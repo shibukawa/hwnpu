@@ -15,7 +15,9 @@ cost before writing one (docs/design.md 16.75). Each of ``layers`` layers is one
 and an empty host step ends it, as the host would pick the next layer's experts there. With
 ``--split`` the copies, the experts' GEMVs and the shared expert and router are commands of
 their own, to time each. Graphs with ``--tiny N`` are N commands of one small add, to time a
-command's own cost. Graphs with ``--q4 ROWS --reps N`` are N q4nx GEMVs of (ROWS, 2048) (IRON's
+command's own cost. Graphs with ``--switch ORDER --pair silu|linear --reps N`` are one command of N
+of two operators, in runs or alternating, to time a change of operator (a reconfiguration of the
+array, docs/design.md 16.266). Graphs with ``--q4 ROWS --reps N`` are N q4nx GEMVs of (ROWS, 2048) (IRON's
 flm.LMHead), to time a 4-bit GEMV. With ``--q4moe q4`` the experts are q4nx tables read in place:
 ExpertQGEMV (gate, up: a column an expert) and ExpertDownQGEMV (down: the 8 side by side) take
 each expert's byte offset per call, so nothing is copied (docs/design.md 16.75).
@@ -732,6 +734,280 @@ def fused_operators():
     return MoEGateUp, MoEDown
 
 
+def experts_operator():
+    """MoEExperts: MoEGateUp then MoEDown as one operator (one core program, one weight stream
+    and one x stream a column), the activations through DRAM between the phases, as gpt-oss's
+    MX4Experts (iron_gptoss_moe.py): each operator paid the start and end of its streams.
+
+    ``y = [a, r + sum_e D_e a_e]``, a the 8 experts' and the shared one's silu(G x) (U x) w (a
+    MoEGateUp's output), the second part a MoEDown's. Phase 1 reads x's object as x then the
+    routing weights (and x again as padding, to the object's length); phase 2 reads it as the
+    activations (y's first part, after phase 1's drains) then the column's residual."""
+    return _experts_operator()
+
+
+import functools  # noqa: E402
+
+
+AHEAD = 2  # MoEExperts: the down runs a column queues before phase 2's x
+
+
+@functools.cache
+def _experts_operator():
+    import aie.dialects.index as index
+    from aie.dialects.aie import T
+    from aie.helpers.taplib import TensorAccessPattern as TAP
+    from aie.iron import Buffer, In, ObjectFifo, Out, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param, per_call, tunable, widths
+    from aie.utils.verify import Tolerance
+
+    from iron.common import Built, Operator
+    from iron_q4 import BLOCK_BYTES as B, CB, K_TILE, dequantize
+
+    MT = CB // 2
+    blk_t = np.ndarray[(B,), np.dtype[np.uint8]]
+    half_t = np.ndarray[(MT,), np.dtype[bfloat16]]
+    acc_t = np.ndarray[(MT,), np.dtype[np.float32]]
+
+    def kernels(xo: int, pairs: int):
+        kdir = Path(config.aie_kernels_dir())
+        here = Path(__file__).resolve().parent / "kernels"
+        x = np.ndarray[(xo,), np.dtype[bfloat16]]
+        sums = np.ndarray[(xo // 32,), np.dtype[bfloat16]]
+        common = dict(source_file=str(here / "moe_mv.cc"),
+                      include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
+                      compile_flags=[f"-DMOE_K={xo // 512 * 512}", f"-DMOE_PAIRS={pairs}"],
+                      object_file_name=f"moe_mv_x{xo}_{pairs}.o")
+        f = lambda name, args: ExternalFunction(name, arg_types=args, **common)  # noqa: E731
+        return dict(
+            sums=f("moe_sums_n", [x, sums, np.int32]),
+            zero=f("moe_zero", [acc_t]),
+            block=f("moe_block", [blk_t, x, sums, acc_t, np.int32]),
+            block_e=f("moe_block_e", [blk_t, x, sums, acc_t, np.int32, np.int32]),
+            glu=f("moe_glu_at", [acc_t, acc_t, x, np.int32, half_t]),
+            end=f("moe_end_at", [acc_t, x, np.int32, half_t]),
+        )
+
+    def offset(op, name):
+        v = op.value(name)
+        return v if v.per_call else None
+
+    class MoEExperts(Operator):
+        """The 8 picked experts and the shared one of a decode step (module docstring of
+        experts_operator): Wg the gate-up table (MoEGateUp's), Wd the down table (MoEDown's),
+        e0 .. e7 the picked experts' byte offsets in Wg, d0 .. d7 in Wd."""
+
+        aiecc_flags: ClassVar[tuple[str, ...]] = ("--reclaim-runtime-bds",)
+
+        grows: int = param(array=True)  # blocks in the gate-up table
+        drows: int = param(array=True)  # blocks in the down table
+        K: int = param(array=True)  # the hidden size
+        NE: int = param(array=True)  # an expert's intermediate size
+        N: int = param(array=True)  # the hidden size again: down's out-features
+        A: int = param(derive=lambda op: (TOP + 1) * op.NE, array=True)  # the activations
+        R: int = param(derive=lambda op: op.N // TOP, array=True)  # a column's residual
+        XO: int = param(derive=lambda op: (TOP + 1) * op.NE + op.N // TOP, array=True)
+        YN: int = param(derive=lambda op: (TOP + 1) * op.NE + op.N, array=True)
+        picked: int = param(default=-1, repr=False)
+        num_aie_columns: int = tunable(domain=widths)
+
+        Wg = In(grows, B, dtype=np.uint8, obj_shape=(2, B), per=(num_aie_columns,))
+        Wd = In(drows, B, dtype=np.uint8, obj_shape=(2, B), per=(num_aie_columns,))
+        x = In(K, obj_shape=(XO,), per=(num_aie_columns,), replicate=True)
+        w = In(WV, obj_shape=(XO,), per=(num_aie_columns,), replicate=True)
+        r = In(N, obj_shape=(XO,), per=(num_aie_columns,))
+        y = Out(YN, obj_shape=(CB,), per=(num_aie_columns,))
+        e0 = per_call(derive=lambda op: 0)
+        e1 = per_call(derive=lambda op: 0)
+        e2 = per_call(derive=lambda op: 0)
+        e3 = per_call(derive=lambda op: 0)
+        e4 = per_call(derive=lambda op: 0)
+        e5 = per_call(derive=lambda op: 0)
+        e6 = per_call(derive=lambda op: 0)
+        e7 = per_call(derive=lambda op: 0)
+        d0 = per_call(derive=lambda op: 0)
+        d1 = per_call(derive=lambda op: 0)
+        d2 = per_call(derive=lambda op: 0)
+        d3 = per_call(derive=lambda op: 0)
+        d4 = per_call(derive=lambda op: 0)
+        d5 = per_call(derive=lambda op: 0)
+        d6 = per_call(derive=lambda op: 0)
+        d7 = per_call(derive=lambda op: 0)
+
+        def validate(self):
+            if self.NE != TOP * CB:
+                raise ValueError(f"MoEExperts: the shared expert's {self.NE} out-features are 64 a column")
+            if self.XO % 32 or self.A % 32 or self.K % 32:
+                raise ValueError(f"MoEExperts: x's object ({self.XO}), the activations ({self.A}) and "
+                                 f"the hidden size ({self.K}) in whole sums of 32")
+
+        def resolve(self, dev):
+            return self.replace(num_aie_columns=TOP)
+
+        def gu_bytes(self) -> int:
+            return 2 * self.NE // CB * (self.K // K_TILE) * 2 * B
+
+        def dn_bytes(self) -> int:
+            return self.N // CB * (self.NE // K_TILE) * 2 * B
+
+        def build(self) -> Built:
+            K, n, A, XO = self.K, self.num_aie_columns, self.A, self.XO
+            kbs, cbs = K // K_TILE, self.NE // CB
+            dcbs, pairs = self.N // CB // n, self.NE // K_TILE
+            k = kernels(XO, pairs)
+            w_l3 = [ObjectFifo(self.Wg.obj_type, depth=2) for _ in range(n)]
+            w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+            x_t = np.ndarray[(XO,), np.dtype[bfloat16]]
+            x_l3 = [ObjectFifo(x_t, depth=1) for _ in range(n)]
+            x_l1 = [f.cons().forward(obj_type=x_t, tile=AnyMemTile) for f in x_l3]
+            y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
+            y_l1 = [f.prod().join([0, MT], obj_types=[half_t, half_t], depths=[2, 2], tile=AnyMemTile)
+                    for f in y_l3]
+
+            def core(w_f, x_f, y_f, sums, g, u, accs, lane, half, k_sums, zero, block, block_e, glu, end):
+                # phase 1: the gate and up of the column's expert, then its share of the shared one
+                x = x_f.acquire(1)
+                k_sums(x, sums, K // 32)
+                zero(g)
+                zero(u)
+
+                def expert(idx, m):
+                    for _ in range_(m):
+                        for acc in (g, u):
+                            for kb in range_(kbs):
+                                kb32 = index.casts(T.i32(), kb)
+                                blk = w_f.acquire(1)
+                                block(blk, x, sums, acc, kb32)
+                                w_f.release(1)
+                        yo = y_f.acquire(1)
+                        glu(g, u, x, K + idx, yo)
+                        y_f.release(1)
+
+                expert(lane, cbs)
+                expert(TOP, 1)
+                x_f.release(1)
+                # phase 2: the down of the column's out-features over the 9 experts, the residual
+                x = x_f.acquire(1)
+                k_sums(x, sums, A // 32)
+                for acc in accs:
+                    zero(acc)
+                for e in range_(TOP + 1):
+                    e32 = index.casts(T.i32(), e)
+                    for acc in accs:
+                        for kh in range(pairs):
+                            blk = w_f.acquire(1)
+                            block_e(blk, x, sums, acc, e32, kh)
+                            w_f.release(1)
+                for c, acc in enumerate(accs):
+                    yo = y_f.acquire(1)
+                    end(acc, x, A + c * CB + half * MT, yo)
+                    y_f.release(1)
+                x_f.release(1)
+
+            workers = []
+            for i in range(n):
+                for j in range(2):
+                    sums = Buffer(np.ndarray[(XO // 32,), np.dtype[bfloat16]])
+                    accs = [Buffer(acc_t) for _ in range(dcbs)]
+                    workers.append(Worker(
+                        lambda w_f, x_f, y_f, sums, g, u, accs, a1, a2, a3, a4, a5, a6, lane=i, half=j: core(
+                            w_f, x_f, y_f, sums, g, u, accs, lane, half, a1, a2, a3, a4, a5, a6),
+                        [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), sums, Buffer(acc_t), Buffer(acc_t),
+                         accs, k["sums"], k["zero"], k["block"], k["block_e"], k["glu"], k["end"]]))
+            for name in ("Wg", "Wd"):
+                getattr(self, name).bind([f.prod() for f in w_l3])
+            for name in ("x", "w", "r"):
+                getattr(self, name).bind([f.prod() for f in x_l3])
+            self.y.bind([f.cons() for f in y_l3])
+            return Built(workers, [])
+
+        def sequence(self, rt):
+            n, K, NE, N, A, R, XO, YN = (self.num_aie_columns, self.K, self.NE, self.N, self.A, self.R,
+                                         self.XO, self.YN)
+            geb, deb = self.gu_bytes(), self.dn_bytes()
+            cb_bytes = 2 * (K // K_TILE) * 2 * B  # a gate and an up column block
+            run = deb // n  # a column's part of an expert's down: its column blocks, contiguous
+            gtotal, dtotal = self.grows * B, self.drows * B
+            first = []
+            for l in range(n):
+                first.append(self.y.drain(TAP((YN,), l * NE, [NE], [1]), lane=l, wait=True, managed=False))
+                first.append(self.y.drain(TAP((YN,), TOP * NE + l * CB, [CB], [1]), lane=l, wait=True,
+                                          managed=False))
+            pad = XO - K - WV
+            for l in range(n):  # phase 1's object: x, the routing weights, then x again to its length
+                self.x.fill(TAP((K,), 0, [K], [1]), lane=l, managed=False)
+                self.w.fill(TAP((WV,), 0, [WV], [1]), lane=l, managed=False)
+                left = pad
+                while left:
+                    m = min(left, K)
+                    self.x.fill(TAP((K,), 0, [m], [1]), lane=l, managed=False)
+                    left -= m
+            for l in range(n):
+                self.Wg.fill(TAP((gtotal,), 0, [geb], [1]), lane=l, offset_parameter=offset(self, f"e{l}"),
+                             managed=False)
+                self.Wg.fill(TAP((gtotal,), SHARED * geb + l * cb_bytes, [cb_bytes], [1]), lane=l,
+                             managed=False)
+            # The down table's first runs right behind the gate-up's, not waiting for phase 1; the
+            # rest after phase 2's x. Its 9 runs a column queued at once overflowed the channel's
+            # task queue: a run's task ends only once phase 2 (which waits for its x) reads it,
+            # and the sequence, waiting to queue the rest, never gave that x (a timeout).
+            def down(l, e):
+                if e < TOP:
+                    self.Wd.fill(TAP((dtotal,), l * run, [run], [1]), lane=l,
+                                 offset_parameter=offset(self, f"d{e}"), managed=False)
+                else:
+                    self.Wd.fill(TAP((dtotal,), SHARED * deb + l * run, [run], [1]), lane=l, managed=False)
+
+            for l in range(n):
+                for e in range(AHEAD):
+                    down(l, e)
+            second = [self.y.drain(TAP((YN,), A + l * R, [R], [1]), lane=l, wait=True, managed=False)
+                      for l in range(n)]
+            for d in first:
+                d.await_()
+            # phase 2's object: the activations from y's first A, then the column's residual
+            for l in range(n):
+                self.x.fill(TAP((YN,), 0, [A], [1]), lane=l, source=self.y, managed=False)
+                self.r.fill(TAP((N,), l * R, [R], [1]), lane=l, managed=False)
+            for l in range(n):
+                for e in range(AHEAD, TOP + 1):
+                    down(l, e)
+            for d in second:
+                d.await_()
+
+        def ops(self) -> int:
+            return 2 * 2 * self.A * self.K + 2 * self.N * self.A
+
+        def reference(self, Wg, Wd, x, w, r, *, e0=0, e1=0, e2=0, e3=0, e4=0, e5=0, e6=0, e7=0,
+                      d0=0, d1=0, d2=0, d3=0, d4=0, d5=0, d6=0, d7=0):
+            ge, de = self.gu_bytes(), self.dn_bytes()
+            fg, fd = np.asarray(Wg, np.uint8).reshape(-1), np.asarray(Wd, np.uint8).reshape(-1)
+            xv, wv = np.asarray(x, np.float64), np.asarray(w, np.float64)
+            acts = []
+            for idx, at in enumerate([*picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], ge), SHARED * ge]):
+                gu = dequantize(fg[int(at) : int(at) + ge], 2 * self.NE, self.K).astype(np.float64)
+                gu = gu.reshape(self.NE // CB, 2, CB, self.K)
+                g = gu[:, 0].reshape(self.NE, self.K) @ xv
+                u = gu[:, 1].reshape(self.NE, self.K) @ xv
+                acts.append(silu(g) * u * wv[idx])
+            a = np.concatenate(acts).astype(bfloat16)
+            av = a.astype(np.float64)
+            out = np.asarray(r, np.float64).copy()
+            for i, at in enumerate([*picked_offsets(self, [d0, d1, d2, d3, d4, d5, d6, d7], de), SHARED * de]):
+                dw = dequantize(fd[int(at) : int(at) + de], self.N, self.NE).astype(np.float64)
+                out += dw @ av[i * self.NE : (i + 1) * self.NE]
+            return np.concatenate([a, out.astype(bfloat16)])
+
+        def tolerance(self) -> Tolerance:
+            return Tolerance.relative(0.05, 1e-2, note="q4nx partial sums in bf16, SiLU's tanh")
+
+    return MoEExperts
+
+
 class FusedLayer:
     def __init__(self, rng, l: int):
         from iron_q4 import BLOCK_BYTES
@@ -867,12 +1143,105 @@ class Tiny(iron.Graph):
         return x
 
 
+class Switch(iron.Graph):
+    """One command of ``n`` of operator A and ``n`` of operator B, in the order ``order``: "runs"
+    (all A, then all B), "alt" (A, B, A, ...), "a" or "b" (2n of one). ``pair`` picks A and B:
+    "silu" (SiLU, add), "linear" (a 2048 x 2048 GEMV, RMS norm) or "gemm" (64 rows by
+    2048 x 2048 on GEMM, the whole array; RMS norm). Timed side by side, it
+    shows what a change of operator (a reconfiguration of the array) costs inside a command
+    (docs/design.md 16.266)."""
+
+    def __init__(self, n: int, order: str, pair: str = "silu"):
+        self.n, self.order, self.pair = n, order, pair
+        if pair == "gemm":  # A: (64, 2048) x (2048, 2048) on GEMM (the whole array); B: RMS norm
+            rng = np.random.default_rng(3)
+            self.w = iron.param(rand_bf16(rng, (HIDDEN, HIDDEN), 1 / np.sqrt(HIDDEN)))
+            self.norm = iron.param(np.ones(HIDDEN, bfloat16))
+        if pair == "linear":
+            rng = np.random.default_rng(3)
+            self.w = iron.param(rand_bf16(rng, (HIDDEN, HIDDEN), 1 / np.sqrt(HIDDEN)))
+            self.norm = iron.param(np.ones(HIDDEN, bfloat16))
+
+    def op(self, o, x):
+        if self.pair == "gemm":
+            if o == "a":
+                return GEMM.step(x, self.w.reshape(HIDDEN, HIDDEN), precision=P)
+            return F.rms_norm(x, (HIDDEN,), self.norm, 1e-6)
+        if self.pair == "linear":
+            if o == "a":
+                return F.linear(x, self.w, precision=P)
+            return F.rms_norm(x.reshape(1, HIDDEN), (HIDDEN,), self.norm, 1e-6).reshape(HIDDEN)
+        return F.silu(x) if o == "a" else x + x
+
+    def body(self, x):
+        ops = {"runs": "a" * self.n + "b" * self.n, "alt": "ab" * self.n,
+               "a": "a" * (2 * self.n), "b": "b" * (2 * self.n)}[self.order]
+        for o in ops:
+            x = self.op(o, x)
+        return x
+
+
+def reconfig_teardown() -> None:
+    """Compose full ELFs with aiecc's --reconfig-teardown: each configuration is undone after
+    it runs, in place of the reset (an empty PDI's load) before the next (docs/design.md 16.266).
+    A composition's cache key gains "teardown", so it does not reuse an image built without."""
+    from aie.iron.program import Program
+    from iron.common.image import compose
+
+    orig = Program.compose.__func__
+
+    def with_teardown(cls, configurations, *, entry, expand_load_pdis=None, reconfig_teardown=None,
+                      reconfig_init_entry=None):
+        if expand_load_pdis:
+            reconfig_teardown = True
+        return orig(cls, configurations, entry=entry, expand_load_pdis=expand_load_pdis,
+                    reconfig_teardown=reconfig_teardown, reconfig_init_entry=reconfig_init_entry)
+
+    Program.compose = classmethod(with_teardown)
+    ident = compose.Composition.identity.fget
+    compose.Composition.identity = property(lambda self: ident(self) + "-teardown")
+
+
+def reconfig_ctrl_pkt() -> None:
+    """Compose full ELFs with aiecc's --load-pdi-to-ctrl-pkt: each configuration streamed to
+    the tiles as control packets by a DMA task, in place of the control code's writes (an
+    experiment: IRON does not pass the option. On 2026-11-20 aiecc fails on it, "operand #0 does
+    not dominate this use" in npu_materialized.mlir, docs/design.md 16.266)."""
+    from aie.iron.program import Program
+    from aie.utils.compile.jit import compilabledesign
+    from iron.common.image import compose
+
+    if "load_pdi_to_ctrl_pkt" not in compilabledesign._RECONFIGURATION_OPTIONS:
+        compilabledesign._RECONFIGURATION_OPTIONS += ("load_pdi_to_ctrl_pkt",)
+        compilabledesign._FULL_ELF_OPTIONS += ("load_pdi_to_ctrl_pkt",)
+    orig = Program.compose.__func__
+
+    def with_ctrl_pkt(cls, configurations, *, entry, expand_load_pdis=None, reconfig_teardown=None,
+                      reconfig_init_entry=None):
+        prog = orig(cls, configurations, entry=entry, reconfig_teardown=reconfig_teardown,
+                    reconfig_init_entry=reconfig_init_entry)
+        if expand_load_pdis:
+            prog._reconfiguration_options["load_pdi_to_ctrl_pkt"] = True
+        return prog
+
+    Program.compose = classmethod(with_ctrl_pkt)
+    ident = compose.Composition.identity.fget
+    compose.Composition.identity = property(lambda self: ident(self) + "-ctrlpkt")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("out", type=Path)
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--split", action="store_true")
     ap.add_argument("--tiny", type=int, default=0)
+    ap.add_argument("--switch", choices=("runs", "alt", "a", "b"),
+                    help="one command of --reps of operator A and --reps of B in this order")
+    ap.add_argument("--pair", choices=("silu", "linear", "gemm"), default="silu", help="--switch's A and B")
+    ap.add_argument("--teardown", action="store_true",
+                    help="aiecc's --reconfig-teardown in place of a reset before each configuration")
+    ap.add_argument("--ctrl-pkt", action="store_true",
+                    help="aiecc's --load-pdi-to-ctrl-pkt: configurations as control packets")
     ap.add_argument("--q4", type=int, default=0, help="a graph of q4nx GEMVs of this many rows by 2048")
     ap.add_argument("--reps", type=int, default=1, help="GEMVs in the --q4 graph")
     ap.add_argument("--channels", type=int, default=0, help="Copy's num_channels (0: its own)")
@@ -882,6 +1251,10 @@ def main() -> None:
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
     bind_device("npu2", 8)
+    if a.teardown:
+        reconfig_teardown()
+    if a.ctrl_pkt:
+        reconfig_ctrl_pkt()
     global DOWN_T
     DOWN_T = a.down_t
     t0 = time.time()
@@ -894,6 +1267,15 @@ def main() -> None:
             rng = np.random.default_rng(1)
             x = np.concatenate([rng.standard_normal(HIDDEN), rng.uniform(0.5, 1.5, HIDDEN)])
             write_check(g, m, a.out, dict(x=x.astype(bfloat16)))
+        return
+    if a.switch:
+        g = Switch(a.reps, a.switch, a.pair)
+        cg = g.compile(x=(64, HIDDEN) if a.pair == "gemm" else (HIDDEN,))
+        m = export_graph(cg, a.out, f"switch_{a.pair}_{a.switch}{a.reps}")
+        print(f"compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}")
+        if a.check:
+            shape = (64, HIDDEN) if a.pair == "gemm" else (HIDDEN,)
+            write_check(g, m, a.out, dict(x=rand_bf16(np.random.default_rng(1), shape, 1e-3)))
         return
     if a.tiny:
         g = Tiny(a.tiny)

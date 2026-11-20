@@ -33,14 +33,21 @@ func TestCodesShared(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	putCodes(ctx, dir, hash, src)
+	shareCodes(ctx, dir, hash, src)
 	shared.Flush(ctx)
 	es, err := shared.ListEntries(ctx, l)
 	if err != nil || len(es) != 1 || !strings.HasPrefix(es[0], "converted/Qwen2.5-Coder-7B-Instruct/any/codes-"+hash+"/") {
 		t.Fatalf("entries in the layer: %v, %v", es, err)
 	}
-	if _, err := os.Stat(filepath.Join(src, shared.EntryFile)); err == nil {
-		t.Error("the codes given were written in")
+	// put once: their entry.json says so, and the next run puts nothing
+	if _, err := os.Stat(filepath.Join(src, shared.EntryFile)); err != nil {
+		t.Errorf("the codes put are not marked: %v", err)
+	}
+	work := cache.Sub("work", "shared")
+	os.RemoveAll(work)
+	shareCodes(ctx, dir, hash, src)
+	if _, err := os.Stat(work); err == nil {
+		t.Error("the codes were put again")
 	}
 
 	dst := CodesDir(dir, hash)
@@ -60,5 +67,20 @@ func TestCodesShared(t *testing.T) {
 	}
 	if fetchCodes(ctx, dir, "00000000", CodesDir(dir, "00000000")) {
 		t.Error("codes of another hash were taken")
+	}
+}
+
+// TestCodesRecipeByDir names the model of the codes by the model's directory alone, as
+// hwnpu-chat calls it (Setup.Dir, no WithModel): the codes are in it, and modelOfDir looks from
+// a path's parent up.
+func TestCodesRecipeByDir(t *testing.T) {
+	m, ok := Lookup("Qwen2.5-Coder-7B-Instruct")
+	if !ok {
+		t.Skip("Qwen2.5-Coder-7B-Instruct is not in models.yaml")
+	}
+	dir := filepath.Join(t.TempDir(), m.DirName())
+	got, r := codesRecipe(context.Background(), dir, "faace07a")
+	if r == nil || got.Name != m.Name || r["codes"] != "faace07a" || r["kind"] != CodesKind {
+		t.Fatalf("%q %v", got.Name, r)
 	}
 }

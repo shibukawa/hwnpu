@@ -279,7 +279,7 @@ func openPackage(dir string) (*milspec.Function, io.ReaderAt, io.Closer, error) 
 
 // LintPackage lowers an .mlpackage's main function without reading its weights (they lower as
 // zeros) and returns what the Neural Engine would get wrong for some values in the program
-// (design.md 16.262).
+// (design.md 16.274).
 func LintPackage(dir string) ([]string, error) {
 	fn, weights, closer, err := openPackage(dir)
 	if err != nil {

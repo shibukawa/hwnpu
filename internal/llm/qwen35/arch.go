@@ -16,7 +16,9 @@ var Arch = &llm.Arch{
 	Format:        "lut8",
 	LastRow:       true,
 	// 1: the gated delta rule over chunks of rows (deltaRuleChunks)
-	Revision:   1,
+	// 2: a chunk of one row without the matmul of an inner dimension of 1, which the Neural
+	// Engine gets wrong (deltaRuleChunks), 2026-11-20
+	Revision:   2,
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	Params: []llm.Param{
 		{Name: "delta", Default: "chunk", Usage: "the Gated DeltaNet's recurrence: chunk (over chunks of rows, the state read and written once a chunk) or rows (one row after the other, the state read and written five times a row)"},

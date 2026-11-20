@@ -71,23 +71,36 @@ func Tables(ctx context.Context, out string, a *llm.Arch, names []string, checkp
 // groups[name] values of a row (llm.WriteTables; llm.HostTableGroups). A tables file written
 // before, with them in bf16, is kept: it reads the same way.
 func GroupedTables(ctx context.Context, out string, a *llm.Arch, names []string, groups map[string]int, checkpoint func() (string, error), log io.Writer) (string, error) {
+	return tables(ctx, out, a.Name, names, groups, func(out string) error {
+		path, err := checkpoint()
+		if err != nil {
+			return err
+		}
+		w, err := llm.OpenWeights(path, a)
+		if err != nil {
+			return err
+		}
+		defer w.Close()
+		return llm.WriteTables(w, names, groups, out)
+	}, log)
+}
+
+// WrittenTables is Tables for a checkpoint that no architecture opens (MOSS-SoundEffect's
+// text encoder and DiT): write writes the tables to out, downloading what it reads if need be,
+// and kind names the tables in the shared layers' key as an architecture's name does.
+func WrittenTables(ctx context.Context, out, kind string, names []string, write func(out string) error, log io.Writer) (string, error) {
+	return tables(ctx, out, kind, names, nil, write, log)
+}
+
+func tables(ctx context.Context, out, kind string, names []string, groups map[string]int, write func(out string) error, log io.Writer) (string, error) {
 	if hasTables(out, names) {
 		return out, nil
 	}
-	m, r := tablesRecipe(ctx, out, a, names, groups)
+	m, r := tablesRecipe(ctx, out, kind, names, groups)
 	if fetchTables(ctx, m, r, out) && hasTables(out, names) {
 		return out, nil
 	}
-	path, err := checkpoint()
-	if err != nil {
-		return "", err
-	}
-	w, err := llm.OpenWeights(path, a)
-	if err != nil {
-		return "", err
-	}
-	defer w.Close()
-	if err := llm.WriteTables(w, names, groups, out); err != nil {
+	if err := write(out); err != nil {
 		return "", err
 	}
 	if log != nil {

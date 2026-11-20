@@ -36,6 +36,15 @@ import numpy as np
 from ml_dtypes import bfloat16
 
 PLE = "hwnpu_ple_rows"
+# A decode step's per-layer inputs, every layer's at once before the first layer (Gemma4's
+# layer computes each layer's: a GEMV, an RMSNorm, a copy, an add and a product, each a
+# reconfiguration of the array, design.md 16.266). HWNPU_GEMMA4_BATCH_PLE=0 keeps a layer's own.
+BATCH_PLE = os.environ.get("HWNPU_GEMMA4_BATCH_PLE", "1") != "0"
+# The MLP's gate and up as one table, run by QGEMVGlu with gelu (iron_q4.glu_param): one
+# operator of a decode step in place of two GEMVs, a GELU and a product. Off unless
+# HWNPU_GEMMA4_FUSE_GLU=1: E2B's decode 9.3 -> 9.9 tokens/s, but its KL from Hugging Face's
+# float32 0.154 -> 0.158 (median 0.068 -> 0.074, design.md 16.269), where LFM3's did not move.
+FUSE_GLU = os.environ.get("HWNPU_GEMMA4_FUSE_GLU", "0") == "1"
 EMBED = "hwnpu_embed_rows"
 # A prompt chunk's commands end where their scratchpad words would pass IRON's limit (32).
 # Each of IRON's gathers took words of its own, so the chunk was 15 commands for E2B; without
@@ -123,7 +132,15 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
             lins = []
             if attn is not None:
                 lins += [(lin, attn) for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj)]
-            if "mlp" not in keep:
+            if "mlp" not in keep and FUSE_GLU and self.config.hidden_act == "gelu_pytorch_tanh":
+                # gate and up as one table: the decode step's one operator (QGEMVGlu with gelu) in
+                # place of two GEMVs, a GELU and a product (design.md 16.269)
+                iron_q4.install_glu()
+                mlp.gu = iron_q4.glu_param(np.asarray(mlp.gate_proj.weight, np.float32),
+                                           np.asarray(mlp.up_proj.weight, np.float32), "q4", act="gelu")
+                mlp.gate_proj = mlp.up_proj = None
+                lins += [(mlp.down_proj, "q4")]
+            elif "mlp" not in keep:
                 lins += [(lin, "q4") for lin in (mlp.gate_proj, mlp.up_proj, mlp.down_proj)]
             for lin, fmt in lins:
                 if lin is not None:
@@ -153,6 +170,25 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
 
     def layer(self, call, i, w, x):
         c, m, P = self.config, self.model, self.config.ple_dim
+        if BATCH_PLE and not call.prompt and getattr(call, "row", None) is None:
+            # a decode step: every layer's per-layer input at once, before the first layer
+            # (five operators in place of five a layer: the same values, design.md 16.269)
+            batch = getattr(self, "_ple_batch", None)
+            if i == 0 or batch is None or batch[0] is not call:
+                L = c.num_hidden_layers
+                ple = g4.F.linear(call.embeddings, m.per_layer_model_projection.weight, precision=c.precision)
+                ple = g4.F.rms_norm(ple.reshape(L, P), (P,), m.per_layer_projection_norm.weight,
+                                    c.eps * c.hidden_size)
+                token = Copy.step(self.ple_rows[:, :1]).reshape(L, P)
+                self._ple_batch = batch = (call, (ple + token) * 2**-0.5)
+            ple_i = batch[1][i].reshape(1, P)
+            if fused_norms(self, x):
+                L = len(m.layers)
+                xn = w.input_layernorm(x) if i == 0 else self._normed
+                nxt = m.layers[i + 1].input_layernorm if i + 1 < L else m.norm
+                x, self._normed = fused_layer(w, x, xn, call, ple_i, nxt)
+                return x
+            return w(x, call, ple_i)
         projection = m.per_layer_model_projection.weight[i * P : (i + 1) * P]
         ple = g4.F.linear(call.embeddings, projection, precision=c.precision)
         norm = m.per_layer_projection_norm.weight
@@ -167,6 +203,14 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
         else:
             token = Copy.step(self.ple_rows[i][:1])
         return w(x, call, (ple + token.reshape(ple.shape)) * 2**-0.5)
+
+    def head(self, x):
+        xn, self._normed = getattr(self, "_normed", None), None
+        if xn is None:
+            return base_head(self, x)
+        # the last layer's SandwichAdd normed it with the final norm: Gemma4.head's softcap
+        logits, cap = self.lm_head(xn), self.config.final_logit_softcapping
+        return logits if cap is None else g4.Tanh.step(logits * (1 / cap)) * cap
 
     base_body = G.body
 
@@ -183,12 +227,46 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
 
     packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, words)
     base_lookup = G.lookup
+    base_head = G.head
+    G.head = head
     G.__init__ = __init__
     G.load_state_dict = load_state_dict
     G.lookup = lookup
     G.body = body
     G.layer = layer
     G.hwnpu_host_ple = True
+
+
+# A decode step's post-norms, residuals and next norms as SandwichAdd (iron_sandwich): after
+# the attention (post-attention norm, residual, pre-feed-forward norm) and after the per-layer
+# input (its norm, residual, layer_scalar, the next layer's input norm), in place of seven
+# operators a layer (design.md 16.269). HWNPU_GEMMA4_FUSED_NORMS=0 keeps IRON's.
+FUSED_NORMS = os.environ.get("HWNPU_GEMMA4_FUSED_NORMS", "1") != "0"
+
+
+def fused_norms(model, x) -> bool:
+    c, m = model.config, model.model
+    if not FUSED_NORMS or x.shape[0] != 1:
+        return False
+    norms = [m.norm] + [n for l in m.layers for n in (
+        l.input_layernorm, l.post_attention_layernorm, l.pre_feedforward_layernorm,
+        l.post_feedforward_layernorm, l.post_per_layer_input_norm)]
+    return all(n.eps == c.eps for n in norms) and all(l.residual_multiplier == 1 for l in m.layers)
+
+
+def fused_layer(w, x, xn, call, ple, nxt):
+    """Gemma 4's layer (PleLayer's body) on x and its input already normed xn, with two
+    SandwichAdds: the residual and the next layer's input (normed by nxt)."""
+    import iron_sandwich
+
+    eps = w.post_attention_layernorm.eps
+    h = w.mix(xn, call)
+    x, n = iron_sandwich.sandwich_add(h, x, w.post_attention_layernorm.weight, w.pre_feedforward_layernorm.weight, eps)
+    h = w.mlp(n)
+    x = x + w.post_feedforward_layernorm(h).reshape(x.shape)
+    g = w.mlp.act(w.per_layer_input_gate(x)) * ple
+    g = w.per_layer_projection(g)
+    return iron_sandwich.sandwich_add(g, x, w.post_per_layer_input_norm.weight, nxt.weight, eps, scale=w.scale)
 
 
 def text_model(model):

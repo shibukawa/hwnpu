@@ -64,7 +64,7 @@ func listOps(pkg string, n int) error {
 }
 
 // lint lowers each package without its weights and prints what the Neural Engine would get
-// wrong for some values in it (ailower.LintPackage, design.md 16.262), counting each note once a
+// wrong for some values in it (ailower.LintPackage, design.md 16.274), counting each note once a
 // package.
 func lint(pkgs []string) error {
 	for _, p := range pkgs {

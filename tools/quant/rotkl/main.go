@@ -1,5 +1,5 @@
 // Command rotkl measures what a weight format costs a model with and without the residual
-// stream rotated (llm.Rotate, design.md 16.262): it builds the whole model for a text's tokens,
+// stream rotated (llm.Rotate, design.md 16.274): it builds the whole model for a text's tokens,
 // runs it on the CPU interpreter (milcpu, float32) and writes the logits; given -ref, the logits
 // of another run (fp16, not rotated), it prints the mean KL(ref || this) and the share of
 // positions whose top token agrees.

@@ -1,8 +1,10 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"slices"
@@ -274,6 +276,16 @@ type HostRouted interface {
 	HostExperts(layer int) experts.MXFP4
 	// ExpertAct is their gated unit.
 	ExpertAct() experts.Act
+}
+
+// HostDerived is a HostRouted model whose release does not hold its experts in the form the host
+// runs (Qwen3.6-35B-A3B's are bf16, 64 GB): a checkpoint with them in MXFP4 is derived from the
+// release (hwnpu-dev mxfp4), and the model runs from that one.
+type HostDerived interface {
+	HostRouted
+	// Derive writes the derived checkpoint of the Hugging Face repository repo (OWNER/NAME)
+	// into dir, unless dir has it whole.
+	Derive(ctx context.Context, repo, dir string, log io.Writer) error
 }
 
 // CheckpointPath is Weights read from a file on disk: its path (a safetensors file, or a sharded

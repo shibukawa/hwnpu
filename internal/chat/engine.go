@@ -275,7 +275,15 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}, nextID: -1, log: c.Log}
 	e.Name = name
-	if e.Template, err = TemplateFor(a.Name); err != nil {
+	arch := a.Name
+	if arch == "qwen35moe" {
+		// Qwen3.5's and Qwen3.6's MoE models are one architecture: the template tells them apart
+		arch = "qwen35"
+		if qwen36Template(filepath.Dir(c.Tokenizer)) {
+			arch = "qwen36"
+		}
+	}
+	if e.Template, err = TemplateFor(arch); err != nil {
 		return nil, err
 	}
 	if e.Tok, err = tokenizer.Load(c.Tokenizer); err != nil {

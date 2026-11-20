@@ -39,6 +39,9 @@ def main():
         raise SystemExit(f'no counts in {a.dir}')
     G = list(C)
     Ks = [k for k in (E // 8, E // 4, 3 * E // 8, E // 2, 5 * E // 8, 3 * E // 4) if k > 0]
+    if E >= 128:
+        # many experts a layer (Qwen3.6's 256, 8 a token): the small shares too
+        Ks = [E // 32, E // 16] + Ks
 
     def share(g, l):
         s = sum(C[g][l]) or 1

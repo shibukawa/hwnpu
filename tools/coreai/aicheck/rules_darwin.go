@@ -19,7 +19,7 @@ import (
 )
 
 // rules checks the Neural Engine's numerical rules that arXiv 2606.22283 describes, on small
-// programs with chosen inputs against the values float32 gives (design.md 16.262):
+// programs with chosen inputs against the values float32 gives (design.md 16.274):
 //
 //   - slice: a slice of the width (last) axis starting at 0 or not, at values 1 to 5000 (the
 //     paper: a fixed x16 gain on a slice starting past 0, Inf above 4094)

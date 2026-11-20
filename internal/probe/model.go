@@ -29,7 +29,7 @@ const (
 const LayerParams = 2*DModel*DModel + 2*DModel*DKV + 3*DModel*DFFN
 
 // BytesPerParam is the stored size of one weight in each format.
-var BytesPerParam = map[string]float64{"fp16": 2, "int8": 1, "lut4": 0.5, "int4": 0.5}
+var BytesPerParam = map[string]float64{"fp16": 2, "int8": 1, "lut4": 0.5, "lut6": 0.75, "lut8": 1, "int4": 0.5}
 
 // WeightBytes is the stored size of the weights of a model with the given layers.
 func WeightBytes(format string, layers int) int64 {
@@ -125,7 +125,8 @@ func Split(layers, n int) []Part {
 
 // WriteMLPackage writes the probe model as an ML Program with weights in the given format:
 // fp16, int8 (symmetric, one scale per output row), lut4 (a 16 entry table per 16 rows, the
-// layout the Neural Engine runs at full speed) or int4 (one scale per 32 inputs, which Core ML
+// layout the Neural Engine runs at full speed), lut6 and lut8 (as lut4 with 64 and 256 entries,
+// the tables of hwnpu-dev convert's -bits 6 and 8) or int4 (one scale per 32 inputs, which Core ML
 // runs on the CPU or the GPU only).
 func WriteMLPackage(dir, format string, layers int, seed uint64) error {
 	return WriteMLPackagePart(dir, format, Whole(layers), seed)
@@ -186,8 +187,9 @@ func buildPart(b *mlpackage.Builder, format string, part Part, seed uint64) (*ml
 			v, err = b.F16("w", []int{rows, cols}, g.halves(rows*cols))
 		case "int8":
 			v, err = b.Int8Scaled("w", []int{rows, cols}, []int{1, cols}, g.bytes(rows*cols), g.scales(rows, 0.04/127))
-		case "lut4":
-			v, err = b.LUT4("w", []int{rows, cols}, []int{16, cols}, g.bytes(rows*cols/2), g.halves(rows/16*16))
+		case "lut4", "lut6", "lut8":
+			bits := int(BytesPerParam[format] * 8)
+			v, err = b.LUT("w", bits, []int{rows, cols}, []int{16, cols}, g.bytes(rows*cols*bits/8), g.halves(rows/16<<bits))
 		case "int4":
 			v, err = b.Int4Scaled("w", []int{rows, cols}, []int{1, 32}, g.bytes(rows*cols/2), g.scales(rows*cols/32, 0.04/7))
 		default:

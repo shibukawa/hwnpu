@@ -266,7 +266,7 @@ const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
 // source's), so the asset itself loads from the entry afterwards (design.md 16.229). The program
 // it holds runs a few percent slower than one compiled on the device.
 func Prebuilt(dir string) string {
-	if os.Getenv(PrebuiltEnv) == "off" {
+	if os.Getenv(PrebuiltEnv) == "off" || LeftToDevice(dir) {
 		return ""
 	}
 	arch := Arch()
@@ -473,7 +473,7 @@ type graph struct {
 
 // aneLive is the programs this process has loaded on the Neural Engine and not closed. An M2
 // takes 112 at a time: the next fails to load there ("no ANE resources") and Core AI runs it on
-// the GPU instead (aicheck limits, design.md 16.262).
+// the GPU instead (aicheck limits, design.md 16.274).
 var aneLive atomic.Int64
 
 // aneProgramLimit is the programs a process had on the Neural Engine at once on an M2.

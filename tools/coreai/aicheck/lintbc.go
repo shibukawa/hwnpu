@@ -15,7 +15,7 @@ import (
 
 // lintProgram finds in an .aimodel's bytecode what ailower.LintPackage finds in a package: the
 // slices of an fp16 tensor's last axis starting at 1..14 mod 32, where the Neural Engine takes
-// values above 4094 to Inf (design.md 16.262). The exports keep the lowered programs only.
+// values above 4094 to Inf (design.md 16.274). The exports keep the lowered programs only.
 func lintProgram(dir string) ([]string, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "main.mlirb"))
 	if err != nil {

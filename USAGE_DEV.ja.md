@@ -27,12 +27,14 @@ macOS では `go run ./cmd/hwnpu-dev powerbench` で、Core ML モデルの呼�
 - LFM3 (d1-2B などの判定モデルを含む)、LFM3-VL の視覚エンコーダ、LFM3-Audio / LFM3-Omni の音声エンコーダと音声出力
 - Gemma 4 (gemma-4-E2B-it)
 - Qwen3.5 (Qwen3.5-4B などのテキスト部分。CPU での照合のみ)、Qwen3 (Qwen3-0.6B と 1.7B。`hwnpu-chat -m qwen3`)
+- Qwen3.5-MoE / Qwen3.6 (`qwen3_5_moe`: Qwen3.6-35B-A3B。Core AI のみ。専門家は `hwnpu-dev mxfp4` が書くチェックポイントの MXFP4 のまま CPU で回す。`hwnpu-chat -m Qwen3.6-35B-A3B` なら初回にそれを書く)
 - BERT 系エンコーダ、PLaMo-Embedding-1B
 - PLaMo 3 (PLaMo 3 Translate 2B。CPU と OpenVINO の CPU での照合のみ。`hwnpu-chat -m plamo-3-translate-2b` で翻訳)
 - Whisper (whisper-large-v3-turbo。音声エンコーダは `-arch whisper-encoder`、クロス注意のキーと値は `-arch whisper-cross`)
 
 ほかのコマンド:
 
+- `hwnpu-dev mxfp4 -o DIR hf:Qwen/Qwen3.6-35B-A3B`: 専門家を 4 ビットの MXFP4 にした Qwen3.5-MoE のチェックポイントを書きます (配布物の bf16 の専門家 64 GB が 17 GB に)。配布物は Range 要求で層ごとに読むので、72 GB をディスクに置きません。ディレクトリも読めます。途中で止まっても続きから書きます
 - `hwnpu-dev check`: 変換したグラフを CPU で fp32 のまま実行し、Hugging Face の実装の参照 (`tools/ref/ref_logits.py`) と層ごとに照合します。Mac は要りません
 - `hwnpu-dev generate`: 変換した因果 LM で文章を生成します (トークナイザーも Go)。`-cache N` で変換すると KV キャッシュ付きになり、長い文章を書けます (M3 の LFM3-1.7B で、キャッシュ 1024 なら 1 トークン 20.6 ms)
 - `hwnpu-dev formats`: 重みの形式 (int8、int4-g128、int4) ごとの精度と速さを NPU の上で比べます

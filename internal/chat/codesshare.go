@@ -21,8 +21,10 @@ const CodesKind = "codes"
 // conversion of this hwnpu: when what it writes changes (ailower.FormatVersion), a conversion
 // needs the codes again, and the machine that chose them may not have them any more.
 func codesRecipe(ctx context.Context, dir, hash string) (Model, map[string]string) {
-	m, r := modelRecipe(ctx, dir)
+	// the model of the directory the codes lie in (modelOfDir looks from a path's parent up)
+	m, r := modelRecipe(ctx, CodesDir(dir, hash))
 	if r == nil {
+		fmt.Fprintf(sharedLog, "%s: the model of %s is not known; the codes are not shared\n", filepath.Base(CodesDir(dir, hash)), dir)
 		return Model{}, nil
 	}
 	r["kind"], r["codes"] = CodesKind, hash
@@ -50,13 +52,24 @@ func fetchCodes(ctx context.Context, dir, hash, dst string) bool {
 	return os.Rename(tmp, dst) == nil
 }
 
+// shareCodes puts the codes of hash in src in the shared layers that are written (putCodes)
+// unless they were put or fetched before: their entry.json, written when they are put, says so.
+func shareCodes(ctx context.Context, dir, hash, src string) {
+	if _, err := os.Stat(filepath.Join(src, shared.EntryFile)); err == nil {
+		return
+	}
+	if work := putCodes(ctx, dir, hash, src); work != "" {
+		copyStream(filepath.Join(src, shared.EntryFile), filepath.Join(work, shared.EntryFile))
+	}
+}
+
 // putCodes puts the codes of hash in src, which a conversion here reads, in the shared layers
 // that are written: a directory of the work area holds them (hard links, else copies) until the
-// queue has put them.
-func putCodes(ctx context.Context, dir, hash, src string) {
+// queue has put them. It returns that directory, "" when nothing is put.
+func putCodes(ctx context.Context, dir, hash, src string) string {
 	m, r := codesRecipe(ctx, dir, hash)
 	if r == nil || len(shared.Writebacks()) == 0 {
-		return
+		return ""
 	}
 	work := cache.Sub("work", "shared", shared.Fingerprint(r))
 	os.RemoveAll(work)
@@ -86,7 +99,11 @@ func putCodes(ctx context.Context, dir, hash, src string) {
 	if err != nil {
 		fmt.Fprintf(sharedLog, "%s: %v; not put in the shared layers\n", filepath.Base(src), err)
 		os.RemoveAll(work)
-		return
+		return ""
 	}
 	putShared(CodesKind, m, r, work, "codes-"+hash)
+	if _, err := os.Stat(filepath.Join(work, shared.EntryFile)); err != nil {
+		return "" // not described: not put
+	}
+	return work
 }
