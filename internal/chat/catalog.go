@@ -259,6 +259,13 @@ func ResolveOn(ctx context.Context, name string, machine int, log io.Writer) (Mo
 // chosen for the model (ChosenMemory). ok is false for none.
 func lookupFor(name string, log io.Writer) (Model, bool, error) { return lookupOn(name, 0, log) }
 
+// LookupFor is the definition name picks on this machine (lookupFor, as AMDExport picks it):
+// false for a name the definitions do not have.
+func LookupFor(name string) (Model, bool) {
+	m, ok, err := lookupFor(strings.TrimSpace(name), nil)
+	return m, ok && err == nil
+}
+
 // lookupOn is lookupFor on a machine of machine GB, 0 for this one's (MachineMemory). A machine
 // given, or a tag of memory (lfm3:8g), runs the model as on it, whatever memory is chosen for it.
 func lookupOn(name string, machine int, log io.Writer) (Model, bool, error) {

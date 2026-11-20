@@ -1144,20 +1144,31 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			}
 		}
 	}
-	for len(e.cur.fed) < len(prompt) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		rest := len(prompt) - len(e.cur.fed)
+	// the tokens of the step that reads the prompt from fed on
+	stepLen := func(fed int) int {
+		rest := len(prompt) - fed
 		k := min(rest, e.sess.Q())
 		if g := e.logitsQ(); g > 0 && rest > g {
 			// the program that reads prompts gives no logits: the last tokens go through the one
 			// that generates, which does
 			k = min(rest-g, e.sess.Q())
 		}
-		if before := len(e.cur.fed); cut > before && cut < before+k {
-			k = cut - before
+		if cut > fed && cut < fed+k {
+			k = cut - fed
 		}
+		return k
+	}
+	// whether the sequence is marked at fed, reached from before: at the last turn's start, and
+	// for the store
+	cutAt := func(fed int) bool { return fed == cut && cut < len(prompt) }
+	storeAt := func(before, fed int) bool {
+		return e.store != nil && fed < len(prompt) && fed/markEvery > before/markEvery
+	}
+	for len(e.cur.fed) < len(prompt) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		k := stepLen(len(e.cur.fed))
 		ti := e.ti
 		if ok, err := e.room(k); err != nil {
 			return nil, err
@@ -1168,16 +1179,57 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			kept = nil // marks of the tier before, not the store's programs'
 		}
 		before := len(e.cur.fed)
+		if ds, ok := e.sess.(*decode.Session); ok && ds.Waves() && e.mtp == nil && !waveOff {
+			// the steps after it that the cache holds as it is, read together a stage at a
+			// time (decode.Session.Steps)
+			ks, marked := []int{k}, []int(nil)
+			for fed := before; ; {
+				next := fed + ks[len(ks)-1]
+				if cutAt(next) || storeAt(fed, next) {
+					marked = append(marked, len(ks)-1)
+				}
+				fed = next
+				n := stepLen(fed)
+				if n == 0 || e.sess.Pos()+fed-before+n > e.sess.Cache() {
+					break
+				}
+				ks = append(ks, n)
+			}
+			if len(ks) > 1 {
+				marks, err := e.steps(ctx, ds, prompt[before:], ks, marked)
+				if err != nil {
+					return nil, err
+				}
+				for i, fed := 0, before; i < len(ks); i++ {
+					from := fed
+					fed += ks[i]
+					j := slices.Index(marked, i)
+					if j < 0 {
+						continue
+					}
+					if cutAt(fed) {
+						e.cur.marks = append(e.cur.marks, mark{marks[j].Mark, marks[j].Logits})
+						if len(e.cur.marks) > maxMarks {
+							e.cur.marks = e.cur.marks[1:]
+						}
+					}
+					if storeAt(from, fed) {
+						kept = append(kept, storedMark{marks[j].Mark.Pos(), marks[j].Mark.Bufs(), marks[j].Logits})
+					}
+				}
+				continue
+			}
+		}
 		if _, err := e.step(prompt[before : before+k]); err != nil {
 			return nil, err
 		}
-		if len(e.cur.fed) == cut && cut < len(prompt) {
+		if cutAt(len(e.cur.fed)) {
 			e.cur.marks = append(e.cur.marks, mark{e.sess.Mark(), e.cur.last})
 			if len(e.cur.marks) > maxMarks {
 				e.cur.marks = e.cur.marks[1:]
 			}
 		}
-		if e.store != nil && len(e.cur.fed) < len(prompt) && len(e.cur.fed)/markEvery > before/markEvery {
+		if storeAt(before, len(e.cur.fed)) {
 			m := e.sess.Mark()
 			kept = append(kept, storedMark{m.Pos(), m.Bufs(), e.cur.last})
 		}
@@ -1440,6 +1492,43 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 	e.cur.last = logits
 	e.recordHidden(pos0)
 	return logits, nil
+}
+
+// waveOff is HWNPU_MOE_DEBUG's wave=0: a prompt's steps one after another, for measuring.
+var waveOff = func() bool { v, _ := experts.DebugOpt("wave"); return v == "0" }()
+
+// steps runs the tokens as steps of ks tokens each, read together (decode.Session.Steps), records
+// them as fed and returns the marks after the steps marked lists. A request given up while they
+// are read leaves the sequence where it was before them.
+func (e *Engine) steps(ctx context.Context, ds *decode.Session, toks []int32, ks, marked []int) ([]decode.Marked, error) {
+	n := 0
+	for _, k := range ks {
+		n += k
+	}
+	toks = toks[:n]
+	embs, err := e.rows(toks)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([][][]float32, len(ks))
+	for i, k := range ks {
+		steps[i], embs = embs[:k], embs[k:]
+	}
+	before := ds.Mark()
+	logits, marks, err := ds.Steps(steps, marked, ctx.Err)
+	if err != nil {
+		if ctx.Err() != nil {
+			ds.Rewind(before) // the rows before it are as they were
+			return nil, err
+		}
+		// the cache may be half written
+		e.sess.Reset()
+		e.cur = seq{}
+		return nil, err
+	}
+	e.cur.fed = append(e.cur.fed, toks...)
+	e.cur.last = logits
+	return marks, nil
 }
 
 // recordHidden gives the multi-token prediction layer the model's final hidden states of the

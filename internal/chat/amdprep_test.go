@@ -30,7 +30,8 @@ func TestAMDExportRecipes(t *testing.T) {
 	models := map[string]bool{"lfm3": true, "lfm3vl": true, "lfm3audio": true, "lfm3omni": true, "gemma4": true,
 		"plamo3": true, "qwen35": true, "qwen35moe": true, "gptoss": true}
 	want := map[string]string{"LFM3-1.7B": "-q4", "Qwen3.5-0.8B": "-q6", "Qwen3.5-2B": "-q6", "Qwen3.5-4B": "-q4",
-		"plamo-3-translate-2b": "-q4", "gemma-4-E2B-it": "-q4", "gpt-oss-20b": "-p16"}
+		"plamo-3-translate-2b": "-q4", "gemma-4-E2B-it": "-q4", "gpt-oss-20b": "-p16",
+		"Qwen3.6-35B-A3B": "-q4-p32"}
 	for _, m := range Catalog {
 		if len(m.AMDExport) == 0 {
 			continue
@@ -43,6 +44,12 @@ func TestAMDExportRecipes(t *testing.T) {
 		}
 	}
 	// gpt-oss-20b: 16 places a layer on 16 GB (an export of its own), every expert from 24 GB
+	if m, _ := Lookup("Qwen3.6-35B-A3B"); !strings.HasSuffix(AMDExportDir(m.On(16)), "Qwen3.6-35B-A3B.amd-npu2-q4-p32") ||
+		!strings.HasSuffix(AMDExportDir(m.On(24)), "Qwen3.6-35B-A3B.amd-npu2-q4-p128") ||
+		!strings.HasSuffix(AMDExportDir(m.On(64)), "Qwen3.6-35B-A3B.amd-npu2-q4") || m.Machine != 16 {
+		t.Errorf("Qwen3.6-35B-A3B: machine %d, on 16 GB %s, on 24 GB %s, on 64 GB %s", m.Machine, AMDExportDir(m.On(16)),
+			AMDExportDir(m.On(24)), AMDExportDir(m.On(64)))
+	}
 	if m, _ := Lookup("gpt-oss-20b"); !strings.HasSuffix(AMDExportDir(m.On(16)), "gpt-oss-20b.amd-npu2-p16") ||
 		!strings.HasSuffix(AMDExportDir(m.On(24)), "gpt-oss-20b.amd-npu2") || m.Machine != 16 {
 		t.Errorf("gpt-oss-20b: machine %d, on 16 GB %s, on 24 GB %s", m.Machine, AMDExportDir(m.On(16)), AMDExportDir(m.On(24)))
