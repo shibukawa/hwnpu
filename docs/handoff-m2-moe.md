@@ -82,3 +82,65 @@ done; done
 - ディスク: 最初の取得はチェックポイント 13 GB と変換、`HWNPU_CACHE_MIN_FREE` (10 GB) の空きも要る
 - `hwnpu status` の NPU% は推定 (PMP の ANE の読み出しの帯域の分布で、いちばん下の区分の外にいた時間)。M2 では確かめていない (チャンネルの名前が違うかもしれない)。電力は macOS 27 では root でないと 0 しか読めないので「読めない」と出す
 - 速くなったら: improvements.md (と .ja.md) の gpt-oss の行、MODEL.md、models.yaml の `memory`
+
+## 6. M2 で測った結果 (2026-11-20、MacBook Air M2 16 GB、0c459eb の先読み入り)
+
+まとめ: **M2 のカーネルは遅くない。遅さは熱と、メモリの取り合いと、層の間で眠ったコア**。先読みがあれば予算 3〜6 GB はどれも 12.4〜12.6 tok/s。
+
+### 6.1 測り方 (これをしないと設定の差が揺れに埋もれる)
+
+- ファンのない Air は 1〜2 回続けて回すと `hwnpu status` の `thermal pressure` が heavy になり (nominal に戻るまで約 60 s)、同じ設定が 12.8 → 8.7 tok/s と落ちる。毎回 nominal に戻ってから 45〜60 s 待つ
+- `vm_stat` の Pageins を前後で取る。Safari (WebKit 多数) を開いたままだと、生成中もシステム全体で 100〜450 MB/s 読み、1 回 7〜36 GB
+- 使ったスクリプト (4 節のものに冷ますのと page-ins を足した):
+
+```sh
+therm(){ ./hwnpu status 2>&1 | grep -oE "thermal pressure [a-z]+"; }
+cool(){ until [ "$(therm)" = "thermal pressure nominal" ]; do sleep 10; done; sleep 45; }
+pi(){ vm_stat | awk '/Pageins/{gsub("\\.","",$2);print $2}'; }
+run(){ cool; echo "== $*"; a=$(pi); env "$@" ./hwnpu-chat chat -m gpt-oss-20b -n 600 --seed 1 --prompt-cache off \
+  "Explain how a CPU cache works, with examples." 2>&1 >/dev/null | grep -E "^experts:|\[prompt|chain: experts"; b=$(pi); echo "pageins $(( (b-a)*16/1024 )) MB; end: $(therm)"; }
+for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w HWNPU_MOE_DEBUG=time,prefetch=$p; done; done; done
+```
+
+### 6.2 カーネル (3.1): 詰める余地は小さい
+
+- `internal/mxfp4` の `BenchmarkGenLayer` (1 層の生成: 4 専門家の gate_up と down、1 ベクトル、53 MB、318 MB を回してキャッシュの外): **1.05 ms (約 50 GB/s)**、M3 の 0.9 ms とほぼ同じ。`GOMAXPROCS` 8、6、4 で差なし (1.01〜1.10 ms)
+- 同じ機械で 8 スレッドの単純な読み出しは約 61 GB/s。カーネルはその 83 %: 命令を詰めても上がるのは最大 15 % ほど。生成は 1 行なので `dotNEON` (SDOT) で、SMMLA (`HWNPU_MXFP4_I8MM`) は関係しない
+- 実機のチェックポイントでの `TestHostTokenTime` はページの読み込みで 8.8〜23 ms/層になり、カーネルの比較には使えない (メモリが空いていないと)
+- 層の間の間: `HWNPU_GPTOSS_GAP=1ms` で 1.09 ms (変わらない)、`4ms` で 1.5〜2.2 ms (コアが眠る)。`HWNPU_MXFP4_SPINNERS=2` で 4 ms の間でも 1.0〜1.07 ms に戻る
+- ところが hwnpu-chat の中では spinners は効かない: 4 GB・先読みありで spinners 0 は 12.5 / 12.4 / 12.4 tok/s、2 は 11.3 / 12.5 / 11.6。既定 (0) のまま
+- 「M2 の専門家は M3 の 1.85 倍」(2 節) は、カーネルではなく、ページの読み込みと眠ったコアと熱だった。chat の中の専門家は今も 1.64〜1.76 ms/層 (合成の 1.05 ms との差が残り)
+
+### 6.3 先読みと予算 (3.2、4 節)
+
+先読みが入る前 (d12b662、冷まして 2 回ずつ、ほかのアプリはふだんどおり):
+
+| `HWNPU_MOE_WIRE` | tok/s | page-ins / 回 |
+|---|---|---|
+| 0 | 12.4 / 11.0 | 8.6 / 12.2 GB |
+| 4GB | 7.5 / 11.4 | 36.6 / 12.6 GB |
+| 6GB | 9.4 / 9.7 / 12.8 | 22.1 / 19.3 GB / — |
+| 8GB | 11.3 / 11.0 | 12.9 / 14.5 GB |
+| 1 (全部、9.1〜9.4 of 10.2 GB で EAGAIN) | 11.0 / 9.9 | 17.3 / 18.9 GB |
+
+遅い回は、30 秒ごとの入れ替えで 1.2 GB を読み直したとき、またはメモリの状態が悪いとき。全部固定しても、Neural Engine の 1.44 GiB と合わせてほかのアプリに残らず、page-ins は減らない。
+
+先読みあり (0c459eb、どの回も終わりまで nominal、3 回ずつ交互):
+
+| 予算 | 先読み | tok/s | 専門家 ms/層 | 固定に当たった | 外れのうち先に読めた |
+|---|---|---|---|---|---|
+| 6GB | 4 (既定) | 12.2 / 12.5 / 12.5 | 2.11 / 1.68 / 1.69 | 82〜87 % | 75〜77 % |
+| 6GB | 0 | 12.1 / 12.3 / 12.1 | 1.79 / 1.74 / 1.79 | 85〜86 % | — |
+| 4GB | 4 | 12.4 / 12.5 / 12.5 (別の回 12.5 / 12.4 / 12.4) | 1.69〜1.76 | 66〜69 % | 77〜78 % |
+| 4GB | 0 | 11.8 / 12.0 / 12.2 | 1.76〜1.84 | 68〜69 % | — |
+| 3GB | 4 | 12.4 / 12.6 / 12.4 | 1.65〜1.74 | 57〜58 % | 77 % |
+
+- 予測は上位 4 個に 87.3 %、上位 8 個に 97.7 % (M3 と同じ)
+- 先読みで 6 GB +2 %、4 GB +4 %。**先読みがあれば 3 GB でも 6 GB と同じ速さ** (M3 でも 3 GB の先読みありが 6 GB の先読みなしより速かった)。先読みは外れの予測のぶん page-ins を 1 回 2〜3 GB 増やす
+- 提案 (まだ変えていない): M2 では既定の予算 (メモリの 3/8 = 6.4 GB) を下げても速さは落ちず、ほかのアプリに 3 GB ほど返せる。M3 の 3 GB (14.7〜15.0) と 6 GB (15.1〜15.2) の差は小さいので、既定を 4 GB 前後 (メモリの 1/4) にするか、両方の機械で決める
+
+### 6.4 残り
+
+- chat の中の専門家 1.65〜1.75 ms と合成の 1.05 ms の差 (眠ったコアか、ページの読み込みか。spinners では縮まらなかった)
+- 1 ステップ 80 ms のうち専門家 24 × 1.7 ≈ 41 ms、残り約 39 ms が Neural Engine の部品 (3.3)
+- 電力 (`sudo powermetrics`) は今回測っていない。熱で絞られる Air では、1 トークンあたりの電力が持続する速さを決める
