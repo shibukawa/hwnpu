@@ -483,14 +483,23 @@ def write_banks(versions, banks: dict, out: Path) -> dict:
             b = np.ascontiguousarray(np.asarray(tensor).astype(np.dtype(seq.buffer_dtype(handle.ref())))).view(np.uint8).reshape(-1)
             if b.size > length:
                 raise SystemExit(f"weight {handle.name}: {b.size} bytes in a buffer of {length}")
+            if b.size > (64 << 20) and not b.any():
+                continue  # zeros (the image starts as zeros): gpt-oss's places, which hwnpu fills
             images[kind][offset : offset + b.size] = b
     names = {}
     for kind, img in images.items():
         img.flush()
         name = f"bank_{kind}.bin"
-        # The raw bytes, without the .npy header.
+        # The raw bytes, without the .npy header; runs of zeros left as holes (gpt-oss's places
+        # for experts that hwnpu fills, GPTOSS_EXPERT_PLACES: gigabytes)
         with open(out / name, "wb") as f:
-            f.write(memoryview(img))
+            step = 16 << 20
+            for at in range(0, img.size, step):
+                chunk = img[at : at + step]
+                if chunk.any():
+                    f.seek(at)
+                    f.write(memoryview(chunk))
+            f.truncate(img.size)
         del img
         (out / f"bank_{kind}.npy.tmp").unlink()
         names[kind] = name
@@ -744,6 +753,24 @@ def export(model, versions, out: Path) -> dict:
     host_tables = iron_hostple.write(model, vm["decode"]["buffers"], out)
     if host_tables:
         m["host_tables"] = host_tables
+    # gpt-oss with fewer places than experts (GPTOSS_EXPERT_PLACES): hwnpu fills the places'
+    # tables from experts.bin (internal/llm/iron/pool.go), the same buffers in every version
+    pool = model.hwnpu_experts_pool() if hasattr(model, "hwnpu_experts_pool") else None
+    if pool:
+        for layer in pool["layers"]:
+            for k in ("gu", "dn"):
+                have = {json.dumps(v["buffers"].get(layer[k]), sort_keys=True) for v in vm.values() if layer[k] in v["buffers"]}
+                if len(have) != 1 or "decode" not in vm or layer[k] not in vm["decode"]["buffers"]:
+                    raise SystemExit(f"experts_pool: {layer[k]} is not one buffer of the versions")
+        m["experts_pool"] = pool
+    route = model.hwnpu_experts_route() if hasattr(model, "hwnpu_experts_route") else None
+    if route:
+        dec = vm["decode"]["buffers"]
+        for layer in route["layers"]:
+            for k in ("norm", "yo", "rw"):
+                if layer[k] not in dec:
+                    raise SystemExit(f"experts_route: the decode step has no buffer {layer[k]}")
+        m["experts_route"] = route
     (out / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     write_words(versions, m, out)
     return m
@@ -953,7 +980,7 @@ def main(argv=None) -> int:
         import iron_gptoss
 
         # the experts are mx4 (the checkpoint's MXFP4) whatever --q4 says
-        iron_gptoss.install(attn=a.attn, head=a.head)
+        iron_gptoss.install(attn=a.attn, head=a.head, out=a.out)
     elif a.q4:
         raise SystemExit(f"--q4: not built for {a.model}")
     if a.model == "qwen35":

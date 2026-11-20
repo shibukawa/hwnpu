@@ -160,6 +160,9 @@ func newPlacer(h *Host, p Placement, budget int64, L int) *placer {
 	return pl
 }
 
+// ReadUsageFor is readUsageFor: the counts at path, or its directory's other files together.
+func ReadUsageFor(path string, L, E int) *Usage { return readUsageFor(path, L, E) }
+
 // readUsageFor reads the counts at path, or, when it is missing, its directory's other files
 // together; nil for none.
 func readUsageFor(path string, L, E int) *Usage {

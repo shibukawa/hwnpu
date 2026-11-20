@@ -35,6 +35,9 @@ type HostStep struct {
 	// expert the graph's value SlotValues[i] ("" for a fixed slot); none, a slot an expert
 	Slots      int      `json:"slots,omitempty"`
 	SlotValues []string `json:"slot_values,omitempty"`
+	// Places, where below Experts, is the places of the layer's tables (Manifest.ExpertsPool):
+	// fixed slot i is place i, and the experts not in a place are copied in between passes
+	Places int `json:"places,omitempty"`
 	Reads      []Region `json:"reads"`
 	Writes     []Region `json:"writes"`
 }
@@ -86,6 +89,9 @@ type moePass struct {
 	copies   []rowCopy
 	slotRows []int
 	cap      int
+	// loads: the experts (expert, place) of a layer with fewer places than experts copied in
+	// before the pass (pool.go)
+	loads [][2]int
 }
 
 // rowCopy is one k-block of one choice's row of x: bytes src.. of the chunk's rows to dst.. of
@@ -344,6 +350,15 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 		for k, x := range p.values {
 			values[k] = x
 		}
+		if len(p.loads) > 0 {
+			t0 := time.Now()
+			if err := m.loadExperts(route.Layer, p.loads); err != nil {
+				return err
+			}
+			if os.Getenv("HWNPU_IRON_TIMING") != "" {
+				fmt.Fprintf(os.Stderr, "moe pass %d of layer %d: %d experts copied in, %.1f ms\n", i, route.Layer, len(p.loads), time.Since(t0).Seconds()*1000)
+			}
+		}
 		if i > 0 { // the last pass's y lies over the shared expert's input
 			if err := m.writeRegion(v, route.Reads[1], rt.hn); err != nil {
 				return err
@@ -488,6 +503,12 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 	}
 	if h.Writes[0].Bytes < 4*S || h.Writes[1].Bytes < 2*S*in*cap {
 		return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots of %d rows past its counts and x", h.Layer, S, cap)
+	}
+	if h.Places > 0 && h.Places < E {
+		if h.Slots <= h.Places {
+			return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots for %d places", h.Layer, S, h.Places)
+		}
+		return rt, m.poolPasses(h, rt, ids, n, K)
 	}
 	if h.Slots > 0 && S < E {
 		return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots for %d experts", h.Layer, S, E)
