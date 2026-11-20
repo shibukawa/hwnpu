@@ -37,9 +37,9 @@ type HostStep struct {
 	SlotValues []string `json:"slot_values,omitempty"`
 	// Places, where below Experts, is the places of the layer's tables (Manifest.ExpertsPool):
 	// fixed slot i is place i, and the experts not in a place are copied in between passes
-	Places int `json:"places,omitempty"`
-	Reads      []Region `json:"reads"`
-	Writes     []Region `json:"writes"`
+	Places int      `json:"places,omitempty"`
+	Reads  []Region `json:"reads"`
+	Writes []Region `json:"writes"`
 }
 
 // Region is a buffer's place in an argument, and the tensor it holds.
