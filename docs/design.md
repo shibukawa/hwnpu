@@ -7724,3 +7724,27 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 - macOS では「device: not opened (--wake …)」を出さない (開いても起こすものも分かることも増えない)
 - NPU を使っているプロセスは表に (PID、名前 16 文字で切る、CPU%、メモリ、GPU%、GPU のメモリ、NPU%、NPU のメモリ、`--watch` と一度だけの表示ではコマンドライン)。`-` は分からないもの。読み方 (`sysload.ProcSampler`、前回からの差分で %): Linux は `/proc/PID/stat` と `statm`、DRM の fdinfo (`drm-engine-*`、`drm-resident-*`、古い `drm-memory-*`、`drm-client-id` で重ねない) の amdgpu を GPU に、amdxdna と intel_vpu を NPU に。macOS は `proc_pid_rusage` (時間は `mach_timebase_info` で ns に、メモリは Activity Monitor の footprint に wired を足したもの: mlock したファイルのページは footprint に入らない。gpt-oss-20b の専門家を 6.4 GB 固定した hwnpu-chat で footprint 0.53 GB、wired 6.41 GB、resident 9.53 GB (resident は固定していないページキャッシュと共有ライブラリも数え、スワップと圧縮は数えない)。wired は JSON の `wired_bytes` にも。他のユーザーのプロセスは root でないと読めない) と、IOAccelerator の下の user client の `AppUsage` の `accumulatedGPUTime` (プロセスごとの GPU のメモリは出ない)。ANE にはプロセスごとの時間がないので macOS の NPU% は `-`。Windows の NPU% は今までの性能カウンター
 - macOS の NPU の行の直し (M3、macOS 27.2、gpt-oss-20b の生成中に IOReport を全部見て): (1) エネルギーの値は root でないと全部 0 (`Energy Model` の `ANE` も `CPU Energy` も、CPU が 260 % のときでも)。「0.00 W」をやめ、CPU のエネルギーも 0 なら読めないとして「power not readable without root (sudo powermetrics …)」(`DarwinIOReport.ANEPowerKnown`)。(2) NPU% は `PMP`/`AF BW`/`ANE0 RD` (電源管理の、ANE の読み出しの帯域の分布、1〜32 GB/s の 32 区分、M3 で約 0.23 ms に 1 回) のいちばん下の区分の外にいた時間の割合 (`ANEBusyPercent`、メモリを読んでいた時間の推定。生成中 39〜51 %)。プロセスごとの時間は無いので、プロセスの NPU のメモリの 9 割以上を持つプロセスの NPU% に (`npuHolder`: 日本語入力や Siri も数 MB 持つので、1 つだけの条件ではモデルに付かなかった)。(3) 割り込みは `ane 0` 決め打ちだった (M3 は `ane 4`): `ane N` を足す (生成中 899 calls/s)。(4) M3 の `H11ANE` には `FirmwareLoaded` が無く、いつも「firmware not loaded」と出ていた: あるときだけ (`FirmwareKnown`)。`ANE`/`IOP State` は読み込まれている間ずっと `Running` で、負荷には使えない。`AMC Stats` の `ANE RD` は M3 に無い (読みの GB/s は出ない)
+
+### 16.261 VAE の prebuilt を使わない: FLUX.2 klein の 512 × 512 に縞、1024 × 768 は Request cancelled — 2026-11-20
+
+FormatVersion 2 の作り直し (16.252) のあとの確かめで、FLUX.2 klein の 1:1s (512 × 512) の絵に 112 行ごとに数行の色の縞が出た (M1、h13g の prebuilt)。キャッシュを空にした別の名前 (codesign -i) で同じ縞。分けて確かめた:
+
+| M1、512 × 512、seed 1 | 絵 | かかった時間 |
+|---|---|---|
+| すべて prebuilt | 縞 | 13m54s |
+| すべて端末で compile (`HWNPU_COREAI_PREBUILT=off`) | 正しい | 50m24s |
+| prebuilt から VAE の 10 段だけ外す | 正しい (端末の compile と同じ絵) | 7m19s |
+
+縞は VAE の prebuilt から。512+1024 の書き出しの 1024 × 1024 の関数は正しく、512 の関数が誤る。1024 × 768 の書き出し (VAE は 1 つの大きさ) は prebuilt の `vae_s0` の実行が `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた (他に Neural Engine を使うものがない時)。
+
+VAE の prebuilt には得もない: 端末が prebuilt を仕上げる時間は compile と同じ (1024 × 1024 の 10 段で 104 s 対 106 s)。仕上げは 1 つごとに ANELargeModelCompilerService の起動を待つ (10 s、16.247)。
+
+- `coreai.LeftToDevice`: 名前が `vae` で始まるプログラム (FLUX.2 klein の `vae_s*`、Chroma と Anima の VAE) は端末で compile する
+- `hwnpu-dev prebuild` (`coreai.Build`) は外す (`left to the device` と出す)
+- `coreai.Prebuilt` は取得元にすでにある VAE の prebuilt (16.252 の作り直しで全部の大きさに入れた) を使わない。入れ直さなくても新しい hwnpu は正しい絵になる。古い hwnpu は縞のまま
+- Apple への報告: coreai-build の VAE の誤り (FB を出す。known-issues.md に足す)
+
+**残り**
+
+- 取得元の FLUX.2 klein と Chroma1-Flash の prebuilt から VAE を除いて詰め直す (場所だけの問題)
+- coreai-build の何が VAE を誤らせるか (縞は 112 行ごと: 段の中の行の区切りか)。直ったら `LeftToDevice` を外す

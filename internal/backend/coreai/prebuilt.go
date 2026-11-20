@@ -128,6 +128,19 @@ func Assets(paths []string) ([]string, error) {
 	return out, nil
 }
 
+// LeftToDevice reports whether the program at dir is compiled on the device even where a prebuilt
+// one could be had: a VAE's (vae*.aimodel). coreai-build's VAE programs come out wrong on the
+// device: FLUX.2 klein's at 512 x 512 (the 512 function of the 512+1024 export, prebuilt for
+// h13g) drew a band of noise every 112 rows on M1, and the 1024 x 768 export's ended in
+// "Request cancelled" at their first stage; the same programs compiled on the device draw the
+// picture right. Nor do they gain anything: the device finishes a prebuilt program no faster than
+// it compiles one this small (the ten stages at 1024 x 1024 104 s either way: a finish waits on
+// the respawn of ANELargeModelCompilerService, 10 s a program). Build leaves them out and Prebuilt
+// passes over them in what the shared layers hold already (design.md 16.261).
+func LeftToDevice(dir string) bool {
+	return strings.HasPrefix(strings.ToLower(filepath.Base(filepath.Clean(dir))), "vae")
+}
+
 // isAsset reports whether dir is a Core AI program hwnpu lowered or converted: its bytecode and
 // hash are there.
 func isAsset(dir string) bool {
