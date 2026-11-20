@@ -28,6 +28,7 @@ See docs/amd-npu-models.md.
 import argparse
 import json
 import shutil
+import os
 import sys
 from pathlib import Path
 
@@ -942,6 +943,11 @@ def main(argv=None) -> int:
     ap.add_argument("--command-per-step", action="store_true",
                     help="for measuring: the prompt chunk a command per step (HWNPU_IRON_TIMING times each), "
                          "the steps' operators by command in OUT/steps.json")
+    ap.add_argument("--expert-places", type=int, default=None, metavar="N",
+                    help="gpt-oss: N places of an expert's tables a layer (a multiple of 4, at most 56), the experts in "
+                         "experts.bin and copied into a place when chosen (hwnpu's pool.go): GPTOSS_EXPERT_PLACES")
+    ap.add_argument("--host-route", action="store_true",
+                    help="gpt-oss: the decode step's routing on the host (always for 128 experts): GPTOSS_HOST_ROUTE")
     ap.add_argument("--scan-window", action="store_true",
                     help="IRON's sliding-window attention, which reads the keys from position 0 and masks "
                          "those out of the window (by default it reads only the window's: iron_window)")
@@ -977,6 +983,12 @@ def main(argv=None) -> int:
 
         iron_qwen35.install(attn=a.attn, mlp=a.mlp, head=a.head)
     elif a.model == "gptoss":
+        if a.expert_places is not None:  # read when iron_gptoss_moe is first imported
+            if "iron_gptoss_moe" in sys.modules:
+                raise SystemExit("--expert-places: iron_gptoss_moe is imported already")
+            os.environ["GPTOSS_EXPERT_PLACES"] = str(a.expert_places)
+        if a.host_route:
+            os.environ["GPTOSS_HOST_ROUTE"] = "1"
         import iron_gptoss
 
         # the experts are mx4 (the checkpoint's MXFP4) whatever --q4 says

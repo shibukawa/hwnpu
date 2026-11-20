@@ -429,6 +429,11 @@ func (m *Model) Close() error {
 			fmt.Fprintf(os.Stderr, "experts: %d places of %d: decode choices %d in a place, %d copied in (%.1f %%); copies %.2f s\n",
 				p.P, p.E, p.hits, p.misses, 100*float64(p.misses)/float64(max(1, p.hits+p.misses)), p.copying.Seconds())
 		}
+		if _, ok := experts.DebugOpt("check"); ok && !m.released && m.pool.filled {
+			if err := m.checkPool(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}
 		m.pool.close()
 	}
 	if m.released {

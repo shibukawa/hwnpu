@@ -1,6 +1,7 @@
 package iron
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"os"
@@ -199,7 +200,38 @@ func (m *Model) fillPool() error {
 		}
 	}
 	p.filled = true
-	m.logf("experts: %d places a layer filled in %.1f s", p.P, time.Since(t0).Seconds())
+	m.logf("experts: %d places a layer filled in %.2f s", p.P, time.Since(t0).Seconds())
+	if _, ok := experts.DebugOpt("check"); ok {
+		return m.checkPool()
+	}
+	return nil
+}
+
+// checkPool compares every place's tables with its expert's in the experts file
+// (HWNPU_MOE_DEBUG=check).
+func (m *Model) checkPool() error {
+	p := m.pool
+	bad := 0
+	for l := range p.L {
+		pl := &p.places[l]
+		lay := pl.lay
+		for i, e := range pl.at {
+			if e < 0 {
+				continue
+			}
+			gu := m.banks[pl.gu.Argument].Bytes()[pl.gu.Offset+i*lay.GUBytes:][:lay.GUBytes]
+			dn := m.banks[pl.dn.Argument].Bytes()[pl.dn.Offset+i*lay.DNBytes:][:lay.DNBytes]
+			fg := p.data[lay.Offset+int64(e)*int64(lay.GUBytes):][:lay.GUBytes]
+			fd := p.data[lay.Offset+int64(p.E)*int64(lay.GUBytes)+int64(e)*int64(lay.DNBytes):][:lay.DNBytes]
+			if !bytes.Equal(gu, fg) || !bytes.Equal(dn, fd) {
+				bad++
+			}
+		}
+	}
+	m.logf("experts: check of the places: %d of %d differ from %s", bad, p.L*p.P, p.man.File)
+	if bad > 0 {
+		return fmt.Errorf("iron: %d places differ from their experts", bad)
+	}
 	return nil
 }
 
