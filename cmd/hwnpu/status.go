@@ -384,24 +384,27 @@ func summarizeDarwin(st *Status, d *npuinfo.DarwinInfo) {
 	if b, ok := mem.NPUWired(); ok {
 		st.Load.NPUMemory = b // the weights are here, not in the processes' footprint
 	}
-	// the ANE has no time per process: with one process holding its memory, the ANE's busy
-	// share is that process's
-	if st.Load.NPUPercent != nil {
-		holder := -1
-		for i, p := range st.Processes {
-			if p.NPUMemory > 0 {
-				if holder >= 0 {
-					holder = -1
-					break
-				}
-				holder = i
-			}
-		}
-		if holder >= 0 {
-			b := *st.Load.NPUPercent
-			st.Processes[holder].NPUPercent = &b
+	// the ANE has no time per process: the process holding nearly all of its memory (a model,
+	// beside the input method's or Siri's few MB) is given the ANE's busy share
+	if i := npuHolder(st.Processes); i >= 0 && st.Load.NPUPercent != nil {
+		b := *st.Load.NPUPercent
+		st.Processes[i].NPUPercent = &b
+	}
+}
+
+// npuHolder is the process that holds at least 90 % of the processes' NPU memory, -1 for none.
+func npuHolder(ps []Process) int {
+	best, sum := -1, int64(0)
+	for i, p := range ps {
+		sum += p.NPUMemory
+		if p.NPUMemory > 0 && (best < 0 || p.NPUMemory > ps[best].NPUMemory) {
+			best = i
 		}
 	}
+	if best < 0 || 10*ps[best].NPUMemory < 9*sum {
+		return -1
+	}
+	return best
 }
 
 func summarizeWindows(st *Status, w *npuinfo.WindowsInfo) {
