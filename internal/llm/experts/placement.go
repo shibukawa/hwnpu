@@ -37,15 +37,65 @@ type Placement struct {
 
 // balanceEvery is how often, at most, the wired experts follow the ones in use; the first time
 // after balanceFirst, so that a start with no counts (Core alone) soon wires the ones in use.
+// pressureEvery is how often the system's shortage of memory is read, to give wired memory back.
 const (
-	balanceEvery = 30 * time.Second
-	balanceFirst = 5 * time.Second
+	balanceEvery  = 30 * time.Second
+	balanceFirst  = 5 * time.Second
+	pressureEvery = 5 * time.Second
 )
+
+// The budget follows the system's free memory (mem.Pressure): all of it at freeHigh percent free
+// or more, the core alone at freeLow or less and at the system's warning (Level 2 and up), in
+// proportion between. The free percent counts the page cache the system can drop, so it falls only
+// once the experts not wired are dropped as well: then the wired ones are what the other
+// applications lack. A budget that shrinks unwires the experts used least; it grows back at the
+// next balance of a run.
+const (
+	freeHigh = 25
+	freeLow  = 10
+)
+
+// effective is the budget for the system's pressure now.
+func (pl *placer) effective() int64 {
+	p, ok := pl.pressure()
+	if !ok {
+		return pl.max
+	}
+	eb := pl.h.expertBytes()
+	var core int64
+	for _, c := range pl.core {
+		if c {
+			core += eb
+		}
+	}
+	core = min(core, pl.max)
+	switch {
+	case p.Level >= 2 || p.Free <= freeLow:
+		return core
+	case p.Free >= freeHigh:
+		return pl.max
+	}
+	return core + (pl.max-core)*int64(p.Free-freeLow)/(freeHigh-freeLow)
+}
+
+// follow sets the budget to effective's, telling a change of more than an expert.
+func (pl *placer) follow() {
+	b := pl.effective()
+	if d := b - pl.budget; d > pl.h.expertBytes() || -d > pl.h.expertBytes() {
+		if DebugTime() {
+			p, _ := pl.pressure()
+			fmt.Fprintf(os.Stderr, "experts: memory %d%% free (pressure %d): budget %.1f → %.1f GB\n", p.Free, p.Level, float64(pl.budget)/1e9, float64(b)/1e9)
+		}
+	}
+	pl.budget = b
+}
 
 // wiring is how the experts are wired: all of them, none, or a budget of bytes for
 // Placement's choice. HWNPU_MOE_WIRE=1 wires all, 0 none, a size (6GB, 6g, 6.5) that budget;
-// otherwise all when they take at most half of the machine's memory, else 3/8 of it (6 GB of
-// 16). Wired, a token's experts cost half as much even with memory to spare (gpt-oss-20b on a
+// otherwise all when they take at most half of the machine's memory, else a quarter of it (4.3
+// GB of 16 GiB; it was 3/8 until the prefetch made 3 GB as fast as 6: an M2 12.4–12.6 against
+// 12.2–12.5 tokens/s, an M3 16.8–16.9 against 17.2–17.6). The budget then follows the system's
+// free memory (placer.effective). Wired, a token's experts cost half as much even with memory to spare (gpt-oss-20b on a
 // 32 GB M4: 1.8 → 0.9 ms a layer, 13.5 → 18.0 tokens/s): unwired pages of a mapped file keep
 // costing the process faults, and on a 16 GB machine with a desktop's applications open the
 // system drops them (an M2: 13.2 tokens/s wired, 7.9 not).
@@ -70,7 +120,7 @@ func (h *Host) wiring() (all bool, budget int64) {
 	if phys > 0 && 2*n <= phys {
 		return true, n
 	}
-	return false, phys * 3 / 8
+	return false, phys / 4
 }
 
 // bytes is the size of every expert's weights.
@@ -118,11 +168,14 @@ func (h *Host) spans(l, e int) [][]byte {
 type placer struct {
 	h      *Host
 	place  Placement
-	budget int64
-	L, E   int
-	core   []bool    // by l*E+e
-	score  []float64 // each expert's share of its layer's runs, older runs weighing less
-	seen   []uint32  // Host.usage's counts at the last balance
+	budget int64 // now: max, less while the system is short of memory (effective)
+	max    int64 // the budget asked for (Host.wiring)
+	// pressure reads how short of memory the system is (mem.PressureNow; a test's own)
+	pressure func() (mem.Pressure, bool)
+	L, E     int
+	core     []bool    // by l*E+e
+	score    []float64 // each expert's share of its layer's runs, older runs weighing less
+	seen     []uint32  // Host.usage's counts at the last balance
 
 	mu      sync.Mutex // the wired experts and the system's wiring of them
 	wired   map[int][][]byte
@@ -144,7 +197,7 @@ type placer struct {
 
 func newPlacer(h *Host, p Placement, budget int64, L int) *placer {
 	E := h.shape.Experts
-	pl := &placer{h: h, place: p, budget: budget, L: L, E: E, core: make([]bool, L*E), score: make([]float64, L*E),
+	pl := &placer{h: h, place: p, budget: budget, max: budget, pressure: mem.PressureNow, L: L, E: E, core: make([]bool, L*E), score: make([]float64, L*E),
 		seen: make([]uint32, L*E), wired: map[int][][]byte{}, quit: make(chan struct{}), lock: mlock, unlock: munlock, on: make([]atomic.Bool, L*E)}
 	for l, es := range p.Core {
 		for _, e := range es {
@@ -343,13 +396,14 @@ func (pl *placer) start() {
 	if idle == 0 {
 		idle = 5 * time.Minute
 	}
-	if idle < 0 {
-		return
-	}
 	pl.wg.Add(1)
 	go func() {
 		defer pl.wg.Done()
-		tick := time.NewTicker(min(idle/4, balanceEvery))
+		every := pressureEvery
+		if idle > 0 {
+			every = min(every, idle/4)
+		}
+		tick := time.NewTicker(every)
 		defer tick.Stop()
 		for {
 			select {
@@ -357,22 +411,33 @@ func (pl *placer) start() {
 				return
 			case <-tick.C:
 			}
-			if time.Since(time.Unix(0, pl.lastRun.Load())) < idle || !pl.busy.CompareAndSwap(false, true) {
+			if !pl.busy.CompareAndSwap(false, true) {
 				continue
 			}
-			core := map[int]bool{}
-			for i, c := range pl.core {
-				if c {
-					core[i] = true
+			// the system short of memory: give back what it asks now, not at the next balance
+			if b := pl.effective(); b < pl.budget-pl.h.expertBytes() {
+				pl.follow()
+				_, un := pl.apply(pl.target())
+				if DebugTime() {
+					fmt.Fprintf(os.Stderr, "experts: %.1f GB unwired, %.1f GB kept\n", float64(un)/1e9, float64(pl.bytes)/1e9)
 				}
 			}
-			pl.mu.Lock()
-			extra := len(pl.wired) > len(core)
-			pl.mu.Unlock()
-			if extra {
-				_, un := pl.apply(core)
-				if DebugTime() {
-					fmt.Fprintf(os.Stderr, "experts: idle %v: %.1f GB unwired, the core's %.1f GB kept\n", idle, float64(un)/1e9, float64(pl.bytes)/1e9)
+			// idle: all but the core unwired
+			if idle > 0 && time.Since(time.Unix(0, pl.lastRun.Load())) >= idle {
+				core := map[int]bool{}
+				for i, c := range pl.core {
+					if c {
+						core[i] = true
+					}
+				}
+				pl.mu.Lock()
+				extra := len(pl.wired) > len(core)
+				pl.mu.Unlock()
+				if extra {
+					_, un := pl.apply(core)
+					if DebugTime() {
+						fmt.Fprintf(os.Stderr, "experts: idle %v: %.1f GB unwired, the core's %.1f GB kept\n", idle, float64(un)/1e9, float64(pl.bytes)/1e9)
+					}
 				}
 			}
 			pl.busy.Store(false)
@@ -437,6 +502,7 @@ func (pl *placer) balance(first bool) {
 		}
 		pl.addShares(diff, 1)
 	}
+	pl.follow()
 	t0 := time.Now()
 	w, un := pl.apply(pl.target())
 	if errors.Is(pl.limited, syscall.ENOMEM) {
