@@ -754,7 +754,7 @@ def export(model, versions, out: Path) -> dict:
     host_tables = iron_hostple.write(model, vm["decode"]["buffers"], out)
     if host_tables:
         m["host_tables"] = host_tables
-    # gpt-oss with fewer places than experts (GPTOSS_EXPERT_PLACES): hwnpu fills the places'
+    # gpt-oss and Qwen3.6 with fewer places than experts (--expert-places): hwnpu fills the places'
     # tables from experts.bin (internal/llm/iron/pool.go), the same buffers in every version
     pool = model.hwnpu_experts_pool() if hasattr(model, "hwnpu_experts_pool") else None
     if pool:
@@ -944,8 +944,9 @@ def main(argv=None) -> int:
                     help="for measuring: the prompt chunk a command per step (HWNPU_IRON_TIMING times each), "
                          "the steps' operators by command in OUT/steps.json")
     ap.add_argument("--expert-places", type=int, default=None, metavar="N",
-                    help="gpt-oss: N places of an expert's tables a layer (a multiple of 4, at most 56), the experts in "
-                         "experts.bin and copied into a place when chosen (hwnpu's pool.go): GPTOSS_EXPERT_PLACES")
+                    help="gpt-oss and qwen35moe: N places of an expert's tables a layer (gpt-oss: a multiple of 4, at "
+                         "most 56; Qwen3.6: at most its 256), the experts in experts.bin and copied into a place when "
+                         "chosen (hwnpu's pool.go): GPTOSS_EXPERT_PLACES, iron_qwen35.POOL")
     ap.add_argument("--host-route", action="store_true",
                     help="gpt-oss: the decode step's routing on the host (always for 128 experts): GPTOSS_HOST_ROUTE")
     ap.add_argument("--scan-window", action="store_true",
@@ -960,6 +961,10 @@ def main(argv=None) -> int:
 
         iron_window.install()
 
+    if a.expert_places is not None and not (a.model == "gptoss" or (a.model == "qwen35moe" and a.q4)):
+        raise SystemExit("--expert-places: gptoss, or qwen35moe with --q4")
+    if a.host_route and a.model != "gptoss":
+        raise SystemExit("--host-route: gptoss")
     if a.model.startswith("gemma4") and not a.device_ple:
         import iron_hostple
 
@@ -981,7 +986,7 @@ def main(argv=None) -> int:
     elif a.model.startswith("qwen35") and a.q4:
         import iron_qwen35
 
-        iron_qwen35.install(attn=a.attn, mlp=a.mlp, head=a.head)
+        iron_qwen35.install(attn=a.attn, mlp=a.mlp, head=a.head, places=a.expert_places or 0, out=a.out)
     elif a.model == "gptoss":
         if a.expert_places is not None:  # read when iron_gptoss_moe is first imported
             if "iron_gptoss_moe" in sys.modules:

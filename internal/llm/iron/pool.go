@@ -17,7 +17,7 @@ import (
 )
 
 // A mixture of experts whose layers' tables hold fewer places than experts (Manifest.ExpertsPool,
-// gpt-oss's GPTOSS_EXPERT_PLACES). The NPU reads only the pinned banks, so an expert runs from a
+// iron_export_lm.py --expert-places: gpt-oss's GPTOSS_EXPERT_PLACES, Qwen3.6's iron_qwen35.POOL). The NPU reads only the pinned banks, so an expert runs from a
 // place: the host copies an expert chosen and not in one from the export's experts.bin (mapped,
 // in the page cache) over the place of the expert of the layer least used lately, never one
 // chosen in the same step or a core expert (models.yaml's experts_core) while another will do.
@@ -26,9 +26,9 @@ import (
 // into the next command's scratchpad (id × the expert's bytes: the place of a table of every
 // expert). So the step's commands run one at a time: after each, the host reads the choices
 // back, copies the missing experts in, and writes the places' offsets over the words before it
-// submits the next command. A prompt chunk's are chosen on the host (moeHostRouteMX4): the
-// experts in a place run in the first pass, the others in passes after it, each pass's missing
-// experts copied in before it.
+// submits the next command. A prompt chunk's are chosen on the host (moeHostRouteMX4, Qwen3.6's
+// moeHostRoute): the experts in a place run in the first pass, the others in passes after it,
+// each pass's missing experts copied in before it (poolPasses, poolRowPasses).
 
 // poolDecay is how much an expert's lateness of use weighs a token later: half after about 140
 // tokens.
@@ -626,6 +626,92 @@ func (m *Model) poolPasses(h *HostStep, rt *moeRoute, ids []int32, n, K int) err
 	return nil
 }
 
+// poolRowPasses splits a moe_route step's choices ids (Qwen3.6's: top a row of the chunk's n,
+// iron_moep's counts and x by the table's expert) into passes over layer's places (h.Places):
+// the experts in a place first, then those not in one, copied in over the places of experts no
+// pass to come needs (the least used lately first, the core ones last) before their pass. A
+// pass's counts and x are by place. An expert's rows of a chunk fit a pass (Cap: a 256-token
+// chunk's every row), so the passes are the places' alone.
+func (m *Model) poolRowPasses(h *HostStep, rt *moeRoute, ids []int32, rows []byte, n, K int) error {
+	m.waitGuesses()
+	p := m.pool
+	if p == nil || h.Layer < 0 || h.Layer >= p.L || h.Places != p.P || h.Experts != p.E || p.P > moePad {
+		return fmt.Errorf("iron: moe_route of layer %d: %d places of %d experts, not the pool's", h.Layer, h.Places, h.Experts)
+	}
+	l, E, top := h.Layer, h.Experts, h.Top
+	pl := &p.places[l]
+	cnt := make([]int, E)
+	for _, e := range ids {
+		cnt[e]++
+	}
+	left := make([]bool, E)
+	nleft := 0
+	missing := []int{}
+	for e, c := range cnt {
+		if c == 0 {
+			continue
+		}
+		if c > h.Cap {
+			return fmt.Errorf("iron: moe_route of layer %d: %d rows of expert %d past the %d a pass", l, c, e, h.Cap)
+		}
+		left[e] = true
+		nleft++
+		p.score[l*E+e] = p.now(l*E+e) + float64(c)
+		p.last[l*E+e] = p.tick
+		if pl.of[e] < 0 {
+			missing = append(missing, e)
+		}
+	}
+	slices.SortStableFunc(missing, func(a, b int) int { return cnt[b] - cnt[a] })
+	passOf, placeOf := make([]int, E), make([]int, E)
+	var groups [][]int
+	var loads [][][2]int
+	for nleft > 0 {
+		var g []int
+		var ld [][2]int
+		for _, e := range pl.at {
+			if e >= 0 && left[e] {
+				g = append(g, e)
+			}
+		}
+		for _, e := range missing {
+			if !left[e] || pl.of[e] >= 0 {
+				continue
+			}
+			i := p.victim(l, func(x int) bool { return left[x] })
+			if i < 0 {
+				break
+			}
+			p.place(l, e, i)
+			ld = append(ld, [2]int{e, i})
+			g = append(g, e)
+		}
+		if len(g) == 0 {
+			return fmt.Errorf("iron: moe_route of layer %d: no pass for the %d experts left", l, nleft)
+		}
+		for _, e := range g {
+			left[e], passOf[e], placeOf[e] = false, len(groups), pl.of[e]
+			nleft--
+		}
+		groups, loads = append(groups, g), append(loads, ld)
+	}
+	p.tick += int64(n)
+	byPlace := make([][][]int, len(groups)) // by pass and place: its choices, token order
+	for q := range groups {
+		byPlace[q] = make([][]int, p.P)
+	}
+	for c, e := range ids {
+		q := passOf[e]
+		byPlace[q][placeOf[e]] = append(byPlace[q][placeOf[e]], c)
+	}
+	for q := range groups {
+		ps := rowsPass(rt, q, byPlace[q], rows, top*h.Tokens, K, top)
+		ps.loads = loads[q]
+		rt.passes = append(rt.passes, ps)
+	}
+	return nil
+}
+
 // directReads says whether to read an experts file of n bytes with O_DIRECT: when it is half the
 // memory or more, the page cache cannot keep it beside the places, and a miss's page faults read
 // the disk at about 1.5 GB/s (gpt-oss-120b: 9.4 ms an expert) where one read straight into the
@@ -656,14 +742,6 @@ func readStaged(f *os.File, dst []byte, off int64) bool {
 	}
 	staging.Put(b)
 	return ok
-}
-
-func openDirect(path string) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECT|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	return os.NewFile(uintptr(fd), path), nil
 }
 
 // readDirect reads len(dst) bytes at off of f into dst, false where O_DIRECT will not (a length

@@ -584,7 +584,7 @@ def fused_operators():
                 self.w.fill(TAP((WV,), 0, [WV], [1]), lane=l, managed=False)
             for l in range(TOP):
                 self.W.fill(TAP((total,), 0, [eb], [1]), lane=l, offset_parameter=offset(self, l), managed=False)
-                self.W.fill(TAP((total,), SHARED * eb + l * cb_bytes, [cb_bytes], [1]), lane=l, managed=False)
+                self.W.fill(TAP((total,), total - eb + l * cb_bytes, [cb_bytes], [1]), lane=l, managed=False)
             for d in drains:
                 d.await_()
 
@@ -598,7 +598,7 @@ def fused_operators():
             w = np.asarray(w, np.float64)
             ys = []
             routed = picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], eb)
-            for idx, at in enumerate([*routed, SHARED * eb]):
+            for idx, at in enumerate([*routed, flat.size - eb]):
                 gu = dequantize(flat[int(at) : int(at) + eb], 2 * self.NE, self.K).astype(np.float64)
                 gu = gu.reshape(self.NE // CB, 2, CB, self.K)
                 g = gu[:, 0].reshape(self.NE, self.K) @ x
@@ -708,7 +708,7 @@ def fused_operators():
                 for e in range(TOP):
                     self.W.fill(TAP((total,), l * run, [run], [1]), lane=l, offset_parameter=offset(self, e),
                                 managed=False)
-                self.W.fill(TAP((total,), SHARED * eb + l * run, [run], [1]), lane=l, managed=False)
+                self.W.fill(TAP((total,), total - eb + l * run, [run], [1]), lane=l, managed=False)
             for d in drains:
                 d.await_()
 
@@ -721,7 +721,7 @@ def fused_operators():
             x = np.asarray(x, np.float64)
             y = np.asarray(r, np.float64).copy()
             routed = picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], eb)
-            for i, at in enumerate([*routed, SHARED * eb]):
+            for i, at in enumerate([*routed, flat.size - eb]):
                 d = dequantize(flat[int(at) : int(at) + eb], self.N, self.KE).astype(np.float64)
                 y += d @ x[i * self.KE : (i + 1) * self.KE]
             return y.astype(bfloat16)
