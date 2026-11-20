@@ -36,7 +36,8 @@ type HostStep struct {
 	Slots      int      `json:"slots,omitempty"`
 	SlotValues []string `json:"slot_values,omitempty"`
 	// Places, where below Experts, is the places of the layer's tables (Manifest.ExpertsPool):
-	// fixed slot i is place i, and the experts not in a place are copied in between passes
+	// fixed slot i is place i (moe_route: the counts and x by place), and the experts not in a
+	// place are copied in between passes
 	Places int      `json:"places,omitempty"`
 	Reads  []Region `json:"reads"`
 	Writes []Region `json:"writes"`
@@ -221,6 +222,9 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 		rt.shared[t] = roundBF16(float32(1 / (1 + math.Exp(-float64(vals[E])))))
 	}
 	m.countPrompt(h.Layer, ids)
+	if h.Places > 0 && h.Places < E {
+		return rt, m.poolRowPasses(h, rt, ids, rows, n, K)
+	}
 	// Passes: tokens in order, a new pass where a token would give an expert more than Cap rows.
 	var passTokens [][]int
 	cnt := make([]int, E)
@@ -239,52 +243,54 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 			cnt[ids[t*top+k]]++
 		}
 	}
-	A := top * C
 	for p, tokens := range passTokens {
-		// rows by expert: the pass's tokens' choices, then the padding rows filling the A rows
-		// (x zero, output zero and unread; the cores read their x past without computing)
-		groups := make([][]int, moePad+1) // token*top+k, or -1 for a padding row
+		// rows by expert: the pass's tokens' choices
+		groups := make([][]int, moePad) // token*top+k
 		for _, t := range tokens {
 			for k := 0; k < top; k++ {
 				e := ids[t*top+k]
 				groups[e] = append(groups[e], t*top+k)
 			}
 		}
-		for i := top * len(tokens); i < A; i++ {
-			groups[moePad] = append(groups[moePad], -1)
-		}
-		// the cores read the padding rows' x past, so only the real rows' (the first ones, the
-		// padding group last) are written: a 32-token chunk's 1/8 of the A rows'
-		real := top * len(tokens)
-		ps := moePass{counts: make([]byte, 4*moeCounts), xs: make([]byte, 2*2*real*K), rows: real, outRows: real}
-		at, x := 0, 0
-		for e, list := range groups {
-			c := len(list)
-			ps.counts[4*e], ps.counts[4*e+1], ps.counts[4*e+2], ps.counts[4*e+3] = byte(c), byte(c>>8), byte(c>>16), byte(c>>24)
-			for r, choice := range list {
-				if choice >= 0 {
-					rt.pass[choice], rt.row[choice] = int32(p), int32(at+r)
-				}
-			}
-			at += c
-			if e == moePad {
-				break // the padding rows: last, their x unwritten
-			}
-			for g := 0; g < 2; g++ { // the gate's pass over the k-blocks, then the up's
-				for kb := 0; kb < K/moeKT; kb++ {
-					for _, choice := range list {
-						if choice >= 0 {
-							t := choice / top
-							copy(ps.xs[2*x:2*(x+moeKT)], rows[2*(t*K+kb*moeKT):2*(t*K+(kb+1)*moeKT)])
-						} // a dummy's x stays zero
-						x += moeKT
-					}
-				}
-			}
-		}
-		rt.passes = append(rt.passes, ps)
+		rt.passes = append(rt.passes, rowsPass(rt, p, groups, rows, top*C, K, top))
 	}
 	return rt, nil
+}
+
+// rowsPass is pass p of a moe_route step whose choices (token*top+k) are by the table's expert
+// (or place) in groups: the counts, x's stream, and each choice's row of the output (rt's), the
+// padding rows filling the a rows after them (x zero, output zero and unread; the cores read
+// their x past without computing).
+func rowsPass(rt *moeRoute, p int, groups [][]int, rows []byte, a, K, top int) moePass {
+	real := 0
+	for _, list := range groups {
+		real += len(list)
+	}
+	// the cores read the padding rows' x past, so only the real rows' (the first ones, the
+	// padding group last) are written: a 32-token chunk's 1/8 of the A rows'
+	ps := moePass{counts: make([]byte, 4*moeCounts), xs: make([]byte, 2*2*real*K), rows: real, outRows: real}
+	putCount := func(e, c int) {
+		ps.counts[4*e], ps.counts[4*e+1], ps.counts[4*e+2], ps.counts[4*e+3] = byte(c), byte(c>>8), byte(c>>16), byte(c>>24)
+	}
+	at, x := 0, 0
+	for e, list := range groups {
+		putCount(e, len(list))
+		for r, choice := range list {
+			rt.pass[choice], rt.row[choice] = int32(p), int32(at+r)
+		}
+		at += len(list)
+		for g := 0; g < 2; g++ { // the gate's pass over the k-blocks, then the up's
+			for kb := 0; kb < K/moeKT; kb++ {
+				for _, choice := range list {
+					t := choice / top
+					copy(ps.xs[2*x:2*(x+moeKT)], rows[2*(t*K+kb*moeKT):2*(t*K+(kb+1)*moeKT)])
+					x += moeKT
+				}
+			}
+		}
+	}
+	putCount(moePad, a-real) // the padding rows: last, their x unwritten
+	return ps
 }
 
 // moeHostCombine runs a moe_combine step: out = h + shared gate * the shared expert's + each

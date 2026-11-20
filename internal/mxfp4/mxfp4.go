@@ -101,6 +101,21 @@ func Dot(w, e []byte, v *Vec) float32 {
 	return dotGo(w, e, v)
 }
 
+// Rows writes into out each row's dot product with v, on the caller's core: the rows' blocks w
+// and their scales e, one row after another. The values are Dot's.
+func Rows(out []float32, w, e []byte, v *Vec) {
+	if len(out) == 0 {
+		return
+	}
+	if haveKernel && rowsKernel(out, w, e, v) {
+		return
+	}
+	nb := len(e) / len(out)
+	for r := range out {
+		out[r] = Dot(w[r*nb*16:(r+1)*nb*16], e[r*nb:(r+1)*nb], v)
+	}
+}
+
 // Dequantize writes a row's values.
 func Dequantize(dst []float32, w, e []byte) {
 	for b := range len(e) {

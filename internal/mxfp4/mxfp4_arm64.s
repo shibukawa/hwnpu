@@ -356,3 +356,125 @@ mm8:
 	MOVD out+64(FP), R14
 	VST1 [V24.S4, V25.S4, V26.S4, V27.S4], (R14)
 	RET
+
+#define FMLAE2(m, n, d) WORD $(0x4F801800 | (m)<<16 | (n)<<5 | (d)) // d.4S += n.4S * m.S[2]
+#define FMLAE3(m, n, d) WORD $(0x4FA01800 | (m)<<16 | (n)<<5 | (d)) // d.4S += n.4S * m.S[3]
+
+// func mvNEON(w, e *byte, q *int8, s *float32, nb, rows int, lut *int8, out *float32)
+// dotNEON of rows rows one after another with one vector (out[r] is row r's, halved): a
+// generated token's products, where a call a row cost as much as the row (a down product of
+// Qwen3.6-35B-A3B is 16 blocks). nb even. The sums are dotNEON's, bit for bit: the blocks in
+// order, the even ones into one accumulator and the odd ones into the other. Four blocks at a
+// time, their scales computed together (FMOVS into the register, not an insert: that would
+// wait for the last iteration's product).
+TEXT ·mvNEON(SB), NOSPLIT, $0-64
+	MOVD w+0(FP), R0
+	MOVD e+8(FP), R1
+	MOVD q+16(FP), R10
+	MOVD s+24(FP), R11
+	MOVD nb+32(FP), R12
+	MOVD rows+40(FP), R7
+	MOVD lut+48(FP), R5
+	MOVD out+56(FP), R8
+	VLD1 (R5), [V30.B16]
+	VMOVI $15, V31.B16
+	FMOVS $0.5, F29
+mvrow:
+	MOVD R10, R2
+	MOVD R11, R3
+	MOVD R12, R4
+	VMOVI $0, V8.B16
+	VMOVI $0, V9.B16
+	CMP $4, R4
+	BLT mvtail
+mvquad:
+	VLD1.P 64(R0), [V20.B16, V21.B16, V22.B16, V23.B16]
+	VLD1.P 64(R2), [V0.B16, V1.B16, V2.B16, V3.B16]
+	VLD1.P 64(R2), [V4.B16, V5.B16, V6.B16, V7.B16]
+	MOVWU.P 4(R1), R6
+	FMOVS R6, F24
+	UXTL8H(24, 24)
+	UXTL4S(24, 24)
+	VSHL $23, V24.S4, V24.S4
+	VLD1.P 16(R3), [V25.S4]
+	FMUL4S(25, 24, 24)
+	VAND V31.B16, V20.B16, V16.B16
+	VUSHR $4, V20.B16, V17.B16
+	VAND V31.B16, V21.B16, V18.B16
+	VUSHR $4, V21.B16, V19.B16
+	VAND V31.B16, V22.B16, V12.B16
+	VUSHR $4, V22.B16, V13.B16
+	VAND V31.B16, V23.B16, V14.B16
+	VUSHR $4, V23.B16, V15.B16
+	VTBL V16.B16, [V30.B16], V16.B16
+	VTBL V17.B16, [V30.B16], V17.B16
+	VTBL V18.B16, [V30.B16], V18.B16
+	VTBL V19.B16, [V30.B16], V19.B16
+	VTBL V12.B16, [V30.B16], V12.B16
+	VTBL V13.B16, [V30.B16], V13.B16
+	VTBL V14.B16, [V30.B16], V14.B16
+	VTBL V15.B16, [V30.B16], V15.B16
+	VMOVI $0, V26.B16
+	VMOVI $0, V27.B16
+	VMOVI $0, V28.B16
+	VMOVI $0, V10.B16
+	SDOT(0, 16, 26)
+	SDOT(2, 18, 27)
+	SDOT(4, 12, 28)
+	SDOT(6, 14, 10)
+	SDOT(1, 17, 26)
+	SDOT(3, 19, 27)
+	SDOT(5, 13, 28)
+	SDOT(7, 15, 10)
+	SCVTF4S(26, 26)
+	SCVTF4S(27, 27)
+	SCVTF4S(28, 28)
+	SCVTF4S(10, 10)
+	FMLAE(24, 26, 8)
+	FMLAE1(24, 27, 9)
+	FMLAE2(24, 28, 8)
+	FMLAE3(24, 10, 9)
+	SUB $4, R4, R4
+	CMP $4, R4
+	BGE mvquad
+mvtail:
+	CBZ R4, mvdone
+	VLD1.P 32(R0), [V20.B16, V21.B16]
+	VLD1.P 64(R2), [V1.B16, V2.B16, V3.B16, V4.B16]
+	MOVHU.P 2(R1), R6
+	FLDPS.P 8(R3), (F7, F17)
+	UBFX $8, R6, $8, R13
+	AND $255, R6, R6
+	LSL $23, R6, R6
+	LSL $23, R13, R13
+	FMOVS R6, F6
+	FMOVS R13, F16
+	FMULS F7, F6, F6
+	FMULS F17, F16, F16
+	VAND V31.B16, V20.B16, V18.B16
+	VUSHR $4, V20.B16, V19.B16
+	VAND V31.B16, V21.B16, V13.B16
+	VUSHR $4, V21.B16, V14.B16
+	VTBL V18.B16, [V30.B16], V18.B16
+	VTBL V19.B16, [V30.B16], V19.B16
+	VTBL V13.B16, [V30.B16], V13.B16
+	VTBL V14.B16, [V30.B16], V14.B16
+	VMOVI $0, V5.B16
+	VMOVI $0, V15.B16
+	SDOT(1, 18, 5)
+	SDOT(3, 13, 15)
+	SDOT(2, 19, 5)
+	SDOT(4, 14, 15)
+	SCVTF4S(5, 5)
+	SCVTF4S(15, 15)
+	FMLAE(6, 5, 8)
+	FMLAE(16, 15, 9)
+mvdone:
+	FADD4S(9, 8, 8)
+	FADDP4S(8, 8, 8)
+	FADDP4S(8, 8, 8)
+	FMULS F29, F8, F8
+	FMOVS.P F8, 4(R8)
+	SUBS $1, R7, R7
+	BNE mvrow
+	RET

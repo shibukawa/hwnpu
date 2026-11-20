@@ -21,9 +21,9 @@ root, or its ``text_config``); the structure follows transformers' modeling_qwen
 - The feed-forward is a SwiGLU MLP (``qwen3_5``), or for ``qwen3_5_moe`` (Qwen3.6-35B-A3B,
   ``Qwen35Moe``) 8 of 256 experts and a shared one gated by ``sigmoid(shared_expert_gate)``,
   routed on the device (iron_moe.py): a layer is two commands of the decode step, and the
-  experts are q4nx tables read in place. The MoE model has a decode step only; hwnpu runs a
-  prompt through it a token at a time (the prompt chunk's MoE, experts by token, is not
-  built yet).
+  experts are q4nx tables read in place. A prompt chunk's experts are routed on the host
+  (iron_moep.py). With ``install(places=P)`` a layer's tables hold P places, the experts in
+  the export's experts.bin (hwnpu's pool.go copies the chosen ones in).
 """
 
 import dataclasses
@@ -94,16 +94,30 @@ FUSE_GLU = True
 QUANT: dict[str, str] = {}
 
 
-def install(attn: str = "q8", mlp: str = "q4", head: str = "q4") -> None:
+# Qwen3.6 with fewer places than experts (install(places=P), iron_export_lm.py --expert-places):
+# a layer's tables hold P places of an expert's tables and the shared expert after them (the
+# operators read the shared one as the table's last), the places zeros in the image; every
+# expert's tables go to the export's experts.bin (by layer, the gate-up tables of every expert
+# then the down ones), from which hwnpu copies an expert into a place when it is chosen
+# (internal/llm/iron/pool.go, as gpt-oss's GPTOSS_EXPERT_PLACES).
+POOL = dict(out=None, places=0, layers={})
+
+
+def install(attn: str = "q8", mlp: str = "q4", head: str = "q4", places: int = 0, out=None) -> None:
     """Build Qwen3.5 with its projections in these formats ("q4", "q6", "q8" or "bf16"), F.linear
-    running iron_q4's on them. The router and the experts' tables are as they are without it."""
+    running iron_q4's on them. The router and the experts' tables are as they are without it.
+    ``places`` (Qwen3.6): the places of a layer's experts' tables, 0 for one an expert; ``out``
+    the export's directory (experts.bin)."""
     import iron_q4
 
     for part, fmt in dict(attn=attn, mlp=mlp, head=head).items():
         if fmt not in ("q4", "q6", "q8", "bf16"):
             raise ValueError(f"{part} in {fmt}: q4, q6, q8 or bf16")
+    if places and out is None:
+        raise ValueError("places: out names the export's directory for experts.bin")
     iron_q4.install_linear()
     QUANT.update(attn=attn, mlp=mlp, head=head)
+    POOL.update(out=out, places=int(places or 0), layers={})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -607,11 +621,24 @@ class SparseMoe(iron.Graph):
         tables = [iron_moeprobe.gu_table(gu[e, :I], gu[e, I:]) for e in range(N)]
         tables.append(iron_moeprobe.gu_table(np.asarray(sh.gate_proj.weight, np.float32),
                                              np.asarray(sh.up_proj.weight, np.float32)))
-        self.gu = iron.param(iron_moe.quantize_experts(tables))
+        gu_t = iron_moe.quantize_experts(tables)
         downs = [down[e] for e in range(N)] + [np.asarray(sh.down_proj.weight, np.float32)]
-        self.down = iron.param(iron_moe.quantize_experts(downs))
-        self.gu_bytes = self.gu.nbytes // (N + 1)
-        self.down_bytes = self.down.nbytes // (N + 1)
+        dn_t = iron_moe.quantize_experts(downs)
+        self.gu_bytes = gu_t.nbytes // (N + 1)
+        self.down_bytes = dn_t.nbytes // (N + 1)
+        P = self.places = POOL["places"] or N
+        if P < N:  # the places zeros (hwnpu fills them), then the shared expert; every expert's in experts.bin
+            gb, db = gu_t.reshape(-1).view(np.uint8), dn_t.reshape(-1).view(np.uint8)
+            self.write_pool(gb[: N * self.gu_bytes], db[: N * self.down_bytes])
+            g = np.zeros(((P + 1) * self.gu_bytes,), np.uint8)
+            g[P * self.gu_bytes :] = gb[N * self.gu_bytes :]
+            d = np.zeros(((P + 1) * self.down_bytes,), np.uint8)
+            d[P * self.down_bytes :] = db[N * self.down_bytes :]
+            gu_t, dn_t = g.reshape(-1, gu_t.shape[-1]), d.reshape(-1, dn_t.shape[-1])
+        elif P != N:
+            raise SystemExit(f"--expert-places {P}: more places than the {N} experts")
+        self.gu = iron.param(gu_t)
+        self.down = iron.param(dn_t)
         # the router's logits, then the shared expert's gate, padded to whole column blocks
         rows = -(-(N + 1) // 64) * 64
         router = np.zeros((rows, E), bfloat16)
@@ -624,6 +651,23 @@ class SparseMoe(iron.Graph):
         # decode step's MoEGateUp and MoEDown)
         self.shared = [sh.gate_proj, sh.up_proj, sh.down_proj]
         self.gate = self.experts = self.shared_expert = self.shared_expert_gate = None
+
+    def write_pool(self, gu, dn):
+        """Layer index's every expert's tables into experts.bin at index × the layer's bytes."""
+        from pathlib import Path
+
+        out = Path(POOL["out"])
+        out.mkdir(parents=True, exist_ok=True)
+        f = out / "experts.bin"
+        if not POOL["layers"] and f.exists():
+            f.unlink()  # an earlier export's
+        layer = gu.size + dn.size
+        with open(f, "r+b" if f.exists() else "w+b") as fh:
+            fh.seek(self.index * layer)
+            fh.write(np.ascontiguousarray(gu).tobytes())
+            fh.write(np.ascontiguousarray(dn).tobytes())
+        POOL["layers"][self.index] = dict(offset=self.index * layer, gu_bytes=int(self.gu_bytes),
+                                          dn_bytes=int(self.down_bytes))
 
     def body(self, hn, h, call):
         if call.prompt:
@@ -668,7 +712,7 @@ class SparseMoe(iron.Graph):
                      writes=(moe.counts, moe.xs))
         g, u, d = self.shared
         Copy.step(d(F.silu(g(hn)) * u(hn)), moe.s)
-        GU, D = iron_moep.group_operators(self.n)
+        GU, D = iron_moep.group_operators(self.places)  # the places' (all the experts, or fewer)
         A = iron_moep.TOP * C
         a = GU.step(self.gu, moe.counts, moe.xs, rows=self.gu.shape[0], A=A, K=E, NE=I)
         y = D.step(self.down, moe.counts, a, rows=self.down.shape[0], A=A, KE=I, N=E)
@@ -699,6 +743,8 @@ class MoEHost:
         self.kind, self.layer, self.experts, self.C, self.states = kind, layer, experts, C, states
         self.hwnpu = dict(kind=kind, layer=layer, experts=experts, top=iron_moep.TOP,
                           cap=iron_moep.CAP, tokens=C)
+        if POOL["places"] and POOL["places"] < experts:  # the places, filled between passes (pool.go)
+            self.hwnpu["places"] = POOL["places"]
 
     def __call__(self, *args):
         getattr(self, self.kind)(*args)
@@ -806,6 +852,18 @@ class Qwen35Moe(Qwen35):
             return CausalLM.body(self, **standard)
         finally:
             causal.Call = made
+
+    def hwnpu_experts_pool(self):
+        """The manifest's experts_pool where the layers' tables have fewer places than experts
+        (install(places=...)): experts.bin and, by layer, its tables' buffers and place there."""
+        if not POOL["layers"]:
+            return None
+        L = self.config.num_hidden_layers
+        if sorted(POOL["layers"]) != list(range(L)):
+            raise SystemExit(f"experts.bin holds layers {sorted(POOL['layers'])} of {L}")
+        return dict(file="experts.bin", experts=int(self.config.num_experts), places=int(POOL["places"]),
+                    layers=[dict(gu=f"model.layers.{l}.mlp.gu", dn=f"model.layers.{l}.mlp.down", **POOL["layers"][l])
+                            for l in range(L)])
 
     def _moe_states(self) -> "MoEStates":
         if getattr(self, "_moe", None) is None:

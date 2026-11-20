@@ -153,7 +153,7 @@ extern "C" void MV_GLU_NAME(MV_FMT)(float *g, float *u, bf16 *y) {
 // The begin makes, on every core, y = r + rms(h) w_post (rounded; with the scale, rounded again
 // times it) into r's place and n = rms(y) w_pre into h's, as kernels/sandwich_add.cc does (the
 // same sums, lanes and roundings: the same bits), then starts the GEMV on n. One operator in place
-// of SandwichAdd and the GEMV (docs/design.md 16.275). MV_FMT_mv_put copies y or n out (a core of
+// of SandwichAdd and the GEMV (docs/design.md 16.277). MV_FMT_mv_put copies y or n out (a core of
 // column 0 each).
 #ifdef Q_SANDWICH
 #ifndef Q_EPS

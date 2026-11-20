@@ -3,6 +3,7 @@ package qwen35
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -430,5 +431,97 @@ func TestParseMoE(t *testing.T) {
 	}
 	if _, ok := m.(llm.HostRouted); !ok {
 		t.Error("not HostRouted")
+	}
+}
+
+// A step of several tokens of the MoE model outputs the convolution's window after its valid
+// tokens (step_window picks its rows), not the window with every row of the step: three tokens
+// in a step of four, the last row padding, leave the window and the recurrent state that three
+// steps of a token leave (whose window is a slice of the token's rows).
+func TestMoEStepWindow(t *testing.T) {
+	c, w := tinyMoE(t)
+	ids := []int32{7, 2, 9}
+	x := embed16(t, c.Config, w, ids)
+	const cache = 16
+	d, k := c.HiddenSize, c.ConvKernel
+	type built struct {
+		p      *milcpu.Program
+		shapes map[string][]int
+		outs   map[string][]int
+	}
+	build := func(seq int) built {
+		opts := llm.Options{Seq: seq, Format: "fp16", FormatFor: []string{"lm_head=fp16"}, Cache: cache, Paged: cache}
+		parts, err := llm.PlanRouted(c, opts, 1<<40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.Start, opts.Layers = parts[0].Start, parts[0].Layers
+		p, ins, outs, _ := buildProgram(t, c, w, opts)
+		b := built{p: p, shapes: map[string][]int{}, outs: map[string][]int{}}
+		for _, f := range ins {
+			b.shapes[f.Name] = f.Shape
+		}
+		for _, f := range outs {
+			b.outs[f.Name] = f.Shape
+		}
+		return b
+	}
+	run := func(b built, rows []float32, step map[string][]float32, state map[string][]float32) map[string]milcpu.Tensor {
+		t.Helper()
+		in := map[string]milcpu.Tensor{}
+		for name, sh := range b.shapes {
+			v := step[name]
+			switch {
+			case name == "x":
+				v = rows
+			case strings.HasPrefix(name, "st_") || strings.HasPrefix(name, "win_"):
+				if v = state[name]; v == nil {
+					v = make([]float32, count(sh))
+				}
+			}
+			if len(v) != count(sh) {
+				t.Fatalf("input %s %v: %d values", name, sh, len(v))
+			}
+			in[name] = milcpu.Tensor{Shape: sh, Data: v}
+		}
+		res, err := b.p.Run(in, milcpu.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	one, four := build(1), build(4)
+	ch := one.shapes["win_conv_0"][2]
+	for _, b := range []built{one, four} {
+		if got := b.outs["win_conv_0_new"]; !slices.Equal(got, []int{1, k - 1, ch}) {
+			t.Fatalf("win_conv_0_new is %v, want the window (1, %d, %d)", got, k-1, ch)
+		}
+	}
+	if _, ok := one.shapes["step_window"]; ok {
+		t.Error("the program of a token a step takes step_window")
+	}
+	if got := four.shapes["step_window"]; !slices.Equal(got, []int{1, k - 1, 4 + k - 1}) {
+		t.Fatalf("step_window is %v", got)
+	}
+	state := map[string][]float32{}
+	for pos := range ids {
+		res := run(one, x[pos*d:(pos+1)*d], c.PagedStepInputs(pos, 1, 1, cache), state)
+		state["win_conv_0"], state["st_rec_0"] = res["win_conv_0_new"].Data, res["st_rec_0_new"].Data
+	}
+	rows := append(slices.Clone(x[:3*d]), x[2*d:3*d]...) // the padding repeats the last token
+	res := run(four, rows, c.PagedStepInputs(0, 3, 4, cache), nil)
+	for _, name := range []string{"win_conv_0", "st_rec_0"} {
+		got, want := res[name+"_new"].Data, state[name]
+		if len(got) != len(want) {
+			t.Fatalf("%s: %d values, want %d", name, len(got), len(want))
+		}
+		var num, den float64
+		for i := range want {
+			num += math.Pow(float64(got[i]-want[i]), 2)
+			den += math.Pow(float64(want[i]), 2)
+		}
+		if e := math.Sqrt(num / den); e > 1e-3 || den == 0 {
+			t.Errorf("%s after 3 tokens in a step of 4: relative error %g against a token a step", name, e)
+		}
 	}
 }
