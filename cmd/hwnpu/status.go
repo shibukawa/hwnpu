@@ -142,7 +142,7 @@ func collect(ctx context.Context, s storeView, scan, wake bool, load *samplers) 
 	procs := load.procs.Read(pids)
 	for i := range st.Processes {
 		p := &st.Processes[i]
-		npu := p.NPUPercent // Windows' counters, put by summarize
+		npu := p.NPUPercent // put by summarize: Windows' counters, the ANE's share on macOS
 		p.Proc = procs[p.PID]
 		if npu != nil {
 			p.NPUPercent = npu
@@ -349,15 +349,30 @@ func summarizeDarwin(st *Status, d *npuinfo.DarwinInfo) {
 			state = "awake"
 		}
 		line += ", " + state
-		if !a.FirmwareLoaded {
+		if a.FirmwareKnown && !a.FirmwareLoaded {
 			line += ", firmware not loaded"
 		}
 		st.NPU = append(st.NPU, line)
 	}
 	if r := d.IOReport; r != nil {
-		st.NPU = append(st.NPU, fmt.Sprintf("ANE %.2f W, reads %.1f GB/s, %.0f calls/s (IOReport)", r.ANEPowerW, r.ANEReadBytesPerSec/1e9, r.ANEInterruptsPerSec/3))
-		w := r.ANEPowerW
-		st.Load.NPUPowerW = &w
+		var parts []string
+		if r.ANEBusyPercent != nil {
+			b := *r.ANEBusyPercent
+			st.Load.NPUPercent = &b
+			parts = append(parts, fmt.Sprintf("reading memory %.0f%% of the time", b))
+		}
+		if r.ANEPowerKnown {
+			w := r.ANEPowerW
+			st.Load.NPUPowerW = &w
+			parts = append(parts, fmt.Sprintf("%.2f W", w))
+		} else {
+			parts = append(parts, "power not readable without root (sudo powermetrics --samplers ane_power)")
+		}
+		if r.ANEReadBytesPerSec > 0 {
+			parts = append(parts, fmt.Sprintf("reads %.1f GB/s", r.ANEReadBytesPerSec/1e9))
+		}
+		parts = append(parts, fmt.Sprintf("%.0f calls/s", r.ANEInterruptsPerSec/3))
+		st.NPU = append(st.NPU, "ANE "+strings.Join(parts, ", ")+" (IOReport)")
 	}
 	if d.ThermalPressure != "" {
 		st.NPU = append(st.NPU, "thermal pressure "+d.ThermalPressure)
@@ -368,6 +383,24 @@ func summarizeDarwin(st *Status, d *npuinfo.DarwinInfo) {
 	}
 	if b, ok := mem.NPUWired(); ok {
 		st.Load.NPUMemory = b // the weights are here, not in the processes' footprint
+	}
+	// the ANE has no time per process: with one process holding its memory, the ANE's busy
+	// share is that process's
+	if st.Load.NPUPercent != nil {
+		holder := -1
+		for i, p := range st.Processes {
+			if p.NPUMemory > 0 {
+				if holder >= 0 {
+					holder = -1
+					break
+				}
+				holder = i
+			}
+		}
+		if holder >= 0 {
+			b := *st.Load.NPUPercent
+			st.Processes[holder].NPUPercent = &b
+		}
 	}
 }
 

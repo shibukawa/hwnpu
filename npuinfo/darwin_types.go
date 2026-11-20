@@ -81,8 +81,10 @@ type DarwinANEDevice struct {
 	BoardType    int    `json:"board_type,omitempty"`
 	BoardSubType int    `json:"board_sub_type,omitempty"`
 	CPUSubType   int    `json:"cpu_sub_type,omitempty"`
-	// FirmwareLoaded is false until something has used the ANE since boot.
+	// FirmwareLoaded is false until something has used the ANE since boot, when the driver
+	// tells (FirmwareKnown: the M1's node has the property, the M3's H11ANE none).
 	FirmwareLoaded bool `json:"firmware_loaded"`
+	FirmwareKnown  bool `json:"firmware_known"`
 	// PowerState and MaxPowerState are the driver's IOPowerManagement states.
 	PowerState    int `json:"power_state"`
 	MaxPowerState int `json:"max_power_state"`
@@ -113,12 +115,21 @@ type DarwinIOReport struct {
 	// ANEPowerW is the ANE's average power (from "PMP"/"Energy Counters"/"ANE" on M1, "Energy
 	// Model"/"ANE…" on later chips).
 	ANEPowerW float64 `json:"ane_power_w"`
+	// ANEPowerKnown is whether the energy counters read at all: macOS 27 gives a process
+	// without root 0 for every one ("Energy Model"/"CPU Energy" as well, with the CPU busy), and
+	// ANEPowerW is then not the ANE's (sudo powermetrics reads it).
+	ANEPowerKnown bool `json:"ane_power_known"`
+	// ANEBusyPercent is the share of the time the ANE read memory: the time outside the lowest
+	// bin (1 GB/s) of the power manager's histogram of its reads ("PMP"/"AF BW"/"ANE0 RD", one
+	// sample about every 0.23 ms on an M3). An estimate of how busy it is (the ANE has no
+	// counter of its own time); nil without the histogram. gpt-oss-20b generating on an M3: 39.
+	ANEBusyPercent *float64 `json:"ane_busy_percent,omitempty"`
 	// ANEReadBytesPerSec and ANEWriteBytesPerSec are the ANE's DRAM traffic (memory
 	// controller counters "AMC Stats"/"Perf Counters"/"ANE RD", "ANE WR").
 	ANEReadBytesPerSec  float64 `json:"ane_read_bytes_per_sec"`
 	ANEWriteBytesPerSec float64 `json:"ane_write_bytes_per_sec"`
 	// ANEInterruptsPerSec is the ANE driver's interrupts ("Interrupt Statistics (by index)"/
-	// "ane 0"); a program that finishes raises one.
+	// "ane N": "ane 0" on the M1, "ane 4" on the M3); a program that finishes raises one.
 	ANEInterruptsPerSec float64 `json:"ane_interrupts_per_sec"`
 	// SoCPowerW is the average power of every power domain of the chip ("PMP"/"Energy
 	// Counters": ECPU, PCPU, GPU, ANE, DRAM, DISP, …; "Energy Model/…" from that group, left

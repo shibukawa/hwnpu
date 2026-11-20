@@ -304,8 +304,26 @@ func (r *DarwinIOReport) summarize() {
 			r.ANEReadBytesPerSec = float64(v) / r.Seconds
 		case c.Group == "AMC Stats" && n == "ANE WR":
 			r.ANEWriteBytesPerSec = float64(v) / r.Seconds
-		case c.Group == "Interrupt Statistics (by index)" && c.SubGroup == "ane 0" && n == "First Level Interrupt Handler Count":
-			r.ANEInterruptsPerSec = float64(v) / r.Seconds
+		case c.Group == "Interrupt Statistics (by index)" && strings.HasPrefix(c.SubGroup, "ane ") && n == "First Level Interrupt Handler Count":
+			r.ANEInterruptsPerSec += float64(v) / r.Seconds
+		}
+	}
+	for _, c := range r.Channels {
+		// the share of the time outside the lowest bin of the ANE's reads (the busiest ANE)
+		n := strings.TrimSpace(c.Name)
+		if c.Group != "PMP" || c.SubGroup != "AF BW" || !strings.HasPrefix(n, "ANE") || !strings.HasSuffix(n, " RD") || len(c.States) < 2 {
+			continue
+		}
+		var sum int64
+		for _, st := range c.States {
+			sum += st.Residency
+		}
+		b := 0.0 // asleep: no time in any bin
+		if sum > 0 {
+			b = 100 * float64(sum-c.States[0].Residency) / float64(sum)
+		}
+		if r.ANEBusyPercent == nil || b > *r.ANEBusyPercent {
+			r.ANEBusyPercent = &b
 		}
 	}
 	e := energyPMP
@@ -333,7 +351,7 @@ func aneDevice(nodes []DarwinIONode) *DarwinANEDevice {
 				d.BoardType = plistInt(dp["ANEDevicePropertyANEHWBoardType"])
 				d.BoardSubType = plistInt(dp["ANEDevicePropertyANEHWBoardSubType"])
 				d.CPUSubType = plistInt(dp["ANEDevicePropertyANECPUSubType"])
-				d.FirmwareLoaded, _ = n.Properties["FirmwareLoaded"].(bool)
+				d.FirmwareLoaded, d.FirmwareKnown = n.Properties["FirmwareLoaded"].(bool)
 				d.Compatible, _ = n.Properties["IONameMatched"].(string)
 				if pm, ok := n.Properties["IOPowerManagement"].(map[string]any); ok {
 					d.PowerState = plistInt(pm["CurrentPowerState"])
