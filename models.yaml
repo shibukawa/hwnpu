@@ -49,8 +49,9 @@
 #                 a file of your own changes the variants it names
 #   amd_export    how tools/amd/iron_export_lm.py exports it for AMD's NPU: its model and options.
 #                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
-#                 --mlp q6, then -pN for --expert-places N), the first run downloads the checkpoint and runs it in IRON's
-#                 environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a model without it has no form there
+#                 --mlp q6, then -pN for --expert-places N), the first run downloads the
+#                 checkpoint and runs it in IRON's environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a
+#                 model without it has no form there
 #   not_on        chips (M1, M2, M3, M4, M5; an M1 Pro is an M1) a family or a use does not pick
 #                 the model on: the family's next is picked there (the 2B for PLaMo 3 Translate
 #                 8B on an M1); its name and FAMILY:TAG still run it
