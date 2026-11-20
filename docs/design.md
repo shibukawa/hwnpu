@@ -8699,3 +8699,33 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 - Mac (Core AI) と Intel で `ai` を通した実機の動作。準備と読み込みはコマンドと同じ関数を呼ぶが、動かしてはいない
 - `text.Chat` の実機
 - コマンドの載せ替え (B3)、`ai/vision` と `ai/imagegen` (J1、J2)、擬似立体のサンプル (J4)、常駐の管理 (B8)。画像のコマンドの準備の手順 (`amdExport`、`openImageDevice`) はまだ `cmd/hwnpu-image` の中にある
+
+### 16.282 Qwen3.5 を回転して書き出す (Apple の既定): 2B lut6 の KL 0.054 → 0.029、MTP の下書きが通る割合 43 → 50 %、45 → 52 tok/s — 2026-11-21
+
+16.274 の回転 (`llm.Rotate`) を、Qwen3.5 の Neural Engine の書き出しの既定にした。
+
+**書き出し**
+- `qwen35` の設定 `rotate` (`llm.RotateParam`)。`llm.buildPart` が `llm.RotateFor` で重みを回してから組むので、部品も注意も同じ形
+- hwnpu-chat (`chat.Prepare`) は、回せるモデル (`rotatable`: 設定があり、`Rotation` が通る) を Core AI と Core ML のときだけ回す。書き出しの名前に `-rot` (例 `qwen35-r2-lut6-h-rot-p8192-…`)。AMD と Intel の書き出しは変わらない。`HWNPU_ROTATE=0` で今まで通り
+- Qwen3.6-35B-A3B (同じ `qwen35`) は回さない。専門家は CPU の MXFP4 で、回すと量子化し直すことになる (`Rotation` が MoE を断る)
+
+**ホストの表** (`tables-rot.safetensors`、`chat.rotatedTables`)
+- 埋め込みは E Q を fp16 で (1.02 GB、今までの bf16 の写しと同じ大きさ)。結んだ出力層の `Get` は出力層の形 (W diag(1 + w) Q) を返すので、表は `rotated.Table` から書く
+- 最後の norm の重みも、チェックポイントのままで入れる (MTP のため)
+- 共有の層 (NAS) の鍵は `qwen35-rot`。今までの `tables.safetensors` とは混ざらない
+
+**MTP**: MTP の層は回さずに書き出す。その入力の 2 つを、ホストで元に戻す (`mtpDrafter.plain`、`llm.Unrotate`: Walsh-Hadamard 変換と符号で r Q Qᵀ)。
+- トークンの埋め込み
+- モデルの最後の隠れ状態: 回したプログラムは最後の norm の 1 + w を出力層に畳んでいる。戻した後に掛ける
+
+**結果** (M2、Qwen3.5-2B lut6、温度 0、考えない)
+- 200 トークン、MTP あり: 回さない 45.1、45.4 tok/s で、下書き 95/220 が通る。回す **51.4、52.4 tok/s で、108/215**。プログラムは同じで、下書きの当たりが増えた分が速くなった。MTP の入力を戻す処理が正しいことも、この当たりで分かる
+- 12 問 (16.115 の Qwen3.5 の問い、80 トークンで切る): 回す 10/12、回さない 9/12
+  - 回すと 17 × 23 を 391 と答える。回さないと 40
+  - どちらも外したのは『こころ』の作者と「猫に小判」
+- KL (16.274): Neural Engine で 0.054 → 0.029
+
+**残り**
+- 書き出しが変わるので、利用者の手元では初回に書き出し直しとコンパイルがある (2B で約 5 分)
+- `hwnpu-chat --package` で回した書き出しを直接渡すとき、表は `WeightsIn` の `tables.safetensors` を選ぶ (回した表を選ばない)
+- Qwen3.5-0.8B と 4B は測っていない。4B の隠れ次元 2560 は、512 の区分対角のアダマールになる

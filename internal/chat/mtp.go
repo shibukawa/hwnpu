@@ -42,6 +42,27 @@ type mtpDrafter struct {
 	// (the session's position after Truncate); -1: the session is empty and starts anywhere
 	base, real int
 	failed     bool // an error turned it off
+	// of a model built rotated (Config.Rotated), whose layer is not: unrot takes the
+	// embeddings and the hidden states back to the checkpoint's, and final (1 + w of the final
+	// norm, which the rotated programs leave out of h) scales the hidden states after
+	unrot func([]float32)
+	final []float32
+}
+
+// plain is row taken back from the rotated residual (unrot) and, for a hidden state, scaled by
+// the final norm's weight; row itself when the model is not rotated.
+func (m *mtpDrafter) plain(row []float32, hidden bool) []float32 {
+	if m.unrot == nil {
+		return row
+	}
+	r := slices.Clone(row)
+	m.unrot(r)
+	if hidden {
+		for i := range r {
+			r[i] *= m.final[i]
+		}
+	}
+	return r
 }
 
 // mtpKeep is how many hidden states before the entries the drafter keeps, to go back to a mark of
@@ -65,7 +86,7 @@ func loadMTP(ctx context.Context, e *Engine, c Config) (*mtpDrafter, error) {
 	if !ok {
 		return nil, fmt.Errorf("chat: drafts from the multi-token prediction layer need a model on the NPU's programs")
 	}
-	a, _, err := llm.LoadConfig(c.ModelConfig, "")
+	a, main, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +103,29 @@ func loadMTP(ctx context.Context, e *Engine, c Config) (*mtpDrafter, error) {
 		m.k = v
 	}
 	m.k = min(m.k, ds.Qs()[0]-1)
+	if c.Rotated {
+		r, ok := main.(llm.Rotator)
+		if !ok {
+			return nil, fmt.Errorf("chat: %s is not rotated", a.Name)
+		}
+		rot, err := r.Rotation()
+		if err != nil {
+			return nil, err
+		}
+		if m.unrot, err = llm.Unrotate(rot.Dim, llm.RotationSeed); err != nil {
+			return nil, err
+		}
+		g, _, err := e.w.Get(rot.HeadNorm) // the rotated tables keep it as it is
+		if err != nil {
+			return nil, fmt.Errorf("chat: the final norm for the multi-token prediction layer: %w", err)
+		}
+		for _, v := range g {
+			if rot.ZeroCentered {
+				v++
+			}
+			m.final = append(m.final, v)
+		}
+	}
 	if m.ids, err = readDraftVocab(c.MTP[0]); err != nil {
 		return nil, err
 	}
@@ -155,6 +199,13 @@ func (m *mtpDrafter) record(fed []int32, pos0 int, rows [][]float32) {
 	}
 	m.sync(fed[:pos0])
 	m.fed = append(m.fed, fed[pos0:]...)
+	if m.unrot != nil {
+		plain := make([][]float32, len(rows))
+		for i, r := range rows {
+			plain[i] = m.plain(r, true)
+		}
+		rows = plain
+	}
 	if len(rows) != len(fed)-pos0 || pos0 != m.hbase+len(m.hrows) {
 		m.hbase, m.hrows = len(fed), nil
 		if len(rows) == len(fed)-pos0 {
@@ -224,7 +275,7 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 			if err != nil {
 				return nil, err
 			}
-			rows[i] = append(append(make([]float32, 0, 2*len(m.hrows[0])), x[0]...), m.hrows[t+i-m.hbase]...)
+			rows[i] = append(append(make([]float32, 0, 2*len(m.hrows[0])), m.plain(x[0], false)...), m.hrows[t+i-m.hbase]...)
 		}
 		var err error
 		if logits, err = m.sess.Step(rows); err != nil {
@@ -248,7 +299,7 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 		if h == nil {
 			break
 		}
-		if logits, err = m.sess.Step([][]float32{append(append([]float32{}, x[0]...), h...)}); err != nil {
+		if logits, err = m.sess.Step([][]float32{append(append([]float32{}, m.plain(x[0], false)...), h...)}); err != nil {
 			return nil, err
 		}
 		h = m.sess.Hidden()
