@@ -31,4 +31,11 @@ type tokenSession interface {
 	SpeculateTokens(toks []int32, accept func(row func(i int) []float32) int) ([]float32, int, error)
 }
 
+// chunkSession reads several chunks of a prompt in one call (decode.Session.StepChunks), a
+// stage of the model at a time where it can.
+type chunkSession interface {
+	StepChunks(chunks [][][]float32) ([]float32, error)
+}
+
 var _ session = (*decode.Session)(nil)
+var _ chunkSession = (*decode.Session)(nil)

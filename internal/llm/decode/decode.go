@@ -54,6 +54,13 @@ type Program struct {
 	// y is not logits, and a step on it returns none. Its last part computes the keys and values
 	// of layers it does not attend for, which the session writes into its cache.
 	NoLogits bool
+	// Carry, of a program split at its attention, saves what the parts after stage i take from
+	// stage i and the ones before it (and the attention after them), and Restore puts it back:
+	// the session then reads several chunks of a prompt a stage at a time (StepChunks).
+	// OutStage is the stage that computes each output. Nil when the program cannot.
+	Carry    func(i int) []byte
+	Restore  func(i int, b []byte)
+	OutStage map[string]int
 	// Meta is the metadata of the program's parts (llm.ReadMeta), from which the session learns
 	// whether the host applies the logits' soft cap (llm.HostSoftcap).
 	Meta map[string]string
@@ -1297,10 +1304,26 @@ func (s *Session) run(emb [][]float32, each bool) (p Program, q int, err error) 
 	if st == nil {
 		return p, 0, fmt.Errorf("decode: no program computes the logits after each of %d tokens (the longer ones compute them after the last alone)", v)
 	}
+	if err := s.prepare(st, emb); err != nil {
+		return p, 0, err
+	}
+	if p.RunPart != nil {
+		s.sparseTouch(s.pos)
+		return p, q, s.runPaged(st, v)
+	}
+	if err := p.Run(); err != nil {
+		return p, 0, err
+	}
+	return p, q, nil
+}
+
+// prepare writes the tokens' rows (emb, at s.pos) and the step's inputs into st's program.
+func (s *Session) prepare(st *step, emb [][]float32) error {
+	p, q, v := st.p, st.q, len(emb)
 	x := p.In["x"]
 	for _, e := range emb {
 		if len(e) != s.Width() {
-			return p, 0, fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
+			return fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
 		}
 	}
 	// The rows past the tokens repeat the last token: they are masked out and not kept, but a
@@ -1327,19 +1350,12 @@ func (s *Session) run(emb [][]float32, each bool) (p Program, q int, err error) 
 	for name, vals := range inputs(s.pos, v, q, s.t) {
 		if b, ok := p.In[name]; ok {
 			if 2*len(vals) != len(b) {
-				return p, 0, fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
+				return fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
 			}
 			hwnpu.EncodeF16(b, vals)
 		}
 	}
-	if p.RunPart != nil {
-		s.sparseTouch(s.pos)
-		return p, q, s.runPaged(st, v)
-	}
-	if err := p.Run(); err != nil {
-		return p, 0, err
-	}
-	return p, q, nil
+	return nil
 }
 
 // runPaged runs a program split at its attention, valid of its rows tokens: its parts, and
@@ -1380,6 +1396,20 @@ func (s *Session) runPaged(st *step, valid int) error {
 			}
 			return nil
 		}
+		if err := s.attendAfter(st, i, valid, rows, used, &oneMasks); err != nil {
+			return err
+		}
+	}
+}
+
+// attendAfter attends for the layer after stage i of the program st runs (p.Attend[i]), the
+// step at s.pos valid of its rows tokens, rows of them fitting the cache, over the used chunks
+// of it: writes the step's keys and values into the cache, attends over it and writes the
+// layer's attention output into the program's input.
+func (s *Session) attendAfter(st *step, i, valid, rows, used int, oneMasks *bool) error {
+	p, q := st.p, st.q
+	att := p.attention(s.chunk)
+	{
 		layer := p.Attend[i]
 		s.noteSinks(p, layer)
 		src := s.kvLayer(layer)
@@ -1392,10 +1422,10 @@ func (s *Session) runPaged(st *step, valid int) error {
 			}
 		}
 		if s.oneRow(p, layer) {
-			if err := s.attendOne(st, layer, kc, vc, valid, &oneMasks); err != nil {
+			if err := s.attendOne(st, layer, kc, vc, valid, oneMasks); err != nil {
 				return err
 			}
-			continue
+			return nil
 		}
 		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
 		if s.sparse != nil && att == p.Attn {
@@ -1405,7 +1435,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 			}
 			if done {
 				putAttnOut(p, layer, st.res)
-				continue
+				return nil
 			}
 		}
 		st.merge.Reset()
@@ -1426,6 +1456,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 		st.merge.Result(st.res)
 		putAttnOut(p, layer, st.res)
 	}
+	return nil
 }
 
 // addSink adds layer's sinks to m (paged.Merge.AddSink) when the programs output them,

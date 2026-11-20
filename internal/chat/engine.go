@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1144,22 +1145,42 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			}
 		}
 	}
+	_, chunked := e.sess.(chunkSession)
+	_, tokens := e.sess.(tokenSession)
+	most := layerMajorChunks()
+	chunked = chunked && !tokens && e.mtp == nil && most != 0
 	for len(e.cur.fed) < len(prompt) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		rest := len(prompt) - len(e.cur.fed)
-		k := min(rest, e.sess.Q())
-		if g := e.logitsQ(); g > 0 && rest > g {
-			// the program that reads prompts gives no logits: the last tokens go through the one
-			// that generates, which does
-			k = min(rest-g, e.sess.Q())
+		// the chunks read next: one, or with chunked several (StepChunks) up to the next mark
+		// (the turn's start, the store's every markEvery tokens) or e.layerMajor of them
+		before := len(e.cur.fed)
+		var ks []int
+		for done := before; done < len(prompt); {
+			rest := len(prompt) - done
+			k := min(rest, e.sess.Q())
+			if g := e.logitsQ(); g > 0 && rest > g {
+				// the program that reads prompts gives no logits: the last tokens go through
+				// the one that generates, which does
+				k = min(rest-g, e.sess.Q())
+			}
+			if cut > done && cut < done+k {
+				k = cut - done
+			}
+			ks = append(ks, k)
+			done += k
+			if !chunked || k < e.sess.Q() || done == cut || len(ks) == most ||
+				e.store != nil && done < len(prompt) && done/markEvery > before/markEvery {
+				break
+			}
 		}
-		if before := len(e.cur.fed); cut > before && cut < before+k {
-			k = cut - before
+		total := 0
+		for _, k := range ks {
+			total += k
 		}
 		ti := e.ti
-		if ok, err := e.room(k); err != nil {
+		if ok, err := e.room(total); err != nil {
 			return nil, err
 		} else if !ok {
 			return nil, fmt.Errorf("%w: %d tokens, the cache holds %d", ErrContext, len(prompt), e.sess.Cache())
@@ -1167,8 +1188,11 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if e.ti != ti {
 			kept = nil // marks of the tier before, not the store's programs'
 		}
-		before := len(e.cur.fed)
-		if _, err := e.step(prompt[before : before+k]); err != nil {
+		if len(ks) == 1 {
+			if _, err := e.step(prompt[before : before+total]); err != nil {
+				return nil, err
+			}
+		} else if err := e.stepChunks(prompt[before:before+total], ks); err != nil {
 			return nil, err
 		}
 		if len(e.cur.fed) == cut && cut < len(prompt) {
@@ -1440,6 +1464,46 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 	e.cur.last = logits
 	e.recordHidden(pos0)
 	return logits, nil
+}
+
+// layerMajorChunks is the most chunks of a prompt read in one call (StepChunks): HWNPU_LAYER_MAJOR
+// =N, off (0) for one at a time; by default no limit but the marks.
+func layerMajorChunks() int {
+	switch v := os.Getenv("HWNPU_LAYER_MAJOR"); v {
+	case "":
+		return -1
+	case "off":
+		return 0
+	default:
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return -1
+		}
+		return n
+	}
+}
+
+// stepChunks runs the tokens as the chunks of ks tokens each in one call (chunkSession) and
+// records them as fed.
+func (e *Engine) stepChunks(toks []int32, ks []int) error {
+	chunks := make([][][]float32, len(ks))
+	off := 0
+	for i, k := range ks {
+		var err error
+		if chunks[i], err = e.rows(toks[off : off+k]); err != nil {
+			return err
+		}
+		off += k
+	}
+	logits, err := e.sess.(chunkSession).StepChunks(chunks)
+	if err != nil {
+		e.sess.Reset() // the cache may be half written
+		e.cur = seq{}
+		return err
+	}
+	e.cur.fed = append(e.cur.fed, toks...)
+	e.cur.last = logits
+	return nil
 }
 
 // recordHidden gives the multi-token prediction layer the model's final hidden states of the

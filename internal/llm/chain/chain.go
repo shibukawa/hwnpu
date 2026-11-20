@@ -665,6 +665,20 @@ func (t *tier) program(ctx context.Context) decode.Program {
 		for _, a := range t.smaller {
 			p.Smaller = append(p.Smaller, a.program(ctx, a.chunk))
 		}
+		carry := t.carry()
+		p.Carry = func(i int) []byte {
+			var out []byte
+			for _, b := range carry[i] {
+				out = append(out, b.Bytes()...)
+			}
+			return out
+		}
+		p.Restore = func(i int, saved []byte) {
+			for _, b := range carry[i] {
+				saved = saved[copy(b.Bytes(), saved):]
+			}
+		}
+		p.OutStage = t.outStage()
 		p.RunPart = func(i int) error {
 			for _, part := range t.stages[i] {
 				for _, b := range part.ins {
@@ -700,6 +714,63 @@ func (t *tier) program(ctx context.Context) decode.Program {
 		return nil
 	}
 	return p
+}
+
+// carry is, after each stage but the last, the buffers the stages after it read that it or a
+// stage before it writes: the parts' outputs, the attention outputs the session writes after
+// them (attn_o_N, attn_ot_N) and the experts' (moe_o_N). decode.Session.StepChunks saves them for
+// each chunk of a prompt it runs a stage at a time.
+func (t *tier) carry() [][]*hwnpu.Buffer {
+	out := make([][]*hwnpu.Buffer, len(t.attend))
+	written := map[*hwnpu.Buffer]bool{}
+	for i := range t.attend {
+		for _, part := range t.stages[i] {
+			for _, b := range part.outs {
+				written[b] = true
+			}
+			if layer, ok := t.moeAt[part]; ok {
+				if b := t.inputs[fmt.Sprintf("moe_o_%d", layer)]; b != nil {
+					written[b] = true
+				}
+			}
+		}
+		for _, n := range []string{"attn_o_%d", "attn_ot_%d"} {
+			if b := t.inputs[fmt.Sprintf(n, t.attend[i])]; b != nil {
+				written[b] = true
+			}
+		}
+		seen := map[*hwnpu.Buffer]bool{}
+		for _, later := range t.stages[i+1:] {
+			for _, part := range later {
+				for _, b := range part.ins {
+					if written[b] && !seen[b] {
+						seen[b] = true
+						out[i] = append(out[i], b)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// outStage is the stage that computes each output.
+func (t *tier) outStage() map[string]int {
+	at := map[*hwnpu.Buffer]int{}
+	for i, parts := range t.stages {
+		for _, part := range parts {
+			for _, b := range part.outs {
+				at[b] = i
+			}
+		}
+	}
+	out := map[string]int{}
+	for n, b := range t.outputs {
+		if i, ok := at[b]; ok {
+			out[n] = i
+		}
+	}
+	return out
 }
 
 // Meta is the metadata of the parts (llm.ReadMeta), nil for a conversion from before it.
