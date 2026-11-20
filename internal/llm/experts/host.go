@@ -270,6 +270,16 @@ func shardOf(checkpoint, name string) (string, error) {
 	return filepath.Join(filepath.Dir(checkpoint), f), nil
 }
 
+// fileAt is the checkpoint's file b is mapped from, and b's offset in it.
+func (h *Host) fileAt(b []byte) (*safetensors.File, int64, bool) {
+	for _, f := range h.files {
+		if off, ok := f.MappedAt(b); ok {
+			return f, off, true
+		}
+	}
+	return nil, 0, false
+}
+
 // Close unmaps the checkpoint.
 func (h *Host) Close() {
 	if h.times != nil {

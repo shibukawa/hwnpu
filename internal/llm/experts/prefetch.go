@@ -94,25 +94,49 @@ func newPrefetcher(h *Host, routers map[int]*router, n int) *prefetcher {
 	return p
 }
 
-// loop brings the pages queued into memory: the kernel is asked to read them ahead, then every
-// page is touched (a page in the page cache still costs the process a fault when first touched).
+// loop brings the pieces queued into memory, on readers goroutines: a piece out of memory is
+// read from its file (pread on several at once: 2.7 GB/s on an M2's SSD, where the kernel's
+// read-ahead of madvise(WILLNEED) gives 1.8 and faults a page at a time 0.6), then every page is
+// touched (a page in the page cache still costs the process a fault when first touched).
 func (p *prefetcher) loop() {
 	defer p.wg.Done()
-	page := os.Getpagesize()
-	var sink byte
-	for {
-		select {
-		case <-p.quit:
-			touched.Add(uint32(sink))
-			return
-		case b := <-p.queue:
-			willneed(b)
-			for j := 0; j < len(b); j += page {
-				sink += b[j]
+	var wg sync.WaitGroup
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			page := os.Getpagesize()
+			buf := make([]byte, piece)
+			var sink byte
+			for {
+				select {
+				case <-p.quit:
+					touched.Add(uint32(sink))
+					return
+				case b := <-p.queue:
+					if !incore(b) {
+						if f, off, ok := p.h.fileAt(b); ok {
+							f.ReadAt(buf[:len(b)], off)
+						} else {
+							willneed(b)
+						}
+					}
+					for j := 0; j < len(b); j += page {
+						sink += b[j]
+					}
+				}
 			}
-		}
+		}()
 	}
+	wg.Wait()
 }
+
+// readers and piece are the goroutines that bring guessed experts in, and the bytes each reads at
+// a time (an expert of gpt-oss-20b is 13.3 MB).
+const (
+	readers = 4
+	piece   = 1 << 20
+)
 
 // ran is told the experts idx a row of layer l runs, with the row x (moe_x_l): it scores the
 // last guess for l and sends x for l+1's guess (guessLoop).
@@ -217,9 +241,11 @@ func (p *prefetcher) guessNext(r guessRow) {
 			continue // wired: in memory already
 		}
 		for _, b := range p.h.spans(l+1, e) {
-			select {
-			case p.queue <- b:
-			default: // behind: drop the guess rather than wait
+			for lo := 0; lo < len(b); lo += piece {
+				select {
+				case p.queue <- b[lo:min(lo+piece, len(b))]:
+				default: // behind: drop the guess rather than wait
+				}
 			}
 		}
 	}
