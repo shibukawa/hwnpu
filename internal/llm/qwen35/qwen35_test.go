@@ -84,7 +84,7 @@ func reference(t *testing.T, c *Config, w llm.Weights, x []float32, stop int) []
 	for l := 0; l < c.NumLayers; l++ {
 		layers = append(layers, refLayer{fmt.Sprintf("%slayers.%d.", c.prefix(), l), c.IsLinear(l)})
 	}
-	return referenceLayers(t, c, w, h, layers, c.prefix()+"norm.weight", stop)
+	return referenceLayers(t, c, w, h, layers, c.prefix()+"norm.weight", stop, nil)
 }
 
 // refLayer is a decoder layer of the reference: its tensors' prefix and its kind.
@@ -94,8 +94,9 @@ type refLayer struct {
 }
 
 // referenceLayers runs the layers over the hidden states h (rows at positions 0, 1, ...), and the
-// final norm, or with stop >= 0 stops after layer stop. It changes h.
-func referenceLayers(t *testing.T, c *Config, w llm.Weights, h [][]float64, layers []refLayer, final string, stop int) [][]float64 {
+// final norm, or with stop >= 0 stops after layer stop. It changes h. mlp is a layer's MLP on a
+// row after the post-attention norm, nil for Qwen3_5MLP.
+func referenceLayers(t *testing.T, c *Config, w llm.Weights, h [][]float64, layers []refLayer, final string, stop int, mlp func(prefix string, f []float64) []float64) [][]float64 {
 	d := c.HiddenSize
 	s := len(h)
 	matvec := func(m []float64, rows int, v []float64) []float64 {
@@ -305,17 +306,23 @@ func referenceLayers(t *testing.T, c *Config, w llm.Weights, h [][]float64, laye
 			}
 		}
 		post := onePlus(lp + "post_attention_layernorm.weight")
-		wg, wu, wd := f16(t, w, lp+"mlp.gate_proj.weight"), f16(t, w, lp+"mlp.up_proj.weight"), f16(t, w, lp+"mlp.down_proj.weight")
+		layerMLP := mlp
+		if layerMLP == nil {
+			wg, wu, wd := f16(t, w, lp+"mlp.gate_proj.weight"), f16(t, w, lp+"mlp.up_proj.weight"), f16(t, w, lp+"mlp.down_proj.weight")
+			layerMLP = func(_ string, f []float64) []float64 {
+				g, u := matvec(wg, c.IntermediateSize, f), matvec(wu, c.IntermediateSize, f)
+				for j := range g {
+					g[j] = silu(g[j]) * u[j]
+				}
+				return matvec(wd, d, g)
+			}
+		}
 		for i := range h {
 			for j := range h[i] {
 				h[i][j] += mix[i][j]
 			}
 			f := rms(h[i], post, c.NormEps)
-			g, u := matvec(wg, c.IntermediateSize, f), matvec(wu, c.IntermediateSize, f)
-			for j := range g {
-				g[j] = silu(g[j]) * u[j]
-			}
-			down := matvec(wd, d, g)
+			down := layerMLP(lp, f)
 			for j := range h[i] {
 				h[i][j] += down[j]
 			}

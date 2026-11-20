@@ -36,7 +36,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <td><b>LFM3-1.7B</b> (Apple 1.7 GB、AMD 2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (AMD 2.4 GB、Apple 2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>、2.2〜2.4 GB)<br>コードも書く<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.1 GB。Apple だけ)<br>プログラム 1 本で、長いプロンプトを読むのは遅い (<code>--prefill on</code> で速く、+0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>、M1 で 1.1 GB、M2 以降 1.6 GB、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱い</td>
 <td><b>Gemma 4 E2B</b> (AMD 2.4 GB、Apple 2.3 GB)<br>長い文脈 (131072 で +0.8 GB) も<br><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br>短い会話なら<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.3 GB)<br>プロンプトを読むプログラムを別に持ち、読むのが 5 倍速い</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br>長い文脈 (131072 で +2.1 GB) も</td>
-<td colspan="2"><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br><i>予定: Qwen3.6-35B-A3B (MoE、4 ビットで約 25 GB)</i></td>
+<td colspan="2"><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br><i>Apple では名前で動く: Qwen3.6-35B-A3B (MoE、<code>-m Qwen3.6-35B-A3B</code>。16 GB から、そこで 9.8〜10 トークン/秒。用途からは選ばれない)</i></td>
 </tr>
 <tr>
 <th>画像を読む<br><sub>hwnpu-chat <code>-m vision</code> (<code>image_url</code>、<code>/image</code>)</sub></th>
@@ -162,8 +162,9 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | Qwen3.5-2B | チャット、コード | AMD 2.4 GB (MLP は 6 ビット)、Apple 2.2 GB (M1: 6 ビットの表で Neural Engine に 1.67 GiB とプロセスの 0.39 GiB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M1) |
 | Qwen3.5-4B | チャット、コード | 約 4.2 GB (8 ビットの重み 3.9 GiB) | 32 KiB/トークン (262144 で 8 GiB。16 GB では 114688 トークン) | M3 の Neural Engine で動作を確認。メモリは重みから見込み |
 | Qwen2.5-Coder-7B-Instruct (Apple) | コード、チャット | 約 4.4 GB (M1: GPTQ で選んだ 4 ビットの表で Neural Engine に 4.0 GB、プロセスに 0.35 GB) | 63 KiB/トークン (32768 で 1.97 GiB) | M1 で測定 (0.8 トークン/秒: Neural Engine の 2.8 GiB を超えるので M1 では選ばない)。M2 以降は未測定 |
+| Qwen3.6-35B-A3B | チャット、コード、推論 (Apple のみ、Core AI) | 16 GB の M3 で 2.8 GB (Neural Engine に 8 と 6 ビットの表で 1.81 GiB、プロセス 0.87 GB)。これとは別に専門家のページキャッシュ: 17.1 GB を 4 ビットの MXFP4 で割り付けて CPU で回し、16 GB では固定せず、載る分 (6〜7 GB、システムは空きに数える) をシステムが持ち、無いものはトークンが選んだときにディスクからまるごと読む。9.8〜10.0 トークン/秒 (別のプロセスが 3 GB を取ると 8.4)。初回は 72 GB の配布物を層ごとにネットワークから読んで 22 GB を書く (40 MB/s で約 40 分) | 22 KiB/トークン (16 GB の文脈 180224 で 3.87 GiB) | M3 (16 GB) で測定 |
 | gpt-oss-20b | チャット、コード、推論 | AMD: 14.5 GB (NPU に 13.0 GiB を固定: 専門家は MXFP4 のまま、注意は 8 ビット、出力層は 4 ビット)。Apple (Core AI、M2 以降): 12.2 GB (専門家の 10.2 GB はチェックポイントを割り付けて CPU で回す、Neural Engine に 8 と 6 ビットの表で 1.44 GiB、プロセス 0.5 GB)。16 GB の M3 で 17〜19 トークン/秒 | AMD 48 KiB/トークン (8192 で 0.38 GiB)、Apple 27 KiB/トークン (131072 で 3.38 GiB) | Ryzen AI 9 365 と M3 (16 GB) で測定 |
-| Qwen3.6-35B-A3B (予定) | チャット、コード | 約 25 GB | — | 4 ビットの重みからの見込み。移植していない |
+| Qwen3.6-35B-A3B (AMD) | チャット、コード | 約 25 GB (4 ビットの重みの像 23 GB) | — | 手で作った書き出しで動く (docs/design.md 16.91〜16.116、5.8 トークン/秒)。models.yaml には入れていない |
 
 - 重みは 4 ビットと 8 ビットを混ぜた形です (MLP と出力の行列が 4 ビット、注意の射影が 8 ビット。画像生成は DiT が 8 ビット)。Qwen3.5-0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします
 - 「実測」は、NPU に固定されたメモリを Ryzen AI 9 365 で測った値に、プロセスの分を足したものです。モデルの重みの大きさで決まります

@@ -1,6 +1,8 @@
 package experts
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/mxfp4"
+	"github.com/shibukawa/hwnpu/internal/safetensors"
 )
 
 // Host's experts of gpt-oss-20b's layer 0 (HWNPU_GPTOSS_CKPT: the checkpoint's directory) against
@@ -23,7 +26,7 @@ func TestHostGptOss(t *testing.T) {
 	rec := &HostRecord{Checkpoint: filepath.Join(dir, "model.safetensors.index.json"), Act: Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, Layers: map[int]MXFP4{}}
 	for _, l := range []int{0, 23} {
 		p := fmt.Sprintf("model.layers.%d.mlp.experts.", l)
-		rec.Layers[l] = MXFP4{p + "gate_up_proj_blocks", p + "gate_up_proj_scales", p + "gate_up_proj_bias", p + "down_proj_blocks", p + "down_proj_scales", p + "down_proj_bias"}
+		rec.Layers[l] = MXFP4{GateUpBlocks: p + "gate_up_proj_blocks", GateUpScales: p + "gate_up_proj_scales", GateUpBias: p + "gate_up_proj_bias", DownBlocks: p + "down_proj_blocks", DownScales: p + "down_proj_scales", DownBias: p + "down_proj_bias"}
 	}
 	h, err := OpenHost(rec, sh)
 	if err != nil {
@@ -96,5 +99,108 @@ func TestHostGptOss(t *testing.T) {
 				t.Errorf("layer %d row %d: cos %.6f", layer, i, cos)
 			}
 		}
+	}
+}
+
+// writeHost writes a small checkpoint of MXFP4 experts (random blocks, scales around 2^-6) of L
+// layers, with biases or without, and returns its record.
+func writeHost(t *testing.T, sh Shape, L int, act Act, bias bool) *HostRecord {
+	t.Helper()
+	r := rand.New(rand.NewPCG(7, 8))
+	E, H, I := sh.Experts, sh.Hidden, sh.Inter
+	path := filepath.Join(t.TempDir(), "model.safetensors")
+	rec := &HostRecord{Checkpoint: path, Act: act, Layers: map[int]MXFP4{}}
+	var outs []safetensors.Out
+	add := func(name, dtype string, shape []int, b []byte) {
+		outs = append(outs, safetensors.Out{Name: name, DType: dtype, Shape: shape, Size: int64(len(b)), Data: bytes.NewReader(b)})
+	}
+	bytesOf := func(n int, scale bool) []byte {
+		b := make([]byte, n)
+		for i := range b {
+			if scale {
+				b[i] = byte(119 + r.IntN(4))
+			} else {
+				b[i] = byte(r.IntN(256))
+			}
+		}
+		return b
+	}
+	floats := func(n int) []byte {
+		b := make([]byte, 4*n)
+		for i := range n {
+			binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(float32(r.NormFloat64())*0.1))
+		}
+		return b
+	}
+	for l := range L {
+		p := fmt.Sprintf("layers.%d.", l)
+		m := MXFP4{GateUpBlocks: p + "gu_blocks", GateUpScales: p + "gu_scales", DownBlocks: p + "dn_blocks", DownScales: p + "dn_scales"}
+		add(m.GateUpBlocks, "U8", []int{E, 2 * I, H / 32, 16}, bytesOf(E*2*I*H/2, false))
+		add(m.GateUpScales, "U8", []int{E, 2 * I, H / 32}, bytesOf(E*2*I*H/32, true))
+		add(m.DownBlocks, "U8", []int{E, H, I / 32, 16}, bytesOf(E*H*I/2, false))
+		add(m.DownScales, "U8", []int{E, H, I / 32}, bytesOf(E*H*I/32, true))
+		if bias {
+			m.GateUpBias, m.DownBias = p+"gu_bias", p+"dn_bias"
+			add(m.GateUpBias, "F32", []int{E, 2 * I}, floats(E*2*I))
+			add(m.DownBias, "F32", []int{E, H}, floats(E*H))
+		}
+		rec.Layers[l] = m
+	}
+	if err := safetensors.Write(path, outs, nil); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// A generated token's experts as one piece of work each (runRow) give bit for bit what the rows'
+// form (three Runs over all the experts) gives for the one row, for gpt-oss's gated unit with
+// biases and for the SwiGLU without, wired or read from the file as chosen.
+func TestHostRowMatchesRows(t *testing.T) {
+	sh := Shape{Hidden: 128, Inter: 64, Experts: 16, TopK: 4}
+	for _, c := range []struct {
+		name string
+		act  Act
+		bias bool
+		wire string
+	}{{"gptoss", Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, true, "1"}, {"silu", Act{Kind: ActSiLU}, false, "1"}, {"silu not wired", Act{Kind: ActSiLU}, false, "0"}} {
+		t.Run(c.name, func(t *testing.T) {
+			rec := writeHost(t, sh, 2, c.act, c.bias)
+			t.Setenv("HWNPU_MOE_WIRE", c.wire)
+			run := func(debug string) [][]float32 {
+				t.Setenv("HWNPU_MOE_DEBUG", debug)
+				h, err := OpenHost(rec, sh)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer h.Close()
+				r := rand.New(rand.NewPCG(1, 2))
+				x := [][]float32{make([]float32, sh.Hidden)}
+				for j := range x[0] {
+					x[0][j] = float32(r.NormFloat64())
+				}
+				var outs [][]float32
+				for l := range 2 {
+					out := [][]float32{make([]float32, sh.Hidden)}
+					if err := h.Run(l, x, [][]int{{9, 2, 15, 4}}, [][]float32{{0.4, 0.3, 0.2, 0.1}}, out); err != nil {
+						t.Fatal(err)
+					}
+					outs = append(outs, out[0])
+				}
+				return outs
+			}
+			row, rows := run(""), run("row=0")
+			var nonzero bool
+			for l := range row {
+				for j := range row[l] {
+					if row[l][j] != rows[l][j] {
+						t.Fatalf("layer %d value %d: %g as a row, %g as rows", l, j, row[l][j], rows[l][j])
+					}
+					nonzero = nonzero || row[l][j] != 0
+				}
+			}
+			if !nonzero {
+				t.Fatal("every output is 0")
+			}
+		})
 	}
 }

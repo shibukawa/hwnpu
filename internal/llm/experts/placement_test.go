@@ -125,21 +125,25 @@ func TestPlacementPressure(t *testing.T) {
 	pl := fakeLock(newPlacer(h, Placement{Core: [][]int{{}, {3}}, Usage: path, Idle: -1}, 5*eb, L))
 	var now mem.Pressure
 	pl.pressure = func() (mem.Pressure, bool) { return now, true }
+	pl.phys = 100 * eb // a percent of the memory is an expert
 	for _, c := range []struct {
 		p    mem.Pressure
 		want int64
 	}{
 		{mem.Pressure{Free: 80, Level: 1}, 5 * eb},
-		{mem.Pressure{Free: 25, Level: 1}, 5 * eb},
-		{mem.Pressure{Free: 10, Level: 1}, eb},             // the core alone
-		{mem.Pressure{Free: 40, Level: 2}, eb},             // the system's warning
-		{mem.Pressure{Free: 17, Level: 1}, eb + 4*eb*7/15}, // in proportion
+		{mem.Pressure{Free: 27, Level: 1}, 2 * eb}, // what leaves 25 % free
+		{mem.Pressure{Free: 25, Level: 1}, eb},     // the core alone
+		{mem.Pressure{Free: 10, Level: 1}, eb},
+		{mem.Pressure{Free: 60, Level: 4}, eb},     // the system's critical level
+		{mem.Pressure{Free: 40, Level: 2}, 5 * eb}, // its warning: 35 % stay free
+		{mem.Pressure{Free: 37, Level: 1}, 2 * eb}, // and for a while after it
 	} {
 		now = c.p
 		if got := pl.effective(); got != c.want {
 			t.Errorf("%+v: budget %d, want %d", c.p, got, c.want)
 		}
 	}
+	pl.warned.Store(0)
 	now = mem.Pressure{Free: 80, Level: 1}
 	pl.balance(true)
 	if got := len(wiredSet(pl)); got != 5 {
@@ -147,11 +151,25 @@ func TestPlacementPressure(t *testing.T) {
 	}
 	// eb + 4eb/3: the core and the best by use (layer 1's expert 0, 2/3 of its layer's runs,
 	// above layer 0's expert 2, 3/7)
-	now = mem.Pressure{Free: 15, Level: 1}
+	// 5 experts wired (own bytes: their whole pages) and so little free that the memory free
+	// without them, less the 25 % to stay free, is 2 experts and a part
+	own := pl.bytes
+	short := 25 - int((own-2*eb)/eb)
+	now = mem.Pressure{Free: short, Level: 1}
+	if got, want := pl.effective(), own-int64(25-short)*eb; got != want || want < 2*eb || want >= 3*eb {
+		t.Fatalf("short (%d%% free, %d wired): budget %d, want %d of 2 experts", short, own, got, want)
+	}
 	pl.follow()
 	pl.apply(pl.target())
 	if got, want := wiredSet(pl), []int{1*E + 0, 1*E + 3}; !slices.Equal(got, want) {
 		t.Fatalf("short: wired %v, want %v", got, want)
+	}
+	// settled: with the 2 wired and 25 % free the budget stays, and a percent more too
+	for _, f := range []int{25, 26} {
+		now = mem.Pressure{Free: f, Level: 1}
+		if got := pl.effective(); got != pl.budget {
+			t.Fatalf("settled at %d%%: budget %d, want %d", f, got, pl.budget)
+		}
 	}
 	now = mem.Pressure{Free: 80, Level: 1}
 	pl.balance(false)

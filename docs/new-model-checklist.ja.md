@@ -165,6 +165,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **アーキテクチャでは**: `llm.Routed` を実装する。部品は MoE の層の始まりで終わり、`moe_x_N` (ffn の norm の出力) と `moe_logits_N` (ルーター、fp16: 選択は小さな差で決まる) を出し、y は残差。次の部品は `moe_o_N` を足して始まる。`Tensors` に専門家は入れない (`experts.WriteFile` が読む)。変換は Core AI だけで `llm.PlanRouted` が切る。`llm.Paged` でもあるモデルは注意でも分け、注意の層の出力からルーターまでは層なしの部品 (`NoLayers`) にする (LFM2-8B-A1B: 29 部品、文脈 128000)
 - **行を数える**: 生成の専門家は行ごとにかかるので、hwnpu-chat は MoE のモデルで draft を切り、tier は 1 つ。プロンプトの呼び出しは選ばれた専門家を全部の行に 1 回ずつ回す (`experts.BuildRows`) ので、プロンプトのプログラムは 1 回 128 トークン: LFM2-8B-A1B は 138 tokens/s、1 行ずつなら 24
 - **どの専門家が使われるかを、たくさんの種類の文で数える** (`tools/moeusage`: `collect.sh MODEL OUT` が `prompts.tsv` の 19 分野 約 25 言語を回し、`analyze.py OUT`): すべての専門家が何度も使われること (gpt-oss-20b: 1 層 213,324 回の選択で最少 147 回)。どの分野でも使う専門家 (どの分野でも層の中で均等な割合以上) は models.yaml の `experts_core` に。専門家がメモリの半分に入らないとき、ホストは芯、次にアプリが使うものの順で予算まで固定する (`experts.Placement`: gpt-oss-20b の 16 GB で 10.2 GB のうち 6.4 GB、M3 で 17.4〜18.3 tok/s、全部固定は 18.8〜19.1)。ある分野で選んだ専門家がほかの分野にどれだけ当たるかも見る (コンピュータと数学はほかから外れやすい)
+- **専門家を CPU で回すモデル (`llm.HostRouted`) は、読みと計算を分けて測る** (`HWNPU_MOE_DEBUG=1`: 選んだ専門家のうちメモリに無かった割合、全部メモリにあった層の行と読み込みのあった行の時間、終わりにメモリにある量): Qwen3.6-35B-A3B は「遅いのはディスク」に見えて、無かったのは 7.8 % だけ、遅いのはフォールト任せの読み方 (0.4 GB/s) だった。SSD の速さは 1 MiB の読みを数本並べて先に測る。専門家がメモリの 3/4 を超えると既定で固定しない (16.262)。設定の比較は同じ質問を繰り返さない: ページキャッシュがその質問の専門家で温まり、固定なしが実際より速く見えた。分野と言語の違う質問の列 (`tools/moeusage/prompts.tsv` から数問、`--prompt-cache off`) を設定ごとに流す。配布物の専門家が 4 ビットでないモデルは、派生のチェックポイント (`hwnpu-dev mxfp4`、`llm.HostDerived`) の大きさとディスクの空き (Neural Engine のコンパイルに空き 10 GB 以上) も先に見る
 - **MoE でないモデルが変わらないことを確かめる**: MoE の経路は `llm.Routed` と `experts` のある manifest だけが通る。LFM3-1.7B: 同じ文、同じ 57.4 tok/s、変換し直しもなし
 
 ## 4. AMD (IRON) と Intel の形
@@ -324,6 +325,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 |---|---|---|
 | AMD の固定 (`Unevictable` の増え) | `/proc/meminfo` (RSS に出ない)、書き出しの `manifest.json` の bank の合計 | 大半は重みと作業域。KV は 5 % 未満 |
 | Mac の `phys_footprint` と Neural Engine が抱えるメモリ | `hwnpu-dev probe split`、`hwnpu-chat` の読み込みのログ、`HWNPU_PROFILE=1` | 重みはカーネルの wired メモリにあり、`mem.NPUWired` で読める (16.95)。Core ML がその場でコンパイルしたプログラムは、読み込みではなく最初の呼び出しで載る (LFM3: 読み込み後 0.27 GiB、1 回呼んで 2.43 GiB) ので、1 回呼んでから測る。2 本のプログラムがそこに収まらないと、生成の部分が毎回載せ直される (M1 の Gemma 4、16.112) |
+| 1 回の実行の間の最大 (footprint、固定、Neural Engine、システムの空き) | `go run ./tools/memwatch [-csv FILE] hwnpu-chat chat -m MODEL "質問"` (0.1 秒ごと、11.2 の測り方) | 固定 (mlock) したファイルのページは footprint に出ないので別に足す。内訳は `footprint PID` と `vmmap -summary PID`: Qwen3.6 のプロセス 1.17 GB のうち hwnpu のバッファは 300 MB、Core AI 自身が約 650 MB、Go のヒープ 213 MB は 0 の bias と float32 に写した経路の重みだった (16.262) |
 | 会話の印の大きさ | | 使っているリングの行だけ写す (`ringRows`、578 → 183 MB) |
 | 変換の直後 | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
 | KV の大きさと文脈 | | 物理メモリの 1/4 を超えたら塊単位で縮める |

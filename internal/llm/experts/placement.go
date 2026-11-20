@@ -44,21 +44,25 @@ const (
 	pressureEvery = 5 * time.Second
 )
 
-// The budget follows the system's free memory (mem.Pressure): all of it at freeHigh percent free
-// or more, the core alone at freeLow or less and at the system's warning (Level 2 and up), in
-// proportion between. The free percent counts the page cache the system can drop, so it falls only
-// once the experts not wired are dropped as well: then the wired ones are what the other
-// applications lack. A budget that shrinks unwires the experts used least; it grows back at the
-// next balance of a run.
+// The budget follows the system's free memory (mem.Pressure): it is what leaves freeHigh percent
+// of the memory free, counting what is wired here as free too (the free percent has it taken
+// away already), so that the budget settles where the free percent is freeHigh. A budget read off
+// the free percent alone swung: Qwen3.6-35B-A3B on a 16 GB M3 with 46 % free wired its 4.1 GB,
+// which left 21 % and the system's warning, unwired them all, was back at 46 % and wired them
+// again, every few seconds. At the system's warning (Level 2) warnMore percent more stay free
+// for warnFor; at its critical level the core alone stays wired. The free percent counts the
+// page cache the system can drop, so the experts not wired do not lower it. A budget that
+// shrinks unwires the experts used least; it grows back at the next balance of a run.
 const (
 	freeHigh = 25
-	freeLow  = 10
+	warnMore = 10
+	warnFor  = 5 * time.Minute
 )
 
 // effective is the budget for the system's pressure now.
 func (pl *placer) effective() int64 {
 	p, ok := pl.pressure()
-	if !ok {
+	if !ok || pl.phys <= 0 {
 		return pl.max
 	}
 	eb := pl.h.expertBytes()
@@ -69,13 +73,27 @@ func (pl *placer) effective() int64 {
 		}
 	}
 	core = min(core, pl.max)
-	switch {
-	case p.Level >= 2 || p.Free <= freeLow:
+	if p.Level >= 4 {
 		return core
-	case p.Free >= freeHigh:
-		return pl.max
 	}
-	return core + (pl.max-core)*int64(p.Free-freeLow)/(freeHigh-freeLow)
+	now := time.Now()
+	if p.Level >= 2 {
+		pl.warned.Store(now.UnixNano())
+	}
+	keep := int64(freeHigh)
+	if w := pl.warned.Load(); w != 0 && now.Sub(time.Unix(0, w)) < warnFor {
+		keep += warnMore
+	}
+	pl.mu.Lock()
+	own := pl.bytes
+	pl.mu.Unlock()
+	b := min(max((int64(p.Free)-keep)*pl.phys/100+own, core), pl.max)
+	// the free percent is whole percents and moves by one or two on its own: a budget within
+	// two of the one now stays, rather than wiring and unwiring that much at every balance
+	if d := b - pl.budget; d < pl.phys/50 && -d < pl.phys/50 && pl.budget >= core && pl.budget <= pl.max {
+		return pl.budget
+	}
+	return b
 }
 
 // follow sets the budget to effective's, telling a change of more than an expert.
@@ -92,7 +110,8 @@ func (pl *placer) follow() {
 
 // wiring is how the experts are wired: all of them, none, or a budget of bytes for
 // Placement's choice. HWNPU_MOE_WIRE=1 wires all, 0 none, a size (6GB, 6g, 6.5) that budget;
-// otherwise all when they take at most half of the machine's memory, else a quarter of it (4.3
+// otherwise all when they take at most half of the machine's memory, none when they take over
+// three quarters of it (below), else a quarter of it (4.3
 // GB of 16 GiB; it was 3/8 until the prefetch made 3 GB as fast as 6: an M2 12.4–12.6 against
 // 12.2–12.5 tokens/s, an M3 16.8–16.9 against 17.2–17.6). The budget then follows the system's
 // free memory (placer.effective). Wired, a token's experts cost half as much even with memory to spare (gpt-oss-20b on a
@@ -119,6 +138,16 @@ func (h *Host) wiring() (all bool, budget int64) {
 	}
 	if phys > 0 && 2*n <= phys {
 		return true, n
+	}
+	if phys > 0 && 4*n > 3*phys {
+		// more experts than the memory can ever hold beside the rest (Qwen3.6-35B-A3B's 17.1
+		// GB on 16 GiB): none wired. The page cache keeps what fits, a run reads the experts
+		// it chose that are not there whole from the file (readIn) and the next layer's are
+		// brought in ahead; wiring a quarter of the memory then only takes it from the page
+		// cache and the other applications. An M3 over 8 prompts of different fields: 10.6
+		// tokens/s with none wired, 9.1 with 2 GB, 8.6–8.8 with 4.3 GB (the system 19 % free
+		// against 51 %, and every run slower for it: 0.84 ms a layer in memory against 0.71)
+		return false, 0
 	}
 	return false, phys / 4
 }
@@ -172,6 +201,8 @@ type placer struct {
 	max    int64 // the budget asked for (Host.wiring)
 	// pressure reads how short of memory the system is (mem.PressureNow; a test's own)
 	pressure func() (mem.Pressure, bool)
+	phys     int64        // the machine's memory (mem.Physical; a test's own)
+	warned   atomic.Int64 // the time of the system's last warning (UnixNano)
 	L, E     int
 	core     []bool    // by l*E+e
 	score    []float64 // each expert's share of its layer's runs, older runs weighing less
@@ -197,7 +228,7 @@ type placer struct {
 
 func newPlacer(h *Host, p Placement, budget int64, L int) *placer {
 	E := h.shape.Experts
-	pl := &placer{h: h, place: p, budget: budget, max: budget, pressure: mem.PressureNow, L: L, E: E, core: make([]bool, L*E), score: make([]float64, L*E),
+	pl := &placer{h: h, place: p, budget: budget, max: budget, pressure: mem.PressureNow, phys: mem.Physical(), L: L, E: E, core: make([]bool, L*E), score: make([]float64, L*E),
 		seen: make([]uint32, L*E), wired: map[int][][]byte{}, quit: make(chan struct{}), lock: mlock, unlock: munlock, on: make([]atomic.Bool, L*E)}
 	for l, es := range p.Core {
 		for _, e := range es {
