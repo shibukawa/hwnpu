@@ -7,7 +7,7 @@
 // 8.5 bits a weight. The blocks come in q4nx's order (column blocks of 64
 // out-features, the two halves alternating).
 //
-// Q8_K is the in-features, a multiple of 512; Q_OUT the out-features a core
+// Q8_K is the in-features, a multiple of 256 (a block's); Q_OUT the out-features a core
 // keeps (64 or 32, as q4_mv.cc's).
 //===----------------------------------------------------------------------===//
 
@@ -27,7 +27,7 @@ constexpr int OUT = Q_OUT;
 constexpr int KT = 256;
 constexpr int MT = 32;
 constexpr int PR = 16; // out-features a strip
-static_assert(K % 512 == 0, "K must be a multiple of 512");
+static_assert(K % 256 == 0, "K must be a multiple of 256");
 static_assert(OUT == 32 || OUT == 64, "a core keeps one or two halves");
 
 struct q8_block {

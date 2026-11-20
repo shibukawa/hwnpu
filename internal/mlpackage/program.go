@@ -397,6 +397,25 @@ func (b *Builder) Int4Scaled(name string, shape, block []int, data []byte, scale
 	return b.scaled(name, 4, shape, block, data, scales)
 }
 
+// MXFP4 adds an MXFP4 weight for Core AI programs: codes are e2m1 values two a byte (the low
+// nibble first) of a (rows, cols) matrix, exps an exponent byte (2^(e-127)) for each 32 columns
+// of a row. MIL has no MX types: it is written as constexpr_blockwise_shift_scale of uint4 data
+// and uint8 scales, which ailower takes for float4E2M1FN and float8E8M0FN (Core ML cannot run it).
+func (b *Builder) MXFP4(name string, rows, cols int, codes, exps []byte) (*Var, error) {
+	if cols%32 != 0 || len(codes) != rows*cols/2 || len(exps) != rows*cols/32 {
+		return nil, fmt.Errorf("mlpackage: %s: MXFP4 %d x %d from %d codes and %d scales", name, rows, cols, len(codes), len(exps))
+	}
+	dv, err := b.constValue(UInt4, []int{rows, cols}, codes, BlobUInt4)
+	if err != nil {
+		return nil, err
+	}
+	sv, err := b.constValue(UInt8, []int{rows, cols / 32}, exps, BlobUInt8)
+	if err != nil {
+		return nil, err
+	}
+	return b.op("constexpr_blockwise_shift_scale", b.unique(name), map[string]any{"data": dv, "scale": sv}, Float16, []int{rows, cols}), nil
+}
+
 // Int8Scaled is Int4Scaled for int8 data, one byte per element (coremltools' linear symmetric
 // int8 per output channel when block is [1, cols]).
 func (b *Builder) Int8Scaled(name string, shape, block []int, data []byte, scales []uint16) (*Var, error) {

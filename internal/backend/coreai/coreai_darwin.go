@@ -642,18 +642,18 @@ func (g *graph) describe(dir, fn string) error {
 		}
 		for _, n := range names {
 			x := byName[n]
-			dt := map[string]types.DType{"f16": types.F16, "f32": types.F32, "i32": types.I32, "i8": types.I8, "i16": types.I16, "i4": types.I4}[x.Elem]
+			dt := map[string]types.DType{"f16": types.F16, "f32": types.F32, "i32": types.I32, "i8": types.I8, "i16": types.I16, "i4": types.I4, "u4": types.U4}[x.Elem]
 			if dt == types.DTypeUnknown {
 				return fmt.Errorf("coreai: %s %q of type %s: %w", kind, n, x.Elem, types.ErrUnsupported)
 			}
 			bytes := dt.Size()
-			if dt == types.I4 {
+			if dt == types.I4 || dt == types.U4 {
 				bytes = 1
 			}
 			for _, v := range x.Shape {
 				bytes *= v
 			}
-			if dt == types.I4 { // two a byte
+			if dt == types.I4 || dt == types.U4 { // two a byte
 				bytes = (bytes + 1) / 2
 			}
 			index[n] = len(g.args)

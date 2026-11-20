@@ -525,6 +525,8 @@ func short(elem string) string {
 		return "i16"
 	case "sint4":
 		return "i4"
+	case "uint4":
+		return "u4"
 	}
 	return elem
 }
@@ -543,6 +545,8 @@ func elemOf(dt milspec.DataType) string {
 		return "sint16"
 	case milspec.DataType_INT4:
 		return "sint4"
+	case milspec.DataType_UINT4:
+		return "uint4"
 	case milspec.DataType_BOOL:
 		return "bool"
 	}

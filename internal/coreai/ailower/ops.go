@@ -705,6 +705,21 @@ func (l *lowerer) lutToDense(op *milspec.Operation, oshape []int) val {
 // shiftScale is the blockwise linearly quantized weight: data (int8 or int4) times its block's
 // scale, as aicode's blockwise_shift_scale_v2 (data, scale, zero point, minimum).
 func (l *lowerer) shiftScale(op *milspec.Operation, oshape []int) val {
+	// MX constants: MIL has no MX types, so uint4 data with uint8 scales are MXFP4's e2m1 codes
+	// (two a byte, the low nibble first) and exponent bytes (mlpackage.Builder.MXFP4)
+	if l.isConst(op, "data") && l.isConst(op, "scale") {
+		dc, sc := l.constOf(op, "data"), l.constOf(op, "scale")
+		de, dshape, draw := l.decode(dc)
+		se, sshape, sraw := l.decode(sc)
+		if de == "uint4" && se == "uint8" {
+			data := l.constRaw("float4E2M1FN", dshape, draw)
+			scale := l.constRaw("float8E8M0FN", sshape, sraw)
+			n := len(sraw)
+			zero := l.constRaw("float4E2M1FN", sshape, make([]byte, n))
+			minv := l.constRaw("float16", sshape, make([]byte, 2*n))
+			return l.emit("blockwise_shift_scale_v2", "float16", oshape, nil, data, scale, zero, minv)
+		}
+	}
 	data := l.in(op, "data")
 	scale := l.in(op, "scale")
 	if l.has(op, "offset") {
@@ -717,11 +732,7 @@ func (l *lowerer) shiftScale(op *milspec.Operation, oshape []int) val {
 	for _, d := range scale.shape {
 		n *= d
 	}
-	zb := 1
-	if data.elem == "sint4" {
-		zb = 1 // one byte a zero point either way (splat)
-	}
-	zero := l.constRaw(data.elem, scale.shape, make([]byte, n*zb))
+	zero := l.constRaw(data.elem, scale.shape, make([]byte, n)) // one byte a zero point either way (splat)
 	minv := l.constRaw(scale.elem, scale.shape, make([]byte, 2*n))
 	return l.emit("blockwise_shift_scale_v2", scale.elem, oshape, nil, data, scale, zero, minv)
 }

@@ -85,7 +85,8 @@ type Attention struct {
 
 // Session is the state of one sequence.
 type Session struct {
-	progs   []step // by tokens per step, shortest first
+	progs   []step            // by tokens per step, shortest first
+	sinks   map[int][]float32 // the attention layers' sinks, by layer (noteSinks)
 	m       llm.Cached
 	kv      []kvCache
 	t       int // cache length
@@ -1380,6 +1381,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 			return nil
 		}
 		layer := p.Attend[i]
+		s.noteSinks(p, layer)
 		src := s.kvLayer(layer)
 		kc, vc := s.cache(fmt.Sprintf("kv_k_%d_new", src)), s.cache(fmt.Sprintf("kv_v_%d_new", src))
 		if src == layer { // a layer reusing another's keys and values finds the step's written
@@ -1420,9 +1422,36 @@ func (s *Session) runPaged(st *step, valid int) error {
 			hwnpu.DecodeF16(st.o[2], att.L)
 			st.merge.Add(st.o[0], st.o[1], st.o[2])
 		}
+		s.addSink(layer, st.merge, q)
 		st.merge.Result(st.res)
 		putAttnOut(p, layer, st.res)
 	}
+}
+
+// addSink adds layer's sinks to m (paged.Merge.AddSink) when the programs output them,
+// attn_sink_N (1, heads): a logit of each head that its softmax takes besides the keys'
+// (gpt-oss). They are constants, kept from the first step that ran the layer (noteSinks).
+func (s *Session) addSink(layer int, m *paged.Merge, tokens int) {
+	if v, ok := s.sinks[layer]; ok {
+		m.AddSink(v, tokens)
+	}
+}
+
+// noteSinks keeps layer's sinks from p, which has just run the part before its attention.
+func (s *Session) noteSinks(p Program, layer int) {
+	if _, ok := s.sinks[layer]; ok {
+		return
+	}
+	b, ok := p.Out[fmt.Sprintf("attn_sink_%d", layer)]
+	if !ok {
+		return
+	}
+	v := make([]float32, len(b)/2)
+	hwnpu.DecodeF16(v, b)
+	if s.sinks == nil {
+		s.sinks = map[int][]float32{}
+	}
+	s.sinks[layer] = v
 }
 
 // writeUnattended writes the step's rows of the caches p outputs but attends for no layer of
@@ -1511,6 +1540,7 @@ func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, mas
 			hwnpu.DecodeF16(sm.o[2], a.L)
 			sm.merge.Add(sm.o[0], sm.o[1], sm.o[2])
 		}
+		s.addSink(layer, sm.merge, sm.q)
 		sm.merge.Result(sm.res)
 	}
 	res := make([]float32, heads*d)

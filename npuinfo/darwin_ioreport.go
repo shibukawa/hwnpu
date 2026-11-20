@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -194,7 +195,11 @@ func darwinIOReport(ctx context.Context, interval time.Duration) (*DarwinIORepor
 		}
 		format := int32(ccall(l.ChannelGetFormat, ch))
 		if format == iorFormatSimple && isSoCChannel(e.Group, e.SubGroup, e.Name) {
-			rep.addSoC(e.Group, e.Name, e.Unit, int64(ccall(l.SimpleGetIntegerValue, ch, 0, 0)))
+			v := int64(ccall(l.SimpleGetIntegerValue, ch, 0, 0))
+			rep.addSoC(e.Group, e.Name, e.Unit, v)
+			if v != 0 && strings.Contains(e.Name, "CPU") && (e.Group == "Energy Model" || e.SubGroup == "Energy Counters") {
+				rep.ANEPowerKnown = true // the CPU always spends some: the counters read
+			}
 		}
 		if !isANEChannel(e.Group, e.SubGroup, e.Name) {
 			continue

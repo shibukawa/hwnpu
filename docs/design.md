@@ -7548,9 +7548,277 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 - 絵はバイト単位で同じ。27 部品すべて NPU。`vae_s0` の 1024² の関数は今も端末で仕上げに失敗し (`failedToSpecialize`)、端末でコンパイルする (約 20 秒)
 - **ディスクが少ないと初回が止まる**: 空きが 12〜22 GB のときの初回は、最初のステップが 5〜15 分かかった。macOS の `deleted` が空きを作るために消せるもの (CD_NEAR_LOW_DISK_EVENT) を消し、prebuilt から仕上げたばかりのプログラムが読めなくなる。aned が `Model load failed … isPreCompiledModel=1` を出し、Core AI が OS の中で端末のコンパイルに切り替える (hwnpu には失敗が見えないので、prebuilt で直せない)。22 GB 空いていても消し始めた。初回を測るときは 25 GB 以上空ける
 
-### 16.254 MOSS-SoundEffect の DAC を M1 の Neural Engine にも: snake の sin を級数に、段 3 を 4500 フレームに — 2026-11-19
+### 16.253 Whisper を AMD の NPU に (IRON、`hwnpu-audio transcribe`) — 2026-11-19
 
-16.197 で M3 では DAC の 5 段がすべて Neural Engine に乗ったが、M1 (h13) では 5 段とも GPU に回り、`--allow-off-npu` がないと `generate -m sfx` が失敗した (16.253)。M1 で直した。
+hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU ではエラーだった (変換器が AMD の形を書かないので、モデルごとに IRON の書き出しが要る)。音のモデルの 1 つ目として Whisper large-v3-turbo を IRON に移した (`tools/amd/iron_whisper.py`、docs/amd-npu-models.md 25 節)。
+
+- **2 つのグラフ**: `encoder` (30 秒の窓のログメル、conv1 と conv2、32 層、復号器 4 層の cross の鍵と値) と `decoder` (1 トークン。自己注意の KV キャッシュはグラフの状態に、cross の鍵と値も状態 `xk{i}`、`xv{i}` に置き、ホストが窓ごとに符号器の出力を写す。logits まで)。Core AI の 3 つのプログラム (符号器、cross、復号器) と違い、cross は符号器の最後に入れた
+- **conv2 (stride 2)**: 出力のフレーム t は conv1 のフレーム 2t − 1、2t、2t + 1 を読む。ホストが conv1 の im2col を偶数のフレームを前半、奇数を後半に並べるので、3 つは偶数の行 t、奇数の行 t、奇数の行 t − 1。最後のものは奇数の半分の積を状態に 1 行ずらして書く (その行 0 は conv2 の詰め物で 0 のまま)
+- **復号器**: 1 行の linear は GEMV (float32 で丸める)。注意は MHA の 1 問い合わせ (packed)。鍵は `pos` に書き、`n` = pos + 1 まで読む。トークンと位置の埋め込みはホストが足す (`decoder/embed.bin`、`positions.bin`)。logits の表 (51866 行) は 52224 に詰める
+- **ホスト** (`internal/transcribe`): 今のプログラム (`converted`) と IRON (`ironPrograms`) を `programs` の interface で隠し、窓の切り方、言語の判定、タイムスタンプ、抑えるトークンは同じ道を通る。`hwnpu-audio transcribe` は AMD の NPU が見つかれば (`HWNPU_BACKEND` がほかを指さなければ) `transcribe.PrepareAMD` で書き出しを用意する (手元、取得元、なければ IRON で書き出して取得元へ。FLUX.3 klein の `PrepareAMD` と同じ形)。`-m DIR` で書き出しのディレクトリも
+- **鍵**: models.yaml の whisper-large-v3-turbo に commit と 4 つのファイルの sha256 を固定した (`chat.PinnedRecipe` が要る)
+
+**確かめたこと** (Ryzen AI 9 365、ほかに NPU を使うものなし)
+
+- 復号器はランダムな入力で IRON の参照と cosine 1.000000 (`irongraph`)、1 回 19 ms
+- 符号器は乱数のログメルで IRON の参照と、8 層で cosine 0.9999、24 層で 0.998、32 層で 0.99 (層を重ねるほど広がる。外れる行は散らばっていて、conv2 のずらしの行 0 ではない)。実際の音声では書き起こしが正しいので、乱数の入力が深い層で増幅されていると見た
+- `/usr/share/sounds/alsa/Front_Left.wav` は「Front. Left.」、speech-dispatcher の案内 (29.4 秒) はほぼ正確 (「You can find it in... ...or in your home in .speechdispatcher...」)。3 回つなげた 88.3 秒をタイムスタンプつきの長い形で、3 つの窓とも同じ文と時刻の切れ目
+- 符号器の行列積: HIGHEST (bf16) 1.71 秒、MEDIUM (bfp16) 0.84 秒で、試した音声の文は一字一句同じ。既定を MEDIUM に。復号は 1 秒に 51 トークン (GEMV が 1 トークンに 316 MB を読む)。88.3 秒を 9.0 秒 (実時間の 9.8 倍)
+- 最大メモリ (NPU の drm-total-memory と RssAnon + RssShmem): 2.0 GiB。models.yaml の amd を 2.2 GB に
+- 初回の流れ (取得元なし): チェックポイントを手元に置いて `hwnpu-audio transcribe`。IRON の書き出し 19 秒の後に書き起こした
+
+**未確認・残り**
+
+- 日本語などの英語でない音声 (この機械に音声の素材がない)。Core AI の 65 秒の日本語と同じ素材で比べたい
+- 復号の速さ: 1 トークン 19 ms のほとんどは重みを読む時間 (層 4 つの 210 MB と logits の表 133 MB)。表を 8 ビットにする、logits を候補だけにする、などは試していない。16.259 で 13 ms に (時間は重みを読むより演算の数で決まっていた)
+
+### 16.254 LFM3-Audio-2B の読み上げを AMD の NPU に (IRON、`hwnpu-audio tts`) — 2026-11-19
+
+16.253 の次に、読み上げ (LFM3-Audio-2B-TTS) を AMD の NPU に移した (`tools/amd/iron_lfm3speech.py`、docs/amd-npu-models.md 26 節)。書き出し `lfm3-audio-2b-tts.amd-npu2` は 3 つのプログラムとホストの表からなる。
+
+- **文のモデル** (`text/`、`iron_lfm3tts.py`: `iron_export_lm.py` に `lfm3tts` を足し、MLP と head を q8 にして `--q4` で呼ぶ): LFM3-Audio の `lfm.` の文の部分を `Lfm3` で、最後の norm の出力 (depthformer が読む隠れ状態) を名前つきの状態 `hwnpu_hidden` に書いてから head に渡す。プロンプトの塊 (最後の行) でも decode でも同じ位置に書かれ、ホストは呼び出しのたびに読む (`iron.Model.Buffer`)。`--q4` でトークンの埋め込みはホストの表 (`hwnpu_embed_rows`) になるので、フレームの後の入力 (符号ごとの feedback の行の和、どのトークンでもない) をホストが書ける (`iron.Model.StepRow`: `fillHostTables` が埋め込みの表の代わりにその行を写す)。重みは Apple の lut8 と同じく 8 ビット (MLP と head も q8。4 ビットでは Apple で読み上げが崩れた、16.31)。`iron_export_lm.py` は変えない (チャットのモデルの書き出しの鍵 `amdtools.LMHash` がそのバイトを含むので、変えると取得元の全部のチャットの書き出しが見つからなくなる): `iron_lfm3tts.py` の `main` が MODELS に足し、`iron_lfm3.install_q4` に `mlp="q8", head="q8"` を渡すようにしてから `iron_export_lm.main` を呼ぶ
+- **depthformer** (`depth/`、グラフ): MaskGIT の 1 回。12 の符号帳の行を MHA の 64 行に詰める。頭が 32 値で IRON の MHA は 64 の倍数なので、頭を 64 に [x0..x15, 0 × 16, x16..x31, 0 × 16] と並べる: RoPE の半分ずつ (rotate_half、i と i + 32) が 32 の頭の i と i + 16 の対になり、0 は 0 のまま。64 の上の RMS norm は、重みを √2 で割り eps を半分にすると 32 の上の norm と同じ。値は [v0..v31, 0 × 32] で、o_proj は頭ごとに最初の 32 を読む。logits は符号帳ごとの norm と表の GEMV (2017 を 2048 に詰める)
+- **codec の復号器** (`codec/`、グラフ): 64 フレーム (384 の STFT フレーム) を 1 回に。最近傍の 6 倍は、ホストがフレームの符号のベクトルを 6 行に写して入れる (線形の層の前なので同じ)。短い畳み込み (7 タップ、0 から因果) は、タップごとの積を状態に k 行ずらして書いて足す (16.253 の conv2 と同じ形)。注意は窓 30 (自分を含む) の因果、GQA、RoPE、ゲート
+- **ホスト** (`internal/speech`): 文のモデルを `textModel` の interface にした (`decode.Session` と `ironText`)。プロンプトは `ironText` が自分で読む (`promptReader`、トークンの id のまま塊で)。depthformer と codec は `graphProgram` (グラフの書き出しを `runner.Program` に: meta の `program` が今のプログラムの形を言い、行の繰り返しと詰めた列を外す) なので、MaskGIT、抽選、feedback、重なりのある codec の呼び出し、逆 STFT は同じ道。ホストの表は書き出しの `tables.safetensors` (bf16: 符号の表、mask の埋め込み、feedback の表)
+- `hwnpu-audio tts` は AMD の NPU では `speech.PrepareAMD` (手元、取得元、なければ IRON で書き出して取得元へ)。`-m DIR` で書き出し、`--iron-text DIR` で文のモデルの書き出しだけを (depthformer と codec は Core ML のパッケージを CPU で) も動かせる
+- 鍵のために models.yaml の LFM3-Audio-2B-TTS に commit と 6 つのファイルの sha256 を固定した
+
+**デバイスヒープの断り**: 最初の形 (チェックポイントの表を開いてから文のモデルの書き出しを読む) は、2 回に 1 回ほど `CREATE_HWCTX` が `EINVAL` になった (カーネルのログは `aie2_send_host_buf_msgs` の 64 MiB のデバイスヒープの登録、opcode 0x106、状態 0x4000003。失敗のたびにヒープの番地が同じ)。hwnpu-chat (同じ書き出しを先に読む) は 4 回とも通る。文のモデルを `Load` の最初 (表の 4 GB の mmap の前) に読むようにすると 5 回とも通った。番地の何が断られるのかは分かっていない (amd-xdna2-bench.md の約 125 回に 1 回のものと同じ断り方)
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- depthformer のグラフはランダムな入力で IRON の参照と cosine 0.99994、codec は 0.99997 (最大の差 1.19 は位相の列の 4 行。振幅の列は 0.125 まで)
+- 段ごとに置き換えて: 文のモデルだけ NPU (depthformer と codec は CPU のインタプリタ) で、同じ文が Whisper (16.253、AMD) で一字一句同じに書き起こせる。全部 NPU でも同じ。CPU のインタプリタだけの参照も同じ文
+- 英語 4 文 (女声、男声)、日本語 1 文 (「今日はいい天気ですね。散歩に行きましょう。」は「今日はいい天気ですね散歩に行きましょう」) が書き起こしで元の文になる
+- 時間: 日本語の 5.12 秒 (64 フレーム) を 11.8 秒 (実時間の 0.43 倍)。フレームごとに文のモデル 107 ms (q8 の 2.0 GB を読む 1 ステップ)、depthformer の 3 回で 72 ms (1 回 24 ms)、codec は 64 フレームで 72 ms。CPU のインタプリタは depthformer 1 回 25 ms、全部 CPU で 4.16 秒に 42.5 秒
+- depthformer の 1 回 24 ms の内訳: depth_linear の GEMV (12288 × 2048) 2 ms、1 層 6 ms (MLP 3 ms、注意 3.5 ms)、logits の 12 の GEMV 3 ms。64 行の GEMM は重みを読む速さで決まる (1 層 32 MB を約 6 ms)。MEDIUM (bfp16) は行を 256 の倍数にする要があり、256 行では HIGHEST 11.6 ms、MEDIUM 9.5 ms で 64 行より遅い。logits を 1 つの GEMM にすると 22 ms (出力 3 MB)
+- 最大メモリ: 2.6 GiB。models.yaml の amd を 2.9 GB に
+- 初回の流れ (取得元なし): 書き出し 52 秒の後に読み上げた
+
+**残り**
+
+- 速さ: 文のモデルの head (128000 × 2048 の q8、0.27 GB) は読み上げでは読まない logits のため。depth_linear はフレームの 3 回で同じなので 1 回でよい (1 フレーム 4 ms)。depthformer の重みを q8 に
+- LFM3-Omni-2B の読み上げ (`model.depth_decoder`、別の表の名前) は対象外
+
+### 16.255 MOSS-SoundEffect を AMD の NPU に (IRON、`hwnpu-audio generate -m sfx`) — 2026-11-19
+
+16.254 の次に、効果音 (MOSS-SoundEffect v2.0) を AMD の NPU に移した (`tools/amd/iron_moss_sfx.py`、docs/amd-npu-models.md 27 節)。internal/sfx のプログラムと同じ入出力のグラフを書き出し、ホストの道 (文の符号化、時刻の埋め込みと変調、CFG の Euler、DAC の段の呼び方) はそのまま使う。
+
+- **グラフをプログラムに** (`iron.GraphProgram`、16.254 の speech の adapter を `internal/llm/iron` に移した): 書き出しの meta の `program` が今のプログラムの形 (`[1, 1500, 128]` など) を言い、グラフの詰めた行と列 (1500 → 1536 のフレーム) を入れるときに 0 で埋め、出すときに外す。1 次元の入力 (DiT の `mod`) はそのまま。呼び出しごとの値は meta の `values`
+- **文の符号器** (`text/`): Qwen3-1.7B の 28 層を 256 行に (因果、RoPE は rotate_half、q と k の頭ごとの norm、SwiGLU は float32 の sigmoid の `iron_silu`)。4 層ずつ 1 コマンド。`--text bf16` (sfx の fp16) か `q8` (sfx の lut8。`TextFP16` の 5 層は bf16、`iron_dit.text_param`)。最後の norm とトークンの埋め込みはホスト (`host/text.safetensors`)
+- **DiT** (`dit-context/`、`dit-blocks-N/` の 6 組): Core ML の版と同じく残差を `DitScale` (4) で割った形 (patch_embedding と cross の出力を 1/4 に。ゲートはホストの `mod` が割ってある)。bf16 は fp16 の範囲の工夫 (`maxScaled`) が要らない。q と k の RMS norm は 1536 の全体、RoPE は Wan の隣り合う対 (IRON の RoPE の `two_halves=False`)、自己注意は `iron_anima.dit_attention` (ImageMHA、128 の頭) で鍵 1500 (`nk`)。cross の鍵と値は 1536 行の状態の最初の 512 行に書いて `nt` = 512 で区切る (MHA の鍵の行は問い合わせの行以上: `kv_len (512) must be ... at least seq_pad (1536)`)。GELU は exact (tanh の近似のチェックポイントに IRON の tanh のカーネルより近い)。行列積は MEDIUM (bfp16、Anima の DiT と同じ)。1 ブロックが 1 コマンド
+- **DAC の復号器は CPU**: Snake の sin² が IRON にない (sin も cos もない) ので、Core ML の段 (`DACStages`、fp16) を `PrepareAMD` が書き出しの `dac/` に変換し、CPU のインタプリタで回す。10 秒の音で数秒
+- `hwnpu-audio generate -m sfx` は AMD の NPU では `sfx.PrepareAMD` (手元、取得元、なければ IRON で書き出して DAC を変換し、取得元へ)。書き出しには `host/` (ホストの表)、tokenizer と文の符号器の config も入れ、チェックポイントなしで動く
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- グラフはランダムな入力で IRON の参照と: dit-context cosine 0.99995、dit-blocks-0 (5 ブロック) 0.99994、文の符号器 0.9991 (最大の差は大きな活性の行)
+- CPU のインタプリタの Core ML (文の符号器と DiT を fp16 で変換) と、同じ犬の吠える声のプロンプト (16 トークン) で: 文の符号器の出力 cosine 0.99963 (相対 RMS 2.8 %)、同じ context と種 1 のノイズで最初の速度 cosine 0.99978 (相対 RMS 2.1 %。sfx.Formats の記録では Mac の fp16 の DiT が参照から 2.1 %、lut8 が 2.7 %)
+- 時間: 1 ブロック 41 ms、速度 1 回 (30 ブロック) 1.24 秒、CFG の 1 ステップ 2.8 秒。5 秒の音を 25 ステップで 1 分 09 秒、10 秒を 10 ステップで 35 秒 (DAC の CPU を含む)。文の符号器 1.4 秒
+- 初回の流れ (取得元なし): IRON の書き出し 53 秒、DAC の 5 段の変換の後に生成した
+- 最大メモリ: 10 秒で 4.9 GiB (DiT の 6 組の固定 2.5 GB と CPU の DAC)。models.yaml の amd を 5.1 GB に
+
+**残り**
+
+- DAC を NPU に (Snake の sin² の float32 のカーネル、`kernels/silu_f32.cc` の形で)。dilation のある畳み込みと転置畳み込みは行のずらしと GEMM で書ける (16.258 でした)
+- 音は聞いて確かめていない (この機械に音を聞く手段がない)。数値は CPU の fp16 の版と比べた
+- lut8 の版 (`moss-soundeffect:8g`、文の符号器を q8) の最大メモリ
+
+### 16.256 Magenta RealTime 2 の SpectroStream の復号器を AMD の NPU に (IRON、`hwnpu-audio generate`) — 2026-11-19
+
+音のモデルの最後に、音楽 (Magenta RealTime 2 small) を AMD の NPU で動くようにした。CPU のインタプリタだけでは 4 秒に 28 秒かかり、そのうち 23 秒が SpectroStream の復号器、言語モデル (temporal と depth) は 1 フレーム約 50 ms だった。そこで復号器を IRON のグラフにし (`tools/amd/iron_magenta.py`、docs/amd-npu-models.md 28 節)、言語モデル、MusicCoCa、符号器は Core ML の版を CPU で回す。
+
+- **形**: 行が (時間, 周波数)、列がチャンネル。畳み込みは余白つきの格子 (上に 0 の行、左右に 0 の列) を IRON の Copy の tap で im2col し、1 つの GEMM に。DMA の一番内側は 1023 ワードまでなので、1024 チャンネルの 3 タップはタップごとに列の区画へ写す。GEMM の行は 32 の倍数なので、時間の区切りは最後のものが T を越えてよい (格子の下に 40 行の 0)
+- **転置畳み込み**: 出力の時間と周波数の位相 (ストライドの剰余) ごとに、入力の上の普通の畳み込み (Flax の ConvTranspose の重みを両方の軸で反転して位相の分を取る) を計算し、出力の位相の場所に tap で散らす。時間は因果 (最後の kt − st を切る)、周波数は "same" (ft / 2 を前に)。近傍の拡大 (shortcut) も同じ散らし
+- **マスクなし**: Core ML の版は、窓の曲より前のフレームを、畳み込みの入力ごとにマスクで 0 にする。グラフはホストが窓の曲の最初のフレームを行 0 に置くので、格子の上の 0 の行がその 0 になり、同じ値になる (時間は因果なので、後ろの余った行は前に効かない)。窓は 48 フレーム (Go の 41)
+- **ELU**: IRON にないので float32 のカーネル (`kernels/elu_f32.cc`、`iron_elu.py`: exp(min(x, 0)) − 1 + max(x, 0)、exp は −30 で切る)。fp16 の版の値の割り算 (`decoderScales`) は bf16 では要らない
+- **ホスト** (`internal/music`): `OpenAMD` が復号器のグラフを Core ML の版と同じ入出力の step にする (`ironDecoder`: x のチャンネル先の窓をマスクの最初の 1 から行に、出力を (2, 2, 4W, 480) の並びに戻し、`DecoderOutScale` で割る)。言語モデルなどは `dev` nil で CPU。`hwnpu-audio generate` は AMD の NPU では `music.PrepareAMD` で書き出しを用意し、CPU の部分は NPU の検査 (`checkNPU`) に掛けない
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- ELU のカーネルは IRON の参照と一致 (−1e6、−30、0 付近、1e6 を含む乱数、cosine 1.000000)
+- 復号器のグラフは乱数の入力で IRON の参照と cosine 0.99998、1 回 (新しい 25 フレーム、1 秒分) 1.2 秒 (CPU は 5.7 秒)
+- 同じ `--codes` と種で、CPU だけの版の 4 秒と比べて波形の SNR 27.8 dB、cosine 0.9992 (言語モデルは同じ CPU の版なので符号は同じ、違いは復号器だけ)。文の曲調 ("smooth jazz") も MusicCoCa (CPU) から
+- 時間: 4 秒を 13 秒 (復号器 6.4 秒)、8 秒を 24 秒。実時間の 0.3 倍 (全部 CPU では 0.14 倍)
+- 初回の流れ (取得元なし): IRON の書き出し 13 秒 (89 MB)
+- 最大メモリ: 8 秒で 2.5 GiB。models.yaml の amd を 2.7 GB に
+
+**試してやめたこと**: 復号器の時間の 38 % は出力の 7 × 7 の畳み込み (2 チャンネル、半分ずつ 226 ms) で、im2col の写しが半分で 578 MB になる。FLUX の VAE の `GridGEMM` (格子を写さずに A として読む) は、単独の 7 × 7 ならコンパイルできたが、このグラフの中では IRON の GEMM の前置き (`rtp.write`) が "Operand 0 of operation aiex.npu.rtp_write must be a Value" で落ちた。原因は調べていない
+
+**残り**
+
+- 言語モデルを NPU に (temporal は 12 層の窓 41 の KV キャッシュと sink、depth は 12 ステップの 2 層。どちらも 1 行の GEMV): 1 フレーム 66 ms のほとんど。16.259 で試し、CPU と同じ速さで使わない
+- 出力の層の im2col を減らす (時間のタップだけ im2col にし、周波数のタップは出力の列で持って足す)。16.259 で済み
+- MusicCoCa の音の側と SpectroStream の符号器 (`--continue`) は CPU のまま
+
+### 16.257 音のモデルの AMD の書き出しを取得元へ (UGREEN の NAS) — 2026-11-19
+
+16.253〜16.256 の最終の tools/amd で、手元の試しの書き出しを消して 5 つを初回として作り、書き戻す取得元 (NAS、WebDAV) に置いた。
+
+| 種類 | 置き場所 | GB |
+|---|---|---|
+| iron-whisper | whisper-large-v3-turbo/amd-xdna2/whisper-large-v3-turbo.amd-npu2/v0-12b61cd8 | 1.81 |
+| iron-lfm3speech | LFM3-Audio-2B-TTS/amd-xdna2/lfm3-audio-2b-tts.amd-npu2/v0-3a5fe2ac | 3.13 |
+| iron-moss_sfx | MOSS-SoundEffect-v2.0/amd-xdna2/moss-soundeffect-v2.0.amd-npu2/v0-e553fdcd | 6.63 |
+| iron-moss_sfx | MOSS-SoundEffect-v2.0-lut8/amd-xdna2/moss-soundeffect-v2.0-lut8.amd-npu2/v0-4db8e6f6 | 5.55 |
+| iron-magenta | magenta-realtime-2-small/amd-xdna2/magenta-realtime-2-small.amd-npu2/v0-b9fbeae2 | 0.09 |
+
+- MOSS-SoundEffect-v2.0-lut8 は `like` で sha256 を引き継がない (別のリポジトリのファイルかもしれないので) ため鍵がなく (`chat.PinnedRecipe` が nil)、置かれなかった。models.yaml の lut8 の版に同じ 2 つの sha256 を書いた
+- 空の根 (`HWNPU_CACHE` を新しいディレクトリに、`HWNPU_IRON_ENV` をないものに、取得元は読むだけ) で: Whisper は書き出し 1.81 GB を取って 42 秒で書き起こした。読み上げは 2.75 GB (詰めたもの) を 62 秒 (44 MB/s) で取り、チェックポイントなしで読み上げた (Whisper で元の文)。効果音は 6.44 GB を 146 秒で取り、チェックポイントなしで生成した (書き出しの `host/` と `dac/` で足りる)。音楽は復号器の書き出しのほかに、言語モデルの Core ML の版のためにチェックポイントが要る
+- lut8 の版の最大メモリ: 10 秒で 4.9 GiB (fp16 の版と同じ。DiT と CPU の DAC が大半)。models.yaml の amd を 5.1 GB に
+- 同じ頃、Mac のセッションが音のモデルの Core AI の書き出し (whisper、tts、MOSS の text、dit、dac、magenta) を取得元に置いていた
+
+### 16.258 MOSS-SoundEffect の DAC の復号器を AMD の NPU に (Snake の sin を float32 の級数で) — 2026-11-19
+
+16.255 で CPU に残した DAC の復号器 (5 段) を IRON のグラフにした (`tools/amd/iron_moss_dac.py`、docs/amd-npu-models.md 27.2.1)。`iron_moss_sfx.py` が `dac-N/` として一緒に書き出し、`hwnpu-audio generate -m sfx` は AMD の NPU では文の符号器から復号まで全部 NPU で動く。
+
+- **Snake** (`kernels/snake_f32.cc`、`iron_snake.py`): IRON には sin も cos もない。internal/sfx の Intel の NPU の段 (以前は Core ML の Neural Engine の段も) と同じく、αx を π で縮めて (n = round(αx / π) を 1.5 × 2²³ の足し引きで、r = αx − nπ を π の 3 つの bf16 の肢で)、sin r を r¹¹ までの Taylor 級数で計算する。ただしすべて float32 (`f32_split.h` の肢の積、最後に bf16 へ 1 回丸める)。チャネルごとの α と 1/(α + 1e-9) は bf16 の 2 つの肢で、`RowAffine` と同じ RowBroadcast の行に入れる。fp16 の版にあった小さな α (最初の DecoderBlock に 8e-6) の級数への切り替えは、float32 では範囲内なので要らない。本物の Snake (float64) と比べた差は bf16 の丸めの範囲 (相対 0.39 % まで。|x| = 400、α = 10 の行を含む)
+- **マスクをやめる**: Core ML の段は、畳み込みの入力ごとにマスク (`m`、`mo`) で曲の外のフレームを 0 にする。グラフの畳み込みは、余白つきの状態の上下の 32 行の 0 を読むだけ。それと同じ値になるように、ホスト (`sfx.amdDAC`) が窓を置く: 窓は曲の最初のフレームから始めるか、捨てる halo の分だけ前から読む。曲の終わり (30 秒) でも同じで、窓をそこで終える。halo は `DACStages` のもの
+- **形**: 時間が行、チャネルが列 (bf16)。畳み込みは IRON の Copy の tap による im2col (tap j は行 t + jd − pad、膨張もそのまま) と GEMM。2048 チャネル (stage 0 の入り口) は 1024 ずつの列の区画に分ける (Snake の行と DMA の一番内側の 1023 ワードのため)。転置畳み込み (ストライド s、核 2s) は、入力のフレーム q − 1、q、q + 1 の 3 タップの畳み込みで s × 出力チャネル (位相が先) を出す。その行がそのまま出力のフレーム qs..qs + s − 1 になる。重みのノルムはホストで畳む。最後の段の出力は出力の層の畳み込み (1 チャネルを 64 に詰める) で、tanh はホスト
+- **GEMM の向き**: IRON の GEMM は N を 64 ずつ配列の 8 列に分ける。64〜256 チャネルへの GEMM は 1〜4 列しか使わなかった。512 チャネル未満へは、重みを A、im2col を列優先の B にして、C を列優先で書く (メモリでは同じ (行, チャネル))。stage 4 の 1 回が 46 ms から 33 ms に
+- **精度**: GEMM は全部 HIGHEST (bf16)。MEDIUM (bfp16) では CPU の段との SNR が 25.8 dB に下がり (HIGHEST は 34.6 dB)、部分和を float32 にしても (`accumulate_f32`) 同じだった (入力の bfp16 の誤差)。時間も 2 割しか縮まない。stage 2〜4 だけを MEDIUM にすると 32.3 dB で、4 % しか縮まない
+- **窓の大きさ**: 1 回の入力フレームは stage 0 から 768、2048、2048、5120、8192。最初は Core ML の段に近い 1024、3328、4096、5376、8192 だったが、短い音では前の段の計算の 4〜6 割が捨てる分だった。GEMM の行は 256 (配列の 4 行 × 64) の倍数で区切る: stage 0 を 544 フレーム (1088 行の区切り) にすると、768 フレーム (1024 行) より 1 回が遅かった (410 ms と 287 ms)
+- 書き出しの版 (`sfx.AMDExportVersion`) を 2 に。v1 (Core ML の `dac/` を CPU で) の書き出しは手元にあっても使わず、作り直す
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- Snake のカーネル、各段のグラフは乱数の入力で IRON の参照と一致 (Snake は差 0、段は cosine 0.999996 以上)
+- 復号器全体 (`TestAMDDAC`): 種 7 の標準正規の潜在から 5 秒を、CPU のインタプリタの Core ML の段 (fp16 で変換) と比べて SNR 34.6 dB、cosine 0.99983
+- 時間: 5 秒の音の復号 1.7 秒 (CPU 5.7 秒)。段ごとの 1 回は 287、175、61、52、33 ms で、5 秒の音に 1、1、5、8、15 回。stage 0 と 1 は HIGHEST の GEMM で約 750 GFLOPS の計算律速。Snake は 100 万値に 1.4 ms で、配列の 1 列あたりのコアを 2、4 にしても変わらなかった
+- `hwnpu-audio generate -m sfx --duration 5s --steps 25`: 1 分 06 秒 (CPU の DAC のときは 1 分 09 秒)。書き出しは 28 秒 (IRON のカーネルが揃っていれば)
+- 最大メモリ (NPU の固定と処理の、10 秒): fp16 の版 4.71 GiB、lut8 の版 4.75 GiB (CPU の DAC のときは 4.9 GiB)。models.yaml の amd を 5.0 GB に
+- 取得元 (NAS) に置いた: `MOSS-SoundEffect-v2.0/amd-xdna2/moss-soundeffect-v2.0.amd-npu2/v0-f04d491b` (6.3 GB) と `MOSS-SoundEffect-v2.0-lut8/.../v0-2a1a87b3` (5.3 GB)。途中の tools/amd で作った `v0-960f0d06` も置かれたが、今の tools では使われない
+- 空の根 (`HWNPU_CACHE` を新しく、`HWNPU_IRON_ENV` をないものに、取得元は読むだけ) で、fp16 の版を取って 5 秒の音を生成した (取得 2 分 46 秒、チェックポイントなし)
+
+**残り**
+
+- 音は聞いて確かめていない (この機械に音を聞く手段がない)。数値は CPU の fp16 の版と比べた
+- Snake を前後の GEMM に融合していない (今は Snake のたびに状態を読み書きする。stage 4 の 33 ms のうち約 10 ms)。16.259 でカーネルを速くした (融合はしない)
+
+
+### 16.259 音のモデルの AMD の残り: Whisper の復号、Snake、Magenta の出力の層と言語モデル、MEDIUM — 2026-11-19
+
+16.253、16.256、16.258 に残した項目を片づけた。
+
+- **Whisper の復号器** (`iron_whisper.py`): 1 トークン 19 ms → 13 ms (51 → 78 トークン/秒、88.3 秒の英語の書き起こし 9.1 → 6.8 秒)。測ると重みを読む時間ではなく演算の数で決まっていた (LayerNorm 1 つ 146 µs、演算 1 つ約 0.13〜0.15 ms。4 層の内訳は自己注意 5.9、cross 6.7、MLP 4.3、logits 2.3 ms)。したこと:
+  - 重みを q8 に (`--decoder bf16` で元に)。`iron_q4` の q8 の GEMV は K が 512 の倍数に限っていたが、ブロックの並びは 256 の in-feature ずつで、カーネルも 256 ずつ読むので、q8 は 256 の倍数に広げた (Whisper の 1280。q4nx と q6 は DequantBFP の並びのため 512 のまま)。q8 だけでは 17.5 ms
+  - MHA の `num_pipelines`: 渡さないと 1 本で、20 の頭を順に回していた。packed の 1 問い合わせの上限 4 で、cross の MHA が 4 層で 3.9 → 2.0 ms
+  - q、k、v を 1 つの GEMV に (k の bias は 0)、out_proj と fc2 の GEMV が残差を足す (`linear_add`): 1 層の演算が 5 つ減る
+  - 文と時刻の切れ目は bf16 の復号器と同じ (speech-dispatcher の案内の最後の句点 1 つだけ違う)。`QGEMVAdd` の参照は入力を宣言の順 (サブクラスのベクトルが先) で受けるので、名前で受けるように直した (`--check` で落ちていた)
+- **Snake のカーネル** (`kernels/snake_f32.cc`): 100 万値 1.42 → 0.59 ms (RowAffine は 0.29 ms)。計算律速だった (カーネルの積が約 60)。後ろの GEMM は bf16 を読むので、要る精度は x と sin²/α の大きい方の bf16。範囲の縮小 (αx、v/π、nπ) は肢のまま float32 の精度に、級数 (r⁷ まで) は r の上の肢の bf16 の積で、最初の項 r と sin r、sin² だけ 2 つの肢。numpy の模型 (`iron_snake.kernel_ref`、IRON の参照もこれ) で 2e6 の乱数を float64 と比べ、大きい方の項に対する誤差は平均 0.0013、最大 0.014 (bf16 に丸めるだけで 0.0012、0.0066)。DAC の 5 秒の音の復号 1.71 → 1.50 秒、CPU の段との SNR 34.6 → 34.5 dB
+- **Snake を GEMM に融合しない**: 後ろは 7 タップの im2col (Snake を写しの中ですると 7 倍の計算) か 1 × 1 の GEMM で、IRON の GEMM には任意の後処理を入れる口がない。カーネルを速くするほうにした
+- **DAC の MEDIUM**: チャネルごとの尺度 (2 の冪、Snake の出力と重みに振り分けられる) で bfp16 の 8 値のブロックの大きさを揃えても、stage 0〜2 の実際の活性で GEMM 1 つの誤差 (0.5〜1 %) が平均 5 % しか減らなかった。仮数 7 ビットの丸めそのもので、ブロックの中の大きさの違いではない。上と下の 2 つの bfp16 に分けると MEDIUM の 2 倍の計算で、HIGHEST より遅い。HIGHEST のまま
+- **Magenta の出力の層** (`iron_magenta.py`): 7 × 7 の畳み込み (64 → 2) の im2col を時間の 7 タップだけにし (K 3136 → 448、写しが半分で 578 → 82 MB)、周波数の 7 タップは GEMM の列 (タップ e、部分 o を列 2e + o) で持つ。周波数を両側 3 つずつ広げた画素の上で計算し、タップごとにずらして写して足す (`out_sum`)。出力は (192 × 480, 2) に (ホストは列の数を長さから読むので変えなし)。出力の層 226 → 54 ms × 2、復号器の 1 回 1.2 → 0.86 秒。古い版の復号器との波形の SNR 44.7 dB (同じ種、同じ符号)。4 秒の音楽 16.6 → 15.4 秒
+- **Magenta の言語モデルを NPU に**: `tools/amd/iron_magenta_lm.py` で temporal と depth の 1 ステップをグラフにした (q8、q の次元ごとの尺度を重みに畳み、sink の鍵はその尺度で割る。鍵と値の輪は状態に、行 0 が sink)。IRON の参照と cosine 0.99974 (temporal 12 層)、0.99998 (depth)。temporal 34 ms (CPU 35〜39 ms)、depth 4.8 ms × 12 = 58 ms (CPU 56〜64 ms) で速さは同じ。これも演算の数で決まる (temporal の 1 層 23 演算で 3.0 ms)。SpectroStream の復号器は今、言語モデル (CPU) の裏で 1 秒ずつ NPU で動くので、言語モデルを NPU に移すと NPU を取り合って全体が遅くなる。CPU のままにして、書き出しは測るために残す
+- **取得元の整理**: v1 の MOSS の書き出し 2 つ (`v0-e553fdcd`、`v0-4db8e6f6`、12.2 GB) と、書き込みの途中の印 `.writing-` 3 つ (LFM3-Audio と MOSS と Whisper の表) を `hwnpu-dev cache gc` で消した
+
+**残り**
+
+- IRON の full ELF の演算 1 つの固定費 (約 0.13〜0.15 ms)。小さいモデルの 1 トークン (Whisper の復号器、Magenta の言語モデル) はこれで決まる。下がれば `iron_magenta_lm.py` で測り直す
+- Whisper の復号器の LayerNorm を GEMV に融合する (12 + 1 個、約 1.9 ms)。今の `QGEMVQKV` の正規化は RMS で、LayerNorm (平均を引き bias を足す) ではない
+
+### 16.260 `hwnpu status -w` を top のように: 固定の領域と書き換える領域、CPU・GPU・NPU の負荷とメモリ — 2026-11-20
+
+- 端末に出す `-w` は代替画面 (`\x1b[?1049h`) を使い、変わらないもの (版、機械、動かす NPU、デバイス、キャッシュと層: `writeFixed`) を上に 1 度だけ書き、その下 (時刻の帯、負荷、NPU の状態、使っているプロセス: `writeLive`) だけを毎回カーソルを動かして書き換える。行は端末の幅で切り (折り返すと下がずれる)、画面の高さを超える分は出さない (スクロールすると固定の領域が消える)。端末の大きさが変わったら全部を書き直す。Ctrl-C で元の画面とカーソルに戻す。間隔は読む時間を含めて `-w` のとおり。端末でないとき、`--json`、Windows (VT を有効にしていない) は今までどおり繰り返して書く
+- 負荷 (`internal/sysload`、root なし): Linux は `/proc/stat` の差分と `/proc/meminfo` (MemTotal − MemAvailable)、amdgpu の sysfs (`gpu_busy_percent`、`mem_info_vram_*`、`mem_info_gtt_*`)。macOS は `host_statistics` (CPU の tick) と `host_statistics64` (Activity Monitor の「使用済みメモリ」: アプリのメモリ + 固定 + 圧縮)、GPU は I/O Registry の IOAccelerator の PerformanceStatistics (`Device Utilization %`、`In use system memory`)。NPU は Linux が gpu_metrics の IPU の忙しさと電力、プロセスの写像の合計、macOS が IOReport の電力と ANE の driver の wired メモリ (`mem.NPUWired`)。Windows は CPU と GPU をまだ読まない。`--json` の `load` にも入る
+- macOS では「device: not opened (--wake …)」を出さない (開いても起こすものも分かることも増えない)
+- NPU を使っているプロセスは表に (PID、名前 16 文字で切る、CPU%、メモリ、GPU%、GPU のメモリ、NPU%、NPU のメモリ、`--watch` と一度だけの表示ではコマンドライン)。`-` は分からないもの。読み方 (`sysload.ProcSampler`、前回からの差分で %): Linux は `/proc/PID/stat` と `statm`、DRM の fdinfo (`drm-engine-*`、`drm-resident-*`、古い `drm-memory-*`、`drm-client-id` で重ねない) の amdgpu を GPU に、amdxdna と intel_vpu を NPU に。macOS は `proc_pid_rusage` (時間は `mach_timebase_info` で ns に、メモリは Activity Monitor の footprint に wired を足したもの: mlock したファイルのページは footprint に入らない。gpt-oss-20b の専門家を 6.4 GB 固定した hwnpu-chat で footprint 0.53 GB、wired 6.41 GB、resident 9.53 GB (resident は固定していないページキャッシュと共有ライブラリも数え、スワップと圧縮は数えない)。wired は JSON の `wired_bytes` にも。他のユーザーのプロセスは root でないと読めない) と、IOAccelerator の下の user client の `AppUsage` の `accumulatedGPUTime` (プロセスごとの GPU のメモリは出ない)。ANE にはプロセスごとの時間がないので macOS の NPU% は `-`。Windows の NPU% は今までの性能カウンター
+- macOS の NPU の行の直し (M3、macOS 27.2、gpt-oss-20b の生成中に IOReport を全部見て): (1) エネルギーの値は root でないと全部 0 (`Energy Model` の `ANE` も `CPU Energy` も、CPU が 260 % のときでも)。「0.00 W」をやめ、CPU のエネルギーも 0 なら読めないとして「power not readable without root (sudo powermetrics …)」(`DarwinIOReport.ANEPowerKnown`)。(2) NPU% は `PMP`/`AF BW`/`ANE0 RD` (電源管理の、ANE の読み出しの帯域の分布、1〜32 GB/s の 32 区分、M3 で約 0.23 ms に 1 回) のいちばん下の区分の外にいた時間の割合 (`ANEBusyPercent`、メモリを読んでいた時間の推定。生成中 39〜51 %)。プロセスごとの時間は無いので、プロセスの NPU のメモリの 9 割以上を持つプロセスの NPU% に (`npuHolder`: 日本語入力や Siri も数 MB 持つので、1 つだけの条件ではモデルに付かなかった)。(3) 割り込みは `ane 0` 決め打ちだった (M3 は `ane 4`): `ane N` を足す (生成中 899 calls/s)。(4) M3 の `H11ANE` には `FirmwareLoaded` が無く、いつも「firmware not loaded」と出ていた: あるときだけ (`FirmwareKnown`)。`ANE`/`IOP State` は読み込まれている間ずっと `Running` で、負荷には使えない。`AMC Stats` の `ANE RD` は M3 に無い (読みの GB/s は出ない)
+
+### 16.261 AMD の MoE の専門家を一部だけ NPU に置く: 使用回数、置き場 (`--expert-places`)、デコードのルーティングをホストで (`--host-route`) — 2026-11-20
+
+docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常駐」(16.179 の後の Mac の仕事、improvements.md) を AMD の NPU (Ryzen AI 9 365) に持ってきた。NPU が読めるのは固定したバッファ (バンク) だけなので、Mac のようにページキャッシュから直接は読めない。置き場 (place) を決まった数だけバンクに持ち、選ばれて置き場にない専門家をホストがコピーする (handoff の A の形)。
+
+**使用回数を数える** (`iron.Model.CountExperts`、`internal/llm/iron/usage.go`)
+
+- プロンプト: ホストが選ぶ (`moeHostRouteMX4`、Qwen3.6 の `moeHostRoute`) のでそこで数える
+- デコード: 経路の段 (T) は次のコマンドのスクラッチパッド (feedback の引数のバッファ) に専門家の位置の語を「番号 × 大きさ + 基点」で書く。トークンの後にその語を読み戻して割る (fed コマンドの語の式は manifest にある)。スクラッチパッドは 1 コマンドにつき別のバッファなので、1 トークン 1 コマンドの形 (読めなかった、16.179) と違って全部の層の語が残っている。費用は測れない (20.3 トークン/秒のまま)
+- hwnpu-chat のアプリの統計 (`~/.cache/hwnpu/models/<モデル>/experts-usage/<キー>.bin`) と `HWNPU_MOE_DEBUG=usage=FILE` に Mac と同じ形 (`experts.Usage`) で書く。`tools/moeusage/collect.sh` は書き出しのディレクトリをそのまま受ける
+- gpt-oss-20b の 110 プロンプト (400 トークン、48 分、1 層 213,060 回の選択): Mac の統計とほぼ同じ。最少 225 回 (Mac 147)、分野の中で上位 16 個が 74〜89 % (Mac 74〜90)、全分野を均等に混ぜて 81 % (同じ)、ほかの分野で選んだ 16 個はコンピュータ 58 %・数学 62 % (Mac 59・63)、芯は 140 個で 30〜40 % (Mac 141 個、31〜41)。芯の集合は 131 個が同じで、違う 19 個は 1/32 の線の近く。注意が q8、専門家が同じ mx4 なので選ばれ方は同じで、models.yaml の `experts_core` (モデルの属性) をそのまま使う
+
+**置き場** (`tools/amd/iron_export_lm.py --expert-places P`、`internal/llm/iron/pool.go`)
+
+- 書き出し: 層の専門家の表 (gate-up と down) を専門家 32 個分でなく P 個の置き場に (`iron_gptoss_moe.EXPERTS` = P、プロンプトのパスの固定のスロットも P 個 + 溢れの 8 個)。全部の専門家の表は `experts.bin` に (層ごとに全専門家の gate-up、続けて全専門家の down: 表の並びのまま)。バンクの置き場はゼロで、像のファイルではゼロの塊を穴にする (疎なファイル)。manifest の `experts_pool`
+- 読み込み: `PlaceExperts` (hwnpu-chat が `experts.Placement` を渡す) で層ごとに芯、アプリの統計の点数、番号の順に P 個をコピーする (16 個で 1.5 s)
+- デコード: 経路の段が書く語は「番号 × 大きさ」なので、置き場の表では番号 ≥ P がはみ出す。そこで 1 コマンドずつ出して待ち、fed コマンドの前に、語を読み戻して選ばれた 4 個を見て、置き場にない専門家を最近使われていない置き場 (同じトークンで選ばれたもの、芯は最後) へ `experts.bin` からコピーし、語を置き場の位置に書き直してから出す。カーネルは変えていない (語を表で引く形もありうるが、外れを見つけるにはどのみち層ごとに止まる)
+- 点数: 使うたびに +1、1 トークンごとに 0.995 倍 (半減は約 140 トークン)。統計の割合を定常の点数 (4 × 割合 / (1 − 0.995)) として最初に入れる
+- プロンプト: ホストの経路 (`poolPasses`) で、置き場にある専門家を最初のパスに、ない専門家は、後のパスで要らない専門家の置き場へパスの前にコピーする。1 パスに入らないもの (溢れのスロット 8 個を越える) は次のパスへ。256 トークンの塊は P = 16 で 2 パス
+- コピーは 1 専門家 14.3 MB をページキャッシュの写像からバンクへ、4 つの goroutine で写して clflush (`SyncToDevice`)。CPU だけで測ると 1.1 ms (2〜4 スレッド、NPU が別の仕事をしている間)。NPU が読むのは 0.26 ms なので、外れ 1 回は約 4 倍
+- 確かめ: `HWNPU_MOE_DEBUG=check` は詰めた後と閉じる時に全部の置き場を `experts.bin` と比べる (0 個が違う)。P = 24 と 16 の答え (2248 トークンのプロンプトと 200 トークン) は全部固定の書き出しと 1 文字ずつ同じ (重みは同じで、置く場所だけが違う)
+
+**結果** (gpt-oss-20b、`ironlm` ではなく hwnpu-chat、同じ文、プロンプト 74 トークンで 300 トークン)
+
+| | 固定する NPU のバッファ | デコード | 外れ (デコードの選択のうちコピーしたもの) | プロンプト 2248 トークン |
+|---|---|---|---|---|
+| 全部 (32) | 12.22 GiB | 20.2 トークン/秒 | — | 15.5 s |
+| 1 コマンドずつ待つだけ (`HWNPU_IRON_SYNC=1`) | 12.22 GiB | 19.7 | — | — |
+| P = 24 | 9.44 GiB | 19.0 (2248 の後 17.9) | 2.4 〜 2.6 % | 17.1 s |
+| P = 16 | 6.90 GiB | 17.2 (2248 の後 16.9) | 9.8 〜 9.9 % | 15.2 s |
+
+- 1 コマンドずつ待つ費用は 1 トークン約 1.2 ms (24 回)。外れはトークンの間の近さで静的な割合よりずっと少ない (上位 16 個の静的な当たりは 81 %、置き場の当たりは 90 %)
+- P = 16 のプロンプトが全部の書き出しより速いのは、1 パスで流す固定のスロットが 32 → 16 個で、2 パスとコピーを足しても同じくらいだから
+- `experts.bin` はページキャッシュに残る (RssFile 約 10 GB、ほかが使えば OS が落とす)。落ちた後の外れはディスクから読む
+- Mac (16 GB の M3) の 6.4 GB 固定 17.4〜18.3 トークン/秒と同じくらい。AMD では固定のメモリ 5.3 GiB を返して 15 % 遅い
+- 測るとき: ほかのプロセスが NPU を使っていると、1 コマンドずつ待つ形はそのたびに NPU を譲るので大きく遅くなる (collect.sh と同時に動かして 4 トークン/秒。待たない形も 9.4)
+
+**デコードのルーティングをホストで** (`--host-route`、`internal/llm/iron/route.go`。gpt-oss-120b の 128 専門家のため)
+
+- GptOssStep の router (R) と経路 (T) は 32 個用 (router の表のブロックの数、経路のカーネルの 32 レーン)。128 個にカーネルを作り直す代わりに、層のコマンドを注意 (Q、A、O) で終え、ホストがその層の残差 (`yo`) を読み、RMSNorm と router (重みを転置した float32 の `router.bin`、層 1.5 MB) を CPU で (`f32.Axpy`)、上位 4 個と softmax、置き場を決めて、次のコマンドの位置の語 (呼び出しごとの値) と経路の重み (状態 `moe_rw<l>`) を書く。置き場がある時はどのみち層ごとに止まるので、止まる費用は増えない
+- 20b (32 個、全部の置き場) で照合: 200 ステップの強制のデコードで、端末の経路とのロジットのコサインの中央値 0.99998、KL 平均 0.0095、最上位の一致 96.5 % (ほぼ同じ値の router のロジットが bf16 で違う側に丸まる時に別の専門家になる。書き出しの HF との KL は約 0.03)。デコード 1 ステップ 50.3 → 51.9 ms (19.0 トークン/秒)
+- 128 個の形: 120b の 26、27 層 (ダウンロード済みの断片から取り出して 0、1 層に) と乱数の埋め込みで 2 層の書き出しを作り (`--expert-places 56`、プロンプトのスロット 64 個)、56 と 32 の置き場の書き出しのロジットがビット単位で同じ (外れ 26 % と 44 %)、置き場の確かめも 0 個違い
+
+**gpt-oss-120b** (`openai/gpt-oss-120b`、36 層、128 専門家から 4 個、hidden 2880、語彙と注意は 20b と同じ。チェックポイント 65 GB、HF から 15 個とも sha256 一致)
+
+- 機械: Ryzen AI 9 365、64 GB (OS から 59 GiB)。専門家は mx4 で 61.2 GiB (1 個 14.3 MB × 4608) で全部は固定できない。プロンプトのスロットが 64 個まで (`COUNT_WORDS`) なので置き場は 56 (+ 溢れ 8): 26.8 GiB
+- 書き出し (`--expert-places 56`、ルーティングは 128 個なので自動でホスト): 6 分 44 秒。`experts.bin` 65.7 GB、`router.bin` 57 MB、バンクは疎なファイル (見かけ 34 GB、実 3 GB)。書き出しのプロセスのメモリは層ごとに表を作って書くので小さい
+- 最初はコピーを写像から (ページフォールト) にして 1 専門家 9.4 ms、デコード 1 ステップ 207 ms (4.6 トークン/秒)。置き場の 26.8 GiB の横でページキャッシュは 61 GiB のファイルを持てず、外れはディスクから約 1.5 GB/s で読んでいた
+- **O_DIRECT で読む** (`directReads`: 専門家のファイルがメモリの半分以上のとき。`HWNPU_MOE_DEBUG=direct=0/1`): NVMe は 1 専門家の大きさを O_DIRECT で 6.1 GB/s (dd)。バンクの写像 (ドライバのページ) へは O_DIRECT が読めない (EFAULT) ので、goroutine ごとの中継のバッファに読んでから写す。NVMe の `dma_alignment` は 4 バイト、ファイルの位置は 4 KiB の倍数。8 つに分けて: 9.4 → 2.6 ms。層の外れ (平均 1.4 個) を並べて 2.5 ms。デコード 207 → 112 → 110 ms (ロジットはビット単位で同じ、置き場の確かめ 0 個違い)
+- 残りの 1 ステップ約 75 ms は 37 コマンド (注意と専門家、層 約 2 ms) と待ちとホストの router。外れは 1 トークン約 14 個 × 2.5 ms = 35 ms
+
+| gpt-oss-120b (hwnpu-chat、74 トークンの後) | |
+|---|---|
+| デコード | 9.2〜9.3 トークン/秒 (17 × 23 の短い答えは 8.5) |
+| 外れ (デコードの選択のうちコピー) | 8.8〜12.1 % |
+| プロンプト 74 トークン | 6.1 s (うち置き場へのコピー 2.7 s、約 1300 個) |
+| 固定する NPU のバッファ | 32.05 GiB (置き場 26.8 + 注意・出力層・kv)、プロセス 1.0 GiB、ページキャッシュはほぼ使わない (O_DIRECT)。ほかに 19 GiB 空く |
+| 読み込み | 15〜21 s (置き場を詰めるのに 4〜8 s) |
+
+- 答え: 「富士山の標高は 3,776 メートル (約 12,389 フィート)」、「17 × 23 = 391」(分析のチャネルで (10 + 7) × 23 と計算)、CPU のキャッシュの説明 (行、タグ、データの配列)
+- HF の float32 との照合 (`ref_gptoss.py ref`、32 トークンと 3 ステップ、層を 1 つずつ読んで 1 時間弱。`ironlm`): コサイン 0.99779 / 0.99920 / 0.99845 / 0.99915、最大の差は最大のロジットの 0.051〜0.082。最上位は 3/4 が一致し、最後のステップは参照の 2 位 (261: 参照で p 0.036、1 位の 2550 が 0.052 の平らな分布)。20b (16.179) はコサイン 0.9968〜0.9997、4/4
+- models.yaml には載せない (検証だけ): NPU に 32 GiB を固定し、ディスクの帯域で 10 トークン/秒に留まるので、このサイズは GPU 向き。80 TOPS を超える NPU とメモリが安くなってから。書き出しは `iron_export_lm.py gptoss CKPT OUT --max-seq-len 8192 --prefill-chunk 256 --expert-places 56` (ルーティングは 128 専門家でホストに)
+
+**次の層の専門家の先読み** (Mac の `experts.prefetcher` と同じ考え、improvements.md 13 節の Fate、MoE-CORE)
+
+- ホストのルーティングのとき (120b): 層 l を経路したあと、同じ残差を層 l+1 の norm の重みと router に掛けて上位 4 個を予測し、置き場にないものを層 l+1 の置き場へ goroutine で読む。次のコマンド (層 l の専門家と層 l+1 の注意) は層 l+1 の置き場を読まないので、その間に読める。置き場ごとに読み込みを待つ (`expertPool.inflight`: その専門家を動かす時か、その置き場を上書きする時)。プロンプトのパスと詰め直しの前は全部を待つ
+- 120b、200 ステップの強制のデコード (ロジットは先読みの有無でビット単位で同じ、置き場の確かめ 0 個違い):
+
+| | 1 ステップ | 外れ | 先読みで読んだ専門家 (うち使われた) | 待ち (外れのコピー + 先読みを待つ) |
+|---|---|---|---|---|
+| なし | 110.5〜110.9 ms | 9.8 % | — | 35 ms |
+| 次の層 上位 4 (既定) | 101.9〜108.3 ms | 3.1 % | 2901 (77 %) | 13 + 16 ms |
+| 次の層 上位 8 | 144.0 ms | 1.4 % | 9124 (30 %) | — |
+| 次の層 上位 2 | 108.3 ms | 6.5 % | 1064 (96 %) | — |
+| 2 層先 上位 4 (`prefetch2=4`、次の層なし) | 102.9 ms | 4.2 % | 3015 (69 %) | 19 + 5 ms |
+
+- hwnpu-chat: 9.2〜9.3 → **9.7〜9.9 トークン/秒** (選択のうちコピー 9.3 → 3.2 %)
+- 効きが小さいのはディスクの帯域: 1 トークンで外れと先読みで約 300 MB を読み (5.7 GB/s で約 50 ms)、1 コマンド (約 2 ms) の間に 1 専門家 (2.6 ms) が読み終わらない。上位 8 個は読む量が増えて遅い。20b (専門家のファイルがページキャッシュに入る) はデバイスの経路なので先読みはない
+
+**120b の使用統計** (`tools/moeusage/collect.sh`、20b と同じ 110 プロンプト・19 分類、先読みありの書き出しで 1 プロンプト約 50 s、`~/.cache/hwnpu/moeusage/gpt-oss-120b-amd`)
+
+- 1 層 212,940 回の選択。128 個のうち、どの分類でも使われない専門家がある (層 16 の 5、層 32 の 60、層 33 の 124、層 34 の 0 と 84 が 0 回)。10 回未満は 4608 個のうち 39 個
+- よく使う K 個の割合 (分類を等しく混ぜて): K=16 で 45 %、32 で 67 %、48 で 80 %、64 で 88 % (56 で約 84 %)。20b (32 個のうち 16 個で 81 %) より散らばる。ほかの分類で選んだ置き場に入る割合は computer (K=64 で 69 %) と math (70 %) が低い
+- 芯 (どの分類でも 1/128 以上): 515 個、1 層 14.3 個 (8〜23)、選択の 29〜40 %。`hwnpu-chat` に渡すと (models.yaml の `experts_core` の形、`tools/moeusage/analyze.py` が出す。置き場から最後に追い出す)。hwnpu-chat で選択のコピー 3.1 → 2.8 %、10.0 トークン/秒
+
+**AMD の ONNX Runtime GenAI との比べ** (improvements.md 13 節、AMD の技術記事の数字。この機械ではその環境を入れていないので同じ機械では測っていない)
+
+| gpt-oss-20b | 記事 (専門家を INT4 に量子化し直し、経路は CPU) | hwnpu (MXFP4 のまま、経路も NPU) |
+|---|---|---|
+| 全部常駐 | 13.7 GB で 13.4 トークン/秒 | 12.22 GiB + 0.3 で 20.2 |
+| 一部 | 24 層を動的に: 2.7 GB で 2.4 | 置き場 16: 6.90 GiB + 0.3 で 17.2、24: 9.44 GiB で 19.0 |
+
+### 16.262 MOSS-SoundEffect の DAC を M1 の Neural Engine にも: snake の sin を級数に、段 3 を 4500 フレームに — 2026-11-19
+
+16.197 で M3 では DAC の 5 段がすべて Neural Engine に乗ったが、M1 (h13) では 5 段とも GPU に回り、`--allow-off-npu` がないと `generate -m sfx` が失敗した。M1 で直した。
 
 **見つけ方**: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine` で、端末のコンパイルが Neural Engine なしで 1 段 1 秒で再現する (乗ったかは `manifest.plist` の `mps.fullyPlacedOnANE`)。理由は `coreai-build` の os_log に出る (`/usr/bin/log show --predicate 'process == "coreai-build"'`。zsh では `log` が組み込みなので `/usr/bin/log`)。snake だけのプログラム (チャンネルは DAC の最後の snake) でも試した。
 
@@ -7568,6 +7836,6 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 **結果** (M1、macOS 27.2)
 - `coreai-build` で h13g (M1) も h15g (M3) も 5 段とも `mps.fullyPlacedOnANE`。前の DAC (r2) は h15g でも通らなかった (M3 の端末のコンパイラは通す)
 - `TestDecodeLatentsCoreAI` (`HWNPU_SFX_COREAI=1`): 5 段とも端末で Neural Engine に乗り (初回の読み込み 段 0 3 分 14 秒、ほかは 1.4〜7.6 秒)、種で決めた潜在 250 フレーム (5 秒) を 4.1 秒で。CPU のインタプリタ (fp32 の sin) との相対 RMS 0.0085 (M3 で 16.197 のときの 0.0085 と同じ)
-- 通し (M1、`--allow-off-npu` なし、5 秒、30 ステップ、種 1、"a dog barking"): MOSS-SoundEffect-v2.0 と -lut8 のどちらもすべて Neural Engine に乗った。DAC を GPU で計算した前の回 (16.253) の音との差は相対 RMS 0.0018。30 ステップで 1 分 35 秒 (前の回は 1 分 49 秒)
+- 通し (M1、`--allow-off-npu` なし、5 秒、30 ステップ、種 1、"a dog barking"): MOSS-SoundEffect-v2.0 と -lut8 のどちらもすべて Neural Engine に乗った。DAC を GPU で計算した前の回の音との差は相対 RMS 0.0018。30 ステップで 1 分 35 秒 (前の回は 1 分 49 秒)
 - 最初に通そうとしたときは空きが 14 GB で、取得元から 11.5 GB を取れなかった。そのとき hwnpu のキャッシュの掃除が、別のセッションの `hwnpu-image` の Core AI のキャッシュ 14 項目 (約 1.8 GB) を消した
 - 未確認: M3 の端末での級数の速さと値 (h15g の `coreai-build` では乗る)

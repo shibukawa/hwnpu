@@ -9,6 +9,7 @@ import (
 	"image"
 	"io"
 	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -70,6 +72,9 @@ type Config struct {
 	// place of Packages: its manifest, ELFs and arena. Tokenizer defaults to the
 	// tokenizer.json in it.
 	IRON string
+	// Experts says which of a mixture of experts' experts the host keeps wired when they do not
+	// all fit: Model.ExpertsCore and this application's counts (ExpertsUsage).
+	Experts experts.Placement
 	// Idle, when above zero, releases an IRON model's device memory after this long without a
 	// request, and loads it again for the next one (idle.go).
 	Idle time.Duration
@@ -129,9 +134,13 @@ type Engine struct {
 	mtp     *mtpDrafter // the multi-token prediction layer (Config.MTP); nil for none
 	kinds   []tokenKind // Tok's tokens, for repeats; set by the first generation
 
-	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
-	store *store      // prompts kept on disk (Config.PromptDir); nil for none
-	log   io.Writer   // Config.Log
+	ir *iron.Model // the model of an IRON export (Config.IRON); nil for none
+	// irUsage counts the experts an IRON mixture of experts runs, added to the files irUsageTo
+	// (Config.Experts.Usage, HWNPU_MOE_DEBUG's usage=FILE) when the engine closes
+	irUsage   *experts.Usage
+	irUsageTo []string
+	store     *store    // prompts kept on disk (Config.PromptDir); nil for none
+	log       io.Writer // Config.Log
 
 	// idle is how long without a request before an IRON model's device memory is released
 	// (Config.Idle, idle.go); lastUsed is the last request's end, idleTimer the clock.
@@ -306,7 +315,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			bar := console.NewLoadBar(c.Log, fmt.Sprintf("  [%d/%d] %s", loaded, total, label), llm.ProgramBytes(pkg))
 			var ch *chain.Chain
 			if i == 0 {
-				ch, err = chain.Open(ctx, e.dev, pkg)
+				ch, err = chain.OpenWith(ctx, e.dev, pkg, chain.Options{Experts: c.Experts})
 			} else {
 				ch, err = t.chains[0].Share(ctx, e.dev, pkg)
 			}
@@ -738,6 +747,14 @@ func (e *Engine) Close() error {
 		e.tiers[i].close()
 	}
 	e.tiers = nil
+	if e.irUsage != nil {
+		for _, p := range e.irUsageTo {
+			if err := e.irUsage.AddTo(p); err != nil {
+				fmt.Fprintf(os.Stderr, "chat: experts' usage: %v\n", err)
+			}
+		}
+		e.irUsage = nil
+	}
 	if e.ir != nil {
 		e.ir.Close()
 		e.ir = nil

@@ -75,10 +75,14 @@ type ExpertsRecord struct {
 	// (experts.BuildRows), one for each tokens per call of the model's programs over 1: a call
 	// that reads a prompt runs each expert its rows chose once.
 	Rows    []PartRecord    `json:"rows,omitempty"`
-	Weights string          `json:"weights"`
+	Weights string          `json:"weights,omitempty"`
 	Layers  []int           `json:"layers"`
 	Shape   experts.Shape   `json:"shape"`
 	Routing experts.Routing `json:"routing"`
+	// Host is the experts the host runs on its CPU from the checkpoint (HostRouted), in place of
+	// Program, Rows and Weights. Its checkpoint is an absolute path: the download, not the
+	// conversion.
+	Host *experts.HostRecord `json:"host,omitempty"`
 }
 
 // Tier is one cache length of a tiered model.
@@ -467,7 +471,7 @@ func WriteManifest(path string, m *Manifest) error {
 	}
 	m.Smaller = slices.Clone(m.Smaller)
 	relative(m.Smaller)
-	if m.Experts != nil {
+	if m.Experts != nil && m.Experts.Host == nil {
 		e := *m.Experts
 		a := []PartRecord{e.Program, {Path: e.Weights}}
 		relative(a)
@@ -506,7 +510,10 @@ func ReadManifest(path string) (*Manifest, error) {
 			r.Path = filepath.Join(filepath.Dir(path), r.Path)
 		}
 	}
-	if e := m.Experts; e != nil {
+	if e := m.Experts; e != nil && e.Host != nil && !filepath.IsAbs(e.Host.Checkpoint) {
+		e.Host.Checkpoint = filepath.Join(filepath.Dir(path), e.Host.Checkpoint)
+	}
+	if e := m.Experts; e != nil && e.Host == nil {
 		e.Program.Path = filepath.Join(filepath.Dir(path), e.Program.Path)
 		e.Weights = filepath.Join(filepath.Dir(path), e.Weights)
 		absolute(e.Rows)
@@ -586,7 +593,7 @@ func ProgramBytes(path string) int64 {
 	for _, r := range m.Smaller {
 		n += PartBytes(r.Path)
 	}
-	if e := m.Experts; e != nil {
+	if e := m.Experts; e != nil && e.Host == nil {
 		n += PartBytes(e.Program.Path)
 		for _, r := range e.Rows {
 			n += PartBytes(r.Path)

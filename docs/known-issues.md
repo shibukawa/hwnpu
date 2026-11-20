@@ -94,14 +94,14 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
 
-- **何が**: Core AI で M1 (h13) の ANE のコンパイラは、`sin`、要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX")、定数倍した入力どうしの引き算 ("NEFUSED_EW: KernelPreScales") を受け付けず、プログラムごと GPU に回す。MOSS の DAC の段 3 は 1 回 4998 フレームで "unexpected failure" になる。M3 の端末のコンパイラは通す。design.md 16.254。ほかの乗らない演算の一覧は improvements.md 7.6
+- **何が**: Core AI で M1 (h13) の ANE のコンパイラは、`sin`、要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX")、定数倍した入力どうしの引き算 ("NEFUSED_EW: KernelPreScales") を受け付けず、プログラムごと GPU に回す。MOSS の DAC の段 3 は 1 回 4998 フレームで "unexpected failure" になる。M3 の端末のコンパイラは通す。design.md 16.262。ほかの乗らない演算の一覧は improvements.md 7.6
 - **今**: DAC の snake の sin を π を単位にした級数で計算し、段 3 を 4500 フレームにした (`DACRevision` 3)。M1 でも M3 でも同じ書き出し
 - **直ったら**: 何もしなくてよい (級数の値は CPU の参照と 0.0085 で、sin と同じ)
 - 確かめ方: `sin` だけのプログラムを `coreai-build --architecture h13g` で作り、`mps.fullyPlacedOnANE` があるか
 
 ## 11. オフラインのコンパイラの方が厳しい (未報告)
 
-- **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた (design.md 16.197)。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。design.md 16.254
+- **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた (design.md 16.197)。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。design.md 16.262
 - **今**: DAC は、どの機種でもオフラインで通る形 (r3) にした。prebuilt を作るなら、オフラインで乗る形で書く
 - **直ったら**: 何もしなくてよい
 - 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_AILOWER_CUT=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか

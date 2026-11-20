@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
@@ -73,4 +75,13 @@ func resolveKind(name string, kind chat.Kind, models string, lw io.Writer) (chat
 		fmt.Fprintln(os.Stderr)
 	}
 	return m, err
+}
+
+// expandHome is path with a leading ~ the home directory.
+func expandHome(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~"+string(filepath.Separator)) {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, path[1:])
+	}
+	return path
 }

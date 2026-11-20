@@ -228,6 +228,18 @@ gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2
 
 値: Core AI の CPU (`HWNPU_COREAI_UNITS=cpu`) では正しい (cos 0.9998) が、Neural Engine では NaN。取り出しだけのプログラムは Neural Engine で全部の int8 について正しい (`aicheck fdiv`)。`mod` を入れたプログラムは GPU に回る。どこで無限大になるかは未調査 (`HWNPU_AILOWER_CUT` で切り分ける)。
 
+### gpt-oss-20b の専門家を 4 ビットで Neural Engine に (A の道、M3、2026-11-19、`aicheck mx`)
+
+| 形 | 置き場所 | 値 | 時間 |
+|---|---|---|---|
+| MX の定数 (`float4E2M1FN` の符号と `float8E8M0FN` のスケール、`blockwise_shift_scale`、ailower は `mlpackage.Builder.MXFP4` から) | GPU。coreai-build で h15g、h16g、h17g 向けにコンパイルしても Neural Engine の領域なし (同じ行列の lut4 にはある) | cos 1.000000 | gate と up (5760 × 2880) 0.73 ms |
+| MX の入力 | MPSGraph の `copy_with_constraints` が fp4 の配列を通さない | — | — |
+| チェックポイントの符号を uint4 の入力に、e2m1 の 16 値の表で引き (`lut_to_dense`)、ブロックのスケールを掛ける | Neural Engine | cos 1.000000 | 1 専門家 49 ms (表引きだけで 47) |
+| int4 の入力と `blockwise_shift_scale` (`linear`) | GPU | — | — |
+| 参考: lut4 の定数 (`linear`) | Neural Engine | (スケールなし) | 0.33 ms |
+
+`matmul` で書くと lut4 の定数でも GPU に回る。`linear` なら Neural Engine。どの 4 ビットの形も CPU の 1 層 1.0 ms (B の道、improvements.md 7.5) に届かないので A はここで止めた。M3 の Neural Engine の検証の返事は `<private>` で読めていない (3.3 のプロファイルが要る)。
+
 ## 2. コード (このブランチ)
 
 | ファイル | 変更 |
@@ -241,6 +253,7 @@ gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2
 | `tools/coreai/aicheck/probe_darwin.go` | probe の追加 (下)。`COREML=1` で Core ML、出力に理由と演算ごとの装置 |
 | `tools/coreai/aicheck/run_darwin.go` | `INPLACE=1` でプログラム自身の入力配列 (`backend.InputAllocator`) を使う |
 | `tools/coreai/aicheck/moe_darwin.go` | `aicheck moe` (MoE の 1 層の計測。`-model gptoss\|qwen3moe\|small`、`-layers`、`-topk`、`-split`、`-copy`、`-fp16`、`-scale-out`)、`aicheck locked CMD` (NPU のロックを取って CMD を回す) |
+| `tools/coreai/aicheck/mx_darwin.go` (M3) | `aicheck mx`: gpt-oss の専門家を MX の定数 (`-const`、`-form mx\|lut4`、`-only`)、uint4 の符号と表 (`-form lut`)、int4 (`-form int4`) で。`-write` で .aimodel を書いて止まる (coreai-build で他のチップ向けに) |
 | `tools/coreai/aicheck/gather_darwin.go` | `aicheck gather` (M3): 定数の表から int16 の番号で専門家を gather_nd して積。Go の float32 と照合、密な定数と時間を比べる。`-e`、`-out`、`-in`、`-k`、`-each`、`-int8`、`-raw8` |
 | `tools/coreai/aicheck/moepack_darwin.go` | `aicheck moepack` (M3): 結び付ける配列を減らした専門家の層。`-scales gather` で拡大を層ごとの 1 配列から ANE の gather で取る。`-two` で gate|up と down の 2 配列 |
 | `tools/coreai/aicheck/moeserve_darwin.go` | `aicheck moeserve CKPT`: 実際の LFM2-MoE の専門家とルーターを ANE で回すサーバー (標準入出力の 2 進) |

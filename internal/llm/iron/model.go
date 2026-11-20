@@ -15,6 +15,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/f32"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
@@ -50,6 +51,18 @@ type Model struct {
 	logf       func(string, ...any)
 	released   bool      // by Release: nothing on the device until Reload
 	parts      []float32 // logits: the partial sums of a row, decoded (kept between steps)
+
+	// embedRow is the row StepRow gives the decode step in place of a token's (EmbedTable's)
+	embedRow []byte
+
+	// usage counts the experts each layer runs (CountExperts, usage.go), or nil; routes are
+	// the decode step's words that name them
+	usage  *experts.Usage
+	routes []fedRoute
+	// pool holds the experts' places where the layers have fewer than experts (pool.go)
+	pool *expertPool
+	// router routes the decode step on the host (route.go), or nil
+	router *hostRouter
 }
 
 type version struct {
@@ -93,6 +106,20 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 		return nil, err
 	}
 	if err := m.openHostTables(); err != nil {
+		m.Close()
+		return nil, err
+	}
+	if err := m.openPool(); err != nil {
+		m.Close()
+		return nil, err
+	}
+	if m.pool != nil {
+		if err := m.findRoutes(); err != nil {
+			m.Close()
+			return nil, err
+		}
+	}
+	if err := m.openRouter(); err != nil {
 		m.Close()
 		return nil, err
 	}
@@ -180,6 +207,9 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 	}
 	m.released = false
 	m.stepped, m.ringAt = [2]int{}, -1 // nothing of a sequence is in the arrays read just now
+	if m.pool != nil {
+		m.pool.filled = false // the banks' zeros: filled again before the next call
+	}
 	return nil
 }
 
@@ -189,6 +219,7 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 // The caches and the states go with it, so a sequence starts again after Reload; one to come
 // back to is copied out first (ExportRows, StateAt). The model must not run until Reload.
 func (m *Model) Release() error {
+	m.waitGuesses() // no copy into a bank that goes
 	var errs []error
 	for _, v := range m.versions() {
 		if v == nil {
@@ -393,6 +424,24 @@ func readInto(path string, dst []byte) error {
 // Close releases the device memory and the host tables.
 func (m *Model) Close() error {
 	m.closeHostTables()
+	if m.pool != nil {
+		if experts.DebugTime() {
+			p := m.pool
+			fmt.Fprintf(os.Stderr, "experts: %d places of %d: decode choices %d in a place, %d copied in (%.1f %%) in %.2f s (%.1f ms each); prompts %d copied in %.2f s\n",
+				p.P, p.E, p.hits, p.misses, 100*float64(p.misses)/float64(max(1, p.hits+p.misses)), p.copying.Seconds(),
+				p.copying.Seconds()*1000/float64(max(1, p.misses)), p.loads, p.loading.Seconds())
+			if r := m.router; r != nil && r.prefetchN > 0 {
+				fmt.Fprintf(os.Stderr, "experts: the next layer's %d guesses brought %d experts in, %d of them run (%.0f %%); waited %.2f s for them\n",
+					r.guess, r.prefetchN, r.prefetchU, 100*float64(r.prefetchU)/float64(r.prefetchN), p.waiting.Seconds())
+			}
+		}
+		if _, ok := experts.DebugOpt("check"); ok && !m.released && m.pool.filled {
+			if err := m.checkPool(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}
+		m.pool.close()
+	}
 	if m.released {
 		return nil
 	}
@@ -574,7 +623,16 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 				return nil, err
 			}
 		}
+		if err := m.fillPool(); err != nil {
+			return nil, err
+		}
 		if err := m.runCommands(ctx, v, values); err != nil {
+			return nil, err
+		}
+		if m.pool != nil {
+			m.pool.tick++
+		}
+		if err := m.countDecode(); err != nil {
 			return nil, err
 		}
 		if err := m.stepAt(position); err != nil {
@@ -673,12 +731,37 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 			return err
 		}
 	}
-	// HWNPU_IRON_TIMING: each command waited for and timed alone
+	// HWNPU_IRON_TIMING: each command waited for and timed alone. Experts in places (pool.go):
+	// each command waited for, and a fed one's choices routed to the places before it runs
 	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	var routed map[int]*fedRoute
+	if m.pool != nil && v == m.decode {
+		routed = map[int]*fedRoute{}
+		for i := range m.routes {
+			routed[m.routes[i].command] = &m.routes[i]
+		}
+	}
+	// HWNPU_IRON_SYNC=1: each command waited for as with places, to measure what that costs
+	hosted := m.router != nil && v == m.decode
+	syncEach := routed != nil || hosted || os.Getenv("HWNPU_IRON_SYNC") == "1"
 	for k, run := range v.runs {
+		if hosted {
+			if l, ok := m.router.cmd[k]; ok {
+				if err = m.hostRoute(l, values); err != nil {
+					break
+				}
+			}
+		}
 		if _, ok := fed[k]; !ok {
 			if err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values); err != nil {
 				break
+			}
+		}
+		if routed != nil {
+			if r := routed[k]; r != nil {
+				if err = m.route(r); err != nil {
+					break
+				}
 			}
 		}
 		var f hwnpu.Fence
@@ -692,6 +775,13 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 				break
 			}
 			fmt.Fprintf(os.Stderr, "decode command %d: %.3f ms\n", k, time.Since(t0).Seconds()*1000)
+			continue
+		}
+		if syncEach {
+			if err = f.Wait(ctx); err != nil {
+				err = fmt.Errorf("iron: decode command %d: %w", k, err)
+				break
+			}
 			continue
 		}
 		fences = append(fences, f)
@@ -830,6 +920,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 	if timing {
 		fmt.Fprintf(os.Stderr, "prompt chunk (%d rows from %d): inputs and host tables %.1f ms, barrier %.1f ms\n", rows, start,
 			tBarrier.Sub(tHost).Seconds()*1000, time.Since(tBarrier).Seconds()*1000)
+	}
+	if err := m.fillPool(); err != nil {
+		return nil, err
 	}
 	routes := map[int]*moeRoute{} // by layer: its moe_route's, until its moe_combine
 	for k := range v.m.Kernels {

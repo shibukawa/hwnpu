@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -69,6 +70,7 @@ func (f *serverFlags) server(ctx context.Context) (*chat.Server, error) {
 		if !isPath(name) && !strings.Contains(name, "/") {
 			name = m.Name // picked once (a family or a use logs what it picks)
 		}
+		f.loadFlags.ExpertsKey = cmp.Or(f.loadFlags.ExpertsKey, "serve")
 		e, err := loadChat(ctx, name, &f.loadFlags, &f.convertFlags, &f.encoderFlags)
 		if err != nil {
 			return fail(err)

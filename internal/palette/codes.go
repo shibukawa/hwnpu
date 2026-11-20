@@ -21,6 +21,12 @@ import (
 // major) and KEY.tab (the tables, rows/group by 2^bits float32 of fp16 values, little endian;
 // with col_block, rows/group by cols/col_block of them, in row major order). The key is WeightKey
 // of the weight as the checkpoint holds it. CodesWriter writes them from Go (tools/coreai/lutfit).
+//
+// A weight of format int8 (a scale a row, tools/ref/gptoss_attn_gptq.py) has its integers in KEY.idx
+// (int8, row major) and its scales in KEY.tab (rows float32 of fp16 values); LookupLinear reads it.
+// A weight of format lutNr (lutN with a scale a row, blocks.LinearBias; gptoss_attn_gptq.py's
+// lutrow) has lutN's KEY.idx and KEY.tab for its rows divided by their scales, and the scales in
+// KEY.rows (rows float32 of fp16 values); LookupRows reads it.
 type Codes struct {
 	dir   string
 	index map[string]codeEntry
@@ -49,7 +55,7 @@ func LoadCodes(dir string) (*Codes, error) {
 	}
 	c := &Codes{dir: dir, index: map[string]codeEntry{}}
 	for k, e := range all {
-		if lutBits(e.Fmt) != 0 {
+		if lutBits(e.Fmt) != 0 || rowBits(e.Fmt) != 0 || e.Fmt == "int8" {
 			c.index[k] = e
 		}
 	}
@@ -74,6 +80,13 @@ func lutBits(format string) int {
 		return 6
 	case "lut8":
 		return 8
+	}
+	return 0
+}
+
+func rowBits(format string) int {
+	if n := len(format); n > 1 && format[n-1] == 'r' {
+		return lutBits(format[:n-1])
 	}
 	return 0
 }
@@ -111,7 +124,56 @@ func (c *Codes) Lookup(w []float32, rows, cols, group, colBlock, bits int, scale
 	}
 	key := WeightKey(w, rows, cols)
 	e, ok := c.index[key]
-	if !ok || lutBits(e.Fmt) != bits || e.Group != group || len(e.Shape) != 2 || e.Shape[0] != rows || e.Shape[1] != cols {
+	if !ok || lutBits(e.Fmt) != bits {
+		return LUT4{}, false, nil
+	}
+	out, ok, err := c.tables(key, e, rows, cols, group, colBlock, bits, scale)
+	if ok {
+		c.hit()
+	}
+	return out, ok, err
+}
+
+// LookupRows is Lookup of a weight in lutNr (bits wide): the tables of its rows divided by their
+// scales, and the scales.
+func (c *Codes) LookupRows(w []float32, rows, cols, group, colBlock, bits int) (LUT4, []float32, bool, error) {
+	if c == nil || len(c.index) == 0 {
+		return LUT4{}, nil, false, nil
+	}
+	key := WeightKey(w, rows, cols)
+	e, ok := c.index[key]
+	if !ok || rowBits(e.Fmt) != bits {
+		return LUT4{}, nil, false, nil
+	}
+	out, ok, err := c.tables(key, e, rows, cols, group, colBlock, bits, 1)
+	if !ok {
+		return LUT4{}, nil, false, err
+	}
+	raw, err := os.ReadFile(filepath.Join(c.dir, key+".rows"))
+	if err != nil {
+		return LUT4{}, nil, false, err
+	}
+	if len(raw) != rows*4 {
+		return LUT4{}, nil, false, fmt.Errorf("palette: codes of %s (%s): %d scale bytes for %d rows in %s", e.Name, key, len(raw), rows, e.Fmt)
+	}
+	scales := make([]float32, rows)
+	for r := range scales {
+		scales[r] = math.Float32frombits(binary.LittleEndian.Uint32(raw[4*r:]))
+	}
+	c.hit()
+	return out, scales, true, nil
+}
+
+func (c *Codes) hit() {
+	c.mu.Lock()
+	c.hits++
+	c.mu.Unlock()
+}
+
+// tables reads entry e's indices and tables (bits wide, multiplied by scale): ok is false for
+// another layout.
+func (c *Codes) tables(key string, e codeEntry, rows, cols, group, colBlock, bits int, scale float32) (LUT4, bool, error) {
+	if e.Group != group || len(e.Shape) != 2 || e.Shape[0] != rows || e.Shape[1] != cols {
 		return LUT4{}, false, nil
 	}
 	cb := cmp.Or(e.ColBlock, cols)
@@ -141,9 +203,43 @@ func (c *Codes) Lookup(w []float32, rows, cols, group, colBlock, bits int, scale
 		out.LUT[i] = f16(math.Float32frombits(binary.LittleEndian.Uint32(tab[4*i:])) * scale)
 	}
 	out.Indices = pack(idx, bits)
-	c.mu.Lock()
-	c.hits++
-	c.mu.Unlock()
+	return out, true, nil
+}
+
+// LookupLinear returns the int8 weight (a scale a row) for w (rows x cols, as the checkpoint
+// holds it) when the codes have it, with the scales multiplied by scale (what the graph multiplies
+// the weight by). ok is false when there are none; the caller then quantizes w itself.
+func (c *Codes) LookupLinear(w []float32, rows, cols int, scale float32) (Linear, bool, error) {
+	if c == nil || len(c.index) == 0 {
+		return Linear{}, false, nil
+	}
+	key := WeightKey(w, rows, cols)
+	e, ok := c.index[key]
+	if !ok || e.Fmt != "int8" || len(e.Shape) != 2 || e.Shape[0] != rows || e.Shape[1] != cols {
+		return Linear{}, false, nil
+	}
+	data, err := os.ReadFile(filepath.Join(c.dir, key+".idx"))
+	if err != nil {
+		return Linear{}, false, err
+	}
+	tab, err := os.ReadFile(filepath.Join(c.dir, key+".tab"))
+	if err != nil {
+		return Linear{}, false, err
+	}
+	if len(data) != rows*cols || len(tab) != rows*4 {
+		return Linear{}, false, fmt.Errorf("palette: codes of %s (%s): %d integers and %d scale bytes for %d x %d in int8",
+			e.Name, key, len(data), len(tab), rows, cols)
+	}
+	for i, v := range data {
+		if int8(v) == -128 {
+			return Linear{}, false, fmt.Errorf("palette: codes of %s: -128 at %d (int8 codes are -127..127)", e.Name, i)
+		}
+	}
+	out := Linear{Rows: rows, Cols: cols, ColBlock: cols, Bits: 8, Data: data, Scales: make([]uint16, rows)}
+	for r := range out.Scales {
+		out.Scales[r] = f16(math.Float32frombits(binary.LittleEndian.Uint32(tab[4*r:])) * scale)
+	}
+	c.hit()
 	return out, true, nil
 }
 

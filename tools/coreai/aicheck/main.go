@@ -46,6 +46,8 @@ func main() {
 		err = moeServe(os.Args[2:])
 	case "fdiv":
 		err = fdivCheck()
+	case "mx":
+		err = mx(os.Args[2:])
 	case "moe4":
 		err = moe4(os.Args[2:])
 	case "moepack":

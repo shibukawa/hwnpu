@@ -264,6 +264,24 @@ type Routed interface {
 	ExpertNames(layer int) experts.Names
 }
 
+// HostRouted is a Routed model whose experts the host runs on its CPU from the checkpoint as it
+// is, in MXFP4 (gpt-oss, internal/mxfp4), rather than in a program of the Neural Engine: the
+// conversion writes no experts of its own, and the manifest names the checkpoint's tensors
+// (experts.HostRecord), which a run then needs.
+type HostRouted interface {
+	Routed
+	// HostExperts are a layer's experts in the checkpoint.
+	HostExperts(layer int) experts.MXFP4
+	// ExpertAct is their gated unit.
+	ExpertAct() experts.Act
+}
+
+// CheckpointPath is Weights read from a file on disk: its path (a safetensors file, or a sharded
+// checkpoint's index).
+type CheckpointPath interface {
+	Path() string
+}
+
 // CacheWriters is a Paged model whose layers past the first CacheLayers write no cache: they
 // reuse the keys and values of earlier layers (Gemma 4's shared layers), so a program that only
 // reads tokens into the caches (Options.KVOnly) stops before them.

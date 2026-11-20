@@ -82,3 +82,9 @@ func Notef(format string, args ...any) {
 	recordLog([]byte(s))
 	io.WriteString(os.Stderr, s)
 }
+
+// Columns is the width of the terminal f, 80 when it cannot be read.
+func Columns(f *os.File) int { return columns(f) }
+
+// Size is the columns and rows of the terminal f, 0 and 0 when they cannot be read.
+func Size(f *os.File) (cols, rows int) { return size(f) }
