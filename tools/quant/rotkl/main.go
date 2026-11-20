@@ -42,6 +42,7 @@ func main() {
 	out := flag.String("o", "", "write the logits here")
 	f16 := flag.Bool("f16", false, "round every operation to fp16 (the Neural Engine's storage)")
 	ane := flag.Bool("ane", false, "run on the Neural Engine (Core AI) instead of the CPU interpreter")
+	perPart := flag.Int("per-part", 6, "with -ane: layers a program")
 	var opts llm.Options
 	set := llm.BindFlags(flag.CommandLine, &opts, "fp16")
 	flag.Parse()
@@ -50,13 +51,13 @@ func main() {
 	if strings.HasPrefix(opts.Format, "lut") && opts.Quant == "" {
 		opts.Quant = "kmeans-minmax"
 	}
-	if err := run(*config, *weights, *tokPath, *textPath, *seq, *rotate, *seed, *ref, *out, *f16, *ane, opts); err != nil {
+	if err := run(*config, *weights, *tokPath, *textPath, *seq, *rotate, *seed, *ref, *out, *f16, *ane, *perPart, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "rotkl:", err)
 		os.Exit(1)
 	}
 }
 
-func run(config, weights, tokPath, textPath string, seq int, rotate bool, seed int64, ref, out string, f16, ane bool, opts llm.Options) error {
+func run(config, weights, tokPath, textPath string, seq int, rotate bool, seed int64, ref, out string, f16, ane bool, perPart int, opts llm.Options) error {
 	a, model, err := llm.LoadConfig(config, "")
 	if err != nil {
 		return err
@@ -105,7 +106,7 @@ func run(config, weights, tokPath, textPath string, seq int, rotate bool, seed i
 	t := time.Now()
 	var logits []float32
 	if ane {
-		logits, err = runANE(model, w, opts, x, dir)
+		logits, err = runANE(model, w, opts, x, dir, perPart)
 	} else {
 		logits, err = buildRun(model, w, opts, x, dir, f16)
 	}
