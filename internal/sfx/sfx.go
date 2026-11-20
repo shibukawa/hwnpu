@@ -33,9 +33,8 @@ import (
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
-// The files of the repository the programs are converted from and run with: the text
-// encoder's checkpoint stays for its embedding table and final norm, the DiT's for the host's
-// time embedding.
+// The files of the repository the programs are converted from and run with. The checkpoints
+// (bigFiles) are downloaded only to convert a program or to write the tables (TablesFile).
 var Files = []string{
 	"model_index.json",
 	"scheduler/scheduler_config.json",
@@ -49,6 +48,23 @@ var Files = []string{
 	"transformer/diffusion_pytorch_model.safetensors",
 	"vae/config.json",
 	"vae/vae_128d_48k.pth",
+}
+
+// bigFiles are Files' checkpoints: the text encoder's, the DiT's and the VAE's.
+var bigFiles = map[string]bool{Files[6]: true, Files[7]: true, Files[9]: true, Files[11]: true}
+
+// TablesFile holds what the host computes with, so that the converted programs run without the
+// checkpoints (11 GB): the text encoder's token embedding and final norm, and the DiT's
+// HostTensors (named "dit." and theirs). It is in the model's directory beside the exports.
+const TablesFile = "sfx-tables.safetensors"
+
+// HostTables are TablesFile's tensors by their names in it.
+func HostTables() []string {
+	names := []string{"model.embed_tokens.weight", "model.norm.weight"}
+	for _, n := range HostTensors {
+		names = append(names, "dit."+n)
+	}
+	return names
 }
 
 // Revision counts the changes to the programs that call for converting them again (in their
@@ -106,6 +122,7 @@ type Paths struct {
 	Blocks  []string // the DiT's groups, DitGroup blocks each
 	Stages  []string // the decoder's stages
 	TextCfg *qwen3.Config
+	Tables  string // TablesFile
 	// Host are the files the host reads the text encoder's embedding table and final norm
 	// from (prefix "") and the DiT's HostTensors (prefix "dit."); nil: the checkpoint's. An
 	// export for AMD's NPU has its own (PrepareAMD).
@@ -127,11 +144,20 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		text, dit = llm.IntelFormat(text), llm.IntelFormat(dit)
 	}
 	p := Paths{Dir: chat.RepoDir(s.Repo)}
-	var want []chat.File
-	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f})
+	fetch := func(names ...string) error {
+		var want []chat.File
+		for _, f := range names {
+			want = append(want, chat.File{Repo: s.Repo, Name: f})
+		}
+		return chat.FetchFiles(ctx, want, log)
 	}
-	if err := chat.FetchFiles(ctx, want, log); err != nil {
+	var small []string
+	for _, f := range Files {
+		if !bigFiles[f] {
+			small = append(small, f)
+		}
+	}
+	if err := fetch(small...); err != nil {
 		return p, err
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
@@ -201,18 +227,41 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 			}
 		}
 	}()
-	lazy := func(to **Weights, pth []string, st map[string][]string) func() (*Weights, error) {
+	// a checkpoint is downloaded and opened when a program is converted from it
+	lazy := func(to **Weights, files []string, pth []string, st map[string][]string) func() (*Weights, error) {
 		return func() (*Weights, error) {
-			var err error
 			if *to == nil {
-				*to, err = OpenWeights(pth, st)
+				if err := fetch(files...); err != nil {
+					return nil, err
+				}
+				w, err := OpenWeights(pth, st)
+				if err != nil {
+					return nil, err
+				}
+				*to = w
 			}
-			return *to, err
+			return *to, nil
 		}
 	}
-	textW := lazy(&tw, nil, map[string][]string{"": {p.at(Files[6]), p.at(Files[7])}})
-	ditW := lazy(&dw, nil, map[string][]string{"dit.": {p.at(Files[9])}})
-	vaeW := lazy(&vw, []string{p.at(Files[11])}, nil)
+	textW := lazy(&tw, Files[6:8], nil, map[string][]string{"": {p.at(Files[6]), p.at(Files[7])}})
+	ditW := lazy(&dw, Files[9:10], nil, map[string][]string{"dit.": {p.at(Files[9])}})
+	vaeW := lazy(&vw, Files[11:12], []string{p.at(Files[11])}, nil)
+	// the tables, from the shared layers or written from the two checkpoints
+	tables := func() error {
+		var err error
+		p.Tables, err = chat.WrittenTables(ctx, filepath.Join(s.Dir, TablesFile), "moss-soundeffect", HostTables(), func(out string) error {
+			if err := fetch(Files[6], Files[7], Files[9]); err != nil {
+				return err
+			}
+			w, err := OpenWeights(nil, map[string][]string{"": {p.at(Files[6]), p.at(Files[7])}, "dit.": {p.at(Files[9])}})
+			if err != nil {
+				return err
+			}
+			defer w.Close()
+			return w.WriteTables(HostTables(), out)
+		}, log)
+		return err
+	}
 	var jobs []job
 	start := 0
 	for i, n := range TextSplit(text) {
@@ -249,7 +298,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		todo = append(todo, j)
 	}
 	if len(todo) == 0 {
-		return p, nil
+		return p, tables()
 	}
 	for export := range pending {
 		if err := llm.StartExport(export); err != nil {
@@ -289,7 +338,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		}
 		llm.ShareExport(ctx, export)
 	}
-	return p, nil
+	return p, tables()
 }
 
 // Generator generates sound effects.
@@ -305,22 +354,26 @@ type Generator struct {
 	progs []runner.Program
 }
 
-// Open reads the tokenizer and the weights the host computes with; Load loads the DiT's and
-// the decoder's programs, and Encode the text encoder's for a prompt.
+// Open reads the tokenizer and host weights (p.Tables, p.Host, else the checkpoints); Load loads
+// the DiT's and the decoder's programs, and Encode the text encoder's for a prompt.
 func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 	g := &Generator{p: p, dev: dev}
 	var err error
 	if g.tok, err = tokenizer.Load(p.at("tokenizer/tokenizer.json")); err != nil {
 		return nil, err
 	}
-	textFiles, ditFiles := []string{p.at(Files[6]), p.at(Files[7])}, []string{p.at(Files[9])}
-	if p.Host != nil {
-		textFiles, ditFiles = p.Host[""], p.Host["dit."]
+	text := map[string][]string{"": {p.at(Files[6]), p.at(Files[7])}}
+	dit := map[string][]string{"dit.": {p.at(Files[9])}}
+	if p.Tables != "" {
+		text, dit = map[string][]string{"": {p.Tables}}, map[string][]string{"": {p.Tables}}
 	}
-	if g.textW, err = OpenWeights(nil, map[string][]string{"": textFiles}); err != nil {
+	if p.Host != nil {
+		text, dit = map[string][]string{"": p.Host[""]}, map[string][]string{"dit.": p.Host["dit."]}
+	}
+	if g.textW, err = OpenWeights(nil, text); err != nil {
 		return nil, err
 	}
-	if g.ditW, err = OpenWeights(nil, map[string][]string{"dit.": ditFiles}); err != nil {
+	if g.ditW, err = OpenWeights(nil, dit); err != nil {
 		g.Close()
 		return nil, err
 	}
