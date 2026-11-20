@@ -49,6 +49,11 @@ type expertPool struct {
 	init    []float64
 	ids     []int32
 
+	// inflight are the copies into a place still running (a guess of the next layer's experts:
+	// route.go), by layer and place, nil for none: closed when done
+	inflight [][]chan struct{}
+	waiting  time.Duration // for them
+
 	hits, misses int64
 	copying      time.Duration // the decode steps' copies
 	loading      time.Duration // the prompt passes' copies
@@ -103,6 +108,10 @@ func (m *Model) openPool() error {
 			pl.of[i] = -1
 		}
 		p.places[l] = pl
+	}
+	p.inflight = make([][]chan struct{}, L)
+	for l := range p.inflight {
+		p.inflight[l] = make([]chan struct{}, P)
 	}
 	if p.data, err = syscall.Mmap(int(f.Fd()), 0, int(st.Size()), syscall.PROT_READ, syscall.MAP_SHARED); err != nil {
 		return fmt.Errorf("iron: experts_pool: %w", err)
@@ -179,6 +188,7 @@ func (m *Model) fillPool() error {
 	if p == nil || p.filled {
 		return nil
 	}
+	m.waitGuesses()
 	t0 := time.Now()
 	order := make([]int, p.E)
 	for l := range p.L {
@@ -224,6 +234,7 @@ func (m *Model) fillPool() error {
 // checkPool compares every place's tables with its expert's in the experts file
 // (HWNPU_MOE_DEBUG=check).
 func (m *Model) checkPool() error {
+	m.waitGuesses()
 	p := m.pool
 	bad := 0
 	for l := range p.L {
@@ -362,6 +373,16 @@ func (p *expertPool) victim(l int, keep func(e int) bool) int {
 	return best
 }
 
+// waitPlace waits for a copy still running into place i of layer l.
+func (p *expertPool) waitPlace(l, i int) {
+	if c := p.inflight[l][i]; c != nil {
+		t0 := time.Now()
+		<-c
+		p.waiting += time.Since(t0)
+		p.inflight[l][i] = nil
+	}
+}
+
 // place puts expert e of layer l into place i (the copy is the caller's).
 func (p *expertPool) place(l, e, i int) {
 	pl := &p.places[l]
@@ -394,11 +415,13 @@ func (m *Model) placeChoices(l int, ids []int32, places []int) ([]int, error) {
 		i := pl.of[e]
 		if i >= 0 {
 			p.hits++
+			p.waitPlace(l, i) // a guess's copy: in before the command reads it
 		} else {
 			p.misses++
 			if i = p.victim(l, chosen); i < 0 {
 				return nil, fmt.Errorf("iron: decode layer %d: no place for expert %d (%d places)", l, e, p.P)
 			}
+			p.waitPlace(l, i) // a guess's copy over it first
 			p.place(l, e, i)
 			copies = append(copies, [2]int{e, i})
 		}
@@ -483,6 +506,7 @@ func (m *Model) loadExperts(l int, loads [][2]int) error {
 // experts in a place first, then those not in one, copied in over the places of experts no pass
 // to come needs (the least used lately first, the core ones last) before their pass.
 func (m *Model) poolPasses(h *HostStep, rt *moeRoute, ids []int32, n, K int) error {
+	m.waitGuesses() // the prompt's passes read and copy over any place
 	p := m.pool
 	if p == nil || h.Layer < 0 || h.Layer >= p.L || h.Places != p.P || h.Experts != p.E {
 		return fmt.Errorf("iron: moe_route_mx4 of layer %d: %d places of %d experts, the pool's %d", h.Layer, h.Places, h.Experts, p.P)

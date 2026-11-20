@@ -219,6 +219,7 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 // The caches and the states go with it, so a sequence starts again after Reload; one to come
 // back to is copied out first (ExportRows, StateAt). The model must not run until Reload.
 func (m *Model) Release() error {
+	m.waitGuesses() // no copy into a bank that goes
 	var errs []error
 	for _, v := range m.versions() {
 		if v == nil {
@@ -429,6 +430,10 @@ func (m *Model) Close() error {
 			fmt.Fprintf(os.Stderr, "experts: %d places of %d: decode choices %d in a place, %d copied in (%.1f %%) in %.2f s (%.1f ms each); prompts %d copied in %.2f s\n",
 				p.P, p.E, p.hits, p.misses, 100*float64(p.misses)/float64(max(1, p.hits+p.misses)), p.copying.Seconds(),
 				p.copying.Seconds()*1000/float64(max(1, p.misses)), p.loads, p.loading.Seconds())
+			if r := m.router; r != nil && r.prefetchN > 0 {
+				fmt.Fprintf(os.Stderr, "experts: the next layer's %d guesses brought %d experts in, %d of them run (%.0f %%); waited %.2f s for them\n",
+					r.guess, r.prefetchN, r.prefetchU, 100*float64(r.prefetchU)/float64(r.prefetchN), p.waiting.Seconds())
+			}
 		}
 		if _, ok := experts.DebugOpt("check"); ok && !m.released && m.pool.filled {
 			if err := m.checkPool(); err != nil {
