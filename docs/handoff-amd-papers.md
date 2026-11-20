@@ -57,7 +57,7 @@
 **残作業**
 - (a) 静かな NPU で測り直す: 済み (16.266 の「静かな NPU で測り直す」)。費用は設定の大きさで増える (40 µs + 2.3 µs/KB)
 - (b) 実機のデコードで確かめる: 済み。LFM3-1.7B 92.6 ms に対して見積もり 98 ms、Gemma 4 E2B 137 ms に対して 138 ms、Qwen3.6 はコマンドごとの時間で 1 トークン約 90 ms / 122 ms が設定
-- (c) 1 層の演算をまとめる: LFM3-1.7B で済み (16.268、`ShortConvStep`、`SandwichAdd`、`QGEMVGlu` で 11.2 → 15.6 トークン/秒、KL は同じ)。Gemma 4 E2B も済み (16.269、7.7 → 9.3 トークン/秒、KL は同じ)。LFM3-VL・Audio・Omni は 11.3 → 15.6、Gemma 4 E4B は 5.5 → 6.4 (16.272)。残りの大きな費用は QGEMV の設定 (1 つ 75〜97 KB) への戻り
+- (c) 1 層の演算をまとめる: LFM3-1.7B で済み (16.268、`ShortConvStep`、`SandwichAdd`、`QGEMVGlu` で 11.2 → 15.6 トークン/秒、KL は同じ)。Gemma 4 E2B も済み (16.269、7.7 → 9.3 トークン/秒、KL は同じ)。LFM3-VL・Audio・Omni は 11.3 → 15.6、Gemma 4 E4B は 5.5 → 6.4 (16.272)。QGEMV を 1 列 1 コアに、sandwich を GEMV の中で (16.277、LFM3 15.6 → 17.2)。LFM3 の ShortConvStep が状態の置き場を直接読み書き (16.278、+2 %)。プロンプトの短い畳み込みを 1 演算子に (16.278、LFM3 16 トークン −13 %、Qwen3.5-0.8B −25 %)。残りの大きな費用は、デコードでは層の中の演算の切り替え (1 配列の形が要る)、Qwen3.6 では GDN の演算子の設定 374 KB × 30 層、プロンプトでは IRON の GEMM が行に関係なく重みを全部の行の単位に流すこと
 - (d) 済み (16.272): ローカルのブランチ t3/qwen36-integrate が GDN の演算子に状態の枠を直接読み書きさせていた (`gdn_operator(slots=)`)。取り込んだ。今の main から作った Qwen3.6 が遅かった原因もこのブランチが main に入っていなかったこと
 - (e) GDN の 0 の塊: 済み (16.267)。Qwen3.5-0.8B で 13.2 → 14.1 トークン/秒 (ロジットはビット単位で同じ)、t3/qwen36-integrate と合わせて Qwen3.5-0.8B 13.8 → 18.7、Qwen3.6 8.5 → 8.9 (16.272、どちらもビット単位で同じ)
 - (f) `--load-pdi-to-ctrl-pkt`: aiecc が「operand #0 does not dominate this use」で止まる (`--ctrlpkt-adaptive-overlay=false`、teardown なしでも)。上流 (Xilinx/mlir-aie #3928 の計画、#3934・#3935 はマージ済み) にこの不具合の報告はない。複数列の設計は #3488 (実機で止まる、open) にも当たりうる
