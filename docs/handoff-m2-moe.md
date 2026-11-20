@@ -44,8 +44,8 @@
 - 疑うところ:
   - **累積の形**: 11c6385 で M3 に合わせて `mm28NEON` の累積を 1 つに (2 つ目の累積と ADD4S を外した) した。M3 では `VEOR v,v,v` が 0 にする慣用句として扱われず、累積を使い回すと鎖が直列になっていたのが本当の原因で、`VMOVI $0` に替えて 2 倍になった (記憶メモ「NEON: zero with MOVI」)。M2 (Avalanche/Blizzard) の SMMLA の待ち時間と並びの数は測っていない。2 つの累積、ループの展開、命令の並べ方を M2 で比べる
   - **命令ごとの速さ**: M3 は SMMLA が約 6 サイクル待ち、1 サイクル 1.5 個 (1 コア 約 190 GMAC/s)、SDOT が約 3 サイクル、3.5 個。命令の種類を 1 つずつ抜いて時間を比べると、どこが詰まっているか分かる (M3 ではこれで EOR を見つけた)。`internal/mxfp4/mxfp4_test.go` の `BenchmarkDot`、`BenchmarkRunVectors`
-  - **SDOT の道との比較**: `HWNPU_MXFP4_I8MM=0` で SMMLA を使わない。M2 で SDOT の方が速ければ、M2 だけ切り替える
-  - **ワーカーの数と塊**: `internal/mxfp4/matvec.go` の `Run` は `GOMAXPROCS` (M2 も 8 = P 4 + E 4) のワーカーが 1 つのカウンタから塊 (`chunk` 行) を取り合う。E コアは遅いが取り合いなので最後の塊のぶんしか待たない。それでも `GOMAXPROCS=4`、`6` と塊の大きさを比べる。眠りと起き上がり: `HWNPU_MXFP4_SPIN`、`HWNPU_MXFP4_SPINNERS` (M3 では hwnpu-chat の中で差がなかった)
+  - **SDOT の道との比較**: `HWNPU_MXFP4=i8mm=0` で SMMLA を使わない (`pad=N` で 8 の倍数を超えたベクトルの扱い)。M2 で SDOT の方が速ければ、M2 だけ切り替える
+  - **ワーカーの数と塊**: `internal/mxfp4/matvec.go` の `Run` は `GOMAXPROCS` (M2 も 8 = P 4 + E 4) のワーカーが 1 つのカウンタから塊 (`chunk` 行) を取り合う。E コアは遅いが取り合いなので最後の塊のぶんしか待たない。それでも `GOMAXPROCS=4`、`6` と塊の大きさを比べる。眠りと起き上がり: ワーカーを回して待たせる形は M3 で hwnpu-chat の中で差がなく、コードごと外した (improvements.md 8 節)。M2 で試すなら `internal/mxfp4/matvec.go` の `workers.loop` に戻す
 - 変えたら: `go test ./internal/mxfp4 ./internal/llm/experts` (値は `TestDot`、`TestRunVectors` が見る)、hwnpu-chat で同じ文になること、`hwnpu-dev generate -score` の KL が変わらないこと。M3 でも遅くならないこと (M3 で測れないなら、CPU の種類で切り替える)
 
 ### 3.2 固定していない専門家の外れ (6.4 GB の 10.1 tok/s と全部固定の 13.2 の差)
