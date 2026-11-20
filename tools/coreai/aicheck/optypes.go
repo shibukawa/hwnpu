@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -57,6 +59,35 @@ func listOps(pkg string, n int) error {
 		}
 		sort.Strings(ins)
 		fmt.Printf("%4d %-32s %-28s %v %v\n", i, op.GetType(), o.GetName(), dims, ins)
+	}
+	return nil
+}
+
+// lint lowers each package without its weights and prints what the Neural Engine would get
+// wrong for some values in it (ailower.LintPackage, design.md 16.262), counting each note once a
+// package.
+func lint(pkgs []string) error {
+	for _, p := range pkgs {
+		lintOne := ailower.LintPackage
+		if strings.HasSuffix(strings.TrimSuffix(p, "/"), ".aimodel") {
+			lintOne = lintProgram
+		}
+		notes, err := lintOne(p)
+		if err != nil {
+			fmt.Printf("%s: FAIL %v\n", p, err)
+			continue
+		}
+		seen := map[string]int{}
+		var order []string
+		for _, n := range notes {
+			if seen[n] == 0 {
+				order = append(order, n)
+			}
+			seen[n]++
+		}
+		for _, n := range order {
+			fmt.Printf("%s: %s\n", p, n)
+		}
 	}
 	return nil
 }

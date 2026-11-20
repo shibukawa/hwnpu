@@ -79,10 +79,15 @@ func (l *lowerer) op(op *milspec.Operation) {
 	case "silu":
 		x := l.in(op, "x")
 		set(l.binary("mul_v1", x, l.sigmoid(x), x.shape))
-	case "softplus": // log(1 + exp(x))
+	case "softplus": // log(1 + exp(x)) as relu(x) + log(1 + exp(-|x|))
+		// log(1 + exp(x)) as it stands gave 0 on the Neural Engine for x above 10.4, where exp(x)
+		// passes 2^15 (an M2, design.md 16.262; log and exp alone are right there): the stable
+		// form keeps every value under 2 (qwen35's softplus is the same)
 		x := l.in(op, "x")
-		e := l.emit("exp_v1", x.elem, x.shape, nil, x)
-		set(l.emit("log_v1", x.elem, x.shape, nil, l.binary("add_v1", e, l.scalar(x.elem, 1), x.shape)))
+		neg := l.binary("mul_v1", l.emit("abs_v1", x.elem, x.shape, nil, x), l.scalar(x.elem, -1), x.shape)
+		e := l.emit("exp_v1", x.elem, x.shape, nil, neg)
+		tail := l.emit("log_v1", x.elem, x.shape, nil, l.binary("add_v1", e, l.scalar(x.elem, 1), x.shape))
+		set(l.binary("add_v1", l.binary("maximum_v1", x, l.scalar(x.elem, 0), x.shape), tail, x.shape))
 	case "elu": // x above 0, alpha (exp(x) - 1) below: max(x, 0) + alpha (exp(min(x, 0)) - 1)
 		x := l.in(op, "x")
 		zero := l.scalar(x.elem, 0)
@@ -412,6 +417,12 @@ func (l *lowerer) matmul(x, y val, tx, ty bool, oshape []int) val {
 		y = swap(y)
 	}
 	r := len(oshape)
+	if len(x.shape) == r && len(y.shape) == r && x.shape[r-1] == 1 && x.elem == "float16" && y.elem == "float16" {
+		// an inner dimension of 1 is an outer product: a broadcast multiply. The Neural Engine's
+		// matmul of (1 x 1)(1 x N) is wrong (relative errors to 0.28 on an M2, M of 64 right;
+		// design.md 16.262), its multiply right.
+		return l.binary("mul_v1", x, y, oshape)
+	}
 	batch := oshape[:r-2]
 	// as coreai-core writes it: the composite broadcasting_batch_matmul_v1, whose body broadcasts
 	// the operands to the batch dimensions (broadcast_to) and multiplies. Written as primitives at
@@ -470,8 +481,22 @@ func (l *lowerer) sliceByIndex(op *milspec.Operation, oshape []int) val {
 		begin[i], end[i] = b, e
 		shape[i] = (e - b + stride[i] - 1) / stride[i]
 	}
+	if b := begin[r-1]; b%32 >= 1 && b%32 <= 14 && stride[r-1] == 1 && x.elem == "float16" {
+		l.note(fmt.Sprintf("%s: slice of the last axis (%v) from %d: the Neural Engine takes values above 4094 to Inf there (begin mod 32 in 1..14, design.md 16.262)", opName(op), x.shape, b))
+	}
 	y := l.emit("slice_v1", x.elem, shape, nil, x, l.i32s(begin...), l.i32s(end...), l.i32s(stride...))
 	return l.reshape(y, oshape)
+}
+
+// note tells of what the program lowers to that the Neural Engine gets wrong for some values
+// (design.md 16.262): LintPackage collects them, HWNPU_AILOWER_NOTES=1 prints them as programs
+// are lowered.
+func (l *lowerer) note(msg string) {
+	if l.notes != nil {
+		*l.notes = append(*l.notes, msg)
+	} else if os.Getenv("HWNPU_AILOWER_NOTES") == "1" {
+		fmt.Fprintln(os.Stderr, "ailower note:", msg)
+	}
 }
 
 func ones(n int) []int {

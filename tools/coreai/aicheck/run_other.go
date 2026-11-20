@@ -30,3 +30,7 @@ func mx([]string) error { return errDarwin }
 func moe4([]string) error { return errDarwin }
 
 func moePack([]string) error { return errDarwin }
+
+func rules([]string) error { return errDarwin }
+
+func limits([]string) error { return errDarwin }

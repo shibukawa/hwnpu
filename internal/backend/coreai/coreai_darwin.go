@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -466,8 +467,17 @@ type graph struct {
 	placement types.PlacementReport
 	cached    bool
 	owned     string
+	onANE     bool // counted in aneLive
 	mu        sync.Mutex
 }
+
+// aneLive is the programs this process has loaded on the Neural Engine and not closed. An M2
+// takes 112 at a time: the next fails to load there ("no ANE resources") and Core AI runs it on
+// the GPU instead (aicheck limits, design.md 16.262).
+var aneLive atomic.Int64
+
+// aneProgramLimit is the programs a process had on the Neural Engine at once on an M2.
+const aneProgramLimit = 112
 
 func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Graph, error) {
 	if src.Format != types.GraphFormatNative || src.Path == "" {
@@ -579,6 +589,13 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	if OnCPU() { // the cache's entry may be another run's, for the Neural Engine
 		g.placement = types.PlacementReport{Method: UnitsEnv, Verified: true, Ops: []types.OpPlacement{{Name: "program", Type: "program", Device: "cpu"}}}
 		offNPU = nil
+	}
+	if g.placement.OnNPU() && !OnCPU() {
+		g.onANE = true
+		aneLive.Add(1)
+	}
+	if n := aneLive.Load(); len(offNPU) > 0 && n >= aneProgramLimit-8 {
+		fmt.Fprintf(os.Stderr, "coreai: %s fell back from the Neural Engine with %d programs of this process on it: it takes about %d at a time (an M2)\n", filepath.Base(src.Path), n, aneProgramLimit)
 	}
 	if len(offNPU) > 0 {
 		// Core AI caches a program that the Neural Engine's compiler failed on (out of disk or
@@ -710,6 +727,10 @@ func (g *graph) Close() error {
 	if g.h != 0 {
 		caiClose(g.h)
 		g.h = 0
+	}
+	if g.onANE {
+		g.onANE = false
+		aneLive.Add(-1)
 	}
 	if g.owned != "" {
 		os.RemoveAll(g.owned)

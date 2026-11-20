@@ -54,6 +54,12 @@ func main() {
 		err = moePack(os.Args[2:])
 	case "moe":
 		err = moe(os.Args[2:])
+	case "limits":
+		err = limits(os.Args[2:])
+	case "lint":
+		err = lint(os.Args[2:])
+	case "rules":
+		err = rules(os.Args[2:])
 	case "probe":
 		err = probe(os.Args[2:], os.Getenv("KEEP") != "")
 	case "lower":
