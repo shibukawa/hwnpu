@@ -6,7 +6,7 @@
 
 - ブランチ: `t3/gpt-oss-20b` (PR #243)
 - 専門家は CPU で、チェックポイントを写像したまま (`safetensors.File.Map`、10.2 GB、コピーしない) `internal/mxfp4` の NEON のカーネル (e2m1 を表で引く、行は 32 個ごとに int8、SMMLA / SDOT) で計算する。`internal/llm/experts/host.go`
-- 専門家の固定 (`internal/llm/experts/placement.go`): メモリの半分に収まらないとき (16 GB の機械) は、芯 (models.yaml の `experts_core`、141 個 1.9 GB) を先に、次にアプリの使用統計 (`~/Library/Caches/hwnpu/models/gpt-oss-20b/experts-usage/<キー>.bin`) の順に、予算 (既定はメモリの 3/8 = 6.4 GB) まで専門家ごとに mlock する。30 秒ごと (初回は 5 秒後) に使われ方で入れ替え、`--idle` (5 分) 使わなければ芯以外を外す
+- 専門家の固定 (`internal/llm/experts/placement.go`): メモリの半分に収まらないとき (16 GB の機械) は、芯 (models.yaml の `experts_core`、141 個 1.9 GB) を先に、次にアプリの使用統計 (`~/Library/Caches/hwnpu/models/gpt-oss-20b/experts-usage/<キー>.bin`) の順に、予算 (既定はメモリの 1/4 = 4.3 GB、空きメモリに合わせて上下 (2026-11-20 に 3/8 = 6.4 GB から下げた)) まで専門家ごとに mlock する。30 秒ごと (初回は 5 秒後) に使われ方で入れ替え、`--idle` (5 分) 使わなければ芯以外を外す
 - `HWNPU_MOE_WIRE`: `0` 固定しない、`1` 全部、`6GB` のような大きさは予算
 - `HWNPU_MOE_DEBUG`: 項目の並び。`1` (time) で専門家の時間、固定の様子、固定した専門家に当たった割合。`usage=FILE` で使用回数をファイルにも、`prefault=0|wait`
 - 使用統計の道具: `tools/moeusage/` (`prompts.tsv` 19 分野 約 25 言語 110 個、`collect.sh`、`analyze.py`)
@@ -137,7 +137,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 - 予測は上位 4 個に 87.3 %、上位 8 個に 97.7 % (M3 と同じ)
 - 先読みで 6 GB +2 %、4 GB +4 %。**先読みがあれば 3 GB でも 6 GB と同じ速さ** (M3 でも 3 GB の先読みありが 6 GB の先読みなしより速かった)。先読みは外れの予測のぶん page-ins を 1 回 2〜3 GB 増やす
-- 提案 (まだ変えていない): M2 では既定の予算 (メモリの 3/8 = 6.4 GB) を下げても速さは落ちず、ほかのアプリに 3 GB ほど返せる。M3 の 3 GB (14.7〜15.0) と 6 GB (15.1〜15.2) の差は小さいので、既定を 4 GB 前後 (メモリの 1/4) にするか、両方の機械で決める
+- 提案 (まだ変えていない): M2 では既定の予算 (メモリの 3/8 = 6.4 GB) を下げても速さは落ちず、ほかのアプリに 3 GB ほど返せる。M3 の 3 GB (14.7〜15.0) と 6 GB (15.1〜15.2) の差は小さいので、既定を 4 GB 前後 (メモリの 1/4) にするか、両方の機械で決める → 2026-11-20 に 1/4 にした (M3 でも 3 GB と 6 GB の差は 2〜4 %)
 
 ### 6.4 残り
 

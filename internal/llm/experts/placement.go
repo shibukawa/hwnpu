@@ -92,8 +92,10 @@ func (pl *placer) follow() {
 
 // wiring is how the experts are wired: all of them, none, or a budget of bytes for
 // Placement's choice. HWNPU_MOE_WIRE=1 wires all, 0 none, a size (6GB, 6g, 6.5) that budget;
-// otherwise all when they take at most half of the machine's memory, else 3/8 of it (6 GB of
-// 16). Wired, a token's experts cost half as much even with memory to spare (gpt-oss-20b on a
+// otherwise all when they take at most half of the machine's memory, else a quarter of it (4.3
+// GB of 16 GiB; it was 3/8 until the prefetch made 3 GB as fast as 6: an M2 12.4–12.6 against
+// 12.2–12.5 tokens/s, an M3 16.8–16.9 against 17.2–17.6). The budget then follows the system's
+// free memory (placer.effective). Wired, a token's experts cost half as much even with memory to spare (gpt-oss-20b on a
 // 32 GB M4: 1.8 → 0.9 ms a layer, 13.5 → 18.0 tokens/s): unwired pages of a mapped file keep
 // costing the process faults, and on a 16 GB machine with a desktop's applications open the
 // system drops them (an M2: 13.2 tokens/s wired, 7.9 not).
@@ -118,7 +120,7 @@ func (h *Host) wiring() (all bool, budget int64) {
 	if phys > 0 && 2*n <= phys {
 		return true, n
 	}
-	return false, phys * 3 / 8
+	return false, phys / 4
 }
 
 // bytes is the size of every expert's weights.
