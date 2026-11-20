@@ -305,8 +305,8 @@ models:
     # AMD only. Ryzen AI 9 365 with 64 GB, 2026-11-20 (design.md 16.261): its 61.2 GiB of experts
     # do not fit, so a layer holds 56 places of its 128 (26.8 GiB) and hwnpu copies a chosen
     # expert in from experts.bin (read with O_DIRECT, 2.5 ms an expert); the decode step routed
-    # on the host. 32.05 GiB pinned for the NPU and 1.0 GiB of the process; 9.2–9.3 tokens/s,
-    # 9–12 % of the choices copied in
+    # on the host, the next layer's experts guessed and read ahead. 32.05 GiB pinned for the NPU and
+    # 1.0 GiB of the process; 9.7–9.9 tokens/s, 3 % of the choices copied in
     machine: 64
     memory: {amd: 35.5}
     bytes: {amd: 69.6e9}
