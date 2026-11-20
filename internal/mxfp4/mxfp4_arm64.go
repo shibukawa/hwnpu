@@ -46,3 +46,17 @@ func mm28Kernel(w []byte, e []byte, p *[4]pairVec, out *[16]float32) {
 		out[i] /= 2
 	}
 }
+
+//go:noescape
+func mvNEON(w, e *byte, q *int8, s *float32, nb, rows int, lut *int8, out *float32)
+
+// rowsKernel is dotKernel of each of the rows in one call: false when a row's blocks are odd
+// (the kernel takes them in pairs).
+func rowsKernel(out []float32, w, e []byte, v *Vec) bool {
+	nb := len(e) / len(out)
+	if nb == 0 || nb%2 != 0 {
+		return false
+	}
+	mvNEON(&w[0], &e[0], &v.Q[0], &v.S[0], nb, len(out), &doubled[0], &out[0])
+	return true
+}

@@ -186,17 +186,26 @@ func Opt(name string) (string, bool) {
 type workers struct {
 	sync.Mutex // held by a Run that uses them; another at the same time starts its own
 	started    int
-	gen        atomic.Uint64 // bumped for each Run
-	task       atomic.Pointer[func()]
-	want       atomic.Int64 // the workers the current Run takes
-	done       sync.WaitGroup
+	cur        atomic.Pointer[poolRun] // the Run they are woken for
 	mu         sync.Mutex
 	cond       *sync.Cond
 	sleeping   int
 }
 
+// poolRun is one Run's work for the workers.
+type poolRun struct {
+	work   func()
+	want   atomic.Int64 // the workers it takes yet
+	active atomic.Int64 // the workers at it
+	closed atomic.Bool  // its work is given out: a worker that wakes now has none
+}
+
 var pool workers
 
+// run runs work on the caller and on up to n workers, and returns when all of it is done: work
+// returns to a worker when nothing of it is left to take. The caller does not wait for the workers
+// to wake: one that wakes after the caller's work returned finds the Run closed. (It waited for
+// every one to wake and report, 2026-11-20: after a pause the last of 7 took as long as the work.)
 func (p *workers) run(work func(), n int) {
 	if p.cond == nil {
 		p.cond = sync.NewCond(&p.mu)
@@ -205,39 +214,46 @@ func (p *workers) run(work func(), n int) {
 		go p.loop()
 		p.started++
 	}
-	p.task.Store(&work)
-	p.want.Store(int64(n))
-	p.done.Add(n)
-	p.gen.Add(1)
+	r := &poolRun{work: work}
+	r.want.Store(int64(n))
+	p.cur.Store(r)
 	p.mu.Lock()
 	if p.sleeping > 0 {
 		p.cond.Broadcast()
 	}
 	p.mu.Unlock()
 	work()
-	p.done.Wait()
+	// (a worker counts itself at the Run before it looks whether it is closed, so one of the
+	// two sees the other)
+	r.closed.Store(true)
+	for r.active.Load() != 0 {
+		runtime.Gosched()
+	}
 }
 
 func (p *workers) loop() {
-	var last uint64
+	var last *poolRun
 	for {
-		g := p.gen.Load()
-		if g == last {
+		r := p.cur.Load()
+		if r == last {
 			p.mu.Lock()
-			for g = p.gen.Load(); g == last; g = p.gen.Load() {
+			for r = p.cur.Load(); r == last; r = p.cur.Load() {
 				p.sleeping++
 				p.cond.Wait()
 				p.sleeping--
 			}
 			p.mu.Unlock()
 		}
-		last = g
+		last = r
 		// take a place in this Run, or sit it out (a Run of fewer workers than started)
-		if p.want.Add(-1) < 0 {
+		if r.want.Add(-1) < 0 {
 			continue
 		}
-		(*p.task.Load())()
-		p.done.Done()
+		r.active.Add(1)
+		if !r.closed.Load() {
+			r.work()
+		}
+		r.active.Add(-1)
 	}
 }
 

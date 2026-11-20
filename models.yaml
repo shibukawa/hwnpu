@@ -313,9 +313,10 @@ models:
     # cache's derived/), mapped and none wired where they are over three quarters of the memory:
     # the page cache keeps what fits and a token's experts that are not there are read whole;
     # the token mixers, the routers and the shared experts on the Neural Engine.
-    # An M3 of 16 GB (2026-11-20, 8 prompts of different fields): 9.8-10.0 tokens/s (8.4 with 3
-    # GB taken by another process), 2602 tokens of prompt in 94 s; the Neural Engine 1.94 GB and
-    # the process 0.87 GB, 2.8 GB, beside the page cache's share of the experts' 17.1 GB (6-7
+    # An M3 of 16 GB (2026-11-20, 8 prompts of different fields, docs/design.md 16.275):
+    # 10.9-11.0 tokens/s, 2602 tokens of prompt in 21.5 s (its steps through one part at a time,
+    # the experts read once); the Neural Engine 1.94 GB and the process 0.75 GB, 2.7 GB, beside
+    # the page cache's share of the experts' 17.1 GB (6-7
     # GB there, which the system counts as free)
     family: qwen3.6
     tag: 35b-a3b
@@ -326,7 +327,7 @@ models:
     # experts and head at 4 bits, the mixers at 8) and the process's 880 MiB at its peak while
     # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB
     machine: 48
-    memory: {amd: 26.3, apple: 2.8}
+    memory: {amd: 26.3, apple: 2.7}
     bytes: 71.9e9
     features: [tools, thinking]
     amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4

@@ -30,7 +30,7 @@ var MoEArch = &llm.Arch{
 	Format:        "lut8",
 	LastRow:       true,
 	// 1: a chunk of one row without the matmul of an inner dimension of 1 (deltaRuleChunks), 2026-11-20
-	Revision:   1,
+	Revision:   2, // 2: win_conv_N_new is the window after the step's tokens (step_window)
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseMoE(raw) },
 	Params: []llm.Param{
 		{Name: "delta", Default: "chunk", Usage: "the Gated DeltaNet's recurrence: chunk (over chunks of rows) or rows (one row after the other)"},

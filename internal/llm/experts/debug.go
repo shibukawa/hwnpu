@@ -16,7 +16,9 @@ import (
 // the next layer's guessed experts (0: none; the default is as many as a token runs), "read=0"
 // leaves the experts a run chose to the page faults instead of reading them whole (Host.readIn),
 // "row=0" runs a token's experts as the rows' three Runs instead of one piece of work each
-// (Host.runRow).
+// (Host.runRow), "many=0" a prompt's experts for a step's rows at a time instead of several steps'
+// together (the values of a step at a time, bit for bit), "wave=0" a prompt's steps one after
+// another through every part instead of a part at a time for all of them (decode.Session.Steps).
 func DebugOpt(name string) (string, bool) {
 	for _, it := range strings.Split(os.Getenv("HWNPU_MOE_DEBUG"), ",") {
 		k, v, _ := strings.Cut(strings.TrimSpace(it), "=")
