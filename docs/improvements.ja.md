@@ -527,6 +527,72 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 - **小さな部分はホストへ**: norm の統計、最後の tanh、埋め込みの行。データが少なく、ホストは float64 で計算できる
 - **代わりを単独で、次に全体で確かめる**: 演算子をその参照 (float64 かチェックポイントの値) と比べ、次にモデルの出力を CPU の版と比べる。Neural Engine や NPU の値の間違いは、配置の報告には出ない
 
+### 7.6 Apple: Neural Engine に乗らない演算と、その境目
+
+Neural Engine で動かない演算とプログラム (CPU か GPU に回る、コンパイルが失敗する、乗っても値が違う) について、docs に記録があるものを並べた。それぞれ、どこを超えるとそうなるかと、hwnpu の対処を書いた。「Core ML」「Core AI」はバックエンド。チップは見た機種を書いた (ほかの機種は試していない)。括弧の数字は design.md の節。
+
+**見つけ方**: Core AI で乗ったかどうかは MPSGraph の manifest (`mps.fullyPlacedOnANE`) に出る。`coreai-build compile X.aimodel --architecture h13g` (M1。M3 は h15g) を使うと、端末の ANE のコンパイルを Neural Engine なしで数秒で再現できる。理由は `coreai-build` の os_log に出る (`/usr/bin/log show --predicate 'process == "coreai-build"'` の "Unsupported NE layer"。zsh の `log` は組み込みのコマンドなので、パスで呼ぶ)。ANE の部分が N 個に分かれていれば ("Configuring bonded mode for procedure … region_K")、その間の N − 1 か所が ANE の外にある。`aicheck run -cpu` と `HWNPU_AILOWER_CUT` を使うと、先頭からの演算の数で二分探索できる。
+
+**Neural Engine にない演算と形**
+
+| 演算・形 | バックエンド、チップ | どこを超えると | 代わりに | hwnpu の対処 |
+|---|---|---|---|---|
+| `sin` | Core AI、M1 | いつも (M3 では乗る。`sin_v1` は ±8 で 0.004、±32 で 0.016) | プログラムごと GPU | π を単位に ±π/2 へ縮めてから級数 (MOSS の DAC、16.262) |
+| `sin`、`cos`、`floor`、`round`、`ceil`、`mod`、`floor_div`、`sign`、`cast` | Core ML | いつも | CPU | 入力の 1536 で `(v + 1536) − 1536` として丸めてから級数 (16.136) |
+| `mod` | Core AI | いつも | プログラムごと GPU | (handoff-ane-gather.md 1b) |
+| 要素ごとの演算にまとめられた clip ("NEFUSED_EW: EW: MAX") | Core AI、M1 (h13 のコンパイラ) | 段のほかの要素ごとの演算と並ぶとき (clip だけなら通る) | プログラムごと GPU | DAC の snake を下の形にすると通る (16.262) |
+| 定数倍した入力どうしの引き算 ("NEFUSED_EW: KernelPreScales (1, −0.0166)") | Core AI、M1 | `y − 3.125 n − (π − 3.125) n` | プログラムごと GPU | `u = y / π`、`n = (u + mg) − mg2`、`w = 2 (u − n)` (16.262) |
+| mg が入力の `(v + mg) − mg` | Core AI | いつも `v` に畳まれる (丸めにならない) | 値が違う | 引く側を別の入力 `mg2` に (16.262) |
+| `gather` | Core ML | いつも | CPU | one-hot の行列積、表を位置から作る (16.13、16.82、16.100) |
+| `gather_nd`、`gather_along_axis`、実行時の begin の `slice_by_index`、`reduce_argmax` | Core AI、M1 | いつも (int32 は "expected fp16, …"、int16 は "Cannot decompose layer") | GPU | M1 では gather を使わない (handoff-ane-gather.md) |
+| `gather_nd` | Core AI、M3 | int32 の添字。int8 の K 4 | GPU | int16 の添字 (cos 1.000000、毎秒約 3 G 要素で定数の重みの 1/6) を小さな表にだけ使う |
+| `conv_transpose` | Core ML、M1 | stride 5 と 7。2048→1024 k16 s8 は 1536 フレームで (1024 なら乗る) | CPU | stride 2 以外は多相に (16.136) |
+| 膨張のある畳み込み | Core ML、M1 | 膨張 17、27、40、48 (2 は乗る) | CPU | ずらした写しをチャンネルに並べて 1×1 の畳み込み (16.128) |
+| 膨張のある畳み込み | Core AI、M3 | 幅方向の膨張 5 と 7 | GPU | `phaseConv`: (1, C, T / d, d) に並べ、高さ方向に膨張なし (16.197) |
+| `max_pool` | Core ML、M1 | 窓 9 と 13 (stride 1) | CPU | 窓 5 を重ねる (16.129) |
+| depthwise の畳み込み | Core ML、M1 | 4096 チャンネルを超えると (5760、5600) | CPU | 4096 ずつに分ける (16.145) |
+| 組ごとの int8 (`int8-g32`) | Core ML、M1 | いつも | CPU | 行ごとの int8 (16.145) |
+| int4 (`ios18.linear`) | Core ML | 出力 107520 の層 | CPU (その層) | lut4。Mac では int4 を使わない (16.164) |
+| 32 列の行列積にした Q4_0 | Core ML、M3 | いつも | CPU (組の畳み込みなら乗るが 7 倍遅い) | lut6 (16.26) |
+| 外側が素の演算の int8 `blockwise_shift_scale_v2` | Core AI | いつも | プログラムごと外れる | 複合の `broadcasting_batch_matmul_v1` (16.169) |
+| 行列積の隣の `exp / sum`、softmax | Core AI | 注意の演算にまとめられる | 外れる | `exp(x − max) × reciprocal(sum)` (16.169、16.201) |
+| 指数の和の `reduce_sum` | Core ML、M3 / Core AI、M1 | Core ML はコンパイルのたびに変わる (塊 2048〜16384)。Core AI は 8 行 × 1024〜8192 キー | CPU / 外れる | 1 との行列積 (16.22)。kv ヘッドごとの注意 (16.219) |
+| 注意の塊のまとめ | Core ML、M3 | 軸に沿って縮める、和 / 全体で重みを付ける、max の前の 1/n | CPU (全体) | 和を足して最後に 1 回割る (16.21) |
+| `transpose` 1 つ、語彙 262144 の `reshape` | Core ML、M3 | PLaMo 3 の最後の部分、Gemma 4 の出力 | CPU (その演算) | ホストで並べ替え、`-logits host` / `folded` (16.43、16.71) |
+| SpectroStream の `upsample_nearest_neighbor`、`reshape`、`transpose` | Core ML、M2 | 4 つ | CPU | ホストで作って入力に (16.132) |
+| (3, 39) の畳み込み + ReLU (Basic Pitch) | Core ML | 幅 16 以下に分けても | CPU | 未解決 (16.129) |
+| 8 × 8 と 8 × 8 の行列積 (Qwen3.5 の GDN の塊) | Core ML / Core AI | いつも | CPU / 外れる | (8 × 8)·(8 × 128) の積 7 つ、累積和は定数の linear (16.193) |
+
+**大きさ**
+
+| 何が | バックエンド、チップ | どこを超えると | 代わりに | hwnpu の対処 |
+|---|---|---|---|---|
+| どの次元も | Core ML、M3 (ほかも) | 16384 を超えると (16384 は乗る、16385 で 39 演算が CPU) | CPU | 文脈 16383 まで、16384 の塊、行列を分ける (16.16〜16.22)。出力・入力・連結も分ける (16.129、16.149、16.189、16.248) |
+| MLP の中間 | Core AI、M1 | 18944 (Qwen2.5-Coder 7B。13824 は乗る) | 部分ごと外れる (0.1 tok/s) | 32 列の倍数で分ける (16.230) |
+| DAC の段 (256 → 128 チャンネル、stride 3) | Core AI、M1 | 入力 4998 フレーム、出力 14994 ("unexpected failure"。4500 → 13500 は通る。間は試していない) | GPU | 1 回 4500 フレーム (16.262) |
+| 1152 チャンネルの VAE の段 | Core AI、M1 | MaxScaled + SiLU の後の 1152 × 64 × 64 (48 × 48、768 × 64 × 64、576 × 96 × 96 は乗る) | GPU ("Allocation failure for L2-dep pair")。失敗する関数が 1 つあると `.aimodel` の関数がみな落ちる | 48 × 48 以下のタイル、関数を分ける (16.184) |
+| `tile` のある 1024 チャンネル 32 × 32 の段、64 × 400 × 400 への `pixel_shuffle` | Core AI、M1 | "empty reset layer candidates in SS cost model" | GPU | `tile` を 1 × 1 の畳み込みに、256 行以下の帯に (16.189、16.190) |
+| プログラム | Core ML / Core AI、M3 | 1 GiB / 2.5〜3 GiB (2.5 は乗る、3 は乗らない) | CPU / GPU | 層で分ける (16.12、16.169) |
+| 仕事が少ない | Core ML | 幅 128 の 3 層の MLP をバッチ 1 で。1 行 (Anima の時刻、SigLIP の問い)。注意の塊が Q=1 で 16384 キー未満、Q=8 で 4096 未満 | CPU | 8 行に、小さな部分は大きな部分に入れる (16.6、16.58、16.85、16.183) |
+| 注意のスコア | Core ML | 64 MiB を超えると | 乗るが 2〜3 倍遅い | 問いを塊に (16.85) |
+
+**乗るが値が違う**
+
+| 何が | バックエンド、チップ | どこを超えると | ずれ | hwnpu の対処 |
+|---|---|---|---|---|
+| 入力をほかの演算が計算する幅方向の畳み込み | Core AI、M3 | カーネル > 1、512 チャンネル以上 (2048 フレーム以上) | 1.26 (相対 RMS) | 高さ方向に (16.197) |
+| 膨張のある畳み込み | Core AI、M3 | 幅方向の膨張 9 (256 ch) で 1.30。高さ方向の膨張 3 (128 ch) は 8000 と 15000 フレームで 1.3〜1.4 (7680、9000、16000 は正しい) | | `phaseConv` (16.197) |
+| 明示の `pad` の後の畳み込み | Core AI、M3 | | 0.99 | pad を使わない (16.197) |
+| `conv_transpose` | Core ML、M1 | stride 8、4、3 (2 は 0.3 %) | 22 %、45 %、4 % | 多相 (0.14〜0.29 %、16.136) |
+| 定数での `divide_v1` | Core AI、M3 | いつも | 積になる: 0.707 u が 1.40〜1.44 u + d | `x × (1/c)` (16.182) |
+| 列のブロックの表と組の scale (lut 16 × 32、int4-g32/g128、int8-g32) | Core AI、M1 | いつも (全部 ANE に乗る) | cos 0.966〜0.984 | 変換で断る (`rowsOnly`、16.230) |
+| `softplus`、`silu` | Core ML、M3 | 一部の入力 (softplus が 0)。silu は 1.4 % | KL 0.33 / 0.76 | exp で書く (16.88、16.95) |
+| 深い CNN を通る `sigmoid` (と sigmoid × x の SiLU) | Core ML | SiLU 80 個 (RTMDet-s): 最初の畳み込みで 0.0011、ステージ 2 の後 0.155 | 箱が 98 px ずれ (CPU は 7.5)、物が 1 つ減る | `1 / (1 + exp(−x))`、`x / (1 + exp(−x))` (16.149) |
+| fp16 の非正規化数と小さな積 | 両方 | 1e-5 ほど以下 | 消える | scale を掛ける (16.88、16.134、16.202) |
+| 大きな値 | Core ML、M1 | 1.2e7 まで (SpectroStream)、RMS 正規化の前の 3.8e4 (SANA の bos) | 0.80、NaN | 2 の冪の scale、重み × 1/64 (16.133、16.145) |
+
+**ほかのコンパイルの失敗と止まり**: 隣り合う lut の表が同じだと `coreai-build` が ANE をあきらめる (どの機種も、16.249)。9 種類の機種では `coreai-build` 自体が落ちる (known-issues 6)。幅の広い one-hot (128 × 16000) は M1 の Neural Engine をどのプロセスからも約 20 分止めた (16.131)。1 つの `.aimodel` に関数を 60 入れると、一部が GPU に回った (16.188)。
+
 ## 8. 試して効かなかったもの・採らなかったもの
 
 | 試したこと | 結果 | 節 |

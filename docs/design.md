@@ -7830,3 +7830,27 @@ docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常�
 |---|---|---|
 | 全部常駐 | 13.7 GB で 13.4 トークン/秒 | 12.22 GiB + 0.3 で 20.2 |
 | 一部 | 24 層を動的に: 2.7 GB で 2.4 | 置き場 16: 6.90 GiB + 0.3 で 17.2、24: 9.44 GiB で 19.0 |
+
+### 16.262 MOSS-SoundEffect の DAC を M1 の Neural Engine にも: snake の sin を級数に、段 3 を 4500 フレームに — 2026-11-19
+
+16.197 で M3 では DAC の 5 段がすべて Neural Engine に乗ったが、M1 (h13) では 5 段とも GPU に回り、`--allow-off-npu` がないと `generate -m sfx` が失敗した。M1 で直した。
+
+**見つけ方**: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine` で、端末のコンパイルが Neural Engine なしで 1 段 1 秒で再現する (乗ったかは `manifest.plist` の `mps.fullyPlacedOnANE`)。理由は `coreai-build` の os_log に出る (`/usr/bin/log show --predicate 'process == "coreai-build"'`。zsh では `log` が組み込みなので `/usr/bin/log`)。snake だけのプログラム (チャンネルは DAC の最後の snake) でも試した。
+
+**乗らなかったもの** (M1 の ANE のコンパイラ)
+1. `sin`: Core AI が GPU に回す (M3 では `sin_v1` が Neural Engine で動く)。段 4 は ANE の部分が 9 つに割れ、その間が snake の数 (8) と同じだった
+2. clip を要素ごとの演算にまとめたもの: "Unsupported NE layer "NEFUSED_EW": EW: MAX"。clip を外すと段全体は通らないが、snake だけなら clip があっても通る
+3. 16.136 の級数 (Intel の形) の `y − 3.125 n − (π − 3.125) n`: "NEFUSED_EW": "KernelPreScales: (1,-0.0165863)" (定数倍した入力どうしの引き算)
+4. 段 3 (256 → 128 チャンネル、stride 3) の 1 回 4998 フレーム (出力 14994): 演算の名前なしの "Failed to compile function …: unexpected failure"。4500、3996、2997 は通る (4500 より上は試していない)
+
+**直し方** (`internal/sfx/dac.go`。Core AI の書き出しだけ。Core ML (`--cpu`) は `sin` のまま、Intel は前の級数のまま)
+- snake の sin を、π を単位にした縮め方の級数で: `u = y / π`、`n = (u + mg) − mg2`、`w = 2 (u − n)`、sin(y) = sin(π/2 · w) を 16.136 の級数で。丸めの定数は 2 つの入力 (`mg`、`mg2`、どちらも 1536): 1 つだと Core AI が `(u + mg) − mg` を `u` に畳む (16.197)。clip (±1500) は残した (|u| < 512 で丸めが正しい)。u は y と同じく fp16 なので、y を fp16 にしたときの誤差と同じくらいの粗さになる
+- 段 3 を 1 回 4500 フレームに (出力 13500 は 9 の倍数で、`phaseConv` に合う)
+- `DACRevision` 3 (書き出しの名前は `hwnpu-dac-r3-fp16`)。M3 も同じ書き出しを取るので、M3 も級数になる
+
+**結果** (M1、macOS 27.2)
+- `coreai-build` で h13g (M1) も h15g (M3) も 5 段とも `mps.fullyPlacedOnANE`。前の DAC (r2) は h15g でも通らなかった (M3 の端末のコンパイラは通す)
+- `TestDecodeLatentsCoreAI` (`HWNPU_SFX_COREAI=1`): 5 段とも端末で Neural Engine に乗り (初回の読み込み 段 0 3 分 14 秒、ほかは 1.4〜7.6 秒)、種で決めた潜在 250 フレーム (5 秒) を 4.1 秒で。CPU のインタプリタ (fp32 の sin) との相対 RMS 0.0085 (M3 で 16.197 のときの 0.0085 と同じ)
+- 通し (M1、`--allow-off-npu` なし、5 秒、30 ステップ、種 1、"a dog barking"): MOSS-SoundEffect-v2.0 と -lut8 のどちらもすべて Neural Engine に乗った。DAC を GPU で計算した前の回の音との差は相対 RMS 0.0018。30 ステップで 1 分 35 秒 (前の回は 1 分 49 秒)
+- 最初に通そうとしたときは空きが 14 GB で、取得元から 11.5 GB を取れなかった。そのとき hwnpu のキャッシュの掃除が、別のセッションの `hwnpu-image` の Core AI のキャッシュ 14 項目 (約 1.8 GB) を消した
+- 未確認: M3 の端末での級数の速さと値 (h15g の `coreai-build` では乗る)

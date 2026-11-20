@@ -57,10 +57,11 @@ func runStage(ctx context.Context, p Program, s DACStage, x []float32, have, cli
 	outN := s.In * s.Rate
 	y := make([]float32, s.Out*want)
 	in := map[string][]float32{
-		"x":  make([]float32, s.Channels*s.In),
-		"m":  make([]float32, s.In),
-		"mo": make([]float32, outN),
-		"mg": {Magic},
+		"x":   make([]float32, s.Channels*s.In),
+		"m":   make([]float32, s.In),
+		"mo":  make([]float32, outN),
+		"mg":  {Magic},
+		"mg2": {Magic},
 	}
 	for c0 := 0; c0*s.Rate < want; c0 += core {
 		lo := c0 - s.Halo // the call's first input frame
