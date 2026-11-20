@@ -15,6 +15,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/f32"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
@@ -53,6 +54,11 @@ type Model struct {
 
 	// embedRow is the row StepRow gives the decode step in place of a token's (EmbedTable's)
 	embedRow []byte
+
+	// usage counts the experts each layer runs (CountExperts, usage.go), or nil; routed are
+	// the decode step's words that name them
+	usage  *experts.Usage
+	routed []routedWord
 }
 
 type version struct {
@@ -578,6 +584,9 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 			}
 		}
 		if err := m.runCommands(ctx, v, values); err != nil {
+			return nil, err
+		}
+		if err := m.countDecode(); err != nil {
 			return nil, err
 		}
 		if err := m.stepAt(position); err != nil {

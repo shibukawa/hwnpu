@@ -214,6 +214,7 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 		}
 		rt.shared[t] = roundBF16(float32(1 / (1 + math.Exp(-float64(vals[E])))))
 	}
+	m.countPrompt(h.Layer, ids)
 	// Passes: tokens in order, a new pass where a token would give an expert more than Cap rows.
 	var passTokens [][]int
 	cnt := make([]int, E)
@@ -473,6 +474,7 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 			rt.w[t*top+k] = roundBF16(float32(e[k] / sum))
 		}
 	}
+	m.countPrompt(h.Layer, ids)
 	// Passes: each token into the first pass where its experts have room (any pass: combine
 	// finds each choice's row), a new pass where none has. Every pass streams the weights again,
 	// so fewer is faster: in order, a 256-token chunk took 3 passes at Cap 64 an expert. By slots,

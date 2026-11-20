@@ -9,6 +9,7 @@ import (
 	"image"
 	"io"
 	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -133,9 +134,13 @@ type Engine struct {
 	mtp     *mtpDrafter // the multi-token prediction layer (Config.MTP); nil for none
 	kinds   []tokenKind // Tok's tokens, for repeats; set by the first generation
 
-	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
-	store *store      // prompts kept on disk (Config.PromptDir); nil for none
-	log   io.Writer   // Config.Log
+	ir *iron.Model // the model of an IRON export (Config.IRON); nil for none
+	// irUsage counts the experts an IRON mixture of experts runs, added to the files irUsageTo
+	// (Config.Experts.Usage, HWNPU_MOE_DEBUG's usage=FILE) when the engine closes
+	irUsage   *experts.Usage
+	irUsageTo []string
+	store     *store    // prompts kept on disk (Config.PromptDir); nil for none
+	log       io.Writer // Config.Log
 
 	// idle is how long without a request before an IRON model's device memory is released
 	// (Config.Idle, idle.go); lastUsed is the last request's end, idleTimer the clock.
@@ -742,6 +747,14 @@ func (e *Engine) Close() error {
 		e.tiers[i].close()
 	}
 	e.tiers = nil
+	if e.irUsage != nil {
+		for _, p := range e.irUsageTo {
+			if err := e.irUsage.AddTo(p); err != nil {
+				fmt.Fprintf(os.Stderr, "chat: experts' usage: %v\n", err)
+			}
+		}
+		e.irUsage = nil
+	}
 	if e.ir != nil {
 		e.ir.Close()
 		e.ir = nil
