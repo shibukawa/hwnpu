@@ -15,7 +15,9 @@ cost before writing one (docs/design.md 16.75). Each of ``layers`` layers is one
 and an empty host step ends it, as the host would pick the next layer's experts there. With
 ``--split`` the copies, the experts' GEMVs and the shared expert and router are commands of
 their own, to time each. Graphs with ``--tiny N`` are N commands of one small add, to time a
-command's own cost. Graphs with ``--q4 ROWS --reps N`` are N q4nx GEMVs of (ROWS, 2048) (IRON's
+command's own cost. Graphs with ``--switch ORDER --pair silu|linear --reps N`` are one command of N
+of two operators, in runs or alternating, to time a change of operator (a reconfiguration of the
+array, docs/design.md 16.262). Graphs with ``--q4 ROWS --reps N`` are N q4nx GEMVs of (ROWS, 2048) (IRON's
 flm.LMHead), to time a 4-bit GEMV. With ``--q4moe q4`` the experts are q4nx tables read in place:
 ExpertQGEMV (gate, up: a column an expert) and ExpertDownQGEMV (down: the 8 side by side) take
 each expert's byte offset per call, so nothing is copied (docs/design.md 16.75).
@@ -867,12 +869,105 @@ class Tiny(iron.Graph):
         return x
 
 
+class Switch(iron.Graph):
+    """One command of ``n`` of operator A and ``n`` of operator B, in the order ``order``: "runs"
+    (all A, then all B), "alt" (A, B, A, ...), "a" or "b" (2n of one). ``pair`` picks A and B:
+    "silu" (SiLU, add), "linear" (a 2048 x 2048 GEMV, RMS norm) or "gemm" (64 rows by
+    2048 x 2048 on GEMM, the whole array; RMS norm). Timed side by side, it
+    shows what a change of operator (a reconfiguration of the array) costs inside a command
+    (docs/design.md 16.262)."""
+
+    def __init__(self, n: int, order: str, pair: str = "silu"):
+        self.n, self.order, self.pair = n, order, pair
+        if pair == "gemm":  # A: (64, 2048) x (2048, 2048) on GEMM (the whole array); B: RMS norm
+            rng = np.random.default_rng(3)
+            self.w = iron.param(rand_bf16(rng, (HIDDEN, HIDDEN), 1 / np.sqrt(HIDDEN)))
+            self.norm = iron.param(np.ones(HIDDEN, bfloat16))
+        if pair == "linear":
+            rng = np.random.default_rng(3)
+            self.w = iron.param(rand_bf16(rng, (HIDDEN, HIDDEN), 1 / np.sqrt(HIDDEN)))
+            self.norm = iron.param(np.ones(HIDDEN, bfloat16))
+
+    def op(self, o, x):
+        if self.pair == "gemm":
+            if o == "a":
+                return GEMM.step(x, self.w.reshape(HIDDEN, HIDDEN), precision=P)
+            return F.rms_norm(x, (HIDDEN,), self.norm, 1e-6)
+        if self.pair == "linear":
+            if o == "a":
+                return F.linear(x, self.w, precision=P)
+            return F.rms_norm(x.reshape(1, HIDDEN), (HIDDEN,), self.norm, 1e-6).reshape(HIDDEN)
+        return F.silu(x) if o == "a" else x + x
+
+    def body(self, x):
+        ops = {"runs": "a" * self.n + "b" * self.n, "alt": "ab" * self.n,
+               "a": "a" * (2 * self.n), "b": "b" * (2 * self.n)}[self.order]
+        for o in ops:
+            x = self.op(o, x)
+        return x
+
+
+def reconfig_teardown() -> None:
+    """Compose full ELFs with aiecc's --reconfig-teardown: each configuration is undone after
+    it runs, in place of the reset (an empty PDI's load) before the next (docs/design.md 16.262).
+    A composition's cache key gains "teardown", so it does not reuse an image built without."""
+    from aie.iron.program import Program
+    from iron.common.image import compose
+
+    orig = Program.compose.__func__
+
+    def with_teardown(cls, configurations, *, entry, expand_load_pdis=None, reconfig_teardown=None,
+                      reconfig_init_entry=None):
+        if expand_load_pdis:
+            reconfig_teardown = True
+        return orig(cls, configurations, entry=entry, expand_load_pdis=expand_load_pdis,
+                    reconfig_teardown=reconfig_teardown, reconfig_init_entry=reconfig_init_entry)
+
+    Program.compose = classmethod(with_teardown)
+    ident = compose.Composition.identity.fget
+    compose.Composition.identity = property(lambda self: ident(self) + "-teardown")
+
+
+def reconfig_ctrl_pkt() -> None:
+    """Compose full ELFs with aiecc's --load-pdi-to-ctrl-pkt: each configuration streamed to
+    the tiles as control packets by a DMA task, in place of the control code's writes (an
+    experiment: IRON does not pass the option. On 2026-11-20 aiecc fails on it, "operand #0 does
+    not dominate this use" in npu_materialized.mlir, docs/design.md 16.262)."""
+    from aie.iron.program import Program
+    from aie.utils.compile.jit import compilabledesign
+    from iron.common.image import compose
+
+    if "load_pdi_to_ctrl_pkt" not in compilabledesign._RECONFIGURATION_OPTIONS:
+        compilabledesign._RECONFIGURATION_OPTIONS += ("load_pdi_to_ctrl_pkt",)
+        compilabledesign._FULL_ELF_OPTIONS += ("load_pdi_to_ctrl_pkt",)
+    orig = Program.compose.__func__
+
+    def with_ctrl_pkt(cls, configurations, *, entry, expand_load_pdis=None, reconfig_teardown=None,
+                      reconfig_init_entry=None):
+        prog = orig(cls, configurations, entry=entry, reconfig_teardown=reconfig_teardown,
+                    reconfig_init_entry=reconfig_init_entry)
+        if expand_load_pdis:
+            prog._reconfiguration_options["load_pdi_to_ctrl_pkt"] = True
+        return prog
+
+    Program.compose = classmethod(with_ctrl_pkt)
+    ident = compose.Composition.identity.fget
+    compose.Composition.identity = property(lambda self: ident(self) + "-ctrlpkt")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("out", type=Path)
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--split", action="store_true")
     ap.add_argument("--tiny", type=int, default=0)
+    ap.add_argument("--switch", choices=("runs", "alt", "a", "b"),
+                    help="one command of --reps of operator A and --reps of B in this order")
+    ap.add_argument("--pair", choices=("silu", "linear", "gemm"), default="silu", help="--switch's A and B")
+    ap.add_argument("--teardown", action="store_true",
+                    help="aiecc's --reconfig-teardown in place of a reset before each configuration")
+    ap.add_argument("--ctrl-pkt", action="store_true",
+                    help="aiecc's --load-pdi-to-ctrl-pkt: configurations as control packets")
     ap.add_argument("--q4", type=int, default=0, help="a graph of q4nx GEMVs of this many rows by 2048")
     ap.add_argument("--reps", type=int, default=1, help="GEMVs in the --q4 graph")
     ap.add_argument("--channels", type=int, default=0, help="Copy's num_channels (0: its own)")
@@ -882,6 +977,10 @@ def main() -> None:
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
     bind_device("npu2", 8)
+    if a.teardown:
+        reconfig_teardown()
+    if a.ctrl_pkt:
+        reconfig_ctrl_pkt()
     global DOWN_T
     DOWN_T = a.down_t
     t0 = time.time()
@@ -894,6 +993,15 @@ def main() -> None:
             rng = np.random.default_rng(1)
             x = np.concatenate([rng.standard_normal(HIDDEN), rng.uniform(0.5, 1.5, HIDDEN)])
             write_check(g, m, a.out, dict(x=x.astype(bfloat16)))
+        return
+    if a.switch:
+        g = Switch(a.reps, a.switch, a.pair)
+        cg = g.compile(x=(64, HIDDEN) if a.pair == "gemm" else (HIDDEN,))
+        m = export_graph(cg, a.out, f"switch_{a.pair}_{a.switch}{a.reps}")
+        print(f"compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}")
+        if a.check:
+            shape = (64, HIDDEN) if a.pair == "gemm" else (HIDDEN,)
+            write_check(g, m, a.out, dict(x=rand_bf16(np.random.default_rng(1), shape, 1e-3)))
         return
     if a.tiny:
         g = Tiny(a.tiny)
