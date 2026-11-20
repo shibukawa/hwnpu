@@ -49,12 +49,44 @@ func hasTables(path string, names []string) bool {
 
 // writeTables makes dir's tables file for the model unless it is there with all its tables, and
 // returns its path. checkpoint gives the checkpoint's path, downloading it if need be.
-func writeTables(ctx context.Context, dir string, a *llm.Arch, model llm.Model, checkpoint func() (string, error), log io.Writer) (string, error) {
+func writeTables(ctx context.Context, dir string, a *llm.Arch, model llm.Model, checkpoint func() (string, error), log io.Writer, rotated bool) (string, error) {
 	names := llm.HostTables(model)
 	if len(names) == 0 {
 		return "", fmt.Errorf("chat: %s has no tables the host reads", a.Name)
 	}
+	if rotated {
+		return rotatedTables(ctx, dir, a, model, names, checkpoint, log)
+	}
 	return GroupedTables(ctx, filepath.Join(dir, TablesFile), a, names, llm.HostTableGroups(model), checkpoint, log)
+}
+
+// RotatedTablesFile is TablesFile of the programs built rotated (Config.Rotated): the embedding
+// as E Q in fp16, and the final norm's weight as the checkpoint has it, which the host applies
+// to the model's final hidden states taken back unrotated (the MTP layer's input).
+const RotatedTablesFile = "tables-rot.safetensors"
+
+func rotatedTables(ctx context.Context, dir string, a *llm.Arch, model llm.Model, names []string, checkpoint func() (string, error), log io.Writer) (string, error) {
+	rot, err := model.(llm.Rotator).Rotation()
+	if err != nil {
+		return "", err
+	}
+	names = append(names, rot.HeadNorm)
+	return tables(ctx, filepath.Join(dir, RotatedTablesFile), a.Name+"-rot", names, nil, func(out string) error {
+		path, err := checkpoint()
+		if err != nil {
+			return err
+		}
+		w, err := llm.OpenWeights(path, a)
+		if err != nil {
+			return err
+		}
+		defer w.Close()
+		rw, err := llm.Rotate(w, rot, llm.RotationSeed)
+		if err != nil {
+			return err
+		}
+		return llm.WriteTables(rw, names, nil, out)
+	}, log)
 }
 
 // Tables writes the named tensors of the checkpoint to out (llm.WriteTables) unless out has them

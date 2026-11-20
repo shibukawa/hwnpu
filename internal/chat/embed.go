@@ -109,7 +109,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 		}
 	}
 	shareOnce(pdir, s.Log)
-	if c.Weights, err = writeTables(ctx, s.Dir, a, model, checkpoint, s.Log); err != nil {
+	if c.Weights, err = writeTables(ctx, s.Dir, a, model, checkpoint, s.Log, false); err != nil {
 		return EmbedConfig{}, err
 	}
 	return c, nil

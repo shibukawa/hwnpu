@@ -40,23 +40,91 @@ type Rotator interface {
 	Rotation() (Rotation, error)
 }
 
+// RotateParam is the architecture setting (Options.Params) that builds a Rotator's programs from
+// its weights rotated (RotateFor), "1"; RotationSeed is the seed of their signs.
+const (
+	RotateParam        = "rotate"
+	RotationSeed int64 = 1
+)
+
+// RotateFor gives w rotated (Rotate, RotationSeed) when o asks for it (RotateParam), else w.
+func RotateFor(m Model, w Weights, o Options) (Weights, error) {
+	if o.Params[RotateParam] != "1" {
+		return w, nil
+	}
+	if _, ok := w.(*rotated); ok {
+		return w, nil
+	}
+	r, ok := m.(Rotator)
+	if !ok {
+		return nil, fmt.Errorf("llm: the model cannot be rotated (%s=1)", RotateParam)
+	}
+	rot, err := r.Rotation()
+	if err != nil {
+		return nil, err
+	}
+	return Rotate(w, rot, RotationSeed)
+}
+
 // Rotate gives w's tensors rotated as r says, with Q = diag(s) H: random signs s (from seed)
 // and the Walsh-Hadamard matrix H of the largest power of two dividing Dim, block diagonal when
 // that is less than Dim.
 func Rotate(w Weights, r Rotation, seed int64) (Weights, error) {
-	b := r.Dim & -r.Dim
+	s, b, err := rotationSigns(r.Dim, seed)
+	if err != nil {
+		return nil, err
+	}
+	return &rotated{Weights: w, r: r, signs: s, block: b}, nil
+}
+
+func rotationSigns(dim int, seed int64) ([]float32, int, error) {
+	b := dim & -dim
 	if b < 64 {
-		return nil, fmt.Errorf("rotate: hidden size %d has no Hadamard block of 64 or more", r.Dim)
+		return nil, 0, fmt.Errorf("rotate: hidden size %d has no Hadamard block of 64 or more", dim)
 	}
 	rng := rand.New(rand.NewSource(seed))
-	s := make([]float32, r.Dim)
+	s := make([]float32, dim)
 	for i := range s {
 		s[i] = 1
 		if rng.Intn(2) == 0 {
 			s[i] = -1
 		}
 	}
-	return &rotated{Weights: w, r: r, signs: s, block: b}, nil
+	return s, b, nil
+}
+
+// Unrotate returns what takes a row of the rotated residual (r Q, Rotate with seed) back to r in
+// place: r Q Qt, Qt = H diag(s), the Walsh-Hadamard transform and the signs (the host's rows for
+// a program built unrotated: the MTP layer's).
+func Unrotate(dim int, seed int64) (func(row []float32), error) {
+	s, b, err := rotationSigns(dim, seed)
+	if err != nil {
+		return nil, err
+	}
+	w := &rotated{signs: s, block: b}
+	return func(row []float32) {
+		w.hadamard(row)
+		for i := range row {
+			row[i] *= s[i]
+		}
+	}, nil
+}
+
+// Table gives a table the host reads rows of (WriteTables): the embedding as E Q (Rows' form,
+// where Get gives a tied table the output layer's), the final norm's weight as the checkpoint
+// has it (for Unrotate's callers that apply it after), any other as Get.
+func (w *rotated) Table(name string) ([]float32, []int, error) {
+	switch name {
+	case w.r.Embed:
+		v, shape, err := w.Weights.Get(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		return v, shape, w.rows(v, shape, nil)
+	case w.r.HeadNorm:
+		return w.Weights.Get(name)
+	}
+	return w.Get(name)
 }
 
 type rotated struct {
