@@ -7745,7 +7745,15 @@ VAE の prebuilt には得もない: 端末が prebuilt を仕上げる時間は
 - Apple への報告: coreai-build の VAE の誤り (FB を出す。known-issues.md に足す)
 - すでに prebuilt の VAE で描いた機械では、Core AI のキャッシュの項目 (main.hash ごと、prebuilt から仕上げたもの) が残り、この版でもそれを読む (`hasEntry` なら prebuilt を見ない)。M1 で、prebuilt で縞を描いたのと同じ名前の hwnpu-image は直したあとも縞 (VAE の段を 1〜2 s で読んだ)、新しい名前 (空のキャッシュ) は 8m03s で正しい絵 (VAE は端末で compile、`vae_s0` 16 s)。その機械は `~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す (VAE の項目だけでもよい)
 
+**追記: 文の符号器も端末で compile する** — 2026-11-20
+
+- 起きたこと (M1、h13g の prebuilt): Chroma1-Flash の 512 × 512 が T5-XXL の 1 本目 (`text_0`) の実行で `ANEProgramProcessRequestDirect() … Request cancelled` に 4 回続けて落ちた。キャッシュを空にした新しい名前 (codesign -i)、prebuild を止めて Neural Engine を他に使うもののない時も同じ
+- 分けて確かめた: すべて端末で compile (`HWNPU_COREAI_PREBUILT=off`) は正しい絵 (25m47s、T5-XXL 220 s)。prebuilt から `text_*` の 8 本だけ外すと T5-XXL は通る (230 s)
+- FLUX.2 klein の Qwen3 は prebuilt で動くが、端末で compile したものより遅い (112 s 対 81 s、16.252 の追記)。文の符号器は prebuilt にしても得がない
+- `coreai.LeftToDevice` は名前が `text` で始まるプログラム (FLUX.2 klein と Chroma の `text_*`) も端末に残す。`hwnpu-dev prebuild` は外し、取得元にある prebuilt は使わない
+- 単体テスト: `TestLeftToDevice` に `text_0`、`text` (真)、`mods`、`ctx` (偽)。`TestBuildLeavesVAEToDevice` は `text_0` も外し、置いてある prebuilt を取らない
+
 **残り**
 
-- 取得元の FLUX.2 klein と Chroma1-Flash の prebuilt から VAE を除いて詰め直す (場所だけの問題)
-- coreai-build の何が VAE を誤らせるか (縞は 112 行ごと: 段の中の行の区切りか)。直ったら `LeftToDevice` を外す
+- 取得元の FLUX.2 klein と Chroma1-Flash の prebuilt から VAE と文の符号器を除いて詰め直す (場所だけの問題)
+- coreai-build の何が VAE を誤らせるか (縞は 112 行ごと: 段の中の行の区切りか)、T5 の何が Request cancelled になるか。直ったら `LeftToDevice` を外す
