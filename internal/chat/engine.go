@@ -22,6 +22,7 @@ import (
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -70,6 +71,9 @@ type Config struct {
 	// place of Packages: its manifest, ELFs and arena. Tokenizer defaults to the
 	// tokenizer.json in it.
 	IRON string
+	// Experts says which of a mixture of experts' experts the host keeps wired when they do not
+	// all fit: Model.ExpertsCore and this application's counts (ExpertsUsage).
+	Experts experts.Placement
 	// Idle, when above zero, releases an IRON model's device memory after this long without a
 	// request, and loads it again for the next one (idle.go).
 	Idle time.Duration
@@ -306,7 +310,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			bar := console.NewLoadBar(c.Log, fmt.Sprintf("  [%d/%d] %s", loaded, total, label), llm.ProgramBytes(pkg))
 			var ch *chain.Chain
 			if i == 0 {
-				ch, err = chain.Open(ctx, e.dev, pkg)
+				ch, err = chain.OpenWith(ctx, e.dev, pkg, chain.Options{Experts: c.Experts})
 			} else {
 				ch, err = t.chains[0].Share(ctx, e.dev, pkg)
 			}

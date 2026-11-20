@@ -54,7 +54,8 @@ func loadProc() {
 	proc.ok = true
 }
 
-// readProcs reads proc_pid_rusage (the CPU's time, the footprint Activity Monitor shows; only
+// readProcs reads proc_pid_rusage (the CPU's time, the footprint Activity Monitor shows and the
+// wired memory, which the footprint leaves out for a file's pages; only
 // the user's own processes without root) and the GPU time of the processes' user clients of
 // the GPU. The ANE has no time of its own per process.
 func readProcs(pids []int) map[int]procTimes {
@@ -68,7 +69,9 @@ func readProcs(pids []int) map[int]procTimes {
 			if proc.rusage(int32(pid), rusageInfoV2Flavor, unsafe.Pointer(&ri)) == 0 {
 				ticks := ri.UserTime + ri.SystemTime
 				t.cpu, t.hasCPU = time.Duration(ticks*proc.numer/proc.denom), true
-				t.memory = int64(ri.PhysFootprint)
+				// wired pages of a mapped file are in neither the footprint nor Activity
+				// Monitor's column; wired anonymous pages would count twice (rare: mlock)
+				t.memory, t.wired = int64(ri.PhysFootprint+ri.WiredSize), int64(ri.WiredSize)
 			}
 		}
 		if g, ok := gpu[pid]; ok {

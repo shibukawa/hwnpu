@@ -3,6 +3,7 @@ package npuinfo
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -263,6 +264,25 @@ func TestDarwinIOReportSummarize(t *testing.T) {
 	if r.ANEPowerW != 1.5 {
 		t.Fatalf("got %v W", r.ANEPowerW)
 	}
+	// The M3: interrupts under "ane 4"; how busy from the histogram of the reads (the lowest
+	// bin idle)
+	st := func(res ...int64) []DarwinIOReportState {
+		var out []DarwinIOReportState
+		for i, x := range res {
+			out = append(out, DarwinIOReportState{Name: fmt.Sprintf("%dGB/s", i+1), Residency: x})
+		}
+		return out
+	}
+	r = &DarwinIOReport{Seconds: 1, Channels: []DarwinIOReportChannel{
+		{Group: "Interrupt Statistics (by index)", SubGroup: "ane 4", Name: "   First Level Interrupt Handler Count", Value: v(1500)},
+		{Group: "PMP", SubGroup: "AF BW", Name: "ANE0 RD", Format: "state", States: st(60, 10, 30)},
+		{Group: "PMP", SubGroup: "AF BW", Name: "ANE0 WR", Format: "state", States: st(100, 0, 0)},
+		{Group: "PMP", SubGroup: "DCS BW", Name: "ANE0 RD", Format: "state", States: st(0, 0, 100)},
+	}}
+	r.summarize()
+	if r.ANEInterruptsPerSec != 1500 || r.ANEBusyPercent == nil || *r.ANEBusyPercent != 40 {
+		t.Fatalf("got %+v (busy %v)", r, r.ANEBusyPercent)
+	}
 }
 
 func TestIsANEChannel(t *testing.T) {
@@ -296,7 +316,7 @@ func TestANEDevice(t *testing.T) {
 	}}}
 	d := aneDevice(nodes)
 	if d == nil || d.Class != "H11ANEIn" || d.Cores != 16 || d.Architecture != "h13g" || d.Version != 64 ||
-		!d.FirmwareLoaded || d.Compatible != "ane,t8020" || d.PowerState != 1 || d.MaxPowerState != 1 {
+		!d.FirmwareLoaded || !d.FirmwareKnown || d.Compatible != "ane,t8020" || d.PowerState != 1 || d.MaxPowerState != 1 {
 		t.Fatalf("got %+v", d)
 	}
 	if aneDevice(nodes[:1]) != nil {

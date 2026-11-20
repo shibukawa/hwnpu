@@ -9,6 +9,8 @@ package blocks
 import (
 	"fmt"
 	"math"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -151,6 +153,24 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 			return v
 		}
 	}
+	if format == "int8" && g.Opts.Codes != "" {
+		// integers chosen for the weight as the checkpoint holds it (a scale a row)
+		c, err := LoadCodes(g.Opts.Codes)
+		if err != nil {
+			g.Fail("%v", err)
+		}
+		q, ok, err := c.LookupLinear(w, rows, cols, scale)
+		if err != nil {
+			g.Fail("%s: %v", name, err)
+		}
+		if ok {
+			v, err := g.B.Int8Scaled(constName, []int{rows, cols}, []int{1, cols}, q.Data, q.Scales)
+			if err != nil {
+				g.Fail("%v", err)
+			}
+			return v
+		}
+	}
 	if scale != 1 {
 		for i := range w {
 			w[i] *= scale
@@ -163,17 +183,7 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		v, err = g.B.F16s(constName, []int{rows, cols}, w)
 	case "lut4", "lut6", "lut8":
 		bits := map[string]int{"lut4": 4, "lut6": 6, "lut8": 8}[format]
-		mode := palette.Uniform
-		switch g.Opts.Quant {
-		case "", "uniform":
-		case "kmeans":
-			mode = palette.KMeans
-		case "kmeans-minmax":
-			mode = palette.KMeansMinMax
-		default:
-			g.Fail("unknown quantizer %q", g.Opts.Quant)
-		}
-		q := palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, mode)
+		q := palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
 		g.rowsOnly(name, q.ColBlock, cols)
 		v, err = g.B.LUT(constName, bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
 	default:
@@ -190,6 +200,12 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		case "", "mse":
 		case "uniform":
 			search = false
+		case "kmeans", "kmeans-minmax":
+			// the tables' fitting of a lutN model (hwnpu-chat's), for a weight FormatFor makes
+			// integer: the scales' search
+			if !strings.HasPrefix(g.Opts.Format, "lut") {
+				g.Fail("quantizer %q is not for %s; use uniform or mse", g.Opts.Quant, format)
+			}
 		default:
 			g.Fail("quantizer %q is not for %s; use uniform or mse", g.Opts.Quant, format)
 		}
@@ -239,17 +255,7 @@ func (g *Graph) MatrixSlice(name string, rows, cols, r0, r1, c0, c1 int) *mlpack
 			}
 		}
 		if !found {
-			mode := palette.Uniform
-			switch g.Opts.Quant {
-			case "", "uniform":
-			case "kmeans":
-				mode = palette.KMeans
-			case "kmeans-minmax":
-				mode = palette.KMeansMinMax
-			default:
-				g.Fail("unknown quantizer %q", g.Opts.Quant)
-			}
-			q = palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, mode)
+			q = palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
 		}
 		if g.luts == nil {
 			g.luts = map[string]palette.LUT4{}
@@ -275,6 +281,9 @@ func (g *Graph) Linear(x *mlpackage.Var, name, outName string, outDim int) *mlpa
 // the consumer must undo it (an RMSNorm with inScale s).
 func (g *Graph) LinearS(x *mlpackage.Var, name, outName string, outDim int, s float32) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]
+	if bits := RowScaledBits(g.Opts.FormatOf(name)); bits != 0 {
+		return g.linearRows(x, name, "", outName, outDim, bits, s)
+	}
 	w := g.Weight(name, outDim, in, s)
 	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
 	if outName != "" {
@@ -648,6 +657,9 @@ func constOnes(n int) []float32 {
 // LinearBias is Linear plus the named bias (out), which stays fp16 whatever the weight format.
 func (g *Graph) LinearBias(x *mlpackage.Var, name, bias, outName string, outDim int) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]
+	if bits := RowScaledBits(g.Opts.FormatOf(name)); bits != 0 {
+		return g.linearRows(x, name, bias, outName, outDim, bits, 1)
+	}
 	w := g.Weight(name, outDim, in, 1)
 	bv := g.F16s(bias, []int{outDim}, g.Get(bias, outDim))
 	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
@@ -696,4 +708,102 @@ func LoadCodes(dir string) (*palette.Codes, error) {
 	}
 	got, _ := codes.LoadOrStore(dir, c)
 	return got.(*palette.Codes), nil
+}
+
+// RowScaledBits is the table width of a lutN format with a scale a row (lut4r, lut6r, lut8r), 0
+// for another format.
+func RowScaledBits(format string) int {
+	return map[string]int{"lut4r": 4, "lut6r": 6, "lut8r": 8}[format]
+}
+
+// linearRows is LinearBias for a weight in lutNr: each row divided by its scale (its largest
+// magnitude over the matrix's, in fp16) is palettized in tables of Opts.Group rows, and the
+// output multiplied back by the scales before the bias (none for Linear; the scales times s for
+// LinearS). Rows of very different magnitudes in one table leave the small ones few levels
+// (gpt-oss's attention: rows of one projection differ by up to 6600 times); with the scales each
+// row spans its table. The output is bounded as the weight's own (the scales are at most 1).
+func (g *Graph) linearRows(x *mlpackage.Var, name, bias, outName string, outDim, bits int, s float32) *mlpackage.Var {
+	in := x.Shape[len(x.Shape)-1]
+	var q palette.LUT4
+	var scales []float32
+	found := false
+	if g.Opts.Codes != "" {
+		// codes chosen for the weight as the checkpoint holds it (gptoss_attn_gptq.py's lutrow)
+		c, err := LoadCodes(g.Opts.Codes)
+		if err != nil {
+			g.Fail("%v", err)
+		}
+		if q, scales, found, err = c.LookupRows(g.Get(name, outDim, in), outDim, in, g.Opts.Group, g.Opts.ColBlock, bits); err != nil {
+			g.Fail("%s: %v", name, err)
+		}
+	}
+	if !found {
+		w := slices.Clone(g.Get(name, outDim, in))
+		scales = RowScales(w, outDim, in)
+		q = palette.QuantizeBits(w, outDim, in, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
+	}
+	if s != 1 {
+		for i := range scales {
+			scales[i] *= s
+		}
+	}
+	g.rowsOnly(name, q.ColBlock, in)
+	wv, err := g.B.LUT(name, bits, []int{outDim, in}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+	if err != nil {
+		g.Fail("%v", err)
+	}
+	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
+	y := g.Op("linear", map[string]any{"x": x, "weight": wv}, shape...)
+	rs := g.F16s(name+"_rows", []int{outDim}, scales)
+	if bias == "" {
+		if outName != "" {
+			return g.B.NamedOp("mul", outName, map[string]any{"x": y, "y": rs}, mlpackage.Float16, shape...)
+		}
+		return g.Op("mul", map[string]any{"x": y, "y": rs}, shape...)
+	}
+	y = g.Op("mul", map[string]any{"x": y, "y": rs}, shape...)
+	inputs := map[string]any{"x": y, "y": g.F16s(bias, []int{outDim}, g.Get(bias, outDim))}
+	if outName != "" {
+		return g.B.NamedOp("add", outName, inputs, mlpackage.Float16, shape...)
+	}
+	return g.Op("add", inputs, shape...)
+}
+
+// RowScales divides each row of w (rows x cols) by its scale, its largest magnitude over the
+// matrix's rounded to fp16 (1 for a row of zeros), and returns the scales.
+func RowScales(w []float32, rows, cols int) []float32 {
+	top := make([]float32, rows)
+	var m float32
+	for r := range rows {
+		for _, v := range w[r*cols : (r+1)*cols] {
+			top[r] = max(top[r], float32(math.Abs(float64(v))))
+		}
+		m = max(m, top[r])
+	}
+	scales := make([]float32, rows)
+	for r := range rows {
+		s := float32(1)
+		if top[r] > 0 && m > 0 {
+			s = mlpackage.Float16Value(mlpackage.Float16Bits(top[r] / m))
+		}
+		scales[r] = s
+		for c := range cols {
+			w[r*cols+c] /= s
+		}
+	}
+	return scales
+}
+
+// lutMode is Opts.Quant's table fitting for a lutN weight.
+func (g *Graph) lutMode() palette.Mode {
+	switch g.Opts.Quant {
+	case "", "uniform":
+		return palette.Uniform
+	case "kmeans":
+		return palette.KMeans
+	case "kmeans-minmax":
+		return palette.KMeansMinMax
+	}
+	g.Fail("unknown quantizer %q", g.Opts.Quant)
+	return 0
 }

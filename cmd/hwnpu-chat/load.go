@@ -14,6 +14,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 )
 
 // loadFlags are where the models are and how they are made ready, for every command that runs one.
@@ -21,7 +22,8 @@ type loadFlags struct {
 	Backend     string        `enum:",coreai,intel,levelzero,openvino" default:"" help:"The NPU to convert for and run on: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one; the models converted for it from their checkpoints), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
 	Cache       string        `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	PromptCache string        `placeholder:"DIR" help:"Keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)."`
-	Idle        time.Duration `default:"5m" help:"AMD's NPU: give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy."`
+	Idle        time.Duration `default:"5m" help:"AMD's NPU: give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy. A mixture of experts whose experts run on the CPU: keep only the core ones wired after this long."`
+	ExpertsKey  string        `placeholder:"KEY" help:"A mixture of experts whose experts do not all fit in memory: the name of this application's counts of the experts it runs, which choose the ones kept wired (default: the command, chat, agent or serve; off: none read or kept)."`
 	Models      string        `placeholder:"FILES" help:"${models_usage}."`
 }
 
@@ -209,6 +211,15 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 	c.PromptDir = promptDir
 	c.Dense = !cf.Sparse
 	c.Idle = lf.Idle
+	idle := lf.Idle
+	if idle <= 0 {
+		idle = -1 // never
+	}
+	// a model without experts on the host ignores it
+	c.Experts = experts.Placement{Core: m.ExpertsCore, Idle: idle}
+	if lf.ExpertsKey != "off" {
+		c.Experts.Usage = chat.ExpertsUsage(chat.ModelDir(m), lf.ExpertsKey)
+	}
 	// the flags override the encoders Prepare converted (a model with vision or audio); without
 	// them those stay
 	if ef != nil && ef.Vision != "" {

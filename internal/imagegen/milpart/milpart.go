@@ -89,6 +89,13 @@ func (g *Graph) InputI4(name string, shape ...int) *mlpackage.Var {
 	return x
 }
 
+// InputU4 adds an unsigned 4-bit input, two a byte, the low nibble first (a Core AI program's).
+func (g *Graph) InputU4(name string, shape ...int) *mlpackage.Var {
+	x := g.B.Input(name, milspec.DataType_UINT4, shape...)
+	g.ins = append(g.ins, mlpackage.Feature{Name: name, DType: milspec.DataType_UINT4, Shape: x.Shape})
+	return x
+}
+
 // Output makes x the part's output y.
 func (g *Graph) Output(x *mlpackage.Var) {
 	g.y = g.B.NamedOp("identity", "y", map[string]any{"x": x}, mlpackage.Float16, x.Shape...)

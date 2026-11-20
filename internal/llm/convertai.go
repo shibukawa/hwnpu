@@ -202,7 +202,22 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 		}
 	}
 	var ex *ExpertsRecord
-	if rm, ok := model.(Routed); ok {
+	if hm, ok := model.(HostRouted); ok {
+		cp, ok := w.(CheckpointPath)
+		if !ok {
+			return nil, fmt.Errorf("llm: %s's experts run from the checkpoint, and %s is not a file", a.Title, w.Source())
+		}
+		path, err := filepath.Abs(cp.Path())
+		if err != nil {
+			return nil, err
+		}
+		rec := &experts.HostRecord{Checkpoint: path, Layers: map[int]experts.MXFP4{}, Act: hm.ExpertAct()}
+		for _, l := range hm.RoutedLayers() {
+			rec.Layers[l] = hm.HostExperts(l)
+		}
+		ex = &ExpertsRecord{Layers: hm.RoutedLayers(), Shape: hm.ExpertShape(), Routing: hm.Routing(), Host: rec}
+		fmt.Fprintf(log, "%s: the experts of %d layers run on the CPU from %s\n", a.Title, len(rec.Layers), path)
+	} else if rm, ok := model.(Routed); ok {
 		var err error
 		var seqs []int
 		for _, p := range progs {

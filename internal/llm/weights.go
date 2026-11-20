@@ -84,6 +84,7 @@ func (w stWeights) Shape(name string) ([]int, bool) {
 }
 
 func (w stWeights) Source() string { return "safetensors " + filepath.Base(w.path) }
+func (w stWeights) Path() string   { return w.path }
 func (w stWeights) Close() error   { return w.f.Close() }
 
 type ggufWeights struct {
@@ -200,6 +201,8 @@ func (w *shardedWeights) Shape(name string) ([]int, bool) {
 	t, _ := f.Lookup(name)
 	return t.Shape, true
 }
+
+func (w *shardedWeights) Path() string { return w.path }
 
 func (w *shardedWeights) Source() string {
 	return fmt.Sprintf("safetensors %s (%d files)", filepath.Base(w.path), len(w.all))

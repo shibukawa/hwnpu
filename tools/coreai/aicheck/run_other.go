@@ -25,6 +25,8 @@ func moeServe([]string) error { return errDarwin }
 
 func fdivCheck() error { return errDarwin }
 
+func mx([]string) error { return errDarwin }
+
 func moe4([]string) error { return errDarwin }
 
 func moePack([]string) error { return errDarwin }

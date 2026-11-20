@@ -27,6 +27,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 )
 
 // Part is one loaded part.
@@ -145,7 +146,27 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
-	return open(ctx, dev, man, nil, nil, "")
+	return open(ctx, dev, man, nil, nil, Options{})
+}
+
+// Options are how OpenWith loads a model.
+type Options struct {
+	// Units are the units every part runs on (hwnpu.GraphSource.Units: "gpu", "cpu"; "" the
+	// Neural Engine).
+	Units string
+	// Experts says which of the experts the host runs stay wired when they do not all fit
+	// (experts.Placement).
+	Experts experts.Placement
+}
+
+// OpenWith is Open with o.
+func OpenWith(ctx context.Context, dev *hwnpu.Device, path string, o Options) (*Chain, error) {
+	defer console.Loading(path)()
+	man, err := llm.ReadManifest(path)
+	if err != nil {
+		return nil, err
+	}
+	return open(ctx, dev, man, nil, nil, o)
 }
 
 // OpenOn is Open with every part run on the units given (hwnpu.GraphSource.Units: "gpu", "cpu";
@@ -156,7 +177,7 @@ func OpenOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*Chain,
 	if err != nil {
 		return nil, err
 	}
-	return open(ctx, dev, man, nil, nil, units)
+	return open(ctx, dev, man, nil, nil, Options{Units: units})
 }
 
 // Share loads the model at path like Open, but binds its KV cache inputs (kv_*, win_*, st_*: llm.CacheInput) to the
@@ -175,12 +196,13 @@ func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Cha
 			shared[name] = b
 		}
 	}
-	return open(ctx, dev, man, shared, c.cur.moe, "")
+	return open(ctx, dev, man, shared, c.cur.moe, Options{})
 }
 
 // open loads the model of man; shared are cache buffers of another chain (Share) and sharedMoE
 // its experts, nil for none.
-func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer, sharedMoE *moe, units string) (*Chain, error) {
+func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer, sharedMoE *moe, o Options) (*Chain, error) {
+	units := o.Units
 	gr, err := dev.Graph()
 	if err != nil {
 		return nil, err
@@ -197,7 +219,7 @@ func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[
 		}
 	}
 	if man.Experts != nil {
-		if err := c.cur.loadExperts(ctx, c, man, sharedMoE); err != nil {
+		if err := c.cur.loadExperts(ctx, c, man, sharedMoE, o.Experts); err != nil {
 			c.cur.close()
 			return nil, err
 		}
@@ -207,14 +229,14 @@ func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[
 
 // loadExperts loads the experts of a model cut at its mixture of experts layers, or takes
 // another chain's (Share), and finds the parts they run after.
-func (t *tier) loadExperts(ctx context.Context, c *Chain, man *llm.Manifest, shared *moe) error {
+func (t *tier) loadExperts(ctx context.Context, c *Chain, man *llm.Manifest, shared *moe, p experts.Placement) error {
 	if len(man.Tiers) > 0 {
 		return fmt.Errorf("chain: a model cut at its mixture of experts layers has no tiers")
 	}
 	if shared != nil {
 		t.moe = shared
 	} else {
-		m, err := loadMoE(ctx, c, man.Experts)
+		m, err := loadMoE(ctx, c, man.Experts, p)
 		if err != nil {
 			return err
 		}

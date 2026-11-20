@@ -83,6 +83,8 @@ const (
 	// I4 is signed 4-bit integers, two a byte (the low nibble first): Size is 0, an argument's
 	// Bytes counts them packed (Core AI's int4 arrays, internal/llm/experts)
 	I4
+	// U4 is unsigned 4-bit integers, packed as I4
+	U4
 )
 
 // Size returns the element size in bytes, or 0 for DTypeUnknown.
@@ -122,6 +124,8 @@ func (d DType) String() string {
 		return "i64"
 	case I4:
 		return "i4"
+	case U4:
+		return "u4"
 	}
 	return "unknown"
 }

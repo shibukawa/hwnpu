@@ -142,7 +142,7 @@ func collect(ctx context.Context, s storeView, scan, wake bool, load *samplers) 
 	procs := load.procs.Read(pids)
 	for i := range st.Processes {
 		p := &st.Processes[i]
-		npu := p.NPUPercent // Windows' counters, put by summarize
+		npu := p.NPUPercent // put by summarize: Windows' counters, the ANE's share on macOS
 		p.Proc = procs[p.PID]
 		if npu != nil {
 			p.NPUPercent = npu
@@ -349,15 +349,30 @@ func summarizeDarwin(st *Status, d *npuinfo.DarwinInfo) {
 			state = "awake"
 		}
 		line += ", " + state
-		if !a.FirmwareLoaded {
+		if a.FirmwareKnown && !a.FirmwareLoaded {
 			line += ", firmware not loaded"
 		}
 		st.NPU = append(st.NPU, line)
 	}
 	if r := d.IOReport; r != nil {
-		st.NPU = append(st.NPU, fmt.Sprintf("ANE %.2f W, reads %.1f GB/s, %.0f calls/s (IOReport)", r.ANEPowerW, r.ANEReadBytesPerSec/1e9, r.ANEInterruptsPerSec/3))
-		w := r.ANEPowerW
-		st.Load.NPUPowerW = &w
+		var parts []string
+		if r.ANEBusyPercent != nil {
+			b := *r.ANEBusyPercent
+			st.Load.NPUPercent = &b
+			parts = append(parts, fmt.Sprintf("reading memory %.0f%% of the time", b))
+		}
+		if r.ANEPowerKnown {
+			w := r.ANEPowerW
+			st.Load.NPUPowerW = &w
+			parts = append(parts, fmt.Sprintf("%.2f W", w))
+		} else {
+			parts = append(parts, "power not readable without root (sudo powermetrics --samplers ane_power)")
+		}
+		if r.ANEReadBytesPerSec > 0 {
+			parts = append(parts, fmt.Sprintf("reads %.1f GB/s", r.ANEReadBytesPerSec/1e9))
+		}
+		parts = append(parts, fmt.Sprintf("%.0f calls/s", r.ANEInterruptsPerSec/3))
+		st.NPU = append(st.NPU, "ANE "+strings.Join(parts, ", ")+" (IOReport)")
 	}
 	if d.ThermalPressure != "" {
 		st.NPU = append(st.NPU, "thermal pressure "+d.ThermalPressure)
@@ -369,6 +384,27 @@ func summarizeDarwin(st *Status, d *npuinfo.DarwinInfo) {
 	if b, ok := mem.NPUWired(); ok {
 		st.Load.NPUMemory = b // the weights are here, not in the processes' footprint
 	}
+	// the ANE has no time per process: the process holding nearly all of its memory (a model,
+	// beside the input method's or Siri's few MB) is given the ANE's busy share
+	if i := npuHolder(st.Processes); i >= 0 && st.Load.NPUPercent != nil {
+		b := *st.Load.NPUPercent
+		st.Processes[i].NPUPercent = &b
+	}
+}
+
+// npuHolder is the process that holds at least 90 % of the processes' NPU memory, -1 for none.
+func npuHolder(ps []Process) int {
+	best, sum := -1, int64(0)
+	for i, p := range ps {
+		sum += p.NPUMemory
+		if p.NPUMemory > 0 && (best < 0 || p.NPUMemory > ps[best].NPUMemory) {
+			best = i
+		}
+	}
+	if best < 0 || 10*ps[best].NPUMemory < 9*sum {
+		return -1
+	}
+	return best
 }
 
 func summarizeWindows(st *Status, w *npuinfo.WindowsInfo) {

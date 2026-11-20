@@ -153,3 +153,34 @@ func TestMergeOrder(t *testing.T) {
 		}
 	}
 }
+
+// A sink is a key of score sink whose value is zero: the merge with it is the softmax over the
+// keys and the sink, the sink's share dropped.
+func TestMergeSink(t *testing.T) {
+	scores := []float32{0.5, -1, 2}
+	vals := [][]float32{{1, 2}, {3, -1}, {0.5, 4}}
+	sink := float32(1.5)
+	var sum float64
+	for _, s := range scores {
+		sum += math.Exp(float64(s))
+	}
+	sum += math.Exp(float64(sink))
+	want := make([]float64, 2)
+	for i, s := range scores {
+		for j := range want {
+			want[j] += math.Exp(float64(s)) / sum * float64(vals[i][j])
+		}
+	}
+	m := NewMerge(1, 2)
+	for i, s := range scores { // one key a chunk
+		m.Add(vals[i], []float32{s}, []float32{1})
+	}
+	m.AddSink([]float32{sink}, 1)
+	got := make([]float32, 2)
+	m.Result(got)
+	for j := range want {
+		if math.Abs(float64(got[j])-want[j]) > 1e-5 {
+			t.Errorf("value %d: %g, want %g", j, got[j], want[j])
+		}
+	}
+}
