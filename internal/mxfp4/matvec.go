@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // Job is one matrix's products with vectors: Out[k][r] is row r's dot product with V[k], the
@@ -26,7 +26,7 @@ func (j Job) Rows() int { return len(j.Out[0]) }
 const chunk = 32
 
 // padFrom is how many vectors past a multiple of 8 take a group of SMMLA padded with zeros
-// (HWNPU_MXFP4_PAD).
+// (HWNPU_MXFP4=pad=N).
 var padFrom = 6
 
 // Run runs the jobs over the CPU's cores.
@@ -153,30 +153,29 @@ func Run(jobs ...Job) {
 	wg.Wait()
 }
 
-// Spin is how long the pool's workers that poll (Spinners) keep polling for the next Run before
-// they sleep (HWNPU_MXFP4_SPIN, a duration). Workers that sleep between Runs wake slowly onto cores
-// the system has slowed: on an M3, gpt-oss-20b's experts of a layer take 0.93 ms back to back,
-// 1.77 ms with 1 ms between and 2.91 ms with 3 ms, and 1.08 and 1.14 ms with every worker polling
-// for 5 ms. In hwnpu-chat the Neural Engine's parts run between them, and polling workers slow
-// those parts as much as they save (2 of 8: the experts 1.62 to 1.27 ms a layer, 15.8 tokens/s
-// either way; 4: 12.0 tokens/s), so none polls by default.
-var Spin = 5 * time.Millisecond
-
-// Spinners is how many of the workers poll (HWNPU_MXFP4_SPINNERS); the others sleep at once.
-var Spinners = 0
+// Workers sleep between Runs. Polling instead (tried 2026-11-19, M3) keeps them on fast cores:
+// gpt-oss-20b's experts of a layer take 0.93 ms back to back, 1.77 ms with 1 ms between and 1.08
+// with every worker polling for 5 ms. In hwnpu-chat the Neural Engine's parts run between them,
+// and polling workers slowed those parts as much as they saved (2 of 8: the experts 1.62 to 1.27
+// ms a layer, 15.8 tokens/s either way; 4: 12.0 tokens/s), so it was taken out
+// (docs/improvements.md section 8).
 
 func init() {
-	if v := os.Getenv("HWNPU_MXFP4_SPIN"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			Spin = d
-		}
-	}
-	if v := os.Getenv("HWNPU_MXFP4_PAD"); v != "" {
+	if v, ok := Opt("pad"); ok {
 		fmt.Sscan(v, &padFrom)
 	}
-	if v := os.Getenv("HWNPU_MXFP4_SPINNERS"); v != "" {
-		fmt.Sscan(v, &Spinners)
+}
+
+// Opt reads an item of HWNPU_MXFP4, a list of NAME=VALUE separated by commas, for measuring:
+// i8mm=0 runs without SMMLA (the SDOT kernels), pad=N the vectors past a multiple of 8 that take
+// a padded group of SMMLA (6), bench=LAYERS the layers TestTokenTime times.
+func Opt(name string) (string, bool) {
+	for _, it := range strings.Split(os.Getenv("HWNPU_MXFP4"), ",") {
+		if k, v, _ := strings.Cut(strings.TrimSpace(it), "="); k == name {
+			return v, true
+		}
 	}
+	return "", false
 }
 
 // workers are goroutines kept for Run, started on first use.
@@ -199,7 +198,7 @@ func (p *workers) run(work func(), n int) {
 		p.cond = sync.NewCond(&p.mu)
 	}
 	for p.started < n {
-		go p.loop(p.started < Spinners)
+		go p.loop()
 		p.started++
 	}
 	p.task.Store(&work)
@@ -215,14 +214,10 @@ func (p *workers) run(work func(), n int) {
 	p.done.Wait()
 }
 
-func (p *workers) loop(spin bool) {
+func (p *workers) loop() {
 	var last uint64
 	for {
 		g := p.gen.Load()
-		if g == last && spin {
-			for t := time.Now(); g == last && time.Since(t) < Spin; g = p.gen.Load() {
-			}
-		}
 		if g == last {
 			p.mu.Lock()
 			for g = p.gen.Load(); g == last; g = p.gen.Load() {

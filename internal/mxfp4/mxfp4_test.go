@@ -104,7 +104,7 @@ func TestRunVectors(t *testing.T) {
 }
 
 // BenchmarkRunVectors is Run of an expert's gate_up (5760 rows of 2880) with 16 vectors, the
-// rows of a prompt's chunk that chose it (HWNPU_MXFP4_I8MM=0 for the kernel without SMMLA).
+// rows of a prompt's chunk that chose it (HWNPU_MXFP4=i8mm=0 for the kernel without SMMLA).
 func BenchmarkRunVectors(b *testing.B) {
 	r := rand.New(rand.NewPCG(5, 6))
 	const rows, nb, n = 5760, 90, 16
