@@ -66,11 +66,12 @@ type Host struct {
 	warm    sync.WaitGroup
 	stop    chan struct{}
 	mu      sync.Mutex
-	locked  [][]byte // the spans wired (Host.wire), unwired by Close
-	usage   *Usage   // how often each expert ran (rows), added by Close to Placement.Usage
-	usageTo string   // Placement.Usage
-	place   *placer  // the experts wired by use, when they are not all (Placement)
-	first   int      // the first layer held
+	locked  [][]byte    // the spans wired (Host.wire), unwired by Close
+	usage   *Usage      // how often each expert ran (rows), added by Close to Placement.Usage
+	usageTo string      // Placement.Usage
+	place   *placer     // the experts wired by use, when they are not all (Placement)
+	pre     *prefetcher // the next layer's experts guessed and brought in, when not all are wired
+	first   int         // the first layer held
 }
 
 // OpenHost maps the experts of rec, all of them wired when they fit (Host.wiring).
@@ -162,6 +163,11 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 		h.place.start()
 	case pf != "0" && 2*h.bytes() <= mem.Physical():
 		h.prefault(false) // unwired as asked, and they fit: their pages in before the first runs
+	}
+	if !all && rec.Act.Kind == ActGptOss {
+		if routers := gptOssRouters(rec, sh, floats); routers != nil {
+			h.pre = newPrefetcher(h, routers, prefetchN())
+		}
 	}
 	if pf == "wait" { // for measuring: every page in before the first run
 		h.warm.Wait()
@@ -262,6 +268,10 @@ func shardOf(checkpoint, name string) (string, error) {
 
 // Close unmaps the checkpoint.
 func (h *Host) Close() {
+	if h.pre != nil {
+		h.pre.stop()
+		h.pre = nil
+	}
 	if h.place != nil {
 		h.place.stop()
 		h.place = nil
@@ -312,6 +322,9 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	if h.place != nil {
 		h.place.count(layer, idx)
 		h.place.ran(layer == h.first)
+	}
+	if h.pre != nil && len(rows) == 1 {
+		h.pre.ran(layer, rows[0], idx[0])
 	}
 	for r := range rows {
 		for k, e := range idx[r] {

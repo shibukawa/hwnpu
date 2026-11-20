@@ -51,9 +51,9 @@
 ### 3.2 固定していない専門家の外れ (6.4 GB の 10.1 tok/s と全部固定の 13.2 の差)
 
 - まず ENOMEM の直し (237e28c) の後で測り直す (下の 4 節)。初回から 6.4 GB 固定できているか (`experts: wired 6.4 GB … (budget 6.4 …)` が最初の行に出る)、当たりの割合 (`experts: NN% of … runs on wired experts`)
-- 外れは 1 層あたり 0.5 ms ほど (M2: 2.38 − 1.85)。Neural Engine が部品を回す 3.5〜5 ms の間、CPU と SSD は空いている。次の層で使う専門家を先に読む:
-  - 簡単な形: 固定していない専門家のうち点数の高いものを `madvise(MADV_WILLNEED)` かページに触れて温めておく (`placer` の点数が使える)
-  - 予測する形: 層 l の隠れ状態に層 l+1 のルーターを掛けて次の 4 つを当てる (MoE のオフロードの論文でよく使われる)。gpt-oss のルーターは 1 層 2880 × 32 + bias で CPU でも軽い。ルーターの重みは今 Neural Engine の部品の中なので、チェックポイントから読む。当たりの割合を先に測る
+- 外れは 1 層あたり 0.5 ms ほど (M2: 2.38 − 1.85)
+- **次の層の専門家の先読みは M3 で入れた** (`internal/llm/experts/prefetch.go`、既定で上位 4 個、`HWNPU_MOE_DEBUG=prefetch=N` で変える、0 で切る)。moe_x_l / w_l · w_{l+1} に層 l+1 のルーター (チェックポイントから読む) を掛けて予測し、固定していない専門家を Neural Engine の部品の間に `madvise(MADV_WILLNEED)` とページへの接触で読み込む。予測は上位 4 個に 86〜87 %、上位 8 個に 97〜98 %。M3 では、ほかのアプリが忙しいとき 6 GB で 14.1〜14.3 → 15.1〜15.2 tok/s、3 GB の先読みあり (14.7〜15.0) が 6 GB の先読みなしより速い。静かでページキャッシュに全部あるときは差なし。12 GB の真似 (乱数 4 GB) では SSD の帯域で決まり (3 GB で 4〜5 tok/s)、先読みは効かない (improvements.md 7.5)
+- M2 で確かめること: `HWNPU_MOE_DEBUG=1` の最後の行 (`the next layer's guess had …`、`… brought in before`) と、`prefetch=0` と既定の交互の比較 (4 節のスクリプトに `HWNPU_MOE_DEBUG=time,prefetch=0` を足す)
 - 予算の曲線: `HWNPU_MOE_WIRE=4GB`、`6GB`、`8GB`、`1` で速さとメモリ。メモリを減らすことにも価値があるので、曲線のまま記録する
 
 ### 3.3 Neural Engine の部品 (M2 は 1 つ 約 4.8 ms、M3 は 3.5)
