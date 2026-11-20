@@ -658,14 +658,6 @@ func readStaged(f *os.File, dst []byte, off int64) bool {
 	return ok
 }
 
-func openDirect(path string) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECT|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	return os.NewFile(uintptr(fd), path), nil
-}
-
 // readDirect reads len(dst) bytes at off of f into dst, false where O_DIRECT will not (a length
 // or an offset off the disk's blocks, a buffer it cannot take): the caller copies instead.
 func readDirect(f *os.File, dst []byte, off int64) bool {

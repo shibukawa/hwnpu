@@ -277,6 +277,40 @@ func openPackage(dir string) (*milspec.Function, io.ReaderAt, io.Closer, error) 
 	return fn, f, f, nil
 }
 
+// LintPackage lowers an .mlpackage's main function without reading its weights (they lower as
+// zeros) and returns what the Neural Engine would get wrong for some values in the program
+// (design.md 16.274).
+func LintPackage(dir string) ([]string, error) {
+	fn, weights, closer, err := openPackage(dir)
+	if err != nil {
+		return nil, err
+	}
+	if closer != nil {
+		defer closer.Close()
+	}
+	if weights != nil {
+		weights = headersOnly{weights}
+	}
+	var notes []string
+	l := newLowerer(newWriter(), map[[32]byte]string{}, weights)
+	l.notes = &notes
+	if _, _, err := l.lower(fn, fn.GetBlockSpecializations()[fn.GetOpset()], "main"); err != nil {
+		return notes, fmt.Errorf("%s: %w", filepath.Base(dir), err)
+	}
+	return notes, nil
+}
+
+// headersOnly reads a weight file's blob headers (64 bytes) and gives zeros for the data.
+type headersOnly struct{ r io.ReaderAt }
+
+func (h headersOnly) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) <= 64 {
+		return h.r.ReadAt(p, off)
+	}
+	clear(p)
+	return len(p), nil
+}
+
 // LowerPackage lowers an .mlpackage's main function.
 func LowerPackage(dir string) (*Program, error) {
 	fn, weights, closer, err := openPackage(dir)
@@ -399,6 +433,8 @@ type lowerer struct {
 	// blobKeys are the resources written so far by the sha256 of their bytes, shared by the
 	// lowerers of one program's functions: a weight is written once
 	blobKeys map[[32]byte]string
+	// notes, when not nil, collects what note is told (LintPackage)
+	notes *[]string
 }
 
 type lowerError struct{ err error }

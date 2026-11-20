@@ -1165,6 +1165,26 @@ Gemma 4's per-layer embeddings (PLE) are a table of the same kind: a row a token
 
   The tables keep the token embedding in bf16 (0.81 GB of E2B's, 1.34 GB of E4B's). The same E4B export with bf16 tables and with int8 tables (the file swapped, `--temp 0`, the prompt cache off) gives the same 300 tokens to the letter for a Japanese prompt and an English one, and the same drafts accepted (24 of 659, 18 of 740). Memory is unchanged: 1.61 GiB on the Neural Engine and a footprint of 0.39 GiB for E2B, 3.34 GiB and 0.34 GiB for E4B, since the host reads the rows with `ReadAt`. The Neural Engine's compile is still made on each Mac (1 to 2 minutes for E2B, 2 to 6 for E4B on the M2).
 
+### 12.8 The papers' Neural Engine rules and limits, checked on the M2 (2026-11-20, design.md 16.274)
+
+From arXiv 2606.22283 (reverse engineering of the ANE), 2611.19101 (its energy roofline) and ANEForge (2606.17090), checked on an M2 (16 GB, macOS 27.2.1) through Core AI with `aicheck rules`, `aicheck limits` and `aicheck lint`. No speed is gained by these: they are fixes, a guard and measurements.
+
+| Rule or limit | On the M2 | What hwnpu does |
+|---|---|---|
+| linear / conv outputs below 2^15 | Inf from a sum of 32768, **partial sums too** (a sum of 0 whose halves reach 32768). reduce_sum is right at 51200. Below 2^15 the sums are exact (Core AI's CPU, accumulating in fp16, is 1–3 % off) | Ranges kept by the scaled norms; a point of the new-model checklist |
+| A slice of the width axis not starting at 0 has a ×16 gain | Values over 4094 come out Inf when the start mod 32 is 1..14 (0 and 15..31 are right), for any width; not on the other axes | `aicheck lint` (packages and `.aimodel`s), `HWNPU_AILOWER_NOTES=1`. Of the 27 local exports only LFM2-8B-A1B's top-4 routing weights (values up to 1) match: nothing affected |
+| softplus | 0 for x over 10.4 as log(1 + exp(x)) (log and exp alone are right) | `ailower` lowers it as relu(x) + log(1 + exp(−\|x\|)): worst error 1 → 0.0014 |
+| Subnormals inside a matmul | Flushed (a linear of products of 1e-6 gives 0); elementwise keeps them | As 16.202 |
+| A matmul of inner dimension 1 | Wrong at M = 1 (relative error 0.28), right at M = 64 | `ailower` lowers it as a broadcast multiply |
+| Programs a process | **112**: the 113th fails to load there ("no ANE resources") and Core AI runs it on the GPU | The Core AI device counts its programs on the Neural Engine and says so when one falls off near the limit. gpt-oss-20b loads about 84 |
+| A call's floor | 160–175 µs (ANEForge's direct path: about 70) | — |
+| Elementwise ops | 16–20 GB/s, no cliff past 2 MB (the paper's slow activation path) | — |
+| A 1x1 convolution's output channels | Flat to 256 channels, then rising (4.3 TFLOP/s at 1024): no reason to split | — |
+| Experts a program (M1: a 4× step from the 6th) | No step on the M2 (gpt-oss's shape: top 4/5/6/8 3.6/4.4/5.5/7.4 ms), as on the M3; the paper's int8 "folds" on M1 only | — |
+| Weight formats (4096 × 4096, one row) | fp16 742 µs, int8 466, lut8 449, lut6 387, lut4 351, int4 329: past the floor, bytes at about 55 GB/s, then about 90 G weights/s. lut8 is 0.6× fp16 (the paper's M2 table: 0.60) and lut4 1.3–1.4× faster than lut8 | The basis for choosing a format by what bounds it |
+
+**Rotating the residual before lut** (`llm.Rotate`, `qwen35.Config.Rotation`, `tools/quant/rotkl`): Q = diag(random signs) × Walsh-Hadamard folded into the weights (embedding E Q, readers W diag(1 + w) Q, writers Qᵀ W), so the program is unchanged. It applies only where every residual reader is a linear after a norm and every writer adds as it is: of the Mac chat models, Qwen3.5 (LFM3, Gemma 4 and PLaMo 3 have sandwich norms; gpt-oss's experts are MXFP4 on the CPU). On the CPU (256 tokens against fp16), the KL roughly halves at every format: Qwen3.5-2B lut6 (the product's) 0.056 → 0.027 with the top token agreeing at 219 → 236 of 256, lut8 0.0047 → 0.0033; 0.8B lut6 0.075 → 0.039. lut4 stays unusable (2B 0.60 → 0.37), so it is accuracy, not a faster format. On the GPU (the whole program fell off the Neural Engine) the same halving. Not yet on the Neural Engine, nor in the exports: the MTP layer (it reads the final norm's output), the host's embedding tables and lookups, a Revision, the 12 questions on the Neural Engine.
+
 ## 13. Related work: MoE inference (checked 2026-11-20)
 
 What hwnpu's MoE work (gpt-oss-20b on Apple and AMD, Qwen3.6-35B-A3B on AMD) borrows from, or should be told apart from. Each was read on its arXiv page (abstract and HTML text) or its source unless marked (snippet): a search result only. Most of 2026's are preprints.
