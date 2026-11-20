@@ -198,8 +198,18 @@ def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, v
 
 
 @functools.cache
+def gdn_scratch(R: int, dk: int, seg: int = 0, dv: int = 0, conv: int = 0, norm: bool = False,
+                steps: int = 0) -> int:
+    """The bf16 of a core's scratch buffer (kernels/gdn.cc's gdn_bind): the state's three limbs a
+    core keeps between calls (dk x 16 each), and 32 more to align them to 64 bytes. As the
+    kernel's static arrays (.bss) they were written with zeros at every configuration of the
+    array, 12 KB a core (docs/design.md 16.267). The other arguments are the kernel's shape, kept
+    for the callers."""
+    return 3 * dk * SLICE + 32
+
+
 def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pairs: bool = False,
-                 presilu: bool = False, steps: int = 0):
+                 presilu: bool = False, steps: int = 0, slots: int = 0):
     """The GatedDeltaRule operator for ``n`` columns of two cores, each core ``hc`` value heads:
     each core's words (four a head) are values of their own, so it is made per shape.
 
@@ -226,12 +236,18 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
     ``steps`` > 1 (with ``conv`` and ``norm``: a check of drafts, iron_verify.py): ``steps``
     rows a call, each run as a decode step's row in turn, the state staying in the cores; the
     final state is ``steps`` states, the one after each row (the host keeps the one after the
-    last row it keeps), y each row's."""
+    last row it keeps), y each row's.
+
+    ``slots`` > 0 (a decode step, with ``conv`` and ``norm``): ``state`` is the whole checkpoint
+    state of that many slots, read at the per-call element offset ``read_at``, and ``final`` the
+    same buffer (an InOut) written at ``write_at``, in place of copies of the slot in and out
+    around the operator (two Copy steps of 2.2 MB a Qwen3.6 layer). The two may be one slot: a
+    column reads each object of its run before it writes it back."""
     import aie.dialects.index as index
     from aie.dialects.aie import T
     from aie.extras.dialects import arith
     from aie.helpers.taplib import TensorAccessPattern as TAP
-    from aie.iron import In, ObjectFifo, Out, Worker
+    from aie.iron import Buffer, In, InOut, ObjectFifo, Out, Worker
     from aie.iron.controlflow import range_
     from aie.iron.device import AnyMemTile
     from aie.iron.kernel import ExternalFunction
@@ -242,6 +258,9 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
     from iron.common import Built, Operator, Rtp
 
     cores = 2 * n
+    GATHER_V = [None]  # a decode step's gather of the v slice alone (kernels: conv and norm)
+    if slots and not (conv and norm and not steps):
+        raise ValueError("gdn_operator: slots are a decode step's, with conv and norm")
 
     def kernels(R: int, blocks: int, dk: int, seg: int, dv: int, zw: int):
         flags = [f"-DGDR_SEG={seg}", f"-DGDR_CONV={conv}"] if conv else []
@@ -267,6 +286,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
         st_t = np.ndarray[(dk * SLICE,), np.dtype[np.float32]]
         y_t = np.ndarray[(R * SLICE,), np.dtype[bfloat16]]
         i32 = np.int32
+        scr_t = np.ndarray[(gdn_scratch(R, dk, seg, dv, conv, bool(norm), steps),), np.dtype[bfloat16]]
+        bindk = ExternalFunction("gdn_bind", arg_types=[scr_t], **common)
         gather = ExternalFunction("gdn_gather", arg_types=[seg_t, i32, i32, i32, i32, i32], **common)
         rule = ExternalFunction("gdn_rule", arg_types=[st_t, st_t, y_t, i32, i32, i32, i32, i32, i32],
                                 **common)
@@ -277,7 +298,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             gather = ExternalFunction("gdn_gather_step", arg_types=[i32] * 5, **common)
             rule = ExternalFunction("gdn_rule_step", arg_types=[st_t, st_t, *[i32] * 6], **common)
             normk = ExternalFunction("gdn_norm_step", arg_types=[head_t, xt_t, i32, i32], **common)
-            return gather, rule, convk, normk
+            return gather, rule, convk, normk, bindk, scr_t
         if conv:
             xt_t = np.ndarray[((1 + conv) * seg + zw,), np.dtype[bfloat16]]
             convk = ExternalFunction("gdn_conv", arg_types=[xt_t, st_t, st_t], **common)
@@ -285,10 +306,11 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             if norm:
                 rule = ExternalFunction("gdn_rule_keep", arg_types=[st_t, st_t, *[i32] * 7], **common)
                 normk = ExternalFunction("gdn_norm", arg_types=[y_t, xt_t, i32, i32], **common)
-                return gather, rule, convk, normk
-            return gather, rule, convk, None
+                GATHER_V[0] = ExternalFunction("gdn_gather_conv_v", arg_types=[i32] * 3, **common)
+                return gather, rule, convk, normk, bindk, scr_t
+            return gather, rule, convk, None, bindk, scr_t
         # without conv, the third: a y of zeros (a prompt chunk's blocks past the call's rows)
-        return gather, rule, ExternalFunction("gdn_zero_y", arg_types=[y_t], **common), None
+        return gather, rule, ExternalFunction("gdn_zero_y", arg_types=[y_t], **common), None, bindk, scr_t
 
     def i32c(v: int):
         return arith.constant(v, T.i32())
@@ -332,9 +354,17 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             z = In(rows, hv, obj_shape=(zw,), per=(columns,))
         if conv:
             taps = In(conv, twidth, obj_shape=(seg,), per=(columns,))  # x's channel, after the row
-        state = In(states, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
-        y = Out(rows, hv, obj_shape=(ypair,), per=(columns,))
-        final = Out(finals, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+        if slots:  # the checkpoint state, each slot ``states`` long: read and written in place
+            total: int = param(derive=lambda op: slots * op.states, repr=False)
+            state = In(total, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+            y = Out(rows, hv, obj_shape=(ypair,), per=(columns,))
+            final = InOut(total, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+            read_at = per_call(derive=lambda op: 0)  # elements: the slot read
+            write_at = per_call(derive=lambda op: 0)  # and the one written
+        else:
+            state = In(states, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+            y = Out(rows, hv, obj_shape=(ypair,), per=(columns,))
+            final = Out(finals, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
         valid = per_call(bounds=rows)
         count = per_call(derive=lambda op: op.valid)
 
@@ -370,7 +400,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
 
         def build(self) -> Built:
             H, KH, dk, dv, hc, S, R, blocks = self.geometry()
-            gather, rule, convk, normk = kernels(R, blocks, dk, self.seg, dv, self.zw)
+            gather, rule, convk, normk, bindk, scr_t = kernels(R, blocks, dk, self.seg, dv, self.zw)
             seg_t = np.ndarray[((1 + conv) * self.seg + self.zw,), np.dtype[bfloat16]]
             if steps:
                 seg_t = np.ndarray[(steps * (self.seg + self.zw) + conv * self.seg,), np.dtype[bfloat16]]
@@ -425,7 +455,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                         y_f.release(1)
                 x_f.release(1)
 
-            def core(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k):
+            def core(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k, bind=None, scr=None, gather_v=None):
+                bind(scr)  # the arrays the core keeps between calls, in its scratch buffer
                 if steps:
                     return core_steps(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k)
                 w = rtp.read()
@@ -449,6 +480,10 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                     qo, ko = i32c(kl * dk), i32c(KHg * dk + kl * dk)
                     vbase = 2 * KHg * dk + hl * dv
                     abo = i32c(2 * KHg * dk + Hg * dv + 2 * hl)
+                    if gather_v is not None and (i == 0 or kl != (hl - 1) // rep):
+                        # q and k once for the core's slices of this key head; each slice then
+                        # gathers its v alone (gdn_gather_conv_v)
+                        gather(i32c(0), qo, ko, i32c(vbase), abo)
                     for s in range_(S):
                         s32 = index.casts(T.i32(), s)
                         vo = arith.addi(i32c(vbase), arith.muli(s32, i32c(SLICE)))
@@ -457,7 +492,9 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                         # (the rule's work, with no live row, skipped)
                         for b in range_(nb if nb is not None else blocks):
                             for t in range_(R):
-                                if conv:
+                                if gather_v is not None:
+                                    gather_v(index.casts(T.i32(), t), vo, abo)
+                                elif conv:
                                     gather(index.casts(T.i32(), t), qo, ko, vo, abo)
                                 else:
                                     row = x_f.acquire(1)
@@ -494,20 +531,26 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             workers = []
             for c in range(n):
                 for j in range(2):
-                    if norm:
-                        fn = lambda x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, j=j, k=2 * c + j: core(  # noqa: E731
-                            x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, j, k)
+                    if norm and GATHER_V[0] is not None and not steps:
+                        fn = lambda x_f, s_f, y_f, f_f, g, r, ck, nk, gv, rtp, b, scr, j=j, k=2 * c + j: core(  # noqa: E731
+                            x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, j, k, b, scr, gather_v=gv)
+                        ks = [gather, rule, convk, normk, GATHER_V[0]]
+                    elif norm:
+                        fn = lambda x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, b, scr, j=j, k=2 * c + j: core(  # noqa: E731
+                            x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, j, k, b, scr)
                         ks = [gather, rule, convk, normk]
                     elif conv:
-                        fn = lambda x_f, s_f, y_f, f_f, g, r, ck, rtp, j=j, k=2 * c + j: core(  # noqa: E731
-                            x_f, s_f, y_f, f_f, g, r, ck, None, rtp, j, k)
+                        fn = lambda x_f, s_f, y_f, f_f, g, r, ck, rtp, b, scr, j=j, k=2 * c + j: core(  # noqa: E731
+                            x_f, s_f, y_f, f_f, g, r, ck, None, rtp, j, k, b, scr)
                         ks = [gather, rule, convk]
                     else:
-                        fn = lambda x_f, s_f, y_f, f_f, g, r, zk, rtp, j=j, k=2 * c + j: core(  # noqa: E731
-                            x_f, s_f, y_f, f_f, g, r, zk, None, rtp, j, k)
+                        fn = lambda x_f, s_f, y_f, f_f, g, r, zk, rtp, b, scr, j=j, k=2 * c + j: core(  # noqa: E731
+                            x_f, s_f, y_f, f_f, g, r, zk, None, rtp, j, k, b, scr)
                         ks = [gather, rule, convk]
+                    # no initial value: nothing is written into it when the array is configured
+                    scratch = Buffer(scr_t, name=f"gdn_scratch_{2 * c + j}")
                     workers.append(Worker(fn, [x_l1[c].cons(), s_l1[c][j].cons(), y_l1[c][j].prod(),
-                                               f_l1[c][j].prod(), *ks, rtps[2 * c + j]]))
+                                               f_l1[c][j].prod(), *ks, rtps[2 * c + j], bindk, scratch]))
             self.x.bind([f.prod() for f in x_l3])
             if norm:
                 self.z.bind([f.prod() for f in x_l3])
@@ -528,9 +571,12 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             skip = self.pair if pairs else 0  # the pair ahead of the run, left as it is
             # The fills first: a prompt chunk's drains are 2 hc S descriptors a column, past what a
             # channel's task queue holds before the data they wait for has come in.
+            size = self.total if slots else self.states
+            rd = (self.read_at if self.read_at.per_call else None) if slots else None
+            wr = (self.write_at if self.write_at.per_call else None) if slots else None
             for c in range(n):
-                self.state.fill(TAP((self.states,), c * run + skip, [run - skip], [1]), lane=c,
-                                managed=False)
+                self.state.fill(TAP((size,), c * run + skip, [run - skip], [1]), lane=c,
+                                offset_parameter=rd, managed=False)
                 if conv:  # the row once (the core keeps the convolution's output), then the taps
                     self.x.fill(TAP((rows, TW), c * seg, [seg], [1]), lane=c, managed=False)
                     if norm:
@@ -539,8 +585,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                 else:
                     self.x.fill(TAP((rows, W), c * seg, [hc * S, rows, seg], [0, W, 1]), lane=c,
                                 managed=False)
-            drains = [self.final.drain(TAP((self.states,), c * run + skip, [run - skip], [1]), lane=c,
-                                       wait=True, managed=False) for c in range(n)]
+            drains = [self.final.drain(TAP((size,), c * run + skip, [run - skip], [1]), lane=c,
+                                       offset_parameter=wr, wait=True, managed=False) for c in range(n)]
             if R == 1:
                 for c in range(n):
                     h0 = c * 2 * hc  # the column's first head (core 0's), core 1's from h0 + hc
@@ -604,6 +650,18 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                     st = put(final)
                     finals.append(st)
                 return np.concatenate(ys), np.concatenate(finals)
+        elif slots:
+            def reference(self, x, z, taps, state, final, *, read_at=0, write_at=0):
+                shape = dict(heads=self.heads, key_heads=self.key_heads, key_dim=self.key_dim,
+                             value_dim=self.value_dim, n=n)
+                H, dv, S = self.heads, self.value_dim, self.states
+                st = np.asarray(state, np.float32).reshape(-1)[int(read_at) : int(read_at) + S]
+                u, rest, put = conv_reference(x, taps, st, **shape)
+                y, fin = gdn_reference(u, rest, self.words, **shape, valid=1)
+                y = norm_reference(np.asarray(y).reshape(1, H, dv), np.asarray(z).reshape(1, H, dv), norm)
+                out = np.array(final, np.float32).reshape(-1)
+                out[int(write_at) : int(write_at) + S] = put(fin)
+                return y.reshape(1, H * dv), out
         elif norm:
             def reference(self, x, z, taps, state):
                 shape = dict(heads=self.heads, key_heads=self.key_heads, key_dim=self.key_dim,
@@ -668,7 +726,7 @@ def silu_operator(n: int = 8):
     (gdn_layout), its (a, b) left as they are, float32 inside and rounded once to bf16 as
     GatedDeltaRule's gather does it: what that operator takes with ``presilu``. Each column's
     cores (silu_parts) take a part of its rows' channels."""
-    from aie.iron import In, ObjectFifo, Out, Worker
+    from aie.iron import Buffer, In, ObjectFifo, Out, Worker
     from aie.iron.controlflow import range_
     from aie.iron.device import AnyMemTile
     from aie.iron.kernel import ExternalFunction
@@ -789,9 +847,14 @@ def _check(args) -> int:
 
         class Graph(iron.Graph):
             def body(self, x, z, taps, state):
-                if zw:
-                    return G.step(x, z, taps, state, **shape, words=words)
-                return G.step(x, taps, state, **shape, words=words)
+                for _ in range(args.plus + 1):  # --plus: y + y after each, a second design
+                    if zw:
+                        y, final = G.step(x, z, taps, state, **shape, words=words)
+                    else:
+                        y, final = G.step(x, taps, state, **shape, words=words)
+                    if args.plus:
+                        y = y + y
+                return y, final
 
             def reference(self, x, z, taps, state):
                 u, rest, put = conv_reference(x, taps, state, **shape, n=n)
@@ -799,6 +862,8 @@ def _check(args) -> int:
                 if zw:
                     y = norm_reference(np.asarray(y).reshape(1, H, dv), np.asarray(z).reshape(1, H, dv),
                                        eps).reshape(1, H * dv)
+                if args.plus:
+                    y = (np.asarray(y, np.float32) * 2).astype(bfloat16)
                 return y, put(final)
 
         g = Graph()
@@ -855,6 +920,9 @@ def main(argv=None) -> int:
     c.add_argument("--conv", type=int, default=0, help="the convolution's taps in the operator (decode)")
     c.add_argument("--norm", action="store_true", help="with --conv: the gated norm in the operator too")
     c.add_argument("--presilu", action="store_true", help="silu before the operator (GdnSiLU), a prompt chunk's")
+    c.add_argument("--plus", type=int, default=0,
+                   help="with --conv: the operator N + 1 times on the same inputs, y + y after each (a second "
+                        "design: the array reconfigured 2 (N + 1) times, to count and time its configuration)")
     a = ap.parse_args(argv)
     return _check(a)
 

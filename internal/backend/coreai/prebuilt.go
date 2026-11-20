@@ -136,7 +136,7 @@ func Assets(paths []string) ([]string, error) {
 // picture right. Nor do they gain anything: the device finishes a prebuilt program no faster than
 // it compiles one this small (the ten stages at 1024 x 1024 104 s either way: a finish waits on
 // the respawn of ANELargeModelCompilerService, 10 s a program). Build leaves them out and Prebuilt
-// passes over them in what the shared layers hold already (design.md 16.264).
+// passes over them in what the shared layers hold already (design.md 16.273).
 //
 // The text encoders likewise: Chroma1-Flash's T5-XXL (text_0 ... text_21, prebuilt for h13g) ended
 // in "Request cancelled" at text_0 on M1 four times running (fresh Core AI caches, nothing else on
