@@ -13,6 +13,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
 // A mixture of experts whose layers' tables hold fewer places than experts (Manifest.ExpertsPool,
@@ -36,7 +37,8 @@ const poolDecay = 0.995
 // expertPool is the places' state.
 type expertPool struct {
 	man     *ExpertsPool
-	data    []byte // experts.bin, mapped
+	data    []byte   // experts.bin, mapped
+	direct  *os.File // experts.bin opened O_DIRECT where it does not fit the page cache (directReads), or nil
 	L, E, P int
 	places  []poolPlaces
 	core    []bool    // by l*E+e
@@ -48,7 +50,9 @@ type expertPool struct {
 	ids     []int32
 
 	hits, misses int64
-	copying      time.Duration
+	copying      time.Duration // the decode steps' copies
+	loading      time.Duration // the prompt passes' copies
+	loads        int64
 }
 
 // poolPlaces is a layer's places: the expert in each (-1 none), each expert's place (-1 none),
@@ -103,6 +107,12 @@ func (m *Model) openPool() error {
 	if p.data, err = syscall.Mmap(int(f.Fd()), 0, int(st.Size()), syscall.PROT_READ, syscall.MAP_SHARED); err != nil {
 		return fmt.Errorf("iron: experts_pool: %w", err)
 	}
+	if directReads(st.Size()) {
+		if p.direct, err = openDirect(filepath.Join(m.dir, ep.File)); err != nil {
+			m.logf("experts: %s not read directly (%v): from the page cache", ep.File, err)
+			p.direct = nil
+		}
+	}
 	m.pool = p
 	m.logf("experts: %d places of %d a layer (%.1f of %.1f GiB), the others copied in from %s when chosen",
 		P, E, float64(int64(L)*int64(P)*int64(ep.Layers[0].GUBytes+ep.Layers[0].DNBytes))/(1<<30),
@@ -111,6 +121,10 @@ func (m *Model) openPool() error {
 }
 
 func (p *expertPool) close() {
+	if p.direct != nil {
+		p.direct.Close()
+		p.direct = nil
+	}
 	if p.data != nil {
 		syscall.Munmap(p.data)
 		p.data = nil
@@ -286,7 +300,7 @@ func (m *Model) copyExpert(l, e, i, n int) error {
 	var parts []span
 	for _, s := range spans {
 		k := max(1, n*s.n/(lay.GUBytes+lay.DNBytes))
-		step := (s.n/k + 63) &^ 63
+		step := (s.n/k + 4095) &^ 4095 // whole blocks for O_DIRECT
 		for at := 0; at < s.n; at += step {
 			c := min(step, s.n-at)
 			parts = append(parts, span{s.buf, s.dst + int64(at), s.src + int64(at), c})
@@ -298,7 +312,10 @@ func (m *Model) copyExpert(l, e, i, n int) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			copy(s.buf.Bytes()[s.dst:s.dst+int64(s.n)], p.data[s.src:s.src+int64(s.n)])
+			dst := s.buf.Bytes()[s.dst : s.dst+int64(s.n)]
+			if p.direct == nil || !readStaged(p.direct, dst, s.src) {
+				copy(dst, p.data[s.src:s.src+int64(s.n)])
+			}
 			errs[j] = s.buf.SyncToDevice(int(s.dst), s.n)
 		}()
 	}
@@ -367,6 +384,7 @@ func (m *Model) placeChoices(l int, ids []int32, places []int) ([]int, error) {
 	}
 	pl := &p.places[l]
 	chosen := func(e int) bool { return slices.Contains(ids, int32(e)) }
+	var copies [][2]int // (expert, place), copied together
 	for k, id := range ids {
 		if id < 0 || int(id) >= p.E {
 			return nil, fmt.Errorf("iron: decode layer %d's choice %d is no expert (%d)", l, k, id)
@@ -381,14 +399,29 @@ func (m *Model) placeChoices(l int, ids []int32, places []int) ([]int, error) {
 			if i = p.victim(l, chosen); i < 0 {
 				return nil, fmt.Errorf("iron: decode layer %d: no place for expert %d (%d places)", l, e, p.P)
 			}
-			t0 := time.Now()
-			if err := m.copyExpert(l, e, i, 4); err != nil {
-				return nil, err
-			}
-			p.copying += time.Since(t0)
 			p.place(l, e, i)
+			copies = append(copies, [2]int{e, i})
 		}
 		places = append(places, i)
+	}
+	if len(copies) > 0 {
+		t0 := time.Now()
+		errs := make([]error, len(copies))
+		var wg sync.WaitGroup
+		for j, c := range copies {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[j] = m.copyExpert(l, c[0], c[1], 8)
+			}()
+		}
+		wg.Wait()
+		p.copying += time.Since(t0)
+		for _, err := range errs {
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	return places, nil
 }
@@ -440,7 +473,8 @@ func (m *Model) loadExperts(l int, loads [][2]int) error {
 	}
 	t0 := time.Now()
 	err := m.copyPlaces(l, es)
-	m.pool.copying += time.Since(t0)
+	m.pool.loading += time.Since(t0)
+	m.pool.loads += int64(len(loads))
 	return err
 }
 
@@ -566,4 +600,58 @@ func (m *Model) poolPasses(h *HostStep, rt *moeRoute, ids []int32, n, K int) err
 		}
 	}
 	return nil
+}
+
+// directReads says whether to read an experts file of n bytes with O_DIRECT: when it is half the
+// memory or more, the page cache cannot keep it beside the places, and a miss's page faults read
+// the disk at about 1.5 GB/s (gpt-oss-120b: 9.4 ms an expert) where one read straight into the
+// bank takes 6 GB/s. HWNPU_MOE_DEBUG=direct=1 or 0 decides.
+func directReads(n int64) bool {
+	if v, ok := experts.DebugOpt("direct"); ok {
+		return v != "0"
+	}
+	phys := mem.Physical()
+	return phys > 0 && 2*n >= phys
+}
+
+var directOnce sync.Once
+
+// staging holds the buffers direct reads land in: O_DIRECT does not read into the bank's
+// mapping (the driver's pages: EFAULT), so a part goes through one and is copied in.
+var staging sync.Pool
+
+func readStaged(f *os.File, dst []byte, off int64) bool {
+	b, _ := staging.Get().([]byte)
+	if cap(b) < len(dst) {
+		b = make([]byte, len(dst))
+	}
+	b = b[:len(dst)]
+	ok := readDirect(f, b, off)
+	if ok {
+		copy(dst, b)
+	}
+	staging.Put(b)
+	return ok
+}
+
+func openDirect(path string) (*os.File, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECT|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+// readDirect reads len(dst) bytes at off of f into dst, false where O_DIRECT will not (a length
+// or an offset off the disk's blocks, a buffer it cannot take): the caller copies instead.
+func readDirect(f *os.File, dst []byte, off int64) bool {
+	for len(dst) > 0 {
+		n, err := syscall.Pread(int(f.Fd()), dst, off)
+		if err != nil || n <= 0 {
+			directOnce.Do(func() { fmt.Fprintf(os.Stderr, "experts: a direct read of %d bytes at %d: %v (copied instead)\n", len(dst), off, err) })
+			return false
+		}
+		dst, off = dst[n:], off+int64(n)
+	}
+	return true
 }

@@ -426,8 +426,9 @@ func (m *Model) Close() error {
 	if m.pool != nil {
 		if experts.DebugTime() {
 			p := m.pool
-			fmt.Fprintf(os.Stderr, "experts: %d places of %d: decode choices %d in a place, %d copied in (%.1f %%); copies %.2f s\n",
-				p.P, p.E, p.hits, p.misses, 100*float64(p.misses)/float64(max(1, p.hits+p.misses)), p.copying.Seconds())
+			fmt.Fprintf(os.Stderr, "experts: %d places of %d: decode choices %d in a place, %d copied in (%.1f %%) in %.2f s (%.1f ms each); prompts %d copied in %.2f s\n",
+				p.P, p.E, p.hits, p.misses, 100*float64(p.misses)/float64(max(1, p.hits+p.misses)), p.copying.Seconds(),
+				p.copying.Seconds()*1000/float64(max(1, p.misses)), p.loads, p.loading.Seconds())
 		}
 		if _, ok := experts.DebugOpt("check"); ok && !m.released && m.pool.filled {
 			if err := m.checkPool(); err != nil {
