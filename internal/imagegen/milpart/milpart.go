@@ -370,6 +370,9 @@ type HeadOptions struct {
 func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.Var {
 	heads, n, d := q.Shape[1], q.Shape[2], q.Shape[3]
 	m := k.Shape[2]
+	if o.Deferred && n%DeferredRows != 0 {
+		return g.paddedDeferred(q, k, v, o)
+	}
 	chunk := o.Chunk
 	if chunk <= 0 || chunk > n {
 		chunk = n
@@ -490,6 +493,41 @@ func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.
 		g.Fail("HeadAttention: %v from %v", out.Shape, q.Shape)
 	}
 	return out
+}
+
+// DeferredRows divides the queries of a Deferred HeadAttention: over other counts the Neural
+// Engine's compiler fails it from M2 on (h14g, h15g and h16g: "unexpected failure", the whole
+// program then on the GPU), where M1's (h13g) compiles it. Anima's cross-attention over its 512
+// text rows at 880 x 1168 (4015 patches) and 752 x 1360 (3995); 4014, 4020 failed too, 4016 and
+// 4056 did not, and the softmax divided before the product (not Deferred) took 4015 (design.md
+// 16.277).
+const DeferredRows = 8
+
+// paddedDeferred is a Deferred HeadAttention on q padded with zero rows to a multiple of
+// DeferredRows, the padding's rows dropped from the result (and from what Note is given).
+func (g *Graph) paddedDeferred(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.Var {
+	heads, n, d := q.Shape[1], q.Shape[2], q.Shape[3]
+	pad := (n+DeferredRows-1)/DeferredRows*DeferredRows - n
+	z := g.F16s(fmt.Sprintf("head_attention_pad_%d", pad), []int{1, heads, pad, d}, make([]float32, heads*pad*d))
+	padded := o
+	if o.Chunk >= n {
+		padded.Chunk = 0
+	}
+	if note := o.Note; note != nil {
+		// the chunks' products in order, a head's n + pad rows after another's
+		seen := 0
+		padded.Note = func(p *mlpackage.Var) {
+			c := p.Shape[2]
+			lo := seen % (n + pad)
+			seen += c
+			if keep := min(c, n-lo); keep == c {
+				note(p)
+			} else if keep > 0 {
+				note(g.Slice(p, 2, 0, keep))
+			}
+		}
+	}
+	return g.Slice(g.HeadAttention(g.Concat(2, q, z), k, v, padded), 2, 0, n)
 }
 
 // Heads is x (1, n, h*d) as (1, h, n, d).

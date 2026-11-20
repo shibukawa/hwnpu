@@ -8470,3 +8470,23 @@ Revision 2 の生成の文は、Revision 1 と約 65 トークン目で分かれ
 - デコードの先読み: 経路の選択がデバイスなので、gpt-oss-120b の形 (ホストの経路と次の層の予測) にはしていない。外れのコピー (P = 32 で 1 トークン約 55 ms) を隠せる見込み
 - GPTQ の符号 (16.101、4.3 時間) なしの q4 の書き出し。HF との照合は全部の書き出しの値 (16.93、16.101) のまま。置き場の書き出しはそれとビット単位で同じ
 - 書き出しを取得元 (NAS) へ: `~/models` に置いた 3 つ (`Qwen3.6-35B-A3B.amd-npu2-q4-p32`、`-q4-p128`、`-q4`、計 約 72 GB) は push していない。16 GB の機械は IRON の書き出し (最大 RSS 22 GB) ができないので、取得元に要る
+
+### 16.277 Anima: 8 で割り切れないパッチの交差注意を M2 から Neural Engine に (問い合わせを 8 の倍数に詰める、書き出し v5) — 2026-11-21
+
+M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-Turbo の 3:4 (880 × 1168)、4:3、9:16 (752 × 1360)、16:9 で h14g、h15g、h16g の DiT のブロック 7 つ全部が `coreai-build left the program off the Neural Engine (no compiled region)` (1 つずつ compile し直しても同じ)。h13g は通り、1:1、1:1s、2:3、3:2 は 4 つとも通る。os_log は `(ANEHostCompiler) Failed to compile function ..._ANE_region_0_0: unexpected failure` と `Full compile with ANE as preferred device failed. Falling back to full compile on GPU.` だけ。端末の compile も同じ compiler なので、M2 からはこの 4 つの大きさの DiT が GPU で回っていたはず (M2〜M4 では確かめていない)。
+
+**切り分け** (coreai-build で h14g に compile、端末の Neural Engine は使わない。合成の重みのブロックで再現する):
+
+| プログラム | 4015 (880 × 1168) | 4056 (832 × 1248) |
+|---|---|---|
+| ブロック 1 つ | GPU | ANE |
+| 自己注意だけ (RoPE、1 ヘッドずつ、1024 問い合わせずつ)、MLP だけ、LayerNorm だけ、パッチの埋め込みだけ | ANE | ANE |
+| 交差注意を含むもの (交差だけ、自己 + 交差、交差 + MLP) | GPU | ANE |
+
+交差注意 (`HeadAttention` の `Deferred`: 512 のテキストの鍵、softmax の和で割るのを値との積のあと) だけで、問い合わせの数が 8 の倍数でないと落ちる: 4014、4015、4020、3995 が GPU、4016、4056 が ANE。`Chunk: 1024` でも (最後の 943 が) 落ちる。`Deferred` でない softmax は 4015 でも通る。
+
+**直し**: `Deferred` の問い合わせが `milpart.DeferredRows` (8) の倍数でなければ、0 の行を足して 8 の倍数にし、結果から捨てる (`paddedDeferred`。`Note` に渡す積からも捨てる)。0 の問い合わせの行はほかの行に混ざらない。h13g〜h16g の 4 つとも ANE (合成の重みのブロック 1 つ)。`Deferred` を使うのは Anima の交差注意だけ。
+
+**書き出しの版**: 変わるのはパッチが 8 の倍数でない大きさ (4015 と 3995 の 4 つ) のプログラムだけなので、その Apple の書き出しだけ名前を `-v5` に (`PaddedExportVersion`)。ほかの 4 つ (1:1 4096、1:1s 1024、2:3 と 3:2 4056) はバイトまで同じで `-v4` のまま、その prebuilt も使える。Intel は `QChunkAttention` で変わらない (`-v4`)。
+
+**残り**: NAS の `-v4` の 4 つの大きさ (Turbo と Aesthetic) と、その prebuilt (h13g の分は通っていた) は使われなくなる。`-v5` を書き出して 4 つのチップの prebuild をし直す。M2〜M4 の実機で絵と時間を確かめる。

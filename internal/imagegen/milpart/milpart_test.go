@@ -125,3 +125,33 @@ func TestKeyParts(t *testing.T) {
 		}
 	}
 }
+
+// TestPaddedDeferred checks that a Deferred HeadAttention over queries not a multiple of
+// DeferredRows runs on queries padded to one, and that Note is given the real rows alone: each
+// head's n rows in all, by chunks or at once.
+func TestPaddedDeferred(t *testing.T) {
+	const heads, d, m = 3, 4, 7
+	for _, c := range []struct{ n, chunk int }{{10, 0}, {10, 4}, {13, 8}, {5, 2}, {16, 0}} {
+		var rows []int
+		p := &Part{Name: "p", Model: "test", Body: func(g *Graph) {
+			q := g.Input("q", 1, heads, c.n, d)
+			k := g.Input("k", 1, heads, m, d)
+			v := g.Input("v", 1, heads, m, d)
+			o := g.HeadAttention(q, k, v, HeadOptions{Deferred: true, Chunk: c.chunk, Note: func(p *mlpackage.Var) { rows = append(rows, p.Shape[2]) }})
+			if o.Shape[2] != c.n {
+				t.Errorf("%+v: %v", c, o.Shape)
+			}
+			g.Output(o)
+		}}
+		if _, err := llm.WritePart(filepath.Join(t.TempDir(), "p.mlpackage"), p, noWeights{}, llm.Options{Backend: llm.BackendCoreML}, nil); err != nil {
+			t.Fatal(err)
+		}
+		total := 0
+		for _, r := range rows {
+			total += r
+		}
+		if total != heads*c.n {
+			t.Errorf("%+v: Note was given %v rows, want %d in all", c, rows, heads*c.n)
+		}
+	}
+}
