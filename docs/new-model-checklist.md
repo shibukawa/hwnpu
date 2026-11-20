@@ -118,6 +118,11 @@ What helped:
 - **Per-row int8 weights overflow on a large output**: the Neural Engine takes the product of the int8 codes and applies the row's scale after it, so an output of 13000 (Qwen3-VL-8B's layer 6 down_proj at the attention sink's row, 3300 after a residual scale) passed fp16 on the way and came out NaN, while the same program on Core ML's CPU was right. A table format (lut8) turns its weights back into fp16 before the product and is right. Bisect such a part layer by layer against the CPU interpreter, counting non-finite values (`TestTextLayersBisect` in `internal/imagegen/qwenimage`, 16.165)
 - **A scale folded into a weight makes products under fp16's normal range**: a residual kept at 1/64 by scaling the output projections' weights lost the small channels of T5's outlier rows (prompt rows at a cosine of 0.36). Multiply the projection's output instead (split the factor when the output itself passes fp16), and feed normed rows into the projections larger, dividing their outputs. Core ML folds a constant scale next to a linear into its weight, so this works only where the scale does not sit right beside the linear (it did nothing in Chroma's DiT, 16.170)
 - **A norm of rows with outlier channels**: dividing a row by its largest value before the norm (`ScaledRMSNorm`) puts the other channels near the subnormals. Take the mean square of the divided copy, but multiply x itself by rsqrt / max (`chroma/mil.t5Norm`)
+- **The Neural Engine's rules measured on the M2** (`aicheck rules`, 16.262; Core AI's CPU has none of them):
+  - a linear's or a convolution's sum, **and its partial sums**, must stay under 2^15 (32768 gives Inf; reduce_sum keeps the full range). The per-row int8 overflow above is likely this rule on the sum of the codes before the row's scale
+  - a slice of the last axis starting at 1..14 mod 32 takes values over 4094 to Inf: run `aicheck lint` on the programs (or load them with `HWNPU_AILOWER_NOTES=1`)
+  - products under fp16's normal range are flushed inside a matmul, not in elementwise ops
+  - `ailower` already rewrites softplus (0 above x = 10.4 as log(1 + exp(x))) and a matmul of inner dimension 1 (wrong at M = 1)
 
 ### 3.4 Pass
 
