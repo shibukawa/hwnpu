@@ -401,7 +401,7 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | Qwen3.5's embeddings on the host (16.104) | The head holds a quantized copy, so the bf16 table on the device was unused | 0.8B −0.47 GiB, 2B −0.95 GiB. Logits bit for bit the same. Qwen3.6 keeps it (its routing reads it) |
 | GDN columns in whole blocks of 64 rows (16.104) | Puts the fused projection of the Qwen3.5 with as many value heads as key heads (0.8B, 2B) on q8 / q4 | A column 772 → 776 channels (rows of zeros). 4B unchanged |
 | Anima's DiT in one bank (`iron.GraphOptions.SwapVariants`, 16.106) | One bank for the 7 groups, a group's weight image (304 MiB) read into it when it runs | Pinned 3445 → 1236 MiB, denoising +2 %, latents byte for byte the same. `-resident-dit` keeps all |
-| hwnpu-dev xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
+| hwnpu-dev xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | With IRON's sample kernels, matrix multiply at 1–4 tenths of the peak (hwnpu's GEMM of bfp16 weights packed on the host: 15.2 TFLOPS at 4096 rows, PROBE.md; int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
 | A checkpoint's own 4 bits kept (mx4, `iron_gptoss_moe.py`, 16.179) | gpt-oss's MXFP4 experts read as they are: e2m1 nibbles decoded in the kernel (sign × max(m, 2m − 4, 4m − 16)), the group's exponent byte as the scale. 4.3 bits a weight, no error | Rounding them again to q4nx added 6.6 % weight error and took KL 2–3× up. q6 also holds them exactly, at 6.5 bits |
 | Attention sinks in IRON's MHA (`iron_sinks.py`, 16.179) | gpt-oss's learned logit per head: its term added to the softmax's running sum before the last division, on the P×V cores | No work added, the KV cache as without sinks. Cosine 0.999988 against the formula, sinks of 6 included |
 | Fewer operators in the decode step (16.179) | A projection's bias and the block's residual added in its GEMV as the output leaves (`QGEMVAdd`, `kernels/mv_add.h`); a gated MLP's gate and up as one table and one operator (`QGEMVGlu`); q and k one RoPE; a router's bias in MoERoute | Qwen3.5-0.8B 87 → 73 ms, gpt-oss 97.5 → 89.5 ms; one table, no second copy of the weights. Generation is bound by the count of operators (80–150 µs each) |
@@ -929,7 +929,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
   - Calls from ComfyUI nodes
 - The rest of Qwen3.6-35B-A3B's prompt (16.116; a chunk of 256 2.6 s): the experts' command (B, 1.49 s) is bound by the kernel's arithmetic (streaming the weights alone takes 8.4 + 4.4 ms of 19–23 + 15–17 ms a layer; a scalar MAC, no mmul. bf16 mmul in groups of 8 rows was tried and was not faster), the GDN and attention command (A, about 0.7 s; `GatedDeltaRule` receives every row 16 times), the host's routing (about 2.8 ms a layer, mostly a 16 MB copy of x)
 
-## 12. The speed ceiling and what software can still move (estimate of 2026-11-08)
+## 12. The speed ceiling and what software can still move (estimate of 2026-11-08; AMD measured again on 2026-11-19)
 
 This section uses `hwnpu-dev probe` on the M1, M2 and M3 (PROBE.md, `npu_profiles/`) and the AMD measurements (amd-xdna2-bench.md) to answer two questions: does a faster NPU make generation faster, and what can software still change? 12.2 is an estimate from public specs and has not been measured.
 
@@ -942,13 +942,17 @@ With 16 layers (0.97 B):
 | NPU, rated | 11 TOPS | 15.8 TOPS | 18 TOPS | 50 TOPS |
 | DRAM bandwidth | 68 GB/s | 100 GB/s | 100 GB/s | 90–120 GB/s |
 | int8 weights read at | 62 GB/s | 62 GB/s | 23 GB/s (slow on the M3 only) | — |
-| 4-bit weights read at | 44 GB/s (lut4) | 63 GB/s (lut4) | 64 GB/s (lut4) | 55 GB/s (q4nx GEMV) |
+| 4-bit weights read at | 44 GB/s (lut4) | 63 GB/s (lut4) | 64 GB/s (lut4) | 53 GB/s (q4nx, no operator loaded again); 19 GB/s as the chat models' exports run a step |
+| Matrix products, measured best | about 5 TFLOPS (Anima's MLP, Core AI) | — | 13.7 TFLOPS (K=64, Core ML) | 15.2 TFLOPS (bfp16 weights, 4096 rows) |
+| Checking drafts: 4 tokens a call cost | — | — | 1.0 steps (up to 64: 1.10) | 1.28 steps (8: 2.83) |
 
 - **The ANE reads weights at about 62–64 GB/s on every Apple chip measured.** DRAM grew 1.47× from the M1 to the M2, but int8 stayed at 62 GB/s. On the M2 and M3 the limit is the ANE's own path to memory, not DRAM (100 GB/s)
 - **Moving bytes is the limit, not computing.** On the M2, int8 and lut4 differ 2× in work per byte yet both read at about 63 GB/s
 - **Only the M1's lut4 was compute-bound.** Expanding the 4-bit table is slow there, and the M2 was 1.41× faster (close to the TOPS ratio of 1.44). The M2 reached the ceiling. The M3 has 14% more TOPS and went from 63 to 64 GB/s
 - **AMD is the same.** DMA tops out at 55–57 GB/s with 8 channels (14 GB/s each). The 4-bit GEMV reaches that with 16 cores, and 32 cores are no faster (2.4× spare compute)
 - **gpt-oss-20b on AMD runs at 93 % of this floor** (16.179): a token moves 2.53 GB, 46 ms at 55 GB/s, and takes 49.4 ms. Getting there took removing everything between the reads (operators loaded again, a barrier, exponentials, the host's loop over the logits), not faster arithmetic: the 4 cores a column have compute to spare
+- **Measured again on AMD with the production paths (2026-11-19, `hwnpu-dev probe` on AMD, PROBE.md):** the ceiling holds (53 to 55 GB/s in q4, q8 and bf16 when the operators run back to back), but a step as the chat models' exports run it reaches a third of it in q4 (19 GB/s): each of a layer's 8 operators is loaded onto the cores again, 20 of the 31 ms of 16 layers. gpt-oss-20b's resident step is the form that removes it; for the other models it is worth about 2.7 times in q4
+- **The compute ceiling is the other way round.** amd-xdna2-bench.md's 10 to 40 % of the rating were IRON's sample kernels; with the weights packed as bfp16 on the host the GEMM reaches 15.2 TFLOPS at 4096 rows (9.0 at 256), above the M3's Neural Engine (13.7 at K=64) and about three times the M1's. Work bound by compute (the image DiTs, prompts) is where AMD is ahead: FLUX.2 klein 1024² about 29 s against the M1's 41, a Qwen-Image step 8.4 against 15.9 s
 - TOPS helps only prefill and attention over a long context (the one-row matrix-vector products the ANE cannot fill). One generated token follows model-fit.md section 2: weight bytes ÷ read bandwidth + attention + about 3 ms. A faster NPU shrinks only the second term
 
 ### 12.2 What newer chips may bring (not measured)
@@ -958,7 +962,7 @@ Generation of LFM3-1.7B (lut4, short context) compared with the M3. The NPU's sh
 | | NPU read, expected | Generation | Prefill | Runs on hwnpu |
 |---|---|---|---|---|
 | Apple M6 (two Neural Engines, 170 GB/s) | The same if one engine still reads 64 GB/s. Up to about 2× if both can be used at once or the path is wider | 1.1–2× | About 2× the M5's compute, 2–4× the M3 | Yes (Core ML) |
-| Snapdragon X2 Elite (80 TOPS, 152 GB/s) | 75–100 GB/s | 1.3–1.6× | About 4× the M3 on paper (effective unknown; AMD reaches 10–40% of its rating) | No (no Qualcomm backend) |
+| Snapdragon X2 Elite (80 TOPS, 152 GB/s) | 75–100 GB/s | 1.3–1.6× | About 4× the M3 on paper (effective unknown; AMD's GEMM reaches 15.2 TFLOPS, 30 % of its 50 TOPS, with bfp16 weights) | No (no Qualcomm backend) |
 | Snapdragon X2 Elite Extreme (228 GB/s) | 115–150 GB/s | 1.8–2.2× | Same as above | Same as above |
 
 - The M6's second engine helps generation only if a layer's matrices can be split into two programs called at the same time. That doubles the fixed cost per call
@@ -975,7 +979,8 @@ Tokens/s ≈ read bandwidth ÷ bytes read per token × tokens advanced per read 
 | Tokens advanced per read | Speculative decoding (prompt lookup) | Done on Apple and Intel. A Q=8 call costs 13% more than Q=1 | 15.9 → 23.7 tokens/s, 1.2–1.5× over a whole task | 16.33, 16.36, 16.37 |
 | 〃 | A draft model (such as Qwen3.5's `mtp.` layers) for more hits | Apple done (16.109, M1 Qwen3.5-0.8B 26.1 → 43.8 tok/s on code). AMD not yet | Gains if it beats prompt lookup's 1.07–1.67 tokens a call | model-fit.md T9 |
 | 〃 | Read once for several requests (batching) | Not done | One read serves several conversations. Total throughput grows when subagents run side by side | — |
-| 〃 | Draft checking on AMD | Done for q8 / q6 (16.117): a check of 3 rows costs 1.27 decode steps. q4 not yet | Qwen3.5-0.8B 82 → 62–72 ms/token with prompt-lookup drafts | 16.117 |
+| 〃 | Draft checking on AMD | Done for q8 / q6 (16.117): a check of 3 rows costs 1.27 decode steps. q4 not yet | Qwen3.5-0.8B 82 → 62–72 ms/token with prompt-lookup drafts. The probe (PROBE.md): 2 rows 1.04, 4 rows 1.28, 8 rows 2.83 steps, a chunk of 256 rows 4.6: about 4 tokens a call is the most | 16.117 |
+| Time not spent reading (prompts) | AMD: a prompt chunk's weights held as bfp16 too, as the image DiTs' (no dequantize at every call) | Not done | The probe: 256 rows of q4 or q8 86–88 ms against bfp16's 28 (3 times); costs 9 bits a weight more | PROBE.md |
 | Time not spent reading | Fixed cost per call (about 3 ms), switching parts, host work | LFM3-1.7B at a 1K capacity: of 19.1 ms, 13.4 ms reading weights, 2.8 ms attention, 3 ms fixed | 15–16 ms expected after trimming the fixed cost and attention | model-fit.md section 2 |
 | 〃 | AMD: one submission for a whole layer | Done (a full ELF is 2.7× faster than submitting each op). A fused layer reaches 83% of the read floor | Avoids piling up the 0.06 ms per call | amd-xdna2-bench.md section 4.10, amd-npu-models.md section 2 |
 | 〃 | AMD: a decode step as one resident array (no operator loaded again), the host's loops in vector code | Done for gpt-oss-20b (16.179). The other models still run their operators apart (about 67 µs and 1.2 µs a KB of programs each time one follows another) | gpt-oss 79.2 → 49.4 ms. What is left: a command boundary a layer (0.1 ms), a phase's fixed 25–35 µs, the host's 1 ms | 16.179 |
