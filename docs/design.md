@@ -7743,6 +7743,7 @@ VAE の prebuilt には得もない: 端末が prebuilt を仕上げる時間は
 - `hwnpu-dev prebuild` (`coreai.Build`) は外す (`left to the device` と出す)
 - `coreai.Prebuilt` は取得元にすでにある VAE の prebuilt (16.252 の作り直しで全部の大きさに入れた) を使わない。入れ直さなくても新しい hwnpu は正しい絵になる。古い hwnpu は縞のまま
 - Apple への報告: coreai-build の VAE の誤り (FB を出す。known-issues.md に足す)
+- すでに prebuilt の VAE で描いた機械では、Core AI のキャッシュの項目 (main.hash ごと、prebuilt から仕上げたもの) が残り、この版でもそれを読む (`hasEntry` なら prebuilt を見ない)。M1 で、prebuilt で縞を描いたのと同じ名前の hwnpu-image は直したあとも縞 (VAE の段を 1〜2 s で読んだ)、新しい名前 (空のキャッシュ) は 8m03s で正しい絵 (VAE は端末で compile、`vae_s0` 16 s)。その機械は `~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す (VAE の項目だけでもよい)
 
 **残り**
 
