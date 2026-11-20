@@ -47,3 +47,17 @@ NPU が読めるのは固定したバッファだけなので、Mac のように
 - 統計のファイルの形と `Placement` の決め方は Mac と同じにしておく (models.yaml の `experts_core` も、道具も共通)
 - 固定の量の測り方: AMD は smaps の `/dev/accel/accel0` の写像の大きさ。`hwnpu status` は Linux では resident を出す
 - 結果が出たら: improvements.md (と .ja.md)、new-model-checklist.md (と .ja.md) の MoE の節、models.yaml、MODEL.md
+
+## 5. 結果 (2026-11-20、design.md 16.261)
+
+- **3.1 使用回数**: できた (`iron.Model.CountExperts`)。デコードは次のコマンドのスクラッチパッドの位置の語を読み戻す (費用は測れない)。20b の 110 プロンプトは Mac とほぼ同じ (芯 140 個と 141 個、131 個が共通)。models.yaml の `experts_core` はそのまま
+- **3.2 一部だけ常駐**: A の形 (置き場) で。カーネルは変えず、デコードは 1 コマンドずつ待ち、ホストが外れをコピーして位置の語を書き直す (待つ費用 1 トークン約 1.2 ms)。20b: 置き場 16 で固定 6.90 GiB、17.2 tok/s (全部 12.22 GiB、20.2)、置き場 24 で 9.44 GiB、19.0。答えは全部の書き出しと 1 文字ずつ同じ。B (CPU で外れを計算) はしていない
+- **3.3 gpt-oss-120b**: 64 GB の機械 (OS から 59 GiB) で置き場 56 (`--expert-places 56`)、デコードのルーティングはホスト (`--host-route`: router のカーネルは 32 個用のまま)。9.2〜9.3 tok/s、固定 32.05 GiB。専門家のファイルは O_DIRECT で読む
+
+### 残り
+
+- 120b の HF との照合 (`tools/ref/ref_gptoss.py ref`。この機械に torch が無い) と KL
+- 120b の使用統計 (`~/.cache/hwnpu/moeusage/gpt-oss-120b-amd`) から models.yaml の `experts_core`、128 個すべてが十分使われるか (analyze.py の the fewest uses)
+- 120b の書き出しを取得元 (NAS) へ (`hwnpu-dev cache push`、70 GB)
+- 置き場を増やす: プロンプトのスロットは 64 個 (`iron_gptoss_moe.COUNT_WORDS`) までなので 56 が上限。カウントの物を広げれば 64 GB の機械でもう少し置ける (固定 32 GiB で空き 19 GiB)
+- 外れの費用: 120b は 1 トークン約 14 個 × 2.5 ms (ディスクの速さ)。外れを減らす置き方 (層ごとに置き場の数を変える: 配列の鍵が同じ大きさを要るので今は一様) や、次の層の専門家を先読みする形は試していない
