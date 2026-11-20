@@ -637,7 +637,16 @@ func (m *builder) deltaRuleChunks(q, k, v, g, beta, state *mlpackage.Var) (o, st
 			u = op("sub", bw, mm(n, u, false, false, 1, hv, c, dv), 1, hv, c, dv)
 		}
 		qk := op("mul", mm(qc, kc, false, true, 1, hv, c, c), op("mul", E, tri(c, true, "incl"), 1, hv, c, c), 1, hv, c, c)
-		oc := mm(qk, u, false, false, 1, hv, c, dv)
+		var oc *mlpackage.Var
+		if c == 1 {
+			// a chunk of one row (a token a call): (1 x 1) times (1 x dv) as a broadcast multiply.
+			// The Neural Engine gets the matmul of an inner dimension of 1 wrong (an M3: o off by
+			// about 8 where it is 40 to 70, the next layer's input 3.5% off; Qwen3.6-35B-A3B then
+			// repeated tokens), where the chunks of 8 rows are right
+			oc = op("mul", qk, u, 1, hv, c, dv)
+		} else {
+			oc = mm(qk, u, false, false, 1, hv, c, dv)
+		}
 		if state != nil {
 			oc = op("add", oc, op("mul", gamma, mm(qc, state, false, false, 1, hv, c, dv), 1, hv, c, dv), 1, hv, c, dv)
 		}

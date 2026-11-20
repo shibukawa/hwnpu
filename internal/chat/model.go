@@ -281,8 +281,12 @@ type Setup struct {
 // tokenizer.Load reads first: PLaMo 3's tokenizer.jsonl and the thresholds of its
 // tokenizer_config.json, every other model's tokenizer.json.
 func TokenizerFiles(arch string) []string {
-	if arch == "plamo3" {
+	switch arch {
+	case "plamo3":
 		return []string{"tokenizer.jsonl", "tokenizer_config.json"}
+	case "qwen35moe":
+		// the chat template tells Qwen3.6's format from Qwen3.5's (qwen36Template)
+		return []string{"tokenizer.json", "chat_template.jinja"}
 	}
 	return []string{"tokenizer.json"}
 }
@@ -387,6 +391,18 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	checkpoint := sync.OnceValues(func() (string, error) {
 		return FetchWeights(ctx, s.Repo, s.Log)
 	})
+	if hd, ok := model.(llm.HostDerived); ok {
+		// the release's experts are not in the host's form (Qwen3.6's bf16, 64 GB): the
+		// checkpoint is one derived from it a layer at a time (DerivedDir), not the release
+		dir := DerivedDir(s.Repo)
+		c.Weights = filepath.Join(dir, "model.safetensors")
+		checkpoint = sync.OnceValues(func() (string, error) {
+			if err := hd.Derive(ctx, s.Repo, dir, s.Log); err != nil {
+				return "", err
+			}
+			return c.Weights, nil
+		})
+	}
 	if hostExperts {
 		// the experts run on the CPU from the checkpoint as it is (llm.HostRouted): it is
 		// needed whatever was converted
@@ -1339,6 +1355,12 @@ func FetchWeights(ctx context.Context, repo string, log io.Writer) (string, erro
 		want = append(want, File{repo, f})
 	}
 	return single, FetchFiles(ctx, want, log)
+}
+
+// DerivedDir is where the checkpoint derived from repo's release goes (llm.HostDerived): the
+// cache's derived/OWNER/NAME (with @REVISION when there is one).
+func DerivedDir(repo string) string {
+	return cache.Sub("derived", filepath.FromSlash(repo))
 }
 
 // shards are the files an index of a checkpoint in several files names, in order.

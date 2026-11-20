@@ -13,6 +13,7 @@
 //	hwnpu-dev cache layers                   # the cache's root and the shared layers
 //	hwnpu-dev prebuild EXPORT                # compile Core AI programs ahead of time (macOS)
 //	hwnpu-dev xclbin ...                     # xclbinutil's arguments, as aiecc passes them
+//	hwnpu-dev mxfp4 -o DIR hf:Qwen/Qwen3.6-35B-A3B  # a Qwen3.5-MoE checkpoint with MXFP4 experts
 //	hwnpu-dev check -h                       # each tool's flags
 //
 // aiecc runs xclbinutil by AIE_XCLBINUTIL alone, without a subcommand: a link to hwnpu-dev named
@@ -37,6 +38,7 @@ import (
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/generate"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/info"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/irdiff"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/mxfp4"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/powerbench"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/prebuild"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/probe"
@@ -60,6 +62,7 @@ type cli struct {
 	Powerbench tool         `cmd:"" passthrough:"all" help:"Measure the power Core ML models draw with macOS powermetrics (was powerbench)."`
 	Prebuild   tool         `cmd:"" passthrough:"all" help:"Compile Core AI programs ahead of time with coreai-build, X.ARCH.aimodelc beside each X.aimodel of an export (macOS, Xcode 27's Metal Toolchain)."`
 	Report     tool         `cmd:"" passthrough:"all" help:"Check every NPU with bundled test models and print a report for an issue (was report)."`
+	Mxfp4      tool         `cmd:"" name:"mxfp4" passthrough:"all" help:"Write a Qwen3.5-MoE checkpoint (Qwen3.6-35B-A3B) with its experts in MXFP4, read a layer at a time from Hugging Face or a directory, for the experts the CPU runs."`
 	Xclbin     tool         `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
 	Cache      cachecmd.Cmd `cmd:"" help:"The cache's root and the shared layers (docs/cache-sharing-design.md): show them, list and put exports, check entries, finish the background work."`
 }
@@ -67,7 +70,7 @@ type cli struct {
 var mains = map[string]func(){
 	"check": check.Main, "convert": convert.Main, "generate": generate.Main, "formats": formats.Main,
 	"info": info.Main, "irdiff": irdiff.Main, "probe": probe.Main, "powerbench": powerbench.Main, "prebuild": prebuild.Main, "report": report.Main,
-	"xclbin": xclbin.Main,
+	"xclbin": xclbin.Main, "mxfp4": mxfp4.Main,
 }
 
 func main() {
