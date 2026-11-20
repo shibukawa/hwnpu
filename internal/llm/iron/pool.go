@@ -648,7 +648,9 @@ func readDirect(f *os.File, dst []byte, off int64) bool {
 	for len(dst) > 0 {
 		n, err := syscall.Pread(int(f.Fd()), dst, off)
 		if err != nil || n <= 0 {
-			directOnce.Do(func() { fmt.Fprintf(os.Stderr, "experts: a direct read of %d bytes at %d: %v (copied instead)\n", len(dst), off, err) })
+			directOnce.Do(func() {
+				fmt.Fprintf(os.Stderr, "experts: a direct read of %d bytes at %d: %v (copied instead)\n", len(dst), off, err)
+			})
 			return false
 		}
 		dst, off = dst[n:], off+int64(n)
