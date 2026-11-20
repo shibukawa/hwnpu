@@ -27,6 +27,7 @@ q4nx_accumulate.
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -942,7 +943,17 @@ def operators():
     return _OPS
 
 
-def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2, adds=()):
+# The cores a column of a plain QGEMV (q_linear): 2 (a memtile splits each column block between
+# two), or 1: half the configuration a switch to it writes, as fast for the decode step's
+# projections (LFM3-1.7B 15.6 -> 17.1 tokens/s, the same bits, design.md 16.271). 0 (the default):
+# 1 up to Q_CORES_UP_TO out-features, 2 past it (a head's). HWNPU_Q_CORES, HWNPU_Q_CORES_UP_TO.
+Q_CORES = int(os.environ.get("HWNPU_Q_CORES", "0"))  # 0: by the out-features (Q_CORES_UP_TO)
+Q_CORES_UP_TO = int(os.environ.get("HWNPU_Q_CORES_UP_TO", "16384"))
+# The same for QGEMVGlu (glu_linear). HWNPU_GLU_CORES.
+GLU_CORES = int(os.environ.get("HWNPU_GLU_CORES", "2"))
+
+
+def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = None, adds=()):
     """``x @ W.T`` for x (k,), (1, k) or (rows, k) and q, W's blocks in fmt as a 1-D iron.param.
 
     One row runs QGEMV on the blocks. Several (a prompt chunk) dequantize them on the device:
@@ -954,6 +965,8 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2, adds=()):
     inputs (normalized, about zero mean) show no difference (KL from bf16 the same on Gemma 4
     E2B and LFM3), and "bf16" costs their prompt chunk 5 to 9 % (LFM3 2048: 628 -> 684 ms).
     """
+    if cores is None:
+        cores = Q_CORES if Q_CORES > 0 else (1 if n <= Q_CORES_UP_TO else 2)
     QGEMV, QDequant = operators()
     one_row = len(x.shape) == 1 or x.shape[0] == 1
     if one_row:
@@ -1264,6 +1277,8 @@ def _check(args) -> int:
     install_linear()  # the base F.linear q8's prompt path calls, and the bfp16 fix
     n, k, fmt = args.n, args.k, args.fmt
     rng = np.random.default_rng(1)
+    if args.sandwich:
+        return _check_sandwich(args, rng)
     if args.glu:
         return _check_glu(args, rng)
     w = rng.standard_normal((n, k)).astype(np.float32) * 0.05
@@ -1336,6 +1351,44 @@ def _check(args) -> int:
     return 0
 
 
+def _check_sandwich(args, rng) -> int:
+    """The sandwich form of QGEMV (or of QGEMVGlu with --glu): its three outputs against
+    iron_sandwich's reference and numpy's GEMV of the reference's n (float64)."""
+    import iron
+    from iron_graph import export_graph, write_check
+
+    import iron_q4 as q4
+
+    n, k, fmt, eps = args.n, args.k, args.fmt, 1e-5
+    wq = None
+    if args.glu:
+        gate = rng.standard_normal((n, k)).astype(np.float32) * 0.05
+        up = rng.standard_normal((n, k)).astype(np.float32) * 0.05
+    else:
+        w = rng.standard_normal((n, k)).astype(np.float32) * 0.05
+    wpost = (rng.uniform(0.5, 1.5, k)).astype(bfloat16)
+    wpre = (rng.uniform(0.5, 1.5, k)).astype(bfloat16)
+    scale = np.full(k, 0.73, bfloat16) if args.scale else None
+
+    class Sw(iron.Graph):
+        def __init__(self):
+            self.wt = q4.glu_param(gate, up, fmt, args.glu) if args.glu else q4.q_param(w, fmt)
+            self.wpost, self.wpre = iron.param(wpost), iron.param(wpre)
+            self.scale = None if scale is None else iron.param(scale)
+
+        def body(self, h, r):
+            return q4.sandwich_linear(h, r, self.wpost, self.wpre, eps, self.wt, self.scale)
+
+    g = Sw()
+    cg = g.compile(h=(k,), r=(k,))
+    m = export_graph(cg, args.out, "qsandwich", dict(n=n, k=k, fmt=fmt))
+    write_check(g, m, args.out, dict(h=(rng.standard_normal(k) * 3).astype(bfloat16),
+                                     r=(rng.standard_normal(k) * 10).astype(bfloat16)), None)
+    print(f"{args.out}: sandwich {'QGEMVGlu (' + args.glu + ')' if args.glu else 'QGEMV'} {fmt} {n} x {k}"
+          f"{' with a scale' if args.scale else ''}")
+    return 0
+
+
 def _check_glu(args, rng) -> int:
     """QGEMVGlu of a gate and an up of (n, k), act(G x) * (U x), against numpy's of the table's
     dequantized weights (float64)."""
@@ -1392,6 +1445,9 @@ def main(argv=None) -> int:
     c.add_argument("--adds", type=int, default=0, help="vectors added in the GEMV (QGEMVAdd: 1 or 2)")
     c.add_argument("--qkv", type=int, default=0, help="QGEMVQKV: the rows turned by RoPE (the norm and a bias too)")
     c.add_argument("--x-mean", type=float, default=0.0, help="the mean of x's random values")
+    c.add_argument("--sandwich", action="store_true",
+                   help="the sandwich form (a block's post norm, residual and next norm made in the GEMV)")
+    c.add_argument("--scale", action="store_true", help="with --sandwich: the residual times a scale row")
     c.add_argument("--glu", choices=("silu", "gelu"), default=None,
                    help="QGEMVGlu: a gate and an up of (n, k) as one table, act(G x) * (U x)")
     c.add_argument("--prefill", choices=("bfp16", "bf16"), default=PREFILL["q4"], help="q4nx's prompt path (q_linear)")
@@ -1612,7 +1668,7 @@ def glu_linear(x, gu, act_fn=None):
     one_row = len(x.shape) == 1 or x.shape[0] == 1
     q = gu.reshape(-1, FORMATS[fmt])
     if one_row:
-        y = ops["glu"].step(q, x.reshape(K), fmt=fmt, act=act)
+        y = ops["glu"].step(q, x.reshape(K), fmt=fmt, act=act, cores=GLU_CORES)
         return y if len(x.shape) == 1 else y.reshape(1, I)
     import iron.functional as F
     from iron import Precision
@@ -1643,3 +1699,193 @@ def install_glu() -> None:
 
     body.hwnpu_glu = True
     GatedMLP.body = body
+
+
+# --- a sandwich-normed layer's residual and next norm in the GEMV that reads them -------------
+
+_SW_OPS: dict = {}
+
+
+def sandwich_operator(glu: bool = False, scaled: bool = False):
+    """QGEMV (or QGEMVGlu with ``glu``) whose x is made on every core from a sandwich-normed block
+    (kernels/mv_add.h's Q_SANDWICH): ``h`` the block's output and ``r`` the residual, with the post
+    norm's and the next norm's weights (``scaled``: and a scale row, Gemma 4's layer_scalar), on
+    x's channel. y = r + rms(h) w_post (times the scale), n = rms(y) w_pre, then the GEMV of n.
+    Outputs: the GEMV's, then y and n (a core of column 0 each), as SandwichAdd would give them:
+    one operator in place of SandwichAdd and the GEMV (docs/design.md 16.271)."""
+    key = (glu, scaled)
+    if key in _SW_OPS:
+        return _SW_OPS[key]
+    import aie.dialects.index as index
+    from aie.dialects.aie import T
+    from aie.helpers.taplib import TensorAccessPattern as TAP
+    from aie.iron import Buffer, In, ObjectFifo, Out, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param
+
+    from iron.common import Built
+
+    Base = glu_operators()["glu"] if glu else operators()[0]
+    cols = Base.num_aie_columns
+    parts = ("r", "wpost", "wpre") + (("scale",) if scaled else ())
+    one = param(default=1, init=False, array=True)
+    body = dict(
+        eps=param(array=True),
+        one=one,
+        res=Out(Base.K, obj_shape=(Base.K,), per=(one,)),
+        nrm=Out(Base.K, obj_shape=(Base.K,), per=(one,)),
+    )
+    for nm in parts:
+        body[nm] = In(Base.K, obj_shape=(Base.K,), per=(cols,), replicate=True)
+    body["__annotations__"] = {"eps": float, "one": int}
+
+    def build(self):
+        K, n, cores, B = self.K, self.num_aie_columns, self.cores, self.block_bytes
+        if cores != 2:
+            raise ValueError("sandwich GEMV: two cores a column (column 0's two put y and n)")
+        kbs = K // K_TILE
+        out = CB // cores
+        xa_t = np.ndarray[((4 + scaled) * K,), np.dtype[bfloat16]]
+        k_t = np.ndarray[(K,), np.dtype[bfloat16]]
+        y_t = np.ndarray[(out,), np.dtype[bfloat16]]
+        acc_t = np.ndarray[(out,), np.dtype[np.float32]]
+        blk_t = np.ndarray[(B,), np.dtype[np.uint8]]
+        sums_t = np.ndarray[(K // GROUP,), np.dtype[bfloat16]]
+        kdir = Path(config.aie_kernels_dir())
+        here = Path(__file__).resolve().parent / "kernels"
+        flags = [f"-D{self.fmt.upper()}_K={K}", f"-DQ_OUT={out}", "-DQ_SANDWICH=1", f"-DQ_EPS={float(self.eps)!r}f"]
+        flags += ["-DQ_SANDWICH_SCALE=1"] if scaled else []
+        if glu:
+            flags += ["-DQ_GLU=1"] + (["-DQ_GLU_GELU=1"] if self.act == "gelu" else [])
+        tag = f"{'glu_' + self.act + '_' if glu else ''}{'s_' if scaled else ''}{abs(hash(float(self.eps))) % 10**8}"
+        common = dict(source_file=str(here / f"{self.fmt}_mv.cc"),
+                      include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
+                      compile_flags=flags, object_file_name=f"{self.fmt}_mv_sw_{K}_{out}_{tag}.o")
+        begin = ExternalFunction(f"{self.fmt}_mv_begin_sandwich", arg_types=[xa_t, sums_t, acc_t], **common)
+        again = ExternalFunction(f"{self.fmt}_mv_begin_again", arg_types=[xa_t, sums_t, acc_t], **common)
+        block = ExternalFunction(f"{self.fmt}_mv_block", arg_types=[blk_t, xa_t, sums_t, acc_t, np.int32, np.int32],
+                                 **common)
+        if glu:
+            end = ExternalFunction(f"{self.fmt}_mv_end_glu", arg_types=[acc_t, acc_t, y_t], **common)
+        else:
+            end = ExternalFunction(f"{self.fmt}_mv_end", arg_types=[acc_t, y_t], **common)
+        put = ExternalFunction(f"{self.fmt}_mv_put", arg_types=[xa_t, k_t, np.int32], **common)
+        cbs = self.N // CB // n
+        w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+        x_l3 = [ObjectFifo(xa_t, depth=1) for _ in range(n)]
+        y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
+        w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+        x_l1 = [f.cons().forward(obj_type=xa_t, tile=AnyMemTile) for f in x_l3]
+        y_l1 = [f.prod().join([0, out], obj_types=[y_t, y_t], depths=[2, 2], tile=AnyMemTile) for f in y_l3]
+        r_f, n_f = ObjectFifo(k_t, depth=1), ObjectFifo(k_t, depth=1)
+
+        def core(w_f, x_f, y_f, sums, accs, begin, again, block, end, o_f=None, put=None, which=0):
+            x = x_f.acquire(1)
+            begin(x, sums, accs[0])
+            if glu:
+                again(x, sums, accs[1])
+            if o_f is not None:  # y (which 1) or n (0) out, once
+                o = o_f.acquire(1)
+                put(x, o, arith_i32(which))
+                o_f.release(1)
+            for _ in range_(cbs):
+                for acc in accs:
+                    for kb in range_(kbs):
+                        kb32 = index.casts(T.i32(), kb)
+                        w = w_f.acquire(1)
+                        block(w, x, sums, acc, kb32, 0)
+                        w_f.release(1)
+                y = y_f.acquire(1)
+                if glu:
+                    end(accs[0], accs[1], y)
+                else:
+                    end(accs[0], y)
+                y_f.release(1)
+            x_f.release(1)
+
+        def arith_i32(v):
+            from aie.extras.dialects import arith
+
+            return arith.constant(v, T.i32())
+
+        workers = []
+        for i in range(n):
+            for j in range(cores):
+                accs = [Buffer(acc_t) for _ in range(2 if glu else 1)]
+                args = [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), Buffer(sums_t), *accs,
+                        begin, again, block, end]
+                na = len(accs)
+                if i == 0:
+                    of = r_f if j == 0 else n_f
+                    fn = (lambda w_f, x_f, y_f, sm, *rest, na=na, which=1 - j: core(
+                        w_f, x_f, y_f, sm, list(rest[:na]), *rest[na:na + 4], rest[na + 4], rest[na + 5], which))
+                    args += [of.prod(), put]
+                else:
+                    fn = (lambda w_f, x_f, y_f, sm, *rest, na=na: core(
+                        w_f, x_f, y_f, sm, list(rest[:na]), *rest[na:na + 4]))
+                workers.append(Worker(fn, args))
+        self.W.bind([f.prod() for f in w_l3])
+        for nm in ("x",) + parts:
+            getattr(self, nm).bind([f.prod() for f in x_l3])
+        self.y.bind([f.cons() for f in y_l3])
+        self.res.bind([r_f.cons()])
+        self.nrm.bind([n_f.cons()])
+        return Built(workers, [])
+
+    def sequence(self, rt):
+        n, K = self.num_aie_columns, self.K
+        drains = [self.y.drain(tap, lane=lane, wait=True, managed=False) for lane, tap, _, _ in self.y.transfers()]
+        drains.append(self.res.drain(TAP((K,), 0, [K], [1]), lane=0, wait=True, managed=False))
+        drains.append(self.nrm.drain(TAP((K,), 0, [K], [1]), lane=0, wait=True, managed=False))
+        for lane in range(n):
+            for nm in ("x",) + parts:
+                getattr(self, nm).fill(TAP((K,), 0, [K], [1]), lane=lane, managed=False)
+        for lane, tap, _, _ in self.W.transfers():
+            self.W.fill(tap, lane=lane, managed=False)
+        for d in drains:
+            d.await_()
+
+    def reference(self, *ops):
+        import iron_sandwich
+
+        ins = [m.name for m in self.declaration.members if m.name in ("W", "x") + parts]
+        v = dict(zip(ins, ops))
+
+        W, x, r, wpost, wpre = (v[k] for k in ("W", "x", "r", "wpost", "wpre"))
+        scale = v.get("scale")
+        y, nn = iron_sandwich.sandwich_reference(x, r, wpost, wpre, float(self.eps), scale)
+        base = Base.reference(self, W, np.asarray(nn, np.float32).reshape(-1).astype(bfloat16))
+        got = dict(y=base, res=np.asarray(y).reshape(-1), nrm=np.asarray(nn).reshape(-1))
+        outs = [m.name for m in self.declaration.members if m.name in got]  # the outputs' order
+        return tuple(got[o] for o in outs)
+
+    body.update(build=build, sequence=sequence, reference=reference, __doc__=sandwich_operator.__doc__)
+    cls = type(Base.__name__ + "Sandwich", (Base,), body)
+    _SW_OPS[key] = cls
+    return cls
+
+
+def sandwich_linear(h, r, w_post, w_pre, eps: float, weight, scale=None):
+    """``(W n, y, n)`` for a q_param weight (or a glu_param table: ``act(G n) * (U n)``), y and n
+    the sandwich of block output h and residual r (iron_sandwich.sandwich_add's, its bits): one row."""
+    K = h.shape[-1]
+    given = dict(x=h.reshape(K), r=r.reshape(K), wpost=w_post.reshape(K), wpre=w_pre.reshape(K))
+    if scale is not None:
+        given["scale"] = scale.reshape(K)
+    if id(weight) in _GLU:
+        _, I, k, fmt, act = _GLU[id(weight)]
+        op, kw = sandwich_operator(True, scale is not None), dict(fmt=fmt, act=act, eps=float(eps))
+    else:
+        entry = _Q4.get(id(weight))
+        if entry is None or entry[0] is not weight:
+            raise ValueError("sandwich_linear: the weight is neither a q_param nor a glu_param")
+        _, nout, k, fmt = entry
+        op, kw = sandwich_operator(False, scale is not None), dict(fmt=fmt, cores=2, eps=float(eps))
+    given["W"] = weight.reshape(-1, FORMATS[fmt])
+    names = [m.name for m in op.declaration.members if m.name in given]
+    got = op.step(*(given[nm] for nm in names), **kw)
+    outs = dict(zip([m.name for m in op.declaration.members if m.name in ("y", "res", "nrm")], got))
+    return outs["y"], outs["res"].reshape(h.shape), outs["nrm"].reshape(h.shape)
