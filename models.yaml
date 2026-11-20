@@ -325,12 +325,24 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
     # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design.md 16.271): 24,188 MiB of the NPU's (the
     # experts and head at 4 bits, the mixers at 8) and the process's 880 MiB at its peak while
-    # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB
-    machine: 48
-    memory: {amd: 26.3, apple: 2.7}
+    # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB.
+    # Below 48 GB its experts in places (--expert-places P, docs/design.md 16.276): the others in
+    # experts.bin (20.1 GB), copied into a place when chosen, read with O_DIRECT where the file
+    # does not fit beside the places (measured with HWNPU_MOE_DEBUG=direct=1, 2026-11-21, a
+    # 1173-token prompt then 200 tokens, the peak of the NPU's buffers and the process's): 32
+    # places 7.5 GiB, 34-37 % of the decode's choices copied in; 128 places 15.0 GiB, 6-8 %. The
+    # logits the same to the bit as with every expert. Their speed was measured before the
+    # array work of 16.266-16.272 (every expert then 5.8 tokens/s, 8.8-8.9 now): 4.2 and 5.1.
+    # A layer's core over half its places is not kept in place on AMD (pool.go: with 32 places
+    # it took most of them, 34.4 -> 36.7 % copied in)
+    machine: 16
+    memory: {amd: 8.1, apple: 2.7}
+    variants:
+      24: {memory: {amd: 16.1, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 128}
+      48: {memory: {amd: 26.3, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4}
     bytes: 71.9e9
     features: [tools, thinking]
-    amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4
+    amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 32
     # the experts every kind of text runs (tools/moeusage, the 19 categories of prompts in about
     # 25 languages gpt-oss-20b's were counted with, 2026-11-20; 375,696 runs a layer): in every
     # category at least an even share (1/256) of their layer's runs; 841 experts (1.4 GB) taking
@@ -377,7 +389,7 @@ models:
       - [14, 27, 48, 57, 58, 65, 72, 78, 104, 113, 143, 145, 147, 161, 162, 175, 182, 214]  # layer 37
       - [0, 22, 27, 30, 71, 79, 84, 92, 97, 103, 119, 120, 148, 151, 180, 191, 209, 215]  # layer 38
       - [2, 10, 16, 22, 23, 36, 38, 44, 62, 69, 77, 78, 92, 110, 122, 129, 145, 154, 158, 162, 189, 190, 197, 213, 235, 238, 242, 243, 248]  # layer 39
-    about: "Qwen's Qwen3.6-35B-A3B, a mixture of experts (35B, 3B active): on AMD's NPU, 8.5 tokens/s, its experts and head at 4 bits and mixers at 8; on a Mac with Core AI, the experts run on the CPU in 4 bit MXFP4 (derived from the release on the first run, 22 GB), kept in the page cache as far as memory allows and read from disk as the tokens choose them, with Gated DeltaNet and attention in 8 bit tables and the output layer in 6 bit ones; it reasons first. The download (72 GB) has the vision part too, which is not converted"
+    about: "Qwen's Qwen3.6-35B-A3B, a mixture of experts (35B, 3B active): on AMD's NPU, 8.5 tokens/s with every expert in its memory (from 48 GB; on 16 GB 32 of each layer's 256, the others read from the disk when chosen, 128 from 24 GB), its experts and head at 4 bits and mixers at 8; on a Mac with Core AI, the experts run on the CPU in 4 bit MXFP4 (derived from the release on the first run, 22 GB), kept in the page cache as far as memory allows and read from disk as the tokens choose them, with Gated DeltaNet and attention in 8 bit tables and the output layer in 6 bit ones; it reasons first. The download (72 GB) has the vision part too, which is not converted"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b
