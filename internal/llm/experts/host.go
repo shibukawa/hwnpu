@@ -116,6 +116,8 @@ type Host struct {
 	// the rows' runs whose experts were all in memory and the others', and their time (ns)
 	dbgIn, dbgOut, dbgInTime, dbgOutTime atomic.Int64
 	dbgRead                              atomic.Int64 // the bytes readChosen read
+	times                                *runTimes    // HWNPU_MOE_DEBUG's time: a row's layers by what their experts were
+	trace                                *traceFile   // HWNPU_MOE_DEBUG's trace=FILE: every row's experts
 }
 
 // OpenHost maps the experts of rec, all of them wired when they fit (Host.wiring).
@@ -240,6 +242,12 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 			h.pre = newPrefetcher(h, routers, prefetchN(sh.TopK))
 		}
 	}
+	if DebugTime() {
+		h.times = &runTimes{}
+	}
+	if path, ok := DebugOpt("trace"); ok && path != "" {
+		h.trace = openTrace(path)
+	}
 	if pf == "wait" { // for measuring: every page in before the first run
 		h.warm.Wait()
 	}
@@ -337,6 +345,16 @@ func shardOf(checkpoint, name string) (string, error) {
 	return filepath.Join(filepath.Dir(checkpoint), f), nil
 }
 
+// fileAt is the checkpoint's file b is mapped from, and b's offset in it.
+func (h *Host) fileAt(b []byte) (*safetensors.File, int64, bool) {
+	for _, f := range h.files {
+		if off, ok := f.MappedAt(b); ok {
+			return f, off, true
+		}
+	}
+	return nil, 0, false
+}
+
 // Close unmaps the checkpoint.
 func (h *Host) Close() {
 	if h.debug {
@@ -359,6 +377,11 @@ func (h *Host) Close() {
 			fmt.Fprintf(os.Stderr, "experts: a layer's row with every expert in memory %.2f ms (%d), with some to read %.2f ms (%d, %.2f MB not in memory each); %.2f GB read whole before the runs\n",
 				ms(h.dbgInTime.Load(), in), in, ms(h.dbgOutTime.Load(), out), out, float64(h.dbgMiss.Load())/1e6/float64(max(out, 1)), float64(h.dbgRead.Load())/1e9)
 		}
+	}
+	h.trace.close()
+	if h.times != nil {
+		h.times.report()
+		h.times = nil
 	}
 	if h.pre != nil {
 		h.pre.stop()
@@ -522,7 +545,7 @@ func (h *Host) readRange(l, e, array int) (n int64) {
 }
 
 // readers are the reads of readChosen at once.
-const readers = 8
+const chosenReaders = 8
 
 // readChosen reads the experts a run chose (the rows of each in byExpert) that are neither wired
 // nor in memory, several ranges at once, before the cores run them.
@@ -541,7 +564,7 @@ func (h *Host) readChosen(layer int, byExpert [][]int) {
 	}
 	var next atomic.Int32
 	var wg sync.WaitGroup
-	for range min(readers, len(todo)) {
+	for range min(chosenReaders, len(todo)) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -573,6 +596,7 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	if h.usage != nil {
 		h.usage.Add(layer, idx)
 	}
+	h.trace.add(layer, idx)
 	if h.place != nil {
 		h.place.count(layer, idx)
 		h.place.ran(layer == h.first)
@@ -599,8 +623,16 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 			}
 		}()
 	}
+	if h.times != nil && len(rows) == 1 {
+		kind, start := h.kind(layer, idx[0]), time.Now()
+		defer func() { h.times.add(kind, time.Since(start)) }()
+	}
 	if h.pre != nil && len(rows) == 1 {
+		t := time.Now()
 		h.pre.ran(layer, rows[0], idx[0])
+		if h.times != nil {
+			h.times.guess(time.Since(t))
+		}
 	}
 	for r := range rows {
 		for k, e := range idx[r] {

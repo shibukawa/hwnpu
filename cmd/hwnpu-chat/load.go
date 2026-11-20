@@ -216,7 +216,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 		idle = -1 // never
 	}
 	// a model without experts on the host ignores it
-	c.Experts = experts.Placement{Core: m.ExpertsCore, Idle: idle}
+	c.Experts = experts.Placement{Core: m.ExpertsCore, Idle: idle, Ceiling: filepath.Join(chat.ModelDir(m), "experts-usage", "ceiling")}
 	if lf.ExpertsKey != "off" {
 		c.Experts.Usage = chat.ExpertsUsage(chat.ModelDir(m), lf.ExpertsKey)
 	}

@@ -204,3 +204,82 @@ func TestHostRowMatchesRows(t *testing.T) {
 		})
 	}
 }
+
+// Host.Run on a small Host of random weights (no checkpoint) against the experts dequantized in
+// float64, with one row (a generated token) and with enough rows on an expert for the kernels of
+// 4 and 8 vectors.
+func TestHostRunSmall(t *testing.T) {
+	const L, E, K = 1, 4, 2
+	h := fakeHost(L, E)
+	h.act = Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}
+	H, I := h.shape.Hidden, h.shape.Inter
+	r := rand.New(rand.NewPCG(21, 22))
+	hl := h.layers[0]
+	for _, b := range [][]byte{hl.gw, hl.dw} {
+		for i := range b {
+			b[i] = byte(r.IntN(256))
+		}
+	}
+	for _, b := range [][]byte{hl.ge, hl.de} {
+		for i := range b {
+			b[i] = byte(118 + r.IntN(6))
+		}
+	}
+	hl.gb, hl.db = make([]float32, E*2*I), make([]float32, E*H)
+	for _, b := range [][]float32{hl.gb, hl.db} {
+		for i := range b {
+			b[i] = float32(r.NormFloat64()) * 0.1
+		}
+	}
+	for _, n := range []int{1, 3, 13, 21} {
+		rows, idx, w, out := make([][]float32, n), make([][]int, n), make([][]float32, n), make([][]float32, n)
+		for i := range rows {
+			rows[i], out[i] = make([]float32, H), make([]float32, H)
+			for j := range rows[i] {
+				rows[i][j] = float32(r.NormFloat64())
+			}
+			idx[i], w[i] = r.Perm(E)[:K], []float32{0.7, 0.3}
+		}
+		if err := h.Run(0, rows, idx, w, out); err != nil {
+			t.Fatal(err)
+		}
+		row := make([]float32, H)
+		for i, x := range rows {
+			want := make([]float64, H)
+			for k, e := range idx[i] {
+				act := make([]float32, I)
+				for j := range I {
+					var gu [2]float64
+					for c := range gu {
+						rr := e*2*I + 2*j + c
+						mxfp4.Dequantize(row, hl.gw[rr*H/2:(rr+1)*H/2], hl.ge[rr*H/32:(rr+1)*H/32])
+						for m := range H {
+							gu[c] += float64(row[m]) * float64(x[m])
+						}
+						gu[c] += float64(hl.gb[rr])
+					}
+					g, u := math.Min(gu[0], 7), math.Max(math.Min(gu[1], 7), -7)
+					act[j] = float32(g / (1 + math.Exp(-1.702*g)) * (u + 1))
+				}
+				for c := range H {
+					rr := e*H + c
+					mxfp4.Dequantize(row[:I], hl.dw[rr*I/2:(rr+1)*I/2], hl.de[rr*I/32:(rr+1)*I/32])
+					var y float64
+					for m := range I {
+						y += float64(row[m]) * float64(act[m])
+					}
+					want[c] += float64(w[i][k]) * (y + float64(hl.db[rr]))
+				}
+			}
+			var dot, na, nb float64
+			for c := range H {
+				dot += want[c] * float64(out[i][c])
+				na += want[c] * want[c]
+				nb += float64(out[i][c]) * float64(out[i][c])
+			}
+			if cos := dot / math.Sqrt(na*nb); cos < 0.999 || math.Abs(math.Sqrt(nb/na)-1) > 0.02 {
+				t.Errorf("%d rows, row %d: cos %.6f, norms %.3f %.3f", n, i, cos, math.Sqrt(na), math.Sqrt(nb))
+			}
+		}
+	}
+}

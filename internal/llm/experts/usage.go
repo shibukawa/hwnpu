@@ -49,6 +49,21 @@ func (u *Usage) Add(layer int, idx [][]int) {
 	u.mu.Unlock()
 }
 
+// AddIDs counts the experts ids (any rows' choices, flat) of layer.
+func (u *Usage) AddIDs(layer int, ids []int32) {
+	if layer < 0 || layer >= u.Layers {
+		return
+	}
+	u.mu.Lock()
+	c := u.Counts[layer*u.Experts : (layer+1)*u.Experts]
+	for _, e := range ids {
+		if e >= 0 && int(e) < u.Experts {
+			c[e]++
+		}
+	}
+	u.mu.Unlock()
+}
+
 // Merge adds v's counts to u's, halving all of them while one would pass usageCap.
 func (u *Usage) Merge(v *Usage) error {
 	if v.Layers != u.Layers || v.Experts != u.Experts {

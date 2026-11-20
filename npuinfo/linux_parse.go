@@ -282,3 +282,7 @@ func xdnaPowerModeName(m int) string {
 	}
 	return strconv.Itoa(m)
 }
+
+// DecodeAMDGPUMetrics decodes the contents of an amdgpu gpu_metrics file
+// (/sys/class/drm/card*/device/gpu_metrics), as Get does for each card.
+func DecodeAMDGPUMetrics(b []byte) (AMDGPUMetrics, error) { return decodeGPUMetrics(b) }

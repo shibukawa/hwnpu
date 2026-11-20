@@ -28,18 +28,21 @@ type prefetcher struct {
 	guess  map[int][]int // by layer: the guessed experts, best first (keep)
 	queue  chan [2]int   // the experts to bring in: layer, expert
 	rows   chan prefRow  // the rows to guess the next layer's experts from
+	ranN   map[int]*atomic.Int64
 
 	// for HWNPU_MOE_DEBUG: how many of the experts run the guess had in its top n and its
 	// whole, the runs of experts not wired, and those of them brought in before
 	topN, topAll, runs, misses, covered atomic.Int64
+	late                                atomic.Int64
 	wg                                  sync.WaitGroup
 	quit                                chan struct{}
 }
 
 // prefRow is a row of layer l (moe_x_l), from which layer l+1's experts are guessed.
 type prefRow struct {
-	l int
-	x []float32
+	l    int
+	x    []float32
+	seen int64
 }
 
 // router is a layer's router (experts, hidden) with its bias (experts, nil for none) and the ffn
@@ -123,7 +126,10 @@ func prefetchN(topK int) int {
 const prefetchReaders = 4
 
 func newPrefetcher(h *Host, routers map[int]*router, n int) *prefetcher {
-	p := &prefetcher{h: h, n: n, keep: max(2*n, 8), router: routers, guess: map[int][]int{}, queue: make(chan [2]int, 256), rows: make(chan prefRow, 4), quit: make(chan struct{})}
+	p := &prefetcher{h: h, n: n, keep: max(2*n, 8), router: routers, guess: map[int][]int{}, queue: make(chan [2]int, 256), rows: make(chan prefRow, 4), ranN: map[int]*atomic.Int64{}, quit: make(chan struct{})}
+	for l := range routers {
+		p.ranN[l] = new(atomic.Int64)
+	}
 	for range prefetchReaders {
 		p.wg.Add(1)
 		go p.loop()
@@ -160,6 +166,9 @@ func (p *prefetcher) loop() {
 // last guess for l and has l+1 guessed (guesser), off the run's own time.
 func (p *prefetcher) ran(l int, x []float32, idx []int) {
 	E := p.h.shape.Experts
+	if c := p.ranN[l]; c != nil {
+		c.Add(1)
+	}
 	p.mu.Lock()
 	g := p.guess[l]
 	delete(p.guess, l)
@@ -185,7 +194,7 @@ func (p *prefetcher) ran(l int, x []float32, idx []int) {
 		return
 	}
 	select {
-	case p.rows <- prefRow{l, append([]float32(nil), x...)}:
+	case p.rows <- prefRow{l, append([]float32(nil), x...), p.ranN[l+1].Load()}:
 	default: // behind: no guess for this layer
 	}
 }
@@ -199,15 +208,19 @@ func (p *prefetcher) guesser() {
 		case <-p.quit:
 			return
 		case r := <-p.rows:
-			p.guessNext(r.l, r.x)
+			p.guessNext(r)
 		}
 	}
 }
 
-func (p *prefetcher) guessNext(l int, x []float32) {
+func (p *prefetcher) guessNext(r prefRow) {
+	l, x := r.l, r.x
 	E := p.h.shape.Experts
 	cur, next := p.router[l], p.router[l+1]
 	H := p.h.shape.Hidden
+	if cur == nil || next == nil {
+		return
+	}
 	y := make([]float32, H)
 	for i, v := range x {
 		if w := cur.norm[i]; w > 1e-6 || w < -1e-6 {
@@ -231,8 +244,15 @@ func (p *prefetcher) guessNext(l int, x []float32) {
 	})
 	order = order[:min(p.keep, E)]
 	p.mu.Lock()
-	p.guess[l+1] = order
+	late := p.ranN[l+1].Load() != r.seen
+	if !late {
+		p.guess[l+1] = order
+	}
 	p.mu.Unlock()
+	if late {
+		p.late.Add(1)
+		return
+	}
 	pl := p.h.place
 	for _, e := range order[:min(p.n, len(order))] {
 		if pl != nil && pl.on[(l+1)*E+e].Load() {
@@ -243,6 +263,14 @@ func (p *prefetcher) guessNext(l int, x []float32) {
 		default: // behind: drop the guess rather than wait
 		}
 	}
+}
+
+// guessed reports whether e was among the experts queued from layer l's guess.
+func (p *prefetcher) guessed(l, e int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	i := slices.Index(p.guess[l], e)
+	return i >= 0 && i < p.n
 }
 
 // dot is the dot product of a and b (as long), in four sums.
@@ -269,6 +297,9 @@ func (p *prefetcher) stop() {
 		r := float64(p.runs.Load())
 		line := fmt.Sprintf("experts: the next layer's guess had %.1f%% of the experts run in its top %d, %.1f%% in its top %d (%d runs)",
 			100*float64(p.topN.Load())/r, p.n, 100*float64(p.topAll.Load())/r, p.keep, p.runs.Load())
+		if n := p.late.Load(); n > 0 {
+			line += fmt.Sprintf("; %d guesses too late", n)
+		}
 		if m := p.misses.Load(); m > 0 {
 			line += fmt.Sprintf("; of %d runs of experts not wired, %.1f%% brought in before (top %d)", m, 100*float64(p.covered.Load())/float64(m), p.n)
 		}

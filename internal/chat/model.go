@@ -437,6 +437,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			}
 		}
 		kind += "-gptq-" + h
+		if codes != "" && h == s.CodesHash {
+			// the definitions' codes, which this machine has: in the shared layers once (their
+			// entry.json says they were put or came from there), so that another machine, or
+			// this one after a change of what is written, converts again without them
+			shareCodes(ctx, s.Dir, h, codes)
+		}
 	}
 	for _, r := range s.FormatFor {
 		sub, f, ok := strings.Cut(r, "=")
@@ -662,13 +668,6 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				for i := range all.ps {
 					all.ps[i].codes = d
 				}
-			}
-		} else if s.CodesHash != "" {
-			// converted with the definitions' codes, which this machine has: put in the shared
-			// layers, so that another machine (or this one, after a change of what is written)
-			// converts again without them
-			if h, err := codesHash(codes); err == nil && h == s.CodesHash {
-				putCodes(ctx, s.Dir, h, codes)
 			}
 		}
 		if s.CodesHash != "" && codes == "" {

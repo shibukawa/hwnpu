@@ -5,6 +5,7 @@ package safetensors
 import (
 	"fmt"
 	"syscall"
+	"unsafe"
 )
 
 // Map returns a tensor's raw data in the file mapped into memory (read only), without reading it:
@@ -34,4 +35,17 @@ func (f *File) unmap() {
 		syscall.Munmap(f.mapped)
 		f.mapped = nil
 	}
+}
+
+// MappedAt is the file offset of b when b is in the file's mapping (Map).
+func (f *File) MappedAt(b []byte) (int64, bool) {
+	if f.mapped == nil || len(b) == 0 {
+		return 0, false
+	}
+	base := uintptr(unsafe.Pointer(unsafe.SliceData(f.mapped)))
+	p := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
+	if p < base || p+uintptr(len(b)) > base+uintptr(len(f.mapped)) {
+		return 0, false
+	}
+	return int64(p - base), true
 }
