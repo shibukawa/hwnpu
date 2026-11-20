@@ -57,6 +57,21 @@ type Program struct {
 	// Meta is the metadata of the program's parts (llm.ReadMeta), from which the session learns
 	// whether the host applies the logits' soft cap (llm.HostSoftcap).
 	Meta map[string]string
+
+	// Carry and StageIn, of a program split at its attention, let the session run several steps
+	// a stage at a time (Session.Steps). Carry(i) is the inputs that hold what the parts up to
+	// part i, and the attention after it, hand to the parts after for the step's tokens: the
+	// hidden state, the attention's output and whatever else a later part takes from an earlier
+	// one. StageIn(i) names the inputs (In) the programs of part i take.
+	Carry   func(i int) [][]byte
+	StageIn func(i int) []string
+	// RunMany, when not nil, is RunPart(i) for the n steps of a wave: before each run of one of
+	// part i's programs for step c it calls step(c), which writes the step's inputs, and after
+	// it ran(c, inputs, last) with the model inputs that program takes, whose state the session
+	// keeps, and last for the part's last program, when the part's outputs are step c's. It may
+	// run each of the part's programs for every step before the next (each for the steps in
+	// order), which RunPart for a step at a time cannot.
+	RunMany func(i, n int, step func(c int) error, ran func(c int, inputs []string, last bool) error) error
 }
 
 // Buf is a buffer the attention program can be bound to: a chunk of keys or values of the
@@ -152,6 +167,8 @@ type step struct {
 	o     [3][]float32 // the attention's outputs o, m, l, decoded
 	res   []float32    // the merged attention
 	sp    *sparseStep  // of the two-level attention, made on its first call
+	hide  []byte       // a mask's row that hides every position of a chunk (stepMasks)
+	carry int          // the most bytes a stage hands on (Program.Carry), 0 until asked
 }
 
 // New checks the program's inputs and outputs and starts an empty sequence.
@@ -1250,6 +1267,9 @@ func (s *Session) replay(p Program, n int) (bool, error) {
 	}
 	var names []string
 	for name := range p.In {
+		if wholeWindow(p, name) {
+			return false, nil // the window after fewer tokens is not in its output
+		}
 		if strings.HasPrefix(name, "st_") {
 			if _, ok := p.Out[name+"_rows"]; !ok {
 				return false, nil
@@ -1265,14 +1285,21 @@ func (s *Session) replay(p Program, n int) (bool, error) {
 	return true, nil
 }
 
-// replaced reports whether p has state that a step replaces as a whole (st_, llm.Cached).
+// replaced reports whether p has state that a step replaces as a whole (llm.Cached): st_, or a
+// window whose output is the window after the step's tokens.
 func (s *Session) replaced(p Program) bool {
 	for name := range p.In {
-		if strings.HasPrefix(name, "st_") {
+		if strings.HasPrefix(name, "st_") || wholeWindow(p, name) {
 			return true
 		}
 	}
 	return false
+}
+
+// wholeWindow reports whether the input name is a window (win_) that p outputs as it is after the
+// step's valid tokens, not with the step's rows to pick it from.
+func wholeWindow(p Program, name string) bool {
+	return strings.HasPrefix(name, "win_") && len(p.Out[name+"_new"]) == len(p.In[name])
 }
 
 // run writes the tokens' rows and the step's inputs into the program with the fewest tokens per
@@ -1286,21 +1313,43 @@ func (s *Session) run(emb [][]float32, each bool) (p Program, q int, err error) 
 	if s.pos+v > s.t {
 		return p, 0, fmt.Errorf("decode: the cache of %d tokens is full", s.t)
 	}
-	var st *step
-	for i := range s.progs {
-		if s.progs[i].q >= v && (!each || v == 1 || rows(s.progs[i].p) == s.progs[i].q) {
-			st = &s.progs[i]
-			p, q = st.p, st.q
-			break
-		}
-	}
+	st := s.pick(v, each)
 	if st == nil {
 		return p, 0, fmt.Errorf("decode: no program computes the logits after each of %d tokens (the longer ones compute them after the last alone)", v)
 	}
+	p, q = st.p, st.q
+	if err := s.writeInputs(st, emb); err != nil {
+		return p, 0, err
+	}
+	if p.RunPart != nil {
+		s.sparseTouch(s.pos)
+		return p, q, s.runPaged(st, v)
+	}
+	if err := p.Run(); err != nil {
+		return p, 0, err
+	}
+	return p, q, nil
+}
+
+// pick is the program with the fewest tokens per step that takes v tokens, or nil; with each, one
+// that computes the logits after each token.
+func (s *Session) pick(v int, each bool) *step {
+	for i := range s.progs {
+		if s.progs[i].q >= v && (!each || v == 1 || rows(s.progs[i].p) == s.progs[i].q) {
+			return &s.progs[i]
+		}
+	}
+	return nil
+}
+
+// writeInputs writes the rows of a step's tokens and the step's inputs at the session's position
+// into st's program.
+func (s *Session) writeInputs(st *step, emb [][]float32) error {
+	p, q, v := st.p, st.q, len(emb)
 	x := p.In["x"]
 	for _, e := range emb {
 		if len(e) != s.Width() {
-			return p, 0, fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
+			return fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
 		}
 	}
 	// The rows past the tokens repeat the last token: they are masked out and not kept, but a
@@ -1327,19 +1376,12 @@ func (s *Session) run(emb [][]float32, each bool) (p Program, q int, err error) 
 	for name, vals := range inputs(s.pos, v, q, s.t) {
 		if b, ok := p.In[name]; ok {
 			if 2*len(vals) != len(b) {
-				return p, 0, fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
+				return fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
 			}
 			hwnpu.EncodeF16(b, vals)
 		}
 	}
-	if p.RunPart != nil {
-		s.sparseTouch(s.pos)
-		return p, q, s.runPaged(st, v)
-	}
-	if err := p.Run(); err != nil {
-		return p, 0, err
-	}
-	return p, q, nil
+	return nil
 }
 
 // runPaged runs a program split at its attention, valid of its rows tokens: its parts, and
@@ -1380,52 +1422,61 @@ func (s *Session) runPaged(st *step, valid int) error {
 			}
 			return nil
 		}
-		layer := p.Attend[i]
-		s.noteSinks(p, layer)
-		src := s.kvLayer(layer)
-		kc, vc := s.cache(fmt.Sprintf("kv_k_%d_new", src)), s.cache(fmt.Sprintf("kv_v_%d_new", src))
-		if src == layer { // a layer reusing another's keys and values finds the step's written
-			for _, c := range []*kvCache{kc, vc} {
-				if err := s.writeRows(c, p.Out[c.out], q, s.pos, rows); err != nil {
-					return err
-				}
-			}
+		if err := s.attend(st, att, i, rows, valid, used, &oneMasks); err != nil {
+			return err
 		}
-		if s.oneRow(p, layer) {
-			if err := s.attendOne(st, layer, kc, vc, valid, &oneMasks); err != nil {
-				return err
-			}
-			continue
-		}
-		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
-		if s.sparse != nil && att == p.Attn {
-			done, err := s.attendSparse(st, layer, kc, vc, s.pos, rows, min(valid, rows), used)
-			if err != nil {
-				return err
-			}
-			if done {
-				putAttnOut(p, layer, st.res)
-				continue
-			}
-		}
-		st.merge.Reset()
-		for j := 0; j < used; j++ {
-			mask := st.zero
-			if m, ok := st.masks[j]; ok {
-				mask = m
-			}
-			if err := att.Run(s.chunks[kc.out][j], s.chunks[vc.out][j], mask); err != nil {
-				return fmt.Errorf("decode: attention of layer %d over chunk %d: %w", layer, j, err)
-			}
-			hwnpu.DecodeF16(st.o[0], att.O)
-			hwnpu.DecodeF16(st.o[1], att.M)
-			hwnpu.DecodeF16(st.o[2], att.L)
-			st.merge.Add(st.o[0], st.o[1], st.o[2])
-		}
-		s.addSink(layer, st.merge, q)
-		st.merge.Result(st.res)
-		putAttnOut(p, layer, st.res)
 	}
+}
+
+// attend attends for the layer after part i of st's program, which has just run at the session's
+// position: the step's keys and values go into the cache, its rows that fit, and the attention's
+// output into the program's input. oneMasks is whether the masks of the step's last token alone
+// are made (attendOne).
+func (s *Session) attend(st *step, att *Attention, i, rows, valid, used int, oneMasks *bool) error {
+	p, q := st.p, st.q
+	layer := p.Attend[i]
+	s.noteSinks(p, layer)
+	src := s.kvLayer(layer)
+	kc, vc := s.cache(fmt.Sprintf("kv_k_%d_new", src)), s.cache(fmt.Sprintf("kv_v_%d_new", src))
+	if src == layer { // a layer reusing another's keys and values finds the step's written
+		for _, c := range []*kvCache{kc, vc} {
+			if err := s.writeRows(c, p.Out[c.out], q, s.pos, rows); err != nil {
+				return err
+			}
+		}
+	}
+	if s.oneRow(p, layer) {
+		return s.attendOne(st, layer, kc, vc, valid, oneMasks)
+	}
+	copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
+	if s.sparse != nil && att == p.Attn {
+		done, err := s.attendSparse(st, layer, kc, vc, s.pos, rows, min(valid, rows), used)
+		if err != nil {
+			return err
+		}
+		if done {
+			putAttnOut(p, layer, st.res)
+			return nil
+		}
+	}
+	st.merge.Reset()
+	for j := 0; j < used; j++ {
+		mask := st.zero
+		if m, ok := st.masks[j]; ok {
+			mask = m
+		}
+		if err := att.Run(s.chunks[kc.out][j], s.chunks[vc.out][j], mask); err != nil {
+			return fmt.Errorf("decode: attention of layer %d over chunk %d: %w", layer, j, err)
+		}
+		hwnpu.DecodeF16(st.o[0], att.O)
+		hwnpu.DecodeF16(st.o[1], att.M)
+		hwnpu.DecodeF16(st.o[2], att.L)
+		st.merge.Add(st.o[0], st.o[1], st.o[2])
+	}
+	s.addSink(layer, st.merge, q)
+	st.merge.Result(st.res)
+	putAttnOut(p, layer, st.res)
+	return nil
 }
 
 // addSink adds layer's sinks to m (paged.Merge.AddSink) when the programs output them,
@@ -1580,7 +1631,16 @@ func (st *step) stepMasks(pos, q, used int) error {
 		st.spare = append(st.spare, b)
 		delete(st.masks, j)
 	}
-	vals := make([]float32, q*c)
+	if len(st.hide) != 2*c {
+		// (a row of the mask is zeros up to the query's own position and this after: written
+		// as bytes, a step's masks of 128 rows over 8192 positions take 0.1 ms, not 3)
+		v := make([]float32, c)
+		for k := range v {
+			v[k] = -1e4
+		}
+		st.hide = make([]byte, 2*c)
+		hwnpu.EncodeF16(st.hide, v)
+	}
 	for j := pos / c; j < used; j++ {
 		var b Buf
 		if n := len(st.spare); n > 0 {
@@ -1591,17 +1651,13 @@ func (st *step) stepMasks(pos, q, used int) error {
 				return err
 			}
 		}
+		m := b.Bytes()
 		for t := 0; t < q; t++ {
-			row := vals[t*c : (t+1)*c]
-			for k := range row {
-				if j*c+k <= pos+t {
-					row[k] = 0
-				} else {
-					row[k] = -1e4
-				}
-			}
+			row := m[2*t*c : 2*(t+1)*c]
+			seen := min(max(pos+t-j*c+1, 0), c) // positions j*c+k <= pos+t
+			clear(row[:2*seen])
+			copy(row[2*seen:], st.hide[2*seen:])
 		}
-		hwnpu.EncodeF16(b.Bytes(), vals)
 		st.masks[j] = b
 	}
 	return nil
@@ -1648,20 +1704,42 @@ func (s *Session) keep(p Program, q, v int) []float32 {
 			}
 		}
 	}
-	for name, in := range p.In {
-		if strings.HasPrefix(name, "win_") {
-			// (1, w, d) <- rows v..v+w of (1, w+q, d): the window after v tokens
-			sh := p.InShape[name]
-			w, d := sh[1], sh[2]
-			copy(in, p.Out[name+"_new"][2*v*d:2*(v+w)*d])
-		}
-		if strings.HasPrefix(name, "st_") {
-			// the state after the step's valid tokens (llm.Cached): run kept them all
-			copy(in, p.Out[name+"_new"])
-		}
+	for name := range p.In {
+		keepState(p, name, v)
 	}
 	s.pos += v
 	s.last, s.lastRows = nil, nil
+	i := s.keepHidden(p, q, v)
+	if p.NoLogits {
+		return nil
+	}
+	return s.row(p, i)
+}
+
+// keepState writes the state after the first v tokens of the step just run on p into its input
+// name, if it is one a step replaces (llm.HeldInput).
+func keepState(p Program, name string, v int) {
+	in := p.In[name]
+	if strings.HasPrefix(name, "win_") {
+		// (1, w, d) <- rows v..v+w of (1, w+q, d): the window after v tokens; or the output
+		// is that window already (llm.Cached)
+		sh := p.InShape[name]
+		w, d := sh[1], sh[2]
+		if out := p.Out[name+"_new"]; len(out) == len(in) {
+			copy(in, out)
+		} else {
+			copy(in, out[2*v*d:2*(v+w)*d])
+		}
+	}
+	if strings.HasPrefix(name, "st_") {
+		// the state after the step's valid tokens (llm.Cached): run kept them all
+		copy(in, p.Out[name+"_new"])
+	}
+}
+
+// keepHidden adds the final hidden states of the first v tokens of the step just run on p to
+// lastRows, when p outputs them, and returns the row of its logits after the last of them.
+func (s *Session) keepHidden(p Program, q, v int) int {
 	i := v - 1
 	if rows(p) == 1 {
 		i = 0 // the program computed the last token's row alone
@@ -1682,10 +1760,7 @@ func (s *Session) keep(p Program, q, v int) []float32 {
 		}
 		s.last = s.lastRows[len(s.lastRows)-1]
 	}
-	if p.NoLogits {
-		return nil
-	}
-	return s.row(p, i)
+	return i
 }
 
 // HiddenRows is the final hidden states h of the last step's kept tokens, one per token, for a

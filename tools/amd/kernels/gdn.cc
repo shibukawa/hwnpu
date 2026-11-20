@@ -63,7 +63,13 @@ using acc_t = aie::accum<accfloat, N>;
 template <unsigned N>
 using bf_t = aie::vector<bfloat16, N>;
 
-alignas(64) bfloat16 s_hi[Dk * P], s_mid[Dk * P], s_lo[Dk * P];
+// The state's limbs a core keeps from one call to the next point into the worker's scratch
+// buffer (gdn_bind, at the start of the core's run): as static arrays (.bss) the array's every
+// configuration wrote them with zeros, 12 KB a core (docs/design.md 16.267).
+constexpr int r32(int n) { return (n + 31) / 32 * 32; }
+bfloat16 *s_hi; // the three limbs, Dk * P each: s_mid and s_lo follow s_hi (one pointer to load)
+#define s_mid (s_hi + Dk * P)
+#define s_lo (s_hi + 2 * Dk * P)
 alignas(64) bfloat16 row[KP], v_row[P], out[P];
 // One per row: a then b; the squared norms of q then k, then their
 // reciprocal roots; exp's arguments, then decay and exp(-b).
@@ -213,7 +219,8 @@ static_assert(Dv == L && Dk % L == 0, "gdn: a slice of 16 value columns");
 
 // The block the gathers fill: q (R x Dk), k (R x Dk), v (R x Dv), then a (R)
 // and b (R), as gated_delta_rule's argument.
-alignas(64) bfloat16 blk[R * (2 * Dk + Dv + 2)];
+constexpr int BLK = R * (2 * Dk + Dv + 2);
+alignas(64) bfloat16 blk[BLK];
 
 // A float from its two 16-bit halves (a runtime parameter word is one half).
 inline float from_halves(int32_t hi, int32_t lo) {
@@ -535,7 +542,7 @@ constexpr int ZW = 0;
 #endif
 constexpr int SEG = GDR_SEG, KC = GDR_CONV;
 static_assert(KC >= 2 && (KC - 1) * SEG <= 2 * Dk * Dv, "gdn_conv: 2 taps or more, the rows in a half");
-alignas(64) bfloat16 u_row[(SEG + 31) / 32 * 32];
+alignas(64) bfloat16 u_row[r32(SEG)];
 #ifdef GDR_NORM_DIM
 alignas(64) bfloat16 y_keep[HD];                   // a value head's y, its slices (gdn_rule_keep)
 float y_rinv;                                      // 1 / rms of y_keep (gdn_norm at slice 0)
@@ -581,6 +588,17 @@ extern "C" void gdn_conv(const bfloat16 *restrict xt, const float *restrict hin,
 extern "C" void gdn_gather_conv(int32_t t, int32_t qo, int32_t ko, int32_t vo,
                                 int32_t abo) {
   gather_row(u_row, t, qo, ko, vo, abo);
+}
+
+// gdn_gather_conv's v slice, a and b alone: q and k stay from the last full gather (the
+// rule only reads them), a core's slices of one key head gathering them once.
+extern "C" void gdn_gather_conv_v(int32_t t, int32_t vo, int32_t abo) {
+  const aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+  silu_row(u_row + vo, blk + 2 * R * Dk + t * Dv, Dv);
+  blk[2 * R * Dk + R * Dv + t] = u_row[abo];
+  blk[2 * R * Dk + R * Dv + R + t] = u_row[abo + 1];
+  aie::set_rounding(saved_rounding);
 }
 
 #ifdef GDR_NORM_DIM
@@ -706,3 +724,11 @@ extern "C" void gdn_norm_step(bfloat16 *restrict out, const bfloat16 *restrict x
 #endif
 #endif
 #endif
+
+// gdn_bind points the state's three limbs into scratch, the worker's buffer of gdn_scratch bf16
+// (iron_gdn.py: 3 Dk P, and 32 more to align them to 64 bytes). The core calls it first. The
+// smaller arrays (blk, u_row, y_keep: under 2 KB a core) stay static: as pointers too, the decode
+// step's core (with gdn_gather_conv_v) passed its 16 KB of program memory by 80 bytes.
+extern "C" void gdn_bind(bfloat16 *scratch) {
+  s_hi = (bfloat16 *)(((uintptr_t)scratch + 63) & ~(uintptr_t)63);
+}

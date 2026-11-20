@@ -56,6 +56,12 @@ import iron_moeprobe
 import iron_moep
 
 COLUMNS = 8  # the columns GatedDeltaRule spreads over (npu2)
+import os
+STATE_CHANNELS = int(os.environ.get("QWEN35_STATE_CHANNELS", "8"))
+SLOTS_IN_PLACE = os.environ.get("QWEN35_SLOTS", "1") != "0"
+FUSE_QKVG = os.environ.get("QWEN35_QKVG", "1") != "0"
+FUSE_INZ = os.environ.get("QWEN35_INZ", "1") != "0"
+FUSE_EXPERTS = os.environ.get("QWEN35_EXPERTS", "1") != "0"
 # Qwen3.6 with a prompt chunk (its experts routed on the host, iron_moep.py); without it the
 # export is the decode step alone, the prompt run a token at a time.
 PROMPT = True
@@ -239,6 +245,16 @@ class GatedDeltaNet(iron.Graph):
         order = iron_gdn.gdn_layout(H, KH, dk, dv, COLUMNS)
         rows = np.concatenate([np.asarray(p.weight) for p in (self.in_proj_qkv, self.in_proj_a, self.in_proj_b)])
         self.in_proj.weight = iron.param(np.ascontiguousarray(iron_gdn.padded(rows)[order]))
+        if FUSE_INZ:
+            # in_proj_z's rows after the fused projection's: a decode step's one QGEMV whose
+            # output is cut, a prompt chunk's GEMM on each run of rows (Linear.split)
+            HV = H * dv
+            self.runs = (W, HV)
+            fused = Linear(c.hidden_size, W + HV, False, precision=c.precision)
+            fused._bound = True
+            fused.weight = iron.param(np.ascontiguousarray(np.concatenate(
+                [np.asarray(self.in_proj.weight), np.asarray(self.in_proj_z.weight)])))
+            self.in_proj, self.in_proj_z = fused, None
         if self.fold:
             # the norm's weight on out_proj's input columns (each value head's dv)
             w = np.asarray(self.out_proj.weight, np.float32) * np.tile(np.asarray(self.norm.weight, np.float32), H)
@@ -269,30 +285,47 @@ class GatedDeltaNet(iron.Graph):
     def body(self, x, call):
         H, KH, dk, dv = self.shape
         shape = dict(heads=H, key_heads=KH, key_dim=dk, value_dim=dv, words=self.words)
-        p = self.in_proj(x)
+        if self.in_proj_z is None:  # FUSE_INZ
+            p, z = self.in_proj.split(x, *self.runs)
+            zf = lambda: z  # noqa: E731
+        else:
+            p = self.in_proj(x)
+            zf = lambda: self.in_proj_z(x)  # noqa: E731
         read, write = self.state.at(call)
         if iron_verify.is_rows(x) and self.fold:
-            return self.rows_body(x, p, read, write, shape)
+            return self.rows_body(x, p, zf(), read, write, shape)
         if call.prompt:  # silu once before the operator, which reads each row once a slice
             GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), pairs=self.fold, presilu=True)
             u = iron_gdn.silu_operator(COLUMNS).step(self.conv(p, call), seg=self.seg,
                                                       raw=iron_gdn.silu_raw(H, KH, dk, dv, COLUMNS))
             y, final = GDR.step(u, Copy.step(read, dtype=np.float32), **shape)
             Copy.step(final, write, dtype=np.float32)
-            return self.out_proj(self.norm(y, self.in_proj_z(x)))
+            return self.out_proj(self.norm(y, zf()))
         if self.fold:
             c = self.config
             GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), c.linear_conv_kernel_dim, float(c.eps))
-            y, final = GDR.step(p, self.in_proj_z(x), self.taps, Copy.step(read, dtype=np.float32), **shape)
-            Copy.step(final, write, dtype=np.float32)
+            if SLOTS_IN_PLACE:
+                # the operator reads and writes the checkpoint slots itself (iron_gdn's slots)
+                slots = self.state.slots
+                n, size = slots.shape[0], slots.shape[1]
+                C = self.state.chunk
+                GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), c.linear_conv_kernel_dim,
+                                            float(c.eps), slots=n)
+                whole = slots.reshape(n * size)
+                y, _ = GDR.step(p, zf(), self.taps, whole, whole,
+                                read_at=((call.start - 1) // C + 1) * size,
+                                write_at=(call.position // C + 1) * size, **shape)
+                return self.out_proj(y)
+            ch = dict(num_channels=STATE_CHANNELS) if STATE_CHANNELS > 1 else {}
+            y, final = GDR.step(p, zf(), self.taps, Copy.step(read, dtype=np.float32, **ch), **shape)
+            Copy.step(final, write, dtype=np.float32, **ch)
             return self.out_proj(y)
         GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS))
         y, final = GDR.step(self.conv(p, call), Copy.step(read, dtype=np.float32), **shape)
         Copy.step(final, write, dtype=np.float32)
-        return self.out_proj(self.norm(y, self.in_proj_z(x)))
+        return self.out_proj(self.norm(y, zf()))
 
-
-    def rows_body(self, x, p, read, write, shape):
+    def rows_body(self, x, p, z, read, write, shape):
         """The version checking drafts: the decode step's operator over its few rows in one call
         (iron_gdn's steps), each row run as a decode step's, the state after each kept: the last
         row's to the slot, the others' to rows_state."""
@@ -301,7 +334,7 @@ class GatedDeltaNet(iron.Graph):
         R = x.shape[0]
         GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), c.linear_conv_kernel_dim, float(c.eps),
                                     steps=R)
-        y, finals = GDR.step(p, self.in_proj_z(x), self.taps, Copy.step(read, dtype=np.float32), **shape)
+        y, finals = GDR.step(p, z, self.taps, Copy.step(read, dtype=np.float32), **shape)
         size = finals.shape[0] // R
         Copy.step(finals[(R - 1) * size :], write, dtype=np.float32)
         Copy.step(finals[: (R - 1) * size], self.rows_state.reshape((R - 1) * size), dtype=np.float32)
@@ -322,12 +355,68 @@ class GatedAttention(Attention):
 
     def load_state_dict(self, tree, *, path: str = "") -> None:
         super().load_state_dict(tree, path=path)
-        H, D = self.heads, self.head_dim
+        H, G, D = self.heads, self.groups, self.head_dim
         w = np.asarray(self.q_proj.weight).reshape(H, 2, D, -1)
-        self.q_proj.weight = iron.param(np.ascontiguousarray(w[:, 0].reshape(H * D, -1)))
-        self.gate = iron.param(np.ascontiguousarray(w[:, 1].reshape(H * D, -1)))
+        q, gate = w[:, 0].reshape(H * D, -1), w[:, 1].reshape(H * D, -1)
+        if not FUSE_QKVG:
+            self.q_proj.weight = iron.param(np.ascontiguousarray(q))
+            self.gate = iron.param(np.ascontiguousarray(gate))
+            return
+        # q, k, v and the gate as one projection (rows in that order): a decode step's one QGEMV
+        # whose output is cut, a prompt chunk's GEMM on each run of its rows (Linear.split)
+        self.runs = (H * D, G * D, G * D, H * D)
+        E = w.shape[-1]
+        self.qkvg = Linear(E, sum(self.runs), False, precision=self.q_proj.precision)
+        self.qkvg._bound = True
+        rows = [q, np.asarray(self.k_proj.weight), np.asarray(self.v_proj.weight), gate]
+        self.qkvg.weight = iron.param(np.ascontiguousarray(np.concatenate(rows)))
+        self.q_proj = self.k_proj = self.v_proj = None
+        self.gate = None
+
+    def body(self, x, cache, call, angles=None):
+        """A decode step's attention on the fused projection: q and k are one contiguous run of
+        its output (18 heads of Qwen3.6), RMS-normed per head by one operator (iron_headnorm, a
+        weight row of q's heads then k's) and turned by one RoPE over their first rotary columns,
+        where the step's q and k take the same angles."""
+        n, H, G, D = x.shape[0], self.heads, self.groups, self.head_dim
+        if (not FUSE_QKVG or n != 1 or angles is None or angles[0] is not angles[1]
+                or self.v_norm or iron_verify.is_rows(x)):
+            return super().body(x, cache, call, angles)
+        import iron_headnorm
+        import iron_q4
+
+        entry = iron_q4._Q4.get(id(self.qkvg.weight))
+        if entry is None or entry[0] is not self.qkvg.weight:  # bf16: no QGEMV to cut
+            return super().body(x, cache, call, angles)
+        _, rows, K, fmt = entry
+        QK = (H + G) * D
+        if getattr(self, "_qk", None) is None:
+            self._qn = iron.param(np.tile(np.asarray(self.q_norm.weight, np.float32), H).astype(bfloat16))
+            self._kn = iron.param(np.tile(np.asarray(self.k_norm.weight, np.float32), G).astype(bfloat16))
+            self._qk = iron.state((QK,), bfloat16)  # q's heads then k's, normed, for one RoPE
+        whole = iron_q4.q_linear(x.reshape(K), self.qkvg.weight, rows, K, fmt)
+        v = whole[QK : QK + G * D]
+        self._gate = whole[QK + G * D :].reshape(1, H * D)
+        Norm = iron_headnorm.HeadRMSNorm
+        Norm.step(whole[: H * D].reshape(1, H * D), self._qk[: H * D].reshape(1, H * D), weight=self._qn,
+                  epsilon=self.eps, head_dim=D)
+        Norm.step(whole[H * D : QK].reshape(1, G * D), self._qk[H * D :].reshape(1, G * D), weight=self._kn,
+                  epsilon=self.eps, head_dim=D)
+        qk = self.rotate(self._qk.reshape(H + G, D), angles[0])
+        q, k = qk[:H].reshape(n, H, D), qk[H:].reshape(n, G, D)
+        o = cache.attend(call, q, k, v.reshape(n, G, D), scale=self.scaling)
+        return self.output(o, x)
+
+    def project(self, x, **gemv) -> list:
+        if not FUSE_QKVG:
+            return super().project(x, **gemv)
+        q, k, v, self._gate = self.qkvg.split(x, *self.runs)
+        return [q, k, v]
 
     def output(self, o, x):
+        if FUSE_QKVG:
+            g, self._gate = Sigmoid.step(self._gate), None
+            return self.o_proj(o * g)
         g = Sigmoid.step(F.linear(x, self.gate, precision=self.q_proj.precision))
         return self.o_proj(o * g)
 
@@ -460,12 +549,17 @@ class Qwen35(CausalLM):
             if layer.linear_attn is not None:
                 g = layer.linear_attn
                 for lin in (g.in_proj, g.in_proj_z, g.out_proj):
-                    q(lin, "weight", fmts["attn"])
+                    if lin is not None:
+                        q(lin, "weight", fmts["attn"])
             else:
                 a = layer.self_attn
-                for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj):
-                    q(lin, "weight", fmts["attn"])
-                q(a, "gate", fmts["attn"])
+                if FUSE_QKVG:
+                    for lin in (a.qkvg, a.o_proj):
+                        q(lin, "weight", fmts["attn"])
+                else:
+                    for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj):
+                        q(lin, "weight", fmts["attn"])
+                    q(a, "gate", fmts["attn"])
             if not isinstance(layer.mlp, SparseMoe):
                 mlp = layer.mlp
                 if fmts["mlp"] in ("q6", "q8") and FUSE_GLU:
@@ -571,8 +665,17 @@ class SparseMoe(iron.Graph):
         w, image = Route.step(logits.reshape(n), self.program, n=n, experts=self.n, picked=self.index)
         call.feedback.append((self.index, image.name))
         iron.on_host(lambda: None)  # command B: the experts, at the offsets the image holds
-        GU, D = iron_moeprobe.fused_operators()
         e = call.experts[self.index]
+        if FUSE_EXPERTS:  # the two in one operator (iron_moeprobe's MoEExperts)
+            EX = iron_moeprobe.experts_operator()
+            y = EX.step(self.gu, self.down, hn.reshape(E), w, h.reshape(E), grows=self.gu.shape[0],
+                        drows=self.down.shape[0], K=E, NE=I, N=E, picked=self.index,
+                        **{f"e{i}": e[i] * self.gu_bytes for i in range(len(e))},
+                        **{f"d{i}": e[i] * self.down_bytes for i in range(len(e))})
+            iron.on_host(lambda: None)
+            A = (iron_moeprobe.TOP + 1) * I
+            return y[A : A + E].reshape(1, E)
+        GU, D = iron_moeprobe.fused_operators()
         a = GU.step(self.gu, hn.reshape(E), w, K=E, NE=I, picked=self.index,
                     **{f"e{i}": e[i] * self.gu_bytes for i in range(len(e))})
         y = D.step(self.down, a, h.reshape(E), KE=I, N=E, picked=self.index,
@@ -665,7 +768,17 @@ class Qwen35MoeLayer(Qwen35Layer):
         self.mlp = SparseMoe(c, i)
 
     def body(self, x, call):
-        h = x + self.mix(self.input_layernorm(x), call)
+        # A decode step's residual added in the mixer's last projection's GEMV (out_proj or
+        # o_proj, iron_q4's into_linear), not by an add of its own; MoEDown adds the second
+        if call.prompt or x.shape[0] != 1 or not QUANT or iron_verify.is_rows(x):
+            h = x + self.mix(self.input_layernorm(x), call)
+        else:
+            import iron_q4
+
+            last = self.linear_attn.out_proj if self.linear_attn is not None else self.self_attn.o_proj
+            with iron_q4.into_linear(last, x) as st:
+                y = self.mix(self.input_layernorm(x), call)
+            h = y if st["used"] else x + y
         return self.mlp(self.post_attention_layernorm(h), h, call)
 
 

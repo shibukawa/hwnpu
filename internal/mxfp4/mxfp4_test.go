@@ -125,3 +125,81 @@ func BenchmarkRunVectors(b *testing.B) {
 		Run(Job{Out: out, W: w, E: e, V: vs})
 	}
 }
+
+// Encode rounds each value to the nearest of its block's scale, and picks the scale of the
+// smallest error among the rule's and its neighbours.
+func TestEncode(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	const nb = 64
+	row := make([]float32, nb*Block)
+	for i := range row {
+		row[i] = float32(r.NormFloat64() * 0.02)
+	}
+	row[5] = 0
+	for i := Block; i < 2*Block; i++ {
+		row[i] = 0 // a block of zeros
+	}
+	w, e := make([]byte, 16*nb), make([]byte, nb)
+	Encode(w, e, row)
+	got := make([]float32, len(row))
+	Dequantize(got, w, e)
+	var se, sr float64
+	for b := range nb {
+		blk, dq := row[b*Block:(b+1)*Block], got[b*Block:(b+1)*Block]
+		s := float64(scale(e[b]))
+		for j, v := range blk {
+			d := float64(v - dq[j])
+			se, sr = se+d*d, sr+float64(v)*float64(v)
+			// nearest at its scale: within half a step (the steps are at most 2 scales apart)
+			if v != 0 && math.Abs(d) > s+1e-12 && math.Abs(float64(v))/s < 6 {
+				t.Fatalf("block %d value %d: %g encoded as %g at scale %g", b, j, v, dq[j], s)
+			}
+		}
+	}
+	if got[5] != 0 || got[Block] != 0 {
+		t.Errorf("zeros encoded as %g, %g", got[5], got[Block])
+	}
+	// e2m1 of normal values: about a tenth of the norm
+	if rel := math.Sqrt(se / sr); rel > 0.12 {
+		t.Errorf("relative error %.3f", rel)
+	} else {
+		t.Logf("relative error %.4f", rel)
+	}
+	for _, tc := range []struct {
+		x    float64
+		want byte
+	}{{0.25, 0}, {0.26, 1}, {0.75, 2}, {1.25, 2}, {1.75, 4}, {2.5, 4}, {3.5, 6}, {5, 6}, {5.1, 7}, {100, 7}, {-0.6, 9}, {-0.1, 0}} {
+		if got := nearest(tc.x); got != tc.want {
+			t.Errorf("nearest(%g) = %d, want %d", tc.x, got, tc.want)
+		}
+	}
+}
+
+// Rows gives Dot's value for every row, bit for bit: with blocks in fours, with two left over
+// (gpt-oss's 90) and with an odd number of them (no kernel of rows).
+func TestRowsMatchesDot(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	for _, c := range []struct{ rows, cols int }{{37, 2048}, {64, 512}, {5, 2880}, {9, 64}, {3, 96}, {1, 32}} {
+		nb := c.cols / Block
+		w, e := make([]byte, c.rows*nb*16), make([]byte, c.rows*nb)
+		for i := range w {
+			w[i] = byte(r.Uint32())
+		}
+		for i := range e {
+			e[i] = byte(110 + r.IntN(20))
+		}
+		x := make([]float32, c.cols)
+		for i := range x {
+			x[i] = float32(r.NormFloat64()) * float32(math.Exp(r.NormFloat64()))
+		}
+		v := NewVec(c.cols)
+		v.Quantize(x)
+		out := make([]float32, c.rows)
+		Rows(out, w, e, v)
+		for i := range out {
+			if want := Dot(w[i*nb*16:(i+1)*nb*16], e[i*nb:(i+1)*nb], v); out[i] != want || want == 0 {
+				t.Fatalf("%d rows of %d: row %d is %g, Dot gives %g", c.rows, c.cols, i, out[i], want)
+			}
+		}
+	}
+}

@@ -48,6 +48,16 @@ from iron.operators.copy import Copy
 from iron.operators.sigmoid import Sigmoid
 from ml_dtypes import bfloat16
 
+# A decode step's short convolution as one operator (iron_shortconv.ShortConvStep) in place of
+# IRON's about 16 (docs/design.md 16.268). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
+FUSED_CONV = __import__("os").environ.get("HWNPU_LFM3_FUSED_CONV", "1") != "0"
+# A decode step's post-norm, residual and next norm as one operator (iron_sandwich.SandwichAdd)
+# in place of three, twice a layer. HWNPU_LFM3_FUSED_NORMS=0 keeps IRON's.
+FUSED_NORMS = __import__("os").environ.get("HWNPU_LFM3_FUSED_NORMS", "1") != "0"
+# The MLP's gate and up as one table (iron_q4's glu_param, QGEMVGlu: one operator of the decode
+# step in place of two GEMVs, a SiLU and a product), as iron_qwen35's FUSE_GLU.
+FUSE_GLU = __import__("os").environ.get("HWNPU_LFM3_FUSE_GLU", "1") != "0"
+
 # By part of the model (mlp, attn, conv, head), its weights' format: iron_q4's "q4" (q4nx) or
 # "q8", or "bf16". Empty: all bf16, IRON's own linear.
 QUANT: dict[str, str] = {}
@@ -140,6 +150,16 @@ class ShortConv(iron.Graph):
 
     def body(self, x, call):
         E = self.width
+        if FUSED_CONV and not call.prompt and x.shape[0] == 1 and self.conv.bias is None:
+            # a decode step: B * x, the convolution and the gate as one operator (iron_shortconv)
+            import iron_shortconv
+
+            K = self.conv.taps.shape[0]
+            read, write = self.conv.state.at(call)
+            y, final = iron_shortconv.short_conv_operator().step(
+                self.in_proj(x), self.conv.taps, Copy.step(read), width=E, taps_n=K)  # the slot is a view: Copy
+            Copy.step(final, write)
+            return self.out_proj(y)
         b, cg, v = self.in_proj.split(x, E, E, E)
         y = self.conv(b * v, call)
         return self.out_proj(cg * y)
@@ -186,6 +206,20 @@ class Lfm3Layer(SandwichLayer):
             return self.conv(h, call)
         return super().mix(h, call)
 
+    def fused_body(self, x, xn, call, nxt):
+        """A decode step's layer on ``x`` and its input already normed ``xn``: each block's post-norm,
+        residual and the next norm as one SandwichAdd (iron_sandwich), the last one's with ``nxt``
+        (the next layer's input norm, or the final norm). Returns the residual and its ``nxt``
+        norm."""
+        import iron_sandwich
+
+        h = self.mix(xn, call)
+        x, m = iron_sandwich.sandwich_add(h, x, self.post_attention_layernorm.weight,
+                                          self.pre_feedforward_layernorm.weight, self.post_attention_layernorm.eps)
+        h = self.mlp(m)
+        return iron_sandwich.sandwich_add(h, x, self.post_feedforward_layernorm.weight, nxt.weight,
+                                          self.post_feedforward_layernorm.eps)
+
 
 class Lfm3(CausalLM):
     """LFM3 on ``config``'s shape and a checkpoint's ``weights``, from its checkpoint and ``tokenizer.json``."""
@@ -223,6 +257,30 @@ class Lfm3(CausalLM):
         if QUANT:
             self.quantize(QUANT)
 
+    def fused(self, call, x) -> bool:
+        """Whether this call's layers run fused_body (a decode step's row, FUSED_NORMS)."""
+        c = self.config
+        return (FUSED_NORMS and not call.prompt and x.shape[0] == 1
+                and getattr(self.model.layers[0], "residual_multiplier", None) in (None, 1, 1.0)
+                and all(n.eps == c.eps for l in self.model.layers for n in (
+                    l.input_layernorm, l.post_attention_layernorm, l.pre_feedforward_layernorm,
+                    l.post_feedforward_layernorm)) and self.model.norm.eps == c.eps)
+
+    def layer(self, call, i: int, w, x):
+        if not self.fused(call, x):
+            return super().layer(call, i, w, x)
+        L = len(self.model.layers)
+        xn = w.input_layernorm(x) if i == 0 else self._normed
+        nxt = self.model.layers[i + 1].input_layernorm if i + 1 < L else self.model.norm
+        x, self._normed = w.fused_body(x, xn, call, nxt)
+        return x
+
+    def head(self, x):
+        xn, self._normed = getattr(self, "_normed", None), None
+        if xn is not None:  # the last layer's SandwichAdd normed it with the final norm
+            return self.lm_head(xn)
+        return super().head(x)
+
     def quantize(self, fmts: dict) -> None:
         """Put the loaded weights in ``fmts``' formats (``install_q4``)."""
         import iron_hostple
@@ -232,7 +290,16 @@ class Lfm3(CausalLM):
             return iron_q4.q_param(np.asarray(w, np.float32), fmt)
 
         for layer in self.layers:
-            if fmts["mlp"] != "bf16":
+            if fmts["mlp"] != "bf16" and FUSE_GLU:
+                # gate and up as one table: the decode step's one operator (iron_q4's QGEMVGlu) in
+                # place of two GEMVs, a SiLU and a product; a prompt chunk reads it in parts
+                mlp = layer.mlp
+                iron_q4.install_glu()
+                mlp.gu = iron_q4.glu_param(np.asarray(mlp.gate_proj.weight, np.float32),
+                                           np.asarray(mlp.up_proj.weight, np.float32), fmts["mlp"])
+                mlp.gate_proj = mlp.up_proj = None
+                mlp.down_proj.weight = q(mlp.down_proj.weight, fmts["mlp"])
+            elif fmts["mlp"] != "bf16":
                 for lin in (layer.mlp.gate_proj, layer.mlp.up_proj, layer.mlp.down_proj):
                     lin.weight = q(lin.weight, fmts["mlp"])
             if layer.conv is not None:

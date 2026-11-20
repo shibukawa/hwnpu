@@ -106,9 +106,19 @@ func FindCoreAIBuild() (string, error) {
 // Metal Toolchain 27.2, fails that one alone). The results come in the order of the programs then
 // the architectures; err is the first failure of the compiler, after everything ran.
 func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, error) {
-	assets, err := Assets(paths)
+	all, err := Assets(paths)
 	if err != nil {
 		return nil, err
+	}
+	var assets []string
+	for _, a := range all {
+		if LeftToDevice(a) {
+			if o.Log != nil {
+				fmt.Fprintf(o.Log, "%s: left to the device (LeftToDevice)\n", filepath.Base(a))
+			}
+			continue
+		}
+		assets = append(assets, a)
 	}
 	archs := o.Archs
 	if len(archs) == 0 {

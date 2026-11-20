@@ -141,20 +141,30 @@ func (p *expertPool) close() {
 }
 
 // PlaceExperts says which experts the places hold first (experts.Placement: Core, then by the
-// application's counts) and keeps the core ones in place while others will do. The places are
-// filled now.
+// application's counts) and keeps the core ones in place while others will do. A layer's core
+// of more than half its places is left out: kept in place, it leaves too few for the experts the
+// text runs now (Qwen3.6-35B-A3B's 22.5 of 32 a layer: 34.4 -> 36.7 % of the choices copied in,
+// design.md 16.276). The places are filled now.
 func (m *Model) PlaceExperts(pl experts.Placement) error {
 	p := m.pool
 	if p == nil {
 		return nil
 	}
 	clear(p.core)
+	dropped := 0
 	for l, es := range pl.Core {
+		if 2*len(es) > p.P {
+			dropped++
+			continue
+		}
 		for _, e := range es {
 			if l < p.L && e >= 0 && e < p.E {
 				p.core[l*p.E+e] = true
 			}
 		}
+	}
+	if dropped > 0 {
+		m.logf("experts: the core of %d layers left out (over half of their %d places)", dropped, p.P)
 	}
 	clear(p.init)
 	if u := experts.ReadUsageFor(pl.Usage, p.L, p.E); u != nil {

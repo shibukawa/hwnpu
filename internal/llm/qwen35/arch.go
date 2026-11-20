@@ -16,7 +16,9 @@ var Arch = &llm.Arch{
 	Format:        "lut8",
 	LastRow:       true,
 	// 1: the gated delta rule over chunks of rows (deltaRuleChunks)
-	Revision:   1,
+	// 2: a chunk of one row without the matmul of an inner dimension of 1, which the Neural
+	// Engine gets wrong (deltaRuleChunks), 2026-11-20
+	Revision:   2,
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	Params: []llm.Param{
 		{Name: "delta", Default: "chunk", Usage: "the Gated DeltaNet's recurrence: chunk (over chunks of rows, the state read and written once a chunk) or rows (one row after the other, the state read and written five times a row)"},
@@ -119,3 +121,32 @@ func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Optio
 func (c *Config) MaxContext() int { return c.MaxPositions }
 
 var _ llm.Paged = (*Config)(nil)
+
+// Rotation is how an orthogonal matrix passes through the text model's residual stream
+// (llm.Rotate): every reader is a linear after a zero centered norm, every writer a linear added
+// as it is. The MTP layer's fc reads two normed halves and is not rotated.
+func (c *Config) Rotation() (llm.Rotation, error) {
+	r := llm.Rotation{Dim: c.HiddenSize, Embed: c.Embedding(), Head: c.Head(), HeadNorm: c.prefix() + "norm.weight",
+		Readers: map[string]string{}, Writers: map[string]bool{}, Norms: map[string]bool{c.prefix() + "norm.weight": true}, ZeroCentered: true}
+	for i := 0; i < c.NumLayers; i++ {
+		p := fmt.Sprintf("%slayers.%d.", c.prefix(), i)
+		in, post := p+"input_layernorm.weight", p+"post_attention_layernorm.weight"
+		r.Norms[in], r.Norms[post] = true, true
+		r.Readers[p+"mlp.gate_proj.weight"], r.Readers[p+"mlp.up_proj.weight"] = post, post
+		r.Writers[p+"mlp.down_proj.weight"] = true
+		if c.IsLinear(i) {
+			a := p + "linear_attn."
+			for _, n := range []string{"in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"} {
+				r.Readers[a+n+".weight"] = in
+			}
+			r.Writers[a+"out_proj.weight"] = true
+		} else {
+			a := p + "self_attn."
+			for _, n := range []string{"q_proj", "k_proj", "v_proj"} {
+				r.Readers[a+n+".weight"] = in
+			}
+			r.Writers[a+"o_proj.weight"] = true
+		}
+	}
+	return r, nil
+}

@@ -215,6 +215,17 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 		for _, l := range hm.RoutedLayers() {
 			rec.Layers[l] = hm.HostExperts(l)
 		}
+		if ls, ok := w.(lister); ok {
+			if n := rec.Layers[hm.RoutedLayers()[0]].GateUpBlocks; n != "" {
+				if _, has := ls.Shape(n); !has {
+					hint := ""
+					if _, ok := model.(HostDerived); ok {
+						hint = " (its release's experts are not MXFP4: write a checkpoint with them in MXFP4 with hwnpu-dev mxfp4, and convert from that)"
+					}
+					return nil, fmt.Errorf("llm: %s's experts run from the checkpoint's MXFP4 tensors, and %s has no %s%s", a.Title, path, n, hint)
+				}
+			}
+		}
 		ex = &ExpertsRecord{Layers: hm.RoutedLayers(), Shape: hm.ExpertShape(), Routing: hm.Routing(), Host: rec}
 		fmt.Fprintf(log, "%s: the experts of %d layers run on the CPU from %s\n", a.Title, len(rec.Layers), path)
 	} else if rm, ok := model.(Routed); ok {

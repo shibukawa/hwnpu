@@ -7725,7 +7725,122 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 - NPU を使っているプロセスは表に (PID、名前 16 文字で切る、CPU%、メモリ、GPU%、GPU のメモリ、NPU%、NPU のメモリ、`--watch` と一度だけの表示ではコマンドライン)。`-` は分からないもの。読み方 (`sysload.ProcSampler`、前回からの差分で %): Linux は `/proc/PID/stat` と `statm`、DRM の fdinfo (`drm-engine-*`、`drm-resident-*`、古い `drm-memory-*`、`drm-client-id` で重ねない) の amdgpu を GPU に、amdxdna と intel_vpu を NPU に。macOS は `proc_pid_rusage` (時間は `mach_timebase_info` で ns に、メモリは Activity Monitor の footprint に wired を足したもの: mlock したファイルのページは footprint に入らない。gpt-oss-20b の専門家を 6.4 GB 固定した hwnpu-chat で footprint 0.53 GB、wired 6.41 GB、resident 9.53 GB (resident は固定していないページキャッシュと共有ライブラリも数え、スワップと圧縮は数えない)。wired は JSON の `wired_bytes` にも。他のユーザーのプロセスは root でないと読めない) と、IOAccelerator の下の user client の `AppUsage` の `accumulatedGPUTime` (プロセスごとの GPU のメモリは出ない)。ANE にはプロセスごとの時間がないので macOS の NPU% は `-`。Windows の NPU% は今までの性能カウンター
 - macOS の NPU の行の直し (M3、macOS 27.2、gpt-oss-20b の生成中に IOReport を全部見て): (1) エネルギーの値は root でないと全部 0 (`Energy Model` の `ANE` も `CPU Energy` も、CPU が 260 % のときでも)。「0.00 W」をやめ、CPU のエネルギーも 0 なら読めないとして「power not readable without root (sudo powermetrics …)」(`DarwinIOReport.ANEPowerKnown`)。(2) NPU% は `PMP`/`AF BW`/`ANE0 RD` (電源管理の、ANE の読み出しの帯域の分布、1〜32 GB/s の 32 区分、M3 で約 0.23 ms に 1 回) のいちばん下の区分の外にいた時間の割合 (`ANEBusyPercent`、メモリを読んでいた時間の推定。生成中 39〜51 %)。プロセスごとの時間は無いので、プロセスの NPU のメモリの 9 割以上を持つプロセスの NPU% に (`npuHolder`: 日本語入力や Siri も数 MB 持つので、1 つだけの条件ではモデルに付かなかった)。(3) 割り込みは `ane 0` 決め打ちだった (M3 は `ane 4`): `ane N` を足す (生成中 899 calls/s)。(4) M3 の `H11ANE` には `FirmwareLoaded` が無く、いつも「firmware not loaded」と出ていた: あるときだけ (`FirmwareKnown`)。`ANE`/`IOP State` は読み込まれている間ずっと `Running` で、負荷には使えない。`AMC Stats` の `ANE RD` は M3 に無い (読みの GB/s は出ない)
 
-### 16.261 AMD の MoE の専門家を一部だけ NPU に置く: 使用回数、置き場 (`--expert-places`)、デコードのルーティングをホストで (`--host-route`) — 2026-11-20
+### 16.261 Qwen3.6-35B-A3B を Mac (Core AI) で: 専門家は 4 ビットの MXFP4 にして CPU、配布物は層ごとに範囲読み — 2026-11-20
+
+AMD では 16.89〜16.116 で動いていた Qwen3.6-35B-A3B (`qwen3_5_moe`) を Mac に入れた。形は gpt-oss-20b (Core AI) と同じ: 各層の専門家で切り (`llm.PlanRouted`)、token mixer (Gated DeltaNet と全注意) と経路のロジットと共有の専門家を Neural Engine、専門家の選択と専門家そのものを CPU (`experts.Host`、MXFP4 のカーネル) で回す。専門家は全部は読み込まず、ファイルを割り付けてトークンが選んだページだけが入る。
+
+**構造 (`internal/llm/qwen35/moe.go`、arch `qwen35moe`)**
+
+- token mixer は密な Qwen3.5 の builder をそのまま使う。MLP は `Qwen3_5MoeSparseMoeBlock`: 経路 (`mlp.gate`、256) の softmax を全体で取り上位 8 個で正規化し直す (`experts.Routing{softmax, Norm}`、gpt-oss と同じ)、共有の専門家 (512) × sigmoid(`shared_expert_gate`)
+- 部品の y は「残差 + 共有の専門家」で、ホストの専門家の出力 (`moe_o_N`) を次の部品が足す。経路と共有の専門家のゲートの重みは fp16、ほかは lut8、出力層は lut6r (gpt-oss と同じ)
+- 対応しない設定 (`mlp_only_layers`、`decoder_sparse_step` > 1、`norm_topk_prob` false、32 の倍数でない大きさ) は `ParseMoE` が断る
+
+**専門家を MXFP4 に (`hwnpu-dev mxfp4`、`qwen35.DeriveMXFP4`)**
+
+- 配布物の専門家は bf16 で 72 GB のうち 64 GB。16 GB の機械では割り付けても回らず、ディスクにも置けない (空き 18 GB)。各層の `gate_up_proj` (256, 1024, 2048) と `down_proj` (256, 2048, 512) を gpt-oss の形の MXFP4 (`*_blocks`、`*_scales`、gate と up の行を交互、gate が偶数行) にした派生のチェックポイントを書く: 17.1 GB、全体 22.0 GB (視覚の塔と MTP は落とす)
+- 配布物は Hugging Face から Range 要求で層ごとに読む (`HTTPSource`、4 本並び)。M3 で 1 層 45〜70 秒、41 ファイルで 39 分。層ごとのファイルなので、止まっても続きから書く。config.json に `hwnpu_mxfp4` を足し、最後に書く
+- 符号化 (`mxfp4.Encode`): 32 値ごとの 2 の冪の scale は OCP の規則 (最大値の指数 − 2) とその上下の 3 つのうち二乗誤差の小さいもの、値は最も近い e2m1 (同じ距離は偶数の符号)。正規分布の値で相対誤差 0.113
+- hwnpu-chat は `llm.HostDerived` のモデルではチェックポイントを落とさず、キャッシュの `derived/Qwen/Qwen3.6-35B-A3B` に派生のチェックポイントを書いて、そこから変換する (`chat.DerivedDir`)。`hwnpu-dev convert` は専門家の MXFP4 のテンソルがないチェックポイントを、`hwnpu-dev mxfp4` を案内して断る
+- `experts.Host` に SwiGLU (`ActSiLU`)、bias なし、記録に経路と norm の名前 (`MXFP4.Router`、`Norm`、`NormOffset`: 0 中心の norm は 1 を足す) を足し、次の層の専門家の予測 (先読み) が gpt-oss 以外でも動くようにした
+
+**照合**
+
+- `TestMoEAgainstFP64`: 小さな合成モデルの部品をつなぎ (専門家はテストのホストが float64 で)、modeling_qwen3_5_moe.py から書いた float64 の参照と、各層の出力と logits が相対誤差 2.5e-6。`TestMoEPagedSteps`: 全注意で分け (Paged)、1 トークンずつ状態とキャッシュを持って回しても同じ。共有の専門家のゲートの sigmoid を外す、共有の専門家を足さない、専門家に norm の前の値を渡す、の 3 つの壊し方をどれも検出する
+- `TestDeriveMXFP4`: bf16 の小さなチェックポイントを派生させ、`experts.Host` の出力が MXFP4 を戻した重みの float64 とコサイン 0.99995 以上 (並べ方が正しい)、bf16 の重みと 0.969〜0.989 (4 ビットの丸め)。途中で止めた続きも確かめる
+- 実物: `tools/ref/ref_qwen36_moe.py` (派生のチェックポイントの MXFP4 を戻した float32 の参照、層ごとに読む、3 分) で層の出力の最大は 48.5 (fp16 はあふれない)、最初のトークン「日本の」は hwnpu と同じ。精度 (KL) は測っていない (4 ビット前提)
+
+**Neural Engine が内側の次元 1 の matmul を誤る (密な Qwen3.5 にも効く)**
+
+- 最初の版は、思考の途中から「：：」「要求要求」のように同じトークンを繰り返して崩れた。プロンプトも 1 トークンずつ (`--prefill off`) 読むと「首都は中国です」になる: 1 トークンの部品だけが誤る
+- 部品 1 つ (層 0 から経路まで) を実物の重みで書き出し (`TestWriteMoEParts`)、`aicheck run -cpu` で CPU のインタプリタと比べると、q1 は y が相対 0.035、q128 は 0.0012。状態 (`st_rec_0_new`) は合う。`HWNPU_AILOWER_CUT` で切ると、Gated DeltaNet の出力 o = (QKᵀ ⊙ E) U + Γ Q S0 の前の項 `matmul (1×1)·(1×128)` (塊が 1 行のとき) が 8 ほどずれていた (値は 40〜70)
+- 塊が 1 行のときは broadcast の mul にした (`deltaRuleChunks`)。q1 も 0.0012 になり、思考も答えも崩れない。密な Qwen3.5 の 1 トークンのプログラムも同じ演算なので Revision 2 にした (TestBuildTiny のダイジェストは q1 の 1 つだけ変わる)。密なモデルで直ったかは未確認
+
+**結果** (M3 16 GB、macOS 27.2、温度 0、「富士山の高さは何メートルですか？」300 トークン。この節は最初の版の数字で、速さとメモリは 16.262 で直した: 9.8〜10.0 トークン/秒、2.8 GB)
+
+| 専門家の固定 | 速さ | 固定した専門家を読んだ割合 |
+|---|---|---|
+| 既定 (メモリの 1/4 = 4.3 GB、空きに合わせて上げ下げ) | 4.1 トークン/秒 | 13 % (固定と解除を繰り返す) |
+| `HWNPU_MOE_WIRE=0` | 4.3 トークン/秒 | — |
+| `HWNPU_MOE_WIRE=2G` | 4.3 トークン/秒 | 49 % |
+
+- 1 層 1 行の専門家 2.1〜6.8 ms (ページキャッシュにあるかで変わる)。トークンの時間の大半は専門家のページをディスクから読む時間で、固定の量はほとんど効かない
+- 既定の固定は、4.1 GB を固定すると空きが 21 % (逼迫度 2) になって全部外し、外すと 46 % に戻ってまた固定する、を繰り返す (16.260 前後の `placer.effective`)。専門家がメモリより大きいモデルでは、ページキャッシュに押されて空きが下がるため。直していない
+- Neural Engine 1.81 GiB、プロセスの footprint 1.4 GB (最大 RSS 7.1 GB はページキャッシュの専門家を含む)。models.yaml の memory は 7.7 (固定の 4.3 を足す)。文脈は 16 GB で 180224 (KV 22 KiB/トークン)
+- 初回のコンパイルは 9〜10 分 (51 部品、2 つのプログラム)。2 回目は 0.9 秒で読み込む。ただし Core AI のキャッシュ (`coreai-cache/26B131/hwnpu-chat`) は 12 GB 前後で頭打ちになり、ほかのモデルの項目と入れ替わってまたコンパイルすることがあった
+
+**残り**: 精度の測定 (全層の参照と KL、GPTQ の MXFP4)、AMD と同じ models.yaml の `amd_export`、`experts_core` (tools/moeusage)、専門家がメモリより大きいときの固定の振る舞い、プロンプトを読む速さ (18 トークンで 4.4〜8.6 秒)
+
+### 16.262 Qwen3.6-35B-A3B の Mac の速さとメモリ: 専門家をまるごと読む、固定しない、1 層を 1 回で (4.1 → 9.8〜10.0 トークン/秒、7.6 → 2.8 GB) — 2026-11-20
+
+16.261 の 4.1 トークン/秒を、improvements.md の 7.5 と 13 章の手 (先読み、固定の予算、`HWNPU_PROFILE`) と new-model-checklist.md の 6・7・11.2 の測り方で詰めた。M3 16 GB、macOS 27.2、温度 0。変更は `internal/llm/experts` (gpt-oss-20b も同じ経路を通る)。
+
+**測るものを足した**
+
+- `HWNPU_MOE_DEBUG=1` に、選んだ専門家のバイトのうちメモリに無かった割合 (`mem.Resident`、mincore)、専門家が全部メモリにあった層の行とそうでない行の時間、終わりにメモリにある専門家の量を足した
+- `tools/memwatch`: コマンドを走らせて 0.1 秒ごとに footprint、固定 (mlock)、Neural Engine のカーネルメモリ、システムの空きを取り、最大を出す (checklist 11.2 の測り方を道具にした)
+
+**内訳 (直す前、400 トークン)**: 1 ステップ 240 ms のうち専門家 186 ms (1 層の行 4.65 ms)、Neural Engine の 51 部品は合わせて約 54 ms。メモリに無かった専門家のバイトは 7.8 % だけ (1 トークン 40 MB の読み込み)。専門家が全部メモリにある層は 0.95 ms、読み込みのある層 (4 割) は 6.88 ms で、平均 2.19 MB を 5.9 ms かけて読んでいた (0.4 GB/s)。割り付けたファイルのページを、各コアが自分の行に触れたときのフォールトで 1 つずつ読むため。同じ SSD は、ページキャッシュを通さない 1 MiB の読みを 1 本で 2.6 GB/s、4 本並べて 4.7 GB/s 出す。メモリにあるページの最初の接触 (読み込みなしのフォールト) は 8 MB で 0.16 ms と安く、原因ではなかった
+
+**入れたもの** (同じ質問の 300 トークン、上から順に足した)
+
+| 変更 | 生成 | 専門家 1 層の行 |
+|---|---|---|
+| 最初 (16.261) | 4.1〜4.8 トークン/秒 | 3.86〜4.65 ms |
+| 先読みを 1 トークンが選ぶ数 (8) に、予測を別の goroutine に、選んだ専門家に `madvise(WILLNEED)` | 6.3 | 2.52 ms |
+| メモリに無い専門家の範囲を、計算の前にまるごと `pread` (1 MiB ずつ、8 本並び、`Host.readIn`) | 7.8〜8.2 | 1.86 ms |
+| 専門家を固定しない (下) | 9.3〜9.9 | 1.25〜1.27 ms |
+
+- **先読み (`prefetcher`)**: 予測の上位 4 個に入るのは実際の専門家の 44〜48 % (gpt-oss は 86 %: 32 個から 4 個、こちらは 256 個から 8 個)、上位 8 個に 72〜82 %、16 個に 95 %。先読みする数は「1 トークンが選ぶ数、最小 4」(`prefetchN`): 8 問の列で 0 個 8.4、4 個 9.5、8 個 9.6〜9.9、16 個 7.3 トークン/秒 (外れた先読みが読みの帯域を食う)。予測 (256 × 2048 の経路の積) は実行の中でやっていて 1 層 約 0.4 ms かかっていたので、別の goroutine に回した。読み手は 4 本
+- **まるごと読む (`Host.readIn`、`readChosen`)**: 実行が選んだ専門家のうち、固定されておらず全部はメモリに無い範囲を、計算の前にファイルから読む (ページキャッシュに入り、写像がそれを見つける)。プロンプトの呼び出し (選ばれた専門家が多い) にも同じく効く: 51 トークンのプロンプト 10.2 → 2.3 秒、2602 トークン 398 → 93.5 秒 (1 回 128 トークンが 1 層の 256 個をほぼ全部選ぶので、塊ごとに 17 GB を読む: 塊 4.5 秒は 3.8 GB/s で、SSD の速さそのもの)。メモリにあるかを言えない OS (`mem.Resident` が無い) では `madvise` に戻る
+- **1 トークンの専門家を 1 個 1 仕事に (`Host.runRow`)**: 行の形は gate/up、活性化、down の 3 回、全コアの働き手を起こす。1 行のときは専門家 1 個を通しで 1 つの仕事にして、起こすのを 1 層 1 回にした。値は行の形とビット単位で同じ (`TestHostRowMatchesRows`: 足す順を変えると失敗する)。8 問の列で 9.3 → 9.6〜9.9
+- **メモリより大きい専門家は固定しない (`Host.wiring`)**: 専門家がメモリの 3/4 を超えるとき (Qwen3.6 の 17.1 GB と 16 GiB) は既定で固定なし。分野の違う 8 問 (各 150 トークン) で、固定なし 10.6、2 GB 9.1、4.3 GB 8.6〜8.8、6 GB 8.7 トークン/秒。600 トークンの内訳では、固定ありは専門家が全部メモリにある層まで遅い (0.84 ms 対 0.71 ms): 4.1 GB の固定でシステムの空きが 19 % になる (固定なしは 51 %)。メモリに無かった割合は同じ (3.2 % と 2.8 %) で、固定はページキャッシュの取り分を移すだけだった。gpt-oss-20b (10.2 GB、メモリの 59 %) は今までどおり予算まで固定する (下)
+- **固定の予算が振動しない計算 (`placer.effective`)**: 予算を「空きの割合」だけから決めていたので、固定すると空きが減って予算が減り、外すと戻る、を繰り返した (16.261)。自分が固定した分を空きに足し、空き 25 % を残す量を予算にする (落ち着く点がある)。システムの警告 (Level 2) では 5 分間 35 % を残し、危機 (Level 4) で芯だけ。空きの 2 % 以内の変化では動かさない
+
+**試して捨てたもの**
+
+- 1 層の 3 回の実行の間だけ働き手を起こしたままにする (`mxfp4.Hold`、Go の中でのポーリング): 続けて回して 0.55 → 1.0 ms。回り続ける goroutine がスケジューラの邪魔をする。代わりに上の 1 層 1 回にした
+- 層の間に 1.2 ms の間 (Neural Engine の部品) があると、専門家が全部メモリにあっても 1 層 0.55 → 1.1 ms になる (`TestHostTokenTimeQwen36`、`HWNPU_QWEN36_GAP`)。1 コアで順に回しても同じだけ延びる (0.9 → 1.4 ms) ので、起こす回数ではなく間のあとのコアの状態。直していない
+
+**gpt-oss-20b への効き** (同じ経路。この機械の同じ状態で main のバイナリと交互に、4 問 × 200 トークン): 生成 6.5〜6.7 → 8.6〜8.7 トークン/秒、357 トークンのプロンプト 33〜37 → 10.5 秒。固定なしは 8.2 で、予算までの固定がまだ少し速い。ページキャッシュに Qwen3.6 の専門家が入っている状態での数字で、16.x の 17 トークン/秒 (静かな状態) とは比べない
+
+**メモリ**
+
+| | 最初 (16.261) | 今 |
+|---|---|---|
+| プロセスの footprint (最大) | 1.49 GB | **0.87 GB** |
+| 固定 (mlock) | 4.13 GB | 0 |
+| Neural Engine | 1.94 GB (1.81 GiB) | 1.94 GB |
+| 合わせて (models.yaml の memory) | 7.56 GB | **2.82 GB** |
+
+- プロセスの内訳 (`footprint`、`vmmap`、確保の呼び出し元ごとの集計): hwnpu の部品の入出力バッファ 約 300 MB (1 トークン用 68 MB、128 トークン用 202 MB: うち GDN の畳み込みの窓の出力 64 MB、状態 31.5 MB × 3)、Core AI 自身 約 650 MB (102 個の関数の実行時の領域と IOSurface)、専門家の側の Go のヒープ 213 MB
+- ヒープの 213 MB を 2.5 MB に: bias のない専門家に 0 の配列を持たせていた (126 MB) のを共有の 0 の行に、先読みの経路の重みを float32 に写していた (84 MB) のをチェックポイントの bf16 を割り付けたまま 1 行ずつ読む形に
+- 専門家の 17.1 GB はページキャッシュに載る分だけ載る (この機械では 6〜7 GB)。システムはこれを空きに数え、ほかのアプリが要れば落とせる。別のプロセスが 3 GB を取ると 9.8〜11.5 → 8.4 トークン/秒
+
+**専門家の使われ方** (`tools/moeusage`: gpt-oss-20b を数えたのと同じ 19 分野 約 25 言語の 110 問、各 400 トークン、1 層 375,696 回の選択。`~/models/moeusage/qwen36`)
+
+| | gpt-oss-20b (32 個から 4 個) | Qwen3.6-35B-A3B (256 個から 8 個) |
+|---|---|---|
+| 分野の中で、よく使う半分の専門家が占める割合 | 74〜90 % | 89〜95 % |
+| 全分野を混ぜて、半分の専門家 | 81 % | 81 % |
+| ほかの分野の統計で選んだ半分: コンピュータ、数学 | 59 %、63 % | 60 %、63 % (平均 76 %) |
+| 芯 (どの分野でも層の中で均等な割合以上) | 141 個 (18 %) で 31〜41 % | 841 個 (8 %、1.4 GB) で 21〜28 % |
+
+- 分野の中では gpt-oss より偏っている: 上位 8 個 (3 %) で 18〜31 %、32 個 (12.5 %) で 46〜61 %、64 個 (25 %、4.3 GB) で 67〜80 %。均等なら 3、12.5、25 %。分野をまたぐと gpt-oss と同じで、コンピュータと数学がほかから外れるのも同じ
+- 使われない専門家はない: 10,240 個のうち 10 回未満は 8 個 (最少 1 回)
+- 先読みの当たり (上位 8 個に 72〜82 %) が gpt-oss (上位 4 個に 86 %) より低いのは、分かれ方ではなく 256 個から 8 個を当てる問題の大きさ。メモリに 4 割弱の専門家しかなくても選んだ専門家の 96〜97 % がメモリにあったのは、この偏りと先読みによる
+- 芯は models.yaml の `experts_core` に入れた。使われるのは予算まで固定する機械 (24 GB。未測定) で、16 GB では固定しない
+- `collect.sh` は問ごとの時間の行を行頭でしか拾っておらず、思考の途中で切れたモデル (改行なしで終わる) では取れなかった。行のどこにあっても拾うようにした (この回の問ごとの速さは取れていない)
+
+**結果** (分野と言語の違う 8 問 × 150 トークン、`--prompt-cache off`): **9.8〜10.0 トークン/秒** (16.261 は 4.1)。1 ステップ 106 ms: 専門家 51 ms (1 層 1.27 ms、全部メモリにある層 0.57 ms、読み込みのある層 1.66 ms)、Neural Engine 約 55 ms (GDN の層の部品は単体で 1.3 ms、出力層 約 8 ms)
+
+**残り**
+
+- プロンプトを層の順に回す (全部の塊を層 l に通してから層 l+1): 専門家を 1 プロンプトで 1 回だけ読めば、塊ごとの 17 GB の読みがなくなる。decode の駆動の作り直しが要る
+- 128 トークン用の GDN の畳み込みの窓の出力 (131 行のうちホストが使うのは 3 行、64 MB と Core AI の側の写し)
+- 1 ベクトルの MXFP4 のカーネル (1 コア 28 GMAC/s。複数ベクトルの SMMLA は 112)、間のあとのコアの状態
+- 24 GB 以上の機械 (専門家がメモリの 3/4 以下: 予算まで固定、32 GB は全部固定) は未測定
+
+### 16.263 AMD の MoE の専門家を一部だけ NPU に置く: 使用回数、置き場 (`--expert-places`)、デコードのルーティングをホストで (`--host-route`) — 2026-11-20
 
 docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常駐」(16.179 の後の Mac の仕事、improvements.md) を AMD の NPU (Ryzen AI 9 365) に持ってきた。NPU が読めるのは固定したバッファ (バンク) だけなので、Mac のようにページキャッシュから直接は読めない。置き場 (place) を決まった数だけバンクに持ち、選ばれて置き場にない専門家をホストがコピーする (handoff の A の形)。
 
@@ -7831,9 +7946,484 @@ docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常�
 | 全部常駐 | 13.7 GB で 13.4 トークン/秒 | 12.22 GiB + 0.3 で 20.2 |
 | 一部 | 24 層を動的に: 2.7 GB で 2.4 | 置き場 16: 6.90 GiB + 0.3 で 17.2、24: 9.44 GiB で 19.0 |
 
-### 16.262 Qwen3.6-35B-A3B の専門家を置き場に (16 GB の機械で 7.5 GiB、4.2 tokens/s)、AMD の hwnpu-chat が `experts_core` を渡していなかった件 — 2026-11-21
+### 16.264 MOSS-SoundEffect の DAC を M1 の Neural Engine にも: snake の sin を級数に、段 3 を 4500 フレームに — 2026-11-19
 
-16.261 の置き場 (`--expert-places`) を Qwen3.6-35B-A3B (`qwen35moe`、16.89〜16.93) に。全部を置いた書き出しは固定 23.6 GiB で 32 GB 未満の機械に載らなかった。
+16.197 で M3 では DAC の 5 段がすべて Neural Engine に乗ったが、M1 (h13) では 5 段とも GPU に回り、`--allow-off-npu` がないと `generate -m sfx` が失敗した。M1 で直した。
+
+**見つけ方**: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine` で、端末のコンパイルが Neural Engine なしで 1 段 1 秒で再現する (乗ったかは `manifest.plist` の `mps.fullyPlacedOnANE`)。理由は `coreai-build` の os_log に出る (`/usr/bin/log show --predicate 'process == "coreai-build"'`。zsh では `log` が組み込みなので `/usr/bin/log`)。snake だけのプログラム (チャンネルは DAC の最後の snake) でも試した。
+
+**乗らなかったもの** (M1 の ANE のコンパイラ)
+1. `sin`: Core AI が GPU に回す (M3 では `sin_v1` が Neural Engine で動く)。段 4 は ANE の部分が 9 つに割れ、その間が snake の数 (8) と同じだった
+2. clip を要素ごとの演算にまとめたもの: "Unsupported NE layer "NEFUSED_EW": EW: MAX"。clip を外すと段全体は通らないが、snake だけなら clip があっても通る
+3. 16.136 の級数 (Intel の形) の `y − 3.125 n − (π − 3.125) n`: "NEFUSED_EW": "KernelPreScales: (1,-0.0165863)" (定数倍した入力どうしの引き算)
+4. 段 3 (256 → 128 チャンネル、stride 3) の 1 回 4998 フレーム (出力 14994): 演算の名前なしの "Failed to compile function …: unexpected failure"。4500、3996、2997 は通る (4500 より上は試していない)
+
+**直し方** (`internal/sfx/dac.go`。Core AI の書き出しだけ。Core ML (`--cpu`) は `sin` のまま、Intel は前の級数のまま)
+- snake の sin を、π を単位にした縮め方の級数で: `u = y / π`、`n = (u + mg) − mg2`、`w = 2 (u − n)`、sin(y) = sin(π/2 · w) を 16.136 の級数で。丸めの定数は 2 つの入力 (`mg`、`mg2`、どちらも 1536): 1 つだと Core AI が `(u + mg) − mg` を `u` に畳む (16.197)。clip (±1500) は残した (|u| < 512 で丸めが正しい)。u は y と同じく fp16 なので、y を fp16 にしたときの誤差と同じくらいの粗さになる
+- 段 3 を 1 回 4500 フレームに (出力 13500 は 9 の倍数で、`phaseConv` に合う)
+- `DACRevision` 3 (書き出しの名前は `hwnpu-dac-r3-fp16`)。M3 も同じ書き出しを取るので、M3 も級数になる
+
+**結果** (M1、macOS 27.2)
+- `coreai-build` で h13g (M1) も h15g (M3) も 5 段とも `mps.fullyPlacedOnANE`。前の DAC (r2) は h15g でも通らなかった (M3 の端末のコンパイラは通す)
+- `TestDecodeLatentsCoreAI` (`HWNPU_SFX_COREAI=1`): 5 段とも端末で Neural Engine に乗り (初回の読み込み 段 0 3 分 14 秒、ほかは 1.4〜7.6 秒)、種で決めた潜在 250 フレーム (5 秒) を 4.1 秒で。CPU のインタプリタ (fp32 の sin) との相対 RMS 0.0085 (M3 で 16.197 のときの 0.0085 と同じ)
+- 通し (M1、`--allow-off-npu` なし、5 秒、30 ステップ、種 1、"a dog barking"): MOSS-SoundEffect-v2.0 と -lut8 のどちらもすべて Neural Engine に乗った。DAC を GPU で計算した前の回の音との差は相対 RMS 0.0018。30 ステップで 1 分 35 秒 (前の回は 1 分 49 秒)
+- 最初に通そうとしたときは空きが 14 GB で、取得元から 11.5 GB を取れなかった。そのとき hwnpu のキャッシュの掃除が、別のセッションの `hwnpu-image` の Core AI のキャッシュ 14 項目 (約 1.8 GB) を消した
+- 未確認: M3 の端末での級数の速さと値 (h15g の `coreai-build` では乗る)
+
+### 16.265 MOSS-SoundEffect の CPU が計算する表を切り出し、チェックポイントなしで動かす — 2026-11-20
+
+MOSS は書き出しがあっても、実行に元のファイル (11.5 GB) を読んでいた (16.253 の「ほかに見えたこと」)。メモリが足りないからではない。CPU が計算に使う表を、チェックポイントから読んでいたため。
+
+- 文の符号器の `model.embed_tokens.weight` (トークンの埋め込み) と `model.norm.weight`
+- DiT の時刻の埋め込みなど (`HostTensors`)
+
+チャットのモデル (model-fit.md T5) と同じく、この 39 の表を `sfx-tables.safetensors` (0.69 GB) に切り出して取得元と共有する (`chat.WrittenTables`)。Prepare は小さなファイルだけを先に取り、チェックポイントは変換するときと表を書くときだけ取る。
+
+**通しの確認** (M1、DAC r3 の 16.254 と合わせて、5 秒、30 ステップ、種 1、"a dog barking"):
+
+| 回 | 元のファイル | 結果 |
+| --- | --- | --- |
+| 表を書く | あり | 表を書いて取得元に置き、2 分 15 秒 |
+| 表から | 4 つのチェックポイントを外す | 取り直さず 1 分 31 秒 (fp16)、1 分 43 秒 (lut8) |
+| 取得元の表から | 外したまま、手元の表も外す | 表 (0.69 GB) を 8.9 秒で取って 1 分 46 秒 (lut8) |
+
+- 音はどの回も、元のファイルを読む前の版 (16.254 の通し) とバイト単位で同じ。すべて Neural Engine
+- 取得元から書き出しと表を取る Mac は、元のファイル 11.5 GB を取らなくてよい
+
+### 16.266 AMD: 命令の中の演算子の切り替え (配列の設定のし直し) を数える (`tools/amd/elfconfigs`) — 2026-11-20
+
+論文の調査の引き継ぎ ([docs/handoff-amd-papers.md](handoff-amd-papers.md) の 1 節。HeteroMosaic 2607.12839 は「データパスの設定のし直しは高く、DMA の設定の切り替えはほぼ無料」) から、16.75 の「違う種類の演算子は 1 個 約 80 µs、同じものが続くと 20 µs 未満」が設定のし直しの費用かを確かめた。
+
+- **制御コードの形**: full ELF の 1 コマンドの中で、演算子が変わるところごとに `load_pdi` (TXN の op 8) が 1 回入り、その後に配列の設定 (コアのプログラムメモリ 16 KB × 使うコアの数のブロック書き込み、データメモリの初期値、ロック、DMA、スイッチ) が制御コードそのものに書かれる。PDI 本体は 368 B の殻で、中身は制御コードの書き込み。同じ演算子が続くと設定は 1 回だけ
+- **試し** (`iron_moeprobe.py OUT --switch runs|alt|a|b --pair silu|linear --reps 8`、1 コマンドに演算 16 個): AAAA BBBB は読み込み 2 回 (制御コード 106 KB)、ABAB は 16 回 (483 KB)
+
+| 1 コマンド (16 演算) | SiLU と加算 | GEMV 2048² と RMS norm |
+|---|---|---|
+| A を 16 個 | 0.32 ms | 2.98 ms |
+| B を 16 個 | 0.35 ms | 0.14 ms |
+| A 8 個、B 8 個 (`runs`、設定 2 回) | 0.50 ms | 1.57 ms |
+| 交互 (`alt`、設定 16 回) | 1.90 ms | 2.76 ms |
+| 設定のし直し 1 回 ((alt − runs) / 14) | **100 µs** | **85 µs** |
+
+  設定の大きさは 1 回 6〜35 KB。同じ時間に別のセッションが gpt-oss-120b を NPU で回し続けていたので、上は回したうちで一番静かだった回 (ほかの回は全体が 2〜5 倍)。比は回をまたいでも同じ向き (alt − runs は混んだ回で 1.3〜3.4 ms)。静かな NPU で測り直した値は下の「静かな NPU で測り直す」
+- **書き出しの数** (`go run ./tools/amd/elfconfigs ELF...`、デコードは 1 トークン、プロンプトは 1 塊の全コマンド):
+
+| 書き出し | 設定のし直し (違う設定) | 設定のバイト | × 100 µs | 今の 1 トークン |
+|---|---|---|---|---|
+| gpt-oss-20b デコード | 25 (4) | 38 KB | 2.5 ms | 49.4 ms |
+| Qwen3.6-35B-A3B デコード | 484 (50) | 30.2 MB | 48 ms | 172〜192 ms |
+| LFM3-1.7B デコード | 614 (24) | 17.5 MB | 61 ms | 89 ms (11.2 tok/s、16.76) |
+| Gemma 4 E2B デコード | 1016 (42) | 26.9 MB | 102 ms | 127 ms (7.9 tok/s、16.73) |
+| Qwen3.5-2B デコード | 306 (42) | 20.2 MB | 31 ms | 約 120 ms (16.108) |
+| PLaMo 3 Translate 2B デコード | 414 (19) | 12.7 MB | 41 ms | |
+| gpt-oss-20b プロンプト (256) | 534 (46) | 54.8 MB | 53 ms | 1.8〜1.9 s |
+| Qwen3.6 プロンプト (塊) | 1586 (68) | 134 MB | 159 ms | 183 トークン 4.6 s |
+
+- **gpt-oss のデコードは当てはまらない**: 常駐の 1 演算 (`GptOssStep`、16.179) で、1 層 1 回だけ (設定は全部合わせて 38 KB)。層のコマンド 1.80 ms の中身は設定のし直しではない
+- **密なモデルのデコードは、時間の大半が設定のし直しの見込み**: LFM3-1.7B は 1 トークンで重み約 1 GB (50 GB/s で 20 ms) なのに 89 ms かかり、設定のし直し 614 回 × 85〜100 µs = 52〜61 ms でその差の大半が説明できる。Gemma 4 E2B も同じ。16.75 の「演算の数が帯域より効く」の中身はこれ
+- **並べ替えはほとんど効かない**: Qwen3.6 のデコードは 1 層 1〜2 コマンドで、GDN の層は「2 3 X 5 2 6 7 8」+「9 8」(数字は設定)。コマンドの中で同じ設定が 2 回出るのは 1 層に 1 つ (設定 2) だけで、依存を無視しても 1 トークン 40 回 (約 4 ms、2 %)。密なモデルは 1 トークン 1 コマンドで同じ設定が層ごとに出るが、層をまたいでは依存があるので並べられない。`elfconfigs` の「reorder … removes at most」は依存を見ない上限で、1 層 1 コマンドのときだけ意味がある
+- **同じプログラムの書き直しを省いても少ない**: 前に同じコアへ同じプログラムを書いていた分は、Qwen3.6 のデコードで 0 %、Qwen3.5-2B で 20 %、LFM3-1.7B で 7 %、プログラムメモリの書き込みのうち (コマンドの中。コマンドをまたぐと Qwen3.6 で 24 %、ただしコマンドの間は他のコンテキストや退避で中身が変わりうるので使えない)。そのうえ 1 回の費用が設定の大きさ (6〜35 KB) でほとんど変わらないので、バイトを減らしても固定の分が残る
+- **GDN の層の X は層ごとに違う設定** (570 KB、32 コア × 16 KB のプログラム): 違いはデータメモリの 0x7f84〜0x7fa0 の数語 (層ごとの実行時の定数) だけ。設定の数を増やしているが、どのみち前後に別の演算があるので読み直しの回数は同じ
+- **効く手は 1 層の演算の数を減らすこと** (gpt-oss の `GptOssStep` と同じ常駐の形、または層の中の演算をまとめる)。LFM3-1.7B なら 1 層 1 回にできれば 1 トークン約 60 ms 縮む見込み。大きな仕事なので、この節では測る道具までにする
+- 試し方: `python tools/amd/iron_moeprobe.py OUT --switch alt --pair silu --reps 8 --check`、`go run ./tools/amd/irongraph -runs 50 OUT`、`go run ./tools/amd/elfconfigs [-seq] EXPORT/decode.elf`
+- 採らなかったもの: ELF の書き換えで `load_pdi` や同じプログラムの書き込みを抜いて測る試し (読み込みの手順を崩すと NPU が止まり、SMU が戻らず再起動が要る: 16.89)
+
+**同期 (引き継ぎの 2 節)**: IRON の経路 (`internal/llm/iron`) のホストの手順の同期は、すでに使う範囲だけになっている (`readRegion`/`writeRegion` は `r.Offset` から使うバイトだけ、`writeCopies` は書いた行の範囲、`rows.go` は行の範囲)。バッファ全体を同期しているのは、読み込みのとき (`graph.go`、`steps.go`、`model.go`) と、IRON でない経路の `internal/llm/chain` (専門家の 1 行の x、i、r と注意の塊。小さなバッファ) だけで、引き継ぎの行番号は今のコードとずれていた。変えていない
+
+#### 静かな NPU で測り直す、実機のデコードとの突き合わせ — 2026-11-20
+
+NPU を開いているプロセスが他にない (`/dev/accel/accel0` を見て) ときに測った。各 100 回の平均、3 回の範囲。
+
+| 1 コマンド (16 演算) | SiLU と加算 | GEMV と RMS norm | GEMM (64 × 2048 × 2048、配列全体) と RMS norm |
+|---|---|---|---|
+| 設定 1 回の大きさ (A / B) | 32 / 24 KB | 35 / 6 KB | 136 / 54 KB |
+| `runs` (設定 2 回) | 0.58〜0.62 ms | 1.63〜1.67 ms | 2.62〜3.40 ms |
+| `alt` (設定 16 回) | 1.95〜2.64 ms | 2.63〜3.03 ms | 6.21〜6.71 ms |
+| 設定のし直し 1 回 | 95〜145 µs | 70〜100 µs | 200〜280 µs |
+
+- **費用は設定の大きさで増える**: 1 回 ≈ 40 µs + 2.3 µs/KB (制御コードの書き込みを約 430 MB/s で処理する)。上の 85〜100 µs は 20〜30 KB の設定の値
+- **実機のデコードと合う** (128 トークン、Ryzen AI 9 365): 重み ÷ 50 GB/s + 設定の見積もり (回数 × 40 µs + バイト × 2.3 µs/KB)
+
+| モデル | 測ったデコード | 重み | 設定の見積もり | 和 |
+|---|---|---|---|---|
+| LFM3-1.7B q4 | 92.6 ms (10.8 tok/s) | 1.65 GB → 33 ms | 65 ms | 98 ms |
+| Gemma 4 E2B q4 | 137 ms (7.3 tok/s) | 1.77 GB → 35 ms | 103 ms | 138 ms |
+| Qwen3.6-35B-A3B q4 | 116 ms (8.6 tok/s) | | 88 ms | |
+
+  Qwen3.6 はコマンドごとの時間 (`HWNPU_IRON_TIMING=1`) で見た。GDN の層の A (30 個) は 2.27 ms で、設定 8 回 746 KB の見積もり 2.04 ms。注意の層の A (10 個) は 1.84 ms で見積もり 1.26 ms (16 回 269 KB)。専門家の B (40 個) は 0.74 ms で見積もり 0.41 ms (2 回 144 KB、残りは専門家の重み約 14 MB)。1 トークン約 90 ms (122 ms のうち 7 割) が設定で、そのうち約 40 ms が GDN の 570 KB の設定 1 つ (層ごとに 1 回)
+- **`--reconfig-teardown` は採らない**: 設定を終えるたびに元に戻し、次の前のリセット (空の PDI の読み込み) を省く aiecc の選択肢。IRON の `Program.compose` に渡す (`iron_moeprobe.py --teardown`)。小さな設定 (SiLU) では 1 回 95 → 79 µs だが、大きな設定 (GEMM) では 236 → 274 µs と遅くなる。制御コードも増える (483 → 597 KB)
+- **`--load-pdi-to-ctrl-pkt` は今は通らない**: 設定を制御パケットとして DMA で流す aiecc の選択肢で、2.3 µs/KB の部分を減らせる見込みがいちばん大きい。IRON は渡さないので `_RECONFIGURATION_OPTIONS` に足して試した (`iron_moeprobe.py --ctrl-pkt`) が、aiecc が `npu_materialized.mlir` で「operand #0 does not dominate this use」(`aie.lock`) で止まる (teardown の有無によらない)。通っても、hwnpu の ELF の読み込みは制御パケットの再配置 (`SchemeControlPacket48`) にまだ対応していない
+- **0 の塊**: 設定のうち、コアのデータメモリに 0 を書くブロック (カーネルの 0 で初期化する静的な配列、.bss) が、GDN のモデルだけで大きい: Qwen3.6 のデコード 1 トークン 7.6 MB、Qwen3.5-0.8B / 2B 4.4 MB、4B 6.1 MB (ほかのモデルは 13 KB 以下)。570 KB の GDN の設定のうち 258 KB がこれ (32 コア × 約 8 KB、`gdn.cc` のファイルの範囲の `s_hi`、`s_mid`、`s_lo`、`blk`、`u_row`、`y_keep` など)
+  - 小さな試し (8 KB の静的な配列を通す写し 8 個と加算 8 個を交互に): .bss のまま 2.28〜2.31 ms、同じ配列を関数の中 (スタック) に置くと 0 の塊が消えて (設定 86 → 21 KB) 1.70〜1.77 ms。0 の 1 KB で約 1.1 µs。`stack_size` を渡さなければ aiecc は測ったスタックの大きさを取るので、8 KB でも溢れない。`__attribute__((section(".noinit")))` はコンパイルが通らない
+  - `gdn.cc` の配列は呼び出しをまたいで値を持つ (状態の 3 つの limb は前の行から、`y_keep` は切れ端をまたいで、`u_row` は `gdn_conv` から `gdn_gather` へ) ので、スタックには移せない。IRON の Worker の局所バッファ (初期値なし) として引数で渡せば 0 は書かれない見込みで、Qwen3.6 で 1 トークン約 8 ms (7 %)、Qwen3.5 で約 5 ms。演算子の引数を変え、書き出しを作り直して `ironlm` で照合する仕事 (未着手)
+- `elfconfigs` は 0 の塊も数える (`blocks of zeros`)
+
+### 16.267 AMD: GDN の 0 の塊を消す (`gdn.cc` の配列を Worker の局所バッファに) — 2026-11-20
+
+16.266 の「0 の塊」。`gdn.cc` のファイルの範囲の配列 (状態の 3 つの limb `s_hi`/`s_mid`/`s_lo`、`blk`、`u_row`、`y_keep`、`u_rows`/`y_rows`) は .bss で、配列の設定のし直しのたびに aiecc が 0 を書いていた (GDN の演算子 1 回で 32 コア 258 KB)。呼び出しをまたいで値を持つのでスタックには置けない。
+
+- 配列をポインタにし、コアごとの `Buffer` (初期値なし、`gdn_scratch` の bf16: 配列ごとに 32 に切り上げ、64 バイトにそろえる分 32) を Worker の引数で渡す。コアは最初に `gdn_bind(scratch)` でポインタを向ける。初期値のない Buffer は設定で何も書かれない
+  - **後の変更 (16.272)**: t3/qwen36-integrate の `gdn_gather_conv_v` と合わせるとデコードのコアのプログラムが 16 KB を 80 バイト超えたので、局所バッファに置くのは状態の 3 つの limb だけ (ポインタは `s_hi` 1 本、`s_mid` と `s_lo` はそこからの定数の位置) にし、`blk`、`u_row`、`y_keep` は静的に戻した。GDN の演算子 1 回の 0 の塊は 258 → 61 KB (下の 14 KB は全部ポインタのときの値)
+- `iron_gdn.py check --conv 4 --norm --plus 3` (GDN の演算子と y + y を 4 回ずつ、設定のし直し 8 回): 設定 567 → 325 KB (0 の塊 258 → 14 KB)、1 回 5.0〜5.4 → 3.6〜4.4 ms (1 回のし直しで約 0.29 ms)、出力は同じ (コサイン 0.999996 のまま、最大誤差も同じ)。プロンプトの形 (`--rows 64`、`--presilu`) も通る
+- **Qwen3.5-0.8B q6** (`qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3` で作り直し、2 分): 1 トークンの 0 の塊 4402 → 250 KB、プロンプトの塊 6283 → 383 KB。古い書き出しのロジット (`ironlm -record`、40 トークン + 23 歩) とビット単位で同じ (コサイン 1.00000、差 0)。デコード (`ironlm -steps 128`、交互に 3 回ずつ) **13.2 → 14.1 トークン/秒** (75.5 → 70.9 ms、見積もり 4.4 MB × 1.1 µs/KB = 4.8 ms どおり)
+- **Qwen3.6-35B-A3B q4** (`qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4`、30 分、最大 RSS 48 GB): 同じコード (HEAD) から `gdn.cc` と `iron_gdn.py` だけを変えた 2 つを作って比べた。0 の塊 7595 → 436 KB、デコード (`ironlm -steps 64`) **5.8 → 6.1 トークン/秒 (171.6 → 164.7 ms)**、見積もりどおり。2 つのロジットは同じ (取得元の書き出しとのコサインがどちらも最小 0.99842)
+  - **別の問題**: 今の main から作った Qwen3.6 は、取得元の書き出し (2026-11-17、commit 345d467b はどのリポジトリにもない) より遅い。設定のし直し 484 → 664 回、8.6 → 5.8 トークン/秒。GDN の層のコマンドの並びが「2 3 X 5 2 6 7 8」から「2 3 4 5 X 5 7 8 2 9 10 11」に変わっている。IRON (11-16 の clone) と mlir-aie の wheel は同じ。`iron_qwen35.py` の最後の変更は 11-14。原因は未調査
+- `gdn.cc` が変わったので、Qwen3.5 / 3.6 の書き出しの道具のハッシュ (entry.json の `tools`) が変わる。取得元の書き出しは作り直して置き直す
+
+### 16.268 AMD: LFM3 のデコードの演算をまとめる (`ShortConvStep`、`SandwichAdd`、`QGEMVGlu`) — 2026-11-20
+
+16.266 のとおり、密なモデルのデコードは時間の 7 割前後が配列の設定のし直し。gpt-oss のような 1 層 1 演算 (`GptOssStep`) は大きな仕事なので、し直しの多いところから順に 1 演算にした。LFM3-1.7B q4 (`lfm3 --max-seq-len 12288 --q4`、作り直しは約 2 分半)。
+
+- **短い畳み込み** (`iron_shortconv.py`、`kernels/short_conv.cc`): IRON の `F.causal_conv1d` はデコードの 1 行を窓への写し、1 タップごとの積と和、ゲートの積 2 つで約 16 演算にする。`ShortConvStep` は in_proj の行 (B、C、x) とタップを 1 本目のチャネル、状態の 6 行を 2 本目で受け、`C * conv(B * x)` と次の状態を返す (8 列、コアあたり 256 チャネル、和は float32)。状態の枠 (`Checkpoints` の slot) は呼び出しごとの位置の view なので演算子に直接は渡せず (「contiguous operand」の TypeError)、Qwen の GDN と同じく `Copy` で読み書きする。in_proj は `split` の 3 回でなく 1 回の QGEMV
+- **sandwich norm** (`iron_sandwich.py`、`kernels/sandwich_add.cc`): ブロックの後の「post norm、残差、次のブロックの norm」(RMSNorm、ElementwiseAdd、RMSNorm) を 1 コアの `SandwichAdd` に。層の 2 つ目は次の層の input norm (最後の層は最後の norm) と組み、層をまたいで次の層に正規化した入力を渡す (`Lfm3.layer`、`head`)。二乗和は float32、各出力を 1 回だけ bf16 に丸める
+- **MLP**: gate と up を 1 つの表にし、iron_q4 の `QGEMVGlu` (`silu(G x) * (U x)`、Qwen3.5 の q6/q8 で使っていたもの) を q4 でも使う
+- 既定はどれもオン。`HWNPU_LFM3_FUSED_CONV=0`、`HWNPU_LFM3_FUSED_NORMS=0`、`HWNPU_LFM3_FUSE_GLU=0` で IRON の形に戻る。`iron_export_lm.py` は `HWNPU_EXPORT_STEPS=1` で版ごとの演算の並び (`<版>.steps.txt`) を書く
+
+| LFM3-1.7B q4 デコード | 設定のし直し / トークン | 設定のバイト | 1 トークン | 速さ |
+|---|---|---|---|---|
+| 前の書き出し | 614 | 17.5 MB | 89.3 ms | 11.2 tok/s |
+| + `ShortConvStep` | 432 | 15.2 MB | | 12.8 tok/s |
+| + `SandwichAdd` | 336 | 13.6 MB | | 14.8 tok/s |
+| + `QGEMVGlu` | 288 | 13.6 MB | 64.0 ms | **15.6 tok/s** |
+
+(`ironlm -steps 128` を前の書き出しと交互に。1 トークンの時間は `ironlm -forced` の 1 歩の時間)
+
+- 精度 (Hugging Face の float32 との KL、`ironlm -forced` で 256 トークンの後 320 行、`tools/ref/forced_logits.py`): 前 0.0642 / 中央値 0.0499 / 95 % 0.174、top-1 87.8 %。3 つ入れた後 0.0646 / 0.0492 / 0.173、86.6 %。前の書き出しとのロジットのコサインは最小 0.9991 (`QGEMVGlu` の前は 0.9998)。プロンプトの塊の境 (1024) をまたぐ 30 歩も同じ
+  - `forced_logits.py` の LFM3 は checkpoint の `auto_map` (リモートコード) を読もうとして止まる。transformers に LFM3 が入っているので、`auto_map` を消した config.json と残りのファイルの symlink の置き場を渡した。ref-venv (Python 3.14) には `ml_dtypes` がないので、import だけのための仮のモジュールを PYTHONPATH に置いた。BOS は 124894 (`q4_gptq.MODELS`)
+- 残りの 1 トークンの演算 (288 回のし直し): QGEMV 106、Copy 51、SandwichAdd 48、QGEMVGlu 24、RMSNorm 23 (q と k の head norm)、RoPE 22、ShortConvStep 13、MHA・Sigmoid・ElementwiseMul 11 ずつ。QGEMV の設定は 1 つ 75〜97 KB と大きく、他の演算から戻るたびに約 250 µs。次は QGEMV の出口に後の演算を入れる形 (iron_q4 の `add_operator` のように) か、注意の q・k の norm と RoPE をまとめる
+- **LFM3-VL-2B** (`lfm3vl --max-seq-len 12288 --q4`) も本体が `Lfm3` なので同じになる: 614 → 288 回、**11.2 → 15.6 トークン/秒**。前の書き出しとのコサインは最小 0.9971、HF との KL (文だけ) は 0.1188 / 0.0615 / 0.491、top-1 83.8 % から 0.1253 / 0.0610 / 0.498、84.1 % (平均が 5 % 上がり、中央値と top-1 は同じか良い)。Audio と Omni は作っていない
+
+### 16.269 AMD: Gemma 4 のデコードの演算をまとめる (per-layer input をまとめて、`SandwichAdd`) — 2026-11-20
+
+16.268 と同じことを Gemma 4 E2B q4 (`gemma4 --max-seq-len 4096 --q4`、作り直し 3 分半) に。デコードは 1 トークン 1016 回の設定のし直しで、hwnpu のモデルでいちばん多かった。
+
+- **per-layer input をまとめる** (`iron_hostple.layer`): IRON の Gemma4 は層ごとに per-layer input を作る (埋め込みの GEMV、RMSNorm、ple_rows の Copy、和、積の 5 演算 × 35 層)。デコードでは最初の層の前に全層の分を 1 回で作る (35 × 256 行の GEMV 1 つ、(35, 256) の RMSNorm、ple_rows の 35 行の Copy、和、積)。計算は同じで、**ロジットは前の書き出しとビット単位で同じ** (コサイン 1.00000、差 0)。`HWNPU_GEMMA4_BATCH_PLE=0` で層ごとに戻る
+- **`SandwichAdd`** (16.268 のもの): 注意の後の「post norm、残差、pre-feed-forward norm」と、per-layer input の後の「post norm、残差、layer_scalar の積、次の層の input norm」(最後の層は最後の norm、`head` は softcap を付ける)。layer_scalar のために `SandwichAdd` に `scale` を足した (y を丸めてから積、IRON と同じ 2 回の丸め)。feed-forward の後の post norm と残差はそのまま。`HWNPU_GEMMA4_FUSED_NORMS=0` で IRON の形に戻る
+
+| Gemma 4 E2B q4 デコード | 設定のし直し / トークン | 設定のバイト | 速さ |
+|---|---|---|---|
+| 前の書き出し | 1016 | 26.9 MB | 7.7 tok/s (129 ms) |
+| + per-layer input をまとめる | 846 | 25.3 MB | 8.4 tok/s |
+| + `SandwichAdd` | 672 | 23.4 MB | **9.3 tok/s (107 ms)** |
+
+- 精度: 前の書き出しとのコサインは最小 0.9985 (1010 トークンの後 30 歩、top のずれなし)。HF の float32 との KL (`forced_logits.py gemma4`、256 トークンの後 320 行): 前 0.1562 / 0.0659 / 0.590、top-1 83.1 %、後 0.1539 / 0.0684 / 0.600、82.2 %
+- 残りの 1 トークンの演算: QGEMV 206、RMSNorm 102 (q、k、v の head norm と feed-forward の後)、ElementwiseMul 72、GEMV 71 (per-layer input の gate と projection、bf16)、SandwichAdd 70、GELU 70、RoPE 50。次は per-layer input の gate と projection を q8 にして QGEMV にそろえる、GELU と積をまとめる (QGEMVGlu の GELU 版)
+- **MLP の gate と up を 1 つに (QGEMVGlu の GELU 版)**: `kernels/mv_add.h` の `Q_GLU_GELU` (tanh の形、tanh は float32 の exp で `1 - 2 / (exp(2t) + 1)`、2t は ±30 で止める)、`iron_q4.glu_param(..., act="gelu")`、`glu_linear` はプロンプトの塊では MLP 自身の活性 (`act_fn`) を使う。`iron_q4.py check --glu gelu|silu` で 6144 × 1536 の q4 を float64 の参照とコサイン 0.999982 (silu と同じ)。E2B のデコード 672 → 602 回、**9.3 → 9.9 トークン/秒** だが、HF との KL が 0.1539 / 0.0684 / 0.600 から 0.1580 / 0.0736 / 0.625 に上がった (前の書き出しとのコサインも最小 0.9985 → 0.9897)。LFM3 では動かなかったので、プロンプトの塊が GLU の表を MEDIUM の GEMM で読む経路 (前は q_linear の bfp16) を疑っているが、確かめていない。既定はオフ (`HWNPU_GEMMA4_FUSE_GLU=1` でオン)
+- E4B と多モーダルの版 (`gemma4mm`) も同じ経路を通る。作り直していない
+
+### 16.270 AMD: main の rebase 後の gpt-oss-20b の確かめ — 2026-11-20
+
+16.266〜16.269 を、gpt-oss-20b と 120b の置き場 (16.261) が入った main に載せ直した。gpt-oss の経路 (`iron_gptoss*.py`) は変えていないが、`iron_export_lm.py` と共有の道具が変わったので確かめた。
+
+- 書き出し (`gptoss --max-seq-len 8192 --prefill-chunk 256`、3 分 16 秒、最大 RSS 38 GB): 取得元の書き出しとロジットがビット単位で同じ (`ironlm -record` の 300 トークン + 23 歩、コサイン 1.00000、差 0)。設定のし直しはデコード 25 回、プロンプトの塊 534 回で同じ。manifest の違いはプロンプトのホストの手順の `places` (32) だけ
+- デコード (`ironlm -steps 128`、交互に): 20.1〜20.2 トークン/秒 (どちらも)。最初の 1 回だけ前の書き出しが 13.8 だった (読み込みの直後、ページキャッシュと見ている)
+- 置き場 16 (`--expert-places 16`、1 分 11 秒): hwnpu-chat (`--experts-key off`、88 トークンのプロンプトで 300 トークン) の答えが全部置いた書き出しと 1 文字ずつ同じ。置き場の確かめ (`HWNPU_MOE_DEBUG=check`) で 384 個のうち 0 個違い。15.7 トークン/秒 (全部 19.9)。16.261 の 17.2 はアプリの統計ありの値で、ここは統計なし
+
+### 16.271 Qwen3.6-35B-A3B を hwnpu-chat のモデルに (AMD): models.yaml、取得から書き出しまで、デコードの演算を減らす (172 → 118 ms/トークン) — 2026-11-17
+
+16.89〜16.116 で Qwen3.6-35B-A3B は AMD の NPU で動いていたが、書き出しは手で `iron_export_lm.py` を流すだけで、models.yaml にも MODEL.md の表にもなかった (「予定」のまま)。`hwnpu-chat -m Qwen3.6-35B-A3B` で取得から書き出し、共有の場所への書き戻しまでが通るようにし、続けてデコードを速くした。
+
+**組み込み**
+
+- models.yaml に `Qwen3.6-35B-A3B` (family `qwen3.6`、tag `35b-a3b`、`amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4`、features tools と thinking)。`memory` は測った値 (下)、`machine: 48`
+- `not_on` に NPU の会社も書けるようにした (`amd`、`apple`、`intel`、`internal/chat/chip.go` の `notOnHere`)。Qwen3.6 は経路の選択 (gather) が Neural Engine と Intel の NPU に載らないので `not_on: [apple, intel]`。用途 `chat` の 48 GB の列を Qwen3.6 にし、Apple と Intel ではその列を飛ばして下の列 (Gemma 4 E4B) を選ぶ (`TestPickNotOnVendor`)。名前とファミリーのタグでは動かせる
+- 取得: 共有の場所の original は `chat_template.jinja` と `tokenizer_config.json` を持っていなかった。Hugging Face から取って書き戻した (Qwen3.6 の型は `chat_template.jinja` の `preserve_thinking` で選ぶ: 16.90)
+- 書き出し: 72 GB のチェックポイントから 29 分 (最大 RSS 50.1 GB、16.92 の 53.8 GB より少ない)。24 GB を共有の場所に書き戻した。共有の場所に書き出しがあれば、IRON のない機械でもそれを取る (16.236)
+- 取得: Wi-Fi の機械では取得元からの 1 本が 1〜11 MB/s で揺れ、72 GB に約 4 時間かかった (4 本並べると約 4 MB/s → 9 MB/s。16.236 で取得は 4 本並びになった)
+
+**デコードの演算を減らす** (4 層の乱数の重みで測り、40 層は実物で測る。どれも前の書き出しとロジットがビット単位で同じ)
+
+16.179 の測り方どおり、演算 1 つずつをコマンドにした版 (`on_host` を演算ごとに挟む) で HWNPU_IRON_TIMING の時間を見た。GDN の層の A (11 演算 3.45 ms) のうち、状態の枠のコピー 2 つ (2.2 MB を 1 本の memtile のチャネルで、約 6 GB/s) が 0.42 ms ずつだった。
+
+| 変えたもの | GDN の層の A | 注意の層の A | 専門家 (B) | 4 層の 1 ステップ |
+|---|---|---|---|---|
+| 前 | 3.45 ms (11 演算) | 2.74 ms (23 演算) | 1.00 ms | 22.8 ms |
+| 残差を out_proj / o_proj の GEMV で (`into_linear`、密な Qwen3.5 には前からあった) と状態のコピーを 8 チャネルに | 2.77 | 2.52 | | 21.0 |
+| GatedDeltaRule が枠を直接読み書き (`gdn_operator(slots=)`: 状態の In とチェックポイント全体の InOut、`read_at` と `write_at` は呼び出しごとの値 `((start - 1) // C + 1) S` と `(position // C + 1) S`) | 2.55 | | | 19.9 |
+| q、k、v、ゲートを 1 つの表 (9216 行) に、q と k の頭ごとの norm を 1 つの状態に書いて RoPE を 1 回に (6 → 3 演算) | | 1.94 (13 演算) | | 19.4 |
+| in_proj (8704 行) と z (4096 行) を 1 つの表 (12800 行 = 200 列ブロック、8 列に 25 ずつ) に | 2.40 | | | 18.7 |
+| 専門家を 1 つの演算子に (`MoEExperts`: gpt-oss の MX4Experts と同じ形、活性は DRAM を回る) | | | 0.75 | 17.6 |
+| q と k の SiLU をキーのヘッドごとに 1 回 (`gdn_gather_conv_v`) | 2.28 | | | 17.45 |
+
+- 16.92 で in_proj と z を 1 本にしたら遅くなったのは、表が 12352 行 (193 列ブロック) で 8 列に分かれなかったため。in_proj を 64 行にそろえた後 (16.117 の `COLUMN_ALIGN`) は 200 列ブロックで速くなる
+- `MoEExperts` の最初の版は止まった (ERT_CMD_STATE_TIMEOUT)。down の 9 本の流れを列ごとに先に積むと、shim のチャネルのタスクの列 (4 つ) があふれ、流れが終わるのは 2 つ目の段 (x を待つ) が読んだ後なので、2 つ目の段の x を出す前にシーケンスが止まる。先に積むのを 2 本にした (`iron_moeprobe.AHEAD`)
+- 密な Qwen3.5 も同じ書き出しの経路なので速くなる: Qwen3.5-0.8B (乱数の重み、`--q4 --mlp q6 --head q6 --verify 3`) で 72.8 → 56.8 ms/トークン、ロジットと下書きの確認は main と同じ
+
+**試して採らなかったもの**
+
+- 専門家 (B) と次の層の A を 1 つのコマンドに (コマンド 81 → 41): 経路の選択が書く語を 16 語だけにし、置き場所をコンパイルしてから読んで書き出し直す (gpt-oss の `Recompile` と同じ)。正しく動いたが 17.6 → 17.6 ms で変わらず、戻した
+- GatedDeltaRule の状態の物を二重に: コアのデータメモリがあふれる。入力だけ二重にしても 2.35 ms のまま
+- GatedDeltaRule の 1.06 ms の内訳 (測るだけの版): gather を外すと −0.15 ms、規則の計算を外しても −0.15 ms。残りは演算子の読み込みと流れの組み立てで、層ごとの演算を 1 つの配列に置く (gpt-oss の GptOssStep) ほかに減らし方がない
+
+**40 層 (実物の重み、q4)**
+
+| | 前 (16.116 の書き出し、16.92 と 16.116 の値) | 今 |
+|---|---|---|
+| デコード | 172 ms/トークン (5.8 トークン/秒) | **117.8 ms (8.5 トークン/秒)**、文脈 1536 で 118.6 ms、4095 で 121.4 ms |
+| 1 ステップのコマンド (`HWNPU_IRON_TIMING`) | 81 | 81 (和 122.8 ms: A の平均 2.18 ms、B 0.74 ms、最後 (B と出力層) 5.81 ms) |
+| プロンプト 256 トークンの塊 | 2.6 s | 2.47 s (0 から、104 トークン/秒)、3840 から 3.56 s。1 塊 38〜48 J |
+| メモリ | 23 GB (文脈 1024) | 26.3 GB (文脈 4096: NPU に 24,188 MiB、プロセス 880 MiB の最大。`/proc/PID/fdinfo` の `drm-total-memory` と RssAnon + RssShmem を 0.5 秒ごと) |
+| HF の float32 と (32 トークンのプロンプトと貪欲法の 8 ステップ、`iron_qwen35_check.py ref --stream`) | コサイン 0.986〜0.996、最上位 9/9 | コサイン 0.989〜0.995、最上位 9/9 (`ironlm` の閾値 0.99 には 2 つの呼び出しが届かない: 前の書き出しも同じ) |
+
+- `hwnpu-chat -m Qwen3.6-35B-A3B "日本の首都はどこですか？一文で答えてください。"` は考えた後に「日本の首都は東京です。」(21 トークンのプロンプト 2.6 s、210 トークンを 8.5 トークン/秒)。Go の素数の関数を頼んでも、考える過程から書く
+- 測った機械は Wi-Fi で、ほかのセッションが同じ NPU を使うときがある (FLUX.2 klein の 512² の `--batch`)。ここの値はそれが動いていないときのもの
+
+**残り**
+
+- プロンプト: 256 トークンの塊 2.47 s (9.7 ms/トークン、gpt-oss は 7 ms)。専門家の演算子 (B) が q4nx の符号を bf16 に戻して 16 レーンのベクトルの MAC で掛けていて、計算で決まる。行列演算器 (bfp16) に載せるには、q4nx のグループごとのスケール (2 のべき乗でない) を部分和に掛ける形に組み直す
+- デコードの層を 1 つの配列に (GptOssStep の形): GDN の演算子の読み込みが残りの大半
+- GPTQ の符号 (`qwen36_gptq.py`、4.3 時間) は models.yaml の書き出しに入れていない (丸めた q4)
+- `--check` (書き出しの照合) は `--q4` の qwen35moe では main でもホストの参照の GEMM で落ちる (`flm/gemm` の reference に q4 の表が渡る)。照合は `ironlm -record` で前の書き出しと、`iron_qwen35_check.py ref` で HF と比べた
+- 測っている途中で NPU が止まった: 読み込み中に別のプロセスから `hwnpu status` を 0.5 秒ごとに呼んだ直後に、ファームウェアのメールボックスがタイムアウトし (`xdna_send_msg_wait`)、SMU が起動しなくなった (`failed to init smu`)。`modprobe -r amdxdna` も戻らず、再起動で直った。原因とは確かめていない (docs/new-model-checklist.md)
+
+(ブランチ `t3/qwen36-integrate` (2026-11-16〜17) の記録を 2026-11-20 に取り込んだ。番号は 16.237 だった。models.yaml の `not_on` に NPU の会社を書く仕組み (0aea06f) と MODEL.md の 48 GB の列は取り込んでいない: main の catalog がその後に変わっていて、ぶつかる)
+
+### 16.272 AMD: t3/qwen36-integrate の取り込みと、再起動した静かな機械での計測 — 2026-11-20
+
+16.266 で見つけた「今の main から作る Qwen3.6 は取得元の書き出し (8.6 トークン/秒) より遅い (5.8)」の原因は、取得元の書き出しが main に入っていないローカルのブランチ `t3/qwen36-integrate` (2026-11-16〜17、worktree `~/develop/hwnpu-qwen36`、その後触られていない) から作られていたこと。そのブランチは Qwen3.5 / 3.6 のデコードの演算を減らしている (GDN の状態の枠を演算子が直接読み書き、in_proj と z を 1 つの表に、q・k・v・ゲートを 1 つの表に、残差を out_proj / o_proj の GEMV で、`MoEExperts`、`gdn_gather_conv_v`)。16.266 の残り (d) の「状態の Copy をなくす」もこれで済む。
+
+- 取り込んだ: 80f9a05 (演算を減らす)、ca96654 (`gdn_gather_conv_v`)、3ef96d9 (Qwen3.6 の記録: 16.271 に番号を変えて、models.yaml の memory)。`iron_gdn.py` は 16.267 の局所バッファと合わせた (コアの引数に scratch と gather_v の両方)
+- 取り込まなかった: 0aea06f と eb1ce73 (models.yaml の `not_on` に NPU の会社を書く仕組みと、Qwen3.6 をチャットの 48 GB の列に)。main の catalog がその後に変わっていてぶつかる。Qwen3.6 は models.yaml にあり名前では動くが、ファミリーや用途からは選ばれない。MODEL.md の表も main のまま
+- 取り込んだ後の Qwen3.6 の書き出しは 16 KB のプログラムメモリを 80 バイト超えた (`gdn_gather_conv_v` と 16.267 のポインタ): 16.267 の「後の変更」
+- 計測の途中、18:32 に NPU のテレメトリの問い合わせが止まり (`aie2_query_telemetry` −62)、以後どの open も `failed to init smu` (この作業は NPU を使っていなかった)。ユーザーの再起動で戻った。下の値は再起動の直後、NPU を他が使っていないときに、新旧を交互に (`ironlm -steps 128`、Qwen3.6 は 64、2〜3 回ずつ)
+
+| モデル (AMD の書き出し) | 設定のし直し / トークン | 前 | 今 | ロジット / 精度 |
+|---|---|---|---|---|
+| Qwen3.5-0.8B q6 (取得元は main から) | 306 → 222 | 13.7〜13.8 tok/s | **18.6〜18.8** (16.267 だけなら 14.6〜14.7) | 前とビット単位で同じ |
+| Qwen3.6-35B-A3B q4 (取得元は t3/qwen36-integrate から) | 484 → 484 (0 の塊 7.6 → 1.8 MB) | 8.4〜8.5 | **8.8〜8.9** | 前とビット単位で同じ |
+| LFM3-1.7B q4 | 614 → 288 | 11.2 | **15.6** | KL 0.0642 → 0.0646 (16.268) |
+| LFM3-VL-2B q4 | 614 → 288 | 11.2 | **15.6** | KL 0.119 → 0.125 |
+| LFM3-Audio-2B q4 | 614 → 288 | 11.3 | **15.6** | 前とのコサイン最小 0.99902、top のずれなし (300 トークン + 29 歩) |
+| LFM3-Omni-2B q4 | 614 → 288 | 11.3 | **15.5** | 同 0.99931、ずれなし |
+| Gemma 4 E2B q4 | 1016 → 672 | 7.7 | **9.3** | KL 0.156 → 0.154 (16.269) |
+| Gemma 4 E4B q4 | 1242 → 826 | 5.5 | **6.4** | KL 0.0631 / 0.0285 / 0.224 → 0.0628 / 0.0267 / 0.224、top-1 83.1 → 82.8 % |
+| gpt-oss-20b | 25 → 25 | 20.2 | 20.2 | ビット単位で同じ (16.270) |
+
+- hwnpu-chat (同じ問い、`--seed 1`): LFM3-1.7B 11.2 → 15.5 トークン/秒、Gemma 4 E2B 7.8 → 9.4、Qwen3.6 8.4 → 8.8 (400 トークンまで同じ文)。答えはどれも正しい (富士山 3,776 m)
+- 書き出しを作り直す時間と最大 RSS: Qwen3.6 29 分 49 GB、Gemma 4 E4B 5 分 31.7 GB、LFM3-Audio / Omni 2 分半 8.5 GB
+- 取得元の書き出しは差し替えていない (道具のハッシュが変わるので、作り直して置き直す)
+### 16.273 VAE の prebuilt を使わない: FLUX.2 klein の 512 × 512 に縞、1024 × 768 は Request cancelled — 2026-11-20
+
+FormatVersion 2 の作り直し (16.252) のあとの確かめで、FLUX.2 klein の 1:1s (512 × 512) の絵に 112 行ごとに数行の色の縞が出た (M1、h13g の prebuilt)。キャッシュを空にした別の名前 (codesign -i) で同じ縞。分けて確かめた:
+
+| M1、512 × 512、seed 1 | 絵 | かかった時間 |
+|---|---|---|
+| すべて prebuilt | 縞 | 13m54s |
+| すべて端末で compile (`HWNPU_COREAI_PREBUILT=off`) | 正しい | 50m24s |
+| prebuilt から VAE の 10 段だけ外す | 正しい (端末の compile と同じ絵) | 7m19s |
+
+縞は VAE の prebuilt から。512+1024 の書き出しの 1024 × 1024 の関数は正しく、512 の関数が誤る。1024 × 768 の書き出し (VAE は 1 つの大きさ) は prebuilt の `vae_s0` の実行が `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた (他に Neural Engine を使うものがない時)。
+
+VAE の prebuilt には得もない: 端末が prebuilt を仕上げる時間は compile と同じ (1024 × 1024 の 10 段で 104 s 対 106 s)。仕上げは 1 つごとに ANELargeModelCompilerService の起動を待つ (10 s、16.247)。
+
+- `coreai.LeftToDevice`: 名前が `vae` で始まるプログラム (FLUX.2 klein の `vae_s*`、Chroma と Anima の VAE) は端末で compile する
+- `hwnpu-dev prebuild` (`coreai.Build`) は外す (`left to the device` と出す)
+- `coreai.Prebuilt` は取得元にすでにある VAE の prebuilt (16.252 の作り直しで全部の大きさに入れた) を使わない。入れ直さなくても新しい hwnpu は正しい絵になる。古い hwnpu は縞のまま
+- Apple への報告: coreai-build の VAE の誤り (FB を出す。known-issues.md に足す)
+- すでに prebuilt の VAE で描いた機械では、Core AI のキャッシュの項目 (main.hash ごと、prebuilt から仕上げたもの) が残り、この版でもそれを読む (`hasEntry` なら prebuilt を見ない)。M1 で、prebuilt で縞を描いたのと同じ名前の hwnpu-image は直したあとも縞 (VAE の段を 1〜2 s で読んだ)、新しい名前 (空のキャッシュ) は 8m03s で正しい絵 (VAE は端末で compile、`vae_s0` 16 s)。その機械は `~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す (VAE の項目だけでもよい)
+
+**追記: 文の符号器も端末で compile する** — 2026-11-20
+
+- 起きたこと (M1、h13g の prebuilt): Chroma1-Flash の 512 × 512 が T5-XXL の 1 本目 (`text_0`) の実行で `ANEProgramProcessRequestDirect() … Request cancelled` に 4 回続けて落ちた。キャッシュを空にした新しい名前 (codesign -i)、prebuild を止めて Neural Engine を他に使うもののない時も同じ
+- 分けて確かめた: すべて端末で compile (`HWNPU_COREAI_PREBUILT=off`) は正しい絵 (25m47s、T5-XXL 220 s)。prebuilt から `text_*` の 8 本だけ外すと T5-XXL は通る (230 s)
+- FLUX.2 klein の Qwen3 は prebuilt で動くが、端末で compile したものより遅い (112 s 対 81 s、16.252 の追記)。文の符号器は prebuilt にしても得がない
+- `coreai.LeftToDevice` は名前が `text` で始まるプログラム (FLUX.2 klein と Chroma の `text_*`) も端末に残す。`hwnpu-dev prebuild` は外し、取得元にある prebuilt は使わない
+- 単体テスト: `TestLeftToDevice` に `text_0`、`text` (真)、`mods`、`ctx` (偽)。`TestBuildLeavesVAEToDevice` は `text_0` も外し、置いてある prebuilt を取らない
+
+**残り**
+
+- 取得元の FLUX.2 klein と Chroma1-Flash の prebuilt から VAE と文の符号器を除いて詰め直す (場所だけの問題)
+- coreai-build の何が VAE を誤らせるか (縞は 112 行ごと: 段の中の行の区切りか)、T5 の何が Request cancelled になるか。直ったら `LeftToDevice` を外す
+
+### 16.274 論文の Neural Engine の規則と上限を M2 で確かめる、回転してから lut に — 2026-11-20
+
+arXiv の Neural Engine の論文 (2606.22283 のリバースエンジニアリング、2611.19101 の roofline、ANEForge 2606.17090) の規則と上限を、M2 (MacBook Air 16 GB、macOS 27.2.1、h14g) で Core AI を通して確かめた。速さは上がっていない: 入ったのは正しさの直し、上限の検出、測る道具。回転 (QuaRot / SpinQuant の形) は精度を上げる (Qwen3.5 で KL が約半分) が、製品の書き出しにはまだ入れていない。
+
+**道具** (`tools/coreai/aicheck`)
+
+- `aicheck rules [-only slice,conv,act,sub,inner1,div,log]`: 選んだ値の小さなプログラムを Neural Engine で動かし、float32 の値と比べる。`HWNPU_COREAI_UNITS=cpu` で Core AI の CPU と比べて、ずれがエンジンのものか下ろし方のものかを分ける
+- `aicheck limits [-only floor,programs,operand,conv,formats]`: 呼び出しの下限、読み込めるプログラムの数、要素ごとの演算の速さ、1×1 conv の出力チャネル、重みの形式の速さ
+- `aicheck lint PKG|PROGRAM.aimodel...`: 下の幅の slice の規則に当たる所を探す。`.mlpackage` は `ailower.LintPackage` (重みを読まずに下ろす)、`.aimodel` はバイトコードの定数を読む (書き出しは下ろした後のものしか残さない)。`HWNPU_AILOWER_NOTES=1` は読み込みのときに下ろしながら stderr に出す
+
+**数値の規則** (M2 の Neural Engine。どれも Core AI の CPU では起きない)
+
+| 規則 | M2 で | hwnpu の扱い |
+|---|---|---|
+| linear / conv の出力は 2^15 未満 (論文 §3.7) | 和が 32768 で Inf (32256 は正しい)。**途中の和でも**: +1 と −1 が半分ずつの 1024 入力で、和 0 でも途中が 32768 に届くと Inf。reduce_sum は 51200 でも正しい。1x1 の conv も同じ。2^15 未満では和は正確 (fp32 並みの累算。Core AI の CPU は fp16 の累算で 1〜3 % ずれる) | 既に MaxScaled などで範囲を抑えている (16.201 の `BlockRanges` は 8 倍の余裕で落とす)。新しいモデルの点検の項目に |
+| 幅の軸の slice、開始が 0 でないと ×16 (§3.7) | 最後の軸の slice で、**開始を 32 で割った余りが 1〜14** のとき、4094 を超える値が Inf (4094 × 16 = 65504)。余り 0 と 15〜31 は正しい。幅 100〜4000 で同じ。高さとチャネルの軸では起きない | `aicheck lint` と `HWNPU_AILOWER_NOTES`。手元の書き出し 27 個 (チャット、画像、音) で当たるのは LFM2-8B-A1B の上位 4 個のルーティングの重み ([1,1,4]、値は 1 以下) だけで、影響はない。RoPE の半分 (32、64) は余り 0 |
+| softplus(+inf) は 0 (§3.6) | **x > 10.4 で 0** (log(1 + exp(x)) の形で、exp(x) が 2^15 を超える所)。log も exp も単独では正しい (log は 65000 まで 0.11 %) ので、Core AI がこの形をまとめているらしい | ailower の softplus を relu(x) + log(1 + exp(−\|x\|)) に (qwen35 の手書きと同じ形): 最大の相対誤差 1 → 0.0014 |
+| matmul の中の非正規化数は 0 (§3.6、M1 と書いてある) | M2 も同じ: 積が 1e-6 の linear 512 本の和 (5.1e-4) が 0。要素ごとの掛け算は非正規化数を残す | 16.202 (Anima の 1/256) と同じ理由。範囲の点検で |
+| 内側の次元が 1 の matmul (memory: ane-matmul-inner-dim-1) | (1, 8, M, 1)·(1, 8, 1, 128): M = 64 は正しく、**M = 1 は相対誤差 0.28**。掛け算は正しい | ailower で、内側 1 の fp16 の matmul を掛け算 (外積) に。M = 64 も誤差が 0.00076 → 0.00049 |
+| 活性化関数は 33 点の折れ線 (§3.5) | sigmoid、silu、tanh、gelu の最大の相対誤差は 0.0009〜0.0016。折れ線の継ぎ目はこの測り方では見えない | 16.88 の silu の書き換えのまま |
+| 定数での割り算 | ailower が掛け算にしているので、誤差は fp16 の丸め程度 (0.00065) | 16.182 のまま |
+
+**上限** (M2)
+
+- **プログラムは 1 プロセス 112 個まで**。256 × 256 の小さな linear を 1 個ずつ読み込むと、113 個目から `Program load failed — no ANE resources (transient; retry)` (`_ANEErrorLoadStage=4`) で、Core AI はそのプログラムを黙って GPU で動かす (配置の報告には出る。小さなプログラムでは 1 回の時間はほぼ同じ)。論文は 1 プロセス約 128 個 (残りはシステムが使う分か)。gpt-oss-20b の書き出しは 37 部品 × 2 関数 + 注意と mass で約 84 個、ほかのチャットのモデルは 40 個以下。2 つのモデルを同じプロセスに持つと越える。`coreai` の装置が Neural Engine の上のプログラムを数え、上限の近くで落ちたときにそう言う (`aneLive`)。固定されるメモリは 112 個で +0.04 GB
+- **呼び出しの下限は約 160〜175 µs** (add 1 個、32 KB〜512 KB)。ANEForge の直接の呼び出しは約 70 µs、論文の M1 は約 190 µs。Core AI とドライバの分が約 100 µs。112 個を順に呼んでも 1 回 145〜175 µs で、切り替えの費用は見えない
+- **要素ごとの演算は 16〜20 GB/s** で頭打ち (3 つのテンソルの合計。2 MB までは下限の 160 µs が効いて上がっていく)。2 MB を超えたときの崖はない。2611.19101 の「遅い活性の経路」(M2 Pro で約 14 GB/s) に当たる
+- **1x1 conv は出力 256 チャネルまで時間が一定** (1024 入力、32 × 32: 254〜273 µs)。そこから増えて 1024 で 500 µs (4.3 TFLOP/s)。段で上がるのではなく、256 チャネルの塊。広い conv を割る理由にはならない
+- **1 プログラムに専門家 5 個までの段 (M1) は M2 にない** (`aicheck moe -layers 1 -topk K`、実行時の int8 の重み)。gpt-oss の形で top 4/5/6/8 が 3.58/4.40/5.53/7.44 ms (比例)。Qwen 型は 1.78/1.97/2.96/3.48 ms (5 → 6 で 1.5 倍だが M1 の 4 倍ではない)。M3 (handoff-ane-gather.md 1b) と同じ。論文の表 7.1 は int8 が M1 で「畳む」(folds)、M2 から「流す」(streams) としていて、M1 だけの段の説明に合う
+- 実行時の重み (入力の配列) は定数の重みの半分の速さ: gpt-oss の専門家で 26 GB/s と 50〜52 GB/s。2611.19101 の 2 本の経路の見方と合う
+
+**重みの形式の速さ** (`aicheck limits -only formats`、定数の 4096 × 4096、lut は 16 行に 1 つの表)
+
+| 形式 | 1 行 | 64 行 | 重みの要素 / 秒 (1 行) |
+|---|---|---|---|
+| fp16 | 742 µs | 808 µs | 22.6 G (45 GB/s) |
+| int8 (行ごと) | 466 | 506 | 36.0 G |
+| lut8 | 449 | 515 | 37.4 G |
+| lut6 | 387 | 477 | 43.4 G |
+| int4 (行ごと) | 329 | 379 | 51.0 G |
+| lut4 | 351 | 382 | 47.9 G |
+
+下限の 160 µs を引くと、fp16 は約 58 GB/s、int8 と lut8 は約 55 GB/s でバイトで決まり、lut4 は約 90 G 要素/秒で頭打ちになる。lut8 は fp16 の 0.6 倍の時間で、論文の M2 の表 7.3 (K = 4096 で int8/fp16 = 0.60) と同じ。lut4 は lut8 より 1.3〜1.4 倍速い。行ごとの int8 が lut8 より遅い (improvements.md 11.1) はこの形では見えない (36.0 と 37.4 G)。
+
+**回転してから lut に** (`llm.Rotate`、`llm.Rotation`、`qwen35.Config.Rotation`、`tools/quant/rotkl`)
+
+残差の流れに直交行列 Q = diag(s) H (ランダムな符号と、隠れ次元の最大の 2 の冪の Walsh-Hadamard、割り切れなければ区分対角) を通す。重みを変えるだけで、プログラムは同じ:
+
+- 埋め込み E Q (ホストが `Rows` で引く)
+- 残差を読む行列 (norm の後の linear): W diag(1 + w) Q。norm の重みは 0 (Qwen3.5 は 1 + w の形)
+- 残差に足す行列: Qᵀ W
+- 出力層 (結んだ埋め込みでも `Get` で): W diag(1 + w_final) Q
+
+通るのは、残差を読むものが全部 norm の後の linear で、書くものが全部そのまま足される線形のモデルだけ。Mac のチャットのモデルでは Qwen3.5 だけが当たる。LFM3 (`use_sandwich_norm`)、Gemma 4、PLaMo 3 は書く側の出力に重みつきの norm があって Q を通せない。gpt-oss は専門家 (CPU の MXFP4) も回して量子化し直すことになる。
+
+`rotkl` で、全体を CPU (milcpu、float32) で 256 トークン (README の英語と日本語) 動かし、回していない fp16 の logits との KL と最上位の一致を見た (表の作り方は hwnpu-chat と同じ kmeans-minmax、16 行):
+
+| | Qwen3.5-0.8B KL | 一致 | Qwen3.5-2B KL | 一致 |
+|---|---|---|---|---|
+| fp16 回転 | 0.0000 | 256/256 | 0.0000 | 256/256 |
+| lut8 | 0.0049 | 244 | 0.0047 | 243 |
+| lut8 回転 | **0.0024** | 247 | **0.0033** | 248 |
+| lut6 | 0.0749 | 222 | 0.0560 (今の製品) | 219 |
+| lut6 回転 | **0.0388** | 226 | **0.0267** | 236 |
+| lut4 | 0.8338 | 141 | 0.6026 | 157 |
+| lut4 回転 | 0.5748 | 180 | 0.3664 | 173 |
+
+- どの形式でも KL は約半分。符号の種を変えても lut6 回転は 0.035〜0.042 (0.8B)
+- fp16 に丸めても (`-f16`) 回転の前後で同じ (lut8 0.0049 と 0.0024)。範囲は崩れない
+- 0.8B の lut6 で出力層を fp16 にしても 0.069 → 0.035: 誤差は層の側
+- **lut4 は回しても使えない** (2B で 0.37)。速さ (lut8 の 1.3〜1.4 倍) にはつながらない。2B の製品の lut6 の精度が上がる (lut8 の 0.0047 との差が半分以下に)
+- `rotkl -ane` (出力層をホストで) は、24 層を 1 つにしたプログラムが Neural Engine のコンパイルに落ちて GPU で動いた (128 トークン)。GPU の fp16 でも同じ傾向: 0.8B lut8 0.0054 → 0.0023、lut6 0.0656 → 0.0368。Neural Engine での確認は、製品と同じ部品の分け方で書き出してから
+- 部分ごとに lut4 を混ぜる (2B、残りは lut6。KL / 最上位の一致、回転なし → 回転あり): 出力層 lut4 0.105 → 0.062 (215)、down_proj 0.133 → 0.076、gate と up 0.157 → 0.124、MLP 全部 0.232 → 0.178、GDN 0.250 → 0.111、出力層と down 0.186 → 0.111。**回しても今の lut6 (0.056) に届く lut4 の組み合わせはない**。いちばん近い出力層 lut4 は重みの 27 % だが、1 行の速さは lut6 の 1.1 倍 (上の表) なので、見込みは全体で 2〜3 %。逆に MLP を lut8 にすると 0.037 → 回転で 0.019
+- 速さ: 今の 2B lut6 の書き出しは 32.0〜32.5 tok/s (`--mtp off`、温度 0、200 トークン、3 回)。出力層 lut4 の書き出しは、Neural Engine の初めてのコンパイルが 2 時間で終わらず測れなかった (ANECompilerService が止めた後も動き続けた)
+- 製品に入れるのに残っていること: MTP (書き出しの `h` は最後の norm の後の値で、MTP の fc が読む。回すと 1 + w が掛からない)、ホストの埋め込みの表 (`WriteTables` は bf16 をそのまま写す)、実行時に埋め込みを引く所 (`chat` のエンジン)、`Revision` を上げて書き出し直し、Neural Engine での 12 問
+
+### 16.275 Qwen3.6-35B-A3B の 16.262 の残り 4 つ: プロンプトを部品の順に、1 トークンの専門家、間のあとの遅さ、畳み込みの窓 (プロンプト 92 → 21.5 秒、生成 10.3 → 11.0 トークン/秒、2.82 → 2.69 GB) — 2026-11-20
+
+16.262 の「残り」を順に試した。M3 16 GB (MacBook Air 15、macOS 27.2)、温度 0。変更は `internal/llm/decode` (wave)、`internal/llm/chain`、`internal/llm/experts`、`internal/mxfp4`、`internal/mem`、`internal/llm/qwen35` (Revision 2)、`internal/chat`。
+
+**結果** (main のバイナリと交互に、同じ機械の同じ状態で)
+
+| | main | 今 |
+|---|---|---|
+| 2602 トークンのプロンプト | 90.0〜92.2 秒 | **21.0〜21.5 秒** |
+| 621 トークンのプロンプト | 19.9 秒 | 8.1 秒 |
+| 生成 (分野の違う 8 問 × 150 トークン、2 往復) | 10.33、10.38 トークン/秒 | **10.90、11.04** |
+| プロセスの footprint (最大、300 トークンの生成) | 0.87 GB | **0.75 GB** |
+| Neural Engine と合わせて | 2.82 GB | **2.69 GB** |
+
+長いプロンプト (2602 トークン) の footprint の最大は 1.14 GB と 1.15 GB で変わらない。
+
+**1. プロンプトを部品の順に回す (`decode.Session.Steps`、wave)**
+
+- 前: 128 トークンの塊を 1 つずつ、全部の部品に通す。塊が 1 層の 256 個の専門家をほぼ全部選ぶので、塊ごとに 17 GB を読む (2602 トークンで 190.9 GB)
+- 今: 注意の層で区切った段 (`RunPart(i)`) ごとに、全部の塊を通す。段の中も部品ごとに全部の塊 (`decode.Program.RunMany`、`chain.tier.runMany`)。層の中では塊は元の順なので、状態 (GDN の状態と窓、注意のキャッシュ) の値は同じ。読みは 14.6 GB (1 回分)
+- 塊ごとに持ち越すもの: 段の間は `decode.Program.Carry(i)` (前の部品の y、注意の出力、後の部品が読む出力。Qwen3.6 で 1 塊 2.6 MB: 隠れ状態 0.5、注意の出力 1、注意のゲート 1)、段の中は部品の y と専門家の出力。wave は持ち越しが 64 MB までの塊数 (25 塊 = 3200 トークン)
+- 印 (会話の途中に戻る点、プロンプトの保存の 512 トークンごと): wave の中の塊の後にも取れる。段ごとに、その段の状態をその塊の後で写す (`Steps` の `marked`)。エンジンは今の tier に入る塊を 1 回の `Steps` に渡す
+- 中断: 塊と部品の間で `ctx` を見る。途中でやめたら wave の前の印に戻す (前の会話のキャッシュは残る)
+- 2 段の注意 (`Sparse`) は層ごとの状態なので、そのまま通る
+- ステップのマスクを fp16 のバイトで直接書く (`step.stepMasks`: 128 行 × 8192 で 3 ms → 0.1 ms。wave は段 × 塊の回数だけ作る)
+
+合成モデルで、wave と 1 塊ずつが、ロジット、印、状態、その後のステップまでビット単位で同じ (`TestPagedWave`。持ち越しを外す、マスクの位置をずらす、印の塊をずらすと失敗する)。実モデルでは 621 トークン (注意のキャッシュの塊の長さが変わらない範囲) で、専門家を 1 塊ずつ計算する形 (`HWNPU_MOE_DEBUG=many=0`) が main と 300 トークン同じ文。
+
+長いプロンプトでは値が丸めの分だけ変わる: wave は最初にキャッシュを最後の長さの塊 (1024 → 4096) にするので、注意の塊の分け方が 1 塊ずつのときと違う。2602 トークンでは 40 トークン同じ文で、約 65 トークン目で分かれた。
+
+**2. 専門家を複数の塊でまとめて計算する (`chain.moe.runMany`、`hostRows` 512)**
+
+部品の順にしたので、1 層の専門家は全部の塊の行をまとめて計算できる。専門家 1 個は呼び出しの中で 1 回だけ読まれ、その呼び出しの行に 8 本ずつ掛けられる (SMMLA)。128 行では専門家 1 個に平均 4 行しかない。
+
+| 1 回の行 | 専門家 1 個の行 | 1 行 1 層 | GMAC/秒 |
+|---|---|---|---|
+| 128 | 4.1 | 0.139 ms | 184 |
+| 256 | 8 | 0.103 | 244 |
+| 512 | 16 | 0.089 | 283 |
+| 1024 | 32 | 0.085 | 291 |
+| 2048 | 64 | 0.082 | 311 |
+
+(`TestHostRowsTimeQwen36`、専門家は全部メモリ。高性能コア 4 個だけなら 0.168〜0.107。) `Host.Run` は専門家を 1024 個 (専門家 × 行) ずつの組で回すので、行が増えても持つ量は 1 塊分 (12 MB) のまま。
+
+実機では 2602 トークンで 24.3 → 21.0 秒 (専門家 1 行 1 層 0.21 → 0.18 ms)。ベンチほど縮まないのは、読み (14.6 GB、約 4 秒) と、ファンのない機械で 20 秒続く負荷のため。値は丸めの分だけ変わる (行がどのカーネルに入るかが、同じ専門家を選んだ行の数で決まり、足す順が違う): 621 トークンで約 30 トークン目で文が分かれた。
+
+プロンプトの 21 秒はほとんど専門家 (読みを含めて約 17.5 秒) で、Neural Engine の 51 部品と注意は 21 塊で約 3.5 秒。
+
+**3. 1 トークンの専門家 (生成)**
+
+16.262 は「1 ベクトルのカーネルが遅い (1 コア 28 GMAC/秒)」と書いたが、測ると違った:
+
+- カーネルだけなら 1 コア 46 GMAC/秒で、重みがキャッシュにあっても (1 MB を繰り返し) メモリから読んでも (256 MB) 同じ。メモリの帯域ではなく、NEON の命令数で決まる (2 ブロックに約 20 個、4 つの演算器で 5 サイクル)
+- **CPU 時間の 47 % は `mincore`** (`mem.Resident`、選んだ専門家がメモリにあるかを聞く) で、カーネルは 19 %。割り付けたファイルの `mincore` は 1 ページ約 0.25 µs、1 MB (16 KiB のページ 64 枚) で 16 µs。1 層 8 個 × 4 範囲と、先読みの分
+- 働き手 8 本のうち後ろの 4 本は起きるのが遅い (`TestWake`: 続けて回して 2 / 8 / 12 / 15 / 20 / 32 / 85 / 106 µs。4 ms の間のあとは 5 本目から 2.2 ms)。前は全員が起きて報告するのを待っていた
+- 専門家 1 個を 1 コアに丸ごと渡していたので、効率コアと遅く起きたコアが層を待たせた: 8 コアと 4 コアで同じ (0.49 と 0.46 ms)
+
+直したもの:
+
+- `mem.Probe`: 範囲の中の 2 ページだけを聞く (範囲はまるごと読まれ、まるごと使われるので、あるかないかは範囲で揃う)。1 秒以内にあると分かった専門家は聞かない (`hostLayer.fresh`、`residentFor`)。1 トークンの分は、無いものがあるときだけ読み手を起こす
+- `Host.runRow`: どのコアも、どの専門家のどの一片 (重み 128 × 2048 個) でも取る。gate/up の最後の一片を終えたコアが活性化を計算し、その専門家の down が取れるようになる。起こすのは 1 層 1 回のまま
+- `mxfp4` の働き手: 呼び出し側は、自分の仕事が終わったら、仕事の中にいる働き手だけを待つ。後から起きた働き手は閉じた実行を見て寝直す
+- `mxfp4.Rows` (`mvNEON`): 複数の行を 1 回の呼び出しで。1 行 1 回の呼び出しは、down の 1 行 (16 ブロック) と同じくらいかかっていた。512 列で 38.9 → 45.6、2048 列で 45.6 → 47.3 GMAC/秒。値は `Dot` とビット単位で同じ (`TestRowsMatchesDot`: 偶数番のブロックと奇数番のブロックを別の累積に、同じ順で)
+
+| 1 層の専門家 8 個 (`TestHostTokenTimeQwen36`、全部メモリ) | 前 | 今 |
+|---|---|---|
+| 続けて回す、8 コア | 0.49 ms | 0.28 ms |
+| 続けて回す、1 コア | 1.45 | 0.64 |
+| 層の間に 1.2 ms、8 コア | 1.03〜1.55 | 0.79〜0.90 |
+| 層の間に 2.5 ms、8 コア | 1.84〜2.02 | 1.14〜1.26 |
+
+実機 (300 トークン): 専門家が全部メモリにある層 0.57 → 0.36〜0.42 ms。読み込みのある層 (3 割) は 1.6 ms のまま。最終のバイナリは、変換し直す前のモデル (Revision 1) で main と 300 トークン同じ文 (この節の CPU 側の変更は値を変えない)。
+
+**4. 間のあとの遅さ**
+
+原因は呼び出し側のスレッドが眠ること。間を眠らずに回って過ごすと遅さは消える (`HWNPU_QWEN36_SPIN`: 1.2 ms の間のあと 0.87〜0.90 → 0.28 ms、1 コアでも 1.28 → 0.63)。眠ったあとはコアが遅い状態から始まり、間が長いほど遅い。
+
+- 上の 3 つで、眠ったあとの 1 層は 1.03〜1.55 → 0.79〜0.90 ms になった (遅く起きる働き手を待たない、起きているコアが先に取る)
+- 残りは直していない。実行時に眠らせないには、Neural Engine の部品を待つ間 1 コアを回し続けることになる。gpt-oss-20b で働き手を回し続けたときは Neural Engine の部品が同じだけ遅くなった (improvements.md 8 章)
+- スレッドの優先度 (`pthread_set_qos_class_self_np` の USER_INTERACTIVE) は効かなかった (1.2 ms の間のあと 1.05〜1.09 と 0.96〜0.99 ms)。コードは残していない
+
+**5. 畳み込みの窓の出力 (Revision 2)**
+
+GDN の畳み込みの窓 `win_conv_N_new` は、窓 3 行と塊の行を並べた 131 行 (1 層 2.1 MB、30 層で 64 MB) を出し、ホストが使う 3 行を写していた。MoE のモデルでは、プログラムが 3 行だけを出す:
+
+- 1 トークンのプログラム: 並べたものの 1 行目から (slice)
+- 128 トークンのプログラム: 入力 `step_window` (1, 3, 131)、行ごとに 1 が 1 つ、との matmul。ホストは塊の有効なトークン数から作る (`PagedStepInputs`)
+- `decode.keepState` は出力が窓の大きさならそのまま写す。この形は、塊の途中までを残す (投機的な復号の一部だけの採用) には使えないので、そのときは残す分だけ走らせ直す (`wholeWindow`)
+- 密な Qwen3.5 は変えていない (窓が小さく、変換し直しになる)
+
+`TestMoEStepWindow`: 4 トークンの塊に 3 トークン (最後は詰め物) を通した窓と状態が、1 トークンずつ 3 回と同じ (選ぶ行を 1 つずらすと失敗する)。実機の最初の部品を Neural Engine と CPU で比べると (`aicheck run -cpu`)、窓はコサイン 1.000000、相対誤差 0.0009 (前の形は 0.0007。ほかの出力は前後とも 0.0012〜0.0018) で、全部 Neural Engine に載る。
+
+Revision 2 の生成の文は、Revision 1 と約 65 トークン目で分かれる (同じバイナリで。計算は同じだが、別のプログラムとしてコンパイルされる)。部品ごとの CPU との誤差は前後で同じ。変換し直しと Core AI のコンパイルで、最初の起動は 10 分。
+
+**gpt-oss-20b への効き** (同じ経路。main と交互に 2 往復、分野の違う 8 問 × 150 トークン、既定の固定): 生成 12.41、12.19 → **14.07、14.11 トークン/秒** (+14〜15 %)。プロンプトは変わらない (8 問で 707 トークン、14.7 / 14.9 → 14.5 / 14.2 秒: 専門家がメモリに収まり、1 塊ですでに専門家 1 個に 16 行あるので、読みもまとめ計算も効かない)。短い質問と 676 トークンのプロンプトの両方で、main と 200 トークン同じ文 (まとめ計算ありでも: 行の入るカーネルが変わらない)。
+
+**試して捨てたもの、気づいたこと**
+
+- SMMLA の 8 本の組に入れる閾値 (`HWNPU_MXFP4=pad=N`、1〜6): プロンプトの行で差なし
+- スレッドの優先度 (上)
+- `hwnpu-chat` は考え中の文を標準エラーに出す。標準出力だけを比べると、短い生成では空どうしの比較になる (この節の最初の照合がそうだった)。照合は標準エラーの「ready」の行から「[prompt」までを取る
+- Core AI のコンパイルのキャッシュはプロセスの名前ごと。計測用に名前を変えたバイナリは、それぞれ 1.8 GB のキャッシュを作る (7 個で 12 GB)。ディレクトリを分けて同じ名前にする
+
+**残り**
+
+- プロンプトの専門家の計算 (21 秒のうち読みを除いて約 13 秒): 1 個の専門家を 1 回読んで 16 行以上に掛けても 0.085 ms/行で頭打ち。4 ビットを int8 に開く命令が行ごとにかかる
+- 生成の読み込みのある層 (3 割、1.6 ms): 外れた専門家 1 個 1.5 MB の読み
+- 眠ったあとのコア (上)
+- 24 GB 以上の機械は未測定のまま
+
+### 16.276 Qwen3.6-35B-A3B の AMD の専門家を置き場に (16 GB の機械で 7.5 GiB、4.2 tokens/s)、AMD の hwnpu-chat が `experts_core` を渡していなかった件 — 2026-11-21
+
+16.263 の置き場 (`--expert-places`) を Qwen3.6-35B-A3B (`qwen35moe`、16.89〜16.93) に。全部を置いた書き出しは固定 23.6 GiB で 32 GB 未満の機械に載らなかった。
 
 **書き出し** (`iron_qwen35.install(places=P)`、`iron_export_lm.py qwen35moe --q4 --expert-places P`)
 
@@ -7843,7 +8433,8 @@ docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常�
 
 **hwnpu の側**
 
-- デコード: 経路の選択はデバイス (MoERoute が次のコマンドのスクラッチパッドに「番号 × 大きさ」を書く) のまま。16.261 の fed コマンドの読み戻しと置き場への書き直し (`route`、`placeChoices`) がそのまま動いた。Go は変えていない
+- main の取り込み (16.266〜16.272) で入ったデコードの演算子 (`iron_moeprobe` の gate-up と down を 1 つにした方) も共有の専門家を番号 256 で読んでいて、置き場の書き出しで IRON が落ちた (Offset too large)。同じく表の最後として読むように。取り込み後に 4 層で P = 16 と全部の書き出しのロジットが 200 ステップでビット単位で同じことを確かめた
+- デコード: 経路の選択はデバイス (MoERoute が次のコマンドのスクラッチパッドに「番号 × 大きさ」を書く) のまま。16.263 の fed コマンドの読み戻しと置き場への書き直し (`route`、`placeChoices`) がそのまま動いた。Go は変えていない
 - プロンプト (ホストの経路、`moe_route`): Qwen3.6 の数と x は専門家の番号の順 (iron_moep の counts、埋め草は 256 番目)。置き場があるとき (`HostStep.Places`) は `poolRowPasses`: 置き場にある専門家を最初のパスに、ない専門家は後のパスで要らない専門家の置き場へコピーしてからそのパスに。パスの数と x は置き場の順。1 つの専門家の行は塊の 256 トークンまで (`Cap` 256) なのでパスは置き場だけで決まる。パスの行の並べ方は前の手順と共通の `rowsPass` に
 - `TestPoolRowPasses`: 各パスで、選択の行が属する置き場にその専門家があること、コピーがパスの前にあること、数の合計と埋め草で 8 C 行、x の流れに各選択の行があること (パスの後の置き場で行を引くように壊すと落ちる)
 - 確かめ: 4 層に切った checkpoint で P = 16 と全部の書き出しのロジットが、600 トークンのプロンプトと 6 回、`-forced` の 200 ステップでビット単位で同じ (`cmp`)。40 層で P = 32、64、128 とも、全部の書き出しの記録 (600 トークンと 5 ステップ) に対し最大の差 0.000、置き場の確かめ (`HWNPU_MOE_DEBUG=check`) は 0 個違い。重みは同じで置く場所だけが違う
@@ -7862,14 +8453,16 @@ docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常�
 - 1 コマンドずつ待つ (81 コマンド) 費用は小さい (P = 128 の外れ 6 % で 5.8 → 5.1〜5.3)
 - 答えは同じ (「富士山の標高は3,776メートルです。」)
 
-**models.yaml** (`Qwen3.6-35B-A3B`、`-m qwen3.6`): 16 GB は置き場 32 (8.1 GB、`.amd-npu2-q4-p32`)、24 GB から置き場 128 (16.1 GB、`-q4-p128`)、48 GB から全部 (26.2 GB、`-q4`)。32 GB の機械に全部 (26 GB) は余裕が少ないので 128 のまま。Apple はまだ (並行して移植中)
+- **速さは #252 (配列の設定のし直しを減らす、16.266〜16.272) の前の書き出しで測った**: 全部の書き出しはそのとき 5.8 tokens/s、今の main では 8.8〜8.9 (16.272)。置き場の数字 (4.2、5.1) は前の値で、書き直しが要る。置き場とコピーの数、メモリ、ビット単位の一致は書き出しの演算に依らない
+
+**models.yaml** (`Qwen3.6-35B-A3B`、`-m qwen3.6`): 16 GB は置き場 32 (8.1 GB、`.amd-npu2-q4-p32`)、24 GB から置き場 128 (16.1 GB、`-q4-p128`)、48 GB から全部 (26.2 GB、`-q4`)。32 GB の機械に全部 (26 GB) は余裕が少ないので 128 のまま。Apple は 16.261、16.262、16.275 の形のまま (variants の memory に apple も)
 
 **使用統計と芯** (`tools/moeusage`、110 プロンプト × 200 トークン、P = 64 の書き出しで、`~/.cache/hwnpu/moeusage/qwen3.6-35b-a3b-amd`)
 
 - 1 層 201,496 回の選択。0 回の専門家がある (層 25 の 60 と 144、層 27 の 193、層 28 の 1 と 221)、10 回未満は 10240 個のうち 78 個
 - 分野の中で上位 64 個が 70〜80 %、全分野を均等に混ぜて 59 %、上位 128 個で 83 %。ほかの分野で選んだ 64 個は平均 54 % (computer 45 %、mechanical 44 %、math 48 % が低い)。gpt-oss-20b (32 個から 16 個で 81 %) よりずっと散らばる
 - 芯 (どの分野でも 1/256 以上) は 901 個 (1 層 22.5 個) で選択の 24〜31 %。**置き場 32 では芯を置くと悪くなる** (コピー 34.4 → 36.7 %、短い問い 37.3 → 38.7 %): 置き場の 7 割を芯が取り、今使われている専門家の場所が無くなる。2/256 以上の芯 (279 個、1 層 7 個) は変わらず (34.4 %)、置き場 128 では芯の有無で同じ (5.8 %)。models.yaml に `experts_core` は入れない
-- **不具合**: AMD の hwnpu-chat は書き出しを読むとき (`loadChat` の IRON の道) に `chat.Config.Experts` を作っていなかった。gpt-oss-20b の芯 (models.yaml の `experts_core`) も、アプリごとの統計 (`--experts-key`) も、AMD の置き場には渡っていなかった (16.261 の 120b の芯でコピーが 3.1 → 2.8 % になった測り方は未確認)。名前で呼んだときは定義の配置 (`expertsPlacement`) を渡すように (`chat.LookupFor`)。書き出しのディレクトリで呼ぶときは定義が無いので渡さない
+- **不具合**: AMD の hwnpu-chat は書き出しを読むとき (`loadChat` の IRON の道) に `chat.Config.Experts` を作っていなかった。gpt-oss-20b の芯 (models.yaml の `experts_core`) も、アプリごとの統計 (`--experts-key`) も、AMD の置き場には渡っていなかった (16.263 の 120b の芯でコピーが 3.1 → 2.8 % になった測り方は未確認)。名前で呼んだときは定義の配置 (`expertsPlacement`) を渡すように (`chat.LookupFor`)。書き出しのディレクトリで呼ぶときは定義が無いので渡さない
 
 **残り**
 
@@ -7877,4 +8470,3 @@ docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常�
 - デコードの先読み: 経路の選択がデバイスなので、gpt-oss-120b の形 (ホストの経路と次の層の予測) にはしていない。外れのコピー (P = 32 で 1 トークン約 55 ms) を隠せる見込み
 - GPTQ の符号 (16.101、4.3 時間) なしの q4 の書き出し。HF との照合は全部の書き出しの値 (16.93、16.101) のまま。置き場の書き出しはそれとビット単位で同じ
 - 書き出しを取得元 (NAS) へ: `~/models` に置いた 3 つ (`Qwen3.6-35B-A3B.amd-npu2-q4-p32`、`-q4-p128`、`-q4`、計 約 72 GB) は push していない。16 GB の機械は IRON の書き出し (最大 RSS 22 GB) ができないので、取得元に要る
-- `GOOS=darwin go vet` が `syscall.O_DIRECT` で通らなかった (16.261 で入った) ので、`openDirect` を linux とほかに分けた

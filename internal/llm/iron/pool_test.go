@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 )
 
 // testPool is a pool of P places for E experts in L layers, the places holding experts 0..P-1.
@@ -190,5 +192,26 @@ func TestPoolRowPasses(t *testing.T) {
 			}
 			return
 		}())
+	}
+}
+
+// TestPlaceExpertsCore: a layer's core of more than half its places is left out, a smaller one
+// kept.
+func TestPlaceExpertsCore(t *testing.T) {
+	m := &Model{pool: testPool(2, 32, 8), released: true, logf: t.Logf}
+	core := [][]int{{1, 2, 3, 4}, {1, 2, 3, 4, 5}} // 4 of 8 places kept; 5 left out
+	if err := m.PlaceExperts(experts.Placement{Core: core}); err != nil {
+		t.Fatal(err)
+	}
+	for l, want := range []int{4, 0} {
+		n := 0
+		for e := range 32 {
+			if m.pool.core[l*32+e] {
+				n++
+			}
+		}
+		if n != want {
+			t.Errorf("layer %d: %d core experts, want %d", l, n, want)
+		}
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -665,6 +666,10 @@ func (t *tier) program(ctx context.Context) decode.Program {
 		for _, a := range t.smaller {
 			p.Smaller = append(p.Smaller, a.program(ctx, a.chunk))
 		}
+		p.Carry, p.StageIn = t.carry, t.stageIn
+		p.RunMany = func(i, n int, step func(c int) error, ran func(c int, inputs []string, last bool) error) error {
+			return t.runMany(ctx, i, n, step, ran)
+		}
 		p.RunPart = func(i int) error {
 			for _, part := range t.stages[i] {
 				for _, b := range part.ins {
@@ -700,6 +705,172 @@ func (t *tier) program(ctx context.Context) decode.Program {
 		return nil
 	}
 	return p
+}
+
+// runMany runs stage i for n steps, a part at a time (decode.Program.RunMany): each part for
+// every step, in order, before the next part. What a part hands to the parts after it (its y,
+// any other output a later part takes, its experts' output) is kept by step and put back before
+// each later part runs for the step. The experts after a part then run once for all the steps'
+// rows (moe.runMany), where a part for a step at a time runs them for the step's alone.
+func (t *tier) runMany(ctx context.Context, i, n int, step func(c int) error, ran func(c int, inputs []string, last bool) error) error {
+	parts := t.stages[i]
+	// by step, what the stage's parts so far hand on: the buffers and their contents
+	type kept struct {
+		b *hwnpu.Buffer
+		v []byte
+	}
+	inner := make([][]kept, n)
+	keep := func(c int, b *hwnpu.Buffer, v []byte) {
+		for j := range inner[c] {
+			if inner[c][j].b == b {
+				inner[c][j].v = append(inner[c][j].v[:0], v...)
+				return
+			}
+		}
+		inner[c] = append(inner[c], kept{b, slices.Clone(v)})
+	}
+	for k, part := range parts {
+		last := k == len(parts)-1
+		names := t.partIn(part)
+		hands := t.hands(part)
+		layer, routed := t.moeAt[part]
+		var xb, lb, ob *hwnpu.Buffer
+		var xs, lgs, outs [][]byte
+		var rows []int
+		if routed {
+			xb, lb = t.outputs[fmt.Sprintf("moe_x_%d", layer)], t.outputs[fmt.Sprintf("moe_logits_%d", layer)]
+			ob = t.inputs[fmt.Sprintf("moe_o_%d", layer)]
+		}
+		for c := range n {
+			if err := step(c); err != nil {
+				return err
+			}
+			for _, h := range inner[c] {
+				copy(h.b.Bytes(), h.v)
+			}
+			for _, b := range part.ins {
+				b.SyncToDevice(0, b.Size())
+			}
+			if err := part.req.Run(ctx); err != nil {
+				return fmt.Errorf("chain: %s: %w", part.Path, err)
+			}
+			for _, b := range part.outs {
+				b.SyncFromDevice(0, b.Size())
+			}
+			switch {
+			case routed && last:
+				// (nothing after it in the stage waits for the experts: for the step alone)
+				if err := t.runExperts(ctx, layer); err != nil {
+					return err
+				}
+			case routed:
+				xs, lgs = append(xs, slices.Clone(xb.Bytes())), append(lgs, slices.Clone(lb.Bytes()))
+				outs, rows = append(outs, make([]byte, ob.Size())), append(rows, t.stepRows(layer))
+			}
+			if err := ran(c, names, last); err != nil {
+				return err
+			}
+			for _, b := range hands {
+				keep(c, b, b.Bytes())
+			}
+		}
+		if routed && !last {
+			if err := t.moe.runMany(ctx, layer, xs, lgs, outs, rows); err != nil {
+				return err
+			}
+			for c := range n {
+				keep(c, ob, outs[c])
+			}
+		}
+	}
+	return nil
+}
+
+// partIn names the model inputs part takes.
+func (t *tier) partIn(part *Part) []string {
+	var names []string
+	for name, b := range t.inputs {
+		if slices.Contains(part.ins, b) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// hands is the outputs of part that a part after it takes as an input.
+func (t *tier) hands(part *Part) []*hwnpu.Buffer {
+	var out []*hwnpu.Buffer
+	after := false
+	for _, p := range t.parts {
+		if p == part {
+			after = true
+			continue
+		}
+		if !after {
+			continue
+		}
+		for _, b := range p.ins {
+			if slices.Contains(part.outs, b) && !slices.Contains(out, b) {
+				out = append(out, b)
+			}
+		}
+	}
+	return out
+}
+
+// stageIn names the model inputs the parts of stage i take (decode.Program.StageIn).
+func (t *tier) stageIn(i int) []string {
+	var names []string
+	for name, b := range t.inputs {
+		for _, part := range t.stages[i] {
+			if slices.Contains(part.ins, b) {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	return names
+}
+
+// carry is the inputs of the stages after stage i that hold what the stages up to it hand on
+// for the step's tokens (decode.Program.Carry): an output of one of their parts (the hidden
+// state y, bound as the next part's x, and any other a later part takes), the output of the
+// attention after one of them, which the session writes (attn_o_N, attn_ot_N), and that of the
+// experts after one of their parts (moe_o_N).
+func (t *tier) carry(i int) [][]byte {
+	from := map[*hwnpu.Buffer]int{} // the stage that writes a buffer, or after which it is written
+	for s, parts := range t.stages {
+		for _, part := range parts {
+			for _, b := range part.outs {
+				from[b] = s
+			}
+			if layer, ok := t.moeAt[part]; ok {
+				if b := t.inputs[fmt.Sprintf("moe_o_%d", layer)]; b != nil {
+					from[b] = s
+				}
+			}
+		}
+	}
+	for s, layer := range t.attend {
+		for _, f := range []string{"attn_o_%d", "attn_ot_%d"} {
+			if b := t.inputs[fmt.Sprintf(f, layer)]; b != nil {
+				from[b] = s
+			}
+		}
+	}
+	var out [][]byte
+	var seen []*hwnpu.Buffer
+	for _, parts := range t.stages[i+1:] {
+		for _, part := range parts {
+			for _, b := range part.ins {
+				if s, ok := from[b]; ok && s <= i && !slices.Contains(seen, b) {
+					seen = append(seen, b)
+					out = append(out, b.Bytes())
+				}
+			}
+		}
+	}
+	return out
 }
 
 // Meta is the metadata of the parts (llm.ReadMeta), nil for a conversion from before it.

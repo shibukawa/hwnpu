@@ -119,7 +119,7 @@ func TestTablesShared(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "whisper-large-v3-turbo", TablesFile)
 	os.MkdirAll(filepath.Dir(out), 0o755)
 	os.WriteFile(out, []byte("tables"), 0o644)
-	m, r := tablesRecipe(ctx, out, a, []string{"model.decoder.embed_tokens.weight"}, nil)
+	m, r := tablesRecipe(ctx, out, a.Name, []string{"model.decoder.embed_tokens.weight"}, nil)
 	putTables(ctx, m, r, out)
 	shared.Flush(ctx)
 	os.Remove(out)
@@ -132,7 +132,7 @@ func TestTablesShared(t *testing.T) {
 	if _, err := os.Stat(out + ".shared"); err == nil {
 		t.Error("the download's directory is left")
 	}
-	if m2, r2 := tablesRecipe(ctx, out, a, []string{"other"}, nil); fetchTables(ctx, m2, r2, out+"2") {
+	if m2, r2 := tablesRecipe(ctx, out, a.Name, []string{"other"}, nil); fetchTables(ctx, m2, r2, out+"2") {
 		t.Error("tables of other names were taken")
 	}
 }
