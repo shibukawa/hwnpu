@@ -72,6 +72,7 @@ type Host struct {
 	place   *placer     // the experts wired by use, when they are not all (Placement)
 	pre     *prefetcher // the next layer's experts guessed and brought in, when not all are wired
 	first   int         // the first layer held
+	times   *runTimes   // HWNPU_MOE_DEBUG's time: a row's layers by what their experts were
 }
 
 // OpenHost maps the experts of rec, all of them wired when they fit (Host.wiring).
@@ -168,6 +169,9 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 		if routers := gptOssRouters(rec, sh, floats); routers != nil {
 			h.pre = newPrefetcher(h, routers, prefetchN())
 		}
+	}
+	if DebugTime() {
+		h.times = &runTimes{}
 	}
 	if pf == "wait" { // for measuring: every page in before the first run
 		h.warm.Wait()
@@ -268,6 +272,10 @@ func shardOf(checkpoint, name string) (string, error) {
 
 // Close unmaps the checkpoint.
 func (h *Host) Close() {
+	if h.times != nil {
+		h.times.report()
+		h.times = nil
+	}
 	if h.pre != nil {
 		h.pre.stop()
 		h.pre = nil
@@ -323,8 +331,16 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 		h.place.count(layer, idx)
 		h.place.ran(layer == h.first)
 	}
+	if h.times != nil && len(rows) == 1 {
+		kind, start := h.kind(layer, idx[0]), time.Now()
+		defer func() { h.times.add(kind, time.Since(start)) }()
+	}
 	if h.pre != nil && len(rows) == 1 {
+		t := time.Now()
 		h.pre.ran(layer, rows[0], idx[0])
+		if h.times != nil {
+			h.times.guess(time.Since(t))
+		}
 	}
 	for r := range rows {
 		for k, e := range idx[r] {
