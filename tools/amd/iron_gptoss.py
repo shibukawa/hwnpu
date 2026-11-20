@@ -69,10 +69,34 @@ RESIDENT = os.environ.get("GPTOSS_RESIDENT", "1") == "1"
 KV_RING = os.environ.get("GPTOSS_KV_RING", "1") == "1"
 
 
-def install(attn: str = "q8", head: str = "q4") -> None:
+# Where the experts do not all have a place (moe.EXPERTS, GPTOSS_EXPERT_PLACES, below the
+# checkpoint's): every expert's tables go to the export's experts.bin (by layer, the gate-up
+# tables of every expert then the down ones, as a layer's tables would be with every expert),
+# the places' tables in the image are zeros, and hwnpu fills them (internal/llm/iron/pool.go).
+POOL = dict(out=None, layers={})
+# The decode step's routing on the host (GPTOSS_HOST_ROUTE=1, and always for more than 32
+# experts, which GptOssStep's router and routing do not hold): a layer's command ends after its
+# attention (no R and T phases); hwnpu reads its residual, runs the router (router.bin: by layer
+# the weight transposed (HP, E) and the bias (E), float32) and writes the next command's experts'
+# offsets (per-call values) and routing weights (a state) before it submits it. hwnpu stops after
+# each command anyway when the experts have fewer places than experts.
+HOST_ROUTE = os.environ.get("GPTOSS_HOST_ROUTE", "0") == "1"
+ROUTE = dict(layers={})
+
+
+def host_route(experts: int) -> bool:
+    """Whether the decode step routes on the host (HOST_ROUTE, or more than GptOssStep's 32)."""
+    return HOST_ROUTE or experts > 32
+
+
+def install(attn: str = "q8", head: str = "q4", out=None) -> None:
     """Build gpt-oss with its attention projections and head in these formats (``q4``, ``q6``,
-    ``q8`` or ``bf16``), F.linear running iron_q4's on them. The experts are mx4 either way."""
+    ``q8`` or ``bf16``), F.linear running iron_q4's on them. The experts are mx4 either way.
+    ``out`` is the export's directory (experts.bin, where the experts have fewer places)."""
     import iron_q4
+
+    POOL.update(out=out, layers={})
+    ROUTE.update(layers={})
 
     for part, fmt in dict(attn=attn, head=head).items():
         if fmt not in ("q4", "q6", "q8", "bf16"):
@@ -130,8 +154,11 @@ class GptOssConfig(DecoderConfig):
             ValueError: ``data`` asks for what is not built here."""
         if data.get("model_type") != "gpt_oss":
             raise ValueError(f"{source}: model_type {data.get('model_type')!r} is not gpt_oss")
-        if (data.get("num_local_experts"), data.get("num_experts_per_tok", data.get("experts_per_token"))) != (32, 4):
-            raise ValueError(f"{source}: experts other than 4 of 32 are not built here")
+        experts, top = data.get("num_local_experts"), data.get("num_experts_per_tok", data.get("experts_per_token"))
+        if top != 4 or experts not in (32, 128):
+            raise ValueError(f"{source}: experts other than 4 of 32 or 128 are not built here")
+        if experts != 32 and not host_route(experts):
+            raise ValueError(f"{source}: {experts} experts route on the host only (GPTOSS_HOST_ROUTE)")
         if data.get("hidden_size") != HIDDEN or data.get("intermediate_size") != moe.INTER:
             raise ValueError(f"{source}: hidden and intermediate sizes other than 2880 are not built here")
         if (data.get("rope_scaling") or {}).get("rope_type") != "yarn":
@@ -382,12 +409,18 @@ class GptOssMoe(iron.Graph):
         db = np.asarray(x.down_proj_bias, np.float32)
         gu = np.concatenate([moe.gate_up_table(gc[e], ge[e], gb[e]) for e in range(self.n)])
         dn = np.concatenate([moe.down_table(dc[e], de[e], db[e]) for e in range(self.n)])
+        self.gu_bytes, self.dn_bytes = gu.size // self.n, dn.size // self.n
+        if moe.EXPERTS < self.n:  # the places' tables zeros (hwnpu fills them), every expert's in experts.bin
+            self.write_pool(gu, dn)
+            gu = np.zeros(moe.EXPERTS * self.gu_bytes, np.uint8)
+            dn = np.zeros(moe.EXPERTS * self.dn_bytes, np.uint8)
+        elif moe.EXPERTS != self.n:
+            raise SystemExit(f"GPTOSS_EXPERT_PLACES={moe.EXPERTS}: more places than the {self.n} experts")
         self.gu = iron.param(gu.reshape(-1, moe.BLOCK))
         self.dn = iron.param(dn.reshape(-1, moe.BLOCK))
-        self.gu_bytes, self.dn_bytes = gu.size // self.n, dn.size // self.n
         # the router's 32 rows padded to a column block (MoERoute's logit 32, a shared gate it has
         # none of, is 0), its bias likewise
-        rows = 64
+        rows = -(-self.n // 64) * 64
         w = np.zeros((rows, np.asarray(self.router.weight).shape[1]), bfloat16)
         w[: self.n] = np.asarray(self.router.weight)
         b = np.zeros(rows, bfloat16)
@@ -400,9 +433,46 @@ class GptOssMoe(iron.Graph):
         if RESIDENT:
             import iron_gptoss_layer as gl
 
-            self.router_x = iron.param(gl.router_table(np.asarray(w, np.float32)[: self.n], np.asarray(b, np.float32)[: self.n]))
+            # (routed on the host: GptOssStep's operand all the same, unread past 32 experts)
+            self.router_x = iron.param(gl.router_table(np.asarray(w, np.float32)[: min(self.n, 32)], np.asarray(b, np.float32)[: min(self.n, 32)]))
+            if host_route(self.n):
+                self.write_router(np.asarray(w, np.float32)[: self.n], np.asarray(b, np.float32)[: self.n])
             self.prog_x = iron.param(np.zeros(gl.PROG, bfloat16))  # the routing's program (program_rows)
         self.router = self.experts = None
+
+    def write_router(self, w, b):
+        """Layer index's router (w (E, HP), b (E)) into router.bin: w transposed, then b, float32."""
+        out = POOL["out"]
+        if out is None:
+            raise SystemExit("GPTOSS_HOST_ROUTE: install(out=...) names the export's directory for router.bin")
+        f = Path(out) / "router.bin"
+        Path(out).mkdir(parents=True, exist_ok=True)
+        if not ROUTE["layers"] and f.exists():
+            f.unlink()
+        E, K = w.shape
+        layer = 4 * (K * E + E)
+        with open(f, "r+b" if f.exists() else "w+b") as fh:
+            fh.seek(self.index * layer)
+            fh.write(np.ascontiguousarray(w.T, np.float32).tobytes())
+            fh.write(np.ascontiguousarray(b, np.float32).tobytes())
+        ROUTE["layers"][self.index] = dict(offset=self.index * layer)
+
+    def write_pool(self, gu, dn):
+        """Layer index's every expert's tables into experts.bin at index × the layer's bytes."""
+        out = POOL["out"]
+        if out is None:
+            raise SystemExit("GPTOSS_EXPERT_PLACES: install(out=...) names the export's directory for experts.bin")
+        out = Path(out)
+        out.mkdir(parents=True, exist_ok=True)
+        f = out / "experts.bin"
+        if not POOL["layers"] and f.exists():
+            f.unlink()  # an earlier export's
+        layer = gu.size + dn.size
+        with open(f, "r+b" if f.exists() else "w+b") as fh:
+            fh.seek(self.index * layer)
+            fh.write(np.ascontiguousarray(gu).tobytes())
+            fh.write(np.ascontiguousarray(dn).tobytes())
+        POOL["layers"][self.index] = dict(offset=self.index * layer, gu_bytes=int(self.gu_bytes), dn_bytes=int(self.dn_bytes))
 
     def body(self, hn, h, call):
         if call.prompt:
@@ -478,7 +548,7 @@ class MoEHost:
     def __init__(self, kind: str, layer: int, experts: int, top: int, C: int, states: MoEStates):
         self.kind, self.layer, self.experts, self.top, self.C, self.states = kind, layer, experts, top, C, states
         self.hwnpu = dict(kind=kind, layer=layer, experts=experts, top=top, cap=moe.CAP, tokens=C,
-                          in_features=moe.HIDDEN, kt=moe.KT, slots=moe.SLOTS,
+                          in_features=moe.HIDDEN, kt=moe.KT, slots=moe.SLOTS, places=moe.EXPERTS,
                           slot_values=[""] * moe.EXPERTS + [f"slot{i}" for i in range(moe.EXPERTS, moe.SLOTS)])
 
     def __call__(self, *args):
@@ -613,6 +683,34 @@ class GptOss(CausalLM):
         bound = getattr(ids, "valid", None) or {}
         return Copy.step(self.embed_rows[: bound[0]] if 0 in bound else self.embed_rows[: shape[0]])
 
+    def hwnpu_experts_pool(self):
+        """The manifest's experts_pool where the layers' tables have fewer places than experts
+        (GPTOSS_EXPERT_PLACES): experts.bin and, by layer, its tables' buffers and place there."""
+        if not POOL["layers"]:
+            return None
+        L = self.config.num_hidden_layers
+        if sorted(POOL["layers"]) != list(range(L)):
+            raise SystemExit(f"experts.bin holds layers {sorted(POOL['layers'])} of {L}")
+        return dict(file="experts.bin", experts=int(self.config.num_local_experts), places=int(moe.EXPERTS),
+                    layers=[dict(gu=f"model.layers.{l}.mlp.gu", dn=f"model.layers.{l}.mlp.dn", **POOL["layers"][l])
+                            for l in range(L)])
+
+    def hwnpu_experts_route(self):
+        """The manifest's experts_route where the decode step routes on the host (host_route):
+        router.bin and, by layer, the buffers of its residual, its norm's weight and the next
+        command's routing weights."""
+        c = self.config
+        if not host_route(c.num_local_experts):
+            return None
+        L = c.num_hidden_layers
+        names = ROUTE.get("names", {})
+        if sorted(ROUTE["layers"]) != list(range(L)) or sorted(names) != list(range(L)):
+            raise SystemExit(f"router.bin holds layers {sorted(ROUTE['layers'])}, the decode step routes {sorted(names)} of {L}")
+        return dict(file="router.bin", experts=int(c.num_local_experts), top=int(c.num_experts_per_tok), hidden=HP,
+                    eps=float(c.eps), weights=moe.WV,
+                    layers=[dict(norm=f"weights.model.layers.{l}.post_attention_layernorm.weight", **names[l],
+                                 **ROUTE["layers"][l]) for l in range(L)])
+
     def head(self, x):
         # The padded head's logits whole: hwnpu reads the first vocab_size (iron.Model.logits),
         # and a cut would be a copy of its own.
@@ -690,13 +788,19 @@ class GptOss(CausalLM):
         call.embeddings = x
         pos, ROW = call.position, gl.ROW
         h, rw = x.reshape(HP), self._rw0
+        if host_route(c.num_local_experts) and getattr(self, "_host_rw", None) is None:
+            self._host_rw = [iron.state((moe.WV,), bfloat16, name=f"moe_rw{l}") for l in range(L)]
         ye = None
         for l in range(L + 1):
             prev, cur = layers[max(l - 1, 0)], layers[min(l, L - 1)]
             a, m, pm = cur.self_attn, cur.mlp, prev.mlp
             # the last command: the last layer's experts, then the head (its norm's weight in the
             # place of the input norm's)
-            phases = (gl.PH_E if l > 0 else 0) | (gl.PH_Q | gl.PH_A | gl.PH_O | gl.PH_R | gl.PH_T if l < L else gl.PH_H)
+            hosted = host_route(c.num_local_experts)
+            attn = gl.PH_Q | gl.PH_A | gl.PH_O | (0 if hosted else gl.PH_R | gl.PH_T)
+            phases = (gl.PH_E if l > 0 else 0) | (attn if l < L else gl.PH_H)
+            if hosted and l > 0:  # the routing weights the host wrote for layer l - 1's experts
+                rw = self._host_rw[l - 1]
             head = self.lm_head.weight.reshape(-1, gl.HB)
             sliding = cur.cache.window is not None
             n = gl.objects(pos)
@@ -723,7 +827,10 @@ class GptOss(CausalLM):
                 kvn=int(np.prod(cur.cache.kv.shape)), eps=c.eps,
                 phases=phases, sliding=sliding, picked=l - 1, routed=l if l < L else -1,
                 fed_at=self.fed_at(l), **values)
-            if l < L:
+            if l < L and hosted:
+                ROUTE.setdefault("names", {})[l] = dict(yo=yo.name, rw=self._host_rw[l].name)
+                iron.on_host(lambda: None)  # the host routes layer l: the next command's words and weights
+            elif l < L:
                 call.feedback.append((l, image.name))
                 iron.on_host(lambda: None)  # the next command's words are this one's routing's
             h, rw = yo, yw
@@ -750,6 +857,8 @@ class GptOss(CausalLM):
         """As iron_qwen35.Qwen35Moe.program_rows: each layer's MoERoute program from the decode
         step's commands; the manifest's ``fed``."""
         if RESIDENT and QUANT and FUSE_QKV:
+            if host_route(self.config.num_local_experts):
+                return []  # no command's words are the device's
             return self.resident_rows(kernels)
         from iron_qwen35 import Qwen35Moe
 

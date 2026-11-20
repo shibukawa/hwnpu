@@ -2,6 +2,7 @@ package experts
 
 import (
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -159,4 +160,91 @@ func TestPlacementPressure(t *testing.T) {
 		t.Fatalf("free again: %d experts wired, want 5", got)
 	}
 	pl.stop()
+}
+
+// The system's warning with more than the core wired lowers the budget's ceiling a step below
+// what was wired, so that the next balance does not wire the same again; it rises after ceilHold.
+func TestPlacementWarned(t *testing.T) {
+	const L, E = 2, 8
+	h := fakeHost(L, E)
+	eb := h.expertBytes()
+	u := NewUsage(L, E)
+	for l := range L {
+		for e := range E {
+			u.Add(l, [][]int{{e}})
+		}
+	}
+	path := filepath.Join(t.TempDir(), "u.bin")
+	if err := u.Write(path); err != nil {
+		t.Fatal(err)
+	}
+	place := Placement{Core: [][]int{{0}}, Usage: path, Idle: -1, Ceiling: filepath.Join(t.TempDir(), "experts-usage", "ceiling")}
+	pl := fakeLock(newPlacer(h, place, 9*eb, L))
+	free := mem.Pressure{Free: 40, Level: 1}
+	now, clock := free, time.Unix(1000, 0)
+	pl.pressure = func() (mem.Pressure, bool) { return now, true }
+	pl.now = func() time.Time { return clock }
+	pl.balance(true)
+	if got := len(wiredSet(pl)); got != 9 {
+		t.Fatalf("free: %d experts wired, want 9", got)
+	}
+	// the warning: the core alone, and a ceiling 2 experts (a quarter of the 8 above the core) lower
+	for _, want := range []int{7, 5} {
+		now = mem.Pressure{Free: 24, Level: 2}
+		pl.balance(false)
+		if got := len(wiredSet(pl)); got != 1 {
+			t.Fatalf("warned: %d experts wired, want the core's 1", got)
+		}
+		now = free
+		for range 3 { // it stays there
+			clock = clock.Add(30 * time.Second)
+			pl.balance(false)
+			if got := len(wiredSet(pl)); got != want {
+				t.Fatalf("after the warning: %d experts wired, want %d", got, want)
+			}
+		}
+	}
+	// the next run starts under the ceiling the first kept
+	pl.stop()
+	timeNow = func() time.Time { return clock }
+	defer func() { timeNow = time.Now }()
+	next := fakeLock(newPlacer(fakeHost(L, E), place, 9*eb, L))
+	next.pressure = pl.pressure
+	next.balance(true)
+	if got := len(wiredSet(next)); got != 5 {
+		t.Fatalf("the next run: %d experts wired, want 5", got)
+	}
+	clock = clock.Add(ceilHold)
+	next.balance(false)
+	if got := len(wiredSet(next)); got != 7 {
+		t.Fatalf("after %v: %d experts wired, want 7", ceilHold, got)
+	}
+	// a warning right after the step up: back to 5, and twice as long before the next step
+	now = mem.Pressure{Free: 24, Level: 2}
+	clock = clock.Add(30 * time.Second)
+	next.balance(false)
+	now = free
+	clock = clock.Add(ceilHold)
+	next.balance(false)
+	if got := len(wiredSet(next)); got != 5 {
+		t.Fatalf("%v after a warning that followed a step up: %d experts wired, want 5", ceilHold, got)
+	}
+	clock = clock.Add(ceilHold)
+	next.balance(false)
+	if got := len(wiredSet(next)); got != 7 {
+		t.Fatalf("%v after it: %d experts wired, want 7", 2*ceilHold, got)
+	}
+	next.stop()
+	// and with the time of the ceiling long past, none
+	clock = clock.Add(24 * time.Hour)
+	last := fakeLock(newPlacer(fakeHost(L, E), place, 9*eb, L))
+	last.pressure = pl.pressure
+	last.balance(true)
+	if got := len(wiredSet(last)); got != 9 {
+		t.Fatalf("a day later: %d experts wired, want 9", got)
+	}
+	last.stop()
+	if _, err := os.Stat(place.Ceiling); err == nil {
+		t.Fatalf("%s is left with no ceiling", place.Ceiling)
+	}
 }

@@ -33,15 +33,20 @@ const IRONEnv = "HWNPU_IRON_ENV"
 func AMDRoot() string { return cache.Entries(cache.AMDTarget) }
 
 // amdSuffix is the suffix of the export's directory iron_export_lm.py's options make: -q4 for
-// --q4, -q6 when the MLP is in 6 bits (--mlp q6), none in bf16.
+// --q4, -q6 when the MLP is in 6 bits (--mlp q6), none in bf16; then -pN for a mixture of
+// experts with N places a layer (--expert-places N: gpt-oss-20b on 16 GB, a variant of its own).
 func amdSuffix(args []string) string {
-	if !slices.Contains(args, "--q4") {
-		return ""
+	suffix := ""
+	if slices.Contains(args, "--q4") {
+		suffix = "-q4"
+		if i := slices.Index(args, "--mlp"); i >= 0 && i+1 < len(args) {
+			suffix = "-" + args[i+1]
+		}
 	}
-	if i := slices.Index(args, "--mlp"); i >= 0 && i+1 < len(args) {
-		return "-" + args[i+1]
+	if i := slices.Index(args, "--expert-places"); i >= 0 && i+1 < len(args) {
+		suffix += "-p" + args[i+1]
 	}
-	return "-q4"
+	return suffix
 }
 
 // AMDExportDir is the directory of model m's export for AMD's NPU that models.yaml's

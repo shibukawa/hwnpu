@@ -23,15 +23,15 @@ func markdown(rep *report) string {
 	sb.WriteString("Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, random values), so a call is the work of generating one token without the attention over the context.\n")
 
 	if len(rep.Bench) > 0 {
-		sb.WriteString("\n## Speed\n\n| weights | format | unit | placement | ms/token | tokens/s | weights GB/s | CPU use | net W | mJ/token | compile s | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		sb.WriteString("\n## Speed\n\n| weights | format | unit | placement | ms/token | tokens/s | weights GB/s | G weights/s | CPU use | net W | mJ/token | compile s | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, r := range rep.Bench {
 			tps := ""
 			if r.MsPerCall > 0 {
 				tps = fmt.Sprintf("%.1f", 1000/r.MsPerCall)
 			}
-			fmt.Fprintf(&sb, "| %.2f B, %.2f GiB | %s | %s | %s | %s | %s | %s | %s | %s | %s | %.1f | %s |\n",
+			fmt.Fprintf(&sb, "| %.2f B, %.2f GiB | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %.1f | %s |\n",
 				float64(r.Params)/1e9, probe.GiB(r.WeightBytes), r.Format, strings.ToUpper(r.Units), r.placement(),
-				cell(r.MsPerCall, "%.1f"), tps, cell(r.gbps(), "%.0f"), cell(r.CPUUse, "%.2f"), cell(r.NetW, "%.2f"), cell(r.MJPerCall, "%.1f"), r.CompileS, errCell(r))
+				cell(r.MsPerCall, "%.1f"), tps, cell(r.gbps(), "%.0f"), cell(gweights(r.Params, r.MsPerCall), "%.0f"), cell(r.CPUUse, "%.2f"), cell(r.NetW, "%.2f"), cell(r.MJPerCall, "%.1f"), r.CompileS, errCell(r))
 		}
 	}
 
@@ -214,6 +214,9 @@ func markdown(rep *report) string {
 	if len(rep.Cache) > 0 {
 		cacheMarkdown(&sb, rep.Cache)
 	}
+	if len(rep.AMD) > 0 {
+		amdMarkdown(&sb, rep.AMD, rep.AMDIdle)
+	}
 	if len(rep.Notes) > 0 {
 		sb.WriteString("\n")
 		for _, n := range rep.Notes {
@@ -222,9 +225,10 @@ func markdown(rep *report) string {
 	}
 	sb.WriteString(`
 Placement: Apple, Core ML's compute plan (MLComputePlan) for every operation; Intel, NPU when the
-driver compiler built the graph (it has no fallback). CPU use is the process CPU time divided by
+driver compiler built the graph (it has no fallback); AMD, IRON's full ELF, all on the NPU. CPU use is the process CPU time divided by
 the wall time while the model runs: near 0 when the NPU does the work, 1 or more when the CPU
-does. weights GB/s is the weight bytes times calls per second. net W is the device's power meter
+does. weights GB/s is the weight bytes times calls per second; G weights/s the weights times calls
+per second, the same in every format (a model of N billion weights decodes at that over N tokens/s). net W is the device's power meter
 while running minus idle, when it has one.
 `)
 	return sb.String()
@@ -253,4 +257,12 @@ func formatsOf(rows []result) []string {
 		}
 	}
 	return fs
+}
+
+// gweights is the billions of weights read a second by calls of ms over params weights.
+func gweights(params int64, ms float64) float64 {
+	if ms == 0 {
+		return 0
+	}
+	return float64(params) / (ms / 1000) / 1e9
 }
