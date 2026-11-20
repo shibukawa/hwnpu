@@ -296,6 +296,23 @@ models:
       - [0, 4, 11, 15, 22, 23]  # layer 22
       - [0, 22, 31]  # layer 23
     about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (all wired into memory on 24 GB and more; on 16 GB 6 GB of them, the ones every text runs and those the application runs most), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
+  gpt-oss-120b:
+    family: gpt-oss
+    tag: 120b
+    kind: chat
+    from: hf:openai/gpt-oss-120b
+    license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-120b/blob/main/LICENSE", class: open}
+    # AMD only. Ryzen AI 9 365 with 64 GB, 2026-11-20 (design.md 16.261): its 61.2 GiB of experts
+    # do not fit, so a layer holds 56 places of its 128 (26.8 GiB) and hwnpu copies a chosen
+    # expert in from experts.bin (read with O_DIRECT, 2.5 ms an expert); the decode step routed
+    # on the host. 32.05 GiB pinned for the NPU and 1.0 GiB of the process; 9.2–9.3 tokens/s,
+    # 9–12 % of the choices copied in
+    machine: 64
+    memory: {amd: 35.5}
+    bytes: {amd: 69.6e9}
+    features: [tools, thinking]
+    amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256 --expert-places 56
+    about: "OpenAI's gpt-oss-120b, a mixture of experts (117B, 5.1B active): on AMD's NPU with 64 GB, 56 of each layer's 128 experts in the NPU's memory and the others copied in from the disk when chosen; its experts in the checkpoint's own 4 bit MXFP4, the attention in 8 bit tables and the output layer in 4 bit ones; it always reasons first (the low effort with no_think)"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b
