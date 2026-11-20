@@ -1478,7 +1478,7 @@ func fetchHFTee(ctx context.Context, repo, name, path string, log io.Writer, tee
 		}
 	}
 	pw := &progress{w: dst, done: have, from: have, total: total, plan: planned(path),
-		bar: console.NewBar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), repo))}
+		bar: console.NewTransferBar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), repo))}
 	_, err = io.Copy(pw, resp.Body)
 	if cerr := f.Close(); err == nil {
 		err = cerr
