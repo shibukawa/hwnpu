@@ -14,6 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
@@ -400,6 +401,27 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	fail := func(err error) (*Engine, error) {
 		e.Close()
 		return nil, err
+	}
+	// a mixture of experts with fewer places than experts: the core experts and this
+	// application's most used in them first (experts.Placement, as the Mac's wired experts)
+	if err := m.PlaceExperts(c.Experts); err != nil {
+		return fail(err)
+	}
+	// the experts a mixture of experts runs, counted as the host's experts count them
+	// (experts.Placement.Usage, HWNPU_MOE_DEBUG=usage=FILE): the same files and tools
+	if L, E := m.ExpertsShape(); L > 0 {
+		dbg, _ := experts.DebugOpt("usage")
+		for _, p := range []string{c.Experts.Usage, dbg} {
+			if p != "" {
+				e.irUsageTo = append(e.irUsageTo, p)
+			}
+		}
+		if len(e.irUsageTo) > 0 {
+			e.irUsage = experts.NewUsage(L, E)
+			if err := m.CountExperts(e.irUsage); err != nil {
+				return fail(err)
+			}
+		}
 	}
 	arch, err := archOf(m.Manifest.Model)
 	if err != nil {

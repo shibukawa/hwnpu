@@ -50,6 +50,54 @@ type Manifest struct {
 	Multimodal *Multimodal `json:"multimodal"`
 	// HostTables are tables whose rows the host writes into the arena before each call.
 	HostTables []HostTable `json:"host_tables"`
+	// ExpertsPool, where not nil, says a mixture of experts' layers hold fewer places than
+	// experts (gpt-oss's GPTOSS_EXPERT_PLACES): the host fills the places from its file (pool.go).
+	ExpertsPool *ExpertsPool `json:"experts_pool,omitempty"`
+	// ExpertsRoute, where not nil, says the decode step's experts are chosen on the host
+	// (gpt-oss's GPTOSS_HOST_ROUTE, and its 128 experts): route.go.
+	ExpertsRoute *ExpertsRoute `json:"experts_route,omitempty"`
+}
+
+// ExpertsRoute is the router of a decode step routed on the host: by layer, in File at Offset,
+// the router's weight transposed (Hidden, Experts) and its bias (Experts), float32; the layer's
+// residual after its attention (YO, Hidden bf16 of the decode step's), its norm's weight (Norm)
+// and the routing weights the next command's experts read (RW, Weights bf16: Top used).
+type ExpertsRoute struct {
+	File    string       `json:"file"`
+	Experts int          `json:"experts"`
+	Top     int          `json:"top"`
+	Hidden  int          `json:"hidden"`
+	Eps     float64      `json:"eps"`
+	Weights int          `json:"weights"`
+	Layers  []RouteLayer `json:"layers"`
+}
+
+// RouteLayer is a layer of ExpertsRoute.
+type RouteLayer struct {
+	Norm   string `json:"norm"`
+	YO     string `json:"yo"`
+	RW     string `json:"rw"`
+	Offset int64  `json:"offset"`
+}
+
+// ExpertsPool is the experts' file of an export whose layers' tables have Places places of an
+// expert's tables each, for Experts experts: by layer at Offset, every expert's gate-up tables
+// (GUBytes each), then every one's down tables (DNBytes each); the places' tables are the
+// buffers GU and DN (a bank's, the same in every version), place i at i × the expert's bytes.
+type ExpertsPool struct {
+	File    string      `json:"file"`
+	Experts int         `json:"experts"`
+	Places  int         `json:"places"`
+	Layers  []PoolLayer `json:"layers"`
+}
+
+// PoolLayer is a layer of ExpertsPool.
+type PoolLayer struct {
+	GU      string `json:"gu"`
+	DN      string `json:"dn"`
+	Offset  int64  `json:"offset"`
+	GUBytes int    `json:"gu_bytes"`
+	DNBytes int    `json:"dn_bytes"`
 }
 
 // Checkpoint is a recurrent layer's state: the buffer of its slots.

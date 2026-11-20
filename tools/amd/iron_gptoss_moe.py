@@ -39,7 +39,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 KT, MT, PR, GROUP = 320, 32, 16, 32
 BLOCK = MT * KT // GROUP + MT * KT // 2 + 2 * MT  # 5504: the exponents (a byte a group), the codes, the bias
-TOP, EXPERTS = 4, 32
+# EXPERTS: the places of a layer's tables, an expert's tables each: every expert (32), or fewer
+# where the layer's experts do not all stay on the device (GPTOSS_EXPERT_PLACES, a multiple of 4:
+# hwnpu copies an expert in from the export's experts.bin when it is chosen and not in a place,
+# internal/llm/iron/pool.go). A prompt pass's fixed slots are the places
+TOP = 4
+EXPERTS = int(os.environ.get("GPTOSS_EXPERT_PLACES", "32"))
 HIDDEN, INTER = 2880, 2880
 CORES = int(os.environ.get("MX4_CORES", "4"))  # cores a column (the memtile splits each object of the weights between them)
 IPAD = 3072  # an expert's gate-up out-features (2880 and 192 of zeros): 96 blocks, 12 for each of its 8 cores
@@ -732,7 +737,7 @@ SB = int(os.environ.get("MX4_SB", "8"))  # rows an object of x
 # command's scratchpad holds 32 words, so not every slot can take one). x and the activations
 # stream a slot's CAP rows whatever its count, so CAP near a chunk's rows an expert (256 tokens:
 # about 32) is what they cost; the overflow slots are the weights read again.
-SLOTS = int(os.environ.get("MX4_SLOTS", "40"))
+SLOTS = int(os.environ.get("MX4_SLOTS", str(EXPERTS + 8)))
 GROUPS = SLOTS // TOP  # a prompt runs the slots 4 at a time on the decode step's columns
 COUNT_WORDS = 64  # the counts' int32 words (a slot's rows), the first object of the x channel
 assert SLOTS % TOP == 0 and SLOTS <= COUNT_WORDS

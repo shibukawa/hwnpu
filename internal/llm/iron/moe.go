@@ -35,8 +35,11 @@ type HostStep struct {
 	// expert the graph's value SlotValues[i] ("" for a fixed slot); none, a slot an expert
 	Slots      int      `json:"slots,omitempty"`
 	SlotValues []string `json:"slot_values,omitempty"`
-	Reads      []Region `json:"reads"`
-	Writes     []Region `json:"writes"`
+	// Places, where below Experts, is the places of the layer's tables (Manifest.ExpertsPool):
+	// fixed slot i is place i, and the experts not in a place are copied in between passes
+	Places int      `json:"places,omitempty"`
+	Reads  []Region `json:"reads"`
+	Writes []Region `json:"writes"`
 }
 
 // Region is a buffer's place in an argument, and the tensor it holds.
@@ -86,6 +89,9 @@ type moePass struct {
 	copies   []rowCopy
 	slotRows []int
 	cap      int
+	// loads: the experts (expert, place) of a layer with fewer places than experts copied in
+	// before the pass (pool.go)
+	loads [][2]int
 }
 
 // rowCopy is one k-block of one choice's row of x: bytes src.. of the chunk's rows to dst.. of
@@ -214,6 +220,7 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 		}
 		rt.shared[t] = roundBF16(float32(1 / (1 + math.Exp(-float64(vals[E])))))
 	}
+	m.countPrompt(h.Layer, ids)
 	// Passes: tokens in order, a new pass where a token would give an expert more than Cap rows.
 	var passTokens [][]int
 	cnt := make([]int, E)
@@ -342,6 +349,15 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 	for i, p := range rt.passes {
 		for k, x := range p.values {
 			values[k] = x
+		}
+		if len(p.loads) > 0 {
+			t0 := time.Now()
+			if err := m.loadExperts(route.Layer, p.loads); err != nil {
+				return err
+			}
+			if os.Getenv("HWNPU_IRON_TIMING") != "" {
+				fmt.Fprintf(os.Stderr, "moe pass %d of layer %d: %d experts copied in, %.1f ms\n", i, route.Layer, len(p.loads), time.Since(t0).Seconds()*1000)
+			}
 		}
 		if i > 0 { // the last pass's y lies over the shared expert's input
 			if err := m.writeRegion(v, route.Reads[1], rt.hn); err != nil {
@@ -473,6 +489,7 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 			rt.w[t*top+k] = roundBF16(float32(e[k] / sum))
 		}
 	}
+	m.countPrompt(h.Layer, ids)
 	// Passes: each token into the first pass where its experts have room (any pass: combine
 	// finds each choice's row), a new pass where none has. Every pass streams the weights again,
 	// so fewer is faster: in order, a 256-token chunk took 3 passes at Cap 64 an expert. By slots,
@@ -486,6 +503,12 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 	}
 	if h.Writes[0].Bytes < 4*S || h.Writes[1].Bytes < 2*S*in*cap {
 		return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots of %d rows past its counts and x", h.Layer, S, cap)
+	}
+	if h.Places > 0 && h.Places < E {
+		if h.Slots <= h.Places {
+			return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots for %d places", h.Layer, S, h.Places)
+		}
+		return rt, m.poolPasses(h, rt, ids, n, K)
 	}
 	if h.Slots > 0 && S < E {
 		return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots for %d experts", h.Layer, S, E)
