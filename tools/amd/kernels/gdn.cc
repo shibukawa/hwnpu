@@ -63,11 +63,13 @@ using acc_t = aie::accum<accfloat, N>;
 template <unsigned N>
 using bf_t = aie::vector<bfloat16, N>;
 
-// The arrays a core keeps from one call to the next point into the worker's scratch buffer
-// (gdn_bind, at the start of the core's run): as static arrays (.bss) the array's every
-// configuration wrote them with zeros, 8 KB a core (docs/design.md 16.263).
+// The state's limbs a core keeps from one call to the next point into the worker's scratch
+// buffer (gdn_bind, at the start of the core's run): as static arrays (.bss) the array's every
+// configuration wrote them with zeros, 12 KB a core (docs/design.md 16.263).
 constexpr int r32(int n) { return (n + 31) / 32 * 32; }
-bfloat16 *s_hi, *s_mid, *s_lo; // Dk * P each
+bfloat16 *s_hi; // the three limbs, Dk * P each: s_mid and s_lo follow s_hi (one pointer to load)
+#define s_mid (s_hi + Dk * P)
+#define s_lo (s_hi + 2 * Dk * P)
 alignas(64) bfloat16 row[KP], v_row[P], out[P];
 // One per row: a then b; the squared norms of q then k, then their
 // reciprocal roots; exp's arguments, then decay and exp(-b).
@@ -218,7 +220,7 @@ static_assert(Dv == L && Dk % L == 0, "gdn: a slice of 16 value columns");
 // The block the gathers fill: q (R x Dk), k (R x Dk), v (R x Dv), then a (R)
 // and b (R), as gated_delta_rule's argument.
 constexpr int BLK = R * (2 * Dk + Dv + 2);
-bfloat16 *blk; // BLK
+alignas(64) bfloat16 blk[BLK];
 
 // A float from its two 16-bit halves (a runtime parameter word is one half).
 inline float from_halves(int32_t hi, int32_t lo) {
@@ -540,9 +542,9 @@ constexpr int ZW = 0;
 #endif
 constexpr int SEG = GDR_SEG, KC = GDR_CONV;
 static_assert(KC >= 2 && (KC - 1) * SEG <= 2 * Dk * Dv, "gdn_conv: 2 taps or more, the rows in a half");
-bfloat16 *u_row; // r32(SEG), in the scratch buffer (gdn_bind)
+alignas(64) bfloat16 u_row[r32(SEG)];
 #ifdef GDR_NORM_DIM
-bfloat16 *y_keep;                                  // HD: a value head's y, its slices (gdn_rule_keep)
+alignas(64) bfloat16 y_keep[HD];                   // a value head's y, its slices (gdn_rule_keep)
 float y_rinv;                                      // 1 / rms of y_keep (gdn_norm at slice 0)
 #endif
 
@@ -644,7 +646,8 @@ extern "C" void gdn_norm(bfloat16 *restrict out, const bfloat16 *restrict xt, in
 // SEG), their z (STEPS of ZW), then the taps (KC of SEG).
 constexpr int STEPS = GDR_STEPS, SEGP = (SEG + 31) / 32 * 32;
 static_assert(R == 1 && GDR_BLOCKS == STEPS, "gdn steps: a row a block");
-bfloat16 *u_rows, *y_rows; // STEPS * SEGP, STEPS * HD, in the scratch buffer (gdn_bind)
+alignas(64) bfloat16 u_rows[STEPS * SEGP];
+alignas(64) bfloat16 y_rows[STEPS * HD];
 
 // Row m's convolution (into u_rows) and the KC - 1 rows ending with it (hout): the rows are
 // hin's KC - 1, then xt's, so row m reads hin's past the first m and xt's up to m.
@@ -722,28 +725,10 @@ extern "C" void gdn_norm_step(bfloat16 *restrict out, const bfloat16 *restrict x
 #endif
 #endif
 
-// gdn_bind points the arrays a core keeps between calls into scratch, the worker's buffer of
-// gdn_scratch bf16 (iron_gdn.py: each array rounded up to 32, and 32 more to align the
-// first to 64 bytes). The core calls it first, before the others.
+// gdn_bind points the state's three limbs into scratch, the worker's buffer of gdn_scratch bf16
+// (iron_gdn.py: 3 Dk P, and 32 more to align them to 64 bytes). The core calls it first. The
+// smaller arrays (blk, u_row, y_keep: under 2 KB a core) stay static: as pointers too, the decode
+// step's core (with gdn_gather_conv_v) passed its 16 KB of program memory by 80 bytes.
 extern "C" void gdn_bind(bfloat16 *scratch) {
-  bfloat16 *p = (bfloat16 *)(((uintptr_t)scratch + 63) & ~(uintptr_t)63);
-  auto take = [&](int n) {
-    bfloat16 *q = p;
-    p += r32(n);
-    return q;
-  };
-  s_hi = take(Dk * P);
-  s_mid = take(Dk * P);
-  s_lo = take(Dk * P);
-  blk = take(BLK);
-#ifdef GDR_SEG
-  u_row = take(SEG);
-#ifdef GDR_NORM_DIM
-  y_keep = take(HD);
-#ifdef GDR_STEPS
-  u_rows = take(STEPS * SEGP);
-  y_rows = take(STEPS * HD);
-#endif
-#endif
-#endif
+  s_hi = (bfloat16 *)(((uintptr_t)scratch + 63) & ~(uintptr_t)63);
 }

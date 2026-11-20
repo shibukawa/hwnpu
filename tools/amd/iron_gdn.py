@@ -200,21 +200,12 @@ def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, v
 @functools.cache
 def gdn_scratch(R: int, dk: int, seg: int = 0, dv: int = 0, conv: int = 0, norm: bool = False,
                 steps: int = 0) -> int:
-    """The bf16 of a core's scratch buffer (kernels/gdn.cc's gdn_bind): the arrays a core keeps
-    between calls, each rounded up to 32, and 32 more to align the first to 64 bytes. As the
+    """The bf16 of a core's scratch buffer (kernels/gdn.cc's gdn_bind): the state's three limbs a
+    core keeps between calls (dk x 16 each), and 32 more to align them to 64 bytes. As the
     kernel's static arrays (.bss) they were written with zeros at every configuration of the
-    array, 8 KB a core (docs/design.md 16.263)."""
-    def r32(v: int) -> int:
-        return (v + 31) // 32 * 32
-
-    n = 3 * r32(dk * SLICE) + r32(R * (2 * dk + SLICE + 2))
-    if conv:
-        n += r32(seg)
-        if norm:
-            n += r32(dv)
-            if steps:
-                n += r32(steps * r32(seg)) + r32(steps * dv)
-    return n + 32
+    array, 12 KB a core (docs/design.md 16.263). The other arguments are the kernel's shape, kept
+    for the callers."""
+    return 3 * dk * SLICE + 32
 
 
 def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pairs: bool = False,
