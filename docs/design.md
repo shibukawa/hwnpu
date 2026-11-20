@@ -8310,3 +8310,29 @@ arXiv の Neural Engine の論文 (2606.22283 のリバースエンジニアリ�
 - 部分ごとに lut4 を混ぜる (2B、残りは lut6。KL / 最上位の一致、回転なし → 回転あり): 出力層 lut4 0.105 → 0.062 (215)、down_proj 0.133 → 0.076、gate と up 0.157 → 0.124、MLP 全部 0.232 → 0.178、GDN 0.250 → 0.111、出力層と down 0.186 → 0.111。**回しても今の lut6 (0.056) に届く lut4 の組み合わせはない**。いちばん近い出力層 lut4 は重みの 27 % だが、1 行の速さは lut6 の 1.1 倍 (上の表) なので、見込みは全体で 2〜3 %。逆に MLP を lut8 にすると 0.037 → 回転で 0.019
 - 速さ: 今の 2B lut6 の書き出しは 32.0〜32.5 tok/s (`--mtp off`、温度 0、200 トークン、3 回)。出力層 lut4 の書き出しは、Neural Engine の初めてのコンパイルが 2 時間で終わらず測れなかった (ANECompilerService が止めた後も動き続けた)
 - 製品に入れるのに残っていること: MTP (書き出しの `h` は最後の norm の後の値で、MTP の fc が読む。回すと 1 + w が掛からない)、ホストの埋め込みの表 (`WriteTables` は bf16 をそのまま写す)、実行時に埋め込みを引く所 (`chat` のエンジン)、`Revision` を上げて書き出し直し、Neural Engine での 12 問
+
+### 16.271 AMD: QGEMV を 1 列 1 コアに、sandwich を次の GEMV の中で — 2026-11-20
+
+16.264〜16.270 の後、LFM3-1.7B のデコードの設定のし直し (288 回 / トークン、13.6 MB) で最も大きいのは QGEMV の設定だった (2048 出力の q8 で 1 つ 92 KB、1 トークン 46 回で 4.2 MB)。QGEMV は 8 列 × 2 コア (memtile が列ブロックの 64 出力を 32 ずつ 2 コアに分ける) で、その 16 コアのプログラムと DMA の設定を、他の演算子から戻るたびに書き直していた。
+
+- **1 列 1 コア** (`iron_q4.q_linear` の cores、既定 0 = 16384 出力まで 1、越えると 2。`HWNPU_Q_CORES`、`HWNPU_Q_CORES_UP_TO`): 1 つのコアが列ブロックの 64 出力を両方持つ (カーネルは `Q_OUT=64`)。設定はほぼ半分 (2048 出力の q8 で 92 → 36 KB)、GEMV は同じ速さ (帯域で決まる)、結果はビット単位で同じ。QGEMVGlu は 2 コアのまま (1 コアでは gate と up の 2 本の累算で遅くなる: 16.3 トークン/秒)。`HWNPU_GLU_CORES`
+- **sandwich を次の GEMV の中で** (`iron_q4.sandwich_operator`、`sandwich_linear`、`kernels/mv_add.h` の `Q_SANDWICH`): ブロックの出力 h、残差、post norm と次の norm の重み (Gemma 4 の layer_scalar の scale も) を x のチャネルに続けて流し、各コアが y = r + rms(h) w_post と n = rms(y) w_pre を作ってから n の GEMV をする (SandwichAdd と同じ和と丸め: 同じビット)。列 0 の 2 コアが y と n を出す。LFM3 の conv の層の in_proj、MLP の QGEMVGlu、出力層で使う (`HWNPU_LFM3_SANDWICH_GEMV`)。注意の層の前の 11 個は SandwichAdd のまま (q、k、v、ゲートの 4 つが n を読む)。`iron_q4.py check --sandwich [--glu silu|gelu] [--scale]` で y と n は誤差 0、GEMV はコサイン 0.99998
+- 確かめ: どれも今の main の書き出し (`hwnpu-dev cache export` で作り直したもの) とロジットがビット単位で同じ (`ironlm -record` の 1010 トークン + 29 歩、PLaMo 3 は hwnpu-chat の訳が同じ)
+
+| デコード (NPU を他が使っていない回、交互に) | 設定のし直し / トークン | 設定 | 速さ |
+|---|---|---|---|
+| LFM3-1.7B、今の main | 288 | 13.6 MB | 15.6 トークン/秒 |
+| + sandwich を GEMV の中で | 252 | 12.3 MB | 15.5 (変わらない) |
+| + 1 列 1 コア (sandwich なし) | 288 | 8.4 MB | 17.1 |
+| + 両方 | 252 | 7.9 MB | **17.2〜17.3** |
+| 両方 + QGEMVGlu も 1 コア | 288 | 7.1 MB | 16.3 |
+| Gemma 4 E2B、今の main → 1 列 1 コア | 672 | 22.9 → 16.0 MB | 9.3 → **9.7** |
+| Qwen3.5-0.8B → 1 列 1 コア | 222 | 13.3 → 11.2 MB | 18.5 → **18.7** |
+| PLaMo 3 Translate 2B → 1 列 1 コア | 414 | 12.4 → 9.6 MB | 同じ (31 トークンの訳で 12.6 / 12.8) |
+
+- sandwich を GEMV に入れても速くならないのは、SandwichAdd の設定が小さく (1 コア)、その後の GEMV への戻りの設定はそのまま残るから。コストの見積もりでは 1 トークン約 4 ms だが、各コアで同じ sandwich を計算し x の物が 4 倍になる分と相殺した
+- LFM3 の残り (1 列 1 コアの後): 252 回 7.9 MB で見積もり 28.6 ms (58 ms のうち)。いちばん大きいのは QGEMVGlu の sandwich 版の 94 KB × 24。ここから大きく減らすには層を 1 つの配列にする (gpt-oss の `GptOssStep`)
+- プロンプト (LFM3、16 トークン、`HWNPU_IRON_TIMING`): 18 コマンドで約 465 ms、設定のし直し 890 回 56 MB で見積もり約 165 ms (35 %)。残りは重みの展開と GEMM
+- 計測の間、別のセッションが Qwen3.6 の置き場の hwnpu-chat (`~/.cache/hwnpu-q36pool`) を回していた。上の表は NPU を他が開いていない回だけ (`/dev/accel/accel0` の fd を見て)
+
+**取得元の書き出し**: #252 で道具 (`iron_export_lm.py` は全部のチャットのモデルが読む) が変わり、鍵が全部変わったので、`hwnpu-dev cache export` で 14 のモデルを作り直して取得元 (NAS) に置いた (古い鍵の物は残る)。`cache export` はモデルの定義だけを作り、gpt-oss-20b の 24 GB からの版 (置き場なし) を作らなかったので、amd_export の違う variants も作るようにした (`amdForms`、`TestAMDForms`)。
