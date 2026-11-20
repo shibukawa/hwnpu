@@ -160,3 +160,52 @@ func TestPlacementPressure(t *testing.T) {
 	}
 	pl.stop()
 }
+
+// The system's warning with more than the core wired lowers the budget's ceiling a step below
+// what was wired, so that the next balance does not wire the same again; it rises after ceilHold.
+func TestPlacementWarned(t *testing.T) {
+	const L, E = 2, 8
+	h := fakeHost(L, E)
+	eb := h.expertBytes()
+	u := NewUsage(L, E)
+	for l := range L {
+		for e := range E {
+			u.Add(l, [][]int{{e}})
+		}
+	}
+	path := filepath.Join(t.TempDir(), "u.bin")
+	if err := u.Write(path); err != nil {
+		t.Fatal(err)
+	}
+	pl := fakeLock(newPlacer(h, Placement{Core: [][]int{{0}}, Usage: path, Idle: -1}, 9*eb, L))
+	free := mem.Pressure{Free: 40, Level: 1}
+	now, clock := free, time.Unix(1000, 0)
+	pl.pressure = func() (mem.Pressure, bool) { return now, true }
+	pl.now = func() time.Time { return clock }
+	pl.balance(true)
+	if got := len(wiredSet(pl)); got != 9 {
+		t.Fatalf("free: %d experts wired, want 9", got)
+	}
+	// the warning: the core alone, and a ceiling 2 experts (a quarter of the 8 above the core) lower
+	for _, want := range []int{7, 5} {
+		now = mem.Pressure{Free: 24, Level: 2}
+		pl.balance(false)
+		if got := len(wiredSet(pl)); got != 1 {
+			t.Fatalf("warned: %d experts wired, want the core's 1", got)
+		}
+		now = free
+		for range 3 { // it stays there
+			clock = clock.Add(30 * time.Second)
+			pl.balance(false)
+			if got := len(wiredSet(pl)); got != want {
+				t.Fatalf("after the warning: %d experts wired, want %d", got, want)
+			}
+		}
+	}
+	clock = clock.Add(ceilHold)
+	pl.balance(false)
+	if got := len(wiredSet(pl)); got != 7 {
+		t.Fatalf("after %v: %d experts wired, want 7", ceilHold, got)
+	}
+	pl.stop()
+}
