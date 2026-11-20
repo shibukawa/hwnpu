@@ -174,3 +174,32 @@ func TestEncode(t *testing.T) {
 		}
 	}
 }
+
+// Rows gives Dot's value for every row, bit for bit: with blocks in fours, with two left over
+// (gpt-oss's 90) and with an odd number of them (no kernel of rows).
+func TestRowsMatchesDot(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	for _, c := range []struct{ rows, cols int }{{37, 2048}, {64, 512}, {5, 2880}, {9, 64}, {3, 96}, {1, 32}} {
+		nb := c.cols / Block
+		w, e := make([]byte, c.rows*nb*16), make([]byte, c.rows*nb)
+		for i := range w {
+			w[i] = byte(r.Uint32())
+		}
+		for i := range e {
+			e[i] = byte(110 + r.IntN(20))
+		}
+		x := make([]float32, c.cols)
+		for i := range x {
+			x[i] = float32(r.NormFloat64()) * float32(math.Exp(r.NormFloat64()))
+		}
+		v := NewVec(c.cols)
+		v.Quantize(x)
+		out := make([]float32, c.rows)
+		Rows(out, w, e, v)
+		for i := range out {
+			if want := Dot(w[i*nb*16:(i+1)*nb*16], e[i*nb:(i+1)*nb], v); out[i] != want || want == 0 {
+				t.Fatalf("%d rows of %d: row %d is %g, Dot gives %g", c.rows, c.cols, i, out[i], want)
+			}
+		}
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"unsafe"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -107,7 +108,61 @@ func cpuPaged(t *testing.T, man *llm.Manifest, allocated *int) decode.Program {
 	}
 	stages = append(stages, cur)
 	var y milcpu.Tensor
+	// what a stage hands on (decode.Program.Carry): the hidden state, kept between the stages in
+	// handed (a stage begins from it), the attention's output and the outputs a later part takes
+	handed := make([][]float32, len(stages))
+	for i := range handed {
+		handed[i] = make([]float32, count(p.InShape["x"]))
+	}
+	takes := func(s int) map[string]bool {
+		names := map[string]bool{}
+		for _, i := range stages[s] {
+			for name := range parts[i].prog.Inputs() {
+				names[name] = true
+			}
+		}
+		return names
+	}
+	p.StageIn = func(s int) []string {
+		var names []string
+		for name := range takes(s) {
+			if p.In[name] != nil {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	p.Carry = func(s int) [][]byte {
+		out := [][]byte{unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(handed[s]))), 4*len(handed[s]))}
+		for _, f := range []string{"attn_o_%d", "attn_ot_%d"} {
+			if b := p.In[fmt.Sprintf(f, p.Attend[s])]; b != nil {
+				out = append(out, b)
+			}
+		}
+		for later := s + 1; later < len(stages); later++ {
+			for name := range takes(later) {
+				made := false
+				for _, st := range stages[:s+1] {
+					for _, i := range st {
+						made = made || slices.Contains(parts[i].outs, name)
+					}
+				}
+				if made && !slices.ContainsFunc(out, func(b []byte) bool { return unsafe.SliceData(b) == unsafe.SliceData(p.Out[name]) }) {
+					out = append(out, p.Out[name])
+				}
+			}
+		}
+		return out
+	}
 	p.RunPart = func(s int) error {
+		if s > 0 {
+			y = milcpu.Tensor{Shape: p.InShape["x"], Data: slices.Clone(handed[s-1])}
+		}
+		defer func() {
+			if s < len(stages)-1 {
+				copy(handed[s], y.Data)
+			}
+		}()
 		for _, i := range stages[s] {
 			in := map[string]milcpu.Tensor{}
 			for name, sh := range parts[i].prog.Inputs() {
@@ -382,4 +437,158 @@ func TestPagedLastRow(t *testing.T) {
 		t.Error("LastRow without a cache was built")
 	}
 	t.Logf("worst relative error %.2g", worst)
+}
+
+// Several steps run a stage at a time (decode.Session.Steps: every step through the parts before
+// the first attention layer, then every step through the next) give the logits, the marks and the
+// states of the steps run in turn, bit for bit: with a padded last step, a mark inside the wave,
+// and going on from the wave's end and from its mark. And so they do through the program's own
+// run of a stage for all the steps (decode.Program.RunMany).
+func TestPagedWave(t *testing.T) {
+	for _, many := range []bool{false, true} {
+		t.Run(fmt.Sprintf("RunMany %v", many), func(t *testing.T) { testPagedWave(t, many) })
+	}
+}
+
+func testPagedWave(t *testing.T, many bool) {
+	cfg := tinyConfig(t)
+	w := llm.NewSynthetic(cfg)
+	tokens := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3}
+	emb := embed16(t, cfg, w, tokens)
+	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
+	const q, cache, chunk = 4, 24, 8
+	man := convertPaged(t, cfg, w, q, cache, chunk)
+	allocated := 0
+	var sessions [2]*decode.Session
+	var ran []int // the stages the wave's session ran, in order
+	direct := 0
+	for i := range sessions {
+		p := cpuPaged(t, man, &allocated)
+		if i == 1 {
+			run := p.RunPart
+			p.RunPart = func(s int) error {
+				ran = append(ran, s)
+				return run(s)
+			}
+			if many {
+				p.RunPart = func(s int) error {
+					direct++ // a step outside a wave
+					return run(s)
+				}
+				p.RunMany = func(s, n int, step func(c int) error, done func(c int, inputs []string, last bool) error) error {
+					for c := range n {
+						if err := step(c); err != nil {
+							return err
+						}
+						ran = append(ran, s)
+						if err := run(s); err != nil {
+							return err
+						}
+						if err := done(c, p.StageIn(s), true); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+			}
+		}
+		s, err := decode.New(p, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessions[i] = s
+	}
+	one, wave := sessions[0], sessions[1]
+	// 4 + 4 + 4 + 3 tokens (the last step padded), a mark after the second; then 3 more
+	var steps [][][]float32
+	for pos := 0; pos < 15; pos += q {
+		var step [][]float32
+		for i := pos; i < min(pos+q, 15); i++ {
+			step = append(step, row(i))
+		}
+		steps = append(steps, step)
+	}
+	rest := [][]float32{row(15), row(16), row(17)}
+	var want []float32
+	var wantMark *decode.Mark
+	var wantAt []float32
+	for i, step := range steps {
+		var err error
+		if want, err = one.Step(step); err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			wantMark, wantAt = one.Mark(), want
+		}
+	}
+	asked := 0
+	got, marks, err := wave.Steps(steps, []int{1}, func() error { asked++; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked < len(steps)*len(man.Parts) {
+		t.Errorf("asked %d times whether to go on, in a wave of %d steps of %d stages", asked, len(steps), len(man.Parts))
+	}
+	same := func(what string, a, b []float32) {
+		t.Helper()
+		if len(a) != len(b) || len(a) == 0 {
+			t.Fatalf("%s: %d and %d values", what, len(a), len(b))
+		}
+		for i := range a {
+			if a[i] != b[i] {
+				t.Fatalf("%s: value %d is %g a stage at a time, %g a step at a time", what, i, a[i], b[i])
+			}
+		}
+	}
+	if want := []int{0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2}; !slices.Equal(ran, want) || direct != 0 {
+		t.Fatalf("the stages ran in the order %v, want %v (%d by RunPart of a program with RunMany)", ran, want, direct)
+	}
+	same("the logits after the wave", got, want)
+	if wave.Pos() != one.Pos() || wave.Pos() != 15 {
+		t.Fatalf("at %d and %d", wave.Pos(), one.Pos())
+	}
+	if len(marks) != 1 || marks[0].Mark.Pos() != wantMark.Pos() {
+		t.Fatalf("%d marks", len(marks))
+	}
+	same("the logits at the mark", marks[0].Logits, wantAt)
+	if len(marks[0].Mark.Bufs()) != len(wantMark.Bufs()) || len(wantMark.Bufs()) == 0 {
+		t.Fatalf("the mark holds %d states, want %d", len(marks[0].Mark.Bufs()), len(wantMark.Bufs()))
+	}
+	for name, b := range wantMark.Bufs() {
+		if !slices.Equal(marks[0].Mark.Bufs()[name], b) {
+			t.Errorf("the mark's %s differs", name)
+		}
+	}
+	next := func(s *decode.Session) []float32 {
+		t.Helper()
+		l, err := s.Step(rest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	same("the step after the wave", next(wave), next(one))
+	// back to the marks, each session to its own, and on from there
+	wave.Rewind(marks[0].Mark)
+	one.Rewind(wantMark)
+	again := [][]float32{row(8), row(9), row(10), row(11)}
+	a, err := wave.Step(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := one.Step(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same("the step after the mark", a, b)
+
+	// a wave that would pass the cache's end stops before the step that does not fit
+	wave.Reset()
+	var over [][][]float32
+	for range cache/q + 1 {
+		over = append(over, steps[0])
+	}
+	if _, _, err := wave.Steps(over, nil, nil); err == nil {
+		t.Error("no error past the cache's end")
+	}
 }

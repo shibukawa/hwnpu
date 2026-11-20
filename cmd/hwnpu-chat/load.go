@@ -175,7 +175,13 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 	}
 	promptDir := chat.PromptStore(lf.PromptCache, lf.Cache)
 	if iron != "" {
-		e, err := chat.Load(ctx, chat.Config{IRON: iron, Tokenizer: cf.Tokenizer, Log: logw(), PromptDir: promptDir, Idle: lf.Idle})
+		c := chat.Config{IRON: iron, Tokenizer: cf.Tokenizer, Log: logw(), PromptDir: promptDir, Idle: lf.Idle}
+		// a model of the definitions: its experts' places get its core and this application's
+		// counts first (an export's directory has neither)
+		if m, ok := chat.LookupFor(name); ok && !isPath(name) {
+			c.Experts = expertsPlacement(m, lf)
+		}
+		e, err := chat.Load(ctx, c)
 		return loaded{Engine: e}, err
 	}
 	gb := memoryGiven(name, cf)
@@ -211,15 +217,8 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 	c.PromptDir = promptDir
 	c.Dense = !cf.Sparse
 	c.Idle = lf.Idle
-	idle := lf.Idle
-	if idle <= 0 {
-		idle = -1 // never
-	}
 	// a model without experts on the host ignores it
-	c.Experts = experts.Placement{Core: m.ExpertsCore, Idle: idle, Ceiling: filepath.Join(chat.ModelDir(m), "experts-usage", "ceiling")}
-	if lf.ExpertsKey != "off" {
-		c.Experts.Usage = chat.ExpertsUsage(chat.ModelDir(m), lf.ExpertsKey)
-	}
+	c.Experts = expertsPlacement(m, lf)
 	// the flags override the encoders Prepare converted (a model with vision or audio); without
 	// them those stay
 	if ef != nil && ef.Vision != "" {
@@ -286,4 +285,18 @@ func ints(ns []int) string {
 		s = append(s, strconv.Itoa(n))
 	}
 	return strings.Join(s, ",")
+}
+
+// expertsPlacement is how a mixture of experts' experts that do not all fit are placed: model
+// m's core (models.yaml's experts_core) first, then by this application's counts (--experts-key).
+func expertsPlacement(m chat.Model, lf *loadFlags) experts.Placement {
+	idle := lf.Idle
+	if idle <= 0 {
+		idle = -1 // never
+	}
+	p := experts.Placement{Core: m.ExpertsCore, Idle: idle, Ceiling: filepath.Join(chat.ModelDir(m), "experts-usage", "ceiling")}
+	if lf.ExpertsKey != "off" {
+		p.Usage = chat.ExpertsUsage(chat.ModelDir(m), lf.ExpertsKey)
+	}
+	return p
 }

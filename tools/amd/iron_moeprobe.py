@@ -409,7 +409,7 @@ def expert_operators():
 
 # --- the fused layer (--q4moe q4 --fused) ----------------------------------------------------
 
-SHARED = EXPERTS  # the shared expert's index in the tables (one more than the routed)
+SHARED = EXPERTS  # the shared expert's index in a table of every expert (the operators read it as the table's last)
 # By a MoERoute's ``picked`` key, the experts its reference chose last (iron_moe.py): on the host,
 # where no device writes the scratchpad, the experts' references read them from here.
 PICKED: dict[int, list[int]] = {}
@@ -586,7 +586,7 @@ def fused_operators():
                 self.w.fill(TAP((WV,), 0, [WV], [1]), lane=l, managed=False)
             for l in range(TOP):
                 self.W.fill(TAP((total,), 0, [eb], [1]), lane=l, offset_parameter=offset(self, l), managed=False)
-                self.W.fill(TAP((total,), SHARED * eb + l * cb_bytes, [cb_bytes], [1]), lane=l, managed=False)
+                self.W.fill(TAP((total,), total - eb + l * cb_bytes, [cb_bytes], [1]), lane=l, managed=False)
             for d in drains:
                 d.await_()
 
@@ -600,7 +600,7 @@ def fused_operators():
             w = np.asarray(w, np.float64)
             ys = []
             routed = picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], eb)
-            for idx, at in enumerate([*routed, SHARED * eb]):
+            for idx, at in enumerate([*routed, flat.size - eb]):
                 gu = dequantize(flat[int(at) : int(at) + eb], 2 * self.NE, self.K).astype(np.float64)
                 gu = gu.reshape(self.NE // CB, 2, CB, self.K)
                 g = gu[:, 0].reshape(self.NE, self.K) @ x
@@ -710,7 +710,7 @@ def fused_operators():
                 for e in range(TOP):
                     self.W.fill(TAP((total,), l * run, [run], [1]), lane=l, offset_parameter=offset(self, e),
                                 managed=False)
-                self.W.fill(TAP((total,), SHARED * eb + l * run, [run], [1]), lane=l, managed=False)
+                self.W.fill(TAP((total,), total - eb + l * run, [run], [1]), lane=l, managed=False)
             for d in drains:
                 d.await_()
 
@@ -723,7 +723,7 @@ def fused_operators():
             x = np.asarray(x, np.float64)
             y = np.asarray(r, np.float64).copy()
             routed = picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], eb)
-            for i, at in enumerate([*routed, SHARED * eb]):
+            for i, at in enumerate([*routed, flat.size - eb]):
                 d = dequantize(flat[int(at) : int(at) + eb], self.N, self.KE).astype(np.float64)
                 y += d @ x[i * self.KE : (i + 1) * self.KE]
             return y.astype(bfloat16)
@@ -949,7 +949,7 @@ def _experts_operator():
             for l in range(n):
                 self.Wg.fill(TAP((gtotal,), 0, [geb], [1]), lane=l, offset_parameter=offset(self, f"e{l}"),
                              managed=False)
-                self.Wg.fill(TAP((gtotal,), SHARED * geb + l * cb_bytes, [cb_bytes], [1]), lane=l,
+                self.Wg.fill(TAP((gtotal,), gtotal - geb + l * cb_bytes, [cb_bytes], [1]), lane=l,
                              managed=False)
             # The down table's first runs right behind the gate-up's, not waiting for phase 1; the
             # rest after phase 2's x. Its 9 runs a column queued at once overflowed the channel's
@@ -960,7 +960,7 @@ def _experts_operator():
                     self.Wd.fill(TAP((dtotal,), l * run, [run], [1]), lane=l,
                                  offset_parameter=offset(self, f"d{e}"), managed=False)
                 else:
-                    self.Wd.fill(TAP((dtotal,), SHARED * deb + l * run, [run], [1]), lane=l, managed=False)
+                    self.Wd.fill(TAP((dtotal,), dtotal - deb + l * run, [run], [1]), lane=l, managed=False)
 
             for l in range(n):
                 for e in range(AHEAD):
@@ -988,7 +988,7 @@ def _experts_operator():
             fg, fd = np.asarray(Wg, np.uint8).reshape(-1), np.asarray(Wd, np.uint8).reshape(-1)
             xv, wv = np.asarray(x, np.float64), np.asarray(w, np.float64)
             acts = []
-            for idx, at in enumerate([*picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], ge), SHARED * ge]):
+            for idx, at in enumerate([*picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], ge), fg.size - ge]):
                 gu = dequantize(fg[int(at) : int(at) + ge], 2 * self.NE, self.K).astype(np.float64)
                 gu = gu.reshape(self.NE // CB, 2, CB, self.K)
                 g = gu[:, 0].reshape(self.NE, self.K) @ xv
@@ -997,7 +997,7 @@ def _experts_operator():
             a = np.concatenate(acts).astype(bfloat16)
             av = a.astype(np.float64)
             out = np.asarray(r, np.float64).copy()
-            for i, at in enumerate([*picked_offsets(self, [d0, d1, d2, d3, d4, d5, d6, d7], de), SHARED * de]):
+            for i, at in enumerate([*picked_offsets(self, [d0, d1, d2, d3, d4, d5, d6, d7], de), fd.size - de]):
                 dw = dequantize(fd[int(at) : int(at) + de], self.N, self.NE).astype(np.float64)
                 out += dw @ av[i * self.NE : (i + 1) * self.NE]
             return np.concatenate([a, out.astype(bfloat16)])

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 )
 
 // testPool is a pool of P places for E experts in L layers, the places holding experts 0..P-1.
@@ -103,5 +105,113 @@ func TestPoolPasses(t *testing.T) {
 			}
 		}
 		t.Logf("%d tokens: %d passes", n, len(rt.passes))
+	}
+}
+
+// TestPoolRowPasses (Qwen3.6's moe_route): every choice of a chunk runs in a pass where its
+// expert is in the place whose rows hold it, the places' copies come before, each pass's counts
+// add up to the chunk's rows with the padding, and x's stream holds each choice's row.
+func TestPoolRowPasses(t *testing.T) {
+	const E, top, K, C = 64, 8, 2 * moeKT, 32
+	rng := rand.New(rand.NewPCG(3, 4))
+	for trial, tc := range []struct{ n, P int }{{1, 16}, {7, 16}, {32, 16}, {32, 8}, {32, 60}} {
+		m := &Model{pool: testPool(1, E, tc.P)}
+		if trial == 3 {
+			m.pool.core[2] = true // kept in its place, others evicted first
+		}
+		h := &HostStep{Layer: 0, Experts: E, Top: top, Cap: 256, Tokens: C, Places: tc.P}
+		n := tc.n
+		ids := make([]int32, n*top)
+		for t := range n {
+			for k, e := range rng.Perm(E)[:top] {
+				ids[t*top+k] = int32(e)
+			}
+		}
+		rows := make([]byte, 2*n*K)
+		for i := range rows {
+			rows[i] = byte(rng.IntN(256))
+		}
+		rt := &moeRoute{pass: make([]int32, n*top), row: make([]int32, n*top)}
+		before := append([]int(nil), m.pool.places[0].at...)
+		if err := m.poolRowPasses(h, rt, ids, rows, n, K); err != nil {
+			t.Fatal(err)
+		}
+		at := before
+		seen := 0
+		for q, ps := range rt.passes {
+			for _, ld := range ps.loads {
+				at[ld[1]] = ld[0]
+			}
+			count := func(i int) int {
+				b := ps.counts[4*i:]
+				return int(b[0]) | int(b[1])<<8 | int(b[2])<<16 | int(b[3])<<24
+			}
+			// the first row of each place, x's offset of its first row
+			first, xat := make([]int, tc.P+1), make([]int, tc.P+1)
+			total := 0
+			for i := range tc.P {
+				first[i+1], xat[i+1] = first[i]+count(i), xat[i]+2*count(i)*K
+				total += count(i)
+			}
+			if total != ps.rows || total+count(moePad) != top*C {
+				t.Fatalf("n %d pass %d: %d rows, %d counted, padding %d of %d", n, q, ps.rows, total, count(moePad), top*C)
+			}
+			for c := range ids {
+				if int(rt.pass[c]) != q {
+					continue
+				}
+				seen++
+				r := int(rt.row[c])
+				i := 0
+				for first[i+1] <= r {
+					i++
+				}
+				if at[i] != int(ids[c]) {
+					t.Fatalf("n %d pass %d: choice %d of expert %d in place %d holding %d", n, q, c, ids[c], i, at[i])
+				}
+				// its gate's k-block 1: x's stream of place i, the gate's pass, block 1, row r - first
+				cnt, j := count(i), r-first[i]
+				x := xat[i] + (1*cnt+j)*moeKT
+				want := rows[2*(c/top*K+moeKT) : 2*(c/top*K+2*moeKT)]
+				if got := ps.xs[2*x : 2*(x+moeKT)]; string(got) != string(want) {
+					t.Fatalf("n %d pass %d: choice %d's x is not its row's", n, q, c)
+				}
+			}
+		}
+		if seen != len(ids) {
+			t.Fatalf("n %d: %d of %d choices in a pass", n, seen, len(ids))
+		}
+		for i, e := range at {
+			if m.pool.places[0].at[i] != e || m.pool.places[0].of[e] != i {
+				t.Fatalf("n %d: the pool's place %d is not the passes' %d", n, i, e)
+			}
+		}
+		t.Logf("%d tokens, %d places: %d passes, %d copies", n, tc.P, len(rt.passes), func() (s int) {
+			for _, ps := range rt.passes {
+				s += len(ps.loads)
+			}
+			return
+		}())
+	}
+}
+
+// TestPlaceExpertsCore: a layer's core of more than half its places is left out, a smaller one
+// kept.
+func TestPlaceExpertsCore(t *testing.T) {
+	m := &Model{pool: testPool(2, 32, 8), released: true, logf: t.Logf}
+	core := [][]int{{1, 2, 3, 4}, {1, 2, 3, 4, 5}} // 4 of 8 places kept; 5 left out
+	if err := m.PlaceExperts(experts.Placement{Core: core}); err != nil {
+		t.Fatal(err)
+	}
+	for l, want := range []int{4, 0} {
+		n := 0
+		for e := range 32 {
+			if m.pool.core[l*32+e] {
+				n++
+			}
+		}
+		if n != want {
+			t.Errorf("layer %d: %d core experts, want %d", l, n, want)
+		}
 	}
 }

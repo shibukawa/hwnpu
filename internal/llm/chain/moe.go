@@ -431,6 +431,15 @@ func (t *tier) runExperts(ctx context.Context, layer int) error {
 	o := t.inputs[fmt.Sprintf("moe_o_%d", layer)]
 	xs.SyncFromDevice(0, xs.Size())
 	lg.SyncFromDevice(0, lg.Size())
+	if err := t.moe.run(ctx, layer, xs.Bytes(), lg.Bytes(), o.Bytes(), t.stepRows(layer)); err != nil {
+		return err
+	}
+	return o.SyncToDevice(0, o.Size())
+}
+
+// stepRows is the rows of the step in the tier's inputs that layer's experts run on: those up to
+// the one the input last picks (the program that reads prompts), else all.
+func (t *tier) stepRows(layer int) int {
 	rows := t.outShape[fmt.Sprintf("moe_x_%d", layer)][1]
 	if last := t.inputs["last"]; last != nil {
 		b := last.Bytes()
@@ -440,10 +449,76 @@ func (t *tier) runExperts(ctx context.Context, layer int) error {
 			}
 		}
 	}
-	if err := t.moe.run(ctx, layer, xs.Bytes(), lg.Bytes(), o.Bytes(), rows); err != nil {
+	return rows
+}
+
+// hostRows is the most rows one call of the host's experts takes of several steps' (runMany):
+// with 8 of 256 experts a row, 512 rows give an expert 16, two full groups of the kernel that
+// takes 8 vectors at a time (Qwen3.6-35B-A3B on an M3: 0.139 ms a row at 128 rows a call, 0.089
+// at 512, 0.085 at 1024).
+const hostRows = 512
+
+// runMany runs layer's experts for several steps: xs and logits are each step's moe_x_N and
+// moe_logits_N and rows its rows, and out, of each step's moe_o_N, is written. On the host the
+// steps' rows go together, hostRows a call: an expert is decoded once for all the rows of a call
+// that chose it, and a step of 128 tokens gives most of 256 experts fewer rows than the kernel
+// takes at a time. The values differ from a step at a time in the last bits (which kernel takes a
+// row depends on how many rows share its expert, and they sum in different orders).
+func (m *moe) runMany(ctx context.Context, layer int, xs, logits, out [][]byte, rows []int) error {
+	if v, _ := experts.DebugOpt("many"); m.host == nil || v == "0" {
+		for c := range xs {
+			if err := m.run(ctx, layer, xs[c], logits[c], out[c], rows[c]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	start := time.Now()
+	H, E, K := m.shape.Hidden, m.shape.Experts, m.shape.TopK
+	type at struct{ step, row int }
+	var from []at
+	var x, y [][]float32
+	var idx [][]int
+	var w [][]float32
+	lg := make([]float32, E)
+	flush := func() error {
+		if len(from) == 0 {
+			return nil
+		}
+		if err := m.host.Run(layer, x, idx, w, y); err != nil {
+			return fmt.Errorf("chain: layer %d's experts: %w", layer, err)
+		}
+		for i, a := range from {
+			vecops.F32ToF16(out[a.step][2*a.row*H:2*(a.row+1)*H], y[i])
+		}
+		m.Calls += len(from)
+		from, x, y, idx, w = from[:0], x[:0], y[:0], idx[:0], w[:0]
+		return nil
+	}
+	for c := range xs {
+		clear(out[c])
+		for r := range rows[c] {
+			xr, yr := make([]float32, H), make([]float32, H)
+			vecops.F16ToF32(xr, xs[c][2*r*H:2*(r+1)*H])
+			vecops.F16ToF32(lg, logits[c][2*r*E:2*(r+1)*E])
+			ir, wr := make([]int, K), make([]float32, K)
+			m.routing.Choose(lg, nil, ir, wr)
+			from, x, y, idx, w = append(from, at{c, r}), append(x, xr), append(y, yr), append(idx, ir), append(w, wr)
+			if len(from) == hostRows {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := flush(); err != nil {
 		return err
 	}
-	return o.SyncToDevice(0, o.Size())
+	m.Time += time.Since(start)
+	m.Called += time.Since(start)
+	return nil
 }
 
 // runRows runs a call's experts with the program of all its rows: each expert any of the first
