@@ -40,6 +40,7 @@ type File struct {
 	names    []string
 	dataBase int64
 	Metadata map[string]string // the "__metadata__" entry, if any
+	mapped   []byte            // the file mapped by Map
 }
 
 type header struct {
@@ -96,7 +97,13 @@ func Open(path string) (*File, error) {
 }
 
 // Close closes the file.
-func (f *File) Close() error { return f.f.Close() }
+func (f *File) Close() error {
+	f.unmap()
+	return f.f.Close()
+}
+
+// ReadAt reads the file at off into p.
+func (f *File) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
 
 // Names lists the tensors in sorted order.
 func (f *File) Names() []string { return append([]string(nil), f.names...) }

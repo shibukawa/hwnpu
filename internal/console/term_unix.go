@@ -36,6 +36,15 @@ func columns(f *os.File) int {
 	return int(ws.Col)
 }
 
+// size is the columns and rows of the terminal f, 0 and 0 when they cannot be read.
+func size(f *os.File) (cols, rows int) {
+	var ws struct{ Row, Col, X, Y uint16 }
+	if err := ioctl(int(f.Fd()), syscall.TIOCGWINSZ, unsafe.Pointer(&ws)); err != nil {
+		return 0, 0
+	}
+	return int(ws.Col), int(ws.Row)
+}
+
 func ioctl(fd int, req uintptr, arg unsafe.Pointer) error {
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), req, uintptr(arg)); e != 0 {
 		return e

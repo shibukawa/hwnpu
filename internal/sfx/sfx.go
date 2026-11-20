@@ -27,6 +27,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/qwen3"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -121,6 +122,13 @@ type Paths struct {
 	Stages  []string // the decoder's stages
 	TextCfg *qwen3.Config
 	Tables  string // TablesFile
+	// Host are the files the host reads the text encoder's embedding table and final norm
+	// from (prefix "") and the DiT's HostTensors (prefix "dit."); nil: the checkpoint's. An
+	// export for AMD's NPU has its own (PrepareAMD).
+	Host map[string][]string
+	// AMD says the programs are graphs for AMD's NPU (iron.GraphProgram), the decoder's stages
+	// too (tools/amd/iron_moss_dac.py: amdDAC), or Core ML packages the CPU interpreter runs.
+	AMD bool
 }
 
 func (p Paths) at(f string) string { return filepath.Join(p.Dir, filepath.FromSlash(f)) }
@@ -341,12 +349,12 @@ type Generator struct {
 	ditW  *Weights // the host's tensors
 	dit   *DiT
 	dac   []Program
+	amd   *amdDAC // the decoder's stages on AMD's NPU
 	progs []runner.Program
 }
 
-// Open reads the tokenizer and the weights the host computes with (p.Tables, else the
-// checkpoints); Load loads the DiT's and the decoder's programs, and Encode the text encoder's for
-// a prompt.
+// Open reads the tokenizer and host weights (p.Tables, p.Host, else the checkpoints); Load loads
+// the DiT's and the decoder's programs, and Encode the text encoder's for a prompt.
 func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 	g := &Generator{p: p, dev: dev}
 	var err error
@@ -357,6 +365,9 @@ func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 	dit := map[string][]string{"dit.": {p.at(Files[9])}}
 	if p.Tables != "" {
 		text, dit = map[string][]string{"": {p.Tables}}, map[string][]string{"": {p.Tables}}
+	}
+	if p.Host != nil {
+		text, dit = map[string][]string{"": p.Host[""]}, map[string][]string{"dit.": p.Host["dit."]}
 	}
 	if g.textW, err = OpenWeights(nil, text); err != nil {
 		return nil, err
@@ -379,7 +390,7 @@ func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 func (g *Generator) Load(ctx context.Context, loaded func(name string, p runner.Program, took time.Duration)) error {
 	open := func(path string) (runner.Program, error) {
 		t0 := time.Now()
-		pr, err := runner.Open(ctx, g.dev, path)
+		pr, err := g.open(ctx, path)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 		}
@@ -401,6 +412,10 @@ func (g *Generator) Load(ctx context.Context, loaded func(name string, p runner.
 		g.dit.Groups = append(g.dit.Groups, pr)
 		g.dit.Sizes = append(g.dit.Sizes, DitGroup)
 	}
+	if g.p.AMD && len(g.p.Stages) > 0 && iron.IsGraph(g.p.Stages[0]) {
+		g.amd, err = openAMDDAC(ctx, g.dev, g.p.Stages)
+		return err
+	}
 	for _, s := range g.p.Stages {
 		pr, err := open(s)
 		if err != nil {
@@ -411,12 +426,28 @@ func (g *Generator) Load(ctx context.Context, loaded func(name string, p runner.
 	return nil
 }
 
+// open loads a program: on AMD's NPU a graph (iron.GraphProgram), or a Core ML package on the
+// CPU interpreter (the decoder's stages); else on the device.
+func (g *Generator) open(ctx context.Context, path string) (runner.Program, error) {
+	if g.p.AMD {
+		if iron.IsGraph(path) {
+			return iron.OpenGraphProgram(ctx, g.dev, path)
+		}
+		return runner.Open(ctx, nil, path)
+	}
+	return runner.Open(ctx, g.dev, path)
+}
+
 // Close lets the programs and the weights go.
 func (g *Generator) Close() error {
 	for _, p := range g.progs {
 		p.Close()
 	}
 	g.progs = nil
+	if g.amd != nil {
+		g.amd.Close()
+		g.amd = nil
+	}
 	for _, w := range []*Weights{g.textW, g.ditW} {
 		if w != nil {
 			w.Close()
@@ -437,7 +468,7 @@ func (g *Generator) Encode(ctx context.Context, prompt string, seconds float64, 
 	}()
 	for _, path := range g.p.Text {
 		t0 := time.Now()
-		pr, err := runner.Open(ctx, g.dev, path)
+		pr, err := g.open(ctx, path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 		}
@@ -508,8 +539,11 @@ func (g *Generator) Generate(ctx context.Context, text []float32, seconds float6
 	if err != nil {
 		return nil, err
 	}
-	z := channels(x, Frames, LatentDim)
 	samples := int(math.Round(seconds*10)) * SampleRate / 10
+	if g.amd != nil {
+		return g.amd.Decode(ctx, x, Frames, Frames, samples)
+	}
+	z := channels(x, Frames, LatentDim)
 	return DecodeLatents(ctx, g.dac, z, Frames, Frames, samples)
 }
 

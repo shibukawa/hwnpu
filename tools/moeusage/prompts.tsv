@@ -1,0 +1,110 @@
+math	Prove that there are infinitely many prime numbers, then explain the idea of the proof to a high school student.
+math	二次方程式の解の公式を平方完成から導き、判別式の意味を説明してください。
+math	Expliquez ce qu'est une valeur propre d'une matrice et donnez un exemple numérique 2x2.
+math	Erkläre den Unterschied zwischen Konvergenz und absoluter Konvergenz einer Reihe mit Beispielen.
+math	请解释什么是贝叶斯定理，并用一个医学检测的例子计算后验概率。
+physics	Explain why the sky is blue and sunsets are red, using Rayleigh scattering.
+physics	特殊相対性理論の時間の遅れを、光時計の思考実験で説明してください。
+physics	Explica la segunda ley de la termodinámica y el concepto de entropía con ejemplos cotidianos.
+physics	양자 얽힘이 무엇인지, 그리고 왜 정보를 빛보다 빠르게 보낼 수 없는지 설명해 주세요.
+physics	Объясните, как работает ядерный реактор и чем деление отличается от синтеза.
+chemistry	Balance the combustion of propane and explain how to compute the enthalpy of reaction from bond energies.
+chemistry	酸と塩基のブレンステッド・ローリーの定義と、pH の計算方法を例で説明して。
+chemistry	Spiega cos'è un catalizzatore e come gli enzimi accelerano le reazioni biologiche.
+chemistry	Wyjaśnij, czym różnią się wiązania jonowe, kowalencyjne i metaliczne.
+chemistry	Explique o que é a tabela periódica e por que os elementos de um mesmo grupo têm propriedades parecidas.
+biology	Describe how CRISPR-Cas9 edits genes and what ethical questions it raises.
+biology	光合成の明反応と暗反応 (カルビン回路) の流れを説明してください。
+biology	Expliquez comment fonctionne le système immunitaire adaptatif, des lymphocytes B aux anticorps.
+biology	请说明自然选择如何导致抗生素耐药性的出现。
+biology	Jelaskan bagaimana DNA direplikasi di dalam sel dan peran enzim helikase serta polimerase.
+computer	Write a Python function that finds the longest palindromic substring, and explain its complexity.
+computer	Rust の所有権と借用の仕組みを、C++ のポインタと比べて説明してください。
+computer	Write a SQL query that returns the top 3 customers by revenue per country, and explain window functions.
+computer	Explain how TCP congestion control works (slow start, congestion avoidance, fast retransmit).
+computer	Write a small HTTP server in Go that serves JSON, with graceful shutdown.
+computer	Erkläre, wie ein Garbage Collector mit Mark-and-Sweep funktioniert, und schreibe Pseudocode dafür.
+computer	Write a bash script that finds the 10 largest files under a directory and prints their sizes in human readable form.
+computer	Implement quicksort in JavaScript and in Haskell and compare the two styles.
+mechanical	Explain how a four-stroke internal combustion engine works and why it needs a flywheel.
+mechanical	歯車の減速比とトルクの関係を、自転車の変速機を例に説明してください。
+mechanical	Explica cómo se calcula la tensión en una viga simplemente apoyada con una carga puntual en el centro.
+mechanical	Erkläre die Funktionsweise eines Differentialgetriebes in einem Auto.
+mechanical	Explain the difference between a PID controller's P, I and D terms with a drone altitude example.
+history	Summarize the causes and consequences of the French Revolution.
+history	明治維新はなぜ起こり、日本社会をどのように変えたのか説明してください。
+history	请简述秦始皇统一中国的过程及其对后世的影响。
+history	Fasse die Geschichte der deutschen Wiedervereinigung 1989 bis 1990 zusammen.
+history	Resume la historia del Imperio inca y la llegada de los españoles.
+history	Explain the rise and fall of the Ottoman Empire.
+history	조선 왕조의 세종대왕이 한글을 만든 이유와 그 의미를 설명해 주세요.
+history	भारत के स्वतंत्रता संग्राम में महात्मा गांधी की भूमिका का वर्णन कीजिए।
+history	Kể tóm tắt lịch sử chiến tranh Việt Nam và những ảnh hưởng của nó.
+history	Describe the history of the Roman Republic until Julius Caesar.
+geography	Describe the geography and climate of Australia and how they shape where people live.
+geography	日本の地形と気候の特徴を、地域ごとに説明してください。
+geography	Décrivez la géographie des Alpes et leur importance économique pour la France, la Suisse et l'Italie.
+geography	Опишите географию Сибири и её природные ресурсы.
+geography	Descreva a bacia amazônica, seus rios e sua importância para o clima global.
+geography	อธิบายภูมิศาสตร์ของประเทศไทยและลักษณะภูมิอากาศในแต่ละภาค
+geography	اشرح جغرافية مصر وأهمية نهر النيل في حياة سكانها.
+business	Draft a polite email to a client explaining that a project will be two weeks late, and propose next steps.
+business	取引先との価格交渉で、値上げをお願いするときの話し方の例を会話形式で書いてください。
+business	Rédigez un plan d'affaires court pour une boulangerie artisanale en ligne.
+business	Explain the difference between gross margin, operating margin and net margin with an example.
+business	Simula una conversación entre un jefe de proyecto y un cliente sobre el cambio de alcance.
+business	Erstelle eine Agenda für ein einstündiges Strategie-Meeting zum Markteintritt in Asien.
+business	请写一段向投资人介绍一家电动车初创公司的演讲稿。
+personal	I feel burned out at work and can't sleep well. What can I do?
+personal	友達とけんかして気まずくなってしまいました。どうやって仲直りすればいいですか。
+personal	Je n'arrive pas à me motiver pour faire du sport. Avez-vous des conseils ?
+personal	제 동생이 진로 문제로 고민하고 있어요. 어떻게 조언해 주면 좋을까요?
+personal	Mi pareja y yo discutimos mucho por el dinero. ¿Cómo podemos hablar de esto sin pelear?
+personal	Как справиться с тревогой перед публичным выступлением?
+personal	My elderly father refuses to stop driving even though it is getting dangerous. How should I talk to him?
+games	Explain the basic strategy for building an economy in a real-time strategy game.
+games	初心者向けに、オープンワールド RPG を楽しむコツを教えてください。
+games	Explain what makes a good roguelike game design, with examples of mechanics.
+games	Erkläre die Grundlagen des Speedrunnings und welche Techniken dabei verwendet werden.
+games	Write a short design document for a puzzle game about light and mirrors.
+games	请介绍一下电子竞技的发展历史和主要比赛项目。
+boardgames	Explain the rules of chess castling and en passant, and give opening principles for beginners.
+boardgames	囲碁の基本ルールと、初心者がまず覚えるべき考え方を教えてください。
+boardgames	将棋の駒の動き方と、序盤の囲いについて説明してください。
+boardgames	Expliquez les règles du bridge et le principe des enchères.
+boardgames	Explain how to win more often at Catan, from the starting placement to trading.
+boardgames	Explica las reglas del mus y por qué es tan popular en España.
+jokes	Tell me five clean jokes about programmers and explain why each one is funny.
+jokes	日本語のダジャレを10個作って、それぞれのどこが面白いか説明して。
+jokes	Raconte-moi une blague française classique et explique le jeu de mots.
+jokes	Erzähl mir ein paar Witze über Ingenieure.
+jokes	Write a funny limerick about a cat who learned to code.
+jokes	讲几个关于学生考试的中文笑话。
+literature	Write a short story in the style of a detective novel set in Kyoto.
+literature	俳句を五つ作って、それぞれの季語と情景を説明してください。
+literature	Analyse the main themes of Shakespeare's Hamlet.
+literature	Escribe un poema sobre el mar en el estilo de Pablo Neruda.
+literature	Расскажите о главных идеях романа «Преступление и наказание».
+law	Explain the difference between civil law and common law systems.
+law	日本で賃貸契約を解約するときの一般的な注意点を教えてください。
+medicine	Explain how vaccines train the immune system and why booster shots are sometimes needed.
+medicine	Erkläre die Unterschiede zwischen Typ-1- und Typ-2-Diabetes.
+cooking	Give me a recipe for a vegetarian curry and explain how each spice changes the flavor.
+cooking	肉じゃがの作り方と、味がしみるコツを教えてください。
+cooking	Explique como fazer pão de queijo e por que se usa polvilho.
+cooking	Spiega come preparare un vero risotto alla milanese.
+travel	Plan a 5-day trip to Istanbul with a budget and local food recommendations.
+travel	初めての台湾旅行で行くべき場所とマナーを教えてください。
+travel	Nêu kinh nghiệm du lịch Hà Nội trong ba ngày.
+lang-misc	Bitte übersetze diesen Satz ins Englische und Japanische und erkläre die Grammatik: "Ich hätte gern einen Kaffee, wenn es keine Umstände macht."
+lang-misc	Explain the differences between Spanish ser and estar with many examples.
+lang-misc	Jelaskan perbedaan bahasa Indonesia formal dan informal dengan contoh percakapan.
+lang-misc	Eleza kwa Kiswahili jinsi ya kupika chapati.
+lang-misc	Türkiye'nin en ünlü yemeklerini ve tariflerini anlatır mısın?
+lang-misc	Kerro suomeksi, miksi sauna on tärkeä osa suomalaista kulttuuria.
+lang-misc	Wytłumacz zasady polskiej ortografii dotyczące "ó" i "u".
+lang-misc	Leg in het Nederlands uit hoe het Nederlandse waterbeheer werkt.
+lang-misc	Εξήγησε στα ελληνικά τι είναι η δημοκρατία στην αρχαία Αθήνα.
+lang-misc	הסבר בעברית מה זה חג פסח ואיך חוגגים אותו.
+lang-misc	বাংলায় ব্যাখ্যা করুন বর্ষাকাল কেন বাংলাদেশের কৃষির জন্য গুরুত্বপূর্ণ।
+lang-misc	Ipaliwanag sa Tagalog kung paano ipinagdiriwang ang Pasko sa Pilipinas.

@@ -44,7 +44,9 @@ func TestDarwinGet(t *testing.T) {
 			energy = true
 		}
 	}
-	if d.IOReport.SoCPowerW["ANE"] == 0 && d.IOReport.SoCPowerW["CPU Energy"] == 0 && len(d.IOReport.SoCPowerW) == 0 {
+	// macOS 27 gives a process without root 0 for every energy counter (ANEPowerKnown false):
+	// then there are none to read, not a fault
+	if d.IOReport.ANEPowerKnown && len(d.IOReport.SoCPowerW) == 0 {
 		t.Errorf("no SoC power domains")
 	}
 	if len(d.Services) == 0 {

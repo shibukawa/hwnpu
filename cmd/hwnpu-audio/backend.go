@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
@@ -68,4 +69,14 @@ func openAudioDevice(ctx context.Context, cacheDir, cpu string, opts ...hwnpu.Op
 		return nil, "", fmt.Errorf("%s runs neither Core AI's programs nor OpenVINO IR (%s)", dev.Info().Backend, cpu)
 	}
 	return dev, format, nil
+}
+
+// onAMD reports whether hwnpu-audio runs on AMD's NPU: one is here and HWNPU_BACKEND names no
+// other device. AMD's NPU runs IRON's graphs exported for it (tools/amd), not converted programs.
+func onAMD() bool {
+	switch strings.TrimSpace(os.Getenv(llm.BackendEnv)) {
+	case "", "amd", "xdna", "iron":
+		return chat.HereVendor() == "amd"
+	}
+	return false
 }

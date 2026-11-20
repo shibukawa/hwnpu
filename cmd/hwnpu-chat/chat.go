@@ -44,6 +44,7 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if err := c.prepare(); err != nil {
 		return err
 	}
+	c.loadFlags.ExpertsKey = cmp.Or(c.loadFlags.ExpertsKey, "chat")
 	e, err := loadChat(ctx, c.Model, &c.loadFlags, &c.convertFlags, &c.encoderFlags)
 	if err != nil {
 		return err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -92,6 +93,8 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if c.SearchFirst && !slices.Contains(tools, "search") {
 		return errors.New("--search-first needs search among --tools")
 	}
+
+	c.loadFlags.ExpertsKey = cmp.Or(c.loadFlags.ExpertsKey, "agent")
 
 	e, err := loadChat(ctx, c.Model, &c.loadFlags, &c.convertFlags, nil)
 	if err != nil {

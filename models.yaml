@@ -262,11 +262,40 @@ models:
     from: hf:openai/gpt-oss-20b
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     machine: 32
-    memory: 14.6
+    memory: {amd: 14.6, apple: 12.2}
     bytes: {amd: 11.79e9, apple: 14.4e9}
     features: [tools, thinking]
     amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
-    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): AMD's NPU only, its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention at 8 bits; it always reasons first (the low effort with no_think)"
+    # the experts every kind of text runs (tools/moeusage, 19 categories of prompts in about 25
+    # languages, 2026-11-20): in every category at least an even share (1/32) of their layer's
+    # runs; 141 experts (1.9 GB) taking 31–41 % of the runs. Wired from the first run when the
+    # experts do not all fit (experts.Placement)
+    experts_core:
+      - [1, 9, 16, 17, 23, 24]  # layer 0
+      - [0, 10, 13, 16, 18, 28]  # layer 1
+      - [0, 8, 21, 29, 31]  # layer 2
+      - [0, 2, 7, 11, 19]  # layer 3
+      - [6, 10, 12, 15, 20, 30]  # layer 4
+      - [0, 6, 10, 14, 17, 24]  # layer 5
+      - [3, 5, 10, 16, 31]  # layer 6
+      - [1, 3, 4, 10, 13, 14, 17, 21, 24, 28, 30]  # layer 7
+      - [0, 3, 17, 19, 24, 28, 31]  # layer 8
+      - [8, 14, 19, 30]  # layer 9
+      - [7, 10, 23, 26]  # layer 10
+      - [9, 24, 30]  # layer 11
+      - [1, 23, 25, 28]  # layer 12
+      - [1, 4, 21, 24]  # layer 13
+      - [1, 4, 9, 18, 24, 31]  # layer 14
+      - [0, 3, 6, 9, 13, 19, 26, 28, 31]  # layer 15
+      - [0, 11, 15, 17, 21, 24, 31]  # layer 16
+      - [4, 5, 7, 8, 11, 13, 19, 25, 28]  # layer 17
+      - [1, 9, 14, 20, 23, 27]  # layer 18
+      - [7, 13, 19, 20, 29, 31]  # layer 19
+      - [2, 6, 10, 11, 13, 16, 21]  # layer 20
+      - [1, 2, 9, 18, 23, 27]  # layer 21
+      - [0, 4, 11, 15, 22, 23]  # layer 22
+      - [0, 22, 31]  # layer 23
+    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (all wired into memory on 24 GB and more; on 16 GB about 4 GB of them, the ones every text runs and those the application runs most, fewer when the system runs short of memory), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b
@@ -383,21 +412,37 @@ models:
     family: whisper
     tag: large-v3-turbo
     kind: transcribe
-    from: hf:openai/whisper-large-v3-turbo
+    from: hf:openai/whisper-large-v3-turbo@41f01f3fe87f28c78e2fbf8b568835947dd65ed9
     # MIT by the model card (the repository has no license file; large-v3's card says apache-2.0)
     license: {id: mit, url: "https://huggingface.co/openai/whisper-large-v3-turbo", class: open}
+    # pinned for the export for AMD's NPU (tools/amd/iron_whisper.py, a key of the sources)
+    sha256:
+      config.json: c5b526b3e3cd64cd8940dabb45e8ba726629e22d8ed389c29b552f9140daf04a
+      generation_config.json: cce11bfe3aaa6ae9e072ea2637caaec8795e68d9b67e655a5af16ee509681a4c
+      model.safetensors: 542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1
+      tokenizer.json: 297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd
     machine: 8
-    memory: 1.9
+    # AMD's: the NPU's pinned memory and the process's of 88 s of speech (a Ryzen AI 9 365, 2026-11-19)
+    memory: {amd: 2.2, apple: 1.9}
     bytes: 1.6e9
     about: "OpenAI's Whisper large-v3-turbo: transcription of 99 languages, with timestamps, in 8 bit tables"
   LFM3-Audio-2B-TTS:
     family: lfm3-audio-tts
     tag: 2b
     kind: speech
-    from: hf:LiquidAI/LFM3-Audio-2B
+    from: hf:LiquidAI/LFM3-Audio-2B@2d6c1f99c129b3ef07a8d168bc0ff08e2bdb93f1
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
+    # pinned for the export for AMD's NPU (tools/amd/iron_lfm3speech.py, a key of the sources)
+    sha256:
+      config.json: 1eb2a8349a1ec9eda2ed8e8bb1a8788007ae2ae9baa38a7d959743c5379d30d8
+      generation_config.json: fa4a9e00378a7c93d199787e6a219bdf48d4bbe85f563b6450c461de5f394853
+      tokenizer.json: 41927bd314d17d7d7fadb44e10cd0919f7b71528d7741596d8cbd15c6945ec44
+      model.safetensors: 9abe5e402f163296e0988f94ad67f65dab61c723e260fea9374109b3775e28f7
+      audio_tokenizer/config.json: 13ac10473c6cf45618a3e9603f529c889683c9e28fa77e0d4f0ca6e686d0cbf4
+      audio_tokenizer/model.safetensors: 45984a872fdcf0b94cd0ec68822bbf26f0c6fcb580cfaba0f7fa3ee60355137f
     machine: 8
-    memory: 2.4
+    # AMD's: the NPU's pinned memory and the process's speaking 5 s (a Ryzen AI 9 365, 2026-11-19)
+    memory: {amd: 2.9, apple: 2.4}
     bytes: 4.0e9
     about: "LFM3-Audio-2B speaking a text (24 kHz WAV): its text model in 8 bit tables, the depthformer and the codec decoder in fp16; shares LFM3-Audio-2B's download"
   d1-2B:
@@ -531,8 +576,13 @@ models:
     # RealTime 2 by Google DeepMind" where the music is used)
     from: hf:google/magenta-realtime-2@010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc
     license: {id: cc-by-4.0, url: "https://huggingface.co/google/magenta-realtime-2", class: open, terms: "credit Magenta RealTime 2 by Google DeepMind where the music is used"}
+    # pinned for the export for AMD's NPU (tools/amd/iron_magenta.py, a key of the sources)
+    sha256:
+      checkpoints/mrt2_small.safetensors: 5dd1cbc7c606c512c21de0bcb04d4818bf0a3b873d7cbb9d1556d67d3b034de3
     machine: 8
-    memory: 1.0
+    # AMD's: the NPU's pinned memory and the process's of 8 s (a Ryzen AI 9 365, 2026-11-19): the
+    # decoder's graph and the language model on the CPU
+    memory: {amd: 2.7, apple: 1.0}
     bytes: 1.7e9
     about: "Magenta RealTime 2 small (230M): 48 kHz stereo music from a text of its style (MusicCoCa), 25 frames a second; weights CC-BY 4.0"
   MOSS-SoundEffect-v2.0:
@@ -551,14 +601,22 @@ models:
       text_encoder/model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
       text_encoder/model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
     machine: 16
-    memory: 2.3
+    # AMD's: the NPU's pinned memory and the process's of 10 s (a Ryzen AI 9 365, 2026-11-19): the
+    # DiT's graphs in bf16 and the decoder's (4.71 GiB)
+    memory: {amd: 5.0, apple: 2.3}
     bytes: 1.15e10
     about: "MOSS-SoundEffect v2.0 (1.3B DiT, Qwen3-1.7B text encoder in fp16, DAC VAE): up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
   MOSS-SoundEffect-v2.0-lut8:
     like: MOSS-SoundEffect-v2.0
     tag: v2.0-lut8
+    # the same files as MOSS-SoundEffect-v2.0's (like does not take sha256): the key of its export
+    # for AMD's NPU
+    sha256:
+      text_encoder/model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
+      text_encoder/model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
     machine: 8
-    memory: 2.2
+    # AMD's: as MOSS-SoundEffect-v2.0's (the DiT's graphs are most of it; 4.75 GiB of 10 s)
+    memory: {amd: 5.0, apple: 2.2}
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the

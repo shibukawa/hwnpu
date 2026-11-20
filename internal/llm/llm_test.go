@@ -27,6 +27,11 @@ func TestFormatOf(t *testing.T) {
 			t.Errorf("%s: %d bytes, want %d", name, got, want)
 		}
 	}
+	// lutNr: lutN and an fp16 scale a row
+	r := Options{Format: "lut8r"}
+	if got, want := tensorBytes("q_proj", shape, r), int64(32*64+2*256*2+32*2); got != want {
+		t.Errorf("lut8r: %d bytes, want %d", got, want)
+	}
 }
 
 // ProgramBackend takes a device backend or the program format OpenDevice returns: the commands
