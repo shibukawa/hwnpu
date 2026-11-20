@@ -172,7 +172,8 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	}
 	if !all && rec.Act.Kind == ActGptOss {
 		if routers := gptOssRouters(rec, sh, floats); routers != nil {
-			h.pre = newPrefetcher(h, routers, prefetchN())
+			n, auto := prefetchN()
+			h.pre = newPrefetcher(h, routers, n, auto)
 		}
 	}
 	if DebugTime() {

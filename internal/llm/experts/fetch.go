@@ -28,6 +28,16 @@ type reader struct {
 	// for HWNPU_MOE_DEBUG's time: the runs that waited for a demand, its pieces read and the wait
 	demands, read atomic.Int64
 	waited        atomic.Int64
+	coldAt        atomic.Int64 // when a run last found experts out of memory (UnixNano)
+}
+
+// shortFor is how long after a run found experts out of memory the memory counts as short.
+const shortFor = 10 * time.Second
+
+// short is whether a run found experts out of memory lately: the page cache does not hold the
+// experts not wired, and what is read for a guess pushes out pages in use.
+func (r *reader) short() bool {
+	return time.Duration(time.Now().UnixNano()-r.coldAt.Load()) < shortFor
 }
 
 // readers and piece are the goroutines that bring experts in, and the bytes each reads at a
@@ -150,7 +160,7 @@ func (r *reader) need(l int, idx [][]int) {
 	if len(ps) == 0 {
 		return
 	}
-	start := time.Now()
+	start, before := time.Now(), r.read.Load()
 	d := &demand{pieces: ps}
 	d.wg.Add(len(ps))
 	for range min(readers, len(ps)-1) {
@@ -163,6 +173,9 @@ func (r *reader) need(l int, idx [][]int) {
 	r.work(d, *buf)
 	r.bufs.Put(buf)
 	d.wg.Wait()
+	if r.read.Load() > before {
+		r.coldAt.Store(time.Now().UnixNano())
+	}
 	r.demands.Add(1)
 	r.waited.Add(int64(time.Since(start)))
 }

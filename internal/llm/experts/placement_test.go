@@ -2,6 +2,7 @@ package experts
 
 import (
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -177,7 +178,8 @@ func TestPlacementWarned(t *testing.T) {
 	if err := u.Write(path); err != nil {
 		t.Fatal(err)
 	}
-	pl := fakeLock(newPlacer(h, Placement{Core: [][]int{{0}}, Usage: path, Idle: -1}, 9*eb, L))
+	place := Placement{Core: [][]int{{0}}, Usage: path, Idle: -1, Ceiling: filepath.Join(t.TempDir(), "experts-usage", "ceiling")}
+	pl := fakeLock(newPlacer(h, place, 9*eb, L))
 	free := mem.Pressure{Free: 40, Level: 1}
 	now, clock := free, time.Unix(1000, 0)
 	pl.pressure = func() (mem.Pressure, bool) { return now, true }
@@ -202,10 +204,47 @@ func TestPlacementWarned(t *testing.T) {
 			}
 		}
 	}
+	// the next run starts under the ceiling the first kept
+	pl.stop()
+	timeNow = func() time.Time { return clock }
+	defer func() { timeNow = time.Now }()
+	next := fakeLock(newPlacer(fakeHost(L, E), place, 9*eb, L))
+	next.pressure = pl.pressure
+	next.balance(true)
+	if got := len(wiredSet(next)); got != 5 {
+		t.Fatalf("the next run: %d experts wired, want 5", got)
+	}
 	clock = clock.Add(ceilHold)
-	pl.balance(false)
-	if got := len(wiredSet(pl)); got != 7 {
+	next.balance(false)
+	if got := len(wiredSet(next)); got != 7 {
 		t.Fatalf("after %v: %d experts wired, want 7", ceilHold, got)
 	}
-	pl.stop()
+	// a warning right after the step up: back to 5, and twice as long before the next step
+	now = mem.Pressure{Free: 24, Level: 2}
+	clock = clock.Add(30 * time.Second)
+	next.balance(false)
+	now = free
+	clock = clock.Add(ceilHold)
+	next.balance(false)
+	if got := len(wiredSet(next)); got != 5 {
+		t.Fatalf("%v after a warning that followed a step up: %d experts wired, want 5", ceilHold, got)
+	}
+	clock = clock.Add(ceilHold)
+	next.balance(false)
+	if got := len(wiredSet(next)); got != 7 {
+		t.Fatalf("%v after it: %d experts wired, want 7", 2*ceilHold, got)
+	}
+	next.stop()
+	// and with the time of the ceiling long past, none
+	clock = clock.Add(24 * time.Hour)
+	last := fakeLock(newPlacer(fakeHost(L, E), place, 9*eb, L))
+	last.pressure = pl.pressure
+	last.balance(true)
+	if got := len(wiredSet(last)); got != 9 {
+		t.Fatalf("a day later: %d experts wired, want 9", got)
+	}
+	last.stop()
+	if _, err := os.Stat(place.Ceiling); err == nil {
+		t.Fatalf("%s is left with no ceiling", place.Ceiling)
+	}
 }

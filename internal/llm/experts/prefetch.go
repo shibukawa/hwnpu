@@ -18,8 +18,15 @@ import (
 // router of l+1 runs on that (the residual before layer l+1's attention). The outputs do not
 // change: the guess only reads pages.
 type prefetcher struct {
-	h      *Host
-	n      int // the guessed experts brought in (the top n of the guess)
+	h *Host
+	n int // the guessed experts brought in (the top n of the guess)
+	// auto brings in fewer (fewWhenShort) while memory is short (reader.short): on an M2 with
+	// experts read from the SSD every token, the top 2 gave 10.3–10.4 and 9.3–9.4 tokens/s (two
+	// prompts) where the top 4 gave 9.9–10.0 and 8.8–8.9 and none 10.2–10.7 and 9.0; with memory to
+	// spare the top 4 are 3–6 % above none (an M3)
+	auto   bool
+	sent   map[int]int // by layer: how many of its guess were brought in
+	few    atomic.Int64
 	router map[int]*router
 	mu     sync.Mutex
 	guess  map[int][]int         // by layer: the guessed experts, best first (8)
@@ -69,21 +76,24 @@ func gptOssRouters(rec *HostRecord, sh Shape, floats func(string, int) ([]float3
 	return out
 }
 
+// fewWhenShort is how many guessed experts are brought in while memory is short.
+const fewWhenShort = 2
+
 // prefetchN is how many guessed experts are brought in: HWNPU_MOE_DEBUG's prefetch=N (0: none),
-// else 4.
-func prefetchN() int {
+// else 4, and fewWhenShort while memory is short (auto).
+func prefetchN() (n int, auto bool) {
 	if v, ok := DebugOpt("prefetch"); ok {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			return 0
+			return 0, false
 		}
-		return min(n, 8)
+		return min(n, 8), false
 	}
-	return 4
+	return 4, true
 }
 
-func newPrefetcher(h *Host, routers map[int]*router, n int) *prefetcher {
-	p := &prefetcher{h: h, n: n, router: routers, guess: map[int][]int{}, rows: make(chan guessRow, 4), ranN: map[int]*atomic.Int64{}, quit: make(chan struct{})}
+func newPrefetcher(h *Host, routers map[int]*router, n int, auto bool) *prefetcher {
+	p := &prefetcher{h: h, n: n, auto: auto, router: routers, guess: map[int][]int{}, sent: map[int]int{}, rows: make(chan guessRow, 4), ranN: map[int]*atomic.Int64{}, quit: make(chan struct{})}
 	for l := range routers {
 		p.ranN[l] = new(atomic.Int64)
 	}
@@ -100,8 +110,9 @@ func (p *prefetcher) ran(l int, x []float32, idx []int) {
 		c.Add(1)
 	}
 	p.mu.Lock()
-	g := p.guess[l]
+	g, sent := p.guess[l], p.sent[l]
 	delete(p.guess, l)
+	delete(p.sent, l)
 	p.mu.Unlock()
 	for _, e := range idx {
 		if g != nil {
@@ -115,7 +126,7 @@ func (p *prefetcher) ran(l int, x []float32, idx []int) {
 		}
 		if pl := p.h.place; pl != nil && e >= 0 && e < E && !pl.on[l*E+e].Load() {
 			p.misses.Add(1)
-			if g != nil && slices.Index(g, e) >= 0 && slices.Index(g, e) < p.n {
+			if g != nil && slices.Index(g, e) >= 0 && slices.Index(g, e) < sent {
 				p.covered.Add(1)
 			}
 		}
@@ -150,10 +161,15 @@ func (p *prefetcher) guessNext(r guessRow) {
 	E := p.h.shape.Experts
 	cur, next := p.router[l], p.router[l+1]
 	order := p.order(x, cur, next)
+	n := min(p.n, len(order))
+	if p.auto && p.h.rd.short() {
+		n = min(n, fewWhenShort)
+		p.few.Add(1)
+	}
 	p.mu.Lock()
 	late := p.ranN[l+1].Load() != r.seen
 	if !late {
-		p.guess[l+1] = order
+		p.guess[l+1], p.sent[l+1] = order, n
 	}
 	p.mu.Unlock()
 	if late {
@@ -161,7 +177,7 @@ func (p *prefetcher) guessNext(r guessRow) {
 		return
 	}
 	pl := p.h.place
-	for _, e := range order[:min(p.n, len(order))] {
+	for _, e := range order[:n] {
 		if pl != nil && pl.on[(l+1)*E+e].Load() {
 			continue // wired: in memory already
 		}
@@ -210,7 +226,7 @@ func (p *prefetcher) guessed(l, e int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	i := slices.Index(p.guess[l], e)
-	return i >= 0 && i < p.n
+	return i >= 0 && i < p.sent[l]
 }
 
 func (p *prefetcher) stop() {
@@ -225,6 +241,9 @@ func (p *prefetcher) stop() {
 		}
 		if m := p.misses.Load(); m > 0 {
 			line += fmt.Sprintf("; of %d runs of experts not wired, %.1f%% brought in before (top %d)", m, 100*float64(p.covered.Load())/float64(m), p.n)
+			if f := p.few.Load(); f > 0 {
+				line += fmt.Sprintf("; top %d for %d guesses with memory short", fewWhenShort, f)
+			}
 		}
 		fmt.Fprintln(os.Stderr, line)
 	}
