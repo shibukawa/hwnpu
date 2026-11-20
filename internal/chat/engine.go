@@ -1153,8 +1153,9 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// the chunks read next: one, or with chunked several (StepChunks) up to the next mark
-		// (the turn's start, the store's every markEvery tokens) or e.layerMajor of them
+		// the chunks read next: one, or with chunked several (StepChunks), up to a chunk shorter
+		// than a call (the last, or one ending at the turn's start) or most of them; the marks
+		// inside are taken by StepChunks
 		before := len(e.cur.fed)
 		var ks []int
 		for done := before; done < len(prompt); {
@@ -1170,14 +1171,19 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			}
 			ks = append(ks, k)
 			done += k
-			if !chunked || k < e.sess.Q() || done == cut || len(ks) == most ||
-				e.store != nil && done < len(prompt) && done/markEvery > before/markEvery {
+			if !chunked || k < e.sess.Q() || len(ks) == most {
 				break
 			}
 		}
+		// after each chunk: a mark at the turn's start (in memory), and the store's every
+		// markEvery tokens
+		turn, stored := make([]bool, len(ks)), make([]bool, len(ks))
 		total := 0
-		for _, k := range ks {
+		for i, k := range ks {
+			from := before + total
 			total += k
+			turn[i] = from+k == cut && cut < len(prompt)
+			stored[i] = e.store != nil && from+k < len(prompt) && (from+k)/markEvery > from/markEvery
 		}
 		ti := e.ti
 		if ok, err := e.room(total); err != nil {
@@ -1188,22 +1194,42 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if e.ti != ti {
 			kept = nil // marks of the tier before, not the store's programs'
 		}
+		var inside []decode.ChunkMark // the marks after the chunks before the last, in order
 		if len(ks) == 1 {
 			if _, err := e.step(prompt[before : before+total]); err != nil {
 				return nil, err
 			}
-		} else if err := e.stepChunks(prompt[before:before+total], ks); err != nil {
-			return nil, err
-		}
-		if len(e.cur.fed) == cut && cut < len(prompt) {
-			e.cur.marks = append(e.cur.marks, mark{e.sess.Mark(), e.cur.last})
-			if len(e.cur.marks) > maxMarks {
-				e.cur.marks = e.cur.marks[1:]
+		} else {
+			want := make([]bool, len(ks))
+			for i := range ks[:len(ks)-1] {
+				want[i] = turn[i] || stored[i]
+			}
+			var err error
+			if inside, err = e.stepChunks(prompt[before:before+total], ks, want); err != nil {
+				return nil, err
 			}
 		}
-		if e.store != nil && len(e.cur.fed) < len(prompt) && len(e.cur.fed)/markEvery > before/markEvery {
-			m := e.sess.Mark()
-			kept = append(kept, storedMark{m.Pos(), m.Bufs(), e.cur.last})
+		for i := range ks {
+			var m *decode.Mark
+			var logits []float32
+			switch {
+			case !turn[i] && !stored[i]:
+				continue
+			case i == len(ks)-1:
+				m, logits = e.sess.Mark(), e.cur.last
+			default:
+				m, logits = inside[0].Mark, inside[0].Logits
+				inside = inside[1:]
+			}
+			if turn[i] {
+				e.cur.marks = append(e.cur.marks, mark{m, logits})
+				if len(e.cur.marks) > maxMarks {
+					e.cur.marks = e.cur.marks[1:]
+				}
+			}
+			if stored[i] {
+				kept = append(kept, storedMark{m.Pos(), m.Bufs(), logits})
+			}
 		}
 	}
 	m = &mark{e.sess.Mark(), e.cur.last}
@@ -1484,26 +1510,26 @@ func layerMajorChunks() int {
 }
 
 // stepChunks runs the tokens as the chunks of ks tokens each in one call (chunkSession) and
-// records them as fed.
-func (e *Engine) stepChunks(toks []int32, ks []int) error {
+// records them as fed, with the marks asked for after the chunks before the last.
+func (e *Engine) stepChunks(toks []int32, ks []int, marks []bool) ([]decode.ChunkMark, error) {
 	chunks := make([][][]float32, len(ks))
 	off := 0
 	for i, k := range ks {
 		var err error
 		if chunks[i], err = e.rows(toks[off : off+k]); err != nil {
-			return err
+			return nil, err
 		}
 		off += k
 	}
-	logits, err := e.sess.(chunkSession).StepChunks(chunks)
+	logits, inside, err := e.sess.(chunkSession).StepChunks(chunks, marks)
 	if err != nil {
 		e.sess.Reset() // the cache may be half written
 		e.cur = seq{}
-		return err
+		return nil, err
 	}
 	e.cur.fed = append(e.cur.fed, toks...)
 	e.cur.last = logits
-	return nil
+	return inside, nil
 }
 
 // recordHidden gives the multi-token prediction layer the model's final hidden states of the

@@ -40,7 +40,7 @@ func TestStepChunks(t *testing.T) {
 	if st, ok := s.layerMajor(chunks); !ok || st == nil {
 		t.Fatal("the program is not read a stage at a time")
 	}
-	if _, err := s.StepChunks(chunks); err != nil {
+	if _, _, err := s.StepChunks(chunks, nil); err != nil {
 		t.Fatal(err)
 	}
 	if s.Pos() != 23 {
@@ -49,7 +49,7 @@ func TestStepChunks(t *testing.T) {
 	if e := relErr(out, exactAttention(tab, 20, 3, q), q, 3); e > 2e-3 {
 		t.Fatalf("the last chunk's attention is %g off", e)
 	}
-	if _, err := s.StepChunks([][][]float32{rows(23, 27), rows(27, 31)}); err != nil {
+	if _, _, err := s.StepChunks([][][]float32{rows(23, 27), rows(27, 31)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if e := relErr(out, exactAttention(tab, 27, 4, q), q, 4); e > 2e-3 {
@@ -61,5 +61,39 @@ func TestStepChunks(t *testing.T) {
 	}
 	if e := relErr(out, exactAttention(tab, 31, 1, q), q, 1); e > 2e-3 {
 		t.Fatalf("a step after the chunks attends %g off", e)
+	}
+}
+
+// A mark StepChunks takes after a chunk inside the call is a point the session can go back to:
+// after Rewind to it, the next step attends as after reading only that far.
+func TestStepChunksMarks(t *testing.T) {
+	const n, q = 300, 4
+	tab := newTables(n, 22)
+	var out []float32
+	s, err := New(carried(fakeProgram(q, n, &tab, &out, false)), fakeModel{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := func(from, to int) [][]float32 {
+		var r [][]float32
+		for p := from; p < to; p++ {
+			r = append(r, []float32{float32(p)})
+		}
+		return r
+	}
+	chunks := [][][]float32{rows(0, 4), rows(4, 8), rows(8, 12), rows(12, 15)}
+	_, marks, err := s.StepChunks(chunks, []bool{false, true, false, false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marks) != 1 || marks[0].Mark.Pos() != 8 || len(marks[0].Logits) == 0 {
+		t.Fatalf("marks %+v, want one at 8 with its logits", marks)
+	}
+	s.Rewind(marks[0].Mark)
+	if _, err := s.Step(rows(8, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if e := relErr(out, exactAttention(tab, 8, 2, q), q, 2); e > 2e-3 {
+		t.Fatalf("after going back to the mark the attention is %g off", e)
 	}
 }

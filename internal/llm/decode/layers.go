@@ -14,17 +14,25 @@ import (
 // It takes the cache's keys and values a stage writes before the chunks after it read them, and
 // the windows of the layers that attend inside the parts (gpt-oss's sliding ones) after each
 // stage's chunk.
-func (s *Session) StepChunks(chunks [][][]float32) ([]float32, error) {
+//
+// marks[k], when true for a chunk k before the last, asks for the point after it (Mark) and the
+// logits there, returned in the order of the chunks: the rings are copied as the stages pass the
+// chunk and its logits kept from the last stage.
+func (s *Session) StepChunks(chunks [][][]float32, marks []bool) ([]float32, []ChunkMark, error) {
+	var got []ChunkMark
 	st, ok := s.layerMajor(chunks)
 	if !ok {
 		var logits []float32
-		for _, c := range chunks {
+		for k, c := range chunks {
 			var err error
 			if logits, err = s.Step(c); err != nil {
-				return nil, err
+				return nil, nil, err
+			}
+			if k < len(chunks)-1 && k < len(marks) && marks[k] {
+				got = append(got, ChunkMark{s.Mark(), logits})
 			}
 		}
-		return logits, nil
+		return logits, got, nil
 	}
 	p, q := st.p, st.q
 	pos0 := s.pos
@@ -33,12 +41,21 @@ func (s *Session) StepChunks(chunks [][][]float32) ([]float32, error) {
 		total += len(c)
 	}
 	if pos0+total > s.t {
-		return nil, fmt.Errorf("decode: the cache of %d tokens is full", s.t)
+		return nil, nil, fmt.Errorf("decode: the cache of %d tokens is full", s.t)
 	}
 	n := len(chunks)
 	lastPos := pos0 + total - len(chunks[n-1])
 	if err := s.fit(lastPos + min(q, s.t-lastPos)); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	// the marks asked for, by chunk: their rings filled in as the stages pass the chunk
+	at := make([]*ChunkMark, n)
+	end := pos0
+	for k, c := range chunks {
+		end += len(c)
+		if k < n-1 && k < len(marks) && marks[k] {
+			at[k] = &ChunkMark{Mark: &Mark{pos: end, bufs: map[string][]byte{}}}
+		}
 	}
 	s.sparseTouch(pos0)
 	att := p.attention(s.chunk)
@@ -48,28 +65,38 @@ func (s *Session) StepChunks(chunks [][][]float32) ([]float32, error) {
 		for j, emb := range chunks {
 			s.pos = pos
 			if err := s.prepare(st, emb); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if i > 0 {
 				p.Restore(i-1, carry[j])
 			}
-			rows := min(q, s.t-s.pos)
-			used := (s.pos + rows + att.Chunk - 1) / att.Chunk
+			fits := min(q, s.t-s.pos) // rows that fit in the cache
+			used := (s.pos + fits + att.Chunk - 1) / att.Chunk
 			if err := st.stepMasks(s.pos, q, used); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if err := p.RunPart(i); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if j < n-1 || i < len(p.Attend) {
 				// the windows this stage wrote, for the chunk after it (the last chunk's at
 				// the end, by keep)
 				s.keepWindows(p, q, len(emb), i)
 			}
+			if m := at[j]; m != nil {
+				s.markWindows(p, m.Mark, i)
+				if i == len(p.Attend) {
+					r := len(emb) - 1
+					if rows(p) == 1 {
+						r = 0
+					}
+					m.Logits = s.row(p, r)
+				}
+			}
 			if i < len(p.Attend) {
 				oneMasks := false
-				if err := s.attendAfter(st, i, len(emb), rows, used, &oneMasks); err != nil {
-					return nil, err
+				if err := s.attendAfter(st, i, len(emb), fits, used, &oneMasks); err != nil {
+					return nil, nil, err
 				}
 				carry[j] = p.Carry(i)
 			}
@@ -80,7 +107,33 @@ func (s *Session) StepChunks(chunks [][][]float32) ([]float32, error) {
 		}
 	}
 	s.pos = lastPos
-	return s.keep(p, q, len(chunks[n-1])), nil
+	for _, m := range at {
+		if m != nil {
+			got = append(got, *m)
+		}
+	}
+	return s.keep(p, q, len(chunks[n-1])), got, nil
+}
+
+// ChunkMark is the point after a chunk of StepChunks and the logits there.
+type ChunkMark struct {
+	Mark   *Mark
+	Logits []float32
+}
+
+// markWindows copies into m the rings that stage i writes, as they are after m's position.
+func (s *Session) markWindows(p Program, m *Mark, stage int) {
+	pos := s.pos
+	s.pos = m.pos // ringRows copies by the position
+	defer func() { s.pos = pos }()
+	for _, c := range s.kv {
+		if c.long {
+			continue
+		}
+		if at, ok := p.OutStage[c.out]; ok && at == stage {
+			m.bufs[c.parts[0]] = s.ringRows(c.parts[0], p.In[c.parts[0]])
+		}
+	}
 }
 
 // layerMajor returns the step that runs every chunk when StepChunks can run them a stage at a

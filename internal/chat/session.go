@@ -34,7 +34,7 @@ type tokenSession interface {
 // chunkSession reads several chunks of a prompt in one call (decode.Session.StepChunks), a
 // stage of the model at a time where it can.
 type chunkSession interface {
-	StepChunks(chunks [][][]float32) ([]float32, error)
+	StepChunks(chunks [][][]float32, marks []bool) ([]float32, []decode.ChunkMark, error)
 }
 
 var _ session = (*decode.Session)(nil)
