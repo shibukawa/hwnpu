@@ -26,10 +26,13 @@ import (
 //
 //   - floor: what one call of a nearly empty program costs (ANEForge: about 70 us; the paper:
 //     about 190 us on an M1)
+//
 //   - programs: N small programs loaded at once and called in turn, N up to -max (the paper:
 //     about 128 programs a process), with the wired memory
+//
 //   - operand: an elementwise program over 0.25 .. 16 MB (the paper: a working set past about
 //     2 MB leaves the chip)
+//
 //   - conv: a 1 x 1 convolution of 1024 channels over 32 x 32 to 64 .. 1024 channels (the
 //     handoff: a 1x1 conv's cost steps up past 192 to 256 output channels)
 //
@@ -37,7 +40,7 @@ import (
 //     lut6 and lut4 (rows whole, lut tables of 16 rows), on 1 and 64 rows (arXiv 2611.19101: the
 //     weights stream at bytes for fp16, at the dequantizer's elements for int8, faster for lut4)
 //
-//	aicheck limits [-only floor,programs,operand,conv,formats] [-max 200] [-calls 200]
+//     aicheck limits [-only floor,programs,operand,conv,formats] [-max 200] [-calls 200]
 func limits(args []string) error {
 	fs := flag.NewFlagSet("limits", flag.ExitOnError)
 	only := fs.String("only", "", "the measurements to run, comma separated (default all)")
