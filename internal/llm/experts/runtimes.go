@@ -9,20 +9,22 @@ import (
 )
 
 // runTimes keeps, for HWNPU_MOE_DEBUG's time, how long a row's layer of experts took (one row:
-// a generated token) by what its experts were: all wired, some not wired but guessed and brought
-// in by the prefetcher, or some neither.
+// a generated token) by what its experts were: all wired, some not wired but every page of
+// them in memory (the page cache kept them, or the prefetcher brought them in), or some with
+// pages out of memory when the row came, guessed by the prefetcher (not in yet) or not.
 type runTimes struct {
 	mu  sync.Mutex
-	got [3][]time.Duration
+	got [4][]time.Duration
 	// the prefetcher's guesses of the next layer, in those times
 	guesses int
 	guessed time.Duration
 }
 
-var runKinds = [3]string{"all wired", "unwired ones brought in", "unwired ones not guessed"}
+var runKinds = [4]string{"all wired", "unwired ones in memory", "guessed ones not in memory yet", "ones not guessed out of memory"}
 
-// kind is what row idx of layer l runs on: 0, 1 or 2 of runKinds. Called before the prefetcher
-// is told of the row (it drops the layer's guess).
+// kind is what row idx of layer l runs on: an index of runKinds. Called before the prefetcher
+// is told of the row (it drops the layer's guess) and before the row's experts are read
+// (reader.need); the pages in memory are Host.cold's sample.
 func (h *Host) kind(l int, idx []int) int {
 	pl := h.place
 	if pl == nil {
@@ -34,9 +36,14 @@ func (h *Host) kind(l int, idx []int) int {
 		if e < 0 || e >= E || pl.on[l*E+e].Load() {
 			continue
 		}
-		k = max(k, 1)
-		if h.pre == nil || !h.pre.guessed(l, e) {
-			return 2
+		in := !h.cold(l, e)
+		switch {
+		case in:
+			k = max(k, 1)
+		case h.pre != nil && h.pre.guessed(l, e):
+			k = max(k, 2)
+		default:
+			return 3
 		}
 	}
 	return k

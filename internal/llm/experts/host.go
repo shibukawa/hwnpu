@@ -71,8 +71,10 @@ type Host struct {
 	usageTo string      // Placement.Usage
 	place   *placer     // the experts wired by use, when they are not all (Placement)
 	pre     *prefetcher // the next layer's experts guessed and brought in, when not all are wired
+	rd      *reader     // reads experts' pages into memory, when not all are wired
 	first   int         // the first layer held
 	times   *runTimes   // HWNPU_MOE_DEBUG's time: a row's layers by what their experts were
+	trace   *traceFile  // HWNPU_MOE_DEBUG's trace=FILE: every row's experts
 }
 
 // OpenHost maps the experts of rec, all of them wired when they fit (Host.wiring).
@@ -165,6 +167,9 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	case pf != "0" && 2*h.bytes() <= mem.Physical():
 		h.prefault(false) // unwired as asked, and they fit: their pages in before the first runs
 	}
+	if !all {
+		h.rd = newReader(h)
+	}
 	if !all && rec.Act.Kind == ActGptOss {
 		if routers := gptOssRouters(rec, sh, floats); routers != nil {
 			h.pre = newPrefetcher(h, routers, prefetchN())
@@ -172,6 +177,9 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	}
 	if DebugTime() {
 		h.times = &runTimes{}
+	}
+	if path, ok := DebugOpt("trace"); ok && path != "" {
+		h.trace = openTrace(path)
 	}
 	if pf == "wait" { // for measuring: every page in before the first run
 		h.warm.Wait()
@@ -183,6 +191,10 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 // process maps costs a fault, read from the disk or not, and a token's experts are new pages
 // until most have been chosen once (gpt-oss-20b on an M3: 9.7 ms a layer for experts first
 // touched, 1.1 once touched). The cores that run the experts take it over as they go.
+// needOn is whether a run reads its experts out of memory before it runs them (reader.need):
+// HWNPU_MOE_DEBUG's need=0 leaves them to the page faults, for measuring.
+var needOn = func() bool { v, _ := DebugOpt("need"); return v != "0" }()
+
 // touched takes the prefault's sums, so that its reads are not compiled away.
 var touched atomic.Uint32
 
@@ -282,6 +294,7 @@ func (h *Host) fileAt(b []byte) (*safetensors.File, int64, bool) {
 
 // Close unmaps the checkpoint.
 func (h *Host) Close() {
+	h.trace.close()
 	if h.times != nil {
 		h.times.report()
 		h.times = nil
@@ -289,6 +302,10 @@ func (h *Host) Close() {
 	if h.pre != nil {
 		h.pre.stop()
 		h.pre = nil
+	}
+	if h.rd != nil {
+		h.rd.stop()
+		h.rd = nil
 	}
 	if h.place != nil {
 		h.place.stop()
@@ -337,6 +354,7 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	if h.usage != nil {
 		h.usage.Add(layer, idx)
 	}
+	h.trace.add(layer, idx)
 	if h.place != nil {
 		h.place.count(layer, idx)
 		h.place.ran(layer == h.first)
@@ -351,6 +369,9 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 		if h.times != nil {
 			h.times.guess(time.Since(t))
 		}
+	}
+	if h.rd != nil && needOn {
+		h.rd.need(layer, idx)
 	}
 	for r := range rows {
 		for k, e := range idx[r] {

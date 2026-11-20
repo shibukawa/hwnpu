@@ -189,3 +189,34 @@ func (h *Host) pread(sp [][]byte, n, piece int) {
 	}
 	wg.Wait()
 }
+
+// TestIncoreCost times asking the system whether an expert's pages are in memory (incore of its
+// 4 spans, and of 8 single pages spread over them).
+func TestIncoreCost(t *testing.T) {
+	h, _ := openGptOss(t)
+	defer h.Close()
+	page := os.Getpagesize()
+	const n = 2000
+	var in int
+	start := time.Now()
+	for i := range n {
+		for _, b := range h.spans(i%24, i%32) {
+			if incore(b) {
+				in++
+			}
+		}
+	}
+	full := time.Since(start) / n
+	start = time.Now()
+	for i := range n {
+		for _, b := range h.spans(i%24, i%32) {
+			for k := range 2 {
+				off := (len(b) / page * k / 2) * page
+				if incore(b[off : off+page]) {
+					in++
+				}
+			}
+		}
+	}
+	t.Logf("an expert: every page %v, 8 pages %v", full, time.Since(start)/n)
+}

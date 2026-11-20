@@ -22,8 +22,7 @@ type prefetcher struct {
 	n      int // the guessed experts brought in (the top n of the guess)
 	router map[int]*router
 	mu     sync.Mutex
-	guess  map[int][]int // by layer: the guessed experts, best first (8)
-	queue  chan []byte
+	guess  map[int][]int         // by layer: the guessed experts, best first (8)
 	rows   chan guessRow         // the rows to guess the next layer from, off the experts' path
 	ranN   map[int]*atomic.Int64 // by layer: the rows run (ran)
 
@@ -84,59 +83,14 @@ func prefetchN() int {
 }
 
 func newPrefetcher(h *Host, routers map[int]*router, n int) *prefetcher {
-	p := &prefetcher{h: h, n: n, router: routers, guess: map[int][]int{}, queue: make(chan []byte, 256), rows: make(chan guessRow, 4), ranN: map[int]*atomic.Int64{}, quit: make(chan struct{})}
+	p := &prefetcher{h: h, n: n, router: routers, guess: map[int][]int{}, rows: make(chan guessRow, 4), ranN: map[int]*atomic.Int64{}, quit: make(chan struct{})}
 	for l := range routers {
 		p.ranN[l] = new(atomic.Int64)
 	}
-	p.wg.Add(2)
-	go p.loop()
+	p.wg.Add(1)
 	go p.guessLoop()
 	return p
 }
-
-// loop brings the pieces queued into memory, on readers goroutines: a piece out of memory is
-// read from its file (pread on several at once: 2.7 GB/s on an M2's SSD, where the kernel's
-// read-ahead of madvise(WILLNEED) gives 1.8 and faults a page at a time 0.6), then every page is
-// touched (a page in the page cache still costs the process a fault when first touched).
-func (p *prefetcher) loop() {
-	defer p.wg.Done()
-	var wg sync.WaitGroup
-	for range readers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			page := os.Getpagesize()
-			buf := make([]byte, piece)
-			var sink byte
-			for {
-				select {
-				case <-p.quit:
-					touched.Add(uint32(sink))
-					return
-				case b := <-p.queue:
-					if !incore(b) {
-						if f, off, ok := p.h.fileAt(b); ok {
-							f.ReadAt(buf[:len(b)], off)
-						} else {
-							willneed(b)
-						}
-					}
-					for j := 0; j < len(b); j += page {
-						sink += b[j]
-					}
-				}
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-// readers and piece are the goroutines that bring guessed experts in, and the bytes each reads at
-// a time (an expert of gpt-oss-20b is 13.3 MB).
-const (
-	readers = 4
-	piece   = 1 << 20
-)
 
 // ran is told the experts idx a row of layer l runs, with the row x (moe_x_l): it scores the
 // last guess for l and sends x for l+1's guess (guessLoop).
@@ -195,17 +149,40 @@ func (p *prefetcher) guessNext(r guessRow) {
 	l, x := r.l, r.x
 	E := p.h.shape.Experts
 	cur, next := p.router[l], p.router[l+1]
-	H := p.h.shape.Hidden
+	order := p.order(x, cur, next)
+	p.mu.Lock()
+	late := p.ranN[l+1].Load() != r.seen
+	if !late {
+		p.guess[l+1] = order
+	}
+	p.mu.Unlock()
+	if late {
+		p.late.Add(1)
+		return
+	}
+	pl := p.h.place
+	for _, e := range order[:min(p.n, len(order))] {
+		if pl != nil && pl.on[(l+1)*E+e].Load() {
+			continue // wired: in memory already
+		}
+		p.h.rd.guess(l+1, e)
+	}
+}
+
+// order is the experts of the layer of router to, best first (8), for the row x of the layer of
+// router from.
+func (p *prefetcher) order(x []float32, from, to *router) []int {
+	E, H := p.h.shape.Experts, p.h.shape.Hidden
 	y := make([]float32, H)
 	for i, v := range x {
-		if w := cur.norm[i]; w > 1e-6 || w < -1e-6 {
-			y[i] = v / w * next.norm[i]
+		if w := from.norm[i]; w > 1e-6 || w < -1e-6 {
+			y[i] = v / w * to.norm[i]
 		}
 	}
 	logits := make([]float32, E)
 	for e := range E {
-		s := next.b[e]
-		row := next.w[e*H : (e+1)*H]
+		s := to.b[e]
+		row := to.w[e*H : (e+1)*H]
 		for i, v := range y {
 			s += row[i] * v
 		}
@@ -225,30 +202,7 @@ func (p *prefetcher) guessNext(r guessRow) {
 		return 0
 	})
 	order = order[:min(8, E)]
-	p.mu.Lock()
-	late := p.ranN[l+1].Load() != r.seen
-	if !late {
-		p.guess[l+1] = order
-	}
-	p.mu.Unlock()
-	if late {
-		p.late.Add(1)
-		return
-	}
-	pl := p.h.place
-	for _, e := range order[:min(p.n, len(order))] {
-		if pl != nil && pl.on[(l+1)*E+e].Load() {
-			continue // wired: in memory already
-		}
-		for _, b := range p.h.spans(l+1, e) {
-			for lo := 0; lo < len(b); lo += piece {
-				select {
-				case p.queue <- b[lo:min(lo+piece, len(b))]:
-				default: // behind: drop the guess rather than wait
-				}
-			}
-		}
-	}
+	return order
 }
 
 // guessed is whether e was among the experts of layer l brought in (the top n of l's guess).
