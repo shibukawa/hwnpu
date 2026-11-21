@@ -25,7 +25,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 | d1-2B / d1-Omni-2B | d1 モードの `lfm3` (+ 塔) | decision (`hwnpu-chat systemone`) | lut8 | 変換できる | — |
 | gemma-4-E2B-it / E4B-it | `gemma4` | chat (tools、thinking)、テキストのみ | lut6 | 変換できる | q4、画像と音声も |
 | plamo-3-translate-0.8b / 2b / 8b | `plamo3` | chat (translation) | lut8。8B は lut4 | int8。8B は行ごとの int4 | q4 |
-| Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking、道具なし) | lut8。Mac では動かしていない | int8。変換はできるが実機では動かしていない | q4 で MLP と head は q6。書き出したが NPU ではまだ動かしていない |
+| Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking、道具なし) | lut8。Mac では動かしていない | int8。変換はできるが実機では動かしていない | q4 で MLP と head は q6。HF と比べて KL 0.026 (1 位の一致 98.4 %)、3.6 トークン/秒 |
 | plamo-embedding-1b | `plamo-bi` | embedding (query) | lut8 + head-scale | int8 | — |
 | BERT の系列 (all-MiniLM-L6-v2 など) | `bert` | — (models.yaml にない) | 変換のみ、lut8 | 変換のみ、int8 | — |
 
@@ -278,7 +278,11 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   (argmax 27/30)、int8 で 0.067 (26/30)。models.yaml には入れていない。
 - AMD (`iron_export_lm.py ouro`): IRON の `SandwichLayer` に Ouro の norm の名前を付け替えて使う。`Ouro.layer` が `model.layers` を
   回ごとに 1 度ずつ動かし (`self.layers` はそれを 4 回並べたもの)、2 回目以降には回ごとの `KVCache` を call 経由で渡し
-  (`passes.P.layers.L.cache.*`。ランタイムは名前の `.cache.` でキャッシュと見なす)、回の間に `model.norm` を入れる。MLP と head は q6 (ホストで丸めたときの KL は q4 0.130、q6 0.013)。詳しくは [amd-llm.ja.md](amd-llm.ja.md)。
+  (`passes.P.layers.L.cache.*`。ランタイムは名前の `.cache.` でキャッシュと見なす)、回の間に `model.norm` を入れる。MLP と head は q6 (ホストで丸めたときの KL は q4 0.130、q6 0.013)。NPU では
+  (`ironlm -forced` と `forced_logits.py`、64 行) q6 で KL 0.026 (1 位の一致 98.4 %)、bf16 で 0.0022 (98.4 %)。詳しくは [amd-llm.ja.md](amd-llm.ja.md)。
+- トークナイザー: SmolLM のもの (1 字ずつの `Digits` の後に GPT-2 のパターンの `ByteLevel`)。`internal/tokenizer` の `gpt2Digits`。
+  正解の id は tokenizers のライブラリで作る (`tokenizer_golden.py --tokenizers`): transformers 5 は GPT2Tokenizer 自身の
+  pre-tokenizer をファイルのものと入れ替え、Digits の段を落とす (" ①" が 1 つの断片になる)。
 - チャットの書式: `chat.Ouro` (下)。Thinking のモデルは既定で考える。ベースのモデル (Ouro-1.4B、2.6B) はチャットのテンプレートがなく、
   models.yaml に入れていない。
 
@@ -319,7 +323,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 
 | 種類 | モデル | 仕組み | 照合 |
 |---|---|---|---|
-| byte-level BPE (`Load`) | LFM3 の系列、Qwen | 追加トークンを先に切り出し、GPT-4 型の pre-tokenizer を手書きの走査で (Go の regexp にない先読み `\s+(?!\S)`)。マージは順位。Qwen3.5 は NFC、`[\p{L}\p{M}]+`、数字を 1 つずつ ([llm-qwen.md](llm-qwen.md)) | HF と一致 |
+| byte-level BPE (`Load`) | LFM3 の系列、Qwen | 追加トークンを先に切り出し、GPT-4 型の pre-tokenizer を手書きの走査で (Go の regexp にない先読み `\s+(?!\S)`)。マージは順位。Qwen3.5 は NFC、`[\p{L}\p{M}]+`、数字を 1 つずつ ([llm-qwen.md](llm-qwen.md))。Ouro は 1 字ずつの Digits の後、その間の文字列に GPT-2 のパターン (`gpt2Digits`) | HF と一致 (Ouro: 40 文 + ランダム 500、18,441 トークン) |
 | byte fallback の BPE (`fallback.go`、`Load` 経由) | Gemma 4 | 空白を ▁ に、追加トークンの間を 1 片として順位でマージ、語彙にない文字は UTF-8 のバイト (`<0xE3>`)。BOS は付けない | 35 文 + 乱数の 300 文 (7,026 トークン) |
 | SentencePiece BPE (`LoadSentencePiece`) | PLaMo-Embedding | `tokenizer.model` の protobuf を手で読む。正規化 identity、先頭に ▁。user-defined のピース (▁ の 2/4/8/16 個の連続、タブ 1/2/4 個、改行) は最長一致で結合しない。マージ一覧でなくピースのスコアで結合 (同点は左)。語彙にないものは `<0xNN>`。特殊トークンを先に切り出し、その後ろにも ▁ を補う (HF の slow tokenizer と同じ)。BOS は付けない | 32 文 (599 トークン) + 乱数の 3,032 文 (88,072 トークン) で不一致 0 |
 | PLaMo (`LoadPlamo`、`.jsonl` なら `Load` が選ぶ) | PLaMo 3 | `tokenizer.jsonl` のスコア付きのピースから合計コスト最小の分け方を後ろから探す。コスト = −round(スコア × 10⁴) (Python の round)。Aho-Corasick の代わりに全ピースの接頭辞の map。同点は長いピース。どのピースにもない文字は UTF-8 のバイト。特殊トークン、同じ文字 4 個以上の連続、空白 2 個以上で切る | 40 例 + 乱数の 3,040 例 |

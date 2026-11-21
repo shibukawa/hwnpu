@@ -28,6 +28,9 @@ default), the MLP's in ``mlp`` and the head in ``head`` (q4nx by default; iron_q
 catalog's: a weight read four times a token compounds its rounding, docs/design/llm-models.md), a
 q6 or q8 MLP's gate and up as one table (FUSE_GLU), and the token embeddings go to the host as PLaMo
 3's do (iron_hostple: embed.bin).
+
+A prompt chunk's command starts every 12 layer runs (install_cuts): the passes share their weights,
+so IRON's own cuts, by the weights a command reads, never come.
 """
 
 import dataclasses
@@ -46,6 +49,13 @@ from iron.operators.copy import Copy
 # A q6 or q8 MLP's gate and up as one table (iron_q4's glu_param), as iron_qwen35.FUSE_GLU.
 # HWNPU_OURO_FUSE_GLU=0 keeps them apart.
 FUSE_GLU = os.environ.get("HWNPU_OURO_FUSE_GLU", "1") != "0"
+
+# A prompt chunk's command starts every LAYERS_PER_COMMAND layer runs (install_cuts).
+# HWNPU_OURO_LAYERS_PER_COMMAND=0 leaves the cuts to IRON's packaging alone.
+LAYERS_PER_COMMAND = int(os.environ.get("HWNPU_OURO_LAYERS_PER_COMMAND", "12"))
+
+# The last step recorded before each cut's layer run (Ouro.layer), for install_cuts.
+_CUT_AFTER: list = []
 
 # install()'s formats: on, the attention's (q8, q4 or bf16), the MLP's and the head's (q4, q6, q8).
 _QUANT = {"on": False, "attn": "q8", "mlp": "q4", "head": "q4"}
@@ -66,6 +76,46 @@ def install(attn: str = "q8", mlp: str = "q4", head: str = "q4") -> None:
     _QUANT.update(on=True, attn=attn, mlp=mlp, head=head)
     # Without the gather of the embeddings, a prompt chunk's commands would merge (iron_hostple).
     packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, iron_hostple.SCRATCHPAD_WORDS)
+
+
+def install_cuts() -> None:
+    """Start a prompt chunk's command every ``LAYERS_PER_COMMAND`` layer runs, in IRON's packaging.
+
+    IRON starts a command where the next step's words would overflow a command's scratchpad
+    (``SCRATCHPAD_WORDS``). Ouro's four passes read the same weights, so their words never
+    overflow it: a chunk of Ouro-1.4B's 96 layer runs was one command whose control code (233 MB
+    in q6) the 64 MiB device heap cannot take (CREATE_BO: resource temporarily unavailable; other
+    exports' largest is 37 MB). A cut every 12 layer runs makes about 29 MB a command. The decode
+    step (no tensor input: IRON keeps it one command) is left as it is (36 MB).
+    """
+    import iron.common.graph.compiled as compiled
+
+    if LAYERS_PER_COMMAND <= 0 or getattr(compiled.plan, "_hwnpu_ouro", False):
+        return
+    plan = compiled.plan
+
+    def cut_plan(dev, recording, *args, **kwargs):
+        chosen = plan(dev, recording, *args, **kwargs)
+        steps = recording.steps
+        cuts = {i + 1 for i, s in enumerate(steps) if any(s is t for t in _CUT_AFTER)}
+        cuts = {i for i in cuts if 0 < i < len(steps)}
+        if not cuts or not chosen.full_elf or not recording.inputs:
+            return chosen
+        commands = tuple(sorted(set(chosen.commands) | cuts))
+        reasons = [*chosen.reasons, f"Ouro: a command starts every {LAYERS_PER_COMMAND} layer runs: {sorted(cuts)}"]
+        return dataclasses.replace(chosen, reasons=reasons, commands=commands)
+
+    cut_plan._hwnpu_ouro = True
+    compiled.plan = cut_plan
+
+
+def _mark_cut() -> None:
+    """Note that a command starts after the last step recorded so far (install_cuts)."""
+    from iron.common.declare.operator import graph_recorder
+
+    recorder = graph_recorder.get()
+    if recorder is not None and recorder.steps:
+        _CUT_AFTER.append(recorder.steps[-1])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -147,12 +197,15 @@ class Ouro(CausalLM):
         # every layer once a pass: Ouro.layer finds the pass from the index
         self.layers = list(self.model.layers) * c.total_ut_steps
         self.host_embed = False
+        install_cuts()
         if _QUANT["on"]:
             self.quantize(_QUANT["attn"], _QUANT["mlp"], _QUANT["head"])
 
     def layer(self, call, i, w, x):
         L = self.config.num_hidden_layers
         p, j = divmod(i, L)
+        if i and LAYERS_PER_COMMAND > 0 and i % LAYERS_PER_COMMAND == 0:
+            _mark_cut()
         call.ouro_cache = None if p == 0 else self.passes[p - 1].layers[j].cache
         x = w(x, call)
         call.ouro_cache = None

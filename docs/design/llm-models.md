@@ -28,7 +28,7 @@ a `.mlpackage` first, then lowers it.
 | d1-2B / d1-Omni-2B | `lfm3` in d1 mode (+ towers) | decision (`hwnpu-chat systemone`) | lut8 | converts | — |
 | gemma-4-E2B-it / E4B-it | `gemma4` | chat (tools, thinking), text only | lut6 | converts | q4, images and audio too |
 | plamo-3-translate-0.8b / 2b / 8b | `plamo3` | chat (translation) | lut8; 8B lut4 | int8; 8B int4 by rows | q4 |
-| Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking, no tools) | lut8, not run on a Mac | int8, converts, not run on hardware | q4 with MLP and head q6, exported, not yet run on the NPU |
+| Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking, no tools) | lut8, not run on a Mac | int8, converts, not run on hardware | q4 with MLP and head q6: KL 0.026 against HF (top-1 98.4 %), 3.6 tokens/s |
 | plamo-embedding-1b | `plamo-bi` | embedding (query) | lut8 + head-scale | int8 | — |
 | BERT family (all-MiniLM-L6-v2 …) | `bert` | — (not in models.yaml) | converts only, lut8 | converts only, int8 | — |
 
@@ -352,7 +352,12 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
 - AMD (`iron_export_lm.py ouro`): IRON's `SandwichLayer` with Ouro's norms renamed; `Ouro.layer`
   runs `model.layers` once a pass (`self.layers` is them four times), gives a pass after the first its
   own `KVCache` through the call (`passes.P.layers.L.cache.*`, which the runtime reads as caches by
-  `.cache.`), and puts `model.norm` between passes. q6 MLP and head (host rounding KL q4 0.130, q6 0.013); details in [amd-llm.md](amd-llm.md).
+  `.cache.`), and puts `model.norm` between passes. q6 MLP and head (host rounding KL q4 0.130, q6 0.013). On the NPU
+  (`ironlm -forced` against `forced_logits.py`, 64 rows): q6 KL 0.026 (top-1 98.4 %), bf16 0.0022 (98.4 %); details in [amd-llm.md](amd-llm.md).
+- Tokenizer: SmolLM's (individual `Digits`, then `ByteLevel` with GPT-2's pattern), `gpt2Digits` in
+  `internal/tokenizer`. Its golden ids come from the tokenizers library (`tokenizer_golden.py --tokenizers`):
+  transformers 5 puts GPT2Tokenizer's own pre-tokenizer in place of the file's and loses the Digits
+  step (" ①" one piece).
 - Chat format: `chat.Ouro` (see below). The Thinking models think by default; the base models
   (Ouro-1.4B, 2.6B) have no chat template and are not in models.yaml.
 
@@ -402,7 +407,7 @@ Depends only on `golang.org/x/text`. Each is checked against HF tokenizers.
 
 | Kind | Models | How it works | Checked |
 |---|---|---|---|
-| byte-level BPE (`Load`) | LFM3 family, Qwen | Added tokens cut first; GPT-4-style pre-tokenizer by a hand-written scanner (`\s+(?!\S)` lookahead, which Go's regexp lacks); merges by rank. Qwen3.5: NFC, `[\p{L}\p{M}]+`, digits one by one ([llm-qwen.md](llm-qwen.md)) | matches HF |
+| byte-level BPE (`Load`) | LFM3 family, Qwen | Added tokens cut first; GPT-4-style pre-tokenizer by a hand-written scanner (`\s+(?!\S)` lookahead, which Go's regexp lacks); merges by rank. Qwen3.5: NFC, `[\p{L}\p{M}]+`, digits one by one ([llm-qwen.md](llm-qwen.md)). Ouro: individual Digits, then GPT-2's pattern on the runs between them (`gpt2Digits`) | matches HF (Ouro: 40 texts + 500 random, 18,441 tokens) |
 | byte-fallback BPE (`fallback.go`, via `Load`) | Gemma 4 | Spaces → ▁, text between added tokens merged by rank as one piece, unknown chars → UTF-8 bytes (`<0xE3>`). No BOS added | 35 texts + 300 random (7,026 tokens) |
 | SentencePiece BPE (`LoadSentencePiece`) | PLaMo-Embedding | Reads `tokenizer.model` protobuf by hand. Identity normalization, ▁ prefix. User-defined pieces (runs of 2/4/8/16 ▁, 1/2/4 tabs, newline) longest-match, never merged. Merges by piece score (ties: left), not a merge list. Unknown → `<0xNN>`. Special tokens cut first and a ▁ added after them too (as HF's slow tokenizer). No BOS added | 32 texts (599 tokens) + 3,032 random (88,072 tokens), 0 mismatches |
 | PLaMo (`LoadPlamo`; `Load` picks it for `.jsonl`) | PLaMo 3 | Least-cost split from `tokenizer.jsonl`'s scored pieces, searched from the end; cost = −round(score × 10⁴) (Python round); a map of all piece prefixes instead of Aho-Corasick; ties → longer piece; uncovered chars → UTF-8 bytes. Cuts at special tokens, runs of ≥4 same char, ≥2 spaces | 40 cases + 3,040 random |

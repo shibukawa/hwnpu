@@ -82,6 +82,15 @@ python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5
 go run ./cmd/hwnpu-chat -m ~/models/Qwen3.5-0.8B.amd-npu2-q6
 ```
 
+## Ouro (in development)
+
+ByteDance's Ouro-1.4B-Thinking is a looped model: its 24 layers run four times a token with the same weights. It is exported with hwnpu's `tools/amd/iron_ouro.py` (`ouro`). The loop adds no weights and no download (2.9 GB, the same as a plain 1.4B model), but each pass keeps its own keys and values, so the cache is four times a 24-layer model's (1.6 GB at a context of 2048), and a token costs what a 96-layer model's does: on a Ryzen AI 9 365 it decodes at 3.6 tokens a second and reads prompts at about 400 tokens a second. A weight read four times a token compounds its rounding, so the MLP and output matrices are 6 bit (`--mlp q6 --head q6`; attention 8 bit, embeddings on the host; KL 0.026 against Hugging Face, the most likely token the same 98.4 % of the time). Pinned memory is 2.79 GiB. It thinks (`<think>`) before it answers, in English, and calls no tools; `--no-think` skips it. Its remote code needs transformers older than 4.56 to check against.
+
+```bash
+python tools/amd/iron_export_lm.py ouro ~/models/Ouro-1.4B-Thinking ~/models/Ouro-1.4B-Thinking.amd-npu2-q6 --max-seq-len 2048 --q4 --mlp q6 --head q6
+go run ./cmd/hwnpu-chat -m ~/models/Ouro-1.4B-Thinking.amd-npu2-q6
+```
+
 ## Phoenix and Hawk Point (NPU1)
 
 Phoenix and Hawk Point (NPU1) have no full ELF, so export with `--device npu1 --cols 4`. Each version then becomes "an xclbin per step", as in IRON (1095 steps for Gemma 4 E2B's decode, 2 xclbins), and hwnpu makes the instruction stream for each call from the program included in the export. This is untested on NPU1 hardware. The same kind of export made for NPU2 with `--per-step` runs correctly on a Ryzen AI 9 365, decoding at 2.6 tokens a second (less than half of the 6 with full ELF, because a token needs 1095 submissions). On NPU1, the xclbins of the versions (6 in all) use up the limit of 6 hardware contexts.

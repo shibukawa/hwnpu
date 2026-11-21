@@ -395,9 +395,9 @@ models:
     # ByteDance's looped model (arch ouro, docs/design/llm-models.md): its 24 layers run four times
     # a token with the same weights, so a token costs what a 96-layer model's does and the KV cache
     # is four times a 24-layer one's (768 KiB a token in fp16). In development: checked against
-    # Hugging Face on the CPU (lut8 KL 0.023); AMD exported (q6, context 2048: 2.86 GB of banks, the
-    # caches 1.6 GB of them, and the host's 0.2 GB table), not yet run on the NPU; the Neural Engine
-    # not tried. memory is that estimate, not measured
+    # Hugging Face on the CPU (lut8 KL 0.023) and on AMD's NPU (q6, context 2048: KL 0.026, top-1
+    # 98.4 %; 3.6 tokens/s; 2.79 GiB pinned, the caches 1.6 GB of it, and 0.82 GB of the process,
+    # measured with ironlm on a Ryzen AI 9 365, 2026-11-22); the Neural Engine not tried
     family: ouro
     tag: 1.4b
     kind: chat
@@ -407,7 +407,7 @@ models:
     sha256:
       model.safetensors: 6730581fd366f6d1689728c61637520228385cdfc17c0b24f19aa840b00565fb
     machine: 8
-    memory: 3.4
+    memory: 3.8
     bytes: 2.87e9
     features: [thinking]
     amd_export: ouro --max-seq-len 2048 --q4 --mlp q6 --head q6
