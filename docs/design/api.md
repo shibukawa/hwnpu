@@ -345,7 +345,7 @@ hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-cha
   (without it, speech during transcription was lost).
 - Samples: `samples/interpreter` (transcribe → translate → speak), `samples/parallax` (a picture's depth
   once, the viewer's head from the camera, the picture redrawn from that view with an Ebitengine Kage
-  shader; layers from `samples/layering` swap in as they are cut), `samples/layers` (cut a picture into
+  shader; layers from `samples/internal/layering` swap in as they are cut), `samples/layers` (cut a picture into
   depth layers, FLUX.2 klein draws what each hid, written as a PSD). Preparation code shared with the
   commands moved into `internal/chat` (`AMDPictureExport`) and `internal/imagegen/flux2klein`.
 

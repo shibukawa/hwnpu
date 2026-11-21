@@ -41,7 +41,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai/cli/konghelper"
 	"github.com/shibukawa/hwnpu/ai/imagegen"
 	"github.com/shibukawa/hwnpu/ai/vision"
-	"github.com/shibukawa/hwnpu/samples/layering"
+	"github.com/shibukawa/hwnpu/samples/internal/layering"
 )
 
 // The models: the depth of a picture, and the one that draws what a layer hid.
@@ -52,7 +52,7 @@ var (
 	artist = imagegen.Edit("image")
 )
 
-// build is the app with its two calls (samples/layering runs them in turns).
+// build is the app with its two calls (samples/internal/layering runs them in turns).
 func build() (*ai.App, *layering.Calls) {
 	app := ai.NewApp("layers")
 	return app, layering.Register(app, depth, artist)

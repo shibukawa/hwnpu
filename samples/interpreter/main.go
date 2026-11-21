@@ -23,7 +23,7 @@
 //	interpreter models                       # the models and the network, and what they take
 //	interpreter models prepare               # download, convert and compile the models ahead
 //	interpreter --mic -o english.wav         # from the microphone, until Ctrl-C or "終わり"
-//	interpreter --mic --device ID            # from another input (interpreter mics lists them)
+//	interpreter --mic --device 2             # from another input (its number in "interpreter mics")
 //	interpreter talk.wav -o english.wav      # Japanese speech to English speech (or the reverse)
 //	interpreter talk.wav --to ja --live      # paced as a microphone would give it
 //	interpreter say こんにちは -o hello.wav   # a text, translated and spoken: one call
@@ -47,7 +47,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/samples/capture"
+	"github.com/shibukawa/hwnpu/samples/internal/capture"
 )
 
 // The models the app uses: uses of the definitions, which pick a model for the machine's memory.
@@ -185,7 +185,7 @@ func (n *network) command(c flow.Chunk[flow.Text], emit func(flow.Chunk[flow.Tex
 var cli struct {
 	Run    RunCmd            `cmd:"" default:"withargs" help:"Interpret speech, from the microphone or a recording, into another language, as speech."`
 	Say    SayCmd            `cmd:"" help:"Translate a text and speak it: one call of the translator and the speaker."`
-	Mics   MicsCmd           `cmd:"" help:"The audio inputs --device takes."`
+	Mics   MicsCmd           `cmd:"" help:"The audio inputs, numbered as --device takes them."`
 	Models konghelper.Models `cmd:"" help:"The models interpreter uses and its network: what they take, download them, compile them for this machine's NPU."`
 	Status konghelper.Status `cmd:"" help:"This machine's NPU: the device, how busy it is and what uses it."`
 }
@@ -214,7 +214,7 @@ func (MicsCmd) Run(ctx context.Context) error {
 	if len(ins) == 0 {
 		fmt.Println("no audio inputs")
 	}
-	for _, in := range ins {
+	for i, in := range ins {
 		note := ""
 		switch {
 		case in.Default:
@@ -222,7 +222,7 @@ func (MicsCmd) Run(ctx context.Context) error {
 		case in.Monitor:
 			note = " (what an output plays)"
 		}
-		fmt.Printf("%s\t%s%s\n", in.ID, in.Name, note)
+		fmt.Printf("%d  %s%s\n", i+1, in.Name, note)
 	}
 	return nil
 }
@@ -277,7 +277,7 @@ func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 type RunCmd struct {
 	File     string        `arg:"" optional:"" type:"existingfile" name:"FILE.wav" help:"A recording of speech (or --mic)."`
 	Mic      bool          `help:"Interpret what the microphone hears, until Ctrl-C (a second Ctrl-C ends at once) or the spoken command."`
-	Device   string        `placeholder:"ID" help:"With --mic, the audio input (interpreter mics lists them); none: the system's default input."`
+	Device   string        `placeholder:"N" help:"With --mic, the audio input: its number in \"interpreter mics\" (or its ID); none: the system's default input."`
 	Seconds  time.Duration `placeholder:"TIME" help:"With --mic, stop listening after this long (30s)."`
 	Out      string        `short:"o" default:"out.wav" type:"path" placeholder:"FILE" help:"The WAV file of the interpretation."`
 	To       string        `placeholder:"LANG" help:"The language to interpret into (en, ja, es, ...); none: English for Japanese speech, Japanese for any other."`

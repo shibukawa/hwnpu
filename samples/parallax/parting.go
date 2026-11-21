@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/samples/layering"
+	"github.com/shibukawa/hwnpu/samples/internal/layering"
 )
 
 // source is the picture and its nearness as the scene was first made from them: what is parted
@@ -63,7 +63,7 @@ func stack(layers []layering.Layer, edge int, far float64) *Scene {
 	return top
 }
 
-// part parts the picture into layers (samples/layering: the depth and the picture model in
+// part parts the picture into layers (samples/internal/layering: the depth and the picture model in
 // turns) and returns its scene. Each step is told on a line of log, and to prog when not nil:
 // the picture the model is asked to draw from and what it drew, how far the work is, and the
 // scene of the layers so far each time a layer is done, so that a window shows the picture

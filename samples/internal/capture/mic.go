@@ -42,7 +42,14 @@ type MicOptions struct {
 func Mic(ctx context.Context, o MicOptions) flow.Stream[[]float32] {
 	rate := cmp.Or(o.Rate, 16000)
 	raw := func(yield func(flow.Chunk[[]float32], error) bool) {
-		mic, err := audio.Open(ctx, o.Device, audio.WithSampleRate(rate), audio.WithChannels(1), audio.WithFormat(audio.F32))
+		id, err := MicID(ctx, o.Device)
+		if err != nil {
+			if ctx.Err() == nil {
+				yield(flow.Chunk[[]float32]{}, fmt.Errorf("the microphone: %w", err))
+			}
+			return
+		}
+		mic, err := audio.Open(ctx, id, audio.WithSampleRate(rate), audio.WithChannels(1), audio.WithFormat(audio.F32))
 		if err != nil {
 			if ctx.Err() == nil {
 				yield(flow.Chunk[[]float32]{}, fmt.Errorf("the microphone: %w", err))
