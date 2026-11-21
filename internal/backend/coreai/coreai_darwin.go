@@ -32,6 +32,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/types"
@@ -543,7 +544,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			g.h = caiOpen(cString(name), kind, &retried, &e)
 		} else if g.h != 0 && prebuilt {
 			prebuiltOnce.Do(func() {
-				fmt.Fprintf(os.Stderr, "  prebuilt programs (%s) finished on the device in place of the Neural Engine compiler (%s=off compiles them)\n", Arch(), PrebuiltEnv)
+				console.Notef("  prebuilt programs (%s) finished on the device in place of the Neural Engine compiler (%s=off compiles them)\n", Arch(), PrebuiltEnv)
 			})
 		}
 		if g.h == 0 {

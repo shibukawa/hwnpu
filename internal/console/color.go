@@ -73,13 +73,20 @@ func Highlight(s string) string {
 	return strings.Join(parts, red+not+gray)
 }
 
-// Notef writes a note (help, a change of setting) to standard error, in gray on a terminal.
+// Notef writes a note (help, a change of setting) to standard error, in gray on a terminal. While a
+// bar or spinner is drawn it takes the bar's line, which the bar draws again on the next (a note
+// written in the middle of "[2/20] dit_time.aimodel ⠙ ..." was left after the bar, 2026-11-21).
 func Notef(format string, args ...any) {
 	s := fmt.Sprintf(format, args...)
+	recordLog([]byte(s))
 	if Colors(os.Stderr) {
 		s = gray + strings.TrimSuffix(s, "\n") + reset + s[len(strings.TrimSuffix(s, "\n")):]
 	}
-	recordLog([]byte(s))
+	liveLines.Lock()
+	defer liveLines.Unlock()
+	if len(liveLines.stack) > 0 && Terminal(os.Stderr) {
+		s = "\r\x1b[K" + s
+	}
 	io.WriteString(os.Stderr, s)
 }
 
