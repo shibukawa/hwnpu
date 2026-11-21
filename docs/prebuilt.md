@@ -1,6 +1,6 @@
 # 変換済みのモデルを Hugging Face で配る (設計)
 
-作成: 2026-11-07。2026-11-21 に書き直した: CI で作って上げる計画をやめ、**書き戻す取得元 (`?writeback=true` の層。今の環境では NAS) にある書き出しを上げることだけ**に絞った。状態: 設計 (未実装)。
+作成: 2026-11-07。2026-11-21 に書き直した: CI で作って上げる計画をやめ、**書き戻す取得元 (`?writeback=true` の層。今の環境では NAS) にある書き出しを上げることだけ**に絞った。状態: 最初の実装あり (2026-11-21、下の「実装の状態」)。まだ何も上げていない。
 
 取得元の仕組み (層、`converted/MODEL/TARGET/EXPORT/VERSION`、`entry.json`、鍵、版) は [design/distribution.md](design/distribution.md) と [cache-sharing-design.md](cache-sharing-design.md) のまま使う。この文書は、その上に足す 2 つだけを決める。
 
@@ -8,6 +8,28 @@
 2. **読む層**: hwnpu が models.yaml の `hub` に書いたリポジトリ (既定は `hwnpu/<モデル>`) を、利用者の取得元と元の Hugging Face の間で読む (読むだけの取得元の 1 つ)
 
 作るのは今までどおり手元 (aix1 の `hwnpu-dev cache export`、Mac の `hwnpu-dev prebuild -put`、各コマンドの初回)。作って書き戻す取得元に置くところまでと、そこから HF に出すところを分ける。
+
+## 実装の状態 (2026-11-21)
+
+| 部分 | どこ | 状態 |
+|---|---|---|
+| models.yaml の `hub.push` と、モデルの `hub` (リポジトリ × 対象のコミット) | `internal/chat/table.go`、`hubpins.go` | 済み。後から読んだファイルのリポジトリが先、同じリポジトリは対象ごとに上書き、`like` は引き継がない |
+| 読む層 (取得元と同梱の後、元の HF の前) | `internal/store/hub.go`、`store.Sources` | 済み。`HWNPU_MODEL_HUB=false` で止まる。`hub` のないモデルと `original/` にはネットに出ない |
+| 断られたときの取り方 (gated は元の HF と同じ `gate`、非公開は `HF_TOKEN` か `hf auth login`) | `internal/chat/hubpins.go` (`hubAuth`) | 済み。gated でないリポジトリにはトークンを送らない。**断られたら手元の変換に進む** (エラーで止めるのはまだ) |
+| `vN` がなければ同じ鍵の `v0-HASH` を読み、`vN` として書き戻す | `internal/chat/sharedexport.go` (`fetchFrom`) | 済み。版を書いても取得元の今の書き出しが無駄にならない |
+| `hwnpu-dev hf plan / push / check` | `cmd/hwnpu-dev/hfcmd` | 済み (下の 4 節)。手元の 1 回の走りで、取得元から選ぶ、置き場所を作る、prebuilt を書き出しのプログラムで照らす、カード・LICENSE・`config.json` を作る、`hf upload-large-folder`、models.yaml の固定、上がったかの確かめ |
+| 書く権限の確かめ (`whoami-v2`) とトークンを貼る | `hfcmd/api.go`、`console.ReadSecret` | 済み。**書くための device flow はまだ** (トークンを貼るか `HF_TOKEN` / `hf auth login`) |
+| 20 GB を超える書き出しを切る | | まだ (今の最大は Qwen3.6 の 22.65 GB) |
+| `hwnpu-dev hf check --remake`、gated の同意の文と欄の写し (`extra_gated_fields`) | | まだ (同意の文は hwnpu が書いた一文) |
+
+実装で決めたこと (設計に足したもの):
+
+- **道具だけが違うエントリも `vN` として上げる** (`hwnpu-dev hf push` だけ。`plan -v` に「made with other tools」と出す)。`vN` を読む hwnpu は道具の hash を見ないので、同じことになる。2026-11-21 の NAS の AMD の書き出しは、どれも今の `tools/amd` より前の道具で作られている (鍵は違うが、道具の hash のほかは同じ)。上げる前に、その書き出しで今のコードが動くかを確かめる。実行時のほうは、同じ鍵 (同じバイト) のときだけ `v0-HASH` を読む
+- 上げるときの `entry.json` は取得元のものをそのまま置く。`v0-HASH` から上げるものだけは、版と場所を書き換えて書き直す (中のファイルと詰めたものは同じバイト)
+- 候補の行は状態の順 (上げられるもの、上げ済み、足りないもの)、その中は名前の順
+- **Core AI の書き出しは版 (`vN`) のエントリだけを上げる** (2026-11-21 に決めた)。取得元には、今のコードがもう作らない名前の書き出しが、今の鍵のまま残っている (Anima の大きさごとの書き出しと、全部の大きさを 1 つにした書き出し。LFM3-1.7B では合わせて 17 GB、FLUX.2 klein では 65 GB)。名前だけではどれが今のものか分からないので、版を書いたあと Mac でそのモデルを一度動かす。今のコードが探す名前だけが、同じ鍵の `v0-HASH` から取られて `vN` として取得元に書き戻される (作り直しは要らない)。AMD の書き出しはレシピから名前が決まるので、`v0-HASH` からも上げる
+- **表 (`any`) は Apple の行にだけ付ける**。表を読むのは Core AI の準備で、AMD の書き出しは自分の中に表を持っている
+- **models.yaml の `disk`** (動かすのにキャッシュに残る量): `hwnpu-dev hf sizes [--write models.yaml]` が取得元から出す。AMD はそのモデル自身の書き出し (変種のものでない。`bytes` と同じ)、Core AI は版のエントリだけ。表にない種類は不明 (一番大きい値にしない)。2026-11-21 に AMD の 20 モデルを書いた。AMD のダウンロード量は 20 モデルとも `bytes` と一致した
 
 ## 1. 何を配るか
 
@@ -101,6 +123,7 @@ tags: [hwnpu, npu, amd-xdna2, coreai, apple-neural-engine]
 
 ```
 hwnpu-dev hf plan [SEL...]           何を上げるかを出すだけ (上げない)
+hwnpu-dev hf sizes [N:MODEL...] [--write models.yaml]   ダウンロード量と、ディスクに残る量 (models.yaml の disk)
 hwnpu-dev hf push [SEL...] [--dry-run] [--all]
 hwnpu-dev hf check [MODEL...] [--remake]
 
@@ -134,7 +157,7 @@ candidate                           license         pinned  version  chips  hf  
 1:LFM3-Audio-2B-TTS/apple           LFM             yes     -        0/12   -           write targets.coreai.version, remake
 0:plamo-3-translate-2b/amd-xdna2    PLaMo           no      -        -      -           pin from, write version, remake
 -:plamo-3-translate-2b/apple        PLaMo           no      -        -      -           make the Core AI export (on a Mac)
--:Anima-Turbo                       non-commercial  -       -        -      -           not published (license)
+-:flux-3-image-klein                non-commercial  -       -        -      -           give the AMD export a key (gated on HF)
 ```
 
 - 行はモデル × 対象 (`amd-xdna2` と `apple`)。Apple の行の `chips` は、取得元にある prebuilt のチップの数 / `coreai-build` の通るチップの数 (今は 12。[design/apple-coreai.md](design/apple-coreai.md) の表)。`0/12` は汎用の `coreai` だけ (チャットのモデルは prebuilt を作らないのでいつもこれ)。`-v` でチップの名前と機種 (`h14g` M2、...) を並べ、足りないチップも出す。prebuilt のないチップの Mac は汎用のもので動くので、`0/12` でも上げられる`N` はその行の place を全部持っている一番前の層で、どの層にもなければ `-:`、層によって分かれていれば `0+1:` (それぞれの place を一番前の層から取る)
@@ -360,8 +383,8 @@ gated は「落とす前に同意させる」仕組みで、再配布してよ�
 | Apache-2.0、MIT ほか (`open`、32) | Qwen3.5、Gemma 4、whisper ほか | なし | gated なし。LICENSE を写す | 不要 |
 | LFM Open License 1.0 (`conditional`) | LFM3 系、LFM2-8B-A1B、d1 | なし | gated なし。LICENSE を写し、条件 (年 1,000 万ドル未満の商用) をカードの先頭に | 配る (2026-11-21: ほかの人も量子化したものを HF で再配布している) |
 | PLaMo コミュニティライセンス (`conditional`) | plamo-3-translate (3) | なし | gated なし。LICENSE を同梱、カードに「Built with PLaMo」と商用の登録の要否、リポジトリの名前に PLaMo を残す (`hwnpu/plamo-3-translate-2b`) | 配る (2026-11-21: 3 つの条件で) |
-| CircleStone Labs 非商用 (`non-commercial`、`accept`) | Anima-Turbo、Anima-Aesthetic | なし | gated なし。LICENSE を写し、非商用をカードの先頭に | 未 |
-| FLUX Kommunity (`non-commercial`、`accept`) | flux-3-image-klein | auto | gated (auto) | 未 |
+| CircleStone Labs 非商用 (`non-commercial`、`accept`) | Anima-Turbo、Anima-Aesthetic | なし | gated なし。LICENSE を写し、非商用 (重みは非商用、生成した絵は商用可) をカードの先頭に | 配る (2026-11-21: ほかの人も量子化したものを再配布している) |
+| FLUX Kommunity (`non-commercial`、`accept`) | flux-3-image-klein | auto | gated (auto、元の同意の文を写す)。LICENSE を写し、非商用と Qualifying User の条件をカードの先頭に | 配る (2026-11-21: ほかの人も量子化したものを再配布している) |
 
 - hwnpu の側の同意 (`accept: true`: 起動前に一度聞く) は、HF から取っても今どおり聞く。HF の gated とは別
 - 確認が済むまで、そのライセンスのモデルは `hub` を書かない (上げない)
@@ -409,7 +432,10 @@ samples が既定で使うモデルを先に配る。samples を試す人がチ�
 
 ## 9. 未決
 
-- ライセンスの再配布の確認: CircleStone、FLUX Kommunity (6 節)。LFM と PLaMo は配ると決めた
+- 書くための device flow (今はトークンを貼るか `HF_TOKEN` / `hf auth login`)。hwnpu の OAuth アプリに `write-repos` を足すか
+- gated で断られたときに止める (今は手元の変換に進む)
+- 20 GB を超える書き出しを切る形 (`files.tar.zst.000` ...) と、それを読む側
+
 - Intel (OpenVINO IR) を配るか。今は取得元でも共有していない
 - 確かめた結果の形 (`--checked` の JSON) と、それを作る手順 (`hwnpu-dev check` の出力から作れるか)
 - 目録 (`config.json`) の形 (hwnpu が取る前に 1 回読む。ダウンロード数の条件にも使う)

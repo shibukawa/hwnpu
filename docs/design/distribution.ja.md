@@ -71,7 +71,8 @@ hwnpu がモデルを探し、落とし、変換し、共有し、消す仕組�
 0. この機械のキャッシュ (cache.Root)   いつも書き戻す・その場で使う
 1. HWNPU_MODEL_SOURCE, _1, _2, ...    番号の順。エラーの取得元は飛ばす
 2. アプリ同梱のモデル                  読むだけ・その場で使う
-3. Hugging Face                       HWNPU_MODEL_HUGGING_FACE=false で出ない
+3. Hugging Face の変換済みのモデル     models.yaml の hub (リポジトリと対象ごとのコミット)。HWNPU_MODEL_HUB=false で読まない
+4. Hugging Face                       HWNPU_MODEL_HUGGING_FACE=false で出ない (3 も読まない)
    どこにもない -> この機械で作る
 ```
 
@@ -94,6 +95,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - 速い道: 手元の lock がファイルを名指し、大きさが合い、コミットが決まったものと同じなら、ネットにも取得元にも聞かない
 - 元のファイルはどの層から来ても手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`) に置く。`chat.Fetch(ctx, repo, name, log)` と `chat.FetchWeights` がパスを返す。モデルの間で共有する部品 (Chroma の T5-XXL と VAE) は各リポジトリのフォルダにあり、sha256 でハードリンクする
 - `TARGET`: `amd-xdna2`、`coreai`、`coreai-ARCH` (prebuilt)、`any` (表、GPTQ の codes)。`VERSION`: models.yaml に `targets.<対象>.version: N` があれば `vN` (道具の hash を除いたレシピが同じなら当たる)、`develop: true` なら `vN-<8 桁>`、版がなければ `v0-<8 桁>`
+- どの層にもない版 (`vN`) は、同じ鍵の `v0-HASH` (版を書く前に作った同じバイト) から取り、`vN` として書き戻す (`chat.fetchFrom`)
 - フォルダは揃っているか、揃っていないかの 2 つ: 変換結果は `entry.json` があれば揃っている。リポジトリは lock が名指すものだけを持つ。読む側に書きかけは見えない
 
 ### 鍵 (何も落とす前に計算する)
@@ -232,7 +234,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 ## 未解決
 
-- 変換済みのモデルの Hugging Face での配布 (組織 `hwnpu`、1 モデル 1 リポジトリ、取得元から `hwnpu-dev hf push` で手で上げ、元のリポジトリの前の層として読む): 設計だけ ([../prebuilt.md](../prebuilt.md))。今は利用者の取得元で共有する
+- 変換済みのモデルの Hugging Face での配布 (組織 `hwnpu`、1 モデル 1 リポジトリ、取得元から `hwnpu-dev hf push` で手で上げ、元のリポジトリの前の層として読む): 読む層、`hub` の固定、`hwnpu-dev hf plan / push / check` を実装。まだ何も上げていない。書くための device flow、20 GB を超える書き出しを切ること、gated で断られたら止めることが残り ([../prebuilt.md](../prebuilt.md))。今は利用者の取得元で共有する
 - 手元の並び: `models/NAME` のプログラムと `entries/` を `converted/MODEL/TARGET/EXPORT/vN/` に移し、完了の印を `entry.json` 1 つに (今は `NAME.done`、`NAME.ext.done`、`entry.json` が混在)。`~/models` を一度移して読まなくする。`modelstore` に変換の API (`Make`)。同梱の変換結果をその場で使う (今はコピー)
 - Core ML と OpenVINO のプログラムのエントリ、機械に縛られた (`host`) エントリの取得元での共有、対象の名前での AMD / Intel の NPU の世代の区別
 - 道具の引数を Go が持たない手で作る画像の書き出し (Anima): 今は名前でだけ

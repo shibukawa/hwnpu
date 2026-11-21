@@ -73,6 +73,18 @@ func fetchFrom(ctx context.Context, p place, dst string, log io.Writer) bool {
 		return false
 	}
 	i, err := shared.FetchEntry(ctx, ss, p.entry.Path, p.takes, dst, log)
+	if errors.Is(err, shared.ErrNotFound) && p.released() {
+		// a published version none has yet: the same key with no version is the same bytes
+		// (made before the version was written); it goes in the sources as the version
+		if i, err = shared.FetchEntry(ctx, ss, Unversioned(p.entry), func(e shared.Entry) bool { return e.Key == p.entry.Key }, dst, log); err == nil {
+			if e, rerr := shared.ReadEntry(dst); rerr == nil {
+				rerr = shared.WriteEntry(dst, Released(p.entry, e))
+				if rerr == nil {
+					i = len(ss) // every source written back to lacks the version
+				}
+			}
+		}
+	}
 	if err != nil {
 		if !errors.Is(err, shared.ErrNotFound) && log != nil {
 			fmt.Fprintf(log, "the sources: %v; making %s here\n", err, filepath.Base(dst))

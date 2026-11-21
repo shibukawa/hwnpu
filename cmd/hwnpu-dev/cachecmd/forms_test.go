@@ -14,7 +14,7 @@ func TestAMDForms(t *testing.T) {
 	if !ok {
 		t.Fatal("no gpt-oss-20b")
 	}
-	forms := amdForms(m)
+	forms := AMDForms(m)
 	if len(forms) != 2 {
 		t.Fatalf("%d forms, want 2", len(forms))
 	}
@@ -22,7 +22,7 @@ func TestAMDForms(t *testing.T) {
 		strings.Contains(strings.Join(forms[1].AMDExport, " "), "--expert-places") {
 		t.Errorf("forms %v and %v", forms[0].AMDExport, forms[1].AMDExport)
 	}
-	if m, ok := chat.Lookup("LFM3-1.7B"); !ok || len(amdForms(m)) != 1 {
-		t.Errorf("LFM3-1.7B: %d forms, want 1", len(amdForms(m)))
+	if m, ok := chat.Lookup("LFM3-1.7B"); !ok || len(AMDForms(m)) != 1 {
+		t.Errorf("LFM3-1.7B: %d forms, want 1", len(AMDForms(m)))
 	}
 }
