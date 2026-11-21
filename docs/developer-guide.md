@@ -2,12 +2,12 @@
 
 [日本語](developer-guide.ja.md)
 
-> **v0**: this API is a first version and its shape will still change. This document is both a guide to using it and material for reviewing its design at this stage. The design questions are numbered in [section 9](#9-design-questions), to be referred to ("D4: option B").
+> **v0**: this API is a first version and its shape will still change. This document is both a guide to using it and material for reviewing its design at this stage. The design questions are numbered in [section 10](#10-design-questions), to be referred to ("D4: option B").
 
 hwnpu is a set of Go libraries that run AI models on the NPU. `hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` are demos that try its features one at a time. An app registers several models, prepares them ahead of time, and runs them joined together.
 
 - There now: speech to text, translation, chat, text to speech, a VAD by loudness, the ways of joining models, commands for an app's command line
-- Not there yet: pictures (depth, faces, objects, generation), music and sound effects, managing what stays loaded, a local server ([section 10](#10-not-there-yet))
+- Not there yet: pictures (depth, faces, objects, generation), music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel it calls the same preparing and loading as the commands, but it was not run through this library there
 - The whole plan is in [app-api.md](app-api.md) and the list of work in [app-api-tasks.md](app-api-tasks.md) (both in Japanese)
 
@@ -164,7 +164,7 @@ categories:
       - {machine: 16, model: plamo-3-translate-2b}
 ```
 
-This and `At` of section 3.2 say the same thing, one in code and one in a file ([D5](#9-design-questions)).
+This and `At` of section 3.2 say the same thing, one in code and one in a file ([D5](#10-design-questions)).
 
 ## 4. Preparing
 
@@ -201,7 +201,7 @@ err = plan.Run(ctx, func(p ai.Progress) {   // p.Stage: prepare, compile, done
 | Compile | Loads each model once. Compiling for Apple's Neural Engine takes from seconds to minutes on the first load (100 s for Gemma 4), and what it makes belongs to the machine | Needed |
 
 - A `plan.Run` that was cut off goes on from where it stopped when called again
-- `Progress.Message` is a line of the log of a download or a conversion. There are no byte counts yet ([D15](#9-design-questions))
+- `Progress.Message` is a line of the log of a download or a conversion. There are no byte counts yet ([D15](#10-design-questions))
 - `app.Prepare(ctx, fn)` is `Plan` and then `Run`
 - What was made also goes to the sources that are written back to (`?writeback=true`). `Run` waits for that before it returns
 
@@ -222,7 +222,7 @@ app.Store = ai.Store{
 - `Store.Models` is [`modelstore.Options`](../USAGE_LIBRARY.md): where the cache is, the sources, the models bundled with the app, the cache's limits, the app's definitions files
 - What was prepared is written into `store.json` at the root of the cache (by the NPU's target, then by `ROLE:NAME`)
 - `Store.Prepared` are folders with a copy of a prepared cache's `store.json` and the files it names. They are read only and used where they are. A use found in one loads without being prepared
-- The store's settings (where the cache is, the sources, the definitions) are one per process for now. Two `App`s with different `Store`s cannot be used at once in a process ([D8](#9-design-questions))
+- The store's settings (where the cache is, the sources, the definitions) are one per process for now. Two `App`s with different `Store`s cannot be used at once in a process ([D8](#10-design-questions))
 
 ## 5. Running
 
@@ -239,7 +239,8 @@ rt.Loaded()                         // the models held now: use, model, memory, 
 - **It touches no network and converts nothing.** A use that is not prepared is `ai.ErrNotPrepared`. With `ai.WithAutoPrepare(fn)` the first `Get` prepares it, as the commands do; that may download gigabytes
 - **A store whose record is not what is picked now counts as not prepared.** When the use was prepared as another model (the app's line-up changed, or the machine's memory setting did), the old one is not loaded in its place
 - **Loads run one at a time.** Each model runs one request at a time (others wait). Different models may be called at the same time
-- **An app that uses its models one after another** unloads them with `Release`: a picture's generator, then its depth, with only the larger of the two in memory. Nothing unloads models by itself yet ([D9](#9-design-questions))
+- **An app that uses its models one after another** unloads them with `Release`: a picture's generator, then its depth, with only the larger of the two in memory. Nothing unloads models by itself yet ([D9](#10-design-questions)). This is another level than the swapping of stages that image generation does inside ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
+- **Models can be called at the same time, but the NPU is one queue.** Whether a pipeline keeps up in real time is decided by what its stages' times add up to ([section 9](#9-constraints-and-rules))
 - A model's `OnNPU()` reports whether its programs were verified to be on the NPU (`Speaker` does not have it yet)
 
 ### 5.1 Errors
@@ -277,7 +278,7 @@ for c, err := range stream {
 - **A stage is a function from streams to a stream.** Stages are joined by passing one's result to the next. A stage goes no further than its reader reads (unless `flow.Async` is between them)
 - **Times are the stream's own.** Audio counts them in samples, so a late microphone or a jittery network does not move them. Only `Metronome`, `Pace` and `Live` look at the wall clock
 - **`Final`** ends a segment: the last chunk of an utterance's audio, a settled sentence, a finished picture. In a stream of text, the chunks before a final one are "the text so far", each replacing the one before (captions while someone speaks, an answer being generated)
-- Audio is `[]float32` (mono, −1 to 1) and text is `flow.Text{Text, Lang}`. The sampling rate is not in the chunk: a transcriber and a VAD read 16 kHz (`speech.TranscribeRate`), and a speaker gives `Speaker.Rate()` (24 kHz) ([D11](#9-design-questions))
+- Audio is `[]float32` (mono, −1 to 1) and text is `flow.Text{Text, Lang}`. The sampling rate is not in the chunk: a transcriber and a VAD read 16 kHz (`speech.TranscribeRate`), and a speaker gives `Speaker.Rate()` (24 kHz) ([D11](#10-design-questions))
 
 ### 6.2 Three ways of joining
 
@@ -375,7 +376,7 @@ func Upper(s flow.Stream[flow.Text]) flow.Stream[flow.Text] {
 }
 ```
 
-- Cancelling is ctx. There is no way yet to interrupt (stop speaking when the other person starts) ([D13](#9-design-questions))
+- Cancelling is ctx. There is no way yet to interrupt (stop speaking when the other person starts) ([D13](#10-design-questions))
 
 ### 6.5 Live inputs: the microphone and the camera
 
@@ -394,14 +395,14 @@ mic = flow.Live(ctx, mic) // to pace it as a microphone would
 
 | Input | What to do |
 |---|---|
-| Sound (all of it must be heard) | Read it in a goroutine of its own and keep it: `flow.Async(ctx, mic, n)`. `capture.Mic` does this inside (a minute by default) and reports through `MicOptions.Lost` when sound was lost all the same |
+| Sound (all of it must be heard) | Read it in a goroutine of its own and keep it: `flow.Async(ctx, mic, n)`. `capture.Mic` does this inside and reports through `MicOptions.Lost` when sound was lost all the same. The most it keeps is `MicOptions.Backlog` (a minute by default). **That is not a delay**: sound is passed on as soon as it is read, and nothing waits while the stages after it keep up |
 | Video (old frames are of no use) | Pass on the newest only: `flow.Latest(ctx, camera)` |
 
 - Seen on the machine: joined without keeping, the sound of the seconds in which the first utterance was transcribed and translated was lost; the second utterance lost its beginning and the third was gone. With keeping, all three came through
 - `flow.Live` (a recording at a microphone's pace) only waits when its reader is late, and loses nothing. A recording does not show this difference
 - Stopping the microphone and stopping the stages after it are two things. `capture.Mic` ends (without an error) when its ctx is cancelled, and the stages after it work off what was heard, so they are given a context of their own (`samples/interpreter` turns the microphone off at the first Ctrl-C and ends at the second)
 - The camera (for the pseudo-3D sample): a frame of hwcamera in the driver's memory needs its `Release`, so frames are made pictures in Go's memory (`WithFormat(hwcamera.RGBA)`) before they go into a stream, and pass through `flow.Latest`. It is not written yet
-- Outputs (a speaker, a screen) follow the same idea: the library has none ([D19](#9-design-questions))
+- Outputs (a speaker, a screen) follow the same idea: the library has none ([D19](#10-design-questions))
 
 ## 7. The models
 
@@ -472,7 +473,142 @@ Their checkpoints are here or come from the sources; about 7.8 GB running togeth
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
 ```
 
-## 9. Design questions
+## 9. Constraints and rules
+
+There is one NPU, its memory is pinned, and its programs have fixed shapes. Much of an app's design follows from that. The numbers say where they come from: **"measured" means on a Ryzen AI 9 365 (AMD, XDNA 2) on 2026-11-21, through this library**; the others are records of design.md and MODEL.md. Nothing was measured through this library on a Mac or on Intel yet.
+
+### 9.1 The NPU is one queue
+
+**Different models can be called at the same time. It is not faster.** The time for all of them is the sum of their times alone.
+
+| Call (measured, AMD) | Alone | Called at the same time |
+|---|---|---|
+| Speech to text (13.3 s of audio) | 1.4 s | 3.1 s with the speaker |
+| Translation (8B, 3 sentences) | 3.3 s | 3.8 s with the speaker |
+| Text to speech (3.9 s of speech) | 10.1 s | 11.4 s with the transcriber, 13.4 s with the translator |
+| All three | 14.8 s added up | 14.7 s until all are done |
+
+- The calls take turns in small pieces (the transcription above ended 3.1 s into the speaker's call). A call does not wait for the whole of another
+- **Nothing orders the calls yet.** There is no way to say that audio goes first or that background work waits ([D10](#10-design-questions)). How long a short call waits in the middle of heavy work (a step of image generation takes one to several seconds) was not measured
+- AMD: each program of a model has a hardware context, and the firmware shares the time between them (design.md 16.94). A switch costs about 0.5 ms
+- Apple: switching programs costs 15 to 35 ms each time (design.md 16.36), which counts for a model that calls several programs a frame (the speaker). How several models of one process behave when called at once was not measured
+- Intel: how models behave when run at once is not measured (design.md 16.94)
+
+### 9.2 Can the models work together in real time?
+
+"Running at the same time" and "keeping up in real time" are two things. The NPU being one queue, a pipeline keeps up only **when the time its stages take on the NPU adds up to less than a second for each second of real time**. Over that, what waits grows.
+
+| Stage (measured, AMD) | Time on the NPU |
+|---|---|
+| Speech to text (whisper-large-v3-turbo) | About 1 to 1.4 s an utterance (up to 30 s; the window is always 30 s, so a short one takes little less) |
+| Translation (plamo-3-translate-8b / 2b) | About 2.7 s / about 1.1 s for an utterance of one or two sentences |
+| Text to speech (LFM3-Audio-2B-TTS) | About 2.6 s for a second of speech (about 0.4 times real time) |
+
+An example: interpreting someone who speaks for 4 s and pauses for 1 s (an utterance every 5 s).
+
+| Set-up | NPU time an utterance | Of 5 s | What happens |
+|---|---|---|---|
+| Captions only (speech to text + the 2B) | About 2.1 s | 0.4 | Keeps up. 2 to 3 s behind the end of an utterance |
+| Captions only (the 8B) | About 3.7 s | 0.7 | Keeps up, with little to spare |
+| With the translation spoken | About 13.6 s (10 s of it the speaker) | 2.7 | Does not keep up. It falls further behind with every utterance |
+
+The delays measured (the recording paced as a microphone, counted from the end of each utterance; the `+N.Ns` that `samples/interpreter --live` prints):
+
+| | First utterance | Third utterance |
+|---|---|---|
+| Text | +1.6 s | +5.4 to 5.7 s |
+| Translation (8B / 2B) | +4.3 / +2.7 s | +8.7 / +7.9 s |
+| Spoken translation (8B / 2B) | +20 / +14 s | +24 / +19 s |
+
+- The +1.6 s of the text is 0.6 s of silence that ends an utterance (`VADOptions.Hangover`) and about a second of transcription
+- Later utterances are later because they share the NPU with the speech of the one before
+- Records on a Mac (alone): Whisper reads a 30 s window in 0.6 s on an M3; PLaMo 3 Translate on an M3 runs at 53 (0.8B), 17 (2B) and 10 to 11 (8B) tokens a second; the speaker at about 0.5 times real time in lut8 on an M3 (design.md 16.31, an old measurement). The speaker does not reach real time there either
+
+**What to choose when the sum is over 1**
+
+| Case | Design |
+|---|---|
+| Old input is of no use (a camera's frames into a detector) | Drop: `flow.Latest`. The detector sees only the present, and skips frames |
+| The output's times are fixed (drawing) | On the beat: `flow.Metronome` and `flow.Hold`. A model's result replaces the one before when it comes |
+| All of it is needed, late is fine (transcribing a recording, a translation to read later) | Keep: `flow.Async`. What waits grows, and nothing is lost |
+| All of it is needed and late is not fine (a conversation) | **Take turns** (not listening until the answer is spoken; listening only while a key is held). Or make it lighter: smaller models (`use.At`, `use.As`), shorter outputs, fewer stages (captions instead of speech) |
+
+- Even under 1, the delay is "until the utterance ends" plus each stage's time. Provisional captions while someone speaks, and speech that plays as it is made, are not there yet
+- There is no API yet for an app to measure what the sum is on its machine ([D20](#10-design-questions)). For now, measure each stage alone as above and add them up
+
+### 9.3 Several inputs into one model
+
+- **A model runs one request at a time.** Calls made at the same time go through one after another
+- **Calls are independent.** `Transcribe`, `Translate`, `Speak` and `Complete` do not depend on the call before (a translation's history and a conversation's messages are given by the caller each time). So several inputs can take turns through one model
+- **Left and right audio**: inputs are mono (a transcriber and a VAD read mono at 16 kHz). Stereo is split into two mono streams, each with its own VAD, into the same transcriber. Measured: two clips of 13.3 s at the same time take 2.8 s (twice the 1.4 s of one). Both count in the sum of section 9.2
+- **Loading the same model twice is not faster**: the NPU being one queue, the total is the same and only the memory doubles (loading two was not measured)
+- **Hardly anything takes several inputs in one call (a batch).** Programs have fixed shapes: one 30 s window for speech to text, one sequence for chat and translation, one text at a time for embeddings. The exceptions are of pictures: image generation draws a few together (`hwnpu-image --batch`), and labels are read 8 texts at a time
+- A chat model skips reading again what continues the conversation before (or one of the two long ones before that); the result is the same. With more conversations taking turns through one model, that saving is lost (it is only slower)
+
+### 9.4 Memory
+
+**The NPU's buffers are pinned memory that cannot be swapped out.** Over what there is, other applications are pushed to swap. Models loaded together add up (nothing is shared).
+
+| The machine's memory | 8 GB | 16 GB | 24 GB | 32 GB | 48 GB | 64 GB and up |
+|---|---|---|---|---|---|---|
+| About what is left for models (MODEL.md) | 3 GB | 9 GB | 15 GB | 22 GB | 35 GB | 50 GB |
+
+- Compare `plan.MemoryGB()` (the models loaded together) with `plan.UsableGB()` (the table above). `plan.Fits()` and `APP models` say whether it is over
+- An example (the interpreter, AMD's figures): 2.2 GB for speech to text and 2.9 GB for the speaker, plus 1.0 (0.8B), 2.7 (2B) or 6.5 GB (8B) for the translator. The 8B does not fit a 16 GB machine (about 9 GB)
+- **How memory is counted**: on Apple the Neural Engine's share is not in the process's memory (its footprint); it is the kernel's wired memory, readable for the whole machine only. On AMD the NPU's buffers are not in the process's RSS either. models.yaml's `memory` is both together
+
+The limits known by chip:
+
+| Chip | Constraint | Source |
+|---|---|---|
+| M1 (the Pro, Max and Ultra are taken to be alike) | With over 2.8 GiB of programs loaded on the Neural Engine together, every call slows down about 12 times. Large models (PLaMo 3 Translate 8B and others) are not picked by a use (`not_on: [M1]`) | `m1HoldBytes` in `internal/chat/model.go`, PROBE.md |
+| M2 and later | No such limit was found (3.65 GiB at full speed on an M2) | The same |
+| Apple, all | The Neural Engine's cache of compiled programs holds about 4 GiB. What is over it is compiled again at every start (minutes). Compiling is one serial queue for the whole machine | design.md 16.99, 16.229 |
+| AMD (XDNA 2) | No limit of memory of the NPU's own was found (its buffers are host memory). The models share the DRAM's bandwidth (about 55 GB/s), so those that read large weights slow each other down | design.md 16.94 |
+| Intel | On a Core Ultra 5 135U, Anima in fp16 failed with `OUT_OF_HOST_MEMORY` at about 4.6 GB. The limit of a program's weights is not known | design.md 16.144, intel-npu-models.md |
+
+### 9.5 `Release`, and image generation swapping its stages
+
+Both keep things from being in memory together, **at different levels**.
+
+| | Image generation swapping its stages | `use.Release(rt)` |
+|---|---|---|
+| What | The stages inside one model (text encoder → DiT → VAE), and the groups of blocks inside the DiT | A use (a model), whole |
+| Who does it | The pipeline itself (on by default) | The app calls it |
+| The next use | Each stage is loaded again by itself | The next `Get` loads all of it again |
+| Where it is now | `internal/imagegen` (only the commands use it) | `ai` |
+
+Image generation's swapping is built differently for each NPU (figures of the records).
+
+- **AMD**: the three stages never run together, so each is on the NPU only while it runs. For Anima at 1024², the peak goes from 14.2 to 5.0 GiB; loading costs a few seconds a picture. The DiT reads each group's weights into one bank (pinned memory 7 × 464 → 464 MiB; `--resident-dit` keeps them all)
+- **Apple (Core AI)**: a group of the DiT is loaded when its turn comes, run, closed, and the next one is loaded ahead. For Anima-Turbo the Neural Engine holds 0.57 instead of 2.53 GiB, and a picture takes the same 49 s (M1). For Chroma it is 2.2 to 2.6 instead of 8.3 GiB, and swapping is the faster
+- **Intel**: holds what fits, and closes what was not used lately to load again when it does not
+
+- When image generation comes into `ai/imagegen`, it brings this swapping as it is, on by default. An app then calls `Release` after generating, to unload what is left (small parts), and goes on to the next model (depth)
+- A third mechanism: a chat model on AMD gives its pinned memory back after a while without a request and loads again in a second or two at the next one (`hwnpu-chat --idle`). It cannot be used from `ai` yet
+- Making one thing of the three (a budget of memory, what may be evicted) is [D9](#10-design-questions)
+- The time to load again (measured, AMD): speech to text 0.5 to 1.2 s, the translator 5 to 9 s (8B) or about 3 s (2B), the speaker 2.3 to 3.8 s. On Apple it is seconds once compiled, and tens of seconds to minutes the first time
+
+### 9.6 Processes
+
+- **On a Mac, one hwnpu process uses the Neural Engine at a time.** Two at once froze an M1's OS, so the process that first opens the device holds a lock until it ends (design.md 16.132). While an app that stays running runs, commands such as `hwnpu-chat` wait. There is no API yet for an app to let the NPU go (`Suspend`)
+- AMD and Intel have no such lock. On AMD, processes can use the same NPU, sharing its time (commands were up to 50 times slower with another process on the NPU: new-model-checklist.md). Intel was not tried
+- On a Mac, macOS's own services (photo analysis, Apple Intelligence) use the Neural Engine too. While they ran, chat fell to 0.7 tokens a second (design.md 16.112). An app cannot stop them
+- **Take a process to have one `App`.** The store's settings are one per process ([D8](#10-design-questions))
+- Several models in one process on AMD need the fix of the device heap's address (design.md 16.281)
+
+### 9.7 The shapes of inputs and outputs
+
+| | Shape |
+|---|---|
+| Input of speech to text and of the VAD | Mono, 16 kHz, float32 (−1 to 1). Windows of 30 s. The VAD ends an utterance at 25 s (`VADOptions.MaxSpeech`) |
+| Output of the speaker | Mono, 24 kHz. A sentence is given whole (it cannot be played from its middle on) |
+| Translation, chat | One text at a time. A chat's context length is the model's definition's |
+| Pictures (planned) | Only the sizes of the export (fixed sizes by aspect ratio) |
+
+- Sound of another rate or channel count is matched before it goes into a stream (`speech.ReadWAV(data, rate)` reads a file so; hwcamera's microphone has the OS do it)
+
+## 10. Design questions
 
 For each: what it is now, why, and the other options. Those **not decided** are marked.
 
@@ -578,7 +714,14 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Option: the code that makes streams of hwcamera as another module of hwnpu (not a dependency of the library). Apps then do not each write it, and the rules of "keep" and "the newest only" are in one place
 - **Not decided**: whether to make that module; where an API for playing sound goes
 
-## 10. Not there yet
+**D20. An API to measure whether a pipeline keeps up, and one to order the calls** — now: neither. An app measures each stage alone and adds them up (section 9.2).
+
+- Option A: the `Runtime` counts each model's calls and their time and gives them in `rt.Loaded()`. An app sees what the sum is on its machine, and changes its line-up or tells the user
+- Option B: a command such as `APP models bench` that measures the registered models on fixed inputs and gives the machine's figures
+- Option C: a priority on a use (`use.Priority(ai.Interactive)`): audio goes first and background work waits at its breaks. The calls to the NPU must then go through one place (D10)
+- **Not decided**: which to add. A is small; C belongs with managing what stays loaded (D9)
+
+## 11. Not there yet
 
 - Pictures: depth, faces, objects, poses, cutouts, OCR, labels (`ai/vision`); generation (`ai/imagegen`)
 - Sound: music, sound effects, pitch, notes (`ai/sound`)
@@ -586,7 +729,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Managing what stays loaded (D9, D10), a local server (OpenAI compatible and others), bundles to ship, build tags
 - Their order and details are in [app-api-tasks.md](app-api-tasks.md)
 
-## 11. For hwnpu's developers: adding a package of models
+## 12. For hwnpu's developers: adding a package of models
 
 A package of models has a `Role` of `internal/airole` and makes its `Use` with `ai.Define`. `ai` knows nothing else of it.
 

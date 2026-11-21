@@ -55,9 +55,9 @@
 | I5 | `hwnpu-mcp`: MCP しか話さない頭脳のための口 | どこでも | I2 | 小 | 未着手 |
 | I4 | 仕事の種類ごとの時間と電力量の目安 | Mac、aix1 | I2 | 小 | 未着手 |
 | **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 未着手 |
-| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 未着手 |
+| **J2** | `ai/imagegen`: 画像の生成 (Anima から: 擬似立体はアニメの絵と相性がよい。続いて FLUX.2 klein、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 未着手 |
 | J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 未着手 |
-| **J4** | `samples/` の擬似立体: 画像の生成 → 深度 → カメラ (hwcamera、または録画や画像のファイル) の顔の位置 → メトロノームで描く | aix1、Mac | J1、J2 | 中 | 未着手 |
+| **J4** | `samples/` の擬似立体: 画像の生成 (Anima のアニメの絵) → 深度 → カメラ (hwcamera、または録画や画像のファイル) の顔の位置 → メトロノームで描く | aix1、Mac | J1、J2 | 中 | 未着手 |
 
 依存のつながり:
 

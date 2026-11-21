@@ -177,6 +177,41 @@ func (p *Plan) Target() string { return p.npu.Target }
 // in it beside everything else the machine runs.
 func (p *Plan) MachineGB() int { return p.machine }
 
+// usable is about how much of a machine's memory is left for models, in GB, by the memory it
+// has: MODEL.md's second row (the OS and the everyday applications taken off). The NPU's buffers
+// are pinned memory that cannot be swapped out, so models over it push other applications to
+// swap.
+var usable = [][2]float64{{8, 3}, {16, 9}, {24, 15}, {32, 22}, {48, 35}, {64, 50}}
+
+// usableGB is usable for a machine of machine GB: between the table's machines in proportion,
+// below 8 GB what is over 5 GB, above 64 GB all but 14 GB.
+func usableGB(machine int) float64 {
+	m := float64(machine)
+	first, last := usable[0], usable[len(usable)-1]
+	switch {
+	case m <= first[0]:
+		return max(0, m-(first[0]-first[1]))
+	case m >= last[0]:
+		return m - (last[0] - last[1])
+	}
+	for i := 1; ; i++ {
+		if a, b := usable[i-1], usable[i]; m <= b[0] {
+			return a[1] + (m-a[0])*(b[1]-a[1])/(b[0]-a[0])
+		}
+	}
+}
+
+// UsableGB is about how much of the plan's machine's memory (MachineGB) is left for models,
+// beside the OS and the everyday applications (MODEL.md: about 3 GB of 8, 9 of 16, 15 of 24, 22
+// of 32, 35 of 48, 50 of 64). MemoryGB is to stay under it: the NPU's buffers are pinned memory
+// that cannot be swapped out, and models over it push the other applications to swap.
+func (p *Plan) UsableGB() float64 { return usableGB(p.machine) }
+
+// Fits reports whether the plan's models running together (MemoryGB) stay within what the
+// machine has for models (UsableGB). An app whose plan does not fit picks smaller models for
+// that memory (Use.At, Use.As) or runs its models one after another (Use.Release).
+func (p *Plan) Fits() bool { return p.MemoryGB() <= p.UsableGB() }
+
 // Ready reports whether every use is ready to load: Run downloads nothing.
 func (p *Plan) Ready() bool {
 	for _, it := range p.Items {

@@ -529,3 +529,32 @@ func TestLineUpByMemory(t *testing.T) {
 		t.Errorf("loaded %v (%v), want the app's 2B", m, err)
 	}
 }
+
+func TestUsableMemory(t *testing.T) {
+	for machine, want := range map[int]float64{4: 0, 8: 3, 12: 6, 16: 9, 24: 15, 32: 22, 48: 35, 59: 45.3125, 64: 50, 128: 114} {
+		if got := usableGB(machine); got != want {
+			t.Errorf("a machine of %d GB has %v GB for models, want %v", machine, got, want)
+		}
+	}
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	tr := Define[*fakeModel](f.role("translate", "translation", chat.KindChat), "translate")
+	tts := Define[*fakeModel](f.role("speak", "", chat.KindSpeech), "speech")
+	store := testStore(t)
+	// on 16 GB the translator alone is the 8B: with the other two, over the 9 GB there is
+	alone, err := NewApp("alone", stt, tr, tts).Memory(16).withStore(store).Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alone.UsableGB() != 9 || alone.Fits() {
+		t.Errorf("the uses' own picks on 16 GB: %.1f GB of %.0f, fits %v; want over", alone.MemoryGB(), alone.UsableGB(), alone.Fits())
+	}
+	lined, err := NewApp("lined", stt, tr.At(16, "plamo3translate:2b"), tts).Memory(16).withStore(store).Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !lined.Fits() {
+		t.Errorf("with the 2B on 16 GB: %.1f GB of %.0f, want it to fit", lined.MemoryGB(), lined.UsableGB())
+	}
+}

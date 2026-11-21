@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -186,15 +187,31 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
 		samples += len(c.Data)
 		return c.Data, nil
 	})
+	// with a live input (the microphone, or --live), how long after the end of an utterance each
+	// stage gave its result: " +1.9s"
+	live := c.Mic || c.Live
+	after := func(end time.Duration) string {
+		if !live {
+			return ""
+		}
+		return fmt.Sprintf(" +%.1fs", (time.Since(start) - end).Seconds())
+	}
 	utterances := speech.NewVAD(speech.VADOptions{}).Detect(ctx, mic)
 	texts := stt.TranscribeStream(ctx, utterances, speech.TranscribeOptions{Language: c.Language})
 	heard := flow.Map(texts, func(t flow.Chunk[flow.Text]) (flow.Text, error) {
-		fmt.Printf("[%6.1fs] %s: %s\n", t.Start.Seconds(), t.Data.Lang, t.Data.Text)
+		fmt.Printf("[%6.1fs%s] %s: %s\n", t.Start.Seconds(), after(t.End()), t.Data.Lang, t.Data.Text)
 		return t.Data, nil
 	})
 	translated := tr.TranslateStream(ctx, heard, text.TranslateOptions{To: c.To})
+	var (
+		mu   sync.Mutex
+		ends []time.Duration // the ends of the utterances whose speech is to come
+	)
 	said := flow.Map(translated, func(t flow.Chunk[flow.Text]) (flow.Text, error) {
-		fmt.Printf("[%6.1fs] %s: %s\n", t.Start.Seconds(), t.Data.Lang, t.Data.Text)
+		fmt.Printf("[%6.1fs%s] %s: %s\n", t.Start.Seconds(), after(t.End()), t.Data.Lang, t.Data.Text)
+		mu.Lock()
+		ends = append(ends, t.End())
+		mu.Unlock()
 		return t.Data, nil
 	})
 	// the speaker runs behind the other two by up to 4 utterances: they go on while it speaks
@@ -206,7 +223,11 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
 			return err
 		}
 		out = append(out, a.Data...)
-		fmt.Fprintf(os.Stderr, "[%6.1fs] %.1f s of speech\n", time.Since(start).Seconds(), a.Len.Seconds())
+		mu.Lock()
+		end := ends[0]
+		ends = ends[1:]
+		mu.Unlock()
+		fmt.Fprintf(os.Stderr, "[%6.1fs%s] %.1f s of speech\n", time.Since(start).Seconds(), after(end), a.Len.Seconds())
 	}
 	f, err := os.Create(c.Out)
 	if err != nil {

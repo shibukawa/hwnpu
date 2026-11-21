@@ -1,6 +1,6 @@
 # アプリに組み込むライブラリ: `ai` のパッケージ群
 
-作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。design.md 16.281)。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、API の設計の論点 (D1〜D19) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
+作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。design.md 16.281)。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、制約とルール (NPU は 1 つの待ち行列、実時間で回るかの見積もり、メモリ)、API の設計の論点 (D1〜D20) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
 
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりにする。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモで、中身はライブラリを呼ぶだけにしていく (コマンドの名前と場所は変えない)。アプリは複数のモデルをつないで使う。例:
 
@@ -365,7 +365,7 @@ interpreter status
 
 ### 9.2 擬似立体 (まだ)
 
-画像の生成 → 深度 (前が全部終わってから) → カメラの映像から顔 (`Latest`) → 頭の位置を持っておき (`Hold`)、メトロノームで描く。要るもの: `ai/vision` (深度、顔)、`ai/imagegen`、深度からメッシュと描画 (Go)、カメラの入力 (hwcamera。フレームは Go のメモリの画像にしてから流れに載せる。録画や画像のファイルでも動くようにする)。
+画像の生成 (Anima: アニメの絵は前景と背景がはっきり分かれ、視差と相性がよい) → 深度 (前が全部終わってから) → カメラの映像から顔 (`Latest`) → 頭の位置を持っておき (`Hold`)、メトロノームで描く。要るもの: `ai/vision` (深度、顔)、`ai/imagegen`、深度からメッシュと描画 (Go)、カメラの入力 (hwcamera。フレームは Go のメモリの画像にしてから流れに載せる。録画や画像のファイルでも動くようにする)。
 
 ## 10. v0 の実装 (2026-11-21)
 

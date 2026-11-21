@@ -23,13 +23,14 @@ type MicOptions struct {
 	Device string
 	// Rate is the samples a second (0: 16000, what a transcriber and a VAD read).
 	Rate int
-	// Buffer is how much sound waits for a reader that is busy (0: a minute). A microphone does
-	// not wait: what a stage after it does not read in time is lost. The stream is read in a
-	// goroutine of its own and kept, so that a transcriber and a translator that take seconds
-	// for an utterance lose nothing of the next one.
-	Buffer time.Duration
+	// Backlog is the most sound that waits for a reader that is busy (0: a minute). It is not a
+	// delay: sound is passed on as soon as it is read, and nothing waits while the reader keeps
+	// up. A microphone does not wait for its reader: what a stage after it does not read in time
+	// is lost. So the stream is read in a goroutine of its own and kept, and a transcriber and a
+	// translator that take seconds for an utterance lose nothing of the next one.
+	Backlog time.Duration
 	// Lost (nil for none) is called when sound was lost all the same: the stages after the
-	// microphone are further behind than Buffer.
+	// microphone are further behind than Backlog.
 	Lost func()
 }
 
@@ -70,9 +71,9 @@ func Mic(ctx context.Context, o MicOptions) flow.Stream[[]float32] {
 			}
 		}
 	}
-	// read ahead of the reader by up to Buffer; the reading ends with ctx, and what was read by
+	// read ahead of the reader by up to Backlog; the reading ends with ctx, and what was read by
 	// then is still passed on
-	n := int(cmp.Or(o.Buffer, time.Minute) / period)
+	n := int(cmp.Or(o.Backlog, time.Minute) / period)
 	return flow.Async(context.WithoutCancel(ctx), raw, n)
 }
 

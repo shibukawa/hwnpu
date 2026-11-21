@@ -70,6 +70,8 @@ type planJSON struct {
 	App           string       `json:"app"`
 	Target        string       `json:"target"`
 	MachineGB     int          `json:"machine_gb"`
+	UsableGB      float64      `json:"usable_gb"`
+	Fits          bool         `json:"fits"`
 	Ready         bool         `json:"ready"`
 	Compiled      bool         `json:"compiled"`
 	DownloadBytes int64        `json:"download_bytes"`
@@ -86,7 +88,7 @@ func (c ModelsList) Run(ctx context.Context, app *ai.App) error {
 	if c.JSON {
 		e := json.NewEncoder(os.Stdout)
 		e.SetIndent("", "  ")
-		return e.Encode(planJSON{App: app.Name, Target: p.Target(), MachineGB: p.MachineGB(), Ready: p.Ready(), Compiled: p.Compiled(),
+		return e.Encode(planJSON{App: app.Name, Target: p.Target(), MachineGB: p.MachineGB(), UsableGB: p.UsableGB(), Fits: p.Fits(), Ready: p.Ready(), Compiled: p.Compiled(),
 			DownloadBytes: p.DownloadBytes(), MemoryGB: p.MemoryGB(), Items: p.Items, Licenses: p.Licenses()})
 	}
 	writePlan(os.Stdout, app, p)
@@ -149,7 +151,7 @@ func writePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 	}
 	tw.Flush()
 	fmt.Fprintln(w)
-	running := fmt.Sprintf("about %s running together, of this machine's %d GB", gb(p.MemoryGB()), p.MachineGB())
+	running := fmt.Sprintf("about %s running together (a machine of %d GB has about %.0f GB for models)", gb(p.MemoryGB()), p.MachineGB(), p.UsableGB())
 	switch {
 	case p.Compiled():
 		fmt.Fprintf(w, "All here and compiled; %s.\n", running)
@@ -162,8 +164,8 @@ func writePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 		}
 		fmt.Fprintf(w, "%s; %s. \"models download\" downloads and converts; \"models prepare\" compiles for the NPU too.\n", down, running)
 	}
-	if p.MemoryGB() > float64(p.MachineGB()) {
-		fmt.Fprintf(w, "Together they take more than the machine's memory: the app is to pick smaller models for it (ai.Use's At and As) or run them one after another (Release).\n")
+	if !p.Fits() {
+		fmt.Fprintf(w, "Together they take more than this machine has for models, and the NPU's memory cannot be swapped out: the other applications are pushed to swap. The app is to pick smaller models for this memory (ai.Use's At and As) or run them one after another (Release).\n")
 	}
 	for _, it := range p.Items {
 		if strings.Contains(it.Why, "by the app") {
