@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	"github.com/shibukawa/hwnpu/internal/store/s3fake"
@@ -200,4 +202,20 @@ func TestPrebuiltShared(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// liveWriter is a writer that says it is a terminal.
+type liveWriter struct{ bytes.Buffer }
+
+func (*liveWriter) Terminal() bool { return true }
+
+// TestLabelLogTerminal: the label rewriter is a terminal when its writer is, so downloads through
+// it draw their bars.
+func TestLabelLogTerminal(t *testing.T) {
+	if !console.Live(labelLog{&liveWriter{}, "a", "b"}) {
+		t.Error("labelLog over a terminal is not live")
+	}
+	if console.Live(labelLog{&bytes.Buffer{}, "a", "b"}) {
+		t.Error("labelLog over a buffer is live")
+	}
 }

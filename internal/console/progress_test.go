@@ -18,6 +18,31 @@ func TestBarNotLive(t *testing.T) {
 	}
 }
 
+// TestTransferBarNotLive writes the label at the start and a line at each tenth done when the
+// writer is no terminal (a download's log through tee showed nothing for minutes, 2026-11-21).
+func TestTransferBarNotLive(t *testing.T) {
+	var b bytes.Buffer
+	bar := NewTransferBar(&b, "downloading x")
+	bar.Set(0.05, "0.1 / 2 GB")
+	bar.Set(0.25, "0.5 / 2 GB")
+	bar.Set(0.27, "0.54 / 2 GB")
+	bar.Set(1, "2 / 2 GB")
+	bar.Done("2 GB in 3s")
+	want := "downloading x ...\ndownloading x 20% 0.0s 0.5 / 2 GB\ndownloading x 2 GB in 3s\n"
+	if got := b.String(); got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+	b.Reset()
+	defer func(d time.Duration) { stepEvery = d }(stepEvery)
+	stepEvery = 0
+	bar = NewTransferBar(&b, "downloading y")
+	bar.Set(-1, "1.00 GB")
+	bar.Done("1 GB in 1s")
+	if got, want := b.String(), "downloading y ...\ndownloading y 0.0s 1.00 GB\ndownloading y 1 GB in 1s\n"; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+}
+
 // liveBuffer is a writer that says it is a terminal.
 type liveBuffer struct{ bytes.Buffer }
 
