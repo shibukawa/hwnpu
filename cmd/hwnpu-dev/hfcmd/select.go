@@ -22,7 +22,7 @@ import (
 
 // The groups of a model's conversions on Hugging Face, each a row of hwnpu-dev hf plan and a
 // target of models.yaml's hub: the exports for AMD's NPU, and the Macs' (the Core AI exports
-// with their prebuilt programs). The tables go with both.
+// with their prebuilt programs and the tables they read).
 const (
 	groupAMD   = "amd-xdna2"
 	groupApple = "apple"
@@ -79,7 +79,7 @@ func layers() []shared.Source {
 // published version) at its place with no version with the same key, which is the same bytes,
 // else in another folder with no version of its export (held: the folders the layers hold of
 // the model) of the same recipe but for the tools' hash, the newest.
-func lookup(ctx context.Context, ls []shared.Source, only int, want shared.Entry, held map[string]int) (found, bool) {
+func lookup(ctx context.Context, ls []shared.Source, only int, want shared.Entry, held map[string]int, loose bool) (found, bool) {
 	released := want.Version > 0 && !want.Develop
 	for i, s := range ls {
 		if only >= 0 && i != only {
@@ -95,7 +95,7 @@ func lookup(ctx context.Context, ls []shared.Source, only int, want shared.Entry
 			}
 		}
 	}
-	if !released {
+	if !released && !loose {
 		return found{}, false
 	}
 	var best found
@@ -219,7 +219,9 @@ func exportOf(dir string) string {
 }
 
 // rows are model m's groups as the layers (only that one, when >= 0) hold them.
-func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model) []*row {
+// loose takes, for a version not written yet too, an entry of the same recipe but for the tools
+// (hwnpu-dev hf sizes: its size).
+func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose bool) []*row {
 	var common []string
 	if !chat.HubCommitPinned(m) {
 		common = append(common, fmt.Sprintf("pin from (hf:%s@COMMIT)", m.Repo))
@@ -229,7 +231,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model) []*ro
 	}
 	amd := &row{model: m, group: groupAMD, why: slices.Clone(common)}
 	apple := &row{model: m, group: groupApple, why: slices.Clone(common)}
-	if len(common) > 0 {
+	if len(common) > 0 && !loose {
 		return []*row{amd, apple} // the keys need the commit: no lookups
 	}
 	held := listed(ctx, ls, only, m)
@@ -244,7 +246,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model) []*ro
 		amd.why = append(amd.why, err.Error())
 	default:
 		for _, w := range wants {
-			if f, ok := lookup(ctx, ls, only, w, held[cache.AMDTarget]); ok {
+			if f, ok := lookup(ctx, ls, only, w, held[cache.AMDTarget], loose); ok {
 				amd.entries = append(amd.entries, f)
 			} else {
 				amd.why = append(amd.why, fmt.Sprintf("make %s (hwnpu-dev cache export %s, or its command on AMD's NPU)", path.Base(path.Dir(w.Path)), m.Name))
@@ -273,12 +275,18 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model) []*ro
 		if !ok {
 			continue
 		}
-		if f, ok := lookup(ctx, ls, only, want, held[chat.CoreAITarget]); ok {
+		// only at its version: the sources keep Core AI exports of names this hwnpu makes no
+		// more under keys it still makes (Anima's of each size beside the one of every size), so
+		// what a Mac took or made as the version is what goes (docs/prebuilt.md 4.1)
+		if want.Version == 0 || want.Develop {
+			continue
+		}
+		if f, ok := lookup(ctx, ls, only, want, nil, false); ok && f.from == want.Path {
 			apple.entries = append(apple.entries, f)
 		}
 	}
-	if len(apple.entries) == 0 {
-		apple.why = append(apple.why, "make its Core AI export (on a Mac) and put it in a source")
+	if len(apple.entries) == 0 && m.Targets[chat.CoreAITarget] > 0 {
+		apple.why = append(apple.why, fmt.Sprintf("run it once on a Mac: its Core AI exports go in the sources as v%d", m.Targets[chat.CoreAITarget]))
 	}
 	// their prebuilt programs: checked against the export's programs when pushed
 	names := map[string]bool{}
@@ -309,7 +317,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model) []*ro
 	}
 	apple.chips = slices.Sorted(mapKeys(chips))
 
-	// the tables, with both
+	// the tables: the Core AI exports' (an export for AMD's NPU holds its own)
 	var tables []found
 	seen := map[string]bool{}
 	for _, dir := range slices.Sorted(mapKeys(held["any"])) {
@@ -321,15 +329,13 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model) []*ro
 		if !ok || seen[want.Path] {
 			continue
 		}
-		if f, ok := lookup(ctx, ls, only, want, held["any"]); ok {
+		if f, ok := lookup(ctx, ls, only, want, held["any"], loose); ok {
 			seen[want.Path] = true
 			tables = append(tables, f)
 		}
 	}
-	for _, r := range []*row{amd, apple} {
-		if len(r.entries) > 0 {
-			r.entries = append(r.entries, tables...)
-		}
+	if len(apple.entries) > 0 {
+		apple.entries = append(apple.entries, tables...)
 	}
 	return []*row{amd, apple}
 }

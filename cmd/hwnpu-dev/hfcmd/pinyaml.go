@@ -199,3 +199,84 @@ func trimEnd(lines []string) []string {
 	}
 	return lines
 }
+
+// fieldYAML sets a field of a model in a definition file to value (YAML in one line): it
+// replaces the field's line (a comment after it stays), or adds one after the line of after
+// (else at the end of the model). The model must be in the file.
+func fieldYAML(src []byte, model, field, value, after string) ([]byte, error) {
+	lines := strings.Split(string(src), "\n")
+	indent := func(l string) int { return len(l) - len(strings.TrimLeft(l, " ")) }
+	content := func(l string) bool {
+		t := strings.TrimSpace(l)
+		return t != "" && !strings.HasPrefix(t, "#")
+	}
+	isKey := func(l string, at int, k string) bool {
+		t := strings.TrimSpace(l)
+		return indent(l) == at && (strings.HasPrefix(t, k+":") || strings.HasPrefix(t, `"`+k+`":`))
+	}
+	top := -1
+	for i, l := range lines {
+		if isKey(l, 0, "models") {
+			top = i
+			break
+		}
+	}
+	if top < 0 {
+		return nil, fmt.Errorf("no models in the file")
+	}
+	step := -1
+	m := -1
+	for i := top + 1; i < len(lines); i++ {
+		if !content(lines[i]) {
+			continue
+		}
+		if indent(lines[i]) == 0 {
+			break
+		}
+		if step < 0 {
+			step = indent(lines[i])
+		}
+		if isKey(lines[i], step, model) {
+			m = i
+			break
+		}
+	}
+	if m < 0 {
+		return nil, fmt.Errorf("no model %s in the file", model)
+	}
+	end, fi := m+1, -1
+	for j := m + 1; j < len(lines); j++ {
+		if !content(lines[j]) {
+			continue
+		}
+		if indent(lines[j]) <= step {
+			break
+		}
+		if fi < 0 {
+			fi = indent(lines[j])
+		}
+		end = j + 1
+	}
+	if fi < 0 {
+		fi = step + 2
+	}
+	at := end
+	for j := m + 1; j < end; j++ {
+		if isKey(lines[j], fi, field) {
+			comment := ""
+			if c := strings.Index(lines[j], " #"); c >= 0 {
+				for c > 0 && lines[j][c-1] == ' ' {
+					c--
+				}
+				comment = lines[j][c:]
+			}
+			lines[j] = strings.Repeat(" ", fi) + field + ": " + value + comment
+			return []byte(strings.Join(lines, "\n")), nil
+		}
+		if after != "" && isKey(lines[j], fi, after) {
+			at = j + 1
+		}
+	}
+	lines = append(lines[:at], append([]string{strings.Repeat(" ", fi) + field + ": " + value}, lines[at:]...)...)
+	return []byte(strings.Join(lines, "\n")), nil
+}

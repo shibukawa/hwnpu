@@ -34,6 +34,7 @@ type Cmd struct {
 	Plan  PlanCmd  `cmd:"" help:"Show the layers, and what of each model's conversions they hold could go to Hugging Face now (N:MODEL/TARGET for push), or what to do first."`
 	Push  PushCmd  `cmd:"" help:"Put conversions the layers hold in their models' repositories on Hugging Face (hub.push/MODEL), then pin the commit in models.yaml."`
 	Check CheckCmd `cmd:"" help:"Check the models' repositories on Hugging Face at the commits models.yaml pins: what is missing there, or not what this hwnpu makes."`
+	Sizes SizesCmd `cmd:"" help:"Show what each model downloads and keeps on the disk by the NPU's vendor, from the conversions the layers hold; with --write set models.yaml's disk."`
 }
 
 func load(c *Cmd) error { return chat.LoadUserModels(c.Models, os.Stderr) }
@@ -101,7 +102,7 @@ func selectRows(ctx context.Context, args []string) ([]*row, error) {
 	}
 	var out []*row
 	for _, s := range sels {
-		for _, r := range rows(ctx, ls, s.layer, s.model) {
+		for _, r := range rows(ctx, ls, s.layer, s.model, false) {
 			if s.group != "" && r.group != s.group {
 				continue
 			}
