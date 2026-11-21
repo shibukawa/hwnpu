@@ -128,7 +128,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 - Non-packed conversions are put while being made (`store.StartEarly`: files idle 3 s, `EarlySettle`); `PutEntry` puts the rest. Packed ones (AMD, Core AI) are put once whole.
 - The queue (`store.PutLater`, `work/queue/`, 4 streams) finishes before exit, resumes at the next start, logs failures to `work/queue.log`, and never fails the command. `hwnpu-dev models flush` waits for it.
 - A folder being written carries `.writing-ID` (JSON: machine, process, start, last write), rewritten every 5 minutes, removed at the end (`store.MarkWriting`). Every writing path sets it (tee and early puts too).
-- Packing (`store.Packs`, `files.tar.zst` beside `entry.json`): AMD and Core AI exports go as one tar+zstd file. The gain is fewer requests (one PUT+MOVE on WebDAV), size 1–5% for Core AI (LFM3-1.7B 2.62 → 2.59 GB), 16% over 13 AMD chat exports (65.7 → 55.2 GB). Download resumes, sha256 of the pack, then each file checked against `entry.json`; only the unpacked export is kept. Loose exports from older hwnpu are still read; `hwnpu-dev models repack` packs them.
+- Packing (`store.Packs`, `files.tar.zst` beside `entry.json`): AMD and Core AI exports go as one tar+zstd file. The gain is fewer requests (one PUT+MOVE on WebDAV), size 1–5% for Core AI (LFM3-1.7B 2.62 → 2.59 GB), 16% over 13 AMD chat exports (65.7 → 55.2 GB). Download resumes, sha256 of the pack, then each file checked against `entry.json`; only the unpacked export is kept. Loose exports from older hwnpu are still read (the NAS's were packed on 2026-11-21 and the command that did it, `hwnpu-dev cache repack`, was removed: every put packs).
 
 ### Transports
 

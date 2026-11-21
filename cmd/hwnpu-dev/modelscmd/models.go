@@ -34,7 +34,6 @@ type Cmd struct {
 	Flush    cachecmd.FlushCmd   `cmd:"" help:"Do the work the background left in the queue (what goes in the sources) and wait for it."`
 	GC       cachecmd.GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); with --orphans what a writeback cut off left too. Shows what would go unless --apply."`
 	Migrate  cachecmd.MigrateCmd `cmd:"" help:"Move what a folder source holds in the layout before (blobs/, upstream/, entries/) to original/ and converted/, by hard links."`
-	Repack   cachecmd.RepackCmd  `cmd:"" help:"Pack the exports an hwnpu before put in a source as loose files though they go packed now (Core AI's: files.tar.zst); shows what would be packed unless --apply."`
 	HF       hfcmd.Cmd           `cmd:"" name:"hf" help:"Put the conversions the sources hold on Hugging Face, one repository a model, and pin the commits in models.yaml (docs/prebuilt.md): plan, push, check, sizes."`
 }
 

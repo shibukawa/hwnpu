@@ -128,7 +128,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - 詰めない変換結果は作りながら置く (`store.StartEarly`: 3 秒触られないファイル、`EarlySettle`)。残りは `PutEntry`。詰めるもの (AMD、Core AI) は揃ってから置く
 - queue (`store.PutLater`、`work/queue/`、4 本) は終わる前に待ち、切れたら次の起動で続け、失敗は `work/queue.log` に書き、コマンドを失敗させない。`hwnpu-dev models flush` で待つ
 - 書いている間のフォルダには `.writing-ID` (JSON: 機械、プロセス、始めた時刻、最後に書いた時刻) を置き、5 分ごとに書き直し、終われば消す (`store.MarkWriting`)。書く道はどれも置く (tee と作りながら置くのも)
-- 詰める (`store.Packs`、`entry.json` の隣の `files.tar.zst`): AMD と Core AI の書き出しは tar を zstd で詰めた 1 ファイル。効くのは要求の数 (WebDAV で PUT と MOVE が 1 回)。大きさは Core AI で 1〜5 % (LFM3-1.7B 2.62 → 2.59 GB)、AMD のチャットの 13 モデルで 16 % (65.7 → 55.2 GB)。取るときは続きから落とし、詰めたものの sha256、次に各ファイルを `entry.json` と照らす。手元には展開したものだけを残す。前の hwnpu がばらで置いたものも読める。`hwnpu-dev models repack` で詰め直す
+- 詰める (`store.Packs`、`entry.json` の隣の `files.tar.zst`): AMD と Core AI の書き出しは tar を zstd で詰めた 1 ファイル。効くのは要求の数 (WebDAV で PUT と MOVE が 1 回)。大きさは Core AI で 1〜5 % (LFM3-1.7B 2.62 → 2.59 GB)、AMD のチャットの 13 モデルで 16 % (65.7 → 55.2 GB)。取るときは続きから落とし、詰めたものの sha256、次に各ファイルを `entry.json` と照らす。手元には展開したものだけを残す。前の hwnpu がばらで置いたものも読める (NAS のものは 2026-11-21 に詰め、詰め直すコマンド `hwnpu-dev cache repack` は外した。今はどの置き方も詰める)
 
 ### 通信
 

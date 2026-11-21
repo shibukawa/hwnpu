@@ -407,7 +407,7 @@ converted/MODEL/amd-xdna2/EXPORT/VERSION/entry.json      files: 中のファイ�
 - 縮み方: 重み (bank) は 1 GB が 0.78 GB、プログラム (ELF) は 1/60 ほど (Qwen3.6-35B-A3B の書き出しで zstd -3)
 - `entry.json` の `files` は中身を並べたままなので、`hwnpu-dev models ls` の大きさは展開したもの。`pack` を知らない前の hwnpu は中のファイルを取れずに外れ、手元で作る
 - `pack` のない AMD と Core AI の書き出し (前の hwnpu が置いたもの) も、今までどおりファイルごとに取れる
-- `hwnpu-dev models repack SOURCE [--target coreai] [--model NAME] [--apply]`: そういう書き出しを詰め直す。同じ鍵の書き出しが手元 (`models/*/EXPORT`) にあり、大きさと sha256 が合えばそれから、なければ取得元から `work/repack/` に取って詰め、置いてからばらのファイルを消す。鍵は変えないので、どの機械も前と同じに当たる
+- 前の hwnpu がばらのまま置いた書き出しを詰め直す `hwnpu-dev cache repack` があった。2026-11-21 に NAS の残り (手で取り込んだ AMD の書き出し 12 件、38 GB) を詰め、コマンドは外した。今の `PutEntry` は取り込みも含めて必ず詰めて置く
 
 - `hwnpu-dev models export MODEL...`: `amd_export` のあるチャットのモデルの書き出しを作って (取得元にあれば取って) 書き戻し、書き出しと詰めた大きさを出す。IRON の書き出しは CPU だけ (aiecc と Peano、`bind_device` は名前で選ぶだけ) なので、NPU をほかが使っている間にも回せる
 - 2026-11-17、チャットの 13 モデルを今の道具で書き出して UGREEN の NAS に置いた。合わせて 65.7 GB が 55.2 GB。gemma-4-E2B-it 7.42 → 7.11 GB、E4B 10.86 → 10.24 GB と gemma は 4〜6% しか縮まず、ほかは 2〜3 割 (Qwen3.5-4B 5.39 → 4.46、gpt-oss-20b 14.39 → 11.79、plamo-3-translate-8b 7.45 → 6.41)。Qwen3.5-0.8B (1.18 GB) を空の根に取って展開して答えるまでを確かめた (取るのに 40 秒、展開 2 秒)

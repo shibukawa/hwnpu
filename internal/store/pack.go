@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -250,47 +249,4 @@ func putPacked(ctx context.Context, s Source, rel, dir string, e Entry) (File, e
 		}
 	}
 	return pf, nil
-}
-
-// Repack puts the entry at rel of s, which an hwnpu before put there as loose files (Packs
-// taking its target since: Core AI's exports, 2026-11-18), packed as PutEntry puts it now: its
-// files from here (local, a directory whose entry has the same key and whose files check out by
-// their sizes and SHA-256) or else fetched from s into the work's directory. The key stays, so
-// every machine finds it as before. It reports whether it repacked (not: not to be packed, or
-// packed already).
-func Repack(ctx context.Context, s Source, rel, local string, log io.Writer) (bool, error) {
-	e, err := ReadEntryAt(ctx, s, rel)
-	if err != nil {
-		return false, err
-	}
-	if !Packs(rel) || e.Pack != nil {
-		return false, nil
-	}
-	dir := local
-	if l, err := ReadEntry(local); local == "" || err != nil || l.Key != e.Key || Verify(local, true) != nil {
-		dir = cache.Sub("work", "repack", cache.Key([]byte(s.String()), []byte(rel)), path.Base(path.Dir(rel)))
-		defer os.RemoveAll(filepath.Dir(dir))
-		if _, err := FetchEntry(ctx, []Source{s}, rel, func(x Entry) bool { return x.Key == e.Key }, dir, log); err != nil {
-			return false, err
-		}
-	}
-	unlock, err := lockWork(ctx, s.String()+"|"+rel)
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
-	done, err := MarkWriting(ctx, s, rel)
-	if err != nil {
-		return false, err
-	}
-	defer done()
-	if err := s.Store.Delete(ctx, rel+"/"+EntryFile); err != nil {
-		return false, err
-	}
-	pf, err := putPacked(ctx, s, rel, dir, e)
-	if err != nil {
-		return false, err
-	}
-	e.Pack = &pf
-	return true, writeEntryAt(ctx, s, rel, e)
 }
