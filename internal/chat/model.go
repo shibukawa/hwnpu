@@ -476,10 +476,14 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// beginning of the drafts does not run them again (llm.StateReplayer): another program,
 	// named -sr
 	stateRows := s.Draft > 1 && a.Param(llm.Options{}, "state-rows") != ""
-	// on the Neural Engine, a model that can be rotated is (llm.Rotate): a lookup table's
-	// error about halves (Qwen3.5's lut6, design.md 16.276). Other programs, named -rot, and
-	// their own tables. HWNPU_ROTATE=0 keeps them unrotated
-	if rotatable(a, model) && (backend == llm.BackendCoreAI || backend == llm.BackendCoreML) && os.Getenv("HWNPU_ROTATE") != "0" {
+	// on the Neural Engine, a model that can be rotated is (llm.Rotate) when its tables have 6
+	// bits or fewer: lut6's error about halves (Qwen3.5-2B, design.md 16.276), while lut8's was
+	// within the Neural Engine's own (0.8B and 4B: the same answers, 0 to 3.5 % faster), which
+	// is not worth converting again. Other programs, named -rot, and their own tables.
+	// HWNPU_ROTATE=0 keeps them unrotated, =1 rotates lut8 too
+	rotate := os.Getenv("HWNPU_ROTATE")
+	if rotatable(a, model) && (backend == llm.BackendCoreAI || backend == llm.BackendCoreML) && rotate != "0" &&
+		(rotate == "1" || format == "lut6" || format == "lut4") {
 		kind += "-rot"
 		params[llm.RotateParam] = "1"
 		c.Rotated = true

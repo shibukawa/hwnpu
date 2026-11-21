@@ -6,7 +6,9 @@
 //
 //	go run ./tools/quant/rotkl -config DIR/config.json -weights DIR/model.safetensors.index.json \
 //	    -tokenizer DIR/tokenizer.json -text FILE -seq 128 -format fp16 -o ref.bin
-//	go run ./tools/quant/rotkl ... -format lut4 -rotate -ref ref.bin -o lut4r.bin
+//	go run ./tools/quant/rotkl ... -format lut4 -rotate 1 -ref ref.bin -o lut4r.bin
+//
+// -rotate is the architecture's setting (llm.RotateParam, as hwnpu-dev convert takes it).
 //
 // The format's table fitting is hwnpu-chat's (kmeans-minmax for lutN, 16 rows a table).
 package main
@@ -36,13 +38,13 @@ func main() {
 	tokPath := flag.String("tokenizer", "", "tokenizer.json")
 	textPath := flag.String("text", "", "the text whose first -seq tokens are run")
 	seq := flag.Int("seq", 128, "tokens")
-	rotate := flag.Bool("rotate", false, "rotate the residual stream (llm.Rotate)")
 	seed := flag.Int64("seed", 1, "the rotation's random signs")
 	ref := flag.String("ref", "", "logits of the reference run, to compare with")
 	out := flag.String("o", "", "write the logits here")
 	f16 := flag.Bool("f16", false, "round every operation to fp16 (the Neural Engine's storage)")
 	ane := flag.Bool("ane", false, "run on the Neural Engine (Core AI) instead of the CPU interpreter")
 	perPart := flag.Int("per-part", 6, "with -ane: layers a program")
+	cpuPart := flag.Int("cpu-per-part", 0, "on the CPU: layers a program (0: the whole model at once; a 4B model's float32 takes 16 GB)")
 	var opts llm.Options
 	set := llm.BindFlags(flag.CommandLine, &opts, "fp16")
 	flag.Parse()
@@ -51,13 +53,13 @@ func main() {
 	if strings.HasPrefix(opts.Format, "lut") && opts.Quant == "" {
 		opts.Quant = "kmeans-minmax"
 	}
-	if err := run(*config, *weights, *tokPath, *textPath, *seq, *rotate, *seed, *ref, *out, *f16, *ane, *perPart, opts); err != nil {
+	if err := run(*config, *weights, *tokPath, *textPath, *seq, opts.Params[llm.RotateParam] == "1", *seed, *ref, *out, *f16, *ane, *perPart, *cpuPart, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "rotkl:", err)
 		os.Exit(1)
 	}
 }
 
-func run(config, weights, tokPath, textPath string, seq int, rotate bool, seed int64, ref, out string, f16, ane bool, perPart int, opts llm.Options) error {
+func run(config, weights, tokPath, textPath string, seq int, rotate bool, seed int64, ref, out string, f16, ane bool, perPart, cpuPart int, opts llm.Options) error {
 	a, model, err := llm.LoadConfig(config, "")
 	if err != nil {
 		return err
@@ -107,6 +109,8 @@ func run(config, weights, tokPath, textPath string, seq int, rotate bool, seed i
 	var logits []float32
 	if ane {
 		logits, err = runANE(model, w, opts, x, dir, perPart)
+	} else if cpuPart > 0 {
+		logits, err = cpuParts(model, w, opts, x, dir, f16, cpuPart)
 	} else {
 		logits, err = buildRun(model, w, opts, x, dir, f16)
 	}
@@ -247,4 +251,20 @@ func hostHead(model llm.Model, w llm.Weights, h []float32) ([]float32, error) {
 	}
 	wg.Wait()
 	return out, nil
+}
+
+// cpuParts runs the model's layers on the CPU interpreter perPart at a time, the hidden state of
+// one part the next one's x, and the final norm and the output layer on the host (hostHead).
+func cpuParts(model llm.Model, w llm.Weights, opts llm.Options, x []float32, dir string, f16 bool, perPart int) ([]float32, error) {
+	opts.NoHead = true
+	h := x
+	for start := 0; start < model.Layers(); start += perPart {
+		o := opts
+		o.Start, o.Layers = start, min(perPart, model.Layers()-start)
+		var err error
+		if h, err = buildRun(model, w, o, h, dir, f16); err != nil {
+			return nil, fmt.Errorf("layers %d..%d: %w", o.Start, o.Start+o.Layers-1, err)
+		}
+	}
+	return hostHead(model, w, h)
 }
