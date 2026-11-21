@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/samples/layering"
 )
 
 // layered is a scene of w x h whose left half is far and blue with a white stripe, and whose
@@ -209,5 +211,39 @@ func TestRenderLayers(t *testing.T) {
 	// the layers are kept when the scene is made smaller
 	if small := s.smaller(100); small.Behind == nil || small.Behind.W != 100 || small.Pix.RGBAAt(10, 5).A != 0 || small.Pix.RGBAAt(90, 5).A != 255 {
 		t.Errorf("the smaller scene lost its layers")
+	}
+}
+
+func TestStackAndProgress(t *testing.T) {
+	const w, h = 8, 4
+	layer := func(a uint8, n float32) layering.Layer {
+		l := layering.Layer{Img: image.NewNRGBA(image.Rect(0, 0, w, h)), Near: make([]float32, w*h)}
+		for i := range l.Near {
+			l.Img.Pix[4*i], l.Img.Pix[4*i+3] = 200, a
+			l.Near[i] = n
+		}
+		return l
+	}
+	s := stack([]layering.Layer{layer(255, 0.1), layer(128, 0.5), layer(0, 1)}, 0, 0)
+	ls := s.layers()
+	if len(ls) != 3 || ls[0].Behind != nil || ls[2] != s || ls[0].Near[0] != 0.1 || ls[2].Near[0] != 1 {
+		t.Fatalf("the stack: %d layers", len(ls))
+	}
+	// a layer's colours hold their alpha in the scene
+	if c := ls[1].Pix.RGBAAt(0, 0); c.A != 128 || c.R < 99 || c.R > 101 {
+		t.Errorf("the middle layer's pixel: %v", c)
+	}
+
+	// the window takes a new scene and a new picture of the step once each
+	p := &progress{}
+	p.set(func(p *progress) {
+		p.scene, p.inset, p.fresh, p.text, p.total, p.active = s, ls[0].Pix, true, "cut", 0.5, true
+	})
+	scene, inset, fresh, text, total, active := p.take()
+	if scene != s || inset == nil || !fresh || text != "cut" || total != 0.5 || !active {
+		t.Errorf("the first take: %v %v %v %q %v %v", scene != nil, inset != nil, fresh, text, total, active)
+	}
+	if scene, _, fresh, text, _, _ := p.take(); scene != nil || fresh || text != "cut" {
+		t.Errorf("the second take: %v %v %q", scene != nil, fresh, text)
 	}
 }

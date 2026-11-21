@@ -105,7 +105,7 @@ A working example that joins several models is [samples/interpreter](../samples/
 | Sample | What it is |
 |---|---|
 | `samples/interpreter` | An interpreter: the microphone or a recording → speech to text → translation → text to speech. Spoken commands. A network and a call |
-| `samples/parallax` | A picture shown as if it were deep: its depth estimated once, the viewer's head followed with the camera, the picture drawn from where the head is (Ebitengine, a Kage shader) |
+| `samples/parallax` | A picture shown as if it were deep: its depth estimated once, the viewer's head followed with the camera, the picture drawn from where the head is (Ebitengine, a Kage shader). It parts the picture into layers beside the window and shows each step in it |
 | `samples/layers` | Layers: parts a picture into layers by depth, has the picture model draw what each layer hid, and writes a Photoshop document (PSD). Two models in turns |
 
 ```
@@ -604,11 +604,12 @@ An app in which the three ways of joining all appear. The picture's depth is nee
 
 ```go
 depth := vision.Depth("depth")
+artist := imagegen.Generate("image")
 faces := vision.Faces("face-detect")
 app := ai.NewApp("parallax")
 
-// a call: the picture → its depth. Run once, and the model unloaded after
-depthOf := ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
+// two calls: the picture → its depth, a painted picture and a prompt → the picture drawn in. Run in turns, each model unloaded after
+split := layering.Register(app, depth, artist)
 
 // a network: camera → faces (the newest frame only) → where the head is → smoothed → the view
 camera := flow.Source[image.Image]("camera")
@@ -617,27 +618,27 @@ view := flow.Sink[View]("view").Do(keepNewest)
 app.From(camera).To(vision.FacesNode(faces), flow.Newest()).To(vision.HeadNode(vision.HeadOptions{})).To(steady).To(view)
 
 rt, _ := app.Open(ctx)
-d, _ := depthOf.Do(ctx, rt, picture)            // when the one before has finished
-depth.Release(rt)
-near := d.Near(w, h)
+near, _, _ := split.Near(ctx, rt, picture)      // when the one before has finished: the depth once, its model unloaded
 
 camera.From(capture.Camera(ctx, capture.CameraOptions{}))
 go rt.Run(ctx)                                  // as the chunks come (the detector reads the newest frame only)
-runWindow(picture, near, latestView)            // on the beat: the window draws 60 times a second with the view that came last
+go layering.Split(ctx, picture, near, split.Models(rt), opts) // parted into layers beside the window; each step goes to opts.Progress
+runWindow(picture, near, latestView, progress)  // on the beat: the window draws 60 times a second with the view and the layers that came last
 ```
 
 - **The drawing's beat is Ebitengine's.** The window's `Update` / `Draw` run 60 times a second and read the newest view the network's last node left (the idea of `flow.Hold`). With a detector that finds 15 times a second, the window does not wait for it
 - **The parallax**: each point of the picture moves in proportion to how near it is (a far one a little, a near one more). For each pixel of the screen the ray from the eye is followed from the nearest layer to the farthest, and the first point at which the picture is at least that near is drawn, so a near thing hides what is behind it. There is the Kage shader (`parallax.kage`) and the same reckoning in Go (`Scene.Render`); their pixels were compared at 8 views and agree
-- The nearness is the inverse of the depth, so with grass right before the eye, the bridge, the houses and the mountains behind it move almost as one (as an eye would see them, but no depth is felt). So a curve pulls the far layers apart (`Layers`, `--layers`, 30 by default: a nearness n becomes log(1 + 30n) / log(31); 0 leaves it). Between opposite views the mountains then moved 0 pixels, the forest 0→4, the houses 1→7, the bridge 3→17 and the post in front 43→57 (a picture of 1024 pixels)
+- The nearness is the inverse of the depth, so with grass right before the eye, the bridge, the houses and the mountains behind it move almost as one (as an eye would see them, but no depth is felt). So a curve pulls the far layers apart (`Layers`, `--far`, 30 by default: a nearness n becomes log(1 + 30n) / log(31); 0 leaves it). Between opposite views the mountains then moved 0 pixels, the forest 0→4, the houses 1→7, the bridge 3→17 and the post in front 43→57 (a picture of 1024 pixels)
 - An estimated depth's outlines are softer than the real ones, so near things are made a few pixels larger first (`Spread`). Without that the outlines tear into streaks
 - What the picture does not show (the background that appears when a near thing moves aside) is not in the picture, so it is stretched. It shows when the points move too far (`--strength`)
-- **A picture in layers**: `parallax DIR` reads the layers (`layer-N.png`) and each layer's nearness (`near-N.png`) that the sample of [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers) writes, and draws them a layer at a time from the farthest, each with its own nearness, one over the other. Inside a layer the points move by their fine relief as before, and where a near layer has moved aside, what was drawn behind it shows, at its own nearness, instead of a stretched edge
+- **Drawn in layers**: the window shows the picture with one depth as soon as the depth is there (a second or two), and parts the picture into layers beside it (`--layers`, 3 by default: the same work as [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers), in `samples/layering`, which both samples use). Each time a layer is cut the window's picture is changed for the one with that layer, drawn a layer at a time from the farthest, each with its own nearness, one over the other. Inside a layer the points move by their fine relief as before, and where a near layer has moved aside, what was drawn behind it shows, at its own nearness, instead of a stretched edge
+- **Showing how it goes**: the parting takes about a minute a layer, so the window shows at its bottom the step ("layer 3 of 3: drawing what is behind it, 40 %"), a bar of how much of the whole is done, and in a corner the picture of the step (the picture with the layer's shape painted in one colour, then what the model drew). The work runs the calls in another goroutine, and what `layering.Options.Progress` is told at each step is only read by the window each frame (the head is followed and the picture drawn all the while). `--save-layers DIR` writes the layers, and `parallax DIR` shows them again without the models. `--layers 1` parts nothing. On a machine whose picture model is not prepared, or whose NPU does not draw from references yet, the picture stays with its one depth
 - The pointer can stand in for the head (`--head pointer`), the view can go around by itself (`--head sweep`), a GIF can be written without a window (`parallax render`), and pictures given as the camera's frames (`parallax track --frames`)
 - The window is Ebitengine's, which on Linux needs the development packages of X11 and OpenGL. A machine without them builds everything but the window with `-tags headless`
 
 ### 6.9 Example: parting a picture into layers by depth (`samples/layers`)
 
-It parts a picture into layers by depth and writes them as a Photoshop document (PSD). The picture model draws what each layer hid, so a layer can be moved or hidden and there is a picture behind it. It is an example of two models used **in turns**.
+It parts a picture into layers by depth and writes them as a Photoshop document (PSD). The picture model draws what each layer hid, so a layer can be moved or hidden and there is a picture behind it. It is an example of two models used **in turns**. The parting itself is in `samples/layering` (which is given the models as functions), used by this sample and by the pseudo-3D one. Below is an excerpt of what it does.
 
 ```go
 var (
@@ -668,8 +669,8 @@ the picture → depth → cut the nearest layer out → paint its shape in one c
 
 - **In turns**: the depth model (1.4 GB) and the picture model (3.9 GB) are never needed together, so each is unloaded with `Release` after it is used ([section 9.5](#95-release-and-image-generation-swapping-its-stages)). Loading again takes 0.1 s for the depth and about 4 s for the picture model, little beside the minute a picture takes
 - **Where to cut**: from the spread of the nearness (the inverse of the depth, on a curve that pulls the far end apart), the cuts that leave each layer's nearness closest together (`layers plan` writes the picture with each layer in a colour and prints the cuts; `--cuts` gives them)
-- **Having what is behind drawn**: the editing model takes no mask, so the part to remove is painted in one colour the picture does not have, and the model is asked to "remove the shape of that colour and draw the scenery behind it". The picture drawn is used where the layer was and a little past it (`--clean`, a 100th of the width by default), the picture before elsewhere. It is taken a little past the layer because thin parts of the layer that the depth missed (the tips of grass, a strand of hair) would otherwise stay in the layer behind and be left there when the layer moves (with `--clean 0` it is taken only where the layer was, and the layers put back together are almost the picture again)
-- **Telling a failed drawing**: the model sometimes leaves the painted shape there (in its colour, or as a dark shadow). A step in colour then runs all along the mask's edge, so the difference of colour just inside and outside the edge (`seam`) tells it, and the picture is drawn again from another seed (`--tries`, 3 by default). The wording matters too: "remove this shape" leaves it less often than "replace this area with the background"
+- **Having what is behind drawn**: the editing model takes no mask, so the part to remove is painted in one colour the picture does not have, and the model is asked to "remove the shape of that colour and draw the scenery behind it". The picture drawn is used only where the layer was, the picture before elsewhere (the layers put back together are almost the picture again). Thin parts of the layer that the depth missed (the tips of grass, a strand of hair) stay in the layer behind and are left there when the layer moves. `--clean PIXELS` takes the picture drawn a little past the layer's edge, which removes them, but where the picture drawn does not go on from its surroundings exactly, it shows as a rim about the layer
+- **Telling a failed drawing**: the model sometimes leaves the painted shape there (in its colour, or as a dark shadow). A step in colour then runs all along the mask's edge, so the difference of colour just inside and outside the edge (`seam`) tells it, and the picture is drawn again from another seed (`--tries`, 3 by default). When no try is good, the layer is not cut out but left in the picture, and the parting ends there (one layer fewer, which is better than a strange picture behind a layer). The wording matters too: "remove this shape" leaves it less often than "replace this area with the background". In a photograph the model once drew a crowd of people where a large shape was painted, so the request also says "do not add people or animals"
 - **The next layer**: the depth of the picture drawn is estimated again and brought to the first estimate's scale from the part both saw, and then the next layer is cut (a depth is in a unit of its own picture, so two are not compared as they are)
 - **A depth for each layer**: each layer has its nearness as well as its colours (`near-N.png` of `--png DIR`: 16 bit gray, on one scale for all the layers). The nearness of a part drawn in is estimated from the picture drawn. A layer's nearness goes on past the layer's edge with the edge's values (dropping there to the values of the layer behind would stretch the edge when it is drawn). `parallax DIR` reads these ([section 6.8](#68-an-example-a-picture-shown-as-if-it-were-deep-samplesparallax))
 - Three layers draw two pictures, 2 to 3.5 minutes at 1024×1024 (Ryzen AI 9 365). The PSD is 8 bit RGB with layers of the document's size, packed with PackBits. Drawing from a reference picture runs on AMD's NPU only for now

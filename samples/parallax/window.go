@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
@@ -30,10 +32,18 @@ type game struct {
 	// pics and nears are the layers' pictures and nearness, from the farthest
 	pics, nears []*ebiten.Image
 	view        View
-	show        bool // the nearness instead of the picture
-	tick        int
-	dumped      int
-	status      string
+	// the parting's step, when the picture is parted beside the window: a small picture of it,
+	// its line, how much is done
+	inset  *ebiten.Image
+	step   string
+	total  float64
+	active bool
+	white  *ebiten.Image // one white pixel, to draw the bar and the frames with
+	opened time.Time
+	show   bool // the nearness instead of the picture
+	tick   int
+	dumped int
+	status string
 }
 
 func runWindow(s *Scene, p Params, o windowOptions) error {
@@ -41,11 +51,9 @@ func runWindow(s *Scene, p Params, o windowOptions) error {
 	if err != nil {
 		return fmt.Errorf("the shader: %w", err)
 	}
-	g := &game{scene: s, params: p, o: o, shader: shader}
-	for _, l := range s.layers() {
-		g.pics = append(g.pics, ebiten.NewImageFromImage(l.Pix))
-		g.nears = append(g.nears, ebiten.NewImageFromImage(l.NearImage()))
-	}
+	g := &game{params: p, o: o, shader: shader, white: ebiten.NewImage(1, 1), opened: time.Now()}
+	g.white.Fill(color.White)
+	g.take(s)
 	w, h := s.W, s.H
 	for w > 1280 || h > 900 {
 		w, h = w/2, h/2
@@ -59,7 +67,46 @@ func runWindow(s *Scene, p Params, o windowOptions) error {
 	return nil
 }
 
+// take makes s the scene the window draws: its layers' pictures and nearness go to the GPU, and
+// those of the scene before are given back.
+func (g *game) take(s *Scene) {
+	for _, img := range append(g.pics, g.nears...) {
+		img.Deallocate()
+	}
+	g.scene, g.pics, g.nears = s, nil, nil
+	for _, l := range s.layers() {
+		g.pics = append(g.pics, ebiten.NewImageFromImage(l.Pix))
+		g.nears = append(g.nears, ebiten.NewImageFromImage(l.NearImage()))
+	}
+}
+
+// rect fills a rectangle of the screen with a colour.
+func (g *game) rect(dst *ebiten.Image, x, y, w, h float64, c color.Color) {
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(w, h)
+	op.GeoM.Translate(x, y)
+	op.ColorScale.ScaleWithColor(c)
+	dst.DrawImage(g.white, op)
+}
+
 func (g *game) Update() error {
+	if pr := g.o.progress; pr != nil {
+		// the parting's news: the layers so far, the picture of its step, its line
+		scene, inset, fresh, text, total, active := pr.take()
+		if scene != nil {
+			g.take(scene)
+		}
+		if fresh {
+			if g.inset != nil {
+				g.inset.Deallocate()
+				g.inset = nil
+			}
+			if inset != nil {
+				g.inset = ebiten.NewImageFromImage(inset)
+			}
+		}
+		g.step, g.total, g.active = text, total, active
+	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) || inpututil.IsKeyJustPressed(ebiten.KeyQ) {
 		return ebiten.Termination
 	}
@@ -99,6 +146,9 @@ func (g *game) Update() error {
 	if g.o.frames > 0 && g.dumped >= g.o.frames {
 		return ebiten.Termination
 	}
+	if g.o.closeAfter > 0 && time.Since(g.opened) > g.o.closeAfter {
+		return ebiten.Termination
+	}
 	return nil
 }
 
@@ -126,13 +176,32 @@ func (g *game) drawScene(dst *ebiten.Image, scale, dx, dy float64) {
 	}
 }
 
-func (g *game) Draw(screen *ebiten.Image) {
-	sw, sh := screen.Bounds().Dx(), screen.Bounds().Dy()
+// frame draws the window into dst: the picture, and over it the lines of what is going on.
+func (g *game) frame(dst *ebiten.Image) {
+	sw, sh := dst.Bounds().Dx(), dst.Bounds().Dy()
 	scale := min(float64(sw)/float64(g.scene.W), float64(sh)/float64(g.scene.H))
-	g.drawScene(screen, scale, (float64(sw)-scale*float64(g.scene.W))/2, (float64(sh)-scale*float64(g.scene.H))/2)
+	g.drawScene(dst, scale, (float64(sw)-scale*float64(g.scene.W))/2, (float64(sh)-scale*float64(g.scene.H))/2)
 	if !g.o.quiet {
-		ebitenutil.DebugPrint(screen, fmt.Sprintf("%s\nview %+.2f %+.2f  strength %.3f (up/down)  D: depth  Q: quit  %.0f fps",
+		ebitenutil.DebugPrint(dst, fmt.Sprintf("%s\nview %+.2f %+.2f  strength %.3f (up/down)  D: depth  Q: quit  %.0f fps",
 			g.status, g.view.X, g.view.Y, g.params.Strength, ebiten.ActualFPS()))
+		g.drawStep(dst)
+	}
+}
+
+func (g *game) Draw(screen *ebiten.Image) {
+	g.frame(screen)
+	if g.o.record != "" && g.tick%120 == 1 {
+		// the window as it is, every 2 seconds: how the parting went, to look at after
+		w, h := screen.Bounds().Dx(), screen.Bounds().Dy()
+		off := ebiten.NewImage(w, h)
+		g.frame(off)
+		img := image.NewRGBA(image.Rect(0, 0, w, h))
+		off.ReadPixels(img.Pix)
+		off.Deallocate()
+		if f, err := os.Create(filepath.Join(g.o.record, fmt.Sprintf("window-%04d.png", g.tick/120))); err == nil {
+			png.Encode(f, img)
+			f.Close()
+		}
 	}
 	if g.o.dump != "" && g.dumped < g.o.frames {
 		// the frame at the picture's own size, as the shader draws it, to compare with Render
@@ -147,6 +216,35 @@ func (g *game) Draw(screen *ebiten.Image) {
 			f.Close()
 		}
 		g.dumped++
+	}
+}
+
+// drawStep draws how the parting of the picture into layers is going, at the bottom of the
+// window: the line of the step, a bar of how much is done, and in the corner a small picture of
+// the step (the picture with a layer's shape painted over, then what the model drew there).
+func (g *game) drawStep(screen *ebiten.Image) {
+	if g.o.progress == nil || g.step == "" {
+		return
+	}
+	sw, sh := float64(screen.Bounds().Dx()), float64(screen.Bounds().Dy())
+	shade := color.RGBA{0, 0, 0, 170}
+	if g.inset != nil {
+		// the corner picture, a quarter of the window wide, in a frame
+		iw, ih := float64(g.inset.Bounds().Dx()), float64(g.inset.Bounds().Dy())
+		scale := sw / 4 / iw
+		x, y := sw-iw*scale-10, sh-ih*scale-44
+		g.rect(screen, x-2, y-2, iw*scale+4, ih*scale+4, color.White)
+		op := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
+		op.GeoM.Scale(scale, scale)
+		op.GeoM.Translate(x, y)
+		screen.DrawImage(g.inset, op)
+	}
+	g.rect(screen, 0, sh-34, sw, 34, shade)
+	ebitenutil.DebugPrintAt(screen, g.step, 8, int(sh)-30)
+	if g.active {
+		// the bar: its ground, and how much is done
+		g.rect(screen, 8, sh-10, sw-16, 5, color.RGBA{90, 90, 90, 255})
+		g.rect(screen, 8, sh-10, (sw-16)*min(max(g.total, 0), 1), 5, color.RGBA{90, 200, 120, 255})
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"image/draw"
 	"math"
 	"slices"
+	"time"
 )
 
 // View is where the eye is before the picture.
@@ -244,4 +245,11 @@ type windowOptions struct {
 	dump   string
 	frames int
 	quiet  bool
+	// record writes the window as a PNG into this directory every 2 seconds.
+	record string
+	// closeAfter closes the window after this long (0: never).
+	closeAfter time.Duration
+	// progress, when not nil, is the parting of the picture into layers, which runs beside the
+	// window: its steps are shown, and the layers taken as they come.
+	progress *progress
 }
