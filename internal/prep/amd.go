@@ -22,8 +22,8 @@ import (
 
 // The exports for AMD's NPU (amd-xdna2) of the kinds the library's roles do not make: those
 // their command makes with IRON on its first run (detect, pose, segment, sfx, music's decoder,
-// FLUX.3 klein), those made by hand with a script of tools/amd and put in the sources (SigLIP 2,
-// Chroma, Anima: looked for), and the kinds that run on the CPU beside AMD's NPU (nothing to make).
+// FLUX.3 klein), Chroma's and Anima's (made with their script of tools/amd: handmade.go), and the
+// kinds that run on the CPU beside AMD's NPU (nothing to make).
 func init() {
 	amd := []string{cache.AMDTarget}
 	Register(&Preparer{Name: "detect", Kinds: []chat.Kind{chat.KindDetect}, Targets: amd, Prepare: onAMDNPU(func(e airole.PrepareEnv, f *airole.Files) error {
@@ -93,11 +93,6 @@ func init() {
 		f.Set("decoder", dir)
 		return err
 	})})
-	Register(&Preparer{Name: "label", Kinds: []chat.Kind{chat.KindLabel}, Targets: amd, Prepare: amdOnly(func(e airole.PrepareEnv, f *airole.Files) error {
-		dir, err := chat.AMDPictureExport(e.Ctx, e.Model, "tools/amd/iron_siglip2.py", 0, e.Log)
-		f.Set("export", dir)
-		return err
-	})})
 	Register(&Preparer{Name: "image", Kinds: []chat.Kind{chat.KindImage}, Targets: amd, Prepare: amdOnly(func(e airole.PrepareEnv, f *airole.Files) error {
 		m := e.Model
 		ctx := chat.WithModel(e.Ctx, m)
@@ -116,9 +111,9 @@ func init() {
 				dir, err = flux3klein.PrepareAMD(ctx, m, aspect.SizesOf(as), as[0].Width, as[0].Height, e.Log)
 			}
 		case strings.HasPrefix(m.Family, "chroma"):
-			dir, err = chat.AMDPictureExport(ctx, m, "tools/amd/iron_chroma.py", 0, e.Log)
+			dir, err = imageHandMade(e, true)
 		case strings.HasPrefix(m.Family, "anima"):
-			dir, err = chat.AMDPictureExport(ctx, m, "tools/amd/iron_anima.py", 0, e.Log)
+			dir, err = imageHandMade(e, false)
 		default:
 			err = fmt.Errorf("no image model of hwnpu-image generate of the family %q", m.Family)
 		}
