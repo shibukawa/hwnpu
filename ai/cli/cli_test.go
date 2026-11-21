@@ -67,7 +67,7 @@ func TestCommands(t *testing.T) {
 		return b.String()
 	}
 	if s := list(); !strings.Contains(s, "demo's models, for this machine's NPU (intel)") || !strings.Contains(s, "missing") || !strings.Contains(s, "1.6 GB to download") ||
-		!strings.Contains(s, "a machine of 8 GB has about 3 GB for models") {
+		!strings.Contains(s, "hwnpu counts on about 3 GB for models on a machine of 8 GB") {
 		t.Errorf("the list before anything:\n%s", s)
 	}
 	var out, log bytes.Buffer

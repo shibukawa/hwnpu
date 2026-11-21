@@ -150,7 +150,7 @@ func WritePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 	if len(turns) > 0 {
 		together = "at once (" + strings.Join(turns, "; ") + " in turns)"
 	}
-	running := fmt.Sprintf("about %s %s; hwnpu counts on about %.0f GB of a %d GB machine for models", gb(p.MemoryGB()), together, p.UsableGB(), p.MachineGB())
+	running := fmt.Sprintf("about %s %s; hwnpu counts on about %.0f GB for models on a machine of %d GB", gb(p.MemoryGB()), together, p.UsableGB(), p.MachineGB())
 	switch {
 	case p.Compiled():
 		fmt.Fprintf(w, "All here and compiled; %s.\n", running)
