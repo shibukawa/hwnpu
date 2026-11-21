@@ -22,6 +22,7 @@ package konghelper
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -38,6 +39,19 @@ func Bind(ctx context.Context, app *ai.App) kong.Option {
 			return err
 		}
 		return kong.Bind(app).Apply(k)
+	})
+}
+
+// HelpWithoutArgs is the kong option that shows the app's help, every command, when it is run
+// without arguments. An app whose main command is its default (`default:"withargs"`) would else
+// show that command's help alone, without the others (models, status). kong.Parse reads the
+// arguments after its options are applied, so this goes in its options.
+func HelpWithoutArgs() kong.Option {
+	return kong.OptionFunc(func(*kong.Kong) error {
+		if len(os.Args) == 1 {
+			os.Args = append(os.Args, "--help")
+		}
+		return nil
 	})
 }
 

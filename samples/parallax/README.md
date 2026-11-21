@@ -17,15 +17,15 @@ the window:               60 times a second, with the view the network last gave
 ```bash
 cd samples
 go run ./parallax models prepare                   # download, convert and compile the models
-go run ./parallax picture.png                      # the window, following your head with the camera
-go run ./parallax picture.png --head pointer       # the mouse stands in for your head (no camera)
+go run ./parallax show picture.png                      # the window, following your head with the camera
+go run ./parallax show picture.png --head pointer       # the mouse stands in for your head (no camera)
 go run ./parallax render picture.png -o deep.gif   # no window: the picture from a head going around
 ```
 
 | Command | What it does |
 |---|---|
-| `parallax PICTURE` | The window. `--layers 1` uses the depth alone (no picture model); `--head sweep` turns by itself; `--for 5m` closes after that long |
-| `parallax DIR` | A picture already in layers (`layers PICTURE --png DIR`): no models needed |
+| `parallax show PICTURE` | The window. `--layers 1` uses the depth alone (no picture model); `--head sweep` turns by itself; `--for 5m` closes after that long |
+| `parallax show DIR` | A picture already in layers (`layers split PICTURE --png DIR`): no models needed |
 | `parallax render PICTURE -o out.gif` | Writes the picture as seen from a head going around (`--frames`, `--width`, `--png DIR`) |
 | `parallax track` | The camera part alone: prints where your head is. `--frames a.png,b.png` uses pictures instead of a camera |
 | `parallax cameras` | The cameras, numbered: `--device 2` takes the second |
