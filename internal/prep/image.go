@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -18,9 +17,10 @@ import (
 )
 
 // image: the Core AI exports hwnpu-image generate draws with, of every size it takes (--size):
-// FLUX.2 klein an export of each aspect of models.yaml npu.apple (1:1 and 1:1s one) with the
-// edit's programs beside each, FLUX.3 klein its one, Chroma one for 1:1 and one for 1:1s, Anima
-// one of every aspect.
+// FLUX.2 klein one of every size of models.yaml npu.apple with the edit's programs, Anima one of
+// every aspect, FLUX.3 klein and Chroma as hwnpu-image generate makes them now (FLUX.3 klein's
+// default sizes, Chroma one for 1:1 and one for 1:1s, until they hold every aspect in one as
+// docs/design/new-model-checklist.md 11.4 says).
 func init() {
 	Register(&Preparer{Name: "image", Kinds: []chat.Kind{chat.KindImage}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {
 		m := e.Model
@@ -31,30 +31,25 @@ func init() {
 			if err != nil {
 				return err
 			}
+			// every size of models.yaml npu.apple in one export (the weights once), as hwnpu-image
+			// generate makes it, and the edit's programs of those sizes beside it
 			spec := m.NPU["apple"]
-			var dirs []string
-			for _, a := range as {
-				setup := flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo, Name: m.Name,
-					ConvertOptions: flux2klein.ConvertOptions{Width: a.Width, Height: a.Height, TextFormat: spec.Text, DitFormat: spec.Dit}, Log: e.Log}
-				dir, err := flux2klein.Prepare(ctx, setup)
-				if err != nil {
-					return fmt.Errorf("%dx%d: %w", a.Width, a.Height, err)
-				}
-				if slices.Contains(dirs, dir) {
-					continue // 1:1 and 1:1s are one export
-				}
-				dirs = append(dirs, dir)
-				man, err := flux2klein.ReadProgramManifest(dir)
-				if err != nil {
-					return err
-				}
-				ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
-				if err != nil {
-					return fmt.Errorf("%dx%d: the edit: %w", a.Width, a.Height, err)
-				}
-				f.Set("edit", ed)
+			setup := flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo, Name: m.Name,
+				ConvertOptions: flux2klein.ConvertOptions{Width: as[0].Width, Height: as[0].Height, Sizes: aspect.SizesOf(as), TextFormat: spec.Text, DitFormat: spec.Dit}, Log: e.Log}
+			dir, err := flux2klein.Prepare(ctx, setup)
+			if err != nil {
+				return err
 			}
-			f.Set("export", dirs...)
+			man, err := flux2klein.ReadProgramManifest(dir)
+			if err != nil {
+				return err
+			}
+			ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
+			if err != nil {
+				return fmt.Errorf("the edit: %w", err)
+			}
+			f.Set("export", dir)
+			f.Set("edit", ed)
 		case strings.HasPrefix(m.Family, "flux3-klein"):
 			dir, err := flux3klein.Prepare(ctx, flux3klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.3-klein"), Repo: m.Repo, Name: m.Name, Log: e.Log})
 			if err != nil {
