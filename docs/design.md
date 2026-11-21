@@ -8758,3 +8758,59 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 - 実物のカメラ (`capture.Camera` はビルドだけ)、実物の画面と GPU、Mac (Core AI での深度と、Metal での窓)、Windows
 - この機械の ONNX Runtime (Ubuntu の 1.23) は読み込むと `Schema error: ... already registered` を数百行出す。`hwnpu-image face-detect` でも同じで、結果には関わらない
 - 画像の生成はまだライブラリにない (J2) ので、サンプルは絵のファイルを読む。物体、姿勢、切り抜き、OCR、ラベルは `ai/vision` に未着手
+
+### 16.283 レイヤー分割のサンプル `samples/layers` (深度で層に分け、隠れた部分を FLUX.2 klein で描き足して PSD に) と `ai/imagegen` — 2026-11-21
+
+**何をしたか**: 16.282 の続き (app-api-tasks.md の J2 の一部と J4b)。絵を深度で層に分け、各層が隠していた部分を画像のモデルに描かせて、Photoshop の文書 (PSD) に書くサンプル。そのために画像の生成をライブラリに入れた (`ai/imagegen`、FLUX.2 klein)。
+
+**`ai/imagegen`** (developer-guide.ja.md 7.4):
+
+- `imagegen.Generate(name)`: 用途 `image`。`Generator.Generate(ctx, prompt, Options{References, Width, Height, Seed, Steps, Progress})`、節は `GenerateNode` (`Request{Prompt, References}` → 絵)
+- 準備と読み込みは `hwnpu-image generate` と同じ関数 (`flux2klein.PrepareAMD` / `Prepare`、`OpenAt`、`EncodeImage`、`Generate`、`Decode`)。機種ごとの絵の大きさを出す `npuAspects` / `npuGeneration` を `cmd/hwnpu-image` から `internal/imagegen/flux2klein` に移して両方が呼ぶ
+- 大きさ: 書き出しが持つ 8 つの大きさのうち、頼まれた形に一番近いものを開く (`SizeFor`)。別の大きさが来たら開き直す (AMD では 0.1 秒)
+- 今は FLUX.2 klein だけ。Anima、Chroma、FLUX.3 klein の名前を渡すと、準備のときに「まだライブラリでは描けない」と返す
+- 確認 (Ryzen AI 9 365): 文からの生成 (16:9 の 1344×768 で 46 秒。ほかのセッションが NPU を使っている間)、参照 1 枚の編集 (1024×1024 で 57〜107 秒)
+
+**サンプルの手順** (developer-guide.ja.md 6.9):
+
+1. 絵の深度を推定し、近さ (深度の逆数) に奥を引き離す曲線 (16.282 と同じ log、k = 30) をかける
+2. 切る値を求める: 近さを 256 段に数え、層の中のばらつき (平均からの 2 乗の和) の合計が最小になる切り方を動的計画法で (Jenks の自然な区切り)。切る値は 2 つの層の間の空いた段の真ん中
+3. 一番手前の層から: 層を切り出し (深度の切れ目から幅の 200 分の 1 だけ広げて、輪郭を層に入れる)、その形をさらに幅の 64 分の 1 広げて、絵にない色 (緑、マゼンタ、青、赤のうち絵に一番少ない色) 1 色で塗る
+4. 塗った絵を FLUX.2 klein に渡して、裏を描かせる。描いた絵は層のあった所 (と 2 画素) だけ使い、ほかは元の絵のまま
+5. その絵の深度をもう一度推定し、塗らなかった部分で最初の近さに最小 2 乗で合わせて (a x + b)、塗った部分の近さにする。次の層へ
+6. 一番奥の層は残った絵まるごと。PSD に書く
+
+モデルは交互に使い、使うたびに `Release` で下ろす (深度 1.4 GB と画像 3.9 GB が同時に載らない)。
+
+**FLUX.2 klein への頼み方** (同じ絵、同じマスクで):
+
+| 頼み方 | 結果 |
+|---|---|
+| `Replace the solid green area of image 1 with the background that continues behind it. Keep everything else unchanged` | 塗った形が暗い影として残る (種 1 と 3 の 2 回とも。`No people.` を足した種 1 は残らなかった) |
+| `Remove the green shape from image 1. Where it was, draw the scenery that is behind it, continuing the surroundings, so that no trace of the shape is left. Keep everything else unchanged.` | 残らなかった (3 枚の絵の 6 回すべて)。大きな穴 (絵の 6 割) も、平らな色でなく景色で埋まる |
+| `Image 1 has a region masked in solid green. Inpaint that region ...` | 緑のまま残る、頭だけ埋まる (2 回とも失敗) |
+| 元の絵とマスクの絵の 2 枚を参照にして `Remove from image 1 everything inside the white area of image 2` | 人物が横に移っただけ。時間は 2 倍 |
+
+- 最初の言い方では、絵の 6 割を塗った 2 回目の穴が平らな 1 色 (緑、灰色) で埋まった。「形を取り除く」と言うと、原っぱと小道、森、庭と腰掛けのように景色で埋まる
+- **描き損じを見分ける**: マスクの縁に沿った 32 画素の升ごとに、縁のすぐ内とすぐ外の平均の色の差を取り、その 4 分の 3 が収まる値 (`seam`)。うまく埋まった絵は 15〜42、形が残った絵は 86 以上 (頭だけ埋まった絵 86、緑のまま 139、影 158、塗っただけの絵 251)。50 以上なら別の種で描き直す (`--tries`、既定 3 回)
+
+**PSD の書き出し** (`samples/layers/psd.go`): 8 ビット RGB、版 1。層は文書の大きさで、透明、赤、緑、青の 4 チャンネルを PackBits で。名前は Pascal 文字列 (ラテン文字だけ) と Unicode (`luni`)。合成済みの絵 (層を読まないプログラムが見せる絵) は元の絵。psd-tools 1.27 と Pillow で読めて、層の画素が PNG と一致。
+
+**確かめたこと** (Ryzen AI 9 365、Anima で作った絵 3 枚、1024×1024、3 層)
+
+| 絵 | 切る値 | 層 (奥から) | 時間 | 重ね直しと元の絵の差 |
+|---|---|---|---|---|
+| 人物とひまわり畑 | 0.28、0.72 | 空と山 (裏は原っぱ) / ひまわり (人物の裏も) / 人物 | 163 秒 | 平均 0.29、16 を超える画素 0.6 % |
+| 風景 | 0.16、0.52 | 家と森と山 / 橋と川 (草の裏は水面) / 手前の草と杭 | 202 秒 | 平均 1.1、1.8 % |
+| 縁側の犬 | 0.43、0.77 | 庭 / 縁側と戸 / 犬 | 218 秒 | 平均 0.28、0.5 % |
+
+- 時間は、ほかのセッションが NPU を使っている間の値 (空いているときは 1 回の描き足しが 57 秒、3 層で 120 秒)
+- `go test` (`samples/layers`: 切る値、マスク、縁の差、PackBits、PSD を節ごとに読み戻す。`ai/imagegen`: 大きさの選び方)
+
+**確かめていないこと・残り**
+
+- Photoshop そのものでは開いていない (psd-tools と Pillow だけ)
+- Apple: 参照からの生成が Neural Engine でまだ動かないので、このサンプルは AMD だけ。文からの生成も `ai` を通しては Mac で動かしていない
+- 実写の絵、1024 より大きい絵 (描き足しは約 100 万画素で描いて伸ばすので、裏は元より粗くなる)
+- 層の輪郭には、深度の切れ目から広げた分 (幅の 200 分の 1) の背景がついてくる。切り抜きのモデル (EfficientSAM、BiRefNet) で輪郭を取り直すのは残り
+- 擬似立体のサンプル (16.282) が、引き伸ばす代わりに描き足した層を使うのは残り

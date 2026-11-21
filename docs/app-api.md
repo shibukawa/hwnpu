@@ -22,7 +22,7 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
 | `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
 | `hwnpu/ai/vision` | 深度 (`Depth`)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)。物体、姿勢、切り抜き、OCR、ラベルはまだ | v0 (深度と顔) |
-| `hwnpu/ai/imagegen` | 画像の生成 (Anima、FLUX.2 / FLUX.3 klein、Chroma) | まだ |
+| `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`: FLUX.2 klein。文から、文と参照の絵から)。Anima、FLUX.3 klein、Chroma はまだ | v0 (FLUX.2 klein) |
 | `hwnpu/ai/sound` | 音楽、効果音、音高、採譜 | まだ |
 
 - **機能ごとにパッケージを分ける**: 文字起こしだけを使うアプリに、画像の生成のコードを入れないため。`ai` は機能のパッケージを import しない。機能のパッケージが、自分のモデルの準備と読み込みのしかた (`internal/airole` の `Role`) を持ち、`ai.Define` で型のついた `Use` を作る
@@ -386,6 +386,23 @@ parallax track --frames a.png,b.png        # カメラなし: 絵をフレーム
 - **絵**: 層のはっきりした絵がよい (人物や動物と背景、奥行きの違うものがいくつもある風景)。テストの絵は Anima で作った (`hwnpu-image generate -m anima-turbo`)。画像の生成はまだライブラリにないので、サンプルは絵のファイルを読む
 - **カメラ**: hwcamera (`samples/capture.Camera`)。フレームを Go のメモリの絵に写して流す
 - 窓は Ebitengine。Linux では X11 と OpenGL の開発用のパッケージが要り、ない機械は `-tags headless` で窓以外をビルドする
+
+### 9.3 レイヤー分割 (`samples/layers`)
+
+絵を深度で層に分け、各層が隠していた部分を画像のモデルで描き足して、Photoshop の文書 (PSD) に書く。層を動かしたり消したりしても、その裏に絵がある。
+
+```
+layers models prepare                # ダウンロード、変換、コンパイル
+layers plan picture.png              # 分け方だけ: 層ごとに色をつけた絵と、切る値 (何も描かない)
+layers picture.png -o picture.psd    # 分ける: 最後の層のほかは 1 層に 1 分ほど
+layers picture.png --layers 4 --png parts/
+```
+
+- **つなぎ方**: 呼び出しが 2 つ (絵 → 深度、塗った絵と文 → 描き足した絵)。交互に呼び、使うたびにモデルを下ろす (`Release`) ので、2 つが同時にメモリに載らない
+- **手順**: 一番手前の層から。近さの分布から切る値を求め (層の中の近さが一番そろう切り方)、層を切り出し、その形を絵にない色 1 色で塗って、「その形を取り除いて裏の景色を描く」と FLUX.2 klein に頼む。描いた絵は層のあった所だけ使う。その絵の深度をもう一度推定して (最初の深度の目盛りに合わせる) 次の層を切り、一番奥の層は残った絵まるごと
+- **描き損じ**: モデルが塗った形を残すことがある (塗った色や影として)。マスクの縁の内と外の色の差で見分け、別の種で描き直す (`--tries`)
+- **PSD**: 8 ビット RGB、層は文書の大きさ、PackBits。書き出しはサンプルの中 (`psd.go`、約 150 行)。psd-tools と Pillow で読めることを確かめた
+- 参照の絵からの生成は、今は AMD の NPU だけ
 
 ## 10. v0 の実装 (2026-11-21)
 
