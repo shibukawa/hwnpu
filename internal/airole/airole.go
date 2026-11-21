@@ -31,6 +31,9 @@ type Role struct {
 	Prepare func(PrepareEnv) (Files, error)
 	// Load loads the model from the files alone: no network, no conversion.
 	Load func(ctx context.Context, f Files, env LoadEnv) (io.Closer, error)
+	// Revision counts the changes to what Prepare makes that call for preparing again: a store
+	// prepared by an earlier revision counts as not prepared.
+	Revision int
 }
 
 // Accepts is nil when the role runs model m.

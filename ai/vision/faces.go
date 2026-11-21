@@ -26,8 +26,9 @@ func Faces(name string) ai.Use[*FaceDetector] {
 const faceONNX = "face_detection_yunet_2023mar.onnx"
 
 var facesRole = &airole.Role{
-	Name:  "faces",
-	Kinds: []chat.Kind{chat.KindFace},
+	Name:     "faces",
+	Revision: 1, // 1: the programs of every size made at Prepare
+	Kinds:    []chat.Kind{chat.KindFace},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m := e.Model
 		// where the definitions say it runs on this machine's NPU (models.yaml's device: the CPU
@@ -63,6 +64,11 @@ var facesRole = &airole.Role{
 			if err := os.MkdirAll(e.Dir, 0o755); err != nil {
 				return f, err
 			}
+			// every size's program now, not at the first frame of each: after "models
+			// prepare" a run needs no network nor conversion (Warm compiles them)
+			if err := face.ConvertPrograms(e.Ctx, e.NPU.Format, path, e.Dir, face.CPUSizes); err != nil {
+				return f, err
+			}
 			f.Set("programs", e.Dir)
 			f.SetValue("format", e.NPU.Format)
 		}
@@ -96,6 +102,14 @@ var facesRole = &airole.Role{
 		}
 		return &FaceDetector{d: d, name: e.Model}, nil
 	},
+}
+
+// Warm loads the program of every size once, which compiles it for the NPU (ai.Warmer: the
+// load of "models prepare"), so that a camera of any size does not wait for that.
+func (d *FaceDetector) Warm(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.d.Warm(ctx)
 }
 
 // Face is a face found in a picture, in the picture's pixels.

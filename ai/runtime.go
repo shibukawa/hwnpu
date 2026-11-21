@@ -152,10 +152,10 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	if err != nil {
 		return nil, err
 	}
-	loc, err := rt.app.Store.find(r.key(), rt.npu, m)
+	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
 	if errors.Is(err, ErrNotPrepared) && rt.o.auto {
 		if err = rt.prepare(ctx, r); err == nil {
-			loc, err = rt.app.Store.find(r.key(), rt.npu, m)
+			loc, err = rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
 		}
 	}
 	if err != nil {
