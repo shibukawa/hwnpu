@@ -10,6 +10,7 @@ require (
 	github.com/hajimehoshi/ebiten/v2 v2.10.6
 	github.com/shibukawa/hwcamera v0.1.0
 	github.com/shibukawa/hwnpu v0.0.0
+	golang.org/x/image v0.45.0
 )
 
 require (

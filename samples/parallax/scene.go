@@ -6,6 +6,7 @@ import (
 	"image/draw"
 	"math"
 	"slices"
+	"time"
 )
 
 // View is where the eye is before the picture.
@@ -38,11 +39,29 @@ func (p Params) uniforms(v View, width int) (viewX, viewY, shift, focus, zoom fl
 }
 
 // Scene is a picture with how near each of its points is.
+//
+// A picture in layers is a scene for each layer, the nearer ones over the ones behind (Behind):
+// each has its own nearness, so that a layer has its relief, and where a near layer moves aside
+// the layer behind shows what it has there instead of the near layer's edge stretched. A layer's
+// nearness goes on past the layer's own part (where the layer is transparent), so that the
+// layer ends at its edge.
 type Scene struct {
 	W, H int
-	Pix  *image.RGBA
+	// Pix is the picture; a layer is transparent where it has nothing.
+	Pix *image.RGBA
 	// Near is the nearness of each pixel, row major: 1 the nearest, 0 the farthest.
 	Near []float32
+	// Behind is the layer behind this one, drawn before it; nil for the farthest layer, and for
+	// a picture that is not in layers.
+	Behind *Scene
+}
+
+// Layers are the scene's layers from the farthest to this one.
+func (s *Scene) layers() []*Scene {
+	if s.Behind == nil {
+		return []*Scene{s}
+	}
+	return append(s.Behind.layers(), s)
 }
 
 // NewScene is the scene of a picture and its nearness (of the picture's size).
@@ -55,7 +74,7 @@ type Scene struct {
 func NewScene(img image.Image, near []float32, edge int, layers float64) *Scene {
 	b := img.Bounds()
 	rgba := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
-	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src)
+	draw.Draw(rgba, rgba.Bounds(), img, b.Min, draw.Src) // a layer's colours come to hold their alpha
 	return &Scene{W: b.Dx(), H: b.Dy(), Pix: rgba, Near: Spread(Layers(near, layers), b.Dx(), b.Dy(), edge)}
 }
 
@@ -156,7 +175,13 @@ func (s *Scene) colorAt(x, y float64) color.RGBA {
 // farthest; at layer n it is over the point of the picture that a point of nearness n would be
 // drawn from, shifted by the eye's place times n - Focus. The first layer at which the picture
 // is at least that near is what the eye sees there, so a near thing hides what is behind it.
+//
+// A scene in layers is drawn from the farthest layer, each over what is drawn already: where
+// the ray meets a layer at a point it does not cover, what is behind stays.
 func (s *Scene) Render(dst *image.RGBA, v View, p Params) {
+	if s.Behind != nil {
+		s.Behind.Render(dst, v, p)
+	}
 	vx, vy, shift, focus, zoom := p.uniforms(v, s.W)
 	sx, sy := vx*shift, vy*shift
 	cx, cy := float64(s.W)/2, float64(s.H)/2
@@ -186,7 +211,14 @@ func (s *Scene) Render(dst *image.RGBA, v View, p Params) {
 				}
 			}
 			hx, hy := clampX(px+sx*(below-focus)), clampY(py+sy*(below-focus))
-			dst.SetRGBA(x, y, s.colorAt(hx, hy))
+			c := s.colorAt(hx, hy)
+			if s.Behind != nil && c.A < 255 { // over what is behind (the colours hold their alpha)
+				under := dst.RGBAAt(x, y)
+				keep := 255 - int(c.A)
+				c.R, c.G = uint8(min(int(c.R)+(int(under.R)*keep+127)/255, 255)), uint8(min(int(c.G)+(int(under.G)*keep+127)/255, 255))
+				c.B, c.A = uint8(min(int(c.B)+(int(under.B)*keep+127)/255, 255)), uint8(min(int(c.A)+(int(under.A)*keep+127)/255, 255))
+			}
+			dst.SetRGBA(x, y, c)
 		}
 	}
 }
@@ -213,4 +245,11 @@ type windowOptions struct {
 	dump   string
 	frames int
 	quiet  bool
+	// record writes the window as a PNG into this directory every 2 seconds.
+	record string
+	// closeAfter closes the window after this long (0: never).
+	closeAfter time.Duration
+	// progress, when not nil, is the parting of the picture into layers, which runs beside the
+	// window: its steps are shown, and the layers taken as they come.
+	progress *progress
 }

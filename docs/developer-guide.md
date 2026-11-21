@@ -6,8 +6,8 @@
 
 hwnpu is a set of Go libraries that run AI models on the NPU. `hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` are demos that try its features one at a time. An app registers several models, prepares them ahead of time, and runs them joined together.
 
-- There now: speech to text, translation, chat, text to speech, a VAD by loudness, the depth of a picture, finding faces and where a head is, the ways of joining models, commands for an app's command line
-- Not there yet: image generation, and objects, poses, cutouts and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
+- There now: speech to text, translation, chat, text to speech, a VAD by loudness, the depth of a picture, finding faces and where a head is, drawing and editing pictures (FLUX.2 klein), the ways of joining models, commands for an app's command line
+- Not there yet: the picture models other than FLUX.2 klein (Anima, Chroma); objects, poses, cutouts and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel it calls the same preparing and loading as the commands, but it was not run through this library there
 - The whole plan is in [app-api.md](app-api.md) and the list of work in [app-api-tasks.md](app-api-tasks.md) (both in Japanese)
 
@@ -27,6 +27,7 @@ uses                    bytes to download,   compile for the NPU         store a
 | `.../ai/speech` | Speech to text `Transcribe`, text to speech `Speak`, a VAD by loudness, reading and writing WAV |
 | `.../ai/text` | Translation `Translate`, chat `Chat` |
 | `.../ai/vision` | The depth of a picture `Depth`, finding faces `Faces`, where a head is from its face `HeadOf` |
+| `.../ai/imagegen` | Drawing and editing pictures `Generate` (from a prompt, from a prompt and reference pictures) |
 | `.../ai/flow` | Passing data between models: `Stream` and its tools, the network (nodes and `To`), calls (`Call`) |
 | `.../ai/cli` | Commands for the app's command line: `models`, `status`. It depends on no command line library |
 | `.../ai/cli/konghelper` | The adapter of those commands for kong |
@@ -104,7 +105,8 @@ A working example that joins several models is [samples/interpreter](../samples/
 | Sample | What it is |
 |---|---|
 | `samples/interpreter` | An interpreter: the microphone or a recording → speech to text → translation → text to speech. Spoken commands. A network and a call |
-| `samples/parallax` | A picture shown as if it were deep: its depth estimated once, the viewer's head followed with the camera, the picture drawn from where the head is (Ebitengine, a Kage shader) |
+| `samples/parallax` | A picture shown as if it were deep: its depth estimated once, the viewer's head followed with the camera, the picture drawn from where the head is (Ebitengine, a Kage shader). It parts the picture into layers beside the window and shows each step in it |
+| `samples/layers` | Layers: parts a picture into layers by depth, has the picture model draw what each layer hid, and writes a Photoshop document (PSD). Two models in turns |
 
 ```
 cd samples
@@ -602,11 +604,12 @@ An app in which the three ways of joining all appear. The picture's depth is nee
 
 ```go
 depth := vision.Depth("depth")
+artist := imagegen.Generate("image")
 faces := vision.Faces("face-detect")
 app := ai.NewApp("parallax")
 
-// a call: the picture → its depth. Run once, and the model unloaded after
-depthOf := ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
+// two calls: the picture → its depth, a painted picture and a prompt → the picture drawn in. Run in turns, each model unloaded after
+split := layering.Register(app, depth, artist)
 
 // a network: camera → faces (the newest frame only) → where the head is → smoothed → the view
 camera := flow.Source[image.Image]("camera")
@@ -615,22 +618,62 @@ view := flow.Sink[View]("view").Do(keepNewest)
 app.From(camera).To(vision.FacesNode(faces), flow.Newest()).To(vision.HeadNode(vision.HeadOptions{})).To(steady).To(view)
 
 rt, _ := app.Open(ctx)
-d, _ := depthOf.Do(ctx, rt, picture)            // when the one before has finished
-depth.Release(rt)
-near := d.Near(w, h)
+near, _, _ := split.Near(ctx, rt, picture)      // when the one before has finished: the depth once, its model unloaded
 
 camera.From(capture.Camera(ctx, capture.CameraOptions{}))
 go rt.Run(ctx)                                  // as the chunks come (the detector reads the newest frame only)
-runWindow(picture, near, latestView)            // on the beat: the window draws 60 times a second with the view that came last
+go layering.Split(ctx, picture, near, split.Models(rt), opts) // parted into layers beside the window; each step goes to opts.Progress
+runWindow(picture, near, latestView, progress)  // on the beat: the window draws 60 times a second with the view and the layers that came last
 ```
 
 - **The drawing's beat is Ebitengine's.** The window's `Update` / `Draw` run 60 times a second and read the newest view the network's last node left (the idea of `flow.Hold`). With a detector that finds 15 times a second, the window does not wait for it
 - **The parallax**: each point of the picture moves in proportion to how near it is (a far one a little, a near one more). For each pixel of the screen the ray from the eye is followed from the nearest layer to the farthest, and the first point at which the picture is at least that near is drawn, so a near thing hides what is behind it. There is the Kage shader (`parallax.kage`) and the same reckoning in Go (`Scene.Render`); their pixels were compared at 8 views and agree
-- The nearness is the inverse of the depth, so with grass right before the eye, the bridge, the houses and the mountains behind it move almost as one (as an eye would see them, but no depth is felt). So a curve pulls the far layers apart (`Layers`, `--layers`, 30 by default: a nearness n becomes log(1 + 30n) / log(31); 0 leaves it). Between opposite views the mountains then moved 0 pixels, the forest 0→4, the houses 1→7, the bridge 3→17 and the post in front 43→57 (a picture of 1024 pixels)
+- The nearness is the inverse of the depth, so with grass right before the eye, the bridge, the houses and the mountains behind it move almost as one (as an eye would see them, but no depth is felt). So a curve pulls the far layers apart (`Layers`, `--far`, 30 by default: a nearness n becomes log(1 + 30n) / log(31); 0 leaves it). Between opposite views the mountains then moved 0 pixels, the forest 0→4, the houses 1→7, the bridge 3→17 and the post in front 43→57 (a picture of 1024 pixels)
 - An estimated depth's outlines are softer than the real ones, so near things are made a few pixels larger first (`Spread`). Without that the outlines tear into streaks
 - What the picture does not show (the background that appears when a near thing moves aside) is not in the picture, so it is stretched. It shows when the points move too far (`--strength`)
+- **Drawn in layers**: the window shows the picture with one depth as soon as the depth is there (a second or two), and parts the picture into layers beside it (`--layers`, 3 by default: the same work as [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers), in `samples/layering`, which both samples use). Each time a layer is cut the window's picture is changed for the one with that layer, drawn a layer at a time from the farthest, each with its own nearness, one over the other. Inside a layer the points move by their fine relief as before, and where a near layer has moved aside, what was drawn behind it shows, at its own nearness, instead of a stretched edge
+- **Showing how it goes**: the parting takes about a minute a layer, so the window shows at its bottom the step ("layer 3 of 3: drawing what is behind it, 40 %"), a bar of how much of the whole is done, and in a corner the picture of the step (the picture with the layer's shape painted in one colour, then what the model drew). The work runs the calls in another goroutine, and what `layering.Options.Progress` is told at each step is only read by the window each frame (the head is followed and the picture drawn all the while). `--save-layers DIR` writes the layers, and `parallax DIR` shows them again without the models. `--layers 1` parts nothing. On a machine whose picture model is not prepared, or whose NPU does not draw from references yet, the picture stays with its one depth
 - The pointer can stand in for the head (`--head pointer`), the view can go around by itself (`--head sweep`), a GIF can be written without a window (`parallax render`), and pictures given as the camera's frames (`parallax track --frames`)
 - The window is Ebitengine's, which on Linux needs the development packages of X11 and OpenGL. A machine without them builds everything but the window with `-tags headless`
+
+### 6.9 Example: parting a picture into layers by depth (`samples/layers`)
+
+It parts a picture into layers by depth and writes them as a Photoshop document (PSD). The picture model draws what each layer hid, so a layer can be moved or hidden and there is a picture behind it. It is an example of two models used **in turns**. The parting itself is in `samples/layering` (which is given the models as functions), used by this sample and by the pseudo-3D one. Below is an excerpt of what it does.
+
+```go
+var (
+	depth  = vision.Depth("depth")
+	artist = imagegen.Generate("image")
+)
+
+app := ai.NewApp("layers")
+depthOf := ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
+drawing := imagegen.GenerateNode(artist, imagegen.Options{})
+behind := ai.NewCall[imagegen.Request, image.Image](app, "what a layer hid").Then(drawing)
+
+// from the nearest layer on (an excerpt)
+d, _ := depthOf.Do(ctx, rt, picture)
+depth.Release(rt)                         // the depth model is unloaded, then
+out, _ := behind.Do(ctx, rt, imagegen.Request{
+	Prompt:     "Remove the green shape from image 1. Where it was, draw the scenery that is behind it, ...",
+	References: []image.Image{painted},   // the picture with the nearest layer painted in one colour
+})
+artist.Release(rt)                        // the picture model is unloaded, then the next depth
+```
+
+```
+the picture → depth → cut the nearest layer out → paint its shape in one colour → have what is behind drawn
+ ↑                                                                                       |
+ └───────────────────────── the picture without that layer ←─────────────────────────────┘
+```
+
+- **In turns**: the depth model (1.4 GB) and the picture model (3.9 GB) are never needed together, so each is unloaded with `Release` after it is used ([section 9.5](#95-release-and-image-generation-swapping-its-stages)). Loading again takes 0.1 s for the depth and about 4 s for the picture model, little beside the minute a picture takes
+- **Where to cut**: from the spread of the nearness (the inverse of the depth, on a curve that pulls the far end apart), the cuts that leave each layer's nearness closest together (`layers plan` writes the picture with each layer in a colour and prints the cuts; `--cuts` gives them)
+- **Having what is behind drawn**: the editing model takes no mask, so the part to remove is painted in one colour the picture does not have, and the model is asked to "remove the shape of that colour and draw the scenery behind it". The picture drawn is used only where the layer was, the picture before elsewhere (the layers put back together are almost the picture again). Thin parts of the layer that the depth missed (the tips of grass, a strand of hair) stay in the layer behind and are left there when the layer moves. `--clean PIXELS` takes the picture drawn a little past the layer's edge, which removes them, but where the picture drawn does not go on from its surroundings exactly, it shows as a rim about the layer
+- **Telling a failed drawing**: the model sometimes leaves the painted shape there (in its colour, or as a dark shadow). A step in colour then runs all along the mask's edge, so the difference of colour just inside and outside the edge (`seam`) tells it, and the picture is drawn again from another seed (`--tries`, 3 by default). When no try is good, the layer is not cut out but left in the picture, and the parting ends there (one layer fewer, which is better than a strange picture behind a layer). The wording matters too: "remove this shape" leaves it less often than "replace this area with the background". In a photograph the model once drew a crowd of people where a large shape was painted, so the request also says "do not add people or animals"
+- **The next layer**: the depth of the picture drawn is estimated again and brought to the first estimate's scale from the part both saw, and then the next layer is cut (a depth is in a unit of its own picture, so two are not compared as they are)
+- **A depth for each layer**: each layer has its nearness as well as its colours (`near-N.png` of `--png DIR`: 16 bit gray, on one scale for all the layers). The nearness of a part drawn in is estimated from the picture drawn. A layer's nearness goes on past the layer's edge with the edge's values (dropping there to the values of the layer behind would stretch the edge when it is drawn). `parallax DIR` reads these ([section 6.8](#68-an-example-a-picture-shown-as-if-it-were-deep-samplesparallax))
+- Three layers draw two pictures, 2 to 3.5 minutes at 1024×1024 (Ryzen AI 9 365). The PSD is 8 bit RGB with layers of the document's size, packed with PackBits. Drawing from a reference picture runs on AMD's NPU only for now
 
 ## 7. The models
 
@@ -690,6 +733,20 @@ Every model has a batch form and a stream form.
 
   The process takes 0.2 GiB more (0.4 to 0.5 GiB with MoGe-2). Depth Anything 3 gives a depth of 504 pixels on its long side, MoGe-2 one of 1024. For one estimate of one picture take DA3MONO-LARGE (enough for the parallax of a still picture), or moge-2-vitb / vitl when the outlines must be fine; over a video take DA3-SMALL (3 pictures a second). MoGe-2 also gives a depth in metres (`DepthMap.Metric`)
 - Not there yet: objects, poses, cutouts, OCR, labels
+
+### 7.4 `ai/imagegen`
+
+| | Batch | Node |
+|---|---|---|
+| `Generator` (FLUX.2 klein 4B) | `Generate(ctx, prompt, opts) (*image.RGBA, error)` | `imagegen.GenerateNode(use, opts)` (`Request{Prompt, References}` → a picture; `Update` changes the settings) |
+
+- **From a prompt**: `g.Generate(ctx, "a red fox in the snow", imagegen.Options{})`
+- **Editing and composing**: pictures go in `Options.References` (up to 4), and the prompt calls them `image 1`, `image 2`. A reference is cropped about its centre to the output's shape and scaled to its size
+- **Sizes**: the sizes the model draws are fixed (`Sizes()`: eight, 1024×1024, 512×512, 3:2, 16:9 and others). The one nearest `Options.Width` and `Height` in shape is drawn (without them the shape of the first reference, else a square). `SizeFor(w, h)` returns that size. A picture whose shape must stay is stretched to that size first, and the result stretched back
+- **And**: `Seed` (0: another each time), `Steps` (0: the model's own; 4 for FLUX.2 klein), `Progress` (called after each step)
+- **Time and memory**: at 1024×1024 about 30 s from a prompt, about a minute for an edit of one reference (Ryzen AI 9 365). It peaks at 3.9 GB while it runs (AMD). The pipeline swaps its stages itself ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
+- **Where it runs**: AMD's NPU (one export of IRON with every size). On Apple's Neural Engine only from a prompt; drawing from references does not run there yet. It was not run through `ai` on Apple
+- Not there yet: Anima, Chroma, FLUX.3 klein (the command `hwnpu-image generate` has them), several pictures together (`--batch`), a reference read at half size (`@half`)
 
 ## 8. The app's command line (`ai/cli`)
 
@@ -881,7 +938,7 @@ Both keep things from being in memory together, **at different levels**.
 | What | The stages inside one model (text encoder → DiT → VAE), and the groups of blocks inside the DiT | A use (a model), whole |
 | Who does it | The pipeline itself (on by default) | The app calls it |
 | The next use | Each stage is loaded again by itself | The next `Get` loads all of it again |
-| Where it is now | `internal/imagegen` (only the commands use it) | `ai` |
+| Where it is now | `internal/imagegen` (the commands and `ai/imagegen` use it) | `ai` |
 
 Image generation's swapping is built differently for each NPU (figures of the records).
 
@@ -889,7 +946,7 @@ Image generation's swapping is built differently for each NPU (figures of the re
 - **Apple (Core AI)**: a group of the DiT is loaded when its turn comes, run, closed, and the next one is loaded ahead. For Anima-Turbo the Neural Engine holds 0.57 instead of 2.53 GiB, and a picture takes the same 49 s (M1). For Chroma it is 2.2 to 2.6 instead of 8.3 GiB, and swapping is the faster
 - **Intel**: holds what fits, and closes what was not used lately to load again when it does not
 
-- When image generation comes into `ai/imagegen`, it brings this swapping as it is, on by default. An app then calls `Release` after generating, to unload what is left (small parts), and goes on to the next model (depth)
+- `ai/imagegen` (FLUX.2 klein) has this swapping as it is, on by default. An app calls `Release` after generating, to unload what is left (small parts), and goes on to the next model, the depth for one (the sample of [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers) does)
 - A third mechanism: a chat model on AMD gives its pinned memory back after a while without a request and loads again in a second or two at the next one (`hwnpu-chat --idle`). It cannot be used from `ai` yet
 - Making one thing of the three (a budget of memory, what may be evicted) is [D9](#10-design-questions)
 - The time to load again (measured, AMD): speech to text 0.5 to 1.2 s, the translator 5 to 9 s (8B) or about 3 s (2B), the speaker 2.3 to 3.8 s. On Apple it is seconds once compiled, and tens of seconds to minutes the first time
@@ -1009,7 +1066,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Before: `ai/aicli` gave kong structs alone
 - **Not decided**: adapters for other libraries (cobra and the like). They would add to the module's dependencies, so they would be modules of their own
 
-**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. `ai/vision`. Planned: `ai/imagegen`, `ai/sound`.
+**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. `ai/vision`, `ai/imagegen`. Planned: `ai/sound`.
 
 - **Not decided**: the name `ai` (hard to change once it is public); `speech` holding both speech to text and text to speech; the name `text` (easily confused beside the standard library's `text/...`)
 
@@ -1048,7 +1105,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 ## 11. Not there yet
 
-- Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); generation (`ai/imagegen`; for now pictures are made with the command, `hwnpu-image generate`)
+- Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); the picture models other than FLUX.2 klein (Anima, Chroma, FLUX.3 klein into `ai/imagegen`; for now they are drawn with the command, `hwnpu-image generate`)
 - Sound: music, sound effects, pitch, notes (`ai/sound`)
 - Moving the commands: making `hwnpu-audio`, `hwnpu-chat` and `hwnpu-image` only call this library
 - Managing what stays loaded (D9, D10), a local server (OpenAI compatible and others), bundles to ship, build tags

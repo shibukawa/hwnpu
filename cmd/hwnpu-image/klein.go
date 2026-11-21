@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/backend/amd"
 	"image"
 	_ "image/jpeg"
 	"image/png"
@@ -25,35 +24,12 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
-// npuGeneration is the generation of this machine's NPU of vendor as models.yaml names it: the
-// chip on Apple, xdna1 or xdna2 on AMD, "" when it is not known (the default sizes then).
-func npuGeneration(vendor string) string {
-	switch vendor {
-	case "apple":
-		return chat.Chip()
-	case "amd":
-		return amd.Generation()
-	}
-	return ""
-}
+// npuGeneration is the generation of this machine's NPU of vendor as models.yaml names it.
+func npuGeneration(vendor string) string { return flux2klein.NPUGeneration(vendor) }
 
-// npuAspects are the picture sizes of FLUX.2 klein's export for vendor's NPU on generation gen:
-// models.yaml npu's sizes, with the generation's overrides, in the order of aspect.All.
+// npuAspects are the picture sizes of FLUX.2 klein's export for vendor's NPU on generation gen.
 func npuAspects(m chat.Model, vendor, gen string) ([]aspect.Aspect, error) {
-	spec, ok := m.NPU[vendor]
-	if !ok {
-		return nil, fmt.Errorf("%s has no %s sizes in models.yaml (npu)", m.Name, vendor)
-	}
-	sizes := spec.SizesOn(gen)
-	out := make([]aspect.Aspect, 0, len(aspect.All))
-	for _, a := range aspect.All {
-		wh, ok := sizes[a.Name]
-		if !ok {
-			return nil, fmt.Errorf("%s: no %s size for %s in models.yaml (npu)", m.Name, vendor, a.Name)
-		}
-		out = append(out, aspect.Aspect{Name: a.Name, Width: wh[0], Height: wh[1]})
-	}
-	return out, nil
+	return flux2klein.NPUAspects(m, vendor, gen)
 }
 
 // kleinSizesHere are FLUX.2 klein's sizes on this machine's NPU, for an export given by its
