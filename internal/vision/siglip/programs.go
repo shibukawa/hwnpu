@@ -79,6 +79,9 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 			return "", err
 		}
 	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return "", err
+	}
 	bar := console.NewBar(log, "converting "+filepath.Base(out))
 	if err := Convert(chat.RepoDir(s.Repo), out, format); err != nil {
 		bar.Done("failed")

@@ -2,10 +2,12 @@ package modelscmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -52,7 +55,7 @@ func (x ExportCmd) Run(d *devopt.Defs) error {
 	if len(shared.Writebacks()) == 0 {
 		fmt.Fprintf(os.Stderr, "no source is written back to (%s ?writeback=true): what is made stays here\n", shared.SourceEnv)
 	}
-	_, err = prepare(ctx, jobs, x.Memory, x.Chip)
+	_, err = prepare(ctx, jobs, x.Memory, x.Chip, nil)
 	return err
 }
 
@@ -90,8 +93,23 @@ func parseJobs(sel []string) ([]job, error) {
 }
 
 // prepare makes the jobs' models ready, each form of each (forms), and waits for what goes in
-// the sources. It returns the files each form's preparation gave (airole.Files), in order.
-func prepare(ctx context.Context, jobs []job, memory []int, chips []string) ([]airole.Files, error) {
+// the sources. It returns the files each form's preparation gave (airole.Files), in order. Given
+// missing, nothing is converted (llm.WithFetchOnly): what is neither here nor in the sources is
+// added to it, and the rest goes on.
+func prepare(ctx context.Context, jobs []job, memory []int, chips []string, missing *[]string) ([]airole.Files, error) {
+	if missing != nil {
+		ctx = llm.WithFetchOnly(ctx)
+	}
+	// skip is whether err is of what is not in the sources, then noted, when nothing is converted
+	skip := func(what string, err error) bool {
+		var nf *llm.NotFetchedError
+		if missing == nil || !errors.As(err, &nf) {
+			return false
+		}
+		fmt.Fprintf(os.Stderr, "%s: %v\n", what, err)
+		*missing = append(*missing, what+": "+filepath.Base(nf.What))
+		return true
+	}
 	for _, c := range chips {
 		if !slices.Contains(chat.Chips, c) {
 			return nil, fmt.Errorf("no chip %q (%s)", c, strings.Join(chat.Chips, ", "))
@@ -105,8 +123,16 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string) ([]a
 			if len(j.model.AMDExport) == 0 {
 				return out, fmt.Errorf("%s has no amd_export", j.model.Name)
 			}
-			if err := (cachecmd.ExportCmd{Model: []string{j.model.Name}}).Make(ctx, memory); err != nil {
-				return out, err
+			if missing == nil {
+				if err := (cachecmd.ExportCmd{Model: []string{j.model.Name}}).Make(ctx, memory); err != nil {
+					return out, err
+				}
+				continue
+			}
+			for _, m := range cachecmd.AMDFormsOn(j.model, memory) {
+				if _, err := chat.PrepareAMD(chat.WithModel(ctx, m), m, log); err != nil && !skip(m.Name+" (amd-xdna2)", err) {
+					return out, fmt.Errorf("%s: %w", m.Name, err)
+				}
 			}
 			continue
 		}
@@ -142,6 +168,9 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string) ([]a
 				f, err := role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, m), Model: m, Dir: chat.ModelDir(m), NPU: npu, Log: log})
 				undo()
 				if err != nil {
+					if skip(m.Name+" ("+what+")", err) {
+						continue
+					}
 					return out, fmt.Errorf("%s (%s): %w", m.Name, what, err)
 				}
 				fmt.Fprintf(os.Stderr, "%s: ready for %s in %s\n", m.Name, what, time.Since(start).Round(time.Second))

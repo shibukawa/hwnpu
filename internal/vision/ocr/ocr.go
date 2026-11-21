@@ -253,7 +253,7 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 		}
 		p := NewProgram(g, shape)
 		bar := console.NewBar(r.s.Log, "converting "+stem)
-		if err := llm.StartProgram(path, export); err != nil {
+		if err := llm.StartProgram(ctx, path, export); err != nil {
 			bar.Done("failed")
 			return nil, err
 		}

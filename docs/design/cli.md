@@ -18,7 +18,7 @@ were removed without wrappers.
 | `hwnpu-chat` | `chat` (default), `agent`, `search`, `serve`, `opencode`, `systemone`, `list` | Language models: chat, coding agent, embeddings, OpenAI-compatible API, d1 decisions |
 | `hwnpu-image` | `generate`, `depth`, `face-detect`, `pose`, `detect`, `ocr`, `label`, `embed`, `segment`, `convert`, `list` | Image generation and vision models |
 | `hwnpu-audio` | `generate` (music; `-m sfx` sound effects), `tts`, `transcribe`, `pitch`, `notes`, `list` | `list` covers music, sfx, speech, transcribe, pitch, notes |
-| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`sources`, `ls`, `export`, `prebuild`, `put`, `import`, `update`, `verify`, `flush`, `gc`, `migrate`, `repack`, `hf`) | Development tools, not for end users |
+| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`sources`, `ls`, `fetch`, `export`, `prebuild`, `put`, `import`, `update`, `verify`, `flush`, `gc`, `migrate`, `repack`, `hf`) | Development tools, not for end users |
 
 - Music and sound effects share `hwnpu-audio generate`: only the model differs, the output (48 kHz
   stereo WAV, speaker) and display are the same. Music-only flags (`--codes`, `--continue`, `--notes`)
@@ -52,7 +52,12 @@ were removed without wrappers.
   are converted or taken from the sources, not loaded, and what is made goes in the sources written back
   to. Core AI's exports differ by chip on the M1 alone, so `coreai` is made as on an M1 and as on an M2
   (`chat.ExportChips`, `chat.ActAsChip`); `--chip` and `--memory` narrow it. `prebuild MODEL` makes the
-  model's Core AI exports ready the same way first. `hwnpu-dev cache` and `hwnpu-dev prebuild` stay as
+  model's Core AI exports ready the same way first. `fetch MODEL[/TARGET]` runs the same preparation
+  converting nothing (`llm.WithFetchOnly`): what is neither here nor in the sources stops where its
+  conversion would start (`llm.MayConvert`, in `StartExport`/`StartProgram`, chat's `convert` and
+  `convertShared`, the tables, `SharedExportOr` and the image exports) and is listed. It brings the
+  checkpoint too (the files the sources' lock names, else a chat model's config, tokenizer and
+  weights; `--no-checkpoint` leaves it), so that conversions can be tried on the model afterwards. `hwnpu-dev cache` and `hwnpu-dev prebuild` stay as
   hidden names of before (`cache push` is `models put`).
 - `hwnpu-dev report` is the hardware check users run for an issue: test models embedded from
   `internal/fixtures` (written to a temp dir, as Core ML needs real files); the same 64×512 · 512×512 + bias

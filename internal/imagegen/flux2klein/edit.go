@@ -311,6 +311,9 @@ func PrepareEdit(ctx context.Context, s Setup, o EditOptions) (string, error) {
 	if err := chat.FetchFiles(ctx, want, log); err != nil {
 		return "", err
 	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return "", err
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

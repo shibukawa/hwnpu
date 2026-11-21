@@ -24,6 +24,7 @@ type Cmd struct {
 
 	Sources  cachecmd.SourcesCmd `cmd:"" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read."`
 	Ls       cachecmd.LsCmd      `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev models sources); with --original the repositories' locks."`
+	Fetch    FetchCmd            `cmd:"" help:"Bring models here without converting anything, to try conversions on them: the checkpoint and the conversions for each target the sources have (what none has is listed); what comes from Hugging Face goes in the sources written back to too."`
 	Export   ExportCmd           `cmd:"" help:"Make the conversions of models for a target (amd-xdna2, coreai) on this machine, whatever its NPU, unless a source has them, and put them in the sources written back to."`
 	Prebuild PrebuildCmd         `cmd:"" help:"Compile the Core AI exports of models (or export folders) for the Neural Engine's architectures with coreai-build, and put them in the sources written back to (macOS, Xcode 27's Metal Toolchain)."`
 	Put      cachecmd.PushCmd    `cmd:"" help:"Put exports for AMD's NPU that are here in the sources written back to (with entry.json, made for them when missing)."`

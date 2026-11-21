@@ -200,8 +200,25 @@ func AMDForms(m chat.Model) []chat.Model {
 	return forms
 }
 
-// ExportCmd is hwnpu-dev models export: chat.PrepareAMD of each model without running it (the
-// export compiles on the CPU: no NPU is opened), the writeback waited for.
+// AMDFormsOn is AMDForms, or given memory the forms of machines of those GB alone (each
+// amd_export once).
+func AMDFormsOn(m chat.Model, memory []int) []chat.Model {
+	if len(memory) == 0 {
+		return AMDForms(m)
+	}
+	var forms []chat.Model
+	for _, gb := range memory {
+		v := m.On(gb)
+		if !slices.ContainsFunc(forms, func(f chat.Model) bool { return slices.Equal(f.AMDExport, v.AMDExport) }) {
+			forms = append(forms, v)
+		}
+	}
+	return forms
+}
+
+// ExportCmd is hwnpu-dev cache export (hwnpu-dev models export of chat models for amd-xdna2):
+// chat.PrepareAMD of each model without running it (the export compiles on the CPU: no NPU is
+// opened), the writeback waited for.
 type ExportCmd struct {
 	Model []string `arg:"" help:"Models of the definitions with amd_export."`
 }
@@ -230,18 +247,7 @@ func (x ExportCmd) Make(ctx context.Context, memory []int) error {
 		if !ok || len(m.AMDExport) == 0 {
 			return fmt.Errorf("%s is not a model of the definitions with amd_export", name)
 		}
-		if len(memory) == 0 {
-			forms = append(forms, AMDForms(m)...)
-			continue
-		}
-		for _, gb := range memory {
-			v := m.On(gb)
-			if !slices.ContainsFunc(forms, func(f chat.Model) bool {
-				return f.Name == v.Name && slices.Equal(f.AMDExport, v.AMDExport)
-			}) {
-				forms = append(forms, v)
-			}
-		}
+		forms = append(forms, AMDFormsOn(m, memory)...)
 	}
 	for _, m := range forms {
 		start := time.Now()
@@ -546,7 +552,7 @@ type VerifyCmd struct {
 	Sums bool     `help:"Check the SHA-256 of every file too (reads them all)."`
 }
 
-func (v VerifyCmd) Run(*Cmd) error {
+func (v VerifyCmd) Run(*devopt.Defs) error {
 	bad := 0
 	for _, d := range v.Dir {
 		if err := shared.Verify(d, v.Sums); err != nil {

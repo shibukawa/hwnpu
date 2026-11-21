@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	amdtools "github.com/shibukawa/hwnpu/tools/amd"
 )
@@ -178,6 +179,9 @@ func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, 
 	defer unlock()
 	if fetchPlaces(ctx, places, out, log) {
 		return nil
+	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return err
 	}
 	// made here: its files go in the sources written back to as they are written, as recipe's
 	// (not on the misses before: an export of others fetched into out would go too)

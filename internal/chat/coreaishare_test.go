@@ -41,7 +41,7 @@ func TestCoreAIShared(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "swift-f0")
 			export, done := llm.CoreAIExport(dir, "swiftf0-r3-fp16-t1896")
 			files := map[string]string{"model.aimodel/main.mlirb": "bytecode", "model.aimodel/main.hash": "hash"}
-			if err := llm.StartExport(export); err != nil {
+			if err := llm.StartExport(ctx, export); err != nil {
 				t.Fatal(err)
 			}
 			for f, body := range files {

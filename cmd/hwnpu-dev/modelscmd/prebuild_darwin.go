@@ -36,7 +36,7 @@ func (p PrebuildCmd) Run(d *devopt.Defs) error {
 		jobs = append(jobs, js...)
 	}
 	if len(jobs) > 0 {
-		files, err := prepare(ctx, jobs, p.Memory, p.Chip)
+		files, err := prepare(ctx, jobs, p.Memory, p.Chip, nil)
 		if err != nil {
 			return err
 		}

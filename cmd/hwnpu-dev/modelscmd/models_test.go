@@ -107,7 +107,7 @@ func TestParse(t *testing.T) {
 	if k.Command() != "models export <MODEL[/TARGET]>" || c.Models.Models != "x.yaml" || !slices.Equal(c.Models.Export.Memory, []int{16}) {
 		t.Errorf("parsed %q %+v", k.Command(), c.Models)
 	}
-	for _, args := range [][]string{{"models", "put", "LFM3-1.7B"}, {"models", "hf", "plan"}, {"models", "prebuild", "x.coreai", "--arch", "all", "-j", "2"}} {
+	for _, args := range [][]string{{"models", "put", "LFM3-1.7B"}, {"models", "hf", "plan"}, {"models", "fetch", "Qwen3-0.6B/coreai", "--no-checkpoint", "--chip", "M1"}, {"models", "prebuild", "x.coreai", "--arch", "all", "-j", "2"}} {
 		if _, err := p.Parse(args); err != nil {
 			t.Errorf("%v: %v", args, err)
 		}

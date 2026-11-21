@@ -1123,6 +1123,9 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if p, ok := cache.ReadDone(done); ok {
 		return p, nil
 	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return "", err
+	}
 	unlock, err := cache.Lock(ctx, out, filepath.Base(out), log)
 	if err != nil {
 		return "", err
@@ -1236,6 +1239,9 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 	converted(ctx, export) // from the shared layers when one has it
 	if _, ok := cache.ReadDone(done); ok {
 		return manifests, nil
+	}
+	if err := llm.MayConvert(ctx, export); err != nil {
+		return nil, err
 	}
 	unlock, err := cache.Lock(ctx, export, filepath.Base(export), log)
 	if err != nil {

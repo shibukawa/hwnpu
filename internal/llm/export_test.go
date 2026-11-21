@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,11 +27,11 @@ func TestProgramPath(t *testing.T) {
 	if ExportDone(done) {
 		t.Fatal("done before it was written")
 	}
-	if err := StartProgram(prog, export); err != nil {
+	if err := StartProgram(context.Background(), prog, export); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(export, "stale"), nil, 0o644)
-	if err := StartProgram(prog, export); err != nil {
+	if err := StartProgram(context.Background(), prog, export); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(export, "stale")); err == nil {
@@ -56,5 +57,25 @@ func TestProgramPath(t *testing.T) {
 	os.WriteFile(done, nil, 0o644)
 	if !ExportDone(done) {
 		t.Error("an empty mark is not done")
+	}
+}
+
+// TestFetchOnly: in a ctx that converts nothing, a conversion does not start (StartProgram and
+// StartExport leave what is there) and says what is missing.
+func TestFetchOnly(t *testing.T) {
+	ctx := WithFetchOnly(context.Background())
+	dir := t.TempDir()
+	prog, _, export := ProgramPath(dir, "x-fp16", BackendCoreAI)
+	os.MkdirAll(export, 0o755)
+	os.WriteFile(filepath.Join(export, "kept"), nil, 0o644)
+	var nf *NotFetchedError
+	if err := StartProgram(ctx, prog, export); !errors.As(err, &nf) || nf.What != export {
+		t.Fatalf("StartProgram: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(export, "kept")); err != nil {
+		t.Error("StartProgram removed the export in a ctx that converts nothing")
+	}
+	if MayConvert(context.Background(), export) != nil || FetchOnly(context.Background()) || !FetchOnly(ctx) {
+		t.Error("an ordinary ctx converts")
 	}
 }

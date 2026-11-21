@@ -18,6 +18,7 @@
 | 断られたときの取り方 (gated は元の HF と同じ `gate`、非公開は `HF_TOKEN` か `hf auth login`) | `internal/chat/hubpins.go` (`hubAuth`) | 済み。gated でないリポジトリにはトークンを送らない。**断られたら手元の変換に進む** (エラーで止めるのはまだ) |
 | `vN` がなければ同じ鍵の `v0-HASH` を読み、`vN` として書き戻す | `internal/chat/sharedexport.go` (`fetchFrom`) | 済み。版を書いても取得元の今の書き出しが無駄にならない |
 | `hwnpu-dev models export MODEL[/TARGET]` (どの OS でも、その対象向けに用意して書き戻す) | `cmd/hwnpu-dev/modelscmd`、`airole.For` / `ForTarget`、`chat.ActAsChip` | 済み (2026-11-21)。アプリの初回と同じ `airole.Role.Prepare` を、対象の NPU として呼ぶ (読み込まない)。AMD のチャットのモデルは今までの IRON の書き出し (変種ごと)。Core AI は M1 と M2 (それ以降の代表) の 2 通り: M1 だけ書き出しが違う (`wholeSlower`、`neuralEngineHold`)。Linux で M1 として作った Qwen3-0.6B の鍵は、NAS にある Mac の書き出しと同じだった |
+| `hwnpu-dev models fetch MODEL[/TARGET]` (変換せずに、チェックポイントと取得元にある変換を手元へ) | `modelscmd/fetch.go`、`llm.WithFetchOnly` / `MayConvert` | 済み (2026-11-21)。export と同じ準備を変換なしで走らせ、取得元にないものは一覧に出す。HF から落としたものは書き戻す取得元にも入る |
 | `hwnpu-dev models hf plan / push / check` | `cmd/hwnpu-dev/hfcmd` | 済み (下の 4 節)。手元の 1 回の走りで、取得元から選ぶ、置き場所を作る、prebuilt を書き出しのプログラムで照らす、カード・LICENSE・`config.json` を作る、`hf upload-large-folder`、models.yaml の固定、上がったかの確かめ |
 | 書く権限の確かめ (`whoami-v2`) とトークンを貼る | `hfcmd/api.go`、`console.ReadSecret` | 済み。**書くための device flow はまだ** (トークンを貼るか `HF_TOKEN` / `hf auth login`) |
 | 20 GB を超える書き出しを切る | | まだ (今の最大は Qwen3.6 の 22.65 GB) |
