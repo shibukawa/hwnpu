@@ -66,6 +66,7 @@ weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safeten
 ```
 
 - The settings are the process's: `Open` sets them for everything in it
+- `Options.Files` are definition files of the app's own (models.yaml's format: models, uses, aliases), read over hwnpu's, the machine's and the user's
 - The bundled models are in the layout of a source (`original/OWNER/NAME/` with `hwnpu-lock.json`) and are used in place (linked, not copied)
 - `Options.Limits` (nil: `HWNPU_CACHE_MAX_SIZE`, `HWNPU_CACHE_MIN_FREE`) bounds the cache: a download that would leave the disk with less than `MinFree` (10 GB unless set) fails with `modelstore.ErrNoRoom`; with a `MaxSize`, the units least recently used are removed first to make room. `s.Usage()`, `s.PlanPrune(o)`, `s.Prune(o)` and `s.Remove(units)` are what `hwnpu cache` does
 
@@ -74,6 +75,99 @@ s, err := modelstore.Open(modelstore.Options{Limits: &modelstore.Limits{MaxSize:
 u, err := s.Usage()                                                     // u.Units: kind, bytes, last used
 gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) // not used for 30 days
 ```
+
+## Apps that combine models (ai)
+
+`github.com/shibukawa/hwnpu/ai` is a set of packages for an app to register the models it uses, download and compile them ahead of time, and run them on the NPU (v0: its shape will still change; how to use it and the open design questions are in [docs/developer-guide.md](docs/developer-guide.md), the plan in [docs/app-api.md](docs/app-api.md), in Japanese). It prepares models the way hwnpu-chat, hwnpu-image and hwnpu-audio do on their first run, in the same cache, so models prepared by the commands are used as they are.
+
+```go
+// Register the models the app uses. Names are models, families or uses of models.yaml (hwnpu-chat list)
+var (
+	stt = speech.Transcribe("transcribe")
+	tr  = text.Translate("translate").
+		At(16, "plamo3translate:2b"). // the 2B on machines of 16 GB and up
+		At(32, "plamo3translate:8b")  // the 8B on machines of 32 GB and up
+	tts = speech.Speak("speech")
+
+	app = ai.NewApp("interpreter", stt, tr, tts)
+)
+
+// Prepare: look at the plan (it downloads nothing), then download, convert and compile for the NPU
+plan, err := app.Plan(ctx)
+fmt.Println(plan.DownloadBytes(), plan.MemoryGB(), plan.Licenses())
+err = plan.Run(ctx, func(p ai.Progress) { fmt.Println(p.Use, p.Stage, p.Message) })
+
+// Run: no network, no conversion. A model that is not prepared is ai.ErrNotPrepared
+rt, err := app.Open(ctx)
+defer rt.Close()
+t, err := stt.Get(ctx, rt) // *speech.Transcriber
+res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
+```
+
+| Package | What it has |
+|---|---|
+| `ai` | `App` (registration), `Use` (a typed handle: `Get`, `Release`, and the line-up by the machine's memory, `At` and `As`), `Plan` (planning and preparing), `Runtime` |
+| `ai/speech` | Speech to text (Whisper), text to speech (LFM3-Audio), a VAD by loudness, reading and writing WAV |
+| `ai/text` | Translation (PLaMo 3 Translate), chat |
+| `ai/flow` | Passing data between models: `Stream`, a stream of chunks, and its tools |
+| `ai/cli` | Commands for the app's command line: `models` (the list, `download`, `prepare`), `status`. It depends on no command line library (`cli.List`, `cli.Run(ctx, app, args)` and the others) |
+| `ai/cli/konghelper` | The adapter of those commands for kong |
+
+- **A line-up by the machine's memory**: a use's name picks the largest model the machine runs when it runs alone. An app that runs several at once can keep its main model large and the others small with `At(gb, name)` (another model on machines of at least that memory) and `As(gb)` (pick as a machine of that memory would). `APP models` shows the models picked, what they take running together, and the machine's memory
+- **One at a time**: `use.Release(rt)` unloads a model, so that large models used one after another (a picture's generator, then its depth) are not in memory together
+- **Preparing on the first run**: `app.Open(ctx, ai.WithAutoPrepare(fn))` prepares a model that is not ready at its first `Get`, as the commands do. That may download gigabytes
+- **Licenses**: a model whose license asks to be accepted fails with `*ai.LicenseError` unless `plan.AcceptLicenses` is set. Show `plan.Licenses()` and get the user's agreement before setting it
+
+### Joining models (ai/flow)
+
+Every model has a batch form (one value in, one out) and a stream form (`...Stream`). A stream is an `iter.Seq2`, read with `range`; it stops at a `break`, an error, or the cancel of its context. Stages are joined in three ways, by when the next one may start.
+
+| Joined | Tools |
+|---|---|
+| When the one before has finished (a picture, then its depth) | The batch calls, `flow.Last`, `flow.Of` |
+| As the chunks come (translate and speak each sentence, follow a camera) | `flow.Async` (stages overlap), `flow.Latest` (drop stale chunks, keep the newest), `flow.Hold` (keep the newest at hand), `flow.Tee` |
+| On the beat (audio in time for a player, frames for a screen) | `flow.Metronome` (a tick a beat), `flow.Pace` (hand a chunk over at its time), `flow.Live` (a recording at a microphone's pace) |
+
+```go
+utterances := speech.NewVAD(speech.VADOptions{}).Detect(ctx, mic) // mic: flow.Stream[[]float32] at 16 kHz
+texts := t.TranscribeStream(ctx, utterances, speech.TranscribeOptions{})
+en := translator.TranslateStream(ctx, texts, text.TranslateOptions{To: "en"})
+audio := speaker.SpeakStream(ctx, flow.Async(ctx, en, 4), speech.SpeakOptions{})
+for c, err := range audio { ... } // c.Data: audio at 24 kHz
+```
+
+The joins can also be written as a structure (a network): nodes of models and nodes of the program joined with `To` and given to the app, which loads the models and runs it. What runs once for a request is written with `ai.NewCall(...).Then(...)` and `Do`. See sections 6.6 and 6.7 of [docs/developer-guide.md](docs/developer-guide.md).
+
+```go
+mic := flow.Source[[]float32]("mic").From(stream)
+hear := speech.TranscribeNode(stt, speech.TranscribeOptions{})
+trans := text.TranslateNode(tr, text.TranslateOptions{To: "en"})
+log := flow.Tap("heard", func(c flow.Chunk[flow.Text]) { fmt.Println(c.Data.Text) }) // a node of the program
+out := flow.Sink[flow.Text]("out").Do(show)
+
+app := ai.NewApp("subtitles") // its models are taken from the network
+app.From(mic).To(speech.VADNode(speech.VADOptions{})).To(hear).To(log).To(trans).To(out)
+err := app.Run(ctx)
+```
+
+### The app's command line (ai/cli)
+
+The commands are functions of `ai/cli`, which depends on no command line library. Call `cli.List(ctx, app, cli.ListOptions{})` and the others from commands of your own, or hand the arguments over to `cli.Run(ctx, app, os.Args[1:])`. For an app that uses kong there is the adapter `ai/cli/konghelper`.
+
+```go
+var cmds struct {
+	Run    RunCmd            `cmd:"" default:"withargs" help:"..."`
+	Models konghelper.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU and what uses it."`
+}
+k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
+k.FatalIfErrorf(k.Run())
+```
+
+`APP models` lists the models and what they take (with what they take together and what this machine has for models), `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. A working example is [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language. The samples are a module of their own (`samples/go.mod`) and take the microphone from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
+
+- So far it has the models of speech and text. Those of pictures (depth, faces, generation and the others) are only in the commands yet
+- It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel the commands do the same preparing and loading, but they were not run through `ai`
 
 ## AMD (running kernels directly)
 

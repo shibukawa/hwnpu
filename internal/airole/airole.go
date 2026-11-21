@@ -1,0 +1,153 @@
+// Package airole is what the ai package and its packages of models (ai/speech, ai/text,
+// ai/vision) agree on: how a kind of model is made ready and loaded. It is internal so that the
+// packages of models are hwnpu's own; an app gets its uses from them.
+package airole
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"runtime"
+	"slices"
+	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/llm"
+)
+
+// Role is a kind of use: what its models are, how one is made ready and how it is loaded.
+type Role struct {
+	// Name is the role's name (transcribe, translate, speak, depth, faces).
+	Name string
+	// Kinds are the kinds of the definitions' models that fill the role; Feature, when not "",
+	// is a feature the model must have besides (translation).
+	Kinds   []chat.Kind
+	Feature string
+	// Prepare makes the model ready as the command of its kind does on its first run: it takes
+	// what is missing from the shared layers or downloads it, and converts the programs unless
+	// a layer has them. It returns the files Load reads.
+	Prepare func(PrepareEnv) (Files, error)
+	// Load loads the model from the files alone: no network, no conversion.
+	Load func(ctx context.Context, f Files, env LoadEnv) (io.Closer, error)
+}
+
+// Accepts is nil when the role runs model m.
+func (r *Role) Accepts(m chat.Model) error {
+	if !slices.Contains(r.Kinds, m.Kind) {
+		return fmt.Errorf("ai: %s is a %s model, which the role %s does not run", m.Name, m.Kind, r.Name)
+	}
+	if r.Feature != "" && !slices.Contains(m.Features, r.Feature) {
+		return fmt.Errorf("ai: %s has no %s, which the role %s needs", m.Name, r.Feature, r.Name)
+	}
+	return nil
+}
+
+// PrepareEnv is what a role's Prepare is given.
+type PrepareEnv struct {
+	Ctx   context.Context
+	Model chat.Model
+	// Dir is the model's directory of programs (chat.ModelDir).
+	Dir string
+	// NPU is what the programs are converted for.
+	NPU NPU
+	Log io.Writer
+}
+
+// LoadEnv is what a role's Load is given.
+type LoadEnv struct {
+	// Model is the model's name in the definitions.
+	Model string
+	NPU   NPU
+	// Cache is the compile cache.
+	Cache string
+	Log   io.Writer
+}
+
+// Files are what a role's Prepare made and its Load reads: paths by name (files, or the
+// directories of programs and exports) and settings that are not paths.
+type Files struct {
+	Paths  map[string][]string `json:"paths,omitempty"`
+	Values map[string]string   `json:"values,omitempty"`
+}
+
+// Set names paths; no paths, or only empty ones, name nothing.
+func (f *Files) Set(name string, paths ...string) {
+	paths = slices.DeleteFunc(slices.Clone(paths), func(p string) bool { return p == "" })
+	if len(paths) == 0 {
+		return
+	}
+	if f.Paths == nil {
+		f.Paths = map[string][]string{}
+	}
+	f.Paths[name] = paths
+}
+
+// SetValue names a setting; an empty one names nothing.
+func (f *Files) SetValue(name, value string) {
+	if value == "" {
+		return
+	}
+	if f.Values == nil {
+		f.Values = map[string]string{}
+	}
+	f.Values[name] = value
+}
+
+// Path is the first path of name, "" for none.
+func (f Files) Path(name string) string {
+	if p := f.Paths[name]; len(p) > 0 {
+		return p[0]
+	}
+	return ""
+}
+
+// NPU is this machine's NPU as the models are prepared for it and run on it.
+type NPU struct {
+	// Vendor is amd, apple or intel; "" without an NPU.
+	Vendor string
+	// Target names what the programs are for, as the shared layers name it: coreai, intel or
+	// amd-xdna2 (cache.AMDTarget); "" when no NPU runs here (the programs are converted, not
+	// loaded).
+	Target string
+	// Device is the device backend to open (llm.FindDevice, "" for the NPU found).
+	Device string
+	// Format is the program format the converted models are made in (llm.Options.Backend); ""
+	// on AMD's NPU, which runs exports of IRON.
+	Format string
+}
+
+// AMD reports whether the NPU is AMD's, which runs IRON's exports instead of converted programs.
+func (n NPU) AMD() bool { return n.Target == cache.AMDTarget }
+
+// Here is this machine's NPU, picked as hwnpu-chat, hwnpu-audio and hwnpu-image pick it:
+// HWNPU_BACKEND, else the NPU found; on a Mac Core AI's (macOS 27), which runs the Neural Engine
+// for them (Core ML is not used).
+func Here(ctx context.Context) NPU {
+	device := strings.TrimSpace(os.Getenv(llm.BackendEnv))
+	if runtime.GOOS == "darwin" {
+		switch device {
+		case "", llm.BackendCoreML, llm.BackendCoreAI:
+			device = llm.BackendCoreAI
+		}
+	}
+	n := NPU{Vendor: chat.HereVendor(), Device: device}
+	if chat.OnlyAMD(ctx, device) {
+		n.Target = cache.AMDTarget
+		return n
+	}
+	if device == llm.BackendCoreAI {
+		n.Format = llm.BackendCoreAI
+		if _, _, err := llm.FindDevice(ctx, device); err == nil {
+			n.Target = cache.CoreAITarget
+		}
+		return n
+	}
+	f, err := llm.ProgramFormat(ctx, device)
+	if err != nil {
+		return n
+	}
+	n.Target, n.Format = f, f
+	return n
+}

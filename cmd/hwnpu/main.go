@@ -60,14 +60,15 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/npustatus"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
-	Status StatusCmd `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
-	Cache  CacheCmd  `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
-	Memory MemoryCmd `cmd:"" help:"The memory each model runs as on this machine, in every hwnpu command: choose a smaller one (hwnpu memory LFM3-1.7B 8) to run a model beside other programs, the way models.yaml defines for that memory."`
-	Issue  IssueCmd  `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
+	Status npustatus.Cmd `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
+	Cache  CacheCmd      `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
+	Memory MemoryCmd     `cmd:"" help:"The memory each model runs as on this machine, in every hwnpu command: choose a smaller one (hwnpu memory LFM3-1.7B 8) to run a model beside other programs, the way models.yaml defines for that memory."`
+	Issue  IssueCmd      `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
 }
 
 func main() {

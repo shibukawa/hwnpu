@@ -1,4 +1,7 @@
-package main
+// Package npustatus is hwnpu status: this machine's NPU (the device, its driver, how busy it is,
+// what uses it), what hwnpu runs on, and the cache. It is the command of hwnpu and of the apps
+// made with the ai package (cli.Status).
+package npustatus
 
 import (
 	"bufio"
@@ -22,6 +25,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/sysload"
+	"github.com/shibukawa/hwnpu/modelstore"
 	"github.com/shibukawa/hwnpu/npuinfo"
 )
 
@@ -65,8 +69,8 @@ type Process struct {
 	sysload.Proc
 }
 
-// samplers keep the counters that loads are worked out from between collects.
-type samplers struct {
+// Samplers keep the counters that loads are worked out from between collects.
+type Samplers struct {
 	sys   sysload.Sampler
 	procs sysload.ProcSampler
 }
@@ -121,7 +125,7 @@ func version() string {
 
 // collect reads the Status. scan walks the cache (a few seconds with many files); wake lets
 // npuinfo ask a sleeping NPU (and wake it); load keeps the counters of the loads between reads.
-func collect(ctx context.Context, s storeView, scan, wake bool, load *samplers) Status {
+func Collect(ctx context.Context, s StoreView, scan, wake bool, load *Samplers) Status {
 	st := Status{
 		Time: time.Now(), Version: version(), OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Memory: mem.Physical(), BackendEnv: os.Getenv(llm.BackendEnv),
@@ -220,15 +224,15 @@ func vendorOf(info *npuinfo.Info) string {
 	return ""
 }
 
-// storeView is what Status reads of the store (modelstore.Store).
-type storeView interface {
+// StoreView is what Status reads of the store (modelstore.Store).
+type StoreView interface {
 	DiskSpace() (int64, int64, error)
 	Limits() (cache.Limits, error)
 	Usage() (cache.Usage, error)
 	LayerNames() []string
 }
 
-func cacheStatus(s storeView, scan bool) CacheStatus {
+func cacheStatus(s StoreView, scan bool) CacheStatus {
 	c := CacheStatus{Root: cache.Root(), Layers: s.LayerNames()}
 	c.Free, c.Total, _ = s.DiskSpace()
 	if l, err := s.Limits(); err != nil {
@@ -366,7 +370,7 @@ func summarizeDarwin(st *Status, d *npuinfo.DarwinInfo) {
 			st.Load.NPUPowerW = &w
 			parts = append(parts, fmt.Sprintf("%.2f W", w))
 		} else {
-			parts = append(parts, "power not readable without root (sudo powermetrics --samplers ane_power)")
+			parts = append(parts, "power not readable without root (sudo powermetrics --Samplers ane_power)")
 		}
 		if r.ANEReadBytesPerSec > 0 {
 			parts = append(parts, fmt.Sprintf("reads %.1f GB/s", r.ANEReadBytesPerSec/1e9))
@@ -468,7 +472,7 @@ func cpuName() string {
 }
 
 // write shows st for a person: what stays (writeFixed), then what changes (writeLive).
-func (st Status) write(w io.Writer, args bool) {
+func (st Status) Write(w io.Writer, args bool) {
 	st.writeFixed(w)
 	st.writeLive(w, args)
 }
@@ -636,35 +640,42 @@ func sizeOr(n int64) string {
 	return cache.FormatSize(n)
 }
 
-// StatusCmd is hwnpu status.
-type StatusCmd struct {
+// Cmd is hwnpu status.
+type Cmd struct {
 	JSON  bool          `help:"Write all that was read as JSON (npuinfo's too)."`
 	Watch time.Duration `short:"w" help:"Show it again every this long (2s) until Ctrl-C: on a terminal, as top does (what stays on top, the load below it, redrawn in place)." placeholder:"EVERY"`
 	Wake  bool          `help:"Open the NPU and ask it too (its driver's and firmware's details, what hwnpu finds): on Linux this wakes a sleeping NPU for a few seconds."`
+	// Store is the store whose cache and layers are shown: the zero value is that of hwnpu's
+	// commands, an app gives its own (ai.Store.Models).
+	Store modelstore.Options `kong:"-"`
 }
 
-func (c StatusCmd) Run(ctx context.Context) error {
-	s, err := open()
+func (c Cmd) Run(ctx context.Context) error {
+	o := c.Store
+	if o.Log == nil {
+		o.Log = os.Stderr
+	}
+	s, err := modelstore.Open(o)
 	if err != nil {
 		return err
 	}
-	v := view{s}
-	var load samplers
+	v := View{s}
+	var load Samplers
 	if c.Watch <= 0 {
-		st := collect(ctx, v, true, c.Wake, &load)
+		st := Collect(ctx, v, true, c.Wake, &load)
 		if c.JSON {
 			e := json.NewEncoder(os.Stdout)
 			e.SetIndent("", "  ")
 			return e.Encode(st)
 		}
-		st.write(os.Stdout, true)
+		st.Write(os.Stdout, true)
 		return nil
 	}
 	if !c.JSON && runtime.GOOS != "windows" && console.Terminal(os.Stdout) {
 		return c.top(ctx, v, &load)
 	}
 	for first := true; ; first = false {
-		st := collect(ctx, v, first, c.Wake, &load) // the cache is walked once
+		st := Collect(ctx, v, first, c.Wake, &load) // the cache is walked once
 		if c.JSON {
 			json.NewEncoder(os.Stdout).Encode(st)
 		} else {
@@ -672,7 +683,7 @@ func (c StatusCmd) Run(ctx context.Context) error {
 				fmt.Println()
 			}
 			fmt.Println(st.Time.Format(time.TimeOnly))
-			st.write(os.Stdout, true)
+			st.Write(os.Stdout, true)
 		}
 		select {
 		case <-ctx.Done():
@@ -695,7 +706,7 @@ const (
 // top is hwnpu status --watch on a terminal: the alternate screen, with what stays written
 // once at the top and the load redrawn in place below it every c.Watch (again all when the
 // terminal is resized), until Ctrl-C.
-func (c StatusCmd) top(ctx context.Context, v view, load *samplers) error {
+func (c Cmd) top(ctx context.Context, v View, load *Samplers) error {
 	out := os.Stdout
 	fmt.Fprint(out, altScreen)
 	defer fmt.Fprint(out, mainScreen)
@@ -703,7 +714,7 @@ func (c StatusCmd) top(ctx context.Context, v view, load *samplers) error {
 	width, height := -1, -1
 	for first := true; ; first = false {
 		next := time.Now().Add(c.Watch) // every c.Watch, however long reading takes
-		st := collect(ctx, v, first, c.Wake, load)
+		st := Collect(ctx, v, first, c.Wake, load)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -770,4 +781,23 @@ func fit(s string, width int) string {
 		return s
 	}
 	return string(r[:i])
+}
+
+// View is a Store as status reads it.
+type View struct{ *modelstore.Store }
+
+// LayerNames are the names of the layers, in order.
+func (v View) LayerNames() []string {
+	var n []string
+	for _, l := range v.Layers() {
+		s := l.Name
+		switch {
+		case l.Bundled:
+			s += " (bundled, read only)"
+		case l.Writeback:
+			s += " (written back to)"
+		}
+		n = append(n, s)
+	}
+	return n
 }

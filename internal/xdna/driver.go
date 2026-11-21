@@ -20,6 +20,12 @@ type Driver interface {
 	Close() error
 }
 
+// AlignedMapper is a Driver that maps a buffer object at an address that is a multiple of align
+// (a power of two), as the device heap needs (Provider.Open).
+type AlignedMapper interface {
+	MmapAligned(offset uint64, length, align int) ([]byte, error)
+}
+
 // Dev wraps a Driver with typed helpers.
 type Dev struct{ D Driver }
 

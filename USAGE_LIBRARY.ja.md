@@ -66,6 +66,7 @@ weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safeten
 ```
 
 - 設定はプロセスのもの: `Open` はプロセス全体に効きます
+- `Options.Files` は、アプリ自身の定義のファイル (models.yaml の形式: モデル、用途、別名) です。hwnpu のもの、機械のもの、利用者のものの上に読みます
 - 同梱のモデルは取得元と同じ並び (`original/OWNER/NAME/` と `hwnpu-lock.json`) で置き、その場で使います (コピーせずリンク)
 - `Options.Limits` (nil: `HWNPU_CACHE_MAX_SIZE`、`HWNPU_CACHE_MIN_FREE`) でキャッシュの大きさを抑えます: ディスクの空きが `MinFree` (指定がなければ 10 GB) を切るダウンロードは `modelstore.ErrNoRoom` で失敗し、`MaxSize` があれば先に最近使っていない単位から消して場所を空けます。`s.Usage()`、`s.PlanPrune(o)`、`s.Prune(o)`、`s.Remove(units)` は `hwnpu cache` と同じ処理です
 
@@ -74,6 +75,99 @@ s, err := modelstore.Open(modelstore.Options{Limits: &modelstore.Limits{MaxSize:
 u, err := s.Usage()                                                     // u.Units: 種類、大きさ、最後に使った時刻
 gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) // 30 日使っていないもの
 ```
+
+## モデルを組み合わせるアプリ (ai)
+
+`github.com/shibukawa/hwnpu/ai` は、アプリが使うモデルを登録し、前もってダウンロードとコンパイルを済ませ、NPU で動かすためのパッケージ群です (v0: 形はまだ変わります。使い方と設計の論点は [docs/developer-guide.ja.md](docs/developer-guide.ja.md)、計画は [docs/app-api.md](docs/app-api.md))。hwnpu-chat、hwnpu-image、hwnpu-audio が初回にするのと同じ準備を同じ置き場に行うので、コマンドで準備したモデルはそのまま使えます。
+
+```go
+// 使うモデルを登録する。名前は models.yaml のモデル、ファミリー、用途 (hwnpu-chat list)
+var (
+	stt = speech.Transcribe("transcribe")
+	tr  = text.Translate("translate").
+		At(16, "plamo3translate:2b"). // 16 GB 以上の機械では 2B
+		At(32, "plamo3translate:8b")  // 32 GB 以上の機械では 8B
+	tts = speech.Speak("speech")
+
+	app = ai.NewApp("interpreter", stt, tr, tts)
+)
+
+// 準備: 計画 (何も落とさない) を見てから、ダウンロード、変換、NPU 向けのコンパイル
+plan, err := app.Plan(ctx)
+fmt.Println(plan.DownloadBytes(), plan.MemoryGB(), plan.Licenses())
+err = plan.Run(ctx, func(p ai.Progress) { fmt.Println(p.Use, p.Stage, p.Message) })
+
+// 実行: ネットワークにも変換にも触らない。準備されていなければ ai.ErrNotPrepared
+rt, err := app.Open(ctx)
+defer rt.Close()
+t, err := stt.Get(ctx, rt) // *speech.Transcriber
+res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
+```
+
+| パッケージ | 中身 |
+|---|---|
+| `ai` | `App` (登録)、`Use` (型のついた取っ手: `Get`、`Release`、機械のメモリごとの構成 `At` と `As`)、`Plan` (計画と準備)、`Runtime` |
+| `ai/speech` | 文字起こし (Whisper)、読み上げ (LFM3-Audio)、音量の VAD、WAV の読み書き |
+| `ai/text` | 翻訳 (PLaMo 3 Translate)、チャット |
+| `ai/flow` | モデルの間のデータの渡し方: 塊の流れ `Stream` と、その道具 |
+| `ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、`download`、`prepare`)、`status`。コマンドラインのライブラリに依存しない (`cli.List`、`cli.Run(ctx, app, args)` など) |
+| `ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ |
+
+- **機械のメモリごとの構成**: 用途の名前は、1 つだけ動かすときにその機械で動く一番大きなモデルを選びます。いくつも同時に動かすアプリは、`At(gb, name)` (そのメモリ以上の機械では別のモデル) と `As(gb)` (その機械として選ぶ) で、主になるモデルを大きく、補助のモデルを小さくできます。`APP models` が、選ばれたモデル、同時に動かす合計、機械のメモリを出します
+- **1 つずつ動かす**: `use.Release(rt)` でモデルを下ろすと、続けて使う大きなモデル (画像の生成のあとに深度など) が同時にメモリに載りません
+- **初回に自動で準備する**: `app.Open(ctx, ai.WithAutoPrepare(fn))` は、準備されていないモデルを最初の `Get` で準備します (コマンドと同じ動き)。ギガバイトのダウンロードになることがあります
+- **ライセンス**: 同意の要るライセンスのモデルは、`plan.AcceptLicenses` を付けないと `*ai.LicenseError` になります。`plan.Licenses()` を見せて同意を取ってから付けてください
+
+### モデルをつなぐ (ai/flow)
+
+どの機能も、一括の形 (値を 1 つ渡して 1 つ受け取る) と流れの形 (`...Stream`) を持ちます。流れは `iter.Seq2` で、`range` で読み、`break`、エラー、ctx の取り消しで止まります。つなぎ方は、次の段をいつ始められるかで 3 つあります。
+
+| つなぎ方 | 道具 |
+|---|---|
+| 前が全部終わってから (絵ができてから深度) | 一括の呼び出し、`flow.Last`、`flow.Of` |
+| できたものから (文ごとに訳して読む、カメラの映像を追う) | `flow.Async` (段を重ねる)、`flow.Latest` (古い塊を捨てて最新だけ)、`flow.Hold` (最新を持っておく)、`flow.Tee` |
+| 拍に合わせて (再生に間に合わせる音、画面に出すフレーム) | `flow.Metronome` (拍ごとの tick)、`flow.Pace` (塊をその時刻に渡す)、`flow.Live` (録音をマイクのように流す) |
+
+```go
+utterances := speech.NewVAD(speech.VADOptions{}).Detect(ctx, mic) // mic: flow.Stream[[]float32]、16 kHz
+texts := t.TranscribeStream(ctx, utterances, speech.TranscribeOptions{})
+en := translator.TranslateStream(ctx, texts, text.TranslateOptions{To: "en"})
+audio := speaker.SpeakStream(ctx, flow.Async(ctx, en, 4), speech.SpeakOptions{})
+for c, err := range audio { ... } // c.Data: 24 kHz の音声
+```
+
+つなぎ方を構造として書くこともできます (ネットワーク)。モデルの節とプログラムの節を `To` でつなぎ、アプリに渡すと、ライブラリがモデルを読み込んで走らせます。要求ごとに 1 回動かす構成は `ai.NewCall(...).Then(...)` と `Do` で書きます。詳しくは [docs/developer-guide.ja.md](docs/developer-guide.ja.md) の 6.6 節と 6.7 節にあります。
+
+```go
+mic := flow.Source[[]float32]("mic").From(stream)
+hear := speech.TranscribeNode(stt, speech.TranscribeOptions{})
+trans := text.TranslateNode(tr, text.TranslateOptions{To: "en"})
+log := flow.Tap("heard", func(c flow.Chunk[flow.Text]) { fmt.Println(c.Data.Text) }) // プログラムの節
+out := flow.Sink[flow.Text]("out").Do(show)
+
+app := ai.NewApp("subtitles") // モデルはネットワークから引かれる
+app.From(mic).To(speech.VADNode(speech.VADOptions{})).To(hear).To(log).To(trans).To(out)
+err := app.Run(ctx)
+```
+
+### アプリのコマンドライン (ai/cli)
+
+サブコマンドの中身は `ai/cli` の関数で、コマンドラインのライブラリに依存しません。自分のコマンドから `cli.List(ctx, app, cli.ListOptions{})` などを呼ぶか、引数をそのまま `cli.Run(ctx, app, os.Args[1:])` に渡します。kong を使うアプリには `ai/cli/konghelper` のアダプタがあります。
+
+```go
+var cmds struct {
+	Run    RunCmd            `cmd:"" default:"withargs" help:"..."`
+	Models konghelper.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU and what uses it."`
+}
+k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
+k.FatalIfErrorf(k.Run())
+```
+
+`APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
+
+- 今ある機能は音声と文だけです。画像 (深度、顔、生成など) は、まだコマンドからだけ使えます
+- 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
 
 ## AMD (カーネルを直接動かす)
 

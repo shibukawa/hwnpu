@@ -7583,7 +7583,7 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 - `hwnpu-audio tts` は AMD の NPU では `speech.PrepareAMD` (手元、取得元、なければ IRON で書き出して取得元へ)。`-m DIR` で書き出し、`--iron-text DIR` で文のモデルの書き出しだけを (depthformer と codec は Core ML のパッケージを CPU で) も動かせる
 - 鍵のために models.yaml の LFM3-Audio-2B-TTS に commit と 6 つのファイルの sha256 を固定した
 
-**デバイスヒープの断り**: 最初の形 (チェックポイントの表を開いてから文のモデルの書き出しを読む) は、2 回に 1 回ほど `CREATE_HWCTX` が `EINVAL` になった (カーネルのログは `aie2_send_host_buf_msgs` の 64 MiB のデバイスヒープの登録、opcode 0x106、状態 0x4000003。失敗のたびにヒープの番地が同じ)。hwnpu-chat (同じ書き出しを先に読む) は 4 回とも通る。文のモデルを `Load` の最初 (表の 4 GB の mmap の前) に読むようにすると 5 回とも通った。番地の何が断られるのかは分かっていない (amd-xdna2-bench.md の約 125 回に 1 回のものと同じ断り方)
+**デバイスヒープの断り**: 最初の形 (チェックポイントの表を開いてから文のモデルの書き出しを読む) は、2 回に 1 回ほど `CREATE_HWCTX` が `EINVAL` になった (カーネルのログは `aie2_send_host_buf_msgs` の 64 MiB のデバイスヒープの登録、opcode 0x106、状態 0x4000003。失敗のたびにヒープの番地が同じ)。hwnpu-chat (同じ書き出しを先に読む) は 4 回とも通る。文のモデルを `Load` の最初 (表の 4 GB の mmap の前) に読むようにすると 5 回とも通った。番地の何が断られるのかは分かっていない (amd-xdna2-bench.md の約 125 回に 1 回のものと同じ断り方)。→ 16.281: ヒープの番地が 64 MiB の倍数でないと断られる
 
 **確かめたこと** (Ryzen AI 9 365)
 
@@ -8617,3 +8617,83 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 
 **移す順** (利用者の指定): Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (`npu.apple.sizes` の 8 つ) → Chroma1 (Flash、HD) → FLUX.3 klein。チップは M1、M2、M3 (h13g、h14g、h15g) から。大きさごとの書き出しとその prebuilt (NAS の `converted/Anima-Turbo/coreai/anima-turbo-v1.1-WxH-…` など) は移し終えたら使われなくなる。
 
+
+### 16.281 アプリに組み込むライブラリ `ai` の v0 を main に載せ直す、AMD の `CREATE_HWCTX` の `EINVAL` の原因 (デバイスヒープの番地) — 2026-11-21
+
+**何をしたか**: hwnpu を「NPU で AI のモデルを動かすライブラリの集まり」にし、コマンド (`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) はその機能を試すデモにする、という方針の 1 歩目。前のブランチ (`t3/08e7bc94`: 1 つの `ai` パッケージ、2026-11-14〜16) は main から 166 コミット離れたので捨て、使えるもの (流れの型、音量の VAD、置き場の目録、計画と準備) を今の main に載せ直して、構成を変えた。計画と残りは [app-api.md](app-api.md)、[app-api-tasks.md](app-api-tasks.md)。
+
+**構成** (app-api.md 1 節):
+
+- `ai`: アプリが使うモデルを登録する `App`、型のついた取っ手 `Use[T]` (`stt.Get(ctx, rt)` が `*speech.Transcriber` を返す)、`Plan` (足りないもの、落とす量、メモリ、ライセンス。ダウンロードと変換、NPU 向けのコンパイルの 2 段)、`Runtime` (準備済みの置き場からだけ読み込む)
+- `ai/speech` (文字起こし、読み上げ、音量の VAD)、`ai/text` (翻訳、チャット): 機能ごとのパッケージが、自分のモデルの準備と読み込み (`internal/airole` の `Role`) を持つ。`ai` は機能のパッケージを import しないので、アプリには使う機能のコードだけが入る
+- `ai/flow`: モデルの間のデータの渡し方 (下)
+- `ai/cli`: アプリのコマンドラインに足すサブコマンド。中身はコマンドラインのライブラリに依存しない関数 (`cli.List`、`cli.Download`、`cli.Prepare`、`cli.Status`、引数を渡す `cli.Run`) で、kong 用のアダプタは `ai/cli/konghelper`。`models` (一覧)、`models download` (ダウンロードと変換、NPU は要らない)、`models prepare` (さらに 1 回読み込んでコンパイル)、`status` (`hwnpu status` と同じ。中身を `cmd/hwnpu/status.go` から `internal/npustatus` に移して両方が呼ぶ)
+- 準備は、コマンドが初回にするのと同じ関数を同じ設定で呼ぶ (`transcribe.Prepare` / `PrepareAMD`、`speech.Prepare` / `PrepareAMD`、`chat.Prepare` / `AMDExport`)。置き場もコマンドと同じなので、互いに準備したものを使える。前のブランチから足したもの: `chat.LookupOn`、`chat.Engine.OnNPU`、`modelstore.Options.Files` (アプリの定義のファイル)
+
+**モデルの間のつなぎ方** (app-api.md 4 節): 次の段をいつ始められるかで 3 つ。どれも `flow.Stream[T]` (`iter.Seq2[Chunk[T], error]`) の上。
+
+- 前が全部終わってから: 一括の呼び出し、`Last`、`Of`。大きなモデルは `Use.Release` で下ろしてから次を読む
+- できたものから: `Async` (段を重ねる、塊は落とさない)、`Latest` (読む側が遅いとき古い塊を捨てる。カメラのフレーム)、`Hold` (最新を持っておく)、`Tee`
+- 拍に合わせて: `Metronome` (拍ごとの tick を `Lead` だけ前に。遅れは `Late`、`Skip` で過ぎた拍を捨てる)、`Pace` (塊をその時刻に渡す)、`Live` (録音をマイクのように流す)
+- 時刻に関わる道具のテストは `testing/synctest` の偽の時計で、待たずに決定的に回す
+
+**機械のメモリごとのモデルの構成** (app-api.md 2.1 節): 用途の名前は、1 つだけ動かすときの一番大きなモデルを選ぶ (`translate` は 16 GB から 8B)。同時に動かすアプリでは補助のモデルを小さくしたいので、登録のときに `use.At(gb, name)` (そのメモリ以上の機械では別の名前) と `use.As(gb)` (その機械として選ぶ) を書けるようにした。`samples/interpreter` は翻訳を 16 GB から 2B、32 GB から 8B にしている。
+
+- 実行時も同じ決まりで引き、置き場の記録が別のモデル (や別のメモリ向けのプログラム) なら `ErrNotPrepared`。最初は目録にあるものをそのまま読んでいて、`HWNPU_MEMORY=16` にしても前に準備した 8B が黙って動いた (実機で見つけた)
+
+**AMD の `CREATE_HWCTX` の `EINVAL`**: 3 つのモデルを 1 プロセスに読み込むと、2 つ目か 3 つ目で `CREATE_HWCTX: invalid argument` になった。カーネルのログは `aie2_send_host_buf_msgs: fw ctx 13 addr 0x7f4247ad5000 size 0x4000000`、`command opcode 0x106 failed, status 0x4000003` で、amd-xdna2-bench.md の「約 125 回に 1 回」と 16.254 の「デバイスヒープの断り」(どちらも原因不明だった) と同じ断り方。
+
+- **切り分け**: 1 プロセスでデバイスを 4 回開き、それぞれに Whisper の書き出しを読み込む道具で、デバイスヒープ (64 MiB、`/proc/self/maps` の `/dev/accel/accel0`) の番地を見た。3 回の実行の 12 回の読み込みのうち、通った 5 回はどれもヒープの番地が 64 MiB の倍数 (下位 26 ビットが 0)、落ちた 7 回はどれも倍数でなかった (下位が 0x3ad5000 か 0x17aa000)。新しいプロセスの 1 つ目のデバイスはいつも倍数の番地だった
+- **原因**: ファームウェアはデバイスヒープを、その大きさの倍数の番地でしか受け取らない (`MAP_HOST_BUFFER` が状態 0x4000003、不正な引数)。カーネルは `mmap` に番地を任せると、番地の空間が空いている間は倍数の番地を返すが、2 つ目のデバイスや、大きな写像のあとでは返さないことがある
+- **直し**: `internal/xdna` に `MmapAligned` を足した (大きさと境界の分だけ番地を予約し、その中の境界の番地に `MAP_FIXED` で写し、残りを返す)。`internal/backend/amd` の `Open` は、ヒープをこれで 64 MiB の倍数の番地に写す
+- **直したあと**: 同じ道具で 3 回の実行の 12 回とも通り、ヒープの番地は全部倍数。`samples/interpreter` も 4 回続けて通った
+- 16.254 が見た形 (4 GB の表を写したあとで文のモデルを読む) と、プロセスを続けて起こす形 (125 回に 1 回) をそれぞれ再現して確かめてはいない。同じ断り方なので同じ原因と見ている。16.254 の読み込みの順 (書き出しを先に) はそのまま残した
+
+**サンプルの入力は hwcamera、サンプルは別のモジュール**: `samples/` に `go.mod` を置き (`replace github.com/shibukawa/hwnpu => ../`)、マイク (とカメラ) は [hwcamera](https://github.com/shibukawa/hwcamera) から取る。ライブラリ本体の `go.mod` は変えない。`samples/capture.Mic` が hwcamera の `audio` を `flow.Stream[[]float32]` に直し、`interpreter --mic` がそれを使う (録音のファイルも同じ流れになる)。
+
+- **生の入力はためる**: 流れは読む側が引く形なので、文字起こしと翻訳が動いている間は誰もマイクを読まず、hwcamera が持つ約 1 秒ぶんより古い音は失われる。最初の形 (そのままつなぐ) では、2 つ目の発話の頭 (「明日の会議は」) が欠け、3 つ目の文が消えた。`capture.Mic` が別の goroutine で読んでためる (`flow.Async`、1 分ぶん) ようにして 3 文とも通った。`flow.Live` (録音をマイクの速さで流す) は遅れても待つだけなので、録音ではこの違いが出ない
+- マイクを止める ctx と後ろの段の ctx を分ける: 1 度目の Ctrl-C (か `--seconds`) でマイクが止まり、聞いたぶんは最後まで訳して書く
+
+**ネットワークの宣言** (developer-guide.ja.md 6.6 節、D21): つなぎ方をコードの中の関数の重ね方でなく、構造として書けるようにした。`flow.Source` → 節 → `flow.Sink` を `a.To(b, 渡し方)` でつなぎ (`To` は続きを書ける場所を返すので `app.From(mic).To(vad).To(hear)...` と続けて書ける)、`app.From(source)` でアプリに渡す。要求ごとに 1 回動かす構成は `ai.NewCall[In, Out](app, name).Then(node).Then(node)` と `Do(ctx, rt, in)` (値を 1 つ受け取り、節を順に通し、値を 1 つ返す。中身は、その回だけの入力と出力を持つネットワーク)。
+
+- 節: モデルの節 (`speech.TranscribeNode`、`speech.SpeakNode`、`text.TranslateNode`。`ai.ModelNode` が設定を持ち、動いている間も `Update` で変えられる)、プログラムの節 (`flow.Each`: 塊ごとのコールバックが `emit` したぶんだけ後ろに流す。`flow.Tap`、`flow.Func`)、`speech.VADNode`
+- 入力と出力の型が節の型引数にある。節の `To` は合わないつなぎ方をコンパイルで止め、続けて書いた 2 つ目からの `To` と `Then` は組み立てのときに確かめて panic する (Go のメソッドは型引数を持てず、続きに型を運べない)。1 つの出力はいくつもの節につなげる (読み手ごとの待ち行列を持つ配り手。遅い読み手がほかを待たせない)
+- 後ろをいつ動かすかはプログラムの節が決める: `flow.Each` の関数が `emit` を呼んだぶんだけ流れる。ためたものを抱えたまま待ち続けないための `flow.WhenIdle(wait, fn)` (最後の塊から wait のあいだ何も来なければ呼ぶ) と、終わりの `flow.AtEnd(fn)`。「前が全部終わってから」を辺の種類にはしない
+- 振り分けと合流: `flow.Route` (`emit(i, c)` で i 番目の出力にだけ流す)、入力が 2 つの節 `flow.Both` (両方から 1 つずつ待つ)、`flow.With` (1 つ目の拍で動き、2 つ目の最新を持っていく)、`flow.Join2` (2 本の流れを受ける関数)。入力が 2 つの節は、両方につながないと `Run` がエラーを返す
+- 辺の渡し方: なし (読むときに)、`flow.Keep(n)` (`Async`)、`flow.Newest()` (`Latest`)。節の中身と辺は今の流れの関数でできていて、ネットワークはそれを組み立てて走らせる層
+- アプリのモデルはネットワークの節から引く (`ai.NewApp` に並べなくても `Plan` と `APP models` が見つける)。`app.Run` はモデルを全部読み込んでから入力を読み始める
+- 節が `flow.Stop` を返すと、そこで終わる: 流れは読む側が引く形なので、前の節は次の `yield` で止まり (マイクは閉じる)、後ろの節は受け取ったぶんを処理して終わる
+- `samples/interpreter` をこの形に書き直し、音声のコマンドの節を足した。実機 (録音): 1 つ目の発話は英語に、「変換スペイン語」のあとの 2 つはスペイン語に (「La reunión de mañana comenzará a las 3 p. m.」「No olvide los materiales.」)、「終わり」で 27 秒の録音の 19.7 秒まで読んで止まり、残りを読み上げて終了。コマンドの発話は訳されない。`--no-commands` では全部を英語に訳す (「Convert to Spanish」「End」も)
+- 呼び出しの実機: `interpreter say 今日は良い天気ですね。散歩に行きましょう。` が「It's a nice day today, isn't it? Let's go for a walk.」の音声に、`say Good morning --to es` が「Buenos días.」に (どちらも出力を Whisper に戻して確かめた)
+- まだないもの: 入力が 3 つ以上の節、モデルを下ろすタイミングをライブラリに任せること、辺ごとの計測
+
+**NPU は 1 つの待ち行列** (developer-guide.ja.md 9 節に制約としてまとめた): 3 つのモデルを 1 プロセスに読み込み、単独と同時で測った。
+
+| | 単独 | 同時 |
+|---|---|---|
+| 文字起こし (13.3 秒の音声) | 1.38 秒 | 読み上げと同時で 3.12 秒 |
+| 翻訳 (8B、3 文) | 3.34 秒 | 読み上げと同時で 3.79 秒 |
+| 読み上げ (3.9 秒ぶん) | 10.1 秒 | 文字起こしと同時で 11.4 秒、翻訳と同時で 13.4 秒 |
+| 文字起こし + 翻訳 | 和 4.72 秒 | 4.67 秒 |
+| 3 つ同時 | 和 14.8 秒 | 14.7 秒 |
+| 文字起こしのモデル 1 つに 2 本 | 1.39 秒 | 2.78 秒 |
+
+- 同時に呼べて、呼び出しは細かく入れ替わる (文字起こしは読み上げの途中で終わる) が、合計は和と同じ。速くはならない
+- 実時間で回り続けるかは、各段の NPU の時間の合計が実時間を下回るかで決まる。読み上げは音声 1 秒に 2.6 秒かかるので、訳した音声まで出す構成は話し続ける相手に追いつかない (4 秒の発話に 13.6 秒)。字幕だけなら 2B で 2.1 秒、8B で 3.7 秒
+- 遅れ (録音をマイクの速さで、発話の終わりから): 1 つ目の発話で文字 +1.6 秒 (無音の待ち 0.6 秒と文字起こし約 1 秒)、訳 +4.3 秒 (2B は +2.7 秒)、訳した音声 +20 秒 (2B は +14 秒)。3 つ目の発話は文字 +5.4〜5.7 秒、訳 +8.7 秒 (+7.9 秒)、音声 +24 秒 (+19 秒)。`interpreter --live` と `--mic` が段ごとに `+N.Ns` を出す
+- `Plan.UsableGB` と `Plan.Fits`: モデルに使えるメモリの目安 (MODEL.md の 2 行目: 8 GB で約 3、16 で 9、24 で 15、32 で 22、48 で 35、64 で 50 GB) と、同時に読み込む合計を比べる。`APP models` が出す。16 GB では用途そのままの翻訳 (8B) を含む 3 つが収まらず、2B にすると収まる
+
+**確かめたこと** (Ryzen AI 9 365、XDNA 2。ほかのセッションが CPU で IRON の書き出しをしている間)
+
+- `interpreter --mic`: この機械にマイクがないので、PipeWire に仮の出力を作り、録音をそこへ再生して、そのモニターを入力として読んだ。34 秒聞いて 3 文とも書き起こして訳し、出力の音声を Whisper に戻すと訳文と同じ。実物のマイクでは確かめていない
+- `samples/interpreter`: 13.3 秒の日本語の音声 (2 発話、3 文) を、whisper-large-v3-turbo、plamo-3-translate-8b、LFM3-Audio-2B-TTS の 3 つを 1 プロセスに同居させて、英語の音声 8.5 秒に。読み込み 0.5、5.1、2.6 秒、全体 31.6 秒 (読み上げが実時間の約 0.4 倍で、ここが遅れを決める)。書き起こしと訳は正しく、出力を `hwnpu-audio transcribe` に戻すと訳文と一字一句同じ。`--live` (マイクの速さで流す) でも同じ文
+- `HWNPU_MEMORY=16` で翻訳が plamo-3-translate-2b に (3 つで 7.8 GB、全体 25.5 秒)
+- `interpreter models` / `models download` / `models prepare` / `status`。準備済みなら download は 0.2 秒で終わる (手元の書き出しを見つけるだけ)
+- `go test -race ./ai/... ./internal/xdna/... ./internal/backend/amd/... ./cmd/hwnpu/ ./internal/npustatus/`
+
+**確かめていないこと・残り**
+
+- 実物のマイク、Mac と Windows での hwcamera の音声入力 (hwcamera 自身がまだ実機で確かめていない)、カメラ (この機械にない。`samples/capture` にカメラの口はまだ書いていない)
+- Mac (Core AI) と Intel で `ai` を通した実機の動作。準備と読み込みはコマンドと同じ関数を呼ぶが、動かしてはいない
+- `text.Chat` の実機
+- コマンドの載せ替え (B3)、`ai/vision` と `ai/imagegen` (J1、J2)、擬似立体のサンプル (J4)、常駐の管理 (B8)。画像のコマンドの準備の手順 (`amdExport`、`openImageDevice`) はまだ `cmd/hwnpu-image` の中にある

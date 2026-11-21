@@ -128,6 +128,13 @@ func AMDExport(ctx context.Context, use, backend string, log io.Writer) (string,
 			return "", errNoModel(name)
 		}
 	}
+	return AMDExportOf(ctx, m, log)
+}
+
+// AMDExportOf is AMDExport for a model already resolved (for the memory it runs as, Model.On:
+// the ai package's uses pick it their own way): its export here, else in the sources, else made
+// by PrepareAMD.
+func AMDExportOf(ctx context.Context, m Model, log io.Writer) (string, error) {
 	if d := FindAMDExport(m); d != "" {
 		ShareMadeByHand(m, d, log) // one made by hand here goes in the sources written back to
 		return d, nil
