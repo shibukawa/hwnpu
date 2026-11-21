@@ -135,7 +135,7 @@ audio := speaker.SpeakStream(ctx, flow.Async(ctx, en, 4), speech.SpeakOptions{})
 for c, err := range audio { ... } // c.Data: audio at 24 kHz
 ```
 
-The joins can also be written as a structure (a network): nodes of models and nodes of the program joined with `Connect` and given to the app, which loads the models and runs it. See section 6.6 of [docs/developer-guide.md](docs/developer-guide.md).
+The joins can also be written as a structure (a network): nodes of models and nodes of the program joined with `To` and given to the app, which loads the models and runs it. What runs once for a request is written with `ai.NewCall(...).Then(...)` and `Do`. See sections 6.6 and 6.7 of [docs/developer-guide.md](docs/developer-guide.md).
 
 ```go
 mic := flow.Source[[]float32]("mic").From(stream)
@@ -145,8 +145,7 @@ log := flow.Tap("heard", func(c flow.Chunk[flow.Text]) { fmt.Println(c.Data.Text
 out := flow.Sink[flow.Text]("out").Do(show)
 
 app := ai.NewApp("subtitles") // its models are taken from the network
-app.Connect(mic)
-mic.Connect(speech.VADNode(speech.VADOptions{})) // ...then vad.Connect(hear), hear.Connect(log), log.Connect(trans), trans.Connect(out)
+app.From(mic).To(speech.VADNode(speech.VADOptions{})).To(hear).To(log).To(trans).To(out)
 err := app.Run(ctx)
 ```
 

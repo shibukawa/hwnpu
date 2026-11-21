@@ -12,7 +12,7 @@ import (
 // runtimeKey is the context key of the Runtime a network runs on.
 type runtimeKey struct{}
 
-// Node makes a node of a network (flow) of a use: fn runs the use's model over the node's
+// Node makes a node of a network or a call (flow) of a use: fn runs the use's model over the node's
 // input. The model is the Runtime's (Use.Get), loaded before the network starts. The packages
 // of models make their nodes with it (speech.TranscribeNode, text.TranslateNode); an app makes
 // its own for a model it uses another way.
@@ -21,7 +21,7 @@ func Node[T io.Closer, A, B any](u Use[T], fn func(ctx context.Context, model T,
 		return func(yield func(flow.Chunk[B], error) bool) {
 			rt, ok := ctx.Value(runtimeKey{}).(*Runtime)
 			if !ok {
-				yield(flow.Chunk[B]{}, errors.New("ai: the node of a model runs in App.Run or Runtime.Run, which give it its model"))
+				yield(flow.Chunk[B]{}, errors.New("ai: the node of a model runs in App.Run, Runtime.Run or a Call's Do, which give it its model"))
 				return
 			}
 			m, err := u.Get(ctx, rt)
@@ -36,31 +36,37 @@ func Node[T io.Closer, A, B any](u Use[T], fn func(ctx context.Context, model T,
 	return n
 }
 
-// Connect gives the app its network: the sources it starts at (flow.Source), with the nodes
-// joined after them (Connect of each node). The models of the network's nodes are the app's
-// models, as if they were given to NewApp: Plan and the commands of aicli see them. The joins
-// may be made before or after this call.
+// From gives the app a source of its network (flow.Source) and returns the place to go on
+// from it, so that the network is written in a row:
 //
 //	app := ai.NewApp("interpreter")
-//	app.Connect(mic)
-//	mic.Connect(vad)
-//	vad.Connect(hear)   // a node of a model: speech.TranscribeNode(stt)
-//	hear.Connect(trans)
+//	app.From(mic).To(vad).To(hear).To(trans).To(speak, flow.Keep(4)).To(out)
 //	...
 //	err := app.Run(ctx)
-func (a *App) Connect(sources ...flow.Root) *App {
-	a.roots = append(a.roots, sources...)
-	return a
+//
+// The models of the network's nodes (speech.TranscribeNode(stt), ...) are the app's models, as
+// if they were given to NewApp: Plan and the commands of aicli see them. Nodes may be joined
+// after the source too (hear.To(captions)), any time before the run.
+func (a *App) From(source flow.Root) *flow.Link {
+	a.roots = append(a.roots, source)
+	return flow.Chain(source)
 }
 
-// Network describes the app's network (Connect), a node before the nodes its output goes to.
-func (a *App) Network() []flow.NodeInfo { return flow.Walk(a.roots...) }
+// Network describes the app's network (From) and then its calls (NewCall), a node before the
+// nodes its output goes to.
+func (a *App) Network() []flow.NodeInfo {
+	out := flow.Walk(a.roots...)
+	for _, c := range a.calls {
+		out = append(out, c.Nodes()...)
+	}
+	return out
+}
 
-// requirements are the app's models: those registered (NewApp, Use) and those of its network's
-// nodes, each once.
+// requirements are the app's models: those registered (NewApp, Use) and those of the nodes of
+// its network and its calls, each once.
 func (a *App) requirements() []requirement {
 	out := append([]requirement(nil), a.reqs...)
-	for _, n := range flow.Walk(a.roots...) {
+	for _, n := range a.Network() {
 		u, ok := n.Meta.(Requirement)
 		if !ok {
 			continue
@@ -77,7 +83,48 @@ func (a *App) requirements() []requirement {
 	return out
 }
 
-// Run opens the app's models and runs its network (Connect) to its end: Open, Runtime.Run and
+// Call is nodes run once for each request on an app's models (flow.Call): one value in, the
+// nodes one after another over it, one value out. It is how an app that answers requests is
+// put together (a server, a batch job), as From and To put together one that keeps running on
+// what its sources give.
+//
+//	say := ai.NewCall[flow.Text, []float32](app, "say").Then(translate).Then(speak)
+//	...
+//	pcm, err := say.Do(ctx, rt, flow.Text{Text: "こんにちは"})
+//
+// The models of the call's nodes are the app's models. A model in a call and in the network,
+// or in two calls, has a node in each (text.TranslateNode(tr, ...) twice): it is one model,
+// loaded once.
+type Call[In, Out any] struct{ c *flow.Call[In, Out] }
+
+// NewCall is a call of app a named name that takes an In and gives an Out, to be given its
+// nodes with Then.
+func NewCall[In, Out any](a *App, name string) *Call[In, Out] {
+	c := &Call[In, Out]{flow.NewCall[In, Out](name)}
+	a.calls = append(a.calls, c.c)
+	return c
+}
+
+// Then adds the node that runs next: on the request for the first, on the output of the node
+// before for the others. It panics when next does not take what comes before it.
+func (c *Call[In, Out]) Then(next flow.Element, p ...flow.Policy) *Call[In, Out] {
+	c.c.Then(next, p...)
+	return c
+}
+
+// Do runs the call's nodes over in on rt and returns what comes out (the last chunk's data).
+// The models of its nodes are loaded at their first use, as Use.Get loads them. Calls may be
+// made at the same time; a model runs one of them at a time.
+func (c *Call[In, Out]) Do(ctx context.Context, rt *Runtime, in In) (Out, error) {
+	return c.c.Do(context.WithValue(ctx, runtimeKey{}, rt), in)
+}
+
+// All is Do that returns everything that comes out, in order.
+func (c *Call[In, Out]) All(ctx context.Context, rt *Runtime, in In) ([]Out, error) {
+	return c.c.All(context.WithValue(ctx, runtimeKey{}, rt), in)
+}
+
+// Run opens the app's models and runs its network (From) to its end: Open, Runtime.Run and
 // Close in one call.
 func (a *App) Run(ctx context.Context, opts ...Option) error {
 	rt, err := a.Open(ctx, opts...)
@@ -88,13 +135,13 @@ func (a *App) Run(ctx context.Context, opts ...Option) error {
 	return rt.Run(ctx)
 }
 
-// Run runs the app's network (App.Connect) on the Runtime: it loads the models of the
+// Run runs the app's network (App.From) on the Runtime: it loads the models of the
 // network's nodes first, one after another, so that no source is read before they are ready,
 // then runs the network until its sources have ended and every chunk has gone through, a node
 // fails (the error names it: *flow.NodeError), or ctx is cancelled.
 func (rt *Runtime) Run(ctx context.Context) error {
 	if len(rt.app.roots) == 0 {
-		return errors.New("ai: the app has no network (App.Connect gives it its sources)")
+		return errors.New("ai: the app has no network (App.From gives it its sources)")
 	}
 	for _, n := range flow.Walk(rt.app.roots...) {
 		if u, ok := n.Meta.(Requirement); ok {

@@ -137,6 +137,7 @@ type App struct {
 
 	reqs   []requirement
 	roots  []flow.Root
+	calls  []interface{ Nodes() []flow.NodeInfo }
 	memory int
 }
 

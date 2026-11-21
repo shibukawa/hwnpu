@@ -35,17 +35,15 @@
 //		draw(mesh, pos.Data, tick.Data.At)
 //	}
 //
-// The joins can be written as a structure too, a network: sources, nodes and sinks joined with
-// Connect, each edge saying how it passes chunks on (Keep, Newest), run by Run. A node is a
-// function over streams (Func), a callback that sees each chunk and emits what goes on (Each,
-// Tap), or a model's (the packages of models make them). What runs the network then knows its
-// models and how they are joined.
+// The joins can be written as a structure too. A network keeps running on what its sources
+// give: sources, nodes and sinks joined with To, each edge saying how it passes chunks on
+// (Keep, Newest), run by Run. A Call runs its nodes once for a request: one value in, one out.
+// A node is a model's (the packages of models make them), or the program's: a callback that
+// sees each chunk and emits what goes on, when it decides to (Each, Tap), one that picks the
+// output each chunk goes to (Route), one of two inputs (Both, With, Join2), or a function over
+// streams (Func). What runs the network then knows its models and how they are joined.
 //
-//	mic.Connect(vad)
-//	vad.Connect(hear)
-//	hear.Connect(log)                 // flow.Tap: a node of the program
-//	log.Connect(speak, flow.Keep(4))
-//	speak.Connect(out)
+//	mic.To(vad).To(hear).To(log).To(speak, flow.Keep(4)).To(out) // log: flow.Tap, a node of the program
 //	err := flow.Run(ctx, mic)
 //
 // Times are the stream's own: a chunk's Start and Len count from the start of its stream, in

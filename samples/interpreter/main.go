@@ -16,12 +16,17 @@
 // hwcamera (github.com/shibukawa/hwcamera, its audio package); a recording is the same kind of
 // source.
 //
+// Beside the network, which keeps running on what its source gives, the app has a call, which
+// runs once for a request (interpreter say): a text → translate → speech. The two share the
+// models, each with nodes of its own.
+//
 //	interpreter models                       # the models and the network, and what they take
 //	interpreter models prepare               # download, convert and compile the models ahead
 //	interpreter --mic -o english.wav         # from the microphone, until Ctrl-C or "終わり"
 //	interpreter --mic --device ID            # from another input (interpreter mics lists them)
 //	interpreter talk.wav -o english.wav      # Japanese speech to English speech (or the reverse)
 //	interpreter talk.wav --to ja --live      # paced as a microphone would give it
+//	interpreter say こんにちは -o hello.wav   # a text, translated and spoken: one call
 //	interpreter status                       # this machine's NPU
 package main
 
@@ -65,6 +70,11 @@ type network struct {
 	say   *ai.ModelNode[flow.Text, []float32, speech.SpeakOptions]
 	out   *flow.Snk[[]float32]
 
+	// the call of "say": a text, translated and spoken, with nodes of its own on the same models
+	sayTrans *ai.ModelNode[flow.Text, flow.Text, text.TranslateOptions]
+	sayVoice *ai.ModelNode[flow.Text, []float32, speech.SpeakOptions]
+	sayCall  *ai.Call[flow.Text, []float32]
+
 	// of a run
 	start    time.Time
 	live     bool // the input comes in real time: the delays are shown
@@ -95,16 +105,13 @@ func build() (*ai.App, *network) {
 	n.out.Do(n.spoken)
 
 	app := ai.NewApp("interpreter")
-	app.Connect(n.mic)
-	n.mic.Connect(vad)
-	vad.Connect(n.hear)
-	n.hear.Connect(heard)
-	heard.Connect(commands)
-	commands.Connect(n.trans)
-	n.trans.Connect(said)
-	// the speaker runs behind the other two by up to 4 utterances: they go on while it speaks
-	said.Connect(n.say, flow.Keep(4))
-	n.say.Connect(n.out)
+	// the network; the speaker runs behind the others by up to 4 utterances, which go on while it
+	// speaks
+	app.From(n.mic).To(vad).To(n.hear).To(heard).To(commands).To(n.trans).To(said).To(n.say, flow.Keep(4)).To(n.out)
+	// the call
+	n.sayTrans = text.TranslateNode(translate, text.TranslateOptions{})
+	n.sayVoice = speech.SpeakNode(speak, speech.SpeakOptions{})
+	n.sayCall = ai.NewCall[flow.Text, []float32](app, "say").Then(n.sayTrans).Then(n.sayVoice)
 	return app, n
 }
 
@@ -177,6 +184,7 @@ func (n *network) command(c flow.Chunk[flow.Text], emit func(flow.Chunk[flow.Tex
 
 var cli struct {
 	Run    RunCmd       `cmd:"" default:"withargs" help:"Interpret speech, from the microphone or a recording, into another language, as speech."`
+	Say    SayCmd       `cmd:"" help:"Translate a text and speak it: one call of the translator and the speaker."`
 	Mics   MicsCmd      `cmd:"" help:"The audio inputs --device takes."`
 	Models aicli.Models `cmd:"" help:"The models interpreter uses and its network: what they take, download them, compile them for this machine's NPU."`
 	Status aicli.Status `cmd:"" help:"This machine's NPU: the device, how busy it is and what uses it."`
@@ -216,6 +224,52 @@ func (MicsCmd) Run(ctx context.Context) error {
 		}
 		fmt.Printf("%s\t%s%s\n", in.ID, in.Name, note)
 	}
+	return nil
+}
+
+// SayCmd is interpreter say TEXT: the app's call, once.
+type SayCmd struct {
+	Text    []string `arg:"" name:"TEXT" help:"The text (the words are joined with spaces)."`
+	Out     string   `short:"o" default:"out.wav" type:"path" placeholder:"FILE" help:"The WAV file of the speech."`
+	To      string   `placeholder:"LANG" help:"The language to translate into (en, ja, es, ...); none: English for Japanese text, Japanese for any other."`
+	Voice   string   `enum:"female,male" default:"female" help:"The voice."`
+	Prepare bool     `help:"Download, convert and compile the models that are not ready instead of failing."`
+}
+
+func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
+	var opts []ai.Option
+	if c.Prepare {
+		opts = append(opts, ai.WithAutoPrepare(nil))
+	}
+	rt, err := app.Open(ctx, opts...)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	n.sayTrans.Update(func(o *text.TranslateOptions) { o.To = c.To })
+	n.sayVoice.Update(func(o *speech.SpeakOptions) { o.Voice = c.Voice })
+	start := time.Now()
+	pcm, err := n.sayCall.Do(ctx, rt, flow.Text{Text: strings.Join(c.Text, " ")})
+	if err != nil {
+		return hint(err)
+	}
+	tts, err := speak.Get(ctx, rt) // loaded by the call: for its rate
+	if err != nil {
+		return err
+	}
+	f, err := os.Create(c.Out)
+	if err != nil {
+		return err
+	}
+	if err := speech.WriteWAV(f, pcm, tts.Rate()); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "%.1f s of speech in %.1f s (the models' loading included): %s\n",
+		flow.Samples(len(pcm), tts.Rate()).Seconds(), time.Since(start).Seconds(), c.Out)
 	return nil
 }
 

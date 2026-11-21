@@ -104,7 +104,7 @@ func (t *Translator) TranslateStream(ctx context.Context, s flow.Stream[flow.Tex
 	return t.translateStream(ctx, s, func() TranslateOptions { return o })
 }
 
-// TranslateNode is the node of a translator in a network (flow, ai.App.Connect): texts in,
+// TranslateNode is the node of a translator in a network or a call (flow, ai.App.From, ai.NewCall): texts in,
 // their translations out, as TranslateStream gives them. Its settings may be changed while the
 // network runs (Update): the next text is translated with them, and a change of the language
 // to translate into starts the history of earlier pairs anew.

@@ -151,7 +151,7 @@ for tick := range (flow.Metronome{Period: time.Second / 60, Skip: true}).Ticks(c
 }
 ```
 
-**ネットワークの宣言** (`flow` の節と `Connect`、`App.Connect`、`App.Run`): 上の関数でのつなぎ方を、構造として書く層。入力 (`flow.Source`)、モデルの節 (`speech.TranscribeNode` など。設定を持ち、動いている間も `Update` で変えられる)、プログラムの節 (`flow.Each`: 塊ごとのコールバックが `emit` したぶんだけ流す。`flow.Tap`: 見るだけ。`flow.Func`: 流れごと)、出力 (`flow.Sink`) を `a.Connect(b, 渡し方)` でつなぐ。型が合わないつなぎ方はコンパイルできない。1 つの出力はいくつもの節につなげる。アプリのモデルはネットワークから引かれ、`app.Run` が全部読み込んでから入力を読み始める。節が `flow.Stop` を返すと、前の節が止まり、後ろは残りを片付けて終わる。使い方は developer-guide.ja.md の 6.6 節、決めたことと残りは同 D21
+**ネットワークと呼び出しの宣言** (`flow` の節、`App.From(...).To(...)`、`App.Run`、`ai.NewCall(...).Then(...)`): 上の関数でのつなぎ方を、構造として書く層。動き続ける構成がネットワーク、要求ごとに 1 回動かす構成が呼び出し (`Call`: 値を 1 つ受け取り、節を順に通して、値を 1 つ返す)。入力 (`flow.Source`)、モデルの節 (`speech.TranscribeNode` など。設定を持ち、動いている間も `Update` で変えられる)、プログラムの節 (`flow.Each`: 塊ごとのコールバックが `emit` したぶんだけ流す。`flow.Tap`: 見るだけ。`flow.Func`: 流れごと)、出力 (`flow.Sink`) を `a.To(b, 渡し方)` でつなぐ (`To` は続きを書ける場所を返す)。型が合わないつなぎ方は、コンパイルか組み立てのときに止まる。1 つの出力はいくつもの節につなげる。後ろをいつ動かすかはプログラムの節が決める (`emit` を呼ぶかどうか。`flow.WhenIdle` で待ち続けない)。振り分け (`flow.Route`) と合流 (`flow.Both`、`flow.With`、`flow.Join2`) もプログラムの節。アプリのモデルはネットワークから引かれ、`app.Run` が全部読み込んでから入力を読み始める。節が `flow.Stop` を返すと、前の節が止まり、後ろは残りを片付けて終わる。使い方は developer-guide.ja.md の 6.6 節と 6.7 節、決めたことと残りは同 D21
 
 - **どの機能も 2 つの形を持つ**: 一括 (値を 1 つ渡して 1 つ受け取る) と流れ (`...Stream`)。一括は塊が 1 つの流れと同じ
 - **塊の大きさは受け取る側が決め直す**: NPU のプログラムは形が固定なので、入る側の塊の大きさは自由にし、段が自分に合う大きさに組み直す (`flow.Rechunk`)
@@ -347,7 +347,7 @@ A2A と MCP のどちらも、同じ仕事の置き場と待ち行列の上の�
 
 ### 9.1 同時通訳 (`samples/interpreter`、動く)
 
-マイクか録音 (WAV) の音声を、VAD → Whisper → PLaMo 3 Translate (前の発話を文脈にする) → LFM3-Audio の読み上げとつなぎ、訳した音声の WAV を書く。ネットワークとして宣言している: `mic → vad → transcribe → heard → commands → translate → said → speech (keep 4) → out`。`commands` はプログラムの節で、音声のコマンドを聞く: 「変換、スペイン語」で訳す先を変え、「終わり」で終える (どちらも訳さない)。
+マイクか録音 (WAV) の音声を、VAD → Whisper → PLaMo 3 Translate (前の発話を文脈にする) → LFM3-Audio の読み上げとつなぎ、訳した音声の WAV を書く。ネットワークとして宣言している: `mic → vad → transcribe → heard → commands → translate → said → speech (keep 4) → out`。`interpreter say TEXT` は呼び出し (`say → translate → speech`) で、要求 1 つにつき 1 回動く。`commands` はプログラムの節で、音声のコマンドを聞く: 「変換、スペイン語」で訳す先を変え、「終わり」で終える (どちらも訳さない)。
 
 ```
 interpreter models                    # 使うモデルと、要るもの
@@ -377,8 +377,10 @@ interpreter status
 | `ai/plan.go` | `Plan` (`Items`、`Ready`、`Compiled`、`DownloadBytes`、`MemoryGB`、`MachineGB`、`Licenses`、`Run`)、`Progress`、`LicenseError`、`App.Prepare` |
 | `ai/store.go` | `Store` (`Models`: `modelstore.Options`、`Prepared`)、置き場の目録 `store.json`、`ErrNotPrepared`、`ErrBundleTarget` |
 | `ai/runtime.go` | `App.Open`、`Runtime` (`Loaded`、`Close`)、`WithLog`、`WithAutoPrepare`、`WithAcceptedLicenses` |
-| `ai/network.go` | `App.Connect`、`App.Run`、`Runtime.Run`、`App.Network`、`Node`、`ModelNode` (`Update`) |
-| `ai/flow/graph.go` | ネットワーク: `Source`、`Func`、`Each`、`Tap`、`Sink`、`Connect`、`Keep`、`Newest`、`Stop`、`Run`、`Walk`、`NodeError` |
+| `ai/network.go` | `App.From`、`App.Run`、`Runtime.Run`、`App.Network`、`Node`、`ModelNode` (`Update`)、`Call` (`NewCall`、`Then`、`Do`、`All`) |
+| `ai/flow/graph.go` | ネットワーク: `Source`、`Func`、`Each` (`AtEnd`、`WhenIdle`)、`Tap`、`Route`、`Sink`、`To` (`Link`、`Chain`)、`Keep`、`Newest`、`Stop`、`Run`、`Walk`、`NodeError` |
+| `ai/flow/join.go` | 入力が 2 つの節: `Join2`、`Both`、`With` |
+| `ai/flow/call.go` | 要求ごとに 1 回: `Call` (`NewCall`、`Then`、`Do`、`All`) |
 | `ai/flow` | 4 節の道具と、`Collect`、`Finals`、`Map`、`From`、`Sentences` |
 | `ai/speech` | `Transcribe`、`Speak`、`NewVAD` (音量の VAD: 雑音の床から 12 dB、終わりの待ち 600 ms)、`ReadWAV`、`WriteWAV`、`Chunks` |
 | `ai/text` | `Translate` (前の 4 組を履歴に)、`Chat` (`Complete`、`CompleteStream`) |

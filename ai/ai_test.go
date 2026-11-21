@@ -600,11 +600,7 @@ func TestNetwork(t *testing.T) {
 		return nil
 	})
 	app := NewApp("net").Memory(16).withStore(testStore(t))
-	app.Connect(src) // the joins may come after
-	src.Connect(hear)
-	hear.Connect(commands)
-	commands.Connect(trans)
-	trans.Connect(out)
+	app.From(src).To(hear).To(commands).To(trans).To(out)
 
 	// the models of the nodes are the app's
 	p, err := app.Plan(ctx)
@@ -641,9 +637,40 @@ func TestNetwork(t *testing.T) {
 
 	// a model's node outside a run, and an app without a network
 	lone := flow.Source[string]("lone").From(flow.From("x"))
-	lone.Connect(Node(stt, func(ctx context.Context, m *fakeModel, in flow.Stream[string]) flow.Stream[string] { return in }))
+	lone.To(Node(stt, func(ctx context.Context, m *fakeModel, in flow.Stream[string]) flow.Stream[string] { return in }))
 	if err := flow.Run(ctx, lone); err == nil || !strings.Contains(err.Error(), "App.Run") {
 		t.Errorf("a model's node run without its app: %v", err)
+	}
+
+	// a call: the same models once a request, each with a node of its own
+	answered := NewApp("answers").Memory(16).withStore(app.Store)
+	transOnce := NewModelNode(tr, options{to: "fr"}, func(ctx context.Context, m *fakeModel, in flow.Stream[string], o func() options) flow.Stream[string] {
+		return flow.Map(in, func(c flow.Chunk[string]) (string, error) { return o().to + ":" + c.Data, nil })
+	})
+	count := flow.Each("count", func(c flow.Chunk[string], emit func(flow.Chunk[int])) error {
+		emit(flow.Chunk[int]{Data: len(c.Data)})
+		return nil
+	})
+	call := NewCall[string, int](answered, "length").Then(transOnce).Then(count)
+	if p, err := answered.Plan(ctx); err != nil || len(p.Items) != 1 || p.Items[0].Use != "translate" || !p.Ready() {
+		t.Fatalf("the plan of an app of a call: %v, %+v", err, p)
+	}
+	rt, err := answered.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	before := f.loads
+	for _, in := range []string{"abc", "hello"} {
+		if n, err := call.Do(ctx, rt, in); err != nil || n != len("fr:")+len(in) {
+			t.Errorf("the call on %q = %d, %v", in, n, err)
+		}
+	}
+	if f.loads != before+1 {
+		t.Errorf("the call's model was loaded %d times, want once", f.loads-before)
+	}
+	if all, err := call.All(ctx, rt, "x"); err != nil || !slices.Equal(all, []int{4}) {
+		t.Errorf("All = %v, %v", all, err)
 	}
 	if err := NewApp("none", stt).withStore(testStore(t)).Run(ctx); err == nil || !strings.Contains(err.Error(), "no network") {
 		t.Errorf("an app without a network: %v", err)

@@ -122,7 +122,7 @@ func (s *Speaker) SpeakStream(ctx context.Context, in flow.Stream[flow.Text], o 
 	return s.speakStream(ctx, in, func() SpeakOptions { return o })
 }
 
-// SpeakNode is the node of a speaker in a network (flow, ai.App.Connect): texts in, their
+// SpeakNode is the node of a speaker in a network or a call (flow, ai.App.From, ai.NewCall): texts in, their
 // speech out, as SpeakStream gives it. Its settings may be changed while the network runs
 // (Update): the next text is spoken with them.
 func SpeakNode(u ai.Use[*Speaker], o SpeakOptions) *ai.ModelNode[flow.Text, []float32, SpeakOptions] {

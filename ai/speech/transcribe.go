@@ -159,7 +159,7 @@ func (t *Transcriber) TranscribeStream(ctx context.Context, s flow.Stream[[]floa
 	return t.transcribeStream(ctx, s, func() TranscribeOptions { return o })
 }
 
-// TranscribeNode is the node of a transcriber in a network (flow, ai.App.Connect): utterances
+// TranscribeNode is the node of a transcriber in a network or a call (flow, ai.App.From, ai.NewCall): utterances
 // in (the VAD's node before it), their texts out, as TranscribeStream gives them. Its settings
 // may be changed while the network runs (Update): the next utterance is read with them.
 func TranscribeNode(u ai.Use[*Transcriber], o TranscribeOptions) *ai.ModelNode[[]float32, flow.Text, TranscribeOptions] {
