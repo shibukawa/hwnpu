@@ -31,7 +31,7 @@ go run ./parallax render picture.png -o deep.gif   # no window: the picture from
 | `parallax cameras` | The cameras, numbered: `--device 2` takes the second |
 | `parallax models`, `parallax status` | The models and what they take; this machine's NPU |
 
-While the picture is made deep, the window shows each step: the depth (near warm, far cool), each layer lifted out, its place painted over and drawn in by the picture model, and last the layers put together. The picture stays in the corner, and with the camera on, so does what the camera sees with the face it found (its box, eyes, nose and mouth) and the head's place. The bar at the bottom is the whole making, to 100 %.
+While the picture is made deep, the window shows what each step made, each for a few seconds at least: the depth (near warm, far cool); for each layer, the layer lifted out (it stays while the picture model draws, the panel saying how far) and the picture with what it hid drawn in; and last the layers put together. While a model loads, the picture is shown dim and still. The picture stays in the corner, and with the camera on, so does what the camera sees with the face it found (its box, eyes, nose and mouth) and the head's place. The bar at the bottom is the whole making, to 100 %.
 
 Keys in the window: left/right or the mouse wheel change the head's gain (how far the view turns when you move your head: raise it when the picture seems to move too little), up/down the strength, D shows the depth, Q quits.
 

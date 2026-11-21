@@ -27,12 +27,9 @@ import (
 //go:embed parallax.kage
 var shaderSource []byte
 
-//go:embed drawing.kage
-var drawingSource []byte
-
 // game is the window. While the picture is made deep (o.progress) its main area shows each
-// step: the depth, each layer lifted out, painted over and drawn behind, and last the layers put
-// together; the picture itself and the camera's view are small in the corner, and a bar at the
+// step's result: the depth, then for each layer the layer lifted out and the picture with what
+// it hid drawn in, and last the layers put together; the picture itself and the camera's view are small in the corner, and a bar at the
 // bottom goes to 100 % when it is all done. Then it is the picture drawn by the shader from where
 // the view is, 60 times a second, whatever the tracker's beat is.
 type game struct {
@@ -40,7 +37,7 @@ type game struct {
 	params Params
 	o      windowOptions
 
-	shader, drawing *ebiten.Shader
+	shader *ebiten.Shader
 	// pics and nears are the layers' pictures and nearness, from the farthest
 	pics, nears []*ebiten.Image
 	view        View
@@ -69,9 +66,8 @@ type making struct {
 	live      news          // the newest of the drawing's line and how far it is
 	cur, prev *ebiten.Image // the main area's picture of this step and of the one before
 	curStage  stage
-	since     time.Time     // when this step came
-	mask      *ebiten.Image // where the model draws, softened
-	bar       float64       // the bar as drawn, following the progress
+	since     time.Time // when this step came
+	bar       float64   // the bar as drawn, following the progress
 	checker   *ebiten.Image
 	// the putting together of the layers, once the scene is ready
 	composeAt time.Time
@@ -88,15 +84,11 @@ func runWindow(s *Scene, p Params, o windowOptions) error {
 	if err != nil {
 		return fmt.Errorf("the shader: %w", err)
 	}
-	drawing, err := ebiten.NewShader(drawingSource)
-	if err != nil {
-		return fmt.Errorf("the drawing's shader: %w", err)
-	}
 	face, err := text.NewGoTextFaceSource(bytes.NewReader(goregular.TTF))
 	if err != nil {
 		return err
 	}
-	g := &game{params: p, o: o, shader: shader, drawing: drawing, face: face, white: ebiten.NewImage(1, 1), opened: time.Now()}
+	g := &game{params: p, o: o, shader: shader, face: face, white: ebiten.NewImage(1, 1), opened: time.Now()}
 	g.white.Fill(color.White)
 	w, h := 0, 0
 	if s != nil {
@@ -308,12 +300,6 @@ func (g *game) next() {
 		}
 		b.prev, b.cur = b.cur, ebiten.NewImageFromImage(st.pic)
 	}
-	if st.mask != nil {
-		if b.mask != nil {
-			b.mask.Deallocate()
-		}
-		b.mask = ebiten.NewImageFromImage(maskImage(st.mask, b.w, b.h))
-	}
 	if st.scene != nil {
 		g.take(st.scene)
 		b.composeAt = time.Now()
@@ -408,7 +394,7 @@ func (g *game) drawBuild(dst *ebiten.Image) {
 	dst.Fill(color.RGBA{18, 20, 24, 255})
 	scale, dx, dy := fit(b.w, b.h, 0, 0, sw, sh-panel)
 	t := time.Since(b.since).Seconds()
-	in := ease(t / 0.8) // a new picture fades in over 0.8 s
+	in := ease(t / 0.4) // a new picture fades in over 0.4 s
 	switch {
 	case !b.composeAt.IsZero():
 		g.drawCompose(dst, scale, dx, dy)
@@ -416,44 +402,19 @@ func (g *game) drawBuild(dst *ebiten.Image) {
 		// the picture, dim and still, while the depth model loads and estimates: nothing moves
 		// that does not move with the work
 		drawPic(dst, b.cur, scale, dx, dy, 1, 0.35)
-	case b.curStage == stageCut:
-		// the layer lifted out of the picture: the picture behind it dimmed, the layer a little
-		// larger, with its shadow
+	case b.curStage == stageCut || b.curStage == stageDrawing:
+		// the layer lifted out of the picture, on a checkerboard where it has nothing; it stays
+		// while the picture model draws what it hid (the panel says how far)
 		g.drawChecker(dst, dx, dy, float64(b.w)*scale, float64(b.h)*scale)
-		drawPic(dst, b.prev, scale, dx, dy, 1, 0.25)
-		lift := 1 + 0.035*in
-		sh := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
-		w, h := float64(b.w), float64(b.h)
-		sh.GeoM.Translate(-w/2, -h/2)
-		sh.GeoM.Scale(scale*lift, scale*lift)
-		sh.GeoM.Translate(dx+w*scale/2+10*in, dy+h*scale/2+12*in)
-		sh.ColorScale.Scale(0, 0, 0, float32(0.55*in))
-		dst.DrawImage(b.cur, sh)
-		drawPic(dst, b.cur, scale, dx, dy, lift, 1)
-	case b.curStage == stageDrawing && b.cur != nil && b.mask != nil && b.live.done <= 0:
-		// the picture model loading (and compiling, the first time): the painted picture, dim
-		// and still, until its drawing has steps to show
-		drawPic(dst, b.cur, scale, dx, dy, 1, 0.35)
-	case b.curStage == stageDrawing && b.cur != nil && b.mask != nil:
-		// the drawing: where the layer was, noise that gets finer and calmer at each step done
-		op := &ebiten.DrawRectShaderOptions{}
-		op.GeoM.Scale(scale, scale)
-		op.GeoM.Translate(dx, dy)
-		op.Images[0], op.Images[1] = b.cur, b.mask
-		op.Uniforms = map[string]any{"Done": float32(b.live.done)}
-		dst.DrawRectShader(b.w, b.h, g.drawing, op)
+		drawPic(dst, b.cur, scale, dx, dy, 1, in)
 	default:
-		// the depth, the painted picture, what was drawn: each fading in over the one before
+		// the depth, what the model drew: each fading in over the one before
 		if in < 1 {
 			drawPic(dst, b.prev, scale, dx, dy, 1, 1)
 		}
 		drawPic(dst, b.cur, scale, dx, dy, 1, in)
 		if b.curStage == stageNear {
 			g.drawLegend(dst, dx+12, dy+12, in)
-		}
-		if b.curStage == stageDrawn && in < 1 {
-			// a flash of light as the drawing comes
-			g.rect(dst, dx, dy, float64(b.w)*scale, float64(b.h)*scale, color.RGBA{255, 255, 255, uint8(60 * (1 - in))})
 		}
 	}
 	if b.composeAt.IsZero() {

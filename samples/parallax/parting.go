@@ -26,20 +26,18 @@ const (
 	stageDepth   stage = iota // the picture, while its depth is estimated
 	stageNear                 // its depth
 	stageCut                  // a layer lifted out of the picture
-	stageAsked                // the picture with that layer's shape painted over
-	stageDrawing              // the model drawing what the layer hid
-	stageDrawn                // what it drew
+	stageDrawing              // the model drawing what the layer hid (the layer still shown)
+	stageDrawn                // the picture with what the layer hid drawn in
 	stageReady                // the finished scene: the window puts the layers together
 	stageFailed               // nothing more comes (the depth could not be estimated)
 )
 
 // step is a step of the making as the window shows it: its picture (the window keeps showing
-// the one before when there is none), where the model draws, its line, how much of the whole
+// the one before when there is none), its line, how much of the whole
 // was done when it came, and the finished scene (stageReady).
 type step struct {
 	stage stage
 	pic   image.Image
-	mask  []float32
 	text  string
 	total float64
 	scene *Scene
@@ -66,7 +64,7 @@ func newProgress(img image.Image, n int) *progress {
 	if n <= 1 {
 		p.wDepth, p.wLayers = 0.85, 0
 	}
-	p.show(stageDepth, img, nil, "Estimating how far each point of the picture is")
+	p.show(stageDepth, img, "Estimating how far each point of the picture is")
 	return p
 }
 
@@ -77,10 +75,10 @@ func (p *progress) set(fn func(p *progress)) {
 }
 
 // show queues a step for the window.
-func (p *progress) show(st stage, pic image.Image, mask []float32, text string) {
+func (p *progress) show(st stage, pic image.Image, text string) {
 	p.set(func(p *progress) {
 		p.stage, p.text = st, text
-		p.steps = append(p.steps, step{stage: st, pic: pic, mask: mask, text: text, total: p.total})
+		p.steps = append(p.steps, step{stage: st, pic: pic, text: text, total: p.total})
 	})
 }
 
@@ -119,11 +117,9 @@ func minShow(st stage) time.Duration {
 	case stageNear:
 		return 4 * time.Second // the depth, a while: the first thing the models found
 	case stageDrawn:
-		return 2200 * time.Millisecond
+		return 3 * time.Second // what the model drew where the layer was: the step's result
 	case stageCut:
-		return 1800 * time.Millisecond
-	case stageAsked:
-		return 1400 * time.Millisecond
+		return 2500 * time.Millisecond
 	}
 	return 0
 }
@@ -161,8 +157,8 @@ func alphaMask(img *image.NRGBA) []bool {
 
 // part parts the picture into layers (samples/internal/layering: the depth and the picture
 // model in turns) and returns its scene. Each step is told on a line of log, and to prog when
-// not nil: the layer lifted out, the picture the model is asked to draw from, its drawing as it
-// goes and what it drew, and how far the whole is.
+// not nil: the layer lifted out, the drawing of what it hid as it goes and what was drawn, and
+// how far the whole is.
 func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *source, prog *progress, log io.Writer) (*Scene, error) {
 	if prog == nil {
 		prog = newProgress(src.img, c.Layers)
@@ -178,9 +174,7 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 		case layering.Cut:
 			text := fmt.Sprintf("%s: lifted out of the picture (%.0f %% of it)", of, 100*s.Share)
 			fmt.Fprintln(log, text)
-			prog.show(stageCut, s.Cutout, nil, text)
-		case layering.Asked:
-			prog.show(stageAsked, s.Picture, s.Mask, of+": painted over, for the picture model to draw what was behind it")
+			prog.show(stageCut, s.Cutout, text)
 		case layering.Drawing:
 			text := fmt.Sprintf("%s: drawing what was behind it, %.0f %%", of, 100*s.Done)
 			if s.Done == 0 {
@@ -201,11 +195,11 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 				text = fmt.Sprintf("%s: its shape is still in the drawing, drawn again (try %d)", of, s.Try)
 			}
 			fmt.Fprintf(log, "%s (seam %.0f)\n", text, s.Seam)
-			prog.show(stageDrawn, s.Picture, nil, text)
+			prog.show(stageDrawn, s.Picture, text)
 		case layering.Kept:
 			text := fmt.Sprintf("%s stays in the picture: what was behind it was not drawn well", of)
 			fmt.Fprintln(log, text)
-			prog.show(stageDrawn, nil, nil, text)
+			prog.show(stageDrawn, nil, text)
 		case layering.Parted:
 			text := fmt.Sprintf("%d layers", len(s.Layers))
 			if s.Left > 0 {
@@ -239,18 +233,6 @@ func depthColors(near []float32, w, h int) *image.RGBA {
 		b := 0.10667330 + x*(12.64194608+x*(-60.58204836+x*(110.36276771+x*(-89.90310912+x*27.34824973))))
 		c := func(f float64) uint8 { return uint8(min(max(f, 0), 1)*255 + 0.5) }
 		img.Pix[4*i], img.Pix[4*i+1], img.Pix[4*i+2], img.Pix[4*i+3] = c(r), c(g), c(b), 255
-	}
-	return img
-}
-
-// maskImage is a mask (1 where the model draws) as a grey picture of w x h, its edge softened a
-// little, for the window's drawing shader to glow along.
-func maskImage(mask []float32, w, h int) *image.Gray {
-	r := max(2, w/160)
-	soft := layering.Soften(mask, w, h, r)
-	img := image.NewGray(image.Rect(0, 0, w, h))
-	for i, v := range soft {
-		img.Pix[i] = uint8(min(max(v, 0), 1)*255 + 0.5)
 	}
 	return img
 }

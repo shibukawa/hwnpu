@@ -239,7 +239,7 @@ func TestStackAndProgress(t *testing.T) {
 	// the steps are queued for the window, each taken once, with how much of the whole was done
 	// when it came; the shares of the whole add up to 1, the window's putting together the rest
 	p := newProgress(ls[0].Pix, 3)
-	p.show(stageCut, ls[1].Pix, nil, "cut")
+	p.show(stageCut, ls[1].Pix, "cut")
 	p.set(func(p *progress) { p.total = 0.5 })
 	p.ready(s)
 	n := p.take()

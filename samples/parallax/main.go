@@ -368,11 +368,11 @@ func (c *ShowCmd) make(ctx context.Context, rt *ai.Runtime, p *parts, img *image
 	if err != nil {
 		if ctx.Err() == nil {
 			fmt.Fprintln(os.Stderr, err)
-			prog.show(stageFailed, nil, nil, "The depth was not estimated: "+err.Error())
+			prog.show(stageFailed, nil, "The depth was not estimated: "+err.Error())
 		}
 		return
 	}
-	prog.show(stageNear, depthColors(near, w, h), nil, "The depth: the near warm, the far cool")
+	prog.show(stageNear, depthColors(near, w, h), "The depth: the near warm, the far cool")
 	prog.set(func(p *progress) { p.total = p.wDepth })
 	scene := NewScene(img, near, c.edge(w), c.Far)
 	if c.Layers > 1 {
