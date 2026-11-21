@@ -82,3 +82,29 @@ func TestNear(t *testing.T) {
 		t.Errorf("a flat depth: %v", n)
 	}
 }
+
+func TestMatte(t *testing.T) {
+	m := &Matte{W: 2, H: 1, A: []float32{1, 0}}
+	if a := m.Alpha(2, 1); &a[0] != &m.A[0] {
+		t.Error("the matte at its own size is not itself")
+	}
+	if a := m.Alpha(4, 2); len(a) != 8 || a[0] != 1 || a[7] != 0 || !(a[1] >= a[2]) {
+		t.Errorf("stretched: %v", a)
+	}
+	if img := m.AlphaImage(2, 1); img.Pix[0] != 255 || img.Pix[1] != 0 {
+		t.Errorf("AlphaImage: %v", img.Pix)
+	}
+	// a model's flicker: half of the step each frame, and a matte of another size starts anew
+	var s *Matte
+	s = s.Smooth(m, 0.5)
+	if s == m || s.A[0] != 1 {
+		t.Fatalf("the first: %+v", s)
+	}
+	s = s.Smooth(&Matte{W: 2, H: 1, A: []float32{0, 1}}, 0.5)
+	if s.A[0] != 0.5 || s.A[1] != 0.5 {
+		t.Errorf("smoothed: %v", s.A)
+	}
+	if s = s.Smooth(&Matte{W: 1, H: 1, A: []float32{0.25}}, 0.5); s.W != 1 || s.A[0] != 0.25 {
+		t.Errorf("another size: %+v", s)
+	}
+}

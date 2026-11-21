@@ -12,6 +12,7 @@
 //	hwnpu-image label photo.jpg                                  # JSON lines: the likeliest of ~440 common labels
 //	hwnpu-image label -l "a cat,a dog,猫" photo.jpg               # zero-shot, any candidates, any language
 //	hwnpu-image embed --compare photo.jpg -t "a red car"         # cosine and probability of a text and a picture
+//	hwnpu-image cutout portrait.jpg                              # portrait.cutout.png: the people, what is behind them clear
 //
 // --model takes a name, a family or a use of models.yaml (image, flux2-klein, anima-turbo, anima,
 // chroma; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
@@ -85,6 +86,7 @@ type cli struct {
 	Label      LabelCmd      `cmd:"" help:"Label pictures: the likeliest of candidate labels in any language, or of a list of common ones (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
 	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
 	Segment    SegmentCmd    `cmd:"" help:"Cut out the thing a point or a box picks in pictures: its mask and a transparent cutout (EfficientSAM; AMD's NPU, Apple's Neural Engine, Intel's NPU, the CPU)."`
+	Cutout     CutoutCmd     `cmd:"" help:"Cut the people of pictures out of what is behind them: a transparent cutout or the matte (MediaPipe Selfie Segmentation; the CPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory or a Chroma repository into a Core AI export (--backend coreml: the Core ML one --cpu runs; intel: OpenVINO IR)."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 

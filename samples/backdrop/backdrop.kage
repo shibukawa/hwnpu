@@ -1,0 +1,31 @@
+//kage:unit pixels
+
+// The frame (source 0) over what is put behind the person (source 2), by the matte (source 1):
+// how much of each pixel is a person.
+
+package main
+
+// Weighed is 1 when what is behind is the blurred frame, whose colours are weighed by its alpha
+// (weigh.kage): they are divided by it.
+var Weighed float
+
+// Show is 1 to draw the matte instead: white a person.
+var Show float
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	// a matte stretched from the model's size is soft at a person's edge: the middle of the
+	// slope is kept, so that the edge is as wide as a few of the frame's pixels
+	a := smoothstep(0.25, 0.75, imageSrc1At(srcPos).a)
+	if Show > 0.5 {
+		return vec4(a, a, a, 1)
+	}
+	front := imageSrc0At(srcPos).rgb
+	b := imageSrc2At(srcPos)
+	back := b.rgb
+	if Weighed > 0.5 {
+		// inside the person nothing is behind (the weight is 0): the frame itself, which the
+		// matte covers there anyway
+		back = mix(front, b.rgb/max(b.a, 0.0001), step(0.004, b.a))
+	}
+	return vec4(mix(back, front, a), 1)
+}

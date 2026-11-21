@@ -2,7 +2,7 @@
 
 [日本語](USAGE_IMAGE.ja.md)
 
-`hwnpu-image` runs image generation (`generate`), depth estimation (`depth`), faces (`face-detect`), objects (`detect`), human poses (`pose`), text (`ocr`), labels and embeddings (`label`, `embed`) and cutouts (`segment`) on the NPU. `hwnpu-image list` shows the models to choose from.
+`hwnpu-image` runs image generation (`generate`), depth estimation (`depth`), faces (`face-detect`), objects (`detect`), human poses (`pose`), text (`ocr`), labels and embeddings (`label`, `embed`) and cutouts (`segment`) on the NPU, and cuts people out of what is behind them (`cutout`) on the CPU. `hwnpu-image list` shows the models to choose from.
 
 ## Image generation (Anima)
 
@@ -104,6 +104,19 @@ Where it runs is set for each NPU vendor by `device` in models.yaml. YuNet runs 
 python tools/amd/iron_yunet.py ~/models/face_detection_yunet ~/models/yunet.amd-npu2   # hf:opencv/face_detection_yunet
 go run ./cmd/hwnpu-image face-detect --draw photo.jpg               # AMD: the CPU (ONNX Runtime)
 go run ./cmd/hwnpu-image face-detect --device npu photo.jpg          # AMD's NPU: the export above
+```
+
+## People cut out of what is behind them (MediaPipe Selfie Segmentation)
+
+`go run ./cmd/hwnpu-image cutout` tells the people of a photo from what is behind them (MediaPipe Selfie Segmentation, Google, Apache-2.0; the ONNX files of onnx-community). For each image it writes `NAME.cutout.png`, the photo with what is behind the people made clear, and gives one line of JSON with the file and the share of the photo that is a person. `--matte` writes `NAME.matte.png` instead: how much of each pixel is a person, white a person.
+
+It runs on the CPU on every machine, with ONNX Runtime's shared library as face detection does (`--device npu` is an error). The model is 0.46 MB of weights: on a Ryzen AI 9 365 a 1280×720 picture takes 5.9 ms on one thread, and 3.1 ms with the model for wide frames (`-m selfie-segmentation-landscape`, 256×144). That is every frame of a camera; `samples/backdrop` does so in a window ([USAGE_LIBRARY.md](USAGE_LIBRARY.md)).
+
+The model is made for a person before a camera. A picture without a person gives a matte of whatever stands out, and the matte is 256×256 stretched over the picture, so thin things (hair that spreads, fingers) are not followed.
+
+```bash
+go run ./cmd/hwnpu-image cutout portrait.jpg                # portrait.cutout.png
+go run ./cmd/hwnpu-image cutout --matte --repeat 100 portrait.jpg   # portrait.matte.png, and the time a picture
 ```
 
 ## Objects, poses and text (RTMDet, RTMO, PP-OCRv6)

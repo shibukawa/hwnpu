@@ -15,6 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -82,7 +85,11 @@ var (
 	loadErr  error
 )
 
-// candidates are the library's paths to try: HWNPU_ONNXRUNTIME, then the system's names.
+// candidates are the library's paths to try: HWNPU_ONNXRUNTIME, then the system's names. On
+// Linux a distribution's runtime package has the library under its version alone
+// (Ubuntu's libonnxruntime1.23: libonnxruntime.so.1.23, the unversioned name being the
+// development package's), so the versioned files of the system's library directories follow,
+// the newest first.
 func candidates() []string {
 	c := []string{os.Getenv("HWNPU_ONNXRUNTIME")}
 	switch runtime.GOOS {
@@ -92,8 +99,41 @@ func candidates() []string {
 		c = append(c, "libonnxruntime.dylib", "/opt/homebrew/lib/libonnxruntime.dylib", "/usr/local/lib/libonnxruntime.dylib")
 	default:
 		c = append(c, "libonnxruntime.so", "libonnxruntime.so.1")
+		c = append(c, versioned("/usr/local/lib", "/usr/lib/*-linux-gnu", "/usr/lib64", "/usr/lib")...)
 	}
 	return c
+}
+
+// versioned are the files libonnxruntime.so.VERSION of dirs (patterns of directories), in the
+// order of the directories and the newest version first within one.
+func versioned(dirs ...string) []string {
+	var out []string
+	for _, d := range dirs {
+		found, _ := filepath.Glob(filepath.Join(d, "libonnxruntime.so.*"))
+		slices.SortFunc(found, func(a, b string) int { return -compareVersions(a, b) })
+		out = append(out, found...)
+	}
+	return out
+}
+
+// compareVersions orders two paths that end in dotted numbers (libonnxruntime.so.1.23.2) by
+// those numbers; a longer version of the same start is the newer.
+func compareVersions(a, b string) int {
+	va, vb := strings.Split(filepath.Base(a), "."), strings.Split(filepath.Base(b), ".")
+	for i := 0; i < len(va) && i < len(vb); i++ {
+		na, ea := strconv.Atoi(va[i])
+		nb, eb := strconv.Atoi(vb[i])
+		if ea != nil || eb != nil {
+			if c := strings.Compare(va[i], vb[i]); c != 0 {
+				return c
+			}
+			continue
+		}
+		if na != nb {
+			return na - nb
+		}
+	}
+	return len(va) - len(vb)
 }
 
 // Available reports whether ONNX Runtime's library loads (HWNPU_ONNXRUNTIME "none": never, to

@@ -6,8 +6,8 @@
 
 hwnpu is a set of Go libraries that run AI models on the NPU. `hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` are demos that try its features one at a time. An app registers several models, prepares them ahead of time, and runs them joined together.
 
-- There now: speech to text, translation, chat, text to speech, a VAD by loudness, the depth of a picture, finding faces and where a head is, drawing and editing pictures (FLUX.2 klein), the ways of joining models, commands for an app's command line
-- Not there yet: the picture models other than FLUX.2 klein (Anima, Chroma); objects, poses, cutouts and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
+- There now: speech to text, translation, chat, text to speech, a VAD by loudness, the depth of a picture, finding faces and where a head is, people cut out of what is behind them, drawing and editing pictures (FLUX.2 klein), the ways of joining models, commands for an app's command line
+- Not there yet: the picture models other than FLUX.2 klein (Anima, Chroma); objects, poses, cutouts of what a point picks and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel it calls the same preparing and loading as the commands, but it was not run through this library there
 - The whole plan is in [app-api.md](app-api.md) and the list of work in [app-api-tasks.md](app-api-tasks.md) (both in Japanese)
 
@@ -107,6 +107,7 @@ A working example that joins several models is [samples/interpreter](../samples/
 | `samples/interpreter` | An interpreter: the microphone or a recording → speech to text → translation → text to speech. Spoken commands. A network and a call |
 | `samples/parallax` | A picture shown as if it were deep: its depth estimated once, the viewer's head followed with the camera, the picture drawn from where the head is (Ebitengine, a Kage shader). It parts the picture into layers beside the window and shows each step in it |
 | `samples/layers` | Layers: parts a picture into layers by depth, has the picture model draw what each layer hid, and writes a Photoshop document (PSD). Two models in turns |
+| `samples/backdrop` | A video call's background: the person of each frame of the camera told from what is behind them, which is blurred or replaced (Ebitengine, Kage shaders). A network on the CPU |
 
 ```
 cd samples
@@ -675,6 +676,33 @@ the picture → depth → cut the nearest layer out → paint its shape in one c
 - **A depth for each layer**: each layer has its nearness as well as its colours (`near-N.png` of `--png DIR`: 16 bit gray, on one scale for all the layers). The nearness of a part drawn in is estimated from the picture drawn. A layer's nearness goes on past the layer's edge with the edge's values (dropping there to the values of the layer behind would stretch the edge when it is drawn). `parallax DIR` reads these ([section 6.8](#68-an-example-a-picture-shown-as-if-it-were-deep-samplesparallax))
 - Three layers draw two pictures, 2 to 3.5 minutes at 1024×1024 (Ryzen AI 9 365). The PSD is 8 bit RGB with layers of the document's size, packed with PackBits. On a Mac (M3) a layer takes 39 s at 512×512 and 89 s at 1024×1024 once the edit's programs are compiled
 
+### 6.10 Example: what is behind a person blurred (`samples/backdrop`)
+
+A network alone, on every frame of a camera: the person is told from what is behind them, and the window draws the frame with what is behind blurred, or with a picture or a colour there, as a video call does.
+
+```go
+cut := vision.Cutout("cutout")
+app := ai.NewApp("backdrop")
+
+// camera → the person's matte (the newest frame only) → smoothed between frames → kept for the window
+camera := flow.Source[image.Image]("camera")
+steady := flow.Each("steady", smooth)                    // Matte.Smooth: half of the matte before stays
+view := flow.Sink[vision.Matted]("view").Do(keepNewest)  // the frame with its own matte
+app.From(camera).To(vision.CutoutNode(cut), flow.Newest()).To(steady).To(view)
+
+rt, _ := app.Open(ctx)
+camera.From(capture.Camera(ctx, capture.CameraOptions{Width: 1280, Height: 720}))
+go rt.Run(ctx)
+runWindow(newest)                                        // on the beat: the newest frame over what is put behind the person
+```
+
+- **The model runs on the CPU**, on one thread: 5.9 ms for a 1280×720 frame (Ryzen AI 9 365), so every frame of a camera gets its matte. It is 0.46 MB of weights, which no NPU pays for
+- **The node gives the frame with its matte** (`vision.Matted`), so that what the window draws together is of the same moment. The matte is the model's size (256×256); the window stretches it on the GPU
+- **Blurring what is behind**: a blur of the frame itself would spread the person's colours around them. So the frame is first weighed by how much of each pixel is not a person (one less the matte), that picture is made a quarter of the size and blurred there, and the result is divided by the blurred weight: only what is behind is mixed (`weigh.kage`, `blur.kage`, `backdrop.kage`)
+- `--behind` takes `blur`, a picture's file or a colour (`#00aa44`); `--steady` how much of the matte before stays in each frame's (the model's matte flickers a little between frames); `--no-mirror` shows the frame as the camera sees it. In the window B goes through what is behind, M shows the matte, up and down change the blur
+- The model is made for a person before a camera: a frame without one gives a matte of whatever stands out, and thin things (spread hair, fingers) are not followed
+- A machine without a camera gives pictures as the frames (`--frames a.png,b.png`). That is how it was checked, in a display drawn by software: a real camera and a real display were not tried
+
 ## 7. The models
 
 Every model has a batch form and a stream form.
@@ -710,12 +738,14 @@ Every model has a batch form and a stream form.
 |---|---|---|
 | `DepthEstimator` (Depth Anything 3, MoGe-2) | `Estimate(ctx, img) (*DepthMap, error)` | `EstimateStream`, `vision.DepthNode(use)` (a picture → its depth) |
 | `FaceDetector` (YuNet) | `Detect(ctx, img) ([]Face, error)` | `DetectStream`, `vision.FacesNode(use)` (a frame → `Found{Frame, Faces}`) |
+| `Cutter` (MediaPipe Selfie Segmentation) | `Matte(ctx, img) (*Matte, error)` | `MatteStream`, `vision.CutoutNode(use)` (a frame → `Matted{Picture, Matte}`) |
 | Where a head is (no model) | `vision.HeadOf(face, frame, opts)`, `vision.NearestHead(faces, frame, opts)` | `vision.HeadNode(opts)` (`Found` → `Head`; nothing for a frame without a face) |
 
 - A picture is an `image.Image`, and a camera's frames a stream of them
 - **`DepthMap`**: `Depth` is how far each point is (larger is farther; meters for MoGe-2, a unit of the picture's own for DA3). Its size is the model's input's, not the picture's. `Near(w, h)` gives how near each pixel is at the picture's size (1 the nearest, 0 the farthest, in proportion to the inverse of the depth): what a parallax shader reads. `NearImage(w, h)` is that as a gray picture
 - **`Face`**: the box, how sure the model is, and the eyes, the nose and the corners of the mouth (in the picture's pixels). `RightEye` is the person's own right eye (on the picture's left)
 - **`Head`**: where a head is before the camera. `X` and `Y` are across the camera's view, −1 to 1 (`X` to the person's own right: mirrored from the frame); `Z` is how far it is from the camera in meters, from how far apart the eyes are in the frame, by a pinhole camera (`HeadOptions.FOV` is the horizontal field of view, 60 degrees by default; `Eyes` the distance between the eyes, 63 mm by default). It is an estimate for a face that looks at the camera
+- **`Matte`**: `A` is how much of each point is a person (1 a person, 0 what is behind, between them at an edge). Its size is the model's input's (256×256), not the picture's. `Alpha(w, h)` gives it at the picture's size, `AlphaImage(w, h)` as a picture (a shader's texture, at the matte's own size for the least work), `Cut(img)` the picture with what is behind made clear, `Smooth(next, keep)` moves it toward the next frame's. The model runs on the CPU of every machine (ONNX Runtime, one thread, a few milliseconds a frame) and is made for a person before a camera: a picture without one gives whatever stands out
 - **YuNet is a model of real faces.** It does not find the faces of anime pictures (none in a picture of a person made with Anima)
 - **Where they run**: depth on the NPU. On a machine with AMD's NPU the definitions (models.yaml's `device`) put YuNet on the CPU (a small graph: a tenth of the time and of the energy there). On the CPU it needs ONNX Runtime (`HWNPU_ONNXRUNTIME` is the library's path). `FaceDetector.Device()` is `npu` or `cpu`
 - On Apple's Neural Engine and Intel's NPU the depth's program of a shape is converted when a picture of that shape first comes (seconds; its first load compiles it)
@@ -732,7 +762,7 @@ Every model has a batch form and a stream form.
   | moge-2-vitl | 3.41 s | 4.17 s | 2.62 GiB | 1024 | The finest. It cuts the sky off as the farthest |
 
   The process takes 0.2 GiB more (0.4 to 0.5 GiB with MoGe-2). Depth Anything 3 gives a depth of 504 pixels on its long side, MoGe-2 one of 1024. For one estimate of one picture take DA3MONO-LARGE (enough for the parallax of a still picture), or moge-2-vitb / vitl when the outlines must be fine; over a video take DA3-SMALL (3 pictures a second). MoGe-2 also gives a depth in metres (`DepthMap.Metric`)
-- Not there yet: objects, poses, cutouts, OCR, labels
+- Not there yet: objects, poses, cutouts of what a point picks, OCR, labels
 
 ### 7.4 `ai/imagegen`
 
