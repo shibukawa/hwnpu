@@ -11,7 +11,7 @@ import (
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
-// What hwnpu-dev hf plan and push look for in the sources: the entries a model's conversions
+// What hwnpu-dev models hf plan and push look for in the sources: the entries a model's conversions
 // have now, as the commands would look for them (docs/prebuilt.md 4.1). The exports for AMD's
 // NPU are known by their recipes (ExportRecipe, PinnedRecipe); the Core AI exports, their
 // prebuilt programs and the tables by the names the sources hold them under, each taken only

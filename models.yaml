@@ -21,7 +21,7 @@
 #   develop       true: in development; what is converted goes in the sources as vN-HASH
 #   hub           the model's conversions on Hugging Face, by repository: the commit each target
 #                 reads there ({hwnpu/NAME: {amd-xdna2: COMMIT, apple: COMMIT}}; coreai-ARCH before
-#                 apple on a Mac of that Neural Engine). hwnpu-dev hf push writes it (docs/prebuilt.md)
+#                 apple on a Mac of that Neural Engine). hwnpu-dev models hf push writes it (docs/prebuilt.md)
 #   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
 #   license       the weights' license: {id, url, class, terms, accept}. class is what it allows of
 #                 commercial use: open, conditional (a cap of revenue, a registration) or
@@ -38,7 +38,7 @@
 #   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
 #   disk          what the model keeps in the cache to run (its conversion unpacked and its tables;
 #                 not the checkpoint, which only converting reads), GB, a table by vendor; a vendor
-#                 it leaves out is not known. hwnpu-dev hf sizes --write models.yaml writes it from
+#                 it leaves out is not known. hwnpu-dev models hf sizes --write models.yaml writes it from
 #                 what the sources hold (Core AI's: at its version). Preparing takes bytes and disk
 #                 at once for a while (a packed export is unpacked beside its pack)
 #                 memory and bytes take one number, or a table by the NPU's vendor where they
@@ -75,7 +75,7 @@
 #   allowed; a model named is refused with why (docs/model-provenance.md 2)
 version: 1
 
-# hub: push: the namespace on Hugging Face hwnpu-dev hf push puts the conversions in (PUSH/MODEL);
+# hub: push: the namespace on Hugging Face hwnpu-dev models hf push puts the conversions in (PUSH/MODEL);
 #   a file of your own gives another (an account or an organization of yours)
 hub:
   push: hwnpu

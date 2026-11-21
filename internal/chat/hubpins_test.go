@@ -75,7 +75,7 @@ func TestHubErrors(t *testing.T) {
 	}
 }
 
-// Every model of the built-in definitions with a hub is published as hwnpu-dev hf push wants
+// Every model of the built-in definitions with a hub is published as hwnpu-dev models hf push wants
 // it: its files' commit is pinned, and each target it pins a commit for has a version.
 func TestBuiltinHub(t *testing.T) {
 	for _, m := range Catalog {

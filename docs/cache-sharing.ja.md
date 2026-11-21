@@ -143,8 +143,8 @@ HWNPU_MODEL_SOURCE_1=s3://models/hwnpu?endpoint=http://rustfs.lab:9000&path_styl
 効いているものは次で確かめます。
 
 ```
-hwnpu-dev cache sources      根、取得元、書き戻すか、Hugging Face を読むか
-hwnpu-dev cache ls           取得元の中身
+hwnpu-dev models sources      根、取得元、書き戻すか、Hugging Face を読むか
+hwnpu-dev models ls           取得元の中身
 ```
 
 ### 2.3 設定を置く場所
@@ -156,7 +156,7 @@ hwnpu-dev cache ls           取得元の中身
 3. ユーザーのフォルダ: `~/.config/hwnpu/` (Windows は `%LOCALAPPDATA%\hwnpu\`)
 4. 機械のフォルダ (管理者が置く): `/etc/hwnpu/` (macOS は `/Library/Application Support/hwnpu/`、Windows は `%ProgramData%\hwnpu\`)
 
-読むのは `HWNPU_`、`HF_`、`AWS_` で始まる名前だけなので、ほかのプロジェクトの `.env` を拾っても困りません。パスワードや鍵は、git に入れない慣例の `.env.local` に。ログと `hwnpu-dev cache sources` は、URL の利用者とパスワードを出しません。
+読むのは `HWNPU_`、`HF_`、`AWS_` で始まる名前だけなので、ほかのプロジェクトの `.env` を拾っても困りません。パスワードや鍵は、git に入れない慣例の `.env.local` に。ログと `hwnpu-dev models sources` は、URL の利用者とパスワードを出しません。
 
 ### 2.4 3 つの組み方
 
@@ -185,10 +185,10 @@ HWNPU_MODEL_SOURCE_1=s3://corp-models/hwnpu?writeback=true     # 全拠点で共
 取得元はサーバーの仕組みを持たないフォルダの木なので、コマンドで整えます。
 
 ```
-hwnpu-dev cache update [MODEL...]   モデルを Hugging Face の新しいコミットに移す (変わったファイルだけ落とす)
-hwnpu-dev cache flush               裏のキューに残った書き戻しを済ませる (終わるまで待つ)
-hwnpu-dev cache verify DIR --sums   変換結果を entry.json と照らす
-hwnpu-dev cache gc 1 --older-than 90 --apply   取得元 1 の、90 日より前に作った変換を消す
+hwnpu-dev models update [MODEL...]   モデルを Hugging Face の新しいコミットに移す (変わったファイルだけ落とす)
+hwnpu-dev models flush               裏のキューに残った書き戻しを済ませる (終わるまで待つ)
+hwnpu-dev models verify DIR --sums   変換結果を entry.json と照らす
+hwnpu-dev models gc 1 --older-than 90 --apply   取得元 1 の、90 日より前に作った変換を消す
                                     (--model、--kind、--key も。--apply がなければ見せるだけ)
 hwnpu cache clean                   書き戻しが切れて残したものを消す: 書きかけのフォルダ、一時ファイル、
                                     S3 の 1 時間を過ぎた分割アップロード
@@ -256,7 +256,7 @@ URL の後ろに足せる設定:
 | `clean [-n] [-y]` | 書き戻す取得元から、切れた書き戻しの残りを消す |
 | `hwnpu memory [MODEL [GB\|--forget]]` | モデルを何 GB の形で動かすか |
 
-`hwnpu-dev cache` (共有の取得元を運用する人向け):
+`hwnpu-dev models` (共有の取得元を運用する人向け):
 
 | コマンド | 働き |
 |---|---|
@@ -309,7 +309,7 @@ w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 
 - **Core AI** (`target coreai`): `.aimodel` は機械によらないバイトコードで、どの Mac も同じです。最初に変換した Mac が取得元に置き、ほかの Mac は落とすだけで、チェックポイントも要りません。コマンドが行を引く表 (`tables.safetensors`) も同じに共有します。
 - **初回のコンパイルは Mac ごと**です。Core AI は部品ごとに初めて読むとき、Neural Engine 向けにコンパイルします (部品ごとに数秒から数分)。その結果は Core AI 自身のキャッシュにあり、OS のビルドに縛られて共有できません。
-- **コンパイル済みの部品**がそれを縮めます。Xcode 27 のある開発機で `hwnpu-dev prebuild -arch all -put EXPORT` を走らせると、チップの世代ごと (`h13g` = M1、`h14g` = M2、`h15g` = M3 ...) に部品をコンパイルし、重み (大きさの約 99 %。`.aimodel` から組み立て直す) を外して、書き出しの隣に置きます。1 世代で書き出しの 1〜2 % です。Mac は自分のチップのものを取り、数十分のコンパイルが 1 秒から 1 分で済みます。効くのは Neural Engine に乗る部品のあるモデルだけなので、モデルを選んで置きます。使わないなら `HWNPU_COREAI_PREBUILT=off`。ディスクが足りなくなったときは、数秒で作り直せるので、この機械のコンパイル済みの部品の写しから先に消します。
+- **コンパイル済みの部品**がそれを縮めます。Xcode 27 のある開発機で `hwnpu-dev models prebuild --arch all EXPORT` を走らせると、チップの世代ごと (`h13g` = M1、`h14g` = M2、`h15g` = M3 ...) に部品をコンパイルし、重み (大きさの約 99 %。`.aimodel` から組み立て直す) を外して、書き出しの隣に置きます。1 世代で書き出しの 1〜2 % です。Mac は自分のチップのものを取り、数十分のコンパイルが 1 秒から 1 分で済みます。効くのは Neural Engine に乗る部品のあるモデルだけなので、モデルを選んで置きます。使わないなら `HWNPU_COREAI_PREBUILT=off`。ディスクが足りなくなったときは、数秒で作り直せるので、この機械のコンパイル済みの部品の写しから先に消します。
 - **Core ML** の Neural Engine 向けのプログラムは、今も Mac ごとに作ります。コンパイル済みの `.mlmodelc` は OS の版に、e5 のバンドルは機械に縛られます。
 
 ### 4.2 AMD XDNA 2 (Linux)
@@ -319,7 +319,7 @@ w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 - 書き出しの鍵は、モデル、チェックポイントのコミット、定義の sha256、書き出しの設定 (`amd_export`)、同梱した IRON の道具のうちその書き出しが読むものの hash の指紋です。読むものは `iron_export_lm.py` と共通のモジュール、モデルのアーキのモジュール (`tools/amd/lmdeps.go` の表から import を辿ったもの)、全部のカーネルです。1 つのモデルの書き出し (Gemma 4 の層ごとの表) や画像のモデルの道具を変えても、ほかのチャットのモデルの書き出しはそのまま当たります。出力の変わる直しは鍵 (か版) を変えるので、古い書き出しに当たりません。
 - IRON のない機械 (社内ではこれがふつう) は、書き出しを落とし、数秒の「準備」だけで NPU で動きます。
 - 初回に自分のプログラムを作る画像のモデル (`detect`、`pose`、`segment`、FLUX.2 klein) も同じ共有です。取得元にあればそれを使い、なければ IRON で作って書き戻します。
-- **手で作った**プログラム (一部の画像や音のモデル、深さ、顔、ラベル、`amd_export` のないモデル) は、`entries/amd-xdna2/` か `~/models` にあります。一度 `hwnpu-dev cache import ~/models` で取得元に置けば、要る機械が名前で取り、手元に写しを残します。手で作ったものを初めて使った機械が、自動で書き戻しもします。
+- **手で作った**プログラム (一部の画像や音のモデル、深さ、顔、ラベル、`amd_export` のないモデル) は、`entries/amd-xdna2/` か `~/models` にあります。一度 `hwnpu-dev models import ~/models` で取得元に置けば、要る機械が名前で取り、手元に写しを残します。手で作ったものを初めて使った機械が、自動で書き戻しもします。
 - IRON のコンパイルのキャッシュ (`iron/`。開発機では数十 GB) は共有しません。書き出す道具の作業の跡です。
 
 ### 4.3 Intel
@@ -329,7 +329,7 @@ w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 
 ### 4.4 新しいチップを足すとき
 
-エントリに何を入れるか、どれが機械に縛られるかは、チップのバックエンドが決めます。共有するには、変換した結果を新しいフォルダに書き、最後にファイルの大きさと SHA-256 と鍵のレシピを書いた `entry.json` を置き、`target` の名前を世代の階層から選び (広い名前 `amd`、世代 `amd-xdna2`)、`hwnpu-dev cache push` と読む側がファイルを分かるよう種類 (kind) を登録します。探す、写す、照らす、書き戻すの共通の部分は変えなくて済みます。
+エントリに何を入れるか、どれが機械に縛られるかは、チップのバックエンドが決めます。共有するには、変換した結果を新しいフォルダに書き、最後にファイルの大きさと SHA-256 と鍵のレシピを書いた `entry.json` を置き、`target` の名前を世代の階層から選び (広い名前 `amd`、世代 `amd-xdna2`)、`hwnpu-dev models put` と読む側がファイルを分かるよう種類 (kind) を登録します。探す、写す、照らす、書き戻すの共通の部分は変えなくて済みます。
 
 ---
 
@@ -349,7 +349,7 @@ chat.Fetch / modelstore.File
             → 落としながら、書き戻す取得元へ tee する
 ```
 
-コミットはリポジトリごとに 1 回決めます。定義の固定、なければ最初の取得元の lock、なければこの機械の lock、なければ Hugging Face の `main`。ファイルはどの層から来ても、そのコミットのものです。だから 2 台が同じモデルの違うバイトで動くことはなく、新しいコミットへ移るのは `hwnpu-dev cache update` のときだけです。
+コミットはリポジトリごとに 1 回決めます。定義の固定、なければ最初の取得元の lock、なければこの機械の lock、なければ Hugging Face の `main`。ファイルはどの層から来ても、そのコミットのものです。だから 2 台が同じモデルの違うバイトで動くことはなく、新しいコミットへ移るのは `hwnpu-dev models update` のときだけです。
 
 ### 5.2 エントリと鍵
 

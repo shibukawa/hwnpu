@@ -162,3 +162,5 @@ func (t *Translator) Close() error {
 	defer t.mu.Unlock()
 	return t.e.Close()
 }
+
+func init() { airole.Register(translateRole) }

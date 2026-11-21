@@ -161,7 +161,7 @@ const m1HoldBytes = 2867 << 20 // 2.8 GiB
 // before it slows down, 0 for no such limit: m1HoldBytes on an M1 (the M1 Pro, Max and Ultra,
 // with the same Neural Engine, are taken to be alike; not measured).
 var neuralEngineHold = func() int64 {
-	if strings.HasPrefix(cpuBrand(), "Apple M1") {
+	if chipName() == "M1" {
 		return m1HoldBytes
 	}
 	return 0

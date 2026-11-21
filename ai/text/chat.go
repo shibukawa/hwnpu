@@ -119,3 +119,5 @@ func (c *Chatter) Close() error {
 	defer c.mu.Unlock()
 	return c.e.Close()
 }
+
+func init() { airole.Register(chatRole) }

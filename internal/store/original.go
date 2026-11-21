@@ -199,7 +199,7 @@ func getChecked(ctx context.Context, s Store, key, sum, dst string, bar func(don
 
 // PutOriginal puts a file of repo of commit (path here, of SHA-256 sum: worked out when "") in s
 // and names it in the source's lock. A source whose lock is of another commit is left as it is
-// (ErrOtherCommit: hwnpu-dev cache update moves it).
+// (ErrOtherCommit: hwnpu-dev models update moves it).
 func PutOriginal(ctx context.Context, s Source, repo, commit, name, path, sum string) error {
 	fi, err := os.Stat(path)
 	if err != nil {

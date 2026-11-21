@@ -139,7 +139,7 @@ func clearCommits() {
 }
 
 // TestFollowLock checks that the machine's cache follows the sources' lock: when it moves to
-// another commit (hwnpu-dev cache update), a file of the old one is fetched again, and one that
+// another commit (hwnpu-dev models update), a file of the old one is fetched again, and one that
 // is the same in both is kept (its SHA-256 the new lock's).
 func TestFollowLock(t *testing.T) {
 	cacheHere(t)
