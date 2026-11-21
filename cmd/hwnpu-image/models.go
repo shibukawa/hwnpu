@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/shibukawa/hwnpu"
-	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"os/exec"
@@ -144,50 +143,19 @@ func convertedImage(family, vendor string) bool {
 	return false
 }
 
-// amdExport is the export of model m on AMD's NPU for pictures of size x size (0: a model of one
-// size; amdNames), here (entries/amd-xdna2 under the cache's root, or ~/models:
-// hcache.ExportRoots) or in the sources, downloaded once into the cache's entries/amd-xdna2
-// (chat.AMDNamed): an export made by hand and put there (hwnpu-dev cache import, or its first use
-// on the machine that made it). tool is the script that writes it, for the error when there is
+// amdExport is chat.AMDPictureExport: the export of model m on AMD's NPU for pictures of size x
+// size, here or in the sources. tool is the script that writes it, for the error when there is
 // none.
 func amdExport(ctx context.Context, m chat.Model, tool string, size int) (string, error) {
-	names := amdNames(m, size)
-	if d := chat.AMDNamed(ctx, m, names, isDir, console.Log(os.Stderr)); d != "" {
-		return d, nil
-	}
-	flags := ""
-	if m.File != "" {
-		flags = " --dit " + m.File
-	}
-	if size != 0 && size != 1024 {
-		flags += fmt.Sprintf(" --size %d", size)
-	}
-	out := filepath.Join(chat.AMDRoot(), names[0])
-	return "", fmt.Errorf("AMD's NPU runs exports of %s, and neither this machine (%s) nor the sources have %s for %s: download %s and run\n  python %s ~/models/%s %s%s\n(its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
-		tool, strings.Join(hcache.ExportRoots(), ", "), names[0], m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), shortHome(out), flags)
+	return chat.AMDPictureExport(ctx, m, tool, size, console.Log(os.Stderr))
 }
 
-// amdNames are the names the export of model m for AMD's NPU has, for pictures of size x size,
-// in lower case (what tools/amd/iron_*.py are told to write, and the sources hold): NAME.amd-npu2
-// or NAME-1024.amd-npu2 at 1024 and for a model of one size (0), NAME-SIZE.amd-npu2 otherwise.
-func amdNames(m chat.Model, size int) []string {
-	name := strings.ToLower(m.Name)
-	if size == 0 || size == 1024 {
-		return []string{name + ".amd-npu2", name + "-1024.amd-npu2"}
-	}
-	return []string{fmt.Sprintf("%s-%d.amd-npu2", name, size)}
-}
+// amdNames are the names the export of model m for AMD's NPU has (chat.AMDPictureNames).
+func amdNames(m chat.Model, size int) []string { return chat.AMDPictureNames(m, size) }
 
 // amdExportHere is the export of model m for AMD's NPU here (amdNames at no size), "" for none:
 // what the listing shows, without asking the sources.
-func amdExportHere(m chat.Model) string {
-	for _, n := range amdNames(m, 0) { // NAME.amd-npu2 first: the export of every aspect ratio (aspectsAMD, flux2klein.PrepareAMD)
-		if d := hcache.FindExport(n, isDir); d != "" {
-			return d
-		}
-	}
-	return ""
-}
+func amdExportHere(m chat.Model) string { return chat.AMDPictureExportHere(m) }
 
 // shortHome is path with the home directory written ~.
 func shortHome(path string) string {

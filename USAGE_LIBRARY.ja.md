@@ -109,6 +109,7 @@ res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
 | `ai` | `App` (登録)、`Use` (型のついた取っ手: `Get`、`Release`、機械のメモリごとの構成 `At` と `As`)、`Plan` (計画と準備)、`Runtime` |
 | `ai/speech` | 文字起こし (Whisper)、読み上げ (LFM3-Audio)、音量の VAD、WAV の読み書き |
 | `ai/text` | 翻訳 (PLaMo 3 Translate)、チャット |
+| `ai/vision` | 絵の深度 (Depth Anything 3、MoGe-2)、顔の検出 (YuNet)、顔からカメラに対する頭の位置 |
 | `ai/flow` | モデルの間のデータの渡し方: 塊の流れ `Stream` と、その道具 |
 | `ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、`download`、`prepare`)、`status`。コマンドラインのライブラリに依存しない (`cli.List`、`cli.Run(ctx, app, args)` など) |
 | `ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ |
@@ -164,9 +165,9 @@ k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
+`APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) と [samples/parallax](samples/parallax) (絵の深度を推定し、カメラで見る人の頭を追って、奥行きがあるように描く。窓は Ebitengine) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
 
-- 今ある機能は音声と文だけです。画像 (深度、顔、生成など) は、まだコマンドからだけ使えます
+- 今ある機能は音声と文、絵の深度と顔です。画像の生成、物体や姿勢の検出などは、まだコマンドからだけ使えます
 - 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
 
 ## AMD (カーネルを直接動かす)

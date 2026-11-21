@@ -8745,3 +8745,64 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 - lut8 の量子化の誤差は、Neural Engine 自身の fp16 の誤差と同じくらいまで小さい。回しても、答えも速さもほとんど変わらない (0〜3.5 %)
 - 一方で、書き出し直しは 0.8B で約 10 分、4B で 15〜27 分かかる
 - lut6 の 2B では差がはっきり出る (KL が約半分、MTP ありで +15 %、12 問 +1)
+
+### 16.283 擬似立体のサンプル `samples/parallax` と `ai/vision` (深度、顔、頭の位置)、深度のモデルの比較 — 2026-11-21
+
+**何をしたか**: 16.281 の続き (app-api-tasks.md の J1 の一部と J4)。絵を奥行きがあるように見せるサンプルを作った。絵の深度を 1 回推定し、カメラで見る人の頭の位置を追い、その視点から見た絵を Ebitengine の Kage のシェーダーで描く。そのために `ai/vision` を足した。
+
+**`ai/vision`** (developer-guide.ja.md 7.3):
+
+- `vision.Depth(name)`: 用途 `depth` (Depth Anything 3、MoGe-2)。`DepthEstimator.Estimate` が `DepthMap` (遠さ) を返し、`DepthMap.Near(w, h)` が絵の大きさの「近さ」(深度の逆数を 0〜1 に) を返す。準備は `hwnpu-image depth` と同じ関数 (`depth.Prepare`、`moge.Prepare`、AMD は IRON の書き出し)
+- `vision.Faces(name)`: 用途 `face-detect` (YuNet。`hwnpu-image face-detect` と同じモデルで、新しいモデルは足していない)。AMD の NPU の機械では定義どおり CPU (ONNX Runtime) で動く
+- `vision.HeadOf` / `NearestHead` / `HeadNode`: 顔の両目の間隔 (既定 63 mm) とカメラの画角 (既定 60 度) から、ピンホールのカメラとして頭の位置を出す。モデルなし
+- AMD の画像のモデルの書き出しを探して取ってくる手順 (`amdExport`、`amdNames`、`amdExportHere`) を `cmd/hwnpu-image` から `internal/chat` (`AMDPictureExport` ほか) に移し、コマンドとライブラリの両方が呼ぶ
+
+**サンプルのつなぎ方** (developer-guide.ja.md 6.8):
+
+- 呼び出し (1 回): 絵 → 深度。終わったら `depth.Release(rt)` でモデルを下ろす
+- ネットワーク (動き続ける): `camera → face-detect (flow.Newest) → head → steady → view`。`steady` はプログラムの節 (揺れをならし、顔が 1.5 秒見えなければ中央に戻す: `flow.WhenIdle`)
+- 窓の拍: Ebitengine が 1 秒に 60 回、最後に届いた視点で描く。カメラは hwcamera (`samples/capture.Camera`。サンプルのモジュールだけの依存)
+
+**描き方** (`parallax.kage` と、同じ計算を Go で書いた `Scene.Render`):
+
+- 画素ごとに、目からの視線を手前の層 (近さ 1) から奥へ 32 層たどる。層 n では絵の `p + View × Shift × (n − Focus)` の点の上にいて、絵の近さが n 以上の最初の層が見えている点。その前の層との間を 5 回 2 分して求める。手前のものが奥を隠す
+- 最初は層の間を直線で補間 (セカント) していて、輪郭に櫛の歯のような筋が出た。2 分にして消えた
+- **輪郭**: 推定した深度の輪郭は実際より甘く、少しずれるので、輪郭が裂ける。近さに「r 画素の中の最大」をかけてから同じ幅でならす (`Spread`、既定は幅の 200 分の 1) と、輪郭はものと一緒に動き、引き伸ばされるのはすぐ外の背景になる
+- **奥の層**: 近さは深度の逆数なので、目のすぐ前に草や杭のある風景では、その奥が全部ほぼ 0 になる (山 0、森 0.008、家 0.016、橋 0.024、手前の花 0.86)。目で見たとおりだが、橋と家と山が一緒に動いて奥行きが伝わらない。近さ n を log(1 + kn) / log(1 + k) にする曲線 (`Layers`、`--layers`、既定 k = 30) を足した。向かい合う視点 (±1) の間の動き (1024 画素の絵、強さ 0.03):
+
+  | k | 山 | 森 | 家 | 橋 | 手前の杭 | 手前の花 |
+  |---|---|---|---|---|---|---|
+  | 0 (深度のまま) | 0 | 0 | 1 | 3 | 43 | 51 |
+  | 30 | 0 | 4 | 7 | 17 | 57 | 61 |
+  | 100 | 0 | 8 | 13 | 25 | 59 | 62 |
+
+- 絵は Anima-Turbo で作った (`hwnpu-image generate -m anima-turbo`、1 枚 32 秒): 人物とひまわり畑、縁側の犬、風景。最初の風景 (湖と橋) は層の差が小さく、上下に白い帯も出た。手前に草と杭、橋、そのすぐ奥に家と風車、森、山、と層を増やした文で作り直した。絵はリポジトリに入れていない (Anima のライセンスは非商用)
+
+**深度のモデルの比較** (Ryzen AI 9 365、XDNA 2。絵 3 枚: 1024×672 が 1 枚、1024×1024 が 2 枚。`ai/vision` を通して。ほかのセッションが NPU を使っている間):
+
+| モデル | 1 枚 (2 枚目から) | 最初の 1 枚 | NPU のメモリ | プロセス | 深度の大きさ | 書き出し | 見た目 |
+|---|---|---|---|---|---|---|---|
+| DA3-SMALL | 0.31 秒 | 0.57 秒 | 0.48 GiB | 0.17 GiB | 504 | 1.0 GB | 輪郭がぼやけ、細い枝や髪は消える |
+| DA3-BASE | 0.43 秒 | 0.86 秒 | 0.74 GiB | 0.17 GiB | 504 | 2.3 GB | SMALL より少しはっきり |
+| DA3MONO-LARGE | 0.85 秒 | 1.63 秒 | 1.36 GiB | 0.21 GiB | 504 | 6.2 GB | 輪郭がはっきり、背景の層も分かれる |
+| DA3METRIC-LARGE | 0.85 秒 | 1.50 秒 | 1.36 GiB | 0.21 GiB | 504 | 6.2 GB | MONO と同じくらい。空や花に細かい粒が出る絵がある |
+| moge-2-vits | 2.52 秒 | 3.15 秒 | 1.94 GiB | 0.44 GiB | 1024 | 2.4 GB | 輪郭は細かいが、背景の層の差が小さい |
+| moge-2-vitb | 2.68 秒 | 3.26 秒 | 2.10 GiB | 0.42 GiB | 1024 | 3.6 GB | 輪郭が細かく、背景の層も分かれる |
+| moge-2-vitl | 3.41 秒 | 4.17 秒 | 2.62 GiB | 0.50 GiB | 1024 | 7.7 GB | 一番細かい。空を「一番遠い」に切り分ける |
+
+- 正解の深度がないので、見た目は灰色の絵を並べて目で比べたもの
+- 用途 `depth` の構成 (8 GB から SMALL、16 GB から BASE、24 GB から MONO-LARGE) はそのまま。サンプルは `vision.Depth("depth")` で、この機械では MONO-LARGE (読み込みを入れて 1.4 秒)
+- 書き出しは NAS から取る (SMALL 81 秒、BASE 152 秒、METRIC-LARGE 264 秒、moge-2-vitl 358 秒)
+
+**確かめたこと** (Ryzen AI 9 365。この機械に画面もカメラもない)
+
+- シェーダー: X11 と OpenGL の開発用のパッケージと Xvfb を `apt-get download` と `dpkg -x` で作業用の場所に展開し、仮の画面 (ソフトウェアの GL) で窓を動かして、描いたフレームを書き出した (`parallax --dump`)。8 つの視点で `Scene.Render` と比べて、差の平均 0.06〜0.10 / 255、8 を超えて違う画素は 0.016 % 以下
+- 頭の追跡: 実写風の顔の絵 (FLUX.2 klein で作った) を 640×480 のフレームの中央、左右、上、半分の大きさに置いたものを、カメラの代わりに 1 秒 15 枚で流した (`parallax track --frames`)。顔のあるフレーム 75 枚すべてで顔が見つかり、頭の位置は中央 0.00、左右 ±0.47、上 +0.56、距離 0.45 m、半分の大きさで 0.86 m。YuNet は CPU で 1 枚 17 ms
+- YuNet はアニメの絵の顔を見つけない (Anima の人物の絵で 0 件)。見る人の顔 (実写) には関係しない
+- `go test -race ./ai/...`、`samples` の `go vet -tags headless ./...` と `go test -tags headless ./parallax/`、`GOOS=darwin GOARCH=arm64 go vet`
+
+**確かめていないこと・残り**
+
+- 実物のカメラ (`capture.Camera` はビルドだけ)、実物の画面と GPU、Mac (Core AI での深度と、Metal での窓)、Windows
+- この機械の ONNX Runtime (Ubuntu の 1.23) は読み込むと `Schema error: ... already registered` を数百行出す。`hwnpu-image face-detect` でも同じで、結果には関わらない
+- 画像の生成はまだライブラリにない (J2) ので、サンプルは絵のファイルを読む。物体、姿勢、切り抜き、OCR、ラベルは `ai/vision` に未着手

@@ -5,7 +5,7 @@
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりにする。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモで、中身はライブラリを呼ぶだけにしていく (コマンドの名前と場所は変えない)。アプリは複数のモデルをつないで使う。例:
 
 - 同時通訳: 文字起こし → 翻訳 → 読み上げ (`samples/interpreter`、動く)
-- 擬似立体: 画像の生成 → 深度の推定 → カメラの映像から頭の位置を追い、視差をつけて描く
+- 擬似立体: 画像の生成 → 深度の推定 → カメラの映像から頭の位置を追い、視差をつけて描く (`samples/parallax`。絵はコマンドで生成したものを読む)
 - 声で絵を直す: 絵の構成要素の検出と、文字起こしと、画像の編集
 
 ## 1. パッケージの構成
@@ -21,7 +21,7 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/text` | 翻訳 (`Translate`)、チャット (`Chat`) | v0 |
 | `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
 | `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
-| `hwnpu/ai/vision` | 深度、顔、物体、姿勢、切り抜き、OCR、ラベル | まだ |
+| `hwnpu/ai/vision` | 深度 (`Depth`)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)。物体、姿勢、切り抜き、OCR、ラベルはまだ | v0 (深度と顔) |
 | `hwnpu/ai/imagegen` | 画像の生成 (Anima、FLUX.2 / FLUX.3 klein、Chroma) | まだ |
 | `hwnpu/ai/sound` | 音楽、効果音、音高、採譜 | まだ |
 
@@ -366,9 +366,26 @@ interpreter status
 - 発話が終わってから訳す**逐次通訳**。話している途中の仮の字幕 (B5) と、できた音から返す読み上げ (B6) はまだ
 - 次の形: ブラウザのマイクの音声を WebSocket で受ける (`ai/server`、8 節) ものは D1 に残る
 
-### 9.2 擬似立体 (まだ)
+### 9.2 擬似立体 (`samples/parallax`)
 
-画像の生成 (Anima: アニメの絵は前景と背景がはっきり分かれ、視差と相性がよい) → 深度 (前が全部終わってから) → カメラの映像から顔 (`Latest`) → 頭の位置を持っておき (`Hold`)、メトロノームで描く。要るもの: `ai/vision` (深度、顔)、`ai/imagegen`、深度からメッシュと描画 (Go)、カメラの入力 (hwcamera。フレームは Go のメモリの画像にしてから流れに載せる。録画や画像のファイルでも動くようにする)。
+絵を、奥行きがあるように見せる。絵の深度を 1 回推定し、カメラで見る人の頭の位置を追い、その視点から見た絵を描く (奥の点は少し、手前の点は大きく動かす)。
+
+```
+parallax models prepare                    # ダウンロード、変換、コンパイル
+parallax picture.png                       # 窓。カメラで頭を追う
+parallax picture.png --head pointer        # カメラなし: マウスが頭の代わり
+parallax picture.png --head sweep          # 勝手に回す
+parallax render picture.png -o deep.gif    # 窓なし: 頭が一回りする間の絵を GIF に
+parallax track --frames a.png,b.png        # カメラなし: 絵をフレームとして流し、頭の位置を出す
+```
+
+- **つなぎ方**: 呼び出し (絵 → 深度。1 回動かしてモデルを下ろす) と、ネットワーク (`camera → face-detect (newest) → head → steady → view`。動き続ける) と、窓の拍 (Ebitengine が 1 秒に 60 回、最後に届いた視点で描く)
+- **モデル**: 深度は Depth Anything 3 (用途 `depth`)、顔は YuNet (用途 `face-detect`)。頭の位置は、顔の両目の間隔からピンホールのカメラとして出す (`vision.HeadOf`)。`steady` はプログラムの節で、検出の揺れをならし、顔が 1.5 秒見えなければ視点を中央に戻す (`flow.WhenIdle`)
+- **描画**: Kage のシェーダー (`parallax.kage`)。画素ごとに、目からの視線を手前の層から奥へ 32 層たどり、絵がその層以上に近い最初の点を、その間を 5 回 2 分して求めて描く。同じ計算を Go で書いた `Scene.Render` があり、窓なしの `render` とテストが使う
+- **奥の層**: 近さ (深度の逆数) のままだと、目のすぐ前のものの奥は全部一緒に動く。奥の層を引き離す曲線 (`--layers`、既定 30) と、輪郭が裂けないように近いものを数画素広げる処理 (`--edge`) をかけてから描く
+- **絵**: 層のはっきりした絵がよい (人物や動物と背景、奥行きの違うものがいくつもある風景)。テストの絵は Anima で作った (`hwnpu-image generate -m anima-turbo`)。画像の生成はまだライブラリにないので、サンプルは絵のファイルを読む
+- **カメラ**: hwcamera (`samples/capture.Camera`)。フレームを Go のメモリの絵に写して流す
+- 窓は Ebitengine。Linux では X11 と OpenGL の開発用のパッケージが要り、ない機械は `-tags headless` で窓以外をビルドする
 
 ## 10. v0 の実装 (2026-11-21)
 

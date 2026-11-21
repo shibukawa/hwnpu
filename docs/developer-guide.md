@@ -6,8 +6,8 @@
 
 hwnpu is a set of Go libraries that run AI models on the NPU. `hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` are demos that try its features one at a time. An app registers several models, prepares them ahead of time, and runs them joined together.
 
-- There now: speech to text, translation, chat, text to speech, a VAD by loudness, the ways of joining models, commands for an app's command line
-- Not there yet: pictures (depth, faces, objects, generation), music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
+- There now: speech to text, translation, chat, text to speech, a VAD by loudness, the depth of a picture, finding faces and where a head is, the ways of joining models, commands for an app's command line
+- Not there yet: image generation, and objects, poses, cutouts and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel it calls the same preparing and loading as the commands, but it was not run through this library there
 - The whole plan is in [app-api.md](app-api.md) and the list of work in [app-api-tasks.md](app-api-tasks.md) (both in Japanese)
 
@@ -26,6 +26,7 @@ uses                    bytes to download,   compile for the NPU         store a
 | `github.com/shibukawa/hwnpu/ai` | `App` (registration), `Use[T]` (a typed handle), `Plan` (planning and preparing), `Runtime` (running), `Store` (where things are kept) |
 | `.../ai/speech` | Speech to text `Transcribe`, text to speech `Speak`, a VAD by loudness, reading and writing WAV |
 | `.../ai/text` | Translation `Translate`, chat `Chat` |
+| `.../ai/vision` | The depth of a picture `Depth`, finding faces `Faces`, where a head is from its face `HeadOf` |
 | `.../ai/flow` | Passing data between models: `Stream` and its tools, the network (nodes and `To`), calls (`Call`) |
 | `.../ai/cli` | Commands for the app's command line: `models`, `status`. It depends on no command line library |
 | `.../ai/cli/konghelper` | The adapter of those commands for kong |
@@ -99,6 +100,11 @@ func main() {
 ```
 
 A working example that joins several models is [samples/interpreter](../samples/interpreter): it interprets speech, from the microphone or a recording, into speech in another language. The samples are a module of their own (`samples/go.mod`) and take the microphone and the camera from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library ([section 6.5](#65-live-inputs-the-microphone-and-the-camera)).
+
+| Sample | What it is |
+|---|---|
+| `samples/interpreter` | An interpreter: the microphone or a recording → speech to text → translation → text to speech. Spoken commands. A network and a call |
+| `samples/parallax` | A picture shown as if it were deep: its depth estimated once, the viewer's head followed with the camera, the picture drawn from where the head is (Ebitengine, a Kage shader) |
 
 ```
 cd samples
@@ -403,7 +409,7 @@ mic = flow.Live(ctx, mic) // to pace it as a microphone would
 - Seen on the machine: joined without keeping, the sound of the seconds in which the first utterance was transcribed and translated was lost; the second utterance lost its beginning and the third was gone. With keeping, all three came through
 - `flow.Live` (a recording at a microphone's pace) only waits when its reader is late, and loses nothing. A recording does not show this difference
 - Stopping the microphone and stopping the stages after it are two things. `capture.Mic` ends (without an error) when its ctx is cancelled, and the stages after it work off what was heard, so they are given a context of their own (`samples/interpreter` turns the microphone off at the first Ctrl-C and ends at the second)
-- The camera (for the pseudo-3D sample): a frame of hwcamera in the driver's memory needs its `Release`, so frames are made pictures in Go's memory (`WithFormat(hwcamera.RGBA)`) before they go into a stream, and pass through `flow.Latest`. It is not written yet
+- The camera (`capture.Camera`): a frame of hwcamera in the driver's memory needs its `Release`, so each is copied into a picture in Go's memory before it goes into the stream (`flow.Stream[image.Image]`). The stage after it is joined over an edge of `flow.Newest()`. It was not run with a real camera yet
 - Outputs (a speaker, a screen) follow the same idea: the library has none ([D19](#10-design-questions))
 
 ### 6.6 Declaring the network
@@ -590,6 +596,42 @@ pcm, err := say.Do(ctx, rt, flow.Text{Text: "こんにちは"})
 - Taking a model with `Use.Get` and calling it yourself (section 5) works as before. A `Call` writes the same thing as a structure, which puts it among the app's models and in `APP models`
 - `samples/interpreter say TEXT` has this shape
 
+### 6.8 An example: a picture shown as if it were deep (`samples/parallax`)
+
+An app in which the three ways of joining all appear. The picture's depth is needed once, the head's place each time it comes, and the drawing runs on a beat of its own. Below is an excerpt of the sample, without the insides of `smooth` and the other functions.
+
+```go
+depth := vision.Depth("depth")
+faces := vision.Faces("face-detect")
+app := ai.NewApp("parallax")
+
+// a call: the picture → its depth. Run once, and the model unloaded after
+depthOf := ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
+
+// a network: camera → faces (the newest frame only) → where the head is → smoothed → the view
+camera := flow.Source[image.Image]("camera")
+steady := flow.Each("steady", smooth, flow.WhenIdle(1500*time.Millisecond, recentre)) // back to the middle when no face is seen
+view := flow.Sink[View]("view").Do(keepNewest)
+app.From(camera).To(vision.FacesNode(faces), flow.Newest()).To(vision.HeadNode(vision.HeadOptions{})).To(steady).To(view)
+
+rt, _ := app.Open(ctx)
+d, _ := depthOf.Do(ctx, rt, picture)            // when the one before has finished
+depth.Release(rt)
+near := d.Near(w, h)
+
+camera.From(capture.Camera(ctx, capture.CameraOptions{}))
+go rt.Run(ctx)                                  // as the chunks come (the detector reads the newest frame only)
+runWindow(picture, near, latestView)            // on the beat: the window draws 60 times a second with the view that came last
+```
+
+- **The drawing's beat is Ebitengine's.** The window's `Update` / `Draw` run 60 times a second and read the newest view the network's last node left (the idea of `flow.Hold`). With a detector that finds 15 times a second, the window does not wait for it
+- **The parallax**: each point of the picture moves in proportion to how near it is (a far one a little, a near one more). For each pixel of the screen the ray from the eye is followed from the nearest layer to the farthest, and the first point at which the picture is at least that near is drawn, so a near thing hides what is behind it. There is the Kage shader (`parallax.kage`) and the same reckoning in Go (`Scene.Render`); their pixels were compared at 8 views and agree
+- The nearness is the inverse of the depth, so with grass right before the eye, the bridge, the houses and the mountains behind it move almost as one (as an eye would see them, but no depth is felt). So a curve pulls the far layers apart (`Layers`, `--layers`, 30 by default: a nearness n becomes log(1 + 30n) / log(31); 0 leaves it). Between opposite views the mountains then moved 0 pixels, the forest 0→4, the houses 1→7, the bridge 3→17 and the post in front 43→57 (a picture of 1024 pixels)
+- An estimated depth's outlines are softer than the real ones, so near things are made a few pixels larger first (`Spread`). Without that the outlines tear into streaks
+- What the picture does not show (the background that appears when a near thing moves aside) is not in the picture, so it is stretched. It shows when the points move too far (`--strength`)
+- The pointer can stand in for the head (`--head pointer`), the view can go around by itself (`--head sweep`), a GIF can be written without a window (`parallax render`), and pictures given as the camera's frames (`parallax track --frames`)
+- The window is Ebitengine's, which on Linux needs the development packages of X11 and OpenGL. A machine without them builds everything but the window with `-tags headless`
+
 ## 7. The models
 
 Every model has a batch form and a stream form.
@@ -618,6 +660,36 @@ Every model has a batch form and a stream form.
 - `TranslateOptions{To, From, Form, Context, History, Glossary, MaxTokens}`: an empty `To` is English for a text with Japanese characters and Japanese for any other
 - `ChatOptions{MaxTokens, Think, ThinkBudget, Temperature}`
 - Not there yet: tool calls, images and audio as input, answers in a given form (JSON Schema), embeddings
+
+### 7.3 `ai/vision`
+
+| | Batch | Stream, node |
+|---|---|---|
+| `DepthEstimator` (Depth Anything 3, MoGe-2) | `Estimate(ctx, img) (*DepthMap, error)` | `EstimateStream`, `vision.DepthNode(use)` (a picture → its depth) |
+| `FaceDetector` (YuNet) | `Detect(ctx, img) ([]Face, error)` | `DetectStream`, `vision.FacesNode(use)` (a frame → `Found{Frame, Faces}`) |
+| Where a head is (no model) | `vision.HeadOf(face, frame, opts)`, `vision.NearestHead(faces, frame, opts)` | `vision.HeadNode(opts)` (`Found` → `Head`; nothing for a frame without a face) |
+
+- A picture is an `image.Image`, and a camera's frames a stream of them
+- **`DepthMap`**: `Depth` is how far each point is (larger is farther; meters for MoGe-2, a unit of the picture's own for DA3). Its size is the model's input's, not the picture's. `Near(w, h)` gives how near each pixel is at the picture's size (1 the nearest, 0 the farthest, in proportion to the inverse of the depth): what a parallax shader reads. `NearImage(w, h)` is that as a gray picture
+- **`Face`**: the box, how sure the model is, and the eyes, the nose and the corners of the mouth (in the picture's pixels). `RightEye` is the person's own right eye (on the picture's left)
+- **`Head`**: where a head is before the camera. `X` and `Y` are across the camera's view, −1 to 1 (`X` to the person's own right: mirrored from the frame); `Z` is how far it is from the camera in meters, from how far apart the eyes are in the frame, by a pinhole camera (`HeadOptions.FOV` is the horizontal field of view, 60 degrees by default; `Eyes` the distance between the eyes, 63 mm by default). It is an estimate for a face that looks at the camera
+- **YuNet is a model of real faces.** It does not find the faces of anime pictures (none in a picture of a person made with Anima)
+- **Where they run**: depth on the NPU. On a machine with AMD's NPU the definitions (models.yaml's `device`) put YuNet on the CPU (a small graph: a tenth of the time and of the energy there). On the CPU it needs ONNX Runtime (`HWNPU_ONNXRUNTIME` is the library's path). `FaceDetector.Device()` is `npu` or `cpu`
+- On Apple's Neural Engine and Intel's NPU the depth's program of a shape is converted when a picture of that shape first comes (seconds; its first load compiles it)
+- **Which depth model**: `vision.Depth("depth")` picks by the machine's memory (DA3-SMALL from 8 GB, DA3-BASE from 16 GB, DA3MONO-LARGE from 24 GB). A name fixes it (`vision.Depth("moge-2-vitl")`). These are the values on AMD's NPU (Ryzen AI 9 365) over three pictures (one of 1024×672, two of 1024×1024)
+
+  | Model | A picture (from the second) | The first picture | NPU memory | The depth's size | Outlines and layers |
+  |---|---|---|---|---|---|
+  | DA3-SMALL | 0.31 s | 0.57 s | 0.48 GiB | 504 | Blurred outlines; thin branches and hair are lost. The order of the layers is right |
+  | DA3-BASE | 0.43 s | 0.86 s | 0.74 GiB | 504 | A little sharper than SMALL |
+  | DA3MONO-LARGE | 0.85 s | 1.63 s | 1.36 GiB | 504 | Sharp outlines (strands of hair, branches). The layers of the background (a field of flowers, a garden) are apart too |
+  | DA3METRIC-LARGE | 0.85 s | 1.50 s | 1.36 GiB | 504 | About as MONO. Some pictures get fine specks in the sky and the blossoms |
+  | moge-2-vits | 2.52 s | 3.15 s | 1.94 GiB | 1024 | Fine outlines, but little difference between the layers of the background |
+  | moge-2-vitb | 2.68 s | 3.26 s | 2.10 GiB | 1024 | Fine outlines, and the layers of the background are apart |
+  | moge-2-vitl | 3.41 s | 4.17 s | 2.62 GiB | 1024 | The finest. It cuts the sky off as the farthest |
+
+  The process takes 0.2 GiB more (0.4 to 0.5 GiB with MoGe-2). Depth Anything 3 gives a depth of 504 pixels on its long side, MoGe-2 one of 1024. For one estimate of one picture take DA3MONO-LARGE (enough for the parallax of a still picture), or moge-2-vitb / vitl when the outlines must be fine; over a video take DA3-SMALL (3 pictures a second). MoGe-2 also gives a depth in metres (`DepthMap.Metric`)
+- Not there yet: objects, poses, cutouts, OCR, labels
 
 ## 8. The app's command line (`ai/cli`)
 
@@ -937,7 +1009,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Before: `ai/aicli` gave kong structs alone
 - **Not decided**: adapters for other libraries (cobra and the like). They would add to the module's dependencies, so they would be modules of their own
 
-**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. Planned: `ai/vision`, `ai/imagegen`, `ai/sound`.
+**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. `ai/vision`. Planned: `ai/imagegen`, `ai/sound`.
 
 - **Not decided**: the name `ai` (hard to change once it is public); `speech` holding both speech to text and text to speech; the name `text` (easily confused beside the standard library's `text/...`)
 
@@ -976,7 +1048,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 ## 11. Not there yet
 
-- Pictures: depth, faces, objects, poses, cutouts, OCR, labels (`ai/vision`); generation (`ai/imagegen`)
+- Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); generation (`ai/imagegen`; for now pictures are made with the command, `hwnpu-image generate`)
 - Sound: music, sound effects, pitch, notes (`ai/sound`)
 - Moving the commands: making `hwnpu-audio`, `hwnpu-chat` and `hwnpu-image` only call this library
 - Managing what stays loaded (D9, D10), a local server (OpenAI compatible and others), bundles to ship, build tags
