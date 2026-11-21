@@ -27,7 +27,8 @@ ai.NewApp(uses...)  →  app.Plan(ctx)   →   plan.Run(ctx, fn)     →    app.
 | `.../ai/speech` | 文字起こし `Transcribe`、読み上げ `Speak`、音量の VAD、WAV の読み書き |
 | `.../ai/text` | 翻訳 `Translate`、チャット `Chat` |
 | `.../ai/flow` | モデルの間のデータの渡し方: `Stream` と道具、ネットワーク (節と `To`)、呼び出し (`Call`) |
-| `.../ai/aicli` | アプリのコマンドラインに足す kong のサブコマンド: `models`、`status` |
+| `.../ai/cli` | アプリのコマンドラインに足すサブコマンド: `models`、`status`。コマンドラインのライブラリに依存しない |
+| `.../ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ |
 
 **用語**
 
@@ -618,19 +619,47 @@ pcm, err := say.Do(ctx, rt, flow.Text{Text: "こんにちは"})
 - `ChatOptions{MaxTokens, Think, ThinkBudget, Temperature}`
 - まだない: 道具の呼び出し、画像や音声の入力、決まった形 (JSON Schema) で答える生成、埋め込み
 
-## 8. アプリのコマンドライン (`ai/aicli`)
+## 8. アプリのコマンドライン (`ai/cli`)
+
+モデルの世話をするサブコマンド (一覧、ダウンロード、コンパイル、NPU の状態) は `ai/cli` にあります。**コマンドラインのライブラリには依存しません。** 使い方は 3 つです。
+
+**(1) 関数を呼ぶ。** 自分のコマンドの中から呼びます。どのコマンドラインのライブラリでも、GUI のボタンからでも使えます。
 
 ```go
-var cli struct {
-	Run    RunCmd       `cmd:"" default:"withargs" help:"..."`
-	Models aicli.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
-	Status aicli.Status `cmd:"" help:"This machine's NPU and what uses it."`
+cli.List(ctx, app, cli.ListOptions{})                             // 一覧 (JSON: true で JSON)
+cli.Download(ctx, app, cli.PrepareOptions{})                      // ダウンロードと変換
+cli.Prepare(ctx, app, cli.PrepareOptions{AcceptLicenses: true})   // さらにコンパイル
+cli.Status(ctx, app, cli.StatusOptions{Watch: 2 * time.Second})   // NPU の状態
+```
+
+**(2) 引数を渡す。** コマンドラインを自分で読むアプリ (標準の `flag` だけ、など) は、引数をそのまま渡します。
+
+```go
+func main() {
+	ctx := context.Background()
+	if handled, err := cli.Run(ctx, app, os.Args[1:]); handled {   // "models ..." か "status ..." だった
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	// ここからアプリ自身の引数。ヘルプには cli.Usage を足せる
+}
+```
+
+**(3) kong のアダプタ (`ai/cli/konghelper`)。** kong を使うアプリは、構造体を自分のコマンドの横に置きます。
+
+```go
+var cmds struct {
+	Run    RunCmd            `cmd:"" default:"withargs" help:"..."`
+	Models konghelper.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU and what uses it."`
 }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	k := kong.Parse(&cli, aicli.Bind(ctx, app))
+	k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 	k.FatalIfErrorf(k.Run())
 }
 
@@ -638,12 +667,12 @@ func main() {
 func (c *RunCmd) Run(ctx context.Context, app *ai.App) error { ... }
 ```
 
-| コマンド | 中身 |
-|---|---|
-| `APP models` | 使うモデルの一覧: 状態 (missing、ready, not compiled、compiled、bundled)、落とす量、メモリ、ライセンス、同時に動かす合計と機械のメモリ、アプリが構成で選んだ理由。`--json` |
-| `APP models download` | ダウンロードと変換。NPU は要りません。`--accept-license`、`-q` |
-| `APP models prepare` (`compile`) | download のあと、各モデルを 1 回読み込んでコンパイル |
-| `APP status` | `hwnpu status` と同じ: デバイス、ドライバ、負荷、電力、使っているプロセス、キャッシュ。`-w 2s`、`--json`、`--wake` |
+| コマンド | 関数 | 中身 |
+|---|---|---|
+| `APP models` | `cli.List` | 使うモデルの一覧: 状態 (missing、ready, not compiled、compiled、bundled)、落とす量、メモリ、ライセンス、同時に動かす合計とこの機械でモデルに使える量、アプリが構成で選んだ理由、ネットワーク。`--json` |
+| `APP models download` | `cli.Download` | ダウンロードと変換。NPU は要りません。`--accept-license`、`-q` |
+| `APP models prepare` (`compile`) | `cli.Prepare` | download のあと、各モデルを 1 回読み込んでコンパイル |
+| `APP status` | `cli.Status` | `hwnpu status` と同じ: デバイス、ドライバ、負荷、電力、使っているプロセスと NPU のメモリ、キャッシュ。`-w 2s`、`--json`、`--wake` |
 
 ```
 $ interpreter models
@@ -654,9 +683,16 @@ transcribe  transcribe  whisper-large-v3-turbo  compiled  -         2.2 GB  mit
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  plamo-community-license (conditional)
 speech      speak       LFM3-Audio-2B-TTS       compiled  -         2.9 GB  lfm-open-1.0 (conditional)
 
-Their checkpoints are here or come from the sources; about 7.8 GB running together, of this machine's 16 GB. ...
+Their checkpoints are here or come from the sources; about 7.8 GB running together (a machine of 16 GB has about 9 GB for models). ...
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
+
+The network:
+  mic → vad → transcribe → heard → commands → translate → said → speech (keep 4) → out
+  say → translate → speech
 ```
+
+- ほかのコマンドラインのライブラリ (cobra、urfave/cli など) のアダプタは置いていません。(1) の関数を、そのライブラリのコマンドから呼んでください
+- `cli.Status` は標準出力に書きます (`hwnpu status` と同じ表示のため)。`cli.List` と `cli.Download` / `cli.Prepare` は、書く先を `Out` と `Log` で変えられます
 
 ## 9. 制約とルール
 
@@ -732,17 +768,29 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 
 ### 9.4 メモリ
 
-**NPU のバッファは固定されたメモリで、スワップに逃がせません。** 超えると、ほかのアプリがスワップに追い出されます。同時に読み込んでいるモデルのメモリは足し算です (共有されません)。
+**まず、アプリの `models` サブコマンドを見ます。** その機械で、登録したモデルが同時に動かすといくつになり、モデルに使えるのがいくつで、収まるかどうかを出します (8 節。アプリに `cli` のサブコマンドを足してあれば使えます)。
 
-| 機械のメモリ | 8 GB | 16 GB | 24 GB | 32 GB | 48 GB | 64 GB 以上 |
-|---|---|---|---|---|---|---|
-| モデルに使える目安 (MODEL.md) | 約 3 GB | 約 9 GB | 約 15 GB | 約 22 GB | 約 35 GB | 約 50 GB |
+```
+$ interpreter models
+...
+translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  ...
+...
+about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
+```
 
-- `plan.MemoryGB()` (同時に読み込む合計) を `plan.UsableGB()` (上の表) と比べます。`plan.Fits()` と `APP models` が、超えているかどうかを出します
+- 収まらないときは、その下に注意が出ます (「Together they take more than this machine has for models ...」)
+- ほかの機械ではどうなるかは、`HWNPU_MEMORY=8 interpreter models` のように、機械のメモリを言い換えて見られます
+- プログラムからは `interpreter models --json` (`memory_gb`、`machine_gb`、`usable_gb`、`fits`、モデルごとの `memory_gb`)、または `plan.MemoryGB()`、`plan.MachineGB()`、`plan.UsableGB()`、`plan.Fits()`
+- **実際に使っている量**は `APP status` が出します: NPU を使っているプロセスごとの、プロセスのメモリと NPU のメモリ (`-w 2s` で見続けられます)
+
+**数字の意味**
+
+- **NPU のバッファは固定されたメモリで、スワップに逃がせません。** 超えると、ほかのアプリがスワップに追い出されます。同時に読み込んでいるモデルのメモリは足し算です (共有されません)
+- 「モデルに使える量」は、OS とふだんのアプリの分を引いた目安です (MODEL.md)。機械のメモリが 8 GB で約 3 GB、16 GB で約 9 GB、24 GB で約 15 GB、32 GB で約 22 GB、48 GB で約 35 GB、64 GB で約 50 GB
+- モデルごとのメモリは models.yaml の値で、プロセスのぶんと NPU のぶんを合わせたものです。Apple では Neural Engine のぶんがプロセスのメモリ (footprint) に出ず、AMD でも NPU のバッファはプロセスの RSS に出ないので、OS のプロセスの一覧だけでは分かりません
 - 例 (同時通訳、AMD の値): 文字起こし 2.2 GB + 読み上げ 2.9 GB に、翻訳が 0.8B なら 1.0、2B なら 2.7、8B なら 6.5 GB。16 GB の機械 (約 9 GB) に 8B は入りません
-- **メモリの数え方**: Apple では Neural Engine のぶんがプロセスのメモリ (footprint) に出ません (カーネルの固定メモリ。機械全体の値しか読めません)。AMD でも NPU のバッファはプロセスの RSS に出ません。models.yaml の `memory` は両方を合わせた値です
 
-機種ごとに分かっている上限:
+**機種ごとに分かっている上限** (サブコマンドには、まだ出ません)
 
 | 機種 | 制約 | 出どころ |
 |---|---|---|
@@ -884,12 +932,12 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 
 - **未定**: 登録のときに変換の設定を書けるようにするか (`text.Chat("lfm3").Context(8192)`)。コマンドを載せ替えるには要る
 
-**D17. kong に決め打ち** — 今: `aicli` は kong の構造体。
+**D17. サブコマンドとコマンドラインのライブラリ** — 今 (2026-11-21 に決めた): サブコマンドの中身は `ai/cli` の関数で、コマンドラインのライブラリに依存しない。kong 用は `ai/cli/konghelper` のアダプタ。引数をそのまま渡す `cli.Run(ctx, app, args)` もある (8 節)。
 
-- 別の案: 同じ中身を関数でも出す (`aicli.WriteModels(w, plan)`、`aicli.RunPrepare(ctx, app, opts)`)。ほかの CLI のライブラリや GUI から呼べる
-- **未定**: 関数も出すか
+- 前の形: `ai/aicli` が kong の構造体だけを出していた
+- **未定**: ほかのライブラリ (cobra など) のアダプタを置くか。置くと本体のモジュールの依存が増えるので、置くなら別のモジュールにする
 
-**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/aicli`。予定: `ai/vision`、`ai/imagegen`、`ai/sound`。
+**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。予定: `ai/vision`、`ai/imagegen`、`ai/sound`。
 
 - **未定**: `ai` という名前 (公開するとあとから変えにくい)。`speech` に文字起こしと読み上げの両方を置く分け方。`text` という名前 (標準ライブラリの `text/...` と並ぶと紛らわしい)
 

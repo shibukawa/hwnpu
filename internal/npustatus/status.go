@@ -1,6 +1,6 @@
 // Package npustatus is hwnpu status: this machine's NPU (the device, its driver, how busy it is,
 // what uses it), what hwnpu runs on, and the cache. It is the command of hwnpu and of the apps
-// made with the ai package (aicli.Status).
+// made with the ai package (cli.Status).
 package npustatus
 
 import (

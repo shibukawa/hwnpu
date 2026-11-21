@@ -110,7 +110,8 @@ res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
 | `ai/speech` | 文字起こし (Whisper)、読み上げ (LFM3-Audio)、音量の VAD、WAV の読み書き |
 | `ai/text` | 翻訳 (PLaMo 3 Translate)、チャット |
 | `ai/flow` | モデルの間のデータの渡し方: 塊の流れ `Stream` と、その道具 |
-| `ai/aicli` | アプリのコマンドラインに足す kong のサブコマンド: `models` (一覧、`download`、`prepare`)、`status` |
+| `ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、`download`、`prepare`)、`status`。コマンドラインのライブラリに依存しない (`cli.List`、`cli.Run(ctx, app, args)` など) |
+| `ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ |
 
 - **機械のメモリごとの構成**: 用途の名前は、1 つだけ動かすときにその機械で動く一番大きなモデルを選びます。いくつも同時に動かすアプリは、`At(gb, name)` (そのメモリ以上の機械では別のモデル) と `As(gb)` (その機械として選ぶ) で、主になるモデルを大きく、補助のモデルを小さくできます。`APP models` が、選ばれたモデル、同時に動かす合計、機械のメモリを出します
 - **1 つずつ動かす**: `use.Release(rt)` でモデルを下ろすと、続けて使う大きなモデル (画像の生成のあとに深度など) が同時にメモリに載りません
@@ -149,19 +150,21 @@ app.From(mic).To(speech.VADNode(speech.VADOptions{})).To(hear).To(log).To(trans)
 err := app.Run(ctx)
 ```
 
-### アプリのコマンドライン (ai/aicli)
+### アプリのコマンドライン (ai/cli)
+
+サブコマンドの中身は `ai/cli` の関数で、コマンドラインのライブラリに依存しません。自分のコマンドから `cli.List(ctx, app, cli.ListOptions{})` などを呼ぶか、引数をそのまま `cli.Run(ctx, app, os.Args[1:])` に渡します。kong を使うアプリには `ai/cli/konghelper` のアダプタがあります。
 
 ```go
-var cli struct {
-	Run    RunCmd       `cmd:"" default:"withargs" help:"..."`
-	Models aicli.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
-	Status aicli.Status `cmd:"" help:"This machine's NPU and what uses it."`
+var cmds struct {
+	Run    RunCmd            `cmd:"" default:"withargs" help:"..."`
+	Models konghelper.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU and what uses it."`
 }
-k := kong.Parse(&cli, aicli.Bind(ctx, app))
+k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` は使うモデルと要るものの一覧、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
+`APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
 
 - 今ある機能は音声と文だけです。画像 (深度、顔、生成など) は、まだコマンドからだけ使えます
 - 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません

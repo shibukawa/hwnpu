@@ -2,7 +2,7 @@
 
 作成: 2026-11-11。更新: 2026-11-21 (`ai` の v0 を main に載せ直した。構成は [app-api.md](app-api.md) の 1 節、実装の記録は design.md 16.281)。この文書は、その計画を複数の機械で手分けして実装するための作業の一覧。
 
-**2026-11-21 に変わったこと**: `ai` は 1 つのパッケージから、`ai` (登録、計画、準備、実行)、`ai/flow` (流れ、非同期、メトロノーム)、機能のパッケージ (`ai/speech`、`ai/text`)、`ai/aicli` (kong のサブコマンド) に分けた。`ai.NewRegistry` と `rt.Transcriber("transcribe")` は、`ai.NewApp` と型のついた `Use` (`speech.Transcribe("transcribe").Get(ctx, rt)`) になった。下の節の本文にある古い名前は、その読み替えで読む。Whisper と LFM3-Audio の読み上げは AMD の NPU で動くようになり (16.253、16.254)、`samples/interpreter` (録音を読む形) は aix1 で動いた。
+**2026-11-21 に変わったこと**: `ai` は 1 つのパッケージから、`ai` (登録、計画、準備、実行)、`ai/flow` (流れ、非同期、メトロノーム)、機能のパッケージ (`ai/speech`、`ai/text`)、`ai/cli` (サブコマンド。kong 用は `ai/cli/konghelper`) に分けた。`ai.NewRegistry` と `rt.Transcriber("transcribe")` は、`ai.NewApp` と型のついた `Use` (`speech.Transcribe("transcribe").Get(ctx, rt)`) になった。下の節の本文にある古い名前は、その読み替えで読む。Whisper と LFM3-Audio の読み上げは AMD の NPU で動くようになり (16.253、16.254)、`samples/interpreter` (録音を読む形) は aix1 で動いた。
 
 読む順: [app-api.md](app-api.md) → [prebuilt.md](prebuilt.md) の 1〜4 節 → [handoff-ane-cache.md](handoff-ane-cache.md) の 4 節。
 
@@ -28,7 +28,7 @@
 | **B2** | `ai`: 実行 (`Open`、文字起こし、翻訳、チャット、読み上げ、音量の VAD) | どこでも、確認は Mac | B1 | 中 | v0 済み (aix1 で確認。Mac と Intel での確認は残り) |
 | **B0** | 流れの型 (`Chunk`、`Stream`) と塊をまとめる道具、3 つのつなぎ方 (`ai/flow`: 一括、`Async` / `Latest` / `Hold`、`Metronome` / `Pace` / `Live`) | どこでも | — | 小 | 済み |
 | **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 未着手 |
-| B7 | `ai/aicli`: アプリに足す kong のサブコマンド (`models`、`status`) | どこでも | B1 | 小 | 済み |
+| B7 | `ai/cli`: アプリに足すサブコマンド (`models`、`status`)。コマンドラインのライブラリに依存しない関数と、kong のアダプタ `ai/cli/konghelper` | どこでも | B1 | 小 | 済み |
 | B9 | ネットワークと呼び出しの宣言 (`flow` の節、`App.From(...).To(...)` / `Run`、`ai.NewCall(...).Then(...)`、プログラムの節 (`Each`、`Route`、`Both`、`With`)、動いている間の設定の変更) | どこでも | B0 | 中 | v0 済み (入力が 3 つ以上の節、モデルを下ろすタイミング、辺ごとの計測は残り。developer-guide.ja.md の D21) |
 | **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 (16.94) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
 | B4 | アプリのための Neural Engine のロックの方針 | Mac | B2 | 小 | 未着手 |

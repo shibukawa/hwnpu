@@ -127,7 +127,7 @@ func (u Use[T]) Get(ctx context.Context, rt *Runtime) (T, error) {
 func (u Use[T]) Release(rt *Runtime) error { return rt.release(u.req) }
 
 // App is the set of models an application uses: what it registers to plan, download, compile
-// and run them. The aicli package gives an app's command line the commands that do so.
+// and run them. The cli package gives an app's command line the commands that do so.
 type App struct {
 	// Name is the app's name, in its commands' help and its logs.
 	Name string

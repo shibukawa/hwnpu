@@ -43,7 +43,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/aicli"
+	"github.com/shibukawa/hwnpu/ai/cli/konghelper"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/ai/text"
@@ -183,11 +183,11 @@ func (n *network) command(c flow.Chunk[flow.Text], emit func(flow.Chunk[flow.Tex
 }
 
 var cli struct {
-	Run    RunCmd       `cmd:"" default:"withargs" help:"Interpret speech, from the microphone or a recording, into another language, as speech."`
-	Say    SayCmd       `cmd:"" help:"Translate a text and speak it: one call of the translator and the speaker."`
-	Mics   MicsCmd      `cmd:"" help:"The audio inputs --device takes."`
-	Models aicli.Models `cmd:"" help:"The models interpreter uses and its network: what they take, download them, compile them for this machine's NPU."`
-	Status aicli.Status `cmd:"" help:"This machine's NPU: the device, how busy it is and what uses it."`
+	Run    RunCmd            `cmd:"" default:"withargs" help:"Interpret speech, from the microphone or a recording, into another language, as speech."`
+	Say    SayCmd            `cmd:"" help:"Translate a text and speak it: one call of the translator and the speaker."`
+	Mics   MicsCmd           `cmd:"" help:"The audio inputs --device takes."`
+	Models konghelper.Models `cmd:"" help:"The models interpreter uses and its network: what they take, download them, compile them for this machine's NPU."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU: the device, how busy it is and what uses it."`
 }
 
 func main() {
@@ -198,7 +198,7 @@ func main() {
 		kong.Name("interpreter"),
 		kong.Description("Interpret speech into another language on the NPU: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
-		aicli.Bind(ctx, app),
+		konghelper.Bind(ctx, app),
 		kong.Bind(net))
 	k.FatalIfErrorf(k.Run())
 }

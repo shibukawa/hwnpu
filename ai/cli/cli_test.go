@@ -1,4 +1,4 @@
-package aicli
+package cli
 
 import (
 	"bytes"
@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
@@ -60,55 +58,65 @@ func testApp(t *testing.T) *ai.App {
 func TestCommands(t *testing.T) {
 	app := testApp(t)
 	ctx := context.Background()
-	var cli struct {
-		Models Models `cmd:""`
-		Status Status `cmd:""`
-	}
-	parse := func(args ...string) *kong.Context {
+	list := func() string {
 		t.Helper()
-		k, err := kong.New(&cli, kong.Name("demo"), Bind(ctx, app))
-		if err != nil {
-			t.Fatal(err)
-		}
-		kctx, err := k.Parse(args)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return kctx
-	}
-	plan := func() string {
-		t.Helper()
-		p, err := app.Plan(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
 		var b bytes.Buffer
-		writePlan(&b, app, p)
+		if err := List(ctx, app, ListOptions{Out: &b}); err != nil {
+			t.Fatal(err)
+		}
 		return b.String()
 	}
-	if got := parse("models").Command(); got != "models list" {
-		t.Errorf("models runs %q, want the list", got)
-	}
-	if got := parse("models", "compile").Command(); got != "models prepare" {
-		t.Errorf("models compile runs %q, want models prepare", got)
-	}
-	if s := plan(); !strings.Contains(s, "demo's models, for this machine's NPU (intel)") || !strings.Contains(s, "missing") || !strings.Contains(s, "1.6 GB to download") {
+	if s := list(); !strings.Contains(s, "demo's models, for this machine's NPU (intel)") || !strings.Contains(s, "missing") || !strings.Contains(s, "1.6 GB to download") ||
+		!strings.Contains(s, "a machine of 8 GB has about 3 GB for models") {
 		t.Errorf("the list before anything:\n%s", s)
 	}
-	if err := parse("models", "list").Run(); err != nil {
-		t.Errorf("models list: %v", err)
+	var out, log bytes.Buffer
+	if err := Download(ctx, app, PrepareOptions{Quiet: true, Out: &out, Log: &log}); err != nil {
+		t.Fatalf("download: %v", err)
 	}
-	if err := parse("models", "download", "-q").Run(); err != nil {
-		t.Fatalf("models download: %v", err)
+	if !strings.Contains(log.String(), "[1/1] transcribe (whisper-large-v3-turbo): downloading and converting") || !strings.Contains(out.String(), "ready, not compiled") {
+		t.Errorf("download wrote:\n%s\n%s", log.String(), out.String())
 	}
-	if s := plan(); !strings.Contains(s, "ready, not compiled") || !strings.Contains(s, "All here;") {
+	if s := list(); !strings.Contains(s, "ready, not compiled") || !strings.Contains(s, "All here;") {
 		t.Errorf("the list after the download:\n%s", s)
 	}
-	if err := parse("models", "prepare", "-q").Run(); err != nil {
-		t.Fatalf("models prepare: %v", err)
+	if err := Prepare(ctx, app, PrepareOptions{Quiet: true, Out: io.Discard, Log: io.Discard}); err != nil {
+		t.Fatalf("prepare: %v", err)
 	}
-	if s := plan(); !strings.Contains(s, "whisper-large-v3-turbo  compiled") || !strings.Contains(s, "All here and compiled") {
+	if s := list(); !strings.Contains(s, "whisper-large-v3-turbo  compiled") || !strings.Contains(s, "All here and compiled") {
 		t.Errorf("the list after prepare:\n%s", s)
+	}
+	var j bytes.Buffer
+	if err := List(ctx, app, ListOptions{JSON: true, Out: &j}); err != nil || !strings.Contains(j.String(), `"usable_gb": 3`) || !strings.Contains(j.String(), `"compiled": true`) {
+		t.Errorf("the list as JSON: %v\n%s", err, j.String())
+	}
+}
+
+// TestRun: an app that parses its command line itself hands its arguments over.
+func TestRun(t *testing.T) {
+	app := testApp(t)
+	ctx := context.Background()
+	for _, args := range [][]string{nil, {"interpret", "talk.wav"}, {"--mic"}} {
+		if handled, err := Run(ctx, app, args); handled || err != nil {
+			t.Errorf("%q is the app's own: handled %v, %v", args, handled, err)
+		}
+	}
+	for _, args := range [][]string{{"models"}, {"models", "list", "--json"}, {"models", "download", "-q"}, {"models", "compile", "-q"}, {"models", "--json"}} {
+		if handled, err := Run(ctx, app, args); !handled || err != nil {
+			t.Errorf("%q: handled %v, %v", args, handled, err)
+		}
+	}
+	if p, err := app.Plan(ctx); err != nil || !p.Compiled() {
+		t.Errorf("after \"models compile\": %v, compiled %v", err, p != nil && p.Compiled())
+	}
+	if handled, err := Run(ctx, app, []string{"models", "remove"}); !handled || err == nil {
+		t.Errorf("an unknown command of models: handled %v, %v", handled, err)
+	}
+	if handled, err := Run(ctx, app, []string{"models", "list", "--no-such-flag"}); !handled || err == nil {
+		t.Errorf("an unknown flag: handled %v, %v", handled, err)
+	}
+	if !strings.Contains(Usage, "models prepare") || !strings.Contains(Usage, "status") {
+		t.Errorf("the usage:\n%s", Usage)
 	}
 }
 

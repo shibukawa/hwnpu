@@ -110,7 +110,8 @@ res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
 | `ai/speech` | Speech to text (Whisper), text to speech (LFM3-Audio), a VAD by loudness, reading and writing WAV |
 | `ai/text` | Translation (PLaMo 3 Translate), chat |
 | `ai/flow` | Passing data between models: `Stream`, a stream of chunks, and its tools |
-| `ai/aicli` | kong commands to put in the app's command line: `models` (the list, `download`, `prepare`), `status` |
+| `ai/cli` | Commands for the app's command line: `models` (the list, `download`, `prepare`), `status`. It depends on no command line library (`cli.List`, `cli.Run(ctx, app, args)` and the others) |
+| `ai/cli/konghelper` | The adapter of those commands for kong |
 
 - **A line-up by the machine's memory**: a use's name picks the largest model the machine runs when it runs alone. An app that runs several at once can keep its main model large and the others small with `At(gb, name)` (another model on machines of at least that memory) and `As(gb)` (pick as a machine of that memory would). `APP models` shows the models picked, what they take running together, and the machine's memory
 - **One at a time**: `use.Release(rt)` unloads a model, so that large models used one after another (a picture's generator, then its depth) are not in memory together
@@ -149,19 +150,21 @@ app.From(mic).To(speech.VADNode(speech.VADOptions{})).To(hear).To(log).To(trans)
 err := app.Run(ctx)
 ```
 
-### The app's command line (ai/aicli)
+### The app's command line (ai/cli)
+
+The commands are functions of `ai/cli`, which depends on no command line library. Call `cli.List(ctx, app, cli.ListOptions{})` and the others from commands of your own, or hand the arguments over to `cli.Run(ctx, app, os.Args[1:])`. For an app that uses kong there is the adapter `ai/cli/konghelper`.
 
 ```go
-var cli struct {
-	Run    RunCmd       `cmd:"" default:"withargs" help:"..."`
-	Models aicli.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
-	Status aicli.Status `cmd:"" help:"This machine's NPU and what uses it."`
+var cmds struct {
+	Run    RunCmd            `cmd:"" default:"withargs" help:"..."`
+	Models konghelper.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU and what uses it."`
 }
-k := kong.Parse(&cli, aicli.Bind(ctx, app))
+k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` lists the models and what they take, `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. A working example is [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language. The samples are a module of their own (`samples/go.mod`) and take the microphone from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
+`APP models` lists the models and what they take (with what they take together and what this machine has for models), `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. A working example is [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language. The samples are a module of their own (`samples/go.mod`) and take the microphone from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
 
 - So far it has the models of speech and text. Those of pictures (depth, faces, generation and the others) are only in the commands yet
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel the commands do the same preparing and loading, but they were not run through `ai`

@@ -19,7 +19,8 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/flow` | モデルの間のデータの渡し方: 塊の流れ (`Stream`)、非同期、メトロノーム | v0 |
 | `hwnpu/ai/speech` | 文字起こし (`Transcribe`)、読み上げ (`Speak`)、音量の VAD、WAV の読み書き | v0 |
 | `hwnpu/ai/text` | 翻訳 (`Translate`)、チャット (`Chat`) | v0 |
-| `hwnpu/ai/aicli` | アプリのコマンドラインに足す kong のサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status` | v0 |
+| `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
+| `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
 | `hwnpu/ai/vision` | 深度、顔、物体、姿勢、切り抜き、OCR、ラベル | まだ |
 | `hwnpu/ai/imagegen` | 画像の生成 (Anima、FLUX.2 / FLUX.3 klein、Chroma) | まだ |
 | `hwnpu/ai/sound` | 音楽、効果音、音高、採譜 | まだ |
@@ -91,18 +92,18 @@ var (
 - **ライセンス**: 同意の要るライセンス (`License.Accept`) のモデルは、`plan.AcceptLicenses` を付けないと `*ai.LicenseError`。アプリが画面で同意を取ってから付ける
 - **CLI と同じ置き場**: `ai.Store` のゼロ値はコマンドと同じ (環境変数と `.env`)。`hwnpu-audio` や `hwnpu-chat` が準備したものはそのまま使え、アプリが準備したものをコマンドも使う
 
-## 3. アプリのコマンドライン (`ai/aicli`)
+## 3. アプリのコマンドライン (`ai/cli`)
 
-アプリは kong で自分のコマンドを作り、モデルの世話をするサブコマンドを `aicli` から足す (kong に決め打ち)。
+モデルの世話をするサブコマンドの中身は `ai/cli` の関数で、コマンドラインのライブラリに依存しない。アプリは、自分のコマンドから関数を呼ぶ (`cli.List`、`cli.Download`、`cli.Prepare`、`cli.Status`)、引数をそのまま渡す (`cli.Run(ctx, app, args)`)、kong のアダプタ (`ai/cli/konghelper`) を使う、のどれかで足す。
 
 ```go
-var cli struct {
-	Run    RunCmd       `cmd:"" default:"withargs" help:"..."`
-	Models aicli.Models `cmd:"" help:"The models interpreter uses: list, download, prepare."`
-	Status aicli.Status `cmd:"" help:"This machine's NPU and what uses it."`
+var cmds struct {
+	Run    RunCmd            `cmd:"" default:"withargs" help:"..."`
+	Models konghelper.Models `cmd:"" help:"The models interpreter uses: list, download, prepare."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU and what uses it."`
 }
 
-k := kong.Parse(&cli, aicli.Bind(ctx, app)) // アプリ自身のコマンドも Run(ctx context.Context, app *ai.App) で受け取れる
+k := kong.Parse(&cmds, konghelper.Bind(ctx, app)) // アプリ自身のコマンドも Run(ctx context.Context, app *ai.App) で受け取れる
 k.FatalIfErrorf(k.Run())
 ```
 
@@ -114,7 +115,7 @@ k.FatalIfErrorf(k.Run())
 | `APP status` | `hwnpu status` と同じ (デバイス、ドライバ、負荷、電力、使っているプロセス、キャッシュ)。`-w`、`--json`、`--wake` |
 
 - 同意の要るライセンスは、端末なら聞き、`--accept-license` で聞かずに通す
-- `hwnpu status` の中身は `internal/npustatus` に移した (`cmd/hwnpu` と `aicli` が同じものを呼ぶ)。アプリの `status` はアプリの置き場 (`app.Store`) のキャッシュと層を出す
+- `hwnpu status` の中身は `internal/npustatus` に移した (`cmd/hwnpu` と `ai/cli` が同じものを呼ぶ)。アプリの `status` はアプリの置き場 (`app.Store`) のキャッシュと層を出す
 
 ## 4. モデルの間のデータの渡し方 (`ai/flow`)
 
@@ -384,7 +385,8 @@ interpreter status
 | `ai/flow` | 4 節の道具と、`Collect`、`Finals`、`Map`、`From`、`Sentences` |
 | `ai/speech` | `Transcribe`、`Speak`、`NewVAD` (音量の VAD: 雑音の床から 12 dB、終わりの待ち 600 ms)、`ReadWAV`、`WriteWAV`、`Chunks` |
 | `ai/text` | `Translate` (前の 4 組を履歴に)、`Chat` (`Complete`、`CompleteStream`) |
-| `ai/aicli` | `Models`、`Status`、`Bind` |
+| `ai/cli` | `List`、`Download`、`Prepare`、`Status`、`Run` (引数を渡す)、`WritePlan`、`Usage` |
+| `ai/cli/konghelper` | kong の構造体 `Models`、`Status` と `Bind` |
 | `internal/airole` | `Role` (準備と読み込み)、`Files`、この機械の NPU (`Here`: `coreai`、`intel`、`amd-xdna2`) |
 | `internal/npustatus` | `hwnpu status` の中身 (`cmd/hwnpu/status.go` から移した) |
 
@@ -396,7 +398,7 @@ interpreter status
 - **AMD の NPU に複数のモデルを同居させるための直し**: 1 つのプロセスが 2 つ目のデバイスを開くと `CREATE_HWCTX` が `EINVAL` になった。デバイスヒープを 64 MiB の境界の番地に写すようにして直った (design.md 16.281)
 - **確かめたこと**:
   - 機械のメモリごとの構成: `HWNPU_MEMORY=16` では翻訳が plamo-3-translate-2b になり (3 つで 7.8 GB、読み込み 3.1 秒、全体 25.5 秒)、設定なし (59 GB) では 8B (11.6 GB)。8B で準備した置き場を 16 GB として開くと `ErrNotPrepared` (前は黙って 8B を読み込んでいたので直した)
-  - `go test -race ./ai/...`: 流れの道具 (偽の時計で `Async` の重なり、`Latest` の間引き、`Hold`、`Metronome` の遅れと `Skip`、`Pace`、`Live`)、計画 → ダウンロード → コンパイル → 2 回目の計画で何も要らない、`Get` / `Release` / `Close`、`WithAutoPrepare`、役割と種類の食い違い、メモリごとの構成 (`At`、`As`) と別のモデルで準備された置き場、アプリの定義のファイル、ライセンスの同意、準備済みの同梱と対象の違い、`aicli` のコマンド
+  - `go test -race ./ai/...`: 流れの道具 (偽の時計で `Async` の重なり、`Latest` の間引き、`Hold`、`Metronome` の遅れと `Skip`、`Pace`、`Live`)、計画 → ダウンロード → コンパイル → 2 回目の計画で何も要らない、`Get` / `Release` / `Close`、`WithAutoPrepare`、役割と種類の食い違い、メモリごとの構成 (`At`、`As`) と別のモデルで準備された置き場、アプリの定義のファイル、ライセンスの同意、準備済みの同梱と対象の違い、`cli` のコマンド
   - Ryzen AI 9 365 (XDNA 2) で `samples/interpreter`: 13.3 秒の日本語の音声 (2 発話、3 文) を、whisper-large-v3-turbo、plamo-3-translate-8b、LFM3-Audio-2B-TTS の 3 つを 1 プロセスに同居させて英語の音声 8.5 秒に。読み込み 0.5、5.1、2.6 秒、全体 31.6 秒。書き起こしと訳は正しく、出力の音声を Whisper に戻すと訳文と一字一句同じ
 - **確かめていないこと**: Mac (Core AI) と Intel での実機 (準備と読み込みはコマンドと同じ関数だが、`ai` を通しては動かしていない)。`Chat` の実機。8 GB の機械での 3 つの同居
 

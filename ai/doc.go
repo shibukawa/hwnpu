@@ -30,7 +30,7 @@
 //	t, err := stt.Get(ctx, rt) // a *speech.Transcriber; ErrNotPrepared when Run has not prepared it
 //	res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{Language: "ja"})
 //
-// The aicli package gives an app's command line the commands that do the preparing (models,
+// The cli package gives an app's command line the commands that do the preparing (models,
 // models download, models prepare) and show the NPU (status). The flow package joins the models:
 // each has a batch form and a stream form, and flow passes one's chunks to the next when it has
 // finished, as they come, or on the beat.

@@ -8627,7 +8627,7 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 - `ai`: アプリが使うモデルを登録する `App`、型のついた取っ手 `Use[T]` (`stt.Get(ctx, rt)` が `*speech.Transcriber` を返す)、`Plan` (足りないもの、落とす量、メモリ、ライセンス。ダウンロードと変換、NPU 向けのコンパイルの 2 段)、`Runtime` (準備済みの置き場からだけ読み込む)
 - `ai/speech` (文字起こし、読み上げ、音量の VAD)、`ai/text` (翻訳、チャット): 機能ごとのパッケージが、自分のモデルの準備と読み込み (`internal/airole` の `Role`) を持つ。`ai` は機能のパッケージを import しないので、アプリには使う機能のコードだけが入る
 - `ai/flow`: モデルの間のデータの渡し方 (下)
-- `ai/aicli`: アプリのコマンドラインに足す kong のサブコマンド。`models` (一覧)、`models download` (ダウンロードと変換、NPU は要らない)、`models prepare` (さらに 1 回読み込んでコンパイル)、`status` (`hwnpu status` と同じ。中身を `cmd/hwnpu/status.go` から `internal/npustatus` に移して両方が呼ぶ)
+- `ai/cli`: アプリのコマンドラインに足すサブコマンド。中身はコマンドラインのライブラリに依存しない関数 (`cli.List`、`cli.Download`、`cli.Prepare`、`cli.Status`、引数を渡す `cli.Run`) で、kong 用のアダプタは `ai/cli/konghelper`。`models` (一覧)、`models download` (ダウンロードと変換、NPU は要らない)、`models prepare` (さらに 1 回読み込んでコンパイル)、`status` (`hwnpu status` と同じ。中身を `cmd/hwnpu/status.go` から `internal/npustatus` に移して両方が呼ぶ)
 - 準備は、コマンドが初回にするのと同じ関数を同じ設定で呼ぶ (`transcribe.Prepare` / `PrepareAMD`、`speech.Prepare` / `PrepareAMD`、`chat.Prepare` / `AMDExport`)。置き場もコマンドと同じなので、互いに準備したものを使える。前のブランチから足したもの: `chat.LookupOn`、`chat.Engine.OnNPU`、`modelstore.Options.Files` (アプリの定義のファイル)
 
 **モデルの間のつなぎ方** (app-api.md 4 節): 次の段をいつ始められるかで 3 つ。どれも `flow.Stream[T]` (`iter.Seq2[Chunk[T], error]`) の上。

@@ -45,7 +45,7 @@ func Node[T io.Closer, A, B any](u Use[T], fn func(ctx context.Context, model T,
 //	err := app.Run(ctx)
 //
 // The models of the network's nodes (speech.TranscribeNode(stt), ...) are the app's models, as
-// if they were given to NewApp: Plan and the commands of aicli see them. Nodes may be joined
+// if they were given to NewApp: Plan and the commands of the cli package see them. Nodes may be joined
 // after the source too (hear.To(captions)), any time before the run.
 func (a *App) From(source flow.Root) *flow.Link {
 	a.roots = append(a.roots, source)

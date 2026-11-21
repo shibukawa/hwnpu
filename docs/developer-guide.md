@@ -27,7 +27,8 @@ uses                    bytes to download,   compile for the NPU         store a
 | `.../ai/speech` | Speech to text `Transcribe`, text to speech `Speak`, a VAD by loudness, reading and writing WAV |
 | `.../ai/text` | Translation `Translate`, chat `Chat` |
 | `.../ai/flow` | Passing data between models: `Stream` and its tools, the network (nodes and `To`), calls (`Call`) |
-| `.../ai/aicli` | kong commands for the app's command line: `models`, `status` |
+| `.../ai/cli` | Commands for the app's command line: `models`, `status`. It depends on no command line library |
+| `.../ai/cli/konghelper` | The adapter of those commands for kong |
 
 **Words**
 
@@ -618,19 +619,47 @@ Every model has a batch form and a stream form.
 - `ChatOptions{MaxTokens, Think, ThinkBudget, Temperature}`
 - Not there yet: tool calls, images and audio as input, answers in a given form (JSON Schema), embeddings
 
-## 8. The app's command line (`ai/aicli`)
+## 8. The app's command line (`ai/cli`)
+
+The commands that look after the models (the list, downloading, compiling, the NPU's status) are in `ai/cli`. **It depends on no command line library.** There are three ways to use it.
+
+**(1) Calling the functions.** From commands of your own: with any command line library, or from a GUI's buttons.
 
 ```go
-var cli struct {
-	Run    RunCmd       `cmd:"" default:"withargs" help:"..."`
-	Models aicli.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
-	Status aicli.Status `cmd:"" help:"This machine's NPU and what uses it."`
+cli.List(ctx, app, cli.ListOptions{})                             // the list (JSON: true for JSON)
+cli.Download(ctx, app, cli.PrepareOptions{})                      // download and convert
+cli.Prepare(ctx, app, cli.PrepareOptions{AcceptLicenses: true})   // and compile
+cli.Status(ctx, app, cli.StatusOptions{Watch: 2 * time.Second})   // the NPU's status
+```
+
+**(2) Handing the arguments over.** An app that reads its command line itself (with the standard `flag` alone, say) passes its arguments on.
+
+```go
+func main() {
+	ctx := context.Background()
+	if handled, err := cli.Run(ctx, app, os.Args[1:]); handled {   // it was "models ..." or "status ..."
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	// the app's own arguments from here; cli.Usage can go into its help
+}
+```
+
+**(3) The adapter for kong (`ai/cli/konghelper`).** An app that uses kong puts the structs beside its own commands.
+
+```go
+var cmds struct {
+	Run    RunCmd            `cmd:"" default:"withargs" help:"..."`
+	Models konghelper.Models `cmd:"" help:"The models the app uses: list, download, prepare."`
+	Status konghelper.Status `cmd:"" help:"This machine's NPU and what uses it."`
 }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	k := kong.Parse(&cli, aicli.Bind(ctx, app))
+	k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 	k.FatalIfErrorf(k.Run())
 }
 
@@ -638,12 +667,12 @@ func main() {
 func (c *RunCmd) Run(ctx context.Context, app *ai.App) error { ... }
 ```
 
-| Command | What it does |
-|---|---|
-| `APP models` | The models the app uses: their state (missing; ready, not compiled; compiled; bundled), bytes to download, memory, license, what they take together and the machine's memory, why the app's line-up picked them. `--json` |
-| `APP models download` | Downloads and converts. No NPU is needed. `--accept-license`, `-q` |
-| `APP models prepare` (`compile`) | As download, then loads each model once to compile it |
-| `APP status` | `hwnpu status`: the device, its driver, how busy it is, its power, the processes that use it, the cache. `-w 2s`, `--json`, `--wake` |
+| Command | Function | What it does |
+|---|---|---|
+| `APP models` | `cli.List` | The models the app uses: their state (missing; ready, not compiled; compiled; bundled), bytes to download, memory, license, what they take together and what this machine has for models, why the app's line-up picked them, the network. `--json` |
+| `APP models download` | `cli.Download` | Downloads and converts. No NPU is needed. `--accept-license`, `-q` |
+| `APP models prepare` (`compile`) | `cli.Prepare` | As download, then loads each model once to compile it |
+| `APP status` | `cli.Status` | `hwnpu status`: the device, its driver, how busy it is, its power, the processes that use it and the NPU's memory each holds, the cache. `-w 2s`, `--json`, `--wake` |
 
 ```
 $ interpreter models
@@ -654,9 +683,16 @@ transcribe  transcribe  whisper-large-v3-turbo  compiled  -         2.2 GB  mit
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  plamo-community-license (conditional)
 speech      speak       LFM3-Audio-2B-TTS       compiled  -         2.9 GB  lfm-open-1.0 (conditional)
 
-Their checkpoints are here or come from the sources; about 7.8 GB running together, of this machine's 16 GB. ...
+Their checkpoints are here or come from the sources; about 7.8 GB running together (a machine of 16 GB has about 9 GB for models). ...
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
+
+The network:
+  mic → vad → transcribe → heard → commands → translate → said → speech (keep 4) → out
+  say → translate → speech
 ```
+
+- There are no adapters for other command line libraries (cobra, urfave/cli and the like): call the functions of (1) from that library's commands
+- `cli.Status` writes on the standard output (it is `hwnpu status`'s display). `cli.List` and `cli.Download` / `cli.Prepare` write where `Out` and `Log` say
 
 ## 9. Constraints and rules
 
@@ -732,17 +768,29 @@ The delays measured (the recording paced as a microphone, counted from the end o
 
 ### 9.4 Memory
 
-**The NPU's buffers are pinned memory that cannot be swapped out.** Over what there is, other applications are pushed to swap. Models loaded together add up (nothing is shared).
+**Look at the app's `models` command first.** It says, for the machine it runs on, what the registered models take running together, what the machine has for models, and whether they fit (section 8; it is there when the app has the `cli` commands).
 
-| The machine's memory | 8 GB | 16 GB | 24 GB | 32 GB | 48 GB | 64 GB and up |
-|---|---|---|---|---|---|---|
-| About what is left for models (MODEL.md) | 3 GB | 9 GB | 15 GB | 22 GB | 35 GB | 50 GB |
+```
+$ interpreter models
+...
+translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  ...
+...
+about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
+```
 
-- Compare `plan.MemoryGB()` (the models loaded together) with `plan.UsableGB()` (the table above). `plan.Fits()` and `APP models` say whether it is over
+- When they do not fit, a note follows ("Together they take more than this machine has for models ...")
+- What it is on another machine is seen by calling the machine's memory something else: `HWNPU_MEMORY=8 interpreter models`
+- From a program: `interpreter models --json` (`memory_gb`, `machine_gb`, `usable_gb`, `fits`, and each model's `memory_gb`), or `plan.MemoryGB()`, `plan.MachineGB()`, `plan.UsableGB()`, `plan.Fits()`
+- **What is taken now** is in `APP status`: for each process that uses the NPU, the process's memory and the NPU's (`-w 2s` keeps showing it)
+
+**What the numbers mean**
+
+- **The NPU's buffers are pinned memory that cannot be swapped out.** Over what there is, other applications are pushed to swap. Models loaded together add up (nothing is shared)
+- "What the machine has for models" is an estimate with the OS and the everyday applications taken off (MODEL.md): about 3 GB of 8, 9 of 16, 15 of 24, 22 of 32, 35 of 48, 50 of 64
+- A model's memory is models.yaml's, the process's share and the NPU's together. On Apple the Neural Engine's share is not in the process's memory (its footprint), and on AMD the NPU's buffers are not in the process's RSS, so the OS's list of processes alone does not show it
 - An example (the interpreter, AMD's figures): 2.2 GB for speech to text and 2.9 GB for the speaker, plus 1.0 (0.8B), 2.7 (2B) or 6.5 GB (8B) for the translator. The 8B does not fit a 16 GB machine (about 9 GB)
-- **How memory is counted**: on Apple the Neural Engine's share is not in the process's memory (its footprint); it is the kernel's wired memory, readable for the whole machine only. On AMD the NPU's buffers are not in the process's RSS either. models.yaml's `memory` is both together
 
-The limits known by chip:
+**The limits known by chip** (the command does not show them yet)
 
 | Chip | Constraint | Source |
 |---|---|---|
@@ -884,12 +932,12 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 - **Not decided**: whether the settings of a conversion can be given when registering (`text.Chat("lfm3").Context(8192)`). Moving the commands onto the library needs it
 
-**D17. kong alone** — now: `aicli` is kong structs.
+**D17. The commands and command line libraries** — now (decided on 2026-11-21): the commands are functions of `ai/cli`, which depends on no command line library. kong's are the adapter `ai/cli/konghelper`. `cli.Run(ctx, app, args)` takes an app's arguments as they are (section 8).
 
-- Option: the same as functions too (`aicli.WriteModels(w, plan)`, `aicli.RunPrepare(ctx, app, opts)`), to be called from other command line libraries and from GUIs
-- **Not decided**: whether to add the functions
+- Before: `ai/aicli` gave kong structs alone
+- **Not decided**: adapters for other libraries (cobra and the like). They would add to the module's dependencies, so they would be modules of their own
 
-**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/aicli`. Planned: `ai/vision`, `ai/imagegen`, `ai/sound`.
+**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. Planned: `ai/vision`, `ai/imagegen`, `ai/sound`.
 
 - **Not decided**: the name `ai` (hard to change once it is public); `speech` holding both speech to text and text to speech; the name `text` (easily confused beside the standard library's `text/...`)
 
