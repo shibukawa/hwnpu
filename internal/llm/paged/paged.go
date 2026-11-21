@@ -43,6 +43,19 @@ type Shape struct {
 // grouped form is theirs (docs/design/apple-coreai.md).
 const Heads = "heads"
 
+// Version is the form of o the programs compute, recorded in a manifest (llm.Manifest.AttnVersion)
+// so that programs written before it are written again (llm.RefreshAttention). 1: the weights of
+// the values are e·(OutScale/l), the product scaled back by 1/OutScale after. The Neural Engine
+// drops products under about 2^-16 inside a matrix product, so matmul(e, v) / l lost the many
+// lightly weighted keys of a layer with small values (LFM3-1.7B layer 18: o of a chunk off by up
+// to 79 %, three pass phrases in 32K tokens missed; docs/design/llm-engine.md). Normalized by l
+// and scaled by OutScale, the products are as large as they can be while every partial sum
+// stays under the Neural Engine's 2^15 (it is at most OutScale times the largest value: 32).
+const Version = 1
+
+// OutScale multiplies the values' weights e/l before their product with the values (Version).
+const OutScale = 1024
+
 // DefaultChunk is the chunk length hwnpu-chat converts with: 8 and 64 query rows are on the
 // Neural Engine, 8 rows at their fastest per key (1.09 ms per 1K over 6 layers on an M3), and the
 // host's merge is a few percent of a step.
@@ -96,6 +109,7 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 	if sh.Scale != 0 {
 		scale = b.ScalarF16(float32(sh.Scale))
 	}
+	outScale, invScale := b.ScalarF16(OutScale), b.ScalarF16(1.0/OutScale)
 	rows := []int{1, nh, s, 1}
 	tile := func(x *mlpackage.Var) *mlpackage.Var {
 		if rep == 1 {
@@ -147,8 +161,11 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 			sc = op("add", map[string]any{"x": sc, "y": mk}, 1, n, 1, c)
 			mg := op("reduce_max", map[string]any{"x": sc, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, 1, n, 1, 1)
 			e := op("exp", map[string]any{"x": op("sub", map[string]any{"x": sc, "y": mg}, 1, n, 1, c)}, 1, n, 1, c)
-			lg := reshape(op("reduce_sum", map[string]any{"x": e, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, 1, n, 1, 1), 1, 1, n, 1)
-			og := op("real_div", map[string]any{"x": matmul(reshape(e, 1, 1, n, c), vg, false, 1, 1, n, d), "y": lg}, 1, 1, n, d)
+			ls1 := op("reduce_sum", map[string]any{"x": e, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, 1, n, 1, 1)
+			lg := reshape(ls1, 1, 1, n, 1)
+			// the weights e·(S/l), the product scaled back after (Version)
+			w := op("mul", map[string]any{"x": e, "y": op("real_div", map[string]any{"x": outScale, "y": ls1}, 1, n, 1, 1)}, 1, n, 1, c)
+			og := op("mul", map[string]any{"x": matmul(reshape(w, 1, 1, n, c), vg, false, 1, 1, n, d), "y": invScale}, 1, 1, n, d)
 			os, ms, ls = append(os, og), append(ms, reshape(mg, 1, 1, n, 1)), append(ls, lg)
 		}
 		o, m, l = reshape(cat(os, d), 1, nh, s, d), reshape(cat(ms, 1), rows...), reshape(cat(ls, 1), rows...)
@@ -166,11 +183,13 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 		if grouped {
 			e = reshape(e, 1, nkv, rep*s, c)
 			l = matmul(e, one, false, 1, nkv, rep*s, 1)
-			o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nkv, rep*s, d), "y": l}, 1, nkv, rep*s, d)
+			w := op("mul", map[string]any{"x": e, "y": op("real_div", map[string]any{"x": outScale, "y": l}, 1, nkv, rep*s, 1)}, 1, nkv, rep*s, c)
+			o = op("mul", map[string]any{"x": matmul(w, v, false, 1, nkv, rep*s, d), "y": invScale}, 1, nkv, rep*s, d)
 			o, l = reshape(o, 1, nh, s, d), reshape(l, rows...)
 		} else {
 			l = matmul(e, one, false, rows...)
-			o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nh, s, d), "y": l}, 1, nh, s, d)
+			w := op("mul", map[string]any{"x": e, "y": op("real_div", map[string]any{"x": outScale, "y": l}, rows...)}, 1, nh, s, c)
+			o = op("mul", map[string]any{"x": matmul(w, v, false, 1, nh, s, d), "y": invScale}, 1, nh, s, d)
 		}
 	}
 	for _, x := range []struct {

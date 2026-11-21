@@ -85,6 +85,14 @@ Gemma 4, Qwen3.5, PLaMo 3; Qwen3 only on Core AI), on Core ML, Core AI and Intel
 - The attention program (`internal/llm/paged`, `out.attn.<ext>`) has no weights: one chunk's attention,
   returning the chunk-normalized output o, row max m and exp-sum l. Sums are a matmul with 1 (on Core ML,
   `reduce_sum` placement flips between ANE and CPU from compile to compile at Q=64).
+- o is `matmul(e · (S / l), v) · (1/S)` with S = 1024 (`paged.Version` 1, `paged.OutScale`), not
+  `matmul(e, v) / l`: the Neural Engine drops products under about 2^-16 inside a matrix product, and with
+  small values (LFM3-1.7B layer 18, |v| ≤ 0.7) the many lightly weighted keys vanished from the numerator
+  (o of a chunk off by up to 79 %, worst after the change 0.4 %; three pass phrases in a 33K-token text:
+  0 → 3 of 3). Partial sums stay under the NE's 2^15 while |v| < 32. Cost: a 128-row call over 8192 keys
+  5.5 → 5.95 ms (M3), an 8-row call unchanged. `Manifest.AttnVersion` records it; `RefreshAttention`
+  rewrites older attention programs (no weights, seconds). `TestSmallValuesOnNeuralEngine` checks it on
+  the device (0.3 % against 4.6 % before).
 - `decode.Session` runs the parts in turn. Between them it writes the step's keys and values into its own
   cache (before attending, so the step's tokens see themselves), calls the attention per used chunk, merges
   in float32 (`paged.Merge`, Flash-Decoding style), and writes `attn_o_N`. Only the chunks the step's tokens
@@ -296,7 +304,7 @@ many drafts are taken, so a range). The documents are this repository's English 
 
 - One pass phrase at the start of repeated filler (the old test) is answered at 35K and 70K tokens.
 - Three pass phrases at 10%, 50% and 90% of the documents, asked for together: 2 of 3 at 17K, 0–1 of 3 at
-  65K and 130K, and the same with all keys read, so two-level attention is not the cause: the NE drops tiny products in the attention programs (see Open).
+  65K and 130K, and the same with all keys read (measured before the attention fix above).
 - Memory: the server's RSS is 0.59 GB at 17K, 1.74 GB at 65K, 1.90 GB at 130K, 3.89 GB at 257K (the
   cache grows with the conversation, 14 KiB a token).
 - Other models, two-level, Core ML era (not measured again on Core AI): Gemma 4 E2B 64K 204 s /
@@ -391,15 +399,13 @@ checks that deliberate breaks (row offset, missing ring copy, mask shift) fail.
 - Store: keep set-aside sequences (`Save`) in the store, thin old per-request end marks, int8 rows.
 - KV-only prompt programs for models whose every layer writes a cache (drop LFM3's output layer, about
   0.19 GiB).
-- **The attention programs of the split form lose long-range recall on the Neural Engine** (Core AI and
-  Core ML alike). Three pass phrases in 32K-token documents: PyTorch fp32 and fp16 (GPU) find all three;
-  hwnpu on the NE finds none on one text with lut6, lut8 and fp16 weights alike; the same programs on
-  Core AI's CPU, or only the attention programs moved to the CPU, find all three. Cause: in
-  `matmul(e, v)` the NE drops products below about 2^-16 (fitted on dumped chunk calls), so with small
-  values (layer 18: |v| ≤ 0.7) the many lightly weighted keys vanish from the numerator while `l`
-  (`reduce_sum`) keeps them: o was off by up to 79 % in a chunk, m and l by under 0.5 %. Candidate fix,
-  checked on the dumped data: `o = matmul(e · (S / l), v) / S` with S = 1024 (error to 0; largest
-  partial sum 1094, under 2^15 while |v| < 32). Not yet in the programs. Every model split at its
-  attention on Apple is concerned (LFM3, Gemma 4, Qwen3.5, PLaMo 3, Qwen3).
+- Long-range recall still trails PyTorch at 24K–32K after the attention fix: three pass phrases, hwnpu
+  lut6 2 of 3 at 25K (PyTorch fp16 3) and 0 of 3 on another 33K text (PyTorch 2); lut8 0 of 3 on the text
+  lut6 now answers. The rest of the NE path (weight parts, other matmuls) not yet checked the same way.
+- The same small-product loss likely applies to other attention written as `matmul(e or softmax, v)`:
+  `blocks.ChunkedSDPA` / `ChunkedSDPAGrouped` (unsplit long caches; it even lowers e by log(4·chunks)),
+  `blocks.SDPA` / `SDPAGrouped` (softmax, then the product), and the image models' attention in
+  `milpart` (e·(1/sum)). Fixing them re-exports programs with weights (a `Revision` per architecture).
+- The long-context table above was measured before the attention fix (prompt reading now a few % slower).
 - Not measured: `Heads` form on M2/M3, ring tiers on M2/M3 and for PLaMo 3 0.8B / 8B, many server
   conversations moving between tiers, Intel NPU hardware for split models.
