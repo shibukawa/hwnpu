@@ -313,7 +313,9 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspec
 		}
 		bar := console.NewBar(lw, name)
 		bar.Set(0, fmt.Sprintf("step 1/%d", steps))
+		var took stepTimes
 		progress := func(i, total int, d time.Duration) {
+			took = append(took, d)
 			per := bar.Elapsed() / time.Duration(i+1)
 			bar.Set(float64(i+1)/float64(total), fmt.Sprintf("step %d/%d, %s, %s left", min(i+2, total), total, times(per),
 				console.Duration(time.Duration(total-i-1)*per)))
@@ -326,7 +328,7 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspec
 			bar.Done("failed")
 			return err
 		}
-		bar.Done(fmt.Sprintf("%d steps in %s (%s)", steps, console.Duration(bar.Elapsed()), times(bar.Elapsed()/time.Duration(steps))))
+		bar.Done(took.summary(bar.Elapsed(), times))
 		if c.Latents != "" {
 			for _, x := range xs {
 				if err := writeF32(c.Latents, x); err != nil {

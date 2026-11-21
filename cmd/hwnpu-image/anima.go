@@ -428,7 +428,9 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		}
 		logf("%s, guidance at %d of %d steps (sigma %g to %g)", cmp.Or(smp.Solver, "euler"), n, steps, smp.CFGMin, smp.CFGMax)
 	}
+	var took stepTimes
 	x, err = p.Denoise(ctx, cond, uncond, guidance, x, sig, smp, func(i int, d time.Duration) {
+		took = append(took, d)
 		per := bar.Elapsed() / time.Duration(i+1)
 		left := time.Duration(steps-i-1) * per
 		bar.Set(float64(i+1)/float64(steps), fmt.Sprintf("step %d/%d, %.1f s a step, %s left", min(i+2, steps), steps, per.Seconds(), console.Duration(left)))
@@ -440,7 +442,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		bar.Done("failed")
 		return err
 	}
-	bar.Done(fmt.Sprintf("%d steps in %s (%.1f s a step)", steps, console.Duration(bar.Elapsed()), bar.Elapsed().Seconds()/float64(steps)))
+	bar.Done(took.summary(bar.Elapsed(), aStep))
 	if c.Latents != "" {
 		if err := writeF32(c.Latents, x); err != nil {
 			return err

@@ -145,7 +145,9 @@ func (c *GenerateCmd) flux3(ctx context.Context, model string, as []aspect.Aspec
 		}
 		bar := console.NewBar(lw, "denoising")
 		bar.Set(0, fmt.Sprintf("step 1/%d", steps))
+		var took stepTimes
 		progress := func(i, total int, d time.Duration) {
+			took = append(took, d)
 			per := bar.Elapsed() / time.Duration(i+1)
 			bar.Set(float64(i+1)/float64(total), fmt.Sprintf("step %d/%d, %.1f s a step, %s left", min(i+2, total), total, per.Seconds(),
 				console.Duration(time.Duration(total-i-1)*per)))
@@ -158,7 +160,7 @@ func (c *GenerateCmd) flux3(ctx context.Context, model string, as []aspect.Aspec
 			bar.Done("failed")
 			return err
 		}
-		bar.Done(fmt.Sprintf("%d steps in %s (%.1f s a step)", steps, console.Duration(bar.Elapsed()), (bar.Elapsed() / time.Duration(steps)).Seconds()))
+		bar.Done(took.summary(bar.Elapsed(), aStep))
 		if c.Latents != "" {
 			if err := writeF32(c.Latents, x); err != nil {
 				return err
