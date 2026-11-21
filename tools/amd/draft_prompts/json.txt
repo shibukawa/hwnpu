@@ -1,0 +1,12 @@
+Convert this table to a JSON array of objects with the keys "name", "cores", "memory_gb" and "npu". Output only the JSON.
+
+| name | cores | memory_gb | npu |
+|---|---|---|---|
+| MacBook Air M2 | 8 | 16 | Neural Engine |
+| MacBook Pro M3 | 8 | 16 | Neural Engine |
+| Mac mini M4 | 10 | 32 | Neural Engine |
+| ThinkPad T14s | 12 | 32 | XDNA 2 |
+| Zenbook S16 | 10 | 64 | XDNA 2 |
+| Surface Laptop 7 | 12 | 16 | Hexagon |
+| Core Ultra NUC | 16 | 32 | Intel NPU 4 |
+| Yoga Slim 7x | 12 | 32 | Hexagon |

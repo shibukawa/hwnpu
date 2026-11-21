@@ -135,8 +135,9 @@ type Engine struct {
 	// drafter guesses the next tokens of a sequence, up to k (speculative decoding); nil for
 	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
 	drafter func(seq []int32, k int) []int32
-	mtp     *mtpDrafter // the multi-token prediction layer (Config.MTP); nil for none
-	kinds   []tokenKind // Tok's tokens, for repeats; set by the first generation
+	policy  *draftPolicy // whether the lookup's drafts are worth checking; nil where a check costs a step
+	mtp     *mtpDrafter  // the multi-token prediction layer (Config.MTP); nil for none
+	kinds   []tokenKind  // Tok's tokens, for repeats; set by the first generation
 
 	ir *iron.Model // the model of an IRON export (Config.IRON); nil for none
 	// irUsage counts the experts an IRON mixture of experts runs, added to the files irUsageTo
@@ -728,23 +729,8 @@ func (e *Engine) Draft() int {
 // stretches. Guessing from 1 token alone is right less often, but checking a guess costs nothing
 // more on the program that generates (design.md 16.37: 7% more tokens per call).
 func LookupDraft(seq []int32, k int) []int32 {
-	const maxN, minN = 4, 1
-	for n := maxN; n >= minN; n-- {
-		if len(seq) <= n {
-			continue
-		}
-		key := seq[len(seq)-n:]
-	next:
-		for i := len(seq) - n - 1; i >= 0; i-- {
-			for j := range n {
-				if seq[i+j] != key[j] {
-					continue next
-				}
-			}
-			return seq[i+n : min(i+n+k, len(seq))]
-		}
-	}
-	return nil
+	drafts, _ := lookupDraft(seq, k)
+	return drafts
 }
 
 // ErrClosed is returned for a request to a model that Close released.
@@ -979,14 +965,22 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	if e.drafter == nil {
 		k = 0
 	}
+	pol := e.policy
+	if pol != nil {
+		pol.open = nil
+	}
 	next := r.pick(slices.Clone(logits), gen, rng)
 	for {
 		// next is generated and not in the cache yet
 		if over, err := take(next); over || err != nil {
 			return st, err
 		}
+		if pol != nil {
+			pol.saw(next)
+		}
 		toks := []int32{next}
 		var drafts []int32
+		match := 0
 		switch {
 		case inside && (thought >= think.Budget || circling):
 			// end the thinking: End goes into the sequence as if the model had generated it
@@ -1018,10 +1012,19 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 				room = min(room, think.Budget-thought)
 			}
 			if room > 0 {
-				drafts = e.drafter(append(slices.Clone(e.cur.fed), next), min(k, room))
+				seq := append(slices.Clone(e.cur.fed), next)
+				if pol == nil {
+					drafts = e.drafter(seq, min(k, room))
+				} else if drafts, match = lookupDraft(seq, min(k, room)); len(drafts) > 0 && !pol.take(match, len(drafts)) {
+					// rarely right behind so short a match: a step costs less
+					pol.leave(match, drafts)
+					drafts = nil
+				}
 			}
 		}
 		if len(drafts) == 0 {
+			single := len(toks) == 1
+			t0 := time.Now()
 			for len(toks) > 0 {
 				n := min(len(toks), e.sess.Q())
 				if logits, err = e.step(toks[:n]); err != nil {
@@ -1030,6 +1033,9 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 				st.Calls++
 				toks = toks[n:]
 			}
+			if pol != nil && single {
+				pol.stepped(time.Since(t0))
+			}
 			next = r.pick(slices.Clone(logits), gen, rng)
 			continue
 		}
@@ -1037,6 +1043,7 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		// before it, and the token picked where they part (or after the last) is the next
 		st.Drafted += len(drafts)
 		var picked int32
+		t0 := time.Now()
 		kept, err := e.speculate(append(toks, drafts...), func(row func(i int) []float32) int {
 			seen := gen
 			for i, d := range drafts {
@@ -1054,9 +1061,15 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		}
 		st.Calls++
 		st.Accepted += kept - 1
+		if pol != nil {
+			pol.checked(match, len(drafts), kept-1, time.Since(t0))
+		}
 		for _, d := range drafts[:kept-1] {
 			if over, err := take(d); over || err != nil {
 				return st, err
+			}
+			if pol != nil {
+				pol.saw(d)
 			}
 		}
 		next = picked
