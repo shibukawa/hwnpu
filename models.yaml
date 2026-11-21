@@ -330,15 +330,15 @@ models:
     # experts.bin (20.1 GB), copied into a place when chosen, read with O_DIRECT where the file
     # does not fit beside the places (measured with HWNPU_MOE_DEBUG=direct=1, 2026-11-21, a
     # 1173-token prompt then 200 tokens, the peak of the NPU's buffers and the process's): 32
-    # places 7.5 GiB, 34-37 % of the decode's choices copied in; 128 places 15.0 GiB, 6-8 %. The
-    # logits the same to the bit as with every expert. Their speed was measured before the
-    # array work of 16.266-16.272 (every expert then 5.8 tokens/s, 8.8-8.9 now): 4.2 and 5.1.
+    # places 7.6 GiB, 33-38 % of the decode's choices copied in; 128 places 16.0 GiB, 6-7 %. The
+    # logits the same to the bit as with every expert. Re-exported from main after the array
+    # work of 16.266-16.272: every expert 8.8-8.9 tokens/s, 128 places 7.5-7.6, 32 places 5.8-6.0.
     # A layer's core over half its places is not kept in place on AMD (pool.go: with 32 places
     # it took most of them, 34.4 -> 36.7 % copied in)
     machine: 16
-    memory: {amd: 8.1, apple: 2.7}
+    memory: {amd: 8.2, apple: 2.7}
     variants:
-      24: {memory: {amd: 16.1, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 128}
+      24: {memory: {amd: 17.2, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 128}
       48: {memory: {amd: 26.3, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4}
     bytes: 71.9e9
     features: [tools, thinking]
