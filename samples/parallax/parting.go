@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,8 +88,13 @@ type phaseClock struct {
 	file  string
 	model string             // the picture model's name, once it is loaded
 	last  map[string]float64 // seconds, by model and phase
-	cur   string
-	since time.Time
+	cur   string             // the phase going on, "" when none
+	label string             // what the panel says of it
+	since time.Time          // when it began
+	// of the steps: the share done, when the last step was done, and how many there are
+	done   float64
+	stepAt time.Time
+	steps  int
 }
 
 func newPhaseClock(rt *ai.Runtime) *phaseClock {
@@ -102,8 +108,10 @@ func newPhaseClock(rt *ai.Runtime) *phaseClock {
 	return c
 }
 
-// begin starts phase, and ends the one before: its name and how long it took.
-func (c *phaseClock) begin(phase string) (prev string, took time.Duration) {
+// tell is told of a phase of the picture model (imagegen.Phase*) or of a step done (done, the
+// share of the drawing): it ends the phase before, whose name and time it returns ("" when
+// none ended). The steps and the decoding are timed as one, "drawing".
+func (c *phaseClock) tell(phase string, done float64) (ended string, took time.Duration) {
 	now := time.Now()
 	if c.model == "" { // the phases come after the picture model's load
 		for _, l := range c.rt.Loaded() {
@@ -112,20 +120,65 @@ func (c *phaseClock) begin(phase string) (prev string, took time.Duration) {
 			}
 		}
 	}
-	if c.cur != "" {
-		prev, took = c.cur, now.Sub(c.since)
-		c.last[c.model+" "+prev] = took.Seconds()
+	switch {
+	case phase == "": // a step done
+		if c.cur == imagegen.PhaseSteps && done > c.done {
+			n := int(math.Round(1/done)) - 1 // done is step / (steps + 1)
+			if c.steps == 0 && n > 0 {
+				c.steps = n
+			}
+			step := int(math.Round(done * float64(c.steps+1)))
+			ended, took = fmt.Sprintf("step %d of %d", step, c.steps), now.Sub(c.stepAt)
+			if step > c.steps {
+				ended = imagegen.PhaseDecode // the last done is of the decoding after the steps
+			}
+			c.done, c.stepAt = done, now
+		}
+		return ended, took
+	case phase == imagegen.PhaseDecode:
+		c.label = phase
+		return "", 0
 	}
-	c.cur, c.since = phase, now
-	if phase == imagegen.PhaseSteps {
-		c.cur = ""
+	if c.cur != "" && c.cur != imagegen.PhaseSteps {
+		ended, took = c.cur, now.Sub(c.since)
+		c.last[c.model+" "+ended] = took.Seconds()
 	}
-	return prev, took
+	c.cur, c.label, c.since, c.stepAt, c.done, c.steps = phase, phase, now, now, 0, 0
+	return ended, took
 }
 
-// expected is how long phase took the last time here, 0 when not known.
-func (c *phaseClock) expected(phase string) time.Duration {
-	return time.Duration(c.last[c.model+" "+phase] * float64(time.Second))
+// drawn ends the drawing: its time is kept for the next.
+func (c *phaseClock) drawn() (ended string, took time.Duration) {
+	if c.cur != imagegen.PhaseSteps {
+		return "", 0
+	}
+	took = time.Since(c.since)
+	c.last[c.model+" "+imagegen.PhaseSteps] = took.Seconds()
+	c.cur = ""
+	return "drawing and decoding", took
+}
+
+// loading is what the panel's second line shows of it.
+func (c *phaseClock) loading() loading {
+	if c.cur == "" {
+		return loading{}
+	}
+	l := loading{use: "image", model: c.model, stage: stagePhase, phase: c.label, since: c.since,
+		expected: time.Duration(c.last[c.model+" "+c.cur] * float64(time.Second))}
+	if c.cur == imagegen.PhaseSteps {
+		if c.done > 0 {
+			// at this pace: the steps so far over their share
+			l.expected = time.Duration(float64(c.stepAt.Sub(c.since)) / c.done)
+		}
+		if c.label == imagegen.PhaseSteps {
+			l.phase = "drawing, step 1" // how many there are is known from the first done
+			if c.steps > 0 {
+				step := min(int(math.Round(c.done*float64(c.steps+1)))+1, c.steps)
+				l.phase = fmt.Sprintf("drawing, step %d of %d", step, c.steps)
+			}
+		}
+	}
+	return l
 }
 
 // save writes the times down (a failure only leaves the next run without them).
@@ -146,10 +199,6 @@ func (p *progress) loading(pr ai.Progress) {
 			if l.use == pr.Use {
 				*l = loading{}
 			}
-			return
-		}
-		if pr.Stage == stagePhase {
-			*l = loading{use: pr.Use, model: pr.Model, stage: pr.Stage, phase: pr.Message, since: pr.Since, expected: pr.Expected}
 			return
 		}
 		if l.use != pr.Use || l.stage != pr.Stage {
@@ -302,21 +351,20 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 			fmt.Fprintln(log, text)
 			prog.show(stageCut, s.Cutout, text)
 		case layering.Drawing:
-			if s.Phase != "" {
-				// what the picture model does before its steps: on the panel's second line with
-				// its time, and how long it took the last time here
-				if prev, took := phases.begin(s.Phase); prev != "" {
-					fmt.Fprintf(log, "%s: the picture model, %s: %.1f s\n", of, prev, took.Seconds())
+			if s.Phase != "" || s.Done > 0 {
+				// what the picture model does, on the panel's second line with its time: each
+				// phase before the steps, then the steps and the decoding as one, with how
+				// long they took the last time here and, once a step is done, at this pace
+				if line, took := phases.tell(s.Phase, s.Done); line != "" {
+					fmt.Fprintf(log, "%s: the picture model, %s: %.1f s\n", of, line, took.Seconds())
 				}
-				if s.Phase == imagegen.PhaseSteps {
-					prog.loading(ai.Progress{Use: "image", Stage: ai.StageDone})
-				} else {
-					prog.loading(ai.Progress{Use: "image", Model: phases.model, Stage: stagePhase, Message: s.Phase, Since: time.Now(), Expected: phases.expected(s.Phase)})
+				prog.set(func(p *progress) { p.load = phases.loading() })
+				if s.Phase != "" && s.Phase != imagegen.PhaseSteps {
+					return
 				}
-				return
 			}
 			text := fmt.Sprintf("%s: drawing what was behind it, %.0f %%", of, 100*s.Done)
-			if s.Done == 0 {
+			if s.Done == 0 && s.Phase != imagegen.PhaseSteps {
 				text = of + ": getting the picture model ready"
 			}
 			if s.Try > 1 {
@@ -329,6 +377,10 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 				p.stage, p.text, p.done = stageDrawing, text, s.Done
 			})
 		case layering.Drawn:
+			if line, took := phases.drawn(); line != "" {
+				fmt.Fprintf(log, "%s: the picture model, %s: %.1f s\n", of, line, took.Seconds())
+			}
+			prog.set(func(p *progress) { p.load = loading{} })
 			text := of + ": what was behind it is drawn"
 			if s.Seam >= layering.SeamOK {
 				text = fmt.Sprintf("%s: its shape is still in the drawing, drawn again (try %d)", of, s.Try)

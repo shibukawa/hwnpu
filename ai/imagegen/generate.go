@@ -167,8 +167,9 @@ type Options struct {
 	// picture is decoded (step == steps + 1).
 	Progress func(step, steps int)
 	// Phase, when not nil, is called as Generate begins each of what it does before its steps
-	// (PhaseOpen, PhaseReferences, PhasePrompt) and as the steps begin (PhaseSteps): the first
-	// picture of a size opens its programs, which can take a while with nothing else to show.
+	// (PhaseOpen, PhaseReferences, PhasePrompt), as the steps begin (PhaseSteps) and as the
+	// picture is decoded after them (PhaseDecode): the first picture of a size opens its
+	// programs, which can take a while with nothing else to show.
 	Phase func(phase string)
 }
 
@@ -178,6 +179,7 @@ const (
 	PhaseReferences = "reading the reference pictures"
 	PhasePrompt     = "reading the prompt"
 	PhaseSteps      = "drawing"
+	PhaseDecode     = "decoding the picture"
 )
 
 // Generator draws pictures. It draws one at a time; others wait.
@@ -317,6 +319,7 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 	if err != nil {
 		return nil, err
 	}
+	phase(PhaseDecode)
 	img, err := p.Decode(ctx, x)
 	if err != nil {
 		return nil, err
