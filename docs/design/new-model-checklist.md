@@ -419,7 +419,7 @@ A model is not done until a name, a family or a use prepares and runs it on ever
 
 | Field | What | How | Pitfalls |
 |---|---|---|---|
-| `bytes` | The download | Sum of HF's `lfs.size` for the files fetched | GB is 10⁹; `du -h` prints GiB |
+| `bytes` | The download | Sum of HF's `lfs.size` for the files fetched. On AMD's NPU, where preparation fetches the export from the sources instead: the export's size (`du -sb`), in a vendor table (`{amd: 6.59e9, apple: 1.4e9, intel: 1.4e9}`) | GB is 10⁹; `du -h` prints GiB. An export of pictures holds a program of each size with the weights, several times the checkpoint (DA3MONO-LARGE 6.59 GB against 1.4 GB). A vendor the table leaves out takes the largest value |
 | `memory` | The peak while running | Sample every 0.1 s over a whole run (`tools/memwatch`; AMD: accel mappings + RSS) | The peak of the run, not after loading (text stage, VAE) |
 | `machine` | Least machine memory the family recommends it for | `memory` + room for the OS and apps | Keep models of the same size alike |
 | `file` | The checkpoint file when a repository holds several | File list | Tensor prefixes can differ |

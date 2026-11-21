@@ -927,7 +927,9 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3MONO-LARGE", class: open}
     machine: 24
     memory: 1.4
-    bytes: 1.4e9
+    # AMD: the export for the NPU, which the sources hold (a program of each picture size, each
+    # with the weights); Apple and Intel: the checkpoint, converted here
+    bytes: {amd: 6.59e9, apple: 1.4e9, intel: 1.4e9}
     about: "Depth Anything 3 Mono Large: relative depth and the sky"
   DA3-BASE:
     family: da3
@@ -937,7 +939,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-BASE", class: open}
     machine: 16
     memory: 0.75
-    bytes: 0.5e9
+    bytes: {amd: 2.38e9, apple: 0.5e9, intel: 0.5e9}
     about: "Depth Anything 3 Base, as one view: relative depth and its confidence (iron_da3.py --views N: N pictures of a scene and their cameras)"
   DA3-SMALL:
     family: da3
@@ -947,7 +949,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-SMALL", class: open}
     machine: 8
     memory: 0.5
-    bytes: 0.14e9
+    bytes: {amd: 1.03e9, apple: 0.14e9, intel: 0.14e9}
     about: "Depth Anything 3 Small, as one view: relative depth and its confidence"
   DA3METRIC-LARGE:
     family: da3metric
@@ -957,7 +959,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3METRIC-LARGE", class: open}
     machine: 8
     memory: 1.4
-    bytes: 1.4e9
+    bytes: {amd: 6.59e9, apple: 1.4e9, intel: 1.4e9}
     about: "Depth Anything 3 Metric Large: meters given the focal length (--focal or --fov), and the sky"
   moge-2-vitl:
     family: moge
@@ -967,7 +969,7 @@ models:
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 24
     memory: 2.6
-    bytes: 1.3e9
+    bytes: {amd: 8.21e9, apple: 1.3e9, intel: 1.3e9}
     about: "MoGe-2 ViT-L: metric depth without the focal length (solved), points, normals and a mask"
   moge-2-vitb:
     family: moge
@@ -977,7 +979,7 @@ models:
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 16
     memory: 2.1
-    bytes: 0.4e9
+    bytes: {amd: 3.80e9, apple: 0.4e9, intel: 0.4e9}
     about: "MoGe-2 ViT-B: metric depth, points, normals and a mask"
   moge-2-vits:
     family: moge
@@ -987,7 +989,7 @@ models:
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 8
     memory: 1.9
-    bytes: 0.14e9
+    bytes: {amd: 2.52e9, apple: 0.14e9, intel: 0.14e9}
     about: "MoGe-2 ViT-S: metric depth, points, normals and a mask"
   YuNet:
     family: yunet
