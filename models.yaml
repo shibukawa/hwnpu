@@ -340,7 +340,8 @@ models:
     variants:
       24: {memory: {amd: 17.2, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 128}
       48: {memory: {amd: 26.3, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4}
-    bytes: 71.9e9
+    # AMD: the export for the NPU as the sources hold it (packed; the three of the variants are as large)
+    bytes: {amd: 22.65e9, apple: 71.9e9}
     features: [tools, thinking]
     amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 32
     # the experts every kind of text runs (tools/moeusage, the 19 categories of prompts in about
@@ -518,7 +519,8 @@ models:
     machine: 8
     # AMD's: the NPU's pinned memory and the process's of 88 s of speech (a Ryzen AI 9 365, 2026-11-19)
     memory: {amd: 2.2, apple: 1.9}
-    bytes: 1.6e9
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
+    bytes: {amd: 1.53e9, apple: 1.6e9}
     about: "OpenAI's Whisper large-v3-turbo: transcription of 99 languages, with timestamps, in 8 bit tables"
   LFM3-Audio-2B-TTS:
     family: lfm3-audio-tts
@@ -537,7 +539,8 @@ models:
     machine: 8
     # AMD's: the NPU's pinned memory and the process's speaking 5 s (a Ryzen AI 9 365, 2026-11-19)
     memory: {amd: 2.9, apple: 2.4}
-    bytes: 4.0e9
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
+    bytes: {amd: 2.75e9, apple: 4.0e9}
     about: "LFM3-Audio-2B speaking a text (24 kHz WAV): its text model in 8 bit tables, the depthformer and the codec decoder in fp16; shares LFM3-Audio-2B's download"
   d1-2B:
     family: d1
@@ -698,10 +701,12 @@ models:
     # AMD's: the NPU's pinned memory and the process's of 10 s (a Ryzen AI 9 365, 2026-11-19): the
     # DiT's graphs in bf16 and the decoder's (4.71 GiB)
     memory: {amd: 5.0, apple: 2.3}
-    bytes: 1.15e10
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
+    bytes: {amd: 6.42e9, apple: 1.15e10}
     about: "MOSS-SoundEffect v2.0 (1.3B DiT, Qwen3-1.7B text encoder in fp16, DAC VAE): up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
   MOSS-SoundEffect-v2.0-lut8:
     like: MOSS-SoundEffect-v2.0
+    bytes: {amd: 5.34e9, apple: 1.15e10}
     tag: v2.0-lut8
     # the same files as MOSS-SoundEffect-v2.0's (like does not take sha256): the key of its export
     # for AMD's NPU
@@ -844,7 +849,8 @@ models:
     # Neural Engine; 3.1 GB at 512 x 512), measured (docs/design/image-apple.md, docs/design/image-models.md)
     memory: {amd: 3.9, apple: 4.9}
     # the repository's diffusers layout (its single-file copy of the DiT is not fetched)
-    bytes: 1.6e10
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
+    bytes: {amd: 12.50e9, apple: 1.6e10}
     features: [edit]
     # The NPU exports: each vendor's weight formats and picture sizes. The sizes are the default on
     # every generation of the vendor's NPU, and a generation that a bigger one does better
@@ -917,7 +923,8 @@ models:
           "16:9": 1344x768
     # the repository's diffusers layout (not its single-file copy of the DiT nor its fp8 and nvfp4
     # variants)
-    bytes: 2.03e10
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
+    bytes: {amd: 13.76e9, apple: 2.03e10}
     about: "FLUX.3 klein (a 5.5B DiT with each stream's mode blocks then single blocks, Qwen3-VL-4B reads the prompt, the FLUX.2 VAE): 16 flow-map steps without guidance, text to image on AMD's NPU (about 1 min 45 s at 1024 x 1024, 32 s at 512 x 512) and Apple's Neural Engine (lut8 tables fitted to the activations; about 2 min at 1024 x 1024 on an M3); FLUX Kommunity License (not commercial)"
   DA3MONO-LARGE:
     family: da3
@@ -927,7 +934,9 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3MONO-LARGE", class: open}
     machine: 24
     memory: 1.4
-    bytes: 1.4e9
+    # AMD: the export for the NPU as the sources hold it (its files as they are: a program of each
+    # picture size, each with the weights); Apple and Intel: the checkpoint, converted here
+    bytes: {amd: 6.59e9, apple: 1.4e9, intel: 1.4e9}
     about: "Depth Anything 3 Mono Large: relative depth and the sky"
   DA3-BASE:
     family: da3
@@ -937,7 +946,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-BASE", class: open}
     machine: 16
     memory: 0.75
-    bytes: 0.5e9
+    bytes: {amd: 2.38e9, apple: 0.5e9, intel: 0.5e9}
     about: "Depth Anything 3 Base, as one view: relative depth and its confidence (iron_da3.py --views N: N pictures of a scene and their cameras)"
   DA3-SMALL:
     family: da3
@@ -947,7 +956,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-SMALL", class: open}
     machine: 8
     memory: 0.5
-    bytes: 0.14e9
+    bytes: {amd: 1.03e9, apple: 0.14e9, intel: 0.14e9}
     about: "Depth Anything 3 Small, as one view: relative depth and its confidence"
   DA3METRIC-LARGE:
     family: da3metric
@@ -957,7 +966,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3METRIC-LARGE", class: open}
     machine: 8
     memory: 1.4
-    bytes: 1.4e9
+    bytes: {amd: 6.59e9, apple: 1.4e9, intel: 1.4e9}
     about: "Depth Anything 3 Metric Large: meters given the focal length (--focal or --fov), and the sky"
   moge-2-vitl:
     family: moge
@@ -967,7 +976,7 @@ models:
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 24
     memory: 2.6
-    bytes: 1.3e9
+    bytes: {amd: 8.21e9, apple: 1.3e9, intel: 1.3e9}
     about: "MoGe-2 ViT-L: metric depth without the focal length (solved), points, normals and a mask"
   moge-2-vitb:
     family: moge
@@ -977,7 +986,7 @@ models:
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 16
     memory: 2.1
-    bytes: 0.4e9
+    bytes: {amd: 3.80e9, apple: 0.4e9, intel: 0.4e9}
     about: "MoGe-2 ViT-B: metric depth, points, normals and a mask"
   moge-2-vits:
     family: moge
@@ -987,7 +996,7 @@ models:
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 8
     memory: 1.9
-    bytes: 0.14e9
+    bytes: {amd: 2.52e9, apple: 0.14e9, intel: 0.14e9}
     about: "MoGe-2 ViT-S: metric depth, points, normals and a mask"
   YuNet:
     family: yunet
@@ -1018,7 +1027,8 @@ models:
     # M3: 0.45 GB of the process at most (embedding the 444 default labels) and 0.36 GB on the
     # Neural Engine (Core AI: 0.48)
     memory: {amd: 0.8, apple: 0.9}
-    bytes: 1.54e9
+    # AMD: the export for the NPU as the sources hold it (its files as they are)
+    bytes: {amd: 0.82e9, apple: 1.54e9}
     about: "SigLIP 2 Base (Google, Apache-2.0): zero-shot labels in any language and embeddings of pictures (224 x 224) and texts in one space"
   siglip2-large-patch16-256:
     family: siglip2
@@ -1029,7 +1039,8 @@ models:
     machine: 16
     # M3: 1.8 GB of the process and 1.24 GB on the Neural Engine (Core AI: 1.56)
     memory: {amd: 1.7, apple: 3.3}
-    bytes: 3.57e9
+    # AMD: the export for the NPU as the sources hold it (its files as they are)
+    bytes: {amd: 1.87e9, apple: 3.57e9}
     about: "SigLIP 2 Large: the same at 256 x 256, closer labels and embeddings, about 3 times the work"
   # hwnpu-image segment: EfficientSAM (Meta's, Apache-2.0), the authors' ONNX exports of its
   # image encoder and its prompt's mask decoder; sha256 names each file. The encoder runs on
