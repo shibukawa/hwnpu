@@ -46,6 +46,46 @@ type ProgramManifest struct {
 	// Dit is the diffusion model's file the export was made from (ConvertOptions.Dit); empty
 	// in earlier exports, which were all of Anima-Turbo.
 	Dit string `json:"dit,omitempty"`
+	// Sizes are the parts of each size of an export of several (Core AI: a program with a
+	// function each, SizeFunction); empty in an export of one size, Width x Height. Blocks, Final
+	// and Vae are Width x Height's, one of them.
+	Sizes []SizeParts `json:"sizes,omitempty"`
+}
+
+// SizeParts are the parts of one size of an export of several: each NAME.aimodel#FUNCTION.
+type SizeParts struct {
+	Width  int      `json:"width"`
+	Height int      `json:"height"`
+	Blocks []string `json:"blocks"`
+	Final  string   `json:"final"`
+	Vae    []string `json:"vae"`
+}
+
+// SizeList is what the export draws: Sizes, else Width x Height.
+func (m *ProgramManifest) SizeList() [][2]int {
+	if len(m.Sizes) == 0 {
+		return [][2]int{{m.Width, m.Height}}
+	}
+	out := make([][2]int, len(m.Sizes))
+	for i, s := range m.Sizes {
+		out[i] = [2]int{s.Width, s.Height}
+	}
+	return out
+}
+
+// At makes m the parts of w x h, one of SizeList (0 x 0: m's own).
+func (m *ProgramManifest) At(w, h int) error {
+	if w == 0 || w == m.Width && h == m.Height {
+		return nil
+	}
+	for _, s := range m.Sizes {
+		if s.Width == w && s.Height == h {
+			m.Blocks, m.Final, m.Vae = s.Blocks, s.Final, s.Vae
+			m.Width, m.Height = w, h
+			return nil
+		}
+	}
+	return fmt.Errorf("the export holds %v, not %dx%d", m.SizeList(), w, h)
 }
 
 // IsProgramExport reports whether dir holds an export of hwnpu-image convert.
@@ -214,10 +254,13 @@ const (
 	progHidden = 1024
 )
 
-func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
+func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
 	m, err := ReadProgramManifest(dir)
 	var dc DitConfig
 	tc := TextConfig{Rows: progRows, Hidden: progHidden, T5Vocab: 32128, QwenVocab: 151936}
+	if err == nil {
+		err = m.At(w, h)
+	}
 	if err != nil {
 		return nil, dc, tc, err
 	}

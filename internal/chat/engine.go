@@ -45,6 +45,10 @@ type Config struct {
 	// guesses the drafts of speculative decoding from the model's final hidden states: the
 	// Packages must output them (hidden-out). Empty: drafts from the prompt alone.
 	MTP []string
+	// Rotated says the Packages were built from the residual stream rotated (llm.RotateParam):
+	// Weights then holds the rotated embedding table, and the host takes rows back to the
+	// checkpoint's (llm.Unrotate) for a program built unrotated (MTP).
+	Rotated bool
 	// ModelConfig is config.json, Weights the checkpoint the token embeddings are read from,
 	// Tokenizer tokenizer.json (default: next to config.json).
 	ModelConfig, Weights, Tokenizer string
