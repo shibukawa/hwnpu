@@ -37,7 +37,14 @@ func Camera(ctx context.Context, o CameraOptions) flow.Stream[image.Image] {
 		if o.FPS > 0 {
 			opts = append(opts, hwcamera.WithFrameRate(o.FPS))
 		}
-		cam, err := hwcamera.Open(ctx, o.Device, opts...)
+		id, err := CameraID(ctx, o.Device)
+		if err != nil {
+			if ctx.Err() == nil {
+				yield(flow.Chunk[image.Image]{}, fmt.Errorf("the camera: %w", err))
+			}
+			return
+		}
+		cam, err := hwcamera.Open(ctx, id, opts...)
 		if err != nil {
 			if ctx.Err() == nil {
 				yield(flow.Chunk[image.Image]{}, fmt.Errorf("the camera: %w", err))

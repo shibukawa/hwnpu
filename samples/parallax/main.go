@@ -22,7 +22,7 @@
 //	parallax render picture.png -o deep.gif    # no window: the picture from a head that goes around
 //	parallax parts/                            # a picture in layers (samples/layers --png parts/): what a near layer hid shows
 //	parallax track --frames a.png,b.png        # no camera: follow the head in pictures
-//	parallax cameras                           # the cameras --device takes
+//	parallax cameras                           # the cameras, numbered as --device takes them
 //
 // Pictures with clear layers work best: a figure before a landscape, things at several depths.
 // The window is built with Ebitengine; a machine without a display or its libraries builds the
@@ -79,7 +79,7 @@ var cmds struct {
 	Show    ShowCmd           `cmd:"" default:"withargs" help:"Show a picture in a window as if it were deep: it turns with the viewer's head."`
 	Render  RenderCmd         `cmd:"" help:"Write the picture as seen from a head that goes around, as an animated GIF: no window and no camera."`
 	Track   TrackCmd          `cmd:"" help:"Follow a head and print where it is: the camera's part alone, from the camera or from pictures."`
-	Cameras CamerasCmd        `cmd:"" help:"The cameras --device takes."`
+	Cameras CamerasCmd        `cmd:"" help:"The cameras, numbered as --device takes them."`
 	Models  konghelper.Models `cmd:"" help:"The models parallax uses and its network: what they take, download them, compile them for this machine's NPU."`
 	Status  konghelper.Status `cmd:"" help:"This machine's NPU: the device, how busy it is and what uses it."`
 }
@@ -212,7 +212,7 @@ func (c *picture) edge(w int) int {
 
 // camera is what the commands that follow a head share.
 type camera struct {
-	Device string   `placeholder:"ID" help:"The camera (parallax cameras lists them); none: the system's default camera."`
+	Device string   `placeholder:"N" help:"The camera: its number in \"parallax cameras\" (or its ID); none: the system's default camera."`
 	Frames []string `placeholder:"FILE,..." help:"Pictures given as the camera's frames, 15 a second, again and again: the head is followed in them (for a machine without a camera)."`
 	FOV    float64  `name:"fov" default:"60" help:"The camera's horizontal field of view in degrees, for how far the head is."`
 	Gain   float64  `default:"2.5" help:"How far the picture turns for the head's move: 2.5 turns it fully for a head 40% of the way to the edge of the camera's view."`
@@ -435,8 +435,8 @@ func (CamerasCmd) Run(ctx context.Context) error {
 	if len(cams) == 0 {
 		fmt.Println("no cameras")
 	}
-	for _, c := range cams {
-		fmt.Printf("%s\t%s\n", c[0], c[1])
+	for i, c := range cams {
+		fmt.Printf("%d  %s\n", i+1, c[1])
 	}
 	return nil
 }
