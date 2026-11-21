@@ -134,7 +134,7 @@ candidate                           license         pinned  version  chips  hf  
 1:LFM3-Audio-2B-TTS/apple           LFM             yes     -        0/12   -           write targets.coreai.version, remake
 0:plamo-3-translate-2b/amd-xdna2    PLaMo           no      -        -      -           pin from, write version, remake
 -:plamo-3-translate-2b/apple        PLaMo           no      -        -      -           make the Core AI export (on a Mac)
--:flux-3-image-klein                non-commercial  -       -        -      -           not published (license)
+-:flux-3-image-klein                non-commercial  -       -        -      -           give the AMD export a key (gated on HF)
 ```
 
 - 行はモデル × 対象 (`amd-xdna2` と `apple`)。Apple の行の `chips` は、取得元にある prebuilt のチップの数 / `coreai-build` の通るチップの数 (今は 12。[design/apple-coreai.md](design/apple-coreai.md) の表)。`0/12` は汎用の `coreai` だけ (チャットのモデルは prebuilt を作らないのでいつもこれ)。`-v` でチップの名前と機種 (`h14g` M2、...) を並べ、足りないチップも出す。prebuilt のないチップの Mac は汎用のもので動くので、`0/12` でも上げられる`N` はその行の place を全部持っている一番前の層で、どの層にもなければ `-:`、層によって分かれていれば `0+1:` (それぞれの place を一番前の層から取る)
@@ -361,7 +361,7 @@ gated は「落とす前に同意させる」仕組みで、再配布してよ�
 | LFM Open License 1.0 (`conditional`) | LFM3 系、LFM2-8B-A1B、d1 | なし | gated なし。LICENSE を写し、条件 (年 1,000 万ドル未満の商用) をカードの先頭に | 配る (2026-11-21: ほかの人も量子化したものを HF で再配布している) |
 | PLaMo コミュニティライセンス (`conditional`) | plamo-3-translate (3) | なし | gated なし。LICENSE を同梱、カードに「Built with PLaMo」と商用の登録の要否、リポジトリの名前に PLaMo を残す (`hwnpu/plamo-3-translate-2b`) | 配る (2026-11-21: 3 つの条件で) |
 | CircleStone Labs 非商用 (`non-commercial`、`accept`) | Anima-Turbo、Anima-Aesthetic | なし | gated なし。LICENSE を写し、非商用 (重みは非商用、生成した絵は商用可) をカードの先頭に | 配る (2026-11-21: ほかの人も量子化したものを再配布している) |
-| FLUX Kommunity (`non-commercial`、`accept`) | flux-3-image-klein | auto | gated (auto) | 未 |
+| FLUX Kommunity (`non-commercial`、`accept`) | flux-3-image-klein | auto | gated (auto、元の同意の文を写す)。LICENSE を写し、非商用と Qualifying User の条件をカードの先頭に | 配る (2026-11-21: ほかの人も量子化したものを再配布している) |
 
 - hwnpu の側の同意 (`accept: true`: 起動前に一度聞く) は、HF から取っても今どおり聞く。HF の gated とは別
 - 確認が済むまで、そのライセンスのモデルは `hub` を書かない (上げない)
@@ -409,7 +409,6 @@ samples が既定で使うモデルを先に配る。samples を試す人がチ�
 
 ## 9. 未決
 
-- ライセンスの再配布の確認: FLUX Kommunity (flux-3-image-klein、6 節)。LFM、PLaMo、CircleStone (Anima) は配ると決めた
 - Intel (OpenVINO IR) を配るか。今は取得元でも共有していない
 - 確かめた結果の形 (`--checked` の JSON) と、それを作る手順 (`hwnpu-dev check` の出力から作れるか)
 - 目録 (`config.json`) の形 (hwnpu が取る前に 1 回読む。ダウンロード数の条件にも使う)
