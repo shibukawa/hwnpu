@@ -16,7 +16,7 @@
 
 ```bash
 cd samples
-go run ./layers models prepare                   # モデルのダウンロード、変換、コンパイル
+go run ./layers models prepare                   # 先にモデルのダウンロード、変換、コンパイル (しなければ最初の実行で、使うものを)
 go run ./layers plan picture.png                 # 切る場所だけ: 層ごとに色をつけた絵 (描かない)
 go run ./layers split picture.png -o picture.psd       # 3 層に分ける
 go run ./layers split picture.png --layers 4 --png parts/
