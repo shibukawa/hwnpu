@@ -119,18 +119,33 @@ hwnpu の設定は今は環境変数で、プロセスがそれぞれシェル�
   `X-Hwnpu-Model-Allowlist`)。hwnpud は、自分の方針が許し、定義のファイルの規則とクライアントの項目も許すモデルを動かす
   (`chat.AllowedAlso`)。クライアントはもっと断れるが、その `+nsfw` や `+license` は hwnpud の `-` を覆さない。管理者の規則は
   機械の `models.yaml` (`policy:`) に書けば、どのプロセスも読む。ファミリーからの選びは今は hwnpud の方針だけで決まり、選んだものを
-  クライアントが断るとエラーになる (次のモデルにはならない)。段取りの 2 で方針を選びに渡す
-- **変えるコマンド**は段取りの 2 で: `hwnpu config get|set|unset NAME [VALUE]` が `~/.config/hwnpu/.env` を書き (認証を
-  持てばモード 0600)、ファイルの値と hwnpud の値を並べて見せる。hwnpud に知らせる必要はない: 次のエンジンがファイルを読む
+  クライアントが断るとエラーになる (次のモデルにはならない)。下の Accept のような選びまで
+- **変えるコマンド**は段取りの 2 で: `hwnpu config get|set|unset NAME [VALUE]` が `~/.config/hwnpu/.env` を書き (認証は
+  `--secret` で OS の保管庫に)、ファイルの値と hwnpud の値を並べて見せる。hwnpud に知らせる必要はない: 次のエンジンがファイルを読む
 
-まだ決めること:
+決めたこと (2026-11-22。まだ作っていない):
 
-- **平文のファイルの認証**。`.env` は NAS のパスワードとトークンをそのまま持つ。Keychain (Mac) と Secret Service (Linux) は
-  後で。それまで hwnpu config はファイルを 0600 に保つ
-- **置き場の引っ越し**。新しい `HWNPU_CACHE` は空から始まり、古い根はそのまま残る。引っ越し (`hwnpu cache migrate --to`) は、
-  裏で手で写すのではなく、hwnpud がキャッシュを持ったまま写すべき
-- **開発者の変数** (`HWNPU_LFM3_*`、検査用のもの、約 100 個) は hwnpud に届かない。開発は hwnpu のコマンドの既定の
-  `HWNPU_DAEMON=off` で
+- **認証は OS の保管庫に**。NAS のパスワードとトークンは `.env` から出す。`hwnpu config set --secret NAME` は、Mac では
+  Keychain (サービス `hwnpu`、アカウント `NAME` の汎用パスワード) に `/usr/bin/security` で入れる。こうすると項目の
+  アクセスリストに載るのは Apple の署名つきの道具になる。hwnpud の ad-hoc の署名は `go install` のたびに変わるので、直接だと
+  そのたびに聞かれる。Linux では Secret Service (`secret-tool` か D-Bus、属性 `service=hwnpu name=NAME`)。環境が設定した
+  変数は今までどおり勝つ (CI のため)。鍵束が開いていない Linux (画面なし、ログイン前の systemd のユーザーの unit) は
+  `~/.config/hwnpu/secrets.env` (モード 0600) に落ちる。ほかの人が読めるモードなら hwnpud は読まない
+- **置き場の引っ越しはクリア**。新しい `HWNPU_CACHE` は空から始まり、取得元 (NAS のビルド済みの書き出し、Hugging Face) から
+  埋まる。古い根は写さずに消す (`hwnpu cache clean --root OLD`、または hwnpud が使わなくなってから手で)
+- **ファミリーからの選びは HTTP の Accept のように**。クライアントは名前 1 つではなく、受け入れるものを好みつきで送る:
+  `accept: ["plamo3translate;q=1", "lfm3;q=0.5", "+license:open"]`。方針の項目は絞り込み、名前、ファミリー、機能は q つき。
+  hwnpud は機械のメモリに合うファミリーのモデルから、自分の方針とクライアントの accept が許す一番よいものを選び、どれを
+  なぜ選んだかを `Content-Type` と `Vary` のように返す。何も残らなければ `406` のように、候補ごとに何が断ったかを返す。
+  `HWNPU_MODEL_ALLOWLIST` はその絞り込みの部分になる
+- **開発用の変数は段取りの 2 の前に整理する**。計画は別に
+
+後で:
+
+- **クライアントの定義**。実験のモデルや、hwnpud が動かせるものと互換な別のアーキテクチャの蒸留モデルは、クライアントの
+  `models.yaml` に定義する。クライアントはそのファイルをリクエストに添え、hwnpud はそのクライアントの分だけ自分のものの上に
+  読む。作ってキャッシュするものは定義で鍵をつけ、同じ名前の 2 つのクライアントのモデルがぶつからないようにする。
+  アーキテクチャは hwnpud のビルドが知っているものに限る。新しいものは hwnpud がそれでビルドされるまで `HWNPU_DAEMON=off` で
 - **クライアントのビルドの定義**。hwnpud より新しいクライアントは、hwnpud の組み込みの `models.yaml` にないモデルを知って
   いることがある。名前を解くのは hwnpud なので、コマンドの `list` も hwnpud から取る (段取りの 2)。古い hwnpud は次に手が
   空いて終わるときに入れ替わる

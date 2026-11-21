@@ -150,20 +150,42 @@ With hwnpud they split in two.
   (`chat.AllowedAlso`): a client can refuse more, and its `+nsfw` or `+license` does not
   override hwnpud's `-`. An administrator's rules go in the machine's `models.yaml` (`policy:`),
   which every process reads. A family is picked by hwnpud's policy alone so far: when the client
-  refuses the pick it is an error, not the next model; step 2 sends the policy into the pick.
+  refuses the pick it is an error, not the next model, until the Accept-like pick (below).
 - **A command to change them** comes with step 2: `hwnpu config get|set|unset NAME [VALUE]`
-  writes `~/.config/hwnpu/.env` (mode 0600 when it holds a credential) and shows hwnpud's values
+  writes `~/.config/hwnpu/.env` (credentials with `--secret` go to the OS's store) and shows hwnpud's values
   beside the file's. Nothing has to tell hwnpud: the next engine reads the file.
 
-Still to settle:
+Decided (2026-11-22), not built yet:
 
-- **Credentials in a plain file.** `.env` holds the NAS's password and the tokens in the clear.
-  The Keychain (Mac) and the Secret Service (Linux) are for later; until then hwnpu config keeps
-  the file 0600.
-- **Moving the cache.** A new `HWNPU_CACHE` starts empty; the old root stays where it is. A move
-  (`hwnpu cache migrate --to`) should copy while hwnpud holds the cache, not by hand behind it.
-- **The developers' variables** (`HWNPU_LFM3_*`, the probes, about a hundred) do not reach
-  hwnpud. Development runs with `HWNPU_DAEMON=off`, the default of hwnpu's commands.
+- **Credentials in the OS's store.** The NAS's password and the tokens leave `.env`.
+  `hwnpu config set --secret NAME` puts one in the Keychain on the Mac (a generic password of
+  service `hwnpu`, account `NAME`, through `/usr/bin/security`: the item's access list then names
+  Apple's signed tool, not hwnpud's ad-hoc signature, which changes with every `go install` and
+  would ask again after each) and in the Secret Service on Linux (`secret-tool` or D-Bus,
+  attributes `service=hwnpu name=NAME`). A variable the environment sets still wins, for CI.
+  A Linux machine with no keyring unlocked (headless, the systemd user unit before a login)
+  falls back to `~/.config/hwnpu/secrets.env` at mode 0600, which hwnpud refuses to read when
+  others can.
+- **Moving the cache is clearing it.** A new `HWNPU_CACHE` starts empty and fills from the sources
+  (the NAS's prebuilt exports, Hugging Face); the old root is removed, not migrated
+  (`hwnpu cache clean --root OLD`, or by hand once hwnpud no longer uses it).
+- **A family is picked as HTTP picks a representation by Accept.** A client sends what it
+  accepts with preferences instead of a single name: `accept: ["plamo3translate;q=1",
+  "lfm3;q=0.5", "+license:open"]`, the policy items as filters and the names, families and
+  features with q. hwnpud picks among the family's models for the machine's memory the best that
+  its policy and the client's accept, and answers which one and why, as `Content-Type` and
+  `Vary`; when none is left it answers as `406`, with each candidate and what refused it.
+  `HWNPU_MODEL_ALLOWLIST` becomes the filter part of it.
+- **The developers' variables are sorted out** before step 2, in a plan of their own.
+
+Later:
+
+- **A client's own definitions.** An experiment's model, or a distilled model of another
+  architecture compatible with one hwnpud runs, is defined in the client's `models.yaml`. The
+  client sends the file with its requests; hwnpud reads it over its own for that client only,
+  and keys what it builds and caches by the definition, so two clients' models of the same name
+  do not meet. The architecture has to be one hwnpud's build knows; a new one runs with
+  `HWNPU_DAEMON=off` until hwnpud is built with it.
 - **The definitions of the client's build.** A client newer than hwnpud may know models that
   hwnpud's built-in `models.yaml` does not; names are resolved by hwnpud, so the commands' `list`
   has to come from hwnpud too (step 2), and an older hwnpud is replaced at its next idle exit.
