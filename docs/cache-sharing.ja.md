@@ -186,7 +186,6 @@ HWNPU_MODEL_SOURCE_1=s3://corp-models/hwnpu?writeback=true     # 全拠点で共
 
 ```
 hwnpu-dev models update [MODEL...]   モデルを Hugging Face の新しいコミットに移す (変わったファイルだけ落とす)
-hwnpu-dev models flush               裏のキューに残った書き戻しを済ませる (終わるまで待つ)
 hwnpu-dev models verify DIR --sums   変換結果を entry.json と照らす
 hwnpu-dev models gc 1 --older-than 90 --apply   取得元 1 の、90 日より前に作った変換を消す
                                     (--model、--kind、--key も。--apply がなければ見せるだけ)
@@ -267,8 +266,7 @@ URL の後ろに足せる設定:
 | `import DIR...` | 手で置いたフォルダ (`~/models`) を取得元へ: Hugging Face と同じと確かめたチェックポイントと、書き出し |
 | `update [MODEL...]` | リポジトリを Hugging Face の新しいコミットへ |
 | `verify [--sums]` | `entry.json` と照らす |
-| `flush` | アップロードのキューを済ませる |
-| `gc N [--model M] [--kind K] [--key K] [--older-than 日数] [--target T] [--orphans] [--apply]` | 取得元 N の変換結果を消す (番号は `sources` に出るもの。0 は手元のキャッシュ) |
+| `gc N [--model M] [--kind K] [--key K] [--older-than 日数] [--target T] [--apply]` | 取得元 N の変換結果を消す (番号は `sources` に出るもの。0 は手元のキャッシュ) |
 | `migrate N` | 前の並び (`blobs/`、`upstream/`、`entries/`) をハードリンクで移す |
 
 ### 3.5 取得元の中の並び
@@ -375,7 +373,7 @@ chat.Fetch / modelstore.File
 - **tee**: Hugging Face から落とすバイトを、落としながら書き戻す取得元へ送り、大きさと SHA-256 が合ったときだけ確定します。取得元が 64 MiB 遅れたとき、`.part` から続けたときは tee を外れ、落とし終えてからキューで置きます。遅い取得元がダウンロードを遅くしたり止めたりすることはありません。
 - **変換しながら置く**: 手元の変換の間、書き出しのフォルダを見て、3 秒触られていないファイルから 4 本ずつ置きます。変換が終わるころには大半が置かれていて、最後は後から変わったファイルと `entry.json` だけです。
 - アップロードは **キュー** (4 本) に入れて進めます。コマンドは終わる前に済むのを待ち、途中で止められたら `work/queue` に残して次の起動で続けます。失敗は `work/queue.log` に残し、コマンドは失敗にしません。
-- 書いている途中のフォルダには `.writing-ID` の印 (機械、プロセス、最後に書いた時刻) を置き、5 分ごとに書き直します。`hwnpu cache clean` と `gc --orphans` は、印かファイルが最近 1 時間に変わったフォルダを残すので、ほかの機械がアップロードしているものを消しません。
+- 書いている途中のフォルダには `.writing-ID` の印 (機械、プロセス、最後に書いた時刻) を置き、5 分ごとに書き直します。`hwnpu cache clean` は、印かファイルが最近 1 時間に変わったフォルダを残すので、ほかの機械がアップロードしているものを消しません。
 - lock は読んで足して書きます。2 台が同時に同じリポジトリへ足すと片方が消えることがありますが、消えたものは次に読む機械が足し直します。
 
 ### 5.4 通信

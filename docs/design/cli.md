@@ -18,7 +18,7 @@ were removed without wrappers.
 | `hwnpu-chat` | `chat` (default), `agent`, `search`, `serve`, `opencode`, `systemone`, `list` | Language models: chat, coding agent, embeddings, OpenAI-compatible API, d1 decisions |
 | `hwnpu-image` | `generate`, `depth`, `face-detect`, `pose`, `detect`, `ocr`, `label`, `embed`, `segment`, `convert`, `list` | Image generation and vision models |
 | `hwnpu-audio` | `generate` (music; `-m sfx` sound effects), `tts`, `transcribe`, `pitch`, `notes`, `list` | `list` covers music, sfx, speech, transcribe, pitch, notes |
-| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`sources`, `ls`, `fetch`, `export`, `prebuild`, `put`, `import`, `update`, `verify`, `flush`, `gc`, `migrate`, `hf`) | Development tools, not for end users |
+| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`sources`, `ls`, `fetch`, `export`, `prebuild`, `put`, `import`, `update`, `verify`, `gc`, `migrate`, `hf`) | Development tools, not for end users |
 
 - Music and sound effects share `hwnpu-audio generate`: only the model differs, the output (48 kHz
   stereo WAV, speaker) and display are the same. Music-only flags (`--codes`, `--continue`, `--notes`)

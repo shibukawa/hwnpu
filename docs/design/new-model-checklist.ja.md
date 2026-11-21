@@ -459,7 +459,7 @@ done
 - **Apple での費用**: Core AI は `.aimodel` の関数をまとめてコンパイルし、コンパイラが 1 つの大きさを落とすとその部分は全部の大きさで NPU から外れる。取得元に置く前に、大きさを 1 つずつ、prebuilt を作るチップごとにオフラインでコンパイルする (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、`/usr/bin/log` で `Falling back` を探す)。その後の `hwnpu-dev models prebuild --arch ARCH EXPORT` は `0 failed` で終わること。VAE には prebuilt を作らない (`coreai.LeftToDevice`)
 - **AMD (IRON)**: 最初の大きさのグラフが bank を持ち、ほかの大きさのグラフは同じ bank の上で `sizes/WxH/` に (`share_banks`)。512 行の丸ごとにならない大きさは詰めて回し、キーを `nk` で区切る。詰めた行だけに依るグラフは共有する
 - **鍵**: `chat.PinnedRecipe(model, tool, version)` と書き出し器の引数。models.yaml に読む全部のファイルの `sha256:` が要る。入力か出力が変わったら書き出しの版を手で上げる
-- **最初の実行が取得元に置く** (`chat.SharedExportOr`、`?writeback=true`、`hwnpu-dev models flush`)。手で作ったものは `hwnpu-dev models import DIR` か、最初に使ったとき
+- **最初の実行が取得元に置く** (`chat.SharedExportOr`、`?writeback=true`)。手で作ったものは `hwnpu-dev models import DIR` か、最初に使ったとき
 - **反対側から確かめる**: `hwnpu-dev models ls N`。手元の書き出しを脇に置いて名前で動かす: 取得元から来て、同じバイトを描くこと
 - **取得元のチェックポイント**は `hwnpu-lock.json` があるときだけ読む
 - **どの大きさの絵も**一番下の機械で見る (壊れた関数はそこにしか出ない)

@@ -459,7 +459,7 @@ done
 - **Its cost on Apple**: Core AI compiles all functions of an `.aimodel` together, and one size the compiler fails takes that part off the NPU for all sizes. Before putting an export in the sources, compile each size alone offline for every chip (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`, look for `Falling back` in `/usr/bin/log`). Then `hwnpu-dev models prebuild --arch ARCH EXPORT` must end with `0 failed`. VAEs get no prebuilt (`coreai.LeftToDevice`)
 - **AMD (IRON)**: the first size's graphs hold the banks, other sizes' graphs are in `sizes/WxH/` on the same banks (`share_banks`). A size not in whole rounds of 512 rows runs padded with keys bounded by `nk`; graphs that depend only on padded rows are shared
 - **The key**: `chat.PinnedRecipe(model, tool, version)` plus the exporter's arguments; it needs every input file's `sha256:` in models.yaml. Raise the export version by hand whenever inputs or outputs change
-- **The first run puts it in the sources** (`chat.SharedExportOr`, `?writeback=true`, `hwnpu-dev models flush`); hand-made exports via `hwnpu-dev models import DIR` or first use
+- **The first run puts it in the sources** (`chat.SharedExportOr`, `?writeback=true`); hand-made exports via `hwnpu-dev models import DIR` or first use
 - **Check from the other side**: `hwnpu-dev models ls N`, then move the local export aside and run by name: it must come from the source and draw the same bytes
 - **The checkpoint in the sources** is read only with its `hwnpu-lock.json`
 - **Check every size's picture** on the lowest machine (a broken function shows only there)

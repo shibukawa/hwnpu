@@ -221,7 +221,7 @@ func TestWebDAVGC(t *testing.T) {
 	}
 	put("x")
 	put("y")
-	g, err := PlanGC(ctx, l, func(e Entry) bool { return e.Model == "x" }, false)
+	g, err := PlanGC(ctx, l, func(e Entry) bool { return e.Model == "x" })
 	if err != nil || len(g.Entries) != 1 {
 		t.Fatalf("plan: %+v %v", g, err)
 	}

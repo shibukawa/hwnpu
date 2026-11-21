@@ -126,7 +126,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 - Order: data first, `entry.json` (or the lock entry) last. File writes go to `.put-…` then MOVE (S3 shows an object only when complete).
 - Tee: a Hugging Face download is streamed to folder and WebDAV sources as it comes, committed only if size and sha256 match. A source 64 MiB behind (`store.TeeBuffer`), S3, or a resumed `.part` drops out and is queued after.
 - Non-packed conversions are put while being made (`store.StartEarly`: files idle 3 s, `EarlySettle`); `PutEntry` puts the rest. Packed ones (AMD, Core AI) are put once whole.
-- The queue (`store.PutLater`, `work/queue/`, 4 streams) finishes before exit, resumes at the next start, logs failures to `work/queue.log`, and never fails the command. `hwnpu-dev models flush` waits for it.
+- The queue (`store.PutLater`, `work/queue/`, 4 streams) finishes before exit, resumes at the next start, logs failures to `work/queue.log`, and never fails the command.
 - A folder being written carries `.writing-ID` (JSON: machine, process, start, last write), rewritten every 5 minutes, removed at the end (`store.MarkWriting`). Every writing path sets it (tee and early puts too).
 - Packing (`store.Packs`, `files.tar.zst` beside `entry.json`): AMD and Core AI exports go as one tar+zstd file. The gain is fewer requests (one PUT+MOVE on WebDAV), size 1–5% for Core AI (LFM3-1.7B 2.62 → 2.59 GB), 16% over 13 AMD chat exports (65.7 → 55.2 GB). Download resumes, sha256 of the pack, then each file checked against `entry.json`; only the unpacked export is kept. Loose exports from older hwnpu are still read (the NAS's were packed on 2026-11-21 and the command that did it, `hwnpu-dev cache repack`, was removed: every put packs).
 
@@ -230,7 +230,6 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 - Outside `converted/` and `original/` (a NAS's `.DS_Store`): untouched.
 - A folder is "being written", and kept, if it has a `.writing-ID` mark whose last write is within an hour (`store.WritingStale`), or any file time (WebDAV `getlastmodified`, mtime, S3 LastModified) within an hour. A mark alone was not enough: an older hwnpu without marks started writing between plan and apply. Each folder is re-checked just before removal; the mark goes last.
 - S3 multipart uploads never completed or aborted (billed, not listed) under `converted/` and `original/` older than `WritingStale` are aborted (`ListMultipartUploads`, tinygodriver v1.3.10).
-- `hwnpu-dev models gc N … --orphans` uses the same rules.
 
 ## Open
 

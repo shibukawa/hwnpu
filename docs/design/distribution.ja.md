@@ -126,7 +126,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - 順: データが先、`entry.json` (か lock の項目) が最後。ファイルは `.put-…` に書いて MOVE (S3 は PUT が終わって初めて見える)
 - tee: Hugging Face からのダウンロードを、来るそばからフォルダと WebDAV の取得元に流し、大きさと sha256 が合ったときだけ確定する。64 MiB 遅れた取得元 (`store.TeeBuffer`)、S3、`.part` からの続きは外れて、ダウンロードの後で queue から置く
 - 詰めない変換結果は作りながら置く (`store.StartEarly`: 3 秒触られないファイル、`EarlySettle`)。残りは `PutEntry`。詰めるもの (AMD、Core AI) は揃ってから置く
-- queue (`store.PutLater`、`work/queue/`、4 本) は終わる前に待ち、切れたら次の起動で続け、失敗は `work/queue.log` に書き、コマンドを失敗させない。`hwnpu-dev models flush` で待つ
+- queue (`store.PutLater`、`work/queue/`、4 本) は終わる前に待ち、切れたら次の起動で続け、失敗は `work/queue.log` に書き、コマンドを失敗させない
 - 書いている間のフォルダには `.writing-ID` (JSON: 機械、プロセス、始めた時刻、最後に書いた時刻) を置き、5 分ごとに書き直し、終われば消す (`store.MarkWriting`)。書く道はどれも置く (tee と作りながら置くのも)
 - 詰める (`store.Packs`、`entry.json` の隣の `files.tar.zst`): AMD と Core AI の書き出しは tar を zstd で詰めた 1 ファイル。効くのは要求の数 (WebDAV で PUT と MOVE が 1 回)。大きさは Core AI で 1〜5 % (LFM3-1.7B 2.62 → 2.59 GB)、AMD のチャットの 13 モデルで 16 % (65.7 → 55.2 GB)。取るときは続きから落とし、詰めたものの sha256、次に各ファイルを `entry.json` と照らす。手元には展開したものだけを残す。前の hwnpu がばらで置いたものも読める (NAS のものは 2026-11-21 に詰め、詰め直すコマンド `hwnpu-dev cache repack` は外した。今はどの置き方も詰める)
 
@@ -230,7 +230,6 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - `converted/` と `original/` の外 (NAS の `.DS_Store` など): 触らない
 - 最後に書いたのが 1 時間以内 (`store.WritingStale`) の `.writing-ID` の印があるか、ファイルの時刻 (WebDAV の `getlastmodified`、mtime、S3 の LastModified) のどれかが 1 時間以内のフォルダは、書いている途中として残す。印だけでは足りなかった: 印を置かない前の hwnpu が、計画と実行の間に書き始めた。消す直前にフォルダを見直す。印は最後に消す
 - S3 の、Complete も Abort もされなかったマルチパート (一覧に出ないまま課金される) は、`converted/` と `original/` の下で `WritingStale` を過ぎたものを中止する (`ListMultipartUploads`、tinygodriver v1.3.10)
-- `hwnpu-dev models gc N … --orphans` も同じ決め方
 
 ## 未解決
 

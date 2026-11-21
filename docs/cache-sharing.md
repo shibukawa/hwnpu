@@ -187,7 +187,6 @@ A shared source is a folder tree with no server logic, so tidy it with commands:
 
 ```
 hwnpu-dev models update [MODEL...]   move a model to Hugging Face's newest commit (only changed files are downloaded)
-hwnpu-dev models flush               finish uploads the background left in the queue, and wait
 hwnpu-dev models verify DIR --sums   check conversions against their entry.json
 hwnpu-dev models gc 1 --older-than 90 --apply   remove conversions in source 1 made over 90 days ago
                                     (also --model, --kind, --key; without --apply it only shows them)
@@ -268,8 +267,7 @@ Parameters, in the query string:
 | `import DIR...` | Put folders made by hand (`~/models`) into a source: checkpoints that match their Hugging Face repository, and exports |
 | `update [MODEL...]` | Move repositories to Hugging Face's newest commit |
 | `verify [--sums]` | Check against `entry.json` |
-| `flush` | Finish the upload queue |
-| `gc N [--model M] [--kind K] [--key K] [--older-than DAYS] [--target T] [--orphans] [--apply]` | Remove conversions from source N (source numbers are those `sources` prints; 0 is this machine's cache) |
+| `gc N [--model M] [--kind K] [--key K] [--older-than DAYS] [--target T] [--apply]` | Remove conversions from source N (source numbers are those `sources` prints; 0 is this machine's cache) |
 | `migrate N` | Move an older layout (`blobs/`, `upstream/`, `entries/`) by hard links |
 
 ### 3.5 What a source looks like inside
@@ -376,7 +374,7 @@ Writes never show a half-written state to readers:
 - **Tee** while downloading: bytes from Hugging Face are sent to a writable source as they arrive and committed only if the size and SHA-256 match. If the source falls 64 MiB behind, or the download resumes from a `.part`, the tee stops and the file is queued after the download. A download is never slowed or stopped by a slow source.
 - **Convert and upload at the same time**: while a local conversion runs, the export folder is watched; files untouched for 3 seconds are uploaded (4 at a time), so most of the data is already uploaded when the conversion ends. Only the files that changed afterwards and `entry.json` are uploaded at the end.
 - Uploads run in a **queue** (4 streams). Whatever is not done before the command exits is waited for; if the process is interrupted, the queue is kept in `work/queue` and finished at the next start. A failure is logged in `work/queue.log` and never fails the command.
-- A folder being written carries a mark `.writing-ID` (machine, process, last-write time), refreshed every 5 minutes. `hwnpu cache clean` and `gc --orphans` leave folders whose mark or files changed within the last hour, so they never remove what another machine is uploading.
+- A folder being written carries a mark `.writing-ID` (machine, process, last-write time), refreshed every 5 minutes. `hwnpu cache clean` leaves folders whose mark or files changed within the last hour, so it never removes what another machine is uploading.
 - Locks are read, extended and written back; two machines adding files to one repository at the same time may lose one of the additions, which the next machine to read the file adds again.
 
 ### 5.4 Transports

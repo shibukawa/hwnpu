@@ -8,19 +8,16 @@ import (
 	"strings"
 )
 
-// GC is what hwnpu-dev models gc removes from a source: the entries chosen (their folders), and
-// with orphans what a writeback cut off left under converted/ (Clean's: the folders with no
-// entry.json, the temporary files of uploads; a folder being written is left). Nothing is
-// removed until Apply.
+// GC is what hwnpu-dev models gc removes from a source: the entries chosen (their folders). What
+// a writeback cut off left is hwnpu cache clean's (PlanClean). Nothing is removed until Apply.
 type GC struct {
 	Entries []Entry  // the entries removed
-	Orphans []string // the files removed that no entry has
 	Bytes   int64    // what the entries' files held
 	keys    []string // every file removed, entry.json first in each folder
 }
 
 // PlanGC works out a GC of s: drop chooses the entries to remove.
-func PlanGC(ctx context.Context, s Source, drop func(Entry) bool, orphans bool) (GC, error) {
+func PlanGC(ctx context.Context, s Source, drop func(Entry) bool) (GC, error) {
 	var g GC
 	keys, err := s.Store.List(ctx, "converted/")
 	if err != nil {
@@ -63,18 +60,6 @@ func PlanGC(ctx context.Context, s Source, drop func(Entry) bool, orphans bool) 
 			g.keys = append(g.keys, k)
 		}
 	}
-	if orphans {
-		c, err := PlanClean(ctx, s)
-		if err != nil {
-			return g, err
-		}
-		for _, f := range c.Folders {
-			if strings.HasPrefix(f.Path, "converted/") && !gone[f.Path] {
-				g.Orphans = append(g.Orphans, f.Files...)
-				g.keys = append(g.keys, f.Files...)
-			}
-		}
-	}
 	return g, nil
 }
 
@@ -90,9 +75,6 @@ func (g GC) Apply(ctx context.Context, s Source) error {
 	dirs := map[string]bool{}
 	for _, e := range g.Entries {
 		dirs[e.Path] = true
-	}
-	for _, k := range g.Orphans {
-		dirs[path.Dir(k)] = true
 	}
 	for _, d := range slices.Sorted(maps.Keys(dirs)) {
 		removeFolder(ctx, s.Store, d)

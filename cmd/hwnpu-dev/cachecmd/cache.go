@@ -43,8 +43,7 @@ type Cmd struct {
 	Import  ImportCmd  `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
 	Update  UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
 	Verify  VerifyCmd  `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
-	Flush   FlushCmd   `cmd:"" help:"Do the work the background left in the queue (what goes in the sources) and wait for it."`
-	GC      GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); with --orphans what a writeback cut off left too. Shows what would go unless --apply."`
+	GC      GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); Shows what would go unless --apply."`
 	Migrate MigrateCmd `cmd:"" help:"Move what a folder source holds in the layout before (blobs/, upstream/, entries/) to original/ and converted/, by hard links."`
 }
 
@@ -388,7 +387,6 @@ type GCCmd struct {
 	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH)." placeholder:"KEY"`
 	OlderThan int      `name:"older-than" help:"Remove the entries made more than this many days ago." placeholder:"DAYS"`
 	Target    []string `help:"Only the entries of these targets (amd-xdna2, coreai...): with the others, which choose among them." placeholder:"TARGET"`
-	Orphans   bool     `help:"Remove what a writeback cut off left under converted/ too: the folders with no entry.json, the temporary files of uploads (.put-); a folder being written (a .writing- marker of the last hour) is left (hwnpu cache clean does original/ too)."`
 	Apply     bool     `help:"Remove them (without it, only show what would go)."`
 }
 
@@ -402,8 +400,8 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 	if err != nil {
 		return err
 	}
-	if len(g.Model) == 0 && len(g.Kind) == 0 && len(g.Key) == 0 && g.OlderThan == 0 && !g.Orphans {
-		return errors.New("say what to remove: --model, --kind, --key, --older-than or --orphans")
+	if len(g.Model) == 0 && len(g.Kind) == 0 && len(g.Key) == 0 && g.OlderThan == 0 {
+		return errors.New("say what to remove: --model, --kind, --key, or --older-than (what a writeback cut off left: hwnpu cache clean)")
 	}
 	before := time.Now().AddDate(0, 0, -g.OlderThan)
 	drop := func(e shared.Entry) bool {
@@ -427,23 +425,20 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 		}
 		return g.OlderThan > 0 && e.Made.Before(before)
 	}
-	plan, err := shared.PlanGC(ctx, l, drop, g.Orphans)
+	plan, err := shared.PlanGC(ctx, l, drop)
 	if err != nil {
 		return err
 	}
 	for _, e := range plan.Entries {
 		fmt.Printf("%s %s %.2f GB %s\n", e.Kind, e.Path, float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime))
 	}
-	for _, k := range plan.Orphans {
-		fmt.Printf("orphan %s\n", k)
-	}
 	verb := "would remove"
 	if g.Apply {
 		verb = "removing"
 	}
-	fmt.Printf("%s: %s %d entries (%.2f GB) and %d orphans\n", l, verb, len(plan.Entries), float64(plan.Bytes)/1e9, len(plan.Orphans))
+	fmt.Printf("%s: %s %d entries (%.2f GB)\n", l, verb, len(plan.Entries), float64(plan.Bytes)/1e9)
 	if !g.Apply {
-		if len(plan.Entries)+len(plan.Orphans) > 0 {
+		if len(plan.Entries) > 0 {
 			fmt.Println("(--apply removes them)")
 		}
 		return nil
@@ -470,24 +465,6 @@ func (v VerifyCmd) Run(*devopt.Defs) error {
 	if bad > 0 {
 		return fmt.Errorf("%d of %d differ", bad, len(v.Dir))
 	}
-	return nil
-}
-
-// FlushCmd is hwnpu-dev models flush.
-type FlushCmd struct{}
-
-func (FlushCmd) Run(d *devopt.Defs) error {
-	if err := load(d); err != nil {
-		return err
-	}
-	ctx, stop := signalContext()
-	defer stop()
-	shared.Flush(ctx)
-	left, _ := filepath.Glob(filepath.Join(cache.Sub("work", "queue"), "*.json"))
-	if len(left) > 0 {
-		return fmt.Errorf("%d pieces of work failed and are left for the next run: see %s", len(left), cache.Sub("work", "queue.log"))
-	}
-	fmt.Println("the queue is empty")
 	return nil
 }
 

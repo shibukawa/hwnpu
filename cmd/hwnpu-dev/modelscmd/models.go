@@ -31,8 +31,7 @@ type Cmd struct {
 	Import   cachecmd.ImportCmd  `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
 	Update   cachecmd.UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
 	Verify   cachecmd.VerifyCmd  `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
-	Flush    cachecmd.FlushCmd   `cmd:"" help:"Do the work the background left in the queue (what goes in the sources) and wait for it."`
-	GC       cachecmd.GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); with --orphans what a writeback cut off left too. Shows what would go unless --apply."`
+	GC       cachecmd.GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); Shows what would go unless --apply."`
 	Migrate  cachecmd.MigrateCmd `cmd:"" help:"Move what a folder source holds in the layout before (blobs/, upstream/, entries/) to original/ and converted/, by hard links."`
 	HF       hfcmd.Cmd           `cmd:"" name:"hf" help:"Put the conversions the sources hold on Hugging Face, one repository a model, and pin the commits in models.yaml (docs/prebuilt.md): plan, push, check, sizes."`
 }

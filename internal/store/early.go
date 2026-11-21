@@ -15,7 +15,7 @@ import (
 // after, then entry.json (docs/cache-sharing-design.md 7.1). The converters are not told: what is put
 // early and changes after is put again, and what is put early and is not in the entry at the
 // end (a file the converter removed) is removed. A conversion that stops leaves what was put of it
-// without an entry.json, as one cut off (hwnpu-dev models gc --orphans).
+// without an entry.json, as one cut off (hwnpu cache clean).
 
 // EarlySettle is how long a file is left alone before it is taken for written; EarlyPoll how
 // often the directory is looked at.

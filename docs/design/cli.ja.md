@@ -17,7 +17,7 @@
 | `hwnpu-chat` | `chat` (既定)、`agent`、`search`、`serve`、`opencode`、`systemone`、`list` | 言語モデル: チャット、コーディングエージェント、埋め込み、OpenAI 互換 API、d1 の判定 |
 | `hwnpu-image` | `generate`、`depth`、`face-detect`、`pose`、`detect`、`ocr`、`label`、`embed`、`segment`、`convert`、`list` | 画像の生成と視覚のモデル |
 | `hwnpu-audio` | `generate` (音楽。`-m sfx` で効果音)、`tts`、`transcribe`、`pitch`、`notes`、`list` | `list` は music、sfx、speech、transcribe、pitch、notes |
-| `hwnpu-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`report`、`mxfp4`、`xclbin`、`models` (`sources`、`ls`、`fetch`、`export`、`prebuild`、`put`、`import`、`update`、`verify`、`flush`、`gc`、`migrate`、`hf`) | 開発用。利用者向けではない |
+| `hwnpu-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`report`、`mxfp4`、`xclbin`、`models` (`sources`、`ls`、`fetch`、`export`、`prebuild`、`put`、`import`、`update`、`verify`、`gc`、`migrate`、`hf`) | 開発用。利用者向けではない |
 
 - 音楽と効果音は同じ `hwnpu-audio generate`: 違うのはモデルだけで、出力 (48 kHz ステレオの WAV、スピーカー) も
   表示も同じ。音楽だけのフラグ (`--codes`、`--continue`、`--notes`) を効果音のモデルに付けるとエラー

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -407,11 +408,11 @@ func TestGC(t *testing.T) {
 	write(t, half, "a writeback cut off")
 	long := time.Now().Add(-2 * WritingStale) // not one being written
 	os.Chtimes(half, long, long)
-	g, err := PlanGC(ctx, s, func(e Entry) bool { return e.Model == "a" }, false)
+	g, err := PlanGC(ctx, s, func(e Entry) bool { return e.Model == "a" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(g.Entries) != 1 || g.Entries[0].Key != a.Key || len(g.Orphans) != 0 || g.Bytes != int64(len("a's own")) {
+	if len(g.Entries) != 1 || g.Entries[0].Key != a.Key || g.Bytes != int64(len("a's own")) {
 		t.Fatalf("plan: %+v", g)
 	}
 	if err := g.Apply(ctx, s); err != nil {
@@ -427,9 +428,10 @@ func TestGC(t *testing.T) {
 	if _, err := FetchEntry(ctx, []Source{s}, ra, func(Entry) bool { return true }, dst+"2", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a after gc: %v", err)
 	}
-	g, _ = PlanGC(ctx, s, func(Entry) bool { return false }, true)
-	if len(g.Entries) != 0 || len(g.Orphans) != 1 || g.Orphans[0] != "converted/c/t/c.x/v1/half" {
-		t.Fatalf("orphans: %+v", g)
+	// what a writeback cut off is hwnpu cache clean's: gc leaves it
+	g, _ = PlanGC(ctx, s, func(Entry) bool { return true })
+	if slices.Contains(g.keys, "converted/c/t/c.x/v1/half") {
+		t.Fatalf("gc takes what a writeback cut off: %+v", g.keys)
 	}
 }
 
