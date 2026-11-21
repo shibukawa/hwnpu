@@ -10,6 +10,9 @@ contains no special token and there is a tokenizer.model, also by sentencepiece 
 must agree. OUT.json holds {"cases": [{"text": ..., "ids": [...]}]}. --random N adds N
 random strings drawn from the texts' characters, spaces, tabs and newlines (for a wider local
 check; the committed golden file has none). Needs transformers and sentencepiece, not torch.
+--tokenizers encodes with the tokenizers library on MODEL_DIR/tokenizer.json alone: transformers 5
+puts its own pre-tokenizer in place of the file's for a GPT2Tokenizer (Ouro's: the Digits step is
+lost, and " ①" becomes one piece), which the model was not trained with.
 """
 import argparse
 import json
@@ -61,17 +64,35 @@ TEXTS = [
 ]
 
 
+class _Plain:
+    """The few things main reads of a transformers tokenizer, from the tokenizers library."""
+
+    def __init__(self, path):
+        from tokenizers import Tokenizer
+
+        self.t = Tokenizer.from_file(path)
+        self.added_tokens_encoder = {a.content: i for i, a in self.t.get_added_tokens_decoder().items()}
+        self.bos_token_id = None
+
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": self.t.encode(text, add_special_tokens=add_special_tokens).ids}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model_dir")
     ap.add_argument("out")
     ap.add_argument("--random", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--tokenizers", action="store_true", help="encode with the tokenizers library on tokenizer.json")
     a = ap.parse_args()
 
-    from transformers import AutoTokenizer
+    if a.tokenizers:
+        tok = _Plain(os.path.join(a.model_dir, "tokenizer.json"))
+    else:
+        from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(a.model_dir, trust_remote_code=True)
+        tok = AutoTokenizer.from_pretrained(a.model_dir, trust_remote_code=True)
     sp = None
     if os.path.exists(os.path.join(a.model_dir, "tokenizer.model")):
         import sentencepiece as spm

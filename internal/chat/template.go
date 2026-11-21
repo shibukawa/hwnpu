@@ -195,6 +195,8 @@ func TemplateFor(arch string) (Template, error) {
 		return Plamo3, nil
 	case "gptoss":
 		return GptOss, nil
+	case "ouro":
+		return Ouro, nil
 	}
 	return nil, fmt.Errorf("chat: no chat format for %s", arch)
 }

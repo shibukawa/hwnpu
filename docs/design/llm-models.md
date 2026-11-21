@@ -3,7 +3,7 @@
 [日本語](llm-models.ja.md)
 
 Per-model notes for the LFM3 family (LFM3-1.7B, LFM3-VL, LFM3-Audio, LFM3-Omni, d1), Gemma 4,
-PLaMo 3 Translate, PLaMo-Embedding-1B and the BERT family, plus the tokenizers
+PLaMo 3 Translate, Ouro, PLaMo-Embedding-1B and the BERT family, plus the tokenizers
 (`internal/tokenizer`) and chat formats (`internal/chat`). Qwen models are in
 [llm-qwen.md](llm-qwen.md), mixtures of experts (LFM2-8B-A1B, Qwen3.6, gpt-oss) in [moe.md](moe.md),
 engine mechanisms (KV cache, rings, split at the attention, prompt store, last-row logits) in
@@ -28,6 +28,7 @@ a `.mlpackage` first, then lowers it.
 | d1-2B / d1-Omni-2B | `lfm3` in d1 mode (+ towers) | decision (`hwnpu-chat systemone`) | lut8 | converts | — |
 | gemma-4-E2B-it / E4B-it | `gemma4` | chat (tools, thinking), text only | lut6 | converts | q4, images and audio too |
 | plamo-3-translate-0.8b / 2b / 8b | `plamo3` | chat (translation) | lut8; 8B lut4 | int8; 8B int4 by rows | q4 |
+| Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking, no tools) | lut8, not run on a Mac | int8, converts, not run on hardware | q4 with MLP and head q6: KL 0.026 against HF (top-1 98.4 %), 3.6 tokens/s |
 | plamo-embedding-1b | `plamo-bi` | embedding (query) | lut8 + head-scale | int8 | — |
 | BERT family (all-MiniLM-L6-v2 …) | `bert` | — (not in models.yaml) | converts only, lut8 | converts only, int8 | — |
 
@@ -312,6 +313,56 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   the prompt).
 - Tokenizer files are chosen by arch (`tokenizer.jsonl`, `tokenizer_config.json`).
 
+## Ouro (`internal/llm/ouro`, `tools/amd/iron_ouro.py`)
+
+- ByteDance's looped language models (`OuroForCausalLM`, remote code `modeling_ouro.py`; Apache 2.0).
+  Llama's layer with sandwich norms (`input_layernorm`, attention, `input_layernorm_2`, residual;
+  `post_attention_layernorm`, SwiGLU, `post_attention_layernorm_2`, residual), plain multi-head
+  attention (16 heads, no GQA), RoPE θ 10⁶, no biases, no norms over the heads, an untied `lm_head`,
+  vocabulary 49152 (SmolLM's). The whole stack runs `total_ut_steps` (4) times on each token with the
+  same weights; after each pass `model.norm` is applied and the next pass starts from the normed
+  state; the head reads the last pass's. Each pass keeps keys and values of its own for every layer.
+- hwnpu treats the passes as layers: `Layers()` is layers × passes (1.4B: 24 × 4 = 96, 2.6B: 48 × 4 =
+  192), layer v the weights of layer v mod layers (`llm.Looped`), the caches `kv_k_v` per pass. The
+  caches, the parts and `hwnpu-dev check` then work as for any decoder. A program holds a layer's
+  weights once however many of its passes it builds (the builder keeps the constants by name:
+  `TestPassesShareWeights`); `llm.EstimateBytes` counts them for every pass (`llm.Looped`), which is
+  over the stored size of a part that builds more than one pass. The KV cache is 4× a 24-layer
+  model's: 768 KiB a token for the 1.4B in fp16, 1.5 MiB for the 2.6B.
+- The early exit gate (`model.early_exit_gate`) is not read: with `early_exit_threshold` 1.0 (the
+  checkpoints') transformers takes the last pass. A threshold under 1 or `early_exit_step` is refused
+  (an exit per token would leave the later passes' caches without that token's keys).
+  `total_ut_steps` can be lowered in config.json, as the model card says, for fewer passes.
+- Norms: the residual reaches 212 (1.4B), its rows' root mean square 4.7, so the norms over it
+  (`input_layernorm`, `post_attention_layernorm`, `model.norm`) take it divided by 4. The norms after
+  the attention and the MLP read at most 54 and 25 but rows down to a root mean square of 0.0002, so
+  they take their input as it is (1/64, as Qwen3's, would square such rows under fp16's smallest
+  values). The first layer's norm reads the embeddings as they are.
+- Checks (1.4B-Thinking): the tiny model (3 layers × 3 passes) against fp64 8e-7, layer by layer 6e-7,
+  with a cache in parts 3.5e-4; breaking the norm between passes, sharing a layer's cache between
+  passes or dropping the norm after the MLP each fail them. `hwnpu-dev check` (30 tokens): 0 missing,
+  0 mismatched, 2 unused (the gate); fp32 worst layer 0.0004, argmax 30/30, KL 0.0000; `-f16` worst
+  layer 0.0012, argmax 30/30, KL 0.0000. The reference is `tools/ref/ref_logits.py` with transformers
+  4.54 (the remote code fails on 5.x: `pad_token_id`, `create_causal_mask`); it records each layer
+  once a pass and the norm between passes (`hook_passes`). 2.6B-Thinking (192 layers, residual up to 161): `-f16` worst layer 0.0020, argmax 30/30, KL 0.0000.
+- Formats (CPU, `-f16`, the whole model against HF fp32, 30 tokens): lut8 KL 0.023 (argmax 25/30),
+  lut6 0.18 (23/30), lut4 5.1 (3/30, unusable), int8 0.006 (29/30). The default is lut8 (Intel's int8).
+  A weight read four times a token compounds its rounding. The 2.6B, whose 48 layers make 192 runs, loses more: lut8 KL 0.13
+  (argmax 27/30), int8 0.067 (26/30); it is not in models.yaml.
+- AMD (`iron_export_lm.py ouro`): IRON's `SandwichLayer` with Ouro's norms renamed; `Ouro.layer`
+  runs `model.layers` once a pass (`self.layers` is them four times), gives a pass after the first its
+  own `KVCache` through the call (`passes.P.layers.L.cache.*`, which the runtime reads as caches by
+  `.cache.`), and puts `model.norm` between passes. q6 MLP and head (host rounding KL q4 0.130, q6 0.013). On the NPU
+  (`ironlm -forced` against `forced_logits.py`, 64 rows): q6 KL 0.026 (top-1 98.4 %), bf16 0.0022 (98.4 %); details in [amd-llm.md](amd-llm.md).
+- Tokenizer: SmolLM's (individual `Digits`, then `ByteLevel` with GPT-2's pattern), `gpt2Digits` in
+  `internal/tokenizer`. Its golden ids come from the tokenizers library (`tokenizer_golden.py --tokenizers`):
+  transformers 5 puts GPT2Tokenizer's own pre-tokenizer in place of the file's and loses the Digits
+  step (" ①" one piece).
+- Chat format: `chat.Ouro` (see below). The Thinking models think by default; the base models
+  (Ouro-1.4B, 2.6B) have no chat template.
+- Not in models.yaml: on the NPU a looped model is slow for its size and its cache grows fast (an evaluation
+  record, with LFM3-1.7B and others beside it: [model-estimation.md](../model-estimation.md)).
+
 ## PLaMo-Embedding-1B (`internal/llm/plamo`, arch `plamo-bi`)
 
 - `PlamoBiModel`: PLaMo's decoder with bidirectional attention, 16 pre-norm layers + final RMSNorm.
@@ -358,7 +409,7 @@ Depends only on `golang.org/x/text`. Each is checked against HF tokenizers.
 
 | Kind | Models | How it works | Checked |
 |---|---|---|---|
-| byte-level BPE (`Load`) | LFM3 family, Qwen | Added tokens cut first; GPT-4-style pre-tokenizer by a hand-written scanner (`\s+(?!\S)` lookahead, which Go's regexp lacks); merges by rank. Qwen3.5: NFC, `[\p{L}\p{M}]+`, digits one by one ([llm-qwen.md](llm-qwen.md)) | matches HF |
+| byte-level BPE (`Load`) | LFM3 family, Qwen | Added tokens cut first; GPT-4-style pre-tokenizer by a hand-written scanner (`\s+(?!\S)` lookahead, which Go's regexp lacks); merges by rank. Qwen3.5: NFC, `[\p{L}\p{M}]+`, digits one by one ([llm-qwen.md](llm-qwen.md)). Ouro: individual Digits, then GPT-2's pattern on the runs between them (`gpt2Digits`) | matches HF (Ouro: 40 texts + 500 random, 18,441 tokens) |
 | byte-fallback BPE (`fallback.go`, via `Load`) | Gemma 4 | Spaces → ▁, text between added tokens merged by rank as one piece, unknown chars → UTF-8 bytes (`<0xE3>`). No BOS added | 35 texts + 300 random (7,026 tokens) |
 | SentencePiece BPE (`LoadSentencePiece`) | PLaMo-Embedding | Reads `tokenizer.model` protobuf by hand. Identity normalization, ▁ prefix. User-defined pieces (runs of 2/4/8/16 ▁, 1/2/4 tabs, newline) longest-match, never merged. Merges by piece score (ties: left), not a merge list. Unknown → `<0xNN>`. Special tokens cut first and a ▁ added after them too (as HF's slow tokenizer). No BOS added | 32 texts (599 tokens) + 3,032 random (88,072 tokens), 0 mismatches |
 | PLaMo (`LoadPlamo`; `Load` picks it for `.jsonl`) | PLaMo 3 | Least-cost split from `tokenizer.jsonl`'s scored pieces, searched from the end; cost = −round(score × 10⁴) (Python round); a map of all piece prefixes instead of Aho-Corasick; ties → longer piece; uncovered chars → UTF-8 bytes. Cuts at special tokens, runs of ≥4 same char, ≥2 spaces | 40 cases + 3,040 random |
@@ -388,6 +439,7 @@ what jinja2 / transformers render, character for character (`tools/ref/template_
 | LFM3 (`chat.LFM3`) | `lfm3` | 6 conversations | `<tools>` JSON at the end of the system message (key order kept); calls as `<tool_call><function=name><parameter=key>value</parameter>` | `<think>…</think>`; earlier replies' thinking dropped |
 | Gemma 4 (`chat.Gemma4`) | `gemma4` | 9 conversations (`gemma4_template.json`) | its own notation (strings `<\|"\|>`, keys dictsort) | `<\|think\|>`, `<\|channel>thought … <channel\|>` |
 | PLaMo 3 / PFML3 (`chat.Plamo3`) | `plamo3` | 8 cases (`plamo3_template_golden.py`) | none; `target_lang`, `source_lang`, `form`, `context`, `glossary` (`Options.Translation`; API `chat_template_kwargs` as vLLM) | none |
+| Ouro (`chat.Ouro`) | `ouro` | 4 conversations (`ouro_template.json`, transformers' `apply_chat_template`) | none (refused) | `<think>` written after the prompt unless `NoThink` (the template's `enable_thinking`); no-think writes Qwen3's empty `<think>\n\n</think>\n\n`, for which the template has no switch |
 | System One (`internal/systemone`) | d1 | 7 cases (`systemone_golden.py`) | d1's choice / score / noul | `<think></think>` |
 | LFM2, Qwen3, Qwen2.5, Qwen3.5, Qwen3.6, harmony | — | see [llm-qwen.md](llm-qwen.md), [moe.md](moe.md) | | |
 
@@ -441,3 +493,6 @@ what jinja2 / transformers render, character for character (`tools/ref/template_
   passkeys, M4, Intel and AMD on hardware, Core AI numbers.
 - PLaMo 3 0.8B: `hwnpu-dev check` against HF fp32, passkeys, AMD and Intel.
 - BERT: a WordPiece tokenizer.
+- Ouro: the Neural Engine (placement, speed, the 96 / 192 caches of a whole program; `UnpagedContext`
+  1024 is a guess), Intel's NPU, GPTQ codes for lut6/lut4 (and for the 2.6B's lut8), the 2.6B on AMD (q8), and whether fewer passes
+  (`total_ut_steps` 3) are worth their speed.

@@ -16,7 +16,9 @@ output_hidden_states, so that they mean the same for every model, as hwnpu's pro
 entry 0 is the output of the token embedding table (before position embeddings, scaling or an
 embedding norm, which the program does: an embedding module with an embed_scale, as Gemma's,
 has it divided out), and entry i + 1 the output of layer i (before a final norm;
-output_hidden_states ends after it in many implementations).
+output_hidden_states ends after it in many implementations). A looped model (Ouro, whose layers
+run total_ut_steps times) has an entry for each layer in each pass, the last layer of a pass but the
+last after the final norm the next pass starts from, and the logits of the last pass.
 
 Causal language models load with AutoModelForCausalLM. --encoder loads with AutoModel instead
 (BERT and the like) and writes the last hidden state as the output; there is no padding, so the
@@ -64,22 +66,37 @@ def main():
         raise SystemExit(f"text has only {ids.shape[1]} tokens, need {a.seq}")
     t0 = time.time()
     auto = AutoModel if a.encoder else AutoModelForCausalLM
-    model = auto.from_pretrained(a.model_dir, trust_remote_code=True, dtype=torch.float32, attn_implementation=a.attn).eval()
+    # transformers before 4.56 names the dtype torch_dtype (Ouro's remote code needs one of them)
+    import transformers
+
+    major, minor = (int(v) for v in transformers.__version__.split(".")[:2])
+    dtype = {"dtype" if (major, minor) >= (4, 56) else "torch_dtype": torch.float32}
+    model = auto.from_pretrained(a.model_dir, trust_remote_code=True, attn_implementation=a.attn, **dtype).eval()
     print(f"loaded in {time.time() - t0:.1f}s: {sum(p.numel() for p in model.parameters()) / 1e9:.3f} B parameters", flush=True)
     cfg = model.config.get_text_config() if hasattr(model.config, "get_text_config") else model.config
     layers = decoder_layers(model, cfg.num_hidden_layers)
 
     captured = {}
     handles = hook_hidden(model, layers, captured)
+    passes = getattr(cfg, "total_ut_steps", 1) if cfg.model_type == "ouro" else 1
+    kwargs = {}
+    if passes > 1:
+        # a looped model (Ouro): its layers run once a pass, the final norm after each; the logits
+        # of the last pass, as early_exit_threshold 1.0 means
+        handles += hook_passes(model, captured)
+        # its OuroModel returns a tuple, which output_hidden_states's wrapper cannot fill
+        kwargs = {"exit_at_step": passes - 1, "output_hidden_states": False}
+    else:
+        kwargs["output_hidden_states"] = True
     with torch.no_grad():
         t0 = time.time()
-        out = model(input_ids=ids, output_hidden_states=True, use_cache=False)
+        out = model(input_ids=ids, use_cache=False, **kwargs)
         print(f"forward in {time.time() - t0:.1f}s", flush=True)
     for h in handles:
         h.remove()
-    hs = stack_hidden(captured, len(layers))
+    hs = stack_hidden(captured, len(layers)) if passes == 1 else stack_passes(captured, len(layers), passes)
     logits = (out.last_hidden_state if a.encoder else out.logits)[0].numpy()
-    last = out.hidden_states[-1][0].numpy()
+    last = out.hidden_states[-1][0].numpy() if out.hidden_states is not None else hs[-1]
     if not np.allclose(last, hs[-1], atol=1e-5):
         print("note: output_hidden_states[-1] differs from the last layer's output (it is after the final norm)")
     save(prefix, ids, hs, logits, cfg, a.text, a.encoder, tok)
@@ -106,6 +123,41 @@ def hook_hidden(model, layers, captured):
         print(f"embedding scale {float(emb.embed_scale):.6g} divided out of entry 0", flush=True)
     handles = [emb.register_forward_hook(hook("embeddings"))]
     return handles + [layer.register_forward_hook(hook(i)) for i, layer in enumerate(layers)]
+
+
+def hook_passes(model, captured):
+    """For a looped model: every output of each layer (one a pass) by "runs", layer index, and of
+    the final norm by "norms"."""
+
+    def first(x):
+        return x[0] if isinstance(x, (tuple, list)) else x
+
+    def hook(key):
+        def f(module, _args, out):
+            captured.setdefault("runs", {}).setdefault(key, []).append(first(out).detach())
+
+        return f
+
+    layers = decoder_layers(model, model.config.num_hidden_layers)
+    handles = [layer.register_forward_hook(hook(i)) for i, layer in enumerate(layers)]
+    return handles + [model.model.norm.register_forward_hook(hook("norm"))]
+
+
+def stack_passes(captured, n, passes):
+    """The hidden states of a looped model as hwnpu's layers of every pass (internal/llm/ouro): the
+    token embeddings, then each layer's output in each pass, the last layer of a pass but the last
+    after the final norm, which the next pass starts from."""
+    import torch
+
+    runs = captured["runs"]
+    for i in range(n):
+        if len(runs[i]) != passes:
+            raise SystemExit(f"layer {i} ran {len(runs[i])} times, not {passes}")
+    out = [captured["embeddings"]]
+    for p in range(passes):
+        for i in range(n):
+            out.append(runs["norm"][p] if i == n - 1 and p < passes - 1 else runs[i][p])
+    return torch.stack(out, 0)[:, 0].numpy()
 
 
 def stack_hidden(captured, n):

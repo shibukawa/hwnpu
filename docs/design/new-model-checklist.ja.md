@@ -384,7 +384,7 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 
 実際には: 比較用の fp16 のプログラムでディスクが倍になる (比べたら消す)。Core ML と Core AI はプロセスの名前ごとにキャッシュを作る (それぞれ数 GB)。止まったダウンロードは時間切れにならない。`hwnpu-dev formats` は分けていない 1 本の重みを 0.00 GiB と出す。
 
-**記録**: モデルの事実、数値、採ったもの、採らなかったもの (と理由) は `docs/design/` のそのモデルの topic の文書に。[performance.md](performance.md) に 1 行。models.yaml の測った値 (11 節)。測れなかったものは `docs/handoff-*.md` に、持っていくもの、コマンド、期待する値とともに。
+**記録**: モデルの事実、数値、採ったもの、採らなかったもの (と理由) は `docs/design/` のそのモデルの topic の文書に。[performance.md](performance.md) に 1 行。models.yaml の測った値 (11 節)。測れなかったものは `docs/handoff-*.md` に、持っていくもの、コマンド、期待する値とともに。models.yaml に入れたかどうかにかかわらず、[model-estimation.ja.md](../model-estimation.ja.md) に 1 節: 判断とその理由、比べた相手、コードがどこに残るか。
 
 ## 10. 部品として組み合わせるための値
 

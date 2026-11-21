@@ -97,6 +97,7 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [../amd-npu-models.md](../amd-npu-models.md) | 変換したモデルを AMD の NPU (IRON) で動かす設計 |
 | [../amd-xdna2-bench.md](../amd-xdna2-bench.md) | XDNA2 (Strix Point) のデータ型と、IRON のサンプルでの実測 |
 | [../intel-npu-models.md](../intel-npu-models.md) | 変換したモデルを Intel の NPU で動かす設計 |
+| [../model-estimation.ja.md](../model-estimation.ja.md) | NPU で評価したモデルの記録。models.yaml に入れなかったものも、判断と理由とともに |
 | [../small-models-survey.md](../small-models-survey.md) | チャット以外の小さな (1B 以下) モデルの調査: 音程、歌声、音楽、効果音、姿勢 |
 | [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Qwen-Image-2.1 と Chroma1 を AMD の NPU へ入れるための下調べ |
 | `../handoff-*.md` | 別の機械 (M1〜M4、AMD、Intel) での確認の引き継ぎ: 何を動かし何を記録するか |

@@ -1,0 +1,62 @@
+[
+ {
+  "name": "one question",
+  "messages": [
+   {
+    "role": "user",
+    "content": "What is 2 + 3?"
+   }
+  ],
+  "want": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nWhat is 2 + 3?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+ },
+ {
+  "name": "own system",
+  "messages": [
+   {
+    "role": "system",
+    "content": "Answer in Japanese."
+   },
+   {
+    "role": "user",
+    "content": "Hello"
+   }
+  ],
+  "want": "<|im_start|>system\nAnswer in Japanese.<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n"
+ },
+ {
+  "name": "turns",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hi"
+   },
+   {
+    "role": "assistant",
+    "content": "Hello! How can I help?"
+   },
+   {
+    "role": "user",
+    "content": "Count to 3."
+   }
+  ],
+  "want": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\nHello! How can I help?<|im_end|>\n<|im_start|>user\nCount to 3.<|im_end|>\n<|im_start|>assistant\n<think>\n"
+ },
+ {
+  "name": "later system",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hi"
+   },
+   {
+    "role": "system",
+    "content": "Be brief."
+   },
+   {
+    "role": "user",
+    "content": "Why?"
+   }
+  ],
+  "want": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>system\nBe brief.<|im_end|>\n<|im_start|>user\nWhy?<|im_end|>\n<|im_start|>assistant\n<think>\n"
+ }
+]

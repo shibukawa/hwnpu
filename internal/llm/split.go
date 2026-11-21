@@ -3,6 +3,7 @@ package llm
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -129,6 +130,14 @@ type Part struct {
 
 var layerIndex = regexp.MustCompile(`(?:^|\.)layers?\.(\d+)\.`)
 
+// Looped is a model whose layers are passes over fewer layers of weights (Ouro): layer i of
+// Layers reads the weights Tensors names as layer WeightLayer(i). A program holds a layer's
+// weights once whichever of its passes it builds; EstimateBytes counts them for every pass, which
+// is over the stored size of a part that builds more than one.
+type Looped interface {
+	WeightLayer(layer int) int
+}
+
 // EstimateBytes estimates the stored weight size of each layer of a model built with opts, and of
 // what comes before the first layer (pre) and after the last (post), from the tensor shapes. The
 // host keeps the embedding table, except when a causal LM ties it to the output layer, and the
@@ -165,6 +174,12 @@ func EstimateBytes(m Model, opts Options) (pre int64, layers []int64, post int64
 			post += n
 		} else {
 			pre += n
+		}
+	}
+	if lm, ok := m.(Looped); ok {
+		weights := slices.Clone(layers)
+		for i := range layers {
+			layers[i] = weights[lm.WeightLayer(i)]
 		}
 	}
 	return pre, layers, post
