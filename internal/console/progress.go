@@ -66,6 +66,9 @@ func newBar(w io.Writer, label string, load *loadState) *Bar {
 	if !b.live {
 		return b
 	}
+	if d, ok := w.(interface{ Direct() io.Writer }); ok {
+		b.w = d.Direct() // the bar writes holding the live lines' lock (Log's own writes take it)
+	}
 	b.done, b.exited = make(chan struct{}), make(chan struct{})
 	b.line = pushLine()
 	b.draw(0)
@@ -224,6 +227,18 @@ func (l *liveLine) end(write func()) {
 		}
 	}
 	write()
+}
+
+// Above writes s (whole lines) to w, a terminal, above the line a bar or spinner is drawing:
+// that line is cleared first and drawn again below at its next redraw, so that a line of log
+// written while a bar goes on is not run into the bar's.
+func Above(w io.Writer, s string) (int, error) {
+	liveLines.Lock()
+	defer liveLines.Unlock()
+	if len(liveLines.stack) > 0 {
+		s = "\r\x1b[K" + s
+	}
+	return io.WriteString(w, s)
 }
 
 // columnsIn is the columns s takes.

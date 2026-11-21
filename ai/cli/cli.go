@@ -255,42 +255,17 @@ func prepare(ctx context.Context, app *ai.App, c PrepareOptions, noCompile bool)
 	if err != nil {
 		return err
 	}
-	p.NoCompile = noCompile
-	if f, ok := c.Log.(*os.File); ok && !c.Quiet {
-		// the downloads and compiles draw their own bars, their lines in gray (on a terminal)
-		p.Log = console.Log(f)
-	}
+	// Run shows what it does on the log as hwnpu's commands do (Plan.Quiet): the stages with
+	// their times, the downloads' and programs' bars, the logs in gray
+	p.NoCompile, p.Log, p.Brief = noCompile, c.Log, c.Quiet
 	if !noCompile && p.Target() == "" {
 		fmt.Fprintln(out, "no NPU that runs the models was found here: downloading and converting only")
 	}
 	if err := licenses(p, c, out); err != nil {
 		return err
 	}
-	start := time.Now()
-	stage := ""
-	err = p.Run(ctx, func(pr ai.Progress) {
-		head := fmt.Sprintf("[%d/%d] %s (%s)", pr.Item, pr.Items, pr.Use, pr.Model)
-		switch {
-		case pr.Message != "":
-			if !c.Quiet {
-				fmt.Fprintf(out, "    %s\n", pr.Message)
-			}
-		case pr.Stage == ai.StagePrepare:
-			fmt.Fprintf(out, "%s: downloading and converting what is not here\n", head)
-		case pr.Stage == ai.StageCompile:
-			fmt.Fprintf(out, "%s: loading once, to compile for the NPU\n", head)
-		case pr.Stage == ai.StageDone && stage != "":
-			fmt.Fprintf(out, "%s: done\n", head)
-		}
-		stage = string(pr.Stage)
-	})
-	if err != nil {
+	if err := p.Run(ctx, nil); err != nil {
 		return err
-	}
-	if stage == "" {
-		fmt.Fprintln(out, "nothing to do")
-	} else {
-		fmt.Fprintf(out, "done in %s\n", time.Since(start).Round(time.Second))
 	}
 	WritePlan(c.Out, app, p)
 	return nil

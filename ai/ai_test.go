@@ -188,7 +188,8 @@ func TestPlanRunOpen(t *testing.T) {
 	}
 	stt.req.role.Revision = 0
 
-	// Plan.Log takes what the preparing writes, instead of a Progress.Message for each line
+	// Plan.Log shows the stages and what the preparing writes, which fn is told too; Quiet
+	// shows nothing
 	if p, err := NewApp("logged", tr).withStore(testStore(t)).Plan(ctx); err != nil {
 		t.Error(err)
 	} else {
@@ -200,8 +201,23 @@ func TestPlanRunOpen(t *testing.T) {
 				messages++
 			}
 		})
-		if err != nil || messages != 0 || !strings.Contains(log.String(), "converting ") {
+		if err != nil || messages != 1 || !strings.Contains(log.String(), "converting ") || !strings.Contains(log.String(), "downloading and converting") || !strings.Contains(log.String(), "done in") {
 			t.Errorf("with Plan.Log: %v, %d messages, log %q", err, messages, log.String())
+		}
+	}
+	if p, err := NewApp("quiet", tr).withStore(testStore(t)).Plan(ctx); err != nil {
+		t.Error(err)
+	} else {
+		var log strings.Builder
+		messages := 0
+		p.NoCompile, p.Log, p.Quiet = true, &log, true
+		err := p.Run(ctx, func(pr Progress) {
+			if pr.Message != "" {
+				messages++
+			}
+		})
+		if err != nil || messages != 1 || log.Len() != 0 {
+			t.Errorf("with Plan.Quiet: %v, %d messages, log %q", err, messages, log.String())
 		}
 	}
 
