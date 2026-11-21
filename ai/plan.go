@@ -317,6 +317,7 @@ type Stage string
 const (
 	StagePrepare Stage = "prepare" // downloading and converting
 	StageCompile Stage = "compile" // loading once: compiling the programs for the NPU
+	StageLoad    Stage = "load"    // loading for a Get, from the NPU compiler's cache (WithLoading)
 	StageDone    Stage = "done"
 )
 
@@ -328,6 +329,10 @@ type Progress struct {
 	// Message is a line of what is being done (a download, a conversion), for a log; "" when
 	// the stage begins or ends.
 	Message string
+	// Expected is how long the stage's load took here the last time (StageCompile, StageLoad),
+	// 0 when not known, and Since when the stage began.
+	Expected time.Duration
+	Since    time.Time
 }
 
 // lineWriter calls fn with each line written to it, on \n or \r (a progress bar redrawn).
@@ -437,6 +442,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 		if compile && !it.Compiled {
 			report(StageCompile, "")
 			log.fn = func(line string) { report(StageCompile, line) }
+			t0 := time.Now()
 			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
@@ -450,7 +456,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 			if err := l.Close(); err != nil {
 				return err
 			}
-			r.Compiled = time.Now().UTC().Truncate(time.Second)
+			r.Compiled, r.Compile = time.Now().UTC().Truncate(time.Second), time.Since(t0)
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
 				return err
 			}

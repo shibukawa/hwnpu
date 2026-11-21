@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/imagegen"
 	"github.com/shibukawa/hwnpu/samples/internal/layering"
 )
 
@@ -56,6 +61,124 @@ type progress struct {
 	total float64 // of the whole making, 0 to 1 (the window adds the putting together)
 	// the shares of the whole: the depth's, the layers', and the window's putting together
 	wDepth, wLayers float64
+	load            loading // the model being made ready, if one is
+}
+
+// loading is a model being made ready for its first use (ai.WithLoading): downloaded and
+// converted, compiled for the NPU, or loaded, since when, and how long its load took the last
+// time here (0: not known), with the newest line of its log.
+type loading struct {
+	use, model string
+	stage      ai.Stage
+	since      time.Time
+	expected   time.Duration
+	line       string
+	phase      string // of stagePhase: imagegen's phase
+}
+
+// stagePhase is a loading of a phase of the picture model before its steps (imagegen.Phase*),
+// the first picture of a size opening its programs: told by part, not by ai.WithLoading.
+const stagePhase ai.Stage = "parallax-phase"
+
+// phaseClock times the picture model's phases before its steps, and keeps how long each took
+// in the user's cache (phases.json), for the next run to show how long it is expected to take.
+type phaseClock struct {
+	rt    *ai.Runtime
+	file  string
+	model string             // the picture model's name, once it is loaded
+	last  map[string]float64 // seconds, by model and phase
+	cur   string
+	since time.Time
+}
+
+func newPhaseClock(rt *ai.Runtime) *phaseClock {
+	c := &phaseClock{rt: rt, last: map[string]float64{}}
+	if dir, err := os.UserCacheDir(); err == nil {
+		c.file = filepath.Join(dir, "hwnpu", "parallax", "phases.json")
+		if b, err := os.ReadFile(c.file); err == nil {
+			_ = json.Unmarshal(b, &c.last)
+		}
+	}
+	return c
+}
+
+// begin starts phase, and ends the one before: its name and how long it took.
+func (c *phaseClock) begin(phase string) (prev string, took time.Duration) {
+	now := time.Now()
+	if c.model == "" { // the phases come after the picture model's load
+		for _, l := range c.rt.Loaded() {
+			if l.Use == "image" {
+				c.model = l.Model
+			}
+		}
+	}
+	if c.cur != "" {
+		prev, took = c.cur, now.Sub(c.since)
+		c.last[c.model+" "+prev] = took.Seconds()
+	}
+	c.cur, c.since = phase, now
+	if phase == imagegen.PhaseSteps {
+		c.cur = ""
+	}
+	return prev, took
+}
+
+// expected is how long phase took the last time here, 0 when not known.
+func (c *phaseClock) expected(phase string) time.Duration {
+	return time.Duration(c.last[c.model+" "+phase] * float64(time.Second))
+}
+
+// save writes the times down (a failure only leaves the next run without them).
+func (c *phaseClock) save() {
+	if c.file == "" {
+		return
+	}
+	if b, err := json.MarshalIndent(c.last, "", "  "); err == nil && os.MkdirAll(filepath.Dir(c.file), 0o755) == nil {
+		_ = os.WriteFile(c.file, b, 0o644)
+	}
+}
+
+// loading tells p of a model being made ready (ai.WithLoading).
+func (p *progress) loading(pr ai.Progress) {
+	p.set(func(p *progress) {
+		l := &p.load
+		if pr.Stage == ai.StageDone {
+			if l.use == pr.Use {
+				*l = loading{}
+			}
+			return
+		}
+		if pr.Stage == stagePhase {
+			*l = loading{use: pr.Use, model: pr.Model, stage: pr.Stage, phase: pr.Message, since: pr.Since, expected: pr.Expected}
+			return
+		}
+		if l.use != pr.Use || l.stage != pr.Stage {
+			*l = loading{use: pr.Use, model: pr.Model, stage: pr.Stage, since: pr.Since, expected: pr.Expected}
+		}
+		if line := logLine(pr.Message); line != "" {
+			l.line = line
+		}
+	})
+}
+
+// logLine is a line of a model's log as the window shows it: without the spinner and the bar
+// of a line of progress redrawn on a terminal (internal/console), the rest (the label, the
+// share, the bytes) as it is.
+func logLine(s string) string {
+	var b strings.Builder
+	bar := false
+	for _, r := range s {
+		switch {
+		case r == '▕':
+			bar = true
+		case r == '▏':
+			bar = false
+		case bar, r >= 0x2800 && r <= 0x28ff: // in the bar, a braille spinner
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // newProgress is the progress of a picture to be made deep in n layers (1: its depth alone).
@@ -99,12 +222,13 @@ type news struct {
 	text        string
 	done, total float64
 	wCompose    float64
+	load        loading
 }
 
 func (p *progress) take() news {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	n := news{steps: p.steps, text: p.text, done: p.done, total: p.total, wCompose: 1 - p.wDepth - p.wLayers}
+	n := news{steps: p.steps, text: p.text, done: p.done, total: p.total, wCompose: 1 - p.wDepth - p.wLayers, load: p.load}
 	p.steps = nil
 	return n
 }
@@ -165,6 +289,8 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 	}
 	w := src.img.Rect.Dx()
 	o := layering.Options{Layers: c.Layers, Far: c.Far, Edge: -1, Hint: c.Hint, Seed: c.Seed}
+	phases := newPhaseClock(rt)
+	defer phases.save()
 	o.Progress = func(s layering.Step) {
 		of := fmt.Sprintf("Layer %d of %d", s.Layer, s.Of) // 1 the farthest; the nearest is cut first
 		if s.Layer == s.Of {
@@ -176,6 +302,19 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 			fmt.Fprintln(log, text)
 			prog.show(stageCut, s.Cutout, text)
 		case layering.Drawing:
+			if s.Phase != "" {
+				// what the picture model does before its steps: on the panel's second line with
+				// its time, and how long it took the last time here
+				if prev, took := phases.begin(s.Phase); prev != "" {
+					fmt.Fprintf(log, "%s: the picture model, %s: %.1f s\n", of, prev, took.Seconds())
+				}
+				if s.Phase == imagegen.PhaseSteps {
+					prog.loading(ai.Progress{Use: "image", Stage: ai.StageDone})
+				} else {
+					prog.loading(ai.Progress{Use: "image", Model: phases.model, Stage: stagePhase, Message: s.Phase, Since: time.Now(), Expected: phases.expected(s.Phase)})
+				}
+				return
+			}
 			text := fmt.Sprintf("%s: drawing what was behind it, %.0f %%", of, 100*s.Done)
 			if s.Done == 0 {
 				text = of + ": getting the picture model ready"

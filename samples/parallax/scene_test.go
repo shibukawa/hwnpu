@@ -299,3 +299,15 @@ func TestRelief(t *testing.T) {
 		t.Errorf("the distances: %v", d)
 	}
 }
+
+// logLine keeps a line of progress's label, share, time and bytes, without its spinner and bar.
+func TestLogLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"  downloading model.safetensors ⠋ ▕████░░░░▏  40% 1m02s  1.2 / 3.4 GB": "downloading model.safetensors 40% 1m02s 1.2 / 3.4 GB",
+		"  loading transformer 12.3s": "loading transformer 12.3s",
+	} {
+		if got := logLine(in); got != want {
+			t.Errorf("logLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

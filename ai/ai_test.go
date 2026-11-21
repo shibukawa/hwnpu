@@ -773,3 +773,52 @@ func TestInTurns(t *testing.T) {
 	}()
 	NewApp("twice").InTurns(stt, tr).InTurns(tr, tts)
 }
+
+// WithLoading tells of the preparing (with its log's lines), the first load as a compile, and
+// a later load with how long the one before took.
+func TestWithLoading(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	ctx := context.Background()
+	app := NewApp("test", stt).withStore(testStore(t))
+
+	var seen []Progress
+	watch := WithLoading(func(p Progress) { seen = append(seen, p) })
+	rt, err := app.Open(ctx, WithAutoPrepare(nil), watch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stt.Get(ctx, rt); err != nil {
+		t.Fatal(err)
+	}
+	rt.Close()
+	var stages []Stage
+	msg := false
+	for _, p := range seen {
+		stages = append(stages, p.Stage)
+		msg = msg || p.Message == "converting "+p.Model
+		if p.Since.IsZero() {
+			t.Errorf("%+v: no Since", p)
+		}
+	}
+	if !msg || !slices.Contains(stages, StagePrepare) || !slices.Contains(stages, StageCompile) || stages[len(stages)-1] != StageDone {
+		t.Errorf("first Get: stages %v, the conversion's line told: %v", stages, msg)
+	}
+
+	// the second load, from the compiler's cache: not known how long it takes; the third is
+	for i, known := range []bool{false, true} {
+		seen = nil
+		rt, err = app.Open(ctx, watch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stt.Get(ctx, rt); err != nil {
+			t.Fatal(err)
+		}
+		rt.Close()
+		if len(seen) != 2 || seen[0].Stage != StageLoad || seen[1].Stage != StageDone || (seen[0].Expected > 0) != known {
+			t.Errorf("Get %d: %+v, want a load (its time known: %v), then done", i+2, seen, known)
+		}
+	}
+}

@@ -55,14 +55,14 @@ func (c *Calls) Near(ctx context.Context, rt *ai.Runtime, img *image.RGBA) ([]fl
 
 // Draw is the picture the picture model draws from a prompt and a reference. The reference is
 // stretched to the size the model draws that is nearest its shape, and the answer back.
-func (c *Calls) Draw(ctx context.Context, rt *ai.Runtime, prompt string, ref *image.RGBA, seed uint64, progress func(done float64)) (*image.RGBA, error) {
+func (c *Calls) Draw(ctx context.Context, rt *ai.Runtime, prompt string, ref *image.RGBA, seed uint64, progress func(done float64), phase func(string)) (*image.RGBA, error) {
 	g, err := c.artist.Get(ctx, rt)
 	if err != nil {
 		return nil, err
 	}
 	size := g.SizeFor(ref.Rect.Dx(), ref.Rect.Dy())
 	c.drawing.Update(func(o *imagegen.Options) {
-		o.Seed = seed
+		o.Seed, o.Phase = seed, phase
 		o.Progress = func(step, steps int) {
 			if progress != nil {
 				progress(float64(step) / float64(steps+1)) // the steps, and the decoding after them
@@ -83,8 +83,8 @@ func (c *Calls) Models(rt *ai.Runtime) Models {
 			near, _, err := c.Near(ctx, rt, img)
 			return near, err
 		},
-		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64)) (*image.RGBA, error) {
-			return c.Draw(ctx, rt, prompt, ref, seed, progress)
+		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64), phase func(string)) (*image.RGBA, error) {
+			return c.Draw(ctx, rt, prompt, ref, seed, progress, phase)
 		},
 	}
 }

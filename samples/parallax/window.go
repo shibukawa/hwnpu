@@ -13,12 +13,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/text/v2"
+	"github.com/shibukawa/hwnpu/ai"
 	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/shibukawa/hwnpu/ai/vision"
@@ -115,7 +117,7 @@ func runWindow(s *Scene, p Params, o windowOptions) error {
 // panelHeight is the height of the panel at the bottom while the picture is made.
 func panelHeight(building bool) int {
 	if building {
-		return 56
+		return 66
 	}
 	return 0
 }
@@ -430,10 +432,76 @@ func (g *game) drawBuild(dst *ebiten.Image) {
 		line = "Putting the layers together"
 	}
 	g.sayFit(dst, line, 14, sh-panel+8, sw-100, 16, color.RGBA{230, 232, 236, 255})
+	if l := b.live.load; l.use != "" && b.composeAt.IsZero() {
+		g.drawLoading(dst, l, sw, sh-panel+31)
+	}
 	pct := fmt.Sprintf("%3.0f %%", 100*min(max(b.bar, 0), 1))
 	g.say(dst, pct, sw-64, sh-panel+8, 16, color.RGBA{150, 210, 255, 255})
 	g.rect(dst, 14, sh-16, sw-28, 6, color.RGBA{50, 54, 62, 255})
 	g.rect(dst, 14, sh-16, (sw-28)*min(max(b.bar, 0), 1), 6, color.RGBA{90, 180, 255, 255})
+}
+
+// drawLoading draws the second line of the panel while a model is made ready: what is done to
+// it, the time it has taken, and when its load took a known time the last time here, a bar of
+// the time gone over that (slowing toward its end, never full, as hwnpu's load bars do) and the
+// time left; then the newest line of its log (a download's share and bytes).
+func (g *game) drawLoading(dst *ebiten.Image, l loading, sw, y float64) {
+	what := map[string]string{"depth": "the depth model", "image": "the picture model", "face-detect": "the face model"}[l.use]
+	if what == "" {
+		what = l.use
+	}
+	doing := "Loading " + what
+	switch l.stage {
+	case stagePhase:
+		doing = strings.ToUpper(what[:1]) + what[1:] + ": " + l.phase
+	case ai.StagePrepare:
+		doing = "Downloading and converting " + what + " (its first use here)"
+	case ai.StageCompile:
+		doing = "Compiling " + what + " for this machine's NPU (its first load here)"
+	}
+	gone := time.Since(l.since)
+	s := fmt.Sprintf("%s (%s): %s", doing, l.model, clock(gone))
+	barW := 0.0
+	if l.expected >= time.Second && l.stage != ai.StagePrepare {
+		if left := l.expected - gone; left > time.Second {
+			s += fmt.Sprintf(", about %s left", clock(left))
+		} else {
+			s += fmt.Sprintf(", longer than the %s it took the last time", clock(l.expected))
+		}
+		barW = 120
+	}
+	if l.line != "" {
+		s += " · " + l.line
+	}
+	gray := color.RGBA{150, 156, 166, 255}
+	g.sayFit(dst, s, 14, y, sw-28-barW-max(barW/10, 0), 13, gray)
+	if barW > 0 {
+		x := sw - 14 - barW
+		g.rect(dst, x, y+6, barW, 4, color.RGBA{50, 54, 62, 255})
+		g.rect(dst, x, y+6, barW*pseudo(gone.Seconds()/l.expected.Seconds()), 4, color.RGBA{150, 156, 166, 255})
+	}
+}
+
+// pseudo is the share shown of a load after x of the time it took the last time: the time
+// itself up to 0.8, then ever slower toward 1 (0.9 when that time is over, 0.97 at twice), so
+// that a load that takes longer still moves and never shows as done.
+func pseudo(x float64) float64 {
+	if x <= 0.8 {
+		return max(x, 0)
+	}
+	return 1 - 0.04/(x-0.6)
+}
+
+// clock is a time as the panel shows it: 42s, 3m05s, 1h02m.
+func clock(d time.Duration) string {
+	d = d.Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%02dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 // drawCompose draws the layers coming together: the farthest is there as it is, and each

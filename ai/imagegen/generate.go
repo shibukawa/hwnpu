@@ -166,7 +166,19 @@ type Options struct {
 	// Progress, when not nil, is called after each step (step from 1) and once more when the
 	// picture is decoded (step == steps + 1).
 	Progress func(step, steps int)
+	// Phase, when not nil, is called as Generate begins each of what it does before its steps
+	// (PhaseOpen, PhaseReferences, PhasePrompt) and as the steps begin (PhaseSteps): the first
+	// picture of a size opens its programs, which can take a while with nothing else to show.
+	Phase func(phase string)
 }
+
+// The phases of Generate before its steps (Options.Phase).
+const (
+	PhaseOpen       = "opening the programs" // of the picture's size, at its first picture
+	PhaseReferences = "reading the reference pictures"
+	PhasePrompt     = "reading the prompt"
+	PhaseSteps      = "drawing"
+)
 
 // Generator draws pictures. It draws one at a time; others wait.
 type Generator struct {
@@ -253,6 +265,14 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 		w, h = b.Dx(), b.Dy()
 	}
 	ctx = chat.WithModel(ctx, g.model)
+	phase := func(s string) {
+		if o.Phase != nil {
+			o.Phase(s)
+		}
+	}
+	if size := g.SizeFor(w, h); g.p == nil || g.at != size {
+		phase(PhaseOpen)
+	}
 	p, err := g.open(ctx, g.SizeFor(w, h))
 	if err != nil {
 		return nil, err
@@ -266,6 +286,9 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 			g.name, len(divs), p.C.Width, p.C.Height, strings.Join(p.References(), ", "))
 	}
 	refs := make([][]float32, len(o.References))
+	if len(refs) > 0 {
+		phase(PhaseReferences)
+	}
 	for i, img := range o.References {
 		if img == nil {
 			return nil, errors.New("ai/imagegen: a nil reference")
@@ -274,6 +297,7 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 			return nil, err
 		}
 	}
+	phase(PhasePrompt)
 	cond, err := p.Encode(ctx, prompt)
 	if err != nil {
 		return nil, err
@@ -284,6 +308,7 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 	}
 	sig := p.Sigmas(o.Steps)
 	steps := len(sig) - 1
+	phase(PhaseSteps)
 	x, err := p.Generate(ctx, cond, refs, p.Noise(seed), sig, func(i, n int, _ time.Duration) {
 		if o.Progress != nil {
 			o.Progress(i+1, n)

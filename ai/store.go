@@ -96,6 +96,11 @@ type record struct {
 	// Revision is the role's (airole.Role.Revision) that prepared it: an earlier one's is
 	// prepared again.
 	Revision int `json:"revision,omitempty"`
+	// Loaded is how long its last load took on this machine (from the NPU compiler's cache),
+	// and Compile how long the load that compiled it took: what a load shows it is expected to
+	// take (Progress.Expected).
+	Loaded  time.Duration `json:"loaded_ns,omitempty"`
+	Compile time.Duration `json:"compile_ns,omitempty"`
 }
 
 // each calls fn with a pointer to every path of the record.

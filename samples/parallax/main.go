@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -275,7 +276,14 @@ type ShowCmd struct {
 }
 
 func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	// the models made ready as they are first used, told to the window's panel once it shows
+	// the making: a download, a compile, a load take seconds to minutes with nothing else moving
+	var watch atomic.Pointer[progress]
+	rt, err := app.Open(ctx, konghelper.AutoPrepare(), ai.WithLoading(func(pr ai.Progress) {
+		if prog := watch.Load(); prog != nil {
+			prog.loading(pr)
+		}
+	}))
 	if err != nil {
 		return err
 	}
@@ -302,6 +310,7 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return err
 		}
 		o.progress, o.picture = newProgress(img, c.Layers), img
+		watch.Store(o.progress)
 		mctx, stop := context.WithCancel(ctx)
 		made := make(chan struct{})
 		go func() {
