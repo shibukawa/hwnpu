@@ -285,7 +285,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   pre-tokenizer をファイルのものと入れ替え、Digits の段を落とす (" ①" が 1 つの断片になる)。
 - チャットの書式: `chat.Ouro` (下)。Thinking のモデルは既定で考える。ベースのモデル (Ouro-1.4B、2.6B) はチャットのテンプレートがない。
 - models.yaml には入れていない: NPU ではループ型は大きさのわりに遅く、キャッシュの増え方も大きい (評価の記録と、LFM3-1.7B などとの比較:
-  [looped-models.md](../looped-models.md))。
+  [model-estimation.md](../model-estimation.md))。
 
 ## PLaMo-Embedding-1B (`internal/llm/plamo`、アーキテクチャ `plamo-bi`)
 

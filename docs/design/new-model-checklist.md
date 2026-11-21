@@ -384,7 +384,7 @@ Do not decide by KL alone. Put answers next to bf16 / fp16 for the model's use:
 
 In practice: fp16 comparison programs double the disk (remove after); Core ML and Core AI make a cache per process name (several GB each); a stalled download never times out; `hwnpu-dev formats` shows an unsplit program's weights as 0.00 GiB.
 
-**The record**: the model's facts, numbers, what was adopted and what was not (with why) in its topic file under `docs/design/`; a row in [performance.md](performance.md); models.yaml's measured values (section 11). What could not be measured goes into `docs/handoff-*.md` with what to bring, the commands and the expected values.
+**The record**: the model's facts, numbers, what was adopted and what was not (with why) in its topic file under `docs/design/`; a row in [performance.md](performance.md); models.yaml's measured values (section 11). What could not be measured goes into `docs/handoff-*.md` with what to bring, the commands and the expected values. Whether it went into models.yaml or not, a section in [model-estimation.md](../model-estimation.md) (Japanese): the verdict and why, what it was compared with, where its code stays.
 
 ## 10. Values for combining it as a part
 

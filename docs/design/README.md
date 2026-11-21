@@ -106,6 +106,7 @@ decisions. History stays in git.
 | [../amd-npu-models.md](../amd-npu-models.md) | Design of running converted models on AMD's NPU (IRON) |
 | [../amd-xdna2-bench.md](../amd-xdna2-bench.md) | Data types and measured performance of XDNA2 (Strix Point) with IRON samples |
 | [../intel-npu-models.md](../intel-npu-models.md) | Design of running converted models on Intel's NPU |
+| [../model-estimation.md](../model-estimation.md) | Record of models evaluated on the NPUs, including those left out of models.yaml, with the verdict and why (Japanese) |
 | [../small-models-survey.md](../small-models-survey.md) | Survey of small (≤1B) non-chat models: pitch, singing, music, sound effects, pose |
 | [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Groundwork for bringing Qwen-Image-2.1 and Chroma1 to AMD's NPU |
 | `../handoff-*.md` | Hand-off notes for checks on other machines (M1–M4, AMD, Intel): what to run and what to record |
