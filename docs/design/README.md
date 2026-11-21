@@ -65,6 +65,7 @@ decisions. History stays in git.
 | [vision-models.md](vision-models.md) | Detection, pose, OCR, segmentation, depth, face, SigLIP 2, ONNX-only models |
 | [audio-models.md](audio-models.md) | Whisper, TTS, Magenta RT2, MOSS-SoundEffect, SwiftF0, Basic Pitch |
 | [distribution.md](distribution.md) | `models.yaml`, the cache root, sources (folder, WebDAV, S3), downloads, gated repositories, licenses, prebuilt distribution, disk sharing (clone / reflink), cleanup |
+| [hwnpud.md](hwnpud.md) | hwnpud (design, not built): one per-user process on the Mac and Linux owns the NPU and the models; model and cache management, socket, supervisor and engine, scheduling across apps, installing and distributing, signing |
 | [cli.md](cli.md) | The commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`, `hwnpu-dev` …), the OpenAI API, OpenCode, terminal display, Ctrl+C |
 | [memory-and-power.md](memory-and-power.md) | Energy measurement, power policy, memory measurement, machine memory classes, residency |
 | [quantization.md](quantization.md) | Weight formats (lut4/6/8, int8, q4/q6/q8, mxfp4), GPTQ, rotation, per-model choices |

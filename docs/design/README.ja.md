@@ -63,6 +63,7 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [vision-models.ja.md](vision-models.ja.md) | 検出、姿勢、OCR、領域分割、深度、顔、SigLIP 2、ONNX だけのモデル |
 | [audio-models.ja.md](audio-models.ja.md) | Whisper、TTS、Magenta RT2、MOSS-SoundEffect、SwiftF0、Basic Pitch |
 | [distribution.ja.md](distribution.ja.md) | `models.yaml`、キャッシュの置き場、取得元 (フォルダ、WebDAV、S3)、ダウンロード、利用条件つきのリポジトリ、ライセンス、書き出し済みの配布、ディスクの共有 (clone / reflink)、掃除 |
+| [hwnpud.ja.md](hwnpud.ja.md) | hwnpud (設計、未実装): Mac と Linux で NPU とモデルをユーザーごとの 1 つのプロセスが持つ。モデルとキャッシュの管理、ソケット、監督役とエンジン、アプリをまたぐ割り振り、入れ方と配り方、署名 |
 | [cli.ja.md](cli.ja.md) | コマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`、`hwnpu-dev` …)、OpenAI の API、OpenCode、端末の表示、Ctrl+C |
 | [memory-and-power.ja.md](memory-and-power.ja.md) | エネルギーの測り方、電力ポリシー、メモリの測り方、機械のメモリの区分、常駐 |
 | [quantization.ja.md](quantization.ja.md) | 重みの形式 (lut4/6/8、int8、q4/q6/q8、mxfp4)、GPTQ、回転、モデルごとの選択 |
