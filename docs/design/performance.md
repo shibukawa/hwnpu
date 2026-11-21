@@ -83,7 +83,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 | Core AI: load the next program ahead, swap DiT groups | A Chroma DiT call 7.2 → 5.4–5.8 s; NE holds 8.3 → 2.2–2.6 GiB | | [image-apple.md](image-apple.md) |
 | `--batch` on Core AI | A Chroma DiT call 5.4 → 5.05 s a picture | Host memory per picture | [image-apple.md](image-apple.md) |
 | Every size as functions of one export | One download for all sizes (Anima's per-size exports were 2.9 GB each) | First compile pays all sizes | [image-apple.md](image-apple.md) |
-| Prebuilt per chip (`hwnpu-dev models prebuild`) | FLUX.2 klein first run on an M1 40 min → 7 min 48 s | Not for chat models or VAEs | [apple-coreai.md](apple-coreai.md) |
+| Prebuilt per chip (`hwnpu-dev models package MODEL/coreai-ARCH`) | FLUX.2 klein first run on an M1 40 min → 7 min 48 s | Not for chat models or VAEs | [apple-coreai.md](apple-coreai.md) |
 | FLUX.2 klein 4B on Core AI | M1: 512² 11 s, 1024² 41 s a picture | | [image-apple.md](image-apple.md) |
 | Host memory back between VAE stages | FLUX.2 klein 1024² peak 5.8 → 4.1 GB | +0.4 s decoding | [image-apple.md](image-apple.md) |
 | AMD: DiT weights as bfp16 on the host | A step: Anima-Turbo 1024² 4.1 → 3.6–3.8 s, Chroma1-Flash 29.9 → 22.8–25.4 s, Chroma1-HD 27.5 → 20.2 s | 9 bits a weight; export 3–4× longer | [image-amd.md](image-amd.md) |

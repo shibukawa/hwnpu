@@ -1,4 +1,4 @@
-package cachecmd
+package sourcescmd
 
 import (
 	"strings"

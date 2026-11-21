@@ -66,7 +66,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   # 1 種類ずつ作り、できたらすぐ取得元に置く (12 種類を一度に作ると、最後まで何も置かれない)
   export HWNPU_MODEL_SOURCE='https://…/llm?writeback=true'
   for a in h13c h13d h13s h14d h14s h15d h15m h15s h17p; do
-    hwnpu-dev models prebuild --arch $a ~/Library/Caches/hwnpu/models/FLUX.2-klein/flux.2-klein-4b-512+1024-lut8-lut8-v1.coreai
+    hwnpu-dev models package ~/Library/Caches/hwnpu/models/FLUX.2-klein/flux.2-klein-4b-512+1024-lut8-lut8-v1.coreai/coreai-$a
   done
   ```
 

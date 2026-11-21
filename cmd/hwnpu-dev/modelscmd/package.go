@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/cachecmd"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/sourcescmd"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -23,43 +24,124 @@ import (
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
-// ExportCmd is hwnpu-dev models export: each model made ready for a target as the apps make it
+// PackageCmd is hwnpu-dev models package: each model made ready for a target as the apps make it
 // on their first run there (airole.Role.Prepare), on this machine whatever its NPU: the programs
-// are converted (or taken from the sources), not loaded. What is made goes in the sources
-// written back to, as the first run's does.
-type ExportCmd struct {
-	Sel    []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2, coreai) or for the targets its definition gives versions for (targets)."`
+// are converted (or taken from the sources), not loaded. For coreai-ARCH the Core AI exports are
+// then compiled for that architecture of the Neural Engine with coreai-build (compile, macOS).
+// What is made goes in the sources written back to, as the first run's does.
+type PackageCmd struct {
+	Sel    []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2; coreai, the generic exports; coreai-ARCH, those compiled for an architecture of the Neural Engine, h14g..., coreai-all for every one) or for the targets its definition gives versions for (targets). A Core AI export folder or program (DIR[/coreai-ARCH]) is compiled alone, for this Mac when no architecture is named."`
 	Memory []int    `help:"Only the forms of machines of these GB (hwnpu-chat --memory); every form the definitions give when left out." placeholder:"GB"`
 	Chip   []string `help:"For coreai, only the exports of Macs of these chips (M1, M2, ...); one of each kind of chip whose exports differ when left out (chat.ExportChips: M1, M2 for the later ones)." placeholder:"CHIP"`
+	compileFlags
 }
 
-// targets are what export makes conversions for.
+// targets are the targets package makes conversions for; coreai-ARCH is coreai's compiled.
 var targets = []string{cache.AMDTarget, cache.CoreAITarget}
 
-// job is a model to make ready for a target.
+// job is a model to make ready for a target; for coreai, archs are the architectures its exports
+// are compiled for (none: the generic exports alone).
 type job struct {
 	model  chat.Model
 	target string
+	archs  []string
 }
 
-func (x ExportCmd) Run(d *devopt.Defs) error {
+// prepared is what a job's preparation of a form gave (airole.Files).
+type prepared struct {
+	job   job
+	files airole.Files
+}
+
+// folder is Core AI export folders and programs to compile for archs (none: this Mac's).
+type folder struct {
+	paths []string
+	archs []string
+}
+
+func (x PackageCmd) Run(d *devopt.Defs) error {
 	if err := d.Load(); err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	jobs, err := parseJobs(x.Sel)
+	jobs, folders, err := parseSel(x.Sel)
 	if err != nil {
 		return err
+	}
+	if len(folders) > 0 || slices.ContainsFunc(jobs, func(j job) bool { return len(j.archs) > 0 }) {
+		if err := canCompile(); err != nil {
+			return err
+		}
 	}
 	if len(shared.Writebacks()) == 0 {
 		fmt.Fprintf(os.Stderr, "no source is written back to (%s ?writeback=true): what is made stays here\n", shared.SourceEnv)
 	}
-	_, err = prepare(ctx, jobs, x.Memory, x.Chip, nil)
-	return err
+	done, err := prepare(ctx, jobs, x.Memory, x.Chip, nil)
+	if err != nil {
+		return err
+	}
+	for _, p := range done {
+		if len(p.job.archs) > 0 {
+			if paths := coreAIPaths(p.files.Paths); len(paths) > 0 {
+				folders = append(folders, folder{paths, p.job.archs})
+			}
+		}
+	}
+	for _, j := range jobs {
+		if len(j.archs) > 0 && !slices.ContainsFunc(done, func(p prepared) bool { return p.job.model.Name == j.model.Name && len(coreAIPaths(p.files.Paths)) > 0 }) {
+			return fmt.Errorf("%s has no Core AI exports to compile", j.model.Name)
+		}
+	}
+	for _, f := range folders {
+		if err := compile(ctx, f.paths, f.archs, x.compileFlags); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// parseJobs reads MODEL[/TARGET]s.
+// parseSel reads MODEL[/TARGET]s and Core AI export folders (DIR[/coreai-ARCH]).
+func parseSel(sel []string) ([]job, []folder, error) {
+	var models []string
+	var folders []folder
+	for _, s := range sel {
+		dir, target := s, ""
+		if i := strings.LastIndexByte(s, '/'); i >= 0 && strings.HasPrefix(s[i+1:], cache.CoreAITarget+"-") {
+			dir, target = s[:i], s[i+1:]
+		}
+		if name, _, _ := strings.Cut(s, "/"); !isPath(dir) || isModel(name) && !exists(dir) {
+			models = append(models, s)
+			continue
+		}
+		var archs []string
+		if target != "" {
+			var err error
+			if archs, err = archsOf(target); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", s, err)
+			}
+		}
+		folders = append(folders, folder{[]string{dir}, archs})
+	}
+	jobs, err := parseJobs(models)
+	return jobs, folders, err
+}
+
+// archsOf are the architectures target coreai-ARCH names (coreai-all: every one, coreai.Archs).
+func archsOf(target string) ([]string, error) {
+	arch, ok := strings.CutPrefix(target, cache.CoreAITarget+"-")
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("no target %q", target)
+	case arch == "all":
+		return coreai.Archs, nil
+	case slices.Contains(coreai.Archs, arch):
+		return []string{arch}, nil
+	}
+	return nil, fmt.Errorf("no architecture %q of the Neural Engine (%s, all)", arch, strings.Join(coreai.Archs, ", "))
+}
+
+// parseJobs reads MODEL[/TARGET]s: a model's coreai-ARCHs are one job of coreai.
 func parseJobs(sel []string) ([]job, error) {
 	var jobs []job
 	for _, s := range sel {
@@ -69,10 +151,17 @@ func parseJobs(sel []string) ([]job, error) {
 			return nil, fmt.Errorf("%s is not a model of the definitions (hwnpu-chat list, hwnpu-audio list, hwnpu-image list)", name)
 		}
 		var ts []string
+		var archs []string
 		switch {
+		case strings.HasPrefix(target, cache.CoreAITarget+"-"):
+			var err error
+			if archs, err = archsOf(target); err != nil {
+				return nil, fmt.Errorf("%s: %w", s, err)
+			}
+			ts = []string{cache.CoreAITarget}
 		case target != "":
 			if !slices.Contains(targets, target) {
-				return nil, fmt.Errorf("%s: no target %q (%s)", s, target, strings.Join(targets, ", "))
+				return nil, fmt.Errorf("%s: no target %q (%s, %s-ARCH)", s, target, strings.Join(targets, ", "), cache.CoreAITarget)
 			}
 			ts = []string{target}
 		default:
@@ -86,7 +175,16 @@ func parseJobs(sel []string) ([]job, error) {
 			}
 		}
 		for _, t := range ts {
-			jobs = append(jobs, job{m, t})
+			i := slices.IndexFunc(jobs, func(j job) bool { return j.model.Name == m.Name && j.target == t })
+			if i < 0 {
+				jobs = append(jobs, job{m, t, archs})
+				continue
+			}
+			for _, a := range archs {
+				if !slices.Contains(jobs[i].archs, a) {
+					jobs[i].archs = append(jobs[i].archs, a)
+				}
+			}
 		}
 	}
 	return jobs, nil
@@ -96,7 +194,7 @@ func parseJobs(sel []string) ([]job, error) {
 // the sources. It returns the files each form's preparation gave (airole.Files), in order. Given
 // missing, nothing is converted (llm.WithFetchOnly): what is neither here nor in the sources is
 // added to it, and the rest goes on.
-func prepare(ctx context.Context, jobs []job, memory []int, chips []string, missing *[]string) ([]airole.Files, error) {
+func prepare(ctx context.Context, jobs []job, memory []int, chips []string, missing *[]string) ([]prepared, error) {
 	if missing != nil {
 		ctx = llm.WithFetchOnly(ctx)
 	}
@@ -116,20 +214,20 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 		}
 	}
 	log := console.Log(os.Stderr)
-	var out []airole.Files
+	var out []prepared
 	for _, j := range jobs {
 		if j.target == cache.AMDTarget && j.model.Kind == chat.KindChat {
-			// IRON's exports of chat models, every form of amd_export (cachecmd.AMDForms)
+			// IRON's exports of chat models, every form of amd_export (sourcescmd.AMDForms)
 			if len(j.model.AMDExport) == 0 {
 				return out, fmt.Errorf("%s has no amd_export", j.model.Name)
 			}
 			if missing == nil {
-				if err := (cachecmd.ExportCmd{Model: []string{j.model.Name}}).Make(ctx, memory); err != nil {
+				if err := (sourcescmd.AMDExport{Model: []string{j.model.Name}}).Make(ctx, memory); err != nil {
 					return out, err
 				}
 				continue
 			}
-			for _, m := range cachecmd.AMDFormsOn(j.model, memory) {
+			for _, m := range sourcescmd.AMDFormsOn(j.model, memory) {
 				if _, err := chat.PrepareAMD(chat.WithModel(ctx, m), m, log); err != nil && !skip(m.Name+" (amd-xdna2)", err) {
 					return out, fmt.Errorf("%s: %w", m.Name, err)
 				}
@@ -174,7 +272,7 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 					return out, fmt.Errorf("%s (%s): %w", m.Name, what, err)
 				}
 				fmt.Fprintf(os.Stderr, "%s: ready for %s in %s\n", m.Name, what, time.Since(start).Round(time.Second))
-				out = append(out, f)
+				out = append(out, prepared{j, f})
 			}
 		}
 	}

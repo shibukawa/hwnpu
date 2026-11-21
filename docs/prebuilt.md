@@ -7,7 +7,7 @@
 1. **上げる道具** `hwnpu-dev models hf push`: 層の並びにある、今の main が取りに行く書き出しを選んで、`hwnpu/<モデル>` に上げる (`hwnpu` は既定の名前空間で、コードには書かない。models.yaml の `hub.push` で変えられる: 4.6 節)
 2. **読む層**: hwnpu が models.yaml の `hub` に書いたリポジトリ (既定は `hwnpu/<モデル>`) を、利用者の取得元と元の Hugging Face の間で読む (読むだけの取得元の 1 つ)
 
-作るのは今までどおり手元 (`hwnpu-dev models export`: AMD も Core AI の汎用版も Linux でも Mac でも作れる。チップごとの prebuilt だけは Mac の `hwnpu-dev models prebuild`。各コマンドの初回でも作られる)。作って書き戻す取得元に置くところまでと、そこから HF に出すところを分ける。
+作るのは今までどおり手元 (`hwnpu-dev models package`: AMD も Core AI の汎用版も Linux でも Mac でも作れる。チップごとの prebuilt だけは Mac の `hwnpu-dev models package MODEL/coreai-ARCH`。各コマンドの初回でも作られる)。作って書き戻す取得元に置くところまでと、そこから HF に出すところを分ける。
 
 ## 実装の状態 (2026-11-21)
 
@@ -17,7 +17,7 @@
 | 読む層 (取得元と同梱の後、元の HF の前) | `internal/store/hub.go`、`store.Sources` | 済み。`HWNPU_MODEL_HUB=false` で止まる。`hub` のないモデルと `original/` にはネットに出ない |
 | 断られたときの取り方 (gated は元の HF と同じ `gate`、非公開は `HF_TOKEN` か `hf auth login`) | `internal/chat/hubpins.go` (`hubAuth`) | 済み。gated でないリポジトリにはトークンを送らない。**断られたら手元の変換に進む** (エラーで止めるのはまだ) |
 | `vN` がなければ同じ鍵の `v0-HASH` を読み、`vN` として書き戻す | `internal/chat/sharedexport.go` (`fetchFrom`) | 済み。版を書いても取得元の今の書き出しが無駄にならない |
-| `hwnpu-dev models export MODEL[/TARGET]` (どの OS でも、その対象向けに用意して書き戻す) | `cmd/hwnpu-dev/modelscmd`、`airole.For` / `ForTarget`、`chat.ActAsChip` | 済み (2026-11-21)。アプリの初回と同じ `airole.Role.Prepare` を、対象の NPU として呼ぶ (読み込まない)。AMD のチャットのモデルは今までの IRON の書き出し (変種ごと)。Core AI は M1 と M2 (それ以降の代表) の 2 通り: M1 だけ書き出しが違う (`wholeSlower`、`neuralEngineHold`)。Linux で M1 として作った Qwen3-0.6B の鍵は、NAS にある Mac の書き出しと同じだった |
+| `hwnpu-dev models package MODEL[/TARGET]` (どの OS でも、その対象向けに用意して書き戻す) | `cmd/hwnpu-dev/modelscmd`、`airole.For` / `ForTarget`、`chat.ActAsChip` | 済み (2026-11-21)。アプリの初回と同じ `airole.Role.Prepare` を、対象の NPU として呼ぶ (読み込まない)。AMD のチャットのモデルは今までの IRON の書き出し (変種ごと)。Core AI は M1 と M2 (それ以降の代表) の 2 通り: M1 だけ書き出しが違う (`wholeSlower`、`neuralEngineHold`)。Linux で M1 として作った Qwen3-0.6B の鍵は、NAS にある Mac の書き出しと同じだった |
 | `hwnpu-dev models fetch MODEL[/TARGET]` (変換せずに、チェックポイントと取得元にある変換を手元へ) | `modelscmd/fetch.go`、`llm.WithFetchOnly` / `MayConvert` | 済み (2026-11-21)。export と同じ準備を変換なしで走らせ、取得元にないものは一覧に出す。HF から落としたものは書き戻す取得元にも入る |
 | `hwnpu-dev models hf plan / push / check` | `cmd/hwnpu-dev/hfcmd` | 済み (下の 4 節)。手元の 1 回の走りで、取得元から選ぶ、置き場所を作る、prebuilt を書き出しのプログラムで照らす、カード・LICENSE・`config.json` を作る、`hf upload-large-folder`、models.yaml の固定、上がったかの確かめ |
 | 書く権限の確かめ (`whoami-v2`) とトークンを貼る | `hfcmd/api.go`、`console.ReadSecret` | 済み。**書くための device flow はまだ** (トークンを貼るか `HF_TOKEN` / `hf auth login`) |
@@ -29,7 +29,7 @@
 - **道具だけが違うエントリも `vN` として上げる** (`hwnpu-dev models hf push` だけ。`plan -v` に「made with other tools」と出す)。`vN` を読む hwnpu は道具の hash を見ないので、同じことになる。2026-11-21 の NAS の AMD の書き出しは、どれも今の `tools/amd` より前の道具で作られている (鍵は違うが、道具の hash のほかは同じ)。上げる前に、その書き出しで今のコードが動くかを確かめる。実行時のほうは、同じ鍵 (同じバイト) のときだけ `v0-HASH` を読む
 - 上げるときの `entry.json` は取得元のものをそのまま置く。`v0-HASH` から上げるものだけは、版と場所を書き換えて書き直す (中のファイルと詰めたものは同じバイト)
 - 候補の行は状態の順 (上げられるもの、上げ済み、足りないもの)、その中は名前の順
-- **Core AI の書き出しは版 (`vN`) のエントリだけを上げる** (2026-11-21 に決めた)。取得元には、今のコードがもう作らない名前の書き出しが、今の鍵のまま残っている (Anima の大きさごとの書き出しと、全部の大きさを 1 つにした書き出し。LFM3-1.7B では合わせて 17 GB、FLUX.2 klein では 65 GB)。名前だけではどれが今のものか分からないので、版を書いたあと `hwnpu-dev models export MODEL/coreai` を実行する (Linux でも Mac でも。Mac でそのモデルを一度動かすのと同じ)。今のコードが探す名前だけが、同じ鍵の `v0-HASH` から取られて `vN` として取得元に書き戻される (作り直しは要らない)。AMD の書き出しはレシピから名前が決まるので、`v0-HASH` からも上げる
+- **Core AI の書き出しは版 (`vN`) のエントリだけを上げる** (2026-11-21 に決めた)。取得元には、今のコードがもう作らない名前の書き出しが、今の鍵のまま残っている (Anima の大きさごとの書き出しと、全部の大きさを 1 つにした書き出し。LFM3-1.7B では合わせて 17 GB、FLUX.2 klein では 65 GB)。名前だけではどれが今のものか分からないので、版を書いたあと `hwnpu-dev models package MODEL/coreai` を実行する (Linux でも Mac でも。Mac でそのモデルを一度動かすのと同じ)。今のコードが探す名前だけが、同じ鍵の `v0-HASH` から取られて `vN` として取得元に書き戻される (作り直しは要らない)。AMD の書き出しはレシピから名前が決まるので、`v0-HASH` からも上げる
 - **表 (`any`) は Apple の行にだけ付ける**。表を読むのは Core AI の準備で、AMD の書き出しは自分の中に表を持っている
 - **models.yaml の `disk`** (動かすのにキャッシュに残る量): `hwnpu-dev models hf sizes [--write models.yaml]` が取得元から出す。AMD はそのモデル自身の書き出し (変種のものでない。`bytes` と同じ)、Core AI は版のエントリだけ。表にない種類は不明 (一番大きい値にしない)。2026-11-21 に AMD の 20 モデルを書いた。AMD のダウンロード量は 20 モデルとも `bytes` と一致した
 
@@ -137,7 +137,7 @@ SEL = [N:]MODEL[/TARGET]
   FLUX.2-klein-4B/coreai-h14g         そのチップの prebuilt だけ (汎用の coreai は含めない)
 ```
 
-**どこから上げるか**: 読むときと同じ層の並び (`hwnpu-dev models sources` の番号: 0 がこの機械のキャッシュ、1 から `HWNPU_MODEL_SOURCE`、`_1`、...) を前から順に見て、place の entry を最初に持つ層から取る。今の `store.FetchEntry` の chain of responsibility をそのまま使い、HF 用の別の置き場所は持たない。層を決めたいときは `N:` を付ける (`--source` のフラグは持たない)。今の環境では 1 番の NAS だけ。
+**どこから上げるか**: 読むときと同じ層の並び (`hwnpu-dev sources` の番号: 0 がこの機械のキャッシュ、1 から `HWNPU_MODEL_SOURCE`、`_1`、...) を前から順に見て、place の entry を最初に持つ層から取る。今の `store.FetchEntry` の chain of responsibility をそのまま使い、HF 用の別の置き場所は持たない。層を決めたいときは `N:` を付ける (`--source` のフラグは持たない)。今の環境では 1 番の NAS だけ。
 
 **対象の選び方**: `/TARGET` は `amd-xdna2`、`coreai` (汎用だけ)、`coreai-<チップ>`、`apple` (`coreai` と全部の `coreai-<チップ>`)。表 (`any`) はどの対象を選んでも付く (どちらの NPU も読むので)。`--target` のフラグは持たない。prebuilt は汎用の `coreai` がないと使えない (重みをそこから組み立てる) ので、`coreai-<チップ>` だけを選んで HF に汎用のものがなければエラーにする。
 
@@ -158,7 +158,7 @@ candidate                           license         pinned  version  chips  hf  
 1:LFM3-Audio-2B-TTS/amd-xdna2       LFM             yes     -        -      -           write targets.amd-xdna2.version, remake
 1:LFM3-Audio-2B-TTS/apple           LFM             yes     -        0/12   -           write targets.coreai.version, remake
 0:plamo-3-translate-2b/amd-xdna2    PLaMo           no      -        -      -           pin from, write version, remake
--:plamo-3-translate-2b/apple        PLaMo           no      -        -      -           hwnpu-dev models export plamo-3-translate-2b/coreai
+-:plamo-3-translate-2b/apple        PLaMo           no      -        -      -           hwnpu-dev models package plamo-3-translate-2b/coreai
 -:flux-3-image-klein                non-commercial  -       -        -      -           give the AMD export a key (gated on HF)
 ```
 
@@ -178,14 +178,14 @@ candidate                           license         pinned  version  chips  hf  
 
 | 種類 | place の出し方 (今あるもの) |
 |---|---|
-| AMD のチャット | `amdForms(m)` の各形 × `chat.ExportRecipe` (`hwnpu-dev models export` と同じ) |
+| AMD のチャット | `amdForms(m)` の各形 × `chat.ExportRecipe` (`hwnpu-dev models package` と同じ) |
 | AMD の初回の書き出し (detect、pose、segment) | `chat.PinnedRecipe` (`hwnpu-dev models push` と同じ) |
 | Core AI | モデルが使う書き出しの名前 × `coreAIRecipe` |
 | Core AI の prebuilt | 上の Core AI の entry の `.aimodel` から `coreai.ProgramsDigest` × 各チップ |
 | 表 | `chat.Tables` |
 
 - これを `chat.Plan(ctx, m) []Place` として 1 か所にまとめる (今は `PrepareAMD`、`llm.FetchExport` などが作りながら計算している)。読む層 (5 節) の確かめ、`hwnpu-dev models` の「取得元に何が足りないか」にも使える (今は使い捨てのテストで調べている: 記憶の pitfalls)
-- どの層にもなければ「足りない: `hwnpu-dev models export M` で作る」と出して飛ばす。**道具は作らない**
+- どの層にもなければ「足りない: `hwnpu-dev models package M` で作る」と出して飛ばす。**道具は作らない**
 - 鍵のない種類 (手で作った `iron-import`: Anima、Chroma、FLUX.2 klein、DA3、MoGe-2、SigLIP 2、YuNet) は上げない。名前だけで当たるので、中身の違う書き出しを別のリリースの hwnpu が読みかねない。上げる前に、初回の書き出しのように鍵 (`PinnedRecipe` と Go の側の版) を持たせる (7 節)
 
 ### 4.2 上げてよいかを確かめる
@@ -243,7 +243,7 @@ hwnpu-dev models hf check [MODEL...] [--remake]
 | 固定が足りない | HF にその対象の place があるのに、`hub` にその対象の鍵がない | 鍵を書く (`hwnpu-dev models hf push` は書くので、手で上げたときだけ) |
 | 取得元にあって HF にない (情報) | 上げられるもの | |
 
-- **`--remake`**: 今のコードで手元に作り直し (`hwnpu-dev models export` と同じ、取得元には書かない)、HF のエントリの `files` の sha256 と比べる。違えば版の上げ忘れ。AMD のチャットは 1 形で数分から 30 分かかるので、「道具が変わった」と出たものだけに使う。前提として書き出しが同じ入力で同じバイトになること (時刻や乱数が入らないこと。[app-api-tasks.md](app-api-tasks.md) の確かめ)
+- **`--remake`**: 今のコードで手元に作り直し (`hwnpu-dev models package` と同じ、取得元には書かない)、HF のエントリの `files` の sha256 と比べる。違えば版の上げ忘れ。AMD のチャットは 1 形で数分から 30 分かかるので、「道具が変わった」と出たものだけに使う。前提として書き出しが同じ入力で同じバイトになること (時刻や乱数が入らないこと。[app-api-tasks.md](app-api-tasks.md) の確かめ)
 - **ネットのいらない検査** (`go test`、`internal/chat`): `hub` のあるモデルは、元のコミットが固定してある、上げる対象に版がある (`develop` でない)、`hub` に `repo` があり、対象の鍵が知っている対象の名前で、値が 40 桁。PR で落ちる
 - 道具の hash の変化を PR の時点で知らせたいなら、cache-sharing-design.md 5 節の lock (版ごとの指紋を書いたファイル) を足す。最初は `hwnpu-dev models hf check` の警告で始め、上げ忘れが実際に起きたら入れる
 
@@ -295,7 +295,7 @@ hwnpu-dev models hf check [MODEL...] [--remake]
 - `models.yaml` に `hub` (リポジトリと対象ごとのコミット、5.1 節) を足す (上げたモデルだけ)。`hub` のないモデルは 3 番に聞かない (存在しないリポジトリへの 404 を毎回出さない。オフラインでも何が配られているか分かり、`hwnpu-chat list` に「変換済みあり」と出せる)。`hub` は鍵に入れない
 - `store` に読むだけの取得元を 1 つ足す: `converted/MODEL/REST` → `https://huggingface.co/<hub>/resolve/<コミット>/REST`。中身は今の読むだけの HTTP (GET と HEAD) で足りる。HF は 302 で CDN に回し、Range も効く (今の再開がそのまま使える)。HEAD は 302 を追った先の大きさ (または `X-Linked-Size`) を使う
 - 当たったものは、今の仕組みのとおり 0 番と `?writeback=true` の取得元に写る (チームの 2 台目以降は NAS から)
-- 止めるとき: `HWNPU_MODEL_HUGGING_FACE=false` で 3 番も 4 番も読まない。開発で自分の変換を試すなら `HWNPU_MODEL_HUB=false` (3 番だけ止める)。`hwnpu-dev models sources` に 3 番を出す
+- 止めるとき: `HWNPU_MODEL_HUGGING_FACE=false` で 3 番も 4 番も読まない。開発で自分の変換を試すなら `HWNPU_MODEL_HUB=false` (3 番だけ止める)。`hwnpu-dev sources` に 3 番を出す
 - トークン: gated でないリポジトリには送らない。gated のもの (6 節) は 5.2 節
 
 ### 5.1 HF のコミットを固定する (これがロックファイル)

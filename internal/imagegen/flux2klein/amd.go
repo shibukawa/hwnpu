@@ -66,7 +66,7 @@ func amdArgs(sizes ...[2]int) []string {
 // ready, as hwnpu-chat makes its models' (chat.PrepareAMD), and returns its directory: the export
 // of every size of sizes (AMDExportName) here (cache.ExportRoots; one made by hand goes in the sources
 // written back to: chat.ShareMadeByHand), else from the shared layers (AMDRecipe, or one made by
-// hand that hwnpu-dev models import put there under its name), else it downloads the checkpoint
+// hand that hwnpu-dev sources import put there under its name), else it downloads the checkpoint
 // (AMDFiles) and exports every size of sizes in one with IRON in IRON's environment (chat.IRONEnv), in
 // the cache's entries/amd-xdna2, and puts that in the sources written back to.
 func PrepareAMD(ctx context.Context, m chat.Model, sizes [][2]int, w, h int, log io.Writer) (string, error) {
@@ -108,7 +108,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, sizes [][2]int, w, h int, log
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, sizes...), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev models import)",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; downloading the checkpoint and exporting it with IRON (%s in one, the blocks for up to 4 references too; %s on a Ryzen AI 9 365)\n",

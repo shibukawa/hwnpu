@@ -79,7 +79,7 @@ func FetchOnly(ctx context.Context) bool { b, _ := ctx.Value(fetchOnlyKey{}).(bo
 type NotFetchedError struct{ What string }
 
 func (e *NotFetchedError) Error() string {
-	return filepath.Base(e.What) + " is neither here nor in the sources, and nothing is converted now (hwnpu-dev models export makes it)"
+	return filepath.Base(e.What) + " is neither here nor in the sources, and nothing is converted now (hwnpu-dev models package makes it)"
 }
 
 // MayConvert is called where a conversion would start, once what it makes was looked for here

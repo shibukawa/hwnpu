@@ -81,7 +81,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), chat.PinnedRecipe(m, AMDTool, AMDExportVersion), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev models import)",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export of SpectroStream's decoder for AMD's NPU here or in the sources; exporting it with IRON\n", m.Name)

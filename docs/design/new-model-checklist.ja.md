@@ -410,7 +410,7 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 ### 11.1 準備の順
 
 1. **手元の書き出し**で `NAME.done` (最後に書く) のあるもの。途中で切れたものは作り直す
-2. **取得元の書き出し** (`HWNPU_MODEL_SOURCE`): 同じレシピの項目、なければ人が名前で置いたもの (`hwnpu-dev models import`)
+2. **取得元の書き出し** (`HWNPU_MODEL_SOURCE`): 同じレシピの項目、なければ人が名前で置いたもの (`hwnpu-dev sources import`)
 3. **手元での変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換し、`.done` を書く。Apple と Intel は Go の変換器 (`chat.Prepare`、`anima.Prepare`)。AMD は hwnpu に入った IRON の書き出し器 (`chat.PrepareAMD`、`amd_export`、`HWNPU_IRON_ENV`)。IRON がなければ止めて、入れるものを言う (INSTALL_AMD.md)
 4. **使えない**: 止めて、何が足りないかを言う
 
@@ -421,7 +421,7 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 
 | 欄 | 何 | どう測る | 落とし穴 |
 |---|---|---|---|
-| `bytes` | ダウンロード | 取るファイルの HF の `lfs.size` の和。AMD の NPU で、準備がチェックポイントでなく取得元の書き出しを取るものは、取得元に置かれた書き出しの大きさを NPU の種類ごとの表に (`{amd: 12.50e9, apple: 1.6e10}`)。エントリが圧縮されていれば (`files.tar.zst`) `entry.json` の `pack.size`、そうでなければ `files` の和 (`hwnpu-dev models ls` が出すのは展開後の大きさ) | GB は 10⁹。`du -h` は GiB を出す。ディスクの上の書き出しはダウンロードの量ではない: 圧縮されたものはもっと小さい (FLUX.2 klein はディスクで 16.0 GB、圧縮で 12.5 GB)。ファイルのまま置かれた画像の書き出しは、大きさごとのプログラムが重みごと入り、チェックポイントの数倍になる (DA3MONO-LARGE は 1.4 GB に対して 6.59 GB)。表にない種類は一番大きい値になる |
+| `bytes` | ダウンロード | 取るファイルの HF の `lfs.size` の和。AMD の NPU で、準備がチェックポイントでなく取得元の書き出しを取るものは、取得元に置かれた書き出しの大きさを NPU の種類ごとの表に (`{amd: 12.50e9, apple: 1.6e10}`)。エントリが圧縮されていれば (`files.tar.zst`) `entry.json` の `pack.size`、そうでなければ `files` の和 (`hwnpu-dev sources ls` が出すのは展開後の大きさ) | GB は 10⁹。`du -h` は GiB を出す。ディスクの上の書き出しはダウンロードの量ではない: 圧縮されたものはもっと小さい (FLUX.2 klein はディスクで 16.0 GB、圧縮で 12.5 GB)。ファイルのまま置かれた画像の書き出しは、大きさごとのプログラムが重みごと入り、チェックポイントの数倍になる (DA3MONO-LARGE は 1.4 GB に対して 6.59 GB)。表にない種類は一番大きい値になる |
 | `disk` | 動かすのにディスクに残る量 | 展開した変換結果と表の和を NPU の種類ごとに (`{amd: 2.28e9}`)。エントリの `files` の和。`hwnpu-dev models hf sizes --write models.yaml` が取得元から書く (AMD はそのモデル自身の書き出しで、変種のものではない。Core AI はモデルの版のエントリだけなので、Mac で一度動かしたあと) | チェックポイント (変換するときだけ読む) と、Mac で Core AI が作るコンパイル結果 (hwnpu のキャッシュの外) は入れない。表にない種類は不明 (`hwnpu-chat list` で `-`) で、一番大きい値にはならない。準備のあいだは `bytes` と `disk` を同時に使う |
 | `memory` | 動いている間の最大 | 1 回の実行の全体を 0.1 秒ごとに (`tools/memwatch`。AMD は accel の割り付け + RSS) | 読み込みの直後でなく実行の最大 (文の段、VAE) |
 | `machine` | ファミリーがそのモデルを勧める最小の機械のメモリ | `memory` + OS とアプリの余裕 | 同じ大きさのモデルは揃える |
@@ -456,11 +456,11 @@ done
 
 - **大きさは models.yaml のもの** (`npu.amd.sizes`、`npu.apple.sizes`: `--size` が取る 8 つの比、`internal/imagegen/aspect`)。コマンドはそれで `--size` を読み、書き出しを作る
 - **Apple (Core AI)**: 大きさでグラフが変わる部分は、大きさごとの関数 (`s{W}x{H}`、`llm.WriteAIFunctions`) を持つ 1 本の `.aimodel`。大きさによらない部分は関数 1 つ。manifest の `sizes` に大きさごとの部分を書き (`ProgramManifest.At`)、名前に大きさを入れる (`aspect.Tag`)。部分の数は大きさで変えない
-- **Apple での費用**: Core AI は `.aimodel` の関数をまとめてコンパイルし、コンパイラが 1 つの大きさを落とすとその部分は全部の大きさで NPU から外れる。取得元に置く前に、大きさを 1 つずつ、prebuilt を作るチップごとにオフラインでコンパイルする (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、`/usr/bin/log` で `Falling back` を探す)。その後の `hwnpu-dev models prebuild --arch ARCH EXPORT` は `0 failed` で終わること。VAE には prebuilt を作らない (`coreai.LeftToDevice`)
+- **Apple での費用**: Core AI は `.aimodel` の関数をまとめてコンパイルし、コンパイラが 1 つの大きさを落とすとその部分は全部の大きさで NPU から外れる。取得元に置く前に、大きさを 1 つずつ、prebuilt を作るチップごとにオフラインでコンパイルする (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、`/usr/bin/log` で `Falling back` を探す)。その後の `hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT` は `0 failed` で終わること。VAE には prebuilt を作らない (`coreai.LeftToDevice`)
 - **AMD (IRON)**: 最初の大きさのグラフが bank を持ち、ほかの大きさのグラフは同じ bank の上で `sizes/WxH/` に (`share_banks`)。512 行の丸ごとにならない大きさは詰めて回し、キーを `nk` で区切る。詰めた行だけに依るグラフは共有する
 - **鍵**: `chat.PinnedRecipe(model, tool, version)` と書き出し器の引数。models.yaml に読む全部のファイルの `sha256:` が要る。入力か出力が変わったら書き出しの版を手で上げる
-- **最初の実行が取得元に置く** (`chat.SharedExportOr`、`?writeback=true`)。手で作ったものは `hwnpu-dev models import DIR` か、最初に使ったとき
-- **反対側から確かめる**: `hwnpu-dev models ls N`。手元の書き出しを脇に置いて名前で動かす: 取得元から来て、同じバイトを描くこと
+- **最初の実行が取得元に置く** (`chat.SharedExportOr`、`?writeback=true`)。手で作ったものは `hwnpu-dev sources import DIR` か、最初に使ったとき
+- **反対側から確かめる**: `hwnpu-dev sources ls N`。手元の書き出しを脇に置いて名前で動かす: 取得元から来て、同じバイトを描くこと
 - **取得元のチェックポイント**は `hwnpu-lock.json` があるときだけ読む
 - **どの大きさの絵も**一番下の機械で見る (壊れた関数はそこにしか出ない)
 - **書き出しの時間、大きさ、最大 RSS を記録する** (models.yaml と利用者へのメッセージに)

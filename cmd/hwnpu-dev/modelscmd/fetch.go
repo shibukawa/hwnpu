@@ -7,10 +7,13 @@ import (
 	"maps"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
+	"github.com/shibukawa/hwnpu/internal/backend/coreai"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
@@ -19,12 +22,12 @@ import (
 // FetchCmd is hwnpu-dev models fetch: a model brought here without converting anything, to try
 // conversions on it after. Its checkpoint (the files the sources' lock of its repository names,
 // else what a conversion reads) and the conversions for each target that are in the sources,
-// as export would take them; what none has is listed (export makes it). What comes from Hugging
+// as package would take them; what none has is listed (package makes it). What comes from Hugging
 // Face goes in the sources written back to too, as every download does.
 type FetchCmd struct {
-	Sel          []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2, coreai) or for the targets its definition gives versions for (targets); a model with neither, its checkpoint alone."`
-	Memory       []int    `help:"Only the forms of machines of these GB (as export)." placeholder:"GB"`
-	Chip         []string `help:"For coreai, only the exports of Macs of these chips (as export)." placeholder:"CHIP"`
+	Sel          []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2, coreai, coreai-ARCH, coreai-all: as package) or for the targets its definition gives versions for (targets); a model with neither, its checkpoint alone."`
+	Memory       []int    `help:"Only the forms of machines of these GB (as package)." placeholder:"GB"`
+	Chip         []string `help:"For coreai, only the exports of Macs of these chips (as package)." placeholder:"CHIP"`
 	NoCheckpoint bool     `help:"Not the checkpoint: the conversions alone."`
 }
 
@@ -66,11 +69,26 @@ func (f FetchCmd) Run(d *devopt.Defs) error {
 		}
 	}
 	var missing []string
-	if _, err := prepare(ctx, jobs, f.Memory, f.Chip, &missing); err != nil {
+	done, err := prepare(ctx, jobs, f.Memory, f.Chip, &missing)
+	if err != nil {
 		return err
 	}
+	// coreai-ARCH: the programs compiled for each architecture, of each export there is here
+	for _, p := range done {
+		for _, export := range coreAIPaths(p.files.Paths) {
+			if !strings.HasSuffix(export, ".coreai") {
+				continue
+			}
+			for _, arch := range p.job.archs {
+				chat.FetchPrebuilt(ctx, export, arch)
+				if _, err := os.Stat(coreai.PackedRoot(export, arch)); err != nil {
+					missing = append(missing, fmt.Sprintf("%s (%s-%s): %s", p.job.model.Name, cache.CoreAITarget, arch, filepath.Base(export)))
+				}
+			}
+		}
+	}
 	if len(missing) > 0 {
-		fmt.Fprintf(os.Stderr, "\nnot in the sources (hwnpu-dev models export makes them):\n")
+		fmt.Fprintf(os.Stderr, "\nnot in the sources (hwnpu-dev models package makes them):\n")
 		for _, m := range missing {
 			fmt.Fprintf(os.Stderr, "  %s\n", m)
 		}

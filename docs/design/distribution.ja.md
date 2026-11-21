@@ -91,7 +91,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 ```
 
 - lock の名指さないファイルは読まない。lock なしで手で写したリポジトリ (NAS の gated のチェックポイント) は見つからず、Hugging Face に回る
-- コミットはリポジトリごとに 1 回決める: models.yaml の固定 (`from: hf:OWNER/NAME@REV`)、なければ最初の取得元の lock、手元の lock、Hugging Face の `main` の順。どの層から取っても全ファイルがそのコミットのもの。lock を移すのは `hwnpu-dev models update` だけ (変わったファイルだけ落とし直す)。取得元の lock が移れば手元も移り、sha256 が同じファイルは残す (`store.Record`)
+- コミットはリポジトリごとに 1 回決める: models.yaml の固定 (`from: hf:OWNER/NAME@REV`)、なければ最初の取得元の lock、手元の lock、Hugging Face の `main` の順。どの層から取っても全ファイルがそのコミットのもの。lock を移すのは `hwnpu-dev sources update` だけ (変わったファイルだけ落とし直す)。取得元の lock が移れば手元も移り、sha256 が同じファイルは残す (`store.Record`)
 - 速い道: 手元の lock がファイルを名指し、大きさが合い、コミットが決まったものと同じなら、ネットにも取得元にも聞かない
 - 元のファイルはどの層から来ても手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`) に置く。`chat.Fetch(ctx, repo, name, log)` と `chat.FetchWeights` がパスを返す。モデルの間で共有する部品 (Chroma の T5-XXL と VAE) は各リポジトリのフォルダにあり、sha256 でハードリンクする
 - `TARGET`: `amd-xdna2`、`coreai`、`coreai-ARCH` (prebuilt)、`any` (表、GPTQ の codes)。`VERSION`: models.yaml に `targets.<対象>.version: N` があれば `vN` (道具の hash を除いたレシピが同じなら当たる)、`develop: true` なら `vN-<8 桁>`、版がなければ `v0-<8 桁>`
@@ -164,7 +164,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 - 何か: 機種ごとの `coreai-build` の出力 (`X.ARCH.aimodelc`) から重みを除いたもの。`coreai.Pack` は `resources.bin` (大きさの 99 %) を `main.mlirb` の塊と突き合わせて `resources.bin.map.json` にする (231 MB の部品が 2.97 MB、組み立て直してバイト単位で同一)。`coreai.Bundle` で機種ごとに `prebuilt.tar.zst` (取るのは自分の機種だけなので、全機種で 1 つにはしない)
 - 取る: Core AI の項目も手元の prebuilt もない部品を `Compile` が読むとき、書き出しごとにプロセスで 1 回、`coreai.FetchPrebuilt` が取得元に聞き、`EXPORT.prebuilt/ARCH/` に置く。`coreai.Assemble` が一時フォルダに組み立て (小さなファイルはハードリンク、重みは `main.mlirb` から、大きさと sha256 を照らす。違うバイトコードからは作らない)、Core AI に開かせてから消す。`HWNPU_COREAI_PREBUILT=off` で使わない
-- 置く: `hwnpu-dev models prebuild --arch LIST EXPORT` (`--packed` は置かずに詰めるだけ、`--no-push` はソースの横に全体のまま残す)。部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB だった)。機種は 1 つずつ作る: 12 種類を一度に作るとどれも置かれない。ディスクを見る: `coreai-build` の後に `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残った
+- 置く: `hwnpu-dev models package EXPORT/coreai-ARCH` (`--packed` は置かずに詰めるだけ、`--no-push` はソースの横に全体のまま残す)。部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB だった)。機種は 1 つずつ作る: 12 種類を一度に作るとどれも置かれない。ディスクを見る: `coreai-build` の後に `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残った
 - prebuilt のある機種にも `.aimodel` の書き出しは要る (重みはそこから)
 - 置くモデル: 効くものだけ
 
@@ -248,7 +248,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 - チェックポイントや重みのディスクの上での圧縮: lz4 で約 100 %、zstd で 71〜90 %。しかも写像するものは展開した写しが要る
 - models.yaml の取得元 (`sources`、`search`、`cache.layers`、`from: SOURCE:NAME`)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE`: 環境変数の URL に置き換えた。まだ書いたファイルは移し方を書いたエラー
-- 内容で番地を決める並び (`blobs/sha256/…`、`upstream/`、`entries/KIND/KEY.json`) とその重複除去: 人が見て分からず、普通の HTTP サーバーで配れない。前のデータは `hwnpu-dev models migrate` がハードリンクで移す
+- 内容で番地を決める並び (`blobs/sha256/…`、`upstream/`、`entries/KIND/KEY.json`) とその重複除去: 人が見て分からず、普通の HTTP サーバーで配れない。前のデータはハードリンクで移した (`hwnpu-dev models migrate`。NAS を移し終えて 2026-11-22 に外した)
 - `HWNPU_OFFLINE` (`HWNPU_MODEL_HUGGING_FACE=false` を使う) と `HWNPU_PREBUILT` (取得元にあれば使う)
 - Hugging Face のトークンのディスクへの保存: メモリだけ
 - ONNX Runtime のライブラリの自動の取得: ネイティブのライブラリの配布は利用者が決める (`HWNPU_ONNXRUNTIME` かシステムのもの)

@@ -26,7 +26,7 @@ import (
 // HWNPU_MODEL_HUGGING_FACE=false. A repository's files in a layer are those its hwnpu-lock.json
 // names, of the commit it names: a model that does not pin a commit takes the commit of the first
 // lock after the machine's cache, so that every machine of the sources runs the same files
-// (hwnpu-dev models update moves the lock), and the machine's cache follows it. A file read from a
+// (hwnpu-dev sources update moves the lock), and the machine's cache follows it. A file read from a
 // later layer goes in the machine's cache and in the sources before with ?writeback=true (in the
 // background).
 
@@ -303,7 +303,7 @@ func LegacyModelDir(base string) string { return cache.Sub("models", path.Base(b
 // lockedCommit is the commit fetch takes the files of repo from: the revision the definitions
 // pin when it is a commit, else the one this process took them from before; for main, else the
 // one of the first source with a lock of the repository, else the one of the machine's cache
-// (what is here: Hugging Face is not asked whether main moved; hwnpu-dev models update moves it);
+// (what is here: Hugging Face is not asked whether main moved; hwnpu-dev sources update moves it);
 // for another branch or tag, the one Hugging Face says it is. "" for any (Hugging Face's main).
 func lockedCommit(ctx context.Context, repo string) string {
 	if c, ok := servedCommit(repo); ok {

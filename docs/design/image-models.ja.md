@@ -113,7 +113,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 払うもの (ダウンロードの重複のほうが重いので受け入れた):
 
 - Core AI は 1 本の `.aimodel` の関数を全部まとめてコンパイルする: 初回は全部の大きさをコンパイルする (M1 の FLUX.2 klein で 512² だけ 10 分、512² と 1024² で 40 分)。prebuilt があれば端末では仕上げだけだが、VAE は prebuilt を使わないので、その大きさはどの機械でも初回にコンパイルする。
-- 1 つの大きさを Neural Engine のコンパイラが通さないと、その部品の **全部の** 大きさが NPU から落ちる。取得元に置く前に、チップごとに大きさを 1 つずつオフラインでコンパイルし (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、そのあと `/usr/bin/log` で `Falling back` を探す)、チップごとの prebuilt (`hwnpu-dev models prebuild --arch ARCH EXPORT`) は `0 failed` で終わること。
+- 1 つの大きさを Neural Engine のコンパイラが通さないと、その部品の **全部の** 大きさが NPU から落ちる。取得元に置く前に、チップごとに大きさを 1 つずつオフラインでコンパイルし (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、そのあと `/usr/bin/log` で `Falling back` を探す)、チップごとの prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT`) は `0 failed` で終わること。
 - 大きさを足すと、書き出しと prebuilt を全部作り直す。
 
 ### 名前と鍵
@@ -123,7 +123,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 | AMD | `NAME.amd-npu2`、モデルの名前の小文字: `anima-turbo`、`anima-aesthetic`、`chroma1-flash`、`chroma1-hd`、`flux.2-klein-4b`、`flux-3-image-klein`。Anima (6.13 GB) と Chroma (18.85 GB) は取得元に詰めて置く (`files.tar.zst`)。大きさの名前 (`-512`、`-aspects`) はもうない |
 | Apple | 書き出しの名前に `aspect.Tag` で大きさが入る (`8sizes-` と大きさの CRC-32)。大きさの組が違えば別の書き出し |
 
-- 鍵: `chat.PinnedRecipe(model, tool, version)` と書き出しの道具の引数 (`AMDRecipe`)。道具が読む全部のファイルの `sha256:` が models.yaml に要る (固定がなければ共有しない)。道具に渡すものか道具が書くもの (大きさ、形式、並べ方) が変わったら `AMDExportVersion` (FLUX.2 と FLUX.3 klein は 2) を手で上げる。組み込みの `tools/amd` のハッシュも鍵に入るので、そこが変わると作り方の項目は見つからなくなる。名前で取り込んだ書き出し (`iron-import`、`hwnpu-dev models import`、`chat.ImportedRecipe`) は名前だけで探すので、中身を変えたら名前を変えるか、取得元の古いものを消す。
+- 鍵: `chat.PinnedRecipe(model, tool, version)` と書き出しの道具の引数 (`AMDRecipe`)。道具が読む全部のファイルの `sha256:` が models.yaml に要る (固定がなければ共有しない)。道具に渡すものか道具が書くもの (大きさ、形式、並べ方) が変わったら `AMDExportVersion` (FLUX.2 と FLUX.3 klein は 2) を手で上げる。組み込みの `tools/amd` のハッシュも鍵に入るので、そこが変わると作り方の項目は見つからなくなる。名前で取り込んだ書き出し (`iron-import`、`hwnpu-dev sources import`、`chat.ImportedRecipe`) は名前だけで探すので、中身を変えたら名前を変えるか、取得元の古いものを消す。
 - 初回が書き出しを取得元に置く (`chat.SharedExportOr`、`?writeback=true` の取得元へ書き戻す)。同じ名前の手元の書き出しに頼まれた大きさがなければ、`NAME.amd-npu2.replaced` に退けて取得元の今のものを取り (なければ IRON で書き出す)、どちらもできなければ戻す。
 - 初回にどこから来るか: AMD の FLUX.2 と FLUX.3 klein は 手元 → 取得元 → IRON で書き出す (`PrepareAMD`)。AMD の Anima と Chroma は手元か取得元。Apple と Intel は取得して変換する。詳しくは [distribution.ja.md](distribution.ja.md)。
 - Apple の大きさごとの書き出しは、この順に 1 つの形へ移している: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (`npu.apple.sizes` の 8 つ) → Chroma1 (Flash、HD) → FLUX.3 klein。チップは M1、M2、M3 (h13g、h14g、h15g) から。

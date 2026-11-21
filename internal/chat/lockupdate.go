@@ -22,28 +22,6 @@ func PlaceEntry(kind string, m Model, target, export string, recipe map[string]s
 	return placeOf(kind, m, target, export, r).entry
 }
 
-// MigratePlace is where an entry of the layout before (entries/KIND/KEY.json) goes now, for
-// shared.MigrateDir: its export's name here is known for Core AI's exports, the tables, the
-// language models' and the first runs' exports for AMD's NPU.
-func MigratePlace(e shared.Entry) (string, bool) {
-	m := modelNamed(e.Model)
-	export := ""
-	switch {
-	case e.Kind == CoreAIKind:
-		export = e.Recipe["export"]
-	case e.Kind == TablesKind && len(e.Files) == 1:
-		export = e.Files[0].Path
-	case e.Kind == "iron-lm":
-		export = filepath.Base(AMDExportDir(m))
-	case strings.HasPrefix(e.Kind, "iron-"):
-		export = strings.ToLower(m.Name) + ".amd-npu2"
-	}
-	if export == "" || export == "." || shared.Fingerprint(e.Recipe) != e.Key {
-		return "", false
-	}
-	return placeOf(e.Kind, m, e.Target, export, e.Recipe).entry.Path, true
-}
-
 // LockedRepos are the repositories s holds files of (their hwnpu-lock.json), in order.
 func LockedRepos(ctx context.Context, s shared.Source) ([]string, error) {
 	keys, err := s.Store.List(ctx, "original/")
@@ -69,7 +47,7 @@ type LockUpdate struct {
 // UpdateLock moves the files of repo (OWNER/NAME[@REVISION]) in source s to the commit Hugging
 // Face serves for the revision (main): each file its lock names that has another SHA-256 there
 // is downloaded and put again, one the commit does not have is dropped, and the lock is written
-// with the new commit last (hwnpu-dev models update). A source with no lock of repo is left.
+// with the new commit last (hwnpu-dev sources update). A source with no lock of repo is left.
 func UpdateLock(ctx context.Context, s shared.Source, repo string, log io.Writer) (LockUpdate, error) {
 	var u LockUpdate
 	if log == nil {

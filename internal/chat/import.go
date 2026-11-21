@@ -130,7 +130,7 @@ func ImportOriginal(ctx context.Context, s shared.Source, repo, dir string, name
 	have := shared.Lock{}
 	if l, err := shared.ReadLock(ctx, s, base); err == nil {
 		if l.Commit != commit {
-			return res, fmt.Errorf("%s holds %s of %.12s, not %.12s (hwnpu-dev models update moves it)", s, base, l.Commit, commit)
+			return res, fmt.Errorf("%s holds %s of %.12s, not %.12s (hwnpu-dev sources update moves it)", s, base, l.Commit, commit)
 		}
 		have = l
 	}

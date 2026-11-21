@@ -26,7 +26,7 @@ Core AI にした理由:
 | `hwnpu-chat` (チャット、埋め込み、`systemone`) | Core AI だけ。`--backend` は `coreai`、`intel`、`levelzero`、`openvino`。`coreml` は選べない |
 | `hwnpu-image` (生成と画像を読むモデル) | Core AI だけ。`convert` の既定は `coreai`。`convert --backend coreml` は `--cpu` が読むものを書くために残す |
 | `hwnpu-audio` (music、sfx、transcribe、tts、pitch、notes) | Core AI だけ |
-| `hwnpu-dev models prebuild` | `coreai-build` で prebuilt を作る (下) |
+| `hwnpu-dev models package MODEL/coreai-ARCH` | `coreai-build` で prebuilt を作る (下) |
 | `hwnpu-dev convert` | 既定は `coreml`。`llm.Convert` は `coreai` も取る |
 
 - Core AI がない (macOS 26 以前) とき、これらのコマンドは「Core AI が要る、macOS 27」というエラーで止まる (`errNoCoreAI`)。Core ML には落とさない
@@ -183,9 +183,9 @@ xcrun coreai-build compile X.aimodel --platform macOS --architecture h14g --pref
 - 鍵: `coreai.ProgramsDigest` (各 `.aimodel` の場所と `main.hash`)、種類、書き出しの名前。`converted/MODEL/coreai-ARCH/EXPORT/v0-HASH`。モデルは書き出しの `entry.json` のもの
 - `Compile` は項目も手元の prebuilt もない部品に出会うと、書き出しごと・プロセスごとに 1 回取得元に聞き (`coreai.FetchPrebuilt`、chat が設定)、`EXPORT.prebuilt/ARCH/` に置く。`EXPORT.coreai.prebuilt` は種類 `prebuilt` のキャッシュの単位で、モデルの量に数えず、切るときも残す。prebuilt のある機械にも `.aimodel` の書き出しは要る (重みはそこから)。書き出しの取得元と詰め方: [配布](distribution.ja.md)
 
-`hwnpu-dev models prebuild MODEL|EXPORT [--arch LIST|all] [-j N] [--force] [-n] [--packed] [--no-push]` (`coreai.Build`):
+`hwnpu-dev models package MODEL/coreai-ARCH|EXPORT[/coreai-ARCH] [-j N] [--force] [-n] [--packed] [--no-push]` (`coreai.Build`):
 
-- 部品 × 種類ごとに `coreai-build` を 1 プロセスずつ、`-j` 個並べて走らせる (既定: 6 GB を超えた 4 GB ごとに 1、コアの半分まで。16 GB で 2)。`.prebuild-*` に書いてから名前を付け替える。部品ごとに作って詰め、`.aimodelc` 全体は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB)。詰めて種類ごとの束を書き戻す取得元に置く。`--packed` は書き出しの横に詰めるだけ、`--no-push` は全体のままソースの横に残す。モデル名を渡すと、先に coreai 向けに用意し (`hwnpu-dev models export MODEL/coreai`: 取得元から、なければ変換) その書き出しをコンパイルする
+- 部品 × 種類ごとに `coreai-build` を 1 プロセスずつ、`-j` 個並べて走らせる (既定: 6 GB を超えた 4 GB ごとに 1、コアの半分まで。16 GB で 2)。`.prebuild-*` に書いてから名前を付け替える。部品ごとに作って詰め、`.aimodelc` 全体は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB)。詰めて種類ごとの束を書き戻す取得元に置く。`--packed` は書き出しの横に詰めるだけ、`--no-push` は全体のままソースの横に残す。モデル名を渡すと、先に coreai 向けに用意し (`hwnpu-dev models package MODEL/coreai`: 取得元から、なければ変換) その書き出しをコンパイルする
 - オフラインのコンパイラが失敗した部品は失敗とし (出力は残さない)、ほかが終わってから単独でもう 1 度試す
 - 1 回に 1 種類ずつ作る (`--arch ARCH`)。12 種類を一度に作ると、ディスクが埋まるまで何も置かれなかった。ディスクの空きと `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` を見る
 - Chroma1-Flash の 1024²: 29 本を 9 分 (1 プロセスのピーク 2.3 GB)。ANE のコードは合計 140 MB、重みは 15.6 GB

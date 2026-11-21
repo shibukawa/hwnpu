@@ -1,8 +1,8 @@
-// Package cachecmd is hwnpu-dev models' commands of the cache and the sources (hwnpu-dev cache before): what is kept here (the cache's root) and in the sources
-// (docs/cache-sharing-design.md 7): the sources in effect, what they hold, putting an export in them,
-// checking an entry, moving a repository's lock to a new commit, and finishing the work left in
-// the background.
-package cachecmd
+// Package sourcescmd is hwnpu-dev sources: the upkeep of the sources (docs/cache-sharing-design.md
+// 7): the cache's root and the sources in effect, what they hold, putting folders made by hand in
+// them, moving a repository's lock to a new commit, checking an entry and removing entries. Also
+// the parts of hwnpu-dev models package and push that are IRON's (AMDExport, PushCmd).
+package sourcescmd
 
 import (
 	"context"
@@ -31,20 +31,16 @@ import (
 	"github.com/shibukawa/hwnpu/internal/vision/segment"
 )
 
-// Cmd is hwnpu-dev cache, the name before hwnpu-dev models (which has its subcommands, push as
-// put).
+// Cmd is hwnpu-dev sources.
 type Cmd struct {
 	devopt.Defs `embed:""`
 
-	Sources SourcesCmd `cmd:"" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read."`
-	Ls      LsCmd      `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev models sources); with --original the repositories' locks."`
-	Export  ExportCmd  `cmd:"" help:"Make the exports for AMD's NPU of chat models (amd_export) with IRON on the CPU alone, unless a source has them, and put them in the sources written back to (packed); then show their sizes."`
-	Push    PushCmd    `cmd:"" help:"Put exports for AMD's NPU that are here in the sources written back to (with entry.json, made for them when missing)."`
-	Import  ImportCmd  `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
-	Update  UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
-	Verify  VerifyCmd  `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
-	GC      GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); Shows what would go unless --apply."`
-	Migrate MigrateCmd `cmd:"" help:"Move what a folder source holds in the layout before (blobs/, upstream/, entries/) to original/ and converted/, by hard links."`
+	List   ListCmd   `cmd:"" default:"1" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read (hwnpu-dev sources alone does it)."`
+	Ls     LsCmd     `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev sources list); with --original the repositories' locks."`
+	Import ImportCmd `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
+	Update UpdateCmd `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
+	Verify VerifyCmd `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
+	GC     GCCmd     `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); shows what would go unless --apply. What a writeback cut off left: hwnpu cache clean."`
 }
 
 // AfterApply gives the subcommands the definitions' flag.
@@ -56,10 +52,10 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt)
 }
 
-// SourcesCmd is hwnpu-dev models sources.
-type SourcesCmd struct{}
+// ListCmd is hwnpu-dev sources list.
+type ListCmd struct{}
 
-func (SourcesCmd) Run(d *devopt.Defs) error {
+func (ListCmd) Run(d *devopt.Defs) error {
 	if err := load(d); err != nil {
 		return err
 	}
@@ -104,22 +100,22 @@ func (SourcesCmd) Run(d *devopt.Defs) error {
 	return nil
 }
 
-// layers are the layers of hwnpu-dev models sources, by their numbers: 0 this machine's cache,
+// layers are the layers of hwnpu-dev sources list, by their numbers: 0 this machine's cache,
 // then the sources of the environment and the bundled models.
 func layers() []shared.Source { return append([]shared.Source{shared.Local()}, shared.Sources()...) }
 
-// source is the layer of number n of hwnpu-dev models sources (0: this machine's cache).
+// source is the layer of number n of hwnpu-dev sources list (0: this machine's cache).
 func source(n int) (shared.Source, error) {
 	ls := layers()
 	if n < 0 || n >= len(ls) {
-		return shared.Source{}, fmt.Errorf("no source %d: hwnpu-dev models sources shows 0 to %d", n, len(ls)-1)
+		return shared.Source{}, fmt.Errorf("no source %d: hwnpu-dev sources list shows 0 to %d", n, len(ls)-1)
 	}
 	return ls[n], nil
 }
 
-// LsCmd is hwnpu-dev models ls.
+// LsCmd is hwnpu-dev sources ls.
 type LsCmd struct {
-	Source   int  `arg:"" optional:"" default:"-1" help:"The source's number in hwnpu-dev models sources (0: this machine's cache; all when left out)."`
+	Source   int  `arg:"" optional:"" default:"-1" help:"The source's number in hwnpu-dev sources list (0: this machine's cache; all when left out)."`
 	Original bool `help:"List the repositories' locks (original/) instead."`
 }
 
@@ -213,25 +209,15 @@ func AMDFormsOn(m chat.Model, memory []int) []chat.Model {
 	return forms
 }
 
-// ExportCmd is hwnpu-dev cache export (hwnpu-dev models export of chat models for amd-xdna2):
-// chat.PrepareAMD of each model without running it (the export compiles on the CPU: no NPU is
-// opened), the writeback waited for.
-type ExportCmd struct {
-	Model []string `arg:"" help:"Models of the definitions with amd_export."`
+// AMDExport is hwnpu-dev models package of chat models for amd-xdna2: chat.PrepareAMD of each
+// model without running it (the export compiles on the CPU: no NPU is opened).
+type AMDExport struct {
+	Model []string
 }
 
-func (x ExportCmd) Run(d *devopt.Defs) error {
-	if err := load(d); err != nil {
-		return err
-	}
-	ctx, stop := signalContext()
-	defer stop()
-	return x.Make(ctx, nil)
-}
-
-// Make is hwnpu-dev models export of x's models, the forms of machines of memory GB alone when
+// Make is hwnpu-dev models package of x's models, the forms of machines of memory GB alone when
 // given (else every form, AMDForms).
-func (x ExportCmd) Make(ctx context.Context, memory []int) error {
+func (x AMDExport) Make(ctx context.Context, memory []int) error {
 	writes := shared.Writebacks()
 	if len(writes) == 0 {
 		return errors.New("no source is written back to: give one ?writeback=true (" + shared.SourceEnv + ")")
@@ -379,9 +365,9 @@ func pushFirstRun(ctx context.Context, writes []shared.Source, m chat.Model, too
 	return describeAndPut(ctx, writes, m, chat.PlaceEntry(chat.ExportKind(tool), m, cache.AMDTarget, filepath.Base(dir), recipe), dir)
 }
 
-// GCCmd is hwnpu-dev models gc.
+// GCCmd is hwnpu-dev sources gc.
 type GCCmd struct {
-	Source    int      `arg:"" help:"The source's number in hwnpu-dev models sources (0: this machine's cache)."`
+	Source    int      `arg:"" help:"The source's number in hwnpu-dev sources list (0: this machine's cache)."`
 	Model     []string `help:"Remove the entries of these models." placeholder:"NAME"`
 	Kind      []string `help:"Remove the entries of these kinds (iron-lm, iron-onnxcnn...)." placeholder:"KIND"`
 	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH)." placeholder:"KEY"`
@@ -446,7 +432,7 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 	return plan.Apply(ctx, l)
 }
 
-// VerifyCmd is hwnpu-dev models verify.
+// VerifyCmd is hwnpu-dev sources verify.
 type VerifyCmd struct {
 	Dir  []string `arg:"" help:"Directories with entry.json." type:"existingdir"`
 	Sums bool     `help:"Check the SHA-256 of every file too (reads them all)."`
@@ -468,10 +454,10 @@ func (v VerifyCmd) Run(*devopt.Defs) error {
 	return nil
 }
 
-// UpdateCmd is hwnpu-dev models update.
+// UpdateCmd is hwnpu-dev sources update.
 type UpdateCmd struct {
 	Repo   []string `arg:"" optional:"" help:"Models of the definitions or repositories (OWNER/NAME[@REVISION]) to move (all the sources hold when left out)."`
-	Source int      `default:"-1" help:"Only this source (its number in hwnpu-dev models sources; 0: this machine's cache, which otherwise follows the sources)."`
+	Source int      `default:"-1" help:"Only this source (its number in hwnpu-dev sources list; 0: this machine's cache, which otherwise follows the sources)."`
 }
 
 func (u UpdateCmd) Run(d *devopt.Defs) error {
@@ -527,38 +513,7 @@ func (u UpdateCmd) Run(d *devopt.Defs) error {
 	return nil
 }
 
-// MigrateCmd is hwnpu-dev models migrate.
-type MigrateCmd struct {
-	Source int  `arg:"" help:"The source's number in hwnpu-dev models sources (a folder: file://)."`
-	Remove bool `help:"Remove from the layout before what was moved (the data stays: hard links)."`
-}
-
-func (mc MigrateCmd) Run(d *devopt.Defs) error {
-	if err := load(d); err != nil {
-		return err
-	}
-	ctx, stop := signalContext()
-	defer stop()
-	if mc.Source == 0 {
-		return errors.New("this machine's cache moves its files itself when they are read (models/NAME to original/)")
-	}
-	s, err := source(mc.Source)
-	if err != nil {
-		return err
-	}
-	dir, ok := s.Store.(shared.Dir)
-	if !ok {
-		return fmt.Errorf("%s is not a folder (file://)", s)
-	}
-	r, err := shared.MigrateDir(ctx, dir.Root, chat.MigratePlace, mc.Remove, os.Stdout)
-	for _, k := range r.Skipped {
-		fmt.Printf("left: %s\n", k)
-	}
-	fmt.Printf("%s: %d repositories (%d files), %d conversions moved\n", s, r.Repos, r.Files, r.Entries)
-	return err
-}
-
-// ImportCmd is hwnpu-dev models import.
+// ImportCmd is hwnpu-dev sources import.
 type ImportCmd struct {
 	Dir    []string `arg:"" help:"Folders: a checkpoint (DIR, or DIR=OWNER/NAME[@REVISION] when its name is no model's of the definitions) or an export for AMD's NPU (NAME.amd-npu2*, with manifest.json or model.json)."`
 	DryRun bool     `name:"dry-run" help:"Only show what each folder is taken for."`

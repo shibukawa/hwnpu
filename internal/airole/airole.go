@@ -156,7 +156,7 @@ func Here(ctx context.Context) NPU {
 var registered []*Role
 
 // Register adds r to the roles For finds: each package of models registers its roles, so that a
-// tool (hwnpu-dev models export) makes a model ready as the app would, by its kind alone.
+// tool (hwnpu-dev models package) makes a model ready as the app would, by its kind alone.
 func Register(r *Role) { registered = append(registered, r) }
 
 // For is the first role registered that runs m; nil when none does (or its package is not

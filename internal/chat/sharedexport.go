@@ -158,7 +158,7 @@ type SharedRecipe struct {
 
 // SharedExportOr is SharedExport that, when no source has recipe's entry, takes the first of
 // others that a source has (each at the place its kind and recipe give under out's name: an
-// export made by hand that hwnpu-dev models import put there, ImportedRecipe) before it builds.
+// export made by hand that hwnpu-dev sources import put there, ImportedRecipe) before it builds.
 // What build makes is put as recipe's.
 func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer, build func() error) error {
 	if recipe == nil {
@@ -244,7 +244,7 @@ func sharedPlace(kind string, recipe map[string]string, out string) place {
 // import puts in the sources.
 const ImportKind = "iron-import"
 
-// ImportedRecipe is the recipe hwnpu-dev models import describes an export made by hand with
+// ImportedRecipe is the recipe hwnpu-dev sources import describes an export made by hand with
 // (ImportKind): its model, target and name alone, so that a command finds one under the name it
 // would make the export with. Its "made" names the command as it was called when the first
 // entries were put (hwnpu-dev cache import): it is in the key, so it stays.

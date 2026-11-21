@@ -229,7 +229,7 @@ func runJob(file string) error {
 	case "original":
 		err = PutOriginal(ctx, *src, j.Repo, j.Commit, j.Name, j.Path, j.SHA256)
 		if errors.Is(err, ErrOtherCommit) {
-			logQueue("%s: %v (left as it is: hwnpu-dev models update moves it)", describe(j), err)
+			logQueue("%s: %v (left as it is: hwnpu-dev sources update moves it)", describe(j), err)
 			err = nil
 		}
 	default:

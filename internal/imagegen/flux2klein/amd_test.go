@@ -69,7 +69,7 @@ func TestAMDExportName(t *testing.T) {
 	}
 }
 
-// TestAMDImportedPlace: the export made by hand of FLUX.2 klein that hwnpu-dev models import put
+// TestAMDImportedPlace: the export made by hand of FLUX.2 klein that hwnpu-dev sources import put
 // in a source is found where it put it, and the first run's is another entry, of every size.
 func TestAMDImportedPlace(t *testing.T) {
 	m := kleinModel(t)

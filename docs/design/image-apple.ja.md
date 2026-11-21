@@ -43,7 +43,7 @@
 
 ## prebuilt にしないもの
 
-`coreai.LeftToDevice` は、名前が `vae` か `text` で始まるプログラムを端末でコンパイルさせる: `hwnpu-dev models prebuild` は外し (「left to the device」)、`coreai.Prebuilt` は取得元にすでにあるそれらの prebuilt を使わない。
+`coreai.LeftToDevice` は、名前が `vae` か `text` で始まるプログラムを端末でコンパイルさせる: `hwnpu-dev models package MODEL/coreai-ARCH` は外し (「left to the device」)、`coreai.Prebuilt` は取得元にすでにあるそれらの prebuilt を使わない。
 
 | 部品 | 理由 |
 |---|---|

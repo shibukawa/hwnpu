@@ -91,7 +91,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 ```
 
 - A file the lock does not name is not read. A repository copied by hand without a lock (a gated checkpoint on a NAS) is not found, and the fetch goes on to Hugging Face.
-- The commit is decided once per repository: the models.yaml pin (`from: hf:OWNER/NAME@REV`), else the first source's lock, else the local lock, else Hugging Face's `main`. Every file comes from that commit whichever layer serves it. Only `hwnpu-dev models update` moves a lock (re-downloads changed files only). When a source's lock moves, the local one follows and files with the same sha256 stay (`store.Record`).
+- The commit is decided once per repository: the models.yaml pin (`from: hf:OWNER/NAME@REV`), else the first source's lock, else the local lock, else Hugging Face's `main`. Every file comes from that commit whichever layer serves it. Only `hwnpu-dev sources update` moves a lock (re-downloads changed files only). When a source's lock moves, the local one follows and files with the same sha256 stay (`store.Record`).
 - Fast path: when the local lock names the file, its size matches and the commit is the decided one, no network and no source is asked.
 - Every original file, from any layer, lands in local `original/OWNER/NAME/FILE` (`chat.RepoDir`); `chat.Fetch(ctx, repo, name, log)` and `chat.FetchWeights` return the path. Parts shared by models (Chroma's T5-XXL and VAE) are in each repository's folder, hard-linked by sha256.
 - `TARGET`: `amd-xdna2`, `coreai`, `coreai-ARCH` (prebuilt), `any` (tables, GPTQ codes). `VERSION`: `vN` when models.yaml has `targets.<target>.version: N` (matched if the recipe without the tools hash is the same), `vN-<8 hex>` with `develop: true`, `v0-<8 hex>` with no version.
@@ -164,7 +164,7 @@ Details and Apple specifics: [apple-coreai.md](apple-coreai.md), [../cache-shari
 
 - What: `coreai-build` output (`X.ARCH.aimodelc`) per chip, without the weights. `coreai.Pack` maps `resources.bin` (99% of the size) to `resources.bin.map.json` against the blobs of `main.mlirb` (a 231 MB part → 2.97 MB, rebuilt byte for byte). `coreai.Bundle` makes `prebuilt.tar.zst` per chip (one chip only is fetched, so not one archive for all).
 - Fetch: when `Compile` loads a part with no Core AI cache entry and no local prebuilt, once per export per process, `coreai.FetchPrebuilt` asks the sources and stores in `EXPORT.prebuilt/ARCH/`. `coreai.Assemble` rebuilds in a temporary folder (small files hard-linked, weights read from `main.mlirb`, size and sha256 checked; never from a different bytecode), Core AI opens it, the folder is removed. `HWNPU_COREAI_PREBUILT=off` skips it.
-- Put: `hwnpu-dev models prebuild --arch LIST EXPORT` (`--packed` packs without putting, `--no-push` leaves the programs whole beside their sources). Build, pack and drop each part's full `.aimodelc` one at a time (Sana's 27 parts × 12 chips whole would be 50 GB). Build one chip at a time: 12 at once put none. Watch disk: `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` kept 12 GB after `coreai-build`.
+- Put: `hwnpu-dev models package EXPORT/coreai-ARCH` (`--packed` packs without putting, `--no-push` leaves the programs whole beside their sources). Build, pack and drop each part's full `.aimodelc` one at a time (Sana's 27 parts × 12 chips whole would be 50 GB). Build one chip at a time: 12 at once put none. Watch disk: `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` kept 12 GB after `coreai-build`.
 - The `.aimodel` export is needed even where a prebuilt exists (the weights come from it).
 - Which models get one: only where it pays.
 
@@ -248,7 +248,7 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 
 - Compressing checkpoints or weights on disk: lz4 ~100%, zstd 71–90%, and mapped files need an unpacked copy.
 - Sources in models.yaml (`sources`, `search`, `cache.layers`, `from: SOURCE:NAME`), `HWNPU_CACHE_LAYERS`, `HWNPU_CACHE_WRITE`: replaced by source URLs in the environment; a file that still writes them gets an error with how to move.
-- Content-addressed layout (`blobs/sha256/…`, `upstream/`, `entries/KIND/KEY.json`) and its dedup: unreadable for people and not servable by a plain HTTP server. `hwnpu-dev models migrate` moves old data by hard links.
+- Content-addressed layout (`blobs/sha256/…`, `upstream/`, `entries/KIND/KEY.json`) and its dedup: unreadable for people and not servable by a plain HTTP server. Old data was moved by hard links (`hwnpu-dev models migrate`, removed on 2026-11-22 once the NAS was moved).
 - `HWNPU_OFFLINE` (use `HWNPU_MODEL_HUGGING_FACE=false`) and `HWNPU_PREBUILT` (a prebuilt is used if a source has it).
 - Saving the Hugging Face token to disk: memory only.
 - Fetching the ONNX Runtime library automatically: native library distribution is the user's choice (`HWNPU_ONNXRUNTIME` or the system's).

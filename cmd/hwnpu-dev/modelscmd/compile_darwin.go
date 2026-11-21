@@ -2,57 +2,23 @@ package modelscmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
-func (p PrebuildCmd) Run(d *devopt.Defs) error {
-	if err := d.Load(); err != nil {
-		return err
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	var paths []string
-	var jobs []job
-	for _, s := range p.Sel {
-		if isPath(s) {
-			paths = append(paths, s)
-			continue
-		}
-		js, err := parseJobs([]string{s + "/" + cache.CoreAITarget})
-		if err != nil {
-			return err
-		}
-		jobs = append(jobs, js...)
-	}
-	if len(jobs) > 0 {
-		files, err := prepare(ctx, jobs, p.Memory, p.Chip, nil)
-		if err != nil {
-			return err
-		}
-		for _, f := range files {
-			paths = append(paths, coreAIPaths(f.Paths)...)
-		}
-		if len(paths) == 0 {
-			return errors.New("the models have no Core AI exports to compile")
-		}
-	}
+// canCompile is nil: coreai-build is asked for when it runs (coreai.Build).
+func canCompile() error { return nil }
+
+// compile compiles the Core AI exports and programs at paths for archs (none: this Mac's) and
+// puts them in the sources written back to (compileFlags).
+func compile(ctx context.Context, paths, archs []string, p compileFlags) error {
 	o := coreai.BuildOptions{Jobs: p.Jobs, Force: p.Force, DryRun: p.DryRun, Log: os.Stderr, Packed: p.Packed || !p.NoPush}
-	if slices.Contains(p.Arch, "all") {
-		o.Archs = coreai.Archs
-	} else {
-		o.Archs = p.Arch
-	}
+	o.Archs = archs
 	t0 := time.Now()
 	results, err := coreai.Build(ctx, paths, o)
 	built, skipped, failed := 0, 0, 0

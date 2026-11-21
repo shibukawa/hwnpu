@@ -83,7 +83,7 @@
 | Core AI: 次のプログラムを先に読む、DiT の組を入れ替える | Chroma の DiT 1 回 7.2 → 5.4〜5.8 秒。NE が持つもの 8.3 → 2.2〜2.6 GiB | | [image-apple.md](image-apple.md) |
 | Core AI の `--batch` | Chroma の DiT 1 回 1 枚 5.4 → 5.05 秒 | 1 枚ごとのホストのメモリ | [image-apple.md](image-apple.md) |
 | 全部の大きさを 1 つの書き出しの関数に | 全部の大きさで 1 回のダウンロード (Anima の大きさごとの書き出しは 1 つ 2.9 GB だった) | 初回のコンパイルは全部の大きさの分 | [image-apple.md](image-apple.md) |
-| チップごとの prebuilt (`hwnpu-dev models prebuild`) | M1 の FLUX.2 klein の初回 40 分 → 7 分 48 秒 | チャットのモデルと VAE には作らない | [apple-coreai.md](apple-coreai.md) |
+| チップごとの prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH`) | M1 の FLUX.2 klein の初回 40 分 → 7 分 48 秒 | チャットのモデルと VAE には作らない | [apple-coreai.md](apple-coreai.md) |
 | Core AI の FLUX.2 klein 4B | M1: 512² 11 秒、1024² 41 秒 / 枚 | | [image-apple.md](image-apple.md) |
 | VAE の段の間にホストのメモリを返す | FLUX.2 klein 1024² の最大 5.8 → 4.1 GB | 復号 +0.4 秒 | [image-apple.md](image-apple.md) |
 | AMD: DiT の重みをホストで bfp16 に | 1 ステップ: Anima-Turbo 1024² 4.1 → 3.6〜3.8 秒、Chroma1-Flash 29.9 → 22.8〜25.4 秒、Chroma1-HD 27.5 → 20.2 秒 | 1 重み 9 ビット。書き出しが 3〜4 倍長い | [image-amd.md](image-amd.md) |

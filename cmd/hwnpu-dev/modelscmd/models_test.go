@@ -9,22 +9,38 @@ import (
 
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
 func TestParseJobs(t *testing.T) {
-	jobs, err := parseJobs([]string{"LFM3-1.7B/coreai", "whisper-large-v3-turbo/amd-xdna2"})
+	jobs, err := parseJobs([]string{"LFM3-1.7B/coreai", "whisper-large-v3-turbo/amd-xdna2", "LFM3-1.7B/coreai-h14g", "LFM3-1.7B/coreai-h13g"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(jobs) != 2 || jobs[0].model.Name != "LFM3-1.7B" || jobs[0].target != cache.CoreAITarget || jobs[1].target != cache.AMDTarget {
+	if len(jobs) != 2 || jobs[0].model.Name != "LFM3-1.7B" || jobs[0].target != cache.CoreAITarget || !slices.Equal(jobs[0].archs, []string{"h14g", "h13g"}) || jobs[1].target != cache.AMDTarget {
 		t.Errorf("jobs = %+v", jobs)
 	}
-	for _, bad := range []string{"no-such-model", "LFM3-1.7B/coreai-h14g", "LFM3-1.7B/intel"} {
+	if jobs, err := parseJobs([]string{"LFM3-1.7B/coreai-all"}); err != nil || len(jobs) != 1 || len(jobs[0].archs) != len(coreai.Archs) {
+		t.Errorf("coreai-all = %+v, %v", jobs, err)
+	}
+	for _, bad := range []string{"no-such-model", "LFM3-1.7B/coreai-h99", "LFM3-1.7B/intel"} {
 		if _, err := parseJobs([]string{bad}); err == nil {
 			t.Errorf("%s: no error", bad)
 		}
+	}
+}
+
+// TestParseSel: a Core AI export folder is compiled alone, for the architecture after it.
+func TestParseSel(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "x.coreai")
+	jobs, folders, err := parseSel([]string{dir + "/coreai-h14g", dir, "LFM3-1.7B/coreai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || len(folders) != 2 || folders[0].paths[0] != dir || !slices.Equal(folders[0].archs, []string{"h14g"}) || folders[1].archs != nil {
+		t.Errorf("jobs %+v, folders %+v", jobs, folders)
 	}
 }
 
@@ -44,7 +60,7 @@ func TestForms(t *testing.T) {
 	}
 }
 
-// TestRoles: every kind export takes is found a role (the packages register theirs), and the
+// TestRoles: every kind package takes is found a role (the packages register theirs), and the
 // targets are NPUs that convert without a device.
 func TestRoles(t *testing.T) {
 	for _, name := range []string{"LFM3-1.7B", "plamo-3-translate-2b", "whisper-large-v3-turbo", "LFM3-Audio-2B-TTS", "FLUX.2-klein-4B"} {
@@ -90,8 +106,7 @@ func TestCoreAIPaths(t *testing.T) {
 	}
 }
 
-// TestParse: the commands parse under models with the definitions' flag bound, and the names of
-// before (cache) still do.
+// TestParse: the commands parse under models with the definitions' flag bound.
 func TestParse(t *testing.T) {
 	var c struct {
 		Models Cmd `cmd:""`
@@ -100,14 +115,14 @@ func TestParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	k, err := p.Parse([]string{"models", "--models", "x.yaml", "export", "LFM3-1.7B/coreai", "--memory", "16", "--chip", "M1"})
+	k, err := p.Parse([]string{"models", "--models", "x.yaml", "package", "LFM3-1.7B/coreai", "--memory", "16", "--chip", "M1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k.Command() != "models export <MODEL[/TARGET]>" || c.Models.Models != "x.yaml" || !slices.Equal(c.Models.Export.Memory, []int{16}) {
+	if k.Command() != "models package <MODEL[/TARGET]>" || c.Models.Models != "x.yaml" || !slices.Equal(c.Models.Package.Memory, []int{16}) {
 		t.Errorf("parsed %q %+v", k.Command(), c.Models)
 	}
-	for _, args := range [][]string{{"models", "push", "LFM3-1.7B"}, {"models", "hf", "plan"}, {"models", "fetch", "Qwen3-0.6B/coreai", "--no-checkpoint", "--chip", "M1"}, {"models", "prebuild", "x.coreai", "--arch", "all", "-j", "2"}} {
+	for _, args := range [][]string{{"models", "push", "LFM3-1.7B"}, {"models", "hf", "plan"}, {"models", "fetch", "Qwen3-0.6B/coreai", "--no-checkpoint", "--chip", "M1"}, {"models", "package", "x.coreai/coreai-all", "-j", "2", "--no-push"}, {"models", "fetch", "LFM3-1.7B/coreai-h14g"}} {
 		if _, err := p.Parse(args); err != nil {
 			t.Errorf("%v: %v", args, err)
 		}

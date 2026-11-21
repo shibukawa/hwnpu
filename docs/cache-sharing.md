@@ -144,8 +144,8 @@ Keys come from the usual AWS variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_
 Check what is in effect:
 
 ```
-hwnpu-dev models sources      the root, each source, whether it is written back to, whether Hugging Face is read
-hwnpu-dev models ls           what the sources hold
+hwnpu-dev sources      the root, each source, whether it is written back to, whether Hugging Face is read
+hwnpu-dev sources ls           what the sources hold
 ```
 
 ### 2.3 Where to put the settings
@@ -157,7 +157,7 @@ Put the variables in a `.env` file. hwnpu reads `.env.local` and `.env` at start
 3. the user's folder: `~/.config/hwnpu/` (Windows: `%LOCALAPPDATA%\hwnpu\`)
 4. the machine's folder, put by an administrator: `/etc/hwnpu/` (macOS: `/Library/Application Support/hwnpu/`, Windows: `%ProgramData%\hwnpu\`)
 
-Only names starting with `HWNPU_`, `HF_` and `AWS_` are read, so another project's `.env` does no harm. Put passwords and keys in `.env.local`, which by convention is not committed. Logs and `hwnpu-dev models sources` never show the user and password of a URL.
+Only names starting with `HWNPU_`, `HF_` and `AWS_` are read, so another project's `.env` does no harm. Put passwords and keys in `.env.local`, which by convention is not committed. Logs and `hwnpu-dev sources` never show the user and password of a URL.
 
 ### 2.4 Three set-ups
 
@@ -186,9 +186,9 @@ HWNPU_MODEL_SOURCE_1=s3://corp-models/hwnpu?writeback=true     # shared by all s
 A shared source is a folder tree with no server logic, so tidy it with commands:
 
 ```
-hwnpu-dev models update [MODEL...]   move a model to Hugging Face's newest commit (only changed files are downloaded)
-hwnpu-dev models verify DIR --sums   check conversions against their entry.json
-hwnpu-dev models gc 1 --older-than 90 --apply   remove conversions in source 1 made over 90 days ago
+hwnpu-dev sources update [MODEL...]   move a model to Hugging Face's newest commit (only changed files are downloaded)
+hwnpu-dev sources verify DIR --sums   check conversions against their entry.json
+hwnpu-dev sources gc 1 --older-than 90 --apply   remove conversions in source 1 made over 90 days ago
                                     (also --model, --kind, --key; without --apply it only shows them)
 hwnpu cache clean                   remove what a cut-off upload left: half-written folders, temporary files,
                                     in S3 multipart uploads older than an hour
@@ -256,19 +256,25 @@ Parameters, in the query string:
 | `clean [-n] [-y]` | Remove leftovers of cut-off uploads from the sources written back to |
 | `hwnpu memory [MODEL [GB\|--forget]]` | How much memory a model runs as |
 
-`hwnpu-dev models` (for who runs a shared source):
+`hwnpu-dev models` (for who makes conversions; `MODEL/TARGET`, TARGET `amd-xdna2`, `coreai`, `coreai-ARCH`, `coreai-all`):
 
 | Command | Does |
 |---|---|
-| `sources` | The sources in effect |
+| `fetch MODEL[/TARGET]...` | Bring the checkpoint and the conversions the sources have here, converting nothing; list what none has |
+| `package MODEL[/TARGET]...` | Make the conversions on this machine (any OS; `coreai-ARCH` compiles with `coreai-build` on macOS), unless a source has them, and put them in the writable sources |
+| `push MODEL...` | Put exports made here by hand (AMD) into the writable sources |
+| `hf plan\|push\|check\|sizes` | Put the sources' conversions on Hugging Face ([prebuilt](prebuilt.md)) |
+
+`hwnpu-dev sources` (for who runs a shared source):
+
+| Command | Does |
+|---|---|
+| `list` (or no command) | The sources in effect |
 | `ls [N] [--original]` | What source N holds (conversions, or the repositories' locks) |
-| `push` | Put exports made here (AMD) into the writable sources |
-| `export MODEL...` | Make the AMD exports of chat models with IRON on the CPU alone (no NPU), unless a source has them, put them in the writable sources and print their sizes |
 | `import DIR...` | Put folders made by hand (`~/models`) into a source: checkpoints that match their Hugging Face repository, and exports |
 | `update [MODEL...]` | Move repositories to Hugging Face's newest commit |
 | `verify [--sums]` | Check against `entry.json` |
-| `gc N [--model M] [--kind K] [--key K] [--older-than DAYS] [--target T] [--apply]` | Remove conversions from source N (source numbers are those `sources` prints; 0 is this machine's cache) |
-| `migrate N` | Move an older layout (`blobs/`, `upstream/`, `entries/`) by hard links |
+| `gc N [--model M] [--kind K] [--key K] [--older-than DAYS] [--target T] [--apply]` | Remove conversions from source N (source numbers are those `list` prints; 0 is this machine's cache) |
 
 ### 3.5 What a source looks like inside
 
@@ -308,7 +314,7 @@ What can be shared depends on what the NPU's toolchain produces. The checkpoint 
 
 - **Core AI** (`target coreai`): the `.aimodel` is a device-independent bytecode, the same for every Mac. The first Mac that converts puts it in the source; any other Mac downloads it and needs no checkpoint. The tables the commands read rows from (`tables.safetensors`) are shared the same way.
 - **The first compile is per Mac.** Core AI compiles each part for the Neural Engine on first load (seconds to minutes per part). That result lives in Core AI's own cache, tied to the OS build, and cannot be shared.
-- **Precompiled parts** shorten that. On a developer machine with Xcode 27, `hwnpu-dev models prebuild --arch all EXPORT` compiles the parts for each chip generation (`h13g` = M1, `h14g` = M2, `h15g` = M3 …), strips the weights (about 99% of the size; they are rebuilt from the `.aimodel`) and puts the result next to the export, 1–2% of the export per generation. A Mac fetches the one for its chip and finishes in a second or a minute instead of compiling for tens of minutes. It helps only the models whose parts the Neural Engine accepts, so it is chosen per model. `HWNPU_COREAI_PREBUILT=off` skips it. If the disk fills, the machine's copy of those compiled parts is removed first, because it can be rebuilt in seconds.
+- **Precompiled parts** shorten that. On a developer machine with Xcode 27, `hwnpu-dev models package EXPORT/coreai-all` compiles the parts for each chip generation (`h13g` = M1, `h14g` = M2, `h15g` = M3 …), strips the weights (about 99% of the size; they are rebuilt from the `.aimodel`) and puts the result next to the export, 1–2% of the export per generation. A Mac fetches the one for its chip and finishes in a second or a minute instead of compiling for tens of minutes. It helps only the models whose parts the Neural Engine accepts, so it is chosen per model. `HWNPU_COREAI_PREBUILT=off` skips it. If the disk fills, the machine's copy of those compiled parts is removed first, because it can be rebuilt in seconds.
 - **Core ML** programs for the Neural Engine are still made on each Mac. The compiled `.mlmodelc` depends on the OS version and the e5 bundle on the machine.
 
 ### 4.2 AMD XDNA 2 (Linux)
@@ -318,7 +324,7 @@ What can be shared depends on what the NPU's toolchain produces. The checkpoint 
 - The key of an export is a fingerprint of: the model, the checkpoint commit, the SHA-256 of the definition, the export's options (`amd_export`) and the hash of the bundled IRON tools that export reads: `iron_export_lm.py` and its common modules, the modules of the model's architecture (a table in `tools/amd/lmdeps.go`, followed through their imports), and every kernel. A change to one model's exporter (Gemma 4's per-layer table) or to an image model's leaves the other chat models' exports found. A change that alters the output needs the key (or the version) to change, so a stale export is never matched.
 - A machine without IRON (the common case in an office) downloads the export and runs on the NPU after "preparing" for a few seconds.
 - Image models that build their programs on first use (`detect`, `pose`, `segment`, FLUX.2 klein) are shared the same way: found in a source, else made with IRON and put back.
-- Programs made **by hand** (some image and audio models, depth, face, labels, models without `amd_export`) are kept in `entries/amd-xdna2/` or `~/models`. Use `hwnpu-dev models import ~/models` once to put them in a source; machines that need one fetch it by name and keep a local copy, and the first machine that uses a hand-made one writes it back automatically.
+- Programs made **by hand** (some image and audio models, depth, face, labels, models without `amd_export`) are kept in `entries/amd-xdna2/` or `~/models`. Use `hwnpu-dev sources import ~/models` once to put them in a source; machines that need one fetch it by name and keep a local copy, and the first machine that uses a hand-made one writes it back automatically.
 - The IRON compile cache (`iron/`, tens of GB on a developer machine) is never shared. It is a build artifact of the exporter.
 
 ### 4.3 Intel
@@ -348,7 +354,7 @@ chat.Fetch / modelstore.File
            → tee to writable sources while downloading
 ```
 
-The commit is decided once per repository: the definition's pin; else the first source's lock; else this machine's lock; else Hugging Face's `main`. Files come from that commit whichever layer serves them, so two machines never run different bytes of one model. Moving to a newer commit happens only with `hwnpu-dev models update`.
+The commit is decided once per repository: the definition's pin; else the first source's lock; else this machine's lock; else Hugging Face's `main`. Files come from that commit whichever layer serves them, so two machines never run different bytes of one model. Moving to a newer commit happens only with `hwnpu-dev sources update`.
 
 ### 5.2 Entries and keys
 

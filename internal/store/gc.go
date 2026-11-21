@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// GC is what hwnpu-dev models gc removes from a source: the entries chosen (their folders). What
+// GC is what hwnpu-dev sources gc removes from a source: the entries chosen (their folders). What
 // a writeback cut off left is hwnpu cache clean's (PlanClean). Nothing is removed until Apply.
 type GC struct {
 	Entries []Entry  // the entries removed

@@ -35,7 +35,7 @@ func Chip() string { return chipName() }
 var ExportChips = []string{"M1", "M2"}
 
 // ActAsChip makes the process convert as a Mac of chip (of Chips; "" for this machine's) would:
-// hwnpu-dev models export makes each chip's Core AI exports on any machine. It returns what
+// hwnpu-dev models package makes each chip's Core AI exports on any machine. It returns what
 // undoes it.
 func ActAsChip(chip string) (undo func()) {
 	was := chipName

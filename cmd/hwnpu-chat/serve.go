@@ -307,7 +307,7 @@ func showModels(w io.Writer, amd bool) {
 		"architecture; serve takes several, comma separated. The default is LFM3-1.7B (search: embedding).\n"+
 		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
 		"On AMD's NPU a name runs its export, NAME.amd-npu2-q4 (-q6, or none for bf16) in %s or ~/models;\n"+
-		"the first run takes it from the sources (hwnpu-dev models sources), else downloads the checkpoint\n"+
+		"the first run takes it from the sources (hwnpu-dev sources), else downloads the checkpoint\n"+
 		"and makes it with IRON (tools/amd/iron_export_lm.py, %s, INSTALL_AMD.md).\n"+
 		"Models are kept in %s (HWNPU_CACHE moves it).\n", shortPath(chat.AMDRoot()), chat.IRONEnv, shortPath(cache.Root()))
 }

@@ -19,20 +19,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
-// Archs are the architectures coreai-build compiles for on macOS (Metal Toolchain 27.2): a name
-// for each chip variant, as AIModel's deviceArchitectureName. The chips, as coreai-build inspect
-// names them for each (seen on a device: h13c, h14g): g the chip (h13g M1 ... h17g M5, h18g M6),
-// s its Pro, c its Max, d its Ultra (h17d none named); h15m an M3 Max too, h17p the A18 and A18
-// Pro.
-var Archs = []string{
-	"h13c", "h13d", "h13g", "h13s",
-	"h14c", "h14d", "h14g", "h14s",
-	"h15c", "h15d", "h15g", "h15m", "h15s",
-	"h16c", "h16g", "h16s",
-	"h17c", "h17d", "h17g", "h17p", "h17s",
-	"h18g",
-}
-
 // BuildOptions says how Build compiles.
 type BuildOptions struct {
 	// Archs are the architectures to compile for (Archs; the device's own when empty).

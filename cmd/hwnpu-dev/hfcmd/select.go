@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/cachecmd"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/sourcescmd"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/speech"
@@ -160,7 +160,7 @@ func amdWants(ctx context.Context, m chat.Model) ([]shared.Entry, error) {
 	}
 	switch {
 	case len(m.AMDExport) > 0:
-		for _, f := range cachecmd.AMDForms(m) {
+		for _, f := range sourcescmd.AMDForms(m) {
 			r := chat.ExportRecipe(ctx, f, "iron_export_lm.py", f.AMDExport)
 			if r == nil {
 				return nil, errors.New("the commit of its files is not known")
@@ -173,7 +173,7 @@ func amdWants(ctx context.Context, m chat.Model) ([]shared.Entry, error) {
 	case m.Kind == chat.KindSpeech:
 		return out, pinned(speech.AMDRecipe(m), speech.AMDTool, speech.AMDExportName(m.Name))
 	}
-	if tool, version, ok := cachecmd.FirstRunExport(m); ok {
+	if tool, version, ok := sourcescmd.FirstRunExport(m); ok {
 		return out, pinned(chat.PinnedRecipe(m, tool, version), tool, filepath.Base(ironcnn.Dir(m.Name)))
 	}
 	return nil, errors.New("hwnpu-dev models hf does not know its export for AMD's NPU yet")
@@ -249,7 +249,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 			if f, ok := lookup(ctx, ls, only, w, held[cache.AMDTarget], loose); ok {
 				amd.entries = append(amd.entries, f)
 			} else {
-				amd.why = append(amd.why, fmt.Sprintf("make %s (hwnpu-dev models export %s, or its command on AMD's NPU)", path.Base(path.Dir(w.Path)), m.Name))
+				amd.why = append(amd.why, fmt.Sprintf("make %s (hwnpu-dev models package %s, or its command on AMD's NPU)", path.Base(path.Dir(w.Path)), m.Name))
 			}
 		}
 	}
@@ -286,7 +286,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 		}
 	}
 	if len(apple.entries) == 0 && m.Targets[chat.CoreAITarget] > 0 {
-		apple.why = append(apple.why, fmt.Sprintf("hwnpu-dev models export %s/coreai (on any machine): its Core AI exports go in the sources as v%d", m.Name, m.Targets[chat.CoreAITarget]))
+		apple.why = append(apple.why, fmt.Sprintf("hwnpu-dev models package %s/coreai (on any machine): its Core AI exports go in the sources as v%d", m.Name, m.Targets[chat.CoreAITarget]))
 	}
 	// their prebuilt programs: checked against the export's programs when pushed
 	names := map[string]bool{}

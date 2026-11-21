@@ -169,7 +169,7 @@ func FetchPrebuilt(ctx context.Context, export, arch string) {
 func bundleDir(root string) string { return root + ".shared" }
 
 // PutPrebuilt puts the packed prebuilt programs of the export for arch (coreai.PackedRoot, made
-// here by hwnpu-dev models prebuild) in the sources that are written back to, in the background, as
+// here by hwnpu-dev models package MODEL/coreai-ARCH) in the sources that are written back to, in the background, as
 // one file (coreai.Bundle).
 func PutPrebuilt(export, arch string) error {
 	p, ok := prebuiltPlace(export, arch)
