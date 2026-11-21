@@ -749,8 +749,10 @@ models:
     # an M1 (3.1 GiB of the process and 1.4 GiB on the Neural Engine, docs/design/image-models.md)
     memory: {amd: 3.5, apple: 4.8}
     # AMD: the export of the eight aspect ratios (anima-turbo.amd-npu2, 6.13 GB) packed in the
-    # sources (files.tar.zst)
-    bytes: {amd: 4.24e9, apple: 5.9e9}
+    # sources (files.tar.zst). Apple: the Core AI export of the eight
+    # (anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai, 2.91 GB packed) and the chip's
+    # prebuilt programs (0.05 to 0.10 GB, the M1's the largest)
+    bytes: {amd: 4.24e9, apple: 3.00e9}
     about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
   Anima-Aesthetic:
     family: anima
@@ -774,7 +776,7 @@ models:
     machine: 8
     # Anima-Turbo's programs with other weights: its memory and download
     memory: {amd: 3.5, apple: 4.8}
-    bytes: {amd: 4.24e9, apple: 5.9e9}
+    bytes: {amd: 4.24e9, apple: 3.00e9}
     about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
   Chroma1-Flash:
     family: chroma
@@ -848,9 +850,11 @@ models:
     # 1024 x 1024 on an M1, 4.9 GB (in the VAE's stages: 3.8 GiB of the process and 0.8 GiB on the
     # Neural Engine; 3.1 GB at 512 x 512), measured (docs/design/image-apple.md, docs/design/image-models.md)
     memory: {amd: 3.9, apple: 4.9}
-    # the repository's diffusers layout (its single-file copy of the DiT is not fetched)
-    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
-    bytes: {amd: 12.50e9, apple: 1.6e10}
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst). Apple: the Core AI
+    # export of the eight sizes below (flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v1.coreai, 7.69 GB
+    # packed) and the chip's prebuilt programs (0.05 to 0.18 GB, the M2's the largest); converting
+    # here fetches the repository's diffusers layout instead (16 GB; not its single-file DiT)
+    bytes: {amd: 12.50e9, apple: 7.87e9}
     features: [edit]
     # The NPU exports: each vendor's weight formats and picture sizes. The sizes are the default on
     # every generation of the vendor's NPU, and a generation that a bigger one does better
