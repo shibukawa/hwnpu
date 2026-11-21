@@ -229,7 +229,7 @@ type Paged interface {
 // sequence: their caches are rings of RingWindow positions in the program, which a call is given
 // whole whatever the sequence holds (PLaMo 3 Translate 2B's 21 rings of 2048 are 84 MiB a call).
 // While a sequence is shorter, programs built for a shorter context run it with shorter caches
-// (chat's ring tiers, docs/design.md 16.220).
+// (chat's ring tiers, docs/design/llm-engine.md).
 type Windowed interface {
 	RingWindow() int
 }
@@ -241,7 +241,7 @@ type Windowed interface {
 // when told (-paged N), and gives it a cache of UnpagedContext tokens otherwise: the longest
 // whole program Core ML runs (Qwen3-0.6B's 28 layers of keys and values fail to predict from
 // 8192). With Core AI it splits it anyway: on an M3, Qwen3-0.6B generates 19 tokens/s whole and
-// 36 split, its attention over chunks of 1024 while the conversation fits (docs/design.md 16.187).
+// 36 split, its attention over chunks of 1024 while the conversation fits (docs/design/llm-engine.md).
 type Unpaged interface {
 	UnpagedContext() int
 }
@@ -339,7 +339,7 @@ type TokenInput struct {
 	Width        int
 	// Group, when not 0, has WriteTables store the table in int8 with an fp16 scale every Group
 	// values of a row (Gemma 4's per-layer embeddings: a scale a layer's slice, half the file
-	// and KL 0.00005 from bf16, docs/improvements.md 12.7). Rows reads it back as float32.
+	// and KL 0.00005 from bf16, docs/design/performance.md). Rows reads it back as float32.
 	Group int
 }
 

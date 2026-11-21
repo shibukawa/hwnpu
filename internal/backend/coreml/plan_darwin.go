@@ -15,8 +15,8 @@ const planMethod = "coreml-compute-plan"
 
 // planTimeout is how long the compute plan may take. A plan takes as long as loading the model;
 // on an M1 whose Neural Engine another process is compiling for, Gemma 2's programs of 470 MB
-// for Sana took over 2 minutes where they took 13 s alone (design.md 16.145), and a 1024 x 1024
-// group of Chroma's DiT with lut6 and lut8 weights took over 10 minutes alone (design.md 16.170;
+// for Sana took over 2 minutes where they took 13 s alone (docs/design/vision-models.md), and a 1024 x 1024
+// group of Chroma's DiT with lut6 and lut8 weights took over 10 minutes alone (docs/design/image-apple.md;
 // its lut8 groups load in up to 19 minutes).
 const planTimeout = 30 * time.Minute
 
@@ -28,7 +28,7 @@ type planResult struct{ plan, err objc.ID }
 //
 // A plan that fails to load is asked for once more: on an M1 Core ML now and then answers
 // "Failed to construct compute plan, internal failure" for a program whose plan the next try
-// (or the next process) builds (a DiT group of Sana, design.md 16.145).
+// (or the next process) builds (a DiT group of Sana, docs/design/vision-models.md).
 func computePlacement(ctx context.Context, compiledURL, config objc.ID, function string) (types.PlacementReport, error) {
 	rep, err := computePlacementOnce(ctx, compiledURL, config, function)
 	if err == nil && !rep.Verified && strings.Contains(rep.Reason, "load compute plan") {

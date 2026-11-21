@@ -726,7 +726,7 @@ func (e *Engine) Draft() int {
 // that followed the latest earlier occurrence of its last few tokens (4 down to 1), up to k. An
 // agent copies what it read into what it writes, so its answers repeat the prompt in long
 // stretches. Guessing from 1 token alone is right less often, but checking a guess costs nothing
-// more on the program that generates (design.md 16.37: 7% more tokens per call).
+// more on the program that generates (docs/design/llm-engine.md: 7% more tokens per call).
 func LookupDraft(seq []int32, k int) []int32 {
 	const maxN, minN = 4, 1
 	for n := maxN; n >= minN; n-- {

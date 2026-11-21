@@ -9,8 +9,7 @@ and wholly in bf16 (weights and arithmetic, as the NPU and IRON's reference both
 own orders), and prints each layer's cosine between the two hidden states (all positions), the
 logits' cosine and top-1 agreement, and how far apart the logits are (their deviation, and the
 median gap between the first and the second). A cosine that falls layer by layer with the drawn
-weights and stays near 1 with the real ones says the drawn weights amplify rounding (docs/design.md
-16.50, 16.70: the NPU against IRON's reference on drawn weights).
+weights and stays near 1 with the real ones says the drawn weights amplify rounding (docs/design/amd-llm.md: the NPU against IRON's reference on drawn weights).
 """
 import argparse
 import sys

@@ -37,7 +37,7 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 | 0.49 B, 0.23 GiB | int4 | GPU | GPU 130 | 9.8 | 102.0 | 25 | 50 | 0.39 |  |  | 1.2 |  |
 | 0.97 B, 1.81 GiB | fp16 | NPU | CPU 258 | 34.7 | 28.8 | 56 | 28 | 4.14 |  |  | 14.7 |  |
 | 0.97 B, 1.81 GiB | fp16 | CPU | CPU 258 | 37.3 | 26.8 | 52 | 26 | 3.88 |  |  | 12.8 |  |
-| 0.97 B, 1.81 GiB | fp16 | GPU | GPU 258 | 23.0 | 43.6 | 85 | 42 | 0.11 |  |  | 16.3 |  |
+| 0.97 B, 1.81 GiB | fp16 | GPU | GPU 258 | 23.0 | 43.6 | 85 | 42 | 0.11 |  |  | [cli](../docs/design/cli.md) |  |
 | 0.97 B, 0.91 GiB | int8 | NPU | NPU | 15.4 | 64.8 | 63 | 63 | 0.02 |  |  | 7.3 |  |
 | 0.97 B, 0.91 GiB | int8 | CPU | CPU 258 | 35.8 | 27.9 | 27 | 27 | 3.98 |  |  | 7.5 |  |
 | 0.97 B, 0.91 GiB | int8 | GPU | error |  |  |  |  |  |  |  | 0.0 | measurement process failed: signal: abort trap: 12 hwnpu-dev 0x0000000100f19d2c hwnpu-dev + 564524 / ) / libc++abi: terminating due to uncaught exception of type NSException |

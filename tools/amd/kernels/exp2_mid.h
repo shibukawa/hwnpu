@@ -10,7 +10,7 @@
 // most about 0.2 % (f's rounding 0.07 %, the steps' 0.1 %), the size of the bf16 rounding the
 // result gets anyway. An image DiT's attention (4608 x 4608 scores a head) spent a fifth of its
 // time in the accurate exponentials: 102.8 ms a block with them, 83.4 with the instruction
-// (FLUX.2 klein at 1024 x 1024, design.md 16.207).
+// (FLUX.2 klein at 1024 x 1024, docs/design/image-amd.md).
 //===----------------------------------------------------------------------===//
 #ifndef HWNPU_EXP2_MID_H
 #define HWNPU_EXP2_MID_H

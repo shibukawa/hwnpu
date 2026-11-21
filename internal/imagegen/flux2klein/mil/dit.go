@@ -50,7 +50,7 @@ func RopeValues(c Dit) (cos, sin []float32) {
 }
 
 // HeadChunk is the queries the attention takes at a time, a head at a time
-// (milpart.HeadAttention), as Chroma's of the same rows (design.md 16.211).
+// (milpart.HeadAttention), as Chroma's of the same rows (docs/design/image-apple.md).
 const HeadChunk = 1024
 
 // stream is a block's projections of one stream's rows.
@@ -99,7 +99,7 @@ func (d *ditGraph) modulate(x, shift, scale *mlpackage.Var) *mlpackage.Var {
 
 // qkv is a stream's q and k (normed, turned by the rows' rotary embedding from row lo) and v of
 // h's rows, each (1, n, heads, head_dim). q holds the attention's scale, 1 / sqrt(head_dim), in
-// its norm's weight: the attention then runs at scale 1 (design.md 16.201).
+// its norm's weight: the attention then runs at scale 1 (docs/design/image-apple.md).
 func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.Var) {
 	c := d.c
 	n, H, D := h.Shape[1], c.Heads, c.HeadDim
@@ -124,7 +124,7 @@ func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.V
 
 // attend is the attention of q, k, v (1, rows, heads, head_dim) over all the rows (the DiT attends
 // to the text's pads too): (1, rows, hidden). A head at a time, HeadChunk queries at a time, the
-// image's keys and the text's as score tensors of their own (design.md 16.211).
+// image's keys and the text's as score tensors of their own (docs/design/image-apple.md).
 func (d *ditGraph) attend(q, k, v *mlpackage.Var) *mlpackage.Var {
 	t := func(x *mlpackage.Var) *mlpackage.Var { return d.Transpose(x, 0, 2, 1, 3) }
 	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: HeadChunk, Split: d.c.Tokens()}))

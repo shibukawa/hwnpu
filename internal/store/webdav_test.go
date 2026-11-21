@@ -343,7 +343,7 @@ func TestWebDAVDown(t *testing.T) {
 
 // TestWebDAVConnections writes files in new folders (MKCOL, PUT and MOVE, whose answers are not
 // read) and reads them back over one connection: each new one asked for a NAS's .local address
-// again, 5 seconds a request (design.md 16.231).
+// again, 5 seconds a request (docs/design/distribution.md).
 func TestWebDAVConnections(t *testing.T) {
 	ctx := context.Background()
 	d := newDAV(t)

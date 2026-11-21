@@ -101,17 +101,17 @@ macOS 27 には Core ML のほかに Core AI があります。追加で入れ�
 
 - **`hwnpu-chat` と `hwnpu-image` は Core AI だけで動き**、Mac では macOS 27 が要ります (`--backend` に `coreml` はありません。ほかのコマンドが受け取る `HWNPU_BACKEND=coreml` は、この 2 つでは Core AI の意味になります)。モデルは Core AI 向け (`.aimodel`、チェックポイントから Go で書き出す) に変換し、Core ML は使いません。`hwnpu-image --cpu` は確かめ用に、これまでどおり Core ML の書き出しを CPU のインタプリタで動かします。macOS 26 以前の Mac では、そう書いたエラーになります
 - **`hwnpu-audio` も Core AI だけで動きます** (macOS 27)。音楽 (Magenta RealTime 2)、効果音 (MOSS-SoundEffect)、tts (LFM3-Audio-2B)、transcribe (Whisper)、pitch、notes を、チェックポイントや ONNX から Core AI 向け (`.aimodel`) に変換します。`--cpu` と、ONNX Runtime の無い機械で CPU で動かす pitch と notes は、Core ML の書き出しを CPU のインタプリタで読みます
-- **置き場所**: どのコマンドも、モデルの Core AI のプログラムを同じ形で、モデルのディレクトリのチェックポイントの横に書き出し `NAME.coreai` (`.aimodel` と要るものを入れたディレクトリ) として置き、できあがったら横に `NAME.coreai.done` を置きます。プログラムが 1 本のモデルは `NAME.coreai/model.aimodel`、別々に変換し直す部分はそれぞれの書き出しです (音楽: 言語モデル、SpectroStream の復号と符号化、MusicCoCa の文と音。効果音: 文の符号器、DiT、DAC)。前の版の `coreai` ディレクトリと `NAME.aimodel` は、置き換える書き出しを書いたときに消します (docs/design.md 16.198)
-- **変換の共有**: 書き戻す取得元 (NAS のフォルダ、WebDAV、S3 のバケット: `HWNPU_MODEL_SOURCE=...?writeback=true`、docs/cache-sharing-design.md 7 節) があれば、書き出しは変換する前にそこを探し、手元で変換したらそこへ置きます。コマンドが行を引く表も同じです。ほかの機械が変換したものを動かす Mac は、書き出しを落とすだけでチェックポイントは要りません。Neural Engine の初回のコンパイルはそれぞれの Mac で要ります (docs/design.md 16.199)
+- **置き場所**: どのコマンドも、モデルの Core AI のプログラムを同じ形で、モデルのディレクトリのチェックポイントの横に書き出し `NAME.coreai` (`.aimodel` と要るものを入れたディレクトリ) として置き、できあがったら横に `NAME.coreai.done` を置きます。プログラムが 1 本のモデルは `NAME.coreai/model.aimodel`、別々に変換し直す部分はそれぞれの書き出しです (音楽: 言語モデル、SpectroStream の復号と符号化、MusicCoCa の文と音。効果音: 文の符号器、DiT、DAC)。前の版の `coreai` ディレクトリと `NAME.aimodel` は、置き換える書き出しを書いたときに消します ([docs/design/apple-coreai.ja.md](docs/design/apple-coreai.ja.md))
+- **変換の共有**: 書き戻す取得元 (NAS のフォルダ、WebDAV、S3 のバケット: `HWNPU_MODEL_SOURCE=...?writeback=true`、docs/cache-sharing-design.md 7 節) があれば、書き出しは変換する前にそこを探し、手元で変換したらそこへ置きます。コマンドが行を引く表も同じです。ほかの機械が変換したものを動かす Mac は、書き出しを落とすだけでチェックポイントは要りません。Neural Engine の初回のコンパイルはそれぞれの Mac で要ります ([docs/design/distribution.ja.md](docs/design/distribution.ja.md))
 - **変換**はモデルの部品 (プログラム) を、CPU のコア数と空きメモリが許すだけ並べて書きます (`HWNPU_JOBS=N` で数を決める。`1` で 1 つずつ)。端末では全体のバーと書いている部品ごとの行を出し、全部終わったら消します
 - **ほかのコマンド**は Core ML が既定のままで、`--backend coreai` か `HWNPU_BACKEND=coreai` で、変換済みのモデル (`.mlpackage`、Go で Core AI のプログラムに下ろす) を Core AI で動かします
 
-- **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma、FLUX.2 klein)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` の全部 (docs/design.md 16.196、16.197)
+- **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma、FLUX.2 klein)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` の全部 ([docs/design/audio-models.ja.md](docs/design/audio-models.ja.md))
 - **結果と速さ**: Core ML と同じです (同じ文、同じ物や文字、埋め込みや深さのコサイン 0.9999 以上、1 回の呼び出しは ±10 % 以内)
 - **違い**: コンパイルした結果の持ち方です。Core ML のキャッシュは約 4 GiB で、それを超えると 2 回目以降もコンパイルし直します (大きな画像生成のモデルで数分〜数十分)。Core AI は自分のキャッシュ (`~/Library/Caches/coreai-cache`) に、ディスクが減るまで持ち続けます。両方のキャッシュが当たっていれば起動は同じです
 - **費用**: 重みがディスクに 3 回分置かれます (変換した `.mlpackage`、下ろした `.aimodel`、Core AI のキャッシュ)。空きが約 15 GB を切ると macOS がキャッシュを消し、次の起動でコンパイルし直します
-- **hwnpu-chat** は、チェックポイントから Core AI のプログラムを直接書きます (画像のモデルと同じく、モデルのディレクトリの書き出し `NAME.coreai` に `.aimodel`、`.mlpackage` は作りません)。1 回に 8 トークンと 128 トークンのプログラムは 1 本の関数 2 つなので、重みはディスク、Core AI のキャッシュ、Neural Engine のどれにも 1 回分です (LFM3-1.7B: 書き出し 1.2 GB、Neural Engine 1.32 GiB、M3 で 2 回目の起動 0.4 秒。docs/design.md 16.185)。Qwen3.5-4B と gemma-4-E4B-it は M2 で 2K トークンのプロンプトを約 2 秒で読みます (16.191)
-- 記録は [docs/design.md](docs/design.md) の 16.169〜16.197、まとめは [docs/improvements.ja.md](docs/improvements.ja.md) の 7.5 節にあります
+- **hwnpu-chat** は、チェックポイントから Core AI のプログラムを直接書きます (画像のモデルと同じく、モデルのディレクトリの書き出し `NAME.coreai` に `.aimodel`、`.mlpackage` は作りません)。1 回に 8 トークンと 128 トークンのプログラムは 1 本の関数 2 つなので、重みはディスク、Core AI のキャッシュ、Neural Engine のどれにも 1 回分です (LFM3-1.7B: 書き出し 1.2 GB、Neural Engine 1.32 GiB、M3 で 2 回目の起動 0.4 秒。[docs/design/apple-coreai.ja.md](docs/design/apple-coreai.ja.md))。Qwen3.5-4B と gemma-4-E4B-it は M2 で 2K トークンのプロンプトを約 2 秒で読みます ([apple-coreai](docs/design/apple-coreai.ja.md))
+- 記録は [docs/design/apple-coreai.ja.md](docs/design/apple-coreai.ja.md)、[audio-models](docs/design/audio-models.ja.md)、まとめは [docs/design/apple-coreai.ja.md](docs/design/apple-coreai.ja.md)にあります
 
 ## 困ったとき
 

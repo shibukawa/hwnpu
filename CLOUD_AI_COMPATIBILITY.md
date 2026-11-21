@@ -118,6 +118,6 @@ The order suggested for the image features on AMD:
 
 ## 4. Not checked
 
-- The candidates' licenses and sizes are from what was written when surveyed, and from memory. Check each against its weight files and model card before bringing it in (docs/new-model-checklist.md 1).
+- The candidates' licenses and sizes are from what was written when surveyed, and from memory. Check each against its weight files and model card before bringing it in ([docs/design/new-model-checklist.md](docs/design/new-model-checklist.md)).
 - Intel's ○ means only that the conversion path is there. None of it has run on the device.
 - Apple's depth and face detection are converted but not measured for speed or energy on the M1.

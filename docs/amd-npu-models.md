@@ -1,6 +1,6 @@
 # 変換したモデルを AMD の NPU で動かす: 設計
 
-作成: 2026-11-03。**状態 (2026-11-04): 段階 A1〜A4 を実装し、Gemma 4 E2B が `hwnpu-chat -iron` と `hwnpu-agent -iron` (今は `hwnpu-chat -m DIR` と `hwnpu-chat agent -m DIR`) で動いた (design.md 16.47〜16.51)。Windows 向けの XRT 経由のバックエンド (16.56) と、NPU1 向けの「1 ステップごとの xclbin」(16.57) も実装した。どちらも同じ経路をこの機械 (NPU2、Linux) で実機検証したが、Windows と NPU1 の実機では未検証。** 対象は `hwnpu-chat` と `hwnpu-chat agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は design.md 16.44 (実機での最初の確認) と 16.45 (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
+作成: 2026-11-03。**状態 (2026-11-04): 段階 A1〜A4 を実装し、Gemma 4 E2B が `hwnpu-chat -iron` と `hwnpu-agent -iron` (今は `hwnpu-chat -m DIR` と `hwnpu-chat agent -m DIR`) で動いた ([docs/design/amd.md](design/amd.md)、[amd-llm](design/amd-llm.md))。Windows 向けの XRT 経由のバックエンド ([amd](design/amd.md)) と、NPU1 向けの「1 ステップごとの xclbin」([amd](design/amd.md)) も実装した。どちらも同じ経路をこの機械 (NPU2、Linux) で実機検証したが、Windows と NPU1 の実機では未検証。** 対象は `hwnpu-chat` と `hwnpu-chat agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は [docs/design/amd.md](design/amd.md) (実機での最初の確認) と [amd](design/amd.md) (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
 
 ## 1. 現状
 
@@ -15,7 +15,7 @@
 
 ## 2. 測定から決まったこと
 
-### 2.1 速さと電力 (design.md 16.45)
+### 2.1 速さと電力 ([docs/design/amd.md](design/amd.md))
 
 - NPU が重みを読む速さは約 50 GB/s (bf16 の GEMV、8 列)。CPU が読むだけなら 55〜79 GB/s
 - 電力 (パッケージ全体): NPU の GEMV はアイドルより約 5〜8 W 増。CPU は読むだけで 13〜24 W 増。同じ量の重みを読む電力量は NPU が半分以下で、待つ間 CPU は空く
@@ -99,7 +99,7 @@ ELF32 (OS/ABI 0x45、ABI 版 0x21)。IRON のカーネル名 `main:sequence` は
 
 ### 3.3 API
 
-`ProgramSource.ELF` (design.md 5.4 で予約済み) と、インスタンス名つきのカーネル名を受け付ける。
+`ProgramSource.ELF` ([docs/design/api.md](design/api.md) で予約済み) と、インスタンス名つきのカーネル名を受け付ける。
 
 ```go
 prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: "decode.elf"}) // 拡張子か ELF の頭で判別
@@ -126,7 +126,7 @@ IRON の `CompiledGraph` が実行時に使うものを、全てファイルに�
 | 呼び出しごとの値 | `artifacts.parameter_table` (スクラッチパッドの語) と `Carried` (デバイスで引き継ぐ値) | 位置、行数、開始位置を書く |
 | 出力 | `recording.returned` の handle の配置 | ロジット (またはデバイスで引いたトークン) を読む |
 
-重みは「デバイス上の並びのまま」の像として書き出す。IRON は読み込み時に重みを変形する (RoPE の表、並べ替え) が、hwnpu はそれを移植せず、変形後のバイト列を bank ごとのファイルにする。実行時は読み込んで BO に写すだけになる (mmap からの写しで、16.38 の prompt store と同じ扱い)。
+重みは「デバイス上の並びのまま」の像として書き出す。IRON は読み込み時に重みを変形する (RoPE の表、並べ替え) が、hwnpu はそれを移植せず、変形後のバイト列を bank ごとのファイルにする。実行時は読み込んで BO に写すだけになる (mmap からの写しで、[llm-engine](design/llm-engine.md) の prompt store と同じ扱い)。
 
 ## 5. 成果物と変換の道具
 
@@ -139,7 +139,7 @@ gemma-4-E2B-it.amd-npu2/
 ```
 
 - 道具: `tools/amd/iron_export.py` (開発者の機械で一度だけ)。IRON のアプリケーション (`iron.applications.gemma4` など) を、NPU のない機械でも `set_current_device(from_name("npu2", n_cols=8))` でコンパイルし、上の全てを書く。IRON と mlir-aie の版を固定し、manifest に記録する
-- 装置ごと: NPU2 (8 列、Strix、Strix Halo、Krackan) は full ELF。NPU1 (Phoenix、Hawk Point、4 列) は full ELF がないので、IRON と同じく「1 ステップごとの xclbin」で書き出す (`--device npu1 --cols 4`、design.md 16.57)。呼び出しごとの値は、mlir-aie が生成する命令列の C++ を命令列プログラムに直して持つ
+- 装置ごと: NPU2 (8 列、Strix、Strix Halo、Krackan) は full ELF。NPU1 (Phoenix、Hawk Point、4 列) は full ELF がないので、IRON と同じく「1 ステップごとの xclbin」で書き出す (`--device npu1 --cols 4`、[docs/design/amd.md](design/amd.md))。呼び出しごとの値は、mlir-aie が生成する命令列の C++ を命令列プログラムに直して持つ
 - `hwnpu-dev convert` には `-backend amd` を足さない (Go では作れないため)。`hwnpu-chat` のカタログに AMD の成果物の置き場所 (URL とハッシュ) を持つ
 
 ## 6. 実行側
@@ -148,15 +148,15 @@ gemma-4-E2B-it.amd-npu2/
 
 - `Open(dir)`: manifest を読み、bank と入出力の BO を作り、重みの像を読み込み、版ごとの ELF を読み込む (ハードウェアコンテキストは版ごとに 1 つ。プロンプトとデコードの切り替えは 1 回 0.46 ms で、トークンごとではないので許せる)
 - `Prompt(ids, start)` / `Step(id, pos)`: 呼び出しごとの値を書き、1 コマンド (または manifest の数) を投入し、ロジットを読む
-- KV キャッシュは IRON の配置どおり bank の中にあり、ホストから読み書きできる BO_SHARE なので、`ExportRows` / `ImportRows` (16.38 の prompt store) はバイト列の写しで実装できる。巻き戻し (`Rewind`) は位置を戻すだけで済む (IRON のキャッシュは位置で書く)
+- KV キャッシュは IRON の配置どおり bank の中にあり、ホストから読み書きできる BO_SHARE なので、`ExportRows` / `ImportRows` ([llm-engine](design/llm-engine.md) の prompt store) はバイト列の写しで実装できる。巻き戻し (`Rewind`) は位置を戻すだけで済む (IRON のキャッシュは位置で書く)
 
 ### 6.2 IRON の版の作り方 (エクスポート時に決める)
 
-hwnpu のエンジンは、ロジットを受け取ってホストで標本を引く (温度、思考の上限 16.32、投機的デコード 16.33)。IRON の既定のモデルはデバイスでトークンを引いて次の呼び出しに引き継ぐ (`Sample` と `Carried`) ので、エクスポートでは次の版を作る:
+hwnpu のエンジンは、ロジットを受け取ってホストで標本を引く (温度、思考の上限 [llm-decoding](design/llm-decoding.md)、投機的デコード [llm-decoding](design/llm-decoding.md))。IRON の既定のモデルはデバイスでトークンを引いて次の呼び出しに引き継ぐ (`Sample` と `Carried`) ので、エクスポートでは次の版を作る:
 
 - デコード: 1 トークンを入れて **ロジット** を返す
-- 投機的デコードの確認: k トークンを入れて k 行のロジットを返す (プロンプトの塊を全行のロジットを返す形にしたもの)。**測った結果、プロンプトの版の流用では行数によらずデコード 4.5〜8 ステップ分かかり得にならない (design.md 16.54)。デコードと同じ演算で k 行を処理する版が IRON 側に要る**
-- プロンプト: 塊を入れて最後の行のロジットを返す。Gemma 4 は KV を共有する層 (E2B の後ろ 20 層、E4B の 18 層) を最後の行だけに通す (`tools/amd/iron_gemma4.py`、design.md 16.80)。キャッシュは IRON のままと同じで、4K のプロンプトは E2B (bf16、q4 とも) で 2.3 倍速く電力量 −56 %、E4B で 1.7 倍、−40 %。IRON のままの版は `iron_export_lm.py gemma4full` (`gemma4mmfull`)
+- 投機的デコードの確認: k トークンを入れて k 行のロジットを返す (プロンプトの塊を全行のロジットを返す形にしたもの)。**測った結果、プロンプトの版の流用では行数によらずデコード 4.5〜8 ステップ分かかり得にならない ([docs/design/amd-llm.md](design/amd-llm.md))。デコードと同じ演算で k 行を処理する版が IRON 側に要る**
+- プロンプト: 塊を入れて最後の行のロジットを返す。Gemma 4 は KV を共有する層 (E2B の後ろ 20 層、E4B の 18 層) を最後の行だけに通す (`tools/amd/iron_gemma4.py`、[docs/design/amd-llm.md](design/amd-llm.md))。キャッシュは IRON のままと同じで、4K のプロンプトは E2B (bf16、q4 とも) で 2.3 倍速く電力量 −56 %、E4B で 1.7 倍、−40 %。IRON のままの版は `iron_export_lm.py gemma4full` (`gemma4mmfull`)
 
 デバイスでのサンプリング (ロジットをホストに読まない分速い) は、まず測ってから。ロジットは Gemma 4 なら 262144 × bf16 = 512 KiB で、50 GB/s の DRAM では読み出しは問題にならない。
 
@@ -165,8 +165,8 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 `chat.Engine` が `decode.Session` に求めているもの (`Q`、`Qs`、`Cache`、`Pos`、`Reset`、`Mark`、`Save`、`Rewind`、`Step`、`Speculate`、`RowBytes`、`ExportRows`、`ImportRows`、`Resume`、`Migrate`) を interface にし、`decode.Session` と IRON の実行器の両方が満たす形にする。違い:
 
 - IRON は埋め込みをデバイスで引くので、入力は埋め込みではなくトークン ID。interface の入力をトークン ID にし、Core ML 側は今までどおりホストで埋め込みを引く
-- KV キャッシュの段階 (16.20、16.37) は IRON にはない (`max_seq_len` で 1 つ)。`Migrate` は何もしない
-- 画像と音声: Gemma 4 E2B の塔は IRON の多モーダルのモデル (`gemma4mm`) で書き出して動く (design.md 16.55)。1 回のプロンプトに画像 1 枚と音声 1 本まで
+- KV キャッシュの段階 ([llm-engine](design/llm-engine.md)) は IRON にはない (`max_seq_len` で 1 つ)。`Migrate` は何もしない
+- 画像と音声: Gemma 4 E2B の塔は IRON の多モーダルのモデル (`gemma4mm`) で書き出して動く ([docs/design/amd-llm.md](design/amd-llm.md))。1 回のプロンプトに画像 1 枚と音声 1 本まで
 
 ### 6.4 バックエンドの選択
 
@@ -175,7 +175,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 ## 7. モデルの順番
 
 1. **Gemma 4 E2B (テキスト部、bf16)**: IRON の既存のアプリケーション。AMD が毎晩精度を確かめていて、hwnpu も Apple で対応済み (チャットの型、トークナイザー)。実行器と full ELF の正しさを、移植の誤りと切り分けて確かめられる。重みは Hugging Face から認証なしで取れる。見込み 5〜6 トークン/秒
-2. **LFM3-1.7B (bf16)** (2026-11-04 済み、[design.md](design.md) の 16.66。hwnpu の `tools/amd/iron_lfm3.py`、8.7 トークン/秒): IRON のアプリケーションを書く (Python)。部品は IRON に揃っている (RMSNorm、GEMV/GEMM、RoPE の部分回転、スライディング窓の注意、depthwise の 1 次元畳み込み、SwiGLU)。`port-architecture` スキルと同じく Hugging Face のロジットと照合する。重み 3.4 GB/トークンで 50 GB/s なら上限 14 トークン/秒、実際は 8〜10 と見込む
+2. **LFM3-1.7B (bf16)** (2026-11-04 済み、[docs/design/amd-llm.md](design/amd-llm.md)。hwnpu の `tools/amd/iron_lfm3.py`、8.7 トークン/秒): IRON のアプリケーションを書く (Python)。部品は IRON に揃っている (RMSNorm、GEMV/GEMM、RoPE の部分回転、スライディング窓の注意、depthwise の 1 次元畳み込み、SwiGLU)。`port-architecture` スキルと同じく Hugging Face のロジットと照合する。重み 3.4 GB/トークンで 50 GB/s なら上限 14 トークン/秒、実際は 8〜10 と見込む
 3. **4 ビットの重み** (2026-11-05、Gemma 4 で済み、13 節): q4nx (FastFlowLM の形式、32 個ごとの scale と min) の GEMV を hwnpu 側に書き (`tools/amd/iron_q4.py`、`kernels/q4_mv.cc`)、プロンプトは IRON の `flm.DequantBFP` で bfp16 に戻して GEMM
 
 ## 8. リスク
@@ -195,12 +195,12 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | A1 | full ELF の実行 (3 節) | IRON の ReLU → AXPY の `design.elf` を Go から実行し、CPU の計算と一致。`xdnasim` のテスト |
 | A2 | スクラッチパッドと複数コマンド | IRON の section-3 (呼び出しごとの長さ) と section-5 (引き継ぐ値) の例が Go で一致 |
 | A3 | エクスポートと実行器 | Gemma 4 E2B のデコードとプロンプトのロジットが、同じ機械の IRON (pyxrt) と許容誤差内で一致。トークン/秒を測る |
-| A4 | チャット | `hwnpu-chat` と `hwnpu-chat agent` が AMD で Gemma 4 E2B を使って応答する (E4B も、16.67) |
-| A5 | LFM3 | IRON のアプリケーションが Hugging Face のロジットと一致し、hwnpu-chat で動く (済み、16.66) |
-| A5b | LFM3 の多モーダル | LFM3-VL、LFM3-Audio、LFM3-Omni の塔が Hugging Face の出力と一致し (乱数の重み)、本物の重みで画像と音声に答える (済み、16.67) |
+| A4 | チャット | `hwnpu-chat` と `hwnpu-chat agent` が AMD で Gemma 4 E2B を使って応答する (E4B も、[amd-llm](design/amd-llm.md)) |
+| A5 | LFM3 | IRON のアプリケーションが Hugging Face のロジットと一致し、hwnpu-chat で動く (済み、[amd-llm](design/amd-llm.md)) |
+| A5b | LFM3 の多モーダル | LFM3-VL、LFM3-Audio、LFM3-Omni の塔が Hugging Face の出力と一致し (乱数の重み)、本物の重みで画像と音声に答える (済み、[amd-llm](design/amd-llm.md)) |
 | A6 | 4 ビット | q4nx の一般化とその精度 (KL) の測定 |
 | A7 | 画像生成 (Anima) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、11 節) |
-| A8 | 画像生成 (Sana。Sana-Sprint は 16.148 で外した) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、14 節) |
+| A8 | 画像生成 (Sana。Sana-Sprint は [image-models](design/image-models.md) で外した) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、14 節) |
 | A9 | 深度推定 (Depth Anything 3) | ViT とヘッドが NPU で動き、公式の CPU の深度と一致する (済み、15 節) |
 
 ## 10. 開発環境 (root なし)
@@ -229,10 +229,10 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 
 - **汎用のグラフの書き出し** (`tools/amd/iron_graph.py`、Go の `iron.Graph`): 言語モデルの版 (decode、prompt) を持たない、入力から出力への IRON のグラフ。manifest は `iron_export_lm.py` の版の形をそのまま使う。`variants` で、同じ ELF に別の重みのバンクを持てる (DiT の 7 組。コンパイルは 1 回)。バンクの像は末尾のゼロを切って書く (VAE で 8 GB → 0.2 GB、読み込み 10 秒 → 4 秒)
 - **コマンドの大きさ**: 1 コマンドの制御コードはデバイスのヒープ (64 MiB) に、時間は amdxdna の 2 秒に収める。テキストは 7 層ごとに空のホストステップ (`iron.on_host`) でコマンドを分けた (80 MB の ELF が 5 コマンドに)。DiT では同じ分け方で最初のコマンドが `ERT_CMD_STATE_TIMEOUT` で止まった (原因は未調査) ので、4 ブロック (制御コード 20 MB、1.0 秒) を 1 コマンドにし、グループごとにグラフを呼ぶ。VAE は段ごとに別のグラフ
-- **交差注意** (2026-11-15、design.md 16.205、`--dit-cross trim` が既定): 4096 個のパッチを 1 回で、プロンプトの行 (per-call の `nt`、Go の `anima.condRows` が条件づけの末尾の 0 の行から数える) のキーだけに注意する。残りの 0 の行のキーと値も 0 なので、それぞれ e^{0 − m} を softmax の和に足すだけ (`iron_mha.ImageMHA(zero_keys=512)`、`kernels/mha_zero_keys.cc`)。IRON の MHA の「クエリはキーの最後の行」(kv_len ≥ クエリ) は因果も窓もなければ読まれないので、`zero_keys` では K と V が短くてよい。前の形 (`--dit-cross chunks`) は 512 行ずつ 8 回、512 キー全部
+- **交差注意** (2026-11-15、[docs/design/image-amd.md](design/image-amd.md)、`--dit-cross trim` が既定): 4096 個のパッチを 1 回で、プロンプトの行 (per-call の `nt`、Go の `anima.condRows` が条件づけの末尾の 0 の行から数える) のキーだけに注意する。残りの 0 の行のキーと値も 0 なので、それぞれ e^{0 − m} を softmax の和に足すだけ (`iron_mha.ImageMHA(zero_keys=512)`、`kernels/mha_zero_keys.cc`)。IRON の MHA の「クエリはキーの最後の行」(kv_len ≥ クエリ) は因果も窓もなければ読まれないので、`zero_keys` では K と V が短くてよい。前の形 (`--dit-cross chunks`) は 512 行ずつ 8 回、512 キー全部
 - **アダプタのマスク**: 注意のキーを有効な行に切る (`k[:n]`)。出力の有効でない行はホストがゼロにする (アダプタのマスクと 512 行への埋めと同じ)
 - **VAE の畳み込み**: チャネルを最後に置いた、ゼロで囲んだ格子 (各行 W + 16 画素、上下に 1 行) にし、3 × 3 の畳み込みは格子を `iron_gridgemm.GridGEMM` がそのまま読む GEMM (1 つか kernel の行ごとに 3 つ)、拡大は出力の 4 つの位相ごとの低い解像度の 2 × 2 の畳み込みにする (2026-11-10、Sana の 14 節と同じ。前は Copy で近傍 9 画素を集めた im2col の行列と GEMM 1 回、`--vae-conv im2col`)。結果の内側だけを次の格子に Copy で書き戻すので、囲みはずっとゼロのまま (RMS 正規化と SiLU はゼロをゼロのままにする)。行数は 256 の倍数に揃える (GEMM のタイルと、格子全体の写しが奇数の長さに分かれないため)。中段の注意は 1 ヘッド 384 次元で、MHA は `d=384` を取る (16384 行で 423 ms)
-- **注意** (2026-11-10、design.md 16.147): `iron_mha.ImageMHA`。因果なしなのでキーを 64 ずつにして mha.cc の速い softmax を通し、P·V を 2 コアにして QK^T だけを bfp16 で掛ける。4096 × 4096 × 16 × 128 が 146 → 59 ms。`--dit-mha bf16` は積を bf16 のまま (103 ms)、`qkpv` は P·V も bfp16 (54 ms)
+- **注意** (2026-11-10、[docs/design/image-amd.md](design/image-amd.md)): `iron_mha.ImageMHA`。因果なしなのでキーを 64 ずつにして mha.cc の速い softmax を通し、P·V を 2 コアにして QK^T だけを bfp16 で掛ける。4096 × 4096 × 16 × 128 が 146 → 59 ms。`--dit-mha bf16` は積を bf16 のまま (103 ms)、`qkpv` は P·V も bfp16 (54 ms)
 - **精度**: IRON の行列積の `MEDIUM` は A と B を bfp16 に丸める。DiT の射影で `HIGH` の 6.5 倍速い (4096 × 2048 × 2048 で 2.1 対 13.3 ms)。テキストは 1 枚に 1 回なので `HIGHEST` にした (時間は同じ 0.5 秒)。DiT と VAE は `MEDIUM` (`--dit-precision high` で選べる)
 
 ### 11.3 測定 (Ryzen AI 9 365、1024 × 1024、Anima-Turbo v1.1、8 ステップ)
@@ -244,8 +244,8 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | DiT 1 ステップ (`dit_in`、4 ブロック × 7、`dit_out`) | 4.6 秒 (2026-11-10。前は 7.2 秒で、自己注意 4096 × 4096 が 1 ブロック 0.15〜0.21 秒、いちばん重かった) |
 | VAE (10 段) | 5.2 秒 (段ごとの読み込みを含む。前は 10 秒) |
 | 合計 | 約 44 秒 (前は約 68〜70 秒)。1 枚の電力量 688 J (前は約 1000 J) |
-| 16.200 の後 (DiT の重み bfp16、GELU、ヘッドの RMSNorm、組の先読み) | 約 35〜36 秒 (DiT 1 ステップ 3.6〜3.8 秒)。fp32 との潜在のコサイン 0.947 → 0.975 |
-| 16.205 の後 (交差注意をプロンプトの行だけに、1 回で) | 約 33 秒 (DiT 1 ステップ 3.2 秒)、572〜615 J |
+| [image-amd](design/image-amd.md) の後 (DiT の重み bfp16、GELU、ヘッドの RMSNorm、組の先読み) | 約 35〜36 秒 (DiT 1 ステップ 3.6〜3.8 秒)。fp32 との潜在のコサイン 0.947 → 0.975 |
+| [image-amd](design/image-amd.md) の後 (交差注意をプロンプトの行だけに、1 回で) | 約 33 秒 (DiT 1 ステップ 3.2 秒)、572〜615 J |
 | 固定されたメモリの最大 | 3.4 GiB (DiT の重み q8。bf16 では 5.0 GiB、全部を読み込んだままだと 14.2 GiB) |
 
 CPU (diffusers、fp32、9 分 17 秒) を参照に、同じノイズから:
@@ -270,30 +270,30 @@ python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo.amd-npu2 --si
 go run ./cmd/hwnpu-image generate --model ~/models/anima-turbo.amd-npu2 "..." --seed 1 -o out.png
 ```
 
-書き出しは 8 つのアスペクト比 (16.239) を 1 つに持つ (最大 RSS 7.1 GB)。hwnpu-image は `NAME.amd-npu2` を探し、`--size 2:3` などで大きさを選ぶ (`--size 1024` だけで書き出すと 1024² だけの 4.0 GB、約 5 分)。
+書き出しは 8 つのアスペクト比 ([image-amd](design/image-amd.md)) を 1 つに持つ (最大 RSS 7.1 GB)。hwnpu-image は `NAME.amd-npu2` を探し、`--size 2:3` などで大きさを選ぶ (`--size 1024` だけで書き出すと 1024² だけの 4.0 GB、約 5 分)。
 
 DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`q4`、`bf16`) で選ぶ (13 節)。確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `--noise` に、`--dump` と `--latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
 
 ### 11.5 残り
 
-- 速さ: 注意は 16.147 で 2.5 倍に (1 枚 70 → 44 秒)、交差注意は 16.205 で 1 ブロック約 13 → 5 ms。残る律速は自己注意の P·V のコア (bf16) と softmax の exp2 の多項式 (1 塊約 6 000 サイクルずつで釣り合う)、DiT の射影と MLP の GEMM
+- 速さ: 注意は [image-amd](design/image-amd.md) で 2.5 倍に (1 枚 70 → 44 秒)、交差注意は [image-amd](design/image-amd.md) で 1 ブロック約 13 → 5 ms。残る律速は自己注意の P·V のコア (bf16) と softmax の exp2 の多項式 (1 塊約 6 000 サイクルずつで釣り合う)、DiT の射影と MLP の GEMM
 - ComfyUI のノードからの呼び出し (同じグラフを持つサーバー) は未実装
 - DiT をホストステップで分けると止まる原因
-- 512 × 512 は書き出せる (`--size 512`、2026-11-08): 1 枚 14 秒 (16.147 の前は 20 秒)、固定の最大 1111 MiB
-- 8 つのアスペクト比 (2026-11-17、16.239): DiT は 512 行の倍数に詰めて鍵を `nk` で区切り、RoPE は入力に。長方形は 1024² と同じ 4608 行のグラフで 1 枚 31〜32 秒、最大 2.04〜2.11 GiB
+- 512 × 512 は書き出せる (`--size 512`、2026-11-08): 1 枚 14 秒 ([image-amd](design/image-amd.md) の前は 20 秒)、固定の最大 1111 MiB
+- 8 つのアスペクト比 (2026-11-17、[image-amd](design/image-amd.md)): DiT は 512 行の倍数に詰めて鍵を `nk` で区切り、RoPE は入力に。長方形は 1024² と同じ 4608 行のグラフで 1 枚 31〜32 秒、最大 2.04〜2.11 GiB
 
 ### 11.6 Turbo でない Anima: Anima-Aesthetic (CFG、2026-11-10)
 
-`split_files/diffusion_models/` の `anima-aesthetic-v1.1.safetensors` (質の高い絵で調整したもの) と `anima-base-v1.0.safetensors` (調整前の基盤モデル) は、Turbo と同じ構造で同じ形の重み (685 本、bf16)。Base だけ名前の頭が `model.diffusion_model.` でなく `net.` (Cosmos の学習のままの名前) なので、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は名前から頭を見分ける。グラフはそのまま、書き出しは `--dit` で選ぶ。Anima-Base は models.yaml から外した (LoRA を読み込まない hwnpu では Aesthetic で足りる、design.md 16.158) が、`--dit anima-base-v1.0.safetensors` の書き出しは今も作れる:
+`split_files/diffusion_models/` の `anima-aesthetic-v1.1.safetensors` (質の高い絵で調整したもの) と `anima-base-v1.0.safetensors` (調整前の基盤モデル) は、Turbo と同じ構造で同じ形の重み (685 本、bf16)。Base だけ名前の頭が `model.diffusion_model.` でなく `net.` (Cosmos の学習のままの名前) なので、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は名前から頭を見分ける。グラフはそのまま、書き出しは `--dit` で選ぶ。Anima-Base は models.yaml から外した (LoRA を読み込まない hwnpu では Aesthetic で足りる、[docs/design/image-models.md](design/image-models.md)) が、`--dit anima-base-v1.0.safetensors` の書き出しは今も作れる:
 
 ```bash
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic.amd-npu2 --size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752 --dit anima-aesthetic-v1.1.safetensors   # 2 分 50 秒
 go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"
 ```
 
-8 つのアスペクト比は Turbo と同じ (5.8 GB、16.239)。長方形も 1024² と同じ 1 枚 2 分 22〜23 秒。
+8 つのアスペクト比は Turbo と同じ (5.8 GB、[image-amd](design/image-amd.md))。長方形も 1024² と同じ 1 枚 2 分 22〜23 秒。
 
-- **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。CFG 4 (モデルカードの 4〜5)。ステップはモデルカードではオイラー法の 30〜50 だが、既定は DPM-Solver++ 2M の 25 ステップで、CFG は σ が 0.6 以上のステップだけ (16.154、下の結果)。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
+- **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。CFG 4 (モデルカードの 4〜5)。ステップはモデルカードではオイラー法の 30〜50 だが、既定は DPM-Solver++ 2M の 25 ステップで、CFG は σ が 0.6 以上のステップだけ ([image-models](design/image-models.md)、下の結果)。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
 - **重みの組ごとに 2 回**: DiT は 4 ブロックの組の重みを 1 つのバンクに読み直して回す (12 節) ので、組ごとに条件と無条件を続けて走らせ、読み直しを 1 ステップ 7 回のまま にする (Sana と同じ)。`dit_in` (時刻とパッチの埋め込み) は条件によらないので 1 回。2 回を別々に回したときより 512 × 512 で 1 ステップ 3.0 → 2.7 秒、潜在はビット単位で同じ
 - **空の負のプロンプト**: diffusers は空のプロンプトを、マスクした Qwen3 のトークン 1 つで走らせる (隠れ状態は 0、T5 のトークンは `</s>` だけ)。アダプタの交差注意はバイアスがないので 0 の源では何も足さず、1 行の自己注意はその行の値。残りは重みだけで決まる 1 行の計算なので、書き出しが `text/empty_cond.bin` (float32 の 1 行) に持つ (テキストのグラフは Qwen3 のトークンを全部マスクできない)。`iron_anima.py` の `empty_cond` と Go の `anima.EmptyCond` は diffusers の値とコサイン 1.0000。この節より前の書き出しにはないので、空の負のプロンプトでは書き出し直しを求める
 
@@ -303,15 +303,15 @@ go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low 
 |---|---|---|---|---|
 | Anima-Turbo、1024²、8 ステップ | 44 秒 | 4.7 秒/ステップ | 715 J | 2409 MiB |
 | Anima-Aesthetic、1024²、オイラー法 30 ステップ、CFG 4 (モデルカード) | 4 分 40 秒 | 9.1 秒/ステップ | 4.8 kJ | 2409 MiB |
-| **Anima-Aesthetic、1024²、DPM-Solver++ 2M 25 ステップ、CFG は σ ≥ 0.6 の 17 ステップ (既定、16.154)** | **3 分 19 秒** | 7.6 秒/ステップ | **3.8 kJ** | 2409 MiB |
-| 同じ設定、16.200 の後 (DiT の重み bfp16 ほか、`HWNPU_ENERGY` で測った) | **2 分 37 秒** | 6.0 秒/ステップ | 2.84 kJ (16.200 の前の q8 で 3.04 kJ) | 2409 MiB |
-| 同じ設定、16.205 の後 (交差注意をプロンプトの行だけに。前の書き出しは同じ日に 2 分 40 秒、3.03 kJ) | **2 分 22 秒** | 5.4 秒/ステップ | 2.71 kJ | 2409 MiB |
+| **Anima-Aesthetic、1024²、DPM-Solver++ 2M 25 ステップ、CFG は σ ≥ 0.6 の 17 ステップ (既定、[image-models](design/image-models.md))** | **3 分 19 秒** | 7.6 秒/ステップ | **3.8 kJ** | 2409 MiB |
+| 同じ設定、[image-amd](design/image-amd.md) の後 (DiT の重み bfp16 ほか、`HWNPU_ENERGY` で測った) | **2 分 37 秒** | 6.0 秒/ステップ | 2.84 kJ ([image-amd](design/image-amd.md) の前の q8 で 3.04 kJ) | 2409 MiB |
+| 同じ設定、[image-amd](design/image-amd.md) の後 (交差注意をプロンプトの行だけに。前の書き出しは同じ日に 2 分 40 秒、3.03 kJ) | **2 分 22 秒** | 5.4 秒/ステップ | 2.71 kJ | 2409 MiB |
 | Anima-Aesthetic、512²、オイラー法 30 ステップ、CFG 4 | 1 分 23 秒 | 2.5〜2.7 秒/ステップ | | |
 | Anima-Aesthetic、512²、既定 | 約 1 分 | 2.2 秒/ステップ | | |
 
-diffusers の fp32 (CPU、13.5 分) と同じノイズから (512²、30 ステップ、CFG 4、空の負のプロンプト): 最後の潜在のコサイン **0.993**、画像の PSNR **27.4 dB**。Turbo の 1024² の 8 ステップ (0.947、17.6 dB、16.147) より近く、30 ステップと CFG で NPU の誤差 (bfp16 の QK^T、q8 の重み) が積み上がることはなかった。絵は構図、顔、背景まで同じ。Anima-Base (512²、`net.` の名前) も NPU で描けることを確かめた
+diffusers の fp32 (CPU、13.5 分) と同じノイズから (512²、30 ステップ、CFG 4、空の負のプロンプト): 最後の潜在のコサイン **0.993**、画像の PSNR **27.4 dB**。Turbo の 1024² の 8 ステップ (0.947、17.6 dB、[image-amd](design/image-amd.md)) より近く、30 ステップと CFG で NPU の誤差 (bfp16 の QK^T、q8 の重み) が積み上がることはなかった。絵は構図、顔、背景まで同じ。Anima-Base (512²、`net.` の名前) も NPU で描けることを確かめた
 
-**解き方と CFG のステップ (16.154)**: DiT を回す回数を減らした。DPM-Solver++ 2M (データの予測 x − σ v の 2 次の多段法、DiT の呼び出しはオイラー法と同じ 1 ステップ 1 回) は 25 ステップで、オイラー法の 100 ステップ (真値の代わり) に 30 ステップのオイラー法より近い (潜在のコサイン 0.984 と 0.982、512² の 6 枚)。CFG は σ が 0.6 より小さいステップで外しても絵は変わらない (オイラー法 30 ステップと 0.998)。合わせて 1024² で 1 枚 4 分 40 秒 → 3 分 19 秒、4.8 → 3.8 kJ。`--sampler euler --steps 30 --cfg-sigmas 0,1` でモデルカードのとおりに戻る
+**解き方と CFG のステップ ([image-models](design/image-models.md))**: DiT を回す回数を減らした。DPM-Solver++ 2M (データの予測 x − σ v の 2 次の多段法、DiT の呼び出しはオイラー法と同じ 1 ステップ 1 回) は 25 ステップで、オイラー法の 100 ステップ (真値の代わり) に 30 ステップのオイラー法より近い (潜在のコサイン 0.984 と 0.982、512² の 6 枚)。CFG は σ が 0.6 より小さいステップで外しても絵は変わらない (オイラー法 30 ステップと 0.998)。合わせて 1024² で 1 枚 4 分 40 秒 → 3 分 19 秒、4.8 → 3.8 kJ。`--sampler euler --steps 30 --cfg-sigmas 0,1` でモデルカードのとおりに戻る
 
 ## 12. メモリ: 固定されるバッファを減らす (2026-11-05)
 
@@ -346,8 +346,8 @@ IRON の arena (bank) とグラフのバッファは amdxdna の BO_SHARE (shmem
 
 - **4 ビットの重み**: 13 節で済み
 - **常駐するサーバーで待つ間はモデルを放す** (2026-11-06 済み、`-idle`、既定 5 分): `iron.Model.Release` / `Reload` (マニフェストとホストの表は残し、デバイスのものを全部放す) と `chat.Engine` の時計 (`internal/chat/idle.go`)。放す前に会話をホストに写し (`putAside`、256 トークン以上)、次の要求で読み直してそこから続ける。E2B の 4 ビットで 1775 MiB → 0、読み直し 0.8 秒、830 トークンを写しから戻した。画像と音声の E2B で 2818 MiB → 0、読み直し 2.0 秒、画像の後の質問に正しく答えた。Neural Engine と Intel の NPU は読み直しに数十秒以上かかるので放さない
-- **塔を使うときだけ読む** (2026-11-06 済み、design.md の 16.81): バンクは塔の分が後ろにあるので、文の版が使う先頭だけを確保し、塔が初めて走る前に全体に育てる (0.6〜0.7 秒)。書き出しはそのまま。文だけの間は E2B の画像と音声の 4 ビットで 2818 → 1826 MiB (文だけの書き出しの 1775 MiB と 51 MiB 差)、LFM3-Omni で 2448 → 1679 MiB。答えは同じ
-- **DiT の 7 組を 1 つの bank で** (2026-11-08 済み、design.md の 16.106): 作業領域だけを分けるより大きく、bank を 1 組だけ確保して、組を切り替えるたびにその組の重みの像 (304 MiB) を bank の先頭に読む (`iron.GraphOptions.SwapVariants`、hwnpu-image の既定。`--resident-dit` で前の形)。1024 × 1024 の q8 で固定の最大 3445 → 1236 MiB、ノイズ除去 +2 %、潜在はバイト単位で同じ
+- **塔を使うときだけ読む** (2026-11-06 済み、[docs/design/amd-llm.md](design/amd-llm.md)): バンクは塔の分が後ろにあるので、文の版が使う先頭だけを確保し、塔が初めて走る前に全体に育てる (0.6〜0.7 秒)。書き出しはそのまま。文だけの間は E2B の画像と音声の 4 ビットで 2818 → 1826 MiB (文だけの書き出しの 1775 MiB と 51 MiB 差)、LFM3-Omni で 2448 → 1679 MiB。答えは同じ
+- **DiT の 7 組を 1 つの bank で** (2026-11-08 済み、[docs/design/image-amd.md](design/image-amd.md)): 作業領域だけを分けるより大きく、bank を 1 組だけ確保して、組を切り替えるたびにその組の重みの像 (304 MiB) を bank の先頭に読む (`iron.GraphOptions.SwapVariants`、hwnpu-image の既定。`--resident-dit` で前の形)。1024 × 1024 の q8 で固定の最大 3445 → 1236 MiB、ノイズ除去 +2 %、潜在はバイト単位で同じ
 - **VAE をタイルに分ける**: VAE の段は特徴マップが大半。分ければ段の最大 1.2 GB が数分の 1 に (DiT を 1 つの bank にしたので、今は VAE の段が最大)
 - **PLaMo の embed_tokens をホストに**: 13 節の PLaMo 3 の `--q4` で済み (0.55 GB)
 
@@ -459,7 +459,7 @@ NPU の q4 の KL は CPU の見積もり (0.035) と同じで、NPU の計算 (
 
 実機での答え (貪欲、bf16 と q4 で同じ問い):
 
-- LFM3-1.7B: 「日本の首都は」に東京、17 × 23 に 391、富士山に 3,776 m、空が青い理由を 3 文で。どれも正しく、言い回しが少し違うだけ。hwnpu-chat agent は 16.66 の円の面積の課題で、ファイルを読み、`go test` を走らせ、`math.Pi * c.R * c.R` に直して通ることを確かめた (11 トークン/秒)
+- LFM3-1.7B: 「日本の首都は」に東京、17 × 23 に 391、富士山に 3,776 m、空が青い理由を 3 文で。どれも正しく、言い回しが少し違うだけ。hwnpu-chat agent は [amd-llm](design/amd-llm.md) の円の面積の課題で、ファイルを読み、`go test` を走らせ、`math.Pi * c.R * c.R` に直して通ることを確かめた (11 トークン/秒)
 - LFM3-VL-2B: 赤い円と青い四角の画像に「赤い楕円と青い四角形が写っています。」、「赤い図形は左右どちら」に「左」(bf16 と同じ)。デコード 8.7 → 11.3 トークン/秒、1.35 → 1.03 J/トークン。固定 4.12 → 2.00 GiB
 - LFM3-Audio-2B: `Front_Left.wav` に「front, left.」、`Rear_Right.wav` に「Rear, right」、speech-dispatcher の案内 (約 10 秒) の書き起こしは bf16 と読点 1 つと「/var/log」→「/var/logs」の 1 か所だけ違う。固定 4.14 → 2.03 GiB
 - LFM3-Omni-2B: 画像に「赤い円と青い四角」、2 つの音声に「Front, left.」「Rear, right.」(bf16 と同じ)。固定 4.51 → 2.39 GiB
@@ -570,7 +570,7 @@ CPU での KL (bf16 の重みとの、平均。丸め → GPTQ):
 
 (時間はほかの校正と並べて流したときのもの。)
 
-NPU (bf16 の書き出しとの KL、平均 / 95 %、最上位の一致。丸め → GPTQ。E4B の丸めは同じ日に書き出し直したもの (`-q4-rtn2`)、PLaMo 3 の丸めは 16.84 の窓の書き出し):
+NPU (bf16 の書き出しとの KL、平均 / 95 %、最上位の一致。丸め → GPTQ。E4B の丸めは同じ日に書き出し直したもの (`-q4-rtn2`)、PLaMo 3 の丸めは [amd-llm](design/amd-llm.md) の窓の書き出し):
 
 | | README | GPL-3 | wiki40b-ja |
 |---|---|---|---|
@@ -586,7 +586,7 @@ NPU (bf16 の書き出しとの KL、平均 / 95 %、最上位の一致。丸め
 - 答え (NPU、貪欲):
   - Gemma 4 E2B の画像と音声つき (`gemma4mm`、E2B の符号がそのまま 106 個当たる): 富士山 3,776 m、391、夏目漱石、信濃川は丸めと GPTQ で同じ。画像 (魔女の絵) の説明はどちらも正しく、GPTQ は満月と魔女の帽子にも触れた。音声 (`Front_Left.wav`) はどちらも "front left"
   - PLaMo 3: 英 → 日 10 文と日 → 英 10 文の訳が bf16 と一字一句同じなのは、丸め 14/20、GPTQ 17/20。違う訳はどれも正しい言い換え (「予定が入ってまして」、"Your order will be shipped" など)
-- この確認で見つかった不具合: 画像や音声を渡すと、塔を読み込んだ直後のプロンプトの塊が `the chunk barrier: EXEC_CMD: no such file or directory` で失敗した。塔を読むとき (`growBanks`、16.81) に重みのバッファを取り替えるが、塊の前の空のコマンド (`chunkBarrier`、16.84) が古いバッファに結び付いたまま残っていた。`dropDecode` で一緒に捨てて作り直す。窓の形の多モーダルの書き出しで、画像と音声は必ずこれで失敗していた
+- この確認で見つかった不具合: 画像や音声を渡すと、塔を読み込んだ直後のプロンプトの塊が `the chunk barrier: EXEC_CMD: no such file or directory` で失敗した。塔を読むとき (`growBanks`、[amd-llm](design/amd-llm.md)) に重みのバッファを取り替えるが、塊の前の空のコマンド (`chunkBarrier`、[amd-llm](design/amd-llm.md)) が古いバッファに結び付いたまま残っていた。`dropDecode` で一緒に捨てて作り直す。窓の形の多モーダルの書き出しで、画像と音声は必ずこれで失敗していた
 
 **Anima の DiT** (`tools/amd/anima_gptq.py`、CPU の fp32、512×512、8 ステップ。校正は 8 つのプロンプトの参照の軌跡の上の入力、評価は別の 3 つのプロンプトと種。DiT の 28 ブロックの注意の射影 8 個と MLP 2 個、7 ブロックずつ 4 パス):
 
@@ -598,19 +598,19 @@ NPU (bf16 の書き出しとの KL、平均 / 95 %、最上位の一致。丸め
 
 GPTQ で q4 の誤差は約半分になり、潜在の cosine は q8 との差が 0.02 になった (プロンプトによっては q8 より近い: 猫の絵で q8 0.909、GPTQ 0.926。8 ステップの軌跡は小さな差で分かれるので、cosine はプロンプトでぶれる)。速度の誤差はまだ q8 の 5 倍なので、既定は q8 のまま。固定のメモリを 735 MiB 減らしたいときに `iron_anima.py --dit-attn q4 --dit-mlp q4 --q4-codes OUT/codes` が選べる。校正は 1.6 時間 (参照の軌跡 19 分を含む)。
 
-1024 × 1024 の NPU で確かめた (2026-11-08、design.md の 16.106。3 つのプロンプト × 種 6 つ、NPU の bf16 との潜在の cosine): q8 中央値 0.957、**q6** (6.5 ビット、下) 0.912、GPTQ の q4 0.860 (最小 0.686、18 組の 2 組で構図が変わった)。q6 は 18 組すべてで構図が同じ。既定は q8 のまま。
+1024 × 1024 の NPU で確かめた (2026-11-08、[docs/design/image-amd.md](design/image-amd.md)。3 つのプロンプト × 種 6 つ、NPU の bf16 との潜在の cosine): q8 中央値 0.957、**q6** (6.5 ビット、下) 0.912、GPTQ の q4 0.860 (最小 0.686、18 組の 2 組で構図が変わった)。q6 は 18 組すべてで構図が同じ。既定は q8 のまま。
 
 ### 6 ビットの重み (q6、2026-11-08)
 
 q8 と同じブロックと並びで符号を 6 ビット (−31〜31) にした形式 (`iron_q4.quantize6`、`kernels/q6_mv.cc`)。符号の下位 4 ビットを q4nx と同じニブルに、上位 2 ビットを 128 個ごとに 32 バイトに置く。6.5 ビット/重み。GEMV は q8 とほぼ同じ時間 (8192 × 2048 で 0.42〜0.47 ms、q8 0.43〜0.50 ms、q4 0.30〜0.35 ms: 上位ビットの取り出しで律速) なので、得るのはメモリと精度 (重みの相対 RMS 誤差 q4 0.071、q6 0.022、q8 0.005)。
 
-- 小さい Qwen3.5 (0.8B、2B) の MLP と出力の行列: q4 では GPL の KL が 0.34 / 0.16 に崩れる (GPTQ でも 0.30) が、q6 で 0.044 / 0.019 (`iron_export_lm.py qwen35 --q4 --mlp q6 --head q6`、design.md の 16.104)。`--verify 3` も足すと下書きを確かめる版がつく (下の節)
+- 小さい Qwen3.5 (0.8B、2B) の MLP と出力の行列: q4 では GPL の KL が 0.34 / 0.16 に崩れる (GPTQ でも 0.30) が、q6 で 0.044 / 0.019 (`iron_export_lm.py qwen35 --q4 --mlp q6 --head q6`、[docs/design/amd-llm.md](design/amd-llm.md))。`--verify 3` も足すと下書きを確かめる版がつく (下の節)
 - Anima の DiT: `iron_anima.py --dit-attn q6 --dit-mlp q6` (上)
 - GPTQ と CPU の見積もり: `q4_gptq.py --fmt-q4 q6 --head q6`
 
 ### 下書きを確かめる版 (`--verify`、2026-11-08)
 
-`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。AMD の NPU の hwnpu-chat はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。ロジットはデコードのステップとビット単位で同じなので、temp 0 の文は変わらない。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン (design.md の 16.117)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_IRON_DRAFTS=0` で使わない。
+`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。AMD の NPU の hwnpu-chat はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。ロジットはデコードのステップとビット単位で同じなので、temp 0 の文は変わらない。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン ([docs/design/amd-llm.md](design/amd-llm.md))。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_IRON_DRAFTS=0` で使わない。
 
 #### Qwen3.6-35B-A3B (`tools/amd/qwen36_gptq.py`、2026-11-08)
 
@@ -641,7 +641,7 @@ NPU (Ryzen AI 9 365、`ironlm`、HF の bf16 のロジットとのコサイン�
 
 ## 14. 画像生成: Sana (`hwnpu-image`、2026-11-09)
 
-2026-11-10: Sana-Sprint (0.6B、1.6B) は、絵の質が Sana よりかなり低いので外した (design.md 16.148)。この節の Sana-Sprint の記録は経緯として残す。`iron_sana.py` と `hwnpu-image` は Sana-Sprint のチェックポイントと書き出しを断る。
+2026-11-10: Sana-Sprint (0.6B、1.6B) は、絵の質が Sana よりかなり低いので外した ([docs/design/image-models.md](design/image-models.md))。この節の Sana-Sprint の記録は経緯として残す。`iron_sana.py` と `hwnpu-image` は Sana-Sprint のチェックポイントと書き出しを断る。
 
 NVlabs の Sana (Efficient-Large-Model の `*_diffusers`、Apache-2.0。テキストエンコーダの Gemma 2 2B は Gemma の利用規約) を AMD の NPU だけで動かす。Anima より軽い枠: DC-AE の潜在は 32 チャネルで辺が 32 分の 1 なので、1024 × 1024 でもトークンは 1024 個 (Anima は 4096)、自己注意は ReLU の線形注意でトークン数の 2 乗にならない。Sana-Sprint は SCM で 1〜4 ステップに蒸留され、ガイダンスの強さを埋め込みで受ける (CFG なし)。
 
@@ -677,7 +677,7 @@ NVlabs の Sana (Efficient-Large-Model の `*_diffusers`、Apache-2.0。テキ�
 | Sana 600M | 20 (CFG 4.5) | 3.0〜3.6 秒 | 48〜55 秒 (2.4〜2.7 秒/ステップ) | 15 秒 | 70〜81 秒 | 0.963 (0.962) | 20.0 dB |
 | Sana-Sprint 1.6B | 2 | 3.7 秒 | 6.1 秒 | 15 秒 | 32 秒 | 0.983 (0.994) | 25.2 dB |
 | SANA 1.5 1.6B | 20 (CFG 4.5) | 3.1 秒 | 95 秒 (4.8 秒/ステップ) | 15 秒 | 116 秒 | 0.984 | 21.4 dB |
-| 16.200 の後 (DiT の射影 bfp16、深さ方向の畳み込みを DWConv3 に): Sana 600M | 20 (CFG 4.5、σ ≥ 0.6) | | 29 秒 | | 39 秒 | 前とのコサイン 0.9999 | |
+| [image-amd](design/image-amd.md) の後 (DiT の射影 bfp16、深さ方向の畳み込みを DWConv3 に): Sana 600M | 20 (CFG 4.5、σ ≥ 0.6) | | 29 秒 | | 39 秒 | 前とのコサイン 0.9999 | |
 | 同じ、SANA 1.5 1.6B | 20 | | 57 秒 | | 66 秒 | 前とのコサイン 0.9997 | |
 
 - 固定されるメモリの最大はどれも 2349 MiB (テキストのグラフ、Gemma 2 の q8)。DiT は重みをグループごとに 1 つのバンクに読み込み、VAE は段ごとに読み込んで放す
@@ -696,7 +696,7 @@ python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/models/sana-
 go run ./cmd/hwnpu-image generate --model ~/models/sana-600m-1024.amd-npu2 "..." --seed 1 -o out.png
 ```
 
-8 つのアスペクト比 (1:1、1:1s、2:3、3:4、9:16、3:2、4:3、16:9: 32 の倍数の `aspect.All32`) を 1 つの書き出しに (design.md 16.240):
+8 つのアスペクト比 (1:1、1:1s、2:3、3:4、9:16、3:2、4:3、16:9: 32 の倍数の `aspect.All32`) を 1 つの書き出しに ([docs/design/image-amd.md](design/image-amd.md)):
 
 ```bash
 python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/.cache/hwnpu/entries/amd-xdna2/sana-600m.amd-npu2 \
@@ -751,9 +751,9 @@ Sana はプロンプトの前に毎回同じ指示文 (diffusers の complex_hum
 ### 14.8 残り
 
 - VAE は約 6.3 秒 (1 枚の時間の半分、14.7)。低い解像度の EfficientViT の段 (0〜3) が計 2.1 秒、1024² の ResBlock 3 つが 1.4 秒。EfficientViT の線形注意は、ヘッドごとのブロック対角の積を、全部のヘッドの密な行列積とマスクで計算していて、要る計算の H 倍 (64² で 32 倍) をしている。深さ方向の畳み込みは要素ごとの掛け算と足し算 (5 × 5 で 49 回) で、IRON の `axpy` は係数がスカラーだけなので 1 回にできない
-- 書き出しは 8 つのアスペクト比を 1 つに (2026-11-17、16.240): 1 M 画素の 7 つは DiT の重みを共有、1:1s だけ別。どの大きさも 1 枚 35 秒 (1:1s 19 秒)、最大 2.0〜2.2 GiB
-- Mac は 4 つの Sana を Core ML で (design.md 16.145)。Intel (OpenVINO) は未対応
-- SANA 1.5 1.6B (VAE 1.1) は同じ手順で書き出せる (`sana1.5-1.6b.amd-npu2`、8 つで 16 GB、1 枚 1 分 01〜02 秒、1:1s 28 秒、16.240)。Sana 1600M (1.0) は確かめていない
+- 書き出しは 8 つのアスペクト比を 1 つに (2026-11-17、[image-amd](design/image-amd.md)): 1 M 画素の 7 つは DiT の重みを共有、1:1s だけ別。どの大きさも 1 枚 35 秒 (1:1s 19 秒)、最大 2.0〜2.2 GiB
+- Mac は 4 つの Sana を Core ML で ([docs/design/vision-models.md](design/vision-models.md))。Intel (OpenVINO) は未対応
+- SANA 1.5 1.6B (VAE 1.1) は同じ手順で書き出せる (`sana1.5-1.6b.amd-npu2`、8 つで 16 GB、1 枚 1 分 01〜02 秒、1:1s 28 秒、[image-amd](design/image-amd.md))。Sana 1600M (1.0) は確かめていない
 
 ## 15. 深度推定: Depth Anything 3 (`hwnpu-image depth`、2026-11-09)
 
@@ -1027,7 +1027,7 @@ ONNX Runtime は別に入れる共有ライブラリで、実行時の外部依�
 
 ## 20. Qwen-Image-2.1-Turbo (`hwnpu-image generate -m qwen-image`、2026-11-11)
 
-design.md 16.155。研究用のライセンス (初回に確かめる)。
+[docs/design/image-models.md](design/image-models.md)。研究用のライセンス (初回に確かめる)。
 
 ### 20.1 構成 (`tools/amd/iron_qwenimage.py`)
 
@@ -1035,7 +1035,7 @@ design.md 16.155。研究用のライセンス (初回に確かめる)。
 |---|---|---|
 | text | Qwen3-VL-8B の 36 層 (q6、HIGHEST)、64 行ずつ `start` から、最後に DiT の txt_in | プロンプトの 64 トークンごと |
 | dit_in | img_in と時刻の埋め込みから共有の変調、norm_out の scale | 1 ステップ 1 回 (と t = 0 で 1 回) |
-| dit_text | 4 ブロック (注意 q8、MLP q6、16.167) × 8 組、文の行を 256 行ずつ、因果、t = 0 の変調。各ブロックの K/V を出す。重みのバンクは dit_blocks の像を指す (同じ配置) | プロンプトごとに 8 組 |
+| dit_text | 4 ブロック (注意 q8、MLP q6、[image-amd](design/image-amd.md)) × 8 組、文の行を 256 行ずつ、因果、t = 0 の変調。各ブロックの K/V を出す。重みのバンクは dit_blocks の像を指す (同じ配置) | プロンプトごとに 8 組 |
 | dit_blocks | 4 ブロック × 8 組 (1 つのバンクに順に読む)、画像の行、キーは [画像、文 `nk`] | 1 ステップ 8 組 |
 | dit_out | norm_out と proj_out | 1 ステップ 1 回 |
 | vae/s0..s7 | 中央、4 つの上げ (DupUp3D の近道つき)、最後の段 3 つ | 1 枚 1 回 |
@@ -1049,9 +1049,9 @@ design.md 16.155。研究用のライセンス (初回に確かめる)。
 | CPU の float32 との潜在のコサイン | 0.9965、0.9996 (MLP q6) | 0.9988 |
 | ピークのメモリ | | 6.8 GB (NPU 6.1 GB) |
 | 書き出し | 14 GB | 14 GB |
-| 1 枚の電力量 (パッケージ) | | 2.0 kJ (119 秒、16.167) |
-| 16.200 の後 (DiT の重み bfp16、ヘッドの RMSNorm、組の先読み) | | 1 ステップ 8.4 秒、1 枚 1 分 27 秒、1.62 kJ、潜在のコサイン 0.9990、ピークは同じ、DiT の書き出し 7.6 GB |
-| Qwen-Image-2.1 (蒸留なし、オイラー法 40)、16.200 の前 → 後 | | 7 分 59 秒、8.98 kJ → 5 分 51 秒、7.54 kJ |
+| 1 枚の電力量 (パッケージ) | | 2.0 kJ (119 秒、[image-amd](design/image-amd.md)) |
+| [image-amd](design/image-amd.md) の後 (DiT の重み bfp16、ヘッドの RMSNorm、組の先読み) | | 1 ステップ 8.4 秒、1 枚 1 分 27 秒、1.62 kJ、潜在のコサイン 0.9990、ピークは同じ、DiT の書き出し 7.6 GB |
+| Qwen-Image-2.1 (蒸留なし、オイラー法 40)、[image-amd](design/image-amd.md) の前 → 後 | | 7 分 59 秒、8.98 kJ → 5 分 51 秒、7.54 kJ |
 
 ### 20.3 手順
 
@@ -1189,7 +1189,7 @@ Go の評価器に足した演算: If (枝が外の値を読む分を If の入�
 
 ## 24. FLUX.2 klein 4B: 生成と参照画像の編集 (`hwnpu-image generate -m flux2-klein`、2026-11-15)
 
-design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG なし。
+[docs/design/image-amd.md](design/image-amd.md)。Apache-2.0、同意は要らない。4 ステップ、CFG なし。
 
 ### 24.1 構成 (`tools/amd/iron_flux2klein.py`)
 
@@ -1214,13 +1214,13 @@ design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG な
 | CPU の float32 との潜在のコサイン (生成、編集) | 0.975、0.998 | 0.961、0.996 |
 | 書き出し | 12 GB (512² と重みを共有) | 12 GB |
 
-16.206 の時点では 1024² が 39 秒と 1 分 22 秒、4.9 GB。VAE の段のバッファの使い回し、注意の P·V の bfp16 とソフトマックスの指数、重みの読み方 (16.207)、VAE の GroupNorm と参照を半分で読む編集 (16.208) で縮めた。
+16.206 の時点では 1024² が 39 秒と 1 分 22 秒、4.9 GB。VAE の段のバッファの使い回し、注意の P·V の bfp16 とソフトマックスの指数、重みの読み方 ([image-amd](design/image-amd.md))、VAE の GroupNorm と参照を半分で読む編集 ([image-amd](design/image-amd.md)) で縮めた。
 
 ### 24.3 手順
 
-`hwnpu-image generate -m flux2-klein` は、初回に `--size` (8 つのアスペクト比、既定は 1:1) の書き出しを用意する (`flux2klein.PrepareAMD`、design.md 16.235): 手元 (キャッシュの `entries/amd-xdna2`、`~/models`) になければ取得元 (`HWNPU_MODEL_SOURCE`) から。取得元には、ほかの機械の初回が置いたもの (`kind: iron-flux2klein`) か、手で作って `hwnpu-dev cache import` で同じ名前で置いたもの (`iron-import`)。どちらもなければチェックポイントを落として `HWNPU_IRON_ENV` の IRON で 8 つの大きさを 1 つに書き出し (`--size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768`、`flux.2-klein-4b.amd-npu2`、約 16 GB、30 分ほど)、書き戻す取得元に置く。FLUX.2 klein の 16:9 と 9:16 は 1344 x 768 / 768 x 1344 で、ほかのモデルの 1360 x 752 と異なる (design.md 16.242)。手元に同じ名前の前の書き出し (16:9 が 1360 x 752) があれば、それにない大きさを頼んだときに取得元の今の書き出しと入れ替える (design.md 16.246)。
+`hwnpu-image generate -m flux2-klein` は、初回に `--size` (8 つのアスペクト比、既定は 1:1) の書き出しを用意する (`flux2klein.PrepareAMD`、[docs/design/image-amd.md](design/image-amd.md)): 手元 (キャッシュの `entries/amd-xdna2`、`~/models`) になければ取得元 (`HWNPU_MODEL_SOURCE`) から。取得元には、ほかの機械の初回が置いたもの (`kind: iron-flux2klein`) か、手で作って `hwnpu-dev cache import` で同じ名前で置いたもの (`iron-import`)。どちらもなければチェックポイントを落として `HWNPU_IRON_ENV` の IRON で 8 つの大きさを 1 つに書き出し (`--size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768`、`flux.2-klein-4b.amd-npu2`、約 16 GB、30 分ほど)、書き戻す取得元に置く。FLUX.2 klein の 16:9 と 9:16 は 1344 x 768 / 768 x 1344 で、ほかのモデルの 1360 x 752 と異なる ([docs/design/image-models.md](design/image-models.md))。手元に同じ名前の前の書き出し (16:9 が 1360 x 752) があれば、それにない大きさを頼んだときに取得元の今の書き出しと入れ替える ([docs/design/image-amd.md](design/image-amd.md))。
 
-1 つの書き出しの中の形: ブロックのグラフ (dit_in、doubles、singles) は 1 ステップの行の数だけで決まるので、最初の大きさ (1024²) の絵の行 (4608) を名前なし、ほかを `_nROWS` として全部の大きさで共有し、バンクは doubles と singles の 1 組だけ。512² の絵は `doubles_n1536` など、3 枚の参照つきの 512² (4608 行) は 1024² の絵のグラフ。大きさで変わる dit_out と VAE は `sizes/512x512/`、参照の符号器は辺の長さで探す (512² の参照は 1024² の `vae_enc_d2`、256² は `sizes/256x256/vae_enc`)。512 の倍数の行にならない 1 ステップ (長方形、512² の半分の参照が奇数枚) は、テキストの行を先に置いて 512 の倍数まで詰め、鍵を `nk` で区切る: single ブロック、`dit_in`、`dit_out` は正方形のものを使い、double ブロックだけテキストが先の `doubles_tROWS` (バンクは同じ)。長方形の VAE と符号器は `sizes/WxH/` (design.md 16.238)。手で書き出すなら:
+1 つの書き出しの中の形: ブロックのグラフ (dit_in、doubles、singles) は 1 ステップの行の数だけで決まるので、最初の大きさ (1024²) の絵の行 (4608) を名前なし、ほかを `_nROWS` として全部の大きさで共有し、バンクは doubles と singles の 1 組だけ。512² の絵は `doubles_n1536` など、3 枚の参照つきの 512² (4608 行) は 1024² の絵のグラフ。大きさで変わる dit_out と VAE は `sizes/512x512/`、参照の符号器は辺の長さで探す (512² の参照は 1024² の `vae_enc_d2`、256² は `sizes/256x256/vae_enc`)。512 の倍数の行にならない 1 ステップ (長方形、512² の半分の参照が奇数枚) は、テキストの行を先に置いて 512 の倍数まで詰め、鍵を `nk` で区切る: single ブロック、`dit_in`、`dit_out` は正方形のものを使い、double ブロックだけテキストが先の `doubles_tROWS` (バンクは同じ)。長方形の VAE と符号器は `sizes/WxH/` ([docs/design/image-amd.md](design/image-amd.md))。手で書き出すなら:
 
 ```
 python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768   # 8 つ
@@ -1232,13 +1232,13 @@ hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from im
 hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DIR "..."                       # 参照と同じノイズで
 ```
 
-- `--refs` は参照つきのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚、A+BdD: 混在。`hwnpu-image generate -i FILE@half` が d2)。グラフは 1 ステップの行数だけで決まるので `_nROWS` と名付け、同じ行数の指定は 1 回だけコンパイルする。既定は 4 枚までの等倍と半分の組み合わせのうち 12800 行までで、1024² は 5632〜12800 行の 8 つ (半分 1〜4 枚、等倍 1 枚 + 半分 0〜3 枚、等倍 2 枚)、512² は 2048〜5632 行の 7 つ。時間と照合は design.md 16.209。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
-- `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる (16.206)
+- `--refs` は参照つきのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚、A+BdD: 混在。`hwnpu-image generate -i FILE@half` が d2)。グラフは 1 ステップの行数だけで決まるので `_nROWS` と名付け、同じ行数の指定は 1 回だけコンパイルする。既定は 4 枚までの等倍と半分の組み合わせのうち 12800 行までで、1024² は 5632〜12800 行の 8 つ (半分 1〜4 枚、等倍 1 枚 + 半分 0〜3 枚、等倍 2 枚)、512² は 2048〜5632 行の 7 つ。時間と照合は [docs/design/image-amd.md](design/image-amd.md)。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
+- `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる ([image-amd](design/image-amd.md))
 - 電力量はまだ測っていない
 
 ## 25. Whisper large-v3-turbo: 書き起こし (`hwnpu-audio transcribe`、2026-11-19)
 
-OpenAI の Whisper large-v3-turbo (MIT、99 の言語) を AMD の NPU で動かす。符号器 32 層、復号器 4 層、幅 1280、頭 20 (64 ずつ)。設計の記録は design.md 16.253。
+OpenAI の Whisper large-v3-turbo (MIT、99 の言語) を AMD の NPU で動かす。符号器 32 層、復号器 4 層、幅 1280、頭 20 (64 ずつ)。設計の記録は [docs/design/audio-models.md](design/audio-models.md)。
 
 ### 25.1 構成 (`tools/amd/iron_whisper.py`)
 
@@ -1272,7 +1272,7 @@ go run ./cmd/hwnpu-audio transcribe -v speech.wav     # 初回は書き出しを
 
 ## 26. LFM3-Audio-2B の読み上げ (`hwnpu-audio tts`、2026-11-19)
 
-LFM3-Audio-2B で文章を 24 kHz の声にする (Apple と同じ流れ、internal/speech)。設計の記録は design.md 16.254。
+LFM3-Audio-2B で文章を 24 kHz の声にする (Apple と同じ流れ、internal/speech)。設計の記録は [docs/design/audio-models.md](design/audio-models.md)。
 
 ### 26.1 構成 (`tools/amd/iron_lfm3speech.py`)
 
@@ -1305,7 +1305,7 @@ go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは   # 初回は�
 
 ## 27. MOSS-SoundEffect v2.0: 効果音 (`hwnpu-audio generate -m sfx`、2026-11-19)
 
-OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作る。設計の記録は design.md 16.255。
+OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作る。設計の記録は [docs/design/audio-models.md](design/audio-models.md)。
 
 ### 27.1 構成 (`tools/amd/iron_moss_sfx.py`)
 
@@ -1351,7 +1351,7 @@ go run ./cmd/hwnpu-audio generate -m sfx --duration 5s "A dog barking loudly in 
 
 ## 28. Magenta RealTime 2 の SpectroStream の復号器 (`hwnpu-audio generate`、2026-11-19)
 
-Magenta RealTime 2 small (コードは Apache-2.0、重みは CC-BY 4.0) の音楽で、SpectroStream の復号器を AMD の NPU で回す。言語モデル、MusicCoCa、符号器は CPU (Core ML の版)。設計の記録は design.md 16.256。
+Magenta RealTime 2 small (コードは Apache-2.0、重みは CC-BY 4.0) の音楽で、SpectroStream の復号器を AMD の NPU で回す。言語モデル、MusicCoCa、符号器は CPU (Core ML の版)。設計の記録は [docs/design/audio-models.md](design/audio-models.md)。
 
 ### 28.1 構成 (`tools/amd/iron_magenta.py`)
 

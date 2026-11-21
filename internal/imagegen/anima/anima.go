@@ -276,7 +276,7 @@ func (p *Pipeline) Distilled() bool {
 // 4 to 5) with DPM-Solver++ 2M in 25 steps and the guidance only at sigmas from 0.6, which on
 // 512 x 512 lands nearer 100 Euler steps than the card's 30 Euler steps with the guidance at
 // every step (latent cosine 0.984 against 0.982 over 6 pictures, the same pictures) in 72 % of
-// the time (design.md 16.154).
+// the time (docs/design/image-models.md).
 func (p *Pipeline) DefaultSteps() int {
 	if p.Distilled() {
 		return 8

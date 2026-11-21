@@ -162,7 +162,7 @@ func (p Provider) Open(ctx context.Context, info types.DeviceInfo, opts backend.
 	// hardware context of a heap elsewhere is refused (MAP_HOST_BUFFER, status 0x4000003, and
 	// CREATE_HWCTX fails with EINVAL). The kernel picks such an address by itself in a fresh
 	// process, but not once the address space is fragmented: after a checkpoint of gigabytes was
-	// mapped, or for the second device a process opens (docs/design.md 16.281).
+	// mapped, or for the second device a process opens (docs/design/amd.md).
 	if am, ok := drv.(xdna.AlignedMapper); ok {
 		d.heapMem, err = am.MmapAligned(d.heap.MapOffset, xdna.DevHeapSize, xdna.DevHeapSize)
 	} else {

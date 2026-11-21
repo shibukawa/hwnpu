@@ -25,8 +25,8 @@ const AMDExportVersion = 2
 var AMDFiles = append(slices.Clone(Files), "model_index.json")
 
 // AMDExportName is the name of the export for AMD's NPU of every size its caller gives:
-// NAME.amd-npu2 in lower case, as the other image models' (design.md 16.243). An export of that
-// name here that lacks a size asked for (the one of 16:9 at 1360 x 752 before, design.md 16.242)
+// NAME.amd-npu2 in lower case, as the other image models' (docs/design/image-amd.md). An export of that
+// name here that lacks a size asked for (the one of 16:9 at 1360 x 752 before, docs/design/image-models.md)
 // is replaced by PrepareAMD.
 func AMDExportName(name string) string {
 	return strings.ToLower(name) + ".amd-npu2"

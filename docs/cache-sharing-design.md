@@ -2,7 +2,7 @@
 
 > 読み物としての説明は [cache-sharing.md](cache-sharing.md) (English) と [cache-sharing.ja.md](cache-sharing.ja.md)。この文書は設計の経緯と細部の記録で、他の文書やコードの「7 節」などの参照はここを指す。
 
-作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、design.md 16.169)。2026-11-15 に取得元を環境変数の URL (フォルダ、WebDAV と HTTP、S3) と固定の並び (`original/` と `hwnpu-lock.json`、`converted/.../vN`) に作り直した (7 節、design.md 16.212)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
+作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、[docs/design/apple-coreai.md](design/apple-coreai.md))。2026-11-15 に取得元を環境変数の URL (フォルダ、WebDAV と HTTP、S3) と固定の並び (`original/` と `hwnpu-lock.json`、`converted/.../vN`) に作り直した (7 節、[docs/design/distribution.md](design/distribution.md))。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
 
 ## 0. 実装したもの (2026-11-12)
 
@@ -12,11 +12,11 @@
 - 元のチェックポイントのフォワードプロキシ (7.1 節): lock のコミットのファイルを取得元から、なければ HF から同じコミットで取り、書き戻す取得元に置く
 - エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具のうちその書き出しが読むものの hash: `amdtools.LMHash`)。読むものは `iron_export_lm.py` と共通の 3 つ、アーキ (`amd_export` の最初の語) ごとの表 `lmArch` (MODELS のモジュールと、その枝が install するもの) と旗 (`--verify`、`--q4-codes`) のモジュールから import を辿ったもの (`iron_export_lm.py` へ戻る import は辿らない)、それと全部のカーネル (部品から名前を作って読むものがあるので)。表にないアーキは道具の全部 (`amdtools.Hash`)。MODELS の全部のモデルが表にあること、`iron_export_lm.py` が import するモジュールがどこかの根にあることは `TestLMArchCoversModels` が見る (2026-11-17)。版 (`version`、5 節の lock) はまだない
 - hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
-- hwnpu-image generate の FLUX.2 klein も、AMD では初回に層から取るか IRON で作って書き戻す (`kind: iron-flux2klein`、鍵は `chat.PinnedRecipe` と `--size`。2026-11-16、design.md 16.235)。層にそれがなければ、手で作って `hwnpu-dev cache import` で置いた同じ名前の書き出し (`kind: iron-import`、レシピはモデル、対象、名前だけ: `chat.ImportedRecipe`) を取る (`chat.SharedExportOr`)。取り込んだものを書き戻し直すことはしない
-- ほかの手で作る AMD の書き出し (hwnpu-image の画像生成、深さ、顔、ラベル、`amd_export` のない hwnpu-chat のモデル) も、手元になければ取得元の同じ名前の `iron-import` を取って手元の `entries/amd-xdna2` に (`chat.AMDNamed`、2026-11-17、design.md 16.236)。2 回目からはその写しで、取得元には聞かない。`entries/amd-xdna2` にある手で作ったもの (entry.json がない) は、初めて使ったときに記述して書き戻す取得元に置く (`chat.ShareMadeByHand`。同じ名前があればその取得元には置かない)。`~/models` のものは書かない (`hwnpu-dev cache import`)。物体検出、姿勢、切り抜き (初回に書き出す道具のもの: `iron_onnxcnn.py`、`iron_efficientsam.py`) の手で作ったものも同じく初めて使ったときに置く。記述は `hwnpu-dev cache import` と同じくその道具の種類と鍵 (`ExportKind`、`PinnedRecipe`) で、ほかの機械の初回がそのまま取る (`chat.ShareMadeHere`、2026-11-18、design.md 16.245)
+- hwnpu-image generate の FLUX.2 klein も、AMD では初回に層から取るか IRON で作って書き戻す (`kind: iron-flux2klein`、鍵は `chat.PinnedRecipe` と `--size`。2026-11-16、[docs/design/image-amd.md](design/image-amd.md))。層にそれがなければ、手で作って `hwnpu-dev cache import` で置いた同じ名前の書き出し (`kind: iron-import`、レシピはモデル、対象、名前だけ: `chat.ImportedRecipe`) を取る (`chat.SharedExportOr`)。取り込んだものを書き戻し直すことはしない
+- ほかの手で作る AMD の書き出し (hwnpu-image の画像生成、深さ、顔、ラベル、`amd_export` のない hwnpu-chat のモデル) も、手元になければ取得元の同じ名前の `iron-import` を取って手元の `entries/amd-xdna2` に (`chat.AMDNamed`、2026-11-17、[docs/design/distribution.md](design/distribution.md))。2 回目からはその写しで、取得元には聞かない。`entries/amd-xdna2` にある手で作ったもの (entry.json がない) は、初めて使ったときに記述して書き戻す取得元に置く (`chat.ShareMadeByHand`。同じ名前があればその取得元には置かない)。`~/models` のものは書かない (`hwnpu-dev cache import`)。物体検出、姿勢、切り抜き (初回に書き出す道具のもの: `iron_onnxcnn.py`、`iron_efficientsam.py`) の手で作ったものも同じく初めて使ったときに置く。記述は `hwnpu-dev cache import` と同じくその道具の種類と鍵 (`ExportKind`、`PinnedRecipe`) で、ほかの機械の初回がそのまま取る (`chat.ShareMadeHere`、2026-11-18、[docs/design/vision-models.md](design/vision-models.md))
 - 取得は並べる: 変換結果のファイルを 4 本ずつ、大きいものから (`store.FetchStreams`)、元のファイルも 4 本ずつ (`chat.FetchFiles`: 画像、音、チャットのモデルの分割した重み)。この機械 (Wi-Fi) と UGREEN の NAS で 1 本 5 MB/s、4 本 9 MB/s
 - `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に。`--target amd-xdna2` でその対象のものだけに絞る: 同じモデルの Core AI の書き出しを残す)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートも `hwnpu cache clean` が中止する (始まって 1 時間を過ぎたもの)。バケットのライフサイクルの規則があれば、それも効く
-- Core AI の書き出し (2026-11-14、design.md 16.199): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
+- Core AI の書き出し (2026-11-14、[docs/design/distribution.md](design/distribution.md)): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
 - 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
 
 ## 1. 目的
@@ -136,7 +136,7 @@ models:
 
 ## 7. 取得元 (透過型のキャッシュ)
 
-2026-11-15 に作り直した (design.md 16.212)。それまでの「層」(定義の `sources`、`search`、`cache.layers`、`HWNPU_CACHE_LAYERS`、内容で番地を決める `blobs/sha256`) は、環境変数の URL の並びと、人が見て分かる固定の並びに置き換えた。
+2026-11-15 に作り直した ([docs/design/distribution.md](design/distribution.md))。それまでの「層」(定義の `sources`、`search`、`cache.layers`、`HWNPU_CACHE_LAYERS`、内容で番地を決める `blobs/sha256`) は、環境変数の URL の並びと、人が見て分かる固定の並びに置き換えた。
 
 ```
 0. この機械のキャッシュ  cache.Root (HWNPU_CACHE)          いつも書き戻す・その場で使う
@@ -148,7 +148,7 @@ models:
 書き: 0 番へは必ず、?writeback=true の取得元へは裏で、手元で作ったものと後ろの層から読んだものを置く (失敗しても続ける)
 ```
 
-2026-11-15 の 2 つ目の変更 (design.md 16.213) で、手元のキャッシュと同梱のモデルも同じ仕組みの層にした。どの層も中は同じ並び (下) で、手元のキャッシュも `original/OWNER/NAME/` に `hwnpu-lock.json` を持つ。どの層から来たファイルも、使うのは手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`)。同梱のモデルはハードリンク、別のファイルシステムならシンボリックリンクで、コピーしない。
+2026-11-15 の 2 つ目の変更 ([docs/design/distribution.md](design/distribution.md)) で、手元のキャッシュと同梱のモデルも同じ仕組みの層にした。どの層も中は同じ並び (下) で、手元のキャッシュも `original/OWNER/NAME/` に `hwnpu-lock.json` を持つ。どの層から来たファイルも、使うのは手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`)。同梱のモデルはハードリンク、別のファイルシステムならシンボリックリンクで、コピーしない。
 
 取得元は URL で書く。`HWNPU_MODEL_SOURCE` で始まる環境変数を全部集め、番号の順に並べる (番号のない `HWNPU_MODEL_SOURCE` が最初、抜けた番号は気にしない)。エラーになった取得元は飛ばして次へ:
 
@@ -270,7 +270,7 @@ hwnpu/
 | `HWNPU_CACHE` | 手元の根 (7.3 節) |
 | `HWNPU_WEBDAV_USER`、`HWNPU_WEBDAV_PASSWORD` | URL にも `~/.netrc` にもないときの WebDAV の利用者 (7.5 節) |
 | `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_PROFILE` | S3 の鍵 (7.2 節) |
-| `HF_TOKEN` | gated のリポジトリ。CI 以外ではデバイスフローのサインイン (design.md 16.153) を勧める |
+| `HF_TOKEN` | gated のリポジトリ。CI 以外ではデバイスフローのサインイン ([docs/design/distribution.md](design/distribution.md)) を勧める |
 | `HWNPU_MODELS`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_BACKEND`、`HWNPU_DEVICE` | 自分の定義のファイル、ライセンスの確認、機械ごとの NPU の選び方 |
 
 なくしたもの: 定義のファイルの `sources`、`search`、`cache` (書いてあるファイルは、移し方を書いたエラーで止める)、`from: SOURCE:NAME` と `-use SOURCE:NAME` (自分のモデルは取得元の `original/OWNER/NAME/` に lock と一緒に置き、`from: hf:OWNER/NAME` で名指す)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE` (`?writeback=true` を外す)。設計だけだった `HWNPU_OFFLINE` (`HWNPU_MODEL_HUGGING_FACE=false`) と `HWNPU_PREBUILT` (取得元にあるかないかで決まる) も作らない。
@@ -290,7 +290,7 @@ hwnpu/
 - Linux (Ryzen AI 9 365、Ubuntu 26.10) で同じことを AMD の NPU で (2026-11-16): 空の取得元のフォルダ (`llm/zz-linux-test`) と空の根で Qwen3.5-0.8B を。チェックポイント 1.75 GB を HF から、IRON で書き出し (1 分 27 秒)、終わる前に元のファイル 8 つ (35 MB/s) と書き出し 1.65 GB (45 MB/s) を置いて終わった。次に空の根、IRON なし、`HWNPU_MODEL_HUGGING_FACE=false` で、書き出しを NAS から取って NPU で答えた。`hwnpu cache clean` で、前に切れた書き戻しの `.put-` 4 つ (3.5 GB) を消した
 - 止まった NAS (2026-11-16): つながらない (名前が引けない、接続を断られる、5 秒で答えない、証明書が信じられない) 取得元は、そのプロセスの間は設定がなかったものとして扱う。最初の 1 回で標準エラーに 1 行出し、その後の要求はすぐ失敗して次の取得元へ。再試行は時間切れ (mDNS の `.local` の名前引きはときどき時間切れになる) のときだけ 3 回まで、断られたときと名前がないときはすぐ (前は 1 ファイルごとに接続の待ち 30 秒 × 再試行が入れ子で重なった)。書き戻しはキューに残り、次の起動で続く
 - UGREEN の NAS (2026-11-15): フォルダのない所への PUT と、親のない MKCOL が 409 でなく 405 を返す。PUT の前にフォルダを (プロセスで一度) 作り、405 でも作り直す
-- UGREEN の NAS (2026-11-16): 自己署名の証明書なので `?tls_sha256=` が要る。`.local` の名前の解決が 1 回 5 秒かかったので、ホストの番地はプロセスで 1 回だけ引き (答えなければ引き直す)、答えの本体は必ず読み切って閉じて接続を使い回す (design.md 16.231)
+- UGREEN の NAS (2026-11-16): 自己署名の証明書なので `?tls_sha256=` が要る。`.local` の名前の解決が 1 回 5 秒かかったので、ホストの番地はプロセスで 1 回だけ引き (答えなければ引き直す)、答えの本体は必ず読み切って閉じて接続を使い回す ([docs/design/distribution.md](design/distribution.md))
 - `hwnpu-dev cache import DIR...`: 手で置いたフォルダ (`~/models`) を書き戻す取得元に置く。チェックポイントは Hugging Face のツリー (`/api/models/REPO/tree/COMMIT`) と照らし、大きさと中身 (LFS は sha256、ほかは git の blob の sha1) の同じファイルだけを `original/` に。書き出し (`NAME.amd-npu2*`) は `converted/`。名前が定義にないフォルダは `DIR=OWNER/NAME`
 
 ### 7.6 公開の API: `modelstore`
@@ -362,7 +362,7 @@ hwnpu memory LFM3-1.7B --forget      この機械のメモリに戻す
 
 ### 7.9 Core AI の prebuilt: 変換後と一緒に、機械の種類ごとのコンパイル済みを配る
 
-Core AI の書き出し (`coreai`、`.aimodel`) は機械に依らないが、初めて読む機械では Neural Engine のコンパイラが部品ごとに数十秒〜数分かかる (機械全体で 1 本の直列の列、design.md 16.229)。Metal Toolchain の `coreai-build` は実機がなくても 22 種類のアーキテクチャ向けに先にコンパイルでき (`X.ARCH.aimodelc`)、それを読む機械はコンパイラの代わりに仕上げだけをする。そのコンパイル済みを、変換後と同じ取得元に置く。
+Core AI の書き出し (`coreai`、`.aimodel`) は機械に依らないが、初めて読む機械では Neural Engine のコンパイラが部品ごとに数十秒〜数分かかる (機械全体で 1 本の直列の列、[docs/design/apple-coreai.md](design/apple-coreai.md))。Metal Toolchain の `coreai-build` は実機がなくても 22 種類のアーキテクチャ向けに先にコンパイルでき (`X.ARCH.aimodelc`)、それを読む機械はコンパイラの代わりに仕上げだけをする。そのコンパイル済みを、変換後と同じ取得元に置く。
 
 ```
 converted/MODEL/coreai/EXPORT/VERSION/...          書き出し (.aimodel)。どの Mac も同じ
@@ -377,23 +377,23 @@ converted/MODEL/coreai-ARCH/EXPORT/VERSION/...     ARCH (h13g = M1、h14g = M2�
 | 機種ごとの prebuilt (重みを除いた `.aimodelc`) | `coreai-ARCH/`、`prebuilt.tar.zst` | `coreai-build` で作れる 12 種類 (M1、M2、M2 Max、M3、M3 Max の h15c、M4 / Pro / Max、M5 / Pro / Max / Ultra) だけ。初回のネイティブのコンパイルの代わりに仕上げだけにする |
 
 - prebuilt は `.aimodel` を置き換えない (重みを持たないので、それだけでは動かない)。`.aimodel` を置かずに prebuilt だけ置くことはしない
-- どの機種に効くかの対応は design.md 16.229 (`coreai-build inspect` の `Supported chips`)。作れない機種の prebuilt は置かない (取りに来ても見つからず、ネイティブに落ちる)
+- どの機種に効くかの対応は [docs/design/apple-coreai.md](design/apple-coreai.md) (`coreai-build inspect` の `Supported chips`)。作れない機種の prebuilt は置かない (取りに来ても見つからず、ネイティブに落ちる)
 - 作る順: `.aimodel` の書き出しを置き (変換した機械が自動で)、そのあと開発機が `hwnpu-dev prebuild -arch all -put EXPORT` で 12 種類の prebuilt を足す
 - prebuilt を作るかはモデルの部品次第 (下の「効くかはモデル次第」)。作らないモデルは `.aimodel` だけ
-- **チャットのモデルには今は作らない** (2026-11-18、M2、design.md 16.247): LFM3-1.7B は初回の読み込みが 2 分 17 秒 (ネイティブ) から 8 分 12 秒 (prebuilt) に、plamo-3-translate-8b は 1 分 13 秒から 7 分 08 秒に延びた。Qwen3.5-4B は 7 分 07 秒で読めた (ネイティブは 12 分 26 秒) が、最初の呼び出しで止まり、1 時間 40 分たっても答えなかった。速さ (tokens/s) と答えは同じ
-- 画像のモデル (2026-11-18、M2、1024²、design.md 16.247): FLUX.2 klein 4B は初回が 52 分 16 秒から 16 分 55 秒に縮む (絵は細部が違う)。Anima-Turbo は 45 分 01 秒から 37 分 50 秒 (絵は同じ)。プロセスの最初の prebuilt に 3〜6 分かかるので、部品が少ないモデルでは負ける
+- **チャットのモデルには今は作らない** (2026-11-18、M2、[docs/design/apple-coreai.md](design/apple-coreai.md)): LFM3-1.7B は初回の読み込みが 2 分 17 秒 (ネイティブ) から 8 分 12 秒 (prebuilt) に、plamo-3-translate-8b は 1 分 13 秒から 7 分 08 秒に延びた。Qwen3.5-4B は 7 分 07 秒で読めた (ネイティブは 12 分 26 秒) が、最初の呼び出しで止まり、1 時間 40 分たっても答えなかった。速さ (tokens/s) と答えは同じ
+- 画像のモデル (2026-11-18、M2、1024²、[docs/design/apple-coreai.md](design/apple-coreai.md)): FLUX.2 klein 4B は初回が 52 分 16 秒から 16 分 55 秒に縮む (絵は細部が違う)。Anima-Turbo は 45 分 01 秒から 37 分 50 秒 (絵は同じ)。プロセスの最初の prebuilt に 3〜6 分かかるので、部品が少ないモデルでは負ける
 
 - 重みは配らない: `.aimodelc` の 99 % は `resources.bin` (重み) で、中身は `.aimodel` の `main.mlirb` のバイトを並べ替えたもの (アーキテクチャに依らない)。`coreai.Pack` はそれを `resources.bin.map.json` (`main.mlirb` のどこから何バイト、の並び。数 KB) に置き換える。1 種類あたり書き出しの 1〜2 % (ANE の LLIR と小さなファイル)
 - 鍵は部品のバイトコード: `programs` (書き出しの中の各 `.aimodel` の場所と `main.hash` の sha256)、`arch`、`export`、`format`。どの機械が変換したかに依らず、同じバイトの書き出しなら当たる。モデルは書き出しの entry.json のもの
 - 作る (開発機、Xcode 27 の Metal Toolchain): `hwnpu-dev prebuild -arch all -put EXPORT`。部品 × アーキテクチャごとに `coreai-build` を走らせ、詰めて `EXPORT.prebuilt/ARCH/` に置き、アーキテクチャごとに 1 つのファイル (`prebuilt.tar.zst`、tar を zstd で) にして書き戻す取得元へ (`EXPORT.prebuilt/ARCH.shared/`)。WebDAV ではファイルごとに PUT と MOVE がかかるので 1 つに。zstd で約 1/3 (h14g の 1 部品 3.0 MB → 0.97 MB、`-19`)。`coreai-build` が落ちる種類と、ANE に乗せられない部品は抜けたまま置く (その機械がネイティブにコンパイルする)
 - 使う (どの Mac も、道具は要らない): Core AI のキャッシュに項目がなく、手元に prebuilt もない部品を読むとき、バックエンドが書き出しごとに 1 回、この機械の種類 (`AIModel.deviceArchitecture`) のものを取得元に聞く (`coreai.FetchPrebuilt`)。取れたら `EXPORT.prebuilt/ARCH.shared/` に置いて `EXPORT.prebuilt/ARCH/` に展開し、部品ごとに重みを `main.mlirb` から組み立てて (sha256 を照らす) 一時フォルダの `.aimodelc` を Core AI に渡し、読み込んだら消す。Core AI の項目ができるので次からは `.aimodel` のまま 0.01 秒。読めなければ (道具の版が違う、壊れている) その部品はネイティブに
-- 効くかはモデル次第 (design.md 16.232): `coreai-build` が ANE に乗せられない部品は配られず、乗った小さな部品は仕上げのほうがネイティブより遅いこともある。Chroma1-Flash の 1024² の DiT は初回の約 46 分が約 1 分になる。Sana-600M は書き出しを `coreai-build` に通る形にした (design.md 16.233) ので、VAE の大きな段 (端末で 1 段 3 分 40 秒) が数秒〜10 秒になる見込み。だから prebuild は自動でなく、効くモデルの書き出しを選んで `-put` する
+- 効くかはモデル次第 ([docs/design/distribution.md](design/distribution.md)): `coreai-build` が ANE に乗せられない部品は配られず、乗った小さな部品は仕上げのほうがネイティブより遅いこともある。Chroma1-Flash の 1024² の DiT は初回の約 46 分が約 1 分になる。Sana-600M は書き出しを `coreai-build` に通る形にした ([docs/design/image-apple.md](design/image-apple.md)) ので、VAE の大きな段 (端末で 1 段 3 分 40 秒) が数秒〜10 秒になる見込み。だから prebuild は自動でなく、効くモデルの書き出しを選んで `-put` する
 - 手元の `EXPORT.prebuilt/` は残す: 読み込んだ部品は Core AI の項目に入るが、項目 (重みの複製、書き出しと同じ大きさ) が消えたとき (空きが足りない、OS の更新) にネットに出ずに数秒で作り直すもとになる。空きが足りないときは、prebuilt のある部品の Core AI の項目が先に消える (7.7)。`hwnpu cache` では種類 `prebuilt` の単位 (`clear --kind prebuilt` で消せる。消してもまた取得元から取る)。組み立てた重み入りの `.aimodelc` は読み込んだ直後に消す
 - 項目がある機械は何も聞かない (2 回目からの実行は取得元に触らない)。`HWNPU_COREAI_PREBUILT=off` で使わない
 
 ### 7.10 AMD と Core AI の書き出しは 1 つに詰めて置く: `files.tar.zst`
 
-AMD の書き出し (`converted/MODEL/amd-xdna2/EXPORT/VERSION`、`store.Packs`) は、取得元ではファイルを並べず、全部を tar にして zstd で詰めた 1 つのファイル (`files.tar.zst`、`store.PackFile`) と `entry.json` だけにする (2026-11-17、design.md 16.237)。Core AI の prebuilt (7.9) と同じく、WebDAV でファイルごとにかかる PUT と MOVE を 1 回にし、送る量を減らす。
+AMD の書き出し (`converted/MODEL/amd-xdna2/EXPORT/VERSION`、`store.Packs`) は、取得元ではファイルを並べず、全部を tar にして zstd で詰めた 1 つのファイル (`files.tar.zst`、`store.PackFile`) と `entry.json` だけにする (2026-11-17、[docs/design/image-models.md](design/image-models.md))。Core AI の prebuilt (7.9) と同じく、WebDAV でファイルごとにかかる PUT と MOVE を 1 回にし、送る量を減らす。
 
 2026-11-18 から Core AI の書き出し (`converted/MODEL/coreai/EXPORT/VERSION`、`.aimodel` の集まり) も同じに詰める (`store.Packs` が `coreai` の対象も取る)。チャットのモデルの書き出しはファイルが 100 ほど (LFM3-1.7B で 103) あり、縮むのは 1〜5 % (zstd の既定の速さで LFM3-1.7B の 2.62 GB が 2.59 GB、Anima の 3.03 GB が 2.89 GB、Chroma1-Flash の 15.97 GB が 15.25 GB。重みの表はほぼ縮まない)。効くのはファイルの数。機械の種類ごとの prebuilt (`coreai-ARCH`) はもともと `prebuilt.tar.zst` の 1 ファイルで、表 (`any`、`tables.safetensors`) は 1 ファイルなので、どちらもそのまま。変換しながら置くこと (7.1) はなくなり、書き出しが揃ってから詰めて送る。
 
@@ -491,11 +491,11 @@ any/v1/...        表など対象によらないもの
 
 ## 10. Apple (白紙)
 
-Apple の機械が使えるようになるまで、Apple の配布の形は決めない。`targets` に `apple` の行は書かない。チームの層 (NAS、S3) での共有だけは先に入れた (16.199): Core AI の書き出しは `target: coreai` で、どの Mac も同じものを読む (端末で専用化したものは Core AI 自身のキャッシュに残る)。
+Apple の機械が使えるようになるまで、Apple の配布の形は決めない。`targets` に `apple` の行は書かない。チームの層 (NAS、S3) での共有だけは先に入れた ([distribution](design/distribution.md)): Core AI の書き出しは `target: coreai` で、どの Mac も同じものを読む (端末で専用化したものは Core AI 自身のキャッシュに残る)。
 
 - 今の Core ML の形: 配れるのは `.mlpackage` まで。`.mlmodelc` は OS の版ごと (`host`)、Neural Engine のコンパイル (e5 バンドル) は機械ごとで、初回の重さ (Gemma 4 で 100 秒級) が残る
 - Core AI の方が事前にビルドしたものを配れる見込みがあり、そうなら Apple でも初回のコンパイルをなくせる。確かめること: 何を事前にビルドできるか、それがチップの世代と OS の版のどちらに縛られるか、Neural Engine への配置を確かめられるか
-- Core AI で確かめたこと (design.md 16.174、M1、macOS 27.2): 配れるのは `.aimodel` (端末によらない MLIR バイトコード)。端末で専用化したもの (初回のコンパイルの結果) は Core AI 自身のキャッシュにあり、OS のビルド (`26B123`) と実行ファイルの名前ごとで配れない。キャッシュの鍵は `main.hash` (中身の sha256) だけで、場所によらない。キャッシュに入ったあとは `main.mlirb` (重み) がなくても読める。8 トークンと 128 トークンのプログラムは、関数 2 つの 1 本の `.aimodel` にすれば、重みを 1 回分で配れて、キャッシュも 1 回分になる。初回のコンパイル (LFM3-1.7B で 1 分半ほど) は Core AI でも残る。`.aimodel` は手元に残すのを既定にし、消すのは最終手段のオプションにする (キャッシュはディスクが足りないときや OS の更新で消え、そのときは落とし直しになる)
+- Core AI で確かめたこと ([docs/design/apple-coreai.md](design/apple-coreai.md)、M1、macOS 27.2): 配れるのは `.aimodel` (端末によらない MLIR バイトコード)。端末で専用化したもの (初回のコンパイルの結果) は Core AI 自身のキャッシュにあり、OS のビルド (`26B123`) と実行ファイルの名前ごとで配れない。キャッシュの鍵は `main.hash` (中身の sha256) だけで、場所によらない。キャッシュに入ったあとは `main.mlirb` (重み) がなくても読める。8 トークンと 128 トークンのプログラムは、関数 2 つの 1 本の `.aimodel` にすれば、重みを 1 回分で配れて、キャッシュも 1 回分になる。初回のコンパイル (LFM3-1.7B で 1 分半ほど) は Core AI でも残る。`.aimodel` は手元に残すのを既定にし、消すのは最終手段のオプションにする (キャッシュはディスクが足りないときや OS の更新で消え、そのときは落とし直しになる)
 - この仕組みの側で備えること: 対象の世代の階層 (3.1 節) にチップは入っている。OS の版に縛られる形なら、エントリに `os: {min, max}` を持たせ、選ぶときに見る (`host` にせず `portable` のまま、OS の範囲で選ぶ)
 
 ## 11. 進める順
@@ -531,7 +531,7 @@ Apple の機械が使えるようになるまで、Apple の配布の形は決�
 - 版は `targets.<対象>.version`。版ありは `vN`、`develop: true` は `vN-HASH`、版なしは `v0-HASH`
 - `HWNPU_CACHE_LAYERS` は読み替えずに消す。`HWNPU_PREBUILT` は作らない (取得元にあるかで決まる)
 - `HF_TOKEN` は CI 以外では勧めない。refresh token の保存 (OS の資格情報の置き場) と、Actions のトークンの交換 (Hugging Face の Trusted Publishers、RFC 8693) は別に
-- 層を平らに (design.md 16.213): 手元のキャッシュを 0 番 (いつも書き戻す)、同梱のモデルを取得元の後ろ (読むだけ、その場で)。手元の並びも取得元と同じ `original/` に。モデルの探索と取得は公開の API (`modelstore`) にし、各コマンドも同じものを使う。各コマンドの `--dir` は消す (根は `HWNPU_CACHE`)
+- 層を平らに ([docs/design/distribution.md](design/distribution.md)): 手元のキャッシュを 0 番 (いつも書き戻す)、同梱のモデルを取得元の後ろ (読むだけ、その場で)。手元の並びも取得元と同じ `original/` に。モデルの探索と取得は公開の API (`modelstore`) にし、各コマンドも同じものを使う。各コマンドの `--dir` は消す (根は `HWNPU_CACHE`)
 - 同梱のモデルの場所はインストーラが置き、アプリのコードで決める (環境変数にしない)。資源フォルダは configdir v1.1.0 の `QueryResourceFolders`
 - `~/models` は次の PR で `converted/` に移して読まなくなる
 

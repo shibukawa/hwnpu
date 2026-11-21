@@ -142,7 +142,7 @@ class KleinConfig:
 
 @dataclasses.dataclass
 class Formats:
-    # the blocks' projections: bfp16 packed on the host (iron_q4.bfp16_pack, design.md 16.200)
+    # the blocks' projections: bfp16 packed on the host (iron_q4.bfp16_pack, docs/design/image-amd.md)
     proj: str = "bfp16"
     mha: str = "qkpv"  # the attention's products through bfp16: QK^T and P V (1024²: the blocks -7 %, an edit -9 %; the latents as near the reference)
 

@@ -2,7 +2,7 @@
 
 測定: 2026-11-02〜03。Ryzen AI 9 365 (Strix Point、npu4、8 列 × 4 行 = 32 コア)、Ubuntu 26.04.1、カーネル 7.0.0-42 同梱の `amdxdna` 0.7.0、ファームウェア 1.1.2.64。設計は mlir-aie v1.4.4 のサンプルを Peano (llvm-aie 22.0.0.2026092101) でビルドし、`hwnpu-dev xclbin` でまとめ、hwnpu の公開 API (`Kernel` → `Load` → `Run`) で動かした。全ての結果は IRON 自身の参照実装 (`kernels.mm_ref` など) と許容誤差で照合した。
 
-> 測った道具は [tools/iron](../tools/iron/README.md) (スクリプトと Go の実行器 `tools/iron/ironbench`) と、xclbinutil の代わりの `hwnpu-dev xclbin`。2026-11-06 に、IRON が固定した mlir-aie (1.4.5.dev119) でも `dma` と `gemm` が動き、`hwnpu-dev xclbin` でまとめた IRON の GEMV の xclbin が実機で合格することを確かめた。その後 main は IRON の演算子と full ELF に移り (design.md 16.45 以降)、4 ビットの生成は hwnpu の `QGEMV` (`tools/amd/iron_q4.py`、design.md 16.73) になった。ここの数値は、その方式でも変わらないハードウェアの上限 (データ型、DMA の帯域、1 回の実行の固定費) の参考として残す。
+> 測った道具は [tools/iron](../tools/iron/README.md) (スクリプトと Go の実行器 `tools/iron/ironbench`) と、xclbinutil の代わりの `hwnpu-dev xclbin`。2026-11-06 に、IRON が固定した mlir-aie (1.4.5.dev119) でも `dma` と `gemm` が動き、`hwnpu-dev xclbin` でまとめた IRON の GEMV の xclbin が実機で合格することを確かめた。その後 main は IRON の演算子と full ELF に移り ([docs/design/amd.md](design/amd.md) 以降)、4 ビットの生成は hwnpu の `QGEMV` (`tools/amd/iron_q4.py`、[docs/design/amd-llm.md](design/amd-llm.md)) になった。ここの数値は、その方式でも変わらないハードウェアの上限 (データ型、DMA の帯域、1 回の実行の固定費) の参考として残す。
 
 ## 1. 要約
 
@@ -104,7 +104,7 @@ LLM の生成は 1 トークンずつなので、重み (B) を 1 回だけ読�
 | bf16 → bf16 (M = 32、m = 8) | 32 × 4096 × 4096 | 1.28 ms | 0.84 | 26.2 GB/s (K = 4096 で精度は許容外) |
 
 - 重み 1 バイトあたりの時間は int8 が bf16 の 2 倍かかる。重みの読みではなく、M = 64 の小さな行列積をタイルごとに回すコアの計算で決まっている
-- LLM で見積もると (例: 1.7B パラメータ)、int8 の重み 1.7 GB を 14 GB/s で 120 ms、bf16 の 3.4 GB を 27 GB/s で 125 ms。1 トークン約 120 ms (8 トークン/秒) で、M3 の Neural Engine の LFM3-1.7B (design.md 16.37 で 26.5 ms/トークン) の 4〜5 倍遅い。読みの帯域 (55 GB/s、4.6 節) まで使えれば int8 で 31 ms、4 bit で 19 ms (4.7 節)
+- LLM で見積もると (例: 1.7B パラメータ)、int8 の重み 1.7 GB を 14 GB/s で 120 ms、bf16 の 3.4 GB を 27 GB/s で 125 ms。1 トークン約 120 ms (8 トークン/秒) で、M3 の Neural Engine の LFM3-1.7B ([docs/design/llm-engine.md](design/llm-engine.md) で 26.5 ms/トークン) の 4〜5 倍遅い。読みの帯域 (55 GB/s、4.6 節) まで使えれば int8 で 31 ms、4 bit で 19 ms (4.7 節)
 - 結論: 生成には、M = 1 の行列 × ベクトルを重みの読みの速さで回す専用カーネル (重みは int8 か bfp16、A は bf16、出力は f32 で足す) が要る。`matrix_vector` のサンプルは 1 コアの int16 で、性能の参考にならない
 
 ### 4.5 固定費
@@ -183,7 +183,7 @@ mlir-aie v1.4.4 の `aie_kernels/flm_gemma4` (FastFlowLM の Gemma 4 の実装�
 - 大きな行列で読みだけの DMA (4.6 節、55〜57 GB/s) にほぼ届く。4 bit を戻して掛ける計算は律速になっていない。行列積のサンプル (4.4 節、int8 で 14 GB/s) との差はカーネルの作り
 - 8 コア (8 × 1) は 1 コア 5.2 G 重み/秒で計算が律速 (戻すだけなら 6.5、4.7 節)。16 コア (8 × 2) で帯域に届き、32 コアにしても速くならない。4 列 (4 × 4) は shim が 4 つなので 42 GB/s で頭打ち。**全 8 列を使い、1 列 2 コア以上**が条件
 - 時間 ≈ 0.06 ms (1 回の実行の固定費) + 重みのバイト数 ÷ 55 GB/s。2048 × 2048 (2.5 MiB) は半分が固定費
-- LLM の 1 トークン (1.7B、q4nx で 1.06 GB): 重みの読みで 19 ms。射影ごとに呼ぶ (1 層 7 回 × 28 層 ≈ 200 回) と固定費が 12 ms 増えて 31 ms、層ごとに 1 回なら 1.7 ms 増えて 21 ms。注意や正規化などの重みのない計算は別に要る。M3 の Neural Engine の LFM3-1.7B (lut4、26.5 ms/トークン、design.md 16.37) と同じ水準に届く
+- LLM の 1 トークン (1.7B、q4nx で 1.06 GB): 重みの読みで 19 ms。射影ごとに呼ぶ (1 層 7 回 × 28 層 ≈ 200 回) と固定費が 12 ms 増えて 31 ms、層ごとに 1 回なら 1.7 ms 増えて 21 ms。注意や正規化などの重みのない計算は別に要る。M3 の Neural Engine の LFM3-1.7B (lut4、26.5 ms/トークン、[docs/design/llm-engine.md](design/llm-engine.md)) と同じ水準に届く
 - int8 の重み (32 個ごとの scale を含め 1.06 バイト/重み) で同じ形のカーネルを作れば、帯域律速で q4nx の 1.7 倍の時間になる見込み (未測定)。bf16 の重みは 3.2 倍
 
 ### 4.9 q4nx の精度
@@ -216,14 +216,14 @@ E: post_ffn_norm と残差 → 層の出力
 ## 5. 測定中に見つけた不具合
 
 - **デバイスを開くときの EINTR (修正済み)**: `open` はプロセスのアドレス空間を IOMMU に結び付ける (SVA bind) 途中で、シグナル (Go のプリエンプション用の SIGURG) が来ると `EINTR` で失敗する (dmesg に `SVA bind device failed, ret -4`)。`xdna.OpenNode` が `syscall.Open` を再試行していなかったので、大きなバッファを使う実行で 2 回、`interrupted system call` が漏れた。`EINTR` なら開き直すようにした (main には #34 で入った)
-- **ハードウェアコンテキストの作成がまれに `EINVAL` (原因は design.md 16.281: デバイスヒープの番地が 64 MiB の倍数でないとファームウェアが断る。ヒープを倍数の番地に写すようにした)**: プロセスを続けて起動したとき、約 125 回に 1 回、ファームウェアがデバイスヒープの登録 (`MAP_HOST_BUFFER`、opcode 0x106) を状態 0x4000003 で拒否し、`CREATE_HWCTX` が `EINVAL` になった。再現は 1 回だけで、続く 100 回では起きなかった。原因が分からないまま再試行を入れるのは避け、記録に留める
+- **ハードウェアコンテキストの作成がまれに `EINVAL` (原因は [docs/design/api.md](design/api.md): デバイスヒープの番地が 64 MiB の倍数でないとファームウェアが断る。ヒープを倍数の番地に写すようにした)**: プロセスを続けて起動したとき、約 125 回に 1 回、ファームウェアがデバイスヒープの登録 (`MAP_HOST_BUFFER`、opcode 0x106) を状態 0x4000003 で拒否し、`CREATE_HWCTX` が `EINVAL` になった。再現は 1 回だけで、続く 100 回では起きなかった。原因が分からないまま再試行を入れるのは避け、記録に留める
 
 ## 6. その後
 
 このときの「次にやること」は、main では次のように進んだ。
 
-- 層を並べた生成: xclbin を層ごとに並べる代わりに、IRON の演算子を 1 つの full ELF にまとめる形になった (design.md 16.45〜16.49、段階 A1、A2)
-- 4 ビットの生成用 GEMV: hwnpu の `QGEMV` (1 列 2 コアで 55 GB/s、design.md 16.73)。4.8 節の条件 (全 8 列、1 列 2 コア以上) と同じ結論
+- 層を並べた生成: xclbin を層ごとに並べる代わりに、IRON の演算子を 1 つの full ELF にまとめる形になった ([docs/design/amd.md](design/amd.md)、段階 A1、A2)
+- 4 ビットの生成用 GEMV: hwnpu の `QGEMV` (1 列 2 コアで 55 GB/s、[docs/design/amd-llm.md](design/amd-llm.md))。4.8 節の条件 (全 8 列、1 列 2 コア以上) と同じ結論
 - コアの丸め: 4.7 節の floor は、画像生成の DiT で最近接偶数に直した (PR #48)
 - 行列積のピーク比: hwnpu の書き出しの経路 (重みをホストで bfp16 に詰めた flm.ProjectionGEMM) は 4096 行で 15.2 TFLOPS、256 行で 9.0 TFLOPS。読みの帯域は、演算子を読み込み直さなければ q4、q8、bf16 のどれも 53〜55 GB/s (2026-11-19、AMD での `hwnpu-dev probe`、PROBE.ja.md)
-- 演算をまとめる: 4.10 節の 1 層 1 呼び出しは、MoE の層を 4 演算にしたもの (design.md 16.75) が後に続く。注意層の 1 呼び出し、SiLU の exp2、行列積のカーネルの効率 (ピーク比 10〜13%)、K 方向の丸めを避けるカーネルは手を付けていない
+- 演算をまとめる: 4.10 節の 1 層 1 呼び出しは、MoE の層を 4 演算にしたもの ([docs/design/moe.md](design/moe.md)) が後に続く。注意層の 1 呼び出し、SiLU の exp2、行列積のカーネルの効率 (ピーク比 10〜13%)、K 方向の丸めを避けるカーネルは手を付けていない

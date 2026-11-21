@@ -188,7 +188,7 @@ func compare(got, want []float32) (cos, rel float64, bad int) {
 
 // worst prints the 12 elements that differ most (AICHECK_WORST): their index, position and
 // values. They show where the values are large as much as where the error is: PP-OCR's sat in
-// the last column while every column was off (design.md 16.183).
+// the last column while every column was off (docs/design/vision-models.md).
 func worst(got, want []float32, dims []int) {
 	type e struct {
 		i int

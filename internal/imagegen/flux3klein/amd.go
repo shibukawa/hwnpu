@@ -37,9 +37,9 @@ var AMDFiles = []string{
 }
 
 // AMDExportName is the name of the export for AMD's NPU of every size its caller gives (models.yaml
-// npu.amd's eight): NAME.amd-npu2 in lower case, as the other image models' (design.md 16.243). An
+// npu.amd's eight): NAME.amd-npu2 in lower case, as the other image models' (docs/design/image-amd.md). An
 // export of that name here that lacks a size asked for (the one of 1024 x 1024 and 512 x 512 alone
-// before, design.md 16.250) is replaced by PrepareAMD.
+// before, docs/design/image-amd.md) is replaced by PrepareAMD.
 func AMDExportName(name string) string {
 	return strings.ToLower(name) + ".amd-npu2"
 }

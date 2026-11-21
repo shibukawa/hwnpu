@@ -23,7 +23,7 @@ var Arch = &llm.Arch{
 	Params: []llm.Param{
 		{Name: "delta", Default: "chunk", Usage: "the Gated DeltaNet's recurrence: chunk (over chunks of rows, the state read and written once a chunk) or rows (one row after the other, the state read and written five times a row)"},
 		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state of every row, which the MTP layer (-arch qwen35-mtp) reads for speculative decoding"},
-		{Name: llm.RotateParam, Default: "0", Usage: "1: the residual stream rotated in the weights (llm.Rotate, a Walsh-Hadamard matrix with random signs): the same program, a lookup table's error about halved (lut6 on the Neural Engine, design.md 16.274); the host's embedding table is then the rotated one (tables-rot.safetensors). Not for a mixture of experts"},
+		{Name: llm.RotateParam, Default: "0", Usage: "1: the residual stream rotated in the weights (llm.Rotate, a Walsh-Hadamard matrix with random signs): the same program, a lookup table's error about halved (lut6 on the Neural Engine, docs/design/apple-neural-engine.md); the host's embedding table is then the rotated one (tables-rot.safetensors). Not for a mixture of experts"},
 		{Name: "state-rows", Default: "0", Usage: "1: a program with a KV cache also outputs st_rec_N_rows, each row's k, v, beta and decay of the Gated DeltaNet layer N, so that the host keeps a beginning of a step's tokens without running them again (speculative decoding)"},
 	},
 }

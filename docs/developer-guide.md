@@ -696,7 +696,7 @@ The network:
 
 ## 9. Constraints and rules
 
-There is one NPU, its memory is pinned, and its programs have fixed shapes. Much of an app's design follows from that. The numbers say where they come from: **"measured" means on a Ryzen AI 9 365 (AMD, XDNA 2) on 2026-11-21, through this library**; the others are records of design.md and MODEL.md. Nothing was measured through this library on a Mac or on Intel yet.
+There is one NPU, its memory is pinned, and its programs have fixed shapes. Much of an app's design follows from that. The numbers say where they come from: **"measured" means on a Ryzen AI 9 365 (AMD, XDNA 2) on 2026-11-21, through this library**; the others are records of [docs/design/README.md](design/README.md) and MODEL.md. Nothing was measured through this library on a Mac or on Intel yet.
 
 ### 9.1 The NPU is one queue
 
@@ -711,9 +711,9 @@ There is one NPU, its memory is pinned, and its programs have fixed shapes. Much
 
 - The calls take turns in small pieces (the transcription above ended 3.1 s into the speaker's call). A call does not wait for the whole of another
 - **Nothing orders the calls yet.** There is no way to say that audio goes first or that background work waits ([D10](#10-design-questions)). How long a short call waits in the middle of heavy work (a step of image generation takes one to several seconds) was not measured
-- AMD: each program of a model has a hardware context, and the firmware shares the time between them (design.md 16.94). A switch costs about 0.5 ms
-- Apple: switching programs costs 15 to 35 ms each time (design.md 16.36), which counts for a model that calls several programs a frame (the speaker). How several models of one process behave when called at once was not measured
-- Intel: how models behave when run at once is not measured (design.md 16.94)
+- AMD: each program of a model has a hardware context, and the firmware shares the time between them ([docs/design/architecture.md](design/architecture.md)). A switch costs about 0.5 ms
+- Apple: switching programs costs 15 to 35 ms each time ([docs/design/llm-decoding.md](design/llm-decoding.md)), which counts for a model that calls several programs a frame (the speaker). How several models of one process behave when called at once was not measured
+- Intel: how models behave when run at once is not measured ([docs/design/architecture.md](design/architecture.md))
 
 ### 9.2 Can the models work together in real time?
 
@@ -743,7 +743,7 @@ The delays measured (the recording paced as a microphone, counted from the end o
 
 - The +1.6 s of the text is 0.6 s of silence that ends an utterance (`VADOptions.Hangover`) and about a second of transcription
 - Later utterances are later because they share the NPU with the speech of the one before
-- Records on a Mac (alone): Whisper reads a 30 s window in 0.6 s on an M3; PLaMo 3 Translate on an M3 runs at 53 (0.8B), 17 (2B) and 10 to 11 (8B) tokens a second; the speaker at about 0.5 times real time in lut8 on an M3 (design.md 16.31, an old measurement). The speaker does not reach real time there either
+- Records on a Mac (alone): Whisper reads a 30 s window in 0.6 s on an M3; PLaMo 3 Translate on an M3 runs at 53 (0.8B), 17 (2B) and 10 to 11 (8B) tokens a second; the speaker at about 0.5 times real time in lut8 on an M3 ([docs/design/llm-models.md](design/llm-models.md), an old measurement). The speaker does not reach real time there either
 
 **What to choose when the sum is over 1**
 
@@ -796,9 +796,9 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 |---|---|---|
 | M1 (the Pro, Max and Ultra are taken to be alike) | With over 2.8 GiB of programs loaded on the Neural Engine together, every call slows down about 12 times. Large models (PLaMo 3 Translate 8B and others) are not picked by a use (`not_on: [M1]`) | `m1HoldBytes` in `internal/chat/model.go`, PROBE.md |
 | M2 and later | No such limit was found (3.65 GiB at full speed on an M2) | The same |
-| Apple, all | The Neural Engine's cache of compiled programs holds about 4 GiB. What is over it is compiled again at every start (minutes). Compiling is one serial queue for the whole machine | design.md 16.99, 16.229 |
-| AMD (XDNA 2) | No limit of memory of the NPU's own was found (its buffers are host memory). The models share the DRAM's bandwidth (about 55 GB/s), so those that read large weights slow each other down | design.md 16.94 |
-| Intel | On a Core Ultra 5 135U, Anima in fp16 failed with `OUT_OF_HOST_MEMORY` at about 4.6 GB. The limit of a program's weights is not known | design.md 16.144, intel-npu-models.md |
+| Apple, all | The Neural Engine's cache of compiled programs holds about 4 GiB. What is over it is compiled again at every start (minutes). Compiling is one serial queue for the whole machine | [docs/design/llm-qwen.md](design/llm-qwen.md), [docs/design/apple-coreai.md](design/apple-coreai.md) |
+| AMD (XDNA 2) | No limit of memory of the NPU's own was found (its buffers are host memory). The models share the DRAM's bandwidth (about 55 GB/s), so those that read large weights slow each other down | [docs/design/architecture.md](design/architecture.md) |
+| Intel | On a Core Ultra 5 135U, Anima in fp16 failed with `OUT_OF_HOST_MEMORY` at about 4.6 GB. The limit of a program's weights is not known | [docs/design/intel.md](design/intel.md), intel-npu-models.md |
 
 ### 9.5 `Release`, and image generation swapping its stages
 
@@ -824,11 +824,11 @@ Image generation's swapping is built differently for each NPU (figures of the re
 
 ### 9.6 Processes
 
-- **On a Mac, one hwnpu process uses the Neural Engine at a time.** Two at once froze an M1's OS, so the process that first opens the device holds a lock until it ends (design.md 16.132). While an app that stays running runs, commands such as `hwnpu-chat` wait. There is no API yet for an app to let the NPU go (`Suspend`)
-- AMD and Intel have no such lock. On AMD, processes can use the same NPU, sharing its time (commands were up to 50 times slower with another process on the NPU: new-model-checklist.md). Intel was not tried
-- On a Mac, macOS's own services (photo analysis, Apple Intelligence) use the Neural Engine too. While they ran, chat fell to 0.7 tokens a second (design.md 16.112). An app cannot stop them
+- **On a Mac, one hwnpu process uses the Neural Engine at a time.** Two at once froze an M1's OS, so the process that first opens the device holds a lock until it ends ([docs/design/apple-neural-engine.md](design/apple-neural-engine.md)). While an app that stays running runs, commands such as `hwnpu-chat` wait. There is no API yet for an app to let the NPU go (`Suspend`)
+- AMD and Intel have no such lock. On AMD, processes can use the same NPU, sharing its time (commands were up to 50 times slower with another process on the NPU: [docs/design/new-model-checklist.md](design/new-model-checklist.md)). Intel was not tried
+- On a Mac, macOS's own services (photo analysis, Apple Intelligence) use the Neural Engine too. While they ran, chat fell to 0.7 tokens a second ([docs/design/llm-engine.md](design/llm-engine.md)). An app cannot stop them
 - **Take a process to have one `App`.** The store's settings are one per process ([D8](#10-design-questions))
-- Several models in one process on AMD need the fix of the device heap's address (design.md 16.281)
+- Several models in one process on AMD need the fix of the device heap's address ([docs/design/api.md](design/api.md))
 
 ### 9.7 The shapes of inputs and outputs
 
@@ -896,7 +896,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 **D9. Memory is left to the app** — now: `Get` loads and `Release` unloads. There is no budget and nothing is evicted.
 
-- Option: a budget in the `Runtime`, which unloads models that are not in use when it runs short (design.md 16.94). A `Use` says whether it may be unloaded (`use.Resident()`, `use.Evictable()`). The value an app holds must then be an indirection, so that it survives its model being unloaded
+- Option: a budget in the `Runtime`, which unloads models that are not in use when it runs short ([docs/design/architecture.md](design/architecture.md)). A `Use` says whether it may be unloaded (`use.Resident()`, `use.Evictable()`). The value an app holds must then be an indirection, so that it survives its model being unloaded
 - **Not decided**: when. It changes the rule of how long a value from `Get` lives
 
 **D10. Concurrency** — now: one request at a time for each model. Nothing orders the models among themselves (the NPU's driver does). Each model opens its own device.

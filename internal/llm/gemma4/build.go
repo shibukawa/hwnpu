@@ -150,7 +150,7 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 // lastFrom is the first layer that computes the last token's row alone: with LastRow and a KV
 // cache, the first that reuses earlier keys and values. A prompt's step leaves behind the cache
 // and the logits after its last token; those layers write no cache, so the other rows of them go
-// nowhere (design.md 16.80 on AMD, 16.83). Past the last layer without.
+// nowhere (docs/design/amd-llm.md on AMD, docs/design/apple-neural-engine.md). Past the last layer without.
 func (m *builder) lastFrom() int {
 	if m.opts.LastRow && m.opts.Cache > 0 && m.cfg.KVShared > 0 {
 		return m.cfg.firstShared()
@@ -229,12 +229,12 @@ func (m *builder) perLayerInputs(h *mlpackage.Var) *mlpackage.Var {
 // head is the final norm, the output layer tied to the embeddings and the soft cap of the logits.
 // By default (Options.HostSoftcap) the host applies the soft cap: it is monotonic, so sampling
 // needs its values for the few most likely tokens alone, and the program is all on the Neural
-// Engine. On an M1 the output layer's part took 2.3 ms less a step (docs/design.md 16.113).
+// Engine. On an M1 the output layer's part took 2.3 ms less a step (docs/design/llm-engine.md).
 // In the program instead: the Neural Engine takes the output layer's 262144 wide axis but not
 // elementwise operations over it (they go to the CPU), so the soft cap runs on the logits folded
 // into rows of at most llm.NeuralEngineMaxDim. The reshape back to (1, seq, vocab) still goes to
 // the CPU (flat); leaving y folded (Options.FoldedLogits) puts everything on the Neural Engine
-// but was 5 to 12% slower on an M3 (16.43).
+// but was 5 to 12% slower on an M3 (docs/design/apple-coreml.md).
 func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
 	seq := h.Shape[1] // 1 for the last row alone (LastRow)

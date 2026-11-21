@@ -14,8 +14,7 @@ import (
 
 // TestWriteProbes writes parts of the DiT at 1024 x 1024 whole and with pieces taken out, as Core
 // AI programs (Core ML packages with HWNPU_ANIMA_PROBE_COREML, for aicheck run -cpu), to time
-// what each piece of a block costs with aicheck run -calls N and aicheck cycle (design.md
-// 16.201): HWNPU_ANIMA_DIR is the Anima directory (diffusion_models/ ...), HWNPU_ANIMA_PROBE_OUT
+// what each piece of a block costs with aicheck run -calls N and aicheck cycle (docs/design/image-apple.md): HWNPU_ANIMA_DIR is the Anima directory (diffusion_models/ ...), HWNPU_ANIMA_PROBE_OUT
 // where they go, HWNPU_ANIMA_PROBE the comma separated keys of parts (default: all). v_ are one
 // block (with self-attention it fails the Neural Engine's compiler alone: time groups), g_ and
 // na are groups of blocks, a_ attention alone on its q, k and v.
@@ -292,7 +291,7 @@ type variant struct {
 	cbias            *mlpackage.Var
 }
 
-// ditBlockV is ditBlock before design.md 16.201 (the scale on the scores), changed by vr.
+// ditBlockV is ditBlock before docs/design/image-apple.md (the scale on the scores), changed by vr.
 func ditBlockV(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, vr variant) *mlpackage.Var {
 	p := fmt.Sprintf("dit.blocks.%d.", i)
 	E, H, D := DitHidden, ditHeads, ditHeadDim

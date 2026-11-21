@@ -36,7 +36,7 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 | 0.97 B (16 layers), 1.81 GiB | bf16 | layers | 1 | 41.1 | 24.3 | 47 | 24 | 0.09 | 8.97 | 368.8 | 10 |  |
 | 0.97 B (16 layers), 1.81 GiB | bf16 | stream | 1 | 35.5 | 28.2 | 55 | 27 | 0.07 | 9.68 | 343.2 | 10 |  |
 
-layers: a layer's seven linears one after another (QGEMV for q4, q6 and q8, IRON's GEMV for bf16) and the SwiGLU's product, as hwnpu's exports of the other models than gpt-oss run them: every operator that follows another is loaded onto the cores again. stream: the same bytes in GEMVs of one shape (8192 by 2048) back to back, not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's GptOssStep, docs/design.md 16.179).
+layers: a layer's seven linears one after another (QGEMV for q4, q6 and q8, IRON's GEMV for bf16) and the SwiGLU's product, as hwnpu's exports of the other models than gpt-oss run them: every operator that follows another is loaded onto the cores again. stream: the same bytes in GEMVs of one shape (8192 by 2048) back to back, not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's GptOssStep, [docs/design/moe.md](../docs/design/moe.md)).
 
 ## K rows per call (AMD, IRON)
 
@@ -73,7 +73,7 @@ layers: a layer's seven linears one after another (QGEMV for q4, q6 and q8, IRON
 | 1536 | 24 of 128 | 12.8 | 2.27 | 1 |  |
 | 4608 | 24 of 128 | 82.2 | 3.17 | 1 |  |
 
-iron_mha.ImageMHA with QKᵀ and P·V through bfp16 and the softmax's exponential on one bf16 limb (FLUX.2 klein's export, docs/design.md 16.207). TFLOPS counts the two products (4 × rows² × heads × dim).
+iron_mha.ImageMHA with QKᵀ and P·V through bfp16 and the softmax's exponential on one bf16 limb (FLUX.2 klein's export, [docs/design/image-amd.md](../docs/design/image-amd.md)). TFLOPS counts the two products (4 × rows² × heads × dim).
 
 ## Where the power goes (AMD, gpu_metrics)
 
@@ -86,7 +86,7 @@ At rest: package 4.38 W (NPU 0.00, CPU cores 0.12, GPU 0.00, the rest 4.26), DRA
 | bench layers-q6-l8-r1 | 20.3 | 12.76 | +8.38 | 1.30 | +1.33 | +5.75 | 16 % | 69 % | 19.2 | 81 % | 1663 |
 | bench stream-q6-l8-r1 | 10.2 | 15.30 | +10.92 | 0.68 | +1.61 | +8.63 | 6 % | 79 % | 34.9 | 83 % | 1658 |
 | bench layers-q8-l8-r1 | 19.4 | 13.05 | +8.67 | 1.31 | +1.34 | +6.03 | 15 % | 69 % | 25.5 | 81 % | 1662 |
-| bench stream-q8-l8-r1 | 9.4 | 16.16 | +11.79 | 0.67 | +1.72 | +9.39 | 6 % | 80 % | 48.8 | 83 % | 1656 |
+| bench stream-q8-l8-r1 | 9.4 | [llm-engine](../docs/design/llm-engine.md) | +11.79 | 0.67 | +1.72 | +9.39 | 6 % | 80 % | 48.8 | 83 % | 1656 |
 | bench layers-bf16-l8-r1 | 20.6 | 14.40 | +10.02 | 0.81 | +2.34 | +6.88 | 8 % | 69 % | 43.7 | 82 % | 1664 |
 | bench stream-bf16-l8-r1 | 17.8 | 14.10 | +9.72 | 0.61 | +1.63 | +7.48 | 6 % | 77 % | 48.7 | 82 % | 1661 |
 | bench layers-q4-l16-r1 | 31.3 | 13.34 | +8.96 | 1.53 | +1.69 | +5.73 | 17 % | 64 % | 19.5 | 82 % | 1666 |
@@ -94,7 +94,7 @@ At rest: package 4.38 W (NPU 0.00, CPU cores 0.12, GPU 0.00, the rest 4.26), DRA
 | bench layers-q6-l16-r1 | 40.5 | 12.82 | +8.44 | 1.33 | +1.39 | +5.72 | 16 % | 68 % | 19.7 | 83 % | 1670 |
 | bench stream-q6-l16-r1 | 20.6 | 15.19 | +10.81 | 0.69 | +1.68 | +8.45 | 6 % | 78 % | 35.7 | 82 % | 1658 |
 | bench layers-q8-l16-r1 | 38.0 | 13.22 | +8.84 | 1.35 | +1.37 | +6.11 | 15 % | 69 % | 26.3 | 83 % | 1669 |
-| bench stream-q8-l16-r1 | 18.9 | 16.04 | +11.66 | 0.68 | +1.64 | +9.34 | 6 % | 80 % | 49.4 | 83 % | 1662 |
+| bench stream-q8-l16-r1 | 18.9 | [memory-and-power](../docs/design/memory-and-power.md) | +11.66 | 0.68 | +1.64 | +9.34 | 6 % | 80 % | 49.4 | 83 % | 1662 |
 | bench layers-bf16-l16-r1 | 41.1 | 13.43 | +9.05 | 0.82 | +1.39 | +6.83 | 9 % | 76 % | 43.7 | 83 % | 1666 |
 | bench stream-bf16-l16-r1 | 35.5 | 14.09 | +9.71 | 0.62 | +1.59 | +7.50 | 6 % | 77 % | 50.2 | 84 % | 1668 |
 | verify layers-q8-l8-r1 | 19.2 | 13.43 | +9.05 | 1.32 | +1.52 | +6.21 | 15 % | 69 % | 25.5 | 82 % | 1662 |
@@ -119,7 +119,7 @@ At rest: package 4.38 W (NPU 0.00, CPU cores 0.12, GPU 0.00, the rest 4.26), DRA
 | verify layers-bfp16-l8-r1024 | 75.1 | 22.80 | +18.42 | 1.97 | +1.13 | +15.33 | 11 % | 83 % | 45.5 | 85 % | 1683 |
 | verify layers-bfp16-l8-r4096 | 262.0 | 24.66 | +20.28 | 1.98 | +0.70 | +17.60 | 10 % | 87 % | 50.1 | 92 % | 1736 |
 | attn attn-r1536-h24-d128 | 12.8 | 15.10 | +10.72 | 0.76 | +0.44 | +9.52 | 7 % | 89 % | 17.3 | 87 % | 1734 |
-| attn attn-r4608-h24-d128 | 82.2 | 15.47 | +11.09 | 0.60 | +0.43 | +10.06 | 5 % | 91 % | 16.7 | 89 % | 1735 |
+| attn attn-r4608-h24-d128 | 82.2 | 15.47 | +11.09 | 0.60 | +0.43 | +10.06 | 5 % | 91 % | [memory-and-power](../docs/design/memory-and-power.md) | 89 % | 1735 |
 
 The SMU's own split (amdgpu's gpu_metrics, the means of a sample every 50 ms while the run is timed). NPU W is the NPU's rail; the rest is the package less the NPU, the CPU cores and the GPU: the data fabric, the memory controller and its PHY, and I/O, the part of moving the weights that is on the package. The DRAM chips are outside it and not measured. The shares are of the package's power above rest.
 

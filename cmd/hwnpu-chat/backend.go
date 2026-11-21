@@ -13,8 +13,7 @@ import (
 // chatDevice is the device backend hwnpu-chat converts for and runs on for the one a command names
 // (name, else HWNPU_BACKEND, else the NPU found): on a Mac Core AI's, whatever names Apple's Neural
 // Engine (coreml included, as HWNPU_BACKEND may for the other commands); Core ML is not used. Its
-// chat and embedding models are converted for Core AI from their checkpoints (docs/design.md
-// 16.185, 16.191).
+// chat and embedding models are converted for Core AI from their checkpoints (docs/design/apple-coreai.md).
 func chatDevice(name string) string {
 	if name == "" {
 		name = strings.TrimSpace(os.Getenv(llm.BackendEnv))

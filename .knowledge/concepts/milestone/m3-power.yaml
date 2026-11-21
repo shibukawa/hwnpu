@@ -45,7 +45,7 @@ facts:
     coreml_cache: キャッシュありの Core ML コンパイルは 158 ms から 27 ms
 history:
   completed:
-    summary: 2026-10-28 受け入れテストに合格 (Intel は偽のドライバ、Apple は実機)。詳細は docs/design.md 16.4
+    summary: 2026-10-28 受け入れテストに合格 (Intel は偽のドライバ、Apple は実機)。詳細は docs/design/memory-and-power.md
 relations:
   - relation: delivers
     to: requirement:power-control

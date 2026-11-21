@@ -92,7 +92,7 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 	} else if vendor := chat.HereVendor(); programDevice(m, vendor, c.Device) {
 		// Intel's NPU runs the encoder converted from its ONNX file to OpenVINO IR, Apple's
 		// Neural Engine the same as a Core ML package (M3: 0.4 s where hwnpu's evaluator takes
-		// 33 s, the mask's IoU with the CPU's 0.9994; design.md 16.183)
+		// 33 s, the mask's IoU with the CPU's 0.9994; docs/design/vision-models.md)
 		enc, dec, err := segment.Fetch(ctx, setup)
 		if err != nil {
 			return err

@@ -11,7 +11,7 @@ import (
 // kept loads in milliseconds whatever its size, one that is compiled takes seconds to minutes,
 // and the runtime (Core AI, Core ML, Level Zero) tells nothing while it does. What is known is
 // how long the programs loaded before took for their size: a load's bar goes by the time since
-// it started over the time a program of that size took, an estimate (design.md 16.204).
+// it started over the time a program of that size took, an estimate (docs/design/cli.md).
 
 const (
 	// slowLoad is the shortest load that tells how long a compile takes: a shorter one was kept

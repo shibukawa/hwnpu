@@ -1,6 +1,6 @@
 # 引き継ぎ: AMD で MoE の専門家を一部だけ置く (使用統計、固定する専門家、gpt-oss-120b)
 
-作成: 2026-11-20、整理: 2026-11-21。Mac (Core AI) の gpt-oss-20b で作った「専門家ごとに、よく使うものだけを常駐させる」仕組みと使用統計の道具を、AMD の NPU (Ryzen AI 9 365、XDNA 2、50 TOPS) に持っていき、メモリに入りきらない MoE (gpt-oss-120b) を動かすためのメモ。Mac 側の実装は [docs/handoff-m2-moe.md](handoff-m2-moe.md) の 1 節、AMD の gpt-oss-20b は [docs/design.md](design.md) の 16.179。
+作成: 2026-11-20、整理: 2026-11-21。Mac (Core AI) の gpt-oss-20b で作った「専門家ごとに、よく使うものだけを常駐させる」仕組みと使用統計の道具を、AMD の NPU (Ryzen AI 9 365、XDNA 2、50 TOPS) に持っていき、メモリに入りきらない MoE (gpt-oss-120b) を動かすためのメモ。Mac 側の実装は [docs/handoff-m2-moe.md](handoff-m2-moe.md) の 1 節、AMD の gpt-oss-20b は [docs/design/moe.md](design/moe.md)。
 
 ## 1. Mac で作ったもの (ブランチ `t3/gpt-oss-20b`、PR #243)
 
@@ -26,9 +26,9 @@
 
 - 統計のファイルの形と `Placement` の決め方は Mac と同じにしておく (models.yaml の `experts_core` も、道具も共通)
 - 固定の量の測り方: AMD は smaps の `/dev/accel/accel0` の写像の大きさ。`hwnpu status` は Linux では resident を出す
-- 結果が出たら: improvements.md (と .ja.md)、new-model-checklist.md (と .ja.md) の MoE の節、models.yaml、MODEL.md
+- 結果が出たら: [docs/design/performance.md](design/performance.md) (と .ja.md)、[docs/design/new-model-checklist.md](design/new-model-checklist.md) (と .ja.md) の MoE の節、models.yaml、MODEL.md
 
-## 4. 結果 (2026-11-20、design.md 16.263)
+## 4. 結果 (2026-11-20、[docs/design/moe.md](design/moe.md))
 
 - **使用回数**: できた (`iron.Model.CountExperts`)。デコードは次のコマンドのスクラッチパッドの位置の語を読み戻す (費用は測れない)。20b の 110 プロンプトは Mac とほぼ同じ (芯 140 個と 141 個、131 個が共通)。models.yaml の `experts_core` はそのまま
 - **一部だけ常駐**: 決まった数の置き場 (スロット) を持ち、配列は「スロット番号 → 置き場の位置」を実行時の値で受け取る形 (EStream 2609.06551 の考え方)。カーネルは変えず、デコードは 1 コマンドずつ待ち、ホストが外れをコピーして位置の語を書き直す (待つ費用 1 トークン約 1.2 ms)。20b: 置き場 16 で固定 6.90 GiB、17.2 tok/s (全部 12.22 GiB、20.2)、置き場 24 で 9.44 GiB、19.0。答えは全部の書き出しと 1 文字ずつ同じ。B (CPU で外れを計算) はしていない
@@ -38,9 +38,9 @@
 - **120b は models.yaml に載せない** (検証だけ): NPU に 32 GiB を固定し、10 tok/s はディスクの帯域で決まる。このサイズは GPU 向き。80 TOPS を超える NPU (Snapdragon X2、M6 など) とメモリが安くなってから考える
 - **AMD の記事の基準** (同じ機械では測っていない: ONNX Runtime GenAI の環境が無い): 20b の全部常駐 13.4 tok/s・13.7 GB に対し hwnpu 20.2・12.2 GiB、24 層動的 2.4 tok/s・2.7 GB に対し置き場 16 で 17.2・6.9 GiB
 
-## 5. Qwen3.6-35B-A3B (2026-11-21、design.md 16.276)
+## 5. Qwen3.6-35B-A3B (2026-11-21、[docs/design/moe.md](design/moe.md))
 
-- 置き場を `qwen35moe` にも (`--expert-places P`、P は 256 まで)。デコードは経路の選択がデバイスのまま、16.263 の fed の書き直しがそのまま動く。プロンプトは Qwen3.6 の数と x (専門家の番号の順) を置き場の順にした `poolRowPasses`
+- 置き場を `qwen35moe` にも (`--expert-places P`、P は 256 まで)。デコードは経路の選択がデバイスのまま、[moe](design/moe.md) の fed の書き直しがそのまま動く。プロンプトは Qwen3.6 の数と x (専門家の番号の順) を置き場の順にした `poolRowPasses`
 - 40 層 (main 3202fb7 で作り直し): P = 32 で 7.2〜7.6 GiB、5.8〜6.0 tok/s (コピー 33〜38 %)、128 で 14.9〜16.0 GiB、7.5〜7.6 (6〜7 %)、全部 24.4〜25.2 GiB、8.8〜8.9。ロジットは全部の書き出しとビット単位で同じ。models.yaml: 16 GB は 32、24 GB から 128、48 GB から全部
 - 芯は入れない (置き場 32 では悪くなる)。AMD の hwnpu-chat が `experts_core` とアプリの統計を置き場に渡していなかった不具合を直した (gpt-oss も)
-- 残りは 2 節。Apple は 16.261、16.262、16.275 (Core AI、専門家は CPU)
+- 残りは 2 節。Apple は [moe](design/moe.md)、[moe](design/moe.md) (Core AI、専門家は CPU)

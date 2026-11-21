@@ -1,8 +1,7 @@
 // Package paged is the attention of a model split at its attention (llm.Options.Paged): the
 // host holds a long KV cache in chunks of a fixed length, and a program without weights attends
 // over one chunk at a time, called for the chunks in use only, so that a step costs in proportion
-// to the tokens in the cache rather than to its capacity (docs/model-fit.md T2, docs/design.md
-// 16.58). The host merges the chunks' outputs (Merge), as Flash-Decoding does.
+// to the tokens in the cache rather than to its capacity (docs/model-fit.md T2, docs/design/llm-engine.md). The host merges the chunks' outputs (Merge), as Flash-Decoding does.
 //
 // The program's inputs are q (1, heads, tokens, head_dim), RoPE already applied; k and v (1,
 // kv_heads, chunk, head_dim), one chunk of the cache with the step's own keys and values already
@@ -36,12 +35,12 @@ type Shape struct {
 // Heads is the form of the attention program that Core AI runs fastest on the Neural Engine: a
 // kv head at a time, its scores laid out (1, rows, 1, keys) with the reductions over the last
 // axis, the scale on the queries and the sum of the exps a reduce_sum (which Core ML placed
-// unsteadily, Build). As the image models' attention (docs/design.md 16.202), for the few query
+// unsteadily, Build). As the image models' attention (docs/design/image-apple.md), for the few query
 // rows of a language model's step. On an M1 a call of LFM3-1.7B's 8 rows over a chunk of 1024,
 // 4096 and 8192 keys takes 0.47, 0.80 and 1.23 ms against the grouped form's 0.55, 0.94 and
 // 1.45; of 128 rows, 1.09, 3.14 and 6.18 against 1.26, 4.16 and 8.22. With one kv head for all
 // the heads (Gemma 4 E2B, PLaMo 3 Translate 0.8B) the program leaves the Neural Engine: the
-// grouped form is theirs (docs/design.md 16.219).
+// grouped form is theirs (docs/design/apple-coreai.md).
 const Heads = "heads"
 
 // DefaultChunk is the chunk length hwnpu-chat converts with: 8 and 64 query rows are on the

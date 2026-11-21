@@ -19,7 +19,7 @@ import (
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
 // again. 2: the DiT's attention scale in the queries' norms, its norms' magnitudes by abs, the
-// attention a head at a time with the image's and the text's keys apart (design.md 16.211, 16.214).
+// attention a head at a time with the image's and the text's keys apart (docs/design/image-apple.md).
 const ExportVersion = 2
 
 // TextVersion is the layout T5's, the approximator's and the VAE's programs last changed at: an
@@ -70,13 +70,13 @@ func (o *ConvertOptions) defaults() {
 		// lut8 with wo, the FF's output projection whose inputs carry T5's outliers, at fp16
 		// (5.5 GB against fp16's 9.5): the same pictures as fp16 (latent cosine 0.996 to 0.999 to
 		// fp16's T5), where lut8 throughout took one prompt row to a cosine of 0.77 and int8 put
-		// infinities on the Neural Engine (wo's integer sums, design.md 16.170)
+		// infinities on the Neural Engine (wo's integer sums, docs/design/image-apple.md)
 		o.TextFormat, o.TextFormatFor = "lut8", []string{"wo=fp16"}
 	}
 	if o.DitFormat == "" {
 		// lut8: per-row int8 put infinities in the later double blocks' text stream on the Neural
 		// Engine (its integer sums of large inputs), and the velocity was 14 % off float32 at
-		// sigma 0.25; lut8 1.2 % (design.md 16.170)
+		// sigma 0.25; lut8 1.2 % (docs/design/image-apple.md)
 		o.DitFormat = "lut8"
 	}
 	if o.TextGroup <= 0 {
@@ -253,7 +253,7 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 
 // writeModel writes model.json, as tools/amd/iron_chroma.py's write_model: Chroma1-Flash Heun's 8
 // steps without guidance; Chroma1-HD guidance 3 with DPM-Solver++ 2M 25 steps, guided at sigma
-// >= 0.6 only (design.md 16.157).
+// >= 0.6 only (docs/design/image-models.md).
 func writeModel(root, out string) error {
 	b, err := os.ReadFile(filepath.Join(root, "scheduler", "scheduler_config.json"))
 	if err != nil {

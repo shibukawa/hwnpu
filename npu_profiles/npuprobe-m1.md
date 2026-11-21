@@ -47,7 +47,7 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 |---|---|---|---|---|---|---|---|---|
 | fp16 | 2 | 0.23 GiB | NPU | 4.9 | 50 | 0.08 | 1.5 |  |
 | fp16 | 4 | 0.45 GiB | NPU | 8.5 | 57 | 0.04 | 2.9 |  |
-| fp16 | 8 | 0.91 GiB | NPU | 16.7 | 58 | 0.03 | 5.7 |  |
+| fp16 | 8 | 0.91 GiB | NPU | [memory-and-power](../docs/design/memory-and-power.md) | 58 | 0.03 | 5.7 |  |
 | fp16 | 9 | 1.02 GiB | CPU 146 | 51.8 | 21 | 3.82 | 3.9 |  |
 | fp16 | 10 | 1.13 GiB | CPU 162 | 62.2 | 20 | 3.56 | 4.8 |  |
 | fp16 | 12 | 1.36 GiB | CPU 194 | 81.3 | 18 | 3.24 | 5.4 |  |
@@ -56,7 +56,7 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 | int8 | 8 | 0.45 GiB | NPU | 8.0 | 61 | 0.03 | 3.4 |  |
 | int8 | 12 | 0.68 GiB | NPU | 11.6 | 63 | 0.02 | 4.9 |  |
 | int8 | 16 | 0.91 GiB | NPU | 15.9 | 61 | 0.02 | 6.5 |  |
-| int8 | 17 | 0.96 GiB | NPU | 16.5 | 63 | 0.01 | 7.5 |  |
+| int8 | 17 | 0.96 GiB | NPU | [amd](../docs/design/amd.md) | 63 | 0.01 | 7.5 |  |
 | int8 | 18 | 1.02 GiB | CPU 290 | 109.6 | 10 | 3.64 | 6.9 |  |
 | int8 | 20 | 1.13 GiB | CPU 322 | 123.8 | 10 | 3.60 | 8.7 |  |
 | int8 | 24 | 1.36 GiB | CPU 386 | 146.1 | 10 | 3.64 | 12.7 |  |
@@ -65,8 +65,8 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 | lut4 | 8 | 0.23 GiB | NPU | 5.6 | 43 | 0.03 | 3.7 |  |
 | lut4 | 12 | 0.34 GiB | NPU | 8.3 | 44 | 0.02 | 5.7 |  |
 | lut4 | 16 | 0.45 GiB | NPU | 10.7 | 45 | 0.02 | 7.7 |  |
-| lut4 | 24 | 0.68 GiB | NPU | 16.0 | 45 | 0.01 | 11.7 |  |
-| lut4 | 32 | 0.91 GiB | NPU | 21.7 | 45 | 0.01 | 16.2 |  |
+| lut4 | 24 | 0.68 GiB | NPU | [README](../docs/design/README.md) | 45 | 0.01 | 11.7 |  |
+| lut4 | 32 | 0.91 GiB | NPU | 21.7 | 45 | 0.01 | [intel](../docs/design/intel.md) |  |
 | lut4 | 34 | 0.96 GiB | NPU | 23.1 | 45 | 0.01 | 17.1 |  |
 | lut4 | 35 | 0.99 GiB | NPU | 23.7 | 45 | 0.01 | 17.6 |  |
 | lut4 | 36 | 1.02 GiB | CPU 578 | 2700.0 | 0 | 0.59 | 23.7 |  |

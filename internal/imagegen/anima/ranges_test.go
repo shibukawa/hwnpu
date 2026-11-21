@@ -36,7 +36,7 @@ func (p *rangeProgram) Run(ctx context.Context, in map[string][]float32) ([]floa
 
 // TestBlockRanges draws pictures with an export on the NPU and prints the ranges of what the
 // DiT's norms take in every block (mil.BlockRanges), over every DiT call: whether a checkpoint's
-// values fit fp16 as the norms are written (design.md 16.201). The queries' and keys' RMS is
+// values fit fp16 as the norms are written (docs/design/image-apple.md). The queries' and keys' RMS is
 // also given over what their projection's weights give for white input of unit variance (the
 // scale mil folds into the weights).
 //

@@ -5,7 +5,7 @@
 // 1.4 ms, 2.5 times a LayerNorm of the same bytes in rows of 2048: a kernel call and a fifo
 // object a head. Here a call takes a whole row (HR_HEADS heads of HR_D) and normalizes each head
 // with its own sum of squares, as rms_norm_aie2p.h does a row: the output x (s_hi + s_lo),
-// rounded to bf16 once, nearest even. tools/amd/iron_headnorm.py, design.md 16.200.
+// rounded to bf16 once, nearest even. tools/amd/iron_headnorm.py, docs/design/image-amd.md.
 //===----------------------------------------------------------------------===//
 #include <aie_api/aie.hpp>
 #include <stdint.h>

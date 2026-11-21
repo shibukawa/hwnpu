@@ -48,7 +48,7 @@ The Go library API is planned and not settled yet. Its current shape is in [USAG
 - [MODEL.md](MODEL.md): the recommended model for each use and amount of memory
 - [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md): the data types each NPU computes in, and how models are prepared
 - [CLOUD_AI_COMPATIBILITY.md](CLOUD_AI_COMPATIBILITY.md): which features of cloud AI APIs hwnpu can take over
-- [docs/design.md](docs/design.md): design notes and measurements (Japanese)
+- [docs/design/README.md](docs/design/README.md): design notes and measurements (Japanese)
 
 ## Tests
 

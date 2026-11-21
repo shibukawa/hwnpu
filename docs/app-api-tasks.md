@@ -1,14 +1,14 @@
 # 作業の分担: アプリに組み込むライブラリとサンプル
 
-作成: 2026-11-11。更新: 2026-11-21 (`ai` の v0 を main に載せ直した。構成は [app-api.md](app-api.md) の 1 節、実装の記録は design.md 16.281)。この文書は、その計画を複数の機械で手分けして実装するための作業の一覧。
+作成: 2026-11-11。更新: 2026-11-21 (`ai` の v0 を main に載せ直した。構成は [app-api.md](app-api.md) の 1 節、実装の記録は [docs/design/api.md](design/api.md))。この文書は、その計画を複数の機械で手分けして実装するための作業の一覧。
 
-**2026-11-21 に変わったこと**: `ai` は 1 つのパッケージから、`ai` (登録、計画、準備、実行)、`ai/flow` (流れ、非同期、メトロノーム)、機能のパッケージ (`ai/speech`、`ai/text`)、`ai/cli` (サブコマンド。kong 用は `ai/cli/konghelper`) に分けた。`ai.NewRegistry` と `rt.Transcriber("transcribe")` は、`ai.NewApp` と型のついた `Use` (`speech.Transcribe("transcribe").Get(ctx, rt)`) になった。下の節の本文にある古い名前は、その読み替えで読む。Whisper と LFM3-Audio の読み上げは AMD の NPU で動くようになり (16.253、16.254)、`samples/interpreter` (録音を読む形) は aix1 で動いた。
+**2026-11-21 に変わったこと**: `ai` は 1 つのパッケージから、`ai` (登録、計画、準備、実行)、`ai/flow` (流れ、非同期、メトロノーム)、機能のパッケージ (`ai/speech`、`ai/text`)、`ai/cli` (サブコマンド。kong 用は `ai/cli/konghelper`) に分けた。`ai.NewRegistry` と `rt.Transcriber("transcribe")` は、`ai.NewApp` と型のついた `Use` (`speech.Transcribe("transcribe").Get(ctx, rt)`) になった。下の節の本文にある古い名前は、その読み替えで読む。Whisper と LFM3-Audio の読み上げは AMD の NPU で動くようになり ([audio-models](design/audio-models.md))、`samples/interpreter` (録音を読む形) は aix1 で動いた。
 
 読む順: [app-api.md](app-api.md) → [prebuilt.md](prebuilt.md) の 1〜4 節 → [handoff-ane-cache.md](handoff-ane-cache.md) の 4 節。
 
 ## 0. 進め方
 
-- 作業ごとに `main` からブランチを切り、PR を 1 つ出す。終わったら [design.md](design.md) の 16 章に節を足し、この文書の表の「状態」を更新する
+- 作業ごとに `main` からブランチを切り、PR を 1 つ出す。終わったら [docs/design/README.md](design/README.md)に節を足し、この文書の表の「状態」を更新する
 - 機械の呼び方:
   - **どこでも**: Go が動く機械。NPU は要らない。CPU の実行器 (`--cpu`、`internal/milcpu`) とモックで確かめる
   - **Mac**: Neural Engine のある Mac。主に M3 (16 GB)。8 GB での確認には M1
@@ -30,7 +30,7 @@
 | **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 未着手 |
 | B7 | `ai/cli`: アプリに足すサブコマンド (`models`、`status`)。コマンドラインのライブラリに依存しない関数と、kong のアダプタ `ai/cli/konghelper` | どこでも | B1 | 小 | 済み |
 | B9 | ネットワークと呼び出しの宣言 (`flow` の節、`App.From(...).To(...)` / `Run`、`ai.NewCall(...).Then(...)`、プログラムの節 (`Each`、`Route`、`Both`、`With`)、動いている間の設定の変更) | どこでも | B0 | 中 | v0 済み (入力が 3 つ以上の節、モデルを下ろすタイミング、辺ごとの計測は残り。developer-guide.ja.md の D21) |
-| **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 (16.94) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
+| **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 ([architecture](design/architecture.md)) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
 | B4 | アプリのための Neural Engine のロックの方針 | Mac | B2 | 小 | 未着手 |
 | B5 | 文字起こしを流しながら (話している途中の仮の字幕と確定) | どこでも、確認は Mac | B2 | 中 | 未着手 |
 | B6 | 読み上げを流しながら (できた音から返す、文を受けるたびに読む) | どこでも、確認は Mac | B2 | 小 | 未着手 |
@@ -46,8 +46,8 @@
 | E3 | バンドルの形式、`hwnpu-dev bundle`、実行時の照合 | どこでも、確認は Mac | A1、B1、E1 | 中 | 未着手 |
 | F1 | `internal/onnx` に LSTM と If | どこでも | — | 中 | 未着手 |
 | F2 | Silero VAD を Neural Engine で | Mac | F1、B2 | 小 | 未着手 |
-| G1 | Whisper を AMD の NPU で | aix1 | — | 大 | 済み (design.md 16.253) |
-| G2 | LFM3-Audio の読み上げを AMD の NPU で | aix1 | — | 大 | 済み (design.md 16.254) |
+| G1 | Whisper を AMD の NPU で | aix1 | — | 大 | 済み ([docs/design/audio-models.md](design/audio-models.md)) |
+| G2 | LFM3-Audio の読み上げを AMD の NPU で | aix1 | — | 大 | 済み ([docs/design/audio-models.md](design/audio-models.md)) |
 | G3 | Silero VAD を AMD の機械で (CPU の見込み) | aix1 | F1 | 小 | 未着手 |
 | H1 | 文書: README、CLOUD_AI_COMPATIBILITY、英語版、godoc の例 | どこでも | B3、C2 | 小 | 未着手 |
 | **I1** | 決まった形で答える生成 (JSON Schema、`response_format`) | どこでも、確認は Mac | — | 中 | 未着手 |
@@ -99,7 +99,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 - 合格の条件
   - 小さなモデル (LFM3 の小さい構成、YuNet の ONNX から、Anima の VAE の段の 1 つ) を同じ入力で 2 回変換し、`cache.TreeDigest` が一致するテスト (`internal/mlpackage`、`internal/onnx`、`internal/imagegen/milpart`)
   - Mac: 1 つのモデルを変換し直し、2 回目の読み込みで hwnpu のキャッシュに当たること (`HWNPU_COREML_TRACE=1`)
-- 注意: 直したあとの最初の変換は、前の (乱数入りの) 書き出しと別物になる。利用者の機械では一度だけコンパイルし直すことになる。design.md に書く
+- 注意: 直したあとの最初の変換は、前の (乱数入りの) 書き出しと別物になる。利用者の機械では一度だけコンパイルし直すことになる。[docs/design/README.md](design/README.md) に書く
 
 ### A2. OpenVINO IR と AMD の書き出しが決定的かを確かめる
 
@@ -162,10 +162,10 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### B8. 常駐の管理
 
-- design.md 16.94 の「Device の常駐の管理」。今は、モデルごとにデバイスを開き、`Use.Release` を呼ぶのはアプリ、モデルは自分の中でだけ要求を 1 つずつ通す
+- [docs/design/architecture.md](design/architecture.md) の「Device の常駐の管理」。今は、モデルごとにデバイスを開き、`Use.Release` を呼ぶのはアプリ、モデルは自分の中でだけ要求を 1 つずつ通す
 - メモリの予算 (`Plan.MemoryGB` と機械のメモリ) を `Runtime` が持ち、足りなければ使っていないモデルを下ろす。下ろしてよいかどうか (常駐か、追い出せるか) を `Use` に書けるようにする
 - NPU への投入の順番: 音声を先に、背景の仕事は塊の切れ目で待つ
-- デバイスを 1 回だけ開いて共有するかどうか。AMD では、1 プロセスが複数のデバイスを開いても動く (16.281 でデバイスヒープの番地を直した)
+- デバイスを 1 回だけ開いて共有するかどうか。AMD では、1 プロセスが複数のデバイスを開いても動く ([api](design/api.md) でデバイスヒープの番地を直した)
 - 合格の条件: 8 GB の機械で同時通訳の 3 つを、読み込み直しをはさんで動かす。16 GB の機械で画像の生成と深度を続けて動かし、最大メモリが大きいほうの 1 つ分に収まる
 
 ### B4. アプリのための Neural Engine のロックの方針
@@ -196,11 +196,11 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### 読み上げの速さ (D3)
 
-- design.md 16.31 の測定では、LFM3-Audio-2B の読み上げは lut8 で**実時間の約 0.5 倍** (1 秒の音に 2 秒)、lut4 で約 1.4 倍だった。ただし lut4 の音は、ASR に戻すと崩れる。このままでは、流しながら鳴らすと途中で途切れる
-- 1 フレーム (80 ms) に、テキスト部 1 回と depthformer 3 回 (12 のコードブックを 4 つずつ)、合わせて 4 回プログラムを呼ぶ。プログラムの切り替えは 1 回 15〜35 ms かかる (16.36) ので、切り替えだけでフレームの時間を使い切るおそれがある
+- [docs/design/llm-models.md](design/llm-models.md) の測定では、LFM3-Audio-2B の読み上げは lut8 で**実時間の約 0.5 倍** (1 秒の音に 2 秒)、lut4 で約 1.4 倍だった。ただし lut4 の音は、ASR に戻すと崩れる。このままでは、流しながら鳴らすと途中で途切れる
+- 1 フレーム (80 ms) に、テキスト部 1 回と depthformer 3 回 (12 のコードブックを 4 つずつ)、合わせて 4 回プログラムを呼ぶ。プログラムの切り替えは 1 回 15〜35 ms かかる ([llm-decoding](design/llm-decoding.md)) ので、切り替えだけでフレームの時間を使い切るおそれがある
 - まずその後の変更 (ロジットを最後の行だけ、GPTQ の lut6 など) を入れた今の速さを測り直す。そのうえで候補を試す
   - depthformer の 3 回を 1 つのプログラムにまとめる
-  - テキスト部を GPTQ の lut6 にする。チャットでは KL が下がった (16.87)
+  - テキスト部を GPTQ の lut6 にする。チャットでは KL が下がった ([quantization](design/quantization.md))
   - フレームの中の呼び出しの重なり
 - 合格の条件: lut8 の音質 (ASR に戻して一致する) のまま、実時間の 1 倍を超える
 
@@ -244,7 +244,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 - LFM3-Audio-2B の日本語の読み上げ: 品質 (聞いてみる、Whisper で書き起こして元の文と比べる) と速さ (実時間の何倍か)
 - 3 つのモデルの同居: models.yaml の `memory` では合わせて約 6.7 GB (Whisper 1.9、PLaMo 3 Translate 0.8B 2.4、TTS 2.4)。M3 (16 GB) で常駐できるか、M1 (8 GB) で読み込み直しが要るか。M1 の ANE が一度に持てる量 (2.8 GiB、`internal/chat/model.go` の `m1HoldBytes`) を超えて遅くならないか
 - 1 発話の遅れの内訳: VAD の終わりの判定、文字起こし、翻訳、読み上げの最初の音まで
-- 結果は design.md の節と、`ai.WithReload` (読み込み直し) を既定にするかの判断に使う
+- 結果は [docs/design/README.md](design/README.md) の節と、`ai.WithReload` (読み込み直し) を既定にするかの判断に使う
 
 ## 6. E: ビルドタグとバンドル
 

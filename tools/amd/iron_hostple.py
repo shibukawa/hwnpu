@@ -23,7 +23,7 @@ With install(ple="int8") (iron_export_lm's default), ple.bin holds each layer's 
 (ple_dim values) as an fp16 scale and ple_dim int8 values (ple_int8), and the manifest's entry
 says format "int8": the host expands a row to bf16 as it writes it. Half the file (E2B 4.4 ->
 2.2 GiB, E4B 5.25 -> 2.65), KL 0.00005 from the bf16 table (tools/amd/ple_quant_kl.py,
-docs/improvements.md 12.7). The device's buffer and what the layers compute are unchanged.
+docs/design/performance.md). The device's buffer and what the layers compute are unchanged.
 
 The manifest names the tables in host_tables (iron_export_lm.export). hwnpu's iron.Model fills
 them.
@@ -38,12 +38,12 @@ from ml_dtypes import bfloat16
 PLE = "hwnpu_ple_rows"
 # A decode step's per-layer inputs, every layer's at once before the first layer (Gemma4's
 # layer computes each layer's: a GEMV, an RMSNorm, a copy, an add and a product, each a
-# reconfiguration of the array, design.md 16.266). HWNPU_GEMMA4_BATCH_PLE=0 keeps a layer's own.
+# reconfiguration of the array, docs/design/amd.md). HWNPU_GEMMA4_BATCH_PLE=0 keeps a layer's own.
 BATCH_PLE = os.environ.get("HWNPU_GEMMA4_BATCH_PLE", "1") != "0"
 # The MLP's gate and up as one table, run by QGEMVGlu with gelu (iron_q4.glu_param): one
 # operator of a decode step in place of two GEMVs, a GELU and a product. Off unless
 # HWNPU_GEMMA4_FUSE_GLU=1: E2B's decode 9.3 -> 9.9 tokens/s, but its KL from Hugging Face's
-# float32 0.154 -> 0.158 (median 0.068 -> 0.074, design.md 16.269), where LFM3's did not move.
+# float32 0.154 -> 0.158 (median 0.068 -> 0.074, docs/design/amd-llm.md), where LFM3's did not move.
 FUSE_GLU = os.environ.get("HWNPU_GEMMA4_FUSE_GLU", "0") == "1"
 EMBED = "hwnpu_embed_rows"
 # A prompt chunk's commands end where their scratchpad words would pass IRON's limit (32).
@@ -134,7 +134,7 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
                 lins += [(lin, attn) for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj)]
             if "mlp" not in keep and FUSE_GLU and self.config.hidden_act == "gelu_pytorch_tanh":
                 # gate and up as one table: the decode step's one operator (QGEMVGlu with gelu) in
-                # place of two GEMVs, a GELU and a product (design.md 16.269)
+                # place of two GEMVs, a GELU and a product (docs/design/amd-llm.md)
                 iron_q4.install_glu()
                 mlp.gu = iron_q4.glu_param(np.asarray(mlp.gate_proj.weight, np.float32),
                                            np.asarray(mlp.up_proj.weight, np.float32), "q4", act="gelu")
@@ -172,7 +172,7 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
         c, m, P = self.config, self.model, self.config.ple_dim
         if BATCH_PLE and not call.prompt and getattr(call, "row", None) is None:
             # a decode step: every layer's per-layer input at once, before the first layer
-            # (five operators in place of five a layer: the same values, design.md 16.269)
+            # (five operators in place of five a layer: the same values, docs/design/amd-llm.md)
             batch = getattr(self, "_ple_batch", None)
             if i == 0 or batch is None or batch[0] is not call:
                 L = c.num_hidden_layers
@@ -240,7 +240,7 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
 # A decode step's post-norms, residuals and next norms as SandwichAdd (iron_sandwich): after
 # the attention (post-attention norm, residual, pre-feed-forward norm) and after the per-layer
 # input (its norm, residual, layer_scalar, the next layer's input norm), in place of seven
-# operators a layer (design.md 16.269). HWNPU_GEMMA4_FUSED_NORMS=0 keeps IRON's.
+# operators a layer (docs/design/amd-llm.md). HWNPU_GEMMA4_FUSED_NORMS=0 keeps IRON's.
 FUSED_NORMS = os.environ.get("HWNPU_GEMMA4_FUSED_NORMS", "1") != "0"
 
 

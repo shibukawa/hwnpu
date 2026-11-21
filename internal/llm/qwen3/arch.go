@@ -29,7 +29,7 @@ var Arch = &llm.Arch{
 // reference) lut8 is KL 0.0012 nats (63 of 64 top tokens the same), lut6 0.18 (with tables per 128
 // columns 0.063), lut4 0.90 (k-means 0.47, per 32 columns 0.16): the Neural Engine's tables of 16
 // rows lose too much of it below 8 bits without choosing them against the activations
-// (docs/design.md 16.230).
+// (docs/design/llm-qwen.md).
 var Qwen2Arch = &llm.Arch{
 	Name: "qwen2",
 	// 1: an MLP wider than the Neural Engine's axis in pieces (mlp, Qwen2.5-Coder-7B's 18944):

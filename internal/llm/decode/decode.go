@@ -807,7 +807,7 @@ func (s *Session) migratePaged(np Program) error {
 // see a window of the sequence, from the programs of a short context, where those layers'
 // caches hold every position, to the ones of the model's context, where they are rings of the
 // window (a call is given every ring whole: PLaMo 3 Translate 2B's 21 rings of 2048 are 84 MiB
-// against 21 MiB of caches of 512, docs/design.md 16.220). The chunks the session holds stay its
+// against 21 MiB of caches of 512, docs/design/llm-engine.md). The chunks the session holds stay its
 // own and move into np's chunks (fit); a cache in the program that holds every position goes
 // into np's ring at position mod its length, or into its cache; a ring of the same length is
 // copied as is, and so are the windows and states. np becomes the session's only program, and

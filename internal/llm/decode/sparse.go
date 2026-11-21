@@ -18,7 +18,7 @@ import (
 // A bucket's weight is the softmax of each query row over the summaries, summed over the rows
 // and the query heads of its kv head (internal/llm/paged's mass program), so that each kv head
 // reads its own buckets and all the queries of a call share them. Checked on the CPU with
-// LFM3-1.7B (docs/design.md 16.61): at 128K, with 16384 keys read exactly (32768 in the
+// LFM3-1.7B (docs/design/llm-engine.md): at 128K, with 16384 keys read exactly (32768 in the
 // prompt) and 64 tokens per call, the next-token loss rose by 0.007 nats and pass phrases at
 // 10, 50 and 90% of the context were still found; keys picked one by one (top-k), even the
 // best 4096, lost them.

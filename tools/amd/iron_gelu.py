@@ -6,7 +6,7 @@ value over 4096 x 8192). IRON's tanh GELU is 4x faster, but forms the tanh's arg
 products (x^2 and s 0.044715 x, 0.4 % each) and changed Anima's pictures (the clothes of the
 test prompt). ``GELUEven`` takes the same table with the argument in float32 (x^2 exact, the
 coefficients two bf16 limbs) and rounds to nearest even: 7 ms, the pictures as near bf16
-weights' as the exact GELU's (design.md 16.200).
+weights' as the exact GELU's (docs/design/image-amd.md).
 
 Tried and dropped: the sigmoid form x sigmoid(2u) from an exponential (gpt-oss's 2^k p(f) on
 bf16 limbs) and the core's float inverse was exact to 2e-4 and as slow as the exact kernel (the

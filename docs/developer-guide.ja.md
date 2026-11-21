@@ -696,7 +696,7 @@ The network:
 
 ## 9. 制約とルール
 
-NPU は 1 つで、メモリは固定され、プログラムの形は決まっています。アプリの設計は、ここから決まる部分が大きいです。数値は出どころを書きました。**「実測」とあるのは Ryzen AI 9 365 (AMD、XDNA 2) で 2026-11-21 にこのライブラリを通して測った値**で、ほかは design.md と MODEL.md の記録です。Mac と Intel では、このライブラリを通した測定はまだありません。
+NPU は 1 つで、メモリは固定され、プログラムの形は決まっています。アプリの設計は、ここから決まる部分が大きいです。数値は出どころを書きました。**「実測」とあるのは Ryzen AI 9 365 (AMD、XDNA 2) で 2026-11-21 にこのライブラリを通して測った値**で、ほかは [docs/design/README.ja.md](design/README.ja.md) と MODEL.md の記録です。Mac と Intel では、このライブラリを通した測定はまだありません。
 
 ### 9.1 NPU は 1 つの待ち行列
 
@@ -711,9 +711,9 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 
 - 呼び出しは細かく入れ替わりながら進みます (上の文字起こしは、読み上げの途中の 3.1 秒で終わっています)。待たされるのは相手の呼び出し全体ではありません
 - **順番を決める仕組みはまだありません。** 音声を先に通す、背景の仕事を待たせる、といった優先度は書けません ([D10](#10-設計の論点))。重い仕事 (画像の生成の 1 ステップは 1〜数秒) の途中に短い呼び出しがどれだけ待つかは、測っていません
-- AMD: モデルのプログラムごとにハードウェアコンテキストができ、ファームウェアが時分割します (design.md 16.94)。切り替えは 1 回約 0.5 ms
-- Apple: プログラムの切り替えに 1 回 15〜35 ms かかります (design.md 16.36)。1 フレームに何度もプログラムを呼ぶモデル (読み上げ) では、これが効きます。1 プロセスの中で複数のモデルを同時に呼んだときの振る舞いは、測っていません
-- Intel: 同時に動かしたときの振る舞いは未測定です (design.md 16.94)
+- AMD: モデルのプログラムごとにハードウェアコンテキストができ、ファームウェアが時分割します ([docs/design/architecture.ja.md](design/architecture.ja.md))。切り替えは 1 回約 0.5 ms
+- Apple: プログラムの切り替えに 1 回 15〜35 ms かかります ([docs/design/llm-decoding.ja.md](design/llm-decoding.ja.md))。1 フレームに何度もプログラムを呼ぶモデル (読み上げ) では、これが効きます。1 プロセスの中で複数のモデルを同時に呼んだときの振る舞いは、測っていません
+- Intel: 同時に動かしたときの振る舞いは未測定です ([docs/design/architecture.ja.md](design/architecture.ja.md))
 
 ### 9.2 リアルタイムに連携できるか
 
@@ -743,7 +743,7 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 
 - 文字の +1.6 秒の内訳は、発話の終わりを決める無音の待ち 0.6 秒 (`VADOptions.Hangover`) と、文字起こしの約 1 秒です
 - 後の発話ほど遅れるのは、前の発話の読み上げと NPU を取り合うからです
-- Mac の記録 (単独): Whisper は M3 で 30 秒の窓を 0.6 秒、PLaMo 3 Translate は M3 で 0.8B が 53、2B が 17、8B が 10〜11 トークン/秒、読み上げは M3 の lut8 で実時間の約 0.5 倍 (design.md 16.31、古い測定)。読み上げが実時間に届かないのは AMD と同じです
+- Mac の記録 (単独): Whisper は M3 で 30 秒の窓を 0.6 秒、PLaMo 3 Translate は M3 で 0.8B が 53、2B が 17、8B が 10〜11 トークン/秒、読み上げは M3 の lut8 で実時間の約 0.5 倍 ([docs/design/llm-models.ja.md](design/llm-models.ja.md)、古い測定)。読み上げが実時間に届かないのは AMD と同じです
 
 **合計が 1 を超えるときの選び方**
 
@@ -796,9 +796,9 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 |---|---|---|
 | M1 (Pro、Max、Ultra も同じとみなす) | Neural Engine に同時に載せるプログラムが 2.8 GiB を超えると、どの呼び出しも約 12 倍遅くなる。大きいモデル (PLaMo 3 Translate 8B など) は用途から選ばれない (`not_on: [M1]`) | `internal/chat/model.go` の `m1HoldBytes`、PROBE.md |
 | M2 以降 | 上の制限は見つかっていない (M2 で 3.65 GiB まで全速) | 同上 |
-| Apple 全般 | Neural Engine のコンパイルのキャッシュは約 4 GiB。超えるぶんは起動のたびにコンパイルし直す (数分)。コンパイルは機械全体で 1 本の直列 | design.md 16.99、16.229 |
-| AMD (XDNA 2) | NPU 専用のメモリの上限は見つかっていない (バッファはホストのメモリ)。DRAM の帯域 (約 55 GB/s) を取り合うので、大きな重みを読むモデルどうしは互いに遅くなる | design.md 16.94 |
-| Intel | Core Ultra 5 135U で、Anima の fp16 が約 4.6 GB で `OUT_OF_HOST_MEMORY`。プログラム 1 本の重みの上限は分かっていない | design.md 16.144、intel-npu-models.md |
+| Apple 全般 | Neural Engine のコンパイルのキャッシュは約 4 GiB。超えるぶんは起動のたびにコンパイルし直す (数分)。コンパイルは機械全体で 1 本の直列 | [docs/design/llm-qwen.ja.md](design/llm-qwen.ja.md)、[docs/design/apple-coreai.ja.md](design/apple-coreai.ja.md) |
+| AMD (XDNA 2) | NPU 専用のメモリの上限は見つかっていない (バッファはホストのメモリ)。DRAM の帯域 (約 55 GB/s) を取り合うので、大きな重みを読むモデルどうしは互いに遅くなる | [docs/design/architecture.ja.md](design/architecture.ja.md) |
+| Intel | Core Ultra 5 135U で、Anima の fp16 が約 4.6 GB で `OUT_OF_HOST_MEMORY`。プログラム 1 本の重みの上限は分かっていない | [docs/design/intel.ja.md](design/intel.ja.md)、intel-npu-models.md |
 
 ### 9.5 `Release` と、画像の生成の段の入れ替え
 
@@ -824,11 +824,11 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 
 ### 9.6 プロセス
 
-- **Mac: Neural Engine を使う hwnpu のプロセスは 1 つずつ**です。2 つ同時に使うと M1 の OS が固まったので、最初にデバイスを開いたプロセスが、終わるまでロックを持ちます (design.md 16.132)。常駐するアプリが動いている間、`hwnpu-chat` などのコマンドは待ちます。アプリが NPU を手放す口 (`Suspend`) はまだありません
-- AMD と Intel にはこのロックがありません。AMD では別々のプロセスが同じ NPU を使えますが、時間を分け合います (ほかのプロセスが NPU を使っていて、コマンドが最大 50 倍遅くなった記録があります。new-model-checklist.md)。Intel は試していません
-- Mac では macOS 自身のサービス (写真の解析、Apple Intelligence) も Neural Engine を使います。それが動いている間、チャットが 0.7 トークン/秒に落ちた記録があります (design.md 16.112)。アプリからは止められません
+- **Mac: Neural Engine を使う hwnpu のプロセスは 1 つずつ**です。2 つ同時に使うと M1 の OS が固まったので、最初にデバイスを開いたプロセスが、終わるまでロックを持ちます ([docs/design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md))。常駐するアプリが動いている間、`hwnpu-chat` などのコマンドは待ちます。アプリが NPU を手放す口 (`Suspend`) はまだありません
+- AMD と Intel にはこのロックがありません。AMD では別々のプロセスが同じ NPU を使えますが、時間を分け合います (ほかのプロセスが NPU を使っていて、コマンドが最大 50 倍遅くなった記録があります。[docs/design/new-model-checklist.ja.md](design/new-model-checklist.ja.md))。Intel は試していません
+- Mac では macOS 自身のサービス (写真の解析、Apple Intelligence) も Neural Engine を使います。それが動いている間、チャットが 0.7 トークン/秒に落ちた記録があります ([docs/design/llm-engine.ja.md](design/llm-engine.ja.md))。アプリからは止められません
 - **1 プロセスに `App` は 1 つ**と考えてください。置き場の設定がプロセスに 1 つだからです ([D8](#10-設計の論点))
-- AMD で 1 プロセスに複数のモデルを読み込めるのは、デバイスヒープの番地の直し (design.md 16.281) が入った版からです
+- AMD で 1 プロセスに複数のモデルを読み込めるのは、デバイスヒープの番地の直し ([docs/design/api.ja.md](design/api.ja.md)) が入った版からです
 
 ### 9.7 入力と出力の形
 
@@ -896,7 +896,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 
 **D9. メモリの管理はアプリ任せ** — 今: `Get` で載せ、`Release` で下ろす。予算も追い出しもない。
 
-- 別の案: `Runtime` に予算を持たせ、足りなければ使っていないモデルを下ろす (design.md 16.94)。下ろしてよいかを `Use` に書く (`use.Resident()`、`use.Evictable()`)。取り出したモデルの値が下ろされても壊れないよう、値を間接にする必要がある
+- 別の案: `Runtime` に予算を持たせ、足りなければ使っていないモデルを下ろす ([docs/design/architecture.ja.md](design/architecture.ja.md))。下ろしてよいかを `Use` に書く (`use.Resident()`、`use.Evictable()`)。取り出したモデルの値が下ろされても壊れないよう、値を間接にする必要がある
 - **未定**: いつ入れるか。入れると `Get` が返す値の寿命の決まりが変わる
 
 **D10. 並行** — 今: モデルごとに 1 回に 1 つ。モデルどうしの順番は決めない (NPU のドライバ任せ)。モデルごとにデバイスを開く。
@@ -909,7 +909,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 
 - 理由: `range` と `break` と ctx だけで書け、段が関数になる。goroutine は要るところ (`Async`、`Latest`、`Hold`) だけ
 - 別の案 A: チャネル。`select` で複数の流れを待てるが、閉じ方とエラーの渡し方を毎回決めることになる
-- 別の案 B: 音声を `flow.Audio{Samples, Rate, Channels}` にし、つなぐときに周波数を合わせる (16.94 の「ポートが型と制約を宣言する」)。間違ったつなぎ方が実行時に分かる
+- 別の案 B: 音声を `flow.Audio{Samples, Rate, Channels}` にし、つなぐときに周波数を合わせる ([architecture](design/architecture.ja.md) の「ポートが型と制約を宣言する」)。間違ったつなぎ方が実行時に分かる
 - **未定**: B を入れるか。画像の型 (`image.Image` のままか、時刻つきのフレームか)。ステレオ
 
 **D12. `Final` の 2 つの意味** — 今: 音声では「発話の終わり」、テキストでは「確定した文」(その前は仮の文で、次が置き換える)。

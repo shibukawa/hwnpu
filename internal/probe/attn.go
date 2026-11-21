@@ -22,7 +22,7 @@ import (
 // blocks.SDPAGrouped (the default attention of LFM3-1.7B); "tile" copies the keys and values for
 // every query head, as blocks.SDPA. Both take the sum of the exps as a matrix product with ones,
 // as blocks.ChunkedSDPA does: a reduce_sum made the placement of 64 tokens per call change from
-// one compile to the next (docs/design.md 16.22).
+// one compile to the next (docs/design/llm-engine.md).
 
 // AttnForms are the forms of WriteChunkAttnPackage.
 var AttnForms = []string{"grouped", "tile"}

@@ -30,7 +30,7 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 | 0.49 B, 0.23 GiB | int4 | CPU | CPU 130 | 18.0 | 55.5 | 14 | 4.07 |  |  | 5.5 |  |
 | 0.49 B, 0.23 GiB | int4 | GPU | GPU 130 | 4.6 | 217.1 | 53 | 0.25 |  |  | 2.8 |  |
 | 0.97 B, 1.81 GiB | fp16 | NPU | CPU 258 | 34.7 | 28.8 | 56 | 4.29 |  |  | 22.2 |  |
-| 0.97 B, 1.81 GiB | fp16 | CPU | CPU 258 | 35.0 | 28.6 | 56 | 4.13 |  |  | 16.5 |  |
+| 0.97 B, 1.81 GiB | fp16 | CPU | CPU 258 | 35.0 | 28.6 | 56 | 4.13 |  |  | [amd](../docs/design/amd.md) |  |
 | 0.97 B, 1.81 GiB | fp16 | GPU | unverified | 25.5 | 39.2 | 76 | 0.43 |  |  | 17.9 |  |
 | 0.97 B, 0.91 GiB | int8 | NPU | NPU | 15.6 | 64.2 | 62 | 0.02 |  |  | 11.6 |  |
 | 0.97 B, 0.91 GiB | int8 | CPU | CPU 258 | 37.1 | 26.9 | 26 | 3.95 |  |  | 17.0 |  |
@@ -67,7 +67,7 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 | lut4 | 16 | 0.45 GiB | NPU | 7.9 | 62 | 0.03 | 7.7 |  |
 | lut4 | 24 | 0.68 GiB | NPU | 11.4 | 64 | 0.02 | 12.9 |  |
 | lut4 | 32 | 0.91 GiB | NPU | 15.1 | 64 | 0.01 | 24.7 |  |
-| lut4 | 34 | 0.96 GiB | NPU | 16.6 | 62 | 0.01 | 16.6 |  |
+| lut4 | 34 | 0.96 GiB | NPU | [apple-coreml](../docs/design/apple-coreml.md) | 62 | 0.01 | [apple-coreml](../docs/design/apple-coreml.md) |  |
 | lut4 | 35 | 0.99 GiB | NPU | 17.0 | 63 | 0.02 | 20.6 |  |
 | lut4 | 36 | 1.02 GiB | CPU 578 | 237.3 | 5 | 2.88 | 51.0 |  |
 | lut4 | 40 | 1.13 GiB | CPU 642 | 6302.2 | 0 | 0.23 | 60.9 |  |
@@ -81,9 +81,9 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 
 | model | weights | placement | ms/call after loading it | CPU use | ms/call with all loaded | CPU use with all loaded | compile s | error |
 |---|---|---|---|---|---|---|---|---|
-| 1 | 0.91 GiB | NPU | 16.2 | 0.02 | 16.2 | 0.01 | 8.7 |  |
+| 1 | 0.91 GiB | NPU | [intel](../docs/design/intel.md) | 0.02 | [intel](../docs/design/intel.md) | 0.01 | 8.7 |  |
 | 2 | 0.91 GiB | NPU | 15.3 | 0.02 | 15.8 | 0.02 | 11.5 |  |
-| 3 | 0.91 GiB | NPU | 16.3 | 0.01 | 15.2 | 0.01 | 51.9 |  |
+| 3 | 0.91 GiB | NPU | [cli](../docs/design/cli.md) | 0.01 | 15.2 | 0.01 | 51.9 |  |
 
 Placement: Apple, Core ML's compute plan (MLComputePlan) for every operation; Intel, NPU when the
 driver compiler built the graph (it has no fallback). CPU use is the process CPU time divided by

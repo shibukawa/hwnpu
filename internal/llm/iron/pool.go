@@ -144,7 +144,7 @@ func (p *expertPool) close() {
 // application's counts) and keeps the core ones in place while others will do. A layer's core
 // of more than half its places is left out: kept in place, it leaves too few for the experts the
 // text runs now (Qwen3.6-35B-A3B's 22.5 of 32 a layer: 34.4 -> 36.7 % of the choices copied in,
-// design.md 16.276). The places are filled now.
+// docs/design/moe.md). The places are filled now.
 func (m *Model) PlaceExperts(pl experts.Placement) error {
 	p := m.pool
 	if p == nil {

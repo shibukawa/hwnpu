@@ -26,7 +26,7 @@ type HostTable struct {
 	// Format is how the file stores a part: "" the buffer's PartBytes of bf16 as they are;
 	// HostTableInt8 an fp16 scale followed by PartBytes/2 int8 values, expanded to bf16 when a
 	// row is written (Gemma 4's per-layer embeddings: half the file, KL 0.00005 from bf16,
-	// docs/improvements.md 12.7). Older exports have no format.
+	// docs/design/performance.md). Older exports have no format.
 	Format string `json:"format,omitempty"`
 }
 

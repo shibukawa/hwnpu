@@ -23,7 +23,7 @@ facts:
     depends_on_questions: [backend:apple-coreml/block-callback, requirement:npu-only-execution/apple-guarantee-wording]
 history:
   completed:
-    summary: 2026-10-27 実装完了。macOS 27.0.1 / ANE 16 cores / CGO_ENABLED=0 で受け入れテスト合格。fp16 モデルの最大絶対誤差 0.0014。詳細は docs/design.md 16.1
+    summary: 2026-10-27 実装完了。macOS 27.0.1 / ANE 16 cores / CGO_ENABLED=0 で受け入れテスト合格。fp16 モデルの最大絶対誤差 0.0014。詳細は docs/design/apple-coreml.md
 relations:
   - relation: delivers
     to: requirement:model-execution-api

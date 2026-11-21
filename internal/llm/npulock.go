@@ -91,7 +91,7 @@ func lockNPU(ctx context.Context) error {
 // A process that ends leaves its programs on the Neural Engine for a while: 2.5 GiB of one that
 // was killed for a tenth of a second to a second, 1.5 GiB of a chat for seven seconds on a busy
 // machine. A program loaded and run meanwhile may be refused: Chroma's T5 failed twice with
-// "Request cancelled", started the moment that chat's lock was free (design.md 16.132). So the
+// "Request cancelled", started the moment that chat's lock was free (docs/design/apple-neural-engine.md). So the
 // lock is followed by a wait for that memory to go (settle).
 //
 // What is on the Neural Engine is known for the whole machine alone (mem.NPUWired), other

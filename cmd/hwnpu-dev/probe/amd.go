@@ -296,7 +296,7 @@ func amdMarkdown(sb *strings.Builder, rows []amdResult, idle *amdPower) {
 				float64(r.Params)/1e9, r.Layers, float64(r.WeightBytes)/(1<<30), r.Format, r.Part, r.Commands,
 				cell(r.MsPerCall, "%.1f"), tps, cell(r.gbps(), "%.0f"), cell(gweights(r.Params, r.MsPerCall), "%.0f"), cell(r.CPUUse, "%.2f"), cell(r.NetW, "%.2f"), cell(r.MJPerCall, "%.1f"), r.ExportS, short(r.Error, 120))
 		}
-		sb.WriteString("\nlayers: a layer's seven linears one after another (QGEMV for q4, q6 and q8, IRON's GEMV for bf16) and the SwiGLU's product, as hwnpu's exports of the other models than gpt-oss run them: every operator that follows another is loaded onto the cores again. stream: the same bytes in GEMVs of one shape (8192 by 2048) back to back, not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's GptOssStep, docs/design.md 16.179).\n")
+		sb.WriteString("\nlayers: a layer's seven linears one after another (QGEMV for q4, q6 and q8, IRON's GEMV for bf16) and the SwiGLU's product, as hwnpu's exports of the other models than gpt-oss run them: every operator that follows another is loaded onto the cores again. stream: the same bytes in GEMVs of one shape (8192 by 2048) back to back, not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's GptOssStep, docs/design/moe.md).\n")
 	}
 	if len(verify) > 1 {
 		sb.WriteString("\n## K rows per call (AMD, IRON)\n\n| weights | format | K | path | ms/call | × K=1 | ms/token | tokens/s | TFLOPS | export s | error |\n|---|---|---|---|---|---|---|---|---|---|---|\n")
@@ -332,7 +332,7 @@ func amdMarkdown(sb *strings.Builder, rows []amdResult, idle *amdPower) {
 		for _, r := range attn {
 			fmt.Fprintf(sb, "| %d | %d of %d | %s | %s | %.0f | %s |\n", r.Rows, r.Heads, r.Dim, cell(r.MsPerCall, "%.1f"), cell(r.tflops(), "%.2f"), r.ExportS, short(r.Error, 120))
 		}
-		sb.WriteString("\niron_mha.ImageMHA with QKᵀ and P·V through bfp16 and the softmax's exponential on one bf16 limb (FLUX.2 klein's export, docs/design.md 16.207). TFLOPS counts the two products (4 × rows² × heads × dim).\n")
+		sb.WriteString("\niron_mha.ImageMHA with QKᵀ and P·V through bfp16 and the softmax's exponential on one bf16 limb (FLUX.2 klein's export, docs/design/image-amd.md). TFLOPS counts the two products (4 × rows² × heads × dim).\n")
 	}
 	amdPowerMarkdown(sb, rows, idle)
 }

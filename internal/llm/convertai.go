@@ -29,7 +29,7 @@ type AIProgram struct {
 // the programs that begin at the same layer written as the functions of one Core AI program,
 // base.partK.aimodel (WriteAIFunctions), so that their weights are on the disk, in Core AI's
 // cache and on the Neural Engine once (LFM3-1.7B's programs of 8 and 128 tokens per call: 1.34
-// GiB against 2.56 GiB apart, docs/design.md 16.177). A program split at its attention
+// GiB against 2.56 GiB apart, docs/design/apple-coreai.md). A program split at its attention
 // (Options.Paged) gets its programs without weights of its own, OUT.attn.aimodel and
 // OUT.mass.aimodel. Each program's OUT.parts.json lists its parts as PATH#NAME; the paths of the
 // manifests are returned in order.
@@ -117,7 +117,7 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 	// (a part of no layers, NoLayers, is a group of its own). Whole programs (their caches
 	// inside) beside programs split at their attention have groups of their own, by cache: in one
 	// Core AI program with the whole programs of a cache of 256, Qwen3-0.6B's of 1024 ran at half
-	// the speed it has alone (docs/design.md 16.188)
+	// the speed it has alone (docs/design/apple-coreai.md)
 	type member struct{ prog, part int }
 	type key struct {
 		start int

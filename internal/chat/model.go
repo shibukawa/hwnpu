@@ -49,7 +49,7 @@ const prefillSeq = 64
 // pagedPrefillSeq is that of a model split at its attention on the Neural Engine, which has no
 // such bound. A call costs little more for more tokens up to about 128 (the weights are read once
 // per call): on an M3, LFM3-1.7B reads 4K, 16K and 64K tokens in 3.9, 16.0 and 136 s with 128
-// rather than 4.7, 25.2 and 160 s with 64, and 256 is no faster (design.md 16.82).
+// rather than 4.7, 25.2 and 160 s with 64, and 256 is no faster (docs/design/apple-neural-engine.md).
 const pagedPrefillSeq = 128
 
 // The values of Setup.Prefill (-prefill): whether a program of 64 tokens per call (128 for a
@@ -60,7 +60,7 @@ const (
 	// every start compiles them again (77 to 87 seconds on an M3) and every question pays 1 to 3
 	// seconds of switching between them, while the one that generates alone starts in 4 seconds
 	// and answers faster. It reads a long prompt 4.4 times slower (16K tokens in 183 seconds
-	// against 42; docs/design.md 16.65)
+	// against 42; docs/design/llm-engine.md)
 	PrefillAuto = "auto"
 	PrefillOn   = "on"  // always a program to read prompts
 	PrefillOff  = "off" // never: the program that generates reads them
@@ -82,7 +82,7 @@ const mtpSeq = 8
 // before in pdir says it has them, else the index of a checkpoint in several files (index: its
 // path, "" for none) names them; else the checkpoint is downloaded to look (tables.go). The
 // index spares a machine that takes what another converted from the sources the checkpoint's
-// download (1.75 GB for Qwen3.5-0.8B, design.md 16.231).
+// download (1.75 GB for Qwen3.5-0.8B, docs/design/distribution.md).
 func mtpArch(config string, a *llm.Arch, pdir string, index func() string, checkpoint func() (string, error)) (string, error) {
 	name := a.Name + "-mtp"
 	ma, mm, err := llm.LoadConfig(config, name)
@@ -146,7 +146,7 @@ func indexNames(index string) (map[string]bool, error) {
 // compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
 // (TierAuto), with some room to spare: on an M3 the two programs of Qwen3.5-2B (3.56 GiB in
 // lut8) were compiled again at every start (4 to 5 minutes), one alone starts in 1.5 seconds
-// (docs/design.md 16.99). The cache is about 4 GiB.
+// (docs/design/llm-qwen.md). The cache is about 4 GiB.
 var compileCacheBytes int64 = 7 << 29 // 3.5 GiB
 
 // m1HoldBytes is what an M1's Neural Engine holds of the programs loaded together before every
@@ -175,7 +175,7 @@ const DefaultTiers = "auto"
 // 4 bit tables, none for 6 or 8 bits. The Neural Engine keeps its compiled programs in a cache
 // of its own that holds about 4 GiB: four programs of LFM3-1.7B in lut4 (3.2 GiB) stay in it and
 // load in a second each, four in lut6 (4.8 GiB) push each other out and every start compiles
-// them anew, 17 seconds a part (docs/design.md 16.41); two in lut6 (2.4 GiB) stay.
+// them anew, 17 seconds a part (docs/design/quantization.md); two in lut6 (2.4 GiB) stay.
 const TierAuto = -1
 
 // autoTiers is the choice TierAuto stands for, by the weight format and the backend: the cache
@@ -477,7 +477,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// named -sr
 	stateRows := s.Draft > 1 && a.Param(llm.Options{}, "state-rows") != ""
 	// on the Neural Engine, a model that can be rotated is (llm.Rotate) when its tables have 6
-	// bits or fewer: lut6's error about halves (Qwen3.5-2B, design.md 16.276), while lut8's was
+	// bits or fewer: lut6's error about halves (Qwen3.5-2B, docs/design/moe.md), while lut8's was
 	// within the Neural Engine's own (0.8B and 4B: the same answers, 0 to 3.5 % faster), which
 	// is not worth converting again. Other programs, named -rot, and their own tables.
 	// HWNPU_ROTATE=0 keeps them unrotated, =1 rotates lut8 too
@@ -776,7 +776,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 		if pm, ok := mm.(llm.Paged); ok && chunk > 0 {
 			// the layer's attention over shorter chunks too, as the model's (without weights):
-			// over the whole chunk it took 3 of its 9 ms a call (Qwen3.5-4B, docs/design.md 16.192)
+			// over the whole chunk it took 3 of its 9 ms a call (Qwen3.5-4B, docs/design/llm-decoding.md)
 			mform := cmp.Or(ma.Param(llm.Options{}, "attn"), "grouped")
 			if err := llm.RefreshAttention(path, mform, pm.PagedShape().Scale); err != nil {
 				return Config{}, err
@@ -823,7 +823,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 // sharesWeights reports whether the programs of a model run on the device backend (Config.Backend)
 // share their weights on the Neural Engine: on Core AI the programs of one model's weights are
 // functions of one program (internal/backend/coreai), which the Neural Engine holds once
-// (LFM3-1.7B's two: 1.34 GiB against 2.56 GiB lowered apart, docs/design.md 16.177).
+// (LFM3-1.7B's two: 1.34 GiB against 2.56 GiB lowered apart, docs/design/apple-coreai.md).
 func sharesWeights(device string) bool { return device == "coreai" }
 
 // heldBytes is what a model's programs hold on the Neural Engine: tiers of the one that generates
@@ -964,7 +964,7 @@ func pruneCache(dir string, logf func(string, ...any)) {
 // layer, 2048 0.63, 4096 0.93 and 8192 1.49: a conversation of 150 tokens went from 44.1 to 53.7
 // tokens a second. Core ML puts the attention of 8 tokens a call over chunks under 4096 on the
 // CPU (the chain leaves such a program out), so it starts at 4096: 42.4 to 47.9. Intel's NPU is
-// not measured (docs/design.md 16.186).
+// not measured (docs/design/llm-engine.md).
 func shortestChunk(backend string, want int) int {
 	switch {
 	case want == PagedOff:
@@ -984,13 +984,13 @@ func shortestChunk(backend string, want int) int {
 // Neural Engine with Core AI, LFM3-1.7B (8 kv heads of 64, 2 KiB a position) generated 64, 62, 59
 // and 52 tokens a second whole with caches of 512 to 4096 against 55 split at its attention, and
 // Qwen3-0.6B (8 of 128, 4 KiB) 68, 53, 35 and 20 against 34 to 40: both even at about 4 MiB a
-// layer (docs/design.md 16.188).
+// layer (docs/design/apple-coreai.md).
 const wholeLayerBytes = 4 << 20
 
 // wholeHold is the most weights the whole program and those split at their attention hold on
 // the Neural Engine together (wholeTiers): each has its own Core AI programs (in one with the
 // others, or with a whole program of another cache, a whole program ran at half its speed,
-// docs/design.md 16.188). An M1 slows down about 12 times past 2.9 GiB (16.118).
+// docs/design/apple-coreai.md). An M1 slows down about 12 times past 2.9 GiB (docs/design/apple-neural-engine.md).
 const wholeHold = 5 << 29 // 2.5 GiB
 
 // minRingTier is the shortest context worth programs of their own (ringTiers): a conversation
@@ -1003,7 +1003,7 @@ const minRingTier = 256
 // minRingTier at least. A program is given its window layers' caches whole at every call, rings
 // of the window in the programs of the model's context: PLaMo 3 Translate 2B's 21 rings of 2048
 // are 84 MiB, and a step of them 76 ms on an M1 where the same programs for a context of 512
-// (21 MiB of caches) take 52 (docs/design.md 16.220). They are split at the attention as the
+// (21 MiB of caches) take 52 (docs/design/llm-engine.md). They are split at the attention as the
 // others and functions of the same Core AI programs, so the weights are held once. None for a
 // model without a window, or with a short one (Gemma 4's 512: a context of 256 runs no faster).
 func ringTiers(model llm.Model) []int {
@@ -1022,7 +1022,7 @@ func ringTiers(model llm.Model) []int {
 // takes the caches a whole program is given at each call more slowly than an M3's: LFM3-1.7B
 // with a whole program of 2048 generated 33.6 and 37.0 tokens a second (a call 36 ms, the caches
 // of 27 MiB among it) where the split programs alone, their attention over chunks of 1024,
-// generated 39.9 and 43.6 (31 ms), the same drafts kept (docs/design.md 16.218). The split
+// generated 39.9 and 43.6 (31 ms), the same drafts kept (docs/design/apple-coreai.md). The split
 // programs alone also hold the weights once (1.4 against 2.6 GiB, under what an M1 holds at full
 // speed, m1HoldBytes) and compile in half the time.
 var wholeSlower = func() bool { return chipName() == "M1" }
@@ -1054,8 +1054,7 @@ func wholeTiers(model llm.Model, gen int64) []int {
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
 // none: the model must be Paged (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4), on any
 // NPU, and an Unpaged one (Qwen3) is split only when Setup.Paged asks, but with Core AI, where it
-// runs faster split (with the attention over shorter chunks, shortestChunk; docs/design.md
-// 16.187).
+// runs faster split (with the attention over shorter chunks, shortestChunk; docs/design/llm-engine.md).
 func pagedChunk(model llm.Model, want int, backend string) int {
 	pm, ok := model.(llm.Paged)
 	if !ok || want < 0 || len(pm.PagedLayers()) == 0 {
@@ -1070,7 +1069,7 @@ func pagedChunk(model llm.Model, want int, backend string) int {
 // encoders are the programs of the multimodal checkpoints besides the text model, converted when
 // config.json has them: LFM3-VL's and LFM3-Omni's vision encoder for one image size (an image is
 // stretched to it), LFM3-Audio's and LFM3-Omni's audio encoder for clips of up to 30 seconds. They
-// stay in fp16 as hwnpu-dev convert's examples convert them (docs/design.md 16.28, 16.29); files are
+// stay in fp16 as hwnpu-dev convert's examples convert them (docs/design/llm-models.md); files are
 // what else of the repository they read.
 var encoders = []struct {
 	arch, param, value string

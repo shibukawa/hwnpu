@@ -93,7 +93,7 @@ func RopeValues(c Dit) (cos, sin []float32) {
 
 // maxScoreBytes is the largest fp16 score tensor (heads x queries x keys) an attention should
 // make at once: past about 64 MiB the Neural Engine runs q k^T and its softmax 2 to 3 times
-// slower per score (design.md 16.85).
+// slower per score (docs/design/image-apple.md).
 const maxScoreBytes = 64 << 20
 
 // QChunk is the queries an attention over the DiT's rows takes at a time: halved from all of them
@@ -157,7 +157,7 @@ func (d *ditGraph) modulate(x, shift, scale *mlpackage.Var) *mlpackage.Var {
 // qkv is a stream's q and k (normed, turned by the rows' rotary embedding from row lo) and v of
 // h's rows, each (1, n, heads, head_dim). q holds the attention's scale, 1 / sqrt(head_dim), in
 // its norm's weight: the attention then runs at scale 1, without a multiply over its scores
-// (design.md 16.201).
+// (docs/design/image-apple.md).
 func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.Var) {
 	c := d.c
 	n, H, D := h.Shape[1], c.Heads, c.HeadDim
@@ -182,12 +182,12 @@ func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.V
 
 // HeadChunk is the queries the attention takes at a time, a head at a time
 // (milpart.HeadAttention): of Chroma's 4608 rows at 1024 x 1024, 24 heads took 139 ms in chunks
-// of 1024 and 134 of 512, which compile 40 % longer (M1, design.md 16.211).
+// of 1024 and 134 of 512, which compile 40 % longer (M1, docs/design/image-apple.md).
 const HeadChunk = 1024
 
 // headAttention reports whether the attention is written a head at a time: not for Intel's NPU
 // (not measured there), and not with HWNPU_CHROMA_ATTENTION=chunks, which writes the heads
-// together as before design.md 16.211 (to tell a rounding difference from a mistake).
+// together as before docs/design/image-apple.md (to tell a rounding difference from a mistake).
 func headAttention(g *graph) bool {
 	return g.Opts.Backend != llm.BackendIntel && os.Getenv("HWNPU_CHROMA_ATTENTION") != "chunks"
 }
@@ -195,7 +195,7 @@ func headAttention(g *graph) bool {
 // attend is the attention of q, k, v (1, rows, heads, head_dim) over the keys kbias keeps:
 // (1, rows, hidden). On Apple's Neural Engine a head at a time, HeadChunk queries at a time, the
 // image's keys and the text's as score tensors of their own (the image's all count, kbias is the
-// text's alone): its core 205 -> 139 ms a block at 1024 x 1024 on an M1 (design.md 16.211).
+// text's alone): its core 205 -> 139 ms a block at 1024 x 1024 on an M1 (docs/design/image-apple.md).
 func (d *ditGraph) attend(q, k, v *mlpackage.Var) *mlpackage.Var {
 	t := func(x *mlpackage.Var) *mlpackage.Var { return d.Transpose(x, 0, 2, 1, 3) }
 	if !headAttention(d.graph) {

@@ -49,7 +49,7 @@ from iron.operators.sigmoid import Sigmoid
 from ml_dtypes import bfloat16
 
 # A decode step's short convolution as one operator (iron_shortconv.ShortConvStep) in place of
-# IRON's about 16 (docs/design.md 16.268). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
+# IRON's about 16 (docs/design/amd-llm.md). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
 FUSED_CONV = __import__("os").environ.get("HWNPU_LFM3_FUSED_CONV", "1") != "0"
 # A prompt chunk's the same (iron_shortconv's ShortConvChunk, in_proj one linear) instead of
 # IRON's about 26 operators a conv layer (window and tail copies, a multiply and an add a tap).
@@ -65,7 +65,7 @@ FUSED_NORMS = __import__("os").environ.get("HWNPU_LFM3_FUSED_NORMS", "1") != "0"
 # step in place of two GEMVs, a SiLU and a product), as iron_qwen35's FUSE_GLU.
 FUSE_GLU = __import__("os").environ.get("HWNPU_LFM3_FUSE_GLU", "1") != "0"
 # The sandwiches made in the GEMV that reads their output (iron_q4.sandwich_linear: a conv layer's
-# in_proj, the MLP's QGEMVGlu, the head) in place of SandwichAdd and the GEMV (design.md 16.277).
+# in_proj, the MLP's QGEMVGlu, the head) in place of SandwichAdd and the GEMV (docs/design/amd.md).
 # HWNPU_LFM3_SANDWICH_GEMV=0 keeps SandwichAdd.
 SANDWICH_GEMV = __import__("os").environ.get("HWNPU_LFM3_SANDWICH_GEMV", "1") != "0"
 

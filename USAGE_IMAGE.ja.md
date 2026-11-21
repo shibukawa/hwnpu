@@ -32,13 +32,13 @@ Mac の Neural Engine と Intel の NPU では、hwnpu-chat と同じく、初�
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
 ```
 
-M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 49 秒、Anima-Aesthetic が約 4 分 (DiT 1 回 5.7 秒。DiT の組を順に読み込んで閉じるので、Neural Engine が抱えるのは 0.6〜0.8 GiB、プロセスのメモリは最大 3.3 GB) です。Neural Engine を使う hwnpu のコマンドがほかに動いている間は、それが終わるのを待ちます。記録は [docs/design.md](docs/design.md) の 16.85、16.152、16.160、16.201、16.202、16.215 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
+M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 49 秒、Anima-Aesthetic が約 4 分 (DiT 1 回 5.7 秒。DiT の組を順に読み込んで閉じるので、Neural Engine が抱えるのは 0.6〜0.8 GiB、プロセスのメモリは最大 3.3 GB) です。Neural Engine を使う hwnpu のコマンドがほかに動いている間は、それが終わるのを待ちます。記録は [docs/design/image-apple.ja.md](docs/design/image-apple.ja.md)、[docs/design/image-models.ja.md](docs/design/image-models.ja.md) にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
 
 ## 画像生成 (Chroma1)
 
 `hwnpu-image generate -m chroma` は lodestones の Chroma1 (FLUX.1 schnell の 8.9B の DiT、T5-XXL、FLUX の VAE、Apache-2.0) で描きます。`chroma` は Chroma1-Flash (Heun 8 ステップ、CFG なし)、`chroma:1-hd` は蒸留していない Chroma1-HD (CFG 3、DPM-Solver++ 2M 25 ステップで、CFG は雑音の多いステップだけ) です。
 
-AMD の NPU では `tools/amd/iron_chroma.py` の書き出しを使います ([docs/amd-npu-models.md](docs/amd-npu-models.md))。Apple の Neural Engine では、初回にチェックポイント (27.5 GB) を落とし、Go だけで Core AI のプログラムに変換して (約 1 分)、Neural Engine 用にコンパイルします。T5-XXL は lut8 (外れ値を出す FF の出力の射影だけ fp16) で 3 層ずつ読んで閉じ、DiT は lut8、VAE は fp16 で、全部が Neural Engine に載ります。M1 (16 GB) で、2 回目からの 1 枚は Chroma1-Flash の 512 × 512 で約 1 分半、1024 × 1024 で約 5 分半です (初回は Neural Engine 用のコンパイルが 512 × 512 で約 20 分、1024 × 1024 で約 1 時間 10 分。Chroma1-HD は Flash の書き出しから T5 と VAE を共有します。HD は 512 × 512 で約 3 分 40 秒。HD の 1024 × 1024 は Core ML のころに約 22 分で、いまの形ではまだ測っていません)。DiT は 4〜8 ブロックの組ごとに読み込んで閉じるので、Neural Engine が抱えるのは 2.6 GiB ほどです (重みは 8.3 GiB。確かめたのは 16 GB の Mac)。CPU の float32 と同じノイズからの潜在のコサインは 0.987〜0.997 (3 プロンプト × 2 種、512²) で、絵は同じです。プロンプトをいくつか並べると、`--batch` 枚 (既定 4) ずつまとめて、ステップも一緒に回します。512 × 512 で 1 枚あたり 7〜8 % 速く、1024 × 1024 では 1〜数 % です。絵はまとめた枚数がそろってから書き出します。1 枚ずつ書き出すなら `--batch 1` です。記録は [docs/design.md](docs/design.md) の 16.170、16.210、16.214 にあります。手で書き出すときは `hwnpu-image convert ~/models/Chroma1-Flash -m OUT --tokenizer T5_TOKENIZER.json` (T5 と VAE が別の場所なら `--text`) を使います。
+AMD の NPU では `tools/amd/iron_chroma.py` の書き出しを使います ([docs/amd-npu-models.md](docs/amd-npu-models.md))。Apple の Neural Engine では、初回にチェックポイント (27.5 GB) を落とし、Go だけで Core AI のプログラムに変換して (約 1 分)、Neural Engine 用にコンパイルします。T5-XXL は lut8 (外れ値を出す FF の出力の射影だけ fp16) で 3 層ずつ読んで閉じ、DiT は lut8、VAE は fp16 で、全部が Neural Engine に載ります。M1 (16 GB) で、2 回目からの 1 枚は Chroma1-Flash の 512 × 512 で約 1 分半、1024 × 1024 で約 5 分半です (初回は Neural Engine 用のコンパイルが 512 × 512 で約 20 分、1024 × 1024 で約 1 時間 10 分。Chroma1-HD は Flash の書き出しから T5 と VAE を共有します。HD は 512 × 512 で約 3 分 40 秒。HD の 1024 × 1024 は Core ML のころに約 22 分で、いまの形ではまだ測っていません)。DiT は 4〜8 ブロックの組ごとに読み込んで閉じるので、Neural Engine が抱えるのは 2.6 GiB ほどです (重みは 8.3 GiB。確かめたのは 16 GB の Mac)。CPU の float32 と同じノイズからの潜在のコサインは 0.987〜0.997 (3 プロンプト × 2 種、512²) で、絵は同じです。プロンプトをいくつか並べると、`--batch` 枚 (既定 4) ずつまとめて、ステップも一緒に回します。512 × 512 で 1 枚あたり 7〜8 % 速く、1024 × 1024 では 1〜数 % です。絵はまとめた枚数がそろってから書き出します。1 枚ずつ書き出すなら `--batch 1` です。記録は [docs/design/image-apple.ja.md](docs/design/image-apple.ja.md) にあります。手で書き出すときは `hwnpu-image convert ~/models/Chroma1-Flash -m OUT --tokenizer T5_TOKENIZER.json` (T5 と VAE が別の場所なら `--text`) を使います。
 
 ## 画像生成と編集 (FLUX.2 klein)
 
@@ -70,7 +70,7 @@ hwnpu-image generate -m flux3-klein --size 512 "A rocky coastline at golden hour
 - AMD の NPU と Apple の Neural Engine (Core AI、macOS 27) で動き、今は文からの生成だけです (`--image` はエラー)。Apple では `--size` は 1:1 (1024 × 1024) か 1:1s (512 × 512) で、プロンプトはチャットテンプレート込みで 160 トークンまでです (1 つの書き出しが両方の大きさと 80 行、160 行のテキストを持ちます)。AMD では `--size` は 8 つのアスペクト比のどれでもよく (1:1、1:1s、2:3 は 832 × 1248、3:4 は 880 × 1168、9:16 は 768 × 1344、3:2、4:3、16:9 は 1344 × 768。FLUX.2 klein と同じ)、プロンプトは 480 トークンまでです
 - AMD の NPU では、初回に書き出し (`flux-3-image-klein.amd-npu2`、15 GB、8 つの大きさ) を取得元から取り、なければチェックポイント (DiT の単一ファイル版 `model.safetensors`、Qwen3-VL、VAE で 20 GB) を落として IRON で書き出し (`tools/amd/iron_flux3klein.py`。`HWNPU_IRON_ENV` を設定。IRON のカーネルができていれば約 11 分)、書き戻す取得元に置きます。Ryzen AI 9 365 で 1024 × 1024 の 1 枚が約 1 分 45 秒 (16 ステップが 5.9 秒ずつ、テキスト 3 秒、VAE 7 秒)、512 × 512 が 32 秒、ほかのアスペクト比が約 1 分 45 秒で、最大メモリは 3.6 GiB (512 × 512 で 2.5 GiB) です。DiT の重みは bfp16、Qwen3-VL は bf16 で、CPU の diffusers の bf16 のパイプラインと同じノイズから比べると、512 × 512 の絵は PSNR 39 dB (最後の潜在の cosine 0.998) です
 - 初回にチェックポイント (20 GB) を落として変換し (約 3 分。書き出しは 9.4 GB)、各プログラムを Neural Engine 用にコンパイルします (初回は両方の大きさで約 50 分)。M3 (16 GB) で、2 回目以降は 1024 × 1024 の 1 枚が約 2 分 (16 ステップが 7.4 秒ずつ、テキスト 1 秒、VAE 4 秒)、512 × 512 が約 30 秒 で、プロセスのメモリは最大 4.1 GB です
-- Qwen3-VL と DiT は lut8、VAE と context_embedder は fp16 で、時刻の埋め込みと変調はホストで計算します。書き出しのフォルダ (キャッシュの `models/FLUX.3-klein`) か取得元 (`HWNPU_MODEL_SOURCE` の `original/hwnpu/flux-3-image-klein-calibration/`) に `flux3-klein.x2.safetensors` があると、DiT の lut8 の表を活性に合わせて作ります。これは `tools/ref/ref_flux3klein.py --stats` で校正した入力の二乗平均 (重み.x2、入力の列ごと) です。なければ表は等間隔になり、髪などの細部が変わります ([docs/design.md](docs/design.md) の 16.248)
+- Qwen3-VL と DiT は lut8、VAE と context_embedder は fp16 で、時刻の埋め込みと変調はホストで計算します。書き出しのフォルダ (キャッシュの `models/FLUX.3-klein`) か取得元 (`HWNPU_MODEL_SOURCE` の `original/hwnpu/flux-3-image-klein-calibration/`) に `flux3-klein.x2.safetensors` があると、DiT の lut8 の表を活性に合わせて作ります。これは `tools/ref/ref_flux3klein.py --stats` で校正した入力の二乗平均 (重み.x2、入力の列ごと) です。なければ表は等間隔になり、髪などの細部が変わります ([docs/design/image-apple.ja.md](docs/design/image-apple.ja.md))
 - 同じノイズから diffusers の bf16 のパイプラインと比べると、512 × 512 の絵は PSNR 37 dB です (最初のステップの速度は cosine 0.9997)
 - プロンプトは英語が前提です
 
@@ -85,7 +85,7 @@ go run ./cmd/hwnpu-image depth photo.jpg
 
 Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。DA3-SMALL / BASE を `--views 3` で書き出すと、同じ場面の 3 枚を同時に推定して、1 つの尺度の深度とカメラの位置 (`cameras.json`)、点群 (`--ply`) を出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
 
-Apple の Neural Engine では、名前だけで動きます (`hwnpu-image depth -m da3:small photo.jpg`、`-m moge:vits`)。初回にチェックポイントを取ってきて、縦横比ごとの大きさは初めて使うときに変換します (数秒、その大きさの最初の読み込みでコンパイル)。M1 で 504 × 504 の 1 枚が DA3-SMALL 0.2 秒、DA3MONO-LARGE 0.5 秒、MoGe-2 ViT-S (700 × 700) 0.5 秒で、公式のモジュールとの深度のコサインは 0.99999 以上です。`--views` (複数視点) は AMD だけです。記録は [docs/design.md](docs/design.md) の 16.145 にあります。
+Apple の Neural Engine では、名前だけで動きます (`hwnpu-image depth -m da3:small photo.jpg`、`-m moge:vits`)。初回にチェックポイントを取ってきて、縦横比ごとの大きさは初めて使うときに変換します (数秒、その大きさの最初の読み込みでコンパイル)。M1 で 504 × 504 の 1 枚が DA3-SMALL 0.2 秒、DA3MONO-LARGE 0.5 秒、MoGe-2 ViT-S (700 × 700) 0.5 秒で、公式のモジュールとの深度のコサインは 0.99999 以上です。`--views` (複数視点) は AMD だけです。記録は [docs/design/vision-models.ja.md](docs/design/vision-models.ja.md) にあります。
 
 MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal、MIT) の書き出し (`tools/amd/iron_moge.py`) を渡すと、焦点距離を知らなくてもメートル単位の深度、点群 (`--raw`)、法線 (`--normal`)、有効な画素のマスク (`--sky`) を出します。812 × 602 で 1 枚 2.7〜3.6 秒です (16 節)。
 
@@ -130,7 +130,7 @@ go run ./cmd/hwnpu-image label photo.jpg                     # JSON lines: the l
 go run ./cmd/hwnpu-image embed --compare photo.jpg -t "a cat on a sofa"
 ```
 
-AMD の手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 18 節、Apple の記録は [docs/design.md](docs/design.md) の 16.183 にあります。
+AMD の手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 18 節、Apple の記録は [docs/design/vision-models.ja.md](docs/design/vision-models.ja.md) にあります。
 
 ## 点や箱で指定する切り抜き (EfficientSAM)
 

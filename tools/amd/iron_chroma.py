@@ -121,7 +121,7 @@ class ChromaConfig:
 @dataclasses.dataclass
 class Formats:
     # the blocks' projections: bfp16 (packed on the host as flm.ProjectionGEMM reads B, 9 bits: no
-    # dequantize on the device, iron_q4.bfp16_pack, design.md 16.200); q8 before (a distilled DiT
+    # dequantize on the device, iron_q4.bfp16_pack, docs/design/image-amd.md); q8 before (a distilled DiT
     # is weak at 4 bits)
     proj: str = "bfp16"
     mha: str = "qk"
@@ -500,7 +500,7 @@ def write_model(root: Path, out: Path) -> None:
     """model.json: the checkpoint and its scheduler, which pick the defaults. Chroma1-Flash: Heun's
     8 steps without guidance. Chroma1-HD: guidance 3 (its card's) with DPM-Solver++ 2M 25 steps,
     guided at sigma >= 0.6 only: against 100 Euler steps the latent's cosine 0.962 (the card's 40
-    Euler steps 0.972, the same picture) in 45 % less time (design.md 16.157)."""
+    Euler steps 0.972, the same picture) in 45 % less time (docs/design/image-models.md)."""
     sched = json.loads((root / "scheduler" / "scheduler_config.json").read_text())
     flash = "flash" in root.name.lower()
     (out / "model.json").write_text(json.dumps(dict(
