@@ -62,6 +62,10 @@ SLOTS_IN_PLACE = os.environ.get("QWEN35_SLOTS", "1") != "0"
 FUSE_QKVG = os.environ.get("QWEN35_QKVG", "1") != "0"
 FUSE_INZ = os.environ.get("QWEN35_INZ", "1") != "0"
 FUSE_EXPERTS = os.environ.get("QWEN35_EXPERTS", "1") != "0"
+# A prompt chunk's Gated DeltaNet convolution and silu as one operator (iron_shortconv's
+# GdnConvChunk) instead of IRON's convolution (about 9 operators) and GdnSiLU. QWEN35_CHUNK_CONV=0
+# keeps IRON's.
+CHUNK_CONV = os.environ.get("QWEN35_CHUNK_CONV", "1") != "0"
 # Qwen3.6 with a prompt chunk (its experts routed on the host, iron_moep.py); without it the
 # export is the decode step alone, the prompt run a token at a time.
 PROMPT = True
@@ -296,8 +300,18 @@ class GatedDeltaNet(iron.Graph):
             return self.rows_body(x, p, zf(), read, write, shape)
         if call.prompt:  # silu once before the operator, which reads each row once a slice
             GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), pairs=self.fold, presilu=True)
-            u = iron_gdn.silu_operator(COLUMNS).step(self.conv(p, call), seg=self.seg,
-                                                      raw=iron_gdn.silu_raw(H, KH, dk, dv, COLUMNS))
+            raw = iron_gdn.silu_raw(H, KH, dk, dv, COLUMNS)
+            if CHUNK_CONV and p.valid.get(0) is not None and self.conv.bias is None:
+                # the convolution and the silu as one operator (iron_shortconv's GdnConvChunk)
+                import iron_shortconv
+
+                cr, cw = self.conv.state.at(call)
+                u, fin = iron_shortconv.gdn_conv_chunk_operator(COLUMNS).step(
+                    p, self.conv.taps, Copy.step(cr), rows=p.shape[0], width=p.shape[1],
+                    taps_n=self.conv.taps.shape[0], raw=raw)
+                Copy.step(fin, cw)
+            else:
+                u = iron_gdn.silu_operator(COLUMNS).step(self.conv(p, call), seg=self.seg, raw=raw)
             y, final = GDR.step(u, Copy.step(read, dtype=np.float32), **shape)
             Copy.step(final, write, dtype=np.float32)
             return self.out_proj(self.norm(y, zf()))

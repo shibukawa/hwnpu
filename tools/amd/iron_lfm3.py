@@ -51,12 +51,23 @@ from ml_dtypes import bfloat16
 # A decode step's short convolution as one operator (iron_shortconv.ShortConvStep) in place of
 # IRON's about 16 (docs/design.md 16.268). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
 FUSED_CONV = __import__("os").environ.get("HWNPU_LFM3_FUSED_CONV", "1") != "0"
+# A prompt chunk's the same (iron_shortconv's ShortConvChunk, in_proj one linear) instead of
+# IRON's about 26 operators a conv layer (window and tail copies, a multiply and an add a tap).
+# HWNPU_LFM3_CHUNK_CONV=0 keeps IRON's.
+CHUNK_CONV = __import__("os").environ.get("HWNPU_LFM3_CHUNK_CONV", "1") != "0"
+# The decode step's ShortConvStep reads and writes the convolution's checkpoint slots itself (at
+# per-call offsets) instead of a copy of each around it. HWNPU_LFM3_SLOTS_CONV=0 keeps the copies.
+SLOTS_CONV = __import__("os").environ.get("HWNPU_LFM3_SLOTS_CONV", "1") != "0"
 # A decode step's post-norm, residual and next norm as one operator (iron_sandwich.SandwichAdd)
 # in place of three, twice a layer. HWNPU_LFM3_FUSED_NORMS=0 keeps IRON's.
 FUSED_NORMS = __import__("os").environ.get("HWNPU_LFM3_FUSED_NORMS", "1") != "0"
 # The MLP's gate and up as one table (iron_q4's glu_param, QGEMVGlu: one operator of the decode
 # step in place of two GEMVs, a SiLU and a product), as iron_qwen35's FUSE_GLU.
 FUSE_GLU = __import__("os").environ.get("HWNPU_LFM3_FUSE_GLU", "1") != "0"
+# The sandwiches made in the GEMV that reads their output (iron_q4.sandwich_linear: a conv layer's
+# in_proj, the MLP's QGEMVGlu, the head) in place of SandwichAdd and the GEMV (design.md 16.277).
+# HWNPU_LFM3_SANDWICH_GEMV=0 keeps SandwichAdd.
+SANDWICH_GEMV = __import__("os").environ.get("HWNPU_LFM3_SANDWICH_GEMV", "1") != "0"
 
 # By part of the model (mlp, attn, conv, head), its weights' format: iron_q4's "q4" (q4nx) or
 # "q8", or "bf16". Empty: all bf16, IRON's own linear.
@@ -142,6 +153,10 @@ class Lfm3Config(DecoderConfig):
 class ShortConv(iron.Graph):
     """LFM2's gated short convolution on ``c``'s shape, named as the checkpoint's ``conv``."""
 
+    # A prompt chunk's as one operator (CHUNK_CONV): the language model's layers (Lfm3Layer), not
+    # the audio encoder's (iron_lfm3audio), whose calls are its own
+    chunked = False
+
     def __init__(self, c: Lfm3Config):
         E = self.width = c.hidden_size
         self.in_proj = Linear(E, 3 * E, c.conv_bias, precision=c.precision)
@@ -151,18 +166,47 @@ class ShortConv(iron.Graph):
     def body(self, x, call):
         E = self.width
         if FUSED_CONV and not call.prompt and x.shape[0] == 1 and self.conv.bias is None:
-            # a decode step: B * x, the convolution and the gate as one operator (iron_shortconv)
-            import iron_shortconv
-
-            K = self.conv.taps.shape[0]
-            read, write = self.conv.state.at(call)
-            y, final = iron_shortconv.short_conv_operator().step(
-                self.in_proj(x), self.conv.taps, Copy.step(read), width=E, taps_n=K)  # the slot is a view: Copy
-            Copy.step(final, write)
-            return self.out_proj(y)
+            return self.decode_from(self.in_proj(x), call)
+        if CHUNK_CONV and self.chunked and call.prompt and x.valid.get(0) is not None and self.conv.bias is None:
+            return self.chunk_from(self.in_proj(x), call)
         b, cg, v = self.in_proj.split(x, E, E, E)
         y = self.conv(b * v, call)
         return self.out_proj(cg * y)
+
+
+    def decode_from(self, p, call):
+        """A decode step's mixer from in_proj's row p (B, C and x): B * x, the convolution and the
+        gate as one operator (iron_shortconv), then out_proj."""
+        import iron_shortconv
+
+        E, K = self.width, self.conv.taps.shape[0]
+        if SLOTS_CONV:  # the operator reads and writes the checkpoint slots itself
+            slots = self.conv.state.slots
+            ns, size, C = slots.shape[0], (K - 1) * E, self.conv.state.chunk
+            whole = slots.reshape(ns * size)
+            y, _ = iron_shortconv.short_conv_operator(slots=ns).step(
+                p.reshape(1, 3 * E), self.conv.taps, whole, whole, width=E, taps_n=K,
+                read_at=((call.start - 1) // C + 1) * size, write_at=(call.position // C + 1) * size)
+            return self.out_proj(y)
+        read, write = self.conv.state.at(call)
+        y, final = iron_shortconv.short_conv_operator().step(
+            p.reshape(1, 3 * E), self.conv.taps, Copy.step(read), width=E, taps_n=K)  # the slot is a view: Copy
+        Copy.step(final, write)
+        return self.out_proj(y)
+
+
+    def chunk_from(self, p, call):
+        """A prompt chunk's mixer from in_proj's rows p (B, C and x, the call's rows bounded): the
+        products, the convolution over the rows and the gate as one operator (iron_shortconv's
+        ShortConvChunk), then out_proj."""
+        import iron_shortconv
+
+        E, K = self.width, self.conv.taps.shape[0]
+        read, write = self.conv.state.at(call)
+        y, final = iron_shortconv.short_conv_chunk_operator().step(
+            p, self.conv.taps, Copy.step(read), rows=p.shape[0], width=E, taps_n=K)
+        Copy.step(final, write)
+        return self.out_proj(y)
 
 
 class GatedAttention(Attention):
@@ -195,6 +239,7 @@ class Lfm3Layer(SandwichLayer):
             super().__init__(c, i)
             del self.self_attn, self.cache
             self.conv = ShortConv(c)
+            self.conv.chunked = True
         else:
             window = c.window if kind == "sliding_attention" else None
             super().__init__(c, i, GatedAttention(c, i), None, KVCache(c, window))
@@ -206,19 +251,36 @@ class Lfm3Layer(SandwichLayer):
             return self.conv(h, call)
         return super().mix(h, call)
 
-    def fused_body(self, x, xn, call, nxt):
-        """A decode step's layer on ``x`` and its input already normed ``xn``: each block's post-norm,
-        residual and the next norm as one SandwichAdd (iron_sandwich), the last one's with ``nxt``
-        (the next layer's input norm, or the final norm). Returns the residual and its ``nxt``
-        norm."""
+    def fused_body(self, x, pend, call):
+        """A decode step's layer on the residual ``x`` and ``pend``: ("normed", the input normed) for the
+        first layer, else ("pending", the last block's output, its post norm's weight), the
+        residual not yet added. The sandwiches (post norm, residual, next norm) are made in the GEMV
+        that reads their output where one does (iron_q4.sandwich_linear: in_proj of a conv layer, the
+        MLP's QGEMVGlu), else by SandwichAdd. Returns the residual and the next ("pending", ...)."""
+        import iron_q4
         import iron_sandwich
 
-        h = self.mix(xn, call)
-        x, m = iron_sandwich.sandwich_add(h, x, self.post_attention_layernorm.weight,
-                                          self.pre_feedforward_layernorm.weight, self.post_attention_layernorm.eps)
-        h = self.mlp(m)
-        return iron_sandwich.sandwich_add(h, x, self.post_feedforward_layernorm.weight, nxt.weight,
-                                          self.post_feedforward_layernorm.eps)
+        eps = self.post_attention_layernorm.eps
+        win = self.input_layernorm.weight
+        if pend[0] == "pending" and self.conv is not None and SANDWICH_GEMV:
+            p, x, _ = iron_q4.sandwich_linear(pend[1], x, pend[2], win, eps, self.conv.in_proj.weight)
+            h = self.conv.decode_from(p, call)
+        else:
+            if pend[0] == "pending":
+                x, xn = iron_sandwich.sandwich_add(pend[1], x, pend[2], win, eps)
+            else:
+                xn = pend[1]
+            h = self.mix(xn, call)
+        gu = getattr(self.mlp, "gu", None)
+        if gu is not None and SANDWICH_GEMV:
+            g, x, _ = iron_q4.sandwich_linear(h, x, self.post_attention_layernorm.weight,
+                                              self.pre_feedforward_layernorm.weight, eps, gu)
+            h = self.mlp.down_proj(g)
+        else:
+            x, m = iron_sandwich.sandwich_add(h, x, self.post_attention_layernorm.weight,
+                                              self.pre_feedforward_layernorm.weight, eps)
+            h = self.mlp(m)
+        return x, ("pending", h, self.post_feedforward_layernorm.weight)
 
 
 class Lfm3(CausalLM):
@@ -269,17 +331,25 @@ class Lfm3(CausalLM):
     def layer(self, call, i: int, w, x):
         if not self.fused(call, x):
             return super().layer(call, i, w, x)
-        L = len(self.model.layers)
-        xn = w.input_layernorm(x) if i == 0 else self._normed
-        nxt = self.model.layers[i + 1].input_layernorm if i + 1 < L else self.model.norm
-        x, self._normed = w.fused_body(x, xn, call, nxt)
+        pend = ("normed", w.input_layernorm(x)) if i == 0 else self._pend
+        x, self._pend = w.fused_body(x, pend, call)
         return x
 
     def head(self, x):
-        xn, self._normed = getattr(self, "_normed", None), None
-        if xn is not None:  # the last layer's SandwichAdd normed it with the final norm
-            return self.lm_head(xn)
-        return super().head(x)
+        pend, self._pend = getattr(self, "_pend", None), None
+        if pend is None:
+            return super().head(x)
+        import iron_q4
+        import iron_sandwich
+
+        _, h, wpost = pend
+        norm = self.model.norm
+        if SANDWICH_GEMV and id(self.lm_head.weight) in iron_q4._Q4:
+            # the last layer's sandwich, its next norm the final norm, made in the head's GEMV
+            logits, _, _ = iron_q4.sandwich_linear(h, x, wpost, norm.weight, norm.eps, self.lm_head.weight)
+            return logits.reshape(1, logits.shape[-1])
+        _, xn = iron_sandwich.sandwich_add(h, x, wpost, norm.weight, norm.eps)
+        return self.lm_head(xn)
 
     def quantize(self, fmts: dict) -> None:
         """Put the loaded weights in ``fmts``' formats (``install_q4``)."""
