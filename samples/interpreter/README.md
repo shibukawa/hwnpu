@@ -15,10 +15,13 @@ mic → vad → transcribe → heard → commands → translate → said → spe
 ```bash
 cd samples
 go run ./interpreter models prepare            # download, convert and compile the models (about 11 GB)
-go run ./interpreter talk.wav -o english.wav   # a recording: Japanese speech to English speech
-go run ./interpreter --mic -o english.wav      # the microphone, until Ctrl-C or "終わり"
-go run ./interpreter say こんにちは -o hello.wav  # a text, translated and spoken
+go run ./interpreter talk.wav                  # a recording: Japanese speech to English speech, on the speaker
+go run ./interpreter --mic                     # the microphone, until Ctrl-C or "終わり"
+go run ./interpreter say こんにちは              # a text, translated and spoken
+go run ./interpreter talk.wav -o english.wav   # into a WAV file instead of the speaker
 ```
+
+The interpretation is played on the speaker (through [oto](https://github.com/ebitengine/oto), without cgo), each utterance as soon as it is spoken, while the next one is transcribed and translated. `-o FILE` writes it into a WAV file instead.
 
 | Command | What it does |
 |---|---|
@@ -29,7 +32,7 @@ go run ./interpreter say こんにちは -o hello.wav  # a text, translated and 
 | `interpreter models` | The models picked for this machine, what they take, and the network |
 | `interpreter status` | This machine's NPU and what uses it |
 
-Options: `--to es` (the language to interpret into), `-l ja` (the language of the speech, instead of finding it in each utterance), `--voice male`, `--no-commands`.
+Options: `--speed 1.3` (said 30 % faster, its pitch kept; 0.5 to 2), `--to es` (the language to interpret into), `-l ja` (the language of the speech, instead of finding it in each utterance), `--voice male`, `--no-commands`.
 
 ### Spoken commands
 

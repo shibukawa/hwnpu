@@ -40,7 +40,7 @@ go run ./interpreter talk.wav -o out.wav
 | ディレクトリ | 中身 |
 |---|---|
 | `interpreter/`、`parallax/`、`layers/` | サンプル (それぞれ `main` パッケージ) |
-| `internal/capture` | マイクとカメラを `ai/flow` の流れに (hwcamera) |
+| `internal/capture` | マイクとカメラを `ai/flow` の流れに (hwcamera)、スピーカー (oto) |
 | `internal/layering` | 絵を深度で層に分ける処理。layers と parallax が共有 |
 
-hwcamera と Ebitengine はこのモジュールだけの依存で、hwnpu のライブラリには入りません。
+hwcamera、oto (スピーカー)、Ebitengine はこのモジュールだけの依存で、hwnpu のライブラリには入りません。
