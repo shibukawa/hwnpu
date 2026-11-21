@@ -390,10 +390,10 @@ func Upper(s flow.Stream[flow.Text]) flow.Stream[flow.Text] {
 
 ### 6.5 Live inputs: the microphone and the camera
 
-The `ai` packages have no microphone, camera or speaker. An input is anything that is a `flow.Stream`: made from a file or from a device, the stages after it are the same. The samples use [hwcamera](https://github.com/shibukawa/hwcamera) (each operating system's camera and audio input API without cgo), with the little code that makes streams of it in `samples/capture`.
+The `ai` packages have no microphone, camera or speaker. An input is anything that is a `flow.Stream`: made from a file or from a device, the stages after it are the same. The samples use [hwcamera](https://github.com/shibukawa/hwcamera) (each operating system's camera and audio input API without cgo), with the little code that makes streams of it in `samples/internal/capture`.
 
 ```go
-// samples/capture: the microphone (hwcamera/audio) as a stream
+// samples/internal/capture: the microphone (hwcamera/audio) as a stream
 mic := capture.Mic(ctx, capture.MicOptions{Rate: speech.TranscribeRate}) // flow.Stream[[]float32]
 
 // from a recording; the stages after it are the same
@@ -631,14 +631,14 @@ runWindow(picture, near, latestView, progress)  // on the beat: the window draws
 - The nearness is the inverse of the depth, so with grass right before the eye, the bridge, the houses and the mountains behind it move almost as one (as an eye would see them, but no depth is felt). So a curve pulls the far layers apart (`Layers`, `--far`, 30 by default: a nearness n becomes log(1 + 30n) / log(31); 0 leaves it). Between opposite views the mountains then moved 0 pixels, the forest 0→4, the houses 1→7, the bridge 3→17 and the post in front 43→57 (a picture of 1024 pixels)
 - An estimated depth's outlines are softer than the real ones, so near things are made a few pixels larger first (`Spread`). Without that the outlines tear into streaks
 - What the picture does not show (the background that appears when a near thing moves aside) is not in the picture, so it is stretched. It shows when the points move too far (`--strength`)
-- **Drawn in layers**: the window shows the picture with one depth as soon as the depth is there (a second or two), and parts the picture into layers beside it (`--layers`, 3 by default: the same work as [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers), in `samples/layering`, which both samples use). Each time a layer is cut the window's picture is changed for the one with that layer, drawn a layer at a time from the farthest, each with its own nearness, one over the other. Inside a layer the points move by their fine relief as before, and where a near layer has moved aside, what was drawn behind it shows, at its own nearness, instead of a stretched edge
+- **Drawn in layers**: the window shows the picture with one depth as soon as the depth is there (a second or two), and parts the picture into layers beside it (`--layers`, 3 by default: the same work as [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers), in `samples/internal/layering`, which both samples use). Each time a layer is cut the window's picture is changed for the one with that layer, drawn a layer at a time from the farthest, each with its own nearness, one over the other. Inside a layer the points move by their fine relief as before, and where a near layer has moved aside, what was drawn behind it shows, at its own nearness, instead of a stretched edge
 - **Showing how it goes**: the parting takes about a minute a layer, so the window shows at its bottom the step ("layer 3 of 3: drawing what is behind it, 40 %"), a bar of how much of the whole is done, and in a corner the picture of the step (the picture with the layer's shape painted in one colour, then what the model drew). The work runs the calls in another goroutine, and what `layering.Options.Progress` is told at each step is only read by the window each frame (the head is followed and the picture drawn all the while). `--save-layers DIR` writes the layers, and `parallax DIR` shows them again without the models. `--layers 1` parts nothing. On a machine whose picture model is not prepared, or whose NPU does not draw from references yet, the picture stays with its one depth
 - The pointer can stand in for the head (`--head pointer`), the view can go around by itself (`--head sweep`), a GIF can be written without a window (`parallax render`), and pictures given as the camera's frames (`parallax track --frames`)
 - The window is Ebitengine's, which on Linux needs the development packages of X11 and OpenGL. A machine without them builds everything but the window with `-tags headless`
 
 ### 6.9 Example: parting a picture into layers by depth (`samples/layers`)
 
-It parts a picture into layers by depth and writes them as a Photoshop document (PSD). The picture model draws what each layer hid, so a layer can be moved or hidden and there is a picture behind it. It is an example of two models used **in turns**. The parting itself is in `samples/layering` (which is given the models as functions), used by this sample and by the pseudo-3D one. Below is an excerpt of what it does.
+It parts a picture into layers by depth and writes them as a Photoshop document (PSD). The picture model draws what each layer hid, so a layer can be moved or hidden and there is a picture behind it. It is an example of two models used **in turns**. The parting itself is in `samples/internal/layering` (which is given the models as functions), used by this sample and by the pseudo-3D one. Below is an excerpt of what it does.
 
 ```go
 var (
@@ -1070,7 +1070,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 - **Not decided**: the name `ai` (hard to change once it is public); `speech` holding both speech to text and text to speech; the name `text` (easily confused beside the standard library's `text/...`)
 
-**D19. Input and output devices** — now: the library has none. It takes streams and gives streams. The samples make streams of the microphone (and the camera) with hwcamera (`samples/capture`).
+**D19. Input and output devices** — now: the library has none. It takes streams and gives streams. The samples make streams of the microphone (and the camera) with hwcamera (`samples/internal/capture`).
 
 - Why: the library's dependencies do not grow. An input from a file or a network has the same shape
 - Option: the code that makes streams of hwcamera as another module of hwnpu (not a dependency of the library). Apps then do not each write it, and the rules of "keep" and "the newest only" are in one place

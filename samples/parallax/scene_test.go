@@ -5,7 +5,7 @@ import (
 	"image/color"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/samples/layering"
+	"github.com/shibukawa/hwnpu/samples/internal/layering"
 )
 
 // layered is a scene of w x h whose left half is far and blue with a white stripe, and whose

@@ -47,7 +47,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/samples/capture"
+	"github.com/shibukawa/hwnpu/samples/internal/capture"
 )
 
 // The models the app uses: uses of the definitions, which pick a model for the machine's memory.

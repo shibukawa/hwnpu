@@ -59,7 +59,7 @@
 | **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 一部 (FLUX.2 klein の文からの生成と参照からの編集は済み、aix1 と Mac で確認。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Anima、FLUX.3 klein、Chroma、まとめて描くは残り) |
 | J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 未着手 |
 | **J4** | `samples/parallax` の擬似立体: 絵 (Anima のアニメの絵。今はコマンドで作ったファイル) → 深度 → カメラ (hwcamera、または絵のファイル) の顔の位置 → Ebitengine の Kage のシェーダーで描く | aix1、Mac | J1 | 中 | 一部 (深度、頭の追跡、シェーダーは済み。Mac で実物のカメラと窓 (Metal) も確認。絵の生成をライブラリから呼ぶのは残り) |
-| **J4b** | `samples/layers` のレイヤー分割: 絵 → 深度 → 手前の層を切り出す → 塗って FLUX.2 klein に裏を描かせる → その絵の深度 → 次の層、を繰り返して PSD に書く | aix1、Mac | J1、J2 | 中 | 済み (aix1 と Mac で確認。層ごとの深度も持ち、擬似立体のサンプルは窓の横で層に分けて、途中経過と進み具合を窓に出す。分ける処理は `samples/layering`) |
+| **J4b** | `samples/layers` のレイヤー分割: 絵 → 深度 → 手前の層を切り出す → 塗って FLUX.2 klein に裏を描かせる → その絵の深度 → 次の層、を繰り返して PSD に書く | aix1、Mac | J1、J2 | 中 | 済み (aix1 と Mac で確認。層ごとの深度も持ち、擬似立体のサンプルは窓の横で層に分けて、途中経過と進み具合を窓に出す。分ける処理は `samples/internal/layering`) |
 
 依存のつながり:
 

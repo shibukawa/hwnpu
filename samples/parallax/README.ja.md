@@ -1,0 +1,54 @@
+# parallax
+
+[English](README.md) · [サンプルの一覧](../README.ja.md)
+
+絵を奥行きがあるように見せます。絵の深度を 1 回推定し、カメラで見る人の頭を追い、その位置から見た絵を描きます。奥の点は少し、手前の点は大きく動くので、窓越しに見ているように見えます (Ebitengine の Kage のシェーダー)。
+
+窓は深度が出たらすぐ絵を見せます。その横で絵を深度で層に分け、各層が隠していた部分を画像のモデルが描き足します。手前のものがずれた所には、縁を引き伸ばす代わりに裏の絵が出ます。窓は途中の段を見せ、層が切れるたびに入れ替えます。
+
+```
+呼び出し (交互に):        絵 → 深度、塗った絵 → 裏の絵                   (Depth Anything 3、FLUX.2 klein)
+ネットワーク (動き続ける): camera → faces → head → steady → view        (YuNet と、プログラムの処理)
+窓:                      1 秒に 60 回、ネットワークが最後に出した視点で描く
+```
+
+## 動かし方
+
+```bash
+cd samples
+go run ./parallax models prepare                   # モデルのダウンロード、変換、コンパイル
+go run ./parallax picture.png                      # 窓。カメラで頭を追う
+go run ./parallax picture.png --head pointer       # マウスが頭の代わり (カメラなし)
+go run ./parallax render picture.png -o deep.gif   # 窓なし: 頭が一回りする間の絵
+```
+
+| コマンド | 何をするか |
+|---|---|
+| `parallax PICTURE` | 窓。`--layers 1` は深度だけ (画像のモデルなし)、`--head sweep` はひとりでに回る、`--for 5m` でその時間で閉じる |
+| `parallax DIR` | 層に分けてある絵 (`layers PICTURE --png DIR`)。モデルは要らない |
+| `parallax render PICTURE -o out.gif` | 頭が一回りする間の絵を書く (`--frames`、`--width`、`--png DIR`) |
+| `parallax track` | カメラの部分だけ: 頭の位置を出す。`--frames a.png,b.png` でカメラの代わりに絵を使う |
+| `parallax cameras` | カメラの一覧 (番号つき)。`--device 2` で 2 番目を使う |
+| `parallax models`、`parallax status` | モデルと要る量、この機械の NPU |
+
+見え方: `--strength` (一番手前の点の動く量)、`--focus` (動かない深度)、`--far` (深度の奥の引き離し)、`--edge`、`--gain` (頭の動きに対する視点の回り方)、`--fov` (カメラの画角)。
+
+層がはっきりした絵が向いています: 風景の前の人物、いくつもの奥行きに物がある絵。
+
+## ダウンロード
+
+| モデル | Apple | AMD |
+|---|---|---|
+| YuNet (顔) | 0.2 MB | 0.2 MB |
+| Depth Anything 3 Base (深度) | 0.5 GB | 2.4 GB |
+| FLUX.2 klein 4B (層が隠していた部分) | 16 GB | 12.5 GB |
+| **合計** | **16.5 GB** | **14.9 GB** |
+
+16 GB の機械の場合です。この機械の量は `parallax models` が出します。Mac では FLUX.2 klein はチェックポイントで、ここで 2 つの書き出し (7.5 GB と、編集のプログラムの 4.1 GB) に変換し、どちらもその横に残ります。
+
+## 要るもの
+
+- モデル: YuNet (顔、0.2 MB)、Depth Anything 3 Base (0.5 GB)、FLUX.2 klein 4B (層)。
+- 深度は 1 秒未満、顔は 1 フレーム数ミリ秒。層に分けるのは AMD の NPU で 1 層 1 分ほど、M3 で 512×512 が 39 秒、1024×1024 が 89 秒。
+- Apple の Neural Engine で層に分けるには、FLUX.2 klein の編集のプログラムが要ります。チェックポイント (16 GB のダウンロード) から変換し、最初の編集でコンパイルします (最大 1 時間ほど。prebuilt でなくす予定)。`--layers 1` ならどれも要りません。
+- Mac ではターミナルのアプリにカメラの許可が要ります。最初の実行で macOS が聞いてきます。画面や Ebitengine のライブラリのない機械では `-tags headless` でビルドします (`render` と `track` は動きます)。

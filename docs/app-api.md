@@ -360,7 +360,7 @@ interpreter status
 ```
 
 - **サンプルは別のモジュール** (`samples/go.mod`、`replace github.com/shibukawa/hwnpu => ../`): サンプルだけが要る依存を、ライブラリ本体の `go.mod` に足さないため。別のモジュールなので `internal` は import できず、公開のパッケージだけで書けることの確かめにもなる
-- **マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera)** から取る (cgo なし。Linux は PulseAudio / PipeWire と V4L2、macOS は AudioQueue と AVFoundation、Windows は WASAPI と Media Foundation)。流れに直すコードは `samples/capture`。入力は録音のファイルでもよく、後ろの段は同じ
+- **マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera)** から取る (cgo なし。Linux は PulseAudio / PipeWire と V4L2、macOS は AudioQueue と AVFoundation、Windows は WASAPI と Media Foundation)。流れに直すコードは `samples/internal/capture`。入力は録音のファイルでもよく、後ろの段は同じ
 - **生の入力はためる**: 流れは読む側が引くので、文字起こしと翻訳が動いている数秒の間、誰もマイクを読まない。そのままだとその間の音が失われる (実機で 2 つ目の発話の頭が欠け、3 つ目が消えた)。`capture.Mic` は別の goroutine で読んで 1 分ぶんまでためる。映像は逆に `flow.Latest` で古いフレームを捨てる
 
 - 発話が終わってから訳す**逐次通訳**。話している途中の仮の字幕 (B5) と、できた音から返す読み上げ (B6) はまだ
@@ -382,10 +382,10 @@ parallax track --frames a.png,b.png        # カメラなし: 絵をフレーム
 - **つなぎ方**: 呼び出し 2 つ (絵 → 深度、塗った絵と文 → 描き足した絵。交互に動かしてモデルを下ろす) と、ネットワーク (`camera → face-detect (newest) → head → steady → view`。動き続ける) と、窓の拍 (Ebitengine が 1 秒に 60 回、最後に届いた視点で描く)
 - **モデル**: 深度は Depth Anything 3 (用途 `depth`)、顔は YuNet (用途 `face-detect`)。頭の位置は、顔の両目の間隔からピンホールのカメラとして出す (`vision.HeadOf`)。`steady` はプログラムの節で、検出の揺れをならし、顔が 1.5 秒見えなければ視点を中央に戻す (`flow.WhenIdle`)
 - **描画**: Kage のシェーダー (`parallax.kage`)。画素ごとに、目からの視線を手前の層から奥へ 32 層たどり、絵がその層以上に近い最初の点を、その間を 5 回 2 分して求めて描く。同じ計算を Go で書いた `Scene.Render` があり、窓なしの `render` とテストが使う
-- **層に分けて描く**: 窓は深度が出たらすぐ絵を見せ、その横で絵を層に分ける (`--layers`、既定 3。9.3 と同じ処理で、`samples/layering` を両方が使う)。層が切れるたびに窓の絵が入れ替わり、層ごとにその層の近さで描いて重ねる。窓の下に今の段と進み具合のバー、隅に今の段の絵 (塗った絵、描き足した絵) を出す。`--save-layers DIR` で書き出し、`parallax DIR` でモデルなしに見る
+- **層に分けて描く**: 窓は深度が出たらすぐ絵を見せ、その横で絵を層に分ける (`--layers`、既定 3。9.3 と同じ処理で、`samples/internal/layering` を両方が使う)。層が切れるたびに窓の絵が入れ替わり、層ごとにその層の近さで描いて重ねる。窓の下に今の段と進み具合のバー、隅に今の段の絵 (塗った絵、描き足した絵) を出す。`--save-layers DIR` で書き出し、`parallax DIR` でモデルなしに見る
 - **奥の層**: 近さ (深度の逆数) のままだと、目のすぐ前のものの奥は全部一緒に動く。奥の層を引き離す曲線 (`--far`、既定 30) と、輪郭が裂けないように近いものを数画素広げる処理 (`--edge`) をかけてから描く
 - **絵**: 層のはっきりした絵がよい (人物や動物と背景、奥行きの違うものがいくつもある風景)。テストの絵は Anima で作った (`hwnpu-image generate -m anima-turbo`)。画像の生成はまだライブラリにないので、サンプルは絵のファイルを読む
-- **カメラ**: hwcamera (`samples/capture.Camera`)。フレームを Go のメモリの絵に写して流す
+- **カメラ**: hwcamera (`samples/internal/capture.Camera`)。フレームを Go のメモリの絵に写して流す
 - 窓は Ebitengine。Linux では X11 と OpenGL の開発用のパッケージが要り、ない機械は `-tags headless` で窓以外をビルドする
 
 ### 9.3 レイヤー分割 (`samples/layers`)

@@ -10,7 +10,7 @@
 //
 // and the window draws on its own beat, 60 times a second, with whatever view the network last
 // gave. The window shows the picture as soon as its depth is there, and beside it the picture is
-// parted into layers by its depth, what each layer hid drawn in (samples/layering): the window
+// parted into layers by its depth, what each layer hid drawn in (samples/internal/layering): the window
 // shows each step and how far the work is, and takes the layers as they come, so that where a
 // near thing moves aside there is a picture behind it. The camera is read through hwcamera (github.com/shibukawa/hwcamera).
 //
@@ -47,8 +47,8 @@ import (
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/ai/imagegen"
 	"github.com/shibukawa/hwnpu/ai/vision"
-	"github.com/shibukawa/hwnpu/samples/capture"
-	"github.com/shibukawa/hwnpu/samples/layering"
+	"github.com/shibukawa/hwnpu/samples/internal/capture"
+	"github.com/shibukawa/hwnpu/samples/internal/layering"
 )
 
 // The models: the depth of the picture, the one that draws what a layer of the picture hid, and
