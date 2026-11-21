@@ -207,6 +207,7 @@ func main() {
 		kong.Name("interpreter"),
 		kong.Description("Interpret speech into another language on the NPU: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
+		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),
 		kong.Bind(net))
 	k.FatalIfErrorf(k.Run())

@@ -92,6 +92,7 @@ func main() {
 		kong.Name("parallax"),
 		kong.Description("Show a picture as if it were deep, turning with the viewer's head: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
+		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),
 		kong.Bind(p))
 	k.FatalIfErrorf(k.Run())

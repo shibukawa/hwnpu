@@ -73,6 +73,7 @@ func main() {
 		kong.Name("layers"),
 		kong.Description("Part a picture into layers by depth, with what each layer hid drawn in, as a Photoshop document: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
+		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),
 		kong.Bind(p))
 	k.FatalIfErrorf(k.Run())
