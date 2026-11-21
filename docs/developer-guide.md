@@ -97,7 +97,14 @@ func main() {
 }
 ```
 
-A working example that joins several models is [samples/interpreter](../samples/interpreter): it interprets recorded speech into speech in another language.
+A working example that joins several models is [samples/interpreter](../samples/interpreter): it interprets speech, from the microphone or a recording, into speech in another language. The samples are a module of their own (`samples/go.mod`) and take the microphone and the camera from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library ([section 6.5](#65-live-inputs-the-microphone-and-the-camera)).
+
+```
+cd samples
+go run ./interpreter models prepare
+go run ./interpreter --mic -o english.wav      # from the microphone, until Ctrl-C
+go run ./interpreter talk.wav -o english.wav   # from a recording
+```
 
 ## 3. Registering models
 
@@ -370,6 +377,32 @@ func Upper(s flow.Stream[flow.Text]) flow.Stream[flow.Text] {
 
 - Cancelling is ctx. There is no way yet to interrupt (stop speaking when the other person starts) ([D13](#9-design-questions))
 
+### 6.5 Live inputs: the microphone and the camera
+
+The `ai` packages have no microphone, camera or speaker. An input is anything that is a `flow.Stream`: made from a file or from a device, the stages after it are the same. The samples use [hwcamera](https://github.com/shibukawa/hwcamera) (each operating system's camera and audio input API without cgo), with the little code that makes streams of it in `samples/capture`.
+
+```go
+// samples/capture: the microphone (hwcamera/audio) as a stream
+mic := capture.Mic(ctx, capture.MicOptions{Rate: speech.TranscribeRate}) // flow.Stream[[]float32]
+
+// from a recording; the stages after it are the same
+mic := speech.Chunks(pcm, speech.TranscribeRate, speech.TranscribeRate/10)
+mic = flow.Live(ctx, mic) // to pace it as a microphone would
+```
+
+**A live input does not wait.** A stream is pulled by its reader, so while the stages after it are busy nobody reads the input, and the sound or the frames of that time are lost at the device. What to do about it is decided right after the input.
+
+| Input | What to do |
+|---|---|
+| Sound (all of it must be heard) | Read it in a goroutine of its own and keep it: `flow.Async(ctx, mic, n)`. `capture.Mic` does this inside (a minute by default) and reports through `MicOptions.Lost` when sound was lost all the same |
+| Video (old frames are of no use) | Pass on the newest only: `flow.Latest(ctx, camera)` |
+
+- Seen on the machine: joined without keeping, the sound of the seconds in which the first utterance was transcribed and translated was lost; the second utterance lost its beginning and the third was gone. With keeping, all three came through
+- `flow.Live` (a recording at a microphone's pace) only waits when its reader is late, and loses nothing. A recording does not show this difference
+- Stopping the microphone and stopping the stages after it are two things. `capture.Mic` ends (without an error) when its ctx is cancelled, and the stages after it work off what was heard, so they are given a context of their own (`samples/interpreter` turns the microphone off at the first Ctrl-C and ends at the second)
+- The camera (for the pseudo-3D sample): a frame of hwcamera in the driver's memory needs its `Release`, so frames are made pictures in Go's memory (`WithFormat(hwcamera.RGBA)`) before they go into a stream, and pass through `flow.Latest`. It is not written yet
+- Outputs (a speaker, a screen) follow the same idea: the library has none ([D19](#9-design-questions))
+
 ## 7. The models
 
 Every model has a batch form and a stream form.
@@ -538,6 +571,12 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 **D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/aicli`. Planned: `ai/vision`, `ai/imagegen`, `ai/sound`.
 
 - **Not decided**: the name `ai` (hard to change once it is public); `speech` holding both speech to text and text to speech; the name `text` (easily confused beside the standard library's `text/...`)
+
+**D19. Input and output devices** — now: the library has none. It takes streams and gives streams. The samples make streams of the microphone (and the camera) with hwcamera (`samples/capture`).
+
+- Why: the library's dependencies do not grow. An input from a file or a network has the same shape
+- Option: the code that makes streams of hwcamera as another module of hwnpu (not a dependency of the library). Apps then do not each write it, and the rules of "keep" and "the newest only" are in one place
+- **Not decided**: whether to make that module; where an API for playing sound goes
 
 ## 10. Not there yet
 

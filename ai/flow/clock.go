@@ -105,7 +105,9 @@ func Pace[T any](ctx context.Context, s Stream[T], ahead time.Duration) Stream[T
 // Live passes the chunks of a recorded stream on as a live source would give them: each when
 // its end, counted from the first one's start, has come (a microphone gives a chunk once its
 // last sample is heard). It makes a file stand in for a microphone or a camera, with the same
-// timing of everything after it.
+// timing of everything after it. Unlike those it waits for a reader that is late and loses
+// nothing: a live source's own stream has to be read as it comes (Async after it for sound that
+// must all be heard, Latest for frames that go stale).
 func Live[T any](ctx context.Context, s Stream[T]) Stream[T] {
 	return pace(ctx, s, func(c Chunk[T]) time.Duration { return c.Start + c.Len })
 }

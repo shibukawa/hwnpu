@@ -97,7 +97,14 @@ func main() {
 }
 ```
 
-複数のモデルをつなぐ動く例は [samples/interpreter](../samples/interpreter) にあります (録音の音声を別の言語の音声に訳す)。
+複数のモデルをつなぐ動く例は [samples/interpreter](../samples/interpreter) にあります (マイクか録音の音声を、別の言語の音声に訳す)。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります。hwcamera はライブラリ本体の依存には入りません ([6.5 節](#65-生の入力-マイクとカメラ))。
+
+```
+cd samples
+go run ./interpreter models prepare
+go run ./interpreter --mic -o english.wav      # マイクから。Ctrl-C で止める
+go run ./interpreter talk.wav -o english.wav   # 録音から
+```
 
 ## 3. モデルを登録する
 
@@ -370,6 +377,32 @@ func Upper(s flow.Stream[flow.Text]) flow.Stream[flow.Text] {
 
 - 取り消しは ctx です。割り込み (相手が話し始めたら読み上げを止める) の口はまだありません ([D13](#9-設計の論点))
 
+### 6.5 生の入力: マイクとカメラ
+
+`ai` のパッケージ群は、マイクもカメラもスピーカーも持ちません。入力は `flow.Stream` であれば何でもよく、ファイルから作っても、デバイスから作っても、後ろの段は同じです。サンプルは [hwcamera](https://github.com/shibukawa/hwcamera) (cgo なしで OS のカメラと音声入力の API を呼ぶ) を使い、流れに直す小さなコードを `samples/capture` に置いています。
+
+```go
+// samples/capture: マイク (hwcamera/audio) を流れに
+mic := capture.Mic(ctx, capture.MicOptions{Rate: speech.TranscribeRate}) // flow.Stream[[]float32]
+
+// 録音から。後ろの段は同じ
+mic := speech.Chunks(pcm, speech.TranscribeRate, speech.TranscribeRate/10)
+mic = flow.Live(ctx, mic) // マイクの速さで流すなら
+```
+
+**生の入力は待ってくれません。** 流れは読む側が引く形なので、後ろの段が忙しい間は誰も入力を読まず、その間の音やフレームはデバイスの側で失われます。入力のすぐ後ろで、どうするかを決めます。
+
+| 入力 | すること |
+|---|---|
+| 音 (全部聞く必要がある) | 別の goroutine で読んでためる: `flow.Async(ctx, mic, n)`。`capture.Mic` はこれを中で行い (既定で 1 分ぶん)、それでも失われたら `MicOptions.Lost` で知らせる |
+| 映像 (古いものは要らない) | 最新だけを渡す: `flow.Latest(ctx, camera)` |
+
+- 実機で確かめたこと: ためずにつなぐと、1 つ目の発話を書き起こして訳している数秒の間の音が失われ、2 つ目の発話の頭が欠け、3 つ目が消えました。ためると 3 つとも通りました
+- `flow.Live` (録音をマイクの速さで流す) は、読む側が遅れても待つだけで失いません。この違いは録音では再現できません
+- マイクを止めるのと、後ろの段を止めるのは別です。`capture.Mic` は ctx が取り消されると (エラーなしで) 終わり、後ろの段は聞いたぶんを最後まで処理します。そのため後ろの段には別の ctx を渡します (`samples/interpreter` は、1 度目の Ctrl-C でマイクを止め、2 度目で終了します)
+- カメラ (擬似立体のサンプルで使う予定): hwcamera のフレームは、ドライバのメモリにあるうちは `Release` が要るので、Go のメモリの画像 (`WithFormat(hwcamera.RGBA)`) にしてから流れに載せ、`flow.Latest` を通す形にします。まだ書いていません
+- 出力 (スピーカー、画面) も同じ考えで、ライブラリは持ちません ([D19](#9-設計の論点))
+
 ## 7. 機能の一覧
 
 どの機能も、一括の形と流れの形を持ちます。
@@ -538,6 +571,12 @@ translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
 **D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/aicli`。予定: `ai/vision`、`ai/imagegen`、`ai/sound`。
 
 - **未定**: `ai` という名前 (公開するとあとから変えにくい)。`speech` に文字起こしと読み上げの両方を置く分け方。`text` という名前 (標準ライブラリの `text/...` と並ぶと紛らわしい)
+
+**D19. 入力と出力のデバイス** — 今: ライブラリは持たない。流れを受け取り、流れを返すだけ。サンプルが hwcamera でマイク (とカメラ) を流れに直す (`samples/capture`)。
+
+- 理由: ライブラリ本体の依存を増やさない。入力はファイルでもネットワークでも同じ形になる
+- 別の案: hwcamera を流れに直す部分を、hwnpu の別のモジュール (本体の依存にならない) として出す。アプリごとに同じコードを書かずに済み、「ためる」「最新だけ」の決まりを 1 か所に置ける
+- **未定**: その別のモジュールを作るか。音の出力 (再生) の口をどこに置くか
 
 ## 10. まだないもの
 

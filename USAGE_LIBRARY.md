@@ -147,7 +147,7 @@ k := kong.Parse(&cli, aicli.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` lists the models and what they take, `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. A working example is [samples/interpreter](samples/interpreter), which interprets recorded speech into speech in another language.
+`APP models` lists the models and what they take, `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. A working example is [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language. The samples are a module of their own (`samples/go.mod`) and take the microphone from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
 
 - So far it has the models of speech and text. Those of pictures (depth, faces, generation and the others) are only in the commands yet
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel the commands do the same preparing and loading, but they were not run through `ai`

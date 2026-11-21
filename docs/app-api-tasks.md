@@ -38,7 +38,7 @@
 | C2 | `ai/server`: 共通の部分 (互換の口をまとめる Handler、トークン、許すディレクトリ) と独自のストリーム | どこでも | B2、C1 | 中 | 未着手 |
 | C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 未着手 |
 | C4 | `ai/server/googlecloud`: Speech-to-Text、Text-to-Speech、Translation v2、Vision の REST | どこでも | C2 | 中 | 未着手 |
-| **D1** | `samples/interpreter`: 同時通訳のサンプル | Mac | C2 | 中 | 一部 (録音を読んで訳した音声を書く形は済み、aix1 で確認。ブラウザのマイクと WebSocket は残り) |
+| **D1** | `samples/interpreter`: 同時通訳のサンプル | Mac | C2 | 中 | 一部 (マイク (hwcamera) か録音を読んで、訳した音声を書く形は済み、aix1 で確認。訳した音声の再生、ブラウザのマイクと WebSocket は残り) |
 | D2 | 測定: 日本語の読み上げ、3 つのモデルの同居、1 発話の遅れ | Mac (M3、M1) | B2 | 小 | 未着手 |
 | E1 | ビルドタグと `hwnpu.Target()`、`hwnpu.Built()` | どこでも | — | 小 | 未着手 |
 | E2 | `hwnpu_noconvert`: 変換をタグで外せるようにする | どこでも | B1、E1 | 大 | 未着手 |
@@ -57,7 +57,7 @@
 | **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 未着手 |
 | **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 未着手 |
 | J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 未着手 |
-| **J4** | `samples/` の擬似立体: 画像の生成 → 深度 → カメラの顔の位置 → メトロノームで描く | aix1、Mac | J1、J2 | 中 | 未着手 |
+| **J4** | `samples/` の擬似立体: 画像の生成 → 深度 → カメラ (hwcamera、または録画や画像のファイル) の顔の位置 → メトロノームで描く | aix1、Mac | J1、J2 | 中 | 未着手 |
 
 依存のつながり:
 

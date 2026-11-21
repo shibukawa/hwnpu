@@ -1,6 +1,6 @@
 # アプリに組み込むライブラリ: `ai` のパッケージ群
 
-作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。design.md 16.281)。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、API の設計の論点 (D1〜D18) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
+作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。design.md 16.281)。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、API の設計の論点 (D1〜D19) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
 
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりにする。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモで、中身はライブラリを呼ぶだけにしていく (コマンドの名前と場所は変えない)。アプリは複数のモデルをつないで使う。例:
 
@@ -345,22 +345,27 @@ A2A と MCP のどちらも、同じ仕事の置き場と待ち行列の上の�
 
 ### 9.1 同時通訳 (`samples/interpreter`、動く)
 
-録音 (WAV) を読み、VAD → Whisper → PLaMo 3 Translate (前の発話を文脈にする) → LFM3-Audio の読み上げとつなぎ、訳した音声の WAV を書く。`ai`、`ai/flow`、`ai/speech`、`ai/text`、`ai/aicli` だけを import する (internal は使わない)。
+マイクか録音 (WAV) の音声を、VAD → Whisper → PLaMo 3 Translate (前の発話を文脈にする) → LFM3-Audio の読み上げとつなぎ、訳した音声の WAV を書く。
 
 ```
 interpreter models                    # 使うモデルと、要るもの
 interpreter models prepare            # ダウンロード、変換、コンパイル
-interpreter talk.wav -o english.wav   # 日本語の音声を英語の音声に (逆も)
-interpreter talk.wav --live           # マイクのように実時間で流す
+interpreter --mic -o english.wav      # マイクから。Ctrl-C で止める (interpreter mics が入力を並べる)
+interpreter talk.wav -o english.wav   # 録音から: 日本語の音声を英語の音声に (逆も)
+interpreter talk.wav --live           # 録音をマイクのように実時間で流す
 interpreter status
 ```
+
+- **サンプルは別のモジュール** (`samples/go.mod`、`replace github.com/shibukawa/hwnpu => ../`): サンプルだけが要る依存を、ライブラリ本体の `go.mod` に足さないため。別のモジュールなので `internal` は import できず、公開のパッケージだけで書けることの確かめにもなる
+- **マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera)** から取る (cgo なし。Linux は PulseAudio / PipeWire と V4L2、macOS は AudioQueue と AVFoundation、Windows は WASAPI と Media Foundation)。流れに直すコードは `samples/capture`。入力は録音のファイルでもよく、後ろの段は同じ
+- **生の入力はためる**: 流れは読む側が引くので、文字起こしと翻訳が動いている数秒の間、誰もマイクを読まない。そのままだとその間の音が失われる (実機で 2 つ目の発話の頭が欠け、3 つ目が消えた)。`capture.Mic` は別の goroutine で読んで 1 分ぶんまでためる。映像は逆に `flow.Latest` で古いフレームを捨てる
 
 - 発話が終わってから訳す**逐次通訳**。話している途中の仮の字幕 (B5) と、できた音から返す読み上げ (B6) はまだ
 - 次の形: ブラウザのマイクの音声を WebSocket で受ける (`ai/server`、8 節) ものは D1 に残る
 
 ### 9.2 擬似立体 (まだ)
 
-画像の生成 → 深度 (前が全部終わってから) → カメラの映像から顔 (`Latest`) → 頭の位置を持っておき (`Hold`)、メトロノームで描く。要るもの: `ai/vision` (深度、顔)、`ai/imagegen`、深度からメッシュと描画 (Go)、カメラの入力。
+画像の生成 → 深度 (前が全部終わってから) → カメラの映像から顔 (`Latest`) → 頭の位置を持っておき (`Hold`)、メトロノームで描く。要るもの: `ai/vision` (深度、顔)、`ai/imagegen`、深度からメッシュと描画 (Go)、カメラの入力 (hwcamera。フレームは Go のメモリの画像にしてから流れに載せる。録画や画像のファイルでも動くようにする)。
 
 ## 10. v0 の実装 (2026-11-21)
 

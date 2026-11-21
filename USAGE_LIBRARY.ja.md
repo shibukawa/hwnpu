@@ -147,7 +147,7 @@ k := kong.Parse(&cli, aicli.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` は使うモデルと要るものの一覧、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (録音の音声を別の言語の音声に訳す) にあります。
+`APP models` は使うモデルと要るものの一覧、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
 
 - 今ある機能は音声と文だけです。画像 (深度、顔、生成など) は、まだコマンドからだけ使えます
 - 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません

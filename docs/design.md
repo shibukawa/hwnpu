@@ -8649,8 +8649,14 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 - **直したあと**: 同じ道具で 3 回の実行の 12 回とも通り、ヒープの番地は全部倍数。`samples/interpreter` も 4 回続けて通った
 - 16.254 が見た形 (4 GB の表を写したあとで文のモデルを読む) と、プロセスを続けて起こす形 (125 回に 1 回) をそれぞれ再現して確かめてはいない。同じ断り方なので同じ原因と見ている。16.254 の読み込みの順 (書き出しを先に) はそのまま残した
 
+**サンプルの入力は hwcamera、サンプルは別のモジュール**: `samples/` に `go.mod` を置き (`replace github.com/shibukawa/hwnpu => ../`)、マイク (とカメラ) は [hwcamera](https://github.com/shibukawa/hwcamera) から取る。ライブラリ本体の `go.mod` は変えない。`samples/capture.Mic` が hwcamera の `audio` を `flow.Stream[[]float32]` に直し、`interpreter --mic` がそれを使う (録音のファイルも同じ流れになる)。
+
+- **生の入力はためる**: 流れは読む側が引く形なので、文字起こしと翻訳が動いている間は誰もマイクを読まず、hwcamera が持つ約 1 秒ぶんより古い音は失われる。最初の形 (そのままつなぐ) では、2 つ目の発話の頭 (「明日の会議は」) が欠け、3 つ目の文が消えた。`capture.Mic` が別の goroutine で読んでためる (`flow.Async`、1 分ぶん) ようにして 3 文とも通った。`flow.Live` (録音をマイクの速さで流す) は遅れても待つだけなので、録音ではこの違いが出ない
+- マイクを止める ctx と後ろの段の ctx を分ける: 1 度目の Ctrl-C (か `--seconds`) でマイクが止まり、聞いたぶんは最後まで訳して書く
+
 **確かめたこと** (Ryzen AI 9 365、XDNA 2。ほかのセッションが CPU で IRON の書き出しをしている間)
 
+- `interpreter --mic`: この機械にマイクがないので、PipeWire に仮の出力を作り、録音をそこへ再生して、そのモニターを入力として読んだ。34 秒聞いて 3 文とも書き起こして訳し、出力の音声を Whisper に戻すと訳文と同じ。実物のマイクでは確かめていない
 - `samples/interpreter`: 13.3 秒の日本語の音声 (2 発話、3 文) を、whisper-large-v3-turbo、plamo-3-translate-8b、LFM3-Audio-2B-TTS の 3 つを 1 プロセスに同居させて、英語の音声 8.5 秒に。読み込み 0.5、5.1、2.6 秒、全体 31.6 秒 (読み上げが実時間の約 0.4 倍で、ここが遅れを決める)。書き起こしと訳は正しく、出力を `hwnpu-audio transcribe` に戻すと訳文と一字一句同じ。`--live` (マイクの速さで流す) でも同じ文
 - `HWNPU_MEMORY=16` で翻訳が plamo-3-translate-2b に (3 つで 7.8 GB、全体 25.5 秒)
 - `interpreter models` / `models download` / `models prepare` / `status`。準備済みなら download は 0.2 秒で終わる (手元の書き出しを見つけるだけ)
@@ -8658,6 +8664,7 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 
 **確かめていないこと・残り**
 
+- 実物のマイク、Mac と Windows での hwcamera の音声入力 (hwcamera 自身がまだ実機で確かめていない)、カメラ (この機械にない。`samples/capture` にカメラの口はまだ書いていない)
 - Mac (Core AI) と Intel で `ai` を通した実機の動作。準備と読み込みはコマンドと同じ関数を呼ぶが、動かしてはいない
 - `text.Chat` の実機
 - コマンドの載せ替え (B3)、`ai/vision` と `ai/imagegen` (J1、J2)、擬似立体のサンプル (J4)、常駐の管理 (B8)。画像のコマンドの準備の手順 (`amdExport`、`openImageDevice`) はまだ `cmd/hwnpu-image` の中にある
