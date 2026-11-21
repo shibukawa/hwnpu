@@ -374,6 +374,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		return "", err
 	}
 	man.Attention = &PartRecord{Path: apath, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}
+	man.AttnVersion = paged.Version
 	if man.Mass, err = writeMass(base, ext, pm.PagedShape(), form, opts.Seq, opts.Paged, a.Title); err != nil {
 		return "", err
 	}
@@ -520,7 +521,8 @@ func attentionForm(backend, form string, sh paged.Shape) string {
 }
 
 // RefreshAttention writes the attention programs of a model split at its attention again when
-// they are not in the form its backend runs fastest now (attentionForm), from the attention
+// they are not in the form its backend runs fastest now (attentionForm) or were written before
+// paged.Version (Manifest.AttnVersion), from the attention
 // program's shape, form being the model's and scale its score scale (as AddMass takes them):
 // they have no weights, so a conversion from before the form keeps its parts. The programs over
 // shorter chunks are removed for AddSmaller to write again. It does nothing for a manifest in
@@ -547,7 +549,7 @@ func RefreshAttention(path, form string, scale float64) error {
 	}
 	sh := paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: scale}
 	want := attentionForm(man.Backend, form, sh)
-	if cmp.Or(man.AttnForm, form) == want {
+	if cmp.Or(man.AttnForm, form) == want && man.AttnVersion >= paged.Version {
 		return nil
 	}
 	stem := strings.TrimSuffix(man.Attention.Path, filepath.Ext(man.Attention.Path))
@@ -558,7 +560,7 @@ func RefreshAttention(path, form string, scale float64) error {
 	for _, r := range man.Smaller {
 		os.RemoveAll(r.Path)
 	}
-	man.Attention, man.Smaller, man.AttnForm = rec, nil, ""
+	man.Attention, man.Smaller, man.AttnForm, man.AttnVersion = rec, nil, "", paged.Version
 	if want != form {
 		man.AttnForm = want
 	}

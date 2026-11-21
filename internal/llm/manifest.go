@@ -45,6 +45,9 @@ type Manifest struct {
 	// (grouped or tile): paged.Heads for Core AI (attentionForm). A manifest from before it has
 	// the model's, and RefreshAttention writes the programs again.
 	AttnForm string `json:"attention_form,omitempty"`
+	// AttnVersion is the paged.Version Attention and Smaller were written in (0 before it):
+	// RefreshAttention writes older ones again.
+	AttnVersion int `json:"attention_version,omitempty"`
 	// Mass is the program without weights that weighs one chunk of bucket summaries for the
 	// two-level attention (decode.Sparse, paged.BuildMass), of a model split at its attention.
 	// Conversions before it have none (AddMass).

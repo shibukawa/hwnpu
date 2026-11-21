@@ -12,7 +12,8 @@ import (
 // RefreshAttention writes the attention program of a Core AI conversion from before the form a
 // kv head at a time (paged.Heads) again, in that form, and removes the programs over shorter
 // chunks for AddSmaller to write; it leaves alone a conversion in the form already, one kv head
-// for all the heads (the grouped form stays), and another backend's.
+// for all the heads (the grouped form stays), and another backend's. A conversion from before
+// paged.Version is written again on every backend.
 func TestRefreshAttention(t *testing.T) {
 	old := func(t *testing.T, backend string, sh paged.Shape) (string, *Manifest) {
 		t.Helper()
@@ -35,7 +36,7 @@ func TestRefreshAttention(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		man := &Manifest{Model: "test", Format: "fp16", Seq: 4, Cache: 64, Paged: 32, Attention: rec, Backend: backend,
+		man := &Manifest{Model: "test", Format: "fp16", Seq: 4, Cache: 64, Paged: 32, Attention: rec, Backend: backend, AttnVersion: paged.Version,
 			Parts: []PartRecord{{Path: filepath.Join(filepath.Dir(path), "m.part1")}}}
 		if err := WriteManifest(path, man); err != nil {
 			t.Fatal(err)
@@ -110,6 +111,27 @@ func TestRefreshAttention(t *testing.T) {
 		}
 		if back.AttnForm != "" || bytecode(t, back.Attention) != before || len(back.Smaller) != 2 {
 			t.Errorf("one kv head for all the heads: form %q, %d shorter chunks", back.AttnForm, len(back.Smaller))
+		}
+	})
+	t.Run("a conversion from before the version", func(t *testing.T) {
+		path, man := old(t, "", several)
+		man.AttnVersion = 0
+		if err := WriteManifest(path, man); err != nil {
+			t.Fatal(err)
+		}
+		small := man.Smaller[0].Path
+		if err := RefreshAttention(path, "grouped", 0); err != nil {
+			t.Fatal(err)
+		}
+		back, err := ReadManifest(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if back.AttnVersion != paged.Version || back.AttnForm != "" || len(back.Smaller) != 0 {
+			t.Errorf("version %d, form %q, %d shorter chunks: want %d, the model's, none", back.AttnVersion, back.AttnForm, len(back.Smaller), paged.Version)
+		}
+		if _, err := os.Stat(small); err == nil {
+			t.Errorf("%s is still there", filepath.Base(small))
 		}
 	})
 	t.Run("Core ML", func(t *testing.T) {
