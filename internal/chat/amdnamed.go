@@ -100,3 +100,60 @@ func ShareMadeHere(m Model, dir, kind string, recipe map[string]string, log io.W
 		shared.PutLater(s, dir)
 	}
 }
+
+// AMDPictureExport is the export of a model of pictures m (a depth model, a detector, an image
+// generator) on AMD's NPU for pictures of size x size (0: a model of one size;
+// AMDPictureNames), here (entries/amd-xdna2 under the cache's root, or ~/models:
+// cache.ExportRoots) or in the sources, downloaded once into the cache's entries/amd-xdna2
+// (AMDNamed): an export made by hand and put there (hwnpu-dev cache import, or its first use on
+// the machine that made it). tool is the script that writes it, for the error when there is
+// none.
+func AMDPictureExport(ctx context.Context, m Model, tool string, size int, log io.Writer) (string, error) {
+	names := AMDPictureNames(m, size)
+	if d := AMDNamed(ctx, m, names, isDirectory, log); d != "" {
+		return d, nil
+	}
+	flags := ""
+	if m.File != "" {
+		flags = " --dit " + m.File
+	}
+	if size != 0 && size != 1024 {
+		flags += fmt.Sprintf(" --size %d", size)
+	}
+	out := filepath.Join(AMDRoot(), names[0])
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, out); err == nil && filepath.IsLocal(rel) {
+			out = "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return "", fmt.Errorf("AMD's NPU runs exports of %s, and neither this machine (%s) nor the sources have %s for %s: download %s and run\n  python %s ~/models/%s %s%s\n(its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
+		tool, strings.Join(cache.ExportRoots(), ", "), names[0], m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), out, flags)
+}
+
+// AMDPictureNames are the names the export of model m for AMD's NPU has, for pictures of size
+// x size, in lower case (what tools/amd/iron_*.py are told to write, and the sources hold):
+// NAME.amd-npu2 or NAME-1024.amd-npu2 at 1024 and for a model of one size (0),
+// NAME-SIZE.amd-npu2 otherwise.
+func AMDPictureNames(m Model, size int) []string {
+	name := strings.ToLower(m.Name)
+	if size == 0 || size == 1024 {
+		return []string{name + ".amd-npu2", name + "-1024.amd-npu2"}
+	}
+	return []string{fmt.Sprintf("%s-%d.amd-npu2", name, size)}
+}
+
+// AMDPictureExportHere is the export of model m for AMD's NPU here (AMDPictureNames at no
+// size), "" for none, without asking the sources.
+func AMDPictureExportHere(m Model) string {
+	for _, n := range AMDPictureNames(m, 0) { // NAME.amd-npu2 first: the export of every aspect ratio
+		if d := cache.FindExport(n, isDirectory); d != "" {
+			return d
+		}
+	}
+	return ""
+}
+
+func isDirectory(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}

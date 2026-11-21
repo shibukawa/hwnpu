@@ -6,8 +6,8 @@
 
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりです。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモという位置付けです。アプリは複数のモデルを登録し、前もって準備し、つないで動かします。
 
-- 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、モデルの間のつなぎ方、アプリに足すサブコマンド
-- まだないもの: 画像 (深度、顔、物体、生成)、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
+- 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、深度の推定、顔の検出と頭の位置、モデルの間のつなぎ方、アプリに足すサブコマンド
+- まだないもの: 画像の生成と、物体・姿勢・切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
 - 実機で動かしたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel は、コマンドと同じ準備と読み込みを呼びますが、このライブラリを通しては動かしていません
 - 計画の全体は [app-api.md](app-api.md)、作業の一覧は [app-api-tasks.md](app-api-tasks.md) (どちらも日本語)
 
@@ -26,6 +26,7 @@ ai.NewApp(uses...)  →  app.Plan(ctx)   →   plan.Run(ctx, fn)     →    app.
 | `github.com/shibukawa/hwnpu/ai` | `App` (登録)、`Use[T]` (型のついた取っ手)、`Plan` (計画と準備)、`Runtime` (実行)、`Store` (置き場) |
 | `.../ai/speech` | 文字起こし `Transcribe`、読み上げ `Speak`、音量の VAD、WAV の読み書き |
 | `.../ai/text` | 翻訳 `Translate`、チャット `Chat` |
+| `.../ai/vision` | 深度の推定 `Depth`、顔の検出 `Faces`、顔から頭の位置 `HeadOf` |
 | `.../ai/flow` | モデルの間のデータの渡し方: `Stream` と道具、ネットワーク (節と `To`)、呼び出し (`Call`) |
 | `.../ai/cli` | アプリのコマンドラインに足すサブコマンド: `models`、`status`。コマンドラインのライブラリに依存しない |
 | `.../ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ |
@@ -99,6 +100,11 @@ func main() {
 ```
 
 複数のモデルをつなぐ動く例は [samples/interpreter](../samples/interpreter) にあります (マイクか録音の音声を、別の言語の音声に訳す)。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります。hwcamera はライブラリ本体の依存には入りません ([6.5 節](#65-生の入力-マイクとカメラ))。
+
+| サンプル | 中身 |
+|---|---|
+| `samples/interpreter` | 同時通訳: マイクか録音 → 文字起こし → 翻訳 → 読み上げ。音声のコマンド。ネットワークと呼び出し |
+| `samples/parallax` | 擬似立体: 絵の深度を 1 回推定し、カメラで頭の位置を追い、その視点から見た絵を描く (Ebitengine、Kage のシェーダー) |
 
 ```
 cd samples
@@ -403,7 +409,7 @@ mic = flow.Live(ctx, mic) // マイクの速さで流すなら
 - 実機で確かめたこと: ためずにつなぐと、1 つ目の発話を書き起こして訳している数秒の間の音が失われ、2 つ目の発話の頭が欠け、3 つ目が消えました。ためると 3 つとも通りました
 - `flow.Live` (録音をマイクの速さで流す) は、読む側が遅れても待つだけで失いません。この違いは録音では再現できません
 - マイクを止めるのと、後ろの段を止めるのは別です。`capture.Mic` は ctx が取り消されると (エラーなしで) 終わり、後ろの段は聞いたぶんを最後まで処理します。そのため後ろの段には別の ctx を渡します (`samples/interpreter` は、1 度目の Ctrl-C でマイクを止め、2 度目で終了します)
-- カメラ (擬似立体のサンプルで使う予定): hwcamera のフレームは、ドライバのメモリにあるうちは `Release` が要るので、Go のメモリの画像 (`WithFormat(hwcamera.RGBA)`) にしてから流れに載せ、`flow.Latest` を通す形にします。まだ書いていません
+- カメラ (`capture.Camera`): hwcamera のフレームは、ドライバのメモリにあるうちは `Release` が要るので、Go のメモリの画像に写してから流れに載せます (`flow.Stream[image.Image]`)。後ろの段へは `flow.Newest()` の辺でつなぎます。実物のカメラでは、まだ確かめていません
 - 出力 (スピーカー、画面) も同じ考えで、ライブラリは持ちません ([D19](#10-設計の論点))
 
 ### 6.6 ネットワークを宣言する
@@ -590,6 +596,42 @@ pcm, err := say.Do(ctx, rt, flow.Text{Text: "こんにちは"})
 - `Use.Get` でモデルを取り出して自分で呼ぶ書き方 (5 節) も、そのまま使えます。`Call` は、同じことを構造として書き、アプリのモデルと `APP models` に載せるためのものです
 - `samples/interpreter say TEXT` がこの形です
 
+### 6.8 例: 擬似立体 (`samples/parallax`)
+
+3 つのつなぎ方が 1 つのアプリに出てくる例です。絵の深度は 1 回だけ要り、頭の位置は来るたびに要り、描画は自分の拍で動きます。下はサンプルの抜粋で、`smooth` などの関数の中身は省いています。
+
+```go
+depth := vision.Depth("depth")
+faces := vision.Faces("face-detect")
+app := ai.NewApp("parallax")
+
+// 呼び出し: 絵 → 深度。1 回だけ動かし、終わったらモデルを下ろす
+depthOf := ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
+
+// ネットワーク: カメラ → 顔 (最新のフレームだけ) → 頭の位置 → ならす → 視点
+camera := flow.Source[image.Image]("camera")
+steady := flow.Each("steady", smooth, flow.WhenIdle(1500*time.Millisecond, recentre)) // 顔が見えなくなったら中央へ戻す
+view := flow.Sink[View]("view").Do(keepNewest)
+app.From(camera).To(vision.FacesNode(faces), flow.Newest()).To(vision.HeadNode(vision.HeadOptions{})).To(steady).To(view)
+
+rt, _ := app.Open(ctx)
+d, _ := depthOf.Do(ctx, rt, picture)            // 前が全部終わってから
+depth.Release(rt)
+near := d.Near(w, h)
+
+camera.From(capture.Camera(ctx, capture.CameraOptions{}))
+go rt.Run(ctx)                                  // できたものから (検出は最新のフレームだけ)
+runWindow(picture, near, latestView)            // 拍に合わせて: 窓は 1 秒に 60 回、最後に届いた視点で描く
+```
+
+- **描画の拍は Ebitengine のもの**です。窓の `Update` / `Draw` が 1 秒に 60 回動き、ネットワークの最後の節が置いた最新の視点を読みます (`flow.Hold` と同じ考え)。検出が 1 秒に 15 回でも、窓は検出を待ちません
+- **視差**: 絵の各点を、近さに比例して動かします (奥は少し、手前は大きく)。画面の画素ごとに、目からの視線を手前の層から奥へたどり、絵がその層以上に近い最初の点を描きます。手前のものが奥を隠します。Kage のシェーダー (`parallax.kage`) と、同じ計算を Go で書いたもの (`Scene.Render`) があり、8 つの視点で画素を比べて一致を確かめています
+- 近さは深度の逆数なので、目のすぐ前に草があると、その奥の橋も家も山もほぼ一緒に動きます (目で見たとおりですが、奥行きは伝わりません)。そこで奥の層を引き離す曲線をかけます (`Layers`、`--layers`、既定 30: 近さ n を log(1 + 30n) / log(31) に。0 でかけない)。向かい合う視点の間の動きは、山 0、森 0→4、家 1→7、橋 3→17、手前の杭 43→57 画素 (1024 画素の絵) になりました
+- 深度の輪郭は実際の輪郭より甘いので、近いものを数画素ぶん広げてから使います (`Spread`)。広げないと、輪郭が裂けて筋になります
+- 絵の見えていなかった部分 (手前のものが動いて現れる背景) は、絵にないので引き伸ばされます。動きを大きくしすぎると目立ちます (`--strength`)
+- 頭の代わりにマウスで動かす (`--head pointer`)、勝手に回す (`--head sweep`)、窓なしで GIF に書く (`parallax render`)、カメラなしで絵をフレームとして流す (`parallax track --frames`) ことができます
+- 窓は Ebitengine で、Linux では X11 と OpenGL の開発用のパッケージが要ります。ない機械では `-tags headless` で窓以外をビルドできます
+
 ## 7. 機能の一覧
 
 どの機能も、一括の形と流れの形を持ちます。
@@ -618,6 +660,36 @@ pcm, err := say.Do(ctx, rt, flow.Text{Text: "こんにちは"})
 - `TranslateOptions{To, From, Form, Context, History, Glossary, MaxTokens}`: `To` が空なら、日本語の文字があれば英語へ、なければ日本語へ
 - `ChatOptions{MaxTokens, Think, ThinkBudget, Temperature}`
 - まだない: 道具の呼び出し、画像や音声の入力、決まった形 (JSON Schema) で答える生成、埋め込み
+
+### 7.3 `ai/vision`
+
+| | 一括 | 流れ、節 |
+|---|---|---|
+| `DepthEstimator` (Depth Anything 3、MoGe-2) | `Estimate(ctx, img) (*DepthMap, error)` | `EstimateStream`、`vision.DepthNode(use)` (絵 → 深度) |
+| `FaceDetector` (YuNet) | `Detect(ctx, img) ([]Face, error)` | `DetectStream`、`vision.FacesNode(use)` (フレーム → `Found{Frame, Faces}`) |
+| 頭の位置 (モデルなし) | `vision.HeadOf(face, frame, opts)`、`vision.NearestHead(faces, frame, opts)` | `vision.HeadNode(opts)` (`Found` → `Head`。顔のないフレームは流さない) |
+
+- 絵は `image.Image`、カメラの映像はその流れです
+- **`DepthMap`**: `Depth` は遠さ (大きいほど遠い。MoGe-2 はメートル、DA3 は絵ごとの単位)。大きさはモデルの入力の大きさで、絵の大きさではありません。`Near(w, h)` が、絵の大きさに直した「近さ」(1 が一番近く、0 が一番遠い。深度の逆数に比例) を返します。視差のシェーダーが読むのはこれです。`NearImage(w, h)` は灰色の絵
+- **`Face`**: 箱、確かさ、目・鼻・口の端の位置 (絵の画素)。`RightEye` は本人の右目 (絵では左側)
+- **`Head`**: カメラの前の頭の位置。`X`、`Y` はカメラの視野の中の −1〜1 (`X` は本人から見た右が正。フレームとは左右が逆)、`Z` はカメラからの距離 (メートル)。距離は、フレームの中の両目の間隔から、ピンホールのカメラとして出します (`HeadOptions.FOV` が水平の画角、既定は 60 度。`Eyes` が両目の間隔、既定は 63 mm)。カメラを向いた顔での目安です
+- **YuNet は実写の顔のモデル**です。アニメの絵の顔は見つけません (Anima で作った人物の絵で 0 件でした)
+- **どこで動くか**: 深度は NPU。YuNet は、AMD の NPU の機械では定義 (models.yaml の `device`) が CPU に置きます (小さなグラフで、CPU のほうが 1 枚の時間も電力も 10 分の 1)。CPU では ONNX Runtime が要ります (`HWNPU_ONNXRUNTIME` にライブラリの場所)。`FaceDetector.Device()` が `npu` か `cpu` を返します
+- Apple の Neural Engine と Intel の NPU では、深度のプログラムは絵の形ごとに、その形の絵が初めて来たときに変換します (数秒。最初の読み込みでコンパイル)
+- **深度のモデルの選び方**: `vision.Depth("depth")` は機械のメモリで選びます (8 GB から DA3-SMALL、16 GB から DA3-BASE、24 GB から DA3MONO-LARGE)。名前で決めることもできます (`vision.Depth("moge-2-vitl")`)。AMD の NPU (Ryzen AI 9 365) で 3 枚の絵 (1024×672 が 1 枚、1024×1024 が 2 枚) にかけた値です
+
+  | モデル | 1 枚 (2 枚目から) | 最初の 1 枚 | NPU のメモリ | 深度の大きさ | 輪郭と層 |
+  |---|---|---|---|---|---|
+  | DA3-SMALL | 0.31 秒 | 0.57 秒 | 0.48 GiB | 504 | 輪郭がぼやけ、細い枝や髪は消える。層の順は合う |
+  | DA3-BASE | 0.43 秒 | 0.86 秒 | 0.74 GiB | 504 | SMALL より少しはっきり |
+  | DA3MONO-LARGE | 0.85 秒 | 1.63 秒 | 1.36 GiB | 504 | 輪郭がはっきり (髪の束、枝)。背景の層 (花畑、庭) も分かれる |
+  | DA3METRIC-LARGE | 0.85 秒 | 1.50 秒 | 1.36 GiB | 504 | MONO と同じくらい。空や花の中に細かい粒が出る絵がある |
+  | moge-2-vits | 2.52 秒 | 3.15 秒 | 1.94 GiB | 1024 | 輪郭は細かいが、背景の層の差が小さい |
+  | moge-2-vitb | 2.68 秒 | 3.26 秒 | 2.10 GiB | 1024 | 輪郭が細かく、背景の層も分かれる |
+  | moge-2-vitl | 3.41 秒 | 4.17 秒 | 2.62 GiB | 1024 | 一番細かい。空は「一番遠い」に切り分ける |
+
+  ほかにプロセスのメモリが 0.2 GiB (MoGe-2 は 0.4〜0.5 GiB)。Depth Anything 3 の深度は長辺 504 画素、MoGe-2 は 1024 画素です。1 枚の絵に 1 回だけ推定するなら DA3MONO-LARGE (止まった絵の視差には十分) か、輪郭を細かく取りたいとき moge-2-vitb / vitl。映像に続けてかけるなら DA3-SMALL (1 秒に 3 枚) です。MoGe-2 はメートルの深度も返します (`DepthMap.Metric`)
+- まだない: 物体、姿勢、切り抜き、OCR、ラベル
 
 ## 8. アプリのコマンドライン (`ai/cli`)
 
@@ -937,7 +1009,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 - 前の形: `ai/aicli` が kong の構造体だけを出していた
 - **未定**: ほかのライブラリ (cobra など) のアダプタを置くか。置くと本体のモジュールの依存が増えるので、置くなら別のモジュールにする
 
-**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。予定: `ai/vision`、`ai/imagegen`、`ai/sound`。
+**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。`ai/vision`。予定: `ai/imagegen`、`ai/sound`。
 
 - **未定**: `ai` という名前 (公開するとあとから変えにくい)。`speech` に文字起こしと読み上げの両方を置く分け方。`text` という名前 (標準ライブラリの `text/...` と並ぶと紛らわしい)
 
@@ -976,7 +1048,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 
 ## 11. まだないもの
 
-- 画像: 深度、顔、物体、姿勢、切り抜き、OCR、ラベル (`ai/vision`)、画像の生成 (`ai/imagegen`)
+- 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、画像の生成 (`ai/imagegen`。今はコマンド `hwnpu-image generate` で作る)
 - 音: 音楽、効果音、音高、採譜 (`ai/sound`)
 - コマンドの載せ替え: `hwnpu-audio`、`hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする
 - 常駐の管理 (D9、D10)、ローカルサーバー (OpenAI 互換など)、配布用のバンドル、ビルドタグ
