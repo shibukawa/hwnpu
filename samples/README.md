@@ -42,7 +42,7 @@ Every sample has the same `models` (`list`, `download`, `prepare`) and `status` 
 | Directory | What it is |
 |---|---|
 | `interpreter/`, `parallax/`, `layers/`, `backdrop/` | The samples (each a `main` package) |
-| `internal/capture` | The microphone and the camera as streams of `ai/flow` (hwcamera) |
+| `internal/capture` | The microphone and the camera as streams of `ai/flow` (hwcamera), the speaker (oto) |
 | `internal/layering` | Parting a picture into layers by depth, shared by layers and parallax |
 
-hwcamera and Ebitengine are dependencies of this module only, not of the hwnpu library.
+hwcamera, oto (the speaker) and Ebitengine are dependencies of this module only, not of the hwnpu library.

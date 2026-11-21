@@ -22,11 +22,12 @@
 //
 //	interpreter models                       # the models and the network, and what they take
 //	interpreter models prepare               # download, convert and compile the models ahead
-//	interpreter --mic -o english.wav         # from the microphone, until Ctrl-C or "終わり"
+//	interpreter --mic                        # from the microphone to the speaker, until Ctrl-C or "終わり"
 //	interpreter --mic --device 2             # from another input (its number in "interpreter mics")
-//	interpreter talk.wav -o english.wav      # Japanese speech to English speech (or the reverse)
+//	interpreter talk.wav -o english.wav      # Japanese speech to English speech in a file (or the reverse)
 //	interpreter talk.wav --to ja --live      # paced as a microphone would give it
-//	interpreter say こんにちは -o hello.wav   # a text, translated and spoken: one call
+//	interpreter talk.wav --speed 1.3         # said 30 % faster, its pitch kept
+//	interpreter say こんにちは                 # a text, translated and spoken: one call
 //	interpreter status                       # this machine's NPU
 package main
 
@@ -80,8 +81,11 @@ type network struct {
 	live     bool // the input comes in real time: the delays are shown
 	commands bool
 	mu       sync.Mutex
-	ends     []time.Duration // the ends of the utterances whose speech is to come
-	pcm      []float32       // the interpretation
+	ends     []time.Duration  // the ends of the utterances whose speech is to come
+	pcm      []float32        // the interpretation
+	rate     int              // its samples a second
+	speed    float64          // how fast it is said (1: as the model says it)
+	speaker  *capture.Speaker // when not nil, it is played as each utterance is spoken
 }
 
 // build declares the network and the app whose models are those of its nodes.
@@ -129,14 +133,19 @@ func (n *network) print(t flow.Chunk[flow.Text]) {
 	fmt.Printf("[%6.1fs%s] %s: %s\n", t.Start.Seconds(), n.after(t.End()), t.Data.Lang, t.Data.Text)
 }
 
-// spoken keeps the speech of an utterance.
+// spoken keeps the speech of an utterance, at the speed asked, and plays it on the speaker when
+// there is one (while the next utterances are transcribed and translated).
 func (n *network) spoken(a flow.Chunk[[]float32]) error {
+	pcm := capture.Stretch(a.Data, n.rate, n.speed)
+	if n.speaker != nil {
+		n.speaker.Play(pcm)
+	}
 	n.mu.Lock()
-	n.pcm = append(n.pcm, a.Data...)
+	n.pcm = append(n.pcm, pcm...)
 	end := n.ends[0]
 	n.ends = n.ends[1:]
 	n.mu.Unlock()
-	fmt.Fprintf(os.Stderr, "[%6.1fs%s] %.1f s of speech\n", time.Since(n.start).Seconds(), n.after(end), a.Len.Seconds())
+	fmt.Fprintf(os.Stderr, "[%6.1fs%s] %.1f s of speech\n", time.Since(n.start).Seconds(), n.after(end), flow.Samples(len(pcm), n.rate).Seconds())
 	return nil
 }
 
@@ -230,13 +239,17 @@ func (MicsCmd) Run(ctx context.Context) error {
 // SayCmd is interpreter say TEXT: the app's call, once.
 type SayCmd struct {
 	Text    []string `arg:"" name:"TEXT" help:"The text (the words are joined with spaces)."`
-	Out     string   `short:"o" default:"out.wav" type:"path" placeholder:"FILE" help:"The WAV file of the speech."`
+	Out     string   `short:"o" type:"path" placeholder:"FILE" help:"Write the speech into this WAV file; none: play it on the speaker."`
+	Speed   float64  `default:"1" help:"How fast the speech is said, 0.5 to 2 (1.25: a quarter faster), its pitch kept."`
 	To      string   `placeholder:"LANG" help:"The language to translate into (en, ja, es, ...); none: English for Japanese text, Japanese for any other."`
 	Voice   string   `enum:"female,male" default:"female" help:"The voice."`
 	Prepare bool     `help:"Download, convert and compile the models that are not ready instead of failing."`
 }
 
 func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
+	if err := checkSpeed(c.Speed); err != nil {
+		return err
+	}
 	var opts []ai.Option
 	if c.Prepare {
 		opts = append(opts, ai.WithAutoPrepare(nil))
@@ -257,19 +270,44 @@ func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(c.Out)
+	pcm = capture.Stretch(pcm, tts.Rate(), c.Speed)
+	fmt.Fprintf(os.Stderr, "%.1f s of speech in %.1f s (the models' loading included)\n",
+		flow.Samples(len(pcm), tts.Rate()).Seconds(), time.Since(start).Seconds())
+	return output(c.Out, pcm, tts.Rate())
+}
+
+// output writes the speech into the WAV file out, or with none plays it on the speaker and waits
+// for its end.
+func output(out string, pcm []float32, rate int) error {
+	if out == "" {
+		sp, err := capture.OpenSpeaker(rate)
+		if err != nil {
+			return fmt.Errorf("%w (-o FILE writes the speech into a file instead)", err)
+		}
+		sp.Play(pcm)
+		sp.Wait()
+		return nil
+	}
+	f, err := os.Create(out)
 	if err != nil {
 		return err
 	}
-	if err := speech.WriteWAV(f, pcm, tts.Rate()); err != nil {
+	if err := speech.WriteWAV(f, pcm, rate); err != nil {
 		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "%.1f s of speech in %.1f s (the models' loading included): %s\n",
-		flow.Samples(len(pcm), tts.Rate()).Seconds(), time.Since(start).Seconds(), c.Out)
+	fmt.Fprintf(os.Stderr, "wrote %s\n", out)
+	return nil
+}
+
+// checkSpeed refuses a speed past what the stretch keeps intelligible.
+func checkSpeed(speed float64) error {
+	if speed < 0.5 || speed > 2 {
+		return fmt.Errorf("--speed %g: 0.5 to 2", speed)
+	}
 	return nil
 }
 
@@ -279,7 +317,8 @@ type RunCmd struct {
 	Mic      bool          `help:"Interpret what the microphone hears, until Ctrl-C (a second Ctrl-C ends at once) or the spoken command."`
 	Device   string        `placeholder:"N" help:"With --mic, the audio input: its number in \"interpreter mics\" (or its ID); none: the system's default input."`
 	Seconds  time.Duration `placeholder:"TIME" help:"With --mic, stop listening after this long (30s)."`
-	Out      string        `short:"o" default:"out.wav" type:"path" placeholder:"FILE" help:"The WAV file of the interpretation."`
+	Out      string        `short:"o" type:"path" placeholder:"FILE" help:"Write the interpretation into this WAV file; none: play it on the speaker, each utterance as soon as it is spoken."`
+	Speed    float64       `default:"1" help:"How fast the interpretation is said, 0.5 to 2 (1.25: a quarter faster), its pitch kept."`
 	To       string        `placeholder:"LANG" help:"The language to interpret into (en, ja, es, ...); none: English for Japanese speech, Japanese for any other."`
 	Language string        `short:"l" placeholder:"LANG" help:"The language of the speech; none: found in each utterance."`
 	Voice    string        `enum:"female,male" default:"female" help:"The voice of the interpretation."`
@@ -289,6 +328,9 @@ type RunCmd struct {
 }
 
 func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
+	if err := checkSpeed(c.Speed); err != nil {
+		return err
+	}
 	var pcm []float32
 	switch {
 	case c.Mic && c.File != "":
@@ -338,6 +380,12 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	n.trans.Update(func(o *text.TranslateOptions) { o.To = c.To })
 	n.say.Update(func(o *speech.SpeakOptions) { o.Voice = c.Voice })
 	n.live, n.commands = c.Mic || c.Live, c.Commands
+	n.rate, n.speed = tts.Rate(), c.Speed
+	if c.Out == "" {
+		if n.speaker, err = capture.OpenSpeaker(tts.Rate()); err != nil {
+			return fmt.Errorf("%w (-o FILE writes the interpretation into a file instead)", err)
+		}
+	}
 
 	// the source's stream, counted as it passes
 	var (
@@ -382,25 +430,21 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	}))
 
 	n.start = time.Now()
-	if err := rt.Run(ctx); err != nil {
-		return err
+	err = rt.Run(ctx)
+	took := time.Since(n.start) // the interpretation's, not the speaker's last words
+	if n.speaker != nil {
+		n.speaker.Wait() // what was spoken, played to its end
 	}
-
-	f, err := os.Create(c.Out)
 	if err != nil {
 		return err
 	}
-	if err := speech.WriteWAV(f, n.pcm, tts.Rate()); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
 	in := flow.Samples(samples, speech.TranscribeRate)
-	fmt.Fprintf(os.Stderr, "%.1f s of speech interpreted into %.1f s in %.1f s: %s\n",
-		in.Seconds(), flow.Samples(len(n.pcm), tts.Rate()).Seconds(), time.Since(n.start).Seconds(), c.Out)
-	return nil
+	fmt.Fprintf(os.Stderr, "%.1f s of speech interpreted into %.1f s in %.1f s\n",
+		in.Seconds(), flow.Samples(len(n.pcm), tts.Rate()).Seconds(), took.Seconds())
+	if c.Out == "" {
+		return nil
+	}
+	return output(c.Out, n.pcm, tts.Rate())
 }
 
 // hint adds how to prepare the models to the error of one that is not ready.
