@@ -84,18 +84,6 @@ type picture struct {
 	Layers  int       `default:"3" help:"How many layers, 2 to 8: where to cut is found from the picture's depth (the cuts that leave each layer's depths closest together)."`
 	Cuts    []float32 `placeholder:"NEARNESS,..." help:"Where to cut instead, as nearness from 0 (the farthest) to 1 (the nearest), ascending: 0.3,0.7 makes three layers. \"layers plan\" prints the cuts it finds."`
 	Far     float64   `default:"30" help:"How far the far end of the nearness is pulled apart before it is cut (0: not at all). A nearness is the inverse of the depth, so behind something right before the eye all the rest is close to 0."`
-	Prepare bool      `help:"Download, convert and compile the models that are not ready instead of failing."`
-}
-
-func (c *picture) options() []ai.Option {
-	if !c.Prepare {
-		return nil
-	}
-	return []ai.Option{ai.WithAutoPrepare(func(p ai.Progress) {
-		if p.Message != "" {
-			fmt.Fprintf(os.Stderr, "  %s: %s\n", p.Model, p.Message)
-		}
-	})}
 }
 
 // read is the picture and the nearness of its pixels. The depth model is unloaded once it has
@@ -138,7 +126,7 @@ type PlanCmd struct {
 }
 
 func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, c.options()...)
+	rt, err := app.Open(ctx, konghelper.AutoPrepare())
 	if err != nil {
 		return err
 	}
@@ -204,7 +192,7 @@ type SplitCmd struct {
 }
 
 func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, c.options()...)
+	rt, err := app.Open(ctx, konghelper.AutoPrepare())
 	if err != nil {
 		return err
 	}
@@ -313,7 +301,7 @@ func writePNG(file string, img image.Image) error {
 // hint adds how to prepare the models to the error of one that is not ready.
 func hint(err error) error {
 	if strings.Contains(err.Error(), "not prepared") {
-		return fmt.Errorf("%w (\"layers models prepare\" makes the models ready, or --prepare)", err)
+		return fmt.Errorf("%w (\"layers models prepare\" makes the models ready)", err)
 	}
 	return err
 }

@@ -17,11 +17,14 @@
 //	}
 //
 // Bind gives the commands the app and a context; the app's own commands may take them too
-// (func (c *RunCmd) Run(ctx context.Context, app *ai.App) error).
+// (func (c *RunCmd) Run(ctx context.Context, app *ai.App) error), and open the app's Runtime
+// with AutoPrepare, so that their first run makes the models ready.
 package konghelper
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -79,6 +82,23 @@ type ModelsPrepare struct{ prepareFlags }
 
 func (c ModelsPrepare) Run(ctx context.Context, app *ai.App) error {
 	return cli.Prepare(ctx, app, c.options())
+}
+
+// AutoPrepare is the option of App.Open (and App.Run) for an app's commands: a model that is not
+// ready is made ready at its first use, as "models prepare" makes them all ahead (downloaded and
+// converted, then compiled as it loads), each step a line on the standard error. Only the models
+// a command uses are prepared: one that runs without the picture model does not download it.
+func AutoPrepare() ai.Option {
+	return ai.WithAutoPrepare(func(p ai.Progress) {
+		switch {
+		case p.Message != "":
+			fmt.Fprintf(os.Stderr, "    %s\n", p.Message)
+		case p.Stage == ai.StagePrepare:
+			fmt.Fprintf(os.Stderr, "%s (%s): not here yet; downloading and converting it (\"models prepare\" does this ahead)\n", p.Use, p.Model)
+		case p.Stage == ai.StageDone:
+			fmt.Fprintf(os.Stderr, "%s (%s): ready\n", p.Use, p.Model)
+		}
+	})
 }
 
 // Status is the command of the NPU's status (cli.Status), as hwnpu status.
