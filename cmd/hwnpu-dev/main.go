@@ -67,7 +67,7 @@ type cli struct {
 	Mxfp4      tool          `cmd:"" name:"mxfp4" passthrough:"all" help:"Write a Qwen3.5-MoE checkpoint (Qwen3.6-35B-A3B) with its experts in MXFP4, read a layer at a time from Hugging Face or a directory, for the experts the CPU runs."`
 	Xclbin     tool          `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
 	Models     modelscmd.Cmd `cmd:"" help:"The models' conversions here, in the sources and on Hugging Face, the same commands on every OS: the sources, what they hold, making conversions for a target (export, prebuild) and putting them in the sources, Hugging Face (hf)."`
-	Cache      cachecmd.Cmd  `cmd:"" hidden:"" help:"The name before hwnpu-dev models (cache push: models put)."`
+	Cache      cachecmd.Cmd  `cmd:"" hidden:"" help:"The name before hwnpu-dev models."`
 }
 
 var mains = map[string]func(){

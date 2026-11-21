@@ -179,7 +179,7 @@ candidate                           license         pinned  version  chips  hf  
 | 種類 | place の出し方 (今あるもの) |
 |---|---|
 | AMD のチャット | `amdForms(m)` の各形 × `chat.ExportRecipe` (`hwnpu-dev models export` と同じ) |
-| AMD の初回の書き出し (detect、pose、segment) | `chat.PinnedRecipe` (`hwnpu-dev models put` と同じ) |
+| AMD の初回の書き出し (detect、pose、segment) | `chat.PinnedRecipe` (`hwnpu-dev models push` と同じ) |
 | Core AI | モデルが使う書き出しの名前 × `coreAIRecipe` |
 | Core AI の prebuilt | 上の Core AI の entry の `.aimodel` から `coreai.ProgramsDigest` × 各チップ |
 | 表 | `chat.Tables` |

@@ -18,7 +18,7 @@ were removed without wrappers.
 | `hwnpu-chat` | `chat` (default), `agent`, `search`, `serve`, `opencode`, `systemone`, `list` | Language models: chat, coding agent, embeddings, OpenAI-compatible API, d1 decisions |
 | `hwnpu-image` | `generate`, `depth`, `face-detect`, `pose`, `detect`, `ocr`, `label`, `embed`, `segment`, `convert`, `list` | Image generation and vision models |
 | `hwnpu-audio` | `generate` (music; `-m sfx` sound effects), `tts`, `transcribe`, `pitch`, `notes`, `list` | `list` covers music, sfx, speech, transcribe, pitch, notes |
-| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`sources`, `ls`, `fetch`, `export`, `prebuild`, `put`, `import`, `update`, `verify`, `gc`, `migrate`, `hf`) | Development tools, not for end users |
+| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`sources`, `ls`, `fetch`, `export`, `prebuild`, `push`, `import`, `update`, `verify`, `gc`, `migrate`, `hf`) | Development tools, not for end users |
 
 - Music and sound effects share `hwnpu-audio generate`: only the model differs, the output (48 kHz
   stereo WAV, speaker) and display are the same. Music-only flags (`--codes`, `--continue`, `--notes`)
@@ -58,7 +58,7 @@ were removed without wrappers.
   `convertShared`, the tables, `SharedExportOr` and the image exports) and is listed. It brings the
   checkpoint too (the files the sources' lock names, else a chat model's config, tokenizer and
   weights; `--no-checkpoint` leaves it), so that conversions can be tried on the model afterwards. `hwnpu-dev cache` and `hwnpu-dev prebuild` stay as
-  hidden names of before (`cache push` is `models put`).
+  hidden names of before.
 - `hwnpu-dev report` is the hardware check users run for an issue: test models embedded from
   `internal/fixtures` (written to a temp dir, as Core ML needs real files); the same 64×512 · 512×512 + bias
   + ReLU in Core ML and OpenVINO IR to compare vendors; NPU tolerance 0.05 absolute and 2 % relative (fp16

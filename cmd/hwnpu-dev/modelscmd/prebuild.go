@@ -16,7 +16,7 @@ import (
 // What is compiled goes packed (EXPORT.prebuilt/ARCH, each program without its weights, which a
 // device makes again from the export's bytecode) in the sources written back to, an
 // architecture's at a time: a machine that fetches the export fetches its architecture's too
-// (docs/cache-sharing-design.md 7.9). --packed packs them without putting them, --no-put leaves
+// (docs/cache-sharing-design.md 7.9). --packed packs them without putting them, --no-push leaves
 // them whole beside their sources.
 type PrebuildCmd struct {
 	Sel    []string `arg:"" name:"MODEL|DIR" help:"Models of the definitions (their Core AI exports), or export folders and programs (.coreai, .aimodel)."`
@@ -25,7 +25,7 @@ type PrebuildCmd struct {
 	Force  bool     `help:"Compile again over prebuilt programs that are there."`
 	DryRun bool     `short:"n" help:"List what would be compiled."`
 	Packed bool     `help:"Pack the programs beside the export (EXPORT.prebuilt/ARCH) without putting them in the sources."`
-	NoPut  bool     `help:"Leave the programs whole beside their sources, not packed nor put in the sources."`
+	NoPush bool     `help:"Leave the programs whole beside their sources, not packed nor put in the sources."`
 	Memory []int    `help:"Of a model, only the forms of machines of these GB (as export)." placeholder:"GB"`
 	Chip   []string `help:"Of a model, only the exports of Macs of these chips (as export)." placeholder:"CHIP"`
 }

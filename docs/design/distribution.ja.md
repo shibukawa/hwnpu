@@ -164,7 +164,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 - 何か: 機種ごとの `coreai-build` の出力 (`X.ARCH.aimodelc`) から重みを除いたもの。`coreai.Pack` は `resources.bin` (大きさの 99 %) を `main.mlirb` の塊と突き合わせて `resources.bin.map.json` にする (231 MB の部品が 2.97 MB、組み立て直してバイト単位で同一)。`coreai.Bundle` で機種ごとに `prebuilt.tar.zst` (取るのは自分の機種だけなので、全機種で 1 つにはしない)
 - 取る: Core AI の項目も手元の prebuilt もない部品を `Compile` が読むとき、書き出しごとにプロセスで 1 回、`coreai.FetchPrebuilt` が取得元に聞き、`EXPORT.prebuilt/ARCH/` に置く。`coreai.Assemble` が一時フォルダに組み立て (小さなファイルはハードリンク、重みは `main.mlirb` から、大きさと sha256 を照らす。違うバイトコードからは作らない)、Core AI に開かせてから消す。`HWNPU_COREAI_PREBUILT=off` で使わない
-- 置く: `hwnpu-dev models prebuild --arch LIST EXPORT` (`--packed` は置かずに詰めるだけ、`--no-put` はソースの横に全体のまま残す)。部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB だった)。機種は 1 つずつ作る: 12 種類を一度に作るとどれも置かれない。ディスクを見る: `coreai-build` の後に `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残った
+- 置く: `hwnpu-dev models prebuild --arch LIST EXPORT` (`--packed` は置かずに詰めるだけ、`--no-push` はソースの横に全体のまま残す)。部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB だった)。機種は 1 つずつ作る: 12 種類を一度に作るとどれも置かれない。ディスクを見る: `coreai-build` の後に `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残った
 - prebuilt のある機種にも `.aimodel` の書き出しは要る (重みはそこから)
 - 置くモデル: 効くものだけ
 
@@ -237,7 +237,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - 手元の並び: `models/NAME` のプログラムと `entries/` を `converted/MODEL/TARGET/EXPORT/vN/` に移し、完了の印を `entry.json` 1 つに (今は `NAME.done`、`NAME.ext.done`、`entry.json` が混在)。`~/models` を一度移して読まなくする。`modelstore` に変換の API (`Make`)。同梱の変換結果をその場で使う (今はコピー)
 - Core ML と OpenVINO のプログラムのエントリ、機械に縛られた (`host`) エントリの取得元での共有、対象の名前での AMD / Intel の NPU の世代の区別
 - 道具の引数を Go が持たない手で作る画像の書き出し (Anima): 今は名前でだけ
-- `hwnpu-dev models put` は初回の FLUX.2 klein の書き出しを知らない
+- `hwnpu-dev models push` は初回の FLUX.2 klein の書き出しを知らない
 - 実機で確かめていない: AWS の S3、Synology の WebDAV、Windows のロックと ReFS / Dev Drive の写し、bcachefs、ZFS、NFS での写し、Windows と macOS で実際のダウンロード中のディスクの空き
 - `FormatVersion` 2 の後、8 GB の列の Core AI のチャットの書き出し (LFM3-1.7B、Qwen3.5-0.8B、Qwen3-1.7B) をまだ作り直して置いていない。Anima-Turbo の 1024² の Core AI の書き出しはまだ取得元にない。Qwen2.5-Coder-7B は GPTQ の codes を作り直し (`tools/ref/qwen2_gptq.py`)、一度変換する要がある
 - prebuilt の仕上げの最初の部品の決まった費用、落ちる 9 種類、M6 の名前の衝突、FLUX の数値の違いは Apple 待ち (作り直すには新しい Metal Toolchain が要る)

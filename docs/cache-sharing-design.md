@@ -487,7 +487,7 @@ any/v1/...        表など対象によらないもの
 
 - 版の間で変わらないファイルは HF の Xet が重複を除くはず。ダウンロードの量にも効くかを確かめ、効かなければ entry.json で前の版のファイルを参照する
 - 古い版は、参照するリリースがなくなってから手で消す
-- 上げるのは `hwnpu-dev models put --to hf:hwnpu/LFM3-1.7B --revision staging` (手元のエントリをそのまま上げる。CI 専用の形を持たない)
+- 上げるのは `hwnpu-dev models push --to hf:hwnpu/LFM3-1.7B --revision staging` (手元のエントリをそのまま上げる。CI 専用の形を持たない)
 
 ## 10. Apple (白紙)
 

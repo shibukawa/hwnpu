@@ -280,7 +280,7 @@ func (x ExportCmd) Make(ctx context.Context, memory []int) error {
 	return w.Flush()
 }
 
-// PushCmd is hwnpu-dev models put.
+// PushCmd is hwnpu-dev models push.
 type PushCmd struct {
 	Model []string `arg:"" help:"Models of the definitions (their exports for AMD's NPU: made by amd_export, or on the first run of hwnpu-image detect, pose, segment) to put in the layers."`
 }
@@ -338,7 +338,7 @@ func describeAndPut(ctx context.Context, writes []shared.Source, m chat.Model, w
 	e, err := shared.ReadEntry(dir)
 	if err != nil || e.Key != want.Key || e.Path != want.Path {
 		fmt.Fprintf(os.Stderr, "%s: describing %s (the SHA-256 of its files)\n", m.Name, dir)
-		want.MadeBy = map[string]string{"note": "described by hwnpu-dev models put"}
+		want.MadeBy = map[string]string{"note": "described by hwnpu-dev models push"}
 		if e, err = shared.Describe(dir, want); err != nil {
 			return err
 		}
@@ -659,7 +659,7 @@ func (ic ImportCmd) one(ctx context.Context, writes []shared.Source, dir, repo s
 }
 
 // export puts an export for AMD's NPU made by hand: one of a model's amd_export or first run
-// as hwnpu-dev models put does, any other under the model whose name begins it (its own name
+// as hwnpu-dev models push does, any other under the model whose name begins it (its own name
 // when none), described by its name.
 func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir string) error {
 	have := func(f string) bool { _, err := os.Stat(filepath.Join(dir, f)); return err == nil }

@@ -328,7 +328,7 @@ What can be shared depends on what the NPU's toolchain produces. The checkpoint 
 
 ### 4.4 Adding a new chip
 
-A chip's backend decides what an entry contains and when it is machine-bound. To share it: write the converted result under a fresh folder, add an `entry.json` last that lists the files with sizes and SHA-256 and the key's recipe, choose a `target` name from the hierarchy (a broad name such as `amd`, then the generation `amd-xdna2`), and register the kind so `hwnpu-dev models put` and the readers know the files. The generic parts (lookup, copying, verification, writing back) need no change.
+A chip's backend decides what an entry contains and when it is machine-bound. To share it: write the converted result under a fresh folder, add an `entry.json` last that lists the files with sizes and SHA-256 and the key's recipe, choose a `target` name from the hierarchy (a broad name such as `amd`, then the generation `amd-xdna2`), and register the kind so `hwnpu-dev models push` and the readers know the files. The generic parts (lookup, copying, verification, writing back) need no change.
 
 ---
 

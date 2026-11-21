@@ -17,7 +17,7 @@
 | `hwnpu-chat` | `chat` (既定)、`agent`、`search`、`serve`、`opencode`、`systemone`、`list` | 言語モデル: チャット、コーディングエージェント、埋め込み、OpenAI 互換 API、d1 の判定 |
 | `hwnpu-image` | `generate`、`depth`、`face-detect`、`pose`、`detect`、`ocr`、`label`、`embed`、`segment`、`convert`、`list` | 画像の生成と視覚のモデル |
 | `hwnpu-audio` | `generate` (音楽。`-m sfx` で効果音)、`tts`、`transcribe`、`pitch`、`notes`、`list` | `list` は music、sfx、speech、transcribe、pitch、notes |
-| `hwnpu-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`report`、`mxfp4`、`xclbin`、`models` (`sources`、`ls`、`fetch`、`export`、`prebuild`、`put`、`import`、`update`、`verify`、`gc`、`migrate`、`hf`) | 開発用。利用者向けではない |
+| `hwnpu-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`report`、`mxfp4`、`xclbin`、`models` (`sources`、`ls`、`fetch`、`export`、`prebuild`、`push`、`import`、`update`、`verify`、`gc`、`migrate`、`hf`) | 開発用。利用者向けではない |
 
 - 音楽と効果音は同じ `hwnpu-audio generate`: 違うのはモデルだけで、出力 (48 kHz ステレオの WAV、スピーカー) も
   表示も同じ。音楽だけのフラグ (`--codes`、`--continue`、`--notes`) を効果音のモデルに付けるとエラー
@@ -49,7 +49,7 @@
   `StartProgram`、chat の `convert` と `convertShared`、表、`SharedExportOr`、画像の書き出し) で止めて一覧に出す。
   チェックポイントも持ってくる (取得元のロックが挙げるファイル。なければチャットのモデルの config、トークナイザ、
   重み。`--no-checkpoint` で外す)。あとでそのモデルで変換を試せるように。
-  `hwnpu-dev cache` と `hwnpu-dev prebuild` は前の名前として隠して残す (`cache push` は `models put`)
+  `hwnpu-dev cache` と `hwnpu-dev prebuild` は前の名前として隠して残す
 - `hwnpu-dev report` は利用者に issue のために頼む実機の確認: テスト用モデルを `internal/fixtures` から埋め込む
   (Core ML が実ファイルを要するので一時ディレクトリに書き出す)。同じ計算 (64×512 · 512×512 + バイアス + ReLU) を
   Core ML と OpenVINO IR で持ち、ベンダー間で比べる。NPU の許容誤差は絶対値 0.05 と相対値 2 % (fp16 の誤差は

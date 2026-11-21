@@ -27,7 +27,7 @@ type Cmd struct {
 	Fetch    FetchCmd            `cmd:"" help:"Bring models here without converting anything, to try conversions on them: the checkpoint and the conversions for each target the sources have (what none has is listed); what comes from Hugging Face goes in the sources written back to too."`
 	Export   ExportCmd           `cmd:"" help:"Make the conversions of models for a target (amd-xdna2, coreai) on this machine, whatever its NPU, unless a source has them, and put them in the sources written back to."`
 	Prebuild PrebuildCmd         `cmd:"" help:"Compile the Core AI exports of models (or export folders) for the Neural Engine's architectures with coreai-build, and put them in the sources written back to (macOS, Xcode 27's Metal Toolchain)."`
-	Put      cachecmd.PushCmd    `cmd:"" help:"Put exports for AMD's NPU that are here in the sources written back to (with entry.json, made for them when missing)."`
+	Push     cachecmd.PushCmd    `cmd:"" help:"Push exports for AMD's NPU that are here in the sources written back to (with entry.json, made for them when missing)."`
 	Import   cachecmd.ImportCmd  `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
 	Update   cachecmd.UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
 	Verify   cachecmd.VerifyCmd  `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`

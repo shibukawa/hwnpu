@@ -47,7 +47,7 @@ func (p PrebuildCmd) Run(d *devopt.Defs) error {
 			return errors.New("the models have no Core AI exports to compile")
 		}
 	}
-	o := coreai.BuildOptions{Jobs: p.Jobs, Force: p.Force, DryRun: p.DryRun, Log: os.Stderr, Packed: p.Packed || !p.NoPut}
+	o := coreai.BuildOptions{Jobs: p.Jobs, Force: p.Force, DryRun: p.DryRun, Log: os.Stderr, Packed: p.Packed || !p.NoPush}
 	if slices.Contains(p.Arch, "all") {
 		o.Archs = coreai.Archs
 	} else {
@@ -72,7 +72,7 @@ func (p PrebuildCmd) Run(d *devopt.Defs) error {
 	if !p.DryRun {
 		fmt.Fprintf(os.Stderr, "%d compiled in %s (%.0f MB of compiled regions beside %.1f GB of weights), %d prebuilt already, %d failed\n", built, time.Since(t0).Round(time.Second), float64(code)/1e6, float64(weights)/1e9, skipped, failed)
 	}
-	if !p.NoPut && !p.Packed && !p.DryRun {
+	if !p.NoPush && !p.Packed && !p.DryRun {
 		// what failed is left out (the devices compile it): the rest is put all the same
 		puts := map[[2]string]bool{}
 		for _, r := range results {

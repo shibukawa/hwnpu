@@ -164,7 +164,7 @@ Details and Apple specifics: [apple-coreai.md](apple-coreai.md), [../cache-shari
 
 - What: `coreai-build` output (`X.ARCH.aimodelc`) per chip, without the weights. `coreai.Pack` maps `resources.bin` (99% of the size) to `resources.bin.map.json` against the blobs of `main.mlirb` (a 231 MB part → 2.97 MB, rebuilt byte for byte). `coreai.Bundle` makes `prebuilt.tar.zst` per chip (one chip only is fetched, so not one archive for all).
 - Fetch: when `Compile` loads a part with no Core AI cache entry and no local prebuilt, once per export per process, `coreai.FetchPrebuilt` asks the sources and stores in `EXPORT.prebuilt/ARCH/`. `coreai.Assemble` rebuilds in a temporary folder (small files hard-linked, weights read from `main.mlirb`, size and sha256 checked; never from a different bytecode), Core AI opens it, the folder is removed. `HWNPU_COREAI_PREBUILT=off` skips it.
-- Put: `hwnpu-dev models prebuild --arch LIST EXPORT` (`--packed` packs without putting, `--no-put` leaves the programs whole beside their sources). Build, pack and drop each part's full `.aimodelc` one at a time (Sana's 27 parts × 12 chips whole would be 50 GB). Build one chip at a time: 12 at once put none. Watch disk: `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` kept 12 GB after `coreai-build`.
+- Put: `hwnpu-dev models prebuild --arch LIST EXPORT` (`--packed` packs without putting, `--no-push` leaves the programs whole beside their sources). Build, pack and drop each part's full `.aimodelc` one at a time (Sana's 27 parts × 12 chips whole would be 50 GB). Build one chip at a time: 12 at once put none. Watch disk: `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` kept 12 GB after `coreai-build`.
 - The `.aimodel` export is needed even where a prebuilt exists (the weights come from it).
 - Which models get one: only where it pays.
 
@@ -237,7 +237,7 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 - Local layout: move `models/NAME` programs and `entries/` to `converted/MODEL/TARGET/EXPORT/vN/` with `entry.json` as the only completion mark (now `NAME.done`, `NAME.ext.done` and `entry.json` coexist); migrate `~/models` once and stop reading it; `modelstore` API to make conversions (`Make`); use bundled conversions in place (now copied).
 - Entries for Core ML and OpenVINO programs; machine-bound (`host`) entries in sources; AMD / Intel NPU generations in the target name.
 - Hand-made image exports whose tool arguments Go does not own (Anima): only by name today.
-- `hwnpu-dev models put` does not know the first-run FLUX.2 klein export.
+- `hwnpu-dev models push` does not know the first-run FLUX.2 klein export.
 - Not checked on hardware: AWS S3, Synology WebDAV, Windows locks and ReFS / Dev Drive cloning, bcachefs, ZFS, NFS cloning; disk-space reads on Windows and macOS during a real download.
 - Core AI chat exports of the 8 GB column (LFM3-1.7B, Qwen3.5-0.8B, Qwen3-1.7B) not yet remade and put after `FormatVersion` 2. Anima-Turbo's 1024² Core AI export not yet in the sources. Qwen2.5-Coder-7B's GPTQ codes must be regenerated (`tools/ref/qwen2_gptq.py`) and converted once.
 - The fixed first-part cost of prebuilt finishing, the 9 crashing chips, M6's name clash and FLUX's numeric difference wait on Apple (a new Metal Toolchain is needed to rebuild).
