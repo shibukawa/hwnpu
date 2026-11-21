@@ -324,7 +324,9 @@ hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-cha
 | `ai/speech`, `ai/text` | Transcribe, speak, loudness VAD, WAV; translate, chat. Each package owns its models' preparation and loading (`internal/airole.Role`); `ai` imports none of them, so an app links only what it uses | v0 |
 | `ai/flow` | Chunk streams (`Stream[T]`, `iter.Seq2`) and the network between models | v0 |
 | `ai/cli` (+ `konghelper`) | Subcommands for an app: `models`, `models download`, `models prepare`, `status` (shared with `hwnpu status` through `internal/npustatus`) | v0 |
-| `ai/vision`, `ai/imagegen`, `ai/sound` | Depth, faces, detection…; image generation; music, sound effects, pitch | not yet |
+| `ai/vision` | `Depth` (use `depth`: Depth Anything 3, MoGe-2; `DepthMap.Near` gives nearness 0–1), `Faces` (`face-detect`: YuNet; CPU on AMD machines), `HeadOf` / `NearestHead` / `HeadNode` (head position from the eye spacing, 63 mm, and the camera's field of view, 60°; no model) | v0 |
+| `ai/imagegen` | `Generate` (use `image`): text and reference images to a picture, `GenerateNode`; the export's size nearest the asked shape (`SizeFor`). FLUX.2 klein only (Anima, Chroma, FLUX.3 klein refuse at preparation) | v0 |
+| `ai/sound`; objects, pose, segmentation, OCR, labels in `ai/vision` | music, sound effects, pitch | not yet |
 
 - Preparation calls the same functions as the commands' first run (`transcribe.Prepare`,
   `speech.Prepare`, `chat.Prepare`, their AMD forms) into the same store, so apps and commands share it.
@@ -341,6 +343,11 @@ hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-cha
 - Live input: the samples module (`samples/`, its own `go.mod`) takes the microphone from
   [hwcamera](https://github.com/shibukawa/hwcamera); `capture.Mic` buffers on its own goroutine
   (without it, speech during transcription was lost).
+- Samples: `samples/interpreter` (transcribe → translate → speak), `samples/parallax` (a picture's depth
+  once, the viewer's head from the camera, the picture redrawn from that view with an Ebitengine Kage
+  shader; layers from `samples/layering` swap in as they are cut), `samples/layers` (cut a picture into
+  depth layers, FLUX.2 klein draws what each hid, written as a PSD). Preparation code shared with the
+  commands moved into `internal/chat` (`AMDPictureExport`) and `internal/imagegen/flux2klein`.
 
 **The NPU is one queue** (Ryzen AI 9 365, whisper-large-v3-turbo + plamo-3-translate-8b +
 LFM3-Audio-2B-TTS in one process): calls interleave but the total equals the sum (transcribe 1.38 s and
@@ -360,9 +367,10 @@ longest command, streaming) per the [new-model checklist](new-model-checklist.md
 ## Open
 
 - `ai`: a residency manager (memory budget, submission order), nodes with three or more inputs, letting
-  the library decide when to release models, per-edge measurement, `ai/vision` / `ai/imagegen`, moving
-  the commands onto `ai`; `ai` not yet run on a Mac (Core AI) or Intel, nor `text.Chat` on hardware, nor
-  a real microphone. Real parallelism by column split (AMD) not verified.
+  the library decide when to release models, per-edge measurement, the rest of `ai/vision`, Anima /
+  Chroma / FLUX.3 klein in `ai/imagegen`, moving the commands onto `ai`; `ai` not yet run on a Mac
+  (Core AI; reference-image generation does not run on the Neural Engine yet, so `samples/layers` is AMD
+  only) or Intel, nor `text.Chat`, a real microphone, camera or screen on hardware. Real parallelism by column split (AMD) not verified.
 - `npuinfo`: run on Windows (Intel and AMD); check IOReport channel names on M2 and later; decode AIE
   status and telemetry; a common API; a browser viewer.
 - The library API is marked planned; names may change.

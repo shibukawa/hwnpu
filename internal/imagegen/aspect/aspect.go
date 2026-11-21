@@ -4,6 +4,7 @@ package aspect
 
 import (
 	"fmt"
+	"hash/crc32"
 	"slices"
 	"strconv"
 	"strings"
@@ -136,4 +137,29 @@ func SizesOf(as []Aspect) [][2]int {
 		out[i] = [2]int{a.Width, a.Height}
 	}
 	return out
+}
+
+// Tag names the sizes of an export in its name: "WxH" for one, "512+1024" for squares and a few,
+// and for more than two "8sizes-HASH" (the count and the first 8 hex digits of the sizes' CRC-32),
+// so that another set of sizes is another export.
+func Tag(sizes [][2]int) string {
+	if len(sizes) > 2 {
+		var b strings.Builder
+		for _, s := range sizes {
+			fmt.Fprintf(&b, "%dx%d;", s[0], s[1])
+		}
+		return fmt.Sprintf("%dsizes-%08x", len(sizes), crc32.ChecksumIEEE([]byte(b.String())))
+	}
+	if len(sizes) == 1 {
+		return fmt.Sprintf("%dx%d", sizes[0][0], sizes[0][1])
+	}
+	var parts []string
+	for _, s := range sizes {
+		if s[0] == s[1] {
+			parts = append(parts, fmt.Sprint(s[0]))
+		} else {
+			parts = append(parts, fmt.Sprintf("%dx%d", s[0], s[1]))
+		}
+	}
+	return strings.Join(parts, "+")
 }

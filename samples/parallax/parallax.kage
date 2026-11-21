@@ -1,0 +1,93 @@
+//kage:unit pixels
+
+// The picture seen from where the eye is: each point of the picture is moved across the screen
+// by how near it is, a far point a little and a near one more, so that the picture looks deep
+// when the eye moves. It is the same reckoning as Scene.Render (scene.go), which is written to
+// be read: a ray from the eye through this pixel is followed from the nearest layer to the
+// farthest, and the first layer at which the picture is at least that near is what is seen.
+//
+// A picture in layers is drawn a layer at a time from the farthest, each with its own picture
+// (source 0) and nearness (source 1).
+
+package main
+
+// View is where the eye is before the picture: x to its right and y down, each -1 to 1.
+var View vec2
+
+// Shift is how many pixels the nearest point moves when the eye is at the edge of the view.
+var Shift float
+
+// Focus is the nearness (0 the farthest, 1 the nearest) that stays where it is.
+var Focus float
+
+// Zoom is how much of the picture is shown (below 1), so that its edges stay off the screen
+// when its points move.
+var Zoom float
+
+// Show is 1 to draw how near each point is instead of the picture.
+var Show float
+
+const steps = 32
+const refine = 5
+
+// colorAt is the picture's colour at pos, between its four nearest pixels. lo and hi are the
+// centres of the picture's first and last pixel.
+func colorAt(pos, lo, hi vec2) vec4 {
+	q := pos - vec2(0.5)
+	f := fract(q)
+	a := clamp(floor(q)+vec2(0.5), lo, hi)
+	b := clamp(a+vec2(1), lo, hi)
+	c00 := imageSrc0UnsafeAt(a)
+	c10 := imageSrc0UnsafeAt(vec2(b.x, a.y))
+	c01 := imageSrc0UnsafeAt(vec2(a.x, b.y))
+	c11 := imageSrc0UnsafeAt(b)
+	return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y)
+}
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	origin := imageSrc0Origin()
+	size := imageSrc0Size()
+	lo := origin + vec2(0.5)
+	hi := origin + size - vec2(0.5)
+	center := origin + size/2
+	p := center + (srcPos-center)*Zoom
+	shift := View * Shift
+
+	// The ray is followed layer by layer from the nearest: above is the last layer at which it
+	// was still before the picture, below the first at which it is in it (the farthest layer
+	// for a ray that meets nothing nearer: the picture is at least that near everywhere).
+	above := 1.0
+	below := 0.0
+	found := 0.0
+	for i := 0; i < steps; i++ {
+		n := 1.0 - float(i)/float(steps-1)
+		c := clamp(p+shift*(n-Focus), lo, hi)
+		if found == 0.0 {
+			if n <= imageSrc1UnsafeAt(c).r {
+				below = n
+				found = 1.0
+			} else {
+				above = n
+			}
+		}
+	}
+	// and where between the two it enters the picture, by halves
+	for i := 0; i < refine; i++ {
+		m := (above + below) / 2
+		c := clamp(p+shift*(m-Focus), lo, hi)
+		if m <= imageSrc1UnsafeAt(c).r {
+			below = m
+		} else {
+			above = m
+		}
+	}
+	// The colour holds its alpha: a layer is drawn over the layers behind it, and where the ray
+	// meets it at a point it does not cover, what is behind stays.
+	hit := clamp(p+shift*(below-Focus), lo, hi)
+	c := colorAt(hit, lo, hi)
+	if Show > 0.5 {
+		d := imageSrc1UnsafeAt(hit).r
+		return vec4(d, d, d, 1) * c.a
+	}
+	return c
+}

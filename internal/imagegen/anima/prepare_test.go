@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 )
 
 // TestExportName puts what changes the programs, and the layout version, in the name.
@@ -66,5 +68,39 @@ func TestDefaultGroup(t *testing.T) {
 		if g := DefaultGroup(c.backend, c.size, c.size); g != c.want {
 			t.Errorf("%s %d: group %d, want %d", c.backend, c.size, g, c.want)
 		}
+	}
+}
+
+// TestExportNameSizes names an export of all the aspect ratios as one (aspect.Tag), whatever size
+// is drawn, at the padded version (some of its sizes are padded).
+func TestExportNameSizes(t *testing.T) {
+	o := ConvertOptions{Backend: "coreai", Dit: "anima-turbo-v1.1.safetensors", TextFormat: "int8", DitFormat: "int8", Group: 4, QChunk: 512,
+		Sizes: aspect.SizesOf(aspect.All)}
+	var names []string
+	for _, a := range aspect.All {
+		p := o
+		p.Width, p.Height = a.Width, a.Height
+		names = append(names, ExportName(p))
+	}
+	want := "anima-turbo-v1.1-" + aspect.Tag(aspect.SizesOf(aspect.All)) + "-int8-int8-g4-q512-v5.coreai"
+	for _, n := range names {
+		if n != want {
+			t.Errorf("%s, want %s", n, want)
+		}
+	}
+}
+
+// TestManifestAt picks a size's parts of an export of several, and refuses one it lacks.
+func TestManifestAt(t *testing.T) {
+	m := &ProgramManifest{Width: 1024, Height: 1024, Blocks: []string{"b.aimodel#s1024x1024"}, Final: "f.aimodel#s1024x1024", Vae: []string{"v.aimodel#s1024x1024"},
+		Sizes: []SizeParts{
+			{1024, 1024, []string{"b.aimodel#s1024x1024"}, "f.aimodel#s1024x1024", []string{"v.aimodel#s1024x1024"}},
+			{880, 1168, []string{"b.aimodel#s880x1168"}, "f.aimodel#s880x1168", []string{"v.aimodel#s880x1168"}},
+		}}
+	if err := m.At(880, 1168); err != nil || m.Width != 880 || m.Final != "f.aimodel#s880x1168" || m.Blocks[0] != "b.aimodel#s880x1168" || m.Vae[0] != "v.aimodel#s880x1168" {
+		t.Errorf("At(880, 1168): %v, %+v", err, m)
+	}
+	if err := m.At(512, 512); err == nil {
+		t.Error("At(512, 512) of an export without it: no error")
 	}
 }

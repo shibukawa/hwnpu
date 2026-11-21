@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
 	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -33,11 +34,14 @@ const ExportVersion = 4
 // other sizes' programs are as ExportVersion's, byte for byte, and keep its name.
 const PaddedExportVersion = 5
 
-// exportVersion is the version in the name of o's export.
+// exportVersion is the version in the name of o's export: PaddedExportVersion when one of its
+// sizes is padded.
 func exportVersion(o ConvertOptions) int {
-	gh, gw := mil.Grid(o.Width, o.Height)
-	if o.Backend != "intel" && (gh*gw)%milpart.DeferredRows != 0 {
-		return PaddedExportVersion
+	for _, sz := range o.sizes() {
+		gh, gw := mil.Grid(sz[0], sz[1])
+		if o.Backend != "intel" && (gh*gw)%milpart.DeferredRows != 0 {
+			return PaddedExportVersion
+		}
 	}
 	return ExportVersion
 }
@@ -106,8 +110,10 @@ func DefaultGroup(backend string, width, height int) int {
 
 // ExportName is the directory Prepare writes the export of o into, in Setup.Dir: what changes
 // the programs is in its name.
+// An export of several sizes (Core AI) names them with aspect.Tag ("8sizes-HASH"); it is one
+// export whatever size is drawn (new-model-checklist.md 11.4).
 func ExportName(o ConvertOptions) string {
-	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-q%d-v%d.%s", strings.TrimSuffix(o.Dit, ".safetensors"), o.Width, o.Height,
+	return fmt.Sprintf("%s-%s-%s-%s-g%d-q%d-v%d.%s", strings.TrimSuffix(o.Dit, ".safetensors"), aspect.Tag(o.sizes()),
 		o.TextFormat, o.DitFormat, o.Group, o.QChunk, exportVersion(o), cmp.Or(o.Backend, "coreml"))
 }
 
@@ -156,7 +162,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.RemoveAll(out); err != nil {
 		return "", err
 	}
-	fmt.Fprintf(log, "converting %s (%dx%d, text %s, DiT %s); this takes under a minute\n", filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
+	fmt.Fprintf(log, "converting %s (%s, text %s, DiT %s); this takes a minute or two\n", filepath.Base(out), aspect.Tag(o.sizes()), o.TextFormat, o.DitFormat)
 	t0 := time.Now()
 	if err := Convert(RepoCheckpoint(), out, o, log); err != nil {
 		return "", err
