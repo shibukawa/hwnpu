@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
@@ -340,17 +341,6 @@ func IsRepository(dir string) bool {
 // programs is in it.
 func ExportName(name string, o ConvertOptions) string {
 	o.defaults()
-	var sizes []string
-	for _, s := range o.sizes() {
-		if s[0] == s[1] {
-			sizes = append(sizes, fmt.Sprint(s[0]))
-		} else {
-			sizes = append(sizes, fmt.Sprintf("%dx%d", s[0], s[1]))
-		}
-	}
-	size := strings.Join(sizes, "+")
-	if len(sizes) == 1 {
-		size = fmt.Sprintf("%dx%d", o.Width, o.Height)
-	}
+	size := aspect.Tag(o.sizes())
 	return fmt.Sprintf("%s-%s-%s-%s-v%d.%s", strings.ToLower(name), size, o.TextFormat, o.DitFormat, ExportVersion, llm.BackendCoreAI)
 }
