@@ -111,8 +111,8 @@ A working example that joins several models is [samples/interpreter](../samples/
 ```
 cd samples
 go run ./interpreter models prepare
-go run ./interpreter --mic -o english.wav      # from the microphone, until Ctrl-C or "that's all"; "switch to Spanish" changes the language
-go run ./interpreter talk.wav -o english.wav   # from a recording
+go run ./interpreter run --mic -o english.wav      # from the microphone, until Ctrl-C or "that's all"; "switch to Spanish" changes the language
+go run ./interpreter run talk.wav -o english.wav   # from a recording
 ```
 
 ## 3. Registering models
@@ -186,7 +186,7 @@ for _, it := range plan.Items {
 	fmt.Println(it.Use, it.Model, it.Ready, it.Compiled, it.Download, it.MemoryGB, it.Why)
 }
 plan.DownloadBytes()   // bytes to download (at most)
-plan.MemoryGB()        // memory of all the models running together
+plan.MemoryGB()        // memory of the models running together (of those InTurns, the largest)
 plan.MachineGB()       // the machine's memory
 plan.Licenses()        // each model's license (id, class, URL, whether it asks to be accepted, whether it was)
 plan.Target()          // coreai, intel, amd-xdna2; "" when no NPU here runs the models
@@ -237,7 +237,7 @@ app.Store = ai.Store{
 ## 5. Running
 
 ```go
-rt, err := app.Open(ctx)            // ai.WithLog(w), ai.WithAutoPrepare(fn), ai.WithAcceptedLicenses()
+rt, err := app.Open(ctx)            // ai.WithLog(w), ai.WithAutoPrepare(fn) or ai.WithConsole(), ai.WithAcceptedLicenses()
 defer rt.Close()
 
 t, err := stt.Get(ctx, rt)          // loads at the first call (under a second to tens of seconds); the same one after
@@ -246,10 +246,11 @@ err = stt.Release(rt)               // unloads it and frees its memory; the next
 rt.Loaded()                         // the models held now: use, model, memory, how long loading took
 ```
 
-- **It touches no network and converts nothing.** A use that is not prepared is `ai.ErrNotPrepared`. With `ai.WithAutoPrepare(fn)` the first `Get` prepares it, as the commands do; that may download gigabytes
+- **It touches no network and converts nothing.** A use that is not prepared is `ai.ErrNotPrepared`. With `ai.WithAutoPrepare(fn)` the first `Get` prepares it, as the commands do; that may download gigabytes. `ai.WithConsole()` does the same and shows it on the terminal as hwnpu's commands do: a line for each model, the downloads', conversions' and first compile's bars redrawn in place, their logs in gray (`Plan.Log` takes such a writer for `Plan.Run`; `ai.Console()` is it). An app's commands open their Runtime with it (`konghelper.AutoPrepare()`), and `APP models prepare` shows its work the same way
+- **After `APP models prepare` a run needs no network and compiles nothing.** A role whose programs depend on the input (YuNet's sizes, DA3's aspects) makes them all at its Prepare, and its model is an `ai.Warmer`: the load of `models prepare` calls `Warm`, which loads each once to compile it. A role that changes what its Prepare makes raises its `Revision`, and a store prepared by an earlier one counts as not prepared
 - **A store whose record is not what is picked now counts as not prepared.** When the use was prepared as another model (the app's line-up changed, or the machine's memory setting did), the old one is not loaded in its place
 - **Loads run one at a time.** Each model runs one request at a time (others wait). Different models may be called at the same time
-- **An app that uses its models one after another** unloads them with `Release`: a picture's generator, then its depth, with only the larger of the two in memory. Nothing unloads models by itself yet ([D9](#10-design-questions)). This is another level than the swapping of stages that image generation does inside ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
+- **An app that uses its models one after another** unloads them with `Release`: a picture's generator, then its depth, with only the larger of the two in memory. `app.InTurns(a, b)` declares it: the plan counts the larger alone in what the models take together, and loading one releases the other. Nothing else unloads models by itself yet ([D9](#10-design-questions)). This is another level than the swapping of stages that image generation does inside ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
 - **Models can be called at the same time, but the NPU is one queue.** Whether a pipeline keeps up in real time is decided by what its stages' times add up to ([section 9](#9-constraints-and-rules))
 - A model's `OnNPU()` reports whether its programs were verified to be on the NPU (`Speaker` does not have it yet)
 
@@ -632,7 +633,7 @@ runWindow(picture, near, latestView, progress)  // on the beat: the window draws
 - An estimated depth's outlines are softer than the real ones, so near things are made a few pixels larger first (`Spread`). Without that the outlines tear into streaks
 - What the picture does not show (the background that appears when a near thing moves aside) is not in the picture, so it is stretched. It shows when the points move too far (`--strength`)
 - **Drawn in layers**: the window shows the picture with one depth as soon as the depth is there (a second or two), and parts the picture into layers beside it (`--layers`, 3 by default: the same work as [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers), in `samples/internal/layering`, which both samples use). Each time a layer is cut the window's picture is changed for the one with that layer, drawn a layer at a time from the farthest, each with its own nearness, one over the other. Inside a layer the points move by their fine relief as before, and where a near layer has moved aside, what was drawn behind it shows, at its own nearness, instead of a stretched edge
-- **Showing how it goes**: the parting takes about a minute a layer, so the window shows at its bottom the step ("layer 3 of 3: drawing what is behind it, 40 %"), a bar of how much of the whole is done, and in a corner the picture of the step (the picture with the layer's shape painted in one colour, then what the model drew). The work runs the calls in another goroutine, and what `layering.Options.Progress` is told at each step is only read by the window each frame (the head is followed and the picture drawn all the while). `--save-layers DIR` writes the layers, and `parallax DIR` shows them again without the models. `--layers 1` parts nothing. On a machine whose picture model is not prepared, or whose NPU does not draw from references yet, the picture stays with its one depth
+- **Showing how it goes**: the parting takes about a minute a layer, so the window shows at its bottom the step ("layer 3 of 3: drawing what is behind it, 40 %"), a bar of how much of the whole is done, and in a corner the picture of the step (the picture with the layer's shape painted in one colour, then what the model drew). The work runs the calls in another goroutine, and what `layering.Options.Progress` is told at each step is only read by the window each frame (the head is followed and the picture drawn all the while). `--save-layers DIR` writes the layers, and `parallax show DIR` shows them again without the models. `--layers 1` parts nothing. On a machine whose picture model is not prepared, or whose NPU does not draw from references yet, the picture stays with its one depth
 - The pointer can stand in for the head (`--head pointer`), the view can go around by itself (`--head sweep`), a GIF can be written without a window (`parallax render`), and pictures given as the camera's frames (`parallax track --frames`)
 - The window is Ebitengine's, which on Linux needs the development packages of X11 and OpenGL. A machine without them builds everything but the window with `-tags headless`
 
@@ -667,12 +668,12 @@ the picture → depth → cut the nearest layer out → paint its shape in one c
  └───────────────────────── the picture without that layer ←─────────────────────────────┘
 ```
 
-- **In turns**: the depth model (1.4 GB) and the picture model (3.9 GB) are never needed together, so each is unloaded with `Release` after it is used ([section 9.5](#95-release-and-image-generation-swapping-its-stages)). Loading again takes 0.1 s for the depth and about 4 s for the picture model, little beside the minute a picture takes
+- **In turns**: the depth model (1.4 GB) and the picture model (3.9 GB) are never needed together, so each is unloaded with `Release` after it is used, and `layering.Register` declares them `app.InTurns(depth, artist)`: `layers models` counts 4.9 GB, not both together ([section 9.5](#95-release-and-image-generation-swapping-its-stages)). Loading again takes 0.1 s for the depth and about 4 s for the picture model, little beside the minute a picture takes
 - **Where to cut**: from the spread of the nearness (the inverse of the depth, on a curve that pulls the far end apart), the cuts that leave each layer's nearness closest together (`layers plan` writes the picture with each layer in a colour and prints the cuts; `--cuts` gives them)
 - **Having what is behind drawn**: the editing model takes no mask, so the part to remove is painted in one colour the picture does not have, and the model is asked to "remove the shape of that colour and draw the scenery behind it". The picture drawn is used only where the layer was, the picture before elsewhere (the layers put back together are almost the picture again). Thin parts of the layer that the depth missed (the tips of grass, a strand of hair) stay in the layer behind and are left there when the layer moves. `--clean PIXELS` takes the picture drawn a little past the layer's edge, which removes them, but where the picture drawn does not go on from its surroundings exactly, it shows as a rim about the layer
 - **Telling a failed drawing**: the model sometimes leaves the painted shape there (in its colour, or as a dark shadow). A step in colour then runs all along the mask's edge, so the difference of colour just inside and outside the edge (`seam`) tells it, and the picture is drawn again from another seed (`--tries`, 3 by default). When no try is good, the layer is not cut out but left in the picture, and the parting ends there (one layer fewer, which is better than a strange picture behind a layer). The wording matters too: "remove this shape" leaves it less often than "replace this area with the background". In a photograph the model once drew a crowd of people where a large shape was painted, so the request also says "do not add people or animals"
 - **The next layer**: the depth of the picture drawn is estimated again and brought to the first estimate's scale from the part both saw, and then the next layer is cut (a depth is in a unit of its own picture, so two are not compared as they are)
-- **A depth for each layer**: each layer has its nearness as well as its colours (`near-N.png` of `--png DIR`: 16 bit gray, on one scale for all the layers). The nearness of a part drawn in is estimated from the picture drawn. A layer's nearness goes on past the layer's edge with the edge's values (dropping there to the values of the layer behind would stretch the edge when it is drawn). `parallax DIR` reads these ([section 6.8](#68-an-example-a-picture-shown-as-if-it-were-deep-samplesparallax))
+- **A depth for each layer**: each layer has its nearness as well as its colours (`near-N.png` of `--png DIR`: 16 bit gray, on one scale for all the layers). The nearness of a part drawn in is estimated from the picture drawn. A layer's nearness goes on past the layer's edge with the edge's values (dropping there to the values of the layer behind would stretch the edge when it is drawn). `parallax show DIR` reads these ([section 6.8](#68-an-example-a-picture-shown-as-if-it-were-deep-samplesparallax))
 - Three layers draw two pictures, 2 to 3.5 minutes at 1024×1024 (Ryzen AI 9 365). The PSD is 8 bit RGB with layers of the document's size, packed with PackBits. On a Mac (M3) a layer takes 39 s at 512×512 and 89 s at 1024×1024 once the edit's programs are compiled
 
 ## 7. The models
@@ -812,7 +813,7 @@ transcribe  transcribe  whisper-large-v3-turbo  compiled  -         2.2 GB  mit
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  plamo-community-license (conditional)
 speech      speak       LFM3-Audio-2B-TTS       compiled  -         2.9 GB  lfm-open-1.0 (conditional)
 
-Their checkpoints are here or come from the sources; about 7.8 GB running together (a machine of 16 GB has about 9 GB for models). ...
+Their checkpoints are here or come from the sources; about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB. ...
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
 
 The network:
@@ -904,10 +905,10 @@ $ interpreter models
 ...
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  ...
 ...
-about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
+about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB.
 ```
 
-- When they do not fit, a note follows ("Together they take more than this machine has for models ...")
+- When they do not fit, a note follows ("Together they take more than hwnpu counts on for models here ..."). The 9 GB of 16 is a working assumption of what a user can give models without strain, not a limit of the machine (with an integrated GPU it also moves with the memory the GPU is given)
 - What it is on another machine is seen by calling the machine's memory something else: `HWNPU_MEMORY=8 interpreter models`
 - From a program: `interpreter models --json` (`memory_gb`, `machine_gb`, `usable_gb`, `fits`, and each model's `memory_gb`), or `plan.MemoryGB()`, `plan.MachineGB()`, `plan.UsableGB()`, `plan.Fits()`
 - **What is taken now** is in `APP status`: for each process that uses the NPU, the process's memory and the NPU's (`-w 2s` keeps showing it)

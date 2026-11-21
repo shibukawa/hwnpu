@@ -65,6 +65,65 @@ func (r *programRunner) program(W, H int) *onnx.Program {
 	return &onnx.Program{G: r.g, Inputs: []onnx.ValueInfo{{Name: r.g.Inputs[0].Name, Shape: []int{1, 3, H, W}}}, Outputs: r.outputs(), Flat: true}
 }
 
+// ConvertPrograms converts the programs of OpenProgram for each of sizes into dir ahead (or
+// takes them from the shared layers), as the first picture of each size would: a detector then
+// needs no network nor conversion for them.
+func ConvertPrograms(ctx context.Context, backend, path, dir string, sizes [][2]int) error {
+	g, err := onnx.Load(path)
+	if err != nil {
+		return err
+	}
+	if backend == "" {
+		backend = llm.BackendCoreML
+	}
+	r := &programRunner{g: g, backend: backend, dir: dir, strides: []int{8, 16, 32}}
+	for _, sz := range sizes {
+		if _, err := r.convert(ctx, sz[0], sz[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Warm loads the program of each size once (OpenProgram's detector), converting what is
+// missing: the first load of each compiles it, so that a picture of any size does not wait.
+func (d *Detector) Warm(ctx context.Context) error {
+	r, ok := d.run.(*programRunner)
+	if !ok {
+		return nil
+	}
+	for _, sz := range d.Sizes {
+		if err := r.use(ctx, sz[0], sz[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// convert writes the program of W x H into r.dir when it is missing (or takes it from the
+// shared layers) and returns its path.
+func (r *programRunner) convert(ctx context.Context, W, H int) (string, error) {
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	name := fmt.Sprintf("yunet-r%d-fp16-%dx%d", ProgramRevision, W, H)
+	path, done, export := llm.ProgramPath(r.dir, name, r.backend)
+	if llm.ProgramReady(ctx, r.dir, name, done, export) {
+		return path, nil
+	}
+	if err := os.MkdirAll(r.dir, 0o755); err != nil {
+		return "", err
+	}
+	if err := llm.StartProgram(ctx, path, export); err != nil {
+		return "", err
+	}
+	_, err := llm.WritePart(path, r.program(W, H), nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {
+		pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, fp16 (hwnpu)", W, H)
+	})
+	if err != nil {
+		return "", fmt.Errorf("face: %w", err)
+	}
+	return path, llm.FinishProgram(ctx, r.dir, name, done, export)
+}
+
 // use loads the program of W x H, converting it first when it is missing.
 func (r *programRunner) use(ctx context.Context, W, H int) error {
 	if r.prog != nil && r.w == W && r.h == H {
@@ -75,11 +134,11 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 		return err
 	}
 	p := r.program(W, H)
-	path, made, err := r.convert(ctx, p, W, H)
+	path, err := r.convert(ctx, W, H)
 	if err != nil {
 		return err
 	}
-	if !made {
+	{
 		// built again without writing it: Split needs the outputs' widths
 		b := mlpackage.NewBuilder("CoreML8", nil)
 		b.ImmediateLimit = math.MaxInt
@@ -146,48 +205,4 @@ func (r *programRunner) run(ctx context.Context, px []uint8, pw, ph, W, H int) (
 		cs = append(cs, c)
 	}
 	return cs, nil
-}
-
-// convert writes the program p of W x H into r.dir unless it is there (or a shared layer has
-// it), and returns its path and whether it was written now.
-func (r *programRunner) convert(ctx context.Context, p *onnx.Program, W, H int) (string, bool, error) {
-	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("yunet-r%d-fp16-%dx%d", ProgramRevision, W, H)
-	path, done, export := llm.ProgramPath(r.dir, name, r.backend)
-	if llm.ProgramReady(ctx, r.dir, name, done, export) {
-		return path, false, nil
-	}
-	if err := os.MkdirAll(r.dir, 0o755); err != nil {
-		return "", false, err
-	}
-	if err := llm.StartProgram(ctx, path, export); err != nil {
-		return "", false, err
-	}
-	_, err := llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, fp16 (hwnpu)", W, H)
-	})
-	if err != nil {
-		return "", false, fmt.Errorf("face: %w", err)
-	}
-	return path, true, llm.FinishProgram(ctx, r.dir, name, done, export)
-}
-
-// PreparePrograms converts the programs of every size (CPUSizes) of the ONNX file at path for
-// backend into dir, as OpenProgram's first picture of each size does (hwnpu-dev models
-// package). No device is opened.
-func PreparePrograms(ctx context.Context, backend, path, dir string) error {
-	g, err := onnx.Load(path)
-	if err != nil {
-		return err
-	}
-	if len(g.Inputs) != 1 {
-		return fmt.Errorf("face: %s has %d inputs", path, len(g.Inputs))
-	}
-	r := &programRunner{g: g, backend: backend, dir: dir, strides: []int{8, 16, 32}}
-	for _, sz := range CPUSizes {
-		if _, _, err := r.convert(ctx, r.program(sz[0], sz[1]), sz[0], sz[1]); err != nil {
-			return err
-		}
-	}
-	return nil
 }

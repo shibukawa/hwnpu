@@ -42,8 +42,17 @@ func (p *progSized) close() error {
 // useProgram loads size w x h of an export of Prepare (Core ML packages or OpenVINO IR),
 // converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
-	if err := makeSize(ctx, d, e.Checkpoint, e.Format, w, h, e.Logf); err != nil {
-		return nil, err
+	if !llm.FetchExport(ctx, d, d+".done") { // here, or from the shared layers
+		if err := llm.MayConvert(ctx, d); err != nil {
+			return nil, err
+		}
+		if e.Logf != nil {
+			e.Logf("depth: converting %dx%d (the first picture of this aspect)", w, h)
+		}
+		if err := ConvertSize(e.Checkpoint, d, w, h, e.Format); err != nil {
+			return nil, err
+		}
+		llm.ShareExport(ctx, d)
 	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))
 	if err != nil {
@@ -213,41 +222,48 @@ func ProgramBackend(format string) string {
 	return llm.BackendCoreML
 }
 
-// makeSize makes size w x h of an export in d (its WxH) unless it is there or a shared layer has
-// it: converted from checkpoint in format, then put in the shared layers.
-func makeSize(ctx context.Context, d, checkpoint, format string, w, h int, logf func(string, ...any)) error {
-	if llm.FetchExport(ctx, d, d+".done") { // here, or from the shared layers
-		return nil
-	}
-	if err := llm.MayConvert(ctx, d); err != nil {
-		return err
-	}
-	if logf != nil {
-		logf("depth: converting %dx%d (the first picture of this aspect)", w, h)
-	}
-	if err := ConvertSize(checkpoint, d, w, h, format); err != nil {
-		return err
-	}
-	llm.ShareExport(ctx, d)
-	return nil
-}
-
-// PrepareSizes makes every size of the export of Prepare at dir (its model.json's sizes), as the
-// first picture of each aspect does (hwnpu-dev models package).
-func PrepareSizes(ctx context.Context, dir string, logf func(string, ...any)) error {
-	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
+// ConvertSizes converts each size of the export of Prepare in dir (Core AI or Core ML programs,
+// OpenVINO IR) ahead, or takes it from the shared layers, as the first picture of each aspect
+// would: an Estimator then needs no network nor conversion. log (nil: nowhere) is told of each
+// size converted.
+func ConvertSizes(ctx context.Context, dir string, log io.Writer) error {
+	x, err := readExport(dir)
 	if err != nil {
 		return err
 	}
-	var x Export
-	if err := json.Unmarshal(b, &x); err != nil {
-		return fmt.Errorf("depth: %s: %w", dir, err)
-	}
-	if x.Checkpoint == "" {
-		return fmt.Errorf("depth: %s is not an export of programs converted by size", dir)
+	if x.Format != "coreml" && x.Format != "coreai" && x.Format != "intel" {
+		return nil // AMD's graphs are whole in the export
 	}
 	for _, sz := range x.Sizes {
-		if err := makeSize(ctx, filepath.Join(dir, fmt.Sprintf("%dx%d", sz[0], sz[1])), x.Checkpoint, x.Format, sz[0], sz[1], logf); err != nil {
+		d := filepath.Join(dir, fmt.Sprintf("%dx%d", sz[0], sz[1]))
+		if llm.FetchExport(ctx, d, d+".done") {
+			continue
+		}
+		if err := llm.MayConvert(ctx, d); err != nil {
+			return err
+		}
+		if log != nil {
+			fmt.Fprintf(log, "depth: converting %dx%d\n", sz[0], sz[1])
+		}
+		if err := ConvertSize(x.Checkpoint, d, sz[0], sz[1], x.Format); err != nil {
+			return err
+		}
+		llm.ShareExport(ctx, d)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Warm loads each size's programs once, converting what is missing: the first load of each
+// compiles it, so that a picture of any aspect does not wait. AMD's graphs need none of it.
+func (e *Estimator) Warm(ctx context.Context) error {
+	if e.Format != "coreml" && e.Format != "coreai" && e.Format != "intel" {
+		return nil
+	}
+	for _, sz := range e.Sizes {
+		if _, err := e.use(ctx, sz[0], sz[1]); err != nil {
 			return err
 		}
 	}

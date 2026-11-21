@@ -27,7 +27,7 @@ func init() {
 				err = moge.PrepareSizes(chat.WithModel(e.Ctx, m), dir, logf(e.Log))
 			}
 		} else if dir, err = depth.Prepare(e.Ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: llm.BackendCoreAI, Log: e.Log}); err == nil {
-			err = depth.PrepareSizes(chat.WithModel(e.Ctx, m), dir, logf(e.Log))
+			err = depth.ConvertSizes(chat.WithModel(e.Ctx, m), dir, e.Log)
 		}
 		f.Set("export", dir)
 		return err
@@ -40,7 +40,7 @@ func init() {
 			return err
 		}
 		f.Set("programs", chat.ModelDir(e.Model))
-		return face.PreparePrograms(chat.WithModel(e.Ctx, e.Model), llm.BackendCoreAI, path, chat.ModelDir(e.Model))
+		return face.ConvertPrograms(chat.WithModel(e.Ctx, e.Model), llm.BackendCoreAI, path, chat.ModelDir(e.Model), face.CPUSizes)
 	})})
 	// ocr: PP-OCR's detector of each size and recognizer of each width (ocr.Sizes, ocr.Widths)
 	Register(&Preparer{Name: "ocr", Kinds: []chat.Kind{chat.KindOCR}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {

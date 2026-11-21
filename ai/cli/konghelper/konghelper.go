@@ -17,11 +17,13 @@
 //	}
 //
 // Bind gives the commands the app and a context; the app's own commands may take them too
-// (func (c *RunCmd) Run(ctx context.Context, app *ai.App) error).
+// (func (c *RunCmd) Run(ctx context.Context, app *ai.App) error), and open the app's Runtime
+// with AutoPrepare, so that their first run makes the models ready.
 package konghelper
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -38,6 +40,19 @@ func Bind(ctx context.Context, app *ai.App) kong.Option {
 			return err
 		}
 		return kong.Bind(app).Apply(k)
+	})
+}
+
+// HelpWithoutArgs is the kong option that shows the app's help, every command, when it is run
+// without arguments. An app whose main command is its default (`default:"withargs"`) would else
+// show that command's help alone, without the others (models, status). kong.Parse reads the
+// arguments after its options are applied, so this goes in its options.
+func HelpWithoutArgs() kong.Option {
+	return kong.OptionFunc(func(*kong.Kong) error {
+		if len(os.Args) == 1 {
+			os.Args = append(os.Args, "--help")
+		}
+		return nil
 	})
 }
 
@@ -80,6 +95,11 @@ type ModelsPrepare struct{ prepareFlags }
 func (c ModelsPrepare) Run(ctx context.Context, app *ai.App) error {
 	return cli.Prepare(ctx, app, c.options())
 }
+
+// AutoPrepare is the option of App.Open (and App.Run) for an app's commands: ai.WithConsole, a
+// model that is not ready made ready at its first use, as "models prepare" makes them all ahead,
+// shown as hwnpu's commands show it. Only the models a command uses are prepared.
+func AutoPrepare() ai.Option { return ai.WithConsole() }
 
 // Status is the command of the NPU's status (cli.Status), as hwnpu status.
 type Status struct {

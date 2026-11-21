@@ -23,8 +23,10 @@ type Calls struct {
 	drawing *ai.ModelNode[imagegen.Request, image.Image, imagegen.Options]
 }
 
-// Register adds the two calls to an app.
+// Register adds the two calls to an app, and says that their models run in turns (App.InTurns):
+// the app's plan counts the larger alone.
 func Register(app *ai.App, depth ai.Use[*vision.DepthEstimator], artist ai.Use[*imagegen.Generator]) *Calls {
+	app.InTurns(depth, artist)
 	c := &Calls{depth: depth, artist: artist, drawing: imagegen.GenerateNode(artist, imagegen.Options{})}
 	c.depthOf = ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
 	c.behind = ai.NewCall[imagegen.Request, image.Image](app, "what a layer hid").Then(c.drawing)

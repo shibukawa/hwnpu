@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 // Option is a setting of App.Open.
@@ -21,6 +23,7 @@ type options struct {
 	auto    bool
 	autoFn  func(Progress)
 	license bool
+	prepLog io.Writer // Plan.Log of the preparing, and the log of a model's first load
 }
 
 // WithLog sends what loading the models does (the programs, where they run) to w.
@@ -33,6 +36,31 @@ func WithLog(w io.Writer) Option { return func(o *options) { o.log = w } }
 func WithAutoPrepare(fn func(Progress)) Option {
 	return func(o *options) { o.auto, o.autoFn = true, fn }
 }
+
+// WithConsole is WithAutoPrepare as hwnpu's commands show it on the terminal (standard error):
+// a line for each model made ready, its downloads, conversions and the compile at its first
+// load with their bars redrawn in place, and what they log in gray (Console). An app's commands
+// open their Runtime with it so that their first run makes the models ready, as "models
+// prepare" (cli.Prepare) does ahead.
+func WithConsole() Option {
+	return func(o *options) {
+		o.auto, o.prepLog = true, Console()
+		o.autoFn = func(p Progress) {
+			switch p.Stage {
+			case StagePrepare:
+				if p.Message == "" {
+					fmt.Fprintf(os.Stderr, "%s (%s): not here yet, downloading and converting it\n", p.Use, p.Model)
+				}
+			case StageDone:
+				fmt.Fprintf(os.Stderr, "%s (%s): ready\n", p.Use, p.Model)
+			}
+		}
+	}
+}
+
+// Console is where Plan.Log writes as hwnpu's commands do (internal/console): standard error,
+// in gray on a terminal, where the downloads' and compiles' bars are redrawn in place.
+func Console() io.Writer { return console.Log(os.Stderr) }
 
 // WithAcceptedLicenses lets WithAutoPrepare accept the licenses that ask for it
 // (Plan.AcceptLicenses), for an app that has the user's agreement.
@@ -124,21 +152,35 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	if err != nil {
 		return nil, err
 	}
-	loc, err := rt.app.Store.find(r.key(), rt.npu, m)
+	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
 	if errors.Is(err, ErrNotPrepared) && rt.o.auto {
 		if err = rt.prepare(ctx, r); err == nil {
-			loc, err = rt.app.Store.find(r.key(), rt.npu, m)
+			loc, err = rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
 		}
 	}
 	if err != nil {
 		return nil, err
+	}
+	// the others of its group of InTurns are released first: the app said it never needs them
+	// together, and the plan counted the largest of them alone
+	for _, k := range rt.app.turnOf(r.key()) {
+		if l, ok := rt.loaded[k]; ok && k != r.key() {
+			delete(rt.loaded, k)
+			if err := l.closer.Close(); err != nil {
+				return nil, fmt.Errorf("ai: releasing %s for %s: %w", k, r.key(), err)
+			}
+		}
 	}
 	if !loc.bundle {
 		// used: kept by this machine's cache while the process runs, and last in its LRU
 		loc.each(func(p *string) { cache.Touch(*p) })
 	}
 	t0 := time.Now()
-	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: rt.o.log})
+	log := rt.o.log
+	if log == nil && rt.o.prepLog != nil && !loc.bundle && loc.Compiled.IsZero() && rt.npu.Target != "" {
+		log = rt.o.prepLog // its first load, which compiles it (minutes): shown as it goes
+	}
+	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log})
 	if err != nil {
 		return nil, fmt.Errorf("ai: loading %s (%s): %w", r.name, loc.Model, err)
 	}
@@ -158,7 +200,7 @@ func (rt *Runtime) prepare(ctx context.Context, r requirement) error {
 	if err != nil {
 		return err
 	}
-	p.NoCompile, p.AcceptLicenses = true, rt.o.license
+	p.NoCompile, p.AcceptLicenses, p.Log = true, rt.o.license, rt.o.prepLog
 	return p.Run(ctx, rt.o.autoFn)
 }
 

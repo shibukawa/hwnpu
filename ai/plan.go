@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +30,15 @@ type Plan struct {
 	// their models, for an app that has shown them and has the user's agreement. Without it Run
 	// fails with a *LicenseError at a model whose license is not accepted yet.
 	AcceptLicenses bool
+	// Log, when not nil, is where the downloads, conversions and compiles write what they do,
+	// as hwnpu's commands show it (Console's: their bars redrawn in place on a terminal, the
+	// rest in gray), instead of a Progress.Message for each line. The stages are still reported.
+	Log io.Writer
 
 	store   Store
 	npu     airole.NPU
 	machine int
+	turns   [][]string // App.InTurns
 }
 
 // Item is a use of a plan.
@@ -144,7 +150,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 	if err := a.Store.open(); err != nil {
 		return nil, err
 	}
-	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, chat.MachineMemory())}
+	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, chat.MachineMemory()), turns: a.turns}
 	for _, r := range reqs {
 		m, why, err := resolve(r, a.memory)
 		if err != nil {
@@ -152,7 +158,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		}
 		it := Item{Use: r.name, Role: r.role.Name, Why: why, model: m, req: r,
 			Model: m.Name, Repo: m.Source(), About: m.About, MemoryGB: m.MemoryFor(p.npu.Vendor), Disk: int64(m.DiskFor(p.npu.Vendor))}
-		loc, err := a.Store.find(r.key(), p.npu, m)
+		loc, err := a.Store.find(r.key(), p.npu, m, r.role.Revision)
 		switch {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
@@ -181,10 +187,11 @@ func (p *Plan) Target() string { return p.npu.Target }
 // in it beside everything else the machine runs.
 func (p *Plan) MachineGB() int { return p.machine }
 
-// usable is about how much of a machine's memory is left for models, in GB, by the memory it
-// has: MODEL.md's second row (the OS and the everyday applications taken off). The NPU's buffers
-// are pinned memory that cannot be swapped out, so models over it push other applications to
-// swap.
+// usable is about how much of a machine's memory hwnpu counts on for models, in GB, by the memory
+// it has: MODEL.md's second row, what a user can give models without strain beside the OS and the
+// everyday applications. It is a working assumption, not a limit of the machine (with an
+// integrated GPU it also moves with the memory the GPU is given). The NPU's buffers are pinned
+// memory that cannot be swapped out, so models over it may push other applications to swap.
 var usable = [][2]float64{{8, 3}, {16, 9}, {24, 15}, {32, 22}, {48, 35}, {64, 50}}
 
 // usableGB is usable for a machine of machine GB: between the table's machines in proportion,
@@ -257,14 +264,41 @@ func (p *Plan) DownloadBytes() int64 {
 }
 
 // MemoryGB is what the plan's models take running at once, from the definitions: whether they
-// fit the machine together (the three models of an interpreter take about 6.7 GB). An app that
-// runs them one after another (Use.Release) needs the largest alone.
+// fit the machine together (the three models of an interpreter take about 6.7 GB). Of the uses
+// the app runs one at a time (App.InTurns) the largest alone counts.
 func (p *Plan) MemoryGB() float64 {
 	var n float64
+	largest := map[int]float64{} // of each group of InTurns
 	for _, it := range p.Items {
-		n += it.MemoryGB
+		g := slices.IndexFunc(p.turns, func(g []string) bool { return slices.Contains(g, it.req.key()) })
+		if g < 0 {
+			n += it.MemoryGB
+		} else {
+			largest[g] = max(largest[g], it.MemoryGB)
+		}
+	}
+	for _, m := range largest {
+		n += m
 	}
 	return n
+}
+
+// InTurns are the groups of the plan's uses (their names) that the app runs one at a time
+// (App.InTurns): of each, the largest counts in MemoryGB.
+func (p *Plan) InTurns() [][]string {
+	var out [][]string
+	for _, g := range p.turns {
+		var names []string
+		for _, it := range p.Items {
+			if slices.Contains(g, it.req.key()) {
+				names = append(names, it.Use)
+			}
+		}
+		if len(names) > 1 {
+			out = append(out, names)
+		}
+	}
+	return out
 }
 
 // Licenses are the models' terms to show before downloading them, one per model.
@@ -380,9 +414,13 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 			fn(Progress{Use: it.Use, Role: it.Role, Model: it.Model, Stage: stage, Item: n + 1, Items: len(todo), Message: msg})
 		}
 		log := &lineWriter{fn: func(line string) { report(StagePrepare, line) }}
+		var out io.Writer = log
+		if p.Log != nil {
+			out = p.Log
+		}
 		var r *record
 		if it.Ready {
-			loc, err := p.store.find(it.req.key(), p.npu, it.model)
+			loc, err := p.store.find(it.req.key(), p.npu, it.model, it.req.role.Revision)
 			if err != nil {
 				return err
 			}
@@ -392,18 +430,18 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 				if !p.AcceptLicenses {
 					return &LicenseError{License: l}
 				}
-				if err := chat.AcceptLicense(it.model, true, false, nil, log); err != nil {
+				if err := chat.AcceptLicense(it.model, true, false, nil, out); err != nil {
 					return fmt.Errorf("ai: %w", err)
 				}
 			}
 			report(StagePrepare, "")
 			dir := chat.ModelDir(it.model)
-			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Dir: dir, NPU: p.npu, Log: log})
+			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Dir: dir, NPU: p.npu, Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: preparing %s (%s): %w", it.Use, it.Model, err)
 			}
 			r = &record{Model: it.Model, Role: it.Role, Run: it.model.Run, MemoryGB: it.MemoryGB, Files: files,
-				Prepared: time.Now().UTC().Truncate(time.Second)}
+				Prepared: time.Now().UTC().Truncate(time.Second), Revision: it.req.role.Revision}
 			// written before the load, so that a compile cut off does not download again
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
 				return err
@@ -413,9 +451,15 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 		if compile && !it.Compiled {
 			report(StageCompile, "")
 			log.fn = func(line string) { report(StageCompile, line) }
-			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: log})
+			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
+			}
+			if w, ok := l.(Warmer); ok {
+				if err := w.Warm(ctx); err != nil {
+					l.Close()
+					return fmt.Errorf("ai: compiling %s (%s): %w", it.Use, it.Model, err)
+				}
 			}
 			if err := l.Close(); err != nil {
 				return err
@@ -432,6 +476,14 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 	// process that ends after Run does not cut it off (ctx's end leaves the rest for the next run)
 	shared.Flush(ctx)
 	return ctx.Err()
+}
+
+// Warmer is a model that makes some of its programs at its first use of a kind of input (a
+// picture's size): Warm loads them all once, which compiles them for the NPU. Run calls it on
+// the model it loads once to compile (not NoCompile), so that a use prepared with Run does not
+// wait for a compile, nor touch the network, at any input.
+type Warmer interface {
+	Warm(ctx context.Context) error
 }
 
 // Prepare is the app's Plan and its Run: everything made ready in one call, for a command line

@@ -93,6 +93,9 @@ type record struct {
 	// yet): its programs are compiled for it, so that the next load does not wait for that.
 	Compiled time.Time    `json:"compiled,omitzero"`
 	Files    airole.Files `json:"files"`
+	// Revision is the role's (airole.Role.Revision) that prepared it: an earlier one's is
+	// prepared again.
+	Revision int `json:"revision,omitempty"`
 }
 
 // each calls fn with a pointer to every path of the record.
@@ -208,9 +211,9 @@ type located struct {
 // app runs now (its line-up changed, or the machine's memory did), so it is as good as not there.
 // A prepared cache that has the use for other NPUs alone is reported as ErrBundleTarget when
 // nothing else is found.
-func (s Store) find(key string, npu airole.NPU, want chat.Model) (located, error) {
+func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (located, error) {
 	var mismatch error
-	stale := ""
+	stale, older := "", false
 	target := targetKey(npu)
 	roots := append(append([]string(nil), s.Prepared...), s.dir())
 	for i, root := range roots {
@@ -232,6 +235,10 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model) (located, error
 			stale = r.Model
 			continue
 		}
+		if r.Revision < revision {
+			older = true
+			continue
+		}
 		r = r.clone()
 		r.absolute(root)
 		if f := r.missing(); f != "" {
@@ -246,6 +253,8 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model) (located, error
 		return located{}, fmt.Errorf("%w: %s is prepared as %s, and is %s now (the app's Plan and its Run prepare it)", ErrNotPrepared, key, stale, want.Name)
 	case stale != "":
 		return located{}, fmt.Errorf("%w: %s (%s) is prepared for another memory (the app's Plan and its Run prepare it)", ErrNotPrepared, key, want.Name)
+	case older:
+		return located{}, fmt.Errorf("%w: %s (%s) was prepared by an earlier hwnpu, which left part of it to its first use (the app's Plan and its Run prepare it)", ErrNotPrepared, key, want.Name)
 	}
 	return located{}, fmt.Errorf("%w: %s (the app's Plan and its Run prepare it)", ErrNotPrepared, key)
 }
