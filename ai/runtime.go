@@ -21,64 +21,24 @@ type Option func(*options)
 
 type options struct {
 	log     io.Writer
-	auto    bool
-	autoFn  func(Progress)
-	license bool
-	prepLog io.Writer // Plan.Log of the preparing (and of its compile)
 	loading func(Progress)
 }
 
 // WithLog sends what loading the models does (the programs, where they run) to w.
 func WithLog(w io.Writer) Option { return func(o *options) { o.log = w } }
 
-// WithAutoPrepare makes the Runtime prepare a use that is not ready when it is first asked for
-// (Plan and Run for that use alone, reported to fn, nil for nowhere), as hwnpu's commands do on
-// their first run: a Get may then download gigabytes and take minutes. Without it the Runtime
-// touches no network and converts nothing.
-func WithAutoPrepare(fn func(Progress)) Option {
-	return func(o *options) { o.auto, o.autoFn = true, fn }
-}
-
-// WithConsole is WithAutoPrepare as hwnpu's commands show it on the terminal (standard error):
-// a line for each model made ready, its downloads, conversions and the compile at its first
-// load with their bars redrawn in place, and what they log in gray (Console). An app's commands
-// open their Runtime with it so that their first run makes the models ready, as "models
-// prepare" (cli.Prepare) does ahead.
-func WithConsole() Option {
-	return func(o *options) {
-		o.auto, o.prepLog = true, Console()
-		o.autoFn = func(p Progress) {
-			switch p.Stage {
-			case StagePrepare:
-				if p.Message == "" {
-					fmt.Fprintf(os.Stderr, "%s (%s): not here yet, downloading and converting it\n", p.Use, p.Model)
-				}
-			case StageDone:
-				fmt.Fprintf(os.Stderr, "%s (%s): ready\n", p.Use, p.Model)
-			}
-		}
-	}
-}
-
 // Console is where Plan.Log writes as hwnpu's commands do (internal/console): standard error,
 // in gray on a terminal, where the downloads' and compiles' bars are redrawn in place.
 func Console() io.Writer { return console.Log(os.Stderr) }
 
-// WithLoading tells fn of each model a Get makes ready, as it goes, for an app that shows it
-// (a window that would otherwise look stuck): its preparing when WithAutoPrepare does it
-// (StagePrepare, with the lines of its downloads and conversions in Message), then its load
-// (StageCompile at its first load here, which compiles its programs for the NPU, else
-// StageLoad), with how long that took the last time here (Expected) and the lines of the
-// load's log, then StageDone. fn is called in the Get's goroutine, and from the goroutines
-// that redraw a bar.
+// WithLoading tells fn of each model a Get loads, for an app that shows it (a window that would
+// otherwise look still): StageLoad as it begins, with how long its load took the last time
+// here (Expected, 0 when not known) and the lines of the load's log in Message, then
+// StageDone. fn is called in the Get's goroutine, and from the goroutines that redraw a bar.
 func WithLoading(fn func(Progress)) Option { return func(o *options) { o.loading = fn } }
 
-// WithAcceptedLicenses lets WithAutoPrepare accept the licenses that ask for it
-// (Plan.AcceptLicenses), for an app that has the user's agreement.
-func WithAcceptedLicenses() Option { return func(o *options) { o.license = true } }
-
-// Runtime runs the models an app's store has prepared. It touches no network and converts
-// nothing (unless WithAutoPrepare): a use the store has not prepared is ErrNotPrepared. Each
+// Runtime runs the models an app's store has prepared and compiled (Plan.Run). It touches no
+// network, converts and compiles nothing: a use not prepared and compiled is ErrNotPrepared. Each
 // model is loaded at its first Get and stays until its Release or Close.
 type Runtime struct {
 	app *App
@@ -163,21 +123,11 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	if err != nil {
 		return nil, err
 	}
-	// a use is run only when it is prepared and compiled for this program on this NPU: no
-	// picture, no input waits for a compile. WithAutoPrepare does what "models prepare" does
-	// first (Plan.Run: the download, the conversion, the load once that compiles every program)
-	find := func() (located, error) {
-		loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
-		if err == nil && !loc.bundle && rt.npu.Target != "" && !loc.compiled() {
-			err = fmt.Errorf("%w: %s (%s) is not compiled for %s on this machine's NPU yet (the app's Plan and its Run compile it)", ErrNotPrepared, r.key(), loc.Model, processName())
-		}
-		return loc, err
-	}
-	loc, err := find()
-	if errors.Is(err, ErrNotPrepared) && rt.o.auto {
-		if err = rt.prepare(ctx, r); err == nil {
-			loc, err = find()
-		}
+	// a use is run only when it is prepared and compiled for this program on this NPU (Plan.Run,
+	// "models prepare"): no picture, no input waits for a download or a compile
+	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
+	if err == nil && !loc.bundle && rt.npu.Target != "" && !loc.compiled() {
+		err = fmt.Errorf("%w: %s (%s) is not compiled for %s on this machine's NPU yet (the app's Plan and its Run compile it)", ErrNotPrepared, r.key(), loc.Model, processName())
 	}
 	if err != nil {
 		return nil, err
@@ -235,49 +185,6 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	}
 	rt.loaded[r.key()] = &loadedModel{closer: l, info: Loaded{Use: r.name, Role: r.role.Name, Model: loc.Model, MemoryGB: loc.MemoryGB, At: t0, Took: time.Since(t0)}}
 	return l, nil
-}
-
-// prepare makes r ready (WithAutoPrepare) as "models prepare" does: downloaded, converted, and
-// loaded once (warmed, ai.Warmer), which compiles its programs for this program on the NPU.
-func (rt *Runtime) prepare(ctx context.Context, r requirement) error {
-	p, err := rt.app.plan(ctx, []requirement{r})
-	if err != nil {
-		return err
-	}
-	p.AcceptLicenses, p.Log = rt.o.license, rt.o.prepLog
-	fn := rt.o.autoFn
-	if watch := rt.o.loading; watch != nil {
-		t0, auto := time.Now(), fn
-		var mu sync.Mutex
-		stage := StagePrepare // the stage the log's lines are of
-		fn = func(pr Progress) {
-			if auto != nil {
-				auto(pr)
-			}
-			mu.Lock()
-			if pr.Stage != stage && pr.Stage != StageDone {
-				stage, t0 = pr.Stage, time.Now() // the compile's time from its own start
-			}
-			pr.Since = t0
-			mu.Unlock()
-			if pr.Stage != StageDone { // the load that follows tells when it is done
-				watch(pr)
-			}
-		}
-		if p.Log != nil { // else Run sends the lines of its log to fn itself
-			model := ""
-			if len(p.Items) > 0 {
-				model = p.Items[0].Model
-			}
-			p.Log = io.MultiWriter(p.Log, &lineWriter{fn: func(line string) {
-				mu.Lock()
-				st, since := stage, t0
-				mu.Unlock()
-				watch(Progress{Use: r.name, Role: r.role.Name, Model: model, Stage: st, Item: 1, Items: 1, Message: line, Since: since})
-			}})
-		}
-	}
-	return p.Run(ctx, fn)
 }
 
 // release unloads r, if it is loaded.

@@ -279,7 +279,7 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 	// the models made ready as they are first used, told to the window's panel once it shows
 	// the making: a download, a compile, a load take seconds to minutes with nothing else moving
 	var watch atomic.Pointer[progress]
-	rt, err := app.Open(ctx, konghelper.AutoPrepare(), ai.WithLoading(func(pr ai.Progress) {
+	rt, err := konghelper.Open(ctx, app, ai.WithLoading(func(pr ai.Progress) {
 		if prog := watch.Load(); prog != nil {
 			prog.loading(pr)
 		}
@@ -408,7 +408,7 @@ type RenderCmd struct {
 }
 
 func (c *RenderCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -468,7 +468,9 @@ func (c *TrackCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			}
 		}
 	}()
-	err = app.Run(ctx, konghelper.AutoPrepare())
+	if err = konghelper.Ready(ctx, app); err == nil {
+		err = app.Run(ctx)
+	}
 	close(stop)
 	p.tracker.mu.Lock()
 	found := p.tracker.found

@@ -20,7 +20,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/text/v2"
-	"github.com/shibukawa/hwnpu/ai"
 	"golang.org/x/image/font/gofont/goregular"
 
 	"github.com/shibukawa/hwnpu/ai/vision"
@@ -454,15 +453,11 @@ func (g *game) drawLoading(dst *ebiten.Image, l loading, sw, y float64) {
 	switch l.stage {
 	case stagePhase:
 		doing = strings.ToUpper(what[:1]) + what[1:] + ": " + l.phase
-	case ai.StagePrepare:
-		doing = "Downloading and converting " + what + " (its first use here)"
-	case ai.StageCompile:
-		doing = "Compiling " + what + " for this machine's NPU (its first load here)"
 	}
 	gone := time.Since(l.since)
 	s := fmt.Sprintf("%s (%s): %s", doing, l.model, clock(gone))
 	barW := 0.0
-	if l.expected >= time.Second && l.stage != ai.StagePrepare {
+	if l.expected >= time.Second {
 		if left := l.expected - gone; left > time.Second {
 			s += fmt.Sprintf(", about %s left", clock(left))
 		} else {

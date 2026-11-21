@@ -247,7 +247,7 @@ func (a *App) withStore(s Store) *App {
 	return a
 }
 
-func TestNotPreparedAndAutoPrepare(t *testing.T) {
+func TestNotPrepared(t *testing.T) {
 	ownDefinitions(t)
 	var f fakes
 	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
@@ -263,22 +263,35 @@ func TestNotPreparedAndAutoPrepare(t *testing.T) {
 	}
 	rt.Close()
 
-	var seen []Stage
-	rt, err = app.Open(ctx, WithAutoPrepare(func(p Progress) { seen = append(seen, p.Stage) }))
+	// prepared without its compile ("models download"): still not run
+	p, err := app.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.NoCompile = true
+	if err := p.Run(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err = app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stt.Get(ctx, rt); !errors.Is(err, ErrNotPrepared) || !strings.Contains(err.Error(), "not compiled") || f.loads != 0 {
+		t.Errorf("a use not compiled: %v (loaded %d), want ErrNotPrepared", err, f.loads)
+	}
+	rt.Close()
+
+	// prepared ("models prepare"): loaded once to compile it and warmed, then for the Get
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err = app.Open(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	// prepared as "models prepare" does: loaded once to compile it (and warmed), then for the Get
 	if _, err := stt.Get(ctx, rt); err != nil || f.prepared != 1 || f.loads != 2 || f.warmed != 1 {
-		t.Errorf("with auto prepare: %v, prepared %d, loaded %d, warmed %d", err, f.prepared, f.loads, f.warmed)
-	}
-	if !slices.Contains(seen, StagePrepare) || !slices.Contains(seen, StageCompile) {
-		t.Errorf("stages %v: prepared and compiled before the Get's load", seen)
-	}
-	// the load was the first on this machine: the plan says it is compiled
-	if p, err := app.Plan(ctx); err != nil || !p.Compiled() {
-		t.Errorf("plan after the first load: %v, %+v", err, p)
+		t.Errorf("prepared: %v, prepared %d, loaded %d, warmed %d", err, f.prepared, f.loads, f.warmed)
 	}
 }
 
@@ -555,7 +568,10 @@ func TestLineUpByMemory(t *testing.T) {
 
 	// the runtime prepares and loads the use as the app registered it, whatever value asks
 	app := NewApp("test", tr).Memory(16).withStore(store)
-	rt, err := app.Open(ctx, WithAutoPrepare(nil))
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := app.Open(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +673,10 @@ func TestNetwork(t *testing.T) {
 	if err := app.Run(ctx); !errors.Is(err, ErrNotPrepared) || loadsAtFirstRead != -1 {
 		t.Fatalf("a network of models not prepared: %v (the source read: %v)", err, loadsAtFirstRead != -1)
 	}
-	if err := app.Run(ctx, WithAutoPrepare(nil)); err != nil {
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if loadsAtFirstRead != 4 { // each loaded once to compile it, as "models prepare" does, then for the run
@@ -775,42 +794,22 @@ func TestInTurns(t *testing.T) {
 	NewApp("twice").InTurns(stt, tr).InTurns(tr, tts)
 }
 
-// WithLoading tells of the preparing (with its log's lines), the first load as a compile, and
-// a later load with how long the one before took.
+// WithLoading tells of each load, with how long the one before took.
 func TestWithLoading(t *testing.T) {
 	ownDefinitions(t)
 	var f fakes
 	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
 	ctx := context.Background()
 	app := NewApp("test", stt).withStore(testStore(t))
-
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
 	var seen []Progress
 	watch := WithLoading(func(p Progress) { seen = append(seen, p) })
-	rt, err := app.Open(ctx, WithAutoPrepare(nil), watch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stt.Get(ctx, rt); err != nil {
-		t.Fatal(err)
-	}
-	rt.Close()
-	var stages []Stage
-	msg := false
-	for _, p := range seen {
-		stages = append(stages, p.Stage)
-		msg = msg || p.Message == "converting "+p.Model
-		if p.Since.IsZero() {
-			t.Errorf("%+v: no Since", p)
-		}
-	}
-	if !msg || !slices.Contains(stages, StagePrepare) || !slices.Contains(stages, StageCompile) || stages[len(stages)-1] != StageDone {
-		t.Errorf("first Get: stages %v, the conversion's line told: %v", stages, msg)
-	}
-
-	// the first Get's own load (after the compile) told how long a load takes
-	for i, known := range []bool{true, true} {
+	// the first load after the compile: not known how long it takes; the next is
+	for i, known := range []bool{false, true} {
 		seen = nil
-		rt, err = app.Open(ctx, watch)
+		rt, err := app.Open(ctx, watch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -818,14 +817,14 @@ func TestWithLoading(t *testing.T) {
 			t.Fatal(err)
 		}
 		rt.Close()
-		if len(seen) != 2 || seen[0].Stage != StageLoad || seen[1].Stage != StageDone || (seen[0].Expected > 0) != known {
-			t.Errorf("Get %d: %+v, want a load (its time known: %v), then done", i+2, seen, known)
+		if len(seen) != 2 || seen[0].Stage != StageLoad || seen[1].Stage != StageDone || (seen[0].Expected > 0) != known || seen[0].Since.IsZero() {
+			t.Errorf("Get %d: %+v, want a load (its time known: %v), then done", i+1, seen, known)
 		}
 	}
 }
 
 // A use compiled by another program (Core AI's cache is the process's) is not compiled for this
-// one: without WithAutoPrepare it is not run, with it it is compiled (loaded once, warmed) first.
+// one: it is not run until this program's Plan.Run compiles it (loads it once, warms it).
 func TestCompiledByProgram(t *testing.T) {
 	ownDefinitions(t)
 	var f fakes
@@ -851,12 +850,15 @@ func TestCompiledByProgram(t *testing.T) {
 	}
 	rt.Close()
 	warmed := f.warmed
-	rt, err = app.Open(ctx, WithAutoPrepare(nil))
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err = app.Open(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rt.Close()
 	if _, err := stt.Get(ctx, rt); err != nil || f.warmed != warmed+1 || f.prepared != 1 {
-		t.Errorf("with auto prepare: %v, warmed %d more, prepared %d (once)", err, f.warmed-warmed, f.prepared)
+		t.Errorf("compiled by this program: %v, warmed %d more, prepared %d (once)", err, f.warmed-warmed, f.prepared)
 	}
 }

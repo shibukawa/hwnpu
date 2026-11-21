@@ -193,7 +193,7 @@ plan.Target()          // coreai、intel、amd-xdna2。"" は、モデルを動�
 ```
 
 - `Ready`: ファイルとプログラムが置き場にあり、ネットワークなしで読み込める
-- `Compiled`: このプログラム (実行ファイルの名前ごと。Core AI はコンパイルのキャッシュをプロセス名ごとに持ちます) が、この機械の NPU で 1 回読み込み、すべてのプログラムを動かしてある (`ai.Warmer`。画像のモデルはサイズごとに 1 ステップの絵を描きます)。次の読み込みはキャッシュから 1 秒ほどで済みます。Runtime はコンパイル済みでない用途を動かしません: `ai.ErrNotPrepared` になるか、`WithAutoPrepare` なら先に `models prepare` と同じ Run をします。アプリの実行中にコンパイルすることはありません
+- `Compiled`: このプログラム (実行ファイルの名前ごと。Core AI はコンパイルのキャッシュをプロセス名ごとに持ちます) が、この機械の NPU で 1 回読み込み、すべてのプログラムを動かしてある (`ai.Warmer`。画像のモデルはサイズごとに 1 ステップの絵を描きます)。次の読み込みはキャッシュから 1 秒ほどで済みます。Runtime はコンパイル済みでない用途を動かしません (`ai.ErrNotPrepared`)。アプリの実行中にコンパイルすることはありません
 - `Download` は models.yaml の `bytes` で、上限です。取得元に変換済みのものがあれば、チェックポイントは落としません
 
 ### 4.2 準備は 2 段
@@ -237,7 +237,7 @@ app.Store = ai.Store{
 ## 5. 実行する
 
 ```go
-rt, err := app.Open(ctx)            // ai.WithLog(w)、ai.WithAutoPrepare(fn) か ai.WithConsole()、ai.WithAcceptedLicenses()
+rt, err := app.Open(ctx)            // ai.WithLog(w)、ai.WithLoading(fn)
 defer rt.Close()
 
 t, err := stt.Get(ctx, rt)          // 最初の呼び出しで読み込む (1 秒未満から数十秒)。2 回目からは同じものを返す
@@ -246,7 +246,7 @@ err = stt.Release(rt)               // 下ろしてメモリを空ける。次�
 rt.Loaded()                         // 今持っているモデル: 用途、モデル、メモリ、読み込みにかかった時間
 ```
 
-- **ネットワークにも変換にも触りません。** 準備されていない用途は `ai.ErrNotPrepared` です。`ai.WithAutoPrepare(fn)` を付けると、最初の `Get` で準備します (コマンドと同じ動き。ギガバイトのダウンロードになることがあります)。`ai.WithConsole()` も同じく準備し、hwnpu のコマンドと同じ見た目で端末に出します: モデルごとに 1 行、ダウンロード・変換・最初のコンパイルはその場で描き直すバー、細かいログは灰色 (`Plan.Run` には `Plan.Log` にその書き先 `ai.Console()` を渡します)。アプリのコマンドはこれで Runtime を開き (`konghelper.AutoPrepare()`)、`APP models prepare` も同じ見た目で出します。自分の窓を持つアプリは `ai.WithLoading(fn)` を足します: `Get` が用意するモデルごとに `fn` が呼ばれ (`ai.Progress`。準備中はダウンロードの行、この機械での最初の読み込みは `StageCompile`、それ以外は `StageLoad`)、`Since` と、前回この機械で読み込みにかかった時間 `Expected` (ストアに記録) が付くので、止まって見えないように経過時間とバーを出せます
+- **ネットワークにも変換にもコンパイルにも触りません。** 準備されていない用途や、このプログラム向けにコンパイルされていない用途は `ai.ErrNotPrepared` です。`APP models prepare` (`Plan.Run`) が先に全部用意するので、アプリの実行中にダウンロードやコンパイルを待つことはありません (アプリが遅いのか準備が遅いのか、使う人には区別がつかないため)。アプリのコマンドは `konghelper.Open(ctx, app)` で Runtime を開きます。用意できていないモデルがあれば、コマンドが始まる前に、そのモデルを挙げて `APP models prepare` を案内して失敗します (`app.Run` の前に確かめるだけなら `konghelper.Ready`)。`Plan.Run` の `Plan.Log` に `ai.Console()` を渡すと、hwnpu のコマンドと同じ見た目 (その場で描き直すバー、灰色のログ) で出します。自分の窓を持つアプリは `ai.WithLoading(fn)` を足します: `Get` が読み込むモデルごとに `fn` が呼ばれ (`ai.Progress`。`StageLoad` のあと `StageDone`)、`Since` と、前回この機械で読み込みにかかった時間 `Expected` (ストアに記録) が付くので、止まって見えないように経過時間とバーを出せます
 - **`APP models prepare` のあとの実行は、ネットワークに触らず、コンパイルもしません。** 入力で決まるプログラム (YuNet の大きさ、DA3 の縦横比) を持つ役割は、Prepare で全部作り、モデルは `ai.Warmer` です。`models prepare` の読み込みが `Warm` を呼び、それぞれを 1 回読み込んでコンパイルします。Prepare で作るものを変えた役割は `Revision` を上げ、前の版で準備した置き場は準備されていない扱いになります
 - **置き場の記録が今の選び方と違えば、準備されていない扱いです。** 別のモデルで準備してある (アプリの構成が変わった、機械のメモリの設定が変わった) とき、前のものを黙って読み込みません
 - **読み込みは 1 つずつ**進みます。モデルは、それぞれ 1 回に 1 つの要求を通します (ほかは待ちます)。別のモデルどうしは同時に呼べます
@@ -258,7 +258,7 @@ rt.Loaded()                         // 今持っているモデル: 用途、モ
 
 | エラー | いつ | どうする |
 |---|---|---|
-| `ai.ErrNotPrepared` | 用途が準備されていない、別のモデルで準備されている、ファイルが消えた | `plan.Run`、または `WithAutoPrepare` |
+| `ai.ErrNotPrepared` | 用途が準備されていない、別のモデルで準備されている、ファイルが消えた | `plan.Run` (`APP models prepare`) |
 | `ai.ErrBundleTarget` | `Store.Prepared` のものが別の NPU 向けだけ、または読めない形式 | その NPU 向けの準備済みのものを配る、または手元で準備する |
 | `*ai.LicenseError` | 同意の要るライセンスに同意していない | 同意を取り、`plan.AcceptLicenses` |
 | `flow.ErrEmpty` | 塊が 1 つも来ないまま流れが終わった (`Held.Wait`) | — |

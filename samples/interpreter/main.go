@@ -250,7 +250,7 @@ func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	if err := checkSpeed(c.Speed); err != nil {
 		return err
 	}
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -342,7 +342,7 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 		}
 	}
 
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}

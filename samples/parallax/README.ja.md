@@ -16,7 +16,7 @@
 
 ```bash
 cd samples
-go run ./parallax models prepare                   # 先にモデルのダウンロード、変換、コンパイル (しなければ最初の実行で、使うものを)
+go run ./parallax models prepare                   # 最初にモデルのダウンロード、変換、コンパイル (済むまでコマンドは動きません)
 go run ./parallax show picture.png                      # 窓。カメラで頭を追う
 go run ./parallax show picture.png --head pointer       # マウスが頭の代わり (カメラなし)
 go run ./parallax render picture.png -o deep.gif   # 窓なし: 頭が一回りする間の絵

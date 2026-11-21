@@ -16,7 +16,7 @@ the window:               60 times a second, with the view the network last gave
 
 ```bash
 cd samples
-go run ./parallax models prepare                   # download, convert and compile the models ahead (else the first run does, for what it uses)
+go run ./parallax models prepare                   # download, convert and compile the models first: the commands run only when it is done
 go run ./parallax show picture.png                      # the window, following your head with the camera
 go run ./parallax show picture.png --head pointer       # the mouse stands in for your head (no camera)
 go run ./parallax render picture.png -o deep.gif   # no window: the picture from a head going around

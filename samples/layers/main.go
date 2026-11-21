@@ -127,7 +127,7 @@ type PlanCmd struct {
 }
 
 func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -193,7 +193,7 @@ type SplitCmd struct {
 }
 
 func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}

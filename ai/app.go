@@ -107,8 +107,7 @@ func (u Use[T]) As(gb int) Use[T] {
 
 // Get is the use's model in rt, loaded at the first call (which takes from under a second to
 // tens of seconds) and kept until Release or the Runtime's Close; later calls return the same
-// one. A use the store has not prepared is ErrNotPrepared, unless the Runtime prepares it
-// (WithAutoPrepare).
+// one. A use the store has not prepared and compiled for this program is ErrNotPrepared.
 func (u Use[T]) Get(ctx context.Context, rt *Runtime) (T, error) {
 	var zero T
 	l, err := rt.get(ctx, u.req)

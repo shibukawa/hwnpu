@@ -14,7 +14,7 @@ mic → vad → transcribe → heard → commands → translate → said → spe
 
 ```bash
 cd samples
-go run ./interpreter models prepare            # download, convert and compile the models ahead (about 11 GB; else the first run does, for what it uses)
+go run ./interpreter models prepare            # download, convert and compile the models first (about 11 GB): the commands run only when it is done
 go run ./interpreter run talk.wav                  # a recording: Japanese speech to English speech, on the speaker
 go run ./interpreter run --mic                     # the microphone, until Ctrl-C or "終わり"
 go run ./interpreter say こんにちは              # a text, translated and spoken

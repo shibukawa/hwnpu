@@ -158,8 +158,8 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		switch {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
-			// compiles it, and nothing can be written there to say so)
-			it.Ready, it.Compiled = true, loc.compiled() || loc.bundle
+			// compiles it, and nothing can be written there to say so); with no NPU, nothing is
+			it.Ready, it.Compiled = true, loc.compiled() || loc.bundle || p.npu.Target == ""
 			if loc.bundle {
 				it.Bundle = loc.root
 			}
