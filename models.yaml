@@ -713,6 +713,8 @@ models:
     memory: {amd: 5.0, apple: 2.2}
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
+  # Image models: one export per model and NPU vendor holds every aspect ratio, the weights once;
+  # never an export per size (new-model-checklist.md 11.4, design.md 16.280).
   # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
   # sources) of tools/amd/iron_anima.py or iron_chroma.py, of the eight aspect ratios of --size
   # in one (FLUX.2 klein's exported with IRON on its first run when the sources have none); on

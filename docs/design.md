@@ -8601,3 +8601,19 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 **残り**: NAS の `-v4` の 4 つの大きさ (Turbo と Aesthetic) と、その prebuilt (h13g の分は通っていた) は使われなくなる。`-v5` を書き出して 4 つのチップの prebuild をし直す。M3、M4 の実機で絵と時間を確かめる。
 
 **M2 の実機で (2026-11-21)**: Anima-Turbo 3:4 (`-v5`、h14g の prebuilt を NAS から) を seed 2 で。DiT の部品は全部 `all on the NPU`、絵は M1 (h13g の prebuilt) と同じ。1 ステップ 4.3 秒 (8 ステップ 34 秒)、M1 は 5.4 秒 (1:1 は 5.3 秒なので、8 の倍数に詰めた分の遅れはほぼない)。
+
+### 16.280 画像のモデルの書き出しは、Apple でも全部のアスペクト比で 1 つに (大きさごとの書き出しをやめる) — 2026-11-21
+
+**何が起きたか**: M2 で Anima-Turbo の 2:3 を試すと、3:4 のあとにまた 3 GB のダウンロードが始まった。Apple の Anima の書き出しは大きさごと (`anima-turbo-v1.1-832x1248-…-v4.coreai` など) で、1 つ 2.9 GB のどれにも重みが丸ごと入っている。8 つの大きさで 23 GB、Turbo と Aesthetic で 46 GB。Chroma は 512 と 1024 が別、FLUX.2 klein は 512+1024 の 1 つ (7.5 GB) とほかの 6 つの大きさが別、FLUX.3 klein は 1024 だけだった。AMD はすでに 8 つで 1 つ (16.237〜16.241、16.251)。
+
+**決まり** (new-model-checklist.md 11.4 に書いた): 画像のモデルの書き出しは、モデルと NPU の会社ごとに 1 つで、models.yaml の全部のアスペクト比を持ち、重みは 1 回だけ置く。大きさごとの書き出しも、一部の大きさだけをまとめたものも作らない。
+
+**Apple での形**: Sana (16.189) と FLUX.2 klein の 512+1024 (16.227) と同じ。大きさでグラフが変わる部品は、大きさごとの関数 `s{W}x{H}` を持つ 1 本の `.aimodel` にする (`llm.WriteAIFunctions`)。manifest の `sizes` に大きさごとの部品の名前を書き、`ProgramManifest.At` で選ぶ。名前の大きさの部分は `aspect.Tag` (3 つ以上は `8sizes-` と大きさの CRC-32 の 8 桁)。機種ごとの prebuilt は書き出し 1 つにつき 1 つで、全部の大きさを持つ (取得元には重みを除いて置く、16.232)。
+
+**払うもの** (利用者が決めた。ダウンロードの重複のほうが重い):
+- Core AI は 1 本の `.aimodel` の関数を全部まとめてコンパイルする (16.184)。初回は全部の大きさをコンパイルする。prebuilt があれば仕上げだけだが、VAE は prebuilt を使わない (16.273) ので、その 8 つの大きさは端末で毎回の初回にコンパイルする
+- 1 つの大きさを Neural Engine のコンパイラが通さないと、その部品の全部の大きさが NPU から落ちる。16.279 (M2 からの交差注意) のような失敗は、置く前にチップごと・大きさごとにオフラインで確かめる (`coreai-build`)
+- 大きさを足すと書き出しと prebuilt を全部作り直す
+
+**移す順** (利用者の指定): Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (`npu.apple.sizes` の 8 つ) → Chroma1 (Flash、HD) → FLUX.3 klein。チップは M1、M2、M3 (h13g、h14g、h15g) から。大きさごとの書き出しとその prebuilt (NAS の `converted/Anima-Turbo/coreai/anima-turbo-v1.1-WxH-…` など) は移し終えたら使われなくなる。
+
