@@ -30,6 +30,10 @@ type Plan struct {
 	// their models, for an app that has shown them and has the user's agreement. Without it Run
 	// fails with a *LicenseError at a model whose license is not accepted yet.
 	AcceptLicenses bool
+	// Log, when not nil, is where the downloads, conversions and compiles write what they do,
+	// as hwnpu's commands show it (Console's: their bars redrawn in place on a terminal, the
+	// rest in gray), instead of a Progress.Message for each line. The stages are still reported.
+	Log io.Writer
 
 	store   Store
 	npu     airole.NPU
@@ -396,6 +400,10 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 			fn(Progress{Use: it.Use, Role: it.Role, Model: it.Model, Stage: stage, Item: n + 1, Items: len(todo), Message: msg})
 		}
 		log := &lineWriter{fn: func(line string) { report(StagePrepare, line) }}
+		var out io.Writer = log
+		if p.Log != nil {
+			out = p.Log
+		}
 		var r *record
 		if it.Ready {
 			loc, err := p.store.find(it.req.key(), p.npu, it.model)
@@ -408,13 +416,13 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 				if !p.AcceptLicenses {
 					return &LicenseError{License: l}
 				}
-				if err := chat.AcceptLicense(it.model, true, false, nil, log); err != nil {
+				if err := chat.AcceptLicense(it.model, true, false, nil, out); err != nil {
 					return fmt.Errorf("ai: %w", err)
 				}
 			}
 			report(StagePrepare, "")
 			dir := chat.ModelDir(it.model)
-			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Dir: dir, NPU: p.npu, Log: log})
+			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Dir: dir, NPU: p.npu, Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: preparing %s (%s): %w", it.Use, it.Model, err)
 			}
@@ -429,7 +437,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 		if compile && !it.Compiled {
 			report(StageCompile, "")
 			log.fn = func(line string) { report(StageCompile, line) }
-			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: log})
+			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
 			}
