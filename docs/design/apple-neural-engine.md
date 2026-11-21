@@ -68,7 +68,7 @@ program.
 | A linear's or conv's sum must stay under 2^15 | 32768 gives Inf (32256 right), **partial sums too** (+1/−1 halves of 1024 inputs: sum 0 but Inf). `reduce_sum` is right to 51200 | Range control (MaxScaled, residual scales). The per-row int8 overflow below is likely this rule |
 | Slice of the last axis starting at 1..14 mod 32 | Values over 4094 become Inf. Starts 0 and 15–31 right; other axes unaffected | `aicheck lint`, `HWNPU_AILOWER_NOTES=1`. Of 27 exports only LFM2-8B-A1B's top-4 routing weights (≤ 1) hit it: harmless |
 | softplus fused as log(1 + exp(x)) | 0 for x > 10.4 | `relu(x) + log(1 + exp(−|x|))` |
-| Subnormals inside a matmul | Flushed to 0. Elementwise mul keeps them | Scale up, divide later |
+| Tiny products inside a matmul | Dropped below about 2^-16 (fitted on attention data; products of 1e-6 summed over 512 give 0). Elementwise mul keeps them. In attention's `matmul(e, v)` with small values it erased the many lightly weighted keys (o off by up to 79 %, see [LLM engine](llm-engine.md)) | Scale up, divide later (normalize e by l and scale by a power of two before the product) |
 | matmul with inner dimension 1 | (1,8,M,1)·(1,8,1,128): M = 1 rel. error 0.28; M = 64 right | Written as a mul (outer product) |
 | Activations as 33-point piecewise lines | sigmoid, silu, tanh, gelu max rel. error 0.0009–0.0016 | See below |
 | Division by a constant | Fine as a product | Lowered as `x × (1/c)` |

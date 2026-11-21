@@ -296,7 +296,7 @@ many drafts are taken, so a range). The documents are this repository's English 
 
 - One pass phrase at the start of repeated filler (the old test) is answered at 35K and 70K tokens.
 - Three pass phrases at 10%, 50% and 90% of the documents, asked for together: 2 of 3 at 17K, 0–1 of 3 at
-  65K and 130K, and the same with all keys read, so two-level attention is not the cause (see Open).
+  65K and 130K, and the same with all keys read, so two-level attention is not the cause: the NE drops tiny products in the attention programs (see Open).
 - Memory: the server's RSS is 0.59 GB at 17K, 1.74 GB at 65K, 1.90 GB at 130K, 3.89 GB at 257K (the
   cache grows with the conversation, 14 KiB a token).
 - Other models, two-level, Core ML era (not measured again on Core AI): Gemma 4 E2B 64K 204 s /
@@ -391,9 +391,15 @@ checks that deliberate breaks (row offset, missing ring copy, mask shift) fail.
 - Store: keep set-aside sequences (`Save`) in the store, thin old per-request end marks, int8 rows.
 - KV-only prompt programs for models whose every layer writes a cache (drop LFM3's output layer, about
   0.19 GiB).
-- Three pass phrases spread through a 65K–130K document (10/50/90%) are mostly missed on Core AI,
-  with or without two-level attention, while one phrase at the start is found. The Core ML era passed a
-  similar three-phrase test (docs in Japanese and English, asked in Japanese) at 128K; the two were not
-  run on the same text, so a Core AI regression is not ruled out.
+- **The attention programs of the split form lose long-range recall on the Neural Engine** (Core AI and
+  Core ML alike). Three pass phrases in 32K-token documents: PyTorch fp32 and fp16 (GPU) find all three;
+  hwnpu on the NE finds none on one text with lut6, lut8 and fp16 weights alike; the same programs on
+  Core AI's CPU, or only the attention programs moved to the CPU, find all three. Cause: in
+  `matmul(e, v)` the NE drops products below about 2^-16 (fitted on dumped chunk calls), so with small
+  values (layer 18: |v| ≤ 0.7) the many lightly weighted keys vanish from the numerator while `l`
+  (`reduce_sum`) keeps them: o was off by up to 79 % in a chunk, m and l by under 0.5 %. Candidate fix,
+  checked on the dumped data: `o = matmul(e · (S / l), v) / S` with S = 1024 (error to 0; largest
+  partial sum 1094, under 2^15 while |v| < 32). Not yet in the programs. Every model split at its
+  attention on Apple is concerned (LFM3, Gemma 4, Qwen3.5, PLaMo 3, Qwen3).
 - Not measured: `Heads` form on M2/M3, ring tiers on M2/M3 and for PLaMo 3 0.8B / 8B, many server
   conversations moving between tiers, Intel NPU hardware for split models.
