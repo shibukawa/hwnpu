@@ -52,7 +52,7 @@ func logf(log io.Writer) func(string, ...any) {
 
 // bar shows a download from a source on log.
 func bar(log io.Writer, what string) (*console.Bar, func(done, total int64)) {
-	b := console.NewBar(log, what)
+	b := console.NewTransferBar(log, what)
 	return b, func(done, total int64) {
 		if total > 0 {
 			b.Set(float64(done)/float64(total), fmt.Sprintf("%.2f / %.2f GB", float64(done)/1e9, float64(total)/1e9))

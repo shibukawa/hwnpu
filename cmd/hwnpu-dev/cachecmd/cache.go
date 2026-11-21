@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -174,6 +175,27 @@ func (l LsCmd) Run(c *Cmd) error {
 	return w.Flush()
 }
 
+// amdForms is m and each of its variants (machines of more memory) whose amd_export differs:
+// gpt-oss-20b's 16 experts a layer on 16 GB and all of them from 24 GB are two exports.
+func amdForms(m chat.Model) []chat.Model {
+	forms := []chat.Model{m}
+	gbs := make([]int, 0, len(m.Variants))
+	for gb := range m.Variants {
+		gbs = append(gbs, gb)
+	}
+	sort.Ints(gbs)
+	for _, gb := range gbs {
+		v := m.On(gb)
+		if len(v.AMDExport) == 0 || slices.ContainsFunc(forms, func(f chat.Model) bool {
+			return slices.Equal(f.AMDExport, v.AMDExport)
+		}) {
+			continue
+		}
+		forms = append(forms, v)
+	}
+	return forms
+}
+
 // ExportCmd is hwnpu-dev cache export: chat.PrepareAMD of each model without running it (the
 // export compiles on the CPU: no NPU is opened), the writeback waited for.
 type ExportCmd struct {
@@ -192,11 +214,15 @@ func (x ExportCmd) Run(c *Cmd) error {
 	}
 	log := console.Log(os.Stderr)
 	var made []string
+	var forms []chat.Model
 	for _, name := range x.Model {
 		m, ok := chat.Lookup(name)
 		if !ok || len(m.AMDExport) == 0 {
 			return fmt.Errorf("%s is not a model of the definitions with amd_export", name)
 		}
+		forms = append(forms, amdForms(m)...)
+	}
+	for _, m := range forms {
 		start := time.Now()
 		dir, err := chat.PrepareAMD(ctx, m, log)
 		if err != nil {

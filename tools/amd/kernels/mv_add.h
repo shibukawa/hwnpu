@@ -146,3 +146,77 @@ extern "C" void MV_GLU_NAME(MV_FMT)(float *g, float *u, bf16 *y) {
   zero_256<float, OUT>(u);
 }
 #endif
+
+// A GEMV whose x is a sandwich-normed layer's next input (iron_q4.py's sandwich forms of QGEMV and
+// QGEMVGlu): the block's output h, the residual r, the post norm's weight and the next norm's
+// (with Q_SANDWICH_SCALE then a scale row, Gemma 4's layer_scalar) ride on x's channel, K each.
+// The begin makes, on every core, y = r + rms(h) w_post (rounded; with the scale, rounded again
+// times it) into r's place and n = rms(y) w_pre into h's, as kernels/sandwich_add.cc does (the
+// same sums, lanes and roundings: the same bits), then starts the GEMV on n. One operator in place
+// of SandwichAdd and the GEMV (docs/design.md 16.277). MV_FMT_mv_put copies y or n out (a core of
+// column 0 each).
+#ifdef Q_SANDWICH
+#ifndef Q_EPS
+#error "mv_add.h needs -DQ_EPS with -DQ_SANDWICH"
+#endif
+#include "common/f32_split.h"
+#include "common/scalar_f32.h"
+
+#define MV_SW_CAT(a, b) a##b
+#define MV_SW_BEGIN(f) MV_SW_CAT(f, _mv_begin_sandwich)
+#define MV_SW_PUT(f) MV_SW_CAT(f, _mv_put)
+#define MV_SW_BASE(f) MV_SW_CAT(f, _mv_begin)
+
+namespace mv_sandwich {
+constexpr int L = 32;
+using bf_t = aie::vector<bf16, L>;
+using acc_t = aie::accum<accfloat, L>;
+
+inline float inv_rms(const bf16 *v) {
+  acc_t sq = aie::zeros<accfloat, L>();
+  for (int i = 0; i < K; i += L) {
+    const bf_t x = aie::load_v<L>(v + i);
+    sq = aie::mac_square(sq, x);
+  }
+  const float ms = scalar_mul(aie::reduce_add(sq.template to_vector<float>()), 1.0f / K);
+  return scalar_invsqrt(ms + Q_EPS);
+}
+
+inline bf_t scaled(bf_t x, bf_t w, float s) {
+  const Limbs<L> sl = bf16_limbs(acc_t(aie::broadcast<float, L>(s)));
+  return mul_limbs(bf16_limbs(mul_limbs(sl, x)), w).template to_vector<bf16>();
+}
+} // namespace mv_sandwich
+
+extern "C" void MV_SW_BEGIN(MV_FMT)(bf16 *xa, bf16 *sums, float *acc) {
+  using namespace mv_sandwich;
+  aie::set_rounding(aie::rounding_mode::conv_even);
+  bf16 *h = xa, *r = xa + K;
+  const bf16 *wpost = xa + 2 * K, *wpre = xa + 3 * K;
+  const float sh = inv_rms(h);
+  const bf_t one = aie::broadcast<bf16, L>(1.0f);
+  for (int i = 0; i < K; i += L) {
+    const bf_t p = scaled(aie::load_v<L>(h + i), aie::load_v<L>(wpost + i), sh);
+    bf_t y = aie::mac(aie::mul(p, one), aie::load_v<L>(r + i), one).template to_vector<bf16>();
+#ifdef Q_SANDWICH_SCALE
+    y = aie::mul(y, aie::load_v<L>(xa + 4 * K + i)).template to_vector<bf16>();
+#endif
+    aie::store_v(r + i, y);
+  }
+  const float sy = inv_rms(r);
+  for (int i = 0; i < K; i += L)
+    aie::store_v(h + i, scaled(aie::load_v<L>(r + i), aie::load_v<L>(wpre + i), sy));
+  MV_SW_BASE(MV_FMT)(xa, sums, acc);
+}
+
+// The plain begin on xa's first K (n, made by the begin above): QGEMVGlu's second accumulator.
+#define MV_SW_AGAIN(f) MV_SW_CAT(f, _mv_begin_again)
+extern "C" void MV_SW_AGAIN(MV_FMT)(bf16 *xa, bf16 *sums, float *acc) { MV_SW_BASE(MV_FMT)(xa, sums, acc); }
+
+// out = xa's which-th K (0: n, 1: y).
+extern "C" void MV_SW_PUT(MV_FMT)(const bf16 *xa, bf16 *out, int32_t which) {
+  const bf16 *src = xa + which * K;
+  for (int i = 0; i < K; i += 32)
+    aie::store_v(out + i, aie::load_v<32>(src + i));
+}
+#endif

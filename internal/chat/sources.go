@@ -447,7 +447,7 @@ func linkOrCopy(src, dst, what string, log io.Writer) error {
 	if err != nil {
 		return err
 	}
-	pw := &progress{w: out, total: fi.Size(), bar: console.NewBar(log, fmt.Sprintf("copying %s from %s", filepath.Base(dst), what))}
+	pw := &progress{w: out, total: fi.Size(), bar: console.NewTransferBar(log, fmt.Sprintf("copying %s from %s", filepath.Base(dst), what))}
 	_, err = io.Copy(pw, in)
 	if cerr := out.Close(); err == nil {
 		err = cerr

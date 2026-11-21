@@ -358,6 +358,10 @@ type labelLog struct {
 	from, to string
 }
 
+// Terminal says that l writes to a terminal when its writer does, so that a download through it
+// draws its bar (without it the shared exports' downloads showed nothing until done, 2026-11-21).
+func (l labelLog) Terminal() bool { return console.Live(l.w) }
+
 func (l labelLog) Write(p []byte) (int, error) {
 	if l.from != l.to {
 		p = []byte(strings.ReplaceAll(string(p), l.from, l.to))

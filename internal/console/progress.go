@@ -25,6 +25,7 @@ type Bar struct {
 	frac   float64 // < 0: not known (no bar, the spinner alone)
 	detail string
 	load   *loadState // of NewLoadBar: the bar is estimated while frac is not known
+	steps  *steps     // of NewTransferBar on no terminal: lines as it goes
 
 	done, exited chan struct{}
 }
@@ -34,6 +35,27 @@ const barWidth = 24
 
 // NewBar starts a line of progress on w for label, with no share known yet.
 func NewBar(w io.Writer, label string) *Bar { return newBar(w, label, nil) }
+
+// NewTransferBar is NewBar for a download or copy, which can take minutes: on no terminal (a log
+// file, a pipe to tee) it also writes the label when it starts and a line at each tenth done (each
+// stepEvery while the share is not known), where NewBar writes nothing until Done.
+func NewTransferBar(w io.Writer, label string) *Bar {
+	b := newBar(w, label, nil)
+	if w != nil && !b.live {
+		b.steps = &steps{last: time.Now()}
+		fmt.Fprintf(w, "%s ...\n", label)
+	}
+	return b
+}
+
+// steps is what a NewTransferBar on no terminal has written.
+type steps struct {
+	tenth int       // the tenths done written
+	last  time.Time // when a line was last written
+}
+
+// stepEvery is how often a NewTransferBar on no terminal writes a line while the share is not known.
+var stepEvery = 30 * time.Second
 
 func newBar(w io.Writer, label string, load *loadState) *Bar {
 	b := &Bar{w: w, label: label, live: w != nil && Live(w), start: time.Now(), frac: -1, load: load}
@@ -67,7 +89,21 @@ func newBar(w io.Writer, label string, load *loadState) *Bar {
 func (b *Bar) Set(frac float64, detail string) {
 	b.mu.Lock()
 	b.frac, b.detail = min(frac, 1), detail
+	var line string
+	if st := b.steps; st != nil {
+		now := time.Now()
+		if t := int(b.frac * 10); b.frac >= 0 && t > st.tenth && t < 10 {
+			st.tenth, st.last = t, now
+			line = fmt.Sprintf("%s %d%% %s %s", b.label, t*10, Duration(now.Sub(b.start)), detail)
+		} else if b.frac < 0 && now.Sub(st.last) >= stepEvery {
+			st.last = now
+			line = fmt.Sprintf("%s %s %s", b.label, Duration(now.Sub(b.start)), detail)
+		}
+	}
 	b.mu.Unlock()
+	if line != "" {
+		fmt.Fprintln(b.w, strings.TrimRight(line, " "))
+	}
 }
 
 // Elapsed is the time since the bar started.
