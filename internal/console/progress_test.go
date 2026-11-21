@@ -2,6 +2,7 @@ package console
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,5 +140,24 @@ func TestBarNested(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(b.String()), []byte("\r  loading vae_s3 1.2s, all on the NPU\x1b[K\n")) {
 		t.Errorf("the inner bar's result is not left: %q", b.String())
+	}
+}
+
+// TestBarLineNarrow keeps the share, the time and a download's sizes on a narrow terminal: the
+// label is shortened first, then the bar.
+func TestBarLineNarrow(t *testing.T) {
+	label := "downloading anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai from HWNPU_MODEL_SOURCE (webdav https://192.168.1.127:5006/llm/)"
+	detail := "1.23 / 3.90 GB, 43.4 MB/s"
+	for _, cols := range []int{120, 80, 60, 50} {
+		line := barLine(label, "⠋", 0.31, 28*time.Second, detail, cols)
+		if !strings.Contains(line, detail) || !strings.Contains(line, " 31%") {
+			t.Errorf("%d columns: %q lacks the share or the sizes", cols, line)
+		}
+		if n := columnsIn(line); n > cols-1 && cols >= 60 {
+			t.Errorf("%d columns: %q takes %d", cols, line, n)
+		}
+	}
+	if line := barLine(label, "⠋", 0.31, time.Second, detail, 300); !strings.Contains(line, "▕") || !strings.Contains(line, label) {
+		t.Errorf("wide: %q", line)
 	}
 }

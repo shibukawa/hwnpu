@@ -139,22 +139,51 @@ func (b *Bar) draw(i int) {
 		}
 	}
 	b.mu.Unlock()
-	var s strings.Builder
-	fmt.Fprintf(&s, " %s", spinFrames[i%len(spinFrames)])
-	if frac >= 0 {
-		full := int(frac * barWidth)
-		fmt.Fprintf(&s, " ▕%s%s▏ %3.0f%%", strings.Repeat("█", full), strings.Repeat("░", barWidth-full), frac*100)
-	}
-	fmt.Fprintf(&s, " %s", Duration(time.Since(b.start)))
+	line := barLine(b.label, spinFrames[i%len(spinFrames)], frac, time.Since(b.start), detail, columnsOf(b.w))
+	b.line.draw(func() { io.WriteString(b.w, oneLine(b.w, "\r"+line)) })
+}
+
+// barLine is a bar's line: the label, the spinner, the bar, the share done, the time and the
+// detail. On a terminal of cols columns (0: not known) too narrow for all of it, the label is
+// shortened first (to 16 columns), then the bar (to nothing): the share, the time and the detail
+// (a download's bytes so far and in all) are what is left to the end, as the line is cut at the
+// terminal's width (a download in a narrow window showed the bar alone, its sizes cut off,
+// 2026-11-21).
+func barLine(label, spin string, frac float64, elapsed time.Duration, detail string, cols int) string {
+	tail := " " + Duration(elapsed)
 	if detail != "" {
-		s.WriteString("  " + detail)
+		tail += "  " + detail
 	}
-	label := b.label
-	if n := columnsOf(b.w); n > 0 {
-		// a narrow terminal shortens the label first: the bar and how far it is are what to see
-		label = shorten(label, max(n-1-columnsIn(s.String()), 16))
+	pct := ""
+	if frac >= 0 {
+		pct = fmt.Sprintf(" %3.0f%%", frac*100)
 	}
-	b.line.draw(func() { io.WriteString(b.w, oneLine(b.w, "\r"+label+s.String())) })
+	width := barWidth
+	if cols > 0 {
+		const minLabel = 16
+		// " ⠋" + " ▕" + bar + "▏" + pct + tail
+		fixed := 2 + columnsIn(pct) + columnsIn(tail)
+		if frac >= 0 {
+			fixed += 3
+		}
+		if room := cols - 1 - minLabel - fixed; room < width {
+			width = max(room, 0)
+		}
+		if frac >= 0 && width < 4 {
+			width = 0
+		}
+	}
+	var s strings.Builder
+	fmt.Fprintf(&s, " %s", spin)
+	if frac >= 0 && width > 0 {
+		full := int(frac * float64(width))
+		fmt.Fprintf(&s, " ▕%s%s▏", strings.Repeat("█", full), strings.Repeat("░", width-full))
+	}
+	s.WriteString(pct + tail)
+	if cols > 0 {
+		label = shorten(label, max(cols-1-columnsIn(s.String()), 16))
+	}
+	return label + s.String()
 }
 
 // liveLines are the bars and spinners being drawn, the last started last: only it draws, so
