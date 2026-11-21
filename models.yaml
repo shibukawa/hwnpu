@@ -19,6 +19,9 @@
 #                 coreai: {version: 1}}), bumped by hand when what is made changes: the sources
 #                 keep it as vN (v0-HASH with no version)
 #   develop       true: in development; what is converted goes in the sources as vN-HASH
+#   hub           the model's conversions on Hugging Face, by repository: the commit each target
+#                 reads there ({hwnpu/NAME: {amd-xdna2: COMMIT, apple: COMMIT}}; coreai-ARCH before
+#                 apple on a Mac of that Neural Engine). hwnpu-dev hf push writes it (docs/prebuilt.md)
 #   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
 #   license       the weights' license: {id, url, class, terms, accept}. class is what it allows of
 #                 commercial use: open, conditional (a cap of revenue, a registration) or
@@ -66,6 +69,11 @@
 #   it names, +nsfw allows the models of content nsfw. A - wins. A use picks the next model
 #   allowed; a model named is refused with why (docs/model-provenance.md 2)
 version: 1
+
+# hub: push: the namespace on Hugging Face hwnpu-dev hf push puts the conversions in (PUSH/MODEL);
+#   a file of your own gives another (an account or an organization of yours)
+hub:
+  push: hwnpu
 
 models:
   LFM3-1.7B:

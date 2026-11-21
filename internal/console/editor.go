@@ -466,3 +466,36 @@ func readHistory(path string) []string {
 	}
 	return out
 }
+
+// ReadSecret asks for a secret (a token) at the terminal without showing what is typed, when
+// the terminal can be put in raw mode; it reads a line as it is shown otherwise.
+func ReadSecret(prompt string) (string, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	fd := int(os.Stdin.Fd())
+	restore, err := makeRaw(fd)
+	if err != nil {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		return strings.TrimRight(line, "\r\n"), err
+	}
+	defer fmt.Fprintln(os.Stderr)
+	defer restore()
+	var buf []byte
+	b := make([]byte, 1)
+	for {
+		if _, err := os.Stdin.Read(b); err != nil {
+			return "", err
+		}
+		switch b[0] {
+		case '\r', '\n':
+			return string(buf), nil
+		case 3: // Ctrl-C
+			return "", errors.New("console: cancelled")
+		case 127, 8:
+			if len(buf) > 0 {
+				buf = buf[:len(buf)-1]
+			}
+		default:
+			buf = append(buf, b[0])
+		}
+	}
+}

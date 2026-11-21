@@ -36,6 +36,7 @@ import (
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/convert"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/formats"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/generate"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/hfcmd"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/info"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/irdiff"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/mxfp4"
@@ -65,6 +66,7 @@ type cli struct {
 	Mxfp4      tool         `cmd:"" name:"mxfp4" passthrough:"all" help:"Write a Qwen3.5-MoE checkpoint (Qwen3.6-35B-A3B) with its experts in MXFP4, read a layer at a time from Hugging Face or a directory, for the experts the CPU runs."`
 	Xclbin     tool         `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
 	Cache      cachecmd.Cmd `cmd:"" help:"The cache's root and the shared layers (docs/cache-sharing-design.md): show them, list and put exports, check entries, finish the background work."`
+	HF         hfcmd.Cmd    `cmd:"" name:"hf" help:"Put the conversions the sources hold on Hugging Face, one repository a model, and pin the commits in models.yaml (docs/prebuilt.md): plan, push, check."`
 }
 
 var mains = map[string]func(){

@@ -131,6 +131,8 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 		rules = append(rules, env...)
 	}
 	Catalog, Categories, Aliases, ModelFiles, Policy = catalog, categories, aliases, t.files, rules
+	HubPush, HubPushFile = t.hubPush, t.hubFile
+	setHub(catalog)
 	shared.SetSources(sources, hf)
 	if user {
 		shared.SetBundles(BundleDirs(configdir.New("", "hwnpu"), ""))
@@ -210,10 +212,26 @@ type modelEntry struct {
 	Targets *map[string]*targetEntry `yaml:"targets"`
 	// Develop marks a model in development: its conversions go in the sources as vN-HASH of
 	// what they are made from, not vN.
-	Develop *bool   `yaml:"develop"`
-	About   *string `yaml:"about"`
-	Like    string  `yaml:"like"`
-	Remove  bool    `yaml:"remove"`
+	Develop *bool `yaml:"develop"`
+	// Hub are the model's conversions on Hugging Face: by repository (OWNER/NAME), the commit
+	// each target reads (amd-xdna2, apple, coreai-ARCH), which hwnpu-dev hf push writes
+	// (docs/prebuilt.md 5.1). A file over another changes the repositories and targets it
+	// names and keeps the others.
+	Hub    *map[string]map[string]string `yaml:"hub"`
+	About  *string                       `yaml:"about"`
+	Like   string                        `yaml:"like"`
+	Remove bool                          `yaml:"remove"`
+
+	// hubFiles are the files that wrote each repository of Hub, by its order (the last: read first).
+	hubFiles map[string]hubOrigin
+}
+
+// hubOrigin is the file that last wrote a repository of a model's hub, and the place in the
+// order the files were read of the one that named it first (a repository of a file read later
+// is read first).
+type hubOrigin struct {
+	file string
+	at   int
 }
 
 // npuEntry is a model's export for one NPU vendor (npu): formats (text, dit), sizes (the default on
@@ -264,6 +282,12 @@ type tableFile struct {
 	Cache      any                       `yaml:"cache"`
 	// Policy are items of the model policy (+nsfw, -license:non-commercial), read before PolicyEnv's.
 	Policy []string `yaml:"policy"`
+	// Hub is where hwnpu-dev hf push puts the conversions (docs/prebuilt.md 4.6).
+	Hub *struct {
+		// Push is the namespace on Hugging Face (an account or an organization): the
+		// repositories are PUSH/MODEL.
+		Push string `yaml:"push"`
+	} `yaml:"hub"`
 }
 
 // order is a file's models and categories in the order written (maps lose it).
@@ -298,6 +322,8 @@ type table struct {
 	aliasFile  map[string]string
 	removed    map[string]string // models a file removed, by the file
 	policy     []Rule            // the files' policy
+	hubPush    string            // hub.push of the last file that gives it
+	hubFile    string            // that file
 }
 
 func newTable(log io.Writer) *table {
@@ -364,6 +390,12 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 		}
 		t.policy = append(t.policy, rules...)
 	}
+	if f.Hub != nil && f.Hub.Push != "" {
+		if !hubNamespace.MatchString(f.Hub.Push) {
+			return fmt.Errorf("chat: %s: hub: push %q is not a namespace of Hugging Face (an account or an organization)", name, f.Hub.Push)
+		}
+		t.hubPush, t.hubFile = f.Hub.Push, name
+	}
 	t.files = append(t.files, name)
 	for _, item := range o.Models {
 		key := fmt.Sprint(item.Key)
@@ -416,6 +448,19 @@ func (t *table) addModel(file, name string, e *modelEntry, builtin bool) error {
 		old = t.models[name]
 	}
 	merge(old, e)
+	if e.Hub != nil {
+		if old.hubFiles == nil {
+			old.hubFiles = map[string]hubOrigin{}
+		}
+		for repo := range *e.Hub {
+			o, ok := old.hubFiles[repo]
+			if !ok {
+				o.at = len(t.files) // the order is of the file that named the repository first
+			}
+			o.file = file
+			old.hubFiles[repo] = o
+		}
+	}
 	t.origin[name] = append(t.origin[name], file)
 	return nil
 }
@@ -438,6 +483,19 @@ func merge(dst, src *modelEntry) {
 		m := maps.Clone(*dst.Targets)
 		maps.Copy(m, *src.Targets)
 		defer func() { dst.Targets = &m }()
+	}
+	if src.Hub != nil && dst.Hub != nil {
+		m := map[string]map[string]string{}
+		for repo, pins := range *dst.Hub {
+			m[repo] = maps.Clone(pins)
+		}
+		for repo, pins := range *src.Hub {
+			if m[repo] == nil {
+				m[repo] = map[string]string{}
+			}
+			maps.Copy(m[repo], pins)
+		}
+		defer func() { dst.Hub = &m }()
 	}
 	if src.Variants != nil && dst.Variants != nil {
 		m := maps.Clone(*dst.Variants)
@@ -605,6 +663,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	}
 	out := *base
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
+	out.Hub, out.hubFiles = e.Hub, e.hubFiles    // nor are its conversions
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
 		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
 		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
@@ -672,6 +731,12 @@ func toModel(name string, e *modelEntry) (Model, error) {
 	}
 	if e.Develop != nil {
 		m.Develop = *e.Develop
+	}
+	if e.Hub != nil {
+		var err error
+		if m.Hub, err = toHub(*e.Hub, e.hubFiles); err != nil {
+			return m, fmt.Errorf("model %s: hub: %w", name, err)
+		}
 	}
 	if e.SHA256 != nil {
 		for f, d := range *e.SHA256 {
