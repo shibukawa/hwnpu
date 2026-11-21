@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
+	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
@@ -24,6 +26,21 @@ import (
 // scaled with abs (milpart.AbsScaled; design.md 16.201) and its attentions a head at a time
 // (milpart.HeadAttention; design.md 16.202).
 const ExportVersion = 4
+
+// PaddedExportVersion is the version of an Apple export whose patches are not a multiple of
+// milpart.DeferredRows (880 x 1168, 752 x 1360 and their turns): its cross-attention's queries
+// padded to one, which M2's and later Neural Engines' compiler takes (design.md 16.277). The
+// other sizes' programs are as ExportVersion's, byte for byte, and keep its name.
+const PaddedExportVersion = 5
+
+// exportVersion is the version in the name of o's export.
+func exportVersion(o ConvertOptions) int {
+	gh, gw := mil.Grid(o.Width, o.Height)
+	if o.Backend != "intel" && (gh*gw)%milpart.DeferredRows != 0 {
+		return PaddedExportVersion
+	}
+	return ExportVersion
+}
 
 // The Hugging Face repositories Prepare downloads from: the official split files (the diffusion
 // model and Qwen3-0.6B) and, of the Diffusers version, what Convert reads besides (the VAE and
@@ -91,7 +108,7 @@ func DefaultGroup(backend string, width, height int) int {
 // the programs is in its name.
 func ExportName(o ConvertOptions) string {
 	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-q%d-v%d.%s", strings.TrimSuffix(o.Dit, ".safetensors"), o.Width, o.Height,
-		o.TextFormat, o.DitFormat, o.Group, o.QChunk, ExportVersion, cmp.Or(o.Backend, "coreml"))
+		o.TextFormat, o.DitFormat, o.Group, o.QChunk, exportVersion(o), cmp.Or(o.Backend, "coreml"))
 }
 
 // Prepare makes Anima ready in s.Dir (its checkpoint: RepoCheckpoint), as hwnpu-chat makes its models ready: it downloads the

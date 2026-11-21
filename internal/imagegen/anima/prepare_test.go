@@ -13,6 +13,24 @@ func TestExportName(t *testing.T) {
 	if got, want := ExportName(o), "anima-turbo-v1.1-1024x1024-int8-int8-g4-q512-v4.coreml"; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
+	// the sizes whose patches are not a multiple of 8 (880 x 1168: 4015) are of the padded
+	// cross-attention's version on Apple; 832 x 1248 (4056) keeps the others'
+	for _, c := range []struct {
+		w, h    int
+		backend string
+		want    string
+	}{
+		{880, 1168, "coreai", "anima-turbo-v1.1-880x1168-int8-int8-g4-q512-v5.coreai"},
+		{1360, 752, "coreai", "anima-turbo-v1.1-1360x752-int8-int8-g4-q512-v5.coreai"},
+		{832, 1248, "coreai", "anima-turbo-v1.1-832x1248-int8-int8-g4-q512-v4.coreai"},
+		{880, 1168, "intel", "anima-turbo-v1.1-880x1168-int8-int8-g4-q512-v4.intel"},
+	} {
+		p := o
+		p.Width, p.Height, p.Backend = c.w, c.h, c.backend
+		if got := ExportName(p); got != c.want {
+			t.Errorf("%s, want %s", got, c.want)
+		}
+	}
 	o.Backend = "intel"
 	if got := ExportName(o); filepath.Ext(got) != ".intel" {
 		t.Errorf("intel: %s", got)
