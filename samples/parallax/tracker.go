@@ -25,7 +25,7 @@ type tracker struct {
 
 	// Gain is how far the view goes for a head at the edge of the camera's view: a head moves
 	// over a part of the camera's view only, so 2.5 has the picture turn fully for a head 40 %
-	// of the way to the edge.
+	// of the way to the edge. It is set before the network runs; AddGain changes it after.
 	Gain float64
 
 	mu     sync.Mutex
@@ -33,13 +33,20 @@ type tracker struct {
 	at     time.Time // when a face was last found
 	found  int       // the frames a face was found in
 	head   vision.Head
+	// the camera's newest frame, and what the detector found in the newest frame it read, for
+	// the window to show how the head is found
+	frame image.Image
+	faces vision.Found
 }
 
 func newTracker(app *ai.App, faces ai.Use[*vision.FaceDetector], o vision.HeadOptions) *tracker {
 	t := &tracker{camera: flow.Source[image.Image]("camera"), Gain: 2.5}
 	var smooth View
 	steady := flow.Each("steady", func(c flow.Chunk[vision.Head], emit func(flow.Chunk[View])) error {
-		to := View{X: clamp(c.Data.X * t.Gain), Y: clamp(c.Data.Y * t.Gain)}
+		t.mu.Lock()
+		gain := t.Gain
+		t.mu.Unlock()
+		to := View{X: clamp(c.Data.X * gain), Y: clamp(c.Data.Y * gain)}
 		smooth = smooth.Follow(to, 0.5) // half of a detector's jitter
 		t.mu.Lock()
 		t.head, t.at, t.found = c.Data, time.Now(), t.found+1
@@ -58,12 +65,40 @@ func newTracker(app *ai.App, faces ai.Use[*vision.FaceDetector], o vision.HeadOp
 		t.mu.Unlock()
 		return nil
 	})
+	// the frames and the faces, as they pass, for the window
+	frame := flow.Tap("frame", func(c flow.Chunk[image.Image]) {
+		t.mu.Lock()
+		t.frame = c.Data
+		t.mu.Unlock()
+	})
+	found := flow.Tap("found", func(c flow.Chunk[vision.Found]) {
+		t.mu.Lock()
+		t.faces = c.Data
+		t.mu.Unlock()
+	})
 	// the detector reads the newest frame only: a frame that waited is of no use
-	app.From(t.camera).To(vision.FacesNode(faces), flow.Newest()).To(vision.HeadNode(o)).To(steady).To(view)
+	app.From(t.camera).To(frame).To(vision.FacesNode(faces), flow.Newest()).To(found).To(vision.HeadNode(o)).To(steady).To(view)
 	return t
 }
 
+// Seen is the camera's newest frame, the faces found in the newest frame the detector read
+// (in that frame's pixels), and the head worked out from the nearest; nil before the first frame.
+func (t *tracker) Seen() (image.Image, vision.Found, vision.Head, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.frame, t.faces, t.head, t.found > 0 && time.Since(t.at) < time.Second
+}
+
 func clamp(x float64) float64 { return min(max(x, -1), 1) }
+
+// AddGain changes the gain by step, within 0.5 to 10, and returns it: the window's keys and
+// wheel, for a viewer whose head moves little.
+func (t *tracker) AddGain(step float64) float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Gain = min(max(t.Gain+step, 0.5), 10)
+	return t.Gain
+}
 
 // Target is where the view is to go, and a line that says what the tracker sees.
 func (t *tracker) Target() (View, string) {

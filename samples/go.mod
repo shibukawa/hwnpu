@@ -18,11 +18,13 @@ require (
 	github.com/ebitengine/gomobile v0.0.0-20260820040257-d11f821a26a6 // indirect
 	github.com/ebitengine/hideconsole v1.0.0 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
+	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/jfreymuth/pulse v0.1.3 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/shibukawa/configdir v1.1.0 // indirect
 	github.com/shibukawa/tinygodriver v1.3.10 // indirect
+	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect

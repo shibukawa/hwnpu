@@ -3,7 +3,9 @@ package main
 import (
 	"image"
 	"image/color"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/samples/internal/layering"
 )
@@ -224,7 +226,7 @@ func TestStackAndProgress(t *testing.T) {
 		}
 		return l
 	}
-	s := stack([]layering.Layer{layer(255, 0.1), layer(128, 0.5), layer(0, 1)}, 0, 0)
+	s := stack([]layering.Layer{layer(255, 0.1), layer(128, 0.5), layer(0, 1)}, look{})
 	ls := s.layers()
 	if len(ls) != 3 || ls[0].Behind != nil || ls[2] != s || ls[0].Near[0] != 0.1 || ls[2].Near[0] != 1 {
 		t.Fatalf("the stack: %d layers", len(ls))
@@ -234,16 +236,66 @@ func TestStackAndProgress(t *testing.T) {
 		t.Errorf("the middle layer's pixel: %v", c)
 	}
 
-	// the window takes a new scene and a new picture of the step once each
-	p := &progress{}
-	p.set(func(p *progress) {
-		p.scene, p.inset, p.fresh, p.text, p.total, p.active = s, ls[0].Pix, true, "cut", 0.5, true
-	})
-	scene, inset, fresh, text, total, active := p.take()
-	if scene != s || inset == nil || !fresh || text != "cut" || total != 0.5 || !active {
-		t.Errorf("the first take: %v %v %v %q %v %v", scene != nil, inset != nil, fresh, text, total, active)
+	// the steps are queued for the window, each taken once, with how much of the whole was done
+	// when it came; the shares of the whole add up to 1, the window's putting together the rest
+	p := newProgress(ls[0].Pix, 3)
+	p.show(stageCut, ls[1].Pix, nil, "cut")
+	p.set(func(p *progress) { p.total = 0.5 })
+	p.ready(s)
+	n := p.take()
+	if len(n.steps) != 3 || n.steps[0].stage != stageDepth || n.steps[1].text != "cut" || n.steps[2].scene != s {
+		t.Fatalf("the steps taken: %+v", n.steps)
 	}
-	if scene, _, fresh, text, _, _ := p.take(); scene != nil || fresh || text != "cut" {
-		t.Errorf("the second take: %v %v %q", scene != nil, fresh, text)
+	if math.Abs(n.steps[2].total+n.wCompose-1) > 1e-9 || n.steps[1].total != 0 {
+		t.Errorf("the shares: %v, %v and %v", n.steps[1].total, n.steps[2].total, n.wCompose)
+	}
+	if n := p.take(); len(n.steps) != 0 {
+		t.Errorf("taken again: %d steps", len(n.steps))
+	}
+	if one := newProgress(ls[0].Pix, 1); one.wLayers != 0 {
+		t.Errorf("a picture of one layer has a share for its layers: %v", one.wLayers)
+	}
+	if minShow(stageNear) < 3*time.Second {
+		t.Errorf("the depth is shown %v", minShow(stageNear))
+	}
+}
+
+func TestRelief(t *testing.T) {
+	// a square thing of flat depth 0.6 with a nearer middle (0.7), in a picture of 100 x 100
+	const w, h = 100, 100
+	near := make([]float32, w*h)
+	in := make([]bool, w*h)
+	for y := 20; y < 80; y++ {
+		for x := 20; x < 80; x++ {
+			in[y*w+x] = true
+			near[y*w+x] = 0.6
+			if x >= 45 && x < 55 && y >= 45 && y < 55 {
+				near[y*w+x] = 0.7
+			}
+		}
+	}
+	at := func(n []float32, x, y int) float64 { return float64(n[y*w+x]) }
+	curved := Layers(near, 30)
+	flat := Relief(near, in, w, h, 30, 1, 0)
+	// it sits where the curve puts it, and inside it the depth is as it was, not flattened
+	if math.Abs(at(flat, 30, 30)-at(curved, 30, 30)) > 1e-5 {
+		t.Errorf("the layer sits at %v, the curve at %v", at(flat, 30, 30), at(curved, 30, 30))
+	}
+	if d := at(flat, 50, 50) - at(flat, 30, 30); math.Abs(d-0.1) > 1e-5 {
+		t.Errorf("the middle is %v nearer; the depth says 0.1 (the curve %v)", d, at(curved, 50, 50)-at(curved, 30, 30))
+	}
+	// round: higher in the middle than at the outline, and never past 1
+	round := Relief(near, in, w, h, 30, 1, 0.5)
+	if at(round, 40, 40) <= at(round, 21, 40)+0.1 {
+		t.Errorf("not round: %v inside, %v at the outline", at(round, 40, 40), at(round, 21, 40))
+	}
+	for i, v := range round {
+		if v < 0 || v > 1 {
+			t.Fatalf("nearness %v at %d", v, i)
+		}
+	}
+	// the picture's border is no outline
+	if d := outline([]bool{true, true, true, false}, 4, 1); d[0] != 3 || d[2] != 1 || d[3] != 0 {
+		t.Errorf("the distances: %v", d)
 	}
 }

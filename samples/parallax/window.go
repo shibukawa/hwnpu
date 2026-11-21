@@ -3,12 +3,14 @@
 package main
 
 import (
+	"bytes"
 	_ "embed"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -16,55 +18,115 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/text/v2"
+	"golang.org/x/image/font/gofont/goregular"
+
+	"github.com/shibukawa/hwnpu/ai/vision"
 )
 
 //go:embed parallax.kage
 var shaderSource []byte
 
-// game is the window: the picture drawn by the shader from where the view is, 60 times a
-// second, whatever the tracker's beat is.
+//go:embed drawing.kage
+var drawingSource []byte
+
+// game is the window. While the picture is made deep (o.progress) its main area shows each
+// step: the depth, each layer lifted out, painted over and drawn behind, and last the layers put
+// together; the picture itself and the camera's view are small in the corner, and a bar at the
+// bottom goes to 100 % when it is all done. Then it is the picture drawn by the shader from where
+// the view is, 60 times a second, whatever the tracker's beat is.
 type game struct {
 	scene  *Scene
 	params Params
 	o      windowOptions
 
-	shader *ebiten.Shader
+	shader, drawing *ebiten.Shader
 	// pics and nears are the layers' pictures and nearness, from the farthest
 	pics, nears []*ebiten.Image
 	view        View
-	// the parting's step, when the picture is parted beside the window: a small picture of it,
-	// its line, how much is done
-	inset  *ebiten.Image
-	step   string
-	total  float64
-	active bool
-	white  *ebiten.Image // one white pixel, to draw the bar and the frames with
-	opened time.Time
-	show   bool // the nearness instead of the picture
-	tick   int
-	dumped int
-	status string
+	white       *ebiten.Image // one white pixel, to draw the bar and the frames with
+	face        *text.GoTextFaceSource
+	opened      time.Time
+	show        bool // the nearness instead of the picture
+	tick        int
+	dumped      int
+	status      string
+	gain        float64   // the head's gain as last set (o.gain)
+	gainAt      time.Time // when it was last changed, to show it a while
+
+	b *making // while the picture is made deep; nil once it is shown
+	// done is when the making ended, for the last line to fade
+	done     time.Time
+	doneText string
 }
+
+// making is what the window shows while the picture is made deep.
+type making struct {
+	w, h      int           // the picture's size
+	orig      *ebiten.Image // the picture, in the corner
+	queue     []step        // the steps to show after this one
+	step      step          // the step shown
+	live      news          // the newest of the drawing's line and how far it is
+	cur, prev *ebiten.Image // the main area's picture of this step and of the one before
+	curStage  stage
+	since     time.Time     // when this step came
+	mask      *ebiten.Image // where the model draws, softened
+	drawStart time.Time
+	bar       float64 // the bar as drawn, following the progress
+	checker   *ebiten.Image
+	// the putting together of the layers, once the scene is ready
+	composeAt time.Time
+	// the camera's corner picture
+	cam    *ebiten.Image
+	camSrc image.Image
+}
+
+// composeTime is how long the layers take to come together at the end.
+const composeTime = 2200 * time.Millisecond
 
 func runWindow(s *Scene, p Params, o windowOptions) error {
 	shader, err := ebiten.NewShader(shaderSource)
 	if err != nil {
 		return fmt.Errorf("the shader: %w", err)
 	}
-	g := &game{params: p, o: o, shader: shader, white: ebiten.NewImage(1, 1), opened: time.Now()}
+	drawing, err := ebiten.NewShader(drawingSource)
+	if err != nil {
+		return fmt.Errorf("the drawing's shader: %w", err)
+	}
+	face, err := text.NewGoTextFaceSource(bytes.NewReader(goregular.TTF))
+	if err != nil {
+		return err
+	}
+	g := &game{params: p, o: o, shader: shader, drawing: drawing, face: face, white: ebiten.NewImage(1, 1), opened: time.Now()}
 	g.white.Fill(color.White)
-	g.take(s)
-	w, h := s.W, s.H
+	w, h := 0, 0
+	if s != nil {
+		g.take(s)
+		w, h = s.W, s.H
+	}
+	if o.progress != nil && o.picture != nil {
+		b := o.picture.Bounds()
+		w, h = b.Dx(), b.Dy()
+		g.b = &making{w: w, h: h, orig: ebiten.NewImageFromImage(o.picture), since: time.Now(), curStage: -1}
+	}
 	for w > 1280 || h > 900 {
 		w, h = w/2, h/2
 	}
-	ebiten.SetWindowSize(w, h)
+	ebiten.SetWindowSize(w, h+panelHeight(g.b != nil))
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
 	ebiten.SetWindowTitle(o.title)
 	if err := ebiten.RunGame(g); err != nil && !errors.Is(err, ebiten.Termination) {
 		return err
 	}
 	return nil
+}
+
+// panelHeight is the height of the panel at the bottom while the picture is made.
+func panelHeight(building bool) int {
+	if building {
+		return 56
+	}
+	return 0
 }
 
 // take makes s the scene the window draws: its layers' pictures and nearness go to the GPU, and
@@ -89,23 +151,43 @@ func (g *game) rect(dst *ebiten.Image, x, y, w, h float64, c color.Color) {
 	dst.DrawImage(g.white, op)
 }
 
+// frameRect draws the outline of a rectangle, t pixels thick.
+func (g *game) frameRect(dst *ebiten.Image, x, y, w, h, t float64, c color.Color) {
+	g.rect(dst, x, y, w, t, c)
+	g.rect(dst, x, y+h-t, w, t, c)
+	g.rect(dst, x, y, t, h, c)
+	g.rect(dst, x+w-t, y, t, h, c)
+}
+
+// sayFit writes a line as say does, in a smaller size down to 11 to fit in width w, and cut
+// short with an ellipsis if it still does not.
+func (g *game) sayFit(dst *ebiten.Image, s string, x, y, w, size float64, c color.Color) {
+	for ; size > 11; size-- {
+		if tw, _ := text.Measure(s, &text.GoTextFace{Source: g.face, Size: size}, 0); tw <= w {
+			break
+		}
+	}
+	r := []rune(s)
+	for len(r) > 1 {
+		if tw, _ := text.Measure(string(r), &text.GoTextFace{Source: g.face, Size: size}, 0); tw <= w {
+			break
+		}
+		r = append(r[:len(r)-2], '…')
+	}
+	g.say(dst, string(r), x, y+(16-size)/2, size, c)
+}
+
+// say writes a line at x, y (its top) in the window's font.
+func (g *game) say(dst *ebiten.Image, s string, x, y, size float64, c color.Color) {
+	op := &text.DrawOptions{}
+	op.GeoM.Translate(x, y)
+	op.ColorScale.ScaleWithColor(c)
+	text.Draw(dst, s, &text.GoTextFace{Source: g.face, Size: size}, op)
+}
+
 func (g *game) Update() error {
-	if pr := g.o.progress; pr != nil {
-		// the parting's news: the layers so far, the picture of its step, its line
-		scene, inset, fresh, text, total, active := pr.take()
-		if scene != nil {
-			g.take(scene)
-		}
-		if fresh {
-			if g.inset != nil {
-				g.inset.Deallocate()
-				g.inset = nil
-			}
-			if inset != nil {
-				g.inset = ebiten.NewImageFromImage(inset)
-			}
-		}
-		g.step, g.total, g.active = text, total, active
+	if g.b != nil {
+		g.updateBuild()
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) || inpututil.IsKeyJustPressed(ebiten.KeyQ) {
 		return ebiten.Termination
@@ -118,6 +200,25 @@ func (g *game) Update() error {
 	}
 	if inpututil.IsKeyJustPressed(ebiten.KeyArrowDown) {
 		g.params.Strength = max(g.params.Strength-0.005, 0)
+	}
+	if g.o.gain != nil {
+		// how far the view turns for the head's move: the arrow keys left and right, the wheel
+		step := 0.0
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowRight) {
+			step += 0.5
+		}
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft) {
+			step -= 0.5
+		}
+		if _, wy := ebiten.Wheel(); wy != 0 {
+			step += 0.25 * wy
+		}
+		if step != 0 || g.gain == 0 {
+			g.gain = g.o.gain(step)
+			if step != 0 {
+				g.gainAt = time.Now()
+			}
+		}
 	}
 	g.tick++
 	var to View
@@ -152,6 +253,77 @@ func (g *game) Update() error {
 	return nil
 }
 
+// updateBuild takes the making's news and goes on to the next step queued once this one was
+// shown its while (minShow), and takes the camera's newest frame.
+func (g *game) updateBuild() {
+	b := g.b
+	n := g.o.progress.take()
+	b.queue = append(b.queue, n.steps...)
+	b.live = n
+	if len(b.queue) > 0 && (b.curStage < 0 || time.Since(b.since) >= minShow(b.curStage)) {
+		g.next()
+	}
+	target := b.step.total
+	if b.curStage == stageDrawing {
+		target = n.total
+	}
+	if !b.composeAt.IsZero() {
+		t := min(time.Since(b.composeAt).Seconds()/composeTime.Seconds(), 1)
+		target = b.step.total + n.wCompose*t
+		if t >= 1 {
+			// put together: the picture is shown deep, without the corner pictures
+			g.b, g.done, g.doneText = nil, time.Now(), "Done: move your head (or the pointer) before the picture"
+			if g.o.target == nil && !g.o.sweep {
+				g.doneText = "Done: move the pointer over the picture"
+			}
+			w, h := ebiten.WindowSize()
+			ebiten.SetWindowSize(w, h-panelHeight(true))
+			return
+		}
+	}
+	b.bar += (target - b.bar) * 0.12
+	if g.o.camera != nil {
+		if frame, _, _, _ := g.o.camera(); frame != nil && frame != b.camSrc {
+			fb := frame.Bounds()
+			if b.cam == nil || b.cam.Bounds().Dx() != fb.Dx() || b.cam.Bounds().Dy() != fb.Dy() {
+				if b.cam != nil {
+					b.cam.Deallocate()
+				}
+				b.cam = ebiten.NewImage(fb.Dx(), fb.Dy())
+			}
+			b.cam.WritePixels(toRGBA(frame).Pix)
+			b.camSrc = frame
+		}
+	}
+}
+
+// next shows the next step queued: its picture over the one before, the scene to put together.
+func (g *game) next() {
+	b := g.b
+	st := b.queue[0]
+	b.queue = b.queue[1:]
+	b.step, b.curStage, b.since = st, st.stage, time.Now()
+	if st.pic != nil {
+		if b.prev != nil && b.prev != b.cur {
+			b.prev.Deallocate()
+		}
+		b.prev, b.cur = b.cur, ebiten.NewImageFromImage(st.pic)
+	}
+	if st.mask != nil {
+		if b.mask != nil {
+			b.mask.Deallocate()
+		}
+		b.mask = ebiten.NewImageFromImage(maskImage(st.mask, b.w, b.h))
+	}
+	if st.stage == stageDrawing {
+		b.drawStart = time.Now()
+	}
+	if st.scene != nil {
+		g.take(st.scene)
+		b.composeAt = time.Now()
+	}
+}
+
 // drawScene draws the scene as seen from the view into dst, the picture's pixels scaled by
 // scale and moved by (dx, dy): its layers from the farthest, each over the ones before.
 func (g *game) drawScene(dst *ebiten.Image, scale, dx, dy float64) {
@@ -176,22 +348,277 @@ func (g *game) drawScene(dst *ebiten.Image, scale, dx, dy float64) {
 	}
 }
 
-// frame draws the window into dst: the picture, and over it the lines of what is going on.
+// frame draws the window into dst.
 func (g *game) frame(dst *ebiten.Image) {
+	if g.b != nil {
+		g.drawBuild(dst)
+		return
+	}
 	sw, sh := dst.Bounds().Dx(), dst.Bounds().Dy()
 	scale := min(float64(sw)/float64(g.scene.W), float64(sh)/float64(g.scene.H))
 	g.drawScene(dst, scale, (float64(sw)-scale*float64(g.scene.W))/2, (float64(sh)-scale*float64(g.scene.H))/2)
 	if !g.o.quiet {
-		ebitenutil.DebugPrint(dst, fmt.Sprintf("%s\nview %+.2f %+.2f  strength %.3f (up/down)  D: depth  Q: quit  %.0f fps",
-			g.status, g.view.X, g.view.Y, g.params.Strength, ebiten.ActualFPS()))
-		g.drawStep(dst)
+		gain := ""
+		if g.o.gain != nil {
+			gain = fmt.Sprintf("  head gain %.2f (left/right, wheel)", g.gain)
+		}
+		ebitenutil.DebugPrint(dst, fmt.Sprintf("%s\nview %+.2f %+.2f  strength %.3f (up/down)%s  D: depth  Q: quit  %.0f fps",
+			g.status, g.view.X, g.view.Y, g.params.Strength, gain, ebiten.ActualFPS()))
+		if since := time.Since(g.gainAt); !g.gainAt.IsZero() && since < 1500*time.Millisecond {
+			// the gain, large for a moment after it changes
+			a := uint8(255 * min(1, (1.5-since.Seconds())/0.5))
+			g.say(dst, fmt.Sprintf("head gain %.2f", g.gain), float64(sw)/2-90, float64(sh)/2-20, 28, color.RGBA{a, a, a, a})
+		}
+		if since := time.Since(g.done); !g.done.IsZero() && since < 4*time.Second {
+			a := uint8(255 * min(1, (4-since.Seconds())/1.5))
+			g.rect(dst, 0, float64(sh)-40, float64(sw), 40, color.RGBA{0, 0, 0, a * 2 / 3})
+			g.say(dst, g.doneText, 14, float64(sh)-31, 18, color.RGBA{a, a, a, a})
+		}
+	}
+}
+
+// fit is where a picture of w x h goes in the area (x, y, aw, ah): its scale and its top left.
+func fit(w, h int, x, y, aw, ah float64) (scale, dx, dy float64) {
+	scale = min(aw/float64(w), ah/float64(h))
+	return scale, x + (aw-scale*float64(w))/2, y + (ah-scale*float64(h))/2
+}
+
+// drawPic draws a picture scaled by scale about the centre of where fit puts it, with alpha.
+func drawPic(dst, img *ebiten.Image, scale, dx, dy, grow, alpha float64) {
+	if img == nil {
+		return
+	}
+	w, h := float64(img.Bounds().Dx()), float64(img.Bounds().Dy())
+	op := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
+	op.GeoM.Translate(-w/2, -h/2)
+	op.GeoM.Scale(scale*grow, scale*grow)
+	op.GeoM.Translate(dx+w*scale/2, dy+h*scale/2)
+	op.ColorScale.ScaleAlpha(float32(alpha))
+	dst.DrawImage(img, op)
+}
+
+// ease goes from 0 to 1 smoothly as t does.
+func ease(t float64) float64 {
+	t = min(max(t, 0), 1)
+	return t * t * (3 - 2*t)
+}
+
+// drawBuild draws the making of the deep picture: the step in the main area, the corner
+// pictures, and the panel with its line and the bar of the whole.
+func (g *game) drawBuild(dst *ebiten.Image) {
+	b := g.b
+	sw, sh := float64(dst.Bounds().Dx()), float64(dst.Bounds().Dy())
+	panel := float64(panelHeight(true))
+	dst.Fill(color.RGBA{18, 20, 24, 255})
+	scale, dx, dy := fit(b.w, b.h, 0, 0, sw, sh-panel)
+	t := time.Since(b.since).Seconds()
+	in := ease(t / 0.8) // a new picture fades in over 0.8 s
+	switch {
+	case !b.composeAt.IsZero():
+		g.drawCompose(dst, scale, dx, dy)
+	case b.curStage == stageDepth:
+		// the picture, while a line of light goes down it again and again
+		drawPic(dst, b.cur, scale, dx, dy, 1, 0.75)
+		ph, pw := float64(b.h)*scale, float64(b.w)*scale
+		y := math.Mod(time.Since(g.opened).Seconds()*0.45, 1) * ph
+		g.rect(dst, dx, dy, pw, y, color.RGBA{40, 90, 160, 50})
+		for k := 0; k < 6; k++ {
+			a := uint8(200 - 32*k)
+			g.rect(dst, dx, dy+y-float64(k*2), pw, 2, color.RGBA{120, 200, 255, a})
+		}
+	case b.curStage == stageCut:
+		// the layer lifted out of the picture: the picture behind it dimmed, the layer a little
+		// larger, with its shadow
+		g.drawChecker(dst, dx, dy, float64(b.w)*scale, float64(b.h)*scale)
+		drawPic(dst, b.prev, scale, dx, dy, 1, 0.25)
+		lift := 1 + 0.035*in
+		sh := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
+		w, h := float64(b.w), float64(b.h)
+		sh.GeoM.Translate(-w/2, -h/2)
+		sh.GeoM.Scale(scale*lift, scale*lift)
+		sh.GeoM.Translate(dx+w*scale/2+10*in, dy+h*scale/2+12*in)
+		sh.ColorScale.Scale(0, 0, 0, float32(0.55*in))
+		dst.DrawImage(b.cur, sh)
+		drawPic(dst, b.cur, scale, dx, dy, lift, 1)
+	case b.curStage == stageDrawing && b.cur != nil && b.mask != nil:
+		op := &ebiten.DrawRectShaderOptions{}
+		op.GeoM.Scale(scale, scale)
+		op.GeoM.Translate(dx, dy)
+		op.Images[0], op.Images[1] = b.cur, b.mask
+		op.Uniforms = map[string]any{"Time": float32(time.Since(b.drawStart).Seconds()), "Done": float32(b.live.done)}
+		dst.DrawRectShader(b.w, b.h, g.drawing, op)
+	default:
+		// the depth, the painted picture, what was drawn: each fading in over the one before
+		if in < 1 {
+			drawPic(dst, b.prev, scale, dx, dy, 1, 1)
+		}
+		drawPic(dst, b.cur, scale, dx, dy, 1, in)
+		if b.curStage == stageNear {
+			g.drawLegend(dst, dx+12, dy+12, in)
+		}
+		if b.curStage == stageDrawn && in < 1 {
+			// a flash of light as the drawing comes
+			g.rect(dst, dx, dy, float64(b.w)*scale, float64(b.h)*scale, color.RGBA{255, 255, 255, uint8(60 * (1 - in))})
+		}
+	}
+	if b.composeAt.IsZero() {
+		g.drawCorner(dst, sw, sh-panel)
+	}
+	// the panel: the step's line, and the bar of the whole
+	g.rect(dst, 0, sh-panel, sw, panel, color.RGBA{10, 11, 14, 255})
+	line := b.step.text
+	if b.curStage == stageDrawing {
+		line = b.live.text // the drawing as it goes
+	}
+	if !b.composeAt.IsZero() {
+		line = "Putting the layers together"
+	}
+	g.sayFit(dst, line, 14, sh-panel+8, sw-100, 16, color.RGBA{230, 232, 236, 255})
+	pct := fmt.Sprintf("%3.0f %%", 100*min(max(b.bar, 0), 1))
+	g.say(dst, pct, sw-64, sh-panel+8, 16, color.RGBA{150, 210, 255, 255})
+	g.rect(dst, 14, sh-16, sw-28, 6, color.RGBA{50, 54, 62, 255})
+	g.rect(dst, 14, sh-16, (sw-28)*min(max(b.bar, 0), 1), 6, color.RGBA{90, 180, 255, 255})
+}
+
+// drawCompose draws the layers coming together: the farthest is there as it is, and each
+// nearer one drops in after the one behind it, from nearer the viewer (larger, with its shadow
+// under it), and settles in its place, where the deep picture takes over.
+func (g *game) drawCompose(dst *ebiten.Image, scale, dx, dy float64) {
+	b := g.b
+	t := time.Since(b.composeAt).Seconds() / composeTime.Seconds()
+	n := len(g.pics)
+	w, h := float64(b.w), float64(b.h)
+	for i, pic := range g.pics {
+		if i == 0 {
+			drawPic(dst, pic, scale, dx, dy, 1, 1)
+			continue
+		}
+		// the layers but the farthest come in turn over the first 80 % of the time
+		start := 0.1 + 0.6*float64(i-1)/float64(max(n-1, 1))
+		u := ease((t - start) / 0.35)
+		if u <= 0 {
+			continue
+		}
+		lift := 1 + 0.18*(1-u) // from nearer the viewer
+		place := func(op *ebiten.DrawImageOptions, ox, oy float64) {
+			op.GeoM.Translate(-w/2, -h/2)
+			op.GeoM.Scale(scale*lift, scale*lift)
+			op.GeoM.Translate(dx+w*scale/2+ox, dy+h*scale/2+oy)
+		}
+		shadow := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
+		place(shadow, 14*(1-u), 18*(1-u))
+		shadow.ColorScale.Scale(0, 0, 0, float32(0.5*(1-u)*min(u*4, 1)))
+		dst.DrawImage(pic, shadow)
+		op := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
+		place(op, 0, 0)
+		op.ColorScale.ScaleAlpha(float32(min(u*2, 1)))
+		dst.DrawImage(pic, op)
+	}
+}
+
+// drawLegend draws the depth's colours from far to near at x, y.
+func (g *game) drawLegend(dst *ebiten.Image, x, y, alpha float64) {
+	const w, h = 180.0, 12.0
+	a := uint8(255 * alpha)
+	g.rect(dst, x-8, y-6, w+16, h+38, color.RGBA{0, 0, 0, uint8(150 * alpha)})
+	for i := 0; i < int(w); i++ {
+		v := float32(i) / float32(w-1)
+		c := depthColors([]float32{v}, 1, 1).Pix
+		g.rect(dst, x+float64(i), y, 1, h, color.RGBA{c[0], c[1], c[2], a})
+	}
+	g.say(dst, "far", x, y+h+4, 13, color.RGBA{a, a, a, a})
+	g.say(dst, "near", x+w-30, y+h+4, 13, color.RGBA{a, a, a, a})
+}
+
+// drawChecker fills a rectangle with the grey squares of a transparent picture's ground.
+func (g *game) drawChecker(dst *ebiten.Image, x, y, w, h float64) {
+	b := g.b
+	if b.checker == nil {
+		b.checker = ebiten.NewImage(2, 2)
+		b.checker.WritePixels([]byte{60, 62, 68, 255, 44, 46, 52, 255, 44, 46, 52, 255, 60, 62, 68, 255})
+	}
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(16, 16)
+	sub := dst.SubImage(image.Rect(int(x), int(y), int(x+w), int(y+h))).(*ebiten.Image)
+	for yy := y; yy < y+h; yy += 32 {
+		for xx := x; xx < x+w; xx += 32 {
+			o := *op
+			o.GeoM.Translate(xx, yy)
+			sub.DrawImage(b.checker, &o)
+		}
+	}
+}
+
+// drawCorner draws the corner pictures above the panel, at the right: the picture itself, and
+// left of it the camera's view with what the detector found.
+func (g *game) drawCorner(dst *ebiten.Image, sw, bottom float64) {
+	b := g.b
+	tw := math.Round(sw / 5)
+	x := sw - tw - 12
+	label := color.RGBA{220, 222, 226, 255}
+	scale := tw / float64(b.w)
+	th := float64(b.h) * scale
+	y := bottom - th - 12
+	g.rect(dst, x-2, y-2, tw+4, th+4, color.RGBA{230, 230, 230, 255})
+	drawPic(dst, b.orig, scale, x, y, 1, 1)
+	g.rect(dst, x, y, tw, 20, color.RGBA{0, 0, 0, 150})
+	g.say(dst, "the picture", x+6, y+3, 12, label)
+	if g.o.camera == nil || b.cam == nil {
+		return
+	}
+	_, found, head, ok := g.o.camera()
+	if !ok && len(found.Faces) > 0 { // found in this frame, before the tracker has smoothed it
+		head, ok = vision.NearestHead(found.Faces, found.Frame, vision.HeadOptions{})
+	}
+	cw, ch := float64(b.cam.Bounds().Dx()), float64(b.cam.Bounds().Dy())
+	ctw := math.Round(tw * 1.6) // the camera larger: the face's points are to be seen
+	cs := ctw / cw
+	cth := ch * cs
+	cx, cy := x-ctw-14, bottom-cth-12
+	tw = ctw
+	g.rect(dst, cx-2, cy-2, tw+4, cth+4, color.RGBA{230, 230, 230, 255})
+	// mirrored, as a mirror shows the viewer
+	op := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
+	op.GeoM.Scale(-cs, cs)
+	op.GeoM.Translate(cx+tw, cy)
+	dst.DrawImage(b.cam, op)
+	fb := found.Frame
+	if fb.Dx() > 0 {
+		fs := tw / float64(fb.Dx())
+		px := func(p vision.Point) (float64, float64) {
+			return cx + tw - (p.X-float64(fb.Min.X))*fs, cy + (p.Y-float64(fb.Min.Y))*fs
+		}
+		for i, f := range found.Faces {
+			c := color.RGBA{90, 220, 140, 255}
+			if i > 0 {
+				c = color.RGBA{200, 200, 90, 255}
+			}
+			x0, y0 := px(vision.Point{X: float64(f.Box.Max.X), Y: float64(f.Box.Min.Y)})
+			x1, y1 := px(vision.Point{X: float64(f.Box.Min.X), Y: float64(f.Box.Max.Y)})
+			g.frameRect(dst, x0, y0, x1-x0, y1-y0, 2, c)
+			for _, p := range []vision.Point{f.RightEye, f.LeftEye, f.Nose, f.MouthRight, f.MouthLeft} {
+				lx, ly := px(p)
+				g.rect(dst, lx-2, ly-2, 4, 4, color.RGBA{255, 120, 90, 255})
+			}
+			g.say(dst, fmt.Sprintf("%.2f", f.Score), x0+3, y1-16, 11, c)
+		}
+	}
+	g.rect(dst, cx, cy, tw, 20, color.RGBA{0, 0, 0, 150})
+	if ok {
+		g.say(dst, fmt.Sprintf("head %+.2f %+.2f, %.2f m away", head.X, head.Y, head.Z), cx+6, cy+3, 12, label)
+	} else {
+		g.say(dst, "camera: looking for a face", cx+6, cy+3, 12, label)
+	}
+	if g.gain > 0 {
+		g.rect(dst, cx, cy+cth-20, tw, 20, color.RGBA{0, 0, 0, 150})
+		g.say(dst, fmt.Sprintf("gain %.2f (left/right, wheel)", g.gain), cx+6, cy+cth-17, 12, label)
 	}
 }
 
 func (g *game) Draw(screen *ebiten.Image) {
 	g.frame(screen)
 	if g.o.record != "" && g.tick%120 == 1 {
-		// the window as it is, every 2 seconds: how the parting went, to look at after
+		// the window as it is, every 2 seconds: how the making went, to look at after
 		w, h := screen.Bounds().Dx(), screen.Bounds().Dy()
 		off := ebiten.NewImage(w, h)
 		g.frame(off)
@@ -203,7 +630,7 @@ func (g *game) Draw(screen *ebiten.Image) {
 			f.Close()
 		}
 	}
-	if g.o.dump != "" && g.dumped < g.o.frames {
+	if g.o.dump != "" && g.dumped < g.o.frames && g.scene != nil {
 		// the frame at the picture's own size, as the shader draws it, to compare with Render
 		off := ebiten.NewImage(g.scene.W, g.scene.H)
 		g.drawScene(off, 1, 0, 0)
@@ -216,35 +643,6 @@ func (g *game) Draw(screen *ebiten.Image) {
 			f.Close()
 		}
 		g.dumped++
-	}
-}
-
-// drawStep draws how the parting of the picture into layers is going, at the bottom of the
-// window: the line of the step, a bar of how much is done, and in the corner a small picture of
-// the step (the picture with a layer's shape painted over, then what the model drew there).
-func (g *game) drawStep(screen *ebiten.Image) {
-	if g.o.progress == nil || g.step == "" {
-		return
-	}
-	sw, sh := float64(screen.Bounds().Dx()), float64(screen.Bounds().Dy())
-	shade := color.RGBA{0, 0, 0, 170}
-	if g.inset != nil {
-		// the corner picture, a quarter of the window wide, in a frame
-		iw, ih := float64(g.inset.Bounds().Dx()), float64(g.inset.Bounds().Dy())
-		scale := sw / 4 / iw
-		x, y := sw-iw*scale-10, sh-ih*scale-44
-		g.rect(screen, x-2, y-2, iw*scale+4, ih*scale+4, color.White)
-		op := &ebiten.DrawImageOptions{Filter: ebiten.FilterLinear}
-		op.GeoM.Scale(scale, scale)
-		op.GeoM.Translate(x, y)
-		screen.DrawImage(g.inset, op)
-	}
-	g.rect(screen, 0, sh-34, sw, 34, shade)
-	ebitenutil.DebugPrintAt(screen, g.step, 8, int(sh)-30)
-	if g.active {
-		// the bar: its ground, and how much is done
-		g.rect(screen, 8, sh-10, sw-16, 5, color.RGBA{90, 90, 90, 255})
-		g.rect(screen, 8, sh-10, (sw-16)*min(max(g.total, 0), 1), 5, color.RGBA{90, 200, 120, 255})
 	}
 }
 

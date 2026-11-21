@@ -1,0 +1,41 @@
+//kage:unit pixels
+
+// The picture model drawing what a layer hid, as the window shows it: where the layer was
+// (source 1, the mask, over a half) the picture is noise that calms down as the drawing goes
+// (Done 0 to 1), finer and quieter, under a glow along its edge; elsewhere the picture
+// (source 0) as it is.
+
+package main
+
+// Time is the seconds since the drawing began, Done how much of it is done.
+var Time float
+var Done float
+
+func hash(p vec2) float {
+	return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453)
+}
+
+func Fragment(dst vec4, src vec2, color vec4) vec4 {
+	pic := imageSrc0At(src)
+	m := imageSrc1At(src).r
+	if m < 0.02 {
+		return pic
+	}
+	// noise in blocks that get finer as the drawing goes, and change a dozen times a second
+	cell := mix(14.0, 2.0, Done)
+	q := floor(src/cell) * cell
+	t := floor(Time * 12)
+	n := vec3(hash(q+t), hash(q+t+17.0), hash(q+t+41.0))
+	// calmer and greyer as it goes, over a dark ground
+	amp := mix(0.9, 0.25, Done)
+	grey := (n.r + n.g + n.b) / 3
+	c := mix(vec3(grey), n, 0.35) * amp
+	c += vec3(0.05, 0.08, 0.12)
+	// a slow wave of light across the part being drawn
+	wave := 0.5 + 0.5*sin(src.x*0.02+src.y*0.013-Time*3)
+	c += vec3(0.10, 0.14, 0.20) * wave * (1 - Done)
+	// the glow along the edge of the part (where the mask is between)
+	edge := 1 - abs(m*2-1)
+	c += vec3(0.35, 0.65, 1.0) * edge * (0.6 + 0.4*sin(Time*6))
+	return vec4(mix(pic.rgb, c, m), 1)
+}

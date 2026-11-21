@@ -31,7 +31,11 @@ go run ./parallax render picture.png -o deep.gif   # no window: the picture from
 | `parallax cameras` | The cameras, numbered: `--device 2` takes the second |
 | `parallax models`, `parallax status` | The models and what they take; this machine's NPU |
 
-The look: `--strength` (how far the nearest point moves), `--focus` (which depth stays put), `--far` (how far the far end of the depth is pulled apart), `--edge`, `--gain` (how far the view turns for a head's move), `--fov` (the camera's field of view).
+While the picture is made deep, the window shows each step: the depth (near warm, far cool), each layer lifted out, its place painted over and drawn in by the picture model, and last the layers put together. The picture stays in the corner, and with the camera on, so does what the camera sees with the face it found (its box, eyes, nose and mouth) and the head's place. The bar at the bottom is the whole making, to 100 %.
+
+Keys in the window: left/right or the mouse wheel change the head's gain (how far the view turns when you move your head: raise it when the picture seems to move too little), up/down the strength, D shows the depth, Q quits.
+
+The look: `--strength` (how far the nearest point moves), `--focus` (which depth stays put), `--far` (how far the far end of the depth is pulled apart), `--relief` (how deep a near layer is inside itself: 1 as the depth says, 0 flat like a card), `--round` (how much rounder a near layer is made from its outline in, so that an animal stands out as a body), `--edge`, `--gain` (how far the view turns for a head's move), `--fov` (the camera's field of view).
 
 Pictures with clear layers work best: a figure before a landscape, things at several depths.
 
