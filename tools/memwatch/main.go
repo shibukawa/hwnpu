@@ -1,5 +1,5 @@
 // Command memwatch runs a command and samples its memory every 0.1 s until it exits
-// (docs/new-model-checklist.md 6 and 11.2): the process's footprint (Activity Monitor's) and its
+// (docs/design/new-model-checklist.md and 11.2): the process's footprint (Activity Monitor's) and its
 // wired memory (mlock: the experts a host wires), the Neural Engine's kernel memory
 // (mem.NPUWired) and the system's free percent and pressure. It prints the peak of each and of
 // footprint + wired + Neural Engine together, models.yaml's memory, and with -csv FILE writes

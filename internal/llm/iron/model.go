@@ -1136,7 +1136,7 @@ func (m *Model) writeInput(v *version, name string, data []byte) error {
 // chunk: one of the ELF's empty instances (mlir-aie's aiecc_empty, no control code), 0.3 to 0.5
 // ms. Without it, a prompt chunk's first command can hang until amdxdna's timeout
 // (ERT_CMD_STATE_TIMEOUT) right after the chunk before, in exports whose commands are cut in
-// some places (design.md 16.80 and 16.84); the first chunk always runs, and so does a chunk after
+// some places (docs/design/amd-llm.md); the first chunk always runs, and so does a chunk after
 // any other context's command (a decode step, another process's). The cause is not known; a
 // pause between the chunks does not help. Nothing without an empty instance (an xclbin per
 // step) runs one.
@@ -1195,7 +1195,7 @@ func (m *Model) emptyRun(v *version, prog *hwnpu.Program) (*hwnpu.Run, error) {
 // stepBarrier runs an empty command in a hardware context of its own (the decode ELF loaded a
 // second time) before a decode step of several commands. Without it, Qwen3.6 with the short
 // convolution in the GDN operator hung the next step's first command (ERT_CMD_STATE_TIMEOUT)
-// right after the last layer's experts command, every time (design.md 16.90, 16.92); an empty
+// right after the last layer's experts command, every time (docs/design/moe.md); an empty
 // command in the decode step's own context does not help, as a pause did not for chunkBarrier.
 // About 0.3 ms a step.
 func (m *Model) stepBarrier(ctx context.Context) error {

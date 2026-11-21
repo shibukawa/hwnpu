@@ -117,7 +117,7 @@ type progEngine struct {
 	// rather than holding the ten of them (8.3 GiB at lut8): Core AI loads a group from its cache
 	// in a fraction of a second, and holding them all is no faster, since a group that follows
 	// another pays for that either way (an M1 at 512 x 512: a picture in 1 m 25 to 30 s with 2.2
-	// to 2.6 GiB on the Neural Engine, against 1 m 36 s with 8.3; design.md 16.210). checked says
+	// to 2.6 GiB on the Neural Engine, against 1 m 36 s with 8.3; docs/design/image-apple.md). checked says
 	// openDiT loaded each once (the first load compiles it) and saw it on the NPU; ring gives the
 	// groups of a call, the doubles then the singles, with ahead the next one loading while one
 	// runs (without it a call takes 7.2 s in place of 5.4 to 5.8: a group is 0.7 to 0.9 GB).
@@ -395,7 +395,7 @@ func (e *progEngine) velocities(ctx context.Context, conds []Cond, xs [][]float3
 			kb[k][i] = -1e4
 		}
 	}
-	// each group runs every conditioning before the next group (design.md 16.148, 16.160): a
+	// each group runs every conditioning before the next group (docs/design/image-models.md): a
 	// group the Neural Engine has to load again loads once a call of the DiT, and a group that
 	// follows another one pays for that in its first run alone
 	for gi, g := range e.m.Doubles {

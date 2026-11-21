@@ -69,7 +69,7 @@ const (
 // telling a lowering's errors from the Neural Engine's (and checking a lowering while another
 // process has the Neural Engine): "cpu" runs them on Core AI's CPU alone. As Core ML's
 // HWNPU_COREML_UNITS. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
-// above 1.1) overflows there, where the Neural Engine and the GPU are right (design.md 16.183).
+// above 1.1) overflows there, where the Neural Engine and the GPU are right (docs/design/vision-models.md).
 const UnitsEnv = "HWNPU_COREAI_UNITS"
 
 // CopyEnv names the environment variable that, when set, gives the programs' inputs buffers of
@@ -247,7 +247,7 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 }
 
 // DropBytecodeEnv set to 1 cuts the bytecode of the compile cache's assets once Core AI's cache
-// holds their programs: the last resort when the disk runs short (design.md 16.174 keeps them by
+// holds their programs: the last resort when the disk runs short (docs/design/apple-coreai.md keeps them by
 // default). The bytecode holds the weights, and Core AI's entry holds them again; Core AI loads a
 // program from its entry by main.hash alone (Chroma1-Flash at 512 x 512: the compile cache 28 ->
 // 15 GB, a DiT group loaded in 0.5 s rather than 6.5 s). When the entry is gone, the program is
@@ -264,7 +264,7 @@ const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
 // layers; Assemble makes it whole). Core AI loads it without the Neural Engine compiler's pass
 // over the program: the device finishes the compiled regions (ANELargeModelCompilerService), 3
 // to 5 times faster for a large program, and fills the same cache entry (the hash is the
-// source's), so the asset itself loads from the entry afterwards (design.md 16.229). The program
+// source's), so the asset itself loads from the entry afterwards (docs/design/apple-coreai.md). The program
 // it holds runs a few percent slower than one compiled on the device.
 func Prebuilt(dir string) string {
 	if os.Getenv(PrebuiltEnv) == "off" || LeftToDevice(dir) {
@@ -474,7 +474,7 @@ type graph struct {
 
 // aneLive is the programs this process has loaded on the Neural Engine and not closed. An M2
 // takes 112 at a time: the next fails to load there ("no ANE resources") and Core AI runs it on
-// the GPU instead (aicheck limits, design.md 16.274).
+// the GPU instead (aicheck limits, docs/design/apple-neural-engine.md).
 var aneLive atomic.Int64
 
 // aneProgramLimit is the programs a process had on the Neural Engine at once on an M2.
@@ -693,7 +693,7 @@ func (g *graph) describe(dir, fn string) error {
 // AllocInput makes the buffer of the input index as an array of Core AI's, which a run takes as
 // it is: a buffer of the host's is copied into one at every run, and a program's caches are tens
 // of megabytes (an M1 copies about 30 GB/s: PLaMo 3 Translate 2B's 84 MiB of rings took 5.8 of
-// its step's 73 ms, docs/design.md 16.218). It may be bound to any input of that shape, of this
+// its step's 73 ms, docs/design/apple-coreai.md). It may be bound to any input of that shape, of this
 // program or another. nil when the shim has no such array for the input (backend.InputAllocator).
 func (g *graph) AllocInput(index int) (backend.Buffer, error) {
 	if caiInputArray == nil || g.h == 0 || os.Getenv(CopyEnv) != "" {

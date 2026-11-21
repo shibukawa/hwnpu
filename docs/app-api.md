@@ -1,6 +1,6 @@
 # アプリに組み込むライブラリ: `ai` のパッケージ群
 
-作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。design.md 16.281)。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、制約とルール (NPU は 1 つの待ち行列、実時間で回るかの見積もり、メモリ)、ネットワークの宣言 (6.6 節)、API の設計の論点 (D1〜D21) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
+作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。[docs/design/api.md](design/api.md))。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、制約とルール (NPU は 1 つの待ち行列、実時間で回るかの見積もり、メモリ)、ネットワークの宣言 (6.6 節)、API の設計の論点 (D1〜D21) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
 
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりにする。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモで、中身はライブラリを呼ぶだけにしていく (コマンドの名前と場所は変えない)。アプリは複数のモデルをつないで使う。例:
 
@@ -164,14 +164,14 @@ for tick := range (flow.Metronome{Period: time.Second / 60, Skip: true}).Ticks(c
 
 ## 5. 取得元
 
-取得元は `ai` の型にせず、コマンドと同じ層 (公開の `modelstore`、design.md 16.212、16.213、cache-sharing.md 7 節) をそのまま使う。`ai.Store.Models` は `modelstore.Options` で、ゼロ値はコマンドと同じ (環境変数と `.env`)。
+取得元は `ai` の型にせず、コマンドと同じ層 (公開の `modelstore`、[docs/design/distribution.md](design/distribution.md)、cache-sharing.md 7 節) をそのまま使う。`ai.Store.Models` は `modelstore.Options` で、ゼロ値はコマンドと同じ (環境変数と `.env`)。
 
 | 層 | 中身 | 変換 |
 |---|---|---|
 | 0. この機械のキャッシュ (`Options.Root`、`HWNPU_CACHE`) | 元のファイル (`original/OWNER/NAME` と `hwnpu-lock.json`)、変換したもの (`models/NAME`、`converted/`)。いつも書き戻す。使わないものから消える (LRU、`Options.Limits`) | — |
 | 1. 取得元 (`Options.Sources`、`HWNPU_MODEL_SOURCE*`) | `file://`、`http(s)://` (WebDAV、読むだけの HTTP)、`s3://`。`?writeback=true` で後ろから読んだものと作ったものを置く。Core AI の書き出しなど変換済みのものもここから取れる | あればしない |
 | 2. 同梱のモデル (`Options.Bundle`) | アプリの資源フォルダ (configdir) の `models/` に、取得元と同じ並びで置いたもの。読むだけ、その場で使う | あればしない |
-| 3. Hugging Face (`Options.HuggingFace`) | `chat.Fetch`。途中から再開でき、同意の要るリポジトリはデバイスフローでサインインする (design.md 16.153) | する |
+| 3. Hugging Face (`Options.HuggingFace`) | `chat.Fetch`。途中から再開でき、同意の要るリポジトリはデバイスフローでサインインする ([docs/design/distribution.md](design/distribution.md)) | する |
 | 準備済みの同梱 (`ai.Store.Prepared`) | 準備したキャッシュの一部を写したもの (`store.json` と、それが名指すファイル)。`Run` を通らずに読む (6 節、10 節) | **しない** |
 
 - 定義の重ねはコマンドと同じ: 組み込み → 機械 (`/etc/hwnpu/models.yaml`、`/Library/Application Support/hwnpu/models.yaml`、`%ProgramData%\hwnpu\models.yaml`) → 利用者 (`~/.config/hwnpu/models.yaml`) → `HWNPU_MODELS` → アプリのファイル (`modelstore.Options.Files`、足した欄)。モデルを何 GB の機械として動かすかの選択 (`hwnpu memory`、`run.json`) と、モデルの方針 (`HWNPU_MODEL_ALLOWLIST`) も効く
@@ -192,7 +192,7 @@ cache-sharing.md 3.1 節と同じ名前を使う (層のエントリの `target`
 
 | 対象 | 同梱するもの | 1 つのバンドルで動く範囲 |
 |---|---|---|
-| `coreai` | Core AI の書き出し (`NAME.coreai`、端末によらない `.aimodel`)。Mac の Neural Engine は Core AI だけで動かす (macOS 27、design.md 16.185、16.196)。端末で専用化したものは Core AI 自身のキャッシュにあり、配れない | M1〜M4 で同じファイル。macOS の最低の版を目録に書く |
+| `coreai` | Core AI の書き出し (`NAME.coreai`、端末によらない `.aimodel`)。Mac の Neural Engine は Core AI だけで動かす (macOS 27、[docs/design/apple-coreai.md](design/apple-coreai.md), [docs/design/audio-models.md](design/audio-models.md))。端末で専用化したものは Core AI 自身のキャッシュにあり、配れない | M1〜M4 で同じファイル。macOS の最低の版を目録に書く |
 | `amd-xdna2` | IRON の書き出し (ELF、xclbin、バンク、manifest) | XDNA 2 (Strix 以降) |
 | `amd-xdna1` | `--per-step` の書き出し | XDNA (Phoenix、Hawk Point)。実機で未確認 |
 | `intel` | OpenVINO IR (`.xml`、`.bin`) | Core Ultra。NPU の blob は、ドライバが読み込むときにコンパイルする |
@@ -310,7 +310,7 @@ http.ListenAndServe("127.0.0.1:8080", h)
 | `GET /v1/tools` | 仕事の種類ごとの入力の JSON Schema。どのエージェントの枠組みにも、関数として登録できる |
 
 - 仕事は置き場のディレクトリに書いておき、サーバーを起動し直しても状態を失わない
-- **優先度は Device の投入の順番に載せる** (16.94): 音声の対話 (`interactive`) が来たら、背景の仕事は塊の切れ目で待つ。`background` の仕事は低い電源の方針で回す
+- **優先度は Device の投入の順番に載せる** ([architecture](design/architecture.md)): 音声の対話 (`interactive`) が来たら、背景の仕事は塊の切れ目で待つ。`background` の仕事は低い電源の方針で回す
 - サーバーを NPU を持つ唯一のプロセスにする (app-api-tasks.md の B4)。サーバーが動いているときは、CLI もサーバーに頼む
 - 安全: 既定では 127.0.0.1 だけで待ち受ける。外から受けるときはトークンを求める。エージェントは任意のファイルの場所を渡せるので、読み書きしてよいディレクトリを設定で限る。URL の取得も、許した先だけにする
 
@@ -342,7 +342,7 @@ A2A と MCP のどちらも、同じ仕事の置き場と待ち行列の上の�
 
 **手元のモデルを頭脳にするとき**: `hwnpu-chat agent` は、同じ仕事の種類を HTTP なしで道具として呼ぶ (同じ JSON Schema)。
 
-**前提として足りないもの**: 決まった形で答える生成 (JSON Schema に沿うよう文法で縛ったデコード、`response_format`)。16.94 にもあるとおり、今の `chat` にはない。小さなモデルに分類や抜き出しを頼むとき、壊れた JSON を返さないために要る。
+**前提として足りないもの**: 決まった形で答える生成 (JSON Schema に沿うよう文法で縛ったデコード、`response_format`)。[architecture](design/architecture.md) にもあるとおり、今の `chat` にはない。小さなモデルに分類や抜き出しを頼むとき、壊れた JSON を返さないために要る。
 
 ## 9. サンプル
 
@@ -431,7 +431,7 @@ layers picture.png --layers 4 --png parts/
 - **準備済みの同梱** (`Store.Prepared`): 準備したキャッシュから `store.json` と名指すファイルを写したもの。`Run` を通らずに読める。別の対象のものだけなら `ErrBundleTarget`。`hwnpu-bundle.json` の目録と `hwnpu-dev bundle` (6 節) はまだない
 - **計画はファイルを数えない**: 「準備済みか」は `store.json` に同じモデルで書かれ、ファイルが全部あるかで決める。落とす量は、チェックポイントがなければ models.yaml の `bytes` (上限。層に変換済みのものがあれば落とさない)
 - **進み具合**: `internal` が書くログの行 (`Progress.Message`) と段階 (`prepare`、`compile`、`done`)。バイト数の入った構造のある値は、取得を分けてから (B1 の残り)
-- **AMD の NPU に複数のモデルを同居させるための直し**: 1 つのプロセスが 2 つ目のデバイスを開くと `CREATE_HWCTX` が `EINVAL` になった。デバイスヒープを 64 MiB の境界の番地に写すようにして直った (design.md 16.281)
+- **AMD の NPU に複数のモデルを同居させるための直し**: 1 つのプロセスが 2 つ目のデバイスを開くと `CREATE_HWCTX` が `EINVAL` になった。デバイスヒープを 64 MiB の境界の番地に写すようにして直った ([docs/design/api.md](design/api.md))
 - **確かめたこと**:
   - 機械のメモリごとの構成: `HWNPU_MEMORY=16` では翻訳が plamo-3-translate-2b になり (3 つで 7.8 GB、読み込み 3.1 秒、全体 25.5 秒)、設定なし (59 GB) では 8B (11.6 GB)。8B で準備した置き場を 16 GB として開くと `ErrNotPrepared` (前は黙って 8B を読み込んでいたので直した)
   - `go test -race ./ai/...`: 流れの道具 (偽の時計で `Async` の重なり、`Latest` の間引き、`Hold`、`Metronome` の遅れと `Skip`、`Pace`、`Live`)、計画 → ダウンロード → コンパイル → 2 回目の計画で何も要らない、`Get` / `Release` / `Close`、`WithAutoPrepare`、役割と種類の食い違い、メモリごとの構成 (`At`、`As`) と別のモデルで準備された置き場、アプリの定義のファイル、ライセンスの同意、準備済みの同梱と対象の違い、`cli` のコマンド
@@ -442,7 +442,7 @@ layers picture.png --layers 4 --png parts/
 
 - **コマンドの載せ替え** (B3): `hwnpu-audio transcribe` / `tts`、`hwnpu-chat`、`hwnpu-image` を `ai` の上に載せる。コマンドにだけある設定 (重みの形式、`--cpu`、手で変換したプログラム、窓ごとの時間) をライブラリの口に出してから
 - **メモリの合計から自動で構成を選ぶこと**: 今はアプリが段を書く (2.1 節)。合計が機械のメモリに収まるように小さいモデルへ自動で落とすことはしない (どれを主にするかはアプリが知っている)
-- **常駐の管理** (16.94): メモリの予算、使っていないモデルの追い出し、NPU への投入の順番 (音声を先に)。今は `Release` を呼ぶアプリ任せで、モデルは自分の中でだけ要求を 1 つずつ通す
+- **常駐の管理** ([architecture](design/architecture.md)): メモリの予算、使っていないモデルの追い出し、NPU への投入の順番 (音声を先に)。今は `Release` を呼ぶアプリ任せで、モデルは自分の中でだけ要求を 1 つずつ通す
 - **デバイスの共有**: 今はモデルごとにデバイスを開く (内部の `Load` がそうなっている)。1 回だけ開いて共有する形にするかは、常駐の管理と一緒に決める
 - **Mac の Neural Engine のロック** (B4): プロセスが生きている間ロックを持つので、常駐するアプリがほかの hwnpu のコマンドを待たせる
 - 流しながらの文字起こし (B5) と読み上げ (B6)、Silero VAD (F2)

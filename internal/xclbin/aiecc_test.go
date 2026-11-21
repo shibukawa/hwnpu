@@ -9,7 +9,7 @@ import (
 
 // testdata/aiecc holds one build of mlir-aie v1.4.4's passthrough_dmas for npu2: the JSON
 // aiecc handed to xclbinutil (PDI path made relative), the PDI, and the xclbin that XRT 2.25's
-// xclbinutil packaged from them. The design ran on a Strix Point NPU (design.md 16.39, 16.40).
+// xclbinutil packaged from them. The design ran on a Strix Point NPU (docs/design/llm-engine.md, docs/design/cli.md).
 
 func readFixture(t *testing.T, name string) []byte {
 	t.Helper()

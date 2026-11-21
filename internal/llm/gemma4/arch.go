@@ -18,7 +18,7 @@ var Arch = &llm.Arch{
 	Architectures: []string{"Gemma4ForConditionalGeneration", "Gemma4ForCausalLM"},
 	// 4 bit tables cost E2B too much (KL 2.54 nats against the reference, against 0.25 with
 	// 6 bits and 0.05 with 8); 6 bits keeps 2 parts on the M3 and runs at 31 ms a token, against
-	// 24 with 4 bits and 41 with 8 (docs/design.md 16.26).
+	// 24 with 4 bits and 41 with 8 (docs/design/llm-models.md).
 	Format: "lut6",
 	Params: []llm.Param{
 		{Name: "logits", Default: "host", Usage: "the logits output y: before the soft cap, which the host applies (host), or with the soft cap in the program, (1, seq, vocab) with its reshape on the CPU (flat) or left folded into rows of at most 16384 (folded), (1, seq, rows, vocab/rows), so that every operation is on the Neural Engine"},

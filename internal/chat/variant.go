@@ -23,7 +23,7 @@ type Run struct {
 	Tier string
 	// Codes is the hash of the lookup tables chosen against the activations (GPTQ) that its
 	// programs are converted with (Setup.CodesHash): Qwen2.5-Coder's 4 bit tables, which
-	// rounding alone leaves far from the model (docs/design.md 16.230).
+	// rounding alone leaves far from the model (docs/design/llm-qwen.md).
 	Codes string
 }
 

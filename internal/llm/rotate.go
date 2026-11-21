@@ -10,7 +10,7 @@ import (
 // weights can be rotated offline (QuaRot, SpinQuant: the residual r becomes r Q). The values in
 // the matrices that read and write the residual are mixed across its dimension, which spreads a
 // row's outliers over the row: a lookup table of whole rows (the Neural Engine's only kind,
-// design.md 16.230) then fits them with fewer bits. Nothing is added to the program: Q is in the
+// docs/design/llm-qwen.md) then fits them with fewer bits. Nothing is added to the program: Q is in the
 // weights.
 //
 // It holds for a pre-norm model whose every reader of the residual is a linear after an RMS

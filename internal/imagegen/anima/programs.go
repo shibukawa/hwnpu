@@ -134,7 +134,7 @@ type progEngine struct {
 	textP, time, patch, fin *slot
 	blocks                  []*slot
 	// vae is the VAE's stages; each is loaded only while it runs (at 1024 x 1024 their
-	// working memory is a few GB, as AMD's stages, 16.72)
+	// working memory is a few GB, as AMD's stages, docs/design/amd.md)
 	vae      []string
 	open     func(ctx context.Context, name string, show bool) (runner.Program, error)
 	log      io.Writer
@@ -151,7 +151,7 @@ type progEngine struct {
 	// (ring), rather than holding the seven: on Core AI (runner.Swap), where a group loads from
 	// the cache in a fraction of a second. The text encoder is then closed after each prompt
 	// too. On an M1 at 1024 x 1024 the Neural Engine holds 0.57 to 0.84 GiB in place of 2.53, a
-	// step takes 5.7 s in place of 5.6 and a picture as long (design.md 16.215).
+	// step takes 5.7 s in place of 5.6 and a picture as long (docs/design/image-apple.md).
 	swap bool
 	ring *runner.Ring
 }

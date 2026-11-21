@@ -4,7 +4,7 @@
 After each block of a sandwich-normed layer (LFM3's, Gemma's), ``y = x + rms(h) * w_post`` and
 the next block's input ``rms(y) * w_pre``: IRON's graph runs a decode step's as three operators
 (RMSNorm, ElementwiseAdd, RMSNorm), each a reconfiguration of the array (about 40 us and 2.3 us
-a KB of its configuration, docs/design.md 16.266). ``SandwichAdd`` is one, on one core: h and the
+a KB of its configuration, docs/design/amd.md). ``SandwichAdd`` is one, on one core: h and the
 two weights on one channel, x on the other; y and the next input out.
 
     python tools/amd/iron_sandwich.py check OUT [--width 2048]

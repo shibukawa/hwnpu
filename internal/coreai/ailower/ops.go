@@ -49,7 +49,7 @@ func (l *lowerer) op(op *milspec.Operation) {
 		// out as about c x plus an offset a channel in PP-OCR's detector (the exact gelu's x /
 		// sqrt 2 after a depthwise 3 x 3 and a 1 x 1: twice the value, 0.05 the detector's
 		// cosine), though not on its CPU or GPU, nor in a program of those three operations
-		// alone (design.md 16.182, 16.183). HWNPU_AILOWER_DIVIDE=1 keeps divide_v1, for
+		// alone (docs/design/vision-models.md). HWNPU_AILOWER_DIVIDE=1 keeps divide_v1, for
 		// looking into it
 		x := l.in(op, "x")
 		set(l.binary("mul_v1", x, l.scalar(x.elem, 1/l.float(op, "y", 1)), oshape))
@@ -81,7 +81,7 @@ func (l *lowerer) op(op *milspec.Operation) {
 		set(l.binary("mul_v1", x, l.sigmoid(x), x.shape))
 	case "softplus": // log(1 + exp(x)) as relu(x) + log(1 + exp(-|x|))
 		// log(1 + exp(x)) as it stands gave 0 on the Neural Engine for x above 10.4, where exp(x)
-		// passes 2^15 (an M2, design.md 16.274; log and exp alone are right there): the stable
+		// passes 2^15 (an M2, docs/design/apple-neural-engine.md; log and exp alone are right there): the stable
 		// form keeps every value under 2 (qwen35's softplus is the same)
 		x := l.in(op, "x")
 		neg := l.binary("mul_v1", l.emit("abs_v1", x.elem, x.shape, nil, x), l.scalar(x.elem, -1), x.shape)
@@ -420,7 +420,7 @@ func (l *lowerer) matmul(x, y val, tx, ty bool, oshape []int) val {
 	if len(x.shape) == r && len(y.shape) == r && x.shape[r-1] == 1 && x.elem == "float16" && y.elem == "float16" {
 		// an inner dimension of 1 is an outer product: a broadcast multiply. The Neural Engine's
 		// matmul of (1 x 1)(1 x N) is wrong (relative errors to 0.28 on an M2, M of 64 right;
-		// design.md 16.274), its multiply right.
+		// docs/design/apple-neural-engine.md), its multiply right.
 		return l.binary("mul_v1", x, y, oshape)
 	}
 	batch := oshape[:r-2]
@@ -482,14 +482,14 @@ func (l *lowerer) sliceByIndex(op *milspec.Operation, oshape []int) val {
 		shape[i] = (e - b + stride[i] - 1) / stride[i]
 	}
 	if b := begin[r-1]; b%32 >= 1 && b%32 <= 14 && stride[r-1] == 1 && x.elem == "float16" {
-		l.note(fmt.Sprintf("%s: slice of the last axis (%v) from %d: the Neural Engine takes values above 4094 to Inf there (begin mod 32 in 1..14, design.md 16.274)", opName(op), x.shape, b))
+		l.note(fmt.Sprintf("%s: slice of the last axis (%v) from %d: the Neural Engine takes values above 4094 to Inf there (begin mod 32 in 1..14, docs/design/apple-neural-engine.md)", opName(op), x.shape, b))
 	}
 	y := l.emit("slice_v1", x.elem, shape, nil, x, l.i32s(begin...), l.i32s(end...), l.i32s(stride...))
 	return l.reshape(y, oshape)
 }
 
 // note tells of what the program lowers to that the Neural Engine gets wrong for some values
-// (design.md 16.274): LintPackage collects them, HWNPU_AILOWER_NOTES=1 prints them as programs
+// (docs/design/apple-neural-engine.md): LintPackage collects them, HWNPU_AILOWER_NOTES=1 prints them as programs
 // are lowered.
 func (l *lowerer) note(msg string) {
 	if l.notes != nil {

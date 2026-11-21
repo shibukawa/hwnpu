@@ -13,7 +13,7 @@ import (
 
 // The multi-token prediction layer's output layer is the model's, over its whole vocabulary:
 // Qwen3.5-4B's 248320 rows were 11.4 of the layer's 13.6 ms a call, twice for every step of the
-// model (docs/design.md 16.192). Its drafts are checked by the model, so a part of the
+// model (docs/design/llm-decoding.md). Its drafts are checked by the model, so a part of the
 // vocabulary loses only the drafts of the tokens outside it, and the answers stay the same (as
 // FR-Spec's drafts over the frequent tokens). draftVocab is that part.
 

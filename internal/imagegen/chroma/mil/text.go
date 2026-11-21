@@ -166,7 +166,7 @@ func t5Norm(g *graph, x *mlpackage.Var, name string, eps float64) *mlpackage.Var
 
 // GeluTanh is the tanh approximation of GELU written as x sigmoid(2 sqrt(2/pi) (x + 0.044715
 // x^3)), with exp and real_div: the Neural Engine's own gelu (TANH_APPROXIMATION) drifts over many
-// layers (design.md 16.145).
+// layers (docs/design/vision-models.md).
 func GeluTanh(g *graph, x *mlpackage.Var) *mlpackage.Var {
 	a := float32(-2 * math.Sqrt(2/math.Pi))
 	u := g.Mul(x, g.AddScalar(g.Scale(g.Mul(x, x), a*0.044715), a))

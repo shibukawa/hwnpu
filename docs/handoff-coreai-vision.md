@@ -1,6 +1,6 @@
 # 引き継ぎ: 画像を読むモデルの Core AI と SigLIP 2 を M2、M4 で確かめる
 
-作成: 2026-11-14、整理: 2026-11-21。M3 (16 GB、macOS 27.2) で入れた 2 つ ([design.md](design.md) の 16.182 と 16.183) の、ほかのチップでの確認。全部で 30 分ほど。
+作成: 2026-11-14、整理: 2026-11-21。M3 (16 GB、macOS 27.2) で入れた 2 つ ([docs/design/vision-models.md](design/vision-models.md)) の、ほかのチップでの確認。全部で 30 分ほど。
 
 - 画像を読むモデル (PP-OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、EfficientSAM) と SigLIP 2 (`hwnpu-image label`、`embed`) を Core AI で
 - `hwnpu-image segment` の符号器は Apple では Neural Engine
@@ -8,10 +8,10 @@
 **済んだこと**
 
 - M3: どの部品も全部 Neural Engine、CPU のインタプリタ (`milcpu`) とのコサイン 0.9997 以上。SigLIP 2 は Transformers (float32) と画像 0.9998 以上、文 0.99999 以上。EfficientSAM-S の符号器は 0.36〜0.43 秒
-- M1: `hwnpu-image` を Core AI だけにしたとき (16.190)、全部のコマンドを既定のまま走らせ、main の Core ML と同じ結果。MoGe-2 の dense が GPU に回ったのは直した
+- M1: `hwnpu-image` を Core AI だけにしたとき ([apple-coreai](design/apple-coreai.md))、全部のコマンドを既定のまま走らせ、main の Core ML と同じ結果。MoGe-2 の dense が GPU に回ったのは直した
 - `hwnpu-image` から Core ML (`--backend coreml`) は外れたので、前の版の「Core ML と Core AI でコマンドの結果と起動の時間を比べる」はもうしない
 
-残りは **M2 と M4** (と、16.190 の残りの「M2 と M3 の初回」)。
+残りは **M2 と M4** (と、[apple-coreai](design/apple-coreai.md) の残りの「M2 と M3 の初回」)。
 
 ## 1. コマンドが動くか
 
@@ -51,8 +51,8 @@ HWNPU_AILOWER_DIVIDE=1 AICHECK_WORST=1 /tmp/aicheck run -cpu $M/PP-OCRv6_small_d
 HWNPU_AILOWER_DIVIDE=1 HWNPU_AILOWER_CUT=133 AICHECK_WORST=1 /tmp/aicheck run -cpu $M/PP-OCRv6_small_det_onnx/det-r1-fp16-960x960.mlpackage
 ```
 
-- M3: 1 行目は `y cos 0.05`。2 行目は `real_div_98 cos 0.984`、相対 RMS 1.12 で、値は全体が正しい値の約 2 倍 (√2 で割るはずが √2 倍になる。design.md 16.183)。M2 の `aicheck rules -only div` (16.274) も合わせて見る
-- どちらでも回避 (`ailower` が逆数との積に書く) はそのまま。出方が違えば (別の倍率、正しい) design.md に書く
+- M3: 1 行目は `y cos 0.05`。2 行目は `real_div_98 cos 0.984`、相対 RMS 1.12 で、値は全体が正しい値の約 2 倍 (√2 で割るはずが √2 倍になる。[docs/design/vision-models.md](design/vision-models.md))。M2 の `aicheck rules -only div` ([apple-neural-engine](design/apple-neural-engine.md)) も合わせて見る
+- どちらでも回避 (`ailower` が逆数との積に書く) はそのまま。出方が違えば (別の倍率、正しい) docs/design/ の話題のファイル ([design/README.md](design/README.md)) に書く
 
 ## 4. SigLIP 2 を参照と比べる
 
@@ -67,5 +67,5 @@ python tools/ref/ref_siglip2.py ~/Library/Caches/hwnpu/models/siglip2-base-patch
 
 ## 5. 記録する場所
 
-- 数値は design.md の 16.183 に足す (チップごとの行)
+- 数値は [docs/design/vision-models.md](design/vision-models.md) に足す (チップごとの行)
 - models.yaml の SigLIP 2 と EfficientSAM の `memory` が違えば直す (new-model-checklist 11.2)

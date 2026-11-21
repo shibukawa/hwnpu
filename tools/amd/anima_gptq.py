@@ -4,7 +4,7 @@ picked against the DiT's own activations, for iron_anima.py --q4-codes.
 
 Rounding each weight to its nearest code (iron_q4.quantize_fmt) keeps the weight's error small,
 not the projection's output error; the 8-step distilled DiT carries q4nx's rounding into the
-image (latent cosine 0.78 against q8's 0.96, design.md 16.81). GPTQ (q4_gptq.gptq, the same
+image (latent cosine 0.78 against q8's 0.96, docs/design/amd-llm.md). GPTQ (q4_gptq.gptq, the same
 as the language models') chooses the codes with H = E[x x^T] of each projection's input, in
 passes of a few blocks, the earlier blocks already quantized. The inputs are the DiT's at each
 step of the reference (fp32) trajectories of a few prompts: the calibration is teacher forced,

@@ -53,7 +53,7 @@ var Files = []File{
 
 // tokenizerFile is T5's tokenizer.json of Anima's repository: Chroma's has only spiece.model, and
 // FLUX's tokenizer.json normalizes with a Sequence the Go tokenizer does not read (the same
-// vocabulary and charsmap, design.md 16.156).
+// vocabulary and charsmap, docs/design/image-amd.md).
 const tokenizerFile = "t5_tokenizer/tokenizer.json"
 
 // ExportName is the directory Prepare writes the export of name and o into: what changes the

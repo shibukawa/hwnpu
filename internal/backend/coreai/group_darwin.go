@@ -5,8 +5,7 @@ package coreai
 // weight file (which llm.ShareWeights clones on disk), or the same blobs besides a few that depend
 // on the shape (the embedder's). Lowered one by one, each .aimodel and each of Core AI's cache
 // entries holds its own copy. A package is lowered instead with the packages beside it that have
-// its largest weights into one .aimodel with a function each (ailower.LowerFunctions, design.md
-// 16.174), which writes a blob of the same bytes once, so that the asset and Core AI's cache
+// its largest weights into one .aimodel with a function each (ailower.LowerFunctions, docs/design/apple-coreai.md), which writes a blob of the same bytes once, so that the asset and Core AI's cache
 // entry hold the weights once.
 //
 // The compile cache keeps, for each package (by its contents, as before), a record of the asset

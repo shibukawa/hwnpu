@@ -40,7 +40,7 @@ type ConvertOptions struct {
 
 // DefaultSizes are the sizes of an export by default: 512 x 512 and 1024 x 1024, one export for
 // both (the functions of the one not drawn are never loaded; they share the weights' bytes with
-// the other's), as Sana's (design.md 16.189).
+// the other's), as Sana's (docs/design/image-apple.md).
 var DefaultSizes = [][2]int{{512, 512}, {1024, 1024}}
 
 // sizes is what o's export holds (after defaults).
@@ -63,12 +63,12 @@ func SizeFunction(w, h int) string { return fmt.Sprintf("s%dx%d", w, h) }
 func (o *ConvertOptions) defaults() {
 	if o.TextFormat == "" {
 		// lut8: Qwen3-VL-8B's attention sink came out NaN at int8 on the Neural Engine
-		// (qwenimage's DefaultTextFormat, design.md 16.165)
+		// (qwenimage's DefaultTextFormat, docs/design/image-apple.md)
 		o.TextFormat = "lut8"
 	}
 	if o.DitFormat == "" {
 		// lut8: Chroma's (FLUX.1's) DiT put infinities in its later blocks at per-row int8 (the
-		// Neural Engine's integer sums of large inputs, design.md 16.170)
+		// Neural Engine's integer sums of large inputs, docs/design/image-apple.md)
 		o.DitFormat = "lut8"
 	}
 	if o.TextGroup <= 0 {

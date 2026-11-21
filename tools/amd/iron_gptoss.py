@@ -837,7 +837,7 @@ class GptOss(CausalLM):
         # the logits as GptOssStep's head sends them: two partial sums a row, which hwnpu adds
         self.hwnpu_logit_parts = 2 * gl.MT
         # one array a step, loaded once: hwnpu's barrier before a step (another hardware context,
-        # which puts the array's configuration back: 2.4 ms a step) is not needed (design.md)
+        # which puts the array's configuration back: 2.4 ms a step) is not needed (docs/design/README.md)
         self.hwnpu_no_step_barrier = True
         return self.draw(yh, call)
 

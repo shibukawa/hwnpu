@@ -21,7 +21,7 @@ func QuantizeWeighted(w []float32, rows, cols, group, colBlock, bits, iters int,
 // uniform levels between the block's minimum and maximum (as KMeansMinMax) in place of the
 // weighted quantiles: a quantile start puts the top level at the block's 99.8 % point and clips
 // the few large weights, which FLUX.3 klein's DiT does not survive (its picture breaks; started
-// from the extremes, its lut8 matches per-row int8: docs/design.md, FLUX.3 klein).
+// from the extremes, its lut8 matches per-row int8: docs/design/README.md, FLUX.3 klein).
 func QuantizeWeightedMinMax(w []float32, rows, cols, group, colBlock, bits, iters int, colWeight []float32) LUT4 {
 	return quantizeWeighted(w, rows, cols, group, colBlock, bits, iters, colWeight, true)
 }

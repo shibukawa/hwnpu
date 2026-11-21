@@ -4,7 +4,7 @@
 
 `hwnpu-audio` generates music and sound effects (`generate`), reads text aloud (`tts`), transcribes (`transcribe`), and finds pitch (`pitch`) and notes (`notes`), on the NPU. Each downloads its model on the first run and converts it by itself. `hwnpu-audio list` shows the models to choose from.
 
-On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (exports `NAME.coreai` of `.aimodel`s in the model's directory, as hwnpu-chat's and hwnpu-image's), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds (docs/design.md 16.196). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
+On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (exports `NAME.coreai` of `.aimodel`s in the model's directory, as hwnpu-chat's and hwnpu-image's), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds ([docs/design/audio-models.md](docs/design/audio-models.md)). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
 
 On AMD's NPU (Ryzen AI 300 and later) each model runs from an export of IRON's (`tools/amd`), which the first run makes (IRON's environment as [INSTALL_AMD.md](INSTALL_AMD.md) says) unless a source has it, and puts in the sources written back to: transcription, speech and sound effects on the NPU, music's decoder on the NPU and its language model on the CPU. `pitch` and `notes` run on the CPU.
 

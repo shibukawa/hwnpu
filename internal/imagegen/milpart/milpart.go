@@ -235,7 +235,7 @@ func (g *Graph) MaxScaled(x *mlpackage.Var, axis int) *mlpackage.Var {
 // AbsScaled is MaxScaled with the magnitude as abs, one operation where MaxScaled's maximum of x
 // and -x is two: the same values, and on the Neural Engine through Core AI 0.8 ms less of each
 // norm over 4096 x 2048 values (Anima's DiT at 1024 x 1024, M1: 4.6 ms of a block's 221 over its
-// six norms, design.md 16.201). MaxScaled stays as it is for the programs already exported with
+// six norms, docs/design/image-apple.md). MaxScaled stays as it is for the programs already exported with
 // it: a model takes AbsScaled when its export is next made again.
 func (g *Graph) AbsScaled(x *mlpackage.Var, axis int) *mlpackage.Var {
 	m := g.Reduce("max", g.Unary("abs", x), axis)
@@ -356,11 +356,11 @@ type HeadOptions struct {
 // the division), and those are what an image's self-attention costs: of Anima's 4096 x 4096
 // scores of 16 heads the two products are 31 ms and the softmax 59 as QChunkAttention writes
 // them, 41 here (M1; every head in one tensor laid out the same way is slower than
-// QChunkAttention, design.md 16.202).
+// QChunkAttention, docs/design/image-apple.md).
 //
 // The layout is fast when the keys are a power of two, 4096 at most: 8 heads of 4096 queries
 // took 0.27 ns a score over 4096 keys, 0.38 to 0.47 over 2304, 3072, 4160, 5120 and 8192, where
-// QChunkAttention takes 0.39 to 0.44 over any (M1, design.md 16.211). So the keys are cut in
+// QChunkAttention takes 0.39 to 0.44 over any (M1, docs/design/image-apple.md). So the keys are cut in
 // such parts (KeyParts), each part's scores a tensor of its own under the one softmax: the
 // largest of their maxima, the sum of their sums. Qwen-Image's 4096 image keys and 512 text
 // keys (32 heads, 4096 queries): 278 ms in one tensor, 173 in two, QChunkAttention 248. With
@@ -499,8 +499,7 @@ func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.
 // Engine's compiler fails it from M2 on (h14g, h15g and h16g: "unexpected failure", the whole
 // program then on the GPU), where M1's (h13g) compiles it. Anima's cross-attention over its 512
 // text rows at 880 x 1168 (4015 patches) and 752 x 1360 (3995); 4014, 4020 failed too, 4016 and
-// 4056 did not, and the softmax divided before the product (not Deferred) took 4015 (design.md
-// 16.277).
+// 4056 did not, and the softmax divided before the product (not Deferred) took 4015 (docs/design/amd.md).
 const DeferredRows = 8
 
 // paddedDeferred is a Deferred HeadAttention on q padded with zero rows to a multiple of

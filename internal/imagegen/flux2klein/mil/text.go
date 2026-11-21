@@ -11,7 +11,7 @@ import (
 // TextScale is what Qwen3-4B's residual stream is divided by in its programs: the host's
 // embedding rows and every layer's output projections are scaled down by it (the norms are scale
 // free). Qwen3's attention sinks reach the ten thousands in a few channels (Qwen3-VL-8B's 13500,
-// design.md 16.165).
+// docs/design/image-apple.md).
 const TextScale = 8
 
 // TextGroup is Qwen3-4B's layers first..first+count-1 over the TextRows rows: input x (1, rows,

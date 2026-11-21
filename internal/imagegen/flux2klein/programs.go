@@ -137,7 +137,7 @@ func writeProgramManifest(dir string, m *ProgramManifest) error {
 // progEngine runs the programs of internal/imagegen/flux2klein/mil, each a runner.Program on the
 // Neural Engine. Qwen3's groups and each VAE stage are loaded only while they run (on Core AI the
 // next one loading while one runs); the DiT's groups each for its turn in a step (a ring), as
-// Chroma's on Core AI (design.md 16.210).
+// Chroma's on Core AI (docs/design/image-apple.md).
 type progEngine struct {
 	m    *ProgramManifest
 	dir  string
@@ -344,7 +344,7 @@ func (e *progEngine) closeDiT() error {
 
 // velocities runs the DiT at sigma on each picture's latents xs[k] (tokens x 128) under its text
 // rows rows[k]: each group of blocks runs every picture before the next group (a group that
-// follows another pays for that in its first run alone, design.md 16.216).
+// follows another pays for that in its first run alone, docs/design/image-models.md).
 func (e *progEngine) velocities(ctx context.Context, rows, xs [][]float32, sigma float64) ([][]float32, error) {
 	E := e.m.Dit.Hidden
 	if err := e.modulations([]float64{sigma}); err != nil {

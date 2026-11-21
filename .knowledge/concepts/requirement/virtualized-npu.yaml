@@ -11,7 +11,7 @@ assertions:
   - predicate: vm_support_in_preparation
     value: possible
     authority: inferred
-    evidence: {path: docs/design.md}
+    evidence: {path: docs/design/architecture.md}
 open_questions:
   revisit:
     text: 仮想化NPUが登場したときにどう対応するか

@@ -44,7 +44,7 @@ func Time() *Part {
 		x := g.Input("x", 1, TimeRows, DitHidden)
 		// silu as blocks.SiLU: the Neural Engine's own silu here and on the modulation's input
 		// moved every block's shift and scale, and the final latents' cosine with diffusers' fp32
-		// was 0.55 to 0.85 over 3 prompts; with blocks.SiLU 0.67 to 0.98, no slower (design.md 16.95)
+		// was 0.55 to 0.85 over 3 prompts; with blocks.SiLU 0.67 to 0.98, no slower (docs/design/apple-neural-engine.md)
 		temb := g.Linear(g.SiLU(g.Linear(x, "dit.t_embedder.1.linear_1.weight", "", DitHidden)),
 			"dit.t_embedder.1.linear_2.weight", "", 3*DitHidden)
 		et := g.ScaledRMSNorm(x, "dit.t_embedding_norm.weight", 1e-6)
@@ -68,7 +68,7 @@ func patchEmbed(g *graph, x *mlpackage.Var) *mlpackage.Var {
 
 // maxScoreBytes is the largest fp16 score tensor (heads x queries x keys) an attention should
 // make at once: past about 64 MiB the Neural Engine runs q k^T and its softmax 2 to 3 times
-// slower per score (M3, design.md 16.85; 65 MiB fast, 68 MiB slow).
+// slower per score (M3, docs/design/image-apple.md; 65 MiB fast, 68 MiB slow).
 const maxScoreBytes = 64 << 20
 
 // DitQChunk is qchunk, halved until the self-attention's scores of a chunk (16 heads by qchunk
@@ -224,7 +224,7 @@ func ditBlock(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, qchun
 	// head is y's heads (1, H, rows, D), normed by normName's weight times s: the queries' norm
 	// takes the attention's 1/sqrt(D), so that no multiply runs over the scores (the Neural
 	// Engine's elementwise passes over the 16 x 512 x 4096 scores of a chunk: on Core AI one
-	// is 11 ms of a block's 230 at 1024 x 1024, M1, design.md 16.201). The division by the
+	// is 11 ms of a block's 230 at 1024 x 1024, M1, docs/design/image-apple.md). The division by the
 	// row's largest magnitude before the norm stays: q and k reach 384, whose square is past
 	// fp16, and their rows' RMS spans 0.07 to 92 over the blocks (TestBlockRanges), more than a
 	// constant folded into the projection could bring into fp16's squares
@@ -245,7 +245,7 @@ func ditBlock(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, qchun
 	}
 	// attend is the attention of q over k and v, v the projection name of its input vin. On
 	// Apple's Neural Engine a head at a time (milpart.HeadAttention): the self-attention 90 ->
-	// 72 ms of a block at 1024 x 1024, the cross-attention 14 -> 10 (design.md 16.202). The
+	// 72 ms of a block at 1024 x 1024, the cross-attention 14 -> 10 (docs/design/image-apple.md). The
 	// cross-attention divides the softmax's sum after the product with the values (deferred):
 	// over 512 text rows the product is 8.7 at most. The self-attention does not: over 4096
 	// patches the product reached fp16's largest in the last block (TestBlockRanges). Intel's

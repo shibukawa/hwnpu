@@ -136,13 +136,13 @@ func Assets(paths []string) ([]string, error) {
 // picture right. Nor do they gain anything: the device finishes a prebuilt program no faster than
 // it compiles one this small (the ten stages at 1024 x 1024 104 s either way: a finish waits on
 // the respawn of ANELargeModelCompilerService, 10 s a program). Build leaves them out and Prebuilt
-// passes over them in what the shared layers hold already (design.md 16.273).
+// passes over them in what the shared layers hold already (docs/design/image-apple.md).
 //
 // The text encoders likewise: Chroma1-Flash's T5-XXL (text_0 ... text_21, prebuilt for h13g) ended
 // in "Request cancelled" at text_0 on M1 four times running (fresh Core AI caches, nothing else on
 // the Neural Engine), and the same programs compiled on the device ran (T5-XXL 220 to 230 s); FLUX.2
 // klein's Qwen3 ran from its prebuilts but slower than compiled on the device (112 s against 81 s,
-// 16.252), so a prebuilt text encoder gains nothing either.
+// docs/design/distribution.md), so a prebuilt text encoder gains nothing either.
 func LeftToDevice(dir string) bool {
 	base := strings.ToLower(filepath.Base(filepath.Clean(dir)))
 	return strings.HasPrefix(base, "vae") || strings.HasPrefix(base, "text")

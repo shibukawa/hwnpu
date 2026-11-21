@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Where a FLUX.2 klein single block's time goes: the block and its parts as graphs of their own,
-timed with tools/amd/irongraph (design.md 16.200's way).
+timed with tools/amd/irongraph (docs/design/image-amd.md's way).
 
   full    a single block (iron_flux2klein.Singles with one block)
   gemm    its seven projections alone (q, k, v, gate, up of the normed rows; the two halves of

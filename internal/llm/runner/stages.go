@@ -10,7 +10,7 @@ import (
 // every picture that goes through the stage together. A VAE's last stages give 0.5 to 1.2 GB a
 // picture at 1024 x 1024 (128 to 288 channels); past about this much, pictures decoded together
 // take as long as one after another, or longer (Sana's two together 2.4 s of 2.7, Qwen-Image's two
-// 7.3 s for 6.5; design.md 16.216).
+// 7.3 s for 6.5; docs/design/image-models.md).
 const StageBudget = 1280 << 20
 
 // StageRun runs stage i's program p on one picture's input x.

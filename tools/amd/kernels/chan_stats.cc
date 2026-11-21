@@ -3,7 +3,7 @@
 // A line is CS_P pixels of CS_C channels (bf16, channel last). The output is 2 CS_C float32:
 // each channel's sum over the line's pixels, then each channel's sum of squares, accumulated in
 // float32 (a square of a bf16 is exact there). A GroupNorm's statistics in one pass over the
-// pixels: tools/amd/iron_groupnorm.py, design.md 16.208.
+// pixels: tools/amd/iron_groupnorm.py, docs/design/image-amd.md.
 //===----------------------------------------------------------------------===//
 #include <aie_api/aie.hpp>
 #include <stdint.h>

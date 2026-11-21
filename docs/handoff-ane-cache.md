@@ -1,8 +1,8 @@
 # 引き継ぎ: Neural Engine のコンパイル済みキャッシュの限界を M1〜M4 で測る
 
-作成: 2026-11-10、整理: 2026-11-21。Sana の Mac 対応 (#99、[design.md](design.md) 16.145) で、hwnpu のキャッシュがあっても読み込みに 1〜2 分かかる原因を調べた。その続きとして、システム側のキャッシュが何をどれだけ持つかを測るためのメモ。
+作成: 2026-11-10、整理: 2026-11-21。Sana の Mac 対応 (#99、[docs/design/vision-models.md](design/vision-models.md)) で、hwnpu のキャッシュがあっても読み込みに 1〜2 分かかる原因を調べた。その続きとして、システム側のキャッシュが何をどれだけ持つかを測るためのメモ。
 
-**今の位置づけ**: これは **Core ML** の話。その後 Mac のコマンドは全部 Core AI になり (hwnpu-image 16.190、hwnpu-chat 16.191、hwnpu-audio も)、Core ML は `--cpu` の CPU のインタプリタでしか使わない。Sana もやめた (16.244)。Core AI のキャッシュは別物で (`~/Library/Caches/coreai-cache/<OS>/<実行ファイル名>/`)、Core ML の約 4 GiB を超える 17 GB の書き出しでも残る (design.md 16.169)。なので下の 2 節の計測は急がない。前の版の「結果で決まること」(Sana の常駐や読む順) は外した。
+**今の位置づけ**: これは **Core ML** の話。その後 Mac のコマンドは全部 Core AI になり (hwnpu-image [apple-coreai](design/apple-coreai.md)、hwnpu-chat [apple-coreai](design/apple-coreai.md)、hwnpu-audio も)、Core ML は `--cpu` の CPU のインタプリタでしか使わない。Sana もやめた ([image-models](design/image-models.md))。Core AI のキャッシュは別物で (`~/Library/Caches/coreai-cache/<OS>/<実行ファイル名>/`)、Core ML の約 4 GiB を超える 17 GB の書き出しでも残る ([docs/design/apple-coreai.md](design/apple-coreai.md))。なので下の 2 節の計測は急がない。前の版の「結果で決まること」(Sana の常駐や読む順) は外した。
 
 測る道具は `hwnpu-dev probe cache` (旧 `cmd/npuprobe`。下の 4 節に動かし方)。
 
@@ -31,7 +31,7 @@ M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae
 
 1 枚に 26 本のプログラム (約 4 GB) を順に読んで閉じる Sana で、2 回目も毎回 1〜2 分外れて見えた。ただしこれは、同時に動いていたコンパイルと書き出しの作り直しによるものだった (1.7)。
 
-### 1.3 前の記録 (design.md 16.41、M3、LFM3)
+### 1.3 前の記録 ([docs/design/quantization.md](design/quantization.md)、M3、LFM3)
 
 - 2 本 (2.4 GiB) は 2 回目から全部当たり (起動 3 秒)
 - 4 本 (4.8 GiB) は 4 回続けて起動しても毎回 3〜6 部分が外れた
@@ -46,15 +46,15 @@ M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae
   - `hwnpu-image` には 16 GB 溜まっていた。書き出しを何度も作り直した残りで、削除済み
 - 1.1 の計測で使ったテスト (`zzload.test`) の同じ場所は 36 KB しかなかった。それでも 2 回目は 0.1 秒で当たったので、当たりを持っているのはこのディレクトリではない
 - `~/Library/Caches/com.apple.e5rt.e5bundlecache`: 11 MB
-- 16.41 の見立てでは、本体は `aned` 側 (sudo が要り未確認)。実行ファイル名で分かれるのか、プロセスをまたいで共有されるのかも、ちゃんと調べていない
+- [quantization](design/quantization.md) の見立てでは、本体は `aned` 側 (sudo が要り未確認)。実行ファイル名で分かれるのか、プロセスをまたいで共有されるのかも、ちゃんと調べていない
 
 ### 1.5 測るときの注意
 
 - **書き出しを作り直すと別物になる**: `internal/mlpackage` が Manifest.json に乱数の UUID を書くため、パッケージのバイトが変わり、hwnpu のキャッシュも Neural Engine のキャッシュも当たらなくなる。測るときは同じパッケージを使い回すこと
-- **ほかのプロセスに注意する**: ほかのプロセスが Neural Engine でコンパイルしていると、配置の確認が数分かかることがある (M1 で 2 分を超えた)。Neural Engine のロック (16.132、`llm.OpenDevice`) を取らないテストや他のツールが動いていないか確かめること
+- **ほかのプロセスに注意する**: ほかのプロセスが Neural Engine でコンパイルしていると、配置の確認が数分かかることがある (M1 で 2 分を超えた)。Neural Engine のロック ([apple-neural-engine](design/apple-neural-engine.md)、`llm.OpenDevice`) を取らないテストや他のツールが動いていないか確かめること
 - **実行ファイル名で分かれる可能性がある**: キャッシュが実行ファイル名で分かれるなら、`go test` (`<pkg>.test`) と `hwnpu-dev` と `hwnpu-image` で結果が違うかもしれない。1.4 の置き場所の謎と合わせて確かめる
 
-### 1.6 容量の内側でも当たらない: Gemma 4 (design.md 16.42〜16.43、M3)
+### 1.6 容量の内側でも当たらない: Gemma 4 ([docs/design/llm-models.md](design/llm-models.md)、[apple-coreml](design/apple-coreml.md)、M3)
 
 容量だけでは説明できない外れがある。Gemma 4 E2B は、合計が容量より小さくても当たらない。
 
@@ -72,9 +72,9 @@ M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae
 | Gemma 4 lut8 | 3 部分 (0.69〜0.74 GiB) | 外れ (8〜10 秒) | 外れ | 外れ |
 
 - 同じ大きさの LFM3 は当たる。lut6 (0.60 GiB の部分) は 2 回目から、lut8 (VL、0.81 GiB) は 3 回目から
-- Sana の Gemma 2 (int8、6 層ずつ 5 本、計 2.2 GB) は M1 で当たる (0.6B の 1 枚 7〜8 秒、design.md 16.145)。同じ Gemma の系列でも、int8 では起きていない
+- Sana の Gemma 2 (int8、6 層ずつ 5 本、計 2.2 GB) は M1 で当たる (0.6B の 1 枚 7〜8 秒、[docs/design/vision-models.md](design/vision-models.md))。同じ Gemma の系列でも、int8 では起きていない
 - Gemma 4 の lut6 / lut8 のプログラムだけが Neural Engine 側に残らない。グラフの何か (形、演算、パレットの並べ方など) が効いていそうだが、分かっていない
-- lut4 は答えが悪い (16.26) ので既定にできない。今の Gemma 4 は起動に約 100 秒かかったまま
+- lut4 は答えが悪い ([llm-models](design/llm-models.md)) ので既定にできない。今の Gemma 4 は起動に約 100 秒かかったまま
 
 ### 1.7 M2 の結果と、M1 の SANA 1.5 (2026-11-10〜11)
 
@@ -83,7 +83,7 @@ M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae
   - 1.02 GiB は 1 本は当たり、2〜3 本は 3 回目から当たり、4 本以上は外れる。システムのキャッシュは 1.02 GiB で重みの約 3 倍、0.91 GiB までは約 1 倍
   - int8 は合計約 3 GiB、lut4 は合計約 1 GiB まで
   - 合計の GiB ではなく、合成の層の本数 (fp16 約 72、int8 約 50、lut4 約 36) で決まるように見えた
-- M1 の SANA 1.5 (design.md 16.152) は、この見方に合わない: Gemma 2 int8 約 2.2 GB と DiT fp16 約 3.2 GB と VAE で、ほかのプロセスが Neural Engine を使っていなければ 2 回目のプロセスから全部当たる (1 枚 1m12s)。1.2 の「毎回外れる」は、同時に動いていたコンパイルと書き出しの作り直しによるものだった。M1 と M2 の違いか、合成プログラムと実際のモデルの違いかは分かっていない
+- M1 の SANA 1.5 ([docs/design/image-apple.md](design/image-apple.md)) は、この見方に合わない: Gemma 2 int8 約 2.2 GB と DiT fp16 約 3.2 GB と VAE で、ほかのプロセスが Neural Engine を使っていなければ 2 回目のプロセスから全部当たる (1 枚 1m12s)。1.2 の「毎回外れる」は、同時に動いていたコンパイルと書き出しの作り直しによるものだった。M1 と M2 の違いか、合成プログラムと実際のモデルの違いかは分かっていない
 
 ## 2. 残り (急がない、Core ML を Neural Engine でまた使うときに)
 

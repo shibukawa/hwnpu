@@ -124,7 +124,7 @@ func (g *Graph) WeightRows(name string, begin, end, cols int, scale float32) *ml
 // rowsOnly refuses a weight of tables or scales per block of columns in a Core AI program: the
 // Neural Engine compiles it (fully placed, at the speed of whole rows) but every row group takes
 // its first column block's table or scale for all its columns, where Core AI's CPU is right
-// (macOS 27.2, M1: docs/design.md 16.230). Core ML and Intel's NPU are left as they were.
+// (macOS 27.2, M1: docs/design/llm-qwen.md). Core ML and Intel's NPU are left as they were.
 func (g *Graph) rowsOnly(name string, colBlock, cols int) {
 	if g.Opts.Backend == llm.BackendCoreAI && colBlock > 0 && colBlock != cols {
 		g.Fail("%s: tables or scales of %d columns (of %d): the Neural Engine reads only the first block's through Core AI; whole rows only", name, colBlock, cols)
@@ -387,9 +387,9 @@ func (g *Graph) SwiGLU(x *mlpackage.Var, gate, up, down string, inter, out int, 
 
 // SiLU is silu(x) = x sigmoid(x), written as x / (1 + exp(-x)). The Neural Engine's own silu (and
 // x times its sigmoid, which gives the same values) is about 1.4% off on an M3, more on the small
-// values of its tail (design.md 16.88): the logits' KL from PyTorch's fp32 on the Neural Engine
+// values of its tail (docs/design/llm-qwen.md): the logits' KL from PyTorch's fp32 on the Neural Engine
 // fell 2.5 times with this form for LFM3-1.7B in lut8 (0.058 to 0.022), to that of the same program
-// on Core ML's CPU, and by a third for PLaMo 3 in lut8 (design.md 16.95). It costs 3 operations
+// on Core ML's CPU, and by a third for PLaMo 3 in lut8 (docs/design/apple-neural-engine.md). It costs 3 operations
 // more: a prompt is read about 9% slower, a step about 3%. Past x = -11, exp(-x) overflows fp16 to
 // inf and the quotient is 0 (silu is under 2e-4 there).
 func (g *Graph) SiLU(x *mlpackage.Var) *mlpackage.Var {
@@ -679,7 +679,7 @@ func (g *Graph) LayerNorm(x *mlpackage.Var, weight, bias string, n int, eps floa
 
 // Activation applies a Hugging Face hidden_act: gelu (exact), gelu_new / gelu_pytorch_tanh
 // (tanh approximation), relu, silu (SiLU). The Neural Engine's own gelu is kept: written with exp
-// and real_div, Gemma 4 E2B's KL was the same (design.md 16.95).
+// and real_div, Gemma 4 E2B's KL was the same (docs/design/apple-neural-engine.md).
 func (g *Graph) Activation(x *mlpackage.Var, act string) *mlpackage.Var {
 	switch act {
 	case "gelu":

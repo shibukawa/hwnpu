@@ -18,7 +18,7 @@ Models: one token through Llama 3.2 1B sized layers (61 M weights per layer, ran
 
 | cache | KV bytes | mode | placement | ms/token | CPU use | error |
 |---|---|---|---|---|---|---|
-| 16383 | 64.0 MiB | host | NPU | 16.63 | 0.14 |  |
+| 16383 | 64.0 MiB | host | NPU | [llm-engine](../docs/design/llm-engine.md) | 0.14 |  |
 | 16384 | 64.0 MiB | host | partial (NPU 35, cpu 39) | 117.09 | 0.91 |  |
 
 One token through lut4 layers of the bench size with attention over a cache of the given length. host binds the cache as inputs and outputs the token's keys and values; state keeps it in Core ML states (MLState) and writes the token in with a one-hot row.

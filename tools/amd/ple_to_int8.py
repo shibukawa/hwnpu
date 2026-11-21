@@ -2,7 +2,7 @@
 """Rewrite the bf16 ple.bin of a Gemma 4 export made before --ple int8 into the int8 format
 (iron_hostple.ple_int8) and mark it in the manifest, without exporting again. The programs are
 unchanged, so the two exports differ only in the table (an A/B of what the table costs on the
-NPU, docs/improvements.md 12.7).
+NPU, docs/design/performance.md).
 
   python tools/amd/ple_to_int8.py EXPORT
 

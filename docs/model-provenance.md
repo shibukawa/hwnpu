@@ -1,6 +1,6 @@
 # モデルのライセンスと内容、使ってよいモデルの指定 (設計案)
 
-作成: 2026-11-15。状態: 1 段 (調査) と 2 段 (models.yaml の `license` と `content`、`HWNPU_MODEL_ALLOWLIST` の指定) を実装 (design.md 16.225)。3 段と 4 段は設計案。
+作成: 2026-11-15。状態: 1 段 (調査) と 2 段 (models.yaml の `license` と `content`、`HWNPU_MODEL_ALLOWLIST` の指定) を実装 ([docs/design/distribution.md](design/distribution.md))。3 段と 4 段は設計案。
 
 ## 0. 実装したもの (2026-11-15)
 
@@ -13,7 +13,7 @@
 ## 1. 進め方
 
 1. 全モデルのライセンスを調べる (この文書の 3 節、4 節)
-2. models.yaml に `license` (全モデル) と `content` を足し、指定 (2 節) で用途の既定と `-m` を絞る。design.md の次の節に記録する
+2. models.yaml に `license` (全モデル) と `content` を足し、指定 (2 節) で用途の既定と `-m` を絞る。[docs/design/distribution.md](design/distribution.md) に今の状態として書く
 3. 第三者の写しを本家の取得元に寄せる (5 節)。まず写しがバイト単位で同じもの
 4. RTMO と RTMDet の ONNX への書き出しを自前で持つ (5 節)
 

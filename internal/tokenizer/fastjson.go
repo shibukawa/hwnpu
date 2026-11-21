@@ -14,8 +14,7 @@ var fastModel = true
 // document without them (an empty object and an empty array in their places), for encoding/json to
 // read the rest of. They are nearly all of the file (Gemma 2's: 32 MB, 256000 tokens and 580000
 // merges), and reading them as a map and as raw messages decoded one by one took 0.9 s of every
-// start of a Sana picture on an M1; read here in one pass over their bytes, 0.2 s (design.md
-// 16.210). ok is false for anything this does not read exactly as encoding/json would (a
+// start of a Sana picture on an M1; read here in one pass over their bytes, 0.2 s (docs/design/image-apple.md). ok is false for anything this does not read exactly as encoding/json would (a
 // vocabulary that is not an object of strings to integers, a merge that is neither "a b" nor
 // ["a", "b"], a key written twice, a string that is not valid UTF-8): the caller then reads the
 // whole document with encoding/json, as before.

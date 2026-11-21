@@ -5,7 +5,7 @@
 // pixel and each vector of 32 channels, the bias plus the DW_K^2 taps times their neighbours, in
 // a float32 accumulator, rounded once to bf16 (nearest even). The taps are (DW_K^2 + 1, DW_C):
 // row dy DW_K + dx a tap, the last row the bias. Sana's GLUMBConv (3 x 3) and its VAE's
-// EfficientViT (5 x 5) ran this as a row product and a sum a tap (design.md 16.200).
+// EfficientViT (5 x 5) ran this as a row product and a sum a tap (docs/design/image-amd.md).
 //===----------------------------------------------------------------------===//
 #include <aie_api/aie.hpp>
 #include <stdint.h>

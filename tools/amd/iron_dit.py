@@ -43,7 +43,7 @@ PREC = Precisions()
 
 # The text encoder's projections: "q6" (iron_q4's 6.5 bits a weight, dequantized to bf16 on the
 # device before each GEMM, which keeps PREC.text), "q8", "q4" or "bf16". q6 draws the pictures q8
-# does (its rows 3.5 % off float32's, q8's 1.4 %, design.md 16.138) in 1.7 GB to 2.3; q4's 15 %
+# does (its rows 3.5 % off float32's, q8's 1.4 %, docs/design/image-apple.md) in 1.7 GB to 2.3; q4's 15 %
 # changes the composition.
 TEXT_FMT = {"fmt": "q6"}
 

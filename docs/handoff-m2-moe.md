@@ -1,6 +1,6 @@
 # 引き継ぎ: M2 (16 GB) での gpt-oss-20b の専門家を速く
 
-作成: 2026-11-20、整理: 2026-11-21。前の版の「やること」と「M2 で最初に測ること」は 4 節で済んだので外した。残りは 4.10。M3 (16 GB) で作った gpt-oss-20b の Core AI の経路 (注意と出力層は Neural Engine、専門家は CPU で MXFP4 のまま) と、専門家ごとの固定 (`experts.Placement`) を、M2 の MacBook Air (16 GB、macOS 27.2.1) で速くするためのメモ。設計と M3 での記録は [docs/improvements.md](improvements.md) の 7.5 節の gpt-oss の行、[docs/design.md](design.md) の 16.260 (`hwnpu status`)。
+作成: 2026-11-20、整理: 2026-11-21。前の版の「やること」と「M2 で最初に測ること」は 4 節で済んだので外した。残りは 4.10。M3 (16 GB) で作った gpt-oss-20b の Core AI の経路 (注意と出力層は Neural Engine、専門家は CPU で MXFP4 のまま) と、専門家ごとの固定 (`experts.Placement`) を、M2 の MacBook Air (16 GB、macOS 27.2.1) で速くするためのメモ。設計と M3 での記録は [docs/design/apple-coreai.md](design/apple-coreai.md)の gpt-oss の行、[docs/design/cli.md](design/cli.md) (`hwnpu status`)。
 
 ## 1. ここまでの状態
 
@@ -33,7 +33,7 @@
 - Core AI のコンパイル済みのキャッシュ (`~/Library/Caches/<プロセス>/com.apple.e5rt.e5bundlecache`) が消えると最初に 40 秒ほどコンパイルし直し、その回の速さは比べられない。速さは 2 回目から
 - ディスク: 最初の取得はチェックポイント 13 GB と変換、`HWNPU_CACHE_MIN_FREE` (10 GB) の空きも要る
 - `hwnpu status` の NPU% は推定 (PMP の ANE の読み出しの帯域の分布で、いちばん下の区分の外にいた時間)。M2 では確かめていない (チャンネルの名前が違うかもしれない)。電力は macOS 27 では root でないと 0 しか読めないので「読めない」と出す
-- 速くなったら: improvements.md (と .ja.md) の gpt-oss の行、MODEL.md、models.yaml の `memory`
+- 速くなったら: [docs/design/performance.md](design/performance.md) (と .ja.md) の gpt-oss の行、MODEL.md、models.yaml の `memory`
 
 ## 4. M2 で測った結果 (2026-11-20、MacBook Air M2 16 GB、0c459eb の先読み入り)
 
@@ -126,7 +126,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 | プロンプト | tok/s | 固定に当たった | 予測せずメモリに無い専門家に当たった層 | その 1 回 | 専門家の時間に占める割合 |
 |---|---|---|---|---|---|
-| 英語 (統計と同じ文) | 9.7 / 9.9 | 71 % | 4.6〜4.8 % | 14〜15 ms (中央値 16.5) | 30〜32 % |
+| 英語 (統計と同じ文) | 9.7 / 9.9 | 71 % | 4.6〜4.8 % | 14〜15 ms (中央値 [amd](design/amd.md)) | 30〜32 % |
 | 日本語 (江戸時代の経済) | 12.2 / 12.2 | 75 % | 1.4 % | 14 ms | 13 % |
 | コード (Go の LRU) | 8.4 / 7.7 | 61 % | 7.2〜7.8 % | 15〜17 ms | 40〜42 % |
 
@@ -181,7 +181,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 層の中の 2 回目と 3 回目の起こしは、ワーカーがまだ眠りきっていないので安い。遅くなるのは層の間 (Neural Engine の部品、1〜2.5 ms) が空いた後の最初の立ち上がりで、chat の全部固定の層 (中央値 1.3 ms、平均 1.45) と同じ。回して待たせる形 (spinners) は PR #245 で外してある (Neural Engine の部品が遅くなり、差し引きで変わらない)。正しさのテスト `TestHostRunSmall` (チェックポイント無しで `Host.Run` を float64 の計算と比べる) は残した。
 
-**Neural Engine の 37 回 (変更なし)**。37 個の部品が 1 トークンに読む重みは 1.09 GB (出力層 436 MB、注意 1 層 12〜27 MB)。32 ms は約 34 GB/s で、呼び出しの固定費 (M1 で空の呼び出し 0.21 ms、improvements.md 16.218 の行) より重みの読み出しが大半。切れ目は専門家 24 とホストの注意 12 で決まり、M3 と同じ形 (3.3)。
+**Neural Engine の 37 回 (変更なし)**。37 個の部品が 1 トークンに読む重みは 1.09 GB (出力層 436 MB、注意 1 層 12〜27 MB)。32 ms は約 34 GB/s で、呼び出しの固定費 (M1 で空の呼び出し 0.21 ms、[docs/design/performance.md](design/performance.md) の行) より重みの読み出しが大半。切れ目は専門家 24 とホストの注意 12 で決まり、M3 と同じ形 (3.3)。
 
 **上限の持ち越し (入れた)**。4.7 の上限と、戻すまでの時間を `experts-usage/ceiling` (「バイト数 時刻 保つ秒数」) に残し、次の起動が引き継ぐ (`Placement.Ceiling`、`placer.keepCeiling`、`readCeiling`)。保つ時間ごとに 1 段戻り、戻りきるとファイルを消す。持ち越すと、10 分ごとに 4.3 GB に戻っては警告で 1.9 GB まで外す繰り返しが見えたので、戻した後その保つ時間のうちに警告が出たら保つ時間を倍にする (最長 80 分)。確認: 警告の後の起動は 3.7 GB (その後 3.1 GB) から始まり、戻した直後の警告で「for 20m0s」になった。
 

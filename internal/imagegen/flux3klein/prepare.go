@@ -91,7 +91,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	if o.Stats == "" {
-		fmt.Fprintf(log, "no activation statistics (%s, nor %s in the sources): the DiT's lut8 tables are spaced evenly, which loses fine detail; see docs/design.md (FLUX.3 klein)\n",
+		fmt.Fprintf(log, "no activation statistics (%s, nor %s in the sources): the DiT's lut8 tables are spaced evenly, which loses fine detail; see docs/design/README.md (FLUX.3 klein)\n",
 			filepath.Join(s.Dir, StatsFile), StatsRepo)
 	}
 	fmt.Fprintf(log, "converting %s (Qwen3-VL %s, DiT %s): several minutes; the first load then compiles the programs for the NPU\n",

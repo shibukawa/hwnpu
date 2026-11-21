@@ -2,7 +2,7 @@
 layer's inputs, which hwnpu-dev convert -codes and hwnpu-chat --codes read.
 
 The attention's projections in lut8 (palette.Uniform, a table of 256 levels for 16 rows) raise the
-KL on plain text from 0.036 to 0.29 on the Neural Engine (docs/improvements.md); fp16 keeps it but
+KL on plain text from 0.036 to 0.29 on the Neural Engine (docs/design/performance.md); fp16 keeps it but
 holds 1.3 GiB more, which a 16 GB Mac does not have with the experts. GPTQ (gptoss_head_gptq.py's)
 chooses each weight's rounding against H = E[x x^T] of the projection's inputs: the first norm's
 outputs for q, k and v, the attention's output for o. The layers go in order, each fed by the

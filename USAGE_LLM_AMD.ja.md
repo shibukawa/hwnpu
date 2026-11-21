@@ -59,9 +59,9 @@ go run ./cmd/hwnpu-chat serve -m ~/models/gemma-4-E2B-it.mm.amd-npu2 --listen 12
 
 ## メモリとディスク
 
-NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` (`chat`、`agent`、`serve`) は、AMD の NPU の書き出しを要求が `--idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`--idle 0` で下ろしません。画像と音声つきの書き出しは、塔の重みを最初の画像か音声が来るまで載せないので (Gemma 4 E2B の 4 ビットで 2.82 → 1.83 GB、文だけの書き出しとの差は 51 MiB。最初の画像か音声で 0.7 秒。[docs/design.md](docs/design.md) の 16.81)、文だけで使うときも同じ書き出しで済みます。
+NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` (`chat`、`agent`、`serve`) は、AMD の NPU の書き出しを要求が `--idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`--idle 0` で下ろしません。画像と音声つきの書き出しは、塔の重みを最初の画像か音声が来るまで載せないので (Gemma 4 E2B の 4 ビットで 2.82 → 1.83 GB、文だけの書き出しとの差は 51 MiB。最初の画像か音声で 0.7 秒。[docs/design/amd-llm.ja.md](docs/design/amd-llm.ja.md))、文だけで使うときも同じ書き出しで済みます。
 
-同じモデルの書き出しを複数置くと (文だけと画像と音声つき、4 ビットと bf16 など)、同じファイルを持ちます (Gemma 4 E2B なら `ple.bin` の 2.2 GiB など。層ごとの埋め込みを int8 で持つもので、2026-11-17 より前の書き出しでは 4.4 GiB)。モデルを置くディスクが Btrfs や XFS (reflink)、Windows の ReFS や Dev Drive のように写しを共有できるファイルシステムなら、hwnpu は書き出しを最初に読むときに、隣の書き出しと同じバイトのファイルとファイルの先頭をその写し (reflink) に置き換え、ディスクを 1 つ分しか使いません (Gemma 4 E2B の 2 つで 15.2 → 8.2 GiB。普通のファイルのまま)。ext4 と NTFS では何もしません ([docs/design.md](docs/design.md) の 16.79。Windows は実機では未確認)。
+同じモデルの書き出しを複数置くと (文だけと画像と音声つき、4 ビットと bf16 など)、同じファイルを持ちます (Gemma 4 E2B なら `ple.bin` の 2.2 GiB など。層ごとの埋め込みを int8 で持つもので、2026-11-17 より前の書き出しでは 4.4 GiB)。モデルを置くディスクが Btrfs や XFS (reflink)、Windows の ReFS や Dev Drive のように写しを共有できるファイルシステムなら、hwnpu は書き出しを最初に読むときに、隣の書き出しと同じバイトのファイルとファイルの先頭をその写し (reflink) に置き換え、ディスクを 1 つ分しか使いません (Gemma 4 E2B の 2 つで 15.2 → 8.2 GiB。普通のファイルのまま)。ext4 と NTFS では何もしません ([docs/design/distribution.ja.md](docs/design/distribution.ja.md)。Windows は実機では未確認)。
 
 ## PLaMo 3 Translate
 
@@ -75,7 +75,7 @@ go run ./cmd/hwnpu-chat -m ~/models/plamo-3-translate-2b.amd-npu2-q4 --to zh-han
 
 ## Qwen3.5
 
-Qwen3.5 (0.8B、2B、4B) は hwnpu の `tools/amd/iron_qwen35.py` で書き出します (`qwen35`)。0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします (`--mlp q6 --head q6`。注意と GDN の射影は 8 ビット、埋め込みはホスト。固定されるメモリは 0.8B 1.04 GiB、2B 1.97 GiB)。`--verify 3` を足すと、次のトークンと推測 2 つを 1 回で確かめる版も書き出し、hwnpu-chat はプロンプトと答えからの推測を確かめながら生成します (投機的デコード。ロジットは 1 トークンずつと同じなので、温度 0 なら文も同じ)。Ryzen AI 9 365 の 0.8B で 1 トークン 82 ms が、コードで 72 ms、日本語の説明で 62 ms になりました ([docs/design.md](docs/design.md) の 16.117)。`HWNPU_IRON_DRAFTS=0` で推測を使いません。
+Qwen3.5 (0.8B、2B、4B) は hwnpu の `tools/amd/iron_qwen35.py` で書き出します (`qwen35`)。0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします (`--mlp q6 --head q6`。注意と GDN の射影は 8 ビット、埋め込みはホスト。固定されるメモリは 0.8B 1.04 GiB、2B 1.97 GiB)。`--verify 3` を足すと、次のトークンと推測 2 つを 1 回で確かめる版も書き出し、hwnpu-chat はプロンプトと答えからの推測を確かめながら生成します (投機的デコード。ロジットは 1 トークンずつと同じなので、温度 0 なら文も同じ)。Ryzen AI 9 365 の 0.8B で 1 トークン 82 ms が、コードで 72 ms、日本語の説明で 62 ms になりました ([docs/design/amd-llm.ja.md](docs/design/amd-llm.ja.md))。`HWNPU_IRON_DRAFTS=0` で推測を使いません。
 
 ```bash
 python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5-0.8B.amd-npu2-q6 --q4 --mlp q6 --head q6 --verify 3

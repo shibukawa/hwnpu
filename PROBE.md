@@ -103,7 +103,7 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split -split-layers
 
 **On AMD's NPU** (Ryzen AI, XDNA2) there is no graph backend: hwnpu runs IRON exports there, so the probe builds its graphs with `tools/amd/iron_probe.py` from random weights, with the operators hwnpu's exports use, and times them through `internal/llm/iron` as hwnpu runs a model. The numbers are therefore the ceilings of the paths the models take, not of IRON's samples ([docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md), measured before hwnpu had its own kernels).
 
-- **bench**: the same 8 and 16 layers in q4 (q4nx, 5 bits a weight), q6 (6.5 bits), q8 (8.5 bits) and bf16, one row a call, two ways. `layers` runs each layer's seven linears and the SwiGLU's product one after another, as hwnpu's exports of the chat models run a decode step: IRON loads every operator that follows another onto the cores again. `stream` puts the same bytes in GEMVs of one shape back to back, which are not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's `GptOssStep`, docs/design.md 16.179).
+- **bench**: the same 8 and 16 layers in q4 (q4nx, 5 bits a weight), q6 (6.5 bits), q8 (8.5 bits) and bf16, one row a call, two ways. `layers` runs each layer's seven linears and the SwiGLU's product one after another, as hwnpu's exports of the chat models run a decode step: IRON loads every operator that follows another onto the cores again. `stream` puts the same bytes in GEMVs of one shape back to back, which are not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's `GptOssStep`, [docs/design/moe.md](docs/design/moe.md)).
 - **verify**: the layers with K rows a call, on the path each K takes in hwnpu: 1 row the decode step's QGEMV, 2 to 8 rows of q8 or q6 QGEMVRows (the call that checks drafts, `--verify`), multiples of 256 the prompt chunk's GEMM (q4 and q8 dequantize their weights on the device at every call; bfp16, the image DiTs' weights packed on the host, are read by the GEMM as they are). The default K are 1, 2, 4, 8, 256, 1024 and 4096, at the first `-layers` (8) unless `-layers` is given.
 - **attn**: the image DiTs' attention as FLUX.2 klein's export has it (`iron_mha.ImageMHA`, QKᵀ and P·V through bfp16, the softmax's exponential on one bf16 limb), 24 heads of 128, 1536 and 4608 rows (512² and 1024² with 512 rows of text; `-image-rows`, `-image-heads`, `-image-dim`).
 
@@ -142,7 +142,7 @@ Options:
 
 ## Results so far
 
-The Apple results below were measured through Core ML, before hwnpu's chat and image models moved to Core AI (macOS 27, docs/improvements.md 7.5). What depends on the hardware still holds: the Neural Engine reads weights at about 62 to 64 GB/s (44 to 48 on the M1; Core AI's chat models read theirs at 48 GB/s on an M1, docs/improvements.md 12.6). What depends on Core ML does not carry over: the 1 GiB limit is Core ML's (one Core AI program holds 2.5 to 3 GiB on an M3), and Core AI's large programs run in turn pay 50 to 70 ms each instead of the M1's limit on the total. The probe has no Core AI path yet.
+The Apple results below were measured through Core ML, before hwnpu's chat and image models moved to Core AI (macOS 27, [docs/design/apple-coreai.md](docs/design/apple-coreai.md)). What depends on the hardware still holds: the Neural Engine reads weights at about 62 to 64 GB/s (44 to 48 on the M1; Core AI's chat models read theirs at 48 GB/s on an M1, [docs/design/performance.md](docs/design/performance.md)). What depends on Core ML does not carry over: the 1 GiB limit is Core ML's (one Core AI program holds 2.5 to 3 GiB on an M3), and Core AI's large programs run in turn pay 50 to 70 ms each instead of the M1's limit on the total. The probe has no Core AI path yet.
 
 ### AMD Ryzen AI 9 365 (Strix Point, XDNA2, 32 cores; Linux, amdxdna 0.7, firmware 1.1.2.64)
 
@@ -163,7 +163,7 @@ G weights/s is the weights read a second: a model of N billion weights decodes a
 
 - **The NPU reads weights at 53 to 55 GB/s in q4, q8 and bf16**, when the operators are not loaded again (stream), as the DMA's ceiling of 55 to 57 GB/s. The Neural Engine reads at 62 to 65 GB/s (M2, M3, M4), so with 4-bit weights the M3 is 1.5 times as fast per token at the ceiling (7.5 ms against 11.6, 129 G weights/s against 84; q4nx is 5 bits a weight with its scales and minimums, lut4 a little over 4).
 - **q6 is slower than q8 although it reads fewer bytes**: it alone stays under the ceiling, at 38 GB/s, because its kernel unpacks four 6 bit codes from three bytes on the cores, and that work, not the transfer, bounds it. It reads 47 G weights/s against q8's 51 (20.7 against 19.0 ms at the ceiling, 40.2 against 38.2 in the layers form), and checking 8 drafts costs 3.9 steps against q8's 2.9 (below). On AMD q6 only saves memory (a quarter less than q8); q8 is both faster and closer to the original. q4 is the fastest by far.
-- **As the chat models' exports run a step, the ceiling is far off**: q4 reaches 19 GB/s, a third of it. A layer is 8 operators, and an operator that follows another is loaded onto the cores again (about 67 µs plus 1.2 µs a KB of its programs, docs/design.md 16.179): 20 of q4's 31 ms. In that form every format but q4 takes about the same time (38 to 41 ms), the reloads hiding what the formats save. bf16 hides it best (47 GB/s), its transfers being 3.6 times as long. gpt-oss-20b, whose step is one resident array, runs at 93 % of the ceiling; for the other models that form is the largest gain left on AMD (2.7 times for q4, by these numbers).
+- **As the chat models' exports run a step, the ceiling is far off**: q4 reaches 19 GB/s, a third of it. A layer is 8 operators, and an operator that follows another is loaded onto the cores again (about 67 µs plus 1.2 µs a KB of its programs, [docs/design/moe.md](docs/design/moe.md)): 20 of q4's 31 ms. In that form every format but q4 takes about the same time (38 to 41 ms), the reloads hiding what the formats save. bf16 hides it best (47 GB/s), its transfers being 3.6 times as long. gpt-oss-20b, whose step is one resident array, runs at 93 % of the ceiling; for the other models that form is the largest gain left on AMD (2.7 times for q4, by these numbers).
 - Energy: a token of q4 at the ceiling costs 136 mJ above idle, against 37 mJ on the M3's Neural Engine (lut4, `hwnpu-dev powerbench`). The meters differ (amdgpu's PPT is the whole package, powermetrics' figure the Neural Engine's own), so take the ratio as rough. The layers form costs more energy, not only time (293 against 136 mJ).
 
 K rows a call (8 layers, 0.49 B weights):
@@ -192,10 +192,10 @@ K rows a call (8 layers, 0.49 B weights):
 q4 has no call for 2 to 8 rows (QGEMVRows is q8 and q6 only).
 
 - **Speculative decoding has little room on AMD**: 2 drafts cost 1.04 steps and 4 cost 1.27, but 8 cost 2.85 (q6: 3.92), and a prompt chunk's GEMM is 4.6 steps whatever its rows up to 256. The best a call can advance is about 4 tokens (6.1 ms a token if every draft were kept). The Neural Engine checks 64 tokens for 1.10 calls (M3, below), so a draft model or MTP drafts pay much more there.
-- **The compute ceiling is AMD's**: 15.2 TFLOPS at 4096 rows with the weights packed as bfp16, against 13.7 on the M3's Neural Engine (K=64, below) and about 5 on the M1's (Anima's MLP, docs/improvements.md 12.5). This is why the image models, bound by compute at 4096 rows and more, became faster on AMD than on the Neural Engine once the GEMMs read bfp16 (docs/design.md 16.200): FLUX.2 klein 1024² in about 29 s against the M1's 41 s, a Qwen-Image step 8.4 s against 15.9.
+- **The compute ceiling is AMD's**: 15.2 TFLOPS at 4096 rows with the weights packed as bfp16, against 13.7 on the M3's Neural Engine (K=64, below) and about 5 on the M1's (Anima's MLP, [docs/design/performance.md](docs/design/performance.md)). This is why the image models, bound by compute at 4096 rows and more, became faster on AMD than on the Neural Engine once the GEMMs read bfp16 ([docs/design/image-amd.md](docs/design/image-amd.md)): FLUX.2 klein 1024² in about 29 s against the M1's 41 s, a Qwen-Image step 8.4 s against 15.9.
 - **A prompt chunk of q4, q6 or q8 pays its dequantize at every call**: 256 rows take 86 to 92 ms against bfp16's 28 ms, three times as long, and the chunk only nears bfp16's rate at 4096 rows. Holding a chat model's weights for the prompt in bfp16 too (9 bits a weight more) would read prompts up to 3 times as fast; not done.
 
-The image DiTs' attention (24 heads of 128): 12.8 ms at 1536 rows (2.3 TFLOPS), 81.8 ms at 4608 rows (3.2 TFLOPS). It is a fifth of the GEMMs' rate: what is left of a DiT block's time on AMD is the attention (FLUX.2 klein's single block: attention 118 of 198 ms before the exponential's change, docs/design.md 16.207).
+The image DiTs' attention (24 heads of 128): 12.8 ms at 1536 rows (2.3 TFLOPS), 81.8 ms at 4608 rows (3.2 TFLOPS). It is a fifth of the GEMMs' rate: what is left of a DiT block's time on AMD is the attention (FLUX.2 klein's single block: attention 118 of 198 ms before the exponential's change, [docs/design/image-amd.md](docs/design/image-amd.md)).
 
 Where the power goes (amdgpu's gpu_metrics, the SMU's own split, sampled every 50 ms; `hwnpu-dev probe` reports it on AMD). At rest the package draws 4.4 W:
 
@@ -207,7 +207,7 @@ Where the power goes (amdgpu's gpu_metrics, the SMU's own split, sampled every 5
 | bfp16 GEMM, 4096 rows (15.2 TFLOPS) | 24.7 | +20.3 | 2.0 (10 %) | +0.7 | +17.6 | 50 |
 | image attention, 4608 rows (3.2 TFLOPS) | 15.5 | +11.1 | 0.60 (5 %) | +0.4 | +10.1 | 17 |
 
-- **The NPU's rail is not the NPU's power**: it is 1.5 W in the layers form and falls to 0.6 to 0.75 W as the work grows (stream, attention), and is at most 2.5 W at 15 TFLOPS. It follows the operators' loads more than the work; the AIE array draws mostly from what gpu_metrics leaves in the rest. The 15 % read before was most likely this rail in the chat models' layers form (docs/design.md 16.195: about 1 W while decoding).
+- **The NPU's rail is not the NPU's power**: it is 1.5 W in the layers form and falls to 0.6 to 0.75 W as the work grows (stream, attention), and is at most 2.5 W at 15 TFLOPS. It follows the operators' loads more than the work; the AIE array draws mostly from what gpu_metrics leaves in the rest. The 15 % read before was most likely this rail in the chat models' layers form ([docs/design/architecture.md](docs/design/architecture.md): about 1 W while decoding).
 - So the rest is not the memory alone. Fitted over the 39 runs, the NPU rail and the rest above rest are about 6.4 W for being active (the fabric and the NPU's clocks up), plus 0.056 W per GB/s of DRAM traffic (56 pJ a byte) and 0.66 W per TFLOPS (0.66 pJ a FLOP), within 1.2 W for most runs (the q4 stream and the attention 1.4 to 1.8 W over: dequantizing and the softmax are work the FLOPs do not count). The DRAM chips themselves are outside the package and not in these numbers.
 - By that fit, **moving the weights is a small part even at the ceiling**: about 2.7 W of the q4 stream's 11 W, against 6.4 W for being on. In the GEMM at 15 TFLOPS the compute is about 10 of 19.6 W, half: the jobs bound by compute (image models, prompts) now spend their energy on the NPU's arithmetic, decoding on staying awake. Running the same work in less time is what saves energy: the q4 stream costs 136 mJ a token against the layers form's 293.
 
@@ -341,7 +341,7 @@ K tokens per call (8 layers, 0.49 B weights):
 | 2.95 GiB | 8 × 0.37 | 2.97 GiB | 50.5 | 51.2 | 63 |
 | 3.62 GiB | 8 × 0.45 | 3.65 GiB | 62.2 | 62.4 | 63 |
 
-  So the M1 alone slows down past about 2.9 GiB; the M2, the M3 (Qwen3.5-4B in lut8, 3.96 GiB in one program, at its expected 8 tokens/s, docs/design.md 16.88) and the M4 (3.62 GiB) do not.
+  So the M1 alone slows down past about 2.9 GiB; the M2, the M3 (Qwen3.5-4B in lut8, 3.96 GiB in one program, at its expected 8 tokens/s, [docs/design/llm-qwen.md](docs/design/llm-qwen.md)) and the M4 (3.62 GiB) do not.
 
 Every format, as on AMD above (`hwnpu-dev probe bench`, macOS 27.2.1, 2026-11-20; report: [npuprobe-m2-formats.md](npu_profiles/npuprobe-m2-formats.md)). 16 layers (0.97 B) on the Neural Engine; fp16 at 16 layers (1.81 GiB) is over the limit and falls to the CPU, so its row is 8 layers:
 
@@ -404,7 +404,7 @@ K tokens per call in every format the Neural Engine runs (`hwnpu-dev probe verif
 | 3.17 GiB | 8 × 0.40 | 3.20 GiB | 814 | 77.0 | 4 |
 | 3.62 GiB | 8 × 0.45 | 3.66 GiB | 1010 | 86.3 | 4 |
 
-  So on the M1 a model's programs that run in turn should hold under about 2.8 GiB on the Neural Engine. The M2 has no such limit (above). Qwen3.5-4B in lut8 (3.96 GiB) and lut6 (2.95 GiB) are over it and generate at about 1 token/s; in lut4 (1.96 GiB) at 10.9 (docs/design.md 16.109).
+  So on the M1 a model's programs that run in turn should hold under about 2.8 GiB on the Neural Engine. The M2 has no such limit (above). Qwen3.5-4B in lut8 (3.96 GiB) and lut6 (2.95 GiB) are over it and generate at about 1 token/s; in lut4 (1.96 GiB) at 10.9 ([docs/design/llm-decoding.md](docs/design/llm-decoding.md)).
 
 ### Apple M4
 
@@ -458,5 +458,5 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe verify -layers 8
 - Random weights: the numbers say nothing about accuracy. For accuracy, see [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
 - No KV cache: real decoding adds the attention over the context, small next to the weights at short contexts.
 - Core ML's compute plan is an estimate of placement; CPU use is the cross-check.
-- AMD's stream form is a stand-in for a step as one resident array: the same bytes, without what such an array adds (its phases' fixed 25 to 35 µs, a command boundary a layer, docs/design.md 16.179).
+- AMD's stream form is a stand-in for a step as one resident array: the same bytes, without what such an array adds (its phases' fixed 25 to 35 µs, a command boundary a layer, [docs/design/moe.md](docs/design/moe.md)).
 - `hwnpu-dev powerbench -decode` and the Intel paths of hwnpu-dev probe have not been run on hardware other than the M3 yet.

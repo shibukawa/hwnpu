@@ -86,7 +86,7 @@ type Model struct {
 	// NoThink is the model's own default of answering without thinking first, which -think
 	// given on the command line, reasoning_effort or enable_thinking override (Qwen3.5's 0.8B
 	// and 2B: their chat templates think only when asked, and the 0.8B thinks to the budget on
-	// simple questions, docs/design.md 16.99).
+	// simple questions, docs/design/llm-qwen.md).
 	NoThink bool
 	// Device is where the model runs by the vendor of the machine's NPU (Vendors: "amd",
 	// "apple", "intel"), Devices: "npu" or "cpu"; a vendor it leaves out runs it on the NPU

@@ -323,7 +323,7 @@ func tlsHandshakeTimeout(err error) bool {
 
 // call is do for an answer whose body is not wanted: read to its end and closed, so that its
 // connection is used again (a connection left open is not, and each new one asks for the host's
-// address again: 5 seconds a request for a NAS's .local name, design.md 16.231).
+// address again: 5 seconds a request for a NAS's .local name, docs/design/distribution.md).
 func (w *WebDAV) call(ctx context.Context, method, u string, hdr http.Header, body func() (io.Reader, int64), ok ...int) error {
 	resp, err := w.do(ctx, method, u, hdr, body, ok...)
 	if err != nil {
