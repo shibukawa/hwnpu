@@ -301,7 +301,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		return p, tables()
 	}
 	for export := range pending {
-		if err := llm.StartExport(export); err != nil {
+		if err := llm.StartExport(ctx, export); err != nil {
 			return p, err
 		}
 	}

@@ -53,7 +53,7 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 			return nil, fmt.Errorf("segment: %s has %d inputs and %d outputs, not the encoder's 1 and 1", encoder, len(g.Inputs), len(g.Outputs))
 		}
 		bar := console.NewBar(cmp.Or[io.Writer](log, io.Discard), "converting "+name)
-		if err := llm.StartProgram(path, export); err != nil {
+		if err := llm.StartProgram(ctx, path, export); err != nil {
 			bar.Done("failed")
 			return nil, fmt.Errorf("segment: %w", err)
 		}

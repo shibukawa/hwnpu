@@ -1,4 +1,4 @@
-// Package hfcmd is hwnpu-dev hf: putting the conversions the sources hold on Hugging Face, one
+// Package hfcmd is hwnpu-dev models hf: putting the conversions the sources hold on Hugging Face, one
 // repository a model (docs/prebuilt.md), and pinning in models.yaml the commit each target reads.
 package hfcmd
 
@@ -21,29 +21,29 @@ import (
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
-// Cmd is hwnpu-dev hf.
+// Cmd is hwnpu-dev models hf; its subcommands take the definitions' flag of models
+// (devopt.Defs).
 type Cmd struct {
-	Models string `help:"${models_usage}" placeholder:"FILE,..."`
-
 	Plan  PlanCmd  `cmd:"" help:"Show the layers, and what of each model's conversions they hold could go to Hugging Face now (N:MODEL/TARGET for push), or what to do first."`
 	Push  PushCmd  `cmd:"" help:"Put conversions the layers hold in their models' repositories on Hugging Face (hub.push/MODEL), then pin the commit in models.yaml."`
 	Check CheckCmd `cmd:"" help:"Check the models' repositories on Hugging Face at the commits models.yaml pins: what is missing there, or not what this hwnpu makes."`
 	Sizes SizesCmd `cmd:"" help:"Show what each model downloads and keeps on the disk by the NPU's vendor, from the conversions the layers hold; with --write set models.yaml's disk."`
 }
 
-func load(c *Cmd) error { return chat.LoadUserModels(c.Models, os.Stderr) }
+func load(d *devopt.Defs) error { return d.Load() }
 
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt)
 }
 
-// HubRepoName is the repository hwnpu-dev hf push puts model m's conversions in: hub.push/MODEL.
+// HubRepoName is the repository hwnpu-dev models hf push puts model m's conversions in: hub.push/MODEL.
 func HubRepoName(m chat.Model) string { return chat.HubPush + "/" + m.Name }
 
 // selector is N:MODEL/TARGET of the command line: the layer (-1: any), the model, the group
@@ -59,7 +59,7 @@ func parseSelector(s string) (selector, error) {
 	if n, rest, ok := strings.Cut(s, ":"); ok {
 		i, err := strconv.Atoi(n)
 		if err != nil || i < 0 {
-			return sel, fmt.Errorf("%s: the layer before : is a number of hwnpu-dev hf plan's list", s)
+			return sel, fmt.Errorf("%s: the layer before : is a number of hwnpu-dev models hf plan's list", s)
 		}
 		sel.layer, s = i, rest
 	}
@@ -91,7 +91,7 @@ func selectRows(ctx context.Context, args []string) ([]*row, error) {
 			return nil, err
 		}
 		if s.layer >= len(ls) {
-			return nil, fmt.Errorf("%s: no layer %d (hwnpu-dev hf plan lists 0 to %d)", a, s.layer, len(ls)-1)
+			return nil, fmt.Errorf("%s: no layer %d (hwnpu-dev models hf plan lists 0 to %d)", a, s.layer, len(ls)-1)
 		}
 		sels = append(sels, s)
 	}
@@ -151,7 +151,7 @@ func hfState(ctx context.Context, r *row) (string, bool) {
 
 func short(c string) string { return c[:min(len(c), 8)] }
 
-// printLayers writes the layers hwnpu-dev hf takes from and where push puts the conversions.
+// printLayers writes the layers hwnpu-dev models hf takes from and where push puts the conversions.
 func printLayers(w io.Writer) {
 	fmt.Fprintln(w, "layers:")
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
@@ -165,11 +165,11 @@ func printLayers(w io.Writer) {
 		}
 		fmt.Fprintf(tw, "  %d\t%s\t%s\n", i, s, what)
 	}
-	fmt.Fprintf(tw, "  -\thf:%s\twhere hwnpu-dev hf push puts them (hub.push of %s)\n", chat.HubPush, chat.HubPushFile)
+	fmt.Fprintf(tw, "  -\thf:%s\twhere hwnpu-dev models hf push puts them (hub.push of %s)\n", chat.HubPush, chat.HubPushFile)
 	tw.Flush()
 }
 
-// printRows writes the rows as hwnpu-dev hf plan shows them, the ones that can go first.
+// printRows writes the rows as hwnpu-dev models hf plan shows them, the ones that can go first.
 func printRows(ctx context.Context, w io.Writer, rs []*row) {
 	type line struct {
 		r        *row
@@ -231,14 +231,14 @@ func printRows(ctx context.Context, w io.Writer, rs []*row) {
 // prebuiltChips are the architectures coreai-build makes programs for (docs/design/apple-coreai.md).
 var prebuiltChips = []string{"h13g", "h14c", "h14g", "h15c", "h15g", "h16c", "h16g", "h16s", "h17c", "h17d", "h17g", "h17s"}
 
-// PlanCmd is hwnpu-dev hf plan.
+// PlanCmd is hwnpu-dev models hf plan.
 type PlanCmd struct {
 	Sel     []string `arg:"" optional:"" name:"N:MODEL/TARGET" help:"What to show (every model when left out): a model, its target (amd-xdna2, apple, coreai, coreai-ARCH) after /, the layer it comes from before :."`
 	Verbose bool     `short:"v" help:"Show each entry, and the chips that have prebuilt programs."`
 }
 
-func (p PlanCmd) Run(c *Cmd) error {
-	if err := load(c); err != nil {
+func (p PlanCmd) Run(d *devopt.Defs) error {
+	if err := load(d); err != nil {
 		return err
 	}
 	ctx, stop := signalContext()
@@ -286,9 +286,9 @@ func (p PlanCmd) Run(c *Cmd) error {
 	return nil
 }
 
-// PushCmd is hwnpu-dev hf push.
+// PushCmd is hwnpu-dev models hf push.
 type PushCmd struct {
-	Sel    []string `arg:"" optional:"" name:"N:MODEL/TARGET" help:"What to put (when left out: every row hwnpu-dev hf plan shows can go, asked first)."`
+	Sel    []string `arg:"" optional:"" name:"N:MODEL/TARGET" help:"What to put (when left out: every row hwnpu-dev models hf plan shows can go, asked first)."`
 	To     string   `placeholder:"NAMESPACE" help:"The namespace on Hugging Face to put them in, this time (else models.yaml's hub.push)."`
 	Write  string   `placeholder:"FILE" help:"The definition file to pin the commits in (else the one that gave hub.push: the source tree's models.yaml for the built-in one)."`
 	All    bool     `help:"Do not ask before putting every row that can go (a repository is still made only when asked)."`
@@ -296,8 +296,8 @@ type PushCmd struct {
 	Keep   bool     `help:"Keep the folder the repository was made in (the cache's work/hf/MODEL)."`
 }
 
-func (p PushCmd) Run(c *Cmd) error {
-	if err := load(c); err != nil {
+func (p PushCmd) Run(d *devopt.Defs) error {
+	if err := load(d); err != nil {
 		return err
 	}
 	ctx, stop := signalContext()
@@ -327,7 +327,7 @@ func (p PushCmd) Run(c *Cmd) error {
 		goes = append(goes, r)
 	}
 	if len(goes) == 0 {
-		return errors.New("nothing to put (hwnpu-dev hf plan says what to do first)")
+		return errors.New("nothing to put (hwnpu-dev models hf plan says what to do first)")
 	}
 	printLayers(os.Stderr)
 	printRows(ctx, os.Stderr, goes)
@@ -593,13 +593,13 @@ var confirm = func(q string) bool {
 	return a == "y" || a == "yes"
 }
 
-// CheckCmd is hwnpu-dev hf check.
+// CheckCmd is hwnpu-dev models hf check.
 type CheckCmd struct {
 	Model []string `arg:"" optional:"" help:"Models to check (every model whose hub pins a commit when left out)."`
 }
 
-func (k CheckCmd) Run(c *Cmd) error {
-	if err := load(c); err != nil {
+func (k CheckCmd) Run(d *devopt.Defs) error {
+	if err := load(d); err != nil {
 		return err
 	}
 	ctx, stop := signalContext()
@@ -652,7 +652,7 @@ func (k CheckCmd) Run(c *Cmd) error {
 // AMD's NPU, every export the commands look for is there. It returns the problems it wrote.
 func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin string) (int, error) {
 	if pin == "main" {
-		fmt.Fprintf(w, "%s\t%s\t%s\tmain\t-\tnot a commit: pin one (hwnpu-dev hf push writes it)\n", m.Name, repo, target)
+		fmt.Fprintf(w, "%s\t%s\t%s\tmain\t-\tnot a commit: pin one (hwnpu-dev models hf push writes it)\n", m.Name, repo, target)
 	}
 	b, err := shared.HubRead(ctx, repo, pin, "config.json")
 	if err != nil {
@@ -700,7 +700,7 @@ func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin 
 			e, err := read(rel)
 			switch {
 			case err != nil:
-				report(rel, "missing (hwnpu-dev hf push)", true)
+				report(rel, "missing (hwnpu-dev models hf push)", true)
 			case chat.Takes(want, e) && e.Recipe["tools"] != want.Recipe["tools"]:
 				report(rel, "the tools changed since: a version to bump if the export changed", false)
 			case chat.Takes(want, e):

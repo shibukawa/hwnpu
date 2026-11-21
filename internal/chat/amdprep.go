@@ -175,7 +175,7 @@ var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_c
 
 // PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as models.yaml's amd_export
 // says: from the shared layers when one has it (SharedExport; else one made by hand under its
-// name that hwnpu-dev cache import put there), else it checks that IRON's
+// name that hwnpu-dev models import put there), else it checks that IRON's
 // environment is there (IRONEnv), downloads the checkpoint (RepoDir: only the files the
 // exporter reads), and runs tools/amd/iron_export_lm.py (the copy
 // built into hwnpu) in that environment into DIR.part, renamed to the export when it is done.
@@ -193,7 +193,7 @@ func PrepareAMD(ctx context.Context, m Model, log io.Writer) (string, error) {
 	if len(shared.Sources()) > 0 {
 		recipe = ExportRecipe(ctx, m, "iron_export_lm.py", m.AMDExport)
 	}
-	// else one made by hand under its name and put in the sources (hwnpu-dev cache import)
+	// else one made by hand under its name and put in the sources (hwnpu-dev models import)
 	imported := []SharedRecipe{{Kind: ImportKind, Recipe: ImportedRecipe(m, cache.AMDTarget, filepath.Base(out))}}
 	err := SharedExportOr(ctx, "iron-lm", recipe, imported, out, log, func() error {
 		python, err := ironPython(ctx)

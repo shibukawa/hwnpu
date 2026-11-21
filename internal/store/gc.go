@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// GC is what hwnpu-dev cache gc removes from a source: the entries chosen (their folders), and
+// GC is what hwnpu-dev models gc removes from a source: the entries chosen (their folders), and
 // with orphans what a writeback cut off left under converted/ (Clean's: the folders with no
 // entry.json, the temporary files of uploads; a folder being written is left). Nothing is
 // removed until Apply.

@@ -14,7 +14,7 @@ import (
 
 // The converted models on Hugging Face (docs/prebuilt.md): models.yaml's hub names, for a
 // model, the repositories its conversions are in and the commit each target reads there, and at
-// its top the namespace hwnpu-dev hf push puts them in (hub: {push: hwnpu}).
+// its top the namespace hwnpu-dev models hf push puts them in (hub: {push: hwnpu}).
 
 // HubRepo is a repository of a model's conversions on Hugging Face (models.yaml's hub).
 type HubRepo struct {
@@ -26,7 +26,7 @@ type HubRepo struct {
 	File string
 }
 
-// HubPush is the namespace on Hugging Face that hwnpu-dev hf push puts the conversions in
+// HubPush is the namespace on Hugging Face that hwnpu-dev models hf push puts the conversions in
 // (models.yaml's hub.push, the last file's that gives it), and HubPushFile that file.
 var HubPush, HubPushFile string
 

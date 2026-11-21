@@ -260,7 +260,7 @@ const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
 
 // Prebuilt is the program coreai-build compiled for this device's architecture for the asset at
 // dir, or "" without one of the same source (main.hash): X.ARCH.aimodelc beside X.aimodel
-// (hwnpu-dev prebuild), else the packed one beside the export (PackedPath, from the shared
+// (hwnpu-dev models prebuild), else the packed one beside the export (PackedPath, from the shared
 // layers; Assemble makes it whole). Core AI loads it without the Neural Engine compiler's pass
 // over the program: the device finishes the compiled regions (ANELargeModelCompilerService), 3
 // to 5 times faster for a large program, and fills the same cache entry (the hash is the

@@ -91,7 +91,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 ```
 
 - lock の名指さないファイルは読まない。lock なしで手で写したリポジトリ (NAS の gated のチェックポイント) は見つからず、Hugging Face に回る
-- コミットはリポジトリごとに 1 回決める: models.yaml の固定 (`from: hf:OWNER/NAME@REV`)、なければ最初の取得元の lock、手元の lock、Hugging Face の `main` の順。どの層から取っても全ファイルがそのコミットのもの。lock を移すのは `hwnpu-dev cache update` だけ (変わったファイルだけ落とし直す)。取得元の lock が移れば手元も移り、sha256 が同じファイルは残す (`store.Record`)
+- コミットはリポジトリごとに 1 回決める: models.yaml の固定 (`from: hf:OWNER/NAME@REV`)、なければ最初の取得元の lock、手元の lock、Hugging Face の `main` の順。どの層から取っても全ファイルがそのコミットのもの。lock を移すのは `hwnpu-dev models update` だけ (変わったファイルだけ落とし直す)。取得元の lock が移れば手元も移り、sha256 が同じファイルは残す (`store.Record`)
 - 速い道: 手元の lock がファイルを名指し、大きさが合い、コミットが決まったものと同じなら、ネットにも取得元にも聞かない
 - 元のファイルはどの層から来ても手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`) に置く。`chat.Fetch(ctx, repo, name, log)` と `chat.FetchWeights` がパスを返す。モデルの間で共有する部品 (Chroma の T5-XXL と VAE) は各リポジトリのフォルダにあり、sha256 でハードリンクする
 - `TARGET`: `amd-xdna2`、`coreai`、`coreai-ARCH` (prebuilt)、`any` (表、GPTQ の codes)。`VERSION`: models.yaml に `targets.<対象>.version: N` があれば `vN` (道具の hash を除いたレシピが同じなら当たる)、`develop: true` なら `vN-<8 桁>`、版がなければ `v0-<8 桁>`
@@ -126,9 +126,9 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - 順: データが先、`entry.json` (か lock の項目) が最後。ファイルは `.put-…` に書いて MOVE (S3 は PUT が終わって初めて見える)
 - tee: Hugging Face からのダウンロードを、来るそばからフォルダと WebDAV の取得元に流し、大きさと sha256 が合ったときだけ確定する。64 MiB 遅れた取得元 (`store.TeeBuffer`)、S3、`.part` からの続きは外れて、ダウンロードの後で queue から置く
 - 詰めない変換結果は作りながら置く (`store.StartEarly`: 3 秒触られないファイル、`EarlySettle`)。残りは `PutEntry`。詰めるもの (AMD、Core AI) は揃ってから置く
-- queue (`store.PutLater`、`work/queue/`、4 本) は終わる前に待ち、切れたら次の起動で続け、失敗は `work/queue.log` に書き、コマンドを失敗させない。`hwnpu-dev cache flush` で待つ
+- queue (`store.PutLater`、`work/queue/`、4 本) は終わる前に待ち、切れたら次の起動で続け、失敗は `work/queue.log` に書き、コマンドを失敗させない。`hwnpu-dev models flush` で待つ
 - 書いている間のフォルダには `.writing-ID` (JSON: 機械、プロセス、始めた時刻、最後に書いた時刻) を置き、5 分ごとに書き直し、終われば消す (`store.MarkWriting`)。書く道はどれも置く (tee と作りながら置くのも)
-- 詰める (`store.Packs`、`entry.json` の隣の `files.tar.zst`): AMD と Core AI の書き出しは tar を zstd で詰めた 1 ファイル。効くのは要求の数 (WebDAV で PUT と MOVE が 1 回)。大きさは Core AI で 1〜5 % (LFM3-1.7B 2.62 → 2.59 GB)、AMD のチャットの 13 モデルで 16 % (65.7 → 55.2 GB)。取るときは続きから落とし、詰めたものの sha256、次に各ファイルを `entry.json` と照らす。手元には展開したものだけを残す。前の hwnpu がばらで置いたものも読める。`hwnpu-dev cache repack` で詰め直す
+- 詰める (`store.Packs`、`entry.json` の隣の `files.tar.zst`): AMD と Core AI の書き出しは tar を zstd で詰めた 1 ファイル。効くのは要求の数 (WebDAV で PUT と MOVE が 1 回)。大きさは Core AI で 1〜5 % (LFM3-1.7B 2.62 → 2.59 GB)、AMD のチャットの 13 モデルで 16 % (65.7 → 55.2 GB)。取るときは続きから落とし、詰めたものの sha256、次に各ファイルを `entry.json` と照らす。手元には展開したものだけを残す。前の hwnpu がばらで置いたものも読める。`hwnpu-dev models repack` で詰め直す
 
 ### 通信
 
@@ -164,7 +164,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 - 何か: 機種ごとの `coreai-build` の出力 (`X.ARCH.aimodelc`) から重みを除いたもの。`coreai.Pack` は `resources.bin` (大きさの 99 %) を `main.mlirb` の塊と突き合わせて `resources.bin.map.json` にする (231 MB の部品が 2.97 MB、組み立て直してバイト単位で同一)。`coreai.Bundle` で機種ごとに `prebuilt.tar.zst` (取るのは自分の機種だけなので、全機種で 1 つにはしない)
 - 取る: Core AI の項目も手元の prebuilt もない部品を `Compile` が読むとき、書き出しごとにプロセスで 1 回、`coreai.FetchPrebuilt` が取得元に聞き、`EXPORT.prebuilt/ARCH/` に置く。`coreai.Assemble` が一時フォルダに組み立て (小さなファイルはハードリンク、重みは `main.mlirb` から、大きさと sha256 を照らす。違うバイトコードからは作らない)、Core AI に開かせてから消す。`HWNPU_COREAI_PREBUILT=off` で使わない
-- 置く: `hwnpu-dev prebuild -arch LIST -put EXPORT` (`-packed` は置かずに詰めるだけ)。部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB だった)。機種は 1 つずつ作る: 12 種類を一度に作るとどれも置かれない。ディスクを見る: `coreai-build` の後に `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残った
+- 置く: `hwnpu-dev models prebuild --arch LIST EXPORT` (`--packed` は置かずに詰めるだけ、`--no-put` はソースの横に全体のまま残す)。部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB だった)。機種は 1 つずつ作る: 12 種類を一度に作るとどれも置かれない。ディスクを見る: `coreai-build` の後に `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残った
 - prebuilt のある機種にも `.aimodel` の書き出しは要る (重みはそこから)
 - 置くモデル: 効くものだけ
 
@@ -177,7 +177,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 | LFM3-1.7B (チャット) | 2 分 17 秒 | 8 分 12 秒 | M2 16 GB |
 | plamo-3-translate-8b (チャット) | 1 分 13 秒 | 7 分 08 秒 | M2 16 GB |
 
-  - 遅い部品の多い画像のモデルが勝つ (FLUX.2 klein、Chroma1-Flash、Anima: `-arch all -put` で置く)。チャットのモデルは負ける: プロセスで最初の prebuilt の部品に `ANELargeModelCompilerService` で決まった 3〜6 分がかかる。Qwen3.5-4B は読めたが 1 時間 40 分答えなかった。チャットのモデルには prebuilt を置かない
+  - 遅い部品の多い画像のモデルが勝つ (FLUX.2 klein、Chroma1-Flash、Anima: `--arch all` で置く)。チャットのモデルは負ける: プロセスで最初の prebuilt の部品に `ANELargeModelCompilerService` で決まった 3〜6 分がかかる。Qwen3.5-4B は読めたが 1 時間 40 分答えなかった。チャットのモデルには prebuilt を置かない
   - 1 ステップの時間は同じ。FLUX.2 klein の絵は prebuilt で少し違う (PSNR 28.9 dB)。Chroma と Anima はバイト単位で同じ
 - 制約:
   - 使えるのは 12 種類 (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s)。M1 Pro / Max / Ultra、M2 Pro / Ultra、M3 Pro / Ultra、h15m、A18 では `coreai-build` が `ANEHostCompiler` で落ちる (SIGSEGV、プログラムに依らない)。M6 (h18g) は `redefinition of symbol named 'hwnpu_N'` で GPU に落ちる。Apple に報告した
@@ -220,7 +220,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - 消さないもの: 最近 1 時間に使ったもの (`cache.KeepRecent`)、このプロセスが使ったもの、書き戻しの queue にあるもの (`cache.SetBusy`)。走査はプロセスに 1 回
 - 空きが足りず prebuilt があるときは、prebuilt のある部品の Core AI の項目 (`coreai-cache/<OS>/hwnpu*/<hash>`、重みの複製) を先に消す: 数秒で作り直せる。prebuilt そのものは残す
 - 機械に縛られたコンパイルのキャッシュ (`cache.Prune`、チャットの読み込みの後): 元のパッケージ (`<key>.src`) が消えた項目、30 日使っていない項目、1 日たった一時フォルダを消す
-- コマンド: 利用者は `hwnpu cache [ls|prune|clear|clean]`、取得元を運用する人は `hwnpu-dev cache …` (取得元の 0 番が手元のキャッシュ)。フラグは [../cache-sharing.md](../cache-sharing.md)
+- コマンド: 利用者は `hwnpu cache [ls|prune|clear|clean]`、取得元を運用する人は `hwnpu-dev models …` (取得元の 0 番が手元のキャッシュ)。フラグは [../cache-sharing.md](../cache-sharing.md)
 - `modelstore` も同じものを出す (`Options.Limits`、`Usage`、`PlanPrune`、`Prune`、`Remove`、`PlanClean`、`Clean`、`ErrNoRoom`)
 
 ### 取得元の掃除 (`hwnpu cache clean [-n] [-y]`、`store.PlanClean`)
@@ -230,15 +230,15 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - `converted/` と `original/` の外 (NAS の `.DS_Store` など): 触らない
 - 最後に書いたのが 1 時間以内 (`store.WritingStale`) の `.writing-ID` の印があるか、ファイルの時刻 (WebDAV の `getlastmodified`、mtime、S3 の LastModified) のどれかが 1 時間以内のフォルダは、書いている途中として残す。印だけでは足りなかった: 印を置かない前の hwnpu が、計画と実行の間に書き始めた。消す直前にフォルダを見直す。印は最後に消す
 - S3 の、Complete も Abort もされなかったマルチパート (一覧に出ないまま課金される) は、`converted/` と `original/` の下で `WritingStale` を過ぎたものを中止する (`ListMultipartUploads`、tinygodriver v1.3.10)
-- `hwnpu-dev cache gc N … --orphans` も同じ決め方
+- `hwnpu-dev models gc N … --orphans` も同じ決め方
 
 ## 未解決
 
-- 変換済みのモデルの Hugging Face での配布 (組織 `hwnpu`、1 モデル 1 リポジトリ、取得元から `hwnpu-dev hf push` で手で上げ、元のリポジトリの前の層として読む): 読む層、`hub` の固定、`hwnpu-dev hf plan / push / check` を実装。まだ何も上げていない。書くための device flow、20 GB を超える書き出しを切ること、gated で断られたら止めることが残り ([../prebuilt.md](../prebuilt.md))。今は利用者の取得元で共有する
+- 変換済みのモデルの Hugging Face での配布 (組織 `hwnpu`、1 モデル 1 リポジトリ、取得元から `hwnpu-dev models hf push` で手で上げ、元のリポジトリの前の層として読む): 読む層、`hub` の固定、`hwnpu-dev models hf plan / push / check` を実装。まだ何も上げていない。書くための device flow、20 GB を超える書き出しを切ること、gated で断られたら止めることが残り ([../prebuilt.md](../prebuilt.md))。今は利用者の取得元で共有する
 - 手元の並び: `models/NAME` のプログラムと `entries/` を `converted/MODEL/TARGET/EXPORT/vN/` に移し、完了の印を `entry.json` 1 つに (今は `NAME.done`、`NAME.ext.done`、`entry.json` が混在)。`~/models` を一度移して読まなくする。`modelstore` に変換の API (`Make`)。同梱の変換結果をその場で使う (今はコピー)
 - Core ML と OpenVINO のプログラムのエントリ、機械に縛られた (`host`) エントリの取得元での共有、対象の名前での AMD / Intel の NPU の世代の区別
 - 道具の引数を Go が持たない手で作る画像の書き出し (Anima): 今は名前でだけ
-- `hwnpu-dev cache push` は初回の FLUX.2 klein の書き出しを知らない
+- `hwnpu-dev models put` は初回の FLUX.2 klein の書き出しを知らない
 - 実機で確かめていない: AWS の S3、Synology の WebDAV、Windows のロックと ReFS / Dev Drive の写し、bcachefs、ZFS、NFS での写し、Windows と macOS で実際のダウンロード中のディスクの空き
 - `FormatVersion` 2 の後、8 GB の列の Core AI のチャットの書き出し (LFM3-1.7B、Qwen3.5-0.8B、Qwen3-1.7B) をまだ作り直して置いていない。Anima-Turbo の 1024² の Core AI の書き出しはまだ取得元にない。Qwen2.5-Coder-7B は GPTQ の codes を作り直し (`tools/ref/qwen2_gptq.py`)、一度変換する要がある
 - prebuilt の仕上げの最初の部品の決まった費用、落ちる 9 種類、M6 の名前の衝突、FLUX の数値の違いは Apple 待ち (作り直すには新しい Metal Toolchain が要る)
@@ -249,7 +249,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 - チェックポイントや重みのディスクの上での圧縮: lz4 で約 100 %、zstd で 71〜90 %。しかも写像するものは展開した写しが要る
 - models.yaml の取得元 (`sources`、`search`、`cache.layers`、`from: SOURCE:NAME`)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE`: 環境変数の URL に置き換えた。まだ書いたファイルは移し方を書いたエラー
-- 内容で番地を決める並び (`blobs/sha256/…`、`upstream/`、`entries/KIND/KEY.json`) とその重複除去: 人が見て分からず、普通の HTTP サーバーで配れない。前のデータは `hwnpu-dev cache migrate` がハードリンクで移す
+- 内容で番地を決める並び (`blobs/sha256/…`、`upstream/`、`entries/KIND/KEY.json`) とその重複除去: 人が見て分からず、普通の HTTP サーバーで配れない。前のデータは `hwnpu-dev models migrate` がハードリンクで移す
 - `HWNPU_OFFLINE` (`HWNPU_MODEL_HUGGING_FACE=false` を使う) と `HWNPU_PREBUILT` (取得元にあれば使う)
 - Hugging Face のトークンのディスクへの保存: メモリだけ
 - ONNX Runtime のライブラリの自動の取得: ネイティブのライブラリの配布は利用者が決める (`HWNPU_ONNXRUNTIME` かシステムのもの)

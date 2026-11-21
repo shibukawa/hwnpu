@@ -29,7 +29,10 @@ func ExportDone(done string) bool {
 }
 
 // StartExport makes export an empty directory, what an earlier conversion cut off removed.
-func StartExport(export string) error {
+func StartExport(ctx context.Context, export string) error {
+	if err := MayConvert(ctx, export); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(export); err != nil {
 		return err
 	}
@@ -56,6 +59,36 @@ type Sharer interface {
 	Fetch(ctx context.Context, export string) bool
 	// Put puts export, made here and whole, in the layers that are written (in the background).
 	Put(ctx context.Context, export string)
+}
+
+type fetchOnlyKey struct{}
+
+// WithFetchOnly is ctx in which nothing is converted: what is neither here nor in the shared
+// layers is not made (MayConvert), while the files a conversion would read are still fetched
+// (hwnpu-dev models fetch, which brings a model here and to the sources written back to, to
+// try conversions on it after).
+func WithFetchOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, fetchOnlyKey{}, true)
+}
+
+// FetchOnly reports whether ctx converts nothing (WithFetchOnly).
+func FetchOnly(ctx context.Context) bool { b, _ := ctx.Value(fetchOnlyKey{}).(bool); return b }
+
+// NotFetchedError is what MayConvert returns in a ctx that converts nothing: What (a path or a
+// name) is neither here nor in the shared layers.
+type NotFetchedError struct{ What string }
+
+func (e *NotFetchedError) Error() string {
+	return filepath.Base(e.What) + " is neither here nor in the sources, and nothing is converted now (hwnpu-dev models export makes it)"
+}
+
+// MayConvert is called where a conversion would start, once what it makes was looked for here
+// and in the shared layers: nil, or a *NotFetchedError in a ctx that converts nothing.
+func MayConvert(ctx context.Context, what string) error {
+	if FetchOnly(ctx) {
+		return &NotFetchedError{What: what}
+	}
+	return nil
 }
 
 // SharedExports is the Sharer of the exports (chat sets it); nil: none is shared.
@@ -118,9 +151,12 @@ func ProgramReady(ctx context.Context, dir, name, done, export string) bool {
 
 // StartProgram removes what an earlier conversion left of a program of ProgramPath and starts
 // its export when it has one.
-func StartProgram(program, export string) error {
+func StartProgram(ctx context.Context, program, export string) error {
 	if export != "" {
-		return StartExport(export)
+		return StartExport(ctx, export)
+	}
+	if err := MayConvert(ctx, program); err != nil {
+		return err
 	}
 	return os.RemoveAll(program)
 }

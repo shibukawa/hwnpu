@@ -161,7 +161,7 @@ const m1HoldBytes = 2867 << 20 // 2.8 GiB
 // before it slows down, 0 for no such limit: m1HoldBytes on an M1 (the M1 Pro, Max and Ultra,
 // with the same Neural Engine, are taken to be alike; not measured).
 var neuralEngineHold = func() int64 {
-	if strings.HasPrefix(cpuBrand(), "Apple M1") {
+	if chipName() == "M1" {
 		return m1HoldBytes
 	}
 	return 0
@@ -1123,6 +1123,9 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if p, ok := cache.ReadDone(done); ok {
 		return p, nil
 	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return "", err
+	}
 	unlock, err := cache.Lock(ctx, out, filepath.Base(out), log)
 	if err != nil {
 		return "", err
@@ -1236,6 +1239,9 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 	converted(ctx, export) // from the shared layers when one has it
 	if _, ok := cache.ReadDone(done); ok {
 		return manifests, nil
+	}
+	if err := llm.MayConvert(ctx, export); err != nil {
+		return nil, err
 	}
 	unlock, err := cache.Lock(ctx, export, filepath.Base(export), log)
 	if err != nil {

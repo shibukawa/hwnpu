@@ -69,7 +69,7 @@ type LockUpdate struct {
 // UpdateLock moves the files of repo (OWNER/NAME[@REVISION]) in source s to the commit Hugging
 // Face serves for the revision (main): each file its lock names that has another SHA-256 there
 // is downloaded and put again, one the commit does not have is dropped, and the lock is written
-// with the new commit last (hwnpu-dev cache update). A source with no lock of repo is left.
+// with the new commit last (hwnpu-dev models update). A source with no lock of repo is left.
 func UpdateLock(ctx context.Context, s shared.Source, repo string, log io.Writer) (LockUpdate, error) {
 	var u LockUpdate
 	if log == nil {

@@ -151,3 +151,34 @@ func Here(ctx context.Context) NPU {
 	n.Target, n.Format = f, f
 	return n
 }
+
+// registered are the roles of the packages of models, in the order they were registered.
+var registered []*Role
+
+// Register adds r to the roles For finds: each package of models registers its roles, so that a
+// tool (hwnpu-dev models export) makes a model ready as the app would, by its kind alone.
+func Register(r *Role) { registered = append(registered, r) }
+
+// For is the first role registered that runs m; nil when none does (or its package is not
+// imported).
+func For(m chat.Model) *Role {
+	for _, r := range registered {
+		if r.Accepts(m) == nil {
+			return r
+		}
+	}
+	return nil
+}
+
+// ForTarget is the NPU of a target as the shared layers name it (amd-xdna2, coreai), to prepare
+// a model for it on any machine: the programs are converted and put in the layers, not loaded,
+// so no device of the target needs to be here.
+func ForTarget(target string) (NPU, error) {
+	switch target {
+	case cache.AMDTarget:
+		return NPU{Vendor: "amd", Target: cache.AMDTarget}, nil
+	case cache.CoreAITarget:
+		return NPU{Vendor: "apple", Target: cache.CoreAITarget, Device: llm.BackendCoreAI, Format: llm.BackendCoreAI}, nil
+	}
+	return NPU{}, fmt.Errorf("ai: no target %q to prepare models for (%s, %s)", target, cache.AMDTarget, cache.CoreAITarget)
+}

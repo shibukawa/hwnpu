@@ -81,7 +81,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 		if err := os.MkdirAll(r.dir, 0o755); err != nil {
 			return err
 		}
-		if err := llm.StartProgram(path, export); err != nil {
+		if err := llm.StartProgram(ctx, path, export); err != nil {
 			return err
 		}
 		_, err := llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {

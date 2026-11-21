@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -193,7 +195,7 @@ func TestSharedExport(t *testing.T) {
 	}
 }
 
-// TestSharedExportImported takes an export made by hand that hwnpu-dev cache import put in the
+// TestSharedExportImported takes an export made by hand that hwnpu-dev models import put in the
 // source (ImportedRecipe) when the source has none of the recipe's, without building it or
 // putting it again; with neither, it builds and puts the recipe's.
 func TestSharedExportImported(t *testing.T) {
@@ -378,5 +380,41 @@ func TestSharedExportVersionWritten(t *testing.T) {
 	// taken here again without the sources
 	if err := SharedExport(ctx, "iron-lm", recipe, out2, nil, build(out2)); err != nil || built != 1 {
 		t.Errorf("built %d: %v", built, err)
+	}
+}
+
+// TestSharedExportFetchOnly: in a ctx that converts nothing, an export no source has is not
+// built (llm.NotFetchedError), and one a source has is still taken.
+func TestSharedExportFetchOnly(t *testing.T) {
+	share := t.TempDir()
+	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}, "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n"); err != nil {
+		t.Fatal(err)
+	}
+	recipe := map[string]string{"model": "LFM3-1.7B", "target": cache.AMDTarget, "tool": "iron_x.py", "tools": "t1"}
+	built := 0
+	build := func(out string) func() error {
+		return func() error {
+			built++
+			if err := os.MkdirAll(out, 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(out, "manifest.json"), []byte("{}"), 0o644)
+		}
+	}
+	ctx := llm.WithFetchOnly(context.Background())
+	out := filepath.Join(t.TempDir(), "x.amd-npu2")
+	var nf *llm.NotFetchedError
+	if err := SharedExportOr(ctx, "iron-x", recipe, nil, out, nil, build(out)); !errors.As(err, &nf) || built != 0 {
+		t.Fatalf("fetch only: %v, built %d", err, built)
+	}
+	// made and put by another machine: taken
+	if err := SharedExportOr(context.Background(), "iron-x", recipe, nil, out, nil, build(out)); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(context.Background())
+	t.Setenv(cache.RootEnv, t.TempDir())
+	again := filepath.Join(t.TempDir(), "x.amd-npu2")
+	if err := SharedExportOr(ctx, "iron-x", recipe, nil, again, nil, build(again)); err != nil || built != 1 {
+		t.Fatalf("from the source: %v, built %d", err, built)
 	}
 }

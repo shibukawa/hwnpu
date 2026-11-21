@@ -20,7 +20,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
 )
 
-// The groups of a model's conversions on Hugging Face, each a row of hwnpu-dev hf plan and a
+// The groups of a model's conversions on Hugging Face, each a row of hwnpu-dev models hf plan and a
 // target of models.yaml's hub: the exports for AMD's NPU, and the Macs' (the Core AI exports
 // with their prebuilt programs and the tables they read).
 const (
@@ -63,7 +63,7 @@ type row struct {
 	chips    []string // apple: the architectures that have prebuilt programs
 }
 
-// layers are the layers hwnpu-dev hf takes conversions from: this machine's cache and the
+// layers are the layers hwnpu-dev models hf takes conversions from: this machine's cache and the
 // sources (not the bundled models' nor Hugging Face's own).
 func layers() []shared.Source {
 	out := []shared.Source{shared.Local()}
@@ -176,7 +176,7 @@ func amdWants(ctx context.Context, m chat.Model) ([]shared.Entry, error) {
 	if tool, version, ok := cachecmd.FirstRunExport(m); ok {
 		return out, pinned(chat.PinnedRecipe(m, tool, version), tool, filepath.Base(ironcnn.Dir(m.Name)))
 	}
-	return nil, errors.New("hwnpu-dev hf does not know its export for AMD's NPU yet")
+	return nil, errors.New("hwnpu-dev models hf does not know its export for AMD's NPU yet")
 }
 
 // listed are the entries the layers hold of model m, by target: each entry's folder
@@ -220,7 +220,7 @@ func exportOf(dir string) string {
 
 // rows are model m's groups as the layers (only that one, when >= 0) hold them.
 // loose takes, for a version not written yet too, an entry of the same recipe but for the tools
-// (hwnpu-dev hf sizes: its size).
+// (hwnpu-dev models hf sizes: its size).
 func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose bool) []*row {
 	var common []string
 	if !chat.HubCommitPinned(m) {
@@ -249,7 +249,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 			if f, ok := lookup(ctx, ls, only, w, held[cache.AMDTarget], loose); ok {
 				amd.entries = append(amd.entries, f)
 			} else {
-				amd.why = append(amd.why, fmt.Sprintf("make %s (hwnpu-dev cache export %s, or its command on AMD's NPU)", path.Base(path.Dir(w.Path)), m.Name))
+				amd.why = append(amd.why, fmt.Sprintf("make %s (hwnpu-dev models export %s, or its command on AMD's NPU)", path.Base(path.Dir(w.Path)), m.Name))
 			}
 		}
 	}
@@ -286,7 +286,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 		}
 	}
 	if len(apple.entries) == 0 && m.Targets[chat.CoreAITarget] > 0 {
-		apple.why = append(apple.why, fmt.Sprintf("run it once on a Mac: its Core AI exports go in the sources as v%d", m.Targets[chat.CoreAITarget]))
+		apple.why = append(apple.why, fmt.Sprintf("hwnpu-dev models export %s/coreai (on any machine): its Core AI exports go in the sources as v%d", m.Name, m.Targets[chat.CoreAITarget]))
 	}
 	// their prebuilt programs: checked against the export's programs when pushed
 	names := map[string]bool{}

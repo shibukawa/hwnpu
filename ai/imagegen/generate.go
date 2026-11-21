@@ -339,3 +339,6 @@ func (g *Generator) Close() error {
 	}
 	return err
 }
+
+// the edit's role makes the generator's export and the edit's: hwnpu-dev models export makes both
+func init() { airole.Register(editRole) }

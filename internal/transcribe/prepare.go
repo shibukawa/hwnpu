@@ -91,7 +91,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			if err != nil {
 				return Config{}, err
 			}
-			if err := llm.StartExport(export); err != nil {
+			if err := llm.StartExport(ctx, export); err != nil {
 				return Config{}, err
 			}
 			fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s); this takes a minute\n", filepath.Base(export), format)
