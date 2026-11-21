@@ -480,7 +480,9 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	}
 	if d := e.Draft(); d > 0 {
 		// the export checks drafts (iron_export_lm.py --verify): from the prompt and the answer
+		// and only the drafts that pay: this check costs more than a decode step
 		e.drafter = LookupDraft
+		e.policy = newDraftPolicy()
 		logf("ready: context %d tokens, up to %d tokens per call, drafts of %d checked per call", e.Context(), e.sess.Q(), d)
 	} else {
 		logf("ready: context %d tokens, up to %d tokens per call", e.Context(), e.sess.Q())

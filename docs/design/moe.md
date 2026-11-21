@@ -85,6 +85,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 - A mapped file faulted by each core reads 16 KB at a time: 0.4–0.6 GB/s. The same SSD gives 2.6 GB/s for one 1 MiB `pread`, 4.7 GB/s for 4.
 - `Host.readIn` / `readChosen` / `experts.reader` (`reader.need`): before a row's (or chunk's) experts run, ranges not in memory are read whole with `pread` (1 MiB pieces, several readers) into the page cache, then used through the mapping. Where `mem.Resident` is missing it falls back to `madvise(WILLNEED)` (0.5 GB/s). `HWNPU_MOE_DEBUG=need=0` leaves it to faults.
 - **Prefetch** (`experts.prefetcher`, on by default): the guess runs in its own goroutine during the Neural Engine part; guessed experts not wired get `madvise(WILLNEED)` and are read by the readers. Count `prefetchN` = experts a token picks, at least 4 (gpt-oss 4, Qwen3.6 8). For 10 s after a run had to read experts from disk, only the top 2 (`prefetcher.auto`, `reader.short`). `HWNPU_MOE_DEBUG=prefetch=N` fixes it, `0` off.
+- Cold-read benchmark (`tools/moeusage/read_bench.py`, page cache dropped): one gpt-oss-20b expert (13.2 MB) took 13.9 ms by mapping/page faults, 3.0 ms with O_DIRECT, or 2.6 ms with four 2 MiB reads; a Qwen3.6 expert (6.3 MB) took 6.9 vs 1.4 ms. A warm page-cache read took 0.04 ms. Mac direct reads have not been measured.
 
 ### Prompts
 
@@ -237,6 +238,8 @@ The NPU reads only pinned buffers (banks). An expert's position in its table is 
 ## Not adopted
 
 AMD:
+- Moving experts in frequent rounds: replaying gpt-oss routing traces gave 81.8% hits when refreshed every 450 tokens (0.83 GB read per 1,000 tokens), 85.3% with 8 experts every 16 tokens (6.5 GB), and 89.0% on every miss (140 GB). The small hit-rate gains cost 3–8× more reads; the existing prefetch makes misses cheaper.
+- Skipping or penalizing unloaded experts (float32 reference only): dropping the lowest of gpt-oss's top 4 cut misses 29% but gave KL 0.014 on generated answers and 0.095 on wikitext-like text; dropping one of Qwen3.6's top 8 gave KL 0.0095. Outputs change, and no NPU implementation was tested.
 - Copying chosen experts into a work state, then GEMV: bytes moved 3 times, `Copy` reads 26 GB/s at best. Reading in place by per-call offsets replaced it.
 - Down as "a column = an expert": needs 7 adds to sum, 1.7× `MoEDown`. A one-row GEMM of a transposed down is slower than GEMV.
 - Requantizing gpt-oss experts to q4nx: weight error 6.6 %, KL 2–3×. mx4 kept.

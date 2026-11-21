@@ -201,6 +201,12 @@ A prompt chunk checking 2–8 tokens costs a full chunk (3–9 decode steps): Qw
 - Pass: `ironlm -verify` — 3 rows' logits bit for bit 3 decode steps; steps after `Keep` bit for bit.
 - Qwen3.5-0.8B q6 (at 82 ms decode): verify 104.5 ms (1.27 steps). With 2 prompt-lookup drafts (`LookupDraft`): code 82.4 → 72.1 ms/token, Japanese prose 82.5 → 61.7. `hwnpu-chat -iron` uses the version when present; `HWNPU_IRON_DRAFTS=0` turns it off. In the catalog only Qwen3.5-0.8B and 2B carry `--verify 3`.
 
+### Selective draft checks
+
+The three-row check now costs 1.96 decode steps for Qwen3.5-0.8B and 1.67 for 2B. On Ryzen AI 9 365, checking every draft made prose slower than decoding without drafts. The AMD-only `chat.draftPolicy` tracks the acceptance rate q by the length of the preceding match and checks only when `1 + q + q²` exceeds the check cost (default 1.8 decode steps, with a 3% margin). Drafts it skips still update q when compared with later tokens. `HWNPU_DRAFT_POLICY=0` restores checking every draft; `HWNPU_DRAFT_RATIO` changes the cost and `HWNPU_DRAFT_TRACE=FILE` records decisions. Apple and Intel are unchanged.
+
+On 300-token, temperature-0 runs, prose on the 0.8B model went from 14.6 tok/s with every draft checked to 18.8 with the policy (18.8 without drafts); on 2B, 9.6 → 11.5 (11.2 without drafts). Copy-heavy answers retained their gains: code on 0.8B 26.9 → 27.2 tok/s, JSON on 2B 14.2 → 13.6. Temperature-0 output can differ between drafted and undrafted decoding; this is not investigated.
+
 See [Decoding](llm-decoding.md) for the drafting side.
 
 ## Weight formats
@@ -280,6 +286,7 @@ Current fused exports, mean / median / p95 over 320 rows after 256 tokens: LFM3-
 
 - Speeding prefill with a GPU or a second machine (oMLX's Prefill Accelerator): hwnpu targets low power; reduce the work instead (Gemma 4's tail).
 - Checking drafts with the prompt chunk: costs 3–9 decode steps, more than prompt lookup's 1.07–1.3 accepted tokens can repay.
+- A two-stage output head (a 2–3-bit copy to shortlist rows, then exact scores): greedy tests read 34% of Qwen3.5-0.8B's head, 50% of Qwen3.5-2B / Qwen3.6's and 40% of gpt-oss's, but keeping 64 candidates reads 56–83% or more; Gemma 4 E2B's copy error was unusable. The head is only 5–15% of a step, so the estimated gain is a few percent without an NPU implementation.
 - Prompt chunk 2048 (20 % slower) or 256 for attention models (Gemma 4's window layers become rings).
 - Attention at 4 bits (`--attn q4`): E2B KL 0.229 vs 0.097 at q8; attention is about a tenth of the weights but most of the 4-bit error.
 - q8 partial sums rounded to one bf16 (q4nx's way): cosine 0.9998 against 0.999992 with two.

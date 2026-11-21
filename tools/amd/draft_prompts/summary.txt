@@ -1,0 +1,42 @@
+Summarize the following text in five bullet points. Quote one key sentence from the text in each bullet.
+
+# hwnpu
+
+CPU 内蔵の NPU を cgo なしで Go から使うためのライブラリです。軽量モデルを低消費電力で動かすことを目的にしています。
+
+- 既定の厳格モードでは、NPU だけで完結しないモデルを実行前にエラーにします。CPU や GPU への黙ったフォールバックはしません
+- 依存は [purego](https://github.com/ebitengine/purego) と golang.org/x/sys だけです
+
+| プラットフォーム | バックエンド | 状態 |
+|---|---|---|
+| macOS (Apple Silicon) | Core ML (GPU を除外し、MLComputePlan で ANE 配置を検証) | M1 実装済み |
+| Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR のドライバ内コンパイル、コンパイル済み blob) | M2 実装済み。実機では未検証 |
+| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計と full ELF の実行、Gemma 4 E2B の hwnpu-chat (chat / agent) を確認 |
+| Windows (AMD Ryzen AI) | XRT (hwnpu の C ライブラリ xrtshim を通す) | 実装済み。Windows では未検証。同じ経路を Linux の XRT 2.21 で確かめた (Gemma 4 E2B の画像と音声まで) |
+| WSL2 | なし | 非対応。WSL2 からは Intel と AMD のどちらの NPU も見えない |
+
+用途と機械のメモリの量ごとのおすすめのモデルは [MODEL.ja.md](MODEL.ja.md)（[English](MODEL.md)）に、各 NPU が扱えるデータ形式とモデルの用意の仕方は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)（[English](MODEL_ARCHITECTURE.md)）にあります。
+
+クラウドの AI API (Google Cloud、AWS、Azure、OpenAI) の機能のどれを hwnpu が代わりに受け持てるか、NPU ごとの対応状況とまだない機能は [CLOUD_AI_COMPATIBILITY.ja.md](CLOUD_AI_COMPATIBILITY.ja.md)（[English](CLOUD_AI_COMPATIBILITY.md)）にあります。
+
+導入手順は、Apple が [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)（[English](INSTALL_APPLE.md)）、Intel が [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)（[English](INSTALL_INTEL.md)）、AMD が [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)（[English](INSTALL_AMD.md)）にあります。
+
+設計は [docs/design.md](docs/design.md) にあります。
+
+## 使い方
+
+```go
+dev, err := hwnpu.Open(ctx)
+if err != nil { ... }
+defer dev.Close()
+
+gr, _ := dev.Graph()
+g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.mlpackage"})
+if errors.Is(err, hwnpu.ErrNotOnNPU) {
+	// err は *hwnpu.PlacementError。NPU 以外に置かれた演算が Report.Ops に入っている
+}
+defer g.Close()
+
+in, _ := g.Arg("x")
+out, _ := g.Arg("y")
+x, _ := dev.AllocBuffer(in.Bytes)
