@@ -58,3 +58,22 @@ func TestWith(t *testing.T) {
 		t.Fatalf("All's 16:9 changed: %d %d", w, h)
 	}
 }
+
+func TestTag(t *testing.T) {
+	for _, c := range []struct {
+		sizes [][2]int
+		want  string
+	}{
+		{[][2]int{{880, 1168}}, "880x1168"},
+		{[][2]int{{512, 512}, {1024, 1024}}, "512+1024"},
+		{[][2]int{{1024, 768}, {1024, 1024}}, "1024x768+1024"},
+	} {
+		if got := Tag(c.sizes); got != c.want {
+			t.Errorf("Tag(%v) = %q, want %q", c.sizes, got, c.want)
+		}
+	}
+	a, b := Tag(SizesOf(All)), Tag(SizesOf(All32))
+	if len(a) != len("8sizes-")+8 || a[:7] != "8sizes-" || a == b {
+		t.Errorf("Tag of All %q, of All32 %q", a, b)
+	}
+}
