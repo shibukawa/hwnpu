@@ -21,6 +21,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/prep"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -234,9 +235,14 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 			}
 			continue
 		}
-		role := airole.For(j.model)
-		if role == nil {
-			return out, fmt.Errorf("%s: no role of the library makes a %s model ready (run its command once on %s)", j.model.Name, j.model.Kind, j.target)
+		// what package makes every form with (prep), else the library's role (airole)
+		name, makeReady := "", (func(airole.PrepareEnv) (airole.Files, error))(nil)
+		if p := prep.For(j.model, j.target); p != nil {
+			name, makeReady = p.Name, p.Prepare
+		} else if r := airole.For(j.model); r != nil {
+			name, makeReady = r.Name, r.Prepare
+		} else {
+			return out, fmt.Errorf("%s: hwnpu-dev models package does not make %s models yet (run its command once on %s)", j.model.Name, j.model.Kind, j.target)
 		}
 		npu, err := airole.ForTarget(j.target)
 		if err != nil {
@@ -261,9 +267,9 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 					what += " as on the " + chip
 				}
 				start := time.Now()
-				fmt.Fprintf(os.Stderr, "%s: %s for %s%s\n", m.Name, role.Name, what, formNote(m, j.model))
+				fmt.Fprintf(os.Stderr, "%s: %s for %s%s\n", m.Name, name, what, formNote(m, j.model))
 				undo := chat.ActAsChip(chip)
-				f, err := role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, m), Model: m, Dir: chat.ModelDir(m), NPU: npu, Log: log})
+				f, err := makeReady(airole.PrepareEnv{Ctx: chat.WithModel(ctx, m), Model: m, Dir: chat.ModelDir(m), NPU: npu, Log: log})
 				undo()
 				if err != nil {
 					if skip(m.Name+" ("+what+")", err) {

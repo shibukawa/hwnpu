@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/prep"
 )
 
 func TestParseJobs(t *testing.T) {
@@ -60,16 +61,12 @@ func TestForms(t *testing.T) {
 	}
 }
 
-// TestRoles: every kind package takes is found a role (the packages register theirs), and the
-// targets are NPUs that convert without a device.
+// TestRoles: every model of the definitions has what package makes it with for Core AI (prep,
+// else a role of the library), and the targets are NPUs that convert without a device.
 func TestRoles(t *testing.T) {
-	for _, name := range []string{"LFM3-1.7B", "plamo-3-translate-2b", "whisper-large-v3-turbo", "LFM3-Audio-2B-TTS", "FLUX.2-klein-4B"} {
-		m, ok := chat.Lookup(name)
-		if !ok {
-			t.Fatalf("no %s", name)
-		}
-		if airole.For(m) == nil {
-			t.Errorf("%s (%s): no role", name, m.Kind)
+	for _, m := range chat.Catalog {
+		if prep.For(m, cache.CoreAITarget) == nil && airole.For(m) == nil {
+			t.Errorf("%s (%s): nothing makes it for coreai", m.Name, m.Kind)
 		}
 	}
 	n, err := airole.ForTarget(cache.CoreAITarget)

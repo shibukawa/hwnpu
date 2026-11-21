@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -73,27 +74,12 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	if err := r.close(); err != nil {
 		return err
 	}
-	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("yunet-r%d-fp16-%dx%d", ProgramRevision, W, H)
-	path, done, export := llm.ProgramPath(r.dir, name, r.backend)
 	p := r.program(W, H)
-	if !llm.ProgramReady(ctx, r.dir, name, done, export) {
-		if err := os.MkdirAll(r.dir, 0o755); err != nil {
-			return err
-		}
-		if err := llm.StartProgram(ctx, path, export); err != nil {
-			return err
-		}
-		_, err := llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, fp16 (hwnpu)", W, H)
-		})
-		if err != nil {
-			return fmt.Errorf("face: %w", err)
-		}
-		if err := llm.FinishProgram(ctx, r.dir, name, done, export); err != nil {
-			return err
-		}
-	} else {
+	path, made, err := r.convert(ctx, p, W, H)
+	if err != nil {
+		return err
+	}
+	if !made {
 		// built again without writing it: Split needs the outputs' widths
 		b := mlpackage.NewBuilder("CoreML8", nil)
 		b.ImmediateLimit = math.MaxInt
@@ -108,7 +94,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
 	if r.dev != nil && !prog.OnNPU() && r.dev.Info().Backend != "openvino" {
 		prog.Close()
-		return fmt.Errorf("face: %s does not run on the NPU alone", name)
+		return fmt.Errorf("face: %s does not run on the NPU alone", filepath.Base(path))
 	}
 	r.p, r.prog, r.w, r.h = p, prog, W, H
 	return nil
@@ -160,4 +146,48 @@ func (r *programRunner) run(ctx context.Context, px []uint8, pw, ph, W, H int) (
 		cs = append(cs, c)
 	}
 	return cs, nil
+}
+
+// convert writes the program p of W x H into r.dir unless it is there (or a shared layer has
+// it), and returns its path and whether it was written now.
+func (r *programRunner) convert(ctx context.Context, p *onnx.Program, W, H int) (string, bool, error) {
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	name := fmt.Sprintf("yunet-r%d-fp16-%dx%d", ProgramRevision, W, H)
+	path, done, export := llm.ProgramPath(r.dir, name, r.backend)
+	if llm.ProgramReady(ctx, r.dir, name, done, export) {
+		return path, false, nil
+	}
+	if err := os.MkdirAll(r.dir, 0o755); err != nil {
+		return "", false, err
+	}
+	if err := llm.StartProgram(ctx, path, export); err != nil {
+		return "", false, err
+	}
+	_, err := llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {
+		pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, fp16 (hwnpu)", W, H)
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("face: %w", err)
+	}
+	return path, true, llm.FinishProgram(ctx, r.dir, name, done, export)
+}
+
+// PreparePrograms converts the programs of every size (CPUSizes) of the ONNX file at path for
+// backend into dir, as OpenProgram's first picture of each size does (hwnpu-dev models
+// package). No device is opened.
+func PreparePrograms(ctx context.Context, backend, path, dir string) error {
+	g, err := onnx.Load(path)
+	if err != nil {
+		return err
+	}
+	if len(g.Inputs) != 1 {
+		return fmt.Errorf("face: %s has %d inputs", path, len(g.Inputs))
+	}
+	r := &programRunner{g: g, backend: backend, dir: dir, strides: []int{8, 16, 32}}
+	for _, sz := range CPUSizes {
+		if _, _, err := r.convert(ctx, r.program(sz[0], sz[1]), sz[0], sz[1]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
