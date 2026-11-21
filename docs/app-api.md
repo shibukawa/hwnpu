@@ -353,9 +353,9 @@ A2A と MCP のどちらも、同じ仕事の置き場と待ち行列の上の�
 ```
 interpreter models                    # 使うモデルと、要るもの
 interpreter models prepare            # ダウンロード、変換、コンパイル
-interpreter --mic -o english.wav      # マイクから。Ctrl-C で止める (interpreter mics が入力を並べる)
-interpreter talk.wav -o english.wav   # 録音から: 日本語の音声を英語の音声に (逆も)
-interpreter talk.wav --live           # 録音をマイクのように実時間で流す
+interpreter run --mic -o english.wav      # マイクから。Ctrl-C で止める (interpreter mics が入力を並べる)
+interpreter run talk.wav -o english.wav   # 録音から: 日本語の音声を英語の音声に (逆も)
+interpreter run talk.wav --live           # 録音をマイクのように実時間で流す
 interpreter status
 ```
 
@@ -372,9 +372,9 @@ interpreter status
 
 ```
 parallax models prepare                    # ダウンロード、変換、コンパイル
-parallax picture.png                       # 窓。カメラで頭を追う
-parallax picture.png --head pointer        # カメラなし: マウスが頭の代わり
-parallax picture.png --head sweep          # 勝手に回す
+parallax show picture.png                       # 窓。カメラで頭を追う
+parallax show picture.png --head pointer        # カメラなし: マウスが頭の代わり
+parallax show picture.png --head sweep          # 勝手に回す
 parallax render picture.png -o deep.gif    # 窓なし: 頭が一回りする間の絵を GIF に
 parallax track --frames a.png,b.png        # カメラなし: 絵をフレームとして流し、頭の位置を出す
 ```
@@ -382,7 +382,7 @@ parallax track --frames a.png,b.png        # カメラなし: 絵をフレーム
 - **つなぎ方**: 呼び出し 2 つ (絵 → 深度、塗った絵と文 → 描き足した絵。交互に動かしてモデルを下ろす) と、ネットワーク (`camera → face-detect (newest) → head → steady → view`。動き続ける) と、窓の拍 (Ebitengine が 1 秒に 60 回、最後に届いた視点で描く)
 - **モデル**: 深度は Depth Anything 3 (用途 `depth`)、顔は YuNet (用途 `face-detect`)。頭の位置は、顔の両目の間隔からピンホールのカメラとして出す (`vision.HeadOf`)。`steady` はプログラムの節で、検出の揺れをならし、顔が 1.5 秒見えなければ視点を中央に戻す (`flow.WhenIdle`)
 - **描画**: Kage のシェーダー (`parallax.kage`)。画素ごとに、目からの視線を手前の層から奥へ 32 層たどり、絵がその層以上に近い最初の点を、その間を 5 回 2 分して求めて描く。同じ計算を Go で書いた `Scene.Render` があり、窓なしの `render` とテストが使う
-- **層に分けて描く**: 窓は深度が出たらすぐ絵を見せ、その横で絵を層に分ける (`--layers`、既定 3。9.3 と同じ処理で、`samples/internal/layering` を両方が使う)。層が切れるたびに窓の絵が入れ替わり、層ごとにその層の近さで描いて重ねる。窓の下に今の段と進み具合のバー、隅に今の段の絵 (塗った絵、描き足した絵) を出す。`--save-layers DIR` で書き出し、`parallax DIR` でモデルなしに見る
+- **層に分けて描く**: 窓は深度が出たらすぐ絵を見せ、その横で絵を層に分ける (`--layers`、既定 3。9.3 と同じ処理で、`samples/internal/layering` を両方が使う)。層が切れるたびに窓の絵が入れ替わり、層ごとにその層の近さで描いて重ねる。窓の下に今の段と進み具合のバー、隅に今の段の絵 (塗った絵、描き足した絵) を出す。`--save-layers DIR` で書き出し、`parallax show DIR` でモデルなしに見る
 - **奥の層**: 近さ (深度の逆数) のままだと、目のすぐ前のものの奥は全部一緒に動く。奥の層を引き離す曲線 (`--far`、既定 30) と、輪郭が裂けないように近いものを数画素広げる処理 (`--edge`) をかけてから描く
 - **絵**: 層のはっきりした絵がよい (人物や動物と背景、奥行きの違うものがいくつもある風景)。テストの絵は Anima で作った (`hwnpu-image generate -m anima-turbo`)。画像の生成はまだライブラリにないので、サンプルは絵のファイルを読む
 - **カメラ**: hwcamera (`samples/internal/capture.Camera`)。フレームを Go のメモリの絵に写して流す
@@ -395,14 +395,14 @@ parallax track --frames a.png,b.png        # カメラなし: 絵をフレーム
 ```
 layers models prepare                # ダウンロード、変換、コンパイル
 layers plan picture.png              # 分け方だけ: 層ごとに色をつけた絵と、切る値 (何も描かない)
-layers picture.png -o picture.psd    # 分ける: 最後の層のほかは 1 層に 1 分ほど
-layers picture.png --layers 4 --png parts/
+layers split picture.png -o picture.psd    # 分ける: 最後の層のほかは 1 層に 1 分ほど
+layers split picture.png --layers 4 --png parts/
 ```
 
 - **つなぎ方**: 呼び出しが 2 つ (絵 → 深度、塗った絵と文 → 描き足した絵)。交互に呼び、使うたびにモデルを下ろす (`Release`) ので、2 つが同時にメモリに載らない
 - **手順**: 一番手前の層から。近さの分布から切る値を求め (層の中の近さが一番そろう切り方)、層を切り出し、その形を絵にない色 1 色で塗って、「その形を取り除いて裏の景色を描く」と FLUX.2 klein に頼む。描いた絵は層のあった所だけ使う (`--clean` で縁の少し先まで)。その絵の深度をもう一度推定して (最初の深度の目盛りに合わせる) 次の層を切り、一番奥の層は残った絵まるごと
 - **描き損じ**: モデルが塗った形を残すことがある (塗った色や影として)。マスクの縁の内と外の色の差で見分け、別の種で描き直す (`--tries`)。どの回もだめなら、その層は切り出さずに残して終わる
-- **層ごとの深度**: `--png DIR` が、層 (`layer-N.png`) と層ごとの近さ (`near-N.png`: 16 ビット、全部の層で同じ目盛り、層の縁の外へも続けてある) を書く。`parallax DIR` がこれを読み、奥の層から 1 層ずつその層の近さで描いて重ねる。層の中は細かい起伏で動き、手前の層がずれた所には描き足した裏の絵が出る (1 枚の深度では縁が引き伸ばされる)
+- **層ごとの深度**: `--png DIR` が、層 (`layer-N.png`) と層ごとの近さ (`near-N.png`: 16 ビット、全部の層で同じ目盛り、層の縁の外へも続けてある) を書く。`parallax show DIR` がこれを読み、奥の層から 1 層ずつその層の近さで描いて重ねる。層の中は細かい起伏で動き、手前の層がずれた所には描き足した裏の絵が出る (1 枚の深度では縁が引き伸ばされる)
 - **PSD**: 8 ビット RGB、層は文書の大きさ、PackBits。書き出しはサンプルの中 (`psd.go`、約 150 行)。psd-tools と Pillow で読めることを確かめた
 - 参照の絵からの生成は、今は AMD の NPU だけ
 

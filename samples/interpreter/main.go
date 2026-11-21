@@ -22,11 +22,11 @@
 //
 //	interpreter models                       # the models and the network, and what they take
 //	interpreter models prepare               # download, convert and compile the models ahead
-//	interpreter --mic                        # from the microphone to the speaker, until Ctrl-C or "終わり"
-//	interpreter --mic --device 2             # from another input (its number in "interpreter mics")
-//	interpreter talk.wav -o english.wav      # Japanese speech to English speech in a file (or the reverse)
-//	interpreter talk.wav --to ja --live      # paced as a microphone would give it
-//	interpreter talk.wav --speed 1.3         # said 30 % faster, its pitch kept
+//	interpreter run --mic                        # from the microphone to the speaker, until Ctrl-C or "終わり"
+//	interpreter run --mic --device 2             # from another input (its number in "interpreter mics")
+//	interpreter run talk.wav -o english.wav      # Japanese speech to English speech in a file (or the reverse)
+//	interpreter run talk.wav --to ja --live      # paced as a microphone would give it
+//	interpreter run talk.wav --speed 1.3         # said 30 % faster, its pitch kept
 //	interpreter say こんにちは                 # a text, translated and spoken: one call
 //	interpreter status                       # this machine's NPU
 package main
@@ -311,7 +311,7 @@ func checkSpeed(speed float64) error {
 	return nil
 }
 
-// RunCmd is interpreter FILE.wav, and interpreter --mic.
+// RunCmd is interpreter run FILE.wav, and interpreter run --mic.
 type RunCmd struct {
 	File     string        `arg:"" optional:"" type:"existingfile" name:"FILE.wav" help:"A recording of speech (or --mic)."`
 	Mic      bool          `help:"Interpret what the microphone hears, until Ctrl-C (a second Ctrl-C ends at once) or the spoken command."`

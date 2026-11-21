@@ -18,15 +18,15 @@
 cd samples
 go run ./layers models prepare                   # モデルのダウンロード、変換、コンパイル
 go run ./layers plan picture.png                 # 切る場所だけ: 層ごとに色をつけた絵 (描かない)
-go run ./layers picture.png -o picture.psd       # 3 層に分ける
-go run ./layers picture.png --layers 4 --png parts/
+go run ./layers split picture.png -o picture.psd       # 3 層に分ける
+go run ./layers split picture.png --layers 4 --png parts/
 ```
 
 | オプション | 何をするか |
 |---|---|
 | `--layers N` | 層の数、2〜8 (既定 3)。切る場所は深度から求める |
 | `--cuts 0.3,0.7` | 代わりにこの近さで切る (0 が一番奥、1 が一番手前) |
-| `--png DIR` | 層 (`layer-N.png`)、その近さ (`near-N.png`、16 ビット)、モデルに頼んだ絵と描いた絵も書く。`parallax DIR` がこれを見せる |
+| `--png DIR` | 層 (`layer-N.png`)、その近さ (`near-N.png`、16 ビット)、モデルに頼んだ絵と描いた絵も書く。`parallax show DIR` がこれを見せる |
 | `--hint "no people"` | 裏を描く頼みに足す言葉 |
 | `--tries 3` | モデルが層の形を残したら (平らな色や影)、別の種で描き直す |
 | `--seed`、`--edge`、`--clean`、`--far` | 種、層が切った所からはみ出す幅、その先で描いた絵を使う幅、深度の奥の広げ方 |

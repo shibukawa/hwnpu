@@ -16,8 +16,8 @@
 //
 //	layers models prepare                # download, convert and compile the models ahead
 //	layers plan picture.png              # the layers the picture would be parted into, as a picture (no drawing)
-//	layers picture.png -o picture.psd    # part it: a minute for each layer but the last
-//	layers picture.png --layers 4 --png parts/ # the layers and how near their points are too: "parallax parts/" draws them
+//	layers split picture.png -o picture.psd    # part it: a minute for each layer but the last
+//	layers split picture.png --layers 4 --png parts/ # the layers and how near their points are too: "parallax show parts/" draws them
 //
 // Drawing from a reference runs on AMD's NPU and Apple's Neural Engine.
 package main
@@ -195,7 +195,7 @@ func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error
 type SplitCmd struct {
 	picture
 	Out   string `short:"o" type:"path" placeholder:"FILE" help:"The Photoshop document to write (default: PICTURE's name with .psd)."`
-	PNG   string `name:"png" type:"path" placeholder:"DIR" help:"Also write into this directory each layer as a PNG with its transparency (layer-N.png, 1 the farthest) and how near its points are (near-N.png: 16 bit gray, white the nearest, on one scale for all the layers, and going on past the layer's own part), which \"parallax DIR\" draws; and the picture the model was asked to draw from (asked-N.png) and what it drew at each try (drawnT-N.png)."`
+	PNG   string `name:"png" type:"path" placeholder:"DIR" help:"Also write into this directory each layer as a PNG with its transparency (layer-N.png, 1 the farthest) and how near its points are (near-N.png: 16 bit gray, white the nearest, on one scale for all the layers, and going on past the layer's own part), which \"parallax show DIR\" draws; and the picture the model was asked to draw from (asked-N.png) and what it drew at each try (drawnT-N.png)."`
 	Hint  string `placeholder:"TEXT" help:"Words added to the request to draw what a layer hid: \"no people\", \"a calm sea\"."`
 	Seed  uint64 `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
 	Tries int    `default:"3" help:"How many times what a layer hid is drawn at most: it is drawn again, from another seed, when the model left the layer's shape there (as a flat colour or a shadow)."`
@@ -275,7 +275,7 @@ func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) erro
 		return err
 	}
 	if c.PNG != "" {
-		// the layers and how near their points are: what "parallax DIR" draws
+		// the layers and how near their points are: what "parallax show DIR" draws
 		if err := layering.Write(c.PNG, layers); err != nil {
 			return err
 		}

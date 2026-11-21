@@ -15,12 +15,12 @@
 // near thing moves aside there is a picture behind it. The camera is read through hwcamera (github.com/shibukawa/hwcamera).
 //
 //	parallax models prepare                    # download, convert and compile the models ahead
-//	parallax picture.png                       # the window, following the head with the camera; the picture comes apart into 3 layers as it is shown
-//	parallax picture.png --layers 1            # with its depth alone, no layers
-//	parallax picture.png --head pointer        # the pointer stands in for the head (no camera)
-//	parallax picture.png --head sweep          # the view goes around by itself
+//	parallax show picture.png                       # the window, following the head with the camera; the picture comes apart into 3 layers as it is shown
+//	parallax show picture.png --layers 1            # with its depth alone, no layers
+//	parallax show picture.png --head pointer        # the pointer stands in for the head (no camera)
+//	parallax show picture.png --head sweep          # the view goes around by itself
 //	parallax render picture.png -o deep.gif    # no window: the picture from a head that goes around
-//	parallax parts/                            # a picture in layers (samples/layers --png parts/): what a near layer hid shows
+//	parallax show parts/                            # a picture in layers (layers split PICTURE --png parts/): what a near layer hid shows
 //	parallax track --frames a.png,b.png        # no camera: follow the head in pictures
 //	parallax cameras                           # the cameras, numbered as --device takes them
 //
@@ -108,7 +108,7 @@ type picture struct {
 	Layers     int     `default:"3" help:"The layers the picture is parted into by its depth, with what each layer hid drawn in by the picture model, so that where a near thing moves aside there is a picture behind it instead of its edge stretched. The window shows the picture at once with its depth alone, and the parting goes on beside it (about a minute for each layer but the last), each step shown. 1: no layers. Where the picture model is not ready, the picture stays as it is."`
 	Hint       string  `placeholder:"TEXT" help:"Words added to the request to draw what a layer hid: \"no people\", \"a calm sea\"."`
 	Seed       uint64  `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
-	SaveLayers string  `name:"save-layers" type:"path" placeholder:"DIR" help:"Write the layers and their nearness into this directory once the picture is parted; \"parallax DIR\" shows them again without the models."`
+	SaveLayers string  `name:"save-layers" type:"path" placeholder:"DIR" help:"Write the layers and their nearness into this directory once the picture is parted; \"parallax show DIR\" shows them again without the models."`
 	Edge       int     `default:"-1" placeholder:"PIXELS" help:"How far the near things are made larger in the nearness, so that their outlines move with them (default: a 200th of the picture's width; 0: not at all)."`
 	Prepare    bool    `help:"Download, convert and compile the models that are not ready instead of failing."`
 }

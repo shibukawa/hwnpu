@@ -15,18 +15,18 @@ mic → vad → transcribe → heard → commands → translate → said → spe
 ```bash
 cd samples
 go run ./interpreter models prepare            # モデルのダウンロード、変換、コンパイル (約 11 GB)
-go run ./interpreter talk.wav                  # 録音: 日本語の音声を英語の音声にしてスピーカーで
-go run ./interpreter --mic                     # マイク: Ctrl-C か「終わり」まで
+go run ./interpreter run talk.wav                  # 録音: 日本語の音声を英語の音声にしてスピーカーで
+go run ./interpreter run --mic                     # マイク: Ctrl-C か「終わり」まで
 go run ./interpreter say こんにちは              # 文を訳して読み上げる
-go run ./interpreter talk.wav -o english.wav   # スピーカーの代わりに WAV のファイルに
+go run ./interpreter run talk.wav -o english.wav   # スピーカーの代わりに WAV のファイルに
 ```
 
 通訳した音声はスピーカーで流します ([oto](https://github.com/ebitengine/oto) を使い、cgo なし)。発話ごとに読み上げができたらすぐ流し、その間に次の発話の文字起こしと翻訳が進みます。`-o FILE` を付けると、代わりに WAV のファイルに書きます。
 
 | コマンド | 何をするか |
 |---|---|
-| `interpreter FILE.wav` | 録音を通訳する (WAV ならサンプリング周波数もチャネル数も問わない)。`--live` はマイクと同じ速さで渡し、各段の遅れを出す |
-| `interpreter --mic` | マイクの音を通訳する。`--seconds 30s` でその時間で止める |
+| `interpreter run FILE.wav` | 録音を通訳する (WAV ならサンプリング周波数もチャネル数も問わない)。`--live` はマイクと同じ速さで渡し、各段の遅れを出す |
+| `interpreter run --mic` | マイクの音を通訳する。`--seconds 30s` でその時間で止める |
 | `interpreter mics` | 音声の入力の一覧 (番号つき)。`--device 2` で 2 番目を使う |
 | `interpreter say TEXT` | 翻訳と読み上げを 1 回呼ぶ |
 | `interpreter models` | この機械向けに選んだモデル、要る量、ネットワーク |

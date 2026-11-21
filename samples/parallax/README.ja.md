@@ -17,15 +17,15 @@
 ```bash
 cd samples
 go run ./parallax models prepare                   # モデルのダウンロード、変換、コンパイル
-go run ./parallax picture.png                      # 窓。カメラで頭を追う
-go run ./parallax picture.png --head pointer       # マウスが頭の代わり (カメラなし)
+go run ./parallax show picture.png                      # 窓。カメラで頭を追う
+go run ./parallax show picture.png --head pointer       # マウスが頭の代わり (カメラなし)
 go run ./parallax render picture.png -o deep.gif   # 窓なし: 頭が一回りする間の絵
 ```
 
 | コマンド | 何をするか |
 |---|---|
-| `parallax PICTURE` | 窓。`--layers 1` は深度だけ (画像のモデルなし)、`--head sweep` はひとりでに回る、`--for 5m` でその時間で閉じる |
-| `parallax DIR` | 層に分けてある絵 (`layers PICTURE --png DIR`)。モデルは要らない |
+| `parallax show PICTURE` | 窓。`--layers 1` は深度だけ (画像のモデルなし)、`--head sweep` はひとりでに回る、`--for 5m` でその時間で閉じる |
+| `parallax show DIR` | 層に分けてある絵 (`layers split PICTURE --png DIR`)。モデルは要らない |
 | `parallax render PICTURE -o out.gif` | 頭が一回りする間の絵を書く (`--frames`、`--width`、`--png DIR`) |
 | `parallax track` | カメラの部分だけ: 頭の位置を出す。`--frames a.png,b.png` でカメラの代わりに絵を使う |
 | `parallax cameras` | カメラの一覧 (番号つき)。`--device 2` で 2 番目を使う |
