@@ -133,6 +133,16 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	if err != nil {
 		return nil, err
 	}
+	// the others of its group of InTurns are released first: the app said it never needs them
+	// together, and the plan counted the largest of them alone
+	for _, k := range rt.app.turnOf(r.key()) {
+		if l, ok := rt.loaded[k]; ok && k != r.key() {
+			delete(rt.loaded, k)
+			if err := l.closer.Close(); err != nil {
+				return nil, fmt.Errorf("ai: releasing %s for %s: %w", k, r.key(), err)
+			}
+		}
+	}
 	if !loc.bundle {
 		// used: kept by this machine's cache while the process runs, and last in its LRU
 		loc.each(func(p *string) { cache.Touch(*p) })
