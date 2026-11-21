@@ -160,14 +160,17 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 
 // modelEntry is a model in a definition file: the fields it gives, nil for those it leaves.
 type modelEntry struct {
-	Family   *string    `yaml:"family"`
-	Tag      *string    `yaml:"tag"`
-	Kind     *string    `yaml:"kind"`
-	From     *string    `yaml:"from"`
-	Arch     *string    `yaml:"arch"`
-	Machine  *int       `yaml:"machine"`
-	Memory   *PerVendor `yaml:"memory"`
-	Bytes    *PerVendor `yaml:"bytes"`
+	Family  *string    `yaml:"family"`
+	Tag     *string    `yaml:"tag"`
+	Kind    *string    `yaml:"kind"`
+	From    *string    `yaml:"from"`
+	Arch    *string    `yaml:"arch"`
+	Machine *int       `yaml:"machine"`
+	Memory  *PerVendor `yaml:"memory"`
+	Bytes   *PerVendor `yaml:"bytes"`
+	// Disk is what the model keeps in the cache to run: its conversion unpacked and its tables
+	// (not the checkpoint, which only converting reads), by vendor as Bytes.
+	Disk     *PerVendor `yaml:"disk"`
 	Features *[]string  `yaml:"features"`
 	// SHA256 pins the repository's files by name (config.json, model.safetensors, ...): a file
 	// fetched from any source must have it (docs/model-table.md 5.3).
@@ -468,7 +471,7 @@ func (t *table) addModel(file, name string, e *modelEntry, builtin bool) error {
 // merge sets the fields of dst that src gives.
 func merge(dst, src *modelEntry) {
 	// memory and bytes: a table changes the vendors it names
-	for _, f := range []struct{ d, s **PerVendor }{{&dst.Memory, &src.Memory}, {&dst.Bytes, &src.Bytes}} {
+	for _, f := range []struct{ d, s **PerVendor }{{&dst.Memory, &src.Memory}, {&dst.Bytes, &src.Bytes}, {&dst.Disk, &src.Disk}} {
 		if *f.s != nil && *f.d != nil {
 			m := (**f.d).over(**f.s)
 			defer func(d **PerVendor) { *d = &m }(f.d)
@@ -665,7 +668,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	out.Hub, out.hubFiles = e.Hub, e.hubFiles    // nor are its conversions
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
+		Memory: e.Memory, Bytes: e.Bytes, Disk: e.Disk, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
 		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
 	return &out, nil
 }
@@ -754,6 +757,9 @@ func toModel(name string, e *modelEntry) (Model, error) {
 	}
 	if e.Bytes != nil {
 		m.BytesBy, m.Bytes = maps.Clone(*e.Bytes), e.Bytes.For("")
+	}
+	if e.Disk != nil {
+		m.DiskBy = maps.Clone(*e.Disk)
 	}
 	if e.NoThink != nil {
 		m.NoThink = *e.NoThink

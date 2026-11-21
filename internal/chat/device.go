@@ -120,6 +120,23 @@ func (m Model) MemoryFor(vendor string) float64 { return m.MemoryBy.For(vendor) 
 // BytesFor is the size of m's download on a machine whose NPU is vendor's (0: unknown).
 func (m Model) BytesFor(vendor string) float64 { return m.BytesBy.For(vendor) }
 
+// DiskFor is what m keeps in the cache to run on a machine whose NPU is vendor's (0: unknown):
+// its conversion unpacked and its tables. Preparing it takes the download and this at once for
+// a while (a packed export is unpacked beside its pack). Unlike memory and bytes, a vendor the
+// table leaves out is not known (0), not the largest: the sizes come from what the sources hold,
+// and a vendor's may not be there yet.
+func (m Model) DiskFor(vendor string) float64 {
+	if v, ok := m.DiskBy[""]; ok {
+		return v
+	}
+	if vendor == "apple" {
+		if v, ok := m.DiskBy[chipName()]; ok {
+			return v
+		}
+	}
+	return m.DiskBy[vendor]
+}
+
 // HereVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
 // HWNPU_BACKEND naming a backend of Intel's programs (intel, levelzero, openvino) makes it
 // "intel", and coreml or coreai "apple": with openvino, a machine without Intel's NPU runs the commands'

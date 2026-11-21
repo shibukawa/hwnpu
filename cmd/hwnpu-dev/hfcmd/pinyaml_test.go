@@ -68,3 +68,18 @@ models:
 		t.Error("a hub in one line was rewritten")
 	}
 }
+
+func TestFieldYAML(t *testing.T) {
+	src := "version: 1\nmodels:\n  a:\n    from: hf:x/a\n    bytes: {amd: 1e9}  # packed\n    about: x\n  b:\n    from: hf:x/b\n    disk: {amd: 1e9}  # old\n"
+	out, err := fieldYAML([]byte(src), "a", "disk", "{amd: 2.00e9}", "bytes")
+	if err != nil || !strings.Contains(string(out), "    bytes: {amd: 1e9}  # packed\n    disk: {amd: 2.00e9}\n    about: x\n") {
+		t.Errorf("%v\n%s", err, out)
+	}
+	out, err = fieldYAML([]byte(src), "b", "disk", "{amd: 3.00e9}", "bytes")
+	if err != nil || !strings.Contains(string(out), "    disk: {amd: 3.00e9}  # old\n") || strings.Count(string(out), "disk:") != 1 {
+		t.Errorf("%v\n%s", err, out)
+	}
+	if _, err := fieldYAML([]byte(src), "c", "disk", "1", "bytes"); err == nil {
+		t.Error("a model not in the file")
+	}
+}

@@ -85,7 +85,10 @@ type Model struct {
 	Bytes float64 // the size of the download (0: unknown), for a vendor BytesBy does not name (BytesFor)
 	// BytesBy is the size of the download by the NPU's vendor (PerVendor).
 	BytesBy PerVendor
-	About   string
+	// DiskBy is what the model keeps in the cache to run, by the NPU's vendor (DiskFor): its
+	// conversion unpacked and its tables, not the checkpoint (models.yaml's disk).
+	DiskBy PerVendor
+	About  string
 	// NoThink is the model's own default of answering without thinking first, which -think
 	// given on the command line, reasoning_effort or enable_thinking override (Qwen3.5's 0.8B
 	// and 2B: their chat templates think only when asked, and the 0.8B thinks to the budget on
