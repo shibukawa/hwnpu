@@ -336,7 +336,7 @@ hwnpu を NPU でモデルを動かす Go のライブラリの集まりにし�
 
 ## 未解決
 
-- `ai`: 常駐の管理 (メモリの予算、投入の順番)、入力が 3 つ以上の節、モデルを下ろすタイミングをライブラリに任せること、辺ごとの計測、`ai/vision` の残り、`ai/imagegen` の Anima / Chroma / FLUX.3 klein、コマンドを `ai` に載せ替えること。Mac (Core AI。参照からの生成がまだ Neural Engine で動かないので `samples/layers` は AMD だけ) と Intel で `ai` を動かしていない。`text.Chat`、実物のマイク、カメラ、画面も未確認。列を分けて本当に同時に動かせるか (AMD) も未確認。
+- `ai`: 常駐の管理 (メモリの予算、投入の順番)、入力が 3 つ以上の節、モデルを下ろすタイミングをライブラリに任せること、辺ごとの計測、`ai/vision` の残り、`ai/imagegen` の Anima / Chroma / FLUX.3 klein、コマンドを `ai` に載せ替えること。Intel で `ai` を動かしていない (Mac では 3 つのサンプル、カメラ、窓まで動いた)。`text.Chat` と実物のマイクも未確認。列を分けて本当に同時に動かせるか (AMD) も未確認。
 - `npuinfo`: Windows (Intel と AMD) で動かす。M2 以降の Mac で IOReport のチャンネル名を確かめる。AIE の状態と
   テレメトリを読み解く。共通の API。ブラウザで見る道具。
 - ライブラリの API は planned で、名前が変わりうる。

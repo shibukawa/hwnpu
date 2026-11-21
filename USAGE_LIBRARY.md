@@ -169,7 +169,8 @@ k.FatalIfErrorf(k.Run())
 `APP models` lists the models and what they take (with what they take together and what this machine has for models), `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. The working examples are [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language, and [samples/parallax](samples/parallax), which estimates the depth of a picture, follows the viewer's head with the camera, and draws the picture as if it had depth (its window is Ebitengine), and [samples/layers](samples/layers), which parts a picture into layers by depth, draws what each layer hid, and writes a PSD. The samples are a module of their own (`samples/go.mod`) and take the microphone and the camera from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
 
 - So far it has the models of speech and text, the depth and the faces of pictures, and drawing and editing pictures (FLUX.2 klein). The other picture models (Anima, Chroma), object and pose detection and the others are only in the commands yet
-- It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel the commands do the same preparing and loading, but they were not run through `ai`
+- It was run on AMD's NPU (Ryzen AI 9 365) and on a Mac (M3, Core AI): the three samples, the camera and the window. On Intel the commands do the same preparing and loading, but they were not run through `ai`
+- Drawing from reference pictures on Apple's Neural Engine takes programs of their own: use `imagegen.Edit` in place of `imagegen.Generate` (it prepares them; the first edit compiles them)
 
 ## AMD (running kernels directly)
 

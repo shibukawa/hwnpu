@@ -604,7 +604,7 @@ An app in which the three ways of joining all appear. The picture's depth is nee
 
 ```go
 depth := vision.Depth("depth")
-artist := imagegen.Generate("image")
+artist := imagegen.Edit("image") // it draws from a reference
 faces := vision.Faces("face-detect")
 app := ai.NewApp("parallax")
 
@@ -643,7 +643,7 @@ It parts a picture into layers by depth and writes them as a Photoshop document 
 ```go
 var (
 	depth  = vision.Depth("depth")
-	artist = imagegen.Generate("image")
+	artist = imagegen.Edit("image") // Generate does on AMD too; Edit prepares the edit's programs on Apple
 )
 
 app := ai.NewApp("layers")
@@ -673,7 +673,7 @@ the picture → depth → cut the nearest layer out → paint its shape in one c
 - **Telling a failed drawing**: the model sometimes leaves the painted shape there (in its colour, or as a dark shadow). A step in colour then runs all along the mask's edge, so the difference of colour just inside and outside the edge (`seam`) tells it, and the picture is drawn again from another seed (`--tries`, 3 by default). When no try is good, the layer is not cut out but left in the picture, and the parting ends there (one layer fewer, which is better than a strange picture behind a layer). The wording matters too: "remove this shape" leaves it less often than "replace this area with the background". In a photograph the model once drew a crowd of people where a large shape was painted, so the request also says "do not add people or animals"
 - **The next layer**: the depth of the picture drawn is estimated again and brought to the first estimate's scale from the part both saw, and then the next layer is cut (a depth is in a unit of its own picture, so two are not compared as they are)
 - **A depth for each layer**: each layer has its nearness as well as its colours (`near-N.png` of `--png DIR`: 16 bit gray, on one scale for all the layers). The nearness of a part drawn in is estimated from the picture drawn. A layer's nearness goes on past the layer's edge with the edge's values (dropping there to the values of the layer behind would stretch the edge when it is drawn). `parallax DIR` reads these ([section 6.8](#68-an-example-a-picture-shown-as-if-it-were-deep-samplesparallax))
-- Three layers draw two pictures, 2 to 3.5 minutes at 1024×1024 (Ryzen AI 9 365). The PSD is 8 bit RGB with layers of the document's size, packed with PackBits. Drawing from a reference picture runs on AMD's NPU only for now
+- Three layers draw two pictures, 2 to 3.5 minutes at 1024×1024 (Ryzen AI 9 365). The PSD is 8 bit RGB with layers of the document's size, packed with PackBits. On a Mac (M3) a layer takes 39 s at 512×512 and 89 s at 1024×1024 once the edit's programs are compiled
 
 ## 7. The models
 
@@ -742,10 +742,10 @@ Every model has a batch form and a stream form.
 
 - **From a prompt**: `g.Generate(ctx, "a red fox in the snow", imagegen.Options{})`
 - **Editing and composing**: pictures go in `Options.References` (up to 4), and the prompt calls them `image 1`, `image 2`. A reference is cropped about its centre to the output's shape and scaled to its size
-- **Sizes**: the sizes the model draws are fixed (`Sizes()`: eight, 1024×1024, 512×512, 3:2, 16:9 and others). The one nearest `Options.Width` and `Height` in shape is drawn (without them the shape of the first reference, else a square). `SizeFor(w, h)` returns that size. A picture whose shape must stay is stretched to that size first, and the result stretched back
+- **Sizes**: the sizes the model draws are fixed (`Sizes()`: on AMD eight, 1024×1024, 512×512, 3:2, 16:9 and others; on Apple 1024×1024 and 512×512). The one nearest `Options.Width` and `Height` in shape is drawn (without them the shape of the first reference, else a square). `SizeFor(w, h)` returns that size. A picture whose shape must stay is stretched to that size first, and the result stretched back
 - **And**: `Seed` (0: another each time), `Steps` (0: the model's own; 4 for FLUX.2 klein), `Progress` (called after each step)
 - **Time and memory**: at 1024×1024 about 30 s from a prompt, about a minute for an edit of one reference (Ryzen AI 9 365). It peaks at 3.9 GB while it runs (AMD). The pipeline swaps its stages itself ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
-- **Where it runs**: AMD's NPU (one export of IRON with every size). On Apple's Neural Engine only from a prompt; drawing from references does not run there yet. It was not run through `ai` on Apple
+- **Where it runs**: AMD's NPU (one export of IRON with every size) and Apple's Neural Engine (the export of 512×512 and 1024×1024; `Sizes()` says which). On Apple drawing from references takes the edit's programs, an export of their own: `imagegen.Edit` prepares them (converted from the checkpoint, a 16 GB download) and the first edit compiles them; `imagegen.Generate` leaves them out and refuses references there. An edit on an M3: 39 s at 512×512, 89 s at 1024×1024
 - Not there yet: Anima, Chroma, FLUX.3 klein (the command `hwnpu-image generate` has them), several pictures together (`--batch`), a reference read at half size (`@half`)
 
 ## 8. The app's command line (`ai/cli`)

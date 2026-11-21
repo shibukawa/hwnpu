@@ -26,85 +26,128 @@ import (
 
 // Generate is the use of a model that draws pictures for an app: a model, a family or a use of
 // the definitions ("image", "FLUX.2-klein-4B"). For now the model is FLUX.2 klein; the others
-// (Anima, Chroma) are drawn by hwnpu-image generate alone.
+// (Anima, Chroma) are drawn by hwnpu-image generate alone. On AMD's NPU it also draws from
+// reference pictures; on Apple's Neural Engine that takes programs of their own (Edit).
 func Generate(name string) ai.Use[*Generator] {
 	return ai.Define[*Generator](role, name)
+}
+
+// Edit is Generate that draws from reference pictures (Options.References) on every NPU: on
+// Apple's Neural Engine it prepares the edit's programs too (the DiT over the picture's and the
+// reference's rows, and the VAE's encoder), which Generate leaves out: they are converted from
+// the checkpoint (a 16 GB download), and compiled at the first edit.
+func Edit(name string) ai.Use[*Generator] {
+	return ai.Define[*Generator](editRole, name)
 }
 
 // isKlein reports whether m is FLUX.2 klein.
 func isKlein(m chat.Model) bool { return strings.HasPrefix(m.Family, "flux2-klein") }
 
-var role = &airole.Role{
-	Name:  "image",
-	Kinds: []chat.Kind{chat.KindImage},
-	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
-		m := e.Model
-		if !isKlein(m) {
-			return f, fmt.Errorf("ai/imagegen: %s is not drawn by the library yet (FLUX.2 klein is; hwnpu-image generate draws the others)", m.Name)
-		}
-		vendor := "apple"
-		if e.NPU.AMD() {
-			vendor = "amd"
-		} else if e.NPU.Format != llm.BackendCoreAI {
-			return f, fmt.Errorf("ai/imagegen: %s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, e.NPU.Format)
-		}
-		as, err := flux2klein.NPUAspects(m, vendor, flux2klein.NPUGeneration(vendor))
-		if err != nil {
-			return f, err
-		}
-		ctx := chat.WithModel(e.Ctx, m)
-		var dir string
-		if e.NPU.AMD() {
-			// one export of every size, here or in the sources, else made with IRON
-			dir, err = flux2klein.PrepareAMD(ctx, m, aspect.SizesOf(as), as[0].Width, as[0].Height, e.Log)
-		} else {
-			spec := m.NPU["apple"]
-			dir, err = flux2klein.Prepare(ctx, flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo, Name: m.Name,
-				ConvertOptions: flux2klein.ConvertOptions{Width: as[0].Width, Height: as[0].Height, TextFormat: spec.Text, DitFormat: spec.Dit}, Log: e.Log})
-		}
-		if err != nil {
-			return f, err
-		}
-		f.Set("export", dir)
-		return f, nil
-	},
-	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		g := &Generator{name: e.Model, dir: f.Path("export"), log: e.Log}
-		g.model, _ = chat.Lookup(e.Model)
-		vendor := "apple"
-		if e.NPU.AMD() {
-			vendor = "amd"
-		}
-		as, err := flux2klein.NPUAspects(g.model, vendor, flux2klein.NPUGeneration(vendor))
-		if err != nil {
-			return nil, err
-		}
-		for _, a := range as {
-			g.sizes = append(g.sizes, image.Pt(a.Width, a.Height))
-		}
-		if e.NPU.AMD() {
-			g.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-			if err == nil {
-				iron.ShareExport(g.dir, func(format string, args ...any) {
-					if e.Log != nil {
-						fmt.Fprintf(e.Log, format+"\n", args...)
-					}
-				})
+var (
+	role     = newRole("image", false)
+	editRole = newRole("image-edit", true)
+)
+
+// newRole is the role of a generator, with the edit's programs on Apple's Neural Engine when edit.
+func newRole(name string, edit bool) *airole.Role {
+	return &airole.Role{
+		Name:  name,
+		Kinds: []chat.Kind{chat.KindImage},
+		Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
+			m := e.Model
+			if !isKlein(m) {
+				return f, fmt.Errorf("ai/imagegen: %s is not drawn by the library yet (FLUX.2 klein is; hwnpu-image generate draws the others)", m.Name)
 			}
-		} else {
-			// strict, so that a program off the NPU, or one whose placement is not verified, says why
-			g.dev, _, err = llm.OpenDevice(ctx, e.NPU.Device, e.Cache, hwnpu.WithPlacement(hwnpu.PlacementStrict))
-		}
-		if err != nil {
-			return nil, err
-		}
-		// the first size is opened now, so that preparing compiles it and a missing part says so here
-		if _, err := g.open(ctx, g.sizes[0]); err != nil {
-			g.dev.Close()
-			return nil, err
-		}
-		return g, nil
-	},
+			vendor := "apple"
+			if e.NPU.AMD() {
+				vendor = "amd"
+			} else if e.NPU.Format != llm.BackendCoreAI {
+				return f, fmt.Errorf("ai/imagegen: %s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, e.NPU.Format)
+			}
+			as, err := flux2klein.NPUAspects(m, vendor, flux2klein.NPUGeneration(vendor))
+			if err != nil {
+				return f, err
+			}
+			ctx := chat.WithModel(e.Ctx, m)
+			var dir string
+			if e.NPU.AMD() {
+				// one export of every size, here or in the sources, else made with IRON; it edits too
+				dir, err = flux2klein.PrepareAMD(ctx, m, aspect.SizesOf(as), as[0].Width, as[0].Height, e.Log)
+				if err != nil {
+					return f, err
+				}
+				f.Set("export", dir)
+				return f, nil
+			}
+			// the export hwnpu-image generate draws with, of the sizes it holds by default
+			spec := m.NPU["apple"]
+			setup := flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo, Name: m.Name,
+				ConvertOptions: flux2klein.ConvertOptions{Width: as[0].Width, Height: as[0].Height, TextFormat: spec.Text, DitFormat: spec.Dit}, Log: e.Log}
+			if dir, err = flux2klein.Prepare(ctx, setup); err != nil {
+				return f, err
+			}
+			f.Set("export", dir)
+			if edit {
+				man, err := flux2klein.ReadProgramManifest(dir)
+				if err != nil {
+					return f, err
+				}
+				ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
+				if err != nil {
+					return f, err
+				}
+				f.Set("edit", ed)
+			}
+			return f, nil
+		},
+		Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
+			g := &Generator{name: e.Model, dir: f.Path("export"), edit: f.Path("edit"), log: e.Log}
+			g.model, _ = chat.Lookup(e.Model)
+			if e.NPU.AMD() {
+				as, err := flux2klein.NPUAspects(g.model, "amd", flux2klein.NPUGeneration("amd"))
+				if err != nil {
+					return nil, err
+				}
+				for _, a := range as {
+					g.sizes = append(g.sizes, image.Pt(a.Width, a.Height))
+				}
+				g.edits = true
+			} else {
+				// the sizes the export holds (models.yaml's eight are hwnpu-image's, an export each)
+				man, err := flux2klein.ReadProgramManifest(g.dir)
+				if err != nil {
+					return nil, err
+				}
+				for _, s := range man.SizeList() {
+					g.sizes = append(g.sizes, image.Pt(s[0], s[1]))
+				}
+				g.edits = g.edit != ""
+			}
+			var err error
+			if e.NPU.AMD() {
+				g.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+				if err == nil {
+					iron.ShareExport(g.dir, func(format string, args ...any) {
+						if e.Log != nil {
+							fmt.Fprintf(e.Log, format+"\n", args...)
+						}
+					})
+				}
+			} else {
+				// strict, so that a program off the NPU, or one whose placement is not verified, says why
+				g.dev, _, err = llm.OpenDevice(ctx, e.NPU.Device, e.Cache, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+			}
+			if err != nil {
+				return nil, err
+			}
+			// the first size is opened now, so that preparing compiles it and a missing part says so here
+			if _, err := g.open(ctx, g.sizes[0]); err != nil {
+				g.dev.Close()
+				return nil, err
+			}
+			return g, nil
+		},
+	}
 }
 
 // Options are how a picture is drawn.
@@ -134,6 +177,10 @@ type Generator struct {
 	model chat.Model
 	sizes []image.Point
 	log   io.Writer
+	// edit is the edit's programs on Apple's Neural Engine (Edit), edits whether it draws from
+	// references
+	edit  string
+	edits bool
 
 	// p draws pictures of at; another size closes it and opens that size's
 	p  *flux2klein.Pipeline
@@ -177,6 +224,12 @@ func (g *Generator) open(ctx context.Context, size image.Point) (*flux2klein.Pip
 	if err != nil {
 		return nil, err
 	}
+	if g.edit != "" {
+		if err := p.UseEdit(g.edit); err != nil {
+			p.Close()
+			return nil, err
+		}
+	}
 	if g.log != nil {
 		p.Logf = func(format string, args ...any) { fmt.Fprintf(g.log, format+"\n", args...) }
 	}
@@ -188,6 +241,9 @@ func (g *Generator) open(ctx context.Context, size image.Point) (*flux2klein.Pip
 func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*image.RGBA, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if len(o.References) > 0 && !g.edits {
+		return nil, fmt.Errorf("ai/imagegen: %s draws from references on Apple's Neural Engine with the edit's programs: use imagegen.Edit in place of imagegen.Generate", g.name)
+	}
 	if len(o.References) > flux2klein.MaxReferences {
 		return nil, fmt.Errorf("ai/imagegen: %d references; %s takes up to %d", len(o.References), g.name, flux2klein.MaxReferences)
 	}

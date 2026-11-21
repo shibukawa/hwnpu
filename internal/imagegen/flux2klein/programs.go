@@ -150,10 +150,15 @@ type progEngine struct {
 	time  *timeEmbed
 	mods  map[float64][]float32
 	ahead bool
-	// checked says each of the DiT's groups was loaded once (the first load compiles it) and seen
-	// on the NPU
-	checked bool
-	ring    *runner.Ring
+	// checked says each of the DiT's groups of a step (by mil.RefsName of its references) was
+	// loaded once (the first load compiles it) and seen on the NPU; ring loads the groups of the
+	// step of ringRefs
+	checked  map[string]bool
+	ring     *runner.Ring
+	ringRefs string
+	// edit, when set, is the edit's programs at the pictures' size (UseEdit), editDir their export
+	edit    *EditSize
+	editDir string
 	// loader, when set, loads the programs in place of runner.Open (tests)
 	loader runner.OpenFunc
 }
@@ -208,7 +213,7 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	}
 	var bar *console.Bar
 	if e.log != nil {
-		bar = console.NewLoadBar(e.log, "  loading "+name, llm.PartBytes(filepath.Join(e.dir, name)))
+		bar = console.NewLoadBar(e.log, "  loading "+filepath.Base(name), llm.PartBytes(e.path(name)))
 	}
 	p, err := e.load(ctx, name)
 	if bar != nil {
@@ -232,12 +237,20 @@ func (e *progEngine) load(ctx context.Context, name string) (runner.Program, err
 	if e.loader != nil {
 		return e.loader(ctx, name)
 	}
-	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
+	p, err := runner.Open(ctx, e.dev, e.path(name))
 	if err == nil && e.dev != nil && !p.OnNPU() {
 		p.Close()
-		p, err = nil, fmt.Errorf("%s does not run on the NPU alone", name)
+		p, err = nil, fmt.Errorf("%s does not run on the NPU alone", filepath.Base(name))
 	}
 	return p, err
+}
+
+// path is the file of a program of the export (relative to it), or of the edit's (absolute).
+func (e *progEngine) path(name string) string {
+	if filepath.IsAbs(name) {
+		return name
+	}
+	return filepath.Join(e.dir, name)
 }
 
 // encode runs Qwen3's groups in turn on every prompt's rows xs[k] (TextRows x hidden, divided by
@@ -300,26 +313,64 @@ func (e *progEngine) encode(ctx context.Context, xs [][]float32, ns []int) ([][]
 	return out, nil
 }
 
-// groups are the DiT's programs in the order a step runs them: the doubles, then the singles.
-func (e *progEngine) groups() []string {
+// step is the DiT's groups of a step with references of the picture's sides over divs: the
+// export's for none, else the edit's (UseEdit), their names absolute.
+func (e *progEngine) step(divs []int) (doubles, singles []Group, err error) {
+	if len(divs) == 0 {
+		return e.m.Doubles, e.m.Singles, nil
+	}
+	if e.edit == nil {
+		return nil, nil, errNoEdit
+	}
+	st, ok := e.edit.Step(divs)
+	if !ok {
+		return nil, nil, fmt.Errorf("the edit's programs have no step of %s at %dx%d", mil.RefsName(divs), e.m.Dit.Width, e.m.Dit.Height)
+	}
+	abs := func(gs []Group) []Group {
+		out := make([]Group, len(gs))
+		for i, g := range gs {
+			out[i] = Group{filepath.Join(e.editDir, g.Name), g.First, g.Count}
+		}
+		return out
+	}
+	return abs(st.Doubles), abs(st.Singles), nil
+}
+
+// errNoEdit is the error of references without the edit's programs.
+var errNoEdit = errors.New("editing (references) needs the edit's programs (PrepareEdit, UseEdit)")
+
+// groups are the DiT's programs of a step in the order it runs them: the doubles, then the
+// singles.
+func groups(doubles, singles []Group) []string {
 	var names []string
-	for _, g := range e.m.Doubles {
+	for _, g := range doubles {
 		names = append(names, g.Name)
 	}
-	for _, g := range e.m.Singles {
+	for _, g := range singles {
 		names = append(names, g.Name)
 	}
 	return names
 }
 
-// openDiT loads each of the DiT's groups once (the first load compiles it) and makes the ring
-// that loads them for each step.
-func (e *progEngine) openDiT(ctx context.Context) error {
-	if e.ring != nil {
+// openDiT loads each of the DiT's groups of a step with references divs once (the first load
+// compiles it) and makes the ring that loads them for each step; another step's ring is closed.
+func (e *progEngine) openDiT(ctx context.Context, divs []int) error {
+	key := mil.RefsName(divs)
+	if e.ring != nil && e.ringRefs == key {
 		return nil
 	}
-	names := e.groups()
-	if !e.checked {
+	if err := e.closeDiT(); err != nil {
+		return err
+	}
+	ds, ss, err := e.step(divs)
+	if err != nil {
+		return err
+	}
+	names := groups(ds, ss)
+	if e.checked == nil {
+		e.checked = map[string]bool{}
+	}
+	if !e.checked[key] {
 		for _, name := range names {
 			p, err := e.open(ctx, name)
 			if err != nil {
@@ -327,9 +378,9 @@ func (e *progEngine) openDiT(ctx context.Context) error {
 			}
 			p.Close()
 		}
-		e.checked = true
+		e.checked[key] = true
 	}
-	e.ring = runner.NewRing(names, e.ahead, e.load)
+	e.ring, e.ringRefs = runner.NewRing(names, e.ahead, e.load), key
 	return nil
 }
 
@@ -343,17 +394,23 @@ func (e *progEngine) closeDiT() error {
 }
 
 // velocities runs the DiT at sigma on each picture's latents xs[k] (tokens x 128) under its text
-// rows rows[k]: each group of blocks runs every picture before the next group (a group that
-// follows another pays for that in its first run alone, docs/design/image-models.md).
-func (e *progEngine) velocities(ctx context.Context, rows, xs [][]float32, sigma float64) ([][]float32, error) {
+// rows rows[k], with the references' latents refs (their rows one after another, the same for
+// every picture) of the picture's sides over divs: each group of blocks runs every picture before
+// the next group (a group that follows another pays for that in its first run alone,
+// docs/design/image-models.md). The ring is the step's (openDiT of divs).
+func (e *progEngine) velocities(ctx context.Context, rows, xs [][]float32, refs []float32, divs []int, sigma float64) ([][]float32, error) {
 	E := e.m.Dit.Hidden
 	if err := e.modulations([]float64{sigma}); err != nil {
+		return nil, err
+	}
+	ds, ss, err := e.step(divs)
+	if err != nil {
 		return nil, err
 	}
 	mods := e.mods[sigma]
 	m := func(lo, hi int) []float32 { return mods[lo*E : hi*E] }
 	hs := make([][]float32, len(xs))
-	for i, name := range e.groups() {
+	for i, name := range groups(ds, ss) {
 		p, err := e.ring.Take(ctx, i)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
@@ -362,22 +419,53 @@ func (e *progEngine) velocities(ctx context.Context, rows, xs [][]float32, sigma
 			var in map[string][]float32
 			switch {
 			case i == 0:
-				in = map[string][]float32{"x": xs[k], "ctx": rows[k], "mods": m(mil.ModImage, mil.ModSingle)}
-			case i < len(e.m.Doubles):
+				x := xs[k]
+				if len(refs) > 0 { // the picture's patches, then the references'
+					x = append(append(make([]float32, 0, len(x)+len(refs)), x...), refs...)
+				}
+				in = map[string][]float32{"x": x, "ctx": rows[k], "mods": m(mil.ModImage, mil.ModSingle)}
+			case i < len(ds):
 				in = map[string][]float32{"x": hs[k], "mods": m(mil.ModImage, mil.ModSingle)}
-			case i == len(e.m.Doubles)+len(e.m.Singles)-1:
+			case i == len(ds)+len(ss)-1:
 				in = map[string][]float32{"x": hs[k], "mods": m(mil.ModSingle, mil.ModRows)}
 			default:
 				in = map[string][]float32{"x": hs[k], "mods": m(mil.ModSingle, mil.ModOut)}
 			}
 			if hs[k], err = p.Run(ctx, in); err != nil {
 				p.Close()
-				return nil, fmt.Errorf("%s: %w", name, err)
+				return nil, fmt.Errorf("%s: %w", filepath.Base(name), err)
 			}
 		}
 		p.Close()
 	}
 	return hs, nil
+}
+
+// encodeReference runs the VAE's encoder of a reference of the picture's sides over div (the
+// edit's programs, a stage at a time) on its pixels (3, h, w) in [-1, 1]: the latents' means
+// (32, h/8, w/8).
+func (e *progEngine) encodeReference(ctx context.Context, px []float32, div int) ([]float32, error) {
+	if e.edit == nil {
+		return nil, errNoEdit
+	}
+	stages := e.edit.Encoders[div]
+	if len(stages) == 0 {
+		return nil, fmt.Errorf("the edit's programs have no encoder of a reference of the sides over %d at %dx%d", div, e.m.Dit.Width, e.m.Dit.Height)
+	}
+	names := make([]string, len(stages))
+	for i, s := range stages {
+		names[i] = filepath.Join(e.editDir, s)
+	}
+	t0 := time.Now()
+	zs, err := runner.Stages(ctx, names, e.ahead, e.open, [][]float32{px}, runner.StageBudget,
+		func(_ int, p runner.Program, x []float32) ([]float32, error) {
+			return p.Run(ctx, map[string][]float32{"x": x})
+		}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("the encoder: %w", err)
+	}
+	e.logf("the reference's latents in %.2f s", time.Since(t0).Seconds())
+	return zs[0], nil
 }
 
 // decodeAll runs the VAE's stages on each picture's latents (32, H/8, W/8), stage by stage
@@ -520,9 +608,18 @@ func scaled(xs []float32, s float32) []float32 {
 	return out
 }
 
-// generatePrograms is GenerateAll on Apple's Neural Engine (text to image): the pictures' steps
-// together, each group of the DiT's blocks running every picture before the next group loads.
-func (p *Pipeline) generatePrograms(ctx context.Context, conds []Cond, noises [][]float32, sigmas []float64, step StepFunc) ([][]float32, error) {
+// generatePrograms is GenerateAll on Apple's Neural Engine: the pictures' steps together, each
+// group of the DiT's blocks running every picture before the next group loads. With references
+// (their latents of EncodeImage) the step is the edit's programs' (UseEdit).
+func (p *Pipeline) generatePrograms(ctx context.Context, conds []Cond, refs, noises [][]float32, sigmas []float64, step StepFunc) ([][]float32, error) {
+	divs, err := p.refDivs(refs)
+	if err != nil {
+		return nil, err
+	}
+	var refRows []float32
+	for _, r := range refs {
+		refRows = append(refRows, r...)
+	}
 	rows := make([][]float32, len(conds))
 	xs := make([][]float32, len(conds))
 	for k, cd := range conds {
@@ -535,14 +632,14 @@ func (p *Pipeline) generatePrograms(ctx context.Context, conds []Cond, noises []
 	if err := e.modulations(sigmas[:len(sigmas)-1]); err != nil {
 		return nil, fmt.Errorf("flux2klein: %w", err)
 	}
-	if err := e.openDiT(ctx); err != nil {
+	if err := e.openDiT(ctx, divs); err != nil {
 		return nil, fmt.Errorf("flux2klein: %w", err)
 	}
 	defer e.closeDiT()
 	n := len(sigmas) - 1
 	for i := 0; i < n; i++ {
 		t0 := time.Now()
-		vs, err := e.velocities(ctx, rows, xs, sigmas[i])
+		vs, err := e.velocities(ctx, rows, xs, refRows, divs, sigmas[i])
 		if err != nil {
 			return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
 		}
@@ -592,4 +689,37 @@ func (p *Pipeline) DecodeAll(ctx context.Context, xs ...[]float32) ([]*image.RGB
 	// the VAE's stages, the largest of a picture's memory
 	debug.FreeOSMemory()
 	return p.prog.decodeAll(ctx, zs, p.Stage)
+}
+
+// UseEdit has an Apple pipeline draw from references too, with the edit's programs in dir (an
+// export of ConvertEdit of the same model, PrepareEdit) at the pictures' size.
+func (p *Pipeline) UseEdit(dir string) error {
+	if p.prog == nil {
+		return errors.New("flux2klein: the edit's programs are for Apple's Neural Engine (an IRON export edits by itself)")
+	}
+	m, err := ReadEditManifest(dir)
+	if err != nil {
+		return err
+	}
+	c := p.prog.m.Dit
+	if m.Hidden != c.Hidden || m.Latent != c.Latent {
+		return fmt.Errorf("flux2klein: %s is of a DiT of %d and patches of %d, the export's of %d and %d", dir, m.Hidden, m.Latent, c.Hidden, c.Latent)
+	}
+	s, ok := m.At(c.Width, c.Height)
+	if !ok {
+		var have []string
+		for _, s := range m.Sizes {
+			have = append(have, fmt.Sprintf("%dx%d", s.Width, s.Height))
+		}
+		return fmt.Errorf("flux2klein: %s edits at %v, not %dx%d", filepath.Base(dir), have, c.Width, c.Height)
+	}
+	if err := p.prog.closeDiT(); err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	p.prog.edit, p.prog.editDir = &s, abs
+	return nil
 }

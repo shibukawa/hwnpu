@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"os"
 	"sync"
 
 	"github.com/shibukawa/hwnpu/ai"
@@ -57,7 +58,11 @@ var facesRole = &airole.Role{
 		f.Set("onnx", path)
 		if device == "npu" {
 			// Apple's and Intel's NPU run the ONNX graph converted (at its first load) into the
-			// model's directory of programs
+			// model's directory of programs, made now: the store finds a use whose files are all
+			// there, and the directory is empty until that load
+			if err := os.MkdirAll(e.Dir, 0o755); err != nil {
+				return f, err
+			}
 			f.Set("programs", e.Dir)
 			f.SetValue("format", e.NPU.Format)
 		}

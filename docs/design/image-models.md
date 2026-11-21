@@ -16,7 +16,7 @@ A picture is three parts, all on the NPU: a text encoder reads the prompt, a DiT
 
 | Name (family:tag) | Parts | Steps / guidance | License, content | `machine` | Memory AMD / Apple (GB) | NPUs, time |
 |---|---|---|---|---|---|---|
-| **FLUX.2-klein-4B** (`flux2-klein:4b`) | 3.9B DiT of FLUX's shape (5 double, 20 single blocks), Qwen3-4B, FLUX.2 VAE | Euler 4, none | Apache-2.0, safe | 8 | 3.9 / 4.9 | AMD 1024² ~29 s, 512² ~10 s; edits (AMD only): 1 min, 37 s with a half-size reference. Apple M1 1024² ~41 s, 512² 11 s |
+| **FLUX.2-klein-4B** (`flux2-klein:4b`) | 3.9B DiT of FLUX's shape (5 double, 20 single blocks), Qwen3-4B, FLUX.2 VAE | Euler 4, none | Apache-2.0, safe | 8 | 3.9 / 4.9 | AMD 1024² ~29 s, 512² ~10 s; edits: AMD 1 min, 37 s with a half-size reference; Apple M3 89 s at 1024², 39 s at 512² (the edit's programs). Apple M1 1024² ~41 s, 512² 11 s |
 | flux-3-image-klein (`flux3-klein`) | 5.5B DiT (each stream's mode blocks, then single blocks), Qwen3-VL-4B, FLUX.2 VAE | 16 flow-map steps, none | FLUX Kommunity (non-commercial, gated; asked once) | 16 | 3.9 / 5.5 (Apple an estimate) | AMD 1024² ~1 min 45 s, 512² 32 s; Apple M3 1024² ~2 min (lut8). Text to image only |
 | Anima-Turbo (`anima-turbo:v1.1`) | Cosmos-Predict2 2B DiT, Qwen3-0.6B + LLM adapter, Qwen-Image VAE | Euler 8, none (distilled) | non-commercial weights (pictures may be used commercially; asked once), nsfw | 8 | 3.5 / 4.8 | AMD 1024² ~32 s; Apple M1 48 s. Intel: the only image model with an Intel form |
 | Anima-Aesthetic (`anima:aesthetic`, the family's default) | Anima-Turbo's programs, other weights | DPM-Solver++ 2M 25, CFG 4 at σ ≥ 0.6 | as Anima-Turbo, nsfw | 8 | 3.5 / 4.8 | about 4.5× Anima-Turbo; AMD 1024² 2 min 22 s, 2.71 kJ |
@@ -59,7 +59,7 @@ Measured (Anima-Aesthetic, 512², AMD, 6 pictures against 100 Euler steps): Eule
 - The prompt and the negative are encoded in one load of the text encoder (`EncodeAll`).
 - **The empty negative is a constant**: diffusers runs an empty prompt as masked tokens; what is left is one row from the weights alone, computed at export (Anima `text/empty_cond.bin`, cosine 1.0000 to diffusers; Chroma on the Mac `text/empty.bin`, its 2 rows through T5 in float32).
 
-## Reference-image editing (FLUX.2 klein, AMD)
+## Reference-image editing (FLUX.2 klein)
 
 `hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 ... the living room from image 2."`
 
@@ -67,7 +67,7 @@ Measured (Anima-Aesthetic, 512², AMD, 6 pictures against 100 Euler steps): Eule
 - A reference's latents (the VAE encoder's mean, patched, normalized by the batch-norm stats) follow the picture's rows; the RoPE's first axis is 10, 20, 30, 40. The modulations are the picture's; only the picture's rows are read at the end.
 - Half size changes the subject's fine detail (fur, face flatter: the CPU float32 shows the same) but not a composition reference. A subject at full size with the room at half: as detailed as two full-size, 1 min 41 s → 1 min 08 s.
 - The step time follows the rows; the export holds the reference combinations of its default (see [image-amd.md](image-amd.md)). An unheld combination fails with the list it can run (`References`).
-- Apple's FLUX.2 klein and the other models draw from text only.
+- On Apple's Neural Engine an edit runs the edit's programs, an export of their own converted at the first edit ([image-apple.md](image-apple.md)). The other models draw from text only.
 
 ## Several pictures: `--batch`
 

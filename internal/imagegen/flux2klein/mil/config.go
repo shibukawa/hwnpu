@@ -55,6 +55,10 @@ type Dit struct {
 	TimeIn        int // the timestep's sinusoid (256)
 	// TextRows is the text's rows the DiT takes.
 	TextRows int
+	// Refs are the reference images of an edit, each of the picture's sides over its value (1:
+	// the picture's size, 2: half its sides): their rows follow the picture's in the image
+	// stream, the first position axis 10, 20, ... (none: text to image).
+	Refs []int
 }
 
 // GH is the patches' rows (16 x 16 pixels a patch).
@@ -66,8 +70,56 @@ func (c Dit) GW() int { return c.Width / 16 }
 // Tokens is the image's rows.
 func (c Dit) Tokens() int { return c.GH() * c.GW() }
 
-// Rows is the DiT's rows: the image's, then the text's.
-func (c Dit) Rows() int { return c.Tokens() + c.TextRows }
+// RefTokens is the references' rows.
+func (c Dit) RefTokens() int {
+	n := 0
+	for _, d := range c.Refs {
+		n += (c.GH() / d) * (c.GW() / d)
+	}
+	return n
+}
+
+// ImageRows is the image stream's rows: the picture's, then the references'.
+func (c Dit) ImageRows() int { return c.Tokens() + c.RefTokens() }
+
+// Rows is the DiT's rows: the image stream's, then the text's.
+func (c Dit) Rows() int { return c.ImageRows() + c.TextRows }
+
+// RefsName names references of the picture's sides over divs, as the programs of their steps
+// are named: "" for none, else "ref" and their count at the picture's size, "h" and their
+// count at half its sides ("ref1", "ref1h1", "refh2").
+func RefsName(divs []int) string {
+	if len(divs) == 0 {
+		return ""
+	}
+	full, half := 0, 0
+	for _, d := range divs {
+		if d == 2 {
+			half++
+		} else {
+			full++
+		}
+	}
+	name := "ref"
+	if full > 0 {
+		name += fmt.Sprint(full)
+	}
+	if half > 0 {
+		name += fmt.Sprintf("h%d", half)
+	}
+	return name
+}
+
+// CheckRefs reports whether divs are references this package's programs take: each of the
+// picture's sides over 1 or 2, a whole number of patches.
+func (c Dit) CheckRefs() error {
+	for i, d := range c.Refs {
+		if (d != 1 && d != 2) || c.GH()%d != 0 || c.GW()%d != 0 {
+			return fmt.Errorf("flux2klein: reference %d of the sides over %d at %dx%d", i+1, d, c.Width, c.Height)
+		}
+	}
+	return nil
+}
 
 // The modulation rows the host gives the programs (the timestep's, shared by the blocks): the
 // double blocks' image stream (shift, scale, gate of the attention, then of the MLP), their text
@@ -205,6 +257,8 @@ type Vae struct {
 	Groups   int
 	Latent   int     // 32
 	BNEps    float64 // the batch norm of the patched latents
+	// Quant: the encoder's moments go through quant_conv (use_quant_conv, diffusers' default)
+	Quant bool
 }
 
 // ReadVae reads root/vae/config.json.
@@ -221,6 +275,7 @@ func ReadVae(root string) (Vae, error) {
 		Latent   int     `json:"latent_channels"`
 		Attn     *bool   `json:"mid_block_add_attention"`
 		PostQ    *bool   `json:"use_post_quant_conv"`
+		Quant    *bool   `json:"use_quant_conv"`
 		Act      string  `json:"act_fn"`
 		BNEps    float64 `json:"batch_norm_eps"`
 		Patch    []int   `json:"patch_size"`
@@ -232,5 +287,6 @@ func ReadVae(root string) (Vae, error) {
 		cfg.Act != "silu" || (cfg.Attn != nil && !*cfg.Attn) || cfg.PostQ == nil || !*cfg.PostQ || fmt.Sprint(cfg.Patch) != "[2 2]" {
 		return Vae{}, fmt.Errorf("flux2klein: the VAE (%s %v, %d latents) is not FLUX.2's", cfg.Class, cfg.Channels, cfg.Latent)
 	}
-	return Vae{Channels: cfg.Channels, Layers: cfg.Layers, Groups: cfg.Groups, Latent: cfg.Latent, BNEps: cfg.BNEps}, nil
+	return Vae{Channels: cfg.Channels, Layers: cfg.Layers, Groups: cfg.Groups, Latent: cfg.Latent, BNEps: cfg.BNEps,
+		Quant: cfg.Quant == nil || *cfg.Quant}, nil
 }

@@ -169,7 +169,8 @@ k.FatalIfErrorf(k.Run())
 `APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) と [samples/parallax](samples/parallax) (絵の深度を推定し、カメラで見る人の頭を追って、奥行きがあるように描く。窓は Ebitengine)、[samples/layers](samples/layers) (絵を深度で層に分け、隠れていた部分を描き足して PSD に書く) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
 
 - 今ある機能は音声と文、絵の深度と顔、画像の生成と編集 (FLUX.2 klein) です。ほかの画像のモデル (Anima、Chroma)、物体や姿勢の検出などは、まだコマンドからだけ使えます
-- 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
+- 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) と Mac (M3、Core AI) です (3 つのサンプル、カメラ、窓)。Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
+- Apple の Neural Engine で参照の絵から描くには、専用のプログラムが要ります。`imagegen.Generate` の代わりに `imagegen.Edit` を使います (準備で用意し、最初の編集でコンパイルします)
 
 ## AMD (カーネルを直接動かす)
 

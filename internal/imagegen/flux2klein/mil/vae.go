@@ -9,7 +9,7 @@ import chroma "github.com/shibukawa/hwnpu/internal/imagegen/chroma/mil"
 
 // flux1 is v as Chroma's decoder takes it.
 func flux1(v Vae) chroma.Vae {
-	return chroma.Vae{Channels: v.Channels, Layers: v.Layers, Groups: v.Groups, Latent: v.Latent, Scaling: 1, PostQuant: true}
+	return chroma.Vae{Channels: v.Channels, Layers: v.Layers, Groups: v.Groups, Latent: v.Latent, Scaling: 1, PostQuant: true, Quant: v.Quant}
 }
 
 // VaeStages is the decoder of a w x h picture in stages, each a program of its own.
@@ -20,6 +20,19 @@ func VaeStages(v Vae, w, h int) []chroma.VaeStage { return chroma.VaeStages(flux
 // roughly (the host clamps).
 func VaeProgram(v Vae, w, h, i int) *Part {
 	p := chroma.VaeProgram(flux1(v), w, h, i)
+	p.Model = "flux2klein"
+	return p
+}
+
+// VaeEncStages is the encoder of a w x h picture (a reference of an edit) in stages, each a
+// program of its own.
+func VaeEncStages(v Vae, w, h int) []chroma.VaeStage { return chroma.VaeEncStages(flux1(v), w, h) }
+
+// VaeEncProgram is stage i of VaeEncStages(v, w, h): input x (1, 3, h, w), the picture in [-1, 1],
+// for the first; output the next stage's input, or the latents' means (1, 32, h/8, w/8), which the
+// host patches and normalizes by the batch-norm statistics.
+func VaeEncProgram(v Vae, w, h, i int) *Part {
+	p := chroma.VaeEncProgram(flux1(v), w, h, i)
 	p.Model = "flux2klein"
 	return p
 }

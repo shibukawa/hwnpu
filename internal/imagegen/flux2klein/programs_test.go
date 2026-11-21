@@ -96,11 +96,11 @@ func TestEngineFlow(t *testing.T) {
 		t.Errorf("text calls %v", log)
 	}
 	log = nil
-	if err := e.openDiT(context.Background()); err != nil {
+	if err := e.openDiT(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	log = nil
-	vs, err := e.velocities(context.Background(), rows[:1], [][]float32{make([]float32, N*c.Latent)}, 0.5)
+	vs, err := e.velocities(context.Background(), rows[:1], [][]float32{make([]float32, N*c.Latent)}, nil, nil, 0.5)
 	v := vs[0]
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestEngineFlow(t *testing.T) {
 	}
 	// two pictures: each group runs both before the next group
 	log = nil
-	vs, err = e.velocities(context.Background(), rows, [][]float32{make([]float32, N*c.Latent), make([]float32, N*c.Latent)}, 0.5)
+	vs, err = e.velocities(context.Background(), rows, [][]float32{make([]float32, N*c.Latent), make([]float32, N*c.Latent)}, nil, nil, 0.5)
 	if err != nil || len(vs) != 2 {
 		t.Fatalf("%d velocities, %v", len(vs), err)
 	}
@@ -145,5 +145,81 @@ func TestSizes(t *testing.T) {
 	}
 	if err := m.At(768, 768); err == nil {
 		t.Error("768 found in an export of 512 and 1024")
+	}
+}
+
+// With the edit's programs a step with a reference runs their groups (from their directory),
+// the reference's patches after the picture's in the first group's x; a step without one runs
+// the export's again; without them a reference is refused.
+func TestEngineEdit(t *testing.T) {
+	m := smallManifest()
+	var log []string
+	c := m.Dit
+	E, N := c.Hidden, c.Tokens()
+	refN := N // one reference of the picture's size
+	R := N + refN + c.TextRows
+	open := func(_ context.Context, name string) (runner.Program, error) {
+		p := &fakeProgram{name: name, log: &log}
+		base := name[strings.LastIndex(name, "/")+1:]
+		switch {
+		case base == "dit_single_2" || base == "dit_single_2_ref1":
+			p.out = N * c.Latent
+		case strings.HasSuffix(base, "_ref1"):
+			p.out = R * E
+		default:
+			p.out = (N + c.TextRows) * E
+		}
+		return p, nil
+	}
+	te := &timeEmbed{E: E, w: [][]float32{make([]float32, E*4), make([]float32, E*E), make([]float32, 6*E*E),
+		make([]float32, 6*E*E), make([]float32, 3*E*E), make([]float32, 2*E*E)}, b: make([][]float32, 6)}
+	e := &progEngine{m: m, loader: open, logf: func(string, ...any) {}, time: te}
+	rows := [][]float32{make([]float32, c.TextRows*E)}
+	x := [][]float32{make([]float32, N*c.Latent)}
+	ref := make([]float32, refN*c.Latent)
+	if err := e.openDiT(context.Background(), []int{1}); err == nil {
+		t.Error("a reference without the edit's programs")
+	}
+	e.edit, e.editDir = &EditSize{Width: 32, Height: 32, Steps: []EditStep{{Refs: []int{1},
+		Doubles: []Group{{"dit_double_0_ref1", 0, 3}}, Singles: []Group{{"dit_single_0_ref1", 0, 2}, {"dit_single_2_ref1", 2, 2}}}}}, "/edit"
+	if err := e.openDiT(context.Background(), []int{1}); err != nil {
+		t.Fatal(err)
+	}
+	log = nil
+	if _, err := e.velocities(context.Background(), rows, x, ref, []int{1}, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		fmt.Sprintf("/edit/dit_double_0_ref1 x:%d ctx:%d mods:%d", (N+refN)*c.Latent, c.TextRows*E, mil.ModSingle*E),
+		fmt.Sprintf("/edit/dit_single_0_ref1 x:%d mods:%d", R*E, 3*E),
+		fmt.Sprintf("/edit/dit_single_2_ref1 x:%d mods:%d", R*E, 5*E),
+	}
+	if strings.Join(log, "; ") != strings.Join(want, "; ") {
+		t.Errorf("an edit's step:\n%s\nwant\n%s", strings.Join(log, "\n"), strings.Join(want, "\n"))
+	}
+	// text to image again: the export's groups, the edit's ring closed
+	if err := e.openDiT(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	log = nil
+	if _, err := e.velocities(context.Background(), rows, x, nil, nil, 0.5); err != nil {
+		t.Fatal(err)
+	}
+	if len(log) != 4 || !strings.HasPrefix(log[0], "dit_double_0 x:") {
+		t.Errorf("text to image after an edit:\n%s", strings.Join(log, "\n"))
+	}
+	if _, ok := e.edit.Step([]int{2}); ok {
+		t.Error("a step of half a picture's sides in an export of the picture's size")
+	}
+	e.closeDiT()
+}
+
+// The edit's programs are named for their sizes and references, apart from the export's.
+func TestEditExportName(t *testing.T) {
+	if n := EditExportName("FLUX.2-klein-4B", EditOptions{}); n != "flux.2-klein-4b-edit-512+1024-ref1-lut8-v1.coreai" {
+		t.Errorf("edit export name %s", n)
+	}
+	if n := EditExportName("FLUX.2-klein-4B", EditOptions{Sizes: [][2]int{{512, 512}}, Refs: [][]int{{1}, {2}}}); n != "flux.2-klein-4b-edit-512x512-ref1+refh1-lut8-v1.coreai" {
+		t.Errorf("edit export name %s", n)
 	}
 }
