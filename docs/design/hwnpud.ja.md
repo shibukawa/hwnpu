@@ -2,10 +2,30 @@
 
 [English](hwnpud.md)
 
-状態: 設計、未実装。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
+状態: Mac で段取りの 1 を実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
 キャッシュを持ち、プログラムを読み込んで動かす。hwnpu のコマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) と
 `ai` のパッケージで作ったアプリは Unix ドメインソケットでこれにつなぐ。自分の実行に要るものを渡し、返ってきたものを描くだけで、
 自分のプロセスで NPU を動かすこともモデルを管理することもしなくなる。Windows は実機で調べてから。
+
+## 実装したもの
+
+Mac で段取りの 1 (`cmd/hwnpud`、`internal/daemon`):
+
+- `hwnpud serve` は監督役: launchd のソケットを受け取り (`launch_activate_socket`)、なければ
+  `HWNPU_DAEMON_SOCKET` か `~/Library/Caches/hwnpu/hwnpud.sock` で待つ (モード 0600、相手の uid を
+  `LOCAL_PEERCRED` で確かめる)。`GET /hwnpud/v1/hello` と `status`、`POST /hwnpud/v1/quit` は自分で答え、
+  残りはエンジンに渡す。エンジンはそういうリクエストの最初に起こし、終わったらまた起こす。launchd が起こしたときは
+  エンジンもリクエストもないまま `HWNPU_DAEMON_IDLE` (5m) たつと終わり、実行ファイルが入れ替わっていれば手が空いた時点で終わる
+- エンジン (`hwnpud engine`) はチャットのモデルを持つ: `POST /hwnpud/v1/load` は hwnpu-chat の既定のフラグと同じに
+  モデルを用意し、ログ (JSON の行。クライアントの端末がバーを描き直せるかつき)、次にモデルを返す。`/v1/chat/completions`
+  はそのモデルの `chat.Server`。usage に hwnpu の統計 (`chat.UsageStats`) を足す。待ち時間で終わり、Neural Engine の
+  メモリとロックを返す
+- `hwnpud install` は `~/Library/LaunchAgents/com.github.shibukawa.hwnpud.plist` (ログは `~/Library/Logs/hwnpud.log`)
+  を書いて bootstrap する。シェルだけが設定している hwnpu の変数を警告する。`uninstall`、`status`、`stop`
+- `hwnpu-chat [chat]` は `HWNPU_DAEMON=on` (か `auto`) でこれを通る: 読み込みのログ、会話、同じ出力と統計の行。
+  モデルの変換と動かし方のフラグはそこでは断る
+- M3: PLaMo 3 Translate 2B のプログラムは `hwnpud` の名前で初回 22 秒 (Core AI の項目 2.5 GB)。次の実行は
+  モデルがエンジンに残っていて、始めから終わりまで 0.6 秒
 
 ## なぜ
 
@@ -159,7 +179,8 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 
 どれも小さい。NPU を使うものは裏でロックを待つ。
 
-1. Mac: 同じ実行ファイルから exec した子 (名前が同じで引数が違う) が Core AI のキャッシュに当たるか
+1. Mac: 同じ実行ファイルから exec した子 (名前が同じで引数が違う) が Core AI のキャッシュに当たるか。測った (M3): 当たる。
+   前のエンジンが作った項目から、新しいエンジンが PLaMo 3 Translate 2B を 0.3 秒で読む
 2. Mac: aned の鍵が識別子だけか: 同じ識別子を決めた ad-hoc のビルド 2 本が ANE のコードを共有するか。識別子が変わった後の
    最初の起動にどれだけかかるか (ad-hoc の `a.out` → 決めた識別子 → チームつきの Developer ID)
 3. Mac: 2 つのアプリのモデルを 1 プロセスに (interpreter と parallax): `mem.NPUWired` と 112 本の上限

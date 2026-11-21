@@ -39,8 +39,18 @@ type Server struct {
 	// Dump, when set, is a directory that receives each request, its prompt and the generated
 	// text (ID.json), for finding out what a client sends.
 	Dump string
+	// Count numbers the requests' ids; nil for the Server's own. Servers made for each request
+	// (hwnpud's engine) share one, so that the ids do not repeat.
+	Count *atomic.Int64
 
 	n atomic.Int64
+}
+
+func (s *Server) next() int64 {
+	if s.Count != nil {
+		return s.Count.Add(1)
+	}
+	return s.n.Add(1)
 }
 
 // Handler returns the API's routes.
@@ -246,7 +256,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		g.Repetition = *req.RepetitionPenalty
 	}
 
-	id := fmt.Sprintf("chatcmpl-%d-%d", time.Now().Unix(), s.n.Add(1))
+	id := fmt.Sprintf("chatcmpl-%d-%d", time.Now().Unix(), s.next())
 	created := time.Now().Unix()
 	// a long prompt on a large cache takes minutes before its first token
 	s.logf("%s: %d tokens of prompt, %d messages, %d tools, seed %d", id, len(ids), len(req.Messages), len(req.Tools), g.Seed)
@@ -355,6 +365,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	usage := map[string]any{
 		"prompt_tokens": stats.Prompt, "completion_tokens": stats.Generated, "total_tokens": stats.Prompt + stats.Generated,
 		"prompt_tokens_details": map[string]any{"cached_tokens": stats.Reused},
+		// hwnpu's own, for hwnpu-chat's line of statistics through hwnpud (UsageStats)
+		"hwnpu": UsageStats{PrefillMS: stats.Prefill.Milliseconds(), DecodeMS: stats.Decode.Milliseconds(),
+			Drafted: stats.Drafted, Accepted: stats.Accepted, ThinkCut: stats.ThinkCut, ThinkLooped: stats.ThinkLooped, Looped: stats.Looped},
 	}
 	if !req.Stream {
 		msg := map[string]any{"role": "assistant", "content": a.Content}
@@ -459,7 +472,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := fmt.Sprintf("embd-%d-%d", time.Now().Unix(), s.n.Add(1))
+	id := fmt.Sprintf("embd-%d-%d", time.Now().Unix(), s.next())
 	t0 := time.Now()
 	data := make([]map[string]any, len(texts))
 	tokens, truncated := 0, 0
@@ -536,4 +549,17 @@ func apiError(w http.ResponseWriter, code int, typ, ecode, msg string) {
 		e["code"] = ecode
 	}
 	writeJSON(w, code, map[string]any{"error": e})
+}
+
+// UsageStats is what a chat completion's usage tells besides the OpenAI fields, under "hwnpu":
+// the times of reading the prompt and of generating, the drafts, and why the thinking or the
+// answer was cut.
+type UsageStats struct {
+	PrefillMS   int64 `json:"prefill_ms"`
+	DecodeMS    int64 `json:"decode_ms"`
+	Drafted     int   `json:"drafted,omitempty"`
+	Accepted    int   `json:"accepted,omitempty"`
+	ThinkCut    bool  `json:"think_cut,omitempty"`
+	ThinkLooped bool  `json:"think_looped,omitempty"`
+	Looped      bool  `json:"looped,omitempty"`
 }

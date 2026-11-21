@@ -18,6 +18,7 @@ were removed without wrappers.
 | `hwnpu-chat` | `chat` (default), `agent`, `search`, `serve`, `opencode`, `systemone`, `list` | Language models: chat, coding agent, embeddings, OpenAI-compatible API, d1 decisions |
 | `hwnpu-image` | `generate`, `depth`, `face-detect`, `pose`, `detect`, `ocr`, `label`, `embed`, `segment`, `convert`, `list` | Image generation and vision models |
 | `hwnpu-audio` | `generate` (music; `-m sfx` sound effects), `tts`, `transcribe`, `pitch`, `notes`, `list` | `list` covers music, sfx, speech, transcribe, pitch, notes |
+| `hwnpud` | `serve` (default), `install`, `uninstall`, `status`, `stop` | The per-user process that owns the NPU and the models; `hwnpu-chat` goes through it with `HWNPU_DAEMON=on` ([hwnpud](hwnpud.md)) |
 | `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `prebuild`, `report`, `mxfp4`, `xclbin`, `cache` | Development tools, not for end users |
 
 - Music and sound effects share `hwnpu-audio generate`: only the model differs, the output (48 kHz

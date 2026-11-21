@@ -2,12 +2,38 @@
 
 [日本語](hwnpud.ja.md)
 
-Status: design, not built. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
+Status: step 1 is built on the Mac (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
 models: it downloads and keeps the converted models, holds the caches, loads the programs and runs
 them. hwnpu's commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`) and the apps built on
 the `ai` package reach it over a Unix domain socket. They pass what their run needs and draw what
 comes back; they no longer run the NPU or manage the models in their own processes. Windows comes
 after it has been looked into on a real machine.
+
+## Built
+
+Step 1 on the Mac (`cmd/hwnpud`, `internal/daemon`):
+
+- `hwnpud serve` is the supervisor: it takes launchd's socket (`launch_activate_socket`), else
+  listens on `HWNPU_DAEMON_SOCKET` or `~/Library/Caches/hwnpu/hwnpud.sock` (mode 0600, the peer's
+  uid checked with `LOCAL_PEERCRED`). It answers `GET /hwnpud/v1/hello` and `status` and
+  `POST /hwnpud/v1/quit` itself and passes the rest to the engine, which it starts at the first
+  such request and again after the engine ends. Under launchd it exits after `HWNPU_DAEMON_IDLE`
+  (5m) without an engine or a request, and as soon as it is idle once its executable has been
+  replaced.
+- The engine (`hwnpud engine`) holds the chat models: `POST /hwnpud/v1/load` makes one ready as
+  hwnpu-chat does with its default flags and streams the log (JSON lines, with whether the
+  client's terminal redraws bars), then the model; `/v1/chat/completions` is `chat.Server` over
+  the model. The usage carries hwnpu's statistics (`chat.UsageStats`). It exits after the idle
+  time, which gives the Neural Engine's memory and its lock back.
+- `hwnpud install` writes `~/Library/LaunchAgents/com.github.shibukawa.hwnpud.plist` (log in
+  `~/Library/Logs/hwnpud.log`) and bootstraps it; it warns of hwnpu's variables set only in the
+  shell. `uninstall`, `status`, `stop`.
+- `hwnpu-chat [chat]` goes through it with `HWNPU_DAEMON=on` (or `auto`): the load's log, then the
+  conversation, the same output and line of statistics. The flags of how a model is converted
+  and run are refused there.
+- M3: the PLaMo 3 Translate 2B program loads in 22 s the first time under the name `hwnpud`
+  (Core AI's entry 2.5 GB); the next run answers in 0.6 s from start to end, the model still in
+  the engine.
 
 ## Why
 
@@ -195,7 +221,8 @@ One process makes some limits shared by every app:
 Each is small; the ones on the NPU wait for the lock in the background.
 
 1. Mac: a child exec'd from the same executable (same name, other arguments) hits the Core AI
-   cache.
+   cache. Measured (M3): yes; a new engine loads PLaMo 3 Translate 2B in 0.3 s from the entry an
+   earlier engine made.
 2. Mac: aned keys only on the identifier: two ad-hoc builds with the same chosen identifier share
    the ANE code, and how long the first start takes after the identifier changes (ad-hoc `a.out`
    → chosen identifier → Developer ID with a team).

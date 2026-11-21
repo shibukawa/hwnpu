@@ -56,6 +56,10 @@
 // of Pi (pi.dev) written in Go on the same engine (see AgentCmd). opencode serves on a free port
 // from 30000 (or --listen), writes an OpenCode config for the server's chat models, and runs
 // OpenCode on this terminal with the arguments after --; when it exits, so does the server.
+//
+// With HWNPU_DAEMON=on (or auto, when it answers), chat goes through hwnpud (cmd/hwnpud): hwnpud
+// makes the model ready and runs it, this process sends the conversation and writes the answers,
+// and the model stays loaded for the next run.
 package main
 
 import (
