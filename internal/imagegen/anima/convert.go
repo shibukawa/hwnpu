@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
@@ -32,7 +33,23 @@ type ConvertOptions struct {
 	QChunk int
 	// Only, when not empty, writes these parts alone (text, time, blocks, final, vae).
 	Only map[string]bool
+	// Sizes are the picture sizes (width, height) a Core AI export holds: each part that depends
+	// on the size one program with a function each (SizeFunction; llm.WriteAIFunctions, the
+	// weights once), the manifest's Sizes. Empty: Width x Height alone. Width x Height is one of
+	// them (the manifest's own). The other backends take one size.
+	Sizes [][2]int
 }
+
+// sizes is what o's export holds.
+func (o ConvertOptions) sizes() [][2]int {
+	if len(o.Sizes) == 0 {
+		return [][2]int{{o.Width, o.Height}}
+	}
+	return o.Sizes
+}
+
+// SizeFunction is the function of a program of several sizes that runs at w x h.
+func SizeFunction(w, h int) string { return fmt.Sprintf("s%dx%d", w, h) }
 
 // Checkpoint is where Convert reads Anima from: Models holds diffusion_models/ and
 // text_encoders/ (split_files/ of RepoSplit), Diffusers vae/, tokenizer/ and t5_tokenizer/ (of
@@ -54,11 +71,23 @@ func RepoCheckpoint() Checkpoint {
 // Convert writes an export of Anima from ck into out: the programs, the tokenizers, the
 // embedding tables (text/, as the IRON export's) and manifest.json.
 func Convert(ck Checkpoint, out string, o ConvertOptions, log io.Writer) error {
-	if o.Width%16 != 0 || o.Height%16 != 0 || o.Width <= 0 || o.Height <= 0 {
-		return fmt.Errorf("anima: %dx%d is no whole 16-pixel patches", o.Width, o.Height)
-	}
 	if o.Backend != llm.BackendCoreML && o.Backend != llm.BackendCoreAI && o.Backend != llm.BackendIntel {
 		return fmt.Errorf("anima: backend %q is not coreml, coreai or intel", o.Backend)
+	}
+	sizes := o.sizes()
+	if len(sizes) > 1 && o.Backend != llm.BackendCoreAI {
+		return fmt.Errorf("anima: an export of several sizes is Core AI's (%s takes one)", o.Backend)
+	}
+	if !slices.Contains(sizes, [2]int{o.Width, o.Height}) {
+		return fmt.Errorf("anima: %dx%d is not one of the sizes %v", o.Width, o.Height, sizes)
+	}
+	for _, sz := range sizes {
+		if sz[0]%16 != 0 || sz[1]%16 != 0 || sz[0] <= 0 || sz[1] <= 0 {
+			return fmt.Errorf("anima: %dx%d is no whole 16-pixel patches", sz[0], sz[1])
+		}
+		if len(mil.VaeStages(sz[0], sz[1])) != len(mil.VaeStages(o.Width, o.Height)) {
+			return fmt.Errorf("anima: the VAE's stages at %dx%d are not as many as at %dx%d", sz[0], sz[1], o.Width, o.Height)
+		}
 	}
 	if o.Group <= 0 {
 		o.Group = DefaultGroup(o.Backend, o.Width, o.Height)
@@ -114,26 +143,73 @@ func Convert(ck Checkpoint, out string, o ConvertOptions, log io.Writer) error {
 		return err
 	}
 	m.TimeRows = mil.TimeRows
-	qchunk := mil.DitQChunk(o.Width, o.Height, o.QChunk)
-	if qchunk != o.QChunk {
-		fmt.Fprintf(log, "the DiT's attention scores %d queries at a time (%d would be over 64 MiB of scores)\n", qchunk, o.QChunk)
+	// writeSized writes the part of each size (part(w, h)): for one size as write does, else one
+	// program with a function each (SizeFunction), the weights once. The names are one a size.
+	writeSized := func(kind string, part func(w, h int) *mil.Part, format string) ([]string, error) {
+		if len(sizes) == 1 {
+			name, err := write(kind, part(sizes[0][0], sizes[0][1]), format)
+			return []string{name}, err
+		}
+		name := part(o.Width, o.Height).Name + ext
+		var names []string
+		var fns []llm.AIFunction
+		for _, sz := range sizes {
+			f := SizeFunction(sz[0], sz[1])
+			names = append(names, name+"#"+f)
+			fns = append(fns, llm.AIFunction{Name: f, Model: part(sz[0], sz[1]), Options: llm.Options{Backend: o.Backend, Format: format}})
+		}
+		if len(o.Only) > 0 && !o.Only[kind] {
+			return names, nil
+		}
+		jobs.Add(name, func() (string, error) {
+			if _, err := llm.WriteAIFunctions(filepath.Join(out, name), w, fns); err != nil {
+				return "", fmt.Errorf("anima: %s: %w", name, err)
+			}
+			return fmt.Sprintf("%s, %d sizes", format, len(sizes)), nil
+		})
+		return names, nil
+	}
+	sized := make([]SizeParts, len(sizes))
+	for i, sz := range sizes {
+		sized[i] = SizeParts{Width: sz[0], Height: sz[1]}
+		if q := mil.DitQChunk(sz[0], sz[1], o.QChunk); q != o.QChunk {
+			fmt.Fprintf(log, "the DiT's attention at %dx%d scores %d queries at a time (%d would be over 64 MiB of scores)\n", sz[0], sz[1], q, o.QChunk)
+		}
 	}
 	for first := 0; first < mil.DitLayers; first += o.Group {
-		name, err := write("blocks", mil.Blocks(o.Width, o.Height, first, o.Group, qchunk), o.DitFormat)
+		names, err := writeSized("blocks", func(w, h int) *mil.Part {
+			return mil.Blocks(w, h, first, o.Group, mil.DitQChunk(w, h, o.QChunk))
+		}, o.DitFormat)
 		if err != nil {
 			return err
 		}
-		m.Blocks = append(m.Blocks, name)
+		for i := range sized {
+			sized[i].Blocks = append(sized[i].Blocks, names[i])
+		}
 	}
-	if m.Final, err = write("final", mil.Final(o.Width, o.Height), o.DitFormat); err != nil {
+	names, err := writeSized("final", func(w, h int) *mil.Part { return mil.Final(w, h) }, o.DitFormat)
+	if err != nil {
 		return err
 	}
-	for i := range mil.VaeStages(o.Width, o.Height) {
-		name, err := write("vae", mil.Vae(o.Width, o.Height, i, vcfg.Mean, vcfg.Std, o.QChunk), "fp16")
+	for i := range sized {
+		sized[i].Final = names[i]
+	}
+	for st := range mil.VaeStages(o.Width, o.Height) {
+		names, err := writeSized("vae", func(w, h int) *mil.Part { return mil.Vae(w, h, st, vcfg.Mean, vcfg.Std, o.QChunk) }, "fp16")
 		if err != nil {
 			return err
 		}
-		m.Vae = append(m.Vae, name)
+		for i := range sized {
+			sized[i].Vae = append(sized[i].Vae, names[i])
+		}
+	}
+	for _, sp := range sized {
+		if sp.Width == o.Width && sp.Height == o.Height {
+			m.Blocks, m.Final, m.Vae = sp.Blocks, sp.Final, sp.Vae
+		}
+	}
+	if len(sized) > 1 {
+		m.Sizes = sized
 	}
 	// a job takes up to 0.4 GB at 20 at a time (Anima Turbo at 1024 x 1024: 6.7 GB in all)
 	if err := jobs.Run(1 << 30); err != nil {
