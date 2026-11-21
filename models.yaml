@@ -1013,6 +1013,38 @@ models:
     memory: 0.03
     bytes: 0.23e6
     about: "YuNet (OpenCV Zoo, MIT): faces' boxes and five landmarks (eyes, nose, mouth corners)"
+  # hwnpu-image cutout: MediaPipe's Selfie Segmentation (Google, Apache-2.0) as onnx-community's
+  # ONNX files, how much of each pixel is a person. 0.46 MB of weights: the CPU (ONNX Runtime, 1
+  # thread) takes 5.5 ms a picture at 256 x 256 and 2.9 ms at 256 x 144 (Ryzen AI 9 365), every
+  # frame of a camera. It is on the CPU on every machine: beside AMD's NPU for what YuNet is
+  # there for, and on Apple's and Intel's because internal/onnx has no lowering of its HardSwish
+  # yet (no program of it was made or tried)
+  selfie-segmentation:
+    family: selfie-segmentation
+    tag: general
+    kind: cutout
+    from: hf:onnx-community/mediapipe_selfie_segmentation@be49485c8e027524be38591817fc5cd31bd9d00e
+    license: {id: apache-2.0, url: "https://huggingface.co/onnx-community/mediapipe_selfie_segmentation", class: open}
+    device: {amd: cpu, apple: cpu, intel: cpu}
+    sha256: {onnx/model.onnx: 3241ac4ad8aa35bdaf33946776db29f7c283a413aa0b0dacb9483594b4531aad}
+    machine: 8
+    # the peak of "hwnpu-image cutout" on a 1280 x 720 picture, the picture and ONNX Runtime included
+    memory: 0.09
+    bytes: 0.46e6
+    about: "MediaPipe Selfie Segmentation (Google, Apache-2.0): how much of each pixel is a person, at 256 x 256 (any picture, stretched)"
+  selfie-segmentation-landscape:
+    family: selfie-segmentation
+    tag: landscape
+    kind: cutout
+    from: hf:onnx-community/mediapipe_selfie_segmentation_landscape@2497d5bec26c626c7b3c4edc6e1fefc21b64f6c3
+    license: {id: apache-2.0, url: "https://huggingface.co/onnx-community/mediapipe_selfie_segmentation_landscape", class: open}
+    device: {amd: cpu, apple: cpu, intel: cpu}
+    sha256: {onnx/model.onnx: 7a0adcfdb1715d3b0ff0f61486d8a181c33f4a208343a5abfccbc6540e872d24}
+    machine: 8
+    # the peak of "hwnpu-image cutout" on a 1280 x 720 picture, the picture and ONNX Runtime included
+    memory: 0.09
+    bytes: 0.46e6
+    about: "The same at 256 x 144, for a camera's wide frames: half the time"
   # hwnpu-image label and embed: on AMD's NPU the export ~/models/NAME.amd-npu2 of
   # tools/amd/iron_siglip2.py (--precision HIGHEST); on Apple's Neural Engine the checkpoint is
   # downloaded and converted on the first run (internal/vision/siglip, fp16; docs/design/vision-models.md);
@@ -1132,6 +1164,11 @@ categories:
     about: face detection (hwnpu-image face-detect)
     picks:
       - {machine: 8, model: YuNet}
+  cutout:
+    aliases: [person-mask, people, background]
+    about: the people of a picture apart from what is behind them (hwnpu-image cutout)
+    picks:
+      - {machine: 8, model: selfie-segmentation}
   pitch:
     aliases: [f0]
     about: the pitch (F0) of a voice or an instrument (hwnpu-audio pitch)

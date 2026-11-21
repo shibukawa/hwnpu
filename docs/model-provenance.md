@@ -79,6 +79,7 @@ Hugging Face の API (`cardData.license`)、モデルカード、リポジトリ
 | DA3-SMALL、DA3-BASE、DA3MONO-LARGE、DA3METRIC-LARGE | `apache-2.0` | 可 | 公式 | ✓ |
 | moge-2-vits、vitb、vitl | `mit` | 可 | 公式 (第一著者のアカウント) | ✓ |
 | YuNet | `mit` | 可 | 公式 (opencv_zoo とバイト単位で同じ) | ✓ |
+| selfie-segmentation、selfie-segmentation-landscape | `apache-2.0` | 可 | 公式ではない (`onnx-community` が Google の MediaPipe Selfie Segmentation を ONNX に変換したもの。Google の配布物 (TFLite) とは突き合わせていない)。コミットと sha256 で固定 | ✓ |
 | siglip2-base-patch16-224、siglip2-large-patch16-256 | `apache-2.0` | 可 | 公式 | ✓ |
 | EfficientSAM-Ti、S | `apache-2.0` | 可 | 公式 (第一著者のアカウント、GitHub とバイト単位で同じ) | ✓ |
 

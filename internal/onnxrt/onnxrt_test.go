@@ -2,6 +2,8 @@ package onnxrt
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/dl"
@@ -87,5 +89,26 @@ func TestRun(t *testing.T) {
 	defer s2.Close()
 	if _, err := s2.Run(map[string]Tensor{"x": x}); err == nil {
 		t.Error("(4, 5) into a model of (2, 3): no error")
+	}
+}
+
+// TestVersioned: a distribution's runtime package has the library under its version alone; the
+// newest of a directory is tried first.
+func TestVersioned(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"libonnxruntime.so.1.9", "libonnxruntime.so.1.23", "libonnxruntime.so.1.23.2", "libonnxruntime_providers_shared.so"} {
+		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := versioned(filepath.Join(dir, "nothing"), dir)
+	want := []string{"libonnxruntime.so.1.23.2", "libonnxruntime.so.1.23", "libonnxruntime.so.1.9"}
+	if len(got) != len(want) {
+		t.Fatalf("%v", got)
+	}
+	for i, g := range got {
+		if filepath.Base(g) != want[i] {
+			t.Errorf("%d: %s, want %s", i, filepath.Base(g), want[i])
+		}
 	}
 }

@@ -324,7 +324,7 @@ hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-cha
 | `ai/speech`, `ai/text` | Transcribe, speak, loudness VAD, WAV; translate, chat. Each package owns its models' preparation and loading (`internal/airole.Role`); `ai` imports none of them, so an app links only what it uses | v0 |
 | `ai/flow` | Chunk streams (`Stream[T]`, `iter.Seq2`) and the network between models | v0 |
 | `ai/cli` (+ `konghelper`) | Subcommands for an app: `models`, `models download`, `models prepare`, `status` (shared with `hwnpu status` through `internal/npustatus`) | v0 |
-| `ai/vision` | `Depth` (use `depth`: Depth Anything 3, MoGe-2; `DepthMap.Near` gives nearness 0–1), `Faces` (`face-detect`: YuNet; CPU on AMD machines), `HeadOf` / `NearestHead` / `HeadNode` (head position from the eye spacing, 63 mm, and the camera's field of view, 60°; no model) | v0 |
+| `ai/vision` | `Depth` (use `depth`: Depth Anything 3, MoGe-2; `DepthMap.Near` gives nearness 0–1), `Faces` (`face-detect`: YuNet; CPU on AMD machines), `Cutout` (`cutout`: MediaPipe Selfie Segmentation, the people of a frame apart from what is behind them; `Matte` at the model's 256×256; CPU on every machine), `HeadOf` / `NearestHead` / `HeadNode` (head position from the eye spacing, 63 mm, and the camera's field of view, 60°; no model) | v0 |
 | `ai/imagegen` | `Generate` (use `image`): text and reference images to a picture, `GenerateNode`; the export's size nearest the asked shape (`SizeFor`). FLUX.2 klein only (Anima, Chroma, FLUX.3 klein refuse at preparation) | v0 |
 | `ai/sound`; objects, pose, segmentation, OCR, labels in `ai/vision` | music, sound effects, pitch | not yet |
 
@@ -346,7 +346,8 @@ hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-cha
 - Samples: `samples/interpreter` (transcribe → translate → speak), `samples/parallax` (a picture's depth
   once, the viewer's head from the camera, the picture redrawn from that view with an Ebitengine Kage
   shader; layers from `samples/internal/layering` swap in as they are cut), `samples/layers` (cut a picture into
-  depth layers, FLUX.2 klein draws what each hid, written as a PSD). Preparation code shared with the
+  depth layers, FLUX.2 klein draws what each hid, written as a PSD), `samples/backdrop` (a camera's frames with what is
+  behind the person blurred or replaced: `camera → cutout (newest) → steady → view`, three Kage shaders). Preparation code shared with the
   commands moved into `internal/chat` (`AMDPictureExport`) and `internal/imagegen/flux2klein`.
 
 **The NPU is one queue** (Ryzen AI 9 365, whisper-large-v3-turbo + plamo-3-translate-8b +

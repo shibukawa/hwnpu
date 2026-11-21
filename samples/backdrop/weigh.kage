@@ -1,0 +1,13 @@
+//kage:unit pixels
+
+// What is behind the person, ready to be blurred: the frame (source 0) weighed by how much of
+// each pixel is not a person (one less the matte, source 1), the weight kept as the alpha. A
+// blur of it mixes the colours of what is behind only, so that the person's colours do not
+// spread into what is drawn around them.
+
+package main
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	w := 1 - imageSrc1At(srcPos).a
+	return vec4(imageSrc0At(srcPos).rgb*w, w)
+}

@@ -6,8 +6,8 @@
 
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりです。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモという位置付けです。アプリは複数のモデルを登録し、前もって準備し、つないで動かします。
 
-- 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、深度の推定、顔の検出と頭の位置、画像の生成と編集 (FLUX.2 klein)、モデルの間のつなぎ方、アプリに足すサブコマンド
-- まだないもの: FLUX.2 klein のほかの画像の生成 (Anima、Chroma)、物体・姿勢・切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
+- 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、深度の推定、顔の検出と頭の位置、人物の切り抜き、画像の生成と編集 (FLUX.2 klein)、モデルの間のつなぎ方、アプリに足すサブコマンド
+- まだないもの: FLUX.2 klein のほかの画像の生成 (Anima、Chroma)、物体・姿勢・点で選ぶ切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
 - 実機で動かしたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel は、コマンドと同じ準備と読み込みを呼びますが、このライブラリを通しては動かしていません
 - 計画の全体は [app-api.md](app-api.md)、作業の一覧は [app-api-tasks.md](app-api-tasks.md) (どちらも日本語)
 
@@ -107,6 +107,7 @@ func main() {
 | `samples/interpreter` | 同時通訳: マイクか録音 → 文字起こし → 翻訳 → 読み上げ。音声のコマンド。ネットワークと呼び出し |
 | `samples/parallax` | 擬似立体: 絵の深度を推定し、カメラで頭の位置を追い、その視点から見た絵を描く (Ebitengine、Kage のシェーダー)。窓の横で絵を層に分け、途中経過を窓に出す |
 | `samples/layers` | レイヤー分割: 絵を深度で層に分け、各層が隠していた部分を画像のモデルで描き足して、Photoshop の文書 (PSD) に書く。2 つのモデルを交互に |
+| `samples/backdrop` | ビデオ通話の背景: カメラの各フレームで人物と背景を分け、背景をぼかすか差し替える (Ebitengine、Kage のシェーダー)。CPU で動くネットワーク |
 
 ```
 cd samples
@@ -675,6 +676,33 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
 - **層ごとの深度**: 色だけでなく、近さも層ごとに持ちます (`--png DIR` の `near-N.png`。16 ビットの灰色、全部の層で同じ目盛り)。描き足した部分の近さは、描き足した絵から推定したものです。層の近さは、層の縁の外へも縁の値のまま続けてあります (縁で奥の層の値に落ちると、描くときに縁が引き伸ばされるため)。`parallax show DIR` がこれを読みます ([6.8 節](#68-例-擬似立体-samplesparallax))
 - 3 層で画像を 2 回描き、1024×1024 で 2 分から 3 分半 (Ryzen AI 9 365)。PSD は層が文書と同じ大きさの 8 ビット RGB、PackBits で詰めたもの。Mac (M3) では、編集のプログラムのコンパイルが済めば 1 層が 512×512 で 39 秒、1024×1024 で 89 秒です
 
+### 6.10 例: 人物の背景をぼかす (`samples/backdrop`)
+
+ネットワークだけのアプリです。カメラの全フレームで人物と背景を分け、窓には背景をぼかしたフレーム、または背景を絵や単色に差し替えたフレームを描きます。ビデオ通話の背景と同じものです。
+
+```go
+cut := vision.Cutout("cutout")
+app := ai.NewApp("backdrop")
+
+// カメラ → 人物のマット (最新のフレームだけ) → フレームの間でならす → 窓のために持っておく
+camera := flow.Source[image.Image]("camera")
+steady := flow.Each("steady", smooth)                    // Matte.Smooth: 前のマットを半分残す
+view := flow.Sink[vision.Matted]("view").Do(keepNewest)  // フレームと、そのフレーム自身のマット
+app.From(camera).To(vision.CutoutNode(cut), flow.Newest()).To(steady).To(view)
+
+rt, _ := app.Open(ctx)
+camera.From(capture.Camera(ctx, capture.CameraOptions{Width: 1280, Height: 720}))
+go rt.Run(ctx)
+runWindow(newest)                                        // 窓の拍で: 最新のフレームを、人物の後ろに置くものの上に描く
+```
+
+- **モデルは CPU で動きます** (1 スレッド)。1280×720 のフレーム 1 枚が 5.9 ms (Ryzen AI 9 365) なので、カメラの全フレームにマットがつきます。重みは 0.46 MB で、NPU に載せても得になりません
+- **節はフレームとマットを組で出します** (`vision.Matted`)。窓が重ねて描く 2 つが同じ瞬間のものになります。マットはモデルの大きさ (256×256) で、窓が GPU で引き伸ばします
+- **背景のぼかし方**: フレームをそのままぼかすと、人物の色がまわりににじみます。そこで、フレームに「人物でない割合」(1 − マット) の重みをかけ、4 分の 1 の大きさに縮めてぼかし、ぼかした重みで割ります。混ざるのは背景の色だけです (`weigh.kage`、`blur.kage`、`backdrop.kage`)
+- `--behind` は `blur`、絵のファイル、色 (`#00aa44`) を取ります。`--steady` は前のフレームのマットをどれだけ残すか (モデルのマットはフレームごとに少し揺れます)、`--no-mirror` はカメラが見たままの向きです。窓では B で背景を切り替え、M でマットを表示、上下でぼかしの強さを変えます
+- カメラの前の人物のためのモデルです。人物のいないフレームでは目立つものを人物として返し、広がった髪や指のような細いものは追えません
+- カメラのない機械では、絵をフレームとして渡せます (`--frames a.png,b.png`)。確認はこの方法で、ソフトウェア描画のディスプレイで行いました。実際のカメラと実際のディスプレイでは試していません
+
 ## 7. 機能の一覧
 
 どの機能も、一括の形と流れの形を持ちます。
@@ -710,12 +738,14 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
 |---|---|---|
 | `DepthEstimator` (Depth Anything 3、MoGe-2) | `Estimate(ctx, img) (*DepthMap, error)` | `EstimateStream`、`vision.DepthNode(use)` (絵 → 深度) |
 | `FaceDetector` (YuNet) | `Detect(ctx, img) ([]Face, error)` | `DetectStream`、`vision.FacesNode(use)` (フレーム → `Found{Frame, Faces}`) |
+| `Cutter` (MediaPipe Selfie Segmentation) | `Matte(ctx, img) (*Matte, error)` | `MatteStream`、`vision.CutoutNode(use)` (フレーム → `Matted{Picture, Matte}`) |
 | 頭の位置 (モデルなし) | `vision.HeadOf(face, frame, opts)`、`vision.NearestHead(faces, frame, opts)` | `vision.HeadNode(opts)` (`Found` → `Head`。顔のないフレームは流さない) |
 
 - 絵は `image.Image`、カメラの映像はその流れです
 - **`DepthMap`**: `Depth` は遠さ (大きいほど遠い。MoGe-2 はメートル、DA3 は絵ごとの単位)。大きさはモデルの入力の大きさで、絵の大きさではありません。`Near(w, h)` が、絵の大きさに直した「近さ」(1 が一番近く、0 が一番遠い。深度の逆数に比例) を返します。視差のシェーダーが読むのはこれです。`NearImage(w, h)` は灰色の絵
 - **`Face`**: 箱、確かさ、目・鼻・口の端の位置 (絵の画素)。`RightEye` は本人の右目 (絵では左側)
 - **`Head`**: カメラの前の頭の位置。`X`、`Y` はカメラの視野の中の −1〜1 (`X` は本人から見た右が正。フレームとは左右が逆)、`Z` はカメラからの距離 (メートル)。距離は、フレームの中の両目の間隔から、ピンホールのカメラとして出します (`HeadOptions.FOV` が水平の画角、既定は 60 度。`Eyes` が両目の間隔、既定は 63 mm)。カメラを向いた顔での目安です
+- **`Matte`**: `A` は各点がどれだけ人物か (1 が人物、0 が背景、輪郭ではその間)。大きさはモデルの入力の大きさ (256×256) で、絵の大きさではありません。`Alpha(w, h)` が絵の大きさに直したもの、`AlphaImage(w, h)` が絵にしたもの (シェーダーのテクスチャ用。マット自身の大きさで作るのが一番軽い)、`Cut(img)` が背景を透明にした絵、`Smooth(next, keep)` が次のフレームのマットに近づけるものです。モデルはどの機械でも CPU で動きます (ONNX Runtime、1 スレッド、1 フレーム数ミリ秒)。カメラの前の人物のためのモデルで、人物のいない絵では目立つものを返します
 - **YuNet は実写の顔のモデル**です。アニメの絵の顔は見つけません (Anima で作った人物の絵で 0 件でした)
 - **どこで動くか**: 深度は NPU。YuNet は、AMD の NPU の機械では定義 (models.yaml の `device`) が CPU に置きます (小さなグラフで、CPU のほうが 1 枚の時間も電力も 10 分の 1)。CPU では ONNX Runtime が要ります (`HWNPU_ONNXRUNTIME` にライブラリの場所)。`FaceDetector.Device()` が `npu` か `cpu` を返します
 - Apple の Neural Engine と Intel の NPU では、深度のプログラムは絵の形ごとに、その形の絵が初めて来たときに変換します (数秒。最初の読み込みでコンパイル)
@@ -732,7 +762,7 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
   | moge-2-vitl | 3.41 秒 | 4.17 秒 | 2.62 GiB | 1024 | 一番細かい。空は「一番遠い」に切り分ける |
 
   ほかにプロセスのメモリが 0.2 GiB (MoGe-2 は 0.4〜0.5 GiB)。Depth Anything 3 の深度は長辺 504 画素、MoGe-2 は 1024 画素です。1 枚の絵に 1 回だけ推定するなら DA3MONO-LARGE (止まった絵の視差には十分) か、輪郭を細かく取りたいとき moge-2-vitb / vitl。映像に続けてかけるなら DA3-SMALL (1 秒に 3 枚) です。MoGe-2 はメートルの深度も返します (`DepthMap.Metric`)
-- まだない: 物体、姿勢、切り抜き、OCR、ラベル
+- まだない: 物体、姿勢、点で選んだものの切り抜き、OCR、ラベル
 
 ### 7.4 `ai/imagegen`
 

@@ -9,6 +9,7 @@ Small apps built on hwnpu's [`ai`](../USAGE_LIBRARY.md) package: each declares t
 | [interpreter](interpreter/README.md) | Interprets speech, from the microphone or a recording, into speech in another language | Whisper, PLaMo 3 Translate, LFM3-Audio TTS | 11.4 GB / 6.6 GB |
 | [parallax](parallax/README.md) | Shows a picture as if it were deep, turning with your head before the camera | Depth Anything 3, YuNet, FLUX.2 klein | 16.5 GB / 14.9 GB |
 | [layers](layers/README.md) | Parts a picture into layers by depth, draws what each layer hid, and writes a Photoshop document | Depth Anything 3, FLUX.2 klein | 16.5 GB / 14.9 GB |
+| [backdrop](backdrop/README.md) | Blurs or replaces what is behind you in the camera's picture, as a video call does | MediaPipe Selfie Segmentation (on the CPU) | 0.5 MB |
 
 The downloads are for a machine of 16 GB (the models are picked by the machine's memory) and are made once: the models stay in hwnpu's cache, shared by the samples and the commands. `go run ./SAMPLE models` prints what this machine would download. parallax and layers share their models: running both downloads no more than one.
 
@@ -33,13 +34,14 @@ Every sample has the same `models` (`list`, `download`, `prepare`) and `status` 
 
 - An NPU hwnpu runs: AMD Ryzen AI (Linux) or a Mac with Apple Silicon on macOS 27. See [INSTALL_AMD.md](../INSTALL_AMD.md) and [INSTALL_APPLE.md](../INSTALL_APPLE.md).
 - The microphone and the camera come from [hwcamera](https://github.com/shibukawa/hwcamera), without cgo. On a Mac the terminal app needs permission for them (System Settings › Privacy & Security); the first use asks.
-- parallax's window is [Ebitengine](https://ebitengine.org). On Linux it needs the X11/OpenGL libraries Ebitengine builds with; without a display, build with `-tags headless` (`render` and `track` still work).
+- parallax's and backdrop's windows are [Ebitengine](https://ebitengine.org). On Linux it needs the X11/OpenGL libraries Ebitengine builds with; without a display, build with `-tags headless` (parallax's `render` and `track` still work).
+- backdrop's model runs on the CPU with ONNX Runtime's shared library (the system's, or the one `HWNPU_ONNXRUNTIME` names), as YuNet does on an AMD machine. It was run on the AMD machine only.
 
 ## Layout
 
 | Directory | What it is |
 |---|---|
-| `interpreter/`, `parallax/`, `layers/` | The samples (each a `main` package) |
+| `interpreter/`, `parallax/`, `layers/`, `backdrop/` | The samples (each a `main` package) |
 | `internal/capture` | The microphone and the camera as streams of `ai/flow` (hwcamera), the speaker (oto) |
 | `internal/layering` | Parting a picture into layers by depth, shared by layers and parallax |
 

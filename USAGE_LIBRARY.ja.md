@@ -109,7 +109,7 @@ res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
 | `ai` | `App` (登録)、`Use` (型のついた取っ手: `Get`、`Release`、機械のメモリごとの構成 `At` と `As`)、`Plan` (計画と準備)、`Runtime` |
 | `ai/speech` | 文字起こし (Whisper)、読み上げ (LFM3-Audio)、音量の VAD、WAV の読み書き |
 | `ai/text` | 翻訳 (PLaMo 3 Translate)、チャット |
-| `ai/vision` | 絵の深度 (Depth Anything 3、MoGe-2)、顔の検出 (YuNet)、顔からカメラに対する頭の位置 |
+| `ai/vision` | 絵の深度 (Depth Anything 3、MoGe-2)、顔の検出 (YuNet)、顔からカメラに対する頭の位置、人物の切り抜き (MediaPipe Selfie Segmentation) |
 | `ai/imagegen` | 画像の生成と編集 (FLUX.2 klein): 文から、文と参照の絵から |
 | `ai/flow` | モデルの間のデータの渡し方: 塊の流れ `Stream` と、その道具 |
 | `ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、`download`、`prepare`)、`status`。コマンドラインのライブラリに依存しない (`cli.List`、`cli.Run(ctx, app, args)` など) |
@@ -168,8 +168,8 @@ k.FatalIfErrorf(k.Run())
 
 `APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) と [samples/parallax](samples/parallax) (絵の深度を推定し、カメラで見る人の頭を追って、奥行きがあるように描く。窓は Ebitengine)、[samples/layers](samples/layers) (絵を深度で層に分け、隠れていた部分を描き足して PSD に書く) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
 
-- 今ある機能は音声と文、絵の深度と顔、画像の生成と編集 (FLUX.2 klein) です。ほかの画像のモデル (Anima、Chroma)、物体や姿勢の検出などは、まだコマンドからだけ使えます
-- 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) と Mac (M3、Core AI) です (3 つのサンプル、カメラ、窓)。Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
+- 今ある機能は音声と文、絵の深度と顔、人物を背景から切り抜くもの (`vision.Cutout`。`samples/backdrop` がカメラの背景をぼかす、差し替えるのに使います)、画像の生成と編集 (FLUX.2 klein) です。ほかの画像のモデル (Anima、Chroma)、物体や姿勢の検出などは、まだコマンドからだけ使えます
+- 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) と Mac (M3、Core AI) です (`samples/backdrop` のほかの 3 つのサンプル、カメラ、窓。`samples/backdrop` は AMD の機械で、絵をフレームとして渡して確かめただけです)。Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
 - Apple の Neural Engine で参照の絵から描くには、専用のプログラムが要ります。`imagegen.Generate` の代わりに `imagegen.Edit` を使います (準備で用意し、最初の編集でコンパイルします)
 
 ## AMD (カーネルを直接動かす)

@@ -2,7 +2,7 @@
 
 [English](USAGE_IMAGE.md)
 
-`hwnpu-image` は、画像生成 (`generate`)、深度推定 (`depth`)、顔 (`face-detect`)、物 (`detect`)、人の姿勢 (`pose`)、文字 (`ocr`)、ラベル付けと埋め込み (`label`、`embed`)、切り抜き (`segment`) を NPU で行います。選べるモデルは `hwnpu-image list` で出ます。
+`hwnpu-image` は、画像生成 (`generate`)、深度推定 (`depth`)、顔 (`face-detect`)、物 (`detect`)、人の姿勢 (`pose`)、文字 (`ocr`)、ラベル付けと埋め込み (`label`、`embed`)、切り抜き (`segment`) を NPU で行います。人物を背景から切り抜く `cutout` は CPU で動きます。選べるモデルは `hwnpu-image list` で出ます。
 
 ## 画像生成 (Anima)
 
@@ -104,6 +104,19 @@ go run ./cmd/hwnpu-image depth -m moge:vits --normal photo.jpg
 python tools/amd/iron_yunet.py ~/models/face_detection_yunet ~/models/yunet.amd-npu2   # hf:opencv/face_detection_yunet
 go run ./cmd/hwnpu-image face-detect --draw photo.jpg               # AMD: the CPU (ONNX Runtime)
 go run ./cmd/hwnpu-image face-detect --device npu photo.jpg          # AMD's NPU: the export above
+```
+
+## 人物を背景から切り抜く (MediaPipe Selfie Segmentation)
+
+`go run ./cmd/hwnpu-image cutout` は、写真の人物を背景から分けます (MediaPipe Selfie Segmentation、Google、Apache-2.0。onnx-community の ONNX ファイル)。画像ごとに、背景を透明にした `NAME.cutout.png` を書き、1 行の JSON でそのファイルと、写真のうち人物が占める割合を出します。`--matte` をつけると、代わりに `NAME.matte.png` (各画素がどれだけ人物か。白が人物) を書きます。
+
+どのマシンでも CPU で動きます。顔の検出と同じく ONNX Runtime の共有ライブラリを使います (`--device npu` はエラーです)。重みは 0.46 MB で、Ryzen AI 9 365 では 1280×720 の絵 1 枚が 1 スレッドで 5.9 ms、横長用のモデル (`-m selfie-segmentation-landscape`、256×144) なら 3.1 ms です。カメラの全フレームに間に合います。窓に出す例が `samples/backdrop` です ([USAGE_LIBRARY.ja.md](USAGE_LIBRARY.ja.md))。
+
+カメラの前の人物のためのモデルです。人物のいない絵では、目立つものを人物として返します。マットは 256×256 を絵の大きさに引き伸ばしたものなので、広がった髪や指のような細いものは追えません。
+
+```bash
+go run ./cmd/hwnpu-image cutout portrait.jpg                # portrait.cutout.png
+go run ./cmd/hwnpu-image cutout --matte --repeat 100 portrait.jpg   # portrait.matte.png と 1 枚あたりの時間
 ```
 
 ## 物の検出、姿勢、文字 (RTMDet、RTMO、PP-OCRv6)

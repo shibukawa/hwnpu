@@ -2,7 +2,7 @@
 
 [English](vision-models.md)
 
-画像を読むモデル (画像生成ではない。[image-models.md](image-models.md)): 物の検出、姿勢、OCR、切り抜き、深度、顔、ラベルと埋め込み。どれも `hwnpu-image` で動かす。多くは ONNX でしか配られず、共通の道 (`internal/onnx`) を通る。
+画像を読むモデル (画像生成ではない。[image-models.md](image-models.md)): 物の検出、姿勢、OCR、切り抜き、人物の切り抜き、深度、顔、ラベルと埋め込み。どれも `hwnpu-image` で動かす。多くは ONNX でしか配られず、共通の道 (`internal/onnx`) を通る。
 
 ## モデルとコマンド
 
@@ -13,6 +13,7 @@
 | `ocr` | `ocr` | PP-OCRv6-small (8 GB) | ONNX、`PaddlePaddle/PP-OCRv6_small_rec_onnx` と、`with: {detector: ...}` の検出器 (50 言語、仮名を含む 18708 字) | Apache-2.0 |
 | `face-detect` | `face-detect` | YuNet (8 GB) | ONNX、`opencv/face_detection_yunet` (2023mar) | MIT |
 | `segment` | `segment` | EfficientSAM-Ti (8 GB)、EfficientSAM-S (16 GB) | 作者の ONNX の符号器と復号器、`yunyangx/EfficientSAM` | Apache-2.0 |
+| `cutout` | `cutout` | selfie-segmentation (8 GB)。ほかに selfie-segmentation-landscape | ONNX、`onnx-community/mediapipe_selfie_segmentation` と `..._landscape` (MediaPipe Selfie Segmentation。0.46 MB) | Apache-2.0 |
 | `depth` | `depth` | DA3-SMALL (8 GB)、DA3-BASE (16 GB)、DA3MONO-LARGE (24 GB)。ほかに DA3METRIC-LARGE、moge-2-vits / vitb / vitl | safetensors / `model.pt` のチェックポイント | Apache-2.0 (DA3)、MIT (MoGe-2) |
 | `label`、`embed` | `label` | siglip2-base-patch16-224 (8 GB)、siglip2-large-patch16-256 (16 GB) | safetensors のチェックポイント | Apache-2.0 |
 
@@ -30,6 +31,7 @@
 | RTMO-s | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | 同じ |
 | PP-OCRv6-small | Core AI | CPU (IRON の形なし) | OpenVINO IR | 同じ |
 | YuNet | Core AI | 既定は CPU。`--device npu` で `iron_yunet.py` の書き出し | OpenVINO IR | ONNX Runtime |
+| Selfie Segmentation | CPU (プログラムはまだない) | CPU | CPU (プログラムはまだない) | ONNX Runtime |
 | EfficientSAM の符号器 | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | ONNX Runtime、なければ hwnpu の評価器 |
 | EfficientSAM の復号器 | ホストの評価器 | ホストの評価器 | ホストの評価器 | ホストの評価器 |
 | DA3、MoGe-2 | Core AI | NPU (`iron_da3.py`、`iron_moge.py` の書き出し) | OpenVINO IR | — |
@@ -43,7 +45,7 @@
 
 ### CPU の経路
 
-- `internal/onnxrt`: ONNX Runtime の共有ライブラリを purego で呼ぶ (cgo なし)。OrtApi 16 以上を求め、関数は表の位置で呼ぶ。既定 1 スレッド、スピンなし (`session.*.allow_spinning = 0`)。ライブラリは `HWNPU_ONNXRUNTIME` かシステムのもの。自動で取ってこない (ネイティブのライブラリの配布は利用者が決める)。`HWNPU_ONNXRUNTIME=none` で使わない
+- `internal/onnxrt`: ONNX Runtime の共有ライブラリを purego で呼ぶ (cgo なし)。OrtApi 16 以上を求め、関数は表の位置で呼ぶ。既定 1 スレッド、スピンなし (`session.*.allow_spinning = 0`)。ライブラリは `HWNPU_ONNXRUNTIME` かシステムのもの (Linux では、配布物の版つきのファイルも探す。Ubuntu の `libonnxruntime1.23` の `libonnxruntime.so.1.23`。新しい版から)。自動で取ってこない (ネイティブのライブラリの配布は利用者が決める)。`HWNPU_ONNXRUNTIME=none` で使わない
 - `onnxrt.Cut` は ONNX のグラフを 2 つの値の間で切る。`onnxrt.Program` は `onnx.Program` と同じ入出力 (`Flat` なら行) を返すので、ホストの処理 (箱の復号、関節、CTC) は変わらない
 - ONNX Runtime がなければ milcpu。`internal/sgemm` (GotoBLAS の形の float32 の行列積。amd64 は AVX2 / AVX-512、arm64 は NEON の 6 × 16 で M3 の 1 スレッド 106 GFLOPS。im2col は B を詰めながら) と SIMD の exp / sigmoid / SiLU / erf (`internal/f32`)。`--threads` (既定 1: CPU 時間とエネルギーが最小)
 
@@ -114,6 +116,14 @@ ONNX の CNN (CSPNeXt、YOLOX 型) を IRON のグラフ 1 つにする。AMD �
 - Apple / Intel: ONNX のグラフを丸ごと `internal/onnx` のプログラム 1 つに (12 の出力を 1 つに)。Apple: 640 × 480 で 3.4 ms (M1)、M3 の Core AI で 4.2〜4.4 ms。OpenCV の FaceDetectorYN と箱と目印が 0.3 px 以内
 - AMD (`tools/amd/iron_yunet.py`): 1 × 1 と深さ方向の 3 × 3 を 1 つの 3 × 3 に、バイアスは 1 のチャネルに、ReLU は ProjectionGEMM の clamp (`ReluGEMM`)。画素を 255 で割り、1 を im2col の最後の 8 列に離す (bfp16 の共有の指数で消えた。cos 0.69)。`iron.GraphOptions.KeepRuns` で開く (コマンドの run を持ち続ける。ホストの CPU 1.6 → 1.1 ms。制御コードがデバイスのヒープ 64 MiB に残るので大きなグラフには使わない)。FaceDetectorYN と一致
 - AMD の 320 × 256 のエネルギー: NPU 29 ms・127 mJ、CPU (ONNX Runtime 1 スレッド) 2.7 ms・7.7 mJ。演算の切り替え (1 回約 250 µs) が支配的。だから `device: {amd: cpu}`。これは AMD の IRON の話で、Apple と Intel はグラフをまとめて投入するので NPU のまま。あるベンダーの結果をほかへ持ち込まない
+
+### Selfie Segmentation (`hwnpu-image cutout`、`vision.Cutout`)
+
+- MediaPipe のモデル (MobileNetV3 系、0.46 MB) を onnx-community が ONNX にしたもの。入力は 0〜1 の RGB を 256×256 (横長用のモデルは 256×144) に引き伸ばしたもの、出力は 1 つで、各画素がどれだけ人物か (グラフの最後が sigmoid)。大きさはグラフの入力から読む。
+- どの機械でも CPU (`device: {amd: cpu, apple: cpu, intel: cpu}`)、ONNX Runtime、1 スレッド。Ryzen AI 9 365: ネットワークは 256×256 で 5.0 ms、256×144 で 2.9 ms。1280×720 のフレームは縮小込みで 5.9 ms と 3.1 ms。アイドルからの増分は 1 フレーム約 35 mJ (2000 フレーム、パッケージの電力)。絵を含めた常駐の最大は 90 MB。
+- モデルの大きさ以上のフレームは、出力の 1 画素が覆う範囲の画素を平均する (`cutout.Planes`。1 回なめるだけで、1280×720 で 1 ms)。それより小さい絵は、モデル自身の前処理と同じアンチエイリアスつきの双線形で拡大する。
+- `ai/vision`: `Cutout(use)` → `Cutter.Matte(ctx, img)` → モデルの大きさの `Matte{W, H, A}`。`Matte.Alpha(w, h)`、`AlphaImage`、`Cut(img)`、`Smooth(next, keep)` (カメラのフレームの間をならす)。`CutoutNode` は `Matted{Picture, Matte}` (フレームと、そのフレーム自身のマット) を出す。`samples/backdrop` がそれを描く。マットは GPU で引き伸ばす。背景は、フレームに (1 − マット) の重みをかけ、4 分の 1 の大きさでぼかし、ぼかした重みで割る。人物の色がまわりににじまない。
+- 見たのは 3 枚だけ (オフィスの実写風の男性、アニメの人物、人物のいない花)。前の 2 枚はきれいに分かれ、体のそばのものが少し残る。人物のいない絵では花を人物として返す。確かめていないもの: 実際のカメラ、複数人、広がった髪。
 
 ### EfficientSAM (`hwnpu-image segment`)
 
@@ -190,6 +200,7 @@ ONNX の CNN (CSPNeXt、YOLOX 型) を IRON のグラフ 1 つにする。AMD �
 
 ## 未解決
 
+- Selfie Segmentation を Apple の Neural Engine と Intel の NPU で: `internal/onnx` に HardSwish の変換がない (グラフは Conv、HardSwish、Relu、ReduceMean、Sigmoid、Mul、Add、線形の Resize、2×2 の ConvTranspose)。プログラムは作っておらず、試してもいない。Mac の CPU の経路には ONNX Runtime のインストールが要る。
 - 電力量を測っていない: Apple の画像を読むモデル (`hwnpu-dev powerbench` は sudo が要る)、AMD の RTMO と EfficientSAM、SigLIP 2
 - Intel の実機の NPU (全モデル)。SigLIP 2 は Intel の形がない (同じ MIL から IR に下ろせるが未確認)
 - Core AI の M1 / M2 / M4 (docs/handoff-coreai-vision.md)。M1 では EfficientSAM の符号器の注意 (4096 × 4096 × 頭の数) が 64 MiB を超える
@@ -207,6 +218,7 @@ ONNX の CNN (CSPNeXt、YOLOX 型) を IRON のグラフ 1 つにする。AMD �
 - `iron_onnxcnn.py` で bfp16 向けにチャネルを並べ替える: tiny は良くなった (0.2 → 0.07) が RTMDet-m で物が消えた
 - 重みを上位と下位の bf16 に分ける: 効かない (誤差は活性の bfp16 と SiLU)
 - YuNet を AMD で既定の NPU に: CPU の 16 倍のエネルギー
+- カメラのフレームで、人物のマットの代わりに深度のモデルを使う: AMD の NPU の DA3-SMALL は毎秒約 7 枚が上限 (252×196 で 0.14 秒。層ごとの呼び出しの手間が中身より重い)。CPU では MiDaS v2.1 small が 26 ms、Depth Anything V2 Small が 252² で 53〜88 ms (4 スレッド)。マットは 1 スレッドで 5 ms で、輪郭もはっきりしている。この大きさでは、どの深度のモデルでも顔は平らな板になる。
 - AMD の文の塔を 1 回 16 文に: 1 文 13.8 ms (8 文なら 16.4 ms) だが、候補が少ないと損。8 のまま
 - SigLIP 2 の IRON の tanh の GELU と MEDIUM の行列積: 画像のコサイン 0.9988。exact の GELU と HIGHEST は時間が 9〜22 % 増える
 - EfficientSAM の復号器を Neural Engine に: 形が動く (If、ScatterND、点の数)。ホストを速くした

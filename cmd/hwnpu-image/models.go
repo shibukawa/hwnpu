@@ -82,7 +82,7 @@ func (c *ListCmd) Run() error {
 	if c.Kind != "" {
 		listModels(os.Stdout, chat.Kind(c.Kind))
 	} else {
-		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel, chat.KindSegment)
+		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel, chat.KindSegment, chat.KindCutout)
 	}
 	return nil
 }

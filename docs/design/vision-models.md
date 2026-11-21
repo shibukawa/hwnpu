@@ -2,7 +2,7 @@
 
 [日本語](vision-models.ja.md)
 
-Models that read images (not image generation, see [image-models.md](image-models.md)): detection, pose, OCR, segmentation, depth, faces, labels and embeddings. All run from `hwnpu-image`. Most are distributed only as ONNX and go through one shared path (`internal/onnx`).
+Models that read images (not image generation, see [image-models.md](image-models.md)): detection, pose, OCR, segmentation, people cut out of what is behind them, depth, faces, labels and embeddings. All run from `hwnpu-image`. Most are distributed only as ONNX and go through one shared path (`internal/onnx`).
 
 ## Models and commands
 
@@ -13,6 +13,7 @@ Models that read images (not image generation, see [image-models.md](image-model
 | `ocr` | `ocr` | PP-OCRv6-small (8 GB) | ONNX, `PaddlePaddle/PP-OCRv6_small_rec_onnx` + detector in `with: {detector: ...}` (50 languages, 18708 characters with kana) | Apache-2.0 |
 | `face-detect` | `face-detect` | YuNet (8 GB) | ONNX, `opencv/face_detection_yunet` (2023mar) | MIT |
 | `segment` | `segment` | EfficientSAM-Ti (8 GB), EfficientSAM-S (16 GB) | the authors' ONNX encoder and decoder, `yunyangx/EfficientSAM` | Apache-2.0 |
+| `cutout` | `cutout` | selfie-segmentation (8 GB); also selfie-segmentation-landscape | ONNX, `onnx-community/mediapipe_selfie_segmentation` and `..._landscape` (MediaPipe Selfie Segmentation; 0.46 MB) | Apache-2.0 |
 | `depth` | `depth` | DA3-SMALL (8 GB), DA3-BASE (16 GB), DA3MONO-LARGE (24 GB); also DA3METRIC-LARGE, moge-2-vits / vitb / vitl | safetensors / `model.pt` checkpoints | Apache-2.0 (DA3), MIT (MoGe-2) |
 | `label`, `embed` | `label` | siglip2-base-patch16-224 (8 GB), siglip2-large-patch16-256 (16 GB) | safetensors checkpoint | Apache-2.0 |
 
@@ -30,6 +31,7 @@ Models that read images (not image generation, see [image-models.md](image-model
 | RTMO-s | Core AI | NPU, IRON export made on first run | OpenVINO IR | same |
 | PP-OCRv6-small | Core AI | CPU (no IRON form) | OpenVINO IR | same |
 | YuNet | Core AI | CPU by default; `--device npu` runs `iron_yunet.py`'s export | OpenVINO IR | ONNX Runtime |
+| Selfie Segmentation | CPU (no program yet) | CPU | CPU (no program yet) | ONNX Runtime |
 | EfficientSAM encoder | Core AI | NPU, IRON export made on first run | OpenVINO IR | ONNX Runtime, else hwnpu's evaluator |
 | EfficientSAM decoder | host evaluator | host evaluator | host evaluator | host evaluator |
 | DA3, MoGe-2 | Core AI | NPU (`iron_da3.py`, `iron_moge.py` exports) | OpenVINO IR | — |
@@ -43,7 +45,7 @@ Models that read images (not image generation, see [image-models.md](image-model
 
 ### CPU path
 
-- `internal/onnxrt`: ONNX Runtime's shared library through purego (no cgo). Needs OrtApi 16 or newer, calls by table index. 1 thread by default, no spinning (`session.*.allow_spinning = 0`). Library from `HWNPU_ONNXRUNTIME` or the system; never downloaded (the user decides how native libraries are shipped). `HWNPU_ONNXRUNTIME=none` disables it.
+- `internal/onnxrt`: ONNX Runtime's shared library through purego (no cgo). Needs OrtApi 16 or newer, calls by table index. 1 thread by default, no spinning (`session.*.allow_spinning = 0`). Library from `HWNPU_ONNXRUNTIME` or the system (on Linux also a distribution's versioned file, `libonnxruntime.so.1.23` of Ubuntu's `libonnxruntime1.23`, the newest first); never downloaded (the user decides how native libraries are shipped). `HWNPU_ONNXRUNTIME=none` disables it.
 - `onnxrt.Cut` cuts the ONNX graph between two values; `onnxrt.Program` returns the same inputs/outputs as `onnx.Program` (rows for `Flat`), so the host code (box decoding, keypoints, CTC) is unchanged.
 - Without ONNX Runtime: milcpu with `internal/sgemm` (GotoBLAS-style float32 GEMM; AVX2 / AVX-512 on amd64, NEON 6×16 on arm64, 106 GFLOPS on one M3 thread; im2col packed while filling B) and SIMD exp / sigmoid / SiLU / erf (`internal/f32`). `--threads` (default 1: the least CPU time and energy).
 
@@ -114,6 +116,14 @@ Turns an ONNX CNN (CSPNeXt, YOLOX-type) into one IRON graph. Switching operators
 - Apple / Intel: the whole ONNX graph as one `internal/onnx` program (12 outputs joined). Apple: 640×480 in 3.4 ms (M1), M3 Core AI 4.2–4.4 ms. Boxes and landmarks within 0.3 px of OpenCV's FaceDetectorYN.
 - AMD (`tools/amd/iron_yunet.py`): 1×1 + depthwise 3×3 fused into one 3×3 conv, biases on a ones channel, ReLU as ProjectionGEMM's clamp (`ReluGEMM`); pixels divided by 255 and the ones moved to im2col's last 8 columns (bfp16 shared exponent erased them: cos 0.69). Opened with `iron.GraphOptions.KeepRuns` (each command's run kept: host CPU 1.6 → 1.1 ms; its control code stays in the 64 MiB device heap, so not for large graphs). Matches FaceDetectorYN.
 - AMD energy at 320×256: NPU 29 ms and 127 mJ, CPU (ONNX Runtime 1 thread) 2.7 ms and 7.7 mJ. Operator switches (~250 µs each) dominate. Hence `device: {amd: cpu}`. This is about AMD's IRON only; Apple and Intel submit the whole graph, so they keep the NPU. Do not carry one vendor's result to another.
+
+### Selfie Segmentation (`hwnpu-image cutout`, `vision.Cutout`)
+
+- MediaPipe's model (MobileNetV3-like, 0.46 MB) as onnx-community's ONNX: RGB in 0..1 stretched to 256×256 (or 256×144, the landscape model), one output, how much of each pixel is a person (the graph ends in a sigmoid). The size is read from the graph's input.
+- CPU everywhere (`device: {amd: cpu, apple: cpu, intel: cpu}`), ONNX Runtime, 1 thread. Ryzen AI 9 365: network 5.0 ms at 256×256 and 2.9 ms at 256×144; a 1280×720 frame with its resize 5.9 ms and 3.1 ms; about 35 mJ a frame above idle (2000 frames, the package's power); peak 90 MB with the picture.
+- A frame at least the model's size is averaged over each output pixel's box of whole pixels (`cutout.Planes`: one pass, 1 ms at 1280×720); a smaller one takes the model's own antialiased bilinear resize.
+- `ai/vision`: `Cutout(use)` → `Cutter.Matte(ctx, img)` → `Matte{W, H, A}` at the model's size; `Matte.Alpha(w, h)`, `AlphaImage`, `Cut(img)`, `Smooth(next, keep)` (between a camera's frames); `CutoutNode` gives `Matted{Picture, Matte}`, the frame with its own matte. `samples/backdrop` draws it: the matte is stretched on the GPU, and what is behind is the frame weighed by one less the matte, blurred at a quarter of the size and divided by the blurred weight, so that the person's colours do not spread around them.
+- Seen on three pictures only (a photo-like man in an office, an anime figure, a flower without a person): the first two come apart cleanly, with a little of what is near the body kept; the picture without a person gives the flower as the person. Not checked: a real camera, several people, spread hair.
 
 ### EfficientSAM (`hwnpu-image segment`)
 
@@ -193,6 +203,7 @@ look is from grey maps side by side.
 ## Open
 
 - Power not measured: Apple's vision models (`hwnpu-dev powerbench` needs sudo), RTMO and EfficientSAM on AMD, SigLIP 2.
+- Selfie Segmentation on Apple's Neural Engine and Intel's NPU: `internal/onnx` has no lowering of HardSwish (the graph is Conv, HardSwish, Relu, ReduceMean, Sigmoid, Mul, Add, Resize linear, ConvTranspose 2×2), so no program was made or tried. The Mac's CPU path needs ONNX Runtime installed.
 - Intel's real NPU for every model; SigLIP 2 has no Intel form (same MIL could be lowered to IR, unchecked).
 - M1 / M2 / M4 on Core AI (docs/handoff-coreai-vision.md). On M1, EfficientSAM's encoder attention (4096 × 4096 × heads) passes 64 MiB.
 - Why the Core AI divide error does not reproduce in a 3-op program; whether it differs by chip.
@@ -209,6 +220,7 @@ look is from grey maps side by side.
 - Channel reordering for bfp16 in `iron_onnxcnn.py`: helped tiny (0.2 → 0.07) but made RTMDet-m lose objects.
 - Splitting weights into high and low bf16: no effect (the error is activations' bfp16 and SiLU).
 - YuNet on AMD's NPU by default: 16× the CPU's energy.
+- A depth model in place of the person matte for a camera's frames: DA3-SMALL on AMD's NPU stops at about 7 a second (0.14 s at 252×196; each layer's call costs more than its work), and on the CPU MiDaS v2.1 small takes 26 ms and Depth Anything V2 Small 53–88 ms at 252² on 4 threads, against 5 ms on one thread for the matte, whose edge is also sharper. At that size every depth model gives a face as a flat plate.
 - Text tower batch of 16 on AMD: 13.8 ms a text vs 16.4 ms at 8, but worse for few candidates; 8 kept.
 - IRON's tanh GELU and MEDIUM matmuls for SigLIP 2: image cosine 0.9988; exact GELU + HIGHEST costs 9–22 % time.
 - Running EfficientSAM's decoder on the Neural Engine: dynamic shapes (If, ScatterND, point count); the host was made faster instead.

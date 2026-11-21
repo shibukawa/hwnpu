@@ -1,0 +1,17 @@
+//kage:unit pixels
+
+// One pass of a blur along Step (pixels between its nine samples): a bell curve's weights. Run
+// along x and then along y it is a blur in both.
+
+package main
+
+var Step vec2
+
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	c := imageSrc0At(srcPos) * 0.2270270
+	c += (imageSrc0At(srcPos+Step) + imageSrc0At(srcPos-Step)) * 0.1945946
+	c += (imageSrc0At(srcPos+2*Step) + imageSrc0At(srcPos-2*Step)) * 0.1216216
+	c += (imageSrc0At(srcPos+3*Step) + imageSrc0At(srcPos-3*Step)) * 0.0540541
+	c += (imageSrc0At(srcPos+4*Step) + imageSrc0At(srcPos-4*Step)) * 0.0162162
+	return c
+}
