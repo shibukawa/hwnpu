@@ -320,6 +320,10 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 			return err
 		}
 		o.Backend = format
+		if format == llm.BackendCoreAI {
+			// every aspect ratio in one export, the weights once (new-model-checklist.md 11.4)
+			o.Sizes = aspect.SizesOf(aspect.All)
+		}
 		if model, err = anima.Prepare(ctx, anima.Setup{Dir: filepath.Join(dir, "Anima"), ConvertOptions: o, Log: lw}); err != nil {
 			return err
 		}
@@ -359,7 +363,11 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		iron.ShareExport(model, logf)
 	}
 	pw, ph := 0, 0
-	if !anima.IsProgramExport(model) && len(anima.IronSizes(model)) > 1 {
+	if anima.IsProgramExport(model) {
+		if m, err := anima.ReadProgramManifest(model); err == nil && len(m.Sizes) > 1 {
+			pw, ph = o.Width, o.Height // an export of several sizes draws at --size
+		}
+	} else if len(anima.IronSizes(model)) > 1 {
 		pw, ph = o.Width, o.Height // an export of several sizes draws at --size (one of a size alone at its own)
 	}
 	p, err := anima.OpenAt(ctx, dev, model, pw, ph, lw)
