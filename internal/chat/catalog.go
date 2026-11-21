@@ -73,6 +73,9 @@ type Model struct {
 	Targets map[string]int
 	// Develop marks a model in development (models.yaml's develop).
 	Develop bool
+	// Hub are the repositories of the model's conversions on Hugging Face (models.yaml's hub),
+	// in the order they are read: those of the files read last first.
+	Hub []HubRepo
 	// SHA256 pins the repository's files by name.
 	SHA256 map[string]string
 	// Arch is the structure the definitions name (llm.Lookup), "" for the one config.json says.

@@ -47,6 +47,9 @@ type WebDAVConfig struct {
 	// ReadOnly reads with GET and HEAD only, as any HTTP server serves them; nothing is written
 	// or listed.
 	ReadOnly bool
+	// Bearer, when set, signs in with the token it returns ("": none yet) instead of a user and
+	// password (no netrc is read): Hugging Face (Hub).
+	Bearer func() string
 }
 
 // WebDAV is a Store of a WebDAV folder: the object of key is the file URL/key. A file is
@@ -92,12 +95,14 @@ func OpenWebDAV(c WebDAVConfig) (*WebDAV, error) {
 		u.Path += "/"
 	}
 	c.URL = u.String()
-	if pass == "" {
-		login, p := netrcLogin(u.Hostname(), user)
-		user, pass = cmp.Or(user, login), p
+	if c.Bearer == nil {
+		if pass == "" {
+			login, p := netrcLogin(u.Hostname(), user)
+			user, pass = cmp.Or(user, login), p
+		}
+		user = cmp.Or(user, os.Getenv(WebDAVUserEnv))
+		pass = cmp.Or(pass, os.Getenv(WebDAVPasswordEnv))
 	}
-	user = cmp.Or(user, os.Getenv(WebDAVUserEnv))
-	pass = cmp.Or(pass, os.Getenv(WebDAVPasswordEnv))
 	// the default client: the proxy of the environment, HTTP/2; no timeout, which would bound
 	// a whole large download, but one for the connection and the answer's header
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -246,7 +251,12 @@ func (w *WebDAV) do(ctx context.Context, method, u string, hdr http.Header, body
 		for k, v := range hdr {
 			req.Header[k] = v
 		}
-		if w.user != "" || w.pass != "" {
+		switch {
+		case w.cfg.Bearer != nil:
+			if t := w.cfg.Bearer(); t != "" {
+				req.Header.Set("Authorization", "Bearer "+t)
+			}
+		case w.user != "" || w.pass != "":
 			req.SetBasicAuth(w.user, w.pass)
 		}
 		resp, err = w.client.Do(req)
@@ -264,7 +274,7 @@ func (w *WebDAV) do(ctx context.Context, method, u string, hdr http.Header, body
 	})
 	if err != nil {
 		var de *davError
-		if errors.As(err, &de) && de.StatusCode == http.StatusUnauthorized {
+		if errors.As(err, &de) && de.StatusCode == http.StatusUnauthorized && w.cfg.Bearer == nil {
 			who := "no user"
 			if w.user != "" {
 				who = "the user " + w.user

@@ -1,6 +1,6 @@
 # 変換済みのモデルを Hugging Face で配る (設計)
 
-作成: 2026-11-07。2026-11-21 に書き直した: CI で作って上げる計画をやめ、**書き戻す取得元 (`?writeback=true` の層。今の環境では NAS) にある書き出しを上げることだけ**に絞った。状態: 設計 (未実装)。
+作成: 2026-11-07。2026-11-21 に書き直した: CI で作って上げる計画をやめ、**書き戻す取得元 (`?writeback=true` の層。今の環境では NAS) にある書き出しを上げることだけ**に絞った。状態: 最初の実装あり (2026-11-21、下の「実装の状態」)。まだ何も上げていない。
 
 取得元の仕組み (層、`converted/MODEL/TARGET/EXPORT/VERSION`、`entry.json`、鍵、版) は [design/distribution.md](design/distribution.md) と [cache-sharing-design.md](cache-sharing-design.md) のまま使う。この文書は、その上に足す 2 つだけを決める。
 
@@ -8,6 +8,25 @@
 2. **読む層**: hwnpu が models.yaml の `hub` に書いたリポジトリ (既定は `hwnpu/<モデル>`) を、利用者の取得元と元の Hugging Face の間で読む (読むだけの取得元の 1 つ)
 
 作るのは今までどおり手元 (aix1 の `hwnpu-dev cache export`、Mac の `hwnpu-dev prebuild -put`、各コマンドの初回)。作って書き戻す取得元に置くところまでと、そこから HF に出すところを分ける。
+
+## 実装の状態 (2026-11-21)
+
+| 部分 | どこ | 状態 |
+|---|---|---|
+| models.yaml の `hub.push` と、モデルの `hub` (リポジトリ × 対象のコミット) | `internal/chat/table.go`、`hubpins.go` | 済み。後から読んだファイルのリポジトリが先、同じリポジトリは対象ごとに上書き、`like` は引き継がない |
+| 読む層 (取得元と同梱の後、元の HF の前) | `internal/store/hub.go`、`store.Sources` | 済み。`HWNPU_MODEL_HUB=false` で止まる。`hub` のないモデルと `original/` にはネットに出ない |
+| 断られたときの取り方 (gated は元の HF と同じ `gate`、非公開は `HF_TOKEN` か `hf auth login`) | `internal/chat/hubpins.go` (`hubAuth`) | 済み。gated でないリポジトリにはトークンを送らない。**断られたら手元の変換に進む** (エラーで止めるのはまだ) |
+| `vN` がなければ同じ鍵の `v0-HASH` を読み、`vN` として書き戻す | `internal/chat/sharedexport.go` (`fetchFrom`) | 済み。版を書いても取得元の今の書き出しが無駄にならない |
+| `hwnpu-dev hf plan / push / check` | `cmd/hwnpu-dev/hfcmd` | 済み (下の 4 節)。手元の 1 回の走りで、取得元から選ぶ、置き場所を作る、prebuilt を書き出しのプログラムで照らす、カード・LICENSE・`config.json` を作る、`hf upload-large-folder`、models.yaml の固定、上がったかの確かめ |
+| 書く権限の確かめ (`whoami-v2`) とトークンを貼る | `hfcmd/api.go`、`console.ReadSecret` | 済み。**書くための device flow はまだ** (トークンを貼るか `HF_TOKEN` / `hf auth login`) |
+| 20 GB を超える書き出しを切る | | まだ (今の最大は Qwen3.6 の 22.65 GB) |
+| `hwnpu-dev hf check --remake`、gated の同意の文と欄の写し (`extra_gated_fields`) | | まだ (同意の文は hwnpu が書いた一文) |
+
+実装で決めたこと (設計に足したもの):
+
+- **道具だけが違うエントリも `vN` として上げる** (`hwnpu-dev hf push` だけ。`plan -v` に「made with other tools」と出す)。`vN` を読む hwnpu は道具の hash を見ないので、同じことになる。2026-11-21 の NAS の AMD の書き出しは、どれも今の `tools/amd` より前の道具で作られている (鍵は違うが、道具の hash のほかは同じ)。上げる前に、その書き出しで今のコードが動くかを確かめる。実行時のほうは、同じ鍵 (同じバイト) のときだけ `v0-HASH` を読む
+- 上げるときの `entry.json` は取得元のものをそのまま置く。`v0-HASH` から上げるものだけは、版と場所を書き換えて書き直す (中のファイルと詰めたものは同じバイト)
+- 候補の行は状態の順 (上げられるもの、上げ済み、足りないもの)、その中は名前の順
 
 ## 1. 何を配るか
 
@@ -408,6 +427,10 @@ samples が既定で使うモデルを先に配る。samples を試す人がチ�
 - Apple のフォルダの名前は `coreai` / `coreai-<チップ>` (コードの対象の名前のまま)
 
 ## 9. 未決
+
+- 書くための device flow (今はトークンを貼るか `HF_TOKEN` / `hf auth login`)。hwnpu の OAuth アプリに `write-repos` を足すか
+- gated で断られたときに止める (今は手元の変換に進む)
+- 20 GB を超える書き出しを切る形 (`files.tar.zst.000` ...) と、それを読む側
 
 - Intel (OpenVINO IR) を配るか。今は取得元でも共有していない
 - 確かめた結果の形 (`--checked` の JSON) と、それを作る手順 (`hwnpu-dev check` の出力から作れるか)

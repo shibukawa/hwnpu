@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -327,5 +328,55 @@ func TestFetchFiles(t *testing.T) {
 	// an error stops the rest and is returned
 	if err := FetchFiles(context.Background(), []File{{Repo: "lab/m", Name: "../x"}}, nil); err == nil {
 		t.Error("no error for a name outside the repository")
+	}
+}
+
+// An export put in a source before its model had a version (v0-HASH) is taken when the version
+// is written (the same key: the same bytes), without building it, and goes in the source at
+// the version.
+func TestSharedExportVersionWritten(t *testing.T) {
+	ctx := context.Background()
+	share := t.TempDir()
+	recipe := map[string]string{"model": "LFM3-1.7B", "target": cache.AMDTarget, "commit": testCommit, "tools": "t1"}
+	built := 0
+	build := func(out string) func() error {
+		return func() error {
+			built++
+			os.MkdirAll(out, 0o755)
+			return os.WriteFile(filepath.Join(out, "manifest.json"), []byte(`{"version":1}`), 0o644)
+		}
+	}
+	src := []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}
+	if _, err := withSources(t, src, "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cache.RootEnv, t.TempDir())
+	out := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+	if err := SharedExport(ctx, "iron-lm", recipe, out, nil, build(out)); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	if _, err := withSources(t, src, "version: 1\nmodels:\n  LFM3-1.7B:\n    targets: {amd-xdna2: {version: 2}}\n    machine: 8\n"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cache.RootEnv, t.TempDir()) // another machine
+	out2 := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+	if err := SharedExport(ctx, "iron-lm", recipe, out2, nil, build(out2)); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	if built != 1 || read(t, filepath.Join(out2, "manifest.json")) != `{"version":1}` {
+		t.Fatalf("built %d", built)
+	}
+	if e, err := shared.ReadEntry(out2); err != nil || e.Version != 2 || !strings.HasSuffix(e.Path, "/v2") {
+		t.Errorf("here: %+v %v", e, err)
+	}
+	es, _ := shared.ListEntries(ctx, shared.Sources()[0])
+	if !slices.ContainsFunc(es, func(p string) bool { return strings.HasSuffix(p, "LFM3-1.7B.amd-npu2/v2") }) {
+		t.Errorf("not put at the version: %v", es)
+	}
+	// taken here again without the sources
+	if err := SharedExport(ctx, "iron-lm", recipe, out2, nil, build(out2)); err != nil || built != 1 {
+		t.Errorf("built %d: %v", built, err)
 	}
 }
