@@ -721,6 +721,52 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Option C: a priority on a use (`use.Priority(ai.Interactive)`): audio goes first and background work waits at its breaks. The calls to the NPU must then go through one place (D10)
 - **Not decided**: which to add. A is small; C belongs with managing what stays loaded (D9)
 
+**D21. Declaring the network (`Connect`)** — now: `ai.NewApp("interpreter", stt, tr, tts)` only lists the models, and how they are joined is in the code that runs (`tts.SpeakStream(ctx, flow.Async(ctx, tr.TranslateStream(...)))`). The library does not know the joins.
+
+- Proposed (2026-11-21): write the joins when registering. `app.Connect(stt)`, `stt.Connect(tr)`, `tr.Connect(tts)`. They are not always one to one
+- What the library can do once it knows the joins:
+  - Estimate whether the pipeline keeps up (section 9.2) and measure on which edge things wait (D20)
+  - Each edge says how chunks pass: kept, the newest only, when all is finished. "Keep a live input" (section 6.5) is not forgotten
+  - It knows which models are loaded together (stages joined by streams) and which one after another (before and after a "when finished" edge), so the memory can be estimated and `Release` left to it (D9)
+  - A fan-out (one transcript to captions and to a translation) and a fan-in (depth and the head's position into a renderer) are written without `Tee` and `Hold` by hand
+  - `APP models` can show the network
+- Types: with ports that carry their input and output types, a wrong join does not compile (checked with a sketch)
+
+```go
+var (
+	stt = speech.Transcribe("transcribe")
+	tr  = text.Translate("translate")
+	tts = speech.Speak("speech")
+)
+
+app := ai.NewApp("interpreter")
+mic := flow.Input[[]float32](app, "mic")             // an input of the app
+out := flow.Output[[]float32](app, "speech")         // an output of the app
+vad := speech.Utterances(speech.VADOptions{})        // a node without a model
+hear, trans, speak := stt.Stage(sopts), tr.Stage(topts), tts.Stage(popts)
+
+mic.To(&vad.In, flow.Keep(time.Minute))              // a live input: kept
+vad.Connect(hear)
+hear.Connect(trans)                                   // one to one, node to node
+hear.Out.To(captions)                                 // a fan-out: the same output into another port
+trans.Connect(speak, flow.Keep(4))
+speak.Out.To(out)
+
+// a fan-in: a node with several ports is a struct of the app's
+gen.Connect(depth, flow.Whole())                      // when finished (gen unloaded before depth)
+depth.Out.To(&render.Depth)
+camera.To(&faces.In, flow.Newest())                   // the newest only
+faces.Out.To(&render.Head, flow.Newest())
+```
+
+- To decide:
+  - **A model and its place in the network, apart?** Using one model in two places (the left and the right transcript, a translator with other settings) needs a `Use` (the model) apart from a `Stage` (the place). With `stt.Connect(tr)` on the `Use` itself, a model has one place only
+  - **Node to node, or port to port?** `stt.Connect(tr)` is how nodes of one input and one output are written. Nodes with several outputs or inputs (provisional captions and settled sentences, depth and confidence, a renderer) need ports. Both, I think, with one-to-one joins written node to node
+  - **Where settings go**: a language or a voice moves from a call's arguments to the node (`tr.Stage(opts)`). Changing them while it runs needs an API of its own (D13)
+  - **Does listing stay?** Calling a model once a request (a server, batch work) has no network. `ai.NewApp(name, uses...)` and `Get` stay, I think, and an app that writes a network has its models taken from it
+  - **And today's `flow.Stream`**: it stays. A node's inside is today's `...Stream` functions, and an edge's way of passing is `Async`, `Latest` and `Tee`. The network is a layer that puts them together and runs them
+- **Not decided**: whether to add this layer. If so, before the pseudo-3D sample (which has a fan-out and a fan-in) is written
+
 ## 11. Not there yet
 
 - Pictures: depth, faces, objects, poses, cutouts, OCR, labels (`ai/vision`); generation (`ai/imagegen`)

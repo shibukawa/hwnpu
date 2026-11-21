@@ -721,6 +721,52 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 - 別の案 C: 用途に優先度を書く (`use.Priority(ai.Interactive)`)。音声を先に通し、背景の仕事は切れ目で待たせる。NPU への投入を 1 か所に集める必要がある (D10)
 - **未定**: どれを入れるか。A は小さく、C は常駐の管理 (D9) と一緒になる
 
+**D21. ネットワークを宣言する (`Connect`)** — 今: `ai.NewApp("interpreter", stt, tr, tts)` は使うモデルを並べるだけで、つなぎ方は実行のときのコード (`tts.SpeakStream(ctx, flow.Async(ctx, tr.TranslateStream(...)))`) にある。ライブラリはつなぎ方を知らない。
+
+- 提案 (2026-11-21): つなぎ方を登録のときに書く。`app.Connect(stt)`、`stt.Connect(tr)`、`tr.Connect(tts)`。1 対 1 とは限らない
+- ライブラリがつなぎ方を知ると、できること:
+  - 実時間で回るかの見積もり (9.2 節) と、どの辺で待ちが積み上がっているかの計測 (D20) を、ライブラリが出せる
+  - 辺ごとに渡し方を書ける: ためる、最新だけ、全部終わってから。「生の入力はためる」(6.5 節) を書き忘れない
+  - 同時に載るモデル (流れでつながる段) と、順に載るモデル (「全部終わってから」の辺の前後) が分かり、メモリの見積もりと `Release` を任せられる (D9)
+  - 分岐 (同じ文字起こしを字幕と翻訳に) と合流 (深度と頭の位置を描画に) が、`Tee` や `Hold` を自分で書かずに書ける
+  - `APP models` がネットワークを表示できる
+- 型が合うことの確かめ: 入力と出力の型を持つ口 (ポート) にすれば、つなぎ間違いはコンパイルで止まる (試し書きで確かめた)
+
+```go
+var (
+	stt = speech.Transcribe("transcribe")
+	tr  = text.Translate("translate")
+	tts = speech.Speak("speech")
+)
+
+app := ai.NewApp("interpreter")
+mic := flow.Input[[]float32](app, "mic")             // アプリの入力
+out := flow.Output[[]float32](app, "speech")         // アプリの出力
+vad := speech.Utterances(speech.VADOptions{})        // モデルのない節
+hear, trans, speak := stt.Stage(sopts), tr.Stage(topts), tts.Stage(popts)
+
+mic.To(&vad.In, flow.Keep(time.Minute))              // 生の入力: ためる
+vad.Connect(hear)
+hear.Connect(trans)                                   // 1 対 1 は節どうしで
+hear.Out.To(captions)                                 // 分岐: 同じ出力をもう 1 つの口へ
+trans.Connect(speak, flow.Keep(4))
+speak.Out.To(out)
+
+// 合流: 口をいくつも持つ節は、アプリが構造体で書く
+gen.Connect(depth, flow.Whole())                      // 全部終わってから (gen を下ろしてから depth)
+depth.Out.To(&render.Depth)
+camera.To(&faces.In, flow.Newest())                   // 最新だけ
+faces.Out.To(&render.Head, flow.Newest())
+```
+
+- 決めること:
+  - **モデルと、ネットワークの中の場所を分けるか**: 同じモデルを 2 か所で使う (L と R の文字起こし、別の設定の翻訳) には、`Use` (モデル) と `Stage` (場所) を分ける必要がある。`stt.Connect(tr)` を `Use` に直接書くと、1 つのモデルは 1 か所にしか置けない
+  - **節どうしか、口どうしか**: `stt.Connect(tr)` は入力と出力が 1 つずつの節の書き方。出力や入力がいくつもある節 (仮の字幕と確定した文、深度と信頼度、描画) には口が要る。両方を持ち、1 対 1 は節どうしで書けるようにするのがよいと考える
+  - **設定の置き場所**: 言語や声などの設定が、呼び出しの引数から節のもの (`tr.Stage(opts)`) になる。実行の途中で変える口 (D13) が別に要る
+  - **並べるだけの登録を残すか**: 要求ごとに 1 回呼ぶ使い方 (サーバー、一括の処理) にはネットワークがない。`ai.NewApp(name, uses...)` と `Get` は残し、ネットワークを書いたアプリは、そこからモデルの一覧を引く形がよいと考える
+  - **今の `flow.Stream` との関係**: 捨てない。節の中身は今の `...Stream` の関数で、辺の渡し方は `Async`、`Latest`、`Tee` で作れる。ネットワークは、それを組み立てて走らせる層になる
+- **未定**: この層を入れるか。入れるなら、擬似立体のサンプル (分岐と合流がある) を書く前がよい
+
 ## 11. まだないもの
 
 - 画像: 深度、顔、物体、姿勢、切り抜き、OCR、ラベル (`ai/vision`)、画像の生成 (`ai/imagegen`)
