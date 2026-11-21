@@ -202,6 +202,10 @@ var cli struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, net := build()
 	k := kong.Parse(&cli,
 		kong.Name("interpreter"),

@@ -68,6 +68,10 @@ var cmds struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("layers"),

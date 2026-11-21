@@ -88,6 +88,10 @@ var cmds struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("parallax"),
@@ -295,7 +299,16 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return err
 		}
 	}
-	o.closeAfter = c.For
+	o.closeAfter, o.done = c.For, ctx.Done()
+	// when the window is closed (or Ctrl-C), what goes on beside it is stopped and waited for
+	// (the deferred calls below); should anything not stop, the process does not stay on with no
+	// window: it ends 5 s after
+	var stopping *time.Timer
+	defer func() {
+		if stopping != nil {
+			stopping.Stop()
+		}
+	}()
 	var scene *Scene
 	if st, err := os.Stat(c.Picture); (err == nil && st.IsDir()) || c.Dump != "" {
 		// a picture in layers already, or the shader's frames to check: no making to show
@@ -332,7 +345,11 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		// the tracker's network runs beside the window, until the window is closed
 		p.tracker.Gain = c.Gain
 		o.camera, o.gain = p.tracker.Seen, p.tracker.AddGain
-		frames, err := c.frames(ctx, false)
+		// the camera's frames end with the tracker, when the window is closed: a camera left
+		// reading kept the tracker's network, and the process, from ending
+		tctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		frames, err := c.frames(tctx, false)
 		if err != nil {
 			return err
 		}
@@ -340,7 +357,6 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		if _, err := faces.Get(ctx, rt); err != nil { // loaded before the window opens
 			return hint(err)
 		}
-		tctx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		go func() { done <- rt.Run(tctx) }()
 		defer func() {
@@ -365,7 +381,12 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return p.tracker.Target()
 		}
 	}
-	return runWindow(scene, c.params(), o)
+	err = runWindow(scene, c.params(), o)
+	stopping = time.AfterFunc(5*time.Second, func() {
+		fmt.Fprintln(os.Stderr, "parallax: still stopping 5 s after the window closed; ending")
+		os.Exit(1)
+	})
+	return err
 }
 
 // make makes the picture deep beside the window and tells prog of each step: its depth, then

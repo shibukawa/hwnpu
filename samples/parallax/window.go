@@ -239,6 +239,11 @@ func (g *game) Update() error {
 	if g.o.frames > 0 && g.dumped >= g.o.frames {
 		return ebiten.Termination
 	}
+	select {
+	case <-g.o.done: // Ctrl-C in the terminal
+		return ebiten.Termination
+	default:
+	}
 	if g.o.closeAfter > 0 && time.Since(g.opened) > g.o.closeAfter {
 		return ebiten.Termination
 	}
