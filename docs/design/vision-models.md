@@ -132,6 +132,25 @@ Turns an ONNX CNN (CSPNeXt, YOLOX-type) into one IRON graph. Switching operators
 - Multi-view (`iron_da3.py --views N`, AMD only): packed view tokens, windowed in-view attention, cross-view attention over all rows; reference view choice and camera MLP on the host (`depth.SaddleBalanced`); writes `cameras.json` and `--ply`. 3 views 1.1 s, cosine 0.9998. Near-identical pictures can pick a different reference view than the official code (`--ref`).
 - Apple (`internal/vision/depth/mil`): transposed conv as 1×1 + `pixel_shuffle`, bilinear as matrix products. One export, a `WxH/` folder per size converted the first time a picture needs it (seconds). M3 Core AI: DA3-BASE 504² ViT 106 ms, head 16 ms; depth cosine 1.000000 against Core ML. DA3-SMALL 1.000000, DA3MONO-LARGE 0.999993 vs the official module (sky 0.9998).
 
+### Depth models compared (Ryzen AI 9 365, through `ai/vision`)
+
+Three pictures (one 1024×672, two 1024×1024), while another session used the NPU. No ground truth: the
+look is from grey maps side by side.
+
+| Model | A picture (from the 2nd) | First | NPU memory | Process | Depth size | Export | Look |
+|---|---|---|---|---|---|---|---|
+| DA3-SMALL | 0.31 s | 0.57 s | 0.48 GiB | 0.17 GiB | 504 | 1.0 GB | soft edges; thin branches and hair vanish |
+| DA3-BASE | 0.43 s | 0.86 s | 0.74 GiB | 0.17 GiB | 504 | 2.3 GB | a little sharper than SMALL |
+| DA3MONO-LARGE | 0.85 s | 1.63 s | 1.36 GiB | 0.21 GiB | 504 | 6.2 GB | sharp edges, background layers apart |
+| DA3METRIC-LARGE | 0.85 s | 1.50 s | 1.36 GiB | 0.21 GiB | 504 | 6.2 GB | as MONO; fine grain in sky or flowers on some pictures |
+| moge-2-vits | 2.52 s | 3.15 s | 1.94 GiB | 0.44 GiB | 1024 | 2.4 GB | fine edges, background layers close together |
+| moge-2-vitb | 2.68 s | 3.26 s | 2.10 GiB | 0.42 GiB | 1024 | 3.6 GB | fine edges, background layers apart |
+| moge-2-vitl | 3.41 s | 4.17 s | 2.62 GiB | 0.50 GiB | 1024 | 7.7 GB | finest; cuts the sky out as farthest |
+
+- The `depth` use stays: SMALL from 8 GB, BASE from 16 GB, MONO-LARGE from 24 GB.
+- Nearness (the inverse of depth) leaves everything behind a close object near 0; `samples/parallax`
+  spreads it with log(1 + k·n) / log(1 + k), k = 30 by default.
+
 ### MoGe-2 (`hwnpu-image depth -m moge`)
 
 - Metric depth, points, normals and a mask without knowing the focal length (DA3METRIC needs it). DINOv2 + ConvStack neck + 3 heads (points, normals, mask). No normalization (`res_block_*_norm` none). All 3×3 pad by replicating edges.

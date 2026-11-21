@@ -318,12 +318,15 @@ hwnpu を NPU でモデルを動かす Go のライブラリの集まりにし�
 | `ai/speech`、`ai/text` | 文字起こし、読み上げ、音量の VAD、WAV。翻訳、チャット。機能のパッケージが自分のモデルの準備と読み込み (`internal/airole.Role`) を持ち、`ai` はそれらを import しないので、アプリには使う機能だけが入る | v0 |
 | `ai/flow` | 塊の流れ (`Stream[T]`、`iter.Seq2`) とモデルの間のネットワーク | v0 |
 | `ai/cli` (+ `konghelper`) | アプリに足すサブコマンド: `models`、`models download`、`models prepare`、`status` (`internal/npustatus` で `hwnpu status` と共有) | v0 |
-| `ai/vision`、`ai/imagegen`、`ai/sound` | 深度、顔、物体検出など。画像の生成。音楽、効果音、音高 | まだ |
+| `ai/vision` | `Depth` (用途 `depth`: Depth Anything 3、MoGe-2。`DepthMap.Near` が近さを 0〜1 で)、`Faces` (`face-detect`: YuNet。AMD の機械では CPU)、`HeadOf` / `NearestHead` / `HeadNode` (両目の間隔 63 mm とカメラの画角 60 度から頭の位置。モデルなし) | v0 |
+| `ai/imagegen` | `Generate` (用途 `image`): 文と参照の絵から絵を、`GenerateNode`。頼まれた形に一番近い書き出しの大きさ (`SizeFor`)。FLUX.2 klein だけ (Anima、Chroma、FLUX.3 klein は準備のときに断る) | v0 |
+| `ai/sound`、`ai/vision` の物体、姿勢、切り抜き、OCR、ラベル | 音楽、効果音、音高 | まだ |
 
 - 準備はコマンドの初回と同じ関数 (`transcribe.Prepare`、`speech.Prepare`、`chat.Prepare` と AMD の版) を同じ置き場に呼ぶので、アプリとコマンドは準備したものを共有する。
 - 機械のメモリごとの構成: 用途の名前は 1 つだけ動かすときの一番大きなモデルを選ぶ。いくつも動かすアプリは `use.At(gb, name)` / `use.As(gb)` を書く (`samples/interpreter`: 翻訳は 16 GB から 2B、32 GB から 8B)。実行時に置き場の記録が別のモデルや別のメモリ向けなら `ErrNotPrepared`。`Plan.UsableGB` / `Plan.Fits` が同時に読む合計とモデルに使えるメモリを比べる。
 - モデルのつなぎ方は、次の段をいつ始められるかで: 前が全部終わってから (`Last`、大きなモデルの前に `Use.Release`)、できたものから (`Async`、`Latest`、`Hold`、`Tee`)、拍に合わせて (`Metronome`、`Pace`、`Live`)。ネットワークとして宣言する: `flow.Source` → 節 → `flow.Sink` を `a.To(b, 辺)` でつなぐ (辺: なし、`flow.Keep(n)`、`flow.Newest()`)。プログラムの節 `flow.Each` / `Route` / `Both` / `With`、モデルの節 (`speech.TranscribeNode`、`text.TranslateNode` など)、要求ごとに 1 回は `ai.NewCall(...).Then(...)`。時刻の道具は `testing/synctest` でテストする。
 - 生の入力: サンプルのモジュール (`samples/`、別の `go.mod`) はマイクを [hwcamera](https://github.com/shibukawa/hwcamera) から取る。`capture.Mic` は別の goroutine でためる (ためないと、文字起こしの間の声が失われた)。
+- サンプル: `samples/interpreter` (文字起こし → 翻訳 → 読み上げ)、`samples/parallax` (絵の深度を 1 回推定し、カメラで見る人の頭を追い、その視点から Ebitengine の Kage のシェーダーで描き直す。`samples/layering` の層が切れるたびに入れ替わる)、`samples/layers` (絵を深度で層に分け、各層が隠していた部分を FLUX.2 klein が描き、PSD に書く)。コマンドと共有する準備の手順は `internal/chat` (`AMDPictureExport`) と `internal/imagegen/flux2klein` に移した。
 
 **NPU は 1 つの待ち行列** (Ryzen AI 9 365、whisper-large-v3-turbo と plamo-3-translate-8b と LFM3-Audio-2B-TTS を 1 プロセスに): 呼び出しは入れ替わるが合計は和と同じ (文字起こし 1.38 秒と翻訳 3.34 秒は、同時で 4.67 秒。3 つ同時で 14.7 秒、和は 14.8)。実時間で回るかは各段の NPU の時間の和で決まる: 読み上げは音声 1 秒に 2.6 秒かかるので、訳した音声まで出すと話し続ける相手に追いつかない。字幕だけなら 1 発話に 2.1 秒 (2B) か 3.7 秒 (8B)。`samples/interpreter`: 13.3 秒の日本語を 31.6 秒で 8.5 秒の英語の音声に。出力を書き起こすと訳文と一字一句同じ。
 
@@ -333,7 +336,7 @@ hwnpu を NPU でモデルを動かす Go のライブラリの集まりにし�
 
 ## 未解決
 
-- `ai`: 常駐の管理 (メモリの予算、投入の順番)、入力が 3 つ以上の節、モデルを下ろすタイミングをライブラリに任せること、辺ごとの計測、`ai/vision` / `ai/imagegen`、コマンドを `ai` に載せ替えること。Mac (Core AI) と Intel で `ai` を動かしていない。`text.Chat` の実機、実物のマイクも未確認。列を分けて本当に同時に動かせるか (AMD) も未確認。
+- `ai`: 常駐の管理 (メモリの予算、投入の順番)、入力が 3 つ以上の節、モデルを下ろすタイミングをライブラリに任せること、辺ごとの計測、`ai/vision` の残り、`ai/imagegen` の Anima / Chroma / FLUX.3 klein、コマンドを `ai` に載せ替えること。Mac (Core AI。参照からの生成がまだ Neural Engine で動かないので `samples/layers` は AMD だけ) と Intel で `ai` を動かしていない。`text.Chat`、実物のマイク、カメラ、画面も未確認。列を分けて本当に同時に動かせるか (AMD) も未確認。
 - `npuinfo`: Windows (Intel と AMD) で動かす。M2 以降の Mac で IOReport のチャンネル名を確かめる。AIE の状態と
   テレメトリを読み解く。共通の API。ブラウザで見る道具。
 - ライブラリの API は planned で、名前が変わりうる。
