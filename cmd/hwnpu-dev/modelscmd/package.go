@@ -278,6 +278,9 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 					return out, fmt.Errorf("%s (%s): %w", m.Name, what, err)
 				}
 				fmt.Fprintf(os.Stderr, "%s: ready for %s in %s\n", m.Name, what, time.Since(start).Round(time.Second))
+				if missing == nil {
+					putHere(f)
+				}
 				out = append(out, prepared{j, f})
 			}
 		}
@@ -311,4 +314,28 @@ func formNote(f, m chat.Model) string {
 		return ""
 	}
 	return fmt.Sprintf(" (as on a machine of more memory: %+v)", f.Run)
+}
+
+// putHere puts the entries the files of a preparation are in (a folder with entry.json: the
+// path, or one above it up to two levels) in the sources written back to, in the background:
+// one that was here already (made or fetched before) is not put by the preparation, and a source
+// that has its key is left (store.PutEntry).
+func putHere(f airole.Files) {
+	seen := map[string]bool{}
+	for _, ps := range f.Paths {
+		for _, p := range ps {
+			for d, i := p, 0; i < 3 && d != "." && d != string(filepath.Separator); d, i = filepath.Dir(d), i+1 {
+				if _, err := os.Stat(filepath.Join(d, shared.EntryFile)); err != nil {
+					continue
+				}
+				if !seen[d] {
+					seen[d] = true
+					for _, s := range shared.Writebacks() {
+						shared.PutLater(s, d)
+					}
+				}
+				break
+			}
+		}
+	}
 }
