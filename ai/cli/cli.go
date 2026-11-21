@@ -58,6 +58,7 @@ type planJSON struct {
 	Compiled      bool         `json:"compiled"`
 	DownloadBytes int64        `json:"download_bytes"`
 	MemoryGB      float64      `json:"memory_gb"`
+	InTurns       [][]string   `json:"in_turns,omitempty"`
 	Items         []ai.Item    `json:"items"`
 	Licenses      []ai.License `json:"licenses"`
 }
@@ -78,7 +79,7 @@ func List(ctx context.Context, app *ai.App, o ListOptions) error {
 		e := json.NewEncoder(out)
 		e.SetIndent("", "  ")
 		return e.Encode(planJSON{App: app.Name, Target: p.Target(), MachineGB: p.MachineGB(), UsableGB: p.UsableGB(), Fits: p.Fits(), Ready: p.Ready(), Compiled: p.Compiled(),
-			DownloadBytes: p.DownloadBytes(), MemoryGB: p.MemoryGB(), Items: p.Items, Licenses: p.Licenses()})
+			DownloadBytes: p.DownloadBytes(), MemoryGB: p.MemoryGB(), InTurns: p.InTurns(), Items: p.Items, Licenses: p.Licenses()})
 	}
 	WritePlan(out, app, p)
 	return nil
@@ -141,7 +142,15 @@ func WritePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 	}
 	tw.Flush()
 	fmt.Fprintln(w)
-	running := fmt.Sprintf("about %s running together (a machine of %d GB has about %.0f GB for models)", gb(p.MemoryGB()), p.MachineGB(), p.UsableGB())
+	var turns []string
+	for _, g := range p.InTurns() {
+		turns = append(turns, strings.Join(g, " and "))
+	}
+	together := "running together"
+	if len(turns) > 0 {
+		together = "at once (" + strings.Join(turns, "; ") + " in turns)"
+	}
+	running := fmt.Sprintf("about %s %s; hwnpu counts on about %.0f GB of a %d GB machine for models", gb(p.MemoryGB()), together, p.UsableGB(), p.MachineGB())
 	switch {
 	case p.Compiled():
 		fmt.Fprintf(w, "All here and compiled; %s.\n", running)
@@ -155,7 +164,7 @@ func WritePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 		fmt.Fprintf(w, "%s; %s. \"models download\" downloads and converts; \"models prepare\" compiles for the NPU too.\n", down, running)
 	}
 	if !p.Fits() {
-		fmt.Fprintf(w, "Together they take more than this machine has for models, and the NPU's memory cannot be swapped out: the other applications are pushed to swap. The app is to pick smaller models for this memory (ai.Use's At and As) or run them one after another (Release).\n")
+		fmt.Fprintf(w, "Together they take more than hwnpu counts on for models here, and the NPU's memory cannot be swapped out: the other applications may be pushed to swap. The app is to pick smaller models for this memory (ai.Use's At and As) or run them one after another (App.InTurns).\n")
 	}
 	for _, it := range p.Items {
 		if strings.Contains(it.Why, "by the app") {

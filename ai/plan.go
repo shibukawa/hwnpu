@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ type Plan struct {
 	store   Store
 	npu     airole.NPU
 	machine int
+	turns   [][]string // App.InTurns
 }
 
 // Item is a use of a plan.
@@ -140,7 +142,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 	if err := a.Store.open(); err != nil {
 		return nil, err
 	}
-	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, chat.MachineMemory())}
+	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, chat.MachineMemory()), turns: a.turns}
 	for _, r := range reqs {
 		m, why, err := resolve(r, a.memory)
 		if err != nil {
@@ -177,10 +179,11 @@ func (p *Plan) Target() string { return p.npu.Target }
 // in it beside everything else the machine runs.
 func (p *Plan) MachineGB() int { return p.machine }
 
-// usable is about how much of a machine's memory is left for models, in GB, by the memory it
-// has: MODEL.md's second row (the OS and the everyday applications taken off). The NPU's buffers
-// are pinned memory that cannot be swapped out, so models over it push other applications to
-// swap.
+// usable is about how much of a machine's memory hwnpu counts on for models, in GB, by the memory
+// it has: MODEL.md's second row, what a user can give models without strain beside the OS and the
+// everyday applications. It is a working assumption, not a limit of the machine (with an
+// integrated GPU it also moves with the memory the GPU is given). The NPU's buffers are pinned
+// memory that cannot be swapped out, so models over it may push other applications to swap.
 var usable = [][2]float64{{8, 3}, {16, 9}, {24, 15}, {32, 22}, {48, 35}, {64, 50}}
 
 // usableGB is usable for a machine of machine GB: between the table's machines in proportion,
@@ -243,14 +246,41 @@ func (p *Plan) DownloadBytes() int64 {
 }
 
 // MemoryGB is what the plan's models take running at once, from the definitions: whether they
-// fit the machine together (the three models of an interpreter take about 6.7 GB). An app that
-// runs them one after another (Use.Release) needs the largest alone.
+// fit the machine together (the three models of an interpreter take about 6.7 GB). Of the uses
+// the app runs one at a time (App.InTurns) the largest alone counts.
 func (p *Plan) MemoryGB() float64 {
 	var n float64
+	largest := map[int]float64{} // of each group of InTurns
 	for _, it := range p.Items {
-		n += it.MemoryGB
+		g := slices.IndexFunc(p.turns, func(g []string) bool { return slices.Contains(g, it.req.key()) })
+		if g < 0 {
+			n += it.MemoryGB
+		} else {
+			largest[g] = max(largest[g], it.MemoryGB)
+		}
+	}
+	for _, m := range largest {
+		n += m
 	}
 	return n
+}
+
+// InTurns are the groups of the plan's uses (their names) that the app runs one at a time
+// (App.InTurns): of each, the largest counts in MemoryGB.
+func (p *Plan) InTurns() [][]string {
+	var out [][]string
+	for _, g := range p.turns {
+		var names []string
+		for _, it := range p.Items {
+			if slices.Contains(g, it.req.key()) {
+				names = append(names, it.Use)
+			}
+		}
+		if len(names) > 1 {
+			out = append(out, names)
+		}
+	}
+	return out
 }
 
 // Licenses are the models' terms to show before downloading them, one per model.

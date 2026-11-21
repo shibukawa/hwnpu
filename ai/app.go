@@ -139,6 +139,8 @@ type App struct {
 	roots  []flow.Root
 	calls  []interface{ Nodes() []flow.NodeInfo }
 	memory int
+	// turns are the groups of uses (their keys) that run one at a time (InTurns)
+	turns [][]string
 }
 
 // NewApp is the app called name that uses the models uses.
@@ -159,6 +161,39 @@ func (a *App) Use(uses ...Requirement) *App {
 		}
 	}
 	return a
+}
+
+// InTurns says that uses run one at a time: the app never needs two of them loaded at once (a
+// picture's depth, then a generator that draws from it, then the depth again). They are
+// registered as Use registers them. The plan then counts the largest of them in what the app's
+// models take running together (Plan.MemoryGB), and the Runtime keeps that true: loading one of
+// them first releases the others of the group that are loaded. A use is in one group at most.
+func (a *App) InTurns(uses ...Requirement) *App {
+	a.Use(uses...)
+	var keys []string
+	for _, u := range uses {
+		k := u.requirement().key()
+		if a.turnOf(k) != nil {
+			panic("ai: " + k + " is in two groups of InTurns")
+		}
+		if !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) > 1 {
+		a.turns = append(a.turns, keys)
+	}
+	return a
+}
+
+// turnOf is the group of InTurns the use of key is in, nil for none.
+func (a *App) turnOf(key string) []string {
+	for _, g := range a.turns {
+		if slices.Contains(g, key) {
+			return g
+		}
+	}
+	return nil
 }
 
 // Memory makes uses and families pick their models, and the models their programs, for a machine

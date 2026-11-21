@@ -186,7 +186,7 @@ for _, it := range plan.Items {
 	fmt.Println(it.Use, it.Model, it.Ready, it.Compiled, it.Download, it.MemoryGB, it.Why)
 }
 plan.DownloadBytes()   // 落とす量 (上限)
-plan.MemoryGB()        // 同時に動かすときのメモリの合計
+plan.MemoryGB()        // 同時に動かすときのメモリ (InTurns のものは一番大きいものだけ)
 plan.MachineGB()       // 機械のメモリ
 plan.Licenses()        // モデルごとのライセンス (ID、種類、URL、同意が要るか、同意済みか)
 plan.Target()          // coreai、intel、amd-xdna2。"" は、モデルを動かせる NPU がない
@@ -249,7 +249,7 @@ rt.Loaded()                         // 今持っているモデル: 用途、モ
 - **ネットワークにも変換にも触りません。** 準備されていない用途は `ai.ErrNotPrepared` です。`ai.WithAutoPrepare(fn)` を付けると、最初の `Get` で準備します (コマンドと同じ動き。ギガバイトのダウンロードになることがあります)
 - **置き場の記録が今の選び方と違えば、準備されていない扱いです。** 別のモデルで準備してある (アプリの構成が変わった、機械のメモリの設定が変わった) とき、前のものを黙って読み込みません
 - **読み込みは 1 つずつ**進みます。モデルは、それぞれ 1 回に 1 つの要求を通します (ほかは待ちます)。別のモデルどうしは同時に呼べます
-- **順に使うアプリ**は `Release` で下ろします。画像の生成のあとに深度、のような使い方で、同時に載るメモリが一番大きいモデルの分で済みます。自動で下ろす仕組みはまだありません ([D9](#10-設計の論点))。画像の生成が中で行う段の入れ替えとは別の層です ([9.5 節](#95-release-と画像の生成の段の入れ替え))
+- **順に使うアプリ**は `Release` で下ろします。画像の生成のあとに深度、のような使い方で、同時に載るメモリが一番大きいモデルの分で済みます。`app.InTurns(a, b)` で宣言すると、計画はモデルを合わせた量に大きいほうだけを数え、片方を読み込むともう片方を下ろします。ほかに自動で下ろす仕組みはまだありません ([D9](#10-設計の論点))。画像の生成が中で行う段の入れ替えとは別の層です ([9.5 節](#95-release-と画像の生成の段の入れ替え))
 - **同時に呼べますが、NPU は 1 つの待ち行列です。** 実時間で回り続けるかどうかは、各段の時間の合計で決まります ([9 節](#9-制約とルール))
 - 各モデルの `OnNPU()` は、プログラムが NPU に載ったことを確かめられたかを返します (`Speaker` にはまだありません)
 
@@ -667,7 +667,7 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
  └──────────────── その層のない絵 ←──────────────────────────────┘
 ```
 
-- **交互に使う**: 深度 (1.4 GB) と画像の生成 (3.9 GB) は同時に要らないので、使うたびに `Release` で下ろします ([9.5 節](#95-release-と画像の生成の段の入れ替え))。読み込み直しは深度が 0.1 秒、画像のモデルが 4 秒ほどで、1 枚描く 1 分に比べて小さい
+- **交互に使う**: 深度 (1.4 GB) と画像の生成 (3.9 GB) は同時に要らないので、使うたびに `Release` で下ろします。`layering.Register` が `app.InTurns(depth, artist)` と宣言するので、`layers models` は両方の合計ではなく 4.9 GB と数えます ([9.5 節](#95-release-と画像の生成の段の入れ替え))。読み込み直しは深度が 0.1 秒、画像のモデルが 4 秒ほどで、1 枚描く 1 分に比べて小さい
 - **切る場所**: 近さ (深度の逆数に、奥を引き離す曲線をかけたもの) の分布から、層の中の近さが一番そろう切り方を求めます (`layers plan` が、層ごとに色をつけた絵と切る値を出します。`--cuts` で指定もできます)
 - **裏を描かせる**: 編集のモデルにマスクの入力はないので、消したい部分を絵にない色 1 色で塗り、「その色の形を取り除いて、裏の景色を描く」と頼みます。描いた絵は層のあった所だけ使い、ほかは元の絵のままにします (層を重ね直すとほぼ元の絵に戻ります)。深度が拾い損ねた層の細い部分 (草の先、髪の束) は奥の層に残り、層を動かすと取り残されます。`--clean PIXELS` で層の縁の少し先まで描いた絵を使うとそれは消えますが、描いた絵が周りときれいにつながらない所では、層の周りに縁取りのように見えます
 - **描き損じを見分ける**: モデルは、塗った形をそのまま (塗った色や、暗い影として) 残すことがあります。そのときはマスクの縁の全周に色の段差が出るので、縁の内と外の色の差 (`seam`) で見分け、別の種で描き直します (`--tries`、既定 3 回)。どの回もだめなら、その層は切り出さずに絵に残し、そこで分けるのをやめます (層が 1 つ減ります。変な絵を裏に入れるよりよい)。頼み方でも変わり、「この領域を背景で置き換える」より「この形を取り除く」のほうが残りにくい。写真では、大きく塗った形の所に人の群れを描いたことがあり、「人や動物を足さない」の一文を入れてあります
@@ -812,7 +812,7 @@ transcribe  transcribe  whisper-large-v3-turbo  compiled  -         2.2 GB  mit
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  plamo-community-license (conditional)
 speech      speak       LFM3-Audio-2B-TTS       compiled  -         2.9 GB  lfm-open-1.0 (conditional)
 
-Their checkpoints are here or come from the sources; about 7.8 GB running together (a machine of 16 GB has about 9 GB for models). ...
+Their checkpoints are here or come from the sources; about 7.8 GB running together; hwnpu counts on about 9 GB of a 16 GB machine for models. ...
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
 
 The network:
@@ -904,10 +904,10 @@ $ interpreter models
 ...
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  ...
 ...
-about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
+about 7.8 GB running together; hwnpu counts on about 9 GB of a 16 GB machine for models.
 ```
 
-- 収まらないときは、その下に注意が出ます (「Together they take more than this machine has for models ...」)
+- 収まらないときは、その下に注意が出ます (「Together they take more than hwnpu counts on for models here ...」)。16 GB のうち 9 GB は、ユーザーが無理なくモデルに回せる量の目安で、機械の上限ではありません (統合 GPU では、GPU に割り当てるメモリによっても変わります)
 - ほかの機械ではどうなるかは、`HWNPU_MEMORY=8 interpreter models` のように、機械のメモリを言い換えて見られます
 - プログラムからは `interpreter models --json` (`memory_gb`、`machine_gb`、`usable_gb`、`fits`、モデルごとの `memory_gb`)、または `plan.MemoryGB()`、`plan.MachineGB()`、`plan.UsableGB()`、`plan.Fits()`
 - **実際に使っている量**は `APP status` が出します: NPU を使っているプロセスごとの、プロセスのメモリと NPU のメモリ (`-w 2s` で見続けられます)

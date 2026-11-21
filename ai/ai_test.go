@@ -676,3 +676,66 @@ func TestNetwork(t *testing.T) {
 		t.Errorf("an app without a network: %v", err)
 	}
 }
+
+// TestInTurns: of the uses an app runs one at a time the largest alone counts in what its models
+// take together, and loading one releases the others of its group.
+func TestInTurns(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	tr := Define[*fakeModel](f.role("translate", "translation", chat.KindChat), "translate")
+	tts := Define[*fakeModel](f.role("speak", "", chat.KindSpeech), "speech")
+	ctx := context.Background()
+	store := testStore(t)
+	together, err := NewApp("together", stt, tr, tts).Memory(16).withStore(store).Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := map[string]float64{}
+	for _, it := range together.Items {
+		mem[it.Use] = it.MemoryGB
+	}
+	app := NewApp("turns", stt).InTurns(tr, tts).Memory(16).withStore(store)
+	p, err := app.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mem["transcribe"] + max(mem["translate"], mem["speech"])
+	if p.MemoryGB() != want || p.MemoryGB() >= together.MemoryGB() {
+		t.Errorf("in turns: %.2f GB, want %.2f (all together %.2f)", p.MemoryGB(), want, together.MemoryGB())
+	}
+	if g := p.InTurns(); len(g) != 1 || strings.Join(g[0], ",") != "translate,speech" {
+		t.Errorf("the plan's groups %v", g)
+	}
+
+	if err := p.Run(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	for _, u := range []Use[*fakeModel]{stt, tr} {
+		if _, err := u.Get(ctx, rt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closed := f.closed
+	if _, err := tts.Get(ctx, rt); err != nil {
+		t.Fatal(err)
+	}
+	var uses []string
+	for _, l := range rt.Loaded() {
+		uses = append(uses, l.Use)
+	}
+	if f.closed != closed+1 || strings.Join(uses, ",") != "transcribe,speech" {
+		t.Errorf("speech after translate: %v loaded, %d closed; want translate released, transcribe kept", uses, f.closed-closed)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a use in two groups of InTurns")
+		}
+	}()
+	NewApp("twice").InTurns(stt, tr).InTurns(tr, tts)
+}
