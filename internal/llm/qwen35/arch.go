@@ -23,6 +23,7 @@ var Arch = &llm.Arch{
 	Params: []llm.Param{
 		{Name: "delta", Default: "chunk", Usage: "the Gated DeltaNet's recurrence: chunk (over chunks of rows, the state read and written once a chunk) or rows (one row after the other, the state read and written five times a row)"},
 		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state of every row, which the MTP layer (-arch qwen35-mtp) reads for speculative decoding"},
+		{Name: llm.RotateParam, Default: "0", Usage: "1: the residual stream rotated in the weights (llm.Rotate, a Walsh-Hadamard matrix with random signs): the same program, a lookup table's error about halved (lut6 on the Neural Engine, design.md 16.274); the host's embedding table is then the rotated one (tables-rot.safetensors). Not for a mixture of experts"},
 		{Name: "state-rows", Default: "0", Usage: "1: a program with a KV cache also outputs st_rec_N_rows, each row's k, v, beta and decay of the Gated DeltaNet layer N, so that the host keeps a beginning of a step's tokens without running them again (speculative decoding)"},
 	},
 }
@@ -126,6 +127,11 @@ var _ llm.Paged = (*Config)(nil)
 // (llm.Rotate): every reader is a linear after a zero centered norm, every writer a linear added
 // as it is. The MTP layer's fc reads two normed halves and is not rotated.
 func (c *Config) Rotation() (llm.Rotation, error) {
+	if c.NumExperts > 0 {
+		// the experts run on the CPU from the checkpoint's MXFP4 (llm.HostRouted): rotated
+		// they would be quantized again
+		return llm.Rotation{}, fmt.Errorf("qwen35: a mixture of experts is not rotated")
+	}
 	r := llm.Rotation{Dim: c.HiddenSize, Embed: c.Embedding(), Head: c.Head(), HeadNorm: c.prefix() + "norm.weight",
 		Readers: map[string]string{}, Writers: map[string]bool{}, Norms: map[string]bool{c.prefix() + "norm.weight": true}, ZeroCentered: true}
 	for i := 0; i < c.NumLayers; i++ {

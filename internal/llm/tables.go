@@ -82,6 +82,19 @@ func WriteTables(w Weights, names []string, groups map[string]int, out string) e
 			ts = append(ts, q, s)
 			continue
 		}
+		if t, ok := w.(interface {
+			Table(string) ([]float32, []int, error)
+		}); ok {
+			// a rotated checkpoint's table (Rotate): its values in fp16
+			v, shape, err := t.Table(name)
+			if err != nil {
+				return err
+			}
+			b := make([]byte, 2*len(v))
+			vecops.F32ToF16(b, v)
+			ts = append(ts, safetensors.Out{Name: name, DType: "F16", Shape: shape, Size: int64(len(b)), Data: bytes.NewReader(b)})
+			continue
+		}
 		if r, ok := w.(rawWeights); ok {
 			sec, t, err := r.section(name)
 			if err != nil {

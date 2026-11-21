@@ -143,9 +143,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 	return OpenAt(ctx, dev, dir, 0, 0, log)
 }
 
-// OpenAt is Open for pictures of w x h, one of the sizes an IRON export holds (IronSizes); 0 x 0
-// is the export's own (an IRON export's first size; an export of hwnpu-image convert is of one
-// size, and w and h are not read).
+// OpenAt is Open for pictures of w x h, one of the sizes the export holds (IronSizes,
+// ProgramManifest.SizeList); 0 x 0 is the export's own (an IRON export's first size, an export of
+// hwnpu-image convert's Width x Height).
 func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{dir: dir}
 	fail := func(err error) (*Pipeline, error) {
@@ -155,7 +155,7 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 	var err error
 	if IsProgramExport(dir) {
 		var pe *progEngine
-		pe, p.Dit, p.Text, err = openPrograms(ctx, dev, dir, log)
+		pe, p.Dit, p.Text, err = openPrograms(ctx, dev, dir, w, h, log)
 		if pe != nil {
 			p.eng, p.Checkpoint = pe, pe.checkpoint
 		}
