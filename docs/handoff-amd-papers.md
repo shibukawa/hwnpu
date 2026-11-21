@@ -2,6 +2,8 @@
 
 作成: 2026-11-20。arXiv の「NPU」の検索 (505 件) と、AMD XDNA、端末の LLM の論文の調査から、hwnpu の AMD の経路 (IRON、`internal/llm/iron`、`internal/backend/amd`) に入れられそうなものを選んだ。全体の一覧 (`docs/npu-optimization-papers.md`: MoE 以外、`docs/moe-papers.md`: MoE) は、このリポジトリにはまだ入っていない。
 
+論文ごとの結果 (当てはまったか) の一覧は [npu-papers.md](reference-paper.ja.md)。
+
 対象の機械は Ryzen AI 9 365 (XDNA2、NPU4 系)。書いてあるのは仮説と、それを確かめる手順。
 
 **論文の確かめた度合い**
