@@ -1,17 +1,24 @@
 // interpreter is a sample app of the ai package: it interprets speech, from the microphone or
-// a recording, into another language, as speech. Three models run one after another on the NPU
-// for each utterance, joined as streams (ai/flow):
+// a recording, into another language, as speech. Its models and the program's own nodes are
+// joined as a network (ai/flow), which the app declares and the library runs:
 //
-//	the microphone or a recording → utterances (VAD) → their text (Whisper) → its translation
-//	(PLaMo 3 Translate) → its speech (LFM3-Audio)
+//	mic → vad → transcribe → heard → commands → translate → said → speech → out
 //
-// The stages overlap: the speaker speaks an utterance while the transcriber and the translator
-// work on the next. The microphone is read through hwcamera (github.com/shibukawa/hwcamera,
-// its audio package); a recording is the same kind of stream.
+// transcribe, translate and speech are models on the NPU (Whisper, PLaMo 3 Translate,
+// LFM3-Audio). heard and said print what passes. commands is a node of the program: it hears
+// spoken commands, which it does not pass on to be translated:
 //
-//	interpreter models                       # the models it uses and what they take
-//	interpreter models prepare               # download, convert and compile them ahead
-//	interpreter --mic -o english.wav         # from the microphone, until Ctrl-C
+//	"変換、スペイン語" / "switch to Spanish"    the next utterances are interpreted into Spanish
+//	"終わり" / "that's all"                     the interpreter ends, once what it heard is spoken
+//
+// The speaker runs behind the others (the edge into it keeps 4 texts), so the transcriber and
+// the translator work on the next utterance while it speaks. The microphone is read through
+// hwcamera (github.com/shibukawa/hwcamera, its audio package); a recording is the same kind of
+// source.
+//
+//	interpreter models                       # the models and the network, and what they take
+//	interpreter models prepare               # download, convert and compile the models ahead
+//	interpreter --mic -o english.wav         # from the microphone, until Ctrl-C or "終わり"
 //	interpreter --mic --device ID            # from another input (interpreter mics lists them)
 //	interpreter talk.wav -o english.wav      # Japanese speech to English speech (or the reverse)
 //	interpreter talk.wav --to ja --live      # paced as a microphone would give it
@@ -23,8 +30,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/alecthomas/kong"
 
@@ -45,25 +54,144 @@ var (
 			At(16, "plamo3translate:2b").
 			At(32, "plamo3translate:8b")
 	speak = speech.Speak("speech")
-
-	app = ai.NewApp("interpreter", transcribe, translate, speak)
 )
+
+// network is the app's network: the nodes a run gives its input, its settings and its output,
+// and what a run keeps.
+type network struct {
+	mic   *flow.Src[[]float32]
+	hear  *ai.ModelNode[[]float32, flow.Text, speech.TranscribeOptions]
+	trans *ai.ModelNode[flow.Text, flow.Text, text.TranslateOptions]
+	say   *ai.ModelNode[flow.Text, []float32, speech.SpeakOptions]
+	out   *flow.Snk[[]float32]
+
+	// of a run
+	start    time.Time
+	live     bool // the input comes in real time: the delays are shown
+	commands bool
+	mu       sync.Mutex
+	ends     []time.Duration // the ends of the utterances whose speech is to come
+	pcm      []float32       // the interpretation
+}
+
+// build declares the network and the app whose models are those of its nodes.
+func build() (*ai.App, *network) {
+	n := &network{
+		mic:   flow.Source[[]float32]("mic"),
+		hear:  speech.TranscribeNode(transcribe, speech.TranscribeOptions{}),
+		trans: text.TranslateNode(translate, text.TranslateOptions{}),
+		say:   speech.SpeakNode(speak, speech.SpeakOptions{}),
+		out:   flow.Sink[[]float32]("out"),
+	}
+	vad := speech.VADNode(speech.VADOptions{})
+	heard := flow.Tap("heard", n.print)
+	commands := flow.Each("commands", n.command)
+	said := flow.Tap("said", func(t flow.Chunk[flow.Text]) {
+		n.print(t)
+		n.mu.Lock()
+		n.ends = append(n.ends, t.End())
+		n.mu.Unlock()
+	})
+	n.out.Do(n.spoken)
+
+	app := ai.NewApp("interpreter")
+	app.Connect(n.mic)
+	n.mic.Connect(vad)
+	vad.Connect(n.hear)
+	n.hear.Connect(heard)
+	heard.Connect(commands)
+	commands.Connect(n.trans)
+	n.trans.Connect(said)
+	// the speaker runs behind the other two by up to 4 utterances: they go on while it speaks
+	said.Connect(n.say, flow.Keep(4))
+	n.say.Connect(n.out)
+	return app, n
+}
+
+// after is, with a live input, how long after the end of an utterance a node gave its result
+// (" +1.9s").
+func (n *network) after(end time.Duration) string {
+	if !n.live {
+		return ""
+	}
+	return fmt.Sprintf(" +%.1fs", (time.Since(n.start) - end).Seconds())
+}
+
+// print shows a text that passes, with its utterance's start.
+func (n *network) print(t flow.Chunk[flow.Text]) {
+	fmt.Printf("[%6.1fs%s] %s: %s\n", t.Start.Seconds(), n.after(t.End()), t.Data.Lang, t.Data.Text)
+}
+
+// spoken keeps the speech of an utterance.
+func (n *network) spoken(a flow.Chunk[[]float32]) error {
+	n.mu.Lock()
+	n.pcm = append(n.pcm, a.Data...)
+	end := n.ends[0]
+	n.ends = n.ends[1:]
+	n.mu.Unlock()
+	fmt.Fprintf(os.Stderr, "[%6.1fs%s] %.1f s of speech\n", time.Since(n.start).Seconds(), n.after(end), a.Len.Seconds())
+	return nil
+}
+
+// languages are the languages a spoken command names, by their names in Japanese and English.
+var languages = map[string]string{
+	"英語": "en", "日本語": "ja", "スペイン語": "es", "フランス語": "fr", "ドイツ語": "de", "イタリア語": "it",
+	"ポルトガル語": "pt", "中国語": "zh", "韓国語": "ko",
+	"english": "en", "japanese": "ja", "spanish": "es", "french": "fr", "german": "de", "italian": "it",
+	"portuguese": "pt", "chinese": "zh", "korean": "ko",
+}
+
+// command is the node that hears spoken commands among the utterances. A command is a whole
+// utterance: "終わり" ends the network (flow.Stop: the nodes before it stop, the microphone is
+// closed, and the nodes after it speak what they were given), "変換、スペイン語" changes the
+// language the translator's node translates into. Neither is passed on; everything else is.
+func (n *network) command(c flow.Chunk[flow.Text], emit func(flow.Chunk[flow.Text])) error {
+	if !n.commands {
+		emit(c)
+		return nil
+	}
+	// the words alone, without the punctuation and spaces a transcript has
+	words := strings.ToLower(strings.Map(func(r rune) rune {
+		if unicode.IsPunct(r) || unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, c.Data.Text))
+	switch words {
+	case "終わり", "終わりです", "おわり", "thatsall", "stopinterpreting":
+		fmt.Println("         (command: end)")
+		return flow.Stop
+	}
+	for _, prefix := range []string{"変換", "switchto"} {
+		if name, ok := strings.CutPrefix(words, prefix); ok {
+			if to, ok := languages[name]; ok {
+				n.trans.Update(func(o *text.TranslateOptions) { o.To = to })
+				fmt.Printf("         (command: interpret into %s)\n", to)
+				return nil
+			}
+		}
+	}
+	emit(c)
+	return nil
+}
 
 var cli struct {
 	Run    RunCmd       `cmd:"" default:"withargs" help:"Interpret speech, from the microphone or a recording, into another language, as speech."`
 	Mics   MicsCmd      `cmd:"" help:"The audio inputs --device takes."`
-	Models aicli.Models `cmd:"" help:"The models interpreter uses: what they take, download them, compile them for this machine's NPU."`
+	Models aicli.Models `cmd:"" help:"The models interpreter uses and its network: what they take, download them, compile them for this machine's NPU."`
 	Status aicli.Status `cmd:"" help:"This machine's NPU: the device, how busy it is and what uses it."`
 }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	app, net := build()
 	k := kong.Parse(&cli,
 		kong.Name("interpreter"),
 		kong.Description("Interpret speech into another language on the NPU: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
-		aicli.Bind(ctx, app))
+		aicli.Bind(ctx, app),
+		kong.Bind(net))
 	k.FatalIfErrorf(k.Run())
 }
 
@@ -94,18 +222,19 @@ func (MicsCmd) Run(ctx context.Context) error {
 // RunCmd is interpreter FILE.wav, and interpreter --mic.
 type RunCmd struct {
 	File     string        `arg:"" optional:"" type:"existingfile" name:"FILE.wav" help:"A recording of speech (or --mic)."`
-	Mic      bool          `help:"Interpret what the microphone hears, until Ctrl-C (a second Ctrl-C ends at once)."`
+	Mic      bool          `help:"Interpret what the microphone hears, until Ctrl-C (a second Ctrl-C ends at once) or the spoken command."`
 	Device   string        `placeholder:"ID" help:"With --mic, the audio input (interpreter mics lists them); none: the system's default input."`
 	Seconds  time.Duration `placeholder:"TIME" help:"With --mic, stop listening after this long (30s)."`
 	Out      string        `short:"o" default:"out.wav" type:"path" placeholder:"FILE" help:"The WAV file of the interpretation."`
-	To       string        `placeholder:"LANG" help:"The language to interpret into (en, ja, ...); none: English for Japanese speech, Japanese for any other."`
+	To       string        `placeholder:"LANG" help:"The language to interpret into (en, ja, es, ...); none: English for Japanese speech, Japanese for any other."`
 	Language string        `short:"l" placeholder:"LANG" help:"The language of the speech; none: found in each utterance."`
 	Voice    string        `enum:"female,male" default:"female" help:"The voice of the interpretation."`
-	Live     bool          `help:"Give the recording at the pace a microphone would, and time each stage against it."`
+	Live     bool          `help:"Give the recording at the pace a microphone would, and time each node against it."`
+	Commands bool          `default:"true" negatable:"" help:"Hear the spoken commands: \"終わり\" (or \"that's all\") ends, \"変換、スペイン語\" (or \"switch to Spanish\") changes the language to interpret into."`
 	Prepare  bool          `help:"Download, convert and compile the models that are not ready, as \"models prepare\" does, instead of failing."`
 }
 
-func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
+func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	var pcm []float32
 	switch {
 	case c.Mic && c.File != "":
@@ -135,12 +264,11 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
 		return err
 	}
 	defer rt.Close()
-	stt, err := transcribe.Get(ctx, rt)
-	if err != nil {
+	// loaded here, to say so before listening (the run would load them too)
+	if _, err := transcribe.Get(ctx, rt); err != nil {
 		return hint(err)
 	}
-	tr, err := translate.Get(ctx, rt)
-	if err != nil {
+	if _, err := translate.Get(ctx, rt); err != nil {
 		return hint(err)
 	}
 	tts, err := speak.Get(ctx, rt)
@@ -151,13 +279,20 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
 		fmt.Fprintf(os.Stderr, "loaded %s (%s) in %.1f s\n", l.Model, l.Role, l.Took.Seconds())
 	}
 
+	// the flags are the nodes' settings
+	n.hear.Update(func(o *speech.TranscribeOptions) { o.Language = c.Language })
+	n.trans.Update(func(o *text.TranslateOptions) { o.To = c.To })
+	n.say.Update(func(o *speech.SpeakOptions) { o.Voice = c.Voice })
+	n.live, n.commands = c.Mic || c.Live, c.Commands
+
+	// the source's stream, counted as it passes
 	var (
 		mic     flow.Stream[[]float32]
 		samples int
 	)
 	if c.Mic {
-		// The microphone (hwcamera), until the first Ctrl-C or --seconds: the stream then ends and
-		// the stages after it, which run under a context of their own, work off what was heard.
+		// The microphone (hwcamera), until the first Ctrl-C or --seconds: the source then ends and
+		// the nodes after it, which run under a context of their own, work off what was heard.
 		// The second Ctrl-C ends the program as usual.
 		listen := ctx
 		if c.Seconds > 0 {
@@ -169,10 +304,15 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
 			fmt.Fprintln(os.Stderr, "sound was lost: the models are more than a minute behind the microphone")
 		}})
 		ctx = context.WithoutCancel(ctx)
+		over := make(chan struct{}) // the run has ended (by a spoken command, say)
+		defer close(over)
 		go func() {
-			<-listen.Done()
-			signal.Reset(os.Interrupt)
-			fmt.Fprintln(os.Stderr, "the microphone is off; finishing what was heard")
+			select {
+			case <-listen.Done():
+				signal.Reset(os.Interrupt)
+				fmt.Fprintln(os.Stderr, "the microphone is off; finishing what was heard")
+			case <-over:
+			}
 		}()
 		fmt.Fprintln(os.Stderr, "listening (Ctrl-C to stop)")
 	} else {
@@ -182,58 +322,21 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
 			mic = flow.Live(ctx, mic)
 		}
 	}
-	start := time.Now()
-	mic = flow.Map(mic, func(c flow.Chunk[[]float32]) ([]float32, error) {
+	n.mic.From(flow.Map(mic, func(c flow.Chunk[[]float32]) ([]float32, error) {
 		samples += len(c.Data)
 		return c.Data, nil
-	})
-	// with a live input (the microphone, or --live), how long after the end of an utterance each
-	// stage gave its result: " +1.9s"
-	live := c.Mic || c.Live
-	after := func(end time.Duration) string {
-		if !live {
-			return ""
-		}
-		return fmt.Sprintf(" +%.1fs", (time.Since(start) - end).Seconds())
-	}
-	utterances := speech.NewVAD(speech.VADOptions{}).Detect(ctx, mic)
-	texts := stt.TranscribeStream(ctx, utterances, speech.TranscribeOptions{Language: c.Language})
-	heard := flow.Map(texts, func(t flow.Chunk[flow.Text]) (flow.Text, error) {
-		fmt.Printf("[%6.1fs%s] %s: %s\n", t.Start.Seconds(), after(t.End()), t.Data.Lang, t.Data.Text)
-		return t.Data, nil
-	})
-	translated := tr.TranslateStream(ctx, heard, text.TranslateOptions{To: c.To})
-	var (
-		mu   sync.Mutex
-		ends []time.Duration // the ends of the utterances whose speech is to come
-	)
-	said := flow.Map(translated, func(t flow.Chunk[flow.Text]) (flow.Text, error) {
-		fmt.Printf("[%6.1fs%s] %s: %s\n", t.Start.Seconds(), after(t.End()), t.Data.Lang, t.Data.Text)
-		mu.Lock()
-		ends = append(ends, t.End())
-		mu.Unlock()
-		return t.Data, nil
-	})
-	// the speaker runs behind the other two by up to 4 utterances: they go on while it speaks
-	audio := tts.SpeakStream(ctx, flow.Async(ctx, said, 4), speech.SpeakOptions{Voice: c.Voice})
+	}))
 
-	var out []float32
-	for a, err := range audio {
-		if err != nil {
-			return err
-		}
-		out = append(out, a.Data...)
-		mu.Lock()
-		end := ends[0]
-		ends = ends[1:]
-		mu.Unlock()
-		fmt.Fprintf(os.Stderr, "[%6.1fs%s] %.1f s of speech\n", time.Since(start).Seconds(), after(end), a.Len.Seconds())
+	n.start = time.Now()
+	if err := rt.Run(ctx); err != nil {
+		return err
 	}
+
 	f, err := os.Create(c.Out)
 	if err != nil {
 		return err
 	}
-	if err := speech.WriteWAV(f, out, tts.Rate()); err != nil {
+	if err := speech.WriteWAV(f, n.pcm, tts.Rate()); err != nil {
 		f.Close()
 		return err
 	}
@@ -242,7 +345,7 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error {
 	}
 	in := flow.Samples(samples, speech.TranscribeRate)
 	fmt.Fprintf(os.Stderr, "%.1f s of speech interpreted into %.1f s in %.1f s: %s\n",
-		in.Seconds(), flow.Samples(len(out), tts.Rate()).Seconds(), time.Since(start).Seconds(), c.Out)
+		in.Seconds(), flow.Samples(len(n.pcm), tts.Rate()).Seconds(), time.Since(n.start).Seconds(), c.Out)
 	return nil
 }
 

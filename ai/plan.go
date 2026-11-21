@@ -131,7 +131,7 @@ func resolve(r requirement, memory int) (m chat.Model, why string, err error) {
 // Plan resolves the app's uses for the machine (or Memory) and finds what the store lacks. It
 // sets the process's layers and reads the definitions as the app's Store says (modelstore.Open).
 func (a *App) Plan(ctx context.Context) (*Plan, error) {
-	return a.plan(ctx, a.reqs)
+	return a.plan(ctx, a.requirements())
 }
 
 func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {

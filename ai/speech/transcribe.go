@@ -156,6 +156,20 @@ func (t *Transcriber) Transcribe(ctx context.Context, pcm []float32, o Transcrib
 // chunk with their times. Captions while someone speaks (provisional chunks read again as the
 // speech grows) are to come.
 func (t *Transcriber) TranscribeStream(ctx context.Context, s flow.Stream[[]float32], o TranscribeOptions) flow.Stream[flow.Text] {
+	return t.transcribeStream(ctx, s, func() TranscribeOptions { return o })
+}
+
+// TranscribeNode is the node of a transcriber in a network (flow, ai.App.Connect): utterances
+// in (the VAD's node before it), their texts out, as TranscribeStream gives them. Its settings
+// may be changed while the network runs (Update): the next utterance is read with them.
+func TranscribeNode(u ai.Use[*Transcriber], o TranscribeOptions) *ai.ModelNode[[]float32, flow.Text, TranscribeOptions] {
+	return ai.NewModelNode(u, o, func(ctx context.Context, t *Transcriber, in flow.Stream[[]float32], options func() TranscribeOptions) flow.Stream[flow.Text] {
+		return t.transcribeStream(ctx, in, options)
+	})
+}
+
+// transcribeStream is TranscribeStream with the options asked for at each segment.
+func (t *Transcriber) transcribeStream(ctx context.Context, s flow.Stream[[]float32], options func() TranscribeOptions) flow.Stream[flow.Text] {
 	return func(yield func(flow.Chunk[flow.Text], error) bool) {
 		var pcm []float32
 		var start, end time.Duration
@@ -163,7 +177,7 @@ func (t *Transcriber) TranscribeStream(ctx context.Context, s flow.Stream[[]floa
 			if len(pcm) == 0 {
 				return true
 			}
-			tr, err := t.Transcribe(ctx, pcm, o)
+			tr, err := t.Transcribe(ctx, pcm, options())
 			pcm = pcm[:0]
 			if err != nil {
 				yield(flow.Chunk[flow.Text]{}, err)

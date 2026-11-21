@@ -35,6 +35,19 @@
 //		draw(mesh, pos.Data, tick.Data.At)
 //	}
 //
+// The joins can be written as a structure too, a network: sources, nodes and sinks joined with
+// Connect, each edge saying how it passes chunks on (Keep, Newest), run by Run. A node is a
+// function over streams (Func), a callback that sees each chunk and emits what goes on (Each,
+// Tap), or a model's (the packages of models make them). What runs the network then knows its
+// models and how they are joined.
+//
+//	mic.Connect(vad)
+//	vad.Connect(hear)
+//	hear.Connect(log)                 // flow.Tap: a node of the program
+//	log.Connect(speak, flow.Keep(4))
+//	speak.Connect(out)
+//	err := flow.Run(ctx, mic)
+//
 // Times are the stream's own: a chunk's Start and Len count from the start of its stream, in
 // samples for audio, so that they do not drift with the wall clock. Only Metronome, Pace and
 // Live look at the wall clock.

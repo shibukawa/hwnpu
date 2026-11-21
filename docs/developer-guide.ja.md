@@ -26,7 +26,7 @@ ai.NewApp(uses...)  →  app.Plan(ctx)   →   plan.Run(ctx, fn)     →    app.
 | `github.com/shibukawa/hwnpu/ai` | `App` (登録)、`Use[T]` (型のついた取っ手)、`Plan` (計画と準備)、`Runtime` (実行)、`Store` (置き場) |
 | `.../ai/speech` | 文字起こし `Transcribe`、読み上げ `Speak`、音量の VAD、WAV の読み書き |
 | `.../ai/text` | 翻訳 `Translate`、チャット `Chat` |
-| `.../ai/flow` | モデルの間のデータの渡し方: `Stream` と道具 |
+| `.../ai/flow` | モデルの間のデータの渡し方: `Stream` と道具、ネットワーク (節と `Connect`) |
 | `.../ai/aicli` | アプリのコマンドラインに足す kong のサブコマンド: `models`、`status` |
 
 **用語**
@@ -102,7 +102,7 @@ func main() {
 ```
 cd samples
 go run ./interpreter models prepare
-go run ./interpreter --mic -o english.wav      # マイクから。Ctrl-C で止める
+go run ./interpreter --mic -o english.wav      # マイクから。Ctrl-C か「終わり」で止める。「変換、スペイン語」で訳す先を変える
 go run ./interpreter talk.wav -o english.wav   # 録音から
 ```
 
@@ -122,6 +122,7 @@ var (
 
 - 名前は、models.yaml のモデル (`whisper-large-v3-turbo`)、タグつきのファミリー (`plamo3translate:2b`)、ファミリー (`plamo3translate`)、用途 (`translate`) のどれか
 - `Use[T]` は値です。`Get` が返す型 `T` を持つので、取り出すときに型を合わせる必要がありません
+- モデルを並べる代わりに、ネットワーク (6.6 節) を `app.Connect` で渡すと、その節のモデルがアプリのモデルになります
 - `app.Use(more...)` であとから足せます。同じ名前と役割の `Use` を 2 度登録すると、最初のものが残ります
 - 役割に合わない名前 (`speech.Transcribe("chat")`) は、`Plan` と `Get` でエラーになります
 
@@ -403,6 +404,90 @@ mic = flow.Live(ctx, mic) // マイクの速さで流すなら
 - マイクを止めるのと、後ろの段を止めるのは別です。`capture.Mic` は ctx が取り消されると (エラーなしで) 終わり、後ろの段は聞いたぶんを最後まで処理します。そのため後ろの段には別の ctx を渡します (`samples/interpreter` は、1 度目の Ctrl-C でマイクを止め、2 度目で終了します)
 - カメラ (擬似立体のサンプルで使う予定): hwcamera のフレームは、ドライバのメモリにあるうちは `Release` が要るので、Go のメモリの画像 (`WithFormat(hwcamera.RGBA)`) にしてから流れに載せ、`flow.Latest` を通す形にします。まだ書いていません
 - 出力 (スピーカー、画面) も同じ考えで、ライブラリは持ちません ([D19](#10-設計の論点))
+
+### 6.6 ネットワークを宣言する
+
+ここまでの書き方は、流れを関数でつなぎます。つなぎ方はコードの中にあり、ライブラリは知りません。**ネットワーク**は、同じつなぎ方を構造として書くものです。節 (ノード) を `Connect` でつなぎ、アプリに渡すと、ライブラリがモデルを読み込んで走らせます。
+
+```go
+var (
+	stt = speech.Transcribe("transcribe")
+	tr  = text.Translate("translate").At(16, "plamo3translate:2b").At(32, "plamo3translate:8b")
+	tts = speech.Speak("speech")
+)
+
+mic   := flow.Source[[]float32]("mic")                             // 入力: 流れはあとで渡す
+vad   := speech.VADNode(speech.VADOptions{})                       // モデルのない節
+hear  := speech.TranscribeNode(stt, speech.TranscribeOptions{})    // モデルの節
+trans := text.TranslateNode(tr, text.TranslateOptions{To: "en"})
+say   := speech.SpeakNode(tts, speech.SpeakOptions{})
+out   := flow.Sink[[]float32]("out").Do(play)                      // 出力
+
+// プログラムの節: 通るものを見て、加工し、流すかどうかを決める
+heard := flow.Tap("heard", func(c flow.Chunk[flow.Text]) { log.Println(c.Data.Text) })
+commands := flow.Each("commands", func(c flow.Chunk[flow.Text], emit func(flow.Chunk[flow.Text])) error {
+	switch c.Data.Text {
+	case "終わり":
+		return flow.Stop                                           // ここで終える: 前の節は止まり、後ろは残りを片付ける
+	case "変換スペイン語":
+		trans.Update(func(o *text.TranslateOptions) { o.To = "es" }) // ほかの節の設定を変える。後ろには流さない
+		return nil
+	}
+	emit(c)                                                        // そのまま流す
+	return nil
+})
+
+app := ai.NewApp("interpreter")     // モデルは、ネットワークの節から引かれる
+app.Connect(mic)
+mic.Connect(vad)
+vad.Connect(hear)
+hear.Connect(heard)
+heard.Connect(commands)
+commands.Connect(trans)
+trans.Connect(say, flow.Keep(4))    // 辺ごとの渡し方: 4 つまでためる
+say.Connect(out)
+
+mic.From(capture.Mic(ctx, capture.MicOptions{}))   // 実行のときに入力の流れを渡す
+err := app.Run(ctx)                                 // モデルを読み込んでから、入力を読み始める
+```
+
+**節の種類**
+
+| 節 | 作り方 | 中身 |
+|---|---|---|
+| 入力 | `flow.Source[T](name)`、`.From(stream)` | 流れ。宣言のときは名前だけで、実行の前に流れを渡す |
+| モデル | `speech.TranscribeNode(use, opts)`、`speech.SpeakNode`、`text.TranslateNode` | そのモデルの流れの形 (`...Stream`)。設定を持ち、動いている間も変えられる (`node.Update(func(o *Options))`) |
+| モデル (自分で) | `ai.Node(use, fn)`、`ai.NewModelNode(use, opts, fn)` | `fn(ctx, model, in)` が流れを返す。機能のパッケージにない使い方をするとき |
+| プログラム | `flow.Each(name, fn, end...)` | 塊が来るたびに `fn(c, emit)` が呼ばれる。`emit` を呼んだぶんだけ後ろに流れる (0 個でも、いくつでも)。変数にためておき、文の区切りが来たら `emit` する、という節が書ける。`end` は入力が終わったときに呼ばれ、ためたものを流す |
+| プログラム (見るだけ) | `flow.Tap(name, fn)` | 全部そのまま流し、`fn` に見せる (ログ、画面の字幕、計数) |
+| プログラム (流れごと) | `flow.Func(name, fn)` | `fn(ctx, in)` が流れを返す。6.4 節の「自分で書く段」をそのまま節にする |
+| モデルなしの VAD | `speech.VADNode(opts)` | 発話の検出 |
+| 出力 | `flow.Sink[T](name)`、`.Do(fn)` | 塊ごとに `fn` |
+
+**つなぎ方**
+
+- `a.Connect(b)` は、a の出力の型と b の入力の型が合うときだけコンパイルできます
+- **1 つの出力を、いくつもの節につなげます** (同じ文字起こしを字幕と翻訳に)。それぞれが全部の塊を受け取り、遅い読み手がほかを待たせません
+- **1 つの節の入力は 1 つです。** 2 つ目をつなぐと panic します。入力をいくつも持つ節 (深度と頭の位置を受ける描画) は、まだ書けません ([D21](#10-設計の論点))
+- 辺ごとの渡し方を、`Connect` の 2 つ目の引数で書きます
+
+| 渡し方 | 意味 | 使うところ |
+|---|---|---|
+| (なし) | 後ろの節が読むときに渡す。後ろが忙しい間、前は待つ | ふつうの辺 |
+| `flow.Keep(n)` | 別の goroutine で読み、n 個までためる。前は待たずに進む。落とさない | 読み上げの前 (読んでいる間に次を訳す) |
+| `flow.Newest()` | 最新の塊だけを渡す。後ろが忙しい間に来たものは捨てる | カメラのフレーム → 検出 |
+
+**走らせ方**
+
+- `app.Connect(sources...)` でネットワークをアプリに渡します。節どうしの `Connect` は、その前でも後でも構いません
+- **アプリのモデルは、ネットワークの節から引かれます。** `ai.NewApp(name, uses...)` に並べなくても、`app.Plan` と `APP models` が見つけます。`APP models` はネットワークも出します
+- `app.Run(ctx)` は、`Open`、モデルの読み込み、ネットワークの実行、`Close` を続けて行います。開いた `Runtime` の上で走らせるなら `rt.Run(ctx)`
+- **モデルは、入力を読み始める前に全部読み込みます。** 読み込みの数秒の間に、マイクの音が失われません
+- 終わり方: 入力が全部終わって最後の塊まで通ると `nil`、節が失敗するとその節の名前のついたエラー (`*flow.NodeError`)、ctx の取り消しでそのエラー
+- **節が中から終える**: `flow.Each` の関数が `flow.Stop` を返すと、その節はそこで終わります。前の節は止まり (マイクは閉じます)、後ろの節は受け取ったぶんを最後まで処理して、`Run` は `nil` を返します
+- 同じモデルを 2 か所で使うときは、節を 2 つ作ります (`speech.TranscribeNode(stt, optsL)` と `speech.TranscribeNode(stt, optsR)`)。モデルは 1 つで、呼び出しは順に通ります (9.3 節)
+
+**流れの関数との関係**: 捨てていません。節の中身は流れの関数で、辺の渡し方は `flow.Async` と `flow.Latest` です。ネットワークは、それを組み立てて走らせる層です。要求ごとに 1 回呼ぶ使い方 (サーバー、一括の処理) や、細かく制御したいところは、これまでどおり `Get` と流れの関数で書けます。
 
 ## 7. 機能の一覧
 
@@ -721,51 +806,22 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 - 別の案 C: 用途に優先度を書く (`use.Priority(ai.Interactive)`)。音声を先に通し、背景の仕事は切れ目で待たせる。NPU への投入を 1 か所に集める必要がある (D10)
 - **未定**: どれを入れるか。A は小さく、C は常駐の管理 (D9) と一緒になる
 
-**D21. ネットワークを宣言する (`Connect`)** — 今: `ai.NewApp("interpreter", stt, tr, tts)` は使うモデルを並べるだけで、つなぎ方は実行のときのコード (`tts.SpeakStream(ctx, flow.Async(ctx, tr.TranslateStream(...)))`) にある。ライブラリはつなぎ方を知らない。
+**D21. ネットワークを宣言する (`Connect`)** — 今 (2026-11-21 に v0 を入れた、6.6 節): 節を `Connect` でつなぎ、`app.Connect(sources...)` でアプリに渡す。モデルの節、プログラムの節 (`flow.Each`、`flow.Tap`、`flow.Func`)、入力と出力。アプリのモデルはネットワークから引かれ、`app.Run` が読み込んで走らせる。
 
-- 提案 (2026-11-21): つなぎ方を登録のときに書く。`app.Connect(stt)`、`stt.Connect(tr)`、`tr.Connect(tts)`。1 対 1 とは限らない
-- ライブラリがつなぎ方を知ると、できること:
-  - 実時間で回るかの見積もり (9.2 節) と、どの辺で待ちが積み上がっているかの計測 (D20) を、ライブラリが出せる
-  - 辺ごとに渡し方を書ける: ためる、最新だけ、全部終わってから。「生の入力はためる」(6.5 節) を書き忘れない
-  - 同時に載るモデル (流れでつながる段) と、順に載るモデル (「全部終わってから」の辺の前後) が分かり、メモリの見積もりと `Release` を任せられる (D9)
-  - 分岐 (同じ文字起こしを字幕と翻訳に) と合流 (深度と頭の位置を描画に) が、`Tee` や `Hold` を自分で書かずに書ける
-  - `APP models` がネットワークを表示できる
-- 型が合うことの確かめ: 入力と出力の型を持つ口 (ポート) にすれば、つなぎ間違いはコンパイルで止まる (試し書きで確かめた)
-
-```go
-var (
-	stt = speech.Transcribe("transcribe")
-	tr  = text.Translate("translate")
-	tts = speech.Speak("speech")
-)
-
-app := ai.NewApp("interpreter")
-mic := flow.Input[[]float32](app, "mic")             // アプリの入力
-out := flow.Output[[]float32](app, "speech")         // アプリの出力
-vad := speech.Utterances(speech.VADOptions{})        // モデルのない節
-hear, trans, speak := stt.Stage(sopts), tr.Stage(topts), tts.Stage(popts)
-
-mic.To(&vad.In, flow.Keep(time.Minute))              // 生の入力: ためる
-vad.Connect(hear)
-hear.Connect(trans)                                   // 1 対 1 は節どうしで
-hear.Out.To(captions)                                 // 分岐: 同じ出力をもう 1 つの口へ
-trans.Connect(speak, flow.Keep(4))
-speak.Out.To(out)
-
-// 合流: 口をいくつも持つ節は、アプリが構造体で書く
-gen.Connect(depth, flow.Whole())                      // 全部終わってから (gen を下ろしてから depth)
-depth.Out.To(&render.Depth)
-camera.To(&faces.In, flow.Newest())                   // 最新だけ
-faces.Out.To(&render.Head, flow.Newest())
-```
-
-- 決めること:
-  - **モデルと、ネットワークの中の場所を分けるか**: 同じモデルを 2 か所で使う (L と R の文字起こし、別の設定の翻訳) には、`Use` (モデル) と `Stage` (場所) を分ける必要がある。`stt.Connect(tr)` を `Use` に直接書くと、1 つのモデルは 1 か所にしか置けない
-  - **節どうしか、口どうしか**: `stt.Connect(tr)` は入力と出力が 1 つずつの節の書き方。出力や入力がいくつもある節 (仮の字幕と確定した文、深度と信頼度、描画) には口が要る。両方を持ち、1 対 1 は節どうしで書けるようにするのがよいと考える
-  - **設定の置き場所**: 言語や声などの設定が、呼び出しの引数から節のもの (`tr.Stage(opts)`) になる。実行の途中で変える口 (D13) が別に要る
-  - **並べるだけの登録を残すか**: 要求ごとに 1 回呼ぶ使い方 (サーバー、一括の処理) にはネットワークがない。`ai.NewApp(name, uses...)` と `Get` は残し、ネットワークを書いたアプリは、そこからモデルの一覧を引く形がよいと考える
-  - **今の `flow.Stream` との関係**: 捨てない。節の中身は今の `...Stream` の関数で、辺の渡し方は `Async`、`Latest`、`Tee` で作れる。ネットワークは、それを組み立てて走らせる層になる
-- **未定**: この層を入れるか。入れるなら、擬似立体のサンプル (分岐と合流がある) を書く前がよい
+- そうした理由: ライブラリがつなぎ方を知ると、実時間で回るかの見積もり (9.2 節) や辺ごとの計測 (D20)、辺ごとの渡し方、メモリの見積もりと `Release` (D9)、ネットワークの表示ができる。分岐を `Tee` なしで書ける
+- 決めたこと:
+  - **モデルと、ネットワークの中の場所を分けた**: `Use` がモデル、`speech.TranscribeNode(use, opts)` がその場所。同じモデルを 2 か所に置ける
+  - **節どうしでつなぐ** (`a.Connect(b)`): 節は入力 1 つ、出力 1 つ。出力はいくつもの節につなげる
+  - **設定は節が持つ**: `node.Update(func(o *Options))` で、動いている間も変えられる (D13 の「途中での設定の変更」の答えの 1 つ)
+  - **並べるだけの登録も残した**: `ai.NewApp(name, uses...)` と `Get`。要求ごとに 1 回呼ぶ使い方のため
+  - **流れの関数は下の層として残した**: 節の中身と辺の渡し方は、流れの関数でできている
+- **未定**:
+  - **入力をいくつも持つ節** (合流): 深度と頭の位置を受ける描画、文と割り込みを受ける読み上げ。口 (ポート) を持つ節にする案: `depth.Connect(&render.Depth)`、`faces.Connect(&render.Head, flow.Newest())`。擬似立体のサンプルで要る
+  - **出力をいくつも持つ節**: 仮の字幕と確定した文、深度と信頼度
+  - **「全部終わってから」の辺** (`flow.Whole()`): 前の節が終わったら、そのモデルを下ろしてから次を読み込む。`Release` をライブラリに任せる形 (D9)
+  - **辺ごとの計測**: 通った塊の数、待っている数、遅れ (D20)。ネットワークがあるので、足す場所は 1 か所になった
+  - **節の名前**: 今はモデルの節の名前が用途の名前で、同じモデルの節が 2 つあると同じ名前になる
+  - **走っている間のつなぎ替え**: 今はできない
 
 ## 11. まだないもの
 

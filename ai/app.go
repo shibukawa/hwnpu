@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
 )
 
@@ -135,6 +136,7 @@ type App struct {
 	Store Store
 
 	reqs   []requirement
+	roots  []flow.Root
 	memory int
 }
 
@@ -170,9 +172,10 @@ func (a *App) Memory(gb int) *App {
 // registered is the app's model of r's name and role, as it was registered (with its At and As);
 // ok is false when r is not one of the app's models.
 func (a *App) registered(r requirement) (reg requirement, ok bool) {
-	i := slices.IndexFunc(a.reqs, func(o requirement) bool { return o.key() == r.key() })
+	reqs := a.requirements()
+	i := slices.IndexFunc(reqs, func(o requirement) bool { return o.key() == r.key() })
 	if i < 0 {
 		return r, false
 	}
-	return a.reqs[i], true
+	return reqs[i], true
 }

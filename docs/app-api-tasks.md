@@ -29,6 +29,7 @@
 | **B0** | 流れの型 (`Chunk`、`Stream`) と塊をまとめる道具、3 つのつなぎ方 (`ai/flow`: 一括、`Async` / `Latest` / `Hold`、`Metronome` / `Pace` / `Live`) | どこでも | — | 小 | 済み |
 | **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 未着手 |
 | B7 | `ai/aicli`: アプリに足す kong のサブコマンド (`models`、`status`) | どこでも | B1 | 小 | 済み |
+| B9 | ネットワークの宣言 (`flow` の節と `Connect`、`App.Connect` / `Run`、プログラムの節、動いている間の設定の変更) | どこでも | B0 | 中 | v0 済み (入力をいくつも持つ節、「全部終わってから」の辺、辺ごとの計測は残り。developer-guide.ja.md の D21) |
 | **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 (16.94) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
 | B4 | アプリのための Neural Engine のロックの方針 | Mac | B2 | 小 | 未着手 |
 | B5 | 文字起こしを流しながら (話している途中の仮の字幕と確定) | どこでも、確認は Mac | B2 | 中 | 未着手 |

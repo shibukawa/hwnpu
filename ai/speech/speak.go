@@ -119,10 +119,22 @@ func (s *Speaker) Speak(ctx context.Context, text string, o SpeakOptions) (Audio
 // whole stream. Provisional chunks are left out. Speech that comes out as it is made, before
 // the text's whole audio is, is to come.
 func (s *Speaker) SpeakStream(ctx context.Context, in flow.Stream[flow.Text], o SpeakOptions) flow.Stream[[]float32] {
+	return s.speakStream(ctx, in, func() SpeakOptions { return o })
+}
+
+// SpeakNode is the node of a speaker in a network (flow, ai.App.Connect): texts in, their
+// speech out, as SpeakStream gives it. Its settings may be changed while the network runs
+// (Update): the next text is spoken with them.
+func SpeakNode(u ai.Use[*Speaker], o SpeakOptions) *ai.ModelNode[flow.Text, []float32, SpeakOptions] {
+	return ai.NewModelNode(u, o, func(ctx context.Context, s *Speaker, in flow.Stream[flow.Text], options func() SpeakOptions) flow.Stream[[]float32] {
+		return s.speakStream(ctx, in, options)
+	})
+}
+
+// speakStream is SpeakStream with the options asked for at each text.
+func (s *Speaker) speakStream(ctx context.Context, in flow.Stream[flow.Text], options func() SpeakOptions) flow.Stream[[]float32] {
 	return func(yield func(flow.Chunk[[]float32], error) bool) {
-		if o.Seed == 0 {
-			o.Seed = rand.Uint64()
-		}
+		seed := rand.Uint64() // one for the stream when the options have none
 		pos := 0
 		for c, err := range in {
 			if err != nil {
@@ -132,7 +144,10 @@ func (s *Speaker) SpeakStream(ctx context.Context, in flow.Stream[flow.Text], o 
 			if !c.Final || strings.TrimSpace(c.Data.Text) == "" {
 				continue
 			}
-			oo := o
+			oo := options()
+			if oo.Seed == 0 {
+				oo.Seed = seed
+			}
 			if oo.Language == "" {
 				oo.Language = c.Data.Lang
 			}

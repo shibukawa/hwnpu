@@ -12,6 +12,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -108,5 +109,24 @@ func TestCommands(t *testing.T) {
 	}
 	if s := plan(); !strings.Contains(s, "whisper-large-v3-turbo  compiled") || !strings.Contains(s, "All here and compiled") {
 		t.Errorf("the list after prepare:\n%s", s)
+	}
+}
+
+func TestNetworkLines(t *testing.T) {
+	nodes := []flow.NodeInfo{
+		{Name: "mic", To: []flow.EdgeInfo{{To: "vad"}}},
+		{Name: "vad", To: []flow.EdgeInfo{{To: "transcribe"}}},
+		{Name: "transcribe", To: []flow.EdgeInfo{{To: "captions"}, {To: "translate"}}},
+		{Name: "captions"},
+		{Name: "translate", To: []flow.EdgeInfo{{To: "speech", Policy: "keep 4"}}},
+		{Name: "speech", To: []flow.EdgeInfo{{To: "out"}}},
+		{Name: "out"},
+	}
+	want := []string{"mic → vad → transcribe → captions, translate", "translate → speech (keep 4) → out"}
+	if got := network(nodes); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("the network as lines:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if got := network(nil); len(got) != 0 {
+		t.Errorf("no network gave %q", got)
 	}
 }

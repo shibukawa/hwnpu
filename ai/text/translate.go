@@ -101,8 +101,24 @@ const historyTurns = 4
 // segments), each with the last few pairs before it as its history after o.History, into final
 // chunks of the same times. Provisional chunks are left out.
 func (t *Translator) TranslateStream(ctx context.Context, s flow.Stream[flow.Text], o TranslateOptions) flow.Stream[flow.Text] {
+	return t.translateStream(ctx, s, func() TranslateOptions { return o })
+}
+
+// TranslateNode is the node of a translator in a network (flow, ai.App.Connect): texts in,
+// their translations out, as TranslateStream gives them. Its settings may be changed while the
+// network runs (Update): the next text is translated with them, and a change of the language
+// to translate into starts the history of earlier pairs anew.
+func TranslateNode(u ai.Use[*Translator], o TranslateOptions) *ai.ModelNode[flow.Text, flow.Text, TranslateOptions] {
+	return ai.NewModelNode(u, o, func(ctx context.Context, t *Translator, in flow.Stream[flow.Text], options func() TranslateOptions) flow.Stream[flow.Text] {
+		return t.translateStream(ctx, in, options)
+	})
+}
+
+// translateStream is TranslateStream with the options asked for at each text.
+func (t *Translator) translateStream(ctx context.Context, s flow.Stream[flow.Text], options func() TranslateOptions) flow.Stream[flow.Text] {
 	return func(yield func(flow.Chunk[flow.Text], error) bool) {
 		var hist []Pair
+		to := options().To
 		for c, err := range s {
 			if err != nil {
 				yield(flow.Chunk[flow.Text]{}, err)
@@ -110,6 +126,10 @@ func (t *Translator) TranslateStream(ctx context.Context, s flow.Stream[flow.Tex
 			}
 			if !c.Final || strings.TrimSpace(c.Data.Text) == "" {
 				continue
+			}
+			o := options()
+			if o.To != to { // pairs of another language are no history for this one
+				to, hist = o.To, nil
 			}
 			oo := o
 			oo.History = append(append([]Pair(nil), o.History...), hist...)

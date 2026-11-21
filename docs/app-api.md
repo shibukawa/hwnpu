@@ -1,6 +1,6 @@
 # アプリに組み込むライブラリ: `ai` のパッケージ群
 
-作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。design.md 16.281)。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、制約とルール (NPU は 1 つの待ち行列、実時間で回るかの見積もり、メモリ)、API の設計の論点 (D1〜D21) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
+作成: 2026-11-11。書き直し: 2026-11-21 (v0 を main に載せ直し、構成を変えた。design.md 16.281)。作業の一覧は [app-api-tasks.md](app-api-tasks.md)。使い方と、制約とルール (NPU は 1 つの待ち行列、実時間で回るかの見積もり、メモリ)、ネットワークの宣言 (6.6 節)、API の設計の論点 (D1〜D21) は [developer-guide.ja.md](developer-guide.ja.md) ([English](developer-guide.md))。
 
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりにする。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモで、中身はライブラリを呼ぶだけにしていく (コマンドの名前と場所は変えない)。アプリは複数のモデルをつないで使う。例:
 
@@ -150,6 +150,8 @@ for tick := range (flow.Metronome{Period: time.Second / 60, Skip: true}).Ticks(c
 	draw(mesh, pos.Data, tick.Data.At)
 }
 ```
+
+**ネットワークの宣言** (`flow` の節と `Connect`、`App.Connect`、`App.Run`): 上の関数でのつなぎ方を、構造として書く層。入力 (`flow.Source`)、モデルの節 (`speech.TranscribeNode` など。設定を持ち、動いている間も `Update` で変えられる)、プログラムの節 (`flow.Each`: 塊ごとのコールバックが `emit` したぶんだけ流す。`flow.Tap`: 見るだけ。`flow.Func`: 流れごと)、出力 (`flow.Sink`) を `a.Connect(b, 渡し方)` でつなぐ。型が合わないつなぎ方はコンパイルできない。1 つの出力はいくつもの節につなげる。アプリのモデルはネットワークから引かれ、`app.Run` が全部読み込んでから入力を読み始める。節が `flow.Stop` を返すと、前の節が止まり、後ろは残りを片付けて終わる。使い方は developer-guide.ja.md の 6.6 節、決めたことと残りは同 D21
 
 - **どの機能も 2 つの形を持つ**: 一括 (値を 1 つ渡して 1 つ受け取る) と流れ (`...Stream`)。一括は塊が 1 つの流れと同じ
 - **塊の大きさは受け取る側が決め直す**: NPU のプログラムは形が固定なので、入る側の塊の大きさは自由にし、段が自分に合う大きさに組み直す (`flow.Rechunk`)
@@ -345,7 +347,7 @@ A2A と MCP のどちらも、同じ仕事の置き場と待ち行列の上の�
 
 ### 9.1 同時通訳 (`samples/interpreter`、動く)
 
-マイクか録音 (WAV) の音声を、VAD → Whisper → PLaMo 3 Translate (前の発話を文脈にする) → LFM3-Audio の読み上げとつなぎ、訳した音声の WAV を書く。
+マイクか録音 (WAV) の音声を、VAD → Whisper → PLaMo 3 Translate (前の発話を文脈にする) → LFM3-Audio の読み上げとつなぎ、訳した音声の WAV を書く。ネットワークとして宣言している: `mic → vad → transcribe → heard → commands → translate → said → speech (keep 4) → out`。`commands` はプログラムの節で、音声のコマンドを聞く: 「変換、スペイン語」で訳す先を変え、「終わり」で終える (どちらも訳さない)。
 
 ```
 interpreter models                    # 使うモデルと、要るもの
@@ -375,6 +377,8 @@ interpreter status
 | `ai/plan.go` | `Plan` (`Items`、`Ready`、`Compiled`、`DownloadBytes`、`MemoryGB`、`MachineGB`、`Licenses`、`Run`)、`Progress`、`LicenseError`、`App.Prepare` |
 | `ai/store.go` | `Store` (`Models`: `modelstore.Options`、`Prepared`)、置き場の目録 `store.json`、`ErrNotPrepared`、`ErrBundleTarget` |
 | `ai/runtime.go` | `App.Open`、`Runtime` (`Loaded`、`Close`)、`WithLog`、`WithAutoPrepare`、`WithAcceptedLicenses` |
+| `ai/network.go` | `App.Connect`、`App.Run`、`Runtime.Run`、`App.Network`、`Node`、`ModelNode` (`Update`) |
+| `ai/flow/graph.go` | ネットワーク: `Source`、`Func`、`Each`、`Tap`、`Sink`、`Connect`、`Keep`、`Newest`、`Stop`、`Run`、`Walk`、`NodeError` |
 | `ai/flow` | 4 節の道具と、`Collect`、`Finals`、`Map`、`From`、`Sentences` |
 | `ai/speech` | `Transcribe`、`Speak`、`NewVAD` (音量の VAD: 雑音の床から 12 dB、終わりの待ち 600 ms)、`ReadWAV`、`WriteWAV`、`Chunks` |
 | `ai/text` | `Translate` (前の 4 組を履歴に)、`Chat` (`Complete`、`CompleteStream`) |

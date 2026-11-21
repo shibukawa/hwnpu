@@ -135,6 +135,21 @@ audio := speaker.SpeakStream(ctx, flow.Async(ctx, en, 4), speech.SpeakOptions{})
 for c, err := range audio { ... } // c.Data: 24 kHz の音声
 ```
 
+つなぎ方を構造として書くこともできます (ネットワーク)。モデルの節とプログラムの節を `Connect` でつなぎ、アプリに渡すと、ライブラリがモデルを読み込んで走らせます。詳しくは [docs/developer-guide.ja.md](docs/developer-guide.ja.md) の 6.6 節にあります。
+
+```go
+mic := flow.Source[[]float32]("mic").From(stream)
+hear := speech.TranscribeNode(stt, speech.TranscribeOptions{})
+trans := text.TranslateNode(tr, text.TranslateOptions{To: "en"})
+log := flow.Tap("heard", func(c flow.Chunk[flow.Text]) { fmt.Println(c.Data.Text) }) // プログラムの節
+out := flow.Sink[flow.Text]("out").Do(show)
+
+app := ai.NewApp("subtitles") // モデルはネットワークから引かれる
+app.Connect(mic)
+mic.Connect(speech.VADNode(speech.VADOptions{})) // ...続けて vad.Connect(hear)、hear.Connect(log)、log.Connect(trans)、trans.Connect(out)
+err := app.Run(ctx)
+```
+
 ### アプリのコマンドライン (ai/aicli)
 
 ```go

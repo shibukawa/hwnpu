@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -556,5 +557,95 @@ func TestUsableMemory(t *testing.T) {
 	}
 	if !lined.Fits() {
 		t.Errorf("with the 2B on 16 GB: %.1f GB of %.0f, want it to fit", lined.MemoryGB(), lined.UsableGB())
+	}
+}
+
+// TestNetwork: an app's models are those of its network's nodes; Run loads them before the
+// sources are read, and a node's settings change while it runs.
+func TestNetwork(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	tr := Define[*fakeModel](f.role("translate", "translation", chat.KindChat), "translate").At(16, "plamo3translate:2b")
+	ctx := context.Background()
+
+	loadsAtFirstRead := -1
+	src := flow.Source[string]("mic").From(func(yield func(flow.Chunk[string], error) bool) {
+		loadsAtFirstRead = f.loads
+		for _, s := range []string{"a", "to:es", "b"} {
+			if !yield(flow.Chunk[string]{Data: s}, nil) {
+				return
+			}
+		}
+	})
+	hear := Node(stt, func(ctx context.Context, m *fakeModel, in flow.Stream[string]) flow.Stream[string] {
+		return flow.Map(in, func(c flow.Chunk[string]) (string, error) { return c.Data, nil })
+	})
+	type options struct{ to string }
+	trans := NewModelNode(tr, options{to: "en"}, func(ctx context.Context, m *fakeModel, in flow.Stream[string], o func() options) flow.Stream[string] {
+		return flow.Map(in, func(c flow.Chunk[string]) (string, error) { return m.name + ":" + o().to + ":" + c.Data, nil })
+	})
+	// a node of the app's own between the two: a command changes the translator's settings
+	commands := flow.Each("commands", func(c flow.Chunk[string], emit func(flow.Chunk[string])) error {
+		if to, ok := strings.CutPrefix(c.Data, "to:"); ok {
+			trans.Update(func(o *options) { o.to = to })
+			return nil
+		}
+		emit(c)
+		return nil
+	})
+	var got []string
+	out := flow.Sink[string]("out").Do(func(c flow.Chunk[string]) error {
+		got = append(got, c.Data)
+		return nil
+	})
+	app := NewApp("net").Memory(16).withStore(testStore(t))
+	app.Connect(src) // the joins may come after
+	src.Connect(hear)
+	hear.Connect(commands)
+	commands.Connect(trans)
+	trans.Connect(out)
+
+	// the models of the nodes are the app's
+	p, err := app.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Items) != 2 || p.Items[0].Use != "transcribe" || p.Items[1].Model != "plamo-3-translate-2b" {
+		t.Fatalf("the plan of the network: %+v", p.Items)
+	}
+	var kinds []string
+	for _, n := range app.Network() {
+		kinds = append(kinds, n.Kind+" "+n.Name)
+	}
+	if want := []string{"source mic", "node transcribe", "node commands", "node translate", "sink out"}; !slices.Equal(kinds, want) {
+		t.Errorf("the network %v, want %v", kinds, want)
+	}
+
+	// not prepared: the run fails before a source is read
+	if err := app.Run(ctx); !errors.Is(err, ErrNotPrepared) || loadsAtFirstRead != -1 {
+		t.Fatalf("a network of models not prepared: %v (the source read: %v)", err, loadsAtFirstRead != -1)
+	}
+	if err := app.Run(ctx, WithAutoPrepare(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if loadsAtFirstRead != 2 {
+		t.Errorf("%d models were loaded when the source was first read, want both", loadsAtFirstRead)
+	}
+	if want := []string{"plamo-3-translate-2b:en:a", "plamo-3-translate-2b:es:b"}; !slices.Equal(got, want) {
+		t.Errorf("the network gave %q, want %q", got, want)
+	}
+	if f.closed != f.loads {
+		t.Errorf("%d models loaded, %d closed after the run", f.loads, f.closed)
+	}
+
+	// a model's node outside a run, and an app without a network
+	lone := flow.Source[string]("lone").From(flow.From("x"))
+	lone.Connect(Node(stt, func(ctx context.Context, m *fakeModel, in flow.Stream[string]) flow.Stream[string] { return in }))
+	if err := flow.Run(ctx, lone); err == nil || !strings.Contains(err.Error(), "App.Run") {
+		t.Errorf("a model's node run without its app: %v", err)
+	}
+	if err := NewApp("none", stt).withStore(testStore(t)).Run(ctx); err == nil || !strings.Contains(err.Error(), "no network") {
+		t.Errorf("an app without a network: %v", err)
 	}
 }

@@ -26,7 +26,7 @@ uses                    bytes to download,   compile for the NPU         store a
 | `github.com/shibukawa/hwnpu/ai` | `App` (registration), `Use[T]` (a typed handle), `Plan` (planning and preparing), `Runtime` (running), `Store` (where things are kept) |
 | `.../ai/speech` | Speech to text `Transcribe`, text to speech `Speak`, a VAD by loudness, reading and writing WAV |
 | `.../ai/text` | Translation `Translate`, chat `Chat` |
-| `.../ai/flow` | Passing data between models: `Stream` and its tools |
+| `.../ai/flow` | Passing data between models: `Stream` and its tools, the network (nodes and `Connect`) |
 | `.../ai/aicli` | kong commands for the app's command line: `models`, `status` |
 
 **Words**
@@ -102,7 +102,7 @@ A working example that joins several models is [samples/interpreter](../samples/
 ```
 cd samples
 go run ./interpreter models prepare
-go run ./interpreter --mic -o english.wav      # from the microphone, until Ctrl-C
+go run ./interpreter --mic -o english.wav      # from the microphone, until Ctrl-C or "that's all"; "switch to Spanish" changes the language
 go run ./interpreter talk.wav -o english.wav   # from a recording
 ```
 
@@ -122,6 +122,7 @@ var (
 
 - A name is one of models.yaml's: a model (`whisper-large-v3-turbo`), a family with a tag (`plamo3translate:2b`), a family (`plamo3translate`) or a use (`translate`)
 - A `Use[T]` is a value. It carries the type `T` that `Get` returns, so nothing has to be cast when a model is taken out
+- Instead of listing the models, give the app its network (section 6.6) with `app.Connect`: the models of its nodes are then the app's
 - `app.Use(more...)` adds more later. A `Use` of the same name and role registered twice stays as it was first registered
 - A name that does not fit the role (`speech.Transcribe("chat")`) is an error of `Plan` and of `Get`
 
@@ -403,6 +404,90 @@ mic = flow.Live(ctx, mic) // to pace it as a microphone would
 - Stopping the microphone and stopping the stages after it are two things. `capture.Mic` ends (without an error) when its ctx is cancelled, and the stages after it work off what was heard, so they are given a context of their own (`samples/interpreter` turns the microphone off at the first Ctrl-C and ends at the second)
 - The camera (for the pseudo-3D sample): a frame of hwcamera in the driver's memory needs its `Release`, so frames are made pictures in Go's memory (`WithFormat(hwcamera.RGBA)`) before they go into a stream, and pass through `flow.Latest`. It is not written yet
 - Outputs (a speaker, a screen) follow the same idea: the library has none ([D19](#10-design-questions))
+
+### 6.6 Declaring the network
+
+The way of writing so far joins streams with functions. The joins are in the code, and the library does not know them. A **network** is the same joins written as a structure: nodes joined with `Connect` and given to the app, which loads the models and runs it.
+
+```go
+var (
+	stt = speech.Transcribe("transcribe")
+	tr  = text.Translate("translate").At(16, "plamo3translate:2b").At(32, "plamo3translate:8b")
+	tts = speech.Speak("speech")
+)
+
+mic   := flow.Source[[]float32]("mic")                             // an input: its stream comes later
+vad   := speech.VADNode(speech.VADOptions{})                       // a node without a model
+hear  := speech.TranscribeNode(stt, speech.TranscribeOptions{})    // nodes of models
+trans := text.TranslateNode(tr, text.TranslateOptions{To: "en"})
+say   := speech.SpeakNode(tts, speech.SpeakOptions{})
+out   := flow.Sink[[]float32]("out").Do(play)                      // an output
+
+// nodes of the program: they see what passes, change it, and decide whether it goes on
+heard := flow.Tap("heard", func(c flow.Chunk[flow.Text]) { log.Println(c.Data.Text) })
+commands := flow.Each("commands", func(c flow.Chunk[flow.Text], emit func(flow.Chunk[flow.Text])) error {
+	switch c.Data.Text {
+	case "that's all":
+		return flow.Stop                                           // end here: the nodes before stop, those after finish
+	case "switch to Spanish":
+		trans.Update(func(o *text.TranslateOptions) { o.To = "es" }) // change another node's settings; pass nothing on
+		return nil
+	}
+	emit(c)                                                        // pass it on as it is
+	return nil
+})
+
+app := ai.NewApp("interpreter")     // its models are taken from the network's nodes
+app.Connect(mic)
+mic.Connect(vad)
+vad.Connect(hear)
+hear.Connect(heard)
+heard.Connect(commands)
+commands.Connect(trans)
+trans.Connect(say, flow.Keep(4))    // how an edge passes chunks on: it keeps up to 4
+say.Connect(out)
+
+mic.From(capture.Mic(ctx, capture.MicOptions{}))   // the input's stream, given for the run
+err := app.Run(ctx)                                 // loads the models, then starts reading the input
+```
+
+**The kinds of nodes**
+
+| Node | Made with | What it is |
+|---|---|---|
+| Input | `flow.Source[T](name)`, `.From(stream)` | A stream. Declared by its name, given its stream before the run |
+| Model | `speech.TranscribeNode(use, opts)`, `speech.SpeakNode`, `text.TranslateNode` | The model's stream form (`...Stream`). It has settings, which can be changed while it runs (`node.Update(func(o *Options))`) |
+| Model (your own) | `ai.Node(use, fn)`, `ai.NewModelNode(use, opts, fn)` | `fn(ctx, model, in)` returns a stream: for a use of a model that its package does not have |
+| Program | `flow.Each(name, fn, end...)` | `fn(c, emit)` is called with each chunk that comes. What it gives to `emit` goes on, nothing, one chunk or several. A node that keeps text in a variable and emits at the end of a sentence is written so. `end` is called when the input has ended, to emit what was kept |
+| Program (looking only) | `flow.Tap(name, fn)` | Passes everything on as it is and shows it to `fn` (a log, captions on a screen, a counter) |
+| Program (the whole stream) | `flow.Func(name, fn)` | `fn(ctx, in)` returns a stream: the "stage of your own" of section 6.4 as a node |
+| The VAD, without a model | `speech.VADNode(opts)` | Finds the utterances |
+| Output | `flow.Sink[T](name)`, `.Do(fn)` | `fn` for each chunk |
+
+**Joining**
+
+- `a.Connect(b)` compiles only when a's output type is b's input type
+- **An output can go to several nodes** (one transcript to captions and to a translation). Each gets every chunk, and a slow reader does not hold the others back
+- **A node has one input.** Connecting a second panics. A node with several inputs (a renderer that takes depth and the head's position) cannot be written yet ([D21](#10-design-questions))
+- How an edge passes chunks on is `Connect`'s second argument
+
+| Passing | Meaning | Where |
+|---|---|---|
+| (none) | Passed when the node after reads. While it is busy, the node before waits | Ordinary edges |
+| `flow.Keep(n)` | Read in a goroutine of its own, up to n chunks kept. The node before does not wait. Nothing is dropped | Before the speaker (the next text is translated while it speaks) |
+| `flow.Newest()` | The newest chunk only. What came while the node after was busy is dropped | A camera's frames into a detector |
+
+**Running**
+
+- `app.Connect(sources...)` gives the network to the app. The nodes' own `Connect`s may come before or after it
+- **The app's models are taken from the network's nodes.** `app.Plan` and `APP models` find them without their being listed in `ai.NewApp(name, uses...)`. `APP models` shows the network too
+- `app.Run(ctx)` is `Open`, loading the models, running the network and `Close`. On a `Runtime` that is open, `rt.Run(ctx)`
+- **All the models are loaded before an input is read.** No sound of the microphone is lost in the seconds of loading
+- How it ends: `nil` once every input has ended and the last chunk has gone through; an error with the node's name (`*flow.NodeError`) when a node fails; ctx's error at its cancel
+- **A node ending it from inside**: when the function of `flow.Each` returns `flow.Stop`, its node ends there. The nodes before it stop (the microphone is closed), the nodes after it work off what they were given, and `Run` returns `nil`
+- One model in two places is two nodes (`speech.TranscribeNode(stt, optsL)` and `speech.TranscribeNode(stt, optsR)`). There is one model, and its calls go through one after another (section 9.3)
+
+**And the stream functions**: they stay. A node's inside is stream functions, and an edge's way of passing is `flow.Async` and `flow.Latest`. The network is a layer that puts them together and runs them. Calling a model once a request (a server, batch work), and anything that needs finer control, is written with `Get` and the stream functions as before.
 
 ## 7. The models
 
@@ -721,51 +806,22 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Option C: a priority on a use (`use.Priority(ai.Interactive)`): audio goes first and background work waits at its breaks. The calls to the NPU must then go through one place (D10)
 - **Not decided**: which to add. A is small; C belongs with managing what stays loaded (D9)
 
-**D21. Declaring the network (`Connect`)** — now: `ai.NewApp("interpreter", stt, tr, tts)` only lists the models, and how they are joined is in the code that runs (`tts.SpeakStream(ctx, flow.Async(ctx, tr.TranslateStream(...)))`). The library does not know the joins.
+**D21. Declaring the network (`Connect`)** — now (v0 added on 2026-11-21, section 6.6): nodes are joined with `Connect` and given to the app with `app.Connect(sources...)`. Nodes of models, nodes of the program (`flow.Each`, `flow.Tap`, `flow.Func`), inputs and outputs. The app's models are taken from the network, and `app.Run` loads them and runs it.
 
-- Proposed (2026-11-21): write the joins when registering. `app.Connect(stt)`, `stt.Connect(tr)`, `tr.Connect(tts)`. They are not always one to one
-- What the library can do once it knows the joins:
-  - Estimate whether the pipeline keeps up (section 9.2) and measure on which edge things wait (D20)
-  - Each edge says how chunks pass: kept, the newest only, when all is finished. "Keep a live input" (section 6.5) is not forgotten
-  - It knows which models are loaded together (stages joined by streams) and which one after another (before and after a "when finished" edge), so the memory can be estimated and `Release` left to it (D9)
-  - A fan-out (one transcript to captions and to a translation) and a fan-in (depth and the head's position into a renderer) are written without `Tee` and `Hold` by hand
-  - `APP models` can show the network
-- Types: with ports that carry their input and output types, a wrong join does not compile (checked with a sketch)
-
-```go
-var (
-	stt = speech.Transcribe("transcribe")
-	tr  = text.Translate("translate")
-	tts = speech.Speak("speech")
-)
-
-app := ai.NewApp("interpreter")
-mic := flow.Input[[]float32](app, "mic")             // an input of the app
-out := flow.Output[[]float32](app, "speech")         // an output of the app
-vad := speech.Utterances(speech.VADOptions{})        // a node without a model
-hear, trans, speak := stt.Stage(sopts), tr.Stage(topts), tts.Stage(popts)
-
-mic.To(&vad.In, flow.Keep(time.Minute))              // a live input: kept
-vad.Connect(hear)
-hear.Connect(trans)                                   // one to one, node to node
-hear.Out.To(captions)                                 // a fan-out: the same output into another port
-trans.Connect(speak, flow.Keep(4))
-speak.Out.To(out)
-
-// a fan-in: a node with several ports is a struct of the app's
-gen.Connect(depth, flow.Whole())                      // when finished (gen unloaded before depth)
-depth.Out.To(&render.Depth)
-camera.To(&faces.In, flow.Newest())                   // the newest only
-faces.Out.To(&render.Head, flow.Newest())
-```
-
-- To decide:
-  - **A model and its place in the network, apart?** Using one model in two places (the left and the right transcript, a translator with other settings) needs a `Use` (the model) apart from a `Stage` (the place). With `stt.Connect(tr)` on the `Use` itself, a model has one place only
-  - **Node to node, or port to port?** `stt.Connect(tr)` is how nodes of one input and one output are written. Nodes with several outputs or inputs (provisional captions and settled sentences, depth and confidence, a renderer) need ports. Both, I think, with one-to-one joins written node to node
-  - **Where settings go**: a language or a voice moves from a call's arguments to the node (`tr.Stage(opts)`). Changing them while it runs needs an API of its own (D13)
-  - **Does listing stay?** Calling a model once a request (a server, batch work) has no network. `ai.NewApp(name, uses...)` and `Get` stay, I think, and an app that writes a network has its models taken from it
-  - **And today's `flow.Stream`**: it stays. A node's inside is today's `...Stream` functions, and an edge's way of passing is `Async`, `Latest` and `Tee`. The network is a layer that puts them together and runs them
-- **Not decided**: whether to add this layer. If so, before the pseudo-3D sample (which has a fan-out and a fan-in) is written
+- Why: once the library knows the joins, it can estimate whether the pipeline keeps up (section 9.2), measure each edge (D20), have each edge say how it passes chunks on, estimate the memory and do the `Release`s (D9), and show the network. A fan-out is written without `Tee`
+- Decided:
+  - **A model and its place in the network are apart**: a `Use` is the model, `speech.TranscribeNode(use, opts)` its place. One model can be in two places
+  - **Joined node to node** (`a.Connect(b)`): a node has one input and one output. An output can go to several nodes
+  - **A node has its settings**: `node.Update(func(o *Options))` changes them while it runs too (one answer to D13's "changing settings in the middle")
+  - **Listing stays**: `ai.NewApp(name, uses...)` and `Get`, for calling a model once a request
+  - **The stream functions stay as the layer below**: a node's inside and an edge's way of passing are made of them
+- **Not decided**:
+  - **Nodes with several inputs** (a fan-in): a renderer that takes depth and the head's position, a speaker that takes text and an interruption. Perhaps nodes with ports: `depth.Connect(&render.Depth)`, `faces.Connect(&render.Head, flow.Newest())`. The pseudo-3D sample needs it
+  - **Nodes with several outputs**: provisional captions and settled sentences, depth and confidence
+  - **A "when finished" edge** (`flow.Whole()`): when the node before has ended, its model is unloaded before the next is loaded. It leaves `Release` to the library (D9)
+  - **Measuring each edge**: the chunks that passed, those waiting, the delay (D20). With the network there is one place to add it
+  - **Nodes' names**: a model's node is named after its use, so two nodes of one model have the same name
+  - **Changing the joins while it runs**: not possible now
 
 ## 11. Not there yet
 

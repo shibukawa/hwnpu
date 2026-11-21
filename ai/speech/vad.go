@@ -226,3 +226,12 @@ func (v *VAD) Segments(pcm []float32) []Span {
 
 // Span is a stretch of a stream's time.
 type Span struct{ Start, End time.Duration }
+
+// VADNode is the node of a VAD in a network (flow): sound in, its utterances out, as Detect
+// gives them. It has no model.
+func VADNode(o VADOptions) *flow.Node[[]float32, []float32] {
+	v := NewVAD(o)
+	return flow.Func("vad", func(ctx context.Context, in flow.Stream[[]float32]) flow.Stream[[]float32] {
+		return v.Detect(ctx, in)
+	})
+}

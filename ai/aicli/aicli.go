@@ -37,6 +37,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/npustatus"
@@ -172,6 +173,45 @@ func writePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 			fmt.Fprintf(w, "%s: %s\n", it.Use, it.Why)
 		}
 	}
+	if lines := network(app.Network()); len(lines) > 0 {
+		fmt.Fprintf(w, "\nThe network:\n  %s\n", strings.Join(lines, "\n  "))
+	}
+}
+
+// network writes a network as its chains, a line each: "mic → vad → transcribe (keep 4) → out".
+// A node whose output goes to several nodes ends its line with them, and each goes on in a line
+// of its own.
+func network(nodes []flow.NodeInfo) []string {
+	var lines []string
+	line := ""
+	for i, n := range nodes {
+		if line == "" {
+			line = n.Name
+		}
+		if len(n.To) == 1 && i+1 < len(nodes) && nodes[i+1].Name == n.To[0].To {
+			line += " → " + edge(n.To[0])
+			continue
+		}
+		if len(n.To) > 0 {
+			var to []string
+			for _, e := range n.To {
+				to = append(to, edge(e))
+			}
+			line += " → " + strings.Join(to, ", ")
+		}
+		if strings.Contains(line, "→") {
+			lines = append(lines, line)
+		}
+		line = ""
+	}
+	return lines
+}
+
+func edge(e flow.EdgeInfo) string {
+	if e.Policy == "" {
+		return e.To
+	}
+	return e.To + " (" + e.Policy + ")"
 }
 
 // prepareFlags are what download and prepare share.
