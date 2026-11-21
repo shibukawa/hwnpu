@@ -7,6 +7,7 @@ package ironcnn
 
 import (
 	"context"
+	"errors"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -223,4 +224,41 @@ func bf16(x float32) uint16 {
 		return uint16(bits>>16) | 0x40
 	}
 	return uint16((bits + 0x7fff + (bits>>16)&1) >> 16)
+}
+
+// ErrNoIRON is FirstRunExport's when no export is here or in the sources and IRON's Python is
+// not here to make one (chat.IRONPython).
+var ErrNoIRON = errors.New("no IRON")
+
+// FirstRunExport is the export of tool (tools/amd's script) that model m runs from on AMD's NPU,
+// in Dir(m.Name): here, from the shared layers, else made with IRON (fetch downloads what export
+// reads, export makes the export of it in dir), as hwnpu-image's first run makes it. have says
+// whether a directory holds one; version is the export's (chat.PinnedRecipe). One made by hand
+// here goes in the sources written back to, described as a first run's.
+func FirstRunExport(ctx context.Context, m chat.Model, tool string, version int, have func(dir string) error, fetch func() (string, error), export func(python []string, model, dir string) error, log io.Writer) (string, error) {
+	dir := Dir(m.Name)
+	if have(dir) == nil {
+		chat.ShareMadeHere(m, dir, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), log)
+		return dir, nil
+	}
+	var noIRON error
+	err := chat.SharedExport(ctx, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), dir, log, func() error {
+		python, err := chat.IRONPython(ctx)
+		if err != nil {
+			noIRON = fmt.Errorf("%w (%v; INSTALL_AMD.md, %s)", ErrNoIRON, err, chat.IRONEnv)
+			return noIRON
+		}
+		model, err := fetch()
+		if err == nil {
+			err = export(python, model, dir)
+		}
+		return err
+	})
+	if err == nil {
+		err = have(dir)
+	}
+	if err != nil {
+		return "", err
+	}
+	return dir, nil
 }

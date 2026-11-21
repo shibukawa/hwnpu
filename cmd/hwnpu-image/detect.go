@@ -213,8 +213,9 @@ func amdCNNExport(ctx context.Context, m chat.Model, flag string, interp bool, l
 		"iron_onnxcnn.py", version, fetch, export)
 }
 
-// amdFirstRunExport is amdCNNExport for any tool's export: have says whether dir holds one,
-// tool is the script, version the export's version (chat.PinnedRecipe).
+// amdFirstRunExport is amdCNNExport for any tool's export (ironcnn.FirstRunExport) where this
+// machine runs m on AMD's NPU: have says whether dir holds one, tool is the script, version the
+// export's version (chat.PinnedRecipe).
 func amdFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), have func(dir string) error, tool string, version int, fetch func() (string, error), export func(python []string, model, dir string) error) string {
 	if interp || chat.HereVendor() != "amd" {
 		return ""
@@ -222,35 +223,13 @@ func amdFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bo
 	if device, _, err := chat.ChooseDevice(m, "amd", flag); err != nil || device != "npu" {
 		return ""
 	}
-	dir := ironcnn.Dir(m.Name)
-	if have(dir) == nil {
-		// one made by hand here goes in the sources written back to, described as a first run's
-		// (as hwnpu-dev sources import describes it), so that other machines' first runs find it
-		chat.ShareMadeHere(m, dir, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), console.Log(os.Stderr))
-		return dir
-	}
-	// none here: from the shared layers, else made as hwnpu-chat makes its models'
-	// (chat.PrepareAMD), with IRON
-	errNoIRON := errors.New("no IRON")
-	err := chat.SharedExport(ctx, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), dir, console.Log(os.Stderr), func() error {
-		python, err := chat.IRONPython(ctx)
-		if err != nil {
-			logf("%s: no export for AMD's NPU in %s or the shared layers, and making one needs IRON (%v; INSTALL_AMD.md, %s): the CPU", m.Name, dir, err, chat.IRONEnv)
-			return errNoIRON
-		}
-		model, err := fetch()
-		if err == nil {
-			err = export(python, model, dir)
-		}
-		return err
-	})
-	if err == nil {
-		err = have(dir)
-	}
-	if err != nil {
-		if !errors.Is(err, errNoIRON) {
-			logf("%s: %v; the CPU", m.Name, err)
-		}
+	dir, err := ironcnn.FirstRunExport(ctx, m, tool, version, have, fetch, export, console.Log(os.Stderr))
+	switch {
+	case errors.Is(err, ironcnn.ErrNoIRON):
+		logf("%s: no export for AMD's NPU in %s or the shared layers, and making one needs IRON (%v): the CPU", m.Name, ironcnn.Dir(m.Name), err)
+		return ""
+	case err != nil:
+		logf("%s: %v; the CPU", m.Name, err)
 		return ""
 	}
 	return dir
