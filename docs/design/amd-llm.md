@@ -16,7 +16,7 @@ All numbers are from a Ryzen AI 9 365 (Strix Point) unless noted.
 | `lfm3` | `iron_lfm3.Lfm3` (hwnpu's; IRON has none) | LFM3-1.7B |
 | `lfm3vl`, `lfm3audio`, `lfm3omni` | `iron_lfm3vl`, `iron_lfm3audio`, `iron_lfm3omni` | LFM3-VL-2B, LFM3-Audio-2B, LFM3-Omni-2B |
 | `plamo3` | `iron_plamo3.Plamo3` (hwnpu's) | PLaMo 3 Translate 0.8B, 2B, 8B |
-| `ouro` | `iron_ouro.Ouro` (hwnpu's; IRON has none) | Ouro-1.4B-Thinking (2.6B not exported) |
+| `ouro` | `iron_ouro.Ouro` (hwnpu's; IRON has none) | Ouro-1.4B-Thinking, evaluated, not in models.yaml ([looped-models.md](../looped-models.md)); 2.6B not exported |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN: `iron_gdn.py`) | Qwen3.5-0.8B, 2B, 4B |
 
 The current export lines are `amd_export` in [models.yaml](../../models.yaml):
@@ -26,7 +26,6 @@ The current export lines are `amd_export` in [models.yaml](../../models.yaml):
 | LFM3-1.7B / VL / Audio / Omni | `lfm3 / lfm3vl / lfm3audio / lfm3omni --max-seq-len 12288 --q4` |
 | Gemma 4 E2B, E4B | `gemma4 --max-seq-len 4096 --q4` (text only; the towers are not converted for the catalog) |
 | PLaMo 3 Translate 0.8B / 2B / 8B | `plamo3 --max-seq-len 8192 --q4` |
-| Ouro-1.4B-Thinking | `ouro --max-seq-len 2048 --q4 --mlp q6 --head q6` (in development) |
 | Qwen3.5-0.8B, 2B | `qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3` |
 | Qwen3.5-4B | `qwen35 --max-seq-len 4096 --q4` |
 

@@ -82,15 +82,6 @@ python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5
 go run ./cmd/hwnpu-chat -m ~/models/Qwen3.5-0.8B.amd-npu2-q6
 ```
 
-## Ouro (開発中)
-
-ByteDance の Ouro-1.4B-Thinking はループ型のモデルで、24 層を 1 トークンにつき同じ重みで 4 回回します。hwnpu の `tools/amd/iron_ouro.py` で書き出します (`ouro`)。ループで重みもダウンロードも増えません (2.9 GB。普通の 1.4B のモデルと同じ) が、回ごとにキーと値を持つのでキャッシュは 24 層のモデルの 4 倍 (文脈 2048 で 1.6 GB)、1 トークンの計算は 96 層のモデルと同じです。Ryzen AI 9 365 でデコードは 3.6 トークン/秒、プロンプトは約 400 トークン/秒です。1 トークンに 4 回読む重みは丸めの誤差が積み重なるので、MLP と出力の行列を 6 ビットにします (`--mlp q6 --head q6`。注意は 8 ビット、埋め込みはホスト。Hugging Face と比べて KL 0.026、最も確からしいトークンの一致 98.4 %)。固定されるメモリは 2.79 GiB です。答える前に英語で考え (`<think>`)、道具は呼びません。`--no-think` で考えずに答えます。照合に使うリモートコードは 4.56 より古い transformers が要ります。
-
-```bash
-python tools/amd/iron_export_lm.py ouro ~/models/Ouro-1.4B-Thinking ~/models/Ouro-1.4B-Thinking.amd-npu2-q6 --max-seq-len 2048 --q4 --mlp q6 --head q6
-go run ./cmd/hwnpu-chat -m ~/models/Ouro-1.4B-Thinking.amd-npu2-q6
-```
-
 ## Phoenix と Hawk Point (NPU1)
 
 Phoenix と Hawk Point (NPU1) には full ELF がないので、`--device npu1 --cols 4` で書き出します。各版は IRON と同じく「1 ステップごとの xclbin」(Gemma 4 E2B のデコードで 1095 ステップ、xclbin は 2 個) になり、呼び出しごとの命令列は書き出しに含めたプログラムから hwnpu が作ります。NPU1 の実機では未検証です。同じ形の書き出しを `--per-step` で NPU2 向けに作ると Ryzen AI 9 365 で正しく動き、デコードは 1 秒に 2.6 トークンでした (full ELF の 6 の半分以下。1 トークンに 1095 回の投入が要るため)。NPU1 は、版ごとの xclbin (計 6 個) で、ハードウェアコンテキストの上限 6 を使い切ります。

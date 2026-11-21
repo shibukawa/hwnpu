@@ -31,7 +31,7 @@ func TestAMDExportRecipes(t *testing.T) {
 		"plamo3": true, "qwen35": true, "qwen35moe": true, "gptoss": true, "ouro": true}
 	want := map[string]string{"LFM3-1.7B": "-q4", "Qwen3.5-0.8B": "-q6", "Qwen3.5-2B": "-q6", "Qwen3.5-4B": "-q4",
 		"plamo-3-translate-2b": "-q4", "gemma-4-E2B-it": "-q4", "gpt-oss-20b": "-p16",
-		"Qwen3.6-35B-A3B": "-q4-p32", "Ouro-1.4B-Thinking": "-q6"}
+		"Qwen3.6-35B-A3B": "-q4-p32"}
 	for _, m := range Catalog {
 		if len(m.AMDExport) == 0 {
 			continue

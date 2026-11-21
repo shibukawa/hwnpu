@@ -359,7 +359,9 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   transformers 5 puts GPT2Tokenizer's own pre-tokenizer in place of the file's and loses the Digits
   step (" ①" one piece).
 - Chat format: `chat.Ouro` (see below). The Thinking models think by default; the base models
-  (Ouro-1.4B, 2.6B) have no chat template and are not in models.yaml.
+  (Ouro-1.4B, 2.6B) have no chat template.
+- Not in models.yaml: on the NPU a looped model is slow for its size and its cache grows fast (an evaluation
+  record, with LFM3-1.7B and others beside it: [looped-models.md](../looped-models.md), in Japanese).
 
 ## PLaMo-Embedding-1B (`internal/llm/plamo`, arch `plamo-bi`)
 

@@ -391,27 +391,6 @@ models:
       - [0, 22, 27, 30, 71, 79, 84, 92, 97, 103, 119, 120, 148, 151, 180, 191, 209, 215]  # layer 38
       - [2, 10, 16, 22, 23, 36, 38, 44, 62, 69, 77, 78, 92, 110, 122, 129, 145, 154, 158, 162, 189, 190, 197, 213, 235, 238, 242, 243, 248]  # layer 39
     about: "Qwen's Qwen3.6-35B-A3B, a mixture of experts (35B, 3B active): on AMD's NPU, 8.5 tokens/s with every expert in its memory (from 48 GB; on 16 GB 32 of each layer's 256, the others read from the disk when chosen, 128 from 24 GB), its experts and head at 4 bits and mixers at 8; on a Mac with Core AI, the experts run on the CPU in 4 bit MXFP4 (derived from the release on the first run, 22 GB), kept in the page cache as far as memory allows and read from disk as the tokens choose them, with Gated DeltaNet and attention in 8 bit tables and the output layer in 6 bit ones; it reasons first. The download (72 GB) has the vision part too, which is not converted"
-  Ouro-1.4B-Thinking:
-    # ByteDance's looped model (arch ouro, docs/design/llm-models.md): its 24 layers run four times
-    # a token with the same weights, so a token costs what a 96-layer model's does and the KV cache
-    # is four times a 24-layer one's (768 KiB a token in fp16). In development: checked against
-    # Hugging Face on the CPU (lut8 KL 0.023) and on AMD's NPU (q6, context 2048: KL 0.026, top-1
-    # 98.4 %; 3.6 tokens/s; 2.79 GiB pinned, the caches 1.6 GB of it, and 0.82 GB of the process,
-    # measured with ironlm on a Ryzen AI 9 365, 2026-11-22); the Neural Engine not tried
-    family: ouro
-    tag: 1.4b
-    kind: chat
-    develop: true
-    from: hf:ByteDance/Ouro-1.4B-Thinking@3aaa2224253a92ca45cf2e3d427c360e1ef9c93d
-    license: {id: apache-2.0, url: "https://huggingface.co/ByteDance/Ouro-1.4B-Thinking/blob/main/README.md", class: open}
-    sha256:
-      model.safetensors: 6730581fd366f6d1689728c61637520228385cdfc17c0b24f19aa840b00565fb
-    machine: 8
-    memory: 3.8
-    bytes: 2.87e9
-    features: [thinking]
-    amd_export: ouro --max-seq-len 2048 --q4 --mlp q6 --head q6
-    about: "ByteDance's Ouro-1.4B-Thinking, a looped model: 1.4B of weights run four times a token, for reasoning in math and code; English, no tools; slow for its size (four passes a token) and in development"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b
