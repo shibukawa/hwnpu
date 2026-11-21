@@ -24,7 +24,7 @@ type options struct {
 	auto    bool
 	autoFn  func(Progress)
 	license bool
-	prepLog io.Writer // Plan.Log of the preparing, and the log of a model's first load
+	prepLog io.Writer // Plan.Log of the preparing (and of its compile)
 	loading func(Progress)
 }
 
@@ -163,10 +163,20 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	if err != nil {
 		return nil, err
 	}
-	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
+	// a use is run only when it is prepared and compiled for this program on this NPU: no
+	// picture, no input waits for a compile. WithAutoPrepare does what "models prepare" does
+	// first (Plan.Run: the download, the conversion, the load once that compiles every program)
+	find := func() (located, error) {
+		loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
+		if err == nil && !loc.bundle && rt.npu.Target != "" && !loc.compiled() {
+			err = fmt.Errorf("%w: %s (%s) is not compiled for %s on this machine's NPU yet (the app's Plan and its Run compile it)", ErrNotPrepared, r.key(), loc.Model, processName())
+		}
+		return loc, err
+	}
+	loc, err := find()
 	if errors.Is(err, ErrNotPrepared) && rt.o.auto {
 		if err = rt.prepare(ctx, r); err == nil {
-			loc, err = rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
+			loc, err = find()
 		}
 	}
 	if err != nil {
@@ -187,18 +197,11 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		loc.each(func(p *string) { cache.Touch(*p) })
 	}
 	t0 := time.Now()
-	compiling := !loc.bundle && loc.Compiled.IsZero() && rt.npu.Target != ""
-	log := rt.o.log
-	if log == nil && rt.o.prepLog != nil && compiling {
-		log = rt.o.prepLog // its first load, which compiles it (minutes): shown as it goes
-	}
+	log := rt.o.log // compiled (find): the load takes its programs from the compiler's cache
 	tell := func(Stage, string) {}
 	var loaded atomic.Bool // its load is over: the lines of its log after are not told
 	if fn := rt.o.loading; fn != nil {
 		stage, expected := StageLoad, loc.Loaded
-		if compiling {
-			stage, expected = StageCompile, loc.Compile
-		}
 		tell = func(st Stage, msg string) {
 			fn(Progress{Use: r.name, Role: r.role.Name, Model: loc.Model, Stage: st, Item: 1, Items: 1, Message: msg, Expected: expected, Since: t0})
 		}
@@ -225,13 +228,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	took := time.Since(t0)
 	loaded.Store(true)
 	tell(StageDone, "")
-	switch {
-	case compiling:
-		// loaded here for the first time (WithAutoPrepare, or prepared without compiling): its
-		// programs are compiled now. Not writing it only has "models prepare" load it once more.
-		loc.Compiled, loc.Compile = time.Now().UTC().Truncate(time.Second), took
-		_ = rt.app.Store.put(ctx, r.key(), rt.npu, loc.record)
-	case !loc.bundle && (loc.Loaded == 0 || took > loc.Loaded*5/4 || took < loc.Loaded*4/5):
+	if !loc.bundle && (loc.Loaded == 0 || took > loc.Loaded*5/4 || took < loc.Loaded*4/5) {
 		// how long it takes, for the next load to show (written when it changed by a fifth)
 		loc.Loaded = took
 		_ = rt.app.Store.put(ctx, r.key(), rt.npu, loc.record)
@@ -240,22 +237,30 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	return l, nil
 }
 
-// prepare makes r ready (WithAutoPrepare) without loading it: the load that follows compiles it.
+// prepare makes r ready (WithAutoPrepare) as "models prepare" does: downloaded, converted, and
+// loaded once (warmed, ai.Warmer), which compiles its programs for this program on the NPU.
 func (rt *Runtime) prepare(ctx context.Context, r requirement) error {
 	p, err := rt.app.plan(ctx, []requirement{r})
 	if err != nil {
 		return err
 	}
-	p.NoCompile, p.AcceptLicenses, p.Log = true, rt.o.license, rt.o.prepLog
+	p.AcceptLicenses, p.Log = rt.o.license, rt.o.prepLog
 	fn := rt.o.autoFn
 	if watch := rt.o.loading; watch != nil {
 		t0, auto := time.Now(), fn
+		var mu sync.Mutex
+		stage := StagePrepare // the stage the log's lines are of
 		fn = func(pr Progress) {
 			if auto != nil {
 				auto(pr)
 			}
+			mu.Lock()
+			if pr.Stage != stage && pr.Stage != StageDone {
+				stage, t0 = pr.Stage, time.Now() // the compile's time from its own start
+			}
+			pr.Since = t0
+			mu.Unlock()
 			if pr.Stage != StageDone { // the load that follows tells when it is done
-				pr.Since = t0
 				watch(pr)
 			}
 		}
@@ -265,7 +270,10 @@ func (rt *Runtime) prepare(ctx context.Context, r requirement) error {
 				model = p.Items[0].Model
 			}
 			p.Log = io.MultiWriter(p.Log, &lineWriter{fn: func(line string) {
-				watch(Progress{Use: r.name, Role: r.role.Name, Model: model, Stage: StagePrepare, Item: 1, Items: 1, Message: line, Since: t0})
+				mu.Lock()
+				st, since := stage, t0
+				mu.Unlock()
+				watch(Progress{Use: r.name, Role: r.role.Name, Model: model, Stage: st, Item: 1, Items: 1, Message: line, Since: since})
 			}})
 		}
 	}

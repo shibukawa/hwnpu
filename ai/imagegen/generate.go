@@ -51,8 +51,9 @@ var (
 // newRole is the role of a generator, with the edit's programs on Apple's Neural Engine when edit.
 func newRole(name string, edit bool) *airole.Role {
 	return &airole.Role{
-		Name:  name,
-		Kinds: []chat.Kind{chat.KindImage},
+		Name:     name,
+		Kinds:    []chat.Kind{chat.KindImage},
+		Revision: 1, // 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 			m := e.Model
 			if !isKlein(m) {
@@ -103,7 +104,8 @@ func newRole(name string, edit bool) *airole.Role {
 		Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 			g := &Generator{name: e.Model, dir: f.Path("export"), edit: f.Path("edit"), log: e.Log}
 			g.model, _ = chat.Lookup(e.Model)
-			if e.NPU.AMD() {
+			g.amd = e.NPU.AMD()
+			if g.amd {
 				as, err := flux2klein.NPUAspects(g.model, "amd", flux2klein.NPUGeneration("amd"))
 				if err != nil {
 					return nil, err
@@ -195,6 +197,7 @@ type Generator struct {
 	// references
 	edit  string
 	edits bool
+	amd   bool // on AMD's NPU
 
 	// p draws pictures of at; another size closes it and opens that size's
 	p  *flux2klein.Pipeline
@@ -249,6 +252,34 @@ func (g *Generator) open(ctx context.Context, size image.Point) (*flux2klein.Pip
 	}
 	g.p, g.at = p, size
 	return p, nil
+}
+
+// Warm draws a picture of one step at each of Sizes (from a gray reference, when it edits): its
+// programs are loaded only as a picture needs them (the text encoder, the VAE's encoder, the
+// DiT's groups of the step, the VAE's decoder), so that the load alone compiles none of them.
+// The compile of "models prepare" (ai.Warmer) calls it, so that no picture waits for a compile.
+// On AMD's NPU, whose programs are made at Prepare, it does nothing.
+func (g *Generator) Warm(ctx context.Context) error {
+	if g.amd {
+		return nil
+	}
+	for _, s := range g.Sizes() {
+		o := Options{Width: s.X, Height: s.Y, Steps: 1, Seed: 1}
+		if g.edits {
+			ref := image.NewRGBA(image.Rect(0, 0, s.X, s.Y))
+			for i := range ref.Pix {
+				ref.Pix[i] = 128
+			}
+			o.References = []image.Image{ref}
+		}
+		if g.log != nil {
+			fmt.Fprintf(g.log, "  compiling the programs of %d x %d: a picture of one step\n", s.X, s.Y)
+		}
+		if _, err := g.Generate(ctx, "a gray picture", o); err != nil {
+			return fmt.Errorf("ai/imagegen: warming %d x %d: %w", s.X, s.Y, err)
+		}
+	}
+	return nil
 }
 
 // Generate draws a picture from a prompt, and from the references when there are any (an edit).

@@ -269,11 +269,12 @@ func TestNotPreparedAndAutoPrepare(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	if _, err := stt.Get(ctx, rt); err != nil || f.prepared != 1 || f.loads != 1 {
-		t.Errorf("with auto prepare: %v, prepared %d, loaded %d", err, f.prepared, f.loads)
+	// prepared as "models prepare" does: loaded once to compile it (and warmed), then for the Get
+	if _, err := stt.Get(ctx, rt); err != nil || f.prepared != 1 || f.loads != 2 || f.warmed != 1 {
+		t.Errorf("with auto prepare: %v, prepared %d, loaded %d, warmed %d", err, f.prepared, f.loads, f.warmed)
 	}
-	if !slices.Contains(seen, StagePrepare) || slices.Contains(seen, StageCompile) {
-		t.Errorf("stages %v: prepared, and compiled by the load itself", seen)
+	if !slices.Contains(seen, StagePrepare) || !slices.Contains(seen, StageCompile) {
+		t.Errorf("stages %v: prepared and compiled before the Get's load", seen)
 	}
 	// the load was the first on this machine: the plan says it is compiled
 	if p, err := app.Plan(ctx); err != nil || !p.Compiled() {
@@ -659,8 +660,8 @@ func TestNetwork(t *testing.T) {
 	if err := app.Run(ctx, WithAutoPrepare(nil)); err != nil {
 		t.Fatal(err)
 	}
-	if loadsAtFirstRead != 2 {
-		t.Errorf("%d models were loaded when the source was first read, want both", loadsAtFirstRead)
+	if loadsAtFirstRead != 4 { // each loaded once to compile it, as "models prepare" does, then for the run
+		t.Errorf("%d models were loaded when the source was first read, want both (twice)", loadsAtFirstRead)
 	}
 	if want := []string{"plamo-3-translate-2b:en:a", "plamo-3-translate-2b:es:b"}; !slices.Equal(got, want) {
 		t.Errorf("the network gave %q, want %q", got, want)
@@ -806,8 +807,8 @@ func TestWithLoading(t *testing.T) {
 		t.Errorf("first Get: stages %v, the conversion's line told: %v", stages, msg)
 	}
 
-	// the second load, from the compiler's cache: not known how long it takes; the third is
-	for i, known := range []bool{false, true} {
+	// the first Get's own load (after the compile) told how long a load takes
+	for i, known := range []bool{true, true} {
 		seen = nil
 		rt, err = app.Open(ctx, watch)
 		if err != nil {
@@ -820,5 +821,42 @@ func TestWithLoading(t *testing.T) {
 		if len(seen) != 2 || seen[0].Stage != StageLoad || seen[1].Stage != StageDone || (seen[0].Expected > 0) != known {
 			t.Errorf("Get %d: %+v, want a load (its time known: %v), then done", i+2, seen, known)
 		}
+	}
+}
+
+// A use compiled by another program (Core AI's cache is the process's) is not compiled for this
+// one: without WithAutoPrepare it is not run, with it it is compiled (loaded once, warmed) first.
+func TestCompiledByProgram(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	ctx := context.Background()
+	app := NewApp("test", stt).withStore(testStore(t))
+	saved := processName
+	t.Cleanup(func() { processName = saved })
+	processName = func() string { return "layers" }
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	processName = func() string { return "parallax" }
+	if p, err := app.Plan(ctx); err != nil || p.Compiled() {
+		t.Errorf("the plan of another program: %v, compiled %v", err, p != nil && p.Compiled())
+	}
+	rt, err := app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stt.Get(ctx, rt); !errors.Is(err, ErrNotPrepared) || !strings.Contains(err.Error(), "not compiled for parallax") {
+		t.Errorf("a use compiled by another program: %v, want not compiled", err)
+	}
+	rt.Close()
+	warmed := f.warmed
+	rt, err = app.Open(ctx, WithAutoPrepare(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	if _, err := stt.Get(ctx, rt); err != nil || f.warmed != warmed+1 || f.prepared != 1 {
+		t.Errorf("with auto prepare: %v, warmed %d more, prepared %d (once)", err, f.warmed-warmed, f.prepared)
 	}
 }

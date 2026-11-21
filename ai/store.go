@@ -90,9 +90,14 @@ type record struct {
 	MemoryGB float64   `json:"memory_gb,omitempty"`
 	Prepared time.Time `json:"prepared"`
 	// Compiled is when the model was first loaded on this machine's NPU (the zero time: not
+	// yet), by any program; CompiledBy when by each program (its executable's name): Apple's
+	// compiler (Core AI) keeps its cache by the process's name, so that what one app compiled is
+	// compiled again by the next (layers' compile left parallax's first picture compiling,
+	// 2026-11-22). A use is compiled for a program when CompiledBy has it.
 	// yet): its programs are compiled for it, so that the next load does not wait for that.
-	Compiled time.Time    `json:"compiled,omitzero"`
-	Files    airole.Files `json:"files"`
+	Compiled   time.Time            `json:"compiled,omitzero"`
+	CompiledBy map[string]time.Time `json:"compiled_by,omitempty"`
+	Files      airole.Files         `json:"files"`
 	// Revision is the role's (airole.Role.Revision) that prepared it: an earlier one's is
 	// prepared again.
 	Revision int `json:"revision,omitempty"`
@@ -102,6 +107,28 @@ type record struct {
 	Loaded  time.Duration `json:"loaded_ns,omitempty"`
 	Compile time.Duration `json:"compile_ns,omitempty"`
 }
+
+// compiled reports whether this program (processName) has loaded the model once on this NPU.
+func (r *record) compiled() bool { return !r.CompiledBy[processName()].IsZero() }
+
+// markCompiled records that this program has loaded it once, now.
+func (r *record) markCompiled() {
+	now := time.Now().UTC().Truncate(time.Second)
+	if r.CompiledBy == nil {
+		r.CompiledBy = map[string]time.Time{}
+	}
+	r.Compiled, r.CompiledBy[processName()] = now, now
+}
+
+// processName is the name the NPU's compiler keeps this program's compiled programs by: its
+// executable's, without the extension ("go run ." builds one of its directory's name).
+var processName = sync.OnceValue(func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	return strings.TrimSuffix(filepath.Base(exe), filepath.Ext(exe))
+})
 
 // each calls fn with a pointer to every path of the record.
 func (r *record) each(fn func(*string)) {

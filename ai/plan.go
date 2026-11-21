@@ -159,7 +159,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
 			// compiles it, and nothing can be written there to say so)
-			it.Ready, it.Compiled = true, !loc.Compiled.IsZero() || loc.bundle
+			it.Ready, it.Compiled = true, loc.compiled() || loc.bundle
 			if loc.bundle {
 				it.Bundle = loc.root
 			}
@@ -456,7 +456,8 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 			if err := l.Close(); err != nil {
 				return err
 			}
-			r.Compiled, r.Compile = time.Now().UTC().Truncate(time.Second), time.Since(t0)
+			r.markCompiled()
+			r.Compile = time.Since(t0)
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
 				return err
 			}

@@ -193,7 +193,7 @@ plan.Target()          // coreai, intel, amd-xdna2; "" when no NPU here runs the
 ```
 
 - `Ready`: the files and programs are in the store, and the model loads without the network
-- `Compiled`: the model was loaded once on this machine's NPU (its programs are compiled)
+- `Compiled`: this program (by its executable's name: Core AI keeps its compile cache by the process's name) loaded the model once on this machine's NPU, and ran every program it has (`ai.Warmer`: the picture model draws a picture of one step at each size), so that its next load takes them from the cache in a second. The Runtime runs no use that is not compiled: it is `ai.ErrNotPrepared`, or with `WithAutoPrepare` the same Run as `models prepare` first; nothing compiles while the app runs
 - `Download` is models.yaml's `bytes`, the most there is to download. When a source has the converted programs, the checkpoint is not downloaded
 
 ### 4.2 Preparing has two stages
