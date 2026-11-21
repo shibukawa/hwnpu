@@ -31,6 +31,10 @@ Step 1 on the Mac (`cmd/hwnpud`, `internal/daemon`):
 - `hwnpu-chat [chat]` goes through it with `HWNPU_DAEMON=on` (or `auto`): the load's log, then the
   conversation, the same output and line of statistics. The flags of how a model is converted
   and run are refused there.
+- Settings ([Settings](#settings)): `hello` gives hwnpud's settings and the `.env` files read; a
+  changed file starts the next engine with the new settings; a client of other settings is told
+  (`on`) or runs by itself (`auto`); `hwnpud status` shows them; a client's
+  `HWNPU_MODEL_ALLOWLIST` narrows hwnpud's policy.
 - M3: the PLaMo 3 Translate 2B program loads in 22 s the first time under the name `hwnpud`
   (Core AI's entry 2.5 GB); the next run answers in 0.6 s from start to end, the model still in
   the engine.
@@ -94,18 +98,77 @@ does it, and the only writer of hwnpu's cache.
   (`cache.Lock`) become exclusion inside hwnpud.
 - **Removing knows what is in use.** `hwnpu cache`'s gc and the trimming to the free-space floor
   skip what is loaded.
-- **The sources are read from files.** launchd and systemd do not read the login shell's profile,
-  so `HWNPU_MODEL_SOURCE` set in `~/.zprofile` does not reach hwnpud. The sources are set in
-  `~/.config/hwnpu/.env` or in `models.yaml`. A client's own environment is not used for them: two
-  apps would get different sources.
+- **The sources are read from files**, as the other settings of where the models are and come from
+  ([Settings](#settings)).
 - **Licenses**: hwnpud has no terminal. For a model with `accept: true` it answers "needs
   acceptance" with the terms; the client asks the user and sends the answer, which goes to
-  `licenses.json` as now. `chat.Policy` (`HWNPU_MODEL_ALLOWLIST`, `policy:`) is applied in hwnpud.
+  `licenses.json` as now. `chat.Policy` (`HWNPU_MODEL_ALLOWLIST`, `policy:`) is applied in hwnpud,
+  and a client's narrows it ([Settings](#settings)).
 - **What still builds**: `hwnpu-dev convert` and putting exports to the sources stay in the
   developer's own process. On the Mac the device still finishes the ANE code (prebuilt or not) and
   compiles again when an entry is gone; that runs in hwnpud, or another name's cache appears again.
 - **One code.** The fetching and the cache stay a library that hwnpud hosts; the in-process
   fallback (below) runs the same code.
+
+## Settings
+
+hwnpu's settings are environment variables today, which each process reads from its shell and
+from the `.env` files (`envfile`: the current directory's, `~/.config/hwnpu/.env`, the machine's).
+With hwnpud they split in two.
+
+| Whose | Variables | How hwnpud gets them |
+|---|---|---|
+| hwnpud's | Where the models are and come from, and how the machine runs them: `HWNPU_CACHE`, `HWNPU_CACHE_MIN_FREE`, `HWNPU_CACHE_MAX_SIZE`, `HWNPU_MODEL_SOURCE*`, `HWNPU_MODEL_HUGGING_FACE`, `HWNPU_MODELS`, `HWNPU_BACKEND`, `HWNPU_DEVICE`, `HWNPU_MEMORY`, `HWNPU_ACCEPT_LICENSE`, `HWNPU_COREAI_*`, the credentials (`HWNPU_WEBDAV_*`, `HF_TOKEN`, `HF_ENDPOINT`, `AWS_*`) | From the `.env` files and the environment it was started with, never from a request |
+| The client's | What this run needs: the model, its memory (`--memory`, a tag), the model policy (`HWNPU_MODEL_ALLOWLIST`) | With each request |
+
+- **Not the shell's.** launchd and systemd do not read the login shell's profile, so
+  `HWNPU_MODEL_SOURCE` set in `~/.zprofile` does not reach hwnpud: it goes in
+  `~/.config/hwnpu/.env`.
+- **Why the cache is not a client's.** hwnpud exists so that the machine has one copy of each
+  model, one download and one exclusion. A client with its own `HWNPU_CACHE` would make a second
+  copy outside the locks and the use counts; one with its own sources would make what an app
+  gets depend on its shell. Credentials have no reason to cross the socket either.
+- **The files are the truth, not a command that sets hwnpud's memory.** hwnpud exits when idle and
+  launchd starts it again, so a value set only inside it would be lost. The processes that do not
+  go through it (`HWNPU_DAEMON=off`, `hwnpu-dev convert`) read the same files, so every path runs
+  with the same settings.
+- **A changed file is read without restarting hwnpud.** The supervisor keeps the environment it
+  was started with, without what the files set (`envfile.Original`), and reads the files again
+  for each new engine (`envfile.Environ`). When they changed, the next request that finds no
+  other going on stops the engine and starts one with the new settings: a model loaded from the
+  old cache is not kept. `hello` gives the settings the next engine gets (credentials only as
+  set, passwords taken out of URLs), the files read, and `pending`, the names the running engine
+  has other values of.
+- **A client of other settings is told.** A client compares its own settings (its shell and its
+  `.env` files, with a project's) with `hello`'s. With `HWNPU_DAEMON=on` it goes through and logs
+  that hwnpud's settings are used and which files hwnpud reads; with `auto` it runs in its own
+  process with its own settings. `hwnpud status` shows the settings and what differs in the
+  shell it runs in; `hwnpud install` warns of the variables only the shell sets.
+- **The policy narrows, never widens.** A client sends its `HWNPU_MODEL_ALLOWLIST`
+  (`LoadRequest.allowlist`, `X-Hwnpu-Model-Allowlist`). hwnpud runs a model when its own policy
+  allows it and the definition files' rules with the client's items do too
+  (`chat.AllowedAlso`): a client can refuse more, and its `+nsfw` or `+license` does not
+  override hwnpud's `-`. An administrator's rules go in the machine's `models.yaml` (`policy:`),
+  which every process reads. A family is picked by hwnpud's policy alone so far: when the client
+  refuses the pick it is an error, not the next model; step 2 sends the policy into the pick.
+- **A command to change them** comes with step 2: `hwnpu config get|set|unset NAME [VALUE]`
+  writes `~/.config/hwnpu/.env` (mode 0600 when it holds a credential) and shows hwnpud's values
+  beside the file's. Nothing has to tell hwnpud: the next engine reads the file.
+
+Still to settle:
+
+- **Credentials in a plain file.** `.env` holds the NAS's password and the tokens in the clear.
+  The Keychain (Mac) and the Secret Service (Linux) are for later; until then hwnpu config keeps
+  the file 0600.
+- **Moving the cache.** A new `HWNPU_CACHE` starts empty; the old root stays where it is. A move
+  (`hwnpu cache migrate --to`) should copy while hwnpud holds the cache, not by hand behind it.
+- **The developers' variables** (`HWNPU_LFM3_*`, the probes, about a hundred) do not reach
+  hwnpud. Development runs with `HWNPU_DAEMON=off`, the default of hwnpu's commands.
+- **The definitions of the client's build.** A client newer than hwnpud may know models that
+  hwnpud's built-in `models.yaml` does not; names are resolved by hwnpud, so the commands' `list`
+  has to come from hwnpud too (step 2), and an older hwnpud is replaced at its next idle exit.
+- **Several users on one Mac** each have their own hwnpud and cache; the Neural Engine's lock is
+  the machine's, so the second user's engine waits for the first one's to exit.
 
 ## Boundary: models, not graphs
 
@@ -242,7 +305,7 @@ Each is small; the ones on the NPU wait for the lock in the background.
 1. hwnpud with the supervisor, the engine, socket start, idle exit, `install` / `uninstall` on the
    Mac and Linux; chat models only, with `hwnpu-chat` as a client (`HWNPU_DAEMON=on`)
 2. The model management in hwnpud: list, status, plan, prepare with progress, licenses, gc; the
-   commands' `list` / `status` and `hwnpu cache` as clients; the sources from files
+   commands' `list` / `status` and `hwnpu cache` as clients; `hwnpu config`; the policy in the pick
 3. The remote side of `ai.Runtime` and `HWNPU_DAEMON=auto`; samples interpreter, layers and
    parallax through the daemon, with the Core AI cache in `coreai-cache/<OS>/hwnpud/` only
 4. Images and audio; the machine-wide scheduler (program budget, unloading, priority)

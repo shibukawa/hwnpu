@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -101,9 +102,26 @@ func Load() {
 // when there is no such file.
 func LoadFile(p string) (File, bool) {
 	f := File{Path: p}
+	ok, err := readFile(p, func(k, v string) {
+		if _, set := os.LookupEnv(k); set {
+			return
+		}
+		os.Setenv(k, v)
+		f.Set = append(f.Set, k)
+	})
+	f.Err = err
+	return f, ok
+}
+
+// readFile calls set for each of hwnpu's variables of the file p in order; ok is false when there
+// is no such file.
+func readFile(p string, set func(k, v string)) (ok bool, err error) {
 	in, err := os.Open(p)
 	if err != nil {
-		return f, !os.IsNotExist(err)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return true, err
 	}
 	defer in.Close()
 	sc := bufio.NewScanner(in)
@@ -112,20 +130,73 @@ func LoadFile(p string) (File, bool) {
 		n++
 		k, v, ok, err := parseLine(sc.Text())
 		if err != nil {
-			f.Err = fmt.Errorf("%s:%d: %w", p, n, err)
-			return f, true
+			return true, fmt.Errorf("%s:%d: %w", p, n, err)
 		}
-		if !ok || !ours(k) {
-			continue
+		if ok && ours(k) {
+			set(k, v)
 		}
-		if _, set := os.LookupEnv(k); set {
-			continue
-		}
-		os.Setenv(k, v)
-		f.Set = append(f.Set, k)
 	}
-	f.Err = sc.Err()
-	return f, true
+	return true, sc.Err()
+}
+
+// Original is the environment the process was started with: os.Environ without what the files
+// set when it started.
+func Original() []string {
+	fromFiles := map[string]bool{}
+	for _, f := range Loaded {
+		for _, k := range f.Set {
+			fromFiles[k] = true
+		}
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); !fromFiles[k] {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// Environ is the environment a process started now with base would have after reading the files
+// of Dirs as they are now (hwnpud gives it to its engine, so that a file changed is read
+// without restarting hwnpud), and the files read. Under go test the files are not read, as Load.
+func Environ(base []string) (env []string, files []string, err error) {
+	if testing.Testing() {
+		return slices.Clone(base), nil, nil
+	}
+	return environIn(base, Dirs())
+}
+
+func environIn(base, dirs []string) (env []string, files []string, err error) {
+	env = slices.Clone(base)
+	have := map[string]bool{}
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		have[k] = true
+	}
+	seen := map[string]bool{}
+	for _, d := range dirs {
+		for _, n := range []string{".env.local", ".env"} {
+			p := filepath.Join(d, n)
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			ok, ferr := readFile(p, func(k, v string) {
+				if !have[k] {
+					have[k] = true
+					env = append(env, k+"="+v)
+				}
+			})
+			if ok {
+				files = append(files, p)
+			}
+			if ferr != nil && err == nil {
+				err = ferr
+			}
+		}
+	}
+	return env, files, err
 }
 
 func ours(k string) bool {

@@ -171,3 +171,25 @@ func joinRules(rs []Rule) string {
 func policyFromEnv() ([]Rule, error) {
 	return ParsePolicy(strings.Split(os.Getenv(PolicyEnv), ","), PolicyEnv)
 }
+
+// AllowedAlso is Allowed with a client's own policy too (its PolicyEnv, items separated by
+// commas): hwnpud runs a model that its own policy allows and so does the client's, the rules of
+// the definition files with the client's items. A client narrows hwnpud's policy, never widens
+// it. items "" is no policy of the client's.
+func AllowedAlso(m Model, items string) error {
+	if err := Allowed(m); err != nil {
+		return err
+	}
+	if strings.TrimSpace(items) == "" {
+		return nil
+	}
+	theirs, err := ParsePolicy(strings.Split(items, ","), "the client's "+PolicyEnv)
+	if err != nil {
+		return err
+	}
+	rules := slices.DeleteFunc(slices.Clone(Policy), func(r Rule) bool { return r.From == PolicyEnv })
+	if why := refused(append(rules, theirs...), m); why != "" {
+		return &PolicyError{Model: m.Name, Why: why}
+	}
+	return nil
+}

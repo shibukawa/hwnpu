@@ -59,7 +59,10 @@
 //
 // With HWNPU_DAEMON=on (or auto, when it answers), chat goes through hwnpud (cmd/hwnpud): hwnpud
 // makes the model ready and runs it, this process sends the conversation and writes the answers,
-// and the model stays loaded for the next run.
+// and the model stays loaded for the next run. Where the models are and come from (HWNPU_CACHE,
+// HWNPU_MODEL_SOURCE, ...) are then hwnpud's, read from ~/.config/hwnpu/.env: a shell of other
+// values is told so (auto runs here instead); HWNPU_MODEL_ALLOWLIST goes with the request and
+// narrows hwnpud's policy.
 package main
 
 import (

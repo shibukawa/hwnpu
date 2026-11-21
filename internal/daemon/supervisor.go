@@ -13,10 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
 // Supervisor holds hwnpud's socket and the engine behind it. It never touches the NPU: when the
@@ -43,6 +46,10 @@ type Supervisor struct {
 	started time.Time    // the executable's modification time when the supervisor started
 	exe     string
 	srv     *http.Server
+	running map[string]string // the settings the engine started with
+	// environ is the environment of the next engine (and its .env files): the base and the files
+	// as they are now; tests give their own
+	environ func() ([]string, []string, error)
 }
 
 type child struct {
@@ -66,6 +73,10 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}
 	s.exe = exe
+	if s.environ == nil {
+		base := envfile.Original()
+		s.environ = func() ([]string, []string, error) { return envfile.Environ(base) }
+	}
 	if fi, err := os.Stat(exe); err == nil {
 		s.started = fi.ModTime()
 	}
@@ -197,9 +208,15 @@ func (s *Supervisor) track(h http.Handler) http.Handler {
 
 func (s *Supervisor) hello() Hello {
 	h := Hello{Protocol: Protocol, Build: Build(), PID: os.Getpid(), Executable: s.exe}
+	env, files, err := s.environ()
+	h.Settings, h.Files = Settings(env), files
+	if err != nil {
+		h.SettingsError = err.Error()
+	}
 	s.mu.Lock()
 	if s.child != nil {
 		h.Engine = s.child.cmd.Process.Pid
+		h.Pending = changed(s.running, h.Settings)
 	}
 	s.mu.Unlock()
 	return h
@@ -229,19 +246,33 @@ func (s *Supervisor) engineRunning() bool {
 
 // ensureEngine starts the engine unless it runs, and waits until it answers on its socket.
 func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
+	env, _, err := s.environ()
+	if err != nil {
+		fmt.Fprintf(s.Log, "hwnpud: %v\n", err)
+	}
+	set := Settings(env)
 	s.mu.Lock()
+	// the .env files changed: a new engine reads them, when no other request needs this one
+	if s.child != nil && s.active.Load() <= 1 {
+		if names := changed(s.running, set); len(names) > 0 {
+			s.mu.Unlock()
+			fmt.Fprintf(s.Log, "hwnpud: %s changed; starting the engine again\n", strings.Join(names, ", "))
+			s.stopEngine()
+			s.mu.Lock()
+		}
+	}
 	c := s.child
 	if c == nil {
 		os.Remove(socket)
 		cmd := exec.Command(s.exe, "engine", "--socket", socket, "--idle", s.Idle.String())
-		cmd.Stdout, cmd.Stderr = s.Log, s.Log
+		cmd.Stdout, cmd.Stderr, cmd.Env = s.Log, s.Log, env
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // a Ctrl-C at the terminal of a supervisor run by hand is the supervisor's to pass on
 		if err := cmd.Start(); err != nil {
 			s.mu.Unlock()
 			return fmt.Errorf("hwnpud: starting the engine: %w", err)
 		}
 		c = &child{cmd: cmd, done: make(chan struct{})}
-		s.child = c
+		s.child, s.running = c, set
 		fmt.Fprintf(s.Log, "hwnpud: engine started (pid %d)\n", cmd.Process.Pid)
 		go func() {
 			err := cmd.Wait()

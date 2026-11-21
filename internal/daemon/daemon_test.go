@@ -49,6 +49,9 @@ func fakeEngine(socket string) int {
 		}
 		fmt.Fprintf(f, "downloading %s\n", req.Model)
 		fmt.Fprintf(f, "terminal %v\n", req.Terminal)
+		if v := os.Getenv("HWNPU_CACHE"); v != "" {
+			fmt.Fprintf(f, "cache %s\n", v)
+		}
 		f.send(LoadEvent{Model: &ModelInfo{Name: req.Model, Context: 4096, OnNPU: true}})
 	})
 	mux.HandleFunc("POST /crash", func(w http.ResponseWriter, r *http.Request) { os.Exit(3) })
@@ -76,13 +79,19 @@ func shortDir(t *testing.T) string {
 
 func startSupervisor(t *testing.T) (*Client, chan error) {
 	t.Helper()
+	return startSupervisorWith(t, nil)
+}
+
+// startSupervisorWith starts a supervisor whose engines get the environment environ gives.
+func startSupervisorWith(t *testing.T, environ func() ([]string, []string, error)) (*Client, chan error) {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	socket := filepath.Join(shortDir(t), "d.sock")
 	var log bytes.Buffer
-	s := &Supervisor{Socket: socket, Executable: exe, Log: &syncWriter{w: &log}}
+	s := &Supervisor{Socket: socket, Executable: exe, Log: &syncWriter{w: &log}, environ: environ}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
@@ -225,16 +234,90 @@ func TestMode(t *testing.T) {
 func TestUseOffAndAuto(t *testing.T) {
 	t.Setenv(SocketEnv, filepath.Join(shortDir(t), "none.sock"))
 	t.Setenv(ModeEnv, "")
-	if c, err := Use(context.Background(), "off"); c != nil || err != nil {
+	if c, err := Use(context.Background(), "off", io.Discard); c != nil || err != nil {
 		t.Fatalf("off: %v, %v", c, err)
 	}
 	t.Setenv(ModeEnv, "auto")
-	if c, err := Use(context.Background(), "off"); c != nil || err != nil {
+	if c, err := Use(context.Background(), "off", io.Discard); c != nil || err != nil {
 		t.Fatalf("auto without a daemon: %v, %v", c, err)
 	}
 	t.Setenv(ModeEnv, "on")
-	if _, err := Use(context.Background(), "off"); !errors.Is(err, ErrNotRunning) {
+	if _, err := Use(context.Background(), "off", io.Discard); !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("on without a daemon: %v", err)
+	}
+}
+
+// TestSettings: hwnpud tells its settings, a changed .env starts the next engine with the new
+// ones, and a client of other settings is told (on) or runs by itself (auto).
+func TestSettings(t *testing.T) {
+	var mu sync.Mutex
+	cache := "/a"
+	environ := func() ([]string, []string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return []string{"PATH=" + os.Getenv("PATH"), "HWNPU_CACHE=" + cache, "HWNPU_MODEL_SOURCE=https://me:pw@nas/llm", "HF_TOKEN=hf_x"}, []string{"/u/.env"}, nil
+	}
+	c, _ := startSupervisorWith(t, environ)
+	ctx := context.Background()
+	h, err := c.Hello(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"HWNPU_CACHE": "/a", "HWNPU_MODEL_SOURCE": "https://me:xxxxx@nas/llm", "HF_TOKEN": Secret}
+	if fmt.Sprint(h.Settings) != fmt.Sprint(want) || len(h.Files) != 1 {
+		t.Fatalf("hello's settings %v %v, want %v", h.Settings, h.Files, want)
+	}
+	load := func() (string, int) {
+		var log bytes.Buffer
+		if _, err := c.Load(ctx, LoadRequest{Model: "m"}, &log); err != nil {
+			t.Fatal(err)
+		}
+		h, _ := c.Hello(ctx)
+		return log.String(), h.Engine
+	}
+	log, first := load()
+	if !strings.Contains(log, "cache /a\n") {
+		t.Fatalf("the engine's environment: %q", log)
+	}
+	mu.Lock()
+	cache = "/b"
+	mu.Unlock()
+	if h, _ := c.Hello(ctx); fmt.Sprint(h.Pending) != "[HWNPU_CACHE]" {
+		t.Fatalf("pending %v", h.Pending)
+	}
+	log, second := load()
+	if !strings.Contains(log, "cache /b\n") || second == first {
+		t.Fatalf("after the change: engine %d (was %d), %q", second, first, log)
+	}
+	if h, _ := c.Hello(ctx); len(h.Pending) != 0 {
+		t.Fatalf("pending %v after the new engine", h.Pending)
+	}
+
+	t.Setenv(SocketEnv, c.Socket)
+	t.Setenv("HWNPU_CACHE", "/here")
+	t.Setenv("HWNPU_MODEL_SOURCE", "https://nas/llm")
+	t.Setenv("HF_TOKEN", "hf_y") // set on both sides: not a difference
+	t.Setenv(ModeEnv, "auto")
+	var out bytes.Buffer
+	if cl, err := Use(ctx, "off", &out); cl != nil || err != nil {
+		t.Fatalf("auto with other settings: %v, %v", cl, err)
+	}
+	if s := out.String(); !strings.Contains(s, "HWNPU_CACHE is /here here, /b in hwnpud") || !strings.Contains(s, "running here") || strings.Contains(s, "HF_TOKEN") {
+		t.Fatalf("auto's log: %q", s)
+	}
+	t.Setenv(ModeEnv, "on")
+	out.Reset()
+	if cl, err := Use(ctx, "off", &out); cl == nil || err != nil {
+		t.Fatalf("on with other settings: %v, %v", cl, err)
+	}
+	if s := out.String(); !strings.Contains(s, "through hwnpud with its settings") || !strings.Contains(s, "/u/.env") {
+		t.Fatalf("on's log: %q", s)
+	}
+	t.Setenv("HWNPU_CACHE", "/b")
+	t.Setenv("HWNPU_MODEL_SOURCE", "https://me:other@nas/llm") // passwords are not compared
+	out.Reset()
+	if cl, _ := Use(ctx, "off", &out); cl == nil || out.Len() != 0 {
+		t.Fatalf("the same settings: %v, %q", cl, out.String())
 	}
 }
 

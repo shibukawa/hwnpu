@@ -27,6 +27,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
 // Protocol is the version of the routes and messages; a client and a daemon of different
@@ -137,6 +139,16 @@ type Hello struct {
 	Engine int `json:"engine"`
 	// Executable is the supervisor's executable.
 	Executable string `json:"executable"`
+	// Settings are hwnpud's settings (Settings): those the next engine starts with, read from the
+	// .env files now.
+	Settings map[string]string `json:"settings,omitempty"`
+	// Files are the .env files they were read from.
+	Files []string `json:"files,omitempty"`
+	// Pending are the settings the running engine has other values of: it is started again with
+	// these at a request when no other goes on.
+	Pending []string `json:"pending,omitempty"`
+	// SettingsError is what was wrong with a .env file.
+	SettingsError string `json:"settings_error,omitempty"`
 }
 
 // Status is the answer of GET /hwnpud/v1/status.
@@ -159,7 +171,13 @@ type LoadRequest struct {
 	Memory int `json:"memory,omitempty"`
 	// Terminal says that the client shows the log on a terminal, where bars are redrawn.
 	Terminal bool `json:"terminal,omitempty"`
+	// Allowlist is the client's model policy (its HWNPU_MODEL_ALLOWLIST): it narrows hwnpud's,
+	// never widens it. "" for none.
+	Allowlist string `json:"allowlist,omitempty"`
 }
+
+// AllowlistHeader is a chat completion's model policy (LoadRequest.Allowlist).
+const AllowlistHeader = "X-Hwnpu-Model-Allowlist"
 
 // ModelInfo is a chat model the engine holds.
 type ModelInfo struct {
@@ -328,7 +346,11 @@ func ResponseError(resp *http.Response) error {
 
 // Use says whether a client goes through hwnpud, by HWNPU_DAEMON (def when unset): on needs it to
 // answer with this Protocol, auto takes it when it does. It returns the client when it does.
-func Use(ctx context.Context, def string) (*Client, error) {
+//
+// The settings of where the models are and come from are hwnpud's (Settings). When this process's
+// differ (a variable set only in the shell, or in a project's .env), on writes to log that
+// hwnpud's are used, and auto runs here instead, with this process's own.
+func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 	mode := Mode(def)
 	if mode == "off" {
 		return nil, nil
@@ -348,6 +370,22 @@ func Use(ctx context.Context, def string) (*Client, error) {
 			return nil, fmt.Errorf("%s=on: %w (go install ./cmd/hwnpud && hwnpud install, or %s=off)", ModeEnv, err, ModeEnv)
 		}
 		return nil, fmt.Errorf("%s=on: %w", ModeEnv, err)
+	}
+	if ms := Compare(localSettings(), h.Settings); len(ms) > 0 {
+		var parts []string
+		for _, m := range ms {
+			parts = append(parts, m.String())
+		}
+		files := h.Files
+		if len(files) == 0 {
+			files = []string{filepath.Join(envfile.UserDir(), ".env")}
+		}
+		where := "hwnpud reads " + strings.Join(files, ", ") + ", not this shell"
+		if mode == "auto" {
+			fmt.Fprintf(log, "not through hwnpud, whose settings differ (%s; %s): running here\n", strings.Join(parts, "; "), where)
+			return nil, nil
+		}
+		fmt.Fprintf(log, "through hwnpud with its settings, not these: %s (%s)\n", strings.Join(parts, "; "), where)
 	}
 	return c, nil
 }

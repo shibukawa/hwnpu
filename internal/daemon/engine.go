@@ -45,8 +45,9 @@ type Engine struct {
 }
 
 type held struct {
-	e    *chat.Engine
-	info ModelInfo
+	e     *chat.Engine
+	model chat.Model
+	info  ModelInfo
 }
 
 // relay is a writer whose destination changes: the load's stream while a load goes on, the
@@ -217,8 +218,20 @@ func (e *Engine) serveLoad(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadModel returns the model a load names, loading it unless the engine holds it; its log goes
-// to log (and the service's) while it loads.
+// to log (and the service's) while it loads. A model the request's policy refuses is an error,
+// held or not.
 func (e *Engine) loadModel(ctx context.Context, req LoadRequest, log io.Writer) (*held, error) {
+	h, err := e.loadAny(ctx, req, log)
+	if err != nil {
+		return nil, err
+	}
+	if err := chat.AllowedAlso(h.model, req.Allowlist); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+func (e *Engine) loadAny(ctx context.Context, req LoadRequest, log io.Writer) (*held, error) {
 	key := req.Model + "@" + strconv.Itoa(req.Memory)
 	if h := e.lookup(key); h != nil {
 		return h, nil
@@ -246,7 +259,7 @@ func (e *Engine) loadModel(ctx context.Context, req LoadRequest, log io.Writer) 
 		e.aliases[key] = m.Name
 		return h, nil
 	}
-	h := &held{e: ce, info: ModelInfo{Name: m.Name, Context: ce.Context(), Images: ce.Images(), Audio: ce.Audio(),
+	h := &held{e: ce, model: m, info: ModelInfo{Name: m.Name, Context: ce.Context(), Images: ce.Images(), Audio: ce.Audio(),
 		Translator: ce.Template == chat.Plamo3, NoThink: ce.NoThink, OnNPU: ce.OnNPU(), Device: ce.DeviceName()}}
 	e.models[m.Name] = h
 	e.aliases[key] = m.Name
@@ -296,7 +309,7 @@ func (e *Engine) completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "a chat completion names its model")
 		return
 	}
-	h, err := e.loadModel(context.WithoutCancel(r.Context()), LoadRequest{Model: head.Model}, nil)
+	h, err := e.loadModel(context.WithoutCancel(r.Context()), LoadRequest{Model: head.Model, Allowlist: r.Header.Get(AllowlistHeader)}, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -335,6 +348,9 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 	} else if iron != "" {
 		m, _ := chat.LookupFor(req.Model)
 		m.Name = cmp.Or(m.Name, filepath.Base(iron))
+		if err := chat.AllowedAlso(m, req.Allowlist); err != nil {
+			return m, nil, err
+		}
 		if h := holding(m.Name); h != nil {
 			return m, h.e, nil
 		}
@@ -357,6 +373,9 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 	}
 	if m.Kind != chat.KindChat {
 		return m, nil, fmt.Errorf("%s is a %s model, not a chat model", m.Name, m.Kind)
+	}
+	if err := chat.AllowedAlso(m, req.Allowlist); err != nil {
+		return m, nil, err // before it is downloaded
 	}
 	if h := holding(m.Name); h != nil {
 		return m, h.e, nil

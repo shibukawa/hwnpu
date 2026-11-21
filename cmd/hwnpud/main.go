@@ -127,6 +127,35 @@ func shellOnly() []string {
 	return out
 }
 
+// printSettings shows hwnpud's settings, where they were read from, and what differs here.
+func printSettings(h daemon.Hello) {
+	files := "none"
+	if len(h.Files) > 0 {
+		files = strings.Join(h.Files, ", ")
+	}
+	fmt.Printf("settings: from %s and the environment hwnpud was started with\n", files)
+	if h.SettingsError != "" {
+		fmt.Printf("  error: %s\n", h.SettingsError)
+	}
+	names := make([]string, 0, len(h.Settings))
+	for k := range h.Settings {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		fmt.Printf("  %s=%s\n", k, h.Settings[k])
+	}
+	if _, set := h.Settings["HWNPU_CACHE"]; !set {
+		fmt.Println("  HWNPU_CACHE unset: the models are in hwnpu in the user cache directory")
+	}
+	if len(h.Pending) > 0 {
+		fmt.Printf("  the engine still runs with the old %s: it starts again with these at the next request\n", strings.Join(h.Pending, ", "))
+	}
+	for _, m := range daemon.Compare(daemon.Settings(os.Environ()), h.Settings) {
+		fmt.Printf("  differs here: %s (hwnpud's is used)\n", m)
+	}
+}
+
 // UninstallCmd removes the LaunchAgent.
 type UninstallCmd struct{}
 
@@ -151,6 +180,7 @@ func (c *StatusCmd) Run(ctx context.Context) error {
 		return nil
 	}
 	fmt.Printf("running: pid %d, build %s, protocol %d, %s\n", st.PID, st.Build, st.Protocol, cl.Socket)
+	printSettings(st.Hello)
 	if st.Engine == 0 {
 		fmt.Println("engine: not running (it starts at the next request)")
 		return nil

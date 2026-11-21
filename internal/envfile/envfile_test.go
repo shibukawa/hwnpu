@@ -3,6 +3,7 @@ package envfile
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -43,5 +44,22 @@ PATH=/nothing
 	os.WriteFile(p, []byte("HWNPU_BAD\n"), 0o644)
 	if f, _ := LoadFile(p); f.Err == nil {
 		t.Error("a line without =")
+	}
+}
+
+func TestEnviron(t *testing.T) {
+	user, machine := t.TempDir(), t.TempDir()
+	os.WriteFile(filepath.Join(user, ".env"), []byte("HWNPU_CACHE=/user\nHWNPU_MODEL_SOURCE=file:///nas\nOTHER=x\n"), 0o644)
+	os.WriteFile(filepath.Join(machine, ".env"), []byte("HWNPU_CACHE=/machine\nHWNPU_DEVICE=npu\n"), 0o644)
+	env, files, err := environIn([]string{"PATH=/bin", "HWNPU_MODEL_SOURCE=file:///shell"}, []string{user, machine})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"PATH=/bin", "HWNPU_MODEL_SOURCE=file:///shell", "HWNPU_CACHE=/user", "HWNPU_DEVICE=npu"}
+	if !slices.Equal(env, want) {
+		t.Errorf("env = %q, want %q", env, want)
+	}
+	if len(files) != 2 {
+		t.Errorf("files = %q", files)
 	}
 }

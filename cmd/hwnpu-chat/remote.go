@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ func (c *ChatCmd) runThrough(ctx context.Context, stop context.CancelFunc, cl *d
 		return fmt.Errorf("%s through hwnpud (%s): hwnpud runs the model as its definition says (models.yaml); %s=off runs it here", strings.Join(given, ", "), cl.Socket, daemon.ModeEnv)
 	}
 	log := logw()
-	info, err := cl.Load(ctx, daemon.LoadRequest{Model: c.Model, Memory: c.Memory, Terminal: console.Live(log)}, log)
+	info, err := cl.Load(ctx, daemon.LoadRequest{Model: c.Model, Memory: c.Memory, Terminal: console.Live(log), Allowlist: os.Getenv(chat.PolicyEnv)}, log)
 	if err != nil {
 		return err
 	}
@@ -173,6 +174,9 @@ func (r remote) reply(ctx context.Context, msgs []chat.Message, o turn, out *pri
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(daemon.ThinkBudgetHeader, strconv.Itoa(o.thinkBudget))
+	if v := os.Getenv(chat.PolicyEnv); v != "" {
+		req.Header.Set(daemon.AllowlistHeader, v)
+	}
 	resp, err := r.c.HTTP.Do(req)
 	if err != nil {
 		return chat.Message{}, turnStats{}, err

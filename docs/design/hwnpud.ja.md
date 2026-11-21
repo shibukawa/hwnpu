@@ -24,6 +24,9 @@ Mac で段取りの 1 (`cmd/hwnpud`、`internal/daemon`):
   を書いて bootstrap する。シェルだけが設定している hwnpu の変数を警告する。`uninstall`、`status`、`stop`
 - `hwnpu-chat [chat]` は `HWNPU_DAEMON=on` (か `auto`) でこれを通る: 読み込みのログ、会話、同じ出力と統計の行。
   モデルの変換と動かし方のフラグはそこでは断る
+- 設定 ([設定](#設定)): `hello` は hwnpud の設定と読んだ `.env` を返す。ファイルが変わると次のエンジンは新しい設定で
+  起きる。設定の違うクライアントには知らせ (`on`)、自分で動く (`auto`)。`hwnpud status` に出す。クライアントの
+  `HWNPU_MODEL_ALLOWLIST` は hwnpud の方針を狭める
 - M3: PLaMo 3 Translate 2B のプログラムは `hwnpud` の名前で初回 22 秒 (Core AI の項目 2.5 GB)。次の実行は
   モデルがエンジンに残っていて、始めから終わりまで 0.6 秒
 
@@ -77,14 +80,62 @@ NPU を使うプロセスを 1 つにすれば、これが全部なくなる:
   去っても、ほかに待つクライアントがいれば続け、誰もいなくなれば止める
 - **プロセスの間のロックがなくなる**。ダウンロード、変換、書き出しのロック (`cache.Lock`) は hwnpud の中の排他になる
 - **消すときに使用中を知っている**。`hwnpu cache` の gc と空きの下限までの切り詰めは、載っているものを飛ばす
-- **取得元はファイルから読む**。launchd も systemd もログインシェルのプロファイルを読まないので、`~/.zprofile` の
-  `HWNPU_MODEL_SOURCE` は hwnpud に届かない。取得元は `~/.config/hwnpu/.env` か `models.yaml` に書く。クライアントの環境は
-  取得元に使わない: アプリごとに取得元が変わってしまう
+- **取得元はファイルから読む**。モデルの置き場と取得元のほかの設定と同じ ([設定](#設定))
 - **ライセンス**: hwnpud には端末がない。`accept: true` のモデルには条件を添えて「同意が要る」と答え、クライアントが利用者に
-  聞いて答えを送る。答えは今のとおり `licenses.json` に。`chat.Policy` (`HWNPU_MODEL_ALLOWLIST`、`policy:`) は hwnpud で当てる
+  聞いて答えを送る。答えは今のとおり `licenses.json` に。`chat.Policy` (`HWNPU_MODEL_ALLOWLIST`、`policy:`) は hwnpud で当て、
+  クライアントのものはそれを狭める ([設定](#設定))
 - **まだビルドするもの**: `hwnpu-dev convert` と取得元への書き出しの書き戻しは開発者のプロセスのまま。Mac では prebuilt が
   あっても端末が ANE のコードを仕上げ、項目が消えればコンパイルし直す。これは hwnpud で動かす。でないと別の名前のキャッシュがまたできる
 - **コードは 1 つ**。取得とキャッシュはライブラリのままで hwnpud がそれを載せる。プロセスの中で動かす逃げ道 (下) も同じコードを動かす
+
+## 設定
+
+hwnpu の設定は今は環境変数で、プロセスがそれぞれシェルと `.env` (`envfile`: 今のフォルダ、`~/.config/hwnpu/.env`、
+機械のもの) から読む。hwnpud ができると 2 つに分かれる。
+
+| 誰のもの | 変数 | hwnpud への届き方 |
+|---|---|---|
+| hwnpud | モデルの置き場と取得元、機械での動かし方: `HWNPU_CACHE`、`HWNPU_CACHE_MIN_FREE`、`HWNPU_CACHE_MAX_SIZE`、`HWNPU_MODEL_SOURCE*`、`HWNPU_MODEL_HUGGING_FACE`、`HWNPU_MODELS`、`HWNPU_BACKEND`、`HWNPU_DEVICE`、`HWNPU_MEMORY`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_COREAI_*`、認証 (`HWNPU_WEBDAV_*`、`HF_TOKEN`、`HF_ENDPOINT`、`AWS_*`) | `.env` と、hwnpud が起こされたときの環境から。リクエストからは取らない |
+| クライアント | その実行に要るもの: モデル、メモリ (`--memory`、タグ)、モデルの方針 (`HWNPU_MODEL_ALLOWLIST`) | リクエストごとに |
+
+- **シェルのものは届かない**。launchd も systemd もログインシェルのプロファイルを読まないので、`~/.zprofile` の
+  `HWNPU_MODEL_SOURCE` は hwnpud に届かない。`~/.config/hwnpu/.env` に書く
+- **置き場がクライアントのものでない理由**。hwnpud があるのは、機械にモデルの写しが 1 つ、ダウンロードが 1 本、排他が 1 つで
+  済むようにするため。自分の `HWNPU_CACHE` を持つクライアントは、ロックと使用中の数えの外に 2 つ目の写しを作る。自分の取得元を
+  持つクライアントがいると、アプリが得るものがそのシェル次第になる。認証をソケットに流す理由もない
+- **正はファイルで、hwnpud のメモリを書き換えるコマンドではない**。hwnpud は手が空くと終わり、launchd がまた起こすので、
+  中だけで変えた値は消える。hwnpud を通らないプロセス (`HWNPU_DAEMON=off`、`hwnpu-dev convert`) も同じファイルを読むので、
+  どの道でも同じ設定で動く
+- **ファイルを変えれば hwnpud を起こし直さずに効く**。監督役は起こされたときの環境から、ファイルが設定したものを除いて持ち
+  (`envfile.Original`)、エンジンを起こすたびにファイルを読み直す (`envfile.Environ`)。変わっていれば、ほかにリクエストのない
+  次のリクエストでエンジンを止め、新しい設定で起こす。古い置き場から読んだモデルは持ち越さない。`hello` は次のエンジンが
+  受け取る設定 (認証は設定済みかだけ、URL のパスワードは除く)、読んだファイル、`pending` (動いているエンジンが違う値で持つ
+  名前) を返す
+- **設定の違うクライアントには知らせる**。クライアントは自分の設定 (シェルと、プロジェクトのものも含む `.env`) を `hello`
+  のものと比べる。`HWNPU_DAEMON=on` なら通り、hwnpud の設定を使うこととそれを読んだファイルをログに出す。`auto` なら自分の
+  プロセスで自分の設定で動く。`hwnpud status` は設定と、実行したシェルとの違いを出す。`hwnpud install` はシェルだけが
+  設定している変数を警告する
+- **方針は狭めるだけで、広げない**。クライアントは `HWNPU_MODEL_ALLOWLIST` を送る (`LoadRequest.allowlist`、
+  `X-Hwnpu-Model-Allowlist`)。hwnpud は、自分の方針が許し、定義のファイルの規則とクライアントの項目も許すモデルを動かす
+  (`chat.AllowedAlso`)。クライアントはもっと断れるが、その `+nsfw` や `+license` は hwnpud の `-` を覆さない。管理者の規則は
+  機械の `models.yaml` (`policy:`) に書けば、どのプロセスも読む。ファミリーからの選びは今は hwnpud の方針だけで決まり、選んだものを
+  クライアントが断るとエラーになる (次のモデルにはならない)。段取りの 2 で方針を選びに渡す
+- **変えるコマンド**は段取りの 2 で: `hwnpu config get|set|unset NAME [VALUE]` が `~/.config/hwnpu/.env` を書き (認証を
+  持てばモード 0600)、ファイルの値と hwnpud の値を並べて見せる。hwnpud に知らせる必要はない: 次のエンジンがファイルを読む
+
+まだ決めること:
+
+- **平文のファイルの認証**。`.env` は NAS のパスワードとトークンをそのまま持つ。Keychain (Mac) と Secret Service (Linux) は
+  後で。それまで hwnpu config はファイルを 0600 に保つ
+- **置き場の引っ越し**。新しい `HWNPU_CACHE` は空から始まり、古い根はそのまま残る。引っ越し (`hwnpu cache migrate --to`) は、
+  裏で手で写すのではなく、hwnpud がキャッシュを持ったまま写すべき
+- **開発者の変数** (`HWNPU_LFM3_*`、検査用のもの、約 100 個) は hwnpud に届かない。開発は hwnpu のコマンドの既定の
+  `HWNPU_DAEMON=off` で
+- **クライアントのビルドの定義**。hwnpud より新しいクライアントは、hwnpud の組み込みの `models.yaml` にないモデルを知って
+  いることがある。名前を解くのは hwnpud なので、コマンドの `list` も hwnpud から取る (段取りの 2)。古い hwnpud は次に手が
+  空いて終わるときに入れ替わる
+- **1 台の Mac の複数の利用者**はそれぞれ自分の hwnpud とキャッシュを持つ。Neural Engine のロックは機械のものなので、2 人目の
+  エンジンは 1 人目のものが終わるのを待つ
 
 ## 境界: グラフではなくモデル
 
@@ -196,7 +247,7 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 1. 監督役、エンジン、ソケットで起きる、使われなければ終わる、`install` / `uninstall` の hwnpud を Mac と Linux で。
    チャットのモデルだけで、`hwnpu-chat` をクライアントに (`HWNPU_DAEMON=on`)
 2. モデルの管理を hwnpud に: 一覧、状態、計画、進み具合つきの準備、ライセンス、gc。コマンドの `list` / `status` と
-   `hwnpu cache` をクライアントに。取得元はファイルから
+   `hwnpu cache` をクライアントに。`hwnpu config`。クライアントの方針をファミリーの選びに渡す
 3. `ai.Runtime` のリモートの側と `HWNPU_DAEMON=auto`。samples の interpreter、layers、parallax をデーモン経由にし、
    Core AI のキャッシュが `coreai-cache/<OS>/hwnpud/` だけになること
 4. 画像と音声。機械全体の割り振り (プログラムの予算、降ろす、優先度)
