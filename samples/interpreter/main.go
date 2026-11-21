@@ -239,23 +239,18 @@ func (MicsCmd) Run(ctx context.Context) error {
 
 // SayCmd is interpreter say TEXT: the app's call, once.
 type SayCmd struct {
-	Text    []string `arg:"" name:"TEXT" help:"The text (the words are joined with spaces)."`
-	Out     string   `short:"o" type:"path" placeholder:"FILE" help:"Write the speech into this WAV file; none: play it on the speaker."`
-	Speed   float64  `default:"1" help:"How fast the speech is said, 0.5 to 2 (1.25: a quarter faster), its pitch kept."`
-	To      string   `placeholder:"LANG" help:"The language to translate into (en, ja, es, ...); none: English for Japanese text, Japanese for any other."`
-	Voice   string   `enum:"female,male" default:"female" help:"The voice."`
-	Prepare bool     `help:"Download, convert and compile the models that are not ready instead of failing."`
+	Text  []string `arg:"" name:"TEXT" help:"The text (the words are joined with spaces)."`
+	Out   string   `short:"o" type:"path" placeholder:"FILE" help:"Write the speech into this WAV file; none: play it on the speaker."`
+	Speed float64  `default:"1" help:"How fast the speech is said, 0.5 to 2 (1.25: a quarter faster), its pitch kept."`
+	To    string   `placeholder:"LANG" help:"The language to translate into (en, ja, es, ...); none: English for Japanese text, Japanese for any other."`
+	Voice string   `enum:"female,male" default:"female" help:"The voice."`
 }
 
 func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	if err := checkSpeed(c.Speed); err != nil {
 		return err
 	}
-	var opts []ai.Option
-	if c.Prepare {
-		opts = append(opts, ai.WithAutoPrepare(nil))
-	}
-	rt, err := app.Open(ctx, opts...)
+	rt, err := app.Open(ctx, konghelper.AutoPrepare())
 	if err != nil {
 		return err
 	}
@@ -325,7 +320,6 @@ type RunCmd struct {
 	Voice    string        `enum:"female,male" default:"female" help:"The voice of the interpretation."`
 	Live     bool          `help:"Give the recording at the pace a microphone would, and time each node against it."`
 	Commands bool          `default:"true" negatable:"" help:"Hear the spoken commands: \"終わり\" (or \"that's all\") ends, \"変換、スペイン語\" (or \"switch to Spanish\") changes the language to interpret into."`
-	Prepare  bool          `help:"Download, convert and compile the models that are not ready, as \"models prepare\" does, instead of failing."`
 }
 
 func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
@@ -348,15 +342,7 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 		}
 	}
 
-	var opts []ai.Option
-	if c.Prepare {
-		opts = append(opts, ai.WithAutoPrepare(func(p ai.Progress) {
-			if p.Message != "" {
-				fmt.Fprintf(os.Stderr, "  %s: %s\n", p.Model, p.Message)
-			}
-		}))
-	}
-	rt, err := app.Open(ctx, opts...)
+	rt, err := app.Open(ctx, konghelper.AutoPrepare())
 	if err != nil {
 		return err
 	}
@@ -450,5 +436,5 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 
 // hint adds how to prepare the models to the error of one that is not ready.
 func hint(err error) error {
-	return fmt.Errorf("%w (\"interpreter models prepare\" makes the models ready, or --prepare)", err)
+	return fmt.Errorf("%w (\"interpreter models prepare\" makes the models ready)", err)
 }

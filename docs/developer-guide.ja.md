@@ -237,7 +237,7 @@ app.Store = ai.Store{
 ## 5. 実行する
 
 ```go
-rt, err := app.Open(ctx)            // ai.WithLog(w)、ai.WithAutoPrepare(fn)、ai.WithAcceptedLicenses()
+rt, err := app.Open(ctx)            // ai.WithLog(w)、ai.WithAutoPrepare(fn) か ai.WithConsole()、ai.WithAcceptedLicenses()
 defer rt.Close()
 
 t, err := stt.Get(ctx, rt)          // 最初の呼び出しで読み込む (1 秒未満から数十秒)。2 回目からは同じものを返す
@@ -246,7 +246,7 @@ err = stt.Release(rt)               // 下ろしてメモリを空ける。次�
 rt.Loaded()                         // 今持っているモデル: 用途、モデル、メモリ、読み込みにかかった時間
 ```
 
-- **ネットワークにも変換にも触りません。** 準備されていない用途は `ai.ErrNotPrepared` です。`ai.WithAutoPrepare(fn)` を付けると、最初の `Get` で準備します (コマンドと同じ動き。ギガバイトのダウンロードになることがあります)
+- **ネットワークにも変換にも触りません。** 準備されていない用途は `ai.ErrNotPrepared` です。`ai.WithAutoPrepare(fn)` を付けると、最初の `Get` で準備します (コマンドと同じ動き。ギガバイトのダウンロードになることがあります)。`ai.WithConsole()` も同じく準備し、hwnpu のコマンドと同じ見た目で端末に出します: モデルごとに 1 行、ダウンロード・変換・最初のコンパイルはその場で描き直すバー、細かいログは灰色 (`Plan.Run` には `Plan.Log` にその書き先 `ai.Console()` を渡します)。アプリのコマンドはこれで Runtime を開き (`konghelper.AutoPrepare()`)、`APP models prepare` も同じ見た目で出します
 - **置き場の記録が今の選び方と違えば、準備されていない扱いです。** 別のモデルで準備してある (アプリの構成が変わった、機械のメモリの設定が変わった) とき、前のものを黙って読み込みません
 - **読み込みは 1 つずつ**進みます。モデルは、それぞれ 1 回に 1 つの要求を通します (ほかは待ちます)。別のモデルどうしは同時に呼べます
 - **順に使うアプリ**は `Release` で下ろします。画像の生成のあとに深度、のような使い方で、同時に載るメモリが一番大きいモデルの分で済みます。`app.InTurns(a, b)` で宣言すると、計画はモデルを合わせた量に大きいほうだけを数え、片方を読み込むともう片方を下ろします。ほかに自動で下ろす仕組みはまだありません ([D9](#10-設計の論点))。画像の生成が中で行う段の入れ替えとは別の層です ([9.5 節](#95-release-と画像の生成の段の入れ替え))

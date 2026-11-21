@@ -19,7 +19,7 @@ The samples are a Go module of their own, built against the hwnpu of this checko
 ```bash
 cd samples
 go run ./interpreter models            # the models, what they take to download and to run, and the network
-go run ./interpreter models prepare    # download, convert and compile them ahead (or pass --prepare to a run)
+go run ./interpreter models prepare    # download, convert and compile them ahead (the first run does it too, for the models it uses)
 go run ./interpreter run talk.wav -o out.wav
 ```
 

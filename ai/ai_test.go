@@ -170,6 +170,22 @@ func TestPlanRunOpen(t *testing.T) {
 	if p, err := NewApp("big", tr).Memory(16).withStore(app.Store).Plan(ctx); err != nil || p.Ready() || p.Items[0].Model == "plamo-3-translate-0.8b" {
 		t.Errorf("plan for 16 GB: %v, %+v", err, p)
 	}
+	// Plan.Log takes what the preparing writes, instead of a Progress.Message for each line
+	if p, err := NewApp("logged", tr).withStore(testStore(t)).Plan(ctx); err != nil {
+		t.Error(err)
+	} else {
+		var log strings.Builder
+		messages := 0
+		p.NoCompile, p.Log = true, &log
+		err := p.Run(ctx, func(pr Progress) {
+			if pr.Message != "" {
+				messages++
+			}
+		})
+		if err != nil || messages != 0 || !strings.Contains(log.String(), "converting ") {
+			t.Errorf("with Plan.Log: %v, %d messages, log %q", err, messages, log.String())
+		}
+	}
 
 	rt, err := app.Open(ctx)
 	if err != nil {

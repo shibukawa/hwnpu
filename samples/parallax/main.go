@@ -113,21 +113,9 @@ type picture struct {
 	Seed       uint64  `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
 	SaveLayers string  `name:"save-layers" type:"path" placeholder:"DIR" help:"Write the layers and their nearness into this directory once the picture is parted; \"parallax show DIR\" shows them again without the models."`
 	Edge       int     `default:"-1" placeholder:"PIXELS" help:"How far the near things are made larger in the nearness, so that their outlines move with them (default: a 200th of the picture's width; 0: not at all)."`
-	Prepare    bool    `help:"Download, convert and compile the models that are not ready instead of failing."`
 }
 
 func (c *picture) params() Params { return Params{Strength: c.Strength, Focus: c.Focus} }
-
-func (c *picture) options() []ai.Option {
-	if !c.Prepare {
-		return nil
-	}
-	return []ai.Option{ai.WithAutoPrepare(func(p ai.Progress) {
-		if p.Message != "" {
-			fmt.Fprintf(os.Stderr, "  %s: %s\n", p.Model, p.Message)
-		}
-	})}
-}
 
 func readPicture(path string) (image.Image, error) {
 	f, err := os.Open(path)
@@ -287,7 +275,7 @@ type ShowCmd struct {
 }
 
 func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, c.options()...)
+	rt, err := app.Open(ctx, konghelper.AutoPrepare())
 	if err != nil {
 		return err
 	}
@@ -411,7 +399,7 @@ type RenderCmd struct {
 }
 
 func (c *RenderCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, c.options()...)
+	rt, err := app.Open(ctx, konghelper.AutoPrepare())
 	if err != nil {
 		return err
 	}
@@ -432,14 +420,9 @@ func (c *RenderCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 type TrackCmd struct {
 	camera
 	Seconds time.Duration `placeholder:"TIME" help:"Stop after this long (10s); none: at Ctrl-C, or once the pictures of --frames were all read."`
-	Prepare bool          `help:"Download, convert and compile the models that are not ready instead of failing."`
 }
 
 func (c *TrackCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	var opts []ai.Option
-	if c.Prepare {
-		opts = append(opts, ai.WithAutoPrepare(nil))
-	}
 	if c.Seconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.Seconds)
@@ -476,7 +459,7 @@ func (c *TrackCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			}
 		}
 	}()
-	err = app.Run(ctx, opts...)
+	err = app.Run(ctx, konghelper.AutoPrepare())
 	close(stop)
 	p.tracker.mu.Lock()
 	found := p.tracker.found
@@ -508,7 +491,7 @@ func (CamerasCmd) Run(ctx context.Context) error {
 // hint adds how to prepare the models to the error of one that is not ready.
 func hint(err error) error {
 	if strings.Contains(err.Error(), "not prepared") {
-		return fmt.Errorf("%w (\"parallax models prepare\" makes the models ready, or --prepare)", err)
+		return fmt.Errorf("%w (\"parallax models prepare\" makes the models ready)", err)
 	}
 	return err
 }

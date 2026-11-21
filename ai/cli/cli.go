@@ -256,6 +256,10 @@ func prepare(ctx context.Context, app *ai.App, c PrepareOptions, noCompile bool)
 		return err
 	}
 	p.NoCompile = noCompile
+	if f, ok := c.Log.(*os.File); ok && !c.Quiet {
+		// the downloads and compiles draw their own bars, their lines in gray (on a terminal)
+		p.Log = console.Log(f)
+	}
 	if !noCompile && p.Target() == "" {
 		fmt.Fprintln(out, "no NPU that runs the models was found here: downloading and converting only")
 	}

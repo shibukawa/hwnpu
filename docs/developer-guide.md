@@ -237,7 +237,7 @@ app.Store = ai.Store{
 ## 5. Running
 
 ```go
-rt, err := app.Open(ctx)            // ai.WithLog(w), ai.WithAutoPrepare(fn), ai.WithAcceptedLicenses()
+rt, err := app.Open(ctx)            // ai.WithLog(w), ai.WithAutoPrepare(fn) or ai.WithConsole(), ai.WithAcceptedLicenses()
 defer rt.Close()
 
 t, err := stt.Get(ctx, rt)          // loads at the first call (under a second to tens of seconds); the same one after
@@ -246,7 +246,7 @@ err = stt.Release(rt)               // unloads it and frees its memory; the next
 rt.Loaded()                         // the models held now: use, model, memory, how long loading took
 ```
 
-- **It touches no network and converts nothing.** A use that is not prepared is `ai.ErrNotPrepared`. With `ai.WithAutoPrepare(fn)` the first `Get` prepares it, as the commands do; that may download gigabytes
+- **It touches no network and converts nothing.** A use that is not prepared is `ai.ErrNotPrepared`. With `ai.WithAutoPrepare(fn)` the first `Get` prepares it, as the commands do; that may download gigabytes. `ai.WithConsole()` does the same and shows it on the terminal as hwnpu's commands do: a line for each model, the downloads', conversions' and first compile's bars redrawn in place, their logs in gray (`Plan.Log` takes such a writer for `Plan.Run`; `ai.Console()` is it). An app's commands open their Runtime with it (`konghelper.AutoPrepare()`), and `APP models prepare` shows its work the same way
 - **A store whose record is not what is picked now counts as not prepared.** When the use was prepared as another model (the app's line-up changed, or the machine's memory setting did), the old one is not loaded in its place
 - **Loads run one at a time.** Each model runs one request at a time (others wait). Different models may be called at the same time
 - **An app that uses its models one after another** unloads them with `Release`: a picture's generator, then its depth, with only the larger of the two in memory. `app.InTurns(a, b)` declares it: the plan counts the larger alone in what the models take together, and loading one releases the other. Nothing else unloads models by itself yet ([D9](#10-design-questions)). This is another level than the swapping of stages that image generation does inside ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
