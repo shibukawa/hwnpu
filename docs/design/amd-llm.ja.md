@@ -16,7 +16,7 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | `lfm3` | `iron_lfm3.Lfm3` (hwnpu のもの。IRON にはない) | LFM3-1.7B |
 | `lfm3vl`、`lfm3audio`、`lfm3omni` | `iron_lfm3vl`、`iron_lfm3audio`、`iron_lfm3omni` | LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B |
 | `plamo3` | `iron_plamo3.Plamo3` (hwnpu のもの) | PLaMo 3 Translate 0.8B、2B、8B |
-| `ouro` | `iron_ouro.Ouro` (hwnpu のもの。IRON にはない) | Ouro-1.4B-Thinking (評価のみで models.yaml にはない。[model-estimation.md](../model-estimation.md))。2.6B は書き出していない |
+| `ouro` | `iron_ouro.Ouro` (hwnpu のもの。IRON にはない) | Ouro-1.4B-Thinking (評価のみで models.yaml にはない。[model-estimation.ja.md](../model-estimation.ja.md))。2.6B は書き出していない |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN は `iron_gdn.py`) | Qwen3.5-0.8B、2B、4B |
 
 今の書き出しの指定は [models.yaml](../../models.yaml) の `amd_export`:
