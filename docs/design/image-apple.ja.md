@@ -10,7 +10,7 @@
 |---|---|---|---|
 | Anima-Turbo、Anima-Aesthetic | あり | あり (OpenVINO IR。実機の通しは未確認) | `internal/imagegen/anima` |
 | Chroma1-Flash、Chroma1-HD | あり | なし | `internal/imagegen/chroma` |
-| FLUX.2 klein 4B | あり (文からの生成。編集は AMD だけ) | なし | `internal/imagegen/flux2klein` |
+| FLUX.2 klein 4B | あり (文からの生成。編集は編集のプログラムで、下) | なし | `internal/imagegen/flux2klein` |
 | FLUX.3 klein | あり (文からの生成) | なし | `internal/imagegen/flux3klein` |
 
 - Mac の `hwnpu-image` は Core AI だけで動く (macOS 27)。`--backend coreml` や `HWNPU_BACKEND=coreml` も Core AI を開く (`cmd/hwnpu-image/backend.go` の `imageDevice`)。Core AI のない Mac には `hwnpu-image` のデバイスがない。
@@ -168,6 +168,14 @@
 - 512² + 1024² を 1 つの書き出しに。潜在は大きさごとの書き出しとビット単位で同じ。
 - 精度 (512²、最初のステップの速度。同じプログラムを CPU の float32 で回したものと、`flux2klein.TestF32Check`): 相対 RMS 3.8 % = lut8 2.7 % + NE の fp16 2.8 %。組ごとには 0.2〜0.8 % で、25 ブロックで積み重なる。diffusers とは比べていない (その Mac に PyTorch がない)。
 - 当てはまらないもの: CFG (蒸留済み)、文のキーと値をステップの外に (文の行はステップごとに変調される)、決まった前置き (3 トークン)、文の行を減らす (DiT がパッドも見る)。
+
+### 編集: 編集のプログラム (`edit.go`)
+
+- 編集には、文からの生成にないプログラムが要る: 絵の行と参照の行を通す DiT の組 (`mil.Dit.Refs`。1024² で等倍の参照 1 枚なら 8704 行、文からは 4608 行) と、VAE の符号器。これを主の書き出しの隣の**別の書き出し**にする (`ConvertEdit`、`PrepareEdit`、`flux.2-klein-4b-edit-512+1024-ref1-lut8-v1.coreai`、4.1 GB)。`Pipeline.UseEdit` で主の書き出しと一緒に読む。分ける理由: Core AI は `.aimodel` の関数を全部まとめてコンパイルするので、主のプログラムに編集の関数を入れると、文からの生成の初回がどれも長くなる。取得元にある主の書き出しの prebuilt もそのまま使える。
+- 最初の編集で (`hwnpu-image generate --image`、`ai/imagegen.Edit`)、チェックポイント (16 GB のダウンロード) から約 30 秒で変換し、その編集でコンパイルする。大きさは主の書き出しのもの (`SizeList`)、参照は `EditOptions.Refs` (既定は絵の大きさの 1 枚。`{2}` は辺が半分の 1 枚)。
+- 参照のあるステップの DiT: 画像の流れは絵の行、続いて参照の行 (変調は同じ行)。参照の RoPE の最初の軸は 10、20、…。`HeadAttention` の分け目は画像の流れの終わり。`proj_out` は絵の行だけ。`TestDitReferences` が diffusers のブロックを float64 で書いたものと比べる (相対 RMS 3e-4、参照なしと同じ)。
+- 符号器 (`chroma/mil.VaeEncStages`、7 段: 絵の大きさとその半分では残差ブロック 1 つずつ、ほかのダウンブロックはまとめて、中のブロックと頭)。ダウンサンプラーは (0, 1, 0, 1) を埋める (`milpart.Conv2DPad`)。`quant_conv` は `conv_out` の最初の 32 チャネル (平均) に畳み込む。diffusers と (`tools/ref/ref_flux2klein.py --encode`、狐の 512²): 相対 RMS 0.39 %、コサイン 0.99999。
+- 数字 (M3 16 GB、キャッシュあり): 512² で参照 1 枚の 1 ステップ 3.0 秒。`samples/layers` の 1 層の描き足しは 512² で 39 秒、1024² で 89 秒 (参照の符号化を含む)。最初の編集は 2 つの大きさの編集のプログラムをまとめてコンパイルし、端末で約 1 時間 (512² だけなら 6 分)。チップごとの prebuilt でなくす予定。名前の違うプロセスは、もう 1 度コンパイルする (Core AI のキャッシュはプロセスの名前ごと)。
 
 ## FLUX.3 klein
 

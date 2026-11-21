@@ -92,11 +92,12 @@ func tinyCheckpoint(t *testing.T, c Dit, root string) map[string][]float32 {
 
 // refDit is Flux2Transformer2DModel's blocks in float64, written from diffusers' (the rotary
 // pairs (2i, 2i + 1), the weights as the checkpoint holds them): the velocity of the patches x
-// (tokens x latent) under the text rows ctx (text rows x hidden, after context_embedder) and the
-// modulation rows mods (ModRows x hidden).
+// (image rows x latent: the picture's, then the references') under the text rows ctx (text rows x
+// hidden, after context_embedder) and the modulation rows mods (ModRows x hidden), for the
+// picture's rows alone.
 func refDit(c Dit, w map[string][]float32, x, ctx, mods []float32) []float64 {
 	E, H, D, M := c.Hidden, c.Heads, c.HeadDim, c.MLP
-	N, T := c.Tokens(), c.TextRows
+	N, T := c.ImageRows(), c.TextRows
 	R := N + T
 	f64 := func(v []float32) []float64 {
 		out := make([]float64, len(v))
@@ -142,12 +143,19 @@ func refDit(c Dit, w map[string][]float32, x, ctx, mods []float32) []float64 {
 		return y
 	}
 	// positions (index, row, column, text position) and the rotary embedding of FLUX's pairs
-	pos := make([][4]float64, R)
-	for r := 0; r < N; r++ {
-		pos[r] = [4]float64{0, float64(r / c.GW()), float64(r % c.GW()), 0}
+	// (diffusers' Flux2KleinPipeline: a reference's index axis 10, 20, ...)
+	var pos [][4]float64
+	for k := 0; k <= len(c.Refs); k++ {
+		gh, gw := c.GH(), c.GW()
+		if k > 0 {
+			gh, gw = gh/c.Refs[k-1], gw/c.Refs[k-1]
+		}
+		for r := 0; r < gh*gw; r++ {
+			pos = append(pos, [4]float64{float64(10 * k), float64(r / gw), float64(r % gw), 0})
+		}
 	}
 	for l := 0; l < T; l++ {
-		pos[N+l] = [4]float64{0, 0, 0, float64(l)}
+		pos = append(pos, [4]float64{0, 0, 0, float64(l)})
 	}
 	var ang [][]float64 // rows x D/2
 	for r := 0; r < R; r++ {
@@ -282,8 +290,9 @@ func refDit(c Dit, w map[string][]float32, x, ctx, mods []float32) []float64 {
 			all[i] += gate[i%E] * y[i]
 		}
 	}
-	h := modulate(all[:N*E], N, mod(ModOut+1), mod(ModOut))
-	return lin(h, N, w["proj_out.weight"], c.Latent)
+	P := c.Tokens()
+	h := modulate(all[:P*E], P, mod(ModOut+1), mod(ModOut))
+	return lin(h, P, w["proj_out.weight"], c.Latent)
 }
 
 // writeRun writes p as a Core ML package and runs it with the CPU interpreter.
@@ -308,8 +317,23 @@ func writeRun(t *testing.T, p *Part, w llm.Weights, in map[string]milcpu.Tensor)
 // The DiT's programs (Doubles, then Singles ending with the output) give the velocity diffusers'
 // blocks give: the checkpoint's weights through Weights (the rotary rows permuted, the fused
 // matrices in parts), the residual stream divided by DitScale.
-func TestDit(t *testing.T) {
+func TestDit(t *testing.T) { testDit(t, tiny()) }
+
+// With references (an edit) the programs take their patches after the picture's, each at its
+// own positions, and give the picture's velocity alone, as diffusers' blocks do.
+func TestDitReferences(t *testing.T) {
 	c := tiny()
+	c.Refs = []int{1, 2} // one of the picture's size, one of half its sides
+	if c.ImageRows() != 4+4+1 || RefsName(c.Refs) != "ref1h1" {
+		t.Fatalf("image rows %d, name %q", c.ImageRows(), RefsName(c.Refs))
+	}
+	if n := Doubles(c, 0, 1).Name; n != "dit_double_0_ref1h1" {
+		t.Errorf("the doubles of references are named %s", n)
+	}
+	testDit(t, c)
+}
+
+func testDit(t *testing.T, c Dit) {
 	root := t.TempDir()
 	ws := tinyCheckpoint(t, c, root)
 	w, err := OpenWeights(root, c)
@@ -325,7 +349,7 @@ func TestDit(t *testing.T) {
 		}
 		return v
 	}
-	E, N, R := c.Hidden, c.Tokens(), c.Rows()
+	E, N, R := c.Hidden, c.ImageRows(), c.Rows()
 	x, ctx, mods := randn(N*c.Latent, 1), randn(c.TextRows*E, 1), randn(ModRows*E, 0.3)
 	want := refDit(c, ws, x, ctx, mods)
 	cs := make([]float32, len(ctx))

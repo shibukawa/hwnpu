@@ -13,10 +13,10 @@ import (
 // projections carry it; the norms do not see it.
 const DitScale = 32
 
-// RopeValues is the rotary embedding of the DiT's rows (the image's at (0, row, column, 0), then
-// the text's at (0, 0, 0, position)) as blocks.ApplyRope takes it in RopePerm's order: (rows,
-// head_dim) each of cos and sin, pair i (values i and i + d/2) at frequency i of the axes' (FLUX.2:
-// four of 32, theta 2000).
+// RopeValues is the rotary embedding of the DiT's rows (the image's at (0, row, column, 0), each
+// reference's at (10 k, row, column, 0) for the k-th, then the text's at (0, 0, 0, position)) as
+// blocks.ApplyRope takes it in RopePerm's order: (rows, head_dim) each of cos and sin, pair i
+// (values i and i + d/2) at frequency i of the axes' (FLUX.2: four of 32, theta 2000).
 func RopeValues(c Dit) (cos, sin []float32) {
 	D := c.HeadDim
 	half := D / 2
@@ -32,13 +32,24 @@ func RopeValues(c Dit) (cos, sin []float32) {
 	}
 	R := c.Rows()
 	cos, sin = make([]float32, R*D), make([]float32, R*D)
-	for r := 0; r < R; r++ {
-		pos := make([]float64, len(c.Axes))
-		if r < c.Tokens() {
-			pos[1], pos[2] = float64(r/c.GW()), float64(r%c.GW())
-		} else {
-			pos[3] = float64(r - c.Tokens())
+	// each row's position: the picture's and the references' patches, then the text's
+	var poss [][4]float64
+	for k := 0; k <= len(c.Refs); k++ {
+		gh, gw := c.GH(), c.GW()
+		if k > 0 {
+			gh, gw = gh/c.Refs[k-1], gw/c.Refs[k-1]
 		}
+		for y := 0; y < gh; y++ {
+			for x := 0; x < gw; x++ {
+				poss = append(poss, [4]float64{float64(10 * k), float64(y), float64(x), 0})
+			}
+		}
+	}
+	for l := 0; l < c.TextRows; l++ {
+		poss = append(poss, [4]float64{0, 0, 0, float64(l)})
+	}
+	for r := 0; r < R; r++ {
+		pos := poss[r]
 		for i, f := range fs {
 			a := pos[f.axis] * f.f
 			cs, sn := float32(math.Cos(a)), float32(math.Sin(a))
@@ -124,10 +135,10 @@ func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.V
 
 // attend is the attention of q, k, v (1, rows, heads, head_dim) over all the rows (the DiT attends
 // to the text's pads too): (1, rows, hidden). A head at a time, HeadChunk queries at a time, the
-// image's keys and the text's as score tensors of their own (docs/design/image-apple.md).
+// image stream's keys and the text's as score tensors of their own (docs/design/image-apple.md).
 func (d *ditGraph) attend(q, k, v *mlpackage.Var) *mlpackage.Var {
 	t := func(x *mlpackage.Var) *mlpackage.Var { return d.Transpose(x, 0, 2, 1, 3) }
-	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: HeadChunk, Split: d.c.Tokens()}))
+	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: HeadChunk, Split: d.c.ImageRows()}))
 }
 
 // swiglu is a SwiGLU MLP's output of h, divided by DitScale.
@@ -135,11 +146,12 @@ func (d *ditGraph) swiglu(h *mlpackage.Var, gate, up, down string) *mlpackage.Va
 	return d.SwiGLU(h, gate, up, down, d.c.MLP, d.c.Hidden, 1.0/DitScale)
 }
 
-// double is Flux2TransformerBlock i over x (1, rows, hidden): the image's rows, then the text's.
-// The modulation rows are the program's: the image's 6 (ModImage), then the text's (ModText).
+// double is Flux2TransformerBlock i over x (1, rows, hidden): the image stream's rows (the
+// picture's, then the references'), then the text's. The modulation rows are the program's: the
+// image stream's 6 (ModImage), then the text's (ModText).
 func (d *ditGraph) double(i int, x *mlpackage.Var) *mlpackage.Var {
 	c := d.c
-	N, R, E := c.Tokens(), c.Rows(), c.Hidden
+	N, R, E := c.ImageRows(), c.Rows(), c.Hidden
 	p := fmt.Sprintf("dit.transformer_blocks.%d.", i)
 	parts := []struct {
 		s      stream
@@ -182,13 +194,14 @@ func (d *ditGraph) single(i int, x *mlpackage.Var, r int) *mlpackage.Var {
 }
 
 // Doubles is the double blocks first..first+count-1: input x (1, rows, hidden), the residual
-// streams (the image's rows, then the text's) divided by DitScale; for the first group x is the
-// latents' patches (1, tokens, 128), which it embeds, and ctx (1, text rows, hidden) Ctx's
-// output. mods (1, 12, hidden): the double blocks' image modulation rows, then their text's (the
-// same for every block). Output y, the residual streams after them.
+// streams (the image stream's rows, then the text's) divided by DitScale; for the first group x
+// is the latents' patches (1, image rows, 128: the picture's, then the references'), which it
+// embeds, and ctx (1, text rows, hidden) Ctx's output. mods (1, 12, hidden): the double blocks'
+// image modulation rows, then their text's (the same for every block). Output y, the residual
+// streams after them. With references the program's name ends with their RefsName.
 func Doubles(c Dit, first, count int) *Part {
-	return part(fmt.Sprintf("dit_double_%d", first), func(g *graph) {
-		N, E := c.Tokens(), c.Hidden
+	return part(fmt.Sprintf("dit_double_%d%s", first, refsSuffix(c)), func(g *graph) {
+		N, E := c.ImageRows(), c.Hidden
 		var x *mlpackage.Var
 		if first == 0 {
 			p := g.Input("x", 1, N, c.Latent)
@@ -210,7 +223,7 @@ func Doubles(c Dit, first, count int) *Part {
 // image's rows, its mods 2 rows more (norm_out's scale and shift): output (1, tokens, 128), the
 // velocity of the patches. Else the output is the residual streams.
 func Singles(c Dit, first, count int) *Part {
-	return part(fmt.Sprintf("dit_single_%d", first), func(g *graph) {
+	return part(fmt.Sprintf("dit_single_%d%s", first, refsSuffix(c)), func(g *graph) {
 		last := first+count == c.Singles
 		mods := 3
 		if last {
@@ -227,6 +240,14 @@ func Singles(c Dit, first, count int) *Part {
 		}
 		g.Output(x)
 	})
+}
+
+// refsSuffix is the end of the name of a program of c's references: "" without any.
+func refsSuffix(c Dit) string {
+	if n := RefsName(c.Refs); n != "" {
+		return "_" + n
+	}
+	return ""
 }
 
 // Ctx is context_embedder of the text's rows: input x (1, text rows, 3 x Qwen3's width), the

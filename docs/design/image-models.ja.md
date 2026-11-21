@@ -16,7 +16,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 | 名前 (family:tag) | 部品 | ステップ / ガイダンス | ライセンス、内容 | `machine` | メモリ AMD / Apple (GB) | NPU、時間 |
 |---|---|---|---|---|---|---|
-| **FLUX.2-klein-4B** (`flux2-klein:4b`) | FLUX の形の 3.9B の DiT (double 5、single 20)、Qwen3-4B、FLUX.2 の VAE | オイラー法 4、なし | Apache-2.0、安全 | 8 | 3.9 / 4.9 | AMD 1024² 約 29 秒、512² 約 10 秒。編集 (AMD だけ) 1 分、参照を半分で 37 秒。Apple M1 1024² 約 41 秒、512² 11 秒 |
+| **FLUX.2-klein-4B** (`flux2-klein:4b`) | FLUX の形の 3.9B の DiT (double 5、single 20)、Qwen3-4B、FLUX.2 の VAE | オイラー法 4、なし | Apache-2.0、安全 | 8 | 3.9 / 4.9 | AMD 1024² 約 29 秒、512² 約 10 秒。編集は AMD 1 分、参照を半分で 37 秒、Apple M3 1024² 89 秒、512² 39 秒 (編集のプログラム)。Apple M1 1024² 約 41 秒、512² 11 秒 |
 | flux-3-image-klein (`flux3-klein`) | 5.5B の DiT (流れごとの mode ブロックのあと single ブロック)、Qwen3-VL-4B、FLUX.2 の VAE | flow-map 16 ステップ、なし | FLUX Kommunity (非商用、gated。初回に聞く) | 16 | 3.9 / 5.5 (Apple は見積もり) | AMD 1024² 約 1 分 45 秒、512² 32 秒。Apple M3 1024² 約 2 分 (lut8)。文からの生成だけ |
 | Anima-Turbo (`anima-turbo:v1.1`) | Cosmos-Predict2 2B の DiT、Qwen3-0.6B と LLM アダプタ、Qwen-Image の VAE | オイラー法 8、なし (蒸留) | 重みは非商用 (絵は商用可。初回に聞く)、nsfw | 8 | 3.5 / 4.8 | AMD 1024² 約 32 秒。Apple M1 48 秒。Intel の形があるのはこれだけ |
 | Anima-Aesthetic (`anima:aesthetic`、ファミリーの既定) | Anima-Turbo のプログラムに別の重み | DPM-Solver++ 2M 25、CFG 4 は σ ≥ 0.6 | Anima-Turbo と同じ、nsfw | 8 | 3.5 / 4.8 | Anima-Turbo の約 4.5 倍。AMD 1024² 2 分 22 秒、2.71 kJ |
@@ -59,7 +59,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 - プロンプトと負のプロンプトは文の符号器の 1 回の読み込みでまとめて符号化する (`EncodeAll`)。
 - **空の負のプロンプトは定数**: diffusers は空のプロンプトをマスクしたトークンで回す。残るのは重みだけで決まる 1 行で、書き出しのときに計算する (Anima `text/empty_cond.bin`、diffusers とコサイン 1.0000。Mac の Chroma `text/empty.bin`、2 行を float32 の T5 で)。
 
-## 参照画像の編集 (FLUX.2 klein、AMD)
+## 参照画像の編集 (FLUX.2 klein)
 
 `hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 ... the living room from image 2."`
 
@@ -67,7 +67,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 - 参照の潜在 (VAE の符号器の平均をパッチにし、バッチ正規化の統計で正規化) を絵の行の後ろに並べ、RoPE の最初の軸を 10、20、30、40 にする。変調は絵の行と同じ。最後に絵の行だけ読む。
 - 半分の大きさは被写体の細部を変える (毛が平らに、顔が簡単に。CPU の float32 でも同じ) が、構図の参照は変わらない。被写体を等倍、部屋を半分にすると、等倍 2 枚と同じ細かさで 1 分 41 秒 → 1 分 8 秒。
 - 1 ステップの時間は行数で決まる。書き出しは既定の参照の組み合わせを持つ ([image-amd.ja.md](image-amd.ja.md))。持っていない組み合わせは、動かせる一覧 (`References`) を添えて断る。
-- Apple の FLUX.2 klein とほかのモデルは文からの生成だけ。
+- Apple の Neural Engine では、編集は編集のプログラム (最初の編集で変換する別の書き出し、[image-apple.ja.md](image-apple.ja.md)) で動く。ほかのモデルは文からの生成だけ。
 
 ## 複数枚: `--batch`
 

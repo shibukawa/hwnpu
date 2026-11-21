@@ -368,9 +368,8 @@ longest command, streaming) per the [new-model checklist](new-model-checklist.md
 
 - `ai`: a residency manager (memory budget, submission order), nodes with three or more inputs, letting
   the library decide when to release models, per-edge measurement, the rest of `ai/vision`, Anima /
-  Chroma / FLUX.3 klein in `ai/imagegen`, moving the commands onto `ai`; `ai` not yet run on a Mac
-  (Core AI; reference-image generation does not run on the Neural Engine yet, so `samples/layers` is AMD
-  only) or Intel, nor `text.Chat`, a real microphone, camera or screen on hardware. Real parallelism by column split (AMD) not verified.
+  Chroma / FLUX.3 klein in `ai/imagegen`, moving the commands onto `ai`; `ai` not yet run on Intel, nor
+  `text.Chat` and a real microphone on hardware (on a Mac the three samples, the camera and the window ran). Real parallelism by column split (AMD) not verified.
 - `npuinfo`: run on Windows (Intel and AMD); check IOReport channel names on M2 and later; decode AIE
   status and telemetry; a common API; a browser viewer.
 - The library API is marked planned; names may change.

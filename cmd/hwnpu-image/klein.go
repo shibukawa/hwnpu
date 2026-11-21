@@ -8,6 +8,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	"image/png"
+	"io"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -84,6 +85,21 @@ func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, []a
 	dir, err := flux2klein.Prepare(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo,
 		Name: m.Name, ConvertOptions: o, Log: console.Log(os.Stderr)})
 	return dir, as, err
+}
+
+// kleinEdit is the edit's programs of the Core AI export model (flux2klein.PrepareEdit): of its
+// sizes and DiT format, next to it, from the shared layers or converted from the checkpoint.
+func kleinEdit(ctx context.Context, model string, log io.Writer) (string, error) {
+	m, ok := chat.Lookup("FLUX.2-klein-4B")
+	if !ok {
+		return "", errors.New("FLUX.2-klein-4B is not in models.yaml")
+	}
+	man, err := flux2klein.ReadProgramManifest(model)
+	if err != nil {
+		return "", err
+	}
+	return flux2klein.PrepareEdit(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Dir(model), Repo: m.Repo, Name: m.Name, Log: log},
+		flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
 }
 
 // referenceArg is an --image argument's file and the reference's size as the picture's sides over
@@ -193,6 +209,16 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspec
 	sig := p.Sigmas(c.Steps)
 	steps := len(sig) - 1
 	// the references' latents: for now as raw float32 rows (tools/ref/ref_flux2klein.py's "refs")
+	if flux2klein.IsProgramExport(model) && (len(c.Image) > 0 || len(c.RefLatents) > 0) {
+		// Apple's Neural Engine edits with programs of their own, converted at the first edit
+		dir, err := kleinEdit(ctx, model, lw)
+		if err != nil {
+			return err
+		}
+		if err := p.UseEdit(dir); err != nil {
+			return err
+		}
+	}
 	var refs [][]float32
 	for _, f := range c.RefLatents {
 		r, err := readF32(f)
@@ -208,8 +234,12 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspec
 		}
 	}
 	if len(files) > 0 && !p.HasReferences(divs) {
-		return fmt.Errorf("--image: the export %s does not run these references (%s); it runs %s, and the others once tools/amd/iron_flux2klein.py --refs compiled their rows",
-			filepath.Base(model), referenceNames(divs), strings.Join(p.References(), ", "))
+		how := "tools/amd/iron_flux2klein.py --refs compiled their rows"
+		if flux2klein.IsProgramExport(model) {
+			how = "flux2klein.EditOptions.Refs converted their programs"
+		}
+		return fmt.Errorf("--image: the export %s does not run these references (%s); it runs %s, and the others once %s",
+			filepath.Base(model), referenceNames(divs), strings.Join(p.References(), ", "), how)
 	}
 	for i, f := range files {
 		div := divs[i]

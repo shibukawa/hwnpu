@@ -348,9 +348,6 @@ const MaxReferences = 4
 // (tools/amd/iron_flux2klein.py --refs) and whose sizes it has an encoder for.
 func (p *Pipeline) References() []string {
 	out := []string{"0"}
-	if p.prog != nil {
-		return out
-	}
 	for full := 0; full <= MaxReferences; full++ {
 		for half := 0; full+half <= MaxReferences; half++ {
 			if full+half == 0 {
@@ -384,7 +381,22 @@ func (p *Pipeline) References() []string {
 // encoders of those sizes.
 func (p *Pipeline) HasReferences(divs []int) bool {
 	if p.prog != nil {
-		return len(divs) == 0
+		if len(divs) == 0 {
+			return true
+		}
+		e := p.prog.edit
+		if e == nil {
+			return false
+		}
+		if _, ok := e.Step(divs); !ok {
+			return false
+		}
+		for _, d := range divs {
+			if len(e.Encoders[d]) == 0 {
+				return false
+			}
+		}
+		return true
 	}
 	st, ok := p.step(divs)
 	if !ok {
@@ -725,8 +737,27 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, refs [][]float32, no
 	return xs[0], nil
 }
 
+// refDivs are the sizes of the references' latents refs (EncodeImage's) as the picture's sides
+// over each: 1 for a reference of the picture's size, 2 or 4 for half or a quarter of its sides.
+func (p *Pipeline) refDivs(refs [][]float32) ([]int, error) {
+	c := p.C
+	N := c.Tokens()
+	divs := make([]int, len(refs))
+	for i, r := range refs {
+		for _, k := range []int{1, 2, 4} {
+			if len(r)*k*k == N*c.Latent && c.GH()%k == 0 && c.GW()%k == 0 {
+				divs[i] = k
+			}
+		}
+		if divs[i] == 0 {
+			return nil, fmt.Errorf("flux2klein: reference %d: %d values for latents of %d (a reference is of the picture's size, or of half its sides)", i+1, len(r), N*c.Latent)
+		}
+	}
+	return divs, nil
+}
+
 // GenerateAll is Generate of several pictures, each noises[k] under conds[k], with the same
-// references (none on Apple's Neural Engine), their steps together: each group of the DiT's
+// references (on Apple's Neural Engine those of the edit's programs, UseEdit), their steps together: each group of the DiT's
 // blocks runs every picture before the next group's weights are read (on AMD's NPU into the one
 // bank; on Apple's Neural Engine its program loaded), and the modulation rows and the DiT's
 // graphs are made once for all of them. step is told of the steps of all of them. A picture's
@@ -742,10 +773,7 @@ func (p *Pipeline) GenerateAll(ctx context.Context, conds []Cond, refs [][]float
 		}
 	}
 	if p.prog != nil {
-		if len(refs) > 0 {
-			return nil, errors.New("flux2klein: editing (--image) runs on AMD's NPU only for now")
-		}
-		return p.generatePrograms(ctx, conds, noises, sigmas, step)
+		return p.generatePrograms(ctx, conds, refs, noises, sigmas, step)
 	}
 	return p.generateIRON(ctx, conds, refs, noises, sigmas, step)
 }
@@ -762,17 +790,9 @@ func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises 
 			return nil, errors.New("flux2klein: the DiT runs without a prompt (Encode)")
 		}
 	}
-	// the references' rows: each of the picture's size, or of half or a quarter of its sides
-	divs := make([]int, len(refs))
-	for i, r := range refs {
-		for _, k := range []int{1, 2, 4} {
-			if len(r)*k*k == N*c.Latent && c.GH()%k == 0 && c.GW()%k == 0 {
-				divs[i] = k
-			}
-		}
-		if divs[i] == 0 {
-			return nil, fmt.Errorf("flux2klein: reference %d: %d values for latents of %d (a reference is of the picture's size, or of half its sides)", i+1, len(r), N*c.Latent)
-		}
+	divs, err := p.refDivs(refs)
+	if err != nil {
+		return nil, err
 	}
 	if !p.HasReferences(divs) {
 		return nil, fmt.Errorf("flux2klein: the export has no blocks for these %d references (it runs %s)", len(refs), strings.Join(p.References(), ", "))
@@ -954,17 +974,17 @@ func (p *Pipeline) Unpack(x []float32) []float32 {
 // centre cropped to the picture's aspect ratio and scaled to its sides over div (bicubic), the
 // VAE's encoder of that size (the latents' means), 2 x 2 patches normalized by the VAE's batch-norm
 // statistics. div 1 reads the reference at the picture's size; 2 at half its sides, a quarter of
-// the rows a step carries (HasReferences).
+// the rows a step carries (HasReferences). On Apple's Neural Engine the encoder is the edit's
+// programs' (UseEdit).
 func (p *Pipeline) EncodeImage(ctx context.Context, img image.Image, div int) ([]float32, error) {
 	c := p.C
-	if p.prog != nil {
-		return nil, errors.New("flux2klein: editing (--image) runs on AMD's NPU only for now")
+	if p.prog != nil && p.prog.edit == nil {
+		return nil, fmt.Errorf("flux2klein: %w", errNoEdit)
 	}
 	if div < 1 || c.Width%(16*div) != 0 || c.Height%(16*div) != 0 {
 		return nil, fmt.Errorf("flux2klein: a reference of the picture's sides over %d", div)
 	}
 	W, H := c.Width/div, c.Height/div
-	dir := p.encoder(W, H)
 	b := img.Bounds()
 	sw, sh := b.Dx(), b.Dy()
 	cw, ch := sw, sh
@@ -989,14 +1009,23 @@ func (p *Pipeline) EncodeImage(ctx context.Context, img image.Image, div int) ([
 			px[k*H*W+i] = float32(rgb[3*i+k])/127.5 - 1
 		}
 	}
-	enc, err := anima.OpenVAE(ctx, p.dev, filepath.Join(p.dir, dir))
-	if err != nil {
-		return nil, fmt.Errorf("flux2klein: the VAE's encoder: %w", err)
-	}
-	enc.Stage = p.Stage
-	z, err := enc.Encode(ctx, px)
-	if err != nil {
-		return nil, fmt.Errorf("flux2klein: %w", err)
+	var (
+		z   []float32
+		err error
+	)
+	if p.prog != nil {
+		if z, err = p.prog.encodeReference(ctx, px, div); err != nil {
+			return nil, fmt.Errorf("flux2klein: %w", err)
+		}
+	} else {
+		enc, err := anima.OpenVAE(ctx, p.dev, filepath.Join(p.dir, p.encoder(W, H)))
+		if err != nil {
+			return nil, fmt.Errorf("flux2klein: the VAE's encoder: %w", err)
+		}
+		enc.Stage = p.Stage
+		if z, err = enc.Encode(ctx, px); err != nil {
+			return nil, fmt.Errorf("flux2klein: %w", err)
+		}
 	}
 	gh, gw, L := c.GH()/div, c.GW()/div, c.Latent
 	h, w := 2*gh, 2*gw

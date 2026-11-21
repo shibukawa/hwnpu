@@ -880,7 +880,7 @@ models:
           "3:2": 1248x832
           "4:3": 1168x880
           "16:9": 1344x768
-    about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image, AMD); AMD's NPU (about 29 s at 1024 x 1024, an edit 1 min, 37 s with --ref-half) and Apple's Neural Engine (text to image: about 41 s at 1024 x 1024, 11 s at 512 x 512 on an M1); Apache-2.0"
+    about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image; on Apple's Neural Engine with programs of their own, converted at the first edit); AMD's NPU (about 29 s at 1024 x 1024, an edit 1 min, 37 s with --ref-half) and Apple's Neural Engine (text to image: about 41 s at 1024 x 1024, 11 s at 512 x 512 on an M1); Apache-2.0"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
   # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
   # converted when a picture first takes it

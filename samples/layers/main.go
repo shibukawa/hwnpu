@@ -19,7 +19,7 @@
 //	layers picture.png -o picture.psd    # part it: a minute for each layer but the last
 //	layers picture.png --layers 4 --png parts/ # the layers and how near their points are too: "parallax parts/" draws them
 //
-// Drawing from a reference runs on AMD's NPU for now.
+// Drawing from a reference runs on AMD's NPU and Apple's Neural Engine.
 package main
 
 import (
@@ -46,8 +46,10 @@ import (
 
 // The models: the depth of a picture, and the one that draws what a layer hid.
 var (
-	depth  = vision.Depth("depth")
-	artist = imagegen.Generate("image")
+	depth = vision.Depth("depth")
+	// Edit, not Generate: it draws from a reference (on Apple's Neural Engine with programs of
+	// their own, which Generate leaves out)
+	artist = imagegen.Edit("image")
 )
 
 // build is the app with its two calls (samples/layering runs them in turns).

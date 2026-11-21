@@ -10,7 +10,7 @@ How the image generation models run on Apple's Neural Engine and on Intel's NPU:
 |---|---|---|---|
 | Anima-Turbo, Anima-Aesthetic | yes | yes (OpenVINO IR, not verified end to end on hardware) | `internal/imagegen/anima` |
 | Chroma1-Flash, Chroma1-HD | yes | no | `internal/imagegen/chroma` |
-| FLUX.2 klein 4B | yes (text to image; editing is AMD only) | no | `internal/imagegen/flux2klein` |
+| FLUX.2 klein 4B | yes (text to image; editing with the edit's programs, below) | no | `internal/imagegen/flux2klein` |
 | FLUX.3 klein | yes (text to image) | no | `internal/imagegen/flux3klein` |
 
 - On a Mac, `hwnpu-image` runs Core AI only (macOS 27). `--backend coreml` or `HWNPU_BACKEND=coreml` also opens Core AI (`imageDevice` in `cmd/hwnpu-image/backend.go`). A Mac without Core AI has no device for `hwnpu-image`.
@@ -168,6 +168,14 @@ Pictures are byte for byte the same in all forms.
 - 512² + 1024² in one export; latents bit for bit as per-size exports.
 - Accuracy (512², first-step velocity, against the same programs in float32 on the CPU, `flux2klein.TestF32Check`): 3.8 % rel. RMS = lut8 2.7 % + NE fp16 2.8 %; per group 0.2–0.8 %, accumulating over 25 blocks. No diffusers comparison (no PyTorch on that Mac).
 - Does not apply: CFG (distilled), text K/V out of the steps (text rows are modulated each step), fixed prefix (3 tokens), fewer text rows (the DiT sees pads).
+
+### Editing: the edit's programs (`edit.go`)
+
+- An edit needs programs text to image does not: the DiT's groups over the picture's rows and the references' (`mil.Dit.Refs`; 1024² with one full-size reference is 8704 rows, against 4608) and the VAE's encoder. They are **an export of their own** next to the main one (`ConvertEdit`, `PrepareEdit`, `flux.2-klein-4b-edit-512+1024-ref1-lut8-v1.coreai`, 4.1 GB), read with it by `Pipeline.UseEdit`. Why apart: Core AI compiles every function of an `.aimodel` together, so edit functions inside the main programs would lengthen every text-to-image first run, and the main export's prebuilt in the sources stays valid.
+- Converted at the first edit (`hwnpu-image generate --image`, `ai/imagegen.Edit`) from the checkpoint (the 16 GB download), in about 30 s; the first edit then compiles them. Its sizes are the main export's (`SizeList`), its references `EditOptions.Refs` (default one of the picture's size; `{2}` is one of half its sides).
+- The DiT's programs of a step with references: the image stream is the picture's rows then the references' (the same modulation rows), the RoPE's first axis 10, 20, … for the references, `HeadAttention`'s split at the image stream's end, `proj_out` over the picture's rows only. `TestDitReferences` checks them against diffusers' blocks in float64 (rel. RMS 3e-4, the same as without references).
+- The encoder (`chroma/mil.VaeEncStages`, 7 stages: a residual block a stage at the picture's size and half of it, the other down blocks whole, the mid block with the head). The downsampler pads (0, 1, 0, 1) (`milpart.Conv2DPad`); `quant_conv` is folded into `conv_out`'s first 32 channels (the means). Against diffusers (`tools/ref/ref_flux2klein.py --encode`, the fox at 512²): rel. RMS 0.39 %, cosine 0.99999.
+- Numbers (M3 16 GB, warm): a step at 512² with one reference 3.0 s; `samples/layers` draws a layer in 39 s at 512² and 89 s at 1024², the reference's encoding included. The first edit compiles the edit's programs of both sizes: about an hour on the device (512² alone took 6 minutes), which the per-chip prebuilt is to take off. A process of another name compiles them again (Core AI's cache is per process name).
 
 ## FLUX.3 klein
 

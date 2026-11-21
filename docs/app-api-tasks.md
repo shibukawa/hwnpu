@@ -25,7 +25,7 @@
 | **A3** | 変換し直すかどうかを、入力のハッシュ (ビルドのキー) で決める | どこでも | A1 | 中 | 未着手 |
 | A4 | models.yaml: 全ファイルの sha256、ライセンスの項目、固定する道具 | どこでも | — | 中 | 未着手 |
 | **B1** | `ai`: 登録、計画、準備、置き場の目録、取得元 | どこでも | A3 | 大 | 一部 (登録、計画、ダウンロードとコンパイルの 2 段、目録、機械のメモリごとの構成、ライセンスの同意。取得元と層は `modelstore`。取得と変換の分割、バイト数の進み具合は残り) |
-| **B2** | `ai`: 実行 (`Open`、文字起こし、翻訳、チャット、読み上げ、音量の VAD) | どこでも、確認は Mac | B1 | 中 | v0 済み (aix1 で確認。Mac と Intel での確認は残り) |
+| **B2** | `ai`: 実行 (`Open`、文字起こし、翻訳、チャット、読み上げ、音量の VAD) | どこでも、確認は Mac | B1 | 中 | v0 済み (aix1 と Mac (M3) で確認。Intel での確認は残り) |
 | **B0** | 流れの型 (`Chunk`、`Stream`) と塊をまとめる道具、3 つのつなぎ方 (`ai/flow`: 一括、`Async` / `Latest` / `Hold`、`Metronome` / `Pace` / `Live`) | どこでも | — | 小 | 済み |
 | **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 未着手 |
 | B7 | `ai/cli`: アプリに足すサブコマンド (`models`、`status`)。コマンドラインのライブラリに依存しない関数と、kong のアダプタ `ai/cli/konghelper` | どこでも | B1 | 小 | 済み |
@@ -39,7 +39,7 @@
 | C2 | `ai/server`: 共通の部分 (互換の口をまとめる Handler、トークン、許すディレクトリ) と独自のストリーム | どこでも | B2、C1 | 中 | 未着手 |
 | C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 未着手 |
 | C4 | `ai/server/googlecloud`: Speech-to-Text、Text-to-Speech、Translation v2、Vision の REST | どこでも | C2 | 中 | 未着手 |
-| **D1** | `samples/interpreter`: 同時通訳のサンプル | Mac | C2 | 中 | 一部 (マイク (hwcamera) か録音を読んで、訳した音声を書く形は済み、aix1 で確認。訳した音声の再生、ブラウザのマイクと WebSocket は残り) |
+| **D1** | `samples/interpreter`: 同時通訳のサンプル | Mac | C2 | 中 | 一部 (マイク (hwcamera) か録音を読んで、訳した音声を書く形は済み、aix1 と Mac で確認。訳した音声の再生、ブラウザのマイクと WebSocket は残り) |
 | D2 | 測定: 日本語の読み上げ、3 つのモデルの同居、1 発話の遅れ | Mac (M3、M1) | B2 | 小 | 未着手 |
 | E1 | ビルドタグと `hwnpu.Target()`、`hwnpu.Built()` | どこでも | — | 小 | 未着手 |
 | E2 | `hwnpu_noconvert`: 変換をタグで外せるようにする | どこでも | B1、E1 | 大 | 未着手 |
@@ -55,11 +55,11 @@
 | **I3** | A2A の口 (Agent Card、JSON-RPC、SSE、push notification) | どこでも | I2 | 中 | 未着手 |
 | I5 | `hwnpu-mcp`: MCP しか話さない頭脳のための口 | どこでも | I2 | 小 | 未着手 |
 | I4 | 仕事の種類ごとの時間と電力量の目安 | Mac、aix1 | I2 | 小 | 未着手 |
-| **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 一部 (深度、顔、頭の位置は済み、aix1 で確認。物体、姿勢、切り抜き、OCR、ラベルは残り) |
-| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 一部 (FLUX.2 klein の文からの生成と参照からの編集は済み、aix1 で確認。Anima、FLUX.3 klein、Chroma、まとめて描く、Mac での確認は残り) |
+| **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 一部 (深度、顔、頭の位置は済み、aix1 と Mac で確認。物体、姿勢、切り抜き、OCR、ラベルは残り) |
+| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 一部 (FLUX.2 klein の文からの生成と参照からの編集は済み、aix1 と Mac で確認。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Anima、FLUX.3 klein、Chroma、まとめて描くは残り) |
 | J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 未着手 |
-| **J4** | `samples/parallax` の擬似立体: 絵 (Anima のアニメの絵。今はコマンドで作ったファイル) → 深度 → カメラ (hwcamera、または絵のファイル) の顔の位置 → Ebitengine の Kage のシェーダーで描く | aix1、Mac | J1 | 中 | 一部 (深度、頭の追跡、シェーダーは済み。窓は仮の画面で確認。実物のカメラと画面、絵の生成をライブラリから呼ぶのは残り) |
-| **J4b** | `samples/layers` のレイヤー分割: 絵 → 深度 → 手前の層を切り出す → 塗って FLUX.2 klein に裏を描かせる → その絵の深度 → 次の層、を繰り返して PSD に書く | aix1 | J1、J2 | 中 | 済み (aix1 で確認。層ごとの深度も持ち、擬似立体のサンプルは窓の横で層に分けて、途中経過と進み具合を窓に出す。分ける処理は `samples/layering`) |
+| **J4** | `samples/parallax` の擬似立体: 絵 (Anima のアニメの絵。今はコマンドで作ったファイル) → 深度 → カメラ (hwcamera、または絵のファイル) の顔の位置 → Ebitengine の Kage のシェーダーで描く | aix1、Mac | J1 | 中 | 一部 (深度、頭の追跡、シェーダーは済み。Mac で実物のカメラと窓 (Metal) も確認。絵の生成をライブラリから呼ぶのは残り) |
+| **J4b** | `samples/layers` のレイヤー分割: 絵 → 深度 → 手前の層を切り出す → 塗って FLUX.2 klein に裏を描かせる → その絵の深度 → 次の層、を繰り返して PSD に書く | aix1、Mac | J1、J2 | 中 | 済み (aix1 と Mac で確認。層ごとの深度も持ち、擬似立体のサンプルは窓の横で層に分けて、途中経過と進み具合を窓に出す。分ける処理は `samples/layering`) |
 
 依存のつながり:
 
