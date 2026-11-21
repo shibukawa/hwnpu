@@ -80,7 +80,8 @@ func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, []a
 		return "", nil, fmt.Errorf("--size %s: FLUX.2 klein's pictures are multiples of 16 pixels", c.Size)
 	}
 	spec := m.NPU["apple"]
-	o := flux2klein.ConvertOptions{Width: w, Height: h,
+	// every size of models.yaml npu.apple in one export (the weights once; design.md 16.280)
+	o := flux2klein.ConvertOptions{Width: w, Height: h, Sizes: aspect.SizesOf(as),
 		TextFormat: cmp.Or(c.TextFormat, spec.Text), DitFormat: cmp.Or(c.DitFormat, spec.Dit)}
 	dir, err := flux2klein.Prepare(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo,
 		Name: m.Name, ConvertOptions: o, Log: console.Log(os.Stderr)})

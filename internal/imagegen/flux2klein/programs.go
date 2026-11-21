@@ -472,7 +472,13 @@ func (e *progEngine) encodeReference(ctx context.Context, px []float32, div int)
 // (runner.Stages): a stage is loaded once (on Core AI while the stage before it runs) and runs
 // every picture before the next one; the last gives the pictures (1, 3, h, w).
 func (e *progEngine) decodeAll(ctx context.Context, zs [][]float32, stage anima.StageFunc) ([]*image.RGBA, error) {
-	xs, err := runner.Stages(ctx, e.m.Vae, e.ahead, e.open, zs, runner.StageBudget,
+	// In an export of several sizes a stage's Neural Engine buffers are those of its biggest size
+	// (vae_s6 1.55 GB on an M1), and the next stage loaded meanwhile then fails to map at times
+	// (9:16 on an M1: "Inference failed — request aborted (underlying=0x15)", the kernel's DART map
+	// failing, every run): the stages load in turn there. From the cache a stage loads in 0.1 s, so
+	// that costs 0.5 s of decoding.
+	ahead := e.ahead && len(e.m.Sizes) == 0
+	xs, err := runner.Stages(ctx, e.m.Vae, ahead, e.open, zs, runner.StageBudget,
 		func(_ int, p runner.Program, x []float32) ([]float32, error) {
 			y, err := p.Run(ctx, map[string][]float32{"x": x})
 			// the stage before's input and output (up to 0.5 GB each of float32 at 1024 x 1024)
