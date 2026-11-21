@@ -7,6 +7,8 @@ import (
 	"math"
 	"slices"
 	"time"
+
+	"github.com/shibukawa/hwnpu/ai/vision"
 )
 
 // View is where the eye is before the picture.
@@ -249,7 +251,15 @@ type windowOptions struct {
 	record string
 	// closeAfter closes the window after this long (0: never).
 	closeAfter time.Duration
-	// progress, when not nil, is the parting of the picture into layers, which runs beside the
-	// window: its steps are shown, and the layers taken as they come.
+	// progress, when not nil, is the making of the deep picture (its depth, its layers), which
+	// runs beside the window: the window shows each step until the scene is ready. picture is
+	// the picture being made deep.
 	progress *progress
+	picture  image.Image
+	// camera, when not nil, is what the tracker sees: the newest frame, the faces found, the
+	// head and whether one is seen now.
+	camera func() (image.Image, vision.Found, vision.Head, bool)
+	// gain, when not nil, changes how far the view turns for the head's move by a step (the
+	// arrow keys left and right, the wheel) and returns it.
+	gain func(step float64) float64
 }

@@ -3,7 +3,9 @@ package main
 import (
 	"image"
 	"image/color"
+	"math"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/samples/internal/layering"
 )
@@ -234,16 +236,26 @@ func TestStackAndProgress(t *testing.T) {
 		t.Errorf("the middle layer's pixel: %v", c)
 	}
 
-	// the window takes a new scene and a new picture of the step once each
-	p := &progress{}
-	p.set(func(p *progress) {
-		p.scene, p.inset, p.fresh, p.text, p.total, p.active = s, ls[0].Pix, true, "cut", 0.5, true
-	})
-	scene, inset, fresh, text, total, active := p.take()
-	if scene != s || inset == nil || !fresh || text != "cut" || total != 0.5 || !active {
-		t.Errorf("the first take: %v %v %v %q %v %v", scene != nil, inset != nil, fresh, text, total, active)
+	// the steps are queued for the window, each taken once, with how much of the whole was done
+	// when it came; the shares of the whole add up to 1, the window's putting together the rest
+	p := newProgress(ls[0].Pix, 3)
+	p.show(stageCut, ls[1].Pix, nil, "cut")
+	p.set(func(p *progress) { p.total = 0.5 })
+	p.ready(s)
+	n := p.take()
+	if len(n.steps) != 3 || n.steps[0].stage != stageDepth || n.steps[1].text != "cut" || n.steps[2].scene != s {
+		t.Fatalf("the steps taken: %+v", n.steps)
 	}
-	if scene, _, fresh, text, _, _ := p.take(); scene != nil || fresh || text != "cut" {
-		t.Errorf("the second take: %v %v %q", scene != nil, fresh, text)
+	if math.Abs(n.steps[2].total+n.wCompose-1) > 1e-9 || n.steps[1].total != 0 {
+		t.Errorf("the shares: %v, %v and %v", n.steps[1].total, n.steps[2].total, n.wCompose)
+	}
+	if n := p.take(); len(n.steps) != 0 {
+		t.Errorf("taken again: %d steps", len(n.steps))
+	}
+	if one := newProgress(ls[0].Pix, 1); one.wLayers != 0 {
+		t.Errorf("a picture of one layer has a share for its layers: %v", one.wLayers)
+	}
+	if minShow(stageNear) < 3*time.Second {
+		t.Errorf("the depth is shown %v", minShow(stageNear))
 	}
 }

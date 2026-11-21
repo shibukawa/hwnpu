@@ -74,10 +74,12 @@ type Layer struct {
 
 // The kinds of steps.
 const (
-	// Cut: a layer was cut out. Layer is its number.
+	// Cut: a layer was cut out. Layer is its number, Cutout the layer (transparent where it has
+	// nothing).
 	Cut = "cut"
 	// Asked: the picture model is asked to draw what the layer hid. Picture is what it draws
-	// from: the picture with the layer's shape painted over.
+	// from: the picture with the layer's shape painted over; Mask is where it is painted (1),
+	// row major at the picture's size.
 	Asked = "asked"
 	// Drawing: the model is drawing. Done is how much of this drawing is done, 0 to 1, Try the
 	// try's number from 1.
@@ -103,6 +105,8 @@ type Step struct {
 	// Share is the share of the picture the layer covers (Cut).
 	Share   float64
 	Picture *image.RGBA
+	Cutout  *image.NRGBA
+	Mask    []float32
 	Seam    float64
 	Try     int
 	Done    float64
@@ -123,6 +127,9 @@ func Curve(near []float32, far float64) []float32 { return curve(near, far) }
 // Cuts are where a nearness is cut into n layers: the cuts that leave each layer's nearness, on
 // the curve of far, closest together.
 func Cuts(near []float32, n int, far float64) []float32 { return cuts(curve(near, far), n) }
+
+// Soften is a mask (row major, w x h) with its edge made a ramp 2r pixels wide.
+func Soften(m []float32, w, h, r int) []float32 { return soften(m, w, h, r) }
 
 // Stretch is a picture at w x h (its shape is not kept), for a model that draws other sizes.
 func Stretch(img image.Image, w, h int) *image.RGBA { return stretch(img, w, h) }
@@ -185,7 +192,7 @@ func Split(ctx context.Context, img *image.RGBA, near []float32, m Models, o Opt
 			continue // nothing is that near
 		}
 		layers[l] = Layer{Img: cutOut(plate, soften(grow(in, w, h, edge), w, h, 1)), Near: extend(near, in, w, h)}
-		tell(Step{Kind: Cut, Layer: l + 1, Share: covered(in)}, 0)
+		tell(Step{Kind: Cut, Layer: l + 1, Share: covered(in), Cutout: layers[l].Img}, 0)
 
 		// the layer's shape, and a little more, in a plain colour the picture has little of
 		hole := grow(in, w, h, edge+margin)
@@ -195,7 +202,7 @@ func Split(ctx context.Context, img *image.RGBA, near []float32, m Models, o Opt
 			prompt += " " + strings.TrimSuffix(o.Hint, ".") + "."
 		}
 		asked := paint(plate, hole, colour)
-		tell(Step{Kind: Asked, Layer: l + 1, Picture: asked}, 0)
+		tell(Step{Kind: Asked, Layer: l + 1, Picture: asked, Mask: hole}, 0)
 		// The model sometimes leaves the shape, in its colour or as a shadow. That shows as a
 		// seam all along the hole's edge, and the picture is then drawn again from another seed;
 		// the one with the least seam is kept.
