@@ -295,3 +295,30 @@ func TestSeam(t *testing.T) {
 		t.Errorf("no mask has a seam of %v", s)
 	}
 }
+
+func TestExtendAndUncurve(t *testing.T) {
+	// a layer in the middle of a row: its ends' values go on to the row's ends
+	const w, h = 9, 3
+	v := make([]float32, w*h)
+	mask := make([]float32, w*h)
+	for y := 0; y < h; y++ {
+		for x := 3; x <= 5; x++ {
+			v[y*w+x], mask[y*w+x] = 0.5+0.1*float32(x-3), 1
+		}
+		v[y*w] = 0.01 // what is behind the layer, which is not to show in it
+	}
+	got := extend(v, mask, w, h)
+	row := got[w : 2*w]
+	if row[3] != 0.5 || row[5] != 0.7 || math.Abs(float64(row[0])-0.5) > 1e-6 || math.Abs(float64(row[8])-0.7) > 1e-6 {
+		t.Errorf("extended: %v", row)
+	}
+	if whole := extend(v, make([]float32, w*h), w, h); whole[0] != 0.01 {
+		t.Errorf("no mask: %v", whole[:w])
+	}
+	for _, n := range []float32{0, 0.01, 0.3, 1} {
+		c := curve([]float32{n}, 30)[0]
+		if back := uncurve(c, 30); math.Abs(float64(back-n)) > 1e-5 {
+			t.Errorf("uncurve(curve(%v)) = %v", n, back)
+		}
+	}
+}

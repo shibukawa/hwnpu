@@ -21,6 +21,66 @@ func curve(near []float32, k float64) []float32 {
 	return out
 }
 
+// uncurve is the nearness that curve brings to c.
+func uncurve(c float32, k float64) float32 {
+	if k <= 0 {
+		return c
+	}
+	return float32(math.Expm1(float64(c)*math.Log1p(k)) / k)
+}
+
+// extend is a layer's nearness everywhere: v where the mask is (over a half), and outside it
+// what the layer's nearest points have, going on smoothly. A layer drawn with it ends at its
+// own edge instead of dropping to what is behind it there, so that what is seen past the edge
+// is the layer behind and not the layer's edge stretched.
+func extend(v, mask []float32, w, h int) []float32 {
+	out := make([]float32, len(v))
+	done := make([]bool, len(v))
+	var front []int
+	for i, m := range mask {
+		if m > 0.5 {
+			out[i], done[i] = v[i], true
+			front = append(front, i)
+		}
+	}
+	if len(front) == 0 {
+		copy(out, v)
+		return out
+	}
+	// outwards from the mask, a ring of pixels at a time: each takes the mean of its neighbours
+	// that have a value
+	queued := make([]bool, len(v))
+	for len(front) > 0 {
+		var next []int
+		for _, i := range front {
+			x, y := i%w, i/w
+			for _, d := range [4][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
+				nx, ny := x+d[0], y+d[1]
+				if nx < 0 || ny < 0 || nx >= w || ny >= h || done[ny*w+nx] || queued[ny*w+nx] {
+					continue
+				}
+				j := ny*w + nx
+				var sum float32
+				n := 0
+				for _, e := range [8][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, 1}, {1, -1}, {-1, -1}} {
+					ex, ey := nx+e[0], ny+e[1]
+					if ex >= 0 && ey >= 0 && ex < w && ey < h && done[ey*w+ex] {
+						sum += out[ey*w+ex]
+						n++
+					}
+				}
+				out[j], queued[j] = sum/float32(n), true
+				next = append(next, j)
+			}
+		}
+		for _, j := range next {
+			done[j] = true
+		}
+		front = next
+	}
+	return out
+}
+
 // bins are the steps cuts counts the nearness in.
 const bins = 256
 

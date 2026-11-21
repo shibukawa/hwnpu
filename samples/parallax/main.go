@@ -16,6 +16,7 @@
 //	parallax picture.png --head pointer        # the pointer stands in for the head (no camera)
 //	parallax picture.png --head sweep          # the view goes around by itself
 //	parallax render picture.png -o deep.gif    # no window: the picture from a head that goes around
+//	parallax parts/                            # a picture in layers (samples/layers --png parts/): what a near layer hid shows
 //	parallax track --frames a.png,b.png        # no camera: follow the head in pictures
 //	parallax cameras                           # the cameras --device takes
 //
@@ -28,10 +29,12 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg"
 	"image/png"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -89,7 +92,7 @@ func main() {
 
 // picture is what the commands that draw share: the picture, its depth and how deep it looks.
 type picture struct {
-	Picture  string  `arg:"" type:"existingfile" name:"PICTURE" help:"The picture (PNG or JPEG)."`
+	Picture  string  `arg:"" type:"path" name:"PICTURE" help:"The picture (PNG or JPEG), or a directory of a picture in layers, each with its own nearness (layer-N.png and near-N.png, 1 the farthest: what \"layers PICTURE --png DIR\" of samples/layers writes). In layers, what a near layer hid is seen where it moves aside, instead of its edge stretched; no depth is estimated then."`
 	Near     string  `type:"existingfile" placeholder:"FILE" help:"The picture's nearness as a gray picture of its size (white the nearest), instead of estimating it: --save-near's file."`
 	SaveNear string  `name:"save-near" type:"path" placeholder:"FILE" help:"Write the nearness estimated as a gray PNG."`
 	Strength float64 `default:"0.03" help:"How far the nearest point moves when the head is at the edge of the view, as a share of the picture's width."`
@@ -128,6 +131,9 @@ func readPicture(path string) (image.Image, error) {
 // scene is the picture with its nearness: read from --near, else estimated by the app's call,
 // once, after which the depth model is unloaded (the tracker's is the only one that stays).
 func (c *picture) scene(ctx context.Context, rt *ai.Runtime, p *parts) (*Scene, error) {
+	if st, err := os.Stat(c.Picture); err == nil && st.IsDir() {
+		return c.layered(c.Picture)
+	}
 	img, err := readPicture(c.Picture)
 	if err != nil {
 		return nil, err
@@ -174,6 +180,45 @@ func (c *picture) scene(ctx context.Context, rt *ai.Runtime, p *parts) (*Scene, 
 		}
 	}
 	return NewScene(img, d.Near(b.Dx(), b.Dy()), c.edge(b.Dx()), c.Layers), nil
+}
+
+// layered is the scene of a picture in layers in dir: layer-1.png (the farthest) and so on,
+// each with near-N.png, how near its points are (gray; white the nearest), on one scale for all
+// the layers.
+func (c *picture) layered(dir string) (*Scene, error) {
+	var top *Scene
+	for n := 1; ; n++ {
+		file := filepath.Join(dir, fmt.Sprintf("layer-%d.png", n))
+		if _, err := os.Stat(file); err != nil {
+			break
+		}
+		img, err := readPicture(file)
+		if err != nil {
+			return nil, err
+		}
+		depth, err := readPicture(filepath.Join(dir, fmt.Sprintf("near-%d.png", n)))
+		if err != nil {
+			return nil, fmt.Errorf("layer %d has no nearness: %w", n, err)
+		}
+		b := img.Bounds()
+		if depth.Bounds().Dx() != b.Dx() || depth.Bounds().Dy() != b.Dy() || top != nil && (b.Dx() != top.W || b.Dy() != top.H) {
+			return nil, fmt.Errorf("%s: the layers and their nearness are not of one size", dir)
+		}
+		near := make([]float32, 0, b.Dx()*b.Dy())
+		for y := depth.Bounds().Min.Y; y < depth.Bounds().Max.Y; y++ {
+			for x := depth.Bounds().Min.X; x < depth.Bounds().Max.X; x++ {
+				near = append(near, float32(color.Gray16Model.Convert(depth.At(x, y)).(color.Gray16).Y)/0xffff)
+			}
+		}
+		// the things of one layer still have outlines inside it (a flower before the grass)
+		s := NewScene(img, near, c.edge(b.Dx()), c.Layers)
+		s.Behind, top = top, s
+	}
+	if top == nil {
+		return nil, fmt.Errorf("%s has no layer-1.png (\"layers PICTURE --png DIR\" of samples/layers writes the layers)", dir)
+	}
+	fmt.Fprintf(os.Stderr, "%d layers of %d x %d\n", len(top.layers()), top.W, top.H)
+	return top, nil
 }
 
 // edge is --edge for a picture of width w.

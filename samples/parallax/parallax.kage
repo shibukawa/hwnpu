@@ -5,6 +5,9 @@
 // when the eye moves. It is the same reckoning as Scene.Render (scene.go), which is written to
 // be read: a ray from the eye through this pixel is followed from the nearest layer to the
 // farthest, and the first layer at which the picture is at least that near is what is seen.
+//
+// A picture in layers is drawn a layer at a time from the farthest, each with its own picture
+// (source 0) and nearness (source 1).
 
 package main
 
@@ -78,10 +81,13 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 			above = m
 		}
 	}
+	// The colour holds its alpha: a layer is drawn over the layers behind it, and where the ray
+	// meets it at a point it does not cover, what is behind stays.
 	hit := clamp(p+shift*(below-Focus), lo, hi)
+	c := colorAt(hit, lo, hi)
 	if Show > 0.5 {
 		d := imageSrc1UnsafeAt(hit).r
-		return vec4(d, d, d, 1)
+		return vec4(d, d, d, 1) * c.a
 	}
-	return colorAt(hit, lo, hi)
+	return c
 }

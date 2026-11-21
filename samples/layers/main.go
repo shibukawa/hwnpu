@@ -17,7 +17,7 @@
 //	layers models prepare                # download, convert and compile the models ahead
 //	layers plan picture.png              # the layers the picture would be parted into, as a picture (no drawing)
 //	layers picture.png -o picture.psd    # part it: a minute for each layer but the last
-//	layers picture.png --layers 4 --png parts/
+//	layers picture.png --layers 4 --png parts/ # the layers and how near their points are too: "parallax parts/" draws them
 //
 // Drawing from a reference runs on AMD's NPU for now.
 package main
@@ -106,8 +106,8 @@ func (c *picture) options() []ai.Option {
 	})}
 }
 
-// read is the picture, and the nearness of its pixels (on the curve of --far) with where it is
-// cut. The depth model is unloaded once it has answered.
+// read is the picture, the nearness of its pixels, and where it is cut (on the curve of --far).
+// The depth model is unloaded once it has answered.
 func (c *picture) read(ctx context.Context, rt *ai.Runtime, p *parts) (*image.RGBA, []float32, []float32, error) {
 	if len(c.Cuts) == 0 && (c.Layers < 2 || c.Layers > 8) {
 		return nil, nil, nil, fmt.Errorf("--layers %d: 2 to 8", c.Layers)
@@ -133,13 +133,13 @@ func (c *picture) read(ctx context.Context, rt *ai.Runtime, p *parts) (*image.RG
 	}
 	at := c.Cuts
 	if len(at) == 0 {
-		at = cuts(near, c.Layers)
+		at = cuts(curve(near, c.Far), c.Layers)
 	}
 	return img, near, at, nil
 }
 
-// near is the nearness of a picture's pixels on the curve of --far, by the depth model, which
-// is unloaded after.
+// near is the nearness of a picture's pixels (1 the nearest, 0 the farthest, in proportion to the
+// inverse of the depth), by the depth model, which is unloaded after.
 func (c *picture) near(ctx context.Context, rt *ai.Runtime, p *parts, img *image.RGBA) ([]float32, error) {
 	t0 := time.Now()
 	d, err := p.depthOf.Do(ctx, rt, img)
@@ -151,7 +151,7 @@ func (c *picture) near(ctx context.Context, rt *ai.Runtime, p *parts, img *image
 	if err := depth.Release(rt); err != nil {
 		return nil, err
 	}
-	return curve(d.Near(img.Rect.Dx(), img.Rect.Dy()), c.Far), nil
+	return d.Near(img.Rect.Dx(), img.Rect.Dy()), nil
 }
 
 // PlanCmd is layers plan PICTURE.
@@ -176,7 +176,7 @@ func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 	n := len(at) + 1
 	share := make([]int, n)
 	out := image.NewRGBA(img.Rect)
-	for i, x := range near {
+	for i, x := range curve(near, c.Far) {
 		l := 0
 		for l < len(at) && x > at[l] {
 			l++
@@ -217,11 +217,12 @@ func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 type SplitCmd struct {
 	picture
 	Out   string `short:"o" type:"path" placeholder:"FILE" help:"The Photoshop document to write (default: PICTURE's name with .psd)."`
-	PNG   string `name:"png" type:"path" placeholder:"DIR" help:"Also write into this directory each layer as a PNG with its transparency (layer-N.png), the picture the model was asked to draw from (asked-N.png) and the picture behind each layer (behind-N.png)."`
+	PNG   string `name:"png" type:"path" placeholder:"DIR" help:"Also write into this directory each layer as a PNG with its transparency (layer-N.png, 1 the farthest) and how near its points are (near-N.png: 16 bit gray, white the nearest, on one scale for all the layers, and going on past the layer's own part), which \"parallax DIR\" draws; and the picture the model was asked to draw from (asked-N.png) and the picture behind each layer (behind-N.png)."`
 	Hint  string `placeholder:"TEXT" help:"Words added to the request to draw what a layer hid: \"no people\", \"a calm sea\"."`
 	Seed  uint64 `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
 	Tries int    `default:"3" help:"How many times what a layer hid is drawn at most: it is drawn again, from another seed, when the model left the layer's shape there (as a flat colour or a shadow)."`
 	Edge  int    `default:"-1" placeholder:"PIXELS" help:"How far a layer reaches past where the depth cuts it, so that it holds its own outline (default: a 200th of the picture's width)."`
+	Clean int    `default:"-1" placeholder:"PIXELS" help:"How far past a layer's edge the layer behind takes the picture drawn instead of the picture before (default: a 100th of the picture's width). The picture before may hold there what the depth missed of the layer (the tips of grass, a strand of hair), which would stay behind when the layer moves. 0: only where the layer was, and the layers put back together are the picture but for 2 pixels about each layer."`
 }
 
 func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
@@ -240,19 +241,26 @@ func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		edge = max(1, w/200)
 	}
 	margin := max(4, w/64) // how far past the layer the picture is drawn again
+	clean := c.Clean       // and how far past it that picture is taken
+	if clean < 0 {
+		clean = max(2, w/100)
+	}
+	clean = min(clean, margin)
 
 	// from the nearest layer to the one before the farthest: cut it out of the picture, draw
 	// what it hid, and go on with that picture
 	plate := img
 	layers := make([]Layer, len(at)+1)
+	nears := make([][]float32, len(at)+1) // how near each layer's points are, past its own part too
 	for l := len(at); l >= 1; l-- {
-		in := above(near, at[l-1])
+		in := above(curve(near, c.Far), at[l-1])
 		if covered(in) == 0 {
 			fmt.Fprintf(os.Stderr, "layer %d: nothing is nearer than %.2f\n", l+1, at[l-1])
 			continue
 		}
 		layer := soften(grow(in, w, h, edge), w, h, 1)
 		layers[l] = Layer{Name: name(l, len(at)+1), Img: cutOut(plate, layer)}
+		nears[l] = extend(near, in, w, h)
 
 		hole := grow(in, w, h, edge+margin)
 		fmt.Fprintf(os.Stderr, "layer %d: %.0f %% of the picture\n", l+1, 100*covered(in))
@@ -260,16 +268,14 @@ func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		if err != nil {
 			return err
 		}
-		// the picture drawn is taken where the layer was, the picture before elsewhere: the
-		// layers put back together are then the picture, but for 2 pixels about the layer
-		plate = mix(plate, drawn, soften(grow(in, w, h, edge+2), w, h, 2))
+		// the picture drawn is taken where the layer was and --clean pixels past it, the picture
+		// before elsewhere: thin things of the layer that the depth missed (the tips of grass, a
+		// strand of hair) would otherwise stay in the layer behind and show when the layer moves
+		plate = mix(plate, drawn, soften(grow(in, w, h, edge+clean), w, h, max(clean/2, 1)))
 		if c.PNG != "" {
 			if err := writePNG(filepath.Join(c.PNG, fmt.Sprintf("behind-%d.png", l+1)), plate); err != nil {
 				return err
 			}
-		}
-		if l == 1 {
-			break // the farthest layer is the picture that is left
 		}
 		// how near the points drawn are: a second estimate, brought to the first one's scale
 		// from the part both saw, and behind the layer cut out
@@ -278,17 +284,22 @@ func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return err
 		}
 		a, b := fit(again, near, hole)
+		limit := uncurve(at[l-1], c.Far)
+		merged := make([]float32, len(near))
 		for i := range near {
+			merged[i] = near[i]
 			if hole[i] > 0 {
-				near[i] = min(max(float32(a*float64(again[i])+b), 0), at[l-1])
+				merged[i] = min(max(float32(a*float64(again[i])+b), 0), limit)
 			}
 		}
+		near = merged
 	}
 	layers[0] = Layer{Name: name(0, len(at)+1), Img: cutOut(plate, above(near, -1))}
-	kept := layers[:0]
-	for _, l := range layers {
+	nears[0] = near
+	kept, keptNears := layers[:0], nears[:0]
+	for i, l := range layers {
 		if l.Img != nil {
-			kept = append(kept, l)
+			kept, keptNears = append(kept, l), append(keptNears, nears[i])
 		}
 	}
 
@@ -308,8 +319,17 @@ func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		return err
 	}
 	if c.PNG != "" {
+		// the layers and how near their points are: what "parallax DIR" draws
 		for i, l := range kept {
 			if err := writePNG(filepath.Join(c.PNG, fmt.Sprintf("layer-%d.png", i+1)), l.Img); err != nil {
+				return err
+			}
+			depth := image.NewGray16(l.Img.Rect)
+			for k, n := range keptNears[i] {
+				v := uint16(min(max(n, 0), 1)*65535 + 0.5)
+				depth.Pix[2*k], depth.Pix[2*k+1] = uint8(v>>8), uint8(v)
+			}
+			if err := writePNG(filepath.Join(c.PNG, fmt.Sprintf("near-%d.png", i+1)), depth); err != nil {
 				return err
 			}
 		}

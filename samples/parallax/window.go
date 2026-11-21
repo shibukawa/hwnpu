@@ -26,13 +26,14 @@ type game struct {
 	params Params
 	o      windowOptions
 
-	shader    *ebiten.Shader
-	pic, near *ebiten.Image
-	view      View
-	show      bool // the nearness instead of the picture
-	tick      int
-	dumped    int
-	status    string
+	shader *ebiten.Shader
+	// pics and nears are the layers' pictures and nearness, from the farthest
+	pics, nears []*ebiten.Image
+	view        View
+	show        bool // the nearness instead of the picture
+	tick        int
+	dumped      int
+	status      string
 }
 
 func runWindow(s *Scene, p Params, o windowOptions) error {
@@ -40,8 +41,11 @@ func runWindow(s *Scene, p Params, o windowOptions) error {
 	if err != nil {
 		return fmt.Errorf("the shader: %w", err)
 	}
-	g := &game{scene: s, params: p, o: o, shader: shader,
-		pic: ebiten.NewImageFromImage(s.Pix), near: ebiten.NewImageFromImage(s.NearImage())}
+	g := &game{scene: s, params: p, o: o, shader: shader}
+	for _, l := range s.layers() {
+		g.pics = append(g.pics, ebiten.NewImageFromImage(l.Pix))
+		g.nears = append(g.nears, ebiten.NewImageFromImage(l.NearImage()))
+	}
 	w, h := s.W, s.H
 	for w > 1280 || h > 900 {
 		w, h = w/2, h/2
@@ -99,25 +103,27 @@ func (g *game) Update() error {
 }
 
 // drawScene draws the scene as seen from the view into dst, the picture's pixels scaled by
-// scale and moved by (dx, dy).
+// scale and moved by (dx, dy): its layers from the farthest, each over the ones before.
 func (g *game) drawScene(dst *ebiten.Image, scale, dx, dy float64) {
 	vx, vy, shift, focus, zoom := g.params.uniforms(g.view, g.scene.W)
 	show := float32(0)
 	if g.show {
 		show = 1
 	}
-	op := &ebiten.DrawRectShaderOptions{}
-	op.GeoM.Scale(scale, scale)
-	op.GeoM.Translate(dx, dy)
-	op.Images[0], op.Images[1] = g.pic, g.near
-	op.Uniforms = map[string]any{
-		"View":  []float32{float32(vx), float32(vy)},
-		"Shift": float32(shift),
-		"Focus": float32(focus),
-		"Zoom":  float32(zoom),
-		"Show":  show,
+	for i := range g.pics {
+		op := &ebiten.DrawRectShaderOptions{}
+		op.GeoM.Scale(scale, scale)
+		op.GeoM.Translate(dx, dy)
+		op.Images[0], op.Images[1] = g.pics[i], g.nears[i]
+		op.Uniforms = map[string]any{
+			"View":  []float32{float32(vx), float32(vy)},
+			"Shift": float32(shift),
+			"Focus": float32(focus),
+			"Zoom":  float32(zoom),
+			"Show":  show,
+		}
+		dst.DrawRectShader(g.scene.W, g.scene.H, g.shader, op)
 	}
-	dst.DrawRectShader(g.scene.W, g.scene.H, g.shader, op)
 }
 
 func (g *game) Draw(screen *ebiten.Image) {
