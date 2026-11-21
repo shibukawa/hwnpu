@@ -15,10 +15,13 @@ mic → vad → transcribe → heard → commands → translate → said → spe
 ```bash
 cd samples
 go run ./interpreter models prepare            # モデルのダウンロード、変換、コンパイル (約 11 GB)
-go run ./interpreter talk.wav -o english.wav   # 録音: 日本語の音声を英語の音声に
-go run ./interpreter --mic -o english.wav      # マイク: Ctrl-C か「終わり」まで
-go run ./interpreter say こんにちは -o hello.wav  # 文を訳して読み上げる
+go run ./interpreter talk.wav                  # 録音: 日本語の音声を英語の音声にしてスピーカーで
+go run ./interpreter --mic                     # マイク: Ctrl-C か「終わり」まで
+go run ./interpreter say こんにちは              # 文を訳して読み上げる
+go run ./interpreter talk.wav -o english.wav   # スピーカーの代わりに WAV のファイルに
 ```
+
+通訳した音声はスピーカーで流します ([oto](https://github.com/ebitengine/oto) を使い、cgo なし)。発話ごとに読み上げができたらすぐ流し、その間に次の発話の文字起こしと翻訳が進みます。`-o FILE` を付けると、代わりに WAV のファイルに書きます。
 
 | コマンド | 何をするか |
 |---|---|
@@ -29,7 +32,7 @@ go run ./interpreter say こんにちは -o hello.wav  # 文を訳して読み�
 | `interpreter models` | この機械向けに選んだモデル、要る量、ネットワーク |
 | `interpreter status` | この機械の NPU と、それを使っているもの |
 
-オプション: `--to es` (通訳先の言語)、`-l ja` (話す言語。指定しなければ発話ごとに判定)、`--voice male`、`--no-commands`。
+オプション: `--speed 1.3` (30 % 速く。声の高さは変わらない。0.5〜2)、`--to es` (通訳先の言語)、`-l ja` (話す言語。指定しなければ発話ごとに判定)、`--voice male`、`--no-commands`。
 
 ### 話す命令
 

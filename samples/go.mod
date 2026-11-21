@@ -7,6 +7,7 @@ go 1.27.0
 
 require (
 	github.com/alecthomas/kong v1.17.0
+	github.com/ebitengine/oto/v3 v3.5.1
 	github.com/hajimehoshi/ebiten/v2 v2.10.6
 	github.com/shibukawa/hwcamera v0.1.0
 	github.com/shibukawa/hwnpu v0.0.0
@@ -18,6 +19,7 @@ require (
 	github.com/ebitengine/hideconsole v1.0.0 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
+	github.com/jfreymuth/pulse v0.1.3 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/shibukawa/configdir v1.1.0 // indirect
 	github.com/shibukawa/tinygodriver v1.3.10 // indirect
