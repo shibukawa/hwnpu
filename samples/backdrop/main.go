@@ -18,7 +18,7 @@
 //	backdrop --behind beach.jpg              # a picture behind the person
 //	backdrop --behind "#00aa44"              # a colour: a green screen
 //	backdrop --frames a.png,b.png            # pictures in place of the camera (a machine without one)
-//	backdrop cameras                         # the cameras --device takes
+//	backdrop cameras                         # the cameras, numbered: --device 2 takes the second
 //
 // In the window B goes through what is behind (blurred, the picture or the colour, the frame as
 // it is), M shows the matte, up and down change the blur.
@@ -49,7 +49,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai/cli/konghelper"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/ai/vision"
-	"github.com/shibukawa/hwnpu/samples/capture"
+	"github.com/shibukawa/hwnpu/samples/internal/capture"
 )
 
 // The model: the people of a frame apart from what is behind them.
@@ -150,7 +150,7 @@ type ShowCmd struct {
 	Steady  float64       `default:"0.5" help:"The share of the matte before that stays in each frame's: 0 takes the model's matte as it is, more flickers less and follows a move later."`
 	Matte   bool          `help:"Start with the matte shown instead of the frame (M in the window): white a person."`
 	Mirror  bool          `default:"true" negatable:"" help:"Show the frame as a mirror does, the way a video call shows oneself."`
-	Device  string        `placeholder:"ID" help:"The camera (backdrop cameras lists them); none: the system's default camera."`
+	Device  string        `placeholder:"N" help:"The camera: its number in \"backdrop cameras\" (or its ID); none: the system's default camera."`
 	Size    string        `default:"1280x720" placeholder:"WxH" help:"The size asked of the camera (it gives its nearest mode)."`
 	Frames  []string      `placeholder:"FILE,..." help:"Pictures given as the camera's frames, 15 a second, again and again (for a machine without a camera)."`
 	Record  string        `type:"path" placeholder:"DIR" help:"Write the window as a PNG into this directory every second, to look at after."`
@@ -301,8 +301,8 @@ func (CamerasCmd) Run(ctx context.Context) error {
 	if len(cams) == 0 {
 		fmt.Println("no cameras")
 	}
-	for _, c := range cams {
-		fmt.Printf("%s\t%s\n", c[0], c[1])
+	for i, c := range cams {
+		fmt.Printf("%d  %s\n", i+1, c[1])
 	}
 	return nil
 }

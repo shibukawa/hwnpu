@@ -9,6 +9,7 @@ hwnpu の [`ai`](../USAGE_LIBRARY.ja.md) パッケージで作った小さなア
 | [interpreter](interpreter/README.ja.md) | マイクか録音の音声を、別の言語の音声に通訳する | Whisper、PLaMo 3 Translate、LFM3-Audio の読み上げ | 11.4 GB / 6.6 GB |
 | [parallax](parallax/README.ja.md) | 絵を奥行きがあるように見せる。カメラの前の頭の動きに合わせて向きが変わる | Depth Anything 3、YuNet、FLUX.2 klein | 16.5 GB / 14.9 GB |
 | [layers](layers/README.ja.md) | 絵を深度で層に分け、各層が隠していた部分を描き足して、Photoshop の文書に書く | Depth Anything 3、FLUX.2 klein | 16.5 GB / 14.9 GB |
+| [backdrop](backdrop/README.ja.md) | カメラの映像で、自分の後ろをぼかす、または差し替える。ビデオ通話の背景と同じ | MediaPipe Selfie Segmentation (CPU で動く) | 0.5 MB |
 
 ダウンロード量は 16 GB の機械の場合です (モデルは機械のメモリで選ばれます)。1 回だけで、モデルは hwnpu のキャッシュに残り、サンプルとコマンドで共有します。この機械で落とす量は `go run ./SAMPLE models` が出します。parallax と layers は同じモデルを使うので、両方動かしてもダウンロードは 1 つ分です。
 
@@ -33,13 +34,14 @@ go run ./interpreter talk.wav -o out.wav
 
 - hwnpu が動かす NPU: AMD Ryzen AI (Linux) か、macOS 27 の Apple Silicon の Mac。[INSTALL_AMD.ja.md](../INSTALL_AMD.ja.md)、[INSTALL_APPLE.ja.md](../INSTALL_APPLE.ja.md) を見てください。
 - マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (cgo なし)。Mac ではターミナルのアプリにその許可が要ります (システム設定 › プライバシーとセキュリティ)。初めて使うときに聞かれます。
-- parallax の窓は [Ebitengine](https://ebitengine.org) です。Linux では Ebitengine がビルドに使う X11/OpenGL のライブラリが要ります。画面のない機械では `-tags headless` でビルドします (`render` と `track` は動きます)。
+- parallax と backdrop の窓は [Ebitengine](https://ebitengine.org) です。Linux では Ebitengine がビルドに使う X11/OpenGL のライブラリが要ります。画面のない機械では `-tags headless` でビルドします (parallax の `render` と `track` は動きます)。
+- backdrop のモデルは CPU で、ONNX Runtime の共有ライブラリを使って動きます (システムのもの、または `HWNPU_ONNXRUNTIME` で指したもの)。AMD の機械の YuNet と同じです。動かしたのは AMD の機械だけです。
 
 ## 構成
 
 | ディレクトリ | 中身 |
 |---|---|
-| `interpreter/`、`parallax/`、`layers/` | サンプル (それぞれ `main` パッケージ) |
+| `interpreter/`、`parallax/`、`layers/`、`backdrop/` | サンプル (それぞれ `main` パッケージ) |
 | `internal/capture` | マイクとカメラを `ai/flow` の流れに (hwcamera) |
 | `internal/layering` | 絵を深度で層に分ける処理。layers と parallax が共有 |
 
