@@ -357,6 +357,8 @@ func archOf(model string) (string, error) {
 		return "qwen35", nil
 	case "GptOss":
 		return "gptoss", nil
+	case "Ouro":
+		return "ouro", nil
 	}
 	return "", fmt.Errorf("chat: no chat format for the IRON model %s", model)
 }

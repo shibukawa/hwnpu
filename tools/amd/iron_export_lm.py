@@ -58,6 +58,9 @@ MODELS = {
     "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
     # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in hwnpu (iron_plamo3.py).
     "plamo3": ("iron_plamo3", "Plamo3"),
+    # Ouro (ByteDance/Ouro-1.4B-Thinking): a looped decoder, its layers run total_ut_steps times
+    # a token, a cache a pass (iron_ouro.py).
+    "ouro": ("iron_ouro", "Ouro"),
     # Qwen3.5 (qwen3_5): Gated DeltaNet (iron_gdn.py) and gated attention (iron_qwen35.py).
     "qwen35": ("iron_qwen35", "Qwen35"),
     # Qwen3.6-35B-A3B (qwen3_5_moe): Qwen3.5 with experts routed on the device (iron_moe.py).
@@ -924,10 +927,10 @@ def main(argv=None) -> int:
     ap.add_argument("--conv", choices=("q8", "q4", "bf16"), default="q8",
                     help="with --q4, LFM3's short convolutions' projections (in_proj, out_proj)")
     ap.add_argument("--mlp", choices=("q4", "q6", "q8"), default="q4",
-                    help="with --q4, Qwen3.5's MLP: q4nx, or q6 (6.5 bits a weight) for the small models (0.8B, "
-                         "2B), whose 4-bit MLP is most of the error")
+                    help="with --q4, Qwen3.5's and Ouro's MLP: q4nx, or q6 (6.5 bits a weight) for the small "
+                         "models (Qwen3.5 0.8B, 2B), whose 4-bit MLP is most of the error")
     ap.add_argument("--head", choices=("q4", "q6", "q8", "bf16"), default="q4",
-                    help="with --q4, Qwen3.5's head (tied to the embeddings)")
+                    help="with --q4, Qwen3.5's head (tied to the embeddings) and Ouro's")
     ap.add_argument("--q4-codes", type=Path, default=None,
                     help="with --q4, the codes q4_gptq.py chose against the activations (GPTQ): its weights take "
                          "them instead of rounding to the nearest level, the others are rounded")
@@ -984,6 +987,10 @@ def main(argv=None) -> int:
         import iron_plamo3
 
         iron_plamo3.install(attn=a.attn)
+    elif a.model == "ouro" and a.q4:
+        import iron_ouro
+
+        iron_ouro.install(attn=a.attn, mlp=a.mlp, head=a.head)
     elif a.model.startswith("lfm3") and a.q4:
         import iron_lfm3
 

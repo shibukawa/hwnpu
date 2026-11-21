@@ -16,6 +16,7 @@ All numbers are from a Ryzen AI 9 365 (Strix Point) unless noted.
 | `lfm3` | `iron_lfm3.Lfm3` (hwnpu's; IRON has none) | LFM3-1.7B |
 | `lfm3vl`, `lfm3audio`, `lfm3omni` | `iron_lfm3vl`, `iron_lfm3audio`, `iron_lfm3omni` | LFM3-VL-2B, LFM3-Audio-2B, LFM3-Omni-2B |
 | `plamo3` | `iron_plamo3.Plamo3` (hwnpu's) | PLaMo 3 Translate 0.8B, 2B, 8B |
+| `ouro` | `iron_ouro.Ouro` (hwnpu's; IRON has none) | Ouro-1.4B-Thinking (2.6B not exported) |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN: `iron_gdn.py`) | Qwen3.5-0.8B, 2B, 4B |
 
 The current export lines are `amd_export` in [models.yaml](../../models.yaml):
@@ -25,6 +26,7 @@ The current export lines are `amd_export` in [models.yaml](../../models.yaml):
 | LFM3-1.7B / VL / Audio / Omni | `lfm3 / lfm3vl / lfm3audio / lfm3omni --max-seq-len 12288 --q4` |
 | Gemma 4 E2B, E4B | `gemma4 --max-seq-len 4096 --q4` (text only; the towers are not converted for the catalog) |
 | PLaMo 3 Translate 0.8B / 2B / 8B | `plamo3 --max-seq-len 8192 --q4` |
+| Ouro-1.4B-Thinking | `ouro --max-seq-len 2048 --q4 --mlp q6 --head q6` (in development) |
 | Qwen3.5-0.8B, 2B | `qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3` |
 | Qwen3.5-4B | `qwen35 --max-seq-len 4096 --q4` |
 
@@ -267,6 +269,7 @@ Current fused exports, mean / median / p95 over 320 rows after 256 tokens: LFM3-
 
 - **LFM3** (`iron_lfm3.py`): conv layer = `in_proj` split B, C, x; `CausalConv1d` (width 7) on B·x with state in `Checkpoints`; × C; `out_proj`. Full attention: per-head q/k RMSNorm, RoPE with the back half of frequencies zero ("zero-tail"), per-head sigmoid gate as `gate_proj` rows repeated per head column and an elementwise product. Sliding layers: window 256, θ 10000. Sandwich norm, SwiGLU, final `embedding_norm`, tied head.
 - **PLaMo 3** (`iron_plamo3.py`, check: `iron_plamo3_check.py`): RMSNorm `(offset + w)·x` with per-norm offsets (1; after attention 1/5; after MLP 1/5^1.5) added into the weights in float32 then rounded to bf16. One layer in 8 global (7, 15, 23), others a 2048 window. Window RoPE θ 10000; global θ 10⁶ with YaRN (factor 256, original 4096, beta 32/1; built from `rope_scaling_factor` and `initial_context_length`, not config.json's `rope_parameters`), `rope_attention_scaling` 0.1 ln 256 + 1. Untied `lm_head`, no embedding scale. Tokenizer and PFML3 chat format: [LLM models](llm-models.md).
+- **Ouro** (`iron_ouro.py`): a looped decoder, its 24 layers run four times a token with the same weights ([LLM models](llm-models.md)). IRON's `SandwichLayer` with Ouro's norms renamed (`input_layernorm_2` → `post_attention_layernorm`, `post_attention_layernorm` → `pre_feedforward_layernorm`, `post_attention_layernorm_2` → `post_feedforward_layernorm`). `self.layers` is `model.layers` four times; `Ouro.layer` gives a pass after the first its own `KVCache` through the call (`call.ouro_cache`, buffers `passes.P.layers.L.cache.keys`, which the runtime reads as KV caches by `.cache.`) and runs `model.norm` after a pass's last layer. The weights stay in the banks once (IRON's `walk` takes a module once). The checkpoint's `model.early_exit_gate` is taken out of the tree (IRON refuses extra weights). q6 MLP and head with gate and up as one table (`QGEMVGlu`, `HWNPU_OURO_FUSE_GLU=0`), q8 attention: host rounding KL over the five evaluation texts (`q4_gptq.py ouro --method rtn`, transformers 4.54) q4 0.130, q6 0.013, q8 0.0012. Context 2048: the caches are 96 layers × 8 KiB a position (1.6 GB at 2048), the banks 2.86 GB; export 48 s, peak RSS 7.7 GB. Not yet run on the NPU (it was in the `failed to init smu` state when exported).
 - **Gemma 4**: IRON's application; hwnpu replaces the prompt forward (`Gemma4Tail`) and moves PLE and embeddings to the host (`iron_hostple`). Model name stays `Gemma4` (`hwnpu_name`), which picks the chat format.
 - **Qwen3.5 dense**: see [Qwen](llm-qwen.md) for the model; GDN operator details are shared with Qwen3.6 ([MoE](moe.md)).
 

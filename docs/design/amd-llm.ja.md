@@ -16,6 +16,7 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | `lfm3` | `iron_lfm3.Lfm3` (hwnpu のもの。IRON にはない) | LFM3-1.7B |
 | `lfm3vl`、`lfm3audio`、`lfm3omni` | `iron_lfm3vl`、`iron_lfm3audio`、`iron_lfm3omni` | LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B |
 | `plamo3` | `iron_plamo3.Plamo3` (hwnpu のもの) | PLaMo 3 Translate 0.8B、2B、8B |
+| `ouro` | `iron_ouro.Ouro` (hwnpu のもの。IRON にはない) | Ouro-1.4B-Thinking (2.6B は書き出していない) |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN は `iron_gdn.py`) | Qwen3.5-0.8B、2B、4B |
 
 今の書き出しの指定は [models.yaml](../../models.yaml) の `amd_export`:
@@ -25,6 +26,7 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | LFM3-1.7B / VL / Audio / Omni | `lfm3 / lfm3vl / lfm3audio / lfm3omni --max-seq-len 12288 --q4` |
 | Gemma 4 E2B、E4B | `gemma4 --max-seq-len 4096 --q4` (文だけ。カタログでは塔を書き出さない) |
 | PLaMo 3 Translate 0.8B / 2B / 8B | `plamo3 --max-seq-len 8192 --q4` |
+| Ouro-1.4B-Thinking | `ouro --max-seq-len 2048 --q4 --mlp q6 --head q6` (開発中) |
 | Qwen3.5-0.8B、2B | `qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3` |
 | Qwen3.5-4B | `qwen35 --max-seq-len 4096 --q4` |
 
@@ -267,6 +269,7 @@ KL(HF ‖ NPU)、README / GPL-3 / wiki40b-ja の 400 行ずつ (`ironlm -forced`
 
 - **LFM3** (`iron_lfm3.py`): 畳み込みの層は `in_proj` を B、C、x に分け、B·x を `CausalConv1d` (幅 7、状態は `Checkpoints`) に通し、C を掛けて `out_proj`。全注意の層は q と k をヘッドごとに RMSNorm、RoPE は周波数の後ろ半分を 0 (「zero-tail」)、ヘッドごとの sigmoid のゲートは `gate_proj` の行をヘッドの列数だけ繰り返して要素ごとの積に。スライディング窓の層は窓 256、θ 10000。sandwich norm、SwiGLU、最後の `embedding_norm`、頭は埋め込み
 - **PLaMo 3** (`iron_plamo3.py`、照合は `iron_plamo3_check.py`): RMSNorm は `(offset + w)·x` で offset は norm ごと (1、注意の後 1/5、MLP の後 1/5^1.5)。float32 で重みに足して bf16 に丸める。8 層に 1 層 (7、15、23) が全体、ほかは窓 2048。窓の RoPE は θ 10000、全体の層は θ 10⁶ の YaRN (倍率 256、元の文脈 4096、beta 32 と 1。config.json の `rope_parameters` ではなく `rope_scaling_factor` と `initial_context_length` から作る)、`rope_attention_scaling` は 0.1 ln 256 + 1。`lm_head` は tie なし、埋め込みの尺度なし。トークナイザーと PFML3 のチャットの書式は [LLM のモデル](llm-models.ja.md)
+- **Ouro** (`iron_ouro.py`): ループ型のデコーダーで、24 層を 1 トークンにつき同じ重みで 4 回回す ([LLM のモデル](llm-models.ja.md))。IRON の `SandwichLayer` に Ouro の norm の名前を付け替える (`input_layernorm_2` → `post_attention_layernorm`、`post_attention_layernorm` → `pre_feedforward_layernorm`、`post_attention_layernorm_2` → `post_feedforward_layernorm`)。`self.layers` は `model.layers` を 4 回並べたもの。`Ouro.layer` が 2 回目以降の回に、その回の `KVCache` を call 経由で渡し (`call.ouro_cache`。バッファは `passes.P.layers.L.cache.keys` で、ランタイムは名前の `.cache.` で KV キャッシュと見なす)、回の最後の層の後に `model.norm` を通す。重みはバンクに 1 度だけ置かれる (IRON の `walk` は同じモジュールを 1 度しか取らない)。チェックポイントの `model.early_exit_gate` は木から外す (IRON は余った重みをエラーにする)。MLP と head は q6 で、gate と up を 1 つの表にする (`QGEMVGlu`、`HWNPU_OURO_FUSE_GLU=0` で外す)。注意は q8。ホストで丸めたときの KL (5 つの評価の文の平均、`q4_gptq.py ouro --method rtn`、transformers 4.54) は q4 0.130、q6 0.013、q8 0.0012。文脈 2048: キャッシュは 96 層 × 1 位置 8 KiB (2048 で 1.6 GB)、バンクは 2.86 GB。書き出しは 48 秒、RSS のピーク 7.7 GB。NPU ではまだ動かしていない (書き出したとき NPU が `failed to init smu` の状態だった)。
 - **Gemma 4**: IRON のアプリケーション。hwnpu はプロンプトの forward を差し替え (`Gemma4Tail`)、PLE と埋め込みをホストに移す (`iron_hostple`)。モデル名は `Gemma4` のまま (`hwnpu_name`。チャットの書式はこれで決まる)
 - **密な Qwen3.5**: モデルは [Qwen](llm-qwen.ja.md)。GDN の演算子は Qwen3.6 と共通 ([MoE](moe.ja.md))
 
