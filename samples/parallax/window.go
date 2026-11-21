@@ -71,8 +71,7 @@ type making struct {
 	curStage  stage
 	since     time.Time     // when this step came
 	mask      *ebiten.Image // where the model draws, softened
-	drawStart time.Time
-	bar       float64 // the bar as drawn, following the progress
+	bar       float64       // the bar as drawn, following the progress
 	checker   *ebiten.Image
 	// the putting together of the layers, once the scene is ready
 	composeAt time.Time
@@ -315,9 +314,6 @@ func (g *game) next() {
 		}
 		b.mask = ebiten.NewImageFromImage(maskImage(st.mask, b.w, b.h))
 	}
-	if st.stage == stageDrawing {
-		b.drawStart = time.Now()
-	}
 	if st.scene != nil {
 		g.take(st.scene)
 		b.composeAt = time.Now()
@@ -417,15 +413,9 @@ func (g *game) drawBuild(dst *ebiten.Image) {
 	case !b.composeAt.IsZero():
 		g.drawCompose(dst, scale, dx, dy)
 	case b.curStage == stageDepth:
-		// the picture, while a line of light goes down it again and again
-		drawPic(dst, b.cur, scale, dx, dy, 1, 0.75)
-		ph, pw := float64(b.h)*scale, float64(b.w)*scale
-		y := math.Mod(time.Since(g.opened).Seconds()*0.45, 1) * ph
-		g.rect(dst, dx, dy, pw, y, color.RGBA{40, 90, 160, 50})
-		for k := 0; k < 6; k++ {
-			a := uint8(200 - 32*k)
-			g.rect(dst, dx, dy+y-float64(k*2), pw, 2, color.RGBA{120, 200, 255, a})
-		}
+		// the picture, dim and still, while the depth model loads and estimates: nothing moves
+		// that does not move with the work
+		drawPic(dst, b.cur, scale, dx, dy, 1, 0.35)
 	case b.curStage == stageCut:
 		// the layer lifted out of the picture: the picture behind it dimmed, the layer a little
 		// larger, with its shadow
@@ -440,12 +430,17 @@ func (g *game) drawBuild(dst *ebiten.Image) {
 		sh.ColorScale.Scale(0, 0, 0, float32(0.55*in))
 		dst.DrawImage(b.cur, sh)
 		drawPic(dst, b.cur, scale, dx, dy, lift, 1)
+	case b.curStage == stageDrawing && b.cur != nil && b.mask != nil && b.live.done <= 0:
+		// the picture model loading (and compiling, the first time): the painted picture, dim
+		// and still, until its drawing has steps to show
+		drawPic(dst, b.cur, scale, dx, dy, 1, 0.35)
 	case b.curStage == stageDrawing && b.cur != nil && b.mask != nil:
+		// the drawing: where the layer was, noise that gets finer and calmer at each step done
 		op := &ebiten.DrawRectShaderOptions{}
 		op.GeoM.Scale(scale, scale)
 		op.GeoM.Translate(dx, dy)
 		op.Images[0], op.Images[1] = b.cur, b.mask
-		op.Uniforms = map[string]any{"Time": float32(time.Since(b.drawStart).Seconds()), "Done": float32(b.live.done)}
+		op.Uniforms = map[string]any{"Done": float32(b.live.done)}
 		dst.DrawRectShader(b.w, b.h, g.drawing, op)
 	default:
 		// the depth, the painted picture, what was drawn: each fading in over the one before

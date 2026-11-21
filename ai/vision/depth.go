@@ -26,8 +26,9 @@ func Depth(name string) ai.Use[*DepthEstimator] {
 }
 
 var depthRole = &airole.Role{
-	Name:  "depth",
-	Kinds: []chat.Kind{chat.KindDepth},
+	Name:     "depth",
+	Revision: 1, // 1: every size's programs made at Prepare
+	Kinds:    []chat.Kind{chat.KindDepth},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m := e.Model
 		var dir string
@@ -46,6 +47,11 @@ var depthRole = &airole.Role{
 			dir, err = moge.Prepare(e.Ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: e.NPU.Format, Log: e.Log})
 		default:
 			dir, err = depth.Prepare(e.Ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: e.NPU.Format, Log: e.Log})
+		}
+		if err == nil && m.Family != "moge" && !e.NPU.AMD() {
+			// every aspect's programs now, not at the first picture of each: after "models
+			// prepare" a run needs no network nor conversion (Warm compiles them)
+			err = depth.ConvertSizes(e.Ctx, dir, e.Log)
 		}
 		if err != nil {
 			return f, err
@@ -180,6 +186,17 @@ func (d *DepthEstimator) Estimate(ctx context.Context, img image.Image) (*DepthM
 		return nil, err
 	}
 	return &DepthMap{W: r.W, H: r.H, Depth: r.Depth}, nil
+}
+
+// Warm loads the programs of every size once, which compiles them for the NPU (ai.Warmer: the
+// load of "models prepare"), so that a picture of any aspect does not wait for that.
+func (d *DepthEstimator) Warm(ctx context.Context) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.da == nil {
+		return nil
+	}
+	return d.da.Warm(chat.WithModel(ctx, d.model))
 }
 
 // EstimateStream estimates the depth of each picture of a stream, in a chunk of the picture's

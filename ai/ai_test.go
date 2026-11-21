@@ -23,12 +23,16 @@ import (
 type fakeModel struct {
 	name   string
 	closed *int
+	warmed *int
 }
 
 func (f *fakeModel) Close() error { *f.closed++; return nil }
 
+// Warm counts the calls of Plan.Run's load (Warmer).
+func (f *fakeModel) Warm(ctx context.Context) error { *f.warmed++; return nil }
+
 // fakes counts what the fake roles did.
-type fakes struct{ prepared, loads, closed int }
+type fakes struct{ prepared, loads, closed, warmed int }
 
 // role is a role of the kinds whose prepare writes a file in the model's directory and whose
 // load checks that it is there.
@@ -53,7 +57,7 @@ func (f *fakes) role(name, feature string, kinds ...chat.Kind) *airole.Role {
 			if _, err := os.Stat(files.Path("program")); err != nil {
 				return nil, err
 			}
-			return &fakeModel{name: e.Model, closed: &f.closed}, nil
+			return &fakeModel{name: e.Model, closed: &f.closed, warmed: &f.warmed}, nil
 		}}
 }
 
@@ -163,6 +167,9 @@ func TestPlanRunOpen(t *testing.T) {
 	if want := []Stage{StageCompile, StageDone, StageCompile, StageDone}; !slices.Equal(stages, want) {
 		t.Errorf("stages %v, want %v", stages, want)
 	}
+	if f.warmed != 2 {
+		t.Errorf("warmed %d times at the loads once, want 2", f.warmed)
+	}
 	if p3, err := app.Plan(ctx); err != nil || !p3.Compiled() {
 		t.Errorf("third plan: %v, %+v", err, p3)
 	}
@@ -170,6 +177,17 @@ func TestPlanRunOpen(t *testing.T) {
 	if p, err := NewApp("big", tr).Memory(16).withStore(app.Store).Plan(ctx); err != nil || p.Ready() || p.Items[0].Model == "plamo-3-translate-0.8b" {
 		t.Errorf("plan for 16 GB: %v, %+v", err, p)
 	}
+	// a role whose Prepare now makes more (its Revision) prepares again what an earlier one made
+	stt.req.role.Revision = 1
+	if p, err := app.Plan(ctx); err != nil || p.Ready() || p.Items[0].Ready || !p.Items[1].Ready {
+		t.Errorf("after the role's revision: %v, %+v", err, p.Items)
+	} else if err := p.Run(ctx, nil); err != nil {
+		t.Error(err)
+	} else if p, err := app.Plan(ctx); err != nil || !p.Ready() {
+		t.Errorf("prepared again: %v, %+v", err, p.Items)
+	}
+	stt.req.role.Revision = 0
+
 	// Plan.Log takes what the preparing writes, instead of a Progress.Message for each line
 	if p, err := NewApp("logged", tr).withStore(testStore(t)).Plan(ctx); err != nil {
 		t.Error(err)
@@ -401,20 +419,20 @@ func TestPreparedCache(t *testing.T) {
 	if err := m.write(bundle); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper); !errors.Is(err, ErrBundleTarget) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrBundleTarget) {
 		t.Errorf("a prepared cache of another target: %v, want ErrBundleTarget", err)
 	}
 	// a file of it missing: not prepared
 	m.Targets = map[string]map[string]*record{"intel": m.Targets["some-other-npu"]}
 	m.write(bundle)
 	os.Remove(filepath.Join(bundle, "models", "whisper-large-v3-turbo", "program.xml"))
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper); !errors.Is(err, ErrNotPrepared) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrNotPrepared) {
 		t.Errorf("a prepared cache with a file missing: %v, want ErrNotPrepared", err)
 	}
 	// a format this package does not read
 	m.Format = storeFormat + 1
 	m.write(bundle)
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper); !errors.Is(err, ErrBundleTarget) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrBundleTarget) {
 		t.Errorf("a prepared cache of a later format: %v, want ErrBundleTarget", err)
 	}
 }

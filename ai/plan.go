@@ -154,7 +154,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		}
 		it := Item{Use: r.name, Role: r.role.Name, Why: why, model: m, req: r,
 			Model: m.Name, Repo: m.Source(), About: m.About, MemoryGB: m.MemoryFor(p.npu.Vendor)}
-		loc, err := a.Store.find(r.key(), p.npu, m)
+		loc, err := a.Store.find(r.key(), p.npu, m, r.role.Revision)
 		switch {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
@@ -406,7 +406,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 		}
 		var r *record
 		if it.Ready {
-			loc, err := p.store.find(it.req.key(), p.npu, it.model)
+			loc, err := p.store.find(it.req.key(), p.npu, it.model, it.req.role.Revision)
 			if err != nil {
 				return err
 			}
@@ -427,7 +427,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 				return fmt.Errorf("ai: preparing %s (%s): %w", it.Use, it.Model, err)
 			}
 			r = &record{Model: it.Model, Role: it.Role, Run: it.model.Run, MemoryGB: it.MemoryGB, Files: files,
-				Prepared: time.Now().UTC().Truncate(time.Second)}
+				Prepared: time.Now().UTC().Truncate(time.Second), Revision: it.req.role.Revision}
 			// written before the load, so that a compile cut off does not download again
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
 				return err
@@ -440,6 +440,12 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
+			}
+			if w, ok := l.(Warmer); ok {
+				if err := w.Warm(ctx); err != nil {
+					l.Close()
+					return fmt.Errorf("ai: compiling %s (%s): %w", it.Use, it.Model, err)
+				}
 			}
 			if err := l.Close(); err != nil {
 				return err
@@ -456,6 +462,14 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 	// process that ends after Run does not cut it off (ctx's end leaves the rest for the next run)
 	shared.Flush(ctx)
 	return ctx.Err()
+}
+
+// Warmer is a model that makes some of its programs at its first use of a kind of input (a
+// picture's size): Warm loads them all once, which compiles them for the NPU. Run calls it on
+// the model it loads once to compile (not NoCompile), so that a use prepared with Run does not
+// wait for a compile, nor touch the network, at any input.
+type Warmer interface {
+	Warm(ctx context.Context) error
 }
 
 // Prepare is the app's Plan and its Run: everything made ready in one call, for a command line
