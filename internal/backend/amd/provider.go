@@ -158,7 +158,17 @@ func (p Provider) Open(ctx context.Context, info types.DeviceInfo, opts backend.
 		drv.Close()
 		return nil, fmt.Errorf("amd: create device heap: %w", err)
 	}
-	if d.heapMem, err = drv.Mmap(d.heap.MapOffset, xdna.DevHeapSize); err != nil {
+	// The NPU's firmware takes the heap only at an address that is a multiple of its size: a
+	// hardware context of a heap elsewhere is refused (MAP_HOST_BUFFER, status 0x4000003, and
+	// CREATE_HWCTX fails with EINVAL). The kernel picks such an address by itself in a fresh
+	// process, but not once the address space is fragmented: after a checkpoint of gigabytes was
+	// mapped, or for the second device a process opens (docs/design.md 16.281).
+	if am, ok := drv.(xdna.AlignedMapper); ok {
+		d.heapMem, err = am.MmapAligned(d.heap.MapOffset, xdna.DevHeapSize, xdna.DevHeapSize)
+	} else {
+		d.heapMem, err = drv.Mmap(d.heap.MapOffset, xdna.DevHeapSize)
+	}
+	if err != nil {
 		d.dev.CloseBO(d.heap.Handle)
 		drv.Close()
 		return nil, fmt.Errorf("amd: map device heap: %w", err)
