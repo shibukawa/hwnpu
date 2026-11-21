@@ -8489,4 +8489,6 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 
 **書き出しの版**: 変わるのはパッチが 8 の倍数でない大きさ (4015 と 3995 の 4 つ) のプログラムだけなので、その Apple の書き出しだけ名前を `-v5` に (`PaddedExportVersion`)。ほかの 4 つ (1:1 4096、1:1s 1024、2:3 と 3:2 4056) はバイトまで同じで `-v4` のまま、その prebuilt も使える。Intel は `QChunkAttention` で変わらない (`-v4`)。
 
-**残り**: NAS の `-v4` の 4 つの大きさ (Turbo と Aesthetic) と、その prebuilt (h13g の分は通っていた) は使われなくなる。`-v5` を書き出して 4 つのチップの prebuild をし直す。M2〜M4 の実機で絵と時間を確かめる。
+**残り**: NAS の `-v4` の 4 つの大きさ (Turbo と Aesthetic) と、その prebuilt (h13g の分は通っていた) は使われなくなる。`-v5` を書き出して 4 つのチップの prebuild をし直す。M3、M4 の実機で絵と時間を確かめる。
+
+**M2 の実機で (2026-11-21)**: Anima-Turbo 3:4 (`-v5`、h14g の prebuilt を NAS から) を seed 2 で。DiT の部品は全部 `all on the NPU`、絵は M1 (h13g の prebuilt) と同じ。1 ステップ 4.3 秒 (8 ステップ 34 秒)、M1 は 5.4 秒 (1:1 は 5.3 秒なので、8 の倍数に詰めた分の遅れはほぼない)。
