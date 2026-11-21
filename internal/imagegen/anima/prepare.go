@@ -21,16 +21,16 @@ import (
 
 // ExportVersion is the layout of the programs Convert writes. Prepare names its exports by it,
 // so that an export of an earlier layout is not loaded by a later hwnpu: 2 is the time part of
-// mil.TimeRows rows and the patch embedding in the first group of blocks (design.md 16.85); 3 the
-// silu of the DiT and the text written with exp and real_div (blocks.SiLU, design.md 16.95); 4
+// mil.TimeRows rows and the patch embedding in the first group of blocks (docs/design/image-apple.md); 3 the
+// silu of the DiT and the text written with exp and real_div (blocks.SiLU, docs/design/apple-neural-engine.md); 4
 // the DiT's attention scale in the queries' norm, no multiply over the scores, its blocks' norms
-// scaled with abs (milpart.AbsScaled; design.md 16.201) and its attentions a head at a time
-// (milpart.HeadAttention; design.md 16.202).
+// scaled with abs (milpart.AbsScaled; docs/design/image-apple.md) and its attentions a head at a time
+// (milpart.HeadAttention; docs/design/image-apple.md).
 const ExportVersion = 4
 
 // PaddedExportVersion is the version of an Apple export whose patches are not a multiple of
 // milpart.DeferredRows (880 x 1168, 752 x 1360 and their turns): its cross-attention's queries
-// padded to one, which M2's and later Neural Engines' compiler takes (design.md 16.277). The
+// padded to one, which M2's and later Neural Engines' compiler takes (docs/design/amd.md). The
 // other sizes' programs are as ExportVersion's, byte for byte, and keep its name.
 const PaddedExportVersion = 5
 
@@ -82,7 +82,7 @@ type Setup struct {
 
 // Formats are the default weight formats of the text and the DiT for a backend: int8 for both on
 // Core ML and Core AI (the text's 1.0 GB at fp16 is over a Core ML program's limit, and the DiT is
-// as fast at int8 as at fp16 and nearer it than lut8, design.md 16.85; Core AI ran these, 16.169);
+// as fast at int8 as at fp16 and nearer it than lut8, docs/design/image-apple.md; Core AI ran these, docs/design/apple-coreai.md);
 // fp16 on Intel's NPU.
 func Formats(backend string) (text, dit string) {
 	if backend == "coreml" || backend == "coreai" {
@@ -95,7 +95,7 @@ func Formats(backend string) (text, dit string) {
 // as many as keep a program's work near 4 blocks of 512 x 512 (1024 patches). Windows stops a job
 // on the NPU that runs past its time limit (TDR, 2 s by default) with ZE_RESULT_ERROR_DEVICE_LOST,
 // and a group of 4 blocks at 1024 x 1024 (4096 patches, attention 16 times the work) did on the
-// Core Ultra 5 135U (design.md 16.146): there it is 1.
+// Core Ultra 5 135U (docs/design/image-apple.md): there it is 1.
 func DefaultGroup(backend string, width, height int) int {
 	g := 4
 	if backend != "intel" {

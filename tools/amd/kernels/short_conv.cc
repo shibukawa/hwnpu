@@ -4,7 +4,7 @@
 // C and x; u = B * x goes through a depth-wise causal filter of SC_K taps over the SC_K - 1
 // rows before it (the state) and C gates the result: y = C * conv(u). The state's next rows
 // are the last SC_K - 2 of the old and u. tools/amd/iron_shortconv.py (ShortConvStep),
-// docs/design.md 16.268.
+// docs/design/amd-llm.md.
 //
 // IRON's graph ran this as about 16 operators (copies into a window, a multiply and an add a
 // tap, the gate's two multiplies), each a reconfiguration of the array: about 1.1 ms a layer.

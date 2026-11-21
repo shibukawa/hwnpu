@@ -10,7 +10,7 @@ same walk with these strides (sequence), so the array, the kernels and B and C a
   one GEMM a 3 x 3 (C <= 170): K = 9 C laid out dy-major, k_tile = 3 C, k_stride = Wp C
   one GEMM a kernel row: K = 3 C, k_stride = k_tile (the 3 C run, contiguous)
 
-The im2col copy this replaces took 63 % of a 1024 x 1024 ResBlock (6.8 GB/s, design.md 16.139).
+The im2col copy this replaces took 63 % of a 1024 x 1024 ResBlock (6.8 GB/s, docs/design/image-apple.md).
 """
 
 import numpy as np

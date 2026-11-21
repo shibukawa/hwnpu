@@ -120,7 +120,7 @@ MODELS = {
 CALIB_DATA = Path.home() / "models" / "calib"
 # The repository's own texts are frozen copies in testdata/texts (of 2026-11-14), so that the
 # codes and the KL stay comparable while the documents and code change: readme.md is the README
-# before it was split, design.md the first 16 * 512 * 64 characters of docs/design.md (all that
+# before it was split, design.md the first 16 * 512 * 64 characters of the old docs/design.md (all that
 # the default --calib-len and --calib-seqs read), GPL-3 Debian's /usr/share/common-licenses/GPL-3.
 CALIB = ["testdata/texts/MODEL_ARCHITECTURE.md", "testdata/texts/design.md", "testdata/texts/engine.go",
          str(CALIB_DATA / "wikitext2-train.txt"), str(CALIB_DATA / "wiki40b-ja-calib.txt")]

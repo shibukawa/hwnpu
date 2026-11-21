@@ -12,7 +12,7 @@ Mac:
     HWNPU_PLAMO_DIR=MODEL_DIR HWNPU_PLAMO_GOLDEN=OUT.json go test -run PlamoEmbeddingGolden ./internal/chat/
 
 Needs torch, transformers and sentencepiece; modeling_plamo.py is written for transformers 4.47
-(see docs/design.md 16.18).
+(see docs/design/llm-models.md).
 """
 import argparse
 import json

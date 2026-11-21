@@ -19,6 +19,9 @@ func (s *Scene) smaller(w int) *Scene {
 	}
 	h := max(1, s.H*w/s.W)
 	out := &Scene{W: w, H: h, Pix: image.NewRGBA(image.Rect(0, 0, w, h)), Near: make([]float32, w*h)}
+	if s.Behind != nil {
+		out.Behind = s.Behind.smaller(w)
+	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			sx := (float64(x) + 0.5) * float64(s.W) / float64(w)

@@ -17,7 +17,7 @@ Mac で確かめてきたモデルは、どれも Intel NPU では動かない�
 | 実行の入口 | `WithBackend("coreml")` が 6 か所に固定 (`chat/engine.go`、`chat/embed.go`、`systemone/model.go`、`speech/speech.go`、`hwnpu-dev generate`、`hwnpu-dev powerbench`) | 端末によるバックエンドの選択 |
 | Level Zero バックエンド | IR のコンパイル、実行、ブロブのキャッシュがある。ただし動作確認は模擬ドライバだけ | 実機での確認 |
 
-実行側がバックエンドに依存していないのは大きい。KV キャッシュをホストのバッファに置く方式 (design.md 16.14) は、Level Zero のホストメモリ (`zeMemAllocHost`、`CapHostCoherent`) でそのまま成り立つ。重い作業は変換側に集まる。
+実行側がバックエンドに依存していないのは大きい。KV キャッシュをホストのバッファに置く方式 ([docs/design/llm-engine.md](design/llm-engine.md)) は、Level Zero のホストメモリ (`zeMemAllocHost`、`CapHostCoherent`) でそのまま成り立つ。重い作業は変換側に集まる。
 
 ## 2. 方針: MIL を中間表現にして IR へ下ろす
 
@@ -82,7 +82,7 @@ mlpackage.Builder (MIL の演算列 + 重みの blob)
 | `const` | 全部 | `Const` | |
 | `constexpr_blockwise_shift_scale` | 新しい重み形式 (5 節) | `Const(i4/i8)` → `Convert(f16)` → `Multiply(scale)` | |
 | `constexpr_lut_to_dense` | `lut4/6/8` | **対応しない** | 「Intel では `-format int4` か `int8` を使う」というエラーにする |
-| `clip` `elu` `pow` `cos` `sin` `erf` `softplus` `cast` | ONNX の変換 (`internal/onnx`)、Magenta RT2、MOSS | `Clamp` `Elu` `Power` `Cos` `Sin` `Erf` (opset1)、`SoftPlus` (opset4)、`Convert` | 2026-11-12 に追加 (design.md 16.166) |
+| `clip` `elu` `pow` `cos` `sin` `erf` `softplus` `cast` | ONNX の変換 (`internal/onnx`)、Magenta RT2、MOSS | `Clamp` `Elu` `Power` `Cos` `Sin` `Erf` (opset1)、`SoftPlus` (opset4)、`Convert` | 2026-11-12 に追加 ([docs/design/intel.md](design/intel.md)) |
 | `max_pool` | RTMO、PP-OCR (ONNX) | `MaxPool` (opset1、明示のパディング) | |
 | `pixel_shuffle` | DA3、MoGe-2、ONNX の変換 | `DepthToSpace` (opset1、`depth_first`) | |
 | `conv_transpose` | Magenta RT2、MOSS の DAC | `ConvolutionBackpropData` (opset1) | MIL の `pad` は全長からの切り落とし。出力が全長より長い分は `output_padding`。groups は 1 だけ (milcpu と同じ) |
@@ -176,7 +176,7 @@ OpenVINO GenAI の NPU 向けの推奨は「int4、対称、チャネルごと (
 Intel NPU の重みの上限は分かっていない。Lunar Lake 以降はシステムメモリを共有するので、ANE の 1 GiB のような固い上限はない見込みだが、2 つの別の理由で分割は要る。
 
 - **コンパイル時間。** ドライバ内のコンパイラは、大きなグラフに数分かかる (OpenVINO の NPUW が層を「同じ関数の繰り返し」として 1 回だけコンパイルするのはこのため)。分割すると、各部分のコンパイル結果を `WithCacheDir` で別々に再利用できる。
-- **静的な形。** プロンプトを読む `-seq 64` と生成の `-seq 1` は別のグラフになる。Core ML では別パッケージの重みは別に読まれ、Intel でもグラフごとに重みを持つ。**メモリが倍になる**。第 1 段階では受け入れ、design.md 5.3 の「コンパイラの重み分離 (6.3 以降、要検証)」を後で調べる。
+- **静的な形。** プロンプトを読む `-seq 64` と生成の `-seq 1` は別のグラフになる。Core ML では別パッケージの重みは別に読まれ、Intel でもグラフごとに重みを持つ。**メモリが倍になる**。第 1 段階では受け入れ、[docs/design/api.md](design/api.md) の「コンパイラの重み分離 (6.3 以降、要検証)」を後で調べる。
 
 `llm.Targets` に `intel-mtl`、`intel-lnl`、`intel-arl`、`intel-ptl` を足す。`MaxBytes` は最初は仮の値 (たとえば 2 GiB) にして `Measured: false` とし、`-target intel` は「既知の Intel の最小値」とする。実機で `hwnpu-dev probe limit` と `hwnpu-dev probe split` を回して決める。
 
@@ -286,7 +286,7 @@ PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_PLAMO
 
 埋め込みモデルは、MiniLM も PLaMo も 4 ビットでは崩れ、8 ビットなら保たれる。そこで Intel の既定を BERT と PLaMo-Embedding では int8 にした (`Arch.IntelFormat`)。
 
-**Mac 側への反映**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており、fp16 とのコサイン類似度は 0.76 しかなかった。BERT と PLaMo の Mac の既定を lut8 にした (design.md 16.34)。実機の Neural Engine では最終層の MLP の出力 (5e4) が fp16 を超えていたので、最終層を 1/64 倍で計算する書き換え (`head-scale`) を入れ、HF の結果と 0.997〜0.999 になった。
+**Mac 側への反映**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており、fp16 とのコサイン類似度は 0.76 しかなかった。BERT と PLaMo の Mac の既定を lut8 にした ([docs/design/llm-models.md](design/llm-models.md))。実機の Neural Engine では最終層の MLP の出力 (5e4) が fp16 を超えていたので、最終層を 1/64 倍で計算する書き換え (`head-scale`) を入れ、HF の結果と 0.997〜0.999 になった。
 
 P1 は以上で終わり。
 
@@ -347,14 +347,14 @@ LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_LFM3_D
 - 既定の段 (4096 と 16320、それぞれ生成用と読み込み用) では 4 つのグラフが重みを別々に持つ (int8 で 6.4 GiB)。メモリが足りなければ `-tier ""` で 2 つ。
 - Gemma 4 と LFM3-VL/Audio の hwnpu-chat での実行。変換と数値は CPU で確かめたが、実物のチェックポイントでは動かしていない。
 
-### 注意の前後で分ける形 (2026-11-04、design.md 16.63)
+### 注意の前後で分ける形 (2026-11-04、[docs/design/llm-engine.md](design/llm-engine.md))
 
 - `hwnpu-dev convert -paged` が `-backend intel` でも動く: 部分 (`out.partN.xml`) と、重みのない塊 1 つ分の注意 (`out.attn.xml`、MIL で組んで `ovlower` で下ろす)。hwnpu-chat と hwnpu-chat agent は LFM3 とその VL、Audio、Omni、Gemma 4 を Intel でもこの形で変換し、文脈はモデルの上限 (LFM3-1.7B は `lfm3-int8-grouped-p8192-c262144-q8.parts.json`)。分けない形は `--paged -1`
 - 実行側は変えていない。塊ごとに k、v、mask を付け替えて呼ぶ。Level Zero の `Bind` は終わった要求の付け替えを許し、投入のたびにコマンドリストを記録し直す
 - OpenVINO の CPU で `lfm3` と `gemma4` の `TestIntelIRPaged` が通る (相対誤差 5.7e-4 と 2.8e-3)。NPU の実機では未確認: ドライバのコンパイラが注意のグラフ (塊 8192、fp16) を受け付けるか、呼び出しごとのコマンドリストの記録の費用 (1 ステップに全注意の層 × 使っている塊の数だけ呼ぶ)
 
-### hwnpu-chat 以外のモデル (2026-11-12、design.md 16.166)
+### hwnpu-chat 以外のモデル (2026-11-12、[docs/design/intel.md](design/intel.md))
 
 - 足りなかった演算 (上の表の `clip` から `conv_transpose`) を ovlower に足し、Go の変換器を持つモデルはすべて IR を書くようにした: Whisper、LFM3-Audio の読み上げ、d1 (systemone)、Magenta RT2、MOSS-SoundEffect、Sana、DA3、MoGe-2、YuNet、EfficientSAM のエンコーダ (ONNX から)。pose、detect、ocr、pitch、notes は IR を書く道はあったが、装置の判定の不具合 (`llm.ProgramBackend`) で Intel では止まっていた
-- `HWNPU_BACKEND=openvino` で hwnpu-image と hwnpu-audio も Intel の経路に入る。Intel の NPU のない機械で、変換から結果までを OpenVINO の CPU で確かめた (表は design.md 16.166)。`hwnpu-dev irdiff` は Core ML のパッケージを IR に下ろして milcpu と比べる
-- AMD の IRON のグラフしかないもの (Chroma、SigLIP 2、FLUX) は対象外 (Go への移植が要る)。Qwen-Image は同じ日に Mac の Core ML の経路ができた (design.md 16.165) が、IR はまだ書かない
+- `HWNPU_BACKEND=openvino` で hwnpu-image と hwnpu-audio も Intel の経路に入る。Intel の NPU のない機械で、変換から結果までを OpenVINO の CPU で確かめた (表は [docs/design/intel.md](design/intel.md))。`hwnpu-dev irdiff` は Core ML のパッケージを IR に下ろして milcpu と比べる
+- AMD の IRON のグラフしかないもの (Chroma、SigLIP 2、FLUX) は対象外 (Go への移植が要る)。Qwen-Image は同じ日に Mac の Core ML の経路ができた ([docs/design/image-apple.md](design/image-apple.md)) が、IR はまだ書かない

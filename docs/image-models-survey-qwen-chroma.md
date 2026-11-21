@@ -1,6 +1,6 @@
 # Qwen-Image-2.1 と Chroma1 を AMD の NPU へ入れるための下調べ
 
-2026-11-11。移植はまだしていない。[new-model-checklist.md](new-model-checklist.md) の 1 節 (紙の上の見積もり) と、最初から入れる最適化 (4.1、5、6、7.1、11) を、二つのモデルの構造に当てはめた。時間は Anima の実測 (DiT 17 TFLOP が 1 パス 4.55 s、約 3.75 TFLOPS) からの見積もり。Chroma の DiT は FLUX.1 schnell の試作 (worktree `t3-flux`、`tools/amd/iron_flux.py`) で測った 1 パス約 20 s と合っている。
+2026-11-11。移植はまだしていない。[docs/design/new-model-checklist.md](design/new-model-checklist.md) (紙の上の見積もり) と、最初から入れる最適化 (4.1、5、6、7.1、11) を、二つのモデルの構造に当てはめた。時間は Anima の実測 (DiT 17 TFLOP が 1 パス 4.55 s、約 3.75 TFLOPS) からの見積もり。Chroma の DiT は FLUX.1 schnell の試作 (worktree `t3-flux`、`tools/amd/iron_flux.py`) で測った 1 パス約 20 s と合っている。
 
 > 用語: Qwen-Image-2.1 と Chroma1-HD は蒸留していない本体 (そのまま使える公開モデル)。Turbo と Flash はそれを少ないステップ・CFG なしに蒸留した版。Anima-Base のような「学習途中のベース」ではない (Chroma1-HD は作者が微調整の土台としても勧めている)。
 
@@ -30,7 +30,7 @@
 | Chroma1-HD | DiT 17.8 GB (`transformer/` の 2 つのシャード) だけ。`Chroma1-HD.safetensors` (同じ 17.8 GB の 1 ファイル版) は落とさない | **T5 と VAE は FLUX.1 schnell のものとバイト単位で同じ** (sha256 を手元の `~/models/FLUX.1-schnell` と照合済み)。Flash とも同じ |
 | Chroma1-Flash | DiT 17.8 GB | 同上 |
 
-テキストの視覚の塔 (約 0.6B) と lm_head は文字からの画像生成では読まない。読み込みは遅らせる (lazy towers、16.81) か、エクスポートで読まない。
+テキストの視覚の塔 (約 0.6B) と lm_head は文字からの画像生成では読まない。読み込みは遅らせる (lazy towers、[amd-llm](design/amd-llm.md)) か、エクスポートで読まない。
 
 ## 3. 紙の上の見積もり (AMD、1 パス)
 
@@ -65,7 +65,7 @@ ImageMHA は FLUX の試作で注意が 1 ブロックの 191 / 342 ms だった
 
 | 部品 | 重み | 固定するメモリ (AMD) の考え方 |
 |---|---|---|
-| Qwen-Image-2.1 の DiT | q8 で 7.1 GB、q6 で 5.8 GB、q4 (q4nx) で約 4.4 GB | 32 ブロックを 4 ブロックずつ 8 グループにし、一つのバンクに順に読む (`SwapVariants`、16.106): バンク約 0.9 GB (q8) + 活性 (MLP の中間 4096 × 12288 bf16 = 100 MB) + テキストの K/V (32 層 × 256 行 × 8192 × bf16 = 134 MB、CFG ならその 2 倍)。ホストは 7.1 GB のグループの像を持つ |
+| Qwen-Image-2.1 の DiT | q8 で 7.1 GB、q6 で 5.8 GB、q4 (q4nx) で約 4.4 GB | 32 ブロックを 4 ブロックずつ 8 グループにし、一つのバンクに順に読む (`SwapVariants`、[image-amd](design/image-amd.md)): バンク約 0.9 GB (q8) + 活性 (MLP の中間 4096 × 12288 bf16 = 100 MB) + テキストの K/V (32 層 × 256 行 × 8192 × bf16 = 134 MB、CFG ならその 2 倍)。ホストは 7.1 GB のグループの像を持つ |
 | Qwen3-VL-8B のテキスト | 36 層で 6.95B (埋め込みの 0.6B はホストの表) | 一度しか走らないので **これも SwapVariants で層のグループを順に読む**。読み直しの損がない (どのみち一度読む)。q8 で丸ごと固定すると 7 GB |
 | Chroma の DiT | q8 で 8.9 GB | 同じくグループに分けて順に読む |
 | T5-XXL | q8 で 4.8 GB | q4 はトークンを壊す (t3-flux: cos −0.16)、q8 は良い (0.992 以上)。q6 は未確認。SwapVariants |
@@ -81,15 +81,15 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 
 | 方法 (checklist の節) | 当てる所 |
 |---|---|
-| 画像の注意を 64 キーのブロック、QK^T を bfp16 (`ImageMHA`、7.1、16.147) | Qwen: 4096 行のクエリ × (テキスト + 4096) キー。Chroma: 4608 × 4608 |
-| プロンプトの MHA を 8 パイプライン (4.1、16.107) | `iron_mha.attention` は行が 512 の倍数でないと 4 パイプラインに落ちる (t3-flux)。Chroma の 4608 = 9 × 512、Qwen はテキストを 256 行単位に詰め、4096 + 256k にする |
-| CFG の二つのパスをグループごとに続けて (7.1、16.148) | SwapVariants で読む回数を 1 ステップ 8 グループのままにする |
-| DPM-Solver++ 2M (`--sampler dpm2m`、16.154) | Qwen-Image-2.1 (本体) と Chroma1-HD。Turbo はチェックポイントのシグマの表に従う (他の表は公式に評価されていない) |
+| 画像の注意を 64 キーのブロック、QK^T を bfp16 (`ImageMHA`、7.1、[image-amd](design/image-amd.md)) | Qwen: 4096 行のクエリ × (テキスト + 4096) キー。Chroma: 4608 × 4608 |
+| プロンプトの MHA を 8 パイプライン (4.1、[amd](design/amd.md)) | `iron_mha.attention` は行が 512 の倍数でないと 4 パイプラインに落ちる (t3-flux)。Chroma の 4608 = 9 × 512、Qwen はテキストを 256 行単位に詰め、4096 + 256k にする |
+| CFG の二つのパスをグループごとに続けて (7.1、[image-models](design/image-models.md)) | SwapVariants で読む回数を 1 ステップ 8 グループのままにする |
+| DPM-Solver++ 2M (`--sampler dpm2m`、[image-models](design/image-models.md)) | Qwen-Image-2.1 (本体) と Chroma1-HD。Turbo はチェックポイントのシグマの表に従う (他の表は公式に評価されていない) |
 | CFG を雑音の多いステップだけ (`--cfg-sigmas 0.6,1`) | Chroma1-HD (CFG が既定)。Qwen-Image-2.1 (本体) は既定で CFG なし |
 | 蒸留した版を既定に (7.1) | `qwen-image` は Turbo、`chroma` は Flash を既定の候補に (Flash の品質と設定を見てから決める) |
-| 固定の負のプロンプトを定数に (16.148 の `empty_cond.bin`) | Chroma: README の負のプロンプト (または空) の T5 出力をエクスポートで計算して持つ。Qwen は CFG を使うときだけ |
-| VAE の 3 × 3 畳み込みを格子の上の GEMM (`GridGEMM`)、最近傍 2 倍 + 畳み込みを位相の 4 つの 2 × 2 (4.1、16.139) | Qwen の VAE は `nearest-exact` の 2 倍 + 3 × 3 の 4 段 (+ DupUp の近道) なので、そのまま当てはまる。同じ形の段を一つのグラフに |
-| コアの丸めを最近接偶数に (16.78) | 平均のある和を引き下げない。DiT とテキストの両方 |
+| 固定の負のプロンプトを定数に ([image-models](design/image-models.md) の `empty_cond.bin`) | Chroma: README の負のプロンプト (または空) の T5 出力をエクスポートで計算して持つ。Qwen は CFG を使うときだけ |
+| VAE の 3 × 3 畳み込みを格子の上の GEMM (`GridGEMM`)、最近傍 2 倍 + 畳み込みを位相の 4 つの 2 × 2 (4.1、[image-apple](design/image-apple.md)) | Qwen の VAE は `nearest-exact` の 2 倍 + 3 × 3 の 4 段 (+ DupUp の近道) なので、そのまま当てはまる。同じ形の段を一つのグラフに |
+| コアの丸めを最近接偶数に ([amd](design/amd.md)) | 平均のある和を引き下げない。DiT とテキストの両方 |
 | コマンドを 2 s 未満、shim のチャネルに 3 つまで (4.1) | 1024² の 1 ブロック (Qwen 218M 重み) は 1 コマンドに収まる見込み。テキストは `SCRATCHPAD_WORDS` で切る |
 | 重みの形式は DiT q8 を既定、q6 と GPTQ q4 を試す (5.2、5.3) | 蒸留した 8 ステップの DiT は 4 ビットに弱い (Anima q4nx cos 0.777)。速度ベクトルの相対 RMS 誤差 (`anima_gptq.py`) で比べる。テキストは q8 / q6 を行の誤差で (Sana は q6) |
 | 演算子ごとに float32 と実の活性で比べる (4.1、SigLIP 2) | tanh の GELU (Qwen の `txt_in`) は表の誤差が bf16 の 5 倍。厳密な GELU と HIGHEST を候補に |
@@ -100,8 +100,8 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 |---|---|
 | **テキストの K/V を一度だけ** (公式の prefix KV cache) | プロンプトごとに一度、DiT のテキストの行 (t = 0 の変調、因果の注意) を流し、32 層の K/V をバンクに残す。毎ステップのグラフは 4096 行の画像だけで、キーは [テキストの K/V (パディングはマスク)、画像] |
 | 変調を全ステップ分まとめて | 共有の変調の線形 (67M) は時刻だけで決まる。全ステップの時刻と t = 0 の行を最初に一度に計算し、ステップごとのグラフの入力にする。ブロックごとに変調の重みを読まない |
-| テキストの決まった前置きを定数に (4.1 の `iron_sana.Prefix`、16.138) | `<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n` は毎回同じ。Qwen3-VL-8B の因果の注意なので、その K/V をエクスポートで float32 で計算して持ち、残りを固定のチャンクと `start` で計算する。DiT 側でも、捨てない前置き (`<|im_start|>user\n`) の K/V は定数にできる |
-| テキストの塔は使うときだけ | 文字からの生成では視覚の塔を読まない (16.81)。編集 (参照画像) は後回し |
+| テキストの決まった前置きを定数に (4.1 の `iron_sana.Prefix`、[image-apple](design/image-apple.md)) | `<|im_start|>system\nComprehend and analyze the provided prompt.<|im_end|>\n<|im_start|>user\n` は毎回同じ。Qwen3-VL-8B の因果の注意なので、その K/V をエクスポートで float32 で計算して持ち、残りを固定のチャンクと `start` で計算する。DiT 側でも、捨てない前置き (`<|im_start|>user\n`) の K/V は定数にできる |
+| テキストの塔は使うときだけ | 文字からの生成では視覚の塔を読まない ([amd-llm](design/amd-llm.md))。編集 (参照画像) は後回し |
 | テキストは Qwen3 の層 | `iron_anima.py` の `Qwen3Layer` (Qwen3-0.6B) が同じ形 (Q/K の RMSNorm、GQA)。文字だけなら mrope の 3 軸は同じ位置になり、ふつうの RoPE と同じ。8B では `iron_export_lm.py` の量子化の GEMM を使う |
 | RoPE の 3 軸 | 複素数の隣り合う組 (`use_real=False`)。t3-flux の `head_perm` (q / k の行を頭ごとに並べ替えて組を作る) がそのまま使える |
 
@@ -119,7 +119,7 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 - 参照: ref-venv の diffusers 0.42.1 に `QwenImage21Pipeline` と `ChromaPipeline` がある。`tools/ref/ref_anima.py` の形で、CPU の float32 で潜在とデコードを `~/models/*-test/ref` に残す
 - **Qwen のテキストの隠れ状態は最終の RMSNorm の前**。transformers 5.x (ref-venv は 5.22.1) は `hidden_states[-1]` を正規化した後のものにする。パイプラインはフックで戻しているが、自前の参照スクリプトでも同じにしないと、信号の 3 分の 1 が違うものと比べることになる
 - Qwen のテキストは BOS がない。空のプロンプトは " " に置き換える (パイプラインの通り)
-- IRON の MHA は点数を bf16 で持つ: Sana 600M のクロス注意で点数が約 1750 になり CFG がずれた (キーの行 0 を引いて直した、16.119)。Qwen の [テキスト + 画像] のキーでも点数の大きさを先に見る
+- IRON の MHA は点数を bf16 で持つ: Sana 600M のクロス注意で点数が約 1750 になり CFG がずれた (キーの行 0 を引いて直した、[image-amd](design/image-amd.md))。Qwen の [テキスト + 画像] のキーでも点数の大きさを先に見る
 - 1024² は Qwen-Image-2.1 の公式の解像度 (2048² 前後) の 4 分の 1。本体の動的な shift (mu) はトークン数で変わる。1024² と 768² の絵を CPU の float32 で公式の 2048² と並べ、使える解像度を先に決める
 - 3 プロンプト × 2 種の絵を参照と並べる (9)。Turbo は 8 ステップの蒸留なので、潜在の cos より絵の並びで判断する (Anima-Turbo 0.876–0.948)
 
@@ -127,7 +127,7 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 
 DiT の fp16 は 14–18 GB で、Neural Engine のコンパイルキャッシュ (実効 3.5 GiB、3.1) と 16 GB の Mac には大きすぎる。lut4 でも DiT だけで 3.6–4.5 GB。まず AMD だけで入れ、Mac は lut4 の分割で入るかを別に見積もる。
 
-2026-11-12: Qwen-Image-2.1-Turbo を Mac の Neural Engine に入れた (DiT の画像のブロック lut4、文の符号器と DiT の文のパス lut8。512² で 1 ステップ 2.2 秒、1024² で 16 秒。時間の大半はキャッシュを超えるプログラムの読み込み)。[design.md](design.md) 16.165。
+2026-11-12: Qwen-Image-2.1-Turbo を Mac の Neural Engine に入れた (DiT の画像のブロック lut4、文の符号器と DiT の文のパス lut8。512² で 1 ステップ 2.2 秒、1024² で 16 秒。時間の大半はキャッシュを超えるプログラムの読み込み)。[docs/design/image-apple.md](design/image-apple.md)。
 
 ## 8. 決めること
 

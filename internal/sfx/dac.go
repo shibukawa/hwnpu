@@ -154,7 +154,7 @@ func (d *dac) conv(x *mlpackage.Var, name string, dil, pad int, wn bool) *mlpack
 // padded with zeros by padL and padR, of the given dilation. Except for Intel's NPU it runs
 // along the height, x laid out as (1, ci, T, 1): Core AI's Neural Engine miscomputes a
 // convolution along the width of a kernel over 1 and 512 or more channels whose input another
-// operation computes (design.md 16.197), and runs it right along the height.
+// operation computes (docs/design/audio-models.md), and runs it right along the height.
 func (d *dac) conv1d(x *mlpackage.Var, name string, w, bias []float32, co, k, dil, padL, padR int) *mlpackage.Var {
 	ci, t := x.Shape[1], x.Shape[3]
 	out := t + padL + padR - dil*(k-1)
@@ -178,7 +178,7 @@ func (d *dac) conv1d(x *mlpackage.Var, name string, w, bias []float32, co, k, di
 // kernel of k by 1, padded by pad / dil rows, and laid back; the output's frame row dil + phase
 // reads the input's frames (row + j) dil + phase. Core AI's Neural Engine miscomputes some
 // dilated convolutions whose input another operation computes (dilation 3 over 128 channels at
-// 8000 and 15000 frames but not 7680 or 16000) and an explicit pad before one (design.md 16.197),
+// 8000 and 15000 frames but not 7680 or 16000) and an explicit pad before one (docs/design/audio-models.md),
 // and runs this right.
 func (d *dac) phaseConv(x *mlpackage.Var, name string, w, bias []float32, ci, co, k, dil, pad int) *mlpackage.Var {
 	t := x.Shape[3]
@@ -252,7 +252,7 @@ const snakeSmall = 1e-2
 // Magic is the value of every stage's inputs mg and mg2: added to a value of fp16 under 512 and
 // taken off again, it rounds the value to an integer (fp16's spacing from 1024 to 2048 is 1). It
 // comes as an input, as a constant Core ML folds the addition and the subtraction away, and Core
-// AI takes it off as another input (mg2), as it folds (v + mg) - mg into v (design.md 16.197).
+// AI takes it off as another input (mg2), as it folds (v + mg) - mg into v (docs/design/audio-models.md).
 const Magic = 1536
 
 // sinTerms are sin(pi / 2 w) = w (b0 + b1 w^2 + ... + b4 w^8) for |w| <= 1, Taylor's terms (the
@@ -309,7 +309,7 @@ func (d *dac) snake(x *mlpackage.Var, name string) *mlpackage.Var {
 		// with it), and its compiler takes neither y - 3.125 n - (pi - 3.125) n (a "fused"
 		// subtraction of two scaled inputs) nor a clip folded into such an operation, so y is
 		// reduced in units of pi: u = y / pi, n = round(u) by (u + mg) - mg2, w = 2 (u - n).
-		// y's own fp16 rounding is as coarse as u's (design.md 16.254)
+		// y's own fp16 rounding is as coarse as u's (docs/design/audio-models.md)
 		u := d.scale(y, float32(1/math.Pi))
 		n := d.sub(d.add(u, d.mg), d.mg2)
 		w = d.scale(d.sub(u, n), 2)

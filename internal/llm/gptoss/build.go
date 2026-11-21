@@ -344,5 +344,5 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 // The head in lut6r: the head's part 10.2 → 8.1 ms a step and 0.14 GiB less on the Neural Engine,
 // for KL on 4 texts 0.057 → 0.061 (plain lut6 0.063; GPTQ's lut6 codes about the same as lut6r,
 // but they are not shipped). Best answers: --format-for=self_attn=fp16,lm_head=lut8
-// (docs/improvements.md).
+// (docs/design/performance.md).
 func defaultFormats() []string { return []string{"self_attn=lut8r", "lm_head=lut6r"} }

@@ -2,7 +2,7 @@
 
 作成: 2026-11-19。対象: Apple の Core AI (macOS 27.2.1 26B131) と `coreai-build` (Metal Toolchain 27.2.47.0、coreai-build 3605.6.3)。
 
-hwnpu が今どう回避しているか、Apple の側で直ったときに hwnpu で何をするか、を問題ごとにまとめる。調べた経緯と数値は design.md の各節にある。Apple への報告 (Feedback Assistant) の番号も書いた。
+hwnpu が今どう回避しているか、Apple の側で直ったときに hwnpu で何をするか、を問題ごとにまとめる。調べた経緯と数値は [docs/design/README.md](design/README.md) の各節にある。Apple への報告 (Feedback Assistant) の番号も書いた。
 
 OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各問題がまだあるかを見て、直ったものだけをこの文書の手順で外す。
 
@@ -18,19 +18,19 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | FB25624336 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
 | 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
 | 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | 未報告 | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
-| 9 | チャットのモデルでは prebuilt が遅く、止まるものがある | 報告済み (16.247) | チャットのモデルに prebuilt を置かない | 測り直して、置くなら作って置く |
+| 9 | チャットのモデルでは prebuilt が遅く、止まるものがある | 報告済み ([apple-coreai](design/apple-coreai.md)) | チャットのモデルに prebuilt を置かない | 測り直して、置くなら作って置く |
 | 10 | M1 の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書きあり) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
-- **何が**: `.aimodelc` を端末で仕上げる `ANELargeModelCompilerService` は 1 本ごとに終わり ("Exiting … to avoid VA fragmentation")、launchd が次の起動を 10 秒待たせる ("service spawn deferred by 10 seconds due to throttle")。小さな部品でも 1 本 10.2 秒かかる。design.md 16.233、16.249 のころの調べ
+- **何が**: `.aimodelc` を端末で仕上げる `ANELargeModelCompilerService` は 1 本ごとに終わり ("Exiting … to avoid VA fragmentation")、launchd が次の起動を 10 秒待たせる ("service spawn deferred by 10 seconds due to throttle")。小さな部品でも 1 本 10.2 秒かかる。[docs/design/image-apple.md](design/image-apple.md), [docs/design/quantization.md](design/quantization.md) のころの調べ
 - **今**: 回避はない。prebuilt が効くのは、1 部品の端末のコンパイルが数分かかる画像のモデル (FLUX.2 klein、Chroma1-Flash、Anima) だけ。部品の多い小さなプログラムは、10 秒ずつ積み上がって負ける
-- **直ったら**: FLUX.2 klein の文の符号器 (prebuilt で 112 秒、端末で 81 秒、16.252) と、チャットのモデル (16.247 の表) を同じ測り方で測り直す。チャットのモデルが端末のコンパイルより速くなれば、9 節の手順で置く
+- **直ったら**: FLUX.2 klein の文の符号器 (prebuilt で 112 秒、端末で 81 秒、[distribution](design/distribution.md)) と、チャットのモデル ([apple-coreai](design/apple-coreai.md) の表) を同じ測り方で測り直す。チャットのモデルが端末のコンパイルより速くなれば、9 節の手順で置く
 
 ## 2. 隣り合う同じ lut の表 (FB25624151)
 
-- **何が**: `coreai-build` の ANE のコンパイラは、`lut_to_dense` の重みの出力 256 行ごとの区切りで、先頭から続く同じ表の数を「表を共有する行の数」と取り違え、次の組が違うと "EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is not content-uniform" で落ちて GPU に回す。どの種類、lut4/6/8、どの組の大きさでも起きる。端末のコンパイラは正しい。FLUX.2 klein の `dit_single_0` に 1 組あった。design.md 16.249
+- **何が**: `coreai-build` の ANE のコンパイラは、`lut_to_dense` の重みの出力 256 行ごとの区切りで、先頭から続く同じ表の数を「表を共有する行の数」と取り違え、次の組が違うと "EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is not content-uniform" で落ちて GPU に回す。どの種類、lut4/6/8、どの組の大きさでも起きる。端末のコンパイラは正しい。FLUX.2 klein の `dit_single_0` に 1 組あった。[docs/design/quantization.md](design/quantization.md)
 - **今**: lut を書くとき (`mlpackage.Builder.LUT`)、前の組と同じ表の値を 1 つだけ 1 ulp ずらす (`mlpackage.DistinctNeighbours`)。これで書くものが変わったので `ailower.FormatVersion` を 2 にした
 - **直ったら**: 外さなくてよい。ずれは表 1 つの値 1 つで、絵も答えも変わらなかった。外すのは、回避が別の問題を起こしたときだけ。外すなら:
   1. `DistinctNeighbours` の呼び出しを除き、`ailower.FormatVersion` を 3 に上げる (書くものが変わるので、取得元の鍵も変わる)
@@ -58,7 +58,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 ## 6. 9 種類で `coreai-build` が落ちる (FB25624336)
 
-- **何が**: `--preferred-compute neural-engine` で h13c/d/s、h14d/s、h15d/m/s、h17p の 9 種類が SIGSEGV (`ZinIrCompilerParameters::PropogateGlobalOptionsToPerProcedureOptions`) で落ちる。`--architecture` を省くと最初の h13c で落ちて全体が止まる。design.md 16.247、16.249
+- **何が**: `--preferred-compute neural-engine` で h13c/d/s、h14d/s、h15d/m/s、h17p の 9 種類が SIGSEGV (`ZinIrCompilerParameters::PropogateGlobalOptionsToPerProcedureOptions`) で落ちる。`--architecture` を省くと最初の h13c で落ちて全体が止まる。[docs/design/apple-coreai.md](design/apple-coreai.md), [docs/design/quantization.md](design/quantization.md)
 - **今**: prebuilt は通る 12 種類 (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s) だけ、`-arch` で名指しして 1 種類ずつ作る。落ちる種類の Mac (M1 Pro/Max/Ultra、M2 Pro/Ultra、M3 Pro/Max/Ultra、A18) は端末でコンパイルする
 - **直ったら**: その種類の prebuilt を作って置く。書き出しは変わらないので、prebuilt だけ:
 
@@ -71,7 +71,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   ```
 
   Chroma1-Flash と Anima も同じに (書き出しが取得元にあるもの)。全種類が通るようになれば `-arch all` でよい
-- **作り直し** (書き出しが変わったとき。2 節、FormatVersion を上げたとき): 書き出しを作って置き (`hwnpu-image` か `tools/coreai/kleinonly prepare` を取得元の書き戻しありで)、その書き出しに上の prebuild をする。チャットのモデルは `hwnpu-chat` を書き戻しありで 1 回ずつ動かす (9 節)。2026-11-19 の作り直しの記録は design.md 16.252
+- **作り直し** (書き出しが変わったとき。2 節、FormatVersion を上げたとき): 書き出しを作って置き (`hwnpu-image` か `tools/coreai/kleinonly prepare` を取得元の書き戻しありで)、その書き出しに上の prebuild をする。チャットのモデルは `hwnpu-chat` を書き戻しありで 1 回ずつ動かす (9 節)。2026-11-19 の作り直しの記録は [docs/design/distribution.md](design/distribution.md)
 - 確かめ方: `xcrun coreai-build compile X.aimodel --platform macOS --architecture h13c --preferred-compute neural-engine --output out/` が落ちず、`out/…/manifest.plist` に `mps.fullyPlacedOnANE` があること。失敗の理由は stderr でなく os_log (プロセス `coreai-build`、ANEHostCompiler) に出る
 
 ## 7. h18g (M6) で ANE に乗らない (FB25625077、FB25624336)
@@ -82,26 +82,26 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 ## 8. ディスクが少ないと仕上げたプログラムが消える (未報告)
 
-- **何が**: 空きが少ないと macOS の `deleted` が消せるものを消す (CD_NEAR_LOW_DISK_EVENT)。Core AI のキャッシュと aned の仕上げたプログラムも消える。仕上げた直後に消えると aned が `Model load failed … isPreCompiledModel=1` を出し、Core AI が OS の中で端末のコンパイルに切り替える。M1 で初回の最初のステップが 5〜15 分かかった。22 GB 空いていても消し始めた。design.md 16.252
+- **何が**: 空きが少ないと macOS の `deleted` が消せるものを消す (CD_NEAR_LOW_DISK_EVENT)。Core AI のキャッシュと aned の仕上げたプログラムも消える。仕上げた直後に消えると aned が `Model load failed … isPreCompiledModel=1` を出し、Core AI が OS の中で端末のコンパイルに切り替える。M1 で初回の最初のステップが 5〜15 分かかった。22 GB 空いていても消し始めた。[docs/design/distribution.md](design/distribution.md)
 - **今**: hwnpu では直せない (失敗が見えない)。初回を測るとき、使うときは 25 GB 以上空ける
-- **直ったら**: 何もしなくてよい。Core AI のキャッシュの方針を `.persistent` にすれば (design.md 16.174) Core AI の分は消えなくなるが、aned の分は残るので、それだけでは足りない
+- **直ったら**: 何もしなくてよい。Core AI のキャッシュの方針を `.persistent` にすれば ([docs/design/apple-coreai.md](design/apple-coreai.md)) Core AI の分は消えなくなるが、aned の分は残るので、それだけでは足りない
 
-## 9. チャットのモデルに prebuilt を置かない (16.247)
+## 9. チャットのモデルに prebuilt を置かない ([apple-coreai](design/apple-coreai.md))
 
 - **何が**: チャットのモデルは部品が少なく、1 つめの prebuilt の決まった費用 (数分) と 1 節の間隔で負ける (LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒)。Qwen3.5-4B は prebuilt で読めたが、最初の呼び出しから答えなかった
 - **今**: チャットのモデルは書き出し (`.aimodel`) だけを取得元に置く
-- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): 16.247 と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B を測る。速くなっていれば、チャットの書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
+- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B を測る。速くなっていれば、チャットの書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
 
-- **何が**: Core AI で M1 (h13) の ANE のコンパイラは、`sin`、要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX")、定数倍した入力どうしの引き算 ("NEFUSED_EW: KernelPreScales") を受け付けず、プログラムごと GPU に回す。MOSS の DAC の段 3 は 1 回 4998 フレームで "unexpected failure" になる。M3 の端末のコンパイラは通す。design.md 16.264。ほかの乗らない演算の一覧は improvements.md 7.6
+- **何が**: Core AI で M1 (h13) の ANE のコンパイラは、`sin`、要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX")、定数倍した入力どうしの引き算 ("NEFUSED_EW: KernelPreScales") を受け付けず、プログラムごと GPU に回す。MOSS の DAC の段 3 は 1 回 4998 フレームで "unexpected failure" になる。M3 の端末のコンパイラは通す。[docs/design/audio-models.md](design/audio-models.md)。ほかの乗らない演算の一覧は [docs/design/apple-coreml.md](design/apple-coreml.md)
 - **今**: DAC の snake の sin を π を単位にした級数で計算し、段 3 を 4500 フレームにした (`DACRevision` 3)。M1 でも M3 でも同じ書き出し
 - **直ったら**: 何もしなくてよい (級数の値は CPU の参照と 0.0085 で、sin と同じ)
 - 確かめ方: `sin` だけのプログラムを `coreai-build --architecture h13g` で作り、`mps.fullyPlacedOnANE` があるか
 
 ## 11. オフラインのコンパイラの方が厳しい (未報告)
 
-- **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた (design.md 16.197)。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。design.md 16.264
+- **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた ([docs/design/audio-models.md](design/audio-models.md))。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。[docs/design/audio-models.md](design/audio-models.md)
 - **今**: DAC は、どの機種でもオフラインで通る形 (r3) にした。prebuilt を作るなら、オフラインで乗る形で書く
 - **直ったら**: 何もしなくてよい
 - 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_AILOWER_CUT=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
@@ -112,7 +112,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - 2 節: 2 節の再現を `coreai-build` で h13g 向けに作り、`mps.fullyPlacedOnANE` があるか
 - 3 節: FLUX.2 klein 1024² の初回に "vae_s0 … the prebuilt program failed" が出るか
 - 6、7 節: 6 節の確かめ方を、落ちる 9 種類と h18g で
-- 9 節: 16.247 の表を測り直す
+- 9 節: [apple-coreai](design/apple-coreai.md) の表を測り直す
 - 10、11 節: 各節の確かめ方を
 
 確かめた日と OS、Metal Toolchain の版を、この文書の各節に書き足す。

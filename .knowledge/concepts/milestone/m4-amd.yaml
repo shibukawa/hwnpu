@@ -60,7 +60,7 @@ facts:
     - 構造体内のポインタを整数で持っていた (スタック移動で古いアドレスが渡る恐れ)。unsafe.Pointer 型に
 history:
   completed:
-    summary: 2026-10-28 偽のドライバ相手に受け入れテストに合格。実機と本物の xclbin では未検証。詳細は docs/design.md 16.5
+    summary: 2026-10-28 偽のドライバ相手に受け入れテストに合格。実機と本物の xclbin では未検証。詳細は docs/design/amd.md
 relations:
   - relation: uses
     to: backend:amd-xdna

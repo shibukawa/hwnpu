@@ -119,8 +119,8 @@ class DitFormats:
     output projections, ``mlp`` the GELU MLP's two. The adaLN modulations (in-features 256 on
     their second linear, no whole blocks), the embeddings and the final layer stay bf16.
 
-    bfp16 against q8 (design.md 16.200): a 1024² block 154 -> about 135 ms with the rest of
-    16.200, the first step's velocity error to diffusers' fp32 0.0246 (q8 0.0253, bf16 0.0232),
+    bfp16 against q8 (docs/design/image-amd.md): a 1024² block 154 -> about 135 ms with the rest of
+    docs/design/image-amd.md, the first step's velocity error to diffusers' fp32 0.0246 (q8 0.0253, bf16 0.0232),
     the bank 464 -> 479 MiB. q8 draws nearly what bf16 draws (latent cosine to diffusers' fp32
     0.961 against bf16's 0.966) in 3.4 GiB of pinned memory instead of 5.0; q4 (2.7 GiB) changes
     the picture (0.78): the DiT of an 8-step distilled model carries 4 bits' rounding into the
@@ -139,7 +139,7 @@ class DitFormats:
     gelu: str = "even"
     # The cross-attention: "trim" (one call of every patch over the prompt's text rows, a
     # per-call word nt; the zero rows past them counted in the softmax, iron_mha's zero_keys:
-    # design.md 16.205) or "chunks" (512 patches a call over all 512 rows, before 16.205)
+    # docs/design/image-amd.md) or "chunks" (512 patches a call over all 512 rows, before docs/design/image-amd.md)
     cross: str = "trim"
 
 
@@ -331,7 +331,7 @@ class AdaLN(iron.Graph):
 def dit_attention(q, k, v, zero_keys: int = 0):
     """The DiT's attention of (rows, heads, 128) q, k, v: iron_mha.ImageMHA, 64-key blocks, with
     QK^T through bfp16 (``--dit-mha qk``), P*V too (``qkpv``) or both bf16 (``bf16``: IRON's MHA's
-    products, 1.7x as long as qk; design.md 16.147). ``zero_keys``: k and v bounded, standing for
+    products, 1.7x as long as qk; docs/design/image-amd.md). ``zero_keys``: k and v bounded, standing for
     that many rows, zeros past the bound (iron_mha.attention)."""
     m = DIT_FMT.mha
     return iron_mha.attention(q, k, v, d=q.shape[-1], qk_bfp16=m != "bf16", pv_bfp16=m == "qkpv",
@@ -725,7 +725,7 @@ def export_text(root: Path, out: Path, check: bool) -> None:
 
 VAE_PAD = 16
 # The 3 x 3 convolutions (--vae-conv): "grid" (iron_gridgemm.GridGEMM reads the grid's rows in
-# place: one GEMM a convolution, or one a kernel row summed, as iron_sana's; design.md 16.147) or
+# place: one GEMM a convolution, or one a kernel row summed, as iron_sana's; docs/design/image-amd.md) or
 # "im2col" (a Copy gathers each pixel's 3 x 3 neighbours into rows 9 C wide, then one GEMM)
 VAE_CONV = ["grid"]
 VAE_TAP_ROWS = 64  # image rows a GridGEMM takes at once

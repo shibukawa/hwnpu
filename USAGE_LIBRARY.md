@@ -110,6 +110,7 @@ res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
 | `ai/speech` | Speech to text (Whisper), text to speech (LFM3-Audio), a VAD by loudness, reading and writing WAV |
 | `ai/text` | Translation (PLaMo 3 Translate), chat |
 | `ai/vision` | The depth of a picture (Depth Anything 3, MoGe-2), face detection (YuNet), and where a head is before the camera, from its face |
+| `ai/imagegen` | Drawing and editing pictures (FLUX.2 klein): from a prompt, from a prompt and reference pictures |
 | `ai/flow` | Passing data between models: `Stream`, a stream of chunks, and its tools |
 | `ai/cli` | Commands for the app's command line: `models` (the list, `download`, `prepare`), `status`. It depends on no command line library (`cli.List`, `cli.Run(ctx, app, args)` and the others) |
 | `ai/cli/konghelper` | The adapter of those commands for kong |
@@ -165,9 +166,9 @@ k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` lists the models and what they take (with what they take together and what this machine has for models), `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. The working examples are [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language, and [samples/parallax](samples/parallax), which estimates the depth of a picture, follows the viewer's head with the camera, and draws the picture as if it had depth (its window is Ebitengine). The samples are a module of their own (`samples/go.mod`) and take the microphone and the camera from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
+`APP models` lists the models and what they take (with what they take together and what this machine has for models), `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. The working examples are [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language, and [samples/parallax](samples/parallax), which estimates the depth of a picture, follows the viewer's head with the camera, and draws the picture as if it had depth (its window is Ebitengine), and [samples/layers](samples/layers), which parts a picture into layers by depth, draws what each layer hid, and writes a PSD. The samples are a module of their own (`samples/go.mod`) and take the microphone and the camera from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
 
-- So far it has the models of speech and text, and the depth and the faces of pictures. Picture generation, object and pose detection and the others are only in the commands yet
+- So far it has the models of speech and text, the depth and the faces of pictures, and drawing and editing pictures (FLUX.2 klein). The other picture models (Anima, Chroma), object and pose detection and the others are only in the commands yet
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel the commands do the same preparing and loading, but they were not run through `ai`
 
 ## AMD (running kernels directly)
@@ -213,7 +214,7 @@ On Strix Point and later (XDNA2), the full ELF IRON builds (`design.elf`, which 
 - On Linux it needs read and write access to `/dev/accel/accel0` (the `render` group)
 - `GraphSource{Path: "model.xml"}` passes OpenVINO IR (the `.bin` next to it is read too), and `GraphSource{Blob: ...}` a compiled blob. Extra options for the compiler go in `BuildFlags` in the form `--config KEY="VALUE"`
 - A model with ops the NPU compiler does not support fails with `ErrNotOnNPU` whatever the placement policy, and the ops at fault and the build log are returned
-- Converted to OpenVINO IR for Intel's NPU are hwnpu-chat's models (LFM3 and its VL, Audio and d1, Gemma 4, Qwen3.5, Qwen3, PLaMo 3, PLaMo-Embedding), Anima, `hwnpu-audio`'s transcribe (Whisper), tts, generate (Magenta RealTime 2, MOSS-SoundEffect), pitch and notes, and `hwnpu-image`'s depth (DA3, MoGe-2), face-detect (YuNet), segment (EfficientSAM's encoder), detect, pose and ocr. Chroma, FLUX.2 klein and SigLIP 2 (label) are on AMD's NPU and Apple's Neural Engine only (not Intel yet). Only LFM3, PLaMo 3 Translate, PLaMo-Embedding and Anima have run on the hardware; the others are checked from conversion to results on OpenVINO's CPU (`HWNPU_BACKEND=openvino`, "Telling problems apart with OpenVINO" in [INSTALL_INTEL.md](INSTALL_INTEL.md)) ([docs/design.md](docs/design.md) 16.166)
+- Converted to OpenVINO IR for Intel's NPU are hwnpu-chat's models (LFM3 and its VL, Audio and d1, Gemma 4, Qwen3.5, Qwen3, PLaMo 3, PLaMo-Embedding), Anima, `hwnpu-audio`'s transcribe (Whisper), tts, generate (Magenta RealTime 2, MOSS-SoundEffect), pitch and notes, and `hwnpu-image`'s depth (DA3, MoGe-2), face-detect (YuNet), segment (EfficientSAM's encoder), detect, pose and ocr. Chroma, FLUX.2 klein and SigLIP 2 (label) are on AMD's NPU and Apple's Neural Engine only (not Intel yet). Only LFM3, PLaMo 3 Translate, PLaMo-Embedding and Anima have run on the hardware; the others are checked from conversion to results on OpenVINO's CPU (`HWNPU_BACKEND=openvino`, "Telling problems apart with OpenVINO" in [INSTALL_INTEL.md](INSTALL_INTEL.md)) ([docs/design/intel.md](docs/design/intel.md))
 
 ## Diagnostics
 

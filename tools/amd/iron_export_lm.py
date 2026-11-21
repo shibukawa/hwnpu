@@ -590,7 +590,7 @@ def export(model, versions, out: Path) -> dict:
     vm = {}
     files = dict(xclbins={}, programs={}, checks=[], insts=[], insts_words=0)
     for name, v in versions.items():
-        if os.environ.get("HWNPU_EXPORT_STEPS"):  # each version's operators in order (design.md 16.268)
+        if os.environ.get("HWNPU_EXPORT_STEPS"):  # each version's operators in order (docs/design/amd-llm.md)
             with open(out / f"{name}.steps.txt", "w") as f:
                 for st in v.sequence.steps:
                     f.write(f"{type(st.op).__name__} {' '.join(repr(st.op).split())[:240]}\n")
@@ -858,7 +858,7 @@ def prompt_attention_profile(model, pipelines: int) -> None:
     """Give the prompt chunk's attention (MHA at prefill_chunk rows) ``pipelines`` pipelines, as
     IRON's Llama profile does (iron/applications/llama/profiles/npu2.json: 8 at its chunk, 4 in
     decode). Without a profile MHA takes its default, 1: Gemma 4 E2B's chunk of 1024 spent 60 %
-    of its time in attention (design.md 16.107). The decode step's attention is left as it is."""
+    of its time in attention (docs/design/amd.md). The decode step's attention is left as it is."""
     from iron.common.declare.profile import Profile
     from iron.operators.mha import MHA
 
@@ -908,7 +908,7 @@ def main(argv=None) -> int:
     ap.add_argument("--max-seq-len", type=int, default=4096)
     ap.add_argument("--prefill-chunk", type=int, default=None,
                     help="tokens of a prompt chunk (default 512 for qwen35, IRON's own for qwen35moe, 1024 for the "
-                         "others: design.md 16.54, 16.108)")
+                         "others: docs/design/amd-llm.md)")
     ap.add_argument("--random-weights", type=int, default=None, help="weights drawn at this seed")
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
@@ -937,7 +937,7 @@ def main(argv=None) -> int:
     ap.add_argument("--ple", choices=("int8", "bf16"), default="int8",
                     help="Gemma 4: how ple.bin stores the per-layer token table on the host: int8 with an fp16 scale "
                          "a layer's slice of a row (half the file: E2B 4.4 -> 2.2 GiB, KL 0.00005 from bf16; "
-                         "docs/improvements.md 12.7), or bf16 as the checkpoint has it")
+                         "docs/design/performance.md), or bf16 as the checkpoint has it")
     ap.add_argument("--verify", type=int, default=0, metavar="ROWS",
                     help="add the version checking drafts: ROWS tokens (the next and the drafts) a call, "
                          "every row's logits out (iron_verify.py)")

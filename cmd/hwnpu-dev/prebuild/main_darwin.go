@@ -2,7 +2,7 @@
 // Metal Toolchain), writing X.ARCH.aimodelc beside each X.aimodel of an export. On a device of
 // that architecture hwnpu loads the prebuilt program while Core AI's cache has no entry for the
 // program, and the device finishes it (ANELargeModelCompilerService) in a third of the time the
-// Neural Engine compiler takes over the source (design.md 16.229).
+// Neural Engine compiler takes over the source (docs/design/apple-coreai.md).
 //
 //	hwnpu-dev prebuild EXPORT_DIR...            this device's architecture
 //	hwnpu-dev prebuild -arch h14g,h15g EXPORT    some architectures (-arch all: every one)

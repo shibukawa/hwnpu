@@ -17,7 +17,7 @@ import (
 // cycle loads every package at once and times their calls two ways: each called rounds times in
 // a row (as run's second time), and all of them in turn for rounds rounds (as a diffusion step
 // runs its groups of blocks). The difference is what the Neural Engine pays when a program
-// follows another (design.md 16.201).
+// follows another (docs/design/image-apple.md).
 func cycle(pkgs []string, rounds int) error {
 	ctx := context.Background()
 	if !coreai.OnCPU() {

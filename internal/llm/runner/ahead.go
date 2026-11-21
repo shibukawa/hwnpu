@@ -17,9 +17,9 @@ func Ahead(dev *hwnpu.Device) bool {
 
 // Swap reports whether the groups of a large DiT's blocks load for each step on dev and close
 // after it, rather than all being held: on Core AI, which fails to run more than the Neural Engine
-// holds where Core ML evicts (Qwen-Image's 8 groups on an M1, design.md 16.184), and loads a group
+// holds where Core ML evicts (Qwen-Image's 8 groups on an M1, docs/design/image-apple.md), and loads a group
 // from its cache in 20 ms. Where they can all be held that is no faster: a group pays for
-// following another group either way (design.md 16.210). HWNPU_HOLD_DIT=1 holds them all as Core
+// following another group either way (docs/design/image-apple.md). HWNPU_HOLD_DIT=1 holds them all as Core
 // ML does, to measure it.
 func Swap(dev *hwnpu.Device) bool {
 	return dev != nil && dev.Info().Backend == "coreai" && os.Getenv("HWNPU_HOLD_DIT") == ""
@@ -31,9 +31,7 @@ type OpenFunc func(ctx context.Context, name string) (Program, error)
 // InTurn calls f with each of the programs names in order, each loaded just before its turn and
 // closed after it. With ahead the next one loads while f runs this one, so that two are held for
 // that time: through Core AI a program its cache holds loads in a fraction of a second, which is
-// then not waited for (Qwen-Image's 17 programs of a prompt on an M1: 7.9 -> 4.7 s, design.md
-// 16.210). Through Core ML a load is a compile, which a run beside it does not shorten (design.md
-// 16.165): there ahead stays false.
+// then not waited for (Qwen-Image's 17 programs of a prompt on an M1: 7.9 -> 4.7 s, docs/design/image-apple.md). Through Core ML a load is a compile, which a run beside it does not shorten (docs/design/image-apple.md): there ahead stays false.
 func InTurn(ctx context.Context, names []string, ahead bool, open OpenFunc, f func(i int, p Program) error) error {
 	r := NewRing(names, ahead, open)
 	defer r.Close()

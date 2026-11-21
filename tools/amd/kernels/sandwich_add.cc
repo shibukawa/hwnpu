@@ -3,8 +3,8 @@
 // After a block of a sandwich-normed layer (LFM3's, Gemma's): y = x + rms(h) * w_post, the
 // residual, and n = rms(y) * w_pre, the next block's input. IRON's graph runs a decode step's as
 // three operators (RMSNorm, ElementwiseAdd, RMSNorm), each a reconfiguration of the array
-// (docs/design.md 16.266). One row of SA_N; the sums of squares in float32, rms(h) * w_post,
-// y and n each rounded once to bf16 (nearest even). tools/amd/iron_sandwich.py, 16.268.
+// (docs/design/amd.md). One row of SA_N; the sums of squares in float32, rms(h) * w_post,
+// y and n each rounded once to bf16 (nearest even). tools/amd/iron_sandwich.py, docs/design/amd-llm.md.
 //===----------------------------------------------------------------------===//
 #include <aie_api/aie.hpp>
 #include <stdint.h>

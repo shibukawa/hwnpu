@@ -344,7 +344,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 			// on Core AI (an older Core ML export is lowered to Core AI as it loads). One hwnpu
 			// process at a time uses the Neural Engine, as the other models' devices are opened
 			// (llm.OpenDevice): beside a chat a stage of the VAE failed, "Inference failed —
-			// request aborted" (design.md 16.215)
+			// request aborted" (docs/design/image-apple.md)
 			if err := llm.LockNPU(ctx); err != nil {
 				return err
 			}

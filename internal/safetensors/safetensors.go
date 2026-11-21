@@ -139,7 +139,7 @@ func (f *File) Float32(name string) ([]float32, error) {
 // ScaleSuffix names the scales of a matrix stored in int8 (hwnpu's own layout, not the
 // reference's): an I8 matrix NAME of (rows, cols) and an F16 matrix NAME + ScaleSuffix of (rows,
 // cols / group), each value standing for q * the scale of its row's group. Float32Range expands
-// it (Gemma 4's per-layer embeddings in the tables file, docs/improvements.md 12.7).
+// it (Gemma 4's per-layer embeddings in the tables file, docs/design/performance.md).
 const ScaleSuffix = ".hwnpu_scale"
 
 // Float32Range reads elements [begin, end) of a tensor, in row major order, as float32.

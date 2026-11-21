@@ -5,16 +5,16 @@ description: Hugging Face のモデル構造（modeling_*.py）を Go に移し�
 
 # アーキテクチャの移植
 
-hwnpu-dev convert が扱うモデルはホワイトリストで、各アーキテクチャは `modeling_*.py` の forward を手で Go に移したものです（llama.cpp と同じ方式。理由は docs/design.md の 16.9）。実例は 2 つあります。手順に迷ったらまずこれを読んでください。
+hwnpu-dev convert が扱うモデルはホワイトリストで、各アーキテクチャは `modeling_*.py` の forward を手で Go に移したものです（llama.cpp と同じ方式。理由は [docs/design/architecture.md](../../../docs/design/architecture.md)）。実例は 2 つあります。手順に迷ったらまずこれを読んでください。
 
 - `internal/llm/lfm3`：因果 LM。畳み込み層と注意層が混在し、Neural Engine 向けの書き換え（`post-scale`、`conv`）が入っている
 - `internal/llm/bert`：エンコーダ。埋め込み段、attention mask の入力、隠れ状態の出力がある。`bert_test.go` の fp64 の正解実装が、テストの書き方の手本
 
-移植の後の検証 (Neural Engine の上限と配置、AMD の形、量子化の形式と GPTQ などの校正、メモリと速さ) は docs/new-model-checklist.ja.md (英語版は docs/new-model-checklist.md) の順に進めてください。
+移植の後の検証 (Neural Engine の上限と配置、AMD の形、量子化の形式と GPTQ などの校正、メモリと速さ) は [docs/design/new-model-checklist.ja.md](../../../docs/design/new-model-checklist.ja.md) (英語版は [docs/design/new-model-checklist.md](../../../docs/design/new-model-checklist.md)) の順に進めてください。
 
 ## 合格条件
 
-すべて満たすまで完了ではありません。結果の数値は docs/design.md の新しい節に残します。
+すべて満たすまで完了ではありません。結果の数値は docs/design/ の話題のファイル (モデルなら [llm-models.md](../../../docs/design/llm-models.md) などモデルの種類のファイル) に、今の状態として英語と日本語の両方で書きます (書き方は [docs/design/README.md](../../../docs/design/README.md) の「Updating these files」)。
 
 1. `go test ./...` が通る。`GOOS=darwin CGO_ENABLED=0 go vet ./...` も通る
 2. 新しいパッケージに、少なくとも次のテストがある
@@ -51,7 +51,7 @@ hwnpu-dev convert が扱うモデルはホワイトリストで、各アーキ�
 - 最初の入力は `x`：埋め込み表を引いただけの値で、形は (1, seq, hidden)。Core ML は gather を CPU に置くので、表引きはホストが行う
 - `Start == 0` のときは、表引きと層 0 の間の処理（位置埋め込み、スケーリング、埋め込みの norm）もプログラムに含める
 - `Start`/`Layers` で層を切り出す。`NoHead` が付いていれば、最後の層の後でも最終 norm の前の値を出力する。`Start == Layers()` なら、最後の層より後ろ（最終 norm と出力層）だけを組み立てる。`hwnpu-dev check` はこれらを使って層ごとに照合する
-- 層の境目の値は残差の流れそのもの（参照の `hidden[i]` と同じスケール）にする。Neural Engine 向けの書き換え（`post-scale` など）は層の中で閉じる。Mac 向けに 1 GiB を超えるモデルは、実行時に層の境目（またぐ値が隠れ状態 1 つだけの位置）で切り分ける（docs/design.md の 16.12）
+- 層の境目の値は残差の流れそのもの（参照の `hidden[i]` と同じスケール）にする。Neural Engine 向けの書き換え（`post-scale` など）は層の中で閉じる。Mac 向けに 1 GiB を超えるモデルは、実行時に層の境目（またぐ値が隠れ状態 1 つだけの位置）で切り分ける（[docs/design/apple-coreml.md](../../../docs/design/apple-coreml.md)）
 - 出力の名前は `y`。2 つ目以降の入力（mask など）は `x` の後に並べる。`hwnpu-dev check` は、x 以外の入力にすべて 1 を入れる
 - エラーは `blocks.Run` の中で `Fail` を呼んで返す
 - **nn.Module 1 つにつきメソッド 1 つ**にし、Python と並べて読める粒度にする。既存の `blocks` にある部品は使い回す
@@ -93,7 +93,7 @@ fp16 の素直なグラフが参照と合ってから入れます。書き換え
 
 ### 8. ドキュメント
 
-- docs/design.md に節を足す：何を移したか、合格条件の数値、未確認の点
+- docs/design/ の話題のファイル (英語と `.ja.md` の両方) を今の状態に直す：何を移したか、合格条件の数値、未確認の点、採らなかったもの
 - MODEL_ARCHITECTURE.md と MODEL_ARCHITECTURE.ja.md の対応アーキテクチャ、README.md と README.ja.md のコマンドの表、USAGE_*.md (日英) の該当する節、MODEL.md と MODEL.ja.md のおすすめとメモリの表を更新する
 
 ## 間違えやすい点

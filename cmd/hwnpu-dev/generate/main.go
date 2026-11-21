@@ -21,7 +21,7 @@
 // as such a reference: their tokens and its own logits at every position, in fp32, and the first
 // token of the answer (Meta.From). Another format scored on it (-score PREFIX) is then measured
 // on the answer's tokens apart, which for a translation model are what matters: its prompt is a
-// text it does not predict (docs/new-model-checklist.md 9). The reference is a converted model,
+// text it does not predict (docs/design/new-model-checklist.md). The reference is a converted model,
 // not Hugging Face's: for a model too large to run in fp32 here (PLaMo 3 Translate 8B, 34 GB).
 package generate
 

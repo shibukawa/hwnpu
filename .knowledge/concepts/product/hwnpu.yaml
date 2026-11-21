@@ -27,7 +27,7 @@ facts:
     - 遅くても処理中の消費電力が少なければ価値がある (2026-10-28)
     - 実用的な用途のモデルは最低でも0.5B、たいていは1B〜2B。小さすぎるモデルのエッジケースへの対処は不要 (2026-10-28)
     - モデルは Hugging Face から選び、各 NPU の形式に事前変換して S3/NFS 等に置いて配る。変換は Python でなく Go だけで行いたい (2026-10-28。汎用変換器は非目標のままで、LLM の構造ごとの変換器は対象に入れる)
-  design_document: docs/design.md
+  design_document: docs/design/README.md
   module_path: github.com/shibukawa/hwnpu
 relations:
   - relation: has_requirement

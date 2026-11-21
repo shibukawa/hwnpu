@@ -13,8 +13,8 @@ import (
 // one after another, and between each two of them the chunk attention program over a cache,
 // called once per chunk in use. It tells whether switching between a program with weights and
 // one without costs the Neural Engine anything: alternating two programs of 0.81 GiB of weights
-// each cost 35 ms a call (docs/design.md 16.36), a seam between two parts of one chain 0.1 ms
-// (16.12).
+// each cost 35 ms a call (docs/design/llm-decoding.md), a seam between two parts of one chain 0.1 ms
+// (docs/design/apple-coreml.md).
 type seamResult struct {
 	Format      string    `json:"format"`
 	Layers      int       `json:"layers"` // weighted layers, in AttnLayers+1 parts

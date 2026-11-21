@@ -3,7 +3,7 @@ package flux2klein
 // TestF32Check (opt-in) is the first step's velocity of the DiT, from the inputs of a run of an
 // export of Convert, on the CPU interpreter in float32 (Core ML packages of the same parts) and on
 // the Neural Engine (the export's programs), to tell how far the export is from float32 and why
-// (design.md 16.227):
+// (docs/design/image-apple.md):
 //
 //	HWNPU_KLEIN_F32=cpu HWNPU_KLEIN_FORMAT=fp16   the parts with fp16 weights on the CPU: v_cpufp16.f32
 //	HWNPU_KLEIN_F32=cpu HWNPU_KLEIN_FORMAT=lut8   the parts in the export's format on the CPU: v_cpulut8.f32

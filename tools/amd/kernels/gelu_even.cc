@@ -4,8 +4,8 @@
 // (getTanhBf16, as gelu.cc's use_lut build), the argument formed in float32.
 // IRON's kernel forms u from bf16 products (x^2 and s 0.044715 x, each 0.4 % off), which
 // changed Anima's pictures; here u is formed in float32 (x^2 exact, the coefficients two bf16
-// limbs) and the output rounds to nearest even (the cores start in floor mode, 16.78). The
-// table's tanh (bf16) is the rest of the error. tools/amd/iron_gelu.py, design.md 16.200.
+// limbs) and the output rounds to nearest even (the cores start in floor mode, docs/design/amd.md). The
+// table's tanh (bf16) is the rest of the error. tools/amd/iron_gelu.py, docs/design/image-amd.md.
 //===----------------------------------------------------------------------===//
 #include <aie_api/aie.hpp>
 #include <stdint.h>

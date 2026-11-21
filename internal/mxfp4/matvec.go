@@ -162,7 +162,7 @@ func Run(jobs ...Job) {
 // with every worker polling for 5 ms. In hwnpu-chat the Neural Engine's parts run between them,
 // and polling workers slowed those parts as much as they saved (2 of 8: the experts 1.62 to 1.27
 // ms a layer, 15.8 tokens/s either way; 4: 12.0 tokens/s), so it was taken out
-// (docs/improvements.md section 8).
+// (docs/design/performance.md).
 
 func init() {
 	if v, ok := Opt("pad"); ok {

@@ -2,9 +2,9 @@
 
 作成: 2026-11-18、整理: 2026-11-21。M1 (16 GB、macOS 27、ビルド 26B131) で調べ、M3 と M2 で続けた。コードは main に入っている (2 節)。
 
-**済んだこと**: M1 と M3 の調査 (1 節、1b 節)、LFM2-8B-A1B を hwnpu-chat に組み込み (1b の「hwnpu に組み込んだ」)、M2 での LFM2-8B-A1B と MoE の 1 層 (1c 節、design.md 16.274)。gpt-oss-20b の専門家を Neural Engine に置く道 (A) は止め、CPU の MXFP4 にした (1b の最後、improvements.md 7.5)。**残りは 3 節** (M4 での配置、ANE のコンパイラが外す理由)。
+**済んだこと**: M1 と M3 の調査 (1 節、1b 節)、LFM2-8B-A1B を hwnpu-chat に組み込み (1b の「hwnpu に組み込んだ」)、M2 での LFM2-8B-A1B と MoE の 1 層 (1c 節、[docs/design/apple-neural-engine.md](design/apple-neural-engine.md))。gpt-oss-20b の専門家を Neural Engine に置く道 (A) は止め、CPU の MXFP4 にした (1b の最後、[docs/design/apple-coreai.md](design/apple-coreai.md))。**残りは 3 節** (M4 での配置、ANE のコンパイラが外す理由)。
 
-目的: Apple 向けの MoE (gpt-oss-20b、Qwen3.6-35B-A3B など) が無いのは、専門家の選択 (gather) が Neural Engine に載らないため ([design.md](design.md) 16.179 の gpt-oss の節、[model-fit.md](model-fit.md) 4 節)。この判断は Core ML 時代のもので、Core AI では試していなかった。ANE のコンパイラの中身を調べ、流用できるものを探した。
+目的: Apple 向けの MoE (gpt-oss-20b、Qwen3.6-35B-A3B など) が無いのは、専門家の選択 (gather) が Neural Engine に載らないため ([docs/design/moe.md](design/moe.md) の gpt-oss の節、[model-fit.md](model-fit.md) 4 節)。この判断は Core ML 時代のもので、Core AI では試していなかった。ANE のコンパイラの中身を調べ、流用できるものを探した。
 
 ## 1. 分かったこと (M1)
 
@@ -62,7 +62,7 @@ ANE の gather は、索引が si16 などで、3 つの軸の座標の組 (チ�
 
 ### 実行時の重みの速さ (M1)
 
-8 行 × 2880 × 2880 (gpt-oss の幅)、200 回の平均。入力はプログラム自身の配列 (`INPLACE=1`、呼ぶたびのコピーなし)。1 回の呼び出しの固定費は約 0.2 ms ([design.md](design.md) 16.218)。
+8 行 × 2880 × 2880 (gpt-oss の幅)、200 回の平均。入力はプログラム自身の配列 (`INPLACE=1`、呼ぶたびのコピーなし)。1 回の呼び出しの固定費は約 0.2 ms ([docs/design/apple-coreai.md](design/apple-coreai.md))。
 
 | 重み | 時間 | CPU (milcpu) との照合 |
 |---|---|---|
@@ -234,7 +234,7 @@ gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2
 | int4 の入力と `blockwise_shift_scale` (`linear`) | GPU | — | — |
 | 参考: lut4 の定数 (`linear`) | Neural Engine | (スケールなし) | 0.33 ms |
 
-`matmul` で書くと lut4 の定数でも GPU に回る。`linear` なら Neural Engine。どの 4 ビットの形も CPU の 1 層 1.0 ms (B の道、improvements.md 7.5) に届かないので A はここで止めた。M3 の Neural Engine の検証の返事は `<private>` で読めていない (3.3 のプロファイルが要る)。
+`matmul` で書くと lut4 の定数でも GPU に回る。`linear` なら Neural Engine。どの 4 ビットの形も CPU の 1 層 1.0 ms (B の道、[docs/design/apple-coreai.md](design/apple-coreai.md)) に届かないので A はここで止めた。M3 の Neural Engine の検証の返事は `<private>` で読めていない (3.3 のプロファイルが要る)。
 
 ## 1c. M2 で分かったこと (2026-11-19〜20)
 
@@ -254,7 +254,7 @@ M2 のプロンプトの時間のばらつきは**メモリ不足**による (M2
 - `HWNPU_MOE_WIRE=1`: 専門家の配列を mlock で固定する (既定は off。16 GB で 7.2 GB 固定すると他のアプリが押し出される。メモリが足りない 16 GB の機械で勧める)。M2 (1,624 トークン、スワップ 7.9 GB 使用) で 3 回ずつ交互に: WIRE 13.2 / 13.1 / 12.7 s (展開 0.07〜0.31 M)、なし 14.4 / 13.9 / 13.6 s (0.42〜0.65 M)。以前の mlock の試しも 13.4〜14.8 s と遅い回が出なかった。M3 では 9.2〜9.6 → 8.7 s、生成 15.3 → 16.1 tok/s
 - 結び付けは費用ではない: 層と専門家ごとに request を持って配列を一度だけ結び付けても (試して外した)、メモリに余裕があれば M2 も M3 も同じ (M2 14.5 s、0.38〜0.39 ms の層行。M3 9.2〜9.3 s)。「最初の呼び出し 2.32 ms、2 度目 1.26 ms」は遅い回でだけ開く差で、圧縮されたページの展開だった。M2 の最良 14.5 s と M3 の 8.7〜9.2 s の差はチップの差 (生成と同じ割合)
 - やらないこと: プロンプトを層ごとに全部の塊を回す順に変え、専門家を層ごとに 1 度だけ結び付ける。結び付けがほぼ無料なので速い回は速くならない
-- MoE の 1 層 (`aicheck moe`、design.md 16.274): M1 の「1 プログラムに専門家 5 個まで」の段は M2 にない (M3 と同じ)。実行時の重みは定数の重みの半分の速さ (gpt-oss の専門家で 26 GB/s と 50〜52 GB/s)
+- MoE の 1 層 (`aicheck moe`、[docs/design/apple-neural-engine.md](design/apple-neural-engine.md)): M1 の「1 プログラムに専門家 5 個まで」の段は M2 にない (M3 と同じ)。実行時の重みは定数の重みの半分の速さ (gpt-oss の専門家で 26 GB/s と 50〜52 GB/s)
 
 ## 2. コード
 

@@ -48,7 +48,7 @@ facts:
     abi: macOS arm64 clang と Linux amd64 gcc で生成した ABI 基準値は同一
 history:
   completed:
-    summary: 2026-10-28 偽のドライバ相手の受け入れテストに合格。実機での検証は未実施。詳細は docs/design.md 16.2
+    summary: 2026-10-28 偽のドライバ相手の受け入れテストに合格。実機での検証は未実施。詳細は docs/design/intel.md
 relations:
   - relation: uses
     to: backend:intel-levelzero

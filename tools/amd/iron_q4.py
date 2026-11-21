@@ -945,7 +945,7 @@ def operators():
 
 # The cores a column of a plain QGEMV (q_linear): 2 (a memtile splits each column block between
 # two), or 1: half the configuration a switch to it writes, as fast for the decode step's
-# projections (LFM3-1.7B 15.6 -> 17.1 tokens/s, the same bits, design.md 16.277). 0 (the default):
+# projections (LFM3-1.7B 15.6 -> 17.1 tokens/s, the same bits, docs/design/amd.md). 0 (the default):
 # 1 up to Q_CORES_UP_TO out-features, 2 past it (a head's). HWNPU_Q_CORES, HWNPU_Q_CORES_UP_TO.
 Q_CORES = int(os.environ.get("HWNPU_Q_CORES", "0"))  # 0: by the out-features (Q_CORES_UP_TO)
 Q_CORES_UP_TO = int(os.environ.get("HWNPU_Q_CORES_UP_TO", "16384"))
@@ -1712,7 +1712,7 @@ def sandwich_operator(glu: bool = False, scaled: bool = False):
     norm's and the next norm's weights (``scaled``: and a scale row, Gemma 4's layer_scalar), on
     x's channel. y = r + rms(h) w_post (times the scale), n = rms(y) w_pre, then the GEMV of n.
     Outputs: the GEMV's, then y and n (a core of column 0 each), as SandwichAdd would give them:
-    one operator in place of SandwichAdd and the GEMV (docs/design.md 16.277)."""
+    one operator in place of SandwichAdd and the GEMV (docs/design/amd.md)."""
     key = (glu, scaled)
     if key in _SW_OPS:
         return _SW_OPS[key]

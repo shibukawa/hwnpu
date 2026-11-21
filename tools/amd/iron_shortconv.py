@@ -4,8 +4,7 @@ A conv layer's mixer is ``out_proj(C * conv(B * x))``, B, C and x the three part
 row and conv a depth-wise causal filter of ``K`` taps (``conv_L_cache``) over the ``K - 1`` rows
 before. IRON's graph (``F.causal_conv1d``) runs a decode step's as about 16 operators: copies into
 its window, a multiply and an add a tap, and the gate's two multiplies. Each is a
-reconfiguration of the array (about 40 us and 2.3 us a KB of its configuration, docs/design.md
-16.266), together about 1.1 ms of a layer's. ``ShortConvStep`` is one: each of ``n`` columns' core
+reconfiguration of the array (about 40 us and 2.3 us a KB of its configuration, docs/design/amd.md), together about 1.1 ms of a layer's. ``ShortConvStep`` is one: each of ``n`` columns' core
 takes its ``width / n`` channels of B, C, x and the taps on one channel and the state's rows on
 the other, and gives back y and the state's next rows.
 

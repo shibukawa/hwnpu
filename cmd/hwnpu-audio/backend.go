@@ -13,7 +13,7 @@ import (
 )
 
 // On a Mac hwnpu-audio runs its programs on Apple's Neural Engine through Core AI alone (macOS
-// 27), converted for it (.aimodel) from the checkpoints, as hwnpu-image does (design.md 16.196).
+// 27), converted for it (.aimodel) from the checkpoints, as hwnpu-image does (docs/design/audio-models.md).
 // Core ML is left to the CPU interpreter (--cpu, and pitch and notes without ONNX Runtime), which
 // reads Core ML exports.
 

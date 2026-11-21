@@ -22,7 +22,7 @@ import (
 )
 
 // limits measures the Neural Engine's limits that arXiv 2606.22283 and ANEForge (2606.17090)
-// give, on this Mac through Core AI (design.md 16.274):
+// give, on this Mac through Core AI (docs/design/apple-neural-engine.md):
 //
 //   - floor: what one call of a nearly empty program costs (ANEForge: about 70 us; the paper:
 //     about 190 us on an M1)

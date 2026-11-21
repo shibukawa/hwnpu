@@ -1,7 +1,7 @@
 //===- silu_f32.cc - SiLU, its sigmoid in float32 ---------------*- C++ -*-===//
 //
 // silu(x) = x / (1 + exp(-x)): the exponential (exp_f32) and the inverse in float32, the product
-// with x rounded once to bf16, to nearest even (the cores start in floor mode, 16.78).
+// with x rounded once to bf16, to nearest even (the cores start in floor mode, docs/design/amd.md).
 //
 // IRON's SiLU multiplies x by a bf16 table's sigmoid: 1 % off on average over [-6, 2] (2 % at
 // most), and exactly 0 from x = -8 down. A SwiGLU MLP multiplies it by the other branch, which in

@@ -38,7 +38,7 @@ type ConvertOptions struct {
 	// Stats, when set, is a safetensors file of the DiT's inputs' mean squares (FitCodes): the
 	// DiT's lut8 tables are then fitted to the activations (weighted Lloyd from the uniform
 	// levels), else spaced evenly (uniform), which loses fine detail (a portrait's hair: latent
-	// cosine 0.964 against 0.998 at 512 x 512, docs/design.md).
+	// cosine 0.964 against 0.998 at 512 x 512, docs/design/README.md).
 	Stats string
 	// TextGroup is Qwen3-VL's layers a program holds at most (a group ends at each hidden state
 	// the DiT reads); SingleGroup the single blocks.
@@ -59,7 +59,7 @@ func (o *ConvertOptions) defaults() {
 		o.TextRows = DefaultTextRows
 	}
 	if o.TextFormat == "" {
-		o.TextFormat = "lut8" // Qwen3-VL's attention sinks: NaN at int8 on the Neural Engine (design.md 16.165)
+		o.TextFormat = "lut8" // Qwen3-VL's attention sinks: NaN at int8 on the Neural Engine (docs/design/image-apple.md)
 	}
 	if o.DitFormat == "" {
 		o.DitFormat = "lut8" // the Neural Engine reads lutN fastest; per-row int8 overflows on large outputs

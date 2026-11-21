@@ -244,7 +244,7 @@ var probes = map[string]func(g *milpart.Graph){
 		a, b := g.Slice(x, -1, 0, 256), g.Slice(x, -1, 256, 512)
 		g.Output(g.Concat(-1, b, a))
 	},
-	// Sana's VAE (design.md 16.189): the first stage at 1024 x 1024 falls off the Neural Engine
+	// Sana's VAE (docs/design/image-apple.md): the first stage at 1024 x 1024 falls off the Neural Engine
 	// from its first EfficientViT block's q/k/v convolution (1024 -> 3072 at 32 x 32)
 	"conv1x1_1024_3072_32": convProbe(1024, 3072, 32, 1, false),
 	"conv1x1_1024_3072_16": convProbe(1024, 3072, 16, 1, false),
@@ -270,7 +270,7 @@ var probes = map[string]func(g *milpart.Graph){
 		y := g.Add(g.Conv2D(z, "a", randW(1024*32*9, 32*9), make([]float32, 1024), 1024, 3, 1), g.Conv2D(z, "e", e, nil, 1024, 1, 1))
 		g.Output(g.Conv2D(y, "b", randW(3072*1024, 1024), nil, 3072, 1, 1))
 	},
-	// MoGe-2's dense head on the M1 (design.md 16.190): the deconvolution 128 -> 64 at 200 x 200
+	// MoGe-2's dense head on the M1 (docs/design/apple-coreai.md): the deconvolution 128 -> 64 at 200 x 200
 	// (a 1 x 1 convolution to 256 channels, then pixel_shuffle) falls off the Neural Engine
 	"ps_256_200":            psProbe(256, 200, 0, 1),
 	"conv_ps_128_200":       psProbe(128, 200, 256, 1),
@@ -281,7 +281,7 @@ var probes = map[string]func(g *milpart.Graph){
 		x := g.Input("x", 1, 256, 8, 64)
 		g.Output(g.Transpose(x, 0, 2, 1, 3))
 	},
-	// Qwen-Image's VAE on M1 (design.md 16.184): the Neural Engine's compiler fails ("Allocation
+	// Qwen-Image's VAE on M1 (docs/design/image-apple.md): the Neural Engine's compiler fails ("Allocation
 	// failure for L2-dep pair") on the norm over 1152 channels of 64 x 64, not on 768 x 64 x 64,
 	// 1152 x 48 x 48 or 576 x 96 x 96, nor on the convolution alone
 	"conv1152_64_neg":      conv3(1152, 64, "neg"),

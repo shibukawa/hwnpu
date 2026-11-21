@@ -31,7 +31,7 @@
 #                 directory instead of downloaded (Qwen3-1.7B and MOSS-SoundEffect's text encoder)
 #   machine       the least memory of a machine, in GB, the family recommends the model for
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
-#                 buffers and the process's together over a run (docs/new-model-checklist.md 11.2)
+#                 buffers and the process's together over a run (docs/design/new-model-checklist.md)
 #   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
 #                 memory and bytes take one number, or a table by the NPU's vendor where they
 #                 differ (memory: {amd: 3.5, apple: 4.1}); a vendor the table leaves out takes its
@@ -74,12 +74,12 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-1.7B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-1.7B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
-    # Apple (Core AI, measured on an M1, 2026-11-15, docs/design.md 16.221): the programs split
+    # Apple (Core AI, measured on an M1, 2026-11-15, docs/design/memory-and-power.md): the programs split
     # at the attention hold the weights once, 1.36 GiB on the Neural Engine and the process's
-    # 0.23 GiB, 1.7 GB. The whole program of short conversations (16.188) holds them once more,
+    # 0.23 GiB, 1.7 GB. The whole program of short conversations (docs/design/apple-coreai.md) holds them once more,
     # 2.64 + 0.21 GiB, 3.1 GB (an M1 made to load it, --tier 2048): over what a machine of 8 GB
-    # has for models, so none there (tier: none; --tier auto has it, 16.222), and from 16 GB on
-    # an M2 or later (an M1 never loads it, 16.218)
+    # has for models, so none there (tier: none; --tier auto has it, docs/design/memory-and-power.md), and from 16 GB on
+    # an M2 or later (an M1 never loads it, docs/design/apple-coreai.md)
     machine: 8
     memory: {amd: 2.2, apple: 1.7}
     tier: none
@@ -115,7 +115,7 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-VL-2B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-VL-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
-    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.24 GiB on the Neural Engine and the process's
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.24 GiB on the Neural Engine and the process's
     # 0.25 GiB describing a picture; 2.14 + 0.23 GiB (2.6 GB) with text alone, the vision
     # encoder loaded from the start
     machine: 8
@@ -130,7 +130,7 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-Audio-2B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
-    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.18 GiB on the Neural Engine and the process's
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.18 GiB on the Neural Engine and the process's
     # 0.21 GiB answering about a clip (2.6 GB); 2.05 + 0.23 GiB (2.4 GB) with text alone
     machine: 8
     memory: 2.6
@@ -144,7 +144,7 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-Omni-2B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
-    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.63 GiB on the Neural Engine and the process's
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.63 GiB on the Neural Engine and the process's
     # 0.25 GiB with a picture and a clip; 2.40 + 0.23 GiB (2.8 GB) with text alone, both
     # encoders loaded from the start
     machine: 8
@@ -160,7 +160,7 @@ models:
     from: hf:google/gemma-4-E2B-it
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 8
-    # AMD (2026-11-17, docs/improvements.md 12.7): the peak of a chat, 1.76 GiB on the NPU and
+    # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 1.76 GiB on the NPU and
     # the process's 0.45 GiB; the download is the converted export (5.09 GB, its per-layer
     # embedding table in int8), packed to 4.78 GB. Apple (an M2, 2026-11-17): the converted Core AI
     # export (1.73 GB) and the tables (3.17 GB, the per-layer embeddings in int8), 4.94 GB with the tokenizer
@@ -176,7 +176,7 @@ models:
     from: hf:google/gemma-4-E4B-it
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 24
-    # AMD (2026-11-17, docs/improvements.md 12.7): the peak of a chat, 3.55 GiB on the NPU and
+    # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 3.55 GiB on the NPU and
     # the process's 0.51 GiB; the download is the converted export (8.07 GB, its per-layer
     # embedding table in int8), packed to 7.45 GB. Apple (an M2, 2026-11-17): the converted Core AI
     # export (3.51 GB) and the tables (4.18 GB, the per-layer embeddings in int8), 7.73 GB with the tokenizer
@@ -203,10 +203,10 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3.5-0.8B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", class: open}
-    # Apple (Core AI, an M1, 2026-11-15, docs/design.md 16.221): 0.99 GiB on the Neural Engine
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.99 GiB on the Neural Engine
     # (the multi-token prediction layer's programs among it) and the process's 0.39 GiB, 1.5 GB;
     # with the whole program of short conversations (--tier 2048 on the M1) 1.84 + 0.31 GiB,
-    # 2.3 GB: none on a machine of 8 GB (tier: none, 16.222), from 16 GB on an M2 or later
+    # 2.3 GB: none on a machine of 8 GB (tier: none, docs/design/memory-and-power.md), from 16 GB on an M2 or later
     machine: 8
     memory: 1.5
     tier: none
@@ -223,9 +223,9 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3.5-2B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE", class: open}
-    # Apple (Core AI, an M1, 2026-11-15, 16.221): 1.67 GiB on the Neural Engine and the process's
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 1.67 GiB on the Neural Engine and the process's
     # 0.39 GiB (no whole program: its weights twice are over what the two may hold): for 8 GB
-    # too (16.222). Converting it the first time the process peaks at 6.0 GiB, which a machine
+    # too (docs/design/memory-and-power.md). Converting it the first time the process peaks at 6.0 GiB, which a machine
     # of 8 GB swaps for: there the programs converted already are to be fetched
     machine: 8
     memory: {amd: 2.4, apple: 2.2}
@@ -240,9 +240,9 @@ models:
     # rows chosen by GPTQ against the activations (codes, tools/ref/qwen2_gptq.py): KL 0.13 nats
     # against transformers' float32 where rounding gives 0.90 (lut8 0.0012; --format-for
     # down_proj=lut8 0.078 for 0.95 GB more). Tables of column blocks would be finer, but the
-    # Neural Engine reads only a row's first (docs/design.md 16.230). M1 (2026-11-16): 4.0 GB on
+    # Neural Engine reads only a row's first (docs/design/llm-qwen.md). M1 (2026-11-16): 4.0 GB on
     # the Neural Engine and the process's 0.35 GB, 0.8 tokens/s: over the 2.8 GiB an M1 runs at
-    # full speed (16.118), so not picked there; the M2 and later not measured. AMD: no export
+    # full speed (docs/design/apple-neural-engine.md), so not picked there; the M2 and later not measured. AMD: no export
     family: qwen2.5-coder
     tag: 7b
     kind: chat
@@ -264,7 +264,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     # 16 GB: on AMD's NPU 16 of each layer's 32 experts in places (6.90 GiB pinned), the others
     # read from experts.bin with O_DIRECT when chosen, the decode step routed on the host so that
-    # the next layer's experts are read ahead (design.md 16.261): 14.4 tokens/s, 3.5 % of the
+    # the next layer's experts are read ahead (docs/design/moe.md): 14.4 tokens/s, 3.5 % of the
     # choices read. On a Mac about 4 GB of the experts wired (experts.Placement), the others
     # mapped from the checkpoint. From 24 GB every expert in the NPU's memory (19.4 tokens/s on
     # AMD) and wired on a Mac
@@ -307,13 +307,13 @@ models:
     about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (all wired into memory on 24 GB and more; on 16 GB about 4 GB of them, the ones every text runs and those the application runs most, fewer when the system runs short of memory), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
   Qwen3.6-35B-A3B:
     # a mixture of experts (qwen3_5_moe: 256 experts of 2048 x 512 a layer, 8 a token, and a
-    # shared one; 35B, 3B active). Apple Core AI (docs/design.md 16.261, 16.262): the
+    # shared one; 35B, 3B active). Apple Core AI (docs/design/moe.md): the
     # experts on the CPU in 4 bit MXFP4 from a checkpoint derived from the release a layer at a
     # time (its bf16 experts are 64 GB of its 72: read over the network, 22 GB written, the
     # cache's derived/), mapped and none wired where they are over three quarters of the memory:
     # the page cache keeps what fits and a token's experts that are not there are read whole;
     # the token mixers, the routers and the shared experts on the Neural Engine.
-    # An M3 of 16 GB (2026-11-20, 8 prompts of different fields, docs/design.md 16.275):
+    # An M3 of 16 GB (2026-11-20, 8 prompts of different fields, docs/design/moe.md):
     # 10.9-11.0 tokens/s, 2602 tokens of prompt in 21.5 s (its steps through one part at a time,
     # the experts read once); the Neural Engine 1.94 GB and the process 0.75 GB, 2.7 GB, beside
     # the page cache's share of the experts' 17.1 GB (6-7
@@ -323,16 +323,16 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3.6-35B-A3B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
-    # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design.md 16.271): 24,188 MiB of the NPU's (the
+    # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design/moe.md): 24,188 MiB of the NPU's (the
     # experts and head at 4 bits, the mixers at 8) and the process's 880 MiB at its peak while
     # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB.
-    # Below 48 GB its experts in places (--expert-places P, docs/design.md 16.276): the others in
+    # Below 48 GB its experts in places (--expert-places P, docs/design/moe.md): the others in
     # experts.bin (20.1 GB), copied into a place when chosen, read with O_DIRECT where the file
     # does not fit beside the places (measured with HWNPU_MOE_DEBUG=direct=1, 2026-11-21, a
     # 1173-token prompt then 200 tokens, the peak of the NPU's buffers and the process's): 32
     # places 7.6 GiB, 33-38 % of the decode's choices copied in; 128 places 16.0 GiB, 6-7 %. The
     # logits the same to the bit as with every expert. Re-exported from main after the array
-    # work of 16.266-16.272: every expert 8.8-8.9 tokens/s, 128 places 7.5-7.6, 32 places 5.8-6.0.
+    # work of docs/design/amd.md, docs/design/amd-llm.md, docs/design/moe.md: every expert 8.8-8.9 tokens/s, 128 places 7.5-7.6, 32 places 5.8-6.0.
     # A layer's core over half its places is not kept in place on AMD (pool.go: with 32 places
     # it took most of them, 34.4 -> 36.7 % copied in)
     machine: 16
@@ -396,11 +396,11 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3-0.6B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE", class: open}
-    # Apple only. Core AI, an M1, 2026-11-15 (16.221): split at its attention, 0.65 GiB on the
+    # Apple only. Core AI, an M1, 2026-11-15 (docs/design/memory-and-power.md): split at its attention, 0.65 GiB on the
     # Neural Engine and the process's 0.35 GiB, 1.1 GB on an M1; with the whole program of short
     # conversations an M2 or later loads too (--tier 1024 on the M1) 1.23 + 0.26 GiB, 1.6 GB.
     # It keeps that program on 8 GB (within what such a machine has, and twice as fast on an
-    # M3, 16.188)
+    # M3, docs/design/apple-coreai.md)
     machine: 8
     memory: {apple: 1.6, M1: 1.1}
     bytes: 1.52e9
@@ -417,7 +417,7 @@ models:
     sha256:
       model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
       model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
-    # Core AI, an M1, 2026-11-15 (16.221): split at its attention. On 8 GB one program reads
+    # Core AI, an M1, 2026-11-15 (docs/design/memory-and-power.md): split at its attention. On 8 GB one program reads
     # the prompts too, 1.64 GiB on the Neural Engine and the process's 0.23 GiB. From 16 GB the
     # program of 128 tokens a call reads them, a function of the same .aimodel (the weights
     # held once): 1.80 + 0.36 GiB. With Core ML each program held the weights (M3: 1.63 GiB and
@@ -440,7 +440,7 @@ models:
     # q8), estimated from the weights, not run. Intel: int4 by rows (Config.IntelFormat) in one
     # program (prefill off; the Neural Engine has one anyway), 3.8 GiB under the about 4.6 GB a
     # Core Ultra 5 135U's NPU held, where int8's 7.6 would not fit; not run, its precision not
-    # checked (docs/design.md 16.143, 16.164)
+    # checked (docs/design/intel.md, docs/design/llm-models.md)
     family: plamo3translate
     tag: 8b
     kind: chat
@@ -466,9 +466,9 @@ models:
     kind: chat
     from: hf:pfnet/plamo-3-translate-2b
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-2b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
-    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.74 GiB on the Neural Engine (2.64 to 2.68
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.74 GiB on the Neural Engine (2.64 to 2.68
     # wired: the programs of the short context are functions of the same .aimodel, 0.1 GiB
-    # more, 16.220) and the process's 0.24 GiB
+    # more, docs/design/llm-engine.md) and the process's 0.24 GiB
     machine: 16
     memory: {amd: 2.7, apple: 3.2}
     bytes: {amd: 2.35e9, apple: 5.76e9}
@@ -481,7 +481,7 @@ models:
     kind: chat
     from: hf:pfnet/plamo-3-translate-0.8b
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-0.8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
-    # Apple (Core AI, an M1, 2026-11-15, 16.221): 0.82 GiB on the Neural Engine and the process's
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.82 GiB on the Neural Engine and the process's
     # 0.12 GiB; as AMD's
     machine: 8
     memory: 1.0
@@ -495,7 +495,7 @@ models:
     kind: embedding
     from: hf:pfnet/plamo-embedding-1b
     license: {id: apache-2.0, url: "https://huggingface.co/pfnet/plamo-embedding-1b/blob/main/LICENSE.txt", class: open}
-    # Apple (Core AI, an M1, 2026-11-15, 16.221): 1.05 GiB on the Neural Engine and the process's
+    # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 1.05 GiB on the Neural Engine and the process's
     # 0.03 GiB (hwnpu-chat search); AMD's is estimated from the weights
     machine: 8
     memory: {amd: 1.3, apple: 1.2}
@@ -714,7 +714,7 @@ models:
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # Image models: one export per model and NPU vendor holds every aspect ratio, the weights once;
-  # never an export per size (new-model-checklist.md 11.4, design.md 16.280).
+  # never an export per size (docs/design/new-model-checklist.md, docs/design/image-models.md).
   # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
   # sources) of tools/amd/iron_anima.py or iron_chroma.py, of the eight aspect ratios of --size
   # in one (FLUX.2 klein's exported with IRON on its first run when the sources have none); on
@@ -741,7 +741,7 @@ models:
     machine: 8
     # AMD: the NPU's 2.4 GiB peak (the VAE's stages) and the process's 0.9 GiB, measured. Apple:
     # the peak of the footprint and the Neural Engine footprint together, 4.8 GB at 1024 x 1024 on
-    # an M1 (3.1 GiB of the process and 1.4 GiB on the Neural Engine, design.md 16.228)
+    # an M1 (3.1 GiB of the process and 1.4 GiB on the Neural Engine, docs/design/image-models.md)
     memory: {amd: 3.5, apple: 4.8}
     # AMD: the export of the eight aspect ratios (anima-turbo.amd-npu2, 6.13 GB) packed in the
     # sources (files.tar.zst)
@@ -793,9 +793,9 @@ models:
       vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
     machine: 16
     # AMD: the peak of a 1024 x 1024 run, the NPU's mappings and the process's RSS: 4643 MiB with
-    # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; design.md 16.167).
+    # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; docs/design/image-amd.md).
     # Apple: the process's footprint at 1024 x 1024 (4.3 GB); the Neural Engine holds 6.9 GiB more
-    # (the DiT, design.md 16.170). AMD (2026-11-17, design.md 16.241): the peak of the eight aspect
+    # (the DiT, docs/design/image-apple.md). AMD (2026-11-17, docs/design/image-amd.md): the peak of the eight aspect
     # ratios, 3.47 to 3.62 GiB (the NPU's 3.44 and the process's 0.25 at most)
     memory: {amd: 3.9, apple: 4.3}
     # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here). AMD: the
@@ -838,10 +838,10 @@ models:
     # AMD: the peak of a 1024 x 1024 run, 3.43 GiB on the NPU (the VAE's stages, which share their
     # buffers; the text encoder's layers and the DiT's blocks are read a group at a time into one
     # bank) and the process's 0.16 GiB, measured; an edit with one reference peaks the same
-    # (design.md 16.206 to 16.208). 1.9 GB at 512 x 512.
+    # (docs/design/image-amd.md to docs/design/image-amd.md). 1.9 GB at 512 x 512.
     # Apple: the peak of the process's footprint and its Neural Engine footprint together at
     # 1024 x 1024 on an M1, 4.9 GB (in the VAE's stages: 3.8 GiB of the process and 0.8 GiB on the
-    # Neural Engine; 3.1 GB at 512 x 512), measured (design.md 16.227, 16.228)
+    # Neural Engine; 3.1 GB at 512 x 512), measured (docs/design/image-apple.md, docs/design/image-models.md)
     memory: {amd: 3.9, apple: 4.9}
     # the repository's diffusers layout (its single-file copy of the DiT is not fetched)
     bytes: 1.6e10
@@ -898,12 +898,12 @@ models:
     machine: 16
     # Apple: the process's footprint at 1024 x 1024 peaks at 4.1 GB (M3, measured); the Neural
     # Engine's own is not measured yet (the DiT's programs a group at a time, 0.6 GB each at lut8):
-    # an estimate (design.md 16.248). AMD: the NPU's drm-total-memory and RssAnon + RssShmem peak at
-    # 3.6 GiB at 1024 x 1024 (2.5 GiB at 512 x 512), measured (design.md 16.250)
+    # an estimate (docs/design/image-apple.md). AMD: the NPU's drm-total-memory and RssAnon + RssShmem peak at
+    # 3.6 GiB at 1024 x 1024 (2.5 GiB at 512 x 512), measured (docs/design/image-amd.md)
     memory: {amd: 3.9, apple: 5.5}
     # AMD: the export of all eight (one export, tools/amd/iron_flux3klein.py; 2026-11-18): the
     # image's rows are padded to whole rounds of 512, so every size but 512 x 512 runs 1024 x
-    # 1024's graphs but the single blocks (design.md 16.251). FLUX.2 klein's sizes on AMD
+    # 1024's graphs but the single blocks (docs/design/image-amd.md). FLUX.2 klein's sizes on AMD
     npu:
       amd:
         sizes:
@@ -1006,7 +1006,7 @@ models:
     about: "YuNet (OpenCV Zoo, MIT): faces' boxes and five landmarks (eyes, nose, mouth corners)"
   # hwnpu-image label and embed: on AMD's NPU the export ~/models/NAME.amd-npu2 of
   # tools/amd/iron_siglip2.py (--precision HIGHEST); on Apple's Neural Engine the checkpoint is
-  # downloaded and converted on the first run (internal/vision/siglip, fp16; design.md 16.183);
+  # downloaded and converted on the first run (internal/vision/siglip, fp16; docs/design/vision-models.md);
   # Intel's NPU has no form yet
   siglip2-base-patch16-224:
     family: siglip2
@@ -1035,7 +1035,7 @@ models:
   # image encoder and its prompt's mask decoder; sha256 names each file. The encoder runs on
   # AMD's NPU from an export of tools/amd/iron_efficientsam.py made on the first run, on Apple's
   # Neural Engine and Intel's NPU converted from its ONNX file on the first run (M3: 0.4 s for S,
-  # all on the Neural Engine; design.md 16.183), elsewhere on the CPU (ONNX Runtime, else hwnpu's
+  # all on the Neural Engine; docs/design/vision-models.md), elsewhere on the CPU (ONNX Runtime, else hwnpu's
   # evaluator); the decoder on the host, per prompt
   EfficientSAM-Ti:
     family: efficientsam
@@ -1108,7 +1108,7 @@ categories:
     about: image generation (hwnpu-image generate)
     # FLUX.2 klein from 8 GB (4.9 GB on Apple at 1024 x 1024, 41 s on an M1; 3.9 GB on AMD):
     # Apache-2.0, safe by default, and edits too on AMD. Anima and Chroma (nsfw) are not picked
-    # even with +nsfw: named, they run (design.md 16.228, 16.244)
+    # even with +nsfw: named, they run (docs/design/image-models.md)
     picks:
       - {machine: 8, model: FLUX.2-klein-4B}
   depth:

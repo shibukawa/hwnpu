@@ -203,7 +203,7 @@ def gdn_scratch(R: int, dk: int, seg: int = 0, dv: int = 0, conv: int = 0, norm:
     """The bf16 of a core's scratch buffer (kernels/gdn.cc's gdn_bind): the state's three limbs a
     core keeps between calls (dk x 16 each), and 32 more to align them to 64 bytes. As the
     kernel's static arrays (.bss) they were written with zeros at every configuration of the
-    array, 12 KB a core (docs/design.md 16.267). The other arguments are the kernel's shape, kept
+    array, 12 KB a core (docs/design/amd-llm.md). The other arguments are the kernel's shape, kept
     for the callers."""
     return 3 * dk * SLICE + 32
 

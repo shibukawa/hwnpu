@@ -139,7 +139,7 @@ def main():
     ap.add_argument("--fmt", default="lut4", choices=("lut4", "lut6", "lut8"))
     ap.add_argument("--col-block", type=int, default=0,
                     help="columns a table (0: whole rows). Core AI's Neural Engine reads only the first block's table of a row "
-                         "(docs/design.md 16.230), so its programs take whole rows; blocks are for measuring on the CPU")
+                         "(docs/design/llm-qwen.md), so its programs take whole rows; blocks are for measuring on the CPU")
     ap.add_argument("--damp", type=float, default=0.01)
     ap.add_argument("--layers", type=int, default=0, help="only the first N layers (0: all), for trying it out")
     a = ap.parse_args()

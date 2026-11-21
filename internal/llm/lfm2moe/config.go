@@ -176,5 +176,5 @@ func (c *Config) PagedKV(layer int) int { return layer }
 func (c *Config) MaxContext() int { return c.MaxPositions }
 
 // Format is lut8: LFM3's family loses its answers in lut4 on the Neural Engine
-// (docs/design.md 16.31). The experts are int8 whatever it is.
+// (docs/design/llm-models.md). The experts are int8 whatever it is.
 func (c *Config) Format() string { return "lut8" }

@@ -53,8 +53,8 @@ def install_tail_boundary() -> None:
 
     IRON starts a command wherever the next step's words would overflow a command's scratchpad
     (``SCRATCHPAD_WORDS``), so the cuts move with every change to the layers' words. A cut inside
-    the tail made the next chunk's first command hang (design.md 16.80), as did, with
-    iron_window, one that left the head's draw a command of its own (16.84; Go's chunkBarrier
+    the tail made the next chunk's first command hang (docs/design/amd-llm.md), as did, with
+    iron_window, one that left the head's draw a command of its own (docs/design/amd-llm.md; Go's chunkBarrier
     is what that hang needed). Starting a command exactly at the tail keeps the tail, the head and
     the draw in one command (their words fit), as in the exports measured, wherever the layers
     before put their cuts.

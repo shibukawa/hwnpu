@@ -312,7 +312,7 @@ func deconv2(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 	y := g.Conv2D(x, path, wt, bias, cout*4, 1, 1)
 	// the shuffle in bands of at most shuffleRows output rows, concatenated (the same values): the
 	// whole of 64 x 400 x 400 put the M1's dense head off the Neural Engine on Core AI ("empty
-	// reset layer candidates in SS cost model", design.md 16.190), two bands of 200 kept it on
+	// reset layer candidates in SS cost model", docs/design/apple-coreai.md), two bands of 200 kept it on
 	rows := (2*H + shuffleRows - 1) / shuffleRows
 	if rows <= 1 {
 		return g.Op("pixel_shuffle", map[string]any{"x": y, "upscale_factor": g.B.ScalarI32(2)}, 1, cout, 2*H, 2*W)

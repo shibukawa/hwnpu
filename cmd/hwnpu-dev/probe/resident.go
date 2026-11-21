@@ -16,16 +16,14 @@ import (
 // The resident mode measures how much the NPU holds at once: programs of one size are loaded one
 // after another and kept open (hold open) until a load fails or -resident-max-gb is reached;
 // each runs once after its load, and every held one again at the end. Intel's NPU has failed
-// with ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's fp16 programs held at once (design.md
-// 16.138), so after such a failure the oldest program is closed and the failed one loaded again:
+// with ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's fp16 programs held at once (docs/design/image-apple.md), so after such a failure the oldest program is closed and the failed one loaded again:
 // whether closing a program gives its memory back is what Anima's reloading (progEngine) counts
 // on. Hold close loads, runs and closes each in turn, the same total, to tell a limit on what is
 // held from one on what has been loaded.
 //
 // A load that does not fail is not a program that stays on the NPU: Core ML evicts without an
 // error, and a program evicted is loaded onto the Neural Engine again at its next call. The M1
-// ran parts in turn about 12 times slower once they held over about 2.9 GiB together (design.md
-// 16.118). So with cycle, after each load every held program runs in turn twice, the second pass
+// ran parts in turn about 12 times slower once they held over about 2.9 GiB together (docs/design/apple-neural-engine.md). So with cycle, after each load every held program runs in turn twice, the second pass
 // timed: the total held where a call in turn gets slower than with few held is the most the NPU
 // keeps at once. On Apple the Neural Engine driver's wired memory (mem.NPUWired) is recorded with
 // each load too: what it really holds, not the weights added up.

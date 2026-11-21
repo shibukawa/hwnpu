@@ -6,8 +6,8 @@
 
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりです。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモという位置付けです。アプリは複数のモデルを登録し、前もって準備し、つないで動かします。
 
-- 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、深度の推定、顔の検出と頭の位置、モデルの間のつなぎ方、アプリに足すサブコマンド
-- まだないもの: 画像の生成と、物体・姿勢・切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
+- 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、深度の推定、顔の検出と頭の位置、画像の生成と編集 (FLUX.2 klein)、モデルの間のつなぎ方、アプリに足すサブコマンド
+- まだないもの: FLUX.2 klein のほかの画像の生成 (Anima、Chroma)、物体・姿勢・切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
 - 実機で動かしたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel は、コマンドと同じ準備と読み込みを呼びますが、このライブラリを通しては動かしていません
 - 計画の全体は [app-api.md](app-api.md)、作業の一覧は [app-api-tasks.md](app-api-tasks.md) (どちらも日本語)
 
@@ -27,6 +27,7 @@ ai.NewApp(uses...)  →  app.Plan(ctx)   →   plan.Run(ctx, fn)     →    app.
 | `.../ai/speech` | 文字起こし `Transcribe`、読み上げ `Speak`、音量の VAD、WAV の読み書き |
 | `.../ai/text` | 翻訳 `Translate`、チャット `Chat` |
 | `.../ai/vision` | 深度の推定 `Depth`、顔の検出 `Faces`、顔から頭の位置 `HeadOf` |
+| `.../ai/imagegen` | 画像の生成と編集 `Generate` (文から、文と参照の絵から) |
 | `.../ai/flow` | モデルの間のデータの渡し方: `Stream` と道具、ネットワーク (節と `To`)、呼び出し (`Call`) |
 | `.../ai/cli` | アプリのコマンドラインに足すサブコマンド: `models`、`status`。コマンドラインのライブラリに依存しない |
 | `.../ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ |
@@ -104,7 +105,8 @@ func main() {
 | サンプル | 中身 |
 |---|---|
 | `samples/interpreter` | 同時通訳: マイクか録音 → 文字起こし → 翻訳 → 読み上げ。音声のコマンド。ネットワークと呼び出し |
-| `samples/parallax` | 擬似立体: 絵の深度を 1 回推定し、カメラで頭の位置を追い、その視点から見た絵を描く (Ebitengine、Kage のシェーダー) |
+| `samples/parallax` | 擬似立体: 絵の深度を推定し、カメラで頭の位置を追い、その視点から見た絵を描く (Ebitengine、Kage のシェーダー)。窓の横で絵を層に分け、途中経過を窓に出す |
+| `samples/layers` | レイヤー分割: 絵を深度で層に分け、各層が隠していた部分を画像のモデルで描き足して、Photoshop の文書 (PSD) に書く。2 つのモデルを交互に |
 
 ```
 cd samples
@@ -602,11 +604,12 @@ pcm, err := say.Do(ctx, rt, flow.Text{Text: "こんにちは"})
 
 ```go
 depth := vision.Depth("depth")
+artist := imagegen.Generate("image")
 faces := vision.Faces("face-detect")
 app := ai.NewApp("parallax")
 
-// 呼び出し: 絵 → 深度。1 回だけ動かし、終わったらモデルを下ろす
-depthOf := ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
+// 呼び出し 2 つ: 絵 → 深度、塗った絵と文 → 描き足した絵。交互に動かし、終わったらモデルを下ろす
+split := layering.Register(app, depth, artist)
 
 // ネットワーク: カメラ → 顔 (最新のフレームだけ) → 頭の位置 → ならす → 視点
 camera := flow.Source[image.Image]("camera")
@@ -615,22 +618,62 @@ view := flow.Sink[View]("view").Do(keepNewest)
 app.From(camera).To(vision.FacesNode(faces), flow.Newest()).To(vision.HeadNode(vision.HeadOptions{})).To(steady).To(view)
 
 rt, _ := app.Open(ctx)
-d, _ := depthOf.Do(ctx, rt, picture)            // 前が全部終わってから
-depth.Release(rt)
-near := d.Near(w, h)
+near, _, _ := split.Near(ctx, rt, picture)      // 前が全部終わってから: 深度を 1 回、モデルは下ろす
 
 camera.From(capture.Camera(ctx, capture.CameraOptions{}))
 go rt.Run(ctx)                                  // できたものから (検出は最新のフレームだけ)
-runWindow(picture, near, latestView)            // 拍に合わせて: 窓は 1 秒に 60 回、最後に届いた視点で描く
+go layering.Split(ctx, picture, near, split.Models(rt), opts) // 窓の横で層に分ける。段ごとに opts.Progress へ
+runWindow(picture, near, latestView, progress)  // 拍に合わせて: 窓は 1 秒に 60 回、最後に届いた視点と層で描く
 ```
 
 - **描画の拍は Ebitengine のもの**です。窓の `Update` / `Draw` が 1 秒に 60 回動き、ネットワークの最後の節が置いた最新の視点を読みます (`flow.Hold` と同じ考え)。検出が 1 秒に 15 回でも、窓は検出を待ちません
 - **視差**: 絵の各点を、近さに比例して動かします (奥は少し、手前は大きく)。画面の画素ごとに、目からの視線を手前の層から奥へたどり、絵がその層以上に近い最初の点を描きます。手前のものが奥を隠します。Kage のシェーダー (`parallax.kage`) と、同じ計算を Go で書いたもの (`Scene.Render`) があり、8 つの視点で画素を比べて一致を確かめています
-- 近さは深度の逆数なので、目のすぐ前に草があると、その奥の橋も家も山もほぼ一緒に動きます (目で見たとおりですが、奥行きは伝わりません)。そこで奥の層を引き離す曲線をかけます (`Layers`、`--layers`、既定 30: 近さ n を log(1 + 30n) / log(31) に。0 でかけない)。向かい合う視点の間の動きは、山 0、森 0→4、家 1→7、橋 3→17、手前の杭 43→57 画素 (1024 画素の絵) になりました
+- 近さは深度の逆数なので、目のすぐ前に草があると、その奥の橋も家も山もほぼ一緒に動きます (目で見たとおりですが、奥行きは伝わりません)。そこで奥の層を引き離す曲線をかけます (`Layers`、`--far`、既定 30: 近さ n を log(1 + 30n) / log(31) に。0 でかけない)。向かい合う視点の間の動きは、山 0、森 0→4、家 1→7、橋 3→17、手前の杭 43→57 画素 (1024 画素の絵) になりました
 - 深度の輪郭は実際の輪郭より甘いので、近いものを数画素ぶん広げてから使います (`Spread`)。広げないと、輪郭が裂けて筋になります
 - 絵の見えていなかった部分 (手前のものが動いて現れる背景) は、絵にないので引き伸ばされます。動きを大きくしすぎると目立ちます (`--strength`)
+- **層に分けて描く**: 窓は、深度が出たらすぐ (1〜2 秒) 絵を 1 枚の深度で見せ、その横で絵を層に分けていきます (`--layers`、既定 3。[6.9 節](#69-例-深度でレイヤーに分ける-sampleslayers) と同じ処理で、`samples/layering` を両方のサンプルが使います)。層が 1 つ切れるたびに窓の絵がその層つきのものに入れ替わり、奥の層から 1 層ずつ、その層の近さで描いて重ねます。層の中は今までどおり細かい起伏で動き、手前の層がずれて見えた所には、引き伸ばしの代わりに、描き足された裏の絵がその絵の近さで出ます
+- **途中経過を見せる**: 分ける処理は 1 層に 1 分ほどかかるので、窓の下に今の段 (「層 3 / 3: 裏を描いている、40 %」)、全体の進み具合のバー、隅に今の段の絵 (層の形を 1 色で塗った絵、次にモデルが描いた絵) を出します。処理は別の goroutine で呼び出しを回し、段ごとに `layering.Options.Progress` で受けたものを窓が毎フレーム読むだけです (頭の追跡と描画は止まりません)。`--save-layers DIR` で層を書き出し、`parallax DIR` でモデルなしにもう一度見られます。`--layers 1` で層に分けません。画像のモデルが準備されていない機械や、参照からの生成がまだ動かない NPU では、1 枚の深度のままになります
 - 頭の代わりにマウスで動かす (`--head pointer`)、勝手に回す (`--head sweep`)、窓なしで GIF に書く (`parallax render`)、カメラなしで絵をフレームとして流す (`parallax track --frames`) ことができます
 - 窓は Ebitengine で、Linux では X11 と OpenGL の開発用のパッケージが要ります。ない機械では `-tags headless` で窓以外をビルドできます
+
+### 6.9 例: 深度でレイヤーに分ける (`samples/layers`)
+
+絵を深度で層に分け、Photoshop の文書 (PSD) に書きます。各層が隠していた部分は画像のモデルが描き足すので、層を動かしたり消したりしても、その裏に絵があります。2 つのモデルを**交互に**使う例です。分ける処理そのものは `samples/layering` にあり (モデルは関数として受け取ります)、このサンプルと擬似立体のサンプルが使います。下は、その中でしていることの抜粋です。
+
+```go
+var (
+	depth  = vision.Depth("depth")
+	artist = imagegen.Generate("image")
+)
+
+app := ai.NewApp("layers")
+depthOf := ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
+drawing := imagegen.GenerateNode(artist, imagegen.Options{})
+behind := ai.NewCall[imagegen.Request, image.Image](app, "what a layer hid").Then(drawing)
+
+// 手前の層から順に (抜粋)
+d, _ := depthOf.Do(ctx, rt, picture)
+depth.Release(rt)                         // 深度のモデルを下ろしてから
+out, _ := behind.Do(ctx, rt, imagegen.Request{
+	Prompt:     "Remove the green shape from image 1. Where it was, draw the scenery that is behind it, ...",
+	References: []image.Image{painted},   // 手前の層を 1 色で塗った絵
+})
+artist.Release(rt)                        // 画像のモデルを下ろしてから、次の深度へ
+```
+
+```
+絵 → 深度 → 一番手前の層を切り出す → その形を 1 色で塗る → 裏を描かせる
+ ↑                                                              |
+ └──────────────── その層のない絵 ←──────────────────────────────┘
+```
+
+- **交互に使う**: 深度 (1.4 GB) と画像の生成 (3.9 GB) は同時に要らないので、使うたびに `Release` で下ろします ([9.5 節](#95-release-と画像の生成の段の入れ替え))。読み込み直しは深度が 0.1 秒、画像のモデルが 4 秒ほどで、1 枚描く 1 分に比べて小さい
+- **切る場所**: 近さ (深度の逆数に、奥を引き離す曲線をかけたもの) の分布から、層の中の近さが一番そろう切り方を求めます (`layers plan` が、層ごとに色をつけた絵と切る値を出します。`--cuts` で指定もできます)
+- **裏を描かせる**: 編集のモデルにマスクの入力はないので、消したい部分を絵にない色 1 色で塗り、「その色の形を取り除いて、裏の景色を描く」と頼みます。描いた絵は層のあった所だけ使い、ほかは元の絵のままにします (層を重ね直すとほぼ元の絵に戻ります)。深度が拾い損ねた層の細い部分 (草の先、髪の束) は奥の層に残り、層を動かすと取り残されます。`--clean PIXELS` で層の縁の少し先まで描いた絵を使うとそれは消えますが、描いた絵が周りときれいにつながらない所では、層の周りに縁取りのように見えます
+- **描き損じを見分ける**: モデルは、塗った形をそのまま (塗った色や、暗い影として) 残すことがあります。そのときはマスクの縁の全周に色の段差が出るので、縁の内と外の色の差 (`seam`) で見分け、別の種で描き直します (`--tries`、既定 3 回)。どの回もだめなら、その層は切り出さずに絵に残し、そこで分けるのをやめます (層が 1 つ減ります。変な絵を裏に入れるよりよい)。頼み方でも変わり、「この領域を背景で置き換える」より「この形を取り除く」のほうが残りにくい。写真では、大きく塗った形の所に人の群れを描いたことがあり、「人や動物を足さない」の一文を入れてあります
+- **次の層**: 描き足した絵の深度をもう一度推定し、両方に写っている部分で最初の深度の目盛りに合わせてから、次の層を切ります (深度は絵ごとの目盛りなので、そのままでは比べられません)
+- **層ごとの深度**: 色だけでなく、近さも層ごとに持ちます (`--png DIR` の `near-N.png`。16 ビットの灰色、全部の層で同じ目盛り)。描き足した部分の近さは、描き足した絵から推定したものです。層の近さは、層の縁の外へも縁の値のまま続けてあります (縁で奥の層の値に落ちると、描くときに縁が引き伸ばされるため)。`parallax DIR` がこれを読みます ([6.8 節](#68-例-擬似立体-samplesparallax))
+- 3 層で画像を 2 回描き、1024×1024 で 2 分から 3 分半 (Ryzen AI 9 365)。PSD は層が文書と同じ大きさの 8 ビット RGB、PackBits で詰めたもの。参照の絵からの生成は、今は AMD の NPU だけです
 
 ## 7. 機能の一覧
 
@@ -690,6 +733,20 @@ runWindow(picture, near, latestView)            // 拍に合わせて: 窓は 1 
 
   ほかにプロセスのメモリが 0.2 GiB (MoGe-2 は 0.4〜0.5 GiB)。Depth Anything 3 の深度は長辺 504 画素、MoGe-2 は 1024 画素です。1 枚の絵に 1 回だけ推定するなら DA3MONO-LARGE (止まった絵の視差には十分) か、輪郭を細かく取りたいとき moge-2-vitb / vitl。映像に続けてかけるなら DA3-SMALL (1 秒に 3 枚) です。MoGe-2 はメートルの深度も返します (`DepthMap.Metric`)
 - まだない: 物体、姿勢、切り抜き、OCR、ラベル
+
+### 7.4 `ai/imagegen`
+
+| | 一括 | 節 |
+|---|---|---|
+| `Generator` (FLUX.2 klein 4B) | `Generate(ctx, prompt, opts) (*image.RGBA, error)` | `imagegen.GenerateNode(use, opts)` (`Request{Prompt, References}` → 絵。`Update` で設定を変える) |
+
+- **文から**: `g.Generate(ctx, "a red fox in the snow", imagegen.Options{})`
+- **編集と合成**: `Options.References` (4 枚まで) に絵を渡し、文の中で `image 1`、`image 2` と呼びます。参照は、絵の中央を出力の形に切って出力の大きさにします
+- **大きさ**: モデルが描ける大きさは決まっています (`Sizes()`: 1024×1024、512×512、3:2、16:9 など 8 つ)。`Options.Width`、`Height` に一番近い形の大きさで描きます (指定がなければ 1 枚目の参照の形、それもなければ正方形)。`SizeFor(w, h)` がその大きさを返します。形を変えたくない絵は、その大きさに伸ばしてから渡し、結果を伸ばし戻します
+- **そのほか**: `Seed` (0 で毎回違う)、`Steps` (0 でモデルの既定。FLUX.2 klein は 4)、`Progress` (段ごとに呼ばれる)
+- **時間とメモリ**: 1024×1024 で、文から約 30 秒、参照 1 枚の編集で約 1 分 (Ryzen AI 9 365)。動く間は最大 3.9 GB (AMD)。段の入れ替え ([9.5 節](#95-release-と画像の生成の段の入れ替え)) はパイプラインが自分でします
+- **どこで動くか**: AMD の NPU (IRON の書き出し 1 つに全部の大きさ)。Apple の Neural Engine は文からの生成だけで、参照からの生成はまだ動きません。Apple では `ai` を通して動かしていません
+- まだない: Anima、Chroma、FLUX.3 klein (コマンド `hwnpu-image generate` にはあります)、まとめて描く (`--batch`)、参照を半分の大きさで読む (`@half`)
 
 ## 8. アプリのコマンドライン (`ai/cli`)
 
@@ -768,7 +825,7 @@ The network:
 
 ## 9. 制約とルール
 
-NPU は 1 つで、メモリは固定され、プログラムの形は決まっています。アプリの設計は、ここから決まる部分が大きいです。数値は出どころを書きました。**「実測」とあるのは Ryzen AI 9 365 (AMD、XDNA 2) で 2026-11-21 にこのライブラリを通して測った値**で、ほかは design.md と MODEL.md の記録です。Mac と Intel では、このライブラリを通した測定はまだありません。
+NPU は 1 つで、メモリは固定され、プログラムの形は決まっています。アプリの設計は、ここから決まる部分が大きいです。数値は出どころを書きました。**「実測」とあるのは Ryzen AI 9 365 (AMD、XDNA 2) で 2026-11-21 にこのライブラリを通して測った値**で、ほかは [docs/design/README.ja.md](design/README.ja.md) と MODEL.md の記録です。Mac と Intel では、このライブラリを通した測定はまだありません。
 
 ### 9.1 NPU は 1 つの待ち行列
 
@@ -783,9 +840,9 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 
 - 呼び出しは細かく入れ替わりながら進みます (上の文字起こしは、読み上げの途中の 3.1 秒で終わっています)。待たされるのは相手の呼び出し全体ではありません
 - **順番を決める仕組みはまだありません。** 音声を先に通す、背景の仕事を待たせる、といった優先度は書けません ([D10](#10-設計の論点))。重い仕事 (画像の生成の 1 ステップは 1〜数秒) の途中に短い呼び出しがどれだけ待つかは、測っていません
-- AMD: モデルのプログラムごとにハードウェアコンテキストができ、ファームウェアが時分割します (design.md 16.94)。切り替えは 1 回約 0.5 ms
-- Apple: プログラムの切り替えに 1 回 15〜35 ms かかります (design.md 16.36)。1 フレームに何度もプログラムを呼ぶモデル (読み上げ) では、これが効きます。1 プロセスの中で複数のモデルを同時に呼んだときの振る舞いは、測っていません
-- Intel: 同時に動かしたときの振る舞いは未測定です (design.md 16.94)
+- AMD: モデルのプログラムごとにハードウェアコンテキストができ、ファームウェアが時分割します ([docs/design/architecture.ja.md](design/architecture.ja.md))。切り替えは 1 回約 0.5 ms
+- Apple: プログラムの切り替えに 1 回 15〜35 ms かかります ([docs/design/llm-decoding.ja.md](design/llm-decoding.ja.md))。1 フレームに何度もプログラムを呼ぶモデル (読み上げ) では、これが効きます。1 プロセスの中で複数のモデルを同時に呼んだときの振る舞いは、測っていません
+- Intel: 同時に動かしたときの振る舞いは未測定です ([docs/design/architecture.ja.md](design/architecture.ja.md))
 
 ### 9.2 リアルタイムに連携できるか
 
@@ -815,7 +872,7 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 
 - 文字の +1.6 秒の内訳は、発話の終わりを決める無音の待ち 0.6 秒 (`VADOptions.Hangover`) と、文字起こしの約 1 秒です
 - 後の発話ほど遅れるのは、前の発話の読み上げと NPU を取り合うからです
-- Mac の記録 (単独): Whisper は M3 で 30 秒の窓を 0.6 秒、PLaMo 3 Translate は M3 で 0.8B が 53、2B が 17、8B が 10〜11 トークン/秒、読み上げは M3 の lut8 で実時間の約 0.5 倍 (design.md 16.31、古い測定)。読み上げが実時間に届かないのは AMD と同じです
+- Mac の記録 (単独): Whisper は M3 で 30 秒の窓を 0.6 秒、PLaMo 3 Translate は M3 で 0.8B が 53、2B が 17、8B が 10〜11 トークン/秒、読み上げは M3 の lut8 で実時間の約 0.5 倍 ([docs/design/llm-models.ja.md](design/llm-models.ja.md)、古い測定)。読み上げが実時間に届かないのは AMD と同じです
 
 **合計が 1 を超えるときの選び方**
 
@@ -868,9 +925,9 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 |---|---|---|
 | M1 (Pro、Max、Ultra も同じとみなす) | Neural Engine に同時に載せるプログラムが 2.8 GiB を超えると、どの呼び出しも約 12 倍遅くなる。大きいモデル (PLaMo 3 Translate 8B など) は用途から選ばれない (`not_on: [M1]`) | `internal/chat/model.go` の `m1HoldBytes`、PROBE.md |
 | M2 以降 | 上の制限は見つかっていない (M2 で 3.65 GiB まで全速) | 同上 |
-| Apple 全般 | Neural Engine のコンパイルのキャッシュは約 4 GiB。超えるぶんは起動のたびにコンパイルし直す (数分)。コンパイルは機械全体で 1 本の直列 | design.md 16.99、16.229 |
-| AMD (XDNA 2) | NPU 専用のメモリの上限は見つかっていない (バッファはホストのメモリ)。DRAM の帯域 (約 55 GB/s) を取り合うので、大きな重みを読むモデルどうしは互いに遅くなる | design.md 16.94 |
-| Intel | Core Ultra 5 135U で、Anima の fp16 が約 4.6 GB で `OUT_OF_HOST_MEMORY`。プログラム 1 本の重みの上限は分かっていない | design.md 16.144、intel-npu-models.md |
+| Apple 全般 | Neural Engine のコンパイルのキャッシュは約 4 GiB。超えるぶんは起動のたびにコンパイルし直す (数分)。コンパイルは機械全体で 1 本の直列 | [docs/design/llm-qwen.ja.md](design/llm-qwen.ja.md)、[docs/design/apple-coreai.ja.md](design/apple-coreai.ja.md) |
+| AMD (XDNA 2) | NPU 専用のメモリの上限は見つかっていない (バッファはホストのメモリ)。DRAM の帯域 (約 55 GB/s) を取り合うので、大きな重みを読むモデルどうしは互いに遅くなる | [docs/design/architecture.ja.md](design/architecture.ja.md) |
+| Intel | Core Ultra 5 135U で、Anima の fp16 が約 4.6 GB で `OUT_OF_HOST_MEMORY`。プログラム 1 本の重みの上限は分かっていない | [docs/design/intel.ja.md](design/intel.ja.md)、intel-npu-models.md |
 
 ### 9.5 `Release` と、画像の生成の段の入れ替え
 
@@ -881,7 +938,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 | 単位 | 1 つのモデルの中の段 (文の符号器 → DiT → VAE) と、DiT の中のブロックの組 | 用途 (モデル) まるごと |
 | 誰がするか | パイプラインが自分で (既定で入っている) | アプリが呼ぶ |
 | 次に使うとき | 段ごとに自動で読み込む | 次の `Get` が全部を読み込み直す |
-| 今どこにあるか | `internal/imagegen` (コマンドだけが使う) | `ai` |
+| 今どこにあるか | `internal/imagegen` (コマンドと `ai/imagegen` が使う) | `ai` |
 
 画像の生成の入れ替えは、機種ごとに作りが違います (記録の値)。
 
@@ -889,18 +946,18 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 - **Apple (Core AI)**: DiT の組を、順番が来たら読み込み、回したら閉じ、次の組を先に読みます。Anima-Turbo で、Neural Engine が抱える量が 2.53 → 0.57 GiB、1 枚の時間は同じ 49 秒 (M1)。Chroma は 8.3 → 2.2〜2.6 GiB で、入れ替えるほうが速い
 - **Intel**: 入るだけ持ち、入らなくなったら使っていないものを閉じて読み直します
 
-- 画像の生成を `ai/imagegen` に入れるときは、この入れ替えを既定のまま持ち込みます。アプリは生成のあと `Release` を呼んで残り (小さい部品) も下ろし、深度などの次のモデルに進む形になります
+- `ai/imagegen` (FLUX.2 klein) は、この入れ替えを既定のまま持っています。アプリは生成のあと `Release` を呼んで残り (小さい部品) も下ろし、深度などの次のモデルに進みます ([6.9 節](#69-例-深度でレイヤーに分ける-sampleslayers) のサンプルがそうしています)
 - 3 つ目の仕組みとして、AMD のチャットのモデルは、しばらく使わないと固定メモリを手放し、次の要求で 1〜2 秒かけて読み直します (`hwnpu-chat --idle`)。`ai` からはまだ使えません
 - この 3 つを 1 つの「常駐の管理」(メモリの予算、追い出してよいもの) にまとめるのが [D9](#10-設計の論点) です
 - 読み直しの時間 (実測、AMD): 文字起こし 0.5〜1.2 秒、翻訳 8B 5〜9 秒、2B 約 3 秒、読み上げ 2.3〜3.8 秒。Apple では、コンパイル済みなら数秒、初回は数十秒から数分です
 
 ### 9.6 プロセス
 
-- **Mac: Neural Engine を使う hwnpu のプロセスは 1 つずつ**です。2 つ同時に使うと M1 の OS が固まったので、最初にデバイスを開いたプロセスが、終わるまでロックを持ちます (design.md 16.132)。常駐するアプリが動いている間、`hwnpu-chat` などのコマンドは待ちます。アプリが NPU を手放す口 (`Suspend`) はまだありません
-- AMD と Intel にはこのロックがありません。AMD では別々のプロセスが同じ NPU を使えますが、時間を分け合います (ほかのプロセスが NPU を使っていて、コマンドが最大 50 倍遅くなった記録があります。new-model-checklist.md)。Intel は試していません
-- Mac では macOS 自身のサービス (写真の解析、Apple Intelligence) も Neural Engine を使います。それが動いている間、チャットが 0.7 トークン/秒に落ちた記録があります (design.md 16.112)。アプリからは止められません
+- **Mac: Neural Engine を使う hwnpu のプロセスは 1 つずつ**です。2 つ同時に使うと M1 の OS が固まったので、最初にデバイスを開いたプロセスが、終わるまでロックを持ちます ([docs/design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md))。常駐するアプリが動いている間、`hwnpu-chat` などのコマンドは待ちます。アプリが NPU を手放す口 (`Suspend`) はまだありません
+- AMD と Intel にはこのロックがありません。AMD では別々のプロセスが同じ NPU を使えますが、時間を分け合います (ほかのプロセスが NPU を使っていて、コマンドが最大 50 倍遅くなった記録があります。[docs/design/new-model-checklist.ja.md](design/new-model-checklist.ja.md))。Intel は試していません
+- Mac では macOS 自身のサービス (写真の解析、Apple Intelligence) も Neural Engine を使います。それが動いている間、チャットが 0.7 トークン/秒に落ちた記録があります ([docs/design/llm-engine.ja.md](design/llm-engine.ja.md))。アプリからは止められません
 - **1 プロセスに `App` は 1 つ**と考えてください。置き場の設定がプロセスに 1 つだからです ([D8](#10-設計の論点))
-- AMD で 1 プロセスに複数のモデルを読み込めるのは、デバイスヒープの番地の直し (design.md 16.281) が入った版からです
+- AMD で 1 プロセスに複数のモデルを読み込めるのは、デバイスヒープの番地の直し ([docs/design/api.ja.md](design/api.ja.md)) が入った版からです
 
 ### 9.7 入力と出力の形
 
@@ -968,7 +1025,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 
 **D9. メモリの管理はアプリ任せ** — 今: `Get` で載せ、`Release` で下ろす。予算も追い出しもない。
 
-- 別の案: `Runtime` に予算を持たせ、足りなければ使っていないモデルを下ろす (design.md 16.94)。下ろしてよいかを `Use` に書く (`use.Resident()`、`use.Evictable()`)。取り出したモデルの値が下ろされても壊れないよう、値を間接にする必要がある
+- 別の案: `Runtime` に予算を持たせ、足りなければ使っていないモデルを下ろす ([docs/design/architecture.ja.md](design/architecture.ja.md))。下ろしてよいかを `Use` に書く (`use.Resident()`、`use.Evictable()`)。取り出したモデルの値が下ろされても壊れないよう、値を間接にする必要がある
 - **未定**: いつ入れるか。入れると `Get` が返す値の寿命の決まりが変わる
 
 **D10. 並行** — 今: モデルごとに 1 回に 1 つ。モデルどうしの順番は決めない (NPU のドライバ任せ)。モデルごとにデバイスを開く。
@@ -981,7 +1038,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 
 - 理由: `range` と `break` と ctx だけで書け、段が関数になる。goroutine は要るところ (`Async`、`Latest`、`Hold`) だけ
 - 別の案 A: チャネル。`select` で複数の流れを待てるが、閉じ方とエラーの渡し方を毎回決めることになる
-- 別の案 B: 音声を `flow.Audio{Samples, Rate, Channels}` にし、つなぐときに周波数を合わせる (16.94 の「ポートが型と制約を宣言する」)。間違ったつなぎ方が実行時に分かる
+- 別の案 B: 音声を `flow.Audio{Samples, Rate, Channels}` にし、つなぐときに周波数を合わせる ([architecture](design/architecture.ja.md) の「ポートが型と制約を宣言する」)。間違ったつなぎ方が実行時に分かる
 - **未定**: B を入れるか。画像の型 (`image.Image` のままか、時刻つきのフレームか)。ステレオ
 
 **D12. `Final` の 2 つの意味** — 今: 音声では「発話の終わり」、テキストでは「確定した文」(その前は仮の文で、次が置き換える)。
@@ -1009,7 +1066,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 - 前の形: `ai/aicli` が kong の構造体だけを出していた
 - **未定**: ほかのライブラリ (cobra など) のアダプタを置くか。置くと本体のモジュールの依存が増えるので、置くなら別のモジュールにする
 
-**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。`ai/vision`。予定: `ai/imagegen`、`ai/sound`。
+**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。`ai/vision`、`ai/imagegen`。予定: `ai/sound`。
 
 - **未定**: `ai` という名前 (公開するとあとから変えにくい)。`speech` に文字起こしと読み上げの両方を置く分け方。`text` という名前 (標準ライブラリの `text/...` と並ぶと紛らわしい)
 
@@ -1048,7 +1105,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 
 ## 11. まだないもの
 
-- 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、画像の生成 (`ai/imagegen`。今はコマンド `hwnpu-image generate` で作る)
+- 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、FLUX.2 klein のほかの画像のモデル (Anima、Chroma、FLUX.3 klein を `ai/imagegen` に。今はコマンド `hwnpu-image generate` で作る)
 - 音: 音楽、効果音、音高、採譜 (`ai/sound`)
 - コマンドの載せ替え: `hwnpu-audio`、`hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする
 - 常駐の管理 (D9、D10)、ローカルサーバー (OpenAI 互換など)、配布用のバンドル、ビルドタグ

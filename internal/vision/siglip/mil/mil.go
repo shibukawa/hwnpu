@@ -5,7 +5,7 @@
 //
 // They run in fp16; every layer norm first divides each row by its largest magnitude (milpart's
 // ScaledLayerNorm), so that no square overflows, and the tanh GELU is written with exp (the
-// Neural Engine's own is inaccurate, design.md 16.145).
+// Neural Engine's own is inaccurate, docs/design/vision-models.md).
 package mil
 
 import (
@@ -24,7 +24,7 @@ import (
 const TextLen = 64
 
 // HeadRows is the rows the pooling head's query is repeated on: the Neural Engine leaves a part
-// of one row to the CPU (design.md 16.85); row 0 is the picture's embedding.
+// of one row to the CPU (docs/design/image-apple.md); row 0 is the picture's embedding.
 const HeadRows = 8
 
 // Part is one program (milpart.Part).

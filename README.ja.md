@@ -48,7 +48,7 @@ Go のライブラリとしての API は予定の段階で、まだ固まって
 - [MODEL.ja.md](MODEL.ja.md): 用途とメモリの量ごとのおすすめのモデル
 - [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md): 各 NPU が扱えるデータ形式とモデルの用意の仕方
 - [CLOUD_AI_COMPATIBILITY.ja.md](CLOUD_AI_COMPATIBILITY.ja.md): クラウドの AI API の機能のどれを代わりに受け持てるか
-- [docs/design.md](docs/design.md): 設計と測定の記録
+- [docs/design/README.ja.md](docs/design/README.ja.md): 設計と測定の記録
 
 ## テスト
 

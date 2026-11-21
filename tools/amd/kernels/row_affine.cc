@@ -5,7 +5,7 @@
 // limbs, b's low limbs. The products and the sum are float32 and round to bf16 once, to nearest
 // even: a GroupNorm's y = (x - mean) gamma / sqrt(var + eps) + beta with a = gamma / sqrt(var +
 // eps) and b = beta - mean a, whose two terms can each be many times the result.
-// tools/amd/iron_groupnorm.py, design.md 16.208.
+// tools/amd/iron_groupnorm.py, docs/design/image-amd.md.
 //===----------------------------------------------------------------------===//
 #include <aie_api/aie.hpp>
 #include <stdint.h>

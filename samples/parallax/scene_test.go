@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/samples/layering"
 )
 
 // layered is a scene of w x h whose left half is far and blue with a white stripe, and whose
@@ -133,5 +135,115 @@ func TestLayers(t *testing.T) {
 	}
 	if same := Layers(near, 0); &same[0] != &near[0] {
 		t.Error("layers of 0 made a copy")
+	}
+}
+
+// TestRenderLayers draws a near red layer over a far layer that has a green stripe behind the
+// red layer's left edge: with the eye to one side the red layer moves off it, and what it
+// uncovers is the far layer's own picture, the green stripe, not the red edge stretched.
+func TestRenderLayers(t *testing.T) {
+	const w, h = 400, 40
+	back := image.NewRGBA(image.Rect(0, 0, w, h))
+	front := image.NewNRGBA(image.Rect(0, 0, w, h))
+	far := make([]float32, w*h)
+	near := make([]float32, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := color.RGBA{0, 0, 255, 255}
+			if x >= 200 && x < 210 {
+				c = color.RGBA{0, 255, 0, 255} // hidden behind the red layer when the eye is in the middle
+			}
+			back.SetRGBA(x, y, c)
+			if x >= 200 {
+				front.SetNRGBA(x, y, color.NRGBA{255, 0, 0, 255})
+			}
+			near[y*w+x] = 1 // the layer's nearness goes on past its edge
+		}
+	}
+	s := NewScene(front, near, 0, 0)
+	s.Behind = NewScene(back, far, 0, 0)
+	if n := len(s.layers()); n != 2 {
+		t.Fatalf("%d layers", n)
+	}
+	p := Params{Strength: 0.05} // the nearest point moves 20 pixels
+	count := func(v View) (red, green, other int) {
+		dst := image.NewRGBA(image.Rect(0, 0, w, h))
+		s.Render(dst, v, p)
+		for x := 0; x < w; x++ {
+			switch c := dst.RGBAAt(x, h/2); {
+			case c.A != 255:
+				other++
+			case c.R > 200 && c.G < 60 && c.B < 60:
+				red++
+			case c.G > 200 && c.R < 60 && c.B < 60:
+				green++
+			case c.B > 200 && c.R < 60 && c.G < 60:
+			default:
+				other++
+			}
+		}
+		return red, green, other
+	}
+	// from the middle the stripe is hidden
+	if _, green, other := count(View{}); green != 0 || other > 2 {
+		t.Errorf("from the middle: %d green pixels, %d of other colours", green, other)
+	}
+	// from one side the red layer has moved off the stripe: all of it shows (10 pixels of the
+	// picture, 11 on a screen that shows 90 % of it), and nothing is stretched between
+	side := View{X: -1}
+	if _, green, _ := count(side); green == 0 {
+		side = View{X: 1}
+	}
+	red, green, other := count(side)
+	if green < 10 || green > 12 || other > 2 {
+		t.Errorf("from the side: %d red, %d green, %d of other colours; want the stripe's 11 green", red, green, other)
+	}
+	// one layer with the same picture and a step in its nearness stretches the edge instead:
+	// the stripe is not in that picture at all
+	flat := layered(w, h)
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	flat.Render(dst, side, p)
+	for x := 0; x < w; x++ {
+		if c := dst.RGBAAt(x, h/2); c.G > 200 && c.R < 60 {
+			t.Fatalf("a picture of one layer shows green at %d", x)
+		}
+	}
+	// the layers are kept when the scene is made smaller
+	if small := s.smaller(100); small.Behind == nil || small.Behind.W != 100 || small.Pix.RGBAAt(10, 5).A != 0 || small.Pix.RGBAAt(90, 5).A != 255 {
+		t.Errorf("the smaller scene lost its layers")
+	}
+}
+
+func TestStackAndProgress(t *testing.T) {
+	const w, h = 8, 4
+	layer := func(a uint8, n float32) layering.Layer {
+		l := layering.Layer{Img: image.NewNRGBA(image.Rect(0, 0, w, h)), Near: make([]float32, w*h)}
+		for i := range l.Near {
+			l.Img.Pix[4*i], l.Img.Pix[4*i+3] = 200, a
+			l.Near[i] = n
+		}
+		return l
+	}
+	s := stack([]layering.Layer{layer(255, 0.1), layer(128, 0.5), layer(0, 1)}, 0, 0)
+	ls := s.layers()
+	if len(ls) != 3 || ls[0].Behind != nil || ls[2] != s || ls[0].Near[0] != 0.1 || ls[2].Near[0] != 1 {
+		t.Fatalf("the stack: %d layers", len(ls))
+	}
+	// a layer's colours hold their alpha in the scene
+	if c := ls[1].Pix.RGBAAt(0, 0); c.A != 128 || c.R < 99 || c.R > 101 {
+		t.Errorf("the middle layer's pixel: %v", c)
+	}
+
+	// the window takes a new scene and a new picture of the step once each
+	p := &progress{}
+	p.set(func(p *progress) {
+		p.scene, p.inset, p.fresh, p.text, p.total, p.active = s, ls[0].Pix, true, "cut", 0.5, true
+	})
+	scene, inset, fresh, text, total, active := p.take()
+	if scene != s || inset == nil || !fresh || text != "cut" || total != 0.5 || !active {
+		t.Errorf("the first take: %v %v %v %q %v %v", scene != nil, inset != nil, fresh, text, total, active)
+	}
+	if scene, _, fresh, text, _, _ := p.take(); scene != nil || fresh || text != "cut" {
+		t.Errorf("the second take: %v %v %q", scene != nil, fresh, text)
 	}
 }

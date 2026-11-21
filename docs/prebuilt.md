@@ -2,7 +2,7 @@
 
 作成: 2026-11-07。状態: 計画 (未実装)。版、対象、キャッシュの層は docs/cache-sharing-design.md (2026-11-12) にまとめ直した。食い違うところはそちらを正とする (版はモデル × 対象ごと、定義は models.yaml の `prebuilt`、`amd-npu2/` は `amd-xdna2/`)。
 
-利用者の手元では、ダウンロードして読み込むだけにする。変換と校正と照合は aix1 (Ryzen AI 9 365、Linux) を GitHub Actions の self-hosted runner にして、そこで回す。design.md 16 章の当初の方針 (「配布前に一度だけ各 NPU の形式へ変換し、S3/NFS などで配る」) の置き場所を、Hugging Face に具体化したもの。
+利用者の手元では、ダウンロードして読み込むだけにする。変換と校正と照合は aix1 (Ryzen AI 9 365、Linux) を GitHub Actions の self-hosted runner にして、そこで回す。[docs/design/README.md](design/README.md)の当初の方針 (「配布前に一度だけ各 NPU の形式へ変換し、S3/NFS などで配る」) の置き場所を、Hugging Face に具体化したもの。
 
 ## 1. 目的と範囲
 
@@ -17,9 +17,9 @@
 
 | 作業 | 理由 | 参照 |
 |---|---|---|
-| 埋め込みの表を変換時に書き出す (T5) **済み** (chat、埋め込み、hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) | 今は実行時もチェックポイントを開くので、配っても元の重み (LFM3 3.5 GB、Gemma 4 10.2 GB) を落とすことになる | model-fit.md T5、design.md 16.x |
-| hwnpu-chat が GPTQ の符号を使う **済み** (`--codes`、#77) | 配る形式は、校正済みのもの (lut6 の KL が ANE で −23〜35%) にしたい | design.md 16.95、improvements.ja.md 11.5 |
-| 重みを 1 つにして実行時に組み立てる | Q=1 と Q=128 の `weight.bin`、AMD の版どうしのバンクの先頭は同じバイト。そのまま置くと 2 回落とす。配るのは 1 つにし、ローダーが clone / hardlink で組み立てる (`cache.ShareFiles` の逆向き) | design.md 16.64、16.79 |
+| 埋め込みの表を変換時に書き出す (T5) **済み** (chat、埋め込み、hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) | 今は実行時もチェックポイントを開くので、配っても元の重み (LFM3 3.5 GB、Gemma 4 10.2 GB) を落とすことになる | model-fit.md T5、[docs/design/README.md](design/README.md) 16.x |
+| hwnpu-chat が GPTQ の符号を使う **済み** (`--codes`、#77) | 配る形式は、校正済みのもの (lut6 の KL が ANE で −23〜35%) にしたい | [docs/design/apple-neural-engine.md](design/apple-neural-engine.md)、[docs/design/performance.md](design/performance.md) |
+| 重みを 1 つにして実行時に組み立てる | Q=1 と Q=128 の `weight.bin`、AMD の版どうしのバンクの先頭は同じバイト。そのまま置くと 2 回落とす。配るのは 1 つにし、ローダーが clone / hardlink で組み立てる (`cache.ShareFiles` の逆向き) | [docs/design/distribution.md](design/distribution.md) |
 | 書き出し形式の版を manifest に | 今は「既定が変わったら変換し直す」ために、形式を名前に入れて区別している。配るものは版で互換性を判断する | 4 節 |
 
 ## 3. 何を配るか (組み合わせを絞る)
@@ -28,7 +28,7 @@
 
 | 対象 | 配るもの | 既定の例 | 照合 |
 |---|---|---|---|
-| `apple` | `.mlpackage` (分けない形。部分の数は実行時に決める (16.12)) | GPTQ lut6 か lut8 (LFM3 系は lut8)、最大の文脈、`-paged` の既定 | aix1: milcpu の KL。公開前に Mac の ANE で `hwnpu-dev check` (7 節) |
+| `apple` | `.mlpackage` (分けない形。部分の数は実行時に決める ([apple-coreml](design/apple-coreml.md))) | GPTQ lut6 か lut8 (LFM3 系は lut8)、最大の文脈、`-paged` の既定 | aix1: milcpu の KL。公開前に Mac の ANE で `hwnpu-dev check` (7 節) |
 | `amd-npu2` | IRON の書き出し (ELF、xclbin、バンク、manifest) | q4 (GPTQ)、Anima の DiT は q8 | aix1 の NPU で `ironcheck` と KL |
 | `amd-npu1` | `--per-step` の書き出し | 同上 | 実機がないので「未確認」として staging まで |
 | `intel` | OpenVINO IR (`.xml` / `.bin`) | int8 | OpenVINO の CPU。実機の NPU で確かめるまで staging まで |
@@ -116,7 +116,7 @@ models:
   4. 照合: `hwnpu-dev check` (milcpu)、`ironcheck` と NPU での KL、OpenVINO の CPU。決めた上限 (例: 既存の値の 1.2 倍) を超えたら失敗にする
   5. 目録を作る (sha256、版、検証の結果)
   6. `hf upload --revision staging` (コミットの説明に `build` の番号と hwnpu のコミット)
-- `concurrency: group: aix1` で、同時に 1 ジョブだけ。NPU は 1 つで、メモリも校正と書き出しが重い (`CREATE_HWCTX` の `EINVAL` (improvements.ja.md 11.3) も避けられる)
+- `concurrency: group: aix1` で、同時に 1 ジョブだけ。NPU は 1 つで、メモリも校正と書き出しが重い (`CREATE_HWCTX` の `EINVAL` ([docs/design/performance.md](design/performance.md)) も避けられる)
 - `timeout-minutes`: 校正を含むジョブは長くする (self-hosted は最大 5 日)
 - 後片付け: ジョブの作業ディレクトリは消し、チェックポイントと符号のキャッシュは残す。ディスクの残りが一定を下回ったら、古いものから消す手順を最初に走らせる
 - 秘密: `HF_TOKEN` は配布先の名前空間だけに書ける fine-grained トークン。GitHub の environment `huggingface` に置き、`main` からのジョブにだけ渡す (フォークの PR には秘密が渡らないが、5.1 と合わせて二重にする)

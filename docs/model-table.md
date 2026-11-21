@@ -9,7 +9,7 @@
 - `hwnpu-chat list` と `-list` (hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
 - hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
-- 取得元 (`internal/chat/sources.go`): 2026-11-15 から定義のファイルの `sources`、`search`、`cache.layers` と `from: SOURCE:NAME` は読まない。環境変数か `.env` の URL (`HWNPU_MODEL_SOURCE`、`_1`、... と `HWNPU_MODEL_HUGGING_FACE`) にした (docs/cache-sharing-design.md 7 節、design.md 16.212)。下の 5 節の `sources` と `search` の例は、それより前の設計
+- 取得元 (`internal/chat/sources.go`): 2026-11-15 から定義のファイルの `sources`、`search`、`cache.layers` と `from: SOURCE:NAME` は読まない。環境変数か `.env` の URL (`HWNPU_MODEL_SOURCE`、`_1`、... と `HWNPU_MODEL_HUGGING_FACE`) にした (docs/cache-sharing-design.md 7 節、[docs/design/distribution.md](design/distribution.md))。下の 5 節の `sources` と `search` の例は、それより前の設計
   - 確かめたこと: テスト (共有フォルダを先に、なければ HF。`hf` のない探索順は HF に出ない。sha256 の違う写しを飛ばす。固定したリビジョンのフォルダを先に。`SOURCE:NAME` のモデル。偽の aws で S3 の URL、endpoint、profile、no_sign と、ないもの。aws がないときのエラー)。sha256 の確認と探索順を壊すとテストが落ちる。M3 で、whisper-large-v3-turbo の写しを置いたフォルダだけを探索順にして (`search: [share]`)、空のモデルのフォルダから取得、変換、表、書き起こしまで通った (HF への通信なし)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
 - 別のリポジトリでも、同じ SHA-256 を `sha256` に書いたファイルは 1 度だけ落とす (2026-11-11): `fetch` は落とす前に、同じ SHA-256 のファイルをモデルの置き場所のほかのモデルのディレクトリに探し、あればハードリンク (できなければ写し) にして SHA-256 を確かめる。違えば消して取得元から。Qwen3-1.7B の 2 つのファイルと MOSS-SoundEffect v2.0 の `text_encoder/` (4.1 GB)
@@ -139,10 +139,10 @@ builds:
   - {npu: apple, format: lut4, paged: 8192, draft: 8, prefill: auto, tiers: auto, mtp: auto}
   - {npu: intel, format: int8, tiers: [4096]}
   - {npu: apple, family: lfm3, format: lut6}
-  - {npu: apple, family: [lfm3-vl, lfm3-audio, lfm3-omni], format: lut8}   # lut4/6 で絵と音を取り違える (16.31)
+  - {npu: apple, family: [lfm3-vl, lfm3-audio, lfm3-omni], format: lut8}   # lut4/6 で絵と音を取り違える ([llm-models](design/llm-models.md))
   - {npu: apple, family: gemma4, format: lut6}
   - {npu: apple, family: [plamo3translate, qwen3.5], format: lut8}
-  - {npu: apple, family: qwen3.5, size: 2, format: lut6}                    # 8 ビットと同じ質 (16.99)
+  - {npu: apple, family: qwen3.5, size: 2, format: lut6}                    # 8 ビットと同じ質 ([llm-qwen](design/llm-qwen.md))
   - {npu: apple, family: [plamo-embedding], format: lut8}                   # 4 ビットで崩れる
   - {npu: apple-m1, family: lfm3, prefill: off}                             # 例: M1 だけ変える
   - {npu: amd-xdna2, format: q4}
@@ -181,7 +181,7 @@ builds:
 
 | type | 書き方 | 取り方 |
 |---|---|---|
-| `hf` (組み込み) | `from: hf:OWNER/NAME@COMMIT` (5.3 節) | 今の `fetch`。`HF_TOKEN`、`hf auth login` のトークン、なければ端末で OAuth のデバイスフロー (同意制リポジトリ、design.md 16.153) |
+| `hf` (組み込み) | `from: hf:OWNER/NAME@COMMIT` (5.3 節) | 今の `fetch`。`HF_TOKEN`、`hf auth login` のトークン、なければ端末で OAuth のデバイスフロー (同意制リポジトリ、[docs/design/distribution.md](design/distribution.md)) |
 | `path` | `from: team-share:plamo-distill-0.8b` | `path` の下のフォルダ。`copy: false` なら写さずに読む (NFS や SMB の共有フォルダ) |
 | `s3` | `from: lab-s3:plamo-distill-0.8b` | `aws s3 sync s3://BUCKET/PREFIX/plamo-distill-0.8b/ DIR` を呼ぶ |
 
@@ -338,7 +338,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 
 ### 6.2 機械のメモリごとの違い (variants、実装済み)
 
-`builds` は NPU とモデルで決める。それとは別に、同じモデルを**機械のメモリ**で動かし分けたいことがある。Qwen3-1.7B は、Core ML ではプロンプトを読むプログラムを別に持つと Neural Engine に 3.26 GiB とプロセスの最大 4.1 GB で約 7.6 GB になり、8 GB の機械には重かった。生成のプログラムにプロンプトも読ませれば 1.63 GiB と 2.8 GB の約 4.5 GB で載る (新しいプロンプトを読むのは約 5 倍遅い)。Core AI ではプロンプトを読むプログラムが同じ重みの関数になり、差は 2.1 GB と 2.3 GB に縮んだ (M1 で実測、design.md 16.221)。そこで、モデルの欄に動かし方を書き、`variants` に、より大きなメモリの機械での差分を書く:
+`builds` は NPU とモデルで決める。それとは別に、同じモデルを**機械のメモリ**で動かし分けたいことがある。Qwen3-1.7B は、Core ML ではプロンプトを読むプログラムを別に持つと Neural Engine に 3.26 GiB とプロセスの最大 4.1 GB で約 7.6 GB になり、8 GB の機械には重かった。生成のプログラムにプロンプトも読ませれば 1.63 GiB と 2.8 GB の約 4.5 GB で載る (新しいプロンプトを読むのは約 5 倍遅い)。Core AI ではプロンプトを読むプログラムが同じ重みの関数になり、差は 2.1 GB と 2.3 GB に縮んだ (M1 で実測、[docs/design/memory-and-power.md](design/memory-and-power.md))。そこで、モデルの欄に動かし方を書き、`variants` に、より大きなメモリの機械での差分を書く:
 
 ```yaml
   Qwen3-1.7B:
@@ -366,7 +366,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 | hwnpu-transcribe | `-use OWNER/NAME` (既定 whisper-large-v3-turbo)。自動で落として変換 (`transcribe.Prepare`) | `-use` を同じ解決 (用途 `transcribe`、ファミリー `whisper`) に。kotoba-whisper (Apache-2.0) を日本語のタグに。表の書き出し (T5) と、チェックポイントを遅れて落とす仕組みを chat と揃える | 1 の続き |
 | hwnpu-tts | `-model DIR` に手で変換したものを渡す (CHAT.md 7 節の手順) | 自動の準備 (`speech.Prepare`: テキスト部、depthformer、コーデックの変換) を作り、`-use` に。T5 (テキストの埋め込み、depth の表) も。用途 `speech` | 3 のあと |
 | hwnpu-systemone | `-model DIR` に手で変換したもの | 自動の準備 (d1 の本体、視覚と音声のエンコーダ) と `-use`。T5 (埋め込み、ラベルの行)。用途 `decision` | 3 のあと |
-| hwnpu-image | `-m` で名前、ファミリー (`anima`、`moge`)、用途 (`image`、`depth`)。AMD は `~/models/NAME.amd-npu2`、Mac / Intel の Anima は自動で落として変換 | AMD の書き出しを自動で作る (Python の iron_*.py) か取得する | 済み (2026-11-10、design.md 16.124) |
+| hwnpu-image | `-m` で名前、ファミリー (`anima`、`moge`)、用途 (`image`、`depth`)。AMD は `~/models/NAME.amd-npu2`、Mac / Intel の Anima は自動で落として変換 | AMD の書き出しを自動で作る (Python の iron_*.py) か取得する | 済み (2026-11-10、[docs/design/distribution.md](design/distribution.md)) |
 | hwnpu-dev formats | `-use` で chat の名前 | chat と同じ解決になる。候補の形式を `builds` から取る (10.2 節で skill が使う) | 2 |
 | hwnpu-dev convert、hwnpu-dev check、hwnpu-dev generate | `-config`、`-weights`、`-package` でファイルを直に | 開発用なので、ファイルを直に渡す形は残す。hwnpu-dev convert には `-use NAME -npu NPU` を足し、`builds` で決まる設定で変換する (ビルドツールの土台) | 4 |
 
@@ -401,7 +401,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 
 ## 10. 定義ファイルを作る支援 (skill)
 
-蒸留モデルや別のチェックポイントを足すとき、`models.yaml` の差分を作るのを手伝う skill (`.claude/skills/tune-model/`、仮の名前) を置く。手順は docs/new-model-checklist.ja.md の 5 節 (量子化) と 6 節 (メモリ) を、1 つのモデルの差分を作る形にまとめたもの。KL などを見ながら、許容誤差とメモリの条件で形式を決める。
+蒸留モデルや別のチェックポイントを足すとき、`models.yaml` の差分を作るのを手伝う skill (`.claude/skills/tune-model/`、仮の名前) を置く。手順は [docs/design/new-model-checklist.md](design/new-model-checklist.md) (量子化) と 6 節 (メモリ) を、1 つのモデルの差分を作る形にまとめたもの。KL などを見ながら、許容誤差とメモリの条件で形式を決める。
 
 ### 10.1 使えるかどうか (最初に確かめる)
 
@@ -437,7 +437,7 @@ skill は最後に、どちらにするかを聞く。
 **このプロジェクトに PR を出す** (誰でも Hugging Face から取れるモデル): 既定に入れるのに要るものを揃え、PR まで出す。
 
 1. `models.yaml` に足す: `models` (`from` は `hf:` だけ。社内の取得元は入れない)、必要なら `builds` と `categories`
-2. 記録: MODEL.md と MODEL.ja.md のメモリの表に行を足し、おすすめの表を変えたならそれも。docs/design.md に節を足し、10.2 節で測った値 (形式ごとの KL、一致率、メモリ、測った機械と OS) を残す。MODEL.md のように .ja.md と対になっている文書は両方を直す
+2. 記録: MODEL.md と MODEL.ja.md のメモリの表に行を足し、おすすめの表を変えたならそれも。docs/design/ のモデルの種類のファイル (英語と日本語) を今の状態に直し ([design/README.md](design/README.md))、10.2 節で測った値 (形式ごとの KL、一致率、メモリ、測った機械と OS) を残す。MODEL.md のように .ja.md と対になっている文書は両方を直す
 3. 確かめる: `go test ./...`。`size` の値と数えた値の差、MODEL.md と定義ファイルの食い違い (7 節) のテストもこれに入る
 4. ライセンス: 元のモデルのライセンスで再配布 (docs/prebuilt.md の配布) ができるかを PR の本文に書く。できなければ「配布しない、手元で変換する」と書く
 5. PR を出す: ブランチを切ってコミットし、`gh pr create`。書く権限がなければ、フォークに push してから出す。本文に、測った値の要約、確かめていない NPU (Mac しかなければ AMD と Intel は「未確認」)、10.1 節で引っかかったところを書く
@@ -525,7 +525,7 @@ cache:
 | 変換し直しが要る変更の番号 (`Arch.Revision`) | アーキテクチャのコード | 来ない。コードの変更についてくるもの |
 | 会話の KV の 1 トークンあたりの大きさ (メモリの見積もり) | MODEL.md の手書き | 来ない。`config.json` から計算できる。MODEL.md の表を作るときに計算する |
 
-### 12.1 docs/new-model-checklist.md の変わるところ
+### 12.1 [docs/design/new-model-checklist.md](design/new-model-checklist.md)変わるところ
 
 手順の中身 (測り方、目安の値、試して効かなかったもの) は変わらない。変わるのは、決めた値の**書き先**と、記録の一部。
 
@@ -535,10 +535,10 @@ cache:
 | 5.4 形式の決め方 | `Formatter` (config の `Format()`) で決める | `builds` の `size` のルールで決める (6.1 節) |
 | 5.3 校正 | `hwnpu-chat --codes` | `builds` の `codes` に、取得元と同じ書き方で |
 | 4.1 AMD | `iron_export_lm.py` の引数 (`--mlp q6` など) を手で | `npu: amd-xdna2` の `builds` に書き、ビルドツールが渡す |
-| 9. 記録 | design.md と improvements | 加えて `models.yaml` (`size`、`memory`、コミットと sha256)。MODEL.md は定義ファイルと食い違えば `go test` が落ちる |
+| 9. 記録 | docs/design/ の話題のファイル ([design/README.md](design/README.md)) | 加えて `models.yaml` (`size`、`memory`、コミットと sha256)。MODEL.md は定義ファイルと食い違えば `go test` が落ちる |
 | 新しい節 | | 「手元か PR か」(10.3 節) と、skill の使い方 |
 
-英語版 (new-model-checklist.md) と日本語版 (new-model-checklist.ja.md) の両方を、2 段 (ビルド設定を移す) を入れるときに直す。それまでは今の手順のまま。
+英語版 ([docs/design/new-model-checklist.md](design/new-model-checklist.md)) と日本語版 ([docs/design/new-model-checklist.md](design/new-model-checklist.md)) の両方を、2 段 (ビルド設定を移す) を入れるときに直す。それまでは今の手順のまま。
 
 ### 12.2 構造の型を選ぶ
 
@@ -580,7 +580,7 @@ models:
 - MODEL.md にすでにある (Anima の中)。重みも、Anima の正解の値も手元にある
 - Anima が使うのは base (`qwen_3_06b_base`)、チャットは instruct (`Qwen/Qwen3-0.6B`)。同じ構造で、テストの正解を 2 通り持てる
 - 用途の表 (`chat` の picks) には入れない。`qwen3:0.6b` としてファミリーのタグで選べるようにし、蒸留モデル (Qwen3 を元にしたものが多い) の土台を確かめるのが目的。MODEL.md の 8 GB の欄には、一番小さなダウンロードとして並べる
-- **入れた (2026-11-09、design.md 16.127)**: 型の名前は今は `qwen3` (`internal/llm/qwen3`)。全層が注意なので注意で分けると遅く、分けない 1 本 (文脈 4096、`llm.Unpaged`) が既定。Anima のテキストエンコーダをこの型に寄せること (2.) と AMD (3.) はまだ
+- **入れた (2026-11-09、[docs/design/llm-qwen.md](design/llm-qwen.md))**: 型の名前は今は `qwen3` (`internal/llm/qwen3`)。全層が注意なので注意で分けると遅く、分けない 1 本 (文脈 4096、`llm.Unpaged`) が既定。Anima のテキストエンコーダをこの型に寄せること (2.) と AMD (3.) はまだ
 
 **会話の型: ChatML + JSON のツールの呼び出し (Hermes 式) を足す**。Qwen3 のツールの呼び出しは `<tool_call>{"name": ..., "arguments": ...}</tool_call>` の JSON で、Qwen3.5 の XML 式 (`<function=...>`) とは違う。同じ型を SmolLM などの ChatML の系統でも使う。Llama 3 と Mistral の型は、それぞれのモデルを受けるときに足す。Jinja の実行はしない (12 節)。
 

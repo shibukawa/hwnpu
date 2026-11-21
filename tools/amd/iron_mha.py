@@ -16,13 +16,13 @@ bf16 products, and measured (Ryzen AI 9 365, 4096 x 4096 x 16 x 128) 146 ms. Two
 
 146 -> 59 ms (QK^T bfp16), 54 ms (and P*V), against the reference's cosine 0.99998 -> 0.99994,
 0.99988. AIE2P's exp2 instruction (``accurate_exp2`` off) would save 10 ms more and costs 4x the
-error, so the softmax keeps its polynomial (design.md 16.147).
+error, so the softmax keeps its polynomial (docs/design/image-amd.md).
 
 ``zero_keys``: a cross-attention to a text whose rows past the prompt are zeros (Anima's
 conditioning) need not take those keys. Bounded to the prompt's keys (``k[:n]``, MHA's
 kv_valid, a per-call word), the call runs only their blocks, and kernels/mha_zero_keys.cc adds
 the left-out keys' term n e^{0 - m} to each row's softmax sum before the division: the output is
-the 512-key call's, each zero key scoring 0 (design.md 16.205).
+the 512-key call's, each zero key scoring 0 (docs/design/image-amd.md).
 """
 
 from pathlib import Path
@@ -229,7 +229,7 @@ class ImageMHA(MHA):
         return batched_matmul_pv, [*args, kernel]
 
 
-EXP = ["mid"]  # ImageMHA.exp of attention(): the cubic on one bf16 limb (kernels/exp2_mid.h, design.md 16.207)
+EXP = ["mid"]  # ImageMHA.exp of attention(): the cubic on one bf16 limb (kernels/exp2_mid.h, docs/design/image-amd.md)
 
 
 def attention(q, k, v, *, d: int, qk_bfp16: bool = True, pv_bfp16: bool = False, zero_keys: int = 0):
@@ -254,7 +254,7 @@ def attention(q, k, v, *, d: int, qk_bfp16: bool = True, pv_bfp16: bool = False,
 def _check(argv=None) -> int:
     """One zero_keys attention (--rows queries over the first --keys of --kv keys, the rest
     zeros) as a graph with its reference, for tools/amd/irongraph; prints the reference against
-    the float32 attention over every key, the zeros attended (design.md 16.205):
+    the float32 attention over every key, the zeros attended (docs/design/image-amd.md):
 
         python tools/amd/iron_mha.py OUT --rows 4096 --kv 512 --keys 77   # Anima's cross-attention
         go run ./tools/amd/irongraph OUT

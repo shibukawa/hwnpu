@@ -772,8 +772,8 @@ class Qwen35MoeLayer(Qwen35Layer):
     # operator; a prompt chunk (PROMPT) runs IRON's convolution on a state of its own, the host
     # copying the rows between the two (GatedDeltaNet's prompt). With the fold, the next decode
     # step's first command hung on the device after the last layer's experts (B) ran
-    # (ERT_CMD_STATE_TIMEOUT; design.md 16.90) until hwnpu ran an empty command in another
-    # hardware context before each step (internal/llm/iron's stepBarrier, 16.92).
+    # (ERT_CMD_STATE_TIMEOUT; docs/design/moe.md) until hwnpu ran an empty command in another
+    # hardware context before each step (internal/llm/iron's stepBarrier, docs/design/moe.md).
     fold = True
     prompt = PROMPT
 

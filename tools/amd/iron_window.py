@@ -4,7 +4,7 @@ IRON's ``KVCache`` keeps a sliding window's keys as a ring only when three rings
 ``max_seq_len`` (Gemma 4's 512 window in a 4096 context does not). Otherwise its ``MHA`` streams
 the keys from position 0 up to the query's for every block of queries; mha.cc skips the compute
 of the blocks out of the window but still reads and steps over them: a prompt chunk at position
-3072 streams 4096 keys per block of queries where 1536 hold its window (design.md 16.84).
+3072 streams 4096 keys per block of queries where 1536 hold its window (docs/design/amd-llm.md).
 
 Here a windowed layer reads a fixed span of keys, rounded up to whole 64-key blocks:
 
