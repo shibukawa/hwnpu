@@ -7,7 +7,7 @@ How hwnpu finds, downloads, converts, shares and removes models. This file is th
 - [../cache-sharing.md](../cache-sharing.md): the user guide and reference (variables, URLs, commands, layouts, per-NPU sharing, internals)
 - [../cache-sharing-design.md](../cache-sharing-design.md): the design record (Japanese)
 - [../model-table.md](../model-table.md): the models.yaml design; [../../models.yaml](../../models.yaml)'s header documents every field
-- [../prebuilt.md](../prebuilt.md): the plan to distribute converted models on Hugging Face (not built)
+- [../prebuilt.md](../prebuilt.md): the design for uploading converted models from a source to Hugging Face (`hwnpu/<model>`) and reading them back (not built)
 
 ## models.yaml
 
@@ -232,7 +232,7 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 
 ## Open
 
-- Hugging Face distribution of converted models (organization `hwnpu`, one repository per model, built by CI on a self-hosted runner): plan only ([../prebuilt.md](../prebuilt.md)). Today sharing goes through the user's sources.
+- Hugging Face distribution of converted models (organization `hwnpu`, one repository per model, uploaded by hand from a source with `hwnpu-dev hf push`, read as a layer before the original repository): designed, not built ([../prebuilt.md](../prebuilt.md)). Today sharing goes through the user's sources.
 - Local layout: move `models/NAME` programs and `entries/` to `converted/MODEL/TARGET/EXPORT/vN/` with `entry.json` as the only completion mark (now `NAME.done`, `NAME.ext.done` and `entry.json` coexist); migrate `~/models` once and stop reading it; `modelstore` API to make conversions (`Make`); use bundled conversions in place (now copied).
 - Entries for Core ML and OpenVINO programs; machine-bound (`host`) entries in sources; AMD / Intel NPU generations in the target name.
 - Hand-made image exports whose tool arguments Go does not own (Anima): only by name today.
