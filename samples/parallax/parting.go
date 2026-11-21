@@ -129,15 +129,34 @@ func minShow(st stage) time.Duration {
 }
 
 // stack is the scene of a picture in layers, from the farthest: each layer a scene over the one
-// behind it. The things of one layer still have outlines inside it (a flower before the grass),
-// so the near things are made larger in each layer's nearness as in a picture of one layer.
-func stack(layers []layering.Layer, edge int, far float64) *Scene {
+// behind it. The farthest layer's nearness is pulled apart as a picture of one layer's is (Far);
+// each nearer layer, a thing cut out of the picture, is given its relief (Relief): the layer
+// sits where Far puts it, and inside it the nearness is as the depth model says, with a
+// roundness added from its outline in.
+func stack(layers []layering.Layer, k look) *Scene {
 	var top *Scene
-	for _, l := range layers {
-		s := NewScene(l.Img, l.Near, edge, far)
+	for i, l := range layers {
+		near := Layers(l.Near, k.far)
+		if i > 0 {
+			near = Relief(l.Near, alphaMask(l.Img), l.Img.Rect.Dx(), l.Img.Rect.Dy(), k.far, k.relief, k.round)
+		}
+		s := NewScene(l.Img, near, k.edge, 0)
 		s.Behind, top = top, s
 	}
 	return top
+}
+
+// alphaMask is where a layer has its colour (alpha over a half).
+func alphaMask(img *image.NRGBA) []bool {
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	m := make([]bool, w*h)
+	for y := 0; y < h; y++ {
+		row := img.Pix[y*img.Stride:]
+		for x := 0; x < w; x++ {
+			m[y*w+x] = row[4*x+3] >= 128
+		}
+	}
+	return m
 }
 
 // part parts the picture into layers (samples/internal/layering: the depth and the picture
@@ -206,7 +225,7 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 	if err != nil {
 		return nil, hint(err)
 	}
-	return stack(layers, c.edge(w), c.Far), nil
+	return stack(layers, c.look(w)), nil
 }
 
 // depthColors is a nearness as a picture in colours, the near warm and the far cool (Google's

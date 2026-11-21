@@ -105,6 +105,8 @@ type picture struct {
 	Strength   float64 `default:"0.03" help:"How far the nearest point moves when the head is at the edge of the view, as a share of the picture's width."`
 	Focus      float64 `default:"0" help:"The nearness that stays where it is: 0 moves the far points least and the near ones most, 0.5 turns the picture about its middle."`
 	Far        float64 `default:"30" help:"How far the far end of the depth is pulled apart: 0 moves each point as its depth says (a thing twice as far moves half as much, so that behind something right before the eye all the rest moves as one); larger gives the far things more of the move, so that a bridge, the houses behind it and the mountains move apart."`
+	Relief     float64 `default:"1" help:"How deep a near layer is inside itself (a thing cut out of the picture, in layers): 1 as the depth model says, against --far's curve, which would flatten it; 0 flat, like a card."`
+	Round      float64 `default:"0.15" help:"How much rounder a near layer is made, from its outline in (a share of the nearness): an animal or a figure stands out as a body instead of a card. 0: as the depth says."`
 	Layers     int     `default:"3" help:"The layers the picture is parted into by its depth, with what each layer hid drawn in by the picture model, so that where a near thing moves aside there is a picture behind it instead of its edge stretched. The window shows the picture at once with its depth alone, and the parting goes on beside it (about a minute for each layer but the last), each step shown. 1: no layers. Where the picture model is not ready, the picture stays as it is."`
 	Hint       string  `placeholder:"TEXT" help:"Words added to the request to draw what a layer hid: \"no people\", \"a calm sea\"."`
 	Seed       uint64  `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
@@ -150,7 +152,7 @@ func (c *picture) scene(ctx context.Context, rt *ai.Runtime, p *parts) (*Scene, 
 			return nil, nil, fmt.Errorf("%w (\"layers PICTURE --png DIR\" of samples/layers, or --save-layers, writes the layers)", err)
 		}
 		fmt.Fprintf(os.Stderr, "%d layers of %d x %d\n", len(layers), layers[0].Img.Rect.Dx(), layers[0].Img.Rect.Dy())
-		return stack(layers, c.edge(layers[0].Img.Rect.Dx()), c.Far), nil, nil
+		return stack(layers, c.look(layers[0].Img.Rect.Dx())), nil, nil
 	}
 	img, err := c.image()
 	if err != nil {
@@ -224,6 +226,11 @@ func (c *picture) near(ctx context.Context, rt *ai.Runtime, p *parts, img *image
 }
 
 // edge is --edge for a picture of width w.
+// look is how the layers' nearness is made from their depth, for a picture of width w.
+func (c *picture) look(w int) look {
+	return look{edge: c.edge(w), far: c.Far, relief: c.Relief, round: c.Round}
+}
+
 func (c *picture) edge(w int) int {
 	if c.Edge >= 0 {
 		return c.Edge

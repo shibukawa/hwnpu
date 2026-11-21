@@ -99,6 +99,102 @@ func Layers(near []float32, k float64) []float32 {
 	return out
 }
 
+// look is how a picture in layers is made deep from its depth: the near things made edge
+// pixels larger (Spread), the far layers pulled apart (Layers, by far), and the near layers'
+// relief and roundness (Relief).
+type look struct {
+	edge               int
+	far, relief, round float64
+}
+
+// Relief is the nearness of a near layer of w x h, a thing cut out of the picture (in, where the
+// layer has its colour), from its depth.
+//
+// The layer as a whole sits where the far curve (Layers, by far) puts the middle of its depth.
+// Inside it the curve would flatten it (with far of 30, a nearness of 0.6 to 0.7 becomes 0.86
+// to 0.89, a pixel or two of move), and the layer would move as a card: its nearness goes on
+// from there as the depth says, times relief. A depth model sees an animal or a figure as
+// nearly flat too, so the layer is also made round, round higher in its middle than at its
+// outline: as much as a tenth of the picture's width from it, a parabola. The picture's own
+// border is no outline (the ground goes on past it). The layer is then brought down until its
+// nearest points (a hundredth of it) are at most 1, the nearest the window can draw.
+func Relief(near []float32, in []bool, w, h int, far, relief, round float64) []float32 {
+	var inside []float32
+	for i, ok := range in {
+		if ok {
+			inside = append(inside, near[i])
+		}
+	}
+	if len(inside) == 0 {
+		return Layers(near, far)
+	}
+	slices.Sort(inside)
+	mid := float64(inside[len(inside)/2])
+	base := mid
+	if far > 0 {
+		base = math.Log1p(far*mid) / math.Log1p(far)
+	}
+	d := outline(in, w, h)
+	r := float64(max(w, h)) / 10
+	out := make([]float32, len(near))
+	vals := inside[:0]
+	for i, n := range near {
+		v := base + relief*(float64(n)-mid)
+		if in[i] {
+			t := min(d[i]/r, 1)
+			v += round * t * (2 - t)
+		}
+		out[i] = float32(v)
+		if in[i] {
+			vals = append(vals, out[i])
+		}
+	}
+	slices.Sort(vals)
+	down := max(float64(vals[len(vals)*99/100])-1, 0)
+	for i, v := range out {
+		out[i] = float32(min(max(float64(v)-down, 0), 1))
+	}
+	return out
+}
+
+// outline is how far each pixel of a mask of w x h is from the nearest pixel outside it, in
+// pixels (a chamfer of 1 and √2, two passes); 0 outside. Past the picture's border is inside.
+func outline(in []bool, w, h int) []float64 {
+	const diag = math.Sqrt2
+	d := make([]float64, len(in))
+	for i, ok := range in {
+		if ok {
+			d[i] = math.Inf(1)
+		}
+	}
+	at := func(x, y int) float64 {
+		if x < 0 || y < 0 || x >= w || y >= h {
+			return math.Inf(1)
+		}
+		return d[y*w+x]
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if i := y*w + x; d[i] > 0 {
+				d[i] = min(d[i], at(x-1, y)+1, at(x, y-1)+1, at(x-1, y-1)+diag, at(x+1, y-1)+diag)
+			}
+		}
+	}
+	for y := h - 1; y >= 0; y-- {
+		for x := w - 1; x >= 0; x-- {
+			if i := y*w + x; d[i] > 0 {
+				d[i] = min(d[i], at(x+1, y)+1, at(x, y+1)+1, at(x+1, y+1)+diag, at(x-1, y+1)+diag)
+			}
+		}
+	}
+	for i, v := range d {
+		if math.IsInf(v, 1) { // a mask with nothing outside it
+			d[i] = float64(max(w, h))
+		}
+	}
+	return d
+}
+
 // Spread makes every pixel of a nearness of w x h as near as the nearest within r pixels of it
 // (across, then down), and then smooths the steps that leaves over the same distance.
 func Spread(near []float32, w, h, r int) []float32 {

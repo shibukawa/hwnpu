@@ -35,7 +35,7 @@ While the picture is made deep, the window shows each step: the depth (near warm
 
 Keys in the window: left/right or the mouse wheel change the head's gain (how far the view turns when you move your head: raise it when the picture seems to move too little), up/down the strength, D shows the depth, Q quits.
 
-The look: `--strength` (how far the nearest point moves), `--focus` (which depth stays put), `--far` (how far the far end of the depth is pulled apart), `--edge`, `--gain` (how far the view turns for a head's move), `--fov` (the camera's field of view).
+The look: `--strength` (how far the nearest point moves), `--focus` (which depth stays put), `--far` (how far the far end of the depth is pulled apart), `--relief` (how deep a near layer is inside itself: 1 as the depth says, 0 flat like a card), `--round` (how much rounder a near layer is made from its outline in, so that an animal stands out as a body), `--edge`, `--gain` (how far the view turns for a head's move), `--fov` (the camera's field of view).
 
 Pictures with clear layers work best: a figure before a landscape, things at several depths.
 

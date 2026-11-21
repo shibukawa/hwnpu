@@ -226,7 +226,7 @@ func TestStackAndProgress(t *testing.T) {
 		}
 		return l
 	}
-	s := stack([]layering.Layer{layer(255, 0.1), layer(128, 0.5), layer(0, 1)}, 0, 0)
+	s := stack([]layering.Layer{layer(255, 0.1), layer(128, 0.5), layer(0, 1)}, look{})
 	ls := s.layers()
 	if len(ls) != 3 || ls[0].Behind != nil || ls[2] != s || ls[0].Near[0] != 0.1 || ls[2].Near[0] != 1 {
 		t.Fatalf("the stack: %d layers", len(ls))
@@ -257,5 +257,45 @@ func TestStackAndProgress(t *testing.T) {
 	}
 	if minShow(stageNear) < 3*time.Second {
 		t.Errorf("the depth is shown %v", minShow(stageNear))
+	}
+}
+
+func TestRelief(t *testing.T) {
+	// a square thing of flat depth 0.6 with a nearer middle (0.7), in a picture of 100 x 100
+	const w, h = 100, 100
+	near := make([]float32, w*h)
+	in := make([]bool, w*h)
+	for y := 20; y < 80; y++ {
+		for x := 20; x < 80; x++ {
+			in[y*w+x] = true
+			near[y*w+x] = 0.6
+			if x >= 45 && x < 55 && y >= 45 && y < 55 {
+				near[y*w+x] = 0.7
+			}
+		}
+	}
+	at := func(n []float32, x, y int) float64 { return float64(n[y*w+x]) }
+	curved := Layers(near, 30)
+	flat := Relief(near, in, w, h, 30, 1, 0)
+	// it sits where the curve puts it, and inside it the depth is as it was, not flattened
+	if math.Abs(at(flat, 30, 30)-at(curved, 30, 30)) > 1e-5 {
+		t.Errorf("the layer sits at %v, the curve at %v", at(flat, 30, 30), at(curved, 30, 30))
+	}
+	if d := at(flat, 50, 50) - at(flat, 30, 30); math.Abs(d-0.1) > 1e-5 {
+		t.Errorf("the middle is %v nearer; the depth says 0.1 (the curve %v)", d, at(curved, 50, 50)-at(curved, 30, 30))
+	}
+	// round: higher in the middle than at the outline, and never past 1
+	round := Relief(near, in, w, h, 30, 1, 0.5)
+	if at(round, 40, 40) <= at(round, 21, 40)+0.1 {
+		t.Errorf("not round: %v inside, %v at the outline", at(round, 40, 40), at(round, 21, 40))
+	}
+	for i, v := range round {
+		if v < 0 || v > 1 {
+			t.Fatalf("nearness %v at %d", v, i)
+		}
+	}
+	// the picture's border is no outline
+	if d := outline([]bool{true, true, true, false}, 4, 1); d[0] != 3 || d[2] != 1 || d[3] != 0 {
+		t.Errorf("the distances: %v", d)
 	}
 }
