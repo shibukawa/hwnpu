@@ -99,7 +99,7 @@ decisions. History stays in git.
 | [../model-provenance.md](../model-provenance.md) | Model licenses and content, and the allowlist of models (`HWNPU_MODEL_ALLOWLIST`) |
 | [../cache-sharing.md](../cache-sharing.md) ([日本語](../cache-sharing.ja.md)) | User guide to the model cache and sharing it |
 | [../cache-sharing-design.md](../cache-sharing-design.md) | Design record of distributing converted models and sharing caches (layers, sources, locks) |
-| [../prebuilt.md](../prebuilt.md) | Plan for distributing converted models on Hugging Face from a self-hosted runner |
+| [../prebuilt.md](../prebuilt.md) | Design for uploading converted models from a source (NAS) to Hugging Face and reading them back |
 | [../known-issues.md](../known-issues.md) | Known Core AI / coreai-build problems, hwnpu's workarounds, and what to do when Apple fixes them |
 | [../reference-paper.md](../reference-paper.md) ([日本語](../reference-paper.ja.md)) | NPU papers drawn on, and whether they held up on hwnpu's hardware |
 | [../amd-npu-models.md](../amd-npu-models.md) | Design of running converted models on AMD's NPU (IRON) |

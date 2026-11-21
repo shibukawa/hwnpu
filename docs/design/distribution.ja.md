@@ -7,7 +7,7 @@ hwnpu がモデルを探し、落とし、変換し、共有し、消す仕組�
 - [../cache-sharing.md](../cache-sharing.md): 利用者の手引きと参照 (変数、URL、コマンド、並び、NPU ごとの共有、中の作り)
 - [../cache-sharing-design.md](../cache-sharing-design.md): 設計の記録
 - [../model-table.md](../model-table.md): models.yaml の設計。各フィールドは [../../models.yaml](../../models.yaml) の頭の注釈に書いてある
-- [../prebuilt.md](../prebuilt.md): 変換済みのモデルを Hugging Face で配る計画 (未実装)
+- [../prebuilt.md](../prebuilt.md): 取得元にある変換済みのモデルを Hugging Face (`hwnpu/<モデル>`) に上げ、読み戻す設計 (未実装)
 
 ## models.yaml
 
@@ -232,7 +232,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 ## 未解決
 
-- 変換済みのモデルの Hugging Face での配布 (組織 `hwnpu`、1 モデル 1 リポジトリ、self-hosted runner の CI で作る): 計画だけ ([../prebuilt.md](../prebuilt.md))。今は利用者の取得元で共有する
+- 変換済みのモデルの Hugging Face での配布 (組織 `hwnpu`、1 モデル 1 リポジトリ、取得元から `hwnpu-dev hf push` で手で上げ、元のリポジトリの前の層として読む): 設計だけ ([../prebuilt.md](../prebuilt.md))。今は利用者の取得元で共有する
 - 手元の並び: `models/NAME` のプログラムと `entries/` を `converted/MODEL/TARGET/EXPORT/vN/` に移し、完了の印を `entry.json` 1 つに (今は `NAME.done`、`NAME.ext.done`、`entry.json` が混在)。`~/models` を一度移して読まなくする。`modelstore` に変換の API (`Make`)。同梱の変換結果をその場で使う (今はコピー)
 - Core ML と OpenVINO のプログラムのエントリ、機械に縛られた (`host`) エントリの取得元での共有、対象の名前での AMD / Intel の NPU の世代の区別
 - 道具の引数を Go が持たない手で作る画像の書き出し (Anima): 今は名前でだけ

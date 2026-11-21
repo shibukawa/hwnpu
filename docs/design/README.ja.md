@@ -90,7 +90,7 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [../model-provenance.md](../model-provenance.md) | モデルのライセンスと内容、使ってよいモデルの指定 (`HWNPU_MODEL_ALLOWLIST`) |
 | [../cache-sharing.ja.md](../cache-sharing.ja.md) ([English](../cache-sharing.md)) | モデルのキャッシュとその共有の利用者向けの説明 |
 | [../cache-sharing-design.md](../cache-sharing-design.md) | 変換済みモデルの配布とキャッシュの共有の設計の記録 (層、取得元、lock) |
-| [../prebuilt.md](../prebuilt.md) | 変換済みモデルを self-hosted runner から Hugging Face で配る計画 |
+| [../prebuilt.md](../prebuilt.md) | 取得元 (NAS) の変換済みモデルを Hugging Face に上げて読み戻す設計 |
 | [../known-issues.md](../known-issues.md) | Core AI / coreai-build の既知の問題、hwnpu の回避策、Apple が直したときにすること |
 | [../reference-paper.ja.md](../reference-paper.ja.md) ([English](../reference-paper.md)) | 参考にした NPU の論文と、hwnpu の実機で当てはまったか |
 | [../amd-npu-models.md](../amd-npu-models.md) | 変換したモデルを AMD の NPU (IRON) で動かす設計 |
