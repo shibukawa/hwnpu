@@ -959,7 +959,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Real checkpoints | Running Gemma 4 and LFM3-VL / Audio in hwnpu-chat (conversion and numbers checked on the CPU) | Same |
 | IR shared on Linux | The `.bin` of the programs for 8 and 64 tokens should be shared like Apple's `weight.bin`. Checked only by tests on Btrfs and XFS, not with a real conversion | 16.79 |
 | PLaMo 3 | Whether the int8 IR (two programs of 4 parts each) runs on a real NPU, and its speed. On OpenVINO's CPU it gave the same translations as AMD | 16.71 |
-| Anima | Whether all of it runs on a real NPU, speed, memory. Checked on OpenVINO's CPU (f32). With f16 inference, PSNR drops to 25.5 dB | 16.69, handoff-anima-mac-intel.md section 4 |
+| Anima | Whether all of it runs on a real NPU, speed, memory. Checked on OpenVINO's CPU (f32). With f16 inference, PSNR drops to 25.5 dB | 16.69, 16.143, 16.146, handoff-anima-mac-intel.md |
 
 ### 11.3 AMD (XDNA)
 

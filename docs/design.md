@@ -1874,7 +1874,7 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
   - `TestSparseMatchesDirect` など (`internal/llm/decode`): 1 層の偽のモデルと Go の注意で、2 段の注意を直接計算したもの (CPU の確認の形) とセッションの出力を比べる。セッションが選んだバケットで計算したものと相対誤差 1e-2 以内、選んだバケットの重みは最も重いものの 99% 以上 (fp16 の丸めで同じくらいの重さのものが入れ替わる)。2 段で読まない呼び出しは全部を読むものと一致。1 トークンと 4 トークンの呼び出し、`Refresh` 4 (選び直しは 4 回に 1 回)、`Mark` に戻って別のトークンを書いたとき、`Reset`、`Save` の行を戻したとき、8 トークンのプリフィルから 1 トークンのデコードに移るとき
   - `TestMassMatchesSoftmax`、`TestMergeSubAndAddMerge` (`internal/llm/paged`、CPU のインタプリタ)
   - `TestPagedSparse` (`internal/llm/lfm3`): 小さな LFM3 を変換し (mass のプログラムも)、2 段の注意を 3296 回呼んで、ロジットは全部を読むものと相対誤差 1.4%。`AddMass` が mass のない manifest に書き足す
-- 見込み (16.59 の M3 の実測から。計測なし): 1 トークンは 128K で約 90 ms (今 165)、250K で約 140 ms (今 320)。128K のプロンプトを読む時間は約 7 分 (今 8.6)、250K は約 19 分 (今 29)。プリフィルは約 57K までは今と同じで、要約への 2 回の注意と mass と 4 つの正確な塊の分だけ縮みが小さい。M3 での確認は [handoff-m3-sparse.md](handoff-m3-sparse.md)
+- 見込み (16.59 の M3 の実測から。計測なし): 1 トークンは 128K で約 90 ms (今 165)、250K で約 140 ms (今 320)。128K のプロンプトを読む時間は約 7 分 (今 8.6)、250K は約 19 分 (今 29)。プリフィルは約 57K までは今と同じで、要約への 2 回の注意と mass と 4 つの正確な塊の分だけ縮みが小さい。M3 での確認は 16.61 の「M3 での確認」と 16.65 の末尾
 - **M3 での確認** (MacBook Air M3 16 GB、macOS 27.0.1、LFM3-1.7B の lut6 + grouped、塊 8192、`-draft 8`、2026-11-06):
   - テスト: 引き継ぎの 6 パッケージは通る (`internal/chat` の `TestPagedOnNeuralEngine` の 2 段の版を含む)
   - 読み込み: 初回の起動で `chat.Prepare` が既存の `lfm3-lut6-grouped-p8192-c262144-q8.parts.json` と `-q64` に mass のプログラムを書き足し、読み込みは 33.2 + 34.2 秒 (mass の 2 本のコンパイル込み)。**2 本とも `all on the NPU`** (`OnNPU` は mass も見る)。ready の行は見込みどおり `... (attention in chunks of 8192; past about 48K tokens, 16384 keys exactly and the rest as means of 8)` で、キャッシュは 1 トークン 12 → 14 KiB (262144 で 3.38 GiB、要約の分)。2 回目からは 1.0〜1.3 + 2.2〜9.8 秒で、プログラムが 2 本増えてもコンパイルのキャッシュに残る
@@ -2887,7 +2887,7 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
 - hwnpu-chat は読み込みの前後の差を出す: LFM3-1.7B lut6 の 2 本 (Q=8 と Q=128) で「the Neural Engine holds 2.43 GiB」(重み 1.21 GiB × 2。同じ重みでもプログラムが違えば 2 つ持つ)。終わると戻る
 - `npuprobe split` の表に「Neural Engine」の列: lut4 の 32 層を 2 部分 (重み 0.91 GiB) で 0.46 GiB。npuprobe の部分は同じ種で作るので 2 つが同じ中身になり、ドライバーは 1 つだけ持つらしい
 
-**GPTQ で選んだ lut6 の表 (16.87) を M3 で** (docs/handoff-m3-gptq.md)
+**GPTQ で選んだ lut6 の表 (16.87) を M3 で**
 
 - 符号は Linux の機械に届かず、M3 で作り直した: `q4_gptq.py lfm3 CKPT OUT --fmt-q4 lut6 --fmt-q8 lut6 --head lut6 --lut-fit wkmeans --q8 gptq` (校正の文 `~/models/calib` も作り直した。GPL-3 は Mac にないので評価から抜ける)。`--q8 gptq` がないと注意と畳み込みの射影は丸めのままで、符号は 143 のうち 73 (MLP と出力層) だけになる (引き継ぎの手順にはこの引数が抜けていた)。校正は 2141 秒 (4 層ずつ 7 回、1 回 4〜5 分。スワップが 9 GB を超えていると 1 回目が 45 分かかった)。符号は 1.6 GB
 - CPU の見積もり (bf16 の重みに対する KL): README 0.0203、wiki40b-ja 0.0500、wikitext-2 0.0291、Go 0.0189
@@ -5225,7 +5225,7 @@ M3 の Core ML の 2 回目は、512² で 4 分 26 秒、1024² で 7 分 08 �
 - `TestConvertAIKVOnlyOnNeuralEngine` (gemma4): 小さな Gemma 4 を 1 トークンのプログラムと、4 トークンでキャッシュだけ書くプログラム (`KVOnly`) の 2 つにした。キャッシュだけ書く部品 (層 0 と 1、それに層 2 のキーと値) は生成側の 1 本目と同じ `.aimodel` の関数になる。7 トークンを読んでから 1 トークンずつ進めると、Core AI の Neural Engine で、キャッシュのないプログラムとの相対誤差は最大 0.014 (Core ML の書き出しを CPU で動かす `TestPagedKVOnly` は 0.0035、差は fp16)。実物の gemma-4-E2B-it の分け方 (config.json だけで `PlanPaged`、lut6、8192 ごと) も同じ形になる。生成側は 8 部品 (層 0〜3、4〜8、9〜13、14〜18、…、34)、キャッシュだけ書く側は最初の 3 部品で、始まりも層の数も同じ。部品 1〜3 が関数 2 つ、4〜8 は生成側だけの `.aimodel` になる
 - Qwen3.5-0.8B の 1 回目のコンパイルは M1 の Core AI (16.173、5 分 9 秒) より長い。`.mlpackage` を下ろす形と同じバイトコードか (関数 2 つのとき) は確かめていない
 
-残り ([handoff-coreai-chat.md](handoff-coreai-chat.md)): Qwen3.5-4B と gemma-4-E4B-it (ディスクの余裕のある機械で)。M3 の空きが 12 GB まで減ったので、gemma-4-E2B-it の実物 (上の小さなモデルの確認だけ)、LFM3-VL、Audio、Omni (符号器)、Qwen3.5-2B、Qwen3-1.7B、PLaMo 3 Translate、d1 は試していない。そのあと既定を Core AI にし、`hwnpu-chat` から Core ML を外す。
+残り (引き継ぎは handoff-coreai-chat.md、済んで削除。Qwen3.5-4B と gemma-4-E4B-it は 16.191、ほかは 16.221 で M1 で): Qwen3.5-4B と gemma-4-E4B-it (ディスクの余裕のある機械で)。M3 の空きが 12 GB まで減ったので、gemma-4-E2B-it の実物 (上の小さなモデルの確認だけ)、LFM3-VL、Audio、Omni (符号器)、Qwen3.5-2B、Qwen3-1.7B、PLaMo 3 Translate、d1 は試していない。そのあと既定を Core AI にし、`hwnpu-chat` から Core ML を外す。
 
 ### 16.186 注意で分けたモデルの注意を、会話を覆う一番短い塊で (1024、2048、4096、8192) — 2026-11-14
 

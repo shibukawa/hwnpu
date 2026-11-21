@@ -959,7 +959,7 @@ Apple / Intel (`hwnpu-image convert`):
 | 実物のチェックポイント | Gemma 4、LFM3-VL / Audio を hwnpu-chat で動かすこと (変換と数値は CPU で確認済み) | 同上 |
 | Linux での IR の共有 | 8 トークンと 64 トークンのプログラムの `.bin` は Apple の `weight.bin` と同じく共有されるはず。確かめたのは Btrfs と XFS でのテストだけで、実際の変換ではまだ | 16.79 |
 | PLaMo 3 | int8 の IR (2 本で各 4 部分) が実機の NPU で動くか、速さ。OpenVINO の CPU では AMD と同じ訳文になった | 16.71 |
-| Anima | 実機の NPU で全部が動くか、速さ、メモリ。OpenVINO の CPU (f32) では照合済み。f16 の推論では PSNR が 25.5 dB に落ちる | 16.69、handoff-anima-mac-intel.md 4 節 |
+| Anima | 実機の NPU で全部が動くか、速さ、メモリ。OpenVINO の CPU (f32) では照合済み。f16 の推論では PSNR が 25.5 dB に落ちる | 16.69、16.143、16.146、handoff-anima-mac-intel.md |
 
 ### 11.3 AMD (XDNA)
 

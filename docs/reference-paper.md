@@ -36,7 +36,7 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 | ENEC 2604.03298 (a, Ascend) | Lossless weight compression removes the transfer bound | **Not started.** Decode today is bound by reconfiguration, not bandwidth, so this waits | |
 | 2505.16056 (Not All Models Suit Expert Offloading) | A cache about twice the active experts is enough. LFU beats LRU | **Partly.** AMD's expert places (`--expert-places`) are now chosen by usage count | 16.263, 16.276 |
 | EStream 2609.06551 (Hexagon) | Keep experts in a bank × slot pool, addressed as base + slot × size. Read with O_DIRECT | **Held.** It is the basis of AMD's expert places. gpt-oss-120b reads with O_DIRECT | 16.89, 16.263, handoff-amd-moe.md |
-| Fate 2502.12224 | Predict the next layer's gate from the current layer's input, and prefetch | **Held.** Apple's gpt-oss-20b: 86–87 % in the top 4. AMD's gpt-oss-120b: misses 9.8 → 3.1 % | improvements.md, handoff-amd-moe.md 3.3 |
+| Fate 2502.12224 | Predict the next layer's gate from the current layer's input, and prefetch | **Held.** Apple's gpt-oss-20b: 86–87 % in the top 4. AMD's gpt-oss-120b: misses 9.8 → 3.1 % | improvements.md, handoff-amd-moe.md 4 |
 | NPUMoE 2604.18788 | Only the prompt on the Neural Engine; routing and gather on the CPU | **Already done.** It matches the decision not to put gather on the Neural Engine (16.179) | 16.179 |
 | Pre-gated MoE 2308.12066 and others | Compute the next gate one layer early | Read as background only | improvements.md chapter 13 |
 | 2606.22283 (Neural Engine reverse engineering) | Numeric rules: outputs below 2^15, width slices, softplus, and more | **Partly.** Most rules hold on the M2. The width-slice rule triggers under narrower conditions than the paper says | 16.274 |
@@ -160,7 +160,7 @@ The full table is chapter 13 of [improvements.md](improvements.md). Only the pap
 
 **Relation to hwnpu**
 - The positions `MoERoute` writes to the scratchpad (16.89) follow the same idea as the paper's "expert virtualization". It became the basis of AMD's places, which hold only some of the experts (16.263)
-- gpt-oss-120b reads its expert files with O_DIRECT (handoff-amd-moe.md 3.3)
+- gpt-oss-120b reads its expert files with O_DIRECT (handoff-amd-moe.md 4)
 
 ### Fate 2502.12224 — held
 
@@ -168,7 +168,7 @@ The full table is chapter 13 of [improvements.md](improvements.md). Only the pap
 
 **Relation to hwnpu**
 - Apple's gpt-oss-20b: the next layer's prediction holds 86–87 % of the experts in its top 4. Prefetching made every budget 3–6 % faster
-- AMD's gpt-oss-120b: prefetching the next layer's top 4 cut misses from 9.8 to 3.1 % and took it from 9.2 to 9.7–9.9 tok/s (handoff-amd-moe.md 3.3)
+- AMD's gpt-oss-120b: prefetching the next layer's top 4 cut misses from 9.8 to 3.1 % and took it from 9.2 to 9.7–9.9 tok/s (handoff-amd-moe.md 4)
 
 ### NPUMoE 2604.18788 — already done
 
