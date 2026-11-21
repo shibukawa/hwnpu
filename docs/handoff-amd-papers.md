@@ -1,8 +1,8 @@
 # 引き継ぎ: 論文から拾った AMD の NPU の最適化の候補
 
-作成: 2026-11-20。arXiv の「NPU」の検索 (505 件) と、AMD XDNA、端末の LLM の論文の調査から、hwnpu の AMD の経路 (IRON、`internal/llm/iron`、`internal/backend/amd`) に入れられそうなものを選んだ。全体の一覧 (`docs/npu-optimization-papers.md`: MoE 以外、`docs/moe-papers.md`: MoE) は、このリポジトリにはまだ入っていない。
+作成: 2026-11-20、整理: 2026-11-21。arXiv の「NPU」の検索 (505 件) と、AMD XDNA、端末の LLM の論文の調査から、hwnpu の AMD の経路 (IRON、`internal/llm/iron`、`internal/backend/amd`) に入れられそうなものを選んだ。全体の一覧 (`docs/npu-optimization-papers.md`: MoE 以外、`docs/moe-papers.md`: MoE) は、このリポジトリにはまだ入っていない。
 
-論文ごとの結果 (当てはまったか) の一覧は [npu-papers.md](reference-paper.ja.md)。
+論文ごとの結果 (当てはまったか) の一覧は [reference-paper.ja.md](reference-paper.ja.md)。
 
 対象の機械は Ryzen AI 9 365 (XDNA2、NPU4 系)。書いてあるのは仮説と、それを確かめる手順。
 
@@ -13,17 +13,15 @@
 
 2026 年のものは査読前のプレプリントが多い。数字を設計の根拠にする前に本文を読む。
 
-## 進み具合 (2026-11-20)
+## 進み具合 (2026-11-21)
 
-| 節 | 状態 |
-|---|---|
-| 1. 演算子の切り替え | **確かめた** (design.md 16.266)。切り替え 1 回で `load_pdi` と配列の設定のし直しが入り、約 40 µs + 2.3 µs/KB。gpt-oss のデコードは 1 層 1 回なので当てはまらないが、LFM3-1.7B、Gemma 4 E2B、Qwen3.6 のデコードでは時間の 7 割前後がこれ (実機の時間と見積もりが 1 割以内で合う)。並べ替えで減らせるのは 1 トークン 2 % ほど。`--reconfig-teardown` は大きな設定で遅くなり、`--load-pdi-to-ctrl-pkt` は aiecc が通らない。効くのは 1 層の演算の数を減らすこと (常駐の形) と、GDN の 0 の塊を消すこと。どちらも実装した (16.267〜16.269、16.272: LFM3 系 +40 %、Gemma 4 +16〜21 %、Qwen3.5-0.8B +36 %、Qwen3.6 +5 %) |
-| 2. 同期 | IRON の経路はすでに使う範囲だけ。引き継ぎの行番号 (`internal/llm/chain`) は IRON でない経路の小さなバッファ。変えていない (16.266 の最後) |
-| 3〜9 | 手を付けていない |
+1 と 2 は済み (下に結果と残りだけ)。3〜9 は手を付けていない。
 
 道具: `go run ./tools/amd/elfconfigs [-seq] ELF...` (設定のし直しの数とバイト)、`iron_moeprobe.py --switch` (切り替えの費用)。
 
 ## 0. 今の数字 (比べる基準)
+
+2026-11-20 の値。このあと 1 で LFM3 系、Gemma 4、Qwen3.5 / 3.6 のデコードは速くなった (1 節)。
 
 | もの | 値 | 出典 |
 |---|---|---|
@@ -42,37 +40,20 @@
 - `HWNPU_ENERGY`: 電力量 (package)
 - `go run ./tools/amd/irongraph`、`tools/amd/ironlm`: 照合
 
-## 1. 演算子の切り替えの上乗せを減らす (優先: 高) — 確かめた、16.266
+## 1. 演算子の切り替えの上乗せを減らす — 済み (design.md 16.266〜16.269、16.272、16.277、16.278)
 
-**出典**
-- HeteroMosaic 2607.12839 ✓: データパスの再設定 (PDI の読み直し) は高く、DMA の設定の切り替えはほぼ無料。xclbin ごとに操作をまとめ、NPU を扱うスレッドを 1 本にする
-- 2606.07586 ✓ (XDNA2 で Llama-3.2-1B のデコード 10.8 tok/s): XRT のコンテキストを使い回し、層ごとの BO をゼロコピーで回す
+出典は HeteroMosaic 2607.12839 ✓ (データパスの再設定は高く、DMA の設定の切り替えはほぼ無料) と 2606.07586 ✓。仮説どおり、演算子が変わるたびに `load_pdi` と配列の設定が制御コードに入る (約 40 µs + 2.3 µs/KB)。1 層の演算をまとめて、LFM3 系 11.2 → 17.2 トークン/秒、Gemma 4 E2B 7.7 → 9.3、Qwen3.5-0.8B 13.8 → 18.7、Qwen3.6 8.5 → 8.9 (どれも KL かロジットは同じ)。
 
-**仮説**: 16.75 の「違う種類の演算子で 1 個 約 80 µs、同じものが続くと 20 µs 未満」は、full ELF の制御コードがコアのプログラム (PDI) を読み直す費用ではないか。
+残り:
 
-**結果** (16.266): 仮説どおり。演算子が変わるたびに `load_pdi` と配列の設定 (コアのプログラムメモリを含む) が制御コードに入り、1 回 85〜100 µs (設定の大きさ 6〜35 KB でほぼ変わらない)。
+- デコードの層の中の演算の切り替え: 減らすには gpt-oss の `GptOssStep` (iron_gptoss_layer.py) のような 1 配列の常駐の形を密なモデル (LFM3-1.7B か Qwen3.5) に作る。比べる基準は `elfconfigs` の数とデコードの 1 トークンの時間、合格条件はロジットのコサインが変わらないこと (`ironlm` の閾値)
+- Qwen3.6 の GDN の演算子の設定 (374 KB × 30 層)
+- プロンプト: IRON の GEMM が行に関係なく重みを全部の行の単位に流す
+- `--load-pdi-to-ctrl-pkt` は aiecc が「operand #0 does not dominate this use」で止まる (`--ctrlpkt-adaptive-overlay=false`、teardown なしでも)。上流 (Xilinx/mlir-aie #3928 の計画、#3934・#3935 はマージ済み) にこの不具合の報告はない。複数列の設計は #3488 (実機で止まる、open) にも当たりうる。`--reconfig-teardown` は大きな設定で遅くなる
 
-- gpt-oss-20b のデコードは常駐の 1 演算で、1 層 1 回だけ。層のコマンド 1.80 ms は別の理由
-- LFM3-1.7B のデコードは 1 トークン 614 回 (約 60 ms / 89 ms)、Gemma 4 E2B は 1016 回 (約 100 ms / 127 ms)、Qwen3.6 は 484 回 (約 48 ms / 172 ms)
-- 並べ替えで消せるのは Qwen3.6 で 1 トークン 40 回まで (依存を無視した上限)。密なモデルは同じ設定が層ごとに出て、層の間には依存がある
+## 2. 要らない同期を外す — 済み (すること無し、16.266 の最後)
 
-**残作業**
-- (a) 静かな NPU で測り直す: 済み (16.266 の「静かな NPU で測り直す」)。費用は設定の大きさで増える (40 µs + 2.3 µs/KB)
-- (b) 実機のデコードで確かめる: 済み。LFM3-1.7B 92.6 ms に対して見積もり 98 ms、Gemma 4 E2B 137 ms に対して 138 ms、Qwen3.6 はコマンドごとの時間で 1 トークン約 90 ms / 122 ms が設定
-- (c) 1 層の演算をまとめる: LFM3-1.7B で済み (16.268、`ShortConvStep`、`SandwichAdd`、`QGEMVGlu` で 11.2 → 15.6 トークン/秒、KL は同じ)。Gemma 4 E2B も済み (16.269、7.7 → 9.3 トークン/秒、KL は同じ)。LFM3-VL・Audio・Omni は 11.3 → 15.6、Gemma 4 E4B は 5.5 → 6.4 (16.272)。QGEMV を 1 列 1 コアに、sandwich を GEMV の中で (16.277、LFM3 15.6 → 17.2)。LFM3 の ShortConvStep が状態の置き場を直接読み書き (16.278、+2 %)。プロンプトの短い畳み込みを 1 演算子に (16.278、LFM3 16 トークン −13 %、Qwen3.5-0.8B −25 %)。残りの大きな費用は、デコードでは層の中の演算の切り替え (1 配列の形が要る)、Qwen3.6 では GDN の演算子の設定 374 KB × 30 層、プロンプトでは IRON の GEMM が行に関係なく重みを全部の行の単位に流すこと
-- (d) 済み (16.272): ローカルのブランチ t3/qwen36-integrate が GDN の演算子に状態の枠を直接読み書きさせていた (`gdn_operator(slots=)`)。取り込んだ。今の main から作った Qwen3.6 が遅かった原因もこのブランチが main に入っていなかったこと
-- (e) GDN の 0 の塊: 済み (16.267)。Qwen3.5-0.8B で 13.2 → 14.1 トークン/秒 (ロジットはビット単位で同じ)、t3/qwen36-integrate と合わせて Qwen3.5-0.8B 13.8 → 18.7、Qwen3.6 8.5 → 8.9 (16.272、どちらもビット単位で同じ)
-- (f) `--load-pdi-to-ctrl-pkt`: aiecc が「operand #0 does not dominate this use」で止まる (`--ctrlpkt-adaptive-overlay=false`、teardown なしでも)。上流 (Xilinx/mlir-aie #3928 の計画、#3934・#3935 はマージ済み) にこの不具合の報告はない。複数列の設計は #3488 (実機で止まる、open) にも当たりうる
-
-**次の手**: 1 層の演算の数を減らす。gpt-oss の `GptOssStep` (iron_gptoss_layer.py) と同じ常駐の形を、密なモデル (まず LFM3-1.7B か Qwen3.5) に作る。比べる基準は `elfconfigs` の数と、デコードの 1 トークンの時間。合格条件はロジットのコサインが変わらないこと (`ironlm` の閾値)。
-
-## 2. 要らない同期を外す (優先: 高、小さい) — IRON の経路はすでに済み
-
-**出典**: 2606.07586 ✓。NPU だけが読み書きするバッファは、ホストとの同期を省く。
-
-**調べた結果**: IRON の経路 (`internal/llm/iron/moe.go` の `readRegion`/`writeRegion`/`writeCopies`、`rows.go`、`graph.go` のホストの手順) は、すでに使う範囲だけを同期している。`moe_route`、`moe_combine`、`moeHostRouteMX4` もそう。バッファ全体の同期が残っているのは読み込みのときと、IRON でない経路 (`internal/llm/chain/moe.go` と `chain.go` の専門家の 1 行と注意の塊。Intel と Apple でも使う) だけ。
-
-**注意**: ホストが読む領域は、IRON の割り当てで使用に数えられず、あとの演算に上書きされることがある (16.93、16.179、16.110 の落とし穴)。同期を減らすときに、読む位置を変えない
+2606.07586 ✓ の「NPU だけが読み書きするバッファはホストとの同期を省く」は、IRON の経路 (`internal/llm/iron` の `readRegion`/`writeRegion`/`writeCopies`、`rows.go`、`graph.go`、`moe_route`、`moe_combine`、`moeHostRouteMX4`) ではすでに使う範囲だけを同期している。全体の同期が残るのは読み込みと、IRON でない経路 (`internal/llm/chain/moe.go`、`chain.go`。Intel と Apple でも使う) だけ。同期を減らすときは、ホストが読む領域の位置を変えない (IRON の割り当てで使用に数えられず、あとの演算に上書きされることがある。16.93、16.179、16.110)
 
 ## 3. 多次元の DMA の番地で、1023 語の制限と事前の並べ替えを避ける (優先: 中)
 

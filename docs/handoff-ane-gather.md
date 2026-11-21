@@ -1,6 +1,8 @@
 # 引き継ぎ: Neural Engine で MoE を動かすための、gather と実行時の重みの調査
 
-作成: 2026-11-18。M1 (16 GB、macOS 27、ビルド 26B131) で調べた。ブランチ `t3/ane-gather-probe` (PR は出していない)。
+作成: 2026-11-18、整理: 2026-11-21。M1 (16 GB、macOS 27、ビルド 26B131) で調べ、M3 と M2 で続けた。コードは main に入っている (2 節)。
+
+**済んだこと**: M1 と M3 の調査 (1 節、1b 節)、LFM2-8B-A1B を hwnpu-chat に組み込み (1b の「hwnpu に組み込んだ」)、M2 での LFM2-8B-A1B と MoE の 1 層 (1c 節、design.md 16.274)。gpt-oss-20b の専門家を Neural Engine に置く道 (A) は止め、CPU の MXFP4 にした (1b の最後、improvements.md 7.5)。**残りは 3 節** (M4 での配置、ANE のコンパイラが外す理由)。
 
 目的: Apple 向けの MoE (gpt-oss-20b、Qwen3.6-35B-A3B など) が無いのは、専門家の選択 (gather) が Neural Engine に載らないため ([design.md](design.md) 16.179 の gpt-oss の節、[model-fit.md](model-fit.md) 4 節)。この判断は Core ML 時代のもので、Core AI では試していなかった。ANE のコンパイラの中身を調べ、流用できるものを探した。
 
@@ -207,12 +209,6 @@ LFM2-8B-A1B が hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動�
 
 残り:生成の専門家の呼び出しを次の部品に入れても 4 % ほど。4 ビットの専門家 (2026-11-19): 精度は 64 列ごとの scale で KL 0.023 (専門家だけ、int8 は 0.0019、行ごと 0.071、`moeserve -bits 4 -group 64`)。速さはどれも int8 (1 層 1.7〜2.6 ms) に負ける: int8 に 2 つ詰めて `floor_div` で取り出す 8.7〜11 ms (値も誤り)、Core AI の int4 配列 (`NDArray.ScalarType.int4`、1 バイトに 2 つ、下位の 4 ビットが先) を `blockwise_shift_scale` で戻す形は正しいが GPU に載り 6.4〜9.8 ms、int4 配列を cast する形は Neural Engine で正しいが 85 ms (`aicheck moe4`)。int4 の入力 (`types.I4`、ailower の `sint4`、shim) と `floor_div`、`mod`、`round` の lowering は残した。
 
-### 次の段
-
-- 実装の形: ルーターまでを 1 プログラム (層の注意・conv と同じ呼び出し)、ホストで top-k、専門家を 1 プログラム (層の形ごとに 1 つ、全層で共有)。専門家は「小さい MoE はコピー方式、大きい専門家は 2 配列 + 拡大の gather」。拡大の表は層ごとの入力配列 (または層ごとのプログラムの定数)
-- lfm3 (LFM2 の密な形) に MoE の層を足して、hwnpu-dev convert と実行時 (層ごとにルーターのロジットをホストへ戻し、専門家の配列を結び付ける) に組み込む
-- 結び付けの費用が層の数で増える理由 (Core AI の覚えている配列の上限か、16 GB の機械のメモリ圧か)。M3 の 24 GB 以上で比べたい
-
 ### gpt-oss-20b の見込み (M3、2026-11-19)
 
 専門家は 24 層 × 32 × (2880 × 5760 + 2880 × 2880) = 19.1 B。int8 で 19.1 GB (16 GB に載らない)、4 ビットで 9.6 GB (注意 0.64 B と出力層 0.58 B を lut8 で足して約 11.5 GB)。
@@ -240,7 +236,27 @@ gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2
 
 `matmul` で書くと lut4 の定数でも GPU に回る。`linear` なら Neural Engine。どの 4 ビットの形も CPU の 1 層 1.0 ms (B の道、improvements.md 7.5) に届かないので A はここで止めた。M3 の Neural Engine の検証の返事は `<private>` で読めていない (3.3 のプロファイルが要る)。
 
-## 2. コード (このブランチ)
+## 1c. M2 で分かったこと (2026-11-19〜20)
+
+M2 でも LFM2-8B-A1B (専門家を Neural Engine、拡大は gather_nd) が動いた。
+
+| LFM2-8B-A1B (hwnpu-chat) | M2 | M3 |
+| --- | --- | --- |
+| 配置 | 全部 NPU | 全部 NPU |
+| 生成 | 12.0〜13.1 tok/s | 14.1 tok/s |
+| 専門家 (1 層 1 行) | 3.83 ms | 2.7〜3.0 ms |
+| プロンプト (M2 約 1620、M3 1503 トークン) | 14.4〜43.3 s (37〜112 tok/s、回ごとに違う) | 10.9 s (138 tok/s) |
+| 初回 (取得・変換・コンパイル) | 17.5 分、最大 12.9 GB | — |
+| 2 回目以降の読み込み | 3.1〜3.2 s、8.0 GB | — |
+
+M2 のプロンプトの時間のばらつきは**メモリ不足**による (M2 での `HWNPU_MOE_DEBUG=1` と `vm_stat`)。呼び出しの数は同じ (36,410 層行) で、遅い回ほど専門家の 1 層行が長く (0.42 → 0.54 → 1.21 ms)、ページの展開が多い (0.5 M → 1.53 M)。同じ配列のまま 2 度目を呼ぶと 1.26〜1.32 ms で変わらず、延びるのは結び付けた最初の呼び出しだけ (2.32 → 3.97 ms)。スワップ 5.5〜7.75 GB 使用、圧縮に約 6.6 GB。熱 (`pmset -g therm` に記録なし) とほかの Neural Engine の利用 (2 度目も遅くなるはず) ではない。`memory_pressure` は空き 68〜75% と出て判断に使えない。
+
+- `HWNPU_MOE_WIRE=1`: 専門家の配列を mlock で固定する (既定は off。16 GB で 7.2 GB 固定すると他のアプリが押し出される。メモリが足りない 16 GB の機械で勧める)。M2 (1,624 トークン、スワップ 7.9 GB 使用) で 3 回ずつ交互に: WIRE 13.2 / 13.1 / 12.7 s (展開 0.07〜0.31 M)、なし 14.4 / 13.9 / 13.6 s (0.42〜0.65 M)。以前の mlock の試しも 13.4〜14.8 s と遅い回が出なかった。M3 では 9.2〜9.6 → 8.7 s、生成 15.3 → 16.1 tok/s
+- 結び付けは費用ではない: 層と専門家ごとに request を持って配列を一度だけ結び付けても (試して外した)、メモリに余裕があれば M2 も M3 も同じ (M2 14.5 s、0.38〜0.39 ms の層行。M3 9.2〜9.3 s)。「最初の呼び出し 2.32 ms、2 度目 1.26 ms」は遅い回でだけ開く差で、圧縮されたページの展開だった。M2 の最良 14.5 s と M3 の 8.7〜9.2 s の差はチップの差 (生成と同じ割合)
+- やらないこと: プロンプトを層ごとに全部の塊を回す順に変え、専門家を層ごとに 1 度だけ結び付ける。結び付けがほぼ無料なので速い回は速くならない
+- MoE の 1 層 (`aicheck moe`、design.md 16.274): M1 の「1 プログラムに専門家 5 個まで」の段は M2 にない (M3 と同じ)。実行時の重みは定数の重みの半分の速さ (gpt-oss の専門家で 26 GB/s と 50〜52 GB/s)
+
+## 2. コード
 
 | ファイル | 変更 |
 |---|---|
@@ -264,33 +280,17 @@ gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2
 
 probe (int16 の索引は fp16 の入力をプログラムの中で int16 に変換する `idx16`。Core ML のモデルの記述に int16 の入力がないため): `gnd16_const`、`gnd16_mm`、`gnd16_pts`、`gnd16_pts_in`、`gnd16_pts_w1`、`gnd16_pts_4d`、`gnd16_pts_hw`、`gaa16_const`、`gaa16_input`、`dslice16_const`、`dslice16_mm` (この 2 つは Core AI の段でプロセスが落ちる)、`gnd_const`、`gnd_input`、`gnd_mm`、`gaa_input`、`gaa_const`、`dslice_const`、`dslice_input`、`dslice_mm`、`mm_dyn`、`mm_dyn_big`、`mm_dyn_i8`、`mm_dyn_i8_big`、`lin_const_big`、`lin_i8_big`、`argmax`。
 
-実験用の変更で、main に入れる形にはしていない (`plan_darwin.go` の文言、`run` の int8 の入力の値はでたらめ)。
+`plan_darwin.go` の文言は実験用。`aicheck run` の int8 の入力の値はでたらめ。
 
 ## 3. 確かめること
 
-測る前に、ほかの hwnpu のプロセスが Neural Engine を使っていないことを確かめる (`ps -ax | grep -E "hwnpu|aicheck"`)。aicheck は NPU のロックを取るので順番待ちになるが、時間はずれる。
+M2 と M3 は済んだ。残りは M4 と、ANE のコンパイラの返事を読むこと。測る前に、ほかの hwnpu のプロセスが Neural Engine を使っていないことを確かめる (`ps -ax | grep -E "hwnpu|aicheck"`)。aicheck は NPU のロックを取るので順番待ちになるが、時間はずれる。
 
-### 3.1 ほかのチップでの配置 (M2、M3、M4)
+### 3.1 M4 での配置
 
-2026-11-19: M2 でも LFM2-8B-A1B (専門家を Neural Engine、拡大は gather_nd) が動いた。
-
-| LFM2-8B-A1B (hwnpu-chat) | M2 | M3 |
-| --- | --- | --- |
-| 配置 | 全部 NPU | 全部 NPU |
-| 生成 | 12.0〜13.1 tok/s | 14.1 tok/s |
-| 専門家 (1 層 1 行) | 3.83 ms | 2.7〜3.0 ms |
-| プロンプト (M2 約 1620、M3 1503 トークン) | 14.4〜43.3 s (37〜112 tok/s、回ごとに違う) | 10.9 s (138 tok/s) |
-| 初回 (取得・変換・コンパイル) | 17.5 分、最大 12.9 GB | — |
-| 2 回目以降の読み込み | 3.1〜3.2 s、8.0 GB | — |
-
-M2 のプロンプトの時間のばらつきは**メモリ不足**による (M2 での `HWNPU_MOE_DEBUG=1` と `vm_stat`)。呼び出しの数は同じ (36,410 層行) で、遅い回ほど専門家の 1 層行が長く (0.42 → 0.54 → 1.21 ms)、ページの展開が多い (0.5 M → 1.53 M)。同じ配列のまま 2 度目を呼ぶと 1.26〜1.32 ms で変わらず、延びるのは結び付けた最初の呼び出しだけ (2.32 → 3.97 ms)。スワップ 5.5〜7.75 GB 使用、圧縮に約 6.6 GB。熱 (`pmset -g therm` に記録なし) とほかの Neural Engine の利用 (2 度目も遅くなるはず) ではない。`memory_pressure` は空き 68〜75% と出て判断に使えない。
-
-- `HWNPU_MOE_WIRE=1`: 専門家の配列を mlock で固定する (既定は off。16 GB で 7.2 GB 固定すると他のアプリが押し出される。メモリが足りない 16 GB の機械で勧める)。M2 (1,624 トークン、スワップ 7.9 GB 使用) で 3 回ずつ交互に: WIRE 13.2 / 13.1 / 12.7 s (展開 0.07〜0.31 M)、なし 14.4 / 13.9 / 13.6 s (0.42〜0.65 M)。以前の mlock の試しも 13.4〜14.8 s と遅い回が出なかった。M3 では 9.2〜9.6 → 8.7 s、生成 15.3 → 16.1 tok/s
-- 結び付けは費用ではない: 層と専門家ごとに request を持って配列を一度だけ結び付けても (試して外した)、メモリに余裕があれば M2 も M3 も同じ (M2 14.5 s、0.38〜0.39 ms の層行。M3 9.2〜9.3 s)。「最初の呼び出し 2.32 ms、2 度目 1.26 ms」は遅い回でだけ開く差で、圧縮されたページの展開だった。M2 の最良 14.5 s と M3 の 8.7〜9.2 s の差はチップの差 (生成と同じ割合)
-- やらないこと: プロンプトを層ごとに全部の塊を回す順に変え、専門家を層ごとに 1 度だけ結び付ける。結び付けがほぼ無料なので速い回は速くならない
+M1 は gather が載らず、M2 と M3 は int16 の索引で載る。M4 (手元にあれば) で同じ probe を回す。
 
 ```sh
-git fetch origin && git switch t3/ane-gather-probe
 go build -o /tmp/aicheck ./tools/coreai/aicheck
 sysctl -n machdep.cpu.brand_string
 rm -rf ~/Library/Caches/coreai-cache/*/aicheck     # aicheck の probe のキャッシュだけ
@@ -301,34 +301,9 @@ COREML=1 /tmp/aicheck probe linear gnd_const gnd_input gnd_mm gaa_input gaa_cons
 
 `ane=true` なら全部 Neural Engine。**とくに見たいのは `gnd16_pts_w1` と `gnd16_pts_4d`** (M1 では「Cannot decompose layer on this architecture」)。新しい世代でここが通るかと、通ったときの次の返事 (3.3 の `log stream` で)。Core ML の行は、演算ごとに優先される装置と、ANE が対応するか (「(the Neural Engine supports it)」) を出す。**新しい世代で gather_nd か dslice が ANE に載れば、MoE の形はずっと簡単になる** (表は定数のまま、専門家の番号だけ入力)。
 
-### 3.2 MoE の 1 層 (M2 以降で見たい)
+### 3.2 M4 での MoE の 1 層 (あれば)
 
-```sh
-/tmp/aicheck moe -model gptoss -layers 4 -calls 200 -copy
-/tmp/aicheck moe -model qwen3moe -layers 4 -calls 200 -split 4 -copy
-/tmp/aicheck moe -model qwen3moe -layers 1 -calls 100 -topk 6     # 5 個までの段差が残るか
-```
-
-見たいもの: 1 プログラム 5 個までの段差、結び付け直しの費用 (覚えておける量が増えていれば「選んだ配列を結び付ける」がコピー方式より速くなる)、コピー方式の 1 層。gpt-oss の `-layers 4` は 3.2 GB 使う。
-
-Swift の比較 (Neural Engine を優先して読み込む):
-
-```sh
-KEEP=1 /tmp/aicheck moe -model gptoss -calls 5 | grep "packages in"     # DIR
-mkdir -p /tmp/moe && /tmp/aicheck lower /tmp/moe DIR/experts_i8.mlpackage
-swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" -target arm64-apple-macos27.0 -O -parse-as-library tools/coreai/moebind/main.swift -o /tmp/moebind
-/tmp/aicheck locked /tmp/moebind /tmp/moe/experts_i8.aimodel 2880 2880 4 32 100
-```
-
-### 3.2b 実行時の重みの速さ (1 枚)
-
-```sh
-KEEP=1 /tmp/aicheck probe mm_dyn_big mm_dyn_i8_big lin_const_big lin_i8_big   # 最後の行に packages in DIR
-INPLACE=1 /tmp/aicheck run -calls 200 DIR/lin_const_big.mlpackage DIR/lin_i8_big.mlpackage DIR/mm_dyn_big.mlpackage DIR/mm_dyn_i8_big.mlpackage
-INPLACE=1 /tmp/aicheck run -calls 50 -cpu DIR/mm_dyn_big.mlpackage
-```
-
-`call A/B` の B が 1 回の平均。
+M2 と M3 は済み (1b、1c)。M4 では `aicheck moe -model gptoss -layers 4 -calls 200 -copy`、`aicheck moe -model qwen3moe -layers 1 -calls 100 -topk 6` (段差が無いか) と、LFM2-8B-A1B の hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B`) の生成とプロンプトの速さ。
 
 ### 3.3 ANE のコンパイラが gather を外す理由 (sudo)
 
@@ -357,12 +332,11 @@ grep errorMsg /tmp/anec_stream.log | grep -v '""' | sort | uniq -c
 
 システム設定の同じ画面でプロファイルを削除する。
 
-### 3.4 次の段 (実装)
+### 3.4 残っている小さなこと
 
-- int8 の入力の正しさ: milcpu に int8 の入力を足すか、`run` で int8 の値を作って比べる
-- 小さい MoE の 1 層 (ルーター、ホストの top-k、選んだ専門家の配列の結び付け) を組んで、1 トークンの時間を測る
-- 配列を数百個持ったときの挙動 (IOSurface の数、常駐するメモリ)
-- `anec.mx_dequant` (MXFP4) が新しい世代で使えれば、gpt-oss の専門家を 4 bit のまま入力にできるかもしれない
+- `anec.mx_dequant` (MXFP4) が新しい世代で使えれば、gpt-oss の専門家を 4 bit のまま入力にできるかもしれない (M3 は MX の定数も入力も Neural Engine に載らなかった。1b の最後)
+- 4 ビットを int8 に 2 つ詰めて `floor_div` で取り出す形が Neural Engine で NaN になる所 (`HWNPU_AILOWER_CUT` で切り分ける。速さで負けるので急がない)
+- 結び付けの費用が層の数で増える理由 (Core AI の覚えている配列の上限か、16 GB の機械のメモリ圧か)。24 GB 以上の機械で比べたい
 
 ## 4. 注意
 

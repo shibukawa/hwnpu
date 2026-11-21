@@ -293,7 +293,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | 1 | 丸め (RTN)。q4nx は 9 つの候補から最小の誤差を選ぶ | `iron_q4.quantize_fmt`、`palette.QuantizeBits` | 重みの誤差 8.2 → 7.3 % | 基準。重みの誤差が最小でも出力の誤差が最小とは限らない |
 | 1b | **各ブロックの最小と最大の重みを残す k-means の表** (lut4、校正のデータなし) | `-quant kmeans-minmax` (`palette.KMeansMinMax`、`llm.Options.Quant`) | Qwen-Image-2.1 の DiT、4 ブロックの組の fp16 に対する誤差: 4.9 % (一様) → 3.2 %。ただの k-means は 12.6 % (外れ値を切る) | 校正の文のない lut4 の部分 (DiT) では GPTQ の前に試す。hwnpu-chat と音楽のモデルの lut4 ではすでに既定 (16.165) |
 | 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-dev convert -codes`、`hwnpu-chat --codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
-| 3 | **表の当てはめ** (Apple の lutN): E[x²] で重み付けした k-means | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038、lut4 0.66 → 0.33 (Go の変換) | 一様な表から始める (重みの誤差が最小の k-means から始めると KL は最悪)。ANE での確認は handoff-m3-gptq.md |
+| 3 | **表の当てはめ** (Apple の lutN): E[x²] で重み付けした k-means | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038、lut4 0.66 → 0.33 (Go の変換) | 一様な表から始める (重みの誤差が最小の k-means から始めると KL は最悪)。ANE での確認は design.md 16.95 |
 | 4 | AWQ 式のスケールの折り込み | 未実装 | | model-fit.md T8 の 2。lut4 をさらに下げたいとき |
 | — | 形式を 1 段上げる (AMD の q6) | `iron_export_lm.py --mlp q6`、`q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B の GPL 0.34 → 0.044 | 校正で直らないとき。GEMV は q8 とほぼ同じ時間で、得るのはメモリ (q8 の 76 %) |
 

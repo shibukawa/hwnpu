@@ -36,7 +36,7 @@
 | ENEC 2604.03298 (a, Ascend) | 重みの可逆圧縮で転送の律速を外す | **未着手**。今のデコードは帯域より設定のし直しで決まるので、後回し | |
 | 2505.16056 (Not All Models Suit Expert Offloading) | 活性の専門家の約 2 倍のキャッシュで足りる。LFU が LRU より良い | **一部**。AMD の置き場 (`--expert-places`) を使用回数で選ぶ形に入った | 16.263、16.276 |
 | EStream 2609.06551 (Hexagon) | 専門家を銀行 × 枠の置き場に。番地は 先頭 + 枠 × 大きさ。O_DIRECT で読む | **当てはまった**。AMD の置き場の設計の下敷き。gpt-oss-120b は O_DIRECT で読む | 16.89、16.263、handoff-amd-moe.md |
-| Fate 2502.12224 | 次の層のゲートを今の層の入力で予測して先読み | **当てはまった**。Apple の gpt-oss-20b で上位 4 個に 86〜87 %、AMD の gpt-oss-120b で外れ 9.8 → 3.1 % | improvements.ja.md、handoff-amd-moe.md 3.3 |
+| Fate 2502.12224 | 次の層のゲートを今の層の入力で予測して先読み | **当てはまった**。Apple の gpt-oss-20b で上位 4 個に 86〜87 %、AMD の gpt-oss-120b で外れ 9.8 → 3.1 % | improvements.ja.md、handoff-amd-moe.md 4 |
 | NPUMoE 2604.18788 | プロンプトだけ Neural Engine に。経路と集めは CPU | **すでに同じ**。Neural Engine に gather を載せない判断 (16.179) と合う | 16.179 |
 | Pre-gated MoE 2308.12066 ほか | 次のゲートを 1 層前に | 背景として読んだだけ | improvements.ja.md 13 章 |
 | 2606.22283 (Neural Engine のリバースエンジニアリング) | 出力の 2^15、幅の slice、softplus などの数値の規則 | **一部**。規則はおおむね M2 でも成り立つ。幅の slice は条件が論文より狭い | 16.274 |
@@ -160,7 +160,7 @@ AMD の q4 (Qwen3.6 の HF とのコサイン 0.986〜0.996 の差の大半が q
 
 **hwnpu との関係**
 - `MoERoute` がスクラッチパッドに書く位置 (16.89) は、この論文の「専門家の仮想化」と同じ考え方。一部の専門家だけを持つ AMD の置き場 (16.263) の下敷きになった
-- gpt-oss-120b は、専門家のファイルを O_DIRECT で読む (handoff-amd-moe.md 3.3)
+- gpt-oss-120b は、専門家のファイルを O_DIRECT で読む (handoff-amd-moe.md 4)
 
 ### Fate 2502.12224 — 当てはまった
 
@@ -168,7 +168,7 @@ AMD の q4 (Qwen3.6 の HF とのコサイン 0.986〜0.996 の差の大半が q
 
 **hwnpu との関係**
 - Apple の gpt-oss-20b: 次の層の専門家の予測が上位 4 個に 86〜87 %。先読みで、どの予算でも 3〜6 % 速くなった
-- AMD の gpt-oss-120b: 次の層の先読み (上位 4 個) で外れが 9.8 → 3.1 %、9.2 → 9.7〜9.9 tok/s (handoff-amd-moe.md 3.3)
+- AMD の gpt-oss-120b: 次の層の先読み (上位 4 個) で外れが 9.8 → 3.1 %、9.2 → 9.7〜9.9 tok/s (handoff-amd-moe.md 4)
 
 ### NPUMoE 2604.18788 — すでに同じ
 

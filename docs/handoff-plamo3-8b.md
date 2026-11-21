@@ -1,33 +1,33 @@
-# 引き継ぎ: PLaMo 3 Translate 8B を M2〜M4、AMD、Intel の NPU で確かめる
+# 引き継ぎ: PLaMo 3 Translate 8B を M4、AMD、Intel の NPU で確かめる
 
-作成: 2026-11-11。M1 (16 GB) で入れた PLaMo 3 Translate 8B (`plamo-3-translate-8b`、[design.md](design.md) の 16.164) の、M1 では測れなかったことの確認。
+作成: 2026-11-11、整理: 2026-11-21。M1 (16 GB) で入れた PLaMo 3 Translate 8B (`plamo-3-translate-8b`、[design.md](design.md) の 16.164) の、M1 では測れなかったことの確認。
 
 ## 1. ここまでの状態
 
 - 構造は 2B と同じ `plamo3` で、コードの変更は既定の形式だけ (8B は lut4、`plamo3.Config.Format`)。Intel は 8B が行ごとの int4 (`plamo3.Config.IntelFormat`、models.yaml の `prefill: off` で 1 本)、2B 以下は int8 (`plamo3.Arch.IntelFormat`)
 - M1 で確かめたこと: 変換 (5 部分、約 1 分)、全部 `all on the NPU`、初回のコンパイル 1 分 16 秒、2 回目以降 3〜5 秒、Neural Engine 3.81 GiB とプロセスの最大 4.1 GB、20 文と段落 4 つの訳 (lut8 と比べて崩れない)
 - M1 では 2.8 GiB を超えるので 0.8 トークン/秒。速さは測れていない
-- M2 (16 GB) で確かめたこと (16.164): 生成 9.4〜10.1 トークン/秒、2 回目以降の読み込み 35〜41 秒 (キャッシュに残るのは 1.2〜2.1 GiB だけ)、20 文は lut8 と 13/20 が同じで残りは言い換え。全部載った後も 1 回 106 ms (38 GiB/s 前後) で、生成の速さは 9〜10 トークン/秒のまま。lut8 は 6 トークン/秒前後 (lut4 の 1.55 倍遅い)。残り: lut8 の 2 回目以降の読み込み (急がない)
+- M2 (16 GB) で確かめたこと (16.164): 生成 9.4〜10.1 トークン/秒、2 回目以降の読み込み 35〜41 秒 (キャッシュに残るのは 1.2〜2.1 GiB だけ)、20 文は lut8 と 13/20 が同じで残りは言い換え。全部載った後も 1 回 106 ms (38 GiB/s 前後) で、生成の速さは 9〜10 トークン/秒のまま。lut8 は 6 トークン/秒前後 (lut4 の 1.55 倍遅い)。lut8 の 2 回目以降の読み込みは測っていない (急がない)
 - M3 (16 GB) で確かめたこと (16.164): 2 回目以降の読み込み 3.6〜4.6 秒 (キャッシュに全部残る)、生成 10.4〜10.9 トークン/秒
 - 比べた文: 16.164 の 20 文 (英 → 日 10、日 → 英 10) と段落 4 つ。下の 2.2 にそのまま置いた
 
-## 2. Mac (M2、M3、M4) — 30 分ほど
+## 2. Mac (M4、と M3 の lut8) — 30 分ほど
 
-### 2.1 速さと読み込み
+M2 と M3 の速さと読み込みは済んだ (1 節)。16 GB の M2 以降で勧めるかも決めた (`machine: 16`、M1 は models.yaml の `not_on: [M1]` で外して 2B)。
+
+### 2.1 M4 の速さと読み込み
 
 ```sh
-go run ./cmd/hwnpu-chat -m plamo3translate:8b --temp 0 "The meeting has been rescheduled to next Monday."   # 初回: 17.1 GB の取得と変換、コンパイル
-go run ./cmd/hwnpu-chat -m plamo3translate:8b --temp 0 "The meeting has been rescheduled to next Monday."   # 2 回目
-go run ./cmd/hwnpu-chat -m plamo3translate:8b --temp 0 "The meeting has been rescheduled to next Monday."   # 3 回目
+for i in 1 2 3; do go run ./cmd/hwnpu-chat -m plamo3translate:8b --temp 0 "The meeting has been rescheduled to next Monday."; done   # 1 回目は 17.1 GB の取得と変換、コンパイル
 ```
 
-- 期待: 2 回目と 3 回目の読み込み (`[1/1] ... parts.json Ns`) が数秒 (M1 は 3〜5 秒)。毎回 1 分以上ならコンパイルのキャッシュから外れている。その時間と `the Neural Engine holds` の値を記録
-- 期待: 生成 15 トークン/秒前後 (3.77 GiB を 63 GB/s、1 トークン約 65 ms)。統計行の `tokens at N tokens/s` を記録。`HWNPU_PROFILE=1` で部分ごとの ms
+- 期待: 2 回目と 3 回目の読み込み (`ready:` の行までの時間) が数秒 (M3 3.6〜4.6 秒)。毎回 1 分以上ならコンパイルのキャッシュから外れている。その時間と `the Neural Engine holds` の値を記録
+- 生成の速さ (統計行の `tokens at N tokens/s`。M3 10.4〜10.9)。`HWNPU_PROFILE=1` で部分ごとの ms
 - 測る前に `top` で `mediaanalysisd` などが Neural Engine を使っていないことを確かめる (new-model-checklist 7 節)
 
 ### 2.2 訳 (lut4 と lut8)
 
-M1 では lut8 を基準にした。fp16 は 15 GiB で載らない。lut8 (7.58 GiB) が M2 以降で全速なら、lut4 と lut8 の速さと訳を比べ直す:
+M1 では lut8 を基準にした (fp16 は 15 GiB で載らない)。M2 の lut8 は 6 トークン/秒前後 (lut4 の 1.55 倍遅い)。M3 と M4 で lut4 と lut8 の速さと訳を比べる。この 20 文は 3 節と 4 節の比較にも使う:
 
 ```sh
 cat > /tmp/s.txt <<'X'
@@ -59,10 +59,6 @@ diff <(grep '^> .' /tmp/out-lut4.txt) <(grep '^> .' /tmp/out-lut8.txt)
 
 - M1 の結果: 13/20 が同じ、違う 7 文は言い換え。違う文の数が大きく増えたり、誤訳 (数字、否定、固有名詞の取り違え) が出たら、design.md に書いて lut6 を試す
 - lut8 の変換は 7.6 GB 増える。比べたら `~/Library/Caches/hwnpu/models/plamo-3-translate-8b/plamo3-r1-lut8-*` を消す
-
-### 2.3 16 GB の M2 以降で 8B を勧めるか — 済み
-
-M2 (9〜10 トークン/秒) と M3 (10〜11、読み込み 4 秒) の結果で、`machine: 16` にした。M1 は models.yaml の `not_on: [M1]` で外し、2B を選ぶ (16.164 の「チップ」)。M4 で測ったら 16.164 に足す。
 
 ## 3. AMD (Ryzen AI、IRON の環境) — 1〜2 時間
 

@@ -1,6 +1,6 @@
 # 引き継ぎ: M2 (16 GB) での gpt-oss-20b の専門家を速く
 
-作成: 2026-11-20。M3 (16 GB) で作った gpt-oss-20b の Core AI の経路 (注意と出力層は Neural Engine、専門家は CPU で MXFP4 のまま) と、専門家ごとの固定 (`experts.Placement`) を、M2 の MacBook Air (16 GB、macOS 27.2.1) で速くするためのメモ。設計と M3 での記録は [docs/improvements.md](improvements.md) の 7.5 節の gpt-oss の行、[docs/design.md](design.md) の 16.260 (`hwnpu status`)。
+作成: 2026-11-20、整理: 2026-11-21。前の版の「やること」と「M2 で最初に測ること」は 4 節で済んだので外した。残りは 4.10。M3 (16 GB) で作った gpt-oss-20b の Core AI の経路 (注意と出力層は Neural Engine、専門家は CPU で MXFP4 のまま) と、専門家ごとの固定 (`experts.Placement`) を、M2 の MacBook Air (16 GB、macOS 27.2.1) で速くするためのメモ。設計と M3 での記録は [docs/improvements.md](improvements.md) の 7.5 節の gpt-oss の行、[docs/design.md](design.md) の 16.260 (`hwnpu status`)。
 
 ## 1. ここまでの状態
 
@@ -18,7 +18,7 @@
 | | M2 (MacBook Air 16 GB) | M3 (16 GB) |
 |---|---|---|
 | 全部固定 (9.4〜9.6 GB) | **13.2 tok/s** (1 ステップ 75 ms、専門家 1 層 1.85 ms) | 18.8〜19.1 tok/s (専門家 約 0.9 ms) |
-| 6.4 GB (今の既定)、統計あり | 10.1 tok/s (専門家 2.38 ms) ※ENOMEM の直し (237e28c) の前 | 17.4〜18.3 tok/s (0.86〜1.21 ms、当たり 76〜83 %) |
+| 6.4 GB (当時の既定、今は 1/4)、統計あり | 10.1 tok/s (専門家 2.38 ms) ※ENOMEM の直し (237e28c) の前 | 17.4〜18.3 tok/s (0.86〜1.21 ms、当たり 76〜83 %) |
 | 6.4 GB、初回 (統計なし) | 6.5 tok/s (4.72 ms) ※同上: 芯が 0.4 GB しか固定できず次の入れ替えまで待った | 17.7〜18.1 |
 | 固定なし | 7.9 tok/s (126 ms/ステップ、部品 1 つ 9〜11 ms、128 の塊 7.5 s) / 電力を測った回は約 13 tok/s (ページキャッシュに残っていた) | 17.2〜17.9 (メモリに余裕) |
 | Neural Engine の部品 (1 つ) | 約 4.8 ms (固定あり) | 約 3.5 ms |
@@ -27,71 +27,23 @@
 - 1 トークンの内訳 (M2、全部固定): 専門家 24 層 × 1.85 ≈ 44 ms、Neural Engine の部品 約 31 ms。M3 は 21 ms と 36 ms
 - M2 の専門家は M3 の 1.85 倍。クロック (P コア 3.5 対 4.05 GHz) の差 1.16 倍より大きい。帯域でも説明できない: 1 層 1 トークンは 4 専門家 × 13.3 MB = 53 MB で、M2 の 1.85 ms は 29 GB/s、M3 の 0.9 ms は 59 GB/s (どちらもメモリは約 100 GB/s)
 
-## 3. やること (効く順の見込み)
+## 3. 気をつけること
 
-### 3.1 専門家のカーネル (余地がいちばん大きい: 1.85 → 1.0 ms なら全部固定で約 17 tok/s)
-
-カーネルは M3 で合わせた。M2 で同じとは限らない。
-
-- まず CPU だけで測る (Neural Engine もロックも要らない):
-
-  ```sh
-  HWNPU_GPTOSS_CKPT=~/Library/Caches/hwnpu/original/openai/gpt-oss-20b \
-    go test ./internal/llm/experts -run 'TestHostTokenTime|TestHostRowsTime' -v -count=1
-  ```
-
-  `TestHostTokenTime` は 1 行 (生成) の 24 層、`HWNPU_GPTOSS_GAP=1ms` で層の間に間を入れる (hwnpu-chat では Neural Engine の部品が間に入り、眠ったワーカーの起き上がりが遅い)。`TestHostRowsTime` は 128 行 (プロンプト)。M3 の値: 1 行 0.83〜0.93 ms、間 1 ms で 1.07〜1.25、128 行 32 ms/層 (`internal/mxfp4` の MOVI の直しの後)
-- 疑うところ:
-  - **累積の形**: 11c6385 で M3 に合わせて `mm28NEON` の累積を 1 つに (2 つ目の累積と ADD4S を外した) した。M3 では `VEOR v,v,v` が 0 にする慣用句として扱われず、累積を使い回すと鎖が直列になっていたのが本当の原因で、`VMOVI $0` に替えて 2 倍になった (記憶メモ「NEON: zero with MOVI」)。M2 (Avalanche/Blizzard) の SMMLA の待ち時間と並びの数は測っていない。2 つの累積、ループの展開、命令の並べ方を M2 で比べる
-  - **命令ごとの速さ**: M3 は SMMLA が約 6 サイクル待ち、1 サイクル 1.5 個 (1 コア 約 190 GMAC/s)、SDOT が約 3 サイクル、3.5 個。命令の種類を 1 つずつ抜いて時間を比べると、どこが詰まっているか分かる (M3 ではこれで EOR を見つけた)。`internal/mxfp4/mxfp4_test.go` の `BenchmarkDot`、`BenchmarkRunVectors`
-  - **SDOT の道との比較**: `HWNPU_MXFP4=i8mm=0` で SMMLA を使わない (`pad=N` で 8 の倍数を超えたベクトルの扱い)。M2 で SDOT の方が速ければ、M2 だけ切り替える
-  - **ワーカーの数と塊**: `internal/mxfp4/matvec.go` の `Run` は `GOMAXPROCS` (M2 も 8 = P 4 + E 4) のワーカーが 1 つのカウンタから塊 (`chunk` 行) を取り合う。E コアは遅いが取り合いなので最後の塊のぶんしか待たない。それでも `GOMAXPROCS=4`、`6` と塊の大きさを比べる。眠りと起き上がり: ワーカーを回して待たせる形は M3 で hwnpu-chat の中で差がなく、コードごと外した (improvements.md 8 節)。M2 で試すなら `internal/mxfp4/matvec.go` の `workers.loop` に戻す
-- 変えたら: `go test ./internal/mxfp4 ./internal/llm/experts` (値は `TestDot`、`TestRunVectors` が見る)、hwnpu-chat で同じ文になること、`hwnpu-dev generate -score` の KL が変わらないこと。M3 でも遅くならないこと (M3 で測れないなら、CPU の種類で切り替える)
-
-### 3.2 固定していない専門家の外れ (6.4 GB の 10.1 tok/s と全部固定の 13.2 の差)
-
-- まず ENOMEM の直し (237e28c) の後で測り直す (下の 4 節)。初回から 6.4 GB 固定できているか (`experts: wired 6.4 GB … (budget 6.4 …)` が最初の行に出る)、当たりの割合 (`experts: NN% of … runs on wired experts`)
-- 外れは 1 層あたり 0.5 ms ほど (M2: 2.38 − 1.85)
-- **次の層の専門家の先読みは M3 で入れた** (`internal/llm/experts/prefetch.go`、既定で上位 4 個、`HWNPU_MOE_DEBUG=prefetch=N` で変える、0 で切る)。moe_x_l / w_l · w_{l+1} に層 l+1 のルーター (チェックポイントから読む) を掛けて予測し、固定していない専門家を Neural Engine の部品の間に `madvise(MADV_WILLNEED)` とページへの接触で読み込む。予測は上位 4 個に 86〜87 %、上位 8 個に 97〜98 %。M3 では、ほかのアプリが忙しいとき 6 GB で 14.1〜14.3 → 15.1〜15.2 tok/s、3 GB の先読みあり (14.7〜15.0) が 6 GB の先読みなしより速い。静かでページキャッシュに全部あるときは差なし。12 GB の真似 (乱数 4 GB) では SSD の帯域で決まり (3 GB で 4〜5 tok/s)、先読みは効かない (improvements.md 7.5)
-- M2 で確かめること: `HWNPU_MOE_DEBUG=1` の最後の行 (`the next layer's guess had …`、`… brought in before`) と、`prefetch=0` と既定の交互の比較 (4 節のスクリプトに `HWNPU_MOE_DEBUG=time,prefetch=0` を足す)
-- 予算の曲線: `HWNPU_MOE_WIRE=4GB`、`6GB`、`8GB`、`1` で速さとメモリ。メモリを減らすことにも価値があるので、曲線のまま記録する
-
-### 3.3 Neural Engine の部品 (M2 は 1 つ 約 4.8 ms、M3 は 3.5)
-
-- 余地は小さい。部品をまとめて呼び出しを減らす (1 トークン 25 回)、注意の重みを小さくする (lut6r は KL が悪くなる、improvements.md の lut8r の行)
-
-## 4. M2 で最初に測ること (同じ状態で交互に)
-
-固定なしの速さはページキャッシュの残り方で 7.9〜13 tok/s と揺れるので、3 つの固定を同じ状態で交互に回し、`memory_pressure` も残す。ほかのアプリはふだんどおり開けておく (それが 16 GB の機械の普通の状態)。
-
-```sh
-go build -o hwnpu-chat ./cmd/hwnpu-chat
-for r in 1 2; do for w in 0 6GB 1; do
-  echo "== $w, round $r"; memory_pressure | tail -1
-  HWNPU_MOE_WIRE=$w HWNPU_MOE_DEBUG=1 ./hwnpu-chat chat -m gpt-oss-20b -n 600 --seed 1 --prompt-cache off \
-    "Explain how a CPU cache works, with examples." 2>&1 >/dev/null | grep -oE "experts: .*|\[prompt.*"
-done; done
-```
-
-長いプロンプト (2662 トークン、M3 の固定ありで 21.1 s) も同じ 3 つで。`hwnpu status -w` を別の端末で開くと、hwnpu-chat のメモリ (footprint + wired)、NPU% (ANE が読んでいた時間の割合) が見える。電力は root が要る (`sudo powermetrics --samplers cpu_power,gpu_power,ane_power -i 1000`)。
-
-## 5. 気をつけること
-
-- Neural Engine のロックはほかのセッションが長く持つことがある。迂回しない (CPU だけの 3.1 はロックが要らない)
+- Neural Engine のロックはほかのセッションが長く持つことがある。迂回しない (CPU だけのカーネルの試験、`go test ./internal/mxfp4` はロックが要らない)
 - Core AI のコンパイル済みのキャッシュ (`~/Library/Caches/<プロセス>/com.apple.e5rt.e5bundlecache`) が消えると最初に 40 秒ほどコンパイルし直し、その回の速さは比べられない。速さは 2 回目から
 - ディスク: 最初の取得はチェックポイント 13 GB と変換、`HWNPU_CACHE_MIN_FREE` (10 GB) の空きも要る
 - `hwnpu status` の NPU% は推定 (PMP の ANE の読み出しの帯域の分布で、いちばん下の区分の外にいた時間)。M2 では確かめていない (チャンネルの名前が違うかもしれない)。電力は macOS 27 では root でないと 0 しか読めないので「読めない」と出す
 - 速くなったら: improvements.md (と .ja.md) の gpt-oss の行、MODEL.md、models.yaml の `memory`
 
-## 6. M2 で測った結果 (2026-11-20、MacBook Air M2 16 GB、0c459eb の先読み入り)
+## 4. M2 で測った結果 (2026-11-20、MacBook Air M2 16 GB、0c459eb の先読み入り)
 
 まとめ: **M2 のカーネルは遅くない。遅さは熱と、メモリの取り合いと、層の間で眠ったコア**。先読みがあれば予算 3〜6 GB はどれも 12.4〜12.6 tok/s。
 
-### 6.1 測り方 (これをしないと設定の差が揺れに埋もれる)
+### 4.1 測り方 (これをしないと設定の差が揺れに埋もれる)
 
 - ファンのない Air は 1〜2 回続けて回すと `hwnpu status` の `thermal pressure` が heavy になり (nominal に戻るまで約 60 s)、同じ設定が 12.8 → 8.7 tok/s と落ちる。毎回 nominal に戻ってから 45〜60 s 待つ
 - `vm_stat` の Pageins を前後で取る。Safari (WebKit 多数) を開いたままだと、生成中もシステム全体で 100〜450 MB/s 読み、1 回 7〜36 GB
-- 使ったスクリプト (4 節のものに冷ますのと page-ins を足した):
+- 使ったスクリプト (3 つの固定を同じ状態で交互に回し、冷ますのと page-ins を足した):
 
 ```sh
 therm(){ ./hwnpu status 2>&1 | grep -oE "thermal pressure [a-z]+"; }
@@ -102,7 +54,7 @@ run(){ cool; echo "== $*"; a=$(pi); env "$@" ./hwnpu-chat chat -m gpt-oss-20b -n
 for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w HWNPU_MOE_DEBUG=time,prefetch=$p; done; done; done
 ```
 
-### 6.2 カーネル (3.1): 詰める余地は小さい
+### 4.2 カーネル: 詰める余地は小さい
 
 - `internal/mxfp4` の `BenchmarkGenLayer` (1 層の生成: 4 専門家の gate_up と down、1 ベクトル、53 MB、318 MB を回してキャッシュの外): **1.05 ms (約 50 GB/s)**、M3 の 0.9 ms とほぼ同じ。`GOMAXPROCS` 8、6、4 で差なし (1.01〜1.10 ms)
 - 同じ機械で 8 スレッドの単純な読み出しは約 61 GB/s。カーネルはその 83 %: 命令を詰めても上がるのは最大 15 % ほど。生成は 1 行なので `dotNEON` (SDOT) で、SMMLA (`HWNPU_MXFP4_I8MM`) は関係しない
@@ -111,7 +63,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 - ところが hwnpu-chat の中では spinners は効かない: 4 GB・先読みありで spinners 0 は 12.5 / 12.4 / 12.4 tok/s、2 は 11.3 / 12.5 / 11.6。既定 (0) のまま
 - 「M2 の専門家は M3 の 1.85 倍」(2 節) は、カーネルではなく、ページの読み込みと眠ったコアと熱だった。chat の中の専門家は今も 1.64〜1.76 ms/層 (合成の 1.05 ms との差が残り)
 
-### 6.3 先読みと予算 (3.2、4 節)
+### 4.3 先読みと予算
 
 先読みが入る前 (d12b662、冷まして 2 回ずつ、ほかのアプリはふだんどおり):
 
@@ -139,7 +91,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 - 先読みで 6 GB +2 %、4 GB +4 %。**先読みがあれば 3 GB でも 6 GB と同じ速さ** (M3 でも 3 GB の先読みありが 6 GB の先読みなしより速かった)。先読みは外れの予測のぶん page-ins を 1 回 2〜3 GB 増やす
 - 提案 (まだ変えていない): M2 では既定の予算 (メモリの 3/8 = 6.4 GB) を下げても速さは落ちず、ほかのアプリに 3 GB ほど返せる。M3 の 3 GB (14.7〜15.0) と 6 GB (15.1〜15.2) の差は小さいので、既定を 4 GB 前後 (メモリの 1/4) にするか、両方の機械で決める → 2026-11-20 に 1/4 にした (M3 でも 3 GB と 6 GB の差は 2〜4 %)
 
-### 6.4 chat の中の 1.7 ms と合成の 1.05 ms の差の内訳
+### 4.4 chat の中の 1.7 ms と合成の 1.05 ms の差の内訳
 
 `HWNPU_MOE_DEBUG=time` に、生成の 1 層ごとの専門家の時間を、選んだ専門家が「全部固定」「固定していないものは先読み済み」「先読みしていないものがある」に分けた分布 (`experts: a row's layer, …`) と、次の層の予測の時間を足した。4 GB (メモリの状態が悪めの回、10.0〜10.7 tok/s、page-ins 12〜27 GB):
 
@@ -153,7 +105,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 - **次の層の予測 0.12〜0.13 ms/層**: 専門家の前に同期して回っていた (`prefetch=0` でも)。goroutine に移した (`prefetcher.guessLoop`。遅れた予測は数えて捨てる、`guesses too late`): 全部固定の層の中央値 1.35 → 1.23〜1.25 ms、4 GB で 10.6〜10.8 → 10.8〜11.6 tok/s (3 回ずつ交互)。遅れた予測は 0
 - **残り約 0.2 ms** (1.25 と 1.05): 全部固定でも残る。眠ったコアの起き上がりと活性化 (spinners では縮まなかった)
 
-### 6.5 先読みの読み方
+### 4.5 先読みの読み方
 
 メモリに無い専門家 1 つ (13.3 MB) を読む速さ (`TestColdRead`、`mincore` でメモリに無いものを選ぶ):
 
@@ -168,7 +120,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 それでも 1 専門家 4.8 ms は Neural Engine の部品の間 (約 1.5 ms) より長い。SSD から読むかぎり先読みで外れは隠しきれない
 
-### 6.6 使う直前にメモリに無い専門家を読む (main の a017fb2 の上、既定の予算 4.3 GB)
+### 4.6 使う直前にメモリに無い専門家を読む (main の a017fb2 の上、既定の予算 4.3 GB)
 
 `HWNPU_MOE_DEBUG=time` の分け方を「使う時点でメモリにあったか」(`Host.cold`: 範囲に散らした 8 ページの `mincore`、1 専門家 4 µs。全ページは 0.2 ms かかる) に替えると、遅さの正体が出た。メモリが苦しい状態 (空き 25 % 前後、page-ins 1 回 23〜58 GB) の 600 トークン:
 
@@ -178,9 +130,9 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 | 日本語 (江戸時代の経済) | 12.2 / 12.2 | 75 % | 1.4 % | 14 ms | 13 % |
 | コード (Go の LRU) | 8.4 / 7.7 | 61 % | 7.2〜7.8 % | 15〜17 ms | 40〜42 % |
 
-速さはほぼこの「メモリに無い専門家」の数で決まる。写像からそのまま計算すると、カーネルが触れるたびの割り込みで 16 KB ずつ読むので 0.6 GB/s しか出ない (6.5 節の表のいちばん上)。
+速さはほぼこの「メモリに無い専門家」の数で決まる。写像からそのまま計算すると、カーネルが触れるたびの割り込みで 16 KB ずつ読むので 0.6 GB/s しか出ない (4.5 節の表のいちばん上)。
 
-`reader.need`: 行 (プロンプトの塊も) の専門家を回す前に、固定していないものを 8 ページで確かめ、無いものを 1 MB ずつ 4 つの読み手と呼び出し側が `pread` して触れる。先読みの読み手 (6.5) と同じ goroutine で、行の要求を先に取る (`internal/llm/experts/fetch.go`)。`HWNPU_MOE_DEBUG=need=0` と交互:
+`reader.need`: 行 (プロンプトの塊も) の専門家を回す前に、固定していないものを 8 ページで確かめ、無いものを 1 MB ずつ 4 つの読み手と呼び出し側が `pread` して触れる。先読みの読み手 (4.5) と同じ goroutine で、行の要求を先に取る (`internal/llm/experts/fetch.go`)。`HWNPU_MOE_DEBUG=need=0` と交互:
 
 | | `need=0` | 既定 | メモリに無い専門家に当たった層 |
 |---|---|---|---|
@@ -191,15 +143,15 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 - 先読み 8 個 (`prefetch=8`) は 7.1〜7.2 tok/s (4 個は 9.7〜9.9)、page-ins 60〜65 GB (23〜24 GB): 間違った予測の読み込みが要るページを追い出す
 - 2 層前からの予測は上位 4 個に 80〜85 %、8 個に 94〜97 % (1 層前は 86〜90 %、97〜99 %)。早く読めるが、読む量を増やす害の方が大きいので使っていない
-- `need` が入ると、メモリが苦しい状態では先読みの差が見えなくなった (英語 あり 10.1 / なし 10.0、コード 8.4 / 8.9)。余裕がある状態 (6.3) の +2〜4 % は測り直していない。既定は変えていない
+- `need` が入ると、メモリが苦しい状態では先読みの差が見えなくなった (英語 あり 10.1 / なし 10.0、コード 8.4 / 8.9)。余裕がある状態 (4.3) の +2〜4 % は測り直していない。既定は変えていない
 
-### 6.7 予算の振動 (PR #246 の空きメモリへの追従)
+### 4.7 予算の振動 (PR #246 の空きメモリへの追従)
 
 空き 24〜26 % の M2 で、固定と警告が追いかけ合った: 4.3 GB 固定 → システムの警告 (逼迫度 2) → 芯の 1.9 GB (2.4 GB を外す) → 空き 40 % → 次の入れ替えで 4.3 GB、を 30 秒ごと。その回は 6.7〜7.8 tok/s。
 
 直し (`placer.warned`、`placer.rise`): 芯より多く固定しているときに警告が出たら、そのとき固定していた量より 1 段 (予算の芯より上の 1/4、16 GB で 0.6 GB) 下を上限にして 10 分保ち、その後 1 段ずつ戻す。直した後: 4.3 → 1.9 → 3.7 GB で止まる (ある回は 3.7 でもう 1 度警告が出て 3.1)。上限はプロセスの中だけなので、起動のたびに 1 度は予算いっぱいを固定する。
 
-### 6.8 固定の入れ替えの方式 (変えていない)
+### 4.8 固定の入れ替えの方式 (変えていない)
 
 `HWNPU_MOE_DEBUG=trace=FILE` で行ごとの専門家を記録し、`tools/moeusage/place.py` で方式を比べた (324 個固定、統計は英語の文の繰り返し)。生成の専門家が固定に当たった割合 (括弧は入れ替えで新しく固定した専門家の数):
 
@@ -214,7 +166,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 これまでの計測は `--experts-key off` を付けずに同じ文を繰り返したので、`experts-usage/chat.bin` がその文に偏っている (英語の文の当たりは実際より良く出ている)。測るときは `--experts-key off` か別のキーを使う。
 
-### 6.9 1 ステップの内訳と、残りの改善点を試した結果
+### 4.9 1 ステップの内訳と、残りの改善点を試した結果
 
 `HWNPU_PROFILE=1` (メモリが苦しい回、1 ステップ 96 ms): 専門家 24 × 2.39 = 57 ms、Neural Engine の呼び出し 37 回 約 32 ms (1 回 約 0.85 ms)、ホストの注意 12 × 0.53 = 6.4 ms。余裕がある回 (80 ms) は専門家が 41 ms。
 
@@ -231,7 +183,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 **Neural Engine の 37 回 (変更なし)**。37 個の部品が 1 トークンに読む重みは 1.09 GB (出力層 436 MB、注意 1 層 12〜27 MB)。32 ms は約 34 GB/s で、呼び出しの固定費 (M1 で空の呼び出し 0.21 ms、improvements.md 16.218 の行) より重みの読み出しが大半。切れ目は専門家 24 とホストの注意 12 で決まり、M3 と同じ形 (3.3)。
 
-**上限の持ち越し (入れた)**。6.7 の上限と、戻すまでの時間を `experts-usage/ceiling` (「バイト数 時刻 保つ秒数」) に残し、次の起動が引き継ぐ (`Placement.Ceiling`、`placer.keepCeiling`、`readCeiling`)。保つ時間ごとに 1 段戻り、戻りきるとファイルを消す。持ち越すと、10 分ごとに 4.3 GB に戻っては警告で 1.9 GB まで外す繰り返しが見えたので、戻した後その保つ時間のうちに警告が出たら保つ時間を倍にする (最長 80 分)。確認: 警告の後の起動は 3.7 GB (その後 3.1 GB) から始まり、戻した直後の警告で「for 20m0s」になった。
+**上限の持ち越し (入れた)**。4.7 の上限と、戻すまでの時間を `experts-usage/ceiling` (「バイト数 時刻 保つ秒数」) に残し、次の起動が引き継ぐ (`Placement.Ceiling`、`placer.keepCeiling`、`readCeiling`)。保つ時間ごとに 1 段戻り、戻りきるとファイルを消す。持ち越すと、10 分ごとに 4.3 GB に戻っては警告で 1.9 GB まで外す繰り返しが見えたので、戻した後その保つ時間のうちに警告が出たら保つ時間を倍にする (最長 80 分)。確認: 警告の後の起動は 3.7 GB (その後 3.1 GB) から始まり、戻した直後の警告で「for 20m0s」になった。
 
 **先読みの数をメモリの状態で (入れた)**。`--experts-key off`、既定の予算、メモリが苦しい状態で 2 回ずつ:
 
@@ -245,12 +197,12 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 
 警告のたびに芯 (1.9 GB) まで外して次の入れ替えで上限まで戻すので、警告が出た回は遅い (コード 7.6 tok/s、page-ins 54 GB。出なかった回 8.7、41 GB)。警告では上限まで 1 段ずつ下げる形 (芯までは逼迫度 4 か空き 10 % 以下だけ) にすれば読み直しは減るが、ほかのアプリにメモリを返すのが遅くなるので変えていない。
 
-### 6.10 残り
+### 4.10 残り
 
 - 層の間が空いた後の立ち上がり (1 層 0.15〜0.3 ms): 起こし方では縮まなかった
-- M3 の「ほかのアプリが忙しい状態」での先読み 2 個と 4 個 (6.9)
+- M3 の「ほかのアプリが忙しい状態」での先読み 2 個と 4 個 (4.9)
 
-### 6.11 電力 (`sudo powermetrics --samplers cpu_power,gpu_power,ane_power -i 1000`、686448d)
+### 4.11 電力 (`sudo powermetrics --samplers cpu_power,gpu_power,ane_power -i 1000`、686448d)
 
 600 トークン、`--experts-key off`、毎回 nominal まで冷まして交互に 2 回。Neural Engine が 0.5 W を超えていた秒の平均。この回はメモリに余裕があった (空き 77〜81 %)。
 
