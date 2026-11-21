@@ -78,7 +78,7 @@ gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) //
 
 ## モデルを組み合わせるアプリ (ai)
 
-`github.com/shibukawa/hwnpu/ai` は、アプリが使うモデルを登録し、前もってダウンロードとコンパイルを済ませ、NPU で動かすためのパッケージ群です (v0: 形はまだ変わります。設計は [docs/app-api.md](docs/app-api.md))。hwnpu-chat、hwnpu-image、hwnpu-audio が初回にするのと同じ準備を同じ置き場に行うので、コマンドで準備したモデルはそのまま使えます。
+`github.com/shibukawa/hwnpu/ai` は、アプリが使うモデルを登録し、前もってダウンロードとコンパイルを済ませ、NPU で動かすためのパッケージ群です (v0: 形はまだ変わります。使い方と設計の論点は [docs/developer-guide.ja.md](docs/developer-guide.ja.md)、計画は [docs/app-api.md](docs/app-api.md))。hwnpu-chat、hwnpu-image、hwnpu-audio が初回にするのと同じ準備を同じ置き場に行うので、コマンドで準備したモデルはそのまま使えます。
 
 ```go
 // 使うモデルを登録する。名前は models.yaml のモデル、ファミリー、用途 (hwnpu-chat list)

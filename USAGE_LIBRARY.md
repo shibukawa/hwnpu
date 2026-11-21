@@ -78,7 +78,7 @@ gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) //
 
 ## Apps that combine models (ai)
 
-`github.com/shibukawa/hwnpu/ai` is a set of packages for an app to register the models it uses, download and compile them ahead of time, and run them on the NPU (v0: its shape will still change; the design is in [docs/app-api.md](docs/app-api.md), in Japanese). It prepares models the way hwnpu-chat, hwnpu-image and hwnpu-audio do on their first run, in the same cache, so models prepared by the commands are used as they are.
+`github.com/shibukawa/hwnpu/ai` is a set of packages for an app to register the models it uses, download and compile them ahead of time, and run them on the NPU (v0: its shape will still change; how to use it and the open design questions are in [docs/developer-guide.md](docs/developer-guide.md), the plan in [docs/app-api.md](docs/app-api.md), in Japanese). It prepares models the way hwnpu-chat, hwnpu-image and hwnpu-audio do on their first run, in the same cache, so models prepared by the commands are used as they are.
 
 ```go
 // Register the models the app uses. Names are models, families or uses of models.yaml (hwnpu-chat list)
