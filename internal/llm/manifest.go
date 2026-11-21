@@ -193,6 +193,9 @@ func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlp
 
 // buildPart builds the program for opts into b: Build, or BuildCached for a Cached model.
 func buildPart(b *mlpackage.Builder, m Model, w Weights, opts Options) (ins, outs []mlpackage.Feature, err error) {
+	if w, err = RotateFor(m, w, opts); err != nil {
+		return nil, nil, err
+	}
 	cm, cached := m.(Cached)
 	if opts.Cache > 0 && !cached {
 		return nil, nil, fmt.Errorf("llm: the model cannot be built with a KV cache")

@@ -476,6 +476,18 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// beginning of the drafts does not run them again (llm.StateReplayer): another program,
 	// named -sr
 	stateRows := s.Draft > 1 && a.Param(llm.Options{}, "state-rows") != ""
+	// on the Neural Engine, a model that can be rotated is (llm.Rotate) when its tables have 6
+	// bits or fewer: lut6's error about halves (Qwen3.5-2B, design.md 16.276), while lut8's was
+	// within the Neural Engine's own (0.8B and 4B: the same answers, 0 to 3.5 % faster), which
+	// is not worth converting again. Other programs, named -rot, and their own tables.
+	// HWNPU_ROTATE=0 keeps them unrotated, =1 rotates lut8 too
+	rotate := os.Getenv("HWNPU_ROTATE")
+	if rotatable(a, model) && (backend == llm.BackendCoreAI || backend == llm.BackendCoreML) && rotate != "0" &&
+		(rotate == "1" || format == "lut6" || format == "lut4") {
+		kind += "-rot"
+		params[llm.RotateParam] = "1"
+		c.Rotated = true
+	}
 	chunk, context := pagedChunk(model, s.Paged, backend), s.Context
 	if context <= 0 {
 		context = DefaultContext
@@ -799,7 +811,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 		*e.packages(&c) = []string{path}
 	}
-	if c.Weights, err = writeTables(ctx, s.Dir, a, model, checkpoint, s.Log); err != nil {
+	if c.Weights, err = writeTables(ctx, s.Dir, a, model, checkpoint, s.Log, c.Rotated); err != nil {
 		return Config{}, err
 	}
 	// A conversion reads the checkpoint into memory (2.4 GiB of PLaMo 3 Translate 2B left after
@@ -1602,4 +1614,24 @@ func gb(n, total int64) string {
 // Hugging Face (docs/cache-sharing-design.md 7).
 func Fetch(ctx context.Context, repo, name string, log io.Writer) (string, error) {
 	return fetch(ctx, repo, name, log)
+}
+
+// rotatable reports whether a's model can be built rotated (llm.RotateParam): the architecture
+// has the setting, the model's Rotation holds (not a mixture of experts) and its hidden size has a
+// Hadamard block of 64 or more.
+func rotatable(a *llm.Arch, model llm.Model) bool {
+	has := false
+	for _, p := range a.Params {
+		has = has || p.Name == llm.RotateParam
+	}
+	r, ok := model.(llm.Rotator)
+	if !has || !ok {
+		return false
+	}
+	rot, err := r.Rotation()
+	if err != nil {
+		return false
+	}
+	_, err = llm.Unrotate(rot.Dim, llm.RotationSeed) // a hidden size with a Hadamard block of 64
+	return err == nil
 }

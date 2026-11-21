@@ -135,3 +135,27 @@ func TestRotateKeepsOutput(t *testing.T) {
 		}
 	}
 }
+
+// Unrotate takes a rotated embedding row back to the checkpoint's.
+func TestUnrotate(t *testing.T) {
+	rng := rand.New(rand.NewSource(5))
+	m := memWeights{"emb": make([]float32, 5*128)}
+	for i := range m["emb"] {
+		m["emb"][i] = float32(rng.NormFloat64())
+	}
+	rw, err := Rotate(m, Rotation{Dim: 128, Embed: "emb"}, RotationSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	un, err := Unrotate(128, RotationSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ := rw.Rows("emb", 2, 3)
+	un(row)
+	for i, v := range row {
+		if math.Abs(float64(v-m["emb"][2*128+i])) > 1e-5 {
+			t.Fatalf("value %d: %g, want %g", i, v, m["emb"][2*128+i])
+		}
+	}
+}
