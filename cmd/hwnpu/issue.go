@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/npustatus"
 )
 
 // Repo is where hwnpu issue opens a new issue.
@@ -72,7 +73,7 @@ func (c IssueCmd) Run(ctx context.Context) error {
 			run = &runs[0]
 		}
 	}
-	st := collect(ctx, view{s}, true, c.Wake, new(samplers))
+	st := npustatus.Collect(ctx, npustatus.View{Store: s}, true, c.Wake, new(npustatus.Samplers))
 	r := newRedactor()
 	title, body := draft(st, run, c.Title, c.Lines, r)
 	u := issueURL(title, body)
@@ -120,7 +121,7 @@ func truncate(s string, n int) string {
 
 // draft is the issue's title and body about st and run (nil for none), with the last lines of
 // its log, as r hides them.
-func draft(st Status, run *console.Run, title string, lines int, r redactor) (string, string) {
+func draft(st npustatus.Status, run *console.Run, title string, lines int, r redactor) (string, string) {
 	var b strings.Builder
 	b.WriteString("<!-- Written by hwnpu issue: paths, the user's and the machine's names, the sources' addresses and tokens are hidden. Check it before you submit. -->\n\n")
 	b.WriteString("## What happened\n\n<!-- What you did, what you expected, and what happened instead. -->\n\n\n")
@@ -158,7 +159,7 @@ func draft(st Status, run *console.Run, title string, lines int, r redactor) (st
 	}
 	b.WriteString("## Machine\n\n```\n")
 	var m strings.Builder
-	st.write(&m, false) // without the processes' command lines: they may hold prompts
+	st.Write(&m, false) // without the processes' command lines: they may hold prompts
 	b.WriteString(r.hide(m.String()))
 	b.WriteString("```\n")
 	if title == "" {

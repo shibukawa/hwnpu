@@ -266,6 +266,14 @@ func LookupFor(name string) (Model, bool) {
 	return m, ok && err == nil
 }
 
+// LookupOn finds the model of the definitions a name means, as hwnpu's commands do (lookupOn),
+// for a package that runs models of several kinds (ai): by its name, or as a family or a use
+// picked for a machine of machine GB (0: this one, with the memory chosen for the model). Why
+// it was picked goes to log. ok is false for none; a repository is not looked up.
+func LookupOn(name string, machine int, log io.Writer) (Model, bool, error) {
+	return lookupOn(name, machine, log)
+}
+
 // lookupOn is lookupFor on a machine of machine GB, 0 for this one's (MachineMemory). A machine
 // given, or a tag of memory (lfm3:8g), runs the model as on it, whatever memory is chosen for it.
 func lookupOn(name string, machine int, log io.Writer) (Model, bool, error) {

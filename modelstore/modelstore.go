@@ -60,6 +60,10 @@ type Options struct {
 	// the cache over MaxSize, removes the units least recently used first when there is a MaxSize,
 	// and fails (ErrNoRoom) when that is not enough.
 	Limits *Limits
+	// Files are definition files of the application's own (models.yaml's format: its models,
+	// uses and aliases), read over hwnpu's, the machine's and the user's, as hwnpu-chat's
+	// -models are.
+	Files []string
 	// Log is where downloads and copies are shown (nil for nowhere).
 	Log io.Writer
 }
@@ -96,11 +100,11 @@ type Layer struct {
 }
 
 // Open sets the layers of the process as o says and returns the Store that reads them. It reads
-// the model definitions (hwnpu's models.yaml, the machine's and the user's) too.
+// the model definitions (hwnpu's models.yaml, the machine's, the user's and o.Files) too.
 func Open(o Options) (*Store, error) {
 	cache.SetRoot(o.Root)
 	cache.SetLimits(o.Limits)
-	if err := chat.LoadModels(nil, true, o.Log); err != nil {
+	if err := chat.LoadModels(o.Files, true, o.Log); err != nil {
 		return nil, err
 	}
 	sources, hf := shared.Sources(), shared.HuggingFace()

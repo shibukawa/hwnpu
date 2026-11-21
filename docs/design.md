@@ -7583,7 +7583,7 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 - `hwnpu-audio tts` は AMD の NPU では `speech.PrepareAMD` (手元、取得元、なければ IRON で書き出して取得元へ)。`-m DIR` で書き出し、`--iron-text DIR` で文のモデルの書き出しだけを (depthformer と codec は Core ML のパッケージを CPU で) も動かせる
 - 鍵のために models.yaml の LFM3-Audio-2B-TTS に commit と 6 つのファイルの sha256 を固定した
 
-**デバイスヒープの断り**: 最初の形 (チェックポイントの表を開いてから文のモデルの書き出しを読む) は、2 回に 1 回ほど `CREATE_HWCTX` が `EINVAL` になった (カーネルのログは `aie2_send_host_buf_msgs` の 64 MiB のデバイスヒープの登録、opcode 0x106、状態 0x4000003。失敗のたびにヒープの番地が同じ)。hwnpu-chat (同じ書き出しを先に読む) は 4 回とも通る。文のモデルを `Load` の最初 (表の 4 GB の mmap の前) に読むようにすると 5 回とも通った。番地の何が断られるのかは分かっていない (amd-xdna2-bench.md の約 125 回に 1 回のものと同じ断り方)
+**デバイスヒープの断り**: 最初の形 (チェックポイントの表を開いてから文のモデルの書き出しを読む) は、2 回に 1 回ほど `CREATE_HWCTX` が `EINVAL` になった (カーネルのログは `aie2_send_host_buf_msgs` の 64 MiB のデバイスヒープの登録、opcode 0x106、状態 0x4000003。失敗のたびにヒープの番地が同じ)。hwnpu-chat (同じ書き出しを先に読む) は 4 回とも通る。文のモデルを `Load` の最初 (表の 4 GB の mmap の前) に読むようにすると 5 回とも通った。番地の何が断られるのかは分かっていない (amd-xdna2-bench.md の約 125 回に 1 回のものと同じ断り方)。→ 16.281: ヒープの番地が 64 MiB の倍数でないと断られる
 
 **確かめたこと** (Ryzen AI 9 365)
 
@@ -8617,3 +8617,47 @@ M1〜M4 (h13g、h14g、h15g、h16g) の prebuild を並べて回すと、Anima-T
 
 **移す順** (利用者の指定): Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (`npu.apple.sizes` の 8 つ) → Chroma1 (Flash、HD) → FLUX.3 klein。チップは M1、M2、M3 (h13g、h14g、h15g) から。大きさごとの書き出しとその prebuilt (NAS の `converted/Anima-Turbo/coreai/anima-turbo-v1.1-WxH-…` など) は移し終えたら使われなくなる。
 
+
+### 16.281 アプリに組み込むライブラリ `ai` の v0 を main に載せ直す、AMD の `CREATE_HWCTX` の `EINVAL` の原因 (デバイスヒープの番地) — 2026-11-21
+
+**何をしたか**: hwnpu を「NPU で AI のモデルを動かすライブラリの集まり」にし、コマンド (`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) はその機能を試すデモにする、という方針の 1 歩目。前のブランチ (`t3/08e7bc94`: 1 つの `ai` パッケージ、2026-11-14〜16) は main から 166 コミット離れたので捨て、使えるもの (流れの型、音量の VAD、置き場の目録、計画と準備) を今の main に載せ直して、構成を変えた。計画と残りは [app-api.md](app-api.md)、[app-api-tasks.md](app-api-tasks.md)。
+
+**構成** (app-api.md 1 節):
+
+- `ai`: アプリが使うモデルを登録する `App`、型のついた取っ手 `Use[T]` (`stt.Get(ctx, rt)` が `*speech.Transcriber` を返す)、`Plan` (足りないもの、落とす量、メモリ、ライセンス。ダウンロードと変換、NPU 向けのコンパイルの 2 段)、`Runtime` (準備済みの置き場からだけ読み込む)
+- `ai/speech` (文字起こし、読み上げ、音量の VAD)、`ai/text` (翻訳、チャット): 機能ごとのパッケージが、自分のモデルの準備と読み込み (`internal/airole` の `Role`) を持つ。`ai` は機能のパッケージを import しないので、アプリには使う機能のコードだけが入る
+- `ai/flow`: モデルの間のデータの渡し方 (下)
+- `ai/aicli`: アプリのコマンドラインに足す kong のサブコマンド。`models` (一覧)、`models download` (ダウンロードと変換、NPU は要らない)、`models prepare` (さらに 1 回読み込んでコンパイル)、`status` (`hwnpu status` と同じ。中身を `cmd/hwnpu/status.go` から `internal/npustatus` に移して両方が呼ぶ)
+- 準備は、コマンドが初回にするのと同じ関数を同じ設定で呼ぶ (`transcribe.Prepare` / `PrepareAMD`、`speech.Prepare` / `PrepareAMD`、`chat.Prepare` / `AMDExport`)。置き場もコマンドと同じなので、互いに準備したものを使える。前のブランチから足したもの: `chat.LookupOn`、`chat.Engine.OnNPU`、`modelstore.Options.Files` (アプリの定義のファイル)
+
+**モデルの間のつなぎ方** (app-api.md 4 節): 次の段をいつ始められるかで 3 つ。どれも `flow.Stream[T]` (`iter.Seq2[Chunk[T], error]`) の上。
+
+- 前が全部終わってから: 一括の呼び出し、`Last`、`Of`。大きなモデルは `Use.Release` で下ろしてから次を読む
+- できたものから: `Async` (段を重ねる、塊は落とさない)、`Latest` (読む側が遅いとき古い塊を捨てる。カメラのフレーム)、`Hold` (最新を持っておく)、`Tee`
+- 拍に合わせて: `Metronome` (拍ごとの tick を `Lead` だけ前に。遅れは `Late`、`Skip` で過ぎた拍を捨てる)、`Pace` (塊をその時刻に渡す)、`Live` (録音をマイクのように流す)
+- 時刻に関わる道具のテストは `testing/synctest` の偽の時計で、待たずに決定的に回す
+
+**機械のメモリごとのモデルの構成** (app-api.md 2.1 節): 用途の名前は、1 つだけ動かすときの一番大きなモデルを選ぶ (`translate` は 16 GB から 8B)。同時に動かすアプリでは補助のモデルを小さくしたいので、登録のときに `use.At(gb, name)` (そのメモリ以上の機械では別の名前) と `use.As(gb)` (その機械として選ぶ) を書けるようにした。`samples/interpreter` は翻訳を 16 GB から 2B、32 GB から 8B にしている。
+
+- 実行時も同じ決まりで引き、置き場の記録が別のモデル (や別のメモリ向けのプログラム) なら `ErrNotPrepared`。最初は目録にあるものをそのまま読んでいて、`HWNPU_MEMORY=16` にしても前に準備した 8B が黙って動いた (実機で見つけた)
+
+**AMD の `CREATE_HWCTX` の `EINVAL`**: 3 つのモデルを 1 プロセスに読み込むと、2 つ目か 3 つ目で `CREATE_HWCTX: invalid argument` になった。カーネルのログは `aie2_send_host_buf_msgs: fw ctx 13 addr 0x7f4247ad5000 size 0x4000000`、`command opcode 0x106 failed, status 0x4000003` で、amd-xdna2-bench.md の「約 125 回に 1 回」と 16.254 の「デバイスヒープの断り」(どちらも原因不明だった) と同じ断り方。
+
+- **切り分け**: 1 プロセスでデバイスを 4 回開き、それぞれに Whisper の書き出しを読み込む道具で、デバイスヒープ (64 MiB、`/proc/self/maps` の `/dev/accel/accel0`) の番地を見た。3 回の実行の 12 回の読み込みのうち、通った 5 回はどれもヒープの番地が 64 MiB の倍数 (下位 26 ビットが 0)、落ちた 7 回はどれも倍数でなかった (下位が 0x3ad5000 か 0x17aa000)。新しいプロセスの 1 つ目のデバイスはいつも倍数の番地だった
+- **原因**: ファームウェアはデバイスヒープを、その大きさの倍数の番地でしか受け取らない (`MAP_HOST_BUFFER` が状態 0x4000003、不正な引数)。カーネルは `mmap` に番地を任せると、番地の空間が空いている間は倍数の番地を返すが、2 つ目のデバイスや、大きな写像のあとでは返さないことがある
+- **直し**: `internal/xdna` に `MmapAligned` を足した (大きさと境界の分だけ番地を予約し、その中の境界の番地に `MAP_FIXED` で写し、残りを返す)。`internal/backend/amd` の `Open` は、ヒープをこれで 64 MiB の倍数の番地に写す
+- **直したあと**: 同じ道具で 3 回の実行の 12 回とも通り、ヒープの番地は全部倍数。`samples/interpreter` も 4 回続けて通った
+- 16.254 が見た形 (4 GB の表を写したあとで文のモデルを読む) と、プロセスを続けて起こす形 (125 回に 1 回) をそれぞれ再現して確かめてはいない。同じ断り方なので同じ原因と見ている。16.254 の読み込みの順 (書き出しを先に) はそのまま残した
+
+**確かめたこと** (Ryzen AI 9 365、XDNA 2。ほかのセッションが CPU で IRON の書き出しをしている間)
+
+- `samples/interpreter`: 13.3 秒の日本語の音声 (2 発話、3 文) を、whisper-large-v3-turbo、plamo-3-translate-8b、LFM3-Audio-2B-TTS の 3 つを 1 プロセスに同居させて、英語の音声 8.5 秒に。読み込み 0.5、5.1、2.6 秒、全体 31.6 秒 (読み上げが実時間の約 0.4 倍で、ここが遅れを決める)。書き起こしと訳は正しく、出力を `hwnpu-audio transcribe` に戻すと訳文と一字一句同じ。`--live` (マイクの速さで流す) でも同じ文
+- `HWNPU_MEMORY=16` で翻訳が plamo-3-translate-2b に (3 つで 7.8 GB、全体 25.5 秒)
+- `interpreter models` / `models download` / `models prepare` / `status`。準備済みなら download は 0.2 秒で終わる (手元の書き出しを見つけるだけ)
+- `go test -race ./ai/... ./internal/xdna/... ./internal/backend/amd/... ./cmd/hwnpu/ ./internal/npustatus/`
+
+**確かめていないこと・残り**
+
+- Mac (Core AI) と Intel で `ai` を通した実機の動作。準備と読み込みはコマンドと同じ関数を呼ぶが、動かしてはいない
+- `text.Chat` の実機
+- コマンドの載せ替え (B3)、`ai/vision` と `ai/imagegen` (J1、J2)、擬似立体のサンプル (J4)、常駐の管理 (B8)。画像のコマンドの準備の手順 (`amdExport`、`openImageDevice`) はまだ `cmd/hwnpu-image` の中にある

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/npustatus"
 )
 
 func TestRedact(t *testing.T) {
@@ -58,8 +59,8 @@ func TestIssueURL(t *testing.T) {
 // TestDraft writes the command, its error and log, and the machine, without the command lines
 // of the processes on the NPU.
 func TestDraft(t *testing.T) {
-	st := Status{Version: "v1", OS: "linux", Arch: "amd64", Vendor: "amd",
-		Processes: []Process{{PID: 7, Name: "hwnpu-chat", Args: []string{"hwnpu-chat", "a secret prompt"}, NPUMemory: 2e9}}}
+	st := npustatus.Status{Version: "v1", OS: "linux", Arch: "amd64", Vendor: "amd",
+		Processes: []npustatus.Process{{PID: 7, Name: "hwnpu-chat", Args: []string{"hwnpu-chat", "a secret prompt"}, NPUMemory: 2e9}}}
 	run := &console.Run{Args: []string{"hwnpu-image", "image", "-m", "anima"}, Error: "step 3: boom",
 		Start: time.Now().Add(-time.Minute), End: time.Now(), Lines: []string{"one", "two", "three"}}
 	title, body := draft(st, run, "", 2, newRedactor())
