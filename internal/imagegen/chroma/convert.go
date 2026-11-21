@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -19,8 +20,10 @@ import (
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
 // again. 2: the DiT's attention scale in the queries' norms, its norms' magnitudes by abs, the
-// attention a head at a time with the image's and the text's keys apart (docs/design/image-apple.md).
-const ExportVersion = 2
+// attention a head at a time with the image's and the text's keys apart (docs/design/image-apple.md);
+// 3: 512 x 512's attention takes its 1536 queries as two chunks of 768 (mil's headChunk: as FLUX.2
+// klein's, the prebuilt programs for an M3 fail to load otherwise, docs/known-issues.md 12).
+const ExportVersion = 3
 
 // TextVersion is the layout T5's, the approximator's and the VAE's programs last changed at: an
 // export from it on holds the ones Convert writes, which it links (LinkFrom).
@@ -53,6 +56,11 @@ type ConvertOptions struct {
 	Tokenizer string
 	// Only, when not empty, writes these parts alone (text, mods, doubles, singles, vae).
 	Only map[string]bool
+	// Sizes are the picture sizes (width, height) a Core AI export holds, each part that depends
+	// on the size (the DiT's groups, the VAE's stages) one program with a function each
+	// (llm.WriteAIFunctions: the weights once, on the disk and in Core AI's cache; design.md
+	// 16.280). Empty: Width x Height alone.
+	Sizes [][2]int
 	// LinkFrom are whole exports to hard link the parts that would come out the same from: T5's
 	// groups but the last (the same T5 format and text rows), the last and the empty prompt's rows
 	// too (the same model), the VAE's stages (the same size). The Core ML cache keys a compiled
@@ -104,6 +112,17 @@ func (o *ConvertOptions) defaults() {
 	}
 }
 
+// sizes is what o's export holds (after defaults).
+func (o ConvertOptions) sizes() [][2]int {
+	if len(o.Sizes) > 0 {
+		return o.Sizes
+	}
+	return [][2]int{{o.Width, o.Height}}
+}
+
+// SizeFunction is the function of a program of several sizes that runs at w x h.
+func SizeFunction(w, h int) string { return fmt.Sprintf("s%dx%d", w, h) }
+
 // ProgramExt is the extension of a program of the format backend: .aimodel for coreai, else
 // .mlpackage.
 func ProgramExt(backend string) string {
@@ -122,11 +141,28 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 	if log == nil {
 		log = io.Discard
 	}
+	sizes := o.sizes()
+	if len(sizes) > 1 && o.Backend != llm.BackendCoreAI {
+		return fmt.Errorf("chroma: an export of several sizes is Core AI's (functions of a program)")
+	}
+	if !slices.Contains(sizes, [2]int{o.Width, o.Height}) {
+		return fmt.Errorf("chroma: %dx%d is not one of the export's sizes %v", o.Width, o.Height, sizes)
+	}
 	dc, err := mil.ReadDit(root, o.Width, o.Height)
 	if err != nil {
 		return err
 	}
 	dc.TextRows = o.TextRows
+	dcs := make([]mil.Dit, len(sizes))
+	for i, sz := range sizes {
+		if sz[0]%16 != 0 || sz[1]%16 != 0 {
+			return fmt.Errorf("chroma: %dx%d: the sizes are multiples of 16", sz[0], sz[1])
+		}
+		if dcs[i], err = mil.ReadDit(root, sz[0], sz[1]); err != nil {
+			return err
+		}
+		dcs[i].TextRows = o.TextRows
+	}
 	tc, err := mil.ReadT5(shared)
 	if err != nil {
 		return err
@@ -146,6 +182,11 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 	texts := mil.TextGroups(tc.Layers, o.TextGroup)
 	doubles, singles := mil.DoubleGroups(dc, o.DoubleGroup), mil.SingleGroups(dc, o.SingleGroup)
 	stages := mil.VaeStages(vc, o.Width, o.Height)
+	for _, sz := range sizes {
+		if len(mil.VaeStages(vc, sz[0], sz[1])) != len(stages) {
+			return fmt.Errorf("chroma: the VAE's stages differ in count at %dx%d", sz[0], sz[1])
+		}
+	}
 	// the programs are written side by side once all are listed (jobs.Run)
 	jobs := console.NewJobs(log)
 	name := filepath.Base(root)
@@ -176,6 +217,44 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 		})
 		return name, nil
 	}
+	// writeSized writes the part of each size (part(dc)): one program as write does for one size,
+	// else a program with a function each (SizeFunction), the weights once. The names are one a
+	// size, NAME#FUNCTION.
+	writeSized := func(kind string, part func(c mil.Dit) *mil.Part, format string, rules []string) ([]string, error) {
+		if len(sizes) == 1 {
+			name, err := write(kind, part(dcs[0]), format, rules)
+			return []string{name}, err
+		}
+		opts := llm.Options{Backend: o.Backend, Format: format, FormatFor: rules}
+		if kind == "doubles" || kind == "singles" {
+			opts.Quant = o.DitQuant
+		}
+		name := part(dcs[0]).Name + ext
+		var names []string
+		var fns []llm.AIFunction
+		for i, sz := range sizes {
+			f := SizeFunction(sz[0], sz[1])
+			names = append(names, name+"#"+f)
+			fns = append(fns, llm.AIFunction{Name: f, Model: part(dcs[i]), Options: opts})
+		}
+		if len(o.Only) > 0 && !o.Only[kind] {
+			return names, nil
+		}
+		if src := from.part(kind, name, false); src != "" {
+			if err := linkTree(filepath.Join(src, name), filepath.Join(out, name)); err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(log, "  %s linked from %s\n", name, filepath.Base(src))
+			return names, nil
+		}
+		jobs.Add(name, func() (string, error) {
+			if _, err := llm.WriteAIFunctions(filepath.Join(out, name), w, fns); err != nil {
+				return "", fmt.Errorf("chroma: %s: %w", name, err)
+			}
+			return fmt.Sprintf("%s, %d sizes", format, len(sizes)), nil
+		})
+		return names, nil
+	}
 	m := &ProgramManifest{Backend: o.Backend, Version: ExportVersion,
 		Formats:    map[string]string{"t5": o.t5Formats(), "dit": o.ditFormats(), "vae": "fp16"},
 		EmbedScale: 1.0 / mil.T5Scale,
@@ -193,26 +272,44 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 	if m.Mods, err = write("mods", mil.Mods(dc), "fp16", nil); err != nil {
 		return err
 	}
+	sized := make([]SizeParts, len(sizes))
+	for i, sz := range sizes {
+		sized[i] = SizeParts{Width: sz[0], Height: sz[1]}
+	}
 	for _, gr := range doubles {
-		name, err := write("doubles", mil.Doubles(dc, gr[0], gr[1]), o.DitFormat, o.DitFormatFor)
+		names, err := writeSized("doubles", func(c mil.Dit) *mil.Part { return mil.Doubles(c, gr[0], gr[1]) }, o.DitFormat, o.DitFormatFor)
 		if err != nil {
 			return err
 		}
-		m.Doubles = append(m.Doubles, Group{name, gr[0], gr[1]})
+		for i := range sized {
+			sized[i].Doubles = append(sized[i].Doubles, Group{names[i], gr[0], gr[1]})
+		}
 	}
 	for _, gr := range singles {
-		name, err := write("singles", mil.Singles(dc, gr[0], gr[1]), o.DitFormat, o.DitFormatFor)
+		names, err := writeSized("singles", func(c mil.Dit) *mil.Part { return mil.Singles(c, gr[0], gr[1]) }, o.DitFormat, o.DitFormatFor)
 		if err != nil {
 			return err
 		}
-		m.Singles = append(m.Singles, Group{name, gr[0], gr[1]})
+		for i := range sized {
+			sized[i].Singles = append(sized[i].Singles, Group{names[i], gr[0], gr[1]})
+		}
 	}
-	for i := range stages {
-		name, err := write("vae", mil.VaeProgram(vc, o.Width, o.Height, i), "fp16", nil)
+	for st := range stages {
+		names, err := writeSized("vae", func(c mil.Dit) *mil.Part { return mil.VaeProgram(vc, c.Width, c.Height, st) }, "fp16", nil)
 		if err != nil {
 			return err
 		}
-		m.Vae = append(m.Vae, name)
+		for i := range sized {
+			sized[i].Vae = append(sized[i].Vae, names[i])
+		}
+	}
+	for _, sp := range sized {
+		if sp.Width == o.Width && sp.Height == o.Height {
+			m.Doubles, m.Singles, m.Vae = sp.Doubles, sp.Singles, sp.Vae
+		}
+	}
+	if len(sized) > 1 {
+		m.Sizes = sized
 	}
 	if len(o.Only) == 0 || o.Only["text"] {
 		if o.Tokenizer == "" {
@@ -373,8 +470,8 @@ func linkSources(dirs []string, name string, o ConvertOptions, dc mil.Dit) linkF
 		// the approximator and the DiT's groups: the same model, size, text rows and formats; the
 		// groups of the same layout and blocks a program only (a group's name says where it starts,
 		// not how many it holds: with other groups, dit_double_4 of 4 blocks would be linked as one of 1)
-		if same && m.Formats["dit"] == o.ditFormats() && m.Dit.Width == o.Width && m.Dit.Height == o.Height &&
-			m.Dit.TextRows == dc.TextRows && len(m.Doubles) > 0 {
+		sameSizes := slices.Equal(m.SizeList(), o.sizes()) && m.Dit.Width == o.Width && m.Dit.Height == o.Height
+		if same && m.Formats["dit"] == o.ditFormats() && sameSizes && m.Dit.TextRows == dc.TextRows && len(m.Doubles) > 0 {
 			if f.mods == "" {
 				f.mods = d
 			}
@@ -383,7 +480,7 @@ func linkSources(dirs []string, name string, o ConvertOptions, dc mil.Dit) linkF
 				f.dit = d
 			}
 		}
-		if m.Dit.Width == o.Width && m.Dit.Height == o.Height && len(m.Vae) > 0 && f.vae == "" {
+		if sameSizes && len(m.Vae) > 0 && f.vae == "" {
 			f.vae = d
 		}
 	}

@@ -83,3 +83,18 @@ func TestVaeStages(t *testing.T) {
 		t.Errorf("stages 6, 9: %+v %+v", s[6], s[9])
 	}
 }
+
+// TestHeadChunk: 512 x 512's 1536 rows (1024 of the picture, 512 of the text) are halved, as
+// FLUX.2 klein's (the prebuilt programs for an M3 failed with 1024 and 512); the other sizes of
+// the export keep HeadChunk.
+func TestHeadChunk(t *testing.T) {
+	if got := headChunk((Dit{Width: 512, Height: 512, TextRows: 512}).Rows()); got != 768 {
+		t.Errorf("512x512: chunk %d, want 768", got)
+	}
+	for _, sz := range [][2]int{{1024, 1024}, {768, 1152}, {768, 1024}, {704, 1280}, {1152, 768}, {1024, 768}, {1280, 704}} {
+		c := Dit{Width: sz[0], Height: sz[1], TextRows: 512}
+		if got := headChunk(c.Rows()); got != HeadChunk {
+			t.Errorf("%dx%d (%d rows): chunk %d, want %d", sz[0], sz[1], c.Rows(), got, HeadChunk)
+		}
+	}
+}

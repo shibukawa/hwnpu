@@ -13,6 +13,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
@@ -61,7 +62,7 @@ const tokenizerFile = "t5_tokenizer/tokenizer.json"
 func ExportName(name string, o ConvertOptions) string {
 	o.defaults()
 	tag := func(f string) string { return strings.NewReplacer(" ", "+", "=", "").Replace(f) }
-	s := fmt.Sprintf("%s-%dx%d-%s-%s", strings.ToLower(name), o.Width, o.Height, tag(o.t5Formats()), tag(o.ditFormats()))
+	s := fmt.Sprintf("%s-%s-%s-%s", strings.ToLower(name), aspect.Tag(o.sizes()), tag(o.t5Formats()), tag(o.ditFormats()))
 	if o.TextRows != 512 {
 		s += fmt.Sprintf("-t%d", o.TextRows)
 	}
@@ -115,8 +116,8 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	for _, d := range done {
 		o.LinkFrom = append(o.LinkFrom, strings.TrimSuffix(d, ".done"))
 	}
-	fmt.Fprintf(log, "converting %s (%dx%d, T5 %s, DiT %s): about a minute; the first load then compiles the programs for the NPU (over an hour at 1024 x 1024 on an M1)\n",
-		filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
+	fmt.Fprintf(log, "converting %s (%d sizes, T5 %s, DiT %s): a few minutes; the first load then compiles the programs for the NPU (hours on an M1 without prebuilt programs)\n",
+		filepath.Base(out), len(o.sizes()), o.TextFormat, o.DitFormat)
 	t0 := time.Now()
 	if err := Convert(root, shared, out, o, log); err != nil {
 		return "", err

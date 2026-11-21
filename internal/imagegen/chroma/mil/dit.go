@@ -205,7 +205,19 @@ func (d *ditGraph) attend(q, k, v *mlpackage.Var) *mlpackage.Var {
 	if d.tbias == nil {
 		d.tbias = d.Slice(d.kbias, -1, d.c.Tokens(), d.c.Rows())
 	}
-	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: HeadChunk, Split: d.c.Tokens(), Bias: d.tbias}))
+	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: headChunk(q.Shape[1]), Split: d.c.Tokens(), Bias: d.tbias}))
+}
+
+// headChunk is the queries the attention of rows takes at a time: HeadChunk, or half the rows
+// (a multiple of 64) when they are more than one chunk and less than two. 512 x 512's 1536 rows
+// (1024 of the picture, 512 of the text) as 1024 and 512 queries: the program coreai-build
+// compiles for an M3 (h15g) leaves a DMA's cache hint the device's check refuses, so the prebuilt
+// program fails to load and is compiled on the device, as FLUX.2 klein's (docs/known-issues.md 12).
+func headChunk(rows int) int {
+	if rows > HeadChunk && rows < 2*HeadChunk {
+		return (rows/2 + 63) / 64 * 64
+	}
+	return HeadChunk
 }
 
 // gelu is the MLP's tanh GELU.

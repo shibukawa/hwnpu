@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
+	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
@@ -19,9 +20,9 @@ import (
 // Chroma1 (Chroma1-Flash: Heun's 8 steps without guidance; Chroma1-HD: guidance 3 with
 // DPM-Solver++ 2M): FLUX.1 schnell's DiT with an FFN for its modulations, T5-XXL and FLUX's VAE.
 // AMD's NPU runs the export of tools/amd/iron_chroma.py (NAME.amd-npu2 of the eight aspect
-// ratios, here or in the sources); Apple's Neural Engine a Core AI export of a square (the
-// setting size) converted from the checkpoint; a model of device cpu the Core ML one on the CPU
-// interpreter.
+// ratios, here or in the sources); Apple's Neural Engine a Core AI export of every size of
+// models.yaml's npu.apple (one export, the weights once) converted from the checkpoint; a model
+// of device cpu the Core ML one of a square (the setting size) on the CPU interpreter.
 
 // chromaTool is the script that exports Chroma for AMD's NPU.
 const chromaTool = "tools/amd/iron_chroma.py"
@@ -64,11 +65,21 @@ func prepareChroma(e airole.PrepareEnv) (f airole.Files, err error) {
 	case !llm.AppleFormat(format):
 		return f, fmt.Errorf("ai/imagegen: %s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, cmp.Or(format, "this machine"))
 	}
-	side, err := chromaSide(m)
-	if err != nil {
-		return f, err
+	o := chroma.ConvertOptions{Backend: format, TextFormat: m.Settings[SettingTextFormat], DitFormat: m.Settings[SettingDitFormat]}
+	if format == llm.BackendCoreAI {
+		// every size of models.yaml's npu.apple in one export (the weights once), 1:1 first
+		as, err := flux2klein.NPUAspects(m, "apple", flux2klein.NPUGeneration("apple"))
+		if err != nil {
+			return f, err
+		}
+		o.Width, o.Height, o.Sizes = as[0].Width, as[0].Height, aspect.SizesOf(as)
+	} else {
+		side, err := chromaSide(m)
+		if err != nil {
+			return f, err
+		}
+		o.Width, o.Height = side, side
 	}
-	o := chroma.ConvertOptions{Backend: format, Width: side, Height: side, TextFormat: m.Settings[SettingTextFormat], DitFormat: m.Settings[SettingDitFormat]}
 	dir, err := chroma.Prepare(chat.WithModel(e.Ctx, base), chroma.Setup{Dir: filepath.Join(chat.ModelsDir(), "Chroma"), Repo: base.Repo, Name: base.Name,
 		ConvertOptions: o, Log: e.Log})
 	if err != nil {
@@ -82,7 +93,7 @@ func prepareChroma(e airole.PrepareEnv) (f airole.Files, err error) {
 type chromaGen struct {
 	g     *Generator
 	dir   string
-	sized bool // an IRON export of several sizes, opened at a size each
+	sized bool // an export of several sizes, opened at a size each
 	p     *chroma.Pipeline
 	at    image.Point
 }
@@ -93,10 +104,19 @@ func loadChroma(ctx context.Context, g *Generator, f airole.Files, e airole.Load
 	var err error
 	switch {
 	case programs:
+		// the sizes the export holds: models.yaml's npu.apple in a Core AI export, else its square
+		man, err := chroma.ReadProgramManifest(c.dir)
+		if err != nil {
+			return nil, err
+		}
+		if s := man.SizeList(); len(s) > 1 {
+			c.sized = true
+			g.sizes = points(s)
+		}
 		g.parse = func(spec string) (int, int, error) {
 			w, h, err := aspect.ParseOrSide(spec, 16)
-			if err == nil && w != h {
-				err = fmt.Errorf("--size %s: this model takes 1:1 or 1:1s for now", spec)
+			if err == nil && !c.sized && w != h {
+				err = fmt.Errorf("--size %s: this export holds a square alone", spec)
 			}
 			return w, h, err
 		}

@@ -150,8 +150,8 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 	return OpenAt(ctx, dev, dir, 0, 0, log)
 }
 
-// OpenAt is Open for pictures of w x h of an IRON export of several sizes (IronSizes); 0 x 0 is
-// the export's first.
+// OpenAt is Open for pictures of w x h of an export of several sizes (an IRON export's IronSizes,
+// a Core AI export's SizeList); 0 x 0 is the export's first (its default).
 func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{embedScale: 1}
 	fail := func(err error) (*Pipeline, error) {
@@ -162,7 +162,7 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 	var td string
 	if IsProgramExport(dir) {
 		var e *progEngine
-		e, err = openPrograms(dev, dir, log, &p.C, &p.Model, p.logf)
+		e, err = openPrograms(dev, dir, w, h, log, &p.C, &p.Model, p.logf)
 		if e != nil {
 			p.eng = e
 			p.t5dim = e.m.T5.Hidden

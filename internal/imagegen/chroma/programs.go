@@ -54,6 +54,46 @@ type ProgramManifest struct {
 	Doubles []Group  `json:"doubles"` // the first embeds the patches
 	Singles []Group  `json:"singles"` // the last ends with norm_out and proj_out
 	Vae     []string `json:"vae"`     // the VAE's stages, in order
+	// Sizes, in an export of several sizes, are the parts of each that depend on the size
+	// (functions of the same programs); Dit, Doubles, Singles and Vae are one of them.
+	Sizes []SizeParts `json:"sizes,omitempty"`
+}
+
+// SizeParts are the parts of an export for pictures of Width x Height.
+type SizeParts struct {
+	Width   int      `json:"width"`
+	Height  int      `json:"height"`
+	Doubles []Group  `json:"doubles"`
+	Singles []Group  `json:"singles"`
+	Vae     []string `json:"vae"`
+}
+
+// SizeList is what the export holds: Sizes, else Dit's size.
+func (m *ProgramManifest) SizeList() [][2]int {
+	if len(m.Sizes) == 0 {
+		return [][2]int{{m.Dit.Width, m.Dit.Height}}
+	}
+	var out [][2]int
+	for _, s := range m.Sizes {
+		out = append(out, [2]int{s.Width, s.Height})
+	}
+	return out
+}
+
+// At makes m the parts of its pictures of w x h (0 for the default), or fails when it holds none
+// of that size.
+func (m *ProgramManifest) At(w, h int) error {
+	if w == 0 || w == m.Dit.Width && h == m.Dit.Height {
+		return nil
+	}
+	for _, s := range m.Sizes {
+		if s.Width == w && s.Height == h {
+			m.Doubles, m.Singles, m.Vae = s.Doubles, s.Singles, s.Vae
+			m.Dit.Width, m.Dit.Height = w, h
+			return nil
+		}
+	}
+	return fmt.Errorf("the export holds %v, not %dx%d", m.SizeList(), w, h)
 }
 
 // ExportFormat is the program format of the export dir (its manifest's backend), "" for none.
@@ -128,9 +168,12 @@ type progEngine struct {
 	loader runner.OpenFunc
 }
 
-func openPrograms(dev *hwnpu.Device, dir string, log io.Writer, c *Config, model *Model, logf func(string, ...any)) (*progEngine, error) {
+func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer, c *Config, model *Model, logf func(string, ...any)) (*progEngine, error) {
 	m, err := ReadProgramManifest(dir)
 	if err != nil {
+		return nil, err
+	}
+	if err := m.At(w, h); err != nil {
 		return nil, err
 	}
 	if m.Version != ExportVersion {
@@ -464,7 +507,12 @@ func (e *progEngine) decode(ctx context.Context, z []float32, stage anima.StageF
 // load. The wide stages take as many pictures together as the host holds the outputs of; stage is
 // told of the stages of all the pictures, counted as they are done.
 func (e *progEngine) decodeAll(ctx context.Context, zs [][]float32, stage anima.StageFunc) ([]*image.RGBA, error) {
-	xs, err := runner.Stages(ctx, e.m.Vae, e.ahead, e.open, zs, runner.StageBudget,
+	// In an export of several sizes a stage's Neural Engine buffers are those of its biggest size,
+	// and the next stage loaded meanwhile fails to map at times (FLUX.2 klein's VAE, which is this
+	// one, at 9:16 on an M1: underlying=0x15): the stages load in turn there (0.1 s each from the
+	// cache).
+	ahead := e.ahead && len(e.m.Sizes) == 0
+	xs, err := runner.Stages(ctx, e.m.Vae, ahead, e.open, zs, runner.StageBudget,
 		func(_ int, p runner.Program, x []float32) ([]float32, error) {
 			return p.Run(ctx, map[string][]float32{"x": x})
 		},
