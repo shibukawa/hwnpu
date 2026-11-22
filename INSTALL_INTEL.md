@@ -254,10 +254,10 @@ When hwnpu's Level Zero path fails, running the same IR with OpenVINO tells whet
 
 ```bash
 python3 -m venv ~/ov && ~/ov/bin/pip install openvino numpy
-HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvino --tier none --context 4096
+HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_DEV=ov.device=NPU hwnpu-chat --backend openvino --tier none --context 4096
 ```
 
-`HWNPU_OV_DEVICE=NPU` runs on OpenVINO's NPU plugin, `CPU` (the default) on the CPU. On Windows, set `HWNPU_OV_PYTHON` to the path of `python.exe`.
+`HWNPU_DEV=ov.device=NPU` runs on OpenVINO's NPU plugin, `CPU` (the default) on the CPU. On Windows, set `HWNPU_OV_PYTHON` to the path of `python.exe`.
 
 The commands without `--backend` (hwnpu-image, hwnpu-audio) run on OpenVINO the same way with the environment variable `HWNPU_BACKEND=openvino`. The commands then take the machine for an Intel one and hand what they convert for Intel's NPU (OpenVINO IR) to OpenVINO, so the Intel path can be checked from the conversion to the result on a machine without Intel's NPU (an AMD one, say).
 

@@ -68,11 +68,11 @@ func TestSmall(t *testing.T) {
 }
 
 // TestMossVAE reads the DAC VAE of OpenMOSS-Team/MOSS-SoundEffect-v2.0 when it has been
-// downloaded (HWNPU_MOSS_VAE, the vae_128d_48k.pth).
+// downloaded (HWNPU_TEST_MOSS_VAE_FILE, the vae_128d_48k.pth).
 func TestMossVAE(t *testing.T) {
-	p := os.Getenv("HWNPU_MOSS_VAE")
+	p := os.Getenv("HWNPU_TEST_MOSS_VAE_FILE")
 	if p == "" {
-		t.Skip("HWNPU_MOSS_VAE is not set")
+		t.Skip("HWNPU_TEST_MOSS_VAE_FILE is not set")
 	}
 	f, err := Open(p)
 	if err != nil {

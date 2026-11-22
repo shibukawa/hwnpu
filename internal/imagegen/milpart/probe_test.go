@@ -14,9 +14,9 @@ import (
 
 // TestWriteAttentionProbes writes attentions alone (no weights: they compile in seconds) as Core
 // AI programs, to time the forms of an image DiT's attention at a model's shape with aicheck run
-// -calls N before changing its export (docs/design/image-apple.md). HWNPU_ATTN_PROBE_OUT is where
-// they go, HWNPU_ATTN_PROBE_SHAPE "heads,queries,keys,head_dim" (Qwen-Image at 1024 x 1024:
-// 32,4096,4608,128; Chroma: 24,4608,4608,128), HWNPU_ATTN_PROBE the comma separated forms
+// -calls N before changing its export (docs/design/image-apple.md). HWNPU_TEST_ATTN_PROBE_OUT is where
+// they go, HWNPU_TEST_ATTN_PROBE_SHAPE "heads,queries,keys,head_dim" (Qwen-Image at 1024 x 1024:
+// 32,4096,4608,128; Chroma: 24,4608,4608,128), HWNPU_TEST_ATTN_PROBE the comma separated forms
 // (default: all), each FORM or FORM:CHUNK (queries a chunk; default 512):
 //
 //	old    QChunkAttention, the scale on the scores, the bias added
@@ -26,18 +26,18 @@ import (
 //	whole  HeadAttention without the bias, the keys in one tensor
 //	split  HeadAttention with the last 512 keys another kind (a text's), the bias on them
 func TestWriteAttentionProbes(t *testing.T) {
-	out := os.Getenv("HWNPU_ATTN_PROBE_OUT")
+	out := os.Getenv("HWNPU_TEST_ATTN_PROBE_OUT")
 	if out == "" {
-		t.Skip("HWNPU_ATTN_PROBE_OUT")
+		t.Skip("HWNPU_TEST_ATTN_PROBE_OUT")
 	}
 	H, n, m, D := 32, 4096, 4608, 128
-	if s := os.Getenv("HWNPU_ATTN_PROBE_SHAPE"); s != "" {
+	if s := os.Getenv("HWNPU_TEST_ATTN_PROBE_SHAPE"); s != "" {
 		if _, err := fmt.Sscanf(s, "%d,%d,%d,%d", &H, &n, &m, &D); err != nil {
 			t.Fatal(err)
 		}
 	}
 	forms := "old,fold,head,headn,split"
-	if s := os.Getenv("HWNPU_ATTN_PROBE"); s != "" {
+	if s := os.Getenv("HWNPU_TEST_ATTN_PROBE"); s != "" {
 		forms = s
 	}
 	for _, f := range strings.Split(forms, ",") {

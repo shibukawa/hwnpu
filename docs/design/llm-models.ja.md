@@ -335,7 +335,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   ピース、byte fallback のない BPE、バイトのピースの欠け。
 - PLaMo-Embedding の `Decode(ids, false)` は `Encode` の逆 (区切りごとに先頭の ▁ を落とす)。HF の decode は特殊トークンの前に空白を足すので
   往復しない。`skipSpecial` は HF の `skip_special_tokens=True` と同じく区切りをつないでから戻す。
-- 正解: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`。実物の語彙のテストは `HWNPU_PLAMO_DIR`、`HWNPU_GEMMA4_DIR` が要る。
+- 正解: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`。実物の語彙のテストは `HWNPU_TEST_PLAMO_DIR`、`HWNPU_TEST_GEMMA4_DIR` が要る。
   スコアの同点と user-defined をまたぐ結合は実物の語彙では起きないので、小さなモデルのテスト (`TestSentencePiece`) が受け持つ。
 - PLaMo のトークナイザーの正解を作る環境: Python 3.12、`sentencepiece==0.2.0` (0.2.2 は `SentencePieceProcessor.Init` がない)、`protobuf`、
   `transformers<5`。

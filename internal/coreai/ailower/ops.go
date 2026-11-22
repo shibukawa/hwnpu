@@ -7,6 +7,8 @@ import (
 	"os"
 	"slices"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
 	"github.com/shibukawa/hwnpu/internal/milspec"
 )
@@ -44,12 +46,12 @@ func (l *lowerer) op(op *milspec.Operation) {
 		l.vals[out] = v
 	}
 	switch {
-	case typ == "real_div" && l.scalarConst(op, "y") && os.Getenv("HWNPU_AILOWER_DIVIDE") == "":
+	case typ == "real_div" && l.scalarConst(op, "y") && !devenv.On("ailower.divide"):
 		// x / c as x times 1 / c: on the Neural Engine, Core AI's divide_v1 by a constant came
 		// out as about c x plus an offset a channel in PP-OCR's detector (the exact gelu's x /
 		// sqrt 2 after a depthwise 3 x 3 and a 1 x 1: twice the value, 0.05 the detector's
 		// cosine), though not on its CPU or GPU, nor in a program of those three operations
-		// alone (docs/design/vision-models.md). HWNPU_AILOWER_DIVIDE=1 keeps divide_v1, for
+		// alone (docs/design/vision-models.md). HWNPU_DEV=ailower.divide=1 keeps divide_v1, for
 		// looking into it
 		x := l.in(op, "x")
 		set(l.binary("mul_v1", x, l.scalar(x.elem, 1/l.float(op, "y", 1)), oshape))
@@ -489,12 +491,12 @@ func (l *lowerer) sliceByIndex(op *milspec.Operation, oshape []int) val {
 }
 
 // note tells of what the program lowers to that the Neural Engine gets wrong for some values
-// (docs/design/apple-neural-engine.md): LintPackage collects them, HWNPU_AILOWER_NOTES=1 prints them as programs
+// (docs/design/apple-neural-engine.md): LintPackage collects them, HWNPU_DEV=ailower.notes=1 prints them as programs
 // are lowered.
 func (l *lowerer) note(msg string) {
 	if l.notes != nil {
 		*l.notes = append(*l.notes, msg)
-	} else if os.Getenv("HWNPU_AILOWER_NOTES") == "1" {
+	} else if devenv.On("ailower.notes") {
 		fmt.Fprintln(os.Stderr, "ailower note:", msg)
 	}
 }

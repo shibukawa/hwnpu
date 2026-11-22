@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
@@ -125,8 +127,8 @@ func (g *Graph) Named(name string) (b []byte, fromDevice, toDevice func() error,
 		func() error { return buf.SyncToDevice(p.Offset, p.Bytes) }, nil
 }
 
-// Prefetch is the image pipelines' GraphOptions.Prefetch: on unless HWNPU_IRON_PREFETCH=0.
-var Prefetch = os.Getenv("HWNPU_IRON_PREFETCH") != "0"
+// Prefetch is the image pipelines' GraphOptions.Prefetch: on unless HWNPU_DEV=iron.prefetch=0.
+var Prefetch = !devenv.IsOff("iron.prefetch")
 
 // GraphOptions are OpenGraphWith's choices.
 type GraphOptions struct {

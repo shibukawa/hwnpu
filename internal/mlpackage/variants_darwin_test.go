@@ -11,12 +11,12 @@ import (
 	"github.com/shibukawa/hwnpu/internal/types"
 )
 
-// Compiles one small program per operation the converters emit, selected by HWNPU_VARIANT, so a
+// Compiles one small program per operation the converters emit, selected by HWNPU_TEST_MLPACKAGE_VARIANT, so a
 // loader crash on one of them can be pinned down from a shell loop.
 func TestOpVariant(t *testing.T) {
-	name := os.Getenv("HWNPU_VARIANT")
+	name := os.Getenv("HWNPU_TEST_MLPACKAGE_VARIANT")
 	if name == "" {
-		t.Skip("HWNPU_VARIANT not set")
+		t.Skip("HWNPU_TEST_MLPACKAGE_VARIANT not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)

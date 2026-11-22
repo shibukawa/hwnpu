@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 )
 
 // HostStep is a host step of a version that hwnpu runs itself, before command Command
@@ -361,7 +363,7 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 			if err := m.loadExperts(route.Layer, p.loads); err != nil {
 				return err
 			}
-			if os.Getenv("HWNPU_IRON_TIMING") != "" {
+			if devenv.On("iron.timing") {
 				fmt.Fprintf(os.Stderr, "moe pass %d of layer %d: %d experts copied in, %.1f ms\n", i, route.Layer, len(p.loads), time.Since(t0).Seconds()*1000)
 			}
 		}
@@ -392,7 +394,7 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 				return err
 			}
 			rt.outs = append(rt.outs, y)
-			if os.Getenv("HWNPU_IRON_TIMING") != "" {
+			if devenv.On("iron.timing") {
 				fmt.Fprintf(os.Stderr, "moe pass: x %.1f ms, run %.1f ms, y %.1f ms\n", t1.Sub(t0).Seconds()*1000,
 					t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
 			}

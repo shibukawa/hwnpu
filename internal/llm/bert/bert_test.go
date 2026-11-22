@@ -285,7 +285,7 @@ func TestIntelIR(t *testing.T) {
 	}
 }
 
-// A real checkpoint (HWNPU_BERT_DIR: config.json and model.safetensors, such as
+// A real checkpoint (HWNPU_TEST_BERT_DIR: config.json and model.safetensors, such as
 // sentence-transformers/all-MiniLM-L6-v2) lowered to OpenVINO IR gives the last hidden state
 // the MIL program gives with milcpu (whose agreement with PyTorch is checked on the Mac): the same
 // in fp16, and with the quantization's error in int8 and int4, measured as the cosine of the
@@ -294,9 +294,9 @@ func TestIntelIR(t *testing.T) {
 // all-MiniLM-L6-v2 (2026-10-30): int8 0.9995, int4 0.934 (per row) to 0.961 (groups of 32) with
 // the mse scales, 0.909 per row with the uniform ones; lut4 gives 0.23 and lut8 0.9988 with milcpu.
 func TestIntelIRCheckpoint(t *testing.T) {
-	dir, py := os.Getenv("HWNPU_BERT_DIR"), ovcpu.Python()
+	dir, py := os.Getenv("HWNPU_TEST_BERT_DIR"), ovcpu.Python()
 	if dir == "" || py == "" {
-		t.Skip("HWNPU_BERT_DIR or HWNPU_OV_PYTHON is not set")
+		t.Skip("HWNPU_TEST_BERT_DIR or HWNPU_OV_PYTHON is not set")
 	}
 	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
 	if err != nil {

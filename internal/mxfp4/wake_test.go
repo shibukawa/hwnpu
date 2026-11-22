@@ -8,11 +8,11 @@ import (
 	"time"
 )
 
-// TestWake times how long after a Run starts each of its workers starts (HWNPU_MXFP4's
+// TestWake times how long after a Run starts each of its workers starts (HWNPU_DEV=mxfp4.
 // bench=wake): the workers sleep between Runs, and the scheduler wakes them one after another.
 func TestWake(t *testing.T) {
 	if v, _ := Opt("bench"); v != "wake" {
-		t.Skip("HWNPU_MXFP4=bench=wake")
+		t.Skip("HWNPU_DEV=mxfp4.bench=wake")
 	}
 	n := runtime.GOMAXPROCS(0)
 	for _, gap := range []time.Duration{0, time.Millisecond, 1500 * time.Microsecond, 2 * time.Millisecond, 3 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond} {

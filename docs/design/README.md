@@ -66,6 +66,7 @@ decisions. History stays in git.
 | [audio-models.md](audio-models.md) | Whisper, TTS, Magenta RT2, MOSS-SoundEffect, SwiftF0, Basic Pitch |
 | [distribution.md](distribution.md) | `models.yaml`, the cache root, sources (folder, WebDAV, S3), downloads, gated repositories, licenses, prebuilt distribution, disk sharing (clone / reflink), cleanup |
 | [hwnpud.md](hwnpud.md) | hwnpud (design, not built): one per-user process on the Mac and Linux owns the NPU and the models; model and cache management, socket, supervisor and engine, scheduling across apps, installing and distributing, signing |
+| [variables.md](variables.md) | hwnpu's environment variables: the settings, the machine's libraries, the developers' switches (`HWNPU_DEV`) and the tests' (`HWNPU_TEST_<GROUP>_<ROLE>`, `HWNPU_TEST_NPU`), with the names before |
 | [cli.md](cli.md) | The commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`, `hwnpu-dev` …), the OpenAI API, OpenCode, terminal display, Ctrl+C |
 | [memory-and-power.md](memory-and-power.md) | Energy measurement, power policy, memory measurement, machine memory classes, residency |
 | [quantization.md](quantization.md) | Weight formats (lut4/6/8, int8, q4/q6/q8, mxfp4), GPTQ, rotation, per-model choices |

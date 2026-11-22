@@ -254,10 +254,10 @@ hwnpu の Level Zero の経路で失敗するとき、同じ IR を OpenVINO で
 
 ```bash
 python3 -m venv ~/ov && ~/ov/bin/pip install openvino numpy
-HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvino --tier none --context 4096
+HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_DEV=ov.device=NPU hwnpu-chat --backend openvino --tier none --context 4096
 ```
 
-`HWNPU_OV_DEVICE=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `HWNPU_OV_PYTHON` に `python.exe` のパスを指定します。
+`HWNPU_DEV=ov.device=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `HWNPU_OV_PYTHON` に `python.exe` のパスを指定します。
 
 `--backend` のないコマンド (hwnpu-image、hwnpu-audio) も、環境変数 `HWNPU_BACKEND=openvino` で同じように OpenVINO で動きます。このときコマンドは機械を Intel のものとして扱い、Intel の NPU に向けた変換 (OpenVINO IR) をそのまま OpenVINO に渡すので、Intel の NPU のない機械 (AMD の機械など) でも Intel の経路を変換から結果まで確かめられます。
 

@@ -15,17 +15,17 @@ import (
 )
 
 // TestS3Server runs the S3 store against a real server (RustFS: docs/cache-sharing-design.md 7.2), when
-// HWNPU_S3_TEST_ENDPOINT names it (with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY). The bucket
-// is HWNPU_S3_TEST_BUCKET, which must be there (Cloudflare R2: region auto), or hwnpu-test, made
-// if missing; the region is HWNPU_S3_TEST_REGION, else us-east-1.
+// HWNPU_TEST_S3_ENDPOINT names it (with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY). The bucket
+// is HWNPU_TEST_S3_BUCKET, which must be there (Cloudflare R2: region auto), or hwnpu-test, made
+// if missing; the region is HWNPU_TEST_S3_REGION, else us-east-1.
 func TestS3Server(t *testing.T) {
-	ep := os.Getenv("HWNPU_S3_TEST_ENDPOINT")
+	ep := os.Getenv("HWNPU_TEST_S3_ENDPOINT")
 	if ep == "" {
-		t.Skip("HWNPU_S3_TEST_ENDPOINT is not set")
+		t.Skip("HWNPU_TEST_S3_ENDPOINT is not set")
 	}
 	ctx := context.Background()
-	region := cmp.Or(os.Getenv("HWNPU_S3_TEST_REGION"), "us-east-1")
-	bucket := os.Getenv("HWNPU_S3_TEST_BUCKET")
+	region := cmp.Or(os.Getenv("HWNPU_TEST_S3_REGION"), "us-east-1")
+	bucket := os.Getenv("HWNPU_TEST_S3_BUCKET")
 	if bucket == "" {
 		bucket = "hwnpu-test"
 		c, err := s3.New(s3.WithEndpoint(ep), s3.WithRegion(region))

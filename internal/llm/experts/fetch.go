@@ -25,7 +25,7 @@ type reader struct {
 	wg     sync.WaitGroup
 	bufs   sync.Pool
 
-	// for HWNPU_MOE_DEBUG's time: the runs that waited for a demand, its pieces read and the wait
+	// for HWNPU_DEV's moe.time: the runs that waited for a demand, its pieces read and the wait
 	demands, read atomic.Int64
 	waited        atomic.Int64
 	coldAt        atomic.Int64 // when a run last found experts out of memory (UnixNano)

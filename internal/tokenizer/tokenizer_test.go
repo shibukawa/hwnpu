@@ -70,11 +70,11 @@ func TestEncodeDecode(t *testing.T) {
 }
 
 // TestLFM3 checks the LFM3 tokenizer against the ids Hugging Face gave for the reference prompt
-// (tools/ref/ref_logits.py). It needs HWNPU_LFM3_DIR with tokenizer.json.
+// (tools/ref/ref_logits.py). It needs HWNPU_TEST_LFM3_DIR with tokenizer.json.
 func TestLFM3(t *testing.T) {
-	dir := os.Getenv("HWNPU_LFM3_DIR")
+	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_LFM3_DIR not set")
+		t.Skip("HWNPU_TEST_LFM3_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {
@@ -149,11 +149,11 @@ func TestNFC(t *testing.T) {
 }
 
 // TestQwen35 checks the Qwen3.5 tokenizer against the ids Hugging Face's tokenizers gave. It needs
-// HWNPU_QWEN35_DIR with tokenizer.json (any Qwen3.5 size: they share it).
+// HWNPU_TEST_QWEN35_DIR with tokenizer.json (any Qwen3.5 size: they share it).
 func TestQwen35(t *testing.T) {
-	dir := os.Getenv("HWNPU_QWEN35_DIR")
+	dir := os.Getenv("HWNPU_TEST_QWEN35_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_QWEN35_DIR not set")
+		t.Skip("HWNPU_TEST_QWEN35_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {

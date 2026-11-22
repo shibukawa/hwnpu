@@ -11,7 +11,7 @@ hwnpu が乗るベンダーのスタック、コードの分け方、cgo を使�
 | ベンダー | OS | hwnpu の経路 | バックエンド名 |
 |---|---|---|---|
 | Intel NPU (Core Ultra、Meteor Lake 以降) | Linux、Windows | Level Zero のローダ (`libze_loader.so.1` / `ze_loader.dll`) + NPU のグラフ拡張を purego で | `levelzero` |
-| Intel (NPU なしでの確認) | どれでも | OpenVINO IR を OpenVINO 自身で (CPU プラグイン、または `HWNPU_OV_DEVICE=NPU`) | `openvino` (`HWNPU_BACKEND=openvino` のときだけ) |
+| Intel (NPU なしでの確認) | どれでも | OpenVINO IR を OpenVINO 自身で (CPU プラグイン、または `HWNPU_DEV=ov.device=NPU`) | `openvino` (`HWNPU_BACKEND=openvino` のときだけ) |
 | AMD XDNA (Ryzen AI、Phoenix 以降) | Linux | カーネルドライバ `amdxdna` の ioctl と mmap を `golang.org/x/sys/unix` で (purego すら不要) | `xdna` |
 | AMD XDNA | Windows (試験は Linux) | XRT (`xrt_coreutil.dll`) を、実行時に読む小さな C のライブラリ `native/xrtshim` 経由で | `xrt` (Linux では `HWNPU_BACKEND=xrt` のときだけ) |
 | Apple Neural Engine | macOS | Core ML を `purego/objc` で | `coreml` (既定) |

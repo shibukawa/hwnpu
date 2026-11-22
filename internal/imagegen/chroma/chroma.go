@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -274,7 +276,7 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 	for k := range conds {
 		// the prompt's tokens and one pad (the pipeline's mask)
 		conds[k].Keys = min(ns[k]+1, R)
-		if n, err := strconv.Atoi(os.Getenv("HWNPU_CHROMA_KEYS")); err == nil && n > 0 { // a test of the text's mask
+		if n, err := strconv.Atoi(devenv.Value("chroma.keys")); err == nil && n > 0 { // a test of the text's mask
 			conds[k].Keys = min(n, R)
 		}
 	}

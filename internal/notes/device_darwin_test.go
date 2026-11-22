@@ -10,11 +10,11 @@ import (
 	"github.com/shibukawa/hwnpu/internal/onnx"
 )
 
-// On the Neural Engine (HWNPU_BASIC_PITCH_DEVICE=1), the program gives a window's activations.
+// On the Neural Engine (HWNPU_TEST_NPU), the program gives a window's activations.
 func TestOnDevice(t *testing.T) {
-	path, ref := os.Getenv("HWNPU_BASIC_PITCH"), os.Getenv("HWNPU_BASIC_PITCH_REF")
-	if path == "" || ref == "" || os.Getenv("HWNPU_BASIC_PITCH_DEVICE") == "" {
-		t.Skip("HWNPU_BASIC_PITCH, HWNPU_BASIC_PITCH_REF and HWNPU_BASIC_PITCH_DEVICE are not set")
+	path, ref := os.Getenv("HWNPU_TEST_BASICPITCH_FILE"), os.Getenv("HWNPU_TEST_BASICPITCH_REF")
+	if path == "" || ref == "" || os.Getenv("HWNPU_TEST_NPU") == "" {
+		t.Skip("HWNPU_TEST_BASICPITCH_FILE, HWNPU_TEST_BASICPITCH_REF and HWNPU_TEST_NPU are not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "", "")

@@ -12,8 +12,8 @@
 |---|---|---|
 | `--draft N` | 8 | 生成のプログラムの 1 回のトークン数。下書きは N − 1。0 か 1 でなし (Q=1) |
 | `--mtp` | `auto` | チェックポイントに MTP の層があれば (Qwen3.5) それからも下書き。`off` はプロンプトだけ |
-| `HWNPU_MTP_DRAFTS` | 2 (`mtpDrafts`) | MTP の下書きを続けていくつ |
-| `HWNPU_IRON_DRAFTS=0` | | AMD: 確かめる版を使わない |
+| `HWNPU_DEV=mtp.drafts` | 2 (`mtpDrafts`) | MTP の下書きを続けていくつ |
+| `HWNPU_DEV=iron.drafts=0` | | AMD: 確かめる版を使わない |
 | `--think` / `--no-think` | 考える (モデルの `no_think` があればそれ) | 答える前に考えさせる |
 | `--think-budget N` | 1024 | 答えに移らせるまでの思考のトークン数。0 で無制限 |
 | `--rep` | 1.05 | 答えのトークンへの繰り返しの罰 |

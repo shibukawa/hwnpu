@@ -423,7 +423,7 @@ Depends only on `golang.org/x/text`. Each is checked against HF tokenizers.
   adds spaces before special tokens, so HF does not round-trip. `skipSpecial` joins segments first, as
   HF's `skip_special_tokens=True`.
 - Golden data: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`; real-vocab tests
-  need `HWNPU_PLAMO_DIR`, `HWNPU_GEMMA4_DIR`. Score ties and merges across user-defined pieces never
+  need `HWNPU_TEST_PLAMO_DIR`, `HWNPU_TEST_GEMMA4_DIR`. Score ties and merges across user-defined pieces never
   occur in the real vocab, so the tiny-model tests (`TestSentencePiece`) cover them.
 - Reference env for PLaMo's tokenizer: Python 3.12, `sentencepiece==0.2.0` (0.2.2 lacks
   `SentencePieceProcessor.Init`), `protobuf`, `transformers<5`.

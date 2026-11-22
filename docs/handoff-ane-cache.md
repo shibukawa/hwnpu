@@ -99,7 +99,7 @@ M2 の容量は済み (1.7)。残りは `hwnpu-dev probe cache` の 4 節のコ�
 - `internal/llm/runner`: `runner.Open` (1 本の読み込み)
 - `internal/llm/chain`: 部品の読み込みと配置の確認
 - `internal/backend/coreml/graph_darwin.go`: コンパイル済みキャッシュ (`compiledModel`)、配置のキャッシュ
-  - `HWNPU_COREML_TRACE=1` で読み込みの内訳が出る
+  - `HWNPU_DEV=coreml.trace=1` で読み込みの内訳が出る
 - `internal/backend/coreml/plan_darwin.go`: `MLComputePlan`
   - 待ちは 10 分 (#99 で 2 分から延ばした)
   - 内部の失敗は 1 回だけやり直す

@@ -47,8 +47,8 @@ P="$M/PP-OCRv6_small_det_onnx/*.mlpackage $M/PP-OCRv6_small_rec_onnx/*.mlpackage
 ## 3. 割り算の誤りがそのチップでも出るか (記録だけ)
 
 ```sh
-HWNPU_AILOWER_DIVIDE=1 AICHECK_WORST=1 /tmp/aicheck run -cpu $M/PP-OCRv6_small_det_onnx/det-r1-fp16-960x960.mlpackage
-HWNPU_AILOWER_DIVIDE=1 HWNPU_AILOWER_CUT=133 AICHECK_WORST=1 /tmp/aicheck run -cpu $M/PP-OCRv6_small_det_onnx/det-r1-fp16-960x960.mlpackage
+HWNPU_DEV=ailower.divide=1 AICHECK_WORST=1 /tmp/aicheck run -cpu $M/PP-OCRv6_small_det_onnx/det-r1-fp16-960x960.mlpackage
+HWNPU_DEV=ailower.divide,ailower.cut=133 AICHECK_WORST=1 /tmp/aicheck run -cpu $M/PP-OCRv6_small_det_onnx/det-r1-fp16-960x960.mlpackage
 ```
 
 - M3: 1 行目は `y cos 0.05`。2 行目は `real_div_98 cos 0.984`、相対 RMS 1.12 で、値は全体が正しい値の約 2 倍 (√2 で割るはずが √2 倍になる。[docs/design/vision-models.md](design/vision-models.md))。M2 の `aicheck rules -only div` ([apple-neural-engine](design/apple-neural-engine.md)) も合わせて見る

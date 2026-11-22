@@ -52,7 +52,7 @@ func writeGraph(t *testing.T, dir string, bank, arg int) {
 // within the VAE's peak (Qwen-Image's 512² DiT would otherwise set the run's peak, docs/design/image-amd.md).
 func TestPrefetchFits(t *testing.T) {
 	if !iron.Prefetch {
-		t.Skip("HWNPU_IRON_PREFETCH=0")
+		t.Skip("HWNPU_DEV=iron.prefetch=0")
 	}
 	root := t.TempDir()
 	writeGraph(t, filepath.Join(root, "dit_in"), 10, 6)

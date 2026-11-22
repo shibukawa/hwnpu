@@ -19,13 +19,13 @@ import (
 
 // The tests here check a Core ML export's programs on the Neural Engine against the float32
 // references tools/ref/ref_chroma_parts.py and ref_chroma_lean.py write, as raw float32 files
-// (NAME.f32) in HWNPU_CHROMA_REF. HWNPU_CHROMA_EXPORT is the export; HWNPU_CHROMA_CPU=1 runs the
+// (NAME.f32) in HWNPU_TEST_CHROMA_REF. HWNPU_TEST_CHROMA_EXPORT is the export; HWNPU_TEST_CHROMA_CPU=1 runs the
 // CPU interpreter instead of the device, HWNPU_BACKEND=coreai Core AI instead of Core ML.
 
 func refDir(t *testing.T) (export, ref string) {
-	export, ref = os.Getenv("HWNPU_CHROMA_EXPORT"), os.Getenv("HWNPU_CHROMA_REF")
+	export, ref = os.Getenv("HWNPU_TEST_CHROMA_EXPORT"), os.Getenv("HWNPU_TEST_CHROMA_REF")
 	if export == "" || ref == "" {
-		t.Skip("HWNPU_CHROMA_EXPORT and HWNPU_CHROMA_REF name an export and a reference")
+		t.Skip("HWNPU_TEST_CHROMA_EXPORT and HWNPU_TEST_CHROMA_REF name an export and a reference")
 	}
 	return export, ref
 }
@@ -44,7 +44,7 @@ func readRef(t *testing.T, dir, name string) []float32 {
 }
 
 func testDevice(t *testing.T) *hwnpu.Device {
-	if os.Getenv("HWNPU_CHROMA_CPU") == "1" {
+	if os.Getenv("HWNPU_TEST_CHROMA_CPU") == "1" {
 		return nil
 	}
 	cache := ""
@@ -162,7 +162,7 @@ func TestDiTOnDevice(t *testing.T) {
 	c := m.Dit
 	E, N, T := c.Hidden, c.Tokens(), c.TextRows
 	keys := refInt(t, ref, "keys")
-	only := os.Getenv("HWNPU_CHROMA_PART")
+	only := os.Getenv("HWNPU_TEST_CHROMA_PART")
 	check := func(what string, got, want []float32, rows ...[2]int) {
 		var g, w []float32
 		for _, r := range rows {
@@ -249,7 +249,7 @@ func TestDiTOnDevice(t *testing.T) {
 	}
 	if only == "" || only == "singles" {
 		for gi, g := range m.Singles {
-			if os.Getenv("HWNPU_CHROMA_LAST") == "1" && gi != len(m.Singles)-1 {
+			if os.Getenv("HWNPU_TEST_CHROMA_LAST") == "1" && gi != len(m.Singles)-1 {
 				continue
 			}
 			var rs []int
@@ -278,12 +278,12 @@ func TestDiTOnDevice(t *testing.T) {
 	}
 }
 
-// TestLoadOnDevice loads each program of the export (HWNPU_CHROMA_EXPORT) and runs it twice on
+// TestLoadOnDevice loads each program of the export (HWNPU_TEST_CHROMA_EXPORT) and runs it twice on
 // small inputs: its compile, load and call times, and whether it is all on the NPU.
 func TestLoadOnDevice(t *testing.T) {
-	export := os.Getenv("HWNPU_CHROMA_EXPORT")
+	export := os.Getenv("HWNPU_TEST_CHROMA_EXPORT")
 	if export == "" {
-		t.Skip("HWNPU_CHROMA_EXPORT names an export")
+		t.Skip("HWNPU_TEST_CHROMA_EXPORT names an export")
 	}
 	dev := testDevice(t)
 	m, err := ReadProgramManifest(export)
@@ -294,7 +294,7 @@ func TestLoadOnDevice(t *testing.T) {
 	for _, g := range append(append([]Group(nil), m.Doubles...), m.Singles...) {
 		names = append(names, g.Name)
 	}
-	if only := os.Getenv("HWNPU_CHROMA_PART"); only != "" {
+	if only := os.Getenv("HWNPU_TEST_CHROMA_PART"); only != "" {
 		names = []string{only}
 	}
 	for _, name := range names {
@@ -389,7 +389,7 @@ func TestTextGroupsDeviceVsCPU(t *testing.T) {
 		copy(x[i*H:], scaled(fromBF16s(b), m.EmbedScale))
 	}
 	mask := maskBias(keys-1, T)
-	chain := os.Getenv("HWNPU_CHROMA_CHAIN") == "1"
+	chain := os.Getenv("HWNPU_TEST_CHROMA_CHAIN") == "1"
 	xn := x
 	for _, name := range m.Text {
 		in := map[string][]float32{"x": x, "mask": mask}
@@ -488,7 +488,7 @@ func TestCallsOnDevice(t *testing.T) {
 		neg = encode(readRef(t, ref, "neg_ids"), refInt(t, ref, "neg_keys"))
 	}
 	only := -1
-	if v := os.Getenv("HWNPU_CHROMA_CALL"); v != "" {
+	if v := os.Getenv("HWNPU_TEST_CHROMA_CALL"); v != "" {
 		fmt.Sscan(v, &only)
 	}
 	for k := range s {
