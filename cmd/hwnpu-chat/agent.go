@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,9 +11,8 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/agent/coding"
 	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/internal/agent"
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
 
@@ -83,14 +81,14 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if b, err := os.ReadFile(filepath.Join(work, "AGENTS.md")); err == nil {
 		instructions = string(b)
 	}
-	searcher, err := agent.NewSearcher(c.Search, os.Getenv("BRAVE_API_KEY"))
+	searcher, err := coding.NewSearcher(c.Search, os.Getenv("BRAVE_API_KEY"))
 	if err != nil {
 		return err
 	}
 	tools := split(c.Tools)
 	for _, t := range tools {
-		if !slices.Contains(agent.Names, t) {
-			return fmt.Errorf("--tools: no tool %q (%s)", t, strings.Join(agent.Names, ", "))
+		if !slices.Contains(coding.Names, t) {
+			return fmt.Errorf("--tools: no tool %q (%s)", t, strings.Join(coding.Names, ", "))
 		}
 	}
 	if c.SearchFirst && !slices.Contains(tools, "search") {
@@ -125,9 +123,9 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		budget = -1 // no limit
 	}
 	ed := console.NewEditor("agent")
-	cfg := agent.Config{
+	cfg := coding.Config{
 		Dir: work, Tools: tools, System: opening, Instructions: instructions,
-		Think: c.think(e), KeepThinking: c.Keep, ThinkBudget: budget, Sampling: chatSampling(c.sampling()),
+		Think: c.think(e), KeepThinking: c.Keep, ThinkBudget: budget, Sampling: c.sampling(),
 		MaxTokens: c.N, Reserve: c.N, Steps: c.Steps, Dump: c.Dump, Log: os.Stderr,
 		Search: searcher, SearchFirst: c.SearchFirst, AllowList: split(c.Allow),
 	}
@@ -143,7 +141,7 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		cfg.Allow = func(string, string) bool { return false }
 		fmt.Fprintln(os.Stderr, "no terminal: the agent runs no command and changes no file without --yes")
 	}
-	s, err := agent.New(agentModel{e}, cfg)
+	s, err := coding.New(e, cfg)
 	if err != nil {
 		return err
 	}
@@ -177,14 +175,12 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 
 // runTask gives the agent one task, showing what it does: the answer and the calls on standard
 // output, the thinking and the tools' results dim, the statistics in gray on standard error.
-func runTask(s *agent.Session, task string) error {
+func runTask(s *coding.Session, task string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	var sent chat.Stream
 	thought, answered := false, false
-	ev := agent.Events{
-		Delta: func(reasoning, content string) {
-			dr, dc := sent.Next(reasoning, content)
+	ev := coding.Events{
+		Delta: func(dr, dc string) {
 			if dr != "" {
 				fmt.Fprint(os.Stderr, dimmed(dr))
 				thought = true
@@ -209,20 +205,21 @@ func runTask(s *agent.Session, task string) error {
 		},
 		Result: func(name, result string) {
 			fmt.Fprintln(os.Stderr, dimmed(preview(result, 5)))
-			sent, thought, answered = chat.Stream{}, false, false
+			thought, answered = false, false
 		},
 		Note: func(text string) {
 			if thought || answered {
 				fmt.Println()
 			}
 			console.Notef("[%s]\n", text)
-			sent, thought, answered = chat.Stream{}, false, false
+			thought, answered = false, false
 		},
-		Done: func(c chat.Completion) {
+		Done: func(a text.Answer) {
+			c := a.Stats
 			if thought || answered {
 				fmt.Println() // the statistics on a line of their own
 			}
-			sent, thought, answered = chat.Stream{}, false, false
+			thought, answered = false, false
 			looped := ""
 			if c.Looped {
 				looped = ", stopped repeating itself"
@@ -234,7 +231,7 @@ func runTask(s *agent.Session, task string) error {
 				looped += fmt.Sprintf("; cache %d", c.Cache)
 			}
 			console.Notef("[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]\n",
-				c.Stats.Prompt, c.Stats.Prompt-c.Reused, c.Prefill.Seconds(), c.Stats.Generated, float64(c.Stats.Generated)/max(c.Decode.Seconds(), 1e-9), looped)
+				c.Prompt, c.Prompt-c.Reused, c.Prefill.Seconds(), c.Generated, float64(c.Generated)/max(c.Decode.Seconds(), 1e-9), looped)
 		},
 	}
 	_, err := s.Run(ctx, task, ev)
@@ -245,9 +242,9 @@ func runTask(s *agent.Session, task string) error {
 	case errors.Is(err, context.Canceled):
 		console.Notef("[stopped]\n")
 		return nil
-	case errors.Is(err, agent.ErrCut):
+	case errors.Is(err, coding.ErrCut):
 		return fmt.Errorf("%w; -n allows longer answers", err)
-	case errors.Is(err, agent.ErrLoop):
+	case errors.Is(err, coding.ErrLoop):
 		return fmt.Errorf("%w; what it answered so far is above", err)
 	}
 	return err
@@ -270,92 +267,3 @@ var bold, reset = func() (string, string) {
 	}
 	return "", ""
 }()
-
-// agentModel is a chat model as the agent's loop asks it (agent.Model): the conversation, the
-// tools and the answer in the engine's types, through text.Chatter.
-type agentModel struct{ c *text.Chatter }
-
-func (m agentModel) Context() int { return m.c.Context() }
-
-func (m agentModel) Count(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options) (int, error) {
-	tm, tt, err := textConversation(msgs, tools)
-	if err != nil {
-		return 0, err
-	}
-	think := !o.NoThink
-	return m.c.Count(ctx, tm, text.ChatOptions{Tools: tt, Think: &think, KeepThinking: o.KeepThinking})
-}
-
-func (m agentModel) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, maxTokens, thinkBudget int, emit func(partial chat.Answer) (stop bool)) (chat.Completion, error) {
-	var c chat.Completion
-	tm, tt, err := textConversation(msgs, tools)
-	if err != nil {
-		return c, err
-	}
-	think := !o.NoThink
-	co := text.ChatOptions{Tools: tt, Think: &think, KeepThinking: o.KeepThinking, MaxTokens: maxTokens, ThinkBudget: thinkBudget,
-		Sampling: &text.Sampling{Temperature: s.Temperature, TopK: s.TopK, TopP: s.TopP, Repetition: s.Repetition}}
-	if maxTokens <= 0 {
-		co.MaxTokens = text.Unlimited
-	}
-	if thinkBudget <= 0 {
-		co.ThinkBudget = -1 // none
-	}
-	var fn func(text.Delta) bool
-	if emit != nil {
-		var sofar chat.Answer // what the answer has added up to
-		fn = func(d text.Delta) bool {
-			sofar.Reasoning += d.Reasoning
-			sofar.Content += d.Text
-			return !emit(sofar)
-		}
-	}
-	a, err := m.c.Reply(ctx, tm, co, fn)
-	c.Reasoning, c.Content, c.Rendered, c.Raw = a.Reasoning, a.Text, a.Prompt, a.Raw
-	for _, tc := range a.ToolCalls {
-		var call chat.ToolCall
-		call.ID, call.Type, call.Function.Name, call.Function.Arguments = tc.ID, "function", tc.Name, tc.Arguments
-		c.ToolCalls = append(c.ToolCalls, call)
-	}
-	st := a.Stats
-	c.Stats = chat.Stats{Prompt: st.Prompt, Reused: st.Reused, Generated: st.Generated, Restored: st.Restored, Finish: a.Finish,
-		Looped: st.Looped, ThinkCut: st.ThinkCut, ThinkLooped: st.ThinkLooped, Drafted: st.Drafted, Accepted: st.Accepted, Calls: st.Calls,
-		Cache: st.Cache, Prefill: st.Prefill, Decode: st.Decode, Seed: st.Seed}
-	if c.Finish == "tool_calls" {
-		c.Finish = "stop"
-	}
-	return c, err
-}
-
-// textConversation is the agent's conversation and tools as text.Chatter takes them.
-func textConversation(msgs []chat.Message, tools []chat.Tool) ([]text.Message, []text.Tool, error) {
-	out := make([]text.Message, len(msgs))
-	for i, m := range msgs {
-		tm := text.Message{Role: m.Role, Text: m.Content.Text, ToolCallID: m.ToolCallID, Name: m.Name}
-		if m.Reasoning != nil {
-			tm.Reasoning = *m.Reasoning
-		}
-		for _, tc := range m.ToolCalls {
-			tm.ToolCalls = append(tm.ToolCalls, text.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
-		}
-		out[i] = tm
-	}
-	var tt []text.Tool
-	for _, t := range tools {
-		raw, err := json.Marshal(t)
-		if err != nil {
-			return nil, nil, err
-		}
-		tool, err := text.ParseTool(raw)
-		if err != nil {
-			return nil, nil, err
-		}
-		tt = append(tt, tool)
-	}
-	return out, tt, nil
-}
-
-// chatSampling is s as the agent's loop takes it.
-func chatSampling(s text.Sampling) chat.Sampling {
-	return chat.Sampling{Temperature: s.Temperature, TopK: s.TopK, TopP: s.TopP, Repetition: s.Repetition}
-}

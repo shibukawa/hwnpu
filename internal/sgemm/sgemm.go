@@ -12,6 +12,11 @@ import (
 	"sync"
 )
 
+// MinWork is the least work (flops) of a goroutine of MulAdd. Supertonic 3's text encoder (128
+// characters, products of 33 to 67 Mflop) on all 20 threads of a Ryzen AI 9 365 took 63 ms, at
+// 8 Mflop a goroutine 54 ms.
+const MinWork = 8 << 20
+
 // The kernel's block: up to MR rows of A (mr: 12 with AVX-512, else 6) by NR columns of B, and
 // the blocking of K, M and N.
 const (
@@ -131,6 +136,9 @@ func MulAdd(m, n, k int, a A, b Source, c []float32, ldc, threads int) {
 	if threads <= 0 {
 		threads = runtime.GOMAXPROCS(0)
 	}
+	// each goroutine packs the whole of A (B by rows), so a small product on many of them
+	// spends more packing than multiplying: at least MinWork flops a goroutine
+	threads = max(1, min(threads, 2*m*n*k/MinWork))
 	// split the columns into whole panels, or the rows when the columns are few
 	panels := (n + NR - 1) / NR
 	if threads > 1 && panels >= 2*threads {

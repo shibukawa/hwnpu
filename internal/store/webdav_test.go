@@ -363,3 +363,65 @@ func TestWebDAVConnections(t *testing.T) {
 		t.Errorf("%d connections for %d requests", n, d.requests.Load())
 	}
 }
+
+// TestWebDAVStall cuts a download whose server stops sending after half of it (and one whose
+// answer does not come) after davStall, and goes on from where it stopped.
+func TestWebDAVStall(t *testing.T) {
+	defer func(d time.Duration) { davStall = d }(davStall)
+	davStall = 200 * time.Millisecond
+	data := make([]byte, 1<<20)
+	rand.Read(data)
+	var gets atomic.Int64
+	release := make(chan struct{})
+	defer close(release)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(root), LockSystem: webdav.NewMemLS()}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			h.ServeHTTP(w, r)
+			return
+		}
+		switch gets.Add(1) {
+		case 1: // its answer does not come
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		case 2: // half, then nothing
+			w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+			w.Write(data[:len(data)/2])
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	t.Setenv("NETRC", filepath.Join(t.TempDir(), "none"))
+	st, err := OpenWebDAV(WebDAVConfig{Name: "nas", URL: srv.URL + "/dav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "f")
+	start := time.Now()
+	n, err := st.Get(context.Background(), "f", dst, nil)
+	if err != nil || n != int64(len(data)) {
+		t.Fatalf("Get: %d %v", n, err)
+	}
+	if got, _ := os.ReadFile(dst); !bytes.Equal(got, data) {
+		t.Error("the file is not the server's")
+	}
+	if g := gets.Load(); g != 3 {
+		t.Errorf("%d GETs, want 3", g)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("took %v", d)
+	}
+}

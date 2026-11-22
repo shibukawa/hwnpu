@@ -35,7 +35,7 @@ type TTSCmd struct {
 	Model     string   `short:"m" default:"speech" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (speech, lfm3-audio-tts:2b), a Hugging Face repository OWNER/NAME of an LFM3-Audio checkpoint, or on AMD's NPU an export's directory (tools/amd/iron_lfm3speech.py)."`
 	Out       string   `short:"o" default:"out.wav" type:"path" placeholder:"FILE" help:"The WAV file to write."`
 	Lang      string   `default:"en" placeholder:"LANG" help:"The language: a code of the model card (en, en-gb, ja, zh, ...) or a language's name."`
-	Voice     string   `enum:"female,male" default:"female" help:"The voice: female or male."`
+	Voice     string   `default:"female" help:"The voice: female or male; Supertonic's by its name too (F1 ... F5, M1 ... M5)."`
 	Seed      uint64   `placeholder:"N" help:"The random seed of the speech codes (0: a new one, logged so that it can be repeated)."`
 	MaxFrames int      `name:"max-frames" placeholder:"N" help:"Most audio frames of 80 ms (0: until the end of audio or a full cache)."`
 	Format    string   `placeholder:"FORMAT" help:"Weight format of the text model's programs (default: the model's, 8 bit tables)."`
@@ -86,8 +86,9 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 		return err
 	}
 	secs, t := float64(len(a.Samples))/float64(a.Rate), a.Stats
-	fmt.Fprintf(lw, "%d frames, %.2f s of audio in %.1f s (seed %d; the text model %.1f s, the depthformer %.1f s, the codec decoder %.1f s)\n",
-		t.Frames, secs, t.Took.Seconds(), t.Seed, t.Text.Seconds(), t.Depth.Seconds(), t.Codec.Seconds())
+	n1, n2, n3 := s.Stages()
+	fmt.Fprintf(lw, "%d frames, %.2f s of audio in %.2f s, %.1fx real time (seed %d; %s %.2f s, %s %.2f s, %s %.2f s)\n",
+		t.Frames, secs, t.Took.Seconds(), secs/t.Took.Seconds(), t.Seed, n1, t.Text.Seconds(), n2, t.Depth.Seconds(), n3, t.Codec.Seconds())
 	fmt.Println(c.Out)
 	return nil
 }

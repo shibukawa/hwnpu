@@ -269,7 +269,7 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 				start := time.Now()
 				fmt.Fprintf(os.Stderr, "%s: %s for %s%s\n", m.Name, name, what, formNote(m, j.model))
 				undo := chat.ActAsChip(chip)
-				f, err := makeReady(airole.PrepareEnv{Ctx: chat.WithModel(ctx, m), Model: m, Dir: chat.ModelDir(m), NPU: npu, Log: log})
+				f, err := makeReady(airole.PrepareEnv{Ctx: chat.WithModel(ctx, m), Model: m, Base: m, Dir: chat.ModelDir(m), NPU: npu, Log: log})
 				undo()
 				if err != nil {
 					if skip(m.Name+" ("+what+")", err) {

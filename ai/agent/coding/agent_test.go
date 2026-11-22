@@ -1,4 +1,4 @@
-package agent
+package coding
 
 import (
 	"context"
@@ -13,36 +13,40 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/text"
 )
 
 // script is a model that answers from a list, and remembers what it was asked.
 type script struct {
-	answers []chat.Answer
-	seen    [][]chat.Message
+	answers []text.Answer
+	seen    [][]text.Message
 	tools   []int // tools offered in each request
 	context int
 }
 
-func (s *script) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, _ chat.Sampling, _, _ int, emit func(chat.Answer) bool) (chat.Completion, error) {
+func (s *script) Reply(ctx context.Context, msgs []text.Message, o text.ChatOptions, fn func(text.Delta) bool) (text.Answer, error) {
 	s.seen = append(s.seen, slices.Clone(msgs))
-	s.tools = append(s.tools, len(tools))
+	s.tools = append(s.tools, len(o.Tools))
 	if len(s.answers) == 0 {
-		return chat.Completion{}, errors.New("the script has ended")
+		return text.Answer{}, errors.New("the script has ended")
 	}
 	a := s.answers[0]
 	s.answers = s.answers[1:]
-	if emit != nil {
-		emit(a)
+	if fn != nil {
+		fn(text.Delta{Reasoning: a.Reasoning, Text: a.Text})
 	}
-	return chat.Completion{Answer: a, Rendered: "prompt", Raw: "generated", Stats: chat.Stats{Finish: "stop", Generated: 1}}, nil
+	a.Prompt, a.Raw, a.Stats.Generated = "prompt", "generated", 1
+	if a.Finish == "" {
+		a.Finish = "stop"
+	}
+	return a, nil
 }
 
 // Count charges 4 tokens a message and a token per 4 characters.
-func (s *script) Count(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options) (int, error) {
+func (s *script) Count(ctx context.Context, msgs []text.Message, o text.ChatOptions) (int, error) {
 	n := 0
 	for _, m := range msgs {
-		n += 4 + len(m.Content.Text)/4
+		n += 4 + len(m.Text)/4
 	}
 	return n, nil
 }
@@ -54,18 +58,14 @@ func (s *script) Context() int {
 	return s.context
 }
 
-func call(name string, args map[string]any) chat.ToolCall {
-	var tc chat.ToolCall
-	tc.ID, tc.Type = "call_"+name, "function"
-	tc.Function.Name = name
+func call(name string, args map[string]any) text.ToolCall {
 	b, _ := json.Marshal(args)
-	tc.Function.Arguments = string(b)
-	return tc
+	return text.ToolCall{ID: "call_" + name, Name: name, Arguments: string(b)}
 }
 
-func calls(cs ...chat.ToolCall) chat.Answer { return chat.Answer{Reasoning: "hmm", ToolCalls: cs} }
+func calls(cs ...text.ToolCall) text.Answer { return text.Answer{Reasoning: "hmm", ToolCalls: cs} }
 
-func said(s string) chat.Answer { return chat.Answer{Reasoning: "hmm", Content: s} }
+func said(s string) text.Answer { return text.Answer{Reasoning: "hmm", Text: s} }
 
 func skipShell(t *testing.T) {
 	t.Helper()
@@ -90,7 +90,7 @@ func project(t *testing.T) string {
 func TestRun(t *testing.T) {
 	skipShell(t)
 	dir := project(t)
-	m := &script{answers: []chat.Answer{
+	m := &script{answers: []text.Answer{
 		calls(call("read", map[string]any{"path": "main.go"})),
 		calls(call("edit", map[string]any{"path": "main.go", "old": "return a - b", "new": "return a + b"})),
 		calls(call("bash", map[string]any{"command": "grep -n 'a + b' main.go"})),
@@ -125,13 +125,13 @@ func TestRun(t *testing.T) {
 			t.Errorf("message %d is %s, want %s", i, last[i].Role, role)
 		}
 	}
-	if last[3].ToolCallID != "call_read" || last[3].Name != "read" || !strings.Contains(last[3].Content.Text, "return a - b") {
+	if last[3].ToolCallID != "call_read" || last[3].Name != "read" || !strings.Contains(last[3].Text, "return a - b") {
 		t.Errorf("tool message %+v", last[3])
 	}
-	if last[2].Reasoning != nil || last[2].Content.Text != "" || len(last[2].ToolCalls) != 1 {
+	if last[2].Reasoning != "" || last[2].Text != "" || len(last[2].ToolCalls) != 1 {
 		t.Errorf("assistant message %+v", last[2])
 	}
-	if msgs := s.Messages(); len(msgs) != 9 || msgs[8].Content.Text != "Fixed add." {
+	if msgs := s.Messages(); len(msgs) != 9 || msgs[8].Text != "Fixed add." {
 		t.Errorf("%d messages after the task", len(msgs))
 	}
 	s.Reset()
@@ -142,7 +142,7 @@ func TestRun(t *testing.T) {
 
 // -keep-thinking keeps the reasoning of the rounds of a task.
 func TestKeepThinking(t *testing.T) {
-	m := &script{answers: []chat.Answer{calls(call("read", map[string]any{"path": "none"})), said("done")}}
+	m := &script{answers: []text.Answer{calls(call("read", map[string]any{"path": "none"})), said("done")}}
 	s, err := New(m, Config{Dir: t.TempDir(), KeepThinking: true})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestKeepThinking(t *testing.T) {
 	if _, err := s.Run(context.Background(), "task", Events{}); err != nil {
 		t.Fatal(err)
 	}
-	if r := m.seen[1][2].Reasoning; r == nil || *r != "hmm" {
+	if r := m.seen[1][2].Reasoning; r != "hmm" {
 		t.Errorf("reasoning %v", r)
 	}
 }
@@ -165,7 +165,7 @@ func sess(t *testing.T, cfg Config) *Session {
 }
 
 // run makes one call in a fresh session.
-func run(t *testing.T, cfg Config, tc chat.ToolCall) string {
+func run(t *testing.T, cfg Config, tc text.ToolCall) string {
 	t.Helper()
 	return sess(t, cfg).call(context.Background(), tc, Events{})
 }
@@ -382,11 +382,11 @@ func TestBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the same file three times, each call a little different so that none counts as a repeat
-	read := func(limit int) chat.Answer {
+	read := func(limit int) text.Answer {
 		return calls(call("read", map[string]any{"path": "f.txt", "limit": limit}))
 	}
 	// system (about 200 tokens) + 3 whole results (177) is over 320; folding 2 brings it under
-	m := &script{context: 420, answers: []chat.Answer{read(100), read(101), read(102), said("ok")}}
+	m := &script{context: 420, answers: []text.Answer{read(100), read(101), read(102), said("ok")}}
 	s, err := New(m, Config{Dir: dir, Reserve: 100, Keep: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +401,7 @@ func TestBudget(t *testing.T) {
 	var tools []string
 	for _, msg := range last {
 		if msg.Role == "tool" {
-			tools = append(tools, msg.Content.Text)
+			tools = append(tools, msg.Text)
 		}
 	}
 	if len(tools) != 3 {
@@ -418,18 +418,18 @@ func TestBudget(t *testing.T) {
 		t.Errorf("%d tokens after folding", n)
 	}
 
-	m = &script{context: 150, answers: []chat.Answer{read(100), read(101), said("ok")}}
+	m = &script{context: 150, answers: []text.Answer{read(100), read(101), said("ok")}}
 	s, err = New(m, Config{Dir: dir, Reserve: 10, Keep: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Run(context.Background(), "read it", Events{}); !errors.Is(err, chat.ErrContext) {
+	if _, err := s.Run(context.Background(), "read it", Events{}); !errors.Is(err, text.ErrContext) {
 		t.Errorf("err = %v, want ErrContext", err)
 	}
 }
 
 func TestUnknownTool(t *testing.T) {
-	m := &script{answers: []chat.Answer{calls(call("grep", map[string]any{"pattern": "x"})), said("ok")}}
+	m := &script{answers: []text.Answer{calls(call("grep", map[string]any{"pattern": "x"})), said("ok")}}
 	s, err := New(m, Config{Dir: t.TempDir(), Tools: []string{"read", "bash"}})
 	if err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestUnknownTool(t *testing.T) {
 	if got, err := s.Run(context.Background(), "task", Events{}); err != nil || got != "ok" {
 		t.Fatal(got, err)
 	}
-	if got := m.seen[1][3].Content.Text; got != `There is no tool "grep". The tools are read, bash.` {
+	if got := m.seen[1][3].Text; got != `There is no tool "grep". The tools are read, bash.` {
 		t.Errorf("tool message %q", got)
 	}
 	if _, err := New(m, Config{Tools: []string{"grep"}}); err == nil {
@@ -447,8 +447,8 @@ func TestUnknownTool(t *testing.T) {
 
 func TestBadArguments(t *testing.T) {
 	tc := call("read", nil)
-	tc.Function.Arguments = "{not json"
-	m := &script{answers: []chat.Answer{{ToolCalls: []chat.ToolCall{tc}}, said("ok")}}
+	tc.Arguments = "{not json"
+	m := &script{answers: []text.Answer{{ToolCalls: []text.ToolCall{tc}}, said("ok")}}
 	s, err := New(m, Config{Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -456,15 +456,15 @@ func TestBadArguments(t *testing.T) {
 	if _, err := s.Run(context.Background(), "task", Events{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.seen[1][3].Content.Text; !strings.HasPrefix(got, "The arguments are not a JSON object") {
+	if got := m.seen[1][3].Text; !strings.HasPrefix(got, "The arguments are not a JSON object") {
 		t.Errorf("tool message %q", got)
 	}
 }
 
 func TestSteps(t *testing.T) {
 	// three different calls, then the rounds run out: a request without tools asks for the answer
-	reads := func(path string) chat.Answer { return calls(call("read", map[string]any{"path": path})) }
-	m := &script{answers: []chat.Answer{reads("a"), reads("b"), said("I looked at a and b."), said("never")}}
+	reads := func(path string) text.Answer { return calls(call("read", map[string]any{"path": path})) }
+	m := &script{answers: []text.Answer{reads("a"), reads("b"), said("I looked at a and b."), said("never")}}
 	s, err := New(m, Config{Dir: t.TempDir(), Steps: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -475,7 +475,7 @@ func TestSteps(t *testing.T) {
 	if len(m.seen) != 3 || m.tools[2] != 0 {
 		t.Errorf("%d requests, tools %v", len(m.seen), m.tools)
 	}
-	m = &script{answers: []chat.Answer{reads("a"), reads("b"), reads("c")}}
+	m = &script{answers: []text.Answer{reads("a"), reads("b"), reads("c")}}
 	s, _ = New(m, Config{Dir: t.TempDir(), Steps: 2})
 	if _, err := s.Run(context.Background(), "task", Events{}); !errors.Is(err, ErrSteps) {
 		t.Errorf("err = %v, want ErrSteps", err)
@@ -487,15 +487,15 @@ func TestSteps(t *testing.T) {
 func TestRepeatedAnswer(t *testing.T) {
 	skipShell(t)
 	answer := "Fixed the bug in main.go: the add function returned a - b instead of a + b, so add(2, 3) gave -1; it now returns a + b and prints 5."
-	first := chat.Answer{Content: answer, ToolCalls: []chat.ToolCall{call("bash", map[string]any{"command": "echo done"})}}
-	second := chat.Answer{Content: strings.Replace(answer, "Fixed", "I fixed", 1), ToolCalls: []chat.ToolCall{call("bash", map[string]any{"command": "echo complete"})}}
-	m := &script{answers: []chat.Answer{first, second, said("never")}}
+	first := text.Answer{Text: answer, ToolCalls: []text.ToolCall{call("bash", map[string]any{"command": "echo done"})}}
+	second := text.Answer{Text: strings.Replace(answer, "Fixed", "I fixed", 1), ToolCalls: []text.ToolCall{call("bash", map[string]any{"command": "echo complete"})}}
+	m := &script{answers: []text.Answer{first, second, said("never")}}
 	s, err := New(m, Config{Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Run(context.Background(), "task", Events{})
-	if err != nil || got != second.Content {
+	if err != nil || got != second.Text {
 		t.Fatalf("Run = %q, %v", got, err)
 	}
 	if len(m.seen) != 2 {
@@ -506,9 +506,9 @@ func TestRepeatedAnswer(t *testing.T) {
 		t.Errorf("last message %+v", last)
 	}
 	// a short remark before a call is not a final answer
-	m = &script{answers: []chat.Answer{
-		{Content: "Let me look.", ToolCalls: []chat.ToolCall{call("read", map[string]any{"path": "a"})}},
-		{Content: "Let me look.", ToolCalls: []chat.ToolCall{call("read", map[string]any{"path": "b"})}},
+	m = &script{answers: []text.Answer{
+		{Text: "Let me look.", ToolCalls: []text.ToolCall{call("read", map[string]any{"path": "a"})}},
+		{Text: "Let me look.", ToolCalls: []text.ToolCall{call("read", map[string]any{"path": "b"})}},
 		said("ok"),
 	}}
 	s, _ = New(m, Config{Dir: t.TempDir()})
@@ -522,7 +522,7 @@ func TestRepeatedAnswer(t *testing.T) {
 func TestRepeatedCall(t *testing.T) {
 	dir := project(t)
 	read := calls(call("read", map[string]any{"path": "main.go"}))
-	m := &script{answers: []chat.Answer{read, read, said("ok")}}
+	m := &script{answers: []text.Answer{read, read, said("ok")}}
 	s, err := New(m, Config{Dir: dir})
 	if err != nil {
 		t.Fatal(err)
@@ -530,14 +530,14 @@ func TestRepeatedCall(t *testing.T) {
 	if got, err := s.Run(context.Background(), "task", Events{}); err != nil || got != "ok" {
 		t.Fatalf("Run = %q, %v", got, err)
 	}
-	if got := m.seen[2][5].Content.Text; got != nudge {
+	if got := m.seen[2][5].Text; got != nudge {
 		t.Errorf("second result %q", got)
 	}
-	if got := m.seen[2][3].Content.Text; !strings.HasPrefix(got, "package main") {
+	if got := m.seen[2][3].Text; !strings.HasPrefix(got, "package main") {
 		t.Errorf("first result %q", got)
 	}
 	// the third time, a request without tools asks for the answer
-	m = &script{answers: []chat.Answer{read, read, {Content: "stuck", ToolCalls: read.ToolCalls}, said("I read main.go."), said("never")}}
+	m = &script{answers: []text.Answer{read, read, {Text: "stuck", ToolCalls: read.ToolCalls}, said("I read main.go."), said("never")}}
 	s, _ = New(m, Config{Dir: dir})
 	if got, err := s.Run(context.Background(), "task", Events{}); err != nil || got != "I read main.go." {
 		t.Errorf("Run = %q, %v", got, err)
@@ -545,11 +545,11 @@ func TestRepeatedCall(t *testing.T) {
 	if len(m.seen) != 4 || m.tools[3] != 0 || m.tools[2] != 4 {
 		t.Errorf("%d requests, tools %v", len(m.seen), m.tools)
 	}
-	if last := m.seen[3][len(m.seen[3])-1]; last.Role != "user" || last.Content.Text != closing {
+	if last := m.seen[3][len(m.seen[3])-1]; last.Role != "user" || last.Text != closing {
 		t.Errorf("closing request ends with %+v", last)
 	}
 	// and when that gives nothing, ErrLoop
-	m = &script{answers: []chat.Answer{read, read, read, said("")}}
+	m = &script{answers: []text.Answer{read, read, read, said("")}}
 	s, _ = New(m, Config{Dir: dir})
 	if got, err := s.Run(context.Background(), "task", Events{}); !errors.Is(err, ErrLoop) || got != "" {
 		t.Errorf("Run = %q, %v", got, err)
@@ -576,7 +576,7 @@ func TestSimilar(t *testing.T) {
 }
 
 func TestCut(t *testing.T) {
-	m := &cut{script{answers: []chat.Answer{said("half an")}}}
+	m := &cut{script{answers: []text.Answer{said("half an")}}}
 	s, err := New(m, Config{Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -589,8 +589,8 @@ func TestCut(t *testing.T) {
 // cut is a script whose answers end by the token limit.
 type cut struct{ script }
 
-func (c *cut) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, n, b int, emit func(chat.Answer) bool) (chat.Completion, error) {
-	r, err := c.script.Complete(ctx, msgs, tools, o, s, n, b, emit)
+func (c *cut) Reply(ctx context.Context, msgs []text.Message, o text.ChatOptions, fn func(text.Delta) bool) (text.Answer, error) {
+	r, err := c.script.Reply(ctx, msgs, o, fn)
 	r.Finish = "length"
 	return r, err
 }
@@ -599,7 +599,7 @@ func (c *cut) Complete(ctx context.Context, msgs []chat.Message, tools []chat.To
 func TestAllow(t *testing.T) {
 	skipShell(t)
 	dir := t.TempDir()
-	m := &script{answers: []chat.Answer{
+	m := &script{answers: []text.Answer{
 		calls(call("bash", map[string]any{"command": "touch made"}), call("read", map[string]any{"path": "none"})),
 		said("ok"),
 	}}
@@ -620,14 +620,14 @@ func TestAllow(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "made")); err == nil {
 		t.Error("the command ran")
 	}
-	if got := m.seen[1][3].Content.Text; got != "Not allowed by the user." {
+	if got := m.seen[1][3].Text; got != "Not allowed by the user." {
 		t.Errorf("tool message %q", got)
 	}
-	if got := m.seen[1][4].Content.Text; !strings.HasPrefix(got, "none does not exist.") {
+	if got := m.seen[1][4].Text; !strings.HasPrefix(got, "none does not exist.") {
 		t.Errorf("read ran anyway: %q", got)
 	}
 	// a command on the allow list runs without asking
-	m = &script{answers: []chat.Answer{calls(call("bash", map[string]any{"command": "touch made"})), said("ok")}}
+	m = &script{answers: []text.Answer{calls(call("bash", map[string]any{"command": "touch made"})), said("ok")}}
 	asked = nil
 	s, _ = New(m, Config{Dir: dir, AllowList: []string{"touch *", "ls*"}, Allow: func(tool, what string) bool {
 		asked = append(asked, tool+" "+what)
@@ -668,7 +668,7 @@ func TestAllowed(t *testing.T) {
 	}
 }
 
-// The thinking budget goes to the model (the engine closes the thinking there), 0 for none,
+// The thinking budget goes to the model (the engine closes the thinking there), -1 for none,
 // and a cut is reported.
 func TestThinkBudget(t *testing.T) {
 	m := &thinker{}
@@ -687,7 +687,7 @@ func TestThinkBudget(t *testing.T) {
 	m = &thinker{}
 	s, _ = New(m, Config{Dir: t.TempDir(), Think: true, ThinkBudget: -1})
 	notes = nil
-	if got, err := s.Run(context.Background(), "task", Events{Note: func(text string) { notes = append(notes, text) }}); err != nil || got != "answer" || !slices.Equal(m.budgets, []int{0}) || len(notes) != 0 {
+	if got, err := s.Run(context.Background(), "task", Events{Note: func(text string) { notes = append(notes, text) }}); err != nil || got != "answer" || !slices.Equal(m.budgets, []int{-1}) || len(notes) != 0 {
 		t.Errorf("Run = %q, %v, budgets %v, notes %q", got, err, m.budgets, notes)
 	}
 	m = &thinker{}
@@ -705,23 +705,24 @@ type thinker struct {
 	budgets []int
 }
 
-func (m *thinker) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, _ chat.Sampling, _, budget int, emit func(chat.Answer) bool) (chat.Completion, error) {
+func (m *thinker) Reply(ctx context.Context, msgs []text.Message, o text.ChatOptions, fn func(text.Delta) bool) (text.Answer, error) {
+	budget := o.ThinkBudget
 	m.budgets = append(m.budgets, budget)
 	n, cut := 50, false
 	if budget > 0 && budget < n {
 		n, cut = budget, true
 	}
-	a := chat.Answer{Reasoning: strings.Repeat("hm ", n), Content: "answer"}
-	if emit != nil {
-		emit(a)
+	a := text.Answer{Reasoning: strings.Repeat("hm ", n), Text: "answer", Finish: "stop", Stats: text.Stats{Generated: n + 1, ThinkCut: cut}}
+	if fn != nil {
+		fn(text.Delta{Reasoning: a.Reasoning, Text: a.Text})
 	}
-	return chat.Completion{Answer: a, Stats: chat.Stats{Finish: "stop", Generated: n + 1, ThinkCut: cut}}, nil
+	return a, nil
 }
 
 // A cancelled task leaves no trace in the conversation.
 func TestCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &stopper{script: script{answers: []chat.Answer{calls(call("read", map[string]any{"path": "x"})), said("ok")}}, cancel: cancel}
+	m := &stopper{script: script{answers: []text.Answer{calls(call("read", map[string]any{"path": "x"})), said("ok")}}, cancel: cancel}
 	s, err := New(m, Config{Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -740,15 +741,15 @@ type stopper struct {
 	cancel context.CancelFunc
 }
 
-func (s *stopper) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, smp chat.Sampling, n, b int, emit func(chat.Answer) bool) (chat.Completion, error) {
-	c, err := s.script.Complete(ctx, msgs, tools, o, smp, n, b, emit)
+func (s *stopper) Reply(ctx context.Context, msgs []text.Message, o text.ChatOptions, fn func(text.Delta) bool) (text.Answer, error) {
+	c, err := s.script.Reply(ctx, msgs, o, fn)
 	s.cancel()
 	return c, err
 }
 
 func TestDump(t *testing.T) {
 	dump := t.TempDir()
-	m := &script{answers: []chat.Answer{said("ok")}}
+	m := &script{answers: []text.Answer{said("ok")}}
 	s, err := New(m, Config{Dir: t.TempDir(), Dump: dump})
 	if err != nil {
 		t.Fatal(err)
@@ -761,7 +762,7 @@ func TestDump(t *testing.T) {
 		t.Fatalf("dumped %v", files)
 	}
 	var d struct {
-		Messages  []chat.Message
+		Messages  []text.Message
 		Prompt    string
 		Generated string
 	}
@@ -794,7 +795,7 @@ var fuji = []Result{{"富士山 - Wikipedia", "https://ja.wikipedia.org/wiki/富
 // searched, and a call returns the results formatted; no results and a failure are told.
 func TestSearchTool(t *testing.T) {
 	fs := &fakeSearch{results: fuji}
-	m := &script{answers: []chat.Answer{
+	m := &script{answers: []text.Answer{
 		calls(call("search", map[string]any{"query": " 富士山  高さ "})),
 		calls(call("search", map[string]any{"query": "x"})),
 		calls(call("search", map[string]any{})),
@@ -808,8 +809,8 @@ func TestSearchTool(t *testing.T) {
 	if !strings.HasPrefix(sys, SearchSystem) || strings.Contains(sys, "Paths are relative") || strings.Contains(sys, "Files in the current directory") || !strings.Contains(sys, "in the language of the question") {
 		t.Errorf("system prompt:\n%s", sys)
 	}
-	if p, err := chat.Render(s.Messages(), s.Tools(), chat.Options{}); err != nil || !strings.Contains(p, "Search the test index.") {
-		t.Errorf("declaration: %s, %v", p, err)
+	if ts := s.Tools(); len(ts) != 1 || !strings.Contains(ts[0].Description, "Search the test index.") {
+		t.Errorf("declaration: %+v", ts)
 	}
 	ans, err := s.Run(context.Background(), "富士山の高さは?", Events{})
 	if err != nil || ans != "3,776 m です。" {
@@ -819,13 +820,13 @@ func TestSearchTool(t *testing.T) {
 		t.Errorf("queries %q", fs.queries)
 	}
 	msgs := s.Messages()
-	if got := msgs[3].Content.Text; msgs[3].Role != "tool" || got != "1. 富士山 - Wikipedia\nhttps://ja.wikipedia.org/wiki/富士山\n富士山は日本の活火山。標高は3776.12 m。" {
+	if got := msgs[3].Text; msgs[3].Role != "tool" || got != "1. 富士山 - Wikipedia\nhttps://ja.wikipedia.org/wiki/富士山\n富士山は日本の活火山。標高は3776.12 m。" {
 		t.Errorf("results: %q", got)
 	}
-	if got := msgs[5].Content.Text; !strings.HasPrefix(got, `No results for "x".`) {
+	if got := msgs[5].Text; !strings.HasPrefix(got, `No results for "x".`) {
 		t.Errorf("no results: %q", got)
 	}
-	if got := msgs[7].Content.Text; got != "query is required." {
+	if got := msgs[7].Text; got != "query is required." {
 		t.Errorf("no query: %q", got)
 	}
 	fs.err = errors.New("boom")
@@ -839,7 +840,7 @@ func TestSearchTool(t *testing.T) {
 // are limited: past Config.Searches a search returns a hint and the model is asked to answer.
 func TestSearchFirst(t *testing.T) {
 	fs := &fakeSearch{results: fuji}
-	m := &script{answers: []chat.Answer{
+	m := &script{answers: []text.Answer{
 		said("3,776 m, as I recall."),                              // dropped
 		calls(call("search", map[string]any{"query": "富士山の高さは?"})), // the same call: not run
 		said("3,776 m です。"),
@@ -858,11 +859,11 @@ func TestSearchFirst(t *testing.T) {
 		t.Errorf("queries %q", fs.queries)
 	}
 	msgs := s.Messages()
-	if len(msgs) != 7 || msgs[2].Role != "assistant" || msgs[2].Content.Text != "" || len(msgs[2].ToolCalls) != 1 || msgs[2].ToolCalls[0].Function.Arguments != `{"query":"富士山の高さは?"}` ||
-		msgs[3].Role != "tool" || msgs[3].ToolCallID != msgs[2].ToolCalls[0].ID || !strings.HasPrefix(msgs[3].Content.Text, "1. 富士山 - Wikipedia") ||
-		msgs[5].Content.Text != nudge || msgs[6].Content.Text != "3,776 m です。" {
+	if len(msgs) != 7 || msgs[2].Role != "assistant" || msgs[2].Text != "" || len(msgs[2].ToolCalls) != 1 || msgs[2].ToolCalls[0].Arguments != `{"query":"富士山の高さは?"}` ||
+		msgs[3].Role != "tool" || msgs[3].ToolCallID != msgs[2].ToolCalls[0].ID || !strings.HasPrefix(msgs[3].Text, "1. 富士山 - Wikipedia") ||
+		msgs[5].Text != nudge || msgs[6].Text != "3,776 m です。" {
 		for i, m := range msgs {
-			t.Logf("%d %s %q %v", i, m.Role, m.Content.Text, m.ToolCalls)
+			t.Logf("%d %s %q %v", i, m.Role, m.Text, m.ToolCalls)
 		}
 		t.Fatal("the conversation")
 	}
@@ -876,14 +877,14 @@ func TestSearchFirst(t *testing.T) {
 		t.Errorf("queries %q, %d messages", fs.queries, len(s.Messages()))
 	}
 	// without search among the tools nothing is searched
-	m = &script{answers: []chat.Answer{said("done")}}
+	m = &script{answers: []text.Answer{said("done")}}
 	s, _ = New(m, Config{Dir: t.TempDir(), Tools: []string{"read"}, Search: fs, SearchFirst: true})
 	if _, err := s.Run(context.Background(), "x", Events{}); err != nil || len(fs.queries) != 2 || len(m.seen) != 1 {
 		t.Errorf("searched without the tool: %q, %v", fs.queries, err)
 	}
 	// the limit
 	fs = &fakeSearch{results: fuji}
-	m = &script{answers: []chat.Answer{
+	m = &script{answers: []text.Answer{
 		calls(call("search", map[string]any{"query": "a"})),
 		calls(call("search", map[string]any{"query": "b"})),
 		calls(call("search", map[string]any{"query": "c"})),
@@ -895,8 +896,8 @@ func TestSearchFirst(t *testing.T) {
 		t.Fatalf("%q, %v, queries %q", ans, err, fs.queries)
 	}
 	msgs = s.Messages()
-	if n := len(msgs); msgs[n-3].Content.Text != searchesUp || msgs[n-2].Content.Text != closingSearch || m.tools[3] != 0 {
-		t.Errorf("the end of the conversation: %q, %q, %d tools", msgs[n-3].Content.Text, msgs[n-2].Content.Text, m.tools[3])
+	if n := len(msgs); msgs[n-3].Text != searchesUp || msgs[n-2].Text != closingSearch || m.tools[3] != 0 {
+		t.Errorf("the end of the conversation: %q, %q, %d tools", msgs[n-3].Text, msgs[n-2].Text, m.tools[3])
 	}
 	if r := []rune(firstLine(strings.Repeat("あ", 120) + "\nx")); len(r) != 100 {
 		t.Errorf("firstLine: %d runes", len(r))

@@ -121,7 +121,7 @@ API はこの違いを隠さない。
 | `internal/safetensors`、`internal/gguf`、`internal/torchzip`、`internal/onnx`、`internal/tflite` | チェックポイントの読み |
 | `internal/palette` | LUT の重みの当てはめ |
 | `internal/llm` (+ `blocks`、`archs`、アーキテクチャごとのパッケージ、`decode`、`chain`、`runner`、`paged`、`experts`、`iron`、`check`) | 言語モデルなどの変換器と実行器 |
-| `internal/chat`、`internal/agent`、`internal/imagegen/*`、`internal/speech`、`internal/transcribe`、`internal/vision`、`internal/audio` … | コマンドの裏の用途別のエンジン |
+| `internal/chat`、`internal/imagegen/*`、`internal/speech`、`internal/transcribe`、`internal/vision`、`internal/audio` … | コマンドの裏の用途別のエンジン |
 | `internal/cache`、`internal/store`、`internal/power`、`internal/mem`、`internal/sysload` | コンパイルキャッシュとモデルの置き場、エネルギーのカウンタ、ページ境界のメモリと NPU のメモリ、負荷 |
 | `cmd/hwnpu`、`cmd/hwnpu-chat`、`cmd/hwnpu-image`、`cmd/hwnpu-audio`、`cmd/hwnpu-dev` | コマンド ([cli.ja.md](cli.ja.md)) |
 | `native/xrtshim`、`internal/backend/coreai/shim` | 実行時に読む shim (XRT 用の C、Core AI 用の Swift) |

@@ -67,7 +67,7 @@ func TestPolicyPicks(t *testing.T) {
 		{"-license:conditional", "chat", 8, "Qwen3.5-2B"}, // LFM3 caps the revenue: an open model of 8 GB
 		{"-license:conditional", "chat", 16, "gemma-4-E2B-it"},
 		{"+nsfw,-license:non-commercial", "image", 8, "FLUX.2-klein-4B"},
-		{"-license:lfm-open-1.0", "speech", 8, "error"},
+		{"-license:lfm-open-1.0", "speech", 16, "supertonic-3"}, // the other speech model
 		{"+license:open", "translate", 8, "error"},
 		{"+license:open,+license:plamo-community-license", "translate", 8, "plamo-3-translate-0.8b"},
 		{"-license:apache-2.0", "image", 8, "error"}, // the others are NSFW (Anima) or Apache-2.0 too (Chroma1)

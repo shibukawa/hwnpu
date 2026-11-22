@@ -7,6 +7,7 @@ hwnpu の [`ai`](../USAGE_LIBRARY.ja.md) パッケージで作った小さなア
 | サンプル | 何をするか | モデル | ダウンロード (Apple / AMD) |
 |---|---|---|---|
 | [interpreter](interpreter/README.ja.md) | マイクか録音の音声を、別の言語の音声に通訳する | Whisper、PLaMo 3 Translate、LFM3-Audio の読み上げ | 11.4 GB / 6.6 GB |
+| [voice-agent](voice-agent/README.ja.md) | 名前で呼ぶと声で答える小さな音声アシスタント (時刻、タイマー、天気、ニュース、調べもの) | Whisper、LFM3-1.7B、LFM3-Audio の読み上げ | 7.5 GB / - |
 | [parallax](parallax/README.ja.md) | 絵を奥行きがあるように見せる。カメラの前の頭の動きに合わせて向きが変わる | Depth Anything 3、YuNet、FLUX.2 klein | 16.5 GB / 14.9 GB |
 | [layers](layers/README.ja.md) | 絵を深度で層に分け、各層が隠していた部分を描き足して、Photoshop の文書に書く | Depth Anything 3、FLUX.2 klein | 16.5 GB / 14.9 GB |
 

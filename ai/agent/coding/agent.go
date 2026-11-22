@@ -1,5 +1,5 @@
-// Package agent is a coding agent of four tools, read, edit, write and bash, on a chat model
-// called in this process (chat.Engine): the loop of Pi (pi.dev) without its harness. The
+// Package coding is a coding agent of four tools, read, edit, write and bash, on a chat model
+// called in this process (ai/text's Chatter): the loop of Pi (pi.dev) without its harness. The
 // model gets a system prompt of a few lines and the four declarations, well under 1K tokens,
 // calls tools one round at a time, and ends a task by answering without a call. A fifth
 // tool, search (Wikipedia, or the web through SearXNG or Brave), makes it an assistant that
@@ -11,7 +11,7 @@
 // A small model needs guards more than rules: edit and write want the file read first, the
 // thinking is closed at a budget, a call made again is not run, and an answer repeated is the
 // end of the task.
-package agent
+package coding
 
 import (
 	"context"
@@ -25,13 +25,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/text"
 )
 
-// Model answers a conversation: *chat.Engine, or a fake in tests.
+// Model answers a conversation: *text.Chatter, or a fake in tests.
 type Model interface {
-	Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, maxTokens, thinkBudget int, emit func(partial chat.Answer) (stop bool)) (chat.Completion, error)
-	Count(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options) (int, error)
+	Reply(ctx context.Context, msgs []text.Message, o text.ChatOptions, fn func(text.Delta) bool) (text.Answer, error)
+	Count(ctx context.Context, msgs []text.Message, o text.ChatOptions) (int, error)
 	Context() int
 }
 
@@ -66,10 +66,10 @@ type Config struct {
 	// rounds of a task in the conversation (it costs context).
 	Think, KeepThinking bool
 	// ThinkBudget is the most tokens of thinking before an answer: past it the thinking is
-	// closed (chat.ThinkLimit) and the model answers from what it has thought. Default 1024;
+	// closed (ai/text's ThinkBudget) and the model answers from what it has thought. Default 1024;
 	// negative for no limit.
 	ThinkBudget int
-	Sampling    chat.Sampling
+	Sampling    text.Sampling
 	// MaxTokens is the most tokens of one answer (0: until the cache is full).
 	MaxTokens int
 	// Steps is the most rounds (answers of the model) of one task. Default 30.
@@ -134,27 +134,27 @@ func (c *Config) defaults() error {
 
 // Events are called as a task runs (any may be nil).
 type Events struct {
-	// Delta gets the reasoning and the content of the answer so far, as it is generated.
+	// Delta gets what the answer adds to its reasoning and its content, as it is generated.
 	Delta func(reasoning, content string)
 	// Call is called before a tool runs, with its name and what it does.
 	Call func(name, what string)
 	// Result is called after a tool ran, with what the model is told.
 	Result func(name, result string)
 	// Done is called after each answer of the model, with its stats.
-	Done func(c chat.Completion)
+	Done func(a text.Answer)
 	// Note is called when the agent steps in, such as cutting the thinking.
 	Note func(text string)
 }
 
 var (
 	// ErrSteps says that the task used all its rounds.
-	ErrSteps = errors.New("agent: the task did not end within the rounds allowed")
+	ErrSteps = errors.New("coding: the task did not end within the rounds allowed")
 	// ErrCut says that the last answer was cut by MaxTokens or the context.
-	ErrCut = errors.New("agent: the answer was cut short")
+	ErrCut = errors.New("coding: the answer was cut short")
 	// ErrLoop says that the model made the same call three times in a row.
-	ErrLoop = errors.New("agent: the model repeats the same call")
+	ErrLoop = errors.New("coding: the model repeats the same call")
 	// ErrSearches says that the task used all its searches without an answer.
-	ErrSearches = errors.New("agent: the model kept searching")
+	ErrSearches = errors.New("coding: the model kept searching")
 )
 
 // nudge is the result of a call the model just made, the second time.
@@ -176,8 +176,8 @@ type Session struct {
 	cfg    Config
 	m      Model
 	tools  []*Tool
-	decls  []chat.Tool
-	msgs   []chat.Message
+	decls  []text.Tool
+	msgs   []text.Message
 	folded map[int]bool    // tool messages shortened to fit the context
 	seen   map[string]bool // files read (or written) in this conversation, by absolute path
 	start  time.Time
@@ -204,23 +204,23 @@ func New(m Model, cfg Config) (*Session, error) {
 
 // Reset forgets the conversation.
 func (s *Session) Reset() {
-	s.msgs = []chat.Message{{Role: "system", Content: chat.Content{Text: Prompt(s.cfg, s.tools)}}}
+	s.msgs = []text.Message{{Role: "system", Text: Prompt(s.cfg, s.tools)}}
 	s.folded = map[int]bool{}
 	s.seen = map[string]bool{}
 }
 
 // System is the system prompt.
-func (s *Session) System() string { return s.msgs[0].Content.Text }
+func (s *Session) System() string { return s.msgs[0].Text }
 
 // Messages is the conversation so far.
-func (s *Session) Messages() []chat.Message { return slices.Clone(s.msgs) }
+func (s *Session) Messages() []text.Message { return slices.Clone(s.msgs) }
 
 // Tools are the declarations sent with each request.
-func (s *Session) Tools() []chat.Tool { return s.decls }
+func (s *Session) Tools() []text.Tool { return s.decls }
 
 // Count is the tokens the conversation takes.
 func (s *Session) Count(ctx context.Context) (int, error) {
-	return s.m.Count(ctx, s.msgs, s.decls, chat.Options{NoThink: !s.cfg.Think})
+	return s.m.Count(ctx, s.msgs, s.options(s.decls))
 }
 
 // Run gives the model a task and runs its tool calls until it answers without one, and returns
@@ -234,7 +234,7 @@ func (s *Session) Count(ctx context.Context) (int, error) {
 // answer (ErrLoop or ErrSteps when even that gives none).
 func (s *Session) Run(ctx context.Context, task string, ev Events) (string, error) {
 	start := len(s.msgs)
-	s.msgs = append(s.msgs, chat.Message{Role: "user", Content: chat.Content{Text: task}})
+	s.msgs = append(s.msgs, text.Message{Role: "user", Text: task})
 	var prev, prevCall string                     // the content and the call of the round before
 	same := 0                                     // rounds the call has been made in a row
 	first := s.cfg.SearchFirst && s.has("search") // the round to come must be a search
@@ -260,30 +260,29 @@ func (s *Session) Run(ctx context.Context, task string, ev Events) (string, erro
 				}
 				tc := searchCall(firstLine(task))
 				out := s.call(ctx, tc, ev)
-				s.msgs = append(s.msgs, chat.Message{Role: "assistant", ToolCalls: []chat.ToolCall{tc}},
-					chat.Message{Role: "tool", Name: "search", ToolCallID: tc.ID, Content: chat.Content{Text: out}})
-				prevCall, searches = signature([]chat.ToolCall{tc}), 1
+				s.msgs = append(s.msgs, text.Message{Role: "assistant", ToolCalls: []text.ToolCall{tc}},
+					text.Message{Role: "tool", Name: "search", ToolCallID: tc.ID, Text: out})
+				prevCall, searches = signature([]text.ToolCall{tc}), 1
 				continue
 			}
 		}
-		msg := chat.Message{Role: "assistant", Content: chat.Content{Text: c.Content}, ToolCalls: c.ToolCalls}
-		if s.cfg.KeepThinking && c.Reasoning != "" {
-			r := c.Reasoning
-			msg.Reasoning = &r
+		msg := text.Message{Role: "assistant", Text: c.Text, ToolCalls: c.ToolCalls}
+		if s.cfg.KeepThinking {
+			msg.Reasoning = c.Reasoning
 		}
-		if len(c.ToolCalls) > 0 && similar(c.Content, prev) {
+		if len(c.ToolCalls) > 0 && similar(c.Text, prev) {
 			msg.ToolCalls = nil // the answer is final; the calls are a habit
 			s.msgs = append(s.msgs, msg)
-			return c.Content, nil
+			return c.Text, nil
 		}
 		s.msgs = append(s.msgs, msg)
 		if len(c.ToolCalls) == 0 {
 			if c.Finish == "length" {
-				return c.Content, ErrCut
+				return c.Text, ErrCut
 			}
-			return c.Content, nil
+			return c.Text, nil
 		}
-		prev = c.Content
+		prev = c.Text
 		if sig := signature(c.ToolCalls); sig == prevCall {
 			same++
 		} else {
@@ -296,7 +295,7 @@ func (s *Session) Run(ctx context.Context, task string, ev Events) (string, erro
 				return "", ctx.Err()
 			}
 			out := nudge
-			search := tc.Function.Name == "search"
+			search := tc.Name == "search"
 			switch {
 			case search && searches >= s.cfg.Searches:
 				out, refused = searchesUp, true
@@ -306,7 +305,7 @@ func (s *Session) Run(ctx context.Context, task string, ev Events) (string, erro
 					searches++
 				}
 			}
-			s.msgs = append(s.msgs, chat.Message{Role: "tool", Name: tc.Function.Name, ToolCallID: tc.ID, Content: chat.Content{Text: out}})
+			s.msgs = append(s.msgs, text.Message{Role: "tool", Name: tc.Name, ToolCallID: tc.ID, Text: out})
 		}
 		if same >= 2 {
 			return s.close(ctx, ev, closing, ErrLoop)
@@ -319,15 +318,15 @@ func (s *Session) Run(ctx context.Context, task string, ev Events) (string, erro
 }
 
 // complete asks the model for the next answer, with its thinking bounded by ThinkBudget.
-func (s *Session) complete(ctx context.Context, tools []chat.Tool, ev Events) (chat.Completion, error) {
-	var emit func(chat.Answer) bool
+func (s *Session) complete(ctx context.Context, tools []text.Tool, ev Events) (text.Answer, error) {
+	var fn func(text.Delta) bool
 	if ev.Delta != nil {
-		emit = func(a chat.Answer) bool {
-			ev.Delta(a.Reasoning, a.Content)
-			return false
+		fn = func(d text.Delta) bool {
+			ev.Delta(d.Reasoning, d.Text)
+			return true
 		}
 	}
-	c, err := s.m.Complete(ctx, s.msgs, tools, chat.Options{NoThink: !s.cfg.Think}, s.cfg.Sampling, s.cfg.MaxTokens, max(s.cfg.ThinkBudget, 0), emit)
+	c, err := s.m.Reply(ctx, s.msgs, s.options(tools), fn)
 	if err != nil {
 		return c, err
 	}
@@ -335,34 +334,46 @@ func (s *Session) complete(ctx context.Context, tools []chat.Tool, ev Events) (c
 	if ev.Done != nil {
 		ev.Done(c)
 	}
-	if c.ThinkCut && ev.Note != nil {
+	if c.Stats.ThinkCut && ev.Note != nil {
 		ev.Note(fmt.Sprintf("thinking cut at %d tokens", s.cfg.ThinkBudget))
 	}
-	if c.ThinkLooped && ev.Note != nil {
+	if c.Stats.ThinkLooped && ev.Note != nil {
 		ev.Note("thinking cut going round in circles")
 	}
 	return c, nil
 }
 
 // close asks for the answer without tools, with text; cause is the error when there is none.
-func (s *Session) close(ctx context.Context, ev Events, text string, cause error) (string, error) {
-	s.msgs = append(s.msgs, chat.Message{Role: "user", Content: chat.Content{Text: text}})
+func (s *Session) close(ctx context.Context, ev Events, ask string, cause error) (string, error) {
+	s.msgs = append(s.msgs, text.Message{Role: "user", Text: ask})
 	c, err := s.complete(ctx, nil, ev)
 	if err != nil {
 		return "", err
 	}
-	s.msgs = append(s.msgs, chat.Message{Role: "assistant", Content: chat.Content{Text: c.Content}})
-	if strings.TrimSpace(c.Content) == "" {
+	s.msgs = append(s.msgs, text.Message{Role: "assistant", Text: c.Text})
+	if strings.TrimSpace(c.Text) == "" {
 		return "", cause
 	}
-	return c.Content, nil
+	return c.Text, nil
+}
+
+// options are the request's: the tools, the thinking and its budget, the sampling and the
+// length of the answer.
+func (s *Session) options(tools []text.Tool) text.ChatOptions {
+	think := s.cfg.Think
+	o := text.ChatOptions{Tools: tools, Think: &think, KeepThinking: s.cfg.KeepThinking, ThinkBudget: s.cfg.ThinkBudget,
+		MaxTokens: s.cfg.MaxTokens, Sampling: &s.cfg.Sampling}
+	if o.MaxTokens <= 0 {
+		o.MaxTokens = text.Unlimited // until the cache is full
+	}
+	return o
 }
 
 // signature tells the calls of a round apart.
-func signature(calls []chat.ToolCall) string {
+func signature(calls []text.ToolCall) string {
 	var sb strings.Builder
 	for _, tc := range calls {
-		sb.WriteString(tc.Function.Name + "(" + tc.Function.Arguments + ")\n")
+		sb.WriteString(tc.Name + "(" + tc.Arguments + ")\n")
 	}
 	return sb.String()
 }
@@ -395,16 +406,16 @@ func similar(a, b string) bool {
 }
 
 // call runs one tool call and returns what the model is told.
-func (s *Session) call(ctx context.Context, tc chat.ToolCall, ev Events) string {
+func (s *Session) call(ctx context.Context, tc text.ToolCall, ev Events) string {
 	args := map[string]any{}
-	if a := strings.TrimSpace(tc.Function.Arguments); a != "" && a != "null" {
+	if a := strings.TrimSpace(tc.Arguments); a != "" && a != "null" {
 		if err := json.Unmarshal([]byte(a), &args); err != nil {
 			return "The arguments are not a JSON object: " + err.Error()
 		}
 	}
 	var t *Tool
 	for _, u := range s.tools {
-		if u.Name == tc.Function.Name {
+		if u.Name == tc.Name {
 			t = u
 		}
 	}
@@ -413,7 +424,7 @@ func (s *Session) call(ctx context.Context, tc chat.ToolCall, ev Events) string 
 		for _, u := range s.tools {
 			names = append(names, u.Name)
 		}
-		return fmt.Sprintf("There is no tool %q. The tools are %s.", tc.Function.Name, strings.Join(names, ", "))
+		return fmt.Sprintf("There is no tool %q. The tools are %s.", tc.Name, strings.Join(names, ", "))
 	}
 	what := t.Describe(args)
 	if ev.Call != nil {
@@ -437,7 +448,7 @@ func (s *Session) call(ctx context.Context, tc chat.ToolCall, ev Events) string 
 
 // fit folds old tool results until the conversation leaves Reserve tokens of the context for
 // the answer: each becomes its first line and a count of the rest, the oldest first, the
-// latest Keep untouched. A conversation that does not fit even so is an error (chat.ErrContext).
+// latest Keep untouched. A conversation that does not fit even so is an error (text.ErrContext).
 func (s *Session) fit(ctx context.Context) error {
 	limit := s.m.Context() - s.cfg.Reserve
 	n, err := s.Count(ctx)
@@ -456,13 +467,13 @@ func (s *Session) fit(ctx context.Context) error {
 		idx = idx[:len(idx)-s.cfg.Keep]
 	}
 	for _, i := range idx {
-		s.msgs[i].Content.Text = fold(s.msgs[i].Content.Text)
+		s.msgs[i].Text = fold(s.msgs[i].Text)
 		s.folded[i] = true
 		if n, err = s.Count(ctx); err != nil || n <= limit {
 			return err
 		}
 	}
-	return fmt.Errorf("%w: the conversation takes %d tokens, %d are allowed (/reset starts over)", chat.ErrContext, n, limit)
+	return fmt.Errorf("%w: the conversation takes %d tokens, %d are allowed (/reset starts over)", text.ErrContext, n, limit)
 }
 
 // fold keeps the first line of a tool result and counts the rest.
@@ -475,15 +486,15 @@ func fold(text string) string {
 }
 
 // dump writes the request and the answer to Config.Dump.
-func (s *Session) dump(c chat.Completion) {
+func (s *Session) dump(c text.Answer) {
 	if s.cfg.Dump == "" {
 		return
 	}
 	s.n++
-	b, _ := json.MarshalIndent(map[string]any{"messages": s.msgs, "prompt": c.Rendered, "generated": c.Raw, "stats": c.Stats}, "", " ")
+	b, _ := json.MarshalIndent(map[string]any{"messages": s.msgs, "prompt": c.Prompt, "generated": c.Raw, "stats": c.Stats}, "", " ")
 	name := filepath.Join(s.cfg.Dump, fmt.Sprintf("agent-%d-%03d.json", s.start.Unix(), s.n))
 	if err := os.WriteFile(name, b, 0o644); err != nil && s.cfg.Log != nil {
-		fmt.Fprintln(s.cfg.Log, "agent:", err)
+		fmt.Fprintln(s.cfg.Log, "coding:", err)
 	}
 }
 
@@ -498,9 +509,9 @@ func (s *Session) has(name string) bool {
 }
 
 // hasCall reports whether a tool is among the calls.
-func hasCall(tcs []chat.ToolCall, name string) bool {
+func hasCall(tcs []text.ToolCall, name string) bool {
 	for _, tc := range tcs {
-		if tc.Function.Name == name {
+		if tc.Name == name {
 			return true
 		}
 	}
@@ -508,12 +519,9 @@ func hasCall(tcs []chat.ToolCall, name string) bool {
 }
 
 // searchCall is a call of search with the query, as the model would make it.
-func searchCall(query string) chat.ToolCall {
-	var tc chat.ToolCall
-	tc.ID, tc.Type, tc.Function.Name = "call_search", "function", "search"
+func searchCall(query string) text.ToolCall {
 	args, _ := json.Marshal(map[string]string{"query": query})
-	tc.Function.Arguments = string(args)
-	return tc
+	return text.ToolCall{ID: "call_search", Name: "search", Arguments: string(args)}
 }
 
 // firstLine is the first line of a task, cut to 100 characters: the query of the search made

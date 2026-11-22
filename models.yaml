@@ -633,6 +633,25 @@ models:
     bytes: {amd: 2.75e9, apple: 4.0e9}
     disk: {amd: 3.12e9}
     about: "LFM3-Audio-2B speaking a text (24 kHz WAV): its text model in 8 bit tables, the depthformer and the codec decoder in fp16; shares LFM3-Audio-2B's download"
+  supertonic-3:
+    family: supertonic
+    tag: "3"
+    kind: speech
+    # Supertone's Supertonic 3: four ONNX graphs (the duration, the text's encoder, a flow of 8
+    # steps, the vocoder), read as they are, as programs of three lengths (internal/supertonic):
+    # on Apple all on the Neural Engine; on AMD IRON graphs (tools/amd/iron_supertonic.py), the
+    # text graphs' windowed relative attention on the host
+    from: hf:Supertone/supertonic-3@3cadd1ee6394adea1bd021217a0e650ede09a323
+    license: {id: openrail-m, url: "https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE", class: conditional, terms: "BigScience Open RAIL-M: commercial use allowed; the use restrictions of its Attachment A (no unlawful use, harm to minors, disinformation, harassment, ...) bind every use and pass on to derivatives"}
+    sha256:
+      onnx/duration_predictor.onnx: c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db
+      onnx/text_encoder.onnx: c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff
+      onnx/vector_estimator.onnx: 883ac868ea0275ef0e991524dc64f16b3c0376efd7c320af6b53f5b780d7c61c
+      onnx/vocoder.onnx: 085de76dd8e8d5836d6ca66826601f615939218f90e519f70ee8a36ed2a4c4ba
+    machine: 8
+    memory: 0.8
+    bytes: 4.0e8
+    about: "Supertone's Supertonic 3 speaking a text (44.1 kHz WAV) in 31 languages from their characters, no phonemizer: 10 voices; on the NPU in fp16 (Apple) or bf16 (AMD), no ONNX Runtime"
   d1-2B:
     family: d1
     tag: 2b
@@ -1283,7 +1302,8 @@ categories:
     aliases: [tts]
     about: text to speech (hwnpu-audio tts)
     picks:
-      - {machine: 8, model: LFM3-Audio-2B-TTS}
+      - {machine: 8, model: supertonic-3}
+      - {machine: 16, model: LFM3-Audio-2B-TTS}
   decision:
     aliases: [systemone]
     about: typed questions about a state (hwnpu-chat systemone)

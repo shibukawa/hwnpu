@@ -1,4 +1,4 @@
-package agent
+package coding
 
 import (
 	"bytes"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/text"
 )
 
 // Names are the tools, in the order they are offered: read, edit, write, bash, search, fetch.
@@ -30,7 +30,7 @@ type Tool struct {
 	// Rule is the line the tool adds to the rules of the system prompt ("" for none).
 	Rule string
 	// Decl is the function declaration sent with the request.
-	Decl chat.Tool
+	Decl text.Tool
 	// Writes says that the tool changes files or runs commands: Config.Allow is asked first.
 	Writes bool
 	// Describe says what a call does in a few words (the command, the path), for the screen.
@@ -60,7 +60,7 @@ func (s *Session) buildTools() ([]*Tool, error) {
 			found = found || t.Name == n
 		}
 		if !found {
-			return nil, fmt.Errorf("agent: no tool %q; the tools are %s", n, strings.Join(Names, ", "))
+			return nil, fmt.Errorf("coding: no tool %q; the tools are %s", n, strings.Join(Names, ", "))
 		}
 	}
 	return out, nil
@@ -151,12 +151,12 @@ func (s *Session) tool(name string) *Tool {
 			Run:      func(ctx context.Context, args map[string]any) string { return c.fetch(ctx, args) },
 		}
 	}
-	panic("agent: unknown tool " + name)
+	panic("coding: unknown tool " + name)
 }
 
-func decl(s string) chat.Tool {
-	var t chat.Tool
-	if err := json.Unmarshal([]byte(s), &t); err != nil {
+func decl(s string) text.Tool {
+	t, err := text.ParseTool([]byte(s))
+	if err != nil {
 		panic(err)
 	}
 	return t

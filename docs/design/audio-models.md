@@ -32,11 +32,11 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 
 ### AMD: IRON graphs per model
 
-- The converter does not write AMD programs; each model has an IRON export in `tools/amd` (`iron_whisper.py`, `iron_lfm3speech.py`, `iron_moss_sfx.py` + `iron_moss_dac.py`, `iron_magenta.py`). Details in `../amd-npu-models.md`; shared IRON pieces in [amd.md](amd.md).
+- The converter does not write AMD programs; each model has an IRON export in `tools/amd` (`iron_whisper.py`, `iron_lfm3speech.py`, `iron_moss_sfx.py` + `iron_moss_dac.py`, `iron_magenta.py`, `iron_supertonic.py`). Details in `../amd-npu-models.md`; shared IRON pieces in [amd.md](amd.md).
 - `hwnpu-audio` uses AMD when an AMD NPU is present and `HWNPU_BACKEND` is empty or `amd`/`xdna`/`iron` (`onAMD`). `PrepareAMD` (per package) takes the export from here, else from the sources, else exports with IRON and writes back. The key needs pinned sha256 in models.yaml (`chat.PinnedRecipe`); `like` does not inherit sha256, so `MOSS-SoundEffect-v2.0-lut8` lists them again.
 - `iron.GraphProgram` turns a graph export into a `runner.Program`: meta `program` gives the program's shape; padded rows/columns are filled with 0 on input and cut on output. So the host code (sampling, MaskGIT, CFG, chunking) is shared with Apple/Intel.
 - Models without an AMD export (pitch, notes) fall to the CPU (`chat.ConvertedDevice`).
-- Exports in the sources: whisper 1.81 GB, LFM3-Audio TTS 3.13 GB, MOSS 6.3 GB (fp16) / 5.3 GB (lut8), Magenta decoder 0.09 GB. See [distribution.md](distribution.md).
+- Exports in the sources: whisper 1.81 GB, LFM3-Audio TTS 3.13 GB, MOSS 6.3 GB (fp16) / 5.3 GB (lut8), Magenta decoder 0.09 GB, Supertonic 3 0.27 GB. See [distribution.md](distribution.md).
 
 ## Whisper (`internal/llm/whisper`, `internal/transcribe`)
 
@@ -226,6 +226,23 @@ Numbers:
 | Ryzen AI 9 365 | 1.24 s a velocity (41 ms a block), 2.8 s a CFG step; DAC 1.5 s for 5 s (CPU 5.7 s, SNR 34.5 dB); 5 s at 25 steps 1 m 06 s; peak 4.71 (fp16) / 4.75 (lut8) GiB at 10 s; IRON export 28 s |
 
 - Accuracy: 4 steps from the reference noise, waveform cosine 0.992 (16 GB setup) / 0.990 (8 GB). AMD vs Core ML fp16 on CPU: text output cosine 0.99963, first velocity 0.99978.
+
+## Supertonic 3 (`internal/supertonic`)
+
+### AMD (`iron_supertonic.py`, `supertonic.AMDExportVersion` 1)
+
+- The flow (`estimator-tT-lL`, one step), the vocoder (`vocoder-lL`), the text encoder (`encoder-tT`) and the duration predictor's sentence encoder (`duration-tT`) are IRON graphs of each of `Sizes`. No ONNX Runtime. The text graphs' windowed relative attention (VITS's) runs on the host between commands (`iron.on_host`, Go's `Graph.After`, `relAttention` on sgemm): IRON's MHA has no relative-position band, and a bf16 diagonal Copy breaks the DMA's 4-byte unit; the GEMMs (most of the energy) stay on the NPU. The sizes share one image of their weights (596 → 255 MB).
+- Both branches of the guidance run in one call: the stream's rows are the conditioned branch's frames and the unconditioned's, each between 16 zero rows. The unconditioned text attention is a constant row (its text is one token at every position). The style keys are constants; the host computes the time rows, RoPE tables and the update x + (4 v_c − 3 v_u) / total.
+- pwconv1's bias and GELU are one operator (`iron_biasgelu.py`); pwconv2's bias is a weight column fed by a padded GELU column of exactly 16 (10 → 8 operators a ConvNeXt block, 5–8 % faster). MEDIUM GEMMs with GELU fused into the epilogue were 9–12 % faster still but dropped a step's accuracy from 25–30 to 18–21 dB, so not taken.
+- Depthwise convolutions are `iron_dwconv1d.py` (K taps up to 7, dilation, bias in one operator, tiles of 16 rows × 128 channels; a row-window FIFO ran out of buffer descriptors). Left edge padding copies each branch's first frame; the right is masked zeros, as the Mac's fixed-length programs.
+- bf16 throughout (HIGHEST): one flow step's update is 21–27 dB from padded ORT; the vocoder 37 dB once the latent's unnormalization is folded into the embedding (29 dB when the host unnormalized it in bf16). MEDIUM did not make the graph faster: operator reconfiguration dominates (a ConvNeXt block's GEMM pair takes about 1 ms at any row count).
+- The CPU interpreter's `conv1d` now goes through `conv2d` (sgemm, im2col): the text encoder took 1.5 s in a one-thread loop, then 57 ms (before it moved to the NPU). sgemm takes at least 8 Mflop a goroutine (each one packs all of A).
+
+### Numbers
+
+| Machine | Result |
+|---|---|
+| Ryzen AI 9 365 | flow step 70 / 77 / 91 ms (64 × 32 / 128 × 64 / 256 × 128), vocoder 21 / 27 / 40 ms; 4.25 s of English in 0.68–0.70 s (6.2x; text 0.04 s); +7.4 W, 1.15 J a second of speech (CPU ONNX Runtime, 4 threads: 7.6x, +41.9 W, 5.5 J) |
 
 ## SwiftF0 (`internal/pitch`)
 

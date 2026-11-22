@@ -137,7 +137,7 @@ were removed without wrappers.
 
 ### Coding agent (`agent`)
 
-The loop of Pi (pi.dev) written in Go on `internal/chat.Engine`, without HTTP (`internal/agent`). No
+The loop of Pi (pi.dev) written in Go on `ai/text`'s `Chatter` (the engine), without HTTP (`ai/agent/coding`). No
 mature Go agent library fit. System prompt and 4 tool declarations: 629 tokens (OpenCode's first request:
 7,516), and no side requests (OpenCode asks for a title first, 1–2 minutes on a small model).
 

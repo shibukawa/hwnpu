@@ -1,4 +1,4 @@
-package agent
+package coding
 
 import (
 	"os"
@@ -53,7 +53,7 @@ func TestPrompt(t *testing.T) {
 	if !strings.Contains(p, "Project instructions:\n"+strings.Repeat("x", MaxInstructions)+"\n[...]") || strings.Contains(p, strings.Repeat("x", MaxInstructions+1)) {
 		t.Errorf("instructions not cut at %d:\n%s", MaxInstructions, p)
 	}
-	if tools := s.Tools(); len(tools) != 2 || tools[0].Name() != "read" || tools[1].Name() != "bash" {
+	if tools := s.Tools(); len(tools) != 2 || tools[0].Name != "read" || tools[1].Name != "bash" {
 		t.Errorf("tools %v", tools)
 	}
 
