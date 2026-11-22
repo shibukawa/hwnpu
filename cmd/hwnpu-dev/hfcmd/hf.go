@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -687,10 +688,27 @@ func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin 
 	if target != groupAMD {
 		conv = chat.CoreAITarget
 	}
-	if m.Targets[conv] == 0 {
+	pinnedAMD := target == groupAMD && len(m.Pins[cache.AMDTarget]) > 0
+	if m.Targets[conv] == 0 && !pinnedAMD {
 		report("-", "targets."+conv+".version is not written", true)
 	}
-	if target == groupAMD {
+	if pinnedAMD {
+		for _, export := range slices.Sorted(maps.Keys(m.Pins[cache.AMDTarget])) {
+			pin := m.Pins[cache.AMDTarget][export]
+			rel := hubRel(chat.PinnedPath(m.Name, cache.AMDTarget, export, pin))
+			e, err := read(rel)
+			switch {
+			case err != nil:
+				report(rel, "missing (hwnpu-dev models hf push)", true)
+			case e.Digest() != pin.Digest:
+				report(rel, "not the pinned digest "+pin.Digest, true)
+			case !chat.FormatTaken(e):
+				report(rel, "a form this hwnpu does not read (chat.AMDExportFormat): make it and pin it again", true)
+			default:
+				report(rel, "ok", false)
+			}
+		}
+	} else if target == groupAMD {
 		wants, err := amdWants(ctx, m)
 		if err != nil {
 			report("-", err.Error(), true)

@@ -217,7 +217,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 go run ./cmd/hwnpu-chat search -m plamo-embedding-1b
 ```
 
-[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) は日本語 (と英語) の文を 2048 個の数のベクトルにします。意味の近い文ほど同じ向きのベクトルになります。最初の起動で `config.json`、`tokenizer.model`、`model.safetensors` (2.1 GB) を `~/Library/Caches/hwnpu/original/pfnet/plamo-embedding-1b` に落とし、チャットのモデルと同じく `--embed-seq` の長さごとに 1 回ずつ変換します。
+[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) は日本語 (と英語) の文を 2048 個の数のベクトルにします。意味の近い文ほど同じ向きのベクトルになります。最初の起動で `config.json`、`tokenizer.model`、`model.safetensors` (2.1 GB) を `~/Library/Caches/hwnpu/original/pfnet/plamo-embedding-1b` に落とし、チャットのモデルと同じく `--embed-seq` の長さごとに 1 回ずつ変換します。 AMD の NPU では `tools/amd/iron_plamo_embed.py` の書き出し (2.1 GB。チャットのモデルの書き出しと同じく取得元か Hugging Face から取る) で動きます。128 語と 1024 語のグラフが重みを 1 つ共有し、Ryzen AI 9 365 で短い文 0.18 秒、500 語で 0.9 秒、埋め込みは参照と cosine 0.9997 です ([docs/amd-npu-models.md](docs/amd-npu-models.md) 30 節)。`--embed-seq` と `--embed-package` はそこでは効きません。
 
 ターミナルでは、入力した 1 行ずつが検索の対象の文書として溜まり、`?` (全角の `？` も可) で始まる行が検索の問い (クエリ) になります。文書をクエリとのコサイン類似度の高い順に並べます。`/list` で文書の一覧、`/reset` で文書を消し、`/exit` か Ctrl-D で終わります。
 

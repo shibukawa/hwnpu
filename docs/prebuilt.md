@@ -364,6 +364,28 @@ hwnpu/flux-3-image-klein on Hugging Face asks you to agree to its terms before d
 
 **上げる側**: gated にするリポジトリは、カードの YAML に `extra_gated_prompt` (と `extra_gated_fields`) を元のカードから写し、作るときに huggingface_hub の `update_repo_settings(gated="auto")` を呼ぶ (`hwnpu-dev models hf push` が models.yaml とライセンスの表 (6 節) を見て決める)。
 
+### 5.3 書き出しを中身で固定する (`exports`、2026-11-22)
+
+5.1 の HF のコミットが固定するのは「HF のどの版を読むか」だけで、**取得元 (NAS など) の書き出しと、どの書き出しを取りに行くかは鍵 (レシピの指紋) で決まっていた**。AMD の鍵には `tools/amd` のファイルの hash が入るので、コメントを直しただけでも全部の書き出しが外れる (2026-11-22 の確かめ: c053f77 の Ouro の追加と c99a9db の変数名の書き換えで、NAS の AMD の書き出しが main から 1 つも取れなくなった)。`targets.version` を書けば道具の hash を見なくなるが、取得元の `vN` のフォルダは上書きでき、中身は確かめていなかった。
+
+そこで models.yaml に、モデルごとに書き出しを中身で固定する欄を足した:
+
+```yaml
+    exports:
+      amd-xdna2:
+        LFM3-1.7B.amd-npu2-q4: v0-7bfc0b02 sha256:0b8f63d0...
+```
+
+- 値は「フォルダ」と「中身の digest」。フォルダは取得元の `converted/MODEL/TARGET/EXPORT/FOLDER` (HF のリポジトリでも同じパス)。digest は `store.Entry.Digest`: entry.json の `files` の (パス、大きさ、SHA-256) を並べた SHA-256。版、パス、レシピ、詰め方 (`pack`)、作った日は入らないので、詰め直しても `vN` として書き直しても同じ
+- 取ってくるファイルは、展開したものも含めて entry.json の SHA-256 と照らされる (`store.materialize`、`unpack`)。だから digest が合う entry.json から取ったものは、そのバイトしかない。HF は 5.1 のコミット (git の hash が entry.json を含む) と、この digest の両方で決まる
+- **アプリは固定した書き出しを、レシピ (鍵) によらず取る**: `placeOf` が固定を見て、取得元でも、HF のリポジトリでも、手元でも、そのフォルダにあって digest の合うものだけを取る。レシピが作れないとき (元のコミットが分からない) も、名前で探す道 (`ImportedRecipe`) に固定が効く
+- 固定に合わないときは今までどおり (鍵の同じもの、なければ手元で作る)。手元で作ったものは `vN` でなく、そのレシピの `v0-HASH` に置く (固定したフォルダは誰も書き換えない)。手元で同じレシピから作ったものは、手元ではそのまま使う
+- **形式の番号** (`chat.AMDExportFormat`): 固定すると、hwnpu の読み方が変わっても古い書き出しが自動では外れなくなる。読み方を変えて前の書き出しが使えなくなったら番号を上げる。2 からはレシピに `format` が入り、固定した書き出しの番号が違えば取らない (作り直して固定し直す)。Core AI は今までどおり `lowering` の番号と名前で分かれる
+- `hwnpu-dev models pin [MODEL[/amd-xdna2]...] [--layer N] [--write FILE] [--dry-run]`: 取得元にある各書き出しの一番新しいエントリ (読める形式のもの) を固定して models.yaml に書く。今は `amd-xdna2` だけ (Core AI は取得元に今のコードが作らない名前が残っているので、名前の選び方を決めてから)
+- `hwnpu-dev models hf plan / push / check`: 固定のある AMD の行は、その固定だけを見る (`targets.amd-xdna2.version` も元のコミットの固定も要らない)。上げるのは固定したフォルダを entry.json ごとそのまま
+- `hwnpu-dev sources gc` は固定したフォルダを消さない (`--pinned` で消す)
+- 署名 (GPG など) はしない。models.yaml はバイナリに埋め込まれるので、信頼の起点はバイナリ。利用者の models.yaml の固定はその人のもの
+
 ## 6. ライセンス
 
 **方針: 元のモデルに乗る。** 配るのは「有名なモデルが NPU ですぐ使える」ためで、元のモデルの代わりや新しい名前の別物にするためではない。なので、できるだけ元のとおりにする:

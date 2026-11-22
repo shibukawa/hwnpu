@@ -157,3 +157,28 @@ func (m *Model) StepRow(ctx context.Context, row []byte, position int) ([]float3
 	defer func() { m.embedRow = nil }()
 	return m.Step(ctx, 0, position)
 }
+
+// EmbedRow is row id of the export's host table of the token embeddings (EmbedTable, a --q4
+// export's embed.bin), as float32: what a tied head's row of id is too (a d1 export reads the
+// logits of its answer labels so, from the hidden state its prompt chunk gives).
+func (m *Model) EmbedRow(id int32) ([]float32, error) {
+	for _, t := range m.hostTables {
+		if t.t.Buffer != EmbedTable {
+			continue
+		}
+		if t.t.Layers != 1 || t.t.Format != "" {
+			return nil, fmt.Errorf("iron: host table %s is not one bf16 row a token", t.t.File)
+		}
+		if id < 0 || int(id) >= t.t.Rows {
+			return nil, fmt.Errorf("iron: token %d outside host table %s of %d rows", id, t.t.File, t.t.Rows)
+		}
+		b := make([]byte, t.t.PartBytes)
+		if _, err := t.f.ReadAt(b, int64(id)*int64(len(b))); err != nil {
+			return nil, fmt.Errorf("iron: host table %s: %w", t.t.File, err)
+		}
+		out := make([]float32, len(b)/2)
+		vecops.BF16ToF32(out, b)
+		return out, nil
+	}
+	return nil, fmt.Errorf("iron: the export has no host table of the token embeddings (%s): export it with --q4", EmbedTable)
+}

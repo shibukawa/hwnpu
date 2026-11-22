@@ -33,12 +33,27 @@ func Decide(name string) ai.Use[*Decider] {
 //	          vision       the vision encoder, a package per image size: questions about images
 //	          audio        the audio encoder, a package per clip length (d1-Omni)
 //
-// A model of device cpu runs on hwnpu's CPU interpreter (slow; for checking).
+// A model of device cpu runs on hwnpu's CPU interpreter (slow; for checking). On AMD's NPU a
+// model runs from its export of tools/amd/iron_export_lm.py d1 (models.yaml's amd_export).
 var decideRole = &airole.Role{
 	Name:  "decide",
 	Kinds: []chat.Kind{chat.KindDecision},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m, ps := e.Model, e.Model.Programs
+		if e.NPU.AMD() && len(ps["packages"]) == 0 && !e.NPU.CPU(m) {
+			// AMD's NPU: an export of tools/amd/iron_export_lm.py d1 (models.yaml's amd_export),
+			// from the sources or made with IRON, as a chat model's
+			if len(m.AMDExport) == 0 {
+				return f, noAMDForm(e)
+			}
+			dir, err := chat.AMDExportOf(e.Ctx, m, e.Log)
+			if err != nil {
+				return f, err
+			}
+			f.Set("export", dir)
+			f.SetValue("name", e.Base.Name)
+			return f, nil
+		}
 		if pk := ps["packages"]; len(pk) > 0 {
 			config := first(ps["config"])
 			if config == "" {
@@ -80,6 +95,13 @@ var decideRole = &airole.Role{
 		return f, nil
 	},
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
+		if dir := f.Path("export"); dir != "" {
+			m, err := systemone.LoadAMD(ctx, systemone.AMDConfig{Dir: dir, Name: f.Values["name"], Log: e.Log})
+			if err != nil {
+				return nil, err
+			}
+			return &Decider{m: m, model: e.Model}, nil
+		}
 		m, err := systemone.Load(ctx, systemone.Config{Packages: f.Paths["packages"], ModelConfig: f.Path("config"), Weights: f.Path("weights"),
 			Tokenizer: f.Path("tokenizer"), Calibration: f.Path("calibration"), Vision: f.Paths["vision"], Audio: f.Paths["audio"],
 			Name: f.Values["name"], CacheDir: e.Cache, CPU: e.NPU.CPU(e.Def), Backend: e.NPU.Device, Log: e.Log})

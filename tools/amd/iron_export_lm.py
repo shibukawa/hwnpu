@@ -56,6 +56,11 @@ MODELS = {
     "lfm3audio": ("iron_lfm3audio", "Lfm3Audio"),
     # LFM3-Omni (LFM3-Omni-2B): LFM3 with both towers, images and audio in (iron_lfm3omni.py).
     "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
+    # d1 (LiquidAI/d1-2B, d1-Omni-2B): LFM3-VL and LFM3-Omni read as the System One decision
+    # models read them, the whole prompt in one chunk, its full attention both ways, the final
+    # hidden state out (iron_d1.py).
+    "d1": ("iron_d1", "D1Vl"),
+    "d1omni": ("iron_d1", "D1Omni"),
     # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in hwnpu (iron_plamo3.py).
     "plamo3": ("iron_plamo3", "Plamo3"),
     # Ouro (ByteDance/Ouro-1.4B-Thinking): a looped decoder, its layers run total_ut_steps times
@@ -991,7 +996,7 @@ def main(argv=None) -> int:
         import iron_ouro
 
         iron_ouro.install(attn=a.attn, mlp=a.mlp, head=a.head)
-    elif a.model.startswith("lfm3") and a.q4:
+    elif (a.model.startswith("lfm3") or a.model.startswith("d1")) and a.q4:
         import iron_lfm3
 
         iron_lfm3.install_q4(attn=a.attn, conv=a.conv)
@@ -1076,7 +1081,7 @@ def main(argv=None) -> int:
         m = export(model, versions, a.out)
     # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
     for name in ("tokenizer.json", "tokenizer.jsonl", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
-                 "processor_config.json"):
+                 "processor_config.json", "calibration.json"):
         src = Path(a.checkpoint) / name
         if src.is_file():
             shutil.copyfile(src, a.out / name)

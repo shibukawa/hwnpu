@@ -217,7 +217,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 go run ./cmd/hwnpu-chat search -m plamo-embedding-1b
 ```
 
-[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) turns a Japanese (or English) text into a vector of 2048 numbers; texts of similar meaning get vectors pointing the same way. The first run downloads `config.json`, `tokenizer.model` and `model.safetensors` (2.1 GB) to `~/Library/Caches/hwnpu/original/pfnet/plamo-embedding-1b` and converts the model once for each length of `--embed-seq`, like the chat model.
+[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) turns a Japanese (or English) text into a vector of 2048 numbers; texts of similar meaning get vectors pointing the same way. The first run downloads `config.json`, `tokenizer.model` and `model.safetensors` (2.1 GB) to `~/Library/Caches/hwnpu/original/pfnet/plamo-embedding-1b` and converts the model once for each length of `--embed-seq`, like the chat model. On AMD's NPU it runs from an export of `tools/amd/iron_plamo_embed.py` (2.1 GB, fetched from the sources or Hugging Face like the chat models' exports): graphs of 128 and 1024 tokens that share one copy of the weights, about 0.18 s a short text and 0.9 s at 500 tokens on a Ryzen AI 9 365, with embeddings at a cosine of 0.9997 to the reference ([docs/amd-npu-models.md](docs/amd-npu-models.md) 30); `--embed-seq` and `--embed-package` do not apply there.
 
 In the terminal, each line typed is a document kept for searching, and a line starting with `?` is a query: the documents are listed by their cosine similarity to it, most similar first. `/list` shows the documents, `/reset` clears them, `/exit` or Ctrl-D quits.
 

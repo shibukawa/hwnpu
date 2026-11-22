@@ -118,6 +118,30 @@ func lookup(ctx context.Context, ls []shared.Source, only int, want shared.Entry
 	return best, ok
 }
 
+// lookupPinned finds the export of model m for target that models.yaml pins, in the layers (only
+// that one, when it is >= 0): at the pin's folder, with the pin's digest. It goes to Hugging Face
+// at that folder, its entry.json as the layer holds it.
+func lookupPinned(ctx context.Context, ls []shared.Source, only int, m chat.Model, target, export string) (found, bool) {
+	pin, ok := chat.PinOf(m, target, export)
+	if !ok {
+		return found{}, false
+	}
+	rel := chat.PinnedPath(m.Name, target, export, pin)
+	for i, s := range ls {
+		if only >= 0 && i != only {
+			continue
+		}
+		raw, e, err := readEntry(ctx, s, rel)
+		if err != nil || e.Digest() != pin.Digest || !chat.FormatTaken(e) {
+			continue
+		}
+		want := e
+		want.Path = rel
+		return found{want: want, got: e, raw: raw, layer: i, from: rel}, true
+	}
+	return found{}, false
+}
+
 // butTools reports whether two recipes are the same but for the tools' hash.
 func butTools(a, b map[string]string) bool {
 	if len(a) != len(b) {
@@ -231,17 +255,33 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 	}
 	amd := &row{model: m, group: groupAMD, why: slices.Clone(common)}
 	apple := &row{model: m, group: groupApple, why: slices.Clone(common)}
+	pinnedAMD := len(m.Pins[cache.AMDTarget]) > 0
+	if pinnedAMD {
+		// the exports models.yaml pins: their folders and digests, whatever the commit and tools
+		amd.why = nil
+		for _, export := range slices.Sorted(mapKeys(m.Pins[cache.AMDTarget])) {
+			if f, ok := lookupPinned(ctx, ls, only, m, cache.AMDTarget, export); ok {
+				amd.entries = append(amd.entries, f)
+			} else {
+				pin := m.Pins[cache.AMDTarget][export]
+				amd.why = append(amd.why, fmt.Sprintf("%s: the pinned %s is in no layer (hwnpu-dev models pin)", export, pin.At))
+			}
+		}
+	}
 	if len(common) > 0 && !loose {
 		return []*row{amd, apple} // the keys need the commit: no lookups
 	}
 	held := listed(ctx, ls, only, m)
 
 	// AMD: the exports the commands look for
-	if m.Targets[cache.AMDTarget] == 0 {
+	if pinnedAMD {
+		// above
+	} else if m.Targets[cache.AMDTarget] == 0 {
 		amd.why = append(amd.why, "write targets.amd-xdna2.version")
 	}
 	wants, err := amdWants(ctx, m)
 	switch {
+	case pinnedAMD:
 	case err != nil:
 		amd.why = append(amd.why, err.Error())
 	default:

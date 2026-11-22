@@ -307,3 +307,33 @@ func TestUserModelsFileEnv(t *testing.T) {
 		t.Errorf("%s, want %s", got, want)
 	}
 }
+
+// TestExportsPins: models.yaml's exports are read as pins; a file over another changes the
+// exports it names and keeps the others; a model like another does not take its pins; a pin
+// that is not FOLDER sha256:DIGEST is an error.
+func TestExportsPins(t *testing.T) {
+	d1, d2 := "sha256:"+strings.Repeat("1", 64), "sha256:"+strings.Repeat("2", 64)
+	base := "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n    exports:\n      amd-xdna2:\n        a.amd-npu2: v0-11111111 " + d1 + "\n        b.amd-npu2: v1 " + d1 + "\n"
+	over := "version: 1\nmodels:\n  LFM3-1.7B:\n    exports:\n      amd-xdna2:\n        b.amd-npu2: v2 " + d2 + "\n  mine:\n    like: LFM3-1.7B\n"
+	if _, err := withSources(t, nil, base, over); err != nil {
+		t.Fatal(err)
+	}
+	m := modelNamed("LFM3-1.7B")
+	if p, ok := PinOf(m, "amd-xdna2", "a.amd-npu2"); !ok || p.At != "v0-11111111" || p.Digest != d1 {
+		t.Errorf("a: %+v %v", p, ok)
+	}
+	if p, ok := PinOf(m, "amd-xdna2", "b.amd-npu2"); !ok || p.At != "v2" || p.Digest != d2 {
+		t.Errorf("b: %+v %v", p, ok)
+	}
+	if len(modelNamed("mine").Pins) != 0 {
+		t.Errorf("like took the pins: %v", modelNamed("mine").Pins)
+	}
+	if _, err := withSources(t, nil, base, "version: 1\nmodels:\n  LFM3-1.7B:\n    exports:\n      amd-xdna2:\n        a.amd-npu2: none\n"); err != nil {
+		t.Fatal(err)
+	} else if _, ok := PinOf(modelNamed("LFM3-1.7B"), "amd-xdna2", "a.amd-npu2"); ok {
+		t.Error("none did not drop the pin")
+	}
+	if _, err := withSources(t, nil, "version: 1\nmodels:\n  LFM3-1.7B:\n    exports:\n      amd-xdna2:\n        a.amd-npu2: latest\n"); err == nil {
+		t.Error("no error for a pin that is not FOLDER sha256:DIGEST")
+	}
+}

@@ -12,7 +12,13 @@ import (
 // repository); comments, order and the other lines stay as they are. A model the file does not
 // have is added at the end of models (an override of the model only, as a user's file has).
 func pinYAML(src []byte, model, repo, target, commit string) ([]byte, error) {
-	out, err := pinLines(strings.Split(string(src), "\n"), model, repo, target, commit)
+	return nestedYAML(src, model, "hub", repo, target, commit)
+}
+
+// nestedYAML is pinYAML for any field of a model that is a map of maps (hub: repository, then
+// target; exports: target, then export): models.MODEL.FIELD.OUTER.INNER = value.
+func nestedYAML(src []byte, model, field, outer, inner, value string) ([]byte, error) {
+	out, err := pinLines(strings.Split(string(src), "\n"), model, field, outer, inner, value)
 	if err != nil {
 		return nil, err
 	}
@@ -23,7 +29,7 @@ func pinYAML(src []byte, model, repo, target, commit string) ([]byte, error) {
 	return []byte(s), nil
 }
 
-func pinLines(lines []string, model, repo, target, commit string) ([]string, error) {
+func pinLines(lines []string, model, field, repo, target, commit string) ([]string, error) {
 	indent := func(l string) int { return len(l) - len(strings.TrimLeft(l, " ")) }
 	content := func(l string) bool {
 		t := strings.TrimSpace(l)
@@ -96,7 +102,7 @@ func pinLines(lines []string, model, repo, target, commit string) ([]string, err
 		}
 	}
 	if m < 0 {
-		insert(topEnd, pad(step)+model+":", pad(2*step)+"hub:", pad(3*step)+repo+":", pad(4*step)+target+": "+commit)
+		insert(topEnd, pad(step)+model+":", pad(2*step)+field+":", pad(3*step)+repo+":", pad(4*step)+target+": "+commit)
 		return lines, nil
 	}
 	mEnd := block(m)
@@ -105,9 +111,9 @@ func pinLines(lines []string, model, repo, target, commit string) ([]string, err
 	h := -1
 	from := -1
 	for i := m + 1; i < mEnd; i++ {
-		if r, ok := key(lines[i], fi, "hub"); ok {
+		if r, ok := key(lines[i], fi, field); ok {
 			if r != "" && !strings.HasPrefix(r, "#") {
-				return nil, fmt.Errorf("%s: hub is written in one line; write it as a block (hub:, then a line for each repository)", model)
+				return nil, fmt.Errorf("%s: %s is written in one line; write it as a block (%s:, then a line for each key)", model, field, field)
 			}
 			h = i
 		}
@@ -120,7 +126,7 @@ func pinLines(lines []string, model, repo, target, commit string) ([]string, err
 		if from >= 0 {
 			at = from + 1
 		}
-		insert(at, pad(fi)+"hub:", pad(fi+unit)+repo+":", pad(fi+2*unit)+target+": "+commit)
+		insert(at, pad(fi)+field+":", pad(fi+unit)+repo+":", pad(fi+2*unit)+target+": "+commit)
 		return lines, nil
 	}
 	hEnd := block(h)
@@ -140,7 +146,7 @@ func pinLines(lines []string, model, repo, target, commit string) ([]string, err
 		// a repository in one line: {amd-xdna2: COMMIT, apple: COMMIT}
 		l, err := pinFlow(lines[r], target, commit)
 		if err != nil {
-			return nil, fmt.Errorf("%s: hub: %s: %w", model, repo, err)
+			return nil, fmt.Errorf("%s: %s: %s: %w", model, field, repo, err)
 		}
 		lines[r] = l
 		return lines, nil

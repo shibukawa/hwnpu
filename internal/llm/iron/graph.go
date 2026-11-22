@@ -664,3 +664,21 @@ func (g *Graph) runBarrier(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Bank is the device buffer of the graph's bank of kind (the variant in use), nil for none: to
+// lend it to another graph of the same weights at the same places (GraphOptions.Buffers), as
+// the lengths of PLaMo-Embedding's export share one copy of them.
+func (g *Graph) Bank(kind string) *hwnpu.Buffer { return g.banks[kind] }
+
+// ImageBytes is the size of the image of the graph's bank of kind (its weights; zeros past it).
+func (g *Graph) ImageBytes(kind string) (int64, error) {
+	b, ok := g.Manifest.Banks[kind]
+	if !ok || b.Image == "" {
+		return 0, fmt.Errorf("iron: %s: no image of bank %s", g.Manifest.Name, kind)
+	}
+	fi, err := os.Stat(filepath.Join(g.dir, b.Image))
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}

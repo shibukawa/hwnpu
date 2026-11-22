@@ -120,9 +120,25 @@ func init() {
 		f.Set("export", dir)
 		return err
 	})})
+	Register(&Preparer{Name: "decision", Kinds: []chat.Kind{chat.KindDecision}, Targets: amd, Prepare: amdOnly(func(e airole.PrepareEnv, f *airole.Files) error {
+		// d1: an export of tools/amd/iron_export_lm.py d1 (models.yaml's amd_export), as a chat model's
+		if len(e.Model.AMDExport) == 0 {
+			fmt.Fprintf(e.Log, "%s: no amd_export: nothing to make for AMD's NPU\n", e.Model.Name)
+			return nil
+		}
+		dir, err := chat.AMDExportOf(chat.WithModel(e.Ctx, e.Model), e.Model, e.Log)
+		f.Set("export", dir)
+		return err
+	})})
+	Register(&Preparer{Name: "embed", Kinds: []chat.Kind{chat.KindEmbed}, Targets: amd, Prepare: amdOnly(func(e airole.PrepareEnv, f *airole.Files) error {
+		// PLaMo-Embedding: an export of tools/amd/iron_plamo_embed.py
+		dir, err := chat.PrepareEmbedderAMD(chat.WithModel(e.Ctx, e.Model), e.Model, e.Log)
+		f.Set("export", dir)
+		return err
+	})})
 	// the kinds with no graph for AMD's NPU: they run on the CPU beside it (ONNX Runtime, or the
 	// CPU interpreter on Core ML packages made where they run)
-	Register(&Preparer{Name: "cpu", Kinds: []chat.Kind{chat.KindOCR, chat.KindPitch, chat.KindNotes, chat.KindEmbed, chat.KindDecision}, Targets: amd,
+	Register(&Preparer{Name: "cpu", Kinds: []chat.Kind{chat.KindOCR, chat.KindPitch, chat.KindNotes}, Targets: amd,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 			fmt.Fprintf(e.Log, "%s: runs on the CPU beside AMD's NPU: nothing to make for it\n", e.Model.Name)
 			return airole.Files{}, nil

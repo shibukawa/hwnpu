@@ -171,7 +171,8 @@ func amdExports() []string {
 // checkpointFiles are the files of a checkpoint iron_export_lm.py reads and copies into the
 // export, besides the weights (FetchWeights); config.json is the only one every repository has.
 var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_config.json", "special_tokens_map.json",
-	"chat_template.jinja", "generation_config.json", "processor_config.json", "preprocessor_config.json"}
+	"chat_template.jinja", "generation_config.json", "processor_config.json", "preprocessor_config.json",
+	"calibration.json"} // a d1 model's temperature (internal/systemone)
 
 // PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as models.yaml's amd_export
 // says: from the shared layers when one has it (SharedExport; else one made by hand under its

@@ -296,6 +296,12 @@ func showModels(w io.Writer, amd bool) {
 			if d := chat.FindAMDExport(m); d != "" {
 				return shortPath(d)
 			}
+			if m.Kind == chat.KindEmbed {
+				if d := chat.FindEmbedAMDExport(m); d != "" {
+					return shortPath(d)
+				}
+				return "exported on first run"
+			}
 			if len(m.AMDExport) > 0 {
 				return "exported on first run"
 			}

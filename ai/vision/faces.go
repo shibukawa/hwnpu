@@ -15,6 +15,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
 	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
 
@@ -64,6 +65,16 @@ var facesRole = &airole.Role{
 				return f, fmt.Errorf("%s runs on AMD's, Apple's and Intel's NPU (this machine's NPU: %s); --device cpu runs it on the CPU", shown(m.Name), orNone(e.NPU.Vendor))
 			}
 			device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", shown(m.Name), orNone(e.NPU.Vendor))
+		}
+		if device == "cpu" && !onnxrt.Available() {
+			// the CPU runs YuNet with ONNX Runtime only: without it, AMD's NPU (its export) unless
+			// the CPU was asked for; elsewhere a prepare that fails now, not a load later
+			switch {
+			case flag != "cpu" && e.NPU.AMD() && program(m, "onnx") == "":
+				device, why = "npu", "ONNX Runtime, which runs it on the CPU, is not here: HWNPU_ONNXRUNTIME"
+			default:
+				return f, fmt.Errorf("%s runs on the CPU with ONNX Runtime, which is not here (HWNPU_ONNXRUNTIME: libonnxruntime's path; github.com/microsoft/onnxruntime/releases ships it in lib/)", shown(m.Name))
+			}
 		}
 		f.SetValue("device", device)
 		f.SetValue("why", why)

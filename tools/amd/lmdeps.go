@@ -33,6 +33,8 @@ var lmArch = map[string][]string{
 	"lfm3vl":       {"iron_lfm3vl.py", "iron_lfm3.py"},
 	"lfm3audio":    {"iron_lfm3audio.py", "iron_lfm3.py"},
 	"lfm3omni":     {"iron_lfm3omni.py", "iron_lfm3.py"},
+	"d1":           {"iron_d1.py", "iron_lfm3vl.py", "iron_lfm3omni.py", "iron_lfm3audio.py", "iron_lfm3.py"},
+	"d1omni":       {"iron_d1.py", "iron_lfm3vl.py", "iron_lfm3omni.py", "iron_lfm3audio.py", "iron_lfm3.py"},
 	"plamo3":       {"iron_plamo3.py"},
 	"ouro":         {"iron_ouro.py"},
 	"qwen35":       {"iron_qwen35.py"},
