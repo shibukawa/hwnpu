@@ -40,6 +40,21 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 	if err != nil {
 		return nil, err
 	}
+	path, err := ConvertEncoder(ctx, backend, encoder, dir, log)
+	if err != nil {
+		return nil, err
+	}
+	p, err := runner.Open(ctx, dev, path)
+	if err != nil {
+		return nil, fmt.Errorf("segment: %w", err)
+	}
+	return &Model{dec: dec, prog: p, progName: filepath.Base(path)}, nil
+}
+
+// ConvertEncoder converts the encoder (its ONNX file) into a program of backend in dir unless it
+// is there (or a shared layer has it), and returns its path: what OpenProgram loads, made with no
+// device (hwnpu-dev models package).
+func ConvertEncoder(ctx context.Context, backend, encoder, dir string, log io.Writer) (string, error) {
 	stem := strings.TrimSuffix(filepath.Base(encoder), filepath.Ext(encoder))
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	name := fmt.Sprintf("%s-r%d-fp16-%d", stem, ProgramRevision, Size)
@@ -47,30 +62,26 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 	if !llm.ProgramReady(ctx, dir, name, done, export) {
 		g, err := onnx.Load(encoder)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		if len(g.Inputs) != 1 || len(g.Outputs) != 1 {
-			return nil, fmt.Errorf("segment: %s has %d inputs and %d outputs, not the encoder's 1 and 1", encoder, len(g.Inputs), len(g.Outputs))
+			return "", fmt.Errorf("segment: %s has %d inputs and %d outputs, not the encoder's 1 and 1", encoder, len(g.Inputs), len(g.Outputs))
 		}
 		bar := console.NewBar(cmp.Or[io.Writer](log, io.Discard), "converting "+name)
-		if err := llm.StartProgram(path, export); err != nil {
+		if err := llm.StartProgram(ctx, path, export); err != nil {
 			bar.Done("failed")
-			return nil, fmt.Errorf("segment: %w", err)
+			return "", fmt.Errorf("segment: %w", err)
 		}
 		if _, err := llm.WritePart(path, EncoderProgram(g), nil, llm.Options{Format: "fp16", Backend: backend}, func(pkg *mlpackage.Package) {
 			pkg.Description = fmt.Sprintf("EfficientSAM's image encoder (%s), %dx%d, fp16 (hwnpu)", filepath.Base(encoder), Size, Size)
 		}); err != nil {
 			bar.Done("failed")
-			return nil, fmt.Errorf("segment: %w", err)
+			return "", fmt.Errorf("segment: %w", err)
 		}
 		bar.Done(console.Duration(bar.Elapsed()))
 		if err := llm.FinishProgram(ctx, dir, name, done, export); err != nil {
-			return nil, err
+			return "", err
 		}
 	}
-	p, err := runner.Open(ctx, dev, path)
-	if err != nil {
-		return nil, fmt.Errorf("segment: %w", err)
-	}
-	return &Model{dec: dec, prog: p, progName: filepath.Base(path)}, nil
+	return path, nil
 }

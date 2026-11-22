@@ -14,7 +14,7 @@ import (
 
 // AMDNamed is the export for AMD's NPU of model m under the first of names (NAME.amd-npu2, ...)
 // that is here (cache.ExportRoots: a directory have takes) or in the sources, "" when neither
-// has one. One in the sources is an export made by hand that hwnpu-dev cache import, or the
+// has one. One in the sources is an export made by hand that hwnpu-dev sources import, or the
 // first use of it on another machine (ShareMadeByHand), put there (ImportKind): it is
 // downloaded into AMDRoot once, and the runs after take that copy without asking the sources.
 // One here made by hand goes in the sources written back to (ShareMadeByHand).
@@ -61,9 +61,9 @@ func fetchImported(ctx context.Context, m Model, out string, log io.Writer) bool
 
 // ShareMadeByHand puts dir, an export for AMD's NPU of model m made here by hand (it has no
 // entry.json: it was neither fetched nor made by a first run), in the sources written back to, as
-// hwnpu-dev cache import does: described once (the SHA-256 of its files, which entry.json then
+// hwnpu-dev sources import does: described once (the SHA-256 of its files, which entry.json then
 // keeps) and put in the background (store.PutLater; a source that holds one of its name already is
-// left as it is). Only exports in AMDRoot: ~/models is read, not written (hwnpu-dev cache import
+// left as it is). Only exports in AMDRoot: ~/models is read, not written (hwnpu-dev sources import
 // puts one from there).
 func ShareMadeByHand(m Model, dir string, log io.Writer) {
 	name := filepath.Base(dir)
@@ -105,7 +105,7 @@ func ShareMadeHere(m Model, dir, kind string, recipe map[string]string, log io.W
 // generator) on AMD's NPU for pictures of size x size (0: a model of one size;
 // AMDPictureNames), here (entries/amd-xdna2 under the cache's root, or ~/models:
 // cache.ExportRoots) or in the sources, downloaded once into the cache's entries/amd-xdna2
-// (AMDNamed): an export made by hand and put there (hwnpu-dev cache import, or its first use on
+// (AMDNamed): an export made by hand and put there (hwnpu-dev sources import, or its first use on
 // the machine that made it). tool is the script that writes it, for the error when there is
 // none.
 func AMDPictureExport(ctx context.Context, m Model, tool string, size int, log io.Writer) (string, error) {

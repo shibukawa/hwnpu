@@ -91,7 +91,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 ```
 
 - A file the lock does not name is not read. A repository copied by hand without a lock (a gated checkpoint on a NAS) is not found, and the fetch goes on to Hugging Face.
-- The commit is decided once per repository: the models.yaml pin (`from: hf:OWNER/NAME@REV`), else the first source's lock, else the local lock, else Hugging Face's `main`. Every file comes from that commit whichever layer serves it. Only `hwnpu-dev cache update` moves a lock (re-downloads changed files only). When a source's lock moves, the local one follows and files with the same sha256 stay (`store.Record`).
+- The commit is decided once per repository: the models.yaml pin (`from: hf:OWNER/NAME@REV`), else the first source's lock, else the local lock, else Hugging Face's `main`. Every file comes from that commit whichever layer serves it. Only `hwnpu-dev sources update` moves a lock (re-downloads changed files only). When a source's lock moves, the local one follows and files with the same sha256 stay (`store.Record`).
 - Fast path: when the local lock names the file, its size matches and the commit is the decided one, no network and no source is asked.
 - Every original file, from any layer, lands in local `original/OWNER/NAME/FILE` (`chat.RepoDir`); `chat.Fetch(ctx, repo, name, log)` and `chat.FetchWeights` return the path. Parts shared by models (Chroma's T5-XXL and VAE) are in each repository's folder, hard-linked by sha256.
 - `TARGET`: `amd-xdna2`, `coreai`, `coreai-ARCH` (prebuilt), `any` (tables, GPTQ codes). `VERSION`: `vN` when models.yaml has `targets.<target>.version: N` (matched if the recipe without the tools hash is the same), `vN-<8 hex>` with `develop: true`, `v0-<8 hex>` with no version.
@@ -126,9 +126,9 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 - Order: data first, `entry.json` (or the lock entry) last. File writes go to `.put-…` then MOVE (S3 shows an object only when complete).
 - Tee: a Hugging Face download is streamed to folder and WebDAV sources as it comes, committed only if size and sha256 match. A source 64 MiB behind (`store.TeeBuffer`), S3, or a resumed `.part` drops out and is queued after.
 - Non-packed conversions are put while being made (`store.StartEarly`: files idle 3 s, `EarlySettle`); `PutEntry` puts the rest. Packed ones (AMD, Core AI) are put once whole.
-- The queue (`store.PutLater`, `work/queue/`, 4 streams) finishes before exit, resumes at the next start, logs failures to `work/queue.log`, and never fails the command. `hwnpu-dev cache flush` waits for it.
+- The queue (`store.PutLater`, `work/queue/`, 4 streams) finishes before exit, resumes at the next start, logs failures to `work/queue.log`, and never fails the command.
 - A folder being written carries `.writing-ID` (JSON: machine, process, start, last write), rewritten every 5 minutes, removed at the end (`store.MarkWriting`). Every writing path sets it (tee and early puts too).
-- Packing (`store.Packs`, `files.tar.zst` beside `entry.json`): AMD and Core AI exports go as one tar+zstd file. The gain is fewer requests (one PUT+MOVE on WebDAV), size 1–5% for Core AI (LFM3-1.7B 2.62 → 2.59 GB), 16% over 13 AMD chat exports (65.7 → 55.2 GB). Download resumes, sha256 of the pack, then each file checked against `entry.json`; only the unpacked export is kept. Loose exports from older hwnpu are still read; `hwnpu-dev cache repack` packs them.
+- Packing (`store.Packs`, `files.tar.zst` beside `entry.json`): AMD and Core AI exports go as one tar+zstd file. The gain is fewer requests (one PUT+MOVE on WebDAV), size 1–5% for Core AI (LFM3-1.7B 2.62 → 2.59 GB), 16% over 13 AMD chat exports (65.7 → 55.2 GB). Download resumes, sha256 of the pack, then each file checked against `entry.json`; only the unpacked export is kept. Loose exports from older hwnpu are still read (the NAS's were packed on 2026-11-21 and the command that did it, `hwnpu-dev cache repack`, was removed: every put packs).
 
 ### Transports
 
@@ -164,7 +164,7 @@ Details and Apple specifics: [apple-coreai.md](apple-coreai.md), [../cache-shari
 
 - What: `coreai-build` output (`X.ARCH.aimodelc`) per chip, without the weights. `coreai.Pack` maps `resources.bin` (99% of the size) to `resources.bin.map.json` against the blobs of `main.mlirb` (a 231 MB part → 2.97 MB, rebuilt byte for byte). `coreai.Bundle` makes `prebuilt.tar.zst` per chip (one chip only is fetched, so not one archive for all).
 - Fetch: when `Compile` loads a part with no Core AI cache entry and no local prebuilt, once per export per process, `coreai.FetchPrebuilt` asks the sources and stores in `EXPORT.prebuilt/ARCH/`. `coreai.Assemble` rebuilds in a temporary folder (small files hard-linked, weights read from `main.mlirb`, size and sha256 checked; never from a different bytecode), Core AI opens it, the folder is removed. `HWNPU_COREAI_PREBUILT=off` skips it.
-- Put: `hwnpu-dev prebuild -arch LIST -put EXPORT` (`-packed` packs without putting). Build, pack and drop each part's full `.aimodelc` one at a time (Sana's 27 parts × 12 chips whole would be 50 GB). Build one chip at a time: 12 at once put none. Watch disk: `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` kept 12 GB after `coreai-build`.
+- Put: `hwnpu-dev models package EXPORT/coreai-ARCH` (`--packed` packs without putting, `--no-push` leaves the programs whole beside their sources). Build, pack and drop each part's full `.aimodelc` one at a time (Sana's 27 parts × 12 chips whole would be 50 GB). Build one chip at a time: 12 at once put none. Watch disk: `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` kept 12 GB after `coreai-build`.
 - The `.aimodel` export is needed even where a prebuilt exists (the weights come from it).
 - Which models get one: only where it pays.
 
@@ -177,7 +177,7 @@ Details and Apple specifics: [apple-coreai.md](apple-coreai.md), [../cache-shari
 | LFM3-1.7B (chat) | 2 min 17 s | 8 min 12 s | M2 16 GB |
 | plamo-3-translate-8b (chat) | 1 min 13 s | 7 min 08 s | M2 16 GB |
 
-  - Image models with many slow parts win (FLUX.2 klein, Chroma1-Flash, Anima: put with `-arch all -put`). Chat models lose: the first prebuilt part of a process costs a fixed 3–6 minutes in `ANELargeModelCompilerService`; Qwen3.5-4B loaded but did not answer for 1 h 40 min. Chat models have no prebuilt.
+  - Image models with many slow parts win (FLUX.2 klein, Chroma1-Flash, Anima: put with `--arch all`). Chat models lose: the first prebuilt part of a process costs a fixed 3–6 minutes in `ANELargeModelCompilerService`; Qwen3.5-4B loaded but did not answer for 1 h 40 min. Chat models have no prebuilt.
   - Steps per second are the same. FLUX.2 klein's picture differs slightly with prebuilt (PSNR 28.9 dB); Chroma and Anima match byte for byte.
 - Constraints:
   - Only 12 chips work (h13g, h14c/g, h15c/g, h16c/g/s, h17c/d/g/s). On M1 Pro / Max / Ultra, M2 Pro / Ultra, M3 Pro / Ultra, h15m and A18 `coreai-build` crashes in `ANEHostCompiler` (SIGSEGV, any program). M6 (h18g) fails with `redefinition of symbol named 'hwnpu_N'` and falls to GPU. Reported to Apple.
@@ -220,7 +220,7 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 - Never removed: used in the last hour (`cache.KeepRecent`), used by this process, waiting in the write-back queue (`cache.SetBusy`). The scan runs once per process.
 - Short of space with prebuilt available, Core AI cache entries of parts that have a prebuilt (`coreai-cache/<OS>/hwnpu*/<hash>`, a copy of the weights) go first: they rebuild in seconds. The prebuilt itself stays.
 - The machine-bound compile cache (`cache.Prune`, called after a chat load): entries whose source package (`<key>.src`) is gone, entries unused for 30 days, temporary folders older than a day.
-- Commands: `hwnpu cache [ls|prune|clear|clean]` for users, `hwnpu-dev cache …` for whoever runs a source (source 0 is the local cache). Flags: [../cache-sharing.md](../cache-sharing.md).
+- Commands: `hwnpu cache [ls|prune|clear|clean]` for users, `hwnpu-dev models …` for whoever runs a source (source 0 is the local cache). Flags: [../cache-sharing.md](../cache-sharing.md).
 - `modelstore` exposes the same (`Options.Limits`, `Usage`, `PlanPrune`, `Prune`, `Remove`, `PlanClean`, `Clean`, `ErrNoRoom`).
 
 ### Cleaning a source (`hwnpu cache clean [-n] [-y]`, `store.PlanClean`)
@@ -230,15 +230,14 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 - Outside `converted/` and `original/` (a NAS's `.DS_Store`): untouched.
 - A folder is "being written", and kept, if it has a `.writing-ID` mark whose last write is within an hour (`store.WritingStale`), or any file time (WebDAV `getlastmodified`, mtime, S3 LastModified) within an hour. A mark alone was not enough: an older hwnpu without marks started writing between plan and apply. Each folder is re-checked just before removal; the mark goes last.
 - S3 multipart uploads never completed or aborted (billed, not listed) under `converted/` and `original/` older than `WritingStale` are aborted (`ListMultipartUploads`, tinygodriver v1.3.10).
-- `hwnpu-dev cache gc N … --orphans` uses the same rules.
 
 ## Open
 
-- Hugging Face distribution of converted models (organization `hwnpu`, one repository per model, uploaded by hand from a source with `hwnpu-dev hf push`, read as a layer before the original repository): the layer, models.yaml's `hub` pins and `hwnpu-dev hf plan / push / check` are built; nothing is uploaded yet. Left: a device flow to write, splitting exports over 20 GB, stopping when a gated repository refuses ([../prebuilt.md](../prebuilt.md)). Today sharing goes through the user's sources.
+- Hugging Face distribution of converted models (organization `hwnpu`, one repository per model, uploaded by hand from a source with `hwnpu-dev models hf push`, read as a layer before the original repository): the layer, models.yaml's `hub` pins and `hwnpu-dev models hf plan / push / check` are built; nothing is uploaded yet. Left: a device flow to write, splitting exports over 20 GB, stopping when a gated repository refuses ([../prebuilt.md](../prebuilt.md)). Today sharing goes through the user's sources.
 - Local layout: move `models/NAME` programs and `entries/` to `converted/MODEL/TARGET/EXPORT/vN/` with `entry.json` as the only completion mark (now `NAME.done`, `NAME.ext.done` and `entry.json` coexist); migrate `~/models` once and stop reading it; `modelstore` API to make conversions (`Make`); use bundled conversions in place (now copied).
 - Entries for Core ML and OpenVINO programs; machine-bound (`host`) entries in sources; AMD / Intel NPU generations in the target name.
 - Hand-made image exports whose tool arguments Go does not own (Anima): only by name today.
-- `hwnpu-dev cache push` does not know the first-run FLUX.2 klein export.
+- `hwnpu-dev models push` does not know the first-run FLUX.2 klein export.
 - Not checked on hardware: AWS S3, Synology WebDAV, Windows locks and ReFS / Dev Drive cloning, bcachefs, ZFS, NFS cloning; disk-space reads on Windows and macOS during a real download.
 - Core AI chat exports of the 8 GB column (LFM3-1.7B, Qwen3.5-0.8B, Qwen3-1.7B) not yet remade and put after `FormatVersion` 2. Anima-Turbo's 1024² Core AI export not yet in the sources. Qwen2.5-Coder-7B's GPTQ codes must be regenerated (`tools/ref/qwen2_gptq.py`) and converted once.
 - The fixed first-part cost of prebuilt finishing, the 9 crashing chips, M6's name clash and FLUX's numeric difference wait on Apple (a new Metal Toolchain is needed to rebuild).
@@ -249,7 +248,7 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 
 - Compressing checkpoints or weights on disk: lz4 ~100%, zstd 71–90%, and mapped files need an unpacked copy.
 - Sources in models.yaml (`sources`, `search`, `cache.layers`, `from: SOURCE:NAME`), `HWNPU_CACHE_LAYERS`, `HWNPU_CACHE_WRITE`: replaced by source URLs in the environment; a file that still writes them gets an error with how to move.
-- Content-addressed layout (`blobs/sha256/…`, `upstream/`, `entries/KIND/KEY.json`) and its dedup: unreadable for people and not servable by a plain HTTP server. `hwnpu-dev cache migrate` moves old data by hard links.
+- Content-addressed layout (`blobs/sha256/…`, `upstream/`, `entries/KIND/KEY.json`) and its dedup: unreadable for people and not servable by a plain HTTP server. Old data was moved by hard links (`hwnpu-dev models migrate`, removed on 2026-11-22 once the NAS was moved).
 - `HWNPU_OFFLINE` (use `HWNPU_MODEL_HUGGING_FACE=false`) and `HWNPU_PREBUILT` (a prebuilt is used if a source has it).
 - Saving the Hugging Face token to disk: memory only.
 - Fetching the ONNX Runtime library automatically: native library distribution is the user's choice (`HWNPU_ONNXRUNTIME` or the system's).

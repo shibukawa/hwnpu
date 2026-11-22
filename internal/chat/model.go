@@ -163,7 +163,7 @@ const m1HoldBytes = 2867 << 20 // 2.8 GiB
 // before it slows down, 0 for no such limit: m1HoldBytes on an M1 (the M1 Pro, Max and Ultra,
 // with the same Neural Engine, are taken to be alike; not measured).
 var neuralEngineHold = func() int64 {
-	if strings.HasPrefix(cpuBrand(), "Apple M1") {
+	if chipName() == "M1" {
 		return m1HoldBytes
 	}
 	return 0
@@ -399,7 +399,9 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		dir := DerivedDir(s.Repo)
 		c.Weights = filepath.Join(dir, "model.safetensors")
 		checkpoint = sync.OnceValues(func() (string, error) {
-			if err := hd.Derive(ctx, s.Repo, dir, s.Log); err != nil {
+			// from the sources, else derived here and put in those written back to
+			derive := func() error { return hd.Derive(ctx, s.Repo, dir, s.Log) }
+			if err := SharedExport(ctx, DerivedKind, derivedRecipe(ctx, modelNamed(c.Name), s.Repo), dir, s.Log, derive); err != nil {
 				return "", err
 			}
 			return c.Weights, nil
@@ -1125,6 +1127,9 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if p, ok := cache.ReadDone(done); ok {
 		return p, nil
 	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return "", err
+	}
 	unlock, err := cache.Lock(ctx, out, filepath.Base(out), log)
 	if err != nil {
 		return "", err
@@ -1238,6 +1243,9 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 	converted(ctx, export) // from the shared layers when one has it
 	if _, ok := cache.ReadDone(done); ok {
 		return manifests, nil
+	}
+	if err := llm.MayConvert(ctx, export); err != nil {
+		return nil, err
 	}
 	unlock, err := cache.Lock(ctx, export, filepath.Base(export), log)
 	if err != nil {
@@ -1368,6 +1376,34 @@ func FetchWeights(ctx context.Context, repo string, log io.Writer) (string, erro
 		want = append(want, File{repo, f})
 	}
 	return single, FetchFiles(ctx, want, log)
+}
+
+// DerivedKind is the kind of entry of a checkpoint derived from a release (llm.HostDerived), which
+// the sources hold as they hold a conversion: a machine that runs the model fetches it in place of
+// the release it is derived from.
+const DerivedKind = "derived"
+
+// derivedVersion is the version of what llm.HostDerived's Derive writes (Qwen3.6's experts in
+// MXFP4), part of the derived checkpoint's key: bumped by hand when what it writes changes.
+const derivedVersion = 1
+
+// derivedRecipe is the key of the checkpoint derived from model m's release repo: the model, the
+// release's repository and commit (and the SHA-256 the definitions pin) and derivedVersion. nil
+// when the commit is not known (nothing is looked for: it is derived here).
+func derivedRecipe(ctx context.Context, m Model, repo string) map[string]string {
+	if m.Repo == "" {
+		m.Repo = repo
+	}
+	commit := sourceCommit(ctx, m)
+	if commit == "" {
+		return nil
+	}
+	base, _, _ := strings.Cut(repo, "@")
+	r := map[string]string{"model": m.Name, "source": base, "commit": commit, "derived": fmt.Sprint(derivedVersion)}
+	for f, d := range m.SHA256 {
+		r["sha256:"+f] = strings.ToLower(d)
+	}
+	return r
 }
 
 // DerivedDir is where the checkpoint derived from repo's release goes (llm.HostDerived): the

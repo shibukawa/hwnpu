@@ -26,7 +26,7 @@ Generation speed is otherwise the same within ±10 %. On an M3, chat models star
 | `hwnpu-chat` (chat, embeddings, `systemone`) | Core AI only. `--backend` takes `coreai`, `intel`, `levelzero`, `openvino`; `coreml` is not a choice |
 | `hwnpu-image` (generation and the image-reading models) | Core AI only. `convert` writes `coreai` by default; `convert --backend coreml` remains to write what `--cpu` reads |
 | `hwnpu-audio` (music, sfx, transcribe, tts, pitch, notes) | Core AI only |
-| `hwnpu-dev prebuild` | Builds prebuilt programs with `coreai-build` (below) |
+| `hwnpu-dev models package MODEL/coreai-ARCH` | Builds prebuilt programs with `coreai-build` (below) |
 | `hwnpu-dev convert` | Writes `coreml` by default; `llm.Convert` also takes `coreai` |
 
 - Without Core AI (macOS 26 or earlier) these commands stop with an error saying that Core AI needs macOS 27 (`errNoCoreAI`). They do not fall back to Core ML.
@@ -183,11 +183,11 @@ Names from `coreai-build inspect X.ARCH.aimodelc` (`Supported chips`): h13 M1, h
 - Key: `coreai.ProgramsDigest` (each `.aimodel`'s place and `main.hash`), the architecture and the export name: `converted/MODEL/coreai-ARCH/EXPORT/v0-HASH`. The model comes from the export's `entry.json`.
 - When `Compile` meets a part with no entry and no local prebuilt, it asks the source once per export and process (`coreai.FetchPrebuilt`, set by chat) and puts the result in `EXPORT.prebuilt/ARCH/`. `EXPORT.coreai.prebuilt` is a cache unit of kind `prebuilt`, not counted in the model's size, and kept when cutting. The `.aimodel` export is still needed on machines with a prebuilt (the weights come from it). Sources and packing of exports: [distribution](distribution.md).
 
-`hwnpu-dev prebuild EXPORT [-arch LIST|all] [-j N] [-force] [-n] [-packed] [-put]` (`coreai.Build`):
+`hwnpu-dev models package MODEL/coreai-ARCH|EXPORT[/coreai-ARCH] [-j N] [--force] [-n] [--packed] [--no-push]` (`coreai.Build`):
 
-- Runs one `coreai-build` process per part and architecture, `-j` at once (default: one per 4 GB of memory beyond 6, at most half the cores; 2 on 16 GB). Writes into `.prebuild-*` then renames. Builds and packs part by part and deletes the whole `.aimodelc` (Sana's 27 parts × 12 kinds whole would be 50 GB). `-put` packs and puts each architecture's bundle in the sources written back to; `-packed` packs beside the export only.
+- Runs one `coreai-build` process per part and architecture, `-j` at once (default: one per 4 GB of memory beyond 6, at most half the cores; 2 on 16 GB). Writes into `.prebuild-*` then renames. Builds and packs part by part and deletes the whole `.aimodelc` (Sana's 27 parts × 12 kinds whole would be 50 GB). It packs and puts each architecture's bundle in the sources written back to; `--packed` packs beside the export only, `--no-push` leaves the whole programs beside their sources. Given a model, it first makes the model ready for coreai (`hwnpu-dev models package MODEL/coreai`: from the sources, else converted) and compiles its exports.
 - A part the offline compiler fails on counts as failed (no output kept) and is tried once more alone after the others.
-- Build one architecture per run (`-arch ARCH -put`): with all 12 at once nothing was put before the disk filled. Watch free disk and `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost`.
+- Build one architecture per run (`--arch ARCH`): with all 12 at once nothing was put before the disk filled. Watch free disk and `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost`.
 - Chroma1-Flash at 1024²: 29 parts in 9 min (2.3 GB a process peak); ANE code 140 MB in all, weights 15.6 GB.
 
 ### Where prebuilt pays

@@ -50,6 +50,12 @@ func (m *builder) output(v *mlpackage.Var, name string) {
 // every layer's attention runs on the host between the parts (llm.Paged); the first part then has
 // no layers (llm.NoLayers) and outputs layer 0's.
 func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
+	if err := cfg.check(); err != nil {
+		return nil, nil, fmt.Errorf("ouro: %w", err)
+	}
+	if opts.Seq < 0 || opts.Seq > maxShapeDimension {
+		return nil, nil, fmt.Errorf("ouro: sequence length %d exceeds the supported shape size", opts.Seq)
+	}
 	if opts.Group == 0 {
 		opts.Group = 16
 	}

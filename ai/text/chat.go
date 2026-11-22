@@ -548,3 +548,5 @@ func chatTools(tools []Tool) ([]chat.Tool, error) {
 	}
 	return out, nil
 }
+
+func init() { airole.Register(chatRole) }

@@ -99,6 +99,9 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err
 	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return "", err
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

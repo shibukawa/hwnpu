@@ -382,3 +382,5 @@ func (d *DepthEstimator) Close() error {
 	}
 	return err
 }
+
+func init() { airole.Register(depthRole) }

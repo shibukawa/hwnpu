@@ -3,6 +3,7 @@ package flux2klein
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -226,5 +227,30 @@ func TestEditExportName(t *testing.T) {
 	}
 	if n := EditExportName("FLUX.2-klein-4B", EditOptions{Sizes: [][2]int{{512, 512}}, Refs: [][]int{{1}, {2}}}); n != "flux.2-klein-4b-edit-512x512-ref1+refh1-lut8-v1.coreai" {
 		t.Errorf("edit export name %s", n)
+	}
+}
+
+// TestEditPatterns: the patterns' sizes and references, each references' sizes, and a name apart
+// from every size with every references.
+func TestEditPatterns(t *testing.T) {
+	o := EditOptions{Patterns: EditPatterns}
+	o.defaults()
+	if !slices.Equal(o.Sizes, [][2]int{{1024, 1024}, {512, 512}}) || len(o.Refs) != 4 {
+		t.Fatalf("sizes %v, refs %v", o.Sizes, o.Refs)
+	}
+	for _, c := range []struct {
+		refs []int
+		want [][2]int
+	}{{[]int{1}, [][2]int{{1024, 1024}, {512, 512}}}, {[]int{1, 2}, [][2]int{{1024, 1024}}}, {[]int{1, 1}, [][2]int{{512, 512}}}, {[]int{1, 2, 2}, [][2]int{{1024, 1024}}}} {
+		if got := o.sizesFor(c.refs); !slices.Equal(got, c.want) {
+			t.Errorf("sizes of %v: %v, want %v", c.refs, got, c.want)
+		}
+	}
+	n := EditExportName("FLUX.2-klein-4B", EditOptions{Patterns: EditPatterns})
+	if !strings.HasPrefix(n, "flux.2-klein-4b-edit-5edits-") || !strings.HasSuffix(n, "-lut8-v1.coreai") {
+		t.Errorf("edit export name %s", n)
+	}
+	if n == EditExportName("FLUX.2-klein-4B", EditOptions{Sizes: o.Sizes, Refs: o.Refs}) {
+		t.Error("the patterns' name is every size's with every references'")
 	}
 }

@@ -158,7 +158,7 @@ func digestOf(hashes map[string][]byte, bytecode map[string]bool) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// manifest is the repository's config.json: what hwnpu-dev hf push put there (hwnpu reads it
+// manifest is the repository's config.json: what hwnpu-dev models hf push put there (hwnpu reads it
 // first; Hugging Face counts its downloads by it).
 type manifest struct {
 	Hwnpu struct {

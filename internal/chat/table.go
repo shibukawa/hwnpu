@@ -235,7 +235,7 @@ type modelEntry struct {
 	// what they are made from, not vN.
 	Develop *bool `yaml:"develop"`
 	// Hub are the model's conversions on Hugging Face: by repository (OWNER/NAME), the commit
-	// each target reads (amd-xdna2, apple, coreai-ARCH), which hwnpu-dev hf push writes
+	// each target reads (amd-xdna2, apple, coreai-ARCH), which hwnpu-dev models hf push writes
 	// (docs/prebuilt.md 5.1). A file over another changes the repositories and targets it
 	// names and keeps the others.
 	Hub   *map[string]map[string]string `yaml:"hub"`
@@ -311,7 +311,7 @@ type tableFile struct {
 	Cache      any                       `yaml:"cache"`
 	// Policy are items of the model policy (+nsfw, -license:non-commercial), read before PolicyEnv's.
 	Policy []string `yaml:"policy"`
-	// Hub is where hwnpu-dev hf push puts the conversions (docs/prebuilt.md 4.6).
+	// Hub is where hwnpu-dev models hf push puts the conversions (docs/prebuilt.md 4.6).
 	Hub *struct {
 		// Push is the namespace on Hugging Face (an account or an organization): the
 		// repositories are PUSH/MODEL.

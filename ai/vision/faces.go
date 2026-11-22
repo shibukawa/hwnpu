@@ -293,3 +293,5 @@ func (d *FaceDetector) Close() error {
 	defer d.mu.Unlock()
 	return d.d.Close()
 }
+
+func init() { airole.Register(facesRole) }

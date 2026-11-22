@@ -8,14 +8,14 @@
 
 - 根を 1 つに (`cache.Root`、`HWNPU_CACHE`)。AMD の書き出しは `entries/amd-xdna2/` に作り、`~/models` は読むだけ。IRON の JIT のキャッシュは `iron/` (`~/.npu/cache` を最初の書き出しの前に移し、リンクを残す)。組み込みの IRON の道具は `tools/`。まだ移していないもの: `models/` (チェックポイントと Core ML、OpenVINO のプログラム) を `src/` と `entries/` に分けること
 - `.done` を相対パスに、ダウンロード・変換・書き出しのロック、HF の続きのダウンロードの `If-Range`
-- 取得元 (7 節、2026-11-15 に作り直し): `HWNPU_MODEL_SOURCE`、`_1`、... の URL (`file://`、`http(s)://` の WebDAV と読むだけの HTTP、`s3://`)、`?writeback=true`、`HWNPU_MODEL_HUGGING_FACE`、`.env` (7.4 節)。元のモデルは `original/OWNER/NAME/` と `hwnpu-lock.json`、変換後は `converted/MODEL/TARGET/EXPORT/VERSION/`。定義の `targets` (版) と `develop`。`hwnpu-dev cache sources|ls|push|update|verify|flush|gc|migrate`
+- 取得元 (7 節、2026-11-15 に作り直し): `HWNPU_MODEL_SOURCE`、`_1`、... の URL (`file://`、`http(s)://` の WebDAV と読むだけの HTTP、`s3://`)、`?writeback=true`、`HWNPU_MODEL_HUGGING_FACE`、`.env` (7.4 節)。元のモデルは `original/OWNER/NAME/` と `hwnpu-lock.json`、変換後は `converted/MODEL/TARGET/EXPORT/VERSION/`。定義の `targets` (版) と `develop`。`hwnpu-dev sources|ls|push|update|verify|flush|gc|migrate`
 - 元のチェックポイントのフォワードプロキシ (7.1 節): lock のコミットのファイルを取得元から、なければ HF から同じコミットで取り、書き戻す取得元に置く
 - エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具のうちその書き出しが読むものの hash: `amdtools.LMHash`)。読むものは `iron_export_lm.py` と共通の 3 つ、アーキ (`amd_export` の最初の語) ごとの表 `lmArch` (MODELS のモジュールと、その枝が install するもの) と旗 (`--verify`、`--q4-codes`) のモジュールから import を辿ったもの (`iron_export_lm.py` へ戻る import は辿らない)、それと全部のカーネル (部品から名前を作って読むものがあるので)。表にないアーキは道具の全部 (`amdtools.Hash`)。MODELS の全部のモデルが表にあること、`iron_export_lm.py` が import するモジュールがどこかの根にあることは `TestLMArchCoversModels` が見る (2026-11-17)。版 (`version`、5 節の lock) はまだない
 - hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
-- hwnpu-image generate の FLUX.2 klein も、AMD では初回に層から取るか IRON で作って書き戻す (`kind: iron-flux2klein`、鍵は `chat.PinnedRecipe` と `--size`。2026-11-16、[docs/design/image-amd.md](design/image-amd.md))。層にそれがなければ、手で作って `hwnpu-dev cache import` で置いた同じ名前の書き出し (`kind: iron-import`、レシピはモデル、対象、名前だけ: `chat.ImportedRecipe`) を取る (`chat.SharedExportOr`)。取り込んだものを書き戻し直すことはしない
-- ほかの手で作る AMD の書き出し (hwnpu-image の画像生成、深さ、顔、ラベル、`amd_export` のない hwnpu-chat のモデル) も、手元になければ取得元の同じ名前の `iron-import` を取って手元の `entries/amd-xdna2` に (`chat.AMDNamed`、2026-11-17、[docs/design/distribution.md](design/distribution.md))。2 回目からはその写しで、取得元には聞かない。`entries/amd-xdna2` にある手で作ったもの (entry.json がない) は、初めて使ったときに記述して書き戻す取得元に置く (`chat.ShareMadeByHand`。同じ名前があればその取得元には置かない)。`~/models` のものは書かない (`hwnpu-dev cache import`)。物体検出、姿勢、切り抜き (初回に書き出す道具のもの: `iron_onnxcnn.py`、`iron_efficientsam.py`) の手で作ったものも同じく初めて使ったときに置く。記述は `hwnpu-dev cache import` と同じくその道具の種類と鍵 (`ExportKind`、`PinnedRecipe`) で、ほかの機械の初回がそのまま取る (`chat.ShareMadeHere`、2026-11-18、[docs/design/vision-models.md](design/vision-models.md))
+- hwnpu-image generate の FLUX.2 klein も、AMD では初回に層から取るか IRON で作って書き戻す (`kind: iron-flux2klein`、鍵は `chat.PinnedRecipe` と `--size`。2026-11-16、[docs/design/image-amd.md](design/image-amd.md))。層にそれがなければ、手で作って `hwnpu-dev sources import` で置いた同じ名前の書き出し (`kind: iron-import`、レシピはモデル、対象、名前だけ: `chat.ImportedRecipe`) を取る (`chat.SharedExportOr`)。取り込んだものを書き戻し直すことはしない
+- ほかの手で作る AMD の書き出し (hwnpu-image の画像生成、深さ、顔、ラベル、`amd_export` のない hwnpu-chat のモデル) も、手元になければ取得元の同じ名前の `iron-import` を取って手元の `entries/amd-xdna2` に (`chat.AMDNamed`、2026-11-17、[docs/design/distribution.md](design/distribution.md))。2 回目からはその写しで、取得元には聞かない。`entries/amd-xdna2` にある手で作ったもの (entry.json がない) は、初めて使ったときに記述して書き戻す取得元に置く (`chat.ShareMadeByHand`。同じ名前があればその取得元には置かない)。`~/models` のものは書かない (`hwnpu-dev sources import`)。物体検出、姿勢、切り抜き (初回に書き出す道具のもの: `iron_onnxcnn.py`、`iron_efficientsam.py`) の手で作ったものも同じく初めて使ったときに置く。記述は `hwnpu-dev sources import` と同じくその道具の種類と鍵 (`ExportKind`、`PinnedRecipe`) で、ほかの機械の初回がそのまま取る (`chat.ShareMadeHere`、2026-11-18、[docs/design/vision-models.md](design/vision-models.md))
 - 取得は並べる: 変換結果のファイルを 4 本ずつ、大きいものから (`store.FetchStreams`)、元のファイルも 4 本ずつ (`chat.FetchFiles`: 画像、音、チャットのモデルの分割した重み)。この機械 (Wi-Fi) と UGREEN の NAS で 1 本 5 MB/s、4 本 9 MB/s
-- `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に。`--target amd-xdna2` でその対象のものだけに絞る: 同じモデルの Core AI の書き出しを残す)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートも `hwnpu cache clean` が中止する (始まって 1 時間を過ぎたもの)。バケットのライフサイクルの規則があれば、それも効く
+- `hwnpu-dev sources gc N` は取得元のエントリのフォルダを選んで消す (`--apply` で実際に。`--target amd-xdna2` でその対象のものだけに絞る: 同じモデルの Core AI の書き出しを残す)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートも `hwnpu cache clean` が中止する (始まって 1 時間を過ぎたもの)。バケットのライフサイクルの規則があれば、それも効く
 - Core AI の書き出し (2026-11-14、[docs/design/distribution.md](design/distribution.md)): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
 - 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
 
@@ -170,17 +170,17 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 
 - `hwnpu-lock.json` (`store.Lock`): `{"format": 1, "repo": "OWNER/NAME", "commit": "<40 桁>", "files": {"config.json": {"sha256": "...", "size": 123}}, "updated": "..."}`。名指しのないファイルは読まない。コミットの違うファイルは書き戻さない (`ErrOtherCommit`、キューの記録に残す)
 - コミットの決め方: 定義がコミットを固定していればそれ。`main` を追うモデルは 1 番以降で最初の lock のコミット (どの機械も同じファイルで動く)、なければ手元のキャッシュの lock のコミット (手元にあるものは HF に聞き直さない)、それもなければ HF の `main` (`X-Repo-Commit`)。手元のキャッシュは決まったコミットに従う: 取得元の lock が別のコミットに移ると、手元の lock も移し、ファイルは新しい lock の sha256 と同じなら残し、違えば取り直す (共有の取得元は `ErrOtherCommit` のまま触らない)。取得元にないファイルを HF から取るときも、lock のコミットのものを取る (`resolve/<コミット>/`)。`main` 以外のブランチやタグは、HF に聞いたコミットと lock を照らし、聞けなければ (HF に出られるときは) 取得元を使わない
-- lock を新しいコミットに移すのは明示的なコマンドだけ: `hwnpu-dev cache update [MODEL...]` (書き戻す取得元がなければ手元のキャッシュ、`--source 0`)。HF の今のコミットを聞き、sha256 の変わったファイルだけ落とし直して置き、最後に lock を書く (LFS のファイルは `X-Linked-Etag` で比べ、変わらなければ落とさない)
+- lock を新しいコミットに移すのは明示的なコマンドだけ: `hwnpu-dev sources update [MODEL...]` (書き戻す取得元がなければ手元のキャッシュ、`--source 0`)。HF の今のコミットを聞き、sha256 の変わったファイルだけ落とし直して置き、最後に lock を書く (LFS のファイルは `X-Linked-Etag` で比べ、変わらなければ落とさない)
 - `VERSION` (`store.VersionDir`): 定義の `targets.<対象>.version` が N のモデルは `vN`。`develop: true` なら `vN-<レシピの指紋の 8 桁>`。版のないモデル (今は全部) は `v0-<8 桁>`
 - 当たりの条件: `vN` は版と、道具の hash を除いたレシピ (元のコミット、sha256、引数) が同じもの。道具の hash が違うだけの 2 台が同じフォルダを書き換え合わないように。出力が変わる直しをしたら版を上げる (3 節)。`vN-HASH` と `v0-HASH` は指紋がそのまま同じもの
 - `EXPORT` は手元の書き出しの名前 (`Qwen3.5-0.8B.amd-npu2-q6`、`LFM3-1.7B.coreai`、`tables.safetensors`)。対象のない表は `TARGET` を `any` に
 - ファイル単位の重複除去 (同じ `weight.bin` を 1 つに) はやめた。並びが分かりやすいこと、普通の HTTP サーバーで配れることを取った
 - 落としたものは lock や entry.json の sha256 と照らし、違えばその取得元を飛ばして次へ (この機械では大きなダウンロードにビットの反転があった)
 - 信頼: 書ける取得元は書ける人を信頼する (xclbin や ELF は NPU で動く)
-- `Prune` は手元だけを掃除する。取得元の掃除は明示的に: `hwnpu-dev cache gc N` (エントリのフォルダを entry.json から消す。`--orphans` で entry.json のない書きかけ) と `hwnpu cache clean` (書き戻しが切れて残したもの、7.1 節)
-- 前の並び (`blobs/`、`upstream/`、`entries/`) のフォルダは `hwnpu-dev cache migrate N [--remove]` でハードリンクで移す。元のモデルはファイルの多いコミットを取る。変換後は名前の分かるもの (Core AI、表、AMD の言語モデルと初回の書き出し) だけ
+- `Prune` は手元だけを掃除する。取得元の掃除は明示的に: `hwnpu-dev sources gc N` (エントリのフォルダを entry.json から消す) と `hwnpu cache clean` (書き戻しが切れて残したもの、7.1 節)
+- 前の並び (`blobs/`、`upstream/`、`entries/`) のフォルダは `hwnpu-dev models migrate N [--remove]` でハードリンクで移した (NAS を移し終えて 2026-11-22 に外した)。元のモデルはファイルの多いコミットを取る。変換後は名前の分かるもの (Core AI、表、AMD の言語モデルと初回の書き出し) だけ
 
-`hwnpu-dev cache sources` で、今効いている層の並び (0 が手元のキャッシュ)、書き戻すか、HF を読むか、読んだ `.env` を出す。`ls [N] [--original]` で中身。
+`hwnpu-dev sources` で、今効いている層の並び (0 が手元のキャッシュ)、書き戻すか、HF を読むか、読んだ `.env` を出す。`ls [N] [--original]` で中身。
 
 同梱のモデル: インストーラがアプリの資源フォルダ (`github.com/shibukawa/configdir` v1.1.0 の `QueryResourceFolders`: 実行ファイルの隣、`X.app/Contents/Resources`、`PREFIX/share/APP`、`$XDG_DATA_DIRS/APP`) の `models/` に、取得元と同じ並びで置く。環境変数ではなくアプリのコードで決める: hwnpu のコマンドは hwnpu の資源フォルダ (`share/hwnpu/models` など) を読み、hwnpu を組み込むアプリは `modelstore.Options.Bundle` で自分のものを渡す (7.6 節)。
 
@@ -188,16 +188,16 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 
 - Hugging Face から落とす元のファイルは、落としながら書き戻す取得元にも書く (`store.Tee`、2026-11-16)。一時の名前 (`.put-`) に送り、落とし終えて大きさと sha256 が合ったときだけ正式な名前に移して lock に足す。対応はフォルダと WebDAV (S3 はキューで)。取得元が 64 MiB (`store.TeeBuffer`) 遅れたとき、失敗したとき、`.part` から続けたとき、lock が別のコミットのときは tee から外れ、落とし終えた後にキューで置く。ダウンロードは止めない。Qwen3-0.6B (M1、Wi-Fi、UGREEN の NAS) で答えた後の待ちが 35 秒から 6 秒に。Wi-Fi では受信と送信が電波を分け合い、ダウンロードは 40 秒 (curl だけ) から 54 秒になった。有線なら遅れないはず
 - 手元で変換するものは、変換しながら置く (`store.StartEarly`、2026-11-16。AMD と Core AI の書き出しは詰めて置くので除く: 7.10。2026-11-18 に Core AI も詰めるようにしたので、今これで置くものはない)。書き戻す取得元で見つからなかったとき、その書き出しのフォルダを 2 秒ごとに見て、見始めてから書かれ、3 秒触られていないファイルから 4 本まで並べて置く (`.` で始まるもの、`.tmp`、`.part` は除く)。変換器には手を入れない。最後の `PutEntry` は、置いた後に変わったファイルと後から書かれたファイルだけを置き、置いたが entry にないもの (変換が消したもの) を消してから `entry.json` を書く。取得元のその場所に `entry.json` がすでにあれば、変換しながらは置かない (その entry のファイルを途中で書き換えないため)。変換が途中で止まれば、置いた分は `entry.json` のないまま残り、印が古くなってから `hwnpu cache clean` が消す。Qwen3-1.7B (書き出し 1.75 GB と表 0.62 GB) で、答えた後の待ちが 35 秒から 12 秒に (変換中に 129 ファイル)
-- ほかの取得元から読んだものは、手元で揃ってから裏で置く。コマンドは終わる前に、キューの仕事 (このプロセスのものと、前のプロセスが残したもの) が済むまで待つ (`store.Wait`、`hwnpu-dev cache flush` と同じ。2026-11-16)。書き戻すのは自分で変換する人だけで、配られたものを読むだけの機械はキューが空なのですぐ終わる。待つ間の Ctrl-C と、プロセスが落ちたときは `work/queue` に残し、次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
+- ほかの取得元から読んだものは、手元で揃ってから裏で置く。コマンドは終わる前に、キューの仕事 (このプロセスのものと、前のプロセスが残したもの) が済むまで待つ (`store.Wait`、2026-11-16。それだけを待つ `hwnpu-dev models flush` は、どのコマンドも待つので 2026-11-22 に外した)。書き戻すのは自分で変換する人だけで、配られたものを読むだけの機械はキューが空なのですぐ終わる。待つ間の Ctrl-C と、プロセスが落ちたときは `work/queue` に残し、次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
 - 後ろの取得元で当たったものは、それより前の書き戻す取得元にも置く (前が速い NAS、後ろが遠い S3 のとき)
 - 置けなかったとき (書けない、容量がない) は `work/queue.log` に残して続ける。書き戻しの失敗で実行を止めない
 - 書き戻しは 4 本まで同時に (`store.PutStreams`): キューの仕事どうしも、1 つの変換結果のファイルどうしも (`entry.json` は最後)。元のファイルはリポジトリの lock を取る前に置き、lock は読んで足して書くときだけ取るので、同じリポジトリのファイルも並ぶ。lock が別のコミットなら置かない。WebDAV のフォルダ作り (MKCOL) はプロセスで 1 本ずつ (同時の MKCOL は 423 Locked で断られる)。Qwen3-0.6B (元 1.5 GB、変換結果 0.93 GB) で、答えた後の待ちが 55 秒から 35 秒に (M1 と UGREEN の NAS、合わせて 50 MB/s ほどで頭打ち。2026-11-16)
 - lock は読んで足して書く。2 台が同時に同じリポジトリを足すと片方の名指しが消えることがあるが、消えたファイルは次に読む機械が HF から取って足し直す
 - フォルダは揃っているか、揃っていないかの 2 つだけ: 変換結果のフォルダ (`converted/MODEL/TARGET/EXPORT/VERSION`) は `entry.json` があれば揃っていて、なければ中身は全部使わない。リポジトリのフォルダ (`original/OWNER/NAME`) は `hwnpu-lock.json` が名指すファイルだけを使う。1 つのファイルは同じフォルダの一時の名前 (`.put-`) に書いて名前を変える (S3 は PUT が終わるまで見えない)
-- 書いている間は、そのフォルダに印 `.writing-ID` (機械、プロセス、始めた時刻、最後に書いた時刻) を置き、5 分ごとに書き直し (`store.WritingRefresh`)、終わったら消す (`store.MarkWriting`: `PutEntry`、`PutOriginal`、`hwnpu-dev cache update`。落としながらの tee は始めてから lock に足すまで、変換しながら置くのは始めてから `PutEntry` が引き継ぐまで: 大きなファイルの tee や、IRON の長いコンパイルの間に置いたものは 1 時間以上触られないことがある)
-- `hwnpu cache clean` (`store.PlanClean`、`modelstore.Store.PlanClean`): 書き戻す取得元から、書き戻しが切れて残したものを消す。entry.json のない変換結果のフォルダは丸ごと (空になったフォルダも)、lock が名指さない元のファイル (lock がなければ全部)、`.put-` の一時ファイル、古い印。印か、ファイルのどれかが最近 1 時間に変わったフォルダ (`store.WritingStale`) は書いている途中とみなして残す。ファイルの時刻も見るのは、印を置かない前の hwnpu が書いているフォルダを消さないため (2026-11-16、UGREEN の NAS で Mac が LFM3-1.7B の重みを置いている最中に、印のない `.put-` を消しかけた。NAS が 423 Locked で断った)。消す直前にもフォルダを見直し、その間に書き始めたもの、揃ったものは残す。S3 では、`converted/` と `original/` の下で始まって 1 時間 (`store.WritingStale`) を過ぎたマルチパートを `ListMultipartUploads` で探し、`AbortMultipartUpload` で中止する (部分の大きさは一覧に出ないので、表の大きさは `?`)。`converted/` と `original/` の外は触らない。`hwnpu-dev cache gc --orphans` も同じ決め方
+- 書いている間は、そのフォルダに印 `.writing-ID` (機械、プロセス、始めた時刻、最後に書いた時刻) を置き、5 分ごとに書き直し (`store.WritingRefresh`)、終わったら消す (`store.MarkWriting`: `PutEntry`、`PutOriginal`、`hwnpu-dev sources update`。落としながらの tee は始めてから lock に足すまで、変換しながら置くのは始めてから `PutEntry` が引き継ぐまで: 大きなファイルの tee や、IRON の長いコンパイルの間に置いたものは 1 時間以上触られないことがある)
+- `hwnpu cache clean` (`store.PlanClean`、`modelstore.Store.PlanClean`): 書き戻す取得元から、書き戻しが切れて残したものを消す。entry.json のない変換結果のフォルダは丸ごと (空になったフォルダも)、lock が名指さない元のファイル (lock がなければ全部)、`.put-` の一時ファイル、古い印。印か、ファイルのどれかが最近 1 時間に変わったフォルダ (`store.WritingStale`) は書いている途中とみなして残す。ファイルの時刻も見るのは、印を置かない前の hwnpu が書いているフォルダを消さないため (2026-11-16、UGREEN の NAS で Mac が LFM3-1.7B の重みを置いている最中に、印のない `.put-` を消しかけた。NAS が 423 Locked で断った)。消す直前にもフォルダを見直し、その間に書き始めたもの、揃ったものは残す。S3 では、`converted/` と `original/` の下で始まって 1 時間 (`store.WritingStale`) を過ぎたマルチパートを `ListMultipartUploads` で探し、`AbortMultipartUpload` で中止する (部分の大きさは一覧に出ないので、表の大きさは `?`)。`converted/` と `original/` の外は触らない。書き戻しが切れて残したものを消すのはこれだけ (`hwnpu-dev sources gc --orphans` は重なるので 2026-11-22 に外した)
 
-別案だったもの: HF の API (`/resolve/`) を真似るキャッシュのサーバー (`hwnpu-dev cache serve`) を 1 台に置き、`HF_ENDPOINT` で向ける。サーバーの運用が要るので入れていない。`original/` は HF と同じ並びなので、要れば後で足せる。
+別案だったもの: HF の API (`/resolve/`) を真似るキャッシュのサーバー (`hwnpu-dev models serve`) を 1 台に置き、`HF_ENDPOINT` で向ける。サーバーの運用が要るので入れていない。`original/` は HF と同じ並びなので、要れば後で足せる。
 
 ### 7.2 S3 のクライアント
 
@@ -261,7 +261,7 @@ hwnpu/
 
 - 読むのは `HWNPU_`、`HF_`、`AWS_` で始まる名前だけ (ほかのプロジェクトの `.env` を拾っても困らないように)。テスト (`go test`) では読まない
 - 書き方: 1 行に `NAME=VALUE`、`export ` を前に付けてもよい、`#` から後ろは注釈、`'...'` はそのまま、`"..."` は `\n`、`\"` が使える
-- 秘密 (WebDAV のパスワード、S3 の鍵) は `.env.local` に (git に入れない慣例)。ログと `hwnpu-dev cache sources` には URL の利用者とパスワードを出さない
+- 秘密 (WebDAV のパスワード、S3 の鍵) は `.env.local` に (git に入れない慣例)。ログと `hwnpu-dev sources` には URL の利用者とパスワードを出さない
 
 | 変数 | 働き |
 |---|---|
@@ -286,12 +286,12 @@ hwnpu/
 - 再試行: 5xx (501 を除く)、429、接続の切断は S3 と同じく 3 回まで
 - 確かめたこと: `TestWebDAV` (3 MB の読み書き、途中からの続き、空のファイル、フォルダは有無で偽、一覧、削除、鍵の外れ)、`TestWebDAVSource` (エントリと lock を書き戻し、同じサーバーを読むだけの取得元として読む、読むだけへの書き込みはエラー)、`TestWebDAVSignIn` (netrc、パスワードの違い、URL のパスワードを表示しない)。Synology の実機は未確認
 - 自己署名の証明書 (NAS のもの。ホスト名を持たないものは、OS の信頼に足しても Go の検証が通らない): URL に `?tls_sha256=<証明書の SHA-256>` を足すと、その証明書だけを信じる (ホスト名は見ない)。値は `openssl s_client -connect HOST:PORT </dev/null | openssl x509 -noout -fingerprint -sha256`。手早く試すなら `?insecure=true` (証明書もホスト名も見ない。同じ LAN の NAS でだけ)
-- UGREEN の NAS で書き戻しと読み戻し (2026-11-16): `?writeback=true&insecure=true` で Qwen3-0.6B を空の根から。NAS になかった元のファイル (config、tokenizer、model.safetensors 1.5 GB、lock) と、この Mac で作った `converted/Qwen3-0.6B/coreai/...coreai` (0.62 GB) と `any/tables.safetensors` (0.31 GB) が置かれた (`hwnpu-dev cache flush` で 71 秒)。次に空の根、`HWNPU_MODEL_HUGGING_FACE=false` で、変換済みを NAS から 18 秒で取り、チェックポイントを落とさずに答えた。macOS で Go の `.local` の名前引きは 1 回 5 秒かかるので、引いた番地をプロセスの間覚える。IP (`https://192.168.1.127:5006/llm`) でもよい
+- UGREEN の NAS で書き戻しと読み戻し (2026-11-16): `?writeback=true&insecure=true` で Qwen3-0.6B を空の根から。NAS になかった元のファイル (config、tokenizer、model.safetensors 1.5 GB、lock) と、この Mac で作った `converted/Qwen3-0.6B/coreai/...coreai` (0.62 GB) と `any/tables.safetensors` (0.31 GB) が置かれた (キューを待つ間を含めて 71 秒)。次に空の根、`HWNPU_MODEL_HUGGING_FACE=false` で、変換済みを NAS から 18 秒で取り、チェックポイントを落とさずに答えた。macOS で Go の `.local` の名前引きは 1 回 5 秒かかるので、引いた番地をプロセスの間覚える。IP (`https://192.168.1.127:5006/llm`) でもよい
 - Linux (Ryzen AI 9 365、Ubuntu 26.10) で同じことを AMD の NPU で (2026-11-16): 空の取得元のフォルダ (`llm/zz-linux-test`) と空の根で Qwen3.5-0.8B を。チェックポイント 1.75 GB を HF から、IRON で書き出し (1 分 27 秒)、終わる前に元のファイル 8 つ (35 MB/s) と書き出し 1.65 GB (45 MB/s) を置いて終わった。次に空の根、IRON なし、`HWNPU_MODEL_HUGGING_FACE=false` で、書き出しを NAS から取って NPU で答えた。`hwnpu cache clean` で、前に切れた書き戻しの `.put-` 4 つ (3.5 GB) を消した
 - 止まった NAS (2026-11-16): つながらない (名前が引けない、接続を断られる、5 秒で答えない、証明書が信じられない) 取得元は、そのプロセスの間は設定がなかったものとして扱う。最初の 1 回で標準エラーに 1 行出し、その後の要求はすぐ失敗して次の取得元へ。再試行は時間切れ (mDNS の `.local` の名前引きはときどき時間切れになる) のときだけ 3 回まで、断られたときと名前がないときはすぐ (前は 1 ファイルごとに接続の待ち 30 秒 × 再試行が入れ子で重なった)。書き戻しはキューに残り、次の起動で続く
 - UGREEN の NAS (2026-11-15): フォルダのない所への PUT と、親のない MKCOL が 409 でなく 405 を返す。PUT の前にフォルダを (プロセスで一度) 作り、405 でも作り直す
 - UGREEN の NAS (2026-11-16): 自己署名の証明書なので `?tls_sha256=` が要る。`.local` の名前の解決が 1 回 5 秒かかったので、ホストの番地はプロセスで 1 回だけ引き (答えなければ引き直す)、答えの本体は必ず読み切って閉じて接続を使い回す ([docs/design/distribution.md](design/distribution.md))
-- `hwnpu-dev cache import DIR...`: 手で置いたフォルダ (`~/models`) を書き戻す取得元に置く。チェックポイントは Hugging Face のツリー (`/api/models/REPO/tree/COMMIT`) と照らし、大きさと中身 (LFS は sha256、ほかは git の blob の sha1) の同じファイルだけを `original/` に。書き出し (`NAME.amd-npu2*`) は `converted/`。名前が定義にないフォルダは `DIR=OWNER/NAME`
+- `hwnpu-dev sources import DIR...`: 手で置いたフォルダ (`~/models`) を書き戻す取得元に置く。チェックポイントは Hugging Face のツリー (`/api/models/REPO/tree/COMMIT`) と照らし、大きさと中身 (LFS は sha256、ほかは git の blob の sha1) の同じファイルだけを `original/` に。書き出し (`NAME.amd-npu2*`) は `converted/`。名前が定義にないフォルダは `DIR=OWNER/NAME`
 
 ### 7.6 公開の API: `modelstore`
 
@@ -330,7 +330,7 @@ dir := s.Dir("LiquidAI/LFM3-1.7B")                         // original/LiquidAI/
 - 大きさはファイルの大きさの和。ハードリンク (Unix) は 1 回だけ数える (同じ sha256 を別のリポジトリと共有しているもの)。reflink で共有したブロックは区別しない
 - 上限の判定のための走査はプロセスに 1 回 (この機械では IRON の 61 万ファイルで 2.7 秒)。あとは足した分を数える。空きの下限だけなら statfs (`GetDiskFreeSpaceEx`) 1 回
 
-一般の利用者のためのコマンドとして `hwnpu` を足した (`hwnpu-dev cache` は取得元の管理のまま)。
+一般の利用者のためのコマンドとして `hwnpu` を足した (`hwnpu-dev models` は取得元の管理のまま)。
 
 ```
 hwnpu cache                          根、ディスクの空き、上限、種類ごとの量、層
@@ -378,14 +378,14 @@ converted/MODEL/coreai-ARCH/EXPORT/VERSION/...     ARCH (h13g = M1、h14g = M2�
 
 - prebuilt は `.aimodel` を置き換えない (重みを持たないので、それだけでは動かない)。`.aimodel` を置かずに prebuilt だけ置くことはしない
 - どの機種に効くかの対応は [docs/design/apple-coreai.md](design/apple-coreai.md) (`coreai-build inspect` の `Supported chips`)。作れない機種の prebuilt は置かない (取りに来ても見つからず、ネイティブに落ちる)
-- 作る順: `.aimodel` の書き出しを置き (変換した機械が自動で)、そのあと開発機が `hwnpu-dev prebuild -arch all -put EXPORT` で 12 種類の prebuilt を足す
+- 作る順: `.aimodel` の書き出しを置き (変換した機械が自動で)、そのあと開発機が `hwnpu-dev models package EXPORT/coreai-all` で 12 種類の prebuilt を足す
 - prebuilt を作るかはモデルの部品次第 (下の「効くかはモデル次第」)。作らないモデルは `.aimodel` だけ
 - **チャットのモデルには今は作らない** (2026-11-18、M2、[docs/design/apple-coreai.md](design/apple-coreai.md)): LFM3-1.7B は初回の読み込みが 2 分 17 秒 (ネイティブ) から 8 分 12 秒 (prebuilt) に、plamo-3-translate-8b は 1 分 13 秒から 7 分 08 秒に延びた。Qwen3.5-4B は 7 分 07 秒で読めた (ネイティブは 12 分 26 秒) が、最初の呼び出しで止まり、1 時間 40 分たっても答えなかった。速さ (tokens/s) と答えは同じ
 - 画像のモデル (2026-11-18、M2、1024²、[docs/design/apple-coreai.md](design/apple-coreai.md)): FLUX.2 klein 4B は初回が 52 分 16 秒から 16 分 55 秒に縮む (絵は細部が違う)。Anima-Turbo は 45 分 01 秒から 37 分 50 秒 (絵は同じ)。プロセスの最初の prebuilt に 3〜6 分かかるので、部品が少ないモデルでは負ける
 
 - 重みは配らない: `.aimodelc` の 99 % は `resources.bin` (重み) で、中身は `.aimodel` の `main.mlirb` のバイトを並べ替えたもの (アーキテクチャに依らない)。`coreai.Pack` はそれを `resources.bin.map.json` (`main.mlirb` のどこから何バイト、の並び。数 KB) に置き換える。1 種類あたり書き出しの 1〜2 % (ANE の LLIR と小さなファイル)
 - 鍵は部品のバイトコード: `programs` (書き出しの中の各 `.aimodel` の場所と `main.hash` の sha256)、`arch`、`export`、`format`。どの機械が変換したかに依らず、同じバイトの書き出しなら当たる。モデルは書き出しの entry.json のもの
-- 作る (開発機、Xcode 27 の Metal Toolchain): `hwnpu-dev prebuild -arch all -put EXPORT`。部品 × アーキテクチャごとに `coreai-build` を走らせ、詰めて `EXPORT.prebuilt/ARCH/` に置き、アーキテクチャごとに 1 つのファイル (`prebuilt.tar.zst`、tar を zstd で) にして書き戻す取得元へ (`EXPORT.prebuilt/ARCH.shared/`)。WebDAV ではファイルごとに PUT と MOVE がかかるので 1 つに。zstd で約 1/3 (h14g の 1 部品 3.0 MB → 0.97 MB、`-19`)。`coreai-build` が落ちる種類と、ANE に乗せられない部品は抜けたまま置く (その機械がネイティブにコンパイルする)
+- 作る (開発機、Xcode 27 の Metal Toolchain): `hwnpu-dev models package EXPORT/coreai-all`。部品 × アーキテクチャごとに `coreai-build` を走らせ、詰めて `EXPORT.prebuilt/ARCH/` に置き、アーキテクチャごとに 1 つのファイル (`prebuilt.tar.zst`、tar を zstd で) にして書き戻す取得元へ (`EXPORT.prebuilt/ARCH.shared/`)。WebDAV ではファイルごとに PUT と MOVE がかかるので 1 つに。zstd で約 1/3 (h14g の 1 部品 3.0 MB → 0.97 MB、`-19`)。`coreai-build` が落ちる種類と、ANE に乗せられない部品は抜けたまま置く (その機械がネイティブにコンパイルする)
 - 使う (どの Mac も、道具は要らない): Core AI のキャッシュに項目がなく、手元に prebuilt もない部品を読むとき、バックエンドが書き出しごとに 1 回、この機械の種類 (`AIModel.deviceArchitecture`) のものを取得元に聞く (`coreai.FetchPrebuilt`)。取れたら `EXPORT.prebuilt/ARCH.shared/` に置いて `EXPORT.prebuilt/ARCH/` に展開し、部品ごとに重みを `main.mlirb` から組み立てて (sha256 を照らす) 一時フォルダの `.aimodelc` を Core AI に渡し、読み込んだら消す。Core AI の項目ができるので次からは `.aimodel` のまま 0.01 秒。読めなければ (道具の版が違う、壊れている) その部品はネイティブに
 - 効くかはモデル次第 ([docs/design/distribution.md](design/distribution.md)): `coreai-build` が ANE に乗せられない部品は配られず、乗った小さな部品は仕上げのほうがネイティブより遅いこともある。Chroma1-Flash の 1024² の DiT は初回の約 46 分が約 1 分になる。Sana-600M は書き出しを `coreai-build` に通る形にした ([docs/design/image-apple.md](design/image-apple.md)) ので、VAE の大きな段 (端末で 1 段 3 分 40 秒) が数秒〜10 秒になる見込み。だから prebuild は自動でなく、効くモデルの書き出しを選んで `-put` する
 - 手元の `EXPORT.prebuilt/` は残す: 読み込んだ部品は Core AI の項目に入るが、項目 (重みの複製、書き出しと同じ大きさ) が消えたとき (空きが足りない、OS の更新) にネットに出ずに数秒で作り直すもとになる。空きが足りないときは、prebuilt のある部品の Core AI の項目が先に消える (7.7)。`hwnpu cache` では種類 `prebuilt` の単位 (`clear --kind prebuilt` で消せる。消してもまた取得元から取る)。組み立てた重み入りの `.aimodelc` は読み込んだ直後に消す
@@ -405,11 +405,11 @@ converted/MODEL/amd-xdna2/EXPORT/VERSION/entry.json      files: 中のファイ�
 - 置く (`PutEntry`): 手元の書き出しを `work/pack/` に詰め (zstd の既定の速さ)、置いてから、そのフォルダの `files.tar.zst` と `entry.json` と印のほかのもの (前の hwnpu が並べて置いたファイル) を消し、`entry.json` を最後に書く。詰めるのは揃ってからなので、変換しながら置く (`StartEarly`) のはしない
 - 取る (`materialize`): `files.tar.zst` を `DST.part/` に落とし (切れたら続きから)、sha256 を照らしてから展開する。entry.json の `files` にあるものだけを、それぞれの大きさと sha256 を照らしながら書き、足りなくても余っても断る。展開したら詰めたものは消す。手元に残るのは展開した書き出しだけ (詰めたものは持たない)
 - 縮み方: 重み (bank) は 1 GB が 0.78 GB、プログラム (ELF) は 1/60 ほど (Qwen3.6-35B-A3B の書き出しで zstd -3)
-- `entry.json` の `files` は中身を並べたままなので、`hwnpu-dev cache ls` の大きさは展開したもの。`pack` を知らない前の hwnpu は中のファイルを取れずに外れ、手元で作る
+- `entry.json` の `files` は中身を並べたままなので、`hwnpu-dev sources ls` の大きさは展開したもの。`pack` を知らない前の hwnpu は中のファイルを取れずに外れ、手元で作る
 - `pack` のない AMD と Core AI の書き出し (前の hwnpu が置いたもの) も、今までどおりファイルごとに取れる
-- `hwnpu-dev cache repack SOURCE [--target coreai] [--model NAME] [--apply]`: そういう書き出しを詰め直す。同じ鍵の書き出しが手元 (`models/*/EXPORT`) にあり、大きさと sha256 が合えばそれから、なければ取得元から `work/repack/` に取って詰め、置いてからばらのファイルを消す。鍵は変えないので、どの機械も前と同じに当たる
+- 前の hwnpu がばらのまま置いた書き出しを詰め直す `hwnpu-dev cache repack` があった。2026-11-21 に NAS の残り (手で取り込んだ AMD の書き出し 12 件、38 GB) を詰め、コマンドは外した。今の `PutEntry` は取り込みも含めて必ず詰めて置く
 
-- `hwnpu-dev cache export MODEL...`: `amd_export` のあるチャットのモデルの書き出しを作って (取得元にあれば取って) 書き戻し、書き出しと詰めた大きさを出す。IRON の書き出しは CPU だけ (aiecc と Peano、`bind_device` は名前で選ぶだけ) なので、NPU をほかが使っている間にも回せる
+- `hwnpu-dev models package MODEL...`: `amd_export` のあるチャットのモデルの書き出しを作って (取得元にあれば取って) 書き戻し、書き出しと詰めた大きさを出す。IRON の書き出しは CPU だけ (aiecc と Peano、`bind_device` は名前で選ぶだけ) なので、NPU をほかが使っている間にも回せる
 - 2026-11-17、チャットの 13 モデルを今の道具で書き出して UGREEN の NAS に置いた。合わせて 65.7 GB が 55.2 GB。gemma-4-E2B-it 7.42 → 7.11 GB、E4B 10.86 → 10.24 GB と gemma は 4〜6% しか縮まず、ほかは 2〜3 割 (Qwen3.5-4B 5.39 → 4.46、gpt-oss-20b 14.39 → 11.79、plamo-3-translate-8b 7.45 → 6.41)。Qwen3.5-0.8B (1.18 GB) を空の根に取って展開して答えるまでを確かめた (取るのに 40 秒、展開 2 秒)
 - 注意: 同じ機械の `work/queue` を前の hwnpu (pack を知らないもの) も処理すると、同じ entry をばらで置き直し、詰めたものが `.put-` のまま残ることがある (plamo-3-translate-2b で起きた)。その機械の hwnpu を揃えること
 
@@ -429,7 +429,7 @@ converted/MODEL/amd-xdna2/EXPORT/VERSION/entry.json      files: 中のファイ�
 
 - 理由: 既存のモデルのパラメータを変えたバリエーション (文脈の長さ、形式、Q、MLP の q6 など) を作るたびに、元を落とし直さないため。model-table.md 11.4 節の「変換が揃ったらすぐ元を消す」は採らない
 - 配布物だけで動いているモデルは元を落とさない (8 節の 3 に行かない)。`src/` はそもそもできない
-- 元を消すのは 11.4 節の「長く使っていない」(`cache.unused_days`) と全体の上限 (`cache.max`) のときだけ。元の最後に使った日時は、それから作ったエントリを使った日時でも更新する (バリエーションを使っている間は元を残す)。`hwnpu-dev cache gc --sources` で明示的に消せる
+- 元を消すのは 11.4 節の「長く使っていない」(`cache.unused_days`) と全体の上限 (`cache.max`) のときだけ。元の最後に使った日時は、それから作ったエントリを使った日時でも更新する (バリエーションを使っている間は元を残す)。`hwnpu-dev sources gc --sources` で明示的に消せる
 - 消した後にバリエーションを作るときは、固定どおりのものを落とし直す (5 節の `sha256` で確かめる)
 
 ### 8.2 バリエーション
@@ -487,7 +487,7 @@ any/v1/...        表など対象によらないもの
 
 - 版の間で変わらないファイルは HF の Xet が重複を除くはず。ダウンロードの量にも効くかを確かめ、効かなければ entry.json で前の版のファイルを参照する
 - 古い版は、参照するリリースがなくなってから手で消す
-- 上げるのは `hwnpu-dev cache push --to hf:hwnpu/LFM3-1.7B --revision staging` (手元のエントリをそのまま上げる。CI 専用の形を持たない)
+- 上げるのは `hwnpu-dev models push --to hf:hwnpu/LFM3-1.7B --revision staging` (手元のエントリをそのまま上げる。CI 専用の形を持たない)
 
 ## 10. Apple (白紙)
 
@@ -501,7 +501,7 @@ Apple の機械が使えるようになるまで、Apple の配布の形は決�
 ## 11. 進める順
 
 1. P0 (手元だけ): 7.3 節の置き場所 (根を 1 つに、`src/` と `entries/`、`NPU_CACHE_HOME`、今の場所からの移し方)、`.done` を `entry.json` に (相対パス)、`source.json` とフォルダ名に owner、エントリごとのロック (flock / LockFileEx)、`If-Range`、placement の鍵にチップ、AMD の書き出しをキャッシュの下へ (`~/models` は読みだけの古い層として探す)、`Prune` を手元の層だけに、指紋の計算
-2. P1: `Store` の interface、計画と作るの分離、path の層 (`write` と `fill`)、`hwnpu-dev cache ls|pull|push|verify|gc`。この機械と Intel の機械の間で試す
+2. P1: `Store` の interface、計画と作るの分離、path の層 (`write` と `fill`)、`hwnpu-dev sources ls|pull|push|verify|gc`。この機械と Intel の機械の間で試す
 3. P2: s3 の層を tinygodriver で (元のチェックポイントの `type: s3` も `aws` CLI から移す)
 4. P3: models.yaml の `prebuilt`、lock と PR の検査、aix1 の runner と Actions、HF を読む層。最初は LFM3-1.7B の `amd-xdna2`
 5. P4: `host` の scope をチームの層へ。世代を見分けるコード (AMD、Intel)
@@ -527,7 +527,7 @@ Apple の機械が使えるようになるまで、Apple の配布の形は決�
 - 取得元は定義のファイルでなく、環境変数の URL の並び (`HWNPU_MODEL_SOURCE`、`_1`、...、番号の順、エラーなら次)。最後に `HWNPU_MODEL_HUGGING_FACE` (true/false)。`.env` と `.env.local` をカレント、ユーザー、機械の順に読む (7、7.4 節)
 - `http(s)://` は WebDAV、書き戻さないなら読むだけの HTTP。URL のパスワードを受け付け、表示では伏せる。S3 の鍵は今どおり AWS の環境変数かプロファイル
 - `?writeback=true` は、手元で作ったものと読んだものの写しの両方。gated も写す
-- 中の並びは固定: `original/OWNER/NAME/` (コミットのフォルダは作らず `hwnpu-lock.json` で照らす) と `converted/MODEL/TARGET/EXPORT/vN`。lock を移すのは `hwnpu-dev cache update` だけ
+- 中の並びは固定: `original/OWNER/NAME/` (コミットのフォルダは作らず `hwnpu-lock.json` で照らす) と `converted/MODEL/TARGET/EXPORT/vN`。lock を移すのは `hwnpu-dev sources update` だけ
 - 版は `targets.<対象>.version`。版ありは `vN`、`develop: true` は `vN-HASH`、版なしは `v0-HASH`
 - `HWNPU_CACHE_LAYERS` は読み替えずに消す。`HWNPU_PREBUILT` は作らない (取得元にあるかで決まる)
 - `HF_TOKEN` は CI 以外では勧めない。refresh token の保存 (OS の資格情報の置き場) と、Actions のトークンの交換 (Hugging Face の Trusted Publishers、RFC 8693) は別に
@@ -540,7 +540,7 @@ Apple の機械が使えるようになるまで、Apple の配布の形は決�
 層を平らにする (2026-11-15) の残り (2 つ目の PR):
 
 - 変換したもの (`models/NAME/` のプログラム、`entries/` の AMD の書き出し) を手元でも `converted/MODEL/TARGET/EXPORT/vN/` に。完了の印を `entry.json` 1 つに (今は `NAME.done`、`NAME.ext.done`、`entry.json` が混在)。Core AI と AMD 以外の書き出しも取得元で共有される
-- `~/models` を `hwnpu-dev cache migrate` で一度 `converted/` に移し、以後は読まない。手で作ったものは `hwnpu-dev cache import DIR` で取り込む (tools/amd の案内も合わせる)
+- `~/models` を `hwnpu-dev sources import DIR` で一度取得元に取り込み、以後は読まない。手で作ったものも同じく取り込む (tools/amd の案内も合わせる)
 - `modelstore` に変換したものの API (`Make`)
 - 同梱のモデルの変換したものをその場で使う (今は `FetchEntry` がコピーする)
 

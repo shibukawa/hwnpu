@@ -43,7 +43,7 @@ Migration order: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (the eight siz
 
 ## What is not prebuilt
 
-`coreai.LeftToDevice` keeps programs whose names start with `vae` or `text` on the device: `hwnpu-dev prebuild` leaves them out ("left to the device") and `coreai.Prebuilt` ignores such prebuilts already in a source.
+`coreai.LeftToDevice` keeps programs whose names start with `vae` or `text` on the device: `hwnpu-dev models package MODEL/coreai-ARCH` leaves them out ("left to the device") and `coreai.Prebuilt` ignores such prebuilts already in a source.
 
 | part | why |
 |---|---|

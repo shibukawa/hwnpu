@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	amdtools "github.com/shibukawa/hwnpu/tools/amd"
 )
@@ -157,7 +158,7 @@ type SharedRecipe struct {
 
 // SharedExportOr is SharedExport that, when no source has recipe's entry, takes the first of
 // others that a source has (each at the place its kind and recipe give under out's name: an
-// export made by hand that hwnpu-dev cache import put there, ImportedRecipe) before it builds.
+// export made by hand that hwnpu-dev sources import put there, ImportedRecipe) before it builds.
 // What build makes is put as recipe's.
 func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer, build func() error) error {
 	if recipe == nil {
@@ -178,6 +179,9 @@ func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, 
 	defer unlock()
 	if fetchPlaces(ctx, places, out, log) {
 		return nil
+	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return err
 	}
 	// made here: its files go in the sources written back to as they are written, as recipe's
 	// (not on the misses before: an export of others fetched into out would go too)
@@ -236,13 +240,14 @@ func sharedPlace(kind string, recipe map[string]string, out string) place {
 	return placeOf(kind, modelNamed(recipe["model"]), recipe["target"], filepath.Base(out), r)
 }
 
-// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which hwnpu-dev cache
+// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which hwnpu-dev models
 // import puts in the sources.
 const ImportKind = "iron-import"
 
-// ImportedRecipe is the recipe hwnpu-dev cache import describes an export made by hand with
+// ImportedRecipe is the recipe hwnpu-dev sources import describes an export made by hand with
 // (ImportKind): its model, target and name alone, so that a command finds one under the name it
-// would make the export with.
+// would make the export with. Its "made" names the command as it was called when the first
+// entries were put (hwnpu-dev cache import): it is in the key, so it stays.
 func ImportedRecipe(m Model, target, export string) map[string]string {
 	return map[string]string{"model": m.Name, "target": target, "export": export, "made": "by hand (hwnpu-dev cache import)"}
 }

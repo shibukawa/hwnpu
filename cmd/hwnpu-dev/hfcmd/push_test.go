@@ -17,11 +17,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
-// fakeHub is Hugging Face as hwnpu-dev hf push uses it: the API (whoami, a model's
+// fakeHub is Hugging Face as hwnpu-dev models hf push uses it: the API (whoami, a model's
 // information, making a repository) and each repository's files (resolve) at its last commit,
 // which the fake hf command (upload-large-folder) copies a folder into.
 type fakeHub struct {
@@ -90,7 +91,7 @@ func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// hwnpu-dev hf push puts what the source holds in a repository of its namespace, as the
+// hwnpu-dev models hf push puts what the source holds in a repository of its namespace, as the
 // commands look for it now (an export made before the version was written goes at the
 // version), pins the commit in the definition file, and hf check finds it whole; a machine
 // with only the hub then reads the export from there.
@@ -141,7 +142,7 @@ func TestPush(t *testing.T) {
 
 	// the version written: it goes as v1
 	os.WriteFile(defs, []byte("version: 1\nhub: {push: me}\nmodels:\n  whisper-large-v3-turbo:\n    targets: {amd-xdna2: {version: 1}}\n    machine: 8\n"), 0o644)
-	c := &Cmd{Models: defs}
+	c := &devopt.Defs{Models: defs}
 	if err := (PushCmd{Sel: []string{"whisper-large-v3-turbo/amd-xdna2"}, Write: defs}).Run(c); err != nil {
 		t.Fatal(err)
 	}

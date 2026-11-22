@@ -272,3 +272,5 @@ func (t *Transcriber) Close() error {
 	}
 	return err
 }
+
+func init() { airole.Register(transcribeRole) }

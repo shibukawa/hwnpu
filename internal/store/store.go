@@ -300,3 +300,13 @@ func FileSHA256(p string) (string, error) {
 
 // Join joins key parts with slashes.
 func Join(elem ...string) string { return path.Join(elem...) }
+
+// removeEmpty removes dir and the folders above it up to root while they are empty.
+func removeEmpty(dir, root string) {
+	for dir != root && strings.HasPrefix(dir, root) {
+		if os.Remove(dir) != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
+}

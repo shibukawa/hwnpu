@@ -226,3 +226,5 @@ func (s *Speaker) Close() error {
 	defer s.mu.Unlock()
 	return s.s.Close()
 }
+
+func init() { airole.Register(speakRole) }

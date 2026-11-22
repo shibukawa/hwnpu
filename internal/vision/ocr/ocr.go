@@ -239,36 +239,9 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 	if r.s.CPU {
 		return r.cpuProgram(model, name, shape)
 	}
-	tag := fmt.Sprintf("%dx%d", shape[3], shape[2])
-	if shape[0] != 1 {
-		tag = fmt.Sprintf("%dx%dx%d", shape[0], shape[3], shape[2])
-	}
-	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	dir, stem := repoDir(r.s.Dir, src), fmt.Sprintf("%s-r%d-fp16-%s", name, Revision, tag)
-	path, done, export := llm.ProgramPath(dir, stem, r.s.Backend)
-	if !llm.ProgramReady(ctx, dir, stem, done, export) {
-		g, err := onnx.Load(model)
-		if err != nil {
-			return nil, err
-		}
-		p := NewProgram(g, shape)
-		bar := console.NewBar(r.s.Log, "converting "+stem)
-		if err := llm.StartProgram(path, export); err != nil {
-			bar.Done("failed")
-			return nil, err
-		}
-		_, err = llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.s.Backend}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("PP-OCR %s from %s, %s, fp16 (hwnpu)", describe, src.Repo, tag)
-			pkg.Metadata[llm.MetaArch] = "ppocr-" + name
-		})
-		if err != nil {
-			bar.Done("failed")
-			return nil, err
-		}
-		bar.Done(console.Duration(bar.Elapsed()))
-		if err := llm.FinishProgram(ctx, dir, stem, done, export); err != nil {
-			return nil, err
-		}
+	path, err := r.convertProgram(ctx, src, model, name, shape, describe)
+	if err != nil {
+		return nil, err
 	}
 	t0 := time.Now()
 	p, err := runner.Open(ctx, r.dev, path)
@@ -643,4 +616,59 @@ func parallel(n int, f func(i int)) {
 		}()
 	}
 	wg.Wait()
+}
+
+// convertProgram converts the program of model at the input shape unless it is converted (or a
+// shared layer has it), in the repository's directory as NAME-rREV-fp16-SHAPE, and returns its
+// path.
+func (r *Reader) convertProgram(ctx context.Context, src Source, model, name string, shape []int, describe string) (string, error) {
+	tag := fmt.Sprintf("%dx%d", shape[3], shape[2])
+	if shape[0] != 1 {
+		tag = fmt.Sprintf("%dx%dx%d", shape[0], shape[3], shape[2])
+	}
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	dir, stem := repoDir(r.s.Dir, src), fmt.Sprintf("%s-r%d-fp16-%s", name, Revision, tag)
+	path, done, export := llm.ProgramPath(dir, stem, r.s.Backend)
+	if !llm.ProgramReady(ctx, dir, stem, done, export) {
+		g, err := onnx.Load(model)
+		if err != nil {
+			return "", err
+		}
+		p := NewProgram(g, shape)
+		bar := console.NewBar(r.s.Log, "converting "+stem)
+		if err := llm.StartProgram(ctx, path, export); err != nil {
+			bar.Done("failed")
+			return "", err
+		}
+		_, err = llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.s.Backend}, func(pkg *mlpackage.Package) {
+			pkg.Description = fmt.Sprintf("PP-OCR %s from %s, %s, fp16 (hwnpu)", describe, src.Repo, tag)
+			pkg.Metadata[llm.MetaArch] = "ppocr-" + name
+		})
+		if err != nil {
+			bar.Done("failed")
+			return "", err
+		}
+		bar.Done(console.Duration(bar.Elapsed()))
+		if err := llm.FinishProgram(ctx, dir, stem, done, export); err != nil {
+			return "", err
+		}
+	}
+	return path, nil
+}
+
+// PreparePrograms converts the programs of every size the reader takes by default: the
+// detector's (Sizes) and the recognizer's (Widths, each at its batch), as the first picture of
+// each does (hwnpu-dev models package). The reader is opened with no device.
+func (r *Reader) PreparePrograms(ctx context.Context) error {
+	for _, sz := range r.Sizes {
+		if _, err := r.convertProgram(ctx, r.s.Det, r.detModel, "det", []int{1, 3, sz[1], sz[0]}, "text detector"); err != nil {
+			return err
+		}
+	}
+	for _, w := range r.Widths {
+		if _, err := r.convertProgram(ctx, r.s.Rec, r.recModel, "rec", []int{r.batch(w), 3, Height, w}, "text recognizer"); err != nil {
+			return err
+		}
+	}
+	return nil
 }

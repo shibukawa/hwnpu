@@ -7,10 +7,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
-// SizesCmd is hwnpu-dev hf sizes: what each model downloads and keeps on the disk, by the NPU's
+// SizesCmd is hwnpu-dev models hf sizes: what each model downloads and keeps on the disk, by the NPU's
 // vendor, from the conversions the layers hold (models.yaml's bytes and disk).
 type SizesCmd struct {
 	Sel   []string `arg:"" optional:"" name:"N:MODEL" help:"Models (every model when left out), the layer they come from before :."`
@@ -20,8 +21,8 @@ type SizesCmd struct {
 // vendorOf is the vendor of the NPU a group runs on (models.yaml's tables of bytes and disk).
 var vendorOf = map[string]string{groupAMD: "amd", groupApple: "apple"}
 
-func (s SizesCmd) Run(c *Cmd) error {
-	if err := load(c); err != nil {
+func (s SizesCmd) Run(d *devopt.Defs) error {
+	if err := load(d); err != nil {
 		return err
 	}
 	ctx, stop := signalContext()

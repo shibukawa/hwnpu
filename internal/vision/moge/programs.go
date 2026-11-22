@@ -52,14 +52,8 @@ func (p *progSized) close() error {
 // useProgram loads size w x h of an export of Prepare (Core ML packages or OpenVINO IR),
 // converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
-	if !llm.FetchExport(ctx, d, d+".done") { // here, or from the shared layers
-		if e.Logf != nil {
-			e.Logf("moge: converting %dx%d (the first picture of this aspect)", w, h)
-		}
-		if err := ConvertSize(e.Checkpoint, d, w/14, h/14, e.Format); err != nil {
-			return nil, err
-		}
-		llm.ShareExport(ctx, d)
+	if err := makeSize(ctx, d, e.Checkpoint, e.Format, w, h, e.Logf); err != nil {
+		return nil, err
 	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))
 	if err != nil {
@@ -204,4 +198,45 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	return out, os.WriteFile(filepath.Join(out, "model.json"), append(b, '\n'), 0o644)
+}
+
+// makeSize makes size w x h of an export in d (its WxH) unless it is there or a shared layer has
+// it: converted from checkpoint in format, then put in the shared layers.
+func makeSize(ctx context.Context, d, checkpoint, format string, w, h int, logf func(string, ...any)) error {
+	if llm.FetchExport(ctx, d, d+".done") { // here, or from the shared layers
+		return nil
+	}
+	if err := llm.MayConvert(ctx, d); err != nil {
+		return err
+	}
+	if logf != nil {
+		logf("moge: converting %dx%d (the first picture of this aspect)", w, h)
+	}
+	if err := ConvertSize(checkpoint, d, w/14, h/14, format); err != nil {
+		return err
+	}
+	llm.ShareExport(ctx, d)
+	return nil
+}
+
+// PrepareSizes makes every size of the export of Prepare at dir (its model.json's sizes), as the
+// first picture of each aspect does (hwnpu-dev models package).
+func PrepareSizes(ctx context.Context, dir string, logf func(string, ...any)) error {
+	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
+	if err != nil {
+		return err
+	}
+	var x Export
+	if err := json.Unmarshal(b, &x); err != nil {
+		return fmt.Errorf("moge: %s: %w", dir, err)
+	}
+	if x.Checkpoint == "" {
+		return fmt.Errorf("moge: %s is not an export of programs converted by size", dir)
+	}
+	for _, sz := range x.Sizes {
+		if err := makeSize(ctx, filepath.Join(dir, fmt.Sprintf("%dx%d", sz[0], sz[1])), x.Checkpoint, x.Format, sz[0], sz[1], logf); err != nil {
+			return err
+		}
+	}
+	return nil
 }

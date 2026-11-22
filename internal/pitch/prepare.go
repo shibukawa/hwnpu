@@ -51,7 +51,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	bar := console.NewBar(log, "converting "+name)
-	if err := llm.StartProgram(program, export); err != nil {
+	if err := llm.StartProgram(ctx, program, export); err != nil {
 		bar.Done("failed")
 		return "", "", err
 	}

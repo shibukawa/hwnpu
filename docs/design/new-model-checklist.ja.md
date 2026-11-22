@@ -119,7 +119,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - **外れ値のチャネルのある行の norm**: 2 乗の平均は最大で割った写しから取り、x そのものに rsqrt / max を掛ける (`chroma/mil.t5Norm`)
 - **NE の規則** (`aicheck rules`、M2 で測った。Core AI の CPU ではどれも起きない。[apple-coreai.md](apple-coreai.md)):
   - linear と畳み込みの和は**途中の和も** 2^15 未満 (reduce_sum は全範囲)
-  - 最後の軸の slice で開始を 32 で割った余りが 1〜14 だと 4094 を超える値が Inf: `aicheck lint` (か `HWNPU_DEV=ailower.notes=1`)
+  - 最後の軸の slice で開始を 32 で割った余りが 1〜14 だと 4094 を超える値が Inf: `aicheck lint` (か `HWNPU_AILOWER_NOTES=1`)
   - fp16 の正規化の範囲を下回る積は matmul の中で 0 になる。要素ごとでは残る
   - softplus と内側の次元が 1 の matmul は `ailower` が書き換える
 
@@ -141,8 +141,8 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 
 - **どの演算にも下ろし方が要る。** `aicheck lower OUT PKG` は最初の欠けで止まる。新しいものは coreai-torch と同じに書く: 小さな torch のモジュールを coreai-torch で変換し、プログラムを出し、バイトコードを `tools/coreai/bcdump` で読む
 - **各部分を Core AI と Core ML の CPU インタプリタと比べる**: `aicheck run -cpu PKG...` と `aicheck run -cpu -coreml PKG...`。全部 NE に載る部分が Core AI でだけ誤ることがある (PP-OCR の検出器 0.05 に対し 0.9999)
-- **`HWNPU_DEV=ailower.cut=N aicheck run -cpu PKG` で演算を探す** (`AICHECK_WORST=1`)。誤差の大きさや最大の場所だけでなく、何の誤りかを見る (入力と出力の間に直線を当てると、NE が割るべきところで掛けていた)。小さな写しでなく本物の部分で確かめる
-- **下ろし方の誤りと NE の誤りを `HWNPU_COREAI_UNITS=cpu` で分ける。** 罠: Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる。CPU インタプリタは実装したものしか参照にならない (`elu` は alpha 1 だけ)。`runner` は `HWNPU_DEV=cpu.f16=1` でなければ fp32、aicheck は fp16 の丸めつき: 参照の精度を先に決める
+- **`HWNPU_AILOWER_CUT=N aicheck run -cpu PKG` で演算を探す** (`AICHECK_WORST=1`)。誤差の大きさや最大の場所だけでなく、何の誤りかを見る (入力と出力の間に直線を当てると、NE が割るべきところで掛けていた)。小さな写しでなく本物の部分で確かめる
+- **下ろし方の誤りと NE の誤りを `HWNPU_COREAI_UNITS=cpu` で分ける。** 罠: Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる。CPU インタプリタは実装したものしか参照にならない (`elu` は alpha 1 だけ)。`runner` は `HWNPU_CPU_F16=1` でなければ fp32、aicheck は fp16 の丸めつき: 参照の精度を先に決める
 - **NE の落とし穴**: 定数での `divide_v1` を誤る (ailower は逆数の積に書く)。`(v + c) - c` を c が入力でも `v` に畳む。幅 1 より大きな核で 512 チャネル以上、入力を別の演算が計算する幅方向の畳み込みが誤る (高さ方向に回す)。膨張つきの畳み込みは長さによって誤る (膨張の行にフレームを並べる)。畳み込みの前の明示の `pad` が誤った。(1×1)·(1×N) の matmul は M3 で誤る (mul で)
 - **1 本の `.aimodel` の関数はまとめてコンパイルされる**: コンパイラが 1 つの関数を落とすと全部が NE から外れる。先に大きさごとの部分を単独で見て、`aicheck probe` で小さな書き換えを試す (`tile` のチャネルの繰り返し → 0/1 の重みの 1 × 1 の畳み込み)。隣り合う lut の表を同じにしない (`coreai-build` が部分を NE から外した)
 - **起動は両方のキャッシュを温めて比べる** (各バックエンドを 1 回回した直後に、新しいプロセスで 3 回ずつ)
@@ -161,9 +161,9 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - **アーキテクチャで**: `llm.Routed` を実装する。MoE の層の始まりで部分を切り (`moe_x_N`、fp16 の `moe_logits_N`)、次の部分は `moe_o_N` を足して始める。`llm.PlanRouted` で切る
 - **行を数える**: MoE のモデルは下書きを切り、段は 1 つ。プロンプトの呼び出しは選ばれた専門家をその行の分 1 回ずつ回す (`experts.BuildRows`)、1 回 128 トークン
 - **どの専門家が回るかを、多くの種類の文で数える** (`tools/moeusage`: `collect.sh MODEL OUT`、`analyze.py OUT`)。どの種類でも回る専門家は models.yaml の `experts_core` に。出す置き場の数で核が得か確かめる (AMD の Qwen3.6 は核なし)
-- **ホストが回す専門家 (`llm.HostRouted`)**: 読むのと計算を分けて測る (`HWNPU_DEV=moe.time`)。先に SSD を測る。同じ質問の繰り返しで設定を比べない (ページキャッシュが温まる): 分野と言語の違う質問の一覧で (`--prompt-cache off`)。CPU のプロファイルを見る (`mincore` とカーネルで 66 %)。層の間に NE の間を入れて (`HWNPU_TEST_QWEN36_GAP`)、長いプロンプト (20 ステップ以上) でも測る。MXFP4 のチェックポイントを作る前 (`hwnpu-dev mxfp4`) にディスクの空きを見る
+- **ホストが回す専門家 (`llm.HostRouted`)**: 読むのと計算を分けて測る (`HWNPU_MOE_DEBUG=1`)。先に SSD を測る。同じ質問の繰り返しで設定を比べない (ページキャッシュが温まる): 分野と言語の違う質問の一覧で (`--prompt-cache off`)。CPU のプロファイルを見る (`mincore` とカーネルで 66 %)。層の間に NE の間を入れて (`HWNPU_QWEN36_GAP`)、長いプロンプト (20 ステップ以上) でも測る。MXFP4 のチェックポイントを作る前 (`hwnpu-dev mxfp4`) にディスクの空きを見る
 - **生成した文は標準エラーで比べる**: `hwnpu-chat` は思考をそこに書くので、短い実行の標準出力は空。測るバイナリの名前は変えない (Core AI のキャッシュはプロセスの名前ごと、1 モデル 1.8 GB)
-- **AMD で入りきらない専門家は置き場に** (`iron_export_lm.py --expert-places P`): `HWNPU_DEV=moe.check` と、全部を置いた書き出しとの比較で確かめる。16 GB の機械には `variants` を。モデルの名前で動かす (名前でだけ核と回数が渡る)
+- **AMD で入りきらない専門家は置き場に** (`iron_export_lm.py --expert-places P`): `HWNPU_MOE_DEBUG=check` と、全部を置いた書き出しとの比較で確かめる。16 GB の機械には `variants` を。モデルの名前で動かす (名前でだけ核と回数が渡る)
 - **MoE でないモデルが変わらないことを確かめる** (同じ文、同じ速さ、変換し直さない)
 
 ## 4. AMD (IRON) と Intel の形
@@ -214,7 +214,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 
 | 手法 | 教訓 |
 |---|---|
-| 先にデコードの演算子と切り替えを数える | `model.record().steps`、`HWNPU_EXPORT_STEPS=1`、`elfconfigs`。`--command-per-step` と `HWNPU_DEV=iron.timing` で 1 つずつ測る (1 コマンドに約 0.1 ms)。その書き出しでは時間だけを読む |
+| 先にデコードの演算子と切り替えを数える | `model.record().steps`、`HWNPU_EXPORT_STEPS=1`、`elfconfigs`。`--command-per-step` と `HWNPU_IRON_TIMING` で 1 つずつ測る (1 コマンドに約 0.1 ms)。その書き出しでは時間だけを読む |
 | **デコードの演算子を減らす** | バイアスと残差を GEMV で (`into_linear`)、gate と up を 1 つの表に (`QGEMVGlu`)、sandwich norm を 1 つに (`SandwichAdd`)、q と k の RoPE を 1 回に、短い畳み込みを 1 つに (`ShortConvStep`)、状態の枠を直接 (`slots=`)、QGEMV を 1 列 1 コアに |
 | **プロンプトの塊の演算子を減らす** | 短い畳み込みを 1 つの演算子に (`ShortConvChunk`、`GdnConvChunk`)。小さな設定 (RMSNorm、和) をまとめても効かない |
 | デコードの 1 歩を 1 つの常駐の配列に (`GptOssStep`) | 載せ直しがなくなる (gpt-oss 79 → 49 ms)。代わりにコアのプログラムを 16 KB に収め、毎歩すべての operand を宣言する。層で違う `array=True` の引数は層ごとの配列になる: 書き出しを変えたらコマンドの時間を読む |
@@ -325,7 +325,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 
 | 測るもの | 道具 |
 |---|---|
-| 1 回の呼び出し | `TestCallTimes` (`HWNPU_TEST_CHAT_CALL_PKGS`) |
+| 1 回の呼び出し | `TestCallTimes` (`HWNPU_CALL_PKGS`) |
 | 生成、プロンプト、起動 (2 回目) | `hwnpu-dev generate`、`hwnpu-chat` のログ |
 | 形式の比較 | `hwnpu-dev formats` |
 | AMD の GEMV、電力 | `tools/amd/gemvbench`、`hwnpu-dev powerbench` |
@@ -384,7 +384,7 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 
 実際には: 比較用の fp16 のプログラムでディスクが倍になる (比べたら消す)。Core ML と Core AI はプロセスの名前ごとにキャッシュを作る (それぞれ数 GB)。止まったダウンロードは時間切れにならない。`hwnpu-dev formats` は分けていない 1 本の重みを 0.00 GiB と出す。
 
-**記録**: モデルの事実、数値、採ったもの、採らなかったもの (と理由) は `docs/design/` のそのモデルの topic の文書に。[performance.md](performance.md) に 1 行。models.yaml の測った値 (11 節)。測れなかったものは `docs/handoff-*.md` に、持っていくもの、コマンド、期待する値とともに。models.yaml に入れたかどうかにかかわらず、[model-estimation.ja.md](../model-estimation.ja.md) に 1 節: 判断とその理由、比べた相手、コードがどこに残るか。
+**記録**: モデルの事実、数値、採ったもの、採らなかったもの (と理由) は `docs/design/` のそのモデルの topic の文書に。[performance.md](performance.md) に 1 行。models.yaml の測った値 (11 節)。測れなかったものは `docs/handoff-*.md` に、持っていくもの、コマンド、期待する値とともに。
 
 ## 10. 部品として組み合わせるための値
 
@@ -410,7 +410,7 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 ### 11.1 準備の順
 
 1. **手元の書き出し**で `NAME.done` (最後に書く) のあるもの。途中で切れたものは作り直す
-2. **取得元の書き出し** (`HWNPU_MODEL_SOURCE`): 同じレシピの項目、なければ人が名前で置いたもの (`hwnpu-dev cache import`)
+2. **取得元の書き出し** (`HWNPU_MODEL_SOURCE`): 同じレシピの項目、なければ人が名前で置いたもの (`hwnpu-dev sources import`)
 3. **手元での変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換し、`.done` を書く。Apple と Intel は Go の変換器 (`chat.Prepare`、`anima.Prepare`)。AMD は hwnpu に入った IRON の書き出し器 (`chat.PrepareAMD`、`amd_export`、`HWNPU_IRON_ENV`)。IRON がなければ止めて、入れるものを言う (INSTALL_AMD.md)
 4. **使えない**: 止めて、何が足りないかを言う
 
@@ -421,12 +421,14 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 
 | 欄 | 何 | どう測る | 落とし穴 |
 |---|---|---|---|
-| `bytes` | ダウンロード | 取るファイルの HF の `lfs.size` の和。準備がチェックポイントでなく取得元の書き出しを取るもの (AMD の NPU、Apple の画像モデルの Core AI の書き出し) は、取得元に置かれた書き出しの大きさを NPU の種類ごとの表に (`{amd: 12.50e9, apple: 7.87e9}`)。Apple はいちばん大きいチップのプリビルトを足す。エントリが圧縮されていれば (`files.tar.zst`) `entry.json` の `pack.size`、そうでなければ `files` の和 (`hwnpu-dev cache ls` が出すのは展開後の大きさ) | GB は 10⁹。`du -h` は GiB を出す。ディスクの上の書き出しはダウンロードの量ではない: 圧縮されたものはもっと小さい (FLUX.2 klein はディスクで 16.0 GB、圧縮で 12.5 GB)。ファイルのまま置かれた画像の書き出しは、大きさごとのプログラムが重みごと入り、チェックポイントの数倍になる (DA3MONO-LARGE は 1.4 GB に対して 6.59 GB)。表にない種類は一番大きい値になる |
-| `disk` | 動かすのにディスクに残る量 | 展開した変換結果と表の和を NPU の種類ごとに (`{amd: 2.28e9}`)。エントリの `files` の和。`hwnpu-dev hf sizes --write models.yaml` が取得元から書く (AMD はそのモデル自身の書き出しで、変種のものではない。Core AI はモデルの版のエントリだけなので、Mac で一度動かしたあと) | チェックポイント (変換するときだけ読む) と、Mac で Core AI が作るコンパイル結果 (hwnpu のキャッシュの外) は入れない。表にない種類は不明 (`hwnpu-chat list` で `-`) で、一番大きい値にはならない。準備のあいだは `bytes` と `disk` を同時に使う |
+| `bytes` | ダウンロード | 取るファイルの HF の `lfs.size` の和。AMD の NPU で、準備がチェックポイントでなく取得元の書き出しを取るものは、取得元に置かれた書き出しの大きさを NPU の種類ごとの表に (`{amd: 12.50e9, apple: 1.6e10}`)。エントリが圧縮されていれば (`files.tar.zst`) `entry.json` の `pack.size`、そうでなければ `files` の和 (`hwnpu-dev sources ls` が出すのは展開後の大きさ) | GB は 10⁹。`du -h` は GiB を出す。ディスクの上の書き出しはダウンロードの量ではない: 圧縮されたものはもっと小さい (FLUX.2 klein はディスクで 16.0 GB、圧縮で 12.5 GB)。ファイルのまま置かれた画像の書き出しは、大きさごとのプログラムが重みごと入り、チェックポイントの数倍になる (DA3MONO-LARGE は 1.4 GB に対して 6.59 GB)。表にない種類は一番大きい値になる |
+| `disk` | 動かすのにディスクに残る量 | 展開した変換結果と表の和を NPU の種類ごとに (`{amd: 2.28e9}`)。エントリの `files` の和。`hwnpu-dev models hf sizes --write models.yaml` が取得元から書く (AMD はそのモデル自身の書き出しで、変種のものではない。Core AI はモデルの版のエントリだけなので、Mac で一度動かしたあと) | チェックポイント (変換するときだけ読む) と、Mac で Core AI が作るコンパイル結果 (hwnpu のキャッシュの外) は入れない。表にない種類は不明 (`hwnpu-chat list` で `-`) で、一番大きい値にはならない。準備のあいだは `bytes` と `disk` を同時に使う |
 | `memory` | 動いている間の最大 | 1 回の実行の全体を 0.1 秒ごとに (`tools/memwatch`。AMD は accel の割り付け + RSS) | 読み込みの直後でなく実行の最大 (文の段、VAE) |
 | `machine` | ファミリーがそのモデルを勧める最小の機械のメモリ | `memory` + OS とアプリの余裕 | 同じ大きさのモデルは揃える |
 | `file` | 1 つのリポジトリに何本もあるときのチェックポイントのファイル | ファイルの一覧 | テンソルの名前の頭が違うことがある |
 | `device` | 会社ごとの動く場所 | NPU と CPU で 1 回の電力量 | 小さなモデルは AMD の NPU で負ける (YuNet 137 mJ に対し 10 mJ) |
+
+Apple の画像モデルの Core AI の `bytes` には、いちばん大きいチップ向けのプリビルトを足す。
 
 - **受け入れの要るライセンス** (`license: {id, url, terms, accept: true}`): 端末で 1 回聞き、`~/.config/hwnpu/licenses.json` に残す。端末がなければ `--accept-license` / `HWNPU_ACCEPT_LICENSE`
 - **NPU で違う値**: 会社ごとの表 (`memory: {amd: 3.5, apple: 4.1}`)。チップの名前も書ける (`M1: 1.7`)。表にない会社は最大の値
@@ -456,11 +458,11 @@ done
 
 - **大きさは models.yaml のもの** (`npu.amd.sizes`、`npu.apple.sizes`: `--size` が取る 8 つの比、`internal/imagegen/aspect`)。コマンドはそれで `--size` を読み、書き出しを作る
 - **Apple (Core AI)**: 大きさでグラフが変わる部分は、大きさごとの関数 (`s{W}x{H}`、`llm.WriteAIFunctions`) を持つ 1 本の `.aimodel`。大きさによらない部分は関数 1 つ。manifest の `sizes` に大きさごとの部分を書き (`ProgramManifest.At`)、名前に大きさを入れる (`aspect.Tag`)。部分の数は大きさで変えない
-- **Apple での費用**: Core AI は `.aimodel` の関数をまとめてコンパイルし、コンパイラが 1 つの大きさを落とすとその部分は全部の大きさで NPU から外れる。取得元に置く前に、大きさを 1 つずつ、prebuilt を作るチップごとにオフラインでコンパイルする (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、`/usr/bin/log` で `Falling back` を探す)。その後の `hwnpu-dev prebuild -arch ARCH -put EXPORT` は `0 failed` で終わること。VAE には prebuilt を作らない (`coreai.LeftToDevice`)
+- **Apple での費用**: Core AI は `.aimodel` の関数をまとめてコンパイルし、コンパイラが 1 つの大きさを落とすとその部分は全部の大きさで NPU から外れる。取得元に置く前に、大きさを 1 つずつ、prebuilt を作るチップごとにオフラインでコンパイルする (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、`/usr/bin/log` で `Falling back` を探す)。その後の `hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT` は `0 failed` で終わること。VAE には prebuilt を作らない (`coreai.LeftToDevice`)
 - **AMD (IRON)**: 最初の大きさのグラフが bank を持ち、ほかの大きさのグラフは同じ bank の上で `sizes/WxH/` に (`share_banks`)。512 行の丸ごとにならない大きさは詰めて回し、キーを `nk` で区切る。詰めた行だけに依るグラフは共有する
 - **鍵**: `chat.PinnedRecipe(model, tool, version)` と書き出し器の引数。models.yaml に読む全部のファイルの `sha256:` が要る。入力か出力が変わったら書き出しの版を手で上げる
-- **最初の実行が取得元に置く** (`chat.SharedExportOr`、`?writeback=true`、`hwnpu-dev cache flush`)。手で作ったものは `hwnpu-dev cache import DIR` か、最初に使ったとき
-- **反対側から確かめる**: `hwnpu-dev cache ls N`。手元の書き出しを脇に置いて名前で動かす: 取得元から来て、同じバイトを描くこと
+- **最初の実行が取得元に置く** (`chat.SharedExportOr`、`?writeback=true`)。手で作ったものは `hwnpu-dev sources import DIR` か、最初に使ったとき
+- **反対側から確かめる**: `hwnpu-dev sources ls N`。手元の書き出しを脇に置いて名前で動かす: 取得元から来て、同じバイトを描くこと
 - **取得元のチェックポイント**は `hwnpu-lock.json` があるときだけ読む
 - **どの大きさの絵も**一番下の機械で見る (壊れた関数はそこにしか出ない)
 - **書き出しの時間、大きさ、最大 RSS を記録する** (models.yaml と利用者へのメッセージに)

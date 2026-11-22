@@ -69,7 +69,7 @@ func TestAMDExportName(t *testing.T) {
 	}
 }
 
-// TestAMDImportedPlace: the export made by hand of FLUX.2 klein that hwnpu-dev cache import put
+// TestAMDImportedPlace: the export made by hand of FLUX.2 klein that hwnpu-dev sources import put
 // in a source is found where it put it, and the first run's is another entry, of every size.
 func TestAMDImportedPlace(t *testing.T) {
 	m := kleinModel(t)
@@ -129,7 +129,7 @@ func TestPrepareAMDHere(t *testing.T) {
 	}
 }
 
-// TestPrepareAMDImported takes an export made by hand that a source holds (hwnpu-dev cache
+// TestPrepareAMDImported takes an export made by hand that a source holds (hwnpu-dev models
 // import), without the checkpoint or IRON, into the cache's entries.
 func TestPrepareAMDImported(t *testing.T) {
 	noSources(t)

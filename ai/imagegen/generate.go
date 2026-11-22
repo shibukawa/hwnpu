@@ -342,3 +342,8 @@ func (g *Generator) logf(format string, args ...any) {
 		fmt.Fprintf(g.log, format+"\n", args...)
 	}
 }
+
+func init() {
+	airole.Register(role)
+	airole.Register(editRole)
+}
