@@ -71,7 +71,8 @@ How hwnpu finds, downloads, converts, shares and removes models. This file is th
 0. this machine's cache (cache.Root)      always written, used in place
 1. HWNPU_MODEL_SOURCE, _1, _2, ...         in number order; a source in error is skipped
 2. models bundled with the app            read only, used in place
-3. Hugging Face                           HWNPU_MODEL_HUGGING_FACE=false never contacts it
+3. the converted models on Hugging Face   models.yaml's hub (repository and commit by target); HWNPU_MODEL_HUB=false skips it
+4. Hugging Face                           HWNPU_MODEL_HUGGING_FACE=false never contacts it (3 neither)
    none has it -> made on this machine
 ```
 
@@ -94,6 +95,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 - Fast path: when the local lock names the file, its size matches and the commit is the decided one, no network and no source is asked.
 - Every original file, from any layer, lands in local `original/OWNER/NAME/FILE` (`chat.RepoDir`); `chat.Fetch(ctx, repo, name, log)` and `chat.FetchWeights` return the path. Parts shared by models (Chroma's T5-XXL and VAE) are in each repository's folder, hard-linked by sha256.
 - `TARGET`: `amd-xdna2`, `coreai`, `coreai-ARCH` (prebuilt), `any` (tables, GPTQ codes). `VERSION`: `vN` when models.yaml has `targets.<target>.version: N` (matched if the recipe without the tools hash is the same), `vN-<8 hex>` with `develop: true`, `v0-<8 hex>` with no version.
+- A published version (`vN`) no layer has is taken from `v0-HASH` of the same key (the same bytes, made before the version was written) and written back as `vN` (`chat.fetchFrom`).
 - A folder is either whole or not: a conversion is whole when its `entry.json` exists; a repository holds only what its lock names. Readers never see half-written data.
 
 ### Keys (computed before any download)
@@ -232,7 +234,7 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 
 ## Open
 
-- Hugging Face distribution of converted models (organization `hwnpu`, one repository per model, uploaded by hand from a source with `hwnpu-dev hf push`, read as a layer before the original repository): designed, not built ([../prebuilt.md](../prebuilt.md)). Today sharing goes through the user's sources.
+- Hugging Face distribution of converted models (organization `hwnpu`, one repository per model, uploaded by hand from a source with `hwnpu-dev hf push`, read as a layer before the original repository): the layer, models.yaml's `hub` pins and `hwnpu-dev hf plan / push / check` are built; nothing is uploaded yet. Left: a device flow to write, splitting exports over 20 GB, stopping when a gated repository refuses ([../prebuilt.md](../prebuilt.md)). Today sharing goes through the user's sources.
 - Local layout: move `models/NAME` programs and `entries/` to `converted/MODEL/TARGET/EXPORT/vN/` with `entry.json` as the only completion mark (now `NAME.done`, `NAME.ext.done` and `entry.json` coexist); migrate `~/models` once and stop reading it; `modelstore` API to make conversions (`Make`); use bundled conversions in place (now copied).
 - Entries for Core ML and OpenVINO programs; machine-bound (`host`) entries in sources; AMD / Intel NPU generations in the target name.
 - Hand-made image exports whose tool arguments Go does not own (Anima): only by name today.

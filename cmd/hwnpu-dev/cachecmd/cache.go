@@ -175,9 +175,9 @@ func (l LsCmd) Run(c *Cmd) error {
 	return w.Flush()
 }
 
-// amdForms is m and each of its variants (machines of more memory) whose amd_export differs:
+// AMDForms is m and each of its variants (machines of more memory) whose amd_export differs:
 // gpt-oss-20b's 16 experts a layer on 16 GB and all of them from 24 GB are two exports.
-func amdForms(m chat.Model) []chat.Model {
+func AMDForms(m chat.Model) []chat.Model {
 	forms := []chat.Model{m}
 	gbs := make([]int, 0, len(m.Variants))
 	for gb := range m.Variants {
@@ -220,7 +220,7 @@ func (x ExportCmd) Run(c *Cmd) error {
 		if !ok || len(m.AMDExport) == 0 {
 			return fmt.Errorf("%s is not a model of the definitions with amd_export", name)
 		}
-		forms = append(forms, amdForms(m)...)
+		forms = append(forms, AMDForms(m)...)
 	}
 	for _, m := range forms {
 		start := time.Now()
@@ -276,7 +276,7 @@ func (p PushCmd) Run(c *Cmd) error {
 		if !ok {
 			return fmt.Errorf("%s is not a model of the definitions", name)
 		}
-		if tool, version, ok := firstRunExport(m); ok {
+		if tool, version, ok := FirstRunExport(m); ok {
 			if err := pushFirstRun(ctx, writes, m, tool, version); err != nil {
 				return err
 			}
@@ -328,9 +328,9 @@ func describeAndPut(ctx context.Context, writes []shared.Source, m chat.Model, w
 	return nil
 }
 
-// firstRunExport is the script and the version of the export hwnpu-image makes of m on its
+// FirstRunExport is the script and the version of the export hwnpu-image makes of m on its
 // first run on AMD's NPU, if it makes one.
-func firstRunExport(m chat.Model) (tool string, version int, ok bool) {
+func FirstRunExport(m chat.Model) (tool string, version int, ok bool) {
 	switch m.Kind {
 	case chat.KindDetect:
 		return "iron_onnxcnn.py", detect.ExportVersion, true
@@ -772,7 +772,7 @@ func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir stri
 	case m.Name != "" && len(m.AMDExport) > 0 && filepath.Base(chat.AMDExportDir(m)) == name:
 		kind, recipe = "iron-lm", chat.ExportRecipe(ctx, m, "iron_export_lm.py", m.AMDExport)
 	case m.Name != "":
-		if tool, version, ok := firstRunExport(m); ok && strings.EqualFold(name, strings.ToLower(m.Name)+".amd-npu2") {
+		if tool, version, ok := FirstRunExport(m); ok && strings.EqualFold(name, strings.ToLower(m.Name)+".amd-npu2") {
 			kind, recipe = chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version)
 		}
 	default:

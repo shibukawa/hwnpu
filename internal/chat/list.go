@@ -31,7 +31,7 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	vendor := HereVendor()
 	machine := MachineMemory()
-	fmt.Fprintf(tw, "NAME\tTAG\tKIND\tFEATURES\tDOWNLOAD\tMEMORY\tREPOSITORY\t%s\tABOUT\n", column)
+	fmt.Fprintf(tw, "NAME\tTAG\tKIND\tFEATURES\tDOWNLOAD\tDISK\tMEMORY\tREPOSITORY\t%s\tABOUT\n", column)
 	for _, m := range Catalog {
 		if !of(m) {
 			continue
@@ -45,7 +45,7 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 		if m.Tag != "" {
 			tag = m.Family + ":" + m.Tag
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.Name, tag, m.Kind, features, inGB(m.BytesFor(vendor)/1e9), inGB(m.On(machine).MemoryFor(vendor)),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.Name, tag, m.Kind, features, inGB(m.BytesFor(vendor)/1e9), inGB(m.DiskFor(vendor)/1e9), inGB(m.On(machine).MemoryFor(vendor)),
 			m.Source(), got, m.About)
 	}
 	tw.Flush()

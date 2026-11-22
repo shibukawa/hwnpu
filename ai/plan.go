@@ -79,6 +79,10 @@ type Item struct {
 	// layer (Store.Models) may hold what was converted, and then the checkpoint is not
 	// downloaded.
 	Download int64 `json:"download_bytes"`
+	// Disk is about how many bytes the model keeps on the disk to run (its conversion unpacked
+	// and its tables), from the definitions (0: not known). Preparing it needs about Download
+	// and Disk at once.
+	Disk int64 `json:"disk_bytes"`
 	// MemoryGB is what the model takes running, from the definitions (0: not known).
 	MemoryGB float64 `json:"memory_gb"`
 
@@ -165,7 +169,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 			return nil, err
 		}
 		it := Item{Use: r.name, Role: r.role.Name, Why: why, model: m, req: r,
-			Model: m.Name, Repo: m.Source(), About: m.About, MemoryGB: m.MemoryFor(p.npu.Vendor)}
+			Model: m.Name, Repo: m.Source(), About: m.About, MemoryGB: m.MemoryFor(p.npu.Vendor), Disk: int64(m.DiskFor(p.npu.Vendor))}
 		loc, err := a.Store.find(r.key(), p.npu, m, r.role.Revision)
 		switch {
 		case err == nil:
@@ -250,6 +254,16 @@ func (p *Plan) Compiled() bool {
 		}
 	}
 	return true
+}
+
+// DiskBytes is about how many bytes the plan's models keep on the disk to run (DownloadBytes
+// more for a while as they are prepared).
+func (p *Plan) DiskBytes() int64 {
+	var n int64
+	for _, it := range p.Items {
+		n += it.Disk
+	}
+	return n
 }
 
 // DownloadBytes is about how many bytes Run downloads.
