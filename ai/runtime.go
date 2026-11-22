@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -20,54 +21,24 @@ type Option func(*options)
 
 type options struct {
 	log     io.Writer
-	auto    bool
-	autoFn  func(Progress)
-	license bool
-	prepLog io.Writer // Plan.Log of the preparing, and the log of a model's first load
+	loading func(Progress)
 }
 
 // WithLog sends what loading the models does (the programs, where they run) to w.
 func WithLog(w io.Writer) Option { return func(o *options) { o.log = w } }
 
-// WithAutoPrepare makes the Runtime prepare a use that is not ready when it is first asked for
-// (Plan and Run for that use alone, reported to fn, nil for nowhere), as hwnpu's commands do on
-// their first run: a Get may then download gigabytes and take minutes. Without it the Runtime
-// touches no network and converts nothing.
-func WithAutoPrepare(fn func(Progress)) Option {
-	return func(o *options) { o.auto, o.autoFn = true, fn }
-}
-
-// WithConsole is WithAutoPrepare as hwnpu's commands show it on the terminal (standard error):
-// a line for each model made ready, its downloads, conversions and the compile at its first
-// load with their bars redrawn in place, and what they log in gray (Console). An app's commands
-// open their Runtime with it so that their first run makes the models ready, as "models
-// prepare" (cli.Prepare) does ahead.
-func WithConsole() Option {
-	return func(o *options) {
-		o.auto, o.prepLog = true, Console()
-		o.autoFn = func(p Progress) {
-			switch p.Stage {
-			case StagePrepare:
-				if p.Message == "" {
-					fmt.Fprintf(os.Stderr, "%s (%s): not here yet, downloading and converting it\n", p.Use, p.Model)
-				}
-			case StageDone:
-				fmt.Fprintf(os.Stderr, "%s (%s): ready\n", p.Use, p.Model)
-			}
-		}
-	}
-}
-
 // Console is where Plan.Log writes as hwnpu's commands do (internal/console): standard error,
 // in gray on a terminal, where the downloads' and compiles' bars are redrawn in place.
 func Console() io.Writer { return console.Log(os.Stderr) }
 
-// WithAcceptedLicenses lets WithAutoPrepare accept the licenses that ask for it
-// (Plan.AcceptLicenses), for an app that has the user's agreement.
-func WithAcceptedLicenses() Option { return func(o *options) { o.license = true } }
+// WithLoading tells fn of each model a Get loads, for an app that shows it (a window that would
+// otherwise look still): StageLoad as it begins, with how long its load took the last time
+// here (Expected, 0 when not known) and the lines of the load's log in Message, then
+// StageDone. fn is called in the Get's goroutine, and from the goroutines that redraw a bar.
+func WithLoading(fn func(Progress)) Option { return func(o *options) { o.loading = fn } }
 
-// Runtime runs the models an app's store has prepared. It touches no network and converts
-// nothing (unless WithAutoPrepare): a use the store has not prepared is ErrNotPrepared. Each
+// Runtime runs the models an app's store has prepared and compiled (Plan.Run). It touches no
+// network, converts and compiles nothing: a use not prepared and compiled is ErrNotPrepared. Each
 // model is loaded at its first Get and stays until its Release or Close.
 type Runtime struct {
 	app *App
@@ -152,11 +123,11 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	if err != nil {
 		return nil, err
 	}
+	// a use is run only when it is prepared and compiled for this program on this NPU (Plan.Run,
+	// "models prepare"): no picture, no input waits for a download or a compile
 	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
-	if errors.Is(err, ErrNotPrepared) && rt.o.auto {
-		if err = rt.prepare(ctx, r); err == nil {
-			loc, err = rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
-		}
+	if err == nil && !loc.bundle && rt.npu.Target != "" && !loc.compiled() {
+		err = fmt.Errorf("%w: %s (%s) is not compiled for %s on this machine's NPU yet (the app's Plan and its Run compile it)", ErrNotPrepared, r.key(), loc.Model, processName())
 	}
 	if err != nil {
 		return nil, err
@@ -176,32 +147,44 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		loc.each(func(p *string) { cache.Touch(*p) })
 	}
 	t0 := time.Now()
-	log := rt.o.log
-	if log == nil && rt.o.prepLog != nil && !loc.bundle && loc.Compiled.IsZero() && rt.npu.Target != "" {
-		log = rt.o.prepLog // its first load, which compiles it (minutes): shown as it goes
+	log := rt.o.log // compiled (find): the load takes its programs from the compiler's cache
+	tell := func(Stage, string) {}
+	var loaded atomic.Bool // its load is over: the lines of its log after are not told
+	if fn := rt.o.loading; fn != nil {
+		stage, expected := StageLoad, loc.Loaded
+		tell = func(st Stage, msg string) {
+			fn(Progress{Use: r.name, Role: r.role.Name, Model: loc.Model, Stage: st, Item: 1, Items: 1, Message: msg, Expected: expected, Since: t0})
+		}
+		// the model keeps the log after its load (a later size's programs, its steps): those
+		// lines are not of the load, which has told it is done
+		lw := &lineWriter{fn: func(line string) {
+			if !loaded.Load() {
+				tell(stage, line)
+			}
+		}}
+		if log == nil {
+			log = lw
+		} else {
+			log = io.MultiWriter(log, lw)
+		}
+		tell(stage, "")
 	}
 	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log})
 	if err != nil {
+		loaded.Store(true)
+		tell(StageDone, "")
 		return nil, fmt.Errorf("ai: loading %s (%s): %w", r.name, loc.Model, err)
 	}
-	if !loc.bundle && loc.Compiled.IsZero() && rt.npu.Target != "" {
-		// loaded here for the first time (WithAutoPrepare, or prepared without compiling): its
-		// programs are compiled now. Not writing it only has "models prepare" load it once more.
-		loc.Compiled = time.Now().UTC().Truncate(time.Second)
+	took := time.Since(t0)
+	loaded.Store(true)
+	tell(StageDone, "")
+	if !loc.bundle && (loc.Loaded == 0 || took > loc.Loaded*5/4 || took < loc.Loaded*4/5) {
+		// how long it takes, for the next load to show (written when it changed by a fifth)
+		loc.Loaded = took
 		_ = rt.app.Store.put(ctx, r.key(), rt.npu, loc.record)
 	}
 	rt.loaded[r.key()] = &loadedModel{closer: l, info: Loaded{Use: r.name, Role: r.role.Name, Model: loc.Model, MemoryGB: loc.MemoryGB, At: t0, Took: time.Since(t0)}}
 	return l, nil
-}
-
-// prepare makes r ready (WithAutoPrepare) without loading it: the load that follows compiles it.
-func (rt *Runtime) prepare(ctx context.Context, r requirement) error {
-	p, err := rt.app.plan(ctx, []requirement{r})
-	if err != nil {
-		return err
-	}
-	p.NoCompile, p.AcceptLicenses, p.Log = true, rt.o.license, rt.o.prepLog
-	return p.Run(ctx, rt.o.autoFn)
 }
 
 // release unloads r, if it is loaded.

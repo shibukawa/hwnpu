@@ -31,7 +31,7 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 
 ## 2. 登録 → 計画 → 準備 → 実行
 
-**実行はネットワークに触らず、変換もしない。** 準備済みの置き場からだけ読み込む (`WithAutoPrepare` を付けたときだけ、CLI のように初回に準備する)。
+**実行はネットワークに触らず、変換もコンパイルもしない。** 準備とコンパイルの済んだ置き場からだけ読み込む (`APP models prepare` が先に全部する)。
 
 ```go
 // 登録: アプリが使うモデルを、機能のパッケージの Use で宣言する。名前は models.yaml のモデル、ファミリー、用途
@@ -413,7 +413,7 @@ layers split picture.png --layers 4 --png parts/
 | `ai/app.go` | `App` (`NewApp`、`Use`、`Memory`)、`Use[T]` (`Get`、`Release`、`At`、`As`)、`Define` |
 | `ai/plan.go` | `Plan` (`Items`、`Ready`、`Compiled`、`DownloadBytes`、`MemoryGB`、`MachineGB`、`Licenses`、`Run`)、`Progress`、`LicenseError`、`App.Prepare` |
 | `ai/store.go` | `Store` (`Models`: `modelstore.Options`、`Prepared`)、置き場の目録 `store.json`、`ErrNotPrepared`、`ErrBundleTarget` |
-| `ai/runtime.go` | `App.Open`、`Runtime` (`Loaded`、`Close`)、`WithLog`、`WithAutoPrepare`、`WithAcceptedLicenses` |
+| `ai/runtime.go` | `App.Open`、`Runtime` (`Loaded`、`Close`)、`WithLog`、`WithLoading` |
 | `ai/network.go` | `App.From`、`App.Run`、`Runtime.Run`、`App.Network`、`Node`、`ModelNode` (`Update`)、`Call` (`NewCall`、`Then`、`Do`、`All`) |
 | `ai/flow/graph.go` | ネットワーク: `Source`、`Func`、`Each` (`AtEnd`、`WhenIdle`)、`Tap`、`Route`、`Sink`、`To` (`Link`、`Chain`)、`Keep`、`Newest`、`Stop`、`Run`、`Walk`、`NodeError` |
 | `ai/flow/join.go` | 入力が 2 つの節: `Join2`、`Both`、`With` |
@@ -434,7 +434,7 @@ layers split picture.png --layers 4 --png parts/
 - **AMD の NPU に複数のモデルを同居させるための直し**: 1 つのプロセスが 2 つ目のデバイスを開くと `CREATE_HWCTX` が `EINVAL` になった。デバイスヒープを 64 MiB の境界の番地に写すようにして直った ([docs/design/api.md](design/api.md))
 - **確かめたこと**:
   - 機械のメモリごとの構成: `HWNPU_MEMORY=16` では翻訳が plamo-3-translate-2b になり (3 つで 7.8 GB、読み込み 3.1 秒、全体 25.5 秒)、設定なし (59 GB) では 8B (11.6 GB)。8B で準備した置き場を 16 GB として開くと `ErrNotPrepared` (前は黙って 8B を読み込んでいたので直した)
-  - `go test -race ./ai/...`: 流れの道具 (偽の時計で `Async` の重なり、`Latest` の間引き、`Hold`、`Metronome` の遅れと `Skip`、`Pace`、`Live`)、計画 → ダウンロード → コンパイル → 2 回目の計画で何も要らない、`Get` / `Release` / `Close`、`WithAutoPrepare`、役割と種類の食い違い、メモリごとの構成 (`At`、`As`) と別のモデルで準備された置き場、アプリの定義のファイル、ライセンスの同意、準備済みの同梱と対象の違い、`cli` のコマンド
+  - `go test -race ./ai/...`: 流れの道具 (偽の時計で `Async` の重なり、`Latest` の間引き、`Hold`、`Metronome` の遅れと `Skip`、`Pace`、`Live`)、計画 → ダウンロード → コンパイル → 2 回目の計画で何も要らない、`Get` / `Release` / `Close`、コンパイル済みでない用途 (別のプログラムがコンパイルしたもの) を動かさないこと、役割と種類の食い違い、メモリごとの構成 (`At`、`As`) と別のモデルで準備された置き場、アプリの定義のファイル、ライセンスの同意、準備済みの同梱と対象の違い、`cli` のコマンド
   - Ryzen AI 9 365 (XDNA 2) で `samples/interpreter`: 13.3 秒の日本語の音声 (2 発話、3 文) を、whisper-large-v3-turbo、plamo-3-translate-8b、LFM3-Audio-2B-TTS の 3 つを 1 プロセスに同居させて英語の音声 8.5 秒に。読み込み 0.5、5.1、2.6 秒、全体 31.6 秒。書き起こしと訳は正しく、出力の音声を Whisper に戻すと訳文と一字一句同じ
 - **確かめていないこと**: Mac (Core AI) と Intel での実機 (準備と読み込みはコマンドと同じ関数だが、`ai` を通しては動かしていない)。`Chat` の実機。8 GB の機械での 3 つの同居
 

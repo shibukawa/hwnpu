@@ -16,7 +16,7 @@ The nearest layer is cut out, where it was is painted in one plain colour, and t
 
 ```bash
 cd samples
-go run ./layers models prepare                   # download, convert and compile the models ahead (else the first run does, for what it uses)
+go run ./layers models prepare                   # download, convert and compile the models first: the commands run only when it is done
 go run ./layers plan picture.png                 # where it would cut, as a picture coloured by layer (no drawing)
 go run ./layers split picture.png -o picture.psd       # part it into 3 layers
 go run ./layers split picture.png --layers 4 --png parts/

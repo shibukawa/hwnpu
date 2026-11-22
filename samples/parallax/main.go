@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -87,6 +88,10 @@ var cmds struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("parallax"),
@@ -275,7 +280,14 @@ type ShowCmd struct {
 }
 
 func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	// the models made ready as they are first used, told to the window's panel once it shows
+	// the making: a download, a compile, a load take seconds to minutes with nothing else moving
+	var watch atomic.Pointer[progress]
+	rt, err := konghelper.Open(ctx, app, ai.WithLoading(func(pr ai.Progress) {
+		if prog := watch.Load(); prog != nil {
+			prog.loading(pr)
+		}
+	}))
 	if err != nil {
 		return err
 	}
@@ -287,7 +299,16 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return err
 		}
 	}
-	o.closeAfter = c.For
+	o.closeAfter, o.done = c.For, ctx.Done()
+	// when the window is closed (or Ctrl-C), what goes on beside it is stopped and waited for
+	// (the deferred calls below); should anything not stop, the process does not stay on with no
+	// window: it ends 5 s after
+	var stopping *time.Timer
+	defer func() {
+		if stopping != nil {
+			stopping.Stop()
+		}
+	}()
 	var scene *Scene
 	if st, err := os.Stat(c.Picture); (err == nil && st.IsDir()) || c.Dump != "" {
 		// a picture in layers already, or the shader's frames to check: no making to show
@@ -302,6 +323,7 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return err
 		}
 		o.progress, o.picture = newProgress(img, c.Layers), img
+		watch.Store(o.progress)
 		mctx, stop := context.WithCancel(ctx)
 		made := make(chan struct{})
 		go func() {
@@ -323,7 +345,11 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		// the tracker's network runs beside the window, until the window is closed
 		p.tracker.Gain = c.Gain
 		o.camera, o.gain = p.tracker.Seen, p.tracker.AddGain
-		frames, err := c.frames(ctx, false)
+		// the camera's frames end with the tracker, when the window is closed: a camera left
+		// reading kept the tracker's network, and the process, from ending
+		tctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		frames, err := c.frames(tctx, false)
 		if err != nil {
 			return err
 		}
@@ -331,7 +357,6 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		if _, err := faces.Get(ctx, rt); err != nil { // loaded before the window opens
 			return hint(err)
 		}
-		tctx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		go func() { done <- rt.Run(tctx) }()
 		defer func() {
@@ -356,7 +381,12 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return p.tracker.Target()
 		}
 	}
-	return runWindow(scene, c.params(), o)
+	err = runWindow(scene, c.params(), o)
+	stopping = time.AfterFunc(5*time.Second, func() {
+		fmt.Fprintln(os.Stderr, "parallax: still stopping 5 s after the window closed; ending")
+		os.Exit(1)
+	})
+	return err
 }
 
 // make makes the picture deep beside the window and tells prog of each step: its depth, then
@@ -399,7 +429,7 @@ type RenderCmd struct {
 }
 
 func (c *RenderCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -459,7 +489,9 @@ func (c *TrackCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			}
 		}
 	}()
-	err = app.Run(ctx, konghelper.AutoPrepare())
+	if err = konghelper.Ready(ctx, app); err == nil {
+		err = app.Run(ctx)
+	}
 	close(stop)
 	p.tracker.mu.Lock()
 	found := p.tracker.found

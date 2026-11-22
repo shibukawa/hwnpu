@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -30,9 +32,16 @@ type Plan struct {
 	// their models, for an app that has shown them and has the user's agreement. Without it Run
 	// fails with a *LicenseError at a model whose license is not accepted yet.
 	AcceptLicenses bool
-	// Log, when not nil, is where the downloads, conversions and compiles write what they do,
-	// as hwnpu's commands show it (Console's: their bars redrawn in place on a terminal, the
-	// rest in gray), instead of a Progress.Message for each line. The stages are still reported.
+	// Quiet shows nothing: without it Run shows what it does on Log as hwnpu's commands do. On
+	// a terminal that is a line for each stage of each model with a spinner and its time,
+	// redrawn until it is done; the downloads' and programs' own bars over it while they go;
+	// what they log in gray; and the time of it all at the end. Elsewhere it is a line as each
+	// begins and ends, and the logs. Either way fn is told it all (the logs' lines in
+	// Progress.Message), for an app that shows it its own way.
+	Quiet bool
+	// Brief shows the stages alone, not the models' logs.
+	Brief bool
+	// Log is where Run shows it (standard error when nil).
 	Log io.Writer
 
 	store   Store
@@ -158,8 +167,8 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		switch {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
-			// compiles it, and nothing can be written there to say so)
-			it.Ready, it.Compiled = true, !loc.Compiled.IsZero() || loc.bundle
+			// compiles it, and nothing can be written there to say so); with no NPU, nothing is
+			it.Ready, it.Compiled = true, loc.compiled() || loc.bundle || p.npu.Target == ""
 			if loc.bundle {
 				it.Bundle = loc.root
 			}
@@ -317,6 +326,7 @@ type Stage string
 const (
 	StagePrepare Stage = "prepare" // downloading and converting
 	StageCompile Stage = "compile" // loading once: compiling the programs for the NPU
+	StageLoad    Stage = "load"    // loading for a Get, from the NPU compiler's cache (WithLoading)
 	StageDone    Stage = "done"
 )
 
@@ -328,6 +338,10 @@ type Progress struct {
 	// Message is a line of what is being done (a download, a conversion), for a log; "" when
 	// the stage begins or ends.
 	Message string
+	// Expected is how long the stage's load took here the last time (StageCompile, StageLoad),
+	// 0 when not known, and Since when the stage began.
+	Expected time.Duration
+	Since    time.Time
 }
 
 // lineWriter calls fn with each line written to it, on \n or \r (a progress bar redrawn).
@@ -383,9 +397,24 @@ func stripANSI(s string) string {
 // NoCompile, it loads each use that was not loaded on this machine before once, which compiles
 // its programs for the NPU, and writes it into the store. fn (nil for none) is called in Run's
 // goroutine. A Run cut off (ctx, a network error) goes on from where it stopped when run again.
-func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
-	if fn == nil {
-		fn = func(Progress) {}
+func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
+	told := fn
+	var show *display
+	if !p.Quiet {
+		w := p.Log
+		if w == nil {
+			w = os.Stderr
+		}
+		show = newDisplay(w, p.Brief)
+		defer func() { show.finish(err) }()
+	}
+	fn = func(pr Progress) {
+		if show != nil {
+			show.stage(pr)
+		}
+		if told != nil {
+			told(pr)
+		}
 	}
 	compile := !p.NoCompile && p.npu.Target != ""
 	var todo []int
@@ -401,8 +430,8 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 		}
 		log := &lineWriter{fn: func(line string) { report(StagePrepare, line) }}
 		var out io.Writer = log
-		if p.Log != nil {
-			out = p.Log
+		if show != nil {
+			out = &teeLog{term: show.log, lines: log}
 		}
 		var r *record
 		if it.Ready {
@@ -437,6 +466,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 		if compile && !it.Compiled {
 			report(StageCompile, "")
 			log.fn = func(line string) { report(StageCompile, line) }
+			t0 := time.Now()
 			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
@@ -450,7 +480,8 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 			if err := l.Close(); err != nil {
 				return err
 			}
-			r.Compiled = time.Now().UTC().Truncate(time.Second)
+			r.markCompiled()
+			r.Compile = time.Since(t0)
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
 				return err
 			}
@@ -480,4 +511,99 @@ func (a *App) Prepare(ctx context.Context, fn func(Progress)) error {
 		return err
 	}
 	return p.Run(ctx, fn)
+}
+
+// teeLog writes the logs of a model's preparing both to the terminal's log and to the lines
+// told to Run's fn, a writer the bars redraw on (console.Live) when the terminal's is one.
+type teeLog struct {
+	term  io.Writer
+	lines *lineWriter
+}
+
+func (t *teeLog) Write(b []byte) (int, error) {
+	t.lines.Write(b)
+	return t.term.Write(b)
+}
+
+// Terminal says whether the bars written to t can be redrawn in place.
+func (t *teeLog) Terminal() bool { return console.Live(t.term) }
+
+// Direct is t for a bar's line, written while the bars' lines are held (console.Log's Direct).
+func (t *teeLog) Direct() io.Writer {
+	if d, ok := t.term.(interface{ Direct() io.Writer }); ok {
+		return &teeLog{term: d.Direct(), lines: t.lines}
+	}
+	return t
+}
+
+// display is what Run shows of itself on a terminal or a log (Plan.Quiet).
+type display struct {
+	w     io.Writer // where the stages go
+	log   io.Writer // where the models' logs go: in gray on a terminal
+	live  bool
+	bar   *console.Bar
+	as    string // what the bar's stage is when done
+	start time.Time
+	any   bool // a stage was shown
+}
+
+func newDisplay(w io.Writer, brief bool) *display {
+	d := &display{w: w, log: w, live: console.Live(w), start: time.Now()}
+	switch f, ok := w.(*os.File); {
+	case brief:
+		d.log = io.Discard
+	case ok:
+		d.log = console.Log(f)
+	}
+	return d
+}
+
+// stage shows pr's stage beginning or its model done.
+func (d *display) stage(pr Progress) {
+	if pr.Message != "" {
+		return // the log shows its lines itself
+	}
+	head := fmt.Sprintf("[%d/%d] %s (%s)", pr.Item, pr.Items, pr.Use, pr.Model)
+	d.end()
+	switch pr.Stage {
+	case StagePrepare:
+		d.begin(head, "downloading and converting", "downloaded and converted")
+	case StageCompile:
+		d.begin(head, "compiling for the NPU", "compiled")
+	case StageDone:
+		if !d.live {
+			fmt.Fprintf(d.w, "%s: done\n", head)
+		}
+	}
+}
+
+func (d *display) begin(head, doing, as string) {
+	d.any = true
+	if d.live {
+		d.bar, d.as = console.NewBar(d.w, head+": "+doing), as
+		return
+	}
+	fmt.Fprintf(d.w, "%s: %s\n", head, doing)
+}
+
+func (d *display) end() {
+	if d.bar != nil {
+		d.bar.Done(d.as + " in " + console.Duration(d.bar.Elapsed()))
+		d.bar = nil
+	}
+}
+
+// finish ends the stage going on and shows the time of it all, or that there was nothing to do.
+func (d *display) finish(err error) {
+	if d.bar != nil {
+		d.bar.Done("stopped after " + console.Duration(d.bar.Elapsed()))
+		d.bar = nil
+	}
+	switch {
+	case err != nil:
+	case d.any:
+		fmt.Fprintf(d.w, "done in %s\n", console.Duration(time.Since(d.start)))
+	default:
+		fmt.Fprintln(d.w, "nothing to do")
+	}
 }

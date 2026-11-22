@@ -19,7 +19,7 @@ hwnpu の [`ai`](../USAGE_LIBRARY.ja.md) パッケージで作った小さなア
 ```bash
 cd samples
 go run ./interpreter models            # モデル、ダウンロードと実行に要る量、ネットワーク
-go run ./interpreter models prepare    # 先にダウンロード、変換、コンパイル (最初の実行でも、使うモデルを用意します)
+go run ./interpreter models prepare    # 最初にダウンロード、変換、コンパイル (済むまでコマンドは動きません)
 go run ./interpreter run talk.wav -o out.wav
 ```
 

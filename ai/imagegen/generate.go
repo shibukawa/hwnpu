@@ -51,8 +51,9 @@ var (
 // newRole is the role of a generator, with the edit's programs on Apple's Neural Engine when edit.
 func newRole(name string, edit bool) *airole.Role {
 	return &airole.Role{
-		Name:  name,
-		Kinds: []chat.Kind{chat.KindImage},
+		Name:     name,
+		Kinds:    []chat.Kind{chat.KindImage},
+		Revision: 1, // 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 			m := e.Model
 			if !isKlein(m) {
@@ -103,7 +104,8 @@ func newRole(name string, edit bool) *airole.Role {
 		Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 			g := &Generator{name: e.Model, dir: f.Path("export"), edit: f.Path("edit"), log: e.Log}
 			g.model, _ = chat.Lookup(e.Model)
-			if e.NPU.AMD() {
+			g.amd = e.NPU.AMD()
+			if g.amd {
 				as, err := flux2klein.NPUAspects(g.model, "amd", flux2klein.NPUGeneration("amd"))
 				if err != nil {
 					return nil, err
@@ -166,7 +168,21 @@ type Options struct {
 	// Progress, when not nil, is called after each step (step from 1) and once more when the
 	// picture is decoded (step == steps + 1).
 	Progress func(step, steps int)
+	// Phase, when not nil, is called as Generate begins each of what it does before its steps
+	// (PhaseOpen, PhaseReferences, PhasePrompt), as the steps begin (PhaseSteps) and as the
+	// picture is decoded after them (PhaseDecode): the first picture of a size opens its
+	// programs, which can take a while with nothing else to show.
+	Phase func(phase string)
 }
+
+// The phases of Generate before its steps (Options.Phase).
+const (
+	PhaseOpen       = "opening the programs" // of the picture's size, at its first picture
+	PhaseReferences = "reading the reference pictures"
+	PhasePrompt     = "reading the prompt"
+	PhaseSteps      = "drawing"
+	PhaseDecode     = "decoding the picture"
+)
 
 // Generator draws pictures. It draws one at a time; others wait.
 type Generator struct {
@@ -181,6 +197,7 @@ type Generator struct {
 	// references
 	edit  string
 	edits bool
+	amd   bool // on AMD's NPU
 
 	// p draws pictures of at; another size closes it and opens that size's
 	p  *flux2klein.Pipeline
@@ -237,6 +254,34 @@ func (g *Generator) open(ctx context.Context, size image.Point) (*flux2klein.Pip
 	return p, nil
 }
 
+// Warm draws a picture of one step at each of Sizes (from a gray reference, when it edits): its
+// programs are loaded only as a picture needs them (the text encoder, the VAE's encoder, the
+// DiT's groups of the step, the VAE's decoder), so that the load alone compiles none of them.
+// The compile of "models prepare" (ai.Warmer) calls it, so that no picture waits for a compile.
+// On AMD's NPU, whose programs are made at Prepare, it does nothing.
+func (g *Generator) Warm(ctx context.Context) error {
+	if g.amd {
+		return nil
+	}
+	for _, s := range g.Sizes() {
+		o := Options{Width: s.X, Height: s.Y, Steps: 1, Seed: 1}
+		if g.edits {
+			ref := image.NewRGBA(image.Rect(0, 0, s.X, s.Y))
+			for i := range ref.Pix {
+				ref.Pix[i] = 128
+			}
+			o.References = []image.Image{ref}
+		}
+		if g.log != nil {
+			fmt.Fprintf(g.log, "  compiling the programs of %d x %d: a picture of one step\n", s.X, s.Y)
+		}
+		if _, err := g.Generate(ctx, "a gray picture", o); err != nil {
+			return fmt.Errorf("ai/imagegen: warming %d x %d: %w", s.X, s.Y, err)
+		}
+	}
+	return nil
+}
+
 // Generate draws a picture from a prompt, and from the references when there are any (an edit).
 func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*image.RGBA, error) {
 	g.mu.Lock()
@@ -253,6 +298,14 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 		w, h = b.Dx(), b.Dy()
 	}
 	ctx = chat.WithModel(ctx, g.model)
+	phase := func(s string) {
+		if o.Phase != nil {
+			o.Phase(s)
+		}
+	}
+	if size := g.SizeFor(w, h); g.p == nil || g.at != size {
+		phase(PhaseOpen)
+	}
 	p, err := g.open(ctx, g.SizeFor(w, h))
 	if err != nil {
 		return nil, err
@@ -266,6 +319,9 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 			g.name, len(divs), p.C.Width, p.C.Height, strings.Join(p.References(), ", "))
 	}
 	refs := make([][]float32, len(o.References))
+	if len(refs) > 0 {
+		phase(PhaseReferences)
+	}
 	for i, img := range o.References {
 		if img == nil {
 			return nil, errors.New("ai/imagegen: a nil reference")
@@ -274,6 +330,7 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 			return nil, err
 		}
 	}
+	phase(PhasePrompt)
 	cond, err := p.Encode(ctx, prompt)
 	if err != nil {
 		return nil, err
@@ -284,6 +341,7 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 	}
 	sig := p.Sigmas(o.Steps)
 	steps := len(sig) - 1
+	phase(PhaseSteps)
 	x, err := p.Generate(ctx, cond, refs, p.Noise(seed), sig, func(i, n int, _ time.Duration) {
 		if o.Progress != nil {
 			o.Progress(i+1, n)
@@ -292,6 +350,7 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 	if err != nil {
 		return nil, err
 	}
+	phase(PhaseDecode)
 	img, err := p.Decode(ctx, x)
 	if err != nil {
 		return nil, err

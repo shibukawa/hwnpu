@@ -202,6 +202,10 @@ var cli struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, net := build()
 	k := kong.Parse(&cli,
 		kong.Name("interpreter"),
@@ -250,7 +254,7 @@ func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	if err := checkSpeed(c.Speed); err != nil {
 		return err
 	}
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -342,7 +346,7 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 		}
 	}
 
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
