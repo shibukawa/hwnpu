@@ -1321,50 +1321,33 @@ func concat(xs []*value, a int) (*value, error) {
 	return out, nil
 }
 
-// conv1d is a grouped 1 D convolution of x (n, c_in, w) with weight (c_out, c_in/groups, k).
+// conv1d is a grouped 1 D convolution of x (n, c_in, w) with weight (c_out, c_in/groups, k):
+// conv2d's over an image of one row (its products on sgemm, its depthwise convolutions in
+// parallel). A direct loop of one thread took 1.5 s of Supertonic 3's text encoder (128
+// characters), 91 % of it here.
 func conv1d(x, w, bias *value, stride, dil []int32, padType string, pad []int32, groups int) (*value, error) {
 	if len(x.shape) != 3 || len(w.shape) != 3 {
 		return nil, fmt.Errorf("only 1 D convolutions are supported, got x %v weight %v", x.shape, w.shape)
 	}
-	n, cin, width := x.shape[0], x.shape[1], x.shape[2]
-	cout, cg, k := w.shape[0], w.shape[1], w.shape[2]
-	if groups <= 0 || cin != cg*groups || cout%groups != 0 {
-		return nil, fmt.Errorf("x %v, weight %v and groups %d do not match", x.shape, w.shape, groups)
-	}
-	s, d := int(stride[0]), int(dil[0])
-	pl, pr := 0, 0
+	var p []int32
 	switch padType {
 	case "valid":
 	case "custom":
-		pl, pr = int(pad[0]), int(pad[1])
+		if len(pad) < 2 {
+			return nil, fmt.Errorf("a 1 D convolution's custom pad %v is not of 2 values", pad)
+		}
+		p = []int32{0, 0, pad[0], pad[1]}
 	default:
 		return nil, fmt.Errorf("pad_type %q is not supported", padType)
 	}
-	ow := (width+pl+pr-d*(k-1)-1)/s + 1
-	out := &value{shape: []int{n, cout, ow}, f: make([]float32, n*cout*ow)}
-	perGroup := cout / groups
-	for b := 0; b < n; b++ {
-		for oc := 0; oc < cout; oc++ {
-			g := oc / perGroup
-			for t := 0; t < ow; t++ {
-				var acc float32
-				if bias != nil {
-					acc = bias.f[oc]
-				}
-				for ic := 0; ic < cg; ic++ {
-					xr := x.f[(b*cin+g*cg+ic)*width:]
-					for j := 0; j < k; j++ {
-						p := t*s + j*d - pl
-						if p >= 0 && p < width {
-							acc += w.f[(oc*cg+ic)*k+j] * xr[p]
-						}
-					}
-				}
-				out.f[(b*cout+oc)*ow+t] = acc
-			}
-		}
+	x2 := &value{shape: []int{x.shape[0], x.shape[1], 1, x.shape[2]}, f: x.f}
+	w2 := &value{shape: []int{w.shape[0], w.shape[1], 1, w.shape[2]}, f: w.f}
+	y, err := conv2d(x2, w2, bias, []int32{1, stride[0]}, []int32{1, dil[0]}, padType, p, groups)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	y.shape = []int{y.shape[0], y.shape[1], y.shape[3]}
+	return y, nil
 }
 
 // conv2d is a grouped 2 D convolution of x (n, c_in, h, w) with weight (c_out, c_in/groups, kh,
