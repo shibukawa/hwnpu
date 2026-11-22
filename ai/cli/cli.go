@@ -271,6 +271,31 @@ func prepare(ctx context.Context, app *ai.App, c PrepareOptions, noCompile bool)
 	return nil
 }
 
+// Ensure makes the app's models that are not here ready for a command that runs them next: it
+// downloads and converts what is missing, as Download does, and writes nothing when everything
+// is here. It leaves the compiling to the command's first load (open the Runtime with
+// ai.CompileOnLoad), so that a model is loaded once, not once to compile it and once to run it.
+func Ensure(ctx context.Context, app *ai.App, o PrepareOptions) error {
+	if o.Log == nil {
+		o.Log = os.Stderr
+	}
+	if o.In == nil {
+		o.In = os.Stdin
+	}
+	p, err := app.Plan(ctx)
+	if err != nil {
+		return err
+	}
+	if p.Ready() {
+		return nil
+	}
+	p.NoCompile, p.Log, p.Brief = true, o.Log, o.Quiet
+	if err := licenses(p, o, o.Log); err != nil {
+		return err
+	}
+	return p.Run(ctx, nil)
+}
+
 // licenses shows the licenses of the models to download that ask to be accepted, and accepts
 // them: by AcceptLicenses, else by asking on a terminal.
 func licenses(p *ai.Plan, c PrepareOptions, out io.Writer) error {

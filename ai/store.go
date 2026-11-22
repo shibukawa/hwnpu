@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,9 @@ type Store struct {
 	// bundled models of Models.Bundle, which preparing fetches the files of, a use found in one
 	// runs without being prepared here.
 	Prepared []string
+	// Definitions are models the app makes as it runs (App.Define), read over the definitions
+	// of Models.
+	Definitions []Definition
 }
 
 // openMu keeps the process's layers and definitions (modelstore.Open) from changing while a
@@ -42,7 +46,13 @@ var openMu sync.Mutex
 // open sets the process's layers and definitions as s says (modelstore.Open). Prepared models
 // and the compile caches are then under cache.Root.
 func (s Store) open() error {
-	if _, err := modelstore.Open(s.Models); err != nil {
+	o := s.Models
+	defs, err := definitions(s.Definitions)
+	if err != nil {
+		return err
+	}
+	o.Definitions = append(slices.Clone(o.Definitions), defs...)
+	if _, err := modelstore.Open(o); err != nil {
 		return fmt.Errorf("ai: %w", err)
 	}
 	return nil
@@ -86,7 +96,9 @@ type record struct {
 	Role  string `json:"role"`
 	// Run is the model's definition for the memory it runs as (Model.On): the variant its
 	// programs were converted for.
-	Run      chat.Run  `json:"run"`
+	Run chat.Run `json:"run"`
+	// Spec is what else the model was prepared as (its device, settings and programs: spec).
+	Spec     string    `json:"spec,omitempty"`
 	MemoryGB float64   `json:"memory_gb,omitempty"`
 	Prepared time.Time `json:"prepared"`
 	// Compiled is when the model was first loaded on this machine's NPU (the zero time: not
@@ -263,7 +275,7 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (
 			}
 			continue
 		}
-		if r.Model != want.Name || r.Run != want.Run {
+		if r.Model != want.Name || r.Run != want.Run || r.Spec != spec(want) {
 			stale = r.Model
 			continue
 		}

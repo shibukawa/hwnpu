@@ -92,6 +92,22 @@ var (
 - **ライセンス**: 同意の要るライセンス (`License.Accept`) のモデルは、`plan.AcceptLicenses` を付けないと `*ai.LicenseError`。アプリが画面で同意を取ってから付ける
 - **CLI と同じ置き場**: `ai.Store` のゼロ値はコマンドと同じ (環境変数と `.env`)。`hwnpu-audio` や `hwnpu-chat` が準備したものはそのまま使え、アプリが準備したものをコマンドも使う
 
+### 2.3 カタログ、アプリの作るモデル、コマンドの準備
+
+コマンド (`hwnpu-audio`、今後 `hwnpu-chat` と `hwnpu-image`) も `ai` の上で動く。そのための口:
+
+| 口 | 意味 |
+|---|---|
+| `store.Catalog()` | 定義 (models.yaml、機械と利用者のファイル、アプリのファイルと `Definitions`) のモデル、用途、別名の一覧。モデルごとに種類、ファミリーとタグ、取得元、この機械の NPU でのメモリとダウンロードの量、動く場所 (npu、cpu)、ライセンス、手元にあるか。`OfKind`、`Model` で引く |
+| `ai.Normalize(cat, use)` | `--model` の名前を、それが指すモデルの名前の `Use` にする (用途、ファミリー、別名、`lfm3:8g` のメモリのタグは `As`)。定義にない Hugging Face のリポジトリ (`OWNER/NAME`) は、その役割の種類の `Definition` を返す。どの名前でもなければ `*ai.NoModelError` (その役割のモデルの一覧つき) |
+| `ai.Definition`、`app.Define(...)` | アプリが動かしながら作るモデル。`Like` (元のモデルの名前) のほかの欄を受け継ぎ、動く場所 (`Device: "cpu"`)、チャットのモデルの `Format` や `Context`、役割ごとの設定 (`Settings`: 文字起こしと読み上げの `format` など)、変換済みのファイル (`Programs`: 手で変換したもの、AMD の IRON の書き出しのディレクトリ) を変える。名前は `ID()` (`Name` がなければ `Like` と中身のハッシュ: `whisper-large-v3-turbo+5c8543f4`)。メモリ上の models.yaml の層として読み、ファミリーや用途からは選ばれない。準備は元のモデルと別に記録し (目録の `spec`)、取得のファイルや AMD の書き出しは元のモデルと共有する (`PrepareEnv.Base`) |
+| `cli.Ensure(ctx, app, o)` | 足りないモデルだけをダウンロードして変換する。全部あれば何も書かない。コマンドが実行の前に呼ぶ |
+| `ai.CompileOnLoad()` (`App.Open` のオプション) | 変換済みでコンパイルしていないモデルを、`Get` の最初の読み込みでコンパイルする。`Ensure` と組み合わせて、モデルを 2 回 (コンパイルと実行) 読み込まずに済ませる。待たせたくないアプリは `models prepare` で済ませておく |
+| `ai.AllowOffNPU()` (`App.Open`)、`Plan.AllowOffNPU` | プログラムの一部が NPU の外 (GPU、CPU) に置かれたモデルも読み込む。配置を確かめる役割は、既定ではそれを断る (Mac が重くなって失敗したことがあるため) |
+
+- **フラグは別のモデルにする**: コマンドのフラグのうちモデルの作り方や動かし方を変えるもの (`--format`、`--cpu`、手で変換したファイル、書き出しのディレクトリ) は、`Definition` を作ってその名前で動かす。モデルはいつも定義のとおりに動き、置き場の記録もフラグの組ごとに分かれる。キャッシュの場所を変える口 (`--cache`) は作らない
+- **計測の値は結果に入れる**: `speech.Transcript` の `Windows` (窓ごとの言語、トークン、特徴量・エンコーダー・デコードの時間) と `Took`、`speech.Audio.Stats` (フレーム数、使った乱数の種、全体と 3 つのプログラムの時間)。実行の記録 (`console.RecordRun`、電力量) はコマンドの `main` に置き、`ai` には入れない
+
 ## 3. アプリのコマンドライン (`ai/cli`)
 
 モデルの世話をするサブコマンドの中身は `ai/cli` の関数で、コマンドラインのライブラリに依存しない。アプリは、自分のコマンドから関数を呼ぶ (`cli.List`、`cli.Download`、`cli.Prepare`、`cli.Status`)、引数をそのまま渡す (`cli.Run(ctx, app, args)`)、kong のアダプタ (`ai/cli/konghelper`) を使う、のどれかで足す。

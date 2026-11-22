@@ -27,7 +27,7 @@
 | **B1** | `ai`: 登録、計画、準備、置き場の目録、取得元 | どこでも | A3 | 大 | 一部 (登録、計画、ダウンロードとコンパイルの 2 段、目録、機械のメモリごとの構成、ライセンスの同意。取得元と層は `modelstore`。取得と変換の分割、バイト数の進み具合は残り) |
 | **B2** | `ai`: 実行 (`Open`、文字起こし、翻訳、チャット、読み上げ、音量の VAD) | どこでも、確認は Mac | B1 | 中 | v0 済み (aix1 と Mac (M3) で確認。Intel での確認は残り) |
 | **B0** | 流れの型 (`Chunk`、`Stream`) と塊をまとめる道具、3 つのつなぎ方 (`ai/flow`: 一括、`Async` / `Latest` / `Hold`、`Metronome` / `Pace` / `Live`) | どこでも | — | 小 | 済み |
-| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 未着手 |
+| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 一部 (土台: カタログ、アプリの作るモデル (`ai.Definition`)、`cli.Ensure` と `ai.CompileOnLoad`、計測の値 (app-api.md 2.3 節)。`hwnpu-audio transcribe` / `tts` は載せ替え済み、aix1 で確認。残りは hwnpu-chat、hwnpu-image、hwnpu-audio の generate / pitch / notes) |
 | B7 | `ai/cli`: アプリに足すサブコマンド (`models`、`status`)。コマンドラインのライブラリに依存しない関数と、kong のアダプタ `ai/cli/konghelper` | どこでも | B1 | 小 | 済み |
 | B9 | ネットワークと呼び出しの宣言 (`flow` の節、`App.From(...).To(...)` / `Run`、`ai.NewCall(...).Then(...)`、プログラムの節 (`Each`、`Route`、`Both`、`With`)、動いている間の設定の変更) | どこでも | B0 | 中 | v0 済み (入力が 3 つ以上の節、モデルを下ろすタイミング、辺ごとの計測は残り。developer-guide.ja.md の D21) |
 | **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 ([architecture](design/architecture.md)) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
