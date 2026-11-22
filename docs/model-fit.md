@@ -85,7 +85,7 @@ kv-cache.md 4 節 (b) の設計。層を「射影と MLP と畳み込み (重み
 - 今は段階ごとに Q=8 (生成) と Q=64 (prefill) の 2 本で、重みが 2 回 ANE に載り、要求ごとに切り替え 35 ms を払う。
 - 実測 ([llm-engine](design/llm-engine.md)、c16320): Q=8 68.5 ms、Q=64 100.8 ms (635 tokens/s)。Q=8 だけで prefill すると 8 ÷ 0.0685 ≈ 117 tokens/s で、OpenCode の 7.4K が 12 秒 → 63 秒になるので、Q=8 だけでは足りない。
 - Q=16 は未計測。Q=1 → Q=8 が +15%、Q=8 → Q=64 が +47% なので、Q=16 は +5〜10% の見込みで、prefill は 230 tokens/s 前後 (7.4K が 32 秒)。T2 で prefill が長さに比例するようになれば、7.4K は 16K 容量の費用を払わないので、この見込みはさらに縮む。
-- やること: `hwnpu-dev convert -seq 16` で c16320 を作り、`HWNPU_CALL_PKGS` で `TestCallTimes` を回す。生成の費用が Q=8 の +10% 以内なら、`chat.Prepare` の 2 本を 1 本にする (`-draft 16`)。下書きの幅 15 は n-gram の下書きでは当たりが続かないので ([llm-engine](design/llm-engine.md): 7 個と 3 個の差は 10%)、幅は 8 のままで Q=16 の残りを prefill にだけ使う。
+- やること: `hwnpu-dev convert -seq 16` で c16320 を作り、`HWNPU_TEST_CHAT_CALL_PKGS` で `TestCallTimes` を回す。生成の費用が Q=8 の +10% 以内なら、`chat.Prepare` の 2 本を 1 本にする (`-draft 16`)。下書きの幅 15 は n-gram の下書きでは当たりが続かないので ([llm-engine](design/llm-engine.md): 7 個と 3 個の差は 10%)、幅は 8 のままで Q=16 の残りを prefill にだけ使う。
 - 2026-11-02: Q=16 を計測した ([docs/design/llm-engine.md](design/llm-engine.md)): 73.4 ms で Q=8 (69.2 ms) の +6%。1 本化は費用の面で成り立つ。grouped の後で測り直す
 - 2026-11-02 (grouped): `-attn grouped` の 3 本を `TestCallTimes` で: Q=8 41.4 ms、Q=16 47.8 ms (+15%)、Q=64 82.4 ms。交互の Q=8/Q=64 は 159.5 ms (切り替え約 18 ms)。grouped では Q=16 の 1 本化は見合わない ([docs/design/cli.md](design/cli.md) の追記)
 
@@ -230,7 +230,7 @@ prefill (Q=64) は塊の形が要る。塊の中は (I + tril(β K Kᵀ))⁻¹ �
 
 新しいモデルを入れるときの全部の手順 (Mac に収まるか、量子化の形式と校正の方法の選び方、各 NPU の教訓) は [docs/design/new-model-checklist.md](design/new-model-checklist.md)。
 
-- 時間の式の係数: `TestCallTimes` (`HWNPU_CALL_PKGS`) で 1 本ごとの 1 回の費用を測り、2 節の表に行を足す。T1 と T3 の判断はこれで決まる。
+- 時間の式の係数: `TestCallTimes` (`HWNPU_TEST_CHAT_CALL_PKGS`) で 1 本ごとの 1 回の費用を測り、2 節の表に行を足す。T1 と T3 の判断はこれで決まる。
 - メモリ: `hwnpu-dev probe split` にシステム側の `phys_footprint` を足す (T10)。スワップが 1 GB 未満の機械で測る ([llm-decoding](design/llm-decoding.md) の条件)。
 - 賢さ: `hwnpu-dev check -package` の KL と argmax、`tools/ref/eval_logits.py`。チャットの体感は [llm-models](design/llm-models.md) の 4 問 (富士山、17 × 23、『こころ』、信濃川) を揃えて比べる。
 - 新しいアーキテクチャ: `.claude/skills/port-architecture` の合格条件 (fp64 の参照との一致、改変の検出、`hwnpu-dev check` の層ごとの照合、ANE の配置)。GDN と Mamba2 の塊の形は、`TestCachedMatchesFull` と同じく「1 トークンずつ」と「Q=64 の塊」の一致で確かめる。

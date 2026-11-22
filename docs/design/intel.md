@@ -93,7 +93,7 @@ int8 stays the default: per-group int4 is slower than int8 here, per-row int4 is
 
 ## Checking without the NPU (OpenVINO's CPU)
 
-- `HWNPU_BACKEND=openvino` (or `--backend openvino`, device `HWNPU_OV_DEVICE`) runs Intel's IR on OpenVINO's CPU plugin (`internal/backend/openvino`, Python via `HWNPU_OV_PYTHON`, `serve_ir.py` / `run_ir.py`). Same conversion, argument names and host code as the NPU; only the compiler and device differ. pip's openvino also works on a Mac.
+- `HWNPU_BACKEND=openvino` (or `--backend openvino`, device `HWNPU_DEV=ov.device`) runs Intel's IR on OpenVINO's CPU plugin (`internal/backend/openvino`, Python via `HWNPU_OV_PYTHON`, `serve_ir.py` / `run_ir.py`). Same conversion, argument names and host code as the NPU; only the compiler and device differ. pip's openvino also works on a Mac.
 - `serve_ir.py` and `run_ir.py` block the `openvino_telemetry` module (its side process read deleted scripts and failed).
 - Opening the backend cleans `/dev/shm` buffer directories left by crashed processes (8.4 GB in a day).
 - `hwnpu-dev irdiff A.mlpackage …`: lowers a Core ML package to IR and compares milcpu with OpenVINO's CPU on the same random inputs — finds ops that do not lower before writing an Intel path.

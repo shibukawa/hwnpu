@@ -22,11 +22,11 @@
 //
 //	interpreter models                       # the models and the network, and what they take
 //	interpreter models prepare               # download, convert and compile the models ahead
-//	interpreter --mic                        # from the microphone to the speaker, until Ctrl-C or "終わり"
-//	interpreter --mic --device 2             # from another input (its number in "interpreter mics")
-//	interpreter talk.wav -o english.wav      # Japanese speech to English speech in a file (or the reverse)
-//	interpreter talk.wav --to ja --live      # paced as a microphone would give it
-//	interpreter talk.wav --speed 1.3         # said 30 % faster, its pitch kept
+//	interpreter run --mic                        # from the microphone to the speaker, until Ctrl-C or "終わり"
+//	interpreter run --mic --device 2             # from another input (its number in "interpreter mics")
+//	interpreter run talk.wav -o english.wav      # Japanese speech to English speech in a file (or the reverse)
+//	interpreter run talk.wav --to ja --live      # paced as a microphone would give it
+//	interpreter run talk.wav --speed 1.3         # said 30 % faster, its pitch kept
 //	interpreter say こんにちは                 # a text, translated and spoken: one call
 //	interpreter status                       # this machine's NPU
 package main
@@ -202,11 +202,16 @@ var cli struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, net := build()
 	k := kong.Parse(&cli,
 		kong.Name("interpreter"),
 		kong.Description("Interpret speech into another language on the NPU: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
+		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),
 		kong.Bind(net))
 	k.FatalIfErrorf(k.Run())
@@ -238,23 +243,18 @@ func (MicsCmd) Run(ctx context.Context) error {
 
 // SayCmd is interpreter say TEXT: the app's call, once.
 type SayCmd struct {
-	Text    []string `arg:"" name:"TEXT" help:"The text (the words are joined with spaces)."`
-	Out     string   `short:"o" type:"path" placeholder:"FILE" help:"Write the speech into this WAV file; none: play it on the speaker."`
-	Speed   float64  `default:"1" help:"How fast the speech is said, 0.5 to 2 (1.25: a quarter faster), its pitch kept."`
-	To      string   `placeholder:"LANG" help:"The language to translate into (en, ja, es, ...); none: English for Japanese text, Japanese for any other."`
-	Voice   string   `enum:"female,male" default:"female" help:"The voice."`
-	Prepare bool     `help:"Download, convert and compile the models that are not ready instead of failing."`
+	Text  []string `arg:"" name:"TEXT" help:"The text (the words are joined with spaces)."`
+	Out   string   `short:"o" type:"path" placeholder:"FILE" help:"Write the speech into this WAV file; none: play it on the speaker."`
+	Speed float64  `default:"1" help:"How fast the speech is said, 0.5 to 2 (1.25: a quarter faster), its pitch kept."`
+	To    string   `placeholder:"LANG" help:"The language to translate into (en, ja, es, ...); none: English for Japanese text, Japanese for any other."`
+	Voice string   `enum:"female,male" default:"female" help:"The voice."`
 }
 
 func (c *SayCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 	if err := checkSpeed(c.Speed); err != nil {
 		return err
 	}
-	var opts []ai.Option
-	if c.Prepare {
-		opts = append(opts, ai.WithAutoPrepare(nil))
-	}
-	rt, err := app.Open(ctx, opts...)
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -311,7 +311,7 @@ func checkSpeed(speed float64) error {
 	return nil
 }
 
-// RunCmd is interpreter FILE.wav, and interpreter --mic.
+// RunCmd is interpreter run FILE.wav, and interpreter run --mic.
 type RunCmd struct {
 	File     string        `arg:"" optional:"" type:"existingfile" name:"FILE.wav" help:"A recording of speech (or --mic)."`
 	Mic      bool          `help:"Interpret what the microphone hears, until Ctrl-C (a second Ctrl-C ends at once) or the spoken command."`
@@ -324,7 +324,6 @@ type RunCmd struct {
 	Voice    string        `enum:"female,male" default:"female" help:"The voice of the interpretation."`
 	Live     bool          `help:"Give the recording at the pace a microphone would, and time each node against it."`
 	Commands bool          `default:"true" negatable:"" help:"Hear the spoken commands: \"終わり\" (or \"that's all\") ends, \"変換、スペイン語\" (or \"switch to Spanish\") changes the language to interpret into."`
-	Prepare  bool          `help:"Download, convert and compile the models that are not ready, as \"models prepare\" does, instead of failing."`
 }
 
 func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
@@ -347,15 +346,7 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 		}
 	}
 
-	var opts []ai.Option
-	if c.Prepare {
-		opts = append(opts, ai.WithAutoPrepare(func(p ai.Progress) {
-			if p.Message != "" {
-				fmt.Fprintf(os.Stderr, "  %s: %s\n", p.Model, p.Message)
-			}
-		}))
-	}
-	rt, err := app.Open(ctx, opts...)
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -449,5 +440,5 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App, n *network) error {
 
 // hint adds how to prepare the models to the error of one that is not ready.
 func hint(err error) error {
-	return fmt.Errorf("%w (\"interpreter models prepare\" makes the models ready, or --prepare)", err)
+	return fmt.Errorf("%w (\"interpreter models prepare\" makes the models ready)", err)
 }

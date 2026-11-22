@@ -23,12 +23,16 @@ import (
 type fakeModel struct {
 	name   string
 	closed *int
+	warmed *int
 }
 
 func (f *fakeModel) Close() error { *f.closed++; return nil }
 
+// Warm counts the calls of Plan.Run's load (Warmer).
+func (f *fakeModel) Warm(ctx context.Context) error { *f.warmed++; return nil }
+
 // fakes counts what the fake roles did.
-type fakes struct{ prepared, loads, closed int }
+type fakes struct{ prepared, loads, closed, warmed int }
 
 // role is a role of the kinds whose prepare writes a file in the model's directory and whose
 // load checks that it is there.
@@ -53,7 +57,7 @@ func (f *fakes) role(name, feature string, kinds ...chat.Kind) *airole.Role {
 			if _, err := os.Stat(files.Path("program")); err != nil {
 				return nil, err
 			}
-			return &fakeModel{name: e.Model, closed: &f.closed}, nil
+			return &fakeModel{name: e.Model, closed: &f.closed, warmed: &f.warmed}, nil
 		}}
 }
 
@@ -163,12 +167,58 @@ func TestPlanRunOpen(t *testing.T) {
 	if want := []Stage{StageCompile, StageDone, StageCompile, StageDone}; !slices.Equal(stages, want) {
 		t.Errorf("stages %v, want %v", stages, want)
 	}
+	if f.warmed != 2 {
+		t.Errorf("warmed %d times at the loads once, want 2", f.warmed)
+	}
 	if p3, err := app.Plan(ctx); err != nil || !p3.Compiled() {
 		t.Errorf("third plan: %v, %+v", err, p3)
 	}
 	// a plan for 16 GB picks a larger translation model: to prepare
 	if p, err := NewApp("big", tr).Memory(16).withStore(app.Store).Plan(ctx); err != nil || p.Ready() || p.Items[0].Model == "plamo-3-translate-0.8b" {
 		t.Errorf("plan for 16 GB: %v, %+v", err, p)
+	}
+	// a role whose Prepare now makes more (its Revision) prepares again what an earlier one made
+	stt.req.role.Revision = 1
+	if p, err := app.Plan(ctx); err != nil || p.Ready() || p.Items[0].Ready || !p.Items[1].Ready {
+		t.Errorf("after the role's revision: %v, %+v", err, p.Items)
+	} else if err := p.Run(ctx, nil); err != nil {
+		t.Error(err)
+	} else if p, err := app.Plan(ctx); err != nil || !p.Ready() {
+		t.Errorf("prepared again: %v, %+v", err, p.Items)
+	}
+	stt.req.role.Revision = 0
+
+	// Plan.Log shows the stages and what the preparing writes, which fn is told too; Quiet
+	// shows nothing
+	if p, err := NewApp("logged", tr).withStore(testStore(t)).Plan(ctx); err != nil {
+		t.Error(err)
+	} else {
+		var log strings.Builder
+		messages := 0
+		p.NoCompile, p.Log = true, &log
+		err := p.Run(ctx, func(pr Progress) {
+			if pr.Message != "" {
+				messages++
+			}
+		})
+		if err != nil || messages != 1 || !strings.Contains(log.String(), "converting ") || !strings.Contains(log.String(), "downloading and converting") || !strings.Contains(log.String(), "done in") {
+			t.Errorf("with Plan.Log: %v, %d messages, log %q", err, messages, log.String())
+		}
+	}
+	if p, err := NewApp("quiet", tr).withStore(testStore(t)).Plan(ctx); err != nil {
+		t.Error(err)
+	} else {
+		var log strings.Builder
+		messages := 0
+		p.NoCompile, p.Log, p.Quiet = true, &log, true
+		err := p.Run(ctx, func(pr Progress) {
+			if pr.Message != "" {
+				messages++
+			}
+		})
+		if err != nil || messages != 1 || log.Len() != 0 {
+			t.Errorf("with Plan.Quiet: %v, %d messages, log %q", err, messages, log.String())
+		}
 	}
 
 	rt, err := app.Open(ctx)
@@ -213,7 +263,7 @@ func (a *App) withStore(s Store) *App {
 	return a
 }
 
-func TestNotPreparedAndAutoPrepare(t *testing.T) {
+func TestNotPrepared(t *testing.T) {
 	ownDefinitions(t)
 	var f fakes
 	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
@@ -229,21 +279,35 @@ func TestNotPreparedAndAutoPrepare(t *testing.T) {
 	}
 	rt.Close()
 
-	var seen []Stage
-	rt, err = app.Open(ctx, WithAutoPrepare(func(p Progress) { seen = append(seen, p.Stage) }))
+	// prepared without its compile ("models download"): still not run
+	p, err := app.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.NoCompile = true
+	if err := p.Run(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err = app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stt.Get(ctx, rt); !errors.Is(err, ErrNotPrepared) || !strings.Contains(err.Error(), "not compiled") || f.loads != 0 {
+		t.Errorf("a use not compiled: %v (loaded %d), want ErrNotPrepared", err, f.loads)
+	}
+	rt.Close()
+
+	// prepared ("models prepare"): loaded once to compile it and warmed, then for the Get
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err = app.Open(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	if _, err := stt.Get(ctx, rt); err != nil || f.prepared != 1 || f.loads != 1 {
-		t.Errorf("with auto prepare: %v, prepared %d, loaded %d", err, f.prepared, f.loads)
-	}
-	if !slices.Contains(seen, StagePrepare) || slices.Contains(seen, StageCompile) {
-		t.Errorf("stages %v: prepared, and compiled by the load itself", seen)
-	}
-	// the load was the first on this machine: the plan says it is compiled
-	if p, err := app.Plan(ctx); err != nil || !p.Compiled() {
-		t.Errorf("plan after the first load: %v, %+v", err, p)
+	if _, err := stt.Get(ctx, rt); err != nil || f.prepared != 1 || f.loads != 2 || f.warmed != 1 {
+		t.Errorf("prepared: %v, prepared %d, loaded %d, warmed %d", err, f.prepared, f.loads, f.warmed)
 	}
 }
 
@@ -385,20 +449,20 @@ func TestPreparedCache(t *testing.T) {
 	if err := m.write(bundle); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper); !errors.Is(err, ErrBundleTarget) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrBundleTarget) {
 		t.Errorf("a prepared cache of another target: %v, want ErrBundleTarget", err)
 	}
 	// a file of it missing: not prepared
 	m.Targets = map[string]map[string]*record{"intel": m.Targets["some-other-npu"]}
 	m.write(bundle)
 	os.Remove(filepath.Join(bundle, "models", "whisper-large-v3-turbo", "program.xml"))
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper); !errors.Is(err, ErrNotPrepared) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrNotPrepared) {
 		t.Errorf("a prepared cache with a file missing: %v, want ErrNotPrepared", err)
 	}
 	// a format this package does not read
 	m.Format = storeFormat + 1
 	m.write(bundle)
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper); !errors.Is(err, ErrBundleTarget) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrBundleTarget) {
 		t.Errorf("a prepared cache of a later format: %v, want ErrBundleTarget", err)
 	}
 }
@@ -520,7 +584,10 @@ func TestLineUpByMemory(t *testing.T) {
 
 	// the runtime prepares and loads the use as the app registered it, whatever value asks
 	app := NewApp("test", tr).Memory(16).withStore(store)
-	rt, err := app.Open(ctx, WithAutoPrepare(nil))
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := app.Open(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -622,11 +689,14 @@ func TestNetwork(t *testing.T) {
 	if err := app.Run(ctx); !errors.Is(err, ErrNotPrepared) || loadsAtFirstRead != -1 {
 		t.Fatalf("a network of models not prepared: %v (the source read: %v)", err, loadsAtFirstRead != -1)
 	}
-	if err := app.Run(ctx, WithAutoPrepare(nil)); err != nil {
+	if err := app.Prepare(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	if loadsAtFirstRead != 2 {
-		t.Errorf("%d models were loaded when the source was first read, want both", loadsAtFirstRead)
+	if err := app.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if loadsAtFirstRead != 4 { // each loaded once to compile it, as "models prepare" does, then for the run
+		t.Errorf("%d models were loaded when the source was first read, want both (twice)", loadsAtFirstRead)
 	}
 	if want := []string{"plamo-3-translate-2b:en:a", "plamo-3-translate-2b:es:b"}; !slices.Equal(got, want) {
 		t.Errorf("the network gave %q, want %q", got, want)
@@ -674,5 +744,137 @@ func TestNetwork(t *testing.T) {
 	}
 	if err := NewApp("none", stt).withStore(testStore(t)).Run(ctx); err == nil || !strings.Contains(err.Error(), "no network") {
 		t.Errorf("an app without a network: %v", err)
+	}
+}
+
+// TestInTurns: of the uses an app runs one at a time the largest alone counts in what its models
+// take together, and loading one releases the others of its group.
+func TestInTurns(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	tr := Define[*fakeModel](f.role("translate", "translation", chat.KindChat), "translate")
+	tts := Define[*fakeModel](f.role("speak", "", chat.KindSpeech), "speech")
+	ctx := context.Background()
+	store := testStore(t)
+	together, err := NewApp("together", stt, tr, tts).Memory(16).withStore(store).Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := map[string]float64{}
+	for _, it := range together.Items {
+		mem[it.Use] = it.MemoryGB
+	}
+	app := NewApp("turns", stt).InTurns(tr, tts).Memory(16).withStore(store)
+	p, err := app.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mem["transcribe"] + max(mem["translate"], mem["speech"])
+	if p.MemoryGB() != want || p.MemoryGB() >= together.MemoryGB() {
+		t.Errorf("in turns: %.2f GB, want %.2f (all together %.2f)", p.MemoryGB(), want, together.MemoryGB())
+	}
+	if g := p.InTurns(); len(g) != 1 || strings.Join(g[0], ",") != "translate,speech" {
+		t.Errorf("the plan's groups %v", g)
+	}
+
+	if err := p.Run(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	for _, u := range []Use[*fakeModel]{stt, tr} {
+		if _, err := u.Get(ctx, rt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closed := f.closed
+	if _, err := tts.Get(ctx, rt); err != nil {
+		t.Fatal(err)
+	}
+	var uses []string
+	for _, l := range rt.Loaded() {
+		uses = append(uses, l.Use)
+	}
+	if f.closed != closed+1 || strings.Join(uses, ",") != "transcribe,speech" {
+		t.Errorf("speech after translate: %v loaded, %d closed; want translate released, transcribe kept", uses, f.closed-closed)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a use in two groups of InTurns")
+		}
+	}()
+	NewApp("twice").InTurns(stt, tr).InTurns(tr, tts)
+}
+
+// WithLoading tells of each load, with how long the one before took.
+func TestWithLoading(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	ctx := context.Background()
+	app := NewApp("test", stt).withStore(testStore(t))
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	var seen []Progress
+	watch := WithLoading(func(p Progress) { seen = append(seen, p) })
+	// the first load after the compile: not known how long it takes; the next is
+	for i, known := range []bool{false, true} {
+		seen = nil
+		rt, err := app.Open(ctx, watch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stt.Get(ctx, rt); err != nil {
+			t.Fatal(err)
+		}
+		rt.Close()
+		if len(seen) != 2 || seen[0].Stage != StageLoad || seen[1].Stage != StageDone || (seen[0].Expected > 0) != known || seen[0].Since.IsZero() {
+			t.Errorf("Get %d: %+v, want a load (its time known: %v), then done", i+1, seen, known)
+		}
+	}
+}
+
+// A use compiled by another program (Core AI's cache is the process's) is not compiled for this
+// one: it is not run until this program's Plan.Run compiles it (loads it once, warms it).
+func TestCompiledByProgram(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	stt := Define[*fakeModel](f.role("transcribe", "", chat.KindTranscribe), "transcribe")
+	ctx := context.Background()
+	app := NewApp("test", stt).withStore(testStore(t))
+	saved := processName
+	t.Cleanup(func() { processName = saved })
+	processName = func() string { return "layers" }
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	processName = func() string { return "parallax" }
+	if p, err := app.Plan(ctx); err != nil || p.Compiled() {
+		t.Errorf("the plan of another program: %v, compiled %v", err, p != nil && p.Compiled())
+	}
+	rt, err := app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stt.Get(ctx, rt); !errors.Is(err, ErrNotPrepared) || !strings.Contains(err.Error(), "not compiled for parallax") {
+		t.Errorf("a use compiled by another program: %v, want not compiled", err)
+	}
+	rt.Close()
+	warmed := f.warmed
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err = app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	if _, err := stt.Get(ctx, rt); err != nil || f.warmed != warmed+1 || f.prepared != 1 {
+		t.Errorf("compiled by this program: %v, warmed %d more, prepared %d (once)", err, f.warmed-warmed, f.prepared)
 	}
 }

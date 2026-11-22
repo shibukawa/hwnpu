@@ -16,17 +16,17 @@ The nearest layer is cut out, where it was is painted in one plain colour, and t
 
 ```bash
 cd samples
-go run ./layers models prepare                   # download, convert and compile the models
+go run ./layers models prepare                   # download, convert and compile the models first: the commands run only when it is done
 go run ./layers plan picture.png                 # where it would cut, as a picture coloured by layer (no drawing)
-go run ./layers picture.png -o picture.psd       # part it into 3 layers
-go run ./layers picture.png --layers 4 --png parts/
+go run ./layers split picture.png -o picture.psd       # part it into 3 layers
+go run ./layers split picture.png --layers 4 --png parts/
 ```
 
 | Option | What it does |
 |---|---|
 | `--layers N` | How many layers, 2 to 8 (default 3); the cuts are found from the depth |
 | `--cuts 0.3,0.7` | Cut at these nearnesses instead (0 the farthest, 1 the nearest) |
-| `--png DIR` | Also writes each layer (`layer-N.png`), its nearness (`near-N.png`, 16-bit), and what the model was asked and drew. `parallax DIR` shows these |
+| `--png DIR` | Also writes each layer (`layer-N.png`), its nearness (`near-N.png`, 16-bit), and what the model was asked and drew. `parallax show DIR` shows these |
 | `--hint "no people"` | Words added to the request to draw what a layer hid |
 | `--tries 3` | When the model leaves the layer's shape behind (a flat colour or a shadow), it draws again from another seed |
 | `--seed`, `--edge`, `--clean`, `--far` | The seed; how far a layer reaches past its cut; how far past it the drawn picture is used; how the far end of the depth is spread |

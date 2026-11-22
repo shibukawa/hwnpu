@@ -58,6 +58,7 @@ type planJSON struct {
 	Compiled      bool         `json:"compiled"`
 	DownloadBytes int64        `json:"download_bytes"`
 	MemoryGB      float64      `json:"memory_gb"`
+	InTurns       [][]string   `json:"in_turns,omitempty"`
 	Items         []ai.Item    `json:"items"`
 	Licenses      []ai.License `json:"licenses"`
 }
@@ -78,7 +79,7 @@ func List(ctx context.Context, app *ai.App, o ListOptions) error {
 		e := json.NewEncoder(out)
 		e.SetIndent("", "  ")
 		return e.Encode(planJSON{App: app.Name, Target: p.Target(), MachineGB: p.MachineGB(), UsableGB: p.UsableGB(), Fits: p.Fits(), Ready: p.Ready(), Compiled: p.Compiled(),
-			DownloadBytes: p.DownloadBytes(), MemoryGB: p.MemoryGB(), Items: p.Items, Licenses: p.Licenses()})
+			DownloadBytes: p.DownloadBytes(), MemoryGB: p.MemoryGB(), InTurns: p.InTurns(), Items: p.Items, Licenses: p.Licenses()})
 	}
 	WritePlan(out, app, p)
 	return nil
@@ -141,7 +142,15 @@ func WritePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 	}
 	tw.Flush()
 	fmt.Fprintln(w)
-	running := fmt.Sprintf("about %s running together (a machine of %d GB has about %.0f GB for models)", gb(p.MemoryGB()), p.MachineGB(), p.UsableGB())
+	var turns []string
+	for _, g := range p.InTurns() {
+		turns = append(turns, strings.Join(g, " and "))
+	}
+	together := "running together"
+	if len(turns) > 0 {
+		together = "at once (" + strings.Join(turns, "; ") + " in turns)"
+	}
+	running := fmt.Sprintf("about %s %s; hwnpu counts on about %.0f GB for models on a machine of %d GB", gb(p.MemoryGB()), together, p.UsableGB(), p.MachineGB())
 	switch {
 	case p.Compiled():
 		fmt.Fprintf(w, "All here and compiled; %s.\n", running)
@@ -155,7 +164,7 @@ func WritePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 		fmt.Fprintf(w, "%s; %s. \"models download\" downloads and converts; \"models prepare\" compiles for the NPU too.\n", down, running)
 	}
 	if !p.Fits() {
-		fmt.Fprintf(w, "Together they take more than this machine has for models, and the NPU's memory cannot be swapped out: the other applications are pushed to swap. The app is to pick smaller models for this memory (ai.Use's At and As) or run them one after another (Release).\n")
+		fmt.Fprintf(w, "Together they take more than hwnpu counts on for models here, and the NPU's memory cannot be swapped out: the other applications may be pushed to swap. The app is to pick smaller models for this memory (ai.Use's At and As) or run them one after another (App.InTurns).\n")
 	}
 	for _, it := range p.Items {
 		if strings.Contains(it.Why, "by the app") {
@@ -246,41 +255,45 @@ func prepare(ctx context.Context, app *ai.App, c PrepareOptions, noCompile bool)
 	if err != nil {
 		return err
 	}
-	p.NoCompile = noCompile
+	// Run shows what it does on the log as hwnpu's commands do (Plan.Quiet): the stages with
+	// their times, the downloads' and programs' bars, the logs in gray
+	p.NoCompile, p.Log, p.Brief = noCompile, c.Log, c.Quiet
 	if !noCompile && p.Target() == "" {
 		fmt.Fprintln(out, "no NPU that runs the models was found here: downloading and converting only")
 	}
 	if err := licenses(p, c, out); err != nil {
 		return err
 	}
-	start := time.Now()
-	stage := ""
-	err = p.Run(ctx, func(pr ai.Progress) {
-		head := fmt.Sprintf("[%d/%d] %s (%s)", pr.Item, pr.Items, pr.Use, pr.Model)
-		switch {
-		case pr.Message != "":
-			if !c.Quiet {
-				fmt.Fprintf(out, "    %s\n", pr.Message)
-			}
-		case pr.Stage == ai.StagePrepare:
-			fmt.Fprintf(out, "%s: downloading and converting what is not here\n", head)
-		case pr.Stage == ai.StageCompile:
-			fmt.Fprintf(out, "%s: loading once, to compile for the NPU\n", head)
-		case pr.Stage == ai.StageDone && stage != "":
-			fmt.Fprintf(out, "%s: done\n", head)
-		}
-		stage = string(pr.Stage)
-	})
-	if err != nil {
+	if err := p.Run(ctx, nil); err != nil {
 		return err
-	}
-	if stage == "" {
-		fmt.Fprintln(out, "nothing to do")
-	} else {
-		fmt.Fprintf(out, "done in %s\n", time.Since(start).Round(time.Second))
 	}
 	WritePlan(c.Out, app, p)
 	return nil
+}
+
+// Ensure makes the app's models that are not here ready for a command that runs them next: it
+// downloads and converts what is missing, as Download does, and writes nothing when everything
+// is here. It leaves the compiling to the command's first load (open the Runtime with
+// ai.CompileOnLoad), so that a model is loaded once, not once to compile it and once to run it.
+func Ensure(ctx context.Context, app *ai.App, o PrepareOptions) error {
+	if o.Log == nil {
+		o.Log = os.Stderr
+	}
+	if o.In == nil {
+		o.In = os.Stdin
+	}
+	p, err := app.Plan(ctx)
+	if err != nil {
+		return err
+	}
+	if p.Ready() {
+		return nil
+	}
+	p.NoCompile, p.Log, p.Brief = true, o.Log, o.Quiet
+	if err := licenses(p, o, o.Log); err != nil {
+		return err
+	}
+	return p.Run(ctx, nil)
 }
 
 // licenses shows the licenses of the models to download that ask to be accepted, and accepts

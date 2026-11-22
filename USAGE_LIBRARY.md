@@ -116,8 +116,8 @@ res, err := t.Transcribe(ctx, pcm16k, speech.TranscribeOptions{})
 | `ai/cli/konghelper` | The adapter of those commands for kong |
 
 - **A line-up by the machine's memory**: a use's name picks the largest model the machine runs when it runs alone. An app that runs several at once can keep its main model large and the others small with `At(gb, name)` (another model on machines of at least that memory) and `As(gb)` (pick as a machine of that memory would). `APP models` shows the models picked, what they take running together, and the machine's memory
-- **One at a time**: `use.Release(rt)` unloads a model, so that large models used one after another (a picture's generator, then its depth) are not in memory together
-- **Preparing on the first run**: `app.Open(ctx, ai.WithAutoPrepare(fn))` prepares a model that is not ready at its first `Get`, as the commands do. That may download gigabytes
+- **One at a time**: `use.Release(rt)` unloads a model, so that large models used one after another (a picture's generator, then its depth) are not in memory together. `app.InTurns(depth, artist)` says so to the app: its plan (`APP models`) counts the larger alone, and loading one releases the other
+- **Prepare first, then run**: the Runtime runs only models prepared and compiled for the program (`APP models prepare`, `plan.Run`); `konghelper.Open(ctx, app)` fails before a command starts, naming what is missing. Nothing downloads or compiles while the app runs
 - **Licenses**: a model whose license asks to be accepted fails with `*ai.LicenseError` unless `plan.AcceptLicenses` is set. Show `plan.Licenses()` and get the user's agreement before setting it
 
 ### Joining models (ai/flow)

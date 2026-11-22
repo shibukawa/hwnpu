@@ -9,7 +9,7 @@ and the ids of the tokenizer with its special tokens (the BOS), for a query with
 before the text. internal/chat's TestPlamoEmbeddingGolden compares hwnpu-chat's with them on a
 Mac:
 
-    HWNPU_PLAMO_DIR=MODEL_DIR HWNPU_PLAMO_GOLDEN=OUT.json go test -run PlamoEmbeddingGolden ./internal/chat/
+    HWNPU_TEST_PLAMO_DIR=MODEL_DIR HWNPU_TEST_PLAMO_EMBED_REF=OUT.json go test -run PlamoEmbeddingGolden ./internal/chat/
 
 Needs torch, transformers and sentencepiece; modeling_plamo.py is written for transformers 4.47
 (see docs/design/llm-models.md).

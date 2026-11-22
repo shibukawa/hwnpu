@@ -44,16 +44,16 @@ func TestSuppress(t *testing.T) {
 	}
 }
 
-// TestRTMDet checks the program (on the CPU interpreter, or on the NPU with HWNPU_DETECT_NPU=1)
+// TestRTMDet checks the program (on the CPU interpreter, or on the NPU with HWNPU_TEST_NPU)
 // against ONNX Runtime (tools/ref/ref_detect_ocr.py rtmdet): the scores and boxes of every
-// anchor the graph lays out ($HWNPU_DETECT_REF.scores.bin, .boxes.bin from the reference's
+// anchor the graph lays out ($HWNPU_TEST_DETECT_REF.scores.bin, .boxes.bin from the reference's
 // input .x.bin), and the objects.
 //
-//	HWNPU_DETECT=rtmdet-s-coco.onnx HWNPU_DETECT_REF=ref/rtmdet-football go test ./internal/vision/detect -run RTMDet -v
+//	HWNPU_TEST_DETECT_FILE=rtmdet-s-coco.onnx HWNPU_TEST_DETECT_REF=ref/rtmdet-football go test ./internal/vision/detect -run RTMDet -v
 func TestRTMDet(t *testing.T) {
-	path, ref := os.Getenv("HWNPU_DETECT"), os.Getenv("HWNPU_DETECT_REF")
+	path, ref := os.Getenv("HWNPU_TEST_DETECT_FILE"), os.Getenv("HWNPU_TEST_DETECT_REF")
 	if path == "" || ref == "" {
-		t.Skip("HWNPU_DETECT and HWNPU_DETECT_REF are not set")
+		t.Skip("HWNPU_TEST_DETECT_FILE and HWNPU_TEST_DETECT_REF are not set")
 	}
 	g, err := onnx.Load(path)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestRTMDet(t *testing.T) {
 		t.Fatal(err)
 	}
 	var dev *hwnpu.Device
-	if os.Getenv("HWNPU_DETECT_NPU") == "1" {
+	if os.Getenv("HWNPU_TEST_NPU") != "" {
 		d, _, err := llm.OpenDevice(context.Background(), "", t.TempDir())
 		if err != nil {
 			t.Fatal(err)

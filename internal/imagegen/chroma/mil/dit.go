@@ -3,7 +3,8 @@ package mil
 import (
 	"fmt"
 	"math"
-	"os"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 
 	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -186,10 +187,10 @@ func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.V
 const HeadChunk = 1024
 
 // headAttention reports whether the attention is written a head at a time: not for Intel's NPU
-// (not measured there), and not with HWNPU_CHROMA_ATTENTION=chunks, which writes the heads
+// (not measured there), and not with HWNPU_DEV=chroma.attention=chunks, which writes the heads
 // together as before docs/design/image-apple.md (to tell a rounding difference from a mistake).
 func headAttention(g *graph) bool {
-	return g.Opts.Backend != llm.BackendIntel && os.Getenv("HWNPU_CHROMA_ATTENTION") != "chunks"
+	return g.Opts.Backend != llm.BackendIntel && devenv.Value("chroma.attention") != "chunks"
 }
 
 // attend is the attention of q, k, v (1, rows, heads, head_dim) over the keys kbias keeps:

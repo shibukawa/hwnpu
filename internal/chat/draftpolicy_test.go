@@ -82,7 +82,7 @@ func TestDraftPolicy(t *testing.T) {
 	if b := draftBucket(5); p.ok[b] != 1 || p.bad[b] != 1 {
 		t.Fatalf("one of two drafts kept: %.0f right, %.0f ended", p.ok[b], p.bad[b])
 	}
-	// checking every draft (HWNPU_DRAFT_POLICY=0)
+	// checking every draft (HWNPU_DEV=draft.policy=0)
 	if p = (&draftPolicy{ratio: draftCheckSteps, always: true}); !p.take(1, 2) {
 		t.Fatal("always: a draft is left unchecked")
 	}

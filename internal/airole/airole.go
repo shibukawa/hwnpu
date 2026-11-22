@@ -31,6 +31,9 @@ type Role struct {
 	Prepare func(PrepareEnv) (Files, error)
 	// Load loads the model from the files alone: no network, no conversion.
 	Load func(ctx context.Context, f Files, env LoadEnv) (io.Closer, error)
+	// Revision counts the changes to what Prepare makes that call for preparing again: a store
+	// prepared by an earlier revision counts as not prepared.
+	Revision int
 }
 
 // Accepts is nil when the role runs model m.
@@ -48,6 +51,10 @@ func (r *Role) Accepts(m chat.Model) error {
 type PrepareEnv struct {
 	Ctx   context.Context
 	Model chat.Model
+	// Base is the model of the definitions Model was made from by the app (ai.Definition's Like):
+	// what it shares where its settings do not change it (the export of AMD's NPU, found by the
+	// model's name). It is Model itself for a model of the definitions.
+	Base chat.Model
 	// Dir is the model's directory of programs (chat.ModelDir).
 	Dir string
 	// NPU is what the programs are converted for.
@@ -57,12 +64,20 @@ type PrepareEnv struct {
 
 // LoadEnv is what a role's Load is given.
 type LoadEnv struct {
-	// Model is the model's name in the definitions.
+	// Model is the model's name in the definitions, and Def its definition (its Device, Settings
+	// and Programs among the rest).
 	Model string
+	Def   chat.Model
 	NPU   NPU
+	// AllowOffNPU loads a model part of whose programs the NPU's compiler placed off it (on the
+	// GPU or the CPU), which a role that checks the placement refuses otherwise.
+	AllowOffNPU bool
 	// Cache is the compile cache.
 	Cache string
 	Log   io.Writer
+	// Settings are how the app runs the role's models beyond their definition, settings that
+	// change nothing of what is prepared (ai.LoadSettings); nil for none.
+	Settings map[string]string
 }
 
 // Files are what a role's Prepare made and its Load reads: paths by name (files, or the
@@ -117,6 +132,9 @@ type NPU struct {
 	// on AMD's NPU, which runs exports of IRON.
 	Format string
 }
+
+// CPU reports whether model m runs on the CPU on this NPU's machine (its definition's device).
+func (n NPU) CPU(m chat.Model) bool { return m.DeviceFor(n.Vendor) == "cpu" }
 
 // AMD reports whether the NPU is AMD's, which runs IRON's exports instead of converted programs.
 func (n NPU) AMD() bool { return n.Target == cache.AMDTarget }

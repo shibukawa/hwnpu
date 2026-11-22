@@ -133,7 +133,7 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			if err != nil {
 				return err
 			}
-			var cut []string // the output of HWNPU_AILOWER_CUT: a value inside the package
+			var cut []string // the output of HWNPU_DEV=ailower.cut: a value inside the package
 			for _, o := range outs {
 				cut = append(cut, o.Name)
 			}

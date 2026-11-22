@@ -3,10 +3,12 @@ package speech
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand/v2"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
@@ -22,19 +24,52 @@ func Speak(name string) ai.Use[*Speaker] {
 	return ai.Define[*Speaker](speakRole, name)
 }
 
+// The settings and programs a speech model's definition may give (ai.Definition):
+//
+//	settings: format     the text model's weight format (default: the model's, 8 bit tables)
+//	programs: iron       on AMD's NPU, an export of tools/amd/iron_lfm3speech.py (its directory)
+//	          text       the text model converted by hand (-cache and -hidden-out 1), its packages
+//	                     of different -seq; or iron-text, on AMD's NPU its export of
+//	                     iron_export_lm.py lfm3tts
+//	          depth      the depthformer (-arch lfm3-depthformer)
+//	          codec      the codec decoder (-arch lfm3-codec)
+//	          checkpoint the checkpoint's directory of those (config.json, model.safetensors,
+//	                     tokenizer.json, audio_tokenizer/config.json)
+//
+// A model of device cpu runs on hwnpu's CPU interpreter (slow).
 var speakRole = &airole.Role{
 	Name:  "speak",
 	Kinds: []chat.Kind{chat.KindSpeech},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		var c speech.Config
-		if e.NPU.AMD() {
+		cpu, ps := e.NPU.CPU(e.Model), e.Model.Programs
+		switch {
+		case first(ps["iron"]) != "":
+			dir := first(ps["iron"])
+			if !speech.IsIronExport(dir) {
+				return f, fmt.Errorf("%s is not an export of tools/amd/iron_lfm3speech.py", dir)
+			}
+			c = speech.IronConfig(dir)
+		case len(ps) > 0:
+			// converted by hand: all of them, used as they are
+			c = speech.Config{Text: ps["text"], IronText: first(ps["iron-text"]), Depth: first(ps["depth"]), Codec: first(ps["codec"]), Dir: first(ps["checkpoint"])}
+			if c.Dir == "" || len(c.Text) == 0 && c.IronText == "" || c.Depth == "" || c.Codec == "" {
+				return f, errors.New("programs converted by hand take all of checkpoint, text (or iron-text), depth and codec")
+			}
+		case e.NPU.AMD() && !cpu:
 			// AMD's NPU runs the export of tools/amd/iron_lfm3speech.py
-			if c, err = speech.PrepareAMD(e.Ctx, e.Model, e.Log); err != nil {
+			if c, err = speech.PrepareAMD(e.Ctx, e.Base, e.Log); err != nil {
 				return f, err
 			}
 			iron.ShareExport(c.Dir, logf(e.Log))
-		} else if c, err = speech.Prepare(e.Ctx, speech.Setup{Dir: e.Dir, Repo: e.Model.Source(), Backend: e.NPU.Format, Log: e.Log}); err != nil {
-			return f, err
+		default:
+			backend := e.NPU.Format
+			if cpu {
+				backend = "" // Core ML packages, what the CPU interpreter runs
+			}
+			if c, err = speech.Prepare(e.Ctx, speech.Setup{Dir: e.Dir, Repo: e.Model.Source(), Format: e.Model.Settings["format"], Backend: backend, Log: e.Log}); err != nil {
+				return f, err
+			}
 		}
 		f.Set("text", c.Text...)
 		f.Set("iron-text", c.IronText)
@@ -47,7 +82,7 @@ var speakRole = &airole.Role{
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 		s, err := speech.Load(ctx, speech.Config{Text: f.Paths["text"], IronText: f.Path("iron-text"), Depth: f.Path("depth"),
 			Codec: f.Path("codec"), Dir: f.Path("dir"), Weights: f.Path("weights"),
-			CacheDir: e.Cache, Device: e.NPU.Device, Log: e.Log})
+			CacheDir: e.Cache, Device: e.NPU.Device, CPU: e.NPU.CPU(e.Def), Log: e.Log})
 		if err != nil {
 			return nil, err
 		}
@@ -62,8 +97,8 @@ type SpeakOptions struct {
 	Language string
 	// Voice is female or male ("": female).
 	Voice string
-	// Seed makes the speech repeatable (0: a new one each call; SpeakStream draws one for the
-	// whole stream, so that its voice stays the same).
+	// Seed makes the speech repeatable (0: a new one each call, told in Audio.Stats; SpeakStream
+	// draws one for the whole stream, so that its voice stays the same).
 	Seed uint64
 	// MaxFrames is the most frames of 80 ms (0: until the model ends the speech).
 	MaxFrames int
@@ -73,6 +108,19 @@ type SpeakOptions struct {
 type Audio struct {
 	Samples []float32 // in [-1, 1]
 	Rate    int       // samples a second
+	// Stats are what speaking it took (Speak's; the zero value elsewhere).
+	Stats SpeakStats
+}
+
+// SpeakStats are what speaking a text took.
+type SpeakStats struct {
+	// Frames are the audio frames of 80 ms made, and Seed the seed they were drawn with (the one
+	// drawn when SpeakOptions had none: given again, it speaks the same).
+	Frames int
+	Seed   uint64
+	// Took is the whole time; Text, Depth and Codec the time in the text model (the prompt and
+	// the frames' steps), the depthformer and the codec decoder.
+	Took, Text, Depth, Codec time.Duration
 }
 
 // Speaker speaks texts (LFM3-Audio). It runs one request at a time; others wait.
@@ -106,11 +154,17 @@ func (s *Speaker) Speak(ctx context.Context, text string, o SpeakOptions) (Audio
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pcm, _, err := s.s.Speak(ctx, o.request(text))
+	if o.Seed == 0 {
+		o.Seed = rand.Uint64() // drawn here so that it can be told (Stats.Seed)
+	}
+	t0 := time.Now()
+	pcm, frames, err := s.s.Speak(ctx, o.request(text))
 	if err != nil {
 		return Audio{}, err
 	}
-	return Audio{Samples: pcm, Rate: s.s.SampleRate()}, nil
+	t := s.s.Times
+	return Audio{Samples: pcm, Rate: s.s.SampleRate(), Stats: SpeakStats{Frames: len(frames), Seed: o.Seed,
+		Took: time.Since(t0), Text: t.Text, Depth: t.Depth, Codec: t.Codec}}, nil
 }
 
 // SpeakStream speaks each final chunk of a stream of text (flow.Sentences, or a translation's)

@@ -111,8 +111,8 @@ func main() {
 ```
 cd samples
 go run ./interpreter models prepare
-go run ./interpreter --mic -o english.wav      # マイクから。Ctrl-C か「終わり」で止める。「変換、スペイン語」で訳す先を変える
-go run ./interpreter talk.wav -o english.wav   # 録音から
+go run ./interpreter run --mic -o english.wav      # マイクから。Ctrl-C か「終わり」で止める。「変換、スペイン語」で訳す先を変える
+go run ./interpreter run talk.wav -o english.wav   # 録音から
 ```
 
 ## 3. モデルを登録する
@@ -186,14 +186,14 @@ for _, it := range plan.Items {
 	fmt.Println(it.Use, it.Model, it.Ready, it.Compiled, it.Download, it.MemoryGB, it.Why)
 }
 plan.DownloadBytes()   // 落とす量 (上限)
-plan.MemoryGB()        // 同時に動かすときのメモリの合計
+plan.MemoryGB()        // 同時に動かすときのメモリ (InTurns のものは一番大きいものだけ)
 plan.MachineGB()       // 機械のメモリ
 plan.Licenses()        // モデルごとのライセンス (ID、種類、URL、同意が要るか、同意済みか)
 plan.Target()          // coreai、intel、amd-xdna2。"" は、モデルを動かせる NPU がない
 ```
 
 - `Ready`: ファイルとプログラムが置き場にあり、ネットワークなしで読み込める
-- `Compiled`: この機械の NPU で 1 回読み込んである (プログラムがコンパイル済み)
+- `Compiled`: このプログラム (実行ファイルの名前ごと。Core AI はコンパイルのキャッシュをプロセス名ごとに持ちます) が、この機械の NPU で 1 回読み込み、すべてのプログラムを動かしてある (`ai.Warmer`。画像のモデルはサイズごとに 1 ステップの絵を描きます)。次の読み込みはキャッシュから 1 秒ほどで済みます。Runtime はコンパイル済みでない用途を動かしません (`ai.ErrNotPrepared`)。アプリの実行中にコンパイルすることはありません
 - `Download` は models.yaml の `bytes` で、上限です。取得元に変換済みのものがあれば、チェックポイントは落としません
 
 ### 4.2 準備は 2 段
@@ -237,7 +237,7 @@ app.Store = ai.Store{
 ## 5. 実行する
 
 ```go
-rt, err := app.Open(ctx)            // ai.WithLog(w)、ai.WithAutoPrepare(fn)、ai.WithAcceptedLicenses()
+rt, err := app.Open(ctx)            // ai.WithLog(w)、ai.WithLoading(fn)
 defer rt.Close()
 
 t, err := stt.Get(ctx, rt)          // 最初の呼び出しで読み込む (1 秒未満から数十秒)。2 回目からは同じものを返す
@@ -246,10 +246,11 @@ err = stt.Release(rt)               // 下ろしてメモリを空ける。次�
 rt.Loaded()                         // 今持っているモデル: 用途、モデル、メモリ、読み込みにかかった時間
 ```
 
-- **ネットワークにも変換にも触りません。** 準備されていない用途は `ai.ErrNotPrepared` です。`ai.WithAutoPrepare(fn)` を付けると、最初の `Get` で準備します (コマンドと同じ動き。ギガバイトのダウンロードになることがあります)
+- **ネットワークにも変換にもコンパイルにも触りません。** 準備されていない用途や、このプログラム向けにコンパイルされていない用途は `ai.ErrNotPrepared` です。`APP models prepare` (`Plan.Run`) が先に全部用意するので、アプリの実行中にダウンロードやコンパイルを待つことはありません (アプリが遅いのか準備が遅いのか、使う人には区別がつかないため)。アプリのコマンドは `konghelper.Open(ctx, app)` で Runtime を開きます。用意できていないモデルがあれば、コマンドが始まる前に、そのモデルを挙げて `APP models prepare` を案内して失敗します (`app.Run` の前に確かめるだけなら `konghelper.Ready`)。`Plan.Run` は、hwnpu のコマンドと同じ見た目で、標準エラー (`Plan.Log` があればそこ) に出します: 端末ではモデルの段ごとにスピナーとストップウォッチの行、その上にダウンロードやプログラムのバー、灰色のログ、最後に全体の時間。端末でなければ、段の始まりと終わりの行です。`Plan.Brief` はログを省き、`Plan.Quiet` は何も出しません。どちらでもコールバックには全部届くので (`Progress.Message` がログの行)、アプリは自分の見せ方もできます。自分の窓を持つアプリは `ai.WithLoading(fn)` を足します: `Get` が読み込むモデルごとに `fn` が呼ばれ (`ai.Progress`。`StageLoad` のあと `StageDone`)、`Since` と、前回この機械で読み込みにかかった時間 `Expected` (ストアに記録) が付くので、止まって見えないように経過時間とバーを出せます
+- **`APP models prepare` のあとの実行は、ネットワークに触らず、コンパイルもしません。** 入力で決まるプログラム (YuNet の大きさ、DA3 の縦横比) を持つ役割は、Prepare で全部作り、モデルは `ai.Warmer` です。`models prepare` の読み込みが `Warm` を呼び、それぞれを 1 回読み込んでコンパイルします。Prepare で作るものを変えた役割は `Revision` を上げ、前の版で準備した置き場は準備されていない扱いになります
 - **置き場の記録が今の選び方と違えば、準備されていない扱いです。** 別のモデルで準備してある (アプリの構成が変わった、機械のメモリの設定が変わった) とき、前のものを黙って読み込みません
 - **読み込みは 1 つずつ**進みます。モデルは、それぞれ 1 回に 1 つの要求を通します (ほかは待ちます)。別のモデルどうしは同時に呼べます
-- **順に使うアプリ**は `Release` で下ろします。画像の生成のあとに深度、のような使い方で、同時に載るメモリが一番大きいモデルの分で済みます。自動で下ろす仕組みはまだありません ([D9](#10-設計の論点))。画像の生成が中で行う段の入れ替えとは別の層です ([9.5 節](#95-release-と画像の生成の段の入れ替え))
+- **順に使うアプリ**は `Release` で下ろします。画像の生成のあとに深度、のような使い方で、同時に載るメモリが一番大きいモデルの分で済みます。`app.InTurns(a, b)` で宣言すると、計画はモデルを合わせた量に大きいほうだけを数え、片方を読み込むともう片方を下ろします。ほかに自動で下ろす仕組みはまだありません ([D9](#10-設計の論点))。画像の生成が中で行う段の入れ替えとは別の層です ([9.5 節](#95-release-と画像の生成の段の入れ替え))
 - **同時に呼べますが、NPU は 1 つの待ち行列です。** 実時間で回り続けるかどうかは、各段の時間の合計で決まります ([9 節](#9-制約とルール))
 - 各モデルの `OnNPU()` は、プログラムが NPU に載ったことを確かめられたかを返します (`Speaker` にはまだありません)
 
@@ -257,7 +258,7 @@ rt.Loaded()                         // 今持っているモデル: 用途、モ
 
 | エラー | いつ | どうする |
 |---|---|---|
-| `ai.ErrNotPrepared` | 用途が準備されていない、別のモデルで準備されている、ファイルが消えた | `plan.Run`、または `WithAutoPrepare` |
+| `ai.ErrNotPrepared` | 用途が準備されていない、別のモデルで準備されている、ファイルが消えた | `plan.Run` (`APP models prepare`) |
 | `ai.ErrBundleTarget` | `Store.Prepared` のものが別の NPU 向けだけ、または読めない形式 | その NPU 向けの準備済みのものを配る、または手元で準備する |
 | `*ai.LicenseError` | 同意の要るライセンスに同意していない | 同意を取り、`plan.AcceptLicenses` |
 | `flow.ErrEmpty` | 塊が 1 つも来ないまま流れが終わった (`Held.Wait`) | — |
@@ -632,7 +633,7 @@ runWindow(picture, near, latestView, progress)  // 拍に合わせて: 窓は 1 
 - 深度の輪郭は実際の輪郭より甘いので、近いものを数画素ぶん広げてから使います (`Spread`)。広げないと、輪郭が裂けて筋になります
 - 絵の見えていなかった部分 (手前のものが動いて現れる背景) は、絵にないので引き伸ばされます。動きを大きくしすぎると目立ちます (`--strength`)
 - **層に分けて描く**: 窓は、深度が出たらすぐ (1〜2 秒) 絵を 1 枚の深度で見せ、その横で絵を層に分けていきます (`--layers`、既定 3。[6.9 節](#69-例-深度でレイヤーに分ける-sampleslayers) と同じ処理で、`samples/internal/layering` を両方のサンプルが使います)。層が 1 つ切れるたびに窓の絵がその層つきのものに入れ替わり、奥の層から 1 層ずつ、その層の近さで描いて重ねます。層の中は今までどおり細かい起伏で動き、手前の層がずれて見えた所には、引き伸ばしの代わりに、描き足された裏の絵がその絵の近さで出ます
-- **途中経過を見せる**: 分ける処理は 1 層に 1 分ほどかかるので、窓の下に今の段 (「層 3 / 3: 裏を描いている、40 %」)、全体の進み具合のバー、隅に今の段の絵 (層の形を 1 色で塗った絵、次にモデルが描いた絵) を出します。処理は別の goroutine で呼び出しを回し、段ごとに `layering.Options.Progress` で受けたものを窓が毎フレーム読むだけです (頭の追跡と描画は止まりません)。`--save-layers DIR` で層を書き出し、`parallax DIR` でモデルなしにもう一度見られます。`--layers 1` で層に分けません。画像のモデルが準備されていない機械や、参照からの生成がまだ動かない NPU では、1 枚の深度のままになります
+- **途中経過を見せる**: 分ける処理は 1 層に 1 分ほどかかるので、窓の下に今の段 (「層 3 / 3: 裏を描いている、40 %」)、全体の進み具合のバー、隅に今の段の絵 (層の形を 1 色で塗った絵、次にモデルが描いた絵) を出します。処理は別の goroutine で呼び出しを回し、段ごとに `layering.Options.Progress` で受けたものを窓が毎フレーム読むだけです (頭の追跡と描画は止まりません)。`--save-layers DIR` で層を書き出し、`parallax show DIR` でモデルなしにもう一度見られます。`--layers 1` で層に分けません。画像のモデルが準備されていない機械や、参照からの生成がまだ動かない NPU では、1 枚の深度のままになります
 - 頭の代わりにマウスで動かす (`--head pointer`)、勝手に回す (`--head sweep`)、窓なしで GIF に書く (`parallax render`)、カメラなしで絵をフレームとして流す (`parallax track --frames`) ことができます
 - 窓は Ebitengine で、Linux では X11 と OpenGL の開発用のパッケージが要ります。ない機械では `-tags headless` で窓以外をビルドできます
 
@@ -667,12 +668,12 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
  └──────────────── その層のない絵 ←──────────────────────────────┘
 ```
 
-- **交互に使う**: 深度 (1.4 GB) と画像の生成 (3.9 GB) は同時に要らないので、使うたびに `Release` で下ろします ([9.5 節](#95-release-と画像の生成の段の入れ替え))。読み込み直しは深度が 0.1 秒、画像のモデルが 4 秒ほどで、1 枚描く 1 分に比べて小さい
+- **交互に使う**: 深度 (1.4 GB) と画像の生成 (3.9 GB) は同時に要らないので、使うたびに `Release` で下ろします。`layering.Register` が `app.InTurns(depth, artist)` と宣言するので、`layers models` は両方の合計ではなく 4.9 GB と数えます ([9.5 節](#95-release-と画像の生成の段の入れ替え))。読み込み直しは深度が 0.1 秒、画像のモデルが 4 秒ほどで、1 枚描く 1 分に比べて小さい
 - **切る場所**: 近さ (深度の逆数に、奥を引き離す曲線をかけたもの) の分布から、層の中の近さが一番そろう切り方を求めます (`layers plan` が、層ごとに色をつけた絵と切る値を出します。`--cuts` で指定もできます)
 - **裏を描かせる**: 編集のモデルにマスクの入力はないので、消したい部分を絵にない色 1 色で塗り、「その色の形を取り除いて、裏の景色を描く」と頼みます。描いた絵は層のあった所だけ使い、ほかは元の絵のままにします (層を重ね直すとほぼ元の絵に戻ります)。深度が拾い損ねた層の細い部分 (草の先、髪の束) は奥の層に残り、層を動かすと取り残されます。`--clean PIXELS` で層の縁の少し先まで描いた絵を使うとそれは消えますが、描いた絵が周りときれいにつながらない所では、層の周りに縁取りのように見えます
 - **描き損じを見分ける**: モデルは、塗った形をそのまま (塗った色や、暗い影として) 残すことがあります。そのときはマスクの縁の全周に色の段差が出るので、縁の内と外の色の差 (`seam`) で見分け、別の種で描き直します (`--tries`、既定 3 回)。どの回もだめなら、その層は切り出さずに絵に残し、そこで分けるのをやめます (層が 1 つ減ります。変な絵を裏に入れるよりよい)。頼み方でも変わり、「この領域を背景で置き換える」より「この形を取り除く」のほうが残りにくい。写真では、大きく塗った形の所に人の群れを描いたことがあり、「人や動物を足さない」の一文を入れてあります
 - **次の層**: 描き足した絵の深度をもう一度推定し、両方に写っている部分で最初の深度の目盛りに合わせてから、次の層を切ります (深度は絵ごとの目盛りなので、そのままでは比べられません)
-- **層ごとの深度**: 色だけでなく、近さも層ごとに持ちます (`--png DIR` の `near-N.png`。16 ビットの灰色、全部の層で同じ目盛り)。描き足した部分の近さは、描き足した絵から推定したものです。層の近さは、層の縁の外へも縁の値のまま続けてあります (縁で奥の層の値に落ちると、描くときに縁が引き伸ばされるため)。`parallax DIR` がこれを読みます ([6.8 節](#68-例-擬似立体-samplesparallax))
+- **層ごとの深度**: 色だけでなく、近さも層ごとに持ちます (`--png DIR` の `near-N.png`。16 ビットの灰色、全部の層で同じ目盛り)。描き足した部分の近さは、描き足した絵から推定したものです。層の近さは、層の縁の外へも縁の値のまま続けてあります (縁で奥の層の値に落ちると、描くときに縁が引き伸ばされるため)。`parallax show DIR` がこれを読みます ([6.8 節](#68-例-擬似立体-samplesparallax))
 - 3 層で画像を 2 回描き、1024×1024 で 2 分から 3 分半 (Ryzen AI 9 365)。PSD は層が文書と同じ大きさの 8 ビット RGB、PackBits で詰めたもの。Mac (M3) では、編集のプログラムのコンパイルが済めば 1 層が 512×512 で 39 秒、1024×1024 で 89 秒です
 
 ## 7. 機能の一覧
@@ -812,7 +813,7 @@ transcribe  transcribe  whisper-large-v3-turbo  compiled  -         2.2 GB  mit
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  plamo-community-license (conditional)
 speech      speak       LFM3-Audio-2B-TTS       compiled  -         2.9 GB  lfm-open-1.0 (conditional)
 
-Their checkpoints are here or come from the sources; about 7.8 GB running together (a machine of 16 GB has about 9 GB for models). ...
+Their checkpoints are here or come from the sources; about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB. ...
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
 
 The network:
@@ -904,10 +905,10 @@ $ interpreter models
 ...
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  ...
 ...
-about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
+about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB.
 ```
 
-- 収まらないときは、その下に注意が出ます (「Together they take more than this machine has for models ...」)
+- 収まらないときは、その下に注意が出ます (「Together they take more than hwnpu counts on for models here ...」)。16 GB のうち 9 GB は、ユーザーが無理なくモデルに回せる量の目安で、機械の上限ではありません (統合 GPU では、GPU に割り当てるメモリによっても変わります)
 - ほかの機械ではどうなるかは、`HWNPU_MEMORY=8 interpreter models` のように、機械のメモリを言い換えて見られます
 - プログラムからは `interpreter models --json` (`memory_gb`、`machine_gb`、`usable_gb`、`fits`、モデルごとの `memory_gb`)、または `plan.MemoryGB()`、`plan.MachineGB()`、`plan.UsableGB()`、`plan.Fits()`
 - **実際に使っている量**は `APP status` が出します: NPU を使っているプロセスごとの、プロセスのメモリと NPU のメモリ (`-w 2s` で見続けられます)
@@ -1066,7 +1067,7 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 - 前の形: `ai/aicli` が kong の構造体だけを出していた
 - **未定**: ほかのライブラリ (cobra など) のアダプタを置くか。置くと本体のモジュールの依存が増えるので、置くなら別のモジュールにする
 
-**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。`ai/vision`、`ai/imagegen`。予定: `ai/sound`。
+**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。`ai/vision`、`ai/imagegen`、`ai/sound`。
 
 - **未定**: `ai` という名前 (公開するとあとから変えにくい)。`speech` に文字起こしと読み上げの両方を置く分け方。`text` という名前 (標準ライブラリの `text/...` と並ぶと紛らわしい)
 
@@ -1106,8 +1107,8 @@ about 7.8 GB running together (a machine of 16 GB has about 9 GB for models).
 ## 11. まだないもの
 
 - 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、FLUX.2 klein のほかの画像のモデル (Anima、Chroma、FLUX.3 klein を `ai/imagegen` に。今はコマンド `hwnpu-image generate` で作る)
-- 音: 音楽、効果音、音高、採譜 (`ai/sound`)
-- コマンドの載せ替え: `hwnpu-audio`、`hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする
+- 音: メトロノームの拍に合わせて作る音楽、鳴らしながら変える曲調 (`ai/sound` には流れの音楽、効果音、音高、採譜がある)
+- コマンドの載せ替え: `hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする (`hwnpu-audio` は済み)
 - 常駐の管理 (D9、D10)、ローカルサーバー (OpenAI 互換など)、配布用のバンドル、ビルドタグ
 - 順番と中身は [app-api-tasks.md](app-api-tasks.md)
 

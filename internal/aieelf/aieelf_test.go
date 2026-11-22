@@ -86,13 +86,13 @@ func TestRejects(t *testing.T) {
 	}
 }
 
-// TestIRON reads a full ELF built by IRON (HWNPU_AIE_ELF), as the ReLU then AXPY graph of
+// TestIRON reads a full ELF built by IRON (HWNPU_TEST_AIE_FILE), as the ReLU then AXPY graph of
 // IRON's programming guide, section 2, compiles it: main:sequence patches three arguments
 // and two PDIs.
 func TestIRON(t *testing.T) {
-	path := os.Getenv("HWNPU_AIE_ELF")
+	path := os.Getenv("HWNPU_TEST_AIE_FILE")
 	if path == "" {
-		t.Skip("HWNPU_AIE_ELF not set")
+		t.Skip("HWNPU_TEST_AIE_FILE not set")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

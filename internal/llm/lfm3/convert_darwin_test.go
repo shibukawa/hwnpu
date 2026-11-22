@@ -19,14 +19,14 @@ import (
 )
 
 // Converts LFM3-1.7B layer by layer and compares the Neural Engine's hidden states and logits
-// with the PyTorch reference written by tools/ref/ref_logits.py. Needs HWNPU_LFM3_DIR with
-// config.json, the checkpoint and ref_bf16.*.bin. HWNPU_LFM3_LAYERS lists the truncation points
-// to check (default "1,3,24"); HWNPU_LFM3_FORMAT picks lut4 (default) or fp16; HWNPU_LFM3_WEIGHTS
+// with the PyTorch reference written by tools/ref/ref_logits.py. Needs HWNPU_TEST_LFM3_DIR with
+// config.json, the checkpoint and ref_bf16.*.bin. HWNPU_TEST_LFM3_LAYERS lists the truncation points
+// to check (default "1,3,24"); HWNPU_TEST_LFM3_FORMAT picks lut4 (default) or fp16; HWNPU_TEST_LFM3_WEIGHTS_FILE
 // names the checkpoint file (default LFM3-1.7B.safetensors).
 func TestAgainstReference(t *testing.T) {
-	dir := os.Getenv("HWNPU_LFM3_DIR")
+	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_LFM3_DIR not set")
+		t.Skip("HWNPU_TEST_LFM3_DIR not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)
@@ -37,7 +37,7 @@ func TestAgainstReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wfile := os.Getenv("HWNPU_LFM3_WEIGHTS")
+	wfile := os.Getenv("HWNPU_TEST_LFM3_WEIGHTS_FILE")
 	if wfile == "" {
 		wfile = "LFM3-1.7B.safetensors"
 	}
@@ -46,7 +46,7 @@ func TestAgainstReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	format := os.Getenv("HWNPU_LFM3_FORMAT")
+	format := os.Getenv("HWNPU_TEST_LFM3_FORMAT")
 	if format == "" {
 		format = "lut4"
 	}
@@ -72,14 +72,14 @@ func TestAgainstReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dev.Close()
-	layerList := os.Getenv("HWNPU_LFM3_LAYERS")
+	layerList := os.Getenv("HWNPU_TEST_LFM3_LAYERS")
 	if layerList == "" {
 		layerList = "1,3,24"
 	}
 	for _, ls := range strings.Split(layerList, ",") {
 		layers, _ := strconv.Atoi(ls)
-		opts := Options{Seq: seq, Layers: layers, Format: format, Group: envInt("HWNPU_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_LFM3_COLBLOCK", 0), ConvMode: os.Getenv("HWNPU_LFM3_CONV"), Quant: os.Getenv("HWNPU_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_LFM3_POSTSCALE", 1))}
-		if keep := os.Getenv("HWNPU_LFM3_KEEP"); keep != "" {
+		opts := Options{Seq: seq, Layers: layers, Format: format, Group: envInt("HWNPU_TEST_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_TEST_LFM3_COLBLOCK", 0), ConvMode: os.Getenv("HWNPU_TEST_LFM3_CONV"), Quant: os.Getenv("HWNPU_TEST_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_TEST_LFM3_POSTSCALE", 1))}
+		if keep := os.Getenv("HWNPU_TEST_LFM3_KEEP"); keep != "" {
 			opts.KeepFP16 = strings.Split(keep, ",")
 		}
 		t.Logf("options: %+v", opts)

@@ -2,11 +2,11 @@ package mxfp4
 
 import (
 	"fmt"
-	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 )
 
 // Job is one matrix's products with vectors: Out[k][r] is row r's dot product with V[k], the
@@ -26,7 +26,7 @@ func (j Job) Rows() int { return len(j.Out[0]) }
 const chunk = 32
 
 // padFrom is how many vectors past a multiple of 8 take a group of SMMLA padded with zeros
-// (HWNPU_MXFP4=pad=N).
+// (HWNPU_DEV=mxfp4.pad=N).
 var padFrom = 6
 
 // Run runs the jobs over the CPU's cores.
@@ -170,16 +170,11 @@ func init() {
 	}
 }
 
-// Opt reads an item of HWNPU_MXFP4, a list of NAME=VALUE separated by commas, for measuring:
+// Opt reads the item mxfp4.NAME of HWNPU_DEV (internal/dev), for measuring:
 // i8mm=0 runs without SMMLA (the SDOT kernels), pad=N the vectors past a multiple of 8 that take
 // a padded group of SMMLA (6), bench=LAYERS the layers TestTokenTime times.
 func Opt(name string) (string, bool) {
-	for _, it := range strings.Split(os.Getenv("HWNPU_MXFP4"), ",") {
-		if k, v, _ := strings.Cut(strings.TrimSpace(it), "="); k == name {
-			return v, true
-		}
-	}
-	return "", false
+	return devenv.Get("mxfp4." + name)
 }
 
 // workers are goroutines kept for Run, started on first use.

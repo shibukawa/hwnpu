@@ -218,3 +218,48 @@ func ProgramBackend(format string) string {
 	}
 	return llm.BackendCoreML
 }
+
+// ConvertSizes converts each size of the export of Prepare in dir (Core AI or Core ML programs,
+// OpenVINO IR) ahead, or takes it from the shared layers, as the first picture of each aspect
+// would: an Estimator then needs no network nor conversion. log (nil: nowhere) is told of each
+// size converted.
+func ConvertSizes(ctx context.Context, dir string, log io.Writer) error {
+	x, err := readExport(dir)
+	if err != nil {
+		return err
+	}
+	if x.Format != "coreml" && x.Format != "coreai" && x.Format != "intel" {
+		return nil // AMD's graphs are whole in the export
+	}
+	for _, sz := range x.Sizes {
+		d := filepath.Join(dir, fmt.Sprintf("%dx%d", sz[0], sz[1]))
+		if llm.FetchExport(ctx, d, d+".done") {
+			continue
+		}
+		if log != nil {
+			fmt.Fprintf(log, "depth: converting %dx%d\n", sz[0], sz[1])
+		}
+		if err := ConvertSize(x.Checkpoint, d, sz[0], sz[1], x.Format); err != nil {
+			return err
+		}
+		llm.ShareExport(ctx, d)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Warm loads each size's programs once, converting what is missing: the first load of each
+// compiles it, so that a picture of any aspect does not wait. AMD's graphs need none of it.
+func (e *Estimator) Warm(ctx context.Context) error {
+	if e.Format != "coreml" && e.Format != "coreai" && e.Format != "intel" {
+		return nil
+	}
+	for _, sz := range e.Sizes {
+		if _, err := e.use(ctx, sz[0], sz[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -64,6 +64,12 @@
 #                 the model on: the family's next is picked there (the 2B for PLaMo 3 Translate
 #                 8B on an M1); its name and FAMILY:TAG still run it
 #   like          another model whose fields this one takes, except its tag
+#   settings      how the model's role prepares and runs it beyond the fields here, by name (a
+#                 speech or transcription model's format: lut4); each role reads the names it knows
+#                 (ai/speech, ai/text). Mostly written by an app as it runs (ai.Definition)
+#   programs      files converted beforehand, by the name the role reads them as (iron: an export's
+#                 directory; text, depth, codec, checkpoint: LFM3-Audio's converted by hand),
+#                 absolute paths: the role uses them as they are and converts nothing of them
 #   remove        true: drop the model
 # categories: NAME: a use (-m translate). picks are MODEL.md's columns: the model a machine of
 #   that much memory (GB) or more runs. A file of your own replaces a column's model, or drops it
@@ -351,7 +357,7 @@ models:
     # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB.
     # Below 48 GB its experts in places (--expert-places P, docs/design/moe.md): the others in
     # experts.bin (20.1 GB), copied into a place when chosen, read with O_DIRECT where the file
-    # does not fit beside the places (measured with HWNPU_MOE_DEBUG=direct=1, 2026-11-21, a
+    # does not fit beside the places (measured with HWNPU_DEV=moe.direct=1, 2026-11-21, a
     # 1173-token prompt then 200 tokens, the peak of the NPU's buffers and the process's): 32
     # places 7.6 GiB, 33-38 % of the decode's choices copied in; 128 places 16.0 GiB, 6-7 %. The
     # logits the same to the bit as with every expert. Re-exported from main after the array
@@ -780,8 +786,10 @@ models:
     # an M1 (3.1 GiB of the process and 1.4 GiB on the Neural Engine, docs/design/image-models.md)
     memory: {amd: 3.5, apple: 4.8}
     # AMD: the export of the eight aspect ratios (anima-turbo.amd-npu2, 6.13 GB) packed in the
-    # sources (files.tar.zst)
-    bytes: {amd: 4.24e9, apple: 5.9e9}
+    # sources (files.tar.zst). Apple: the Core AI export of the eight
+    # (anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai, 2.91 GB packed) and the chip's
+    # prebuilt programs (0.05 to 0.10 GB, the M1's the largest)
+    bytes: {amd: 4.24e9, apple: 3.00e9}
     about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
   Anima-Aesthetic:
     family: anima
@@ -805,7 +813,7 @@ models:
     machine: 8
     # Anima-Turbo's programs with other weights: its memory and download
     memory: {amd: 3.5, apple: 4.8}
-    bytes: {amd: 4.24e9, apple: 5.9e9}
+    bytes: {amd: 4.24e9, apple: 3.00e9}
     about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
   Chroma1-Flash:
     family: chroma
@@ -879,9 +887,11 @@ models:
     # 1024 x 1024 on an M1, 4.9 GB (in the VAE's stages: 3.8 GiB of the process and 0.8 GiB on the
     # Neural Engine; 3.1 GB at 512 x 512), measured (docs/design/image-apple.md, docs/design/image-models.md)
     memory: {amd: 3.9, apple: 4.9}
-    # the repository's diffusers layout (its single-file copy of the DiT is not fetched)
-    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
-    bytes: {amd: 12.50e9, apple: 1.6e10}
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst). Apple: the Core AI
+    # export of the eight sizes below (flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v1.coreai, 7.69 GB
+    # packed) and the chip's prebuilt programs (0.05 to 0.18 GB, the M2's the largest); converting
+    # here fetches the repository's diffusers layout instead (16 GB; not its single-file DiT)
+    bytes: {amd: 12.50e9, apple: 7.87e9}
     features: [edit]
     # The NPU exports: each vendor's weight formats and picture sizes. The sizes are the default on
     # every generation of the vendor's NPU, and a generation that a bigger one does better

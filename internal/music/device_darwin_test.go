@@ -1,6 +1,7 @@
 package music
 
 import (
+	"cmp"
 	"context"
 	"math"
 	"os"
@@ -11,16 +12,16 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
-// On the Neural Engine (HWNPU_MRT_DEVICE: the programs' format, lut8 or fp16), the prepared
+// On the Neural Engine (HWNPU_TEST_NPU; HWNPU_TEST_MRT_FORMAT: the programs' format, lut8 by default or fp16), the prepared
 // programs stepped with the reference's tokens forced give logits close to the reference's (fp32):
 // the KL of the codebooks' distributions (at temperature 1.3) and how often the most likely token
 // is the same.
 func TestLMOnDevice(t *testing.T) {
 	dir, ref := refDirs(t)
-	format := os.Getenv("HWNPU_MRT_DEVICE")
-	if format == "" {
-		t.Skip("HWNPU_MRT_DEVICE is not set")
+	if os.Getenv("HWNPU_TEST_NPU") == "" {
+		t.Skip("HWNPU_TEST_NPU is not set")
 	}
+	format := cmp.Or(os.Getenv("HWNPU_TEST_MRT_FORMAT"), "lut8")
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "", "")
 	if err != nil {
@@ -112,14 +113,14 @@ func klDiv(p, q []float32, temp float64) float64 {
 	return s
 }
 
-// MusicCoCa's encoders on the Neural Engine (HWNPU_MRT_DEVICE set) give the references'
+// MusicCoCa's encoders on the Neural Engine (HWNPU_TEST_NPU set) give the references'
 // embeddings, and the text's codes.
 func TestMusicCoCaOnDevice(t *testing.T) {
-	if os.Getenv("HWNPU_MRT_DEVICE") == "" {
-		t.Skip("HWNPU_MRT_DEVICE is not set")
+	if os.Getenv("HWNPU_TEST_NPU") == "" {
+		t.Skip("HWNPU_TEST_NPU is not set")
 	}
 	p, ref := mccRef(t)
-	aref := os.Getenv("HWNPU_MUSICCOCA_AUDIO_REF")
+	aref := os.Getenv("HWNPU_TEST_MUSICCOCA_AUDIO_REF")
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "", "")
 	if err != nil {
@@ -171,12 +172,12 @@ func TestMusicCoCaOnDevice(t *testing.T) {
 	t.Logf("music: relative error %.3g", math.Sqrt(relErr32(out["y"], readF32(t, aref+".emb.bin", false))))
 }
 
-// SpectroStream's encoder on the Neural Engine (HWNPU_MRT_DEVICE set; HWNPU_MRT_DIR,
-// HWNPU_MRT_ENC_REF) gives the reference's codes.
+// SpectroStream's encoder on the Neural Engine (HWNPU_TEST_NPU set; HWNPU_TEST_MRT_DIR,
+// HWNPU_TEST_MRT_ENCODER_REF) gives the reference's codes.
 func TestEncodeAudioOnDevice(t *testing.T) {
-	dir, ref := os.Getenv("HWNPU_MRT_DIR"), os.Getenv("HWNPU_MRT_ENC_REF")
-	if os.Getenv("HWNPU_MRT_DEVICE") == "" || dir == "" || ref == "" {
-		t.Skip("HWNPU_MRT_DEVICE, HWNPU_MRT_DIR and HWNPU_MRT_ENC_REF are not set")
+	dir, ref := os.Getenv("HWNPU_TEST_MRT_DIR"), os.Getenv("HWNPU_TEST_MRT_ENCODER_REF")
+	if os.Getenv("HWNPU_TEST_NPU") == "" || dir == "" || ref == "" {
+		t.Skip("HWNPU_TEST_NPU, HWNPU_TEST_MRT_DIR and HWNPU_TEST_MRT_ENCODER_REF are not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "", "")
@@ -217,11 +218,11 @@ func TestEncodeAudioOnDevice(t *testing.T) {
 	t.Logf("on the NPU: %v; %d frames in %.2f s: %d / %d codes the same (first level %d)", g.enc.onNPU, len(codes), g.Timing.Encode.Seconds(), same, len(codes)*Codebooks, first)
 }
 
-// SpectroStream's decoder on the units of HWNPU_MRT_UNITS (gpu, cpu; "" the Neural Engine) gives
-// the reference's samples of its codes (HWNPU_MRT, HWNPU_MRT_REF: mrt_ss_ref.py's prefix).
+// SpectroStream's decoder on the units of HWNPU_TEST_MRT_UNITS (gpu, cpu; "" the Neural Engine) gives
+// the reference's samples of its codes (HWNPU_TEST_MRT_EXPORT, HWNPU_TEST_MRT_REF: mrt_ss_ref.py's prefix).
 func TestDecoderOnUnits(t *testing.T) {
-	if os.Getenv("HWNPU_MRT_DEVICE") == "" {
-		t.Skip("HWNPU_MRT_DEVICE is not set")
+	if os.Getenv("HWNPU_TEST_NPU") == "" {
+		t.Skip("HWNPU_TEST_NPU is not set")
 	}
 	dir, ref := refDirs(t)
 	ctx := context.Background()
@@ -234,7 +235,7 @@ func TestDecoderOnUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := OpenOn(ctx, dev, p, os.Getenv("HWNPU_MRT_UNITS"))
+	g, err := OpenOn(ctx, dev, p, os.Getenv("HWNPU_TEST_MRT_UNITS"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,5 +253,5 @@ func TestDecoderOnUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("units %q: samples relative error %.3g (%.2f s)", os.Getenv("HWNPU_MRT_UNITS"), relErr(wav, readBin[float32](t, ref+".wav.bin")), g.Timing.Decode.Seconds())
+	t.Logf("units %q: samples relative error %.3g (%.2f s)", os.Getenv("HWNPU_TEST_MRT_UNITS"), relErr(wav, readBin[float32](t, ref+".wav.bin")), g.Timing.Decode.Seconds())
 }

@@ -16,22 +16,26 @@
 
 ```bash
 cd samples
-go run ./parallax models prepare                   # モデルのダウンロード、変換、コンパイル
-go run ./parallax picture.png                      # 窓。カメラで頭を追う
-go run ./parallax picture.png --head pointer       # マウスが頭の代わり (カメラなし)
+go run ./parallax models prepare                   # 最初にモデルのダウンロード、変換、コンパイル (済むまでコマンドは動きません)
+go run ./parallax show picture.png                      # 窓。カメラで頭を追う
+go run ./parallax show picture.png --head pointer       # マウスが頭の代わり (カメラなし)
 go run ./parallax render picture.png -o deep.gif   # 窓なし: 頭が一回りする間の絵
 ```
 
 | コマンド | 何をするか |
 |---|---|
-| `parallax PICTURE` | 窓。`--layers 1` は深度だけ (画像のモデルなし)、`--head sweep` はひとりでに回る、`--for 5m` でその時間で閉じる |
-| `parallax DIR` | 層に分けてある絵 (`layers PICTURE --png DIR`)。モデルは要らない |
+| `parallax show PICTURE` | 窓。`--layers 1` は深度だけ (画像のモデルなし)、`--head sweep` はひとりでに回る、`--for 5m` でその時間で閉じる |
+| `parallax show DIR` | 層に分けてある絵 (`layers split PICTURE --png DIR`)。モデルは要らない |
 | `parallax render PICTURE -o out.gif` | 頭が一回りする間の絵を書く (`--frames`、`--width`、`--png DIR`) |
 | `parallax track` | カメラの部分だけ: 頭の位置を出す。`--frames a.png,b.png` でカメラの代わりに絵を使う |
 | `parallax cameras` | カメラの一覧 (番号つき)。`--device 2` で 2 番目を使う |
 | `parallax models`、`parallax status` | モデルと要る量、この機械の NPU |
 
-見え方: `--strength` (一番手前の点の動く量)、`--focus` (動かない深度)、`--far` (深度の奥の引き離し)、`--edge`、`--gain` (頭の動きに対する視点の回り方)、`--fov` (カメラの画角)。
+絵を奥行きのある絵にする間、窓は各段の成果を数秒ずつ見せます: 深度 (手前が暖色、奥が寒色)、層ごとに切り出した層 (画像のモデルが描く間もそのまま出し、進み具合はパネルに出ます) と、層が隠していた部分を描き足した絵、最後に層を重ねるところ。モデルを読み込む間は、絵を暗く止めて出し、パネルの 2 行目に何をしているか (ダウンロード、NPU 向けのコンパイル、読み込み、画像のモデルのプログラムを開く・参照の絵とプロンプトを読む)、かかっている時間と、前回この機械でかかった時間が分かるときは残り時間と小さなバーを出します。隅には元の絵と、カメラを使うときはカメラの絵に見つけた顔 (枠、目、鼻、口) と頭の位置が出ます。下のバーは全部の工程で 100 % になります。
+
+窓のキー: 左右の矢印かマウスのホイールで頭のゲイン (頭を動かしたときの視点の回り方。動きが小さく感じたら上げる)、上下の矢印で強さ、D で深度を見る、Q で終わる。
+
+見え方: `--strength` (一番手前の点の動く量)、`--focus` (動かない深度)、`--far` (深度の奥の引き離し)、`--relief` (手前の層の中の奥行き。1 で深度のとおり、0 でカードのように平ら)、`--round` (手前の層を輪郭から内へ丸くする量。動物が板でなく体に見える)、`--edge`、`--gain` (頭の動きに対する視点の回り方)、`--fov` (カメラの画角)。
 
 層がはっきりした絵が向いています: 風景の前の人物、いくつもの奥行きに物がある絵。
 

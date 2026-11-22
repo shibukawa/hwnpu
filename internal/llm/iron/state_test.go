@@ -13,11 +13,11 @@ import (
 // and the slot of its states there (StateAt): after the sequence ran past it, within the same
 // chunk and into the next, reading the same tokens again from it gives the same logits. The
 // positions are one before a chunk boundary, on it, and past it. Needs an LFM3 export in
-// HWNPU_IRON_RECURRENT and the NPU.
+// HWNPU_TEST_IRON_RECURRENT_EXPORT and the NPU.
 func TestStateRewindOnDevice(t *testing.T) {
-	dir := os.Getenv("HWNPU_IRON_RECURRENT")
+	dir := os.Getenv("HWNPU_TEST_IRON_RECURRENT_EXPORT")
 	if dir == "" {
-		t.Skip("HWNPU_IRON_RECURRENT is not set")
+		t.Skip("HWNPU_TEST_IRON_RECURRENT_EXPORT is not set")
 	}
 	ctx := context.Background()
 	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))

@@ -41,11 +41,11 @@ func TestTextEncoderProgram(t *testing.T) {
 }
 
 // The music encoder's program (its loop unrolled) on the CPU interpreter gives the reference's
-// embedding (HWNPU_MUSICCOCA_AUDIO_REF, mcc_audio_ref.py's prefix).
+// embedding (HWNPU_TEST_MUSICCOCA_AUDIO_REF, mcc_audio_ref.py's prefix).
 func TestMusicEncoderProgram(t *testing.T) {
-	ref := os.Getenv("HWNPU_MUSICCOCA_AUDIO_REF")
+	ref := os.Getenv("HWNPU_TEST_MUSICCOCA_AUDIO_REF")
 	if ref == "" {
-		t.Skip("HWNPU_MUSICCOCA_AUDIO_REF is not set")
+		t.Skip("HWNPU_TEST_MUSICCOCA_AUDIO_REF is not set")
 	}
 	p, _ := mccRef(t)
 	st, err := OpenStyler(context.Background(), nil, p)

@@ -29,8 +29,9 @@ type Models struct {
 	Near func(ctx context.Context, img *image.RGBA) ([]float32, error)
 	// Draw is the picture an editing model draws from a prompt and a reference (image 1 in the
 	// prompt), at the reference's size. It calls progress, when it can, with how much of the
-	// drawing is done, 0 to 1.
-	Draw func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(done float64)) (*image.RGBA, error)
+	// drawing is done, 0 to 1, and phase with what it does before its steps (imagegen's
+	// Options.Phase: opening the programs of the size, reading the reference and the prompt).
+	Draw func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(done float64), phase func(string)) (*image.RGBA, error)
 }
 
 // Options are how a picture is parted.
@@ -74,13 +75,16 @@ type Layer struct {
 
 // The kinds of steps.
 const (
-	// Cut: a layer was cut out. Layer is its number.
+	// Cut: a layer was cut out. Layer is its number, Cutout the layer (transparent where it has
+	// nothing).
 	Cut = "cut"
 	// Asked: the picture model is asked to draw what the layer hid. Picture is what it draws
-	// from: the picture with the layer's shape painted over.
+	// from: the picture with the layer's shape painted over; Mask is where it is painted (1),
+	// row major at the picture's size.
 	Asked = "asked"
 	// Drawing: the model is drawing. Done is how much of this drawing is done, 0 to 1, Try the
-	// try's number from 1.
+	// try's number from 1, Phase what it does before its steps (imagegen's phases), "" when
+	// not told.
 	Drawing = "drawing"
 	// Drawn: the model has drawn. Picture is its drawing, Seam how much of the shape is left
 	// (SeamOK and over: it is drawn again while tries are left).
@@ -103,9 +107,12 @@ type Step struct {
 	// Share is the share of the picture the layer covers (Cut).
 	Share   float64
 	Picture *image.RGBA
+	Cutout  *image.NRGBA
+	Mask    []float32
 	Seam    float64
 	Try     int
 	Done    float64
+	Phase   string
 	Layers  []Layer
 	Left    int
 	// Total is how much of the whole parting is done, 0 to 1: each layer but the farthest is an
@@ -123,6 +130,9 @@ func Curve(near []float32, far float64) []float32 { return curve(near, far) }
 // Cuts are where a nearness is cut into n layers: the cuts that leave each layer's nearness, on
 // the curve of far, closest together.
 func Cuts(near []float32, n int, far float64) []float32 { return cuts(curve(near, far), n) }
+
+// Soften is a mask (row major, w x h) with its edge made a ramp 2r pixels wide.
+func Soften(m []float32, w, h, r int) []float32 { return soften(m, w, h, r) }
 
 // Stretch is a picture at w x h (its shape is not kept), for a model that draws other sizes.
 func Stretch(img image.Image, w, h int) *image.RGBA { return stretch(img, w, h) }
@@ -185,7 +195,7 @@ func Split(ctx context.Context, img *image.RGBA, near []float32, m Models, o Opt
 			continue // nothing is that near
 		}
 		layers[l] = Layer{Img: cutOut(plate, soften(grow(in, w, h, edge), w, h, 1)), Near: extend(near, in, w, h)}
-		tell(Step{Kind: Cut, Layer: l + 1, Share: covered(in)}, 0)
+		tell(Step{Kind: Cut, Layer: l + 1, Share: covered(in), Cutout: layers[l].Img}, 0)
 
 		// the layer's shape, and a little more, in a plain colour the picture has little of
 		hole := grow(in, w, h, edge+margin)
@@ -195,7 +205,7 @@ func Split(ctx context.Context, img *image.RGBA, near []float32, m Models, o Opt
 			prompt += " " + strings.TrimSuffix(o.Hint, ".") + "."
 		}
 		asked := paint(plate, hole, colour)
-		tell(Step{Kind: Asked, Layer: l + 1, Picture: asked}, 0)
+		tell(Step{Kind: Asked, Layer: l + 1, Picture: asked, Mask: hole}, 0)
 		// The model sometimes leaves the shape, in its colour or as a shadow. That shows as a
 		// seam all along the hole's edge, and the picture is then drawn again from another seed;
 		// the one with the least seam is kept.
@@ -210,6 +220,8 @@ func Split(ctx context.Context, img *image.RGBA, near []float32, m Models, o Opt
 			out, err := m.Draw(ctx, prompt, asked, seed, func(done float64) {
 				done = min(max(done, 0), 1)
 				tell(Step{Kind: Drawing, Layer: l + 1, Try: try + 1, Done: done}, drawing*done)
+			}, func(phase string) {
+				tell(Step{Kind: Drawing, Layer: l + 1, Try: try + 1, Phase: phase}, 0)
 			})
 			if err != nil {
 				return nil, err

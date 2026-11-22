@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -29,10 +32,25 @@ type Plan struct {
 	// their models, for an app that has shown them and has the user's agreement. Without it Run
 	// fails with a *LicenseError at a model whose license is not accepted yet.
 	AcceptLicenses bool
+	// Quiet shows nothing: without it Run shows what it does on Log as hwnpu's commands do. On
+	// a terminal that is a line for each stage of each model with a spinner and its time,
+	// redrawn until it is done; the downloads' and programs' own bars over it while they go;
+	// what they log in gray; and the time of it all at the end. Elsewhere it is a line as each
+	// begins and ends, and the logs. Either way fn is told it all (the logs' lines in
+	// Progress.Message), for an app that shows it its own way.
+	Quiet bool
+	// Brief shows the stages alone, not the models' logs.
+	Brief bool
+	// AllowOffNPU compiles models part of whose programs the NPU's compiler places off the NPU
+	// (ai.AllowOffNPU).
+	AllowOffNPU bool
+	// Log is where Run shows it (standard error when nil).
+	Log io.Writer
 
 	store   Store
 	npu     airole.NPU
 	machine int
+	turns   [][]string // App.InTurns
 }
 
 // Item is a use of a plan.
@@ -144,7 +162,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 	if err := a.Store.open(); err != nil {
 		return nil, err
 	}
-	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, chat.MachineMemory())}
+	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, chat.MachineMemory()), turns: a.turns}
 	for _, r := range reqs {
 		m, why, err := resolve(r, a.memory)
 		if err != nil {
@@ -152,19 +170,19 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		}
 		it := Item{Use: r.name, Role: r.role.Name, Why: why, model: m, req: r,
 			Model: m.Name, Repo: m.Source(), About: m.About, MemoryGB: m.MemoryFor(p.npu.Vendor), Disk: int64(m.DiskFor(p.npu.Vendor))}
-		loc, err := a.Store.find(r.key(), p.npu, m)
+		loc, err := a.Store.find(r.key(), p.npu, m, r.role.Revision)
 		switch {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
-			// compiles it, and nothing can be written there to say so)
-			it.Ready, it.Compiled = true, !loc.Compiled.IsZero() || loc.bundle
+			// compiles it, and nothing can be written there to say so); with no NPU, nothing is
+			it.Ready, it.Compiled = true, loc.compiled() || loc.bundle || p.npu.Target == "" || p.npu.CPU(m)
 			if loc.bundle {
 				it.Bundle = loc.root
 			}
 		case err != nil && !errors.Is(err, ErrNotPrepared) && !errors.Is(err, ErrBundleTarget):
 			return nil, err
 		}
-		if !it.Ready && !chat.Downloaded(m) {
+		if !it.Ready && !chat.Downloaded(m) && len(m.Programs) == 0 {
 			it.Download = int64(m.BytesFor(p.npu.Vendor))
 		}
 		p.Items = append(p.Items, it)
@@ -181,10 +199,11 @@ func (p *Plan) Target() string { return p.npu.Target }
 // in it beside everything else the machine runs.
 func (p *Plan) MachineGB() int { return p.machine }
 
-// usable is about how much of a machine's memory is left for models, in GB, by the memory it
-// has: MODEL.md's second row (the OS and the everyday applications taken off). The NPU's buffers
-// are pinned memory that cannot be swapped out, so models over it push other applications to
-// swap.
+// usable is about how much of a machine's memory hwnpu counts on for models, in GB, by the memory
+// it has: MODEL.md's second row, what a user can give models without strain beside the OS and the
+// everyday applications. It is a working assumption, not a limit of the machine (with an
+// integrated GPU it also moves with the memory the GPU is given). The NPU's buffers are pinned
+// memory that cannot be swapped out, so models over it may push other applications to swap.
 var usable = [][2]float64{{8, 3}, {16, 9}, {24, 15}, {32, 22}, {48, 35}, {64, 50}}
 
 // usableGB is usable for a machine of machine GB: between the table's machines in proportion,
@@ -257,14 +276,41 @@ func (p *Plan) DownloadBytes() int64 {
 }
 
 // MemoryGB is what the plan's models take running at once, from the definitions: whether they
-// fit the machine together (the three models of an interpreter take about 6.7 GB). An app that
-// runs them one after another (Use.Release) needs the largest alone.
+// fit the machine together (the three models of an interpreter take about 6.7 GB). Of the uses
+// the app runs one at a time (App.InTurns) the largest alone counts.
 func (p *Plan) MemoryGB() float64 {
 	var n float64
+	largest := map[int]float64{} // of each group of InTurns
 	for _, it := range p.Items {
-		n += it.MemoryGB
+		g := slices.IndexFunc(p.turns, func(g []string) bool { return slices.Contains(g, it.req.key()) })
+		if g < 0 {
+			n += it.MemoryGB
+		} else {
+			largest[g] = max(largest[g], it.MemoryGB)
+		}
+	}
+	for _, m := range largest {
+		n += m
 	}
 	return n
+}
+
+// InTurns are the groups of the plan's uses (their names) that the app runs one at a time
+// (App.InTurns): of each, the largest counts in MemoryGB.
+func (p *Plan) InTurns() [][]string {
+	var out [][]string
+	for _, g := range p.turns {
+		var names []string
+		for _, it := range p.Items {
+			if slices.Contains(g, it.req.key()) {
+				names = append(names, it.Use)
+			}
+		}
+		if len(names) > 1 {
+			out = append(out, names)
+		}
+	}
+	return out
 }
 
 // Licenses are the models' terms to show before downloading them, one per model.
@@ -297,6 +343,7 @@ type Stage string
 const (
 	StagePrepare Stage = "prepare" // downloading and converting
 	StageCompile Stage = "compile" // loading once: compiling the programs for the NPU
+	StageLoad    Stage = "load"    // loading for a Get, from the NPU compiler's cache (WithLoading)
 	StageDone    Stage = "done"
 )
 
@@ -308,6 +355,10 @@ type Progress struct {
 	// Message is a line of what is being done (a download, a conversion), for a log; "" when
 	// the stage begins or ends.
 	Message string
+	// Expected is how long the stage's load took here the last time (StageCompile, StageLoad),
+	// 0 when not known, and Since when the stage began.
+	Expected time.Duration
+	Since    time.Time
 }
 
 // lineWriter calls fn with each line written to it, on \n or \r (a progress bar redrawn).
@@ -363,14 +414,29 @@ func stripANSI(s string) string {
 // NoCompile, it loads each use that was not loaded on this machine before once, which compiles
 // its programs for the NPU, and writes it into the store. fn (nil for none) is called in Run's
 // goroutine. A Run cut off (ctx, a network error) goes on from where it stopped when run again.
-func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
-	if fn == nil {
-		fn = func(Progress) {}
+func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
+	told := fn
+	var show *display
+	if !p.Quiet {
+		w := p.Log
+		if w == nil {
+			w = os.Stderr
+		}
+		show = newDisplay(w, p.Brief)
+		defer func() { show.finish(err) }()
+	}
+	fn = func(pr Progress) {
+		if show != nil {
+			show.stage(pr)
+		}
+		if told != nil {
+			told(pr)
+		}
 	}
 	compile := !p.NoCompile && p.npu.Target != ""
 	var todo []int
 	for i, it := range p.Items {
-		if !it.Ready || compile && !it.Compiled {
+		if !it.Ready || compile && !it.Compiled && !p.npu.CPU(it.model) {
 			todo = append(todo, i)
 		}
 	}
@@ -380,9 +446,13 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 			fn(Progress{Use: it.Use, Role: it.Role, Model: it.Model, Stage: stage, Item: n + 1, Items: len(todo), Message: msg})
 		}
 		log := &lineWriter{fn: func(line string) { report(StagePrepare, line) }}
+		var out io.Writer = log
+		if show != nil {
+			out = &teeLog{term: show.log, lines: log}
+		}
 		var r *record
 		if it.Ready {
-			loc, err := p.store.find(it.req.key(), p.npu, it.model)
+			loc, err := p.store.find(it.req.key(), p.npu, it.model, it.req.role.Revision)
 			if err != nil {
 				return err
 			}
@@ -392,35 +462,46 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 				if !p.AcceptLicenses {
 					return &LicenseError{License: l}
 				}
-				if err := chat.AcceptLicense(it.model, true, false, nil, log); err != nil {
+				if err := chat.AcceptLicense(it.model, true, false, nil, out); err != nil {
 					return fmt.Errorf("ai: %w", err)
 				}
 			}
 			report(StagePrepare, "")
 			dir := chat.ModelDir(it.model)
-			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Dir: dir, NPU: p.npu, Log: log})
+			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Base: p.store.base(it.model), Dir: dir, NPU: p.npu, Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: preparing %s (%s): %w", it.Use, it.Model, err)
 			}
-			r = &record{Model: it.Model, Role: it.Role, Run: it.model.Run, MemoryGB: it.MemoryGB, Files: files,
-				Prepared: time.Now().UTC().Truncate(time.Second)}
+			r = &record{Model: it.Model, Role: it.Role, Run: it.model.Run, Spec: spec(it.model), MemoryGB: it.MemoryGB, Files: files,
+				Prepared: time.Now().UTC().Truncate(time.Second), Revision: it.req.role.Revision}
 			// written before the load, so that a compile cut off does not download again
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
 				return err
 			}
 			it.Ready, it.Download = true, 0
 		}
+		if p.npu.CPU(it.model) {
+			it.Compiled = true // nothing to compile for the NPU
+		}
 		if compile && !it.Compiled {
 			report(StageCompile, "")
 			log.fn = func(line string) { report(StageCompile, line) }
-			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: log})
+			t0 := time.Now()
+			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, Def: it.model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out, AllowOffNPU: p.AllowOffNPU})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
+			}
+			if w, ok := l.(Warmer); ok {
+				if err := w.Warm(ctx); err != nil {
+					l.Close()
+					return fmt.Errorf("ai: compiling %s (%s): %w", it.Use, it.Model, err)
+				}
 			}
 			if err := l.Close(); err != nil {
 				return err
 			}
-			r.Compiled = time.Now().UTC().Truncate(time.Second)
+			r.markCompiled()
+			r.Compile = time.Since(t0)
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
 				return err
 			}
@@ -434,6 +515,14 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 	return ctx.Err()
 }
 
+// Warmer is a model that makes some of its programs at its first use of a kind of input (a
+// picture's size): Warm loads them all once, which compiles them for the NPU. Run calls it on
+// the model it loads once to compile (not NoCompile), so that a use prepared with Run does not
+// wait for a compile, nor touch the network, at any input.
+type Warmer interface {
+	Warm(ctx context.Context) error
+}
+
 // Prepare is the app's Plan and its Run: everything made ready in one call, for a command line
 // tool. Apps that show what is downloaded first call Plan and Run.
 func (a *App) Prepare(ctx context.Context, fn func(Progress)) error {
@@ -442,4 +531,99 @@ func (a *App) Prepare(ctx context.Context, fn func(Progress)) error {
 		return err
 	}
 	return p.Run(ctx, fn)
+}
+
+// teeLog writes the logs of a model's preparing both to the terminal's log and to the lines
+// told to Run's fn, a writer the bars redraw on (console.Live) when the terminal's is one.
+type teeLog struct {
+	term  io.Writer
+	lines *lineWriter
+}
+
+func (t *teeLog) Write(b []byte) (int, error) {
+	t.lines.Write(b)
+	return t.term.Write(b)
+}
+
+// Terminal says whether the bars written to t can be redrawn in place.
+func (t *teeLog) Terminal() bool { return console.Live(t.term) }
+
+// Direct is t for a bar's line, written while the bars' lines are held (console.Log's Direct).
+func (t *teeLog) Direct() io.Writer {
+	if d, ok := t.term.(interface{ Direct() io.Writer }); ok {
+		return &teeLog{term: d.Direct(), lines: t.lines}
+	}
+	return t
+}
+
+// display is what Run shows of itself on a terminal or a log (Plan.Quiet).
+type display struct {
+	w     io.Writer // where the stages go
+	log   io.Writer // where the models' logs go: in gray on a terminal
+	live  bool
+	bar   *console.Bar
+	as    string // what the bar's stage is when done
+	start time.Time
+	any   bool // a stage was shown
+}
+
+func newDisplay(w io.Writer, brief bool) *display {
+	d := &display{w: w, log: w, live: console.Live(w), start: time.Now()}
+	switch f, ok := w.(*os.File); {
+	case brief:
+		d.log = io.Discard
+	case ok:
+		d.log = console.Log(f)
+	}
+	return d
+}
+
+// stage shows pr's stage beginning or its model done.
+func (d *display) stage(pr Progress) {
+	if pr.Message != "" {
+		return // the log shows its lines itself
+	}
+	head := fmt.Sprintf("[%d/%d] %s (%s)", pr.Item, pr.Items, pr.Use, pr.Model)
+	d.end()
+	switch pr.Stage {
+	case StagePrepare:
+		d.begin(head, "downloading and converting", "downloaded and converted")
+	case StageCompile:
+		d.begin(head, "compiling for the NPU", "compiled")
+	case StageDone:
+		if !d.live {
+			fmt.Fprintf(d.w, "%s: done\n", head)
+		}
+	}
+}
+
+func (d *display) begin(head, doing, as string) {
+	d.any = true
+	if d.live {
+		d.bar, d.as = console.NewBar(d.w, head+": "+doing), as
+		return
+	}
+	fmt.Fprintf(d.w, "%s: %s\n", head, doing)
+}
+
+func (d *display) end() {
+	if d.bar != nil {
+		d.bar.Done(d.as + " in " + console.Duration(d.bar.Elapsed()))
+		d.bar = nil
+	}
+}
+
+// finish ends the stage going on and shows the time of it all, or that there was nothing to do.
+func (d *display) finish(err error) {
+	if d.bar != nil {
+		d.bar.Done("stopped after " + console.Duration(d.bar.Elapsed()))
+		d.bar = nil
+	}
+	switch {
+	case err != nil:
+	case d.any:
+		fmt.Fprintf(d.w, "done in %s\n", console.Duration(time.Since(d.start)))
+	default:
+		fmt.Fprintln(d.w, "nothing to do")
+	}
 }

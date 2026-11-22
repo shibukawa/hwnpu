@@ -9,7 +9,7 @@
 - 画像のモデルは、入力から出力への IRON のグラフとして書き出す (`tools/amd/iron_graph.py`、Go の `iron.Graph`、`internal/llm/iron/graph.go`)。言語モデルの decode と prompt のプログラムとは別。書き出しの道具: `tools/amd/iron_anima.py`、`iron_chroma.py` (T5 と VAE の `iron_chroma_parts.py` は `--parts` で DiT の後に回る)、`iron_flux2klein.py`、`iron_flux3klein.py`。共通の部分は `iron_dit.py` (`Checkpoint`、`qparam`、`head_perm`、`rope_angles`、`share_banks`、`VaeStage`、`timestep_sinusoid`、`text_linear`)。書き出しのディレクトリは `NAME.amd-npu2` で、`model.json` とマニフェストを持つ。
 - **重みのバンク** (`variants`): 1 つの ELF がバンクを何組も持つ。DiT のブロックは数ブロックのグラフ 1 つと、組ごとのバンク (Anima: 28 ブロック = 4 ブロックのグラフ × 7 組)。
 - **`SwapVariants`** (既定): バンクを 1 組だけ確保し、組を回す前にその組の像をバンクに読む (arena は重みを先に、作業領域を後ろに置き、1 回の呼び出しの後に作業領域に残すものはない)。Anima 1024²: 固定の最大 3445 → 1236 MiB、時間 +2 %、バイト単位で同じ。`--resident-dit` で全部の組を常駐。文の符号器 (Qwen3、T5、Qwen3-VL) も同じく組にする。
-- **先読み** (`iron.GraphOptions.Prefetch`): 2 つ目のバンクを持ち、`Use(i)` の後に組 i+1 を裏で読み、次の `Use` はバンクを入れ替えるだけ。DiT の段に 2 つ目のバンクと 384 MiB の余裕 (`anima.prefetchMargin`: プログラムと制御コードも固定する) を足した量が、VAE のピーク以下か `anima.PrefetchFloor` (2 GiB) 以下のときだけ。`HWNPU_IRON_PREFETCH=0` で切る。Anima は 1 ステップ 0.5 秒の読み直しのうち 0.1 秒しか隠れない: 読み込みと NPU が同じメモリ帯域を使う。
+- **先読み** (`iron.GraphOptions.Prefetch`): 2 つ目のバンクを持ち、`Use(i)` の後に組 i+1 を裏で読み、次の `Use` はバンクを入れ替えるだけ。DiT の段に 2 つ目のバンクと 384 MiB の余裕 (`anima.prefetchMargin`: プログラムと制御コードも固定する) を足した量が、VAE のピーク以下か `anima.PrefetchFloor` (2 GiB) 以下のときだけ。`HWNPU_DEV=iron.prefetch=0` で切る。Anima は 1 ステップ 0.5 秒の読み直しのうち 0.1 秒しか隠れない: 読み込みと NPU が同じメモリ帯域を使う。
 - 先読みしない読み込みは 8 スレッド (`iron.readPrefix`): 5〜7 → 15 GB/s。
 - **`share_banks`**: 前のグラフと同じ重みが同じ順に並ぶグラフは自分のバンクの像を消し、`../GRAPH/` を指す (バイト単位で照らす)。そのため重みの配置は大きさにも行数にも依ってはいけない: **RoPE の表は入力** (`angles`、行 × head_dim、Go の `ropeAngles` がホストで作る、`TestRopeAngles`) にし、バンクに焼かない。`angles` のない古い書き出しも動く。
 - **`iron.GraphOptions.Barrier`**: 同じグラフの 2 回目の最初のコマンドが `ERT_CMD_STATE_TIMEOUT` になることがある (呼び出しごとの位置に K/V を書くグラフ、6 コマンドの Chroma の approximator)。同じ ELF を別のハードウェアコンテキストに読み、空のコマンドを先に回すと止まらない (irongraph `-barrier`)。
@@ -69,7 +69,7 @@ Anima の 4 ブロックのグラフ (1024²、下の変更の前) の内訳: �
   - ホストの段 (`iron.Graph.After`、`anima.hostNorms`): グラフの状態に名前を付け (`gn0.stats`、`gn0.row`) マニフェストの `buffers` から場所を引く。コマンドが終わるたびに、次の norm の統計が書かれていれば (NaN の印が消えていれば)、float64 で群の平均と分散を出し、a = γ/√(var + eps)、b = β − 平均·a を書く。統計の演算の直後でコマンドを切る。
   - `RowAffine`: y = x·a + b。a と b は bf16 の limb 2 本、計算は float32、bf16 へ 1 回だけ丸める (x·a と b は結果の何倍にもなる: この復号器では |平均|/標準偏差が 6.3 まで)。
   - 格子のまま計算する (0 のパッドは和に入らない。本当の画素数で割る)。norm と SiLU の後はパッドが 0 でなくなるので、画像の画素だけを新しい格子に写す。
-  - 1024² の 128 チャネルで約 157 ms → 数 ms。復号 512² 2.6 → 1.8 秒、1024² 8.5 → 7.0 秒、float32 との PSNR 52.6 dB。`graph.reference()` はホストの段を知らないので照合は NPU で (`HWNPU_KLEIN_DECODE=1` で `--noise` の潜在を復号、`--dump`)。
+  - 1024² の 128 チャネルで約 157 ms → 数 ms。復号 512² 2.6 → 1.8 秒、1024² 8.5 → 7.0 秒、float32 との PSNR 52.6 dB。`graph.reference()` はホストの段を知らないので照合は NPU で (`HWNPU_DEV=klein.decode=1` で `--noise` の潜在を復号、`--dump`)。
   - 前の形 (GEMM と RMSNorm の約 20 演算。1/√(var + eps) は群の行と定数の行の RMSNorm で) はホストが要らず、`--no-host-norm` で残る。
 - **潜在が 16 の倍数でない** (長方形。832 × 1248 で 104 × 156。`iron_anima.GridShape`、Go の `anima.GridShape`): 行の幅 `Wp` は W と詰め物 16 を 16 の倍数に。畳み込みは高さを 16 に切り上げた `Ha` を 16 行ずつ回り、画像の行だけを写す。中ほどの注意は画素を 256 の倍数に詰め、詰めたキーの点数に −30000 を足す (マスクは 1 の列とマスクの行の GEMM で 1 回だけ作る: 16384 列の行ごとの足し算は DMA の記述子が 16 を超える) (`attn_masked`)。正方形は前と同じ計算。
 - DMA の繰り返しは 64 まで (列の塊の数を抑える)。100 万画素の転置の GEMM は終わらないので 262144 画素ずつのコマンドに (Chroma 1024²)。

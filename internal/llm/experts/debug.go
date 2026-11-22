@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strings"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 )
 
-// DebugOpt reads an item of HWNPU_MOE_DEBUG, a list of items separated by commas, each NAME or
-// NAME=VALUE: "time" (or "1") prints what the experts took; "usage=FILE" adds the counts of the
+// DebugOpt reads the item moe.NAME of HWNPU_DEV (internal/dev): "time" prints what the experts took; "usage=FILE" adds the counts of the
 // experts each layer ran to FILE (Usage) when the experts close; "trace=FILE" writes every row's
 // experts in order (a line "LAYER ROWS E E E E" a row, for trying placements on, tools/moeusage);
 // "prefault=0" leaves their pages to the first runs, "prefault=wait" has every page in before the
@@ -20,25 +20,16 @@ import (
 // together (the values of a step at a time, bit for bit), "wave=0" a prompt's steps one after
 // another through every part instead of a part at a time for all of them (decode.Session.Steps).
 func DebugOpt(name string) (string, bool) {
-	for _, it := range strings.Split(os.Getenv("HWNPU_MOE_DEBUG"), ",") {
-		k, v, _ := strings.Cut(strings.TrimSpace(it), "=")
-		if k == "1" {
-			k = "time"
-		}
-		if k == name {
-			return v, true
-		}
-	}
-	return "", false
+	return devenv.Get("moe." + name)
 }
 
-// DebugTime is whether HWNPU_MOE_DEBUG asks for times.
+// DebugTime is whether HWNPU_DEV asks for the experts' times (moe.time).
 func DebugTime() bool {
 	_, ok := DebugOpt("time")
 	return ok
 }
 
-// traceFile is HWNPU_MOE_DEBUG's trace=FILE.
+// traceFile is HWNPU_DEV's moe.trace=FILE.
 type traceFile struct {
 	f *os.File
 	w *bufio.Writer

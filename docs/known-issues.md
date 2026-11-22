@@ -104,7 +104,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた ([docs/design/audio-models.md](design/audio-models.md))。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。[docs/design/audio-models.md](design/audio-models.md)
 - **今**: DAC は、どの機種でもオフラインで通る形 (r3) にした。prebuilt を作るなら、オフラインで乗る形で書く
 - **直ったら**: 何もしなくてよい
-- 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_AILOWER_CUT=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
+- 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_DEV=ailower.cut=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 

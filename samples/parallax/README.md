@@ -16,22 +16,26 @@ the window:               60 times a second, with the view the network last gave
 
 ```bash
 cd samples
-go run ./parallax models prepare                   # download, convert and compile the models
-go run ./parallax picture.png                      # the window, following your head with the camera
-go run ./parallax picture.png --head pointer       # the mouse stands in for your head (no camera)
+go run ./parallax models prepare                   # download, convert and compile the models first: the commands run only when it is done
+go run ./parallax show picture.png                      # the window, following your head with the camera
+go run ./parallax show picture.png --head pointer       # the mouse stands in for your head (no camera)
 go run ./parallax render picture.png -o deep.gif   # no window: the picture from a head going around
 ```
 
 | Command | What it does |
 |---|---|
-| `parallax PICTURE` | The window. `--layers 1` uses the depth alone (no picture model); `--head sweep` turns by itself; `--for 5m` closes after that long |
-| `parallax DIR` | A picture already in layers (`layers PICTURE --png DIR`): no models needed |
+| `parallax show PICTURE` | The window. `--layers 1` uses the depth alone (no picture model); `--head sweep` turns by itself; `--for 5m` closes after that long |
+| `parallax show DIR` | A picture already in layers (`layers split PICTURE --png DIR`): no models needed |
 | `parallax render PICTURE -o out.gif` | Writes the picture as seen from a head going around (`--frames`, `--width`, `--png DIR`) |
 | `parallax track` | The camera part alone: prints where your head is. `--frames a.png,b.png` uses pictures instead of a camera |
 | `parallax cameras` | The cameras, numbered: `--device 2` takes the second |
 | `parallax models`, `parallax status` | The models and what they take; this machine's NPU |
 
-The look: `--strength` (how far the nearest point moves), `--focus` (which depth stays put), `--far` (how far the far end of the depth is pulled apart), `--edge`, `--gain` (how far the view turns for a head's move), `--fov` (the camera's field of view).
+While the picture is made deep, the window shows what each step made, each for a few seconds at least: the depth (near warm, far cool); for each layer, the layer lifted out (it stays while the picture model draws, the panel saying how far) and the picture with what it hid drawn in; and last the layers put together. While a model loads, the picture is shown dim and still, and the panel's second line says what is being done to it (downloaded, compiled for the NPU, loaded, or the picture model opening its programs and reading the reference and the prompt), the time it has taken and, when it took a known time the last time here, the time left with a small bar. The picture stays in the corner, and with the camera on, so does what the camera sees with the face it found (its box, eyes, nose and mouth) and the head's place. The bar at the bottom is the whole making, to 100 %.
+
+Keys in the window: left/right or the mouse wheel change the head's gain (how far the view turns when you move your head: raise it when the picture seems to move too little), up/down the strength, D shows the depth, Q quits.
+
+The look: `--strength` (how far the nearest point moves), `--focus` (which depth stays put), `--far` (how far the far end of the depth is pulled apart), `--relief` (how deep a near layer is inside itself: 1 as the depth says, 0 flat like a card), `--round` (how much rounder a near layer is made from its outline in, so that an animal stands out as a body), `--edge`, `--gain` (how far the view turns for a head's move), `--fov` (the camera's field of view).
 
 Pictures with clear layers work best: a figure before a landscape, things at several depths.
 

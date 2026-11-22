@@ -486,15 +486,15 @@ func TestIntelIR(t *testing.T) {
 	}
 }
 
-// The real PLaMo-Embedding-1B (HWNPU_PLAMO_DIR: config.json, tokenizer.model and
+// The real PLaMo-Embedding-1B (HWNPU_TEST_PLAMO_DIR: config.json, tokenizer.model and
 // model.safetensors) lowered to OpenVINO IR gives the sentence embeddings (the mean of the rows
 // after the BOS, as internal/chat pools them) that the fp16 MIL program gives with milcpu: the
 // same in fp16, and with the quantization's error in int8 and int4. Needs HWNPU_OV_PYTHON. The
 // lut4 and lut8 programs, which the Neural Engine runs, are measured the same way with milcpu.
 func TestIntelIRCheckpoint(t *testing.T) {
-	dir, py := os.Getenv("HWNPU_PLAMO_DIR"), ovcpu.Python()
+	dir, py := os.Getenv("HWNPU_TEST_PLAMO_DIR"), ovcpu.Python()
 	if dir == "" || py == "" {
-		t.Skip("HWNPU_PLAMO_DIR or HWNPU_OV_PYTHON is not set")
+		t.Skip("HWNPU_TEST_PLAMO_DIR or HWNPU_OV_PYTHON is not set")
 	}
 	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
 	if err != nil {

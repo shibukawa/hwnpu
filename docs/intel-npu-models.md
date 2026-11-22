@@ -271,7 +271,7 @@ P1〜P3 は Mac だけで進められる。P4 には Intel 機が要る。
 
 all-MiniLM-L6-v2 (隠れ層 384、6 層) は 4 ビットに弱い。int4 でも 0.93 で、文埋め込みに使うなら int8 にしたほうがよい。**Mac の既定 (lut4) では 0.23 で、ほとんど使えない**。BERT の既定の形式は見直しが要る (Intel 向けの作業とは別の問題)。
 
-PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_PLAMO_DIR`): 3 つの文 (日本語 2、英語 1、`-seq 48`) の文埋め込み (BOS の後の行の平均) を、fp16 の MIL を milcpu で動かした結果と比べ、3 つのうち最も低いコサイン類似度を取った。
+PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_TEST_PLAMO_DIR`): 3 つの文 (日本語 2、英語 1、`-seq 48`) の文埋め込み (BOS の後の行の平均) を、fp16 の MIL を milcpu で動かした結果と比べ、3 つのうち最も低いコサイン類似度を取った。
 
 | 形式 | 最も低いコサイン類似度 |
 |---|---|
@@ -299,7 +299,7 @@ P1 は以上で終わり。
 - **hwnpu-chat・hwnpu-chat agent の初回変換** (`chat.Prepare`、`PrepareEmbedder`)。Intel では `<model>/intel/` に `.xml` で書き、名前に形式を入れる (`lfm3-int8-c4096-q8.xml`)。Core ML の変換結果の場所と名前は今まで通り。`--backend` と `--format` を足した。Intel では 1 トークンの段も 1 つのグラフにする (Core ML は 2 分割)。
 - **`runner` のメタデータ**: manifest の `meta`、なければ IR の `rt_info` (`ovir.ReadRTInfo`) か mlpackage から読む (`llm.ReadMeta`)。画像・音声のエンコーダもこれで IR から読める。
 - **Level Zero の引数名** (10 節の未確定事項への備え)。ドライバの返す名前が IR の名前でなければ、debug 名、tensor 名 (`associated_tensor_names`) の順に IR の名前を探し、なければ IR の Parameter・Result の順番で対応させる (`levelzero.argNames`)。
-- **`openvino` バックエンド** (`internal/backend/openvino`、確認用)。IR を OpenVINO で動かす。Python のプロセス (`serve_ir.py`、埋め込み) とバッファをメモリマップしたファイルで共有し、Level Zero と同じ名前の規則で引数を返す。`-backend openvino` (または `HWNPU_BACKEND=openvino`) と `HWNPU_OV_PYTHON` で使う。`HWNPU_OV_DEVICE=NPU` にすると OpenVINO の NPU プラグインで動くので、実機で Level Zero の経路と比べられる。x86 の CPU では、圧縮した重みの MatMul で活性化を int8 に量子化する既定 (dynamic quantization) が誤差を 1% ほど足すので切っている (`tools/ov/run_ir.py` も同じ。これで `ovlower` と `plamo` の IR テストが x86 でも通るようになった)。
+- **`openvino` バックエンド** (`internal/backend/openvino`、確認用)。IR を OpenVINO で動かす。Python のプロセス (`serve_ir.py`、埋め込み) とバッファをメモリマップしたファイルで共有し、Level Zero と同じ名前の規則で引数を返す。`-backend openvino` (または `HWNPU_BACKEND=openvino`) と `HWNPU_OV_PYTHON` で使う。`HWNPU_DEV=ov.device=NPU` にすると OpenVINO の NPU プラグインで動くので、実機で Level Zero の経路と比べられる。x86 の CPU では、圧縮した重みの MatMul で活性化を int8 に量子化する既定 (dynamic quantization) が誤差を 1% ほど足すので切っている (`tools/ov/run_ir.py` も同じ。これで `ovlower` と `plamo` の IR テストが x86 でも通るようになった)。
 - **パディングの行**: `decode` は、1 回の呼び出しの残りの行を 0 ではなく最後のトークンの行で埋める。Gemma 4 の RMSNorm の epsilon (1e-6/64²) は fp16 で 0 になるので、0 の行が 1/√0 = ∞ になり、注意の重み 0 × NaN でトークンの行まで NaN になっていた。OpenVINO の CPU で見つかった。NPU も fp16 で計算するので、実機でも起きたはず。
 
 確かめたこと (Linux x86、OpenVINO 2026.4 の CPU、推論の精度 f32):
@@ -314,7 +314,7 @@ P1 は以上で終わり。
 | hwnpu-chat (実物の LFM3-1.7B、`--backend openvino`) | 変換 (1 プログラム 10 秒ほど) → 読み込み → 対話 | 正しく答える。int4 で 37 トークン/秒 (20 コアの CPU) |
 | hwnpu-chat agent (同じ、既定の段 4096/16320、下書き 8) | `calc.go` のバグを直す課題 | ツールを呼び、ファイルを直した |
 
-LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_LFM3_DIR`)。日本語と英語の 52 トークンを 1 トークンずつ読み、各位置で最も確からしい次のトークンが fp16 の IR と同じだった数と、ロジットの相対誤差:
+LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_TEST_LFM3_DIR`)。日本語と英語の 52 トークンを 1 トークンずつ読み、各位置で最も確からしい次のトークンが fp16 の IR と同じだった数と、ロジットの相対誤差:
 
 | 形式 | 次のトークンが fp16 と同じ | ロジットの相対誤差 (平均 / 最悪) |
 |---|---|---|

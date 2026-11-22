@@ -16,6 +16,7 @@ All numbers are from a Ryzen AI 9 365 (Strix Point) unless noted.
 | `lfm3` | `iron_lfm3.Lfm3` (hwnpu's; IRON has none) | LFM3-1.7B |
 | `lfm3vl`, `lfm3audio`, `lfm3omni` | `iron_lfm3vl`, `iron_lfm3audio`, `iron_lfm3omni` | LFM3-VL-2B, LFM3-Audio-2B, LFM3-Omni-2B |
 | `plamo3` | `iron_plamo3.Plamo3` (hwnpu's) | PLaMo 3 Translate 0.8B, 2B, 8B |
+| `ouro` | `iron_ouro.Ouro` (hwnpu's; IRON has none) | Ouro-1.4B-Thinking, evaluated, not in models.yaml ([model-estimation.md](../model-estimation.md)); 2.6B not exported |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN: `iron_gdn.py`) | Qwen3.5-0.8B, 2B, 4B |
 
 The current export lines are `amd_export` in [models.yaml](../../models.yaml):
@@ -149,6 +150,7 @@ Current decode (q4 exports unless noted):
 | Qwen3.5-0.8B q6 | | 70.9 ms (14.1 tok/s) | 1069 MiB |
 | Qwen3.5-2B q6 | | about 120 ms (before the GDN zero-blob fix) | 1862 MiB |
 | Qwen3.5-4B q4 | | 157–162 ms (6.2 tok/s) | 3727 MiB |
+| Ouro-1.4B-Thinking q6 | | 268–357 ms (3.7–2.8 tok/s; 96 layer runs a token) | 2.79 GiB |
 
 Energy: E2B q4 1.46 J/token, LFM3-1.7B q4 1.05 J/token (before the fusions).
 
@@ -160,7 +162,7 @@ Left in the LFM3 decode (226 reconfigurations): QGEMV configs are 75–97 KB (ab
 
 - KV caches sit by position in the host-visible arena bank, laid out alike in every version (E2B: 15 layers × keys/values, 18 KiB a position). `Mark`/`Rewind` move only the position: the next call overwrites.
 - `iron.Model.ExportRows` / `ImportRows` copy a position range; the prompt store and `Save` use them through `rowSource` (`RowBytes`, `ExportRows`). Store key: model name, manifest mtime, bank size. A 2736-token item is 51 MB. After a restart the same request: 13.2 s → 0.0 s.
-- Models with state (LFM3's convolutions, Qwen3.5's GDN): IRON's `Checkpoints` keep a slot per chunk boundary (slot k = state after position k × chunk). `StateAt(pos)` / `SetStateAt` copy only the slot a call from `pos` reads (LFM3 13 layers: 312 KiB); with the KV rows that restores `pos` fully. `Prompt` cuts calls at chunk boundaries. Marks, `Rewind`, `Save` and the store carry the copy. `TestStateRewindOnDevice` (`HWNPU_IRON_RECURRENT`).
+- Models with state (LFM3's convolutions, Qwen3.5's GDN): IRON's `Checkpoints` keep a slot per chunk boundary (slot k = state after position k × chunk). `StateAt(pos)` / `SetStateAt` copy only the slot a call from `pos` reads (LFM3 13 layers: 312 KiB); with the KV rows that restores `pos` fully. `Prompt` cuts calls at chunk boundaries. Marks, `Rewind`, `Save` and the store carry the copy. `TestStateRewindOnDevice` (`HWNPU_TEST_IRON_RECURRENT_EXPORT`).
 - `Resumable()` refuses exports with rings (`Rings > 0`) or inconsistent slots; the engine does not load a non-restartable export without it.
 - `Engine.markTurns`: for state models that are not restartable, prefill also marks after the last turn's header (`<|im_start|>assistant\n`), because the chat template drops earlier thinking and the common prefix ends at the previous assistant turn.
 - `ironSession.StepTokens`: a short read goes through decode steps when tokens × step time < chunk time (the session measures both).
@@ -199,11 +201,11 @@ A prompt chunk checking 2–8 tokens costs a full chunk (3–9 decode steps): Qw
 - `iron.Model.Keep`: when fewer rows are accepted, the host copies row kept−1 of `rows_state` to the slot (Qwen3.5-0.8B 18 layers × 1.1 MB, 1.5 ms). Extra K/V rows are overwritten later. Checks across a chunk boundary use decode steps (`SpeculateTokens`).
 - Control code: verify ELF 30 MB beside decode 26 MB in the 64 MiB heap; otherwise per call (`perCall`).
 - Pass: `ironlm -verify` — 3 rows' logits bit for bit 3 decode steps; steps after `Keep` bit for bit.
-- Qwen3.5-0.8B q6 (at 82 ms decode): verify 104.5 ms (1.27 steps). With 2 prompt-lookup drafts (`LookupDraft`): code 82.4 → 72.1 ms/token, Japanese prose 82.5 → 61.7. `hwnpu-chat -iron` uses the version when present; `HWNPU_IRON_DRAFTS=0` turns it off. In the catalog only Qwen3.5-0.8B and 2B carry `--verify 3`.
+- Qwen3.5-0.8B q6 (at 82 ms decode): verify 104.5 ms (1.27 steps). With 2 prompt-lookup drafts (`LookupDraft`): code 82.4 → 72.1 ms/token, Japanese prose 82.5 → 61.7. `hwnpu-chat -iron` uses the version when present; `HWNPU_DEV=iron.drafts=0` turns it off. In the catalog only Qwen3.5-0.8B and 2B carry `--verify 3`.
 
 ### Selective draft checks
 
-The three-row check now costs 1.96 decode steps for Qwen3.5-0.8B and 1.67 for 2B. On Ryzen AI 9 365, checking every draft made prose slower than decoding without drafts. The AMD-only `chat.draftPolicy` tracks the acceptance rate q by the length of the preceding match and checks only when `1 + q + q²` exceeds the check cost (default 1.8 decode steps, with a 3% margin). Drafts it skips still update q when compared with later tokens. `HWNPU_DRAFT_POLICY=0` restores checking every draft; `HWNPU_DRAFT_RATIO` changes the cost and `HWNPU_DRAFT_TRACE=FILE` records decisions. Apple and Intel are unchanged.
+The three-row check now costs 1.96 decode steps for Qwen3.5-0.8B and 1.67 for 2B. On Ryzen AI 9 365, checking every draft made prose slower than decoding without drafts. The AMD-only `chat.draftPolicy` tracks the acceptance rate q by the length of the preceding match and checks only when `1 + q + q²` exceeds the check cost (default 1.8 decode steps, with a 3% margin). Drafts it skips still update q when compared with later tokens. `HWNPU_DEV=draft.policy=0` restores checking every draft; `HWNPU_DEV=draft.ratio` changes the cost and `HWNPU_DEV=draft.trace=FILE` records decisions. Apple and Intel are unchanged.
 
 On 300-token, temperature-0 runs, prose on the 0.8B model went from 14.6 tok/s with every draft checked to 18.8 with the policy (18.8 without drafts); on 2B, 9.6 → 11.5 (11.2 without drafts). Copy-heavy answers retained their gains: code on 0.8B 26.9 → 27.2 tok/s, JSON on 2B 14.2 → 13.6. Temperature-0 output can differ between drafted and undrafted decoding; this is not investigated.
 
@@ -267,6 +269,7 @@ Current fused exports, mean / median / p95 over 320 rows after 256 tokens: LFM3-
 
 - **LFM3** (`iron_lfm3.py`): conv layer = `in_proj` split B, C, x; `CausalConv1d` (width 7) on B·x with state in `Checkpoints`; × C; `out_proj`. Full attention: per-head q/k RMSNorm, RoPE with the back half of frequencies zero ("zero-tail"), per-head sigmoid gate as `gate_proj` rows repeated per head column and an elementwise product. Sliding layers: window 256, θ 10000. Sandwich norm, SwiGLU, final `embedding_norm`, tied head.
 - **PLaMo 3** (`iron_plamo3.py`, check: `iron_plamo3_check.py`): RMSNorm `(offset + w)·x` with per-norm offsets (1; after attention 1/5; after MLP 1/5^1.5) added into the weights in float32 then rounded to bf16. One layer in 8 global (7, 15, 23), others a 2048 window. Window RoPE θ 10000; global θ 10⁶ with YaRN (factor 256, original 4096, beta 32/1; built from `rope_scaling_factor` and `initial_context_length`, not config.json's `rope_parameters`), `rope_attention_scaling` 0.1 ln 256 + 1. Untied `lm_head`, no embedding scale. Tokenizer and PFML3 chat format: [LLM models](llm-models.md).
+- **Ouro** (`iron_ouro.py`): a looped decoder, its 24 layers run four times a token with the same weights ([LLM models](llm-models.md)). IRON's `SandwichLayer` with Ouro's norms renamed (`input_layernorm_2` → `post_attention_layernorm`, `post_attention_layernorm` → `pre_feedforward_layernorm`, `post_attention_layernorm_2` → `post_feedforward_layernorm`). `self.layers` is `model.layers` four times; `Ouro.layer` gives a pass after the first its own `KVCache` through the call (`call.ouro_cache`, buffers `passes.P.layers.L.cache.keys`, which the runtime reads as KV caches by `.cache.`) and runs `model.norm` after a pass's last layer. The weights stay in the banks once (IRON's `walk` takes a module once). The checkpoint's `model.early_exit_gate` is taken out of the tree (IRON refuses extra weights). q6 MLP and head with gate and up as one table (`QGEMVGlu`, `HWNPU_OURO_FUSE_GLU=0`), q8 attention: host rounding KL over the five evaluation texts (`q4_gptq.py ouro --method rtn`, transformers 4.54) q4 0.130, q6 0.013, q8 0.0012. Context 2048: the caches are 96 layers × 8 KiB a position (1.6 GB at 2048), the banks 2.86 GB; export 43–48 s, peak RSS 7.7 GB. A prompt chunk's command starts every 12 layer runs (`install_cuts`, `HWNPU_OURO_LAYERS_PER_COMMAND`): the passes read the same weights, so IRON's cuts (by a command's scratchpad words) never came, and a chunk was one command of 233 MB of control code (160 MB in bf16), which the 64 MiB device heap refused (`control code buffer: CREATE_BO: resource temporarily unavailable`; other exports' largest command is 37 MB). Now 8 commands of about 29 MB; the decode step stays one (36 MB). On a Ryzen AI 9 365 (2026-11-22): against Hugging Face (`ironlm -forced` on readme.md, 256 + 64 tokens, `forced_logits.py` with transformers 4.54) q6 KL 0.026 / median 0.0036 / p95 0.108, top-1 98.4 %; bf16 KL 0.0022, 98.4 %. q6 decode 268 ms a token at 300 (3.6–3.7 tokens/s), 312 ms at 1024, 357 ms at 2047; bf16 321 ms. A chunk of 1024 2.50 s from 0, 3.11 s from 1024 (409 / 329 tokens/s; each command well under the 2 s limit). Pinned 2.79 GiB (`drm-total-memory`), process 0.82 GB, load 1.1 s. hwnpu-chat runs it (3.6 tokens/s greedy).
 - **Gemma 4**: IRON's application; hwnpu replaces the prompt forward (`Gemma4Tail`) and moves PLE and embeddings to the host (`iron_hostple`). Model name stays `Gemma4` (`hwnpu_name`), which picks the chat format.
 - **Qwen3.5 dense**: see [Qwen](llm-qwen.md) for the model; GDN operator details are shared with Qwen3.6 ([MoE](moe.md)).
 
@@ -278,7 +281,7 @@ Current fused exports, mean / median / p95 over 320 rows after 256 tokens: LFM3-
 - `forced_logits.py` on LFM3: the checkpoint's `auto_map` makes transformers load remote code; pass a directory with `auto_map` removed from config.json.
 - `ironlm -record` writes an export's own logits as `check/`; another export run on it compares (used for every refactor: "bit for bit the same").
 - `ironlm -depth` times a chunk and a step at each boundary up to the context; `-bench` times few-token calls; `-steps N` decode speed; run old and new alternately, NPU otherwise idle.
-- Per-op timing: `--command-per-step` + `HWNPU_IRON_TIMING=1` (sums about 10 % above a normal export).
+- Per-op timing: `--command-per-step` + `HWNPU_DEV=iron.timing=1` (sums about 10 % above a normal export).
 - Check every tower with `hwnpu-chat` (an image and a clip) after any export change.
 - Check downloaded checkpoints' sha256 against `x-linked-etag`: LFM3-Audio and Omni safetensors once had bit flips that no random-weight check found.
 

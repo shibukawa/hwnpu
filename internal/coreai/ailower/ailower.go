@@ -28,6 +28,8 @@ import (
 	"strings"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -224,7 +226,7 @@ func lowerMany(w *mlirbc.Writer, fns []*milspec.Function, weights []io.ReaderAt,
 
 func newWriter() *mlirbc.Writer {
 	w := mlirbc.NewWriter(Producer, map[string][]byte{"aicode": {0x05}})
-	if os.Getenv("HWNPU_AILOWER_TRACE") != "" {
+	if devenv.On("ailower.trace") {
 		w.Trace = func(id int, name string, operands, results []int) {
 			var o, r []string
 			for _, t := range operands {
@@ -486,8 +488,8 @@ func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block, name string)
 		l.vals[argNames[i]] = ins[i]
 	}
 	outputs := block.GetOutputs()
-	cut := 0 // HWNPU_AILOWER_CUT=N: only the first N operations, the last one's value the output
-	fmt.Sscan(os.Getenv("HWNPU_AILOWER_CUT"), &cut)
+	cut := 0 // HWNPU_DEV=ailower.cut=N: only the first N operations, the last one's value the output
+	fmt.Sscan(devenv.Value("ailower.cut"), &cut)
 	for i, op := range block.GetOperations() {
 		if cut > 0 && i >= cut {
 			break

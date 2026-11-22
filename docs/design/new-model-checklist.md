@@ -119,7 +119,7 @@ What helped:
 - **A norm of rows with outlier channels**: take the mean square of the max-divided copy, but multiply x itself by rsqrt / max (`chroma/mil.t5Norm`)
 - **The NE's rules** (`aicheck rules`, measured on an M2; Core AI's CPU has none of them, see [apple-coreai.md](apple-coreai.md)):
   - a linear's / convolution's sum **and partial sums** must stay under 2^15 (reduce_sum keeps the full range)
-  - a slice of the last axis starting at 1..14 mod 32 turns values over 4094 into Inf: run `aicheck lint` (or `HWNPU_AILOWER_NOTES=1`)
+  - a slice of the last axis starting at 1..14 mod 32 turns values over 4094 into Inf: run `aicheck lint` (or `HWNPU_DEV=ailower.notes=1`)
   - products under fp16's normal range are flushed inside a matmul, not elementwise
   - `ailower` already rewrites softplus and a matmul of inner dimension 1
 
@@ -141,8 +141,8 @@ A model whose parts pass 3.1–3.4 can still fail on Core AI. Check on the M1 to
 
 - **Every op needs a lowering.** `aicheck lower OUT PKG` stops at the first missing one. Write a new one as coreai-torch does: convert a small torch module with coreai-torch, print the program, read the bytecode with `tools/coreai/bcdump`
 - **Compare every part with the CPU interpreter on Core AI and on Core ML**: `aicheck run -cpu PKG...` and `aicheck run -cpu -coreml PKG...`. A part all on the NE can be wrong on Core AI alone (PP-OCR's detector 0.05 against 0.9999)
-- **Find the op with `HWNPU_AILOWER_CUT=N aicheck run -cpu PKG`** (`AICHECK_WORST=1`). Look at what the error is, not only where it is largest (fit a line between input and output: the NE multiplied where it should divide). Test against the real part, not a small copy
-- **Tell lowering errors from the NE's with `HWNPU_COREAI_UNITS=cpu`.** Traps: Core AI's CPU overflows a `reduce_mean` whose sum passes fp16; the CPU interpreter implements only what it implements (`elu` alpha 1 alone); `runner` computes in fp32 unless `HWNPU_CPU_F16=1`, aicheck with fp16 rounding: decide the reference's precision first
+- **Find the op with `HWNPU_DEV=ailower.cut=N aicheck run -cpu PKG`** (`AICHECK_WORST=1`). Look at what the error is, not only where it is largest (fit a line between input and output: the NE multiplied where it should divide). Test against the real part, not a small copy
+- **Tell lowering errors from the NE's with `HWNPU_COREAI_UNITS=cpu`.** Traps: Core AI's CPU overflows a `reduce_mean` whose sum passes fp16; the CPU interpreter implements only what it implements (`elu` alpha 1 alone); `runner` computes in fp32 unless `HWNPU_DEV=cpu.f16=1`, aicheck with fp16 rounding: decide the reference's precision first
 - **NE pitfalls**: `divide_v1` by a constant is miscomputed (ailower writes a product by the reciprocal); `(v + c) - c` is folded to `v` even with c an input; a width convolution with kernel over 1 and 512+ channels whose input is computed comes out wrong (run it along the height); dilated convolutions are wrong at some lengths (lay frames out as rows of the dilation); an explicit `pad` before a convolution went wrong; a (1×1)·(1×N) matmul is wrong on the M3 (use mul)
 - **Several functions in one `.aimodel` compile as one**: one function the compiler fails takes all of them off the NE. Look at each size's part alone first, and try small rewrites in `aicheck probe` (a `tile` channel repeat → a 1 × 1 convolution of 0/1 weights). Adjacent lut tables must not be identical (`coreai-build` left a part off the NE)
 - **Compare starts with both caches warm** (three starts of each backend in new processes, right after a run of each)
@@ -161,9 +161,9 @@ Details in [moe.md](moe.md).
 - **In the architecture**: implement `llm.Routed`; a part ends where a MoE layer begins (`moe_x_N`, `moe_logits_N` in fp16), the next starts adding `moe_o_N`; cut by `llm.PlanRouted`
 - **Count rows**: drafts are off and one tier runs for a MoE model; a prompt call runs each chosen expert once over its rows (`experts.BuildRows`), 128 tokens a call
 - **Count which experts run** over many kinds of text (`tools/moeusage`: `collect.sh MODEL OUT`, `analyze.py OUT`). Experts every kind runs go to models.yaml's `experts_core`; check the core pays at the places you ship (Qwen3.6 on AMD has none)
-- **Host-run experts (`llm.HostRouted`)**: measure reading and computing apart (`HWNPU_MOE_DEBUG=1`). Measure the SSD first. Do not compare settings on one repeated question (the page cache warms): use a list of questions of different fields and languages (`--prompt-cache off`). Look at a CPU profile (`mincore` and the kernel took 66 %). Time with the NE's pause between layers (`HWNPU_QWEN36_GAP`) and a long prompt (20+ steps). Check the free disk before deriving an MXFP4 checkpoint (`hwnpu-dev mxfp4`)
+- **Host-run experts (`llm.HostRouted`)**: measure reading and computing apart (`HWNPU_DEV=moe.time`). Measure the SSD first. Do not compare settings on one repeated question (the page cache warms): use a list of questions of different fields and languages (`--prompt-cache off`). Look at a CPU profile (`mincore` and the kernel took 66 %). Time with the NE's pause between layers (`HWNPU_TEST_QWEN36_GAP`) and a long prompt (20+ steps). Check the free disk before deriving an MXFP4 checkpoint (`hwnpu-dev mxfp4`)
 - **Compare generated text from stderr**: `hwnpu-chat` writes thinking there, so a short run's stdout is empty. Keep measuring binaries' names (Core AI's cache is per process name, 1.8 GB a model)
-- **On AMD, experts that do not fit go in places** (`iron_export_lm.py --expert-places P`): check with `HWNPU_MOE_DEBUG=check` and against an export with every expert placed; give a 16 GB machine a `variants` entry; run by the model's name (only the name gives the core and counts)
+- **On AMD, experts that do not fit go in places** (`iron_export_lm.py --expert-places P`): check with `HWNPU_DEV=moe.check` and against an export with every expert placed; give a 16 GB machine a `variants` entry; run by the model's name (only the name gives the core and counts)
 - **Check a model that is not MoE stays as it was** (same text, same speed, not converted again)
 
 ## 4. The AMD (IRON) and Intel forms
@@ -214,7 +214,7 @@ Details in [amd.md](amd.md), [amd-llm.md](amd-llm.md) and [image-amd.md](image-a
 
 | Method | Lesson |
 |---|---|
-| Count the decode step's operators and switches first | `model.record().steps`, `HWNPU_EXPORT_STEPS=1` and `elfconfigs`; time each with `--command-per-step` and `HWNPU_IRON_TIMING` (a command costs about 0.1 ms of its own). Read times only from that export |
+| Count the decode step's operators and switches first | `model.record().steps`, `HWNPU_EXPORT_STEPS=1` and `elfconfigs`; time each with `--command-per-step` and `HWNPU_DEV=iron.timing` (a command costs about 0.1 ms of its own). Read times only from that export |
 | **Fewer operators in the decode step** | Bias and residual in the GEMV (`into_linear`), gate and up as one table (`QGEMVGlu`), sandwich norms as one (`SandwichAdd`), one RoPE for q and k, short convolution as one (`ShortConvStep`), state slots read in place (`slots=`), QGEMV on one core a column |
 | **Fewer operators in a prompt chunk** | One short-convolution operator (`ShortConvChunk`, `GdnConvChunk`). Merging small configurations (RMSNorm, add) does not pay |
 | A decode step as one resident array (`GptOssStep`) | Removes reloads (gpt-oss 79 → 49 ms); costs a core program within 16 KB and every operand declared every step. An `array=True` parameter that differs by layer makes an array a layer: read the commands' times after any export change |
@@ -325,7 +325,7 @@ Details in [memory-and-power.md](memory-and-power.md).
 
 | What to measure | Tools |
 |---|---|
-| One call | `TestCallTimes` (`HWNPU_CALL_PKGS`) |
+| One call | `TestCallTimes` (`HWNPU_TEST_CHAT_CALL_PKGS`) |
 | Generation, prompts, startup (second start) | `hwnpu-dev generate`, `hwnpu-chat`'s log |
 | Comparing formats | `hwnpu-dev formats` |
 | AMD GEMV, power | `tools/amd/gemvbench`, `hwnpu-dev powerbench` |
@@ -384,7 +384,7 @@ Do not decide by KL alone. Put answers next to bf16 / fp16 for the model's use:
 
 In practice: fp16 comparison programs double the disk (remove after); Core ML and Core AI make a cache per process name (several GB each); a stalled download never times out; `hwnpu-dev formats` shows an unsplit program's weights as 0.00 GiB.
 
-**The record**: the model's facts, numbers, what was adopted and what was not (with why) in its topic file under `docs/design/`; a row in [performance.md](performance.md); models.yaml's measured values (section 11). What could not be measured goes into `docs/handoff-*.md` with what to bring, the commands and the expected values.
+**The record**: the model's facts, numbers, what was adopted and what was not (with why) in its topic file under `docs/design/`; a row in [performance.md](performance.md); models.yaml's measured values (section 11). What could not be measured goes into `docs/handoff-*.md` with what to bring, the commands and the expected values. Whether it went into models.yaml or not, a section in [model-estimation.md](../model-estimation.md): the verdict and why, what it was compared with, where its code stays.
 
 ## 10. Values for combining it as a part
 
@@ -421,7 +421,7 @@ A model is not done until a name, a family or a use prepares and runs it on ever
 
 | Field | What | How | Pitfalls |
 |---|---|---|---|
-| `bytes` | The download | Sum of HF's `lfs.size` for the files fetched. On AMD's NPU, where preparation fetches the export from the sources instead: the export's size as the sources hold it, in a vendor table (`{amd: 12.50e9, apple: 1.6e10}`). That is `pack.size` of the entry's `entry.json` when the entry is packed (`files.tar.zst`), else the sum of its `files` (`hwnpu-dev cache ls` prints the unpacked size) | GB is 10⁹; `du -h` prints GiB. The export on the disk is not the download: a packed one is smaller (FLUX.2 klein 16.0 GB on the disk, 12.5 GB packed). An export of pictures kept as files holds a program of each size with the weights, several times the checkpoint (DA3MONO-LARGE 6.59 GB against 1.4 GB). A vendor the table leaves out takes the largest value |
+| `bytes` | The download | Sum of HF's `lfs.size` for the files fetched. Where preparation fetches the export from the sources instead (AMD's NPU; Apple's Core AI exports of the image models): the export's size as the sources hold it, in a vendor table (`{amd: 12.50e9, apple: 7.87e9}`), on Apple with the largest chip's prebuilt programs added. That is `pack.size` of the entry's `entry.json` when the entry is packed (`files.tar.zst`), else the sum of its `files` (`hwnpu-dev cache ls` prints the unpacked size) | GB is 10⁹; `du -h` prints GiB. The export on the disk is not the download: a packed one is smaller (FLUX.2 klein 16.0 GB on the disk, 12.5 GB packed). An export of pictures kept as files holds a program of each size with the weights, several times the checkpoint (DA3MONO-LARGE 6.59 GB against 1.4 GB). A vendor the table leaves out takes the largest value |
 | `disk` | What stays on the disk to run | The conversion unpacked plus its tables, by vendor (`{amd: 2.28e9}`): the sum of `files` of the entries. Written by `hwnpu-dev hf sizes --write models.yaml` from the sources (AMD: the export of the model itself, not its variants'; Core AI: only exports at the model's version, so after a Mac ran it once) | Not the checkpoint (only converting reads it), nor Core AI's own compiled programs on a Mac (outside hwnpu's cache). A vendor the table leaves out is unknown (`-` in `hwnpu-chat list`), not the largest value. Preparing needs `bytes` and `disk` at once for a while |
 | `memory` | The peak while running | Sample every 0.1 s over a whole run (`tools/memwatch`; AMD: accel mappings + RSS) | The peak of the run, not after loading (text stage, VAE) |
 | `machine` | Least machine memory the family recommends it for | `memory` + room for the OS and apps | Keep models of the same size alike |

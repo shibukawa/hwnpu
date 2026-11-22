@@ -13,12 +13,12 @@ import (
 	"github.com/shibukawa/hwnpu/internal/onnx"
 )
 
-// TestBisect compares values of the graph (HWNPU_DETECT_AT, names separated by commas) on the
+// TestBisect compares values of the graph (HWNPU_TEST_DETECT_AT, names separated by commas) on the
 // NPU and on the CPU interpreter (fp32) from the reference's input: where the NPU drifts.
 func TestBisect(t *testing.T) {
-	path, ref, at := os.Getenv("HWNPU_DETECT"), os.Getenv("HWNPU_DETECT_REF"), os.Getenv("HWNPU_DETECT_AT")
+	path, ref, at := os.Getenv("HWNPU_TEST_DETECT_FILE"), os.Getenv("HWNPU_TEST_DETECT_REF"), os.Getenv("HWNPU_TEST_DETECT_AT")
 	if path == "" || ref == "" || at == "" {
-		t.Skip("HWNPU_DETECT, HWNPU_DETECT_REF and HWNPU_DETECT_AT are not set")
+		t.Skip("HWNPU_TEST_DETECT_FILE, HWNPU_TEST_DETECT_REF and HWNPU_TEST_DETECT_AT are not set")
 	}
 	g, err := onnx.Load(path)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestBisect(t *testing.T) {
 	}
 	defer d.Close()
 	for _, name := range strings.Split(at, ",") {
-		p := &onnx.Program{G: g, Inputs: []onnx.ValueInfo{{Name: g.Inputs[0].Name, Shape: []int{1, 3, Size, Size}}}, Outputs: []string{name}, Axis: -1, ExpSigmoid: os.Getenv("HWNPU_DETECT_EXP") != "0"}
+		p := &onnx.Program{G: g, Inputs: []onnx.ValueInfo{{Name: g.Inputs[0].Name, Shape: []int{1, 3, Size, Size}}}, Outputs: []string{name}, Axis: -1, ExpSigmoid: os.Getenv("HWNPU_TEST_DETECT_EXP") != "0"}
 		dir := filepath.Join(t.TempDir(), "p.mlpackage")
 		if _, err := llm.WritePart(dir, p, nil, llm.Options{Format: "fp16"}, nil); err != nil {
 			t.Fatal(err)

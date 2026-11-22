@@ -14,19 +14,19 @@ mic → vad → transcribe → heard → commands → translate → said → spe
 
 ```bash
 cd samples
-go run ./interpreter models prepare            # download, convert and compile the models (about 11 GB)
-go run ./interpreter talk.wav                  # a recording: Japanese speech to English speech, on the speaker
-go run ./interpreter --mic                     # the microphone, until Ctrl-C or "終わり"
+go run ./interpreter models prepare            # download, convert and compile the models first (about 11 GB): the commands run only when it is done
+go run ./interpreter run talk.wav                  # a recording: Japanese speech to English speech, on the speaker
+go run ./interpreter run --mic                     # the microphone, until Ctrl-C or "終わり"
 go run ./interpreter say こんにちは              # a text, translated and spoken
-go run ./interpreter talk.wav -o english.wav   # into a WAV file instead of the speaker
+go run ./interpreter run talk.wav -o english.wav   # into a WAV file instead of the speaker
 ```
 
 The interpretation is played on the speaker (through [oto](https://github.com/ebitengine/oto), without cgo), each utterance as soon as it is spoken, while the next one is transcribed and translated. `-o FILE` writes it into a WAV file instead.
 
 | Command | What it does |
 |---|---|
-| `interpreter FILE.wav` | Interprets a recording (a WAV file of any rate and channels). `--live` gives it at the pace a microphone would and shows each step's delay |
-| `interpreter --mic` | Interprets what the microphone hears. `--seconds 30s` stops after that long |
+| `interpreter run FILE.wav` | Interprets a recording (a WAV file of any rate and channels). `--live` gives it at the pace a microphone would and shows each step's delay |
+| `interpreter run --mic` | Interprets what the microphone hears. `--seconds 30s` stops after that long |
 | `interpreter mics` | The audio inputs, numbered: `--device 2` takes the second |
 | `interpreter say TEXT` | One call of the translator and the speaker |
 | `interpreter models` | The models picked for this machine, what they take, and the network |

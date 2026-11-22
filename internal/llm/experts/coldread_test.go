@@ -28,7 +28,7 @@ func resident(b []byte) float64 {
 	return float64(n) / float64(len(vec))
 }
 
-// TestColdRead times reading experts that are out of memory (HWNPU_GPTOSS_CKPT) by ways the
+// TestColdRead times reading experts that are out of memory (HWNPU_TEST_GPTOSS_CKPT_DIR) by ways the
 // prefetcher could: touching the pages on one goroutine, madvise(WILLNEED) first, and touching
 // on several goroutines at once.
 func TestColdRead(t *testing.T) {

@@ -16,8 +16,8 @@
 //
 //	layers models prepare                # download, convert and compile the models ahead
 //	layers plan picture.png              # the layers the picture would be parted into, as a picture (no drawing)
-//	layers picture.png -o picture.psd    # part it: a minute for each layer but the last
-//	layers picture.png --layers 4 --png parts/ # the layers and how near their points are too: "parallax parts/" draws them
+//	layers split picture.png -o picture.psd    # part it: a minute for each layer but the last
+//	layers split picture.png --layers 4 --png parts/ # the layers and how near their points are too: "parallax show parts/" draws them
 //
 // Drawing from a reference runs on AMD's NPU and Apple's Neural Engine.
 package main
@@ -68,11 +68,16 @@ var cmds struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("layers"),
 		kong.Description("Part a picture into layers by depth, with what each layer hid drawn in, as a Photoshop document: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
+		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),
 		kong.Bind(p))
 	k.FatalIfErrorf(k.Run())
@@ -84,18 +89,6 @@ type picture struct {
 	Layers  int       `default:"3" help:"How many layers, 2 to 8: where to cut is found from the picture's depth (the cuts that leave each layer's depths closest together)."`
 	Cuts    []float32 `placeholder:"NEARNESS,..." help:"Where to cut instead, as nearness from 0 (the farthest) to 1 (the nearest), ascending: 0.3,0.7 makes three layers. \"layers plan\" prints the cuts it finds."`
 	Far     float64   `default:"30" help:"How far the far end of the nearness is pulled apart before it is cut (0: not at all). A nearness is the inverse of the depth, so behind something right before the eye all the rest is close to 0."`
-	Prepare bool      `help:"Download, convert and compile the models that are not ready instead of failing."`
-}
-
-func (c *picture) options() []ai.Option {
-	if !c.Prepare {
-		return nil
-	}
-	return []ai.Option{ai.WithAutoPrepare(func(p ai.Progress) {
-		if p.Message != "" {
-			fmt.Fprintf(os.Stderr, "  %s: %s\n", p.Model, p.Message)
-		}
-	})}
 }
 
 // read is the picture and the nearness of its pixels. The depth model is unloaded once it has
@@ -138,7 +131,7 @@ type PlanCmd struct {
 }
 
 func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, c.options()...)
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -195,7 +188,7 @@ func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error
 type SplitCmd struct {
 	picture
 	Out   string `short:"o" type:"path" placeholder:"FILE" help:"The Photoshop document to write (default: PICTURE's name with .psd)."`
-	PNG   string `name:"png" type:"path" placeholder:"DIR" help:"Also write into this directory each layer as a PNG with its transparency (layer-N.png, 1 the farthest) and how near its points are (near-N.png: 16 bit gray, white the nearest, on one scale for all the layers, and going on past the layer's own part), which \"parallax DIR\" draws; and the picture the model was asked to draw from (asked-N.png) and what it drew at each try (drawnT-N.png)."`
+	PNG   string `name:"png" type:"path" placeholder:"DIR" help:"Also write into this directory each layer as a PNG with its transparency (layer-N.png, 1 the farthest) and how near its points are (near-N.png: 16 bit gray, white the nearest, on one scale for all the layers, and going on past the layer's own part), which \"parallax show DIR\" draws; and the picture the model was asked to draw from (asked-N.png) and what it drew at each try (drawnT-N.png)."`
 	Hint  string `placeholder:"TEXT" help:"Words added to the request to draw what a layer hid: \"no people\", \"a calm sea\"."`
 	Seed  uint64 `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
 	Tries int    `default:"3" help:"How many times what a layer hid is drawn at most: it is drawn again, from another seed, when the model left the layer's shape there (as a flat colour or a shadow)."`
@@ -204,7 +197,7 @@ type SplitCmd struct {
 }
 
 func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, c.options()...)
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -275,7 +268,7 @@ func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) erro
 		return err
 	}
 	if c.PNG != "" {
-		// the layers and how near their points are: what "parallax DIR" draws
+		// the layers and how near their points are: what "parallax show DIR" draws
 		if err := layering.Write(c.PNG, layers); err != nil {
 			return err
 		}
@@ -313,7 +306,7 @@ func writePNG(file string, img image.Image) error {
 // hint adds how to prepare the models to the error of one that is not ready.
 func hint(err error) error {
 	if strings.Contains(err.Error(), "not prepared") {
-		return fmt.Errorf("%w (\"layers models prepare\" makes the models ready, or --prepare)", err)
+		return fmt.Errorf("%w (\"layers models prepare\" makes the models ready)", err)
 	}
 	return err
 }

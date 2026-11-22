@@ -15,12 +15,12 @@
 // near thing moves aside there is a picture behind it. The camera is read through hwcamera (github.com/shibukawa/hwcamera).
 //
 //	parallax models prepare                    # download, convert and compile the models ahead
-//	parallax picture.png                       # the window, following the head with the camera; the picture comes apart into 3 layers as it is shown
-//	parallax picture.png --layers 1            # with its depth alone, no layers
-//	parallax picture.png --head pointer        # the pointer stands in for the head (no camera)
-//	parallax picture.png --head sweep          # the view goes around by itself
+//	parallax show picture.png                       # the window, following the head with the camera; the picture comes apart into 3 layers as it is shown
+//	parallax show picture.png --layers 1            # with its depth alone, no layers
+//	parallax show picture.png --head pointer        # the pointer stands in for the head (no camera)
+//	parallax show picture.png --head sweep          # the view goes around by itself
 //	parallax render picture.png -o deep.gif    # no window: the picture from a head that goes around
-//	parallax parts/                            # a picture in layers (samples/layers --png parts/): what a near layer hid shows
+//	parallax show parts/                            # a picture in layers (layers split PICTURE --png parts/): what a near layer hid shows
 //	parallax track --frames a.png,b.png        # no camera: follow the head in pictures
 //	parallax cameras                           # the cameras, numbered as --device takes them
 //
@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -87,11 +88,16 @@ var cmds struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("parallax"),
 		kong.Description("Show a picture as if it were deep, turning with the viewer's head: a sample of hwnpu's ai package."),
 		kong.UsageOnError(),
+		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),
 		kong.Bind(p))
 	k.FatalIfErrorf(k.Run())
@@ -105,26 +111,16 @@ type picture struct {
 	Strength   float64 `default:"0.03" help:"How far the nearest point moves when the head is at the edge of the view, as a share of the picture's width."`
 	Focus      float64 `default:"0" help:"The nearness that stays where it is: 0 moves the far points least and the near ones most, 0.5 turns the picture about its middle."`
 	Far        float64 `default:"30" help:"How far the far end of the depth is pulled apart: 0 moves each point as its depth says (a thing twice as far moves half as much, so that behind something right before the eye all the rest moves as one); larger gives the far things more of the move, so that a bridge, the houses behind it and the mountains move apart."`
+	Relief     float64 `default:"1" help:"How deep a near layer is inside itself (a thing cut out of the picture, in layers): 1 as the depth model says, against --far's curve, which would flatten it; 0 flat, like a card."`
+	Round      float64 `default:"0.15" help:"How much rounder a near layer is made, from its outline in (a share of the nearness): an animal or a figure stands out as a body instead of a card. 0: as the depth says."`
 	Layers     int     `default:"3" help:"The layers the picture is parted into by its depth, with what each layer hid drawn in by the picture model, so that where a near thing moves aside there is a picture behind it instead of its edge stretched. The window shows the picture at once with its depth alone, and the parting goes on beside it (about a minute for each layer but the last), each step shown. 1: no layers. Where the picture model is not ready, the picture stays as it is."`
 	Hint       string  `placeholder:"TEXT" help:"Words added to the request to draw what a layer hid: \"no people\", \"a calm sea\"."`
 	Seed       uint64  `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
-	SaveLayers string  `name:"save-layers" type:"path" placeholder:"DIR" help:"Write the layers and their nearness into this directory once the picture is parted; \"parallax DIR\" shows them again without the models."`
+	SaveLayers string  `name:"save-layers" type:"path" placeholder:"DIR" help:"Write the layers and their nearness into this directory once the picture is parted; \"parallax show DIR\" shows them again without the models."`
 	Edge       int     `default:"-1" placeholder:"PIXELS" help:"How far the near things are made larger in the nearness, so that their outlines move with them (default: a 200th of the picture's width; 0: not at all)."`
-	Prepare    bool    `help:"Download, convert and compile the models that are not ready instead of failing."`
 }
 
 func (c *picture) params() Params { return Params{Strength: c.Strength, Focus: c.Focus} }
-
-func (c *picture) options() []ai.Option {
-	if !c.Prepare {
-		return nil
-	}
-	return []ai.Option{ai.WithAutoPrepare(func(p ai.Progress) {
-		if p.Message != "" {
-			fmt.Fprintf(os.Stderr, "  %s: %s\n", p.Model, p.Message)
-		}
-	})}
-}
 
 func readPicture(path string) (image.Image, error) {
 	f, err := os.Open(path)
@@ -150,22 +146,43 @@ func (c *picture) scene(ctx context.Context, rt *ai.Runtime, p *parts) (*Scene, 
 			return nil, nil, fmt.Errorf("%w (\"layers PICTURE --png DIR\" of samples/layers, or --save-layers, writes the layers)", err)
 		}
 		fmt.Fprintf(os.Stderr, "%d layers of %d x %d\n", len(layers), layers[0].Img.Rect.Dx(), layers[0].Img.Rect.Dy())
-		return stack(layers, c.edge(layers[0].Img.Rect.Dx()), c.Far), nil, nil
+		return stack(layers, c.look(layers[0].Img.Rect.Dx())), nil, nil
 	}
-	pic, err := readPicture(c.Picture)
+	img, err := c.image()
 	if err != nil {
 		return nil, nil, err
 	}
-	img := layering.Stretch(pic, pic.Bounds().Dx(), pic.Bounds().Dy())
+	near, err := c.near(ctx, rt, p, img)
+	if err != nil {
+		return nil, nil, err
+	}
+	return NewScene(img, near, c.edge(img.Rect.Dx()), c.Far), &source{img: img, near: near}, nil
+}
+
+// image is the picture, as RGBA.
+func (c *picture) image() (*image.RGBA, error) {
+	pic, err := readPicture(c.Picture)
+	if err != nil {
+		return nil, err
+	}
+	return layering.Stretch(pic, pic.Bounds().Dx(), pic.Bounds().Dy()), nil
+}
+
+// near is how near each point of the picture is: read from --near, else estimated by the app's
+// call, once, after which the depth model is unloaded.
+func (c *picture) near(ctx context.Context, rt *ai.Runtime, p *parts, img *image.RGBA) ([]float32, error) {
 	b := img.Bounds()
-	var near []float32
+	var (
+		near []float32
+		err  error
+	)
 	if c.Near != "" {
 		n, err := readPicture(c.Near)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if n.Bounds().Dx() != b.Dx() || n.Bounds().Dy() != b.Dy() {
-			return nil, nil, fmt.Errorf("%s is %d x %d, the picture %d x %d", c.Near, n.Bounds().Dx(), n.Bounds().Dy(), b.Dx(), b.Dy())
+			return nil, fmt.Errorf("%s is %d x %d, the picture %d x %d", c.Near, n.Bounds().Dx(), n.Bounds().Dy(), b.Dx(), b.Dy())
 		}
 		near = make([]float32, 0, b.Dx()*b.Dy())
 		for y := n.Bounds().Min.Y; y < n.Bounds().Max.Y; y++ {
@@ -178,7 +195,7 @@ func (c *picture) scene(ctx context.Context, rt *ai.Runtime, p *parts) (*Scene, 
 		t0 := time.Now()
 		var model string
 		if near, model, err = p.split.Near(ctx, rt, img); err != nil {
-			return nil, nil, hint(err)
+			return nil, hint(err)
 		}
 		fmt.Fprintf(os.Stderr, "the picture's depth by %s in %.1f s (the model's loading included)\n", model, time.Since(t0).Seconds())
 		if c.SaveNear != "" {
@@ -188,21 +205,26 @@ func (c *picture) scene(ctx context.Context, rt *ai.Runtime, p *parts) (*Scene, 
 			}
 			f, err := os.Create(c.SaveNear)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			if err := png.Encode(f, gray); err != nil {
 				f.Close()
-				return nil, nil, err
+				return nil, err
 			}
 			if err := f.Close(); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 		}
 	}
-	return NewScene(img, near, c.edge(b.Dx()), c.Far), &source{img: img, near: near}, nil
+	return near, nil
 }
 
 // edge is --edge for a picture of width w.
+// look is how the layers' nearness is made from their depth, for a picture of width w.
+func (c *picture) look(w int) look {
+	return look{edge: c.edge(w), far: c.Far, relief: c.Relief, round: c.Round}
+}
+
 func (c *picture) edge(w int) int {
 	if c.Edge >= 0 {
 		return c.Edge
@@ -258,15 +280,18 @@ type ShowCmd struct {
 }
 
 func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, c.options()...)
+	// the models made ready as they are first used, told to the window's panel once it shows
+	// the making: a download, a compile, a load take seconds to minutes with nothing else moving
+	var watch atomic.Pointer[progress]
+	rt, err := konghelper.Open(ctx, app, ai.WithLoading(func(pr ai.Progress) {
+		if prog := watch.Load(); prog != nil {
+			prog.loading(pr)
+		}
+	}))
 	if err != nil {
 		return err
 	}
 	defer rt.Close()
-	scene, src, err := c.scene(ctx, rt, p)
-	if err != nil {
-		return err
-	}
 	o := windowOptions{title: "parallax: " + c.Picture, sweep: c.Head == "sweep", dump: c.Dump, quiet: c.Dump != ""}
 	if c.Record != "" {
 		o.record = c.Record
@@ -274,22 +299,40 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return err
 		}
 	}
-	o.closeAfter = c.For
-	if src != nil && c.Layers > 1 && c.Dump == "" {
-		// the picture is parted into layers beside the window, which shows each step and takes
-		// the layers as they come
-		o.progress = &progress{}
-		pctx, stop := context.WithCancel(ctx)
-		parted := make(chan struct{})
+	o.closeAfter, o.done = c.For, ctx.Done()
+	// when the window is closed (or Ctrl-C), what goes on beside it is stopped and waited for
+	// (the deferred calls below); should anything not stop, the process does not stay on with no
+	// window: it ends 5 s after
+	var stopping *time.Timer
+	defer func() {
+		if stopping != nil {
+			stopping.Stop()
+		}
+	}()
+	var scene *Scene
+	if st, err := os.Stat(c.Picture); (err == nil && st.IsDir()) || c.Dump != "" {
+		// a picture in layers already, or the shader's frames to check: no making to show
+		if scene, _, err = c.scene(ctx, rt, p); err != nil {
+			return err
+		}
+	} else {
+		// the window opens at once and shows the picture being made deep beside it: its depth,
+		// each layer, and the layers put together
+		img, err := c.image()
+		if err != nil {
+			return err
+		}
+		o.progress, o.picture = newProgress(img, c.Layers), img
+		watch.Store(o.progress)
+		mctx, stop := context.WithCancel(ctx)
+		made := make(chan struct{})
 		go func() {
-			defer close(parted)
-			if _, err := c.part(pctx, rt, p, src, o.progress, os.Stderr); err != nil && pctx.Err() == nil {
-				fmt.Fprintln(os.Stderr, "not parted into layers:", err)
-			}
+			defer close(made)
+			c.make(mctx, rt, p, img, o.progress)
 		}()
 		defer func() { // before the models are unloaded
 			stop()
-			<-parted
+			<-made
 		}()
 	}
 	if c.Dump != "" {
@@ -301,7 +344,12 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 	if c.Head == "camera" {
 		// the tracker's network runs beside the window, until the window is closed
 		p.tracker.Gain = c.Gain
-		frames, err := c.frames(ctx, false)
+		o.camera, o.gain = p.tracker.Seen, p.tracker.AddGain
+		// the camera's frames end with the tracker, when the window is closed: a camera left
+		// reading kept the tracker's network, and the process, from ending
+		tctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		frames, err := c.frames(tctx, false)
 		if err != nil {
 			return err
 		}
@@ -309,7 +357,6 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 		if _, err := faces.Get(ctx, rt); err != nil { // loaded before the window opens
 			return hint(err)
 		}
-		tctx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		go func() { done <- rt.Run(tctx) }()
 		defer func() {
@@ -334,7 +381,42 @@ func (c *ShowCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			return p.tracker.Target()
 		}
 	}
-	return runWindow(scene, c.params(), o)
+	err = runWindow(scene, c.params(), o)
+	stopping = time.AfterFunc(5*time.Second, func() {
+		fmt.Fprintln(os.Stderr, "parallax: still stopping 5 s after the window closed; ending")
+		os.Exit(1)
+	})
+	return err
+}
+
+// make makes the picture deep beside the window and tells prog of each step: its depth, then
+// its layers (--layers), and last the scene, which the window puts together. A picture that is
+// not parted into layers is shown with its depth alone.
+func (c *ShowCmd) make(ctx context.Context, rt *ai.Runtime, p *parts, img *image.RGBA, prog *progress) {
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	near, err := c.near(ctx, rt, p, img)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintln(os.Stderr, err)
+			prog.show(stageFailed, nil, "The depth was not estimated: "+err.Error())
+		}
+		return
+	}
+	prog.show(stageNear, depthColors(near, w, h), "The depth: the near warm, the far cool")
+	prog.set(func(p *progress) { p.total = p.wDepth })
+	scene := NewScene(img, near, c.edge(w), c.Far)
+	if c.Layers > 1 {
+		layered, err := c.part(ctx, rt, p, &source{img: img, near: near}, prog, os.Stderr)
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			fmt.Fprintln(os.Stderr, "not parted into layers:", err)
+		default:
+			scene = layered
+		}
+	}
+	prog.ready(scene)
 }
 
 // RenderCmd is parallax render PICTURE: no window, an animated GIF drawn on the CPU.
@@ -347,7 +429,7 @@ type RenderCmd struct {
 }
 
 func (c *RenderCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	rt, err := app.Open(ctx, c.options()...)
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -368,14 +450,9 @@ func (c *RenderCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 type TrackCmd struct {
 	camera
 	Seconds time.Duration `placeholder:"TIME" help:"Stop after this long (10s); none: at Ctrl-C, or once the pictures of --frames were all read."`
-	Prepare bool          `help:"Download, convert and compile the models that are not ready instead of failing."`
 }
 
 func (c *TrackCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
-	var opts []ai.Option
-	if c.Prepare {
-		opts = append(opts, ai.WithAutoPrepare(nil))
-	}
 	if c.Seconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.Seconds)
@@ -412,7 +489,9 @@ func (c *TrackCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 			}
 		}
 	}()
-	err = app.Run(ctx, opts...)
+	if err = konghelper.Ready(ctx, app); err == nil {
+		err = app.Run(ctx)
+	}
 	close(stop)
 	p.tracker.mu.Lock()
 	found := p.tracker.found
@@ -444,7 +523,7 @@ func (CamerasCmd) Run(ctx context.Context) error {
 // hint adds how to prepare the models to the error of one that is not ready.
 func hint(err error) error {
 	if strings.Contains(err.Error(), "not prepared") {
-		return fmt.Errorf("%w (\"parallax models prepare\" makes the models ready, or --prepare)", err)
+		return fmt.Errorf("%w (\"parallax models prepare\" makes the models ready)", err)
 	}
 	return err
 }

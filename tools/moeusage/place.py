@@ -1,5 +1,5 @@
 """place.py USAGE TRACE... [--budget N] [--models models.yaml]: tries ways of choosing the wired
-experts (experts.placer) on traces of the experts a model ran (HWNPU_MOE_DEBUG=trace=FILE: a line
+experts (experts.placer) on traces of the experts a model ran (HWNPU_DEV=moe.trace=FILE: a line
 "LAYER ROWS E E E E" a row), starting from the counts of USAGE (experts.Usage, an application's
 experts-usage/KEY.bin). For each way and trace: the share of a generated token's runs that found
 their expert wired, and the experts wired anew by the balances (13 MB each for gpt-oss-20b).

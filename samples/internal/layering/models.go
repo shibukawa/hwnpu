@@ -3,6 +3,7 @@ package layering
 import (
 	"context"
 	"image"
+	"math"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/imagegen"
@@ -23,8 +24,10 @@ type Calls struct {
 	drawing *ai.ModelNode[imagegen.Request, image.Image, imagegen.Options]
 }
 
-// Register adds the two calls to an app.
+// Register adds the two calls to an app, and says that their models run in turns (App.InTurns):
+// the app's plan counts the larger alone.
 func Register(app *ai.App, depth ai.Use[*vision.DepthEstimator], artist ai.Use[*imagegen.Generator]) *Calls {
+	app.InTurns(depth, artist)
 	c := &Calls{depth: depth, artist: artist, drawing: imagegen.GenerateNode(artist, imagegen.Options{})}
 	c.depthOf = ai.NewCall[image.Image, *vision.DepthMap](app, "depth of the picture").Then(vision.DepthNode(depth))
 	c.behind = ai.NewCall[imagegen.Request, image.Image](app, "what a layer hid").Then(c.drawing)
@@ -52,15 +55,15 @@ func (c *Calls) Near(ctx context.Context, rt *ai.Runtime, img *image.RGBA) ([]fl
 }
 
 // Draw is the picture the picture model draws from a prompt and a reference. The reference is
-// stretched to the size the model draws that is nearest its shape, and the answer back.
-func (c *Calls) Draw(ctx context.Context, rt *ai.Runtime, prompt string, ref *image.RGBA, seed uint64, progress func(done float64)) (*image.RGBA, error) {
+// stretched to the smallest size the model draws of its shape (smallest), and the answer back.
+func (c *Calls) Draw(ctx context.Context, rt *ai.Runtime, prompt string, ref *image.RGBA, seed uint64, progress func(done float64), phase func(string)) (*image.RGBA, error) {
 	g, err := c.artist.Get(ctx, rt)
 	if err != nil {
 		return nil, err
 	}
-	size := g.SizeFor(ref.Rect.Dx(), ref.Rect.Dy())
+	size := smallest(g, ref.Rect.Dx(), ref.Rect.Dy())
 	c.drawing.Update(func(o *imagegen.Options) {
-		o.Seed = seed
+		o.Seed, o.Phase = seed, phase
 		o.Progress = func(step, steps int) {
 			if progress != nil {
 				progress(float64(step) / float64(steps+1)) // the steps, and the decoding after them
@@ -74,6 +77,21 @@ func (c *Calls) Draw(ctx context.Context, rt *ai.Runtime, prompt string, ref *im
 	return Stretch(out, ref.Rect.Dx(), ref.Rect.Dy()), nil
 }
 
+// smallest is the smallest size the model draws of the shape nearest w x h: what a layer hid is
+// drawn behind it and seen only where the layer moves aside, so the small size does (and on
+// Apple's Neural Engine a 512 x 512 picture's steps take a quarter of a 1024 x 1024 one's, whose
+// programs are also compiled at their first use).
+func smallest(g *imagegen.Generator, w, h int) image.Point {
+	best := g.SizeFor(w, h)
+	shape := func(p image.Point) float64 { return math.Log(float64(p.X) / float64(p.Y)) }
+	for _, s := range g.Sizes() {
+		if math.Abs(shape(s)-shape(best)) < 0.01 && s.X*s.Y < best.X*best.Y {
+			best = s
+		}
+	}
+	return best
+}
+
 // Models are the calls as Split asks them, run on rt.
 func (c *Calls) Models(rt *ai.Runtime) Models {
 	return Models{
@@ -81,8 +99,8 @@ func (c *Calls) Models(rt *ai.Runtime) Models {
 			near, _, err := c.Near(ctx, rt, img)
 			return near, err
 		},
-		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64)) (*image.RGBA, error) {
-			return c.Draw(ctx, rt, prompt, ref, seed, progress)
+		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64), phase func(string)) (*image.RGBA, error) {
+			return c.Draw(ctx, rt, prompt, ref, seed, progress, phase)
 		},
 	}
 }

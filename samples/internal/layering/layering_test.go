@@ -170,7 +170,7 @@ func TestSplit(t *testing.T) {
 	var steps []Step
 	m := Models{
 		Near: func(ctx context.Context, p *image.RGBA) ([]float32, error) { return first, nil },
-		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64)) (*image.RGBA, error) {
+		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64), phase func(string)) (*image.RGBA, error) {
 			draws++
 			if !strings.Contains(prompt, "Remove the") || !strings.Contains(prompt, "no birds.") || seed != 7 {
 				t.Errorf("asked %q with seed %d", prompt, seed)
@@ -262,7 +262,7 @@ func TestSplitKept(t *testing.T) {
 	var last Step
 	m := Models{
 		Near: func(ctx context.Context, p *image.RGBA) ([]float32, error) { return near, nil },
-		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64)) (*image.RGBA, error) {
+		Draw: func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(float64), phase func(string)) (*image.RGBA, error) {
 			draws++
 			if draws == 1 { // the first layer's background goes on from the picture above it
 				out := image.NewRGBA(ref.Rect)
