@@ -32,11 +32,11 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 
 ### AMD: IRON graphs per model
 
-- The converter does not write AMD programs; each model has an IRON export in `tools/amd` (`iron_whisper.py`, `iron_lfm3speech.py`, `iron_moss_sfx.py` + `iron_moss_dac.py`, `iron_magenta.py`). Details in `../amd-npu-models.md`; shared IRON pieces in [amd.md](amd.md).
+- The converter does not write AMD programs; each model has an IRON export in `tools/amd` (`iron_whisper.py`, `iron_lfm3speech.py`, `iron_moss_sfx.py` + `iron_moss_dac.py`, `iron_magenta.py`, `iron_supertonic.py`). Details in `../amd-npu-models.md`; shared IRON pieces in [amd.md](amd.md).
 - `hwnpu-audio` uses AMD when an AMD NPU is present and `HWNPU_BACKEND` is empty or `amd`/`xdna`/`iron` (`onAMD`). `PrepareAMD` (per package) takes the export from here, else from the sources, else exports with IRON and writes back. The key needs pinned sha256 in models.yaml (`chat.PinnedRecipe`); `like` does not inherit sha256, so `MOSS-SoundEffect-v2.0-lut8` lists them again.
 - `iron.GraphProgram` turns a graph export into a `runner.Program`: meta `program` gives the program's shape; padded rows/columns are filled with 0 on input and cut on output. So the host code (sampling, MaskGIT, CFG, chunking) is shared with Apple/Intel.
 - Models without an AMD export (pitch, notes) fall to the CPU (`chat.ConvertedDevice`).
-- Exports in the sources: whisper 1.81 GB, LFM3-Audio TTS 3.13 GB, MOSS 6.3 GB (fp16) / 5.3 GB (lut8), Magenta decoder 0.09 GB. See [distribution.md](distribution.md).
+- Exports in the sources: whisper 1.81 GB, LFM3-Audio TTS 3.13 GB, MOSS 6.3 GB (fp16) / 5.3 GB (lut8), Magenta decoder 0.09 GB, Supertonic 3 0.27 GB. See [distribution.md](distribution.md).
 
 ## Whisper (`internal/llm/whisper`, `internal/transcribe`)
 
@@ -226,6 +226,22 @@ Numbers:
 | Ryzen AI 9 365 | 1.24 s a velocity (41 ms a block), 2.8 s a CFG step; DAC 1.5 s for 5 s (CPU 5.7 s, SNR 34.5 dB); 5 s at 25 steps 1 m 06 s; peak 4.71 (fp16) / 4.75 (lut8) GiB at 10 s; IRON export 28 s |
 
 - Accuracy: 4 steps from the reference noise, waveform cosine 0.992 (16 GB setup) / 0.990 (8 GB). AMD vs Core ML fp16 on CPU: text output cosine 0.99963, first velocity 0.99978.
+
+## Supertonic 3 (`internal/supertonic`)
+
+### AMD (`iron_supertonic.py`, `supertonic.AMDExportVersion` 1)
+
+- The flow (`estimator-tT-lL`, one step) and the vocoder (`vocoder-lL`) are IRON graphs of each of `Sizes`; the text's two graphs are Core ML packages on the CPU interpreter (`Setup.TextOnly`). No ONNX Runtime. The sizes share one image of their weights (596 → 255 MB).
+- Both branches of the guidance run in one call: the stream's rows are the conditioned branch's frames and the unconditioned's, each between 16 zero rows. The unconditioned text attention is a constant row (its text is one token at every position). The style keys are constants; the host computes the time rows, RoPE tables and the update x + (4 v_c − 3 v_u) / total.
+- Depthwise convolutions are `iron_dwconv1d.py` (K taps up to 7, dilation, bias in one operator, tiles of 16 rows × 128 channels; a row-window FIFO ran out of buffer descriptors). Left edge padding copies each branch's first frame; the right is masked zeros, as the Mac's fixed-length programs.
+- bf16 throughout (HIGHEST): one flow step's update is 21–27 dB from padded ORT; the vocoder 37 dB once the latent's unnormalization is folded into the embedding (29 dB when the host unnormalized it in bf16). MEDIUM did not make the graph faster: operator reconfiguration dominates (a ConvNeXt block's GEMM pair takes about 1 ms at any row count).
+- The CPU interpreter's `conv1d` now goes through `conv2d` (sgemm, im2col): the text encoder took 1.5 s in a one-thread loop, now 57 ms.
+
+### Numbers
+
+| Machine | Result |
+|---|---|
+| Ryzen AI 9 365 | flow step 77 / 83 / 97 ms (64 × 32 / 128 × 64 / 256 × 128), vocoder 26 / 28 / 41 ms; 4.25 s of English in 0.80 s (5.3x), 7.5 s in 0.90 s (8.4x); +7.1 W, 1.3 J a second of speech (CPU ONNX Runtime, 4 threads: 7.6x, +41.9 W, 5.5 J) |
 
 ## SwiftF0 (`internal/pitch`)
 

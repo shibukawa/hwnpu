@@ -99,7 +99,8 @@ var speakRole = &airole.Role{
 		return &Speaker{s: s, model: e.Model}, nil
 	},
 	// 1: Supertonic's programs of its text's graphs (durations, encoders), with no ONNX Runtime
-	Revision: 1,
+	// 2: Supertonic on AMD's NPU (amd: supertonic.PrepareAMD's export)
+	Revision: 2,
 }
 
 // SpeakOptions are how a text is spoken (LFM3-Audio's settings).
@@ -415,10 +416,16 @@ func isSupertonic(m chat.Model) bool {
 }
 
 // prepareSupertonic downloads Supertonic 3 and, for the NPU, converts the programs of its flow
-// and its vocoder (a model of device cpu runs on ONNX Runtime alone).
+// and its vocoder (a model of device cpu runs on ONNX Runtime alone). On AMD's NPU the flow and
+// the vocoder are the graphs of supertonic.PrepareAMD's export, the text's two graphs Core ML
+// packages for the CPU interpreter.
 func prepareSupertonic(e airole.PrepareEnv) (f airole.Files, err error) {
 	backend := e.NPU.Format
-	if e.NPU.CPU(e.Model) || e.NPU.AMD() {
+	amd := e.NPU.AMD() && !e.NPU.CPU(e.Model)
+	switch {
+	case amd:
+		backend = llm.BackendCoreML
+	case e.NPU.CPU(e.Model) || e.NPU.AMD():
 		backend = "" // the CPU: ONNX Runtime reads the graphs
 	}
 	if backend == llm.BackendCoreAI {
@@ -426,9 +433,17 @@ func prepareSupertonic(e airole.PrepareEnv) (f airole.Files, err error) {
 		// programs run all on the Neural Engine (measured on M2: 80 times real time)
 		backend = llm.BackendCoreML
 	}
-	c, err := supertonic.Prepare(e.Ctx, supertonic.Setup{Repo: e.Model.Source(), Dir: e.Dir, Backend: backend, Log: e.Log})
+	c, err := supertonic.Prepare(e.Ctx, supertonic.Setup{Repo: e.Model.Source(), Dir: e.Dir, Backend: backend, TextOnly: amd, Log: e.Log})
 	if err != nil {
 		return f, err
+	}
+	if amd {
+		dir, err := supertonic.PrepareAMD(e.Ctx, e.Base, e.Log)
+		if err != nil {
+			return f, err
+		}
+		iron.ShareExport(dir, logf(e.Log))
+		f.Set("amd", dir)
 	}
 	f.Set("supertonic", c.Dir)
 	f.Set("durations", c.Durations...)
@@ -439,8 +454,14 @@ func prepareSupertonic(e airole.PrepareEnv) (f airole.Files, err error) {
 }
 
 func loadSupertonic(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-	c := supertonic.Config{Dir: f.Path("supertonic"), Durations: f.Paths["durations"], Encoders: f.Paths["encoders"], Estimators: f.Paths["estimators"], Vocoders: f.Paths["vocoders"]}
-	if len(c.Estimators) > 0 && !e.NPU.CPU(e.Def) {
+	c := supertonic.Config{Dir: f.Path("supertonic"), Durations: f.Paths["durations"], Encoders: f.Paths["encoders"], Estimators: f.Paths["estimators"], Vocoders: f.Paths["vocoders"], AMD: f.Path("amd")}
+	if c.AMD != "" {
+		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		if err != nil {
+			return nil, err
+		}
+		c.Device = dev
+	} else if len(c.Estimators) > 0 && !e.NPU.CPU(e.Def) {
 		name := e.NPU.Device
 		if name == llm.BackendCoreAI || name == "" && e.NPU.Format == llm.BackendCoreAI {
 			// Core AI's device lowers Core ML's programs with its own lowering, which has no

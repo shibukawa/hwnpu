@@ -1394,3 +1394,70 @@ python tools/amd/iron_magenta.py ~/models/magenta-realtime-2 ~/models/magenta-re
 go run ./tools/amd/irongraph ~/models/magenta-realtime-2-small.amd-npu2/decoder
 go run ./cmd/hwnpu-audio generate --duration 10s "disco funk" -o out.wav
 ```
+
+## 29. Supertonic 3 の読み上げ (`hwnpu-audio tts -m supertonic`、2026-11-23)
+
+Supertone の Supertonic 3 (OpenRAIL-M) で、31 の言語の文章を 44.1 kHz の声にする。Mac と同じ流れ (internal/supertonic): 文字の ID から長さと文の埋め込み、雑音から flow を 8 ステップ (分類器なしのガイダンス、v = 4 v_cond − 3 v_uncond)、vocoder。ONNX Runtime は要らない。
+
+### 29.1 構成 (`tools/amd/iron_supertonic.py`、`supertonic.AMDExportVersion` 1)
+
+| 部分 | 中身 |
+|---|---|
+| `estimator-tT-lL/` | flow の 1 ステップ (グラフ、41 コマンド)。2 つの枝を 1 回で: ストリームの行は条件つきの枝の L フレームと条件なしの枝の L フレーム、それぞれの前後に P = 16 行の 0。ConvNeXt 28 個、時刻のブロック 4 個、文への注意 4 個、スタイルへの注意 4 個 |
+| `vocoder-lL/` | vocoder (グラフ、12 コマンド)。6 L フレーム × 24 チャネルの埋め込みの畳み込み (im2col と GEMM)、ConvNeXt 10 個 (因果の 7 タップ、dilation 1、2、4)、head |
+| `host.safetensors` | ホストが計算するもの: 時刻の埋め込みの MLP と、時刻のブロックの Linear、RoPE の周波数 (float32) |
+| 文の 2 グラフ | duration_predictor と text_encoder は Core ML の形式にして CPU interpreter で (`supertonic.Setup.TextOnly`) |
+
+サイズは internal/supertonic.Sizes の 3 つ (64 × 32、128 × 64、256 × 128。約 2.2、4.5、8.9 秒)。重みはサイズで同じ場所に置き、バンクの像を 1 つにする (`share_banks`、iron_plamo_embed.py と同じ形)。596 MB が 255 MB になった。
+
+### 29.2 決めたこと
+
+- **深さ方向の畳み込み** (`tools/amd/iron_dwconv1d.py`、`kernels/dwconv1d.cc`): IRON の DepthwiseConv1d は因果の 5 タップで bias も dilation もない。1 つの演算子で K タップ (7 まで)、dilation、bias。入力はホストかグラフが埋めた行 (rows + (K − 1) d)。初めは 1 行ずつのフィフォの窓にしたが、5 タップ dilation 8 で窓が 33 行になり、BD (1 チャネル 16 まで) が足りなかった。16 行 × 128 チャネルとその halo を 1 つのオブジェクトにして、各列が 128 チャネルのブロック 1 つと行の一部を持つ。NPU の出力は numpy の参照とビットまで同じ、128 行 × 512 チャネルで 0.2 ms
+- **端の埋め方**: ONNX のグラフは edge (端のフレームを繰り返す)。左はグラフが各枝の最初のフレームを前の 0 の行に写す (Copy 1 つ、ConvNeXt ごと)。右はマスクした 0 で、Mac のプログラム (固定長でマスクする) と同じ。ORT を正確な長さで回すと最後の数フレームの入力が違い、8 ステップで潜在は別のものになる (同じ ORT でもパディングの有無だけで −0.1 dB) が、書き起こしは同じ。比べるときは ORT もパディングしたものを参照にする
+- **条件なしの枝の文への注意**: 文はどの位置も同じトークンなので、値はどの位置も同じ行になり、注意の出力はその行 (定数) になる。MHA は条件つきの枝だけ
+- **スタイルへの注意**: 鍵は両方の枝とも定数 (鍵のトークンを射影した tanh)。条件なしの値も定数。IRON の MHA は鍵の数を呼び出しごとの値で受けるが、param はその値で切れないので、定数を 1 回の Copy で state に入れてから切る。鍵の行はクエリの行以上が要る (128 にした)
+- **MHA のクエリは 64 行以上**: 32 フレームのサイズでは 64 行を読み、自分の 32 行を取る
+- **vocoder の正規化を重みに**: 潜在の unnormalize (latent_std と latent_mean) をホストですると、平均とその 40 分の 1 の偏差を bf16 に丸めて、音声が ORT と 29 dB に落ちた。埋め込みの重みと bias に畳み込んだ (端の行は入力ごと写すので正確)。全部 bf16 で 37〜40 dB
+- **PReLU** (傾き 2e-4) は ReLU にした (numpy で 58 dB、ほかの丸めより小さい)
+- **GELU** は GELUEven (`iron_gelu.py`、tanh の形、引数は float32)。正確な erf より ConvNeXt 1 つで 0.26 ms 速い
+- **精度**: GEMM は HIGHEST (bf16)。flow の 1 ステップの更新は、同じパディングの ORT と 21〜27 dB (潜在で 29〜41 dB)、8 ステップの後の潜在で 22 dB。ConvNeXt の部分を numpy で丸めると、残差のストリームの bf16 が一番効く (30 dB)
+- **MEDIUM (bfp16) は使わない**: GEMM 単体では 256 行で 2.2 倍速いが、グラフ全体では 87 ms のまま (演算子の再構成が時間を決める)。重みをホストで bfp16 に詰めても ConvNeXt 8 個で 7 % だけ
+- **文の 2 グラフ**: CPU interpreter の conv1d が 1 スレッドの直接の和で、text_encoder (128 文字) に 1.5 秒かかっていた (91 % が conv1d)。conv2d の道 (sgemm と im2col、深さ方向は並列) に 1 行の画像として通して 57 ms (duration は 110 → 15 ms)。internal/milcpu の変更なので、conv1d を使うほかのモデルも速くなる
+- **書き込み先**: IRON の `h[...] = x` は Copy が 1 つ増える。演算子の出力の引数に state の view を渡すと増えない。ただし入力と同じバッファに書く ElementwiseAdd と、state に書く RowwiseAdd は、次の呼び出しのコマンド 0 が ERT_CMD_STATE_TIMEOUT になった。vocoder はストリームを 2 つの state で交互にし、最初の RowwiseAdd は Copy に戻した
+
+### 29.3 測定 (Ryzen AI 9 365)
+
+| | 時間 |
+|---|---|
+| flow 1 ステップ (両方の枝) | 77 ms (64 × 32)、83 ms (128 × 64)、97 ms (256 × 128) |
+| ConvNeXt 1 つ (192 行) | 2.35 ms。GEMM の 1 対が約 1.0 ms (行数にほぼよらない: 128 行で 0.81、512 行で 1.48)、正確な GELU 0.46、ほかは 0.1 前後 |
+| vocoder | 26 ms (32)、28 ms (64)、41 ms (128) |
+| 英語 4.25 秒 | 0.80 秒 (5.3 倍): 文 0.10 秒、flow 0.67 秒、vocoder 0.03 秒 |
+| 英語 7.5 秒 | 0.90 秒 (8.4 倍) |
+| 日本語 12 秒 (分けて読む) | 1.85 秒 (6.5 倍) |
+| 書き出し | 30 秒 (IRON のカーネルがなければもっと) |
+
+電力 (パッケージの PPT、アイドル 4.5 W を引く、30 秒くり返し):
+
+| | 実時間の何倍か | 増えた電力 | 音声 1 秒あたりの電力量 |
+|---|---|---|---|
+| CPU 4 スレッド (ONNX Runtime 1.23) | 7.6 倍 | 41.9 W | 5.5 J |
+| NPU (文は CPU interpreter) | 5.3 倍 | 7.1 W | 1.3 J |
+
+Whisper large-v3-turbo の書き起こしは、英語と日本語の文で入力と同じ (日本語の長い文では「生れた」が「折れた」になった)。
+
+### 29.4 残り
+
+- 演算子の数: ConvNeXt 1 つに 10 (端の Copy、深さ方向の畳み込み、layer norm、GEMM、bias、GELU、GEMM、bias、残差、マスク)。マスクを深さ方向の畳み込みのカーネルで入力に掛け、pwconv2 の bias を次の消費者 (畳み込みのカーネル、注意のクエリと out_fc の bias、proj_out) に畳めば、bias とマスクの 2 つが消えて 8。bias と GELU を 1 つのカーネルにすると 7
+- text_encoder を NPU に: 相対位置の注意 (VITS の窓つき) は IRON の MHA で書けない
+- デバイスのメモリ: バンクの像はディスクで 1 つだが、読み込むとサイズごとにバッファを持つ (GraphOptions.Buffers でバンクを貸せば 1 つになる)
+
+### 29.5 手順
+
+```bash
+python tools/amd/iron_supertonic.py ~/.cache/hwnpu/original/Supertone/supertonic-3/onnx OUT --check   # --sizes 64x32、--only estimator
+go run ./tools/amd/irongraph OUT/estimator-t128-l64
+python tools/amd/iron_dwconv1d.py check OUT --rows 128 --taps 5 --dilation 8
+go run ./cmd/hwnpu-audio tts -m supertonic --lang ja -o out.wav こんにちは   # 書き出しは取得元から、なければ IRON で
+go run ./cmd/hwnpu-dev models package supertonic-3/amd-xdna2
+```

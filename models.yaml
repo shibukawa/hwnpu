@@ -576,8 +576,9 @@ models:
     tag: "3"
     kind: speech
     # Supertone's Supertonic 3: four ONNX graphs (the duration, the text's encoder, a flow of 8
-    # steps, the vocoder), read as they are; the flow and the vocoder run on the NPU as programs
-    # of three lengths (internal/supertonic), the text's two small graphs on ONNX Runtime
+    # steps, the vocoder), read as they are, as programs of three lengths (internal/supertonic):
+    # on Apple all on the Neural Engine; on AMD the flow and the vocoder are IRON graphs
+    # (tools/amd/iron_supertonic.py) and the text's two small graphs run on the CPU interpreter
     from: hf:Supertone/supertonic-3@3cadd1ee6394adea1bd021217a0e650ede09a323
     license: {id: openrail-m, url: "https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE", class: conditional, terms: "BigScience Open RAIL-M: commercial use allowed; the use restrictions of its Attachment A (no unlawful use, harm to minors, disinformation, harassment, ...) bind every use and pass on to derivatives"}
     sha256:
@@ -588,7 +589,7 @@ models:
     machine: 8
     memory: 0.8
     bytes: 4.0e8
-    about: "Supertone's Supertonic 3 speaking a text (44.1 kHz WAV) in 31 languages from their characters, no phonemizer: 10 voices; its flow and vocoder on the NPU in fp16, its text's graphs on ONNX Runtime (HWNPU_ONNXRUNTIME)"
+    about: "Supertone's Supertonic 3 speaking a text (44.1 kHz WAV) in 31 languages from their characters, no phonemizer: 10 voices; on the NPU in fp16 (Apple) or bf16 (AMD, its text's graphs on the CPU), no ONNX Runtime"
   d1-2B:
     family: d1
     tag: 2b

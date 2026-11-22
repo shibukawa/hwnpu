@@ -56,7 +56,10 @@ type Setup struct {
 	Repo, Dir string
 	// Backend is the programs' format (llm.Options.Backend); "" for none: the CPU alone.
 	Backend string
-	Log     io.Writer
+	// TextOnly converts the text's graphs alone (the duration and the encoder): AMD's NPU runs
+	// the flow and the vocoder as the graphs of PrepareAMD's export.
+	TextOnly bool
+	Log      io.Writer
 }
 
 // Config is what Load reads: the model's directory (onnx/, voice_styles/) and the programs
@@ -64,8 +67,11 @@ type Setup struct {
 type Config struct {
 	Dir                                       string
 	Durations, Encoders, Estimators, Vocoders []string
-	Device                                    *hwnpu.Device // nil: the CPU
-	Threads                                   int           // ONNX Runtime's threads on the CPU (0: 4)
+	// AMD is the export of PrepareAMD (the flow's and the vocoder's graphs), run on Device, AMD's
+	// NPU; the text's programs then run on the CPU interpreter.
+	AMD     string
+	Device  *hwnpu.Device // nil: the CPU
+	Threads int           // ONNX Runtime's threads on the CPU (0: 4)
 }
 
 // stage is a graph made into programs of Sizes.
@@ -112,6 +118,9 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return c, nil
 	}
 	for _, st := range stages {
+		if s.TextOnly && !st.text {
+			continue
+		}
 		var g *onnx.Graph
 		for _, size := range Sizes {
 			name := fmt.Sprintf("%s-r%d-%s-t%d-l%d-fp16", Arch, Revision, st.name, size.T, size.L)
@@ -184,13 +193,23 @@ func checkSHA(path, want string) error {
 }
 
 // Load opens the model: its programs on the device, with no ONNX Runtime (a text longer than
-// they hold is ErrTooLong), or its graphs on the CPU with ONNX Runtime without them.
+// they hold is ErrTooLong), or on AMD's NPU the export c.AMD (the text's programs on the CPU
+// interpreter), or its graphs on the CPU with ONNX Runtime without them.
 func Load(ctx context.Context, c Config) (*Synth, error) {
 	ix, err := LoadIndexer(filepath.Join(c.Dir, "onnx", "unicode_indexer.json"))
 	if err != nil {
 		return nil, err
 	}
 	s := &Synth{Indexer: ix, Dir: c.Dir}
+	if c.AMD != "" {
+		if c.Device == nil {
+			return nil, fmt.Errorf("supertonic: the export %s is for AMD's NPU, and no device is open", c.AMD)
+		}
+		if s.Stages, err = OpenAMD(ctx, c.Device, c, c.AMD); err != nil {
+			return nil, err
+		}
+		return s, nil
+	}
 	if c.Device != nil && len(c.Estimators) > 0 {
 		if s.Stages, err = OpenNPU(ctx, c.Device, nil, c); err != nil {
 			return nil, err

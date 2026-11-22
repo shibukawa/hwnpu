@@ -156,11 +156,13 @@ type npuSize struct {
 	sin               hostSin
 }
 
-// OpenNPU opens the programs of c (of the same Sizes) on dev, the embedding tables from the
-// model's graphs; cpu (nil for none) runs what no program holds.
+// OpenNPU opens the programs of c (of the same Sizes) on dev (nil: the CPU interpreter), the
+// embedding tables from the model's graphs; cpu (nil for none) runs what no program holds. A
+// Config of the text's programs alone (no Estimators and Vocoders) opens those (OpenAMD's).
 func OpenNPU(ctx context.Context, dev *hwnpu.Device, cpu Stages, c Config) (Stages, error) {
-	n := len(c.Estimators)
-	if n == 0 || len(c.Vocoders) != n || len(c.Durations) != n || len(c.Encoders) != n {
+	n := len(c.Durations)
+	flow := len(c.Estimators) > 0 || len(c.Vocoders) > 0
+	if n == 0 || len(c.Encoders) != n || flow && (len(c.Estimators) != n || len(c.Vocoders) != n) {
 		return nil, fmt.Errorf("supertonic: %d, %d, %d and %d programs of the stages: convert them again", len(c.Durations), len(c.Encoders), len(c.Estimators), len(c.Vocoders))
 	}
 	s := &npuStages{cpu: cpu}
@@ -177,10 +179,20 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, cpu Stages, c Config) (Stag
 	}
 	for i := range n {
 		var p npuSize
-		for _, x := range []struct {
+		progs := []struct {
 			path string
 			out  *runner.Program
-		}{{c.Durations[i], &p.dp}, {c.Encoders[i], &p.enc}, {c.Estimators[i], &p.est}, {c.Vocoders[i], &p.voc}} {
+		}{{c.Durations[i], &p.dp}, {c.Encoders[i], &p.enc}}
+		if flow {
+			progs = append(progs, struct {
+				path string
+				out  *runner.Program
+			}{c.Estimators[i], &p.est}, struct {
+				path string
+				out  *runner.Program
+			}{c.Vocoders[i], &p.voc})
+		}
+		for _, x := range progs {
 			if *x.out, err = runner.Open(ctx, dev, x.path); err != nil {
 				for _, q := range []runner.Program{p.dp, p.enc, p.est} {
 					if q != nil {
@@ -191,6 +203,13 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, cpu Stages, c Config) (Stag
 			}
 		}
 		s.progs = append(s.progs, p) // closed with s from here
+		if !flow {
+			s.progs[i].T = p.dp.Inputs()["x"][1]
+			if et := p.enc.Inputs()["x"][1]; et != s.progs[i].T {
+				return fail(fmt.Errorf("supertonic: %s is of %d characters, %s of %d", c.Durations[i], s.progs[i].T, c.Encoders[i], et))
+			}
+			continue
+		}
 		in := p.est.Inputs()
 		s.progs[i].T, s.progs[i].L = in["text_emb"][2], in["x"][2]
 		if err := json.Unmarshal([]byte(p.est.Metadata()[metaSin]), &s.progs[i].sin); err != nil || len(s.progs[i].sin.Theta) != ropeDim {
@@ -227,7 +246,7 @@ func table(path, name string, width int) ([]float32, error) {
 func (s *npuStages) OnNPU() bool {
 	for _, p := range s.progs {
 		for _, q := range []runner.Program{p.dp, p.enc, p.est, p.voc} {
-			if !q.OnNPU() {
+			if q != nil && !q.OnNPU() {
 				return false
 			}
 		}
