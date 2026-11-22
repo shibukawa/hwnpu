@@ -611,6 +611,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	hybrid := chunk > 0 && len(caches) > 0
 	var tps []tierProgs
 	missing := false
+	var noRoom error // of fetching a missing export (llm.FetchFailed)
 	for _, cache := range append(caches, context) {
 		var outs, names []string
 		var ps []program
@@ -666,10 +667,23 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			}
 		}
 		missing = !converted(ctx, all.base+programExt(backend))
+		if missing {
+			noRoom = llm.FetchFailed(all.base + programExt(backend))
+		}
 	} else if backend == llm.BackendCoreAI {
 		for _, tp := range tps {
-			missing = missing || !converted(ctx, tp.base+programExt(backend))
+			if !converted(ctx, tp.base+programExt(backend)) {
+				missing = true
+				if noRoom = llm.FetchFailed(tp.base + programExt(backend)); noRoom != nil {
+					break
+				}
+			}
 		}
+	}
+	if noRoom != nil {
+		// a source has the export, which the cache has no room for: the checkpoint to convert it
+		// here would need more
+		return Config{}, noRoom
 	}
 	if missing {
 		if s.CodesHash != "" && codes == "" {

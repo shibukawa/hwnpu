@@ -52,7 +52,7 @@ func (p *progSized) close() error {
 // useProgram loads size w x h of an export of Prepare (Core ML packages or OpenVINO IR),
 // converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
-	if err := makeSize(ctx, d, e.Checkpoint, e.Format, w, h, e.Logf); err != nil {
+	if err := makeSize(ctx, d, &e.Export, w, h, e.Logf); err != nil {
 		return nil, err
 	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))
@@ -166,18 +166,16 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// Prepare makes a MoGe-2 ready for Apple's Neural Engine (or Intel's NPU, s.Backend) in s.Dir: it downloads model.pt when
-// missing and writes the export's model.json; each size is converted when a picture first takes
-// it.
+// Prepare makes a MoGe-2 ready for Apple's Neural Engine (or Intel's NPU, s.Backend) in s.Dir: it
+// writes the export's model.json; each size is taken from the shared layers or converted when a
+// picture first takes it, model.pt downloaded then.
 func Prepare(ctx context.Context, s Setup) (string, error) {
 	root := filepath.Join(s.Dir, s.Name)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err
 	}
-	pt, err := chat.Fetch(ctx, s.Repo, "model.pt", s.Log)
-	if err != nil {
-		return "", err
-	}
+	// model.pt is downloaded when a size is converted (makeSize)
+	pt := filepath.Join(chat.RepoDir(s.Repo), "model.pt")
 	format := depth.ExportFormat(s.Backend)
 	// the export beside the checkpoint, in the model's directory (as every model's); the one an
 	// earlier hwnpu kept in the models' directory is removed (its sizes are converted again)
@@ -185,7 +183,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	os.RemoveAll(old)
 	os.Remove(old + ".done")
 	out := filepath.Join(root, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
-	x := Export{Name: s.Name, Kind: "moge", Tokens: Tokens, Format: format, Checkpoint: pt}
+	x := Export{Name: s.Name, Kind: "moge", Tokens: Tokens, Format: format, Checkpoint: pt, Repo: s.Repo}
 	for _, a := range Aspects {
 		bw, bh := BaseSize(Tokens, a)
 		x.Sizes = append(x.Sizes, [2]int{14 * bw, 14 * bh})
@@ -200,9 +198,10 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	return out, os.WriteFile(filepath.Join(out, "model.json"), append(b, '\n'), 0o644)
 }
 
-// makeSize makes size w x h of an export in d (its WxH) unless it is there or a shared layer has
-// it: converted from checkpoint in format, then put in the shared layers.
-func makeSize(ctx context.Context, d, checkpoint, format string, w, h int, logf func(string, ...any)) error {
+// makeSize makes size w x h of export x in d (its WxH) unless it is there or a shared layer has
+// it: converted from its checkpoint (downloaded now when x names its repository) in its format,
+// then put in the shared layers.
+func makeSize(ctx context.Context, d string, x *Export, w, h int, logf func(string, ...any)) error {
 	if llm.FetchExport(ctx, d, d+".done") { // here, or from the shared layers
 		return nil
 	}
@@ -212,7 +211,12 @@ func makeSize(ctx context.Context, d, checkpoint, format string, w, h int, logf 
 	if logf != nil {
 		logf("moge: converting %dx%d (the first picture of this aspect)", w, h)
 	}
-	if err := ConvertSize(checkpoint, d, w/14, h/14, format); err != nil {
+	if x.Repo != "" {
+		if _, err := chat.Fetch(ctx, x.Repo, "model.pt", depth.LogWriter(logf)); err != nil {
+			return err
+		}
+	}
+	if err := ConvertSize(x.Checkpoint, d, w/14, h/14, x.Format); err != nil {
 		return err
 	}
 	llm.ShareExport(ctx, d)
@@ -234,7 +238,7 @@ func PrepareSizes(ctx context.Context, dir string, logf func(string, ...any)) er
 		return fmt.Errorf("moge: %s is not an export of programs converted by size", dir)
 	}
 	for _, sz := range x.Sizes {
-		if err := makeSize(ctx, filepath.Join(dir, fmt.Sprintf("%dx%d", sz[0], sz[1])), x.Checkpoint, x.Format, sz[0], sz[1], logf); err != nil {
+		if err := makeSize(ctx, filepath.Join(dir, fmt.Sprintf("%dx%d", sz[0], sz[1])), &x, sz[0], sz[1], logf); err != nil {
 			return err
 		}
 	}

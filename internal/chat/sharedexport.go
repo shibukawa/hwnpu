@@ -122,6 +122,14 @@ func fetchFromErr(ctx context.Context, p place, dst string, log io.Writer) (bool
 		}
 	}
 	i, err := shared.FetchEntry(ctx, ss, p.entry.Path, p.takes, dst, log)
+	// the cache had no room for it: converting it here instead is not tried (llm.MayConvert)
+	noRoom := err
+	defer func() {
+		if err == nil || !errors.Is(noRoom, cache.ErrNoRoom) {
+			noRoom = err
+		}
+		llm.NoteFetch(dst, noRoom)
+	}()
 	if errors.Is(err, shared.ErrNotFound) && p.released() {
 		// a published version none has yet: the same key with no version is the same bytes
 		// (made before the version was written); it goes in the sources as the version

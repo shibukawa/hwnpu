@@ -49,6 +49,9 @@ func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized,
 		if e.Logf != nil {
 			e.Logf("depth: converting %dx%d (the first picture of this aspect)", w, h)
 		}
+		if err := e.fetchCheckpoint(ctx, LogWriter(e.Logf)); err != nil {
+			return nil, err
+		}
 		if err := ConvertSize(e.Checkpoint, d, w, h, e.Format); err != nil {
 			return nil, err
 		}
@@ -160,14 +163,13 @@ type Setup struct {
 }
 
 // Prepare makes a DA3 ready for Apple's Neural Engine (or Intel's NPU, s.Backend) in s.Dir, as hwnpu-chat makes its models
-// ready: it downloads the checkpoint when missing and writes the export's model.json; each size
-// is converted when a picture first takes it (seconds; its first load compiles it).
+// ready: it downloads the checkpoint's config.json when missing and writes the export's
+// model.json; each size is taken from the shared layers or converted when a picture first takes
+// it (seconds; its first load compiles it), the checkpoint's weights downloaded then.
 func Prepare(ctx context.Context, s Setup) (string, error) {
 	root := filepath.Join(s.Dir, s.Name)
-	for _, f := range []string{"config.json", "model.safetensors"} {
-		if _, err := chat.Fetch(ctx, s.Repo, f, s.Log); err != nil {
-			return "", err
-		}
+	if _, err := chat.Fetch(ctx, s.Repo, "config.json", s.Log); err != nil {
+		return "", err
 	}
 	src := chat.RepoDir(s.Repo)
 	c, err := mil.ReadConfig(src, Sizes[0][0], Sizes[0][1])
@@ -182,7 +184,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	os.Remove(old + ".done")
 	out := filepath.Join(root, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	x := Export{Name: s.Name, Kind: "depth", Metric: strings.Contains(strings.ToLower(s.Name), "metric"), MetricScale: 300,
-		Second: "sky", Format: format, Checkpoint: src, Version: ExportVersion}
+		Second: "sky", Format: format, Checkpoint: src, Repo: s.Repo, Version: ExportVersion}
 	if c.Dual {
 		x.Second = "confidence"
 	}
@@ -245,6 +247,9 @@ func ConvertSizes(ctx context.Context, dir string, log io.Writer) error {
 		if log != nil {
 			fmt.Fprintf(log, "depth: converting %dx%d\n", sz[0], sz[1])
 		}
+		if err := x.fetchCheckpoint(ctx, log); err != nil {
+			return err
+		}
 		if err := ConvertSize(x.Checkpoint, d, sz[0], sz[1], x.Format); err != nil {
 			return err
 		}
@@ -268,4 +273,34 @@ func (e *Estimator) Warm(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// fetchCheckpoint downloads the checkpoint's weights (model.safetensors of Repo) for converting a
+// size, unless they are there; an export without Repo (of an earlier hwnpu) had them downloaded
+// by Prepare.
+func (x *Export) fetchCheckpoint(ctx context.Context, log io.Writer) error {
+	if x.Repo == "" {
+		return nil
+	}
+	for _, f := range []string{"config.json", "model.safetensors"} {
+		if _, err := chat.Fetch(ctx, x.Repo, f, log); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// LogWriter writes lines to logf (nil: nowhere).
+func LogWriter(logf func(string, ...any)) io.Writer {
+	if logf == nil {
+		return nil
+	}
+	return lineWriter(logf)
+}
+
+type lineWriter func(string, ...any)
+
+func (w lineWriter) Write(b []byte) (int, error) {
+	w("%s", strings.TrimRight(string(b), "\n"))
+	return len(b), nil
 }

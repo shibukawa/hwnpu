@@ -32,8 +32,9 @@ var chatRole = &airole.Role{
 	Kinds:   []chat.Kind{chat.KindChat},
 	Prepare: prepareEngine,
 	// 1: the attention programs of a model split at its attention are written again with the
-	// model's scale of the values' weights (paged.Shape.OutScale: Qwen3's), which Prepare does
-	Revision: 1,
+	// model's scale of the values' weights (paged.Shape.OutScale: Qwen3's), which Prepare does;
+	// 2: Qwen3.5's too
+	Revision: 2,
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 		eng, err := loadEngine(ctx, f, e, "chat")
 		if err != nil {
