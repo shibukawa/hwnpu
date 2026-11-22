@@ -102,6 +102,7 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
 - **派生のチェックポイント** (`hwnpu-dev mxfp4`、`qwen35.DeriveMXFP4`): bf16 の専門家 (72 GB のうち 64 GB) は 16 GB にもディスクにも入らない。各層の `gate_up_proj` (256, 1024, 2048) と `down_proj` (256, 2048, 512) を gpt-oss の形の MXFP4 (`*_blocks`、`*_scales`、gate と up の行を交互、gate が偶数行) で書く。専門家 17.1 GB、全体 22.0 GB (視覚の塔と MTP は落とす)。
   - Hugging Face から Range 要求で層ごとに読む (`HTTPSource`、4 本並び): 1 層 45〜70 秒、M3 で 39 分。層ごとのファイルなので続きから書ける。config.json の `hwnpu_mxfp4` は最後に書く。
   - hwnpu-chat (`llm.HostDerived`) は配布物を落とさず、キャッシュの `derived/Qwen/Qwen3.6-35B-A3B` に書く (`chat.DerivedDir`)。`hwnpu-dev convert` は専門家の MXFP4 が無いチェックポイントを、`hwnpu-dev mxfp4` を案内して断る。
+  - 取得元のエントリにもなる (`chat.DerivedKind`、`converted/Qwen3.6-35B-A3B/any/Qwen3.6-35B-A3B/`。鍵は配布物のコミットと `derivedVersion`): 機械はそこから取り、自分では作らない。作った機械は書き戻す取得元に置く (`hwnpu-dev models package Qwen3.6-35B-A3B/coreai`、2026-11-22)。AMD は使わない (専門家は IRON の書き出しで NPU)
 - **対応しない設定**は `ParseMoE` が断る: `mlp_only_layers`、`decoder_sparse_step` > 1、`norm_topk_prob` false、32 の倍数でない大きさ。
 - **Neural Engine が内側の次元 1 の matmul を誤る**: Gated DeltaNet の出力 o = (QKᵀ ⊙ E) U + Γ Q S0 で、塊が 1 行だと `matmul (1×1)·(1×128)` になり、Neural Engine が誤る (値 40〜70 に対して 8 ほど)。1 トークンの生成が同じトークンを繰り返した。塊が 1 行のときは broadcast の mul にする (`deltaRuleChunks`)。密な Qwen3.5 の 1 トークンのプログラムも同じ変更 (Revision 2)。
 - **畳み込みの窓の出力** (Revision 2): GDN の窓 `win_conv_N_new` はホストが使う 3 行だけを出す (1 トークンのプログラムは slice、128 トークンのプログラムは入力 `step_window` (1, 3, 131) との matmul。`PagedStepInputs` がステップの有効なトークンから作る)。64 MB 減る。この形はステップの途中までを残せない (下書きの一部だけの採用) ので、そのときは走らせ直す (`wholeWindow`)。密な Qwen3.5 は変えていない。
