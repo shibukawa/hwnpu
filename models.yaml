@@ -1159,7 +1159,8 @@ categories:
     aliases: [tts]
     about: text to speech (hwnpu-audio tts)
     picks:
-      - {machine: 8, model: LFM3-Audio-2B-TTS}
+      - {machine: 8, model: supertonic-3}
+      - {machine: 16, model: LFM3-Audio-2B-TTS}
   decision:
     aliases: [systemone]
     about: typed questions about a state (hwnpu-chat systemone)
