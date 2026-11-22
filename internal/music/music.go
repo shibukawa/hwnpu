@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/safetensors"
 )
 
 // The files of google/magenta-realtime-2 the small model needs: the checkpoint (the
@@ -35,13 +36,50 @@ var (
 		"resources/musiccoca/pretrained_vector_quantizer.tflite",
 	}
 	EncoderFiles = []string{"resources/spectrostream/encoder.safetensors"}
+	// convertOnly are the files only a conversion reads: the checkpoint (whose tensors the host
+	// reads are in the language model's Core AI export, HostFile), MusicCoCa's encoders and
+	// SpectroStream's encoder, which their programs hold
+	convertOnly = []string{Files[0], TextFiles[0], AudioStyleFiles[1], EncoderFiles[0]}
 )
 
+// HostFile is the file of the checkpoint's tensors the host reads (hostTensors: the
+// conditioning's and the tokens' embeddings, SpectroStream's quantizer), as they are in it, in
+// the language model's Core AI export: what runs on Core AI needs no checkpoint.
+const HostFile = "host.safetensors"
+
+var hostTensors = []string{
+	"params/" + lmPrefix + "encoder/body/layers_1/branched_mulan_embedder/mulan_embedder/mulan_dequantizer/embedding",
+	"params/" + lmPrefix + "encoder/body/layers_1/branched_mulan_embedder/mulan_embedder/depth_input_adapter/kernel",
+	"params/" + lmPrefix + "encoder/body/layers_1/branched_regular_embedder/regular_embedder/embedding",
+	"params/" + lmPrefix + "encoder/body/encoder_ln/scale",
+	"params/" + lmPrefix + "encoder/body/encoder_ln/bias",
+	"params/" + lmPrefix + "decoder/decoder_embedding/embedding/embedding",
+	"params/soundstream/quantizer/embedding",
+}
+
+// writeHost writes the tensors of the checkpoint the host reads (hostTensors) to path.
+func writeHost(checkpoint, path string) error {
+	f, err := safetensors.Open(checkpoint)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var ts []safetensors.Out
+	for _, name := range hostTensors {
+		r, t, err := f.Section(name)
+		if err != nil {
+			return fmt.Errorf("music: %w", err)
+		}
+		ts = append(ts, safetensors.Out{Name: name, DType: t.DType, Shape: t.Shape, Size: r.Size(), Data: r})
+	}
+	return safetensors.Write(path, ts, nil)
+}
+
 // Revision counts the changes to the language model's programs that call for converting them
-// again; ssRevision SpectroStream's (2: their inputs laid out on the host; 4: the decoder's
-// blocks scaled into fp16's range).
+// again (2: its Core AI export holds HostFile); ssRevision SpectroStream's (2: their inputs laid
+// out on the host; 4: the decoder's blocks scaled into fp16's range).
 const (
-	Revision   = 1
+	Revision   = 2
 	ssRevision = 4
 )
 
@@ -69,7 +107,9 @@ type Setup struct {
 
 // Paths are the files and programs of a prepared model ("" for the parts not prepared).
 type Paths struct {
-	Dir, Checkpoint          string
+	// Checkpoint is the checkpoint, which only a conversion reads on Core AI: Host has the
+	// tensors the host reads ("": the checkpoint's)
+	Dir, Checkpoint, Host    string
 	Temporal, Depth, Decoder string
 	// SpectroStream's encoder: its weights and its program
 	EncoderWeights, Encoder string
@@ -104,24 +144,45 @@ func (s Setup) files() []string {
 }
 
 // Prepare downloads the files unless they are there and converts the programs unless they are.
+// On Core AI the files only a conversion reads (convertOnly) are downloaded when one is to be
+// made: exports from the shared layers need none of them, and the paths of those not here are
+// left out of what it returns.
 func Prepare(ctx context.Context, s Setup) (Paths, error) {
+	p, err := prepare(ctx, s)
+	if s.Backend == llm.BackendCoreAI {
+		for _, path := range []*string{&p.Checkpoint, &p.TextEncoder, &p.MusicEncoder, &p.EncoderWeights} {
+			if _, serr := os.Stat(*path); serr != nil {
+				*path = ""
+			}
+		}
+	}
+	return p, err
+}
+
+func prepare(ctx context.Context, s Setup) (Paths, error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
 	format := cmp.Or(s.Format, "lut8")
 	src := chat.RepoDir(s.Repo)
 	at := func(f string) string { return filepath.Join(src, filepath.FromSlash(f)) }
 	p := Paths{Dir: s.Dir, Checkpoint: at(Files[0])}
-	var want []chat.File
-	for _, f := range s.files() {
-		want = append(want, chat.File{Repo: s.Repo, Name: f})
+	coreai := s.Backend == llm.BackendCoreAI
+	// the files: those a run reads now, the others before converting
+	fetch := func(all bool) error {
+		var want []chat.File
+		for _, f := range s.files() {
+			if all || !coreai || !slices.Contains(convertOnly, f) {
+				want = append(want, chat.File{Repo: s.Repo, Name: f})
+			}
+		}
+		return chat.FetchFiles(ctx, want, log)
 	}
-	if err := chat.FetchFiles(ctx, want, log); err != nil {
+	if err := fetch(false); err != nil {
 		return p, err
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return p, err
 	}
 	// Intel's NPU reads OpenVINO IR (kept in Dir/intel) and no lookup tables: lut8 is int8
-	coreai := s.Backend == llm.BackendCoreAI
 	dir, ext := s.Dir, llm.ProgramExt(s.Backend)
 	if s.Backend == llm.BackendIntel {
 		format = llm.IntelFormat(format)
@@ -147,6 +208,10 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	lm := fmt.Sprintf("mrt2-small-r%d-%s", Revision, format)
 	p.Temporal = name(lm, "temporal", fmt.Sprintf("mrt2-small-temporal-r%d-%s", Revision, format))
 	p.Depth = name(lm, "depth", fmt.Sprintf("mrt2-small-depth-r%d-%s", Revision, format))
+	lmExport, _ := llm.CoreAIExport(s.Dir, lm)
+	if coreai {
+		p.Host = filepath.Join(lmExport, HostFile)
+	}
 	ssName := func(kind string) string {
 		return name(fmt.Sprintf("mrt2-spectrostream-%s-t%d-r%d-fp16", kind, DecodeFrames+decodeContext, ssRevision), kind,
 			fmt.Sprintf("mrt2-small-%s-t%d-r%d-fp16", kind, DecodeFrames+decodeContext, ssRevision))
@@ -238,6 +303,14 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 			return p, err
 		}
 	}
+	if err := fetch(true); err != nil {
+		return p, err
+	}
+	if _, ok := pending[lmExport]; ok {
+		if err := writeHost(p.Checkpoint, p.Host); err != nil {
+			return p, err
+		}
+	}
 	// written side by side (console.Jobs), the weights opened first: the jobs share them
 	q := console.NewJobs(log)
 	for _, c := range todo {
@@ -319,10 +392,11 @@ func OpenOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string) (*G
 func openOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string, dec *step) (*Generator, error) {
 	g := &Generator{dec: dec}
 	var err error
-	if g.lw, err = OpenWeights(map[string]string{p.Checkpoint: "params/"}); err != nil {
+	host := cmp.Or(p.Host, p.Checkpoint)
+	if g.lw, err = OpenWeights(map[string]string{host: "params/"}); err != nil {
 		return nil, err
 	}
-	if g.sw, err = OpenWeights(map[string]string{p.Checkpoint: "params/soundstream/"}); err != nil {
+	if g.sw, err = OpenWeights(map[string]string{host: "params/soundstream/"}); err != nil {
 		g.Close()
 		return nil, err
 	}

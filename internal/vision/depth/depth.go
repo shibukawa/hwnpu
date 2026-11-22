@@ -59,7 +59,10 @@ type Export struct {
 	// Checkpoint when a picture first takes the size), "" for one of tools/amd/iron_da3.py.
 	Format     string `json:"format,omitempty"`
 	Checkpoint string `json:"checkpoint,omitempty"`
-	Version    int    `json:"version,omitempty"`
+	// Repo is the Hugging Face repository of Checkpoint, whose weights are downloaded when a
+	// size is converted (fetchCheckpoint): a size from the shared layers needs none.
+	Repo    string `json:"repo,omitempty"`
+	Version int    `json:"version,omitempty"`
 }
 
 // patchIn is the patch embedding's input width (iron_da3.PE_IN): 3 x 14 x 14 values, padded.

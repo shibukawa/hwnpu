@@ -754,10 +754,17 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 func (c *Config) PagedLayers() []int { return c.FullLayers() }
 
 // PagedShape is the full attention's heads, kv heads and head size (llm.Paged), its scores
-// scaled by 1/sqrt(head_dim).
+// scaled by 1/sqrt(head_dim), and the values' weights scaled by pagedOutScale.
 func (c *Config) PagedShape() paged.Shape {
-	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim}
+	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim, OutScale: pagedOutScale}
 }
+
+// pagedOutScale is the scale of the values' weights in the attention over a chunk
+// (paged.Shape.OutScale). Qwen3.5's values are not normed: over a short English text the largest
+// of Qwen3.5-4B reach 50 (layer 19), past the 32 that paged.OutScale (1024) keeps under the
+// Neural Engine's 2^15, and it answered "2222..." on the M3 (16 GB, the form split at its
+// attention); 64 keeps them up to 512, and 16 gave the same tokens.
+const pagedOutScale = 64
 
 // PagedKV is layer itself: every full attention layer has its own keys and values.
 func (c *Config) PagedKV(layer int) int { return layer }

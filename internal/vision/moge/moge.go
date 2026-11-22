@@ -36,6 +36,9 @@ type Export struct {
 	// Checkpoint, model.pt, when a picture first takes the size).
 	Format     string `json:"format,omitempty"`
 	Checkpoint string `json:"checkpoint,omitempty"`
+	// Repo is the Hugging Face repository of Checkpoint, downloaded when a size is converted: a
+	// size from the shared layers needs none.
+	Repo string `json:"repo,omitempty"`
 }
 
 // sizeConfig is model.json of one size.
