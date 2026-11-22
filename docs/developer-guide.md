@@ -1067,7 +1067,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Before: `ai/aicli` gave kong structs alone
 - **Not decided**: adapters for other libraries (cobra and the like). They would add to the module's dependencies, so they would be modules of their own
 
-**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. `ai/vision`, `ai/imagegen`. Planned: `ai/sound`.
+**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. `ai/vision`, `ai/imagegen`, `ai/sound`.
 
 - **Not decided**: the name `ai` (hard to change once it is public); `speech` holding both speech to text and text to speech; the name `text` (easily confused beside the standard library's `text/...`)
 
@@ -1107,8 +1107,8 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 ## 11. Not there yet
 
 - Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); the picture models other than FLUX.2 klein (Anima, Chroma, FLUX.3 klein into `ai/imagegen`; for now they are drawn with the command, `hwnpu-image generate`)
-- Sound: music, sound effects, pitch, notes (`ai/sound`)
-- Moving the commands: making `hwnpu-audio`, `hwnpu-chat` and `hwnpu-image` only call this library
+- Sound: music made on the beat of a metronome, and a style that changes while it plays (`ai/sound` has music as a stream, sound effects, pitch and notes)
+- Moving the commands: making `hwnpu-chat` and `hwnpu-image` only call this library (`hwnpu-audio` does)
 - Managing what stays loaded (D9, D10), a local server (OpenAI compatible and others), bundles to ship, build tags
 - Their order and details are in [app-api-tasks.md](app-api-tasks.md)
 

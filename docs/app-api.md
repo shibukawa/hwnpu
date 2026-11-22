@@ -23,7 +23,7 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
 | `hwnpu/ai/vision` | 深度 (`Depth`)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)。物体、姿勢、切り抜き、OCR、ラベルはまだ | v0 (深度と顔) |
 | `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`: FLUX.2 klein。文から、文と参照の絵から)。Anima、FLUX.3 klein、Chroma はまだ | v0 (FLUX.2 klein) |
-| `hwnpu/ai/sound` | 音楽、効果音、音高、採譜 | まだ |
+| `hwnpu/ai/sound` | 音楽 (`Music`: Magenta RealTime 2。できた 1 秒ごとに流す)、効果音 (`Effect`: MOSS-SoundEffect)、音高 (`Pitch`: SwiftF0)、採譜 (`Notes`: Basic Pitch)、MIDI の読み書き | v0 |
 
 - **機能ごとにパッケージを分ける**: 文字起こしだけを使うアプリに、画像の生成のコードを入れないため。`ai` は機能のパッケージを import しない。機能のパッケージが、自分のモデルの準備と読み込みのしかた (`internal/airole` の `Role`) を持ち、`ai.Define` で型のついた `Use` を作る
 - **`internal/airole` は機能のパッケージと `ai` の間の約束**: 外のモジュールは `Role` を作れないので、`Use` を作れるのは hwnpu の機能のパッケージだけ
@@ -107,6 +107,24 @@ var (
 
 - **フラグは別のモデルにする**: コマンドのフラグのうちモデルの作り方や動かし方を変えるもの (`--format`、`--cpu`、手で変換したファイル、書き出しのディレクトリ) は、`Definition` を作ってその名前で動かす。モデルはいつも定義のとおりに動き、置き場の記録もフラグの組ごとに分かれる。キャッシュの場所を変える口 (`--cache`) は作らない
 - **計測の値は結果に入れる**: `speech.Transcript` の `Windows` (窓ごとの言語、トークン、特徴量・エンコーダー・デコードの時間) と `Took`、`speech.Audio.Stats` (フレーム数、使った乱数の種、全体と 3 つのプログラムの時間)。実行の記録 (`console.RecordRun`、電力量) はコマンドの `main` に置き、`ai` には入れない
+
+### 2.4 音 (`ai/sound`)
+
+`hwnpu-audio` の `generate`、`pitch`、`notes` はこのパッケージの上で動く (`tts` と `transcribe` は `ai/speech`)。
+
+| 口 | 中身 |
+|---|---|
+| `sound.Music(name)` → `*MusicGenerator` | `Style(ctx, parts...)`: 文や録音 (`Clip`) を重みで混ぜた曲調の 12 のコード (MusicCoCa。最初の呼び出しで読み込む)。`Generate(ctx, MusicOptions)` は `flow.Stream[[]float32]` (48 kHz ステレオ、左右交互) と `*MusicStats` を返し、流れは読まれたときに作り、復号器が 1 秒ぶん出すごとに塊を渡す。最後の `Fade` のぶんは手元に残し、溶暗にして最後の塊で渡す。設定は曲調のコード、長さ (0 なら音符の長さ+0.5 秒、なければ 10 秒)、MIDI の音符 (`ReadMIDI`)、続ける録音 (`Continue`、`NewOnly`)、ドラム、温度、top-k、CFG の 3 つ、種。`Progress` で録音の読み込みと 1 秒ごとの進み |
+| `sound.Effect(name)` → `*EffectGenerator` | `Generate(ctx, 説明, EffectOptions)`: 長さ (最大 30 秒)、ステップ、CFG、shift、種、`Fade`。結果は 48 kHz モノラルと `EffectStats` |
+| `sound.Pitch(name)` → `*PitchDetector` | `Detect(ctx, 16 kHz モノラル, PitchOptions{FMin, FMax})`: 16 ms ごとの音高、確からしさ、音量 (`Voiced` = 0.5 以上で有声) |
+| `sound.Notes(name)` → `*NoteTranscriber` | `Transcribe(ctx, 22050 Hz モノラル, NotesOptions)`: 音符 (始まり、終わり、高さ、強さ、ピッチベンド)。`WriteMIDI` |
+
+- **計測の値は結果に**: `MusicStats` (使った種、フレーム数、録音のフレームと時間、全体と復号器の時間、`RealTime`)、`EffectStats` (種、トークン、切ったか、文の符号化・読み込み・生成の時間)、`PitchTrack`・`NoteList` の `Seconds` と `Took`。種は `Generate` が返った時点で `MusicStats.Seed` にある
+- **定義の設定**: 音楽は `settings.format` (言語モデルの重み)、効果音は `settings.text-format`、`settings.dit-format`。どれも `Device: "cpu"` で CPU のインタープリター。AMD の書き出しは `PrepareEnv.Base` (元のモデル) の名前で探す
+- **音高と採譜の動く場所**: 読み込みのときに決める (定義の `Device`、`HWNPU_DEVICE`、models.yaml、変換の形がない NPU なら CPU)。CPU では ONNX Runtime があればそれ、なければ hwnpu の実行器 (milcpu) で変換したプログラム。`settings.threads` (CPU のスレッド)、`settings.cpu: hwnpu` (ONNX Runtime を使わず全部のコアの hwnpu の実行器)。準備は ONNX のファイル、CPU のインタープリター用と NPU 用のプログラムを全部作る
+- **NPU の外**: 音楽と効果音は、プログラムの一部が NPU の外に置かれたら `*sound.OffNPUError` で止まる。`ai.AllowOffNPU()` (Runtime の方針) で通す。効果音は文の符号化器と DiT を呼び出しのときに読み込むので、確かめるのも `Generate` の中
+- **音楽の準備は全部**: 曲調の文の側と音声の側、SpectroStream の符号化器 (続き用) も準備する。読み込みは使うとき (曲調は最初の `Style`、符号化器は最初の `Continue`)
+- **まだ**: メトロノームの拍に合わせて作る形、鳴らしている間に曲調を変える形 (モデルの節)。今は流れを `flow.Pace` で再生の速さにする
 
 ## 3. アプリのコマンドライン (`ai/cli`)
 
