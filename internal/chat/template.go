@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/pyjson"
@@ -89,6 +90,12 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 
 func (c Content) MarshalJSON() ([]byte, error) { return json.Marshal(c.Text) }
 
+// PartsContent is the content of a message sent as a list of parts, as UnmarshalJSON makes it:
+// each part a text or MediaMarker, which stands for the next of media.
+func PartsContent(parts []string, media []Media) Content {
+	return Content{Text: strings.Join(parts, ""), Parts: true, parts: slices.Clone(parts), Media: slices.Clone(media)}
+}
+
 // ToolCall is a call of a function by the assistant. Arguments is a JSON object as a string.
 type ToolCall struct {
 	ID       string `json:"id"`
@@ -124,6 +131,14 @@ func (t *Tool) UnmarshalJSON(b []byte) error {
 
 // Name is the function's name.
 func (t Tool) Name() string { return t.raw.Get("name").Str }
+
+// MarshalJSON writes the function object, which UnmarshalJSON reads back as it was.
+func (t Tool) MarshalJSON() ([]byte, error) {
+	if t.raw == nil {
+		return []byte("null"), nil
+	}
+	return []byte(t.raw.String()), nil
+}
 
 // paramType is the JSON schema type of a parameter ("" when not given).
 func (t Tool) paramType(param string) string {
