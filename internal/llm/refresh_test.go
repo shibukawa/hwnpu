@@ -41,7 +41,7 @@ func TestRefreshAttention(t *testing.T) {
 		if err := WriteManifest(path, man); err != nil {
 			t.Fatal(err)
 		}
-		if err := AddSmaller(path, "grouped", sh.Scale, 8); err != nil {
+		if err := AddSmaller(path, "grouped", sh, 8); err != nil {
 			t.Fatal(err)
 		}
 		if man, err = ReadManifest(path); err != nil {
@@ -65,7 +65,7 @@ func TestRefreshAttention(t *testing.T) {
 		path, man := old(t, BackendCoreAI, several)
 		// AddSmaller wrote the shorter chunks' in the form already; the manifest's own is grouped
 		before, small := bytecode(t, man.Attention), man.Smaller[0].Path
-		if err := RefreshAttention(path, "grouped", 0); err != nil {
+		if err := RefreshAttention(path, "grouped", paged.Shape{}); err != nil {
 			t.Fatal(err)
 		}
 		back, err := ReadManifest(path)
@@ -86,10 +86,10 @@ func TestRefreshAttention(t *testing.T) {
 		}
 		// in the form: nothing more
 		again := bytecode(t, back.Attention)
-		if err := AddSmaller(path, "grouped", 0, 8); err != nil {
+		if err := AddSmaller(path, "grouped", paged.Shape{}, 8); err != nil {
 			t.Fatal(err)
 		}
-		if err := RefreshAttention(path, "grouped", 0); err != nil {
+		if err := RefreshAttention(path, "grouped", paged.Shape{}); err != nil {
 			t.Fatal(err)
 		}
 		if back, err = ReadManifest(path); err != nil {
@@ -102,7 +102,7 @@ func TestRefreshAttention(t *testing.T) {
 	t.Run("one kv head", func(t *testing.T) {
 		path, man := old(t, BackendCoreAI, paged.Shape{Heads: 8, KVHeads: 1, HeadDim: 16, Scale: 1})
 		before := bytecode(t, man.Attention)
-		if err := RefreshAttention(path, "grouped", 1); err != nil {
+		if err := RefreshAttention(path, "grouped", paged.Shape{Scale: 1}); err != nil {
 			t.Fatal(err)
 		}
 		back, err := ReadManifest(path)
@@ -120,7 +120,7 @@ func TestRefreshAttention(t *testing.T) {
 			t.Fatal(err)
 		}
 		small := man.Smaller[0].Path
-		if err := RefreshAttention(path, "grouped", 0); err != nil {
+		if err := RefreshAttention(path, "grouped", paged.Shape{}); err != nil {
 			t.Fatal(err)
 		}
 		back, err := ReadManifest(path)
@@ -134,9 +134,49 @@ func TestRefreshAttention(t *testing.T) {
 			t.Errorf("%s is still there", filepath.Base(small))
 		}
 	})
+	t.Run("the model's scale of the values' weights", func(t *testing.T) {
+		path, _ := old(t, BackendCoreAI, several)
+		if err := RefreshAttention(path, "grouped", paged.Shape{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := AddSmaller(path, "grouped", paged.Shape{}, 8); err != nil {
+			t.Fatal(err)
+		}
+		back, err := ReadManifest(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, small := bytecode(t, back.Attention), back.Smaller[0].Path
+		model := paged.Shape{OutScale: 64}
+		if err := RefreshAttention(path, "grouped", model); err != nil {
+			t.Fatal(err)
+		}
+		if back, err = ReadManifest(path); err != nil {
+			t.Fatal(err)
+		}
+		if back.AttnOutScale != 64 || bytecode(t, back.Attention) == before || len(back.Smaller) != 0 {
+			t.Errorf("out scale %v, %d shorter chunks, written again %v: want 64, none, true", back.AttnOutScale, len(back.Smaller), bytecode(t, back.Attention) != before)
+		}
+		if _, err := os.Stat(small); err == nil {
+			t.Errorf("%s is still there", filepath.Base(small))
+		}
+		if err := AddSmaller(path, "grouped", model, 8); err != nil {
+			t.Fatal(err)
+		}
+		again := bytecode(t, back.Attention)
+		if err := RefreshAttention(path, "grouped", model); err != nil {
+			t.Fatal(err)
+		}
+		if back, err = ReadManifest(path); err != nil {
+			t.Fatal(err)
+		}
+		if bytecode(t, back.Attention) != again || len(back.Smaller) != 2 {
+			t.Errorf("written again with the same scale, or lost its shorter chunks (%d)", len(back.Smaller))
+		}
+	})
 	t.Run("Core ML", func(t *testing.T) {
 		path, _ := old(t, "", several)
-		if err := RefreshAttention(path, "grouped", 0); err != nil {
+		if err := RefreshAttention(path, "grouped", paged.Shape{}); err != nil {
 			t.Fatal(err)
 		}
 		back, err := ReadManifest(path)

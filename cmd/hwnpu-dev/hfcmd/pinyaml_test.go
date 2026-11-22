@@ -83,3 +83,33 @@ func TestFieldYAML(t *testing.T) {
 		t.Error("a model not in the file")
 	}
 }
+
+// TestExportsYAML writes models.MODEL.exports.TARGET.EXPORT, a pin, as nestedYAML does for
+// hwnpu-dev models pin, and replaces it.
+func TestExportsYAML(t *testing.T) {
+	src := "version: 1\nmodels:\n  LFM3-1.7B:\n    from: hf:LiquidAI/LFM3-1.7B\n    machine: 8\n"
+	d := strings.Repeat("ab", 32)
+	out, err := nestedYAML([]byte(src), "LFM3-1.7B", "exports", "amd-xdna2", "LFM3-1.7B.amd-npu2-q4", "v0-7bfc0b02 sha256:"+d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err = nestedYAML(out, "LFM3-1.7B", "exports", "amd-xdna2", "LFM3-1.7B.amd-npu2-q6", "v1 sha256:"+d); err != nil {
+		t.Fatal(err)
+	}
+	if out, err = nestedYAML(out, "LFM3-1.7B", "exports", "amd-xdna2", "LFM3-1.7B.amd-npu2-q4", "v0-11111111 sha256:"+d); err != nil {
+		t.Fatal(err)
+	}
+	var back struct {
+		Models map[string]struct {
+			Exports map[string]map[string]string `yaml:"exports"`
+			Machine int                          `yaml:"machine"`
+		} `yaml:"models"`
+	}
+	if err := yaml.Unmarshal(out, &back); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	got := back.Models["LFM3-1.7B"]
+	if got.Exports["amd-xdna2"]["LFM3-1.7B.amd-npu2-q4"] != "v0-11111111 sha256:"+d || got.Exports["amd-xdna2"]["LFM3-1.7B.amd-npu2-q6"] != "v1 sha256:"+d || got.Machine != 8 {
+		t.Errorf("read back %+v from\n%s", got, out)
+	}
+}

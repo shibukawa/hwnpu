@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -374,6 +375,7 @@ type GCCmd struct {
 	OlderThan int      `name:"older-than" help:"Remove the entries made more than this many days ago." placeholder:"DAYS"`
 	Target    []string `help:"Only the entries of these targets (amd-xdna2, coreai...): with the others, which choose among them." placeholder:"TARGET"`
 	Apply     bool     `help:"Remove them (without it, only show what would go)."`
+	Pinned    bool     `help:"Remove the entries models.yaml pins (exports) too: without it they stay, whatever the others choose."`
 }
 
 func (g GCCmd) Run(d *devopt.Defs) error {
@@ -390,7 +392,8 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 		return errors.New("say what to remove: --model, --kind, --key, or --older-than (what a writeback cut off left: hwnpu cache clean)")
 	}
 	before := time.Now().AddDate(0, 0, -g.OlderThan)
-	drop := func(e shared.Entry) bool {
+	kept := 0
+	chosen := func(e shared.Entry) bool {
 		if len(g.Target) > 0 && !slices.Contains(g.Target, e.Target) {
 			return false
 		}
@@ -411,6 +414,16 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 		}
 		return g.OlderThan > 0 && e.Made.Before(before)
 	}
+	drop := func(e shared.Entry) bool {
+		if !chosen(e) {
+			return false
+		}
+		if pin, ok := chat.PinOfEntry(e); ok && !g.Pinned && path.Base(e.Path) == pin.At {
+			kept++
+			return false
+		}
+		return true
+	}
 	plan, err := shared.PlanGC(ctx, l, drop)
 	if err != nil {
 		return err
@@ -423,6 +436,9 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 		verb = "removing"
 	}
 	fmt.Printf("%s: %s %d entries (%.2f GB)\n", l, verb, len(plan.Entries), float64(plan.Bytes)/1e9)
+	if kept > 0 {
+		fmt.Printf("kept %d entries models.yaml pins (--pinned removes them too)\n", kept)
+	}
 	if !g.Apply {
 		if len(plan.Entries) > 0 {
 			fmt.Println("(--apply removes them)")

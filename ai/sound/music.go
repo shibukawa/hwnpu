@@ -120,7 +120,7 @@ var musicRole = &airole.Role{
 
 // musicPaths are the fields of p by the names a preparation keeps them under.
 func musicPaths(p *music.Paths) map[string]*string {
-	return map[string]*string{"dir": &p.Dir, "checkpoint": &p.Checkpoint, "temporal": &p.Temporal, "depth": &p.Depth,
+	return map[string]*string{"dir": &p.Dir, "checkpoint": &p.Checkpoint, "host": &p.Host, "temporal": &p.Temporal, "depth": &p.Depth,
 		"decoder": &p.Decoder, "encoder-weights": &p.EncoderWeights, "encoder": &p.Encoder,
 		"text-encoder": &p.TextEncoder, "music-encoder": &p.MusicEncoder, "audio-preprocessor": &p.AudioPreprocessor,
 		"mapper": &p.Mapper, "quantizer": &p.Quantizer, "spm": &p.SPM, "text-program": &p.TextProgram,

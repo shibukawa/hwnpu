@@ -611,6 +611,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	hybrid := chunk > 0 && len(caches) > 0
 	var tps []tierProgs
 	missing := false
+	var noRoom error // of fetching a missing export (llm.FetchFailed)
 	for _, cache := range append(caches, context) {
 		var outs, names []string
 		var ps []program
@@ -666,10 +667,23 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			}
 		}
 		missing = !converted(ctx, all.base+programExt(backend))
+		if missing {
+			noRoom = llm.FetchFailed(all.base + programExt(backend))
+		}
 	} else if backend == llm.BackendCoreAI {
 		for _, tp := range tps {
-			missing = missing || !converted(ctx, tp.base+programExt(backend))
+			if !converted(ctx, tp.base+programExt(backend)) {
+				missing = true
+				if noRoom = llm.FetchFailed(tp.base + programExt(backend)); noRoom != nil {
+					break
+				}
+			}
 		}
+	}
+	if noRoom != nil {
+		// a source has the export, which the cache has no room for: the checkpoint to convert it
+		// here would need more
+		return Config{}, noRoom
 	}
 	if missing {
 		if s.CodesHash != "" && codes == "" {
@@ -728,17 +742,17 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			for _, path := range pkgs {
 				// a conversion from before the two-level attention gets its mass program, which
 				// has no weights, instead of being converted again
-				form, scale := cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale
-				if err := llm.AddMass(path, form, scale); err != nil {
+				form, sh := cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape()
+				if err := llm.AddMass(path, form, sh.Scale); err != nil {
 					return Config{}, err
 				}
 				// the attention in the form the backend runs fastest, of a conversion from
 				// before it (Core AI: a kv head at a time), also without weights
-				if err := llm.RefreshAttention(path, form, scale); err != nil {
+				if err := llm.RefreshAttention(path, form, sh); err != nil {
 					return Config{}, err
 				}
 				// the attention over shorter chunks, also without weights
-				if err := llm.AddSmaller(path, form, scale, shortestChunk(backend, s.Shortest)); err != nil {
+				if err := llm.AddSmaller(path, form, sh, shortestChunk(backend, s.Shortest)); err != nil {
 					return Config{}, err
 				}
 			}
@@ -782,10 +796,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			// the layer's attention over shorter chunks too, as the model's (without weights):
 			// over the whole chunk it took 3 of its 9 ms a call (Qwen3.5-4B, docs/design/llm-decoding.md)
 			mform := cmp.Or(ma.Param(llm.Options{}, "attn"), "grouped")
-			if err := llm.RefreshAttention(path, mform, pm.PagedShape().Scale); err != nil {
+			if err := llm.RefreshAttention(path, mform, pm.PagedShape()); err != nil {
 				return Config{}, err
 			}
-			if err := llm.AddSmaller(path, mform, pm.PagedShape().Scale, shortestChunk(backend, s.Shortest)); err != nil {
+			if err := llm.AddSmaller(path, mform, pm.PagedShape(), shortestChunk(backend, s.Shortest)); err != nil {
 				return Config{}, err
 			}
 		}

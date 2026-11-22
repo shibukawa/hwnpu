@@ -20,6 +20,12 @@ import (
 // converted/MODEL/TARGET/EXPORT/VERSION and the entry it is described by (no files yet).
 type place struct {
 	entry shared.Entry
+	// pin is the export's pin of models.yaml's exports, if it has one: read from its folder
+	// (pinned) before entry's place, and taken there or here only with its digest. What is made
+	// here of a pinned export goes in the sources at entry's place, which is then never vN (the
+	// published version is the pinned one).
+	pin    *Pin
+	pinned string // the pin's folder in a source
 }
 
 // placeOf is the place of the conversion of kind of model m for target that recipe r describes,
@@ -31,9 +37,22 @@ func placeOf(kind string, m Model, target, export string, r map[string]string) p
 	}
 	key := shared.Fingerprint(r)
 	v := m.Targets[target]
+	pin, pinned := PinOf(m, target, export)
+	if pinned {
+		v = 0 // what is made here goes beside the pinned one, as v0-HASH of its recipe
+	}
 	rel := shared.EntryPath(m.Name, target, export, shared.VersionDir(v, m.Develop, key))
-	return place{shared.Entry{Key: key, Kind: kind, Scope: shared.ScopePortable, Model: m.Name, Target: target,
+	p := place{entry: shared.Entry{Key: key, Kind: kind, Scope: shared.ScopePortable, Model: m.Name, Target: target,
 		Version: v, Develop: m.Develop, Path: rel, Recipe: r}}
+	if pinned {
+		p.pin, p.pinned = &pin, PinnedPath(m.Name, target, export, pin)
+	}
+	return p
+}
+
+// takesPinned reports whether e is the pinned export (any place with a pin: its digest).
+func (p place) takesPinned(e shared.Entry) bool {
+	return p.pin != nil && e.Digest() == p.pin.Digest && FormatTaken(e)
 }
 
 // released reports whether the place is a published version (vN): taken whatever tools made it.
@@ -43,6 +62,10 @@ func (p place) released() bool { return p.entry.Version > 0 && !p.entry.Develop 
 // the same recipe but for the tools' hash (a change of the tools that changes what is made bumps
 // the version); else the same key.
 func (p place) takes(e shared.Entry) bool {
+	if p.pin != nil {
+		// the pinned export, or one made from this very recipe (made here, or by hand for it)
+		return p.takesPinned(e) || e.Key == p.entry.Key
+	}
 	if !p.released() {
 		return e.Key == p.entry.Key
 	}
@@ -69,11 +92,44 @@ func fetchConverted(ctx context.Context, p place, dst string, log io.Writer) boo
 // fetchFrom makes dst from the first source that has the place's entry, and puts it in the
 // sources before that one that are written back to. It reports whether it did.
 func fetchFrom(ctx context.Context, p place, dst string, log io.Writer) bool {
+	ok, _ := fetchFromErr(ctx, p, dst, log)
+	return ok
+}
+
+// fetchFromErr is fetchFrom that also returns why a source that has the entry did not give it
+// when that is the cache's room (cache.ErrNoRoom): to be said, not followed by a build that
+// would need the room as well (and IRON, which a machine of fetched exports has not).
+func fetchFromErr(ctx context.Context, p place, dst string, log io.Writer) (bool, error) {
 	ss := shared.Sources()
 	if len(ss) == 0 {
-		return false
+		return false, nil
+	}
+	if p.pin != nil {
+		i, err := shared.FetchEntry(ctx, ss, p.pinned, p.takesPinned, dst, log)
+		if err == nil {
+			for _, s := range ss[:i] {
+				if s.Writeback {
+					shared.PutLater(s, dst)
+				}
+			}
+			return true, nil
+		}
+		if errors.Is(err, cache.ErrNoRoom) {
+			return false, err
+		}
+		if log != nil {
+			fmt.Fprintf(log, "%s: the pinned %s (%s) is in no source: %v\n", filepath.Base(dst), p.pin.At, short(p.pin.Digest), err)
+		}
 	}
 	i, err := shared.FetchEntry(ctx, ss, p.entry.Path, p.takes, dst, log)
+	// the cache had no room for it: converting it here instead is not tried (llm.MayConvert)
+	noRoom := err
+	defer func() {
+		if err == nil || !errors.Is(noRoom, cache.ErrNoRoom) {
+			noRoom = err
+		}
+		llm.NoteFetch(dst, noRoom)
+	}()
 	if errors.Is(err, shared.ErrNotFound) && p.released() {
 		// a published version none has yet: the same key with no version is the same bytes
 		// (made before the version was written); it goes in the sources as the version
@@ -87,17 +143,20 @@ func fetchFrom(ctx context.Context, p place, dst string, log io.Writer) bool {
 		}
 	}
 	if err != nil {
+		if errors.Is(err, cache.ErrNoRoom) {
+			return false, err
+		}
 		if !errors.Is(err, shared.ErrNotFound) && log != nil {
 			fmt.Fprintf(log, "the sources: %v; making %s here\n", err, filepath.Base(dst))
 		}
-		return false
+		return false, nil
 	}
 	for _, s := range ss[:i] {
 		if s.Writeback {
 			shared.PutLater(s, dst)
 		}
 	}
-	return true
+	return true, nil
 }
 
 // startEarly puts the files of dir, the place's entry being made here next, in the sources
@@ -161,14 +220,20 @@ type SharedRecipe struct {
 // export made by hand that hwnpu-dev sources import put there, ImportedRecipe) before it builds.
 // What build makes is put as recipe's.
 func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer, build func() error) error {
-	if recipe == nil {
+	if recipe == nil && len(others) == 0 {
 		return build()
 	}
 	if log == nil {
 		log = io.Discard
 	}
-	p := sharedPlace(kind, recipe, out)
-	places := []place{p}
+	// with no recipe (what it is made from is not known: no commit), what others name (an export
+	// by its name, which a pin of models.yaml makes one of known bytes) is still looked for
+	var places []place
+	var p *place
+	if recipe != nil {
+		q := sharedPlace(kind, recipe, out)
+		p, places = &q, []place{q}
+	}
 	for _, o := range others {
 		places = append(places, sharedPlace(o.Kind, o.Recipe, out))
 	}
@@ -177,32 +242,38 @@ func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, 
 		return err
 	}
 	defer unlock()
-	if fetchPlaces(ctx, places, out, log) {
-		return nil
+	if ok, err := fetchPlaces(ctx, places, out, log); ok || err != nil {
+		return err
 	}
 	if err := llm.MayConvert(ctx, out); err != nil {
 		return err
 	}
+	if p == nil {
+		return build()
+	}
 	// made here: its files go in the sources written back to as they are written, as recipe's
 	// (not on the misses before: an export of others fetched into out would go too)
-	startEarly(p, out)
+	startEarly(*p, out)
 	if err := build(); err != nil {
 		return err
 	}
-	putConverted(p, out, log)
+	putConverted(*p, out, log)
 	return nil
 }
 
 // FetchShared is SharedExportOr without the build: it reports whether out is recipe's entry, or
 // one of others', here or fetched from a source. A nil recipe is never there.
 func FetchShared(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer) (bool, error) {
-	if recipe == nil {
+	if recipe == nil && len(others) == 0 {
 		return false, nil
 	}
 	if log == nil {
 		log = io.Discard
 	}
-	places := []place{sharedPlace(kind, recipe, out)}
+	var places []place
+	if recipe != nil {
+		places = append(places, sharedPlace(kind, recipe, out))
+	}
 	for _, o := range others {
 		places = append(places, sharedPlace(o.Kind, o.Recipe, out))
 	}
@@ -211,26 +282,30 @@ func FetchShared(ctx context.Context, kind string, recipe map[string]string, oth
 		return false, err
 	}
 	defer unlock()
-	return fetchPlaces(ctx, places, out, log), nil
+	return fetchPlaces(ctx, places, out, log)
 }
 
 // fetchPlaces reports whether out is the entry of one of places: here, or fetched from the first
 // source that has one (out.done written then).
-func fetchPlaces(ctx context.Context, places []place, out string, log io.Writer) bool {
+func fetchPlaces(ctx context.Context, places []place, out string, log io.Writer) (bool, error) {
 	if e, err := shared.ReadEntry(out); err == nil {
 		for _, q := range places {
 			if q.takes(e) {
-				return true
+				return true, nil
 			}
 		}
 	}
 	for _, q := range places {
-		if fetchFrom(ctx, q, out, log) {
+		ok, err := fetchFromErr(ctx, q, out, log)
+		if err != nil {
+			return false, err
+		}
+		if ok {
 			os.WriteFile(out+".done", nil, 0o644)
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // sharedPlace is the place of the entry of kind and recipe named as out.
@@ -281,6 +356,7 @@ func ExportRecipe(ctx context.Context, m Model, tool string, args []string) map[
 	base, _, _ := strings.Cut(m.Repo, "@")
 	r := map[string]string{"model": m.Name, "target": cache.AMDTarget, "source": base, "commit": commit,
 		"tool": tool, "args": strings.Join(args, " "), "tools": hash}
+	addFormat(r)
 	if m.File != "" {
 		r["file"] = m.File
 	}
@@ -305,6 +381,7 @@ func PinnedRecipe(m Model, tool string, version int) map[string]string {
 	base, _, _ := strings.Cut(m.Repo, "@")
 	r := map[string]string{"model": m.Name, "target": cache.AMDTarget, "source": base,
 		"tool": tool, "version": fmt.Sprint(version), "tools": hash}
+	addFormat(r)
 	for f, d := range m.SHA256 {
 		r["sha256:"+f] = strings.ToLower(d)
 	}
@@ -315,4 +392,31 @@ func PinnedRecipe(m Model, tool string, version int) map[string]string {
 // iron-onnxcnn.
 func ExportKind(tool string) string {
 	return "iron-" + strings.TrimSuffix(strings.TrimPrefix(tool, "iron_"), ".py")
+}
+
+// AMDExportFormat is the form of the exports for AMD's NPU this hwnpu reads (every tool's): raise
+// it when hwnpu reads them in a way the exports made before cannot serve, so that the exports
+// models.yaml pins that were made before are refused (FormatTaken) and are made and pinned again.
+// From 2 it is in the recipes (format), and so in their keys.
+const AMDExportFormat = 1
+
+// addFormat writes AMDExportFormat into an AMD recipe, from 2.
+func addFormat(r map[string]string) {
+	if AMDExportFormat > 1 {
+		r["format"] = fmt.Sprint(AMDExportFormat)
+	}
+}
+
+// FormatTaken reports whether this hwnpu reads entry e's form: for AMD's NPU, its recipe's
+// format (none: 1) is AMDExportFormat. Core AI exports carry theirs in their recipe and names
+// (lowering), and are taken by it.
+func FormatTaken(e shared.Entry) bool {
+	if e.Target != cache.AMDTarget {
+		return true
+	}
+	f := e.Recipe["format"]
+	if f == "" {
+		f = "1"
+	}
+	return f == fmt.Sprint(AMDExportFormat)
 }

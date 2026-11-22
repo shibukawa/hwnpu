@@ -19,7 +19,20 @@ import (
 
 // Takes reports whether got, found at want's place, is what want describes: the same key, or
 // for a version that is published (vN) the same recipe but for the tools' hash.
-func Takes(want, got shared.Entry) bool { return place{want}.takes(got) }
+func Takes(want, got shared.Entry) bool {
+	p := place{entry: want}
+	if pin, ok := PinOfEntry(want); ok {
+		p.pin, p.pinned = &pin, PinnedPath(want.Model, want.Target, exportOfPath(want.Path), pin)
+	}
+	return p.takes(got)
+}
+
+// TakesPinned reports whether got is the export models.yaml pins for want (its digest, in a
+// form this hwnpu reads); false when it pins none.
+func TakesPinned(want, got shared.Entry) bool {
+	pin, ok := PinOfEntry(want)
+	return ok && got.Digest() == pin.Digest && FormatTaken(got)
+}
 
 // CoreAIWant is the entry of the Core AI export of model m named export in the sources
 // (NAME.coreai, or NAME.coreai/SIZE for one of several sizes), as the commands look for it now;

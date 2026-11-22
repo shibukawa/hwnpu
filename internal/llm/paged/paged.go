@@ -30,6 +30,19 @@ type Shape struct {
 	// Scale multiplies the scores; 0 for 1/sqrt(HeadDim). Gemma 4 takes 1: its query and key
 	// norms take the place of the scaling.
 	Scale float64
+	// OutScale multiplies the values' weights before their product with the values (Version); 0
+	// for OutScale. A partial sum of the product is at most OutScale times the largest value, which
+	// must stay under the Neural Engine's 2^15: a model whose values are larger than 32 takes less
+	// (Qwen3-1.7B's reach 168: with 1024 every answer was noise).
+	OutScale float64
+}
+
+// Out is the scale of the values' weights: sh.OutScale, else OutScale.
+func (sh Shape) Out() float64 {
+	if sh.OutScale > 0 {
+		return sh.OutScale
+	}
+	return OutScale
 }
 
 // Heads is the form of the attention program that Core AI runs fastest on the Neural Engine: a
@@ -50,7 +63,8 @@ const Heads = "heads"
 // lightly weighted keys of a layer with small values (LFM3-1.7B layer 18: o of a chunk off by up
 // to 79 %, three pass phrases in 32K tokens missed; docs/design/llm-engine.md). Normalized by l
 // and scaled by OutScale, the products are as large as they can be while every partial sum
-// stays under the Neural Engine's 2^15 (it is at most OutScale times the largest value: 32).
+// stays under the Neural Engine's 2^15 (it is at most OutScale times the largest value: 32;
+// a model of larger values gives its own, Shape.OutScale).
 const Version = 1
 
 // OutScale multiplies the values' weights e/l before their product with the values (Version).
@@ -109,7 +123,7 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 	if sh.Scale != 0 {
 		scale = b.ScalarF16(float32(sh.Scale))
 	}
-	outScale, invScale := b.ScalarF16(OutScale), b.ScalarF16(1.0/OutScale)
+	outScale, invScale := b.ScalarF16(float32(sh.Out())), b.ScalarF16(float32(1/sh.Out()))
 	rows := []int{1, nh, s, 1}
 	tile := func(x *mlpackage.Var) *mlpackage.Var {
 		if rep == 1 {

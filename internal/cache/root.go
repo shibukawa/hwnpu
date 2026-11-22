@@ -99,10 +99,16 @@ func ExportRoots() []string {
 	return roots
 }
 
-// FindExport is the first of ExportRoots/name that have says holds an export, "" for none.
+// ExportStale says whether an export found by name is not the one the definitions pin (an
+// export fetched or made by hwnpu, its entry.json of other bytes than models.yaml's exports pin):
+// FindExport passes it by, and the export is fetched again at the pin. The chat package sets it.
+var ExportStale = func(dir string) bool { return false }
+
+// FindExport is the first of ExportRoots/name that have says holds an export (and ExportStale
+// does not refuse), "" for none.
 func FindExport(name string, have func(dir string) bool) string {
 	for _, r := range ExportRoots() {
-		if d := filepath.Join(r, name); have(d) {
+		if d := filepath.Join(r, name); have(d) && !ExportStale(d) {
 			Touch(d) // used now (LRU)
 			return d
 		}

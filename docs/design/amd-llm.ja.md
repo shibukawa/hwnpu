@@ -16,6 +16,7 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | `lfm3` | `iron_lfm3.Lfm3` (hwnpu のもの。IRON にはない) | LFM3-1.7B |
 | `lfm3vl`、`lfm3audio`、`lfm3omni` | `iron_lfm3vl`、`iron_lfm3audio`、`iron_lfm3omni` | LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B |
 | `plamo3` | `iron_plamo3.Plamo3` (hwnpu のもの) | PLaMo 3 Translate 0.8B、2B、8B |
+| `d1`、`d1omni` | `iron_d1.D1Vl`、`iron_d1.D1Omni` (hwnpu の) | d1-2B、d1-Omni-2B (System One の判断モデル): LFM3-VL / Omni の full attention の層をプロンプトの塊で双方向にし、最終の隠れ状態を出す ([amd-npu-models.md](../amd-npu-models.md) 29 節) |
 | `ouro` | `iron_ouro.Ouro` (hwnpu のもの。IRON にはない) | Ouro-1.4B-Thinking (評価のみで models.yaml にはない。[model-estimation.ja.md](../model-estimation.ja.md))。2.6B は書き出していない |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN は `iron_gdn.py`) | Qwen3.5-0.8B、2B、4B |
 
@@ -26,6 +27,7 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | LFM3-1.7B / VL / Audio / Omni | `lfm3 / lfm3vl / lfm3audio / lfm3omni --max-seq-len 12288 --q4` |
 | Gemma 4 E2B、E4B | `gemma4 --max-seq-len 4096 --q4` (文だけ。カタログでは塔を書き出さない) |
 | PLaMo 3 Translate 0.8B / 2B / 8B | `plamo3 --max-seq-len 8192 --q4` |
+| d1-2B / d1-Omni-2B | `d1 / d1omni --max-seq-len 1024 --prefill-chunk 1024 --q4` (1 問が位置 0 からの塊 1 回) |
 | Qwen3.5-0.8B、2B | `qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3` |
 | Qwen3.5-4B | `qwen35 --max-seq-len 4096 --q4` |
 

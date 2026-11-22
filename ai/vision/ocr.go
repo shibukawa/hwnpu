@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,11 @@ var ocrRole = &airole.Role{
 			return f, err
 		}
 		r.Close()
+		// the programs are made in s.Dir at the first picture: it is there for the record of the
+		// store, which counts a use whose files are missing as not prepared (a fresh cache has none)
+		if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+			return f, err
+		}
 		f.Set("models", s.Dir)
 		return f, nil
 	},

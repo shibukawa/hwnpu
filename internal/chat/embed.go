@@ -150,6 +150,7 @@ type Embedder struct {
 	mu     sync.Mutex
 	closed bool        // by Close
 	progs  []embedProg // shortest first
+	amd    *amdEmbed   // an export for AMD's NPU instead of programs (LoadEmbedderAMD)
 }
 
 type embedProg struct {
@@ -263,6 +264,10 @@ func (e *Embedder) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.closed = true
+	if e.amd != nil {
+		e.amd.close()
+		e.amd = nil
+	}
 	for i := len(e.chains) - 1; i >= 0; i-- {
 		e.chains[i].Close()
 	}
@@ -282,7 +287,12 @@ func (e *Embedder) Close() error {
 func (e *Embedder) Dim() int { return e.model.Hidden() }
 
 // MaxTokens is the most tokens a text can have, with the BOS and a query's instruction.
-func (e *Embedder) MaxTokens() int { return e.progs[len(e.progs)-1].seq }
+func (e *Embedder) MaxTokens() int {
+	if e.amd != nil {
+		return e.amd.maxTokens()
+	}
+	return e.progs[len(e.progs)-1].seq
+}
 
 // Tokens returns the tokens the model reads for a text, and how many of them at the start are
 // left out of the mean: the BOS, and for a query the instruction QueryPrefix. A document is
@@ -339,6 +349,9 @@ func (e *Embedder) run(ids []int32, skip int) ([]float32, error) {
 	defer e.mu.Unlock()
 	if e.closed {
 		return nil, ErrClosed
+	}
+	if e.amd != nil {
+		return e.amd.run(context.Background(), ids, skip, e.Dim())
 	}
 	i := slices.IndexFunc(e.progs, func(p embedProg) bool { return p.seq >= len(ids) })
 	if i < 0 {

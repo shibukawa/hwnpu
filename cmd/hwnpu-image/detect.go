@@ -47,6 +47,9 @@ type DetectCmd struct {
 
 // Run finds the objects of each picture.
 func (c *DetectCmd) Run(ctx context.Context) error {
+	if err := outDir(c.Out); err != nil {
+		return err
+	}
 	if slices.Contains(c.Class, "help") {
 		fmt.Println(strings.Join(vision.COCO, ", "))
 		return nil
@@ -154,6 +157,15 @@ func repeated(n int) string {
 
 // drawPath is where --draw writes a picture's drawing: dir (or the picture's directory) and the
 // picture's name with suffix.
+// outDir makes the directory -o names (nothing for none), so that a command does not fail at its
+// first file after the models ran.
+func outDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	return os.MkdirAll(dir, 0o755)
+}
+
 func drawPath(dir, picture, suffix string) string {
 	if dir == "" {
 		dir = filepath.Dir(picture)

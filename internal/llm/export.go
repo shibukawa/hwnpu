@@ -2,8 +2,10 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 )
@@ -83,10 +85,48 @@ func (e *NotFetchedError) Error() string {
 }
 
 // MayConvert is called where a conversion would start, once what it makes was looked for here
-// and in the shared layers: nil, or a *NotFetchedError in a ctx that converts nothing.
+// and in the shared layers: nil, the error of fetching it when the cache had no room for it
+// (FetchFailed), or a *NotFetchedError in a ctx that converts nothing.
 func MayConvert(ctx context.Context, what string) error {
+	if err := FetchFailed(what); err != nil {
+		return err
+	}
 	if FetchOnly(ctx) {
 		return &NotFetchedError{What: what}
+	}
+	return nil
+}
+
+// noRoom holds, by export, the error of the last fetch from the shared layers the cache had no
+// room for (cache.ErrNoRoom).
+var noRoom sync.Map
+
+// NoteFetch is told of the end of a fetch of export from the shared layers (nil: it was made).
+// One the cache has no room for is kept for FetchFailed: converting it here would need the
+// checkpoint, more room still, so it is not tried.
+func NoteFetch(export string, err error) {
+	if errors.Is(err, cache.ErrNoRoom) {
+		// of the errors of each layer, the one without room alone
+		if j, ok := err.(interface{ Unwrap() []error }); ok {
+			for _, e := range j.Unwrap() {
+				if errors.Is(e, cache.ErrNoRoom) {
+					err = e
+					break
+				}
+			}
+		}
+		noRoom.Store(filepath.Clean(export), err)
+	} else {
+		noRoom.Delete(filepath.Clean(export))
+	}
+}
+
+// FetchFailed is the error of the last fetch of export from the shared layers when the cache
+// had no room for it (NoteFetch), else nil: what is to download the checkpoint and convert it
+// returns it instead.
+func FetchFailed(export string) error {
+	if err, ok := noRoom.Load(filepath.Clean(export)); ok {
+		return err.(error)
 	}
 	return nil
 }

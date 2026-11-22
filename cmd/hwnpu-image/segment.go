@@ -43,6 +43,9 @@ type SegmentCmd struct {
 
 // Run cuts out the prompt's thing in each picture.
 func (c *SegmentCmd) Run(ctx context.Context) error {
+	if err := outDir(c.Out); err != nil {
+		return err
+	}
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	prompt, err := c.prompt()

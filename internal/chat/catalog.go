@@ -73,6 +73,8 @@ type Model struct {
 	Targets map[string]int
 	// Develop marks a model in development (models.yaml's develop).
 	Develop bool
+	// Pins are the conversions models.yaml's exports pin: by target, then export.
+	Pins map[string]map[string]Pin
 	// Hub are the repositories of the model's conversions on Hugging Face (models.yaml's hub),
 	// in the order they are read: those of the files read last first.
 	Hub []HubRepo

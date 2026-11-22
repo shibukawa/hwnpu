@@ -81,7 +81,7 @@ type cli struct {
 	Search    SearchCmd    `cmd:"" help:"Search the texts typed by their embeddings (an embedding model)."`
 	Serve     ServeCmd     `cmd:"" help:"Serve the OpenAI compatible API: chat completions and embeddings."`
 	OpenCode  OpenCodeCmd  `cmd:"" name:"opencode" help:"Serve the chat models and run OpenCode on them in this terminal."`
-	SystemOne SystemOneCmd `cmd:"" name:"systemone" help:"Answer typed questions about a state with a d1 decision model: the System One API of llama.cpp's server (Apple's Neural Engine)."`
+	SystemOne SystemOneCmd `cmd:"" name:"systemone" help:"Answer typed questions about a state with a d1 decision model: the System One API of llama.cpp's server (Apple's Neural Engine, AMD's NPU)."`
 	List      ListCmd      `cmd:"" help:"List the chat and embedding models, what each is for and whether it is downloaded."`
 }
 
