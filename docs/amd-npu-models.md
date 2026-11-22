@@ -1419,7 +1419,10 @@ Supertone の Supertonic 3 (OpenRAIL-M) で、31 の言語の文章を 44.1 kHz 
 - **MHA のクエリは 64 行以上**: 32 フレームのサイズでは 64 行を読み、自分の 32 行を取る
 - **vocoder の正規化を重みに**: 潜在の unnormalize (latent_std と latent_mean) をホストですると、平均とその 40 分の 1 の偏差を bf16 に丸めて、音声が ORT と 29 dB に落ちた。埋め込みの重みと bias に畳み込んだ (端の行は入力ごと写すので正確)。全部 bf16 で 37〜40 dB
 - **PReLU** (傾き 2e-4) は ReLU にした (numpy で 58 dB、ほかの丸めより小さい)
-- **GELU** は GELUEven (`iron_gelu.py`、tanh の形、引数は float32)。正確な erf より ConvNeXt 1 つで 0.26 ms 速い
+- **GELU** は GELUEven と同じ計算 (`iron_gelu.py`、tanh の形、引数は float32)。正確な erf より ConvNeXt 1 つで 0.26 ms 速い
+- **bias と GELU を 1 つの演算子に** (`tools/amd/iron_biasgelu.py`、`kernels/bias_gelu.cc`): pwconv1 の bias を足して GELU。pwconv2 の bias は GEMM の重みの列に入れる: pwconv1 の出力を 2304 列 (8 列のコアで 32 の倍数) にして、足した最初の列は重み 0、bias 16 (GELU(16) は tanh が飽和してちょうど 16)、pwconv2 はその列の重みを b2 / 16 にする。ConvNeXt 1 つの演算子が 10 から 8 になり、flow は 5〜8 % 速い。精度は前と同じ
+  - 1 の列を param から state の列に Copy する形は、ボコーダの次の呼び出しのコマンド 0 が ERT_CMD_STATE_TIMEOUT になった (使わないときも)
+  - 試してやめたもの: マスクを深さ方向の畳み込みのカーネルで掛ける (コアの DMA の入力は 2 チャネルで、x、重み、マスクの 3 つは入らない)。GEMM を MEDIUM にして GELU を出力段 (x sigmoid(1.702 x)) に融合する形は、flow が A よりさらに 9〜12 % 速かったが、1 ステップの更新の誤差が 25〜30 dB から 18〜21 dB に下がる (numpy の模擬) ので採らなかった
 - **精度**: GEMM は HIGHEST (bf16)。flow の 1 ステップの更新は、同じパディングの ORT と 21〜27 dB (潜在で 29〜41 dB)、8 ステップの後の潜在で 22 dB。ConvNeXt の部分を numpy で丸めると、残差のストリームの bf16 が一番効く (30 dB)
 - **MEDIUM (bfp16) は使わない**: GEMM 単体では 256 行で 2.2 倍速いが、グラフ全体では 87 ms のまま (演算子の再構成が時間を決める)。重みをホストで bfp16 に詰めても ConvNeXt 8 個で 7 % だけ
 - **文の 2 グラフ**: CPU interpreter の conv1d が 1 スレッドの直接の和で、text_encoder (128 文字) に 1.5 秒かかっていた (91 % が conv1d)。conv2d の道 (sgemm と im2col、深さ方向は並列) に 1 行の画像として通して 57 ms (duration は 110 → 15 ms)。internal/milcpu の変更なので、conv1d を使うほかのモデルも速くなる
@@ -1429,12 +1432,12 @@ Supertone の Supertonic 3 (OpenRAIL-M) で、31 の言語の文章を 44.1 kHz 
 
 | | 時間 |
 |---|---|
-| flow 1 ステップ (両方の枝) | 77 ms (64 × 32)、83 ms (128 × 64)、97 ms (256 × 128) |
+| flow 1 ステップ (両方の枝) | 70 ms (64 × 32)、77 ms (128 × 64)、91 ms (256 × 128) (bias と GELU を 1 つにする前は 76、84、96 ms) |
 | ConvNeXt 1 つ (192 行) | 2.35 ms。GEMM の 1 対が約 1.0 ms (行数にほぼよらない: 128 行で 0.81、512 行で 1.48)、正確な GELU 0.46、ほかは 0.1 前後 |
-| vocoder | 26 ms (32)、28 ms (64)、41 ms (128) |
-| 英語 4.25 秒 | 0.80 秒 (5.3 倍): 文 0.10 秒、flow 0.67 秒、vocoder 0.03 秒 |
-| 英語 7.5 秒 | 0.90 秒 (8.4 倍) |
-| 日本語 12 秒 (分けて読む) | 1.85 秒 (6.5 倍) |
+| vocoder | 21 ms (32)、27 ms (64)、40 ms (128) |
+| 英語 4.25 秒 | 0.75〜0.80 秒 (5.3〜5.7 倍): 文 0.10 秒、flow 0.62 秒、vocoder 0.03 秒 |
+| 英語 7.5 秒 | 0.89 秒 (8.4 倍) |
+| 日本語 12 秒 (分けて読む) | 1.69 秒 (7.1 倍) |
 | 書き出し | 30 秒 (IRON のカーネルがなければもっと) |
 
 電力 (パッケージの PPT、アイドル 4.5 W を引く、30 秒くり返し):
@@ -1448,7 +1451,8 @@ Whisper large-v3-turbo の書き起こしは、英語と日本語の文で入力
 
 ### 29.4 残り
 
-- 演算子の数: ConvNeXt 1 つに 10 (端の Copy、深さ方向の畳み込み、layer norm、GEMM、bias、GELU、GEMM、bias、残差、マスク)。マスクを深さ方向の畳み込みのカーネルで入力に掛け、pwconv2 の bias を次の消費者 (畳み込みのカーネル、注意のクエリと out_fc の bias、proj_out) に畳めば、bias とマスクの 2 つが消えて 8。bias と GELU を 1 つのカーネルにすると 7
+- 演算子の数: ConvNeXt 1 つに 8 (端の Copy、深さ方向の畳み込み、layer norm、GEMM、bias と GELU、GEMM、残差、マスク)。ConvNeXt の 1 つは約 2.1 ms で、GEMM の 1 対が約 1 ms (演算子の再構成)。GPU (Radeon 880M、ONNX Runtime の WebGPU) は flow の 1 ステップが 44 ms で、ここまで詰めるには ConvNeXt の MLP を 1 つの演算子にするところまで要る
+- 文の 2 グラフ (CPU interpreter): 全コアで 60 ms、0.97 J。スレッドを 2〜4 にすると 42〜46 ms、0.80 J (小さい行列には全コアが多すぎる)。NPU に移すと約 0.35 J の見込み (読み上げ 1 回の約 8 %) だが、時間は縮まない
 - text_encoder を NPU に: 相対位置の注意 (VITS の窓つき) は IRON の MHA で書けない
 - デバイスのメモリ: バンクの像はディスクで 1 つだが、読み込むとサイズごとにバッファを持つ (GraphOptions.Buffers でバンクを貸せば 1 つになる)
 

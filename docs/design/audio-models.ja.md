@@ -233,6 +233,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 
 - flow (`estimator-tT-lL`、1 ステップ) と vocoder (`vocoder-lL`) は `Sizes` のそれぞれの IRON のグラフ。文の 2 グラフは CPU interpreter の Core ML の形式 (`Setup.TextOnly`)。ONNX Runtime は要らない。サイズで重みの像を 1 つにした (596 → 255 MB)
 - ガイダンスの 2 つの枝を 1 回の呼び出しで: ストリームの行は条件つきの枝のフレームと条件なしの枝のフレーム、それぞれの前後に 0 の行が 16。条件なしの枝の文への注意は定数の行 (文はどの位置も同じトークン)。スタイルの鍵は定数。時刻の行、RoPE の表、更新 x + (4 v_c − 3 v_u) / total はホスト
+- pwconv1 の bias と GELU は 1 つの演算子 (`iron_biasgelu.py`)。pwconv2 の bias は、ちょうど 16 になる GELU の列で重みの列から足す (ConvNeXt 1 つが 10 → 8 演算子、5〜8 % 速い)。GEMM を MEDIUM にして GELU を出力段に融合する形はさらに 9〜12 % 速かったが、1 ステップの精度が 25〜30 dB から 18〜21 dB に下がるので採らなかった
 - 深さ方向の畳み込みは `iron_dwconv1d.py` (7 までの K タップ、dilation、bias を 1 つの演算子で。16 行 × 128 チャネルのタイル。行の窓のフィフォは BD が足りなかった)。左端は各枝の最初のフレームを写し、右はマスクした 0 (Mac の固定長のプログラムと同じ)
 - 全部 bf16 (HIGHEST)。flow の 1 ステップの更新はパディングした ORT と 21〜27 dB。vocoder は潜在の unnormalize を埋め込みに畳んで 37 dB (ホストで bf16 にしたときは 29 dB)。MEDIUM でもグラフは速くならない: 演算子の再構成が時間を決める (ConvNeXt の GEMM の 1 対は行数によらず約 1 ms)
 - CPU interpreter の `conv1d` を `conv2d` (sgemm、im2col) に通した: text_encoder が 1 スレッドの和で 1.5 秒、今は 57 ms
@@ -241,7 +242,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 
 | 機械 | 結果 |
 |---|---|
-| Ryzen AI 9 365 | flow 1 ステップ 77 / 83 / 97 ms (64 × 32 / 128 × 64 / 256 × 128)、vocoder 26 / 28 / 41 ms。英語 4.25 秒を 0.80 秒 (5.3 倍)、7.5 秒を 0.90 秒 (8.4 倍)。+7.1 W、音声 1 秒に 1.3 J (CPU の ONNX Runtime、4 スレッド: 7.6 倍、+41.9 W、5.5 J) |
+| Ryzen AI 9 365 | flow 1 ステップ 70 / 77 / 91 ms (64 × 32 / 128 × 64 / 256 × 128)、vocoder 21 / 27 / 40 ms。英語 4.25 秒を 0.75〜0.80 秒 (5.3〜5.7 倍)、7.5 秒を 0.89 秒 (8.4 倍)。+7.1 W、音声 1 秒に 1.3 J (CPU の ONNX Runtime、4 スレッド: 7.6 倍、+41.9 W、5.5 J) |
 
 ## SwiftF0 (`internal/pitch`)
 

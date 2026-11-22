@@ -58,13 +58,10 @@ from iron.operators.relu import ReLU
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from iron_anima import bf, command_boundary, tap  # noqa: E402
 from iron_dwconv1d import dwconv  # noqa: E402
-from iron_gelu import gelu as gelu_even  # noqa: E402
+from iron_biasgelu import bias_gelu  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
 
 PREC = Precision.HIGHEST
-# GELU: "even" (iron_gelu.GELUEven, the tanh form with its argument in float32, 0.26 ms less a
-# ConvNeXt block than IRON's exact erf) or "none" (exact)
-GELU_FORM = ["even"]
 SIZES = [(64, 32), (128, 64), (256, 128)]  # internal/supertonic.Sizes
 LATENT, TEXT, HID, FF = 144, 256, 512, 2048
 XP = 192  # the latent's channels padded for the GEMMs
@@ -335,8 +332,17 @@ def dw_weights(w, b):
     return np.concatenate([w[:, 0, :].T, b.reshape(1, -1)])
 
 
+# pwconv1's out-features padded (the 2048 and 256, BiasGELU's whole vectors on 8 columns): the
+# first padded one's weights 0 and bias ONE, whose GELU is ONE exactly (the tanh saturates), the
+# others' GELU 0, so that pwconv2 takes its bias from a weight column (b2 / ONE). A column of ones
+# copied into a state of the GELU's output instead made the vocoder's next call hang (its first
+# command timed out).
+FFP, ONE = FF + 256, 16.0
+
+
 class ConvNext:
-    """A ConvNeXt block's params: the layer norm's affine folded into pwconv1, gamma into pwconv2."""
+    """A ConvNeXt block's params: the layer norm's affine folded into pwconv1, gamma into pwconv2,
+    pwconv1's bias added by BiasGELU (iron_biasgelu.py), pwconv2's a column of its weights (FFP)."""
 
     def __init__(self, ps: Params, G: Onnx, p: str):
         wn = p + ".dwconv.weight" if p + ".dwconv.weight" in G.init else p + ".dwconv.net.weight"
@@ -345,15 +351,20 @@ class ConvNext:
         self.dw = ps.p(dw_weights(w, b))
         g, beta = G[p + ".norm.norm.weight"], G[p + ".norm.norm.bias"]
         w1, b1 = G[p + ".pwconv1.weight"][:, :, 0], G[p + ".pwconv1.bias"]
-        self.w1, self.b1 = ps.p(w1 * g[None, :]), ps.p(w1 @ beta + b1)
+        w1p, b1p = np.zeros((FFP, HID)), np.zeros(FFP)
+        w1p[:FF], b1p[:FF], b1p[FF] = w1 * g[None, :], w1 @ beta + b1, ONE
+        self.w1, self.b1 = ps.p(w1p), ps.p(b1p)
         gam = G[p + ".gamma"].reshape(-1)
-        self.w2, self.b2 = ps.p(G[p + ".pwconv2.weight"][:, :, 0] * gam[:, None]), ps.p(G[p + ".pwconv2.bias"] * gam)
+        w2 = np.zeros((HID, FFP))
+        w2[:, :FF] = G[p + ".pwconv2.weight"][:, :, 0] * gam[:, None]
+        w2[:, FF] = G[p + ".pwconv2.bias"] * gam / ONE
+        self.w2 = ps.p(w2)
+
 
     def mlp(self, h):
         """pwconv2(GELU(pwconv1(layer_norm(h)))) times gamma."""
         n = F.layer_norm(h, (HID,), None, None, eps=1e-6)
-        u = lin(n, self.w1, self.b1)
-        return lin(gelu_even(u) if GELU_FORM[0] == "even" else F.gelu(u, approximate="none"), self.w2, self.b2)
+        return lin(bias_gelu(lin(n, self.w1), self.b1), self.w2)
 
 
 class Estimator(iron.Graph, Params):
@@ -667,12 +678,10 @@ def main(argv=None) -> int:
     ap.add_argument("--sizes", nargs="*", default=[f"{t}x{l}" for t, l in SIZES], help="TxL, as internal/supertonic.Sizes")
     ap.add_argument("--only", nargs="*", default=["estimator", "vocoder"])
     ap.add_argument("--check", action="store_true")
-    ap.add_argument("--gelu", default=GELU_FORM[0], choices=["none", "even"])
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
     a = ap.parse_args(argv)
     bind_device(a.device, a.cols)
-    GELU_FORM[0] = a.gelu
     sizes = [tuple(int(v) for v in s.split("x")) for s in a.sizes]
     export(a.onnx, a.out, sizes, a.check, a.only)
     return 0
