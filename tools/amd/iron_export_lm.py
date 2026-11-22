@@ -58,6 +58,9 @@ MODELS = {
     "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
     # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in hwnpu (iron_plamo3.py).
     "plamo3": ("iron_plamo3", "Plamo3"),
+    # Ouro (ByteDance/Ouro-1.4B-Thinking): a looped decoder, its layers run total_ut_steps times
+    # a token, a cache a pass (iron_ouro.py).
+    "ouro": ("iron_ouro", "Ouro"),
     # Qwen3.5 (qwen3_5): Gated DeltaNet (iron_gdn.py) and gated attention (iron_qwen35.py).
     "qwen35": ("iron_qwen35", "Qwen35"),
     # Qwen3.6-35B-A3B (qwen3_5_moe): Qwen3.5 with experts routed on the device (iron_moe.py).
@@ -879,7 +882,7 @@ def prompt_attention_profile(model, pipelines: int) -> None:
 def install_command_per_step(out: Path) -> None:
     """Cut a prompt chunk's full ELF into a command a step (each runs on its own, as the plan's
     commands queue them), and write each command's operator into out/steps.json, so that
-    HWNPU_IRON_TIMING's times say which operator they are. The decode step (no input tensor
+    HWNPU_DEV=iron.timing's times say which operator they are. The decode step (no input tensor
     beyond its token) is left as it is."""
     import dataclasses
 
@@ -924,10 +927,10 @@ def main(argv=None) -> int:
     ap.add_argument("--conv", choices=("q8", "q4", "bf16"), default="q8",
                     help="with --q4, LFM3's short convolutions' projections (in_proj, out_proj)")
     ap.add_argument("--mlp", choices=("q4", "q6", "q8"), default="q4",
-                    help="with --q4, Qwen3.5's MLP: q4nx, or q6 (6.5 bits a weight) for the small models (0.8B, "
-                         "2B), whose 4-bit MLP is most of the error")
+                    help="with --q4, Qwen3.5's and Ouro's MLP: q4nx, or q6 (6.5 bits a weight) for the small "
+                         "models (Qwen3.5 0.8B, 2B), whose 4-bit MLP is most of the error")
     ap.add_argument("--head", choices=("q4", "q6", "q8", "bf16"), default="q4",
-                    help="with --q4, Qwen3.5's head (tied to the embeddings)")
+                    help="with --q4, Qwen3.5's head (tied to the embeddings) and Ouro's")
     ap.add_argument("--q4-codes", type=Path, default=None,
                     help="with --q4, the codes q4_gptq.py chose against the activations (GPTQ): its weights take "
                          "them instead of rounding to the nearest level, the others are rounded")
@@ -946,7 +949,7 @@ def main(argv=None) -> int:
                          "qwen35moe, not measured with more; 1 is IRON's default without a profile, which left a "
                          "chunk's attention on one pipeline)")
     ap.add_argument("--command-per-step", action="store_true",
-                    help="for measuring: the prompt chunk a command per step (HWNPU_IRON_TIMING times each), "
+                    help="for measuring: the prompt chunk a command per step (HWNPU_DEV=iron.timing times each), "
                          "the steps' operators by command in OUT/steps.json")
     ap.add_argument("--expert-places", type=int, default=None, metavar="N",
                     help="gpt-oss and qwen35moe: N places of an expert's tables a layer (gpt-oss: a multiple of 4, at "
@@ -984,6 +987,10 @@ def main(argv=None) -> int:
         import iron_plamo3
 
         iron_plamo3.install(attn=a.attn)
+    elif a.model == "ouro" and a.q4:
+        import iron_ouro
+
+        iron_ouro.install(attn=a.attn, mlp=a.mlp, head=a.head)
     elif a.model.startswith("lfm3") and a.q4:
         import iron_lfm3
 

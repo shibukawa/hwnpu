@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/shibukawa/hwnpu/internal/backend"
@@ -81,9 +83,9 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	cache.Touch(src.Path) // the model it is of is used now (the cache's LRU)
 	g := &graph{}
 	compiled := src.Path
-	// HWNPU_COREML_TRACE=1 prints how long each phase of loading takes, to see where a slow load
+	// HWNPU_DEV=coreml.trace=1 prints how long each phase of loading takes, to see where a slow load
 	// goes. It is not part of the API.
-	trace := os.Getenv("HWNPU_COREML_TRACE") != ""
+	trace := devenv.On("coreml.trace")
 	phase := time.Now()
 	lap := func(what string) {
 		if trace {

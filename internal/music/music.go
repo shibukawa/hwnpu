@@ -345,23 +345,54 @@ func openOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string, dec
 	}
 	// SpectroStream's programs run once on silence, so that a failure shows now and not in
 	// the middle of the music
-	W := DecodeFrames + decodeContext
 	for _, s := range []*step{g.dec, g.enc} {
-		if s == nil {
-			continue
-		}
-		size := EmbeddingSize * W
-		if s == g.enc {
-			size = 4 * timeStride * W * stftBins
-		}
-		in := map[string][]float32{"x": make([]float32, size)}
-		ssMasks(in, make([]float32, W))
-		if _, err := s.run(in); err != nil {
+		if err := g.tryOnSilence(s); err != nil {
 			g.Close()
-			return nil, fmt.Errorf("music: %s fails on the %s: %w", s.name, cmp.Or(s.units, "Neural Engine"), err)
+			return nil, err
 		}
 	}
 	return g, nil
+}
+
+// tryOnSilence runs SpectroStream's decoder or encoder s (nil: none) once on silence.
+func (g *Generator) tryOnSilence(s *step) error {
+	if s == nil {
+		return nil
+	}
+	W := DecodeFrames + decodeContext
+	size := EmbeddingSize * W
+	if s == g.enc {
+		size = 4 * timeStride * W * stftBins
+	}
+	in := map[string][]float32{"x": make([]float32, size)}
+	ssMasks(in, make([]float32, W))
+	if _, err := s.run(in); err != nil {
+		return fmt.Errorf("music: %s fails on the %s: %w", s.name, cmp.Or(s.units, "Neural Engine"), err)
+	}
+	return nil
+}
+
+// OpenEncoder loads SpectroStream's encoder of p (Setup.Encoder) on dev (nil: the CPU
+// interpreter) when Open left it out (p.Encoder was ""), for continuing a clip (EncodeAudio):
+// a generator that is not asked to does without it. It is the Neural Engine's on Core ML.
+func (g *Generator) OpenEncoder(ctx context.Context, dev *hwnpu.Device, p Paths) error {
+	if g.enc != nil {
+		return nil
+	}
+	if p.Encoder == "" {
+		return fmt.Errorf("music: SpectroStream's encoder is not prepared")
+	}
+	enc, err := openStepOn(ctx, dev, p.Encoder, SpectroStreamUnits())
+	if err != nil {
+		return err
+	}
+	g.enc = enc
+	if err := g.tryOnSilence(enc); err != nil {
+		enc.Close()
+		g.enc = nil
+		return err
+	}
+	return nil
 }
 
 // OnNPU reports whether all the programs meant for the NPU run on it (those loaded on other

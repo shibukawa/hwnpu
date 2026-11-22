@@ -127,7 +127,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 - **Kernel fixes live in the export**: an AMD export keeps the kernels it was made with (rounding, merged operators) until exported again. An export from a newer exporter can be refused by an older hwnpu (gpt-oss's resident step)
 - **`-idle`**: the next request pays 0.8–2 s. **Towers on use**: the first image or clip waits 0.5–0.7 s, and the old and new banks are both pinned for that moment
 - **AMD barriers**: the chunk barrier costs 0.3–0.5 ms a chunk; the step barrier 0.3 ms a step (skipped for gpt-oss's resident step, where it would reload the array: 2.4 ms)
-- **Timing AMD**: `HWNPU_IRON_TIMING=1` adds each command's round trip; read `ironlm -forced`'s step time. An `array=True` parameter that differs by layer reloads the array each command and still passes the check
+- **Timing AMD**: `HWNPU_DEV=iron.timing=1` adds each command's round trip; read `ironlm -forced`'s step time. An `array=True` parameter that differs by layer reloads the array each command and still passes the check
 - **Disk sharing depends on the file system**: ext4 shares nothing; use Btrfs or XFS (Windows: Dev Drive)
 - **Core AI's first run** compiles every part once, and a multi-function `.aimodel` compiles all functions (Chroma1-Flash: 1 h 14 min for 512² and 1024²). The cache is per OS build and process name: after an OS update, or from `aicheck` / `go test`, programs compile again. macOS purges it when the disk is low (seen at 11–22 GB free); converting needs room too
 - **A layout version in an export's name** means converting and compiling again once; pictures are not bit for bit the previous version's (sums in another order); the old export stays until deleted

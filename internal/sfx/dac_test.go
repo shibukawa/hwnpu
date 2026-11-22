@@ -16,12 +16,12 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
 
-// refDir is the model's directory (HWNPU_SFX_DIR) and the reference's prefix (HWNPU_SFX_REF,
+// refDir is the model's directory (HWNPU_TEST_SFX_DIR) and the reference's prefix (HWNPU_TEST_SFX_REF,
 // tools/ref/ref_moss_sfx.py's OUT).
 func refDir(t *testing.T) (dir, ref string) {
-	dir, ref = os.Getenv("HWNPU_SFX_DIR"), os.Getenv("HWNPU_SFX_REF")
+	dir, ref = os.Getenv("HWNPU_TEST_SFX_DIR"), os.Getenv("HWNPU_TEST_SFX_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_SFX_DIR and HWNPU_SFX_REF are not set")
+		t.Skip("HWNPU_TEST_SFX_DIR and HWNPU_TEST_SFX_REF are not set")
 	}
 	return dir, ref
 }
@@ -132,12 +132,12 @@ func openCoreAIStages(t *testing.T, w *Weights) []Program {
 	return ps
 }
 
-// On Core AI's Neural Engine (HWNPU_SFX_DEVICE=1) the decoder's stages are all on the NPU and
+// On Core AI's Neural Engine (HWNPU_TEST_NPU) the decoder's stages are all on the NPU and
 // give the reference's samples.
 func TestDecodeLatentsOnDevice(t *testing.T) {
 	dir, ref := refDir(t)
-	if os.Getenv("HWNPU_SFX_DEVICE") == "" {
-		t.Skip("HWNPU_SFX_DEVICE is not set")
+	if os.Getenv("HWNPU_TEST_NPU") == "" {
+		t.Skip("HWNPU_TEST_NPU is not set")
 	}
 	ctx := context.Background()
 	w := vaeWeights(t, dir)
@@ -158,15 +158,15 @@ func TestDecodeLatentsOnDevice(t *testing.T) {
 	}
 }
 
-// On Core AI's Neural Engine (HWNPU_SFX_COREAI=1; HWNPU_SFX_DIR, the model's directory: the
+// On Core AI's Neural Engine (HWNPU_TEST_NPU; HWNPU_TEST_SFX_DIR, the model's directory: the
 // models' MOSS-SoundEffect-v2.0 by default) the decoder's stages are all on the NPU and give the
 // CPU interpreter's samples of 5 seconds of seeded latents (docs/design/audio-models.md: 0.009 off, the CPU
 // interpreter 0.003 off the stages of before run with fp16's rounding).
 func TestDecodeLatentsCoreAI(t *testing.T) {
-	if os.Getenv("HWNPU_SFX_COREAI") == "" {
-		t.Skip("HWNPU_SFX_COREAI is not set")
+	if os.Getenv("HWNPU_TEST_NPU") == "" {
+		t.Skip("HWNPU_TEST_NPU is not set")
 	}
-	dir := os.Getenv("HWNPU_SFX_DIR")
+	dir := os.Getenv("HWNPU_TEST_SFX_DIR")
 	if dir == "" {
 		home, _ := os.UserCacheDir()
 		dir = filepath.Join(home, "hwnpu", "models", "MOSS-SoundEffect-v2.0")
@@ -198,12 +198,12 @@ func TestDecodeLatentsCoreAI(t *testing.T) {
 	}
 }
 
-// TestWriteStages writes the decoder's stages into HWNPU_SFX_WRITE (for hwnpu-dev info -model).
+// TestWriteStages writes the decoder's stages into HWNPU_TEST_SFX_OUT (for hwnpu-dev info -model).
 func TestWriteStages(t *testing.T) {
-	out := os.Getenv("HWNPU_SFX_WRITE")
-	dir := os.Getenv("HWNPU_SFX_DIR")
+	out := os.Getenv("HWNPU_TEST_SFX_OUT")
+	dir := os.Getenv("HWNPU_TEST_SFX_DIR")
 	if out == "" || dir == "" {
-		t.Skip("HWNPU_SFX_WRITE and HWNPU_SFX_DIR are not set")
+		t.Skip("HWNPU_TEST_SFX_OUT and HWNPU_TEST_SFX_DIR are not set")
 	}
 	w := vaeWeights(t, dir)
 	defer w.Close()
@@ -217,16 +217,16 @@ func TestWriteStages(t *testing.T) {
 }
 
 // TestStagesOnDevice runs each stage on the Neural Engine from the reference's input to it
-// (HWNPU_SFX_STAGES: a directory of the stages, TestWriteStages'), against the reference's output.
+// (HWNPU_TEST_SFX_STAGES: a directory of the stages, TestWriteStages'), against the reference's output.
 func TestStagesOnDevice(t *testing.T) {
 	_, ref := refDir(t)
-	dir := os.Getenv("HWNPU_SFX_STAGES")
+	dir := os.Getenv("HWNPU_TEST_SFX_STAGES")
 	if dir == "" {
-		t.Skip("HWNPU_SFX_STAGES is not set")
+		t.Skip("HWNPU_TEST_SFX_STAGES is not set")
 	}
 	ctx := context.Background()
 	var dev *hwnpu.Device
-	if os.Getenv("HWNPU_SFX_DEVICE") != "" {
+	if os.Getenv("HWNPU_TEST_NPU") != "" {
 		d, _, err := llm.OpenDevice(ctx, "", "")
 		if err != nil {
 			t.Fatal(err)

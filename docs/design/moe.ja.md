@@ -28,7 +28,7 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
 
 ## 専門家の使われ方、芯、先読み (両方の会社)
 
-- **数える**: `experts.Usage` が層ごとの選択を記録する。hwnpu-chat はモデルとアプリのキーごとにファイルを持つ: Mac は `~/Library/Caches/hwnpu/models/<モデル>/experts-usage/<キー>.bin`、Linux は `~/.cache/hwnpu/models/<モデル>/experts-usage/<キー>.bin` (`--experts-key`。測るときは `off`)。`HWNPU_MOE_DEBUG=usage=FILE` も同じ形で書く。AMD の `iron.Model.CountExperts` は、プロンプトはホストの経路で数え、デコードは次のコマンドのスクラッチパッドに書かれた位置の語を読み戻す (費用は測れない)。
+- **数える**: `experts.Usage` が層ごとの選択を記録する。hwnpu-chat はモデルとアプリのキーごとにファイルを持つ: Mac は `~/Library/Caches/hwnpu/models/<モデル>/experts-usage/<キー>.bin`、Linux は `~/.cache/hwnpu/models/<モデル>/experts-usage/<キー>.bin` (`--experts-key`。測るときは `off`)。`HWNPU_DEV=moe.usage=FILE` も同じ形で書く。AMD の `iron.Model.CountExperts` は、プロンプトはホストの経路で数え、デコードは次のコマンドのスクラッチパッドに書かれた位置の語を読み戻す (費用は測れない)。
 - **`tools/moeusage`**: `prompts.tsv` (110 プロンプト、19 分野、約 25 言語)、`collect.sh`、`analyze.py`、`place.py`。結果:
 
 | | gpt-oss-20b (32 個から 4 個) | Qwen3.6 Mac (256 個から 8 個) | Qwen3.6 AMD | gpt-oss-120b (128 個から 4 個) |
@@ -54,7 +54,7 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
 
 ### MXFP4 のカーネル (`internal/mxfp4`、NEON)
 
-- e2m1 は表で引く。活性の行は 32 個ごとに int8 にする。1 ベクトルは SDOT、同じ専門家の 8 行以上は SMMLA (`mm28NEON`、FEAT_I8MM、M2 以降。`HWNPU_MXFP4=i8mm=0` で切る)。
+- e2m1 は表で引く。活性の行は 32 個ごとに int8 にする。1 ベクトルは SDOT、同じ専門家の 8 行以上は SMMLA (`mm28NEON`、FEAT_I8MM、M2 以降。`HWNPU_DEV=mxfp4.i8mm=0` で切る)。
 - 累算は `EOR v,v,v` でなく `MOVI` で 0 にする: M3 では EOR がレジスタの前の値を待ち、和が直列になる。MOVI でカーネルが倍に (1 ベクトルの行 65 → 32 µs)。
 - `mxfp4.Rows` (`mvNEON`): 複数の行を 1 回の呼び出しで。1 コア 45.6〜47.3 GMAC/秒。メモリでなく NEON の命令数で決まる (2 ブロックに約 20 個)。`Dot` とビット単位で同じ。
 - 符号化 (`mxfp4.Encode`): 32 値ごとの 2 の冪の scale は、OCP の規則 (最大値の指数 − 2) とその前後のうち二乗誤差の小さいもの。値は最も近い e2m1 (同じ距離は偶数)。正規分布の値で相対誤差 0.113。
@@ -63,7 +63,7 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
 
 - `Host.runRow`: 専門家を一片 (重み 128 × 2048 個) に分け、どのコアもどの一片でも取る。gate/up の最後の一片を終えたコアが活性化を計算し、その専門家の down を開ける。働き手を起こすのは 1 層 1 回。呼び出し側は仕事の中にいる働き手だけを待ち、後から起きた働き手は閉じた実行を見て寝直す。前は専門家 1 個を 1 コアに渡していて、効率コアや遅く起きたコアを層が待った (8 本の働き手の後ろの 4 本は起きるのに 85 µs〜3 ms、`TestWake`)。
 - `mem.Probe`: 範囲の 2 ページだけを `mincore` に聞き (範囲はまるごと読まれ、まるごと使われる)、1 秒以内には聞き直さない (`hostLayer.fresh`)。割り付けたファイルの `mincore` は 1 ページ 0.25 µs で、専門家の CPU 時間の 47 % を占めていた。
-- 1 層の専門家 8 個、全部メモリ (`TestHostTokenTimeQwen36`): 続けて 8 コアで 0.28 ms (1 コア 0.64)、1.2 ms の間のあと 0.79〜0.90 ms。間のあとの遅さは呼び出し側のスレッドが眠るため (`HWNPU_QWEN36_SPIN` で消える)。未解決を参照。
+- 1 層の専門家 8 個、全部メモリ (`TestHostTokenTimeQwen36`): 続けて 8 コアで 0.28 ms (1 コア 0.64)、1.2 ms の間のあと 0.79〜0.90 ms。間のあとの遅さは呼び出し側のスレッドが眠るため (`HWNPU_TEST_QWEN36_SPIN` で消える)。未解決を参照。
 
 ### メモリ: 固定 (`experts.Host.wiring`、`experts.Placement`)
 
@@ -83,8 +83,8 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
 ### メモリに無い専門家を読む
 
 - 割り付けたファイルを各コアのフォールトで読むと 16 KB ずつで 0.4〜0.6 GB/秒。同じ SSD は 1 MiB の `pread` 1 本で 2.6 GB/秒、4 本で 4.7 GB/秒。
-- `Host.readIn` / `readChosen` / `experts.reader` (`reader.need`): 行 (またはプロンプトの塊) の専門家を回す前に、メモリに無い範囲を `pread` (1 MiB ずつ、読み手を複数) でまるごとページキャッシュに読み、写像から使う。`mem.Resident` の無い OS では `madvise(WILLNEED)` に戻る (0.5 GB/秒)。`HWNPU_MOE_DEBUG=need=0` でフォールトに任せる。
-- **先読み** (`experts.prefetcher`、既定で入): 予測は Neural Engine の部品の間に別の goroutine で回す。予測した専門家のうち固定されていないものに `madvise(WILLNEED)` をかけ、読み手が読む。数 `prefetchN` は 1 トークンが選ぶ数、最小 4 (gpt-oss 4、Qwen3.6 8)。ディスクから専門家を読んだ後の 10 秒は上位 2 個だけ (`prefetcher.auto`、`reader.short`)。`HWNPU_MOE_DEBUG=prefetch=N` で数を固定、`0` で切る。
+- `Host.readIn` / `readChosen` / `experts.reader` (`reader.need`): 行 (またはプロンプトの塊) の専門家を回す前に、メモリに無い範囲を `pread` (1 MiB ずつ、読み手を複数) でまるごとページキャッシュに読み、写像から使う。`mem.Resident` の無い OS では `madvise(WILLNEED)` に戻る (0.5 GB/秒)。`HWNPU_DEV=moe.need=0` でフォールトに任せる。
+- **先読み** (`experts.prefetcher`、既定で入): 予測は Neural Engine の部品の間に別の goroutine で回す。予測した専門家のうち固定されていないものに `madvise(WILLNEED)` をかけ、読み手が読む。数 `prefetchN` は 1 トークンが選ぶ数、最小 4 (gpt-oss 4、Qwen3.6 8)。ディスクから専門家を読んだ後の 10 秒は上位 2 個だけ (`prefetcher.auto`、`reader.short`)。`HWNPU_DEV=moe.prefetch=N` で数を固定、`0` で切る。
 - 冷えた読み込みの計測 (`tools/moeusage/read_bench.py`、ページキャッシュを落とす): gpt-oss-20b の専門家 1 個 (13.2 MB) は写像のページフォールトで 13.9 ms、O_DIRECT で 3.0 ms、2 MiB 読みを 4 本で 2.6 ms。Qwen3.6 (6.3 MB) は 6.9 対 1.4 ms。ページキャッシュにあれば 0.04 ms。Mac の直接読みは未計測。
 
 ### プロンプト
@@ -94,7 +94,7 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
   - 印 (プロンプトの保存の 512 トークンごと) は wave の中でも取れる。ステップと部品の間で `ctx` を見て、中断した wave は前の印に戻す。
   - ステップのマスクは fp16 のバイトで直接書く (`step.stepMasks`、3 → 0.1 ms)。
   - `TestPagedWave`: 合成モデルで 1 ステップずつとビット単位で同じ。長いプロンプトは丸めが違う (wave は最初から注意のキャッシュを最後の塊の大きさにする)。
-- **複数のステップの行をまとめて** (`chain.moe.runMany`、`hostRows` 512): 専門家は 1 回の呼び出しで 1 回読む。1 行 1 層: 128 行で 0.139 ms、512 行 0.089、1024 行 0.085。`Host.Run` は (専門家 × 行) 1024 個ずつの組で回すので、持つ量は 1 ステップ分 (12 MB) のまま。`HWNPU_MOE_DEBUG=many=0` で 1 ステップずつ。
+- **複数のステップの行をまとめて** (`chain.moe.runMany`、`hostRows` 512): 専門家は 1 回の呼び出しで 1 回読む。1 行 1 層: 128 行で 0.139 ms、512 行 0.089、1024 行 0.085。`Host.Run` は (専門家 × 行) 1024 個ずつの組で回すので、持つ量は 1 ステップ分 (12 MB) のまま。`HWNPU_DEV=moe.many=0` で 1 ステップずつ。
 - LFM2-8B-A1B とそれ以前: `experts.BuildRows`、`chain.moe.runRows` が選ばれた専門家を呼び出しの全部の行に 1 回ずつ回す。
 
 ### Apple の Qwen3.6
@@ -173,7 +173,7 @@ NPU が読めるのは固定したバッファ (バンク) だけ。専門家の
 - **mx4 の専門家** (`tools/amd/iron_gptoss_moe.py`、`kernels/moe_mx4.cc`): q8 と同じブロック (出力 32 × 入力 320)、e2m1 の 4 ビット、スケールは MXFP4 の指数のバイトのまま (カーネルで bf16 の指数の欄に入れる)、ブロックの bias。1 重み 4.3 ビット。符号 × max(m, 2m − 4, 4m − 16) で戻す。2880 = 9 × 320 なので入力は埋めない。gate と up の出力は 3072 に埋める。
 - **sink** (`tools/amd/iron_sinks.py`、`kernels/mha_sinks.cc`): P×V のコアが最後の割り算の前に、行の和 l に 2^(sink·log2e − m·scale·log2e) を足す。softmax の状態を sink で始める形は誤った: 装置の exp2 は 0 より大きく下で最大 2 倍高い。IRON の MHA の P×V の worker のプログラムだけを差し替える。IRON のコンパイルのキャッシュは演算子の引数で引くので、`sink_form` を引数に足した。
 - 残差を 3072 に埋める (norm の重み × sqrt(2880/3072)、eps × 2880/3072)。出力層の行は 201216 に埋め、hwnpu は先頭の 201088 個を読む。注意の射影は q8、出力層は q4 (GPTQ の符号は `--q4-codes` で)、router は bf16、埋め込みはホスト。窓の層は窓の中だけ読む。
-- **デコードを常駐の 1 配列に** (`GptOssStep`、`tools/amd/iron_gptoss_layer.py`、`kernels/gptoss_layer.cc`): 層の演算がすべて 1 つの配列の段。1 コマンド = 前の層の専門家 (E) → q/k/v と RMSNorm、bias、RoPE (Q) → 注意 (A) → o_proj と bias と残差 (O) → router (R) → 経路 (T: 次のコマンドのスクラッチパッドの語を書く)。最後のコマンドは [E、出力層 (H)]。1 トークン 25 コマンド、PDI の読み込みは 1 回 (`unexpanded_loads`)、ステップのバリアなし (`no_step_barrier`。`HWNPU_IRON_BARRIER=1/0` で逆に)。
+- **デコードを常駐の 1 配列に** (`GptOssStep`、`tools/amd/iron_gptoss_layer.py`、`kernels/gptoss_layer.cc`): 層の演算がすべて 1 つの配列の段。1 コマンド = 前の層の専門家 (E) → q/k/v と RMSNorm、bias、RoPE (Q) → 注意 (A) → o_proj と bias と残差 (O) → router (R) → 経路 (T: 次のコマンドのスクラッチパッドの語を書く)。最後のコマンドは [E、出力層 (H)]。1 トークン 25 コマンド、PDI の読み込みは 1 回 (`unexpanded_loads`)、ステップのバリアなし (`no_step_barrier`。`HWNPU_DEV=iron.barrier=1/0` で逆に)。
   - 射影は 5504 バイトの q8x ブロック (mx4 のブロックと同じ大きさ)。プロンプトも同じ q8x の表を戻して使う (`Q8XDequant`) ので表は 1 つ。
   - 出力層は q4 の表をそのまま、5120 バイトずつ進む 5504 バイトの窓として読む。1 行の 2 つの部分和は hwnpu が足す (`logit_parts`)。
   - デコードの KV は 1 つの配列 (`cache.kv`)。hwnpu がプロンプトのキーと値の配列と行き来させる (`joinKV`、`splitKV`)。窓の層は 128 行の輪 (`GPTOSS_KV_RING`、位置 % 128)、巻き戻しの後は `ringsTo` で入れ直す。`TestKVRingRewindOnDevice` で確かめる。
@@ -190,8 +190,8 @@ NPU が読めるのは固定したバッファ (バンク) だけ。専門家の
 - 点数: 使うたびに +1、1 トークンごとに × 0.995 (半減は約 140 トークン)。最初は統計の定常の点数を入れる。
 - **デコード、ホストの経路** (`--host-route`、`internal/llm/iron/route.go`。gpt-oss の 16 GB の書き出しと 120b): 層のコマンドを注意で終える。ホストが残差 (`yo`) を読み、RMSNorm と router を CPU で (`router.bin`、転置した float32)、上位 4 個と softmax を取り、次のコマンドの位置の語と経路の重み (`moe_rw<l>`) を書く。続けて層 l+1 の上位 4 個を予測し、無いものを l+1 の置き場へ裏で読む (`guessNext`、`expertPool.inflight`)。デバイスの経路に対して (20b): コサインの中央値 0.99998、KL 0.0095。1 ステップ 50.3 → 51.9 ms。
 - **プロンプト** (`poolPasses` / Qwen3.6 の `poolRowPasses`、`rowsPass`): 置き場にある専門家を最初のパスに、ない専門家は後のパスで要らない専門家の置き場へそのパスの前にコピーする。`TestPoolRowPasses` で確かめる。
-- **コピー**: 4 つの goroutine がページキャッシュの写像から写して clflush (`SyncToDevice`)。`directReads` (専門家のファイルが物理メモリの半分以上。`HWNPU_MOE_DEBUG=direct=0/1`) のときは O_DIRECT で、goroutine ごとの中継のバッファを通して読む (バンクの写像は O_DIRECT を EFAULT で断る)。1 専門家を 8 つに分ける。測った費用: gpt-oss の 1 専門家 (14.3 MB) はページキャッシュから 1.1 ms、O_DIRECT で 2.6 ms (フォールトでは 9.4 ms)。Qwen3.6 の 1 専門家 (1.97 MB) は O_DIRECT で 0.4〜0.7 ms、キャッシュから 0.1〜0.3 ms。
-- `HWNPU_MOE_DEBUG=check` は詰めた後と閉じる時に全部の置き場を `experts.bin` と比べる。置き場の書き出しのロジットは全部の書き出しとビット単位で同じ (重みは同じで、置く場所だけが違う)。
+- **コピー**: 4 つの goroutine がページキャッシュの写像から写して clflush (`SyncToDevice`)。`directReads` (専門家のファイルが物理メモリの半分以上。`HWNPU_DEV=moe.direct=0/1`) のときは O_DIRECT で、goroutine ごとの中継のバッファを通して読む (バンクの写像は O_DIRECT を EFAULT で断る)。1 専門家を 8 つに分ける。測った費用: gpt-oss の 1 専門家 (14.3 MB) はページキャッシュから 1.1 ms、O_DIRECT で 2.6 ms (フォールトでは 9.4 ms)。Qwen3.6 の 1 専門家 (1.97 MB) は O_DIRECT で 0.4〜0.7 ms、キャッシュから 0.1〜0.3 ms。
+- `HWNPU_DEV=moe.check` は詰めた後と閉じる時に全部の置き場を `experts.bin` と比べる。置き場の書き出しのロジットは全部の書き出しとビット単位で同じ (重みは同じで、置く場所だけが違う)。
 
 ### 値 (AMD、Ryzen AI 9 365)
 
@@ -263,7 +263,7 @@ Apple:
 - メモリの 3/4 を超える専門家の固定 (16 GB の Qwen3.6): どの予算でも遅い。
 - Qwen3.6 で 16 個の先読み (7.3 トークン/秒、外れが SSD の読みを食う)、gpt-oss で 8 個 (4 個より速くない、メモリが苦しいと遅い)、2 層前からの予測 (上位 4 個に 80〜85 %、読む量が増える)。
 - 働き手を回し続ける (`mxfp4.Hold`、spinners): 0.55 → 1.0 ms で、Neural Engine の部品も同じだけ遅くなる。スレッドの QoS `USER_INTERACTIVE`: 効かない。
-- SMMLA の閾値 (`HWNPU_MXFP4=pad=N`): 差なし。2 行 × 4 ベクトルの SMMLA: SDOT より遅い。
+- SMMLA の閾値 (`HWNPU_DEV=mxfp4.pad=N`): 差なし。2 行 × 4 ベクトルの SMMLA: SDOT より遅い。
 - 固定した専門家のほかの入れ替え方式: どれも平均の当たり 72〜74 %。
 - gpt-oss の注意: ただの lut8 (KL 0.284)、int8 (Neural Engine で遅い)。`lut8r` の注意と lut6 の出力層の GPTQ の符号は既定にしない (どの文でも良くはならず、符号は配らない)。
 

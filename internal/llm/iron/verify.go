@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 )
 
 // The version checking drafts (tools/amd/iron_verify.py, iron_export_lm.py --verify): a call of
@@ -113,7 +115,7 @@ func (m *Model) Verify(ctx context.Context, ids []int32, start int) ([][]float32
 		}
 		return m.rowLogits(v, R)
 	}
-	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	timing := devenv.On("iron.timing")
 	for k := range v.m.Kernels {
 		t0 := time.Now()
 		run, err := m.newRun(v, k)

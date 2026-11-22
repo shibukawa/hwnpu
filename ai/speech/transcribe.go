@@ -28,13 +28,27 @@ func Transcribe(name string) ai.Use[*Transcriber] {
 	return ai.Define[*Transcriber](transcribeRole, name)
 }
 
+// The settings and programs a transcription model's definition may give (ai.Definition):
+//
+//	settings: format    the programs' weight format: lut8 (the default), lut6, lut4 or fp16
+//	programs: iron      on AMD's NPU, an export of tools/amd/iron_whisper.py (its directory)
+//
+// A model of device cpu runs on hwnpu's CPU interpreter (slow).
 var transcribeRole = &airole.Role{
 	Name:  "transcribe",
 	Kinds: []chat.Kind{chat.KindTranscribe},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
-		if e.NPU.AMD() {
+		cpu := e.NPU.CPU(e.Model)
+		if dir := first(e.Model.Programs["iron"]); dir != "" {
+			if !transcribe.IsIronExport(dir) {
+				return f, fmt.Errorf("%s is not an export of tools/amd/iron_whisper.py", dir)
+			}
+			f.Set("iron", dir)
+			return f, nil
+		}
+		if e.NPU.AMD() && !cpu {
 			// AMD's NPU runs the graphs of tools/amd/iron_whisper.py
-			dir, err := transcribe.PrepareAMD(e.Ctx, e.Model, e.Log)
+			dir, err := transcribe.PrepareAMD(e.Ctx, e.Base, e.Log)
 			if err != nil {
 				return f, err
 			}
@@ -42,7 +56,11 @@ var transcribeRole = &airole.Role{
 			f.Set("iron", dir)
 			return f, nil
 		}
-		c, err := transcribe.Prepare(e.Ctx, transcribe.Setup{Dir: e.Dir, Repo: e.Model.Source(), Backend: e.NPU.Format, Log: e.Log})
+		backend := e.NPU.Format
+		if cpu {
+			backend = llm.BackendCoreML // what the CPU interpreter runs
+		}
+		c, err := transcribe.Prepare(e.Ctx, transcribe.Setup{Dir: e.Dir, Repo: e.Model.Source(), Format: e.Model.Settings["format"], Backend: backend, Log: e.Log})
 		if err != nil {
 			return f, err
 		}
@@ -59,24 +77,37 @@ var transcribeRole = &airole.Role{
 			t   *transcribe.Transcriber
 			err error
 		)
+		cpu := e.NPU.CPU(e.Def)
 		if dir := f.Path("iron"); dir != "" {
 			if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
 				return nil, err
 			}
 			t, err = transcribe.LoadIron(ctx, dev, dir)
 		} else {
-			if dev, _, err = llm.OpenDevice(ctx, e.NPU.Device, e.Cache); err != nil {
-				return nil, err
+			if !cpu {
+				if dev, _, err = llm.OpenDevice(ctx, e.NPU.Device, e.Cache); err != nil {
+					return nil, err
+				}
 			}
 			t, err = transcribe.Load(ctx, dev, transcribe.Config{Dir: f.Path("dir"), Encoder: f.Path("encoder"),
 				Cross: f.Path("cross"), Decoder: f.Path("decoder"), Weights: f.Path("weights")})
 		}
 		if err != nil {
-			dev.Close()
+			if dev != nil {
+				dev.Close()
+			}
 			return nil, err
 		}
-		return &Transcriber{t: t, dev: dev, model: e.Model}, nil
+		return &Transcriber{t: t, dev: dev, model: e.Model, cpu: cpu}, nil
 	},
+}
+
+// first is the first of ps, "" for none.
+func first(ps []string) string {
+	if len(ps) == 0 {
+		return ""
+	}
+	return ps[0]
 }
 
 // logf writes lines to w (nil for nowhere).
@@ -105,6 +136,22 @@ type Transcript struct {
 	Lang string
 	// Segments are the text's pieces with their times; one for up to 30 seconds of speech.
 	Segments []Segment
+	// Windows are the windows of 30 seconds the speech was read in, with what each took.
+	Windows []Window
+	// Took is how long the transcription took.
+	Took time.Duration
+}
+
+// Window is a window of 30 seconds of a transcription and what reading it took.
+type Window struct {
+	// Start is where it begins in the speech, Lang its language.
+	Start time.Duration
+	Lang  string
+	// Tokens are the tokens of text generated (its timestamps among them).
+	Tokens int
+	// Features is the time spent on the features (the log-mel spectrogram), Encode on the
+	// encoder and the cross attention's keys and values, Decode on decoding the tokens.
+	Features, Encode, Decode time.Duration
 }
 
 // Segment is a piece of a transcript.
@@ -119,7 +166,11 @@ type Transcriber struct {
 	t     *transcribe.Transcriber
 	dev   *hwnpu.Device
 	model string
+	cpu   bool
 }
+
+// OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
+func (t *Transcriber) OnCPU() bool { return t.cpu }
 
 // Model is the name of the model in the definitions.
 func (t *Transcriber) Model() string { return t.model }
@@ -132,15 +183,18 @@ func (t *Transcriber) OnNPU() bool { return t.t.OnNPU() }
 func (t *Transcriber) Transcribe(ctx context.Context, pcm []float32, o TranscribeOptions) (Transcript, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t0 := time.Now()
 	res, err := t.t.Transcribe(ctx, pcm, transcribe.Options{Language: o.Language, Translate: o.Translate, MaxTokens: o.MaxTokens})
 	if err != nil {
 		return Transcript{}, err
 	}
-	out := Transcript{Text: strings.TrimSpace(res.Text)}
+	out := Transcript{Text: strings.TrimSpace(res.Text), Took: time.Since(t0)}
 	for _, w := range res.Windows {
 		if out.Lang == "" {
 			out.Lang = w.Language
 		}
+		out.Windows = append(out.Windows, Window{Start: w.Start, Lang: w.Language, Tokens: len(w.Tokens),
+			Features: w.Features, Encode: w.Encode, Decode: w.Decode})
 		for _, s := range w.Segments {
 			out.Segments = append(out.Segments, Segment{Start: w.Start + s.Start, End: w.Start + s.End, Text: strings.TrimSpace(t.t.SegmentText(s))})
 		}

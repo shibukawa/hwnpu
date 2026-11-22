@@ -62,14 +62,14 @@ An `.aimodel` is a directory:
 | Matmul | composite `broadcasting_batch_matmul_v1` around `broadcast_to` and `batch_matmul` | bare ops with int8 weights (`blockwise_shift_scale_v2`) put the whole program off the Neural Engine; a reshape of the weights makes MPSGraph get the shape wrong |
 | Softmax | `exp(x − max) × reciprocal(sum)` | `exp / sum` or softmax is fused with the matmul into an attention op that leaves the Neural Engine |
 | Binary ops | equal shapes only; widen with `broadcast_in_dims` | — |
-| Division by a constant | product by the reciprocal (`HWNPU_AILOWER_DIVIDE=1` keeps the division, for study) | the Neural Engine multiplies instead of dividing (PP-OCR's detector at cosine 0.05) |
+| Division by a constant | product by the reciprocal (`HWNPU_DEV=ailower.divide=1` keeps the division, for study) | the Neural Engine multiplies instead of dividing (PP-OCR's detector at cosine 0.05) |
 | Matmul with inner dimension 1 | written as a multiply (outer product) | (1×1)·(1×N) is wrong on the Neural Engine (relative error 0.28 at M = 1) |
 | softplus | `relu(x) + log(1 + exp(−|x|))` | Core AI fuses `log(1 + exp(x))`; it gives 0 for x > 10.4 |
 | Neighbouring lut tables | never equal (`mlpackage.DistinctNeighbours`: one value moved 1 ulp toward 0) | `coreai-build`'s ANE compiler fails ("per-cout group … not content-uniform") and puts the part on the GPU |
 
 Lowerings also exist for `max_pool`, `conv_transpose` (cropped to MIL's pads), `pad` replicate / reflect, `elu`, LUT (lut4–lut8), and more. To write a new one, convert a small torch module with coreai-torch (`uv run --offline --prerelease=allow --python 3.13 --with coreai-torch==0.4.3 --with torch`), print the program and read its bytecode with `bcdump`; coreai-core's `_coreai_ops_gen.py` gives the operands in order.
 
-`ailower` notes known Neural Engine traps as it lowers (`HWNPU_AILOWER_NOTES=1` prints them; `aicheck lint` searches exports). Today: a slice of the last axis starting at `begin mod 32` in 1..14 (values above 4094 become Inf).
+`ailower` notes known Neural Engine traps as it lowers (`HWNPU_DEV=ailower.notes=1` prints them; `aicheck lint` searches exports). Today: a slice of the last axis starting at `begin mod 32` in 1..14 (values above 4094 become Inf).
 
 ## Exports: `NAME.coreai`
 
@@ -108,7 +108,7 @@ Automatic grouping when a `.mlpackage` is lowered at load (`internal/backend/cor
 - Copy speed on an M1 is about 29 GB/s. A program that does nothing costs 0.21 ms a call (M1); the floor of a call is 160–175 µs (M2).
 - At most 112 programs per process on the Neural Engine (M2). The 113th fails to load ("no ANE resources") and Core AI runs it on the GPU silently. The device counts loaded programs (`aneLive`) and says so when a load fails near the limit. gpt-oss-20b's export is about 84; other chat models under 40. Two models in one process can pass it.
 - Core AI cannot choose compute units for a program the way Core ML's `GraphSource.Units` does. `HWNPU_COREAI_UNITS=cpu` runs everything on Core AI's CPU, for tests without the Neural Engine.
-- A load from Core AI's cache takes 0.2–0.3 s, so the next program can be loaded while one runs (`runner.InTurn`, `runner.Ring`; `HWNPU_LOAD_AHEAD=0` turns it off). See [image models on Apple](image-apple.md).
+- A load from Core AI's cache takes 0.2–0.3 s, so the next program can be loaded while one runs (`runner.InTurn`, `runner.Ring`; `HWNPU_DEV=load-ahead=0` turns it off). See [image models on Apple](image-apple.md).
 
 ## Caches and disk
 
@@ -126,9 +126,9 @@ Rules that follow:
 - Core AI's cache is per executable name. Renamed test binaries add a full copy (1.8 GB a model). Keep the name and use directories (`base/hwnpu-chat`, `new/hwnpu-chat`). `aicheck` built under the name `hwnpu-image` hits that command's cache.
 - An OS update compiles everything again from `main.mlirb`.
 - With little free disk, macOS deletes Core AI entries, aned's code and sometimes hwnpu's cache root under `~/Library/Caches` (the default policy evicts on `storagePressure`, not by least recent use). It started below about 15 GiB free on an M2, and deleted freshly finished prebuilt programs even with 22 GB free. Keep 25 GB or more free for first runs.
-- When aned's code is gone but the entry is still there, `specialize` / `loadFunction` fails at once (`_GenericObjCError.nilError`, `_GenericObjCError 0`). The shim deletes the entry and loads again; with no disk left the Neural Engine compiler fails and the program goes to the GPU. `HWNPU_COREAI_DEBUG=1` prints "the cached entry failed (…), compiled again", deletes entries that fell to the GPU, and warns when free space is under 10 GiB.
+- When aned's code is gone but the entry is still there, `specialize` / `loadFunction` fails at once (`_GenericObjCError.nilError`, `_GenericObjCError 0`). The shim deletes the entry and loads again; with no disk left the Neural Engine compiler fails and the program goes to the GPU. `HWNPU_DEV=coreai.debug=1` prints "the cached entry failed (…), compiled again", deletes entries that fell to the GPU, and warns when free space is under 10 GiB.
 - Once Core AI has an entry, `main.mlirb` is not read again: the asset loads even with it emptied (`main.hash` must stay).
-- `HWNPU_COREAI_DROP_BYTECODE=1` replaces `main.mlirb` with an empty file (by rename, since Core AI may still map the old one) after the entry exists. Chroma1-Flash at 512²: hwnpu's cache 28 → 15 GB. Off by default: an export taken from a source would have to be downloaded again when the entry is evicted.
+- `HWNPU_DEV=coreai.drop-bytecode` replaces `main.mlirb` with an empty file (by rename, since Core AI may still map the old one) after the entry exists. Chroma1-Flash at 512²: hwnpu's cache 28 → 15 GB. Off by default: an export taken from a source would have to be downloaded again when the entry is evicted.
 - An empty `main.mlirb` given to Core AI's parser aborts the process (LLVM: `cannot unwrap empty odiec_module_t`). So an empty asset is opened only when its entry is there (`hasEntry`: a non-empty `…/model.aimodelx/main-this.odix`), with `kindNoRetry` (0x100: the shim does not delete and reload); otherwise Go lowers it again from the package, or fails for an asset given directly. When unsure, do not empty and lower again.
 - `hwnpu cache`, cutting to its free-space floor, deletes first the Core AI entries of parts that have a prebuilt: they come back from it in seconds.
 - The Neural Engine's weights are wired kernel memory (read by `mem.NPUWired`), not the process footprint: see [memory and power](memory-and-power.md).
@@ -217,8 +217,8 @@ Tools in `tools/coreai`:
 | Tool | Use |
 |---|---|
 | `aicheck run -cpu PKG…` | Run parts on Core AI and compare with `milcpu` on random inputs; `-coreml` runs the same part on Core ML (is the error Core AI's?); `-calls N` averages later calls; `-ref` compares with a reference package; `AICHECK_WORST=1` prints the worst elements; `AICHECK_CONST=name=v,…` gives constant or mask inputs their real values |
-| `HWNPU_AILOWER_CUT=N` | Lower only the first N ops and compare that op by cosine with `milcpu`: bisect for the op that is wrong or leaves the Neural Engine |
-| `HWNPU_AILOWER_TRACE` | Map op_ids (Core AI's errors name them) to ops |
+| `HWNPU_DEV=ailower.cut=N` | Lower only the first N ops and compare that op by cosine with `milcpu`: bisect for the op that is wrong or leaves the Neural Engine |
+| `HWNPU_DEV=ailower.trace` | Map op_ids (Core AI's errors name them) to ops |
 | `aicheck probe` | Small MIL programs (SDPA, RoPE, RMSNorm, int8 linear, rewrites): do they stay on the Neural Engine? |
 | `aicheck lower OUT PKG` | Stops at the first op with no lowering |
 | `aicheck merge OUT.aimodel f8=PKG f128=PKG` | Several packages as functions of one asset |
@@ -237,7 +237,7 @@ Checks for a new model (in addition to the [Neural Engine's](apple-neural-engine
 - A small program (about 45 ops) goes to the CPU whatever it holds: find what puts a program off the Neural Engine by adding the piece to a real-size program known to be on it.
 - For sizes as functions of one asset, check each size's part alone before cutting.
 - Compare start times with both caches warm (three starts each, right after a run of each): an evicted Core ML cache once looked like a Core AI speedup.
-- Decide the reference's precision first: the CPU interpreter through `runner` is fp32 unless `HWNPU_CPU_F16=1`; `aicheck` runs it with fp16 rounding.
+- Decide the reference's precision first: the CPU interpreter through `runner` is fp32 unless `HWNPU_DEV=cpu.f16=1`; `aicheck` runs it with fp16 rounding.
 
 ## Pitfalls of Core AI and the Neural Engine under it
 
@@ -253,7 +253,7 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 | An explicit `pad` before a convolution went wrong | — |
 | Matmul with inner dimension 1 | Written as a multiply |
 | softplus 0 for x > 10.4 | Stable form (above) |
-| Last-axis slice from `begin mod 32` in 1..14: values over 4094 → Inf | `HWNPU_AILOWER_NOTES`, `aicheck lint` (only LFM2-8B-A1B's routing weights hit it, values ≤ 1) |
+| Last-axis slice from `begin mod 32` in 1..14: values over 4094 → Inf | `HWNPU_DEV=ailower.notes`, `aicheck lint` (only LFM2-8B-A1B's routing weights hit it, values ≤ 1) |
 | linear / conv output, even a partial sum, reaching 2^15 → Inf (M2) | Keep ranges down (MaxScaled, `mil.BlockRanges`) |
 | Denormals inside a matmul become 0 | Range checks |
 | "empty reset layer candidates in SS cost model": a pair of ops fails where each alone passes (Sana's VAE `tile` + 1×1 conv; MoGe-2's `pixel_shuffle` after a 1×1 deconv) | Rewrite with the same values: a channel repeat as a 1×1 conv of 0/1 weights; the shuffle in bands of rows (`mil.deconv2`, up to 256 rows) |
@@ -269,8 +269,8 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 
 | Choice | File |
 |---|---|
-| Short conversations on a whole program, then the program split at attention (`wholeTiers`, `decode.Session.Migrate`; none on an M1: `chat.wholeSlower`); Qwen3 split at attention on Core AI; attention a kv head at a time (`paged.Heads`, `HWNPU_ATTENTION=grouped`); ring tiers for long windows | [LLM engine](llm-engine.md) |
-| DiT groups swapped per call (`HWNPU_HOLD_DIT=1`), load ahead, batching, attention layouts, block counts per memory | [image models on Apple](image-apple.md) |
+| Short conversations on a whole program, then the program split at attention (`wholeTiers`, `decode.Session.Migrate`; none on an M1: `chat.wholeSlower`); Qwen3 split at attention on Core AI; attention a kv head at a time (`paged.Heads`, `HWNPU_DEV=attention=grouped`); ring tiers for long windows | [LLM engine](llm-engine.md) |
+| DiT groups swapped per call (`HWNPU_DEV=hold-dit=1`), load ahead, batching, attention layouts, block counts per memory | [image models on Apple](image-apple.md) |
 | Experts picked by the host between parts | [MoE](moe.md) |
 | Exports in sources, `files.tar.zst`, prebuilt bundles | [distribution](distribution.md) |
 
@@ -283,7 +283,7 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 - **Prebuilt for VAEs and text encoders** (`LeftToDevice`): wrong pictures / `Request cancelled`, and no gain.
 - **Prebuilt for Sana**: `coreai-build` placed only 8 of 27 parts on the ANE when tried, and those finished slower than a native compile. Qwen-Image is not a target either.
 - **h18g and the 9 crashing architectures**: not built (a GPU-only prebuilt would keep an M6 off the ANE).
-- **Deleting `main.mlirb` after caching by default**: a source's export would be downloaded again on eviction; only `HWNPU_COREAI_DROP_BYTECODE=1`.
+- **Deleting `main.mlirb` after caching by default**: a source's export would be downloaded again on eviction; only `HWNPU_DEV=coreai.drop-bytecode`.
 - **Parallel compiles**: the machine has one ANE compiler queue.
 - **Fresh `NDArray` per call, or views of caller buffers** (`NDArray.RawView`, IOSurface): 10.0 / 10.7 / 8.3 ms against 7.2 ms for a reused array (PLaMo 3 0.8B part1, M1); now the caller writes into Core AI's array.
 - **A whole program and the split one in one `.aimodel`**: Qwen3-0.6B became 60 functions, loading took 2 min 28 s, some went to the GPU, and each function on the GPU wrote 0.6 GB of MPSGraph scratch until the disk ran out.

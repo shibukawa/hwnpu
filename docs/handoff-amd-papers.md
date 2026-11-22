@@ -35,7 +35,7 @@
 | Anima-Aesthetic 1024² (DPM 25) | 2 分 37 秒、2.84 kJ | [image-amd](design/image-amd.md) |
 
 測り方:
-- `HWNPU_IRON_TIMING=1`: コマンドとホストの手順ごとの時間 (コマンドごとに待つので、プロンプトの時間は数倍にふくらむ)
+- `HWNPU_DEV=iron.timing=1`: コマンドとホストの手順ごとの時間 (コマンドごとに待つので、プロンプトの時間は数倍にふくらむ)
 - `iron_export_lm.py --command-per-step`: プロンプトを手順ごとのコマンドに切って内訳を見る ([amd](design/amd.md))
 - `HWNPU_ENERGY`: 電力量 (package)
 - `go run ./tools/amd/irongraph`、`tools/amd/ironlm`: 照合

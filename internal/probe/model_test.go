@@ -11,7 +11,7 @@ import (
 )
 
 // The IR must parse with hwnpu's reader and have the weights the format promises. Set
-// HWNPU_IR_OUT to a directory to keep the files, e.g. to check them with OpenVINO's read_model.
+// HWNPU_TEST_PROBE_IR_OUT to a directory to keep the files, e.g. to check them with OpenVINO's read_model.
 func TestBuildIR(t *testing.T) {
 	for _, f := range []string{"fp16", "int8", "int4"} {
 		xmlData, bin, err := BuildIR(f, 2, 1)
@@ -28,7 +28,7 @@ func TestBuildIR(t *testing.T) {
 		if w := WeightBytes(f, 2); int64(len(bin)) < w || int64(len(bin)) > w+w/50 {
 			t.Errorf("%s: bin %d bytes, weights %d", f, len(bin), w)
 		}
-		if dir := os.Getenv("HWNPU_IR_OUT"); dir != "" {
+		if dir := os.Getenv("HWNPU_TEST_PROBE_IR_OUT"); dir != "" {
 			os.WriteFile(filepath.Join(dir, "probe_"+f+".xml"), xmlData, 0o644)
 			os.WriteFile(filepath.Join(dir, "probe_"+f+".bin"), bin, 0o644)
 		}

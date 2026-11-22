@@ -211,8 +211,8 @@ AWS SDK (aws-sdk-go-v2) は重いので使わない。`aws` CLI を呼ぶ今の�
   - マルチパート: `Put` は 1 回の要求 (上限 5 GiB) で、分割は自分でする。64 MiB を超えるファイルは 64 MiB の部分に分けて上げ (IRON のバンクには数 GB のものがある)、失敗したら必ず `AbortMultipartUpload`。途中で止まった分 (プロセスが落ちて Abort できなかったもの) は、`hwnpu cache clean` が `ListMultipartUploads` (tinygodriver v1.3.10 から) で見つけて中止する。始まって 1 時間を過ぎたものだけで、ほかの機械が上げている途中のものは残す。バケットのライフサイクルの規則 (未完了のマルチパートを N 日で中止) を足しておけば、clean を走らせなくても消える
   - 再試行: 5xx、接続の切断、`SlowDown` は指数的に待って 3 回まで。ダウンロードは `GetRange` で続きから
   - `no_sign` (署名なしの公開バケット): tinygodriver で鍵なしの要求が送れるかを確かめる。送れなければ、公開バケットは `https://` の取得元 (HTTP の GET) として読む
-- 確かめたこと (2026-11-13、RustFS 1.0.5 を手元で): 部分に分けた送り (5 MiB の部分で 12 MiB)、空のファイル (tinygodriver v1.3.8 は長さ 0 の本体を chunked で送り 411 になった。v1.3.9 で直った)、`GetRange` の続き、一覧、削除、パス形式 (`internal/store` の `TestS3Server`、`HWNPU_S3_TEST_ENDPOINT` を与えたときだけ)。Qwen3.5-0.8B の書き出し (1.57 GB) を `push` (10 秒) し、空の根で IRON なしに層から取って NPU で答えた (準備 4.4 秒)
-- Cloudflare R2 で (2026-11-13): `region: auto` で署名が通り、`TestS3Server` が通った (`HWNPU_S3_TEST_BUCKET` に既にあるバケット、`HWNPU_S3_TEST_REGION=auto`)。Qwen3.5-0.8B の書き出しを `push` (1.57 GB、119 秒。この機械の上りは無線で約 13 MB/s)、空の根と IRON なしの hwnpu-chat が層から取って答えた (準備 54 秒、取るのは約 30 MB/s)。R2 の無料枠は保存 10 GB/月なので、試しには小さな書き出しだけを置く
+- 確かめたこと (2026-11-13、RustFS 1.0.5 を手元で): 部分に分けた送り (5 MiB の部分で 12 MiB)、空のファイル (tinygodriver v1.3.8 は長さ 0 の本体を chunked で送り 411 になった。v1.3.9 で直った)、`GetRange` の続き、一覧、削除、パス形式 (`internal/store` の `TestS3Server`、`HWNPU_TEST_S3_ENDPOINT` を与えたときだけ)。Qwen3.5-0.8B の書き出し (1.57 GB) を `push` (10 秒) し、空の根で IRON なしに層から取って NPU で答えた (準備 4.4 秒)
+- Cloudflare R2 で (2026-11-13): `region: auto` で署名が通り、`TestS3Server` が通った (`HWNPU_TEST_S3_BUCKET` に既にあるバケット、`HWNPU_TEST_S3_REGION=auto`)。Qwen3.5-0.8B の書き出しを `push` (1.57 GB、119 秒。この機械の上りは無線で約 13 MB/s)、空の根と IRON なしの hwnpu-chat が層から取って答えた (準備 54 秒、取るのは約 30 MB/s)。R2 の無料枠は保存 10 GB/月なので、試しには小さな書き出しだけを置く
 - 確かめること: AWS の S3 で仮想ホスト形式と、ほかのリージョンへのリダイレクト
 - MinIO は対象にしない (保守が終わった)。S3 互換のサーバーの確認は RustFS で
 

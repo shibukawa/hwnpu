@@ -93,7 +93,7 @@ Intel での配置の検証 (NPU のコンパイラは演算を他の装置に�
 
 ## NPU なしで確かめる (OpenVINO の CPU)
 
-- `HWNPU_BACKEND=openvino` (または `--backend openvino`、装置は `HWNPU_OV_DEVICE`) で、Intel の IR を OpenVINO の CPU プラグインで動かす (`internal/backend/openvino`、Python は `HWNPU_OV_PYTHON`、`serve_ir.py` / `run_ir.py`)。変換、引数の名前、ホストの処理は NPU と同じで、違うのはコンパイラと装置だけ。pip の openvino は Mac でも動く。
+- `HWNPU_BACKEND=openvino` (または `--backend openvino`、装置は `HWNPU_DEV=ov.device`) で、Intel の IR を OpenVINO の CPU プラグインで動かす (`internal/backend/openvino`、Python は `HWNPU_OV_PYTHON`、`serve_ir.py` / `run_ir.py`)。変換、引数の名前、ホストの処理は NPU と同じで、違うのはコンパイラと装置だけ。pip の openvino は Mac でも動く。
 - `serve_ir.py` と `run_ir.py` は `openvino_telemetry` のモジュールを読ませない (別プロセスが消したスクリプトを読みにいって失敗していた)。
 - バックエンドを開くとき、落ちたプロセスが `/dev/shm` に残した共有バッファのディレクトリ (1 日で 8.4 GB) を片付ける。
 - `hwnpu-dev irdiff A.mlpackage …`: Core ML のパッケージを IR に下ろし、同じ乱数の入力で milcpu と OpenVINO の CPU を比べる。Intel の経路を書く前に、下ろせない演算を見つけられる。

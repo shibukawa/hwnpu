@@ -2,7 +2,7 @@
 
 [English](llm-models.md)
 
-LFM3 の系列 (LFM3-1.7B、LFM3-VL、LFM3-Audio、LFM3-Omni、d1)、Gemma 4、PLaMo 3 Translate、
+LFM3 の系列 (LFM3-1.7B、LFM3-VL、LFM3-Audio、LFM3-Omni、d1)、Gemma 4、PLaMo 3 Translate、Ouro、
 PLaMo-Embedding-1B、BERT の系列のモデルごとの記録と、トークナイザー (`internal/tokenizer`) とチャットの書式
 (`internal/chat`)。Qwen のモデルは [llm-qwen.md](llm-qwen.md)、専門家の混合 (LFM2-8B-A1B、Qwen3.6、gpt-oss) は
 [moe.md](moe.md)、エンジンの仕組み (KV キャッシュ、リング、注意で分けた形、プロンプトストア、最後の行のロジット) は
@@ -25,6 +25,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 | d1-2B / d1-Omni-2B | d1 モードの `lfm3` (+ 塔) | decision (`hwnpu-chat systemone`) | lut8 | 変換できる | — |
 | gemma-4-E2B-it / E4B-it | `gemma4` | chat (tools、thinking)、テキストのみ | lut6 | 変換できる | q4、画像と音声も |
 | plamo-3-translate-0.8b / 2b / 8b | `plamo3` | chat (translation) | lut8。8B は lut4 | int8。8B は行ごとの int4 | q4 |
+| Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking、道具なし) | lut8。Mac では動かしていない | int8。変換はできるが実機では動かしていない | q4 で MLP と head は q6。HF と比べて KL 0.026 (1 位の一致 98.4 %)、3.6 トークン/秒 |
 | plamo-embedding-1b | `plamo-bi` | embedding (query) | lut8 + head-scale | int8 | — |
 | BERT の系列 (all-MiniLM-L6-v2 など) | `bert` | — (models.yaml にない) | 変換のみ、lut8 | 変換のみ、int8 | — |
 
@@ -249,6 +250,43 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   下書きは当たらない (出力の言語がプロンプトと違う)。
 - トークナイザーのファイルはアーキテクチャで選ぶ (`tokenizer.jsonl`、`tokenizer_config.json`)。
 
+## Ouro (`internal/llm/ouro`、`tools/amd/iron_ouro.py`)
+
+- ByteDance のループ型の言語モデル (`OuroForCausalLM`、リモートコードの `modeling_ouro.py`。Apache 2.0)。層は Llama のものに
+  サンドイッチ norm を付けた形 (`input_layernorm`、注意、`input_layernorm_2`、残差。`post_attention_layernorm`、SwiGLU、
+  `post_attention_layernorm_2`、残差)。注意は素の多頭注意 (16 ヘッド、GQA なし)、RoPE θ 10⁶、bias なし、ヘッドごとの norm なし、
+  `lm_head` は埋め込みと別、語彙は 49152 (SmolLM のもの)。層の全体を 1 トークンにつき `total_ut_steps` (4) 回、同じ重みで回す。
+  回の終わりごとに `model.norm` を通し、次の回はその値から始める。出力層は最後の回の値を読む。KV は回ごと・層ごとに持つ。
+- hwnpu は回を層として扱う: `Layers()` は層 × 回 (1.4B は 24 × 4 = 96、2.6B は 48 × 4 = 192)。層 v は層 v mod 層数の重みを使い
+  (`llm.Looped`)、キャッシュは回ごとの `kv_k_v`。これでキャッシュ、部分への分割、`hwnpu-dev check` が普通のデコーダーと同じに動く。
+  1 つのプログラムは、層の回をいくつ組み立てても、その層の重みを 1 度だけ持つ (ビルダーが定数を名前で覚えている。
+  `TestPassesShareWeights`)。`llm.EstimateBytes` は回ごとに数える (`llm.Looped`) ので、2 回以上を組み立てる部分では実際より大きく見積もる。
+  KV キャッシュは 24 層のモデルの 4 倍で、fp16 で 1 トークンあたり 1.4B は 768 KiB、2.6B は 1.5 MiB。
+- 早く抜けるゲート (`model.early_exit_gate`) は読まない: `early_exit_threshold` が 1.0 (チェックポイントの値) なら transformers は
+  最後の回を使う。1 未満の threshold と `early_exit_step` はエラーにする (トークンごとに抜けると、後の回のキャッシュにそのトークンの
+  鍵が入らない)。モデルカードにあるとおり、config.json の `total_ut_steps` を下げれば回を減らせる。
+- norm: 残差は最大 212 (1.4B)、行の RMS は最大 4.7 なので、残差を読む norm (`input_layernorm`、`post_attention_layernorm`、
+  `model.norm`) は入力を 1/4 にしてから二乗する。注意と MLP の後の norm は最大 54 と 25 だが、行の RMS が 0.0002 まで小さくなるので、
+  入力をそのまま使う (Qwen3 と同じ 1/64 にすると、そうした行の二乗が fp16 の下限を割る)。最初の層の norm は埋め込みをそのまま読む。
+- 照合 (1.4B-Thinking): 小さなモデル (3 層 × 3 回) で fp64 と 8e-7、1 層ずつ 6e-7、キャッシュ付きで部分に分けて 3.5e-4。回の間の norm を
+  外す、層のキャッシュを回の間で共有する、MLP の後の norm を外す、のどれでもテストが失敗する。`hwnpu-dev check` (30 トークン): 欠け 0、
+  形の違い 0、余り 2 (ゲート)。fp32 で最悪の層 0.0004、argmax 30/30、KL 0.0000。`-f16` で最悪の層 0.0012、argmax 30/30、KL 0.0000。
+  参照値は transformers 4.54 での `tools/ref/ref_logits.py` (リモートコードは 5.x で動かない: `pad_token_id`、`create_causal_mask`)。
+  各層を回ごとに記録し、回の間の norm も記録する (`hook_passes`)。2.6B-Thinking (192 層、残差は最大 161): `-f16` で最悪の層 0.0020、argmax 30/30、KL 0.0000。
+- 形式 (CPU、`-f16`、モデル全体を HF の fp32 と比べる、30 トークン): lut8 KL 0.023 (argmax 25/30)、lut6 0.18 (23/30)、lut4 5.1 (3/30、
+  使えない)、int8 0.006 (29/30)。既定は lut8 (Intel は int8)。1 トークンに 4 回読む重みは、丸めの誤差が積み重なる。48 層で 192 回になる 2.6B はさらに失う: lut8 で KL 0.13
+  (argmax 27/30)、int8 で 0.067 (26/30)。models.yaml には入れていない。
+- AMD (`iron_export_lm.py ouro`): IRON の `SandwichLayer` に Ouro の norm の名前を付け替えて使う。`Ouro.layer` が `model.layers` を
+  回ごとに 1 度ずつ動かし (`self.layers` はそれを 4 回並べたもの)、2 回目以降には回ごとの `KVCache` を call 経由で渡し
+  (`passes.P.layers.L.cache.*`。ランタイムは名前の `.cache.` でキャッシュと見なす)、回の間に `model.norm` を入れる。MLP と head は q6 (ホストで丸めたときの KL は q4 0.130、q6 0.013)。NPU では
+  (`ironlm -forced` と `forced_logits.py`、64 行) q6 で KL 0.026 (1 位の一致 98.4 %)、bf16 で 0.0022 (98.4 %)。詳しくは [amd-llm.ja.md](amd-llm.ja.md)。
+- トークナイザー: SmolLM のもの (1 字ずつの `Digits` の後に GPT-2 のパターンの `ByteLevel`)。`internal/tokenizer` の `gpt2Digits`。
+  正解の id は tokenizers のライブラリで作る (`tokenizer_golden.py --tokenizers`): transformers 5 は GPT2Tokenizer 自身の
+  pre-tokenizer をファイルのものと入れ替え、Digits の段を落とす (" ①" が 1 つの断片になる)。
+- チャットの書式: `chat.Ouro` (下)。Thinking のモデルは既定で考える。ベースのモデル (Ouro-1.4B、2.6B) はチャットのテンプレートがない。
+- models.yaml には入れていない: NPU ではループ型は大きさのわりに遅く、キャッシュの増え方も大きい (評価の記録と、LFM3-1.7B などとの比較:
+  [model-estimation.ja.md](../model-estimation.ja.md))。
+
 ## PLaMo-Embedding-1B (`internal/llm/plamo`、アーキテクチャ `plamo-bi`)
 
 - `PlamoBiModel`: PLaMo のデコーダの注意を双方向にしたもの。pre-norm の 16 層 + 最終 RMSNorm。融合した `qkv_proj` (2304 = 2048 + 128 + 128)、
@@ -286,7 +324,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 
 | 種類 | モデル | 仕組み | 照合 |
 |---|---|---|---|
-| byte-level BPE (`Load`) | LFM3 の系列、Qwen | 追加トークンを先に切り出し、GPT-4 型の pre-tokenizer を手書きの走査で (Go の regexp にない先読み `\s+(?!\S)`)。マージは順位。Qwen3.5 は NFC、`[\p{L}\p{M}]+`、数字を 1 つずつ ([llm-qwen.md](llm-qwen.md)) | HF と一致 |
+| byte-level BPE (`Load`) | LFM3 の系列、Qwen | 追加トークンを先に切り出し、GPT-4 型の pre-tokenizer を手書きの走査で (Go の regexp にない先読み `\s+(?!\S)`)。マージは順位。Qwen3.5 は NFC、`[\p{L}\p{M}]+`、数字を 1 つずつ ([llm-qwen.md](llm-qwen.md))。Ouro は 1 字ずつの Digits の後、その間の文字列に GPT-2 のパターン (`gpt2Digits`) | HF と一致 (Ouro: 40 文 + ランダム 500、18,441 トークン) |
 | byte fallback の BPE (`fallback.go`、`Load` 経由) | Gemma 4 | 空白を ▁ に、追加トークンの間を 1 片として順位でマージ、語彙にない文字は UTF-8 のバイト (`<0xE3>`)。BOS は付けない | 35 文 + 乱数の 300 文 (7,026 トークン) |
 | SentencePiece BPE (`LoadSentencePiece`) | PLaMo-Embedding | `tokenizer.model` の protobuf を手で読む。正規化 identity、先頭に ▁。user-defined のピース (▁ の 2/4/8/16 個の連続、タブ 1/2/4 個、改行) は最長一致で結合しない。マージ一覧でなくピースのスコアで結合 (同点は左)。語彙にないものは `<0xNN>`。特殊トークンを先に切り出し、その後ろにも ▁ を補う (HF の slow tokenizer と同じ)。BOS は付けない | 32 文 (599 トークン) + 乱数の 3,032 文 (88,072 トークン) で不一致 0 |
 | PLaMo (`LoadPlamo`、`.jsonl` なら `Load` が選ぶ) | PLaMo 3 | `tokenizer.jsonl` のスコア付きのピースから合計コスト最小の分け方を後ろから探す。コスト = −round(スコア × 10⁴) (Python の round)。Aho-Corasick の代わりに全ピースの接頭辞の map。同点は長いピース。どのピースにもない文字は UTF-8 のバイト。特殊トークン、同じ文字 4 個以上の連続、空白 2 個以上で切る | 40 例 + 乱数の 3,040 例 |
@@ -297,7 +335,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   ピース、byte fallback のない BPE、バイトのピースの欠け。
 - PLaMo-Embedding の `Decode(ids, false)` は `Encode` の逆 (区切りごとに先頭の ▁ を落とす)。HF の decode は特殊トークンの前に空白を足すので
   往復しない。`skipSpecial` は HF の `skip_special_tokens=True` と同じく区切りをつないでから戻す。
-- 正解: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`。実物の語彙のテストは `HWNPU_PLAMO_DIR`、`HWNPU_GEMMA4_DIR` が要る。
+- 正解: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`。実物の語彙のテストは `HWNPU_TEST_PLAMO_DIR`、`HWNPU_TEST_GEMMA4_DIR` が要る。
   スコアの同点と user-defined をまたぐ結合は実物の語彙では起きないので、小さなモデルのテスト (`TestSentencePiece`) が受け持つ。
 - PLaMo のトークナイザーの正解を作る環境: Python 3.12、`sentencepiece==0.2.0` (0.2.2 は `SentencePieceProcessor.Init` がない)、`protobuf`、
   `transformers<5`。
@@ -313,6 +351,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 | LFM3 (`chat.LFM3`) | `lfm3` | 6 会話 | システムメッセージの末尾に `<tools>` の JSON (キーの順を保つ)。呼び出しは `<tool_call><function=name><parameter=key>value</parameter>` | `<think>…</think>`。前の返答の思考は落とす |
 | Gemma 4 (`chat.Gemma4`) | `gemma4` | 9 会話 (`gemma4_template.json`) | 独自の記法 (文字列は `<\|"\|>`、キーは dictsort) | `<\|think\|>`、`<\|channel>thought … <channel\|>` |
 | PLaMo 3 / PFML3 (`chat.Plamo3`) | `plamo3` | 8 例 (`plamo3_template_golden.py`) | なし。`target_lang`、`source_lang`、`form`、`context`、`glossary` (`Options.Translation`。API では vLLM と同じ `chat_template_kwargs`) | なし |
+| Ouro (`chat.Ouro`) | `ouro` | 4 会話 (`ouro_template.json`、transformers の `apply_chat_template`) | なし (エラーにする) | `NoThink` でなければプロンプトの後に `<think>` を書く (テンプレートの `enable_thinking`)。考えないときは Qwen3 と同じ空の `<think>\n\n</think>\n\n` (テンプレートにはこの切り替えがない) |
 | System One (`internal/systemone`) | d1 | 7 例 (`systemone_golden.py`) | d1 の choice / score / noul | `<think></think>` |
 | LFM2、Qwen3、Qwen2.5、Qwen3.5、Qwen3.6、harmony | — | [llm-qwen.md](llm-qwen.md)、[moe.md](moe.md) | | |
 
@@ -354,3 +393,5 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 - PLaMo 3 8B: HF の fp32 との KL、GPTQ の符号と `--lut-fit wkmeans` (fp32 の校正は約 34 GB)、長い文脈のパスキー、M4、Intel と AMD の実機、Core AI での値。
 - PLaMo 3 0.8B: HF の fp32 との `hwnpu-dev check`、パスキー、AMD と Intel。
 - BERT: WordPiece のトークナイザー。
+- Ouro: Neural Engine (配置、速さ、プログラム全体で 96 / 192 個のキャッシュ。`UnpagedContext` の 1024 は見当)、Intel の NPU、lut6 と lut4
+  の GPTQ の符号 (2.6B では lut8 にも)、AMD での 2.6B (q8)、回を減らす (`total_ut_steps` 3) 価値があるか。

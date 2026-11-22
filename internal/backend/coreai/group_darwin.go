@@ -171,7 +171,7 @@ func alone(dir string, sum []byte) bool {
 }
 
 // usable reports whether a stored asset can be opened: not one whose bytecode was cut
-// (DropBytecodeEnv) after Core AI's entry went away, which is removed to be lowered again.
+// (HWNPU_DEV=coreai.drop-bytecode) after Core AI's entry went away, which is removed to be lowered again.
 func usable(asset string) bool {
 	if isCut(asset) && !hasEntry(asset) {
 		os.RemoveAll(asset)

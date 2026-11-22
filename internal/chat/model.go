@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -482,8 +484,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// bits or fewer: lut6's error about halves (Qwen3.5-2B, docs/design/moe.md), while lut8's was
 	// within the Neural Engine's own (0.8B and 4B: the same answers, 0 to 3.5 % faster), which
 	// is not worth converting again. Other programs, named -rot, and their own tables.
-	// HWNPU_ROTATE=0 keeps them unrotated, =1 rotates lut8 too
-	rotate := os.Getenv("HWNPU_ROTATE")
+	// HWNPU_DEV=rotate=0 keeps them unrotated, =1 rotates lut8 too
+	rotate := devenv.Value("rotate")
 	if rotatable(a, model) && (backend == llm.BackendCoreAI || backend == llm.BackendCoreML) && rotate != "0" &&
 		(rotate == "1" || format == "lut6" || format == "lut4") {
 		kind += "-rot"

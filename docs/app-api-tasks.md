@@ -27,7 +27,7 @@
 | **B1** | `ai`: 登録、計画、準備、置き場の目録、取得元 | どこでも | A3 | 大 | 一部 (登録、計画、ダウンロードとコンパイルの 2 段、目録、機械のメモリごとの構成、ライセンスの同意。取得元と層は `modelstore`。取得と変換の分割、バイト数の進み具合は残り) |
 | **B2** | `ai`: 実行 (`Open`、文字起こし、翻訳、チャット、読み上げ、音量の VAD) | どこでも、確認は Mac | B1 | 中 | v0 済み (aix1 と Mac (M3) で確認。Intel での確認は残り) |
 | **B0** | 流れの型 (`Chunk`、`Stream`) と塊をまとめる道具、3 つのつなぎ方 (`ai/flow`: 一括、`Async` / `Latest` / `Hold`、`Metronome` / `Pace` / `Live`) | どこでも | — | 小 | 済み |
-| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 未着手 |
+| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 済み (土台: カタログ、アプリの作るモデル (`ai.Definition`)、`cli.Ensure` と `ai.CompileOnLoad`、`ai.LoadSettings`、計測の値 (app-api.md 2.3 節)。`hwnpu-audio`、`hwnpu-chat`、`hwnpu-image` の全部のサブコマンドが `ai` の上で動き、aix1 で旧版と同じ出力を確認。Mac と Intel では `ai` を通して未確認) |
 | B7 | `ai/cli`: アプリに足すサブコマンド (`models`、`status`)。コマンドラインのライブラリに依存しない関数と、kong のアダプタ `ai/cli/konghelper` | どこでも | B1 | 小 | 済み |
 | B9 | ネットワークと呼び出しの宣言 (`flow` の節、`App.From(...).To(...)` / `Run`、`ai.NewCall(...).Then(...)`、プログラムの節 (`Each`、`Route`、`Both`、`With`)、動いている間の設定の変更) | どこでも | B0 | 中 | v0 済み (入力が 3 つ以上の節、モデルを下ろすタイミング、辺ごとの計測は残り。developer-guide.ja.md の D21) |
 | **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 ([architecture](design/architecture.md)) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
@@ -36,8 +36,8 @@
 | B6 | 読み上げを流しながら (できた音から返す、文を受けるたびに読む) | どこでも、確認は Mac | B2 | 小 | 未着手 |
 | **D3** | 読み上げを実時間より速くする (今は lut8 で実時間の約 0.5 倍) | Mac | — | 中 | 未着手 |
 | C1 | `internal/ws`: WebSocket (RFC 6455) の最小限の実装 | どこでも | — | 小 | 未着手 |
-| C2 | `ai/server`: 共通の部分 (互換の口をまとめる Handler、トークン、許すディレクトリ) と独自のストリーム | どこでも | B2、C1 | 中 | 未着手 |
-| C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 未着手 |
+| C2 | `ai/server`: 共通の部分 (互換の口をまとめる Handler、トークン、許すディレクトリ) と独自のストリーム | どこでも | B2、C1 | 中 | 未着手 (互換のパッケージは単独の `http.Handler` として先にできた: `ai/server/openai`、`ai/server/systemone`) |
+| C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 一部 (3 つを `text.Chatter` と `text.Embedder` の上に移し、`response_format` を足した。`hwnpu-chat serve` が使う。音声の 3 つと `Mount` は残り) |
 | C4 | `ai/server/googlecloud`: Speech-to-Text、Text-to-Speech、Translation v2、Vision の REST | どこでも | C2 | 中 | 未着手 |
 | **D1** | `samples/interpreter`: 同時通訳のサンプル | Mac | C2 | 中 | 一部 (マイク (hwcamera) か録音を読んで、訳した音声を書く形は済み、aix1 と Mac で確認。訳した音声のスピーカーでの再生 (oto) と速さの調整 (`--speed`) も済み。ブラウザのマイクと WebSocket は残り) |
 | D2 | 測定: 日本語の読み上げ、3 つのモデルの同居、1 発話の遅れ | Mac (M3、M1) | B2 | 小 | 未着手 |
@@ -50,14 +50,14 @@
 | G2 | LFM3-Audio の読み上げを AMD の NPU で | aix1 | — | 大 | 済み ([docs/design/audio-models.md](design/audio-models.md)) |
 | G3 | Silero VAD を AMD の機械で (CPU の見込み) | aix1 | F1 | 小 | 未着手 |
 | H1 | 文書: README、CLOUD_AI_COMPATIBILITY、英語版、godoc の例 | どこでも | B3、C2 | 小 | 未着手 |
-| **I1** | 決まった形で答える生成 (JSON Schema、`response_format`) | どこでも、確認は Mac | — | 中 | 未着手 |
+| **I1** | 決まった形で答える生成 (JSON Schema、`response_format`) | どこでも、確認は Mac | — | 中 | 一部 (照らすだけ: `text.Format` が system で伝え、答えの JSON をスキーマと照らして `FormatError`。`/v1/chat/completions` の `response_format`。文法でデコードを縛るのは残り) |
 | I2 | 仕事の API (`/v1/jobs`、`/v1/capabilities`、`/v1/tools`) | どこでも | C2 | 中 | 未着手 |
 | **I3** | A2A の口 (Agent Card、JSON-RPC、SSE、push notification) | どこでも | I2 | 中 | 未着手 |
 | I5 | `hwnpu-mcp`: MCP しか話さない頭脳のための口 | どこでも | I2 | 小 | 未着手 |
 | I4 | 仕事の種類ごとの時間と電力量の目安 | Mac、aix1 | I2 | 小 | 未着手 |
-| **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 一部 (深度、顔、頭の位置は済み、aix1 と Mac で確認。物体、姿勢、切り抜き、OCR、ラベルは残り) |
-| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 一部 (FLUX.2 klein の文からの生成と参照からの編集は済み、aix1 と Mac で確認。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Anima、FLUX.3 klein、Chroma、まとめて描くは残り) |
-| J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 未着手 |
+| **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 一部 (深度 (多視点、空、確信度、法線、点も)、顔、頭の位置、物体、姿勢、切り抜き、OCR、ラベルと埋め込みは済み、aix1 で hwnpu-image の旧版と同じ出力を確認 (app-api.md 2.4 節)。新しい役割の Mac と Intel での確認は残り) |
+| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 済み (FLUX.2 klein の文からの生成と参照からの編集、FLUX.3 klein、Anima、Chroma、`GenerateAll` でまとめて描く。`hwnpu-image generate` はこの上で動き、aix1 で旧版とバイトまで同じ絵。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Mac と Intel の Anima、Chroma、FLUX.3 klein は `ai` を通しては未確認) |
+| J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 一部 (`Music`、`Effect`、`Pitch`、`Notes`、`hwnpu-audio` が上で動く。音楽は 1 秒ごとの流れまで。メトロノームの拍に合わせる形と、鳴らしながら曲調を変える節はまだ) |
 | **J4** | `samples/parallax` の擬似立体: 絵 (Anima のアニメの絵。今はコマンドで作ったファイル) → 深度 → カメラ (hwcamera、または絵のファイル) の顔の位置 → Ebitengine の Kage のシェーダーで描く | aix1、Mac | J1 | 中 | 一部 (深度、頭の追跡、シェーダーは済み。Mac で実物のカメラと窓 (Metal) も確認。絵の生成をライブラリから呼ぶのは残り) |
 | **J4b** | `samples/layers` のレイヤー分割: 絵 → 深度 → 手前の層を切り出す → 塗って FLUX.2 klein に裏を描かせる → その絵の深度 → 次の層、を繰り返して PSD に書く | aix1、Mac | J1、J2 | 中 | 済み (aix1 と Mac で確認。層ごとの深度も持ち、擬似立体のサンプルは窓の横で層に分けて、途中経過と進み具合を窓に出す。分ける処理は `samples/internal/layering`) |
 
@@ -99,7 +99,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
   - `json.MarshalIndent` の map は鍵の順に並ぶので、そのままでよい
 - 合格の条件
   - 小さなモデル (LFM3 の小さい構成、YuNet の ONNX から、Anima の VAE の段の 1 つ) を同じ入力で 2 回変換し、`cache.TreeDigest` が一致するテスト (`internal/mlpackage`、`internal/onnx`、`internal/imagegen/milpart`)
-  - Mac: 1 つのモデルを変換し直し、2 回目の読み込みで hwnpu のキャッシュに当たること (`HWNPU_COREML_TRACE=1`)
+  - Mac: 1 つのモデルを変換し直し、2 回目の読み込みで hwnpu のキャッシュに当たること (`HWNPU_DEV=coreml.trace=1`)
 - 注意: 直したあとの最初の変換は、前の (乱数入りの) 書き出しと別物になる。利用者の機械では一度だけコンパイルし直すことになる。[docs/design/README.md](design/README.md) に書く
 
 ### A2. OpenVINO IR と AMD の書き出しが決定的かを確かめる
@@ -171,7 +171,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### B4. アプリのための Neural Engine のロックの方針
 
-- 今: Core ML のときは、プロセスが生きている間、ファイルのロック (`internal/llm/npulock.go`、`HWNPU_NPU_LOCK=off` で外せる) を持ち続ける。同時通訳のアプリを開いたままにすると、ほかの hwnpu のコマンドやアプリはずっと待つ
+- 今: Core ML のときは、プロセスが生きている間、ファイルのロック (`internal/llm/npulock.go`。外す道はない) を持ち続ける。同時通訳のアプリを開いたままにすると、ほかの hwnpu のコマンドやアプリはずっと待つ
 - ロックの理由 (`npulock.go` のコメント): 2 つのプロセスが同時に Neural Engine を使うと、M1 の Mac が固まった。予測が返らず、Ctrl+C でも kill -9 でもプロセスが終わらず、次のコマンドもその後ろで止まった。ロックを外すのは危ない
 - 決めること (案)
   - ロックはそのまま、プロセスに 1 つとする。その代わり、常駐するアプリには「NPU を手放す」API (`rt.Suspend()` でモデルを閉じてロックを放し、`rt.Resume()` で取り直す) を用意する

@@ -13,8 +13,8 @@ verify program is in [amd-llm.md](amd-llm.md). The cache and the split are in
 |---|---|---|
 | `--draft N` | 8 | tokens per call of the generating program; drafts = N − 1. 0 or 1: off (Q=1) |
 | `--mtp` | `auto` | also draft from the checkpoint's MTP layer when it has one (Qwen3.5); `off`: prompt only |
-| `HWNPU_MTP_DRAFTS` | 2 (`mtpDrafts`) | MTP drafts in a row |
-| `HWNPU_IRON_DRAFTS=0` | | AMD: do not use the verify program |
+| `HWNPU_DEV=mtp.drafts` | 2 (`mtpDrafts`) | MTP drafts in a row |
+| `HWNPU_DEV=iron.drafts=0` | | AMD: do not use the verify program |
 | `--think` / `--no-think` | on, unless the model's `no_think` | let the model think first |
 | `--think-budget N` | 1024 | thinking tokens before it is made to answer; 0: no limit |
 | `--rep` | 1.05 | repetition penalty on the answer's tokens |

@@ -5,26 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vision/siglip"
+	"github.com/shibukawa/hwnpu/internal/imagedev"
 )
 
 // LabelCmd is "hwnpu-image label": zero-shot labels of pictures with SigLIP 2 (google/siglip2-*,
-// Apache-2.0; internal/vision/siglip) on AMD's NPU (exports of tools/amd/iron_siglip2.py) or
-// Apple's Neural Engine (the checkpoint downloaded and converted into Core ML packages on the
-// first run; --backend coreai runs them on Core AI).
+// Apache-2.0; ai/vision's Label) on AMD's NPU (exports of tools/amd/iron_siglip2.py) or Apple's
+// Neural Engine (the checkpoint downloaded and converted into Core AI programs on the first run;
+// --cpu: Core ML packages on the CPU interpreter).
 //
 // Each label is put in --template's sentence ("this is a photo of {}."), and the model gives
 // the probability that the sentence describes the picture: each label on its own (a sigmoid,
@@ -59,27 +55,19 @@ func (c *LabelCmd) Run(ctx context.Context) error {
 	if !strings.Contains(c.Template, "{}") {
 		return fmt.Errorf("--template %q has no {}", c.Template)
 	}
-	m, closeAll, err := openSiglip(ctx, c.Model, c.siglipFlags, lw, logf)
+	m, rt, err := openSiglip(ctx, c.Model, c.siglipFlags, lw, logf)
 	if err != nil {
 		return err
 	}
-	defer closeAll()
-	sentences := make([]string, len(labels))
-	for i, l := range labels {
-		sentences[i] = strings.ReplaceAll(c.Template, "{}", l)
-	}
-	cache := ""
-	if !c.NoCache {
-		cache = siglipCache()
-	}
+	defer rt.Close()
+	defer imagedev.NPUHeld(logf)()
 	console.Running()
-	t0 := time.Now()
-	texts, err := m.CachedTexts(ctx, sentences, cache)
+	cands, err := m.Candidates(ctx, labels, vision.CandidateOptions{Template: c.Template, NoCache: c.NoCache})
 	if err != nil {
 		return err
 	}
-	if d := time.Since(t0); d > 50*time.Millisecond {
-		logf("embedded %d labels in %.2f s (NPU %.2f s)", len(labels), d.Seconds(), m.Times[1].Seconds())
+	if cands.Took > 50*time.Millisecond {
+		logf("embedded %d labels in %.2f s (NPU %.2f s)", len(labels), cands.Took.Seconds(), cands.NPU.Seconds())
 	}
 	enc := json.NewEncoder(os.Stdout)
 	for _, p := range c.Pictures {
@@ -87,35 +75,37 @@ func (c *LabelCmd) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		var e []float32
+		var e *vision.PictureEmbedding
 		start := time.Now()
 		for i := range max(1, c.Repeat) {
 			if i == 1 {
 				start = time.Now() // the first loads the graph
 			}
-			if e, err = m.Image(ctx, img); err != nil {
+			if e, err = m.EmbedPicture(ctx, img); err != nil {
 				return fmt.Errorf("%s: %w", p, err)
 			}
 		}
 		runs := max(1, c.Repeat-1)
 		logf("%s: %.1f ms (input %.1f, NPU %.1f)%s", filepath.Base(p), ms(time.Since(start))/float64(runs),
-			ms(m.Times[0]), ms(m.Times[1]), repeated(c.Repeat))
-		ranked := m.Rank(e, labels, texts)
-		out := []siglip.Label{}
-		for _, l := range ranked {
-			if (c.Top > 0 && len(out) >= c.Top) || l.Score < c.Min {
-				break
-			}
-			out = append(out, l)
+			ms(e.Input), ms(e.NPU), repeated(c.Repeat))
+		out := []labelJSON{}
+		for _, l := range m.Rank(e.Embedding, cands, vision.RankOptions{Top: c.Top, Min: c.Min}) {
+			out = append(out, labelJSON(l))
 		}
 		if err := enc.Encode(struct {
-			File   string         `json:"file"`
-			Labels []siglip.Label `json:"labels"`
+			File   string      `json:"file"`
+			Labels []labelJSON `json:"labels"`
 		}{p, out}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// labelJSON is a label as label prints it, with its score.
+type labelJSON struct {
+	Label string  `json:"label"`
+	Score float64 `json:"score"`
 }
 
 // labels are --labels, --labels-file's, or the default list.
@@ -131,22 +121,22 @@ func (c *LabelCmd) labels() ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, siglip.ParseLabels(string(b))...)
+		out = append(out, vision.ParseLabels(string(b))...)
 	}
 	if len(out) == 0 && (len(c.Labels) > 0 || c.LabelsFile != "") {
 		return nil, errors.New("no labels in --labels or --labels-file")
 	}
 	if len(out) == 0 {
-		out = siglip.DefaultLabels()
+		out = vision.DefaultLabels()
 	}
 	return out, nil
 }
 
 // EmbedCmd is "hwnpu-image embed": embeddings of pictures and texts in SigLIP 2's one space
-// (google/siglip2-*, Apache-2.0; exports of tools/amd/iron_siglip2.py on AMD's NPU, Core ML
-// packages converted on the first run on Apple's Neural Engine), for image
-// search and similarity: the cosine (the dot product: they are normalized) of a picture's and a
-// text's, or of two pictures'.
+// (google/siglip2-*, Apache-2.0; exports of tools/amd/iron_siglip2.py on AMD's NPU, Core AI
+// programs converted on the first run on Apple's Neural Engine), for image search and
+// similarity: the cosine (the dot product: they are normalized) of a picture's and a text's, or
+// of two pictures'.
 //
 // It prints a line of JSON for each picture and each --text: the file or the text, and the
 // embedding. With --compare it prints the cosines of every picture with every text (and of the
@@ -166,29 +156,32 @@ func (c *EmbedCmd) Run(ctx context.Context) error {
 	}
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	m, closeAll, err := openSiglip(ctx, c.Model, c.siglipFlags, lw, logf)
+	m, rt, err := openSiglip(ctx, c.Model, c.siglipFlags, lw, logf)
 	if err != nil {
 		return err
 	}
-	defer closeAll()
+	defer rt.Close()
+	defer imagedev.NPUHeld(logf)()
 	console.Running()
-	var imgs [][]float32
+	var imgs []vision.Embedding
 	for _, p := range c.Pictures {
 		img, err := readPicture(p)
 		if err != nil {
 			return err
 		}
-		e, err := m.Image(ctx, img)
+		e, err := m.EmbedPicture(ctx, img)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
-		imgs = append(imgs, e)
+		imgs = append(imgs, e.Embedding)
 	}
-	var texts [][]float32
+	var texts []vision.Embedding
 	if len(c.Text) > 0 {
-		if texts, err = m.Texts(ctx, c.Text); err != nil {
+		t, err := m.EmbedTexts(ctx, c.Text)
+		if err != nil {
 			return err
 		}
+		texts = t.Embeddings
 	}
 	enc := json.NewEncoder(os.Stdout)
 	if !c.Compare {
@@ -219,13 +212,13 @@ func (c *EmbedCmd) Run(ctx context.Context) error {
 	}
 	for i, p := range c.Pictures {
 		for j, t := range c.Text {
-			if err := enc.Encode(pair{File: p, Text: t, Cosine: siglip.Dot(imgs[i], texts[j]), Score: m.Probability(imgs[i], texts[j])}); err != nil {
+			if err := enc.Encode(pair{File: p, Text: t, Cosine: vision.Cosine(imgs[i], texts[j]), Score: m.Probability(imgs[i], texts[j])}); err != nil {
 				return err
 			}
 		}
 		if len(c.Text) == 0 {
 			for j := i + 1; j < len(c.Pictures); j++ {
-				if err := enc.Encode(pair{File: p, Other: c.Pictures[j], Cosine: siglip.Dot(imgs[i], imgs[j])}); err != nil {
+				if err := enc.Encode(pair{File: p, Other: c.Pictures[j], Cosine: vision.Cosine(imgs[i], imgs[j])}); err != nil {
 					return err
 				}
 			}
@@ -238,7 +231,7 @@ func (c *EmbedCmd) Run(ctx context.Context) error {
 					Text   string  `json:"text"`
 					Other  string  `json:"other"`
 					Cosine float64 `json:"cosine"`
-				}{c.Text[i], c.Text[j], siglip.Dot(texts[i], texts[j])}); err != nil {
+				}{c.Text[i], c.Text[j], vision.Cosine(texts[i], texts[j])}); err != nil {
 					return err
 				}
 			}
@@ -253,83 +246,23 @@ type siglipFlags struct {
 	CPU         bool `name:"cpu" help:"Run the converted programs on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 }
 
-// openSiglip loads SigLIP 2 for --model: on AMD's NPU its export of tools/amd/iron_siglip2.py,
-// on Apple's Neural Engine the Core AI programs siglip.Prepare converts on the first run (the
-// checkpoint downloaded; with --cpu the Core ML packages the CPU interpreter runs), or an export's directory of either. The closer releases it and the
-// device.
-func openSiglip(ctx context.Context, model string, f siglipFlags, lw io.Writer, logf func(string, ...any)) (*siglip.Model, func(), error) {
-	dir := expandHome(model)
-	if !isPath(model) {
-		m, err := resolve(model, chat.KindLabel)
-		if err != nil {
-			return nil, nil, err
-		}
-		format := ""
-		if f.CPU {
-			format = llm.BackendCoreML // what the CPU interpreter runs
-		} else if chat.HereVendor() != "amd" || f.Backend != "" {
-			if format, err = imageFormat(ctx, f.Backend); err != nil && runtime.GOOS == "darwin" {
-				return nil, nil, err
-			}
-		}
-		switch format {
-		case llm.BackendCoreML, llm.BackendCoreAI:
-			if dir, err = siglip.Prepare(chat.WithModel(ctx, m), siglip.Setup{Dir: chat.ModelsDir(), Repo: m.Source(), Name: m.Name, Format: format, Log: lw}); err != nil {
-				return nil, nil, err
-			}
-		case "":
-			if dir, err = amdExport(ctx, m, "tools/amd/iron_siglip2.py", 0); err != nil {
-				return nil, nil, err
-			}
-		default:
-			return nil, nil, fmt.Errorf("SigLIP 2 runs on AMD's NPU and Apple's Neural Engine so far (this machine's NPU takes %s programs)", format)
-		}
+// openSiglip loads SigLIP 2 for --model (ai/vision's Label): on AMD's NPU its export of
+// tools/amd/iron_siglip2.py, on Apple's Neural Engine the Core AI programs converted on the
+// first run (with --cpu the Core ML packages the CPU interpreter runs), or an export's directory
+// of either. The Runtime closes it.
+func openSiglip(ctx context.Context, model string, f siglipFlags, lw io.Writer, logf func(string, ...any)) (*vision.Labeler, *ai.Runtime, error) {
+	useBackend(f.Backend)
+	var how made
+	how.interpreter(f.CPU)
+	name := model
+	if isPath(model) {
+		how.program("export", expandHome(model))
+		name = "label"
 	}
-	x, err := siglip.ReadExport(dir)
+	m, rt, _, err := load(ctx, name, vision.Label, how, lw)
 	if err != nil {
 		return nil, nil, err
 	}
-	var dev *hwnpu.Device
-	switch {
-	case siglip.IsProgramFormat(x.Format) && f.CPU:
-	case siglip.IsProgramFormat(x.Format):
-		d, _, err := llm.OpenDevice(ctx, exportDevice(x.Format, f.Backend), cacheDirOf(""), hwnpu.WithPlacement(hwnpu.PlacementStrict))
-		if err != nil {
-			return nil, nil, err
-		}
-		dev = d
-	default:
-		d, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-		if err != nil {
-			return nil, nil, err
-		}
-		dev = d
-		iron.ShareExport(dir, logf)
-	}
-	closeDev := func() {
-		if dev != nil {
-			dev.Close()
-		}
-	}
-	m, err := siglip.Open(ctx, dev, dir)
-	if err != nil {
-		closeDev()
-		return nil, nil, err
-	}
-	m.Logf = logf
-	logf("%s: SigLIP 2, %dx%d pictures, %d-dimensional embeddings", filepath.Base(dir), m.Config.Image, m.Config.Image, m.Dim())
-	held := func() {}
-	if x.Format == siglip.FormatCoreML && dev != nil {
-		held = npuHeld(logf)
-	}
-	return m, func() {
-		held()
-		m.Close()
-		closeDev()
-	}, nil
-}
-
-// siglipCache is where label embeddings are kept: hwnpu/siglip in the user cache directory.
-func siglipCache() string {
-	return hcache.Sub("siglip")
+	logf("%s: SigLIP 2, %dx%d pictures, %d-dimensional embeddings", filepath.Base(m.Export()), m.ImageSize(), m.ImageSize(), m.Dim())
+	return m, rt, nil
 }

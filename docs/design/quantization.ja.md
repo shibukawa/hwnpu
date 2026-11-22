@@ -173,7 +173,7 @@ codes:
 - `rotkl` を CPU で (milcpu、float32、256 トークン、kmeans-minmax): Qwen3.5-2B の lut8 0.0047 → 0.0033、lut6 0.0560 → 0.0267、lut4 0.6026 → 0.3664。0.8B の lut6 0.0749 → 0.0388。fp16 に丸めても範囲は崩れない
 - lut4 は回しても使えず、今の lut6 に届く lut4 の組み合わせもない (一番近い出力層 lut4 で 0.062)。回転で得るのは lut6 の精度で、速さではない
 - Neural Engine で (`rotkl -ane -per-part 6`、M2、2B、128 トークン、CPU の fp16 と比べる): lut6 0.0537 → **0.0288**。lut8 は 0.0079 → 0.0091 (NE 自身の fp16 の誤差に隠れる)
-- **Apple の Qwen3.5 の lut6 の書き出し (2B) は既定で回す**: `chat.Prepare` は回せるモデルを、Core AI と Core ML で lut6 以下のときだけ回す (書き出しの名前に `-rot`。`HWNPU_ROTATE=0` で回さない、`=1` で lut8 も)。AMD と Intel の書き出しは回さない。Qwen3.6 も回さない (専門家は CPU の MXFP4 で、量子化し直すことになる)。結果と MTP、表の扱いは [Qwen](llm-qwen.ja.md)
+- **Apple の Qwen3.5 の lut6 の書き出し (2B) は既定で回す**: `chat.Prepare` は回せるモデルを、Core AI と Core ML で lut6 以下のときだけ回す (書き出しの名前に `-rot`。`HWNPU_DEV=rotate=0` で回さない、`=1` で lut8 も)。AMD と Intel の書き出しは回さない。Qwen3.6 も回さない (専門家は CPU の MXFP4 で、量子化し直すことになる)。結果と MTP、表の扱いは [Qwen](llm-qwen.ja.md)
 
 ## 失敗の形
 

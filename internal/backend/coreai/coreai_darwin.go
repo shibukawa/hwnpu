@@ -28,6 +28,8 @@ import (
 	"syscall"
 	"unsafe"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/ebitengine/purego"
 
 	"github.com/shibukawa/hwnpu/internal/backend"
@@ -72,10 +74,9 @@ const (
 // above 1.1) overflows there, where the Neural Engine and the GPU are right (docs/design/vision-models.md).
 const UnitsEnv = "HWNPU_COREAI_UNITS"
 
-// CopyEnv names the environment variable that, when set, gives the programs' inputs buffers of
-// the host's, copied into Core AI's arrays at every run, instead of those arrays themselves
-// (graph.AllocInput): for telling what the copies cost, and whether an error is of the arrays.
-const CopyEnv = "HWNPU_COREAI_COPY"
+// HWNPU_DEV=coreai.copy gives the programs' inputs buffers of the host's, copied into Core AI's
+// arrays at every run, instead of those arrays themselves (graph.AllocInput): for telling what
+// the copies cost, and whether an error is of the arrays.
 
 // OnCPU reports whether UnitsEnv asks for the CPU.
 func OnCPU() bool { return os.Getenv(UnitsEnv) == "cpu" }
@@ -246,13 +247,12 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 	return tmp, "main", false, tmp, "", nil
 }
 
-// DropBytecodeEnv set to 1 cuts the bytecode of the compile cache's assets once Core AI's cache
+// HWNPU_DEV=coreai.drop-bytecode cuts the bytecode of the compile cache's assets once Core AI's cache
 // holds their programs: the last resort when the disk runs short (docs/design/apple-coreai.md keeps them by
 // default). The bytecode holds the weights, and Core AI's entry holds them again; Core AI loads a
 // program from its entry by main.hash alone (Chroma1-Flash at 512 x 512: the compile cache 28 ->
 // 15 GB, a DiT group loaded in 0.5 s rather than 6.5 s). When the entry is gone, the program is
 // lowered again from its package, and Core AI compiles it as the first time.
-const DropBytecodeEnv = "HWNPU_COREAI_DROP_BYTECODE"
 
 // PrebuiltEnv set to off makes Core AI compile a program on the device even when a prebuilt one
 // (coreai-build's .aimodelc, Prebuilt) lies beside it.
@@ -554,7 +554,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			// Core AI had an entry that failed to load (aned purged its compiled program when the
 			// disk ran short): dropped and compiled again; e is the first attempt's error
 			msg := goString(e)
-			if os.Getenv("HWNPU_COREAI_DEBUG") != "" {
+			if devenv.On("coreai.debug") {
 				fmt.Fprintf(os.Stderr, "coreai: %s: the cached entry failed (%s), compiled again\n", filepath.Base(src.Path), msg)
 			}
 		}
@@ -578,7 +578,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	if d := entryDir(dir); d != "" {
 		cache.Use(d) // its entry is not removed to make room while this process runs
 	}
-	if stored != "" && os.Getenv(DropBytecodeEnv) == "1" {
+	if stored != "" && devenv.On("coreai.drop-bytecode") {
 		cut(stored) // best effort: an asset left whole only takes more disk
 	}
 	if err := g.describe(dir, fn); err != nil {
@@ -696,7 +696,7 @@ func (g *graph) describe(dir, fn string) error {
 // its step's 73 ms, docs/design/apple-coreai.md). It may be bound to any input of that shape, of this
 // program or another. nil when the shim has no such array for the input (backend.InputAllocator).
 func (g *graph) AllocInput(index int) (backend.Buffer, error) {
-	if caiInputArray == nil || g.h == 0 || os.Getenv(CopyEnv) != "" {
+	if caiInputArray == nil || g.h == 0 || devenv.On("coreai.copy") {
 		return nil, nil
 	}
 	if index < 0 || index >= len(g.args) || g.args[index].Kind != types.ArgInput {

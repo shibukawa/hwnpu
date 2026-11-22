@@ -42,6 +42,7 @@ import (
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/modelscmd"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/mxfp4"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/powerbench"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/prebuild"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/probe"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/report"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/sourcescmd"
@@ -62,6 +63,7 @@ type cli struct {
 	Info       tool           `cmd:"" passthrough:"all" help:"List the NPUs hwnpu can use, and where a model's operations would run (was hwnpuinfo)."`
 	Probe      tool           `cmd:"" passthrough:"all" help:"Measure this machine's NPU with generated LLM-shaped models: speed, size limit, KV cache (was npuprobe)."`
 	Powerbench tool           `cmd:"" passthrough:"all" help:"Measure the power Core ML models draw with macOS powermetrics (was powerbench)."`
+	Prebuild   tool           `cmd:"" passthrough:"all" help:"Compile Core AI programs ahead of time with coreai-build, X.ARCH.aimodelc beside each X.aimodel of an export (macOS, Xcode 27's Metal Toolchain)."`
 	Report     tool           `cmd:"" passthrough:"all" help:"Check every NPU with bundled test models and print a report for an issue (was report)."`
 	Mxfp4      tool           `cmd:"" name:"mxfp4" passthrough:"all" help:"Write a Qwen3.5-MoE checkpoint (Qwen3.6-35B-A3B) with its experts in MXFP4, read a layer at a time from Hugging Face or a directory, for the experts the CPU runs."`
 	Xclbin     tool           `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
@@ -71,7 +73,7 @@ type cli struct {
 
 var mains = map[string]func(){
 	"check": check.Main, "convert": convert.Main, "generate": generate.Main, "formats": formats.Main,
-	"info": info.Main, "irdiff": irdiff.Main, "probe": probe.Main, "powerbench": powerbench.Main, "report": report.Main,
+	"info": info.Main, "irdiff": irdiff.Main, "probe": probe.Main, "powerbench": powerbench.Main, "prebuild": prebuild.Main, "report": report.Main,
 	"xclbin": xclbin.Main, "mxfp4": mxfp4.Main,
 }
 

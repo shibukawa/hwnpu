@@ -24,20 +24,20 @@ import (
 // output, compares each with the same program run on the CPU in float32 (milcpu), and wants the
 // sentence embeddings to agree. It shows where the Neural Engine's fp16 error grows and where a
 // value leaves fp16 (Inf or NaN): without head-scale the last MLP's output (5e4) did, and the
-// embedding's cosine with the CPU's was 0.975. Needs HWNPU_PLAMO_DIR; HWNPU_PLAMO_FORMAT picks
-// the weights (default lut8), HWNPU_PLAMO_HEADSCALE the head-scale, HWNPU_PLAMO_F16 adds the CPU
+// embedding's cosine with the CPU's was 0.975. Needs HWNPU_TEST_PLAMO_DIR; HWNPU_TEST_PLAMO_FORMAT picks
+// the weights (default lut8), HWNPU_TEST_PLAMO_HEADSCALE the head-scale, HWNPU_TEST_PLAMO_F16 adds the CPU
 // with every result rounded to fp16.
 func TestANEPrecision(t *testing.T) {
-	dir := os.Getenv("HWNPU_PLAMO_DIR")
+	dir := os.Getenv("HWNPU_TEST_PLAMO_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_PLAMO_DIR not set")
+		t.Skip("HWNPU_TEST_PLAMO_DIR not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)
 	if err != nil || len(infos) == 0 {
 		t.Skip("no Neural Engine")
 	}
-	format := os.Getenv("HWNPU_PLAMO_FORMAT")
+	format := os.Getenv("HWNPU_TEST_PLAMO_FORMAT")
 	if format == "" {
 		format = "lut8"
 	}
@@ -129,7 +129,7 @@ func TestANEPrecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var r16 map[string]milcpu.Tensor
-	if os.Getenv("HWNPU_PLAMO_F16") != "" {
+	if os.Getenv("HWNPU_TEST_PLAMO_F16") != "" {
 		if r16, err = cp.Run(ins, milcpu.Options{RoundF16: true}); err != nil {
 			t.Fatal(err)
 		}
@@ -243,9 +243,9 @@ func runAll(t *testing.T, dev backend.Device, g backend.Graph, in map[string][]f
 	return res
 }
 
-// paramsFromEnv reads HWNPU_PLAMO_HEADSCALE into the architecture's settings.
+// paramsFromEnv reads HWNPU_TEST_PLAMO_HEADSCALE into the architecture's settings.
 func paramsFromEnv() map[string]string {
-	if v := os.Getenv("HWNPU_PLAMO_HEADSCALE"); v != "" {
+	if v := os.Getenv("HWNPU_TEST_PLAMO_HEADSCALE"); v != "" {
 		return map[string]string{"head-scale": v}
 	}
 	return nil

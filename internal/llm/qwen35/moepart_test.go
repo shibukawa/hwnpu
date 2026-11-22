@@ -9,14 +9,14 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
-// Parts of a real Qwen3.5-MoE (HWNPU_QWEN36_DIR: a checkpoint hwnpu-dev mxfp4 wrote) as Core ML
-// packages in HWNPU_QWEN36_OUT, for tools/coreai/aicheck run to compare on the Neural Engine with
+// Parts of a real Qwen3.5-MoE (HWNPU_TEST_QWEN36_DIR: a checkpoint hwnpu-dev mxfp4 wrote) as Core ML
+// packages in HWNPU_TEST_QWEN36_OUT, for tools/coreai/aicheck run to compare on the Neural Engine with
 // the CPU interpreter: the first part (layer 0 to its router) of one token a call, as hwnpu-chat
 // splits it.
 func TestWriteMoEParts(t *testing.T) {
-	dir, out := os.Getenv("HWNPU_QWEN36_DIR"), os.Getenv("HWNPU_QWEN36_OUT")
+	dir, out := os.Getenv("HWNPU_TEST_QWEN36_DIR"), os.Getenv("HWNPU_TEST_QWEN36_OUT")
 	if dir == "" || out == "" {
-		t.Skip("HWNPU_QWEN36_DIR, HWNPU_QWEN36_OUT")
+		t.Skip("HWNPU_TEST_QWEN36_DIR, HWNPU_TEST_QWEN36_OUT")
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {

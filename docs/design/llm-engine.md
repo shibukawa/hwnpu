@@ -156,7 +156,7 @@ Gemma 4, Qwen3.5, PLaMo 3; Qwen3 only on Core AI), on Core ML, Core AI and Intel
 - `paged.Heads` (Core AI, kv heads ≥ 2; `llm.attentionForm`): queries of a kv head as (1, 1, rows, d),
   scores laid out (1, rows, 1, keys), scale on the queries, max and sum over the last axis with `reduce_sum`.
   5–26% faster per call (M1). With 1 kv head (Gemma 4 E2B, PLaMo 3 0.8B) it leaves the Neural Engine, so
-  those stay `grouped`. `HWNPU_ATTENTION=grouped` forces the old form for comparison.
+  those stay `grouped`. `HWNPU_DEV=attention=grouped` forces the old form for comparison.
 - `llm.RefreshAttention` rewrites the attention programs of an older export (`Manifest.AttnForm`); weight
   parts stay. `chat.Prepare` calls it after `AddMass`.
 - The mass program (`paged.BuildMass`) stays `grouped`.

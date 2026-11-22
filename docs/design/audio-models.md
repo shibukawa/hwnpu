@@ -72,7 +72,7 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 ### Accuracy
 
 - Encoder fp16 vs fp32 cosine 0.9978. Layers 20–21 make attention-sink values (~300) at silent positions; tiny input errors move which positions become sinks. HF in fp16 shows the same (0.9978), so it is fp16 itself, not the NE. Speech positions are right and transcripts unchanged.
-- To check NE numerics: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`, `HWNPU_WHISPER_REF`, `HWNPU_WHISPER_ENCODERS`, `HWNPU_WHISPER_LAYER` with `-layers N`), NE vs Core ML CPU vs HF.
+- To check NE numerics: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`, `HWNPU_TEST_WHISPER_REF`, `HWNPU_TEST_WHISPER_ENCODERS`, `HWNPU_TEST_WHISPER_LAYER` with `-layers N`), NE vs Core ML CPU vs HF.
 - Formats (turbo, M3): LibriSpeech dummy (73 clips, 481 s) WER: HF fp32 4.43 %, fp16 4.43 %, lut8 4.43 %, lut6 4.87 %. Japanese (48 `say` clips) CER: 3.60 / 3.60 / 3.74 / 3.94 %. **Default lut8.**
 - AMD: random-input encoder vs IRON reference cosine 0.9999 (8 layers) → 0.99 (32 layers), but real speech transcribes right; 88.3 s English in 3 windows, same text and cuts.
 
@@ -206,7 +206,7 @@ Numbers:
 - M1 (h13) fixes: `sin` goes to the GPU; clip fused into elementwise ("NEFUSED_EW: EW: MAX") and the subtraction of constant-scaled inputs ("KernelPreScales") are rejected; stage 3 at 4998 frames "unexpected failure", 4500 works. The same export is used on M3.
 - Check placement offline: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine`, then `manifest.plist` `mps.fullyPlacedOnANE`; reasons in `/usr/bin/log show --predicate 'process == "coreai-build"'` (zsh's `log` is a builtin).
 - Core ML export (`--cpu` only) uses plain `sin`; Intel keeps the older fp16 series and `(v + 1536) − 1536` rounding with an input constant.
-- Reference pitfall: the `runner` CPU path computes in fp32 unless `HWNPU_CPU_F16=1`, so fp16 rounding tricks do nothing there. Decide the reference's precision first (aicheck runs milcpu with `RoundF16`).
+- Reference pitfall: the `runner` CPU path computes in fp32 unless `HWNPU_DEV=cpu.f16=1`, so fp16 rounding tricks do nothing there. Decide the reference's precision first (aicheck runs milcpu with `RoundF16`).
 
 ### AMD (`iron_moss_sfx.py`, `iron_moss_dac.py`, `sfx.AMDExportVersion` 2)
 

@@ -11,10 +11,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/server/systemone"
+	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/systemone"
+	sysone "github.com/shibukawa/hwnpu/internal/systemone"
 )
 
 // SystemOneCmd is "hwnpu-chat systemone": typed questions about a state answered by a d1
@@ -57,7 +58,6 @@ type SystemOneCmd struct {
 	Listen  string `placeholder:"ADDR" help:"Serve POST /v1/systemone at this address (127.0.0.1:8080) instead of answering one request."`
 	Seq     string `default:"512" placeholder:"N,..." help:"Prompt lengths of the programs converted, comma separated: a prompt runs on the shortest that holds it."`
 	Format  string `placeholder:"FORMAT" help:"Weight format of the d1 model's programs (default: lut8)."`
-	Cache   string `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	Models  string `placeholder:"FILES" help:"${models_usage}."`
 	CPU     bool   `name:"cpu" help:"Run on the CPU interpreter instead of the Neural Engine (slow; for checking)."`
 
@@ -74,60 +74,95 @@ type SystemOneCmd struct {
 // Run answers the request or serves.
 func (c *SystemOneCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	lw := logw()
-	lf := loadFlags{Cache: c.Cache, Models: c.Models}
-	if err := lf.prepare(); err != nil {
-		return err
-	}
 	if c.Listen != "" && c.Request != "" {
 		return errors.New("--listen serves; it takes no request")
 	}
-	var cfg systemone.Config
-	if c.Package != "" {
-		if c.Checkpoint == "" && (c.Config == "" || c.Weights == "") {
-			return errors.New("--package needs --checkpoint (or --config and --weights)")
-		}
-		if c.Config == "" {
-			c.Config = filepath.Join(c.Checkpoint, "config.json")
-		}
-		if c.Weights == "" {
-			c.Weights = filepath.Join(c.Checkpoint, "model.safetensors")
-		}
-		cfg = systemone.Config{Packages: split(c.Package), ModelConfig: c.Config, Weights: c.Weights}
-	} else {
-		seqs, err := parseInts(c.Seq)
-		if err != nil {
-			return fmt.Errorf("--seq: %w", err)
-		}
-		m, err := chat.ResolveFor(c.Model, chat.KindDecision, lw)
-		if err != nil {
-			return err
-		}
-		backend := ""
-		if !c.CPU { // the CPU interpreter runs Core ML packages
-			if backend, err = llm.NativeFormat(ctx, lf.Backend); err != nil {
-				return err
-			}
-		}
-		if cfg, err = systemone.Prepare(ctx, systemone.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Seqs: seqs, Format: c.Format, Backend: backend, Log: lw}); err != nil {
-			return err
-		}
-		cfg.Name = m.Name
-	}
-	cfg.Tokenizer, cfg.Calibration, cfg.CacheDir, cfg.CPU, cfg.Log, cfg.Backend = c.Tokenizer, c.Calibration, lf.Cache, c.CPU, lw, lf.Backend
-	cfg.Vision, cfg.Audio = split(c.Vision), split(c.Audio)
-	m, err := systemone.Load(ctx, cfg)
+	lf := loadFlags{Models: c.Models}
+	st, cat, err := lf.prepare(ctx)
 	if err != nil {
 		return err
 	}
-	defer m.Close()
+	u, defs, err := c.use(cat)
+	if err != nil {
+		return err
+	}
+	st.Definitions = defs
+	app := ai.NewApp("hwnpu-chat", u)
+	app.Store = st
+	rt, err := open(ctx, app)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	d, err := u.Get(ctx, rt)
+	if err != nil {
+		return err
+	}
 	if c.Listen != "" {
-		return serveSystemOne(ctx, stop, &systemone.Server{M: m, Name: m.Name, Log: lw}, c.Listen, m.MaxTokens())
+		return serveSystemOne(ctx, stop, &systemone.Server{D: d, Log: lw}, c.Listen, d.MaxTokens())
 	}
 	console.Running() // a server's or a conversation's times are not of the command's work
-	return answerSystemOne(ctx, m, c.Request)
+	return answerSystemOne(ctx, d, c.Request)
 }
 
-func answerSystemOne(ctx context.Context, m *systemone.Model, path string) error {
+// use is the use of the decision model --model names, as the flags make it: a model of its own
+// for --seq, --format, --cpu and the programs converted by hand.
+func (c *SystemOneCmd) use(cat *ai.Catalog) (ai.Use[*text.Decider], []ai.Definition, error) {
+	u, defs, err := useFor(cat, text.Decide(c.Model))
+	if err != nil {
+		return u, nil, err
+	}
+	if _, err := parseInts(c.Seq); err != nil {
+		return u, nil, fmt.Errorf("--seq: %w", err)
+	}
+	d := ai.Definition{Like: u.Name()}
+	set, ps := map[string]string{}, map[string][]string{}
+	if c.Seq != ints(sysone.DefaultSeqs) {
+		set["seqs"] = c.Seq
+	}
+	if c.Format != "" {
+		set["format"] = c.Format
+	}
+	if c.CPU {
+		d.Device = "cpu"
+	}
+	if c.Package != "" {
+		if c.Checkpoint == "" && (c.Config == "" || c.Weights == "") {
+			return u, nil, errors.New("--package needs --checkpoint (or --config and --weights)")
+		}
+		config, weights := c.Config, c.Weights
+		if config == "" {
+			config = filepath.Join(c.Checkpoint, "config.json")
+		}
+		if weights == "" {
+			weights = filepath.Join(c.Checkpoint, "model.safetensors")
+		}
+		ps["packages"], ps["config"], ps["weights"] = absolutes(c.Package), []string{absolute(config)}, []string{absolute(weights)}
+	}
+	for name, v := range map[string]string{"tokenizer": c.Tokenizer, "calibration": c.Calibration} {
+		if v != "" {
+			ps[name] = []string{absolute(v)}
+		}
+	}
+	if c.Vision != "" {
+		ps["vision"] = absolutes(c.Vision)
+	}
+	if c.Audio != "" {
+		ps["audio"] = absolutes(c.Audio)
+	}
+	if len(set) > 0 {
+		d.Settings = set
+	}
+	if len(ps) > 0 {
+		d.Programs = ps
+	}
+	if d.Settings == nil && d.Programs == nil && d.Device == "" {
+		return u, defs, nil
+	}
+	return text.Decide(d.ID()), append(defs, d), nil
+}
+
+func answerSystemOne(ctx context.Context, d *text.Decider, path string) error {
 	var raw []byte
 	var err error
 	if path == "" || path == "-" {
@@ -138,20 +173,12 @@ func answerSystemOne(ctx context.Context, m *systemone.Model, path string) error
 	if err != nil {
 		return err
 	}
-	req, err := systemone.ParseRequest(raw)
-	if err != nil {
-		return err
-	}
-	res, err := m.Decide(ctx, req)
-	if err != nil {
-		return err
-	}
-	b, err := json.Marshal(res)
+	res, err := d.Decide(ctx, raw)
 	if err != nil {
 		return err
 	}
 	var out bytes.Buffer
-	json.Indent(&out, b, "", "  ")
+	json.Indent(&out, res.JSON, "", "  ")
 	out.WriteByte('\n')
 	_, err = os.Stdout.Write(out.Bytes())
 	return err
@@ -164,7 +191,7 @@ func serveSystemOne(ctx context.Context, stop context.CancelFunc, s *systemone.S
 		stop() // as ServeCmd.Run: Ctrl-C is how serving ends
 		srv.Close()
 	}()
-	fmt.Fprintf(os.Stderr, "serving %s (prompts up to %d tokens) at http://%s/v1/systemone\n", s.Name, maxTokens, addr)
+	fmt.Fprintf(os.Stderr, "serving %s (prompts up to %d tokens) at http://%s/v1/systemone\n", s.D.Name(), maxTokens, addr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

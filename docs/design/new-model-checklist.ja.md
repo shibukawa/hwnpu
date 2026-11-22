@@ -428,6 +428,8 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 | `file` | 1 つのリポジトリに何本もあるときのチェックポイントのファイル | ファイルの一覧 | テンソルの名前の頭が違うことがある |
 | `device` | 会社ごとの動く場所 | NPU と CPU で 1 回の電力量 | 小さなモデルは AMD の NPU で負ける (YuNet 137 mJ に対し 10 mJ) |
 
+Apple の画像モデルの Core AI の `bytes` には、いちばん大きいチップ向けのプリビルトを足す。
+
 - **受け入れの要るライセンス** (`license: {id, url, terms, accept: true}`): 端末で 1 回聞き、`~/.config/hwnpu/licenses.json` に残す。端末がなければ `--accept-license` / `HWNPU_ACCEPT_LICENSE`
 - **NPU で違う値**: 会社ごとの表 (`memory: {amd: 3.5, apple: 4.1}`)。チップの名前も書ける (`M1: 1.7`)。表にない会社は最大の値
 - **用途はファミリーと同じくメモリで選ぶ**: 用途の `picks` にファミリーと同じ段を

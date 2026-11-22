@@ -42,13 +42,13 @@ type moe struct {
 	host *experts.Host
 	bias map[int][]float32
 
-	// what the experts took, for HWNPU_MOE_DEBUG: the chain's runs, the rows a layer's experts
+	// what the experts took, for HWNPU_DEV's moe.time: the chain's runs, the rows a layer's experts
 	// ran on, their time and the time of the calls alone
 	Runs, Calls  int
 	Time, Called time.Duration
 }
 
-// report prints what the experts took with HWNPU_MOE_DEBUG.
+// report prints what the experts took with HWNPU_DEV's moe.time.
 func (m *moe) report() {
 	if m == nil || m.Calls == 0 || !experts.DebugTime() {
 		return

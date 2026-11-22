@@ -19,9 +19,9 @@ import (
 // Runs growing prefixes of conv layer 0 on the Neural Engine in fp16 and compares each with a
 // float32 computation here, to find the operation that loses precision.
 func TestConvPieces(t *testing.T) {
-	dir := os.Getenv("HWNPU_LFM3_DIR")
+	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_LFM3_DIR not set")
+		t.Skip("HWNPU_TEST_LFM3_DIR not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)

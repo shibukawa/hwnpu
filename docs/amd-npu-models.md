@@ -610,7 +610,7 @@ q8 と同じブロックと並びで符号を 6 ビット (−31〜31) にした
 
 ### 下書きを確かめる版 (`--verify`、2026-11-08)
 
-`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。AMD の NPU の hwnpu-chat はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン ([docs/design/amd-llm.ja.md](design/amd-llm.ja.md))。デコードが速くなった現在、確認 1 回は 0.8B で 1.96 ステップ、2B で 1.67 ステップ分で、全部確かめると散文は下書きなしより遅い。そこで hwnpu-chat は当たりそうな下書き (長く一致した後のもの) だけ確かめる (`chat.draftPolicy`; `HWNPU_DRAFT_POLICY=0` で全部確かめる)。`HWNPU_DRAFT_RATIO` で確認の費用を変え、`HWNPU_DRAFT_TRACE=FILE` で判断を記録する。温度 0 でも下書きなしとありで文が違うことがある (原因は未調査)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_IRON_DRAFTS=0` で使わない。
+`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。AMD の NPU の hwnpu-chat はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン ([docs/design/amd-llm.ja.md](design/amd-llm.ja.md))。デコードが速くなった現在、確認 1 回は 0.8B で 1.96 ステップ、2B で 1.67 ステップ分で、全部確かめると散文は下書きなしより遅い。そこで hwnpu-chat は当たりそうな下書き (長く一致した後のもの) だけ確かめる (`chat.draftPolicy`; `HWNPU_DEV=draft.policy=0` で全部確かめる)。`HWNPU_DEV=draft.ratio` で確認の費用を変え、`HWNPU_DEV=draft.trace=FILE` で判断を記録する。温度 0 でも下書きなしとありで文が違うことがある (原因は未調査)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_DEV=iron.drafts=0` で使わない。
 
 #### Qwen3.6-35B-A3B (`tools/amd/qwen36_gptq.py`、2026-11-08)
 
@@ -738,7 +738,7 @@ Sana はプロンプトの前に毎回同じ指示文 (diffusers の complex_hum
 
 ### 14.7 VAE: タップごとの行列積と、同じ形の段をまとめる (2026-11-10)
 
-1 枚 20 秒のうち VAE が 13 秒だった。段 9 (1024² × 128 チャネルの ResBlock 1 つ、1.15 秒) を、演算ごとにコマンドを分けた計測用の書き出し (`IRON_SANA_PROFILE=1`、`HWNPU_IRON_TIMING=1`) で分けると、im2col の写しが 63 % (733 ms)、行列積 21 %、後処理 8 %、格子への写し 8 %。写しは連続する長さが 3C (768 バイト) の細かい DMA で、6.8 GB/s しか出ていなかった。
+1 枚 20 秒のうち VAE が 13 秒だった。段 9 (1024² × 128 チャネルの ResBlock 1 つ、1.15 秒) を、演算ごとにコマンドを分けた計測用の書き出し (`IRON_SANA_PROFILE=1`、`HWNPU_DEV=iron.timing=1`) で分けると、im2col の写しが 63 % (733 ms)、行列積 21 %、後処理 8 %、格子への写し 8 %。写しは連続する長さが 3C (768 バイト) の細かい DMA で、6.8 GB/s しか出ていなかった。
 
 - **タップごとの行列積** (`--vae-conv taps`、既定): 格子は「チャネルが最後、行に Wp 画素」なので、3 × 3 の各タップの入力は格子の連続した行の範囲になる。タップごとに行列積 (K = C) をして 9 個を足す。im2col の写し (格子の 9 倍) がなくなる。64 行ずつで、塊ごとにコマンドを分ける (制御コードをデバイスのヒープ 64 MiB に)。段 9 は 1.15 → 0.76 秒。行列積に足し込む出口処理はない (活性化だけ) ので、足し算 8 回が残る (塊あたり約 7 ms)。偶奇で重みを変える拡大 (チャネルを半分にする 3 つ) は im2col のまま。im2col の上限を 64 → 256 MiB にするだけでは 9 % しか速くならない (演算の切り替えの回数は主ではない)
 - **同じ形の段をまとめる**: 段 9〜11 (ResBlock 3 つ) と段 3〜4 (EfficientViT 2 つ) を 1 つの段に (13 → 10 段)。パイプラインの中では、次の段の読み込み (重みと大きな格子の確保) が重なって実行が 0.76 → 1.1 秒に遅くなっていたので、読み込みが減るぶん効く。ブロックの間でコマンドを分ける。格子の状態は使い終わったら返して同じ形の次の格子に使い (`free_grid`)、2 つ目以降の ResBlock は入力の格子に上書きする (2 つ目の畳み込みは x を近道の足し算で同じ行しか読まない)。上書きしないと格子 1 枚 (260 MiB) 分だけ固定の最大が増えた (2409 → 2670 MiB)
@@ -1345,7 +1345,7 @@ OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説�
 ```bash
 python tools/amd/iron_moss_sfx.py ~/models/MOSS-SoundEffect-v2.0 ~/models/moss-soundeffect-v2.0.amd-npu2   # --text q8、--check、--groups 1、--only dac
 go run ./tools/amd/irongraph ~/models/moss-soundeffect-v2.0.amd-npu2/dit-blocks-0
-HWNPU_SFX_AMD=~/models/moss-soundeffect-v2.0.amd-npu2 HWNPU_SFX_CPU_DAC=DIR_OF_MLPACKAGES go test ./internal/sfx -run TestAMDDAC -v
+HWNPU_TEST_SFX_AMD_EXPORT=~/models/moss-soundeffect-v2.0.amd-npu2 HWNPU_TEST_SFX_CPU_DAC_DIR=DIR_OF_MLPACKAGES go test ./internal/sfx -run TestAMDDAC -v
 go run ./cmd/hwnpu-audio generate -m sfx --duration 5s "A dog barking loudly in a park."
 ```
 

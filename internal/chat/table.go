@@ -81,6 +81,19 @@ func UserModelsFile() string {
 // the ones before. Warnings (an override of a model none defines, a newer version's keys) go to
 // log.
 func LoadModels(files []string, user bool, log io.Writer) error {
+	return LoadModelsWith(files, nil, user, log)
+}
+
+// Definitions is a definition file given as its text, not a path: Name names it in messages
+// and in a model's Files.
+type Definitions struct {
+	Name string
+	YAML []byte
+}
+
+// LoadModelsWith is LoadModels with the definitions of texts read over all the files, in order
+// (an app's models made from flags: ai.Definition).
+func LoadModelsWith(files []string, texts []Definitions, user bool, log io.Writer) error {
 	t := newTable(log)
 	if err := t.add(Builtin, hwnpu.ModelsYAML, true); err != nil {
 		return err
@@ -111,6 +124,11 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 			if err := t.add(p, raw, false); err != nil {
 				return err
 			}
+		}
+	}
+	for _, d := range texts {
+		if err := t.add(d.Name, d.YAML, false); err != nil {
+			return err
 		}
 	}
 	catalog, categories, aliases, err := t.build()
@@ -220,10 +238,18 @@ type modelEntry struct {
 	// each target reads (amd-xdna2, apple, coreai-ARCH), which hwnpu-dev models hf push writes
 	// (docs/prebuilt.md 5.1). A file over another changes the repositories and targets it
 	// names and keeps the others.
-	Hub    *map[string]map[string]string `yaml:"hub"`
-	About  *string                       `yaml:"about"`
-	Like   string                        `yaml:"like"`
-	Remove bool                          `yaml:"remove"`
+	Hub   *map[string]map[string]string `yaml:"hub"`
+	About *string                       `yaml:"about"`
+	// Settings are how the model's role prepares and runs it, by name, beyond the fields above
+	// (a speech model's format, a chat model's draft): what a command's flags give, written as a
+	// model of its own (ai.Definition). Each role reads the names it knows.
+	Settings *map[string]string `yaml:"settings"`
+	// Programs are files converted beforehand (by hand, hwnpu-dev convert, or an export of
+	// IRON), by the name the model's role reads them as: the role uses them as they are and
+	// converts nothing of them.
+	Programs *map[string][]string `yaml:"programs"`
+	Like     string               `yaml:"like"`
+	Remove   bool                 `yaml:"remove"`
 
 	// hubFiles are the files that wrote each repository of Hub, by its order (the last: read first).
 	hubFiles map[string]hubOrigin
@@ -665,11 +691,15 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 		return nil, err
 	}
 	out := *base
-	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
-	out.Hub, out.hubFiles = e.Hub, e.hubFiles    // nor are its conversions
+	out.Tag, out.Like = nil, ""
+	if e.From != nil {
+		out.SHA256 = nil // the files of another repository are not the base's
+	}
+	out.Hub, out.hubFiles = e.Hub, e.hubFiles // nor are its conversions
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
 		Memory: e.Memory, Bytes: e.Bytes, Disk: e.Disk, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
-		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
+		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn,
+		Settings: e.Settings, Programs: e.Programs})
 	return &out, nil
 }
 
@@ -840,6 +870,23 @@ func toModel(name string, e *modelEntry) (Model, error) {
 				}
 			}
 			m.NPU[vendor] = spec
+		}
+	}
+	if e.Settings != nil {
+		m.Settings = maps.Clone(*e.Settings)
+	}
+	if e.Programs != nil {
+		m.Programs = map[string][]string{}
+		for k, ps := range *e.Programs {
+			if k == "" || len(ps) == 0 {
+				return m, fmt.Errorf("model %s: programs %q names no files", name, k)
+			}
+			for _, p := range ps {
+				if !filepath.IsAbs(p) {
+					return m, fmt.Errorf("model %s: programs %s: %q is not an absolute path", name, k, p)
+				}
+			}
+			m.Programs[k] = slices.Clone(ps)
 		}
 	}
 	run, err := toRun(e.RunEntry)

@@ -10,19 +10,19 @@ import (
 
 // TestWhisper checks Whisper's tokenizer (a ByteLevel pre-tokenizer with GPT-2's pattern)
 // against the ids Hugging Face gave (testdata/whisper-large-v3-turbo.json, from
-// tools/ref/tokenizer_golden.py). It needs HWNPU_WHISPER_DIR with tokenizer.json;
-// HWNPU_WHISPER_GOLDEN names another golden file (one with --random cases).
+// tools/ref/tokenizer_golden.py). It needs HWNPU_TEST_WHISPER_DIR with tokenizer.json;
+// HWNPU_TEST_WHISPER_TOKENS_REF names another golden file (one with --random cases).
 func TestWhisper(t *testing.T) {
-	dir := os.Getenv("HWNPU_WHISPER_DIR")
+	dir := os.Getenv("HWNPU_TEST_WHISPER_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_WHISPER_DIR not set")
+		t.Skip("HWNPU_TEST_WHISPER_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	golden := "testdata/whisper-large-v3-turbo.json"
-	if g := os.Getenv("HWNPU_WHISPER_GOLDEN"); g != "" {
+	if g := os.Getenv("HWNPU_TEST_WHISPER_TOKENS_REF"); g != "" {
 		golden = g
 	}
 	raw, err := os.ReadFile(golden)

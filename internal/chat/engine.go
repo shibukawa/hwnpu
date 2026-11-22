@@ -141,7 +141,7 @@ type Engine struct {
 
 	ir *iron.Model // the model of an IRON export (Config.IRON); nil for none
 	// irUsage counts the experts an IRON mixture of experts runs, added to the files irUsageTo
-	// (Config.Experts.Usage, HWNPU_MOE_DEBUG's usage=FILE) when the engine closes
+	// (Config.Experts.Usage, HWNPU_DEV's moe.usage=FILE) when the engine closes
 	irUsage   *experts.Usage
 	irUsageTo []string
 	store     *store    // prompts kept on disk (Config.PromptDir); nil for none
@@ -1531,7 +1531,7 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 	return logits, nil
 }
 
-// waveOff is HWNPU_MOE_DEBUG's wave=0: a prompt's steps one after another, for measuring.
+// waveOff is HWNPU_DEV's moe.wave=0: a prompt's steps one after another, for measuring.
 var waveOff = func() bool { v, _ := experts.DebugOpt("wave"); return v == "0" }()
 
 // steps runs the tokens as steps of ks tokens each, read together (decode.Session.Steps), records

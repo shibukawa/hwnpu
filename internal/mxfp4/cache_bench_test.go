@@ -7,11 +7,11 @@ import (
 )
 
 // TestDotCache times Dot on one core over rows that stay in the cache (1 MB of them, again and
-// again) and over rows that do not (256 MB, once through), HWNPU_MXFP4's bench=cache: what the
+// again) and over rows that do not (256 MB, once through), HWNPU_DEV's mxfp4.bench=cache: what the
 // kernel does, and what reading the weights from memory leaves of it.
 func TestDotCache(t *testing.T) {
 	if v, _ := Opt("bench"); v != "cache" {
-		t.Skip("HWNPU_MXFP4=bench=cache")
+		t.Skip("HWNPU_DEV=mxfp4.bench=cache")
 	}
 	r := rand.New(rand.NewPCG(1, 2))
 	for _, c := range []struct{ rows, cols int }{{1024, 2048}, {262144, 2048}, {2048, 512}, {1048576, 512}} {

@@ -315,13 +315,13 @@ func TestRoute(t *testing.T) {
 	}
 }
 
-// With the real tokenizer (HWNPU_PLAMO_DIR holds tokenizer.model), a query's tokens are the BOS
+// With the real tokenizer (HWNPU_TEST_PLAMO_DIR holds tokenizer.model), a query's tokens are the BOS
 // and the tokenizer's tokens of the instruction and the text together, and the mean starts
 // exactly at the text.
 func TestPlamoQueryTokens(t *testing.T) {
-	dir := os.Getenv("HWNPU_PLAMO_DIR")
+	dir := os.Getenv("HWNPU_TEST_PLAMO_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_PLAMO_DIR is not set")
+		t.Skip("HWNPU_TEST_PLAMO_DIR is not set")
 	}
 	tok, err := tokenizer.LoadSentencePiece(filepath.Join(dir, "tokenizer.model"))
 	if err != nil {

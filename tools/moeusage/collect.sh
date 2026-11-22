@@ -21,6 +21,6 @@ while IFS=$'\t' read -r cat prompt; do
   [ -z "$cat" ] && continue
   case $cat in \#*) continue ;; esac
   i=$((i + 1))
-  line=$(HWNPU_MOE_DEBUG="usage=$out/$cat.bin" "$bin" chat -m "$model" --experts-key off -n "$tokens" --seed "$i" --prompt-cache off "$prompt" 2>&1 >/dev/null </dev/null | grep -a -o -E 'hwnpu-chat: error.*|\[prompt [0-9]+ tokens.*' | tail -1)
+  line=$(HWNPU_DEV="moe.usage=$out/$cat.bin" "$bin" chat -m "$model" --experts-key off -n "$tokens" --seed "$i" --prompt-cache off "$prompt" 2>&1 >/dev/null </dev/null | grep -a -o -E 'hwnpu-chat: error.*|\[prompt [0-9]+ tokens.*' | tail -1)
   echo "$i $cat $line"
 done < "$here/prompts.tsv"
