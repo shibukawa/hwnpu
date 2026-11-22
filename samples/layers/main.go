@@ -68,6 +68,10 @@ var cmds struct {
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	go func() { // the first Ctrl-C stops the work and ends; a second ends at once
+		<-ctx.Done()
+		stop()
+	}()
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("layers"),
@@ -127,7 +131,7 @@ type PlanCmd struct {
 }
 
 func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}
@@ -193,7 +197,7 @@ type SplitCmd struct {
 }
 
 func (c *SplitCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error {
-	rt, err := app.Open(ctx, konghelper.AutoPrepare())
+	rt, err := konghelper.Open(ctx, app)
 	if err != nil {
 		return err
 	}

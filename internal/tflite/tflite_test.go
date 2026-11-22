@@ -58,12 +58,12 @@ func run(t *testing.T, m *Model, ins ...*onnx.Tensor) []float64 {
 	return out[m.OutputValues[0]].F
 }
 
-// MusicCoCa's TFLite models (HWNPU_MUSICCOCA, their directory) evaluated on the host give the
-// reference's embedding, mapped embedding and codes (HWNPU_MUSICCOCA_REF, mcc_ref.py's prefix).
+// MusicCoCa's TFLite models (HWNPU_TEST_MUSICCOCA_DIR, their directory) evaluated on the host give the
+// reference's embedding, mapped embedding and codes (HWNPU_TEST_MUSICCOCA_REF, mcc_ref.py's prefix).
 func TestMusicCoCa(t *testing.T) {
-	dir, ref := os.Getenv("HWNPU_MUSICCOCA"), os.Getenv("HWNPU_MUSICCOCA_REF")
+	dir, ref := os.Getenv("HWNPU_TEST_MUSICCOCA_DIR"), os.Getenv("HWNPU_TEST_MUSICCOCA_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_MUSICCOCA and HWNPU_MUSICCOCA_REF are not set")
+		t.Skip("HWNPU_TEST_MUSICCOCA_DIR and HWNPU_TEST_MUSICCOCA_REF are not set")
 	}
 	load := func(name string) *Model {
 		m, err := Load(filepath.Join(dir, name))

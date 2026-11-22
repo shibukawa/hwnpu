@@ -193,7 +193,7 @@ plan.Target()          // coreai, intel, amd-xdna2; "" when no NPU here runs the
 ```
 
 - `Ready`: the files and programs are in the store, and the model loads without the network
-- `Compiled`: the model was loaded once on this machine's NPU (its programs are compiled)
+- `Compiled`: this program (by its executable's name: Core AI keeps its compile cache by the process's name) loaded the model once on this machine's NPU, and ran every program it has (`ai.Warmer`: the picture model draws a picture of one step at each size), so that its next load takes them from the cache in a second. The Runtime runs no use that is not compiled (`ai.ErrNotPrepared`): nothing compiles while the app runs
 - `Download` is models.yaml's `bytes`, the most there is to download. When a source has the converted programs, the checkpoint is not downloaded
 
 ### 4.2 Preparing has two stages
@@ -237,7 +237,7 @@ app.Store = ai.Store{
 ## 5. Running
 
 ```go
-rt, err := app.Open(ctx)            // ai.WithLog(w), ai.WithAutoPrepare(fn) or ai.WithConsole(), ai.WithAcceptedLicenses()
+rt, err := app.Open(ctx)            // ai.WithLog(w), ai.WithLoading(fn)
 defer rt.Close()
 
 t, err := stt.Get(ctx, rt)          // loads at the first call (under a second to tens of seconds); the same one after
@@ -246,7 +246,7 @@ err = stt.Release(rt)               // unloads it and frees its memory; the next
 rt.Loaded()                         // the models held now: use, model, memory, how long loading took
 ```
 
-- **It touches no network and converts nothing.** A use that is not prepared is `ai.ErrNotPrepared`. With `ai.WithAutoPrepare(fn)` the first `Get` prepares it, as the commands do; that may download gigabytes. `ai.WithConsole()` does the same and shows it on the terminal as hwnpu's commands do: a line for each model, the downloads', conversions' and first compile's bars redrawn in place, their logs in gray (`Plan.Log` takes such a writer for `Plan.Run`; `ai.Console()` is it). An app's commands open their Runtime with it (`konghelper.AutoPrepare()`), and `APP models prepare` shows its work the same way
+- **It touches no network, converts and compiles nothing.** A use that is not prepared, or not compiled for this program, is `ai.ErrNotPrepared`: `APP models prepare` (`Plan.Run`) makes them all ready ahead, so that a user never waits on a download or a compile while the app runs, which they could not tell from the app being slow. An app's commands open their Runtime with `konghelper.Open(ctx, app)`, which fails before the command starts, naming the models that are not ready and saying to run `APP models prepare` (`konghelper.Ready` checks alone, before `app.Run`). `Plan.Run` shows its work as hwnpu's commands do, on standard error unless `Plan.Log` says where: on a terminal a line for each stage of each model with a spinner and a stopwatch, the downloads' and programs' bars over it while they go, the logs in gray, and the time of it all; elsewhere a line as each stage begins and ends. `Plan.Brief` leaves out the logs, `Plan.Quiet` shows nothing; the callback is told it all either way (`Progress.Message` has the logs' lines), for an app that shows it its own way. An app with a window of its own adds `ai.WithLoading(fn)`: `fn` gets each model a `Get` loads (`ai.Progress`, `StageLoad` then `StageDone`), with `Since` and `Expected`, how long its load took the last time on this machine (kept in the store), so that the window can show a time and a bar instead of looking still
 - **After `APP models prepare` a run needs no network and compiles nothing.** A role whose programs depend on the input (YuNet's sizes, DA3's aspects) makes them all at its Prepare, and its model is an `ai.Warmer`: the load of `models prepare` calls `Warm`, which loads each once to compile it. A role that changes what its Prepare makes raises its `Revision`, and a store prepared by an earlier one counts as not prepared
 - **A store whose record is not what is picked now counts as not prepared.** When the use was prepared as another model (the app's line-up changed, or the machine's memory setting did), the old one is not loaded in its place
 - **Loads run one at a time.** Each model runs one request at a time (others wait). Different models may be called at the same time
@@ -258,7 +258,7 @@ rt.Loaded()                         // the models held now: use, model, memory, 
 
 | Error | When | What to do |
 |---|---|---|
-| `ai.ErrNotPrepared` | The use is not prepared, is prepared as another model, or its files are gone | `plan.Run`, or `WithAutoPrepare` |
+| `ai.ErrNotPrepared` | The use is not prepared, is prepared as another model, or its files are gone | `plan.Run` (`APP models prepare`) |
 | `ai.ErrBundleTarget` | What `Store.Prepared` has is for another NPU alone, or in a format that is not read | Ship what was prepared for that NPU, or prepare on the machine |
 | `*ai.LicenseError` | A license that asks to be accepted was not | Get the agreement, then `plan.AcceptLicenses` |
 | `flow.ErrEmpty` | A stream ended without a chunk (`Held.Wait`) | — |
@@ -1067,7 +1067,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 - Before: `ai/aicli` gave kong structs alone
 - **Not decided**: adapters for other libraries (cobra and the like). They would add to the module's dependencies, so they would be modules of their own
 
-**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. `ai/vision`, `ai/imagegen`. Planned: `ai/sound`.
+**D18. The packages' names and split** — now: `ai`, `ai/speech`, `ai/text`, `ai/flow`, `ai/cli`, `ai/cli/konghelper`. `ai/vision`, `ai/imagegen`, `ai/sound`.
 
 - **Not decided**: the name `ai` (hard to change once it is public); `speech` holding both speech to text and text to speech; the name `text` (easily confused beside the standard library's `text/...`)
 
@@ -1107,8 +1107,8 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 ## 11. Not there yet
 
 - Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); the picture models other than FLUX.2 klein (Anima, Chroma, FLUX.3 klein into `ai/imagegen`; for now they are drawn with the command, `hwnpu-image generate`)
-- Sound: music, sound effects, pitch, notes (`ai/sound`)
-- Moving the commands: making `hwnpu-audio`, `hwnpu-chat` and `hwnpu-image` only call this library
+- Sound: music made on the beat of a metronome, and a style that changes while it plays (`ai/sound` has music as a stream, sound effects, pitch and notes)
+- Moving the commands: making `hwnpu-chat` and `hwnpu-image` only call this library (`hwnpu-audio` does)
 - Managing what stays loaded (D9, D10), a local server (OpenAI compatible and others), bundles to ship, build tags
 - Their order and details are in [app-api-tasks.md](app-api-tasks.md)
 

@@ -43,6 +43,9 @@ func (p *progSized) close() error {
 // converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
 	if !llm.FetchExport(ctx, d, d+".done") { // here, or from the shared layers
+		if err := llm.MayConvert(ctx, d); err != nil {
+			return nil, err
+		}
 		if e.Logf != nil {
 			e.Logf("depth: converting %dx%d (the first picture of this aspect)", w, h)
 		}
@@ -235,6 +238,9 @@ func ConvertSizes(ctx context.Context, dir string, log io.Writer) error {
 		d := filepath.Join(dir, fmt.Sprintf("%dx%d", sz[0], sz[1]))
 		if llm.FetchExport(ctx, d, d+".done") {
 			continue
+		}
+		if err := llm.MayConvert(ctx, d); err != nil {
+			return err
 		}
 		if log != nil {
 			fmt.Fprintf(log, "depth: converting %dx%d\n", sz[0], sz[1])

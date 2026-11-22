@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +12,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/server/openai"
+	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -29,67 +31,69 @@ type serverFlags struct {
 	embedFlags
 }
 
-// server loads the models of --model into a chat.Server.
-func (f *serverFlags) server(ctx context.Context) (*chat.Server, error) {
-	if err := f.prepare(); err != nil {
-		return nil, err
+// server loads the models of --model into the OpenAI API's server (ai/server/openai), on the
+// Runtime returned, which the caller closes.
+func (f *serverFlags) server(ctx context.Context) (*openai.Server, *ai.Runtime, error) {
+	st, cat, err := f.loadFlags.prepare(ctx)
+	if err != nil {
+		return nil, nil, err
 	}
-	srv := &chat.Server{Think: f.Think == nil || *f.Think, ThinkBudget: f.ThinkBudget, Defaults: f.sampling(), Log: logw(), Dump: f.Dump}
-	fail := func(err error) (*chat.Server, error) {
-		closeServer(srv)
-		return nil, err
-	}
-	seen := map[string]bool{}
+	var (
+		chats  []ai.Use[*text.Chatter]
+		embeds []ai.Use[*text.Embedder]
+		defs   []ai.Definition
+		kept   []chatModel
+	)
 	for _, name := range split(f.Model) {
 		name = strings.TrimSpace(name)
-		var m chat.Model
 		if !isPath(name) {
-			var err error
-			if m, err = chat.Resolve(ctx, name, logw()); err != nil {
-				return fail(err)
-			}
-			if seen[m.Name] {
+			if m, err := cat.Find(name, text.Embed(name)); err == nil && m.Kind == string(chat.KindEmbed) {
+				if len(embeds) > 0 && f.EmbedPackage != "" {
+					return nil, nil, errors.New("--embed-package is for one embedding model; --model names several")
+				}
+				u, d, err := embedUse(cat, name, &f.embedFlags)
+				if err != nil {
+					return nil, nil, err
+				}
+				embeds, defs = append(embeds, u), append(defs, d...)
 				continue
 			}
-			seen[m.Name] = true
 		}
-		if m.Kind == chat.KindEmbed {
-			if len(srv.Embedders) > 0 && f.EmbedPackage != "" {
-				return fail(errors.New("--embed-package is for one embedding model; --model names several"))
-			}
-			e, err := loadEmbedder(ctx, m, &f.loadFlags, &f.embedFlags)
-			if err != nil {
-				return fail(err)
-			}
-			srv.Embedders = append(srv.Embedders, e)
-			continue
+		if len(chats) > 0 && (f.Package != "" || f.Config != "" || f.Weights != "" || f.Tokenizer != "" || f.Vision != "" || f.AudioEncoder != "") {
+			return nil, nil, errors.New("--package, --config, --weights, --tokenizer, --vision and --audio-encoder are for one chat model; --model names several")
 		}
-		if len(srv.Chats) > 0 && (f.Package != "" || f.Config != "" || f.Weights != "" || f.Tokenizer != "" || f.Vision != "" || f.AudioEncoder != "") {
-			return fail(errors.New("--package, --config, --weights, --tokenizer, --vision and --audio-encoder are for one chat model; --model names several"))
-		}
-		if !isPath(name) && !strings.Contains(name, "/") {
-			name = m.Name // picked once (a family or a use logs what it picks)
-		}
-		f.loadFlags.ExpertsKey = cmp.Or(f.loadFlags.ExpertsKey, "serve")
-		e, err := loadChat(ctx, name, &f.loadFlags, &f.convertFlags, &f.encoderFlags)
+		cm, err := chatModelOf(cat, name, &f.convertFlags, &f.encoderFlags)
 		if err != nil {
-			return fail(err)
+			return nil, nil, err
 		}
-		if f.Think != nil {
-			e.NoThink = false // --think or --no-think says it for every model
-		}
-		srv.Chats = append(srv.Chats, e.Engine)
+		chats, defs, kept = append(chats, cm.chat), append(defs, cm.defs...), append(kept, cm)
 	}
-	return srv, nil
-}
-
-func closeServer(s *chat.Server) {
-	for _, e := range s.Chats {
-		e.Close()
+	st.Definitions = defs
+	app := ai.NewApp("hwnpu-chat")
+	for _, u := range chats {
+		app.Use(u)
 	}
-	for _, e := range s.Embedders {
-		e.Close()
+	for _, u := range embeds {
+		app.Use(u)
 	}
+	app.Store = st
+	rt, err := open(ctx, app, options(&f.loadFlags, &f.convertFlags, "serve")...)
+	if err != nil {
+		return nil, nil, err
+	}
+	s, err := openai.Load(ctx, rt, chats, embeds)
+	if err != nil {
+		rt.Close()
+		return nil, nil, err
+	}
+	prepared(rt)
+	for _, cm := range kept {
+		cm.keep()
+	}
+	s.Think, s.ThinkBudget, s.Log, s.Dump = f.Think, f.budget(), logw(), f.Dump
+	sm := f.sampling()
+	s.Sampling = &sm
+	return s, rt, nil
 }
 
 // ServeCmd is "hwnpu-chat serve": the OpenAI compatible API, chat completions for the chat models
@@ -101,11 +105,11 @@ type ServeCmd struct {
 
 // Run loads the models and serves until Ctrl-C.
 func (c *ServeCmd) Run(ctx context.Context, stop context.CancelFunc) error {
-	s, err := c.server(ctx)
+	s, rt, err := c.server(ctx)
 	if err != nil {
 		return err
 	}
-	defer closeServer(s)
+	defer rt.Close()
 	srv := &http.Server{Addr: c.Listen, Handler: s.Handler()}
 	go func() {
 		<-ctx.Done()
@@ -114,10 +118,10 @@ func (c *ServeCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	}()
 	var what []string
 	for _, e := range s.Chats {
-		what = append(what, fmt.Sprintf("%s (chat, context %d tokens)", e.Name, e.Context()))
+		what = append(what, fmt.Sprintf("%s (chat, context %d tokens)", e.Name(), e.Context()))
 	}
 	for _, e := range s.Embedders {
-		what = append(what, fmt.Sprintf("%s (embeddings, up to %d tokens)", e.Name, e.MaxTokens()))
+		what = append(what, fmt.Sprintf("%s (embeddings, up to %d tokens)", e.Name(), e.MaxTokens()))
 	}
 	fmt.Fprintf(os.Stderr, "serving %s at http://%s/v1\n", strings.Join(what, " and "), c.Listen)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -138,13 +142,13 @@ type OpenCodeCmd struct {
 
 // Run serves and runs OpenCode, and exits with its code.
 func (c *OpenCodeCmd) Run(ctx context.Context, stop context.CancelFunc) error {
-	s, err := c.server(ctx)
+	s, rt, err := c.server(ctx)
 	if err != nil {
 		return err
 	}
 	stop()
-	code, err := openCode(s, c.Listen, openCodeDir(c.Cache), c.Bin, c.openCodeArgs())
-	closeServer(s)
+	code, err := openCode(s, c.Listen, openCodeDir(cache.Root()), c.Bin, c.openCodeArgs())
+	rt.Close()
 	if err != nil {
 		return err
 	}
@@ -170,60 +174,65 @@ type SearchCmd struct {
 
 // Run loads the model and searches.
 func (c *SearchCmd) Run(ctx context.Context, stop context.CancelFunc) error {
-	if err := c.prepare(); err != nil {
-		return err
-	}
-	m, err := chat.Resolve(ctx, c.Model, logw())
+	st, cat, err := c.loadFlags.prepare(ctx)
 	if err != nil {
 		return err
 	}
-	if m.Kind != chat.KindEmbed {
-		return fmt.Errorf("%s is a %s model, not an embedding model", m.Name, m.Kind)
-	}
-	e, err := loadEmbedder(ctx, m, &c.loadFlags, &c.embedFlags)
+	u, defs, err := embedUse(cat, c.Model, &c.embedFlags)
 	if err != nil {
 		return err
 	}
-	defer e.Close()
+	st.Definitions = defs
+	app := ai.NewApp("hwnpu-chat", u)
+	app.Store = st
+	rt, err := open(ctx, app)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	e, err := u.Get(ctx, rt)
+	if err != nil {
+		return err
+	}
 	stop()
 	return search(e)
 }
 
 // search is the interactive search by embeddings.
-func search(e *chat.Embedder) error {
+func search(e *text.Embedder) error {
 	type doc struct {
 		text string
 		v    []float32
 	}
 	var docs []doc
 	console.Notef("%s: %d dimensions, up to %d tokens a text. Each input is a document to search; ?TEXT searches them, /list shows them, /reset clears them, /exit (or Ctrl-D) quits\n",
-		e.Name, e.Dim(), e.MaxTokens())
+		e.Name(), e.Dim(), e.MaxTokens())
 	ed := console.NewEditor("search")
 	for {
-		text, ok := read(ed)
+		line, ok := read(ed)
 		if !ok {
 			return nil
 		}
 		query := false
 		switch {
-		case text == "":
+		case line == "":
 			continue
-		case text == "/exit" || text == "/quit":
+		case line == "/exit" || line == "/quit":
 			return nil
-		case text == "/reset":
+		case line == "/reset":
 			docs = docs[:0]
 			console.Notef("[documents cleared]\n")
 			continue
-		case text == "/list":
+		case line == "/list":
 			for i, d := range docs {
 				fmt.Printf("%3d  %s\n", i+1, oneLine(d.text))
 			}
 			continue
-		case strings.HasPrefix(text, "?") || strings.HasPrefix(text, "？"):
+		case strings.HasPrefix(line, "?") || strings.HasPrefix(line, "？"):
 			query = true
-			text = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "?"), "？"))
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "?"), "？"))
 		}
-		r, err := e.Embed(context.Background(), text, query, true)
+		r, err := e.Embed(context.Background(), line, text.EmbedOptions{Query: query, Truncate: true})
 		if err != nil {
 			printError(err)
 			continue
@@ -233,8 +242,8 @@ func search(e *chat.Embedder) error {
 			cut = fmt.Sprintf(", cut to %d", e.MaxTokens())
 		}
 		if !query {
-			docs = append(docs, doc{text, r.Vector})
-			console.Notef("[document %d: %d tokens%s in %.2fs]\n", len(docs), r.Tokens, cut, r.Time.Seconds())
+			docs = append(docs, doc{line, r.Vector})
+			console.Notef("[document %d: %d tokens%s in %.2fs]\n", len(docs), r.Tokens, cut, r.Took.Seconds())
 			continue
 		}
 		if len(docs) == 0 {
@@ -244,13 +253,13 @@ func search(e *chat.Embedder) error {
 		order := make([]int, len(docs))
 		sim := make([]float64, len(docs))
 		for i, d := range docs {
-			order[i], sim[i] = i, chat.Cosine(r.Vector, d.v)
+			order[i], sim[i] = i, text.Cosine(r.Vector, d.v)
 		}
 		sort.SliceStable(order, func(a, b int) bool { return sim[order[a]] > sim[order[b]] })
 		for _, i := range order[:min(len(order), 10)] {
 			fmt.Printf("%.3f  %3d  %s\n", sim[i], i+1, oneLine(docs[i].text))
 		}
-		console.Notef("[query: %d tokens%s in %.2fs]\n", r.Tokens, cut, r.Time.Seconds())
+		console.Notef("[query: %d tokens%s in %.2fs]\n", r.Tokens, cut, r.Took.Seconds())
 	}
 }
 
@@ -272,8 +281,7 @@ type ListCmd struct {
 
 // Run lists the models.
 func (c *ListCmd) Run(ctx context.Context) error {
-	lf := loadFlags{Models: c.Models}
-	if err := lf.prepare(); err != nil {
+	if _, err := store(c.Models).Catalog(); err != nil { // the definitions, as the commands read them
 		return err
 	}
 	showModels(os.Stdout, chat.OnlyAMD(ctx, ""))
@@ -307,7 +315,7 @@ func showModels(w io.Writer, amd bool) {
 		"architecture; serve takes several, comma separated. The default is LFM3-1.7B (search: embedding).\n"+
 		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
 		"On AMD's NPU a name runs its export, NAME.amd-npu2-q4 (-q6, or none for bf16) in %s or ~/models;\n"+
-		"the first run takes it from the sources (hwnpu-dev cache sources), else downloads the checkpoint\n"+
+		"the first run takes it from the sources (hwnpu-dev sources), else downloads the checkpoint\n"+
 		"and makes it with IRON (tools/amd/iron_export_lm.py, %s, INSTALL_AMD.md).\n"+
 		"Models are kept in %s (HWNPU_CACHE moves it).\n", shortPath(chat.AMDRoot()), chat.IRONEnv, shortPath(cache.Root()))
 }

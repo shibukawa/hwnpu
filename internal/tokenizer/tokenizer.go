@@ -57,6 +57,10 @@ const (
 	//
 	//	's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
 	gpt2
+	// gpt2Digits is a Digits pre-tokenizer with individual_digits, then GPT-2's pattern on each
+	// piece (SmolLM's and Ouro's): every number character a piece of its own, the pattern applied
+	// to the runs between them.
+	gpt2Digits
 	// o200k is o200k_harmony's (gpt-oss): letter runs split at case, a contraction joined to the
 	// run, numbers in threes, and '/' after a run of other characters:
 	//
@@ -96,6 +100,8 @@ type file struct {
 			Invert    bool   `json:"invert"`
 			AddPrefix bool   `json:"add_prefix_space"`
 			UseRegex  bool   `json:"use_regex"`
+			// of a Digits pre-tokenizer
+			IndividualDigits bool `json:"individual_digits"`
 		} `json:"pretokenizers"`
 	} `json:"pre_tokenizer"`
 	Model struct {
@@ -163,10 +169,20 @@ func parse(raw []byte) (*Tokenizer, error) {
 		}
 		return t, nil
 	}
+	if pt.Type == "Sequence" && len(pt.Pretokenizers) == 2 &&
+		pt.Pretokenizers[0].Type == "Digits" && pt.Pretokenizers[0].IndividualDigits &&
+		pt.Pretokenizers[1].Type == "ByteLevel" && pt.Pretokenizers[1].UseRegex && !pt.Pretokenizers[1].AddPrefix {
+		t := newTokenizer(&f)
+		t.style, t.nfc = gpt2Digits, nfc
+		if err := t.readMerges(&f); err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
 	if pt.Type != "Sequence" || len(pt.Pretokenizers) != 2 ||
 		pt.Pretokenizers[0].Type != "Split" || pt.Pretokenizers[0].Behavior != "Isolated" || pt.Pretokenizers[0].Invert || !knownPattern(pt.Pretokenizers[0].Pattern.Regex) ||
 		pt.Pretokenizers[1].Type != "ByteLevel" || pt.Pretokenizers[1].AddPrefix || pt.Pretokenizers[1].UseRegex {
-		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4, Qwen3, Qwen3.5 or o200k pattern, isolated) then ByteLevel without prefix space")
+		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4, Qwen3, Qwen3.5 or o200k pattern, isolated) or individual Digits, then ByteLevel without prefix space")
 	}
 	t := newTokenizer(&f)
 	t.style, t.nfc = patterns[pt.Pretokenizers[0].Pattern.Regex], nfc
@@ -407,6 +423,24 @@ func split(text string) []string { return splitStyle(text, gpt4) }
 func splitStyle(text string, st style) []string {
 	rs := []rune(text)
 	var out []string
+	if st == gpt2Digits {
+		// each number character alone, GPT-2's pattern on the runs between them (the end of a
+		// run is the end of the text for its \s+(?!\S))
+		for i := 0; i < len(rs); {
+			if isN(rs[i]) {
+				out = append(out, string(rs[i]))
+				i++
+				continue
+			}
+			j := i
+			for j < len(rs) && !isN(rs[j]) {
+				j++
+			}
+			out = append(out, splitStyle(string(rs[i:j]), gpt2)...)
+			i = j
+		}
+		return out
+	}
 	for i := 0; i < len(rs); {
 		n := match(rs, i, st)
 		out = append(out, string(rs[i:i+n]))

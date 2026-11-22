@@ -18,7 +18,7 @@
 | `hwnpu-image` | `generate`、`depth`、`face-detect`、`pose`、`detect`、`ocr`、`label`、`embed`、`segment`、`convert`、`list` | 画像の生成と視覚のモデル |
 | `hwnpu-audio` | `generate` (音楽。`-m sfx` で効果音)、`tts`、`transcribe`、`pitch`、`notes`、`list` | `list` は music、sfx、speech、transcribe、pitch、notes |
 | `hwnpud` | `serve` (既定)、`install`、`uninstall`、`status`、`stop` | NPU とモデルを持つユーザーごとのプロセス。`hwnpu-chat` は `HWNPU_DAEMON=on` でこれを通る ([hwnpud](hwnpud.ja.md)) |
-| `hwnpu-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`prebuild`、`report`、`mxfp4`、`xclbin`、`cache` | 開発用。利用者向けではない |
+| `hwnpu-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`report`、`mxfp4`、`xclbin`、`models` (`fetch`、`package`、`push`、`hf`)、`sources` (`list`、`ls`、`import`、`update`、`verify`、`gc`) | 開発用。利用者向けではない |
 
 - 音楽と効果音は同じ `hwnpu-audio generate`: 違うのはモデルだけで、出力 (48 kHz ステレオの WAV、スピーカー) も
   表示も同じ。音楽だけのフラグ (`--codes`、`--continue`、`--notes`) を効果音のモデルに付けるとエラー
@@ -37,8 +37,27 @@
 - モデルの定義に任せるだけのフラグはポインタにする (`Tier *string`、`Think *bool`)。与えていないことと空の値を分ける
 - `hwnpu-dev` は `passthrough:"all"` の kong の殻: 道具ごとに `cmd/hwnpu-dev/NAME` のパッケージで `Main` を持ち、
   標準の `flag` のフラグのまま。`os.Args` と `flag.CommandLine` を差し替えて `Main` を呼ぶ。`probe` は自分を
-  子プロセスで起動するので、`probe.ChildArgs` (`["probe"]`) を前に付ける。`hwnpu-dev cache` は普通の kong の
+  子プロセスで起動するので、`probe.ChildArgs` (`["probe"]`) を前に付ける。`hwnpu-dev models` は普通の kong の
   サブコマンド
+- `hwnpu-dev models` は、手元、取得元、Hugging Face にあるモデルの変換を扱うものをまとめる。コマンドとフラグはどの
+  OS でも同じで、裏で動く処理が違う。変換は取得元のフォルダ (`converted/MODEL/TARGET`) と同じく `MODEL/TARGET`
+  で呼ぶ: `amd-xdna2`、`coreai` (汎用の `.aimodel` の書き出し)、`coreai-ARCH` (Neural Engine の世代 `h14g` などに
+  コンパイルしたもの。`coreai-all` で全部)。`fetch` が持ってきて、`package` が作り、`push` は手で作ったものを取得元に
+  置く (`package` が作ったものは自分で置かれる)。その OS にないものが要るコマンドは、そう言って止まる
+  (`coreai-ARCH` は macOS の `coreai-build` が要る)。`package MODEL[/TARGET]` は、その対象でのアプリの初回と同じに
+  モデルを用意する (`airole.Role.Prepare`。ロールはモデルの種類から `airole.For` で探す)。どの機械でもよい:
+  プログラムは変換するか取得元から取り、読み込まない。作ったものは書き戻す取得元に置く。Core AI の書き出しは
+  M1 だけがチップで違うので、`coreai` は M1 として、また M2 として作る (`chat.ExportChips`、`chat.ActAsChip`)。
+  `--chip` と `--memory` で絞る。`coreai-ARCH` は、そうして作った書き出しを続けてコンパイルする (`coreai.Build`)。
+  Core AI の書き出しのフォルダ (`DIR[/coreai-ARCH]`) を渡すと、それだけをコンパイルする。`fetch MODEL[/TARGET]` は同じ準備を、何も変換せずに走らせる
+  (`llm.WithFetchOnly`)。手元にも取得元にもないものは、変換を始めるところ (`llm.MayConvert`。`StartExport` /
+  `StartProgram`、chat の `convert` と `convertShared`、表、`SharedExportOr`、画像の書き出し) で止めて一覧に出す。
+  チェックポイントも持ってくる (取得元のロックが挙げるファイル。なければチャットのモデルの config、トークナイザ、
+  重み。`--no-checkpoint` で外す)。あとでそのモデルで変換を試せるように。
+- `hwnpu-dev sources` は取得元の保守: `list` (引数なしでもこれ。根と効いている取得元)、`ls`、`import` (手で作った
+  フォルダ)、`update` (ロックを新しいコミットへ)、`verify`、`gc`。書き戻しが切れて残したものは `hwnpu cache clean`。
+  前の名前の `hwnpu-dev cache` と `hwnpu-dev prebuild` は 2026-11-22 に外した。`flush` (どのコマンドもキューを待つ)、
+  `gc --orphans`、`migrate` (NAS は移し終えた) も
 - `hwnpu-dev report` は利用者に issue のために頼む実機の確認: テスト用モデルを `internal/fixtures` から埋め込む
   (Core ML が実ファイルを要するので一時ディレクトリに書き出す)。同じ計算 (64×512 · 512×512 + バイアス + ReLU) を
   Core ML と OpenVINO IR で持ち、ベンダー間で比べる。NPU の許容誤差は絶対値 0.05 と相対値 2 % (fp16 の誤差は

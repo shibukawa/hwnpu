@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/daemon"
@@ -40,7 +42,102 @@ func (c *ChatCmd) runThrough(ctx context.Context, stop context.CancelFunc, cl *d
 	if c.Think != nil {
 		think = *c.Think
 	}
-	return c.converse(remote{c: cl, info: info}, think)
+	t := &talker{
+		c:           remoteChatter{remote{c: cl, info: info}},
+		think:       think,
+		thinkBudget: c.ThinkBudget,
+		maxNew:      c.N,
+		s:           c.sampling(),
+		seed:        c.Seed,
+		tr:          text.TranslateOptions{To: c.To, From: c.From, Form: c.Form},
+	}
+	return c.converse(t)
+}
+
+type remoteChatter struct{ remote }
+
+func (r remoteChatter) Images() bool     { return r.info.Images }
+func (r remoteChatter) Audio() bool      { return r.info.Audio }
+func (r remoteChatter) Translates() bool { return r.info.Translator }
+
+func (r remoteChatter) Reply(ctx context.Context, msgs []text.Message, o text.ChatOptions, show func(text.Delta) bool) (text.Answer, error) {
+	in := make([]chat.Message, 0, len(msgs))
+	for _, m := range msgs {
+		content := chat.Content{Text: m.Text}
+		for _, media := range m.Media {
+			content.Media = append(content.Media, daemonMedia(media))
+		}
+		if len(m.Parts) > 0 {
+			content.Text = ""
+			content.Media = nil
+			for _, part := range m.Parts {
+				if part.Media != nil {
+					content.Text += chat.MediaMarker
+					content.Media = append(content.Media, daemonMedia(*part.Media))
+				} else {
+					content.Text += part.Text
+				}
+			}
+		} else if len(content.Media) > 0 {
+			content.Text = strings.Repeat(chat.MediaMarker, len(content.Media)) + content.Text
+		}
+		var reasoning *string
+		if m.Reasoning != "" {
+			reasoning = &m.Reasoning
+		}
+		in = append(in, chat.Message{Role: m.Role, Content: content, Reasoning: reasoning})
+	}
+	var translation *chat.Translation
+	if o.Translation != nil {
+		translation = &chat.Translation{TargetLang: o.Translation.To, SourceLang: o.Translation.From, Form: o.Translation.Form}
+	}
+	think := true
+	if o.Think != nil {
+		think = *o.Think
+	}
+	maxNew := o.MaxTokens
+	if maxNew < 0 {
+		maxNew = 0
+	}
+	thinkBudget := o.ThinkBudget
+	if thinkBudget < 0 {
+		thinkBudget = 0
+	}
+	sampling := text.DefaultSampling
+	if o.Sampling != nil {
+		sampling = *o.Sampling
+	}
+	msg, stats, err := r.remote.replyWith(ctx, in, turn{
+		think: think, thinkBudget: thinkBudget, maxNew: maxNew,
+		s:    chat.Sampling{Temperature: sampling.Temperature, TopK: sampling.TopK, TopP: sampling.TopP, Repetition: sampling.Repetition},
+		seed: o.Seed, tr: translation,
+	}, func(reasoning, content string) {
+		if show != nil {
+			show(text.Delta{Reasoning: reasoning, Text: content})
+		}
+	})
+	var reasoning string
+	if msg.Reasoning != nil {
+		reasoning = *msg.Reasoning
+	}
+	return text.Answer{Text: msg.Content.Text, Reasoning: reasoning, Stats: text.Stats{
+		Prompt: stats.prompt, Reused: stats.reused, Generated: stats.generated,
+		Prefill: stats.prefill, Decode: stats.decode, Drafted: stats.drafted, Accepted: stats.accepted,
+		Seed: stats.seed, ThinkCut: stats.thinkCut, ThinkLooped: stats.thinkLooped, Looped: stats.looped,
+	}}, err
+}
+
+func daemonMedia(media text.Media) chat.Media {
+	data := media.URL
+	if data == "" {
+		encoded := base64.StdEncoding.EncodeToString(media.Data)
+		if media.Audio {
+			data = encoded
+		} else {
+			data = "data:" + http.DetectContentType(media.Data) + ";base64," + encoded
+		}
+	}
+	return chat.Media{Audio: media.Audio, Data: data}
 }
 
 // notThroughDaemon are the flags given that hwnpud does not take: those of where the models are
@@ -54,7 +151,6 @@ func (c *ChatCmd) notThroughDaemon() []string {
 	}
 	lf, cf, ef := c.loadFlags, c.convertFlags, c.encoderFlags
 	add(lf.Backend != "", "--backend")
-	add(lf.Cache != "", "--cache")
 	add(lf.PromptCache != "", "--prompt-cache")
 	add(lf.Idle != 5*time.Minute, "--idle")
 	add(lf.ExpertsKey != "", "--experts-key")
@@ -155,6 +251,10 @@ type streamChunk struct {
 }
 
 func (r remote) reply(ctx context.Context, msgs []chat.Message, o turn, out *printer) (chat.Message, turnStats, error) {
+	return r.replyWith(ctx, msgs, o, out.write)
+}
+
+func (r remote) replyWith(ctx context.Context, msgs []chat.Message, o turn, write func(string, string)) (chat.Message, turnStats, error) {
 	kwargs := map[string]any{"enable_thinking": o.think}
 	if o.tr != nil {
 		kwargs["target_lang"], kwargs["source_lang"], kwargs["form"] = o.tr.TargetLang, o.tr.SourceLang, o.tr.Form
@@ -210,7 +310,7 @@ func (r remote) reply(ctx context.Context, msgs []chat.Message, o turn, out *pri
 		for _, c := range ch.Choices {
 			reasoning.WriteString(c.Delta.Reasoning)
 			content.WriteString(c.Delta.Content)
-			out.write(c.Delta.Reasoning, c.Delta.Content)
+			write(c.Delta.Reasoning, c.Delta.Content)
 		}
 		if u := ch.Usage; u != nil {
 			st.prompt, st.reused, st.generated = u.PromptTokens, u.Details.Cached, u.CompletionTokens

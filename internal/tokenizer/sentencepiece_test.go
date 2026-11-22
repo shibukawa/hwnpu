@@ -125,12 +125,12 @@ func TestSentencePieceRejects(t *testing.T) {
 }
 
 // TestPlamoEmbedding checks PLaMo-Embedding-1B's tokenizer against the ids Hugging Face gave
-// (testdata/plamo-embedding-1b.json, from tools/ref/tokenizer_golden.py). It needs HWNPU_PLAMO_DIR
+// (testdata/plamo-embedding-1b.json, from tools/ref/tokenizer_golden.py). It needs HWNPU_TEST_PLAMO_DIR
 // with tokenizer.model.
 func TestPlamoEmbedding(t *testing.T) {
-	dir := os.Getenv("HWNPU_PLAMO_DIR")
+	dir := os.Getenv("HWNPU_TEST_PLAMO_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_PLAMO_DIR not set")
+		t.Skip("HWNPU_TEST_PLAMO_DIR not set")
 	}
 	tk, err := LoadSentencePiece(filepath.Join(dir, "tokenizer.model"))
 	if err != nil {

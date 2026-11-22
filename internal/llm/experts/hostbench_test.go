@@ -13,7 +13,7 @@ import (
 )
 
 // TestHostTokenTime times a generated token's experts (one row, 4 of 32 a layer, every layer) on
-// gpt-oss-20b's checkpoint (HWNPU_GPTOSS_CKPT), the experts picked at random.
+// gpt-oss-20b's checkpoint (HWNPU_TEST_GPTOSS_CKPT_DIR), the experts picked at random.
 func TestHostTokenTime(t *testing.T) {
 	h, r := openGptOss(t)
 	defer h.Close()
@@ -23,9 +23,9 @@ func TestHostTokenTime(t *testing.T) {
 	}
 	out := [][]float32{make([]float32, 2880)}
 	w := [][]float32{{0.25, 0.25, 0.25, 0.25}}
-	// HWNPU_GPTOSS_GAP: a pause between layers (the Neural Engine's part of a step), not timed
+	// HWNPU_TEST_GPTOSS_GAP: a pause between layers (the Neural Engine's part of a step), not timed
 	var gap time.Duration
-	if v := os.Getenv("HWNPU_GPTOSS_GAP"); v != "" {
+	if v := os.Getenv("HWNPU_TEST_GPTOSS_GAP"); v != "" {
 		gap, _ = time.ParseDuration(v)
 	}
 	for pass := range 3 {
@@ -51,14 +51,14 @@ func TestHostTokenTime(t *testing.T) {
 	}
 }
 
-// TestHostRowsTime times a prompt chunk's experts (HWNPU_GPTOSS_ROWS rows, 128 by default, 4 of
+// TestHostRowsTime times a prompt chunk's experts (HWNPU_TEST_GPTOSS_ROWS rows, 128 by default, 4 of
 // 32 each, every layer), after every page is touched.
 func TestHostRowsTime(t *testing.T) {
 	h, r := openGptOss(t)
 	defer h.Close()
 	h.warm.Wait()
 	n := 128
-	if v := os.Getenv("HWNPU_GPTOSS_ROWS"); v != "" {
+	if v := os.Getenv("HWNPU_TEST_GPTOSS_ROWS"); v != "" {
 		fmt.Sscan(v, &n)
 	}
 	x, out, idx, w := make([][]float32, n), make([][]float32, n), make([][]int, n), make([][]float32, n)
@@ -70,7 +70,7 @@ func TestHostRowsTime(t *testing.T) {
 		w[i] = []float32{0.25, 0.25, 0.25, 0.25}
 	}
 	layers := 24
-	if v := os.Getenv("HWNPU_GPTOSS_LAYERS"); v != "" {
+	if v := os.Getenv("HWNPU_TEST_GPTOSS_LAYERS"); v != "" {
 		fmt.Sscan(v, &layers)
 	}
 	for pass := range 3 {
@@ -89,9 +89,9 @@ func TestHostRowsTime(t *testing.T) {
 }
 
 func openGptOss(t *testing.T) (*Host, *rand.Rand) {
-	dir := os.Getenv("HWNPU_GPTOSS_CKPT")
+	dir := os.Getenv("HWNPU_TEST_GPTOSS_CKPT_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_GPTOSS_CKPT: gpt-oss-20b's checkpoint")
+		t.Skip("HWNPU_TEST_GPTOSS_CKPT_DIR: gpt-oss-20b's checkpoint")
 	}
 	sh := Shape{Hidden: 2880, Inter: 2880, Experts: 32, TopK: 4}
 	rec := &HostRecord{Checkpoint: filepath.Join(dir, "model.safetensors.index.json"), Act: Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, Layers: map[int]MXFP4{}}
@@ -107,16 +107,16 @@ func openGptOss(t *testing.T) (*Host, *rand.Rand) {
 }
 
 // TestHostTokenTimeQwen36 times a generated token's experts (one row, 8 of 256 a layer, 40
-// layers) on Qwen3.6-35B-A3B's checkpoint with MXFP4 experts (HWNPU_QWEN36_CKPT, hwnpu-dev
+// layers) on Qwen3.6-35B-A3B's checkpoint with MXFP4 experts (HWNPU_TEST_QWEN36_CKPT_DIR, hwnpu-dev
 // mxfp4): the same experts every token (in memory after the first: what the kernels and the
 // host's steps around them take), then experts picked at random (read from the file as chosen,
-// on a machine whose memory does not hold them all). HWNPU_QWEN36_GAP pauses between the layers,
-// as the Neural Engine's part of a step does: asleep, or with HWNPU_QWEN36_SPIN the caller's core
+// on a machine whose memory does not hold them all). HWNPU_TEST_QWEN36_GAP pauses between the layers,
+// as the Neural Engine's part of a step does: asleep, or with HWNPU_TEST_QWEN36_SPIN the caller's core
 // kept awake.
 func TestHostTokenTimeQwen36(t *testing.T) {
-	dir := os.Getenv("HWNPU_QWEN36_CKPT")
+	dir := os.Getenv("HWNPU_TEST_QWEN36_CKPT_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_QWEN36_CKPT: Qwen3.6-35B-A3B's checkpoint with MXFP4 experts")
+		t.Skip("HWNPU_TEST_QWEN36_CKPT_DIR: Qwen3.6-35B-A3B's checkpoint with MXFP4 experts")
 	}
 	const L, E, K, H = 40, 256, 8, 2048
 	sh := Shape{Hidden: H, Inter: 512, Experts: E, TopK: K}
@@ -144,7 +144,7 @@ func TestHostTokenTimeQwen36(t *testing.T) {
 	out := [][]float32{make([]float32, H)}
 	w := [][]float32{{0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125}}
 	var gap time.Duration
-	if v := os.Getenv("HWNPU_QWEN36_GAP"); v != "" {
+	if v := os.Getenv("HWNPU_TEST_QWEN36_GAP"); v != "" {
 		gap, _ = time.ParseDuration(v)
 	}
 	fixed := make([][]int, L)
@@ -162,7 +162,7 @@ func TestHostTokenTimeQwen36(t *testing.T) {
 			for l := range L {
 				idx := [][]int{c.pick(l)}
 				for t0 := time.Now(); gap > 0 && time.Since(t0) < gap; {
-					if os.Getenv("HWNPU_QWEN36_SPIN") != "" {
+					if os.Getenv("HWNPU_TEST_QWEN36_SPIN") != "" {
 						continue // the caller's core kept awake
 					}
 					time.Sleep(gap / 4)
@@ -179,11 +179,11 @@ func TestHostTokenTimeQwen36(t *testing.T) {
 	}
 }
 
-// qwen36Host opens Qwen3.6-35B-A3B's checkpoint with MXFP4 experts (HWNPU_QWEN36_CKPT).
+// qwen36Host opens Qwen3.6-35B-A3B's checkpoint with MXFP4 experts (HWNPU_TEST_QWEN36_CKPT_DIR).
 func qwen36Host(t *testing.T) (*Host, Shape) {
-	dir := os.Getenv("HWNPU_QWEN36_CKPT")
+	dir := os.Getenv("HWNPU_TEST_QWEN36_CKPT_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_QWEN36_CKPT: Qwen3.6-35B-A3B's checkpoint with MXFP4 experts")
+		t.Skip("HWNPU_TEST_QWEN36_CKPT_DIR: Qwen3.6-35B-A3B's checkpoint with MXFP4 experts")
 	}
 	const L, E, K, H = 40, 256, 8, 2048
 	sh := Shape{Hidden: H, Inter: 512, Experts: E, TopK: K}
@@ -205,12 +205,12 @@ func qwen36Host(t *testing.T) (*Host, Shape) {
 // TestHostRowsTimeQwen36 times a layer's experts on the rows of a prompt (8 of 256 experts a
 // row), by how many rows one call takes: the rows of a step of 128 tokens, and those of several
 // steps together. The experts are picked evenly (the fewest rows an expert) or as tokens pick
-// them (HWNPU_QWEN36_SKEW=1: a few experts take most rows).
+// them (HWNPU_TEST_QWEN36_SKEW=1: a few experts take most rows).
 func TestHostRowsTimeQwen36(t *testing.T) {
 	h, sh := qwen36Host(t)
 	E, K, H := sh.Experts, sh.TopK, sh.Hidden
 	r := rand.New(rand.NewPCG(5, 6))
-	skew := os.Getenv("HWNPU_QWEN36_SKEW") != ""
+	skew := os.Getenv("HWNPU_TEST_QWEN36_SKEW") != ""
 	pick := func() []int {
 		if !skew {
 			return r.Perm(E)[:K]

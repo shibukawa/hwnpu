@@ -132,6 +132,9 @@ func tables(ctx context.Context, out, kind string, names []string, groups map[st
 	if fetchTables(ctx, m, r, out) && hasTables(out, names) {
 		return out, nil
 	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return "", err
+	}
 	if err := write(out); err != nil {
 		return "", err
 	}

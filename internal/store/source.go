@@ -256,16 +256,21 @@ func SetBundles(dirs []string) {
 	clearLocks()
 }
 
-// Sources are the layers after the machine's own cache: the sources of the environment, then
-// the bundled models.
+// Sources are the layers after the machine's own cache: the sources of the environment, the
+// bundled models, then the converted models on Hugging Face (hub.go; not with
+// HuggingFaceEnv=false or HubEnv=false).
 func Sources() []Source {
 	sourcesMu.RLock()
-	defer sourcesMu.RUnlock()
-	if len(bundles) == 0 {
-		return sources
+	out, hf := append(slices.Clip(sources), bundles...), huggingFace
+	sourcesMu.RUnlock()
+	if hf && hubOn() {
+		out = append(out, hubSources()...)
 	}
-	return append(slices.Clip(sources), bundles...)
+	return slices.Clip(out)
 }
+
+// IsHub reports whether s is a layer of the converted models on Hugging Face.
+func IsHub(s Source) bool { _, ok := s.Store.(Hub); return ok }
 
 // Local is the first layer: the machine's own cache (cache.Root), which holds what is read from
 // the others and what is made here, in the layout of a source.

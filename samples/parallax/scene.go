@@ -347,6 +347,8 @@ type windowOptions struct {
 	record string
 	// closeAfter closes the window after this long (0: never).
 	closeAfter time.Duration
+	// done, when it is closed, closes the window (Ctrl-C in the terminal)
+	done <-chan struct{}
 	// progress, when not nil, is the making of the deep picture (its depth, its layers), which
 	// runs beside the window: the window shows each step until the scene is ready. picture is
 	// the picture being made deep.

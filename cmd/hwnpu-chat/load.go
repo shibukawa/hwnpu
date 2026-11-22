@@ -4,42 +4,27 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
 )
 
-// loadFlags are where the models are and how they are made ready, for every command that runs one.
+// loadFlags are where the models are and how they run, for every command that runs one.
 type loadFlags struct {
-	Backend     string        `enum:",coreai,intel,levelzero,openvino" default:"" help:"The NPU to convert for and run on: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one; the models converted for it from their checkpoints), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
-	Cache       string        `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	PromptCache string        `placeholder:"DIR" help:"Keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)."`
+	Backend     string        `enum:",coreai,intel,levelzero,openvino" default:"" help:"The NPU to convert for and run on: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one; the models converted for it from their checkpoints), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_DEV=ov.device, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
+	PromptCache string        `placeholder:"DIR" help:"Keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the cache; \"off\" for none)."`
 	Idle        time.Duration `default:"5m" help:"AMD's NPU: give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy. A mixture of experts whose experts run on the CPU: keep only the core ones wired after this long."`
 	ExpertsKey  string        `placeholder:"KEY" help:"A mixture of experts whose experts do not all fit in memory: the name of this application's counts of the experts it runs, which choose the ones kept wired (default: the command, chat, agent or serve; off: none read or kept)."`
 	Models      string        `placeholder:"FILES" help:"${models_usage}."`
-}
-
-// prepare reads the definitions and fills in the defaults of the directories.
-func (f *loadFlags) prepare() error {
-	if err := chat.LoadUserModels(f.Models, logw()); err != nil {
-		return err
-	}
-	var err error
-	if f.Backend, err = resolveBackend(context.Background(), f.Backend); err != nil {
-		return err
-	}
-	if f.Cache == "" {
-		f.Cache = cache.Root()
-	}
-	return nil
 }
 
 // convertFlags are how a chat model is converted and run.
@@ -105,16 +90,24 @@ type samplingFlags struct {
 	Rep         float64 `default:"1.05" help:"Repetition penalty on the tokens of the answer (1: none)."`
 }
 
-func (f samplingFlags) sampling() chat.Sampling {
-	return chat.Sampling{Temperature: f.Temp, TopK: f.TopK, TopP: f.TopP, Repetition: f.Rep}
+func (f samplingFlags) sampling() text.Sampling {
+	return text.Sampling{Temperature: f.Temp, TopK: f.TopK, TopP: f.TopP, Repetition: f.Rep}
+}
+
+// budget is --think-budget as text.ChatOptions takes it (0: no limit).
+func (f samplingFlags) budget() int {
+	if f.ThinkBudget <= 0 {
+		return -1
+	}
+	return f.ThinkBudget
 }
 
 // think is whether the model thinks: --think, else not when its definition says so.
-func (f samplingFlags) think(e *chat.Engine) bool {
+func (f samplingFlags) think(c *text.Chatter) bool {
 	if f.Think != nil {
 		return *f.Think
 	}
-	return !e.NoThink
+	return c.Thinks()
 }
 
 // encoderFlags are the encoders of a chat model that reads images or audio, converted by
@@ -151,89 +144,156 @@ func isIRON(dir string) bool {
 	return err == nil
 }
 
-// loaded is a chat model loaded, with its definition (empty for an export's directory).
-type loaded struct {
-	*chat.Engine
-	model chat.Model
+// chatModel is the chat model --model names, as the flags make it: a use of the definitions, or
+// a model of its own made from it (ai.Definition) when the flags change how it is made.
+type chatModel struct {
+	chat ai.Use[*text.Chatter]
+	// translate is the use of a translation model (PLaMo 3 Translate), which chat talks to as a
+	// translator; nil for the others.
+	translate *ai.Use[*text.Translator]
+	defs      []ai.Definition
+	// base is the model of the definitions it is, or is made from; memory the memory given to
+	// run it as (memoryGiven), kept for it once it is ready.
+	base   string
+	memory int
 }
 
-// loadChat makes ready and loads the chat model name names: an export's directory, the export
-// of AMD's NPU, the programs of --package, or the model of the definitions, downloaded and
-// converted when missing (chat.RepoDir, chat.ModelDir).
-func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags, ef *encoderFlags) (loaded, error) {
-	iron := ""
+// chatModelOf is the chat model name names (a model, a use or a family of the definitions, a
+// Hugging Face repository, an export's directory) with the flags.
+func chatModelOf(cat *ai.Catalog, name string, cf *convertFlags, ef *encoderFlags) (chatModel, error) {
+	var cm chatModel
 	if isPath(name) {
-		iron = expandHome(name)
-		if !isIRON(iron) {
-			return loaded{}, fmt.Errorf("%s is not an export of tools/amd/iron_export_lm.py (no manifest.json)", name)
+		// an export of tools/amd/iron_export_lm.py, for AMD's NPU: a model like the one of the
+		// definitions it was exported from (else the default chat model), named by its directory
+		dir := absolute(name)
+		if !isIRON(dir) {
+			return cm, fmt.Errorf("%s is not an export of tools/amd/iron_export_lm.py (no manifest.json)", name)
 		}
-	} else if cf.Package == "" {
-		var err error
-		if iron, err = chat.AMDExport(ctx, name, lf.Backend, logw()); err != nil {
-			return loaded{}, err
+		like := "LFM3-1.7B"
+		if b, _, ok := strings.Cut(filepath.Base(dir), ".amd-npu2"); ok {
+			if m, found := chat.Lookup(b); found && m.Kind == chat.KindChat {
+				like = m.Name
+			}
 		}
+		d := ai.Definition{Name: strings.Map(func(r rune) rune {
+			if strings.ContainsRune(":/\\ ", r) {
+				return '_'
+			}
+			return r
+		}, filepath.Base(dir)), Like: like, About: "the export " + dir, Programs: map[string][]string{"iron": {dir}}}
+		if cf.Tokenizer != "" {
+			d.Programs["tokenizer"] = []string{absolute(cf.Tokenizer)}
+		}
+		cm.chat, cm.defs, cm.base = text.Chat(d.ID()), []ai.Definition{d}, like
+		return cm, nil
 	}
-	promptDir := chat.PromptStore(lf.PromptCache, lf.Cache)
-	if iron != "" {
-		c := chat.Config{IRON: iron, Tokenizer: cf.Tokenizer, Log: logw(), PromptDir: promptDir, Idle: lf.Idle}
-		// a model of the definitions: its experts' places get its core and this application's
-		// counts first (an export's directory has neither)
-		if m, ok := chat.LookupFor(name); ok && !isPath(name) {
-			c.Experts = expertsPlacement(m, lf)
-		}
-		e, err := chat.Load(ctx, c)
-		return loaded{Engine: e}, err
+	cm.memory = memoryGiven(name, cf)
+	u := text.Chat(name)
+	if cm.memory > 0 {
+		u = u.As(cm.memory)
 	}
-	gb := memoryGiven(name, cf)
-	m, err := chat.ResolveOn(ctx, name, gb, logw())
+	u, defs, err := useFor(cat, u)
 	if err != nil {
-		return loaded{}, err
+		return cm, err
 	}
-	if m.Kind != chat.KindChat {
-		return loaded{}, fmt.Errorf("%s is a %s model, not a chat model", m.Name, m.Kind)
-	}
-	md, src := chat.ModelDir(m), chat.RepoDir(m.Source())
-	c := chat.Config{ModelConfig: cf.Config, Weights: cf.Weights}
-	if cf.Package != "" {
-		c.Packages, c.Name, c.Backend = strings.Split(cf.Package, ","), m.Name, lf.Backend
-		c.ModelConfig = cmp.Or(c.ModelConfig, filepath.Join(src, "config.json"))
-		c.Weights = cmp.Or(c.Weights, chat.WeightsIn(m))
-	} else {
-		// the flags, else the model's definition for the memory it runs as (Model.On)
-		run := m.Run.Over(cf.given())
-		tiers, err := chat.Tiers(cmp.Or(run.Tier, chat.DefaultTiers))
-		if err != nil {
-			return loaded{}, fmt.Errorf("tier %q: %w", run.Tier, err)
+	cm.chat, cm.defs, cm.base = u, defs, u.Name()
+	d := cf.definition(ef)
+	if d.Settings != nil || d.Programs != nil || d.Format != "" || d.Context != 0 || d.Paged != 0 || d.Prefill != "" || d.Tier != "" {
+		d.Like = u.Name()
+		cm.chat = text.Chat(d.ID())
+		if cm.memory > 0 {
+			cm.chat = cm.chat.As(cm.memory)
 		}
-		if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
-			Context: run.Context, Paged: run.Paged, Shortest: cf.Shortest, Prefill: run.Prefill,
-			Format: run.Format, Draft: cf.Draft, MTP: cf.MTP, Tiers: tiers, Backend: lf.Backend, Codes: cf.Codes, CodesHash: run.Codes,
-			FormatFor: split(cf.FormatFor), Log: logw()}); err != nil {
-			return loaded{}, err
-		}
-		keepMemory(m, gb, logw())
+		cm.defs = append(cm.defs, d)
 	}
-	c.Tokenizer, c.CacheDir, c.Log = cf.Tokenizer, lf.Cache, logw()
-	c.PromptDir = promptDir
-	c.Dense = !cf.Sparse
-	c.Idle = lf.Idle
-	// a model without experts on the host ignores it
-	c.Experts = expertsPlacement(m, lf)
-	// the flags override the encoders Prepare converted (a model with vision or audio); without
-	// them those stay
+	if m, ok := cat.Model(u.Name()); ok && slices.Contains(m.Features, "translation") {
+		t := text.Translate(cm.chat.Name())
+		if cm.memory > 0 {
+			t = t.As(cm.memory)
+		}
+		cm.translate = &t
+	}
+	return cm, nil
+}
+
+// definition is what the flags change of how a chat model is made (the zero Definition when
+// they change nothing): its run, its settings and the programs converted by hand.
+func (f *convertFlags) definition(ef *encoderFlags) ai.Definition {
+	r := f.given()
+	d := ai.Definition{Format: r.Format, Context: r.Context, Paged: r.Paged, Prefill: r.Prefill, Tier: r.Tier}
+	set := map[string]string{}
+	if f.Draft != 8 {
+		set["draft"] = strconv.Itoa(f.Draft)
+	}
+	if f.MTP != chat.MTPAuto {
+		set["mtp"] = f.MTP
+	}
+	if f.Shortest != 0 {
+		set["shortest"] = strconv.Itoa(f.Shortest)
+	}
+	if f.Codes != "" {
+		set["codes"] = absolute(f.Codes)
+	}
+	if f.FormatFor != "" {
+		set["format_for"] = f.FormatFor
+	}
+	if len(set) > 0 {
+		d.Settings = set
+	}
+	ps := map[string][]string{}
+	if f.Package != "" {
+		ps["packages"] = absolutes(f.Package)
+		if f.Config != "" {
+			ps["config"] = []string{absolute(f.Config)}
+		}
+		if f.Weights != "" {
+			ps["weights"] = []string{absolute(f.Weights)}
+		}
+	}
+	if f.Tokenizer != "" {
+		ps["tokenizer"] = []string{absolute(f.Tokenizer)}
+	}
 	if ef != nil && ef.Vision != "" {
-		c.Vision = split(ef.Vision)
+		ps["vision"] = absolutes(ef.Vision)
 	}
 	if ef != nil && ef.AudioEncoder != "" {
-		c.Audio = split(ef.AudioEncoder)
+		ps["audio"] = absolutes(ef.AudioEncoder)
 	}
-	e, err := chat.Load(ctx, c)
-	if err != nil {
-		return loaded{}, err
+	if len(ps) > 0 {
+		d.Programs = ps
 	}
-	console.Prepared(logw())
-	e.NoThink = m.NoThink
-	return loaded{Engine: e, model: m}, nil
+	return d
+}
+
+// options are how the chat and translation models run, from the flags (ai.LoadSettings): the
+// role's settings that change nothing of what is prepared.
+func options(lf *loadFlags, cf *convertFlags, expertsKey string) []ai.Option {
+	set := map[string]string{"idle": lf.Idle.String(), "experts_key": cmp.Or(lf.ExpertsKey, expertsKey)}
+	if lf.PromptCache != "" {
+		set["prompt_cache"] = lf.PromptCache
+	}
+	if cf != nil && !cf.Sparse {
+		set["sparse"] = "off"
+	}
+	return []ai.Option{ai.LoadSettings("chat", set), ai.LoadSettings("translate", set)}
+}
+
+// prepare reads the definitions (--models) and sets the NPU (--backend): the store of the
+// command's models and their catalog.
+func (f *loadFlags) prepare(ctx context.Context) (ai.Store, *ai.Catalog, error) {
+	if err := setBackend(ctx, f.Backend); err != nil {
+		return ai.Store{}, nil, err
+	}
+	st := store(f.Models)
+	cat, err := st.Catalog()
+	return st, cat, err
+}
+
+// keep keeps the memory given for the model, now that it is ready (keepMemory).
+func (cm chatModel) keep() {
+	if m, ok := chat.Lookup(cm.base); ok {
+		keepMemory(m, cm.memory, logw())
+	}
 }
 
 // embedFlags are how an embedding model is converted.
@@ -242,21 +302,27 @@ type embedFlags struct {
 	EmbedPackage string `placeholder:"FILES" help:"Embedding programs converted by hwnpu-dev convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)."`
 }
 
-// loadEmbedder makes ready and loads the embedding model m.
-func loadEmbedder(ctx context.Context, m chat.Model, lf *loadFlags, ef *embedFlags) (*chat.Embedder, error) {
-	seqs, err := parseInts(ef.EmbedSeq)
+// embedUse is the use of the embedding model name names, as the flags make it: a model of its
+// own for --embed-seq and --embed-package.
+func embedUse(cat *ai.Catalog, name string, ef *embedFlags) (ai.Use[*text.Embedder], []ai.Definition, error) {
+	u, defs, err := useFor(cat, text.Embed(name))
 	if err != nil {
-		return nil, fmt.Errorf("--embed-seq: %w", err)
+		return u, nil, err
 	}
-	md, src := chat.ModelDir(m), chat.RepoDir(m.Source())
-	var c chat.EmbedConfig
+	if _, err := parseInts(ef.EmbedSeq); err != nil {
+		return u, nil, fmt.Errorf("--embed-seq: %w", err)
+	}
+	d := ai.Definition{Like: u.Name()}
+	if ef.EmbedSeq != ints(chat.DefaultEmbedSeqs) {
+		d.Settings = map[string]string{"seqs": ef.EmbedSeq}
+	}
 	if ef.EmbedPackage != "" {
-		c = chat.EmbedConfig{Packages: strings.Split(ef.EmbedPackage, ","), ModelConfig: filepath.Join(src, "config.json"), Weights: chat.WeightsIn(m), Name: m.Name, Backend: lf.Backend}
-	} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Source(), Name: m.Name, Seqs: seqs, Backend: lf.Backend, Log: logw()}); err != nil {
-		return nil, err
+		d.Programs = map[string][]string{"packages": absolutes(ef.EmbedPackage)}
 	}
-	c.CacheDir, c.Log = lf.Cache, logw()
-	return chat.LoadEmbedder(ctx, c)
+	if d.Settings == nil && d.Programs == nil {
+		return u, defs, nil
+	}
+	return text.Embed(d.ID()), append(defs, d), nil
 }
 
 // split splits a comma separated list; nil for "".
@@ -285,18 +351,4 @@ func ints(ns []int) string {
 		s = append(s, strconv.Itoa(n))
 	}
 	return strings.Join(s, ",")
-}
-
-// expertsPlacement is how a mixture of experts' experts that do not all fit are placed: model
-// m's core (models.yaml's experts_core) first, then by this application's counts (--experts-key).
-func expertsPlacement(m chat.Model, lf *loadFlags) experts.Placement {
-	idle := lf.Idle
-	if idle <= 0 {
-		idle = -1 // never
-	}
-	p := experts.Placement{Core: m.ExpertsCore, Idle: idle, Ceiling: filepath.Join(chat.ModelDir(m), "experts-usage", "ceiling")}
-	if lf.ExpertsKey != "off" {
-		p.Usage = chat.ExpertsUsage(chat.ModelDir(m), lf.ExpertsKey)
-	}
-	return p
 }

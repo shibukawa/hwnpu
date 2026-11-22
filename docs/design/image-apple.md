@@ -14,7 +14,7 @@ How the image generation models run on Apple's Neural Engine and on Intel's NPU:
 | FLUX.3 klein | yes (text to image) | no | `internal/imagegen/flux3klein` |
 
 - On a Mac, `hwnpu-image` runs Core AI only (macOS 27). `--backend coreml` or `HWNPU_BACKEND=coreml` also opens Core AI (`imageDevice` in `cmd/hwnpu-image/backend.go`). A Mac without Core AI has no device for `hwnpu-image`.
-- Core ML exports are still written by `hwnpu-image convert --backend coreml`. They are what `--cpu` runs: the CPU interpreter (`milcpu`) in float32, the reference where no PyTorch runs. `HWNPU_CPU_F16` rounds every op to fp16 on the CPU.
+- Core ML exports are still written by `hwnpu-image convert --backend coreml`. They are what `--cpu` runs: the CPU interpreter (`milcpu`) in float32, the reference where no PyTorch runs. `HWNPU_DEV=cpu.f16` rounds every op to fp16 on the CPU.
 - Each model has one MIL description (`internal/imagegen/<model>/mil`). It is written as a Core AI `.aimodel`, as a Core ML package, or as OpenVINO IR (`ovlower`, Anima only). The pipeline (tokenizer, sampler, CFG, batch) is shared with the AMD path. Only the engine (`progEngine` in `programs.go`) differs.
 - First run: `Prepare` downloads the missing checkpoint files (`chat.Fetch`, sha256 pinned in [../../models.yaml](../../models.yaml)), converts in Go only, and writes `NAME.done` last. The export name holds what changes the programs, including `ExportVersion`; a new layout gets a new name and is converted again. Old exports stay until removed by hand.
 - Every model takes the Neural Engine lock before it opens an Apple export (`llm.LockNPU`, "waiting for the Neural Engine: process N … is using it"). Without it, another hwnpu process on the NE made VAE stages fail with `Inference failed — request aborted (underlying=0x15)`. See [apple-coreml.md](apple-coreml.md).
@@ -43,7 +43,7 @@ Migration order: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (the eight siz
 
 ## What is not prebuilt
 
-`coreai.LeftToDevice` keeps programs whose names start with `vae` or `text` on the device: `hwnpu-dev prebuild` leaves them out ("left to the device") and `coreai.Prebuilt` ignores such prebuilts already in a source.
+`coreai.LeftToDevice` keeps programs whose names start with `vae` or `text` on the device: `hwnpu-dev models package MODEL/coreai-ARCH` leaves them out ("left to the device") and `coreai.Prebuilt` ignores such prebuilts already in a source.
 
 | part | why |
 |---|---|
@@ -70,7 +70,7 @@ At 1024² a DiT attends over 4096 image tokens. The time is in the element-wise 
 Rules learned:
 - Do not defer the division in self-attention: the product reaches fp16's max in Anima's last block (27). Scaling V's int8 weights by 1/256 to avoid it changed the pictures (products under fp16's normal range are dropped by the NE).
 - Writing that left the NE: two chunks divided by the same sum (use the sum's reciprocal), `maximum` of maxima of different widths (`Interleave should be matched for dual-input PEs`; concatenate the maxima and `reduce_max` again). Qwen-Image's query chunk of 2048 also left it.
-- `HWNPU_ANIMA_ATTENTION=chunks` and `HWNPU_CHROMA_ATTENTION=chunks` export the older heads-together form (`QChunkAttention`) on Apple, to tell rounding from a mistake (convert into another folder). Intel always uses `QChunkAttention`.
+- `HWNPU_DEV=anima.attention=chunks` and `HWNPU_DEV=chroma.attention=chunks` export the older heads-together form (`QChunkAttention`) on Apple, to tell rounding from a mistake (convert into another folder). Intel always uses `QChunkAttention`.
 - A single score tensor over about 64 MiB is 2–3× slower per score on Core ML's NE (a step between 65 and 68 MiB). This is why `mil.DitQChunk` halves the query chunk at conversion until 16 × chunk × patches × 2 B ≤ 64 MiB (Anima's heads-together form: 1024² 512, 1280² 256, 2048² 128). The size of the on-chip memory is not the cause: per-score speed is flat from 0.5 MB to 64 MiB.
 
 ### fp16 traps and their fixes
@@ -108,7 +108,7 @@ Rules learned:
 - On Core AI the DiT groups are not held. Each group is loaded for its turn, run, and closed (`runner.Swap`; Anima `progEngine.swap`, Chroma `swapDiT`, FLUX `runner.Ring`). While a group runs, the next one loads (`runner.InTurn` for in-turn parts, `runner.Ring` for the DiT: after the last group it loads the first for the next call; an unused load is closed). At most 2 programs open. A failed ahead-load is retried once at its turn (`TestRing`, `TestInTurn`).
 - Why: a load from Core AI's cache is 0.02–0.3 s, about one run. Holding everything is no faster, because a large group that follows another program pays a switch cost anyway (`aicheck cycle`: a 4-block Anima group after another group +50–70 ms; 2 small programs or a group plus a small one +0). And holding a lot makes things slower or fail: Chroma1-Flash 1024² holding all 8.8 GiB is 10 % slower; Qwen-Image's lut4 DiT held at 5.2 GiB failed with `underlying=0x15` (Core AI errors instead of evicting like Core ML).
 - Text encoders are closed after the prompt, the approximator before the steps, the groups loaded for the last step's next before the VAE. VAE stages are loaded one at a time (10–20 ms each, no preload needed).
-- `HWNPU_HOLD_DIT=1` holds every group; `HWNPU_LOAD_AHEAD=0` turns preloading off (both for measuring). Core ML and Intel load one at a time (Intel holds what fits and closes others when out of memory).
+- `HWNPU_DEV=hold-dit=1` holds every group; `HWNPU_DEV=load-ahead=0` turns preloading off (both for measuring). Core ML and Intel load one at a time (Intel holds what fits and closes others when out of memory).
 - A first call after a load (or after another program) is slow: a VAE stage and a text encoder group always run as first calls.
 - Several prompts together (`--batch`, `GenerateAll`, `DecodeAll`, `EncodeAll`): the text once for all prompts, each DiT group runs every picture, each VAE stage every picture. See [image-models.md](image-models.md).
 - Memory at 1024² peaks in the last VAE stages (process float32 buffers), not in the DiT. FLUX.2 klein drops the time embedding weights (0.7 GB) after building every σ's rows and returns step garbage before the VAE and after each stage (`debug.FreeOSMemory`): 5.8 → 4.1 GB footprint.

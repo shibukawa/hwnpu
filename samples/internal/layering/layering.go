@@ -29,8 +29,9 @@ type Models struct {
 	Near func(ctx context.Context, img *image.RGBA) ([]float32, error)
 	// Draw is the picture an editing model draws from a prompt and a reference (image 1 in the
 	// prompt), at the reference's size. It calls progress, when it can, with how much of the
-	// drawing is done, 0 to 1.
-	Draw func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(done float64)) (*image.RGBA, error)
+	// drawing is done, 0 to 1, and phase with what it does before its steps (imagegen's
+	// Options.Phase: opening the programs of the size, reading the reference and the prompt).
+	Draw func(ctx context.Context, prompt string, ref *image.RGBA, seed uint64, progress func(done float64), phase func(string)) (*image.RGBA, error)
 }
 
 // Options are how a picture is parted.
@@ -82,7 +83,8 @@ const (
 	// row major at the picture's size.
 	Asked = "asked"
 	// Drawing: the model is drawing. Done is how much of this drawing is done, 0 to 1, Try the
-	// try's number from 1.
+	// try's number from 1, Phase what it does before its steps (imagegen's phases), "" when
+	// not told.
 	Drawing = "drawing"
 	// Drawn: the model has drawn. Picture is its drawing, Seam how much of the shape is left
 	// (SeamOK and over: it is drawn again while tries are left).
@@ -110,6 +112,7 @@ type Step struct {
 	Seam    float64
 	Try     int
 	Done    float64
+	Phase   string
 	Layers  []Layer
 	Left    int
 	// Total is how much of the whole parting is done, 0 to 1: each layer but the farthest is an
@@ -217,6 +220,8 @@ func Split(ctx context.Context, img *image.RGBA, near []float32, m Models, o Opt
 			out, err := m.Draw(ctx, prompt, asked, seed, func(done float64) {
 				done = min(max(done, 0), 1)
 				tell(Step{Kind: Drawing, Layer: l + 1, Try: try + 1, Done: done}, drawing*done)
+			}, func(phase string) {
+				tell(Step{Kind: Drawing, Layer: l + 1, Try: try + 1, Phase: phase}, 0)
 			})
 			if err != nil {
 				return nil, err

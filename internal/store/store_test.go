@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -407,11 +408,11 @@ func TestGC(t *testing.T) {
 	write(t, half, "a writeback cut off")
 	long := time.Now().Add(-2 * WritingStale) // not one being written
 	os.Chtimes(half, long, long)
-	g, err := PlanGC(ctx, s, func(e Entry) bool { return e.Model == "a" }, false)
+	g, err := PlanGC(ctx, s, func(e Entry) bool { return e.Model == "a" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(g.Entries) != 1 || g.Entries[0].Key != a.Key || len(g.Orphans) != 0 || g.Bytes != int64(len("a's own")) {
+	if len(g.Entries) != 1 || g.Entries[0].Key != a.Key || g.Bytes != int64(len("a's own")) {
 		t.Fatalf("plan: %+v", g)
 	}
 	if err := g.Apply(ctx, s); err != nil {
@@ -427,61 +428,10 @@ func TestGC(t *testing.T) {
 	if _, err := FetchEntry(ctx, []Source{s}, ra, func(Entry) bool { return true }, dst+"2", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a after gc: %v", err)
 	}
-	g, _ = PlanGC(ctx, s, func(Entry) bool { return false }, true)
-	if len(g.Entries) != 0 || len(g.Orphans) != 1 || g.Orphans[0] != "converted/c/t/c.x/v1/half" {
-		t.Fatalf("orphans: %+v", g)
-	}
-}
-
-// TestMigrate moves the layout before (blobs, upstream, entries) to original/ and converted/.
-func TestMigrate(t *testing.T) {
-	t.Setenv(cache.RootEnv, t.TempDir())
-	ctx := context.Background()
-	root := t.TempDir()
-	blob := func(body string) string {
-		p := filepath.Join(t.TempDir(), "b")
-		write(t, p, body)
-		sum, _ := FileSHA256(p)
-		write(t, filepath.Join(root, "blobs", "sha256", sum[:2], sum), body)
-		return sum
-	}
-	c1, c2 := strings.Repeat("1", 40), strings.Repeat("2", 40)
-	for _, f := range []struct{ commit, name, body string }{{c1, "config.json", "{}"}, {c1, "w/model.bin", "weights"}, {c2, "config.json", "{2}"}} {
-		sum := blob(f.body)
-		write(t, filepath.Join(root, "upstream", "lab", "m@"+f.commit, filepath.FromSlash(f.name)+".json"), fmt.Sprintf(`{"sha256":%q,"size":%d}`, sum, len(f.body)))
-	}
-	sum := blob("program")
-	e := Entry{Format: EntryFormat, Key: strings.Repeat("k", 64), Kind: "coreai", Model: "M", Target: "coreai",
-		Recipe: map[string]string{"export": "M.coreai"}, Files: []File{{Path: "main.mlirb", Size: 7, SHA256: sum}}}
-	b, _ := json.Marshal(e)
-	write(t, filepath.Join(root, "entries", "coreai", e.Key+".json"), string(b))
-	place := func(e Entry) (string, bool) {
-		return EntryPath(e.Model, e.Target, e.Recipe["export"], VersionDir(0, false, e.Key)), e.Recipe["export"] != ""
-	}
-	r, err := MigrateDir(ctx, root, place, true, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Repos != 1 || r.Files != 2 || r.Entries != 1 || len(r.Skipped) != 1 {
-		t.Fatalf("%+v", r)
-	}
-	s := Source{Store: Dir{Name: "nas", Root: root}}
-	clearLocks()
-	if l, err := ReadLock(ctx, s, "lab/m"); err != nil || l.Commit != c1 || len(l.Files) != 2 {
-		t.Errorf("lock %+v %v", l, err)
-	}
-	if b, _ := os.ReadFile(filepath.Join(root, "original", "lab", "m", "w", "model.bin")); string(b) != "weights" {
-		t.Errorf("model.bin %q", b)
-	}
-	rel := "converted/M/coreai/M.coreai/v0-kkkkkkkk"
-	if got, err := ReadEntryAt(ctx, s, rel); err != nil || got.Path != rel {
-		t.Errorf("entry %+v %v", got, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "entries")); err == nil {
-		t.Error("entries/ is left")
-	}
-	if _, err := os.Stat(filepath.Join(root, "upstream", "lab", "m@"+c2)); err != nil {
-		t.Error("the other commit was removed")
+	// what a writeback cut off is hwnpu cache clean's: gc leaves it
+	g, _ = PlanGC(ctx, s, func(Entry) bool { return true })
+	if slices.Contains(g.keys, "converted/c/t/c.x/v1/half") {
+		t.Fatalf("gc takes what a writeback cut off: %+v", g.keys)
 	}
 }
 

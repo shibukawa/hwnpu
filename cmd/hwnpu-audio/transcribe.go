@@ -4,17 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
-	"github.com/shibukawa/hwnpu/internal/llm/whisper"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/transcribe"
 )
@@ -34,7 +28,6 @@ type TranscribeCmd struct {
 	Format     string   `placeholder:"FORMAT" help:"Weight format of the programs: lut8 (default), lut6, lut4 or fp16."`
 	MaxTokens  int      `name:"max-tokens" placeholder:"N" help:"Most tokens of text per 30 seconds (0: as many as the decoder holds, 444)."`
 	Verbose    bool     `short:"v" help:"Log each window's language and times."`
-	Cache      string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	Models     string   `placeholder:"FILES" help:"${models_usage}."`
 	CPU        bool     `name:"cpu" help:"Run on the CPU interpreter instead of the Neural Engine (slow)."`
 }
@@ -43,76 +36,36 @@ type TranscribeCmd struct {
 func (c *TranscribeCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	var (
-		m   chat.Model
-		err error
-	)
-	export := ""
-	if transcribe.IsIronExport(expandHome(c.Model)) {
-		export = expandHome(c.Model) // an export of tools/amd/iron_whisper.py, for AMD's NPU
-		m.Name = filepath.Base(export)
-	} else if m, err = resolveKind(c.Model, chat.KindTranscribe, c.Models, lw); err != nil {
+	st := store(c.Models)
+	use, defs, err := c.use(st)
+	if err != nil {
 		return err
 	}
-	s := transcribe.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Format: c.Format, Log: lw}
-	o := transcribe.Options{Language: c.Language, Translate: c.Translate, MaxTokens: c.MaxTokens}
-	var (
-		dev    *hwnpu.Device
-		t      *transcribe.Transcriber
-		wired0 int64
-		wired  bool
-		t0     time.Time
-	)
-	if export != "" || !c.CPU && onAMD() {
-		// AMD's NPU runs the graphs of tools/amd/iron_whisper.py (exported on the first run)
-		dir := export
-		if dir == "" {
-			var err error
-			if dir, err = transcribe.PrepareAMD(chat.WithModel(ctx, m), m, lw); err != nil {
-				return err
-			}
-		}
-		if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
-			return err
-		}
-		defer dev.Close()
-		iron.ShareExport(dir, logf)
-		t0 = time.Now()
-		if t, err = transcribe.LoadIron(ctx, dev, dir); err != nil {
-			return err
-		}
-	} else {
-		if c.CPU {
-			s.Backend = llm.BackendCoreML // what the CPU interpreter runs
-		} else {
-			if dev, s.Backend, err = openAudioDevice(ctx, cacheDir(c.Cache), "--cpu runs Whisper on the CPU"); err != nil {
-				return err
-			}
-			defer dev.Close()
-		}
-		cfg, err := transcribe.Prepare(ctx, s)
-		if err != nil {
-			return err
-		}
-		wired0, wired = mem.NPUWired()
-		t0 = time.Now()
-		if t, err = transcribe.Load(ctx, dev, cfg); err != nil {
-			return err
-		}
+	st.Definitions = defs
+	app := ai.NewApp("hwnpu-audio", use)
+	app.Store = st
+	rt, err := open(ctx, app, lw)
+	if err != nil {
+		return err
 	}
-	defer t.Close()
-	logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, t.OnNPU()))
+	defer rt.Close()
+	wired0, wired := mem.NPUWired()
+	t, err := use.Get(ctx, rt)
+	if err != nil {
+		return err
+	}
+	logf("%s", loadedLine(rt, t.OnCPU(), t.OnNPU()))
 	console.Running()
+	o := speech.TranscribeOptions{Language: c.Language, Translate: c.Translate, MaxTokens: c.MaxTokens}
 	for _, p := range c.Files {
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		samples, err := lfm3audio.ReadWAV(raw) // mono, at 16 kHz: the rate of both models
+		samples, err := speech.ReadWAV(raw, speech.TranscribeRate) // mono, at 16 kHz
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
-		start := time.Now()
 		res, err := t.Transcribe(ctx, samples, o)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
@@ -122,20 +75,18 @@ func (c *TranscribeCmd) Run(ctx context.Context) error {
 		}
 		if c.Timestamps {
 			fmt.Println()
-			for _, w := range res.Windows {
-				for _, seg := range w.Segments {
-					fmt.Printf("[%s - %s] %s\n", clock(w.Start+seg.Start), clock(w.Start+seg.End), strings.TrimSpace(t.SegmentText(seg)))
-				}
+			for _, seg := range res.Segments {
+				fmt.Printf("[%s - %s] %s\n", clock(seg.Start), clock(seg.End), seg.Text)
 			}
 		} else {
 			fmt.Println(res.Text)
 		}
-		secs := float64(len(samples)) / whisper.SampleRate
-		el := time.Since(start).Seconds()
+		secs := float64(len(samples)) / speech.TranscribeRate
+		el := res.Took.Seconds()
 		if c.Verbose {
 			for _, w := range res.Windows {
 				logf("  %v %s: %d tokens; features %.0f ms, encoder and cross %.0f ms, decoding %.0f ms (%.1f tokens/s)",
-					w.Start, w.Language, len(w.Tokens), ms(w.Features), ms(w.Encode), ms(w.Decode), float64(len(w.Tokens)+4)/w.Decode.Seconds())
+					w.Start, w.Lang, w.Tokens, ms(w.Features), ms(w.Encode), ms(w.Decode), float64(w.Tokens+4)/w.Decode.Seconds())
 			}
 		}
 		logf("%s: %.1f s of audio in %.2f s (%.1fx real time)", p, secs, el, secs/el)
@@ -145,6 +96,33 @@ func (c *TranscribeCmd) Run(ctx context.Context) error {
 		logf("the Neural Engine holds %.2f GiB for the programs, kernel memory of its driver outside this process's footprint", float64(w-wired0)/(1<<30))
 	}
 	return nil
+}
+
+// use is the use of the model --model names, as the flags make it: a model of its own for
+// --format and --cpu, or for an export's directory.
+func (c *TranscribeCmd) use(st ai.Store) (ai.Use[*speech.Transcriber], []ai.Definition, error) {
+	var d ai.Definition
+	name := c.Model
+	if dir := expandHome(c.Model); transcribe.IsIronExport(dir) {
+		// an export of tools/amd/iron_whisper.py, for AMD's NPU: a model like the definitions' own
+		d.Programs = map[string][]string{"iron": {absolute(dir)}}
+		name = "transcribe"
+	}
+	use, defs, err := useFor(st, speech.Transcribe(name))
+	if err != nil {
+		return use, nil, err
+	}
+	if c.Format != "" {
+		d.Settings = map[string]string{"format": c.Format}
+	}
+	if c.CPU {
+		d.Device = "cpu"
+	}
+	if d.Programs == nil && d.Settings == nil && d.Device == "" {
+		return use, defs, nil
+	}
+	d.Like = use.Name()
+	return speech.Transcribe(d.ID()), append(defs, d), nil
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

@@ -66,6 +66,7 @@ decisions. History stays in git.
 | [audio-models.md](audio-models.md) | Whisper, TTS, Magenta RT2, MOSS-SoundEffect, SwiftF0, Basic Pitch |
 | [distribution.md](distribution.md) | `models.yaml`, the cache root, sources (folder, WebDAV, S3), downloads, gated repositories, licenses, prebuilt distribution, disk sharing (clone / reflink), cleanup |
 | [hwnpud.md](hwnpud.md) | hwnpud (design, not built): one per-user process on the Mac and Linux owns the NPU and the models; model and cache management, socket, supervisor and engine, scheduling across apps, installing and distributing, signing |
+| [variables.md](variables.md) | hwnpu's environment variables: the settings, the machine's libraries, the developers' switches (`HWNPU_DEV`) and the tests' (`HWNPU_TEST_<GROUP>_<ROLE>`, `HWNPU_TEST_NPU`), with the names before |
 | [cli.md](cli.md) | The commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`, `hwnpu-dev` …), the OpenAI API, OpenCode, terminal display, Ctrl+C |
 | [memory-and-power.md](memory-and-power.md) | Energy measurement, power policy, memory measurement, machine memory classes, residency |
 | [quantization.md](quantization.md) | Weight formats (lut4/6/8, int8, q4/q6/q8, mxfp4), GPTQ, rotation, per-model choices |
@@ -106,6 +107,7 @@ decisions. History stays in git.
 | [../amd-npu-models.md](../amd-npu-models.md) | Design of running converted models on AMD's NPU (IRON) |
 | [../amd-xdna2-bench.md](../amd-xdna2-bench.md) | Data types and measured performance of XDNA2 (Strix Point) with IRON samples |
 | [../intel-npu-models.md](../intel-npu-models.md) | Design of running converted models on Intel's NPU |
+| [../model-estimation.md](../model-estimation.md) ([日本語](../model-estimation.ja.md)) | Record of models evaluated on the NPUs, including those left out of models.yaml, with the verdict and why |
 | [../small-models-survey.md](../small-models-survey.md) | Survey of small (≤1B) non-chat models: pitch, singing, music, sound effects, pose |
 | [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Groundwork for bringing Qwen-Image-2.1 and Chroma1 to AMD's NPU |
 | `../handoff-*.md` | Hand-off notes for checks on other machines (M1–M4, AMD, Intel): what to run and what to record |

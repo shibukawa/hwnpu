@@ -64,6 +64,7 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [audio-models.ja.md](audio-models.ja.md) | Whisper、TTS、Magenta RT2、MOSS-SoundEffect、SwiftF0、Basic Pitch |
 | [distribution.ja.md](distribution.ja.md) | `models.yaml`、キャッシュの置き場、取得元 (フォルダ、WebDAV、S3)、ダウンロード、利用条件つきのリポジトリ、ライセンス、書き出し済みの配布、ディスクの共有 (clone / reflink)、掃除 |
 | [hwnpud.ja.md](hwnpud.ja.md) | hwnpud (設計、未実装): Mac と Linux で NPU とモデルをユーザーごとの 1 つのプロセスが持つ。モデルとキャッシュの管理、ソケット、監督役とエンジン、アプリをまたぐ割り振り、入れ方と配り方、署名 |
+| [variables.ja.md](variables.ja.md) | hwnpu の環境変数: 設定、機械のライブラリ、開発者のスイッチ (`HWNPU_DEV`)、テストのもの (`HWNPU_TEST_<群>_<役>`、`HWNPU_TEST_NPU`)、前の名前 |
 | [cli.ja.md](cli.ja.md) | コマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`、`hwnpu-dev` …)、OpenAI の API、OpenCode、端末の表示、Ctrl+C |
 | [memory-and-power.ja.md](memory-and-power.ja.md) | エネルギーの測り方、電力ポリシー、メモリの測り方、機械のメモリの区分、常駐 |
 | [quantization.ja.md](quantization.ja.md) | 重みの形式 (lut4/6/8、int8、q4/q6/q8、mxfp4)、GPTQ、回転、モデルごとの選択 |
@@ -97,6 +98,7 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [../amd-npu-models.md](../amd-npu-models.md) | 変換したモデルを AMD の NPU (IRON) で動かす設計 |
 | [../amd-xdna2-bench.md](../amd-xdna2-bench.md) | XDNA2 (Strix Point) のデータ型と、IRON のサンプルでの実測 |
 | [../intel-npu-models.md](../intel-npu-models.md) | 変換したモデルを Intel の NPU で動かす設計 |
+| [../model-estimation.ja.md](../model-estimation.ja.md) | NPU で評価したモデルの記録。models.yaml に入れなかったものも、判断と理由とともに |
 | [../small-models-survey.md](../small-models-survey.md) | チャット以外の小さな (1B 以下) モデルの調査: 音程、歌声、音楽、効果音、姿勢 |
 | [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Qwen-Image-2.1 と Chroma1 を AMD の NPU へ入れるための下調べ |
 | `../handoff-*.md` | 別の機械 (M1〜M4、AMD、Intel) での確認の引き継ぎ: 何を動かし何を記録するか |

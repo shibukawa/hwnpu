@@ -11,24 +11,19 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/vision/depth"
-	"github.com/shibukawa/hwnpu/internal/vision/moge"
 )
 
 // DepthCmd is "hwnpu-image depth": the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth Anything 3
 // (depth-anything/DA3*, Apache-2.0; exports of tools/amd/iron_da3.py, internal/vision/depth) or
-// MoGe-2 (Ruicheng/moge-2-*-normal, MIT; exports of tools/amd/iron_moge.py, internal/vision/moge).
+// MoGe-2 (Ruicheng/moge-2-*-normal, MIT; exports of tools/amd/iron_moge.py, internal/vision/moge),
+// through ai/vision's Depth.
 //
 // For each picture it writes NAME.depth.png next to it (or into --out): the inverse depth (near
 // is bright) normalized to 8 bits, at the picture's size. The export holds DA3's or MoGe-2's
@@ -59,109 +54,40 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
-	model := expandHome(c.Model)
-	// Apple's Neural Engine and Intel's NPU run the programs Prepare converts (Core AI, OpenVINO
-	// IR); AMD's an export of IRON
-	backend := ""
-	if chat.HereVendor() != "amd" {
-		format, err := imageFormat(ctx, c.Backend)
-		switch {
-		case err == nil:
-			backend = format
-		case runtime.GOOS == "darwin":
-			return err
-		}
+	useBackend(c.Backend)
+	var how made
+	name := c.Model
+	if isPath(c.Model) {
+		// an export's directory: a model like the depth use's
+		how.program("export", expandHome(c.Model))
+		name = "depth"
 	}
-	programs := backend != ""
-	if !isPath(c.Model) {
-		m, err := resolve(c.Model, chat.KindDepth)
-		if err != nil {
-			return err
-		}
-		// the sizes converted later (Core AI) are this model's in the shared layers
-		ctx = chat.WithModel(ctx, m)
-		switch {
-		case programs && m.Family == "moge":
-			if model, err = moge.Prepare(ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: backend, Log: lw}); err != nil {
-				return err
-			}
-		case programs:
-			if model, err = depth.Prepare(ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: backend, Log: lw}); err != nil {
-				return err
-			}
-		default:
-			tool := "tools/amd/iron_da3.py"
-			if m.Family == "moge" {
-				tool = "tools/amd/iron_moge.py"
-			}
-			if model, err = amdExport(ctx, m, tool, 0); err != nil {
-				return err
-			}
-		}
+	e, rt, _, err := load(ctx, name, vision.Depth, how, lw)
+	if err != nil {
+		return err
 	}
-	var dev *hwnpu.Device
-	if programs {
-		var opts []hwnpu.Option
-		if llm.AppleFormat(backend) {
-			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
-		}
-		d, _, err := openImageDevice(ctx, c.Backend, cacheDirOf(""), opts...)
-		if err != nil {
-			return err
-		}
-		dev = d
-	} else {
-		d, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-		if err != nil {
-			return err
-		}
-		dev = d
-		iron.ShareExport(model, logf)
-	}
-	defer dev.Close()
+	defer rt.Close()
 	o := opts{dir: c.Out, raw: c.Raw, sky: c.Sky, keep: c.Keep, focal: c.Focal, fov: c.Fov, normal: c.Normal}
-	if depth.IsMultiExport(model) {
-		m, err := depth.OpenMulti(ctx, dev, model)
-		if err != nil {
-			return err
-		}
-		defer m.Close()
-		m.Logf = logf
-		m.Ref = c.Ref
+	export := filepath.Base(e.Export())
+	switch {
+	case e.Views() > 0:
 		console.Running()
-		return runMulti(ctx, m, c.Pictures, o, c.Ply, logf)
-	}
-	if moge.IsExport(model) {
-		m, err := moge.Open(ctx, dev, model)
-		if err != nil {
-			return err
-		}
-		defer m.Close()
-		m.Logf = logf
-		m.FovX = c.Fov
-		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(model), m.Sizes)
+		return runMulti(ctx, e, c.Pictures, o, c.Ref, c.Ply, logf)
+	case e.Family() == "moge":
+		logf("%s: MoGe-2, metric depth, sizes %v", export, e.Sizes())
 		console.Running()
 		for _, path := range c.Pictures {
-			if err := runMoge(ctx, m, path, o, logf); err != nil {
+			if err := runMoge(ctx, e, path, o, logf); err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
 		}
 		return nil
 	}
-	e, err := depth.Open(ctx, dev, model)
-	if err != nil {
-		return err
+	kind := e.Kind()
+	if kind == "metric depth" && c.Focal == 0 && c.Fov == 0 {
+		kind += " (relative without --focal or --fov)"
 	}
-	defer e.Close()
-	e.Logf = logf
-	kind := "relative depth"
-	if e.Metric {
-		kind = "metric depth"
-		if c.Focal == 0 && c.Fov == 0 {
-			kind += " (relative without --focal or --fov)"
-		}
-	}
-	logf("%s: %s, sizes %v (%s)", filepath.Base(model), kind, e.Sizes, console.Duration(time.Since(t0)))
+	logf("%s: %s, sizes %v (%s)", export, kind, e.Sizes(), console.Duration(time.Since(t0)))
 	console.Running()
 	for _, path := range c.Pictures {
 		if err := run(ctx, e, path, o, logf); err != nil {
@@ -180,13 +106,12 @@ type opts struct {
 // runMoge writes MoGe-2's depth (meters) of the picture at path: NAME.depth.png (the inverse
 // depth, the masked pixels black), --raw NAME.depth.f32 (+Inf where masked) and NAME.points.f32
 // (x, y, z a pixel), --sky NAME.mask.png, --normal NAME.normal.png.
-func runMoge(ctx context.Context, m *moge.Estimator, path string, o opts, logf func(string, ...any)) error {
+func runMoge(ctx context.Context, e *vision.DepthEstimator, path string, o opts, logf func(string, ...any)) error {
 	img, err := decode(path)
 	if err != nil {
 		return err
 	}
-	t0 := time.Now()
-	r, err := m.Estimate(ctx, img)
+	r, err := e.EstimateWith(ctx, img, vision.DepthOptions{FovX: o.fov})
 	if err != nil {
 		return err
 	}
@@ -231,16 +156,26 @@ func runMoge(ctx context.Context, m *moge.Estimator, path string, o opts, logf f
 		}
 	}
 	if o.raw {
-		if err := writeF32(filepath.Join(dir, base+".depth.f32"), r.Depth); err != nil {
+		// MoGe-2's depth is +Inf where its mask is off (vision gives 0 there)
+		raw := slices.Clone(r.Depth)
+		for i, ok := range r.Mask {
+			if !ok {
+				raw[i] = float32(math.Inf(1))
+			}
+		}
+		if err := writeF32(filepath.Join(dir, base+".depth.f32"), raw); err != nil {
 			return err
 		}
 		if err := writeF32(filepath.Join(dir, base+".points.f32"), r.Points); err != nil {
 			return err
 		}
 	}
-	c := r.Depth[(r.H/2)*r.W+r.W/2]
+	centre := r.Depth[(r.H/2)*r.W+r.W/2]
+	if !r.Mask[(r.H/2)*r.W+r.W/2] {
+		centre = float32(math.Inf(1))
+	}
 	logf("%s: %dx%d in %s, %.2f m at the centre, %.2f m nearest, horizontal fov %.1f°", out, r.W, r.H,
-		console.Duration(time.Since(t0)), c, near, r.FovX)
+		console.Duration(r.Took), centre, near, r.FovX)
 	return nil
 }
 
@@ -248,9 +183,9 @@ func runMoge(ctx context.Context, m *moge.Estimator, path string, o opts, logf f
 // one's NAME.depth.png (one scale for all; --raw, --sky the confidence), cameras.json beside the
 // first's (or in --out: each picture's world-to-camera [R | t] and intrinsics at the processed
 // size), and --ply the points of all the views in the reference view's frame.
-func runMulti(ctx context.Context, m *depth.Multi, paths []string, o opts, ply string, logf func(string, ...any)) error {
-	if len(paths) != m.Views {
-		return fmt.Errorf("the export takes %d pictures together, got %d", m.Views, len(paths))
+func runMulti(ctx context.Context, e *vision.DepthEstimator, paths []string, o opts, ref int, ply string, logf func(string, ...any)) error {
+	if len(paths) != e.Views() {
+		return fmt.Errorf("the export takes %d pictures together, got %d", e.Views(), len(paths))
 	}
 	imgs := make([]image.Image, len(paths))
 	for i, p := range paths {
@@ -260,8 +195,7 @@ func runMulti(ctx context.Context, m *depth.Multi, paths []string, o opts, ply s
 		}
 		imgs[i] = img
 	}
-	t0 := time.Now()
-	rs, cams, err := m.Estimate(ctx, imgs)
+	rs, err := e.EstimateViews(ctx, imgs, vision.ViewOptions{Ref: ref})
 	if err != nil {
 		return err
 	}
@@ -304,7 +238,7 @@ func runMulti(ctx context.Context, m *depth.Multi, paths []string, o opts, ply s
 				return err
 			}
 		}
-		c := cams[i]
+		c := r.Camera
 		var j camJSON
 		j.Image, j.Width, j.Height = paths[i], r.W, r.H
 		for a := 0; a < 3; a++ {
@@ -326,21 +260,21 @@ func runMulti(ctx context.Context, m *depth.Multi, paths []string, o opts, ply s
 		return err
 	}
 	if ply != "" {
-		if err := writePLY(ply, imgs, rs, cams); err != nil {
+		if err := writePLY(ply, imgs, rs); err != nil {
 			return err
 		}
 	}
-	logf("%d views in %s; cameras.json in %s", len(paths), console.Duration(time.Since(t0)), dir)
+	logf("%d views in %s; cameras.json in %s", len(paths), console.Duration(rs[0].Took), dir)
 	return nil
 }
 
 // writePLY writes every view's pixels as points in the reference view's frame (world = R^T
 // (camera - t) of each view's world-to-camera [R | t]), colored by the picture.
-func writePLY(path string, imgs []image.Image, rs []*depth.Result, cams []depth.Camera) error {
+func writePLY(path string, imgs []image.Image, rs []*vision.DepthMap) error {
 	var body []byte
 	n := 0
 	for i, r := range rs {
-		c := cams[i]
+		c := r.Camera
 		px := lfm3vl.Resize(imgs[i], r.W, r.H, "bilinear")
 		for y := 0; y < r.H; y++ {
 			for x := 0; x < r.W; x++ {
@@ -394,40 +328,30 @@ func writeRGB(path string, n []float32, w, h int) error {
 	return f.Close()
 }
 
-func run(ctx context.Context, e *depth.Estimator, path string, o opts, logf func(string, ...any)) error {
-	outDir, raw, sky, keep := o.dir, o.raw, o.sky, o.keep
-	f, err := os.Open(path)
+// run writes Depth Anything 3's depth of the picture at path: NAME.depth.png, --raw
+// NAME.depth.f32, --sky NAME.sky.png (DA3METRIC) or NAME.conf.png (DA3-SMALL / BASE).
+func run(ctx context.Context, e *vision.DepthEstimator, path string, o opts, logf func(string, ...any)) error {
+	img, err := decode(path)
 	if err != nil {
 		return err
 	}
-	img, _, err := image.Decode(f)
-	f.Close()
-	if err != nil {
-		return err
-	}
-	t0 := time.Now()
-	r, err := e.Estimate(ctx, img)
+	r, err := e.EstimateWith(ctx, img, vision.DepthOptions{Focal: o.focal, FovX: o.fov})
 	if err != nil {
 		return err
 	}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	dir := outDir
+	dir := o.dir
 	if dir == "" {
 		dir = filepath.Dir(path)
 	}
 	ow, oh := img.Bounds().Dx(), img.Bounds().Dy()
 	metric := ""
-	if r.Metric && (o.focal > 0 || o.fov > 0) {
-		f := o.focal
-		if f == 0 {
-			f = float64(ow) / 2 / math.Tan(o.fov*math.Pi/360)
-		}
-		r.Meters(f, f, ow, oh)
+	if r.Metric {
 		c := r.Depth[(r.H/2)*r.W+r.W/2]
 		near := slices.Min(r.Depth)
 		metric = fmt.Sprintf(", %.2f m at the centre, %.2f m nearest", c, near)
 	}
-	if keep {
+	if o.keep {
 		ow, oh = r.W, r.H
 	}
 	inv := make([]float32, len(r.Depth))
@@ -441,27 +365,23 @@ func run(ctx context.Context, e *depth.Estimator, path string, o opts, logf func
 	if err := writeGray(out, g, ow, oh, lo, hi); err != nil {
 		return err
 	}
-	if sky && r.Sky != nil {
+	if o.sky && r.Sky != nil {
 		if err := writeGray(filepath.Join(dir, base+".sky.png"), Bilinear(r.Sky, r.W, r.H, ow, oh), ow, oh, 0, 1); err != nil {
 			return err
 		}
 	}
-	if sky && r.Conf != nil { // the any-view models' confidence in place of the sky
+	if o.sky && r.Conf != nil { // the any-view models' confidence in place of the sky
 		lo, hi := slices.Min(r.Conf), slices.Max(r.Conf)
 		if err := writeGray(filepath.Join(dir, base+".conf.png"), Bilinear(r.Conf, r.W, r.H, ow, oh), ow, oh, lo, hi); err != nil {
 			return err
 		}
 	}
-	if raw {
-		b := make([]byte, 4*len(r.Depth))
-		for i, d := range r.Depth {
-			binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(d))
-		}
-		if err := os.WriteFile(filepath.Join(dir, base+".depth.f32"), b, 0o644); err != nil {
+	if o.raw {
+		if err := writeF32(filepath.Join(dir, base+".depth.f32"), r.Depth); err != nil {
 			return err
 		}
 	}
-	logf("%s: %dx%d (ran at %dx%d) in %s%s", out, ow, oh, r.W, r.H, console.Duration(time.Since(t0)), metric)
+	logf("%s: %dx%d (ran at %dx%d) in %s%s", out, ow, oh, r.W, r.H, console.Duration(r.Took), metric)
 	return nil
 }
 

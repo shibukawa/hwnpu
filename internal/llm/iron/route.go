@@ -34,9 +34,9 @@ type hostRouter struct {
 	// prefetch: the next layer's experts guessed from this layer's residual (its norm's weight
 	// and router, as the Mac's experts.prefetcher) and copied into its places while the next
 	// command runs, which reads none of them (expertPool.inflight: a place is waited for when it
-	// is run or copied over). guess: how many (HWNPU_MOE_DEBUG=prefetch=N, 0 none)
+	// is run or copied over). guess: how many (HWNPU_DEV=moe.prefetch=N, 0 none)
 	guess     int
-	guess2    int      // two layers ahead (HWNPU_MOE_DEBUG=prefetch2=N)
+	guess2    int      // two layers ahead (HWNPU_DEV=moe.prefetch2=N)
 	fetched   [][]bool // by layer and place: brought in by a guess, not yet run
 	raw       []float32
 	guessed   []int

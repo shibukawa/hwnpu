@@ -3,8 +3,9 @@ package mil
 import (
 	"fmt"
 	"math"
-	"os"
 	"slices"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 
 	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -252,8 +253,8 @@ func ditBlock(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, qchun
 	// NPU keeps the heads together (not measured there).
 	attend := func(q, k, vin *mlpackage.Var, name string, cross bool) *mlpackage.Var {
 		v := head(g.Linear(vin, name, "", E), "", false, 1)
-		if g.Opts.Backend == llm.BackendIntel || os.Getenv("HWNPU_ANIMA_ATTENTION") == "chunks" {
-			// HWNPU_ANIMA_ATTENTION=chunks: the heads together on Apple's too, to tell this
+		if g.Opts.Backend == llm.BackendIntel || devenv.Value("anima.attention") == "chunks" {
+			// HWNPU_DEV=anima.attention=chunks: the heads together on Apple's too, to tell this
 			// attention's rounding from the rest's (convert into a directory of its own)
 			return g.QChunkAttention(q, k, v, 1, nil, qchunk)
 		}

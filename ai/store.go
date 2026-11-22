@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,9 @@ type Store struct {
 	// bundled models of Models.Bundle, which preparing fetches the files of, a use found in one
 	// runs without being prepared here.
 	Prepared []string
+	// Definitions are models the app makes as it runs (App.Define), read over the definitions
+	// of Models.
+	Definitions []Definition
 }
 
 // openMu keeps the process's layers and definitions (modelstore.Open) from changing while a
@@ -42,7 +46,13 @@ var openMu sync.Mutex
 // open sets the process's layers and definitions as s says (modelstore.Open). Prepared models
 // and the compile caches are then under cache.Root.
 func (s Store) open() error {
-	if _, err := modelstore.Open(s.Models); err != nil {
+	o := s.Models
+	defs, err := definitions(s.Definitions)
+	if err != nil {
+		return err
+	}
+	o.Definitions = append(slices.Clone(o.Definitions), defs...)
+	if _, err := modelstore.Open(o); err != nil {
 		return fmt.Errorf("ai: %w", err)
 	}
 	return nil
@@ -86,17 +96,51 @@ type record struct {
 	Role  string `json:"role"`
 	// Run is the model's definition for the memory it runs as (Model.On): the variant its
 	// programs were converted for.
-	Run      chat.Run  `json:"run"`
+	Run chat.Run `json:"run"`
+	// Spec is what else the model was prepared as (its device, settings and programs: spec).
+	Spec     string    `json:"spec,omitempty"`
 	MemoryGB float64   `json:"memory_gb,omitempty"`
 	Prepared time.Time `json:"prepared"`
 	// Compiled is when the model was first loaded on this machine's NPU (the zero time: not
+	// yet), by any program; CompiledBy when by each program (its executable's name): Apple's
+	// compiler (Core AI) keeps its cache by the process's name, so that what one app compiled is
+	// compiled again by the next (layers' compile left parallax's first picture compiling,
+	// 2026-11-22). A use is compiled for a program when CompiledBy has it.
 	// yet): its programs are compiled for it, so that the next load does not wait for that.
-	Compiled time.Time    `json:"compiled,omitzero"`
-	Files    airole.Files `json:"files"`
+	Compiled   time.Time            `json:"compiled,omitzero"`
+	CompiledBy map[string]time.Time `json:"compiled_by,omitempty"`
+	Files      airole.Files         `json:"files"`
 	// Revision is the role's (airole.Role.Revision) that prepared it: an earlier one's is
 	// prepared again.
 	Revision int `json:"revision,omitempty"`
+	// Loaded is how long its last load took on this machine (from the NPU compiler's cache),
+	// and Compile how long the load that compiled it took: what a load shows it is expected to
+	// take (Progress.Expected).
+	Loaded  time.Duration `json:"loaded_ns,omitempty"`
+	Compile time.Duration `json:"compile_ns,omitempty"`
 }
+
+// compiled reports whether this program (processName) has loaded the model once on this NPU.
+func (r *record) compiled() bool { return !r.CompiledBy[processName()].IsZero() }
+
+// markCompiled records that this program has loaded it once, now.
+func (r *record) markCompiled() {
+	now := time.Now().UTC().Truncate(time.Second)
+	if r.CompiledBy == nil {
+		r.CompiledBy = map[string]time.Time{}
+	}
+	r.Compiled, r.CompiledBy[processName()] = now, now
+}
+
+// processName is the name the NPU's compiler keeps this program's compiled programs by: its
+// executable's, without the extension ("go run ." builds one of its directory's name).
+var processName = sync.OnceValue(func() string {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
+	}
+	return strings.TrimSuffix(filepath.Base(exe), filepath.Ext(exe))
+})
 
 // each calls fn with a pointer to every path of the record.
 func (r *record) each(fn func(*string)) {
@@ -231,7 +275,7 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (
 			}
 			continue
 		}
-		if r.Model != want.Name || r.Run != want.Run {
+		if r.Model != want.Name || r.Run != want.Run || r.Spec != spec(want) {
 			stale = r.Model
 			continue
 		}

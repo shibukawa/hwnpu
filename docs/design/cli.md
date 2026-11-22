@@ -19,7 +19,7 @@ were removed without wrappers.
 | `hwnpu-image` | `generate`, `depth`, `face-detect`, `pose`, `detect`, `ocr`, `label`, `embed`, `segment`, `convert`, `list` | Image generation and vision models |
 | `hwnpu-audio` | `generate` (music; `-m sfx` sound effects), `tts`, `transcribe`, `pitch`, `notes`, `list` | `list` covers music, sfx, speech, transcribe, pitch, notes |
 | `hwnpud` | `serve` (default), `install`, `uninstall`, `status`, `stop` | The per-user process that owns the NPU and the models; `hwnpu-chat` goes through it with `HWNPU_DAEMON=on` ([hwnpud](hwnpud.md)) |
-| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `prebuild`, `report`, `mxfp4`, `xclbin`, `cache` | Development tools, not for end users |
+| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`fetch`, `package`, `push`, `hf`), `sources` (`list`, `ls`, `import`, `update`, `verify`, `gc`) | Development tools, not for end users |
 
 - Music and sound effects share `hwnpu-audio generate`: only the model differs, the output (48 kHz
   stereo WAV, speaker) and display are the same. Music-only flags (`--codes`, `--continue`, `--notes`)
@@ -44,7 +44,30 @@ were removed without wrappers.
 - `hwnpu-dev` is a kong shell with `passthrough:"all"`: each tool is a package `cmd/hwnpu-dev/NAME` with
   `Main`, keeps its std `flag` flags, and gets `os.Args` and `flag.CommandLine` replaced before `Main`.
   `probe` runs itself as a child process, so `probe.ChildArgs` (`["probe"]`) is put in front.
-  `hwnpu-dev cache` is a real kong subcommand.
+  `hwnpu-dev models` is a real kong subcommand.
+- `hwnpu-dev models` gathers what works on the models' conversions here, in the sources and on Hugging
+  Face, with the same commands and flags on every OS; what runs behind them differs. Each conversion is
+  named `MODEL/TARGET` as the sources' folders are (`converted/MODEL/TARGET`): `amd-xdna2`, `coreai` (the
+  generic `.aimodel` exports) and `coreai-ARCH` (those compiled for an architecture of the Neural Engine,
+  `h14g`...; `coreai-all` for every one). `fetch` brings them here, `package` makes them, `push` puts in
+  the sources what was made by hand (what `package` makes goes there itself). A command that needs what
+  this OS lacks says so and stops (`coreai-ARCH` needs macOS's `coreai-build`). `package MODEL[/TARGET]`
+  makes a model ready for a target as the apps' first run there does
+  (`airole.Role.Prepare`, the role found by the model's kind: `airole.For`), on any machine: the programs
+  are converted or taken from the sources, not loaded, and what is made goes in the sources written back
+  to. Core AI's exports differ by chip on the M1 alone, so `coreai` is made as on an M1 and as on an M2
+  (`chat.ExportChips`, `chat.ActAsChip`); `--chip` and `--memory` narrow it. For `coreai-ARCH` the exports so made
+  are then compiled (`coreai.Build`); a Core AI export folder (`DIR[/coreai-ARCH]`) is compiled alone. `fetch MODEL[/TARGET]` runs the same preparation
+  converting nothing (`llm.WithFetchOnly`): what is neither here nor in the sources stops where its
+  conversion would start (`llm.MayConvert`, in `StartExport`/`StartProgram`, chat's `convert` and
+  `convertShared`, the tables, `SharedExportOr` and the image exports) and is listed. It brings the
+  checkpoint too (the files the sources' lock names, else a chat model's config, tokenizer and
+  weights; `--no-checkpoint` leaves it), so that conversions can be tried on the model afterwards.
+- `hwnpu-dev sources` is the upkeep of the sources: `list` (alone: the root and the sources in effect),
+  `ls`, `import` (folders made by hand), `update` (locks to a new commit), `verify`, `gc`. What a cut-off
+  writeback left is `hwnpu cache clean`'s. `hwnpu-dev cache` and `hwnpu-dev prebuild`, the names of
+  before, were removed on 2026-11-22, with `flush` (every command waits for the queue), `gc --orphans`
+  and `migrate` (the NAS was moved).
 - `hwnpu-dev report` is the hardware check users run for an issue: test models embedded from
   `internal/fixtures` (written to a temp dir, as Core ML needs real files); the same 64×512 · 512×512 + bias
   + ReLU in Core ML and OpenVINO IR to compare vendors; NPU tolerance 0.05 absolute and 2 % relative (fp16

@@ -41,7 +41,7 @@ func TestCoreAIShared(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "swift-f0")
 			export, done := llm.CoreAIExport(dir, "swiftf0-r3-fp16-t1896")
 			files := map[string]string{"model.aimodel/main.mlirb": "bytecode", "model.aimodel/main.hash": "hash"}
-			if err := llm.StartExport(export); err != nil {
+			if err := llm.StartExport(ctx, export); err != nil {
 				t.Fatal(err)
 			}
 			for f, body := range files {
@@ -140,7 +140,7 @@ func TestTablesShared(t *testing.T) {
 }
 
 // TestPrebuiltShared puts the packed prebuilt programs of an export for an architecture in a
-// shared layer (hwnpu-dev prebuild -put) and makes them again beside the same export on
+// shared layer (hwnpu-dev models package MODEL/coreai-ARCH) and makes them again beside the same export on
 // another machine, under converted/MODEL/coreai-ARCH. An export of other programs (another
 // main.hash) does not take them.
 func TestPrebuiltShared(t *testing.T) {

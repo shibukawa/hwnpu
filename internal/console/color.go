@@ -56,7 +56,19 @@ func (l logWriter) Write(p []byte) (int, error) {
 	if l.w == os.Stderr {
 		recordLog(p)
 	}
-	if _, err := io.WriteString(l.w, gray+Highlight(string(p))+reset); err != nil {
+	if _, err := Above(l.w, gray+Highlight(string(p))+reset); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// Direct is l for a bar's line, which is drawn holding the live lines' lock: gray, not Above.
+func (l logWriter) Direct() io.Writer { return grayWriter{l.w} }
+
+type grayWriter struct{ w *os.File }
+
+func (g grayWriter) Write(p []byte) (int, error) {
+	if _, err := io.WriteString(g.w, gray+Highlight(string(p))+reset); err != nil {
 		return 0, err
 	}
 	return len(p), nil

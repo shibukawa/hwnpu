@@ -79,7 +79,7 @@
 ### 注意のプログラムの形
 
 - `grouped` (`blocks.SDPAGrouped`、LFM3 の `attn` の既定): kv ヘッドごとに、重ねた問い合わせのヘッドとの積 1 回。K/V を `tile` で複製しない。`tile` も選べる。
-- `paged.Heads` (Core AI、kv ヘッド 2 つ以上。`llm.attentionForm`): kv ヘッド 1 つ分の問い合わせを (1, 1, 行, d) にし、スコアを (1, 行, 1, キー) に並べ、倍率は問い合わせに掛け、最大値と和は最後の軸で `reduce_sum`。1 回が 5〜26% 速い (M1)。kv ヘッドが 1 つ (Gemma 4 E2B、PLaMo 3 0.8B) だと Neural Engine から外れるので `grouped` のまま。`HWNPU_ATTENTION=grouped` で比べるために前の形にできる。
+- `paged.Heads` (Core AI、kv ヘッド 2 つ以上。`llm.attentionForm`): kv ヘッド 1 つ分の問い合わせを (1, 1, 行, d) にし、スコアを (1, 行, 1, キー) に並べ、倍率は問い合わせに掛け、最大値と和は最後の軸で `reduce_sum`。1 回が 5〜26% 速い (M1)。kv ヘッドが 1 つ (Gemma 4 E2B、PLaMo 3 0.8B) だと Neural Engine から外れるので `grouped` のまま。`HWNPU_DEV=attention=grouped` で比べるために前の形にできる。
 - `llm.RefreshAttention` が前の書き出しの注意のプログラムを書き直す (`Manifest.AttnForm`)。重みの部分はそのまま。`chat.Prepare` が `AddMass` の後に呼ぶ。
 - mass のプログラム (`paged.BuildMass`) は `grouped` のまま。
 

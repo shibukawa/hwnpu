@@ -14,11 +14,11 @@ import (
 // the ring, the steps from it again give the same logits, bit for bit (the ring is filled from
 // the keys and values, each position in its own slot), and so do the steps after the rows are
 // exported, the sequence run on, and the rows imported again. Needs a gpt-oss export in
-// HWNPU_IRON_KVRING and the NPU.
+// HWNPU_TEST_IRON_KVRING_EXPORT and the NPU.
 func TestKVRingRewindOnDevice(t *testing.T) {
-	dir := os.Getenv("HWNPU_IRON_KVRING")
+	dir := os.Getenv("HWNPU_TEST_IRON_KVRING_EXPORT")
 	if dir == "" {
-		t.Skip("HWNPU_IRON_KVRING is not set")
+		t.Skip("HWNPU_TEST_IRON_KVRING_EXPORT is not set")
 	}
 	ctx := context.Background()
 	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))

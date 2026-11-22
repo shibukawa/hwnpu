@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagedev"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
@@ -22,29 +24,55 @@ func Faces(name string) ai.Use[*FaceDetector] {
 	return ai.Define[*FaceDetector](facesRole, name)
 }
 
-// faceONNX is the file of YuNet's repository.
-const faceONNX = "face_detection_yunet_2023mar.onnx"
-
+// The definition of a face model may give the settings threads, the programs export (a
+// directory of tools/amd/iron_yunet.py: AMD's NPU) or onnx (YuNet's ONNX file: the CPU, or
+// converted for Apple's and Intel's NPU), and the device (common.go).
 var facesRole = &airole.Role{
 	Name:     "faces",
 	Revision: 1, // 1: the programs of every size made at Prepare
 	Kinds:    []chat.Kind{chat.KindFace},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m := e.Model
+		flag := imagedev.DeviceFlag(m)
+		if dir := program(m, "export"); dir != "" {
+			if !face.IsExport(dir) {
+				return f, fmt.Errorf("%s is not an export of tools/amd/iron_yunet.py", dir)
+			}
+			if flag == "cpu" {
+				return f, fmt.Errorf("an export of tools/amd/iron_yunet.py (%s) runs on AMD's NPU, not the CPU", dir)
+			}
+			f.SetValue("device", "npu")
+			f.Set("export", dir)
+			return f, nil
+		}
 		// where the definitions say it runs on this machine's NPU (models.yaml's device: the CPU
 		// beside AMD's NPU, where it takes a tenth of the time and energy)
-		device, _, err := chat.ChooseDevice(m, e.NPU.Vendor, "")
+		device, why, err := chat.ChooseDevice(m, e.NPU.Vendor, flag)
+		if path := program(m, "onnx"); path != "" {
+			why = "" // a file of the app's: not said, as the command never said it
+			if flag == "" {
+				device = "cpu" // an ONNX file runs on the CPU unless the device is given
+			}
+		}
 		if err != nil {
 			return f, err
 		}
-		switch e.NPU.Vendor {
-		case "amd", "apple", "intel":
-		default:
-			device = "cpu" // no graph of it for another NPU
+		if device == "npu" && e.NPU.Vendor != "amd" && e.NPU.Vendor != "apple" && e.NPU.Vendor != "intel" {
+			// AMD's NPU has YuNet's graph (iron_yunet.py), Apple's and Intel's the ONNX graph
+			// converted; no graph of it for another NPU
+			if flag == "npu" {
+				return f, fmt.Errorf("%s runs on AMD's, Apple's and Intel's NPU (this machine's NPU: %s); --device cpu runs it on the CPU", shown(m.Name), orNone(e.NPU.Vendor))
+			}
+			device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", shown(m.Name), orNone(e.NPU.Vendor))
 		}
 		f.SetValue("device", device)
+		f.SetValue("why", why)
+		path := program(m, "onnx")
 		if device == "npu" && e.NPU.AMD() {
-			dir, err := chat.AMDPictureExport(e.Ctx, m, "tools/amd/iron_yunet.py", 0, e.Log)
+			if path != "" {
+				return f, fmt.Errorf("AMD's NPU runs an export of tools/amd/iron_yunet.py, not the ONNX file %s", path)
+			}
+			dir, err := chat.AMDPictureExport(e.Ctx, e.Base, "tools/amd/iron_yunet.py", 0, e.Log)
 			if err != nil {
 				return f, err
 			}
@@ -52,24 +80,26 @@ var facesRole = &airole.Role{
 			f.Set("export", dir)
 			return f, nil
 		}
-		path, err := chat.Fetch(e.Ctx, m.Source(), faceONNX, e.Log)
-		if err != nil {
-			return f, err
+		if path == "" {
+			if path, err = chat.Fetch(e.Ctx, m.Source(), imagedev.YuNetFile, e.Log); err != nil {
+				return f, err
+			}
 		}
 		f.Set("onnx", path)
 		if device == "npu" {
 			// Apple's and Intel's NPU run the ONNX graph converted (at its first load) into the
 			// model's directory of programs, made now: the store finds a use whose files are all
 			// there, and the directory is empty until that load
-			if err := os.MkdirAll(e.Dir, 0o755); err != nil {
+			dir := chat.ModelDir(e.Base)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return f, err
 			}
 			// every size's program now, not at the first frame of each: after "models
 			// prepare" a run needs no network nor conversion (Warm compiles them)
-			if err := face.ConvertPrograms(e.Ctx, e.NPU.Format, path, e.Dir, face.CPUSizes); err != nil {
+			if err := face.ConvertPrograms(e.Ctx, e.NPU.Format, path, dir, face.CPUSizes); err != nil {
 				return f, err
 			}
-			f.Set("programs", e.Dir)
+			f.Set("programs", dir)
 			f.SetValue("format", e.NPU.Format)
 		}
 		return f, nil
@@ -79,10 +109,14 @@ var facesRole = &airole.Role{
 			d   *face.Detector
 			err error
 		)
+		if why := f.Values["why"]; why != "" {
+			logf(e.Log)("%s on the %s (%s)", shown(e.Model), f.Values["device"], why)
+		}
+		n := threads(e.Def)
 		switch {
 		case f.Values["device"] == "cpu":
-			if d, err = face.OpenCPU(f.Path("onnx"), 1); err != nil {
-				return nil, fmt.Errorf("%s runs on the CPU with ONNX Runtime here: %w", e.Model, err)
+			if d, err = face.OpenCPU(f.Path("onnx"), n); err != nil {
+				return nil, fmt.Errorf("%s runs on the CPU with ONNX Runtime here: %w", shown(e.Model), err)
 			}
 		default:
 			dev, err := openDevice(ctx, e)
@@ -100,8 +134,15 @@ var facesRole = &airole.Role{
 			}
 			d.OnClose = func() { dev.Close() }
 		}
-		return &FaceDetector{d: d, name: e.Model}, nil
+		return &FaceDetector{d: d, name: e.Model, log: e.Log, score: d.Score, nms: d.NMS, threads: n}, nil
 	},
+}
+
+func orNone(v string) string {
+	if v == "" {
+		return "none"
+	}
+	return v
 }
 
 // Warm loads the program of every size once, which compiles it for the NPU (ai.Warmer: the
@@ -115,7 +156,7 @@ func (d *FaceDetector) Warm(ctx context.Context) error {
 // Face is a face found in a picture, in the picture's pixels.
 type Face struct {
 	// Box is the face's box.
-	Box image.Rectangle
+	Box Box
 	// Score is how sure the model is, 0 to 1.
 	Score float64
 	// RightEye and LeftEye are the person's own right and left eye (the right eye is on the
@@ -124,14 +165,27 @@ type Face struct {
 	RightEye, LeftEye, Nose, MouthRight, MouthLeft Point
 }
 
-// Point is a point of a picture, in its pixels.
-type Point struct{ X, Y float64 }
-
 // FaceDetector finds the faces in pictures. It runs one picture at a time; others wait.
 type FaceDetector struct {
-	mu   sync.Mutex
-	d    *face.Detector
-	name string
+	mu         sync.Mutex
+	d          *face.Detector
+	name       string
+	log        io.Writer
+	score, nms float32
+	threads    int
+}
+
+// FaceOptions are how faces are found. The zero value of a field takes its default.
+type FaceOptions struct {
+	// Score is the least score a face is kept with (default 0.9, OpenCV's; a negative value
+	// keeps every face), NMS the overlap (intersection over union) above which the lower of two
+	// faces goes (default 0.3).
+	Score, NMS float32
+	// Size is the model's input size every picture runs at, multiples of 32 (default: of the
+	// model's sizes the one the picture is scaled down least to fit).
+	Size [2]int
+	// Log writes each picture's sizes and times to the Runtime's log (ai.WithLog).
+	Log bool
 }
 
 // Model is the name of the model in the definitions.
@@ -141,10 +195,37 @@ func (d *FaceDetector) Model() string { return d.name }
 // on the CPU beside AMD's NPU).
 func (d *FaceDetector) Device() string { return d.d.Device }
 
+// Where says where the model runs, for a log: "the CPU (ONNX Runtime, 1 threads)", "the NPU".
+func (d *FaceDetector) Where() string {
+	if d.d.Device == "cpu" {
+		return fmt.Sprintf("the CPU (ONNX Runtime, %d threads)", d.threads)
+	}
+	return "the NPU"
+}
+
 // Detect finds the faces in a picture, the surest first.
 func (d *FaceDetector) Detect(ctx context.Context, img image.Image) ([]Face, error) {
+	return d.DetectWith(ctx, img, FaceOptions{})
+}
+
+// DetectWith is Detect with options.
+func (d *FaceDetector) DetectWith(ctx context.Context, img image.Image, o FaceOptions) ([]Face, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if o.Size != [2]int{} && (o.Size[0] <= 0 || o.Size[1] <= 0 || o.Size[0]%32 != 0 || o.Size[1]%32 != 0) {
+		return nil, fmt.Errorf("vision: a face model's size %dx%d is not of multiples of 32", o.Size[0], o.Size[1])
+	}
+	d.d.Score, d.d.NMS, d.d.Size = d.score, d.nms, o.Size
+	if o.Score != 0 {
+		d.d.Score = o.Score
+	}
+	if o.NMS != 0 {
+		d.d.NMS = o.NMS
+	}
+	d.d.Logf = nil
+	if o.Log {
+		d.d.Logf = logf(d.log)
+	}
 	found, err := d.d.Detect(ctx, img)
 	if err != nil {
 		return nil, err
@@ -155,8 +236,9 @@ func (d *FaceDetector) Detect(ctx context.Context, img image.Image) ([]Face, err
 		pt := func(p [2]float32) Point {
 			return Point{float64(p[0]) + float64(b.Min.X), float64(p[1]) + float64(b.Min.Y)}
 		}
+		x, y := float64(f.X)+float64(b.Min.X), float64(f.Y)+float64(b.Min.Y)
 		out[i] = Face{
-			Box:      image.Rect(int(f.X), int(f.Y), int(f.X+f.W+0.5), int(f.Y+f.H+0.5)).Add(b.Min),
+			Box:      Box{Point{x, y}, Point{x + float64(f.W), y + float64(f.H)}},
 			Score:    float64(f.Score),
 			RightEye: pt(f.Landmarks[0]), LeftEye: pt(f.Landmarks[1]), Nose: pt(f.Landmarks[2]),
 			MouthRight: pt(f.Landmarks[3]), MouthLeft: pt(f.Landmarks[4]),
@@ -170,6 +252,8 @@ func (d *FaceDetector) Detect(ctx context.Context, img image.Image) ([]Face, err
 type Found struct {
 	Frame image.Rectangle
 	Faces []Face
+	// Took is how long finding them took.
+	Took time.Duration
 }
 
 // DetectStream finds the faces in each picture of a stream (a camera's frames), in a chunk of
@@ -177,8 +261,9 @@ type Found struct {
 // through flow.Latest, or over an edge of flow.Newest.
 func (d *FaceDetector) DetectStream(ctx context.Context, s flow.Stream[image.Image]) flow.Stream[Found] {
 	return flow.Map(s, func(c flow.Chunk[image.Image]) (Found, error) {
+		t0 := time.Now()
 		faces, err := d.Detect(ctx, c.Data)
-		return Found{Frame: c.Data.Bounds(), Faces: faces}, err
+		return Found{Frame: c.Data.Bounds(), Faces: faces, Took: time.Since(t0)}, err
 	})
 }
 
@@ -208,3 +293,5 @@ func (d *FaceDetector) Close() error {
 	defer d.mu.Unlock()
 	return d.d.Close()
 }
+
+func init() { airole.Register(facesRole) }

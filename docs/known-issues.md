@@ -66,11 +66,11 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   # 1 種類ずつ作り、できたらすぐ取得元に置く (12 種類を一度に作ると、最後まで何も置かれない)
   export HWNPU_MODEL_SOURCE='https://…/llm?writeback=true'
   for a in h13c h13d h13s h14d h14s h15d h15m h15s h17p; do
-    hwnpu-dev prebuild -arch $a -put ~/Library/Caches/hwnpu/models/FLUX.2-klein/flux.2-klein-4b-512+1024-lut8-lut8-v1.coreai
+    hwnpu-dev models package ~/Library/Caches/hwnpu/models/FLUX.2-klein/flux.2-klein-4b-512+1024-lut8-lut8-v1.coreai/coreai-$a
   done
   ```
 
-  Chroma1-Flash と Anima も同じに (書き出しが取得元にあるもの)。全種類が通るようになれば `-arch all` でよい
+  Chroma1-Flash と Anima も同じに (書き出しが取得元にあるもの)。全種類が通るようになれば `--arch all` でよい
 - **作り直し** (書き出しが変わったとき。2 節、FormatVersion を上げたとき): 書き出しを作って置き (`hwnpu-image` か `tools/coreai/kleinonly prepare` を取得元の書き戻しありで)、その書き出しに上の prebuild をする。チャットのモデルは `hwnpu-chat` を書き戻しありで 1 回ずつ動かす (9 節)。2026-11-19 の作り直しの記録は [docs/design/distribution.md](design/distribution.md)
 - 確かめ方: `xcrun coreai-build compile X.aimodel --platform macOS --architecture h13c --preferred-compute neural-engine --output out/` が落ちず、`out/…/manifest.plist` に `mps.fullyPlacedOnANE` があること。失敗の理由は stderr でなく os_log (プロセス `coreai-build`、ANEHostCompiler) に出る
 
@@ -78,7 +78,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 - **何が**: h18g は落ちないが、どのモデルも "failed to verify module" で ANE をあきらめ、GPU だけの `.aimodelc` を書いて 0 で終わる
 - **今**: h18g の prebuilt は作らない (GPU だけのものを置くと、M6 で ANE を使わなくなる)。M6 は端末でコンパイルする
-- **直ったら**: 6 節と同じに `-arch h18g` で作って置く。置く前に、`manifest.plist` に `mps.fullyPlacedOnANE` があることを必ず確かめる (GPU に回っても終了コードは 0)
+- **直ったら**: 6 節と同じに `--arch h18g` で作って置く。置く前に、`manifest.plist` に `mps.fullyPlacedOnANE` があることを必ず確かめる (GPU に回っても終了コードは 0)
 
 ## 8. ディスクが少ないと仕上げたプログラムが消える (未報告)
 
@@ -104,7 +104,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた ([docs/design/audio-models.md](design/audio-models.md))。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。[docs/design/audio-models.md](design/audio-models.md)
 - **今**: DAC は、どの機種でもオフラインで通る形 (r3) にした。prebuilt を作るなら、オフラインで乗る形で書く
 - **直ったら**: 何もしなくてよい
-- 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_AILOWER_CUT=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
+- 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_DEV=ailower.cut=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 

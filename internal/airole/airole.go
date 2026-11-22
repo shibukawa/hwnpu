@@ -51,6 +51,10 @@ func (r *Role) Accepts(m chat.Model) error {
 type PrepareEnv struct {
 	Ctx   context.Context
 	Model chat.Model
+	// Base is the model of the definitions Model was made from by the app (ai.Definition's Like):
+	// what it shares where its settings do not change it (the export of AMD's NPU, found by the
+	// model's name). It is Model itself for a model of the definitions.
+	Base chat.Model
 	// Dir is the model's directory of programs (chat.ModelDir).
 	Dir string
 	// NPU is what the programs are converted for.
@@ -60,12 +64,20 @@ type PrepareEnv struct {
 
 // LoadEnv is what a role's Load is given.
 type LoadEnv struct {
-	// Model is the model's name in the definitions.
+	// Model is the model's name in the definitions, and Def its definition (its Device, Settings
+	// and Programs among the rest).
 	Model string
+	Def   chat.Model
 	NPU   NPU
+	// AllowOffNPU loads a model part of whose programs the NPU's compiler placed off it (on the
+	// GPU or the CPU), which a role that checks the placement refuses otherwise.
+	AllowOffNPU bool
 	// Cache is the compile cache.
 	Cache string
 	Log   io.Writer
+	// Settings are how the app runs the role's models beyond their definition, settings that
+	// change nothing of what is prepared (ai.LoadSettings); nil for none.
+	Settings map[string]string
 }
 
 // Files are what a role's Prepare made and its Load reads: paths by name (files, or the
@@ -121,6 +133,9 @@ type NPU struct {
 	Format string
 }
 
+// CPU reports whether model m runs on the CPU on this NPU's machine (its definition's device).
+func (n NPU) CPU(m chat.Model) bool { return m.DeviceFor(n.Vendor) == "cpu" }
+
 // AMD reports whether the NPU is AMD's, which runs IRON's exports instead of converted programs.
 func (n NPU) AMD() bool { return n.Target == cache.AMDTarget }
 
@@ -153,4 +168,35 @@ func Here(ctx context.Context) NPU {
 	}
 	n.Target, n.Format = f, f
 	return n
+}
+
+// registered are the roles of the packages of models, in the order they were registered.
+var registered []*Role
+
+// Register adds r to the roles For finds: each package of models registers its roles, so that a
+// tool (hwnpu-dev models package) makes a model ready as the app would, by its kind alone.
+func Register(r *Role) { registered = append(registered, r) }
+
+// For is the first role registered that runs m; nil when none does (or its package is not
+// imported).
+func For(m chat.Model) *Role {
+	for _, r := range registered {
+		if r.Accepts(m) == nil {
+			return r
+		}
+	}
+	return nil
+}
+
+// ForTarget is the NPU of a target as the shared layers name it (amd-xdna2, coreai), to prepare
+// a model for it on any machine: the programs are converted and put in the layers, not loaded,
+// so no device of the target needs to be here.
+func ForTarget(target string) (NPU, error) {
+	switch target {
+	case cache.AMDTarget:
+		return NPU{Vendor: "amd", Target: cache.AMDTarget}, nil
+	case cache.CoreAITarget:
+		return NPU{Vendor: "apple", Target: cache.CoreAITarget, Device: llm.BackendCoreAI, Format: llm.BackendCoreAI}, nil
+	}
+	return NPU{}, fmt.Errorf("ai: no target %q to prepare models for (%s, %s)", target, cache.AMDTarget, cache.CoreAITarget)
 }

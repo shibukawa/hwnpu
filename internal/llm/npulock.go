@@ -3,8 +3,6 @@ package llm
 import (
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/mem"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,19 +10,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
 // The Neural Engine is used by one hwnpu process at a time: two at once have frozen a Mac (M1:
 // predictions that never return, processes that neither Ctrl+C nor kill -9 ends, the next
 // commands stuck behind them). OpenDevice takes an exclusive lock on a file for the Core ML
 // backend and keeps it while the process lives (the kernel drops it when the process ends); a
-// second process waits for it, saying which process holds it. HWNPU_NPU_LOCK=off skips it.
+// second process waits for it, saying which process holds it. It is not skipped: hwnpud
+// (docs/design/hwnpud.md) is how several apps share the Neural Engine.
 //
 // AMD's NPU takes the same lock for a chat model's IRON export (chat's loadIRON): one chat model
 // uses all of its hardware contexts, a second process's CREATE_HWCTX right after another's
-// contexts ended fails now and then, and hwnpud's engine holds the NPU for every client
-// (docs/design/hwnpud.md).
-const npuLockEnv = "HWNPU_NPU_LOCK"
+// contexts ended fails now and then, and hwnpud's engine holds the NPU for every client.
 
 var npuLock struct {
 	sync.Mutex
@@ -37,9 +37,6 @@ func npuLockPath() string {
 
 // lockNPU takes the lock unless this process has it, waiting until ctx ends.
 func lockNPU(ctx context.Context) error {
-	if strings.EqualFold(os.Getenv(npuLockEnv), "off") {
-		return nil
-	}
 	npuLock.Lock()
 	defer npuLock.Unlock()
 	if npuLock.f != nil {
@@ -69,7 +66,7 @@ func lockNPU(ctx context.Context) error {
 			if who == "" {
 				who = "another process"
 			}
-			fmt.Fprintf(os.Stderr, "waiting for the %s: %s is using it (%s=off to skip the wait)\n", npuName(), who, npuLockEnv)
+			fmt.Fprintf(os.Stderr, "waiting for the %s: %s is using it\n", npuName(), who)
 			told = true
 		}
 		select {

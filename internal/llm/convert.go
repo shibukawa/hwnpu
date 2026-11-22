@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -502,19 +504,14 @@ func AddSmaller(path, form string, scale float64, from int) error {
 	return WriteManifest(path, man)
 }
 
-// AttentionEnv names the environment variable that keeps the attention programs of a model
-// split at its attention in the model's own form ("grouped") instead of the one its backend
-// runs fastest (attentionForm), for comparing the two: the programs are written again when it
-// changes (RefreshAttention).
-const AttentionEnv = "HWNPU_ATTENTION"
-
 // attentionForm is the form the attention programs of a model split at its attention are
 // written in for backend, from the model's (its architecture's attn: grouped or tile): Core AI
 // runs a grouped attention of several kv heads faster a kv head at a time (paged.Heads). One kv
 // head for all the heads written so leaves the Neural Engine (Gemma 4 E2B, PLaMo 3 Translate
-// 0.8B): it stays grouped.
+// 0.8B): it stays grouped. HWNPU_DEV=attention=grouped keeps the model's own form, for comparing
+// the two: the programs are written again when it changes (RefreshAttention).
 func attentionForm(backend, form string, sh paged.Shape) string {
-	if backend == BackendCoreAI && form == "grouped" && sh.KVHeads > 1 && os.Getenv(AttentionEnv) != "grouped" {
+	if backend == BackendCoreAI && form == "grouped" && sh.KVHeads > 1 && devenv.Value("attention") != "grouped" {
 		return paged.Heads
 	}
 	return form

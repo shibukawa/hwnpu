@@ -18,12 +18,16 @@
 //
 // Bind gives the commands the app and a context; the app's own commands may take them too
 // (func (c *RunCmd) Run(ctx context.Context, app *ai.App) error), and open the app's Runtime
-// with AutoPrepare, so that their first run makes the models ready.
+// with Open, which runs them only when "APP models prepare" has made every model ready and
+// compiled for this machine's NPU: a command never waits for a download or a compile, which
+// its user could not tell from the app being slow.
 package konghelper
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/kong"
@@ -96,10 +100,36 @@ func (c ModelsPrepare) Run(ctx context.Context, app *ai.App) error {
 	return cli.Prepare(ctx, app, c.options())
 }
 
-// AutoPrepare is the option of App.Open (and App.Run) for an app's commands: ai.WithConsole, a
-// model that is not ready made ready at its first use, as "models prepare" makes them all ahead,
-// shown as hwnpu's commands show it. Only the models a command uses are prepared.
-func AutoPrepare() ai.Option { return ai.WithConsole() }
+// Ready fails unless every model of the app is prepared and compiled for this machine's NPU
+// (by this program): the error names those that are not and says to run "APP models prepare".
+// An app's command calls it (or Open) before it starts, so that it does not stop half way.
+func Ready(ctx context.Context, app *ai.App) error {
+	p, err := app.Plan(ctx)
+	if err != nil {
+		return err
+	}
+	if p.Compiled() {
+		return nil
+	}
+	var not []string
+	for _, it := range p.Items {
+		switch {
+		case !it.Ready:
+			not = append(not, fmt.Sprintf("%s (%s) is not downloaded and converted", it.Use, it.Model))
+		case !it.Compiled:
+			not = append(not, fmt.Sprintf("%s (%s) is not compiled for this machine's NPU", it.Use, it.Model))
+		}
+	}
+	return fmt.Errorf("%w: %s; \"%s models prepare\" makes them ready (\"%s models\" shows them)", ai.ErrNotPrepared, strings.Join(not, ", "), app.Name, app.Name)
+}
+
+// Open is App.Open after Ready.
+func Open(ctx context.Context, app *ai.App, opts ...ai.Option) (*ai.Runtime, error) {
+	if err := Ready(ctx, app); err != nil {
+		return nil, err
+	}
+	return app.Open(ctx, opts...)
+}
 
 // Status is the command of the NPU's status (cli.Status), as hwnpu status.
 type Status struct {

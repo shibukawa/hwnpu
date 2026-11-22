@@ -18,9 +18,9 @@ import (
 // Measures the Neural Engine's fp16 error on the pieces of a layer separately, against float32
 // computed here from the same weights: the RMS norm alone, the in_proj linear alone, and both.
 func TestANEPrecision(t *testing.T) {
-	dir := os.Getenv("HWNPU_LFM3_DIR")
+	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_LFM3_DIR not set")
+		t.Skip("HWNPU_TEST_LFM3_DIR not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)

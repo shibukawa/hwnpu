@@ -197,7 +197,7 @@ type PlacementError struct {
 | Core ML | `MLComputePlan`: 全演算の推奨デバイスが Neural Engine であること。推定で、実行時の保証ではない |
 | Core AI | 自分のコンパイルキャッシュ: MPSGraph の delegate のマニフェスト (`mps.fullyPlacedOnANE`。method は `coreai-cache-manifest`) |
 | Level Zero | 対応レイヤーの問い合わせ (`levelzero-query-network`)。NPU プラグインはフォールバックしないので、コンパイルが通れば NPU で動く |
-| OpenVINO | `HWNPU_OV_DEVICE=NPU` のときだけ確かめた扱い |
+| OpenVINO | `HWNPU_DEV=ov.device=NPU` のときだけ確かめた扱い |
 | AMD | xclbin / ELF は NPU 専用なので常に満たす |
 
 ## 電力

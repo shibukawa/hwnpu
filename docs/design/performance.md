@@ -83,7 +83,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 | Core AI: load the next program ahead, swap DiT groups | A Chroma DiT call 7.2 → 5.4–5.8 s; NE holds 8.3 → 2.2–2.6 GiB | | [image-apple.md](image-apple.md) |
 | `--batch` on Core AI | A Chroma DiT call 5.4 → 5.05 s a picture | Host memory per picture | [image-apple.md](image-apple.md) |
 | Every size as functions of one export | One download for all sizes (Anima's per-size exports were 2.9 GB each) | First compile pays all sizes | [image-apple.md](image-apple.md) |
-| Prebuilt per chip (`hwnpu-dev prebuild`) | FLUX.2 klein first run on an M1 40 min → 7 min 48 s | Not for chat models or VAEs | [apple-coreai.md](apple-coreai.md) |
+| Prebuilt per chip (`hwnpu-dev models package MODEL/coreai-ARCH`) | FLUX.2 klein first run on an M1 40 min → 7 min 48 s | Not for chat models or VAEs | [apple-coreai.md](apple-coreai.md) |
 | FLUX.2 klein 4B on Core AI | M1: 512² 11 s, 1024² 41 s a picture | | [image-apple.md](image-apple.md) |
 | Host memory back between VAE stages | FLUX.2 klein 1024² peak 5.8 → 4.1 GB | +0.4 s decoding | [image-apple.md](image-apple.md) |
 | AMD: DiT weights as bfp16 on the host | A step: Anima-Turbo 1024² 4.1 → 3.6–3.8 s, Chroma1-Flash 29.9 → 22.8–25.4 s, Chroma1-HD 27.5 → 20.2 s | 9 bits a weight; export 3–4× longer | [image-amd.md](image-amd.md) |
@@ -127,7 +127,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 - **Kernel fixes live in the export**: an AMD export keeps the kernels it was made with (rounding, merged operators) until exported again. An export from a newer exporter can be refused by an older hwnpu (gpt-oss's resident step)
 - **`-idle`**: the next request pays 0.8–2 s. **Towers on use**: the first image or clip waits 0.5–0.7 s, and the old and new banks are both pinned for that moment
 - **AMD barriers**: the chunk barrier costs 0.3–0.5 ms a chunk; the step barrier 0.3 ms a step (skipped for gpt-oss's resident step, where it would reload the array: 2.4 ms)
-- **Timing AMD**: `HWNPU_IRON_TIMING=1` adds each command's round trip; read `ironlm -forced`'s step time. An `array=True` parameter that differs by layer reloads the array each command and still passes the check
+- **Timing AMD**: `HWNPU_DEV=iron.timing=1` adds each command's round trip; read `ironlm -forced`'s step time. An `array=True` parameter that differs by layer reloads the array each command and still passes the check
 - **Disk sharing depends on the file system**: ext4 shares nothing; use Btrfs or XFS (Windows: Dev Drive)
 - **Core AI's first run** compiles every part once, and a multi-function `.aimodel` compiles all functions (Chroma1-Flash: 1 h 14 min for 512² and 1024²). The cache is per OS build and process name: after an OS update, or from `aicheck` / `go test`, programs compile again. macOS purges it when the disk is low (seen at 11–22 GB free); converting needs room too
 - **A layout version in an export's name** means converting and compiling again once; pictures are not bit for bit the previous version's (sums in another order); the old export stays until deleted

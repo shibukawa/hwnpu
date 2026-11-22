@@ -2,12 +2,12 @@
 // itself, through a Python process (serve_ir.py, embedded) that shares the buffers with hwnpu as
 // files mapped in memory. It is for checking the Intel path without Intel's NPU: on OpenVINO's
 // CPU plugin, hwnpu-chat (chat, agent, serve) and the tests run the same IR, by the same argument names,
-// as on the NPU through Level Zero. With HWNPU_OV_DEVICE=NPU it runs on OpenVINO's NPU plugin
+// as on the NPU through Level Zero. With HWNPU_DEV=ov.device=NPU it runs on OpenVINO's NPU plugin
 // instead, to compare with the Level Zero backend on an Intel machine.
 //
 // The backend lists a device only when asked: HWNPU_BACKEND=openvino, or Enable. HWNPU_OV_PYTHON names a
-// Python interpreter with the openvino and numpy packages (default python3, python on Windows), HWNPU_OV_DEVICE the
-// OpenVINO device (default CPU), HWNPU_OV_PRECISION the CPU plugin's inference precision (default
+// Python interpreter with the openvino and numpy packages (default python3, python on Windows), HWNPU_DEV=ov.device the
+// OpenVINO device (default CPU), HWNPU_DEV=ov.precision the CPU plugin's inference precision (default
 // f32; f16 is nearer to what the NPU computes).
 package openvino
 
@@ -27,6 +27,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -43,7 +45,7 @@ type Provider struct{}
 func (Provider) Name() string { return Name }
 
 func ovDevice() string {
-	if d := os.Getenv("HWNPU_OV_DEVICE"); d != "" {
+	if d := devenv.Value("ov.device"); d != "" {
 		return d
 	}
 	return "CPU"
@@ -99,7 +101,7 @@ func (Provider) Open(ctx context.Context, info types.DeviceInfo, opts backend.Op
 		return nil, err
 	}
 	args := []string{"-I", script, "--device", info.ID}
-	if p := os.Getenv("HWNPU_OV_PRECISION"); p != "" {
+	if p := devenv.Value("ov.precision"); p != "" {
 		args = append(args, "--precision", p)
 	}
 	cmd := exec.Command(python(), args...)

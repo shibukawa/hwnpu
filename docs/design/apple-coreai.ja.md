@@ -26,7 +26,7 @@ Core AI にした理由:
 | `hwnpu-chat` (チャット、埋め込み、`systemone`) | Core AI だけ。`--backend` は `coreai`、`intel`、`levelzero`、`openvino`。`coreml` は選べない |
 | `hwnpu-image` (生成と画像を読むモデル) | Core AI だけ。`convert` の既定は `coreai`。`convert --backend coreml` は `--cpu` が読むものを書くために残す |
 | `hwnpu-audio` (music、sfx、transcribe、tts、pitch、notes) | Core AI だけ |
-| `hwnpu-dev prebuild` | `coreai-build` で prebuilt を作る (下) |
+| `hwnpu-dev models package MODEL/coreai-ARCH` | `coreai-build` で prebuilt を作る (下) |
 | `hwnpu-dev convert` | 既定は `coreml`。`llm.Convert` は `coreai` も取る |
 
 - Core AI がない (macOS 26 以前) とき、これらのコマンドは「Core AI が要る、macOS 27」というエラーで止まる (`errNoCoreAI`)。Core ML には落とさない
@@ -62,14 +62,14 @@ Core AI にした理由:
 | 行列の積 | 複合の `broadcasting_batch_matmul_v1` の中に `broadcast_to` と `batch_matmul` | 基本の演算を外に並べると、int8 の重み (`blockwise_shift_scale_v2`) があるときプログラム全体が Neural Engine から外れる。重みの reshape では MPSGraph が形を誤る |
 | softmax | `exp(x − max) × reciprocal(sum)` | `exp / sum` や softmax は matmul と注意の演算にまとめられ、Neural Engine から外れる |
 | 2 項演算 | 同じ形どうしだけ。広げるのは `broadcast_in_dims` | — |
-| 定数での割り算 | 逆数との積 (`HWNPU_AILOWER_DIVIDE=1` は調べるために割り算のまま) | Neural Engine が割る代わりに掛ける (PP-OCR の検出器でコサイン 0.05) |
+| 定数での割り算 | 逆数との積 (`HWNPU_DEV=ailower.divide=1` は調べるために割り算のまま) | Neural Engine が割る代わりに掛ける (PP-OCR の検出器でコサイン 0.05) |
 | 内側の次元が 1 の matmul | 掛け算 (外積) で書く | (1×1)·(1×N) は Neural Engine で誤る (M = 1 で相対誤差 0.28) |
 | softplus | `relu(x) + log(1 + exp(−|x|))` | Core AI が `log(1 + exp(x))` をまとめ、x > 10.4 で 0 になる |
 | 隣り合う lut の表 | 同じにしない (`mlpackage.DistinctNeighbours`: 値を 1 つ 0 の方へ 1 ulp) | `coreai-build` の ANE のコンパイラが落ち (「per-cout group … not content-uniform」)、部品を GPU に回す |
 
 ほかに `max_pool`、`conv_transpose` (MIL の pads に切り詰め)、`pad` の replicate / reflect、`elu`、LUT (lut4〜lut8) などの下ろし方がある。新しいものは coreai-torch で小さな torch のモジュールを変換し (`uv run --offline --prerelease=allow --python 3.13 --with coreai-torch==0.4.3 --with torch`)、プログラムを出して `bcdump` でバイトコードを読む。演算の operand の順は coreai-core の `_coreai_ops_gen.py` にある。
 
-`ailower` は下ろしながら、知られている Neural Engine の罠を記録する (`HWNPU_AILOWER_NOTES=1` で出す。`aicheck lint` は書き出しを探す)。今あるのは、最後の軸の slice の開始を 32 で割った余りが 1〜14 のもの (4094 を超える値が Inf になる)。
+`ailower` は下ろしながら、知られている Neural Engine の罠を記録する (`HWNPU_DEV=ailower.notes=1` で出す。`aicheck lint` は書き出しを探す)。今あるのは、最後の軸の slice の開始を 32 で割った余りが 1〜14 のもの (4094 を超える値が Inf になる)。
 
 ## 書き出し: `NAME.coreai`
 
@@ -108,7 +108,7 @@ Core AI にした理由:
 - M1 の写しは約 29 GB/s。何もしないプログラムの 1 回は 0.21 ms (M1)、呼び出しの下限は 160〜175 µs (M2)
 - Neural Engine に載るプログラムは 1 プロセス 112 個まで (M2)。113 個目は読み込みに失敗し (「no ANE resources」)、Core AI は黙って GPU で動かす。デバイスは読み込んだプログラムを数え (`aneLive`)、上限の近くで失敗したらそう言う。gpt-oss-20b の書き出しは約 84 個、ほかのチャットのモデルは 40 個以下。2 つのモデルを 1 プロセスに持つと越えうる
 - Core AI は Core ML の `GraphSource.Units` のように計算するユニットを選べない。`HWNPU_COREAI_UNITS=cpu` は全部を Core AI の CPU で動かす (Neural Engine なしのテスト用)
-- Core AI のキャッシュからの読み込みは 0.2〜0.3 秒なので、1 本を動かす間に次を読める (`runner.InTurn`、`runner.Ring`。`HWNPU_LOAD_AHEAD=0` で切る)。[Apple の画像のモデル](image-apple.ja.md)
+- Core AI のキャッシュからの読み込みは 0.2〜0.3 秒なので、1 本を動かす間に次を読める (`runner.InTurn`、`runner.Ring`。`HWNPU_DEV=load-ahead=0` で切る)。[Apple の画像のモデル](image-apple.ja.md)
 
 ## キャッシュとディスク
 
@@ -126,9 +126,9 @@ Core AI にした理由:
 - Core AI のキャッシュは実行ファイル名ごと。名前を変えたテストのバイナリは丸ごと 1 回分 (1 モデル 1.8 GB) 増やす。名前はそのままにしてディレクトリで分ける (`base/hwnpu-chat`、`new/hwnpu-chat`)。`hwnpu-image` の名前で作った `aicheck` はそのコマンドのキャッシュに当たる
 - OS を更新すると、全部を `main.mlirb` からコンパイルし直す
 - ディスクの空きが少ないと、macOS が Core AI の項目、aned のコード、ときに `~/Library/Caches` の下の hwnpu のキャッシュの根まで消す (既定の方針は `storagePressure` で消し、使っていない順ではない)。M2 では空き約 15 GiB を切ると始まり、空き 22 GB でも仕上げたばかりの prebuilt を消した。初回は 25 GB 以上空ける
-- aned のコードが消えて項目が残ると、`specialize` / `loadFunction` がすぐ失敗する (`_GenericObjCError.nilError`、`_GenericObjCError 0`)。shim は項目を消して読み直す。ディスクに空きがなければ Neural Engine のコンパイラが失敗し、GPU に回る。`HWNPU_COREAI_DEBUG=1` は「the cached entry failed (…), compiled again」を出し、GPU に落ちた項目を消し、空きが 10 GiB 未満なら警告する
+- aned のコードが消えて項目が残ると、`specialize` / `loadFunction` がすぐ失敗する (`_GenericObjCError.nilError`、`_GenericObjCError 0`)。shim は項目を消して読み直す。ディスクに空きがなければ Neural Engine のコンパイラが失敗し、GPU に回る。`HWNPU_DEV=coreai.debug=1` は「the cached entry failed (…), compiled again」を出し、GPU に落ちた項目を消し、空きが 10 GiB 未満なら警告する
 - Core AI に項目ができたら `main.mlirb` は読まれない。空にしても資産は読める (`main.hash` は残す)
-- `HWNPU_COREAI_DROP_BYTECODE=1` は項目ができた後に `main.mlirb` を空のファイルに置き換える (Core AI が古いファイルを写像しているかもしれないので rename で)。Chroma1-Flash の 512² で hwnpu のキャッシュは 28 → 15 GB。既定は切らない: 取得元から取った書き出しは、項目が消えたときに落とし直しになる
+- `HWNPU_DEV=coreai.drop-bytecode` は項目ができた後に `main.mlirb` を空のファイルに置き換える (Core AI が古いファイルを写像しているかもしれないので rename で)。Chroma1-Flash の 512² で hwnpu のキャッシュは 28 → 15 GB。既定は切らない: 取得元から取った書き出しは、項目が消えたときに落とし直しになる
 - 空の `main.mlirb` を Core AI が解析するとプロセスごと落ちる (LLVM: `cannot unwrap empty odiec_module_t`)。そこで空の資産は項目があるとき (`hasEntry`: `…/model.aimodelx/main-this.odix` が空でないファイル) だけ `kindNoRetry` (0x100: shim は項目を消して読み直さない) で開き、なければ Go が部品から下ろし直す。直接渡されたものならエラーにする。迷ったら空にせず、下ろし直す
 - `hwnpu cache` が空きの下限まで切るときは、prebuilt のある部品の Core AI の項目を先に消す。prebuilt から数秒で戻る
 - Neural Engine の重みはカーネルの wired メモリ (`mem.NPUWired` で読む) で、プロセスの footprint ではない: [メモリと電力](memory-and-power.ja.md)
@@ -183,11 +183,11 @@ xcrun coreai-build compile X.aimodel --platform macOS --architecture h14g --pref
 - 鍵: `coreai.ProgramsDigest` (各 `.aimodel` の場所と `main.hash`)、種類、書き出しの名前。`converted/MODEL/coreai-ARCH/EXPORT/v0-HASH`。モデルは書き出しの `entry.json` のもの
 - `Compile` は項目も手元の prebuilt もない部品に出会うと、書き出しごと・プロセスごとに 1 回取得元に聞き (`coreai.FetchPrebuilt`、chat が設定)、`EXPORT.prebuilt/ARCH/` に置く。`EXPORT.coreai.prebuilt` は種類 `prebuilt` のキャッシュの単位で、モデルの量に数えず、切るときも残す。prebuilt のある機械にも `.aimodel` の書き出しは要る (重みはそこから)。書き出しの取得元と詰め方: [配布](distribution.ja.md)
 
-`hwnpu-dev prebuild EXPORT [-arch LIST|all] [-j N] [-force] [-n] [-packed] [-put]` (`coreai.Build`):
+`hwnpu-dev models package MODEL/coreai-ARCH|EXPORT[/coreai-ARCH] [-j N] [--force] [-n] [--packed] [--no-push]` (`coreai.Build`):
 
-- 部品 × 種類ごとに `coreai-build` を 1 プロセスずつ、`-j` 個並べて走らせる (既定: 6 GB を超えた 4 GB ごとに 1、コアの半分まで。16 GB で 2)。`.prebuild-*` に書いてから名前を付け替える。部品ごとに作って詰め、`.aimodelc` 全体は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB)。`-put` は詰めて種類ごとの束を書き戻す取得元に置く。`-packed` は書き出しの横に詰めるだけ
+- 部品 × 種類ごとに `coreai-build` を 1 プロセスずつ、`-j` 個並べて走らせる (既定: 6 GB を超えた 4 GB ごとに 1、コアの半分まで。16 GB で 2)。`.prebuild-*` に書いてから名前を付け替える。部品ごとに作って詰め、`.aimodelc` 全体は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB)。詰めて種類ごとの束を書き戻す取得元に置く。`--packed` は書き出しの横に詰めるだけ、`--no-push` は全体のままソースの横に残す。モデル名を渡すと、先に coreai 向けに用意し (`hwnpu-dev models package MODEL/coreai`: 取得元から、なければ変換) その書き出しをコンパイルする
 - オフラインのコンパイラが失敗した部品は失敗とし (出力は残さない)、ほかが終わってから単独でもう 1 度試す
-- 1 回に 1 種類ずつ作る (`-arch ARCH -put`)。12 種類を一度に作ると、ディスクが埋まるまで何も置かれなかった。ディスクの空きと `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` を見る
+- 1 回に 1 種類ずつ作る (`--arch ARCH`)。12 種類を一度に作ると、ディスクが埋まるまで何も置かれなかった。ディスクの空きと `$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` を見る
 - Chroma1-Flash の 1024²: 29 本を 9 分 (1 プロセスのピーク 2.3 GB)。ANE のコードは合計 140 MB、重みは 15.6 GB
 
 ### prebuilt が効くところ
@@ -217,8 +217,8 @@ Core AI と `coreai-build` の未解決の問題、Apple への報告の番号�
 | 道具 | 使い方 |
 |---|---|
 | `aicheck run -cpu PKG…` | 部品を Core AI で動かし、乱数の入力で `milcpu` と比べる。`-coreml` は同じ部品を Core ML で (誤りが Core AI のものか)。`-calls N` は 2 回目以降の平均。`-ref` は参照のパッケージと比べる。`AICHECK_WORST=1` は差の大きい要素を出す。`AICHECK_CONST=name=v,…` は定数やマスクの入力に本当の値を与える |
-| `HWNPU_AILOWER_CUT=N` | 先頭の N 個の演算だけを下ろし、その演算を `milcpu` とコサインで比べる。誤る演算、Neural Engine から外れる演算を二分探索する |
-| `HWNPU_AILOWER_TRACE` | op_id (Core AI のエラーが示す) と演算の対応 |
+| `HWNPU_DEV=ailower.cut=N` | 先頭の N 個の演算だけを下ろし、その演算を `milcpu` とコサインで比べる。誤る演算、Neural Engine から外れる演算を二分探索する |
+| `HWNPU_DEV=ailower.trace` | op_id (Core AI のエラーが示す) と演算の対応 |
 | `aicheck probe` | 小さな MIL (SDPA、RoPE、RMSNorm、int8 の線形、書き換え) が Neural Engine に載るか |
 | `aicheck lower OUT PKG` | 下ろし方のない最初の演算で止まる |
 | `aicheck merge OUT.aimodel f8=PKG f128=PKG` | 複数のパッケージを 1 本の関数に |
@@ -237,7 +237,7 @@ Core AI と `coreai-build` の未解決の問題、Apple への報告の番号�
 - 小さなプログラム (約 45 演算) は中身によらず CPU に行く。Neural Engine から外す原因は、載ると分かっている本物の大きさのプログラムに足して探す
 - 大きさを 1 本の関数にするときは、切り詰める前に大きさごとの部品を単独で見る
 - 起動の時間は両方のキャッシュを温めて比べる (それぞれ動かした直後に 3 回ずつ): 追い出された Core ML のキャッシュを Core AI の速さと読み違えたことがある
-- 参照の精度を先に決める: `runner` を通す CPU のインタプリタは `HWNPU_CPU_F16=1` でなければ fp32。`aicheck` は fp16 の丸めで動かす
+- 参照の精度を先に決める: `runner` を通す CPU のインタプリタは `HWNPU_DEV=cpu.f16=1` でなければ fp32。`aicheck` は fp16 の丸めで動かす
 
 ## Core AI とその下の Neural Engine の罠
 
@@ -253,7 +253,7 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 | 畳み込みの前の明示の `pad` が誤った | — |
 | 内側の次元が 1 の matmul | 掛け算で書く |
 | softplus が x > 10.4 で 0 | 安定な形 (上) |
-| 最後の軸の slice の開始を 32 で割った余りが 1〜14: 4094 を超える値が Inf | `HWNPU_AILOWER_NOTES`、`aicheck lint` (当たるのは LFM2-8B-A1B のルーティングの重みだけで、値は 1 以下) |
+| 最後の軸の slice の開始を 32 で割った余りが 1〜14: 4094 を超える値が Inf | `HWNPU_DEV=ailower.notes`、`aicheck lint` (当たるのは LFM2-8B-A1B のルーティングの重みだけで、値は 1 以下) |
 | linear / conv の出力が、途中の和でも 2^15 に届くと Inf (M2) | 範囲を抑える (MaxScaled、`mil.BlockRanges`) |
 | matmul の中の非正規化数は 0 | 範囲の点検 |
 | 「empty reset layer candidates in SS cost model」: 単独なら通る演算の組で落ちる (Sana の VAE の `tile` + 1×1 の畳み込み、MoGe-2 の 1×1 の逆畳み込みの後の `pixel_shuffle`) | 値の同じ書き方に: チャンネルの繰り返しを 0/1 の重みの 1×1 の畳み込みで、シャッフルを行の帯に分けて (`mil.deconv2`、256 行まで) |
@@ -269,8 +269,8 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 
 | 選択 | ファイル |
 |---|---|
-| 短い会話は分けない 1 本で、伸びたら注意で分けた形に (`wholeTiers`、`decode.Session.Migrate`。M1 ではなし: `chat.wholeSlower`)、Core AI では Qwen3 も注意で分ける、kv ヘッドごとの注意 (`paged.Heads`、`HWNPU_ATTENTION=grouped`)、長い窓のリングの段 | [LLM のエンジン](llm-engine.ja.md) |
-| DiT の組を呼び出しごとに入れ替える (`HWNPU_HOLD_DIT=1`)、先読み、まとめて描く、注意の並べ方、メモリに応じたブロック数 | [Apple の画像のモデル](image-apple.ja.md) |
+| 短い会話は分けない 1 本で、伸びたら注意で分けた形に (`wholeTiers`、`decode.Session.Migrate`。M1 ではなし: `chat.wholeSlower`)、Core AI では Qwen3 も注意で分ける、kv ヘッドごとの注意 (`paged.Heads`、`HWNPU_DEV=attention=grouped`)、長い窓のリングの段 | [LLM のエンジン](llm-engine.ja.md) |
+| DiT の組を呼び出しごとに入れ替える (`HWNPU_DEV=hold-dit=1`)、先読み、まとめて描く、注意の並べ方、メモリに応じたブロック数 | [Apple の画像のモデル](image-apple.ja.md) |
 | 部品の間でホストが専門家を選ぶ | [MoE](moe.ja.md) |
 | 取得元の書き出し、`files.tar.zst`、prebuilt の束 | [配布](distribution.ja.md) |
 
@@ -283,7 +283,7 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 - **VAE と文の符号器の prebuilt** (`LeftToDevice`): 絵が誤る / `Request cancelled`、得もない
 - **Sana の prebuilt**: 試したとき `coreai-build` が ANE に乗せたのは 27 本のうち 8 本で、それも端末のコンパイルより仕上げが遅かった。Qwen-Image も対象にしない
 - **h18g と落ちる 9 種類**: 作らない (GPU だけの prebuilt は M6 を ANE から外す)
-- **キャッシュに入ったら既定で `main.mlirb` を消す**: 取得元の書き出しは項目が消えたら落とし直しになる。`HWNPU_COREAI_DROP_BYTECODE=1` だけ
+- **キャッシュに入ったら既定で `main.mlirb` を消す**: 取得元の書き出しは項目が消えたら落とし直しになる。`HWNPU_DEV=coreai.drop-bytecode` だけ
 - **コンパイルを並べる**: 機械に ANE のコンパイラの列は 1 本しかない
 - **呼び出しごとに新しい `NDArray`、呼び出し側のバッファの view** (`NDArray.RawView`、IOSurface): 10.0 / 10.7 / 8.3 ms に対し、使い回す配列は 7.2 ms (PLaMo 3 0.8B の part1、M1)。今は呼び出し側が Core AI の配列に書く
 - **分けない 1 本と分けた形を 1 本の `.aimodel` に**: Qwen3-0.6B で 60 関数になり、読み込み 2 分 28 秒、一部が GPU に外れ、GPU の関数ごとに MPSGraph の作業が 0.6 GB でディスクが尽きた

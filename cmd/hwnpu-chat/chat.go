@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/daemon"
@@ -50,60 +51,89 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if cl != nil {
 		return c.runThrough(ctx, stop, cl)
 	}
-	if err := c.prepare(); err != nil {
-		return err
-	}
-	c.loadFlags.ExpertsKey = cmp.Or(c.loadFlags.ExpertsKey, "chat")
-	e, err := loadChat(ctx, c.Model, &c.loadFlags, &c.convertFlags, &c.encoderFlags)
+	st, cat, err := c.loadFlags.prepare(ctx)
 	if err != nil {
 		return err
 	}
-	defer e.Close()
+	cm, err := chatModelOf(cat, c.Model, &c.convertFlags, &c.encoderFlags)
+	if err != nil {
+		return err
+	}
+	st.Definitions = cm.defs
+	var use ai.Requirement = cm.chat
+	if cm.translate != nil {
+		use = *cm.translate // a translation model translates each text, with the chat's turns as its history
+	}
+	app := ai.NewApp("hwnpu-chat", use)
+	app.Store = st
+	rt, err := open(ctx, app, options(&c.loadFlags, &c.convertFlags, "chat")...)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	t := &talker{maxNew: c.N, s: c.sampling(), seed: c.Seed, thinkBudget: c.ThinkBudget,
+		tr: text.TranslateOptions{To: c.To, From: c.From, Form: c.Form}}
+	if cm.translate != nil {
+		if t.tl, err = cm.translate.Get(ctx, rt); err != nil {
+			return err
+		}
+	} else {
+		cchat, err := cm.chat.Get(ctx, rt)
+		if err != nil {
+			return err
+		}
+		t.c = cchat
+		t.think = c.think(cchat)
+	}
+	prepared(rt)
+	cm.keep()
 	stop() // Ctrl-C stops an answer, not the chat
-	return c.converse(local{e.Engine}, c.think(e.Engine))
+	return c.converse(t)
 }
 
-// converse answers the prompt given, or talks, with the model r.
-func (c *ChatCmd) converse(r replier, think bool) error {
-	t := &talker{r: r, think: think, thinkBudget: c.ThinkBudget, maxNew: c.N, s: c.sampling(), seed: c.Seed,
-		tr: &chat.Translation{TargetLang: c.To, SourceLang: c.From, Form: c.Form}}
+func (c *ChatCmd) converse(t *talker) error {
 	t.reset(c.System)
 	if c.Prompt == "" {
 		return t.talk(c.System)
 	}
 	console.Running() // the times of a conversation in the terminal are not told
-	content := chat.Content{Text: c.Prompt}
+	msg := text.Message{Role: "user", Text: c.Prompt}
 	for _, f := range c.Image {
 		m, err := mediaFile(f, false)
 		if err != nil {
 			return err
 		}
-		content.Media = append(content.Media, m)
+		msg.Media = append(msg.Media, m)
 	}
 	for _, f := range c.Audio {
 		m, err := mediaFile(f, true)
 		if err != nil {
 			return err
 		}
-		content.Media = append(content.Media, m)
+		msg.Media = append(msg.Media, m)
 	}
-	if len(content.Media) > 0 {
-		content.Text = strings.Repeat(chat.MediaMarker, len(content.Media)) + content.Text
-	}
-	return t.answer(content)
+	return t.answer(msg)
 }
 
-// talker holds a conversation with a chat model: one loaded here (local) or one hwnpud holds
-// (remote).
+// talker holds a conversation with a chat model, or a translation model's history.
+type chatter interface {
+	Reply(context.Context, []text.Message, text.ChatOptions, func(text.Delta) bool) (text.Answer, error)
+	Images() bool
+	Audio() bool
+	Translates() bool
+}
+
 type talker struct {
-	r           replier
-	msgs        []chat.Message
+	c           chatter
+	tl          *text.Translator // a translation model, in place of c
+	msgs        []text.Message
+	pairs       []text.Pair // the translations so far (tl)
 	think       bool
 	thinkBudget int
 	maxNew      int
-	s           chat.Sampling
+	s           text.Sampling
 	seed        uint64
-	tr          *chat.Translation
+	tr          text.TranslateOptions
 }
 
 // replier answers a conversation, writing the answer to out as it comes.
@@ -161,52 +191,89 @@ func (p *printer) end() {
 
 // reset starts the conversation again, with the system message.
 func (t *talker) reset(system string) {
-	t.msgs = t.msgs[:0]
+	t.msgs, t.pairs = t.msgs[:0], nil
 	if system != "" {
-		t.msgs = append(t.msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
+		t.msgs = append(t.msgs, text.Message{Role: "system", Text: system})
 	}
 }
 
-// answer sends content and writes the answer: the thinking to standard error in dim, the answer
-// to standard output, a line of statistics to standard error in gray. On an error the message is
-// taken back.
-func (t *talker) answer(content chat.Content) error {
-	t.msgs = append(t.msgs, chat.Message{Role: "user", Content: content})
+// answer sends a message and writes the answer: the thinking to standard error in dim, the
+// answer to standard output, a line of statistics to standard error in gray. On an error the
+// message is taken back.
+func (t *talker) answer(msg text.Message) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	var p printer
-	msg, st, err := t.r.reply(ctx, t.msgs, turn{think: t.think, thinkBudget: t.thinkBudget, maxNew: t.maxNew, s: t.s, seed: t.seed, tr: t.tr}, &p)
+	thought, answered := false, false
+	show := func(d text.Delta) bool {
+		if d.Reasoning != "" {
+			fmt.Fprint(os.Stderr, dimmed(d.Reasoning))
+			thought = true
+		}
+		if d.Text != "" {
+			if !answered && thought {
+				fmt.Fprint(os.Stderr, "\n\n")
+			}
+			fmt.Print(d.Text)
+			answered = true
+		}
+		return true
+	}
+	maxNew := t.maxNew
+	if maxNew <= 0 {
+		maxNew = text.Unlimited
+	}
+	var st text.Stats
+	var err error
+	if t.tl != nil {
+		o := t.tr
+		o.History, o.MaxTokens, o.Sampling, o.Seed = t.pairs, maxNew, &t.s, t.seed
+		var tr text.Translation
+		tr, err = t.tl.Reply(ctx, msg.Text, o, show)
+		st = tr.Stats
+		if err == nil || errors.Is(err, context.Canceled) {
+			t.pairs = append(t.pairs, text.Pair{Source: msg.Text, Target: tr.Text})
+		}
+	} else {
+		var a text.Answer
+		msgs := append(t.msgs, msg)
+		o := text.ChatOptions{MaxTokens: maxNew, Think: &t.think, ThinkBudget: samplingFlags{ThinkBudget: t.thinkBudget}.budget(),
+			Sampling: &t.s, Seed: t.seed}
+		if t.c.Translates() {
+			o.Translation = &t.tr
+		}
+		a, err = t.c.Reply(ctx, msgs, o, show)
+		st = a.Stats
+		if err == nil || errors.Is(err, context.Canceled) {
+			t.msgs = append(msgs, text.Message{Role: "assistant", Text: a.Text, Reasoning: a.Reasoning})
+		}
+	}
 	stop()
-	p.end()
+	if answered || thought {
+		fmt.Println()
+	}
 	if err != nil && !errors.Is(err, context.Canceled) {
-		t.msgs = t.msgs[:len(t.msgs)-1]
 		return err
 	}
-	t.msgs = append(t.msgs, msg)
-	if errors.Is(err, context.Canceled) && st.prompt == 0 {
-		console.Notef("[stopped]\n") // through hwnpud: a stream cut short has no statistics
-		return nil
-	}
 	cut := ""
-	if st.thinkCut {
+	if st.ThinkCut {
 		cut = fmt.Sprintf("; thinking cut at %d tokens", t.thinkBudget)
 	}
-	if st.thinkLooped {
+	if st.ThinkLooped {
 		cut = "; thinking cut going round in circles"
 	}
-	if st.looped {
+	if st.Looped {
 		cut += "; stopped repeating itself"
 	}
-	if st.drafted > 0 {
-		cut += fmt.Sprintf("; %d of %d drafts accepted", st.accepted, st.drafted)
+	if st.Drafted > 0 {
+		cut += fmt.Sprintf("; %d of %d drafts accepted", st.Accepted, st.Drafted)
 	}
-	if t.s.Temperature > 0 && st.seed != 0 {
-		cut += fmt.Sprintf("; seed %d", st.seed)
+	if t.s.Temperature > 0 && st.Seed != 0 {
+		cut += fmt.Sprintf("; seed %d", st.Seed)
 	}
 	if errors.Is(err, context.Canceled) {
 		cut += "; stopped"
 	}
 	console.Notef("[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]\n",
-		st.prompt, st.prompt-st.reused, st.prefill.Seconds(), st.generated, float64(st.generated)/max(st.decode.Seconds(), 1e-9), cut)
+		st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, st.TokensPerSecond(), cut)
 	if console.Profile {
 		decode.WriteProfile(os.Stderr)
 		if b, ok := mem.NPUWired(); ok {
@@ -254,50 +321,49 @@ func (l local) reply(ctx context.Context, msgs []chat.Message, o turn, out *prin
 
 // talk is the conversation in the terminal.
 func (t *talker) talk(system string) error {
-	f := t.r.features()
 	media := ""
-	if f.images {
+	if t.c != nil && t.c.Images() {
 		media += "/image FILE [text] sends an image, "
 	}
-	if f.audio {
+	if t.c != nil && t.c.Audio() {
 		media += "/audio FILE.wav [text] sends a clip, "
 	}
-	translator := f.translator
+	translator := t.tl != nil || (t.c != nil && t.c.Translates())
 	if translator {
-		to := cmp.Or(t.tr.TargetLang, "English for Japanese text, else Japanese")
+		to := cmp.Or(t.tr.To, "English for Japanese text, else Japanese")
 		media += fmt.Sprintf("each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)
 	}
 	console.Notef("%s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer, ↑ ↓ go through what was typed\n", media)
 	ed := console.NewEditor("chat")
 	for {
-		text, ok := read(ed)
+		line, ok := read(ed)
 		if !ok {
 			return nil
 		}
 		switch {
-		case text == "":
+		case line == "":
 			continue
-		case text == "/exit" || text == "/quit":
+		case line == "/exit" || line == "/quit":
 			return nil
-		case text == "/reset":
+		case line == "/reset":
 			t.reset(system)
 			console.Notef("[conversation cleared]\n")
 			continue
-		case translator && (text == "/to" || strings.HasPrefix(text, "/to ")):
+		case translator && (line == "/to" || strings.HasPrefix(line, "/to ")):
 			// the history's translations are labelled with the target language: start again
-			t.tr.TargetLang = strings.TrimSpace(strings.TrimPrefix(text, "/to"))
+			t.tr.To = strings.TrimSpace(strings.TrimPrefix(line, "/to"))
 			t.reset(system)
-			console.Notef("[translating into %s; history cleared]\n", cmp.Or(t.tr.TargetLang, "the language by the text"))
+			console.Notef("[translating into %s; history cleared]\n", cmp.Or(t.tr.To, "the language by the text"))
 			continue
-		case strings.HasPrefix(text, "/think"):
-			t.think = strings.TrimSpace(strings.TrimPrefix(text, "/think")) != "off"
+		case strings.HasPrefix(line, "/think"):
+			t.think = strings.TrimSpace(strings.TrimPrefix(line, "/think")) != "off"
 			console.Notef("[thinking %v]\n", t.think)
 			continue
 		}
-		content := chat.Content{Text: text}
+		msg := text.Message{Role: "user", Text: line}
 		// /image FILE [text], /audio FILE.wav [text]: the image or the clip, then the text
 		for _, cmd := range []string{"/image ", "/audio "} {
-			rest, ok := strings.CutPrefix(text, cmd)
+			rest, ok := strings.CutPrefix(line, cmd)
 			if !ok {
 				continue
 			}
@@ -305,45 +371,44 @@ func (t *talker) talk(system string) error {
 			m, err := mediaFile(expandHome(file), cmd == "/audio ")
 			if err != nil {
 				printError(err)
-				content.Text = ""
+				msg.Text = ""
 				break
 			}
-			content = chat.Content{Text: chat.MediaMarker + strings.TrimSpace(after), Media: []chat.Media{m}}
+			msg = text.Message{Role: "user", Text: strings.TrimSpace(after), Media: []text.Media{m}}
 		}
-		if content.Text == "" {
+		if msg.Text == "" && len(msg.Media) == 0 {
 			continue
 		}
-		if err := t.answer(content); err != nil {
+		if err := t.answer(msg); err != nil {
 			printError(err)
 		}
 	}
 }
 
-// mediaFile reads an image file as a data URL, or a WAV file as base64.
-func mediaFile(path string, isAudio bool) (chat.Media, error) {
+// mediaFile reads an image or a WAV file.
+func mediaFile(path string, isAudio bool) (text.Media, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return chat.Media{}, err
+		return text.Media{}, err
 	}
 	if isAudio {
-		return chat.Media{Audio: true, Data: base64.StdEncoding.EncodeToString(raw)}, nil
+		return text.Media{Audio: true, Data: raw}, nil
 	}
-	mime := http.DetectContentType(raw)
-	if !strings.HasPrefix(mime, "image/") {
-		return chat.Media{}, fmt.Errorf("%s is %s, not an image", path, mime)
+	if mime := http.DetectContentType(raw); !strings.HasPrefix(mime, "image/") {
+		return text.Media{}, fmt.Errorf("%s is %s, not an image", path, mime)
 	}
-	return chat.Media{Data: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw)}, nil
+	return text.Media{Data: raw}, nil
 }
 
 // read prompts for and reads the next input with the line editor (a history on the arrows; a line
 // ending in \ continues on the next). It returns false at the end of the input.
 func read(ed *console.Editor) (string, bool) {
 	fmt.Println()
-	text, err := ed.Read("> ")
+	line, err := ed.Read("> ")
 	if err != nil {
 		return "", false
 	}
-	return strings.TrimSpace(text), true
+	return strings.TrimSpace(line), true
 }
 
 // printError writes an error of a turn, after which the conversation goes on, in red on a

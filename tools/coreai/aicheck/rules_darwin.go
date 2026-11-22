@@ -439,7 +439,7 @@ func (r *ruleRunner) inner1M(M int) error {
 	return nil
 }
 
-// div: x / 3 and x / 7 (ailower turns it into a multiply unless HWNPU_AILOWER_DIVIDE=1).
+// div: x / 3 and x / 7 (ailower turns it into a multiply unless HWNPU_DEV=ailower.divide=1).
 func (r *ruleRunner) div() error {
 	const n = 64 * 1024
 	xs := make([]float32, n)

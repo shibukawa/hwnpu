@@ -17,19 +17,19 @@ import (
 
 // Times one call of each of a model's programs on the Neural Engine, alone and alternating with
 // the others: the cost of a call hardly depends on the tokens it takes (speculative decoding
-// relies on that), and switching programs costs. Needs HWNPU_LFM3_DIR (the model's directory of
-// hwnpu-chat); HWNPU_CALL_PKGS names the programs, groups that share one cache separated by ";"
+// relies on that), and switching programs costs. Needs HWNPU_TEST_LFM3_DIR (the model's directory of
+// hwnpu-chat); HWNPU_TEST_CHAT_CALL_PKGS names the programs, groups that share one cache separated by ";"
 // and programs by "," (default: the programs of 1, 8 and 64 tokens with the cache of 16320).
 func TestCallTimes(t *testing.T) {
-	dir := os.Getenv("HWNPU_LFM3_DIR")
+	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_LFM3_DIR not set")
+		t.Skip("HWNPU_TEST_LFM3_DIR not set")
 	}
 	ctx := context.Background()
 	if infos, err := (coreml.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Neural Engine")
 	}
-	groups := os.Getenv("HWNPU_CALL_PKGS")
+	groups := os.Getenv("HWNPU_TEST_CHAT_CALL_PKGS")
 	if groups == "" {
 		groups = "lfm3-lut6-grouped-c16320-q8.mlpackage,lfm3-lut6-grouped-c16320-q64.mlpackage"
 	}

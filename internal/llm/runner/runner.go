@@ -9,8 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -234,9 +235,9 @@ func (p *cpuProgram) Run(ctx context.Context, in map[string][]float32) ([]float3
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// HWNPU_CPU_F16 rounds every operation's result to fp16, about the Neural Engine's
+		// HWNPU_DEV=cpu.f16 rounds every operation's result to fp16, about the Neural Engine's
 		// storage precision: to find values a program overflows on the NPU
-		res, err := part.Run(feed, milcpu.Options{RoundF16: os.Getenv("HWNPU_CPU_F16") != ""})
+		res, err := part.Run(feed, milcpu.Options{RoundF16: devenv.On("cpu.f16")})
 		if err != nil {
 			return nil, err
 		}

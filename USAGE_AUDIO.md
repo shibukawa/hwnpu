@@ -2,7 +2,7 @@
 
 [日本語](USAGE_AUDIO.ja.md)
 
-`hwnpu-audio` generates music and sound effects (`generate`), reads text aloud (`tts`), transcribes (`transcribe`), and finds pitch (`pitch`) and notes (`notes`), on the NPU. Each downloads its model on the first run and converts it by itself. `hwnpu-audio list` shows the models to choose from.
+`hwnpu-audio` generates music and sound effects (`generate`), reads text aloud (`tts`), transcribes (`transcribe`), and finds pitch (`pitch`) and notes (`notes`), on the NPU. Each downloads its model on the first run and converts it by itself. `hwnpu-audio list` shows the models to choose from. The commands are demos of the app library `ai` ([docs/app-api.md](docs/app-api.md): `ai/sound` for music, sound effects, pitch and notes, `ai/speech` for speech and transcription): they prepare what is missing before they run, and keep the compiled programs in hwnpu's user cache (there is no `--cache`). The flags that change how a model is made or run (`--format`, `--text-format`, `--dit-format`, `--cpu`, `--device`, `--threads`) make a model of its own, prepared apart from the one it is like.
 
 On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (exports `NAME.coreai` of `.aimodel`s in the model's directory, as hwnpu-chat's and hwnpu-image's), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds ([docs/design/audio-models.md](docs/design/audio-models.md)). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
 
@@ -17,6 +17,8 @@ On AMD's NPU (Ryzen AI 300 and later) each model runs from an export of IRON's (
 - MIDI notes: `--notes melody.mid`
 - Continuing a recording: `--continue intro.wav`
 - Play and write a file at once: `--play -o out.wav`; stream to standard output: `-o -`
+
+The first run prepares the whole model, the audio side of the style and SpectroStream's encoder (for `--continue`) with the rest, so that a later style from a recording or a continuation needs no download or conversion.
 
 On AMD's NPU SpectroStream's decoder runs as the graph of `tools/amd/iron_magenta.py`, and the language model and MusicCoCa on the CPU. The first run exports the decoder with IRON (about 15 seconds) unless a source has it (`magenta-realtime-2-small.amd-npu2`). On a Ryzen AI 9 365 it makes music at about 0.3 times real time (4 seconds in 13 seconds: the decoder 1.6 seconds and the language model 1.6 seconds a second of music; all on the CPU 28 seconds), at about 2.7 GB.
 

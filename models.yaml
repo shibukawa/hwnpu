@@ -19,6 +19,9 @@
 #                 coreai: {version: 1}}), bumped by hand when what is made changes: the sources
 #                 keep it as vN (v0-HASH with no version)
 #   develop       true: in development; what is converted goes in the sources as vN-HASH
+#   hub           the model's conversions on Hugging Face, by repository: the commit each target
+#                 reads there ({hwnpu/NAME: {amd-xdna2: COMMIT, apple: COMMIT}}; coreai-ARCH before
+#                 apple on a Mac of that Neural Engine). hwnpu-dev models hf push writes it (docs/prebuilt.md)
 #   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
 #   license       the weights' license: {id, url, class, terms, accept}. class is what it allows of
 #                 commercial use: open, conditional (a cap of revenue, a registration) or
@@ -33,6 +36,11 @@
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
 #                 buffers and the process's together over a run (docs/design/new-model-checklist.md)
 #   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
+#   disk          what the model keeps in the cache to run (its conversion unpacked and its tables;
+#                 not the checkpoint, which only converting reads), GB, a table by vendor; a vendor
+#                 it leaves out is not known. hwnpu-dev models hf sizes --write models.yaml writes it from
+#                 what the sources hold (Core AI's: at its version). Preparing takes bytes and disk
+#                 at once for a while (a packed export is unpacked beside its pack)
 #                 memory and bytes take one number, or a table by the NPU's vendor where they
 #                 differ (memory: {amd: 3.5, apple: 4.1}); a vendor the table leaves out takes its
 #                 largest. The table may name Apple's chips too (M1, M2, ...), where one differs
@@ -67,6 +75,11 @@
 #   allowed; a model named is refused with why (docs/model-provenance.md 2)
 version: 1
 
+# hub: push: the namespace on Hugging Face hwnpu-dev models hf push puts the conversions in (PUSH/MODEL);
+#   a file of your own gives another (an account or an organization of yours)
+hub:
+  push: hwnpu
+
 models:
   LFM3-1.7B:
     family: lfm3
@@ -86,6 +99,7 @@ models:
     variants:
       16: {memory: {apple: 3.1, M1: 1.7}, tier: auto}
     bytes: {amd: 1.74e9, apple: 3.5e9}
+    disk: {amd: 2.28e9}
     features: [tools, thinking]
     amd_export: lfm3 --max-seq-len 12288 --q4
     about: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"
@@ -121,6 +135,7 @@ models:
     machine: 8
     memory: {amd: 2.6, apple: 2.7}
     bytes: {amd: 2.08e9, apple: 3.8e9}
+    disk: {amd: 2.76e9}
     features: [tools, thinking, vision]
     amd_export: lfm3vl --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"
@@ -135,6 +150,7 @@ models:
     machine: 8
     memory: 2.6
     bytes: {amd: 1.97e9, apple: 4.0e9}
+    disk: {amd: 2.79e9}
     features: [tools, thinking, audio]
     amd_export: lfm3audio --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-audio tts)"
@@ -150,6 +166,7 @@ models:
     machine: 8
     memory: {amd: 3.0, apple: 3.1}
     bytes: {amd: 2.33e9, apple: 4.3e9}
+    disk: {amd: 3.20e9}
     features: [tools, thinking, vision, audio]
     amd_export: lfm3omni --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"
@@ -166,6 +183,7 @@ models:
     # export (1.73 GB) and the tables (3.17 GB, the per-layer embeddings in int8), 4.94 GB with the tokenizer
     memory: {amd: 2.4, apple: 2.3}
     bytes: {amd: 4.78e9, apple: 4.9e9}
+    disk: {amd: 5.08e9}
     features: [tools, thinking]
     amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"
@@ -182,6 +200,7 @@ models:
     # export (3.51 GB) and the tables (4.18 GB, the per-layer embeddings in int8), 7.73 GB with the tokenizer
     memory: {amd: 4.3, apple: 4.0}
     bytes: {amd: 7.45e9, apple: 7.7e9}
+    disk: {amd: 8.05e9}
     features: [tools, thinking]
     amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"
@@ -194,6 +213,7 @@ models:
     machine: 24
     memory: 4.2
     bytes: {amd: 4.46e9, apple: 9.3e9}
+    disk: {amd: 5.37e9}
     features: [tools, thinking]
     amd_export: qwen35 --max-seq-len 4096 --q4
     about: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"
@@ -213,6 +233,7 @@ models:
     variants:
       16: {memory: {apple: 2.3, M1: 1.5}, tier: auto}
     bytes: {amd: 1.18e9, apple: 1.77e9}
+    disk: {amd: 1.63e9}
     features: [tools, thinking]
     no_think: true
     amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
@@ -230,6 +251,7 @@ models:
     machine: 8
     memory: {amd: 2.4, apple: 2.2}
     bytes: {amd: 2.67e9, apple: 4.57e9}
+    disk: {amd: 3.15e9}
     features: [tools, thinking]
     no_think: true
     amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
@@ -273,6 +295,7 @@ models:
     variants:
       24: {memory: {amd: 14.6, apple: 12.2}, amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256}
     bytes: {amd: 11.79e9, apple: 14.4e9}
+    disk: {amd: 19.64e9}
     features: [tools, thinking]
     amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256 --expert-places 16 --host-route
     # the experts every kind of text runs (tools/moeusage, 19 categories of prompts in about 25
@@ -342,6 +365,7 @@ models:
       48: {memory: {amd: 26.3, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4}
     # AMD: the export for the NPU as the sources hold it (packed; the three of the variants are as large)
     bytes: {amd: 22.65e9, apple: 71.9e9}
+    disk: {amd: 27.11e9}
     features: [tools, thinking]
     amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 32
     # the experts every kind of text runs (tools/moeusage, the 19 categories of prompts in about
@@ -458,6 +482,7 @@ models:
     memory: {amd: 6.5, apple: 8.2}
     prefill: off
     bytes: {amd: 6.41e9, apple: 17.07e9}
+    disk: {amd: 7.45e9}
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 8B: the 2B's translation from a model 3.5 times as large, in 4 bit tables (as good as 8 bit ones on it); 10 to 11 tokens/s on an M3; not picked on an M1 (its 3.8 GiB is over what an M1's Neural Engine runs at full speed: the 2B there); on Intel's NPU in int4, its precision not checked yet"
@@ -473,6 +498,7 @@ models:
     machine: 16
     memory: {amd: 2.7, apple: 3.2}
     bytes: {amd: 2.35e9, apple: 5.76e9}
+    disk: {amd: 3.03e9}
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"
@@ -487,6 +513,7 @@ models:
     machine: 8
     memory: 1.0
     bytes: {amd: 0.83e9, apple: 1.79e9}
+    disk: {amd: 1.02e9}
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"
@@ -521,6 +548,7 @@ models:
     memory: {amd: 2.2, apple: 1.9}
     # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
     bytes: {amd: 1.53e9, apple: 1.6e9}
+    disk: {amd: 1.66e9}
     about: "OpenAI's Whisper large-v3-turbo: transcription of 99 languages, with timestamps, in 8 bit tables"
   LFM3-Audio-2B-TTS:
     family: lfm3-audio-tts
@@ -541,6 +569,7 @@ models:
     memory: {amd: 2.9, apple: 2.4}
     # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
     bytes: {amd: 2.75e9, apple: 4.0e9}
+    disk: {amd: 3.12e9}
     about: "LFM3-Audio-2B speaking a text (24 kHz WAV): its text model in 8 bit tables, the depthformer and the codec decoder in fp16; shares LFM3-Audio-2B's download"
   d1-2B:
     family: d1
@@ -589,6 +618,7 @@ models:
     # AMD: 327 MiB pinned on the NPU and 215 MiB of the process (the ONNX graph for the host's part)
     memory: {amd: 0.55, apple: 0.23}
     bytes: 4.0e7
+    disk: {amd: 0.06e9}
     about: "RTMO-s: the people in an image and their 17 COCO keypoints in one pass, without a person detector; 9.9M parameters, images stretched to 640x640"
   # hwnpu-image detect: OpenMMLab MMDetection's RTMDet (Apache-2.0), MMDeploy's ONNX exports of
   # its COCO weights in one repository; sha256 names the model's file
@@ -630,6 +660,7 @@ models:
     # the process
     memory: {amd: 0.7, apple: 0.2}
     bytes: 1.1e8
+    disk: {amd: 0.19e9}
     about: "RTMDet-m: the objects in an image, boxes and COCO's 80 labels (49.1 box AP); 24.7M parameters, images fit into 640x640"
   # hwnpu-image ocr: PaddleOCR's PP-OCRv6 (Apache-2.0), the ONNX files PaddlePaddle publishes: the
   # recognizer's repository, and the detector's in with (its files' sha256 under detector/)
@@ -1060,6 +1091,7 @@ models:
     # AMD: 118 MiB pinned on the NPU and 274 MiB of the process (the decoder in float64)
     memory: 0.4
     bytes: 4.14e7
+    disk: {amd: 0.03e9}
     about: "EfficientSAM-Ti: the mask of the thing a point or a box picks in a picture (Segment Anything's prompts); a ViT-Tiny at 1024 x 1024, 10M parameters"
   EfficientSAM-S:
     like: EfficientSAM-Ti
@@ -1069,6 +1101,7 @@ models:
     # AMD: 158 MiB on the NPU and 267 MiB of the process
     memory: 0.45
     bytes: 1.06e8
+    disk: {amd: 0.07e9}
     about: "EfficientSAM-S: the same with a ViT-Small, closer masks, about 3 times the work"
 
 categories:

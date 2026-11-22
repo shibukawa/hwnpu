@@ -15,12 +15,12 @@ import (
 	"github.com/shibukawa/hwnpu/internal/safetensors"
 )
 
-// Host's experts of gpt-oss-20b's layer 0 (HWNPU_GPTOSS_CKPT: the checkpoint's directory) against
+// Host's experts of gpt-oss-20b's layer 0 (HWNPU_TEST_GPTOSS_CKPT_DIR: the checkpoint's directory) against
 // the experts dequantized in float64 (transformers' convert_moe_packed_tensors and GptOssExperts).
 func TestHostGptOss(t *testing.T) {
-	dir := os.Getenv("HWNPU_GPTOSS_CKPT")
+	dir := os.Getenv("HWNPU_TEST_GPTOSS_CKPT_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_GPTOSS_CKPT: gpt-oss-20b's checkpoint")
+		t.Skip("HWNPU_TEST_GPTOSS_CKPT_DIR: gpt-oss-20b's checkpoint")
 	}
 	sh := Shape{Hidden: 2880, Inter: 2880, Experts: 32, TopK: 4}
 	rec := &HostRecord{Checkpoint: filepath.Join(dir, "model.safetensors.index.json"), Act: Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, Layers: map[int]MXFP4{}}
@@ -167,7 +167,7 @@ func TestHostRowMatchesRows(t *testing.T) {
 			rec := writeHost(t, sh, 2, c.act, c.bias)
 			t.Setenv("HWNPU_MOE_WIRE", c.wire)
 			run := func(debug string) [][]float32 {
-				t.Setenv("HWNPU_MOE_DEBUG", debug)
+				t.Setenv("HWNPU_DEV", debug)
 				h, err := OpenHost(rec, sh)
 				if err != nil {
 					t.Fatal(err)
@@ -188,7 +188,7 @@ func TestHostRowMatchesRows(t *testing.T) {
 				}
 				return outs
 			}
-			row, rows := run(""), run("row=0")
+			row, rows := run(""), run("moe.row=0")
 			var nonzero bool
 			for l := range row {
 				for j := range row[l] {

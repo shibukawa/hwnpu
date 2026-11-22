@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/daemon"
 )
@@ -111,6 +112,29 @@ func TestRemoteReply(t *testing.T) {
 	kw := got["chat_template_kwargs"].(map[string]any)
 	if kw["enable_thinking"] != true || kw["target_lang"] != "ja" {
 		t.Fatalf("kwargs %v", kw)
+	}
+}
+
+func TestRemoteChatterReply(t *testing.T) {
+	var budget string
+	c := serveUnix(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		budget = r.Header.Get(daemon.ThinkBudgetHeader)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	r := remoteChatter{remote{c: c, info: daemon.ModelInfo{Name: "m"}}}
+	var answer string
+	got, err := r.Reply(context.Background(), []text.Message{{Role: "user", Text: "hi"}},
+		text.ChatOptions{ThinkBudget: -1}, func(d text.Delta) bool {
+			answer += d.Text
+			return true
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "hello" || answer != got.Text || budget != "0" {
+		t.Fatalf("answer=%q streamed=%q think budget=%q", got.Text, answer, budget)
 	}
 }
 

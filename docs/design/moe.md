@@ -28,7 +28,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 
 ## Expert usage, the core, and prefetch (both vendors)
 
-- **Counts.** `experts.Usage` records each layer's choices. hwnpu-chat keeps a file a model and application key: `~/Library/Caches/hwnpu/models/<model>/experts-usage/<key>.bin` on a Mac, `~/.cache/hwnpu/models/<model>/experts-usage/<key>.bin` on Linux (`--experts-key`; `off` for measurements). `HWNPU_MOE_DEBUG=usage=FILE` writes the same form. On AMD, `iron.Model.CountExperts` counts the prompt's host routing and reads the decode's routed words back from the next command's scratchpad (no measurable cost).
+- **Counts.** `experts.Usage` records each layer's choices. hwnpu-chat keeps a file a model and application key: `~/Library/Caches/hwnpu/models/<model>/experts-usage/<key>.bin` on a Mac, `~/.cache/hwnpu/models/<model>/experts-usage/<key>.bin` on Linux (`--experts-key`; `off` for measurements). `HWNPU_DEV=moe.usage=FILE` writes the same form. On AMD, `iron.Model.CountExperts` counts the prompt's host routing and reads the decode's routed words back from the next command's scratchpad (no measurable cost).
 - **`tools/moeusage`**: `prompts.tsv` (110 prompts, 19 fields, about 25 languages), `collect.sh`, `analyze.py`, `place.py`. Results:
 
 | | gpt-oss-20b (4 of 32) | Qwen3.6 Mac (8 of 256) | Qwen3.6 AMD | gpt-oss-120b (4 of 128) |
@@ -54,7 +54,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 
 ### MXFP4 kernels (`internal/mxfp4`, NEON)
 
-- e2m1 by table lookup; the activation row quantized to int8 by blocks of 32; SDOT for one vector, SMMLA (`mm28NEON`, FEAT_I8MM, M2 and later; `HWNPU_MXFP4=i8mm=0` off) for 8 or more rows of one expert.
+- e2m1 by table lookup; the activation row quantized to int8 by blocks of 32; SDOT for one vector, SMMLA (`mm28NEON`, FEAT_I8MM, M2 and later; `HWNPU_DEV=mxfp4.i8mm=0` off) for 8 or more rows of one expert.
 - Zero accumulators with `MOVI`, not `EOR v,v,v`: on the M3 EOR waits for the register's old value and the sums serialize. MOVI doubled the kernels (one vector row 65 → 32 µs).
 - `mxfp4.Rows` (`mvNEON`): many rows a call. 45.6–47.3 GMAC/s on one core. It is bound by NEON instructions (about 20 a 2 blocks), not memory. Bit-identical to `Dot`.
 - Encoding (`mxfp4.Encode`): the power-of-two scale per 32 values is the best (least squared error) of the OCP rule (max exponent − 2) and its neighbours; values round to the nearest e2m1 (ties to even). Relative error 0.113 on normal values.
@@ -63,7 +63,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 
 - `Host.runRow`: an expert is split into pieces (128 × 2048 weights) that any core takes. The core that ends an expert's gate/up runs its activation and opens its down. Workers are woken once a layer. The caller waits only for workers inside the work; late workers see the closed run and sleep again. Before this, an expert a core made a layer wait for efficiency cores or late wakers (the last 4 of 8 workers take 85 µs to 3 ms to wake, `TestWake`).
 - `mem.Probe`: ask `mincore` for 2 pages of a range only (a range is read and used whole), and not again within a second (`hostLayer.fresh`). `mincore` on a mapped file is 0.25 µs a page and had been 47 % of the experts' CPU time.
-- A layer of 8 experts, all in memory (`TestHostTokenTimeQwen36`): back to back 0.28 ms on 8 cores (0.64 on 1); after a 1.2 ms gap 0.79–0.90 ms. The gap slowdown comes from the calling thread sleeping (`HWNPU_QWEN36_SPIN` removes it), see Open.
+- A layer of 8 experts, all in memory (`TestHostTokenTimeQwen36`): back to back 0.28 ms on 8 cores (0.64 on 1); after a 1.2 ms gap 0.79–0.90 ms. The gap slowdown comes from the calling thread sleeping (`HWNPU_TEST_QWEN36_SPIN` removes it), see Open.
 
 ### Memory: wiring (`experts.Host.wiring`, `experts.Placement`)
 
@@ -83,8 +83,8 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 ### Reading experts not in memory
 
 - A mapped file faulted by each core reads 16 KB at a time: 0.4–0.6 GB/s. The same SSD gives 2.6 GB/s for one 1 MiB `pread`, 4.7 GB/s for 4.
-- `Host.readIn` / `readChosen` / `experts.reader` (`reader.need`): before a row's (or chunk's) experts run, ranges not in memory are read whole with `pread` (1 MiB pieces, several readers) into the page cache, then used through the mapping. Where `mem.Resident` is missing it falls back to `madvise(WILLNEED)` (0.5 GB/s). `HWNPU_MOE_DEBUG=need=0` leaves it to faults.
-- **Prefetch** (`experts.prefetcher`, on by default): the guess runs in its own goroutine during the Neural Engine part; guessed experts not wired get `madvise(WILLNEED)` and are read by the readers. Count `prefetchN` = experts a token picks, at least 4 (gpt-oss 4, Qwen3.6 8). For 10 s after a run had to read experts from disk, only the top 2 (`prefetcher.auto`, `reader.short`). `HWNPU_MOE_DEBUG=prefetch=N` fixes it, `0` off.
+- `Host.readIn` / `readChosen` / `experts.reader` (`reader.need`): before a row's (or chunk's) experts run, ranges not in memory are read whole with `pread` (1 MiB pieces, several readers) into the page cache, then used through the mapping. Where `mem.Resident` is missing it falls back to `madvise(WILLNEED)` (0.5 GB/s). `HWNPU_DEV=moe.need=0` leaves it to faults.
+- **Prefetch** (`experts.prefetcher`, on by default): the guess runs in its own goroutine during the Neural Engine part; guessed experts not wired get `madvise(WILLNEED)` and are read by the readers. Count `prefetchN` = experts a token picks, at least 4 (gpt-oss 4, Qwen3.6 8). For 10 s after a run had to read experts from disk, only the top 2 (`prefetcher.auto`, `reader.short`). `HWNPU_DEV=moe.prefetch=N` fixes it, `0` off.
 - Cold-read benchmark (`tools/moeusage/read_bench.py`, page cache dropped): one gpt-oss-20b expert (13.2 MB) took 13.9 ms by mapping/page faults, 3.0 ms with O_DIRECT, or 2.6 ms with four 2 MiB reads; a Qwen3.6 expert (6.3 MB) took 6.9 vs 1.4 ms. A warm page-cache read took 0.04 ms. Mac direct reads have not been measured.
 
 ### Prompts
@@ -94,7 +94,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
   - Marks (the prompt store's every 512 tokens) can be taken inside a wave. `ctx` is checked between steps and parts; an interrupted wave goes back to the mark before it.
   - Step masks written as fp16 bytes directly (`step.stepMasks`, 3 → 0.1 ms).
   - `TestPagedWave`: bit-identical to step-at-a-time on a synthetic model. Long prompts differ in rounding (the wave sizes the attention cache to its final chunk from the start).
-- **Several steps' rows per call** (`chain.moe.runMany`, `hostRows` 512): an expert is read once a call. Per row per layer: 128 rows 0.139 ms, 512 0.089, 1024 0.085. `Host.Run` works in groups of 1024 (expert × row) so memory stays one step's (12 MB). `HWNPU_MOE_DEBUG=many=0` runs a step at a time.
+- **Several steps' rows per call** (`chain.moe.runMany`, `hostRows` 512): an expert is read once a call. Per row per layer: 128 rows 0.139 ms, 512 0.089, 1024 0.085. `Host.Run` works in groups of 1024 (expert × row) so memory stays one step's (12 MB). `HWNPU_DEV=moe.many=0` runs a step at a time.
 - LFM2-8B-A1B and earlier: `experts.BuildRows`, `chain.moe.runRows` run each chosen expert once over all rows of a call.
 
 ### Qwen3.6 on Apple
@@ -102,6 +102,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 - **Derived checkpoint** (`hwnpu-dev mxfp4`, `qwen35.DeriveMXFP4`): the bf16 experts (64 of 72 GB) neither fit 16 GB nor the disk. Each layer's `gate_up_proj` (256, 1024, 2048) and `down_proj` (256, 2048, 512) are written as gpt-oss-style MXFP4 (`*_blocks`, `*_scales`, gate and up rows interleaved, gate even). 17.1 GB of experts, 22.0 GB in all (vision tower and MTP dropped).
   - Read from Hugging Face with Range requests a layer at a time (`HTTPSource`, 4 streams): 45–70 s a layer, 39 min on an M3. Per-layer files, so it resumes. `hwnpu_mxfp4` is added to config.json last.
   - hwnpu-chat (`llm.HostDerived`) writes it to the cache's `derived/Qwen/Qwen3.6-35B-A3B` (`chat.DerivedDir`) without downloading the release. `hwnpu-dev convert` refuses a checkpoint without MXFP4 experts and points to `hwnpu-dev mxfp4`.
+  - It is an entry of the sources (`chat.DerivedKind`, `converted/Qwen3.6-35B-A3B/any/Qwen3.6-35B-A3B/`, keyed by the release's commit and `derivedVersion`): a machine takes it from there in place of deriving it, and one that derived it puts it in the sources written back to (`hwnpu-dev models package Qwen3.6-35B-A3B/coreai`; 2026-11-22). AMD does not use it: its experts run on the NPU from the IRON export.
 - **Unsupported configs** are refused by `ParseMoE`: `mlp_only_layers`, `decoder_sparse_step` > 1, `norm_topk_prob` false, sizes not a multiple of 32.
 - **Neural Engine inner-dim-1 matmul bug**: in the Gated DeltaNet output o = (QKᵀ ⊙ E) U + Γ Q S0, a chunk of one row gives `matmul (1×1)·(1×128)`, which the Neural Engine computes wrong (off by about 8 on values of 40–70). One-token decoding repeated tokens. A one-row chunk now uses a broadcast mul (`deltaRuleChunks`). The dense Qwen3.5 one-token program got the same change (Revision 2).
 - **Conv window output** (Revision 2): the GDN conv window `win_conv_N_new` outputs only the 3 rows the host keeps (one-token program: a slice; 128-token program: a matmul with input `step_window` (1, 3, 131), built from the step's valid tokens by `PagedStepInputs`). Saves 64 MB. This form cannot keep part of a step (partial acceptance of drafts), so such a step runs again (`wholeWindow`). Dense Qwen3.5 is unchanged.
@@ -172,7 +173,7 @@ The NPU reads only pinned buffers (banks). An expert's position in its table is 
 - **mx4 experts** (`tools/amd/iron_gptoss_moe.py`, `kernels/moe_mx4.cc`): q8's block shape (32 outputs × 320 inputs), e2m1 nibbles, the MXFP4 exponent byte kept as the scale (put into bf16's exponent field in the kernel), the block's bias. 4.3 bits a weight. Decoded as sign × max(m, 2m − 4, 4m − 16). 2880 = 9 × 320, so no input padding; gate/up outputs padded to 3072.
 - **Sinks** (`tools/amd/iron_sinks.py`, `kernels/mha_sinks.cc`): the P×V core adds 2^(sink·log2e − m·scale·log2e) to the row sum l before the final divide. Starting the softmax state at the sink was wrong: the device's exp2 is up to 2× high far below 0. Only the P×V worker program of IRON's MHA is replaced. `sink_form` was added to the operator args because IRON's compile cache keys on them.
 - Residual padded to 3072 (norm weight × sqrt(2880/3072), eps × 2880/3072). Head rows padded to 201216; hwnpu reads the first 201088. Attention projections q8, head q4 (GPTQ codes optional via `--q4-codes`), router bf16, embedding on the host. Window layers read only the window.
-- **Decode as one resident array** (`GptOssStep`, `tools/amd/iron_gptoss_layer.py`, `kernels/gptoss_layer.cc`): every layer op is a phase of one array. A command = previous layer's experts (E) → q/k/v with RMSNorm, bias and RoPE (Q) → attention (A) → o_proj with bias and residual (O) → router (R) → routing (T: writes the next command's scratchpad words). The last command is [E, head (H)]. 25 commands a token, the PDI loaded once (`unexpanded_loads`), no step barrier (`no_step_barrier`; `HWNPU_IRON_BARRIER=1/0` overrides).
+- **Decode as one resident array** (`GptOssStep`, `tools/amd/iron_gptoss_layer.py`, `kernels/gptoss_layer.cc`): every layer op is a phase of one array. A command = previous layer's experts (E) → q/k/v with RMSNorm, bias and RoPE (Q) → attention (A) → o_proj with bias and residual (O) → router (R) → routing (T: writes the next command's scratchpad words). The last command is [E, head (H)]. 25 commands a token, the PDI loaded once (`unexpanded_loads`), no step barrier (`no_step_barrier`; `HWNPU_DEV=iron.barrier=1/0` overrides).
   - Projections in q8x blocks of 5504 bytes, the size of an mx4 block. The prompt dequantizes the same q8x tables (`Q8XDequant`), so there is one copy.
   - Head read in place from the q4 table as 5504-byte windows stepping 5120 bytes. A row's two partial sums are added by hwnpu (`logit_parts`).
   - KV in one array for decode (`cache.kv`); hwnpu joins and splits it with the prompt's key and value arrays (`joinKV`, `splitKV`). Window layers keep a 128-row ring (`GPTOSS_KV_RING`, position % 128); `ringsTo` rebuilds it after rewinds. `TestKVRingRewindOnDevice` checks it.
@@ -189,8 +190,8 @@ The NPU reads only pinned buffers (banks). An expert's position in its table is 
 - Scores: +1 a use, × 0.995 a token (half-life about 140 tokens), seeded with the counts' steady state.
 - **Decode, host routing** (`--host-route`, `internal/llm/iron/route.go`; gpt-oss 16 GB export and 120b): a layer's command ends after attention. The host reads the residual (`yo`), runs RMSNorm and the router on the CPU (`router.bin`, transposed float32), takes top 4 and softmax, and writes the next command's position words and routing weights (`moe_rw<l>`). Then it guesses layer l+1's top 4 and reads missing ones into l+1's places in the background (`guessNext`, `expertPool.inflight`). vs device routing (20b): median cosine 0.99998, KL 0.0095; 50.3 → 51.9 ms a step.
 - **Prompt** (`poolPasses` / Qwen3.6 `poolRowPasses`, `rowsPass`): experts already in a place go in the first pass; others are copied into places of experts not needed later, before their pass. `TestPoolRowPasses` checks it.
-- **Copying**: 4 goroutines copy from the page cache mapping, then clflush (`SyncToDevice`). With `directReads` (the experts file is at least half of physical memory; `HWNPU_MOE_DEBUG=direct=0/1`), reads use O_DIRECT through per-goroutine staging buffers (the bank mapping rejects O_DIRECT with EFAULT), 8 pieces an expert. Measured costs: gpt-oss expert (14.3 MB) 1.1 ms from page cache, 2.6 ms O_DIRECT (vs 9.4 ms by faults); Qwen3.6 expert (1.97 MB) 0.4–0.7 ms O_DIRECT, 0.1–0.3 ms from cache.
-- `HWNPU_MOE_DEBUG=check` compares every place with `experts.bin` after filling and at close. Place exports give the same logits bit for bit as all-expert exports (same weights, other places).
+- **Copying**: 4 goroutines copy from the page cache mapping, then clflush (`SyncToDevice`). With `directReads` (the experts file is at least half of physical memory; `HWNPU_DEV=moe.direct=0/1`), reads use O_DIRECT through per-goroutine staging buffers (the bank mapping rejects O_DIRECT with EFAULT), 8 pieces an expert. Measured costs: gpt-oss expert (14.3 MB) 1.1 ms from page cache, 2.6 ms O_DIRECT (vs 9.4 ms by faults); Qwen3.6 expert (1.97 MB) 0.4–0.7 ms O_DIRECT, 0.1–0.3 ms from cache.
+- `HWNPU_DEV=moe.check` compares every place with `experts.bin` after filling and at close. Place exports give the same logits bit for bit as all-expert exports (same weights, other places).
 
 ### Numbers (AMD, Ryzen AI 9 365)
 
@@ -262,7 +263,7 @@ Apple:
 - Wiring experts that exceed 3/4 of memory (Qwen3.6 on 16 GB): slower at every budget.
 - Prefetching 16 for Qwen3.6 (7.3 tok/s, wrong guesses eat SSD reads); 8 for gpt-oss (no better than 4, worse when memory is short); a guess from two layers back (80–85 % top 4, more reading).
 - Keeping workers spinning (`mxfp4.Hold`, spinners): 0.55 → 1.0 ms, and the Neural Engine parts slow by as much. Thread QoS `USER_INTERACTIVE`: no effect.
-- SMMLA pad threshold (`HWNPU_MXFP4=pad=N`): no difference. 2 rows × 4 vectors SMMLA: slower than SDOT.
+- SMMLA pad threshold (`HWNPU_DEV=mxfp4.pad=N`): no difference. 2 rows × 4 vectors SMMLA: slower than SDOT.
 - Other replacement policies for wired experts: all 72–74 % average hit.
 - gpt-oss attention: plain lut8 (KL 0.284), int8 (slow on the Neural Engine); GPTQ codes for `lut8r` attention or lut6 head are not the default (not better on every text; codes not shipped).
 

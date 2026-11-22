@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	amdtools "github.com/shibukawa/hwnpu/tools/amd"
 )
@@ -73,6 +74,18 @@ func fetchFrom(ctx context.Context, p place, dst string, log io.Writer) bool {
 		return false
 	}
 	i, err := shared.FetchEntry(ctx, ss, p.entry.Path, p.takes, dst, log)
+	if errors.Is(err, shared.ErrNotFound) && p.released() {
+		// a published version none has yet: the same key with no version is the same bytes
+		// (made before the version was written); it goes in the sources as the version
+		if i, err = shared.FetchEntry(ctx, ss, Unversioned(p.entry), func(e shared.Entry) bool { return e.Key == p.entry.Key }, dst, log); err == nil {
+			if e, rerr := shared.ReadEntry(dst); rerr == nil {
+				rerr = shared.WriteEntry(dst, Released(p.entry, e))
+				if rerr == nil {
+					i = len(ss) // every source written back to lacks the version
+				}
+			}
+		}
+	}
 	if err != nil {
 		if !errors.Is(err, shared.ErrNotFound) && log != nil {
 			fmt.Fprintf(log, "the sources: %v; making %s here\n", err, filepath.Base(dst))
@@ -145,7 +158,7 @@ type SharedRecipe struct {
 
 // SharedExportOr is SharedExport that, when no source has recipe's entry, takes the first of
 // others that a source has (each at the place its kind and recipe give under out's name: an
-// export made by hand that hwnpu-dev cache import put there, ImportedRecipe) before it builds.
+// export made by hand that hwnpu-dev sources import put there, ImportedRecipe) before it builds.
 // What build makes is put as recipe's.
 func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer, build func() error) error {
 	if recipe == nil {
@@ -166,6 +179,9 @@ func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, 
 	defer unlock()
 	if fetchPlaces(ctx, places, out, log) {
 		return nil
+	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return err
 	}
 	// made here: its files go in the sources written back to as they are written, as recipe's
 	// (not on the misses before: an export of others fetched into out would go too)
@@ -224,13 +240,14 @@ func sharedPlace(kind string, recipe map[string]string, out string) place {
 	return placeOf(kind, modelNamed(recipe["model"]), recipe["target"], filepath.Base(out), r)
 }
 
-// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which hwnpu-dev cache
+// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which hwnpu-dev models
 // import puts in the sources.
 const ImportKind = "iron-import"
 
-// ImportedRecipe is the recipe hwnpu-dev cache import describes an export made by hand with
+// ImportedRecipe is the recipe hwnpu-dev sources import describes an export made by hand with
 // (ImportKind): its model, target and name alone, so that a command finds one under the name it
-// would make the export with.
+// would make the export with. Its "made" names the command as it was called when the first
+// entries were put (hwnpu-dev cache import): it is in the key, so it stays.
 func ImportedRecipe(m Model, target, export string) map[string]string {
 	return map[string]string{"model": m.Name, "target": target, "export": export, "made": "by hand (hwnpu-dev cache import)"}
 }

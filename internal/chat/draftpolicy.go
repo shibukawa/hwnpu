@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 )
 
 // draftPolicy decides, call by call, whether checking the drafts of a prompt lookup pays, where
@@ -22,8 +24,8 @@ import (
 // following the text at no cost. The cost is a constant and not the calls' times, so that the
 // choices, and with them the call that computes each token, are the same from run to run.
 //
-// HWNPU_DRAFT_POLICY=0 checks every draft, as before; HWNPU_DRAFT_RATIO is the cost of a check in
-// steps; HWNPU_DRAFT_TRACE=FILE adds a line a call, "KIND MATCH DRAFTS RIGHT MS" (step, check,
+// HWNPU_DEV=draft.policy=0 checks every draft, as before; HWNPU_DEV=draft.ratio is the cost of a check in
+// steps; HWNPU_DEV=draft.trace=FILE adds a line a call, "KIND MATCH DRAFTS RIGHT MS" (step, check,
 // leave, and left when the drafts left unchecked are known: tools/amd/draft_analyze.py reads it).
 type draftPolicy struct {
 	ok, bad [draftBuckets]float64 // drafts that were right, and drafts that ended a run, decayed
@@ -38,7 +40,7 @@ const (
 	draftMargin  = 0.03 // a check must bring this much more than its cost
 	draftPrior   = 4.0  // the prior's weight, in drafts
 	draftDecay   = 0.99
-	// draftCheckSteps is what a check costs in steps unless HWNPU_DRAFT_RATIO says: between the
+	// draftCheckSteps is what a check costs in steps unless HWNPU_DEV=draft.ratio says: between the
 	// two models measured (1.95 and 1.68).
 	draftCheckSteps = 1.8
 )
@@ -66,11 +68,11 @@ func draftBucket(n int) int {
 }
 
 func newDraftPolicy() *draftPolicy {
-	p := &draftPolicy{always: os.Getenv("HWNPU_DRAFT_POLICY") == "0", ratio: draftCheckSteps}
-	if r, err := strconv.ParseFloat(os.Getenv("HWNPU_DRAFT_RATIO"), 64); err == nil && r > 0 {
+	p := &draftPolicy{always: devenv.IsOff("draft.policy"), ratio: draftCheckSteps}
+	if r, err := strconv.ParseFloat(devenv.Value("draft.ratio"), 64); err == nil && r > 0 {
 		p.ratio = r
 	}
-	if path := os.Getenv("HWNPU_DRAFT_TRACE"); path != "" {
+	if path := devenv.Value("draft.trace"); path != "" {
 		p.trace, _ = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	}
 	return p

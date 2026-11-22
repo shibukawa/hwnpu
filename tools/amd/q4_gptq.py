@@ -105,6 +105,14 @@ MODELS = {
         q8=("linear_attn.in_proj_qkv", "linear_attn.in_proj_z", "linear_attn.out_proj",
             "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
     ),
+    # Ouro (iron_ouro.Ouro): a looped decoder, its layers run total_ut_steps times; the logits of
+    # the last pass (last_pass). Its remote code needs transformers before 4.56
+    # (docs/design/llm-models.md). <|endoftext|> (0) stands for the BOS.
+    "ouro": dict(
+        bos=0, layers="model.layers", remote=True, last_pass=True,
+        q4=("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"),
+        q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
+    ),
     "lfm3": dict(
         bos=124894, layers="model.layers", remote=True,
         q4=("feed_forward.w1", "feed_forward.w3", "feed_forward.w2"),
@@ -404,8 +412,16 @@ def load(path: Path, spec):
         m = load_gemma4_lean(path)
         return m, transformers.AutoTokenizer.from_pretrained(path)
     auto = getattr(transformers, spec.get("auto", "AutoModelForCausalLM"))
-    m = auto.from_pretrained(path, dtype=torch.float32, trust_remote_code=spec["remote"])
+    # transformers before 4.56 names the dtype torch_dtype (Ouro's remote code needs one of them)
+    major, minor = (int(v) for v in transformers.__version__.split(".")[:2])
+    dtype = {"dtype" if (major, minor) >= (4, 56) else "torch_dtype": torch.float32}
+    m = auto.from_pretrained(path, trust_remote_code=spec["remote"], **dtype)
     m.eval()
+    if spec.get("last_pass"):
+        # the last pass, and no cache: its remote code's cache does not build under the old
+        # transformers it needs
+        m.hwnpu_forward = {"exit_at_step": m.config.total_ut_steps - 1, "use_cache": False}
+        m.config.use_cache = False
     if "text" in spec:
         m = TextLM(m, spec["text"], spec["head"])
     tok = transformers.AutoTokenizer.from_pretrained(path, trust_remote_code=spec["remote"])
@@ -461,7 +477,7 @@ def texts(paths, tok, bos: int, length: int, count: int):
 def logits_of(m, ids):
     import torch
 
-    return m(input_ids=torch.tensor([ids])).logits[0].float()
+    return m(input_ids=torch.tensor([ids]), **getattr(m, "hwnpu_forward", {})).logits[0].float()
 
 
 def kl_stats(ref, q):

@@ -22,6 +22,9 @@ import (
 // models (Embedder) with the embeddings API (POST /v1/embeddings); GET /v1/models lists them. A
 // request goes to the model of its endpoint's kind that its model field names, or to the only
 // one of that kind whatever it names. Each model runs one request at a time; the others wait.
+//
+// hwnpu-chat serves with ai/server/openai, the same API on the ai package's models; this one
+// stays for the tests of the engine through the API until they move there.
 type Server struct {
 	Chats     []*Engine
 	Embedders []*Embedder

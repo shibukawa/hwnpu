@@ -3,10 +3,11 @@ package chat
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
@@ -76,7 +77,7 @@ const mtpKeep = 4096
 // mtpSeq of them.
 const mtpStart = 512
 
-// mtpDrafts is the most drafts in a row the layer guesses (HWNPU_MTP_DRAFTS overrides it): each
+// mtpDrafts is the most drafts in a row the layer guesses (HWNPU_DEV=mtp.drafts overrides it): each
 // after the first costs a call of the layer and is right less often.
 var mtpDrafts = 2
 
@@ -99,7 +100,7 @@ func loadMTP(ctx context.Context, e *Engine, c Config) (*mtpDrafter, error) {
 		return nil, fmt.Errorf("chat: %s cannot run with a KV cache", filepath.Base(c.MTP[0]))
 	}
 	m := &mtpDrafter{e: e, k: mtpDrafts, base: -1}
-	if v, err := strconv.Atoi(os.Getenv("HWNPU_MTP_DRAFTS")); err == nil && v > 0 {
+	if v, err := strconv.Atoi(devenv.Value("mtp.drafts")); err == nil && v > 0 {
 		m.k = v
 	}
 	m.k = min(m.k, ds.Qs()[0]-1)

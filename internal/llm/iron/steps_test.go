@@ -133,13 +133,13 @@ func TestSteps(t *testing.T) {
 	}
 }
 
-// TestExportStreams checks an export packaged as an xclbin per step (HWNPU_IRON_EXPORT, an
+// TestExportStreams checks an export packaged as an xclbin per step (HWNPU_TEST_IRON_EXPORT, an
 // export directory): every stream check/streams.json keeps, which mlir-aie's dispatch library
 // built, is what the Go interpreter builds from the same scalars. No NPU is needed.
 func TestExportStreams(t *testing.T) {
-	dir := os.Getenv("HWNPU_IRON_EXPORT")
+	dir := os.Getenv("HWNPU_TEST_IRON_EXPORT")
 	if dir == "" {
-		t.Skip("set HWNPU_IRON_EXPORT to an export with check/streams.json")
+		t.Skip("set HWNPU_TEST_IRON_EXPORT to an export with check/streams.json")
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "check", "streams.json"))
 	if err != nil {
@@ -178,13 +178,13 @@ func TestExportStreams(t *testing.T) {
 	t.Logf("%d streams of %d programs", len(checks), len(progs))
 }
 
-// TestExportLoads loads an export packaged as an xclbin per step (HWNPU_IRON_EXPORT) on the
+// TestExportLoads loads an export packaged as an xclbin per step (HWNPU_TEST_IRON_EXPORT) on the
 // simulated NPU of 4 columns, as on NPU1: its xclbins become hardware contexts and its steps'
 // runs are made, with every buffer bound. The simulated design runs nothing of the model.
 func TestExportLoads(t *testing.T) {
-	dir := os.Getenv("HWNPU_IRON_EXPORT")
+	dir := os.Getenv("HWNPU_TEST_IRON_EXPORT")
 	if dir == "" {
-		t.Skip("set HWNPU_IRON_EXPORT to an export")
+		t.Skip("set HWNPU_TEST_IRON_EXPORT to an export")
 	}
 	ctx := context.Background()
 	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend(simBackend))

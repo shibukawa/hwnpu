@@ -1,7 +1,6 @@
 package text
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -26,7 +25,7 @@ var translateRole = &airole.Role{
 	Feature: "translation",
 	Prepare: prepareEngine,
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		eng, err := loadEngine(ctx, f, e)
+		eng, err := loadEngine(ctx, f, e, "translate")
 		if err != nil {
 			return nil, err
 		}
@@ -50,8 +49,29 @@ type TranslateOptions struct {
 	History []Pair
 	// Glossary are terms to translate so.
 	Glossary []Pair
-	// MaxTokens is the most tokens of the translation (0: 1024).
+	// MaxTokens is the most tokens of the translation (0: 1024; Unlimited: until the cache is
+	// full).
 	MaxTokens int
+	// Sampling is how the tokens are drawn (nil: the most likely each time), with Seed (0: a new
+	// one for each translation, which Stats.Seed tells).
+	Sampling *Sampling
+	Seed     uint64
+}
+
+// chat is the translation's settings as PLaMo 3's template takes them.
+func (o *TranslateOptions) chat() *chat.Translation {
+	tr := &chat.Translation{TargetLang: o.To, SourceLang: o.From, Form: o.Form, Context: o.Context}
+	for _, g := range o.Glossary {
+		tr.Glossary = append(tr.Glossary, chat.Term{Source: g.Source, Target: g.Target})
+	}
+	return tr
+}
+
+// Translation is a text translated.
+type Translation struct {
+	// Text is the translation as the model wrote it (Translate trims it).
+	Text  string
+	Stats Stats
 }
 
 // Pair is a text and its translation.
@@ -72,8 +92,16 @@ func (t *Translator) OnNPU() bool { return t.e.OnNPU() }
 
 // Translate translates a text.
 func (t *Translator) Translate(ctx context.Context, text string, o TranslateOptions) (string, error) {
+	tr, err := t.Reply(ctx, text, o, nil)
+	return strings.TrimSpace(tr.Text), err
+}
+
+// Reply translates a text, telling fn (nil for none) what the translation adds after each token
+// (Delta.Text); fn returns false to stop there. When ctx is cancelled the translation so far is
+// returned with ctx's error.
+func (t *Translator) Reply(ctx context.Context, text string, o TranslateOptions, fn func(Delta) bool) (Translation, error) {
 	if strings.TrimSpace(text) == "" {
-		return "", errors.New("text: nothing to translate")
+		return Translation{}, errors.New("text: nothing to translate")
 	}
 	var msgs []chat.Message
 	for _, p := range o.History {
@@ -81,17 +109,10 @@ func (t *Translator) Translate(ctx context.Context, text string, o TranslateOpti
 			chat.Message{Role: "assistant", Content: chat.Content{Text: p.Target}})
 	}
 	msgs = append(msgs, chat.Message{Role: "user", Content: chat.Content{Text: text}})
-	tr := &chat.Translation{TargetLang: o.To, SourceLang: o.From, Form: o.Form, Context: o.Context}
-	for _, g := range o.Glossary {
-		tr.Glossary = append(tr.Glossary, chat.Term{Source: g.Source, Target: g.Target})
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	c, err := t.e.Complete(ctx, msgs, nil, chat.Options{Translation: tr}, chat.Sampling{}, cmp.Or(o.MaxTokens, 1024), 0, nil)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(c.Content), nil
+	a, err := generate(ctx, t.e, msgs, nil, chat.Options{Translation: o.chat()}, request(o.Sampling, Sampling{}, o.MaxTokens, o.Seed), 0, nil, fn)
+	return Translation{Text: a.Text, Stats: a.Stats}, err
 }
 
 // historyTurns is how many earlier pairs TranslateStream gives each translation.
@@ -162,3 +183,5 @@ func (t *Translator) Close() error {
 	defer t.mu.Unlock()
 	return t.e.Close()
 }
+
+func init() { airole.Register(translateRole) }

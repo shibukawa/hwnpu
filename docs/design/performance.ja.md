@@ -83,7 +83,7 @@
 | Core AI: 次のプログラムを先に読む、DiT の組を入れ替える | Chroma の DiT 1 回 7.2 → 5.4〜5.8 秒。NE が持つもの 8.3 → 2.2〜2.6 GiB | | [image-apple.md](image-apple.md) |
 | Core AI の `--batch` | Chroma の DiT 1 回 1 枚 5.4 → 5.05 秒 | 1 枚ごとのホストのメモリ | [image-apple.md](image-apple.md) |
 | 全部の大きさを 1 つの書き出しの関数に | 全部の大きさで 1 回のダウンロード (Anima の大きさごとの書き出しは 1 つ 2.9 GB だった) | 初回のコンパイルは全部の大きさの分 | [image-apple.md](image-apple.md) |
-| チップごとの prebuilt (`hwnpu-dev prebuild`) | M1 の FLUX.2 klein の初回 40 分 → 7 分 48 秒 | チャットのモデルと VAE には作らない | [apple-coreai.md](apple-coreai.md) |
+| チップごとの prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH`) | M1 の FLUX.2 klein の初回 40 分 → 7 分 48 秒 | チャットのモデルと VAE には作らない | [apple-coreai.md](apple-coreai.md) |
 | Core AI の FLUX.2 klein 4B | M1: 512² 11 秒、1024² 41 秒 / 枚 | | [image-apple.md](image-apple.md) |
 | VAE の段の間にホストのメモリを返す | FLUX.2 klein 1024² の最大 5.8 → 4.1 GB | 復号 +0.4 秒 | [image-apple.md](image-apple.md) |
 | AMD: DiT の重みをホストで bfp16 に | 1 ステップ: Anima-Turbo 1024² 4.1 → 3.6〜3.8 秒、Chroma1-Flash 29.9 → 22.8〜25.4 秒、Chroma1-HD 27.5 → 20.2 秒 | 1 重み 9 ビット。書き出しが 3〜4 倍長い | [image-amd.md](image-amd.md) |
@@ -127,7 +127,7 @@
 - **カーネルの直しは書き出しの中にある**: AMD の書き出しは、作ったときのカーネル (丸め、まとめた演算子) を書き出し直すまで持つ。新しい書き出し器の書き出しを古い hwnpu が拒むことがある (gpt-oss の常駐の 1 歩)
 - **`-idle`**: 次の要求が 0.8〜2 秒払う。**使うときに読む塔**: 最初の画像か音声が 0.5〜0.7 秒待ち、その間は古い bank と新しい bank の両方が固定される
 - **AMD の barrier**: 塊の barrier は 1 塊 0.3〜0.5 ms、1 歩の barrier は 1 歩 0.3 ms (gpt-oss の常駐の 1 歩では配列を載せ直す 2.4 ms になるので飛ばす)
-- **AMD の時間の測り方**: `HWNPU_IRON_TIMING=1` は各コマンドの往復を足す。`ironlm -forced` の 1 歩の時間を読む。層で違う `array=True` の引数はコマンドごとに配列を載せ直し、それでも確認は通る
+- **AMD の時間の測り方**: `HWNPU_DEV=iron.timing=1` は各コマンドの往復を足す。`ironlm -forced` の 1 歩の時間を読む。層で違う `array=True` の引数はコマンドごとに配列を載せ直し、それでも確認は通る
 - **ディスクの共有はファイルシステムによる**: ext4 は何も共有しない。Btrfs か XFS に (Windows は Dev Drive)
 - **Core AI の初回**はどの部分も 1 回コンパイルし、関数の多い `.aimodel` は全部の関数をコンパイルする (Chroma1-Flash の 512² と 1024² で 1 時間 14 分)。キャッシュは OS のビルドとプロセスの名前ごと: OS の更新の後、`aicheck` や `go test` からはコンパイルし直す。ディスクが減ると macOS が消す (空き 11〜22 GB で見た)。変換にも空きが要る
 - **書き出しの名前に配置の版**があると、1 回変換とコンパイルをし直す。絵は前の版とビット単位では同じでない (和の順が違う)。古い書き出しは消すまで残る
