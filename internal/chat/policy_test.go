@@ -140,3 +140,30 @@ func TestPolicyFiles(t *testing.T) {
 		t.Errorf("policy of %s: %s", PolicyEnv, got)
 	}
 }
+
+// TestAllowedAlso checks that a client's policy narrows hwnpud's and does not widen it.
+func TestAllowedAlso(t *testing.T) {
+	m := Model{Name: "x", License: License{ID: "lfm-open-1.0", Class: "conditional"}}
+	nsfw := Model{Name: "y", License: License{ID: "apache-2.0", Class: "open"}, Content: []string{"nsfw"}}
+	setPolicy(t, "+nsfw")
+	if err := AllowedAlso(m, ""); err != nil {
+		t.Errorf("no policy of the client's: %v", err)
+	}
+	var pe *PolicyError
+	if err := AllowedAlso(m, "-license:conditional"); !errors.As(err, &pe) || !strings.Contains(err.Error(), "the client's") {
+		t.Errorf("the client's -license:conditional: %v", err)
+	}
+	if err := AllowedAlso(nsfw, "+nsfw"); err != nil {
+		t.Errorf("both +nsfw: %v", err)
+	}
+	if err := AllowedAlso(nsfw, "-license:mit"); !errors.As(err, &pe) {
+		t.Errorf("the client without +nsfw: %v", err)
+	}
+	setPolicy(t, "-license:conditional")
+	if err := AllowedAlso(m, "+license:lfm-open-1.0"); !errors.As(err, &pe) {
+		t.Errorf("the client's + over hwnpud's -: %v", err)
+	}
+	if err := AllowedAlso(m, "bad"); err == nil {
+		t.Error("an item without + or -")
+	}
+}

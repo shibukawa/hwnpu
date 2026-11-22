@@ -9,10 +9,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/daemon"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
@@ -41,6 +44,13 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if c.Prompt == "" && (len(c.Image) > 0 || len(c.Audio) > 0) {
 		return errors.New("--image and --audio go with a prompt (in the terminal: /image FILE, /audio FILE.wav)")
 	}
+	cl, err := daemon.Use(ctx, "off", logw())
+	if err != nil {
+		return err
+	}
+	if cl != nil {
+		return c.runThrough(ctx, stop, cl)
+	}
 	st, cat, err := c.loadFlags.prepare(ctx)
 	if err != nil {
 		return err
@@ -68,14 +78,20 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 			return err
 		}
 	} else {
-		if t.c, err = cm.chat.Get(ctx, rt); err != nil {
+		cchat, err := cm.chat.Get(ctx, rt)
+		if err != nil {
 			return err
 		}
-		t.think = c.think(t.c)
+		t.c = cchat
+		t.think = c.think(cchat)
 	}
 	prepared(rt)
 	cm.keep()
 	stop() // Ctrl-C stops an answer, not the chat
+	return c.converse(t)
+}
+
+func (c *ChatCmd) converse(t *talker) error {
 	t.reset(c.System)
 	if c.Prompt == "" {
 		return t.talk(c.System)
@@ -100,8 +116,15 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 }
 
 // talker holds a conversation with a chat model, or a translation model's history.
+type chatter interface {
+	Reply(context.Context, []text.Message, text.ChatOptions, func(text.Delta) bool) (text.Answer, error)
+	Images() bool
+	Audio() bool
+	Translates() bool
+}
+
 type talker struct {
-	c           *text.Chatter
+	c           chatter
 	tl          *text.Translator // a translation model, in place of c
 	msgs        []text.Message
 	pairs       []text.Pair // the translations so far (tl)
@@ -111,6 +134,59 @@ type talker struct {
 	s           text.Sampling
 	seed        uint64
 	tr          text.TranslateOptions
+}
+
+// replier answers a conversation, writing the answer to out as it comes.
+type replier interface {
+	reply(ctx context.Context, msgs []chat.Message, o turn, out *printer) (chat.Message, turnStats, error)
+	// features are what the model reads besides text, and whether it translates.
+	features() features
+}
+
+type features struct{ images, audio, translator bool }
+
+// turn is how a turn is answered.
+type turn struct {
+	think       bool
+	thinkBudget int
+	maxNew      int
+	s           chat.Sampling
+	seed        uint64
+	tr          *chat.Translation
+}
+
+// turnStats are a turn's statistics, for its line.
+type turnStats struct {
+	prompt, reused, generated int
+	prefill, decode           time.Duration
+	thinkCut, thinkLooped     bool
+	looped                    bool
+	drafted, accepted         int
+	seed                      uint64
+}
+
+// printer writes an answer as it comes: the thinking to standard error in dim, the answer to
+// standard output.
+type printer struct{ thought, answered bool }
+
+func (p *printer) write(dr, dc string) {
+	if dr != "" {
+		fmt.Fprint(os.Stderr, dimmed(dr))
+		p.thought = true
+	}
+	if dc != "" {
+		if !p.answered && p.thought {
+			fmt.Fprint(os.Stderr, "\n\n")
+		}
+		fmt.Print(dc)
+		p.answered = true
+	}
+}
+
+func (p *printer) end() {
+	if p.answered || p.thought {
+		fmt.Println()
+	}
 }
 
 // reset starts the conversation again, with the system message.
@@ -159,8 +235,12 @@ func (t *talker) answer(msg text.Message) error {
 	} else {
 		var a text.Answer
 		msgs := append(t.msgs, msg)
-		a, err = t.c.Reply(ctx, msgs, text.ChatOptions{MaxTokens: maxNew, Think: &t.think, ThinkBudget: samplingFlags{ThinkBudget: t.thinkBudget}.budget(),
-			Sampling: &t.s, Seed: t.seed}, show)
+		o := text.ChatOptions{MaxTokens: maxNew, Think: &t.think, ThinkBudget: samplingFlags{ThinkBudget: t.thinkBudget}.budget(),
+			Sampling: &t.s, Seed: t.seed}
+		if t.c.Translates() {
+			o.Translation = &t.tr
+		}
+		a, err = t.c.Reply(ctx, msgs, o, show)
 		st = a.Stats
 		if err == nil || errors.Is(err, context.Canceled) {
 			t.msgs = append(msgs, text.Message{Role: "assistant", Text: a.Text, Reasoning: a.Reasoning})
@@ -186,7 +266,7 @@ func (t *talker) answer(msg text.Message) error {
 	if st.Drafted > 0 {
 		cut += fmt.Sprintf("; %d of %d drafts accepted", st.Accepted, st.Drafted)
 	}
-	if t.s.Temperature > 0 {
+	if t.s.Temperature > 0 && st.Seed != 0 {
 		cut += fmt.Sprintf("; seed %d", st.Seed)
 	}
 	if errors.Is(err, context.Canceled) {
@@ -203,6 +283,42 @@ func (t *talker) answer(msg text.Message) error {
 	return nil
 }
 
+// local is a chat model loaded in this process.
+type local struct{ e *chat.Engine }
+
+func (l local) features() features {
+	return features{images: l.e.Images(), audio: l.e.Audio(), translator: l.e.Template == chat.Plamo3}
+}
+
+func (l local) reply(ctx context.Context, msgs []chat.Message, o turn, out *printer) (chat.Message, turnStats, error) {
+	e := l.e
+	prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !o.think, Translation: o.tr})
+	if err != nil {
+		return chat.Message{}, turnStats{}, err
+	}
+	var media []chat.Media
+	for _, m := range msgs {
+		media = append(media, m.Content.Media...)
+	}
+	ids, err := e.Tokens(ctx, prompt, media)
+	if err != nil {
+		return chat.Message{}, turnStats{}, err
+	}
+	var sent chat.Stream
+	var gen []int32
+	st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: o.maxNew, Sampling: o.s, Seed: o.seed, Think: e.ThinkLimit(o.thinkBudget, thinking)}, func(g []int32) (bool, error) {
+		gen = g
+		a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
+		out.write(sent.Next(a.Reasoning, a.Content))
+		return false, nil
+	})
+	a := e.Template.Parse(e.Tok.Decode(gen, false), thinking, nil, true)
+	r := a.Reasoning
+	msg := chat.Message{Role: "assistant", Content: chat.Content{Text: a.Content}, Reasoning: &r}
+	return msg, turnStats{prompt: st.Prompt, reused: st.Reused, generated: st.Generated, prefill: st.Prefill, decode: st.Decode,
+		thinkCut: st.ThinkCut, thinkLooped: st.ThinkLooped, looped: st.Looped, drafted: st.Drafted, accepted: st.Accepted, seed: st.Seed}, err
+}
+
 // talk is the conversation in the terminal.
 func (t *talker) talk(system string) error {
 	media := ""
@@ -212,7 +328,7 @@ func (t *talker) talk(system string) error {
 	if t.c != nil && t.c.Audio() {
 		media += "/audio FILE.wav [text] sends a clip, "
 	}
-	translator := t.tl != nil
+	translator := t.tl != nil || (t.c != nil && t.c.Translates())
 	if translator {
 		to := cmp.Or(t.tr.To, "English for Japanese text, else Japanese")
 		media += fmt.Sprintf("each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)

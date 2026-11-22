@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,10 @@ import (
 // backend and keeps it while the process lives (the kernel drops it when the process ends); a
 // second process waits for it, saying which process holds it. It is not skipped: hwnpud
 // (docs/design/hwnpud.md) is how several apps share the Neural Engine.
+//
+// AMD's NPU takes the same lock for a chat model's IRON export (chat's loadIRON): one chat model
+// uses all of its hardware contexts, a second process's CREATE_HWCTX right after another's
+// contexts ended fails now and then, and hwnpud's engine holds the NPU for every client.
 
 var npuLock struct {
 	sync.Mutex
@@ -61,7 +66,7 @@ func lockNPU(ctx context.Context) error {
 			if who == "" {
 				who = "another process"
 			}
-			fmt.Fprintf(os.Stderr, "waiting for the Neural Engine: %s is using it\n", who)
+			fmt.Fprintf(os.Stderr, "waiting for the %s: %s is using it\n", npuName(), who)
 			told = true
 		}
 		select {
@@ -157,7 +162,15 @@ func settle(ctx context.Context, wired func() (int64, bool), base int64, poll ti
 	return n, looks, true
 }
 
-// LockNPU takes the Neural Engine's lock as OpenDevice does, for a tool that opens the device
-// by other means (hwnpu-dev probe cache, whose measurements another process compiling for the
-// Neural Engine would spoil). It is held until the process ends.
+// npuName names the NPU the lock is for in what a waiting process says.
+func npuName() string {
+	if runtime.GOOS == "darwin" {
+		return "Neural Engine"
+	}
+	return "NPU"
+}
+
+// LockNPU takes the NPU's lock as OpenDevice does, for what opens the device by other means:
+// hwnpu-dev probe cache, whose measurements another process compiling for the Neural Engine
+// would spoil, and the chat models' IRON exports on AMD. It is held until the process ends.
 func LockNPU(ctx context.Context) error { return lockNPU(ctx) }
