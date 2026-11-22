@@ -122,7 +122,7 @@ Module `github.com/shibukawa/hwnpu`.
 | `internal/safetensors`, `internal/gguf`, `internal/torchzip`, `internal/onnx`, `internal/tflite` | Checkpoint readers |
 | `internal/palette` | LUT weight fitting |
 | `internal/llm` (+ `blocks`, `archs`, one package per architecture, `decode`, `chain`, `runner`, `paged`, `experts`, `iron`, `check`) | Converters and runners for language and other models |
-| `internal/chat`, `internal/agent`, `internal/imagegen/*`, `internal/speech`, `internal/transcribe`, `internal/vision`, `internal/audio`, … | Per-use engines behind the commands |
+| `internal/chat`, `internal/imagegen/*`, `internal/speech`, `internal/transcribe`, `internal/vision`, `internal/audio`, … | Per-use engines behind the commands |
 | `internal/cache`, `internal/store`, `internal/power`, `internal/mem`, `internal/sysload` | Compile cache and model store, energy counters, page-aligned memory and NPU memory, load |
 | `cmd/hwnpu`, `cmd/hwnpu-chat`, `cmd/hwnpu-image`, `cmd/hwnpu-audio`, `cmd/hwnpu-dev` | Commands ([cli.md](cli.md)) |
 | `native/xrtshim`, `internal/backend/coreai/shim` | Shims loaded at run time (C for XRT, Swift for Core AI) |

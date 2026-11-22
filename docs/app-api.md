@@ -19,6 +19,9 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/flow` | モデルの間のデータの渡し方: 塊の流れ (`Stream`)、非同期、メトロノーム | v0 |
 | `hwnpu/ai/speech` | 文字起こし (`Transcribe`)、読み上げ (`Speak`)、音量の VAD、WAV の読み書き | v0 |
 | `hwnpu/ai/text` | 翻訳 (`Translate`)、チャット (`Chat`: ツール、画像と音声、JSON の形)、埋め込み (`Embed`)、判断 (`Decide`: d1) | v0 |
+| `hwnpu/ai/agent` | 道具を呼ぶ会話 (`Agent`: 1 つの頼みに道具の往復と答え、短く保つ履歴、確定まで答えを止める `Gate`、`Prime`)、道具 (`Tool`、`Args`) | v0 |
+| `hwnpu/ai/agent/coding` | コーディングのエージェント (`Session`: read、edit、write、bash と search、fetch の道具、Pi のループ、古い結果を畳んで文脈に収める)。`hwnpu-chat agent` が使う | v0 |
+| `hwnpu/ai/agent/voice` | 声のアシスタント: 名前で呼ばれた頼みを聞いて答える (`Listener`: 間で先に書き起こしてエージェントを始める、ショートカット)、読み上げ (`Voice`: 文ごと、決まった言葉のキャッシュ、合図の音)、呼び名 (`Wake`)、`Splitter` | v0 |
 | `hwnpu/ai/server/openai` | OpenAI 互換の口 (`/v1/models`、`/v1/chat/completions`、`/v1/embeddings`) の `http.Handler`。`hwnpu-chat serve` が使う | v0 |
 | `hwnpu/ai/server/systemone` | llama.cpp の System One API (`/v1/systemone`) の `http.Handler`。`hwnpu-chat systemone --listen` が使う | v0 |
 | `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
@@ -495,6 +498,8 @@ layers split picture.png --layers 4 --png parts/
 | `ai/flow` | 4 節の道具と、`Collect`、`Finals`、`Map`、`From`、`Sentences` |
 | `ai/speech` | `Transcribe`、`Speak`、`NewVAD` (音量の VAD: 雑音の床から 12 dB、終わりの待ち 600 ms)、`ReadWAV`、`WriteWAV`、`Chunks` |
 | `ai/text` | `Translate` (前の 4 組を履歴に、`Reply`)、`Chat` (`Reply`、`Complete`、`CompleteStream`、`Count`)、`Embed`、`Decide`、`Format` (2.5 節) |
+| `ai/agent` | `New` (`Config`: `System`、`Tools`、`Options`、`ResetAfter`、`MaxMessages`、`Rounds`)、`Agent` (`Turn`、`TurnOptions`: `Gate`、`Text`、`Tool`。`Prime`、`Reset`、`History`)、`Tool`、`Args`、`Model` |
+| `ai/agent/voice` | `NewListener` (`Config`: `Transcriber`、`Agent`、`Voice`、`Wake`、`Shortcut`、`Pause`、`Follow`、`Speculate`、`BargeIn`、`Events`)、`NewVoice` (`Synth`、`Player`、`VoiceOptions`: `Say`、`Phrase`、`SayPhrase`、`Chime`、`Alarm`、`Stop`)、`NewWake`、`Splitter`、`Speakable`、`Hallucination` |
 | `ai/imagegen` | `Generate`、`Edit`、`Generator` (`Generate`、`GenerateAll`、`Sizes`、`SizeFor`、`SizeOf`、`Warm`)、`Options` (参照とその大きさ、種、ステップ、ネガティブとガイダンス、サンプラー、`Batch`、進み具合の `OnBatch` / `OnStep` / `OnStage` / `Drawn`、確かめるための `Checks`)、`Pictures`、`Export` (書き出しのディレクトリを `Definition` に)、`GenerateNode`。ファミリーごとに `klein.go`、`flux3.go`、`anima.go`、`chroma.go` |
 | `ai/server/openai`、`ai/server/systemone` | OpenAI 互換の口と System One API の `http.Handler` (8 節) |
 | `ai/cli` | `List`、`Download`、`Prepare`、`Status`、`Run` (引数を渡す)、`WritePlan`、`Usage` |

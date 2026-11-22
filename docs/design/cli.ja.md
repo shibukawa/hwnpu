@@ -123,7 +123,7 @@
 
 ### コーディングエージェント (`agent`)
 
-Pi (pi.dev) のループを Go で書き、`internal/chat.Engine` を HTTP なしで直接呼ぶ (`internal/agent`)。合う Go の
+Pi (pi.dev) のループを Go で書き、エンジンを `ai/text` の `Chatter` から HTTP なしで直接呼ぶ (`ai/agent/coding`)。合う Go の
 エージェントのライブラリはなかった。system prompt と 4 つの道具の宣言で 629 トークン (OpenCode の最初の要求は
 7,516)、脇の要求もない (OpenCode は最初に題名を頼み、小さなモデルでは 1〜2 分かかる)。
 

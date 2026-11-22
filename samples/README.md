@@ -7,6 +7,7 @@ Small apps built on hwnpu's [`ai`](../USAGE_LIBRARY.md) package: each declares t
 | Sample | What it does | Models | Download (Apple / AMD) |
 |---|---|---|---|
 | [interpreter](interpreter/README.md) | Interprets speech, from the microphone or a recording, into speech in another language | Whisper, PLaMo 3 Translate, LFM3-Audio TTS | 11.4 GB / 6.6 GB |
+| [voice-agent](voice-agent/README.md) | A small voice assistant called by its name: the time, timers, the weather, the news, Wikipedia | Whisper, LFM3-1.7B, LFM3-Audio TTS | 7.5 GB / - |
 | [parallax](parallax/README.md) | Shows a picture as if it were deep, turning with your head before the camera | Depth Anything 3, YuNet, FLUX.2 klein | 16.5 GB / 14.9 GB |
 | [layers](layers/README.md) | Parts a picture into layers by depth, draws what each layer hid, and writes a Photoshop document | Depth Anything 3, FLUX.2 klein | 16.5 GB / 14.9 GB |
 
