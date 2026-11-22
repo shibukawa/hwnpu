@@ -473,7 +473,11 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 func toolCalls(tcs []text.ToolCall) []map[string]any {
 	var out []map[string]any
 	for _, tc := range tcs {
-		out = append(out, map[string]any{"id": tc.ID, "type": "function", "function": map[string]any{"name": tc.Name, "arguments": tc.Arguments}})
+		fn := struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{tc.Name, tc.Arguments}
+		out = append(out, map[string]any{"id": tc.ID, "type": "function", "function": fn})
 	}
 	return out
 }
