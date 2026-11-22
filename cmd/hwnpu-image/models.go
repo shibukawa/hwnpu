@@ -13,8 +13,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/imagedev"
 )
 
 // acceptLicenses is --accept-license.
@@ -76,7 +78,8 @@ type ListCmd struct {
 
 // Run lists the models.
 func (c *ListCmd) Run() error {
-	if err := chat.LoadUserModels("", os.Stderr); err != nil {
+	// the definitions as ai reads them (its catalog: the built-in, the machine's and the user's)
+	if _, err := (ai.Store{}).Catalog(); err != nil {
 		return err
 	}
 	if c.Kind != "" {
@@ -103,7 +106,7 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 			return "exported on first run (IRON)"
 		}
 		if m.Kind == chat.KindSegment { // the encoder: converted on Apple's and Intel's, else the CPU
-			if programDevice(m, vendor, "") {
+			if imagedev.ProgramDevice(m, vendor, "") {
 				return "converted on first run"
 			}
 			return "CPU"

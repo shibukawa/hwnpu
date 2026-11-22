@@ -21,7 +21,7 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/text` | 翻訳 (`Translate`)、チャット (`Chat`) | v0 |
 | `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
 | `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
-| `hwnpu/ai/vision` | 深度 (`Depth`)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)。物体、姿勢、切り抜き、OCR、ラベルはまだ | v0 (深度と顔) |
+| `hwnpu/ai/vision` | 深度 (`Depth`: 多視点も)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)、物体 (`Detect`)、姿勢 (`Pose`)、切り抜き (`Segment`)、OCR (`OCR`)、ラベルと埋め込み (`Label`) | v0 (2.4 節) |
 | `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`: FLUX.2 klein。文から、文と参照の絵から)。Anima、FLUX.3 klein、Chroma はまだ | v0 (FLUX.2 klein) |
 | `hwnpu/ai/sound` | 音楽、効果音、音高、採譜 | まだ |
 
@@ -107,6 +107,24 @@ var (
 
 - **フラグは別のモデルにする**: コマンドのフラグのうちモデルの作り方や動かし方を変えるもの (`--format`、`--cpu`、手で変換したファイル、書き出しのディレクトリ) は、`Definition` を作ってその名前で動かす。モデルはいつも定義のとおりに動き、置き場の記録もフラグの組ごとに分かれる。キャッシュの場所を変える口 (`--cache`) は作らない
 - **計測の値は結果に入れる**: `speech.Transcript` の `Windows` (窓ごとの言語、トークン、特徴量・エンコーダー・デコードの時間) と `Took`、`speech.Audio.Stats` (フレーム数、使った乱数の種、全体と 3 つのプログラムの時間)。実行の記録 (`console.RecordRun`、電力量) はコマンドの `main` に置き、`ai` には入れない
+
+### 2.4 絵のモデル (`ai/vision`)
+
+`hwnpu-image` の解析のサブコマンド (depth、face-detect、detect、pose、segment、ocr、label、embed) は `ai/vision` の上で動く。準備の手順 (デバイスの選び方、AMD の IRON の書き出しを初回に作る、CPU の 3 つの道) は `internal/imagedev` にあり、コマンドと `ai/vision` が共有する。
+
+| 使い方 | 型 | 呼び出しと結果 |
+|---|---|---|
+| `vision.Depth("depth")` | `*DepthEstimator` | `EstimateWith(ctx, img, DepthOptions{Focal, FovX})` → `DepthMap` (深さ、DA3 の空と確信度、MoGe-2 のマスク・法線・点・視野角、`Took`)。多視点の書き出しは `Views()` と `EstimateViews(ctx, imgs, ViewOptions{Ref})` (各視点の `Camera`) |
+| `vision.Faces("face-detect")` | `*FaceDetector` | `DetectWith(ctx, img, FaceOptions{Score, NMS, Size, Log})` → `[]Face` (`Box` は小数の矩形)。`Device()`、`Where()` |
+| `vision.Detect("detect")` | `*Detector` | `Detect(ctx, img, DetectOptions{Score, NMS, Classes})` → `Objects` (物体と、縮小・ネットワーク・ホストの時間)。`Classes()` |
+| `vision.Pose("pose")` | `*PoseEstimator` | `Estimate(ctx, img, PoseOptions{Score})` → `People` (人の箱と 17 点、時間) |
+| `vision.Segment("segment")` | `*Segmenter` | `Encode(ctx, img)` → `PictureEncoding`、`Masks(enc, Prompt{Points, Negative, Box})` → `Masks` (3 つの候補、`Best()`、`Mask.Image`、`Cutout`) |
+| `vision.OCR("ocr")` | `*TextReader` | `Read(ctx, img, OCROptions{MinScore, Size})` → `Text` (行の四隅と文字と点数、検出器の大きさ、段ごとの時間) |
+| `vision.Label("label")` | `*Labeler` | `Candidates(ctx, labels, CandidateOptions{Template, NoCache})` (ラベルの埋め込みはユーザーのキャッシュ hwnpu/siglip に残す)、`Rank(emb, cands, RankOptions{Top, Min})`、`Label`、`EmbedPicture`、`EmbedTexts`、`Probability`、`vision.Cosine` |
+
+- **モデルを変えるフラグは `Definition` にする**: 動く場所 (`Device`: `--device npu|cpu`)、設定 (`Settings`: `threads` は CPU のスレッド数、`cpu: interpreter` は変換したプログラムを CPU のインタープリターで動かす `--cpu`)、手元のファイル (`Programs`: `export` は書き出しのディレクトリ、`onnx` は YuNet の ONNX ファイル)。全部の NPU に同じ `Device` を書いた定義は、コマンドの `--device` と同じに扱う (`HWNPU_DEVICE` より強く、形のない NPU では CPU に落とさずエラー)。AMD の書き出しは元のモデル (`PrepareEnv.Base`) の名前で探す
+- **呼ぶたびに変えられるものはオプション**: 点数としきい値、クラスの絞り込み、プロンプト、上位の数、検出器の大きさ
+- 載せ替えの際、models.yaml の `like:` は取得元 (`from`) が同じなら元のモデルの `sha256` を受け継ぐようにした (取得元を変えたときだけ消す)
 
 ## 3. アプリのコマンドライン (`ai/cli`)
 

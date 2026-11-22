@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"image"
 	"image/color"
 	"image/draw"
@@ -13,22 +12,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/pose"
 )
 
 // PoseCmd is "hwnpu-image pose": the people in pictures and their 17 COCO keypoints with RTMO
-// (OpenMMLab MMPose), on Apple's Neural Engine or Intel's NPU, converted the first time, on AMD's
-// NPU from an export of tools/amd/iron_onnxcnn.py (made with IRON on the first run), and
-// elsewhere or with --device cpu on the CPU with ONNX Runtime (--cpu: the converted program on
-// the CPU interpreter). The network up to the head's outputs for every anchor runs on the NPU
-// (on AMD's, up to the head's convolutions); top-k, non-maximum suppression and each person's
-// keypoint classifier on the host.
+// (OpenMMLab MMPose; ai/vision's Pose), on Apple's Neural Engine or Intel's NPU, converted the
+// first time, on AMD's NPU from an export of tools/amd/iron_onnxcnn.py (made with IRON on the
+// first run), and elsewhere or with --device cpu on the CPU with ONNX Runtime (--cpu: the
+// converted program on the CPU interpreter). The network up to the head's outputs for every
+// anchor runs on the NPU (on AMD's, up to the head's convolutions); top-k, non-maximum
+// suppression and each person's keypoint classifier on the host.
 //
 // For each picture it prints one line of JSON: each person's box, score and keypoints in the
 // picture's pixels. With --draw it also writes NAME.pose.png with them and the skeleton drawn.
@@ -38,7 +33,6 @@ type PoseCmd struct {
 	Score       float64  `default:"0.3" help:"The least score of a person to report."`
 	Draw        bool     `help:"Also write NAME.pose.png: the picture with the boxes, keypoints and skeletons."`
 	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
-	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU         bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
 	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
@@ -49,107 +43,46 @@ type PoseCmd struct {
 func (c *PoseCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	m, err := resolve(c.Model, chat.KindPose)
+	useBackend(c.Backend)
+	how := made{device: c.Device}
+	how.threads(c.Threads)
+	how.interpreter(c.CPU)
+	e, rt, loaded, err := load(ctx, c.Model, vision.Pose, how, lw)
 	if err != nil {
 		return err
 	}
-	cache := c.Cache
-	if cache == "" {
-		cache = hcache.Root()
+	defer rt.Close()
+	logf("%s, %s", loaded, e.Where())
+	score := c.Score
+	if score == 0 {
+		score = -1 // every person
 	}
-	setup := pose.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), SHA256: m.SHA256[pose.ModelFile], Log: lw}
-	fetch := func() (string, error) { return pose.Fetch(ctx, setup) }
-	if export := amdCNNExport(ctx, m, c.Device, c.CPU, logf, pose.ExportVersion, fetch, func(python []string, model, dir string) error {
-		return pose.ExportNPU(ctx, python, m.Name, model, dir, lw)
-	}); export != "" {
-		model, err := fetch()
-		if err != nil {
-			return err
-		}
-		t0 := time.Now()
-		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-		if err != nil {
-			return err
-		}
-		defer dev.Close()
-		e, err := pose.OpenNPU(ctx, dev, export, model)
-		if err != nil {
-			return err
-		}
-		defer e.Close()
-		logf("loaded %s in %.1f s, on AMD's NPU (%s)", m.Name, time.Since(t0).Seconds(), filepath.Base(export))
-		return c.estimate(ctx, e, logf)
-	}
-	ort, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
-	c.CPU = c.CPU || builtin
-	if ort {
-		model, err := pose.Fetch(ctx, setup)
-		if err != nil {
-			return err
-		}
-		t0 := time.Now()
-		e, err := pose.OpenCPU(model, c.Threads)
-		if err != nil {
-			return err
-		}
-		defer e.Close()
-		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
-		return c.estimate(ctx, e, logf)
-	}
-	backend := llm.BackendCoreML // what the CPU interpreter runs
-	var dev *hwnpu.Device
-	if !c.CPU {
-		if dev, backend, err = openImageDevice(ctx, c.Backend, cache); err != nil {
-			return err
-		}
-		defer dev.Close()
-		if backend == "" {
-			return fmt.Errorf("%s runs neither Core AI programs nor OpenVINO IR (--device cpu runs it on the CPU)", dev.Info().Backend)
-		}
-	}
-	setup.Backend = backend
-	model, program, err := pose.Prepare(ctx, setup)
-	if err != nil {
-		return err
-	}
-	t0 := time.Now()
-	e, err := pose.Open(ctx, dev, model, program)
-	if err != nil {
-		return err
-	}
-	defer e.Close()
-	where := "on the CPU interpreter"
-	if !c.CPU {
-		where = "all on the NPU"
-		if !e.OnNPU() {
-			where = "NOT all on the NPU"
-		}
-	}
-	logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), where)
-	return c.estimate(ctx, e, logf)
-}
-
-// estimate finds the people of each picture with e.
-func (c *PoseCmd) estimate(ctx context.Context, e *pose.Estimator, logf func(string, ...any)) error {
 	console.Running()
 	enc := json.NewEncoder(os.Stdout)
-	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	for _, p := range c.Pictures {
 		img, err := readPicture(p)
 		if err != nil {
 			return err
 		}
-		start := time.Now()
-		people, err := e.Estimate(ctx, img, c.Score)
+		found, err := e.Estimate(ctx, img, vision.PoseOptions{Score: score})
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
-		logf("%s: %d people in %.0f ms (resize %.0f, network %.0f, people and keypoints on the host %.0f)", filepath.Base(p), len(people), ms(time.Since(start)), ms(e.Times[0]), ms(e.Times[1]), ms(e.Times[2]))
+		logf("%s: %d people in %.0f ms (resize %.0f, network %.0f, people and keypoints on the host %.0f)", filepath.Base(p), len(found.People),
+			ms(found.Took), ms(found.Resize), ms(found.Network), ms(found.Host))
+		var people []personJSON // none: null, as before
+		for _, q := range found.People {
+			pj := personJSON{Box: [4]float64{q.Box.Min.X, q.Box.Min.Y, q.Box.Max.X, q.Box.Max.Y}, Score: q.Score}
+			for _, k := range q.Keypoints {
+				pj.Keypoints = append(pj.Keypoints, keypointJSON{k.Name, k.X, k.Y, k.Score})
+			}
+			people = append(people, pj)
+		}
 		if err := enc.Encode(struct {
-			File   string        `json:"file"`
-			Width  int           `json:"width"`
-			Height int           `json:"height"`
-			People []pose.Person `json:"people"`
+			File   string       `json:"file"`
+			Width  int          `json:"width"`
+			Height int          `json:"height"`
+			People []personJSON `json:"people"`
 		}{p, img.Bounds().Dx(), img.Bounds().Dy(), people}); err != nil {
 			return err
 		}
@@ -159,7 +92,7 @@ func (c *PoseCmd) estimate(ctx context.Context, e *pose.Estimator, logf func(str
 				d = filepath.Dir(p)
 			}
 			out := filepath.Join(d, strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))+".pose.png")
-			if err := drawPeople(out, img, people); err != nil {
+			if err := drawPeople(out, img, found.People); err != nil {
 				return err
 			}
 			logf("wrote %s", out)
@@ -168,11 +101,22 @@ func (c *PoseCmd) estimate(ctx context.Context, e *pose.Estimator, logf func(str
 	return nil
 }
 
-// skeleton are COCO's limbs, by keypoint.
-var skeleton = [][2]int{{15, 13}, {13, 11}, {16, 14}, {14, 12}, {11, 12}, {5, 11}, {6, 12}, {5, 6}, {5, 7}, {6, 8}, {7, 9}, {8, 10}, {1, 2}, {0, 1}, {0, 2}, {1, 3}, {2, 4}, {3, 5}, {4, 6}}
+// personJSON is a person as pose prints it: the box (x1, y1, x2, y2), its score, the keypoints.
+type personJSON struct {
+	Box       [4]float64     `json:"box"`
+	Score     float64        `json:"score"`
+	Keypoints []keypointJSON `json:"keypoints"`
+}
+
+type keypointJSON struct {
+	Name  string  `json:"name"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Score float64 `json:"score"`
+}
 
 // drawPeople writes img with the people's boxes, limbs and keypoints drawn to a PNG at path.
-func drawPeople(path string, img image.Image, people []pose.Person) error {
+func drawPeople(path string, img image.Image, people []vision.Person) error {
 	b := img.Bounds()
 	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
 	draw.Draw(dst, dst.Bounds(), img, b.Min, draw.Src)
@@ -190,12 +134,12 @@ func drawPeople(path string, img image.Image, people []pose.Person) error {
 	}
 	box, limb, joint := color.RGBA{255, 200, 0, 255}, color.RGBA{0, 220, 255, 255}, color.RGBA{255, 40, 80, 255}
 	for _, p := range people {
-		x0, y0, x1, y1 := p.Box[0], p.Box[1], p.Box[2], p.Box[3]
+		x0, y0, x1, y1 := p.Box.Min.X, p.Box.Min.Y, p.Box.Max.X, p.Box.Max.Y
 		line(x0, y0, x1, y0, box)
 		line(x1, y0, x1, y1, box)
 		line(x1, y1, x0, y1, box)
 		line(x0, y1, x0, y0, box)
-		for _, s := range skeleton {
+		for _, s := range vision.Skeleton {
 			a, c := p.Keypoints[s[0]], p.Keypoints[s[1]]
 			if a.Score >= 0.3 && c.Score >= 0.3 {
 				line(a.X, a.Y, c.X, c.Y, limb)

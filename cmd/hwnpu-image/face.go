@@ -13,17 +13,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
 
 // FaceDetectCmd is "hwnpu-image face-detect": the faces in pictures with YuNet (OpenCV Zoo's
-// face_detection_yunet_2023mar, MIT; internal/vision/face), on AMD's NPU (exports of
-// tools/amd/iron_yunet.py) or on the CPU (the ONNX file with ONNX Runtime). models.yaml's
-// device says which for the machine's NPU (YuNet: the CPU on AMD, where the NPU took 16 times
-// the energy); --device and HWNPU_DEVICE override it.
+// face_detection_yunet_2023mar, MIT; ai/vision's Faces), on AMD's NPU (exports of
+// tools/amd/iron_yunet.py), Apple's and Intel's NPU (the ONNX graph converted) or on the CPU
+// (the ONNX file with ONNX Runtime). models.yaml's device says which for the machine's NPU
+// (YuNet: the CPU on AMD, where the NPU took 16 times the energy); --device and HWNPU_DEVICE
+// override it.
 //
 // For each picture it prints one line of JSON: the faces' boxes (x, y, w, h), scores and five
 // landmarks (the right eye, the left eye, the nose tip, the mouth's right and left corners) in
@@ -46,17 +46,31 @@ type FaceDetectCmd struct {
 func (c *FaceDetectCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	d, err := c.open(ctx, logf)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	d.Score, d.NMS = c.Score, c.NMS
+	o := vision.FaceOptions{Score: orAll(c.Score), NMS: c.NMS, Log: c.Repeat <= 1}
 	if c.Size != "" {
-		if _, err := fmt.Sscanf(c.Size, "%dx%d", &d.Size[0], &d.Size[1]); err != nil {
+		if _, err := fmt.Sscanf(c.Size, "%dx%d", &o.Size[0], &o.Size[1]); err != nil {
 			return fmt.Errorf("--size %q: not WxH", c.Size)
 		}
 	}
+	useBackend(c.Backend)
+	how := made{device: c.Device}
+	how.threads(c.Threads)
+	name := c.Model
+	if isPath(c.Model) {
+		// an export's directory (the NPU) or an ONNX file (the CPU): a model like YuNet
+		path := expandHome(c.Model)
+		if strings.EqualFold(filepath.Ext(path), ".onnx") {
+			how.program("onnx", path)
+		} else {
+			how.program("export", path)
+		}
+		name = "face-detect"
+	}
+	d, rt, _, err := load(ctx, name, vision.Faces, how, lw)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
 	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for _, p := range c.Pictures {
@@ -64,13 +78,10 @@ func (c *FaceDetectCmd) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if c.Repeat <= 1 {
-			d.Logf = logf
-		}
-		var faces []face.Face
+		var faces []vision.Face
 		t0 := time.Now()
 		for i := 0; i < max(1, c.Repeat); i++ {
-			if faces, err = d.Detect(ctx, img); err != nil {
+			if faces, err = d.DetectWith(ctx, img, o); err != nil {
 				return err
 			}
 			if i == 0 && c.Repeat > 1 {
@@ -98,111 +109,9 @@ func (c *FaceDetectCmd) Run(ctx context.Context) error {
 	return nil
 }
 
-// open loads the detector where it runs: the NPU (an export, AMD's) or the CPU (the ONNX file).
-func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*face.Detector, error) {
-	model := expandHome(c.Model)
-	vendor := npuVendor(ctx)
-	if isPath(c.Model) {
-		device := c.Device
-		if device == "" {
-			device = "npu"
-			if strings.EqualFold(filepath.Ext(model), ".onnx") {
-				device = "cpu"
-			}
-		}
-		if device == "cpu" {
-			return face.OpenCPU(model, c.Threads)
-		}
-		return openFaceNPU(ctx, model)
-	}
-	m, err := resolve(c.Model, chat.KindFace)
-	if err != nil {
-		return nil, err
-	}
-	device, why, err := chat.ChooseDevice(m, vendor, c.Device)
-	if err != nil {
-		return nil, err
-	}
-	if device == "npu" && vendor != "amd" && vendor != "apple" && vendor != "intel" {
-		// AMD's NPU has YuNet's graph (iron_yunet.py), Apple's and Intel's the ONNX graph as
-		// Core ML and OpenVINO IR
-		if c.Device == "npu" {
-			return nil, fmt.Errorf("%s runs on AMD's, Apple's and Intel's NPU (this machine's NPU: %s); --device cpu runs it on the CPU", m.Name, orNone(vendor))
-		}
-		device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", m.Name, orNone(vendor))
-	}
-	logf("%s on the %s (%s)", m.Name, device, why)
-	if device == "npu" && (vendor == "apple" || vendor == "intel") {
-		path, err := faceONNX(ctx, m)
-		if err != nil {
-			return nil, err
-		}
-		var opts []hwnpu.Option
-		if vendor == "apple" {
-			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
-		}
-		dev, backend, err := openImageDevice(ctx, c.Backend, cacheDirOf(""), opts...)
-		if err != nil {
-			return nil, err
-		}
-		d, err := face.OpenProgram(ctx, dev, backend, path, chat.ModelDir(m))
-		if err != nil {
-			dev.Close()
-			return nil, err
-		}
-		d.OnClose = func() { dev.Close() }
-		return d, nil
-	}
-	if device == "cpu" {
-		path, err := faceONNX(ctx, m)
-		if err != nil {
-			return nil, err
-		}
-		return face.OpenCPU(path, c.Threads)
-	}
-	dir, err := amdExport(ctx, m, "tools/amd/iron_yunet.py", 0)
-	if err != nil {
-		return nil, err
-	}
-	return openFaceNPU(ctx, dir)
-}
-
-// openFaceNPU loads the export in dir onto AMD's NPU; the device closes with the detector.
-func openFaceNPU(ctx context.Context, dir string) (*face.Detector, error) {
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-	if err != nil {
-		return nil, err
-	}
-	d, err := face.Open(ctx, dev, dir)
-	if err != nil {
-		dev.Close()
-		return nil, err
-	}
-	d.OnClose = func() { dev.Close() }
-	return d, nil
-}
-
-// faceONNX is the model's ONNX file, fetched when missing (chat.Fetch; models.yaml pins its
-// sha256). Its programs go in its directory of programs (chat.ModelDir).
-func faceONNX(ctx context.Context, m chat.Model) (string, error) {
-	return chat.Fetch(ctx, m.Source(), "face_detection_yunet_2023mar.onnx", os.Stderr)
-}
-
-func fileExists(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && st.Mode().IsRegular()
-}
-
 // npuVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one
 // (chat.HereVendor: HWNPU_BACKEND=openvino is an Intel machine).
 func npuVendor(context.Context) string { return chat.HereVendor() }
-
-func orNone(v string) string {
-	if v == "" {
-		return "none"
-	}
-	return v
-}
 
 func readPicture(path string) (image.Image, error) {
 	f, err := os.Open(path)
@@ -223,25 +132,31 @@ type faceOut struct {
 	Landmarks [5][2]float32 `json:"landmarks"`
 }
 
-func faceJSON(path string, faces []face.Face) any {
+func faceJSON(path string, faces []vision.Face) any {
 	out := struct {
 		Picture string    `json:"picture"`
 		Faces   []faceOut `json:"faces"`
 	}{Picture: path, Faces: []faceOut{}}
-	r := func(x float32) float32 { return float32(int(x*10+0.5)) / 10 }
+	r := func(x float64) float32 { return float32(int(float32(x)*10+0.5)) / 10 }
 	for _, f := range faces {
-		o := faceOut{Box: [4]float32{r(f.X), r(f.Y), r(f.W), r(f.H)}, Score: float32(int(f.Score*1000+0.5)) / 1000}
-		for i, l := range f.Landmarks {
-			o.Landmarks[i] = [2]float32{r(l[0]), r(l[1])}
+		o := faceOut{Box: [4]float32{r(f.Box.Min.X), r(f.Box.Min.Y), r(f.Box.Dx()), r(f.Box.Dy())}, Score: float32(int(float32(f.Score)*1000+0.5)) / 1000}
+		for i, l := range landmarks(f) {
+			o.Landmarks[i] = [2]float32{r(l.X), r(l.Y)}
 		}
 		out.Faces = append(out.Faces, o)
 	}
 	return out
 }
 
+// landmarks are a face's five landmarks in YuNet's order: the right eye, the left eye, the
+// nose, the mouth's right and left corners.
+func landmarks(f vision.Face) [5]vision.Point {
+	return [5]vision.Point{f.RightEye, f.LeftEye, f.Nose, f.MouthRight, f.MouthLeft}
+}
+
 // writeFaces writes img with each face's box (green) and landmarks (OpenCV's demo colors:
 // the eyes blue and red, the nose green, the mouth's corners magenta and yellow).
-func writeFaces(path string, img image.Image, faces []face.Face) error {
+func writeFaces(path string, img image.Image, faces []vision.Face) error {
 	b := img.Bounds()
 	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
 	draw.Draw(dst, dst.Bounds(), img, b.Min, draw.Src)
@@ -252,13 +167,13 @@ func writeFaces(path string, img image.Image, faces []face.Face) error {
 	green := color.RGBA{0, 255, 0, 255}
 	marks := []color.RGBA{{0, 0, 255, 255}, {255, 0, 0, 255}, {0, 255, 0, 255}, {255, 0, 255, 255}, {255, 255, 0, 255}}
 	for _, f := range faces {
-		x0, y0, x1, y1 := int(f.X), int(f.Y), int(f.X+f.W), int(f.Y+f.H)
+		x0, y0, x1, y1 := int(f.Box.Min.X), int(f.Box.Min.Y), int(float32(f.Box.Max.X)), int(float32(f.Box.Max.Y))
 		rect(x0, y0, x1, y0+t, green)
 		rect(x0, y1-t, x1, y1, green)
 		rect(x0, y0, x0+t, y1, green)
 		rect(x1-t, y0, x1, y1, green)
-		for i, l := range f.Landmarks {
-			x, y := int(l[0]), int(l[1])
+		for i, l := range landmarks(f) {
+			x, y := int(l.X), int(l.Y)
 			rect(x-2*t, y-2*t, x+2*t, y+2*t, marks[i])
 		}
 	}

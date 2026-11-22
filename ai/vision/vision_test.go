@@ -13,7 +13,7 @@ func near(a, b, tol float64) bool { return math.Abs(a-b) <= tol }
 func TestHeadOf(t *testing.T) {
 	frame := image.Rect(0, 0, 640, 480)
 	face := func(cx, cy, apart float64) Face {
-		return Face{Box: image.Rect(int(cx-apart), int(cy-apart), int(cx+apart), int(cy+apart)),
+		return Face{Box: box(cx-apart, cy-apart, cx+apart, cy+apart),
 			RightEye: Point{cx - apart/2, cy}, LeftEye: Point{cx + apart/2, cy}}
 	}
 	// a camera of 60 degrees across 640 pixels has a focal length of 554 pixels: eyes 63 mm
@@ -36,8 +36,8 @@ func TestHeadOf(t *testing.T) {
 		t.Errorf("with a field of view of 90 degrees: %.3f m, want 0.32", h.Z)
 	}
 	// without the eyes, the box
-	box := Face{Box: image.Rect(250, 170, 390, 310)}
-	if h := HeadOf(box, frame, HeadOptions{}); !near(h.X, 0, 1e-9) || !near(h.Z, 0.554*63/(140/2.2), 0.01) {
+	noEyes := Face{Box: box(250.0, 170, 390, 310)}
+	if h := HeadOf(noEyes, frame, HeadOptions{}); !near(h.X, 0, 1e-9) || !near(h.Z, 0.554*63/(140/2.2), 0.01) {
 		t.Errorf("a face without landmarks: %+v", h)
 	}
 
@@ -53,7 +53,7 @@ func TestHeadOf(t *testing.T) {
 
 func TestHeadNode(t *testing.T) {
 	frame := image.Rect(0, 0, 640, 480)
-	one := Face{Box: image.Rect(280, 200, 360, 280), RightEye: Point{300, 240}, LeftEye: Point{340, 240}}
+	one := Face{Box: box(280.0, 200, 360, 280), RightEye: Point{300, 240}, LeftEye: Point{340, 240}}
 	src := flow.Source[Found]("found").From(flow.From(Found{Frame: frame}, Found{Frame: frame, Faces: []Face{one}}, Found{Frame: frame}))
 	var got []Head
 	src.To(HeadNode(HeadOptions{})).To(flow.Sink[Head]("heads").Do(func(c flow.Chunk[Head]) error {

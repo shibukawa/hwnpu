@@ -7,17 +7,15 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/vision/ocr"
+	"github.com/shibukawa/hwnpu/internal/imagedev"
 )
 
 // OCRCmd is "hwnpu-image ocr": the text in pictures with PaddleOCR's PP-OCRv6 (Apache-2.0;
-// internal/vision/ocr), a text detector and a recognizer of 50 languages (Japanese, Chinese,
+// ai/vision's OCR), a text detector and a recognizer of 50 languages (Japanese, Chinese,
 // English, ...), on Apple's Neural Engine or Intel's NPU, and elsewhere (AMD's NPU has no form of
 // them yet) or with --device cpu on the CPU with ONNX Runtime (--cpu: the converted programs on
 // the CPU interpreter). The models are downloaded the first time, and for an NPU each size of
@@ -35,7 +33,6 @@ type OCRCmd struct {
 	Draw        bool     `help:"Also write NAME.text.png: the picture with the lines' boxes."`
 	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
 	Repeat      int      `default:"1" help:"Run each picture this many times and report the mean time."`
-	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU         bool     `name:"cpu" help:"Run the converted programs on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
 	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
@@ -46,47 +43,22 @@ type OCRCmd struct {
 func (c *OCRCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	m, err := resolve(c.Model, chat.KindOCR)
-	if err != nil {
-		return err
-	}
-	det := m.With["detector"]
-	if det == "" {
-		return fmt.Errorf("%s: models.yaml gives no detector (with: {detector: hf:OWNER/NAME})", m.Name)
-	}
-	cpu, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
-	c.CPU = c.CPU || builtin
-	var dev *hwnpu.Device
-	backend := ""
-	if !cpu {
-		d, b, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, c.Backend, "PP-OCR")
-		if err != nil {
-			return err
-		}
-		defer closeDev()
-		defer npuHeld(logf)()
-		dev, backend = d, b
-	}
-	dir := chat.ModelsDir()
-	detSHA, recSHA := map[string]string{}, map[string]string{}
-	for f, d := range m.SHA256 {
-		if rest, ok := strings.CutPrefix(f, "detector/"); ok {
-			detSHA[rest] = d
-		} else {
-			recSHA[f] = d
-		}
-	}
-	r, err := ocr.Open(ctx, dev, ocr.Setup{Dir: dir, Det: ocr.Source{Repo: det, SHA256: detSHA}, Rec: ocr.Source{Repo: m.Source(), SHA256: recSHA}, Backend: backend, CPU: cpu, Threads: c.Threads, Log: lw})
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-	r.Logf, r.MinScore = logf, c.MinScore
+	o := vision.OCROptions{MinScore: c.MinScore}
 	if c.Size != "" {
-		if _, err := fmt.Sscanf(c.Size, "%dx%d", &r.Size[0], &r.Size[1]); err != nil || r.Size[0]%32 != 0 || r.Size[1]%32 != 0 || r.Size[0] <= 0 || r.Size[1] <= 0 {
+		if _, err := fmt.Sscanf(c.Size, "%dx%d", &o.Size[0], &o.Size[1]); err != nil || o.Size[0]%32 != 0 || o.Size[1]%32 != 0 || o.Size[0] <= 0 || o.Size[1] <= 0 {
 			return fmt.Errorf("--size %q: not WxH in multiples of 32", c.Size)
 		}
 	}
+	useBackend(c.Backend)
+	how := made{device: c.Device}
+	how.threads(c.Threads)
+	how.interpreter(c.CPU)
+	r, rt, _, err := load(ctx, c.Model, vision.OCR, how, lw)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	defer imagedev.NPUHeld(logf)()
 	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for n, p := range c.Pictures {
@@ -94,13 +66,13 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		var lines []ocr.Line
+		var text *vision.Text
 		start := time.Now()
 		for i := range max(1, c.Repeat) {
 			if i == 1 {
 				start = time.Now()
 			}
-			if lines, err = r.Read(ctx, img); err != nil {
+			if text, err = r.Read(ctx, img, o); err != nil {
 				return fmt.Errorf("%s: %w", p, err)
 			}
 		}
@@ -108,10 +80,17 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 		if c.Repeat > 1 {
 			runs = c.Repeat - 1
 		}
-		W, H := r.Choose(img.Bounds().Dx(), img.Bounds().Dy())
-		t := r.Times
 		logf("%s: %d lines in %.0f ms (detector at %dx%d: resize %.1f, network %.1f, boxes %.1f; crops %.1f, recognizer %.1f in %d calls, decoding %.1f)%s",
-			filepath.Base(p), len(lines), ms(time.Since(start))/float64(runs), W, H, ms(t.Resize), ms(t.Detect), ms(t.Boxes), ms(t.Crop), ms(t.Recognize), r.Calls, ms(t.Decode), repeated(c.Repeat))
+			filepath.Base(p), len(text.Lines), ms(time.Since(start))/float64(runs), text.Size[0], text.Size[1], ms(text.Resize), ms(text.Detect), ms(text.Boxes),
+			ms(text.Crop), ms(text.Recognize), text.Calls, ms(text.Decode), repeated(c.Repeat))
+		lines := []lineJSON{}
+		for _, l := range text.Lines {
+			lj := lineJSON{Text: l.Text, Score: float32(l.Score)}
+			for i, q := range l.Box {
+				lj.Box[i] = [2]float32{float32(q.X), float32(q.Y)}
+			}
+			lines = append(lines, lj)
+		}
 		if c.Text {
 			if n > 0 {
 				fmt.Println()
@@ -120,14 +99,11 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 				fmt.Println(l.Text)
 			}
 		} else {
-			if lines == nil {
-				lines = []ocr.Line{}
-			}
 			if err := enc.Encode(struct {
 				File   string     `json:"file"`
 				Width  int        `json:"width"`
 				Height int        `json:"height"`
-				Lines  []ocr.Line `json:"lines"`
+				Lines  []lineJSON `json:"lines"`
 			}{p, img.Bounds().Dx(), img.Bounds().Dy(), lines}); err != nil {
 				return err
 			}
@@ -145,4 +121,11 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// lineJSON is a line of text as ocr prints it: its box's four corners, its text and score.
+type lineJSON struct {
+	Box   [4][2]float32 `json:"box"`
+	Text  string        `json:"text"`
+	Score float32       `json:"score"`
 }
