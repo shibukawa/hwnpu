@@ -1399,16 +1399,17 @@ go run ./cmd/hwnpu-audio generate --duration 10s "disco funk" -o out.wav
 
 Supertone の Supertonic 3 (OpenRAIL-M) で、31 の言語の文章を 44.1 kHz の声にする。Mac と同じ流れ (internal/supertonic): 文字の ID から長さと文の埋め込み、雑音から flow を 8 ステップ (分類器なしのガイダンス、v = 4 v_cond − 3 v_uncond)、vocoder。ONNX Runtime は要らない。
 
-### 29.1 構成 (`tools/amd/iron_supertonic.py`、`supertonic.AMDExportVersion` 1)
+### 29.1 構成 (`tools/amd/iron_supertonic.py`、`supertonic.AMDExportVersion` 2)
 
 | 部分 | 中身 |
 |---|---|
 | `estimator-tT-lL/` | flow の 1 ステップ (グラフ、41 コマンド)。2 つの枝を 1 回で: ストリームの行は条件つきの枝の L フレームと条件なしの枝の L フレーム、それぞれの前後に P = 16 行の 0。ConvNeXt 28 個、時刻のブロック 4 個、文への注意 4 個、スタイルへの注意 4 個 |
 | `vocoder-lL/` | vocoder (グラフ、12 コマンド)。6 L フレーム × 24 チャネルの埋め込みの畳み込み (im2col と GEMM)、ConvNeXt 10 個 (因果の 7 タップ、dilation 1、2、4)、head |
-| `host.safetensors` | ホストが計算するもの: 時刻の埋め込みの MLP と、時刻のブロックの Linear、RoPE の周波数 (float32) |
-| 文の 2 グラフ | duration_predictor と text_encoder は Core ML の形式にして CPU interpreter で (`supertonic.Setup.TextOnly`) |
+| `encoder-tT/` | text_encoder (グラフ、5 コマンド)。ConvNeXt 6 個 (256 チャネル、dilation 1、1、2、2、4、4)、VITS の注意の層 4 つ、スタイルへの注意 2 回と layer norm。注意の層の窓つき相対位置の注意 (4 ヘッド × 64) はホストがコマンドの間に (下) |
+| `duration-tT/` | duration_predictor の文の符号器 (グラフ、3 コマンド)。文のトークンと文字の列 (64 チャネル) の ConvNeXt 6 個と注意の層 2 つ (2 ヘッド × 32)。出力の先頭の行 (トークン) の proj_out、predictor (192 → 128、PReLU、→ 1)、exp はホスト |
+| `host.safetensors` | ホストが計算するもの: 時刻の埋め込みの MLP と、時刻のブロックの Linear、RoPE の周波数、相対位置の注意の埋め込み、duration の文のトークンと最後の層 (float32) |
 
-サイズは internal/supertonic.Sizes の 3 つ (64 × 32、128 × 64、256 × 128。約 2.2、4.5、8.9 秒)。重みはサイズで同じ場所に置き、バンクの像を 1 つにする (`share_banks`、iron_plamo_embed.py と同じ形)。596 MB が 255 MB になった。
+サイズは internal/supertonic.Sizes の 3 つ (64 × 32、128 × 64、256 × 128。約 2.2、4.5、8.9 秒)。重みはサイズで同じ場所に置き、バンクの像を 1 つにする (`share_banks`、iron_plamo_embed.py と同じ形)。596 MB が 255 MB になった (文の 2 グラフを足して 312 MB)。
 
 ### 29.2 決めたこと
 
@@ -1425,7 +1426,9 @@ Supertone の Supertonic 3 (OpenRAIL-M) で、31 の言語の文章を 44.1 kHz 
   - 試してやめたもの: マスクを深さ方向の畳み込みのカーネルで掛ける (コアの DMA の入力は 2 チャネルで、x、重み、マスクの 3 つは入らない)。GEMM を MEDIUM にして GELU を出力段 (x sigmoid(1.702 x)) に融合する形は、flow が A よりさらに 9〜12 % 速かったが、1 ステップの更新の誤差が 25〜30 dB から 18〜21 dB に下がる (numpy の模擬) ので採らなかった
 - **精度**: GEMM は HIGHEST (bf16)。flow の 1 ステップの更新は、同じパディングの ORT と 21〜27 dB (潜在で 29〜41 dB)、8 ステップの後の潜在で 22 dB。ConvNeXt の部分を numpy で丸めると、残差のストリームの bf16 が一番効く (30 dB)
 - **MEDIUM (bfp16) は使わない**: GEMM 単体では 256 行で 2.2 倍速いが、グラフ全体では 87 ms のまま (演算子の再構成が時間を決める)。重みをホストで bfp16 に詰めても ConvNeXt 8 個で 7 % だけ
-- **文の 2 グラフ**: CPU interpreter の conv1d が 1 スレッドの直接の和で、text_encoder (128 文字) に 1.5 秒かかっていた (91 % が conv1d)。conv2d の道 (sgemm と im2col、深さ方向は並列) に 1 行の画像として通して 57 ms (duration は 110 → 15 ms)。internal/milcpu の変更なので、conv1d を使うほかのモデルも速くなる
+- **文の 2 グラフを NPU に**: VITS の窓つき相対位置の注意は IRON の MHA で書けない (スコアに相対位置の帯を足す口がない)。グラフの中で組むと 1 層 30 演算子前後になり、bf16 の対角の Copy は DMA の 4 バイト単位に合わなかった。注意そのもの (128 文字で 1 層 8 MFLOP) はホストがコマンドの間に計算する (`iron.on_host`、Go は `Graph.After`): グラフが q、k、v を名前つきの state qkv に書き、ホスト (`relAttention`、Q K^T と P V は sgemm、帯と softmax はループ) が att に書く。電力の大きい GEMM (ConvNeXt と FFN、約 670 MFLOP) は NPU。文の部分は 0.10 秒が 0.04 秒、読み上げ全体の電力量は音声 1 秒あたり 1.3 J が 1.15 J
+- 文の 2 グラフのマスク: 注意の符号器の中の行のマスクは掛けない (ホストの注意が有効な行だけを読み、ほかで行は混ざらない)
+- **文の 2 グラフ (CPU interpreter のとき)**: CPU interpreter の conv1d が 1 スレッドの直接の和で、text_encoder (128 文字) に 1.5 秒かかっていた (91 % が conv1d)。conv2d の道 (sgemm と im2col、深さ方向は並列) に 1 行の画像として通して 57 ms (duration は 110 → 15 ms)。internal/milcpu の変更なので、conv1d を使うほかのモデルも速くなる
 - **書き込み先**: IRON の `h[...] = x` は Copy が 1 つ増える。演算子の出力の引数に state の view を渡すと増えない。ただし入力と同じバッファに書く ElementwiseAdd と、state に書く RowwiseAdd は、次の呼び出しのコマンド 0 が ERT_CMD_STATE_TIMEOUT になった。vocoder はストリームを 2 つの state で交互にし、最初の RowwiseAdd は Copy に戻した
 
 ### 29.3 測定 (Ryzen AI 9 365)
@@ -1435,9 +1438,10 @@ Supertone の Supertonic 3 (OpenRAIL-M) で、31 の言語の文章を 44.1 kHz 
 | flow 1 ステップ (両方の枝) | 70 ms (64 × 32)、77 ms (128 × 64)、91 ms (256 × 128) (bias と GELU を 1 つにする前は 76、84、96 ms) |
 | ConvNeXt 1 つ (192 行) | 2.35 ms。GEMM の 1 対が約 1.0 ms (行数にほぼよらない: 128 行で 0.81、512 行で 1.48)、正確な GELU 0.46、ほかは 0.1 前後 |
 | vocoder | 21 ms (32)、27 ms (64)、40 ms (128) |
-| 英語 4.25 秒 | 0.75〜0.80 秒 (5.3〜5.7 倍): 文 0.10 秒、flow 0.62 秒、vocoder 0.03 秒 |
+| 英語 4.25 秒 | 0.68〜0.70 秒 (6.2 倍): 文 0.04 秒、flow 0.61 秒、vocoder 0.03 秒 |
 | 英語 7.5 秒 | 0.89 秒 (8.4 倍) |
-| 日本語 12 秒 (分けて読む) | 1.69 秒 (7.1 倍) |
+| 日本語 12 秒 (分けて読む) | 1.69 秒 (7.1 倍、文を CPU interpreter で) |
+| 日本語 16 秒 (分けて読む) | 2.44 秒 (6.5 倍): 文 0.11 秒、flow 2.18 秒、vocoder 0.12 秒 |
 | 書き出し | 30 秒 (IRON のカーネルがなければもっと) |
 
 電力 (パッケージの PPT、アイドル 4.5 W を引く、30 秒くり返し):
@@ -1445,22 +1449,24 @@ Supertone の Supertonic 3 (OpenRAIL-M) で、31 の言語の文章を 44.1 kHz 
 | | 実時間の何倍か | 増えた電力 | 音声 1 秒あたりの電力量 |
 |---|---|---|---|
 | CPU 4 スレッド (ONNX Runtime 1.23) | 7.6 倍 | 41.9 W | 5.5 J |
-| NPU (文は CPU interpreter) | 5.3 倍 | 7.1 W | 1.3 J |
+| NPU (文の 2 グラフは CPU interpreter、bias と GELU を 1 つにする前) | 5.3 倍 | 7.1 W | 1.3 J |
+| NPU (全部) | 6.4 倍 | 7.4 W | 1.15 J |
+| GPU (Radeon 880M、ONNX Runtime 1.27 の WebGPU、参考) | 10.8 倍 | 20.1 W | 1.9 J |
+
+NPU (全部) の CPU は 30 秒で user 1.5 秒 (コア 1 つの 5 %)。
 
 Whisper large-v3-turbo の書き起こしは、英語と日本語の文で入力と同じ (日本語の長い文では「生れた」が「折れた」になった)。
 
 ### 29.4 残り
 
 - 演算子の数: ConvNeXt 1 つに 8 (端の Copy、深さ方向の畳み込み、layer norm、GEMM、bias と GELU、GEMM、残差、マスク)。ConvNeXt の 1 つは約 2.1 ms で、GEMM の 1 対が約 1 ms (演算子の再構成)。GPU (Radeon 880M、ONNX Runtime の WebGPU) は flow の 1 ステップが 44 ms で、ここまで詰めるには ConvNeXt の MLP を 1 つの演算子にするところまで要る
-- 文の 2 グラフ (CPU interpreter): 全コアで 60 ms、0.97 J。スレッドを 2〜4 にすると 42〜46 ms、0.80 J (小さい行列には全コアが多すぎる)。NPU に移すと約 0.35 J の見込み (読み上げ 1 回の約 8 %) だが、時間は縮まない
-- text_encoder を NPU に: 相対位置の注意 (VITS の窓つき) は IRON の MHA で書けない
 - デバイスのメモリ: バンクの像はディスクで 1 つだが、読み込むとサイズごとにバッファを持つ (GraphOptions.Buffers でバンクを貸せば 1 つになる)
 
 ### 29.5 手順
 
 ```bash
 python tools/amd/iron_supertonic.py ~/.cache/hwnpu/original/Supertone/supertonic-3/onnx OUT --check   # --sizes 64x32、--only estimator
-go run ./tools/amd/irongraph OUT/estimator-t128-l64
+go run ./tools/amd/irongraph OUT/estimator-t128-l64   # (encoder と duration はホストの注意があるので irongraph では合わない)
 python tools/amd/iron_dwconv1d.py check OUT --rows 128 --taps 5 --dilation 8
 go run ./cmd/hwnpu-audio tts -m supertonic --lang ja -o out.wav こんにちは   # 書き出しは取得元から、なければ IRON で
 go run ./cmd/hwnpu-dev models package supertonic-3/amd-xdna2

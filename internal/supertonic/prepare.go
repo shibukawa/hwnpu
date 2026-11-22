@@ -56,10 +56,7 @@ type Setup struct {
 	Repo, Dir string
 	// Backend is the programs' format (llm.Options.Backend); "" for none: the CPU alone.
 	Backend string
-	// TextOnly converts the text's graphs alone (the duration and the encoder): AMD's NPU runs
-	// the flow and the vocoder as the graphs of PrepareAMD's export.
-	TextOnly bool
-	Log      io.Writer
+	Log     io.Writer
 }
 
 // Config is what Load reads: the model's directory (onnx/, voice_styles/) and the programs
@@ -67,8 +64,7 @@ type Setup struct {
 type Config struct {
 	Dir                                       string
 	Durations, Encoders, Estimators, Vocoders []string
-	// AMD is the export of PrepareAMD (the flow's and the vocoder's graphs), run on Device, AMD's
-	// NPU; the text's programs then run on the CPU interpreter.
+	// AMD is the export of PrepareAMD (the graphs), run on Device, AMD's NPU.
 	AMD     string
 	Device  *hwnpu.Device // nil: the CPU
 	Threads int           // ONNX Runtime's threads on the CPU (0: 4)
@@ -118,9 +114,6 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return c, nil
 	}
 	for _, st := range stages {
-		if s.TextOnly && !st.text {
-			continue
-		}
 		var g *onnx.Graph
 		for _, size := range Sizes {
 			name := fmt.Sprintf("%s-r%d-%s-t%d-l%d-fp16", Arch, Revision, st.name, size.T, size.L)
@@ -193,8 +186,8 @@ func checkSHA(path, want string) error {
 }
 
 // Load opens the model: its programs on the device, with no ONNX Runtime (a text longer than
-// they hold is ErrTooLong), or on AMD's NPU the export c.AMD (the text's programs on the CPU
-// interpreter), or its graphs on the CPU with ONNX Runtime without them.
+// they hold is ErrTooLong), or on AMD's NPU the export c.AMD, or its graphs on the CPU with ONNX
+// Runtime without them.
 func Load(ctx context.Context, c Config) (*Synth, error) {
 	ix, err := LoadIndexer(filepath.Join(c.Dir, "onnx", "unicode_indexer.json"))
 	if err != nil {

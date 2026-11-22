@@ -18,19 +18,20 @@ import (
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
-// On AMD's NPU the flow and the vocoder run as the graphs of tools/amd/iron_supertonic.py (an
-// export NAME.amd-npu2 of each of Sizes), the text's two graphs as Core ML packages on the CPU
-// interpreter (Prepare's of them alone): no ONNX Runtime either.
+// On AMD's NPU the four graphs run as the graphs of tools/amd/iron_supertonic.py (an export
+// NAME.amd-npu2 of each of Sizes; the text's relative attention and the duration's last layers
+// on the host, amd_text.go): no ONNX Runtime and no programs of Prepare.
 
-// AMDTool is the IRON exporter of the flow and the vocoder (tools/amd, built into hwnpu).
+// AMDTool is the IRON exporter of the model's graphs (tools/amd, built into hwnpu).
 const AMDTool = "iron_supertonic.py"
 
 // AMDExportVersion is the version of PrepareAMD's exports (a key of the shared layers:
 // chat.PinnedRecipe), raised by hand when what PrepareAMD passes AMDTool changes.
-const AMDExportVersion = 1
+// 2: the text encoder and the duration predictor too
+const AMDExportVersion = 2
 
 // AMDFiles are the repository's files AMDTool reads.
-var AMDFiles = []string{"onnx/" + Graphs.Estimator, "onnx/" + Graphs.Vocoder}
+var AMDFiles = []string{"onnx/" + Graphs.Estimator, "onnx/" + Graphs.Vocoder, "onnx/" + Graphs.Encoder, "onnx/" + Graphs.Duration}
 
 // AMDExportName is the name of the export for AMD's NPU: NAME.amd-npu2 in lower case.
 func AMDExportName(name string) string { return strings.ToLower(name) + ".amd-npu2" }
@@ -75,7 +76,8 @@ func IsIronExport(dir string) bool {
 		if !have[s] {
 			return false
 		}
-		for _, f := range []string{filepath.Join(estimatorDir(dir, s), "manifest.json"), filepath.Join(vocoderDir(dir, s), "manifest.json")} {
+		for _, f := range []string{filepath.Join(estimatorDir(dir, s), "manifest.json"), filepath.Join(vocoderDir(dir, s), "manifest.json"),
+			filepath.Join(textDir(dir, "encoder", s), "manifest.json"), filepath.Join(textDir(dir, "duration", s), "manifest.json")} {
 			if _, err := os.Stat(f); err != nil {
 				return false
 			}
@@ -85,7 +87,7 @@ func IsIronExport(dir string) bool {
 	return err == nil
 }
 
-// PrepareAMD makes the export of the flow and the vocoder of m for AMD's NPU ready and returns
+// PrepareAMD makes the export of the graphs of m for AMD's NPU ready and returns
 // its directory: here (cache.ExportRoots; one made by hand goes in the sources written back
 // to), else from the shared layers, else it downloads the graphs and exports them with IRON in
 // IRON's environment (chat.IRONEnv) into the cache's entries/amd-xdna2, and puts it in the
@@ -107,7 +109,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
-		fmt.Fprintf(log, "%s: no export of the flow and the vocoder for AMD's NPU here or in the sources; exporting them with IRON\n", m.Name)
+		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; exporting its graphs with IRON\n", m.Name)
 		want := make([]chat.File, len(AMDFiles))
 		for i, f := range AMDFiles {
 			want[i] = chat.File{Repo: m.Repo, Name: f}
@@ -130,10 +132,10 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 	return out, nil
 }
 
-// amdStages run the text's graphs as text (npuStages of the CPU interpreter's programs) and
-// the flow and the vocoder as the export's graphs on AMD's NPU.
+// amdStages run the export's graphs on AMD's NPU: the text's (amdText), the flow and the
+// vocoder.
 type amdStages struct {
-	text  *npuStages
+	text  *amdText
 	sizes []*amdSize
 	host  amdHost
 }
@@ -231,14 +233,14 @@ func (h amdHost) angles(n, m int) []float32 {
 	return out
 }
 
-// OpenAMD opens the text's programs of c (Durations and Encoders, Core ML packages) on the CPU
-// interpreter and the export dir's graphs on amd, AMD's NPU.
+// OpenAMD opens the export dir's graphs on amd, AMD's NPU (the embedding tables from the model's
+// graphs in c.Dir).
 func OpenAMD(ctx context.Context, amd *hwnpu.Device, c Config, dir string) (Stages, error) {
-	text, err := OpenNPU(ctx, nil, nil, Config{Dir: c.Dir, Durations: c.Durations, Encoders: c.Encoders})
+	text, err := openAMDText(ctx, amd, c, dir)
 	if err != nil {
 		return nil, err
 	}
-	s := &amdStages{text: text.(*npuStages)}
+	s := &amdStages{text: text}
 	fail := func(err error) (Stages, error) {
 		s.Close()
 		return nil, err
@@ -262,7 +264,7 @@ func OpenAMD(ctx context.Context, amd *hwnpu.Device, c Config, dir string) (Stag
 	return s, nil
 }
 
-// OnNPU reports that the flow and the vocoder run on AMD's NPU (the text's graphs on the CPU).
+// OnNPU reports that the graphs run on AMD's NPU.
 func (s *amdStages) OnNPU() bool { return true }
 
 func (s *amdStages) Duration(ctx context.Context, ids []int64, style []float32) (float32, error) {

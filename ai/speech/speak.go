@@ -100,7 +100,8 @@ var speakRole = &airole.Role{
 	},
 	// 1: Supertonic's programs of its text's graphs (durations, encoders), with no ONNX Runtime
 	// 2: Supertonic on AMD's NPU (amd: supertonic.PrepareAMD's export)
-	Revision: 2,
+	// 3: its text's graphs in the export too (no programs)
+	Revision: 3,
 }
 
 // SpeakOptions are how a text is spoken (LFM3-Audio's settings).
@@ -416,24 +417,20 @@ func isSupertonic(m chat.Model) bool {
 }
 
 // prepareSupertonic downloads Supertonic 3 and, for the NPU, converts the programs of its flow
-// and its vocoder (a model of device cpu runs on ONNX Runtime alone). On AMD's NPU the flow and
-// the vocoder are the graphs of supertonic.PrepareAMD's export, the text's two graphs Core ML
-// packages for the CPU interpreter.
+// and its vocoder (a model of device cpu runs on ONNX Runtime alone). On AMD's NPU the graphs
+// are supertonic.PrepareAMD's export (no programs).
 func prepareSupertonic(e airole.PrepareEnv) (f airole.Files, err error) {
 	backend := e.NPU.Format
 	amd := e.NPU.AMD() && !e.NPU.CPU(e.Model)
-	switch {
-	case amd:
-		backend = llm.BackendCoreML
-	case e.NPU.CPU(e.Model) || e.NPU.AMD():
-		backend = "" // the CPU: ONNX Runtime reads the graphs
+	if e.NPU.CPU(e.Model) || e.NPU.AMD() {
+		backend = "" // AMD's export, or the CPU: ONNX Runtime reads the graphs
 	}
 	if backend == llm.BackendCoreAI {
 		// Core AI's lowering has no 1-D convolution (the flow's and the vocoder's); Core ML's
 		// programs run all on the Neural Engine (measured on M2: 80 times real time)
 		backend = llm.BackendCoreML
 	}
-	c, err := supertonic.Prepare(e.Ctx, supertonic.Setup{Repo: e.Model.Source(), Dir: e.Dir, Backend: backend, TextOnly: amd, Log: e.Log})
+	c, err := supertonic.Prepare(e.Ctx, supertonic.Setup{Repo: e.Model.Source(), Dir: e.Dir, Backend: backend, Log: e.Log})
 	if err != nil {
 		return f, err
 	}

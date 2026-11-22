@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Supertonic 3's flow (vector_estimator.onnx) and vocoder (vocoder.onnx) as IRON graphs, which
-internal/supertonic runs on AMD's NPU. The text's two small graphs (duration_predictor,
-text_encoder) run on the CPU interpreter as Core ML packages made where they run.
+"""Supertonic 3's four graphs as IRON graphs, which internal/supertonic runs on AMD's NPU: the flow
+(vector_estimator.onnx), the vocoder (vocoder.onnx), the text encoder (text_encoder.onnx) and the
+duration predictor's sentence encoder (duration_predictor.onnx; TextGraph, its windowed relative
+attention on the host).
 
   python tools/amd/iron_supertonic.py ONNX_DIR OUT [--sizes 64x32 128x64 256x128] [--check]
 
-writes OUT/estimator-tT-lL/ and OUT/vocoder-lL/ (iron_graph.py) for each size (T characters of
-the text, L frames of the latent: internal/supertonic.Sizes), OUT/host.safetensors (what the
-host computes: the step's time embedding) and OUT/model.json.
+writes OUT/estimator-tT-lL/, OUT/vocoder-lL/, OUT/encoder-tT/ and OUT/duration-tT/ (iron_graph.py)
+for each size (T characters of the text, L frames of the latent: internal/supertonic.Sizes),
+OUT/host.safetensors (what the host computes: the step's time embedding, the text graphs'
+relative attention, the duration's last layers) and OUT/model.json.
 
 The layout: a tensor is rows of time, its channels the columns, bf16.
 
@@ -342,7 +344,8 @@ FFP, ONE = FF + 256, 16.0
 
 class ConvNext:
     """A ConvNeXt block's params: the layer norm's affine folded into pwconv1, gamma into pwconv2,
-    pwconv1's bias added by BiasGELU (iron_biasgelu.py), pwconv2's a column of its weights (FFP)."""
+    pwconv1's bias added by BiasGELU (iron_biasgelu.py), pwconv2's a column of its weights (FFP:
+    FF + 256 columns)."""
 
     def __init__(self, ps: Params, G: Onnx, p: str):
         wn = p + ".dwconv.weight" if p + ".dwconv.weight" in G.init else p + ".dwconv.net.weight"
@@ -351,19 +354,20 @@ class ConvNext:
         self.dw = ps.p(dw_weights(w, b))
         g, beta = G[p + ".norm.norm.weight"], G[p + ".norm.norm.bias"]
         w1, b1 = G[p + ".pwconv1.weight"][:, :, 0], G[p + ".pwconv1.bias"]
-        w1p, b1p = np.zeros((FFP, HID)), np.zeros(FFP)
-        w1p[:FF], b1p[:FF], b1p[FF] = w1 * g[None, :], w1 @ beta + b1, ONE
+        ff, C = w1.shape
+        self.C, ffp = C, ff + 256
+        w1p, b1p = np.zeros((ffp, C)), np.zeros(ffp)
+        w1p[:ff], b1p[:ff], b1p[ff] = w1 * g[None, :], w1 @ beta + b1, ONE
         self.w1, self.b1 = ps.p(w1p), ps.p(b1p)
         gam = G[p + ".gamma"].reshape(-1)
-        w2 = np.zeros((HID, FFP))
-        w2[:, :FF] = G[p + ".pwconv2.weight"][:, :, 0] * gam[:, None]
-        w2[:, FF] = G[p + ".pwconv2.bias"] * gam / ONE
+        w2 = np.zeros((C, ffp))
+        w2[:, :ff] = G[p + ".pwconv2.weight"][:, :, 0] * gam[:, None]
+        w2[:, ff] = G[p + ".pwconv2.bias"] * gam / ONE
         self.w2 = ps.p(w2)
-
 
     def mlp(self, h):
         """pwconv2(GELU(pwconv1(layer_norm(h)))) times gamma."""
-        n = F.layer_norm(h, (HID,), None, None, eps=1e-6)
+        n = F.layer_norm(h, (self.C,), None, None, eps=1e-6)
         return lin(bias_gelu(lin(n, self.w1), self.b1), self.w2)
 
 
@@ -543,6 +547,205 @@ class Vocoder(iron.Graph, Params):
         return lin(u, self.w2)
 
 
+# --- the text's graphs: the text encoder and the duration predictor's sentence encoder ------------
+
+WREL = 4  # VITS's relative attention's window: positions -4 .. 4 (emb_rel_k, emb_rel_v of 9 rows)
+TP, DPP = "tts.ttl.text_encoder.", "tts.dp.sentence_encoder."
+SPT = 256  # the text encoder's style keys and values, padded (IRON's MHA: keys at least the queries)
+
+
+def rel_attention(qkv, n: int, H: int, D: int, ek, ev) -> np.ndarray:
+    """VITS's windowed relative attention on the host (internal/supertonic's, in float64 here):
+    qkv (rows, 3 H D) the projections (q divided by sqrt(D)) of n valid rows, ek, ev (9, D). The
+    output (rows, H D), zero past n."""
+    x = np.asarray(qkv, np.float64)[:n]
+    q, k, v = (x[:, j * H * D : (j + 1) * H * D].reshape(n, H, D) for j in range(3))
+    s = np.einsum("ihd,jhd->hij", q, k)
+    rel = np.einsum("ihd,rd->hir", q, ek)
+    for r in range(2 * WREL + 1):
+        d = r - WREL
+        i = np.arange(max(0, -d), min(n, n - d))
+        s[:, i, i + d] += rel[:, i, r]
+    pr = _softmax(s)
+    o = np.einsum("hij,jhd->ihd", pr, v)
+    for r in range(2 * WREL + 1):
+        d = r - WREL
+        i = np.arange(max(0, -d), min(n, n - d))
+        o[i] += np.einsum("hi,d->ihd", pr[:, i, i + d], ev[r])
+    out = np.zeros((np.shape(qkv)[0], H * D))
+    out[:n] = o.reshape(n, H * D)
+    return out
+
+
+class VitsLayer:
+    """A layer of VITS's attention encoder (the attention's projections, its output's, the layer
+    norms and the ReLU FFN) on the device; the windowed relative attention itself is a host step
+    between two commands, reading the projections from the state qkv and writing the state att
+    (internal/supertonic's relAttention). The rows past the text are not masked: the host's
+    attention reads the valid ones alone and nothing mixes the rows elsewhere."""
+
+    def __init__(self, ps: Params, G: Onnx, A: str, l: int, H: int):
+        p = A + f"attn_layers.{l}."
+        cw = lambda n: G[p + n + ".weight"][:, :, 0]  # noqa: E731
+        C = cw("conv_q").shape[0]
+        self.C, self.H, self.D = C, H, C // H
+        sq = 1 / math.sqrt(self.D)
+        self.wqkv = ps.p(np.concatenate([cw("conv_q") * sq, cw("conv_k"), cw("conv_v")]))
+        self.bqkv = ps.p(np.concatenate([G[p + "conv_q.bias"] * sq, G[p + "conv_k.bias"], G[p + "conv_v.bias"]]))
+        self.wo, self.bo = ps.p(cw("conv_o")), ps.p(G[p + "conv_o.bias"])
+        self.ek, self.ev = G[p + "emb_rel_k"][0], G[p + "emb_rel_v"][0]
+        f = A + f"ffn_layers.{l}."
+        self.f1, self.fb1 = ps.p(G[f + "conv_1.weight"][:, :, 0]), ps.p(G[f + "conv_1.bias"])
+        self.f2, self.fb2 = ps.p(G[f + "conv_2.weight"][:, :, 0]), ps.p(G[f + "conv_2.bias"])
+        n1, n2 = A + f"norm_layers_1.{l}.norm.", A + f"norm_layers_2.{l}.norm."
+        self.g1, self.b1 = ps.p(G[n1 + "weight"]), ps.p(G[n1 + "bias"])
+        self.g2, self.b2 = ps.p(G[n2 + "weight"]), ps.p(G[n2 + "bias"])
+
+    def __call__(self, a, qkv, att, mrows):
+        """a (rows, C) -> the layer's output; qkv, att the states, mrows the mask's rows of a."""
+        R, C, H, D = a.shape[0], self.C, self.H, self.D
+        qkv[0:R] = lin(a, self.wqkv, self.bqkv)
+        ek, ev = self.ek, self.ev
+
+        def host(x, m, out):
+            n = int(np.count_nonzero(np.asarray(m, np.float32)[:, 0]))
+            out[...] = bf(rel_attention(x, n, H, D, ek, ev))
+
+        iron.on_host(host, qkv[0:R], mrows, writes=(att[0:R],))
+        a = F.layer_norm(a + lin(att[0:R], self.wo, self.bo), (C,), self.g1, self.b1, eps=1e-6)
+        f = lin(ReLU.step(lin(a, self.f1, self.fb1)), self.f2, self.fb2)
+        return F.layer_norm(a + f, (C,), self.g2, self.b2, eps=1e-6)
+
+
+class TextGraph(iron.Graph, Params):
+    """The ConvNeXt blocks over a stream of the text's rows (rows P .. P + R of S, zero rows around,
+    the first row copied before it: the graph's edge padding, masked after each block) and the
+    attention encoder's layers (VitsLayer) over its R rows. The text encoder (kind "encoder") adds
+    the ConvNeXt blocks' output and the speech-prompted encoder (two attentions to the style, its
+    keys constants, and a layer norm): its output (R, 256) is the text's embedding. The duration
+    predictor's sentence encoder ("duration") reads the sentence token and the text's rows: its
+    output's first row is the token's hidden, before proj_out (the host's, with the predictor)."""
+
+    def __init__(self, G: Onnx, kind: str, T: int):
+        Params.__init__(self)
+        self.kind, self.T = kind, T
+        if kind == "encoder":
+            pre, nconv, layers, H = TP, 6, 4, 4
+            self.R, self.P = T, 32
+            self.S = T + 2 * self.P  # ConvNeXt's rows by 64 (256 channels: DWConv1d's 4 parts of 16)
+        else:
+            pre, nconv, layers, H = DPP, 6, 2, 2
+            self.R, self.P = T + 16, 16  # the token and T characters, by 16
+            self.S = -(-(self.P + self.R + 16) // 128) * 128  # (64 channels: DWConv1d's 8 parts)
+        self.blocks = [ConvNext(self, G, pre + f"convnext.convnext.{j}") for j in range(nconv)]
+        self.C = self.blocks[0].C
+        self.layers = [VitsLayer(self, G, pre + "attn_encoder.", l, H) for l in range(layers)]
+        if kind == "encoder":
+            sp = "tts.ttl.speech_prompted_text_encoder."
+            keys = G["tts.ttl.style_encoder.style_token_layer.style_key"].reshape(STYLE, 256)
+            self.att = []
+            consts = []
+            for i in (1, 2):
+                a, q_ = f"/speech_prompted_text_encoder/attention{i}/", sp + f"attention{i}."
+                k = np.tanh(keys @ G.w(a + "W_key/linear/MatMul") + G[q_ + "W_key.linear.bias"])
+                consts.append(np.pad(k, ((0, SPT - STYLE), (0, 0))))
+                self.att.append(dict(
+                    wq=self.p(G.w(a + "W_query/linear/MatMul").T), bq=self.p(G[q_ + "W_query.linear.bias"]),
+                    wv=self.p(G.w(a + "W_value/linear/MatMul").T), bv=self.p(G[q_ + "W_value.linear.bias"]),
+                    wo=self.p(G.w(a + "out_fc/linear/MatMul").T), bo=self.p(G[q_ + "out_fc.linear.bias"])))
+            self.keys = self.p(np.concatenate(consts))  # copied into a state a call (per-call keys)
+            self.ng, self.nb = self.p(G[sp + "norm.norm.weight"]), self.p(G[sp + "norm.norm.bias"])
+
+    def state(self, shape, name=None):
+        return iron.state(shape, name=name)
+
+    def convnexts(self, x, mask):
+        """The ConvNeXt blocks over x (S, C): the stream state's rows."""
+        S, P, C = self.S, self.P, self.C
+        hs = self.state((M + S + M, C))
+        h = hs[M : M + S]
+        ElementwiseMul.step(x, mask, h)
+        for b in self.blocks:
+            hd = b.d * (b.K - 1) // 2
+            Copy.step(hs, hs, src=tap((M + S + M, C), (M + P) * C, [hd, C], [0, 1]),
+                      dst=tap((M + S + M, C), (M + P - hd) * C, [hd, C], [C, 1]))
+            y = dwconv(hs[M - hd : M + S + hd], b.dw, S, b.K, b.d)
+            ElementwiseMul.step(h + b.mlp(y), mask, h)
+        return hs[M + P : M + P + self.R]
+
+    def vits(self, c, mask):
+        R, C, P = self.R, self.C, self.P
+        qkv = self.state((R, 3 * C), name="qkv")
+        att = self.state((R, C), name="att")
+        a = c
+        for layer in self.layers:  # each ends a command at its host step
+            a = layer(a, qkv, att, mask[P : P + R])
+        return a
+
+    def encoder(self, x, mask, style, ns):
+        R = self.R
+        ks = self.state((2 * SPT, 256))
+        ks[0 : 2 * SPT] = self.keys
+        c = self.convnexts(x, mask)
+        x2 = self.vits(c, mask) + c
+        s = x2
+        for i, a in enumerate(self.att):
+            q = lin(s, a["wq"], a["bq"]).reshape(R, 2, 128)
+            v = lin(style, a["wv"], a["bv"]).reshape(SPT, 2, 128)[:ns]
+            k = ks[i * SPT : (i + 1) * SPT].reshape(SPT, 2, 128)[:ns]
+            o = MHA.step(q, k, v, heads_interleaved=True, kv_interleaved=True, causal=False, d=128, scale=1 / 16.0)
+            s = lin(o.reshape(R, 256), a["wo"], a["bo"]) + x2
+        return F.layer_norm(s, (256,), self.ng, self.nb, eps=1e-6)
+
+    def sentence(self, x, mask):
+        c = self.convnexts(x, mask)
+        return self.vits(c, mask) + c  # its row 0 the sentence token's
+
+
+class TextEncoderGraph(TextGraph):
+    def __init__(self, G: Onnx, T: int):
+        super().__init__(G, "encoder", T)
+
+    def body(self, x, mask, style, *, ns: Scratchpad[np.int32]):
+        return self.encoder(x, mask, style, ns)
+
+
+class SentenceGraph(TextGraph):
+    def __init__(self, G: Onnx, T: int):
+        super().__init__(G, "duration", T)
+
+    def body(self, x, mask):
+        return self.sentence(x, mask)
+
+
+def text_graph(G: Onnx, kind: str, T: int) -> TextGraph:
+    return TextEncoderGraph(G, T) if kind == "encoder" else SentenceGraph(G, T)
+
+
+def text_inputs(G: Onnx, g: TextGraph, rows, n: int, style=None):
+    """A TextGraph's inputs: rows (n, C) the embedding table's rows of the text's ids (the duration
+    predictor's after its sentence token), style (50, 256) the text encoder's."""
+    x = np.zeros((g.S, g.C))
+    mask = np.zeros((g.S, g.C))
+    x[g.P : g.P + n] = rows
+    mask[g.P : g.P + n] = 1
+    ins = dict(x=bf(x), mask=bf(mask))
+    vals = {}
+    if g.kind == "encoder":
+        st = np.zeros((SPT, 256))
+        st[:STYLE] = style
+        ins["style"] = bf(st)
+        vals["ns"] = STYLE
+    return ins, vals
+
+
+def text_shapes(g: TextGraph) -> dict:
+    sh = dict(x=(g.S, g.C), mask=(g.S, g.C))
+    if g.kind == "encoder":
+        sh["style"] = (SPT, 256)
+    return sh
+
+
 # --- export --------------------------------------------------------------------------------------
 
 
@@ -569,9 +772,11 @@ def estimator_inputs(E: Onnx, g, x, text, style, n: int, t: int, step: int, tota
     return dict(x=bf(xs), text=bf(tx), style=bf(st), mask=bf(mask), tb=bf(tb), qang=bf(qa), kang=bf(ka)), dict(nt=t, ns=STYLE)
 
 
-def export(onnx_dir: Path, out: Path, sizes, check: bool, only=("estimator", "vocoder")) -> None:
+def export(onnx_dir: Path, out: Path, sizes, check: bool, only=("estimator", "vocoder", "encoder", "duration")) -> None:
     E = Onnx(onnx_dir / "vector_estimator.onnx")
     V = Onnx(onnx_dir / "vocoder.onnx")
+    TE = Onnx(onnx_dir / "text_encoder.onnx")
+    DE = Onnx(onnx_dir / "duration_predictor.onnx")
     out.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     longest = max(L for _, L in sizes)
@@ -593,6 +798,22 @@ def export(onnx_dir: Path, out: Path, sizes, check: bool, only=("estimator", "vo
                 style = rng.standard_normal((STYLE, 256)) * 0.3
                 ins, vals = estimator_inputs(E, g, x, text, style, n, t, 3, 8)
                 write_check(g, m, out / name, ins, vals)
+        for kind, G in (("encoder", TE), ("duration", DE)):
+            if kind not in only:
+                continue
+            t0 = time.time()
+            g = text_graph(G, kind, T)
+            cg = g.compile(**text_shapes(g))
+            name = f"{kind}-t{T}"
+            meta = dict(T=T, rows=g.S, P=g.P, R=g.R, channels=g.C, heads=g.layers[0].H, layers=len(g.layers),
+                        style_rows=SPT if kind == "encoder" else 0)
+            m = export_graph(cg, out / name, name, meta)
+            print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan'].splitlines()[0]}", flush=True)
+            if check:
+                n = T - 7 if kind == "encoder" else T - 6
+                rows = rng.standard_normal((n, g.C)) * 0.5
+                ins, vals = text_inputs(G, g, rows, n, rng.standard_normal((STYLE, 256)) * 0.3)
+                write_check(g, m, out / name, ins, vals)
         if "vocoder" in only:
             t0 = time.time()
             g = Vocoder(V, L)
@@ -607,9 +828,10 @@ def export(onnx_dir: Path, out: Path, sizes, check: bool, only=("estimator", "vo
                 write_check(g, m, out / name, dict(x=bf(xin)))
     if not check:
         for kind in only:
-            names = [f"estimator-t{T}-l{L}" if kind == "estimator" else f"vocoder-l{L}" for T, L in sizes]
+            names = [{"estimator": f"estimator-t{T}-l{L}", "vocoder": f"vocoder-l{L}"}.get(kind, f"{kind}-t{T}")
+                     for T, L in sizes]
             share_banks(out, names)
-    write_host(E, out)
+    write_host(E, out, TE, DE)
     (out / "model.json").write_text(json.dumps(dict(
         kind="supertonic3", sizes=[dict(T=T, L=L) for T, L in sizes], P=P, latent_cols=XP, style_rows=SP,
         time_blocks=len(TIME_BLOCKS)), indent=1) + "\n")
@@ -646,8 +868,10 @@ def share_banks(out: Path, names: list[str]) -> None:
         (d / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
 
 
-def write_host(E: Onnx, out: Path) -> None:
-    """host.safetensors: the time embedding's MLP and the time blocks' Linears (float32)."""
+def write_host(E: Onnx, out: Path, TE: Onnx, DE: Onnx) -> None:
+    """host.safetensors (float32): the time embedding's MLP and the time blocks' Linears, RoPE's
+    frequencies; the relative attention's embeddings of the text's graphs' layers; the duration
+    predictor's sentence token, proj_out and predictor."""
     t = {
         "time.freqs": E[EN + "time_encoder/sinusoidal/Constant_3_output_0"].reshape(-1) if EN + "time_encoder/sinusoidal/Constant_3_output_0" in E.init else E.consts[EN + "time_encoder/sinusoidal/Constant_3_output_0"].reshape(-1),
         "time.w0": E[EP + "time_encoder.mlp.0.linear.weight"], "time.b0": E[EP + "time_encoder.mlp.0.linear.bias"],
@@ -655,7 +879,16 @@ def write_host(E: Onnx, out: Path) -> None:
         "time.rows.w": np.stack([E.w(EN + f"main_blocks.{i}/linear/linear/MatMul").T for i in TIME_BLOCKS]),
         "time.rows.b": np.stack([E[EP + f"main_blocks.{i}.linear.linear.bias"] for i in TIME_BLOCKS]),
         "rope.theta": E[EP + "main_blocks.3.attn.theta"].reshape(-1),
+        "dp.token": DE[DPP + "sentence_token"].reshape(-1),
+        "dp.proj": DE[DPP + "proj_out.net.weight"][:, :, 0],
+        "dp.l0.w": DE["tts.dp.predictor.layers.0.weight"], "dp.l0.b": DE["tts.dp.predictor.layers.0.bias"],
+        "dp.prelu": DE["tts.dp.predictor.activation.weight"].reshape(-1),
+        "dp.l1.w": DE["tts.dp.predictor.layers.1.weight"], "dp.l1.b": DE["tts.dp.predictor.layers.1.bias"],
     }
+    for kind, G, pre, layers in (("encoder", TE, TP, 4), ("duration", DE, DPP, 2)):
+        for l in range(layers):
+            for e in ("k", "v"):
+                t[f"{kind}.rel_{e}.{l}"] = G[pre + f"attn_encoder.attn_layers.{l}.emb_rel_{e}"][0]
     hdr, blobs, off = {}, [], 0
     for k, v in t.items():
         b = np.ascontiguousarray(np.asarray(v, np.float32)).tobytes()
@@ -676,7 +909,7 @@ def main(argv=None) -> int:
     ap.add_argument("onnx", type=Path, help="the model's onnx/ directory (Supertone/supertonic-3)")
     ap.add_argument("out", type=Path)
     ap.add_argument("--sizes", nargs="*", default=[f"{t}x{l}" for t, l in SIZES], help="TxL, as internal/supertonic.Sizes")
-    ap.add_argument("--only", nargs="*", default=["estimator", "vocoder"])
+    ap.add_argument("--only", nargs="*", default=["estimator", "vocoder", "encoder", "duration"])
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)

@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 COLUMNS = 8
 MAX_K = 7
-BLOCK = 128  # a core's channels
+BLOCK = 128  # a core's channels (all of them, fewer)
 TILE = 16  # a core's output rows an object
 
 
@@ -64,21 +64,22 @@ def operator(n: int = COLUMNS):
         rows_in: int = param(array=True)
         kp: int = param(derive=lambda op: op.taps + 1, repr=False)
         columns: int = param(default=n, init=False, array=True)
-        xo: int = param(derive=lambda op: (TILE + (op.taps - 1) * op.dilation) * BLOCK, repr=False)
-        wo: int = param(derive=lambda op: (op.taps + 1) * BLOCK, repr=False)
-        yo: int = param(default=TILE * BLOCK, init=False, repr=False)
+        blk: int = param(derive=lambda op: min(BLOCK, op.channels), array=True)
+        xo: int = param(derive=lambda op: (TILE + (op.taps - 1) * op.dilation) * min(BLOCK, op.channels), repr=False)
+        wo: int = param(derive=lambda op: (op.taps + 1) * min(BLOCK, op.channels), repr=False)
+        yo: int = param(derive=lambda op: TILE * min(BLOCK, op.channels), repr=False)
 
         x = In(rows_in, channels, obj_shape=(xo,), per=(columns,))
         w = In(kp, channels, obj_shape=(wo,), per=(columns,))
         y = Out(rows, channels, obj_shape=(yo,), per=(columns,))
 
         def parts(self) -> int:
-            return n // (self.channels // BLOCK)
+            return n // (self.channels // self.blk)
 
         def validate(self):
-            C = self.channels
-            if C % BLOCK or n % (C // BLOCK) or not 1 <= self.taps <= MAX_K or self.rows % (TILE * (n // (C // BLOCK))):
-                raise ValueError(f"DWConv1d: {C} channels (blocks of {BLOCK} over {n} columns), {self.taps} "
+            C, B = self.channels, min(BLOCK, self.channels)
+            if C % B or B % 32 or n % (C // B) or not 1 <= self.taps <= MAX_K or self.rows % (TILE * (n // (C // B))):
+                raise ValueError(f"DWConv1d: {C} channels (blocks of {B} over {n} columns), {self.taps} "
                                  f"taps (1 to {MAX_K}), {self.rows} rows (tiles of {TILE} in each part)")
             if self.rows_in != self.rows + (self.taps - 1) * self.dilation:
                 raise ValueError(f"DWConv1d: {self.rows_in} input rows for {self.rows} out of {self.taps} "
@@ -94,8 +95,8 @@ def operator(n: int = COLUMNS):
             kern = ExternalFunction(
                 "dwconv1d_bias", arg_types=[w_t, x_t, y_t], source_file=str(here / "dwconv1d.cc"),
                 include_dirs=[str(Path(config.aie_kernels_dir())), config.cxx_header_path()],
-                compile_flags=[f"-DDW_C={BLOCK}", f"-DDW_K={K}", f"-DDW_D={d}", f"-DDW_R={TILE}"],
-                object_file_name=f"dwconv1d_{BLOCK}_{K}_{d}_{TILE}.o")
+                compile_flags=[f"-DDW_C={self.blk}", f"-DDW_K={K}", f"-DDW_D={d}", f"-DDW_R={TILE}"],
+                object_file_name=f"dwconv1d_{self.blk}_{K}_{d}_{TILE}.o")
             x_f = [ObjectFifo(x_t, depth=2) for _ in range(n)]
             w_f = [ObjectFifo(w_t, depth=1) for _ in range(n)]
             y_f = [ObjectFifo(y_t, depth=2) for _ in range(n)]
@@ -118,7 +119,7 @@ def operator(n: int = COLUMNS):
         def sequence(self, rt):
             from aie.helpers.taplib import TensorAccessPattern as TAP
 
-            C, K, R = self.channels, self.taps, self.rows
+            C, K, R, BLOCK = self.channels, self.taps, self.rows, self.blk
             halo = (K - 1) * self.dilation
             nb, parts = C // BLOCK, self.parts()
             tiles = R // TILE // parts

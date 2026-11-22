@@ -2,6 +2,7 @@ package supertonic
 
 import (
 	"math"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -49,6 +50,68 @@ func TestAMDHost(t *testing.T) {
 			if want := float64(o)*e[k] + float64(k); math.Abs(float64(r[k*512+o])-want) > 1e-3*(1+math.Abs(want)) {
 				t.Fatalf("timeRows[%d][%d] = %g, want %g", k, o, r[k*512+o], want)
 			}
+		}
+	}
+}
+
+// TestRelAttention checks the host's windowed relative attention (sgemm) against the direct
+// sums: the scores with the band of relative logits, the softmax over the valid keys, the values
+// with the band of relative values; rows past n zero.
+func TestRelAttention(t *testing.T) {
+	const rows, n, H, D = 24, 19, 2, 32
+	C := H * D
+	r := rand.New(rand.NewPCG(5, 6))
+	qkv := make([]float32, rows*3*C)
+	for i := range qkv {
+		qkv[i] = float32(r.NormFloat64()) * 0.5
+	}
+	ek, ev := make([]float32, 9*D), make([]float32, 9*D)
+	for i := range ek {
+		ek[i], ev[i] = float32(r.NormFloat64()), float32(r.NormFloat64())
+	}
+	got := make([]float32, rows*C)
+	for i := range got {
+		got[i] = 7 // overwritten
+	}
+	relAttention(qkv, got, n, H, D, ek, ev)
+	at := func(i, part, h, d int) float64 { return float64(qkv[i*3*C+part*C+h*D+d]) }
+	for h := range H {
+		for i := range n {
+			s := make([]float64, n)
+			for j := range n {
+				for d := range D {
+					s[j] += at(i, 0, h, d) * at(j, 1, h, d)
+					if rr := j - i + relWindow; rr >= 0 && rr <= 2*relWindow {
+						s[j] += at(i, 0, h, d) * float64(ek[rr*D+d])
+					}
+				}
+			}
+			mx, sum := math.Inf(-1), 0.0
+			for _, v := range s {
+				mx = math.Max(mx, v)
+			}
+			for j := range s {
+				s[j] = math.Exp(s[j] - mx)
+				sum += s[j]
+			}
+			for d := range D {
+				want := 0.0
+				for j := range n {
+					p := s[j] / sum
+					want += p * at(j, 2, h, d)
+					if rr := j - i + relWindow; rr >= 0 && rr <= 2*relWindow {
+						want += p * float64(ev[rr*D+d])
+					}
+				}
+				if g := float64(got[i*C+h*D+d]); math.Abs(g-want) > 1e-4 {
+					t.Fatalf("out[%d][%d][%d] = %g, want %g", i, h, d, g, want)
+				}
+			}
+		}
+	}
+	for i := n * C; i < rows*C; i++ {
+		if got[i] != 0 {
+			t.Fatalf("out[%d] = %g past the valid rows", i/C, got[i])
 		}
 	}
 }
