@@ -173,6 +173,42 @@ type davError struct {
 
 func (e *davError) Error() string { return fmt.Sprintf("store: %s %s: %s", e.Method, e.URL, e.Status) }
 
+// davStall is how long a download may go without a byte, its answer's headers too, before it is
+// cut and tried again from where it stopped.
+var davStall = 60 * time.Second
+
+// stallError is a download cut for davStall without a byte: a timeout, tried again.
+type stallError struct{ err error }
+
+func (e *stallError) Error() string {
+	return fmt.Sprintf("no data for %s: %v", davStall, e.err)
+}
+func (e *stallError) Unwrap() error   { return e.err }
+func (e *stallError) Timeout() bool   { return true }
+func (e *stallError) Temporary() bool { return true }
+
+// stalled is err as a stallError when it is of rctx cut by its watch, not of ctx.
+func stalled(ctx, rctx context.Context, err error) error {
+	if err != nil && ctx.Err() == nil && rctx.Err() != nil {
+		return &stallError{err: err}
+	}
+	return err
+}
+
+// watched is a body that puts its watch off by davStall at each byte read.
+type watched struct {
+	r    io.Reader
+	idle *time.Timer
+}
+
+func (w *watched) Read(p []byte) (int, error) {
+	n, err := w.r.Read(p)
+	if n > 0 {
+		w.idle.Reset(davStall)
+	}
+	return n, err
+}
+
 // davDialTimeout bounds connecting to a server (its name's lookup too) and its TLS handshake.
 var davDialTimeout = 15 * time.Second
 
@@ -429,13 +465,19 @@ func (w *WebDAV) Get(ctx context.Context, key, dst string, bar func(done, total 
 				have = 0
 			}
 		}
-		body, start, total, err := w.open(ctx, key, have)
+		// a server that stops sending (or a connection that died quietly) is cut after
+		// davStall and gone on from where it stopped, not waited on for ever
+		rctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		idle := time.AfterFunc(davStall, cancel)
+		defer idle.Stop()
+		body, start, total, err := w.open(rctx, key, have)
 		if err != nil {
-			return err
+			return stalled(ctx, rctx, err)
 		}
 		defer body.Close()
-		size, err = copyTo(ctx, body, dst, start, total, bar)
-		return err
+		size, err = copyTo(ctx, &watched{r: body, idle: idle}, dst, start, total, bar)
+		return stalled(ctx, rctx, err)
 	})
 	if errors.Is(err, ErrNotFound) {
 		return 0, fmt.Errorf("store: %s: %s: %w", w.cfg.Name, key, ErrNotFound)
