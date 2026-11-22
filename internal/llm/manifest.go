@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/milspec"
@@ -48,6 +49,9 @@ type Manifest struct {
 	// AttnVersion is the paged.Version Attention and Smaller were written in (0 before it):
 	// RefreshAttention writes older ones again.
 	AttnVersion int `json:"attention_version,omitempty"`
+	// AttnOutScale is the paged.Shape.OutScale Attention and Smaller were written with (0 for
+	// paged.OutScale): RefreshAttention writes them again when the model's is another.
+	AttnOutScale float64 `json:"attention_out_scale,omitempty"`
 	// Mass is the program without weights that weighs one chunk of bucket summaries for the
 	// two-level attention (decode.Sparse, paged.BuildMass), of a model split at its attention.
 	// Conversions before it have none (AddMass).
@@ -516,8 +520,12 @@ func ReadManifest(path string) (*Manifest, error) {
 			r.Path = filepath.Join(filepath.Dir(path), r.Path)
 		}
 	}
-	if e := m.Experts; e != nil && e.Host != nil && !filepath.IsAbs(e.Host.Checkpoint) {
-		e.Host.Checkpoint = filepath.Join(filepath.Dir(path), e.Host.Checkpoint)
+	if e := m.Experts; e != nil && e.Host != nil {
+		if !filepath.IsAbs(e.Host.Checkpoint) {
+			e.Host.Checkpoint = filepath.Join(filepath.Dir(path), e.Host.Checkpoint)
+		} else {
+			e.Host.Checkpoint = localCheckpoint(e.Host.Checkpoint)
+		}
 	}
 	if e := m.Experts; e != nil && e.Host == nil {
 		e.Program.Path = filepath.Join(filepath.Dir(path), e.Program.Path)
@@ -630,4 +638,28 @@ func PartBytes(path string) int64 {
 		}
 	}
 	return n
+}
+
+// localCheckpoint is the checkpoint a manifest's experts run from (experts.HostRecord) on this
+// machine. The conversion records the absolute path it read the checkpoint from, which is in the
+// cache of the machine that converted it: an export shared through the sources (or Hugging Face)
+// names another user's cache. A path that is not here is taken to the same place under this
+// machine's cache (its original/ or derived/ and what follows); else it is kept, for the error.
+func localCheckpoint(p string) string {
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	slash := filepath.ToSlash(p)
+	at := -1
+	for _, dir := range []string{"/original/", "/derived/"} {
+		at = max(at, strings.LastIndex(slash, dir))
+	}
+	if at < 0 {
+		return p
+	}
+	local := filepath.Join(cache.Root(), filepath.FromSlash(slash[at+1:]))
+	if _, err := os.Stat(local); err != nil {
+		return p
+	}
+	return local
 }

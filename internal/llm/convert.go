@@ -376,7 +376,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		return "", err
 	}
 	man.Attention = &PartRecord{Path: apath, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}
-	man.AttnVersion = paged.Version
+	man.AttnVersion, man.AttnOutScale = paged.Version, pm.PagedShape().OutScale
 	if man.Mass, err = writeMass(base, ext, pm.PagedShape(), form, opts.Seq, opts.Paged, a.Title); err != nil {
 		return "", err
 	}
@@ -456,7 +456,7 @@ func AddMass(path, form string, scale float64) error {
 // the mass program, in the attention's form with the model's score scale, for the manifest's
 // backend. A from of 0 removes them. It does nothing when the manifest has them already, or is
 // not split at its attention.
-func AddSmaller(path, form string, scale float64, from int) error {
+func AddSmaller(path, form string, model paged.Shape, from int) error {
 	man, err := ReadManifest(path)
 	if err != nil {
 		return err
@@ -493,7 +493,7 @@ func AddSmaller(path, form string, scale float64, from int) error {
 	}
 	man.Smaller = nil
 	base := strings.TrimSuffix(path, ".parts.json")
-	sh := paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: scale}
+	sh := paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: model.Scale, OutScale: man.AttnOutScale}
 	for _, c := range want {
 		rec, err := writeAttention(fmt.Sprintf("%s.attn%d", base, c), man.Backend, sh, form, q[2], c, man.Model)
 		if err != nil {
@@ -524,7 +524,7 @@ func attentionForm(backend, form string, sh paged.Shape) string {
 // they have no weights, so a conversion from before the form keeps its parts. The programs over
 // shorter chunks are removed for AddSmaller to write again. It does nothing for a manifest in
 // that form already, or not split at its attention.
-func RefreshAttention(path, form string, scale float64) error {
+func RefreshAttention(path, form string, model paged.Shape) error {
 	man, err := ReadManifest(path)
 	if err != nil {
 		return err
@@ -544,9 +544,10 @@ func RefreshAttention(path, form string, scale float64) error {
 	if len(q) != 4 || len(k) != 4 {
 		return fmt.Errorf("llm: %s: the attention program has no q and k of 4 dimensions", path)
 	}
-	sh := paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: scale}
+	sh := paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: model.Scale, OutScale: model.OutScale}
 	want := attentionForm(man.Backend, form, sh)
-	if cmp.Or(man.AttnForm, form) == want && man.AttnVersion >= paged.Version {
+	have := paged.Shape{OutScale: man.AttnOutScale}
+	if cmp.Or(man.AttnForm, form) == want && man.AttnVersion >= paged.Version && have.Out() == sh.Out() {
 		return nil
 	}
 	stem := strings.TrimSuffix(man.Attention.Path, filepath.Ext(man.Attention.Path))
@@ -557,7 +558,7 @@ func RefreshAttention(path, form string, scale float64) error {
 	for _, r := range man.Smaller {
 		os.RemoveAll(r.Path)
 	}
-	man.Attention, man.Smaller, man.AttnForm, man.AttnVersion = rec, nil, "", paged.Version
+	man.Attention, man.Smaller, man.AttnForm, man.AttnVersion, man.AttnOutScale = rec, nil, "", paged.Version, sh.OutScale
 	if want != form {
 		man.AttnForm = want
 	}

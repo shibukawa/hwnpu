@@ -147,10 +147,17 @@ func (c *Config) PagedLayers() []int {
 }
 
 // PagedShape is the attention's heads, kv heads and head size (llm.Paged), the scores scaled by
-// 1/sqrt(head_dim).
+// 1/sqrt(head_dim), and the values' weights scaled by pagedOutScale.
 func (c *Config) PagedShape() paged.Shape {
-	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim, Scale: c.scoreScale()}
+	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim, Scale: c.scoreScale(), OutScale: pagedOutScale}
 }
+
+// pagedOutScale is the scale of the values' weights in the attention over a chunk
+// (paged.Shape.OutScale). Qwen3's values are not normed: over a short English text the largest
+// reach 64 (Qwen3-0.6B) and 168 (Qwen3-1.7B, layer 14), past the 32 that paged.OutScale (1024)
+// keeps under the Neural Engine's 2^15, and the split programs answered noise (1.7B) or garbled
+// words (0.6B). 64 keeps values up to 512.
+const pagedOutScale = 64
 
 // PagedKV is layer itself: every layer has its own keys and values.
 func (c *Config) PagedKV(layer int) int { return layer }
