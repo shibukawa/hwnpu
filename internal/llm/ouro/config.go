@@ -55,6 +55,8 @@ type Config struct {
 	EarlyExitStep      *int            `json:"early_exit_step"`
 }
 
+const maxShapeDimension = 1<<31 - 1
+
 // LoadConfig reads config.json.
 func LoadConfig(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
@@ -90,6 +92,10 @@ func (c *Config) check() error {
 	switch {
 	case c.ModelType != "ouro":
 		return fmt.Errorf("model_type %q is not ouro", c.ModelType)
+	case c.NumHeads <= 0 || c.HeadDim <= 0:
+		return fmt.Errorf("num_attention_heads %d and head_dim %d must be positive", c.NumHeads, c.HeadDim)
+	case c.NumHeads > maxShapeDimension || c.HeadDim > maxShapeDimension || int64(c.NumHeads)*int64(c.HeadDim) > maxShapeDimension:
+		return fmt.Errorf("attention dimensions %d × %d exceed the supported shape size", c.NumHeads, c.HeadDim)
 	case c.HiddenAct != "silu":
 		return fmt.Errorf("hidden_act %q is not supported (the MLP is SwiGLU)", c.HiddenAct)
 	case c.UseSlidingWindow:

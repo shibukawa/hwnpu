@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -482,5 +483,26 @@ func TestParseConfigRejects(t *testing.T) {
 		if _, err := ParseConfig([]byte(raw)); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: error %v, want one about %s", c.new, err, c.want)
 		}
+	}
+	for _, field := range []struct {
+		from, to string
+	}{
+		{`"head_dim": 16`, `"head_dim": 2147483648`},
+		{`"num_attention_heads": 4`, `"num_attention_heads": 2147483648`},
+	} {
+		raw := strings.Replace(tiny, field.from, field.to, 1)
+		if _, err := ParseConfig([]byte(raw)); err == nil {
+			t.Errorf("%s: accepted an oversized dimension", field.to)
+		}
+	}
+}
+
+func TestBuildRejectsOversizedSequence(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("int cannot exceed int32 on this architecture")
+	}
+	seq := int(int64(1) << 31)
+	if _, _, err := Build(nil, tinyConfig(t), nil, llm.Options{Seq: seq}); err == nil {
+		t.Fatal("accepted an oversized sequence")
 	}
 }
