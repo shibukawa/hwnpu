@@ -44,6 +44,9 @@ type FaceDetectCmd struct {
 
 // Run finds the faces of each picture.
 func (c *FaceDetectCmd) Run(ctx context.Context) error {
+	if err := outDir(c.Out); err != nil {
+		return err
+	}
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	o := vision.FaceOptions{Score: orAll(c.Score), NMS: c.NMS, Log: c.Repeat <= 1}

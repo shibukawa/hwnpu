@@ -418,3 +418,158 @@ func TestSharedExportFetchOnly(t *testing.T) {
 		t.Fatalf("from the source: %v, built %d", err, built)
 	}
 }
+
+// TestSharedExportPinned: an export models.yaml pins (exports: its folder and digest) is taken
+// from that folder whatever the recipe now (other tools, or no recipe at all), only with its
+// digest; with another digest it is not, and what is built then goes beside it as v0-HASH, the
+// pinned folder left as it was.
+func TestSharedExportPinned(t *testing.T) {
+	ctx := context.Background()
+	share := t.TempDir()
+	src := []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}
+	name := "LFM3-1.7B.amd-npu2"
+	built := 0
+	build := func(out, body string) func() error {
+		return func() error {
+			built++
+			os.MkdirAll(out, 0o755)
+			return os.WriteFile(filepath.Join(out, "manifest.json"), []byte(body), 0o644)
+		}
+	}
+	defs := "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n"
+	if _, err := withSources(t, src, defs); err != nil {
+		t.Fatal(err)
+	}
+	recipe := func(tools string) map[string]string {
+		return map[string]string{"model": "LFM3-1.7B", "target": cache.AMDTarget, "commit": testCommit, "tools": tools}
+	}
+	t.Setenv(cache.RootEnv, t.TempDir())
+	out := filepath.Join(t.TempDir(), name)
+	if err := SharedExport(ctx, "iron-lm", recipe("t1"), out, nil, build(out, `{"made":"t1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	es, _ := shared.ListEntries(ctx, shared.Sources()[0])
+	if len(es) != 1 {
+		t.Fatalf("entries %v", es)
+	}
+	put, err := shared.ReadEntryAt(ctx, shared.Sources()[0], es[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := Pin{At: path.Base(es[0]), Digest: put.Digest()}
+	pinned := func(p Pin) string {
+		return defs + "    exports:\n      amd-xdna2:\n        " + name + ": " + p.String() + "\n"
+	}
+	if _, err := withSources(t, src, pinned(pin)); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := PinOf(modelNamed("LFM3-1.7B"), cache.AMDTarget, name); !ok || got != pin {
+		t.Fatalf("pin read as %+v %v", got, ok)
+	}
+	// another machine, other tools: the pinned export, not built
+	t.Setenv(cache.RootEnv, t.TempDir())
+	out2 := filepath.Join(t.TempDir(), name)
+	if err := SharedExport(ctx, "iron-lm", recipe("t2"), out2, nil, build(out2, `{"made":"t2"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if built != 1 || read(t, filepath.Join(out2, "manifest.json")) != `{"made":"t1"}` {
+		t.Fatalf("built %d, %s", built, read(t, filepath.Join(out2, "manifest.json")))
+	}
+	// no recipe (the commit not known), only its name: still the pinned one
+	t.Setenv(cache.RootEnv, t.TempDir())
+	out3 := filepath.Join(t.TempDir(), name)
+	m := modelNamed("LFM3-1.7B")
+	imported := []SharedRecipe{{Kind: ImportKind, Recipe: ImportedRecipe(m, cache.AMDTarget, name)}}
+	if err := SharedExportOr(ctx, "iron-lm", nil, imported, out3, nil, build(out3, `{"made":"nil"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if built != 1 || read(t, filepath.Join(out3, "manifest.json")) != `{"made":"t1"}` {
+		t.Fatalf("no recipe: built %d", built)
+	}
+	// another digest pinned: not taken; built, and put as v0-HASH of its recipe
+	bad := pin
+	bad.Digest = shared.DigestPrefix + strings.Repeat("0", 64)
+	if _, err := withSources(t, src, pinned(bad)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cache.RootEnv, t.TempDir())
+	out4 := filepath.Join(t.TempDir(), name)
+	if err := SharedExport(ctx, "iron-lm", recipe("t2"), out4, nil, build(out4, `{"made":"t2"}`)); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	if built != 2 {
+		t.Fatalf("built %d with a digest no source has", built)
+	}
+	if again, err := shared.ReadEntryAt(ctx, shared.Sources()[0], es[0]); err != nil || again.Digest() != pin.Digest {
+		t.Errorf("the pinned folder changed: %v", err)
+	}
+	es2, _ := shared.ListEntries(ctx, shared.Sources()[0])
+	if len(es2) != 2 || !slices.ContainsFunc(es2, func(p string) bool { return p != es[0] && strings.Contains(path.Base(p), "v0-") }) {
+		t.Errorf("entries %v", es2)
+	}
+	// the export made here is taken here again (its own recipe)
+	if err := SharedExport(ctx, "iron-lm", recipe("t2"), out4, nil, build(out4, `{"made":"t2"}`)); err != nil || built != 2 {
+		t.Errorf("built %d: %v", built, err)
+	}
+}
+
+func TestParsePin(t *testing.T) {
+	d := strings.Repeat("ab", 32)
+	if p, err := ParsePin("v0-7bfc0b02 sha256:" + d); err != nil || p.At != "v0-7bfc0b02" || p.Digest != "sha256:"+d {
+		t.Errorf("%+v %v", p, err)
+	}
+	for _, bad := range []string{"", "v0-7bfc0b02", "v0-7bfc0b02 " + d, "../x sha256:" + d, "v1 sha256:12", "v1 md5:" + d} {
+		if _, err := ParsePin(bad); err == nil {
+			t.Errorf("%q: no error", bad)
+		}
+	}
+}
+
+func TestFormatTaken(t *testing.T) {
+	e := shared.Entry{Target: cache.AMDTarget, Recipe: map[string]string{}}
+	if !FormatTaken(e) {
+		t.Error("an AMD export without format refused")
+	}
+	e.Recipe["format"] = fmt.Sprint(AMDExportFormat + 1)
+	if FormatTaken(e) {
+		t.Error("an AMD export of a later format taken")
+	}
+	if !FormatTaken(shared.Entry{Target: CoreAITarget, Recipe: map[string]string{"format": "9"}}) {
+		t.Error("a Core AI export refused")
+	}
+}
+
+// TestFindExportPinned: an export found by name whose entry.json is not of the pinned bytes is
+// passed by (cache.ExportStale), one of them is found, and one made by hand (no entry.json) too.
+func TestFindExportPinned(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	name := "LFM3-1.7B.amd-npu2-q4"
+	dir := filepath.Join(cache.Entries(cache.AMDTarget), name)
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{}`), 0o644)
+	have := func(d string) bool { _, err := os.Stat(filepath.Join(d, "manifest.json")); return err == nil }
+	if cache.FindExport(name, have) != dir {
+		t.Fatal("an export made by hand not found")
+	}
+	e, err := shared.Describe(dir, shared.Entry{Kind: "iron-lm", Model: "LFM3-1.7B", Target: cache.AMDTarget, Recipe: map[string]string{"a": "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs := func(digest string) string {
+		return "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n    exports:\n      amd-xdna2:\n        " + name + ": v0-12345678 " + digest + "\n"
+	}
+	if _, err := withSources(t, nil, defs(e.Digest())); err != nil {
+		t.Fatal(err)
+	}
+	if cache.FindExport(name, have) != dir {
+		t.Error("the pinned export not found")
+	}
+	if _, err := withSources(t, nil, defs(shared.DigestPrefix+strings.Repeat("0", 64))); err != nil {
+		t.Fatal(err)
+	}
+	if d := cache.FindExport(name, have); d != "" {
+		t.Errorf("an export of other bytes than the pin's found: %s", d)
+	}
+}

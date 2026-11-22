@@ -19,6 +19,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/audio"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/pyjson"
@@ -72,6 +73,9 @@ type Model struct {
 
 	mu         sync.Mutex
 	emb, heads map[int32][]float32
+
+	// amd is the export for AMD's NPU the model runs from instead of programs (LoadAMD).
+	amd *iron.Model
 }
 
 // encoder is the tokenizer: Encode reads the spellings of added tokens in the text as them.
@@ -204,6 +208,10 @@ func (m *Model) Close() error {
 		p.Close()
 	}
 	m.progs = nil
+	if m.amd != nil {
+		m.amd.Close()
+		m.amd = nil
+	}
 	if m.dev != nil {
 		m.dev.Close()
 		m.dev = nil
@@ -216,7 +224,12 @@ func (m *Model) Close() error {
 }
 
 // MaxTokens is the longest prompt the model takes.
-func (m *Model) MaxTokens() int { return m.progs[len(m.progs)-1].Seq() }
+func (m *Model) MaxTokens() int {
+	if m.amd != nil {
+		return m.amd.Manifest.Config.PrefillChunk
+	}
+	return m.progs[len(m.progs)-1].Seq()
+}
 
 // Response is the answer to a request.
 type Response struct {
@@ -253,6 +266,9 @@ func (r *Response) MarshalJSON() ([]byte, error) {
 func (m *Model) Decide(ctx context.Context, r *Request) (*Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.amd != nil {
+		return m.decideAMD(ctx, r)
+	}
 	var media [][]float32
 	for _, md := range r.Media {
 		rows, err := m.encode(ctx, md)

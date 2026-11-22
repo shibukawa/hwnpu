@@ -27,6 +27,7 @@ type Cmd struct {
 	Fetch   FetchCmd           `cmd:"" help:"Bring models here without converting anything, to try conversions on them: the checkpoint and the conversions for each target the sources have (what none has is listed); what comes from Hugging Face goes in the sources written back to too."`
 	Package PackageCmd         `cmd:"" help:"Make the conversions of models for targets (amd-xdna2, coreai, coreai-ARCH) on this machine, whatever its NPU, unless a source has them, and put them in the sources written back to."`
 	Push    sourcescmd.PushCmd `cmd:"" help:"Push exports for AMD's NPU that are here, made by hand, in the sources written back to (with entry.json, made for them when missing); what package makes goes there itself."`
+	Pin     hfcmd.PinCmd       `cmd:"" help:"Pin in models.yaml (exports) the conversions the sources hold, by their folder and the digest of their files: every hwnpu of that models.yaml takes those bytes, whatever tools made them; the newest of each export unless --layer says."`
 	HF      hfcmd.Cmd          `cmd:"" name:"hf" help:"Put the conversions the sources hold on Hugging Face, one repository a model, and pin the commits in models.yaml (docs/prebuilt.md): plan, push, check, sizes."`
 }
 

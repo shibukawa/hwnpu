@@ -128,3 +128,19 @@ func TestUnpackChecks(t *testing.T) {
 		t.Error("a file of another SHA-256 was taken")
 	}
 }
+
+// TestDigest: an entry's digest is of its files alone, in any order, not of its version, path,
+// pack or recipe.
+func TestDigest(t *testing.T) {
+	a := Entry{Key: "k", Path: "converted/m/t/e/v0-1", Recipe: map[string]string{"tools": "1"},
+		Files: []File{{Path: "b", Size: 2, SHA256: "BB"}, {Path: "a", Size: 1, SHA256: "aa"}}}
+	b := Entry{Key: "j", Version: 2, Path: "converted/m/t/e/v2", Pack: &File{Path: PackFile},
+		Files: []File{{Path: "a", Size: 1, SHA256: "aa"}, {Path: "b", Size: 2, SHA256: "bb"}}}
+	if a.Digest() != b.Digest() || !strings.HasPrefix(a.Digest(), DigestPrefix) {
+		t.Errorf("%s != %s", a.Digest(), b.Digest())
+	}
+	b.Files[1].SHA256 = "bc"
+	if a.Digest() == b.Digest() {
+		t.Error("the digest of other bytes is the same")
+	}
+}

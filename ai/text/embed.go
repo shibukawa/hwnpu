@@ -27,11 +27,24 @@ func Embed(name string) ai.Use[*Embedder] {
 //	                    (128,1024): a text runs on the shortest that holds it
 //	programs: packages  the programs converted by hwnpu-dev convert, with different -seq; with
 //	                    config and weights (default: the checkpoint's)
+//
+// On AMD's NPU a model runs from its export of tools/amd/iron_plamo_embed.py.
 var embedRole = &airole.Role{
 	Name:  "embed",
 	Kinds: []chat.Kind{chat.KindEmbed},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m, ps := e.Model, e.Model.Programs
+		if e.NPU.AMD() && len(ps["packages"]) == 0 {
+			// AMD's NPU: an export of tools/amd/iron_plamo_embed.py, from the sources or made
+			// with IRON (the CPU interpreter runs no embedding model)
+			dir, err := chat.PrepareEmbedderAMD(e.Ctx, m, e.Log)
+			if err != nil {
+				return f, err
+			}
+			f.Set("export", dir)
+			f.SetValue("name", e.Base.Name)
+			return f, nil
+		}
 		if pk := ps["packages"]; len(pk) > 0 {
 			f.Set("packages", pk...)
 			f.Set("config", cmp.Or(first(ps["config"]), filepath.Join(chat.RepoDir(m.Source()), "config.json")))
@@ -57,6 +70,13 @@ var embedRole = &airole.Role{
 		return f, nil
 	},
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
+		if dir := f.Path("export"); dir != "" {
+			em, err := chat.LoadEmbedderAMD(ctx, dir, f.Values["name"], e.Log)
+			if err != nil {
+				return nil, err
+			}
+			return &Embedder{e: em, model: e.Model}, nil
+		}
 		em, err := chat.LoadEmbedder(ctx, chat.EmbedConfig{Packages: f.Paths["packages"], ModelConfig: f.Path("config"), Weights: f.Path("weights"),
 			Tokenizer: f.Path("tokenizer"), Name: f.Values["name"], Backend: f.Values["backend"], CacheDir: e.Cache, Log: e.Log})
 		if err != nil {

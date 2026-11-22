@@ -1394,3 +1394,27 @@ python tools/amd/iron_magenta.py ~/models/magenta-realtime-2 ~/models/magenta-re
 go run ./tools/amd/irongraph ~/models/magenta-realtime-2-small.amd-npu2/decoder
 go run ./cmd/hwnpu-audio generate --duration 10s "disco funk" -o out.wav
 ```
+
+## 29. d1 の判断モデル (`hwnpu-chat systemone`、2026-11-23)
+
+d1-2B と d1-Omni-2B (Liquid AI、System One API) は、それまで AMD の書き出しがなく、AMD では CPU のインタプリタ (Core ML のパッケージ、1 問 9 秒) でしか動かなかった。
+
+- **書き出し** (`tools/amd/iron_d1.py`、`iron_export_lm.py d1` / `d1omni`): 中身は LFM3-VL / LFM3-Omni と同じ構造 (`model_type` も同じ、重みの名前も同じ)。d1 の読み方 (`d1_attention: set`) に合わせて、LFM3 の書き出しを 2 か所だけ変える
+  - full attention の層 (`SetCache`) はプロンプトの塊の中で前後両方を見る (MHA の `causal` を切る。鍵は呼び出しの行まで)。sliding attention と短い畳み込みは因果のまま
+  - 出力は最後の行の最終 norm の隠れ状態 (2048)。頭 (埋め込みと共有) は装置に置かず、ホストが答えのラベルの行と内積を取る (`iron.Model.EmbedRow`: 書き出しの `embed.bin`)。装置で語を引かない (`draw` を飛ばす)
+- **実行** (`internal/systemone/amd.go`): 1 問がプロンプトの塊 1 回、位置 0 から。だから 1 問は塊 (`--prefill-chunk 1024`、`--max-seq-len 1024`) 以内。画像と音声は LFM3-VL / Omni の塔と placed の塊をそのまま使う。塔は結果を 1 つしか持たないので、1 つの要求で画像 1 枚と音声 1 本 (話した質問を含む) まで。塔は要求ごとに 1 回
+- models.yaml の `amd_export: d1 --max-seq-len 1024 --prefill-chunk 1024 --q4` (d1-Omni は `d1omni`)。書き出しは 2 分半 (RSS 7.7 GB)
+- Ryzen AI 9 365 で: 1 問 360 ms (CPU のインタプリタは 9 秒)、画像付き 1.5 秒 (塔の読み込み 0.5 秒を含む)。固定 1.57 GiB (塔の読み込み後) とプロセスの 0.46 GiB
+- 答え: 「傘は要るか」0.9875 (CPU のインタプリタ lut8 で 0.9917)、天気「rainy」0.9909 (0.9919)、犬の写真で dog 0.9987、d1-Omni に読み上げの音声で話題「weather」0.973
+
+## 30. PLaMo-Embedding-1B (`hwnpu-chat search`、埋め込みの API、2026-11-23)
+
+PlamoBiModel (前後両方を見る PLaMo の encoder)。それまで AMD の書き出しがなかった。
+
+- **書き出し** (`tools/amd/iron_plamo_embed.py`): `iron_graph.py` のグラフ (言語モデルの書き出しではない)。長さごと (既定 128 と 1024) に 1 つ、`sNNN/`。入力は埋め込みの行 (ホストが `embed.bin` から引く)、呼び出しごとの値 `nk` (文の語数: 鍵をそこまで)、出力は最終 norm の後の隠れ状態の全行。平均はホスト (`meanPool`)
+  - 層: RMSNorm、qkv (行で 3 つの linear に分ける)、頭ごとの q / k の RMSNorm (重みは頭ごと: 行の重みを掛ける)、RoPE (rotate half、base 10000、IRON の `RoPE` は角度の 1 行が連続する頭の行に効く)、MQA (KV の頭 1)、双方向の MHA、SwiGLU。精度は HIGHEST (bf16 の活性。SigLIP 2 と同じ)
+  - RoPE の表をどの長さのグラフでも一番長いものの大きさにすると、重みは全部のグラフで同じ場所に置かれ、銀行の像もバイトまで同じになる。短いグラフの manifest は一番長いグラフの像 (`../s1024/bank_scratch.bin`) を指し、自分の像を持たない (書き出し 2.0 GB、詰めて 2.1 GB。前は 4.0 GB)
+- **実行** (`internal/chat/embed_amd.go`): 一番長いグラフを先に開き、その銀行を短いグラフに貸す (`iron.GraphOptions.Buffers`、`Graph.Bank`)。重みは固定 1 つ分。長さが変わるときは、銀行の像の後ろ (作業域) をゼロに戻す (グラフはゼロを前提にする)。同じ文を長い文の前後で埋め込んで cosine 1.0000000
+- 精度 (Hugging Face の modeling_plamo.py を numpy の float32 で書き直した参照と、同じ語で): 行ごとの cosine 0.9993 以上、平均を取った埋め込みの cosine 0.99972〜0.99977 (Core ML の lut8 は 0.998)。文どうしの類似度は小数第 2〜3 位まで同じ
+- Ryzen AI 9 365 で: 128 のグラフ 176 ms (9 語の文)、1024 のグラフ 945 ms (482 語)。書き出し 20 秒。固定 1.89 GiB とプロセスの 0.08 GiB (models.yaml の memory を 1.3 から 2.1 に)
+- 未: 重みを q8 にする (固定とダウンロードは半分になる見込み。埋め込みの精度を確かめてから)、短い文が 128 のグラフ全体を回すこと (IRON の GEMM は塊の全行を回す)

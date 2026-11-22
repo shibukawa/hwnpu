@@ -121,7 +121,7 @@ func TestPush(t *testing.T) {
 
 	// the export, put in the source before its model had a version
 	defs := filepath.Join(work, "models.yaml")
-	os.WriteFile(defs, []byte("version: 1\nhub: {push: me}\nmodels:\n  whisper-large-v3-turbo:\n    machine: 8\n"), 0o644)
+	os.WriteFile(defs, []byte("version: 1\nhub: {push: me}\nmodels:\n  whisper-large-v3-turbo:\n    machine: 8\n"+noPin), 0o644)
 	if err := chat.LoadModels([]string{defs}, true, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestPush(t *testing.T) {
 	}
 
 	// the version written: it goes as v1
-	os.WriteFile(defs, []byte("version: 1\nhub: {push: me}\nmodels:\n  whisper-large-v3-turbo:\n    targets: {amd-xdna2: {version: 1}}\n    machine: 8\n"), 0o644)
+	os.WriteFile(defs, []byte("version: 1\nhub: {push: me}\nmodels:\n  whisper-large-v3-turbo:\n    targets: {amd-xdna2: {version: 1}}\n    machine: 8\n"+noPin), 0o644)
 	c := &devopt.Defs{Models: defs}
 	if err := (PushCmd{Sel: []string{"whisper-large-v3-turbo/amd-xdna2"}, Write: defs}).Run(c); err != nil {
 		t.Fatal(err)
@@ -194,3 +194,7 @@ func TestPush(t *testing.T) {
 		t.Errorf("fetched %q", b)
 	}
 }
+
+// noPin drops the built-in pin of whisper's export for AMD's NPU (models.yaml's exports): the
+// tests of versions put an export of their own.
+const noPin = "    exports:\n      amd-xdna2:\n        whisper-large-v3-turbo.amd-npu2: none\n"

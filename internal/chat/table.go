@@ -238,8 +238,15 @@ type modelEntry struct {
 	// each target reads (amd-xdna2, apple, coreai-ARCH), which hwnpu-dev models hf push writes
 	// (docs/prebuilt.md 5.1). A file over another changes the repositories and targets it
 	// names and keeps the others.
-	Hub   *map[string]map[string]string `yaml:"hub"`
-	About *string                       `yaml:"about"`
+	Hub *map[string]map[string]string `yaml:"hub"`
+	// Exports pin the model's conversions: by target (amd-xdna2, coreai...) and export
+	// (LFM3-1.7B.amd-npu2-q4), "FOLDER sha256:DIGEST": the folder of the entry in a source
+	// (converted/MODEL/TARGET/EXPORT/FOLDER, also its path in the model's repository on Hugging
+	// Face) and the digest of what it holds (store.Entry.Digest). An export pinned is taken from
+	// there whatever tools made it, and only with that digest; hwnpu-dev models pin writes them.
+	// A file over another changes the targets and exports it names and keeps the others.
+	Exports *map[string]map[string]string `yaml:"exports"`
+	About   *string                       `yaml:"about"`
 	// Settings are how the model's role prepares and runs it, by name, beyond the fields above
 	// (a speech model's format, a chat model's draft): what a command's flags give, written as a
 	// model of its own (ai.Definition). Each role reads the names it knows.
@@ -526,6 +533,19 @@ func merge(dst, src *modelEntry) {
 		}
 		defer func() { dst.Hub = &m }()
 	}
+	if src.Exports != nil && dst.Exports != nil {
+		m := map[string]map[string]string{}
+		for target, pins := range *dst.Exports {
+			m[target] = maps.Clone(pins)
+		}
+		for target, pins := range *src.Exports {
+			if m[target] == nil {
+				m[target] = map[string]string{}
+			}
+			maps.Copy(m[target], pins)
+		}
+		defer func() { dst.Exports = &m }()
+	}
 	if src.Variants != nil && dst.Variants != nil {
 		m := maps.Clone(*dst.Variants)
 		maps.Copy(m, *src.Variants)
@@ -696,6 +716,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 		out.SHA256 = nil // the files of another repository are not the base's
 	}
 	out.Hub, out.hubFiles = e.Hub, e.hubFiles // nor are its conversions
+	out.Exports = e.Exports                   // nor the pins of the base's (their folders are the base's)
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
 		Memory: e.Memory, Bytes: e.Bytes, Disk: e.Disk, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
 		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn,
@@ -764,6 +785,12 @@ func toModel(name string, e *modelEntry) (Model, error) {
 	}
 	if e.Develop != nil {
 		m.Develop = *e.Develop
+	}
+	if e.Exports != nil {
+		var err error
+		if m.Pins, err = toPins(*e.Exports); err != nil {
+			return m, fmt.Errorf("model %s: exports: %w", name, err)
+		}
 	}
 	if e.Hub != nil {
 		var err error

@@ -1,11 +1,14 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -68,6 +71,25 @@ func (e Entry) Bytes() int64 {
 	}
 	return n
 }
+
+// Digest is what the entry holds, whatever folder, version or pack it is kept in: "sha256:" and
+// the SHA-256 of a line for each of its files (path, size and SHA-256, separated by NUL), in the
+// order of their paths. What models.yaml's exports pin: every file of an entry fetched is
+// checked against Files (unpacked ones too), so that an entry of the digest pinned holds those
+// bytes and no others. Its version, path, recipe, pack and when it was made are not in it: the
+// same export packed again, or written as a published version, has the same digest.
+func (e Entry) Digest() string {
+	fs := slices.Clone(e.Files)
+	slices.SortFunc(fs, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
+	h := sha256.New()
+	for _, f := range fs {
+		fmt.Fprintf(h, "%s\x00%d\x00%s\n", f.Path, f.Size, strings.ToLower(f.SHA256))
+	}
+	return DigestPrefix + hex.EncodeToString(h.Sum(nil))
+}
+
+// DigestPrefix starts every Digest.
+const DigestPrefix = "sha256:"
 
 // Fingerprint is the key of a recipe: the SHA-256 of its settings in order of their names.
 func Fingerprint(recipe map[string]string) string {

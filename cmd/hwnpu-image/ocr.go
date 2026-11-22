@@ -41,6 +41,9 @@ type OCRCmd struct {
 
 // Run reads the text of each picture.
 func (c *OCRCmd) Run(ctx context.Context) error {
+	if err := outDir(c.Out); err != nil {
+		return err
+	}
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	o := vision.OCROptions{MinScore: c.MinScore}
