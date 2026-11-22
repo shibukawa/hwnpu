@@ -345,6 +345,14 @@ func (l *lowering) node(n *Node) {
 		set(0, in[0])
 	case "Cast":
 		to := int(n.Int("to", Float))
+		if to == Bool {
+			// a program value of 0 and 1, as Where reads a condition: min(|x| 1e4, 1), exact
+			// for a condition of Equal's and for a mask
+			sh := x(0).Shape
+			d := l.op("abs", map[string]any{"x": x(0)}, sh...)
+			out(l.op("minimum", map[string]any{"x": l.op("mul", map[string]any{"x": d, "y": l.B.ScalarF16(1e4)}, sh...), "y": l.B.ScalarF16(1)}, sh...))
+			return
+		}
 		if to != Float && to != Float16 && to != Double {
 			l.Fail("Cast %s of a program value to type %d", n.Name, to)
 		}
@@ -405,6 +413,25 @@ func (l *lowering) node(n *Node) {
 		out(l.op(typ, map[string]any{"x": x(0)}, x(0).Shape...))
 	case "Rsqrt":
 		out(l.op("rsqrt", map[string]any{"x": x(0), "epsilon": l.B.ScalarF16(0)}, x(0).Shape...))
+	case "Equal":
+		// a program value of 0 and 1, as Where reads a condition (a program has no booleans):
+		// 1 - min(|x - y| 1e4, 1), exact for values at least 1e-4 apart (masks, ids, steps)
+		shape, err := Broadcast(in[0].shape(), in[1].shape())
+		if err != nil {
+			l.Fail("Equal %s: %v", n.Name, err)
+		}
+		d := l.op("abs", map[string]any{"x": l.op("sub", map[string]any{"x": x(0), "y": x(1)}, shape...)}, shape...)
+		d = l.op("minimum", map[string]any{"x": l.op("mul", map[string]any{"x": d, "y": l.B.ScalarF16(1e4)}, shape...), "y": l.B.ScalarF16(1)}, shape...)
+		out(l.op("sub", map[string]any{"x": l.B.ScalarF16(1), "y": d}, shape...))
+	case "Reciprocal":
+		out(l.op("real_div", map[string]any{"x": l.B.ScalarF16(1), "y": x(0)}, x(0).Shape...))
+	case "Softplus":
+		out(l.op("softplus", map[string]any{"x": x(0)}, x(0).Shape...))
+	case "PRelu":
+		// max(x, 0) + slope * min(x, 0), the slope broadcast as the graph's
+		pos := l.op("relu", map[string]any{"x": x(0)}, x(0).Shape...)
+		neg := l.op("minimum", map[string]any{"x": x(0), "y": l.B.ScalarF16(0)}, x(0).Shape...)
+		out(l.op("add", map[string]any{"x": pos, "y": l.op("mul", map[string]any{"x": neg, "y": x(1)}, x(0).Shape...)}, x(0).Shape...))
 	case "Neg":
 		out(l.op("mul", map[string]any{"x": x(0), "y": l.B.ScalarF16(-1)}, x(0).Shape...))
 	case "Clip":

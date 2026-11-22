@@ -1,6 +1,7 @@
 package speech
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,16 +11,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/speech"
+	"github.com/shibukawa/hwnpu/internal/supertonic"
 )
 
-// Speak is the use of a model of text to speech (LFM3-Audio) for an app: a model, a family or a
-// use of the definitions ("speech").
+// Speak is the use of a model of text to speech (LFM3-Audio, Supertonic 3) for an app: a model,
+// a family or a use of the definitions ("speech", "supertonic").
 func Speak(name string) ai.Use[*Speaker] {
 	return ai.Define[*Speaker](speakRole, name)
 }
@@ -41,6 +45,9 @@ var speakRole = &airole.Role{
 	Name:  "speak",
 	Kinds: []chat.Kind{chat.KindSpeech},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
+		if isSupertonic(e.Model) || isSupertonic(e.Base) {
+			return prepareSupertonic(e)
+		}
 		var c speech.Config
 		cpu, ps := e.NPU.CPU(e.Model), e.Model.Programs
 		switch {
@@ -80,6 +87,9 @@ var speakRole = &airole.Role{
 		return f, nil
 	},
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
+		if f.Path("supertonic") != "" {
+			return loadSupertonic(ctx, f, e)
+		}
 		s, err := speech.Load(ctx, speech.Config{Text: f.Paths["text"], IronText: f.Path("iron-text"), Depth: f.Path("depth"),
 			Codec: f.Path("codec"), Dir: f.Path("dir"), Weights: f.Path("weights"),
 			CacheDir: e.Cache, Device: e.NPU.Device, CPU: e.NPU.CPU(e.Def), Log: e.Log})
@@ -88,6 +98,8 @@ var speakRole = &airole.Role{
 		}
 		return &Speaker{s: s, model: e.Model}, nil
 	},
+	// 1: Supertonic's programs of its text's graphs (durations, encoders), with no ONNX Runtime
+	Revision: 1,
 }
 
 // SpeakOptions are how a text is spoken (LFM3-Audio's settings).
@@ -102,7 +114,14 @@ type SpeakOptions struct {
 	Seed uint64
 	// MaxFrames is the most frames of 80 ms (0: until the model ends the speech).
 	MaxFrames int
+	// Speed is how fast the text is said, as a multiple of the model's own pace (0: 1), by a
+	// model that paces its speech (Paces: Supertonic, from 0.67 to 1.9); the others leave it.
+	Speed float64
 }
+
+// Paces reports whether the model says a text at SpeakOptions.Speed itself (Supertonic); the
+// speech of another is to be stretched for it.
+func (s *Speaker) Paces() bool { return s.st != nil }
 
 // Audio is mono audio.
 type Audio struct {
@@ -126,15 +145,43 @@ type SpeakStats struct {
 // Speaker speaks texts (LFM3-Audio). It runs one request at a time; others wait.
 type Speaker struct {
 	mu    sync.Mutex
-	s     *speech.Synth
+	s     *speech.Synth // LFM3-Audio's, or
+	st    *supertonic.Synth
+	dev   *hwnpu.Device // Supertonic's NPU (nil: the CPU)
 	model string
+	// styles are Supertonic's voices read, by name
+	styles map[string]supertonic.Style
 }
 
 // Model is the name of the model in the definitions.
 func (s *Speaker) Model() string { return s.model }
 
-// Rate is the samples a second of the speech (24000).
-func (s *Speaker) Rate() int { return s.s.SampleRate() }
+// Rate is the samples a second of the speech (LFM3-Audio's 24000, Supertonic's 44100).
+func (s *Speaker) Rate() int {
+	if s.st != nil {
+		return supertonic.SampleRate
+	}
+	return s.s.SampleRate()
+}
+
+// Stages names what SpeakStats' Text, Depth and Codec times are of: LFM3-Audio's text model,
+// depthformer and codec decoder, or Supertonic's text graphs, flow and vocoder.
+func (s *Speaker) Stages() (text, depth, codec string) {
+	if s.st != nil {
+		return "the text", "the flow", "the vocoder"
+	}
+	return "the text model", "the depthformer", "the codec decoder"
+}
+
+// OnNPU reports whether the speech is made on the NPU (Supertonic's flow and vocoder; false on
+// the CPU).
+func (s *Speaker) OnNPU() bool {
+	if s.st != nil {
+		n, ok := s.st.Stages.(interface{ OnNPU() bool })
+		return ok && n.OnNPU()
+	}
+	return true
+}
 
 func (o SpeakOptions) request(text string) speech.Request {
 	lang, voice := o.Language, o.Voice
@@ -158,6 +205,9 @@ func (s *Speaker) Speak(ctx context.Context, text string, o SpeakOptions) (Audio
 		o.Seed = rand.Uint64() // drawn here so that it can be told (Stats.Seed)
 	}
 	t0 := time.Now()
+	if s.st != nil {
+		return s.speakSupertonic(ctx, text, o, t0)
+	}
 	pcm, frames, err := s.s.Speak(ctx, o.request(text))
 	if err != nil {
 		return Audio{}, err
@@ -224,7 +274,191 @@ func (s *Speaker) speakStream(ctx context.Context, in flow.Stream[flow.Text], op
 func (s *Speaker) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.st != nil {
+		err := s.st.Close()
+		if s.dev != nil {
+			s.dev.Close()
+		}
+		return err
+	}
 	return s.s.Close()
 }
 
+// supertonicPiece is the most letters Supertonic is given at once: a longer text is spoken in
+// pieces of whole sentences, so that each fits a program of the NPU (about 9 s of speech).
+const supertonicPiece = 60
+
+// speakSupertonic speaks a text with Supertonic: in pieces of sentences, joined by a short
+// silence, as the reference does with its chunks.
+func (s *Speaker) speakSupertonic(ctx context.Context, text string, o SpeakOptions, t0 time.Time) (Audio, error) {
+	voice := o.Voice
+	st, ok := s.styles[voice]
+	if !ok {
+		var err error
+		if st, err = s.st.Voice(voice); err != nil {
+			return Audio{}, fmt.Errorf("speech: the voice %q: %w (Supertonic's are female, male, F1 ... F5, M1 ... M5)", voice, err)
+		}
+		s.styles[voice] = st
+	}
+	var pieces []string
+	cur := ""
+	for _, sent := range flow.SplitSentences(text) {
+		if cur != "" && len([]rune(cur+sent)) > supertonicPiece {
+			pieces = append(pieces, cur)
+			cur = ""
+		}
+		cur += sent
+	}
+	if strings.TrimSpace(cur) != "" {
+		pieces = append(pieces, cur)
+	}
+	speed := supertonic.DefaultSpeed * cmp.Or(o.Speed, 1)
+	if speed < supertonic.MinSpeed || speed > supertonic.MaxSpeed {
+		return Audio{}, fmt.Errorf("speech: the speed %g: Supertonic says from %.2f to %.2f", o.Speed, supertonic.MinSpeed/supertonic.DefaultSpeed, supertonic.MaxSpeed/supertonic.DefaultSpeed)
+	}
+	var pcm []float32
+	var stats SpeakStats
+	n := 0
+	var say func(p string) error
+	say = func(p string) error {
+		out, _, err := s.st.Speak(ctx, supertonic.Request{Text: p, Lang: supertonicLang(o.Language), Style: st, Seed: o.Seed + uint64(n), Speed: speed})
+		if errors.Is(err, supertonic.ErrTooLong) {
+			// longer than the NPU's programs hold: in two, at the pause nearest its middle
+			a, b, ok := halve(p)
+			if !ok {
+				return err
+			}
+			if err := say(a); err != nil {
+				return err
+			}
+			return say(b)
+		}
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			pcm = append(pcm, make([]float32, supertonic.SampleRate*15/100)...)
+		}
+		n++
+		pcm = append(pcm, out...)
+		t := s.st.Times
+		stats.Text += t.Duration + t.Encode
+		stats.Depth += t.Estimate
+		stats.Codec += t.Vocode
+		return nil
+	}
+	for _, p := range pieces {
+		if err := say(strings.TrimSpace(p)); err != nil {
+			return Audio{}, err
+		}
+	}
+	stats.Frames, stats.Seed, stats.Took = (len(pcm)+supertonic.Chunk-1)/supertonic.Chunk, o.Seed, time.Since(t0)
+	return Audio{Samples: pcm, Rate: supertonic.SampleRate, Stats: stats}, nil
+}
+
+// halve cuts a text in two at the pause (a comma, a space) nearest its middle, or at its
+// middle without one; ok is false for a text too short to cut.
+func halve(text string) (a, b string, ok bool) {
+	r := []rune(text)
+	if len(r) < 4 {
+		return "", "", false
+	}
+	mid, at := len(r)/2, -1
+	for i, c := range r[1 : len(r)-1] {
+		if strings.ContainsRune("、，,；;：: 　・…", c) && (at < 0 || abs(i+1-mid) < abs(at-mid)) {
+			at = i + 1
+		}
+	}
+	if at < 0 {
+		at = mid
+	} else {
+		at++ // the pause stays with the first half
+	}
+	return strings.TrimSpace(string(r[:at])), strings.TrimSpace(string(r[at:])), true
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// supertonicLang is a language as Supertonic's token names it: a code (ja, en-gb as en), or
+// na for one it does not speak.
+func supertonicLang(lang string) string {
+	l := strings.ToLower(strings.TrimSpace(lang))
+	if i := strings.IndexAny(l, "-_"); i > 0 {
+		l = l[:i]
+	}
+	names := map[string]string{"english": "en", "japanese": "ja", "korean": "ko", "spanish": "es", "french": "fr", "german": "de", "italian": "it", "portuguese": "pt", "russian": "ru", "": "en"}
+	if c, ok := names[l]; ok {
+		l = c
+	}
+	for _, c := range supertonic.Languages {
+		if c == l {
+			return l
+		}
+	}
+	return "na"
+}
+
 func init() { airole.Register(speakRole) }
+
+// supertonicFamily is the family of Supertonic's models in the definitions.
+const supertonicFamily = "supertonic"
+
+// isSupertonic reports whether a model is Supertonic's: of its family, or of its repository
+// (a model an app derived from the definitions keeps the repository, not the family).
+func isSupertonic(m chat.Model) bool {
+	return m.Family == supertonicFamily || strings.HasPrefix(strings.TrimPrefix(m.Source(), "hf:"), "Supertone/")
+}
+
+// prepareSupertonic downloads Supertonic 3 and, for the NPU, converts the programs of its flow
+// and its vocoder (a model of device cpu runs on ONNX Runtime alone).
+func prepareSupertonic(e airole.PrepareEnv) (f airole.Files, err error) {
+	backend := e.NPU.Format
+	if e.NPU.CPU(e.Model) || e.NPU.AMD() {
+		backend = "" // the CPU: ONNX Runtime reads the graphs
+	}
+	if backend == llm.BackendCoreAI {
+		// Core AI's lowering has no 1-D convolution (the flow's and the vocoder's); Core ML's
+		// programs run all on the Neural Engine (measured on M2: 80 times real time)
+		backend = llm.BackendCoreML
+	}
+	c, err := supertonic.Prepare(e.Ctx, supertonic.Setup{Repo: e.Model.Source(), Dir: e.Dir, Backend: backend, Log: e.Log})
+	if err != nil {
+		return f, err
+	}
+	f.Set("supertonic", c.Dir)
+	f.Set("durations", c.Durations...)
+	f.Set("encoders", c.Encoders...)
+	f.Set("estimators", c.Estimators...)
+	f.Set("vocoders", c.Vocoders...)
+	return f, nil
+}
+
+func loadSupertonic(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
+	c := supertonic.Config{Dir: f.Path("supertonic"), Durations: f.Paths["durations"], Encoders: f.Paths["encoders"], Estimators: f.Paths["estimators"], Vocoders: f.Paths["vocoders"]}
+	if len(c.Estimators) > 0 && !e.NPU.CPU(e.Def) {
+		name := e.NPU.Device
+		if name == llm.BackendCoreAI || name == "" && e.NPU.Format == llm.BackendCoreAI {
+			// Core AI's device lowers Core ML's programs with its own lowering, which has no
+			// 1-D convolution (prepareSupertonic): Core ML runs them
+			name = llm.BackendCoreML
+		}
+		dev, _, err := llm.OpenDevice(ctx, name, e.Cache)
+		if err != nil {
+			return nil, err
+		}
+		c.Device = dev
+	}
+	st, err := supertonic.Load(ctx, c)
+	if err != nil {
+		if c.Device != nil {
+			c.Device.Close()
+		}
+		return nil, err
+	}
+	return &Speaker{st: st, dev: c.Device, model: e.Model, styles: map[string]supertonic.Style{}}, nil
+}

@@ -64,6 +64,7 @@ const (
 	arenaAllocator   = 1  // OrtArenaAllocator
 	memTypeDefault   = 0  // OrtMemTypeDefault
 	elementTypeFloat = 1  // ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
+	elementTypeInt64 = 7  // ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64
 )
 
 // Runtime is the loaded library and its environment.
@@ -268,10 +269,12 @@ func (s *Session) Close() error {
 	return nil
 }
 
-// Tensor is a float32 tensor: its shape and its values, row major.
+// Tensor is a float32 tensor: its shape and its values, row major. An input may be an int64
+// tensor instead (token ids): Int64 in place of Data.
 type Tensor struct {
 	Shape []int64
 	Data  []float32
+	Int64 []int64
 }
 
 // Run runs the model on inputs (by name, every input) and returns every output by name.
@@ -295,13 +298,23 @@ func (s *Session) Run(inputs map[string]Tensor) (map[string]Tensor, error) {
 		for _, d := range t.Shape {
 			count *= d
 		}
-		if count != int64(len(t.Data)) || len(t.Data) == 0 || len(t.Shape) == 0 {
-			return nil, fmt.Errorf("onnxrt: input %s: %d values for the shape %v", n, len(t.Data), t.Shape)
+		data, size, typ, length := uintptr(0), 4, elementTypeFloat, len(t.Data)
+		if t.Int64 != nil {
+			size, typ, length = 8, elementTypeInt64, len(t.Int64)
 		}
-		pin.Pin(&t.Data[0])
+		if count != int64(length) || length == 0 || len(t.Shape) == 0 {
+			return nil, fmt.Errorf("onnxrt: input %s: %d values for the shape %v", n, length, t.Shape)
+		}
+		if t.Int64 != nil {
+			pin.Pin(&t.Int64[0])
+			data = ptr(&t.Int64[0])
+		} else {
+			pin.Pin(&t.Data[0])
+			data = ptr(&t.Data[0])
+		}
 		pin.Pin(&t.Shape[0])
-		if err := r.call(fnCreateTensorWithDataAsOrtValue, r.mem, ptr(&t.Data[0]), uintptr(4*len(t.Data)),
-			ptr(&t.Shape[0]), uintptr(len(t.Shape)), elementTypeFloat, ptr(&vals[i])); err != nil {
+		if err := r.call(fnCreateTensorWithDataAsOrtValue, r.mem, data, uintptr(size*length),
+			ptr(&t.Shape[0]), uintptr(len(t.Shape)), uintptr(typ), ptr(&vals[i])); err != nil {
 			return nil, fmt.Errorf("onnxrt: input %s: %w", n, err)
 		}
 		pin.Pin(&s.cin[i][0])
