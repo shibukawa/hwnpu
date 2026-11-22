@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	aicli "github.com/shibukawa/hwnpu/ai/cli"
@@ -57,12 +58,31 @@ func useFor[T io.Closer](st ai.Store, u ai.Use[T]) (ai.Use[T], []ai.Definition, 
 }
 
 // open prepares the app's models that are not here and opens its Runtime, whose first load of a
-// model compiles it for the NPU.
-func open(ctx context.Context, app *ai.App, lw io.Writer) (*ai.Runtime, error) {
+// model compiles it for the NPU. opts are the Runtime's others (ai.AllowOffNPU).
+func open(ctx context.Context, app *ai.App, lw io.Writer, opts ...ai.Option) (*ai.Runtime, error) {
 	if err := aicli.Ensure(ctx, app, aicli.PrepareOptions{Log: os.Stderr}); err != nil {
 		return nil, err
 	}
-	return app.Open(ctx, ai.CompileOnLoad(), ai.WithLog(lw))
+	return app.Open(ctx, append([]ai.Option{ai.CompileOnLoad(), ai.WithLog(lw)}, opts...)...)
+}
+
+// defined is the use u as the flags make it: u itself when d changes nothing, else a model of
+// its own like u's (d, which the app defines).
+func defined[T io.Closer](u ai.Use[T], defs []ai.Definition, d ai.Definition, as func(string) ai.Use[T]) (ai.Use[T], []ai.Definition) {
+	if d.Programs == nil && d.Settings == nil && d.Device == "" {
+		return u, defs
+	}
+	d.Like = u.Name()
+	return as(d.ID()), append(defs, d)
+}
+
+// loaded is the model the Runtime loaded last, and how long that took.
+func loaded(rt *ai.Runtime) (model string, took time.Duration) {
+	ls := rt.Loaded()
+	if len(ls) == 0 {
+		return "", 0
+	}
+	return ls[len(ls)-1].Model, ls[len(ls)-1].Took
 }
 
 // loadedLine is the log's line of a model loaded: its name, how long it took, where it runs.
