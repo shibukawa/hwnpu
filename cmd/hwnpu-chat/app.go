@@ -51,6 +51,9 @@ func useFor[T io.Closer](cat *ai.Catalog, u ai.Use[T]) (ai.Use[T], []ai.Definiti
 	if err != nil {
 		return u, nil, err
 	}
+	if !strings.EqualFold(n.Name(), u.Name()) && def == nil {
+		chat.LookupOn(u.Name(), 0, logw()) // what a use or a family picks, and why, as before
+	}
 	if def != nil {
 		return n, []ai.Definition{*def}, nil
 	}

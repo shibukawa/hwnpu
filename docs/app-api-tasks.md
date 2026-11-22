@@ -27,7 +27,7 @@
 | **B1** | `ai`: 登録、計画、準備、置き場の目録、取得元 | どこでも | A3 | 大 | 一部 (登録、計画、ダウンロードとコンパイルの 2 段、目録、機械のメモリごとの構成、ライセンスの同意。取得元と層は `modelstore`。取得と変換の分割、バイト数の進み具合は残り) |
 | **B2** | `ai`: 実行 (`Open`、文字起こし、翻訳、チャット、読み上げ、音量の VAD) | どこでも、確認は Mac | B1 | 中 | v0 済み (aix1 と Mac (M3) で確認。Intel での確認は残り) |
 | **B0** | 流れの型 (`Chunk`、`Stream`) と塊をまとめる道具、3 つのつなぎ方 (`ai/flow`: 一括、`Async` / `Latest` / `Hold`、`Metronome` / `Pace` / `Live`) | どこでも | — | 小 | 済み |
-| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 一部 (土台: カタログ、アプリの作るモデル (`ai.Definition`)、`cli.Ensure` と `ai.CompileOnLoad`、計測の値 (app-api.md 2.3 節)。`hwnpu-audio transcribe` / `tts` は載せ替え済み、aix1 で確認。残りは hwnpu-chat、hwnpu-image、hwnpu-audio の generate / pitch / notes) |
+| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 一部 (土台: カタログ、アプリの作るモデル (`ai.Definition`)、`cli.Ensure` と `ai.CompileOnLoad`、計測の値 (app-api.md 2.3 節)。`hwnpu-audio transcribe` / `tts` と `hwnpu-chat` (chat、agent、serve、opencode、search、systemone、list) は載せ替え済み、aix1 で確認 (hwnpu-chat の埋め込みと d1 は Mac か Intel で確認が残り)。残りは hwnpu-image、hwnpu-audio の generate / pitch / notes) |
 | B7 | `ai/cli`: アプリに足すサブコマンド (`models`、`status`)。コマンドラインのライブラリに依存しない関数と、kong のアダプタ `ai/cli/konghelper` | どこでも | B1 | 小 | 済み |
 | B9 | ネットワークと呼び出しの宣言 (`flow` の節、`App.From(...).To(...)` / `Run`、`ai.NewCall(...).Then(...)`、プログラムの節 (`Each`、`Route`、`Both`、`With`)、動いている間の設定の変更) | どこでも | B0 | 中 | v0 済み (入力が 3 つ以上の節、モデルを下ろすタイミング、辺ごとの計測は残り。developer-guide.ja.md の D21) |
 | **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 ([architecture](design/architecture.md)) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
@@ -36,8 +36,8 @@
 | B6 | 読み上げを流しながら (できた音から返す、文を受けるたびに読む) | どこでも、確認は Mac | B2 | 小 | 未着手 |
 | **D3** | 読み上げを実時間より速くする (今は lut8 で実時間の約 0.5 倍) | Mac | — | 中 | 未着手 |
 | C1 | `internal/ws`: WebSocket (RFC 6455) の最小限の実装 | どこでも | — | 小 | 未着手 |
-| C2 | `ai/server`: 共通の部分 (互換の口をまとめる Handler、トークン、許すディレクトリ) と独自のストリーム | どこでも | B2、C1 | 中 | 未着手 |
-| C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 未着手 |
+| C2 | `ai/server`: 共通の部分 (互換の口をまとめる Handler、トークン、許すディレクトリ) と独自のストリーム | どこでも | B2、C1 | 中 | 未着手 (互換のパッケージは単独の `http.Handler` として先にできた: `ai/server/openai`、`ai/server/systemone`) |
+| C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 一部 (3 つを `text.Chatter` と `text.Embedder` の上に移し、`response_format` を足した。`hwnpu-chat serve` が使う。音声の 3 つと `Mount` は残り) |
 | C4 | `ai/server/googlecloud`: Speech-to-Text、Text-to-Speech、Translation v2、Vision の REST | どこでも | C2 | 中 | 未着手 |
 | **D1** | `samples/interpreter`: 同時通訳のサンプル | Mac | C2 | 中 | 一部 (マイク (hwcamera) か録音を読んで、訳した音声を書く形は済み、aix1 と Mac で確認。訳した音声のスピーカーでの再生 (oto) と速さの調整 (`--speed`) も済み。ブラウザのマイクと WebSocket は残り) |
 | D2 | 測定: 日本語の読み上げ、3 つのモデルの同居、1 発話の遅れ | Mac (M3、M1) | B2 | 小 | 未着手 |
@@ -50,7 +50,7 @@
 | G2 | LFM3-Audio の読み上げを AMD の NPU で | aix1 | — | 大 | 済み ([docs/design/audio-models.md](design/audio-models.md)) |
 | G3 | Silero VAD を AMD の機械で (CPU の見込み) | aix1 | F1 | 小 | 未着手 |
 | H1 | 文書: README、CLOUD_AI_COMPATIBILITY、英語版、godoc の例 | どこでも | B3、C2 | 小 | 未着手 |
-| **I1** | 決まった形で答える生成 (JSON Schema、`response_format`) | どこでも、確認は Mac | — | 中 | 未着手 |
+| **I1** | 決まった形で答える生成 (JSON Schema、`response_format`) | どこでも、確認は Mac | — | 中 | 一部 (照らすだけ: `text.Format` が system で伝え、答えの JSON をスキーマと照らして `FormatError`。`/v1/chat/completions` の `response_format`。文法でデコードを縛るのは残り) |
 | I2 | 仕事の API (`/v1/jobs`、`/v1/capabilities`、`/v1/tools`) | どこでも | C2 | 中 | 未着手 |
 | **I3** | A2A の口 (Agent Card、JSON-RPC、SSE、push notification) | どこでも | I2 | 中 | 未着手 |
 | I5 | `hwnpu-mcp`: MCP しか話さない頭脳のための口 | どこでも | I2 | 小 | 未着手 |
