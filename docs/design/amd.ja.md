@@ -86,7 +86,7 @@ NPU2 でどのモデルも使う形。グラフの 1 回の呼び出しを 1 つ
 
 - AMD に公開されたグラフのコンパイラはなく、演算ごとの xclbin は切り替え 1 回 0.46 ms かかる (`tools/amd/ctxbench`: 3 つのコンテキストを交互に 2.960 ms、単独の合計 1.571 ms。まとめて投入しても縮まない)。100 演算なら 1 トークン 46 ms。そこで [amd/IRON](https://github.com/amd/IRON) (Apache-2.0) と mlir-aie で書き出し時にコンパイルし、モデルの 1 回の呼び出しを 1 つの full ELF にして、hwnpu が Go で動かす。「変換は Go だけで」の唯一の例外で、利用者の機械には Python も XRT も要らない。
 - 書き出しの道具: `tools/amd/iron_export.py` (IRON の `CompiledGraph` → ELF + manifest: コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ、`carried`、`images` = バンクの初期像 `arg_<種類>.bin`。`--check` は乱数の入力と `graph.reference()` の出力、引き継ぐ値のあるグラフでは `check/calls.json` を書く)。`iron_export_lm.py` (言語モデル)、`iron_graph.py` + `iron.Graph` (それ以外のグラフ。1 つの ELF が複数の重みのバンク `variants` を持てる)。`hwnpu-dev xclbin` は XRT の xclbinutil なしで IRON の設計をビルドする。
-- 実行側の道具: `tools/amd/ironcheck` (書き出しをその check と照合)、`irongraph` (`-runs N`、`-swap -variant`)、`ironlm` (言語モデル)、`gemvbench`、`ctxbench`、`elfconfigs` (ELF ごとの設定のし直し)、`HWNPU_IRON_TIMING=1` (コマンドごとの時間)、`--command-per-step` (ステップごとに 1 コマンド。時間を測るためだけ)。
+- 実行側の道具: `tools/amd/ironcheck` (書き出しをその check と照合)、`irongraph` (`-runs N`、`-swap -variant`)、`ironlm` (言語モデル)、`gemvbench`、`ctxbench`、`elfconfigs` (ELF ごとの設定のし直し)、`HWNPU_DEV=iron.timing=1` (コマンドごとの時間)、`--command-per-step` (ステップごとに 1 コマンド。時間を測るためだけ)。
 - ビルド環境: mlir-aie の wheel は Python 3.12 が要る (uv)。IRON は mlir-aie の nightly を固定する。装置は `aie_utils.set_current_device(from_name("npu2", n_cols=8))`。大きな書き出し (Qwen3.6: 30 分、ピーク RSS 60 GB 中 53.8 GB) はほかの大きな仕事と並べない。置き場は `~/models` (`/tmp` は tmpfs)。長いものは `systemd-run --user` で。
 - 書き出しの名前: `~/models/NAME.amd-npu2-q4` (または `NAME.amd-npu2`)。AMD の NPU だけの機械では、hwnpu-chat が `-m NAME` にこれを選ぶ。
 

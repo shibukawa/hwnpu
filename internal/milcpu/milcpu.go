@@ -70,7 +70,7 @@ type Options struct {
 	// value (before RoundF16), to find what overflows fp16 (65504).
 	Trace func(typ, name string, maxAbs, rms float32)
 	// Value, when set, is called with each operation's output name and values (after
-	// RoundF16), to compare a value inside the program (aicheck's HWNPU_AILOWER_CUT).
+	// RoundF16), to compare a value inside the program (aicheck's HWNPU_DEV=ailower.cut).
 	Value func(name string, data []float32)
 }
 

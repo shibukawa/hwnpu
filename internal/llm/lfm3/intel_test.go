@@ -132,14 +132,14 @@ func TestIntelIRCached(t *testing.T) {
 	}
 }
 
-// The real LFM3-1.7B (HWNPU_LFM3_DIR: config.json, tokenizer.json and model.safetensors) in
+// The real LFM3-1.7B (HWNPU_TEST_LFM3_DIR: config.json, tokenizer.json and model.safetensors) in
 // Intel's weight formats, generating one token per call on OpenVINO's CPU through
 // internal/llm/chain: how often the most likely next token is the fp16 program's, and the
 // logits' relative error against it, over a Japanese and an English text. Needs HWNPU_OV_PYTHON.
 func TestIntelIRCheckpoint(t *testing.T) {
-	dir := os.Getenv("HWNPU_LFM3_DIR")
+	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" || ovcpu.Python() == "" {
-		t.Skip("HWNPU_LFM3_DIR or HWNPU_OV_PYTHON is not set")
+		t.Skip("HWNPU_TEST_LFM3_DIR or HWNPU_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "openvino", "")
@@ -230,7 +230,7 @@ func TestIntelIRCheckpoint(t *testing.T) {
 	}
 	ref := logits("fp16")
 	formats := []string{"int8", "int4-g128", "int4"}
-	if f := os.Getenv("HWNPU_LFM3_FORMATS"); f != "" {
+	if f := os.Getenv("HWNPU_TEST_LFM3_FORMATS"); f != "" {
 		formats = strings.Split(f, ";")
 	}
 	for _, format := range formats {

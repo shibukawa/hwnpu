@@ -11,7 +11,7 @@ own file ([Neural Engine](apple-neural-engine.md), [Core AI](apple-coreai.md), [
 | Vendor | OS | Path hwnpu takes | Backend name |
 |---|---|---|---|
 | Intel NPU (Core Ultra, Meteor Lake and later) | Linux, Windows | Level Zero loader (`libze_loader.so.1` / `ze_loader.dll`) + the NPU graph extension, through purego | `levelzero` |
-| Intel (checks without the NPU) | any | OpenVINO IR run by OpenVINO itself (CPU plugin, or `HWNPU_OV_DEVICE=NPU`) | `openvino` (only with `HWNPU_BACKEND=openvino`) |
+| Intel (checks without the NPU) | any | OpenVINO IR run by OpenVINO itself (CPU plugin, or `HWNPU_DEV=ov.device=NPU`) | `openvino` (only with `HWNPU_BACKEND=openvino`) |
 | AMD XDNA (Ryzen AI, Phoenix and later) | Linux | `amdxdna` kernel driver, ioctl and mmap through `golang.org/x/sys/unix` (not even purego) | `xdna` |
 | AMD XDNA | Windows (Linux for tests) | XRT (`xrt_coreutil.dll`) through `native/xrtshim`, a small C library loaded at run time | `xrt` (on Linux only with `HWNPU_BACKEND=xrt`) |
 | Apple Neural Engine | macOS | Core ML through `purego/objc` | `coreml` (default) |

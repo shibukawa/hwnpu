@@ -99,7 +99,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
   - `json.MarshalIndent` の map は鍵の順に並ぶので、そのままでよい
 - 合格の条件
   - 小さなモデル (LFM3 の小さい構成、YuNet の ONNX から、Anima の VAE の段の 1 つ) を同じ入力で 2 回変換し、`cache.TreeDigest` が一致するテスト (`internal/mlpackage`、`internal/onnx`、`internal/imagegen/milpart`)
-  - Mac: 1 つのモデルを変換し直し、2 回目の読み込みで hwnpu のキャッシュに当たること (`HWNPU_COREML_TRACE=1`)
+  - Mac: 1 つのモデルを変換し直し、2 回目の読み込みで hwnpu のキャッシュに当たること (`HWNPU_DEV=coreml.trace=1`)
 - 注意: 直したあとの最初の変換は、前の (乱数入りの) 書き出しと別物になる。利用者の機械では一度だけコンパイルし直すことになる。[docs/design/README.md](design/README.md) に書く
 
 ### A2. OpenVINO IR と AMD の書き出しが決定的かを確かめる
@@ -171,7 +171,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### B4. アプリのための Neural Engine のロックの方針
 
-- 今: Core ML のときは、プロセスが生きている間、ファイルのロック (`internal/llm/npulock.go`、`HWNPU_NPU_LOCK=off` で外せる) を持ち続ける。同時通訳のアプリを開いたままにすると、ほかの hwnpu のコマンドやアプリはずっと待つ
+- 今: Core ML のときは、プロセスが生きている間、ファイルのロック (`internal/llm/npulock.go`。外す道はない) を持ち続ける。同時通訳のアプリを開いたままにすると、ほかの hwnpu のコマンドやアプリはずっと待つ
 - ロックの理由 (`npulock.go` のコメント): 2 つのプロセスが同時に Neural Engine を使うと、M1 の Mac が固まった。予測が返らず、Ctrl+C でも kill -9 でもプロセスが終わらず、次のコマンドもその後ろで止まった。ロックを外すのは危ない
 - 決めること (案)
   - ロックはそのまま、プロセスに 1 つとする。その代わり、常駐するアプリには「NPU を手放す」API (`rt.Suspend()` でモデルを閉じてロックを放し、`rt.Resume()` で取り直す) を用意する

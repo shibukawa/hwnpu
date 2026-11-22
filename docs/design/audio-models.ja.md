@@ -72,7 +72,7 @@
 ### 精度
 
 - 符号器の fp16 は fp32 とコサイン 0.9978。層 20〜21 が無音の位置に注意の吸い込み先 (約 300) を作り、入力のわずかな誤差でどの位置がそうなるかが入れ替わる。HF を fp16 で動かしても同じ (0.9978) なので、fp16 そのものの誤差で NE の誤りではない。音声の位置は合っていて書き起こしは変わらない
-- NE の数値の確かめ方: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`、`HWNPU_WHISPER_REF`、`HWNPU_WHISPER_ENCODERS`、`HWNPU_WHISPER_LAYER` と `-layers N`)。NE、Core ML の CPU、HF を比べる
+- NE の数値の確かめ方: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`、`HWNPU_TEST_WHISPER_REF`、`HWNPU_TEST_WHISPER_ENCODERS`、`HWNPU_TEST_WHISPER_LAYER` と `-layers N`)。NE、Core ML の CPU、HF を比べる
 - 形式 (turbo、M3): LibriSpeech の dummy (73 本、481 秒) の WER は HF fp32 4.43 %、fp16 4.43 %、lut8 4.43 %、lut6 4.87 %。日本語 (`say` の 48 本) の CER は 3.60 / 3.60 / 3.74 / 3.94 %。**既定は lut8**
 - AMD: 乱数の入力で符号器と IRON の参照のコサインは 0.9999 (8 層) → 0.99 (32 層) と広がるが、実際の音声は正しく書き起こす。88.3 秒の英語を 3 つの窓で同じ文と切れ目
 
@@ -206,7 +206,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 - M1 (h13) のための直し: `sin` は GPU に回る。要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX") と定数倍した入力どうしの引き算 ("KernelPreScales") は受け付けない。段 3 の 4998 フレームは "unexpected failure"、4500 は通る。M3 も同じ書き出し
 - 配置をオフラインで確かめる: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine`、`manifest.plist` の `mps.fullyPlacedOnANE`。理由は `/usr/bin/log show --predicate 'process == "coreai-build"'` (zsh の `log` は組み込み)
 - Core ML の書き出し (`--cpu` だけ) は `sin` のまま。Intel は前の fp16 の級数と、入力の定数での `(v + 1536) − 1536` の丸めのまま
-- 参照の落とし穴: `runner` の CPU の経路は `HWNPU_CPU_F16=1` がないと fp32 で計算し、fp16 の丸めの技が効かない。比べる前に参照の精度を決める (aicheck は milcpu を `RoundF16` で動かす)
+- 参照の落とし穴: `runner` の CPU の経路は `HWNPU_DEV=cpu.f16=1` がないと fp32 で計算し、fp16 の丸めの技が効かない。比べる前に参照の精度を決める (aicheck は milcpu を `RoundF16` で動かす)
 
 ### AMD (`iron_moss_sfx.py`、`iron_moss_dac.py`、`sfx.AMDExportVersion` 2)
 

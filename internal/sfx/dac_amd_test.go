@@ -13,18 +13,18 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
 
-// TestAMDDAC compares the decoder's stages on AMD's NPU (HWNPU_SFX_AMD: an export with dac-N/,
-// tools/amd/iron_moss_dac.py) with the Core ML stages on the CPU interpreter (HWNPU_SFX_CPU_DAC:
+// TestAMDDAC compares the decoder's stages on AMD's NPU (HWNPU_TEST_SFX_AMD_EXPORT: an export with dac-N/,
+// tools/amd/iron_moss_dac.py) with the Core ML stages on the CPU interpreter (HWNPU_TEST_SFX_CPU_DAC_DIR:
 // a directory of hwnpu-dac-N-rREV-fp16.mlpackage) over standard normal latents (or
-// HWNPU_SFX_LATENTS: 1500 rows of 128 float32).
+// HWNPU_TEST_SFX_LATENTS: 1500 rows of 128 float32).
 func TestAMDDAC(t *testing.T) {
-	amdDir, cpuDir := os.Getenv("HWNPU_SFX_AMD"), os.Getenv("HWNPU_SFX_CPU_DAC")
+	amdDir, cpuDir := os.Getenv("HWNPU_TEST_SFX_AMD_EXPORT"), os.Getenv("HWNPU_TEST_SFX_CPU_DAC_DIR")
 	if amdDir == "" || cpuDir == "" {
-		t.Skip("HWNPU_SFX_AMD and HWNPU_SFX_CPU_DAC are not set")
+		t.Skip("HWNPU_TEST_SFX_AMD_EXPORT and HWNPU_TEST_SFX_CPU_DAC_DIR are not set")
 	}
 	ctx := context.Background()
 	x := Noise(7)
-	if f := os.Getenv("HWNPU_SFX_LATENTS"); f != "" {
+	if f := os.Getenv("HWNPU_TEST_SFX_LATENTS"); f != "" {
 		x = readF32(t, f)
 	}
 	seconds := 5.0
@@ -86,7 +86,7 @@ func TestAMDDAC(t *testing.T) {
 	if snr < 20 {
 		t.Errorf("SNR %.1f dB", snr)
 	}
-	if out := os.Getenv("HWNPU_SFX_WAV"); out != "" {
+	if out := os.Getenv("HWNPU_TEST_SFX_WAV_OUT"); out != "" {
 		writeTestWAV(t, out+"-amd.wav", got)
 		writeTestWAV(t, out+"-cpu.wav", want)
 	}

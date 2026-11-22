@@ -162,7 +162,7 @@ LFM3 のデコードの残り (226 回): QGEMV の設定は 1 つ 75〜97 KB (�
 
 - KV キャッシュはホストから読み書きできる arena の bank の中に位置ごとに並び、どの版でも配置が同じ (E2B: 15 層 × 鍵 / 値、1 位置 18 KiB)。`Mark` / `Rewind` は位置だけを動かす: 次の呼び出しが上書きする
 - `iron.Model.ExportRows` / `ImportRows` が位置の範囲を写す。prompt store と `Save` は `rowSource` (`RowBytes`、`ExportRows`) を通して使う。store のキーはモデルの名前、manifest の更新時刻、bank の大きさ。2736 トークンで 1 項目 51 MB。再起動のあとの同じ要求は 13.2 秒 → 0.0 秒
-- 状態のあるモデル (LFM3 の畳み込み、Qwen3.5 の GDN): IRON の `Checkpoints` は塊の境ごとに slot を持つ (slot k は位置 k × 塊までの後の状態)。`StateAt(pos)` / `SetStateAt` は pos から始まる呼び出しが読む slot だけを写し (LFM3 の 13 層で 312 KiB)、KV の行と合わせて pos の系列が全部戻る。`Prompt` は呼び出しを塊の境で切る。印、`Rewind`、`Save`、store がこの写しを持つ。`TestStateRewindOnDevice` (`HWNPU_IRON_RECURRENT`)
+- 状態のあるモデル (LFM3 の畳み込み、Qwen3.5 の GDN): IRON の `Checkpoints` は塊の境ごとに slot を持つ (slot k は位置 k × 塊までの後の状態)。`StateAt(pos)` / `SetStateAt` は pos から始まる呼び出しが読む slot だけを写し (LFM3 の 13 層で 312 KiB)、KV の行と合わせて pos の系列が全部戻る。`Prompt` は呼び出しを塊の境で切る。印、`Rewind`、`Save`、store がこの写しを持つ。`TestStateRewindOnDevice` (`HWNPU_TEST_IRON_RECURRENT_EXPORT`)
 - `Resumable()` はリングのある (`Rings > 0`) か slot の合わない書き出しを拒む。エンジンは restartable でなくこれも満たさない書き出しを読み込まない
 - `Engine.markTurns`: restartable でない状態のあるモデルでは、prefill が最後のターンの見出し (`<|im_start|>assistant\n`) の後にも印を付ける。チャットの型が前の思考を外すので、共通の先頭は前のアシスタントのターンまでだから
 - `ironSession.StepTokens`: トークン数 × ステップの時間が塊より短ければ、短い読みをデコードのステップで読む (セッションが両方の時間を覚える)
@@ -201,11 +201,11 @@ LFM3 のデコードの残り (226 回): QGEMV の設定は 1 つ 75〜97 KB (�
 - `iron.Model.Keep`: 一部の行だけを採るとき、ホストが `rows_state` の行 kept−1 を slot に写す (Qwen3.5-0.8B で 18 層 × 1.1 MB、1.5 ms)。余分な鍵と値の行は後で上書きされる。塊の境をまたぐ確認はデコードのステップで (`SpeculateTokens`)
 - 制御コード: 確かめる版の ELF 30 MB とデコードの 26 MB を 64 MiB のヒープに両方置く。入らなければ呼び出しごとに作る (`perCall`)
 - 合格: `ironlm -verify` — 3 行のロジットがデコード 3 ステップとビット単位で同じ、`Keep` の後のステップもビット単位で同じ
-- Qwen3.5-0.8B q6 (デコード 82 ms のとき): 確かめる版 104.5 ms (1.27 ステップ)。プロンプトからの下書き 2 つ (`LookupDraft`) で、英語のコード 82.4 → 72.1 ms/トークン、日本語の説明 82.5 → 61.7。`hwnpu-chat -iron` は版があれば使い、`HWNPU_IRON_DRAFTS=0` で使わない。カタログで `--verify 3` を持つのは Qwen3.5-0.8B と 2B だけ
+- Qwen3.5-0.8B q6 (デコード 82 ms のとき): 確かめる版 104.5 ms (1.27 ステップ)。プロンプトからの下書き 2 つ (`LookupDraft`) で、英語のコード 82.4 → 72.1 ms/トークン、日本語の説明 82.5 → 61.7。`hwnpu-chat -iron` は版があれば使い、`HWNPU_DEV=iron.drafts=0` で使わない。カタログで `--verify 3` を持つのは Qwen3.5-0.8B と 2B だけ
 
 ### 下書きの選択的な確認
 
-3 行の確認は今、Qwen3.5-0.8B でデコード 1.96 ステップ分、2B で 1.67 ステップ分かかる。Ryzen AI 9 365 では全部の下書きを確かめると、散文は下書きなしより遅かった。AMD だけで使う `chat.draftPolicy` は、手前の一致の長さごとに採用率 q を数え、`1 + q + q²` が確認の費用 (既定はデコード 1.8 ステップ、3 % の余裕を加える) を超えるときだけ確かめる。確かめなかった下書きも、後のトークンと照らして q を更新する。`HWNPU_DRAFT_POLICY=0` で全部確かめ、`HWNPU_DRAFT_RATIO` で費用を変え、`HWNPU_DRAFT_TRACE=FILE` で判断を記録する。Apple と Intel は変わらない。
+3 行の確認は今、Qwen3.5-0.8B でデコード 1.96 ステップ分、2B で 1.67 ステップ分かかる。Ryzen AI 9 365 では全部の下書きを確かめると、散文は下書きなしより遅かった。AMD だけで使う `chat.draftPolicy` は、手前の一致の長さごとに採用率 q を数え、`1 + q + q²` が確認の費用 (既定はデコード 1.8 ステップ、3 % の余裕を加える) を超えるときだけ確かめる。確かめなかった下書きも、後のトークンと照らして q を更新する。`HWNPU_DEV=draft.policy=0` で全部確かめ、`HWNPU_DEV=draft.ratio` で費用を変え、`HWNPU_DEV=draft.trace=FILE` で判断を記録する。Apple と Intel は変わらない。
 
 Ryzen AI 9 365 で 300 トークン、温度 0 のとき、0.8B の散文は全部確かめる 14.6 tok/s から採否を使うと 18.8 (下書きなしも 18.8)、2B は 9.6 → 11.5 (下書きなしは 11.2)。写しの多い答えの速さも保った: 0.8B のコードは 26.9 → 27.2 tok/s、2B の JSON は 14.2 → 13.6。温度 0 でも下書きの有無で文が変わることがある。原因は未調査。
 
@@ -281,7 +281,7 @@ KL(HF ‖ NPU)、README / GPL-3 / wiki40b-ja の 400 行ずつ (`ironlm -forced`
 - LFM3 の `forced_logits.py`: チェックポイントの `auto_map` で transformers がリモートコードを読もうとする。config.json から `auto_map` を消した置き場を渡す
 - `ironlm -record` はその書き出し自身のロジットを `check/` として書き、別の書き出しをそれに照らす (作り直しの「ビット単位で同じ」はこれで確かめる)
 - `ironlm -depth` は文脈まで塊の境ごとに塊とステップを測る。`-bench` は数トークンの呼び出し、`-steps N` はデコードの速さ。新旧を交互に、NPU をほかが使っていないときに
-- 演算ごとの時間: `--command-per-step` と `HWNPU_IRON_TIMING=1` (和は普通の書き出しより約 1 割多い)
+- 演算ごとの時間: `--command-per-step` と `HWNPU_DEV=iron.timing=1` (和は普通の書き出しより約 1 割多い)
 - 書き出しを変えたら、`hwnpu-chat` で画像 1 枚と音声 1 本を通して塔を確かめる
 - 落としたチェックポイントは `x-linked-etag` の sha256 と照らす: LFM3-Audio と Omni の safetensors に、乱数の重みの照合では見つからないビットの反転があった
 

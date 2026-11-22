@@ -33,17 +33,17 @@ func rows(x []float32, c, n int) []float32 {
 	return y
 }
 
-// On the Neural Engine (HWNPU_SFX_DEVICE; the DiT's format in HWNPU_SFX_DIT_FORMAT, fp16 by
-// default; the programs kept in HWNPU_SFX_WRITE) the velocities of the reference's first steps
-// (tools/ref/ref_moss_sfx.py run --dump, HWNPU_SFX_REF; its context in HWNPU_SFX_CONTEXT) are the
+// On the Neural Engine (HWNPU_TEST_NPU; the DiT's format in HWNPU_TEST_SFX_DIT_FORMAT, fp16 by
+// default; the programs kept in HWNPU_TEST_SFX_OUT) the velocities of the reference's first steps
+// (tools/ref/ref_moss_sfx.py run --dump, HWNPU_TEST_SFX_REF; its context in HWNPU_TEST_SFX_CONTEXT) are the
 // reference's.
 func TestVelocityOnDevice(t *testing.T) {
 	dir, ref := refDir(t)
-	ctxPath := os.Getenv("HWNPU_SFX_CONTEXT")
-	if os.Getenv("HWNPU_SFX_DEVICE") == "" || ctxPath == "" {
-		t.Skip("HWNPU_SFX_DEVICE and HWNPU_SFX_CONTEXT are not set")
+	ctxPath := os.Getenv("HWNPU_TEST_SFX_CONTEXT")
+	if os.Getenv("HWNPU_TEST_NPU") == "" || ctxPath == "" {
+		t.Skip("HWNPU_TEST_NPU and HWNPU_TEST_SFX_CONTEXT are not set")
 	}
-	format := os.Getenv("HWNPU_SFX_DIT_FORMAT")
+	format := os.Getenv("HWNPU_TEST_SFX_DIT_FORMAT")
 	if format == "" {
 		format = "fp16"
 	}
@@ -56,7 +56,7 @@ func TestVelocityOnDevice(t *testing.T) {
 	defer dev.Close()
 	w := ditWeights(t, dir)
 	defer w.Close()
-	out := os.Getenv("HWNPU_SFX_WRITE")
+	out := os.Getenv("HWNPU_TEST_SFX_OUT")
 	if out == "" {
 		out = t.TempDir()
 	}
@@ -116,22 +116,22 @@ func TestVelocityOnDevice(t *testing.T) {
 }
 
 // TestGroupsOnDevice runs the context and each group of blocks from the reference's input to it
-// (tools/ref/ref_moss_sfx.py hidden, HWNPU_SFX_HIDDEN; the programs in HWNPU_SFX_WRITE of
+// (tools/ref/ref_moss_sfx.py hidden, HWNPU_TEST_SFX_HIDDEN; the programs in HWNPU_TEST_SFX_OUT of
 // TestVelocityOnDevice) against the reference's output.
 func TestGroupsOnDevice(t *testing.T) {
 	dir, _ := refDir(t)
-	hid := os.Getenv("HWNPU_SFX_HIDDEN")
-	out := os.Getenv("HWNPU_SFX_WRITE")
-	if hid == "" || out == "" || os.Getenv("HWNPU_SFX_DEVICE") == "" {
-		t.Skip("HWNPU_SFX_HIDDEN, HWNPU_SFX_WRITE and HWNPU_SFX_DEVICE are not set")
+	hid := os.Getenv("HWNPU_TEST_SFX_HIDDEN")
+	out := os.Getenv("HWNPU_TEST_SFX_OUT")
+	if hid == "" || out == "" || os.Getenv("HWNPU_TEST_NPU") == "" {
+		t.Skip("HWNPU_TEST_SFX_HIDDEN, HWNPU_TEST_SFX_OUT and HWNPU_TEST_NPU are not set")
 	}
-	format := os.Getenv("HWNPU_SFX_DIT_FORMAT")
+	format := os.Getenv("HWNPU_TEST_SFX_DIT_FORMAT")
 	if format == "" {
 		format = "fp16"
 	}
 	ctx := context.Background()
 	var d *hwnpu.Device
-	if os.Getenv("HWNPU_SFX_CPU") == "" {
+	if os.Getenv("HWNPU_TEST_SFX_CPU") == "" {
 		dv, _, err := llm.OpenDevice(ctx, "", "")
 		if err != nil {
 			t.Fatal(err)
@@ -150,7 +150,7 @@ func TestGroupsOnDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cp.Close()
-	c, err := cp.Run(ctx, map[string][]float32{"ctx": readF32(t, os.Getenv("HWNPU_SFX_CONTEXT"))})
+	c, err := cp.Run(ctx, map[string][]float32{"ctx": readF32(t, os.Getenv("HWNPU_TEST_SFX_CONTEXT"))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestGroupsOnDevice(t *testing.T) {
 	}
 	group := 5
 	for first := 0; first < DitLayers; first += group {
-		if only := os.Getenv("HWNPU_SFX_ONLY"); only != "" && only != fmt.Sprint(first) {
+		if only := os.Getenv("HWNPU_TEST_SFX_ONLY"); only != "" && only != fmt.Sprint(first) {
 			continue
 		}
 		p, err := runner.Open(ctx, d, filepath.Join(out, fmt.Sprintf("dit_blocks_%d-%s.mlpackage", first, format)))
@@ -176,7 +176,7 @@ func TestGroupsOnDevice(t *testing.T) {
 		}
 		var x []float32
 		if first == 0 {
-			x = rows(readF32(t, os.Getenv("HWNPU_SFX_X")), LatentDim, Frames)
+			x = rows(readF32(t, os.Getenv("HWNPU_TEST_SFX_X")), LatentDim, Frames)
 		} else {
 			x = scale(readF32(t, fmt.Sprintf("%s.h%d.bin", hid, first)), 1.0/DitScale)
 		}

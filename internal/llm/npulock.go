@@ -3,22 +3,23 @@ package llm
 import (
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/mem"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
 // The Neural Engine is used by one hwnpu process at a time: two at once have frozen a Mac (M1:
 // predictions that never return, processes that neither Ctrl+C nor kill -9 ends, the next
 // commands stuck behind them). OpenDevice takes an exclusive lock on a file for the Core ML
 // backend and keeps it while the process lives (the kernel drops it when the process ends); a
-// second process waits for it, saying which process holds it. HWNPU_NPU_LOCK=off skips it.
-const npuLockEnv = "HWNPU_NPU_LOCK"
+// second process waits for it, saying which process holds it. It is not skipped: hwnpud
+// (docs/design/hwnpud.md) is how several apps share the Neural Engine.
 
 var npuLock struct {
 	sync.Mutex
@@ -31,9 +32,6 @@ func npuLockPath() string {
 
 // lockNPU takes the lock unless this process has it, waiting until ctx ends.
 func lockNPU(ctx context.Context) error {
-	if strings.EqualFold(os.Getenv(npuLockEnv), "off") {
-		return nil
-	}
 	npuLock.Lock()
 	defer npuLock.Unlock()
 	if npuLock.f != nil {
@@ -63,7 +61,7 @@ func lockNPU(ctx context.Context) error {
 			if who == "" {
 				who = "another process"
 			}
-			fmt.Fprintf(os.Stderr, "waiting for the Neural Engine: %s is using it (%s=off to skip the wait)\n", who, npuLockEnv)
+			fmt.Fprintf(os.Stderr, "waiting for the Neural Engine: %s is using it\n", who)
 			told = true
 		}
 		select {

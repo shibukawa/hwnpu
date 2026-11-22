@@ -71,7 +71,7 @@ go run ./cmd/hwnpu-chat -m plamo3translate:8b "The meeting has been rescheduled 
 確かめること (new-model-checklist 4.1 節):
 
 - **書き出しのピークのメモリ**: 17 GB の bf16 のチェックポイントから書き出す。`/usr/bin/time -v` の Maximum resident set size。16 GB の機械で足りるか (Qwen3.6 の 40 層は 53.8 GB だった)。足りなければ models.yaml の `machine` か書き出しを見直す
-- **コマンドの 2 秒**: 2B は 1024 トークンの塊を 3 コマンドで、位置 7168 から 10.5 秒 ([amd-llm](design/amd-llm.md))。8B は計算が約 3.5 倍。`ERT_CMD_STATE_TIMEOUT` が出たら、書き出しの `SCRATCHPAD_WORDS` を下げてコマンドを分ける。`HWNPU_IRON_TIMING=1` で一番長いコマンド
+- **コマンドの 2 秒**: 2B は 1024 トークンの塊を 3 コマンドで、位置 7168 から 10.5 秒 ([amd-llm](design/amd-llm.md))。8B は計算が約 3.5 倍。`ERT_CMD_STATE_TIMEOUT` が出たら、書き出しの `SCRATCHPAD_WORDS` を下げてコマンドを分ける。`HWNPU_DEV=iron.timing=1` で一番長いコマンド
 - **デバイスのヒープ (64 MiB)**: `CREATE_BO: invalid argument` か `ENOSPC` が出たら、制御コードが載っていない ([amd-llm](design/amd-llm.md))
 - **固定メモリ**: プロセスの `/dev/accel/accel0` の写像 (`smaps`) + RSS の最大 (new-model-checklist 11.2 の例のスクリプト)。見積もりは約 6.5 GB。models.yaml の `memory.amd` を実測に
 - **速さ**: デコードは 150〜200 ms の見込み (2B の q4 は 89 ms)。`ironlm -forced` の ms/ステップ

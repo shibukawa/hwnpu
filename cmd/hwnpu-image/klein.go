@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -304,7 +306,7 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspec
 			xs[i-lo] = p.Noise(s)
 		}
 		sg := sig
-		if os.Getenv("HWNPU_KLEIN_DECODE") != "" { // a check of the VAE alone: --noise holds final latents
+		if devenv.On("klein.decode") { // a check of the VAE alone: --noise holds final latents
 			sg = sig[:1]
 		}
 		name := "denoising"

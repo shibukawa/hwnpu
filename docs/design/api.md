@@ -200,7 +200,7 @@ records the result in `Graph.Placement`.
 | Core ML | `MLComputePlan`: every op's preferred device must be the Neural Engine. An estimate, not a runtime guarantee |
 | Core AI | its compile cache: the MPSGraph delegate's manifest (`mps.fullyPlacedOnANE`; method `coreai-cache-manifest`) |
 | Level Zero | supported-layer query (`levelzero-query-network`); the NPU plugin does not fall back, so a successful compile means it runs on the NPU |
-| OpenVINO | verified only with `HWNPU_OV_DEVICE=NPU` |
+| OpenVINO | verified only with `HWNPU_DEV=ov.device=NPU` |
 | AMD | xclbin / ELF are NPU-only: always satisfied |
 
 ## Power

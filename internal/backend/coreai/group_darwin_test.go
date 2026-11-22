@@ -188,7 +188,7 @@ func TestResolveExports(t *testing.T) {
 	}
 }
 
-// A group whose bytecode was cut (DropBytecodeEnv) and whose Core AI entry is gone is lowered
+// A group whose bytecode was cut (HWNPU_DEV=coreai.drop-bytecode) and whose Core AI entry is gone is lowered
 // again, not opened (parsing a cut bytecode aborts).
 func TestResolveCutGroup(t *testing.T) {
 	t.Setenv("HWNPU_CACHE", t.TempDir())

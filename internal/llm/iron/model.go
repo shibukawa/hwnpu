@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/f32"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
@@ -613,9 +615,9 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		}
 		// (a version on one resident array says it needs none: there the barrier's change of
 		// hardware context puts the array's whole configuration back, 2.4 ms a step.
-		// HWNPU_IRON_BARRIER=1 or 0 overrides the manifest, to measure.)
+		// HWNPU_DEV=iron.barrier=1 or 0 overrides the manifest, to measure.)
 		barrier := !v.m.NoStepBarrier
-		if e := os.Getenv("HWNPU_IRON_BARRIER"); e != "" {
+		if e := devenv.Value("iron.barrier"); e != "" {
 			barrier = e != "0"
 		}
 		if barrier {
@@ -731,9 +733,9 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 			return err
 		}
 	}
-	// HWNPU_IRON_TIMING: each command waited for and timed alone. Experts in places (pool.go):
+	// HWNPU_DEV=iron.timing: each command waited for and timed alone. Experts in places (pool.go):
 	// each command waited for, and a fed one's choices routed to the places before it runs
-	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	timing := devenv.On("iron.timing")
 	var routed map[int]*fedRoute
 	if m.pool != nil && v == m.decode {
 		routed = map[int]*fedRoute{}
@@ -741,9 +743,9 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 			routed[m.routes[i].command] = &m.routes[i]
 		}
 	}
-	// HWNPU_IRON_SYNC=1: each command waited for as with places, to measure what that costs
+	// HWNPU_DEV=iron.sync=1: each command waited for as with places, to measure what that costs
 	hosted := m.router != nil && v == m.decode
-	syncEach := routed != nil || hosted || os.Getenv("HWNPU_IRON_SYNC") == "1"
+	syncEach := routed != nil || hosted || devenv.On("iron.sync")
 	for k, run := range v.runs {
 		if hosted {
 			if l, ok := m.router.cmd[k]; ok {
@@ -866,7 +868,7 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		return nil, errReleased
 	}
 	rows := len(ids)
-	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	timing := devenv.On("iron.timing")
 	if err := m.splitKV(); err != nil { // the decode steps' rows into the keys and values the chunk reads
 		return nil, err
 	}

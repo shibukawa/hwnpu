@@ -222,7 +222,7 @@ LFM2-8B-A1B が hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動�
 
 gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2 tok/s ほど)。時間の大半は重みの要素ごとの演算 (cast、+128、floor_div、×16、−)。int8 の 1 層 1.7 ms も cast が律速と見られる (Neural Engine の要素ごとの演算は約 16〜26 G 要素/s)。
 
-値: Core AI の CPU (`HWNPU_COREAI_UNITS=cpu`) では正しい (cos 0.9998) が、Neural Engine では NaN。取り出しだけのプログラムは Neural Engine で全部の int8 について正しい (`aicheck fdiv`)。`mod` を入れたプログラムは GPU に回る。どこで無限大になるかは未調査 (`HWNPU_AILOWER_CUT` で切り分ける)。
+値: Core AI の CPU (`HWNPU_COREAI_UNITS=cpu`) では正しい (cos 0.9998) が、Neural Engine では NaN。取り出しだけのプログラムは Neural Engine で全部の int8 について正しい (`aicheck fdiv`)。`mod` を入れたプログラムは GPU に回る。どこで無限大になるかは未調査 (`HWNPU_DEV=ailower.cut` で切り分ける)。
 
 ### gpt-oss-20b の専門家を 4 ビットで Neural Engine に (A の道、M3、2026-11-19、`aicheck mx`)
 
@@ -249,7 +249,7 @@ M2 でも LFM2-8B-A1B (専門家を Neural Engine、拡大は gather_nd) が動�
 | 初回 (取得・変換・コンパイル) | 17.5 分、最大 12.9 GB | — |
 | 2 回目以降の読み込み | 3.1〜3.2 s、8.0 GB | — |
 
-M2 のプロンプトの時間のばらつきは**メモリ不足**による (M2 での `HWNPU_MOE_DEBUG=1` と `vm_stat`)。呼び出しの数は同じ (36,410 層行) で、遅い回ほど専門家の 1 層行が長く (0.42 → 0.54 → 1.21 ms)、ページの展開が多い (0.5 M → 1.53 M)。同じ配列のまま 2 度目を呼ぶと 1.26〜1.32 ms で変わらず、延びるのは結び付けた最初の呼び出しだけ (2.32 → 3.97 ms)。スワップ 5.5〜7.75 GB 使用、圧縮に約 6.6 GB。熱 (`pmset -g therm` に記録なし) とほかの Neural Engine の利用 (2 度目も遅くなるはず) ではない。`memory_pressure` は空き 68〜75% と出て判断に使えない。
+M2 のプロンプトの時間のばらつきは**メモリ不足**による (M2 での `HWNPU_DEV=moe.time` と `vm_stat`)。呼び出しの数は同じ (36,410 層行) で、遅い回ほど専門家の 1 層行が長く (0.42 → 0.54 → 1.21 ms)、ページの展開が多い (0.5 M → 1.53 M)。同じ配列のまま 2 度目を呼ぶと 1.26〜1.32 ms で変わらず、延びるのは結び付けた最初の呼び出しだけ (2.32 → 3.97 ms)。スワップ 5.5〜7.75 GB 使用、圧縮に約 6.6 GB。熱 (`pmset -g therm` に記録なし) とほかの Neural Engine の利用 (2 度目も遅くなるはず) ではない。`memory_pressure` は空き 68〜75% と出て判断に使えない。
 
 - `HWNPU_MOE_WIRE=1`: 専門家の配列を mlock で固定する (既定は off。16 GB で 7.2 GB 固定すると他のアプリが押し出される。メモリが足りない 16 GB の機械で勧める)。M2 (1,624 トークン、スワップ 7.9 GB 使用) で 3 回ずつ交互に: WIRE 13.2 / 13.1 / 12.7 s (展開 0.07〜0.31 M)、なし 14.4 / 13.9 / 13.6 s (0.42〜0.65 M)。以前の mlock の試しも 13.4〜14.8 s と遅い回が出なかった。M3 では 9.2〜9.6 → 8.7 s、生成 15.3 → 16.1 tok/s
 - 結び付けは費用ではない: 層と専門家ごとに request を持って配列を一度だけ結び付けても (試して外した)、メモリに余裕があれば M2 も M3 も同じ (M2 14.5 s、0.38〜0.39 ms の層行。M3 9.2〜9.3 s)。「最初の呼び出し 2.32 ms、2 度目 1.26 ms」は遅い回でだけ開く差で、圧縮されたページの展開だった。M2 の最良 14.5 s と M3 の 8.7〜9.2 s の差はチップの差 (生成と同じ割合)
@@ -335,7 +335,7 @@ grep errorMsg /tmp/anec_stream.log | grep -v '""' | sort | uniq -c
 ### 3.4 残っている小さなこと
 
 - `anec.mx_dequant` (MXFP4) が新しい世代で使えれば、gpt-oss の専門家を 4 bit のまま入力にできるかもしれない (M3 は MX の定数も入力も Neural Engine に載らなかった。1b の最後)
-- 4 ビットを int8 に 2 つ詰めて `floor_div` で取り出す形が Neural Engine で NaN になる所 (`HWNPU_AILOWER_CUT` で切り分ける。速さで負けるので急がない)
+- 4 ビットを int8 に 2 つ詰めて `floor_div` で取り出す形が Neural Engine で NaN になる所 (`HWNPU_DEV=ailower.cut` で切り分ける。速さで負けるので急がない)
 - 結び付けの費用が層の数で増える理由 (Core AI の覚えている配列の上限か、16 GB の機械のメモリ圧か)。24 GB 以上の機械で比べたい
 
 ## 4. 注意

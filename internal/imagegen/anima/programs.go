@@ -14,6 +14,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/ovcpu"
@@ -365,7 +366,7 @@ func openProgram(ctx context.Context, dev *hwnpu.Device, dir, backend, name stri
 		if py == "" {
 			return nil, errors.New("anima: an Intel export runs without the NPU on OpenVINO's CPU, which needs HWNPU_OV_PYTHON")
 		}
-		return &ovProgram{py: py, xml: filepath.Join(dir, name), precision: os.Getenv("HWNPU_OV_PRECISION")}, nil
+		return &ovProgram{py: py, xml: filepath.Join(dir, name), precision: devenv.Value("ov.precision")}, nil
 	}
 	p, err := runner.Open(ctx, dev, filepath.Join(dir, name))
 	if err != nil {

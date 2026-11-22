@@ -126,7 +126,7 @@ type Host struct {
 	// zeros in place of the biases of experts that have none (hostLayer.gb, db nil)
 	zeroGate, zeroDown []float32
 
-	// for HWNPU_MOE_DEBUG: the bytes of the experts a row ran, and those of them not in memory
+	// for HWNPU_DEV's moe.time: the bytes of the experts a row ran, and those of them not in memory
 	// when it chose them (read from the disk for it)
 	// reads: the experts are not all wired, and a run reads the ones it chose that are not in
 	// memory whole from the file before it touches them (readIn)
@@ -136,8 +136,8 @@ type Host struct {
 	// the rows' runs whose experts were all in memory and the others', and their time (ns)
 	dbgIn, dbgOut, dbgInTime, dbgOutTime atomic.Int64
 	dbgRead                              atomic.Int64 // the bytes readChosen read
-	times                                *runTimes    // HWNPU_MOE_DEBUG's time: a row's layers by what their experts were
-	trace                                *traceFile   // HWNPU_MOE_DEBUG's trace=FILE: every row's experts
+	times                                *runTimes    // HWNPU_DEV's moe.time: a row's layers by what their experts were
+	trace                                *traceFile   // HWNPU_DEV's moe.trace=FILE: every row's experts
 }
 
 // OpenHost maps the experts of rec, all of them wired when they fit (Host.wiring).

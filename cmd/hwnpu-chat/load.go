@@ -4,13 +4,14 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -19,7 +20,7 @@ import (
 
 // loadFlags are where the models are and how they are made ready, for every command that runs one.
 type loadFlags struct {
-	Backend     string        `enum:",coreai,intel,levelzero,openvino" default:"" help:"The NPU to convert for and run on: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one; the models converted for it from their checkpoints), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
+	Backend     string        `enum:",coreai,intel,levelzero,openvino" default:"" help:"The NPU to convert for and run on: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one; the models converted for it from their checkpoints), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_DEV=ov.device, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
 	Cache       string        `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	PromptCache string        `placeholder:"DIR" help:"Keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)."`
 	Idle        time.Duration `default:"5m" help:"AMD's NPU: give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy. A mixture of experts whose experts run on the CPU: keep only the core ones wired after this long."`

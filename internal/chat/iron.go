@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
+
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
@@ -45,9 +47,9 @@ func (s *ironSession) Q() int { return s.m.Manifest.Config.PrefillChunk }
 
 // Qs: the check of drafts' rows first when the export has it (iron_export_lm.py --verify), so
 // that a generation checks that many less one drafts a call (Engine.Draft); else the decode
-// step's 1. HWNPU_IRON_DRAFTS=0 leaves the check unused.
+// step's 1. HWNPU_DEV=iron.drafts=0 leaves the check unused.
 func (s *ironSession) Qs() []int {
-	if r := s.m.VerifyRows(); r > 1 && os.Getenv("HWNPU_IRON_DRAFTS") != "0" {
+	if r := s.m.VerifyRows(); r > 1 && !devenv.IsOff("iron.drafts") {
 		return []int{r, s.Q()}
 	}
 	return []int{1, s.Q()}
@@ -410,7 +412,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		return fail(err)
 	}
 	// the experts a mixture of experts runs, counted as the host's experts count them
-	// (experts.Placement.Usage, HWNPU_MOE_DEBUG=usage=FILE): the same files and tools
+	// (experts.Placement.Usage, HWNPU_DEV=moe.usage=FILE): the same files and tools
 	if L, E := m.ExpertsShape(); L > 0 {
 		dbg, _ := experts.DebugOpt("usage")
 		for _, p := range []string{c.Experts.Usage, dbg} {

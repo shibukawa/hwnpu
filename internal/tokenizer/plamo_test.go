@@ -71,19 +71,19 @@ func TestPlamoTiny(t *testing.T) {
 
 // TestPlamo3 checks PLaMo 3's tokenizer against the ids Hugging Face gave
 // (testdata/plamo-3-translate-2b.json, from tools/ref/tokenizer_golden.py). It needs
-// HWNPU_PLAMO3_DIR with tokenizer.jsonl and tokenizer_config.json; HWNPU_PLAMO3_GOLDEN names
+// HWNPU_TEST_PLAMO3_DIR with tokenizer.jsonl and tokenizer_config.json; HWNPU_TEST_PLAMO3_TOKENS_REF names
 // another golden file (one with --random cases).
 func TestPlamo3(t *testing.T) {
-	dir := os.Getenv("HWNPU_PLAMO3_DIR")
+	dir := os.Getenv("HWNPU_TEST_PLAMO3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_PLAMO3_DIR not set")
+		t.Skip("HWNPU_TEST_PLAMO3_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	golden := "testdata/plamo-3-translate-2b.json"
-	if g := os.Getenv("HWNPU_PLAMO3_GOLDEN"); g != "" {
+	if g := os.Getenv("HWNPU_TEST_PLAMO3_TOKENS_REF"); g != "" {
 		golden = g
 	}
 	raw, err := os.ReadFile(golden)

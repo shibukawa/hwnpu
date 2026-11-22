@@ -13,13 +13,13 @@ import (
 	"github.com/shibukawa/hwnpu/internal/types"
 )
 
-// Runs each of the first HWNPU_LFM3_PERLAYER layers (default 8) alone on the Neural Engine, fed
+// Runs each of the first HWNPU_TEST_LFM3_PERLAYER layers (default 8) alone on the Neural Engine, fed
 // with the reference hidden state entering it, and reports that layer's own fp16 error, so that
 // errors do not accumulate across layers and the layer types can be compared.
 func TestPerLayer(t *testing.T) {
-	dir := os.Getenv("HWNPU_LFM3_DIR")
+	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_LFM3_DIR not set")
+		t.Skip("HWNPU_TEST_LFM3_DIR not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)
@@ -38,8 +38,8 @@ func TestPerLayer(t *testing.T) {
 	ids := readI32(t, filepath.Join(dir, "ref_bf16.ids.bin"))
 	seq, d := len(ids), cfg.HiddenSize
 	hidden := readF32(t, filepath.Join(dir, "ref_bf16.hidden.bin"))
-	n := envInt("HWNPU_LFM3_PERLAYER", 8)
-	format := os.Getenv("HWNPU_LFM3_FORMAT")
+	n := envInt("HWNPU_TEST_LFM3_PERLAYER", 8)
+	format := os.Getenv("HWNPU_TEST_LFM3_FORMAT")
 	if format == "" {
 		format = "fp16"
 	}
@@ -61,7 +61,7 @@ func TestPerLayer(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-		inF, y, err := Build(b, cfg, w, Options{Seq: seq, Start: i, Layers: 1, Format: format, Group: envInt("HWNPU_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_LFM3_COLBLOCK", 0), ConvMode: os.Getenv("HWNPU_LFM3_CONV"), Quant: os.Getenv("HWNPU_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_LFM3_POSTSCALE", 1))})
+		inF, y, err := Build(b, cfg, w, Options{Seq: seq, Start: i, Layers: 1, Format: format, Group: envInt("HWNPU_TEST_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_TEST_LFM3_COLBLOCK", 0), ConvMode: os.Getenv("HWNPU_TEST_LFM3_CONV"), Quant: os.Getenv("HWNPU_TEST_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_TEST_LFM3_POSTSCALE", 1))})
 		if err != nil {
 			t.Fatal(err)
 		}

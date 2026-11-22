@@ -882,7 +882,7 @@ def prompt_attention_profile(model, pipelines: int) -> None:
 def install_command_per_step(out: Path) -> None:
     """Cut a prompt chunk's full ELF into a command a step (each runs on its own, as the plan's
     commands queue them), and write each command's operator into out/steps.json, so that
-    HWNPU_IRON_TIMING's times say which operator they are. The decode step (no input tensor
+    HWNPU_DEV=iron.timing's times say which operator they are. The decode step (no input tensor
     beyond its token) is left as it is."""
     import dataclasses
 
@@ -949,7 +949,7 @@ def main(argv=None) -> int:
                          "qwen35moe, not measured with more; 1 is IRON's default without a profile, which left a "
                          "chunk's attention on one pipeline)")
     ap.add_argument("--command-per-step", action="store_true",
-                    help="for measuring: the prompt chunk a command per step (HWNPU_IRON_TIMING times each), "
+                    help="for measuring: the prompt chunk a command per step (HWNPU_DEV=iron.timing times each), "
                          "the steps' operators by command in OUT/steps.json")
     ap.add_argument("--expert-places", type=int, default=None, metavar="N",
                     help="gpt-oss and qwen35moe: N places of an expert's tables a layer (gpt-oss: a multiple of 4, at "
