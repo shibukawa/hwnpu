@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
 // A load of a name no definition has fails with the error of resolving it, before any device
@@ -16,8 +19,7 @@ import (
 func TestEngineLoadUnknown(t *testing.T) {
 	t.Setenv("HWNPU_CACHE", t.TempDir())
 	e := &Engine{Log: io.Discard}
-	e.models, e.aliases = map[string]*held{}, map[string]string{}
-	e.relay.base = io.Discard
+	e.init()
 	dir := shortDir(t)
 	ln, err := ListenUnix(filepath.Join(dir, "e.sock"))
 	if err != nil {
@@ -43,5 +45,41 @@ func TestEngineLoadUnknown(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("completion without a model: %s", resp.Status)
+	}
+}
+
+// On AMD's NPU a load of another model closes the IRON model held, once the requests using it
+// have ended; a request that comes meanwhile does not get it.
+func TestEvictIRONWaitsForRequests(t *testing.T) {
+	e := &Engine{Log: io.Discard}
+	e.init()
+	a := &held{e: &chat.Engine{}, model: chat.Model{Name: "a"}, iron: true}
+	mac := &held{e: &chat.Engine{}, model: chat.Model{Name: "mac"}}
+	e.models["a"], e.models["mac"] = a, mac
+	e.aliases["a@0"], e.aliases["chat@0"], e.aliases["mac@0"] = "a", "a", "mac"
+	if e.lookup("a@0") != a {
+		t.Fatal("lookup")
+	}
+	done := make(chan struct{})
+	go func() {
+		e.evictIRON()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("closed with a request going on")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if e.lookup("a@0") != nil || e.lookup("chat@0") != nil {
+		t.Fatal("a new request got the model being closed")
+	}
+	e.release(a)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not closed after its request ended")
+	}
+	if e.lookup("mac@0") != mac || len(e.models) != 1 || len(e.aliases) != 1 {
+		t.Fatalf("models %v, aliases %v", e.models, e.aliases)
 	}
 }

@@ -1,4 +1,4 @@
-//go:build !darwin
+//go:build !darwin && !linux
 
 package daemon
 
@@ -7,16 +7,22 @@ import (
 	"io"
 )
 
-var errService = errors.New("hwnpud install: only the Mac's LaunchAgent so far (systemd's user units come with Linux; docs/design/hwnpud.md); run hwnpud serve by hand")
+var errService = errors.New("hwnpud install: only the Mac's LaunchAgent and systemd's user units; run hwnpud serve by hand")
 
-// Install is the Mac's for now.
+// Install is the Mac's and Linux's.
 func Install(string, io.Writer) error { return errService }
 
-// Uninstall is the Mac's for now.
+// Uninstall is the Mac's and Linux's.
 func Uninstall(io.Writer) error { return errService }
 
-// Installed is the Mac's for now.
+// Installed is the Mac's and Linux's.
 func Installed() string { return "" }
 
-// PlistPath is the Mac's for now.
-func PlistPath() string { return "" }
+// ServiceFile is the Mac's and Linux's.
+func ServiceFile() string { return "" }
+
+// LogWhere is the supervisor's standard error here.
+func LogWhere() string { return "hwnpud serve's standard error" }
+
+// ServiceEnviron is the Mac's and Linux's.
+func ServiceEnviron() []string { return nil }

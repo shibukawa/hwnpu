@@ -7,6 +7,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,11 @@ import (
 // commands stuck behind them). OpenDevice takes an exclusive lock on a file for the Core ML
 // backend and keeps it while the process lives (the kernel drops it when the process ends); a
 // second process waits for it, saying which process holds it. HWNPU_NPU_LOCK=off skips it.
+//
+// AMD's NPU takes the same lock for a chat model's IRON export (chat's loadIRON): one chat model
+// uses all of its hardware contexts, a second process's CREATE_HWCTX right after another's
+// contexts ended fails now and then, and hwnpud's engine holds the NPU for every client
+// (docs/design/hwnpud.md).
 const npuLockEnv = "HWNPU_NPU_LOCK"
 
 var npuLock struct {
@@ -63,7 +69,7 @@ func lockNPU(ctx context.Context) error {
 			if who == "" {
 				who = "another process"
 			}
-			fmt.Fprintf(os.Stderr, "waiting for the Neural Engine: %s is using it (%s=off to skip the wait)\n", who, npuLockEnv)
+			fmt.Fprintf(os.Stderr, "waiting for the %s: %s is using it (%s=off to skip the wait)\n", npuName(), who, npuLockEnv)
 			told = true
 		}
 		select {
@@ -159,7 +165,15 @@ func settle(ctx context.Context, wired func() (int64, bool), base int64, poll ti
 	return n, looks, true
 }
 
-// LockNPU takes the Neural Engine's lock as OpenDevice does, for a tool that opens the device
-// by other means (hwnpu-dev probe cache, whose measurements another process compiling for the
-// Neural Engine would spoil). It is held until the process ends.
+// npuName names the NPU the lock is for in what a waiting process says.
+func npuName() string {
+	if runtime.GOOS == "darwin" {
+		return "Neural Engine"
+	}
+	return "NPU"
+}
+
+// LockNPU takes the NPU's lock as OpenDevice does, for what opens the device by other means:
+// hwnpu-dev probe cache, whose measurements another process compiling for the Neural Engine
+// would spoil, and the chat models' IRON exports on AMD. It is held until the process ends.
 func LockNPU(ctx context.Context) error { return lockNPU(ctx) }

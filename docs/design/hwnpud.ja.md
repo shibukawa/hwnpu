@@ -2,7 +2,7 @@
 
 [English](hwnpud.md)
 
-状態: Mac で段取りの 1 を実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
+状態: Mac と、AMD の NPU の Linux で段取りの 1 を実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
 キャッシュを持ち、プログラムを読み込んで動かす。hwnpu のコマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) と
 `ai` のパッケージで作ったアプリは Unix ドメインソケットでこれにつなぐ。自分の実行に要るものを渡し、返ってきたものを描くだけで、
 自分のプロセスで NPU を動かすこともモデルを管理することもしなくなる。Windows は実機で調べてから。
@@ -29,6 +29,25 @@ Mac で段取りの 1 (`cmd/hwnpud`、`internal/daemon`):
   `HWNPU_MODEL_ALLOWLIST` は hwnpud の方針を狭める
 - M3: PLaMo 3 Translate 2B のプログラムは `hwnpud` の名前で初回 22 秒 (Core AI の項目 2.5 GB)。次の実行は
   モデルがエンジンに残っていて、始めから終わりまで 0.6 秒
+
+AMD の NPU の Linux でも、同じ監督役とエンジン:
+
+- `hwnpud install` は systemd のユーザーのユニット `~/.config/systemd/user/hwnpud.socket`
+  (`ListenStream=$XDG_RUNTIME_DIR/hwnpud.sock`、モード 0600、`FileDescriptorName=hwnpud`) と `hwnpud.service`
+  (`ExecStart=… serve`、`KillMode=mixed`: エンジンは監督役が自分で止める) を書き、`systemctl --user enable --now hwnpud.socket`
+  する。監督役は `LISTEN_FDS` からソケットを受け取り (この変数はエンジンに渡さない)、相手の uid を `SO_PEERCRED` で確かめる。
+  ログはジャーナル (`journalctl --user -u hwnpud`)。systemd のユーザーのマネージャーは `~/.config/environment.d` の変数を
+  サービスに渡すので、`install` が警告するのはそこにも `.env` にもない変数だけ
+- AMD の NPU ではエンジンはチャットのモデルを一度に 1 つ持つ: 1 つのモデルがハードウェアコンテキストを全部使うので、
+  別のモデルの読み込みは持っているモデルを、そのリクエストが終わってから閉じる (その間の新しいリクエストには渡さない)。
+  1 つのモデルへのリクエストは順番に動く (`chat.Engine` は生成を一度に 1 つ)。順は来た順
+- NPU のロック (`neural-engine.lock`) は AMD でも、チャットのモデルの IRON の書き出しを読むときに取る (hwnpud のエンジンでも、
+  自分のプロセスで動く `hwnpu-chat` でも)。`HWNPU_DAEMON=off` のクライアントは `waiting for the NPU: process N (hwnpud) is using it`
+  と出して、エンジンが待ち時間で終わるのを待つ。AMD の画像と音声はまだ取らない (段取りの 4)
+- `hwnpud status` はエンジンの NPU のバッファ (固定される) を出す (`/proc/self/fdinfo` の `drm-total-memory`、`mem.DRMMemory`)
+- Ryzen AI 9 365 (`hwnpud install` のユニットと、別のソケットで `systemd-socket-activate`): LFM3-1.7B の書き出しは初回 2.6 秒で読み、
+  17 tok/s で答える。次の実行は読み込みなしで始めから終わりまで 3.1 秒 (固定 1.62 GiB)。3 つのクライアントを同時に出すと
+  1 つずつ順に答える (12 秒、24 秒、43 秒)。Qwen3.5-0.8B を読むと先に LFM3-1.7B を閉じる (その後 1.02 GiB)。`hwnpud stop` でサービスが終わり、次の接続でまた起きる
 
 ## なぜ
 
@@ -181,8 +200,8 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
   道連れにしてはならない。監督役はソケット、列、モデルの管理を持ち、NPU に触らない。エンジンは同じ実行ファイルを起こし直した
   もの (`hwnpud engine`) なので、Mac では名前が同じで同じ Core AI のキャッシュに当たる。エンジンはいつも 1 つで、落ちたら
   監督役が新しく起こし、動いていたリクエストは失敗にする。NPU のメモリはプロセスとともに消える
-- **エンジンは NPU にプログラムがある間だけ NPU のロックを持つ**: Mac は今のとおり `neural-engine.lock`、Linux にも同じロックを
-  足す (今はない)。使われずに降ろしたら放すので、自分のプロセスで NPU を開く道具 (`hwnpu-dev probe`、`aicheck`、IRON の道具) も
+- **エンジンは NPU にプログラムがある間だけ NPU のロックを持つ**: Mac は今のとおり `neural-engine.lock`、Linux にも同じロック
+  (今はチャットのモデルの IRON の書き出しが取る)。使われずに降ろしたら放すので、自分のプロセスで NPU を開く道具 (`hwnpu-dev probe`、`aicheck`、IRON の道具) も
   順番を待って動く
 
 ## アプリをまたぐ割り振り

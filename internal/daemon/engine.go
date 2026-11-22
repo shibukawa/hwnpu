@@ -26,8 +26,12 @@ import (
 )
 
 // Engine loads the chat models and runs them, behind the supervisor. It is the only process of
-// hwnpud on the NPU: it takes the NPU's lock with its first model (llm.OpenDevice) and gives it
-// back when it exits, after Idle without a request.
+// hwnpud on the NPU: it takes the NPU's lock with its first model (llm.OpenDevice, and the IRON
+// export's load on AMD) and gives it back when it exits, after Idle without a request.
+//
+// The requests of one model take their turns on it (chat.Engine runs one generation at a time).
+// On AMD's NPU one chat model uses every hardware context, so the engine holds one at a time:
+// a load of another closes the one it holds once its requests have ended.
 type Engine struct {
 	// Idle is how long it waits without a request before it closes its models and exits; 0 never.
 	Idle time.Duration
@@ -36,6 +40,7 @@ type Engine struct {
 
 	load    sync.Mutex // one load at a time; the next waits
 	mu      sync.Mutex
+	freed   *sync.Cond        // a held model's requests ended (held.refs fell), on mu
 	models  map[string]*held  // by the model's name
 	aliases map[string]string // what a load named (and the memory) → the model's name
 	relay   relay             // where the models' logs go: the load's while one goes on
@@ -48,6 +53,8 @@ type held struct {
 	e     *chat.Engine
 	model chat.Model
 	info  ModelInfo
+	refs  int  // the requests using it, on Engine.mu
+	iron  bool // an IRON export, on AMD's NPU
 }
 
 // relay is a writer whose destination changes: the load's stream while a load goes on, the
@@ -86,8 +93,7 @@ func (e *Engine) Run(ctx context.Context, socket string) error {
 	if e.Log == nil {
 		e.Log = os.Stderr
 	}
-	e.models, e.aliases = map[string]*held{}, map[string]string{}
-	e.relay.base = e.Log
+	e.init()
 	if err := chat.LoadUserModels("", e.Log); err != nil {
 		return err
 	}
@@ -123,6 +129,49 @@ func (e *Engine) Run(ctx context.Context, socket string) error {
 		return nil
 	}
 	return err
+}
+
+func (e *Engine) init() {
+	e.models, e.aliases = map[string]*held{}, map[string]string{}
+	e.freed = sync.NewCond(&e.mu)
+	e.relay.base = e.Log
+}
+
+// release ends a request's use of h.
+func (e *Engine) release(h *held) {
+	e.mu.Lock()
+	h.refs--
+	e.mu.Unlock()
+	e.freed.Broadcast()
+}
+
+// evictIRON closes the IRON models held, for another to load on AMD's NPU: they are taken out
+// first, so that no new request gets them, and closed once their requests have ended. Its caller
+// holds e.load.
+func (e *Engine) evictIRON() {
+	e.mu.Lock()
+	var out []*held
+	for name, h := range e.models {
+		if h.iron {
+			out = append(out, h)
+			delete(e.models, name)
+		}
+	}
+	for key, name := range e.aliases {
+		if _, ok := e.models[name]; !ok {
+			delete(e.aliases, key)
+		}
+	}
+	for _, h := range out {
+		for h.refs > 0 {
+			e.freed.Wait()
+		}
+	}
+	e.mu.Unlock()
+	for _, h := range out {
+		fmt.Fprintf(e.Log, "hwnpud engine: closing %s for the next model (AMD's NPU holds one chat model)\n", h.model.Name)
+		h.e.Close()
+	}
 }
 
 func (e *Engine) closeAll() {
@@ -162,7 +211,9 @@ func (e *Engine) status(w http.ResponseWriter, r *http.Request) {
 	}
 	e.mu.Unlock()
 	if b, ok := mem.NPUWired(); ok {
-		st.NPUBytes = int64(b)
+		st.NPUBytes = b
+	} else if b, ok := mem.DRMMemory(); ok {
+		st.NPUBytes = b
 	}
 	// this request is one: the idle time is since the one before
 	st.Idle = time.Since(time.Unix(0, e.last.Load())).Round(time.Second).String()
@@ -214,18 +265,20 @@ func (e *Engine) serveLoad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := h.info
+	e.release(h)
 	f.send(LoadEvent{Model: &info})
 }
 
 // loadModel returns the model a load names, loading it unless the engine holds it; its log goes
 // to log (and the service's) while it loads. A model the request's policy refuses is an error,
-// held or not.
+// held or not. The caller releases the model (Engine.release) when its request ends.
 func (e *Engine) loadModel(ctx context.Context, req LoadRequest, log io.Writer) (*held, error) {
 	h, err := e.loadAny(ctx, req, log)
 	if err != nil {
 		return nil, err
 	}
 	if err := chat.AllowedAlso(h.model, req.Allowlist); err != nil {
+		e.release(h)
 		return nil, err
 	}
 	return h, nil
@@ -245,11 +298,11 @@ func (e *Engine) loadAny(ctx context.Context, req LoadRequest, log io.Writer) (*
 		e.relay.set(log, req.Terminal)
 		defer e.relay.set(nil, false)
 	}
-	m, ce, err := loadChat(ctx, req, &e.relay, func(name string) *held {
+	m, ce, iron, err := loadChat(ctx, req, &e.relay, func(name string) *held {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		return e.models[name]
-	})
+	}, e.evictIRON)
 	if err != nil {
 		return nil, err
 	}
@@ -257,9 +310,10 @@ func (e *Engine) loadAny(ctx context.Context, req LoadRequest, log io.Writer) (*
 	defer e.mu.Unlock()
 	if h, ok := e.models[m.Name]; ok { // held already under another name
 		e.aliases[key] = m.Name
+		h.refs++
 		return h, nil
 	}
-	h := &held{e: ce, model: m, info: ModelInfo{Name: m.Name, Context: ce.Context(), Images: ce.Images(), Audio: ce.Audio(),
+	h := &held{e: ce, model: m, iron: iron, refs: 1, info: ModelInfo{Name: m.Name, Context: ce.Context(), Images: ce.Images(), Audio: ce.Audio(),
 		Translator: ce.Template == chat.Plamo3, NoThink: ce.NoThink, OnNPU: ce.OnNPU(), Device: ce.DeviceName()}}
 	e.models[m.Name] = h
 	e.aliases[key] = m.Name
@@ -271,7 +325,10 @@ func (e *Engine) lookup(key string) *held {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if name, ok := e.aliases[key]; ok {
-		return e.models[name]
+		if h := e.models[name]; h != nil {
+			h.refs++
+			return h
+		}
 	}
 	return nil
 }
@@ -314,6 +371,7 @@ func (e *Engine) completions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	defer e.release(h)
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	e.server(h, r).Handler().ServeHTTP(w, r)
 }
@@ -333,33 +391,36 @@ func chatBackend() string {
 
 // loadChat makes ready and loads the chat model req names, as hwnpu-chat does with its default
 // flags: the model's definition for the memory it runs as. holding gives the model of a name
-// already held, which is not loaded twice.
-func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(string) *held) (chat.Model, *chat.Engine, error) {
+// already held, which is not loaded twice. On AMD's NPU (an IRON export, iron) evict closes the
+// IRON models held before it loads another: one chat model takes all of the NPU's hardware
+// contexts.
+func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(string) *held, evict func()) (chat.Model, *chat.Engine, bool, error) {
 	backend := chatBackend()
 	if backend == llm.BackendCoreAI {
 		if _, _, err := llm.FindDevice(ctx, backend); err != nil {
-			return chat.Model{}, nil, fmt.Errorf("hwnpud runs on Apple's Neural Engine through Core AI, which needs macOS 27: %w", err)
+			return chat.Model{}, nil, false, fmt.Errorf("hwnpud runs on Apple's Neural Engine through Core AI, which needs macOS 27: %w", err)
 		}
 	}
 	root := cache.Root()
 	promptDir := chat.PromptStore("", root)
 	if iron, err := chat.AMDExport(ctx, req.Model, backend, log); err != nil {
-		return chat.Model{}, nil, err
+		return chat.Model{}, nil, false, err
 	} else if iron != "" {
 		m, _ := chat.LookupFor(req.Model)
 		m.Name = cmp.Or(m.Name, filepath.Base(iron))
 		if err := chat.AllowedAlso(m, req.Allowlist); err != nil {
-			return m, nil, err
+			return m, nil, true, err
 		}
 		if h := holding(m.Name); h != nil {
-			return m, h.e, nil
+			return m, h.e, true, nil
 		}
+		evict()
 		c := chat.Config{IRON: iron, Log: log, PromptDir: promptDir, Idle: DefaultIdle}
 		if m.Name != "" {
 			c.Experts = placement(m)
 		}
 		ce, err := chat.Load(ctx, c)
-		return m, ce, err
+		return m, ce, true, err
 	}
 	gb := req.Memory
 	if _, tag, tagged := strings.Cut(req.Model, ":"); tagged {
@@ -369,36 +430,36 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 	}
 	m, err := chat.ResolveOn(ctx, req.Model, gb, log)
 	if err != nil {
-		return m, nil, err
+		return m, nil, false, err
 	}
 	if m.Kind != chat.KindChat {
-		return m, nil, fmt.Errorf("%s is a %s model, not a chat model", m.Name, m.Kind)
+		return m, nil, false, fmt.Errorf("%s is a %s model, not a chat model", m.Name, m.Kind)
 	}
 	if err := chat.AllowedAlso(m, req.Allowlist); err != nil {
-		return m, nil, err // before it is downloaded
+		return m, nil, false, err // before it is downloaded
 	}
 	if h := holding(m.Name); h != nil {
-		return m, h.e, nil
+		return m, h.e, false, nil
 	}
 	run := m.Run.Over(chat.Run{})
 	tiers, err := chat.Tiers(cmp.Or(run.Tier, chat.DefaultTiers))
 	if err != nil {
-		return m, nil, fmt.Errorf("tier %q: %w", run.Tier, err)
+		return m, nil, false, fmt.Errorf("tier %q: %w", run.Tier, err)
 	}
 	c, err := chat.Prepare(ctx, chat.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Arch: m.Arch, Name: m.Name,
 		Context: run.Context, Paged: run.Paged, Prefill: run.Prefill, Format: run.Format, Draft: 8, MTP: chat.MTPAuto,
 		Tiers: tiers, Backend: backend, CodesHash: run.Codes, Log: log})
 	if err != nil {
-		return m, nil, err
+		return m, nil, false, err
 	}
 	c.CacheDir, c.Log, c.PromptDir, c.Idle = root, log, promptDir, DefaultIdle
 	c.Experts = placement(m)
 	ce, err := chat.Load(ctx, c)
 	if err != nil {
-		return m, nil, err
+		return m, nil, false, err
 	}
 	ce.NoThink = m.NoThink
-	return m, ce, nil
+	return m, ce, false, nil
 }
 
 // placement is how a mixture of experts' experts are placed: the model's core first, then by

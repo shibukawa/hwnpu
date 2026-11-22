@@ -12,6 +12,21 @@ import (
 	"strings"
 )
 
+// ServiceFile is the definition of the installed service (the LaunchAgent's plist).
+func ServiceFile() string { return PlistPath() }
+
+// LogPath is where the service writes its log.
+func LogPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "Logs", "hwnpud.log")
+}
+
+// LogWhere is where the service's log is.
+func LogWhere() string { return LogPath() }
+
+// ServiceEnviron is what launchd gives the service beyond the .env files: nothing of the shell's.
+func ServiceEnviron() []string { return nil }
+
 // PlistPath is the LaunchAgent's definition.
 func PlistPath() string {
 	home, _ := os.UserHomeDir()

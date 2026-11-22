@@ -2,9 +2,10 @@
 // (docs/design/hwnpud.md), and what its clients need of it: where its socket is, whether to use
 // it (HWNPU_DAEMON), and a client over the socket.
 //
-// hwnpud is two processes. The supervisor (Supervisor) holds the socket that launchd (or the
-// supervisor itself) listens on, answers hello and status, and passes the rest to the engine
-// (Engine), the same executable run again with "engine", which loads and runs the models. The
+// hwnpud is two processes. The supervisor (Supervisor) holds the socket that the service manager
+// (launchd, systemd) or the supervisor itself listens on, answers hello and status, and passes
+// the rest to the engine (Engine), the same executable run again with "engine", which loads and
+// runs the models. The
 // engine exits after it has been idle, giving the NPU's memory and its lock back; the supervisor
 // starts it again at the next request.
 //
@@ -24,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -50,14 +52,14 @@ const (
 // DefaultIdle is how long the engine keeps the models without a request.
 const DefaultIdle = 5 * time.Minute
 
-// Label is the name of the service (launchd's label).
+// Label is the name of the service on the Mac (launchd's label).
 const Label = "com.github.shibukawa.hwnpud"
 
-// SocketName is the name of the socket in the service's definition (launchd's Sockets key).
+// SocketName is the name of the socket in the service's definition (launchd's Sockets key,
+// systemd's FileDescriptorName).
 const SocketName = "hwnpud"
 
-// SocketPath is the socket clients connect to: HWNPU_DAEMON_SOCKET, else hwnpud.sock in the
-// user's cache directory (~/Library/Caches/hwnpu on a Mac). It does not follow HWNPU_CACHE: the
+// SocketPath is the socket clients connect to: HWNPU_DAEMON_SOCKET, else DefaultSocketPath. It does not follow HWNPU_CACHE: the
 // service is started without the shell's variables, and every client must find the same socket.
 func SocketPath() string {
 	if p := strings.TrimSpace(os.Getenv(SocketEnv)); p != "" {
@@ -66,8 +68,14 @@ func SocketPath() string {
 	return DefaultSocketPath()
 }
 
-// DefaultSocketPath is the socket of the installed service.
+// DefaultSocketPath is the socket of the installed service: hwnpud.sock in XDG_RUNTIME_DIR on
+// Linux (where systemd's user units listen), else in the user's cache directory.
 func DefaultSocketPath() string {
+	if runtime.GOOS == "linux" {
+		if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
+			return filepath.Join(d, "hwnpud.sock")
+		}
+	}
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		dir = os.TempDir()
@@ -156,7 +164,8 @@ type Status struct {
 	Hello
 	// Models are the models the engine holds.
 	Models []ModelInfo `json:"models"`
-	// NPUBytes is what the Neural Engine holds (the whole machine's), 0 when it is not known.
+	// NPUBytes is what the NPU holds, 0 when it is not known: on the Mac the Neural Engine's wired
+	// memory (the whole machine's), on Linux the engine's NPU buffers (pinned).
 	NPUBytes int64 `json:"npu_bytes"`
 	// Idle is how long the engine has had no request.
 	Idle string `json:"idle,omitempty"`
@@ -247,8 +256,8 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 	return s, err
 }
 
-// Quit asks the supervisor to stop the engine and exit (launchd starts it again at the next
-// connection).
+// Quit asks the supervisor to stop the engine and exit (the service manager starts it again at
+// the next connection).
 func (c *Client) Quit(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/hwnpud/v1/quit"), nil)
 	if err != nil {
@@ -322,7 +331,7 @@ func (c *Client) Load(ctx context.Context, r LoadRequest, log io.Writer) (ModelI
 	if err := sc.Err(); err != nil {
 		return ModelInfo{}, err
 	}
-	return ModelInfo{}, errors.New("hwnpud: the engine ended before the model was loaded (its log: " + LogPath() + ")")
+	return ModelInfo{}, errors.New("hwnpud: the engine ended before the model was loaded (its log: " + LogWhere() + ")")
 }
 
 // ResponseError is the error of an answer that is not 200: its JSON error's message, else its body.
@@ -388,10 +397,4 @@ func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 		fmt.Fprintf(log, "through hwnpud with its settings, not these: %s (%s)\n", strings.Join(parts, "; "), where)
 	}
 	return c, nil
-}
-
-// LogPath is where the service writes its log.
-func LogPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "Logs", "hwnpud.log")
 }

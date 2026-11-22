@@ -26,11 +26,11 @@ import (
 // engine dies (Core AI takes a process down when its own conversion fails) the socket stays and
 // the next request starts a new engine.
 type Supervisor struct {
-	// Socket is where it listens when launchd did not start it with one (SocketPath).
+	// Socket is where it listens when the service manager did not start it with one (SocketPath).
 	Socket string
-	// Idle is how long the engine waits without a request before it exits, and, when launchd
-	// started the supervisor, how long the supervisor waits after that before it exits too; 0
-	// never.
+	// Idle is how long the engine waits without a request before it exits, and, when the service
+	// manager (launchd, systemd) started the supervisor, how long the supervisor waits after that
+	// before it exits too; 0 never.
 	Idle time.Duration
 	// Executable is what runs the engine ("engine" and its flags after it); this executable
 	// when "".
@@ -57,7 +57,8 @@ type child struct {
 	done chan struct{}
 }
 
-// Run serves until ctx ends, the idle time passes (when launchd started it), or a quit request.
+// Run serves until ctx ends, the idle time passes (when the service manager started it), or a
+// quit request.
 func (s *Supervisor) Run(ctx context.Context) error {
 	if s.Log == nil {
 		s.Log = os.Stderr
@@ -85,7 +86,12 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		return err
 	}
 	launched := len(lns) > 0
-	if !launched {
+	if launched {
+		// the service manager's socket, which the engine's is beside
+		if a, ok := lns[0].Addr().(*net.UnixAddr); ok && a.Name != "" {
+			s.Socket = a.Name
+		}
+	} else {
 		ln, err := ListenUnix(s.Socket)
 		if err != nil {
 			return err
@@ -103,7 +109,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if r.Context().Err() != nil {
 				return // the client went away
 			}
-			writeError(w, http.StatusBadGateway, fmt.Sprintf("hwnpud's engine: %v (its log: %s)", err, LogPath()))
+			writeError(w, http.StatusBadGateway, fmt.Sprintf("hwnpud's engine: %v (its log: %s)", err, LogWhere()))
 		},
 	}
 	s.last.Store(time.Now().UnixNano())
@@ -127,7 +133,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	s.srv = &http.Server{Handler: s.track(mux)}
 	how := "listening"
 	if launched {
-		how = "started by launchd"
+		how = "started by " + serviceManager()
 	}
 	fmt.Fprintf(s.Log, "hwnpud %s (protocol %d, pid %d): %s on %s\n", Build(), Protocol, os.Getpid(), how, s.Socket)
 
@@ -149,9 +155,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	return err
 }
 
-// watch shuts the supervisor down when ctx ends, and, when launchd started it, after the idle
-// time without an engine or a request, or when its executable has been replaced (go install):
-// launchd starts the new one at the next connection.
+// watch shuts the supervisor down when ctx ends, and, when the service manager started it, after
+// the idle time without an engine or a request, or when its executable has been replaced (go
+// install): the service manager starts the new one at the next connection.
 func (s *Supervisor) watch(ctx context.Context, launched bool, stop chan struct{}) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
@@ -169,7 +175,7 @@ func (s *Supervisor) watch(ctx context.Context, launched bool, stop chan struct{
 		}
 		since := time.Since(time.Unix(0, s.last.Load()))
 		if s.replaced() {
-			fmt.Fprintf(s.Log, "hwnpud: %s has been replaced; exiting for launchd to start the new one\n", s.exe)
+			fmt.Fprintf(s.Log, "hwnpud: %s has been replaced; exiting for %s to start the new one\n", s.exe, serviceManager())
 			s.shutdown()
 			return
 		}
@@ -265,7 +271,7 @@ func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 	if c == nil {
 		os.Remove(socket)
 		cmd := exec.Command(s.exe, "engine", "--socket", socket, "--idle", s.Idle.String())
-		cmd.Stdout, cmd.Stderr, cmd.Env = s.Log, s.Log, env
+		cmd.Stdout, cmd.Stderr, cmd.Env = s.Log, s.Log, withoutActivation(env)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // a Ctrl-C at the terminal of a supervisor run by hand is the supervisor's to pass on
 		if err := cmd.Start(); err != nil {
 			s.mu.Unlock()
@@ -299,7 +305,7 @@ func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 		}
 		select {
 		case <-c.done:
-			return fmt.Errorf("hwnpud: the engine ended as it started (its log: %s)", LogPath())
+			return fmt.Errorf("hwnpud: the engine ended as it started (its log: %s)", LogWhere())
 		case <-deadline:
 			return errors.New("hwnpud: the engine does not answer on " + socket)
 		case <-ctx.Done():

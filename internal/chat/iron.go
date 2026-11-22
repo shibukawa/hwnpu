@@ -380,6 +380,9 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		name = strings.TrimSuffix(filepath.Base(c.IRON), ".amd-npu2")
 	}
 	logf("loading %s onto AMD's NPU", shortPath(c.IRON))
+	if err := llm.LockNPU(ctx); err != nil { // one process's chat model on the NPU at a time
+		return nil, err
+	}
 	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
 	if err != nil {
 		return nil, err

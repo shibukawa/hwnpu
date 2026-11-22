@@ -3,20 +3,20 @@
 // in their own processes, so that one Core AI cache (under the name hwnpud) and one copy of a
 // model on the Neural Engine serve them all.
 //
-//	go install ./cmd/hwnpud && hwnpud install   # a LaunchAgent: launchd starts it at the first connection
+//	go install ./cmd/hwnpud && hwnpud install   # a LaunchAgent (Mac) or systemd user units (Linux): started at the first connection
 //	HWNPU_DAEMON=on hwnpu-chat "hello"          # hwnpu-chat through it
 //	hwnpud status                               # what it holds
-//	hwnpud stop                                 # end it now (launchd starts it again when needed)
+//	hwnpud stop                                 # end it now (the service manager starts it again when needed)
 //	hwnpud serve                                # run it by hand, in the foreground
 //
 // The supervisor (serve) holds the socket and starts the engine (the same executable with
 // "engine"), which loads and runs the models and exits after HWNPU_DAEMON_IDLE (5m) without a
-// request, giving the Neural Engine's memory and its lock back; the supervisor exits after that
-// too when launchd started it, and when its executable has been replaced (go install).
+// request, giving the NPU's memory and its lock back; the supervisor exits after that too when
+// launchd or systemd started it, and when its executable has been replaced (go install).
 //
 // The service starts without the shell's variables: hwnpu's settings (HWNPU_MODEL_SOURCE and the
 // like) go in ~/.config/hwnpu/.env, which hwnpud reads (install warns about those set only in the
-// shell).
+// shell). On Linux, systemd's user manager also gives it ~/.config/environment.d's.
 package main
 
 import (
@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -36,16 +37,16 @@ import (
 )
 
 type cli struct {
-	Serve     ServeCmd     `cmd:"" default:"1" help:"Run the supervisor: listen on the socket (or take launchd's) and start the engine for the requests (the command when none is named)."`
+	Serve     ServeCmd     `cmd:"" default:"1" help:"Run the supervisor: listen on the socket (or take launchd's or systemd's) and start the engine for the requests (the command when none is named)."`
 	Engine    EngineCmd    `cmd:"" hidden:"" help:"Run the engine (the supervisor starts it)."`
-	Install   InstallCmd   `cmd:"" help:"Install the LaunchAgent: launchd starts hwnpud when a client connects."`
-	Uninstall UninstallCmd `cmd:"" help:"Remove the LaunchAgent."`
+	Install   InstallCmd   `cmd:"" help:"Install the service (a LaunchAgent on the Mac, systemd user units on Linux): it starts hwnpud when a client connects."`
+	Uninstall UninstallCmd `cmd:"" help:"Remove the service."`
 	Status    StatusCmd    `cmd:"" help:"Show whether hwnpud runs and what it holds."`
-	Stop      StopCmd      `cmd:"" help:"End hwnpud and its engine now (launchd starts it again at the next connection)."`
+	Stop      StopCmd      `cmd:"" help:"End hwnpud and its engine now (the service manager starts it again at the next connection)."`
 }
 
 func main() {
-	// Ctrl-C, launchd's bootout and the supervisor's stop: the engine closes its models and
+	// Ctrl-C, launchd's bootout, systemd's stop and the supervisor's stop: the engine closes its models and
 	// removes its socket, the supervisor stops the engine first
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -60,7 +61,7 @@ func main() {
 
 // ServeCmd runs the supervisor.
 type ServeCmd struct {
-	Socket string         `placeholder:"PATH" help:"The socket to listen on when launchd did not start it with one (default: HWNPU_DAEMON_SOCKET, else hwnpud.sock in the user cache directory)."`
+	Socket string         `placeholder:"PATH" help:"The socket to listen on when the service manager did not start it with one (default: HWNPU_DAEMON_SOCKET, else hwnpud.sock in XDG_RUNTIME_DIR on Linux, in the user cache directory on the Mac)."`
 	Idle   *time.Duration `help:"How long the engine keeps the models without a request (0: always) (default: HWNPU_DAEMON_IDLE, else 5m)."`
 }
 
@@ -87,7 +88,7 @@ func idle(d *time.Duration) time.Duration {
 	return daemon.Idle()
 }
 
-// InstallCmd installs the LaunchAgent.
+// InstallCmd installs the service.
 type InstallCmd struct{}
 
 func (c *InstallCmd) Run() error {
@@ -102,7 +103,8 @@ func (c *InstallCmd) Run() error {
 }
 
 // shellOnly are hwnpu's variables (and Hugging Face's and AWS's) the environment sets that no
-// .env file does: the service, started by launchd, does not get them.
+// .env file does and the service manager does not give the service either (launchd gives none
+// of them, systemd those of environment.d): the service does not get them.
 func shellOnly() []string {
 	fromFiles := map[string]bool{}
 	for _, f := range envfile.Loaded {
@@ -110,10 +112,14 @@ func shellOnly() []string {
 			fromFiles[name] = true
 		}
 	}
+	service := map[string]bool{}
+	for _, kv := range daemon.ServiceEnviron() {
+		service[kv] = true
+	}
 	var out []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if fromFiles[name] || strings.HasPrefix(name, "HWNPU_DAEMON") {
+		if fromFiles[name] || service[kv] || strings.HasPrefix(name, "HWNPU_DAEMON") {
 			continue
 		}
 		for _, p := range envfile.Prefixes {
@@ -156,7 +162,7 @@ func printSettings(h daemon.Hello) {
 	}
 }
 
-// UninstallCmd removes the LaunchAgent.
+// UninstallCmd removes the service.
 type UninstallCmd struct{}
 
 func (c *UninstallCmd) Run(ctx context.Context) error {
@@ -170,7 +176,7 @@ type StatusCmd struct{}
 func (c *StatusCmd) Run(ctx context.Context) error {
 	cl := daemon.NewClient("")
 	if exe := daemon.Installed(); exe != "" {
-		fmt.Printf("installed: %s (%s)\n", exe, daemon.PlistPath())
+		fmt.Printf("installed: %s (%s)\n", exe, daemon.ServiceFile())
 	} else {
 		fmt.Println("installed: no (hwnpud install)")
 	}
@@ -187,7 +193,11 @@ func (c *StatusCmd) Run(ctx context.Context) error {
 	}
 	fmt.Printf("engine: pid %d, idle %s", st.Engine, st.Idle)
 	if st.NPUBytes > 0 {
-		fmt.Printf(", the Neural Engine holds %.2f GiB", float64(st.NPUBytes)/(1<<30))
+		if runtime.GOOS == "darwin" {
+			fmt.Printf(", the Neural Engine holds %.2f GiB", float64(st.NPUBytes)/(1<<30))
+		} else {
+			fmt.Printf(", its NPU buffers %.2f GiB (pinned)", float64(st.NPUBytes)/(1<<30))
+		}
 	}
 	fmt.Println()
 	for _, m := range st.Models {

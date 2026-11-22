@@ -337,3 +337,12 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(p)
 }
+
+// The engine is not given systemd's activation variables, which name the supervisor's
+// descriptors.
+func TestWithoutActivation(t *testing.T) {
+	got := withoutActivation([]string{"A=1", "LISTEN_PID=4", "LISTEN_FDS=1", "LISTEN_FDNAMES=hwnpud", "LISTEN_FDSX=2"})
+	if strings.Join(got, " ") != "A=1 LISTEN_FDSX=2" {
+		t.Fatalf("%v", got)
+	}
+}

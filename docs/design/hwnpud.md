@@ -2,7 +2,7 @@
 
 [日本語](hwnpud.ja.md)
 
-Status: step 1 is built on the Mac (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
+Status: step 1 is built on the Mac and on Linux with AMD's NPU (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
 models: it downloads and keeps the converted models, holds the caches, loads the programs and runs
 them. hwnpu's commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`) and the apps built on
 the `ai` package reach it over a Unix domain socket. They pass what their run needs and draw what
@@ -38,6 +38,32 @@ Step 1 on the Mac (`cmd/hwnpud`, `internal/daemon`):
 - M3: the PLaMo 3 Translate 2B program loads in 22 s the first time under the name `hwnpud`
   (Core AI's entry 2.5 GB); the next run answers in 0.6 s from start to end, the model still in
   the engine.
+
+On Linux with AMD's NPU, the same supervisor and engine:
+
+- `hwnpud install` writes systemd's user units `~/.config/systemd/user/hwnpud.socket`
+  (`ListenStream=$XDG_RUNTIME_DIR/hwnpud.sock`, mode 0600, `FileDescriptorName=hwnpud`) and
+  `hwnpud.service` (`ExecStart=… serve`, `KillMode=mixed`: the supervisor stops the engine
+  itself), then `systemctl --user enable --now hwnpud.socket`. The supervisor takes the socket
+  from `LISTEN_FDS` (the variables are not passed to the engine) and checks the peer's uid with
+  `SO_PEERCRED`. The log is the journal (`journalctl --user -u hwnpud`). systemd's user manager
+  gives the service `~/.config/environment.d`'s variables, so `install` warns only of those
+  neither it nor a `.env` file sets.
+- The engine holds one chat model at a time on AMD's NPU: one model uses all of its hardware
+  contexts, so a load of another closes the one held, once its requests have ended (no new
+  request gets it meanwhile). The requests of a model take turns on it (`chat.Engine` runs one
+  generation at a time), in the order they came.
+- The NPU lock (`neural-engine.lock`) is taken on AMD too, when a chat model's IRON export loads
+  (in hwnpud's engine and in `hwnpu-chat` run in its own process), so a client with
+  `HWNPU_DAEMON=off` prints `waiting for the NPU: process N (hwnpud) is using it` and waits
+  for the engine's idle exit. Images and audio on AMD do not take it yet (step 4).
+- `hwnpud status` shows the engine's NPU buffers, which are pinned (`drm-total-memory` of
+  `/proc/self/fdinfo`, `mem.DRMMemory`).
+- Ryzen AI 9 365 (`hwnpud install`'s units, and `systemd-socket-activate` for a second socket):
+  LFM3-1.7B's export loads in 2.6 s the first time and answers at 17 tok/s; the next run takes
+  3.1 s from start to end with no load (1.62 GiB pinned). Three clients at once are served one
+  after the other (12 s, 24 s, 43 s). A load of Qwen3.5-0.8B closes LFM3-1.7B first (1.02 GiB
+  pinned after). `hwnpud stop` ends the service; the next connection starts it again.
 
 ## Why
 
@@ -229,7 +255,7 @@ The RPC is a model's call at the grain of the `ai` package's uses: `Transcribe(p
   Core AI cache. There is only ever one engine; the supervisor starts a new one when it dies and
   fails the requests that were running. The NPU memory goes with the process.
 - **The engine holds the NPU lock only while it has programs on the NPU**: `neural-engine.lock` on
-  the Mac as now, and the same lock on Linux, which has none today. It releases the lock when it
+  the Mac as now, and the same lock on Linux (taken by the chat models' IRON exports so far). It releases the lock when it
   unloads after going idle, so tools that open the NPU in their own process (`hwnpu-dev probe`,
   `aicheck`, the IRON tools) still run and wait their turn.
 
