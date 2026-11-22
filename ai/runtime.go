@@ -20,8 +20,43 @@ import (
 type Option func(*options)
 
 type options struct {
-	log     io.Writer
-	loading func(Progress)
+	log         io.Writer
+	loading     func(Progress)
+	compile     bool
+	allowOffNPU bool
+	settings    map[string]map[string]string
+}
+
+// CompileOnLoad lets a Get load a use that is prepared (downloaded and converted: Plan.Run with
+// NoCompile, "models download") but not compiled for this machine's NPU yet: its first load
+// compiles its programs, which takes from seconds to minutes. It is for a command line tool that
+// prepares what it runs just before running it, so that the model is not loaded twice (once to
+// compile it, once to run it); an app that must not wait at a Get prepares with Plan.Run.
+func CompileOnLoad() Option { return func(o *options) { o.compile = true } }
+
+// AllowOffNPU loads models part of whose programs the NPU's compiler placed off the NPU (on the
+// GPU or the CPU): the roles that check where their programs run refuse them otherwise, as that
+// has made a Mac sluggish and failed.
+func AllowOffNPU() Option { return func(o *options) { o.allowOffNPU = true } }
+
+// LoadSettings are settings of how the models of a role (chat, translate, embed, ...) run
+// that change nothing of what is prepared: a role reads the names it knows when it loads a model
+// (text's chat: idle, prompt_cache, experts_key, sparse). What changes the programs is a model
+// of its own instead (Definition's Settings). Given twice for a role, the later names win.
+func LoadSettings(role string, settings map[string]string) Option {
+	return func(o *options) {
+		if o.settings == nil {
+			o.settings = map[string]map[string]string{}
+		}
+		m := o.settings[role]
+		if m == nil {
+			m = map[string]string{}
+			o.settings[role] = m
+		}
+		for k, v := range settings {
+			m[k] = v
+		}
+	}
 }
 
 // WithLog sends what loading the models does (the programs, where they run) to w.
@@ -126,7 +161,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	// a use is run only when it is prepared and compiled for this program on this NPU (Plan.Run,
 	// "models prepare"): no picture, no input waits for a download or a compile
 	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
-	if err == nil && !loc.bundle && rt.npu.Target != "" && !loc.compiled() {
+	if err == nil && !loc.bundle && rt.npu.Target != "" && !rt.npu.CPU(m) && !loc.compiled() && !rt.o.compile {
 		err = fmt.Errorf("%w: %s (%s) is not compiled for %s on this machine's NPU yet (the app's Plan and its Run compile it)", ErrNotPrepared, r.key(), loc.Model, processName())
 	}
 	if err != nil {
@@ -169,7 +204,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		}
 		tell(stage, "")
 	}
-	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log})
+	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, Def: m, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log, AllowOffNPU: rt.o.allowOffNPU, Settings: rt.o.settings[r.role.Name]})
 	if err != nil {
 		loaded.Store(true)
 		tell(StageDone, "")
@@ -178,7 +213,12 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	took := time.Since(t0)
 	loaded.Store(true)
 	tell(StageDone, "")
-	if !loc.bundle && (loc.Loaded == 0 || took > loc.Loaded*5/4 || took < loc.Loaded*4/5) {
+	if !loc.bundle && rt.npu.Target != "" && !loc.compiled() {
+		// compiled by this load (CompileOnLoad): the next one need not
+		loc.markCompiled()
+		loc.Compile = took
+		_ = rt.app.Store.put(ctx, r.key(), rt.npu, loc.record)
+	} else if !loc.bundle && (loc.Loaded == 0 || took > loc.Loaded*5/4 || took < loc.Loaded*4/5) {
 		// how long it takes, for the next load to show (written when it changed by a fifth)
 		loc.Loaded = took
 		_ = rt.app.Store.put(ctx, r.key(), rt.npu, loc.record)

@@ -18,12 +18,14 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai` | アプリが使うモデルの登録 (`App`、`Use`)、計画と準備 (`Plan`)、実行 (`Runtime`) | v0 |
 | `hwnpu/ai/flow` | モデルの間のデータの渡し方: 塊の流れ (`Stream`)、非同期、メトロノーム | v0 |
 | `hwnpu/ai/speech` | 文字起こし (`Transcribe`)、読み上げ (`Speak`)、音量の VAD、WAV の読み書き | v0 |
-| `hwnpu/ai/text` | 翻訳 (`Translate`)、チャット (`Chat`) | v0 |
+| `hwnpu/ai/text` | 翻訳 (`Translate`)、チャット (`Chat`: ツール、画像と音声、JSON の形)、埋め込み (`Embed`)、判断 (`Decide`: d1) | v0 |
+| `hwnpu/ai/server/openai` | OpenAI 互換の口 (`/v1/models`、`/v1/chat/completions`、`/v1/embeddings`) の `http.Handler`。`hwnpu-chat serve` が使う | v0 |
+| `hwnpu/ai/server/systemone` | llama.cpp の System One API (`/v1/systemone`) の `http.Handler`。`hwnpu-chat systemone --listen` が使う | v0 |
 | `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
 | `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
-| `hwnpu/ai/vision` | 深度 (`Depth`)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)。物体、姿勢、切り抜き、OCR、ラベルはまだ | v0 (深度と顔) |
-| `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`: FLUX.2 klein。文から、文と参照の絵から)。Anima、FLUX.3 klein、Chroma はまだ | v0 (FLUX.2 klein) |
-| `hwnpu/ai/sound` | 音楽、効果音、音高、採譜 | まだ |
+| `hwnpu/ai/vision` | 深度 (`Depth`: 多視点も)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)、物体 (`Detect`)、姿勢 (`Pose`)、切り抜き (`Segment`)、OCR (`OCR`)、ラベルと埋め込み (`Label`) | v0 (2.6 節) |
+| `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`、`Edit`: FLUX.2 klein、FLUX.3 klein、Anima、Chroma。文から、FLUX.2 klein は文と参照の絵からも。`GenerateAll` で複数のプロンプトをまとめて) | v0 |
+| `hwnpu/ai/sound` | 音楽 (`Music`: Magenta RealTime 2。できた 1 秒ごとに流す)、効果音 (`Effect`: MOSS-SoundEffect)、音高 (`Pitch`: SwiftF0)、採譜 (`Notes`: Basic Pitch)、MIDI の読み書き | v0 |
 
 - **機能ごとにパッケージを分ける**: 文字起こしだけを使うアプリに、画像の生成のコードを入れないため。`ai` は機能のパッケージを import しない。機能のパッケージが、自分のモデルの準備と読み込みのしかた (`internal/airole` の `Role`) を持ち、`ai.Define` で型のついた `Use` を作る
 - **`internal/airole` は機能のパッケージと `ai` の間の約束**: 外のモジュールは `Role` を作れないので、`Use` を作れるのは hwnpu の機能のパッケージだけ
@@ -91,6 +93,78 @@ var (
 - **1 つずつ使う**: `use.Release(rt)` でモデルを下ろす。画像の生成のあとに深度、のように順に使うアプリは、同時に置くメモリが一番大きいモデルの分で済む
 - **ライセンス**: 同意の要るライセンス (`License.Accept`) のモデルは、`plan.AcceptLicenses` を付けないと `*ai.LicenseError`。アプリが画面で同意を取ってから付ける
 - **CLI と同じ置き場**: `ai.Store` のゼロ値はコマンドと同じ (環境変数と `.env`)。`hwnpu-audio` や `hwnpu-chat` が準備したものはそのまま使え、アプリが準備したものをコマンドも使う
+
+### 2.3 カタログ、アプリの作るモデル、コマンドの準備
+
+コマンド (`hwnpu-audio`、今後 `hwnpu-chat` と `hwnpu-image`) も `ai` の上で動く。そのための口:
+
+| 口 | 意味 |
+|---|---|
+| `store.Catalog()` | 定義 (models.yaml、機械と利用者のファイル、アプリのファイルと `Definitions`) のモデル、用途、別名の一覧。モデルごとに種類、ファミリーとタグ、取得元、この機械の NPU でのメモリとダウンロードの量、動く場所 (npu、cpu)、ライセンス、手元にあるか。`OfKind`、`Model` で引く |
+| `ai.Normalize(cat, use)` | `--model` の名前を、それが指すモデルの名前の `Use` にする (用途、ファミリー、別名、`lfm3:8g` のメモリのタグは `As`)。定義にない Hugging Face のリポジトリ (`OWNER/NAME`) は、その役割の種類の `Definition` を返す。どの名前でもなければ `*ai.NoModelError` (その役割のモデルの一覧つき) |
+| `ai.Definition`、`app.Define(...)` | アプリが動かしながら作るモデル。`Like` (元のモデルの名前) のほかの欄を受け継ぎ、動く場所 (`Device: "cpu"`)、チャットのモデルの `Format` や `Context`、役割ごとの設定 (`Settings`: 文字起こしと読み上げの `format` など)、変換済みのファイル (`Programs`: 手で変換したもの、AMD の IRON の書き出しのディレクトリ) を変える。名前は `ID()` (`Name` がなければ `Like` と中身のハッシュ: `whisper-large-v3-turbo+5c8543f4`)。メモリ上の models.yaml の層として読み、ファミリーや用途からは選ばれない。準備は元のモデルと別に記録し (目録の `spec`)、取得のファイルや AMD の書き出しは元のモデルと共有する (`PrepareEnv.Base`) |
+| `cli.Ensure(ctx, app, o)` | 足りないモデルだけをダウンロードして変換する。全部あれば何も書かない。コマンドが実行の前に呼ぶ |
+| `ai.CompileOnLoad()` (`App.Open` のオプション) | 変換済みでコンパイルしていないモデルを、`Get` の最初の読み込みでコンパイルする。`Ensure` と組み合わせて、モデルを 2 回 (コンパイルと実行) 読み込まずに済ませる。待たせたくないアプリは `models prepare` で済ませておく |
+| `ai.AllowOffNPU()` (`App.Open`)、`Plan.AllowOffNPU` | プログラムの一部が NPU の外 (GPU、CPU) に置かれたモデルも読み込む。配置を確かめる役割は、既定ではそれを断る (Mac が重くなって失敗したことがあるため) |
+
+- **フラグは別のモデルにする**: コマンドのフラグのうちモデルの作り方や動かし方を変えるもの (`--format`、`--cpu`、手で変換したファイル、書き出しのディレクトリ) は、`Definition` を作ってその名前で動かす。モデルはいつも定義のとおりに動き、置き場の記録もフラグの組ごとに分かれる。キャッシュの場所を変える口 (`--cache`) は作らない
+- **計測の値は結果に入れる**: `speech.Transcript` の `Windows` (窓ごとの言語、トークン、特徴量・エンコーダー・デコードの時間) と `Took`、`speech.Audio.Stats` (フレーム数、使った乱数の種、全体と 3 つのプログラムの時間)、`imagegen.Pictures` (絵ごとの種、まとめて描いた組ごとのステップと VAE の段の時間、大きさのプログラムを開いた時間、参照とプロンプトの読み込みの時間、全体)。実行の記録 (`console.RecordRun`、電力量) はコマンドの `main` に置き、`ai` には入れない
+- **動かし方だけの設定は読み込みの設定**: 準備するものを変えない設定 (チャットの `--idle`、`--prompt-cache`、`--experts-key`、`--no-sparse`) は `ai.LoadSettings(role, map)` (`App.Open` のオプション、役割の `LoadEnv.Settings`)。別のモデルにはしない。サンプリングと考えるかどうかは要求ごとのオプション
+- **絵のモデルの設定** (`ai/imagegen`): 準備するものを変えるフラグは `Settings` にする。`text-format`、`dit-format` (Apple と Intel の変換の重みの形式)、`size` (1 つの大きさしか持たない書き出し: Intel の Anima、Apple の Chroma)、Anima の `dit`、`group`、`qchunk`、`resident-dit` (AMD で DiT の組を全部 NPU に置く)。書き出しのディレクトリは `Programs` の `export` (`imagegen.Export(dir)` が元のモデルを見分けて `Definition` を作る)。`--cpu` (Anima、Chroma の Core ML の書き出しを CPU のインタープリタで) は `Device: "cpu"`。絵ごとのもの (プロンプト、ネガティブ、ガイダンス、ステップ、種、サンプラー、shift、`--cfg-sigmas`、大きさ、参照とその大きさ `FILE@half`、`--batch`、`--keep-dit`) は `imagegen.Options`。Apple の FLUX.2 klein はコマンドと同じ 8 つの大きさの書き出しを 1 つ作る (前は 512 と 1024 だけで、コマンドと共有できなかった。役割の版を 2 に上げた)
+
+### 2.4 音 (`ai/sound`)
+
+`hwnpu-audio` の `generate`、`pitch`、`notes` はこのパッケージの上で動く (`tts` と `transcribe` は `ai/speech`)。
+
+| 口 | 中身 |
+|---|---|
+| `sound.Music(name)` → `*MusicGenerator` | `Style(ctx, parts...)`: 文や録音 (`Clip`) を重みで混ぜた曲調の 12 のコード (MusicCoCa。最初の呼び出しで読み込む)。`Generate(ctx, MusicOptions)` は `flow.Stream[[]float32]` (48 kHz ステレオ、左右交互) と `*MusicStats` を返し、流れは読まれたときに作り、復号器が 1 秒ぶん出すごとに塊を渡す。最後の `Fade` のぶんは手元に残し、溶暗にして最後の塊で渡す。設定は曲調のコード、長さ (0 なら音符の長さ+0.5 秒、なければ 10 秒)、MIDI の音符 (`ReadMIDI`)、続ける録音 (`Continue`、`NewOnly`)、ドラム、温度、top-k、CFG の 3 つ、種。`Progress` で録音の読み込みと 1 秒ごとの進み |
+| `sound.Effect(name)` → `*EffectGenerator` | `Generate(ctx, 説明, EffectOptions)`: 長さ (最大 30 秒)、ステップ、CFG、shift、種、`Fade`。結果は 48 kHz モノラルと `EffectStats` |
+| `sound.Pitch(name)` → `*PitchDetector` | `Detect(ctx, 16 kHz モノラル, PitchOptions{FMin, FMax})`: 16 ms ごとの音高、確からしさ、音量 (`Voiced` = 0.5 以上で有声) |
+| `sound.Notes(name)` → `*NoteTranscriber` | `Transcribe(ctx, 22050 Hz モノラル, NotesOptions)`: 音符 (始まり、終わり、高さ、強さ、ピッチベンド)。`WriteMIDI` |
+
+- **計測の値は結果に**: `MusicStats` (使った種、フレーム数、録音のフレームと時間、全体と復号器の時間、`RealTime`)、`EffectStats` (種、トークン、切ったか、文の符号化・読み込み・生成の時間)、`PitchTrack`・`NoteList` の `Seconds` と `Took`。種は `Generate` が返った時点で `MusicStats.Seed` にある
+- **定義の設定**: 音楽は `settings.format` (言語モデルの重み)、効果音は `settings.text-format`、`settings.dit-format`。どれも `Device: "cpu"` で CPU のインタープリター。AMD の書き出しは `PrepareEnv.Base` (元のモデル) の名前で探す
+- **音高と採譜の動く場所**: 読み込みのときに決める (定義の `Device`、`HWNPU_DEVICE`、models.yaml、変換の形がない NPU なら CPU)。CPU では ONNX Runtime があればそれ、なければ hwnpu の実行器 (milcpu) で変換したプログラム。`settings.threads` (CPU のスレッド)、`settings.cpu: hwnpu` (ONNX Runtime を使わず全部のコアの hwnpu の実行器)。準備は ONNX のファイル、CPU のインタープリター用と NPU 用のプログラムを全部作る
+- **NPU の外**: 音楽と効果音は、プログラムの一部が NPU の外に置かれたら `*sound.OffNPUError` で止まる。`ai.AllowOffNPU()` (Runtime の方針) で通す。効果音は文の符号化器と DiT を呼び出しのときに読み込むので、確かめるのも `Generate` の中
+- **音楽の準備は全部**: 曲調の文の側と音声の側、SpectroStream の符号化器 (続き用) も準備する。読み込みは使うとき (曲調は最初の `Style`、符号化器は最初の `Continue`)
+- **まだ**: メトロノームの拍に合わせて作る形、鳴らしている間に曲調を変える形 (モデルの節)。今は流れを `flow.Pace` で再生の速さにする
+
+### 2.5 文 (`ai/text`)
+
+| 口 | 中身 |
+|---|---|
+| `text.Chat(name)` → `*Chatter` | `Reply(ctx, msgs, o, fn)` が答え (`Answer`: 本文、考え (`Reasoning`)、ツールの呼び出し、終わり方、計測の値 `Stats`、読んだプロンプトと生成した文) を返し、生成のたびに `fn` に考えと本文の差分 (`Delta`) を渡す。ctx を止めるとそこまでの答えとエラー。`Complete` (文字列)、`CompleteStream` (`flow`)、`Count` (プロンプトのトークン数)、`Context`、`Thinks`、`Features`、`Images`、`Audio` |
+| `text.Message` | 役割 (system、user、assistant、tool)、本文、画像と音声 (`Media`: 画像のファイルか WAV のバイト、または data URL。本文の前に置く)、順のある部分 (`Parts`: API の content の部分)、考え、ツールの呼び出し、tool のメッセージの `ToolCallID` と `Name` |
+| `text.ChatOptions` | `MaxTokens` (0: 1024、`text.Unlimited`: キャッシュが満ちるまで)、`Think` (nil: モデルの定義のとおり)、`ThinkBudget` (0: 1024、負: 上限なし)、`KeepThinking`、`Sampling` (nil: `DefaultSampling` = 温度 0.1、top-k 50、繰り返しの罰 1.05)、`Seed` (0: 毎回新しい種、`Stats.Seed` に出る)、`Stop` (止める文字列)、`Tools` (`ParseTool` は API の JSON をそのまま保つ)、`Format`、`Translation` (翻訳のモデルへの設定) |
+| `text.Format` | 答えを JSON で求める (`response_format`)。system のメッセージで伝え、答えから JSON を取り出してスキーマと照らす。合わなければ `*FormatError`。**デコードを文法で縛ってはいない** (I1 の残り)。照らすキーワードは type、properties、required、additionalProperties、items、enum、const、数と長さと個数の上下、anyOf、oneOf、allOf |
+| `text.Translate(name)` → `*Translator` | `Translate`、`Reply` (差分と計測の値)、`TranslateStream`、`TranslateNode`。`TranslateOptions` に `Sampling` (nil: 一番ありそうなトークン) と `Seed` |
+| `text.Embed(name)` → `*Embedder` | `Embed(ctx, text, EmbedOptions{Query, Truncate})` (`Embedding`: 長さ 1 のベクトル、トークン数、切ったか、時間)、`Dim`、`MaxTokens`、`Cosine` |
+| `text.Decide(name)` → `*Decider` | d1 の判断のモデル。`Decide(ctx, 要求の JSON)` が llama.cpp の System One API の応答の JSON を返す (`ErrBadRequest`、`ErrUnsupported`) |
+
+定義 (`ai.Definition`) の設定と変換済みのファイル (各役割のコメントに一覧):
+
+- チャットと翻訳: `Format`、`Context`、`Paged`、`Prefill`、`Tier` の欄、settings の `draft`、`mtp`、`shortest`、`codes`、`format_for`、programs の `iron` (AMD の書き出しのディレクトリ)、`packages` (と `config`、`weights`)、`tokenizer`、`vision`、`audio`。AMD では元のモデル (`PrepareEnv.Base`) の名前で書き出しを引く。読み込みの設定 (`ai.LoadSettings("chat", ...)`) は `idle` (既定 5m)、`prompt_cache` (既定はキャッシュの `prompts`、`off`)、`experts_key` (既定は役割の名前)、`sparse` (`off`)
+- 埋め込み: settings の `seqs` (既定 128,1024)、programs の `packages` (と `config`、`weights`)
+- 判断: settings の `seqs` (既定 512)、`format` (既定 lut8)、`Device: "cpu"`、programs の `packages` (と `config`、`weights`、`tokenizer`、`calibration`)、`vision`、`audio`
+
+### 2.6 絵のモデル (`ai/vision`)
+
+`hwnpu-image` の解析のサブコマンド (depth、face-detect、detect、pose、segment、ocr、label、embed) は `ai/vision` の上で動く。準備の手順 (デバイスの選び方、AMD の IRON の書き出しを初回に作る、CPU の 3 つの道) は `internal/imagedev` にあり、コマンドと `ai/vision` が共有する。
+
+| 使い方 | 型 | 呼び出しと結果 |
+|---|---|---|
+| `vision.Depth("depth")` | `*DepthEstimator` | `EstimateWith(ctx, img, DepthOptions{Focal, FovX})` → `DepthMap` (深さ、DA3 の空と確信度、MoGe-2 のマスク・法線・点・視野角、`Took`)。多視点の書き出しは `Views()` と `EstimateViews(ctx, imgs, ViewOptions{Ref})` (各視点の `Camera`) |
+| `vision.Faces("face-detect")` | `*FaceDetector` | `DetectWith(ctx, img, FaceOptions{Score, NMS, Size, Log})` → `[]Face` (`Box` は小数の矩形)。`Device()`、`Where()` |
+| `vision.Detect("detect")` | `*Detector` | `Detect(ctx, img, DetectOptions{Score, NMS, Classes})` → `Objects` (物体と、縮小・ネットワーク・ホストの時間)。`Classes()` |
+| `vision.Pose("pose")` | `*PoseEstimator` | `Estimate(ctx, img, PoseOptions{Score})` → `People` (人の箱と 17 点、時間) |
+| `vision.Segment("segment")` | `*Segmenter` | `Encode(ctx, img)` → `PictureEncoding`、`Masks(enc, Prompt{Points, Negative, Box})` → `Masks` (3 つの候補、`Best()`、`Mask.Image`、`Cutout`) |
+| `vision.OCR("ocr")` | `*TextReader` | `Read(ctx, img, OCROptions{MinScore, Size})` → `Text` (行の四隅と文字と点数、検出器の大きさ、段ごとの時間) |
+| `vision.Label("label")` | `*Labeler` | `Candidates(ctx, labels, CandidateOptions{Template, NoCache})` (ラベルの埋め込みはユーザーのキャッシュ hwnpu/siglip に残す)、`Rank(emb, cands, RankOptions{Top, Min})`、`Label`、`EmbedPicture`、`EmbedTexts`、`Probability`、`vision.Cosine` |
+
+- **モデルを変えるフラグは `Definition` にする**: 動く場所 (`Device`: `--device npu|cpu`)、設定 (`Settings`: `threads` は CPU のスレッド数、`cpu: interpreter` は変換したプログラムを CPU のインタープリターで動かす `--cpu`)、手元のファイル (`Programs`: `export` は書き出しのディレクトリ、`onnx` は YuNet の ONNX ファイル)。全部の NPU に同じ `Device` を書いた定義は、コマンドの `--device` と同じに扱う (`HWNPU_DEVICE` より強く、形のない NPU では CPU に落とさずエラー)。AMD の書き出しは元のモデル (`PrepareEnv.Base`) の名前で探す
+- **呼ぶたびに変えられるものはオプション**: 点数としきい値、クラスの絞り込み、プロンプト、上位の数、検出器の大きさ
+- 載せ替えの際、models.yaml の `like:` は取得元 (`from`) が同じなら元のモデルの `sha256` を受け継ぐようにした (取得元を変えたときだけ消す)
 
 ## 3. アプリのコマンドライン (`ai/cli`)
 
@@ -255,7 +329,7 @@ hwnpu-dev bundle -target coreai -use transcribe,translate,speech,vad -memory 8,1
 
 ## 8. ローカルサーバー (`github.com/shibukawa/hwnpu/ai/server`)
 
-> この節は計画で、まだ実装していない。
+> この節は計画。できているのは `ai/server/openai` の文のための 3 つの口 (`openai.Server`、`openai.Load(ctx, rt, chats, embedders)`、`hwnpu-chat serve` と `opencode` が使う) と `ai/server/systemone` だけ。共通の `ai/server` (`server.New`、`Mount`、トークン、許すディレクトリ) と音声の口はまだない。
 
 `http.Handler` として作り、アプリが自分のサーバーに組み込める。`hwnpu-chat serve` もこれを使う。**既存のサービスの API との互換は、サービスごとに下のパッケージに分ける**。共通の部分 (仕事の置き場、認証、読み書きしてよいディレクトリ、ストリーム) は `ai/server` に置き、互換のパッケージはそれぞれの形の要求を `ai` の呼び出しに直す薄い層にする。
 
@@ -420,7 +494,9 @@ layers split picture.png --layers 4 --png parts/
 | `ai/flow/call.go` | 要求ごとに 1 回: `Call` (`NewCall`、`Then`、`Do`、`All`) |
 | `ai/flow` | 4 節の道具と、`Collect`、`Finals`、`Map`、`From`、`Sentences` |
 | `ai/speech` | `Transcribe`、`Speak`、`NewVAD` (音量の VAD: 雑音の床から 12 dB、終わりの待ち 600 ms)、`ReadWAV`、`WriteWAV`、`Chunks` |
-| `ai/text` | `Translate` (前の 4 組を履歴に)、`Chat` (`Complete`、`CompleteStream`) |
+| `ai/text` | `Translate` (前の 4 組を履歴に、`Reply`)、`Chat` (`Reply`、`Complete`、`CompleteStream`、`Count`)、`Embed`、`Decide`、`Format` (2.5 節) |
+| `ai/imagegen` | `Generate`、`Edit`、`Generator` (`Generate`、`GenerateAll`、`Sizes`、`SizeFor`、`SizeOf`、`Warm`)、`Options` (参照とその大きさ、種、ステップ、ネガティブとガイダンス、サンプラー、`Batch`、進み具合の `OnBatch` / `OnStep` / `OnStage` / `Drawn`、確かめるための `Checks`)、`Pictures`、`Export` (書き出しのディレクトリを `Definition` に)、`GenerateNode`。ファミリーごとに `klein.go`、`flux3.go`、`anima.go`、`chroma.go` |
+| `ai/server/openai`、`ai/server/systemone` | OpenAI 互換の口と System One API の `http.Handler` (8 節) |
 | `ai/cli` | `List`、`Download`、`Prepare`、`Status`、`Run` (引数を渡す)、`WritePlan`、`Usage` |
 | `ai/cli/konghelper` | kong の構造体 `Models`、`Status` と `Bind` |
 | `internal/airole` | `Role` (準備と読み込み)、`Files`、この機械の NPU (`Here`: `coreai`、`intel`、`amd-xdna2`) |
@@ -436,11 +512,13 @@ layers split picture.png --layers 4 --png parts/
   - 機械のメモリごとの構成: `HWNPU_MEMORY=16` では翻訳が plamo-3-translate-2b になり (3 つで 7.8 GB、読み込み 3.1 秒、全体 25.5 秒)、設定なし (59 GB) では 8B (11.6 GB)。8B で準備した置き場を 16 GB として開くと `ErrNotPrepared` (前は黙って 8B を読み込んでいたので直した)
   - `go test -race ./ai/...`: 流れの道具 (偽の時計で `Async` の重なり、`Latest` の間引き、`Hold`、`Metronome` の遅れと `Skip`、`Pace`、`Live`)、計画 → ダウンロード → コンパイル → 2 回目の計画で何も要らない、`Get` / `Release` / `Close`、コンパイル済みでない用途 (別のプログラムがコンパイルしたもの) を動かさないこと、役割と種類の食い違い、メモリごとの構成 (`At`、`As`) と別のモデルで準備された置き場、アプリの定義のファイル、ライセンスの同意、準備済みの同梱と対象の違い、`cli` のコマンド
   - Ryzen AI 9 365 (XDNA 2) で `samples/interpreter`: 13.3 秒の日本語の音声 (2 発話、3 文) を、whisper-large-v3-turbo、plamo-3-translate-8b、LFM3-Audio-2B-TTS の 3 つを 1 プロセスに同居させて英語の音声 8.5 秒に。読み込み 0.5、5.1、2.6 秒、全体 31.6 秒。書き起こしと訳は正しく、出力の音声を Whisper に戻すと訳文と一字一句同じ
-- **確かめていないこと**: Mac (Core AI) と Intel での実機 (準備と読み込みはコマンドと同じ関数だが、`ai` を通しては動かしていない)。`Chat` の実機。8 GB の機械での 3 つの同居
+- **確かめていないこと**: Mac (Core AI) と Intel での実機 (準備と読み込みはコマンドと同じ関数だが、`ai` を通しては動かしていない)。8 GB の機械での 3 つの同居
+- **hwnpu-chat の載せ替え (2026-11-22)**: chat、agent、serve、opencode、search、systemone、list が `ai` の上で動く (`--cache` はなくした)。aix1 (AMD) で旧版と同じ出力: LFM3-1.7B (温度 0、種 7 の温度 0.7 で考えも)、PLaMo 3 Translate 0.8B、Qwen3.5-0.8B、LFM3-VL-2B の画像、serve (流さない、ツールの呼び出しの流れ、`stop`)、agent (read を使う 2 回の往復)。埋め込みと d1 は AMD で動かず (旧版と同じエラー)、Mac と Intel では未確認
 
 ## 11. まだないもの、決めていないこと
 
-- **コマンドの載せ替え** (B3): `hwnpu-audio transcribe` / `tts`、`hwnpu-chat`、`hwnpu-image` を `ai` の上に載せる。コマンドにだけある設定 (重みの形式、`--cpu`、手で変換したプログラム、窓ごとの時間) をライブラリの口に出してから
+- **コマンドの載せ替え** (B3): `hwnpu-audio`、`hwnpu-chat`、`hwnpu-image generate` は載せ替え済み。残りは `hwnpu-image` の解析のコマンド
+- **決まった形で答える生成** (I1): `text.Format` は答えを照らすだけ。文法でデコードを縛ることはまだ
 - **メモリの合計から自動で構成を選ぶこと**: 今はアプリが段を書く (2.1 節)。合計が機械のメモリに収まるように小さいモデルへ自動で落とすことはしない (どれを主にするかはアプリが知っている)
 - **常駐の管理** ([architecture](design/architecture.md)): メモリの予算、使っていないモデルの追い出し、NPU への投入の順番 (音声を先に)。今は `Release` を呼ぶアプリ任せで、モデルは自分の中でだけ要求を 1 つずつ通す
 - **デバイスの共有**: 今はモデルごとにデバイスを開く (内部の `Load` がそうなっている)。1 回だけ開いて共有する形にするかは、常駐の管理と一緒に決める

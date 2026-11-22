@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
+	"strconv"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/sound"
+	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
-	"github.com/shibukawa/hwnpu/internal/pitch"
 )
 
 // PitchCmd is "hwnpu-audio pitch": the pitch (F0) of a voice or an instrument in WAV files with
@@ -28,7 +26,6 @@ type PitchCmd struct {
 	FMin      float64  `name:"fmin" placeholder:"HZ" help:"The lowest pitch to consider (0: 46.875)."`
 	FMax      float64  `name:"fmax" placeholder:"HZ" help:"The highest pitch to consider (0: 2093.75)."`
 	Threshold float64  `default:"0.5" help:"The confidence at and over which a frame is voiced."`
-	Cache     string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU       bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device    string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
 	Threads   int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
@@ -38,72 +35,66 @@ type PitchCmd struct {
 func (c *PitchCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	m, err := resolveKind(c.Model, chat.KindPitch, "", lw)
+	st := store("")
+	use, defs, err := useFor(st, sound.Pitch(c.Model))
 	if err != nil {
 		return err
 	}
-	setup := pitch.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Log: lw}
-	var d *pitch.Detector
-	t0 := time.Now()
-	ort, builtin := cpuRoute(m, c.Device, c.CPU, c.Threads, logf)
-	c.CPU = c.CPU || builtin
-	if ort {
-		model, err := pitch.Fetch(ctx, setup)
-		if err != nil {
-			return err
-		}
-		if d, err = pitch.OpenCPU(model, c.Threads); err != nil {
-			return err
-		}
-		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
-	} else {
-		backend := llm.BackendCoreML // what the CPU interpreter runs
-		var dev *hwnpu.Device
-		if !c.CPU {
-			if dev, backend, err = openAudioDevice(ctx, cacheDir(c.Cache), "--device cpu runs it on the CPU"); err != nil {
-				return err
-			}
-			defer dev.Close()
-		}
-		setup.Backend = backend
-		model, program, err := pitch.Prepare(ctx, setup)
-		if err != nil {
-			return err
-		}
-		t0 = time.Now()
-		if d, err = pitch.Open(ctx, dev, model, program); err != nil {
-			return err
-		}
-		logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
+	use, defs = defined(use, defs, convertedDefinition(c.Device, c.CPU, c.Threads), sound.Pitch)
+	st.Definitions = defs
+	app := ai.NewApp("hwnpu-audio", use)
+	app.Store = st
+	rt, err := open(ctx, app, lw)
+	if err != nil {
+		return err
 	}
-	defer d.Close()
+	defer rt.Close()
+	d, err := use.Get(ctx, rt)
+	if err != nil {
+		return err
+	}
+	model, took := loaded(rt)
+	logf("loaded %s in %.1f s, %s", model, took.Seconds(), d.Where())
 	console.Running()
 	for _, p := range c.Files {
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		x, err := lfm3audio.ReadWAV(raw) // mono at 16 kHz, SwiftF0's rate too
+		x, err := speech.ReadWAV(raw, sound.PitchRate) // mono at 16 kHz
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
-		start := time.Now()
-		r, err := d.Pitch(ctx, x, c.FMin, c.FMax)
+		t, err := d.Detect(ctx, x, sound.PitchOptions{FMin: c.FMin, FMax: c.FMax})
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
-		el := time.Since(start)
-		if err := writePitch(p, r, c.Threshold, c.JSON, len(c.Files) > 1); err != nil {
+		if err := writePitch(p, t, c.Threshold, c.JSON, len(c.Files) > 1); err != nil {
 			return err
 		}
-		secs := float64(len(x)) / pitch.SampleRate
-		logf("%s: %.1f s of audio, %d frames in %.3f s (%.0fx real time)", p, secs, len(r.PitchHz), el.Seconds(), secs/el.Seconds())
+		logf("%s: %.1f s of audio, %d frames in %.3f s (%.0fx real time)", p, t.Seconds, len(t.Frames), t.Took.Seconds(), t.Seconds/t.Took.Seconds())
 	}
 	return nil
 }
 
-func writePitch(path string, r pitch.Result, threshold float64, asJSON, named bool) error {
-	period := float64(pitch.Hop) / pitch.SampleRate
+// convertedDefinition is what --device, --cpu and --threads make of a converted model (pitch,
+// notes): a device of its own, hwnpu's CPU executor on all the cores for --cpu, the CPU's
+// threads.
+func convertedDefinition(device string, cpu bool, threads int) ai.Definition {
+	var d ai.Definition
+	switch {
+	case cpu:
+		d.Device, d.Settings = "cpu", map[string]string{"cpu": "hwnpu"}
+	default:
+		d.Device = device
+		if threads != 1 {
+			d.Settings = map[string]string{"threads": strconv.Itoa(threads)}
+		}
+	}
+	return d
+}
+
+func writePitch(path string, t sound.PitchTrack, threshold float64, asJSON, named bool) error {
 	if asJSON {
 		type frame struct {
 			Time       float64 `json:"timestamp"`
@@ -119,8 +110,8 @@ func writePitch(path string, r pitch.Result, threshold float64, asJSON, named bo
 		if named {
 			out.File = path
 		}
-		for i := range r.PitchHz {
-			out.Frames = append(out.Frames, frame{float64(i) * period, r.PitchHz[i], r.Confidence[i], r.Confidence[i] >= threshold, r.LoudnessDB[i]})
+		for _, f := range t.Frames {
+			out.Frames = append(out.Frames, frame{f.Time, f.Hz, f.Confidence, f.Confidence >= threshold, f.LoudnessDB})
 		}
 		return json.NewEncoder(os.Stdout).Encode(out)
 	}
@@ -128,8 +119,8 @@ func writePitch(path string, r pitch.Result, threshold float64, asJSON, named bo
 		fmt.Printf("# %s\n", path)
 	}
 	fmt.Println("timestamp,pitch_hz,confidence,voiced,loudness_db")
-	for i := range r.PitchHz {
-		fmt.Printf("%.4f,%.2f,%.4f,%v,%.1f\n", float64(i)*period, r.PitchHz[i], r.Confidence[i], r.Confidence[i] >= threshold, r.LoudnessDB[i])
+	for _, f := range t.Frames {
+		fmt.Printf("%.4f,%.2f,%.4f,%v,%.1f\n", f.Time, f.Hz, f.Confidence, f.Confidence >= threshold, f.LoudnessDB)
 	}
 	return nil
 }

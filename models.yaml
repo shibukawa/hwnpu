@@ -56,6 +56,12 @@
 #                 the model on: the family's next is picked there (the 2B for PLaMo 3 Translate
 #                 8B on an M1); its name and FAMILY:TAG still run it
 #   like          another model whose fields this one takes, except its tag
+#   settings      how the model's role prepares and runs it beyond the fields here, by name (a
+#                 speech or transcription model's format: lut4); each role reads the names it knows
+#                 (ai/speech, ai/text). Mostly written by an app as it runs (ai.Definition)
+#   programs      files converted beforehand, by the name the role reads them as (iron: an export's
+#                 directory; text, depth, codec, checkpoint: LFM3-Audio's converted by hand),
+#                 absolute paths: the role uses them as they are and converts nothing of them
 #   remove        true: drop the model
 # categories: NAME: a use (-m translate). picks are MODEL.md's columns: the model a machine of
 #   that much memory (GB) or more runs. A file of your own replaces a column's model, or drops it

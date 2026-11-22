@@ -135,6 +135,11 @@ type Model struct {
 	License License
 	// Content is what the model may make that the policy refuses unless allowed (Contents: nsfw).
 	Content []string
+	// Settings are how the model's role prepares and runs it beyond the fields above (models.yaml's
+	// settings: a speech model's format), and Programs files converted beforehand that the role
+	// uses as they are, by the name it reads them as (models.yaml's programs).
+	Settings map[string]string
+	Programs map[string][]string
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that

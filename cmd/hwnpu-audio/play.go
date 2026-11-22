@@ -10,7 +10,7 @@ import (
 
 	"github.com/ebitengine/oto/v3"
 
-	"github.com/shibukawa/hwnpu/internal/music"
+	"github.com/shibukawa/hwnpu/ai/sound"
 )
 
 // speaker plays the music through the default audio output as it is generated (oto, which on
@@ -26,7 +26,7 @@ type speaker struct {
 }
 
 // prebuffer is how much is buffered before the music starts.
-const prebuffer = 4 * music.SampleRate // bytes of int16 stereo: one second
+const prebuffer = 4 * sound.MusicRate // bytes of int16 stereo: one second
 
 var otoContext struct {
 	once sync.Once
@@ -38,7 +38,7 @@ func newSpeaker() (*speaker, error) {
 	otoContext.once.Do(func() {
 		var ready chan struct{}
 		otoContext.ctx, ready, otoContext.err = oto.NewContext(&oto.NewContextOptions{
-			SampleRate:   music.SampleRate,
+			SampleRate:   sound.MusicRate,
 			ChannelCount: 2,
 			Format:       oto.FormatSignedInt16LE,
 		})
@@ -91,7 +91,7 @@ func (s *speaker) Read(p []byte) (int, error) {
 func (s *speaker) finish(ctx context.Context) error {
 	// a quarter of a second of silence after the music, and a wait for the device's buffer after
 	// the player has read it all, so that the music's last moments are heard
-	s.write(make([]float32, 2*music.SampleRate/4))
+	s.write(make([]float32, 2*sound.MusicRate/4))
 	s.mu.Lock()
 	s.closed = true
 	start := !s.started

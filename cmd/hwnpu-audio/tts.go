@@ -3,14 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"strings"
-	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/speech"
+	ispeech "github.com/shibukawa/hwnpu/internal/speech"
 )
 
 // TTSCmd is "hwnpu-audio tts": speaks a text with LFM3-Audio-2B on the Neural Engine into a WAV
@@ -40,7 +39,6 @@ type TTSCmd struct {
 	Seed      uint64   `placeholder:"N" help:"The random seed of the speech codes (0: a new one, logged so that it can be repeated)."`
 	MaxFrames int      `name:"max-frames" placeholder:"N" help:"Most audio frames of 80 ms (0: until the end of audio or a full cache)."`
 	Format    string   `placeholder:"FORMAT" help:"Weight format of the text model's programs (default: the model's, 8 bit tables)."`
-	Cache     string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	Models    string   `placeholder:"FILES" help:"${models_usage}."`
 	CPU       bool     `name:"cpu" help:"Run on the CPU interpreter instead of the Neural Engine (slow)."`
 
@@ -54,51 +52,25 @@ type TTSCmd struct {
 // Run speaks the text.
 func (c *TTSCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
-	manual := c.Checkpoint != "" || c.TextModel != "" || c.IronText != "" || c.Depth != "" || c.Codec != ""
-	if manual && (c.Checkpoint == "" || c.TextModel == "" && c.IronText == "" || c.Depth == "" || c.Codec == "") {
-		return fmt.Errorf("programs converted by hand take all of --checkpoint, --text (or --iron-text), --depth and --codec")
-	}
-	cfg := speech.Config{Text: strings.Split(c.TextModel, ","), Depth: c.Depth, Codec: c.Codec, Dir: c.Checkpoint, IronText: c.IronText}
-	switch {
-	case !manual && speech.IsIronExport(expandHome(c.Model)):
-		cfg = speech.IronConfig(expandHome(c.Model)) // an export of tools/amd/iron_lfm3speech.py
-	case !manual && !c.CPU && onAMD():
-		// AMD's NPU runs the export of tools/amd/iron_lfm3speech.py (made on the first run)
-		m, err := resolveKind(c.Model, chat.KindSpeech, c.Models, lw)
-		if err != nil {
-			return err
-		}
-		if cfg, err = speech.PrepareAMD(chat.WithModel(ctx, m), m, lw); err != nil {
-			return err
-		}
-	case !manual:
-		m, err := resolveKind(c.Model, chat.KindSpeech, c.Models, lw)
-		if err != nil {
-			return err
-		}
-		backend := ""
-		if !c.CPU { // the CPU interpreter runs Core ML packages
-			if backend, err = audioFormat(ctx); err != nil {
-				return err
-			}
-		}
-		if cfg, err = speech.Prepare(ctx, speech.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Format: c.Format, Backend: backend, Log: lw}); err != nil {
-			return err
-		}
-	}
-	cfg.CacheDir, cfg.CPU, cfg.Device, cfg.Log = cacheDir(c.Cache), c.CPU, audioDevice(), lw
-	seed := c.Seed
-	if seed == 0 {
-		seed = rand.Uint64() // drawn here so that it can be told (--seed repeats the speech)
-	}
-	s, err := speech.Load(ctx, cfg)
+	st := store(c.Models)
+	use, defs, err := c.use(st)
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	st.Definitions = defs
+	app := ai.NewApp("hwnpu-audio", use)
+	app.Store = st
+	rt, err := open(ctx, app, lw)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	s, err := use.Get(ctx, rt)
+	if err != nil {
+		return err
+	}
 	console.Running()
-	t0 := time.Now()
-	pcm, frames, err := s.Speak(ctx, speech.Request{Text: strings.Join(c.Text, " "), Language: c.Lang, Voice: c.Voice, Seed: seed, MaxFrames: c.MaxFrames})
+	a, err := s.Speak(ctx, strings.Join(c.Text, " "), speech.SpeakOptions{Language: c.Lang, Voice: c.Voice, Seed: c.Seed, MaxFrames: c.MaxFrames})
 	if err != nil {
 		return err
 	}
@@ -106,16 +78,61 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := speech.WriteWAV(f, pcm, s.SampleRate()); err != nil {
+	if err := speech.WriteWAV(f, a.Samples, a.Rate); err != nil {
 		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	secs := float64(len(pcm)) / float64(s.SampleRate())
+	secs, t := float64(len(a.Samples))/float64(a.Rate), a.Stats
 	fmt.Fprintf(lw, "%d frames, %.2f s of audio in %.1f s (seed %d; the text model %.1f s, the depthformer %.1f s, the codec decoder %.1f s)\n",
-		len(frames), secs, time.Since(t0).Seconds(), seed, s.Times.Text.Seconds(), s.Times.Depth.Seconds(), s.Times.Codec.Seconds())
+		t.Frames, secs, t.Took.Seconds(), t.Seed, t.Text.Seconds(), t.Depth.Seconds(), t.Codec.Seconds())
 	fmt.Println(c.Out)
 	return nil
 }
+
+// use is the use of the model --model names, as the flags make it: a model of its own for
+// --format, --cpu, the programs converted by hand, or an export's directory.
+func (c *TTSCmd) use(st ai.Store) (ai.Use[*speech.Speaker], []ai.Definition, error) {
+	var d ai.Definition
+	name := c.Model
+	manual := c.Checkpoint != "" || c.TextModel != "" || c.IronText != "" || c.Depth != "" || c.Codec != ""
+	switch dir := expandHome(c.Model); {
+	case manual:
+		if c.Checkpoint == "" || c.TextModel == "" && c.IronText == "" || c.Depth == "" || c.Codec == "" {
+			return ai.Use[*speech.Speaker]{}, nil, fmt.Errorf("programs converted by hand take all of --checkpoint, --text (or --iron-text), --depth and --codec")
+		}
+		d.Programs = map[string][]string{"checkpoint": {absolute(c.Checkpoint)}, "depth": {absolute(c.Depth)}, "codec": {absolute(c.Codec)}}
+		if c.TextModel != "" {
+			for _, p := range strings.Split(c.TextModel, ",") {
+				d.Programs["text"] = append(d.Programs["text"], absolute(p))
+			}
+		}
+		if c.IronText != "" {
+			d.Programs["iron-text"] = []string{absolute(c.IronText)}
+		}
+	case isSpeechExport(dir):
+		// an export of tools/amd/iron_lfm3speech.py, for AMD's NPU: a model like the definitions' own
+		d.Programs = map[string][]string{"iron": {absolute(dir)}}
+		name = "speech"
+	}
+	use, defs, err := useFor(st, speech.Speak(name))
+	if err != nil {
+		return use, nil, err
+	}
+	if c.Format != "" {
+		d.Settings = map[string]string{"format": c.Format}
+	}
+	if c.CPU {
+		d.Device = "cpu"
+	}
+	if d.Programs == nil && d.Settings == nil && d.Device == "" {
+		return use, defs, nil
+	}
+	d.Like = use.Name()
+	return speech.Speak(d.ID()), append(defs, d), nil
+}
+
+// isSpeechExport reports whether dir is an export of tools/amd/iron_lfm3speech.py.
+func isSpeechExport(dir string) bool { return ispeech.IsIronExport(dir) }

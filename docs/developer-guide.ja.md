@@ -1067,7 +1067,7 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 - 前の形: `ai/aicli` が kong の構造体だけを出していた
 - **未定**: ほかのライブラリ (cobra など) のアダプタを置くか。置くと本体のモジュールの依存が増えるので、置くなら別のモジュールにする
 
-**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。`ai/vision`、`ai/imagegen`。予定: `ai/sound`。
+**D18. パッケージの名前と分け方** — 今: `ai`、`ai/speech`、`ai/text`、`ai/flow`、`ai/cli`、`ai/cli/konghelper`。`ai/vision`、`ai/imagegen`、`ai/sound`。
 
 - **未定**: `ai` という名前 (公開するとあとから変えにくい)。`speech` に文字起こしと読み上げの両方を置く分け方。`text` という名前 (標準ライブラリの `text/...` と並ぶと紛らわしい)
 
@@ -1107,8 +1107,8 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 ## 11. まだないもの
 
 - 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、FLUX.2 klein のほかの画像のモデル (Anima、Chroma、FLUX.3 klein を `ai/imagegen` に。今はコマンド `hwnpu-image generate` で作る)
-- 音: 音楽、効果音、音高、採譜 (`ai/sound`)
-- コマンドの載せ替え: `hwnpu-audio`、`hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする
+- 音: メトロノームの拍に合わせて作る音楽、鳴らしながら変える曲調 (`ai/sound` には流れの音楽、効果音、音高、採譜がある)
+- コマンドの載せ替え: `hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする (`hwnpu-audio` は済み)
 - 常駐の管理 (D9、D10)、ローカルサーバー (OpenAI 互換など)、配布用のバンドル、ビルドタグ
 - 順番と中身は [app-api-tasks.md](app-api-tasks.md)
 

@@ -2,7 +2,7 @@
 
 [English](USAGE_AUDIO.md)
 
-`hwnpu-audio` は、音楽と効果音の生成 (`generate`)、読み上げ (`tts`)、書き起こし (`transcribe`)、音高 (`pitch`)、音符 (`notes`) を NPU で行います。どれも初回にモデルを落として自分で変換します。選べるモデルは `hwnpu-audio list` で出ます。
+`hwnpu-audio` は、音楽と効果音の生成 (`generate`)、読み上げ (`tts`)、書き起こし (`transcribe`)、音高 (`pitch`)、音符 (`notes`) を NPU で行います。どれも初回にモデルを落として自分で変換します。選べるモデルは `hwnpu-audio list` で出ます。コマンドはアプリ向けのライブラリ `ai` のデモです ([docs/app-api.md](docs/app-api.md)。音楽、効果音、音高、音符は `ai/sound`、読み上げと書き起こしは `ai/speech`)。動かす前に足りないものだけを準備し、コンパイルしたプログラムは hwnpu の利用者のキャッシュに置きます (`--cache` はありません)。モデルの作り方や動かし方を変えるフラグ (`--format`、`--text-format`、`--dit-format`、`--cpu`、`--device`、`--threads`) は、元のモデルとは別に準備する、そのモデルだけのモデルになります。
 
 Mac では Core AI を通して Neural Engine で動かすだけなので、macOS 27 が要ります (macOS 26 以前では、そう書いたエラーで止まります)。モデルは Core AI 向け (モデルのディレクトリの書き出し `NAME.coreai` に `.aimodel`、hwnpu-chat や hwnpu-image と同じ) に変換し、コンパイルした結果は Core AI が自分のキャッシュに持つので、2 回目からの読み込みは 0.1 秒です ([docs/design/audio-models.ja.md](docs/design/audio-models.ja.md))。`--cpu` は確かめ用に、Core ML の書き出しを CPU のインタプリタで動かします。
 
@@ -17,6 +17,8 @@ AMD の NPU (Ryzen AI 300 以降) では、どのモデルも IRON の書き出�
 - MIDI の音符: `--notes melody.mid`
 - 録音の続き: `--continue intro.wav`
 - 鳴らしながらファイルにも書く: `--play -o out.wav`、標準出力に流す: `-o -`
+
+初回はモデルの全部を準備します。曲調の音声の側と SpectroStream の符号化器 (`--continue` 用) もいっしょなので、あとで録音の曲調や続きを使うときに、ダウンロードも変換も要りません。
 
 AMD の NPU では、SpectroStream の復号器が `tools/amd/iron_magenta.py` のグラフで、言語モデルと MusicCoCa は CPU で動きます。初回は、取得元に書き出し (`magenta-realtime-2-small.amd-npu2`) がなければ IRON で復号器を書き出します (約 15 秒)。Ryzen AI 9 365 で実時間の約 0.3 倍 (4 秒を 13 秒。音楽の 1 秒あたり復号器 1.6 秒、言語モデル 1.6 秒。全部 CPU なら 28 秒)、約 2.7 GB です。
 

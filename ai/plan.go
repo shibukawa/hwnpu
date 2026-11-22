@@ -41,6 +41,9 @@ type Plan struct {
 	Quiet bool
 	// Brief shows the stages alone, not the models' logs.
 	Brief bool
+	// AllowOffNPU compiles models part of whose programs the NPU's compiler places off the NPU
+	// (ai.AllowOffNPU).
+	AllowOffNPU bool
 	// Log is where Run shows it (standard error when nil).
 	Log io.Writer
 
@@ -168,14 +171,14 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
 			// compiles it, and nothing can be written there to say so); with no NPU, nothing is
-			it.Ready, it.Compiled = true, loc.compiled() || loc.bundle || p.npu.Target == ""
+			it.Ready, it.Compiled = true, loc.compiled() || loc.bundle || p.npu.Target == "" || p.npu.CPU(m)
 			if loc.bundle {
 				it.Bundle = loc.root
 			}
 		case err != nil && !errors.Is(err, ErrNotPrepared) && !errors.Is(err, ErrBundleTarget):
 			return nil, err
 		}
-		if !it.Ready && !chat.Downloaded(m) {
+		if !it.Ready && !chat.Downloaded(m) && len(m.Programs) == 0 {
 			it.Download = int64(m.BytesFor(p.npu.Vendor))
 		}
 		p.Items = append(p.Items, it)
@@ -419,7 +422,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 	compile := !p.NoCompile && p.npu.Target != ""
 	var todo []int
 	for i, it := range p.Items {
-		if !it.Ready || compile && !it.Compiled {
+		if !it.Ready || compile && !it.Compiled && !p.npu.CPU(it.model) {
 			todo = append(todo, i)
 		}
 	}
@@ -451,11 +454,11 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 			}
 			report(StagePrepare, "")
 			dir := chat.ModelDir(it.model)
-			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Dir: dir, NPU: p.npu, Log: out})
+			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Base: p.store.base(it.model), Dir: dir, NPU: p.npu, Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: preparing %s (%s): %w", it.Use, it.Model, err)
 			}
-			r = &record{Model: it.Model, Role: it.Role, Run: it.model.Run, MemoryGB: it.MemoryGB, Files: files,
+			r = &record{Model: it.Model, Role: it.Role, Run: it.model.Run, Spec: spec(it.model), MemoryGB: it.MemoryGB, Files: files,
 				Prepared: time.Now().UTC().Truncate(time.Second), Revision: it.req.role.Revision}
 			// written before the load, so that a compile cut off does not download again
 			if err := p.store.put(ctx, it.req.key(), p.npu, r); err != nil {
@@ -463,11 +466,14 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 			}
 			it.Ready, it.Download = true, 0
 		}
+		if p.npu.CPU(it.model) {
+			it.Compiled = true // nothing to compile for the NPU
+		}
 		if compile && !it.Compiled {
 			report(StageCompile, "")
 			log.fn = func(line string) { report(StageCompile, line) }
 			t0 := time.Now()
-			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out})
+			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, Def: it.model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out, AllowOffNPU: p.AllowOffNPU})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
 			}

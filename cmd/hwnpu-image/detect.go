@@ -3,14 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
-	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,22 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
-	"github.com/shibukawa/hwnpu/internal/vision/detect"
-	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
+	"github.com/shibukawa/hwnpu/internal/imagedev"
 )
 
 // DetectCmd is "hwnpu-image detect": the objects in pictures (COCO's 80 classes) with RTMDet
-// (OpenMMLab MMDetection, Apache-2.0; internal/vision/detect), on Apple's Neural Engine or
-// Intel's NPU, converted the first time, and elsewhere (AMD's NPU has no form of it yet) or with
-// --device cpu on the CPU, the ONNX file with ONNX Runtime (--cpu: the converted program on the
-// CPU interpreter, for checking a conversion). The network up to its head runs on the NPU;
+// (OpenMMLab MMDetection, Apache-2.0; ai/vision's Detect), on Apple's Neural Engine or Intel's
+// NPU, converted the first time, on AMD's NPU from an export of tools/amd/iron_onnxcnn.py (made
+// with IRON on the first run) where models.yaml says so, and elsewhere or with --device cpu on
+// the CPU, the ONNX file with ONNX Runtime (--cpu: the converted program on the CPU
+// interpreter, for checking a conversion). The network up to its head runs on the NPU;
 // decoding the boxes and suppressing the overlaps on the host.
 //
 // For each picture it prints one line of JSON: each object's box (x1, y1, x2, y2 in the
@@ -47,7 +39,6 @@ type DetectCmd struct {
 	Draw        bool     `help:"Also write NAME.objects.png: the picture with the boxes."`
 	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
 	Repeat      int      `default:"1" help:"Run each picture this many times and report the mean time."`
-	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU         bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
 	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
@@ -57,86 +48,30 @@ type DetectCmd struct {
 // Run finds the objects of each picture.
 func (c *DetectCmd) Run(ctx context.Context) error {
 	if slices.Contains(c.Class, "help") {
-		fmt.Println(strings.Join(detect.COCO, ", "))
+		fmt.Println(strings.Join(vision.COCO, ", "))
 		return nil
 	}
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	m, err := resolve(c.Model, chat.KindDetect)
+	useBackend(c.Backend)
+	how := made{device: c.Device}
+	how.threads(c.Threads)
+	how.interpreter(c.CPU)
+	d, rt, loaded, err := load(ctx, c.Model, vision.Detect, how, lw)
 	if err != nil {
 		return err
 	}
-	file, err := onlyFile(m, ".onnx")
-	if err != nil {
-		return err
-	}
-	setup := detect.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), File: file, SHA256: m.SHA256[file], Log: lw}
-	var d *detect.Detector
-	t0 := time.Now()
-	fetch := func() (string, error) { return detect.Fetch(ctx, setup) }
-	if export := amdCNNExport(ctx, m, c.Device, c.CPU, logf, detect.ExportVersion, fetch, func(python []string, model, dir string) error {
-		return detect.ExportNPU(ctx, python, m.Name, model, dir, lw)
-	}); export != "" {
-		model, err := detect.Fetch(ctx, setup)
-		if err != nil {
-			return err
-		}
-		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-		if err != nil {
-			return err
-		}
-		defer dev.Close()
-		if d, err = detect.OpenNPU(ctx, dev, export, model); err != nil {
-			return err
-		}
-		logf("loaded %s in %.1f s, on AMD's NPU (%s)", m.Name, time.Since(t0).Seconds(), filepath.Base(export))
-		defer d.Close()
-		return c.detect(ctx, d, logf)
-	}
-	ort, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
-	c.CPU = c.CPU || builtin
-	if ort {
-		model, err := detect.Fetch(ctx, setup)
-		if err != nil {
-			return err
-		}
-		if d, err = detect.OpenCPU(model, c.Threads); err != nil {
-			return err
-		}
-		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
-	} else {
-		dev, backend, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, c.Backend, "RTMDet")
-		if err != nil {
-			return err
-		}
-		defer closeDev()
-		defer npuHeld(logf)()
-		setup.Backend = backend
-		_, program, err := detect.Prepare(ctx, setup)
-		if err != nil {
-			return err
-		}
-		t0 = time.Now()
-		if d, err = detect.Open(ctx, dev, program); err != nil {
-			return err
-		}
-		logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
-	}
-	defer d.Close()
-	return c.detect(ctx, d, logf)
-}
-
-// detect finds the objects of each picture with d.
-func (c *DetectCmd) detect(ctx context.Context, d *detect.Detector, logf func(string, ...any)) error {
-	d.Score, d.NMS = c.Score, c.NMS
-	keep := map[string]bool{}
+	defer rt.Close()
+	defer imagedev.NPUHeld(logf)()
+	logf("%s, %s", loaded, d.Where())
+	o := vision.DetectOptions{Score: orAll(c.Score), NMS: c.NMS}
 	for _, l := range c.Class {
 		for _, k := range strings.Split(l, ",") {
 			k = strings.TrimSpace(k)
-			if !slices.Contains(d.Classes, k) {
+			if !slices.Contains(d.Classes(), k) {
 				return fmt.Errorf("--class %q is not one of the model's classes (--class help lists them)", k)
 			}
-			keep[k] = true
+			o.Classes = append(o.Classes, k)
 		}
 	}
 	console.Running()
@@ -146,13 +81,13 @@ func (c *DetectCmd) detect(ctx context.Context, d *detect.Detector, logf func(st
 		if err != nil {
 			return err
 		}
-		var objs []detect.Object
+		var found *vision.Objects
 		start := time.Now()
 		for i := range max(1, c.Repeat) {
 			if i == 1 {
 				start = time.Now()
 			}
-			if objs, err = d.Detect(ctx, img); err != nil {
+			if found, err = d.Detect(ctx, img, o); err != nil {
 				return fmt.Errorf("%s: %w", p, err)
 			}
 		}
@@ -160,19 +95,18 @@ func (c *DetectCmd) detect(ctx context.Context, d *detect.Detector, logf func(st
 		if c.Repeat <= 1 {
 			runs = 1
 		}
-		if len(keep) > 0 {
-			objs = slices.DeleteFunc(objs, func(o detect.Object) bool { return !keep[o.Label] })
-		}
-		logf("%s: %d objects in %.1f ms (resize %.1f, network %.1f, boxes on the host %.1f)%s", filepath.Base(p), len(objs),
-			ms(time.Since(start))/float64(runs), ms(d.Times[0]), ms(d.Times[1]), ms(d.Times[2]), repeated(c.Repeat))
-		if objs == nil {
-			objs = []detect.Object{}
+		logf("%s: %d objects in %.1f ms (resize %.1f, network %.1f, boxes on the host %.1f)%s", filepath.Base(p), len(found.Objects),
+			ms(time.Since(start))/float64(runs), ms(found.Resize), ms(found.Network), ms(found.Host), repeated(c.Repeat))
+		objs := []objectJSON{}
+		for _, ob := range found.Objects {
+			objs = append(objs, objectJSON{Box: [4]float32{float32(ob.Box.Min.X), float32(ob.Box.Min.Y), float32(ob.Box.Max.X), float32(ob.Box.Max.Y)},
+				Class: ob.Class, Label: ob.Label, Score: float32(ob.Score)})
 		}
 		if err := enc.Encode(struct {
-			File    string          `json:"file"`
-			Width   int             `json:"width"`
-			Height  int             `json:"height"`
-			Objects []detect.Object `json:"objects"`
+			File    string       `json:"file"`
+			Width   int          `json:"width"`
+			Height  int          `json:"height"`
+			Objects []objectJSON `json:"objects"`
 		}{p, img.Bounds().Dx(), img.Bounds().Dy(), objs}); err != nil {
 			return err
 		}
@@ -191,6 +125,23 @@ func (c *DetectCmd) detect(ctx context.Context, d *detect.Detector, logf func(st
 	return nil
 }
 
+// objectJSON is an object as detect prints it: its box (x1, y1, x2, y2), class, label and score.
+type objectJSON struct {
+	Box   [4]float32 `json:"box"`
+	Class int        `json:"class"`
+	Label string     `json:"label"`
+	Score float32    `json:"score"`
+}
+
+// orAll is a least score of a flag as ai/vision's options take it: 0 keeps everything (a
+// negative score there; 0 is the default).
+func orAll(score float32) float32 {
+	if score == 0 {
+		return -1
+	}
+	return score
+}
+
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 
 // repeated says how many runs a time is the mean of.
@@ -199,148 +150,6 @@ func repeated(n int) string {
 		return ""
 	}
 	return fmt.Sprintf(", the mean of %d runs after the first", n-1)
-}
-
-// amdCNNExport is the export of tools/amd/iron_onnxcnn.py that model m runs from on AMD's NPU
-// (ironcnn.Dir: NAME.amd-npu2 in the cache's entries/amd-xdna2, or ~/models), from the shared
-// layers or made on the first run with IRON when it is not there (minutes): fetch downloads the
-// ONNX file, export makes the export of it in dir, version is the export's (ironcnn.Version or
-// the model's own). It is "" where m runs elsewhere: another NPU, --cpu, --device cpu (or
-// models.yaml's device for AMD, HWNPU_DEVICE), or no export and no IRON to make one with (then
-// the CPU, said in the log).
-func amdCNNExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), version int, fetch func() (string, error), export func(python []string, model, dir string) error) string {
-	return amdFirstRunExport(ctx, m, flag, interp, logf, func(dir string) error { _, err := ironcnn.Read(dir); return err },
-		"iron_onnxcnn.py", version, fetch, export)
-}
-
-// amdFirstRunExport is amdCNNExport for any tool's export: have says whether dir holds one,
-// tool is the script, version the export's version (chat.PinnedRecipe).
-func amdFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), have func(dir string) error, tool string, version int, fetch func() (string, error), export func(python []string, model, dir string) error) string {
-	if interp || chat.HereVendor() != "amd" {
-		return ""
-	}
-	if device, _, err := chat.ChooseDevice(m, "amd", flag); err != nil || device != "npu" {
-		return ""
-	}
-	dir := ironcnn.Dir(m.Name)
-	if have(dir) == nil {
-		// one made by hand here goes in the sources written back to, described as a first run's
-		// (as hwnpu-dev cache import describes it), so that other machines' first runs find it
-		chat.ShareMadeHere(m, dir, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), console.Log(os.Stderr))
-		return dir
-	}
-	// none here: from the shared layers, else made as hwnpu-chat makes its models'
-	// (chat.PrepareAMD), with IRON
-	errNoIRON := errors.New("no IRON")
-	err := chat.SharedExport(ctx, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), dir, console.Log(os.Stderr), func() error {
-		python, err := chat.IRONPython(ctx)
-		if err != nil {
-			logf("%s: no export for AMD's NPU in %s or the shared layers, and making one needs IRON (%v; INSTALL_AMD.md, %s): the CPU", m.Name, dir, err, chat.IRONEnv)
-			return errNoIRON
-		}
-		model, err := fetch()
-		if err == nil {
-			err = export(python, model, dir)
-		}
-		return err
-	})
-	if err == nil {
-		err = have(dir)
-	}
-	if err != nil {
-		if !errors.Is(err, errNoIRON) {
-			logf("%s: %v; the CPU", m.Name, err)
-		}
-		return ""
-	}
-	return dir
-}
-
-// cpuRoute is where an ONNX model m runs (chat.ConvertedDevice) and logs it: ort, ONNX
-// Runtime on the CPU when its library is here; builtin, hwnpu's own CPU executor on the
-// converted program (internal/milcpu, on threads goroutines) when it is not, or with --cpu
-// (interp: all the cores); neither, the NPU.
-func cpuRoute(ctx context.Context, m chat.Model, flag string, interp bool, threads int, logf func(string, ...any)) (ort, builtin bool) {
-	if interp {
-		milcpu.Threads = 0
-		return false, true
-	}
-	device, why, err := chat.ConvertedDevice(m, chat.HereVendor(), flag)
-	if err != nil {
-		logf("%v; the NPU", err)
-		return false, false
-	}
-	if device != "cpu" {
-		logf("%s on the %s (%s)", m.Name, device, why)
-		return false, false
-	}
-	if onnxrt.Available() {
-		logf("%s on the CPU with ONNX Runtime (%s)", m.Name, why)
-		return true, false
-	}
-	milcpu.Threads = max(1, threads)
-	logf("%s on the CPU with hwnpu's own executor (%s; ONNX Runtime, faster, is not here: HWNPU_ONNXRUNTIME)", m.Name, why)
-	return false, true
-}
-
-// placement is where a loaded program runs, for the log.
-func placement(cpu, onNPU bool) string {
-	switch {
-	case cpu:
-		return "on the CPU interpreter"
-	case onNPU:
-		return "all on the NPU"
-	}
-	return "NOT all on the NPU"
-}
-
-// npuHeld logs, when called after the pictures, how much more memory the Neural Engine holds
-// than before (mem.NPUWired: the programs' weights and buffers, outside the process's
-// footprint).
-func npuHeld(logf func(string, ...any)) func() {
-	before, ok := mem.NPUWired()
-	return func() {
-		if after, ok2 := mem.NPUWired(); ok && ok2 && after > before {
-			logf("the Neural Engine holds %.0f MB more", float64(after-before)/1e6)
-		}
-	}
-}
-
-// onlyFile is the one file with the extension that models.yaml's sha256 of m names: the file of
-// a repository with several models (bukuroo/RTMDet-ONNX).
-func onlyFile(m chat.Model, ext string) (string, error) {
-	var files []string
-	for f := range maps.Keys(m.SHA256) {
-		if strings.EqualFold(filepath.Ext(f), ext) && !strings.Contains(f, "/") {
-			files = append(files, f)
-		}
-	}
-	if len(files) != 1 {
-		return "", fmt.Errorf("%s: models.yaml's sha256 must name its one %s file (it names %d)", m.Name, ext, len(files))
-	}
-	return files[0], nil
-}
-
-// openProgramDevice opens the NPU for converted programs (Core AI's or OpenVINO IR), or none for
-// the CPU interpreter (which runs Core ML packages): the device backend named (--backend, "":
-// HWNPU_BACKEND or the NPU found; a Mac's is Core AI's). what names the model for the error on an
-// NPU that runs neither.
-func openProgramDevice(ctx context.Context, cpu bool, cache, name, what string) (*hwnpu.Device, string, func(), error) {
-	if cpu {
-		return nil, llm.BackendCoreML, func() {}, nil
-	}
-	if cache == "" {
-		cache = hcache.Root()
-	}
-	dev, backend, err := openImageDevice(ctx, name, cache)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	if backend == "" {
-		dev.Close()
-		return nil, "", nil, fmt.Errorf("%s runs neither Core AI programs nor OpenVINO IR (--device cpu runs %s on the CPU)", dev.Info().Backend, what)
-	}
-	return dev, backend, func() { dev.Close() }, nil
 }
 
 // drawPath is where --draw writes a picture's drawing: dir (or the picture's directory) and the

@@ -64,9 +64,15 @@ type Options struct {
 	// uses and aliases), read over hwnpu's, the machine's and the user's, as hwnpu-chat's
 	// -models are.
 	Files []string
+	// Definitions are definition files given as their text (models.yaml's format), read over
+	// Files: models an application makes as it runs (ai.Definition), each a model of its own.
+	Definitions []Definitions
 	// Log is where downloads and copies are shown (nil for nowhere).
 	Log io.Writer
 }
+
+// Definitions is a definition file given as its text: Name names it in messages.
+type Definitions = chat.Definitions
 
 // Limits are what the cache may take of the disk (cache.Limits).
 type Limits = cache.Limits
@@ -104,7 +110,7 @@ type Layer struct {
 func Open(o Options) (*Store, error) {
 	cache.SetRoot(o.Root)
 	cache.SetLimits(o.Limits)
-	if err := chat.LoadModels(o.Files, true, o.Log); err != nil {
+	if err := chat.LoadModelsWith(o.Files, o.Definitions, true, o.Log); err != nil {
 		return nil, err
 	}
 	sources, hf := shared.Sources(), shared.HuggingFace()
