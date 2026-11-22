@@ -10,7 +10,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 | # | 問題 | 報告 | 今の回避 | 直ったら |
 |---|---|---|---|---|
-| 1 | prebuilt の仕上げが機械全体で 10 秒に 1 本 | FB25624129 | なし (prebuilt は大きな部品に効くので置く) | 測り直して、チャットのモデルにも置くか決める |
+| 1 | prebuilt の仕上げが機械全体で 10 秒に 1 本 | FB25624129 | なし (prebuilt は大きな部品に効くので置く) | 測り直して、画像以外のモデルにも置くか決める |
 | 2 | 隣り合う同じ lut の表で `coreai-build` が ANE をあきらめる | FB25624151 (追記あり) | 表の 1 つを 1 ulp ずらす (`mlpackage.DistinctNeighbours`) | 外さなくてよい。外すなら FormatVersion を上げて全部作り直す |
 | 3 | `coreai-build` が通した `.aimodelc` が端末で仕上がらない (`vae_s0` 1024²) | FB25624294 | 端末のコンパイルに戻る (自動、約 20 秒) | 何もしなくてよい (置いた prebuilt のまま効く) |
 | 4 | prebuilt から仕上げたプログラムの 1 回の呼び出しが遅い | FB25624318 | なし (8〜16 %、M1) | 何もしなくてよい。チャットのモデルの判断に入れる |
@@ -18,15 +18,15 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | FB25624336 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
 | 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
 | 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | 未報告 | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
-| 9 | チャットのモデルでは prebuilt が遅く、止まるものがある | 報告済み ([apple-coreai](design/apple-coreai.md)) | チャットのモデルに prebuilt を置かない | 測り直して、置くなら作って置く |
+| 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
 | 10 | M1 の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書きあり) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
 - **何が**: `.aimodelc` を端末で仕上げる `ANELargeModelCompilerService` は 1 本ごとに終わり ("Exiting … to avoid VA fragmentation")、launchd が次の起動を 10 秒待たせる ("service spawn deferred by 10 seconds due to throttle")。小さな部品でも 1 本 10.2 秒かかる。[docs/design/image-apple.md](design/image-apple.md), [docs/design/quantization.md](design/quantization.md) のころの調べ
-- **今**: 回避はない。prebuilt が効くのは、1 部品の端末のコンパイルが数分かかる画像のモデル (FLUX.2 klein、Chroma1-Flash、Anima) だけ。部品の多い小さなプログラムは、10 秒ずつ積み上がって負ける
-- **直ったら**: FLUX.2 klein の文の符号器 (prebuilt で 112 秒、端末で 81 秒、[distribution](design/distribution.md)) と、チャットのモデル ([apple-coreai](design/apple-coreai.md) の表) を同じ測り方で測り直す。チャットのモデルが端末のコンパイルより速くなれば、9 節の手順で置く
+- **今**: 回避はない。prebuilt が効くのは、1 部品の端末のコンパイルが数分かかる画像のモデル (FLUX.2 klein、Chroma1-Flash、Anima) だけ。部品の多い小さなプログラムは、10 秒ずつ積み上がって負ける (画像以外は 9 節)
+- **直ったら**: FLUX.2 klein の文の符号器 (prebuilt で 112 秒、端末で 81 秒、[distribution](design/distribution.md)) と、9 節の表のモデルを同じ測り方で測り直す。端末のコンパイルより速くなれば、9 節の手順で置く
 
 ## 2. 隣り合う同じ lut の表 (FB25624151)
 
@@ -86,11 +86,23 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: hwnpu では直せない (失敗が見えない)。初回を測るとき、使うときは 25 GB 以上空ける
 - **直ったら**: 何もしなくてよい。Core AI のキャッシュの方針を `.persistent` にすれば ([docs/design/apple-coreai.md](design/apple-coreai.md)) Core AI の分は消えなくなるが、aned の分は残るので、それだけでは足りない
 
-## 9. チャットのモデルに prebuilt を置かない ([apple-coreai](design/apple-coreai.md))
+## 9. 画像以外のモデルに prebuilt を置かない ([apple-coreai](design/apple-coreai.md))
 
-- **何が**: チャットのモデルは部品が少なく、1 つめの prebuilt の決まった費用 (数分) と 1 節の間隔で負ける (LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒)。Qwen3.5-4B は prebuilt で読めたが、最初の呼び出しから答えなかった
-- **今**: チャットのモデルは書き出し (`.aimodel`) だけを取得元に置く
-- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B を測る。速くなっていれば、チャットの書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
+- **何が**: 画像生成以外のモデルは部品が小さく、端末のコンパイルが短い (長くて数分)。1 つめの prebuilt の決まった費用と 1 節の間隔で負ける
+  - チャット: LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒。Qwen3.5-4B は prebuilt で読めたが、最初の呼び出しから答えなかった
+  - 解析と音声 (2026-11-22、M3、h15g、空のキャッシュから 1 回目の読み込み):
+
+    | モデル | 端末でコンパイル | prebuilt |
+    |---|---|---|
+    | YuNet | 2.3 秒 | 15 秒 |
+    | DA3-BASE | 3 分 00 秒 | 4 分 45 秒 |
+    | whisper-large-v3-turbo | 53 秒 | 5 分 27 秒 |
+    | LFM3-Audio-2B-TTS | 45 秒 | 測れず (ディスクが尽きて ANE のコンパイラが落ちた、8 節) |
+
+  - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
+  - M1、M2 では測っていない
+- **今**: 画像生成のモデル (FLUX.2 klein、Chroma1-Flash、Anima) にだけ prebuilt を置く。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
+- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
 
@@ -112,7 +124,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - 2 節: 2 節の再現を `coreai-build` で h13g 向けに作り、`mps.fullyPlacedOnANE` があるか
 - 3 節: FLUX.2 klein 1024² の初回に "vae_s0 … the prebuilt program failed" が出るか
 - 6、7 節: 6 節の確かめ方を、落ちる 9 種類と h18g で
-- 9 節: [apple-coreai](design/apple-coreai.md) の表を測り直す
+- 9 節: [apple-coreai](design/apple-coreai.md) の表と 9 節の表を測り直す
 - 10、11 節: 各節の確かめ方を
 
 確かめた日と OS、Metal Toolchain の版を、この文書の各節に書き足す。
