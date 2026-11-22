@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
 
@@ -93,7 +94,7 @@ func shorterSessions(t *testing.T, dev *hwnpu.Device, backend string) (*lfm3.Con
 			}
 			paths = append(paths, path)
 		}
-		if err := llm.AddSmaller(paths[0], "grouped", 0, 8); err != nil {
+		if err := llm.AddSmaller(paths[0], "grouped", paged.Shape{}, 8); err != nil {
 			t.Fatal(err)
 		}
 		man, err := llm.ReadManifest(paths[0])

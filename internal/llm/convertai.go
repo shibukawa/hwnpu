@@ -278,7 +278,7 @@ func writeAIPaged(man *Manifest, a *Arch, pm Paged, out string, o Options) error
 	if err != nil {
 		return err
 	}
-	man.Attention, man.AttnVersion = arec, paged.Version
+	man.Attention, man.AttnVersion, man.AttnOutScale = arec, paged.Version, sh.OutScale
 	if af := attentionForm(BackendCoreAI, form, sh); af != form {
 		man.AttnForm = af
 	}
