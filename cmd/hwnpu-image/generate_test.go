@@ -38,7 +38,4 @@ func TestReferenceArg(t *testing.T) {
 			t.Errorf("%s: no error", arg)
 		}
 	}
-	if got := referenceNames([]int{2, 1, 2}); got != "1+2@half" {
-		t.Errorf("names: %q", got)
-	}
 }

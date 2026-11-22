@@ -22,7 +22,7 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
 | `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
 | `hwnpu/ai/vision` | 深度 (`Depth`)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)。物体、姿勢、切り抜き、OCR、ラベルはまだ | v0 (深度と顔) |
-| `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`: FLUX.2 klein。文から、文と参照の絵から)。Anima、FLUX.3 klein、Chroma はまだ | v0 (FLUX.2 klein) |
+| `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`、`Edit`: FLUX.2 klein、FLUX.3 klein、Anima、Chroma。文から、FLUX.2 klein は文と参照の絵からも。`GenerateAll` で複数のプロンプトをまとめて) | v0 |
 | `hwnpu/ai/sound` | 音楽 (`Music`: Magenta RealTime 2。できた 1 秒ごとに流す)、効果音 (`Effect`: MOSS-SoundEffect)、音高 (`Pitch`: SwiftF0)、採譜 (`Notes`: Basic Pitch)、MIDI の読み書き | v0 |
 
 - **機能ごとにパッケージを分ける**: 文字起こしだけを使うアプリに、画像の生成のコードを入れないため。`ai` は機能のパッケージを import しない。機能のパッケージが、自分のモデルの準備と読み込みのしかた (`internal/airole` の `Role`) を持ち、`ai.Define` で型のついた `Use` を作る
@@ -106,7 +106,8 @@ var (
 | `ai.AllowOffNPU()` (`App.Open`)、`Plan.AllowOffNPU` | プログラムの一部が NPU の外 (GPU、CPU) に置かれたモデルも読み込む。配置を確かめる役割は、既定ではそれを断る (Mac が重くなって失敗したことがあるため) |
 
 - **フラグは別のモデルにする**: コマンドのフラグのうちモデルの作り方や動かし方を変えるもの (`--format`、`--cpu`、手で変換したファイル、書き出しのディレクトリ) は、`Definition` を作ってその名前で動かす。モデルはいつも定義のとおりに動き、置き場の記録もフラグの組ごとに分かれる。キャッシュの場所を変える口 (`--cache`) は作らない
-- **計測の値は結果に入れる**: `speech.Transcript` の `Windows` (窓ごとの言語、トークン、特徴量・エンコーダー・デコードの時間) と `Took`、`speech.Audio.Stats` (フレーム数、使った乱数の種、全体と 3 つのプログラムの時間)。実行の記録 (`console.RecordRun`、電力量) はコマンドの `main` に置き、`ai` には入れない
+- **計測の値は結果に入れる**: `speech.Transcript` の `Windows` (窓ごとの言語、トークン、特徴量・エンコーダー・デコードの時間) と `Took`、`speech.Audio.Stats` (フレーム数、使った乱数の種、全体と 3 つのプログラムの時間)、`imagegen.Pictures` (絵ごとの種、まとめて描いた組ごとのステップと VAE の段の時間、大きさのプログラムを開いた時間、参照とプロンプトの読み込みの時間、全体)。実行の記録 (`console.RecordRun`、電力量) はコマンドの `main` に置き、`ai` には入れない
+- **絵のモデルの設定** (`ai/imagegen`): 準備するものを変えるフラグは `Settings` にする。`text-format`、`dit-format` (Apple と Intel の変換の重みの形式)、`size` (1 つの大きさしか持たない書き出し: Intel の Anima、Apple の Chroma)、Anima の `dit`、`group`、`qchunk`、`resident-dit` (AMD で DiT の組を全部 NPU に置く)。書き出しのディレクトリは `Programs` の `export` (`imagegen.Export(dir)` が元のモデルを見分けて `Definition` を作る)。`--cpu` (Anima、Chroma の Core ML の書き出しを CPU のインタープリタで) は `Device: "cpu"`。絵ごとのもの (プロンプト、ネガティブ、ガイダンス、ステップ、種、サンプラー、shift、`--cfg-sigmas`、大きさ、参照とその大きさ `FILE@half`、`--batch`、`--keep-dit`) は `imagegen.Options`。Apple の FLUX.2 klein はコマンドと同じ 8 つの大きさの書き出しを 1 つ作る (前は 512 と 1024 だけで、コマンドと共有できなかった。役割の版を 2 に上げた)
 
 ### 2.4 音 (`ai/sound`)
 
@@ -455,6 +456,7 @@ layers split picture.png --layers 4 --png parts/
 | `ai/flow` | 4 節の道具と、`Collect`、`Finals`、`Map`、`From`、`Sentences` |
 | `ai/speech` | `Transcribe`、`Speak`、`NewVAD` (音量の VAD: 雑音の床から 12 dB、終わりの待ち 600 ms)、`ReadWAV`、`WriteWAV`、`Chunks` |
 | `ai/text` | `Translate` (前の 4 組を履歴に)、`Chat` (`Complete`、`CompleteStream`) |
+| `ai/imagegen` | `Generate`、`Edit`、`Generator` (`Generate`、`GenerateAll`、`Sizes`、`SizeFor`、`SizeOf`、`Warm`)、`Options` (参照とその大きさ、種、ステップ、ネガティブとガイダンス、サンプラー、`Batch`、進み具合の `OnBatch` / `OnStep` / `OnStage` / `Drawn`、確かめるための `Checks`)、`Pictures`、`Export` (書き出しのディレクトリを `Definition` に)、`GenerateNode`。ファミリーごとに `klein.go`、`flux3.go`、`anima.go`、`chroma.go` |
 | `ai/cli` | `List`、`Download`、`Prepare`、`Status`、`Run` (引数を渡す)、`WritePlan`、`Usage` |
 | `ai/cli/konghelper` | kong の構造体 `Models`、`Status` と `Bind` |
 | `internal/airole` | `Role` (準備と読み込み)、`Files`、この機械の NPU (`Here`: `coreai`、`intel`、`amd-xdna2`) |
@@ -474,7 +476,7 @@ layers split picture.png --layers 4 --png parts/
 
 ## 11. まだないもの、決めていないこと
 
-- **コマンドの載せ替え** (B3): `hwnpu-audio transcribe` / `tts`、`hwnpu-chat`、`hwnpu-image` を `ai` の上に載せる。コマンドにだけある設定 (重みの形式、`--cpu`、手で変換したプログラム、窓ごとの時間) をライブラリの口に出してから
+- **コマンドの載せ替え** (B3): `hwnpu-audio transcribe` / `tts`、`hwnpu-image generate` は載せ替え済み。`hwnpu-chat`、`hwnpu-image` の解析のコマンドを `ai` の上に載せる。コマンドにだけある設定 (重みの形式、`--cpu`、手で変換したプログラム、窓ごとの時間) をライブラリの口に出してから
 - **メモリの合計から自動で構成を選ぶこと**: 今はアプリが段を書く (2.1 節)。合計が機械のメモリに収まるように小さいモデルへ自動で落とすことはしない (どれを主にするかはアプリが知っている)
 - **常駐の管理** ([architecture](design/architecture.md)): メモリの予算、使っていないモデルの追い出し、NPU への投入の順番 (音声を先に)。今は `Release` を呼ぶアプリ任せで、モデルは自分の中でだけ要求を 1 つずつ通す
 - **デバイスの共有**: 今はモデルごとにデバイスを開く (内部の `Load` がそうなっている)。1 回だけ開いて共有する形にするかは、常駐の管理と一緒に決める
