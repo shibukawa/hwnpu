@@ -176,7 +176,9 @@ Decided (2026-11-22), not built yet:
   its policy and the client's accept, and answers which one and why, as `Content-Type` and
   `Vary`; when none is left it answers as `406`, with each candidate and what refused it.
   `HWNPU_MODEL_ALLOWLIST` becomes the filter part of it.
-- **The developers' variables are sorted out** before step 2, in a plan of their own.
+- **The developers' variables are sorted out** ([Variables](variables.md), #294): the switches are
+  `HWNPU_DEV`'s keys, which hwnpud does not take from a client (`Settings` leaves them out), and
+  the tests' run in their own process with the Neural Engine's lock.
 
 Later:
 
