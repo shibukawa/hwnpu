@@ -24,6 +24,7 @@ type options struct {
 	loading     func(Progress)
 	compile     bool
 	allowOffNPU bool
+	settings    map[string]map[string]string
 }
 
 // CompileOnLoad lets a Get load a use that is prepared (downloaded and converted: Plan.Run with
@@ -37,6 +38,26 @@ func CompileOnLoad() Option { return func(o *options) { o.compile = true } }
 // GPU or the CPU): the roles that check where their programs run refuse them otherwise, as that
 // has made a Mac sluggish and failed.
 func AllowOffNPU() Option { return func(o *options) { o.allowOffNPU = true } }
+
+// LoadSettings are settings of how the models of a role (chat, translate, embed, ...) run
+// that change nothing of what is prepared: a role reads the names it knows when it loads a model
+// (text's chat: idle, prompt_cache, experts_key, sparse). What changes the programs is a model
+// of its own instead (Definition's Settings). Given twice for a role, the later names win.
+func LoadSettings(role string, settings map[string]string) Option {
+	return func(o *options) {
+		if o.settings == nil {
+			o.settings = map[string]map[string]string{}
+		}
+		m := o.settings[role]
+		if m == nil {
+			m = map[string]string{}
+			o.settings[role] = m
+		}
+		for k, v := range settings {
+			m[k] = v
+		}
+	}
+}
 
 // WithLog sends what loading the models does (the programs, where they run) to w.
 func WithLog(w io.Writer) Option { return func(o *options) { o.log = w } }
@@ -183,7 +204,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		}
 		tell(stage, "")
 	}
-	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, Def: m, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log, AllowOffNPU: rt.o.allowOffNPU})
+	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, Def: m, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log, AllowOffNPU: rt.o.allowOffNPU, Settings: rt.o.settings[r.role.Name]})
 	if err != nil {
 		loaded.Store(true)
 		tell(StageDone, "")

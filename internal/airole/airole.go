@@ -75,6 +75,9 @@ type LoadEnv struct {
 	// Cache is the compile cache.
 	Cache string
 	Log   io.Writer
+	// Settings are how the app runs the role's models beyond their definition, settings that
+	// change nothing of what is prepared (ai.LoadSettings); nil for none.
+	Settings map[string]string
 }
 
 // Files are what a role's Prepare made and its Load reads: paths by name (files, or the

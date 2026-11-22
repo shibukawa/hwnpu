@@ -15,7 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/server/openai"
 )
 
 // Ports opencode serves on: from 30000 up to the start of the ephemeral range macOS (and the
@@ -78,7 +78,7 @@ func openCodeConfig(baseURL string, models []openModel) ([]byte, error) {
 // into dir, and runs OpenCode (bin, with args after the model) on this terminal: it gets the
 // standard input, output and error as they are, so its interface works as when started alone.
 // The server's log goes to dir/server.log meanwhile. It returns OpenCode's exit code.
-func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error) {
+func openCode(s *openai.Server, addr, dir, bin string, args []string) (int, error) {
 	if len(s.Chats) == 0 {
 		return 2, fmt.Errorf("opencode needs a chat model (--model)")
 	}
@@ -108,7 +108,7 @@ func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error)
 	baseURL := fmt.Sprintf("http://%s/v1", l.Addr())
 	var models []openModel
 	for _, e := range s.Chats {
-		models = append(models, openModel{e.Name, e.Context(), e.DeviceName()})
+		models = append(models, openModel{e.Name(), e.Context(), e.Device()})
 	}
 	cfg, err := openCodeConfig(baseURL, models)
 	if err != nil {

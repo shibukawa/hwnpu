@@ -1,8 +1,8 @@
 package main
 
 import (
-	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/agent"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -61,7 +63,8 @@ type AgentCmd struct {
 
 // Run loads the model and runs the task, or takes tasks in the terminal.
 func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
-	if err := c.prepare(); err != nil {
+	st, cat, err := c.loadFlags.prepare(ctx)
+	if err != nil {
 		return err
 	}
 	work, err := filepath.Abs(c.WorkDir)
@@ -94,15 +97,26 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		return errors.New("--search-first needs search among --tools")
 	}
 
-	c.loadFlags.ExpertsKey = cmp.Or(c.loadFlags.ExpertsKey, "agent")
-
-	e, err := loadChat(ctx, c.Model, &c.loadFlags, &c.convertFlags, nil)
+	cm, err := chatModelOf(cat, c.Model, &c.convertFlags, nil)
 	if err != nil {
 		return err
 	}
-	defer e.Close()
-	if len(e.model.Features) > 0 && !slices.Contains(e.model.Features, "tools") {
-		return fmt.Errorf("%s has no tool calls; the agent needs a model with the tools feature (hwnpu-chat list)", e.model.Name)
+	st.Definitions = cm.defs
+	app := ai.NewApp("hwnpu-chat", cm.chat)
+	app.Store = st
+	rt, err := open(ctx, app, options(&c.loadFlags, &c.convertFlags, "agent")...)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	e, err := cm.chat.Get(ctx, rt)
+	if err != nil {
+		return err
+	}
+	prepared(rt)
+	cm.keep()
+	if f := e.Features(); len(f) > 0 && !slices.Contains(f, "tools") {
+		return fmt.Errorf("%s has no tool calls; the agent needs a model with the tools feature (hwnpu-chat list)", cm.base)
 	}
 	stop()
 
@@ -113,7 +127,7 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	ed := console.NewEditor("agent")
 	cfg := agent.Config{
 		Dir: work, Tools: tools, System: opening, Instructions: instructions,
-		Think: c.think(e.Engine), KeepThinking: c.Keep, ThinkBudget: budget, Sampling: c.sampling(),
+		Think: c.think(e), KeepThinking: c.Keep, ThinkBudget: budget, Sampling: chatSampling(c.sampling()),
 		MaxTokens: c.N, Reserve: c.N, Steps: c.Steps, Dump: c.Dump, Log: os.Stderr,
 		Search: searcher, SearchFirst: c.SearchFirst, AllowList: split(c.Allow),
 	}
@@ -129,12 +143,12 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		cfg.Allow = func(string, string) bool { return false }
 		fmt.Fprintln(os.Stderr, "no terminal: the agent runs no command and changes no file without --yes")
 	}
-	s, err := agent.New(e.Engine, cfg)
+	s, err := agent.New(agentModel{e}, cfg)
 	if err != nil {
 		return err
 	}
 	if n, err := s.Count(context.Background()); err == nil {
-		fmt.Fprintf(logw(), "%s, context %d tokens, %d for the system prompt and the tools\n", e.Name, e.Context(), n)
+		fmt.Fprintf(logw(), "%s, context %d tokens, %d for the system prompt and the tools\n", e.Name(), e.Context(), n)
 	}
 	if task := strings.TrimSpace(strings.Join(c.Task, " ")); task != "" {
 		return runTask(s, task)
@@ -256,3 +270,92 @@ var bold, reset = func() (string, string) {
 	}
 	return "", ""
 }()
+
+// agentModel is a chat model as the agent's loop asks it (agent.Model): the conversation, the
+// tools and the answer in the engine's types, through text.Chatter.
+type agentModel struct{ c *text.Chatter }
+
+func (m agentModel) Context() int { return m.c.Context() }
+
+func (m agentModel) Count(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options) (int, error) {
+	tm, tt, err := textConversation(msgs, tools)
+	if err != nil {
+		return 0, err
+	}
+	think := !o.NoThink
+	return m.c.Count(ctx, tm, text.ChatOptions{Tools: tt, Think: &think, KeepThinking: o.KeepThinking})
+}
+
+func (m agentModel) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, maxTokens, thinkBudget int, emit func(partial chat.Answer) (stop bool)) (chat.Completion, error) {
+	var c chat.Completion
+	tm, tt, err := textConversation(msgs, tools)
+	if err != nil {
+		return c, err
+	}
+	think := !o.NoThink
+	co := text.ChatOptions{Tools: tt, Think: &think, KeepThinking: o.KeepThinking, MaxTokens: maxTokens, ThinkBudget: thinkBudget,
+		Sampling: &text.Sampling{Temperature: s.Temperature, TopK: s.TopK, TopP: s.TopP, Repetition: s.Repetition}}
+	if maxTokens <= 0 {
+		co.MaxTokens = text.Unlimited
+	}
+	if thinkBudget <= 0 {
+		co.ThinkBudget = -1 // none
+	}
+	var fn func(text.Delta) bool
+	if emit != nil {
+		var sofar chat.Answer // what the answer has added up to
+		fn = func(d text.Delta) bool {
+			sofar.Reasoning += d.Reasoning
+			sofar.Content += d.Text
+			return !emit(sofar)
+		}
+	}
+	a, err := m.c.Reply(ctx, tm, co, fn)
+	c.Reasoning, c.Content, c.Rendered, c.Raw = a.Reasoning, a.Text, a.Prompt, a.Raw
+	for _, tc := range a.ToolCalls {
+		var call chat.ToolCall
+		call.ID, call.Type, call.Function.Name, call.Function.Arguments = tc.ID, "function", tc.Name, tc.Arguments
+		c.ToolCalls = append(c.ToolCalls, call)
+	}
+	st := a.Stats
+	c.Stats = chat.Stats{Prompt: st.Prompt, Reused: st.Reused, Generated: st.Generated, Restored: st.Restored, Finish: a.Finish,
+		Looped: st.Looped, ThinkCut: st.ThinkCut, ThinkLooped: st.ThinkLooped, Drafted: st.Drafted, Accepted: st.Accepted, Calls: st.Calls,
+		Cache: st.Cache, Prefill: st.Prefill, Decode: st.Decode, Seed: st.Seed}
+	if c.Finish == "tool_calls" {
+		c.Finish = "stop"
+	}
+	return c, err
+}
+
+// textConversation is the agent's conversation and tools as text.Chatter takes them.
+func textConversation(msgs []chat.Message, tools []chat.Tool) ([]text.Message, []text.Tool, error) {
+	out := make([]text.Message, len(msgs))
+	for i, m := range msgs {
+		tm := text.Message{Role: m.Role, Text: m.Content.Text, ToolCallID: m.ToolCallID, Name: m.Name}
+		if m.Reasoning != nil {
+			tm.Reasoning = *m.Reasoning
+		}
+		for _, tc := range m.ToolCalls {
+			tm.ToolCalls = append(tm.ToolCalls, text.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+		}
+		out[i] = tm
+	}
+	var tt []text.Tool
+	for _, t := range tools {
+		raw, err := json.Marshal(t)
+		if err != nil {
+			return nil, nil, err
+		}
+		tool, err := text.ParseTool(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		tt = append(tt, tool)
+	}
+	return out, tt, nil
+}
+
+// chatSampling is s as the agent's loop takes it.
+func chatSampling(s text.Sampling) chat.Sampling {
+	return chat.Sampling{Temperature: s.Temperature, TopK: s.TopK, TopP: s.TopP, Repetition: s.Repetition}
+}
