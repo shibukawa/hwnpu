@@ -630,7 +630,10 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 		return nil, err
 	}
 	out := *base
-	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
+	out.Tag, out.Like = nil, ""
+	if e.From != nil {
+		out.SHA256 = nil // the files of another repository are not the base's
+	}
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
 		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
 		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn,

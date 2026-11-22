@@ -5,26 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
-	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/vision/segment"
 )
 
 // SegmentCmd is "hwnpu-image segment": the mask of the thing a prompt picks in pictures, as
-// Segment Anything does, with EfficientSAM (Meta's, Apache-2.0; internal/vision/segment). The
+// Segment Anything does, with EfficientSAM (Meta's, Apache-2.0; ai/vision's Segment). The
 // prompt is points in the thing (--point), out of it (--negative), or a box (--box), in the
 // picture's pixels. The image encoder runs on AMD's NPU (an export of
 // tools/amd/iron_efficientsam.py, made with IRON on the first run), on Apple's Neural Engine and
-// Intel's NPU (its ONNX file converted to a Core ML package or OpenVINO IR on the first run),
+// Intel's NPU (its ONNX file converted to a Core AI program or OpenVINO IR on the first run),
 // elsewhere or with --device cpu on the CPU (ONNX Runtime when its library is there, else
 // hwnpu's evaluator: slow); the mask decoder on the host.
 //
@@ -53,73 +49,15 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	m, err := resolve(c.Model, chat.KindSegment)
+	useBackend(c.Backend)
+	how := made{device: c.Device}
+	how.threads(c.Threads)
+	sm, rt, loaded, err := load(ctx, c.Model, vision.Segment, how, lw)
 	if err != nil {
 		return err
 	}
-	var encFile, decFile string
-	for f := range m.SHA256 {
-		switch {
-		case strings.HasSuffix(f, "_encoder.onnx"):
-			encFile = f
-		case strings.HasSuffix(f, "_decoder.onnx"):
-			decFile = f
-		}
-	}
-	if encFile == "" || decFile == "" {
-		return fmt.Errorf("%s: models.yaml names no *_encoder.onnx and *_decoder.onnx in its sha256", m.Name)
-	}
-	setup := segment.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Encoder: encFile, Decoder: decFile, SHA256: m.SHA256, Log: lw}
-	t0 := time.Now()
-	var sm *segment.Model
-	fetchEnc := func() (string, error) { e, _, err := segment.Fetch(ctx, setup); return e, err }
-	have := func(dir string) error { _, err := os.Stat(filepath.Join(dir, "model.json")); return err }
-	if export := amdFirstRunExport(ctx, m, c.Device, false, logf, have, "iron_efficientsam.py", segment.ExportVersion, fetchEnc, func(python []string, model, dir string) error {
-		return segment.ExportNPU(ctx, python, m.Name, model, dir, lw)
-	}); export != "" {
-		_, dec, err := segment.Fetch(ctx, setup)
-		if err != nil {
-			return err
-		}
-		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-		if err != nil {
-			return err
-		}
-		defer dev.Close()
-		if sm, err = segment.OpenNPU(ctx, dev, export, dec); err != nil {
-			return err
-		}
-	} else if vendor := chat.HereVendor(); programDevice(m, vendor, c.Device) {
-		// Intel's NPU runs the encoder converted from its ONNX file to OpenVINO IR, Apple's
-		// Neural Engine the same as a Core ML package (M3: 0.4 s where hwnpu's evaluator takes
-		// 33 s, the mask's IoU with the CPU's 0.9994; docs/design/vision-models.md)
-		enc, dec, err := segment.Fetch(ctx, setup)
-		if err != nil {
-			return err
-		}
-		var opts []hwnpu.Option
-		if vendor == "apple" {
-			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
-		}
-		dev, backend, err := openImageDevice(ctx, c.Backend, cacheDirOf(""), opts...)
-		if err != nil {
-			return err
-		}
-		defer dev.Close()
-		if sm, err = segment.OpenProgram(ctx, dev, backend, enc, dec, setup.Dir, lw); err != nil {
-			return err
-		}
-	} else {
-		enc, dec, err := segment.Fetch(ctx, setup)
-		if err != nil {
-			return err
-		}
-		if sm, err = segment.OpenCPU(enc, dec, c.Threads); err != nil {
-			return err
-		}
-	}
-	defer sm.Close()
-	logf("loaded %s in %.1f s, the encoder on %s", m.Name, time.Since(t0).Seconds(), sm.Where())
+	defer rt.Close()
+	logf("%s, the encoder on %s", loaded, sm.Where())
 	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for _, p := range c.Pictures {
@@ -127,20 +65,18 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		start := time.Now()
-		e, err := sm.Embed(ctx, img)
+		e, err := sm.Encode(ctx, img)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
-		t1 := time.Now()
-		masks, err := sm.Segment(e, prompt)
+		masks, err := sm.Masks(e, prompt)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
-		logf("%s: %.0f ms (resize %.0f, encoder %.0f, decoder %.0f)", filepath.Base(p), ms(time.Since(start)), ms(sm.Times[0]), ms(sm.Times[1]), ms(time.Since(t1)))
-		keep := []int{best(masks)}
+		logf("%s: %.0f ms (resize %.0f, encoder %.0f, decoder %.0f)", filepath.Base(p), ms(e.Took+masks.Took), ms(e.Resize), ms(e.Encode), ms(masks.Took))
+		keep := []int{masks.Best()}
 		if c.All {
-			keep = []int{0, 1, 2}[:len(masks)]
+			keep = []int{0, 1, 2}[:len(masks.Masks)]
 		}
 		d := c.Out
 		if d == "" {
@@ -160,8 +96,10 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 			if c.All {
 				suffix = strconv.Itoa(j)
 			}
-			o := out{Score: masks[j].Score, Area: masks[j].Area(), Box: masks[j].Box(), Mask: base + ".mask" + suffix + ".png", Cutout: base + ".cutout" + suffix + ".png"}
-			if err := writeMask(o.Mask, o.Cutout, img, &masks[j]); err != nil {
+			k := &masks.Masks[j]
+			r := k.Bounds()
+			o := out{Score: k.Score, Area: k.Area(), Box: [4]int{r.Min.X, r.Min.Y, r.Max.X, r.Max.Y}, Mask: base + ".mask" + suffix + ".png", Cutout: base + ".cutout" + suffix + ".png"}
+			if err := writeMask(o.Mask, o.Cutout, img, k); err != nil {
 				return err
 			}
 			outs = append(outs, o)
@@ -179,7 +117,7 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 }
 
 // prompt is the points of --point, --negative and --box.
-func (c *SegmentCmd) prompt() ([]segment.Point, error) {
+func (c *SegmentCmd) prompt() (vision.Prompt, error) {
 	nums := func(s string, n int) ([]float64, error) {
 		f := strings.Split(s, ",")
 		if len(f) != n {
@@ -195,57 +133,36 @@ func (c *SegmentCmd) prompt() ([]segment.Point, error) {
 		}
 		return out, nil
 	}
-	var pts []segment.Point
-	for label, list := range map[int][]string{1: c.Point, 0: c.Negative} {
-		for _, s := range list {
+	var p vision.Prompt
+	for _, list := range []struct {
+		flags []string
+		to    *[]vision.Point
+	}{{c.Point, &p.Points}, {c.Negative, &p.Negative}} {
+		for _, s := range list.flags {
 			v, err := nums(s, 2)
 			if err != nil {
-				return nil, err
+				return p, err
 			}
-			pts = append(pts, segment.Point{X: v[0], Y: v[1], Label: label})
+			*list.to = append(*list.to, vision.Point{X: v[0], Y: v[1]})
 		}
 	}
 	if c.Box != "" {
 		v, err := nums(c.Box, 4)
 		if err != nil {
-			return nil, err
+			return p, err
 		}
-		pts = append(pts, segment.Point{X: v[0], Y: v[1], Label: 2}, segment.Point{X: v[2], Y: v[3], Label: 3})
+		p.Box = &vision.Box{Min: vision.Point{X: v[0], Y: v[1]}, Max: vision.Point{X: v[2], Y: v[3]}}
 	}
-	if len(pts) == 0 {
-		return nil, fmt.Errorf("no prompt: give --point X,Y (on the thing), --negative X,Y or --box X1,Y1,X2,Y2")
+	if len(p.Points) == 0 && len(p.Negative) == 0 && p.Box == nil {
+		return p, fmt.Errorf("no prompt: give --point X,Y (on the thing), --negative X,Y or --box X1,Y1,X2,Y2")
 	}
-	return pts, nil
-}
-
-// best is the mask the decoder scores highest.
-func best(masks []segment.Mask) int {
-	j := 0
-	for i, k := range masks {
-		if k.Score > masks[j].Score {
-			j = i
-		}
-	}
-	return j
+	return p, nil
 }
 
 // writeMask writes the mask (white on the thing, black off it) and the cutout (the picture,
 // transparent off the thing) as PNGs.
-func writeMask(maskPath, cutoutPath string, img image.Image, k *segment.Mask) error {
-	b := img.Bounds()
-	mask := image.NewGray(image.Rect(0, 0, k.W, k.H))
-	cut := image.NewNRGBA(image.Rect(0, 0, k.W, k.H))
-	for y := range k.H {
-		for x := range k.W {
-			if !k.In[y*k.W+x] {
-				continue
-			}
-			mask.SetGray(x, y, color.Gray{255})
-			r, g, bl, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			cut.SetNRGBA(x, y, color.NRGBA{uint8(r >> 8), uint8(g >> 8), uint8(bl >> 8), 255})
-		}
-	}
-	for path, im := range map[string]image.Image{maskPath: mask, cutoutPath: cut} {
+func writeMask(maskPath, cutoutPath string, img image.Image, k *vision.Mask) error {
+	for path, im := range map[string]image.Image{maskPath: k.Image(), cutoutPath: k.Cutout(img)} {
 		f, err := os.Create(path)
 		if err != nil {
 			return err
@@ -259,14 +176,4 @@ func writeMask(maskPath, cutoutPath string, img image.Image, k *segment.Mask) er
 		}
 	}
 	return nil
-}
-
-// programDevice reports whether the encoder runs as a converted program on this machine's NPU
-// (vendor): on Apple's and Intel's, unless --device (flag), HWNPU_DEVICE or models.yaml says cpu.
-func programDevice(m chat.Model, vendor, flag string) bool {
-	if vendor != "apple" && vendor != "intel" {
-		return false
-	}
-	d, _, err := chat.ChooseDevice(m, vendor, flag)
-	return err == nil && d == "npu"
 }
