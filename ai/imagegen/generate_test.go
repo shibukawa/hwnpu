@@ -2,6 +2,7 @@ package imagegen
 
 import (
 	"image"
+	"slices"
 	"testing"
 )
 
@@ -19,6 +20,27 @@ func TestSizeFor(t *testing.T) {
 	} {
 		if got := g.SizeFor(c.w, c.h); got != image.Pt(c.wantW, c.wantH) {
 			t.Errorf("SizeFor(%d, %d) = %v, want %d x %d", c.w, c.h, got, c.wantW, c.wantH)
+		}
+	}
+}
+
+// TestEditSize: an edit's picture is as big as its biggest reference (flux2klein.EditPatterns).
+func TestEditSize(t *testing.T) {
+	big, small := image.NewRGBA(image.Rect(0, 0, 1024, 900)), image.NewRGBA(image.Rect(0, 0, 500, 512))
+	for _, c := range []struct {
+		refs []image.Image
+		size image.Point
+		divs []int
+	}{
+		{[]image.Image{big}, image.Pt(1024, 1024), []int{1}},
+		{[]image.Image{small}, image.Pt(512, 512), []int{1}},
+		{[]image.Image{big, small}, image.Pt(1024, 1024), []int{1, 2}},
+		{[]image.Image{small, small}, image.Pt(512, 512), []int{1, 1}},
+		{[]image.Image{small, big, small}, image.Pt(1024, 1024), []int{2, 1, 2}},
+	} {
+		size, divs := editSize(c.refs)
+		if size != c.size || !slices.Equal(divs, c.divs) {
+			t.Errorf("%d references: %v %v, want %v %v", len(c.refs), size, divs, c.size, c.divs)
 		}
 	}
 }

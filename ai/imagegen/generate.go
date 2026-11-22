@@ -92,7 +92,7 @@ func newRole(name string, edit bool) *airole.Role {
 				if err != nil {
 					return f, err
 				}
-				ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
+				ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Patterns: flux2klein.EditPatterns, DitFormat: man.Formats["dit"]})
 				if err != nil {
 					return f, err
 				}
@@ -253,13 +253,19 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 		w, h = b.Dx(), b.Dy()
 	}
 	ctx = chat.WithModel(ctx, g.model)
-	p, err := g.open(ctx, g.SizeFor(w, h))
-	if err != nil {
-		return nil, err
-	}
+	size := g.SizeFor(w, h)
 	divs := make([]int, len(o.References))
 	for i := range divs {
 		divs[i] = 1
+	}
+	if g.edit != "" && len(o.References) > 0 {
+		// Apple's edits (flux2klein.EditPatterns): the picture as big as the biggest reference,
+		// 1024 or 512 pixels a side, a reference of 512 under one of 1024 at half its sides
+		size, divs = editSize(o.References)
+	}
+	p, err := g.open(ctx, size)
+	if err != nil {
+		return nil, err
 	}
 	if len(divs) > 0 && !p.HasReferences(divs) {
 		return nil, fmt.Errorf("ai/imagegen: %s here does not draw from %d reference(s) at %d x %d (it runs %s)",
@@ -270,7 +276,7 @@ func (g *Generator) Generate(ctx context.Context, prompt string, o Options) (*im
 		if img == nil {
 			return nil, errors.New("ai/imagegen: a nil reference")
 		}
-		if refs[i], err = p.EncodeImage(ctx, img, 1); err != nil {
+		if refs[i], err = p.EncodeImage(ctx, img, divs[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -342,3 +348,26 @@ func (g *Generator) Close() error {
 
 // the edit's role makes the generator's export and the edit's: hwnpu-dev models package makes both
 func init() { airole.Register(editRole) }
+
+// editSize is the picture size of an edit from references on Apple's Neural Engine and each
+// reference's sides over it (flux2klein.EditPatterns): a reference is of 1024 pixels a side when
+// its longer side is 768 or more, else of 512; the picture is as big as the biggest.
+func editSize(refs []image.Image) (image.Point, []int) {
+	big := false
+	for _, r := range refs {
+		if r != nil && max(r.Bounds().Dx(), r.Bounds().Dy()) >= 768 {
+			big = true
+		}
+	}
+	divs := make([]int, len(refs))
+	for i, r := range refs {
+		divs[i] = 1
+		if big && r != nil && max(r.Bounds().Dx(), r.Bounds().Dy()) < 768 {
+			divs[i] = 2
+		}
+	}
+	if big {
+		return image.Pt(1024, 1024), divs
+	}
+	return image.Pt(512, 512), divs
+}

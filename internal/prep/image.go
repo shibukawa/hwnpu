@@ -44,7 +44,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
+			ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Patterns: flux2klein.EditPatterns, DitFormat: man.Formats["dit"]})
 			if err != nil {
 				return fmt.Errorf("the edit: %w", err)
 			}

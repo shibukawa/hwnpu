@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -42,6 +43,10 @@ type EditOptions struct {
 	// Refs are the references a step takes, each a list of the picture's sides over 1 (a
 	// reference of the picture's size) or 2 (of half its sides). Default one of the picture's size.
 	Refs [][]int
+	// Patterns, when set, are the edits held in place of every size with every Refs: each a
+	// picture size and its references (Sizes and Refs are then theirs). EditPatterns are
+	// FLUX.2 klein's.
+	Patterns []EditPattern
 	// DitFormat is the DiT's weight format (default lut8), DoubleGroup and SingleGroup its blocks
 	// a program holds (ConvertOptions'). The encoder's weights are fp16.
 	DitFormat                string
@@ -54,12 +59,51 @@ func (o *EditOptions) defaults() {
 	c := ConvertOptions{DitFormat: o.DitFormat, DoubleGroup: o.DoubleGroup, SingleGroup: o.SingleGroup}
 	c.defaults()
 	o.DitFormat, o.DoubleGroup, o.SingleGroup = c.DitFormat, c.DoubleGroup, c.SingleGroup
+	if len(o.Patterns) > 0 {
+		o.Sizes, o.Refs = nil, nil
+		for _, p := range o.Patterns {
+			if sz := [2]int{p.Width, p.Height}; !slices.Contains(o.Sizes, sz) {
+				o.Sizes = append(o.Sizes, sz)
+			}
+			if !slices.ContainsFunc(o.Refs, func(r []int) bool { return slices.Equal(r, p.Refs) }) {
+				o.Refs = append(o.Refs, p.Refs)
+			}
+		}
+	}
 	if len(o.Sizes) == 0 {
 		o.Sizes = DefaultSizes
 	}
 	if len(o.Refs) == 0 {
 		o.Refs = [][]int{{1}}
 	}
+}
+
+// EditPattern is an edit's picture size and its references, each of the picture's sides over
+// 1 (its size) or 2 (half its sides).
+type EditPattern struct {
+	Width, Height int
+	Refs          []int
+}
+
+// EditPatterns are the edits of FLUX.2 klein's export on Apple's Neural Engine: the picture as big
+// as its biggest reference, of 1024 or 512 pixels a side (hwnpu-image generate --image):
+// 1024 x 1024 with a reference of it, of half it, or both; 512 x 512 with one or two of it.
+var EditPatterns = []EditPattern{
+	{1024, 1024, []int{1}}, {512, 512, []int{1}}, {1024, 1024, []int{1, 2}}, {512, 512, []int{1, 1}}, {1024, 1024, []int{1, 2, 2}},
+}
+
+// sizesFor are the sizes of o (after defaults) that take a step with refs.
+func (o EditOptions) sizesFor(refs []int) [][2]int {
+	if len(o.Patterns) == 0 {
+		return o.Sizes
+	}
+	var out [][2]int
+	for _, sz := range o.Sizes {
+		if slices.ContainsFunc(o.Patterns, func(p EditPattern) bool { return p.Width == sz[0] && p.Height == sz[1] && slices.Equal(p.Refs, refs) }) {
+			out = append(out, sz)
+		}
+	}
+	return out
 }
 
 // EditStep is the DiT's programs of a step with references of the picture's sides over Refs.
@@ -206,12 +250,14 @@ func ConvertEdit(root, out string, o EditOptions, log io.Writer) error {
 		if len(refs) == 0 || len(refs) > MaxReferences {
 			return fmt.Errorf("flux2klein: a step of %d references (1 to %d)", len(refs), MaxReferences)
 		}
-		steps := make([]EditStep, len(o.Sizes))
+		// the sizes that take these references (every size, but for Patterns), steps[i] of sizes[i]
+		sizes := o.sizesFor(refs)
+		steps := make([]EditStep, len(sizes))
 		for i := range steps {
 			steps[i].Refs = refs
 		}
 		for _, gr := range mil.Groups(base.Doubles, o.DoubleGroup) {
-			names, err := sized("doubles", o.Sizes, func(w, h int) (*mil.Part, error) {
+			names, err := sized("doubles", sizes, func(w, h int) (*mil.Part, error) {
 				c, err := dit(w, h, refs)
 				return mil.Doubles(c, gr[0], gr[1]), err
 			}, o.DitFormat)
@@ -223,7 +269,7 @@ func ConvertEdit(root, out string, o EditOptions, log io.Writer) error {
 			}
 		}
 		for _, gr := range mil.Groups(base.Singles, o.SingleGroup) {
-			names, err := sized("singles", o.Sizes, func(w, h int) (*mil.Part, error) {
+			names, err := sized("singles", sizes, func(w, h int) (*mil.Part, error) {
 				c, err := dit(w, h, refs)
 				return mil.Singles(c, gr[0], gr[1]), err
 			}, o.DitFormat)
@@ -234,15 +280,16 @@ func ConvertEdit(root, out string, o EditOptions, log io.Writer) error {
 				steps[i].Singles = append(steps[i].Singles, Group{names[i], gr[0], gr[1]})
 			}
 		}
-		for i := range m.Sizes {
-			m.Sizes[i].Steps = append(m.Sizes[i].Steps, steps[i])
+		for i, sz := range sizes {
+			k := slices.IndexFunc(m.Sizes, func(s EditSize) bool { return s.Width == sz[0] && s.Height == sz[1] })
+			m.Sizes[k].Steps = append(m.Sizes[k].Steps, steps[i])
 		}
 	}
 	// the encoder of each reference size: one program a stage, a function for each size (a
 	// reference of half a picture's sides may be another's whole)
 	var encSizes [][2]int
-	for _, sz := range o.Sizes {
-		for _, refs := range o.Refs {
+	for _, refs := range o.Refs {
+		for _, sz := range o.sizesFor(refs) {
 			for _, d := range refs {
 				if es := [2]int{sz[0] / d, sz[1] / d}; !slices.Contains(encSizes, es) {
 					encSizes = append(encSizes, es)
@@ -263,6 +310,9 @@ func ConvertEdit(root, out string, o EditOptions, log io.Writer) error {
 	}
 	for i, sz := range o.Sizes {
 		for _, refs := range o.Refs {
+			if !slices.Contains(o.sizesFor(refs), sz) {
+				continue
+			}
 			for _, d := range refs {
 				k := slices.Index(encSizes, [2]int{sz[0] / d, sz[1] / d})
 				m.Sizes[i].Encoders[d] = encNames[k]
@@ -287,7 +337,16 @@ func EditExportName(name string, o EditOptions) string {
 	for _, r := range o.Refs {
 		refs = append(refs, mil.RefsName(r))
 	}
-	return fmt.Sprintf("%s-edit-%s-%s-%s-v%d.%s", strings.ToLower(name), aspect.Tag(o.Sizes), strings.Join(refs, "+"), o.DitFormat, EditVersion, llm.BackendCoreAI)
+	tag := aspect.Tag(o.Sizes) + "-" + strings.Join(refs, "+")
+	if len(o.Patterns) > 0 {
+		// each size with its references: the patterns' tag (not every size takes every Refs)
+		var ps []string
+		for _, p := range o.Patterns {
+			ps = append(ps, fmt.Sprintf("%dx%d:%s", p.Width, p.Height, mil.RefsName(p.Refs)))
+		}
+		tag = fmt.Sprintf("%dedits-%08x", len(o.Patterns), crc32.ChecksumIEEE([]byte(strings.Join(ps, ","))))
+	}
+	return fmt.Sprintf("%s-edit-%s-%s-v%d.%s", strings.ToLower(name), tag, o.DitFormat, EditVersion, llm.BackendCoreAI)
 }
 
 // PrepareEdit makes the edit's programs of s's model ready in s.Dir for Apple's Neural Engine,

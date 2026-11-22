@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -100,7 +101,7 @@ func kleinEdit(ctx context.Context, model string, log io.Writer) (string, error)
 		return "", err
 	}
 	return flux2klein.PrepareEdit(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Dir(model), Repo: m.Repo, Name: m.Name, Log: log},
-		flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
+		flux2klein.EditOptions{Patterns: flux2klein.EditPatterns, DitFormat: man.Formats["dit"]})
 }
 
 // referenceArg is an --image argument's file and the reference's size as the picture's sides over
@@ -164,6 +165,16 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspec
 	pw, ph, err := c.pictureIn(as, 16)
 	if err != nil {
 		return err
+	}
+	// Apple's edits (flux2klein.EditPatterns): the picture as big as the biggest reference, 1024
+	// x 1024 when one is FILE (or FILE@full), else 512 x 512 with each FILE@half of its size
+	halfOnly := false
+	if flux2klein.IsProgramExport(model) && len(c.Image) > 0 {
+		halfOnly = !slices.ContainsFunc(c.Image, func(arg string) bool { _, div, err := referenceArg(arg); return err == nil && div == 1 })
+		pw, ph = 1024, 1024
+		if halfOnly {
+			pw, ph = 512, 512
+		}
 	}
 	lw := console.Log(os.Stderr)
 	live := console.Live(lw)
@@ -232,6 +243,9 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspec
 	for i, arg := range c.Image {
 		if files[i], divs[i], err = referenceArg(arg); err != nil {
 			return err
+		}
+		if halfOnly {
+			divs[i] = 1 // of the picture's size: 512 x 512
 		}
 	}
 	if len(files) > 0 && !p.HasReferences(divs) {
