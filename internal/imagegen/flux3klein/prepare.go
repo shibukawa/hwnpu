@@ -69,6 +69,9 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if o.Stats == "" {
 		o.Stats = stats(ctx, s.Dir, log)
 	}
+	if err := o.FromRecipe(s.Name); err != nil {
+		return "", err
+	}
 	o.defaults()
 	out := filepath.Join(s.Dir, ExportName(s.Name, o))
 	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers

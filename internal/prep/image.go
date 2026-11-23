@@ -57,13 +57,16 @@ func init() {
 			}
 			f.Set("export", dir)
 		case strings.HasPrefix(m.Family, "anima"):
-			// every aspect ratio in one export, as hwnpu-image generate makes it (its --size 1:1 and
-			// --qchunk 512 by default)
+			// every aspect ratio in one export, as hwnpu-image generate makes it (its --size 1:1, the
+			// rest from the recipe)
 			w, h, err := anima.ParseAspect("1:1")
 			if err != nil {
 				return err
 			}
-			o := anima.ConvertOptions{Backend: llm.BackendCoreAI, Width: w, Height: h, Dit: m.File, QChunk: 512, Sizes: aspect.SizesOf(aspect.All)}
+			o := anima.ConvertOptions{Backend: llm.BackendCoreAI, Width: w, Height: h, Dit: m.File, Sizes: aspect.SizesOf(aspect.All)}
+			if err := anima.FromRecipe(m.Name, &o); err != nil {
+				return err
+			}
 			dir, err := anima.Prepare(ctx, anima.Setup{Dir: filepath.Join(chat.ModelsDir(), "Anima"), ConvertOptions: o, Log: e.Log})
 			if err != nil {
 				return err

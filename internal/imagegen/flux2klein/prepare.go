@@ -48,6 +48,9 @@ var Files = []string{
 func Prepare(ctx context.Context, s Setup) (string, error) {
 	o := s.ConvertOptions
 	o.Only = nil
+	if err := o.FromRecipe(s.Name); err != nil {
+		return "", err
+	}
 	o.defaults()
 	log := s.Log
 	if log == nil {

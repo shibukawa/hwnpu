@@ -13,6 +13,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/prep"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 )
 
 func TestParseJobs(t *testing.T) {
@@ -123,5 +124,31 @@ func TestParse(t *testing.T) {
 		if _, err := p.Parse(args); err != nil {
 			t.Errorf("%v: %v", args, err)
 		}
+	}
+}
+
+// Every model that has Core AI exports (a preparer or a role makes them) has a version of them in
+// model-recipes.yaml (apple.version), so that a change of what makes them is seen
+// (testdata/apple-versions.txt); its Targets carry it to the sources (vN).
+func TestAppleVersionsOfEveryModel(t *testing.T) {
+	recipes, err := recipe.Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, m := range chat.Catalog {
+		if prep.For(m, cache.CoreAITarget) == nil && airole.For(m) == nil {
+			continue
+		}
+		n++
+		v := recipes.AppleVersion(m.Recipe)
+		if v == 0 {
+			t.Errorf("%s: no apple.version in model-recipes.yaml (models.%s.apple)", m.Name, m.Name)
+		} else if m.Targets[cache.CoreAITarget] != v {
+			t.Errorf("%s: Targets[coreai] %d, its recipe's version %d", m.Name, m.Targets[cache.CoreAITarget], v)
+		}
+	}
+	if n < 40 {
+		t.Errorf("%d models with Core AI exports", n)
 	}
 }

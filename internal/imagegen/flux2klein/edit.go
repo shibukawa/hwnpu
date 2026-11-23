@@ -125,6 +125,9 @@ func AppleOptions(m chat.Model, gen string, w, h int, text, dit string) (Convert
 func PrepareDevice(ctx context.Context, s Setup) (string, error) {
 	o := s.ConvertOptions
 	o.Only = nil
+	if err := o.FromRecipe(s.Name); err != nil {
+		return "", err
+	}
 	o.defaults()
 	log := s.Log
 	if log == nil {

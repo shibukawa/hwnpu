@@ -40,7 +40,7 @@ func animaOptions(m chat.Model, backend string) (anima.ConvertOptions, error) {
 		return anima.ConvertOptions{}, err
 	}
 	o := anima.ConvertOptions{Backend: backend, Width: w, Height: h, Dit: setting(m, SettingDit, m.File),
-		TextFormat: m.Settings[SettingTextFormat], DitFormat: m.Settings[SettingDitFormat], QChunk: 512}
+		TextFormat: m.Settings[SettingTextFormat], DitFormat: m.Settings[SettingDitFormat]}
 	for name, p := range map[string]*int{SettingGroup: &o.Group, SettingQChunk: &o.QChunk} {
 		if v := m.Settings[name]; v != "" {
 			if *p, err = strconv.Atoi(v); err != nil {
@@ -49,8 +49,13 @@ func animaOptions(m chat.Model, backend string) (anima.ConvertOptions, error) {
 		}
 	}
 	if backend == llm.BackendCoreAI {
-		// every aspect ratio in one export, the weights once (new-model-checklist.md 11.4)
+		// every aspect ratio in one export, the weights once (new-model-checklist.md 11.4), what
+		// the settings leave out from the model's recipe
 		o.Sizes = aspect.SizesOf(aspect.All)
+		return o, anima.FromRecipe(m.Name, &o)
+	}
+	if o.QChunk == 0 {
+		o.QChunk = 512 // M3: 25 % faster than 1024 at 1024 x 1024
 	}
 	return o, nil
 }

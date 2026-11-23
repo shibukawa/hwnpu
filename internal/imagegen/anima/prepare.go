@@ -108,6 +108,21 @@ func DefaultGroup(backend string, width, height int) int {
 	return g
 }
 
+// FromRecipe fills what a Core AI export's o leaves out from model name's recipe
+// (model-recipes.yaml apple.convert): the formats of the text and the DiT (text_format,
+// dit_format), the DiT's blocks a program holds (group) and the queries an attention scores at a
+// time (qchunk). Other backends take Formats, DefaultGroup and the code's qchunk.
+func FromRecipe(name string, o *ConvertOptions) error {
+	if o.Backend != llm.BackendCoreAI {
+		return nil
+	}
+	if err := chat.FillConvert(name, map[string]*int{"group": &o.Group, "qchunk": &o.QChunk},
+		map[string]*string{"text_format": &o.TextFormat, "dit_format": &o.DitFormat}); err != nil {
+		return fmt.Errorf("anima: %w", err)
+	}
+	return nil
+}
+
 // ExportName is the directory Prepare writes the export of o into, in Setup.Dir: what changes
 // the programs is in its name.
 // An export of several sizes (Core AI) names them with aspect.Tag ("8sizes-HASH"); it is one

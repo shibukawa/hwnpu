@@ -27,6 +27,8 @@
 #               other rewrites take an export of their own, the rewrite in its name
 #               (hwnpu-dac-r3-fp16-sin-native.coreai); a chip no rule names takes the default.
 #               A run takes its own chip's (HWNPU_DEV=rewrite=sin:series over it, to compare)
+#     code      the Go packages (directories of the module, or one .go file of one) every Core AI
+#               conversion writes its programs with: MIL, its lowering, the weights' writing
 #   amd         what every model's exports for AMD's NPU are made with, unless its own says:
 #     generations  the generations of the NPU they are made for: xdna1 (Phoenix, Hawk Point:
 #               IRON's npu1), xdna2 (Strix, Krackan: npu2). Each goes as its own target
@@ -34,7 +36,20 @@
 #     extra     GEN: arguments after every script's own for that generation
 #   models      MODEL (a model of models.yaml): {apple: ..., amd: ...}. apple as above, its rules
 #               after those of apple. A build that fails on a program no rule names stops, and
-#               says the rule that would leave it to the device. amd:
+#               says the rule that would leave it to the device. A model's apple also has:
+#     version   the version of what its Core AI conversion makes (the sources keep its exports
+#               as vN: converted/MODEL/coreai/EXPORT/v1; an export made here of another version
+#               is made again). Raise it whenever its convert or its code changes what it
+#               makes: internal/recipe/testdata/apple-versions.txt holds what each version is,
+#               and its test fails on a change under the same version. 1: the exports of
+#               before (2026-11-24), the same bytes, their names kept
+#     code      the Go packages that write its programs, after apple's code (a change of them
+#               is a change of the version, as amd's tools); !FILE leaves out a file of them
+#               only a run reads (experts' host.go, lfm3vl's preprocess.go)
+#     convert   the values its conversion is made with, by their names in its code
+#               (text_group, qchunk): what the code took as constants before. What a run reads
+#               too stays in models.yaml (npu.apple's sizes and formats)
+#   amd:
 #     script    the script of tools/amd that makes the export
 #     args      its arguments; placeholders, each a whole argument, are put in by the code that
 #               runs it: {in} what it prepared (the checkpoint's folder, the ONNX file), {out}
@@ -60,6 +75,9 @@ tools:
 apple:
   archs: [h13g, h14g, h15g]
   jobs: 2
+  # what every Core AI conversion writes its programs with: MIL, its lowering to Core AI's
+  # bytecode, and the writing of the weights and the parts
+  code: [internal/mlpackage, internal/coreai/ailower, internal/coreai/mlirbc, internal/llm/manifest.go, internal/llm/convertai.go, internal/llm/weights.go]
 
 amd:
   generations: [xdna2]
@@ -75,6 +93,14 @@ models:
       script: iron_flux2klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
+      version: 1
+      code: [internal/imagegen/flux2klein, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
+      # a program: 3 of Qwen3's layers (0.3 GB at 8 bits), 2 double blocks (0.5 GB), 5 single
+      # blocks (0.6 GB); the formats are models.yaml's npu.apple (a run reads them)
+      convert:
+        text_group: 3
+        double_group: 2
+        single_group: 5
       jobs: 3
       prebuild:
         - arch: h13g
@@ -89,6 +115,8 @@ models:
       script: iron_moss_sfx.py
       args: ["{in}", "{out}", --text, "{text}"]
     apple:
+      version: 1
+      code: [internal/sfx]
       rewrite:
         # coreai-build, each of the five decoder stages: with sin itself, h13g, h14g and h14c
         # split the stage in 8 or 9 regions of the Neural Engine (sin off it between them),
@@ -111,6 +139,9 @@ models:
   # language models (and d1's decision models): tools/amd/iron_export_lm.py ARCH CHECKPOINT OUT
   # OPTIONS; the options name the export (-q4, -q6, -p16) and key it in the sources
   LFM3-1.7B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3]
     amd:
       version: 1
       script: iron_export_lm.py
@@ -119,54 +150,81 @@ models:
         # on xdna1: its 4 columns, an xclbin a step (it has no full ELF)
         xdna1: [--cols, "4"]
   LFM3-VL-2B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go"]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [lfm3vl, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
   LFM3-Audio-2B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [lfm3audio, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
   LFM3-Omni-2B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [lfm3omni, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
   gemma-4-E2B-it:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
   gemma-4-E4B-it:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
   Qwen3.5-4B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
   Qwen3.5-0.8B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
       extra: *lm-extra
   Qwen3.5-2B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
       extra: *lm-extra
   gpt-oss-20b:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
       version: 1
       # 16 GB: 16 of each layer's 32 experts in places, the decode step routed on the host; every expert from 24 GB
@@ -176,6 +234,9 @@ models:
         24: [gptoss, "{in}", "{out}", --max-seq-len, "8192", --prefill-chunk, "256"]
       extra: *lm-extra
   Qwen3.6-35B-A3B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
       version: 1
       # 32 places a layer on 16 GB, 128 on 24 GB, every expert from 48 GB
@@ -186,30 +247,45 @@ models:
         48: [qwen35moe, "{in}", "{out}", --max-seq-len, "4096", --prefill-chunk, "256", --q4]
       extra: *lm-extra
   plamo-3-translate-8b:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
   plamo-3-translate-2b:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
   plamo-3-translate-0.8b:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
   d1-2B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       version: 1
       script: iron_export_lm.py
       args: [d1, "{in}", "{out}", --max-seq-len, "1024", --prefill-chunk, "1024", --q4]
       extra: *lm-extra
   d1-Omni-2B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       version: 1
       script: iron_export_lm.py
@@ -217,33 +293,67 @@ models:
       extra: *lm-extra
 
   whisper-large-v3-turbo:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/whisper, internal/transcribe]
     amd:
       version: 1
       script: iron_whisper.py
       args: ["{in}", "{out}"]
   LFM3-Audio-2B-TTS:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio, internal/llm/lfm3gen, internal/speech]
     amd:
       version: 1
       script: iron_lfm3speech.py
       args: ["{in}", "{out}"]
   supertonic-3:
+    apple:
+      version: 1
+      code: [internal/supertonic, internal/onnx]
     amd:
       version: 1
       # {in} the repository's onnx/; the sizes of supertonic.Sizes (T x L)
       script: iron_supertonic.py
       args: ["{in}", "{out}", --sizes, "{sizes}"]
   magenta-realtime-2-small:
+    apple:
+      version: 1
+      code: [internal/music, internal/notes, internal/onnx]
     amd:
       version: 1
       # SpectroStream's decoder; the language model and MusicCoCa run on the CPU
       script: iron_magenta.py
       args: ["{in}", "{out}"]
   flux-3-image-klein:
+    apple:
+      version: 1
+      code: [internal/imagegen/flux3klein, internal/imagegen/flux3klein/mil, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
+      # lut8: Qwen3-VL's attention sinks came out NaN at int8 on the Neural Engine, and per-row
+      # int8 overflows on large outputs; a program: 4 of Qwen3-VL's layers (0.4 GB at 8 bits), 5
+      # single blocks (0.6 GB)
+      convert:
+        text_format: lut8
+        dit_format: lut8
+        text_group: 4
+        single_group: 5
     amd:
       version: 1
       script: iron_flux3klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
   Anima-Aesthetic: &anima-amd
+    apple:
+      version: 1
+      code: [internal/imagegen/anima, internal/imagegen/anima/mil, internal/imagegen/milpart]
+      # int8 both: the text's 1.0 GB at fp16 is over a program's limit, and the DiT is as fast at
+      # int8 as at fp16 and nearer it than lut8; 4 DiT blocks a program; 512 queries an
+      # attention scores at a time (M3: 25 % faster than 1024 at 1024 x 1024)
+      convert:
+        text_format: int8
+        dit_format: int8
+        group: 4
+        qchunk: 512
     amd:
       version: 1
       # {in} the folder of both repositories' files (diffusion_models/, text_encoders/, vae/,
@@ -252,6 +362,9 @@ models:
       args: ["{in}", "{out}", --size, "{sizes}", --dit, "{dit}"]
   Anima-Turbo: *anima-amd
   DA3-BASE: &da3-amd
+    apple:
+      version: 1
+      code: [internal/vision/depth, internal/vision/depth/mil, internal/imagegen/milpart]
     amd:
       version: 1
       script: iron_da3.py
@@ -260,6 +373,9 @@ models:
   DA3MONO-LARGE: *da3-amd
   DA3METRIC-LARGE: *da3-amd
   moge-2-vits: &moge-amd
+    apple:
+      version: 1
+      code: [internal/vision/moge, internal/vision/moge/mil, internal/vision/depth/mil, internal/imagegen/milpart]
     amd:
       version: 1
       script: iron_moge.py
@@ -267,17 +383,26 @@ models:
   moge-2-vitb: *moge-amd
   moge-2-vitl: *moge-amd
   siglip2-base-patch16-224: &siglip-amd
+    apple:
+      version: 1
+      code: [internal/vision/siglip, internal/vision/siglip/mil, internal/imagegen/milpart]
     amd:
       version: 1
       script: iron_siglip2.py
       args: ["{in}", "{out}"]
   siglip2-large-patch16-256: *siglip-amd
   YuNet:
+    apple:
+      version: 1
+      code: [internal/vision/face, internal/onnx]
     amd:
       version: 1
       script: iron_yunet.py
       args: ["{in}", "{out}"]
   RTMDet-tiny: &rtmdet-amd
+    apple:
+      version: 1
+      code: [internal/vision/detect, internal/onnx]
     amd:
       version: 1
       # {in} the ONNX file, {size} the detector's (detect.Size), {outputs} its heads
@@ -286,6 +411,9 @@ models:
   RTMDet-s: *rtmdet-amd
   RTMDet-m: *rtmdet-amd
   RTMO-s:
+    apple:
+      version: 1
+      code: [internal/pose, internal/onnx]
     amd:
       version: 1
       # its pixels as they are (0 to 255), SiLU as an operator of its own (the GEMM epilogue's
@@ -296,6 +424,9 @@ models:
       args: ["{in}", "{out}", --size, "{size}", --mean, "0", "0", "0", --std, "1", "1", "1", --silu, op,
         --precision, HIGH, --dw-precision, HIGH, --outputs, "{outputs}"]
   EfficientSAM-Ti: &efficientsam-amd
+    apple:
+      version: 1
+      code: [internal/vision/segment, internal/onnx]
     amd:
       version: 1
       # {in} the encoder's ONNX file
@@ -303,7 +434,39 @@ models:
       args: ["{in}", "{out}"]
   EfficientSAM-S: *efficientsam-amd
   plamo-embedding-1b:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo, internal/chat/embed.go]
     amd:
       version: 1
       script: iron_plamo_embed.py
       args: ["{in}", "{out}"]
+
+  LFM2-8B-A1B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go"]
+  Qwen2.5-Coder-7B-Instruct:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
+  Qwen3-0.6B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
+  Qwen3-1.7B:
+    apple:
+      version: 1
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
+  swift-f0:
+    apple:
+      version: 1
+      code: [internal/pitch, internal/onnx]
+  basic-pitch:
+    apple:
+      version: 1
+      code: [internal/notes, internal/onnx]
+  PP-OCRv6-small:
+    apple:
+      version: 1
+      code: [internal/vision/ocr, internal/vision/detect, internal/onnx]
