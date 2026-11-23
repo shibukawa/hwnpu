@@ -95,8 +95,15 @@ const ExportVersion = 1
 // ExportNPU makes the export of tools/amd/iron_efficientsam.py of the encoder's ONNX file in out
 // with IRON's python (chat.IRONPython).
 func ExportNPU(ctx context.Context, python []string, name, encoder, out string, log io.Writer) error {
-	return chat.RunIRON(ctx, python, name, "iron_efficientsam.py", []string{encoder, chat.ExportOut}, out, log)
+	m, ok := chat.Lookup(name)
+	if !ok {
+		return fmt.Errorf("segment: %s is not a model of the definitions", name)
+	}
+	return chat.RunAMDRecipe(ctx, python, m, chat.InVar(encoder), out, log, Tool)
 }
+
+// Tool is the script of tools/amd whose exports the package reads.
+const Tool = "iron_efficientsam.py"
 
 // Model is an encoder and a decoder.
 type Model struct {

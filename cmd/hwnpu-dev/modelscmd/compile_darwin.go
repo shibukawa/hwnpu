@@ -2,6 +2,7 @@ package modelscmd
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/prebuild"
@@ -16,4 +17,10 @@ func canCompile() error { return nil }
 func compile(ctx context.Context, paths, archs []string, model string, p compileFlags) error {
 	return prebuild.Run(ctx, paths, prebuild.Options{Model: model, Archs: archs, Jobs: p.Jobs, Force: p.Force, DryRun: p.DryRun,
 		Packed: p.Packed || !p.NoPush, Put: !p.NoPush && !p.Packed, AnyTools: p.AnyTools, Log: os.Stderr})
+}
+
+// canExportAMD is why this OS cannot make exports for AMD's NPU: IRON (mlir-aie, Peano) runs on
+// Linux and Windows.
+func canExportAMD() error {
+	return errors.New("the exports for AMD's NPU are made with IRON, on Linux or Windows")
 }

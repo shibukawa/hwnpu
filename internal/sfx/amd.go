@@ -11,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 )
 
 // AMDTool is the IRON exporter of MOSS-SoundEffect (tools/amd, built into hwnpu): the text
@@ -40,9 +41,15 @@ func AMDTextFormat(text string) string {
 func AMDRecipe(m chat.Model, text string) map[string]string {
 	r := chat.PinnedRecipe(m, AMDTool, AMDExportVersion)
 	if r != nil {
-		r["args"] = "--text " + text
+		r["args"] = strings.Join(chat.AMDOptions(m, amdVars(m, text), AMDTool), " ")
 	}
 	return r
+}
+
+// amdVars are the values of the recipe's placeholders for m's export with the text encoder in
+// text's format.
+func amdVars(m chat.Model, text string) map[string][]string {
+	return map[string][]string{recipe.In: {chat.RepoDir(m.Repo)}, recipe.Text: {text}}
 }
 
 // dacStage is the decoder's stage i in an export for AMD's NPU (a graph).
@@ -132,7 +139,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, text string, log io.Writer) (
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return chat.RunIRON(ctx, python, m.Name, AMDTool, []string{chat.RepoDir(m.Repo), chat.ExportOut, "--text", fmtText}, out, log)
+		return chat.RunAMDRecipe(ctx, python, m, amdVars(m, fmtText), out, log, AMDTool)
 	})
 	if err != nil {
 		return Paths{}, err

@@ -15,9 +15,10 @@
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory). It is looked for
 #                 in the sources first (HWNPU_MODEL_SOURCE, _1, ...: docs/cache-sharing-design.md 7)
-#   targets       the version of what is converted for each target ({amd-xdna2: {version: 2},
-#                 coreai: {version: 1}}), bumped by hand when what is made changes: the sources
-#                 keep it as vN (v0-HASH with no version)
+#   targets       the version of what is converted for each target ({coreai: {version: 1}}),
+#                 bumped by hand when what is made changes: the sources keep it as vN (v0-HASH
+#                 with no version). amd-xdna2's is model-recipes.yaml's (models.NAME.amd.version);
+#                 a file of your own may give it over that
 #   exports       the conversions pinned, by target and export: "FOLDER sha256:DIGEST", the folder of the
 #                 entry in a source (converted/MODEL/TARGET/EXPORT/FOLDER, the same path in the model's
 #                 repository on Hugging Face) and the digest of its files (their paths, sizes and SHA-256).
@@ -58,14 +59,10 @@
 #                 --paged, --tier) do not say: auto, on or off; a weight format (lut8); tokens; a
 #                 chunk of tokens or -1; auto, none or a list of caches
 #   variants      the model on machines of more memory than machine, by the least memory in GB:
-#                 each changes the memory, the five above and amd_export that it gives, on
-#                 machines of that much or more (variants: {16: {memory: 2.3, prefill: auto}});
-#                 a file of your own changes the variants it names
-#   amd_export    how tools/amd/iron_export_lm.py exports it for AMD's NPU: its model and options.
-#                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
-#                 --mlp q6, then -pN for --expert-places N), the first run downloads the
-#                 checkpoint and runs it in IRON's environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a
-#                 model without it has no form there
+#                 each changes the memory and the five above that it gives, on machines of that
+#                 much or more (variants: {16: {memory: 2.3, prefill: auto}}); a file of your own
+#                 changes the variants it names. How the exports for AMD's NPU are made (of a
+#                 variant too) is in model-recipes.yaml (docs/model-recipes.md)
 #   not_on        chips (M1, M2, M3, M4, M5; an M1 Pro is an M1) a family or a use does not pick
 #                 the model on: the family's next is picked there (the 2B for PLaMo 3 Translate
 #                 8B on an M1); its name and FAMILY:TAG still run it
@@ -94,7 +91,7 @@ models:
     from: hf:LiquidAI/LFM3-1.7B
     exports:
       amd-xdna2:
-        LFM3-1.7B.amd-npu2-q4: v0-7bfc0b02 sha256:0b8f63d08a46191c555e2ac7a075a1f3cc5b2d0c5cedefb93c774a1668da3043
+        LFM3-1.7B.amd-npu2-q4: v1 sha256:0b8f63d08a46191c555e2ac7a075a1f3cc5b2d0c5cedefb93c774a1668da3043
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-1.7B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, measured on an M1, 2026-11-15, docs/design/memory-and-power.md): the programs split
     # at the attention hold the weights once, 1.36 GiB on the Neural Engine and the process's
@@ -110,7 +107,6 @@ models:
     bytes: {amd: 1.74e9, apple: 3.5e9}
     disk: {amd: 2.28e9}
     features: [tools, thinking]
-    amd_export: lfm3 --max-seq-len 12288 --q4
     about: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"
   LFM2-8B-A1B:
     # a mixture of experts (lfm2_moe, 32 experts of which 4 a token): the host picks the experts
@@ -139,7 +135,7 @@ models:
     from: hf:LiquidAI/LFM3-VL-2B
     exports:
       amd-xdna2:
-        LFM3-VL-2B.amd-npu2-q4: v0-bb8476f7 sha256:359a77ad764fb2f2b09bd5a0b5e33b14b9bae9ed75cba787d0856ec5f21d87f6
+        LFM3-VL-2B.amd-npu2-q4: v1 sha256:359a77ad764fb2f2b09bd5a0b5e33b14b9bae9ed75cba787d0856ec5f21d87f6
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-VL-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.24 GiB on the Neural Engine and the process's
     # 0.25 GiB describing a picture; 2.14 + 0.23 GiB (2.6 GB) with text alone, the vision
@@ -149,7 +145,6 @@ models:
     bytes: {amd: 2.08e9, apple: 3.8e9}
     disk: {amd: 2.76e9}
     features: [tools, thinking, vision]
-    amd_export: lfm3vl --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"
   LFM3-Audio-2B:
     family: lfm3-audio
@@ -158,7 +153,7 @@ models:
     from: hf:LiquidAI/LFM3-Audio-2B
     exports:
       amd-xdna2:
-        LFM3-Audio-2B.amd-npu2-q4: v0-60de15cc sha256:9fd81e21c045339a092ca3ea0153e0b398078a11648e297feb991a6e9d4844ef
+        LFM3-Audio-2B.amd-npu2-q4: v1 sha256:9fd81e21c045339a092ca3ea0153e0b398078a11648e297feb991a6e9d4844ef
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.18 GiB on the Neural Engine and the process's
     # 0.21 GiB answering about a clip (2.6 GB); 2.05 + 0.23 GiB (2.4 GB) with text alone
@@ -167,7 +162,6 @@ models:
     bytes: {amd: 1.97e9, apple: 4.0e9}
     disk: {amd: 2.79e9}
     features: [tools, thinking, audio]
-    amd_export: lfm3audio --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-audio tts)"
   LFM3-Omni-2B:
     family: lfm3-omni
@@ -176,7 +170,7 @@ models:
     from: hf:LiquidAI/LFM3-Omni-2B
     exports:
       amd-xdna2:
-        LFM3-Omni-2B.amd-npu2-q4: v0-1dd56bcc sha256:df5b99af45ba2c4c8c9ad6eb2c359974014d299a435e2bae2918ca6e6d2ae9d9
+        LFM3-Omni-2B.amd-npu2-q4: v1 sha256:df5b99af45ba2c4c8c9ad6eb2c359974014d299a435e2bae2918ca6e6d2ae9d9
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.63 GiB on the Neural Engine and the process's
     # 0.25 GiB with a picture and a clip; 2.40 + 0.23 GiB (2.8 GB) with text alone, both
@@ -186,7 +180,6 @@ models:
     bytes: {amd: 2.33e9, apple: 4.3e9}
     disk: {amd: 3.20e9}
     features: [tools, thinking, vision, audio]
-    amd_export: lfm3omni --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"
   gemma-4-E2B-it:
     family: gemma4
@@ -195,7 +188,7 @@ models:
     from: hf:google/gemma-4-E2B-it
     exports:
       amd-xdna2:
-        gemma-4-E2B-it.amd-npu2-q4: v0-90daae45 sha256:86dde1db0ceddb01d5ac6ae43aa27ec1f9ca6291a8447375da6539093ef36302
+        gemma-4-E2B-it.amd-npu2-q4: v1 sha256:86dde1db0ceddb01d5ac6ae43aa27ec1f9ca6291a8447375da6539093ef36302
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 8
     # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 1.76 GiB on the NPU and
@@ -206,7 +199,6 @@ models:
     bytes: {amd: 4.78e9, apple: 4.9e9}
     disk: {amd: 5.08e9}
     features: [tools, thinking]
-    amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"
   gemma-4-E4B-it:
     family: gemma4
@@ -215,7 +207,7 @@ models:
     from: hf:google/gemma-4-E4B-it
     exports:
       amd-xdna2:
-        gemma-4-E4B-it.amd-npu2-q4: v0-5bde4380 sha256:6f91bcad57054506896664953642f01583aed126d90f91fdf4533679d02d745c
+        gemma-4-E4B-it.amd-npu2-q4: v1 sha256:6f91bcad57054506896664953642f01583aed126d90f91fdf4533679d02d745c
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 24
     # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 3.55 GiB on the NPU and
@@ -226,7 +218,6 @@ models:
     bytes: {amd: 7.45e9, apple: 7.7e9}
     disk: {amd: 8.05e9}
     features: [tools, thinking]
-    amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"
   Qwen3.5-4B:
     family: qwen3.5
@@ -235,14 +226,13 @@ models:
     from: hf:Qwen/Qwen3.5-4B
     exports:
       amd-xdna2:
-        Qwen3.5-4B.amd-npu2-q4: v0-19fbcb58 sha256:1a02544c674be95c92d060f15c5e04ff324fedd2a2e414e6c9da70977c4b48b6
+        Qwen3.5-4B.amd-npu2-q4: v1 sha256:1a02544c674be95c92d060f15c5e04ff324fedd2a2e414e6c9da70977c4b48b6
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE", class: open}
     machine: 24
     memory: 4.2
     bytes: {amd: 4.46e9, apple: 9.3e9}
     disk: {amd: 5.37e9}
     features: [tools, thinking]
-    amd_export: qwen35 --max-seq-len 4096 --q4
     about: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"
   Qwen3.5-0.8B:
     family: qwen3.5
@@ -251,7 +241,7 @@ models:
     from: hf:Qwen/Qwen3.5-0.8B
     exports:
       amd-xdna2:
-        Qwen3.5-0.8B.amd-npu2-q6: v0-8c48750e sha256:b777937398639bd36981d23de984da644650894109f1eb07a02907023395d515
+        Qwen3.5-0.8B.amd-npu2-q6: v1 sha256:b777937398639bd36981d23de984da644650894109f1eb07a02907023395d515
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.99 GiB on the Neural Engine
     # (the multi-token prediction layer's programs among it) and the process's 0.39 GiB, 1.5 GB;
@@ -266,7 +256,6 @@ models:
     disk: {amd: 1.63e9}
     features: [tools, thinking]
     no_think: true
-    amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
     about: "Qwen's smallest Qwen3.5, the 4B's structure in 0.8B: fast, but weak at facts; its text model in 8 bit tables, answering without thinking unless asked; the download has the vision part too, which is not converted"
   Qwen3.5-2B:
     family: qwen3.5
@@ -275,7 +264,7 @@ models:
     from: hf:Qwen/Qwen3.5-2B
     exports:
       amd-xdna2:
-        Qwen3.5-2B.amd-npu2-q6: v0-55f6835a sha256:709a0804f6b516b0619619339f2a2dfbb9dbeaf051d53ff1ae571816f66028f8
+        Qwen3.5-2B.amd-npu2-q6: v1 sha256:709a0804f6b516b0619619339f2a2dfbb9dbeaf051d53ff1ae571816f66028f8
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 1.67 GiB on the Neural Engine and the process's
     # 0.39 GiB (no whole program: its weights twice are over what the two may hold): for 8 GB
@@ -287,7 +276,6 @@ models:
     disk: {amd: 3.15e9}
     features: [tools, thinking]
     no_think: true
-    amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
     about: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"
   Qwen2.5-Coder-7B-Instruct:
     # Qwen2 (qwen2: Qwen3's decoder with biases on q, k and v, no norms over the heads; its MLP
@@ -318,8 +306,8 @@ models:
     from: hf:openai/gpt-oss-20b
     exports:
       amd-xdna2:
-        gpt-oss-20b.amd-npu2: v0-25685097 sha256:6a7f778da6243838429633e4d2fc5a10ad4cd1c21302b6617d6222509509fd06
-        gpt-oss-20b.amd-npu2-p16: v0-f61348f5 sha256:912fc37aa82f3447595b13eedbd61e7a5816775e0dd278141ee5b54aeea8f6f6
+        gpt-oss-20b.amd-npu2: v1 sha256:6a7f778da6243838429633e4d2fc5a10ad4cd1c21302b6617d6222509509fd06
+        gpt-oss-20b.amd-npu2-p16: v1 sha256:912fc37aa82f3447595b13eedbd61e7a5816775e0dd278141ee5b54aeea8f6f6
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     # 16 GB: on AMD's NPU 16 of each layer's 32 experts in places (6.90 GiB pinned), the others
     # read from experts.bin with O_DIRECT when chosen, the decode step routed on the host so that
@@ -330,11 +318,10 @@ models:
     machine: 16
     memory: {amd: 8.3, apple: 6.4}
     variants:
-      24: {memory: {amd: 14.6, apple: 12.2}, amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256}
+      24: {memory: {amd: 14.6, apple: 12.2}}
     bytes: {amd: 11.79e9, apple: 14.4e9}
     disk: {amd: 19.64e9}
     features: [tools, thinking]
-    amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256 --expert-places 16 --host-route
     # the experts every kind of text runs (tools/moeusage, 19 categories of prompts in about 25
     # languages, 2026-11-20): in every category at least an even share (1/32) of their layer's
     # runs; 141 experts (1.9 GB) taking 31–41 % of the runs. Wired from the first run when the
@@ -384,7 +371,7 @@ models:
     from: hf:Qwen/Qwen3.6-35B-A3B
     exports:
       amd-xdna2:
-        Qwen3.6-35B-A3B.amd-npu2-q4: v0-615c7bfd sha256:7a74cc166fe3d4bf232790321e9cabb088aa06cc92ae33d1d2520e60af081348
+        Qwen3.6-35B-A3B.amd-npu2-q4: v1 sha256:7a74cc166fe3d4bf232790321e9cabb088aa06cc92ae33d1d2520e60af081348
         Qwen3.6-35B-A3B.amd-npu2-q4-p128: v0-e22921d9 sha256:dc8896f292ec2b11aa296b660e1fb5b4cbe86b6e17e7341818035ffac8fe3ca3
         Qwen3.6-35B-A3B.amd-npu2-q4-p32: v0-8d13a33c sha256:99612a05029adb7980a0e6a8757e47c459a7fa7d97656e9fef1f8fc9243cc1d6
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
@@ -403,13 +390,12 @@ models:
     machine: 16
     memory: {amd: 8.2, apple: 2.7}
     variants:
-      24: {memory: {amd: 17.2, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 128}
-      48: {memory: {amd: 26.3, apple: 2.7}, amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4}
+      24: {memory: {amd: 17.2, apple: 2.7}}
+      48: {memory: {amd: 26.3, apple: 2.7}}
     # AMD: the export for the NPU as the sources hold it (packed; the three of the variants are as large)
     bytes: {amd: 22.65e9, apple: 71.9e9}
     disk: {amd: 27.11e9}
     features: [tools, thinking]
-    amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4 --expert-places 32
     # the experts every kind of text runs (tools/moeusage, the 19 categories of prompts in about
     # 25 languages gpt-oss-20b's were counted with, 2026-11-20; 375,696 runs a layer): in every
     # category at least an even share (1/256) of their layer's runs; 841 experts (1.4 GB) taking
@@ -529,7 +515,6 @@ models:
     bytes: {amd: 6.41e9, apple: 17.07e9}
     disk: {amd: 7.45e9}
     features: [translation]
-    amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 8B: the 2B's translation from a model 3.5 times as large, in 4 bit tables (as good as 8 bit ones on it); 10 to 11 tokens/s on an M3; not picked on an M1 (its 3.8 GiB is over what an M1's Neural Engine runs at full speed: the 2B there); on Intel's NPU in int4, its precision not checked yet"
   plamo-3-translate-2b:
     family: plamo3translate
@@ -548,7 +533,6 @@ models:
     bytes: {amd: 2.35e9, apple: 5.76e9}
     disk: {amd: 3.03e9}
     features: [translation]
-    amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"
   plamo-3-translate-0.8b:
     family: plamo3translate
@@ -566,7 +550,6 @@ models:
     bytes: {amd: 0.83e9, apple: 1.79e9}
     disk: {amd: 1.02e9}
     features: [translation]
-    amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"
   plamo-embedding-1b:
     family: plamo-embedding
@@ -664,7 +647,6 @@ models:
     machine: 8
     # AMD's NPU: LFM3-VL's export read as d1 reads it (tools/amd/iron_d1.py): a question is one
     # prompt chunk from 0, so at most 1024 tokens with its image
-    amd_export: d1 --max-seq-len 1024 --prefill-chunk 1024 --q4
     memory: 2.4
     about: "Liquid AI's d1-2B: answers typed questions about a state (the System One API), images too, in 8 bit tables"
   d1-Omni-2B:
@@ -677,7 +659,6 @@ models:
         d1-Omni-2B.amd-npu2-q4: v0-d951b968 sha256:c7cae5b3de233f08cb3f070faf18bed560bb875da6aa1537059cc395c0ae533e
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
-    amd_export: d1omni --max-seq-len 1024 --prefill-chunk 1024 --q4
     memory: 2.8
     about: "Liquid AI's d1-Omni-2B: d1 with an audio encoder, questions about images and clips and questions asked as a clip"
   swift-f0:

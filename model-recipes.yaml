@@ -27,9 +27,31 @@
 #               other rewrites take an export of their own, the rewrite in its name
 #               (hwnpu-dac-r3-fp16-sin-native.coreai); a chip no rule names takes the default.
 #               A run takes its own chip's (HWNPU_DEV=rewrite=sin:series over it, to compare)
-#   models      MODEL (a model of models.yaml): {apple: ...} as above, its rules after those
-#               of apple. A build that fails on a program no rule names stops, and says the
-#               rule that would leave it to the device
+#   amd         what every model's exports for AMD's NPU are made with, unless its own says:
+#     generations  the generations of the NPU they are made for: xdna1 (Phoenix, Hawk Point:
+#               IRON's npu1), xdna2 (Strix, Krackan: npu2). Each goes as its own target
+#               (amd-xdna2); hwnpu runs amd-xdna2's alone yet, so xdna1's are not made
+#     extra     GEN: arguments after every script's own for that generation
+#   models      MODEL (a model of models.yaml): {apple: ..., amd: ...}. apple as above, its rules
+#               after those of apple. A build that fails on a program no rule names stops, and
+#               says the rule that would leave it to the device. amd:
+#     script    the script of tools/amd that makes the export
+#     args      its arguments; placeholders, each a whole argument, are put in by the code that
+#               runs it: {in} what it prepared (the checkpoint's folder, the ONNX file), {out}
+#               the export's folder, {sizes} the sizes (models.yaml npu.amd, or the code's),
+#               {size}, {outputs} (the ONNX outputs the code chose), {text} (the text
+#               encoder's format), {dit} (the DiT's file)
+#     variants  GB: args on a machine of that much memory or more (a variant of models.yaml)
+#     version   the version of what it makes (the sources keep it as vN; models.yaml's targets
+#               do not give amd-xdna2's then). Raise it whenever the recipe changes:
+#               internal/recipe/testdata/amd-versions.txt holds what each version is, and its
+#               test fails on a recipe changed under the same version. 1: the exports of
+#               models.yaml's amd_export and hwnpu's code before (2026-11-23), copied as v1
+#     generations, extra  as amd's, over them (extra: after them)
+#     skip      generations the export is not made for: {generation, why, checked}
+#   For iron_export_lm.py the args but {in} and {out} name the export (-q4, -p16) and key it in
+#   the sources; for the others the code's version (ExportVersion) keys it, and for
+#   iron_flux2klein.py, iron_flux3klein.py and iron_moss_sfx.py the args too
 version: 1
 
 tools:
@@ -39,8 +61,19 @@ apple:
   archs: [h13g, h14g, h15g]
   jobs: 2
 
+amd:
+  generations: [xdna2]
+  extra:
+    # every script takes --device (npu2 by default)
+    xdna1: [--device, npu1]
+
 models:
   FLUX.2-klein-4B:
+    amd:
+      version: 1
+      # one export of every size of models.yaml npu.amd
+      script: iron_flux2klein.py
+      args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
       jobs: 3
       prebuild:
@@ -50,6 +83,11 @@ models:
           why: "RegAlloc: failed to allocate tensors with fixed L2 hint (Failed to compile function func_s1152x768, s768x1152, s1280x704, s704x1280); the M1 compiles them on the NPU, 50 to 59 min each"
           checked: 2026-11-22
   Chroma1-Flash:
+    amd: &chroma-amd
+      version: 1
+      # one export of the eight aspect ratios (aspect.Of(16))
+      script: iron_chroma.py
+      args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
       prebuild:
         - arch: h13g
@@ -63,6 +101,7 @@ models:
           why: "left off the Neural Engine (no compiled region), alone too, after 1h29m to 2h52m each"
           checked: 2026-11-23
   Chroma1-HD:
+    amd: *chroma-amd
     # Chroma1-Flash's programs with other weights
     apple:
       prebuild:
@@ -77,6 +116,11 @@ models:
           why: "as Chroma1-Flash's (the same programs)"
           checked: 2026-11-23
   MOSS-SoundEffect-v2.0: &moss
+    amd:
+      version: 1
+      # an export of each text encoder's format (sfx.Formats: fp16 on 16 GB, lut8 on 8 GB)
+      script: iron_moss_sfx.py
+      args: ["{in}", "{out}", --text, "{text}"]
     apple:
       rewrite:
         # coreai-build, each of the five decoder stages: with sin itself, h13g, h14g and h14c
@@ -94,3 +138,205 @@ models:
           why: "audio prebuilts were slower or failed on the M1 (Whisper 2:48 to 4:08 first load, Magenta 'bad program image', MOSS 'Request cancelled'), and a bad one does not fall back"
           checked: 2026-11-19
   MOSS-SoundEffect-v2.0-lut8: *moss
+
+  # the exports for AMD's NPU alone
+
+  # language models (and d1's decision models): tools/amd/iron_export_lm.py ARCH CHECKPOINT OUT
+  # OPTIONS; the options name the export (-q4, -q6, -p16) and key it in the sources
+  LFM3-1.7B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [lfm3, "{in}", "{out}", --max-seq-len, "12288", --q4]
+      extra: &lm-extra
+        # on xdna1: its 4 columns, an xclbin a step (it has no full ELF)
+        xdna1: [--cols, "4"]
+  LFM3-VL-2B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [lfm3vl, "{in}", "{out}", --max-seq-len, "12288", --q4]
+      extra: *lm-extra
+  LFM3-Audio-2B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [lfm3audio, "{in}", "{out}", --max-seq-len, "12288", --q4]
+      extra: *lm-extra
+  LFM3-Omni-2B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [lfm3omni, "{in}", "{out}", --max-seq-len, "12288", --q4]
+      extra: *lm-extra
+  gemma-4-E2B-it:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
+      extra: *lm-extra
+  gemma-4-E4B-it:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
+      extra: *lm-extra
+  Qwen3.5-4B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4]
+      extra: *lm-extra
+  Qwen3.5-0.8B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
+      extra: *lm-extra
+  Qwen3.5-2B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
+      extra: *lm-extra
+  gpt-oss-20b:
+    amd:
+      version: 1
+      # 16 GB: 16 of each layer's 32 experts in places, the decode step routed on the host; every expert from 24 GB
+      script: iron_export_lm.py
+      args: [gptoss, "{in}", "{out}", --max-seq-len, "8192", --prefill-chunk, "256", --expert-places, "16", --host-route]
+      variants:
+        24: [gptoss, "{in}", "{out}", --max-seq-len, "8192", --prefill-chunk, "256"]
+      extra: *lm-extra
+  Qwen3.6-35B-A3B:
+    amd:
+      version: 1
+      # 32 places a layer on 16 GB, 128 on 24 GB, every expert from 48 GB
+      script: iron_export_lm.py
+      args: [qwen35moe, "{in}", "{out}", --max-seq-len, "4096", --prefill-chunk, "256", --q4, --expert-places, "32"]
+      variants:
+        24: [qwen35moe, "{in}", "{out}", --max-seq-len, "4096", --prefill-chunk, "256", --q4, --expert-places, "128"]
+        48: [qwen35moe, "{in}", "{out}", --max-seq-len, "4096", --prefill-chunk, "256", --q4]
+      extra: *lm-extra
+  plamo-3-translate-8b:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
+      extra: *lm-extra
+  plamo-3-translate-2b:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
+      extra: *lm-extra
+  plamo-3-translate-0.8b:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
+      extra: *lm-extra
+  d1-2B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [d1, "{in}", "{out}", --max-seq-len, "1024", --prefill-chunk, "1024", --q4]
+      extra: *lm-extra
+  d1-Omni-2B:
+    amd:
+      version: 1
+      script: iron_export_lm.py
+      args: [d1omni, "{in}", "{out}", --max-seq-len, "1024", --prefill-chunk, "1024", --q4]
+      extra: *lm-extra
+
+  whisper-large-v3-turbo:
+    amd:
+      version: 1
+      script: iron_whisper.py
+      args: ["{in}", "{out}"]
+  LFM3-Audio-2B-TTS:
+    amd:
+      version: 1
+      script: iron_lfm3speech.py
+      args: ["{in}", "{out}"]
+  supertonic-3:
+    amd:
+      version: 1
+      # {in} the repository's onnx/; the sizes of supertonic.Sizes (T x L)
+      script: iron_supertonic.py
+      args: ["{in}", "{out}", --sizes, "{sizes}"]
+  magenta-realtime-2-small:
+    amd:
+      version: 1
+      # SpectroStream's decoder; the language model and MusicCoCa run on the CPU
+      script: iron_magenta.py
+      args: ["{in}", "{out}"]
+  flux-3-image-klein:
+    amd:
+      version: 1
+      script: iron_flux3klein.py
+      args: ["{in}", "{out}", --size, "{sizes}"]
+  Anima-Aesthetic: &anima-amd
+    amd:
+      version: 1
+      # {in} the folder of both repositories' files (diffusion_models/, text_encoders/, vae/,
+      # diffusers/), {dit} the model's file
+      script: iron_anima.py
+      args: ["{in}", "{out}", --size, "{sizes}", --dit, "{dit}"]
+  Anima-Turbo: *anima-amd
+  DA3-BASE: &da3-amd
+    amd:
+      version: 1
+      script: iron_da3.py
+      args: ["{in}", "{out}"]
+  DA3-SMALL: *da3-amd
+  DA3MONO-LARGE: *da3-amd
+  DA3METRIC-LARGE: *da3-amd
+  moge-2-vits: &moge-amd
+    amd:
+      version: 1
+      script: iron_moge.py
+      args: ["{in}", "{out}"]
+  moge-2-vitb: *moge-amd
+  moge-2-vitl: *moge-amd
+  siglip2-base-patch16-224: &siglip-amd
+    amd:
+      version: 1
+      script: iron_siglip2.py
+      args: ["{in}", "{out}"]
+  siglip2-large-patch16-256: *siglip-amd
+  YuNet:
+    amd:
+      version: 1
+      script: iron_yunet.py
+      args: ["{in}", "{out}"]
+  RTMDet-tiny: &rtmdet-amd
+    amd:
+      version: 1
+      # {in} the ONNX file, {size} the detector's (detect.Size), {outputs} its heads
+      script: iron_onnxcnn.py
+      args: ["{in}", "{out}", --size, "{size}", --outputs, "{outputs}"]
+  RTMDet-s: *rtmdet-amd
+  RTMDet-m: *rtmdet-amd
+  RTMO-s:
+    amd:
+      version: 1
+      # its pixels as they are (0 to 255), SiLU as an operator of its own (the GEMM epilogue's
+      # vtanh is a few ulps off near 0) and bf16's products (HIGH) in place of bfp16's: at MEDIUM
+      # the keypoints' scores moved by up to 0.13 from ONNX Runtime's and a doubtful person's box
+      # by 97 px, at HIGH by 0.03 and 6 px, the network 0.15 s -> 0.22 s (docs/amd-npu-models.md 22)
+      script: iron_onnxcnn.py
+      args: ["{in}", "{out}", --size, "{size}", --mean, "0", "0", "0", --std, "1", "1", "1", --silu, op,
+        --precision, HIGH, --dw-precision, HIGH, --outputs, "{outputs}"]
+  EfficientSAM-Ti: &efficientsam-amd
+    amd:
+      version: 1
+      # {in} the encoder's ONNX file
+      script: iron_efficientsam.py
+      args: ["{in}", "{out}"]
+  EfficientSAM-S: *efficientsam-amd
+  plamo-embedding-1b:
+    amd:
+      version: 1
+      script: iron_plamo_embed.py
+      args: ["{in}", "{out}"]

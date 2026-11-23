@@ -20,9 +20,9 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | `ouro` | `iron_ouro.Ouro` (hwnpu のもの。IRON にはない) | Ouro-1.4B-Thinking (評価のみで models.yaml にはない。[model-estimation.ja.md](../model-estimation.ja.md))。2.6B は書き出していない |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN は `iron_gdn.py`) | Qwen3.5-0.8B、2B、4B |
 
-今の書き出しの指定は [models.yaml](../../models.yaml) の `amd_export`:
+今の書き出しの指定は [model-recipes.yaml](../../model-recipes.yaml) の `iron_export_lm.py` の `args`:
 
-| モデル | `amd_export` |
+| モデル | `iron_export_lm.py` の args (`{in}` `{out}` を除く) |
 |---|---|
 | LFM3-1.7B / VL / Audio / Omni | `lfm3 / lfm3vl / lfm3audio / lfm3omni --max-seq-len 12288 --q4` |
 | Gemma 4 E2B、E4B | `gemma4 --max-seq-len 4096 --q4` (文だけ。カタログでは塔を書き出さない) |

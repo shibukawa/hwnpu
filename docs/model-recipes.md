@@ -3,7 +3,7 @@
 モデルの変換を、誰がどの機械で作っても同じものにするための定義。作るときにしか要らないことを、ここに書く。動かすときに要ることは models.yaml に置く。
 
 - **models.yaml**: 動かすときに要るもの。モデルの取得元、メモリ、サイズ (`npu.*.sizes`)、固定した書き出し (`exports`)
-- **model-recipes.yaml**: 作るときにだけ要るもの。どのチップ向けに作るか、何本同時に作るか、通らないプログラムをどうするか、道具の版
+- **model-recipes.yaml**: 作るときにだけ要るもの。どのチップ・世代向けに作るか、何本同時に作るか、通らないプログラムをどうするか、AMD の書き出しのスクリプトと引数、道具の版
 
 どちらもリポジトリの直下にあって、バイナリに組み込まれる (`hwnpu.ModelsYAML`、`hwnpu.RecipesYAML`)。読むのは `internal/recipe`。
 
@@ -17,6 +17,8 @@ hwnpu-dev models package FLUX.2-klein-4B
 - `MODEL/coreai-h14g` のようにチップを書くと、そのチップだけを作る。並列数と、実機に回すプログラムは、そのときもレシピのとおり
 - 手元の書き出しだけをプリビルドするときは `hwnpu-dev prebuild -put EXPORT_DIR`。どのモデルのレシピかは、書き出しの `entry.json` の `model` から決める (`-model NAME` で指定もできる)
 - `-arch` と `-j` は、レシピより優先する。確かめのとき以外は書かない
+- AMD のレシピ (`amd`) があるモデルは、Linux と Windows ではターゲットを書かなくても、レシピの世代 (`generations`) の書き出し (`amd-xdna2`) を作る。Mac では AMD の分を、ほかの OS では Core AI のプリビルドの分を、一言出して飛ばす
+- `MODEL/amd-xdna2` のように世代のターゲットを書くと、その世代だけを作る。hwnpu がまだ動かさない世代 (`amd-xdna1`) と、レシピが `skip` する世代は、理由を出して止まる
 
 ## 2. ファイルの形
 
@@ -65,6 +67,59 @@ models:
 - `why` と `checked` は省けない。あとで Metal Toolchain が上がったときに、その規則がまだ要るかを確かめるため
 - パターンは `path.Match` の形 (`*` は何文字でも)
 
+### AMD (`amd`)
+
+AMD の NPU の書き出しは、`tools/amd` のスクリプトを IRON の環境で動かして作る。どのスクリプトを、どの引数で動かすかをレシピに書く。前は models.yaml の `amd_export` (チャットのモデル) と Go のコード (画像、深さ、ラベル、検出など) に分かれていた。
+
+```yaml
+amd:                            # どのモデルにも効く既定
+  generations: [xdna2]          # 作る世代: xdna1 (Phoenix、Hawk Point: IRON の npu1)、xdna2 (Strix、Krackan: npu2)
+  extra:
+    xdna1: [--device, npu1]     # その世代で、どのスクリプトにも足す引数 (どれも --device を取り、既定は npu2)
+
+models:
+  gpt-oss-20b:
+    amd:
+      script: iron_export_lm.py                                  # tools/amd のスクリプト
+      args: [gptoss, "{in}", "{out}", --max-seq-len, "8192", --prefill-chunk, "256", --expert-places, "16", --host-route]
+      variants:                                                  # models.yaml の variants と同じ GB のキー
+        24: [gptoss, "{in}", "{out}", --max-seq-len, "8192", --prefill-chunk, "256"]
+      extra:
+        xdna1: [--cols, "4"]                                     # 既定の extra のあとに足す
+  FLUX.2-klein-4B:
+    amd:
+      script: iron_flux2klein.py
+      args: ["{in}", "{out}", --size, "{sizes}"]
+      generations: [xdna1, xdna2]                                # 既定より優先
+      skip:                                                      # 作らない世代と、その理由
+        - generation: xdna1
+          why: "..."
+          checked: 2026-11-23
+```
+
+- 置き場所 (`{...}`) は 1 つの引数まるごとで、動かすコードが入れる: `{in}` コードが用意したもの (チェックポイントのフォルダ、ONNX のファイル、Anima のフォルダ)、`{out}` 書き出しのフォルダ、`{sizes}` 大きさの並び (models.yaml の `npu.amd.sizes`、Chroma と Anima は `aspect.Of(16)`、Supertonic は `supertonic.Sizes`)、`{size}` (検出と姿勢の入力の大きさ)、`{outputs}` (コードが ONNX から選んだ出力)、`{text}` (MOSS の文のエンコーダーの形式)、`{dit}` (Anima の DiT のファイル)。コードが入れない置き場所を書くと、作るときに止まる
+- スクリプトの名前は、動かすコードが読む書き出しのもの (`iron_whisper.py` の書き出しを読むのは Whisper のコード)。違うスクリプトを書くと、作るときに止まる
+- `iron_export_lm.py` の args のうち `{in}` と `{out}` を除いたものが、そのまま models.yaml の `amd_export` だったもの。書き出しの名前 (`-q4`、`-q6`、`-p16`) と取得元のキーになる。動かす側もこれを読む (`chat.Model.AMDExport`)
+- ほかのスクリプトの書き出しのキーは、前と同じで、コードの版 (`ExportVersion`) と、FLUX.2 klein、FLUX.3 klein、MOSS は args (`{in}` `{out}` を除く) も入る。手で作った書き出し (Chroma、Anima、DA3、MoGe、SigLIP2、YuNet) は名前だけ。キーの中身は前と同じにしたので、取得元の書き出しとピンはそのまま使える
+- `like` のモデル (自分の定義ファイルのものも) は、自分のレシピがなければ、似せたモデルのレシピで作る
+- 世代ごとに別のターゲット (`amd-xdna1`、`amd-xdna2`) に置く。hwnpu が動かすのは今は `amd-xdna2` だけ (`recipe.Built`) なので、xdna1 のレシピは読んで確かめるが、作らない
+
+#### 版 (`version`)
+
+```yaml
+  LFM3-1.7B:
+    amd:
+      version: 1        # レシピを変えたら上げる
+      script: iron_export_lm.py
+      ...
+```
+
+- `version` は、そのレシピが作るものの版。取得元には `vN` のフォルダで置く (`converted/MODEL/amd-xdna2/EXPORT/v1`)。前は models.yaml の `targets: {amd-xdna2: {version: N}}` だった。組み込みの models.yaml には書かない (自分の定義ファイルに書けば、そちらが優先)
+- **レシピを変えたら版を上げる**。版の中身は `internal/recipe/testdata/amd-versions.txt` に残してあり (レシピの指紋)、同じ版のままレシピを変えると `go test ./internal/recipe` が落ちる。版を上げたら `go test ./internal/recipe -run TestAMDVersions -update` で書き直す
+- 版を上げたら、作り直して置き、ピンし直す (`hwnpu-dev models package MODEL/amd-xdna2`、`hwnpu-dev models pin MODEL`)。手元で確かめるときは、手元の前の書き出し (`~/.cache/hwnpu/entries/amd-xdna2/EXPORT`) を消してから作り直す
+- `vN` は道具 (`tools/amd`) の hash によらず取られる。道具を変えて書き出しが変わるときも版を上げる
+- 版 1 は、models.yaml の `amd_export` と Go のコードからレシピに移したときのもの (2026-11-23)。作るものは同じ (作り直してバイトまで同じことを見た) なので、作り直さず、取得元のピンした書き出しを `v1` にコピーして版だけ書き換え、ピンを `v1` に移す。2026-11-23 は 12 個 (LFM3 の 4 つ、Gemma 4 の 2 つ、Qwen3.5 の 3 つ、gpt-oss-20b の 2 つ、Qwen3.6-35B-A3B の q4) を移したところで NAS が書き込みを受けなくなった。残りの 34 個のピンは前の `v0-…` のまま (ピンはフォルダの名前によらず中身の digest で取るので、そのままで動く)
+
 ## 3. 通らないプログラムがあったとき
 
 `hwnpu-dev models package` と `hwnpu-dev prebuild` は、レシピにないプログラムが落ちると止まる。
@@ -95,21 +150,14 @@ MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をその
 
 - **ほかの置き換え**: 2 節の `rewrite` は、いまは MOSS の DAC の sin だけ。ほかはコードに直接書いてある (softmax を exp と逆数で、x / c を 1 / c 倍で、sigmoid と tanh を exp で、conv_transpose を polyphase で、など)。M1 と M2 以降で違うものから、書き方を `Ways` に足して移す。sin の表引きも、そのときに書き方として足す
 - **変換の設定**: 量子化の形式 (`npu.apple.formats`)、FLUX.2 klein の編集の組み合わせなど。いまは models.yaml とコードにある
-- **AMD**: `iron_*.py` のスクリプトと引数。いまは models.yaml の `amd_export` (チャットのモデル) と Go のコード (画像、深さ、ラベルなど)、md のコマンドの例にある。次の形を考えている:
-
-  ```yaml
-  models:
-    Anima-Turbo:
-      amd:
-        script: iron_anima.py
-        args: [--size, "{sizes}", --dit, "{file}"]   # {sizes} は models.yaml の npu.amd.sizes から
-  ```
-
-  手で作った書き出し (Anima、Chroma、DA3、SigLIP2 など) のキーは、いまは名前だけ。引数を変えても名前が同じなので、レシピの引数をキーに入れる
+- **AMD の xdna1**: レシピは書けるが、hwnpu が `amd-xdna1` の書き出しを読んで動かすところ (`.amd-npu1` の名前、`cache.AMDTarget` の世代ごとの切り替え、`iron_export_lm.py` の xclbin を段ごとにした書き出しの読み込み) がまだない。xdna1 の機械で確かめてから `recipe.Built` に足す
+- **AMD の書き出しのキー**: 手で作った書き出し (Anima、Chroma、DA3、SigLIP2 など) のキーはいまも名前だけで、ほかの多くもコードの版だけ。レシピの args を変えても、ピンのないものは前の書き出しを取ってしまう。args をキーに入れる (取得元の書き出しを作り直してピンし直すことになる)
 - **道具の版 (AMD)**: mlir-aie と Python の版 (`tools.iron`)
 - **Core AI の書き出しの固定**: `hwnpu-dev models pin` は AMD だけ
 
 ## 7. 確かめ方
 
-- `go test ./internal/recipe`: 組み込みのレシピが読めること、名前が models.yaml のモデルであること、M1 / M2 / M3 で規則が分かれること
+- `go test ./internal/recipe`: 組み込みのレシピが読めること、M1 / M2 / M3 で規則が分かれること、AMD のコマンドの組み立て (置き場所、variants、世代の extra、skip)、AMD のレシピが変わったら版も上がっていること (`testdata/amd-versions.txt`)
+- `go test ./internal/chat`: レシピの名前が models.yaml のモデルであること、`iron_export_lm.py` のレシピが `AMDExport` になること (`like` と variants も)
+- `go test ./internal/prep`: AMD の NPU で動かすモデルに、コードが読むスクリプトのレシピがあり、置き場所がコードの入れるものであること。コマンドが前のコードのものと同じこと
 - 作ったプリビルドが端末で仕上がるかは、オフラインではわからない。そのチップの Mac で Core AI のキャッシュを空にして描き、「the prebuilt program failed」が出ないこと、DiT の各部品が数十秒で開くことを見る ([known-issues](known-issues.md) 12 節)

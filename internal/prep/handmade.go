@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 )
 
 // The exports for AMD's NPU that their command takes as made by hand with a script of tools/amd
@@ -47,7 +48,8 @@ func init() {
 }
 
 // imageHandMade is the export of every aspect ratio of Chroma's or Anima's model m for AMD's NPU
-// (tools/amd/iron_chroma.py, iron_anima.py --size of aspect.Of(16)).
+// (tools/amd/iron_chroma.py, iron_anima.py as their recipes say: {sizes} those of aspect.Of(16),
+// {dit} the model's file).
 func imageHandMade(e airole.PrepareEnv, chromaModel bool) (string, error) {
 	var sizes []string
 	for _, a := range aspect.Of(16) {
@@ -57,7 +59,7 @@ func imageHandMade(e airole.PrepareEnv, chromaModel bool) (string, error) {
 			sizes = append(sizes, fmt.Sprintf("%dx%d", a.Width, a.Height))
 		}
 	}
-	args := append([]string{"--size"}, sizes...)
+	vars := map[string][]string{recipe.Sizes: sizes}
 	// one of an earlier hwnpu by the same name may hold 1024 x 1024 alone: made again
 	holds := func(sizesOf func(string) [][2]int) func(string) bool {
 		return func(dir string) bool {
@@ -80,7 +82,7 @@ func imageHandMade(e airole.PrepareEnv, chromaModel bool) (string, error) {
 				return "", err
 			}
 			return chat.RepoDir(e.Model.Repo), nil
-		}, args, holds(chroma.IronSizes))
+		}, vars, holds(chroma.IronSizes))
 	}
 	return handMadeOf(e, "iron_anima.py", func() (string, error) {
 		var want []chat.File
@@ -91,7 +93,13 @@ func imageHandMade(e airole.PrepareEnv, chromaModel bool) (string, error) {
 			return "", err
 		}
 		return animaRoot()
-	}, append(args, "--dit", e.Model.File), holds(anima.IronSizes))
+	}, withDiT(vars, e.Model.File), holds(anima.IronSizes))
+}
+
+// withDiT is vars with recipe.DiT file.
+func withDiT(vars map[string][]string, file string) map[string][]string {
+	vars[recipe.DiT] = []string{file}
+	return vars
 }
 
 // animaRoot is the folder tools/amd/iron_anima.py reads (diffusion_models/, text_encoders/,
@@ -129,16 +137,16 @@ func fetchRepo(e airole.PrepareEnv, files []string) (string, error) {
 }
 
 // handMade is the export of tool for model m by the name its command looks for
-// (chat.AMDPictureNames): here or in the sources (chat.AMDPictureExport), else made with tool on
-// what fetch gives (root) with args after root and the export's folder, in IRON's environment,
-// and put in the sources written back to as made by hand.
-func handMade(e airole.PrepareEnv, tool string, fetch func() (string, error), args []string) (string, error) {
-	return handMadeOf(e, tool, fetch, args, nil)
+// (chat.AMDPictureNames): here or in the sources (chat.AMDPictureExport), else made as its recipe
+// says (model-recipes.yaml, whose script must be tool) on what fetch gives (recipe.In) and vars,
+// in IRON's environment, and put in the sources written back to as made by hand.
+func handMade(e airole.PrepareEnv, tool string, fetch func() (string, error), vars map[string][]string) (string, error) {
+	return handMadeOf(e, tool, fetch, vars, nil)
 }
 
 // handMadeOf is handMade that takes an export here or in the sources only when holds says it
 // is whole (nil: any).
-func handMadeOf(e airole.PrepareEnv, tool string, fetch func() (string, error), args []string, holds func(dir string) bool) (string, error) {
+func handMadeOf(e airole.PrepareEnv, tool string, fetch func() (string, error), vars map[string][]string, holds func(dir string) bool) (string, error) {
 	m := e.Model
 	ctx := chat.WithModel(e.Ctx, m)
 	if dir, err := chat.AMDPictureExport(ctx, m, "tools/amd/"+tool, 0, e.Log); err == nil && (holds == nil || holds(dir)) {
@@ -153,7 +161,11 @@ func handMadeOf(e airole.PrepareEnv, tool string, fetch func() (string, error), 
 		return "", err
 	}
 	out := filepath.Join(chat.AMDRoot(), chat.AMDPictureNames(m, 0)[0])
-	if err := chat.RunIRON(ctx, python, m.Name, tool, append([]string{root, chat.ExportOut}, args...), out, e.Log); err != nil {
+	if vars == nil {
+		vars = map[string][]string{}
+	}
+	vars[recipe.In] = []string{root}
+	if err := chat.RunAMDRecipe(ctx, python, m, vars, out, e.Log, tool); err != nil {
 		return "", err
 	}
 	chat.ShareMadeByHand(m, out, e.Log)

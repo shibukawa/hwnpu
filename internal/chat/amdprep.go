@@ -18,6 +18,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	amdtools "github.com/shibukawa/hwnpu/tools/amd"
 )
@@ -50,7 +51,7 @@ func amdSuffix(args []string) string {
 }
 
 // AMDExportDir is the directory of model m's export for AMD's NPU that models.yaml's
-// amd_export makes, "" for a model without one.
+// recipe (model-recipes.yaml) makes, "" for a model without one.
 func AMDExportDir(m Model) string {
 	if len(m.AMDExport) == 0 {
 		return ""
@@ -65,7 +66,7 @@ func isExport(dir string) bool {
 	return err == nil
 }
 
-// FindAMDExport is the export of model m here: the one its amd_export makes, else
+// FindAMDExport is the export of model m here: the one its recipe makes, else
 // NAME.amd-npu2-q4, else NAME.amd-npu2 (exports made by hand); "" when there is none.
 func FindAMDExport(m Model) string {
 	var names []string
@@ -109,7 +110,7 @@ func OnlyAMD(ctx context.Context, backend string) bool {
 // machine's memory, logged to log, or a repository OWNER/NAME) that hwnpu-chat runs when the
 // only NPU is AMD's, which runs no programs of hwnpu-dev convert. It is "" when that is not so
 // (OnlyAMD). As the other NPUs' models are prepared on their first run, a model of the
-// definitions with amd_export and no export here is made ready by PrepareAMD: its checkpoint
+// definitions with a recipe of iron_export_lm.py and no export here is made ready by PrepareAMD: its checkpoint
 // downloaded into dir and exported with IRON.
 func AMDExport(ctx context.Context, use, backend string, log io.Writer) (string, error) {
 	if !OnlyAMD(ctx, backend) {
@@ -144,7 +145,7 @@ func AMDExportOf(ctx context.Context, m Model, log io.Writer) (string, error) {
 		if d := AMDNamed(ctx, m, handMadeNames(m), isExport, log); d != "" {
 			return d, nil
 		}
-		msg := fmt.Sprintf("%s has no form for AMD's NPU: hwnpu has no recipe of tools/amd/iron_export_lm.py for it (amd_export in models.yaml), and neither %s nor the sources have %s.amd-npu2-q4 or %s.amd-npu2; --model takes an export's directory too",
+		msg := fmt.Sprintf("%s has no form for AMD's NPU: hwnpu has no recipe of tools/amd/iron_export_lm.py for it (model-recipes.yaml), and neither %s nor the sources have %s.amd-npu2-q4 or %s.amd-npu2; --model takes an export's directory too",
 			m.Name, strings.Join(cache.ExportRoots(), " or "), m.Name, m.Name)
 		if names := amdExports(); len(names) > 0 {
 			msg += ". The exports here: " + strings.Join(names, ", ")
@@ -174,7 +175,7 @@ var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_c
 	"chat_template.jinja", "generation_config.json", "processor_config.json", "preprocessor_config.json",
 	"calibration.json"} // a d1 model's temperature (internal/systemone)
 
-// PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as models.yaml's amd_export
+// PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as its recipe
 // says: from the shared layers when one has it (SharedExport; else one made by hand under its
 // name that hwnpu-dev sources import put there), else it checks that IRON's
 // environment is there (IRONEnv), downloads the checkpoint (RepoDir: only the files the
@@ -225,8 +226,13 @@ func exportAMD(ctx context.Context, python []string, m Model, out string, logf f
 			return err
 		}
 	}
+	// the recipe's (model-recipes.yaml) for the machine m runs as (Model.On), and the extra
+	// arguments of this generation
 	args := append([]string{m.AMDExport[0], ck, ExportOut}, m.AMDExport[1:]...)
-	return RunIRON(ctx, python, m.Name, "iron_export_lm.py", args, out, log)
+	if f, err := recipe.Builtin(); err == nil {
+		args = append(args, f.AMDExtra(m.Recipe, AMDGeneration)...)
+	}
+	return RunIRON(ctx, python, m.Name, LMTool, args, out, log)
 }
 
 // ExportOut stands in RunIRON's args for the directory the exporter writes.

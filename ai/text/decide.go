@@ -35,7 +35,7 @@ func Decide(name string) ai.Use[*Decider] {
 //	          audio        the audio encoder, a package per clip length (d1-Omni)
 //
 // A model of device cpu runs on hwnpu's CPU interpreter (slow; for checking). On AMD's NPU a
-// model runs from its export of tools/amd/iron_export_lm.py d1 (models.yaml's amd_export).
+// model runs from its export of tools/amd/iron_export_lm.py d1 (its recipe, model-recipes.yaml).
 var decideRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &Decider{remote: h} },
 	Name:   "decide",
@@ -43,7 +43,7 @@ var decideRole = &airole.Role{
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m, ps := e.Model, e.Model.Programs
 		if e.NPU.AMD() && len(ps["packages"]) == 0 && !e.NPU.CPU(m) {
-			// AMD's NPU: an export of tools/amd/iron_export_lm.py d1 (models.yaml's amd_export),
+			// AMD's NPU: an export of tools/amd/iron_export_lm.py d1 (its recipe, model-recipes.yaml),
 			// from the sources or made with IRON, as a chat model's
 			if len(m.AMDExport) == 0 {
 				return f, noAMDForm(e)

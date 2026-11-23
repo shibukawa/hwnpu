@@ -87,7 +87,7 @@ func PrepareEmbedderAMD(ctx context.Context, m Model, log io.Writer) (string, er
 		if _, err := FetchWeights(ctx, m.Source(), log); err != nil {
 			return err
 		}
-		return RunIRON(ctx, python, m.Name, EmbedAMDTool, []string{RepoDir(m.Source()), ExportOut}, out, log)
+		return RunAMDRecipe(ctx, python, m, InVar(RepoDir(m.Source())), out, log, EmbedAMDTool)
 	})
 	if err != nil {
 		return "", err

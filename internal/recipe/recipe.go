@@ -24,6 +24,7 @@ type File struct {
 	Version int              `yaml:"version"`
 	Tools   Tools            `yaml:"tools"`
 	Apple   Apple            `yaml:"apple"`
+	AMD     AMD              `yaml:"amd"`
 	Models  map[string]Model `yaml:"models"`
 }
 
@@ -65,9 +66,10 @@ var Ways = map[string][]string{
 	"sin": {"series", "native"},
 }
 
-// Model is a model's recipe.
+// Model is a model's recipe: its Core AI exports' (Apple) and its exports' for AMD's NPU (AMD).
 type Model struct {
-	Apple *Apple `yaml:"apple"`
+	Apple *Apple    `yaml:"apple"`
+	AMD   *AMDModel `yaml:"amd"`
 }
 
 // Rule is what becomes of some programs of some exports for some architectures.
@@ -132,9 +134,17 @@ func Parse(name string, raw []byte) (*File, error) {
 	if err := f.Apple.check("apple"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
 	}
+	if err := f.AMD.check("amd"); err != nil {
+		return nil, fmt.Errorf("recipe: %s: %w", name, err)
+	}
 	for _, m := range f.sortedModels() {
 		if a := f.Models[m].Apple; a != nil {
 			if err := a.check("models." + m + ".apple"); err != nil {
+				return nil, fmt.Errorf("recipe: %s: %w", name, err)
+			}
+		}
+		if a := f.Models[m].AMD; a != nil {
+			if err := a.check("models." + m + ".amd"); err != nil {
 				return nil, fmt.Errorf("recipe: %s: %w", name, err)
 			}
 		}

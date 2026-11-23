@@ -31,7 +31,7 @@
 
 | 機能 | クラウドでの例 | hwnpu | モデル | Apple | Intel | AMD |
 |---|---|---|---|---|---|---|
-| チャット、コーディング | OpenAI Chat Completions、Gemini、Bedrock | `hwnpu-chat`、`agent`、`serve` (`/v1/chat/completions`) | LFM3、Gemma 4、Qwen3.5 ほか | ◎ | ○ | ◎ (models.yaml の `amd_export`) |
+| チャット、コーディング | OpenAI Chat Completions、Gemini、Bedrock | `hwnpu-chat`、`agent`、`serve` (`/v1/chat/completions`) | LFM3、Gemma 4、Qwen3.5 ほか | ◎ | ○ | ◎ (model-recipes.yaml の `amd`) |
 | 画像についての質問 | GPT の画像入力、Gemini | `hwnpu-chat -m vision` | LFM3-VL-2B、Gemma 4 E2B 画像と音声つき | ◎ | ○ | ◎ |
 | 音声についての質問 | GPT の音声入力、Gemini | `hwnpu-chat -m audio` | LFM3-Audio / Omni、Gemma 4 E2B | ◎ | ○ | ◎ |
 | 翻訳 | Cloud Translation、Azure Translator、DeepL | `hwnpu-chat -m translate` | PLaMo 3 Translate 0.8B / 2B | ◎ | ○ | ◎ |
