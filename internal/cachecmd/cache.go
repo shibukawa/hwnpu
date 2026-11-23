@@ -1,13 +1,11 @@
-package main
+package cachecmd
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"path"
 	"slices"
 	"strconv"
@@ -16,7 +14,6 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
 
@@ -29,17 +26,21 @@ type CacheCmd struct {
 	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (HWNPU_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its hwnpu-lock.json does not name, the temporary files of uploads, in S3 the uploads in parts cut off over an hour ago. Folders being written now are left."`
 }
 
-func open() (*modelstore.Store, error) {
-	return modelstore.Open(modelstore.Options{Log: os.Stderr})
+// open opens hwnpu's store as the commands do, its downloads' log to e.Err.
+func (e *Env) open() (*modelstore.Store, error) {
+	return modelstore.Open(modelstore.Options{Log: e.Err})
 }
 
-var kindHelp = strings.Join(cache.Kinds, ", ")
+// KindHelp names the kinds of units, for the commands' help (kong's ${kinds}).
+var KindHelp = strings.Join(cache.Kinds, ", ")
 
 // InfoCmd is hwnpu cache info.
 type InfoCmd struct{}
 
-func (InfoCmd) Run() error {
-	s, err := open()
+func (c InfoCmd) Run(ctx context.Context) error { return run(ctx, Request{Command: "info"}) }
+
+func (InfoCmd) exec(e *Env) error {
+	s, err := e.open()
 	if err != nil {
 		return err
 	}
@@ -47,26 +48,26 @@ func (InfoCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("cache:  %s", u.Root)
+	fmt.Fprintf(e.Out, "cache:  %s", u.Root)
 	if os.Getenv(cache.RootEnv) != "" {
-		fmt.Printf(" (%s)", cache.RootEnv)
+		fmt.Fprintf(e.Out, " (%s)", cache.RootEnv)
 	}
-	fmt.Println()
+	fmt.Fprintln(e.Out)
 	free, total, derr := s.DiskSpace()
 	if derr == nil {
-		fmt.Printf("disk:   %s free of %s\n", cache.FormatSize(free), cache.FormatSize(total))
+		fmt.Fprintf(e.Out, "disk:   %s free of %s\n", cache.FormatSize(free), cache.FormatSize(total))
 	}
 	l, err := s.Limits()
 	if err != nil {
-		fmt.Printf("limits: %v\n", err)
+		fmt.Fprintf(e.Out, "limits: %v\n", err)
 	} else {
-		fmt.Printf("limits: %s (%s, %s)\n", l, cache.MaxSizeEnv, cache.MinFreeEnv)
+		fmt.Fprintf(e.Out, "limits: %s (%s, %s)\n", l, cache.MaxSizeEnv, cache.MinFreeEnv)
 		if derr == nil && free < l.MinFreeOf(total) {
-			fmt.Printf("        %s: downloads stop until hwnpu cache prune or clear frees room\n", "the disk has less free")
+			fmt.Fprintf(e.Out, "        %s: downloads stop until hwnpu cache prune or clear frees room\n", "the disk has less free")
 		}
 	}
-	fmt.Printf("holds:  %s\n", cache.FormatSize(u.Bytes))
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprintf(e.Out, "holds:  %s\n", cache.FormatSize(u.Bytes))
+	w := tabwriter.NewWriter(e.Out, 0, 4, 2, ' ', tabwriter.AlignRight)
 	by := u.ByKind()
 	n := map[string]int{}
 	for _, x := range u.Units {
@@ -91,9 +92,9 @@ func (InfoCmd) Run() error {
 	fmt.Fprintf(w, "  other\t%s\t\t\n", cache.FormatSize(other))
 	w.Flush()
 	if len(parts) > 0 {
-		fmt.Printf("        (other: %s; never removed by prune)\n", strings.Join(parts, ", "))
+		fmt.Fprintf(e.Out, "        (other: %s; never removed by prune)\n", strings.Join(parts, ", "))
 	}
-	fmt.Println("layers (models are read from the first that has them):")
+	fmt.Fprintln(e.Out, "layers (models are read from the first that has them):")
 	for i, ly := range s.Layers() {
 		what := ""
 		switch {
@@ -102,7 +103,7 @@ func (InfoCmd) Run() error {
 		case ly.Writeback:
 			what = " (written back to)"
 		}
-		fmt.Printf("  %d  %s%s\n", i, ly.Name, what)
+		fmt.Fprintf(e.Out, "  %d  %s%s\n", i, ly.Name, what)
 	}
 	return nil
 }
@@ -142,7 +143,7 @@ func match(x modelstore.Unit, patterns []string) bool {
 func badKinds(kinds []string) error {
 	for _, k := range kinds {
 		if !slices.Contains(cache.Kinds, k) {
-			return fmt.Errorf("no kind %q: %s", k, kindHelp)
+			return fmt.Errorf("no kind %q: %s", k, KindHelp)
 		}
 	}
 	return nil
@@ -176,8 +177,8 @@ func modelName(x modelstore.Unit) string {
 }
 
 // table lists each unit.
-func table(units []modelstore.Unit) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+func table(e *Env, units []modelstore.Unit) {
+	w := tabwriter.NewWriter(e.Out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "model\tkind\tsize\tlast used\tunit")
 	var total int64
 	for _, x := range units {
@@ -185,7 +186,7 @@ func table(units []modelstore.Unit) {
 		total += x.Bytes
 	}
 	w.Flush()
-	fmt.Printf("%d units, %s\n", len(units), cache.FormatSize(total))
+	fmt.Fprintf(e.Out, "%d units, %s\n", len(units), cache.FormatSize(total))
 }
 
 // group is the units of a model of a kind.
@@ -220,8 +221,8 @@ func groups(units []modelstore.Unit) []group {
 }
 
 // summary lists the units by model and kind.
-func summary(gs []group) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+func summary(e *Env, gs []group) {
+	w := tabwriter.NewWriter(e.Out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "model\tkind\tunits\tsize\tlast used")
 	var n int
 	var total int64
@@ -231,7 +232,7 @@ func summary(gs []group) {
 		total += g.bytes
 	}
 	w.Flush()
-	fmt.Printf("%d units, %s\n", n, cache.FormatSize(total))
+	fmt.Fprintf(e.Out, "%d units, %s\n", n, cache.FormatSize(total))
 }
 
 // LsCmd is hwnpu cache ls.
@@ -242,11 +243,13 @@ type LsCmd struct {
 	Units    bool     `short:"u" help:"Each unit, instead of the units of a model of a kind together."`
 }
 
-func (l LsCmd) Run() error {
+func (l LsCmd) Run(ctx context.Context) error { return run(ctx, Request{Command: "ls", Ls: l}) }
+
+func (l LsCmd) exec(e *Env) error {
 	if err := badKinds(l.Kind); err != nil {
 		return err
 	}
-	s, err := open()
+	s, err := e.open()
 	if err != nil {
 		return err
 	}
@@ -259,14 +262,16 @@ func (l LsCmd) Run() error {
 		if l.Size {
 			slices.SortStableFunc(units, func(a, b modelstore.Unit) int { return cmp.Compare(b.Bytes, a.Bytes) })
 		}
-		table(units)
+		table(e, units)
+		e.held(units)
 		return nil
 	}
 	gs := groups(units)
 	if l.Size {
 		slices.SortStableFunc(gs, func(a, b group) int { return cmp.Compare(b.bytes, a.bytes) })
 	}
-	summary(gs)
+	summary(e, gs)
+	e.held(units)
 	return nil
 }
 
@@ -289,11 +294,15 @@ type PruneCmd struct {
 	DryRun    bool     `short:"n" help:"Show what would be removed, and remove nothing."`
 }
 
-func (p PruneCmd) Run() error {
+func (p PruneCmd) Run(ctx context.Context) error {
+	return run(ctx, Request{Command: "prune", Prune: p})
+}
+
+func (p PruneCmd) exec(e *Env) error {
 	if err := badKinds(p.Kind); err != nil {
 		return err
 	}
-	s, err := open()
+	s, err := e.open()
 	if err != nil {
 		return err
 	}
@@ -322,32 +331,34 @@ func (p PruneCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	return remove(s, units, p.DryRun, true)
+	return remove(e, s, e.notHeld(units), p.DryRun, true)
 }
 
 // remove removes units, or shows them with dryRun; ask asks first on a terminal unless yes.
-func remove(s *modelstore.Store, units []modelstore.Unit, dryRun, yes bool) error {
+func remove(e *Env, s *modelstore.Store, units []modelstore.Unit, dryRun, yes bool) error {
 	if len(units) == 0 {
-		fmt.Println("nothing to remove")
+		fmt.Fprintln(e.Out, "nothing to remove")
 		return nil
 	}
 	if len(units) > 30 {
-		summary(groups(units)) // hwnpu cache ls --units lists each
+		summary(e, groups(units)) // hwnpu cache ls --units lists each
 	} else {
-		table(units)
+		table(e, units)
 	}
 	if dryRun {
-		fmt.Println("(--dry-run: nothing removed)")
+		fmt.Fprintln(e.Out, "(--dry-run: nothing removed)")
 		return nil
 	}
 	if !yes {
-		if !console.Terminal(os.Stdin) {
+		if e.Ask == nil {
 			return errors.New("--yes removes them (standard input is not a terminal to ask on)")
 		}
-		fmt.Print("remove them? [y/N] ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			fmt.Println("nothing removed")
+		if !e.Ask("remove them? [y/N] ") {
+			fmt.Fprintln(e.Out, "nothing removed")
+			return nil
+		}
+		// what was loaded while the question was asked stays too
+		if units = e.notHeld(units); len(units) == 0 {
 			return nil
 		}
 	}
@@ -356,7 +367,7 @@ func remove(s *modelstore.Store, units []modelstore.Unit, dryRun, yes bool) erro
 	for _, x := range done {
 		bytes += x.Bytes
 	}
-	fmt.Printf("removed %d units, %s\n", len(done), cache.FormatSize(bytes))
+	fmt.Fprintf(e.Out, "removed %d units, %s\n", len(done), cache.FormatSize(bytes))
 	return err
 }
 
@@ -369,7 +380,11 @@ type ClearCmd struct {
 	DryRun   bool     `short:"n" help:"Show what would be removed, and remove nothing."`
 }
 
-func (c ClearCmd) Run() error {
+func (c ClearCmd) Run(ctx context.Context) error {
+	return run(ctx, Request{Command: "clear", Clear: c})
+}
+
+func (c ClearCmd) exec(e *Env) error {
 	if err := badKinds(c.Kind); err != nil {
 		return err
 	}
@@ -379,7 +394,7 @@ func (c ClearCmd) Run() error {
 	if len(c.Patterns) > 0 && c.All {
 		return errors.New("--all takes no pattern")
 	}
-	s, err := open()
+	s, err := e.open()
 	if err != nil {
 		return err
 	}
@@ -389,17 +404,17 @@ func (c ClearCmd) Run() error {
 	}
 	now := time.Now()
 	var units []modelstore.Unit
-	for _, x := range pick(u.ByUse(), c.Patterns, c.Kind) {
+	for _, x := range e.notHeld(pick(u.ByUse(), c.Patterns, c.Kind)) {
 		if !cache.Removable(x, now, 0) {
-			fmt.Fprintf(os.Stderr, "%s: kept (a writeback to a source is queued for it)\n", x.Name)
+			fmt.Fprintf(e.Err, "%s: kept (a writeback to a source is queued for it)\n", x.Name)
 			continue
 		}
 		if now.Sub(x.Used) < time.Minute {
-			fmt.Fprintf(os.Stderr, "%s: used %s: a command running now may stop\n", x.Name, used(x.Used))
+			fmt.Fprintf(e.Err, "%s: used %s: a command running now may stop\n", x.Name, used(x.Used))
 		}
 		units = append(units, x)
 	}
-	return remove(s, units, c.DryRun, c.Yes)
+	return remove(e, s, units, c.DryRun, c.Yes)
 }
 
 // parseAge reads an age: a Go duration (12h, 90m) or days (30d) or weeks (2w).
@@ -426,24 +441,27 @@ type CleanCmd struct {
 	DryRun bool `short:"n" help:"Show what would be removed, and remove nothing."`
 }
 
-func (c CleanCmd) Run() error {
-	s, err := open()
+func (c CleanCmd) Run(ctx context.Context) error {
+	return run(ctx, Request{Command: "clean", Clean: c})
+}
+
+func (c CleanCmd) exec(e *Env) error {
+	s, err := e.open()
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	ctx := e.Ctx
 	plans, err := s.PlanClean(ctx)
 	if err != nil {
 		return err
 	}
 	if len(plans) == 0 {
-		fmt.Println("no source is written back to (HWNPU_MODEL_SOURCE ?writeback=true)")
+		fmt.Fprintln(e.Out, "no source is written back to (HWNPU_MODEL_SOURCE ?writeback=true)")
 		return nil
 	}
 	var folders, files, uploads int
 	var bytes int64
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	w := tabwriter.NewWriter(e.Out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "source\tsize\tfiles\twhy\tfolder")
 	for _, p := range plans {
 		for _, f := range p.Folders {
@@ -462,39 +480,37 @@ func (c CleanCmd) Run() error {
 		bytes += p.Bytes()
 	}
 	if folders == 0 && uploads == 0 {
-		fmt.Println("nothing to remove: what the sources hold is whole")
+		fmt.Fprintln(e.Out, "nothing to remove: what the sources hold is whole")
 		return nil
 	}
 	w.Flush()
-	fmt.Printf("%d files in %d folders, %s", files, folders, cache.FormatSize(bytes))
+	fmt.Fprintf(e.Out, "%d files in %d folders, %s", files, folders, cache.FormatSize(bytes))
 	if uploads > 0 {
-		fmt.Printf("; %d S3 uploads in parts to abort (their parts, of a size S3 does not list, go too)", uploads)
+		fmt.Fprintf(e.Out, "; %d S3 uploads in parts to abort (their parts, of a size S3 does not list, go too)", uploads)
 	}
-	fmt.Println()
+	fmt.Fprintln(e.Out)
 	if c.DryRun {
-		fmt.Println("(--dry-run: nothing removed)")
+		fmt.Fprintln(e.Out, "(--dry-run: nothing removed)")
 		return nil
 	}
 	if !c.Yes {
-		if !console.Terminal(os.Stdin) {
+		if e.Ask == nil {
 			return errors.New("--yes removes them (standard input is not a terminal to ask on)")
 		}
-		fmt.Print("remove them? [y/N] ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			fmt.Println("nothing removed")
+		if !e.Ask("remove them? [y/N] ") {
+			fmt.Fprintln(e.Out, "nothing removed")
 			return nil
 		}
 	}
 	n, err := s.Clean(ctx, plans)
 	if all := files + uploads; n < all && err == nil {
-		fmt.Printf("removed %d of the %d files and uploads (the rest are in folders a writeback has started in since)\n", n, all)
+		fmt.Fprintf(e.Out, "removed %d of the %d files and uploads (the rest are in folders a writeback has started in since)\n", n, all)
 	} else if err == nil {
-		fmt.Printf("removed %d files, %s", n-uploads, cache.FormatSize(bytes))
+		fmt.Fprintf(e.Out, "removed %d files, %s", n-uploads, cache.FormatSize(bytes))
 		if uploads > 0 {
-			fmt.Printf(", and aborted %d uploads", uploads)
+			fmt.Fprintf(e.Out, ", and aborted %d uploads", uploads)
 		}
-		fmt.Println()
+		fmt.Fprintln(e.Out)
 	}
 	return err
 }

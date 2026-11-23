@@ -15,6 +15,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/npustatus"
+	"github.com/shibukawa/hwnpu/modelstore"
 )
 
 // Repo is where hwnpu issue opens a new issue.
@@ -35,7 +36,7 @@ type IssueCmd struct {
 }
 
 func (c IssueCmd) Run(ctx context.Context) error {
-	s, err := open()
+	s, err := modelstore.Open(modelstore.Options{Log: os.Stderr})
 	if err != nil {
 		return err
 	}
