@@ -118,7 +118,7 @@ models:
 - **レシピを変えたら版を上げる**。版の中身は `internal/recipe/testdata/amd-versions.txt` に残してあり (レシピの指紋)、同じ版のままレシピを変えると `go test ./internal/recipe` が落ちる。版を上げたら `go test ./internal/recipe -run TestAMDVersions -update` で書き直す
 - 版を上げたら、作り直して置き、ピンし直す (`hwnpu-dev models package MODEL/amd-xdna2`、`hwnpu-dev models pin MODEL`)。手元で確かめるときは、手元の前の書き出し (`~/.cache/hwnpu/entries/amd-xdna2/EXPORT`) を消してから作り直す
 - `vN` は道具 (`tools/amd`) の hash によらず取られる。道具を変えて書き出しが変わるときも版を上げる
-- 版 1 は、models.yaml の `amd_export` と Go のコードからレシピに移したときのもの (2026-11-23)。作るものは同じ (作り直してバイトまで同じことを見た) なので、作り直さず、取得元のピンした書き出しを `v1` にコピーして版だけ書き換え、ピンを `v1` に移した
+- 版 1 は、models.yaml の `amd_export` と Go のコードからレシピに移したときのもの (2026-11-23)。作るものは同じ (作り直してバイトまで同じことを見た) なので、作り直さず、取得元のピンした書き出しを `v1` にコピーして版だけ書き換え、ピンを `v1` に移す。2026-11-23 は 12 個 (LFM3 の 4 つ、Gemma 4 の 2 つ、Qwen3.5 の 3 つ、gpt-oss-20b の 2 つ、Qwen3.6-35B-A3B の q4) を移したところで NAS が書き込みを受けなくなった。残りの 34 個のピンは前の `v0-…` のまま (ピンはフォルダの名前によらず中身の digest で取るので、そのままで動く)
 
 ## 3. 通らないプログラムがあったとき
 
