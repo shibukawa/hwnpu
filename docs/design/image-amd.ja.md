@@ -6,13 +6,13 @@
 
 ## グラフの書き出し
 
-- 画像のモデルは、入力から出力への IRON のグラフとして書き出す (`tools/amd/iron_graph.py`、Go の `iron.Graph`、`internal/llm/iron/graph.go`)。言語モデルの decode と prompt のプログラムとは別。書き出しの道具: `tools/amd/iron_anima.py`、`iron_chroma.py` (T5 と VAE の `iron_chroma_parts.py` は `--parts` で DiT の後に回る)、`iron_flux2klein.py`、`iron_flux3klein.py`。共通の部分は `iron_dit.py` (`Checkpoint`、`qparam`、`head_perm`、`rope_angles`、`share_banks`、`VaeStage`、`timestep_sinusoid`、`text_linear`)。書き出しのディレクトリは `NAME.amd-npu2` で、`model.json` とマニフェストを持つ。
+- 画像のモデルは、入力から出力への IRON のグラフとして書き出す (`tools/amd/iron_graph.py`、Go の `iron.Graph`、`internal/llm/iron/graph.go`)。言語モデルの decode と prompt のプログラムとは別。書き出しの道具: `tools/amd/iron_anima.py`、`iron_flux2klein.py`、`iron_flux3klein.py`。共通の部分は `iron_dit.py` (`Checkpoint`、`qparam`、`head_perm`、`rope_angles`、`share_banks`、`VaeStage`、`timestep_sinusoid`、`text_linear`) と、FLUX.1 の VAE の `iron_chroma_parts.py` (`FluxVaeStage`。残りの T5 は外した Chroma1 のもの: [not-adopted/chroma1.md](../not-adopted/chroma1.md))。書き出しのディレクトリは `NAME.amd-npu2` で、`model.json` とマニフェストを持つ。
 - **重みのバンク** (`variants`): 1 つの ELF がバンクを何組も持つ。DiT のブロックは数ブロックのグラフ 1 つと、組ごとのバンク (Anima: 28 ブロック = 4 ブロックのグラフ × 7 組)。
 - **`SwapVariants`** (既定): バンクを 1 組だけ確保し、組を回す前にその組の像をバンクに読む (arena は重みを先に、作業領域を後ろに置き、1 回の呼び出しの後に作業領域に残すものはない)。Anima 1024²: 固定の最大 3445 → 1236 MiB、時間 +2 %、バイト単位で同じ。`--resident-dit` で全部の組を常駐。文の符号器 (Qwen3、T5、Qwen3-VL) も同じく組にする。
 - **先読み** (`iron.GraphOptions.Prefetch`): 2 つ目のバンクを持ち、`Use(i)` の後に組 i+1 を裏で読み、次の `Use` はバンクを入れ替えるだけ。DiT の段に 2 つ目のバンクと 384 MiB の余裕 (`anima.prefetchMargin`: プログラムと制御コードも固定する) を足した量が、VAE のピーク以下か `anima.PrefetchFloor` (2 GiB) 以下のときだけ。`HWNPU_DEV=iron.prefetch=0` で切る。Anima は 1 ステップ 0.5 秒の読み直しのうち 0.1 秒しか隠れない: 読み込みと NPU が同じメモリ帯域を使う。
 - 先読みしない読み込みは 8 スレッド (`iron.readPrefix`): 5〜7 → 15 GB/s。
 - **`share_banks`**: 前のグラフと同じ重みが同じ順に並ぶグラフは自分のバンクの像を消し、`../GRAPH/` を指す (バイト単位で照らす)。そのため重みの配置は大きさにも行数にも依ってはいけない: **RoPE の表は入力** (`angles`、行 × head_dim、Go の `ropeAngles` がホストで作る、`TestRopeAngles`) にし、バンクに焼かない。`angles` のない古い書き出しも動く。
-- **`iron.GraphOptions.Barrier`**: 同じグラフの 2 回目の最初のコマンドが `ERT_CMD_STATE_TIMEOUT` になることがある (呼び出しごとの位置に K/V を書くグラフ、6 コマンドの Chroma の approximator)。同じ ELF を別のハードウェアコンテキストに読み、空のコマンドを先に回すと止まらない (irongraph `-barrier`)。
+- **`iron.GraphOptions.Barrier`**: 同じグラフの 2 回目の最初のコマンドが `ERT_CMD_STATE_TIMEOUT` になることがある (呼び出しごとの位置に K/V を書くグラフ、6 コマンドの Chroma1 の approximator。外した)。同じ ELF を別のハードウェアコンテキストに読み、空のコマンドを先に回すと止まらない (irongraph `-barrier`)。
 - グラフは行数ごとにコンパイルする。1 ステップの行は **512** の倍数 (注意の 8 本のパイプライン × 64 行) でなければならず、そうでない大きさは詰める (下)。
 
 ## 注意
@@ -31,7 +31,6 @@
 | モデル | `mha` | `exp` |
 |---|---|---|
 | Anima | qk | exact (`--dit-exp`。mid は 3 % のわりに絵が動く: 潜在 0.976 / 19.6 dB) |
-| Chroma1 | qk | mid |
 | FLUX.2 klein、FLUX.3 klein | qkpv | mid |
 
 ## DiT のブロック
@@ -39,7 +38,7 @@
 Anima の 4 ブロックのグラフ (1024²、下の変更の前) の内訳: 注意 48 %、GEMM 29 %、要素ごとの演算 30 % (ほぼ帯域、約 58 GB/s)、adaLN 1 %。要素ごとの演算は 4096 × 2048 で 1 つ 0.6〜0.8 ms で、IRON の厳密な GELU の 5.2 ms が目立った。
 
 - **重みを bfp16 でホストで詰める** (`iron_q4.bfp16_pack`、`bfp16_linear`、形式 `bfp16`。どの DiT のブロックも既定): MEDIUM の GEMM は bf16 の重みを毎回 bfp16 に丸め、q8 はさらに毎ステップ展開する。書き出しのときに `flm.ProjectionGEMM` が読む `bfp16ebs8` の並びにしておけば、どちらもなくなる。MLP 1 つで q8 25.9、bf16 23.0、bfp16 18.5 ms、誤差は bf16 と同じ。1 重み 9 ビット (q8 は 8.5)。詰める側と GEMM に同じ `pack_b` の tile_n 64、k のタイル 512 (K が倍数でなければ 384、256、128)、ct_k 128 を渡す。違うと黙って並びが狂う。block 型の重みとして登録する (`bfp16_operand`)。払うもの: 書き出しの時間 (Anima の DiT 45 秒 → 3 分 18 秒、`bfp.encode` が直列)、`graph.reference()` は詰めた B を読めないので `--check` は `--proj bf16` の書き出しで。埋め込み、adaLN、最後の層は bf16。
-- **GELU** (`iron_gelu.GELUEven`、`kernels/gelu_even.cc`、`--dit-gelu even`): IRON の tanh の表で、引数を float32 で作り (x² は正確、係数は bf16 の limb 2 本)、最近接偶数で丸める。厳密なカーネルの 5.2 ms に対して 1.76 ms。Chroma (tanh 近似の GELU で学習) も同じ。
+- **GELU** (`iron_gelu.GELUEven`、`kernels/gelu_even.cc`、`--dit-gelu even`): IRON の tanh の表で、引数を float32 で作り (x² は正確、係数は bf16 の limb 2 本)、最近接偶数で丸める。厳密なカーネルの 5.2 ms に対して 1.76 ms。Chroma1 (tanh 近似の GELU で学習。外した) も使っていた。
 - **LayerNorm に変調の掛け算を** (`F.layer_norm(x, weight=scale + 1)`、IRON の WeightedRowwise が 2 つ目のコアで): 1.23 → 0.61 ms、ビット単位で同じ。adaLN の全部に。
 - **ヘッドごとの RMSNorm** (`iron_headnorm.py`、`kernels/head_rms.cc`): q と k の正規化を (行、ヘッド × 128) のまま 1 回で、重みはヘッドごとに並べる。1.4 → 0.83 ms、ビット単位で同じ。
 - **SiLU を float32 で** (`iron_silu.SiLUF32`、`kernels/silu_f32.cc`): IRON の SiLU は x に bf16 の表のシグモイドを掛け、[−6, 2] で平均 1 % (最大 2.3 %) ずれ、x ≤ −8 でちょうど 0。言語モデルの残差には値が数十〜数百のチャネルがあり、SwiGLU の up の枝がそこで大きいので、誤差が MLP の出力に出る。x / (1 + exp(−x)) を IRON の `exp_f32` と float の逆数で計算し、bf16 へ 1 回だけ丸める: 平均誤差 0.14 %、512 × 9728 で 12 ms。FLUX.2 klein の Qwen3 の文の符号器で使う (最後の潜在 0.916 → 0.977)。DiT の SwiGLU は表のまま (ゲートが大きな負にならない: 1 ステップ目の速度 0.99999)。ほかの SwiGLU の言語モデルの書き出しにも当てはまりうる。未確認。
@@ -49,7 +48,6 @@ Anima の 4 ブロックのグラフ (1024²、下の変更の前) の内訳: �
 | モデル | 符号器 | 形 |
 |---|---|---|
 | Anima | Qwen3-0.6B と LLM アダプタ | GEMM は `HIGHEST`: MEDIUM (bfp16) は文で誤差を広げる (HIGHEST で潜在 0.938 → 0.966、時間は同じ) |
-| Chroma1 | T5-XXL | q8、HIGHEST、GELU は erf (IRON の tanh の表は最悪の行を 0.986 に)。4 層ずつ 6 組を 1 つのバンクに (`--t5-group 4`): どの組も残差と最後の RMSNorm を出す。プロンプトと負のプロンプトは組ごとに続けて。1024² のピーク 5.9 → 4.6 GB、T5 4.2〜5 秒 |
 | FLUX.2 klein | Qwen3-4B、3 層ずつ 9 組、bf16、HIGHEST | 層 9、18、27 の後の隠れ状態 (7680 列)。`ctx` (context_embedder) は GEMM 3 つの和 (K 7680 は HIGHEST の GEMM に入らない) |
 | FLUX.3 klein | Qwen3-VL-4B、32 層を 4 層ずつ 8 バンク、bf16 | FLUX.2 の `Qwen3Layer`。bf16 なので文の流れの 9.7e6 も縮めずに持てる |
 
@@ -57,14 +55,13 @@ Anima の 4 ブロックのグラフ (1024²、下の変更の前) の内訳: �
 - **Qwen3 の符号器のパッドの行 (FLUX)**: パイプラインはプロンプトを 512 トークンに埋め、DiT はパッドの行も読む。transformers のマスクでは、パッドの行はプロンプトのキーだけを見て (自分のキーも見ない)、プロンプトの行は因果。そこで注意を 2 回走らせる (全部の行の因果の注意と、最初の `nk` 個のキーへのマスクなしの注意) 。入力 `sel` (プロンプトの行で 1) で行ごとに選ぶ (`op + (oc − op)·sel`)。512 行を 1 回で (64 行ずつだとパッドの行の自分のキーが因果の注意に入る)。
 - パッドの行は重みの丸めに敏感 (層 18 のパッドの行: q6 0.904、q8 0.995、bf16 0.9995): FLUX.2 の文の符号器は bf16 のまま (埋め込みの表 0.8 GB を含めて 5.9 GB、1 層 61 → 52 ms)。
 - FLUX.3: 文は 512 行の枠 (`text_slot`) に持ち、プロンプトの R 行 (トークン数を 80 の倍数に切り上げ、80〜480) だけがキー (`nk`)。パッドの位置は 1。512 行で回して先頭 R 行を使う (80 行で回したものと同じ)。
-- Chroma のトークナイザー: Chroma1 には `spiece.model` しかない。書き出しの道具がその protobuf を直に読み (IRON の環境に sentencepiece はない)、Anima の `t5_tokenizer.json` と同じ形を書く (`t5_tokenizer_json`。Anima のものと同じ)。FLUX のトークナイザーの tokenizer.json は正規化が Sequence で Go が読めない。
 
 ## VAE
 
 - **格子のままの畳み込み** (`iron_gridgemm.GridGEMM`、`--vae-conv grid`): 3 × 3 の畳み込みを im2col の写しなしで (3C が 512 以下なら GEMM 1 つ、超えればカーネルの行ごとに 3 つを足す)。拡大は 4 つの出力の位相をそれぞれ低い解像度の 2 × 2 の畳み込みで (`PHASE_TAPS`)。Anima の VAE 9.3 → 5.2 秒、im2col の形と PSNR 52.7 dB。
 - `iron_anima.gemm_tile_n`: 8 列が埋まる tile (128 チャネルで 16、256 で 32。既定の 64 は 2 列しか使わなかった)。畳み込みだけなら 46 → 38 ms、段では 1.37 → 1.30 秒だけ: 畳み込みは A の転送 (画素あたり 9C) が律速。
 - **バッファの使い回し** (`iron.GraphOptions.Buffers`、`anima.VAE.run`): デバイスのバッファの確保はページを固定して 0 で埋める (1 GiB に 0.33 秒、解放 0.11 秒)。FLUX.2 の復号器の 10 段は 17.6 GiB を確保し、14 秒のうち 7.6 秒だった。今はバンクの種類ごとに 1 つ (いちばん大きい段の大きさ) を全部の段で使い、像を読んだ後ろを 0 にする (複数スレッドで)。段の出力のバッファはそのまま次の段の入力 (コピーなし、ホストに写さない)。FLUX.2 1024² の復号 14 → 8.5 秒、符号化 7.3 → 4.8 秒、プロセスの RSS 1.17 → 0.16 GiB、ピーク 4.9 → 3.8 GB、バイト単位で同じ。Anima-Turbo の復号 5.2 → 4.0 秒。(VAE の段の先読みは確保の時間を隠していただけなので、なくした。)
-- **GroupNorm** (`iron_groupnorm.py`、`kernels/chan_stats.cc`、`kernels/row_affine.cc`、`anima.HostNorm`、`--host-norm`、既定。FLUX.2 / FLUX.3 klein と Chroma の FLUX の VAE): IRON には GroupNorm も逆数の平方根もない。
+- **GroupNorm** (`iron_groupnorm.py`、`kernels/chan_stats.cc`、`kernels/row_affine.cc`、`anima.HostNorm`、`--host-norm`、既定。FLUX.2 / FLUX.3 klein の FLUX の VAE): IRON には GroupNorm も逆数の平方根もない。
   - `ChannelStats`: bf16 の画素の行から、チャネルごとの和と二乗和 (float32) を 1 回読みで出す。
   - ホストの段 (`iron.Graph.After`、`anima.hostNorms`): グラフの状態に名前を付け (`gn0.stats`、`gn0.row`) マニフェストの `buffers` から場所を引く。コマンドが終わるたびに、次の norm の統計が書かれていれば (NaN の印が消えていれば)、float64 で群の平均と分散を出し、a = γ/√(var + eps)、b = β − 平均·a を書く。統計の演算の直後でコマンドを切る。
   - `RowAffine`: y = x·a + b。a と b は bf16 の limb 2 本、計算は float32、bf16 へ 1 回だけ丸める (x·a と b は結果の何倍にもなる: この復号器では |平均|/標準偏差が 6.3 まで)。
@@ -72,7 +69,7 @@ Anima の 4 ブロックのグラフ (1024²、下の変更の前) の内訳: �
   - 1024² の 128 チャネルで約 157 ms → 数 ms。復号 512² 2.6 → 1.8 秒、1024² 8.5 → 7.0 秒、float32 との PSNR 52.6 dB。`graph.reference()` はホストの段を知らないので照合は NPU で (`HWNPU_DEV=klein.decode=1` で `--noise` の潜在を復号、`--dump`)。
   - 前の形 (GEMM と RMSNorm の約 20 演算。1/√(var + eps) は群の行と定数の行の RMSNorm で) はホストが要らず、`--no-host-norm` で残る。
 - **潜在が 16 の倍数でない** (長方形。832 × 1248 で 104 × 156。`iron_anima.GridShape`、Go の `anima.GridShape`): 行の幅 `Wp` は W と詰め物 16 を 16 の倍数に。畳み込みは高さを 16 に切り上げた `Ha` を 16 行ずつ回り、画像の行だけを写す。中ほどの注意は画素を 256 の倍数に詰め、詰めたキーの点数に −30000 を足す (マスクは 1 の列とマスクの行の GEMM で 1 回だけ作る: 16384 列の行ごとの足し算は DMA の記述子が 16 を超える) (`attn_masked`)。正方形は前と同じ計算。
-- DMA の繰り返しは 64 まで (列の塊の数を抑える)。100 万画素の転置の GEMM は終わらないので 262144 画素ずつのコマンドに (Chroma 1024²)。
+- DMA の繰り返しは 64 まで (列の塊の数を抑える)。100 万画素の転置の GEMM は終わらないので 262144 画素ずつのコマンドに (Chroma1 1024²。外した)。
 - ストライド 2 の畳み込み (FLUX.2 の符号器): 同じ大きさの 3 × 3 の畳み込みのあと、1 つおきの画素を半分の格子へ写す (出力 (Y, X) は右と下に 1 画素詰めた畳み込みの (2Y + 1, 2X + 1))。
 - VAE は `--batch` でも 1 枚ずつ ([image-models.ja.md](image-models.ja.md))。
 
@@ -81,7 +78,6 @@ Anima の 4 ブロックのグラフ (1024²、下の変更の前) の内訳: �
 | モデル | 行の並び | 詰め方 |
 |---|---|---|
 | Anima | [パッチ] | パッチの数を 512 の倍数に切り上げ (832 × 1248: 4056 → 4608)。自己注意のキーは `nk` = パッチの数で切る。詰め物の行の角度は位置 0。出力は先頭のパッチの数だけ取る。グラフは行数で名づける (`dit_blocks_n1024`。4096 行のものは名前なし) |
-| Chroma1 | [画像、文 512、詰め物] | 512 の倍数に。詰め物は文のパディングの後なので、前からの `nk` (画像と文の行) で切れる。double ブロックの画像の流れは画像のトークンを 256 の倍数に切り上げた行 (`img_rows`: `flm.ProjectionGEMM` の M は 256 の倍数) で、文の流れは 512 行で回し、それぞれ自分の行だけを書く。`dit_in`、`dit_out`、`doubles` は大きさごと (`_WxH`)、`singles` は行数ごと |
 | FLUX.2 klein | [画像、参照]、512 の倍数でなければ [文 512、画像、参照、0] | double ブロックは文と画像で重みが違い、その境が並び方で変わるので、文が先のときは `doubles_tROWS` (バンクは同じ)。singles、`dit_in`、`dit_out` は行数だけで決まり共有する。1024² を文が先で回すといつもの並びと PSNR 36.9 dB (キーの塊の順の丸め) |
 | FLUX.3 klein | singles: [画像 P、文の枠 512]。画像の mode ブロック: P 行 | 画像の行を 0 で P まで詰める (`image_rows`、大きい 7 つはどれも 4096)。キーは [画像 N 行、文 R 行] に詰め直す (`parallel(keys=...)`) ので、1 つのグラフがどのプロンプトの長さにも効く (文を先にすると鍵でない行がキーの間に挟まる)。`dit_in`、画像の mode ブロック、`dit_out` は P だけで決まり、なければ最初の大きさのものを使う (`flux3klein.ironPart`)。`singles` と VAE は大きさごと |
 
@@ -104,18 +100,9 @@ Anima の 4 ブロックのグラフ (1024²、下の変更の前) の内訳: �
 - 電力量: Turbo 1024² 572〜615 J (パッケージ全体、`HWNPU_ENERGY`)。精度 (Turbo 1024²、diffusers の fp32): 潜在のコサイン約 0.975〜0.98。
 - models.yaml の AMD のメモリは 3.5 GB (NPU の最大 2.4 GiB は VAE の段、プロセス 0.9 GiB)。
 
-### Chroma1-Flash、Chroma1-HD
+### Chroma1-Flash、Chroma1-HD (外した)
 
-- DiT: double 19 (素数なので 1 ブロック 1 バンク)、single 38 (2 ブロック)。approximator (5 層 × 5120、1 呼び出し 512 行: 344 + 詰め物) が全部の σ の変調をステップの前に作る。HIGHEST でなく HIGH (K = 5120 でバッファ記述子が作れない)。幅 4096 を超える RMSNorm の重みは次の線形の列に畳む。
-- 文のマスク: diffusers の ChromaPipeline は float の 0/1 のマスクを渡し、それが点数に足されるので、パディングにも注意が向く。Chroma はパディングを (1 つを残して) 隠して学習されたので、NPU は `nk` でキーを切る。参照は `ref_chroma.py --mask keys` で合う (T5 を回した後に差し替える。前だと T5 のバイアスのマスクが消える)。最初の速度 0.99985、8 ステップの潜在 0.9988、40.8 dB (512²)。
-- 8 つの大きさの書き出し: 12 分 02 秒、最大 RSS 26 GB、18.85 GB。HD は 9 分 19 秒、18.8 GB (T5 と VAE は Flash のものにハードリンク)。
-
-| | 1024² | 512² | 長方形 | 最大 (NPU と RSS) |
-|---|---|---|---|---|
-| Flash、Heun 8 | 3 分 14 秒 | 1 分 01 秒 | 3 分 12〜15 秒 | 3.47〜3.62 GiB (512² 1.50) |
-| HD、DPM 25、CFG 3 | 8 分 34 秒 | 2 分 32 秒 | 8 分 29〜37 秒 | 3.46〜3.62 GiB (512² 1.53) |
-
-- 行が 4096 に収まる大きさは少し速い (768 × 1152 で 2 分 44 秒、3.0 GiB) が、大きさは `aspect.All` のまま。
+2026-11-24 に外した。DiT、文のマスク、書き出しと数字は [not-adopted/chroma1.md](../not-adopted/chroma1.md) にある。
 
 ### FLUX.2 klein 4B
 

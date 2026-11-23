@@ -285,7 +285,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   pre-tokenizer をファイルのものと入れ替え、Digits の段を落とす (" ①" が 1 つの断片になる)。
 - チャットの書式: `chat.Ouro` (下)。Thinking のモデルは既定で考える。ベースのモデル (Ouro-1.4B、2.6B) はチャットのテンプレートがない。
 - models.yaml には入れていない: NPU ではループ型は大きさのわりに遅く、キャッシュの増え方も大きい (評価の記録と、LFM3-1.7B などとの比較:
-  [model-estimation.ja.md](../model-estimation.ja.md))。
+  [model-estimation.ja.md](../model-estimation.ja.md)。再開するときのメモ: [not-adopted/ouro.md](../not-adopted/ouro.md))。
 
 ## PLaMo-Embedding-1B (`internal/llm/plamo`、アーキテクチャ `plamo-bi`)
 
@@ -316,7 +316,8 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 ## BERT の系列 (`internal/llm/bert`)
 
 - 符号器は移植済みで、lut8 (Apple) か int8 (Intel) に変換できる。all-MiniLM-L6-v2 の fp16 とのコサイン類似度は lut4 で 0.23、lut8 で 0.9988。
-- hwnpu-chat からは使えない: WordPiece のトークナイザーがない (`tokenizer.Load` が拒否する)。models.yaml にない。
+- hwnpu-chat からは使えない: WordPiece のトークナイザーがない (`tokenizer.Load` が拒否する)。models.yaml にない
+  ([not-adopted/bert.md](../not-adopted/bert.md))。
 
 ## トークナイザー (`internal/tokenizer`)
 

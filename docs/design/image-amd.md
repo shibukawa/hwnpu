@@ -6,13 +6,13 @@ How the DiTs, VAEs and text encoders of the image models run on AMD XDNA 2 throu
 
 ## Graph exports
 
-- An image model is exported as IRON graphs, input to output (`tools/amd/iron_graph.py`, Go `iron.Graph` in `internal/llm/iron/graph.go`), not as the LLMs' decode/prompt programs. Exporters: `tools/amd/iron_anima.py`, `iron_chroma.py` (+ `iron_chroma_parts.py` for T5 and the VAE, run after the DiT by `--parts`), `iron_flux2klein.py`, `iron_flux3klein.py`; shared pieces in `iron_dit.py` (`Checkpoint`, `qparam`, `head_perm`, `rope_angles`, `share_banks`, `VaeStage`, `timestep_sinusoid`, `text_linear`). The export directory is `NAME.amd-npu2` with `model.json` and a manifest.
+- An image model is exported as IRON graphs, input to output (`tools/amd/iron_graph.py`, Go `iron.Graph` in `internal/llm/iron/graph.go`), not as the LLMs' decode/prompt programs. Exporters: `tools/amd/iron_anima.py`, `iron_flux2klein.py`, `iron_flux3klein.py`; shared pieces in `iron_dit.py` (`Checkpoint`, `qparam`, `head_perm`, `rope_angles`, `share_banks`, `VaeStage`, `timestep_sinusoid`, `text_linear`) and FLUX.1's VAE in `iron_chroma_parts.py` (`FluxVaeStage`; the rest of it, T5, was Chroma1's, removed: [not-adopted/chroma1.md](../not-adopted/chroma1.md)). The export directory is `NAME.amd-npu2` with `model.json` and a manifest.
 - **Weight banks** (`variants`): one ELF holds several banks; a DiT's blocks are one graph of a few blocks and one bank per group (Anima: 28 blocks = a 4-block graph × 7 banks).
 - **`SwapVariants`** (default): one bank is allocated and each group's image is read into it before the group runs (the arena puts weights first, scratch after; nothing in scratch survives a call). Anima 1024²: pinned peak 3445 → 1236 MiB for +2 % time, the same bytes. `--resident-dit` keeps every bank. The text encoders (Qwen3, T5, Qwen3-VL) are grouped the same way.
 - **Prefetch** (`iron.GraphOptions.Prefetch`): a second bank; after `Use(i)` group i+1 is read in the background, and the next `Use` swaps banks. Used when the DiT stage plus the second bank plus a 384 MiB margin (`anima.prefetchMargin`: programs and control code pin memory too) stays under the VAE's peak, or under `anima.PrefetchFloor` (2 GiB). `HWNPU_DEV=iron.prefetch=0` turns it off. Anima hides only 0.1 of 0.5 s a step: the read and the NPU share the memory bandwidth.
 - Reads that are not prefetched use 8 threads (`iron.readPrefix`): 5–7 → 15 GB/s.
 - **`share_banks`**: a graph whose weights are the same bytes in the same order as an earlier graph's drops its own bank image and points at `../GRAPH/` (checked byte for byte). For this the weights' layout must not depend on the size or rows: **RoPE tables are inputs** (`angles`, rows × head_dim, made on the host by Go `ropeAngles`, `TestRopeAngles`), never baked into a bank. Older exports without `angles` still run.
-- **`iron.GraphOptions.Barrier`**: a graph run a second time can time out on its first command (`ERT_CMD_STATE_TIMEOUT`; graphs writing K/V at per-call positions, Chroma's 6-command approximator). Loading the same ELF into another hardware context and running an empty command first avoids it (irongraph `-barrier`).
+- **`iron.GraphOptions.Barrier`**: a graph run a second time can time out on its first command (`ERT_CMD_STATE_TIMEOUT`; graphs writing K/V at per-call positions, Chroma1's 6-command approximator, removed). Loading the same ELF into another hardware context and running an empty command first avoids it (irongraph `-barrier`).
 - Graphs are compiled per number of rows. A step's rows must be whole rounds of **512** (the attention's 8 pipelines × 64 rows); a size that is not is padded (below).
 
 ## Attention
@@ -31,7 +31,6 @@ How the DiTs, VAEs and text encoders of the image models run on AMD XDNA 2 throu
 | Model | `mha` | `exp` |
 |---|---|---|
 | Anima | qk | exact (`--dit-exp`; mid moved the picture, latent 0.976 / 19.6 dB, for 3 %) |
-| Chroma1 | qk | mid |
 | FLUX.2 klein, FLUX.3 klein | qkpv | mid |
 
 ## DiT blocks
@@ -39,7 +38,7 @@ How the DiTs, VAEs and text encoders of the image models run on AMD XDNA 2 throu
 Measured on Anima's 4-block graph (1024², before the changes below): attention 48 %, GEMMs 29 %, elementwise 30 % (mostly bandwidth, ~58 GB/s), adaLN 1 %. Elementwise ops cost 0.6–0.8 ms each at 4096 × 2048; IRON's exact GELU 5.2 ms stood out.
 
 - **Weights packed as bfp16 on the host** (`iron_q4.bfp16_pack`, `bfp16_linear`, format `bfp16`; default for every DiT's blocks): MEDIUM GEMMs round bf16 weights to bfp16 on every call, and q8 also dequantizes each step; packing at export into the `bfp16ebs8` layout `flm.ProjectionGEMM` reads removes both. One MLP: q8 25.9, bf16 23.0, bfp16 18.5 ms; error as bf16's. 9 bits a weight (q8 8.5). The packer and the GEMM must get the same `pack_b` tile_n 64, k tile 512 (384/256/128 when K is not a multiple), ct_k 128, or the order silently breaks. Registered as block-typed weights (`bfp16_operand`). Costs: export time (Anima DiT 45 s → 3 min 18 s; `bfp.encode` serial); `graph.reference()` cannot read packed B, so `--check` needs an export with `--proj bf16`. Embeddings, adaLN and the final layer stay bf16.
-- **GELU** (`iron_gelu.GELUEven`, `kernels/gelu_even.cc`, `--dit-gelu even`): IRON's tanh table with the argument in float32 (x² exact, the coefficient as two bf16 limbs), rounded to nearest even: 1.76 ms vs the exact kernel's 5.2. Chroma (trained on tanh GELU) uses it too.
+- **GELU** (`iron_gelu.GELUEven`, `kernels/gelu_even.cc`, `--dit-gelu even`): IRON's tanh table with the argument in float32 (x² exact, the coefficient as two bf16 limbs), rounded to nearest even: 1.76 ms vs the exact kernel's 5.2. Chroma1 (trained on tanh GELU, removed) used it too.
 - **LayerNorm with the modulation multiply** (`F.layer_norm(x, weight=scale + 1)`, IRON's WeightedRowwise on a second core): 1.23 → 0.61 ms, bit-identical. Every adaLN.
 - **Per-head RMSNorm** (`iron_headnorm.py`, `kernels/head_rms.cc`): q/k norms over (rows, heads × 128) in one call, weight tiled per head: 1.4 → 0.83 ms, bit-identical.
 - **SiLU in float32** (`iron_silu.SiLUF32`, `kernels/silu_f32.cc`): IRON's SiLU multiplies x by a bf16 table sigmoid, off 1 % on average (2.3 % max) on [−6, 2] and exactly 0 at x ≤ −8. In an LLM's residual, channels of tens to hundreds make SwiGLU's up branch large there, so the error reaches the MLP's output. x / (1 + exp(−x)) with IRON's `exp_f32` and a float reciprocal, one bf16 rounding: 0.14 % mean error, 512 × 9728 in 12 ms. Used in FLUX.2 klein's Qwen3 text encoder (final latent 0.916 → 0.977). The DiT's SwiGLU keeps the table (its gates are not large negatives: first-step velocity 0.99999). Other SwiGLU LLM exports may be hit too; not checked.
@@ -49,7 +48,6 @@ Measured on Anima's 4-block graph (1024², before the changes below): attention 
 | Model | Encoder | Form |
 |---|---|---|
 | Anima | Qwen3-0.6B + LLM adapter | GEMMs at `HIGHEST`: MEDIUM (bfp16) spread error in the text (latent 0.938 → 0.966 with HIGHEST, same time) |
-| Chroma1 | T5-XXL | q8, HIGHEST, erf GELU (IRON's tanh table took the worst row to 0.986). 6 groups of 4 layers in one bank (`--t5-group 4`): each group outputs the residual and the final RMSNorm; prompt and negative run back to back per group. Peak 5.9 → 4.6 GB at 1024², T5 4.2–5 s |
 | FLUX.2 klein | Qwen3-4B, 9 groups of 3 layers, bf16, HIGHEST | the hidden states after layers 9, 18, 27 (7680 columns); `ctx` (context_embedder) as 3 GEMMs (K 7680 does not fit a HIGHEST GEMM) |
 | FLUX.3 klein | Qwen3-VL-4B, 32 layers in 8 banks of 4, bf16 | FLUX.2's `Qwen3Layer`; bf16 holds the text stream's 9.7e6 without scaling |
 
@@ -57,14 +55,13 @@ Measured on Anima's 4-block graph (1024², before the changes below): attention 
 - **Padding rows of a Qwen3 encoder (FLUX)**: the pipeline pads the prompt to 512 tokens and the DiT reads the pad rows. In transformers' mask a pad row attends to the prompt's keys only (not its own), prompt rows are causal. So attention runs twice — causal over all rows, and mask-free over the first `nk` keys — and an input `sel` (1 on prompt rows) picks per row (`op + (oc − op)·sel`). 512 rows in one call (64-row chunks would put a pad row's own key into the causal pass).
 - The pad rows are sensitive to weight rounding (layer 18's pad rows: q6 0.904, q8 0.995, bf16 0.9995): FLUX.2's text encoder stays bf16 (5.9 GB with the 0.8 GB embedding table; a layer 61 → 52 ms).
 - FLUX.3: the text lives in a 512-row slot (`text_slot`); only the prompt's R rows (tokens rounded up to 80, 80–480) are keys (`nk`); pad positions are 1. Run at 512 rows, the first R used (the same as an 80-row run).
-- Chroma's tokenizer: Chroma1 has only `spiece.model`; the exporter reads its protobuf directly (no sentencepiece in the IRON env) and writes Anima's `t5_tokenizer.json` form (`t5_tokenizer_json`; identical to Anima's). FLUX's own tokenizer.json uses a Sequence normalizer Go cannot read.
 
 ## VAE
 
 - **Convolutions on the grid** (`iron_gridgemm.GridGEMM`, `--vae-conv grid`): 3 × 3 convs without im2col copies (one GEMM if 3C ≤ 512, else three summed per kernel row). Upsampling as four output phases, each a 2 × 2 conv at the low resolution (`PHASE_TAPS`). Anima's VAE 9.3 → 5.2 s; PSNR 52.7 dB to the im2col form.
 - `iron_anima.gemm_tile_n`: a tile that fills all 8 columns (16 for 128 channels, 32 for 256; the default 64 used 2 columns). Conv alone 46 → 38 ms, a stage only 1.37 → 1.30 s: convs are bound by A's transfer (9C a pixel).
 - **Buffer reuse** (`iron.GraphOptions.Buffers`, `anima.VAE.run`): allocating a device buffer pins and zeroes pages (0.33 s a GiB, freeing 0.11 s); FLUX.2's 10 decoder stages allocated 17.6 GiB, 7.6 s of 14. Now one buffer per bank kind (the largest stage's size) serves every stage, zeroed after the image is read (multi-threaded), and a stage's output buffer is the next stage's input (no copy, no host round trip). FLUX.2 1024² decode 14 → 8.5 s, encode 7.3 → 4.8 s, the process's RSS 1.17 → 0.16 GiB, the peak 4.9 → 3.8 GB, the same bytes. Anima-Turbo's decode 5.2 → 4.0 s. (Prefetching VAE stages was only hiding allocation; it is gone.)
-- **GroupNorm** (`iron_groupnorm.py`, `kernels/chan_stats.cc`, `kernels/row_affine.cc`, `anima.HostNorm`, `--host-norm`, default; FLUX's VAE in FLUX.2/FLUX.3 klein and Chroma): IRON has neither GroupNorm nor rsqrt.
+- **GroupNorm** (`iron_groupnorm.py`, `kernels/chan_stats.cc`, `kernels/row_affine.cc`, `anima.HostNorm`, `--host-norm`, default; FLUX's VAE in FLUX.2/FLUX.3 klein): IRON has neither GroupNorm nor rsqrt.
   - `ChannelStats`: per-channel sum and sum of squares (float32) from bf16 pixel rows, read once.
   - A host stage (`iron.Graph.After`, `anima.hostNorms`): named graph states (`gn0.stats`, `gn0.row`) located from the manifest's `buffers`; after each command, if the next norm's stats are written (a NaN marker is gone), the host computes group mean and variance in float64 and writes a = γ/√(var + eps), b = β − mean·a. The command is cut right after the stats op.
   - `RowAffine`: y = x·a + b, a and b as two bf16 limbs, float32 math, one bf16 rounding (x·a and b reach many times the result: |mean|/std up to 6.3 in this decoder).
@@ -72,7 +69,7 @@ Measured on Anima's 4-block graph (1024², before the changes below): attention 
   - 128 channels at 1024²: about 157 ms → a few ms. Decode 512² 2.6 → 1.8 s, 1024² 8.5 → 7.0 s; PSNR to float32 52.6 dB. `graph.reference()` does not know host stages: check on the NPU (`HWNPU_DEV=klein.decode=1` decodes `--noise`'s latents; `--dump`).
   - The older form (~20 ops of GEMMs and an RMSNorm: 1/√(var + eps) as an RMSNorm of the group's row with a constant row) needs no host and remains with `--no-host-norm`.
 - **Latents not a multiple of 16** (rectangles, e.g. 104 × 156 for 832 × 1248; `iron_anima.GridShape`, Go `anima.GridShape`): the row width `Wp` = W + 16 pad rounded to 16; convs iterate over `Ha` (height rounded to 16) in 16-row chunks and copy only image rows. The middle attention pads pixels to multiples of 256 and adds −30000 to padded keys' scores (the mask built once as a GEMM of a ones column with the mask row: a 16384-column rowwise add exceeds 16 DMA descriptors) (`attn_masked`). Squares compute as before.
-- DMA repeats are at most 64 (bound the column blocks); a transpose GEMM over 1 M pixels never finished, so it runs in commands of 262144 pixels (Chroma 1024²).
+- DMA repeats are at most 64 (bound the column blocks); a transpose GEMM over 1 M pixels never finished, so it runs in commands of 262144 pixels (Chroma1 1024², removed).
 - Stride-2 conv (FLUX.2 encoder): a same-size 3 × 3 conv, then every other pixel copied to the half grid (output (Y, X) is (2Y + 1, 2X + 1) of a conv padded one pixel right and down).
 - The VAE runs a picture at a time even with `--batch` ([image-models.md](image-models.md)).
 
@@ -81,7 +78,6 @@ Measured on Anima's 4-block graph (1024², before the changes below): attention 
 | Model | Row order | Padding |
 |---|---|---|
 | Anima | [patches] | patches rounded up to 512 (832 × 1248: 4056 → 4608); self-attention keys cut at `nk` = patches; pad rows' angle is position 0; output's first `patches` rows kept. Graphs named by rows (`dit_blocks_n1024`; 4096 rows unnamed) |
-| Chroma1 | [image, text 512, pad] | to 512; the pad follows the text's pad, so `nk` (image + text rows) already cuts it. Double blocks' image stream runs at the image rows rounded to 256 (`img_rows`: `flm.ProjectionGEMM`'s M is a multiple of 256), the text stream at 512, each writing only its rows. `dit_in`, `dit_out`, `doubles` per size (`_WxH`); `singles` per row count |
 | FLUX.2 klein | [image, refs] or, when not a multiple of 512, [text 512, image, refs, zeros] | the double blocks' weights differ for text and image and the boundary moves with the order, so the text-first case has `doubles_tROWS` (same banks). singles, `dit_in`, `dit_out` depend on rows only and are shared. Text-first vs normal at 1024²: PSNR 36.9 dB (key-block order rounding) |
 | FLUX.3 klein | singles: [image P, text slot 512]; image mode blocks: P rows | image rows zero-padded to P (`image_rows`, 4096 for all 7 large sizes); keys repacked as [N image, text R] (`parallel(keys=...)`), so one graph serves every prompt length (text first would interleave non-key rows). `dit_in`, image mode blocks, `dit_out` depend on P only and fall back to the first size's (`flux3klein.ironPart`); `singles` and the VAE are per size |
 
@@ -104,18 +100,9 @@ Padding changes nothing: a 2:3 FLUX.2 picture at 4608 and 5120 rows is byte-iden
 - Energy: Turbo 1024² 572–615 J (package, `HWNPU_ENERGY`). Accuracy (Turbo 1024², diffusers fp32): latent cosine about 0.975–0.98.
 - models.yaml's AMD memory 3.5 GB (NPU peak 2.4 GiB in the VAE + process 0.9 GiB).
 
-### Chroma1-Flash, Chroma1-HD
+### Chroma1-Flash, Chroma1-HD (removed)
 
-- DiT: 19 double blocks (prime: 1 a bank) and 38 single (2 a bank). The approximator (5 layers × 5120, 512 rows a call: 344 + pad) gives every sigma's modulations before the steps; HIGH, not HIGHEST (K = 5120 breaks the buffer descriptor); RMSNorm weights wider than 4096 folded into the next linear's columns.
-- The text mask: diffusers' ChromaPipeline passes a float 0/1 mask that gets added to the scores, so padding is still attended. Chroma was trained with padding masked (but one), so the NPU cuts keys at `nk`; the reference matches with `ref_chroma.py --mask keys` (applied after T5 runs, or T5's bias mask is lost). First velocity 0.99985, 8-step latent 0.9988, 40.8 dB (512²).
-- Export of eight sizes: 12 min 02 s, peak RSS 26 GB, 18.85 GB; HD 9 min 19 s, 18.8 GB (T5 and VAE hard-linked to Flash's).
-
-| | 1024² | 512² | rectangles | Peak (NPU + RSS) |
-|---|---|---|---|---|
-| Flash, Heun 8 | 3 min 14 s | 1 min 01 s | 3 min 12–15 s | 3.47–3.62 GiB (512² 1.50) |
-| HD, DPM 25, CFG 3 | 8 min 34 s | 2 min 32 s | 8 min 29–37 s | 3.46–3.62 GiB (512² 1.53) |
-
-- Sizes whose rows fit 4096 are faster (768 × 1152: 2 min 44 s, 3.0 GiB) but the sizes stay `aspect.All`'s.
+Removed on 2026-11-24: the DiT, the text mask, the export and its numbers are in [not-adopted/chroma1.md](../not-adopted/chroma1.md).
 
 ### FLUX.2 klein 4B
 

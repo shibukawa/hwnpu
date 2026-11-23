@@ -39,7 +39,7 @@
 |---|---|---|---|
 | `amd-xdna2` | IRON の書き出し (ELF、xclbin、バンク、manifest)。`iron_export_lm.py` のレシピの版 (`variants` で増える `-p16`、`-p128` など) ごと | AMD の XDNA2 (Strix Point ほか)。**Linux と Windows で同じもの** | model-recipes.yaml に `amd` のレシピのあるモデル |
 | `coreai` | Core AI の `.aimodel` (端末によらない MLIR バイトコードと重み) | macOS 27 以降のどの Mac も。初回はその Mac で ANE 向けにコンパイルする | Core AI の書き出しのあるモデル全部 |
-| `coreai-<チップ>` (`coreai-h14g` など) | `coreai-build` の結果。重みなし (`coreai` の `main.mlirb` から組み立てる)。1 つ数十 MB | そのチップの Mac。初回のコンパイルが短くなる | 効く画像のモデルだけ (FLUX.2 klein、Chroma1-Flash、Anima)。チャットは配らない (初回が遅くなる: distribution.md) |
+| `coreai-<チップ>` (`coreai-h14g` など) | `coreai-build` の結果。重みなし (`coreai` の `main.mlirb` から組み立てる)。1 つ数十 MB | そのチップの Mac。初回のコンパイルが短くなる | 効く画像のモデルだけ (FLUX.2 klein、Anima)。チャットは配らない (初回が遅くなる: distribution.md) |
 | `any` | 埋め込みの表 (`tables`) | どれも | 表のあるモデル。これがあればチェックポイントを落とさずに済む |
 
 - **AMD は OS で分けない。** Windows は XRT (xrtshim) を通るが、読むファイルは Linux と同じバイト ([design/amd.md](design/amd.md))。`linux-xdna2` のような名前にはせず、Windows はモデルカードに「未確認」と書く。世代を分ける日 (XDNA1) が来ても、対象の名前 (`amd-xdna1`) で分かれる
@@ -102,7 +102,7 @@ tags: [hwnpu, npu, amd-xdna2, coreai, apple-neural-engine]
 
 - `base_model` は models.yaml の `from` のリポジトリ (コミットは付けない)。`hwnpu-dev models hf push` が書く。ないリポジトリの名前だと HF が受け付けないので、上げる前に API で確かめる
 - 関係の種類は adapter、merge、finetune、quantized だけで、「別の形式に変換した」はない。hwnpu の書き出しは q4、q6、lut8 などに量子化しているので quantized にする (量子化しない形だけの書き出しでも、近いのは quantized)
-- 部品を別のリポジトリから読むモデル (`with:`、Chroma の T5-XXL など) は、主のリポジトリだけを書く。`base_model` を並べると merge に見える
+- 部品を別のリポジトリから読むモデル (`with:`。外した Chroma1 の T5-XXL がそうだった) は、主のリポジトリだけを書く。`base_model` を並べると merge に見える
 - 同じ元のリポジトリの名前違い (`LFM3-Audio-2B` と `LFM3-Audio-2B-TTS`) は、別のリポジトリにすると同じ元のページに 2 つ並ぶ。1 つにまとめるか (リポジトリの下のフォルダに分ける形) は、並び方を見て決める
 - 並ぶ順はダウンロード数や人気で決まるので、数える仕組み (下) がここにも効く
 
@@ -186,7 +186,7 @@ candidate                           license         pinned  version  chips  hf  
 
 - これを `chat.Plan(ctx, m) []Place` として 1 か所にまとめる (今は `PrepareAMD`、`llm.FetchExport` などが作りながら計算している)。読む層 (5 節) の確かめ、`hwnpu-dev models` の「取得元に何が足りないか」にも使える (今は使い捨てのテストで調べている: 記憶の pitfalls)
 - どの層にもなければ「足りない: `hwnpu-dev models package M` で作る」と出して飛ばす。**道具は作らない**
-- 鍵のない種類 (手で作った `iron-import`: Anima、Chroma、FLUX.2 klein、DA3、MoGe-2、SigLIP 2、YuNet) は上げない。名前だけで当たるので、中身の違う書き出しを別のリリースの hwnpu が読みかねない。上げる前に、初回の書き出しのように鍵 (`PinnedRecipe` と Go の側の版) を持たせる (7 節)
+- 鍵のない種類 (手で作った `iron-import`: Anima、FLUX.2 klein、DA3、MoGe-2、SigLIP 2、YuNet) は上げない。名前だけで当たるので、中身の違う書き出しを別のリリースの hwnpu が読みかねない。上げる前に、初回の書き出しのように鍵 (`PinnedRecipe` と Go の側の版) を持たせる (7 節)
 
 ### 4.2 上げてよいかを確かめる
 

@@ -74,7 +74,7 @@
 - 2512.13282 ✓: 出力の転送が償却できるとき、C のバッファを 1 つに (+13〜18%)
 
 **対象**
-- 画像の DiT の GEMM (Anima、FLUX.2/3 klein、Chroma の bfp16 の MLP と注意。[image-amd](design/image-amd.md)、[image-amd](design/image-amd.md))
+- 画像の DiT の GEMM (Anima、FLUX.2/3 klein の bfp16 の MLP と注意。[image-amd](design/image-amd.md)、[image-amd](design/image-amd.md))
 - gpt-oss のプロンプトの専門家 (`MX4GroupGateUp`、bf16 の `mac_4x8_8x8`)
 
 **やること**: 本文を読んで、今の `iron_gridgemm.py` と DiT の GEMM のタイルの大きさ、L1 と L2 の二重バッファの数と比べる。1 つの形 (Anima の DiT の MLP) で試し、1 ステップの時間を比べる

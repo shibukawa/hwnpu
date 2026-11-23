@@ -205,7 +205,7 @@ xcrun coreai-build compile X.aimodel --platform macOS --architecture h14g --pref
 | Qwen3.5-4B、M2 | 12 分 26 秒 | 7 分 07 秒で読めたが、1 時間 40 分答えなかった | — |
 
 - 効くのは 1 本のコンパイルに数分かかる大きな部品 (画像の DiT: FLUX の `dit_single` が約 7 分 → 33 秒)。小さな部品では負ける: 仕上げは 1 本約 10 秒かかり (サービスが 1 本ごとに終わり、launchd が起動を遅らせる)、プロセスの最初の prebuilt に数分の決まった費用があるように見える
-- そこで prebuilt は FLUX.2 klein、Chroma1-Flash、Anima (DiT など、文と VAE 以外の部品) に作り、チャットのモデルには作らない
+- そこで prebuilt は FLUX.2 klein と Anima (外した Chroma1-Flash にも作っていた。DiT など、文と VAE 以外の部品) に作り、チャットのモデルには作らない
 - 1 ステップの時間はどちらも同じ
 
 Core AI と `coreai-build` の未解決の問題、Apple への報告の番号、直ったときにすること: [既知の問題](../known-issues.md)。
@@ -225,7 +225,7 @@ Core AI と `coreai-build` の未解決の問題、Apple への報告の番号�
 | `aicheck cycle [-rounds N] PKG…` | ほかのプログラムの後に呼ぶときの費用 |
 | `aicheck rules`、`limits`、`lint` | Neural Engine の数値の規則 (float32 と比べる)、上限 (呼び出しの下限、プログラムの数、形式)、書き出しの lint |
 | `caiload` (Swift) | Core AI だけで specialize、実行、`-cycle` で切り替えの費用 |
-| `chromafake`、`lutfake`、`lutscan -tile 16`、`kleinonly`、`bcdump` | ヘッダから乱数の重みの部品、合成の lut の層、隣り合う同じ表、FLUX.2 klein の準備と置き、バイトコードの読み出し |
+| `lutfake`、`lutscan -tile 16`、`kleinonly`、`bcdump` | 合成の lut の層、隣り合う同じ表、FLUX.2 klein の準備と置き、バイトコードの読み出し |
 
 `aicheck run` と `probe` はコマンドと同じく Neural Engine のロックを取る (`llm.LockNPU`): 2 つのプロセスが同時に使うと Mac が固まったことがあり、ほかのプロセスのコンパイルは時間を乱す。
 
@@ -298,7 +298,7 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 - Core AI の `.persistent` のキャッシュの方針 (`AIModelCache.specialize(…cachePolicy:)`、`~/Library/Application Support/coreai-cache/` に置く): 掃除によるコンパイルし直しはなくなるが、項目は hwnpu が自分で消すことになり (`deleteEntries(for:)`)、aned のコードは消されるまま。決めていない
 - 同じ `.aimodel` が OS の版を越えて読めるか (キャッシュのフォルダは OS のビルドごと)
 - プロセスの最初の prebuilt の仕上げにかかる数分、Anima の最初のステップの 13 分 (prebuilt によらない): 調べていない
-- `coreai-build` の VAE のプログラムが縞を描く理由と、T5 が cancelled になる理由。直ったら `LeftToDevice` を外す。取得元の FLUX.2 klein と Chroma1-Flash の prebuilt はまだ VAE と文の部品を含む (使わない) ので詰め直す
+- `coreai-build` の VAE のプログラムが縞を描く理由と、T5 が cancelled になる理由。直ったら `LeftToDevice` を外す。取得元の FLUX.2 klein の prebuilt はまだ VAE と文の部品を含む (使わない) ので詰め直す
 - `coreai-build` は 9 種類で落ち、h18g で ANE のコードを出さない (Apple に報告済み)。M6 が端末でコンパイルできるかはわからない
 - aned のディスクの量は直接測っていない
 - 入力の配列に直接書く形: M2 / M3 では測っていない。画像と音声のプログラムは今も写す

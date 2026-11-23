@@ -130,7 +130,7 @@ Intel での配置の検証 (NPU のコンパイラは演算を他の装置に�
 - 8 トークンと 64 トークンのグラフで、コンパイラが重みを共有できるか (今はそれぞれが持つ)。
 - Lunar Lake 以降の速さ (測ったのは Meteor Lake だけ)。グループごとの int4 がそこで違う振る舞いをするか。
 - 2 つのモデルを同時に動かすとき (キューはドライバが管理する。未測定)。
-- Chroma、SigLIP 2 (label)、FLUX は IRON のグラフ (Python) しかなく、Go の MIL のグラフがない。Qwen-Image は Go のグラフがあるが、まだ IR を書かない。まず `internal/llm/blocks` への移植が要る。
+- SigLIP 2 (label)、FLUX は IRON のグラフ (Python) しかなく、Go の MIL のグラフがない。Qwen-Image は Go のグラフがあるが、まだ IR を書かない。まず `internal/llm/blocks` への移植が要る。
 - Windows に loader が入らない構成があれば、Level Zero の「loader バイパス」(ドライバの DLL を読み DDI テーブルを引く)。今のところ要っていない。
 - ページ境界に揃った blob のコピーを省く `ZE_GRAPH_FLAG_INPUT_GRAPH_PERSISTENT`。積み直しの費用が見えたら `zeMutableCommandList`。
 

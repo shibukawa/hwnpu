@@ -40,7 +40,7 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 
 ## Whisper (`internal/llm/whisper`, `internal/transcribe`)
 
-- Default `openai/whisper-large-v3-turbo` (809M). `kotoba-tech/kotoba-whisper-v2.2` (Japanese distil, 2 decoder layers) runs with the same code when named by repo; not in models.yaml. It breaks on long audio (also in HF's long-form), so turbo is the one for long audio.
+- Default `openai/whisper-large-v3-turbo` (809M). `kotoba-tech/kotoba-whisper-v2.2` (Japanese distil, 2 decoder layers) runs with the same code when named by repo; not in models.yaml. It breaks on long audio (also in HF's long-form), so turbo is the one for long audio ([not-adopted/kotoba-whisper.md](../not-adopted/kotoba-whisper.md)).
 
 ### Programs (Apple / Intel)
 

@@ -56,7 +56,7 @@
 | I5 | `hwnpu-mcp`: MCP しか話さない頭脳のための口 | どこでも | I2 | 小 | 未着手 |
 | I4 | 仕事の種類ごとの時間と電力量の目安 | Mac、aix1 | I2 | 小 | 未着手 |
 | **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 一部 (深度 (多視点、空、確信度、法線、点も)、顔、頭の位置、物体、姿勢、切り抜き、OCR、ラベルと埋め込みは済み、aix1 で hwnpu-image の旧版と同じ出力を確認 (app-api.md 2.4 節)。新しい役割の Mac と Intel での確認は残り) |
-| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein、Chroma) | どこでも、確認は aix1 と Mac | B2 | 大 | 済み (FLUX.2 klein の文からの生成と参照からの編集、FLUX.3 klein、Anima、Chroma、`GenerateAll` でまとめて描く。`hwnpu-image generate` はこの上で動き、aix1 で旧版とバイトまで同じ絵。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Mac と Intel の Anima、Chroma、FLUX.3 klein は `ai` を通しては未確認) |
+| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein。Chroma1 も入れたが、のちに外した) | どこでも、確認は aix1 と Mac | B2 | 大 | 済み (FLUX.2 klein の文からの生成と参照からの編集、FLUX.3 klein、Anima、`GenerateAll` でまとめて描く。`hwnpu-image generate` はこの上で動き、aix1 で旧版とバイトまで同じ絵。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Mac と Intel の Anima、FLUX.3 klein は `ai` を通しては未確認) |
 | J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 一部 (`Music`、`Effect`、`Pitch`、`Notes`、`hwnpu-audio` が上で動く。音楽は 1 秒ごとの流れまで。メトロノームの拍に合わせる形と、鳴らしながら曲調を変える節はまだ) |
 | **J4** | `samples/parallax` の擬似立体: 絵 (Anima のアニメの絵。今はコマンドで作ったファイル) → 深度 → カメラ (hwcamera、または絵のファイル) の顔の位置 → Ebitengine の Kage のシェーダーで描く | aix1、Mac | J1 | 中 | 一部 (深度、頭の追跡、シェーダーは済み。Mac で実物のカメラと窓 (Metal) も確認。絵の生成をライブラリから呼ぶのは残り) |
 | **J4b** | `samples/layers` のレイヤー分割: 絵 → 深度 → 手前の層を切り出す → 塗って FLUX.2 klein に裏を描かせる → その絵の深度 → 次の層、を繰り返して PSD に書く | aix1、Mac | J1、J2 | 中 | 済み (aix1 と Mac で確認。層ごとの深度も持ち、擬似立体のサンプルは窓の横で層に分けて、途中経過と進み具合を窓に出す。分ける処理は `samples/internal/layering`) |

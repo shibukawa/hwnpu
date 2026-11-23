@@ -357,4 +357,4 @@ LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_TEST_L
 
 - 足りなかった演算 (上の表の `clip` から `conv_transpose`) を ovlower に足し、Go の変換器を持つモデルはすべて IR を書くようにした: Whisper、LFM3-Audio の読み上げ、d1 (systemone)、Magenta RT2、MOSS-SoundEffect、Sana、DA3、MoGe-2、YuNet、EfficientSAM のエンコーダ (ONNX から)。pose、detect、ocr、pitch、notes は IR を書く道はあったが、装置の判定の不具合 (`llm.ProgramBackend`) で Intel では止まっていた
 - `HWNPU_BACKEND=openvino` で hwnpu-image と hwnpu-audio も Intel の経路に入る。Intel の NPU のない機械で、変換から結果までを OpenVINO の CPU で確かめた (表は [docs/design/intel.md](design/intel.md))。`hwnpu-dev irdiff` は Core ML のパッケージを IR に下ろして milcpu と比べる
-- AMD の IRON のグラフしかないもの (Chroma、SigLIP 2、FLUX) は対象外 (Go への移植が要る)。Qwen-Image は同じ日に Mac の Core ML の経路ができた ([docs/design/image-apple.md](design/image-apple.md)) が、IR はまだ書かない
+- AMD の IRON のグラフしかないもの (SigLIP 2、FLUX) は対象外 (Go への移植が要る)。Qwen-Image は同じ日に Mac の Core ML の経路ができた ([docs/design/image-apple.md](design/image-apple.md)) が、IR はまだ書かない

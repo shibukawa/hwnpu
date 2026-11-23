@@ -130,7 +130,7 @@ int8 stays the default: per-group int4 is slower than int8 here, per-row int4 is
 - Whether the compiler can share weights between the 8- and 64-token graphs (today each holds its own).
 - Speed on Lunar Lake and later (only Meteor Lake measured); whether per-group int4 behaves differently there.
 - Running two models at once (the driver manages the queues; not measured).
-- Chroma, SigLIP 2 (label) and FLUX have only IRON graphs (Python), no Go MIL graph; Qwen-Image has a Go graph but writes no IR yet. They need a port to `internal/llm/blocks` first.
+- SigLIP 2 (label) and FLUX have only IRON graphs (Python), no Go MIL graph; Qwen-Image has a Go graph but writes no IR yet. They need a port to `internal/llm/blocks` first.
 - A Level Zero "loader bypass" mode (load the driver DLL and read its DDI tables) if some Windows setups ship no loader — not needed so far.
 - `ZE_GRAPH_FLAG_INPUT_GRAPH_PERSISTENT` to skip copying a page-aligned blob; `zeMutableCommandList` if re-recording costs show.
 

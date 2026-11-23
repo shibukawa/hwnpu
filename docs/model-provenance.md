@@ -4,9 +4,9 @@
 
 ## 0. 実装したもの (2026-11-15)
 
-- models.yaml の全モデルに `license` (`class`: `open`、`conditional`、`non-commercial`)、Anima と Chroma に `content: [nsfw]`
+- models.yaml の全モデルに `license` (`class`: `open`、`conditional`、`non-commercial`)、Anima と Chroma1 (のちに外した: [not-adopted/chroma1.md](not-adopted/chroma1.md)) に `content: [nsfw]`
 - `HWNPU_MODEL_ALLOWLIST` と利用者の models.yaml の `policy:` (2 節の決まりのとおり)。用途は許されたモデルに回し、なければ同じ種類のほかのモデル、名前で指したものはエラー。`hwnpu-chat list` などが弾いたモデルと理由を出す
-- 既定で Anima と Chroma を選ばなくなった (`+nsfw` でオプトイン)
+- 既定で Anima と Chroma1 を選ばなくなった (`+nsfw` でオプトイン)
 
 お客さんの規程でモデルの選び方がきびしいことがある (商用で使えないライセンスの禁止、NSFW を出すモデルの禁止)。用途の既定 (`categories` の `picks`) が機械のメモリで変わるので、「承認したモデル」を利用者が手で守るのは難しい。そこで、モデルごとにライセンスと内容の印を models.yaml に持たせ、利用者が allow と deny で絞れるようにする。
 
@@ -62,7 +62,7 @@ Hugging Face の API (`cardData.license`)、モデルカード、リポジトリ
 | モデル | ライセンス | 商用 (重み / 生成物) | 部品から引き継ぐもの | NSFW | 確度 |
 |---|---|---|---|---|---|
 | Anima-Turbo、Anima-Aesthetic | `circlestone-labs-non-commercial` (Anima は v1.2、Anima-Base-v1.0-Diffusers は v1.0) | 不可 / 可 (v1.2 の 2.e。v1.0 にはこの例外がない) | NVIDIA Open Model License (Cosmos-Predict2-2B の派生): 「Built on NVIDIA Cosmos」の表示、安全機構を外すと権利が切れる | likely | △ |
-| Chroma1-Flash、Chroma1-HD | `apache-2.0` | 可 / 可 | FLUX.1 schnell、T5-XXL、FLUX の VAE (どれも Apache-2.0) | likely (「Fully uncensored」) | ✓ |
+| Chroma1-Flash、Chroma1-HD (外した) | `apache-2.0` | 可 / 可 | FLUX.1 schnell、T5-XXL、FLUX の VAE (どれも Apache-2.0) | likely (「Fully uncensored」) | ✓ |
 | FLUX.2-klein-4B | `apache-2.0` | 可 / 可 | Qwen3-4B、FLUX.2 の VAE (Apache-2.0)。9B は非商用なので差し替えない | filtered (学習データの選別、出入りの NSFW フィルタ、透かしと C2PA) | ✓ |
 | magenta-realtime-2-small | `cc-by-4.0` (重み)、コードは Apache-2.0 | 可 (表示の義務: 「Magenta RealTime 2 by Google DeepMind」) / 可 | なし | — | ✓ |
 | MOSS-SoundEffect-v2.0 (lut8 も) | `apache-2.0` | 可 / 可 | Qwen3-1.7B (Apache-2.0)、DAC 形の VAE (コードは Descript の MIT、重みを誰が学習したかは不明) | — | △ |
@@ -99,9 +99,9 @@ Hugging Face の API (`cardData.license`)、モデルカード、リポジトリ
 
 ### 4.3 NSFW
 
-- likely: Anima (学習に `safe, sensitive, nsfw, explicit` のタグ。短いプロンプトで出やすいとカード自身が書く)、Chroma (検閲なしをうたう)
+- likely: Anima (学習に `safe, sensitive, nsfw, explicit` のタグ。短いプロンプトで出やすいとカード自身が書く)、Chroma1 (検閲なしをうたう。外した)
 - filtered: FLUX.2-klein (学習データの選別と、入出力のフィルタ)
-- `content: [nsfw]` (`+nsfw` がないと選ばない) を付けるのは likely の Anima と Chroma だけ。頼んでいないのに出してくる (Anima は `safe` を付けても出る) のが問題で、filtered の FLUX.2-klein には付けない
+- `content: [nsfw]` (`+nsfw` がないと選ばない) を付けるのは likely の Anima だけ (外した Chroma1 にも付けていた)。頼んでいないのに出してくる (Anima は `safe` を付けても出る) のが問題で、filtered の FLUX.2-klein には付けない
 
 ## 5. 本家に寄せる
 

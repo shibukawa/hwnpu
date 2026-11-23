@@ -43,14 +43,14 @@ hwnpu がモデルを探し、落とし、変換し、共有し、消す仕組�
 ### ライセンスとモデルの指定
 
 - 全モデルに `license: {id, url, class, terms, accept}` がある (`TestBuiltinLicenses`)。`class` は `open`、`conditional` (年商の上限、登録)、`non-commercial` (重みが商用不可。作ったものは売れても)。各ライセンスの一次資料は [../model-provenance.md](../model-provenance.md)
-- `content: [nsfw]` は頼まなくても NSFW の絵を描くモデル (Anima、Chroma) だけ。頼めば出しうるだけのモデルには付けない
+- `content: [nsfw]` は頼まなくても NSFW の絵を描くモデル (Anima) だけ。頼めば出しうるだけのモデルには付けない
 - 指定 (`chat.Policy`、`internal/chat/policy.go`): `HWNPU_MODEL_ALLOWLIST` (`.env` も) と、利用者の定義のファイルの `policy: [...]` (組み込みには書けない)。項目は `+license:X`、`-license:X` (X は id か区分)、`+nsfw`
   - `-` が `+` に勝つ。`+license` が 1 つでもあれば許可リストになり、当たらないもの、ライセンスの分からないものを弾く
   - `nsfw` のモデルは `+nsfw` がなければ弾く。`+nsfw` は許すだけで、生成の振る舞いは変えない
   - 用途は弾かれたモデルを飛ばす。この機械に合うものが残らなければ、同じ種類と機能で許されたモデルのうち、いちばん開いた区分のものを足す。弾いたモデルと理由は選んだ理由の後ろに出す
   - 名前で指したモデル (`-m`、タグ、リポジトリ、API のリクエスト) は差し替えず、理由を添えた `*chat.PolicyError`。リポジトリはライセンスが分からないので、`-license` は通り、`+license` で弾かれる
   - 一覧は弾かれたモデルと理由を最後に出す。全部弾かれた欄は `-`
-  - 用途 `image` は 8 GB から FLUX.2 klein 4B。Anima と Chroma は `+nsfw` でも用途では選ばない。名前で指せば `+nsfw` で動く
+  - 用途 `image` は 8 GB から FLUX.2 klein 4B。Anima は `+nsfw` でも用途では選ばない。名前で指せば `+nsfw` で動く
   - 例 (`TestPolicyPicks`): `-license:conditional` → chat 8 GB は Qwen3-1.7B (LFM3 は年商の上限つき)、chat 16 GB は gemma-4-E2B-it。`-license:lfm-open-1.0` → speech はエラー (代わりがない)。`+license:open` → translate はエラー (PLaMo 3 Translate は条件付き)
 - ライセンスの確認 (`chat.AcceptLicense`): `accept: true` のモデル (CircleStone Labs の Anima など) は、名前で初めて使うときに端末で一度だけ聞き、`~/.config/hwnpu/licenses.json` に残す。端末がなければ `--accept-license` か `HWNPU_ACCEPT_LICENSE=ID` (その回だけ) を求めて止まる。答えは手元だけで共有しない。機械ごとに答える
 
@@ -93,7 +93,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - lock の名指さないファイルは読まない。lock なしで手で写したリポジトリ (NAS の gated のチェックポイント) は見つからず、Hugging Face に回る
 - コミットはリポジトリごとに 1 回決める: models.yaml の固定 (`from: hf:OWNER/NAME@REV`)、なければ最初の取得元の lock、手元の lock、Hugging Face の `main` の順。どの層から取っても全ファイルがそのコミットのもの。lock を移すのは `hwnpu-dev sources update` だけ (変わったファイルだけ落とし直す)。取得元の lock が移れば手元も移り、sha256 が同じファイルは残す (`store.Record`)
 - 速い道: 手元の lock がファイルを名指し、大きさが合い、コミットが決まったものと同じなら、ネットにも取得元にも聞かない
-- 元のファイルはどの層から来ても手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`) に置く。`chat.Fetch(ctx, repo, name, log)` と `chat.FetchWeights` がパスを返す。モデルの間で共有する部品 (Chroma の T5-XXL と VAE) は各リポジトリのフォルダにあり、sha256 でハードリンクする
+- 元のファイルはどの層から来ても手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`) に置く。`chat.Fetch(ctx, repo, name, log)` と `chat.FetchWeights` がパスを返す。モデルの間で共有する部品 (外した Chroma1 の T5-XXL と VAE がそうだった) は各リポジトリのフォルダにあり、sha256 でハードリンクする
 - `TARGET`: `amd-xdna2`、`coreai`、`coreai-ARCH` (prebuilt)、`any` (表、GPTQ の codes)。`VERSION`: models.yaml に `targets.<対象>.version: N` があれば `vN` (道具の hash を除いたレシピが同じなら当たる)、`develop: true` なら `vN-<8 桁>`、版がなければ `v0-<8 桁>`
 - どの層にもない版 (`vN`) は、同じ鍵の `v0-HASH` (版を書く前に作った同じバイト) から取り、`vN` として書き戻す (`chat.fetchFrom`)
 - フォルダは揃っているか、揃っていないかの 2 つ: 変換結果は `entry.json` があれば揃っている。リポジトリは lock が名指すものだけを持つ。読む側に書きかけは見えない
@@ -256,7 +256,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 - 全機種の prebuilt を 1 つの圧縮ファイルで取る (zstd -19 --long で 36.98 → 1.33 MB): 各 Mac は自分の機種のものだけ要る
 - チャットのモデルの prebuilt: 初回が遅くなり、Qwen3.5-4B は止まった
 - 端末でコンパイルした Core AI の結果の持ち出し: SIP の中、署名の識別子ごと
-- Sana (全モデル) と Qwen-Image-2.1 (Turbo と無印、Qwen Research のライセンスの確認ごと): models.yaml から消した。Qwen-Image は NPU で使うにはパラメータが多すぎ、Sana も一緒にやめた (Core AI の prebuilt もほとんどの部品が ANE に乗らなかった)
+- Sana (全モデル) と Qwen-Image-2.1 (Turbo と無印、Qwen Research のライセンスの確認ごと): models.yaml から消した。Qwen-Image は NPU で使うにはパラメータが多すぎ、Sana も一緒にやめた (Core AI の prebuilt もほとんどの部品が ANE に乗らなかった。[sana.md](../not-adopted/sana.md)、[qwen-image.md](../not-adopted/qwen-image.md))
 - 確かめる S3 サーバーとしての MinIO: 保守が終わった
 - `~/models` への書き込み: 読むだけの古い層
 - Cloudflare R2 の無料枠に大きなモデル: 10 GB までなので小さなものだけ

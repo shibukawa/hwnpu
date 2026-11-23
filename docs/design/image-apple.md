@@ -9,7 +9,6 @@ How the image generation models run on Apple's Neural Engine and on Intel's NPU:
 | model | Apple (Core AI) | Intel NPU | package |
 |---|---|---|---|
 | Anima-Turbo, Anima-Aesthetic | yes | yes (OpenVINO IR, not verified end to end on hardware) | `internal/imagegen/anima` |
-| Chroma1-Flash, Chroma1-HD | yes | no | `internal/imagegen/chroma` |
 | FLUX.2 klein 4B | yes (text to image; editing with the edit's programs, below) | no | `internal/imagegen/flux2klein` |
 | FLUX.3 klein | yes (text to image) | no | `internal/imagegen/flux3klein` |
 
@@ -28,18 +27,17 @@ The rule (see [image-models.md](image-models.md) and [new-model-checklist.md](ne
   - Core AI compiles every function of an `.aimodel` together. The first run compiles all sizes. The VAE is never prebuilt (below), so its sizes are compiled on the device on the first run.
   - If the NE compiler rejects one size, every size of that part leaves the NE. Check each chip and each size offline with `coreai-build` before placing an export.
   - Adding a size rebuilds the export and every prebuilt.
-- Parts that do not depend on the size (text encoders, Chroma's approximator) are one function. Parts shared between models or exports are hard links (`ConvertOptions.LinkFrom`, `linkFrom`, `TextVersion`), so Core AI's cache hits them and they are not compiled again. The cache keys on program bytes, and each conversion writes a new UUID into the package, so separately converted copies of the same part would be compiled and held twice.
+- Parts that do not depend on the size (text encoders) are one function. Parts shared between models or exports are hard links (`ConvertOptions.LinkFrom`, `linkFrom`, `TextVersion`), so Core AI's cache hits them and they are not compiled again. The cache keys on program bytes, and each conversion writes a new UUID into the package, so separately converted copies of the same part would be compiled and held twice.
 
 Current state (migration is open):
 
 | model | Apple export now |
 |---|---|
 | Anima | one export per size (`anima-turbo-v1.1-WxH-int8-int8-g4-q512-v4.coreai`; `-v5` for the sizes whose patches are not a multiple of 8) |
-| Chroma1 | one export per size (512² and 1024² apart) |
 | FLUX.2 klein | 512² + 1024² in one (7.5 GB, against 7.3 + 7.5 GB apart); the other six sizes of `npu.apple.sizes` separately |
 | FLUX.3 klein | 512² and 1024² × text rows 80 and 160 in one (`DefaultSizes`, `DefaultTextRows`) |
 
-Migration order: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (the eight sizes of `npu.apple.sizes`) → Chroma1 (Flash, HD) → FLUX.3 klein; chips M1, M2, M3 (h13g, h14g, h15g) first.
+Migration order: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (the eight sizes of `npu.apple.sizes`) → FLUX.3 klein (Chroma1 was removed: [not-adopted/chroma1.md](../not-adopted/chroma1.md)); chips M1, M2, M3 (h13g, h14g, h15g) first.
 
 ## What is not prebuilt
 
@@ -47,8 +45,8 @@ Migration order: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (the eight siz
 
 | part | why |
 |---|---|
-| VAE stages (FLUX.2 klein, Chroma, Anima) | `coreai-build`'s FLUX.2 klein VAE drew stripes a few rows high every 112 rows at 512² (the 1024² function of the same `.aimodel` was right). A 1024 × 768 `vae_s0` failed with `ANEProgramProcessRequestDirect() … Request cancelled`. No gain anyway: finishing a prebuilt takes as long as compiling (10 stages at 1024²: 104 s against 106 s), as each waits for ANELargeModelCompilerService to start (10 s) |
-| text encoders (`text_*`) | Chroma's T5-XXL `text_0` from prebuilt failed with `Request cancelled` four times in a row. FLUX.2 klein's Qwen3 from prebuilt runs but slower (112 s against 81 s compiled on the device) |
+| VAE stages (FLUX.2 klein, Anima; Chroma1 too) | `coreai-build`'s FLUX.2 klein VAE drew stripes a few rows high every 112 rows at 512² (the 1024² function of the same `.aimodel` was right). A 1024 × 768 `vae_s0` failed with `ANEProgramProcessRequestDirect() … Request cancelled`. No gain anyway: finishing a prebuilt takes as long as compiling (10 stages at 1024²: 104 s against 106 s), as each waits for ANELargeModelCompilerService to start (10 s) |
+| text encoders (`text_*`) | Chroma1's T5-XXL `text_0` (removed) from prebuilt failed with `Request cancelled` four times in a row. FLUX.2 klein's Qwen3 from prebuilt runs but slower (112 s against 81 s compiled on the device) |
 
 - A machine that already drew with a prebuilt VAE keeps the finished entry in Core AI's cache (`hasEntry` wins over prebuilt) and keeps the stripes. Remove `~/Library/Caches/coreai-cache/<OS build>/hwnpu-image/` (the VAE entries are enough).
 - Open: what makes `coreai-build` wrong on the VAE (the 112-row period may be a row split inside a stage) and what cancels T5. Drop `LeftToDevice` when fixed. Report to Apple (FB).
@@ -61,51 +59,49 @@ At 1024² a DiT attends over 4096 image tokens. The time is in the element-wise 
 
 | form | where | effect (M1, 1024², one block's attention core) |
 |---|---|---|
-| attention scale 1/√d in the queries' RMSNorm weight; `SDPAScale` 1 puts no multiply | all four models (q is RMS-normed); Chroma's and FLUX's text paths read the same weights | Anima self-attention 102 → 89 ms, a 4-block group −4.7 %; the same error against milcpu (RoPE is linear) |
+| attention scale 1/√d in the queries' RMSNorm weight; `SDPAScale` 1 puts no multiply | every model (q is RMS-normed); FLUX's text paths read the same weights | Anima self-attention 102 → 89 ms, a 4-block group −4.7 %; the same error against milcpu (RoPE is linear) |
 | `milpart.HeadAttention`: a head at a time, a chunk's scores reshaped to (1, queries, 1, keys), softmax over the last axis | image self-attention, chunks of 1024 queries (`HeadChunk`), division before the product with V | Anima 90 → 72 ms. Both conditions are needed: every head in one tensor of that layout is slower than before, and so are smaller chunks alone |
-| keys split into power-of-two parts of 4096 at most (`milpart.KeyParts`), image keys and text keys as separate score tensors (`HeadOptions.Split`) under one softmax (max of maxima, sum of sums); the text pad bias on the text part only | Chroma, FLUX.2 klein, FLUX.3 klein (text rows in the same attention) | per score 0.27 ns at exactly 4096 keys, 0.38–0.47 ns at 2304…8192. Chroma 205 → 139 ms (24 heads, 4608 keys); a double group 1.68 → 1.40 s, a single group 3.47 → 2.91 s |
+| keys split into power-of-two parts of 4096 at most (`milpart.KeyParts`), image keys and text keys as separate score tensors (`HeadOptions.Split`) under one softmax (max of maxima, sum of sums); the text pad bias on the text part only | FLUX.2 klein, FLUX.3 klein (text rows in the same attention); first on Chroma1 (removed) | per score 0.27 ns at exactly 4096 keys, 0.38–0.47 ns at 2304…8192. Chroma1 205 → 139 ms (24 heads, 4608 keys); a double group 1.68 → 1.40 s, a single group 3.47 → 2.91 s |
 | cross-attention: every query at once, the sum divided after the product with V (`Deferred`) | Anima only (512 text keys) | 14 → 10 ms. Safe because the product before division is at most 8.7; `TestBlockRanges` fails under 8× headroom |
 | `Deferred` queries padded with zero rows to a multiple of `milpart.DeferredRows` (8), dropped after (`paddedDeferred`) | Anima | M2's and later NE compilers (h14g, h15g, h16g) put a `Deferred` attention with a query count not a multiple of 8 on the GPU (`no compiled region`); h13g took it. Fixed sizes: 880 × 1168, 752 × 1360 and their turns (export `-v5`, `PaddedExportVersion`); the other sizes stay `-v4` byte for byte. M2 3:4: 4.3 s a step, all on the NE |
 
 Rules learned:
 - Do not defer the division in self-attention: the product reaches fp16's max in Anima's last block (27). Scaling V's int8 weights by 1/256 to avoid it changed the pictures (products under fp16's normal range are dropped by the NE).
 - Writing that left the NE: two chunks divided by the same sum (use the sum's reciprocal), `maximum` of maxima of different widths (`Interleave should be matched for dual-input PEs`; concatenate the maxima and `reduce_max` again). Qwen-Image's query chunk of 2048 also left it.
-- `HWNPU_DEV=anima.attention=chunks` and `HWNPU_DEV=chroma.attention=chunks` export the older heads-together form (`QChunkAttention`) on Apple, to tell rounding from a mistake (convert into another folder). Intel always uses `QChunkAttention`.
+- `HWNPU_DEV=anima.attention=chunks` exports the older heads-together form (`QChunkAttention`) on Apple, to tell rounding from a mistake (convert into another folder). Intel always uses `QChunkAttention`.
 - A single score tensor over about 64 MiB is 2–3× slower per score on Core ML's NE (a step between 65 and 68 MiB). This is why `mil.DitQChunk` halves the query chunk at conversion until 16 × chunk × patches × 2 B ≤ 64 MiB (Anima's heads-together form: 1024² 512, 1280² 256, 2048² 128). The size of the on-chip memory is not the cause: per-score speed is flat from 0.5 MB to 64 MiB.
 
 ### fp16 traps and their fixes
 
 | trap | fix | where |
 |---|---|---|
-| residual streams pass fp16 (Anima DiT 2.7e5, Chroma T5 2.8e5, Chroma DiT text rows 2.4e5, FLUX.3 text stream 9.7e6) | hold the stream scaled: Anima `DitScale` 1/32 (patch embedding and gates ×1/32); Chroma `T5Scale` 1/64, `DitScale` 1/32; FLUX.2 klein DiT 1/32, `TextScale` 1/8; FLUX.3 image 1/32, text `TextStreamScale` 1/1024 with the gate adding the block output (1/32) into the text times 32/1024 | every DiT and text encoder |
+| residual streams pass fp16 (Anima DiT 2.7e5, Chroma1's T5 2.8e5 and DiT text rows 2.4e5, FLUX.3 text stream 9.7e6) | hold the stream scaled: Anima `DitScale` 1/32 (patch embedding and gates ×1/32); FLUX.2 klein DiT 1/32, `TextScale` 1/8; FLUX.3 image 1/32, text `TextStreamScale` 1/1024 with the gate adding the block output (1/32) into the text times 32/1024 | every DiT and text encoder (Chroma1, removed: `T5Scale` 1/64, `DitScale` 1/32) |
 | squares in RMSNorm/LayerNorm overflow; a fixed scale makes small rows subnormal | divide each row by its largest magnitude first (`milpart.AbsScaled`, `AbsScaledLayerNorm`; `abs` is one op, the older `MaxScaled` used `maximum(x, −x)`) | all norms in DiTs. It cannot become a constant: Anima's q and k reach 384 and their row RMS spans 1400× (measured by `mil.BlockRanges`), weight-derived scales still leave 700× |
-| dividing by the max leaves outlier-free channels near subnormal (T5 rows have one channel 1000× the rest) | take the mean square from the divided copy, build the output from the original x times a scalar (`mil.t5Norm`) | Chroma T5 |
-| a scale folded into weights makes products under fp16's normal range (6e-5); the NE drops them | keep scales on outputs: o's 1/64 after the product; wo 1/8 in the weight and 1/8 after; norm output ×16 before the projection and ÷16 after (`t5Up`) | Chroma T5 (three prompt rows were at cosine 0.93, 0.75, 0.36 before) |
-| Core ML folds constant multiplies around a linear back into the weight | the `t5Up` trick only helps when an add follows the scale; on the DiT it changed nothing and broke the last single group (reverted) | Chroma DiT |
-| untyped integer constant division: `1/64 = 0`, `8/32 = 0` | write float constants; checked by unit tests (`TestCtx`) | Chroma T5 FF output vanished; FLUX.2 klein text rows all zero |
-| per-row int8: the NE seems to accumulate the signed products and apply the row scale last, so the accumulation passes fp16 on large inputs → inf/NaN | lut8 (table expanded to fp16 weights before the product). The same int8 program is right in the CPU interpreter | Chroma T5 layers 4–11 and late double blocks; Qwen3-VL attention sinks (NaN); hence lut8 for every text encoder with attention sinks and for FLUX/Chroma DiTs |
+| dividing by the max leaves outlier-free channels near subnormal (T5 rows have one channel 1000× the rest) | take the mean square from the divided copy, build the output from the original x times a scalar (Chroma1's `mil.t5Norm`) | Chroma1's T5 (Chroma1, removed: [not-adopted/chroma1.md](../not-adopted/chroma1.md)) |
+| a scale folded into weights makes products under fp16's normal range (6e-5); the NE drops them | keep scales on outputs: o's 1/64 after the product; wo 1/8 in the weight and 1/8 after; norm output ×16 before the projection and ÷16 after (`t5Up`) | Chroma1's T5, removed (three prompt rows were at cosine 0.93, 0.75, 0.36 before) |
+| Core ML folds constant multiplies around a linear back into the weight | the `t5Up` trick only helps when an add follows the scale; on the DiT it changed nothing and broke the last single group (reverted) | Chroma1's DiT (removed) |
+| untyped integer constant division: `1/64 = 0`, `8/32 = 0` | write float constants; checked by unit tests (`TestCtx`) | Chroma1's T5 FF output vanished (removed); FLUX.2 klein text rows all zero |
+| per-row int8: the NE seems to accumulate the signed products and apply the row scale last, so the accumulation passes fp16 on large inputs → inf/NaN | lut8 (table expanded to fp16 weights before the product). The same int8 program is right in the CPU interpreter | Chroma1's T5 layers 4–11 and late double blocks (removed); Qwen3-VL attention sinks (NaN); hence lut8 for every text encoder with attention sinks and for the FLUX DiTs |
 | a dimension over 16384 runs on the CPU | split: FLUX.3 `context_embedder` input 20480 as two inputs and two half linears; FFN `linear_in` 18432 read as `#gate` and `#up`; Sana's KV output put layers on axis 1 | |
-| a program of one row (Anima `dit_time`, input (1, 1, 2048)) or a tiny program (`dit_patch`, one linear) runs on the CPU | 8 rows (`mil.TimeRows`, sinusoid in row 0); put small parts into a neighbor group (patch embedding into `dit_blocks_0`, Chroma's x_embedder into the first double group, norm_out/proj_out into the last) | |
-| modulations from one timestep row drift on the NE | compute on the host in float32 (FLUX.2/3 klein's time embedding and shared modulation, `time.safetensors`, once per σ; Chroma's approximator is an NE program run once per σ before the steps) | |
+| a program of one row (Anima `dit_time`, input (1, 1, 2048)) or a tiny program (`dit_patch`, one linear) runs on the CPU | 8 rows (`mil.TimeRows`, sinusoid in row 0); put small parts into a neighbor group (patch embedding into `dit_blocks_0`, norm_out/proj_out into the last) | |
+| modulations from one timestep row drift on the NE | compute on the host in float32 (FLUX.2/3 klein's time embedding and shared modulation, `time.safetensors`, once per σ) | |
 
 ### Weight formats on Apple
 
 | part | format | reason |
 |---|---|---|
 | Anima text (Qwen3-0.6B) and DiT | int8 / int8 | DiT int8 nearer fp16 than lut8 (latent cosine 0.902 against 0.858, M3); on Core AI a block without attention cores is int8 97.4 ms, fp16 111.9, lut8 111.6 (the NE pays nothing to expand int8 and reads half the bytes); fp16 doubles what the NE holds (2.62 → 5.2 GiB) |
-| Chroma T5-XXL | lut8, `wo` fp16 (`TextFormatFor wo=fp16`) | `wo` takes the outlier channels; 5.5 GB against fp16's 9.5 GB, the same pictures (latent cosine 0.993–0.997 to fp32, 0.996–0.999 to fp16 T5); lut8 throughout put one row at 0.766 |
-| Chroma DiT | lut8 | int8 drifts at σ = 0.25 (rel. 14 %, stripes); lut8 2.8 %, latent 0.9965, 37.9 dB |
 | FLUX.2 klein Qwen3-4B, DiT | lut8, lut8 | attention sinks at int8; lut6 changes the picture |
 | FLUX.3 klein Qwen3-VL, DiT | lut8; DiT tables fitted to activations (`lut8x2`) | below |
-| context embedders (FLUX.2 `Ctx`, FLUX.3 `ctx`), VAE, Chroma approximator | fp16 | run once per prompt or picture: more bits cost nothing at steps |
+| context embedders (FLUX.2 `Ctx`, FLUX.3 `ctx`), VAE | fp16 | run once per prompt or picture: more bits cost nothing at steps |
 
 - Speed: on Core AI, int8 vs lut8 depends on the shape. Anima int8 was 13–17 % faster than lut8; Qwen-Image's (hidden 4096) was not (369 vs 361 ms a group, 6.2 TFLOPS, the NE's ceiling). Measure on the model's group before choosing a format for speed.
-- 4 bits is not enough for distilled DiTs (Chroma MLP lut4 changes pose or collapses).
+- 4 bits is not enough for distilled DiTs (Chroma1's MLP at lut4 changed poses or collapsed; removed).
 - See [quantization.md](quantization.md) for the formats.
 
 ### Loading programs: swapping DiT groups and preloading
 
-- On Core AI the DiT groups are not held. Each group is loaded for its turn, run, and closed (`runner.Swap`; Anima `progEngine.swap`, Chroma `swapDiT`, FLUX `runner.Ring`). While a group runs, the next one loads (`runner.InTurn` for in-turn parts, `runner.Ring` for the DiT: after the last group it loads the first for the next call; an unused load is closed). At most 2 programs open. A failed ahead-load is retried once at its turn (`TestRing`, `TestInTurn`).
+- On Core AI the DiT groups are not held. Each group is loaded for its turn, run, and closed (`runner.Swap`; Anima `progEngine.swap`, FLUX `runner.Ring`). While a group runs, the next one loads (`runner.InTurn` for in-turn parts, `runner.Ring` for the DiT: after the last group it loads the first for the next call; an unused load is closed). At most 2 programs open. A failed ahead-load is retried once at its turn (`TestRing`, `TestInTurn`).
 - Why: a load from Core AI's cache is 0.02–0.3 s, about one run. Holding everything is no faster, because a large group that follows another program pays a switch cost anyway (`aicheck cycle`: a 4-block Anima group after another group +50–70 ms; 2 small programs or a group plus a small one +0). And holding a lot makes things slower or fail: Chroma1-Flash 1024² holding all 8.8 GiB is 10 % slower; Qwen-Image's lut4 DiT held at 5.2 GiB failed with `underlying=0x15` (Core AI errors instead of evicting like Core ML).
 - Text encoders are closed after the prompt, the approximator before the steps, the groups loaded for the last step's next before the VAE. VAE stages are loaded one at a time (10–20 ms each, no preload needed).
 - `HWNPU_DEV=hold-dit=1` holds every group; `HWNPU_DEV=load-ahead=0` turns preloading off (both for measuring). Core ML and Intel load one at a time (Intel holds what fits and closes others when out of memory).
@@ -115,7 +111,7 @@ Rules learned:
 
 | measured on M1, 1024² (Core AI) | hold all | swap, no preload | swap + preload (default) |
 |---|---|---|---|
-| Chroma1-Flash: a picture / NE held | 6 m 16 s / 8.80 GiB | 6 m 11 s / 1.80 GiB | 5 m 36 s / 2.53 GiB |
+| Chroma1-Flash (removed): a picture / NE held | 6 m 16 s / 8.80 GiB | 6 m 11 s / 1.80 GiB | 5 m 36 s / 2.53 GiB |
 | Anima-Turbo: a picture / NE held / process peak | 49 s / 2.53 GiB / 3.88 GB | — | 49 s / 0.57 GiB (0.84 with two groups) / 3.32 GB |
 
 Pictures are byte for byte the same in all forms.
@@ -125,7 +121,6 @@ Pictures are byte for byte the same in all forms.
 | model | encoder | programs | notes |
 |---|---|---|---|
 | Anima | Qwen3-0.6B | `text` (one program) | 1.0 GB at fp16 was over a Core ML program's limit; int8 |
-| Chroma | T5-XXL | 3 layers a program, 8 (`text_0`…`text_21`), the last with the final norm and the DiT's `context_embedder` | an empty negative prompt (`</s>` only, Chroma1-HD's default) is precomputed on the host in float32 at conversion (`text/empty.bin`); 512 rows, `--text-rows 256` (for prompts ≤ 255 tokens: −7 % time) is not default |
 | FLUX.2 klein | Qwen3-4B, first 27 layers | 3 layers a program, 9 (`mil.TextGroups`: the hidden states after layers 9, 18, 27 each one output); `Ctx` concatenates them | 512 rows; prompt rows causal, pad rows see only prompt keys (`kbias` + causal mask). The DiT reads pad rows, so they cannot be skipped |
 | FLUX.3 klein | Qwen3-VL-4B language part, 32 of 36 layers | the hidden states after layers 4, 8, …, 32 concatenated (20480) | text rows padded to a multiple of 80 (80 or 160); pad position ID 1; the same mask as FLUX.2 klein (checked against transformers 5.23) |
 
@@ -134,10 +129,10 @@ Pictures are byte for byte the same in all forms.
 
 ### VAE
 
-- Run stage by stage (Anima 10, FLUX/Chroma 10), loaded per stage, closed after. Each stage reads the previous output directly.
+- Run stage by stage (Anima 10, FLUX 10), loaded per stage, closed after. Each stage reads the previous output directly.
 - Upsampling is `upsample_nearest_neighbor` (Anima stage 5 alone 1275 → 412 ms, 3× faster than reshape + tile); OpenVINO IR keeps reshape + tile.
-- Chroma's/FLUX's GroupNorm: group values as (1, 32, a, b) (every axis ≤ 16384), divide by the group max, subtract the mean before the squares (|mean|/std reaches 6.3). 512² VAE vs diffusers fp32: 66.3 dB.
-- FLUX.2/3 klein: Chroma's FLUX.1 decoder plus `post_quant_conv` (`chroma/mil.Vae.PostQuant`); batch-norm denormalization and the 2 × 2 unpack on the host.
+- FLUX's GroupNorm (`fluxvae.GroupNorm`): group values as (1, 32, a, b) (every axis ≤ 16384), divide by the group max, subtract the mean before the squares (|mean|/std reaches 6.3). 512² VAE vs diffusers fp32: 66.3 dB.
+- FLUX.2/3 klein: FLUX.1's decoder (`internal/imagegen/fluxvae`, once Chroma1's) plus `post_quant_conv` (`fluxvae.Vae.PostQuant`); batch-norm denormalization and the 2 × 2 unpack on the host.
 - Anima's VAE values stay under 8: no fp16 care.
 - Never prebuilt (above).
 - Passing fp16 between stages instead of float32 gave nothing (0–0.3 s, Sana 1024²).
@@ -151,20 +146,14 @@ Pictures are byte for byte the same in all forms.
 - Its CFG step costs exactly twice a plain step (11.1–11.2 vs 5.6–5.7 s): the groups are small (0.28 GiB), so it pays no switch cost, and batching groups does not speed it up.
 - Accuracy: Anima-Turbo 512² against a CPU float32 run of the same int8 weights: latent cosine 0.987–0.999. Against diffusers fp32 at 1024² (M1, Core ML, int8): 0.876–0.948, same composition; the 8-step distilled model amplifies small differences. Anima-Aesthetic (25 small steps) stays close (0.997–0.9999 between attention forms).
 
-## Chroma1 (Flash, HD)
+## Chroma1 (removed)
 
-- Programs (33): `text_*` T5 (8, lut8 + wo fp16), `mods` (approximator, fp16, once per σ before the steps: Flash's Heun 8 steps = 8 calls; shared by Heun's two evaluations and CFG's two), `dit_double_*` (4 double blocks a program, 5; the first with x_embedder), `dit_single_*` (8 single blocks, 5; the last with norm_out and proj_out), `vae_s0`–`s9` (fp16).
-- Rows are [image, text]. Text pad is masked by a key bias (`kbias`: only the prompt tokens and one pad at 0). FLUX's RoPE pairs (2i, 2i+1) become `blocks.ApplyRope`'s (i, i+64) by permuting the q and k weight rows (`mil.RopePerm`); cos/sin are constants.
-- CFG's two calls run group by group back to back.
-- `ExportVersion` 2 changed only the DiT groups: T5, approximator and VAE link from version 1 exports. T5 is the same for Flash and HD except the last group (context_embedder); the VAE is the same per size. HD 1024² export from Flash's: about 10 GB new.
-- Flags (`convert`): `--text-format-for`, `--dit-format-for`, `--dit-quant` (uniform, kmeans, kmeans-minmax), `--text-rows`, `--keep-dit` (on Core AI only marks the groups checked).
-- MLComputePlan placement check timeout is 30 min (`planTimeout`, Core ML): mixed lut6/lut8 1024² single groups took 19–27 min.
-- Accuracy (Core ML, M1, 512², Flash, 3 prompts × 2 seeds vs fp32 `ref_chroma_lean.py`): latent 0.987–0.997, 29.9–37.9 dB, same compositions, faces, sign placement. HD 1024² DiT on the reference's first 4 calls: velocity cosine 0.99983–0.99991. The current attention form vs the heads-together form (512², 3 prompts): 0.999–0.9996, 40.5–41.2 dB.
+Chroma1 (Flash, HD) was removed on 2026-11-24: its programs, formats and numbers are in [not-adopted/chroma1.md](../not-adopted/chroma1.md).
 
 ## FLUX.2 klein 4B
 
 - Programs: Qwen3-4B 9 groups (lut8), `Ctx` (fp16), DiT 2 double blocks a program (3) and 5 single blocks a program (4) at lut8, VAE.
-- DiT from Chroma's form: no biases, SwiGLU, modulation shared across blocks (double image 6 rows, text 6, single 3, norm_out 2) computed on the host per σ; fused single-block projection read by part names (`to_qkv_mlp_proj.weight#q`, `mil.Weights`); RoPE 4 axes × 32, θ 2000, text rows on axis 4. Attention a head at a time, image and text keys apart, no mask (the DiT sees pads).
+- DiT in the form of Chroma1's (removed): no biases, SwiGLU, modulation shared across blocks (double image 6 rows, text 6, single 3, norm_out 2) computed on the host per σ; fused single-block projection read by part names (`to_qkv_mlp_proj.weight#q`, `mil.Weights`); RoPE 4 axes × 32, θ 2000, text rows on axis 4. Attention a head at a time, image and text keys apart, no mask (the DiT sees pads).
 - 512² + 1024² in one export; latents bit for bit as per-size exports.
 - Accuracy (512², first-step velocity, against the same programs in float32 on the CPU, `flux2klein.TestF32Check`): 3.8 % rel. RMS = lut8 2.7 % + NE fp16 2.8 %; per group 0.2–0.8 %, accumulating over 25 blocks. No diffusers comparison (no PyTorch on that Mac).
 - Does not apply: CFG (distilled), text K/V out of the steps (text rows are modulated each step), fixed prefix (3 tokens), fewer text rows (the DiT sees pads).
@@ -174,7 +163,7 @@ Pictures are byte for byte the same in all forms.
 - An edit needs programs text to image does not: the DiT's groups over the picture's rows and the references' (`mil.Dit.Refs`; 1024² with one full-size reference is 8704 rows, against 4608) and the VAE's encoder. They are **in the one export** of every size: models.yaml `npu.apple.edits` names the edits by aspect ratio (`ConvertOptions.Edits`, `AppleOptions`), and each DiT program holds a function for each size and each edit step (`EditFunction`, `s1024x1024_ref1h2`), the weights once: 8 sizes + 5 edits = 13 functions (2026-11-22). An edit of 8192 keys or more (the DiT's rows: at 1024² a reference of 1024 is 8704) is not in them: coreai-build leaves an attention over that many keys to the GPU on every chip (Metal Toolchain 27.2, `NEFUSED_EW: KernelPreScales`; the keys in pieces of their own, or each piece's softmax by itself and the pieces weighed after, fail the same; 8064 keys compile), and one such function would cost the whole program its prebuilt. Those steps are programs of their own, a function each (`dit_double_0_device.aimodel`, `flux2klein.PrebuiltKeys`, `DeviceSuffix`): `coreai.LeftToDevice` leaves them to the device's compiler, which takes them, at the first such edit. They hold the group's weights again (about 4 GB more). So the main programs are 10 functions (8 sizes, the two edits at 512²) and prebuilt; the three edits with a reference of 1024 compile on the device. Export layout v2. The edits: at 1024² from one reference of 1024, 1024 + 512, or 1024 + 512 × 2; at 512² from one or two of 512. The encoder's stages are programs of their own, a function for 1024² and for 512² (a reference of 512 is the same function at either picture). The manifest lists them under `edits` (`EditSize`); the name gains `-5edits-HASH` (`flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v1.coreai`).
 - Until then the edit was an export of its own (`ConvertEdit`, `PrepareEdit`, `Pipeline.UseEdit`, `flux.2-klein-4b-edit-…`), converted at the first edit, so that text to image compiled none of it: Core AI compiles every function of an `.aimodel` together. With the prebuilt in the sources nothing compiles at the first run, and the second export only held the DiT's weights again (4 GB more) and a second prebuilt, so it is gone. An edit at another size is refused (`References` lists what the export runs).
 - The DiT's programs of a step with references: the image stream is the picture's rows then the references' (the same modulation rows), the RoPE's first axis 10, 20, … for the references, `HeadAttention`'s split at the image stream's end, `proj_out` over the picture's rows only. `TestDitReferences` checks them against diffusers' blocks in float64 (rel. RMS 3e-4, the same as without references).
-- The encoder (`chroma/mil.VaeEncStages`, 7 stages: a residual block a stage at the picture's size and half of it, the other down blocks whole, the mid block with the head). The downsampler pads (0, 1, 0, 1) (`milpart.Conv2DPad`); `quant_conv` is folded into `conv_out`'s first 32 channels (the means). Against diffusers (`tools/ref/ref_flux2klein.py --encode`, the fox at 512²): rel. RMS 0.39 %, cosine 0.99999.
+- The encoder (`fluxvae.VaeEncStages`, 7 stages: a residual block a stage at the picture's size and half of it, the other down blocks whole, the mid block with the head). The downsampler pads (0, 1, 0, 1) (`milpart.Conv2DPad`); `quant_conv` is folded into `conv_out`'s first 32 channels (the means). Against diffusers (`tools/ref/ref_flux2klein.py --encode`, the fox at 512²): rel. RMS 0.39 %, cosine 0.99999.
 - Numbers (M3 16 GB, warm, the separate export of before): a step at 512² with one reference 3.0 s; `samples/layers` draws a layer in 39 s at 512² and 89 s at 1024², the reference's encoding included.
 
 ## FLUX.3 klein
@@ -206,10 +195,8 @@ Pictures are byte for byte the same in all forms.
 | Anima-Turbo (8 steps) | M1 16 GB | 7.5 s of steps | 48–49 s (5.6–5.7 s a step, VAE 2.8–3.2 s) | 4.81 GB (3.06 + 1.42 GiB) |
 | Anima-Turbo 3:4 (880 × 1168) | M2 | | 34 s of 8 steps (4.3 s a step; M1 5.4 s) | |
 | Anima-Aesthetic (25 steps, CFG on 17) | M1 16 GB | | 3 m 51–57 s of steps (CFG step 11.0–11.2 s, other 5.6–5.7 s) | as Anima-Turbo |
-| Chroma1-Flash (Heun 8 steps, 15 DiT calls) | M1 16 GB | 1 m 25 s (DiT call 5.3 s) | 5 m 36 s (T5 2.1 s, DiT call 21.7 s, VAE 4.6 s; NE 2.53 GiB) | models.yaml 4.3 GB is Core ML's process footprint, not re-measured |
-| Chroma1-HD (DPM-Solver++ 2M 25 steps, CFG 3 at σ ≥ 0.6) | M1 16 GB | 3 m 39 s (CFG step 10.0 s, other 5.4 s; NE 2.49 GiB) | not run on Core AI | |
 
-- First run (conversion + NE compile): FLUX.2 klein 40 min (both sizes), FLUX.3 klein about 50 min, Anima-Turbo 1024² about 21 min, Chroma 512² about 24 min (DiT 20 min, T5 3 m 46 s), Chroma 1024² 1 h 12 min. The first run's memory peak is higher (FLUX.2 klein 1024²: 7.00 GB).
+- First run (conversion + NE compile): FLUX.2 klein 40 min (both sizes), FLUX.3 klein about 50 min, Anima-Turbo 1024² about 21 min. The first run's memory peak is higher (FLUX.2 klein 1024²: 7.00 GB).
 - Measure with an executable named `hwnpu-image`: Core AI's cache is per executable name, and another name compiles everything again (see [apple-coreai.md](apple-coreai.md)). To time one part from the production cache, build `tools/coreai/aicheck` as `hwnpu-image` and run `run -calls N EXPORT/PART.aimodel#FUNCTION`.
 - Memory is the peak of `ri_phys_footprint + ri_neural_footprint` (`proc_pid_rusage`). `mem.NPUWired` is machine-wide and includes other processes. See [memory-and-power.md](memory-and-power.md).
 - Low power mode halved image generation speed on an M3; no difference seen on an M1.
@@ -223,7 +210,7 @@ Pictures are byte for byte the same in all forms.
 
 ## Lessons kept from dropped models (Sana, Qwen-Image)
 
-Sana and Qwen-Image are no longer offered (see [image-models.md](image-models.md), Not adopted). What still applies:
+Sana and Qwen-Image are no longer offered (see [image-models.md](image-models.md), Not adopted; the notes for taking them up again are in [not-adopted/sana.md](../not-adopted/sana.md) and [not-adopted/qwen-image.md](../not-adopted/qwen-image.md)). What still applies:
 
 - Core AI's NE compiler can reject a wide conv: Qwen-Image's 1152 → 1152 channel VAE stages at 64 × 64 and above (M1, `Allocation failure for L2-dep pair`) went to the GPU; the same package ran on Core ML. Splitting the conv by channels or rows did not help. Tiling the stage input into overlapping windows (≤ 48 × 48) and stitching is exact when only pixels farther than the stage's reach from the inner edge are used (overlap 7 for two tiles, 14 for three or more). FLUX's VAE (512 channels at most) does not need it.
 - When one function of a grouped `.aimodel` fails, the whole file goes to the GPU: the backend ungroups (`ungroup`, `record.Alone`) and lowers the members alone (see [apple-coreai.md](apple-coreai.md)).
@@ -248,12 +235,6 @@ Sana and Qwen-Image are no longer offered (see [image-models.md](image-models.md
 | replacing the max division before norms by constants | ranges span 1400× |
 | higher weight bits for speed (fp16 / lut8 on Anima) | slower than int8 and doubles NE memory |
 | holding every DiT group on Core AI | no faster, up to 10 % slower at 1024², more NE memory, can fail |
-| Chroma: DiT MLP lut6 | the same pictures, not faster at 1024²; only 1.7 GB of disk/cache saved |
-| Chroma: DiT int8, MLP lut4 | stripes / changes pose or collapses |
-| Chroma: T5 fp16 | 9.5 GB against 5.5, 12.7 s a prompt against 9.5 (Core ML); lut8 + wo fp16 gives the same pictures |
-| Chroma: T5 all lut8 | one prompt row at 0.766 |
-| Chroma: `--text-rows 256` as default | −7 % time, cuts long prompts |
-| Chroma: `t5Up` trick on the DiT | Core ML folded it; broke the last single group |
 | FLUX.2 klein DiT lut6 | −9 % a step but latent 0.957, the picture changes |
 | FLUX.2 klein larger groups (3 double, 7 single) | the same 2.2 s a step (preload hides the switch); longer compiles |
 | FLUX.3 klein lut8 k-means from quantiles | breaks the picture (0.56) |
@@ -268,7 +249,6 @@ Sana and Qwen-Image are no longer offered (see [image-models.md](image-models.md
 - Why `coreai-build` is wrong on the VAE and cancels T5; drop `LeftToDevice` when fixed.
 - FLUX.3 klein on Apple: Neural Engine memory, editing, other sizes, prompts over 160 tokens, the pad-row drift (e.g. later Qwen3-VL layers at fp16), how the calibration statistics are distributed.
 - FLUX.2 klein editing on Apple.
-- Chroma: memory on Core AI (models.yaml still Core ML's), Chroma1-HD at 1024² on Core AI, comparison with the fp32 reference after the attention change, why the second CFG call at 1024² was cheaper on Core ML (23 vs 35 s).
 - Anima on Intel's NPU: end-to-end run on hardware at 1024², the v4/v5 exports on Intel. Anima-Aesthetic ranges (`TestBlockRanges`).
 - M2 and M3: block-switch costs (`aicheck cycle`), query chunk sizes, the padded `-v5` sizes on M3 and M4. Energy per picture (powerbench needs sudo).
 - The prebuilt finish floor of about 10.2 s per part after the first part of a process (see [apple-coreai.md](apple-coreai.md)).

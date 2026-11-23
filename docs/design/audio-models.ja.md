@@ -40,7 +40,7 @@
 
 ## Whisper (`internal/llm/whisper`、`internal/transcribe`)
 
-- 既定は `openai/whisper-large-v3-turbo` (809M)。`kotoba-tech/kotoba-whisper-v2.2` (日本語向けの蒸留、復号器 2 層) もリポジトリ名で指定すれば同じコードで動く。models.yaml には入れていない。長い音声で崩れる (HF の長い音声の方式でも同じ) ので、長い音声には turbo
+- 既定は `openai/whisper-large-v3-turbo` (809M)。`kotoba-tech/kotoba-whisper-v2.2` (日本語向けの蒸留、復号器 2 層) もリポジトリ名で指定すれば同じコードで動く。models.yaml には入れていない。長い音声で崩れる (HF の長い音声の方式でも同じ) ので、長い音声には turbo ([not-adopted/kotoba-whisper.md](../not-adopted/kotoba-whisper.md))
 
 ### プログラム (Apple / Intel)
 

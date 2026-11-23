@@ -26,7 +26,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
 - **何が**: `.aimodelc` を端末で仕上げる `ANELargeModelCompilerService` は 1 本ごとに終わり ("Exiting … to avoid VA fragmentation")、launchd が次の起動を 10 秒待たせる ("service spawn deferred by 10 seconds due to throttle")。小さな部品でも 1 本 10.2 秒かかる。[docs/design/image-apple.md](design/image-apple.md), [docs/design/quantization.md](design/quantization.md) のころの調べ
-- **今**: 回避はない。prebuilt が効くのは、1 部品の端末のコンパイルが数分かかる画像のモデル (FLUX.2 klein、Chroma1-Flash、Anima) だけ。部品の多い小さなプログラムは、10 秒ずつ積み上がって負ける (画像以外は 9 節)
+- **今**: 回避はない。prebuilt が効くのは、1 部品の端末のコンパイルが数分かかる画像のモデル (FLUX.2 klein、Anima) だけ。部品の多い小さなプログラムは、10 秒ずつ積み上がって負ける (画像以外は 9 節)
 - **直ったら**: FLUX.2 klein の文の符号器 (prebuilt で 112 秒、端末で 81 秒、[distribution](design/distribution.md)) と、9 節の表のモデルを同じ測り方で測り直す。端末のコンパイルより速くなれば、9 節の手順で置く
 
 ## 2. 隣り合う同じ lut の表 (FB25624151)
@@ -47,7 +47,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 ## 4. prebuilt から仕上げたプログラムの呼び出しが遅い (FB25624318)
 
-- **何が**: prebuilt から仕上げたものは LLIR の道 (`useANELLIR` が true) を通り、中間のバッファが大きい (VAE の段で 549 MB、端末のコンパイルでは 411 MB)。1 回の呼び出しが M1 で 8〜16 %、M2 の Chroma で 3〜5 % 遅い
+- **何が**: prebuilt から仕上げたものは LLIR の道 (`useANELLIR` が true) を通り、中間のバッファが大きい (VAE の段で 549 MB、端末のコンパイルでは 411 MB)。1 回の呼び出しが M1 で 8〜16 %、M2 の Chroma1 (外した) で 3〜5 % 遅い
 - **今**: 回避はない。初回の短縮 (FLUX.2 klein の M1 で 40 分 → 8 分) の方が大きいので置いている
 - **直ったら**: 何もしなくてよい。チャットのモデルに置くかの判断 (9 節) では、呼び出しの速さが変わらないことも条件になる
 
@@ -71,7 +71,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   done
   ```
 
-  Chroma1-Flash と Anima も同じに (書き出しが取得元にあるもの)。全種類が通るようになれば `--arch all` でよい
+  Anima も同じに (書き出しが取得元にあるもの)。全種類が通るようになれば `--arch all` でよい
 - **作り直し** (書き出しが変わったとき。2 節、FormatVersion を上げたとき): 書き出しを作って置き (`hwnpu-image` か `tools/coreai/kleinonly prepare` を取得元の書き戻しありで)、その書き出しに上の prebuild をする。チャットのモデルは `hwnpu-chat` を書き戻しありで 1 回ずつ動かす (9 節)。2026-11-19 の作り直しの記録は [docs/design/distribution.md](design/distribution.md)
 - 確かめ方: `xcrun coreai-build compile X.aimodel --platform macOS --architecture h13c --preferred-compute neural-engine --output out/` が落ちず、`out/…/manifest.plist` に `mps.fullyPlacedOnANE` があること。失敗の理由は stderr でなく os_log (プロセス `coreai-build`、ANEHostCompiler) に出る
 
@@ -102,7 +102,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
   - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
   - M1、M2 では測っていない
-- **今**: 画像生成のモデル (FLUX.2 klein、Chroma1-Flash、Anima) にだけ prebuilt を置く。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
+- **今**: 画像生成のモデル (FLUX.2 klein、Anima) にだけ prebuilt を置く。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
 - **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
@@ -126,7 +126,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: 行が 1 塊より多く 2 塊より少ないとき、半分ずつ (64 の倍数) にする (`flux2klein/mil` の `headChunk`)。FLUX.2 klein で変わるのは 512² の文からの生成だけ (1536 行 → 768 + 768)。計算は同じ (行ごとの softmax)。書き出しの版を 4 にした (`ExportVersion`。3 までは編集の置き方)。M3 で、直した 512² の DiT の 7 部品は prebuilt から全部仕上がり、直す前のものは全部落ちた。編集の 5 通り (2560 行から) は変わらない
 - **作り直し**: 書き出しの名前が `-v4` になるので、FLUX.2 klein の書き出しと、各種類の prebuilt (6 節) を作り直して取得元に置く。v3 までの prebuilt は使われなくなる
 - **直ったら**: 何もしなくてよい
-- まだ見ていないもの: Chroma1-Flash も 512² は 1536 行で `HeadChunk` が 1024 (同じ形)。h15g 以外の種類の端末での検査 (この機械は h15g だけ)
+- まだ見ていないもの: h15g 以外の種類の端末での検査 (この機械は h15g だけ)
 - 確かめ方: `coreai-build compile … --architecture h15g` で作った `.aimodelc` を M3 で開き (AIModel(contentsOf:))、`/usr/bin/log stream` に "cache_hint" が出るか。attention だけなら 1536 行、`HeadChunk` 1024 のもので足りる
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)

@@ -325,7 +325,7 @@ hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-cha
 | `ai/flow` | Chunk streams (`Stream[T]`, `iter.Seq2`) and the network between models | v0 |
 | `ai/cli` (+ `konghelper`) | Subcommands for an app: `models`, `models download`, `models prepare`, `status` (shared with `hwnpu status` through `internal/npustatus`) | v0 |
 | `ai/vision` | `Depth` (use `depth`: Depth Anything 3, MoGe-2; `DepthMap.Near` gives nearness 0–1), `Faces` (`face-detect`: YuNet; CPU on AMD machines), `HeadOf` / `NearestHead` / `HeadNode` (head position from the eye spacing, 63 mm, and the camera's field of view, 60°; no model) | v0 |
-| `ai/imagegen` | `Generate` (use `image`): text and reference images to a picture, `GenerateNode`; the export's size nearest the asked shape (`SizeFor`). FLUX.2 klein only (Anima, Chroma, FLUX.3 klein refuse at preparation) | v0 |
+| `ai/imagegen` | `Generate` (use `image`): text and reference images to a picture, `GenerateNode`; the export's size nearest the asked shape (`SizeFor`). FLUX.2 klein only (Anima and FLUX.3 klein refuse at preparation) | v0 |
 | `ai/sound`; objects, pose, segmentation, OCR, labels in `ai/vision` | music, sound effects, pitch | not yet |
 
 - Preparation calls the same functions as the commands' first run (`transcribe.Prepare`,
@@ -368,7 +368,7 @@ longest command, streaming) per the [new-model checklist](new-model-checklist.md
 
 - `ai`: a residency manager (memory budget, submission order), nodes with three or more inputs, letting
   the library decide when to release models, per-edge measurement, the rest of `ai/vision`, Anima /
-  Chroma / FLUX.3 klein in `ai/imagegen`, moving the commands onto `ai`; `ai` not yet run on Intel, nor
+  FLUX.3 klein in `ai/imagegen`, moving the commands onto `ai`; `ai` not yet run on Intel, nor
   `text.Chat` and a real microphone on hardware (on a Mac the three samples, the camera and the window ran). Real parallelism by column split (AMD) not verified.
 - `npuinfo`: run on Windows (Intel and AMD); check IOReport channel names on M2 and later; decode AIE
   status and telemetry; a common API; a browser viewer.

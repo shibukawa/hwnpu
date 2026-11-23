@@ -30,7 +30,7 @@ go run ./cmd/hwnpu-dev report -o report.md   # この機械の NPU で hwnpu が
 | コマンド | できること | 説明 |
 |---|---|---|
 | `hwnpu-chat` | 対話、翻訳、コーディングエージェント (`agent`)、OpenAI 互換のサーバー (`serve`)、埋め込みの検索 (`search`)、型付きの判定 (`systemone`) | [CHAT.ja.md](CHAT.ja.md)、AMD は [USAGE_LLM_AMD.ja.md](USAGE_LLM_AMD.ja.md) |
-| `hwnpu-image` | 画像生成 (FLUX.2 klein、Anima、Chroma1) と編集 (FLUX.2 klein)、深度、顔、物、姿勢、文字 (OCR)、ラベル付け、切り抜き | [USAGE_IMAGE.ja.md](USAGE_IMAGE.ja.md) |
+| `hwnpu-image` | 画像生成 (FLUX.2 klein、FLUX.3 klein、Anima) と編集 (FLUX.2 klein)、深度、顔、物、姿勢、文字 (OCR)、ラベル付け、切り抜き | [USAGE_IMAGE.ja.md](USAGE_IMAGE.ja.md) |
 | `hwnpu-audio` | 音楽と効果音の生成、読み上げ、書き起こし、音高、音符 | [USAGE_AUDIO.ja.md](USAGE_AUDIO.ja.md) |
 | `hwnpu` | NPU の状態と使っているもの (`status`)、失敗したコマンドの issue の下書き (`issue`)、モデルのキャッシュ: 中身、ディスクの空き、使っていないものを消す (`cache`、`cache prune`、`cache clear`)、モデルを何 GB の機械として動かすか (`memory`) | [docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.7、7.8 |
 | `hwnpu-dev` | 動作確認、NPU の測定 (`probe`)、モデルの変換と照合 | [USAGE_DEV.ja.md](USAGE_DEV.ja.md)、[PROBE.ja.md](PROBE.ja.md) |

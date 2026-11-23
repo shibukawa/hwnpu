@@ -10,7 +10,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 - 1 枚の時間は DiT を回す回数で決まる: ステップ数 × 1 ステップの回数 (classifier-free guidance で 2) × 1 回。文と VAE は数秒。まず回数を減らし、次に 1 回を速くする。
 - どの変更も、同じノイズから CPU の float32 の参照 (`tools/ref/ref_*.py`) と比べる: 最後の潜在のコサインと絵の PSNR を、いくつかのプロンプト × 種で。絵も見る。種 1 つのコサインは大きくばらつく。
-- パッケージ: `internal/imagegen/anima`、`chroma`、`flux2klein`、`flux3klein`。`internal/imagegen/aspect` (大きさ)、`internal/imagegen/milpart` (Core AI の部品)。
+- パッケージ: `internal/imagegen/anima`、`flux2klein`、`flux3klein`、`fluxvae` (FLUX.1 の VAE。FLUX.2 と FLUX.3 が使う)。`internal/imagegen/aspect` (大きさ)、`internal/imagegen/milpart` (Core AI の部品)。
 
 ## 一覧 (models.yaml)
 
@@ -20,13 +20,10 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 | flux-3-image-klein (`flux3-klein`) | 5.5B の DiT (流れごとの mode ブロックのあと single ブロック)、Qwen3-VL-4B、FLUX.2 の VAE | flow-map 16 ステップ、なし | FLUX Kommunity (非商用、gated。初回に聞く) | 16 | 3.9 / 5.5 (Apple は見積もり) | AMD 1024² 約 1 分 45 秒、512² 32 秒。Apple M3 1024² 約 2 分 (lut8)。文からの生成だけ |
 | Anima-Turbo (`anima-turbo:v1.1`) | Cosmos-Predict2 2B の DiT、Qwen3-0.6B と LLM アダプタ、Qwen-Image の VAE | オイラー法 8、なし (蒸留) | 重みは非商用 (絵は商用可。初回に聞く)、nsfw | 8 | 3.5 / 4.8 | AMD 1024² 約 32 秒。Apple M1 48 秒。Intel の形があるのはこれだけ |
 | Anima-Aesthetic (`anima:aesthetic`、ファミリーの既定) | Anima-Turbo のプログラムに別の重み | DPM-Solver++ 2M 25、CFG 4 は σ ≥ 0.6 | Anima-Turbo と同じ、nsfw | 8 | 3.5 / 4.8 | Anima-Turbo の約 4.5 倍。AMD 1024² 2 分 22 秒、2.71 kJ |
-| Chroma1-Flash (`chroma:1-flash`) | FLUX.1 schnell の 8.9B の DiT に変調の FFN (approximator)、T5-XXL、FLUX の VAE | Heun 8 (DiT 15 回)、なし | Apache-2.0、nsfw (「Fully uncensored」) | 16 | 3.9 / 4.3 (Neural Engine に 6.9 GiB 別) | AMD 1024² 3 分 14 秒、512² 1 分。Apple M1 1024² 約 9.5 分 |
-| Chroma1-HD (`chroma:1-hd`) | 蒸留していない Chroma1 | DPM-Solver++ 2M 25、CFG 3 は σ ≥ 0.6 | Flash と同じ | 0 (名前を明示したときだけ) | Flash と同じ | AMD 1024² 8 分 34 秒 |
 
-- Chroma1 の T5-XXL と VAE は FLUX.1 schnell のものとバイト単位で同じで、あれば共有する。Chroma1-HD の書き出しは Flash のものを使う。
 - Anima の VAE、トークナイザー、設定は `circlestone-labs/Anima-Base-v1.0-Diffusers` から (`with: diffusers`)。欄 `file` はリポジトリのどのチェックポイントがそのモデルかを選ぶ (`--dit` の既定)。Anima-Base のチェックポイントは名前の頭が `net.` (`model.diffusion_model.` でない) で、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は今も見分ける。
 - `accept: true` のライセンスは端末で一度だけ聞き、利用者の設定の隣の `licenses.json` に残す。端末がなければ `--accept-license` か `HWNPU_ACCEPT_LICENSE=ID` (その回だけ) (`chat.AcceptLicense`)。
-- `content: [nsfw]` のモデル (Anima、Chroma) は、名前で動かすのに `HWNPU_MODEL_ALLOWLIST` の `+nsfw` が要る。
+- `content: [nsfw]` のモデル (Anima) は、名前で動かすのに `HWNPU_MODEL_ALLOWLIST` の `+nsfw` が要る。
 - メモリ = NPU のメモリとプロセスのメモリの和の最大 (AMD: accel の fd の `drm-total-memory` + `RssAnon + RssShmem`。Apple: `ri_phys_footprint + ri_neural_footprint`)。1024² の 2 回目で測る。最大はたいてい VAE の最後の段。[memory-and-power.ja.md](memory-and-power.ja.md)。
 
 ## 主力: 用途 `image`
@@ -35,7 +32,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 - 理由: Apache-2.0、頼まなければ NSFW を描かない、AMD では編集もできる、Anima-Turbo とほぼ同じメモリ (M1 で 4.9 と 4.8 GB) で速い (41 と 48 秒)。
 - 8 GB の機械 (モデルに使えるのは約 3 GB) では 1024² の最大がそれを超える。`--size 1:1s` (512²、Apple 3.1 GB、AMD 1.9 GB) なら入る。
-- Anima と Chroma は `+nsfw` があっても選ばない。名前で指せば動く。
+- Anima は `+nsfw` があっても選ばない。名前で指せば動く。
 
 ## 解き方とステップ数
 
@@ -43,8 +40,6 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 |---|---|---|
 | Anima-Turbo | オイラー法 8、shift 3、ガイダンス 1 (`--negative` があれば 1.5) | 蒸留はオイラー法で |
 | Anima-Aesthetic | DPM-Solver++ 2M 25、CFG 4 は σ ≥ 0.6 (25 のうち 17 ステップ) | モデルカードのとおり: `--sampler euler --steps 30 --cfg-sigmas 0,1` |
-| Chroma1-Flash | Heun 8 | `--sampler euler` (8 回) |
-| Chroma1-HD | DPM-Solver++ 2M 25、CFG 3 は σ ≥ 0.6 | 書き出しの `model.json` (`sampler`、`steps`、`cfg_sigmas`) に書く |
 | FLUX.2 klein | オイラー法 4 | — |
 | FLUX.3 klein | flow-map 16 ステップ (`flux3klein.Steps`) | — |
 
@@ -57,7 +52,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 - `--guidance SCALE`、`--negative TEXT`、`--cfg-sigmas LO,HI` (σ が [LO, HI] のステップだけ CFG。`0,1` で全ステップ)。ガイダンスのあるモデルの既定は `0.6,1`: σ 0.6 未満のステップは DiT を 1 回。絵は同じ (Anima で全ステップ CFG との潜在のコサイン 0.998)。σ ≥ 0.8 では色が淡くなり、小さな物が消える。
 - 条件つきと条件なしの 2 回は **重みの組ごとに続けて** 回す (エンジンの `velocity`、どのバックエンドも)。組の重みを読むのは 1 ステップ 2 回でなく 1 回。時刻とパッチの埋め込み (`dit_in`) は 1 回。
 - プロンプトと負のプロンプトは文の符号器の 1 回の読み込みでまとめて符号化する (`EncodeAll`)。
-- **空の負のプロンプトは定数**: diffusers は空のプロンプトをマスクしたトークンで回す。残るのは重みだけで決まる 1 行で、書き出しのときに計算する (Anima `text/empty_cond.bin`、diffusers とコサイン 1.0000。Mac の Chroma `text/empty.bin`、2 行を float32 の T5 で)。
+- **空の負のプロンプトは定数**: diffusers は空のプロンプトをマスクしたトークンで回す。残るのは重みだけで決まる 1 行で、書き出しのときに計算する (Anima `text/empty_cond.bin`、diffusers とコサイン 1.0000)。
 
 ## 参照画像の編集 (FLUX.2 klein)
 
@@ -75,11 +70,11 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 | | 文 | ステップ | VAE |
 |---|---|---|---|
-| Apple (Core AI): FLUX.2 klein、Chroma | N 枚のプロンプトを 1 回の読み込みで | N 枚一緒に、重みの組は全部で 1 回 | 段ごとに N 枚 (`runner.Stages`) |
+| Apple (Core AI): FLUX.2 klein | N 枚のプロンプトを 1 回の読み込みで | N 枚一緒に、重みの組は全部で 1 回 | 段ごとに N 枚 (`runner.Stages`) |
 | AMD: FLUX.2 klein | 全部のプロンプトを 1 回の読み込みで | 組の重みを 1 回読んで全部の絵の行を通す | 1 枚ずつ |
 | Anima | まとめない: プロンプト 1 つで、組を続けて回しても速くならない | | |
 
-- 1 回読み込んで N 回回す部品は、遅い 1 回目の呼び出しを 1 回だけ払う。512² で大きく効き (M1 の Chroma 1 枚 1 分 24 秒 → 1 分 18 秒)、1024² では 1〜3 % (AMD の FLUX.2 klein: 512² 1 枚 8.1 → 7.3 秒、1024² 3 %)。
+- 1 回読み込んで N 回回す部品は、遅い 1 回目の呼び出しを 1 回だけ払う。512² で大きく効き (M1 の Chroma1 (外した) 1 枚 1 分 24 秒 → 1 分 18 秒)、1024² では 1〜3 % (AMD の FLUX.2 klein: 512² 1 枚 8.1 → 7.3 秒、1024² 3 %)。
 - `runner.Stages`: VAE の段を 1 回読み込み、全部の絵をその段に通してから次の段へ。段の間はホストが float32 で持つ (1024² で 1 枚最大 1.2 GB) ので、出力が `StageBudget` (1.25 GiB) を超える段からは入る枚数ずつ。全部の段を読み込んだまま順に呼ぶのはずっと遅い (13 段の VAE で 2.5 → 16.9 秒)。
 - AMD の VAE は 1 枚ずつのまま: 段の出力をデバイスのまま次の段に渡しており、まとめると 1 枚 0.5〜0.8 秒のためにホストへ写してピークが上がる。
 - 絵ごとの復号の前に `debug.FreeOSMemory` で、ピークを 1 枚分に保つ。
@@ -120,13 +115,13 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 | | 名前 |
 |---|---|
-| AMD | `NAME.amd-npu2`、モデルの名前の小文字: `anima-turbo`、`anima-aesthetic`、`chroma1-flash`、`chroma1-hd`、`flux.2-klein-4b`、`flux-3-image-klein`。Anima (6.13 GB) と Chroma (18.85 GB) は取得元に詰めて置く (`files.tar.zst`)。大きさの名前 (`-512`、`-aspects`) はもうない |
+| AMD | `NAME.amd-npu2`、モデルの名前の小文字: `anima-turbo`、`anima-aesthetic`、`flux.2-klein-4b`、`flux-3-image-klein`。Anima (6.13 GB) は取得元に詰めて置く (`files.tar.zst`)。大きさの名前 (`-512`、`-aspects`) はもうない |
 | Apple | 書き出しの名前に `aspect.Tag` で大きさが入る (`8sizes-` と大きさの CRC-32)。大きさの組が違えば別の書き出し |
 
 - 鍵: `chat.PinnedRecipe(model, tool, version)` と書き出しの道具の引数 (`AMDRecipe`)。道具が読む全部のファイルの `sha256:` が models.yaml に要る (固定がなければ共有しない)。道具に渡すものか道具が書くもの (大きさ、形式、並べ方) が変わったら `AMDExportVersion` (FLUX.2 と FLUX.3 klein は 2) を手で上げる。組み込みの `tools/amd` のハッシュも鍵に入るので、そこが変わると作り方の項目は見つからなくなる。名前で取り込んだ書き出し (`iron-import`、`hwnpu-dev sources import`、`chat.ImportedRecipe`) は名前だけで探すので、中身を変えたら名前を変えるか、取得元の古いものを消す。
 - 初回が書き出しを取得元に置く (`chat.SharedExportOr`、`?writeback=true` の取得元へ書き戻す)。同じ名前の手元の書き出しに頼まれた大きさがなければ、`NAME.amd-npu2.replaced` に退けて取得元の今のものを取り (なければ IRON で書き出す)、どちらもできなければ戻す。
-- 初回にどこから来るか: AMD の FLUX.2 と FLUX.3 klein は 手元 → 取得元 → IRON で書き出す (`PrepareAMD`)。AMD の Anima と Chroma は手元か取得元。Apple と Intel は取得して変換する。詳しくは [distribution.ja.md](distribution.ja.md)。
-- Apple の大きさごとの書き出しは、この順に 1 つの形へ移している: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (`npu.apple.sizes` の 8 つ) → Chroma1 (Flash、HD) → FLUX.3 klein。チップは M1、M2、M3 (h13g、h14g、h15g) から。
+- 初回にどこから来るか: AMD の FLUX.2 と FLUX.3 klein は 手元 → 取得元 → IRON で書き出す (`PrepareAMD`)。AMD の Anima は手元か取得元。Apple と Intel は取得して変換する。詳しくは [distribution.ja.md](distribution.ja.md)。
+- Apple の大きさごとの書き出しは、この順に 1 つの形へ移している: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (`npu.apple.sizes` の 8 つ) → FLUX.3 klein (Chroma1 は外した)。チップは M1、M2、M3 (h13g、h14g、h15g) から。
 
 ## 未解決
 
@@ -139,9 +134,10 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 | もの | 理由 |
 |---|---|
-| Sana 600M、SANA 1.5 1.6B (外した) | Qwen-Image と一緒にやめた。8 GB の枠は FLUX.2 klein に。`internal/imagegen/sana`、`iron_sana.py`、`iron_dwconv.py` は消し、Anima、Chroma、FLUX が借りていた部分は `tools/amd/iron_dit.py` に移した。`kernels/dwconv3.cc` などのカーネルは残す: チャットの書き出しの鍵が全部のカーネルを含む (`amdtools.LMHash`) |
-| Qwen-Image-2.1、-Turbo (外した) | 7B の DiT と Qwen3-VL-8B: NPU で使うにはパラメータが多すぎる (プログラム 17 GB は Neural Engine のコンパイルのキャッシュを超える。AMD でも 1024² で速くて約 1.5 分) |
-| Sana-Sprint 0.6B / 1.6B (外した) | 2 ステップで速い (1024² で 12〜32 秒) が、絵の質が Sana よりかなり低い。書き出しの道具は `guidance_embeds` のチェックポイントを断る |
+| Sana 600M、SANA 1.5 1.6B (外した) | Qwen-Image と一緒にやめた。8 GB の枠は FLUX.2 klein に。`internal/imagegen/sana`、`iron_sana.py`、`iron_dwconv.py` は消し、Anima と FLUX (と、のちに外した Chroma1) が借りていた部分は `tools/amd/iron_dit.py` に移した。`kernels/dwconv3.cc` などのカーネルは残す: チャットの書き出しの鍵が全部のカーネルを含む (`amdtools.LMHash`) ([メモ](../not-adopted/sana.md)) |
+| Chroma1-Flash、Chroma1-HD (外した) | M1 のコンパイラが DiT の 8 サイズのプリビルドで落ちる (そのたびに端末で 1 部品 2 時間ほどコンパイルする)。用途は FLUX.2 klein で足り、軽くて速い。`internal/imagegen/chroma`、`iron_chroma.py` は消し、FLUX.1 の VAE は `internal/imagegen/fluxvae` に移した。`iron_chroma_parts.py` は FLUX の AMD の VAE が使うので残す ([メモ](../not-adopted/chroma1.md)) |
+| Qwen-Image-2.1、-Turbo (外した) | 7B の DiT と Qwen3-VL-8B: NPU で使うにはパラメータが多すぎる (プログラム 17 GB は Neural Engine のコンパイルのキャッシュを超える。AMD でも 1024² で速くて約 1.5 分) ([メモ](../not-adopted/qwen-image.md)) |
+| Sana-Sprint 0.6B / 1.6B (外した) | 2 ステップで速い (1024² で 12〜32 秒) が、絵の質が Sana よりかなり低い。書き出しの道具は `guidance_embeds` のチェックポイントを断る ([メモ](../not-adopted/sana.md)) |
 | Anima-Base v1.0 (外した) | 取り柄は LoRA の学習のもとになること。hwnpu は LoRA を読まない。同じ構造・同じ時間の Anima-Aesthetic で足りる。`-m anima:base` は断る (`TestImageMemoryTags`)。`iron_anima.py --dit anima-base-v1.0.safetensors` は今も書き出せる |
 | 大きさごとの書き出し、一部の大きさだけのもの | ダウンロードの重複 (上) |
 | LongCat-Image-Edit、OmniGen2 (編集のモデルとして) | LongCat は DiT 6.3B と文の符号器 16.6 GB。OmniGen2 は質が下 |
@@ -151,4 +147,3 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 | 条件つきと条件なしを 1 回の呼び出しにまとめる | GEMM はもう 4096 行ある |
 | DPM-Solver++ 15 ステップ | 細部が崩れる (0.920) |
 | NPU の横で GPU | 方針: NPU だけ |
-| Chroma の `--text-rows 256` を既定に | 512² で −7 %。255 トークン以下のプロンプトでしか厳密でない |

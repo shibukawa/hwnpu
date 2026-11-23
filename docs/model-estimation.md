@@ -14,7 +14,7 @@ Candidates surveyed but not yet ported go in survey documents such as [small-mod
 
 Checked whether a looped language model, which runs the same layers several times a token, is worth using on the NPUs. The port is ByteDance's Ouro (`internal/llm/ouro`, `tools/amd/iron_ouro.py`, the tokenizer's `gpt2Digits`); its code and tests stay. **Verdict: not in the catalog.** Taking speed, memory and quality together on the NPUs, LFM3-1.7B is still the best small chat model.
 
-The structure and checks are in the Ouro section of [LLM models](design/llm-models.md), the AMD export in the porting notes of [amd-llm](design/amd-llm.md).
+The structure and checks are in the Ouro section of [LLM models](design/llm-models.md), the AMD export in the porting notes of [amd-llm](design/amd-llm.md). Steps to put it back in the catalog: [not-adopted/ouro.md](not-adopted/ouro.md).
 
 ### Candidates
 

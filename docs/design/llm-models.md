@@ -361,7 +361,8 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
 - Chat format: `chat.Ouro` (see below). The Thinking models think by default; the base models
   (Ouro-1.4B, 2.6B) have no chat template.
 - Not in models.yaml: on the NPU a looped model is slow for its size and its cache grows fast (an evaluation
-  record, with LFM3-1.7B and others beside it: [model-estimation.md](../model-estimation.md)).
+  record, with LFM3-1.7B and others beside it: [model-estimation.md](../model-estimation.md); to take it up again:
+  [not-adopted/ouro.md](../not-adopted/ouro.md)).
 
 ## PLaMo-Embedding-1B (`internal/llm/plamo`, arch `plamo-bi`)
 
@@ -401,7 +402,8 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
 
 - Encoder ported; converts with lut8 (Apple) or int8 (Intel). all-MiniLM-L6-v2: cosine to fp16 lut4
   0.23, lut8 0.9988.
-- Not usable from hwnpu-chat: no WordPiece tokenizer (`tokenizer.Load` rejects it). Not in models.yaml.
+- Not usable from hwnpu-chat: no WordPiece tokenizer (`tokenizer.Load` rejects it). Not in models.yaml
+  ([not-adopted/bert.md](../not-adopted/bert.md)).
 
 ## Tokenizers (`internal/tokenizer`)
 

@@ -98,7 +98,7 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 
 **Claim**: keep tiles of different sizes for input and output. 24.6 TFLOPS, 4.54×, on a BFP16-BF16 GEMM on XDNA2.
 
-**Candidate targets**: the image DiTs' GEMMs (Anima, FLUX, Chroma) and gpt-oss's prompt experts. It may also bear on 16.278's finding that IRON's GEMM streams the whole weight to every row unit regardless of the call's rows (60 % of a short prompt).
+**Candidate targets**: the image DiTs' GEMMs (Anima, FLUX) and gpt-oss's prompt experts. It may also bear on 16.278's finding that IRON's GEMM streams the whole weight to every row unit regardless of the call's rows (60 % of a short prompt).
 
 ### Attention fusion: 2609.21264 ✓, STEEL 2607.09385 (a), Zen-Attention 2508.17593 (a) — not started
 
