@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -131,7 +132,26 @@ func (h *Handle) invoke(ctx context.Context, method string, keep bool, args []an
 	if ft.NumIn() > 0 && ft.In(0) == ctxType {
 		off = 1
 	}
-	if ft.IsVariadic() || len(args) != ft.NumIn()-off {
+	if ft.IsVariadic() {
+		// the variadic arguments go as their slice (given as one, or one by one)
+		fixed := ft.NumIn() - off - 1
+		st := ft.In(ft.NumIn() - 1)
+		if len(args) < fixed {
+			return nil, fmt.Errorf("airpc: %s takes at least %d arguments, given %d", method, fixed, len(args))
+		}
+		if len(args) != fixed+1 || args[fixed] == nil || !reflect.TypeOf(args[fixed]).AssignableTo(st) {
+			rest := reflect.MakeSlice(st, 0, len(args)-fixed)
+			for _, a := range args[fixed:] {
+				v := reflect.New(st.Elem()).Elem()
+				if a != nil {
+					v.Set(reflect.ValueOf(a))
+				}
+				rest = reflect.Append(rest, v)
+			}
+			args = append(args[:fixed:fixed], rest.Interface())
+		}
+	}
+	if len(args) != ft.NumIn()-off {
 		return nil, fmt.Errorf("airpc: %s takes %d arguments, given %d", method, ft.NumIn()-off, len(args))
 	}
 	id := s.next.Add(1)
@@ -171,6 +191,14 @@ func (h *Handle) invoke(ctx context.Context, method string, keep bool, args []an
 			}
 			m.Values = append(m.Values, nil)
 			continue
+		}
+		if rt := refOf(pt); rt != nil {
+			if rh := rt.handle(v); rh != nil {
+				if rh.s != s {
+					return nil, fmt.Errorf("airpc: %s's argument %d is of another session", method, i+1)
+				}
+				m.Funcs = append(m.Funcs, funcRef{Arg: i, ID: rh.id, Ref: true})
+			}
 		}
 		funcFields(v, nil, 0, func(path []int, f reflect.Value) {
 			fid := s.addFunc(f)
@@ -219,12 +247,16 @@ func (h *Handle) invoke(ctx context.Context, method string, keep bool, args []an
 		}
 		return nil, e
 	}
-	streams := map[int]uint64{}
+	streams, refs := map[int]uint64{}, map[int]uint64{}
 	for _, f := range r.Funcs {
-		if f.Stream {
+		switch {
+		case f.Stream:
 			streams[f.Arg] = f.ID
+		case f.Ref:
+			refs[f.Arg] = f.ID
 		}
 	}
+	var out []reflect.Value
 	// the call's callbacks stay while the streams it returned are read
 	var left atomic.Int64
 	left.Store(int64(len(streams)))
@@ -233,11 +265,24 @@ func (h *Handle) invoke(ctx context.Context, method string, keep bool, args []an
 	if keep {
 		held = nil
 	}
-	ended := func() {
-		if left.Add(-1) == 0 {
-			close(all)
-			s.freeFuncs(held)
+	ended := func(end *msg) {
+		if left.Add(-1) != 0 {
+			return
 		}
+		// the results the call's last stream ended with: what a pointer result points to is
+		// as the server's is now (MusicStats, whole when the music ends)
+		if end != nil {
+			for i, data := range end.Values {
+				if data == nil || i >= len(out) || out[i].Kind() != reflect.Pointer || out[i].IsNil() {
+					continue
+				}
+				if v, err := decode(out[i].Type(), data); err == nil && !v.IsNil() {
+					out[i].Elem().Set(v.Elem())
+				}
+			}
+		}
+		close(all)
+		s.freeFuncs(held)
 	}
 	if len(streams) > 0 || keep {
 		funcs = nil // freed by ended, or kept
@@ -252,7 +297,6 @@ func (h *Handle) invoke(ctx context.Context, method string, keep bool, args []an
 			}
 		}()
 	}
-	var out []reflect.Value
 	var callErr error
 	for i := range ft.NumOut() {
 		ot := ft.Out(i)
@@ -281,6 +325,11 @@ func (h *Handle) invoke(ctx context.Context, method string, keep bool, args []an
 		v, err := decode(ot, data)
 		if err != nil {
 			return nil, err
+		}
+		if rid, ok := refs[i]; ok {
+			if rt := refOf(ot); rt != nil && !v.IsNil() {
+				rt.attach(v, s.Object(rid))
+			}
 		}
 		out = append(out, v)
 	}
@@ -440,7 +489,7 @@ func (s *Session) serveCall(m *msg) {
 		off = 1
 	}
 	n := ft.NumIn() - off
-	if ft.IsVariadic() || len(m.Values) != n {
+	if len(m.Values) != n {
 		fail(fmt.Errorf("airpc: %s takes %d arguments, sent %d (hwnpud and this program are of other builds?)", m.Method, n, len(m.Values)))
 		return
 	}
@@ -477,6 +526,16 @@ func (s *Session) serveCall(m *msg) {
 		}
 		pt := ft.In(off + f.Arg)
 		switch {
+		case f.Ref:
+			s.mu.Lock()
+			obj, ok := s.objects[f.ID]
+			s.mu.Unlock()
+			if !ok || !reflect.TypeOf(obj).AssignableTo(pt) {
+				finish()
+				fail(fmt.Errorf("airpc: no %s %d (released)", pt, f.ID))
+				return
+			}
+			args[f.Arg] = reflect.ValueOf(obj)
 		case f.Stream:
 			args[f.Arg] = s.sink(pt, f.ID, nil)
 		case len(f.Path) == 0:
@@ -492,7 +551,11 @@ func (s *Session) serveCall(m *msg) {
 		}
 	}
 	var out []reflect.Value
-	if err := protect(func() { out = mv.Call(append(in, args...)) }); err != nil {
+	call := mv.Call
+	if ft.IsVariadic() {
+		call = mv.CallSlice
+	}
+	if err := protect(func() { out = call(append(in, args...)) }); err != nil {
 		finish()
 		fail(err)
 		return
@@ -502,13 +565,18 @@ func (s *Session) serveCall(m *msg) {
 		ot := ft.Out(i)
 		if isSeq(ot) && !o.IsNil() {
 			left.Add(1)
-			reply.Funcs = append(reply.Funcs, funcRef{Arg: i, ID: s.addSource(o, func() {
-				if left.Add(-1) == 0 {
-					finish()
+			reply.Funcs = append(reply.Funcs, funcRef{Arg: i, ID: s.addSource(o, func() [][]byte {
+				if left.Add(-1) != 0 {
+					return nil
 				}
+				finish()
+				return again(ft, out)
 			}), Stream: true})
 			reply.Values = append(reply.Values, nil)
 			continue
+		}
+		if rt := refOf(ot); rt != nil && !o.IsNil() {
+			reply.Funcs = append(reply.Funcs, funcRef{Arg: i, ID: s.Register(o.Interface()), Ref: true})
 		}
 		b, err := encode(ot, o)
 		if err != nil {
@@ -522,4 +590,55 @@ func (s *Session) serveCall(m *msg) {
 		finish()
 	}
 	s.send(reply)
+}
+
+// again are a call's pointer results encoded as they are now (nil for the others), sent with
+// the end of the last stream the call returned.
+func again(ft reflect.Type, out []reflect.Value) [][]byte {
+	vals := make([][]byte, len(out))
+	for i, o := range out {
+		ot := ft.Out(i)
+		if ot.Kind() != reflect.Pointer || o.IsNil() || refOf(ot) != nil {
+			continue
+		}
+		vals[i], _ = encode(ot, o)
+	}
+	return vals
+}
+
+// refType is a type whose values stay in the process that made them (RegisterRef).
+type refType struct {
+	attach func(v reflect.Value, h *Handle)
+	handle func(v reflect.Value) *Handle
+}
+
+var refs sync.Map // reflect.Type → *refType
+
+func refOf(t reflect.Type) *refType {
+	if r, ok := refs.Load(t); ok {
+		return r.(*refType)
+	}
+	return nil
+}
+
+// RegisterRef makes the values of *T references: a *T a method of the server returns stays in
+// the server (an object of the session) and goes as its id with its exported fields; the
+// client's *T is given its handle by attach (vision.PictureEncoding's). A *T given back as an
+// argument is the server's own again: handle says the client's value's handle (nil for a value
+// of the client's own, which goes as its fields). The server's object is released when the
+// client's value is garbage collected.
+func RegisterRef[T any](attach func(v *T, h *Handle), handle func(v *T) *Handle) {
+	refs.Store(reflect.TypeFor[*T](), &refType{
+		attach: func(v reflect.Value, h *Handle) {
+			p := v.Interface().(*T)
+			attach(p, h)
+			runtime.AddCleanup(p, func(h *Handle) { h.Release() }, h)
+		},
+		handle: func(v reflect.Value) *Handle {
+			if v.IsNil() {
+				return nil
+			}
+			return handle(v.Interface().(*T))
+		},
+	})
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
@@ -46,8 +47,9 @@ func Effect(name string) ai.Use[*EffectGenerator] {
 // the graphs of tools/amd/iron_moss_sfx.py (exported on the first preparation; dit-format does
 // not change them).
 var effectRole = &airole.Role{
-	Name:  "sfx",
-	Kinds: []chat.Kind{chat.KindSFX},
+	Remote: func(h *airpc.Handle) io.Closer { return &EffectGenerator{remote: h} },
+	Name:   "sfx",
+	Kinds:  []chat.Kind{chat.KindSFX},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		cpu := e.NPU.CPU(e.Model)
 		var p sfx.Paths
@@ -119,6 +121,7 @@ var effectRole = &airole.Role{
 // let go before the DiT's, which are loaded at the first sound and kept. It runs one request at
 // a time; others wait.
 type EffectGenerator struct {
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	mu     sync.Mutex
 	g      *sfx.Generator
 	p      sfx.Paths
@@ -131,13 +134,28 @@ type EffectGenerator struct {
 }
 
 // Model is the name of the model in the definitions.
-func (g *EffectGenerator) Model() string { return g.model }
+func (g *EffectGenerator) Model() string {
+	if g.remote != nil {
+		return airpc.Value[string](g.remote, "Model")
+	}
+	return g.model
+}
 
 // OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
-func (g *EffectGenerator) OnCPU() bool { return g.cpu }
+func (g *EffectGenerator) OnCPU() bool {
+	if g.remote != nil {
+		return airpc.Value[bool](g.remote, "OnCPU")
+	}
+	return g.cpu
+}
 
 // Programs names the weight formats of the text encoder's and the DiT's programs, for a log.
-func (g *EffectGenerator) Programs() string { return g.p.String() }
+func (g *EffectGenerator) Programs() string {
+	if g.remote != nil {
+		return airpc.Value[string](g.remote, "Programs")
+	}
+	return g.p.String()
+}
 
 // EffectOptions are a sound effect's settings.
 type EffectOptions struct {
@@ -257,6 +275,9 @@ func (g *EffectGenerator) check(pl *placement) error {
 
 // Generate makes the sound of a description (English or Chinese).
 func (g *EffectGenerator) Generate(ctx context.Context, description string, o EffectOptions) (EffectSound, error) {
+	if g.remote != nil {
+		return airpc.Call1[EffectSound](g.remote, ctx, "Generate", description, o)
+	}
 	prompt := strings.TrimSpace(description)
 	if prompt == "" {
 		return EffectSound{}, errors.New("sound: a description of the sound is needed")
@@ -326,6 +347,9 @@ func (g *EffectGenerator) Generate(ctx context.Context, description string, o Ef
 // Warm loads the DiT's and the decoder's programs and reads a description once, which compiles
 // them all for the NPU (ai.Warmer: the load of "models prepare").
 func (g *EffectGenerator) Warm(ctx context.Context) error {
+	if g.remote != nil {
+		return airpc.Call0(g.remote, ctx, "Warm")
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if _, _, err := g.g.Encode(ctx, "rain", 1, nil); err != nil {
@@ -343,6 +367,9 @@ func (g *EffectGenerator) Warm(ctx context.Context) error {
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (g *EffectGenerator) Close() error {
+	if g.remote != nil {
+		return g.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var err error
@@ -355,4 +382,9 @@ func (g *EffectGenerator) Close() error {
 		g.dev = nil
 	}
 	return err
+}
+
+func init() {
+	airole.Register(effectRole)
+	airpc.RegisterErrorType("sound.OffNPUError", (*OffNPUError)(nil))
 }

@@ -2,7 +2,7 @@
 
 [日本語](hwnpud.ja.md)
 
-Status: step 1 is built on the Mac and on Linux with AMD's NPU, and the first part of step 3 on the Mac (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
+Status: step 1 is built on the Mac and on Linux with AMD's NPU, and step 3 on the Mac but the status and cache commands (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
 models: it downloads and keeps the converted models, holds the caches, loads the programs and runs
 them. hwnpu's commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`) and the apps built on
 the `ai` package reach it over a Unix domain socket. They pass what their run needs and draw what
@@ -39,7 +39,7 @@ Step 1 on the Mac (`cmd/hwnpud`, `internal/daemon`):
   (Core AI's entry 2.5 GB); the next run answers in 0.6 s from start to end, the model still in
   the engine.
 
-Step 3, its first part, on the Mac (`internal/airpc`, `internal/aihost`, the `ai` package):
+Step 3 on the Mac, but the status and cache commands (`internal/airpc`, `internal/aihost`, the `ai` package):
 
 - Every program of the `ai` package goes through hwnpud: `HWNPU_DAEMON` is `on` unless it is set
   (`daemon.DefaultMode`), and a program whose hwnpud does not answer fails with what to do.
@@ -74,14 +74,32 @@ Step 3, its first part, on the Mac (`internal/airpc`, `internal/aihost`, the `ai
   program. A model prepared for a role under one use's name is ready for another use of the
   same model, and compiled when hwnpud compiled either (hwnpu-audio's `whisper-large-v3-turbo`
   is the interpreter's `transcribe`).
-- The roles that run through hwnpud now: depth, faces, image and image-edit (generate, edit),
-  transcribe, speak, translate, chat. An app with another role (label, pose, detect, segment,
-  ocr, embed, decide, the sound roles) fails at its `Plan` and `Open`, naming them, until they
-  have their client side (step 3's second part); `HWNPU_DAEMON=off` runs it. The stream methods
+- Every role runs through hwnpud: depth, faces, label, pose, detect, segment, ocr, image and
+  image-edit, transcribe, speak, translate, chat, embed, decide, music, notes, pitch and sfx
+  (each registered, `airole.Register`, with its client side, `Role.Remote`). The stream methods
   that are made of a model's single calls (`TranscribeStream`, `SpeakStream`, `DetectStream`,
-  `CompleteStream`, the nodes) run in the client over those calls. Not yet: the models bundled
-  with an app (`Store.Models.Bundle`), one copy of a model shared by two clients (each session
-  loads its own), and `hwnpu cache` / `status` through hwnpud.
+  `CompleteStream`, `Labeler.Label`, `Segmenter.Segment`, the nodes) run in the client over
+  those calls.
+- What a model's call leaves in the engine: a picture's encoding (`Segmenter.Encode`'s
+  `*PictureEncoding`, the image encoder's output that `Masks` decodes) stays there behind a
+  handle (`airpc.RegisterRef`): the client's value has its exported fields (the times) and the
+  handle, `Masks` given it is the engine's own again, and the engine's is let go when the
+  client's is garbage collected (or the session ends). A label's candidates and the embeddings
+  (`Candidates`, `Embedding`) are plain data and cross as they are; `Rank` and `Probability`
+  still run in the engine, with the model. A result a stream fills in as it goes
+  (`MusicGenerator.Generate`'s `*MusicStats`) is sent again with the stream's end, so that it
+  is whole when the loop over the stream ends, as here; a loop that stops early waits for the
+  producer to stop, as a loop over an iterator does (the producer is a few chunks ahead: the
+  stream has no flow control). Variadic methods (`MusicGenerator.Style`) send their slice.
+- The commands' and samples' model work all goes through `ai`. What stays in the program's own
+  process: `hwnpu-image convert` (Anima's and Chroma's conversion, no NPU), `hwnpu-dev` (the
+  developer's process), `hwnpu cache`, `hwnpu memory` and the `status` commands (read here,
+  hwnpud's to serve later), and the logs of the Neural Engine's memory (`mem.NPUWired`, the
+  machine's, so a command still tells how much more it holds). `hwnpu-chat chat` goes through
+  the engine's chat route (`/hwnpud/v1/load`), not `ai`'s. A command's `--backend` sets this
+  process's `HWNPU_BACKEND`, which hwnpud does not take (it says that its own is used).
+- Not yet: the models bundled with an app (`Store.Models.Bundle`), one copy of a model shared by
+  two clients (each session loads its own), and `hwnpu cache` / `status` through hwnpud.
 - M3 (macOS 27, a hwnpud of the worktree on its own socket, the NAS's exports): `hwnpu-image depth` of a
   picture took 60 s the first time (hwnpud fetched and unpacked DA3-BASE's programs, 35 s, then
   compiled the picture's size at its first call, 24 s) and 0.2 s the next. `hwnpu-audio
@@ -95,6 +113,14 @@ Step 3, its first part, on the Mac (`internal/airpc`, `internal/aihost`, the `ai
   2.5 GB, to 28, 5.5 GB); `hwnpu-image/`, `hwnpu-audio/` and `interpreter/` did not change, and
   no `parallax/` or `layers/` appeared. `hwnpu-chat` through the same engine answered in 1.3 s
   from start to end.
+- M3, the other roles (the first time each, the models fetched from the NAS): `hwnpu-image label`
+  (SigLIP 2 large) 67 s, `detect` (RTMDet-m) 27 s, `pose` (RTMO-s) 46 s, `ocr` (PP-OCRv6 small)
+  14 s, `segment` (EfficientSAM-S, a point: its encoding kept in the engine for the masks) 35 s;
+  `hwnpu-audio pitch` and `notes` 11 s each, `generate` of 5 s of music (Magenta RealTime 2,
+  its stats whole after the stream) 31 s; `hwnpu-chat search` (PLaMo-Embedding-1B) 61 s, then
+  0.3 s; `hwnpu-chat systemone` (d1-2B) 3m34s, then 0.45 s; `voice-agent models prepare`
+  (Whisper, LFM3-1.7B, Supertonic 3) 2m49s. Core AI's `hwnpud/` grew from 18 entries to 54
+  (2.5 to 8.9 GB); no other program's directory changed.
 
 On Linux with AMD's NPU, the same supervisor and engine:
 
@@ -418,8 +444,7 @@ Each is small; the ones on the NPU wait for the lock in the background.
    commands' `list` / `status` and `hwnpu cache` as clients; `hwnpu config`; the policy in the pick
 3. The remote side of `ai.Runtime`, with `HWNPU_DAEMON=on` the default; samples interpreter, layers
    and parallax through the daemon, with the Core AI cache in `coreai-cache/<OS>/hwnpud/` only.
-   Built first: the session and the roles the samples use (above); then the other roles, the
-   status and cache commands
+   Built (above), but the status and cache commands through hwnpud
 4. Images and audio; the machine-wide scheduler (program budget, unloading, priority)
 5. Release builds (a fixed identifier on the Mac), `daemon install`, a Homebrew tap; notarization
    when the paid account exists

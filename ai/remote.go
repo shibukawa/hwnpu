@@ -24,7 +24,8 @@ import (
 // which plans, prepares, compiles and loads the models in its own process, so that Apple's
 // compiler keeps one cache for every program (coreai-cache/<OS>/hwnpud/) and a model one
 // program prepared is compiled for the next. A Use's Get gives a model of the app's own type
-// whose methods call the one hwnpud loaded (airole.Role.Remote). The app's code is the same
+// whose methods call the one hwnpud loaded (airole.Role.Remote; every role of hwnpu's packages
+// has one). The app's code is the same
 // either way. A test (go test) and hwnpud's engine itself run the models in their own process.
 
 // Host is what hwnpud's engine serves on a session of the ai package (internal/aihost): an app's
@@ -161,12 +162,12 @@ func (s StoreSpec) store() Store {
 	return Store{Models: o, Prepared: s.Prepared, Definitions: s.AppDefinitions}
 }
 
-// daemonClient is this process's client of hwnpud, asked once (daemon.Use: HWNPU_DAEMON, the
-// protocol, the settings that differ): nil to run the models here.
+// daemonClient is this process's client of hwnpud, asked once for a socket (daemon.Use:
+// HWNPU_DAEMON, the protocol, the settings that differ): nil to run the models here.
 var daemonClient struct {
 	sync.Mutex
-	asked bool
-	c     *daemon.Client
+	socket string // asked of the hwnpud of this socket ("": not asked)
+	c      *daemon.Client
 }
 
 // through is hwnpud's client when the app's models run there: never for an app hwnpud made
@@ -177,14 +178,14 @@ func (a *App) through(ctx context.Context) (*daemon.Client, error) {
 	}
 	daemonClient.Lock()
 	defer daemonClient.Unlock()
-	if daemonClient.asked {
+	if daemonClient.socket == daemon.SocketPath() {
 		return daemonClient.c, nil
 	}
 	c, err := daemon.Use(ctx, daemon.DefaultMode(), Console())
 	if err != nil {
 		return nil, fmt.Errorf("ai: %w", err)
 	}
-	daemonClient.asked, daemonClient.c = true, c
+	daemonClient.socket, daemonClient.c = daemon.SocketPath(), c
 	return c, nil
 }
 

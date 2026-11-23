@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
@@ -52,8 +53,9 @@ func Music(name string) ai.Use[*MusicGenerator] {
 // Every part is prepared: MusicCoCa's text and audio sides (styles from texts and from audio)
 // and SpectroStream's encoder (continuing a clip), loaded at their first use.
 var musicRole = &airole.Role{
-	Name:  "music",
-	Kinds: []chat.Kind{chat.KindMusic},
+	Remote: func(h *airpc.Handle) io.Closer { return &MusicGenerator{remote: h} },
+	Name:   "music",
+	Kinds:  []chat.Kind{chat.KindMusic},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		cpu := e.NPU.CPU(e.Model)
 		amd := e.NPU.AMD() && !cpu
@@ -131,13 +133,14 @@ func musicPaths(p *music.Paths) map[string]*string {
 // MusicGenerator makes music (Magenta RealTime 2): styles from texts and audio (Style), then
 // the music of a style, as it is made (Generate). It runs one request at a time; others wait.
 type MusicGenerator struct {
-	mu    sync.Mutex
-	g     *music.Generator
-	p     music.Paths
-	dev   *hwnpu.Device // the generator's (AMD's NPU: its decoder's)
-	side  *hwnpu.Device // MusicCoCa's and SpectroStream's encoder's: dev, nil on AMD's NPU (the CPU)
-	st    *music.Styler // loaded at the first style
-	model string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	g      *music.Generator
+	p      music.Paths
+	dev    *hwnpu.Device // the generator's (AMD's NPU: its decoder's)
+	side   *hwnpu.Device // MusicCoCa's and SpectroStream's encoder's: dev, nil on AMD's NPU (the CPU)
+	st     *music.Styler // loaded at the first style
+	model  string
 	// cpu: the model's device is cpu; amd: the decoder runs on AMD's NPU, the rest on the CPU;
 	// allow: programs placed off the NPU are run (ai.AllowOffNPU)
 	cpu, amd, allow bool
@@ -145,14 +148,27 @@ type MusicGenerator struct {
 }
 
 // Model is the name of the model in the definitions.
-func (m *MusicGenerator) Model() string { return m.model }
+func (m *MusicGenerator) Model() string {
+	if m.remote != nil {
+		return airpc.Value[string](m.remote, "Model")
+	}
+	return m.model
+}
 
 // OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
-func (m *MusicGenerator) OnCPU() bool { return m.cpu }
+func (m *MusicGenerator) OnCPU() bool {
+	if m.remote != nil {
+		return airpc.Value[bool](m.remote, "OnCPU")
+	}
+	return m.cpu
+}
 
 // Where says where the programs run, for a log: "all on the NPU", "SpectroStream's decoder on
 // the NPU, the language model on the CPU" (AMD's NPU), "on the CPU interpreter", ...
 func (m *MusicGenerator) Where() string {
+	if m.remote != nil {
+		return airpc.Value[string](m.remote, "Where")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	g := m.g
@@ -233,6 +249,9 @@ type StyleResult struct {
 // Style is the style of the parts mixed by their weights (MusicCoCa's embeddings, averaged,
 // then its 12 codes). MusicCoCa is loaded at the first call and kept.
 func (m *MusicGenerator) Style(ctx context.Context, parts ...Style) (StyleResult, error) {
+	if m.remote != nil {
+		return airpc.Call1[StyleResult](m.remote, ctx, "Style", parts)
+	}
 	if len(parts) == 0 {
 		return StyleResult{}, errors.New("sound: a style of no parts")
 	}
@@ -436,6 +455,14 @@ func (o *MusicOptions) check() (codes []int, frames int, err error) {
 // time on the NPU; a player paces it (flow.Pace) and plays it at MusicGain. The stats are those
 // of the piece, whole when the stream ends. The stream generates once, when it is read.
 func (m *MusicGenerator) Generate(ctx context.Context, o MusicOptions) (flow.Stream[[]float32], *MusicStats) {
+	if m.remote != nil {
+		// the stats are whole when the stream ends, as here (airpc sends them with its end)
+		s, st, err := airpc.Call2[flow.Stream[[]float32], *MusicStats](m.remote, ctx, "Generate", o)
+		if err != nil {
+			return func(yield func(flow.Chunk[[]float32], error) bool) { yield(flow.Chunk[[]float32]{}, err) }, &MusicStats{Seed: o.Seed}
+		}
+		return s, st
+	}
 	if o.Seed == 0 {
 		o.Seed = rand.Uint64() // drawn here so that it can be told (MusicStats.Seed)
 	}
@@ -635,6 +662,9 @@ func (m *MusicGenerator) generate(ctx context.Context, o MusicOptions, stats *Mu
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (m *MusicGenerator) Close() error {
+	if m.remote != nil {
+		return m.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.st != nil {
@@ -655,4 +685,8 @@ func (m *MusicGenerator) closeDev() {
 		m.dev.Close()
 		m.dev = nil
 	}
+}
+
+func init() {
+	airole.Register(musicRole)
 }
