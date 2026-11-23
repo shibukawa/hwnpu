@@ -7,3 +7,9 @@ import _ "embed"
 //
 //go:embed models.yaml
 var ModelsYAML []byte
+
+// RecipesYAML is model-recipes.yaml: how hwnpu-dev makes the models' conversions, what only the
+// build needs (internal/recipe reads it, docs/model-recipes.md).
+//
+//go:embed model-recipes.yaml
+var RecipesYAML []byte

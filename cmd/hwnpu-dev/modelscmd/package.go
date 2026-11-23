@@ -22,6 +22,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/prep"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -31,7 +32,7 @@ import (
 // then compiled for that architecture of the Neural Engine with coreai-build (compile, macOS).
 // What is made goes in the sources written back to, as the first run's does.
 type PackageCmd struct {
-	Sel    []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2; coreai, the generic exports; coreai-ARCH, those compiled for an architecture of the Neural Engine, h14g..., coreai-all for every one) or for the targets its definition gives versions for (targets). A Core AI export folder or program (DIR[/coreai-ARCH]) is compiled alone, for this Mac when no architecture is named."`
+	Sel    []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2; coreai, the generic exports; coreai-ARCH, those compiled for an architecture of the Neural Engine, h14g..., coreai-all for every one) or for the targets its definition gives versions for (targets), else what its recipe makes (model-recipes.yaml: the Core AI exports prebuilt for its architectures). A Core AI export folder or program (DIR[/coreai-ARCH]) is compiled alone, for the architectures of its model's recipe when none is named."`
 	Memory []int    `help:"Only the forms of machines of these GB (hwnpu-chat --memory); every form the definitions give when left out." placeholder:"GB"`
 	Chip   []string `help:"For coreai, only the exports of Macs of these chips (M1, M2, ...); one of each kind of chip whose exports differ when left out (chat.ExportChips: M1, M2 for the later ones)." placeholder:"CHIP"`
 	compileFlags
@@ -54,10 +55,12 @@ type prepared struct {
 	files airole.Files
 }
 
-// folder is Core AI export folders and programs to compile for archs (none: this Mac's).
+// folder is Core AI export folders and programs to compile for archs (none: the recipe's) as
+// model's recipe says ("": each export's model's).
 type folder struct {
 	paths []string
 	archs []string
+	model string
 }
 
 func (x PackageCmd) Run(d *devopt.Defs) error {
@@ -85,7 +88,7 @@ func (x PackageCmd) Run(d *devopt.Defs) error {
 	for _, p := range done {
 		if len(p.job.archs) > 0 {
 			if paths := coreAIPaths(p.files.Paths); len(paths) > 0 {
-				folders = append(folders, folder{paths, p.job.archs})
+				folders = append(folders, folder{paths, p.job.archs, p.job.model.Name})
 			}
 		}
 	}
@@ -95,7 +98,7 @@ func (x PackageCmd) Run(d *devopt.Defs) error {
 		}
 	}
 	for _, f := range folders {
-		if err := compile(ctx, f.paths, f.archs, x.compileFlags); err != nil {
+		if err := compile(ctx, f.paths, f.archs, f.model, x.compileFlags); err != nil {
 			return err
 		}
 	}
@@ -122,7 +125,11 @@ func parseSel(sel []string) ([]job, []folder, error) {
 				return nil, nil, fmt.Errorf("%s: %w", s, err)
 			}
 		}
-		folders = append(folders, folder{[]string{dir}, archs})
+		if target == "" {
+			// a folder alone: for the recipe's architectures, not only this Mac's
+			archs = nil
+		}
+		folders = append(folders, folder{[]string{dir}, archs, ""})
 	}
 	jobs, err := parseJobs(models)
 	return jobs, folders, err
@@ -172,7 +179,17 @@ func parseJobs(sel []string) ([]job, error) {
 				}
 			}
 			if len(ts) == 0 {
-				return nil, fmt.Errorf("%s: its definition gives no versions of targets: name one (%s/%s)", m.Name, m.Name, strings.Join(targets, ", "+m.Name+"/"))
+				// what its recipe makes: the Core AI exports prebuilt for its architectures
+				recipes, err := recipe.Builtin()
+				if err != nil {
+					return nil, err
+				}
+				if r, ok := recipes.Models[m.Name]; ok && r.Apple != nil {
+					ts, archs = []string{cache.CoreAITarget}, recipes.AppleOf(m.Name).Archs
+				}
+			}
+			if len(ts) == 0 {
+				return nil, fmt.Errorf("%s: neither its definition nor its recipe (model-recipes.yaml) gives versions of targets: name one (%s/%s)", m.Name, m.Name, strings.Join(targets, ", "+m.Name+"/"))
 			}
 		}
 		for _, t := range ts {

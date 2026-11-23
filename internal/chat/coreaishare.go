@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -370,4 +371,22 @@ func (l labelLog) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// ExportModel is the model of the definitions whose Core AI export is at dir: the one its
+// entry.json names (an export made or fetched here has one), else the one whose folder holds it
+// (modelOfDir; Chroma1-Flash and Chroma1-HD share theirs, so the entry is read first).
+func ExportModel(dir string) (Model, bool) {
+	if b, err := os.ReadFile(filepath.Join(dir, shared.EntryFile)); err == nil {
+		var e struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(b, &e) == nil && e.Model != "" {
+			if m, ok := Lookup(e.Model); ok {
+				return m, true
+			}
+		}
+	}
+	m, _, ok := modelOfDir(dir)
+	return m, ok
 }

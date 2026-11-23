@@ -18,13 +18,16 @@ import (
 // device makes again from the export's bytecode) in the sources written back to, an
 // architecture's at a time: a machine that fetches the export fetches its architecture's too
 // (docs/cache-sharing-design.md 7.9). --packed packs them without putting them, --no-push leaves
-// them whole beside their sources.
+// them whole beside their sources. The architectures, the compiles at once and the programs left
+// to the device are the model's recipe's (model-recipes.yaml, docs/model-recipes.md) where the
+// target and -j do not say.
 type compileFlags struct {
-	Jobs   int  `short:"j" help:"For coreai-ARCH, compiles at once (0: one for every 4 GB of memory beyond 6, at most half the cores)."`
-	Force  bool `help:"For coreai-ARCH, compile again over prebuilt programs that are there."`
-	DryRun bool `short:"n" help:"For coreai-ARCH, list what would be compiled (the exports are made all the same)."`
-	Packed bool `help:"For coreai-ARCH, pack the programs beside the export (EXPORT.prebuilt/ARCH) without putting them in the sources."`
-	NoPush bool `help:"For coreai-ARCH, leave the programs whole beside their sources, not packed nor put in the sources."`
+	Jobs     int  `short:"j" help:"For coreai-ARCH, compiles at once (0: one for every 4 GB of memory beyond 6, at most half the cores)."`
+	Force    bool `help:"For coreai-ARCH, compile again over prebuilt programs that are there."`
+	DryRun   bool `short:"n" help:"For coreai-ARCH, list what would be compiled (the exports are made all the same)."`
+	Packed   bool `help:"For coreai-ARCH, pack the programs beside the export (EXPORT.prebuilt/ARCH) without putting them in the sources."`
+	NoPush   bool `help:"For coreai-ARCH, leave the programs whole beside their sources, not packed nor put in the sources."`
+	AnyTools bool `help:"For coreai-ARCH, build with a coreai-build of another version than model-recipes.yaml's tools (to check a new Metal Toolchain)."`
 }
 
 // isPath reports whether a selection is a folder or a program rather than a model's name.
