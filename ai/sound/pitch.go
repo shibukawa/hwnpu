@@ -9,6 +9,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/pitch"
 )
@@ -31,8 +32,9 @@ func Pitch(name string) ai.Use[*PitchDetector] {
 // pitchRole's models run as the converted models do (converted.go): the front end (the three
 // spectrograms) and the decoding of the logits on the host, the CNN on the NPU or the CPU.
 var pitchRole = &airole.Role{
-	Name:  "pitch",
-	Kinds: []chat.Kind{chat.KindPitch},
+	Remote: func(h *airpc.Handle) io.Closer { return &PitchDetector{remote: h} },
+	Name:   "pitch",
+	Kinds:  []chat.Kind{chat.KindPitch},
 	Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 		return convertedPrepare(e, func(backend string) (string, string, error) {
 			return pitch.Prepare(e.Ctx, pitch.Setup{Dir: e.Dir, Repo: e.Model.Source(), Backend: backend, Log: e.Log})
@@ -58,22 +60,36 @@ var pitchRole = &airole.Role{
 // PitchDetector tells the pitch (F0) of a voice or an instrument (SwiftF0), and how sure it is
 // that there is one, every 16 ms. It runs one request at a time; others wait.
 type PitchDetector struct {
-	mu    sync.Mutex
-	d     *pitch.Detector
-	dev   *hwnpu.Device
-	r     route
-	model string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	d      *pitch.Detector
+	dev    *hwnpu.Device
+	r      route
+	model  string
 }
 
 // Model is the name of the model in the definitions.
-func (d *PitchDetector) Model() string { return d.model }
+func (d *PitchDetector) Model() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Model")
+	}
+	return d.model
+}
 
 // Device is where the model runs: npu or cpu.
-func (d *PitchDetector) Device() string { return d.r.device }
+func (d *PitchDetector) Device() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Device")
+	}
+	return d.r.device
+}
 
 // Where says where the model runs, for a log: "all on the NPU", "on the CPU (ONNX Runtime, 1
 // threads)", "on the CPU interpreter", ...
 func (d *PitchDetector) Where() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Where")
+	}
 	if w := d.r.Where(); w != "" {
 		return w
 	}
@@ -112,6 +128,9 @@ type PitchTrack struct {
 
 // Detect tells the pitch of audio (mono, at PitchRate, in [-1, 1]).
 func (d *PitchDetector) Detect(ctx context.Context, pcm []float32, o PitchOptions) (PitchTrack, error) {
+	if d.remote != nil {
+		return airpc.Call1[PitchTrack](d.remote, ctx, "Detect", pcm, o)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	t0 := time.Now()
@@ -129,6 +148,9 @@ func (d *PitchDetector) Detect(ctx context.Context, pcm []float32, o PitchOption
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *PitchDetector) Close() error {
+	if d.remote != nil {
+		return d.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	err := d.d.Close()
@@ -137,4 +159,8 @@ func (d *PitchDetector) Close() error {
 		d.dev = nil
 	}
 	return err
+}
+
+func init() {
+	airole.Register(pitchRole)
 }

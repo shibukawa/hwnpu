@@ -1,9 +1,9 @@
-package main
+package cachecmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,8 +20,12 @@ type MemoryCmd struct {
 	Forget bool   `help:"Forget the memory chosen for the model: run it as on this machine."`
 }
 
-func (c MemoryCmd) Run() error {
-	s, err := open()
+func (c MemoryCmd) Run(ctx context.Context) error {
+	return run(ctx, Request{Command: "memory", Memory: c})
+}
+
+func (c MemoryCmd) exec(e *Env) error {
+	s, err := e.open()
 	if err != nil {
 		return err
 	}
@@ -29,7 +33,7 @@ func (c MemoryCmd) Run() error {
 		if c.GB != "" || c.Forget {
 			return errors.New("name the model")
 		}
-		return listMemories(s)
+		return listMemories(e, s)
 	}
 	var mem modelstore.Memory
 	switch {
@@ -50,7 +54,7 @@ func (c MemoryCmd) Run() error {
 			return err
 		}
 		if before.GB != mem.GB {
-			defer fmt.Printf("The programs %s made for %d GB stay in the cache until it is pruned; hwnpu cache clear %s removes them all, and the next run gets those of %d GB alone.\n", mem.Model, before.GB, mem.Model, mem.GB)
+			defer fmt.Fprintf(e.Out, "The programs %s made for %d GB stay in the cache until it is pruned; hwnpu cache clear %s removes them all, and the next run gets those of %d GB alone.\n", mem.Model, before.GB, mem.Model, mem.GB)
 		}
 	default:
 		mem, err = s.Memory(c.Model)
@@ -58,19 +62,19 @@ func (c MemoryCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(describe(mem))
+	fmt.Fprintln(e.Out, describe(mem))
 	return nil
 }
 
 // listMemories prints this machine's memory and the models with a memory chosen.
-func listMemories(s *modelstore.Store) error {
-	fmt.Printf("this machine: %d GB (%s)\n", chat.MachineMemory(), chat.RunFile())
+func listMemories(e *Env, s *modelstore.Store) error {
+	fmt.Fprintf(e.Out, "this machine: %d GB (%s)\n", chat.MachineMemory(), chat.RunFile())
 	chosen := s.Memories()
 	if len(chosen) == 0 {
-		fmt.Println("no model has a memory chosen: each runs as on this machine")
+		fmt.Fprintln(e.Out, "no model has a memory chosen: each runs as on this machine")
 		return nil
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	w := tabwriter.NewWriter(e.Out, 0, 4, 2, ' ', 0)
 	names := make([]string, 0, len(chosen))
 	for n := range chosen {
 		names = append(names, n)

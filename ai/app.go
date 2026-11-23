@@ -140,6 +140,10 @@ type App struct {
 	memory int
 	// turns are the groups of uses (their keys) that run one at a time (InTurns)
 	turns [][]string
+	// local is an app hwnpud made of a client's (AppFromSpec), whose models run in this
+	// process, and allowlist that client's model policy
+	local     bool
+	allowlist string
 }
 
 // NewApp is the app called name that uses the models uses.

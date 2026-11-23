@@ -12,6 +12,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
@@ -30,8 +31,9 @@ func Embed(name string) ai.Use[*Embedder] {
 //
 // On AMD's NPU a model runs from its export of tools/amd/iron_plamo_embed.py.
 var embedRole = &airole.Role{
-	Name:  "embed",
-	Kinds: []chat.Kind{chat.KindEmbed},
+	Remote: func(h *airpc.Handle) io.Closer { return &Embedder{remote: h} },
+	Name:   "embed",
+	Kinds:  []chat.Kind{chat.KindEmbed},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m, ps := e.Model, e.Model.Programs
 		if e.NPU.AMD() && len(ps["packages"]) == 0 {
@@ -115,26 +117,55 @@ var (
 
 // Embedder turns texts into vectors for search. It runs one text at a time; others wait.
 type Embedder struct {
-	e     *chat.Embedder
-	model string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	e      *chat.Embedder
+	model  string
 }
 
 // Model is the name of the model in the definitions, Name the one it calls itself (the API's).
-func (e *Embedder) Model() string { return e.model }
-func (e *Embedder) Name() string  { return e.e.Name }
+func (e *Embedder) Model() string {
+	if e.remote != nil {
+		return airpc.Value[string](e.remote, "Model")
+	}
+	return e.model
+}
+func (e *Embedder) Name() string {
+	if e.remote != nil {
+		return airpc.Value[string](e.remote, "Name")
+	}
+	return e.e.Name
+}
 
 // Dim is the length of the vectors, MaxTokens the most tokens of a text.
-func (e *Embedder) Dim() int       { return e.e.Dim() }
-func (e *Embedder) MaxTokens() int { return e.e.MaxTokens() }
+func (e *Embedder) Dim() int {
+	if e.remote != nil {
+		return airpc.Value[int](e.remote, "Dim")
+	}
+	return e.e.Dim()
+}
+func (e *Embedder) MaxTokens() int {
+	if e.remote != nil {
+		return airpc.Value[int](e.remote, "MaxTokens")
+	}
+	return e.e.MaxTokens()
+}
 
 // Embed is the embedding of a text.
 func (e *Embedder) Embed(ctx context.Context, text string, o EmbedOptions) (Embedding, error) {
+	if e.remote != nil {
+		return airpc.Call1[Embedding](e.remote, ctx, "Embed", text, o)
+	}
 	r, err := e.e.Embed(ctx, text, o.Query, o.Truncate)
 	return Embedding{Vector: r.Vector, Tokens: r.Tokens, Truncated: r.Truncated, Took: r.Time}, err
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (e *Embedder) Close() error { return e.e.Close() }
+func (e *Embedder) Close() error {
+	if e.remote != nil {
+		return e.remote.Release() // the Runtime in hwnpud unloads it
+	}
+	return e.e.Close()
+}
 
 // Cosine is the cosine similarity of two vectors.
 func Cosine(a, b []float32) float64 { return chat.Cosine(a, b) }
@@ -153,4 +184,8 @@ func ints(s string, def []int) ([]int, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+func init() {
+	airole.Register(embedRole)
 }

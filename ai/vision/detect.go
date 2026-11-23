@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
 	"github.com/shibukawa/hwnpu/internal/vision/detect"
@@ -67,6 +68,7 @@ var detectCNN = cnn[*detect.Detector]{
 // The definition of a detection model may give the settings threads and cpu, and the device
 // (common.go).
 var detectRole = &airole.Role{
+	Remote:  func(h *airpc.Handle) io.Closer { return &Detector{remote: h} },
 	Name:    "detect",
 	Kinds:   []chat.Kind{chat.KindDetect},
 	Prepare: detectCNN.prepare,
@@ -109,6 +111,7 @@ type DetectOptions struct {
 
 // Detector finds the objects in pictures. It runs one picture at a time; others wait.
 type Detector struct {
+	remote        *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	mu            sync.Mutex
 	d             *detect.Detector
 	closeDev      func()
@@ -118,20 +121,43 @@ type Detector struct {
 }
 
 // Model is the name of the model in the definitions.
-func (d *Detector) Model() string { return d.name }
+func (d *Detector) Model() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Model")
+	}
+	return d.name
+}
 
 // Device is where the model's network runs: npu or cpu.
-func (d *Detector) Device() string { return d.device }
+func (d *Detector) Device() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Device")
+	}
+	return d.device
+}
 
 // Where says where the model runs, for a log: "on AMD's NPU (rtmdet-m.amd-npu2)", "on the CPU
 // (ONNX Runtime, 1 threads)", "all on the NPU", "on the CPU interpreter".
-func (d *Detector) Where() string { return d.where }
+func (d *Detector) Where() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Where")
+	}
+	return d.where
+}
 
 // Classes are the names of the model's classes (COCO's).
-func (d *Detector) Classes() []string { return slices.Clone(d.d.Classes) }
+func (d *Detector) Classes() []string {
+	if d.remote != nil {
+		return airpc.Value[[]string](d.remote, "Classes")
+	}
+	return slices.Clone(d.d.Classes)
+}
 
 // Detect finds the objects in a picture, the surest first.
 func (d *Detector) Detect(ctx context.Context, img image.Image, o DetectOptions) (*Objects, error) {
+	if d.remote != nil {
+		return airpc.Call1[*Objects](d.remote, ctx, "Detect", img, o)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	keep := map[string]bool{}
@@ -176,9 +202,16 @@ func (b Box) add(p image.Point) Box {
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *Detector) Close() error {
+	if d.remote != nil {
+		return d.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	err := d.d.Close()
 	d.closeDev()
 	return err
+}
+
+func init() {
+	airole.Register(detectRole)
 }

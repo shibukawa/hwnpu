@@ -11,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/systemone"
@@ -36,8 +37,9 @@ func Decide(name string) ai.Use[*Decider] {
 // A model of device cpu runs on hwnpu's CPU interpreter (slow; for checking). On AMD's NPU a
 // model runs from its export of tools/amd/iron_export_lm.py d1 (its recipe, model-recipes.yaml).
 var decideRole = &airole.Role{
-	Name:  "decide",
-	Kinds: []chat.Kind{chat.KindDecision},
+	Remote: func(h *airpc.Handle) io.Closer { return &Decider{remote: h} },
+	Name:   "decide",
+	Kinds:  []chat.Kind{chat.KindDecision},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m, ps := e.Model, e.Model.Programs
 		if e.NPU.AMD() && len(ps["packages"]) == 0 && !e.NPU.CPU(m) {
@@ -131,25 +133,49 @@ type Decision struct {
 // Decider answers typed questions about a state with a decision model. It runs one question at a
 // time.
 type Decider struct {
-	m     *systemone.Model
-	model string
-	cpu   bool
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	m      *systemone.Model
+	model  string
+	cpu    bool
 }
 
 // Model is the name of the model in the definitions, Name the one it calls itself.
-func (d *Decider) Model() string { return d.model }
-func (d *Decider) Name() string  { return d.m.Name }
+func (d *Decider) Model() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Model")
+	}
+	return d.model
+}
+func (d *Decider) Name() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Name")
+	}
+	return d.m.Name
+}
 
 // MaxTokens is the most tokens of a question's prompt.
-func (d *Decider) MaxTokens() int { return d.m.MaxTokens() }
+func (d *Decider) MaxTokens() int {
+	if d.remote != nil {
+		return airpc.Value[int](d.remote, "MaxTokens")
+	}
+	return d.m.MaxTokens()
+}
 
 // OnCPU reports whether it runs on the CPU interpreter.
-func (d *Decider) OnCPU() bool { return d.cpu }
+func (d *Decider) OnCPU() bool {
+	if d.remote != nil {
+		return airpc.Value[bool](d.remote, "OnCPU")
+	}
+	return d.cpu
+}
 
 // Decide answers a request of the System One API: {"state": ..., "questions": {"id": {"type":
 // "choice" | "score" | "noul", "instructions": ..., "criteria": ...}}}, as llama.cpp's
 // tools/server/README.md describes it. A request that is not one is ErrBadRequest.
 func (d *Decider) Decide(ctx context.Context, request []byte) (Decision, error) {
+	if d.remote != nil {
+		return airpc.Call1[Decision](d.remote, ctx, "Decide", request)
+	}
 	t0 := time.Now()
 	req, err := systemone.ParseRequest(request)
 	if err == nil {
@@ -177,4 +203,15 @@ func (e kindError) Error() string   { return e.err.Error() }
 func (e kindError) Unwrap() []error { return []error{e.kind, e.err} }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (d *Decider) Close() error { return d.m.Close() }
+func (d *Decider) Close() error {
+	if d.remote != nil {
+		return d.remote.Release() // the Runtime in hwnpud unloads it
+	}
+	return d.m.Close()
+}
+
+func init() {
+	airole.Register(decideRole)
+	airpc.RegisterError("text.ErrBadRequest", ErrBadRequest)
+	airpc.RegisterError("text.ErrUnsupported", ErrUnsupported)
+}

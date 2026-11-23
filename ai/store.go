@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -288,7 +289,32 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (
 		if f := r.missing(); f != "" {
 			continue
 		}
+		if !r.compiled() {
+			compiledAs(m, target, key, want, r)
+		}
 		return located{record: r, root: root, bundle: bundle}, nil
+	}
+	// the same model prepared for the role under another use's name (another app's: hwnpu-audio's
+	// whisper-large-v3-turbo, interpreter's transcribe) is as good: its files are the model's,
+	// and what hwnpud compiled for one is compiled for the other
+	role, _, _ := strings.Cut(key, ":")
+	for i, root := range roots {
+		bundle := i < len(s.Prepared)
+		m, err := readManifest(root, !bundle)
+		if err != nil {
+			continue
+		}
+		for _, other := range slices.Sorted(maps.Keys(m.Targets[target])) {
+			r := m.Targets[target][other]
+			if r.Role != role || r.Model != want.Name || r.Run != want.Run || r.Spec != spec(want) || r.Revision < revision {
+				continue
+			}
+			r = r.clone()
+			r.absolute(root)
+			if r.missing() == "" {
+				return located{record: r, root: root, bundle: bundle}, nil
+			}
+		}
 	}
 	switch {
 	case mismatch != nil:
@@ -301,6 +327,26 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (
 		return located{}, fmt.Errorf("%w: %s (%s) was prepared by an earlier hwnpu, which left part of it to its first use (the app's Plan and its Run prepare it)", ErrNotPrepared, key, want.Name)
 	}
 	return located{}, fmt.Errorf("%w: %s (the app's Plan and its Run prepare it)", ErrNotPrepared, key)
+}
+
+// compiledAs marks r compiled for this program when another use's record of the same model in
+// m says this program compiled it: Apple's compiler keeps its cache by the program and the
+// model's programs, not by the use (hwnpud compiles every app's).
+func compiledAs(m *manifest, target, key string, want chat.Model, r *record) {
+	role, _, _ := strings.Cut(key, ":")
+	for other, o := range m.Targets[target] {
+		if other == key || o.Role != role || o.Model != want.Name || o.Run != want.Run || o.Spec != spec(want) || o.Revision < r.Revision {
+			continue
+		}
+		if at := o.CompiledBy[processName()]; !at.IsZero() {
+			if r.CompiledBy == nil {
+				r.CompiledBy = map[string]time.Time{}
+			}
+			r.CompiledBy[processName()] = at
+			r.Compile = cmp.Or(r.Compile, o.Compile)
+			return
+		}
+	}
 }
 
 // put writes key's record for npu into this machine's StoreFile, under the lock of the file
