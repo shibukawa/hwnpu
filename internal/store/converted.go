@@ -179,8 +179,8 @@ func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io
 }
 
 // PutEntry puts the entry of dir (its EntryFile, with its Path) in s: unless s has it (the same
-// key), its entry.json is removed first, the files put, and the entry.json written last, the
-// folder marked as being written meanwhile (MarkWriting).
+// key, holding all it holds: HoldsMore), its entry.json is removed first, the files put, and the
+// entry.json written last, the folder marked as being written meanwhile (MarkWriting).
 func PutEntry(ctx context.Context, s Source, dir string) error {
 	e, err := ReadEntry(dir)
 	if err != nil {
@@ -196,7 +196,7 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 	}
 	defer unlock()
 	put := endEarly(s, dir) // what went while it was made (StartEarly)
-	if old, err := ReadEntryAt(ctx, s, rel); err == nil && old.Key == e.Key {
+	if old, err := ReadEntryAt(ctx, s, rel); err == nil && old.Key == e.Key && !HoldsMore(e, old.Holds) {
 		return nil
 	}
 	// the folder is not whole from here until entry.json is written: marked, so that Clean

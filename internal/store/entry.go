@@ -51,6 +51,11 @@ type Entry struct {
 	// Pack is the one file in a source that holds Files, for an entry that goes there packed
 	// (Packs: PackFile); none here, where the files are.
 	Pack *File `json:"pack,omitempty"`
+	// Holds names the parts an entry that grows holds (the prebuilt programs of a Core AI export
+	// for a chip, which one machine may put before it has built them all): not in the key, so
+	// that a machine finds the entry by what it would compile; PutEntry replaces an entry of the
+	// same key that holds less (HoldsMore), and a machine that lacks a part fetches it again.
+	Holds []string `json:"holds,omitempty"`
 	// MadeBy is the tools and the machine that made it, recorded only (not in the key).
 	MadeBy map[string]string `json:"made_by,omitempty"`
 	Made   time.Time         `json:"made"`
@@ -61,6 +66,21 @@ type File struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
+}
+
+// HoldsMore reports whether e holds a part (Holds) that held lacks: an entry of the same key
+// that is to replace an older one. An entry without Holds holds nothing more.
+func HoldsMore(e Entry, held []string) bool {
+	in := make(map[string]bool, len(held))
+	for _, h := range held {
+		in[h] = true
+	}
+	for _, h := range e.Holds {
+		if !in[h] {
+			return true
+		}
+	}
+	return false
 }
 
 // Bytes is the size of the entry's files.

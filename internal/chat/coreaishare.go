@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -144,7 +145,9 @@ func prebuiltPlace(export, arch string) (place, bool) {
 
 // FetchPrebuilt makes the packed prebuilt programs of the export for arch (coreai.PackedRoot)
 // from the first source that has them (coreai.FetchPrebuilt: the backend asks when it would
-// compile a program of the export).
+// compile a program of the export). The ones here are fetched again when a source has the
+// entry holding programs they lack (shared.HoldsMore): a machine may have put the entry before
+// it had built them all, and the backend asks only when a program is missing here.
 func FetchPrebuilt(ctx context.Context, export, arch string) {
 	p, ok := prebuiltPlace(export, arch)
 	if !ok {
@@ -152,16 +155,47 @@ func FetchPrebuilt(ctx context.Context, export, arch string) {
 	}
 	root := coreai.PackedRoot(export, arch)
 	dir := bundleDir(root)
+	log := labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"}
 	if e, err := shared.ReadEntry(dir); err == nil && p.takes(e) {
 		if _, err := os.Stat(root); err == nil {
-			return
+			held := prebuiltPrograms(root)
+			fresh := dir + ".new"
+			os.RemoveAll(fresh)
+			_, err := shared.FetchEntry(ctx, shared.Sources(), p.entry.Path, func(e shared.Entry) bool { return p.takes(e) && shared.HoldsMore(e, held) }, fresh, log)
+			if err != nil {
+				os.RemoveAll(fresh)
+				return
+			}
+			os.RemoveAll(dir)
+			if err := os.Rename(fresh, dir); err != nil {
+				os.RemoveAll(fresh)
+				return
+			}
 		}
-	} else if !fetchFrom(ctx, p, dir, labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"}) { // nothing is made here after a miss: no early puts
+	} else if !fetchFrom(ctx, p, dir, log) { // nothing is made here after a miss: no early puts
 		return
 	}
 	if err := coreai.Unbundle(filepath.Join(dir, coreai.BundleFile), root); err != nil {
 		fmt.Fprintf(sharedLog, "%s (prebuilt for %s): %v; compiled on the device\n", filepath.Base(export), arch, err)
 	}
+}
+
+// prebuiltPrograms are the packed prebuilt programs at root (coreai.PackedRoot): their paths
+// in it (dit_double_0.h15g.aimodelc), what the entry of their bundle holds (shared.Entry.Holds).
+func prebuiltPrograms(root string) []string {
+	var out []string
+	filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || !strings.HasSuffix(d.Name(), ".aimodelc") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err == nil {
+			out = append(out, filepath.ToSlash(rel))
+		}
+		return filepath.SkipDir
+	})
+	slices.Sort(out)
+	return out
 }
 
 // bundleDir is the entry of the shared layers that holds the bundle of the packed prebuilt
@@ -189,6 +223,9 @@ func PutPrebuilt(export, arch string) error {
 	if err := coreai.Bundle(root, filepath.Join(dir, coreai.BundleFile)); err != nil {
 		return err
 	}
+	// what it holds: a source replaces an entry of the same key that holds less (one put by a
+	// build that had not made them all)
+	p.entry.Holds = prebuiltPrograms(root)
 	putConverted(p, dir, labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"})
 	return nil
 }
