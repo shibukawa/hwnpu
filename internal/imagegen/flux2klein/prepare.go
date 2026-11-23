@@ -57,24 +57,17 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
 		return out, nil
 	}
-	var want []chat.File
-	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f})
-	}
-	if err := chat.FetchFiles(ctx, want, log); err != nil {
-		return "", err
-	}
-	if err := llm.MayConvert(ctx, out); err != nil {
-		return "", err
-	}
-	if err := ctx.Err(); err != nil {
+	if err := fetchCheckpoint(ctx, s.Repo, out, log); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.RemoveAll(out); err != nil {
-		return "", err
+	dout := DeviceExport(out)
+	for _, d := range []string{out, dout} {
+		if err := os.RemoveAll(d); err != nil {
+			return "", err
+		}
 	}
 	fmt.Fprintf(log, "converting %s (%dx%d, Qwen3 %s, DiT %s): a few minutes; the first load then compiles the programs for the NPU\n",
 		filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
@@ -84,10 +77,33 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	fmt.Fprintf(log, "converted in %s\n", time.Since(t0).Round(time.Second))
 	debug.FreeOSMemory()
+	// the DeviceExport, when the export has one, is whole too (converted with it)
+	if _, err := os.Stat(filepath.Join(dout, "manifest.json")); err == nil {
+		if err := cache.WriteDone(dout+".done", dout); err != nil {
+			return "", err
+		}
+		llm.ShareExport(ctx, dout)
+	}
 	if err := cache.WriteDone(out+".done", out); err != nil {
 		return "", err
 	}
 	// a Core AI export goes in the shared layers that are written (llm.SharedExports)
 	llm.ShareExport(ctx, out)
 	return out, nil
+}
+
+// fetchCheckpoint downloads the files of the repository Convert reads that are missing, for the
+// conversion of out (llm.MayConvert: none in a ctx that only fetches).
+func fetchCheckpoint(ctx context.Context, repo, out string, log io.Writer) error {
+	var want []chat.File
+	for _, f := range Files {
+		want = append(want, chat.File{Repo: repo, Name: f})
+	}
+	if err := chat.FetchFiles(ctx, want, log); err != nil {
+		return err
+	}
+	if err := llm.MayConvert(ctx, out); err != nil {
+		return err
+	}
+	return ctx.Err()
 }

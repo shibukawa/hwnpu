@@ -76,7 +76,7 @@ func (f FetchCmd) Run(d *devopt.Defs) error {
 	// coreai-ARCH: the programs compiled for each architecture, of each export there is here
 	for _, p := range done {
 		for _, export := range coreAIPaths(p.files.Paths) {
-			if !strings.HasSuffix(export, ".coreai") {
+			if !strings.HasSuffix(export, ".coreai") || coreai.NothingToPrebuild(export) {
 				continue
 			}
 			for _, arch := range p.job.archs {

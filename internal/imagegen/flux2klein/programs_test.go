@@ -3,10 +3,11 @@ package flux2klein
 import (
 	"context"
 	"fmt"
-	"slices"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
@@ -133,15 +134,15 @@ func TestEngineFlow(t *testing.T) {
 
 // An export of 512² and 1024² is named for both and gives each size's functions.
 func TestSizes(t *testing.T) {
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024}); n != "flux.2-klein-4b-512+1024-lut8-lut8-v1.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024}); n != "flux.2-klein-4b-512+1024-lut8-lut8-v3.coreai" {
 		t.Errorf("export name %s", n)
 	}
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 768}); n != "flux.2-klein-4b-768x768-lut8-lut8-v1.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 768}); n != "flux.2-klein-4b-768x768-lut8-lut8-v3.coreai" {
 		t.Errorf("export name of another size %s", n)
 	}
 	// models.yaml npu.apple's 8: one export, named by their count and a hash of the list
 	eight := [][2]int{{1024, 1024}, {512, 512}, {768, 1152}, {768, 1024}, {704, 1280}, {1152, 768}, {1024, 768}, {1280, 704}}
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024, Height: 1024, Sizes: eight}); n != "flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v1.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024, Height: 1024, Sizes: eight}); n != "flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v3.coreai" {
 		t.Errorf("export name of 8 sizes %s", n)
 	}
 	m := &ProgramManifest{Dit: Config{Width: 1024, Height: 1024}, Vae: []string{"vae_s0.aimodel#s1024x1024"},
@@ -154,9 +155,9 @@ func TestSizes(t *testing.T) {
 	}
 }
 
-// With the edit's programs a step with a reference runs their groups (from their directory),
-// the reference's patches after the picture's in the first group's x; a step without one runs
-// the export's again; without them a reference is refused.
+// With the export's edits a step with a reference runs their groups, the reference's patches
+// after the picture's in the first group's x; a step without one runs the size's again; without
+// them a reference is refused.
 func TestEngineEdit(t *testing.T) {
 	m := smallManifest()
 	var log []string
@@ -184,10 +185,10 @@ func TestEngineEdit(t *testing.T) {
 	x := [][]float32{make([]float32, N*c.Latent)}
 	ref := make([]float32, refN*c.Latent)
 	if err := e.openDiT(context.Background(), []int{1}); err == nil {
-		t.Error("a reference without the edit's programs")
+		t.Error("a reference without the export's edits")
 	}
-	e.edit, e.editDir = &EditSize{Width: 32, Height: 32, Steps: []EditStep{{Refs: []int{1},
-		Doubles: []Group{{"dit_double_0_ref1", 0, 3}}, Singles: []Group{{"dit_single_0_ref1", 0, 2}, {"dit_single_2_ref1", 2, 2}}}}}, "/edit"
+	e.edit = &EditSize{Width: 32, Height: 32, Steps: []EditStep{{Refs: []int{1},
+		Doubles: []Group{{"dit_double_0_ref1", 0, 3}}, Singles: []Group{{"dit_single_0_ref1", 0, 2}, {"dit_single_2_ref1", 2, 2}}}}}
 	if err := e.openDiT(context.Background(), []int{1}); err != nil {
 		t.Fatal(err)
 	}
@@ -196,9 +197,9 @@ func TestEngineEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		fmt.Sprintf("/edit/dit_double_0_ref1 x:%d ctx:%d mods:%d", (N+refN)*c.Latent, c.TextRows*E, mil.ModSingle*E),
-		fmt.Sprintf("/edit/dit_single_0_ref1 x:%d mods:%d", R*E, 3*E),
-		fmt.Sprintf("/edit/dit_single_2_ref1 x:%d mods:%d", R*E, 5*E),
+		fmt.Sprintf("dit_double_0_ref1 x:%d ctx:%d mods:%d", (N+refN)*c.Latent, c.TextRows*E, mil.ModSingle*E),
+		fmt.Sprintf("dit_single_0_ref1 x:%d mods:%d", R*E, 3*E),
+		fmt.Sprintf("dit_single_2_ref1 x:%d mods:%d", R*E, 5*E),
 	}
 	if strings.Join(log, "; ") != strings.Join(want, "; ") {
 		t.Errorf("an edit's step:\n%s\nwant\n%s", strings.Join(log, "\n"), strings.Join(want, "\n"))
@@ -220,37 +221,46 @@ func TestEngineEdit(t *testing.T) {
 	e.closeDiT()
 }
 
-// The edit's programs are named for their sizes and references, apart from the export's.
-func TestEditExportName(t *testing.T) {
-	if n := EditExportName("FLUX.2-klein-4B", EditOptions{}); n != "flux.2-klein-4b-edit-512+1024-ref1-lut8-v1.coreai" {
-		t.Errorf("edit export name %s", n)
+// models.yaml npu.apple's FLUX.2 klein is one export of its 8 sizes and 5 edits, named for both:
+// at 1024 x 1024 from a reference of 1024 and none, one or two of 512; at 512 x 512 from one or two
+// of 512.
+func TestAppleOptions(t *testing.T) {
+	m, ok := chat.Lookup("FLUX.2-klein-4B")
+	if !ok {
+		t.Fatal("FLUX.2-klein-4B is not in models.yaml")
 	}
-	if n := EditExportName("FLUX.2-klein-4B", EditOptions{Sizes: [][2]int{{512, 512}}, Refs: [][]int{{1}, {2}}}); n != "flux.2-klein-4b-edit-512x512-ref1+refh1-lut8-v1.coreai" {
-		t.Errorf("edit export name %s", n)
+	o, err := AppleOptions(m, "", 1024, 1024, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Edit{{1024, 1024, [][]int{{1}, {1, 2}, {1, 2, 2}}}, {512, 512, [][]int{{1}, {1, 1}}}}
+	if len(o.Sizes) != 8 || !reflect.DeepEqual(o.Edits, want) {
+		t.Errorf("sizes %v, edits %v", o.Sizes, o.Edits)
+	}
+	if n := ExportName(m.Name, o); !strings.HasPrefix(n, "flux.2-klein-4b-8sizes-4d02f40a-5edits-") || !strings.HasSuffix(n, "-lut8-lut8-v3.coreai") {
+		t.Errorf("export name %s", n)
+	}
+	if f := EditFunction(1024, 1024, []int{2, 1, 2}); f != "s1024x1024_ref1h2" {
+		t.Errorf("edit function %s", f)
+	}
+	for _, bad := range []string{"", "0", "x@half", "3+2@half", "1@full"} {
+		if _, err := ParseReferences(bad); err == nil {
+			t.Errorf("references %q: no error", bad)
+		}
 	}
 }
 
-// TestEditPatterns: the patterns' sizes and references, each references' sizes, and a name apart
-// from every size with every references.
-func TestEditPatterns(t *testing.T) {
-	o := EditOptions{Patterns: EditPatterns}
-	o.defaults()
-	if !slices.Equal(o.Sizes, [][2]int{{1024, 1024}, {512, 512}}) || len(o.Refs) != 4 {
-		t.Fatalf("sizes %v, refs %v", o.Sizes, o.Refs)
+// An export's edits are found by the picture's size, and a step by its references in any order.
+func TestEditAt(t *testing.T) {
+	m := &ProgramManifest{Edits: []EditSize{{Width: 1024, Height: 1024, Steps: []EditStep{{Refs: []int{1, 2}}}}}}
+	s, ok := m.EditAt(1024, 1024)
+	if !ok {
+		t.Fatal("no edits at 1024")
 	}
-	for _, c := range []struct {
-		refs []int
-		want [][2]int
-	}{{[]int{1}, [][2]int{{1024, 1024}, {512, 512}}}, {[]int{1, 2}, [][2]int{{1024, 1024}}}, {[]int{1, 1}, [][2]int{{512, 512}}}, {[]int{1, 2, 2}, [][2]int{{1024, 1024}}}} {
-		if got := o.sizesFor(c.refs); !slices.Equal(got, c.want) {
-			t.Errorf("sizes of %v: %v, want %v", c.refs, got, c.want)
-		}
+	if _, ok := s.Step([]int{2, 1}); !ok {
+		t.Error("no step of 2, 1")
 	}
-	n := EditExportName("FLUX.2-klein-4B", EditOptions{Patterns: EditPatterns})
-	if !strings.HasPrefix(n, "flux.2-klein-4b-edit-5edits-") || !strings.HasSuffix(n, "-lut8-v1.coreai") {
-		t.Errorf("edit export name %s", n)
-	}
-	if n == EditExportName("FLUX.2-klein-4B", EditOptions{Sizes: o.Sizes, Refs: o.Refs}) {
-		t.Error("the patterns' name is every size's with every references'")
+	if _, ok := m.EditAt(512, 512); ok {
+		t.Error("edits at 512")
 	}
 }

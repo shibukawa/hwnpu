@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,20 +25,27 @@ import (
 // FLUX.2 klein 4B: 4 Euler steps without guidance, from a prompt and up to four reference
 // pictures. AMD's NPU runs the export of tools/amd/iron_flux2klein.py of every size of
 // models.yaml's npu.amd (one export, from the shared layers or made with IRON); Apple's Neural
-// Engine a Core AI export of every size of npu.apple (one export, the weights once), converted
-// from the checkpoint, and the edit's programs beside it (Edit).
+// Engine a Core AI export of every size and edit of npu.apple (one export, the weights once),
+// converted from the checkpoint, and the edits of a reference of 1024 in an export beside it
+// (flux2klein.DeviceExport: compiled on the device, so prepared for Edit alone).
 
 func prepareKlein(e airole.PrepareEnv, edit bool) (f airole.Files, err error) {
 	m, base := e.Model, e.Base
 	if dir := first(m.Programs[ProgramExport]); dir != "" {
 		f.Set("export", dir)
 		if edit && flux2klein.IsProgramExport(dir) {
-			// the edit's programs beside the export, of its sizes and its DiT's format
-			ed, err := kleinEdit(e.Ctx, base, dir, filepath.Dir(dir), e.Log)
+			// the export beside it of the edits of a reference of the picture's size, when it has one
+			man, err := flux2klein.ReadProgramManifest(dir)
 			if err != nil {
 				return f, err
 			}
-			f.Set("edit", ed)
+			if man.Device != "" {
+				dd := flux2klein.DeviceExport(dir)
+				if !llm.FetchExport(chat.WithModel(e.Ctx, base), dd, dd+".done") {
+					return f, fmt.Errorf("ai/imagegen: %s draws its edits of a reference of the picture's size with %s beside it, which is missing (hwnpu-image convert makes both)", dir, filepath.Base(dd))
+				}
+				f.Set("device", dd)
+			}
 		}
 		return f, nil
 	}
@@ -64,20 +72,26 @@ func prepareKlein(e airole.PrepareEnv, edit bool) (f airole.Files, err error) {
 		f.Set("export", dir)
 		return f, nil
 	}
-	// every size of models.yaml npu.apple in one export (the weights once), as hwnpu-image's
+	// every size and edit of models.yaml npu.apple in one export (the weights once), as hwnpu-image's
 	spec := m.NPU["apple"]
-	setup := kleinSetup(base, flux2klein.ConvertOptions{Width: as[0].Width, Height: as[0].Height, Sizes: aspect.SizesOf(as),
-		TextFormat: setting(m, SettingTextFormat, spec.Text), DitFormat: setting(m, SettingDitFormat, spec.Dit)}, e.Log)
+	o, err := flux2klein.AppleOptions(m, flux2klein.NPUGeneration(vendor), as[0].Width, as[0].Height,
+		setting(m, SettingTextFormat, spec.Text), setting(m, SettingDitFormat, spec.Dit))
+	if err != nil {
+		return f, err
+	}
+	setup := kleinSetup(base, o, e.Log)
 	if dir, err = flux2klein.Prepare(ctx, setup); err != nil {
 		return f, err
 	}
 	f.Set("export", dir)
 	if edit {
-		ed, err := kleinEdit(e.Ctx, base, dir, setup.Dir, e.Log)
+		dd, err := flux2klein.PrepareDevice(ctx, setup)
 		if err != nil {
 			return f, err
 		}
-		f.Set("edit", ed)
+		if dd != "" {
+			f.Set("device", dd)
+		}
 	}
 	return f, nil
 }
@@ -87,29 +101,17 @@ func kleinSetup(base chat.Model, o flux2klein.ConvertOptions, log io.Writer) flu
 	return flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: base.Repo, Name: base.Name, ConvertOptions: o, Log: log}
 }
 
-// kleinEdit is the edit's programs of the Core AI export dir (flux2klein.PrepareEdit): of its
-// sizes and DiT format, in parent, from the shared layers or converted from the checkpoint.
-func kleinEdit(ctx context.Context, base chat.Model, dir, parent string, log io.Writer) (string, error) {
-	man, err := flux2klein.ReadProgramManifest(dir)
-	if err != nil {
-		return "", err
-	}
-	s := kleinSetup(base, flux2klein.ConvertOptions{}, log)
-	s.Dir = parent
-	return flux2klein.PrepareEdit(chat.WithModel(ctx, base), s, flux2klein.EditOptions{Sizes: man.SizeList(), DitFormat: man.Formats["dit"]})
-}
-
 // klein draws with FLUX.2 klein.
 type klein struct {
-	g         *Generator
-	dir, edit string
+	g   *Generator
+	dir string
 	// p draws pictures of at; another size closes it and opens that size's
 	p  *flux2klein.Pipeline
 	at image.Point
 }
 
 func loadKlein(ctx context.Context, g *Generator, f airole.Files, e airole.LoadEnv) (family, error) {
-	k := &klein{g: g, dir: f.Path("export"), edit: f.Path("edit")}
+	k := &klein{g: g, dir: f.Path("export")}
 	var err error
 	g.amd = !flux2klein.IsProgramExport(k.dir)
 	var as []aspect.Aspect
@@ -140,13 +142,28 @@ func loadKlein(ctx context.Context, g *Generator, f airole.Files, e airole.LoadE
 		}
 		iron.ShareExport(k.dir, logfOf(e.Log))
 	} else {
-		// the sizes the export holds (models.yaml's eight)
+		// the sizes and the edits the export holds (models.yaml's), those of the export beside it
+		// (flux2klein.DeviceExport) only once it is here (Edit)
 		man, err := flux2klein.ReadProgramManifest(k.dir)
 		if err != nil {
 			return nil, err
 		}
 		g.sizes = points(man.SizeList())
-		g.edits, g.warmAll = k.edit != "", true
+		device := man.Device != "" && llm.ExportDone(filepath.Join(filepath.Dir(k.dir), man.Device)+".done")
+		g.editSizes, g.editRefs = []image.Point{}, map[image.Point][][]int{}
+		for _, s := range man.Edits {
+			pt := image.Pt(s.Width, s.Height)
+			for _, st := range s.Steps {
+				if st.Device && !device {
+					continue
+				}
+				if len(g.editRefs[pt]) == 0 {
+					g.editSizes = append(g.editSizes, pt)
+				}
+				g.editRefs[pt] = append(g.editRefs[pt], slices.Sorted(slices.Values(st.Refs)))
+			}
+		}
+		g.edits, g.warmAll = len(g.editSizes) > 0, true
 		if g.dev, _, err = llm.OpenDevice(ctx, llm.BackendCoreAI, e.Cache, placement(e)); err != nil {
 			return nil, err
 		}
@@ -175,12 +192,6 @@ func (k *klein) open(ctx context.Context, size image.Point) (*flux2klein.Pipelin
 	p, err := flux2klein.OpenAt(chat.WithModel(ctx, k.g.model), k.g.dev, k.dir, w, h, k.g.log)
 	if err != nil {
 		return nil, err
-	}
-	if k.edit != "" {
-		if err := p.UseEdit(k.edit); err != nil {
-			p.Close()
-			return nil, err
-		}
 	}
 	p.Logf = logfOf(k.g.log)
 	k.g.logf("loaded %s (%dx%d) in %.1f s", filepath.Base(k.dir), p.C.Width, p.C.Height, time.Since(t0).Seconds())
@@ -213,17 +224,28 @@ func (k *klein) draw(ctx context.Context, r *run) error {
 		return err
 	}
 	p.Dump = dump
+	// the references' sizes: those asked, else those of the export's edit at the size (on Apple's
+	// a reference of the picture's size first, the others of half it at 1024 x 1024)
 	divs := make([]int, len(o.References))
+	asked := false
 	for i := range divs {
 		divs[i] = 1
 		if i < len(o.ReferenceScales) && o.ReferenceScales[i] > 1 {
-			divs[i] = o.ReferenceScales[i]
+			divs[i], asked = o.ReferenceScales[i], true
+		}
+	}
+	if !asked && len(divs) > 0 && k.g.editRefs != nil {
+		for _, pat := range k.g.editRefs[r.size] {
+			if len(pat) == len(divs) {
+				copy(divs, pat)
+				break
+			}
 		}
 	}
 	if len(divs) > 0 && !p.HasReferences(divs) {
 		how := "tools/amd/iron_flux2klein.py --refs compiled their rows"
 		if flux2klein.IsProgramExport(k.dir) {
-			how = "flux2klein.EditOptions.Refs converted their programs"
+			how = "models.yaml npu.apple edits name them (at their sizes)"
 		}
 		return fmt.Errorf("ai/imagegen: the export %s does not run these references (%s) at %d x %d; it runs %s, and the others once %s",
 			filepath.Base(k.dir), referenceNames(divs), p.C.Width, p.C.Height, strings.Join(p.References(), ", "), how)

@@ -183,8 +183,10 @@ func (c *GenerateCmd) references(o *imagegen.Options) error {
 // weight formats, Anima's conversion, --cpu, --resident-dit, or an export's directory.
 func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Definition, error) {
 	mk := imagegen.Generate
-	if len(c.Image) > 0 || len(c.RefLatents) > 0 {
-		mk = imagegen.Edit // on Apple's Neural Engine with the edit's programs
+	if (len(c.Image) > 0 || len(c.RefLatents) > 0) && c.Size != "1:1s" && c.Size != "512" {
+		// on Apple's Neural Engine with the export of the edits of 1024 beside the model's (the
+		// edits at 512 x 512 are in the model's)
+		mk = imagegen.Edit
 	}
 	var d ai.Definition
 	name := c.Model

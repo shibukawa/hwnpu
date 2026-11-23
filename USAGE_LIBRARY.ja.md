@@ -170,7 +170,7 @@ k.FatalIfErrorf(k.Run())
 
 - 今ある機能は音声と文、絵の深度と顔、画像の生成と編集 (FLUX.2 klein) です。ほかの画像のモデル (Anima、Chroma)、物体や姿勢の検出などは、まだコマンドからだけ使えます
 - 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) と Mac (M3、Core AI) です (3 つのサンプル、カメラ、窓)。Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
-- Apple の Neural Engine で参照の絵から描くには、専用のプログラムが要ります。`imagegen.Generate` の代わりに `imagegen.Edit` を使います (準備で用意し、最初の編集でコンパイルします)
+- Apple の Neural Engine の FLUX.2 klein は、参照の絵から 1024 x 1024 (1024 の 1 枚と、512 の 0〜2 枚) と 512 x 512 (512 の 1 枚か 2 枚) で描きます。プロンプトから描くのと同じ書き出しです (`Generator.EditSizes`)
 
 ## AMD (カーネルを直接動かす)
 

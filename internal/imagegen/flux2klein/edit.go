@@ -2,119 +2,38 @@ package flux2klein
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"hash/crc32"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
 	"github.com/shibukawa/hwnpu/internal/llm"
+
+	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 )
 
-// On Apple's Neural Engine an edit (reference images) runs programs an export of Convert does not
-// hold: the DiT's groups over the picture's rows and the references' (more rows than any size of
-// text to image) and the VAE's encoder. They are an export of their own (ConvertEdit), next to
-// the export of Convert and read with it (Pipeline.UseEdit), so that drawing from text alone
-// downloads, converts and compiles none of them: Core AI compiles every function of a program
-// together, and the DiT's groups of an edit would double the first run of every picture.
-
-// EditKind is the kind of manifest.json of an export of ConvertEdit.
-const EditKind = "flux2klein-edit"
-
-// EditVersion is the layout of the programs ConvertEdit writes; an export of another is
-// converted again.
-const EditVersion = 1
-
-// EditOptions select what ConvertEdit writes.
-type EditOptions struct {
-	// Sizes are the picture sizes (width, height) the edits are drawn at: those of the export of
-	// Convert it is read with (ProgramManifest.SizeList), or some of them. Default DefaultSizes.
-	Sizes [][2]int
-	// Refs are the references a step takes, each a list of the picture's sides over 1 (a
-	// reference of the picture's size) or 2 (of half its sides). Default one of the picture's size.
-	Refs [][]int
-	// Patterns, when set, are the edits held in place of every size with every Refs: each a
-	// picture size and its references (Sizes and Refs are then theirs). EditPatterns are
-	// FLUX.2 klein's.
-	Patterns []EditPattern
-	// DitFormat is the DiT's weight format (default lut8), DoubleGroup and SingleGroup its blocks
-	// a program holds (ConvertOptions'). The encoder's weights are fp16.
-	DitFormat                string
-	DoubleGroup, SingleGroup int
-	// Only, when not empty, writes these parts alone (doubles, singles, encoder).
-	Only map[string]bool
-}
-
-func (o *EditOptions) defaults() {
-	c := ConvertOptions{DitFormat: o.DitFormat, DoubleGroup: o.DoubleGroup, SingleGroup: o.SingleGroup}
-	c.defaults()
-	o.DitFormat, o.DoubleGroup, o.SingleGroup = c.DitFormat, c.DoubleGroup, c.SingleGroup
-	if len(o.Patterns) > 0 {
-		o.Sizes, o.Refs = nil, nil
-		for _, p := range o.Patterns {
-			if sz := [2]int{p.Width, p.Height}; !slices.Contains(o.Sizes, sz) {
-				o.Sizes = append(o.Sizes, sz)
-			}
-			if !slices.ContainsFunc(o.Refs, func(r []int) bool { return slices.Equal(r, p.Refs) }) {
-				o.Refs = append(o.Refs, p.Refs)
-			}
-		}
-	}
-	if len(o.Sizes) == 0 {
-		o.Sizes = DefaultSizes
-	}
-	if len(o.Refs) == 0 {
-		o.Refs = [][]int{{1}}
-	}
-}
-
-// EditPattern is an edit's picture size and its references, each of the picture's sides over
-// 1 (its size) or 2 (half its sides).
-type EditPattern struct {
-	Width, Height int
-	Refs          []int
-}
-
-// EditPatterns are the edits of FLUX.2 klein's export on Apple's Neural Engine: the picture as big
-// as its biggest reference, of 1024 or 512 pixels a side (hwnpu-image generate --image):
-// 1024 x 1024 with a reference of it, of half it, or both; 512 x 512 with one or two of it.
-var EditPatterns = []EditPattern{
-	{1024, 1024, []int{1}}, {512, 512, []int{1}}, {1024, 1024, []int{1, 2}}, {512, 512, []int{1, 1}}, {1024, 1024, []int{1, 2, 2}},
-}
-
-// sizesFor are the sizes of o (after defaults) that take a step with refs.
-func (o EditOptions) sizesFor(refs []int) [][2]int {
-	if len(o.Patterns) == 0 {
-		return o.Sizes
-	}
-	var out [][2]int
-	for _, sz := range o.Sizes {
-		if slices.ContainsFunc(o.Patterns, func(p EditPattern) bool { return p.Width == sz[0] && p.Height == sz[1] && slices.Equal(p.Refs, refs) }) {
-			out = append(out, sz)
-		}
-	}
-	return out
-}
+// On Apple's Neural Engine an edit (reference images) runs programs text to image does not: the
+// DiT's groups over the picture's rows and the references' (more rows than any size of text to
+// image) and the VAE's encoder. The export holds them for the edits models.yaml npu names
+// (ConvertOptions.Edits): the DiT's as more functions of the same programs, the weights once, so
+// that one download and one prebuilt hold both.
 
 // EditStep is the DiT's programs of a step with references of the picture's sides over Refs.
 type EditStep struct {
-	Refs    []int   `json:"refs"`
+	Refs []int `json:"refs"`
+	// Device says the programs are the DeviceExport's (ProgramManifest.Device), compiled on the
+	// device: an edit of PrebuiltKeys keys or more.
+	Device  bool    `json:"device,omitempty"`
 	Doubles []Group `json:"doubles"`
 	Singles []Group `json:"singles"`
 }
 
-// EditSize is the programs of an export of ConvertEdit for pictures of Width x Height: each
-// step's, and the encoder's stages of each reference size (by the picture's sides over it).
+// EditSize is the edits of an export for pictures of Width x Height: each step's programs, and
+// the encoder's stages of each reference size (by the picture's sides over it).
 type EditSize struct {
 	Width    int              `json:"width"`
 	Height   int              `json:"height"`
@@ -122,32 +41,8 @@ type EditSize struct {
 	Encoders map[int][]string `json:"encoders"`
 }
 
-// EditManifest is manifest.json of an export of ConvertEdit. Its programs are relative to its
-// directory.
-type EditManifest struct {
-	Kind    string            `json:"kind"`
-	Backend string            `json:"backend"`
-	Version int               `json:"version"`
-	Formats map[string]string `json:"formats"`
-	// Hidden and Latent are the DiT's width and the patches' channels, which the export of
-	// Convert read with it must have.
-	Hidden int        `json:"hidden"`
-	Latent int        `json:"latent"`
-	Sizes  []EditSize `json:"sizes"`
-}
-
-// At is the programs of m for pictures of w x h, false when it holds none.
-func (m *EditManifest) At(w, h int) (EditSize, bool) {
-	for _, s := range m.Sizes {
-		if s.Width == w && s.Height == h {
-			return s, true
-		}
-	}
-	return EditSize{}, false
-}
-
 // Step is the step of s with references of the picture's sides over divs (in any order: the
-// programs depend on the rows alone, which ConvertEdit lays out in the order of its Refs).
+// programs depend on the rows alone, which Convert lays out in the order of the step's Refs).
 func (s EditSize) Step(divs []int) (EditStep, bool) {
 	want := slices.Sorted(slices.Values(divs))
 	for _, st := range s.Steps {
@@ -158,241 +53,112 @@ func (s EditSize) Step(divs []int) (EditStep, bool) {
 	return EditStep{}, false
 }
 
-// ReadEditManifest reads dir/manifest.json of an export of ConvertEdit.
-func ReadEditManifest(dir string) (*EditManifest, error) {
-	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
-	if err != nil {
-		return nil, err
+// NeedsDevice reports whether a step with references of the picture's sides over divs runs the
+// programs of the DeviceExport, and whether they are here (whole: its .done). On AMD's NPU, and
+// for the steps of the export itself, it is false.
+func (p *Pipeline) NeedsDevice(divs []int) (needs, here bool) {
+	if p.prog == nil || p.prog.edit == nil || len(divs) == 0 {
+		return false, false
 	}
-	var m EditManifest
-	if err := json.Unmarshal(b, &m); err != nil {
-		return nil, err
+	st, ok := p.prog.edit.Step(divs)
+	if !ok || !st.Device {
+		return false, false
 	}
-	if m.Kind != EditKind {
-		return nil, fmt.Errorf("flux2klein: %s is not an export of the edit's programs", dir)
-	}
-	if m.Version != EditVersion {
-		return nil, fmt.Errorf("flux2klein: %s is of layout %d, this hwnpu reads %d: convert it again", dir, m.Version, EditVersion)
-	}
-	return &m, nil
+	dd := filepath.Join(filepath.Dir(p.prog.dir), p.prog.m.Device)
+	return true, llm.ExportDone(dd + ".done")
 }
 
-// ConvertEdit writes the edit's programs of the FLUX.2 klein repository root into out (Core AI
-// programs and manifest.json): for each size and each of o.Refs the DiT's groups over the
-// picture's and the references' rows, and the VAE's encoder in stages at each reference size.
-// Each program holds a function per size (SizeFunction), the weights once.
-func ConvertEdit(root, out string, o EditOptions, log io.Writer) error {
-	o.defaults()
-	if log == nil {
-		log = io.Discard
+// NPUEdits are the edits of m's export for vendor's NPU on generation gen: models.yaml npu's
+// edits, at the sizes NPUAspects gives their aspect ratios, in the order of aspect.All.
+func NPUEdits(m chat.Model, vendor, gen string) ([]Edit, error) {
+	spec := m.NPU[vendor]
+	if len(spec.Edits) == 0 {
+		return nil, nil
 	}
-	base, err := mil.ReadDit(root, o.Sizes[0][0], o.Sizes[0][1])
-	if err != nil {
-		return err
-	}
-	vc, err := mil.ReadVae(root)
-	if err != nil {
-		return err
-	}
-	w, err := mil.OpenWeights(root, base)
-	if err != nil {
-		return err
-	}
-	defer w.Close()
-	if err := os.MkdirAll(out, 0o755); err != nil {
-		return err
-	}
-	m := &EditManifest{Kind: EditKind, Backend: llm.BackendCoreAI, Version: EditVersion,
-		Formats: map[string]string{"dit": o.DitFormat, "encoder": "fp16"}, Hidden: base.Hidden, Latent: base.Latent}
-	for _, sz := range o.Sizes {
-		m.Sizes = append(m.Sizes, EditSize{Width: sz[0], Height: sz[1], Encoders: map[int][]string{}})
-	}
-	jobs := console.NewJobs(log)
-	const ext = ".aimodel"
-	// sized writes a program of a function for each of sizes (part(w, h)), unless Only leaves its
-	// kind out, and returns its name for each size
-	sized := func(kind string, sizes [][2]int, part func(w, h int) (*mil.Part, error), format string) ([]string, error) {
-		var names []string
-		var fns []llm.AIFunction
-		name := ""
-		for _, sz := range sizes {
-			p, err := part(sz[0], sz[1])
+	sizes := spec.SizesOn(gen)
+	var out []Edit
+	for _, a := range aspect.All {
+		names, ok := spec.Edits[a.Name]
+		if !ok {
+			continue
+		}
+		wh := sizes[a.Name]
+		e := Edit{Width: wh[0], Height: wh[1]}
+		for _, n := range names {
+			divs, err := ParseReferences(n)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%s: models.yaml npu %s edits %s: %w", m.Name, vendor, a.Name, err)
 			}
-			if name == "" {
-				name = p.Name + ext
-			}
-			f := SizeFunction(sz[0], sz[1])
-			names = append(names, name+"#"+f)
-			fns = append(fns, llm.AIFunction{Name: f, Model: p, Options: llm.Options{Backend: llm.BackendCoreAI, Format: format}})
+			e.Refs = append(e.Refs, divs)
 		}
-		if len(o.Only) > 0 && !o.Only[kind] {
-			return names, nil
-		}
-		jobs.Add(name, func() (string, error) {
-			if _, err := llm.WriteAIFunctions(filepath.Join(out, name), w, fns); err != nil {
-				return "", fmt.Errorf("flux2klein: %s: %w", name, err)
-			}
-			return fmt.Sprintf("%s, %d sizes", format, len(fns)), nil
-		})
-		return names, nil
+		out = append(out, e)
 	}
-	dit := func(w, h int, refs []int) (mil.Dit, error) {
-		c, err := mil.ReadDit(root, w, h)
-		if err != nil {
-			return c, err
-		}
-		c.Refs = refs
-		return c, c.CheckRefs()
-	}
-	for _, refs := range o.Refs {
-		if len(refs) == 0 || len(refs) > MaxReferences {
-			return fmt.Errorf("flux2klein: a step of %d references (1 to %d)", len(refs), MaxReferences)
-		}
-		// the sizes that take these references (every size, but for Patterns), steps[i] of sizes[i]
-		sizes := o.sizesFor(refs)
-		steps := make([]EditStep, len(sizes))
-		for i := range steps {
-			steps[i].Refs = refs
-		}
-		for _, gr := range mil.Groups(base.Doubles, o.DoubleGroup) {
-			names, err := sized("doubles", sizes, func(w, h int) (*mil.Part, error) {
-				c, err := dit(w, h, refs)
-				return mil.Doubles(c, gr[0], gr[1]), err
-			}, o.DitFormat)
-			if err != nil {
-				return err
-			}
-			for i := range steps {
-				steps[i].Doubles = append(steps[i].Doubles, Group{names[i], gr[0], gr[1]})
-			}
-		}
-		for _, gr := range mil.Groups(base.Singles, o.SingleGroup) {
-			names, err := sized("singles", sizes, func(w, h int) (*mil.Part, error) {
-				c, err := dit(w, h, refs)
-				return mil.Singles(c, gr[0], gr[1]), err
-			}, o.DitFormat)
-			if err != nil {
-				return err
-			}
-			for i := range steps {
-				steps[i].Singles = append(steps[i].Singles, Group{names[i], gr[0], gr[1]})
-			}
-		}
-		for i, sz := range sizes {
-			k := slices.IndexFunc(m.Sizes, func(s EditSize) bool { return s.Width == sz[0] && s.Height == sz[1] })
-			m.Sizes[k].Steps = append(m.Sizes[k].Steps, steps[i])
-		}
-	}
-	// the encoder of each reference size: one program a stage, a function for each size (a
-	// reference of half a picture's sides may be another's whole)
-	var encSizes [][2]int
-	for _, refs := range o.Refs {
-		for _, sz := range o.sizesFor(refs) {
-			for _, d := range refs {
-				if es := [2]int{sz[0] / d, sz[1] / d}; !slices.Contains(encSizes, es) {
-					encSizes = append(encSizes, es)
-				}
-			}
-		}
-	}
-	n := len(mil.VaeEncStages(vc, encSizes[0][0], encSizes[0][1]))
-	encNames := make([][]string, len(encSizes)) // by size, the stages
-	for s := 0; s < n; s++ {
-		names, err := sized("encoder", encSizes, func(w, h int) (*mil.Part, error) { return mil.VaeEncProgram(vc, w, h, s), nil }, "fp16")
-		if err != nil {
-			return err
-		}
-		for i := range encSizes {
-			encNames[i] = append(encNames[i], names[i])
-		}
-	}
-	for i, sz := range o.Sizes {
-		for _, refs := range o.Refs {
-			if !slices.Contains(o.sizesFor(refs), sz) {
-				continue
-			}
-			for _, d := range refs {
-				k := slices.Index(encSizes, [2]int{sz[0] / d, sz[1] / d})
-				m.Sizes[i].Encoders[d] = encNames[k]
-			}
-		}
-	}
-	// a job takes up to about 1.5 GB (a group of the DiT's blocks read as float32)
-	if err := jobs.Run(2 << 30); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(m, "", " ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(out, "manifest.json"), append(b, '\n'), 0o644)
+	return out, nil
 }
 
-// EditExportName is the directory PrepareEdit writes the edit's programs of name and o into.
-func EditExportName(name string, o EditOptions) string {
-	o.defaults()
-	var refs []string
-	for _, r := range o.Refs {
-		refs = append(refs, mil.RefsName(r))
+// AppleOptions are the ConvertOptions of m's export for Apple's Neural Engine on chip gen, drawing
+// w x h first: every size and edit of models.yaml npu.apple in one export (the weights once),
+// its weight formats unless text or dit name others.
+func AppleOptions(m chat.Model, gen string, w, h int, text, dit string) (ConvertOptions, error) {
+	as, err := NPUAspects(m, "apple", gen)
+	if err != nil {
+		return ConvertOptions{}, err
 	}
-	tag := aspect.Tag(o.Sizes) + "-" + strings.Join(refs, "+")
-	if len(o.Patterns) > 0 {
-		// each size with its references: the patterns' tag (not every size takes every Refs)
-		var ps []string
-		for _, p := range o.Patterns {
-			ps = append(ps, fmt.Sprintf("%dx%d:%s", p.Width, p.Height, mil.RefsName(p.Refs)))
-		}
-		tag = fmt.Sprintf("%dedits-%08x", len(o.Patterns), crc32.ChecksumIEEE([]byte(strings.Join(ps, ","))))
+	edits, err := NPUEdits(m, "apple", gen)
+	if err != nil {
+		return ConvertOptions{}, err
 	}
-	return fmt.Sprintf("%s-edit-%s-%s-v%d.%s", strings.ToLower(name), tag, o.DitFormat, EditVersion, llm.BackendCoreAI)
+	spec := m.NPU["apple"]
+	if text == "" {
+		text = spec.Text
+	}
+	if dit == "" {
+		dit = spec.Dit
+	}
+	return ConvertOptions{Width: w, Height: h, Sizes: aspect.SizesOf(as), Edits: edits, TextFormat: text, DitFormat: dit}, nil
 }
 
-// PrepareEdit makes the edit's programs of s's model ready in s.Dir for Apple's Neural Engine,
-// as Prepare makes the export of Convert ready: from the shared layers, else converted from the
-// checkpoint (downloaded when missing). It returns their directory.
-func PrepareEdit(ctx context.Context, s Setup, o EditOptions) (string, error) {
+// PrepareDevice makes the DeviceExport of s's export ready beside it (Prepare's): the programs of
+// the edits of PrebuiltKeys keys or more, which only such an edit needs. From the shared layers,
+// else converted from the checkpoint (downloaded when missing). It returns its directory, "" when
+// the export has none. The device compiles its programs at their first load.
+func PrepareDevice(ctx context.Context, s Setup) (string, error) {
+	o := s.ConvertOptions
 	o.Only = nil
 	o.defaults()
 	log := s.Log
 	if log == nil {
 		log = io.Discard
 	}
-	out := filepath.Join(s.Dir, EditExportName(s.Name, o))
-	if llm.FetchExport(ctx, out, out+".done") {
-		return out, nil
-	}
-	var want []chat.File
-	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f})
-	}
-	if err := chat.FetchFiles(ctx, want, log); err != nil {
+	out, err := Prepare(ctx, s)
+	if err != nil {
 		return "", err
 	}
-	if err := llm.MayConvert(ctx, out); err != nil {
+	m, err := ReadProgramManifest(out)
+	if err != nil {
 		return "", err
 	}
-	if err := ctx.Err(); err != nil {
+	if m.Device == "" {
+		return "", nil
+	}
+	dout := DeviceExport(out)
+	if llm.FetchExport(ctx, dout, dout+".done") {
+		return dout, nil
+	}
+	if err := fetchCheckpoint(ctx, s.Repo, dout, log); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
-		return "", err
-	}
-	if err := os.RemoveAll(out); err != nil {
-		return "", err
-	}
-	fmt.Fprintf(log, "converting %s (the edit's programs: %s, DiT %s): a few minutes; the first edit then compiles them for the NPU\n",
-		filepath.Base(out), aspect.Tag(o.Sizes), o.DitFormat)
+	fmt.Fprintf(log, "converting %s (the edits of a reference of the picture's size): a minute; their first edit then compiles them on the device\n", filepath.Base(dout))
 	t0 := time.Now()
-	if err := ConvertEdit(chat.RepoDir(s.Repo), out, o, log); err != nil {
+	o.Only = map[string]bool{"device": true}
+	if err := Convert(chat.RepoDir(s.Repo), out, o, log); err != nil {
 		return "", err
 	}
 	fmt.Fprintf(log, "converted in %s\n", time.Since(t0).Round(time.Second))
 	debug.FreeOSMemory()
-	if err := cache.WriteDone(out+".done", out); err != nil {
+	if err := cache.WriteDone(dout+".done", dout); err != nil {
 		return "", err
 	}
-	llm.ShareExport(ctx, out)
-	return out, nil
+	llm.ShareExport(ctx, dout)
+	return dout, nil
 }

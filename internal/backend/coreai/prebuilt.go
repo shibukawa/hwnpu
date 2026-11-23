@@ -157,9 +157,29 @@ func Assets(paths []string) ([]string, error) {
 // the Neural Engine), and the same programs compiled on the device ran (T5-XXL 220 to 230 s); FLUX.2
 // klein's Qwen3 ran from its prebuilts but slower than compiled on the device (112 s against 81 s,
 // docs/design/distribution.md), so a prebuilt text encoder gains nothing either.
+//
+// And a program whose name ends in _device (NAME_device.aimodel): one coreai-build leaves to the
+// GPU where the device's compiler takes it, as FLUX.2 klein's edits of 8192 keys or more
+// (flux2klein.PrebuiltKeys).
 func LeftToDevice(dir string) bool {
 	base := strings.ToLower(filepath.Base(filepath.Clean(dir)))
-	return strings.HasPrefix(base, "vae") || strings.HasPrefix(base, "text")
+	return strings.HasPrefix(base, "vae") || strings.HasPrefix(base, "text") ||
+		strings.HasSuffix(strings.TrimSuffix(base, ".aimodel"), "_device")
+}
+
+// NothingToPrebuild reports whether every program under export is LeftToDevice (FLUX.2 klein's
+// DeviceExport): no prebuilt of it is made, or looked for.
+func NothingToPrebuild(export string) bool {
+	all, err := Assets([]string{export})
+	if err != nil {
+		return false
+	}
+	for _, a := range all {
+		if !LeftToDevice(a) {
+			return false
+		}
+	}
+	return true
 }
 
 // isAsset reports whether dir is a Core AI program hwnpu lowered or converted: its bytecode and

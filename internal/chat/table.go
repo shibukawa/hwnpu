@@ -271,7 +271,8 @@ type hubOrigin struct {
 }
 
 // npuEntry is a model's export for one NPU vendor (npu): formats (text, dit), sizes (the default on
-// every generation: aspect ratio to WIDTHxHEIGHT) and generations (overrides of sizes by generation).
+// every generation: aspect ratio to WIDTHxHEIGHT), generations (overrides of sizes by generation)
+// and edits (by aspect ratio, the references of each edit the export holds programs for).
 type npuEntry struct {
 	Formats *struct {
 		Text string `yaml:"text"`
@@ -279,6 +280,7 @@ type npuEntry struct {
 	} `yaml:"formats"`
 	Sizes       map[string]string            `yaml:"sizes"`
 	Generations map[string]map[string]string `yaml:"generations"`
+	Edits       map[string][]string          `yaml:"edits"`
 }
 
 // NPUVendors are the NPU vendors a model's npu names.
@@ -896,6 +898,15 @@ func toModel(name string, e *modelEntry) (Model, error) {
 					return m, err
 				}
 			}
+			for a, refs := range ne.Edits {
+				if _, ok := spec.Sizes[a]; !ok {
+					return m, fmt.Errorf("model %s: npu %s edits %q is not one of its sizes", name, vendor, a)
+				}
+				if len(refs) == 0 {
+					return m, fmt.Errorf("model %s: npu %s edits %s lists no references", name, vendor, a)
+				}
+			}
+			spec.Edits = ne.Edits
 			m.NPU[vendor] = spec
 		}
 	}

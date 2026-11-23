@@ -170,7 +170,7 @@ k.FatalIfErrorf(k.Run())
 
 - So far it has the models of speech and text, the depth and the faces of pictures, and drawing and editing pictures (FLUX.2 klein). The other picture models (Anima, Chroma), object and pose detection and the others are only in the commands yet
 - It was run on AMD's NPU (Ryzen AI 9 365) and on a Mac (M3, Core AI): the three samples, the camera and the window. On Intel the commands do the same preparing and loading, but they were not run through `ai`
-- Drawing from reference pictures on Apple's Neural Engine takes programs of their own: use `imagegen.Edit` in place of `imagegen.Generate` (it prepares them; the first edit compiles them)
+- On Apple's Neural Engine FLUX.2 klein draws from reference pictures at 1024 x 1024 (one of 1024, and none, one or two of 512) and 512 x 512 (one or two of 512), in the same export as drawing from a prompt (`Generator.EditSizes`)
 
 ## AMD (running kernels directly)
 

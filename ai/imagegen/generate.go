@@ -1,12 +1,14 @@
 package imagegen
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"image"
 	"io"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 
@@ -19,17 +21,18 @@ import (
 
 // Generate is the use of a model that draws pictures for an app: a model, a family or a use of
 // the definitions ("image", "FLUX.2-klein-4B", "anima", "chroma", "flux3-klein"). FLUX.2 klein
-// also draws from reference pictures on AMD's NPU; on Apple's Neural Engine that takes programs
-// of their own (Edit).
+// also draws from reference pictures: on AMD's NPU at every size, on Apple's Neural Engine at the
+// sizes of models.yaml npu.apple's edits (512 x 512; 1024 x 1024 with Edit, whose programs of a
+// reference of 1024 are an export of their own, compiled on the device).
 func Generate(name string) ai.Use[*Generator] {
 	return ai.Define[*Generator](role, name)
 }
 
-// Edit is Generate that draws from reference pictures (Options.References) on every NPU: on
-// Apple's Neural Engine it prepares FLUX.2 klein's edit programs too (the DiT over the picture's
-// and the reference's rows, and the VAE's encoder), which Generate leaves out: they are converted
-// from the checkpoint (a 16 GB download), and compiled at the first edit. The other models draw
-// from a prompt alone.
+// Edit is Generate for an app that draws from reference pictures (Options.References): on Apple's
+// Neural Engine it prepares FLUX.2 klein's edits at 1024 x 1024 too (a reference of 1024 and none,
+// one or two of 512), an export of their own beside the model's (about 5 GB) that the device
+// compiles at the prepare's compile (hours on an M1); Generate draws from references at 512 x 512
+// alone there. The other models draw from a prompt alone.
 func Edit(name string) ai.Use[*Generator] {
 	return ai.Define[*Generator](editRole, name)
 }
@@ -85,15 +88,17 @@ func familyOf(m chat.Model) string {
 	return ""
 }
 
-// newRole is the role of a generator, with FLUX.2 klein's edit programs on Apple's Neural Engine
-// when edit.
+// newRole is the role of a generator; edit prepares FLUX.2 klein's edits of a reference of the
+// picture's size too on Apple's Neural Engine (flux2klein.PrepareDevice: an export of their own,
+// compiled on the device), which Generate leaves out.
 func newRole(name string, edit bool) *airole.Role {
 	return &airole.Role{
 		Name:  name,
 		Kinds: []chat.Kind{chat.KindImage},
 		// 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		// 2: Anima, Chroma and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
-		Revision: 2,
+		// 3: FLUX.2 klein's export on Apple's of every size and edit in one, and one beside it
+		Revision: 3,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 			var f airole.Files
 			fam := familyOf(e.Base)
@@ -182,7 +187,12 @@ type Generator struct {
 	// klein on Apple's), else the first; amd whether it runs on AMD's NPU, whose programs are made
 	// at Prepare (Warm does nothing)
 	edits, warmAll, amd bool
-	p                   family
+	// editSizes are the sizes it draws from references at, nil for every one of sizes; editRefs
+	// the references of each size's edits, each the picture's sides over 1 or 2 in order, nil for
+	// any number of the picture's size (FLUX.2 klein on Apple's: models.yaml npu.apple edits)
+	editSizes []image.Point
+	editRefs  map[image.Point][][]int
+	p         family
 }
 
 // Model is the name of the model in the definitions.
@@ -197,22 +207,62 @@ func (g *Generator) Edits() bool { return g.edits }
 // Sizes are the picture sizes the model draws on this machine's NPU.
 func (g *Generator) Sizes() []image.Point { return append([]image.Point(nil), g.sizes...) }
 
+// EditSizes are the picture sizes it draws from references at on this machine's NPU (none when it
+// does not edit).
+func (g *Generator) EditSizes() []image.Point {
+	if !g.edits {
+		return nil
+	}
+	if g.editSizes == nil {
+		return g.Sizes()
+	}
+	return append([]image.Point(nil), g.editSizes...)
+}
+
 // SizeFor is the size of Sizes nearest w x h in shape; between sizes of one shape, the nearest
 // in pixels. A picture of another shape is drawn from by stretching it to this size, or by
 // leaving the crop to Generate.
-func (g *Generator) SizeFor(w, h int) image.Point {
+func (g *Generator) SizeFor(w, h int) image.Point { return byNearness(g.sizes, w, h)[0] }
+
+// byNearness is sizes from the nearest w x h in shape, then in pixels (as they are for none).
+func byNearness(sizes []image.Point, w, h int) []image.Point {
+	out := slices.Clone(sizes)
 	if w <= 0 || h <= 0 {
-		return g.sizes[0]
+		return out
 	}
-	best, score := g.sizes[0], math.Inf(1)
-	for _, s := range g.sizes {
+	score := func(s image.Point) float64 {
 		shape := math.Abs(math.Log(float64(w)/float64(h)) - math.Log(float64(s.X)/float64(s.Y)))
 		area := math.Abs(math.Log(float64(w)*float64(h)) - math.Log(float64(s.X)*float64(s.Y)))
-		if sc := shape*100 + area; sc < score {
-			best, score = s, sc
+		return shape*100 + area
+	}
+	slices.SortStableFunc(out, func(a, b image.Point) int { return cmp.Compare(score(a), score(b)) })
+	return out
+}
+
+// editFor is the size and the references (the picture's sides over each) of an edit from n
+// references for a picture of about w x h: the nearest of EditSizes with an edit of n.
+func (g *Generator) editFor(w, h, n int) (image.Point, []int, error) {
+	for _, s := range byNearness(g.EditSizes(), w, h) {
+		if g.editRefs == nil { // any number of the picture's size
+			divs := make([]int, n)
+			for i := range divs {
+				divs[i] = 1
+			}
+			return s, divs, nil
+		}
+		for _, r := range g.editRefs[s] {
+			if len(r) == n {
+				return s, r, nil
+			}
 		}
 	}
-	return best
+	var have []string
+	for _, s := range g.editSizes {
+		for _, r := range g.editRefs[s] {
+			have = append(have, fmt.Sprintf("%s at %d x %d", referenceNames(r), s.X, s.Y))
+		}
+	}
+	return image.Point{}, nil, fmt.Errorf("ai/imagegen: %s here draws from no %d reference(s) (it draws from %s)", g.name, n, strings.Join(have, ", "))
 }
 
 // SizeOf is the size a name of one means for the model, as hwnpu-image's --size takes it: an
@@ -228,7 +278,7 @@ func (g *Generator) SizeOf(spec string) (image.Point, error) {
 }
 
 // Warm draws a picture of one step at each of Sizes (FLUX.2 klein; the first size alone for the
-// others), from a gray reference when it edits: its programs are loaded only as a picture needs
+// others), from a gray reference at the sizes it edits at: its programs are loaded only as a picture needs
 // them (the text encoder, the VAE's encoder, the DiT's groups of the step, the VAE's decoder), so
 // that the load alone compiles none of them. The compile of "models prepare" (ai.Warmer) calls
 // it, so that no picture waits for a compile. On AMD's NPU, whose programs are made at Prepare,
@@ -245,7 +295,7 @@ func (g *Generator) Warm(ctx context.Context) error {
 	defer g.mu.Unlock()
 	for _, s := range sizes {
 		o := Options{Width: s.X, Height: s.Y, Steps: 1, Seed: 1}
-		if g.edits {
+		if at, _, err := g.editFor(s.X, s.Y, 1); g.edits && err == nil && at == s {
 			ref := image.NewRGBA(image.Rect(0, 0, s.X, s.Y))
 			for i := range ref.Pix {
 				ref.Pix[i] = 128

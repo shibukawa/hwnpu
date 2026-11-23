@@ -1000,9 +1000,14 @@ models:
     # 1024 x 1024 on an M1, 4.9 GB (in the VAE's stages: 3.8 GiB of the process and 0.8 GiB on the
     # Neural Engine; 3.1 GB at 512 x 512), measured (docs/design/image-apple.md, docs/design/image-models.md)
     memory: {amd: 3.9, apple: 4.9}
-    # the repository's diffusers layout (its single-file copy of the DiT is not fetched)
-    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
-    bytes: {amd: 12.50e9, apple: 1.6e10}
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst). Apple: the
+    # export of the eight sizes and the edits at 512 x 512 below
+    # (flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v3.coreai, 7.76 GB packed) and the
+    # chip's prebuilt programs (0.06 to 0.21 GB, the M2's the largest); an app's edits at 1024 x
+    # 1024 (imagegen.Edit) fetch the export beside it too (its -device.coreai, 3.73 GB packed).
+    # Converting here fetches the repository's diffusers layout instead (16 GB; not its
+    # single-file DiT)
+    bytes: {amd: 12.50e9, apple: 7.97e9}
     features: [edit]
     # The NPU exports: each vendor's weight formats and picture sizes. The sizes are the default on
     # every generation of the vendor's NPU, and a generation that a bigger one does better
@@ -1022,6 +1027,15 @@ models:
           "3:2": 1152x768
           "4:3": 1024x768
           "16:9": 1280x704
+        # the edits in the same export: a picture of 1024 x 1024 from one reference of 1024, one of
+        # 1024 and one of 512, or one of 1024 and two of 512; one of 512 x 512 from one or two of
+        # 512 (the VAE's encoder at 1024 and 512). Those at 512 x 512 are functions of the same DiT
+        # programs (the weights once, prebuilt); those at 1024 x 1024 (8192 keys or more, which
+        # coreai-build cannot compile for the Neural Engine) programs of their own, compiled on the
+        # device at the first such edit (flux2klein.PrebuiltKeys)
+        edits:
+          "1:1": ["1", "1+1@half", "1+2@half"]
+          "1:1s": ["1", "2"]
       amd:
         sizes:
           "1:1": 1024x1024
@@ -1032,7 +1046,7 @@ models:
           "3:2": 1248x832
           "4:3": 1168x880
           "16:9": 1344x768
-    about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image; on Apple's Neural Engine with programs of their own, converted at the first edit); AMD's NPU (about 29 s at 1024 x 1024, an edit 1 min, 37 s with --ref-half) and Apple's Neural Engine (text to image: about 41 s at 1024 x 1024, 11 s at 512 x 512 on an M1); Apache-2.0"
+    about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image; on Apple's Neural Engine at 1024 x 1024 and 512 x 512, in the same export); AMD's NPU (about 29 s at 1024 x 1024, an edit 1 min, 37 s with --ref-half) and Apple's Neural Engine (text to image: about 41 s at 1024 x 1024, 11 s at 512 x 512 on an M1); Apache-2.0"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
   # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
   # converted when a picture first takes it
