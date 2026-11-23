@@ -18,7 +18,12 @@
 //     its process and returns what it returned
 //   - an iterator (iter.Seq, iter.Seq2 and their shapes: flow.Stream) is a stream: an argument
 //     is read from the caller as the server ranges over it, a result is ranged over by the
-//     caller as the server produces it; a caller that stops early stops the producer
+//     caller as the server produces it; a caller that stops early stops the producer and waits
+//     for it to end; a call's pointer results are sent again with the end of its last stream
+//     (a piece's stats, whole when the music ends)
+//   - a value of a type registered with RegisterRef stays in the server behind a handle (a
+//     picture's encoding), and is the server's own again when it is given back
+//   - a variadic method's arguments go as their slice
 //
 // airpc knows nothing of the ai package; internal/aihost serves the ai package on it.
 package airpc
@@ -70,6 +75,8 @@ type funcRef struct {
 	Path   []int
 	ID     uint64
 	Stream bool
+	// Ref is an object of the server's (RegisterRef)
+	Ref bool
 }
 
 // Session is one end of a connection.
@@ -275,16 +282,17 @@ func (s *Session) Forget(id uint64) {
 	s.mu.Unlock()
 }
 
-// source is a stream this end produces: an iterator, and what to call when it has ended.
+// source is a stream this end produces: an iterator, and what to call when it has ended (before
+// its end is sent: the values it returns go with the end, the call's results again).
 type source struct {
 	seq     reflect.Value
 	pulled  atomic.Bool
 	stopped atomic.Bool
-	ended   func()
+	ended   func() [][]byte
 }
 
 // addSource keeps seq as a stream for the other end to read and returns its id.
-func (s *Session) addSource(seq reflect.Value, ended func()) uint64 {
+func (s *Session) addSource(seq reflect.Value, ended func() [][]byte) uint64 {
 	id := s.next.Add(1)
 	s.mu.Lock()
 	s.sources[id] = &source{seq: seq, ended: ended}
@@ -298,9 +306,6 @@ func (s *Session) produce(id uint64, src *source) {
 		s.mu.Lock()
 		delete(s.sources, id)
 		s.mu.Unlock()
-		if src.ended != nil {
-			src.ended()
-		}
 	}()
 	yt := src.seq.Type().In(0)
 	var failed error
@@ -331,13 +336,17 @@ func (s *Session) produce(id uint64, src *source) {
 	if err != nil {
 		end.Err, _ = encodeError(err)
 	}
+	if src.ended != nil {
+		end.Values = src.ended()
+	}
 	s.send(end)
 }
 
 // sink is an iterator of type t that reads the stream id of the other end: it asks for its items
-// as it is ranged over (once), and stops the producer when its loop ends early. ended is called
-// when it has been read.
-func (s *Session) sink(t reflect.Type, id uint64, ended func()) reflect.Value {
+// as it is ranged over (once), and stops the producer when its loop ends early (and waits for it
+// to end, as a loop over an iterator of this process does). ended is called when it has been
+// read, with its end (nil when the session ended first).
+func (s *Session) sink(t reflect.Type, id uint64, ended func(end *msg)) reflect.Value {
 	var once atomic.Bool
 	return reflect.MakeFunc(t, func(args []reflect.Value) []reflect.Value {
 		yield := args[0]
@@ -346,8 +355,9 @@ func (s *Session) sink(t reflect.Type, id uint64, ended func()) reflect.Value {
 			s.yieldErr(yield, errors.New("airpc: a stream of the other process is read once"))
 			return nil
 		}
+		var last *msg
 		if ended != nil {
-			defer ended()
+			defer func() { ended(last) }()
 		}
 		q := newQueue()
 		s.mu.Lock()
@@ -369,13 +379,23 @@ func (s *Session) sink(t reflect.Type, id uint64, ended func()) reflect.Value {
 			s.yieldErr(yield, err)
 			return nil
 		}
+		stopped := false // the loop ended: the items left are dropped until the end comes
 		for {
 			m, ok := q.pop()
 			if !ok {
-				s.yieldErr(yield, ErrClosed)
+				if !stopped {
+					s.yieldErr(yield, ErrClosed)
+				}
 				return nil
 			}
+			if stopped && m.Kind != kEnd {
+				continue
+			}
 			if m.Kind == kEnd {
+				last = m
+				if stopped {
+					return nil
+				}
 				if len(m.Err) > 0 {
 					e, _ := decodeError(m.Err)
 					if e != nil {
@@ -400,7 +420,7 @@ func (s *Session) sink(t reflect.Type, id uint64, ended func()) reflect.Value {
 			}
 			if !yield.Call(vals)[0].Bool() {
 				s.send(&msg{Kind: kStop, ID: id})
-				return nil
+				stopped = true
 			}
 		}
 	})

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -284,14 +285,81 @@ func TestThroughHwnpud(t *testing.T) {
 	}
 }
 
-func TestRoleNotThroughHwnpud(t *testing.T) {
+func TestRoleWithoutRemote(t *testing.T) {
 	serve(t)
-	app := ai.NewApp("local", ai.Define[*fakeModel](localRole, "speech"))
+	ctx := context.Background()
+	use := ai.Define[*fakeModel](localRole, "speech")
+	app := ai.NewApp("local", use)
 	app.Store = testStore(t)
-	if _, err := app.Plan(context.Background()); err == nil || !strings.Contains(err.Error(), "do not run through hwnpud") {
+	rt, err := app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	if _, err := use.Get(ctx, rt); err == nil || !strings.Contains(err.Error(), daemon.ModeEnv+"=off") {
 		t.Errorf("a role without Remote: %v", err)
 	}
-	if _, err := app.Open(context.Background()); err == nil || !strings.Contains(err.Error(), daemon.ModeEnv+"=off") {
-		t.Errorf("open: %v", err)
+}
+
+// fakeEncoding is what a fake model's Encode gives: its state stays in hwnpud (a reference, as
+// vision.PictureEncoding's).
+type fakeEncoding struct {
+	of     string
+	Took   time.Duration
+	remote *airpc.Handle
+}
+
+func init() {
+	airpc.RegisterRef(func(e *fakeEncoding, h *airpc.Handle) { e.remote = h }, func(e *fakeEncoding) *airpc.Handle { return e.remote })
+}
+
+func (f *fakeModel) Encode(ctx context.Context, s string) (*fakeEncoding, error) {
+	if f.remote != nil {
+		return airpc.Call1[*fakeEncoding](f.remote, ctx, "Encode", s)
+	}
+	return &fakeEncoding{of: s, Took: time.Second}, nil
+}
+
+func (f *fakeModel) Decode(e *fakeEncoding, suffix string) (string, error) {
+	if f.remote != nil {
+		return airpc.Call1[string](f.remote, context.Background(), "Decode", e, suffix)
+	}
+	if e.of == "" {
+		return "", errors.New("an encoding of no state")
+	}
+	return e.of + suffix, nil
+}
+
+// TestEngineState: a model's result that holds state of hwnpud's (Segmenter.Encode's) stays
+// there behind a handle and is used there again.
+func TestEngineState(t *testing.T) {
+	serve(t)
+	ctx := context.Background()
+	use := ai.Define[*fakeModel](fakeRole, "transcribe")
+	app := ai.NewApp("state", use).Memory(8)
+	app.Store = testStore(t)
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := app.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	m, err := use.Get(ctx, rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := m.Encode(ctx, "picture")
+	if err != nil || e.remote == nil || e.of != "" || e.Took != time.Second {
+		t.Fatalf("Encode: %+v, %v", e, err)
+	}
+	for _, s := range []string{" a", " b"} {
+		if out, err := m.Decode(e, s); err != nil || out != "picture"+s {
+			t.Errorf("Decode: %q, %v", out, err)
+		}
+	}
+	if _, err := m.Decode(&fakeEncoding{}, "x"); err == nil {
+		t.Error("an encoding of this process decoded with hwnpud's state")
 	}
 }

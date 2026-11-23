@@ -9,6 +9,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/notes"
 )
@@ -25,8 +26,9 @@ func Notes(name string) ai.Use[*NoteTranscriber] {
 // notesRole's models run as the converted models do (converted.go): the constant-Q transform
 // and the making of notes on the host, the network on the NPU or the CPU.
 var notesRole = &airole.Role{
-	Name:  "notes",
-	Kinds: []chat.Kind{chat.KindNotes},
+	Remote: func(h *airpc.Handle) io.Closer { return &NoteTranscriber{remote: h} },
+	Name:   "notes",
+	Kinds:  []chat.Kind{chat.KindNotes},
 	Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 		return convertedPrepare(e, func(backend string) (string, string, error) {
 			return notes.Prepare(e.Ctx, notes.Setup{Dir: e.Dir, Repo: e.Model.Source(), SHA256: e.Model.SHA256[notes.ModelFile], Backend: backend, Log: e.Log})
@@ -56,21 +58,35 @@ var notesRole = &airole.Role{
 // NoteTranscriber writes down the notes of music (Basic Pitch): any instrument, several notes
 // at once, with their pitch bends. It runs one request at a time; others wait.
 type NoteTranscriber struct {
-	mu    sync.Mutex
-	t     *notes.Transcriber
-	r     route
-	model string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	t      *notes.Transcriber
+	r      route
+	model  string
 }
 
 // Model is the name of the model in the definitions.
-func (t *NoteTranscriber) Model() string { return t.model }
+func (t *NoteTranscriber) Model() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Model")
+	}
+	return t.model
+}
 
 // Device is where the model runs: npu or cpu.
-func (t *NoteTranscriber) Device() string { return t.r.device }
+func (t *NoteTranscriber) Device() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Device")
+	}
+	return t.r.device
+}
 
 // Where says where the model runs, for a log: "all on the NPU", "on the CPU (ONNX Runtime, 1
 // threads)", "on the CPU interpreter", ...
 func (t *NoteTranscriber) Where() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Where")
+	}
 	if w := t.r.Where(); w != "" {
 		return w
 	}
@@ -121,6 +137,9 @@ type NoteList struct {
 
 // Transcribe writes down the notes of music (mono, at NotesRate, in [-1, 1]).
 func (t *NoteTranscriber) Transcribe(ctx context.Context, pcm []float32, o NotesOptions) (NoteList, error) {
+	if t.remote != nil {
+		return airpc.Call1[NoteList](t.remote, ctx, "Transcribe", pcm, o)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t0 := time.Now()
@@ -141,7 +160,14 @@ func (t *NoteTranscriber) Transcribe(ctx context.Context, pcm []float32, o Notes
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *NoteTranscriber) Close() error {
+	if t.remote != nil {
+		return t.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.t.Close()
+}
+
+func init() {
+	airole.Register(notesRole)
 }

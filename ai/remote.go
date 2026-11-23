@@ -8,7 +8,6 @@ import (
 	"os"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -24,7 +23,8 @@ import (
 // which plans, prepares, compiles and loads the models in its own process, so that Apple's
 // compiler keeps one cache for every program (coreai-cache/<OS>/hwnpud/) and a model one
 // program prepared is compiled for the next. A Use's Get gives a model of the app's own type
-// whose methods call the one hwnpud loaded (airole.Role.Remote). The app's code is the same
+// whose methods call the one hwnpud loaded (airole.Role.Remote; every role of hwnpu's packages
+// has one). The app's code is the same
 // either way. A test (go test) and hwnpud's engine itself run the models in their own process.
 
 // Host is what hwnpud's engine serves on a session of the ai package (internal/aihost): an app's
@@ -161,12 +161,12 @@ func (s StoreSpec) store() Store {
 	return Store{Models: o, Prepared: s.Prepared, Definitions: s.AppDefinitions}
 }
 
-// daemonClient is this process's client of hwnpud, asked once (daemon.Use: HWNPU_DAEMON, the
-// protocol, the settings that differ): nil to run the models here.
+// daemonClient is this process's client of hwnpud, asked once for a socket (daemon.Use:
+// HWNPU_DAEMON, the protocol, the settings that differ): nil to run the models here.
 var daemonClient struct {
 	sync.Mutex
-	asked bool
-	c     *daemon.Client
+	socket string // asked of the hwnpud of this socket ("": not asked)
+	c      *daemon.Client
 }
 
 // through is hwnpud's client when the app's models run there: never for an app hwnpud made
@@ -177,30 +177,15 @@ func (a *App) through(ctx context.Context) (*daemon.Client, error) {
 	}
 	daemonClient.Lock()
 	defer daemonClient.Unlock()
-	if daemonClient.asked {
+	if daemonClient.socket == daemon.SocketPath() {
 		return daemonClient.c, nil
 	}
 	c, err := daemon.Use(ctx, daemon.DefaultMode(), Console())
 	if err != nil {
 		return nil, fmt.Errorf("ai: %w", err)
 	}
-	daemonClient.asked, daemonClient.c = true, c
+	daemonClient.socket, daemonClient.c = daemon.SocketPath(), c
 	return c, nil
-}
-
-// remoteRoles is nil when every use of the app has a role that runs through hwnpud.
-func (a *App) remoteRoles() error {
-	var missing []string
-	for _, r := range a.requirements() {
-		if r.role.Remote == nil && !slices.Contains(missing, r.role.Name) {
-			missing = append(missing, r.role.Name)
-		}
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	return fmt.Errorf("ai: the models of %s (%s) do not run through hwnpud yet; %s=off runs them in this process",
-		a.Name, strings.Join(missing, ", "), daemon.ModeEnv)
 }
 
 // session opens a session with hwnpud's engine and the handle of its Host.
@@ -218,9 +203,6 @@ func (a *App) session(ctx context.Context, c *daemon.Client) (*airpc.Session, *a
 
 // planRemote is Plan made by hwnpud.
 func (a *App) planRemote(ctx context.Context, c *daemon.Client) (*Plan, error) {
-	if err := a.remoteRoles(); err != nil {
-		return nil, err
-	}
 	s, host, spec, err := a.session(ctx, c)
 	if err != nil {
 		return nil, err
@@ -272,9 +254,6 @@ type remoteRuntime struct {
 
 // openRemote is Open in hwnpud.
 func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (*Runtime, error) {
-	if err := a.remoteRoles(); err != nil {
-		return nil, err
-	}
 	rt := &Runtime{app: a, loaded: map[string]*loadedModel{}}
 	for _, o := range opts {
 		o(&rt.o)
@@ -304,7 +283,8 @@ func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (
 // The caller holds rt.mu.
 func (r *remoteRuntime) get(ctx context.Context, rt *Runtime, req requirement) (io.Closer, error) {
 	if req.role.Remote == nil {
-		return nil, rt.app.remoteRoles()
+		// every role of hwnpu's packages has one: a role without is a test's
+		return nil, fmt.Errorf("ai: the role %s has no side in the app's process (airole.Role.Remote); %s=off runs it here", req.role.Name, daemon.ModeEnv)
 	}
 	// hwnpud releases the others of the use's group of InTurns as it loads it
 	for _, k := range rt.app.turnOf(req.key()) {

@@ -1146,5 +1146,6 @@ var depthRole = &airole.Role{
 - **What differs by NPU** is read from `e.NPU`: an export of IRON when `e.NPU.AMD()`, else programs in `e.NPU.Format` (`coreai`, `intel`)
 - **Give both a batch form and a stream form.** The stream form may start as a batch call at each segment (`Final`)
 - **A model's value is an `io.Closer`** and runs one request at a time (it locks inside)
+- **The role also runs in hwnpud** ([hwnpud](design/hwnpud.md)): register it (`airole.Register` in an `init`) and give it `Remote`, which makes the model's type around an `*airpc.Handle`; each public method that touches the model starts with `if d.remote != nil { return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o) }` (`airpc.Value` for one without a context, `Release` for `Close`). Its arguments and results cross with gob: exported fields, functions as callbacks, streams as streams; a result holding the engine's state that is not plain data stays there with `airpc.RegisterRef`
 - **Tests** can go from the plan to the load without an NPU, with a fake `Role` (`ai/ai_test.go`). What depends on time uses `testing/synctest`
 - A module outside cannot import `internal/airole`, so only packages inside hwnpu can make a `Use`

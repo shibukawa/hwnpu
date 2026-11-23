@@ -2,7 +2,7 @@
 
 [English](hwnpud.md)
 
-状態: Mac と、AMD の NPU の Linux で段取りの 1 を、Mac で段取りの 3 の前半を実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
+状態: Mac と、AMD の NPU の Linux で段取りの 1 を、Mac で段取りの 3 を状態とキャッシュのコマンドのほかは実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
 キャッシュを持ち、プログラムを読み込んで動かす。hwnpu のコマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) と
 `ai` のパッケージで作ったアプリは Unix ドメインソケットでこれにつなぐ。自分の実行に要るものを渡し、返ってきたものを描くだけで、
 自分のプロセスで NPU を動かすこともモデルを管理することもしなくなる。Windows は実機で調べてから。
@@ -30,7 +30,7 @@ Mac で段取りの 1 (`cmd/hwnpud`、`internal/daemon`):
 - M3: PLaMo 3 Translate 2B のプログラムは `hwnpud` の名前で初回 22 秒 (Core AI の項目 2.5 GB)。次の実行は
   モデルがエンジンに残っていて、始めから終わりまで 0.6 秒
 
-Mac で段取りの 3 の前半 (`internal/airpc`、`internal/aihost`、`ai` のパッケージ):
+Mac で段取りの 3。状態とキャッシュのコマンドのほか (`internal/airpc`、`internal/aihost`、`ai` のパッケージ):
 
 - `ai` のパッケージを使うプログラムはすべて hwnpud を通る: `HWNPU_DAEMON` は設定しなければ `on`
   (`daemon.DefaultMode`)。hwnpud が答えなければ、どうすればよいかを添えてエラーにする。`HWNPU_DAEMON=off` は
@@ -57,13 +57,28 @@ Mac で段取りの 3 の前半 (`internal/airpc`、`internal/aihost`、`ai` の
   動く: Core AI のキャッシュは `coreai-cache/<OS>/hwnpud/` だけになり、ストアの `compiled_by` はどのプログラムでも
   `hwnpud`。ある use の名前で役に用意したモデルは、同じモデルの別の use でも用意済みで、どちらかを hwnpud が
   コンパイルしていればコンパイル済み (hwnpu-audio の `whisper-large-v3-turbo` は interpreter の `transcribe`)
-- いま hwnpud を通る役: depth、faces、image と image-edit (generate、edit)、transcribe、speak、translate、chat。
-  ほかの役 (label、pose、detect、segment、ocr、embed、decide、音の役) を持つアプリは、それらのクライアントの側が
-  できるまで (段取り 3 の後半) `Plan` と `Open` で役の名前を挙げて失敗する。`HWNPU_DAEMON=off` なら動く。
-  モデルの 1 回ずつの呼び出しでできたストリームのメソッド (`TranscribeStream`、`SpeakStream`、`DetectStream`、
-  `CompleteStream`、ノード) はクライアントでその呼び出しの上に動く。まだのもの: アプリに同梱したモデル
-  (`Store.Models.Bundle`)、2 つのクライアントでモデルを 1 つ共有すること (セッションごとに読み込む)、
-  `hwnpu cache` / `status` を hwnpud 経由にすること
+- すべての役が hwnpud を通る: depth、faces、label、pose、detect、segment、ocr、image と image-edit、transcribe、
+  speak、translate、chat、embed、decide、music、notes、pitch、sfx (それぞれ `airole.Register` で登録し、クライアントの
+  側 `Role.Remote` を持つ)。モデルの 1 回ずつの呼び出しでできたストリームのメソッド (`TranscribeStream`、
+  `SpeakStream`、`DetectStream`、`CompleteStream`、`Labeler.Label`、`Segmenter.Segment`、ノード) はクライアントで
+  その呼び出しの上に動く
+- モデルの呼び出しがエンジンに残すもの: 絵のエンコード (`Segmenter.Encode` の `*PictureEncoding`。`Masks` が
+  デコードする画像エンコーダーの出力) はハンドルの向こうのエンジンに置いたまま (`airpc.RegisterRef`)。クライアントの
+  値は公開の欄 (時間) とハンドルを持ち、それを渡した `Masks` ではエンジンのものに戻る。クライアントの値が GC で
+  回収されると (かセッションが終わると) エンジンのものを手放す。ラベルの候補と埋め込み (`Candidates`、`Embedding`)
+  はただのデータなのでそのまま渡す。`Rank` と `Probability` はモデルと一緒にエンジンで動く。ストリームが進むにつれて
+  埋まる結果 (`MusicGenerator.Generate` の `*MusicStats`) はストリームの終わりと一緒にもう一度送るので、ストリームの
+  ループが終わったときには揃っている。途中でやめたループは、iterator のループと同じく作る側が止まるのを待つ
+  (作る側は数個先まで進んでいる: ストリームに流量の制御はない)。可変長引数のメソッド (`MusicGenerator.Style`)
+  はスライスを送る
+- コマンドとサンプルのモデルの仕事はすべて `ai` を通る。自分のプロセスに残るもの: `hwnpu-image convert` (Anima と
+  Chroma の変換。NPU は使わない)、`hwnpu-dev` (開発者のプロセス)、`hwnpu cache`、`hwnpu memory`、`status` の
+  コマンド (ここで読む。後で hwnpud が出す)、Neural Engine のメモリのログ (`mem.NPUWired` は機械全体のものなので、
+  コマンドはどれだけ増えたかを今も出せる)。`hwnpu-chat chat` は `ai` ではなくエンジンのチャットの道
+  (`/hwnpud/v1/load`) を通る。コマンドの `--backend` はこのプロセスの `HWNPU_BACKEND` を設定するが、hwnpud は
+  それを取らない (自分のものを使うと言う)
+- まだのもの: アプリに同梱したモデル (`Store.Models.Bundle`)、2 つのクライアントでモデルを 1 つ共有すること
+  (セッションごとに読み込む)、`hwnpu cache` / `status` を hwnpud 経由にすること
 - M3 (macOS 27、worktree の hwnpud を別のソケットで、NAS の書き出し): `hwnpu-image depth` の絵 1 枚は初回 60 秒
   (hwnpud が DA3-BASE のプログラムを取ってきて展開し 35 秒、絵の大きさを最初の呼び出しでコンパイルして 24 秒)、
   次は 0.2 秒。`hwnpu-audio transcribe` の日本語 6 秒は初回 75 秒 (Whisper の読み込みのコンパイルが 57 秒)、
@@ -74,6 +89,13 @@ Mac で段取りの 3 の前半 (`internal/airpc`、`internal/aihost`、`ai` の
   は hwnpu-image が動かした深度と顔のモデルをコンパイル済みと出した。Core AI のキャッシュで増えたのは `hwnpud/`
   だけ (18 項目 2.5 GB から 28 項目 5.5 GB)。`hwnpu-image/`、`hwnpu-audio/`、`interpreter/` は変わらず、
   `parallax/` や `layers/` もできなかった。同じエンジンを通る `hwnpu-chat` は始めから終わりまで 1.3 秒で答えた
+- M3、ほかの役 (それぞれ初回、モデルは NAS から): `hwnpu-image label` (SigLIP 2 large) 67 秒、`detect` (RTMDet-m)
+  27 秒、`pose` (RTMO-s) 46 秒、`ocr` (PP-OCRv6 small) 14 秒、`segment` (EfficientSAM-S、点 1 つ: エンコードは
+  エンジンに置いたままマスクに) 35 秒。`hwnpu-audio pitch` と `notes` はそれぞれ 11 秒、音楽 5 秒の `generate`
+  (Magenta RealTime 2。統計はストリームのあとで揃う) 31 秒。`hwnpu-chat search` (PLaMo-Embedding-1B) 61 秒、
+  次は 0.3 秒。`hwnpu-chat systemone` (d1-2B) 3 分 34 秒、次は 0.45 秒。`voice-agent models prepare` (Whisper、
+  LFM3-1.7B、Supertonic 3) 2 分 49 秒。Core AI の `hwnpud/` は 18 項目から 54 項目に (2.5 GB から 8.9 GB)。
+  ほかのプログラムのディレクトリは変わらなかった
 
 AMD の NPU の Linux でも、同じ監督役とエンジン:
 
@@ -331,8 +353,8 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 2. モデルの管理を hwnpud に: 一覧、状態、計画、進み具合つきの準備、ライセンス、gc。コマンドの `list` / `status` と
    `hwnpu cache` をクライアントに。`hwnpu config`。クライアントの方針をファミリーの選びに渡す
 3. `ai.Runtime` のリモートの側と、既定の `HWNPU_DAEMON=on`。samples の interpreter、layers、parallax をデーモン
-   経由にし、Core AI のキャッシュが `coreai-cache/<OS>/hwnpud/` だけになること。先にセッションとサンプルが使う役
-   (上)、次にほかの役、状態とキャッシュのコマンド
+   経由にし、Core AI のキャッシュが `coreai-cache/<OS>/hwnpud/` だけになること。状態とキャッシュのコマンドの
+   hwnpud 経由のほかは実装した (上)
 4. 画像と音声。機械全体の割り振り (プログラムの予算、降ろす、優先度)
 5. リリースのビルド (Mac は識別子を決める)、`daemon install`、Homebrew の tap。有償の契約ができたら公証
 6. Windows は実機で調べてから (サービス、ソケット、XRT)
