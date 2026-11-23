@@ -194,6 +194,33 @@ func TestPrebuiltShared(t *testing.T) {
 	if _, err := os.Stat(coreai.PackedRoot(other, "h14g")); err == nil {
 		t.Error("an export of other programs took them")
 	}
+	// a build that had made only some of them put them first: the whole set put after replaces
+	// them in the layer (the same key), and a machine that took the first fetches them again
+	// when it lacks a program
+	more := filepath.Join(coreai.PackedRoot(here, "h14g"), "dit.h14g.aimodelc")
+	os.MkdirAll(more, 0o755)
+	os.WriteFile(filepath.Join(more, "main.hash"), []byte("h1"), 0o644)
+	os.WriteFile(filepath.Join(more, "resources.bin"+coreai.MapSuffix), []byte("{}"), 0o644)
+	if err := PutPrebuilt(here, "h14g"); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	if e, err := shared.ReadEntryAt(ctx, l, es[0]); err != nil || strings.Join(e.Holds, " ") != "dit.h14g.aimodelc vae/decoder.h14g.aimodelc" {
+		t.Fatalf("the layer's entry after the whole set: %v %v", e.Holds, err)
+	}
+	FetchPrebuilt(ctx, there, "h14g")
+	if _, err := os.Stat(filepath.Join(coreai.PackedRoot(there, "h14g"), "dit.h14g.aimodelc", "main.hash")); err != nil {
+		t.Fatalf("the programs here were not fetched again: %v", err)
+	}
+	// fewer put after do not replace them
+	os.RemoveAll(more)
+	if err := PutPrebuilt(here, "h14g"); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	if e, err := shared.ReadEntryAt(ctx, l, es[0]); err != nil || len(e.Holds) != 2 {
+		t.Fatalf("fewer programs replaced the layer's: %v %v", e.Holds, err)
+	}
 	// a miss makes nothing here: nothing begins to be put for it (store.StartEarly would mark
 	// the folder and watch it until the process ends)
 	filepath.WalkDir(l.Store.(shared.Dir).Root, func(p string, d os.DirEntry, err error) error {
