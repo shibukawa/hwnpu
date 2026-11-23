@@ -48,7 +48,7 @@ models:
   MOSS-SoundEffect-v2.0:
     apple:
       rewrite:
-        - arch: [h15g, h16g, h17g]      # 1 つか並び。省くと全部
+        - arch: [h15g, h15c, h16g, h16s, h16c, h17g, h17s, h17c, h17d]  # 1 つか並び。省くと全部
           op: sin                       # 演算 (recipe.Ways にあるもの)
           as: native                    # 書き方。sin は series (既定) か native
           why: "..."
@@ -87,7 +87,7 @@ models:
 | Chroma1-Flash / HD | `dit_single_*` を端末で | `dit_single_0/8/16` を端末で | 全部プリビルド |
 | MOSS-SoundEffect v2.0 (`-lut8` も) | sin は級数 | sin は級数 | sin はそのまま (`-sin-native` の書き出し) |
 
-MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をそのまま書くと、h13g と h14g は 1 段が Neural Engine の 8〜9 個の区間に分かれる (sin がその間で外に出る)。h15g、h16g、h17g は 1 区間に収まる。級数はどのチップでも 1 区間。sin の前の clip は、sin とまとめられて (NEFUSED_EW: EW: MAX) h15g でも通らないので、そのまま書くときは clip を外す (clip は丸めのためのもの)。音声のプリビルドは置かない (M1 で遅いか壊れていた) ので、DAC は全部端末に回す規則にしてある。
+MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をそのまま書くと、h13g、h14g、h14c (M2 Pro・Max) は 1 段が Neural Engine の 8〜9 個の区間に分かれる (sin がその間で外に出る)。h15g/c、h16g/s/c、h17g/s/c/d は 1 区間に収まる (h15s/m/d と h17p は coreai-build が落ちるので見ていない)。M3 では、この書き出しを取ってきて音を作れた。級数はどのチップでも 1 区間。sin の前の clip は、sin とまとめられて (NEFUSED_EW: EW: MAX) h15g でも通らないので、そのまま書くときは clip を外す (clip は丸めのためのもの)。音声のプリビルドは置かない (M1 で遅いか壊れていた) ので、DAC は全部端末に回す規則にしてある。
 
 どれも、落ちるまでに 1 本 1〜3 時間かかっていた。レシピに書いたので、もう試さない。
 

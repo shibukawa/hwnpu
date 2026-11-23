@@ -79,13 +79,14 @@ models:
   MOSS-SoundEffect-v2.0: &moss
     apple:
       rewrite:
-        # coreai-build, each of the five decoder stages: with sin itself, h13g and h14g split
-        # the stage in 8 or 9 regions of the Neural Engine (sin off it between them), h15g,
-        # h16g and h17g keep it in one; the series is one region on all
-        - arch: [h15g, h16g, h17g]
+        # coreai-build, each of the five decoder stages: with sin itself, h13g, h14g and h14c
+        # split the stage in 8 or 9 regions of the Neural Engine (sin off it between them),
+        # h15g/c, h16g/s/c and h17g/s/c/d keep it in one; the series is one region on all.
+        # h15s/m/d and h17p: coreai-build crashes on them, not checked
+        - arch: [h15g, h15c, h16g, h16s, h16c, h17g, h17s, h17c, h17d]
           op: sin
           as: native
-          why: "one Neural Engine region a stage offline with sin (h13g, h14g: 8 to 9, sin off it); seen on the M3 for its sound: not yet"
+          why: "one Neural Engine region a stage offline with sin (h13g, h14g, h14c: 8 to 9, sin off it); the M3 took this export and made its sound"
           checked: 2026-11-23
       prebuild:
         - programs: ["*"]

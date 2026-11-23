@@ -106,7 +106,7 @@ func TestRewrites(t *testing.T) {
 	}
 	for _, m := range []string{"MOSS-SoundEffect-v2.0", "MOSS-SoundEffect-v2.0-lut8"} {
 		a := f.AppleOf(m)
-		for arch, want := range map[string]string{"h13g": "", "h14g": "", "h15g": "-sin-native", "h17g": "-sin-native", "h18g": ""} {
+		for arch, want := range map[string]string{"h13g": "", "h14g": "", "h15g": "-sin-native", "h17g": "-sin-native", "h15c": "-sin-native", "h17d": "-sin-native", "h14c": "", "h18g": ""} {
 			if got := Suffix(a.Rewrites(arch), "sin"); got != want {
 				t.Errorf("%s %s: %q, want %q", m, arch, got, want)
 			}
