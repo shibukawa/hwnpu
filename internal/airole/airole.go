@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -34,6 +35,11 @@ type Role struct {
 	// Revision counts the changes to what Prepare makes that call for preparing again: a store
 	// prepared by an earlier revision counts as not prepared.
 	Revision int
+	// Remote is the role's model of an app whose models run in hwnpud (HWNPU_DAEMON): a value
+	// of the type Load returns whose methods call h's, the model Load loaded in hwnpud's engine
+	// (airpc.Call1(x.remote, ctx, "Estimate", img)). nil for a role that does not run through
+	// hwnpud yet: an app of it runs with HWNPU_DAEMON=off.
+	Remote func(h *airpc.Handle) io.Closer
 }
 
 // Accepts is nil when the role runs model m.
@@ -176,6 +182,17 @@ var registered []*Role
 // Register adds r to the roles For finds: each package of models registers its roles, so that a
 // tool (hwnpu-dev models package) makes a model ready as the app would, by its kind alone.
 func Register(r *Role) { registered = append(registered, r) }
+
+// Lookup is the role registered as name (Role.Name), nil when none is: how hwnpud's engine finds
+// the roles of an app's uses (internal/aihost), whose packages it imports.
+func Lookup(name string) *Role {
+	for _, r := range registered {
+		if r.Name == name {
+			return r
+		}
+	}
+	return nil
+}
 
 // For is the first role registered that runs m; nil when none does (or its package is not
 // imported).

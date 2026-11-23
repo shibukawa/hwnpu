@@ -14,6 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
 	"github.com/shibukawa/hwnpu/internal/vision/ocr"
@@ -49,8 +50,9 @@ func ocrSetup(m chat.Model, log io.Writer) (ocr.Setup, error) {
 // (common.go). On an NPU each size of the detector's and the recognizer's programs is converted
 // the first time a picture (a line) takes it.
 var ocrRole = &airole.Role{
-	Name:  "ocr",
-	Kinds: []chat.Kind{chat.KindOCR},
+	Remote: func(h *airpc.Handle) io.Closer { return &TextReader{remote: h} },
+	Name:   "ocr",
+	Kinds:  []chat.Kind{chat.KindOCR},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m := e.Model
 		s, err := ocrSetup(m, e.Log)
@@ -148,6 +150,7 @@ type OCROptions struct {
 
 // TextReader reads the text in pictures. It runs one picture at a time; others wait.
 type TextReader struct {
+	remote        *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	mu            sync.Mutex
 	r             *ocr.Reader
 	closeDev      func()
@@ -156,16 +159,34 @@ type TextReader struct {
 }
 
 // Model is the name of the model in the definitions.
-func (t *TextReader) Model() string { return t.name }
+func (t *TextReader) Model() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Model")
+	}
+	return t.name
+}
 
 // Device is where the networks run: npu or cpu.
-func (t *TextReader) Device() string { return t.device }
+func (t *TextReader) Device() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Device")
+	}
+	return t.device
+}
 
 // Where says where the networks run, for a log.
-func (t *TextReader) Where() string { return t.where }
+func (t *TextReader) Where() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Where")
+	}
+	return t.where
+}
 
 // Read reads the lines of text in a picture.
 func (t *TextReader) Read(ctx context.Context, img image.Image, o OCROptions) (*Text, error) {
+	if t.remote != nil {
+		return airpc.Call1[*Text](t.remote, ctx, "Read", img, o)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if s := o.Size; s != [2]int{} && (s[0] <= 0 || s[1] <= 0 || s[0]%32 != 0 || s[1]%32 != 0) {
@@ -195,9 +216,16 @@ func (t *TextReader) Read(ctx context.Context, img image.Image, o OCROptions) (*
 
 // Close unloads the models. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *TextReader) Close() error {
+	if t.remote != nil {
+		return t.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	err := t.r.Close()
 	t.closeDev()
 	return err
+}
+
+func init() {
+	airole.Register(ocrRole)
 }

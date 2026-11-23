@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/daemon"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -51,6 +52,13 @@ type Plan struct {
 	npu     airole.NPU
 	machine int
 	turns   [][]string // App.InTurns
+	// remote is the app of a plan hwnpud made (and runs), client its client, licenses what it
+	// said of the models' licenses
+	remote   *App
+	client   *daemon.Client
+	licenses []License
+	// logTo is where a Quiet Run writes the models' logs (RunTo: hwnpud's, to its client)
+	logTo io.Writer
 }
 
 // Item is a use of a plan.
@@ -153,6 +161,13 @@ func resolve(r requirement, memory int) (m chat.Model, why string, err error) {
 // Plan resolves the app's uses for the machine (or Memory) and finds what the store lacks. It
 // sets the process's layers and reads the definitions as the app's Store says (modelstore.Open).
 func (a *App) Plan(ctx context.Context) (*Plan, error) {
+	c, err := a.through(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if c != nil {
+		return a.planRemote(ctx, c)
+	}
 	return a.plan(ctx, a.requirements())
 }
 
@@ -166,6 +181,9 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 	for _, r := range reqs {
 		m, why, err := resolve(r, a.memory)
 		if err != nil {
+			return nil, err
+		}
+		if err := a.allowed(m); err != nil {
 			return nil, err
 		}
 		it := Item{Use: r.name, Role: r.role.Name, Why: why, model: m, req: r,
@@ -315,6 +333,9 @@ func (p *Plan) InTurns() [][]string {
 
 // Licenses are the models' terms to show before downloading them, one per model.
 func (p *Plan) Licenses() []License {
+	if p.remote != nil {
+		return slices.Clone(p.licenses)
+	}
 	var out []License
 	seen := map[string]bool{}
 	for _, it := range p.Items {
@@ -433,6 +454,14 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 			told(pr)
 		}
 	}
+	if p.remote != nil {
+		// hwnpud prepares and compiles: the stages are shown here, the models' logs as they come
+		var log io.Writer
+		if show != nil && !p.Brief {
+			log = show.log
+		}
+		return p.runRemote(ctx, fn, log)
+	}
 	compile := !p.NoCompile && p.npu.Target != ""
 	var todo []int
 	for i, it := range p.Items {
@@ -449,6 +478,8 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 		var out io.Writer = log
 		if show != nil {
 			out = &teeLog{term: show.log, lines: log}
+		} else if p.logTo != nil {
+			out = &teeLog{term: p.logTo, lines: log}
 		}
 		var r *record
 		if it.Ready {

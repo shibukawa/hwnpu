@@ -15,6 +15,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
@@ -42,8 +43,9 @@ func Speak(name string) ai.Use[*Speaker] {
 //
 // A model of device cpu runs on hwnpu's CPU interpreter (slow).
 var speakRole = &airole.Role{
-	Name:  "speak",
-	Kinds: []chat.Kind{chat.KindSpeech},
+	Name:   "speak",
+	Remote: func(h *airpc.Handle) io.Closer { return &Speaker{remote: h} },
+	Kinds:  []chat.Kind{chat.KindSpeech},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		if isSupertonic(e.Model) || isSupertonic(e.Base) {
 			return prepareSupertonic(e)
@@ -123,7 +125,12 @@ type SpeakOptions struct {
 
 // Paces reports whether the model says a text at SpeakOptions.Speed itself (Supertonic); the
 // speech of another is to be stretched for it.
-func (s *Speaker) Paces() bool { return s.st != nil }
+func (s *Speaker) Paces() bool {
+	if s.remote != nil {
+		return airpc.Value[bool](s.remote, "Paces")
+	}
+	return s.st != nil
+}
 
 // Audio is mono audio.
 type Audio struct {
@@ -146,20 +153,29 @@ type SpeakStats struct {
 
 // Speaker speaks texts (LFM3-Audio). It runs one request at a time; others wait.
 type Speaker struct {
-	mu    sync.Mutex
-	s     *speech.Synth // LFM3-Audio's, or
-	st    *supertonic.Synth
-	dev   *hwnpu.Device // Supertonic's NPU (nil: the CPU)
-	model string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	s      *speech.Synth // LFM3-Audio's, or
+	st     *supertonic.Synth
+	dev    *hwnpu.Device // Supertonic's NPU (nil: the CPU)
+	model  string
 	// styles are Supertonic's voices read, by name
 	styles map[string]supertonic.Style
 }
 
 // Model is the name of the model in the definitions.
-func (s *Speaker) Model() string { return s.model }
+func (s *Speaker) Model() string {
+	if s.remote != nil {
+		return airpc.Value[string](s.remote, "Model")
+	}
+	return s.model
+}
 
 // Rate is the samples a second of the speech (LFM3-Audio's 24000, Supertonic's 44100).
 func (s *Speaker) Rate() int {
+	if s.remote != nil {
+		return airpc.Value[int](s.remote, "Rate")
+	}
 	if s.st != nil {
 		return supertonic.SampleRate
 	}
@@ -169,6 +185,13 @@ func (s *Speaker) Rate() int {
 // Stages names what SpeakStats' Text, Depth and Codec times are of: LFM3-Audio's text model,
 // depthformer and codec decoder, or Supertonic's text graphs, flow and vocoder.
 func (s *Speaker) Stages() (text, depth, codec string) {
+	if s.remote != nil {
+		out, err := s.remote.Call(context.Background(), "Stages")
+		if err != nil || len(out) != 3 {
+			return "", "", ""
+		}
+		return out[0].String(), out[1].String(), out[2].String()
+	}
 	if s.st != nil {
 		return "the text", "the flow", "the vocoder"
 	}
@@ -178,6 +201,9 @@ func (s *Speaker) Stages() (text, depth, codec string) {
 // OnNPU reports whether the speech is made on the NPU (Supertonic's flow and vocoder; false on
 // the CPU).
 func (s *Speaker) OnNPU() bool {
+	if s.remote != nil {
+		return airpc.Value[bool](s.remote, "OnNPU")
+	}
 	if s.st != nil {
 		n, ok := s.st.Stages.(interface{ OnNPU() bool })
 		return ok && n.OnNPU()
@@ -200,6 +226,9 @@ func (o SpeakOptions) request(text string) speech.Request {
 func (s *Speaker) Speak(ctx context.Context, text string, o SpeakOptions) (Audio, error) {
 	if strings.TrimSpace(text) == "" {
 		return Audio{}, errors.New("speech: nothing to speak")
+	}
+	if s.remote != nil {
+		return airpc.Call1[Audio](s.remote, ctx, "Speak", text, o)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -274,6 +303,9 @@ func (s *Speaker) speakStream(ctx context.Context, in flow.Stream[flow.Text], op
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (s *Speaker) Close() error {
+	if s.remote != nil {
+		return s.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.st != nil {
