@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -188,6 +189,21 @@ func (a *App) through(ctx context.Context) (*daemon.Client, error) {
 	return c, nil
 }
 
+// remoteRoles is nil when every use of the app has a role that runs through hwnpud.
+func (a *App) remoteRoles() error {
+	var missing []string
+	for _, r := range a.requirements() {
+		if r.role.Remote == nil && !slices.Contains(missing, r.role.Name) {
+			missing = append(missing, r.role.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("ai: the models of %s (%s) do not run through hwnpud yet; %s=off runs them in this process",
+		a.Name, strings.Join(missing, ", "), daemon.ModeEnv)
+}
+
 // session opens a session with hwnpud's engine and the handle of its Host.
 func (a *App) session(ctx context.Context, c *daemon.Client) (*airpc.Session, *airpc.Handle, AppSpec, error) {
 	spec, err := a.Spec()
@@ -203,6 +219,9 @@ func (a *App) session(ctx context.Context, c *daemon.Client) (*airpc.Session, *a
 
 // planRemote is Plan made by hwnpud.
 func (a *App) planRemote(ctx context.Context, c *daemon.Client) (*Plan, error) {
+	if err := a.remoteRoles(); err != nil {
+		return nil, err
+	}
 	s, host, spec, err := a.session(ctx, c)
 	if err != nil {
 		return nil, err
@@ -254,6 +273,9 @@ type remoteRuntime struct {
 
 // openRemote is Open in hwnpud.
 func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (*Runtime, error) {
+	if err := a.remoteRoles(); err != nil {
+		return nil, err
+	}
 	rt := &Runtime{app: a, loaded: map[string]*loadedModel{}}
 	for _, o := range opts {
 		o(&rt.o)
@@ -283,8 +305,7 @@ func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (
 // The caller holds rt.mu.
 func (r *remoteRuntime) get(ctx context.Context, rt *Runtime, req requirement) (io.Closer, error) {
 	if req.role.Remote == nil {
-		// every role of hwnpu's packages has one: a role without is a test's
-		return nil, fmt.Errorf("ai: the role %s has no side in the app's process (airole.Role.Remote); %s=off runs it here", req.role.Name, daemon.ModeEnv)
+		return nil, rt.app.remoteRoles()
 	}
 	// hwnpud releases the others of the use's group of InTurns as it loads it
 	for _, k := range rt.app.turnOf(req.key()) {

@@ -285,19 +285,15 @@ func TestThroughHwnpud(t *testing.T) {
 	}
 }
 
-func TestRoleWithoutRemote(t *testing.T) {
+func TestRoleNotThroughHwnpud(t *testing.T) {
 	serve(t)
-	ctx := context.Background()
-	use := ai.Define[*fakeModel](localRole, "speech")
-	app := ai.NewApp("local", use)
+	app := ai.NewApp("local", ai.Define[*fakeModel](localRole, "speech"))
 	app.Store = testStore(t)
-	rt, err := app.Open(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rt.Close()
-	if _, err := use.Get(ctx, rt); err == nil || !strings.Contains(err.Error(), daemon.ModeEnv+"=off") {
+	if _, err := app.Plan(context.Background()); err == nil || !strings.Contains(err.Error(), "do not run through hwnpud") {
 		t.Errorf("a role without Remote: %v", err)
+	}
+	if _, err := app.Open(context.Background()); err == nil || !strings.Contains(err.Error(), daemon.ModeEnv+"=off") {
+		t.Errorf("open: %v", err)
 	}
 }
 
