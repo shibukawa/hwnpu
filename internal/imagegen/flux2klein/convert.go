@@ -17,8 +17,9 @@ import (
 )
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
-// again.
-const ExportVersion = 1
+// again. 2: 512 x 512's attention takes its 1536 queries as two chunks of 768 (mil's headChunk:
+// the prebuilt programs for an M3 failed to load).
+const ExportVersion = 2
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {

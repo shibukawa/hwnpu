@@ -138,7 +138,21 @@ func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.V
 // image stream's keys and the text's as score tensors of their own (docs/design/image-apple.md).
 func (d *ditGraph) attend(q, k, v *mlpackage.Var) *mlpackage.Var {
 	t := func(x *mlpackage.Var) *mlpackage.Var { return d.Transpose(x, 0, 2, 1, 3) }
-	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: HeadChunk, Split: d.c.ImageRows()}))
+	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: headChunk(q.Shape[1]), Split: d.c.ImageRows()}))
+}
+
+// headChunk is the queries the attention of rows takes at a time: HeadChunk, or half the rows
+// (a multiple of 64) when they are more than one chunk and less than two. 512 x 512's 1536 rows
+// as 1024 and 512 queries: the program coreai-build compiles for an M3 (h15g) leaves a DMA's
+// cache hint the device's check refuses ("tile_dma_src.dma_config2.cache_hint !=
+// ...cache_hint_drop_v8", "Invalid TD exists"), so the prebuilt program fails to load
+// (failedToSpecialize) and every size's DiT is compiled on the device. 768 and 768 load
+// (docs/known-issues.md 12).
+func headChunk(rows int) int {
+	if rows > HeadChunk && rows < 2*HeadChunk {
+		return (rows/2 + 63) / 64 * 64
+	}
+	return HeadChunk
 }
 
 // swiglu is a SwiGLU MLP's output of h, divided by DitScale.

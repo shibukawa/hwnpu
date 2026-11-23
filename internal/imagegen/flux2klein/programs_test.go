@@ -133,15 +133,15 @@ func TestEngineFlow(t *testing.T) {
 
 // An export of 512² and 1024² is named for both and gives each size's functions.
 func TestSizes(t *testing.T) {
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024}); n != "flux.2-klein-4b-512+1024-lut8-lut8-v1.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024}); n != "flux.2-klein-4b-512+1024-lut8-lut8-v2.coreai" {
 		t.Errorf("export name %s", n)
 	}
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 768}); n != "flux.2-klein-4b-768x768-lut8-lut8-v1.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 768}); n != "flux.2-klein-4b-768x768-lut8-lut8-v2.coreai" {
 		t.Errorf("export name of another size %s", n)
 	}
 	// models.yaml npu.apple's 8: one export, named by their count and a hash of the list
 	eight := [][2]int{{1024, 1024}, {512, 512}, {768, 1152}, {768, 1024}, {704, 1280}, {1152, 768}, {1024, 768}, {1280, 704}}
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024, Height: 1024, Sizes: eight}); n != "flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v1.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024, Height: 1024, Sizes: eight}); n != "flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v2.coreai" {
 		t.Errorf("export name of 8 sizes %s", n)
 	}
 	m := &ProgramManifest{Dit: Config{Width: 1024, Height: 1024}, Vae: []string{"vae_s0.aimodel#s1024x1024"},
