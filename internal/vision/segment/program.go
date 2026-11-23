@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
@@ -57,7 +58,11 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 func ConvertEncoder(ctx context.Context, backend, encoder, dir string, log io.Writer) (string, error) {
 	stem := strings.TrimSuffix(filepath.Base(encoder), filepath.Ext(encoder))
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("%s-r%d-fp16-%d", stem, ProgramRevision, Size)
+	format, err := chat.ConvertFormat(ctx, filepath.Join(dir, stem), backend, "fp16")
+	if err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("%s-r%d-%s-%d", stem, ProgramRevision, format, Size)
 	path, done, export := llm.ProgramPath(dir, name, backend)
 	if !llm.ProgramReady(ctx, dir, name, done, export) {
 		g, err := onnx.Load(encoder)
@@ -72,8 +77,8 @@ func ConvertEncoder(ctx context.Context, backend, encoder, dir string, log io.Wr
 			bar.Done("failed")
 			return "", fmt.Errorf("segment: %w", err)
 		}
-		if _, err := llm.WritePart(path, EncoderProgram(g), nil, llm.Options{Format: "fp16", Backend: backend}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("EfficientSAM's image encoder (%s), %dx%d, fp16 (hwnpu)", filepath.Base(encoder), Size, Size)
+		if _, err := llm.WritePart(path, EncoderProgram(g), nil, llm.Options{Format: format, Backend: backend}, func(pkg *mlpackage.Package) {
+			pkg.Description = fmt.Sprintf("EfficientSAM's image encoder (%s), %dx%d, %s (hwnpu)", filepath.Base(encoder), Size, Size, format)
 		}); err != nil {
 			bar.Done("failed")
 			return "", fmt.Errorf("segment: %w", err)

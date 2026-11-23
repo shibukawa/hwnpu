@@ -19,6 +19,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -75,7 +76,11 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("%s-r%d-fp16-%d", Arch, Revision, Size)
+	format, err := chat.ConvertFormat(ctx, filepath.Join(s.Dir, Arch), s.Backend, "fp16")
+	if err != nil {
+		return "", "", err
+	}
+	name := fmt.Sprintf("%s-r%d-%s-%d", Arch, Revision, format, Size)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
 	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
@@ -90,8 +95,8 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	p := newProgram(g)
-	_, err = llm.WritePart(program, p, nil, llm.Options{Format: "fp16", Backend: s.Backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("RTMO from %s up to its head's outputs, %dx%d, fp16 (hwnpu)", s.Repo, Size, Size)
+	_, err = llm.WritePart(program, p, nil, llm.Options{Format: format, Backend: s.Backend}, func(pkg *mlpackage.Package) {
+		pkg.Description = fmt.Sprintf("RTMO from %s up to its head's outputs, %dx%d, %s (hwnpu)", s.Repo, Size, Size, format)
 		pkg.Metadata[llm.MetaArch] = Arch
 	})
 	if err != nil {

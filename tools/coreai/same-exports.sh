@@ -1,12 +1,14 @@
 #!/bin/bash
 # same-exports.sh BASE MODEL[/coreai]...: makes the models' Core AI exports with the hwnpu-dev of
 # BASE (a commit) and with this checkout's, each into a cache of its own, and says whether they
-# are the same: the same names, the same bytes but metadata.json's creationDate. When they are,
+# are the same: the same names, the same bytes but metadata.json's creationDate (and the caches'
+# own paths in a JSON file). When they are,
 # a change of the code (apple.code) or of apple.convert needs no new version: go test
 # ./internal/recipe -run TestAppleVersions -update (docs/model-recipes.md 2).
 #
-# The checkpoints are taken from this machine's cache (original/, linked); nothing is fetched or
-# put in the sources. The programs are not prebuilt. WORK (default a new temporary directory)
+# The checkpoints are taken from this machine's cache (original/, linked; what is missing comes
+# from Hugging Face into it); no export is fetched or put in the sources. The programs are not
+# prebuilt. WORK (default a new temporary directory)
 # keeps the caches: 2 x the exports' size on the disk; they are removed when the two are the same.
 set -euo pipefail
 [ $# -ge 2 ] || { sed -n '2,10p' "$0"; exit 2; }
@@ -24,7 +26,7 @@ trap 'git -C "$root" worktree remove --force "$work/src-base" 2>/dev/null || tru
 (cd "$root" && go build -o "$work/bin-new/" ./cmd/hwnpu-dev)
 
 unset HWNPU_MODEL_SOURCE
-export HWNPU_MODEL_HUGGING_FACE=false
+# originals missing here come from Hugging Face into this machine's original/ (linked)
 for side in base new; do
 	export HWNPU_CACHE="$work/cache-$side"
 	mkdir -p "$HWNPU_CACHE"
@@ -42,6 +44,9 @@ while IFS= read -r f; do
 		echo "only in $base: $f"; same=0
 	elif [ "$(basename "$f")" = metadata.json ]; then
 		cmp -s <(grep -v creationDate "$a/$f") <(grep -v creationDate "$b/$f") || { echo "differs: $f"; same=0; }
+	elif [ "${f##*.}" = json ]; then
+		# the caches' own paths (DA3's and MoGe's checkpoint) aside
+		cmp -s <(sed "s#$work/cache-base#CACHE#g" "$a/$f") <(sed "s#$work/cache-new#CACHE#g" "$b/$f") || { echo "differs: $f"; same=0; }
 	elif ! cmp -s "$a/$f" "$b/$f"; then
 		echo "differs: $f"; same=0
 	fi

@@ -148,7 +148,9 @@ models:
 - **作り直してバイトまで同じなら、版を上げなくてよい**。共通のコード (`apple.code`) はどのモデルも使うので、そこを直すと全部のモデルの test が落ちる。`tools/coreai/same-exports.sh BASE MODEL...` で作り直して同じことを見たら (変える前の commit と今の hwnpu-dev で、別々のキャッシュに `models package MODEL/coreai` を作り、名前と、`metadata.json` の `creationDate` のほかのバイトを比べる)、版はそのままで `-update` だけしてよい。PR にそう書く
 - 版を上げると、手元の書き出しも作り直す。書き出しの `entry.json` の版がレシピの版と違えば、なかったものとして取り直すか作り直す (`llm.StaleExport`)。名前は変わらなくてよい
 - `convert` の値を読むのは Core AI の書き出しを作るときだけ。Core ML や Intel の書き出し、`hwnpu-image convert` で手で作るときは、コードの既定のまま。動かすときにも要る値 (models.yaml の `npu.apple` の大きさと形式、`settings`) は models.yaml に残す。`settings` で変えたものはレシピより先に使う
-- 今 `convert` があるのは画像のモデル (FLUX.2 klein、FLUX.3 klein、Anima)。ほかのモデルは `version` と `code` だけで、値はまだコードにある (順にレシピに移す)
+- 今 `convert` があるのは、画像のモデル (FLUX.2 klein、FLUX.3 klein、Anima: 形式とプログラムの段の数)、視覚と音声のモデル (検出、姿勢、分割、SigLIP 2、DA3、MoGe、YuNet、PP-OCR、SwiftF0、Basic Pitch: 重みの形式 `format`; Magenta: `format` と量子化 `quant`; Whisper: `quant`)
+- 視覚と音声の `format` は書き出しの名前にも入る (`rtmdet-…-r1-fp16-640`)。動かすときも名前を作るのでレシピを読む (組み込みのレシピ)。書き出しの場所からモデルを引くので、動かしながら作る大きさ (DA3、MoGe、YuNet、PP-OCR) も同じ値になる
+- MOSS の文のエンコーダーと DiT の形式、プログラムの分け方、fp16 に残す層は、AMD の書き出しと動かすときも読むので、コードに残す (`code` の hash が見る)。TTS (LFM3-Audio-2B-TTS) と Supertonic (Core ML で書く) もまだコード
 
 ## 3. 通らないプログラムがあったとき
 

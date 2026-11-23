@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"cmp"
+	"context"
 	"fmt"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -68,4 +70,46 @@ func FillConvert(name string, ints map[string]*int, strs map[string]*string) err
 		}
 	}
 	return nil
+}
+
+// ConvertOf is the apple.convert of the model ctx is for (WithModel, else the one whose
+// directory holds path, as the shared layers' keys take it) and its recipe's model, as
+// AppleConvert: for a conversion whose code has the model only in its context.
+func ConvertOf(ctx context.Context, path string) (recipe.Convert, string, error) {
+	m, ok := ctx.Value(modelKey{}).(Model)
+	if !ok && path != "" {
+		m, _, ok = modelOfDir(path)
+	}
+	if !ok {
+		return nil, "", fmt.Errorf("chat: no model for the recipe of the conversion of %s (WithModel)", path)
+	}
+	return AppleConvert(cmp.Or(m.Recipe, m.Name))
+}
+
+// ConvertString is the string key of the apple.convert of ConvertOf(ctx, path).
+func ConvertString(ctx context.Context, path, key string) (string, error) {
+	c, by, err := ConvertOf(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	return c.String(by, key)
+}
+
+// ConvertInt is the whole number key of the apple.convert of ConvertOf(ctx, path).
+func ConvertInt(ctx context.Context, path, key string) (int, error) {
+	c, by, err := ConvertOf(ctx, path)
+	if err != nil {
+		return 0, err
+	}
+	return c.Int(by, key)
+}
+
+// ConvertFormat is the weight format (apple.convert's format) a conversion into path for
+// backend writes, of the model ctx is for (ConvertOf): the recipe's for Core AI, else code's
+// (what other backends write).
+func ConvertFormat(ctx context.Context, path, backend, code string) (string, error) {
+	if backend != CoreAITarget {
+		return code, nil
+	}
+	return ConvertString(ctx, path, "format")
 }

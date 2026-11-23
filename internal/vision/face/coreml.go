@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	llmrunner "github.com/shibukawa/hwnpu/internal/llm/runner"
@@ -109,7 +110,11 @@ func (d *Detector) Warm(ctx context.Context) error {
 // shared layers) and returns its path.
 func (r *programRunner) convert(ctx context.Context, W, H int) (string, error) {
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("yunet-r%d-fp16-%dx%d", ProgramRevision, W, H)
+	format, err := chat.ConvertFormat(ctx, filepath.Join(r.dir, "yunet"), r.backend, "fp16")
+	if err != nil {
+		return "", err
+	}
+	name := fmt.Sprintf("yunet-r%d-%s-%dx%d", ProgramRevision, format, W, H)
 	path, done, export := llm.ProgramPath(r.dir, name, r.backend)
 	if llm.ProgramReady(ctx, r.dir, name, done, export) {
 		return path, nil
@@ -120,8 +125,8 @@ func (r *programRunner) convert(ctx context.Context, W, H int) (string, error) {
 	if err := llm.StartProgram(ctx, path, export); err != nil {
 		return "", err
 	}
-	_, err := llm.WritePart(path, r.program(W, H), nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, fp16 (hwnpu)", W, H)
+	_, err = llm.WritePart(path, r.program(W, H), nil, llm.Options{Format: format, Backend: r.backend}, func(pkg *mlpackage.Package) {
+		pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, %s (hwnpu)", W, H, format)
 	})
 	if err != nil {
 		return "", fmt.Errorf("face: %w", err)

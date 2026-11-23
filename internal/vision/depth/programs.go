@@ -52,7 +52,11 @@ func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized,
 		if err := e.fetchCheckpoint(ctx, LogWriter(e.Logf)); err != nil {
 			return nil, err
 		}
-		if err := ConvertSize(e.Checkpoint, d, w, h, e.Format); err != nil {
+		weights, err := chat.ConvertFormat(ctx, d, ProgramBackend(e.Format), "fp16")
+		if err != nil {
+			return nil, err
+		}
+		if err := ConvertSize(e.Checkpoint, d, w, h, e.Format, weights); err != nil {
 			return nil, err
 		}
 		llm.ShareExport(ctx, d)
@@ -117,7 +121,7 @@ func (e *Estimator) estimateProgram(ctx context.Context, s *sized, img image.Ima
 // ConvertSize writes the programs of the DA3 checkpoint root (config.json, model.safetensors)
 // for w x h pixels into d in format ("coreai": vit.aimodel and head.aimodel; "coreml":
 // vit.mlpackage and head.mlpackage; "intel": vit.xml and head.xml, OpenVINO IR) and model.json; d.done, written last, says they are whole.
-func ConvertSize(root, d string, w, h int, format string) error {
+func ConvertSize(root, d string, w, h int, format, weights string) error {
 	c, err := mil.ReadConfig(root, w, h)
 	if err != nil {
 		return err
@@ -134,7 +138,7 @@ func ConvertSize(root, d string, w, h int, format string) error {
 		return err
 	}
 	for _, p := range []*mil.Part{mil.Vit(c), mil.Head(c)} {
-		if _, err := llm.WritePart(filepath.Join(d, p.Name+ProgramExt(format)), p, wt, llm.Options{Backend: ProgramBackend(format), Format: "fp16"}, nil); err != nil {
+		if _, err := llm.WritePart(filepath.Join(d, p.Name+ProgramExt(format)), p, wt, llm.Options{Backend: ProgramBackend(format), Format: weights}, nil); err != nil {
 			return fmt.Errorf("depth: %s: %w", p.Name, err)
 		}
 	}
@@ -250,7 +254,11 @@ func ConvertSizes(ctx context.Context, dir string, log io.Writer) error {
 		if err := x.fetchCheckpoint(ctx, log); err != nil {
 			return err
 		}
-		if err := ConvertSize(x.Checkpoint, d, sz[0], sz[1], x.Format); err != nil {
+		weights, err := chat.ConvertFormat(ctx, d, ProgramBackend(x.Format), "fp16")
+		if err != nil {
+			return err
+		}
+		if err := ConvertSize(x.Checkpoint, d, sz[0], sz[1], x.Format, weights); err != nil {
 			return err
 		}
 		llm.ShareExport(ctx, d)

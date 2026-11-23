@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -41,7 +42,11 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("%s-r%d-fp16-t%d", Arch, Revision, ProgramFrames)
+	format, err := chat.ConvertFormat(ctx, filepath.Join(s.Dir, Arch), s.Backend, "fp16")
+	if err != nil {
+		return "", "", err
+	}
+	name := fmt.Sprintf("%s-r%d-%s-t%d", Arch, Revision, format, ProgramFrames)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
 	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
@@ -55,8 +60,8 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		bar.Done("failed")
 		return "", "", err
 	}
-	_, err = llm.WritePart(program, &Program{Frames: ProgramFrames}, m.Weights(), llm.Options{Format: "fp16", Backend: s.Backend}, func(p *mlpackage.Package) {
-		p.Description = fmt.Sprintf("SwiftF0's CNN (swift-f0 0.3.0), %d frames a call, fp16 (hwnpu)", ProgramFrames)
+	_, err = llm.WritePart(program, &Program{Frames: ProgramFrames}, m.Weights(), llm.Options{Format: format, Backend: s.Backend}, func(p *mlpackage.Package) {
+		p.Description = fmt.Sprintf("SwiftF0's CNN (swift-f0 0.3.0), %d frames a call, %s (hwnpu)", ProgramFrames, format)
 		p.Metadata[llm.MetaArch] = Arch
 	})
 	if err != nil {
