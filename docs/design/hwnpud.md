@@ -2,7 +2,7 @@
 
 [日本語](hwnpud.ja.md)
 
-Status: step 1 is built on the Mac and on Linux with AMD's NPU (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
+Status: step 1 is built on the Mac and on Linux with AMD's NPU, and the first part of step 3 on the Mac (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
 models: it downloads and keeps the converted models, holds the caches, loads the programs and runs
 them. hwnpu's commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`) and the apps built on
 the `ai` package reach it over a Unix domain socket. They pass what their run needs and draw what
@@ -38,6 +38,63 @@ Step 1 on the Mac (`cmd/hwnpud`, `internal/daemon`):
 - M3: the PLaMo 3 Translate 2B program loads in 22 s the first time under the name `hwnpud`
   (Core AI's entry 2.5 GB); the next run answers in 0.6 s from start to end, the model still in
   the engine.
+
+Step 3, its first part, on the Mac (`internal/airpc`, `internal/aihost`, the `ai` package):
+
+- Every program of the `ai` package goes through hwnpud: `HWNPU_DAEMON` is `on` unless it is set
+  (`daemon.DefaultMode`), and a program whose hwnpud does not answer fails with what to do.
+  `HWNPU_DAEMON=off` runs the models in the program's own process as before; a test (`go test`)
+  and hwnpud's engine itself (which sets it off) run them there too. `hwnpu-chat [chat]` goes
+  through hwnpud by default as well.
+- A session (`internal/airpc`) is a connection to the socket upgraded from HTTP
+  (`GET /hwnpud/v1/ai`, `Upgrade: hwnpu-ai/1`, through the supervisor's proxy to the engine),
+  with a gob stream each way of messages multiplexed by id. The client calls the methods of the
+  engine's objects by name, with the types of the methods of a type of its own (the model's
+  type, or `ai.Host`): the arguments and results with gob (a picture behind `image.Image` as its
+  concrete type), a `context.Context` as a cancellation, a function argument and the function
+  fields of a struct argument (`imagegen.Options`' `Progress`, `Drawn`, ...) as callbacks into
+  the client, an iterator (`flow.Stream`, `iter.Seq`) as a stream either way, read as it is
+  ranged over and stopped when its reader stops. Errors keep their registered sentinels and
+  types (`ai.ErrNotPrepared`, `*ai.LicenseError`, `text.ErrContext`, `*text.FormatError`), so
+  `errors.Is` and `errors.As` hold. The engine's handler returns when the session ends, so the
+  engine does not exit idle under an app.
+- The engine (`internal/aihost`, given to `daemon.Engine.AI` by `cmd/hwnpud`; `internal/daemon`
+  imports no package of models) serves `ai.Host` on each session: `App.Plan` and `Plan.Run`
+  make the app again from what the client sent (`App.Spec`, `ai.AppFromSpec`: the uses by
+  their roles' names, `airole.Lookup`, the groups of `InTurns`, the memory, the store with its
+  definitions) and plan or run it in the engine, `Run`'s stages and the models' logs going back
+  as they come (the client draws them as `Run` does). `App.Open` opens a Runtime of the
+  session; `Use.Get` loads the use there and gives a model of the app's own type
+  (`airole.Role.Remote`) whose methods call the engine's. `Release` and `Close` unload them;
+  a session that ends unloads its models. Loads and runs of all the sessions take turns. The
+  client's `HWNPU_MODEL_ALLOWLIST` narrows hwnpud's policy, as `LoadRequest` does.
+- So the preparing, the compiling (`Run`'s loads and `Warm`, and `CompileOnLoad`'s first load)
+  and the models run under the name `hwnpud`: Core AI's cache is
+  `coreai-cache/<OS>/hwnpud/` alone, and the store's `compiled_by` is `hwnpud` for every
+  program. A model prepared for a role under one use's name is ready for another use of the
+  same model, and compiled when hwnpud compiled either (hwnpu-audio's `whisper-large-v3-turbo`
+  is the interpreter's `transcribe`).
+- The roles that run through hwnpud now: depth, faces, image and image-edit (generate, edit),
+  transcribe, speak, translate, chat. An app with another role (label, pose, detect, segment,
+  ocr, embed, decide, the sound roles) fails at its `Plan` and `Open`, naming them, until they
+  have their client side (step 3's second part); `HWNPU_DAEMON=off` runs it. The stream methods
+  that are made of a model's single calls (`TranscribeStream`, `SpeakStream`, `DetectStream`,
+  `CompleteStream`, the nodes) run in the client over those calls. Not yet: the models bundled
+  with an app (`Store.Models.Bundle`), one copy of a model shared by two clients (each session
+  loads its own), and `hwnpu cache` / `status` through hwnpud.
+- M3 (macOS 27, a hwnpud of the worktree on its own socket, the NAS's exports): `hwnpu-image depth` of a
+  picture took 60 s the first time (hwnpud fetched and unpacked DA3-BASE's programs, 35 s, then
+  compiled the picture's size at its first call, 24 s) and 0.2 s the next. `hwnpu-audio
+  transcribe` of 6 s of Japanese: 75 s the first time (Whisper's load compiling, 57 s), the
+  speech in 0.7 s. `interpreter models` then showed `transcribe` compiled (hwnpu-audio's
+  `whisper-large-v3-turbo`), and `models prepare` made PLaMo 3 Translate 2B and LFM3-Audio-2B-TTS
+  ready in 3m10s; `interpreter run` of the recording loaded its three models in 0.3, 1.3 and
+  0.6 s and took 7.5 s in all. `hwnpu-audio tts` after it loaded the interpreter's speech model
+  in 0.2 s, compiling nothing; `parallax models` and `layers models` showed the depth and face
+  models hwnpu-image had run as compiled. Of Core AI's cache only `hwnpud/` grew (18 entries,
+  2.5 GB, to 28, 5.5 GB); `hwnpu-image/`, `hwnpu-audio/` and `interpreter/` did not change, and
+  no `parallax/` or `layers/` appeared. `hwnpu-chat` through the same engine answered in 1.3 s
+  from start to end.
 
 On Linux with AMD's NPU, the same supervisor and engine:
 
@@ -281,10 +338,13 @@ One process makes some limits shared by every app:
 
 ## Clients and versions
 
-- `HWNPU_DAEMON=on|off|auto`. The `ai` package's apps use `auto`: the daemon if it answers with a
-  matching protocol, otherwise in their own process as now. hwnpu's commands use `off` unless it is
-  set, so `go run ./cmd/hwnpu-chat` in a worktree runs that worktree's code and the
-  `base/hwnpu-chat` / `new/hwnpu-chat` comparisons keep working.
+- `HWNPU_DAEMON=on|off|auto`, `on` unless it is set (decided 2026-11-23): every program, the `ai`
+  package's apps and hwnpu's commands, goes through hwnpud and fails when it does not answer;
+  `auto` takes it when it answers with a matching protocol, else runs in its own process; `off`
+  runs in its own process, as a test does. `go run ./cmd/hwnpu-chat` in a worktree runs that
+  worktree's code with `HWNPU_DAEMON=off` (the `base/hwnpu-chat` / `new/hwnpu-chat`
+  comparisons set it), or against a hwnpud of the worktree on its own socket
+  (`HWNPU_DAEMON_SOCKET`).
 - `HWNPU_DAEMON_SOCKET` points to another socket, to try a hwnpud built from a worktree beside the
   installed one.
 - The first message gives the protocol version and the build. A daemon older than its client is
@@ -356,8 +416,10 @@ Each is small; the ones on the NPU wait for the lock in the background.
    Mac and Linux; chat models only, with `hwnpu-chat` as a client (`HWNPU_DAEMON=on`)
 2. The model management in hwnpud: list, status, plan, prepare with progress, licenses, gc; the
    commands' `list` / `status` and `hwnpu cache` as clients; `hwnpu config`; the policy in the pick
-3. The remote side of `ai.Runtime` and `HWNPU_DAEMON=auto`; samples interpreter, layers and
-   parallax through the daemon, with the Core AI cache in `coreai-cache/<OS>/hwnpud/` only
+3. The remote side of `ai.Runtime`, with `HWNPU_DAEMON=on` the default; samples interpreter, layers
+   and parallax through the daemon, with the Core AI cache in `coreai-cache/<OS>/hwnpud/` only.
+   Built first: the session and the roles the samples use (above); then the other roles, the
+   status and cache commands
 4. Images and audio; the machine-wide scheduler (program budget, unloading, priority)
 5. Release builds (a fixed identifier on the Mac), `daemon install`, a Homebrew tap; notarization
    when the paid account exists

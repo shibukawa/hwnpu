@@ -20,7 +20,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/daemon"
 )
 
-// runThrough is ChatCmd through hwnpud (HWNPU_DAEMON=on or auto): hwnpud makes the model ready
+// runThrough is ChatCmd through hwnpud (HWNPU_DAEMON on, the default, or auto): hwnpud makes the model ready
 // and runs it as its definition says, this process only sends the conversation and writes the
 // answers. The flags of how a model is converted and run are hwnpud's to decide.
 func (c *ChatCmd) runThrough(ctx context.Context, stop context.CancelFunc, cl *daemon.Client) error {

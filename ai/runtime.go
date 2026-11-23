@@ -83,6 +83,8 @@ type Runtime struct {
 	mu     sync.Mutex
 	loaded map[string]*loadedModel
 	closed bool
+	// remote holds the models in hwnpud (nil: in this process)
+	remote *remoteRuntime
 }
 
 type loadedModel struct {
@@ -109,8 +111,15 @@ type Loaded struct {
 // definitions and the app's line-up (Use.At, Use.As) pick for this machine, and a store that
 // holds it prepared as another is ErrNotPrepared.
 func (a *App) Open(ctx context.Context, opts ...Option) (*Runtime, error) {
+	c, err := a.through(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if c != nil {
+		return a.openRemote(ctx, c, opts)
+	}
 	openMu.Lock()
-	err := a.Store.open()
+	err = a.Store.open()
 	openMu.Unlock()
 	if err != nil {
 		return nil, err
@@ -152,10 +161,16 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	if !ok {
 		return nil, fmt.Errorf("ai: %s is not one of %s's models (App.Use registers it)", r.key(), rt.app.Name)
 	}
+	if rt.remote != nil {
+		return rt.remote.get(ctx, rt, r)
+	}
 	// the model the use is on this machine now: what the store holds prepared as another (the
 	// app's line-up changed, or the machine's memory) is not loaded in its place
 	m, _, err := resolve(r, rt.app.memory)
 	if err != nil {
+		return nil, err
+	}
+	if err := rt.app.allowed(m); err != nil {
 		return nil, err
 	}
 	// a use is run only when it is prepared and compiled for this program on this NPU (Plan.Run,
@@ -231,6 +246,9 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 func (rt *Runtime) release(r requirement) error {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	if rt.remote != nil {
+		return rt.remote.release(rt, r)
+	}
 	l, ok := rt.loaded[r.key()]
 	if !ok {
 		return nil
@@ -247,6 +265,11 @@ func (rt *Runtime) Close() error {
 		return nil
 	}
 	rt.closed = true
+	if rt.remote != nil {
+		err := rt.remote.close(rt)
+		rt.loaded = nil
+		return err
+	}
 	var errs []error
 	for _, l := range rt.loaded {
 		errs = append(errs, l.closer.Close())

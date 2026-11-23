@@ -37,6 +37,10 @@ type Engine struct {
 	Idle time.Duration
 	// Log receives what goes on outside a load (os.Stderr when nil, the service's log).
 	Log io.Writer
+	// AI serves the sessions of the ai package at AIPath (internal/aihost, which cmd/hwnpud
+	// gives it: the engine's package does not import the packages of models); nil for none.
+	// A session is a request going on until it ends, so the engine does not exit idle under it.
+	AI http.Handler
 
 	load    sync.Mutex // one load at a time; the next waits
 	mu      sync.Mutex
@@ -190,6 +194,9 @@ func (e *Engine) Handler() http.Handler {
 	mux.HandleFunc("GET /hwnpud/v1/status", e.status)
 	mux.HandleFunc("POST /hwnpud/v1/load", e.serveLoad)
 	mux.HandleFunc("POST /v1/chat/completions", e.completions)
+	if e.AI != nil {
+		mux.Handle("GET "+AIPath, e.AI)
+	}
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
 		e.server(nil, r).Handler().ServeHTTP(w, r)
 	})

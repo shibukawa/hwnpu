@@ -1,10 +1,11 @@
 // hwnpud is the per-user process that owns the NPU and the models (docs/design/hwnpud.md):
-// hwnpu-chat and the apps reach it over a Unix domain socket instead of running the Neural Engine
-// in their own processes, so that one Core AI cache (under the name hwnpud) and one copy of a
-// model on the Neural Engine serve them all.
+// hwnpu-chat, hwnpu's commands and the apps of the ai package reach it over a Unix domain socket
+// instead of running the Neural Engine in their own processes (HWNPU_DAEMON is on unless set
+// off), so that one Core AI cache (under the name hwnpud) and one copy of a model on the Neural
+// Engine serve them all.
 //
 //	go install ./cmd/hwnpud && hwnpud install   # a LaunchAgent (Mac) or systemd user units (Linux): started at the first connection
-//	HWNPU_DAEMON=on hwnpu-chat "hello"          # hwnpu-chat through it
+//	hwnpu-chat "hello"                          # hwnpu-chat through it (HWNPU_DAEMON=off: in its own process)
 //	hwnpud status                               # what it holds
 //	hwnpud stop                                 # end it now (the service manager starts it again when needed)
 //	hwnpud serve                                # run it by hand, in the foreground
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/shibukawa/hwnpu/internal/aihost"
 	"github.com/shibukawa/hwnpu/internal/daemon"
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
@@ -77,7 +79,9 @@ type EngineCmd struct {
 }
 
 func (c *EngineCmd) Run(ctx context.Context) error {
-	e := &daemon.Engine{Idle: idle(c.Idle)}
+	// the engine runs the models itself: its apps' (internal/aihost) are not sent on to hwnpud
+	os.Setenv(daemon.ModeEnv, "off")
+	e := &daemon.Engine{Idle: idle(c.Idle), Log: os.Stderr, AI: aihost.Handler(os.Stderr)}
 	return e.Run(ctx, c.Socket)
 }
 

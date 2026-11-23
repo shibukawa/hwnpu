@@ -14,6 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
@@ -89,8 +90,9 @@ func familyOf(m chat.Model) string {
 // when edit.
 func newRole(name string, edit bool) *airole.Role {
 	return &airole.Role{
-		Name:  name,
-		Kinds: []chat.Kind{chat.KindImage},
+		Name:   name,
+		Remote: func(h *airpc.Handle) io.Closer { return &Generator{remote: h} },
+		Kinds:  []chat.Kind{chat.KindImage},
 		// 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		// 2: Anima, Chroma and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
 		Revision: 2,
@@ -169,6 +171,7 @@ type family interface {
 
 // Generator draws pictures. It draws one at a time; others wait.
 type Generator struct {
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	mu     sync.Mutex
 	dev    *hwnpu.Device // nil on the CPU interpreter
 	name   string
@@ -186,21 +189,44 @@ type Generator struct {
 }
 
 // Model is the name of the model in the definitions.
-func (g *Generator) Model() string { return g.name }
+func (g *Generator) Model() string {
+	if g.remote != nil {
+		return airpc.Value[string](g.remote, "Model")
+	}
+	return g.name
+}
 
 // Family is the model's family: flux2-klein, flux3-klein, anima or chroma.
-func (g *Generator) Family() string { return g.family }
+func (g *Generator) Family() string {
+	if g.remote != nil {
+		return airpc.Value[string](g.remote, "Family")
+	}
+	return g.family
+}
 
 // Edits reports whether it draws from reference pictures (Options.References).
-func (g *Generator) Edits() bool { return g.edits }
+func (g *Generator) Edits() bool {
+	if g.remote != nil {
+		return airpc.Value[bool](g.remote, "Edits")
+	}
+	return g.edits
+}
 
 // Sizes are the picture sizes the model draws on this machine's NPU.
-func (g *Generator) Sizes() []image.Point { return append([]image.Point(nil), g.sizes...) }
+func (g *Generator) Sizes() []image.Point {
+	if g.remote != nil {
+		return airpc.Value[[]image.Point](g.remote, "Sizes")
+	}
+	return append([]image.Point(nil), g.sizes...)
+}
 
 // SizeFor is the size of Sizes nearest w x h in shape; between sizes of one shape, the nearest
 // in pixels. A picture of another shape is drawn from by stretching it to this size, or by
 // leaving the crop to Generate.
 func (g *Generator) SizeFor(w, h int) image.Point {
+	if g.remote != nil {
+		return airpc.Value[image.Point](g.remote, "SizeFor", w, h)
+	}
 	if w <= 0 || h <= 0 {
 		return g.sizes[0]
 	}
@@ -220,6 +246,9 @@ func (g *Generator) SizeFor(w, h int) image.Point {
 // model's own sizes of them), or a side in pixels for a square. It need not be one of Sizes
 // (Generate draws the nearest); an error says what the model takes.
 func (g *Generator) SizeOf(spec string) (image.Point, error) {
+	if g.remote != nil {
+		return airpc.Call1[image.Point](g.remote, context.Background(), "SizeOf", spec)
+	}
 	w, h, err := g.parse(spec)
 	if err != nil {
 		return image.Point{}, err
@@ -234,6 +263,9 @@ func (g *Generator) SizeOf(spec string) (image.Point, error) {
 // it, so that no picture waits for a compile. On AMD's NPU, whose programs are made at Prepare,
 // it does nothing.
 func (g *Generator) Warm(ctx context.Context) error {
+	if g.remote != nil {
+		return airpc.Call0(g.remote, ctx, "Warm")
+	}
 	if g.amd || g.dev == nil {
 		return nil
 	}
@@ -280,6 +312,10 @@ func (g *Generator) GenerateAll(ctx context.Context, prompts []string, o Options
 	if len(prompts) == 0 {
 		return nil, errors.New("ai/imagegen: no prompt")
 	}
+	if g.remote != nil {
+		// the callbacks of o (Progress, Drawn, ...) are called here as hwnpud draws
+		return airpc.Call1[*Pictures](g.remote, ctx, "GenerateAll", prompts, o)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if len(o.References) > 0 && !g.edits {
@@ -320,6 +356,9 @@ func GenerateNode(u ai.Use[*Generator], o Options) *ai.ModelNode[Request, image.
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (g *Generator) Close() error {
+	if g.remote != nil {
+		return g.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var err error
