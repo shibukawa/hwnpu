@@ -133,7 +133,7 @@ func refused(rules []Rule, m Model) string {
 			return fmt.Sprintf("it may make NSFW pictures unasked (%s in %s)", deny[0], deny[0].From)
 		}
 		if len(allow) == 0 {
-			return fmt.Sprintf("it may make NSFW pictures unasked; +nsfw in %s allows it", PolicyEnv)
+			return fmt.Sprintf("it may make NSFW pictures unasked; hwnpu config add model-allowlist nsfw (+nsfw in %s) allows it", PolicyEnv)
 		}
 	}
 	allow, deny := of("license")

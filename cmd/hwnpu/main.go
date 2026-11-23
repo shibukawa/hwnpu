@@ -15,6 +15,16 @@
 //	hwnpu memory LFM3-1.7B                   # the memory it runs as, and how
 //	hwnpu memory LFM3-1.7B 8                 # run it as on a machine of 8 GB, in every command
 //	hwnpu memory LFM3-1.7B --forget          # as on this machine again
+//	hwnpu service install                    # hwnpud as a service (LaunchAgent, systemd user units): it starts at the first connection
+//	hwnpu service status                     # whether hwnpud runs, its settings, what it holds
+//	hwnpu service start|stop|restart         # not installed: start runs hwnpud here, in the foreground
+//	hwnpu config                             # the settings in effect and where each comes from (config keys: all there are)
+//	hwnpu config set model-source webdav://nas/llm  # kept in ~/.config/hwnpu/.env; hwnpud applies it at once
+//	hwnpu config get model-source
+//	hwnpu config remove model-source
+//	hwnpu config add model-allowlist +nsfw   # a list: an item at a time
+//	hwnpu config get model-allowlist         # its items, numbered: 1: +nsfw
+//	hwnpu config remove model-allowlist 1    # by its number (or the item itself)
 //
 // The cache is hwnpu in the user cache directory (~/.cache/hwnpu, ~/Library/Caches/hwnpu,
 // %LOCALAPPDATA%\hwnpu), or HWNPU_CACHE. It is held in units, each removed whole: a repository's
@@ -66,14 +76,17 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/npustatus"
+	"github.com/shibukawa/hwnpu/internal/servicecmd"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
-	Status npustatus.Cmd      `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
-	Cache  cachecmd.CacheCmd  `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
-	Memory cachecmd.MemoryCmd `cmd:"" help:"The memory each model runs as on this machine, in every hwnpu command: choose a smaller one (hwnpu memory LFM3-1.7B 8) to run a model beside other programs, the way models.yaml defines for that memory."`
-	Issue  IssueCmd           `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
+	Status  npustatus.Cmd      `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
+	Cache   cachecmd.CacheCmd  `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
+	Memory  cachecmd.MemoryCmd `cmd:"" help:"The memory each model runs as on this machine, in every hwnpu command: choose a smaller one (hwnpu memory LFM3-1.7B 8) to run a model beside other programs, the way models.yaml defines for that memory."`
+	Service servicecmd.Cmd     `cmd:"" help:"hwnpud, which owns the NPU and the models for the commands and the apps: install (as a service that starts at the first connection), status, start (not installed: in the foreground), stop, restart, uninstall."`
+	Config  ConfigCmd          `cmd:"" help:"hwnpu's settings by key, as git config (model-source, model-allowlist: config keys): set, get and remove; add, get and remove N of a list. Kept in ~/.config/hwnpu/.env, which hwnpud reads and applies at once."`
+	Issue   IssueCmd           `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
 }
 
 func main() {

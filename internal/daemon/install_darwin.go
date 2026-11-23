@@ -87,7 +87,7 @@ func Install(exe string, out io.Writer) error {
 		return err
 	}
 	if strings.Contains(exe, string(filepath.Separator)+"go-build") {
-		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpud install", exe)
+		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpu service install", exe)
 	}
 	socket := DefaultSocketPath()
 	for _, dir := range []string{filepath.Dir(PlistPath()), filepath.Dir(socket), filepath.Dir(LogPath())} {

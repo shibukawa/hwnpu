@@ -20,12 +20,12 @@ Mac で段取りの 1 (`cmd/hwnpud`、`internal/daemon`):
   モデルを用意し、ログ (JSON の行。クライアントの端末がバーを描き直せるかつき)、次にモデルを返す。`/v1/chat/completions`
   はそのモデルの `chat.Server`。usage に hwnpu の統計 (`chat.UsageStats`) を足す。待ち時間で終わり、Neural Engine の
   メモリとロックを返す
-- `hwnpud install` は `~/Library/LaunchAgents/com.github.shibukawa.hwnpud.plist` (ログは `~/Library/Logs/hwnpud.log`)
+- `hwnpu service install` は `~/Library/LaunchAgents/com.github.shibukawa.hwnpud.plist` (ログは `~/Library/Logs/hwnpud.log`)
   を書いて bootstrap する。シェルだけが設定している hwnpu の変数を警告する。`uninstall`、`status`、`stop`
 - `hwnpu-chat [chat]` は `HWNPU_DAEMON=on` (か `auto`) でこれを通る: 読み込みのログ、会話、同じ出力と統計の行。
   モデルの変換と動かし方のフラグはそこでは断る (段取り 3 で `ai` のパッケージに移した。下)
 - 設定 ([設定](#設定)): `hello` は hwnpud の設定と読んだ `.env` を返す。ファイルが変わると次のエンジンは新しい設定で
-  起きる。設定の違うクライアントには知らせ (`on`)、自分で動く (`auto`)。`hwnpud status` に出す。クライアントの
+  起きる。設定の違うクライアントには知らせ (`on`)、自分で動く (`auto`)。`hwnpu service status` に出す。クライアントの
   `HWNPU_MODEL_ALLOWLIST` は hwnpud の方針を狭める
 - M3: PLaMo 3 Translate 2B のプログラムは `hwnpud` の名前で初回 22 秒 (Core AI の項目 2.5 GB)。次の実行は
   モデルがエンジンに残っていて、始めから終わりまで 0.6 秒
@@ -85,7 +85,7 @@ Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd
   モデル、ファイル、動かし方の設定 `LoadSettings`、`AllowOffNPU`) を共有する。最初の `Get` が読み込み、次からは
   それを使い、最後の Runtime が手放すと (`Release`、`Close`、終わったセッション) 降ろす。呼び出しはその型のとおり
   順番に (どれも 1 回に 1 つ)。アプリの `InTurns` は今までどおり、グループのほかの自分の分を手放す。モデルの
-  ログは、それを持つ最後のクライアントのものに行く。`hwnpud status` は持っているモデルと、持つクライアントの数を出す
+  ログは、それを持つ最後のクライアントのものに行く。`hwnpu service status` は持っているモデルと、持つクライアントの数を出す
 - キャッシュのコマンドはエンジンで動く (`internal/cachecmd`、同じセッションの `cachecmd.Host`): `hwnpu cache`
   (info、ls、prune、clear、clean) と `hwnpu memory`。エンジンの設定 (シェルのではなく、その `HWNPU_CACHE` とソース)
   で動き、出力と問い (「remove them?」) はクライアントに。`hwnpu status` とアプリの `status` はエンジンのキャッシュを
@@ -116,13 +116,13 @@ Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd
   LFM3-1.7B、Supertonic 3) 2 分 49 秒。Core AI の `hwnpud/` は 18 項目から 54 項目に (2.5 GB から 8.9 GB)。
   ほかのプログラムのディレクトリは変わらなかった
 - M3、モデル 1 つとキャッシュ: 同時に開いた 2 つの `hwnpu-chat -m Qwen3-0.6B` はモデルを 1 つだけ持った
-  (`hwnpud status`: 「Qwen3-0.6B (chat): loaded once, for 2 clients」。2 つ目の `Get` は 1 つ目のものを使った)。
+  (`hwnpu service status`: 「Qwen3-0.6B (chat): loaded once, for 2 clients」。2 つ目の `Get` は 1 つ目のものを使った)。
   `hwnpu cache ls Qwen3-0.6B` はその 2 つのユニットに in use と書き、`clear -y` は残した。2 つとも終わったあとは
   同じ `clear` が消せる
 
 AMD の NPU の Linux でも、同じ監督役とエンジン:
 
-- `hwnpud install` は systemd のユーザーのユニット `~/.config/systemd/user/hwnpud.socket`
+- `hwnpu service install` は systemd のユーザーのユニット `~/.config/systemd/user/hwnpud.socket`
   (`ListenStream=$XDG_RUNTIME_DIR/hwnpud.sock`、モード 0600、`FileDescriptorName=hwnpud`) と `hwnpud.service`
   (`ExecStart=… serve`、`KillMode=mixed`: エンジンは監督役が自分で止める) を書き、`systemctl --user enable --now hwnpud.socket`
   する。監督役は `LISTEN_FDS` からソケットを受け取り (この変数はエンジンに渡さない)、相手の uid を `SO_PEERCRED` で確かめる。
@@ -137,15 +137,15 @@ AMD の NPU の Linux でも、同じ監督役とエンジン:
   (hwnpud のエンジンでも、`HWNPU_DAEMON=off` で動くプログラムでも)。そのプログラムは `waiting for the NPU: process N (hwnpud) is using it`
   と出して、エンジンが待ち時間で終わるのを待つ。エンジンではどの役のモデルも 1 つのプロセスにある。`HWNPU_DAEMON=off` で
   Whisper、読み上げ、画像のモデルを動かすプログラムはロックなしで NPU を開く (段取りの 4)
-- `hwnpud status` はエンジンの NPU のバッファ (固定される) を出す (`/proc/self/fdinfo` の `drm-total-memory`、`mem.DRMMemory`)
-- Ryzen AI 9 365 (`hwnpud install` のユニットと、別のソケットで `systemd-socket-activate`): LFM3-1.7B の書き出しは初回 2.6 秒で読み、
+- `hwnpu service status` はエンジンの NPU のバッファ (固定される) を出す (`/proc/self/fdinfo` の `drm-total-memory`、`mem.DRMMemory`)
+- Ryzen AI 9 365 (`hwnpu service install` のユニットと、別のソケットで `systemd-socket-activate`): LFM3-1.7B の書き出しは初回 2.6 秒で読み、
   17 tok/s で答える。次の実行は読み込みなしで始めから終わりまで 3.1 秒 (固定 1.62 GiB)。3 つのクライアントを同時に出すと
-  1 つずつ順に答える (12 秒、24 秒、43 秒)。Qwen3.5-0.8B を読むと先に LFM3-1.7B を閉じる (その後 1.02 GiB)。`hwnpud stop` でサービスが終わり、次の接続でまた起きる
+  1 つずつ順に答える (12 秒、24 秒、43 秒)。Qwen3.5-0.8B を読むと先に LFM3-1.7B を閉じる (その後 1.02 GiB)。`hwnpu service stop` でサービスが終わり、次の接続でまた起きる
 
 AMD の NPU の Linux の段取りの 3: Mac と同じコードで、Mac だけのものはない。
 
 - ここでも `HWNPU_DAEMON` は既定で `on`: hwnpud が答えなければ、`ai` パッケージのコマンドはどれも失敗し、することを言う
-  (`hwnpud install`、または `HWNPU_DAEMON=off`)
+  (`hwnpu service install`、または `HWNPU_DAEMON=off`)
 - エンジンはどのセッションのモデルも、役によらず並べて持つ (チャットのモデル 2 つ、チャットと Whisper など)。コマンドは NPU の上で
   交互に流れ、あるモデルの呼び出しの間に別のモデルの呼び出しが入る。障壁の要るモデルの障壁 (`stepBarrier`、`GraphOptions.Barrier`)
   はそれぞれのグラフが自分のものを動かすので効く
@@ -239,21 +239,39 @@ hwnpu の設定は今は環境変数で、プロセスがそれぞれシェル�
   中だけで変えた値は消える。hwnpud を通らないプロセス (`HWNPU_DAEMON=off`、`hwnpu-dev convert`) も同じファイルを読むので、
   どの道でも同じ設定で動く
 - **ファイルを変えれば hwnpud を起こし直さずに効く**。監督役は起こされたときの環境から、ファイルが設定したものを除いて持ち
-  (`envfile.Original`)、エンジンを起こすたびにファイルを読み直す (`envfile.Environ`)。変わっていれば、ほかにリクエストのない
-  次のリクエストでエンジンを止め、新しい設定で起こす。古い置き場から読んだモデルは持ち越さない。`hello` は次のエンジンが
-  受け取る設定 (認証は設定済みかだけ、URL のパスワードは除く)、読んだファイル、`pending` (動いているエンジンが違う値で持つ
-  名前) を返す
+  (`envfile.Original`)、エンジンを起こすたびにファイルを読み直す (`envfile.Environ`)。5 秒ごとと
+  `POST /hwnpud/v1/reload` (`hwnpu config set`) で、hwnpu と Hugging Face と AWS の変数をすべて (起こされたときに読む
+  `HWNPU_DAEMON*` は除く) エンジンを起こしたときのものと比べ、変わっていてリクエストがなければエンジンを止める。次のリクエストが
+  新しい設定で起こす (ほかにリクエストのないリクエストも同じ)。古い置き場から読んだモデルは持ち越さない。`hello` は次のエンジンが
+  受け取る設定 (認証は設定済みかだけ、URL のパスワードは除く、モデルの方針も)、読んだファイル、`pending` (動いているエンジンが
+  違う値で持つ名前) を返す
+- **hwnpud ではなく hwnpu service**。hwnpud はサービスの管理役が動かすもの (`serve` と、監督役が使う `engine`) だけを持ち、
+  利用者は `hwnpu service install|uninstall|status|start|stop|restart` (`internal/servicecmd`) で扱う (`tailscale` と
+  `tailscaled` のように)。インストールしてあれば、`start` は監督役 (つなぐとサービスの管理役が起こす) とエンジン
+  (`POST /hwnpud/v1/start`) を起こし、`stop` は終わらせ (次の接続でまた起きる)、`restart` は終わるよう頼み
+  (`POST /hwnpud/v1/restart`)、サービスの管理役が新しいもの (新しい実行ファイルでも) を起こすのを待って、エンジンを起こす。
+  インストールしていなければ、`start` は自分の代わりに `hwnpud serve` をフォアグラウンドで動かす (`exec`。起こされたときの環境から
+  ファイルが設定したものを除いて渡し、ファイルは hwnpud が自分で読む)。別のターミナルからの `stop` と `restart` も同じに効き、
+  手で動かした監督役の `restart` は、同じプロセスで実行ファイルを動かし直す (`Run` が `ErrRestart` を返し、`serve` が自分を
+  exec する): ログはそのターミナルに出続ける。pid が同じでも、`hello` の `started` で新しいものと古いものを見分ける
 - **設定の違うクライアントには知らせる**。クライアントは自分の設定 (シェルと、プロジェクトのものも含む `.env`) を `hello`
   のものと比べる。`HWNPU_DAEMON=on` なら通り、hwnpud の設定を使うこととそれを読んだファイルをログに出す。`auto` なら自分の
-  プロセスで自分の設定で動く。`hwnpud status` は設定と、実行したシェルとの違いを出す。`hwnpud install` はシェルだけが
+  プロセスで自分の設定で動く。`hwnpu service status` は設定と、実行したシェルとの違いを出す。`hwnpu service install` はシェルだけが
   設定している変数を警告する
 - **方針は狭めるだけで、広げない**。クライアントは `HWNPU_MODEL_ALLOWLIST` を送る (`LoadRequest.allowlist`、
   `X-Hwnpu-Model-Allowlist`)。hwnpud は、自分の方針が許し、定義のファイルの規則とクライアントの項目も許すモデルを動かす
   (`chat.AllowedAlso`)。クライアントはもっと断れるが、その `+nsfw` や `+license` は hwnpud の `-` を覆さない。管理者の規則は
   機械の `models.yaml` (`policy:`) に書けば、どのプロセスも読む。ファミリーからの選びは今は hwnpud の方針だけで決まり、選んだものを
   クライアントが断るとエラーになる (次のモデルにはならない)。下の Accept のような選びまで
-- **変えるコマンド**は段取りの 2 で: `hwnpu config get|set|unset NAME [VALUE]` が `~/.config/hwnpu/.env` を書き (認証は
-  `--secret` で OS の保管庫に)、ファイルの値と hwnpud の値を並べて見せる。hwnpud に知らせる必要はない: 次のエンジンがファイルを読む
+- **変えるコマンド**は git config のようにキーで (`envfile.Keys`): 利用者は環境変数の名前ではなくキーで設定を指す。値が 1 つの
+  もの (`cache`、`memory` など) は `hwnpu config set|get|remove KEY`、リストは `hwnpu config add|get|remove KEY` で 1 項目ずつ
+  変える: `get` が項目に番号を付け、`remove N` がその番号 (か項目そのもの) で消す。`model-source` は探す順に並べた取得元で、
+  `HWNPU_MODEL_SOURCE`、`_1`、`_2` … に書き、消すと番号を詰めて書き直す (`add --at 1` で先頭に入れる)。`model-allowlist` と `model-denylist` は
+  `HWNPU_MODEL_ALLOWLIST` の `+` と `-` の項目で、符号を付けずに書く (`hwnpu config add model-allowlist nsfw`、
+  `hwnpu config add model-denylist license:non-commercial`)。`hwnpu config` は効いている設定とその出どころを、`hwnpu config keys`
+  はキーを並べる。値は `~/.config/hwnpu/.env` (`--file` で別のファイル) に、コメントとほかの行を残して書き、どのプロセスも読む。
+  変えると hwnpud がすぐ効かせ (`reload`)、ファイルより勝つもの (シェル、先に読むファイル) があれば知らせる。認証を OS の保管庫に
+  置く `--secret` (下) はまだ作っていない
 
 決めたこと (2026-11-22。まだ作っていない):
 
@@ -352,8 +370,8 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 - `go install ./cmd/hwnpud` (または `go build`) で実行ファイル名は `hwnpud`。Mac ではこれが Core AI の項目の唯一の鍵。
   `go run ./cmd/hwnpud` も一時フォルダから同じ名前で動き、同じキャッシュに当たる
 - Mac では Go のリンカーはどの開発ビルドとも同じく `a.out` で ad-hoc に署名するので、aned のコードは共有のまま。`codesign` の手順はない
-- `hwnpud install` は自分のパス (`os.Executable`、たいてい `~/go/bin/hwnpud`) を指すサービスのファイルを書き、起こす
-  (`launchctl bootstrap gui/$UID`、`systemctl --user enable --now hwnpud.socket`)。`hwnpud uninstall` で戻す。
+- `hwnpu service install` は自分のパス (`os.Executable`、たいてい `~/go/bin/hwnpud`) を指すサービスのファイルを書き、起こす
+  (`launchctl bootstrap gui/$UID`、`systemctl --user enable --now hwnpud.socket`)。`hwnpu service uninstall` で戻す。
   `go install` でバイナリを入れ替えたら、次に起きたときから新しいもの
 
 ### 後で: Go のない人のためのバイナリ
@@ -367,7 +385,7 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 |---|---|---|
 | `go install` | なし | 動く |
 | Homebrew の formula (ソースからか bottle) | なし | 動く |
-| `hwnpud install` や `ai` の cli の `daemon install` (Go で落とし、sha256 を確かめる) | なし | 動く |
+| `hwnpu service install` や `ai` の cli の `daemon install` (Go で落とし、sha256 を確かめる) | なし | 動く |
 | GitHub Releases をブラウザで落とす | あり | 止まる。システム設定の「このまま開く」か `xattr -d com.apple.quarantine` |
 
 - 有償の契約 (年 99 USD、日本では 12,800 円) が要るのは、端末を使わない人に `.app` や `.pkg` を落としてもらうとき、

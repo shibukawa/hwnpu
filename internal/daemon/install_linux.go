@@ -87,13 +87,13 @@ func Install(exe string, out io.Writer) error {
 		return err
 	}
 	if strings.Contains(exe, string(filepath.Separator)+"go-build") {
-		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpud install", exe)
+		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpu service install", exe)
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
-		return fmt.Errorf("hwnpud install needs systemd's user units (systemctl): %w; run hwnpud serve by hand", err)
+		return fmt.Errorf("hwnpu service install needs systemd's user units (systemctl): %w; run it in the foreground with hwnpu service start", err)
 	}
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
-		return fmt.Errorf("hwnpud install: XDG_RUNTIME_DIR is unset (no systemd user session here); run hwnpud serve by hand")
+		return fmt.Errorf("hwnpu service install: XDG_RUNTIME_DIR is unset (no systemd user session here); run it in the foreground with hwnpu service start")
 	}
 	socket := DefaultSocketPath()
 	if err := os.MkdirAll(unitDir(), 0o755); err != nil {
