@@ -5,11 +5,9 @@ import (
 	"testing"
 
 	"github.com/goccy/go-yaml"
-
-	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
-// The embedded recipes read, and name models of models.yaml.
+// The embedded recipes read (internal/chat checks that they name models of models.yaml).
 func TestBuiltin(t *testing.T) {
 	f, err := Builtin()
 	if err != nil {
@@ -17,11 +15,6 @@ func TestBuiltin(t *testing.T) {
 	}
 	if f.Tools.CoreAIBuild == "" || len(f.Apple.Archs) == 0 {
 		t.Errorf("tools %+v, apple %+v", f.Tools, f.Apple)
-	}
-	for name := range f.Models {
-		if _, ok := chat.Lookup(name); !ok {
-			t.Errorf("%s is not a model of models.yaml", name)
-		}
 	}
 }
 

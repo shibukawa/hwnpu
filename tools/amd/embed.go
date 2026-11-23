@@ -75,3 +75,9 @@ func Extract(dir string) (string, error) {
 	}
 	return out, nil
 }
+
+// Has reports whether name is one of the exporters (iron_whisper.py).
+func Has(name string) bool {
+	_, err := fs.Stat(files, name)
+	return err == nil
+}

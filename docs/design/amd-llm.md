@@ -20,9 +20,9 @@ All numbers are from a Ryzen AI 9 365 (Strix Point) unless noted.
 | `ouro` | `iron_ouro.Ouro` (hwnpu's; IRON has none) | Ouro-1.4B-Thinking, evaluated, not in models.yaml ([model-estimation.md](../model-estimation.md)); 2.6B not exported |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN: `iron_gdn.py`) | Qwen3.5-0.8B, 2B, 4B |
 
-The current export lines are `amd_export` in [models.yaml](../../models.yaml):
+The current export lines are the `args` of `iron_export_lm.py` in [model-recipes.yaml](../../model-recipes.yaml):
 
-| Model | `amd_export` |
+| Model | `iron_export_lm.py`'s args (but `{in}` `{out}`) |
 |---|---|
 | LFM3-1.7B / VL / Audio / Omni | `lfm3 / lfm3vl / lfm3audio / lfm3omni --max-seq-len 12288 --q4` |
 | Gemma 4 E2B, E4B | `gemma4 --max-seq-len 4096 --q4` (text only; the towers are not converted for the catalog) |

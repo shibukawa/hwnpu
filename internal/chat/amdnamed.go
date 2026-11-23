@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -113,21 +114,14 @@ func AMDPictureExport(ctx context.Context, m Model, tool string, size int, log i
 	if d := AMDNamed(ctx, m, names, isDirectory, log); d != "" {
 		return d, nil
 	}
-	flags := ""
-	if m.File != "" {
-		flags = " --dit " + m.File
-	}
-	if size != 0 && size != 1024 {
-		flags += fmt.Sprintf(" --size %d", size)
-	}
-	out := filepath.Join(AMDRoot(), names[0])
-	if home, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(home, out); err == nil && filepath.IsLocal(rel) {
-			out = "~/" + filepath.ToSlash(rel)
+	how := ""
+	if f, err := recipe.Builtin(); err == nil {
+		if r, ok := f.AMDOf(m.Recipe); ok {
+			how = fmt.Sprintf(" (model-recipes.yaml: %s %s)", r.Script, strings.Join(r.Args, " "))
 		}
 	}
-	return "", fmt.Errorf("AMD's NPU runs exports of %s, and neither this machine (%s) nor the sources have %s for %s: download %s and run\n  python %s ~/models/%s %s%s\n(its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
-		tool, strings.Join(cache.ExportRoots(), ", "), names[0], m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), out, flags)
+	return "", fmt.Errorf("AMD's NPU runs exports of %s, and neither this machine (%s) nor the sources have %s for %s: make it with\n  hwnpu-dev models package %s/%s\nas its recipe says%s, which puts it in the sources written back to (docs/model-recipes.md)",
+		tool, strings.Join(cache.ExportRoots(), ", "), names[0], m.Name, m.Name, cache.AMDTarget, how)
 }
 
 // AMDPictureNames are the names the export of model m for AMD's NPU has, for pictures of size

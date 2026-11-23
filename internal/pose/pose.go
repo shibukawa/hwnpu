@@ -155,25 +155,19 @@ type Estimator struct {
 }
 
 // ExportVersion is the version of ExportNPU's exports (a key of the shared layers: chat.PinnedRecipe),
-// bumped by hand when what it passes iron_onnxcnn.py (npuOptions, the outputs) changes.
+// bumped by hand when what it passes iron_onnxcnn.py (its recipe's options, the outputs) changes.
 const ExportVersion = 1
-
-// npuOptions are iron_onnxcnn.py's options for RTMO: its pixels as they are (0 to 255), SiLU as
-// an operator of its own (the GEMM epilogue's vtanh is a few ulps off near 0) and bf16's
-// products (HIGH) in place of bfp16's: at MEDIUM the keypoints' scores moved by up to 0.13 from
-// ONNX Runtime's and a doubtful person's box by 97 px, at HIGH by 0.03 and 6 px, the network
-// 0.15 s -> 0.22 s (docs/amd-npu-models.md 22)
-var npuOptions = []string{"--mean", "0", "0", "0", "--std", "1", "1", "1", "--silu", "op", "--precision", "HIGH", "--dw-precision", "HIGH"}
 
 // ExportNPU makes the export of tools/amd/iron_onnxcnn.py of the ONNX file model in out with
 // IRON's python (chat.IRONPython): the network from the image to the head's convolutions
-// (ironcnn.LastConvs), its transformer layer included.
+// (ironcnn.LastConvs), its transformer layer included, with the options of its recipe
+// (model-recipes.yaml: RTMO's pixels as they are, SiLU as an operator, bf16's products).
 func ExportNPU(ctx context.Context, python []string, name, model, out string, log io.Writer) error {
 	g, err := onnx.Load(model)
 	if err != nil {
 		return err
 	}
-	return ironcnn.Make(ctx, python, name, model, out, Size, ironcnn.LastConvs(g), npuOptions, log)
+	return ironcnn.Make(ctx, python, name, model, out, Size, ironcnn.LastConvs(g), log)
 }
 
 // OpenNPU loads an export of ExportNPU (dir) onto dev, and the ONNX file model for the host's

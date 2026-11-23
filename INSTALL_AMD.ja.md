@@ -199,7 +199,7 @@ Strix Point でのデータ型ごとの性能と DMA の帯域、それを測っ
 
 ### hwnpu-chat のモデル
 
-hwnpu-chat は `tools/amd/iron_export_lm.py` の書き出し (`~/models/NAME.amd-npu2-q4`) を動かします。モデルの書き出しがなければ、初回にチェックポイントを落とし、手順 2 の IRON の環境で、models.yaml の `amd_export` のとおりに書き出します。その環境は `HWNPU_IRON_ENV` で渡します: 仮想環境のディレクトリか、環境を整えるスクリプト (bash で source するもの。`source utils/env_setup.sh` と `AIE_XCLBINUTIL` の設定をするものなど)。なければ PATH の python3 を試し、IRON を import できなければ、何を入れればよいかを言って止まります。
+hwnpu-chat は `tools/amd/iron_export_lm.py` の書き出し (`~/models/NAME.amd-npu2-q4`) を動かします。モデルの書き出しがなければ、初回にチェックポイントを落とし、手順 2 の IRON の環境で、model-recipes.yaml の `amd` のとおりに書き出します。その環境は `HWNPU_IRON_ENV` で渡します: 仮想環境のディレクトリか、環境を整えるスクリプト (bash で source するもの。`source utils/env_setup.sh` と `AIE_XCLBINUTIL` の設定をするものなど)。なければ PATH の python3 を試し、IRON を import できなければ、何を入れればよいかを言って止まります。
 
 ```bash
 HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "こんにちは"
@@ -209,7 +209,7 @@ HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "こんにちは"
 
 hwnpu-image generate も、FLUX.2 klein 4B (`-m flux2-klein`、`--size` は 8 つのアスペクト比、既定は 1:1) の書き出しを、初回に同じように `tools/amd/iron_flux2klein.py` で作ります。何かを落とす前に、`HWNPU_MODEL_SOURCE` の取得元に書き出しがないかを見ます: ほかの機械の初回が置いたもの、または手で作って `hwnpu-dev sources import` で同じ名前 (`flux.2-klein-4b.amd-npu2`) で置いたもの。書き出しは `--size` の 8 つの大きさ (1:1、1:1s、2:3、3:4、9:16、3:2、4:3、16:9) を 1 つに持ち (16.0 GB、作るのに 30 分ほど。重みは 1 回だけで、大きさごとなら 2 つで 22.7 GB)。16:9 と 9:16 は 1344 x 768 と 768 x 1344 で、ほかの画像モデルの 1360 x 752、752 x 1360 とは異なります。作ったものは書き戻す取得元 (`?writeback=true`) に置きます。
 
-ほかの AMD の書き出し (Anima、Chroma、Depth Anything 3、MoGe-2、YuNet、SigLIP 2、`amd_export` のないチャットのモデル) は手で作ります。hwnpu-image と hwnpu-chat は、手元にあればそれを、なければ取得元にある同じ名前のものを、キャッシュの `entries/amd-xdna2` に一度だけ落として使います (2 回目からはその写し)。`~/.cache/hwnpu/entries/amd-xdna2/NAME.amd-npu2` に作ると、初めて使ったときに記述し (ファイルの SHA-256。一度だけ)、書き戻す取得元に置きます。ほかの機械は作らずに落として使えます。`~/models` のものは読むだけなので、`hwnpu-dev sources import ~/models/NAME.amd-npu2` で置きます。書き出しもチェックポイントも、4 ファイルずつ並べて落とします。
+ほかの AMD の書き出し (Anima、Chroma、Depth Anything 3、MoGe-2、YuNet、SigLIP 2、AMD のレシピのないチャットのモデル) は手で作ります。hwnpu-image と hwnpu-chat は、手元にあればそれを、なければ取得元にある同じ名前のものを、キャッシュの `entries/amd-xdna2` に一度だけ落として使います (2 回目からはその写し)。`~/.cache/hwnpu/entries/amd-xdna2/NAME.amd-npu2` に作ると、初めて使ったときに記述し (ファイルの SHA-256。一度だけ)、書き戻す取得元に置きます。ほかの機械は作らずに落として使えます。`~/models` のものは読むだけなので、`hwnpu-dev sources import ~/models/NAME.amd-npu2` で置きます。書き出しもチェックポイントも、4 ファイルずつ並べて落とします。
 
 ## 5. 自分のカーネルを使う
 

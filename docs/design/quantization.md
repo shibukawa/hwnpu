@@ -64,7 +64,7 @@ Mixture-of-experts models on a Mac run their experts on the CPU (see [MoE](moe.m
 
 From the code (`Arch.Format`, `Config.Format()`, `defaultFormats`) and [models.yaml](../../models.yaml). hwnpu-chat fits lut tables with `kmeans-minmax`; the plain converter's default is `uniform`.
 
-| Model | Apple (Neural Engine) | Intel | AMD (`amd_export`) |
+| Model | Apple (Neural Engine) | Intel | AMD (model-recipes.yaml `amd`) |
 |---|---|---|---|
 | LFM3-1.7B | lut6 (with grouped attention) | int8 | `--q4` (MLP, head q4nx; attention, conv q8) |
 | LFM3-VL / Audio / Omni, d1 (text parts) | lut8 (`Config.Multimodal`) | int8 | `--q4` |
@@ -163,7 +163,7 @@ Codes:
 - Written as `palette.Codes` (`index.json`, per-weight `.idx` and `.tab`; `palette.CodesWriter` from Go). Looked up by a hash of the checkpoint weight's shape and bf16 values (`iron_q4.weight_key` = `palette.WeightKey`), so no name mapping per model. If an export reorders or concatenates weights they do not match; check the log's "N weights took the chosen codes". Fused weights quantized as one (PLaMo 3's `gate_up_proj`) match
 - AMD: `iron_export_lm.py --q4-codes DIR`. Apple: `hwnpu-dev convert -codes DIR`, `hwnpu-chat --codes DIR` (lutN only; the program name gets the codes hash, e.g. `gemma4-r1-lut6-gptq-27b3b448-per_layer.lut8-...`)
 - models.yaml `codes: HASH` makes a model convert with codes. They are put to and fetched from the source with the export (`chat.putCodes`, `fetchCodes`, `converted/MODEL/any/codes-HASH`), since without them nobody can rebuild the export when its key changes. See [distribution](distribution.md)
-- GPTQ is the default only for Qwen2.5-Coder-7B. Elsewhere it is opt-in; `amd_export` does not calibrate
+- GPTQ is the default only for Qwen2.5-Coder-7B. Elsewhere it is opt-in; the AMD recipes do not calibrate
 
 ## Rotation before lut
 

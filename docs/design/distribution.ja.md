@@ -30,7 +30,7 @@ hwnpu がモデルを探し、落とし、変換し、共有し、消す仕組�
 
 - `HWNPU_MEMORY` は機械をその GB として扱う。`hwnpu memory MODEL GB` はモデルごとの選択を `~/.config/hwnpu/run.json` に残す
 - `not_on: [M1, …]`: ファミリーや用途はそのチップではこのモデルを飛ばし次を選ぶ。名前で指せば動く
-- `tier`、`prefill`、`format`、`context`、`paged`: フラグがないときの hwnpu-chat のチャットのモデルの動かし方 ([llm-engine.md](llm-engine.md))。`variants: {16: {...}}` は大きな機械でこれらと `memory`、`amd_export` を変える
+- `tier`、`prefill`、`format`、`context`、`paged`: フラグがないときの hwnpu-chat のチャットのモデルの動かし方 ([llm-engine.md](llm-engine.md))。`variants: {16: {...}}` は大きな機械でこれらと `memory` を変える (AMD の書き出しの引数は model-recipes.yaml の `variants`)
 - `hwnpu-chat list` と `hwnpu-image list [image|depth]` は 1 つの表 (`chat.ListHave`) で、この NPU の DOWNLOAD、MEMORY、RUNS FROM を出す
 
 ### NPU ごとに測る値
@@ -102,7 +102,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   変換結果。entry.json を最後に�
 
 | 種類 | 鍵 |
 |---|---|
-| AMD のチャットの書き出し (`chat.ExportRecipe`、`chat.SharedExport`) | モデル、チェックポイントのコミット、models.yaml の sha256、`amd_export` の引数、読む組み込みの IRON の道具の hash |
+| AMD のチャットの書き出し (`chat.ExportRecipe`、`chat.SharedExport`) | モデル、チェックポイントのコミット、models.yaml の sha256、レシピの引数 (model-recipes.yaml)、読む組み込みの IRON の道具の hash |
 | AMD の初回の書き出し (detect、pose、segment、FLUX.2 klein。`chat.PinnedRecipe`) | 読む全ファイルの models.yaml の sha256、道具の名前と hash、Go の側の版 (`detect.ExportVersion` など、`AMDExportVersion`。引数の渡し方を変えたら手で上げる)。固定がなければ鍵がなく共有しない |
 | 手で作った AMD の書き出し (`iron-import`、`chat.AMDNamed`) | 名前 (`NAME.amd-npu2`、`NAME-1024.amd-npu2`、`NAME-SIZE.amd-npu2`、`NAME.amd-npu2-q4`) |
 | Core AI の書き出し (`coreAIRecipe`、`kind: coreai`) | モデル、リポジトリ、sha256 (なければファイルのコミット)、一緒に読むリポジトリ、書き出しの名前 (版と形式を含む)、`ailower.FormatVersion` |

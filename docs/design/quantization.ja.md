@@ -64,7 +64,7 @@ Mac の専門家混合のモデルは専門家を CPU で回す ([MoE](moe.md) �
 
 コード (`Arch.Format`、`Config.Format()`、`defaultFormats`) と [models.yaml](../../models.yaml) から。hwnpu-chat は lut の表を `kmeans-minmax` で当てはめる。変換器だけの既定は `uniform`。
 
-| モデル | Apple (Neural Engine) | Intel | AMD (`amd_export`) |
+| モデル | Apple (Neural Engine) | Intel | AMD (model-recipes.yaml `amd`) |
 |---|---|---|---|
 | LFM3-1.7B | lut6 (grouped 注意と) | int8 | `--q4` (MLP と出力層 q4nx、注意と畳み込み q8) |
 | LFM3-VL / Audio / Omni、d1 (テキスト部) | lut8 (`Config.Multimodal`) | int8 | `--q4` |
@@ -163,7 +163,7 @@ codes:
 - `palette.Codes` (`index.json`、重みごとの `.idx` と `.tab`。Go からは `palette.CodesWriter`) に書く。チェックポイントの重みの形と bf16 の値のハッシュで引く (`iron_q4.weight_key` = `palette.WeightKey`) ので、モデルごとの名前の対応は要らない。書き出しが重みを並べ替えたりつないだりすると当たらない。ログの「N weights took the chosen codes」で数を確かめる。1 つとして量子化する融合した重み (PLaMo 3 の `gate_up_proj`) は当たる
 - AMD: `iron_export_lm.py --q4-codes DIR`。Apple: `hwnpu-dev convert -codes DIR`、`hwnpu-chat --codes DIR` (lutN だけ。プログラムの名前に codes のハッシュが入る。例 `gemma4-r1-lut6-gptq-27b3b448-per_layer.lut8-...`)
 - models.yaml の `codes: HASH` があると codes で変換する。codes は書き出しと一緒に取得元に置き、取得元から取る (`chat.putCodes`、`fetchCodes`、`converted/MODEL/any/codes-HASH`)。書き出しの鍵が変わったとき、codes がないと誰も作り直せないため。[配布](distribution.md) を参照
-- GPTQ が既定なのは Qwen2.5-Coder-7B だけ。ほかは使うときに指定する。`amd_export` は校正しない
+- GPTQ が既定なのは Qwen2.5-Coder-7B だけ。ほかは使うときに指定する。AMD のレシピは校正しない
 
 ## lut の前に回転
 

@@ -30,7 +30,7 @@ How hwnpu finds, downloads, converts, shares and removes models. This file is th
 
 - `HWNPU_MEMORY` treats the machine as that many GB; `hwnpu memory MODEL GB` stores a per-model choice in `~/.config/hwnpu/run.json`.
 - `not_on: [M1, …]`: a family or a use skips the model on that chip and picks the next; the name still runs it.
-- `tier`, `prefill`, `format`, `context`, `paged`: how hwnpu-chat runs a chat model when the flags do not say (see [llm-engine.md](llm-engine.md)). `variants: {16: {...}}` changes them, `memory` and `amd_export` on bigger machines.
+- `tier`, `prefill`, `format`, `context`, `paged`: how hwnpu-chat runs a chat model when the flags do not say (see [llm-engine.md](llm-engine.md)). `variants: {16: {...}}` changes them and `memory` on bigger machines.
 - `hwnpu-chat list` and `hwnpu-image list [image|depth]` print one table (`chat.ListHave`) with this NPU's DOWNLOAD, MEMORY and RUNS FROM.
 
 ### Values measured per NPU
@@ -102,7 +102,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 
 | Kind | Key |
 |---|---|
-| AMD chat export (`chat.ExportRecipe`, `chat.SharedExport`) | model, checkpoint commit, models.yaml sha256, `amd_export` arguments, hash of the bundled IRON tools it reads |
+| AMD chat export (`chat.ExportRecipe`, `chat.SharedExport`) | model, checkpoint commit, models.yaml sha256, recipe's arguments (model-recipes.yaml), hash of the bundled IRON tools it reads |
 | AMD first-run exports (detect, pose, segment, FLUX.2 klein; `chat.PinnedRecipe`) | models.yaml sha256 of every input, tool name and hash, a Go-side version (`detect.ExportVersion`, …, `AMDExportVersion`) raised by hand when the arguments change. No pins → no key → not shared |
 | AMD export made by hand (`iron-import`, `chat.AMDNamed`) | its name (`NAME.amd-npu2`, `NAME-1024.amd-npu2`, `NAME-SIZE.amd-npu2`, `NAME.amd-npu2-q4`) |
 | Core AI export (`coreAIRecipe`, `kind: coreai`) | model, repository, sha256 (else the files' commit), repositories read with it, export name (holds version and format), `ailower.FormatVersion` |

@@ -173,7 +173,7 @@ func (l LsCmd) Run(d *devopt.Defs) error {
 	return w.Flush()
 }
 
-// AMDForms is m and each of its variants (machines of more memory) whose amd_export differs:
+// AMDForms is m and each of its variants (machines of more memory) whose export for AMD's NPU differs (its recipe's args):
 // gpt-oss-20b's 16 experts a layer on 16 GB and all of them from 24 GB are two exports.
 func AMDForms(m chat.Model) []chat.Model {
 	forms := []chat.Model{m}
@@ -195,7 +195,7 @@ func AMDForms(m chat.Model) []chat.Model {
 }
 
 // AMDFormsOn is AMDForms, or given memory the forms of machines of those GB alone (each
-// amd_export once).
+// recipe's args once).
 func AMDFormsOn(m chat.Model, memory []int) []chat.Model {
 	if len(memory) == 0 {
 		return AMDForms(m)
@@ -229,7 +229,7 @@ func (x AMDExport) Make(ctx context.Context, memory []int) error {
 	for _, name := range x.Model {
 		m, ok := chat.Lookup(name)
 		if !ok || len(m.AMDExport) == 0 {
-			return fmt.Errorf("%s is not a model of the definitions with amd_export", name)
+			return fmt.Errorf("%s is not a model of the definitions with a recipe of iron_export_lm.py (model-recipes.yaml)", name)
 		}
 		forms = append(forms, AMDFormsOn(m, memory)...)
 	}
@@ -269,7 +269,7 @@ func (x AMDExport) Make(ctx context.Context, memory []int) error {
 
 // PushCmd is hwnpu-dev models push.
 type PushCmd struct {
-	Model []string `arg:"" help:"Models of the definitions (their exports for AMD's NPU: made by amd_export, or on the first run of hwnpu-image detect, pose, segment) to put in the layers."`
+	Model []string `arg:"" help:"Models of the definitions (their exports for AMD's NPU: made as model-recipes.yaml says, or on the first run of hwnpu-image detect, pose, segment) to put in the layers."`
 }
 
 func (p PushCmd) Run(d *devopt.Defs) error {
@@ -295,7 +295,7 @@ func (p PushCmd) Run(d *devopt.Defs) error {
 		}
 		dir := chat.AMDExportDir(m)
 		if dir == "" {
-			return fmt.Errorf("%s has no amd_export", m.Name)
+			return fmt.Errorf("%s has no recipe of iron_export_lm.py (model-recipes.yaml)", m.Name)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
 			// one made before Root held the exports: under ~/models
@@ -629,7 +629,7 @@ func (ic ImportCmd) one(ctx context.Context, writes []shared.Source, dir, repo s
 	return nil
 }
 
-// export puts an export for AMD's NPU made by hand: one of a model's amd_export or first run
+// export puts an export for AMD's NPU made by hand: one of a model's recipe of iron_export_lm.py or first run
 // as hwnpu-dev models push does, any other under the model whose name begins it (its own name
 // when none), described by its name.
 func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir string) error {

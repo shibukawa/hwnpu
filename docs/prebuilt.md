@@ -37,7 +37,7 @@
 
 | 対象 (フォルダ) | 中身 | 使う機械 | 配るモデル |
 |---|---|---|---|
-| `amd-xdna2` | IRON の書き出し (ELF、xclbin、バンク、manifest)。`amd_export` の版 (`variants` で増える `-p16`、`-p128` など) ごと | AMD の XDNA2 (Strix Point ほか)。**Linux と Windows で同じもの** | `amd_export` か初回の書き出しのあるモデル |
+| `amd-xdna2` | IRON の書き出し (ELF、xclbin、バンク、manifest)。`iron_export_lm.py` のレシピの版 (`variants` で増える `-p16`、`-p128` など) ごと | AMD の XDNA2 (Strix Point ほか)。**Linux と Windows で同じもの** | model-recipes.yaml に `amd` のレシピのあるモデル |
 | `coreai` | Core AI の `.aimodel` (端末によらない MLIR バイトコードと重み) | macOS 27 以降のどの Mac も。初回はその Mac で ANE 向けにコンパイルする | Core AI の書き出しのあるモデル全部 |
 | `coreai-<チップ>` (`coreai-h14g` など) | `coreai-build` の結果。重みなし (`coreai` の `main.mlirb` から組み立てる)。1 つ数十 MB | そのチップの Mac。初回のコンパイルが短くなる | 効く画像のモデルだけ (FLUX.2 klein、Chroma1-Flash、Anima)。チャットは配らない (初回が遅くなる: distribution.md) |
 | `any` | 埋め込みの表 (`tables`) | どれも | 表のあるモデル。これがあればチェックポイントを落とさずに済む |
