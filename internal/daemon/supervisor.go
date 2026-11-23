@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,15 +39,18 @@ type Supervisor struct {
 	// Log receives what the supervisor does and the engine's standard error (os.Stderr when nil).
 	Log io.Writer
 
-	mu      sync.Mutex
-	child   *child
-	proxy   *httputil.ReverseProxy
-	active  atomic.Int64
-	last    atomic.Int64 // unix nanoseconds of the last request's end
-	started time.Time    // the executable's modification time when the supervisor started
-	exe     string
-	srv     *http.Server
-	running map[string]string // the settings the engine started with
+	mu       sync.Mutex
+	child    *child
+	proxy    *httputil.ReverseProxy
+	active   atomic.Int64
+	last     atomic.Int64 // unix nanoseconds of the last request's end
+	started  time.Time    // the executable's modification time when the supervisor started
+	exe      string
+	srv      *http.Server
+	launched bool              // the service manager started it
+	since    time.Time         // when it started (Hello.Started)
+	restart  atomic.Bool       // a restart was asked: Run returns ErrRestart
+	running  map[string]string // the variables the engine started with (watched)
 	// environ is the environment of the next engine (and its .env files): the base and the files
 	// as they are now; tests give their own
 	environ func() ([]string, []string, error)
@@ -56,6 +60,10 @@ type child struct {
 	cmd  *exec.Cmd
 	done chan struct{}
 }
+
+// ErrRestart is what Run returns when a restart was asked of a supervisor the service manager did
+// not start: its caller runs the executable again (hwnpud serve does, in the same process).
+var ErrRestart = errors.New("hwnpud: restart")
 
 // Run serves until ctx ends, the idle time passes (when the service manager started it), or a
 // quit request.
@@ -74,6 +82,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		}
 	}
 	s.exe = exe
+	s.since = time.Now()
 	if s.environ == nil {
 		base := envfile.Original()
 		s.environ = func() ([]string, []string, error) { return envfile.Environ(base) }
@@ -86,9 +95,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		return err
 	}
 	launched := len(lns) > 0
+	s.launched = launched
 	if launched {
-		// the service manager's socket, which the engine's is beside
-		if a, ok := lns[0].Addr().(*net.UnixAddr); ok && a.Name != "" {
+		// the service manager's socket, which the engine's is beside. launchd binds it in a
+		// directory of root's (/var/run/com.apple.launchd.*) and moves it to the plist's path, and
+		// the listener keeps the first name, where the engine's cannot be made: on the Mac it is
+		// the path given (the plist's, DefaultSocketPath), on Linux systemd's own
+		if a, ok := lns[0].Addr().(*net.UnixAddr); ok && a.Name != "" && runtime.GOOS != "darwin" {
 			s.Socket = a.Name
 		}
 	} else {
@@ -119,6 +132,24 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		writeJSONValue(w, http.StatusOK, s.hello())
 	})
 	mux.HandleFunc("GET /hwnpud/v1/status", s.status)
+	mux.HandleFunc("POST /hwnpud/v1/start", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.ensureEngine(r.Context(), engineSocket); err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeJSONValue(w, http.StatusOK, s.hello())
+	})
+	mux.HandleFunc("POST /hwnpud/v1/restart", func(w http.ResponseWriter, r *http.Request) {
+		// the service manager starts the next at the next connection; one started by hand runs
+		// its executable again itself
+		s.restart.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+		go s.shutdown()
+	})
+	mux.HandleFunc("POST /hwnpud/v1/reload", func(w http.ResponseWriter, r *http.Request) {
+		s.reload(1) // this request is one
+		writeJSONValue(w, http.StatusOK, s.hello())
+	})
 	mux.HandleFunc("POST /hwnpud/v1/quit", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		go s.shutdown()
@@ -150,6 +181,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		os.Remove(s.Socket)
 	}
 	if errors.Is(err, http.ErrServerClosed) {
+		if s.restart.Load() && !launched {
+			return ErrRestart
+		}
 		return nil
 	}
 	return err
@@ -170,6 +204,7 @@ func (s *Supervisor) watch(ctx context.Context, launched bool, stop chan struct{
 			return
 		case <-t.C:
 		}
+		s.reload(0)
 		if !launched || s.active.Load() > 0 || s.engineRunning() {
 			continue
 		}
@@ -185,6 +220,28 @@ func (s *Supervisor) watch(ctx context.Context, launched bool, stop chan struct{
 			return
 		}
 	}
+}
+
+// reload stops the engine when the .env files changed what it was started with and no request
+// but the others of the caller (others) goes on: the next request starts one with the new
+// settings. It reports the names that changed, nil when it did not stop the engine.
+func (s *Supervisor) reload(others int64) []string {
+	if !s.engineRunning() || s.active.Load() > others {
+		return nil
+	}
+	env, _, err := s.environ()
+	if err != nil {
+		return nil // the file is being written, or wrong: hello tells
+	}
+	s.mu.Lock()
+	names := changed(s.running, watched(env))
+	s.mu.Unlock()
+	if len(names) == 0 {
+		return nil
+	}
+	fmt.Fprintf(s.Log, "hwnpud: %s changed; stopping the engine for the next request to start it with them\n", strings.Join(names, ", "))
+	s.stopEngine()
+	return names
 }
 
 // replaced reports whether the executable on disk is not the one that started.
@@ -213,7 +270,10 @@ func (s *Supervisor) track(h http.Handler) http.Handler {
 }
 
 func (s *Supervisor) hello() Hello {
-	h := Hello{Protocol: Protocol, Build: Build(), PID: os.Getpid(), Executable: s.exe}
+	h := Hello{Protocol: Protocol, Build: Build(), PID: os.Getpid(), Executable: s.exe, Started: s.since.UnixNano()}
+	if s.launched {
+		h.Service = serviceManager()
+	}
 	env, files, err := s.environ()
 	h.Settings, h.Files = Settings(env), files
 	if err != nil {
@@ -222,7 +282,7 @@ func (s *Supervisor) hello() Hello {
 	s.mu.Lock()
 	if s.child != nil {
 		h.Engine = s.child.cmd.Process.Pid
-		h.Pending = changed(s.running, h.Settings)
+		h.Pending = changed(s.running, watched(env))
 	}
 	s.mu.Unlock()
 	return h
@@ -256,7 +316,7 @@ func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 	if err != nil {
 		fmt.Fprintf(s.Log, "hwnpud: %v\n", err)
 	}
-	set := Settings(env)
+	set := watched(env)
 	s.mu.Lock()
 	// the .env files changed: a new engine reads them, when no other request needs this one
 	if s.child != nil && s.active.Load() <= 1 {
@@ -342,7 +402,7 @@ func ListenUnix(path string) (net.Listener, error) {
 	if _, err := os.Lstat(path); err == nil {
 		if conn, err := net.DialTimeout("unix", path, time.Second); err == nil {
 			conn.Close()
-			return nil, fmt.Errorf("another hwnpud answers on %s (hwnpud stop ends it)", path)
+			return nil, fmt.Errorf("another hwnpud answers on %s (hwnpu service stop ends it)", path)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, err

@@ -195,6 +195,35 @@ func TestSupervisor(t *testing.T) {
 	}
 }
 
+// TestRestartByHand: a supervisor not started by the service manager ends at restart with
+// ErrRestart, for hwnpud serve to run itself again.
+func TestRestartByHand(t *testing.T) {
+	c, done := startSupervisor(t)
+	ctx := context.Background()
+	h, err := c.Hello(ctx)
+	if err != nil || h.Service != "" || h.Started == 0 {
+		t.Fatalf("hello %+v, %v", h, err)
+	}
+	if _, err := c.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, c.URL("/hwnpud/v1/restart"), nil)
+	resp, err := c.HTTP.Do(req)
+	if err != nil || resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("restart: %v, %v", resp, err)
+	}
+	resp.Body.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrRestart) {
+			t.Fatalf("run ended with %v, want ErrRestart", err)
+		}
+		done <- nil // for the cleanup
+	case <-time.After(40 * time.Second):
+		t.Fatal("the supervisor did not end")
+	}
+}
+
 func TestListenUnixReplacesStaleSocket(t *testing.T) {
 	path := filepath.Join(shortDir(t), "s.sock")
 	ln, err := ListenUnix(path)
@@ -251,11 +280,11 @@ func TestUseOffAndAuto(t *testing.T) {
 // ones, and a client of other settings is told (on) or runs by itself (auto).
 func TestSettings(t *testing.T) {
 	var mu sync.Mutex
-	cache := "/a"
+	cache, extra := "/a", "OTHER=1"
 	environ := func() ([]string, []string, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		return []string{"PATH=" + os.Getenv("PATH"), "HWNPU_CACHE=" + cache, "HWNPU_MODEL_SOURCE=https://me:pw@nas/llm", "HF_TOKEN=hf_x"}, []string{"/u/.env"}, nil
+		return []string{"PATH=" + os.Getenv("PATH"), "HWNPU_CACHE=" + cache, "HWNPU_MODEL_SOURCE=https://me:pw@nas/llm", "HF_TOKEN=hf_x", extra}, []string{"/u/.env"}, nil
 	}
 	c, _ := startSupervisorWith(t, environ)
 	ctx := context.Background()
@@ -285,6 +314,10 @@ func TestSettings(t *testing.T) {
 	if h, _ := c.Hello(ctx); fmt.Sprint(h.Pending) != "[HWNPU_CACHE]" {
 		t.Fatalf("pending %v", h.Pending)
 	}
+	// reload (hwnpu config set, and the supervisor every few seconds) stops the engine of the old
+	if h, err := c.Reload(ctx); err != nil || h.Engine != 0 || len(h.Pending) != 0 {
+		t.Fatalf("reload: %+v, %v", h, err)
+	}
 	log, second := load()
 	if !strings.Contains(log, "cache /b\n") || second == first {
 		t.Fatalf("after the change: engine %d (was %d), %q", second, first, log)
@@ -292,11 +325,24 @@ func TestSettings(t *testing.T) {
 	if h, _ := c.Hello(ctx); len(h.Pending) != 0 {
 		t.Fatalf("pending %v after the new engine", h.Pending)
 	}
+	// start and restart: the engine runs after them, a new one after restart
+	if h, err := c.Start(ctx); err != nil || h.Engine != second {
+		t.Fatalf("start with the engine running: %+v, %v (engine %d)", h, err, second)
+	}
+	_ = second
+	// the model policy is reported, but a client's own is not a difference
+	mu.Lock()
+	extra = "HWNPU_MODEL_ALLOWLIST=+nsfw"
+	mu.Unlock()
+	if h, _ := c.Hello(ctx); h.Settings["HWNPU_MODEL_ALLOWLIST"] != "+nsfw" || fmt.Sprint(h.Pending) != "[HWNPU_MODEL_ALLOWLIST]" {
+		t.Fatalf("hello with a policy: %v, pending %v", h.Settings, h.Pending)
+	}
 
 	t.Setenv(SocketEnv, c.Socket)
 	t.Setenv("HWNPU_CACHE", "/here")
 	t.Setenv("HWNPU_MODEL_SOURCE", "https://nas/llm")
-	t.Setenv("HF_TOKEN", "hf_y") // set on both sides: not a difference
+	t.Setenv("HF_TOKEN", "hf_y")                                 // set on both sides: not a difference
+	t.Setenv("HWNPU_MODEL_ALLOWLIST", "-license:non-commercial") // the client's: it narrows, not a difference
 	t.Setenv(ModeEnv, "auto")
 	var out bytes.Buffer
 	if cl, err := Use(ctx, "off", &out); cl != nil || err != nil {

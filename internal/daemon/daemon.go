@@ -159,13 +159,19 @@ type Hello struct {
 	Engine int `json:"engine"`
 	// Executable is the supervisor's executable.
 	Executable string `json:"executable"`
+	// Service is the service manager that started the supervisor (launchd, systemd), "" when it
+	// was started by hand (hwnpud serve): one that quits is started again only by the former.
+	Service string `json:"service,omitempty"`
+	// Started is when the supervisor started (unix nanoseconds): a restart by hand keeps the
+	// process, and this tells the new from the old.
+	Started int64 `json:"started,omitempty"`
 	// Settings are hwnpud's settings (Settings): those the next engine starts with, read from the
 	// .env files now.
 	Settings map[string]string `json:"settings,omitempty"`
 	// Files are the .env files they were read from.
 	Files []string `json:"files,omitempty"`
-	// Pending are the settings the running engine has other values of: it is started again with
-	// these at a request when no other goes on.
+	// Pending are the variables (hwnpu's, Hugging Face's, AWS's) the running engine has other
+	// values of: it is stopped when no request goes on, and the next starts one with these.
 	Pending []string `json:"pending,omitempty"`
 	// SettingsError is what was wrong with a .env file.
 	SettingsError string `json:"settings_error,omitempty"`
@@ -293,6 +299,76 @@ func (c *Client) Quit(ctx context.Context) error {
 	return nil
 }
 
+// Start starts the engine unless it runs (and the supervisor, when the service manager starts it
+// at a connection), and answers hello.
+func (c *Client) Start(ctx context.Context) (Hello, error) {
+	return c.postHello(ctx, "/hwnpud/v1/start")
+}
+
+// Restart ends the supervisor and its engine (the requests going on fail) and waits until a new
+// supervisor answers, which the service manager starts, or, when it was started by hand, it runs
+// itself again; then it starts the engine. It answers the old supervisor's hello and the new's.
+func (c *Client) Restart(ctx context.Context) (old, now Hello, err error) {
+	if old, err = c.Hello(ctx); err != nil {
+		return old, now, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/hwnpud/v1/restart"), nil)
+	if err != nil {
+		return old, now, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return old, now, c.notRunning(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return old, now, fmt.Errorf("hwnpud %s does not restart (%s): hwnpu service stop, then start", old.Build, resp.Status)
+	}
+	// it stops its engine (up to 30 seconds) and exits or runs itself again
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		h, err := c.Hello(hctx)
+		cancel()
+		if err == nil && (h.PID != old.PID || h.Started != old.Started) {
+			break
+		}
+		if ctx.Err() != nil {
+			return old, now, ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return old, now, fmt.Errorf("hwnpud did not start again (pid %d before; its log: %s)", old.PID, LogWhere())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	now, err = c.Start(ctx)
+	return old, now, err
+}
+
+// Reload has hwnpud apply the .env files now: when they changed what the engine runs with and no
+// request goes on, it stops the engine (the next request starts one with them). Hello's Pending
+// are what is left for later.
+func (c *Client) Reload(ctx context.Context) (Hello, error) {
+	return c.postHello(ctx, "/hwnpud/v1/reload")
+}
+
+func (c *Client) postHello(ctx context.Context, path string) (Hello, error) {
+	var h Hello
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL(path), nil)
+	if err != nil {
+		return h, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return h, c.notRunning(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return h, ResponseError(resp)
+	}
+	return h, json.NewDecoder(resp.Body).Decode(&h)
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL(path), nil)
 	if err != nil {
@@ -412,14 +488,14 @@ func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 	defer cancel()
 	h, err := c.Hello(hctx)
 	if err == nil && h.Protocol != Protocol {
-		err = fmt.Errorf("hwnpud at %s speaks protocol %d, this client %d: hwnpud stop, then install the same version (go install ./cmd/hwnpud)", c.Socket, h.Protocol, Protocol)
+		err = fmt.Errorf("hwnpud at %s speaks protocol %d, this client %d: hwnpu service stop, then install the same version (go install ./cmd/hwnpud)", c.Socket, h.Protocol, Protocol)
 	}
 	if err != nil {
 		if mode == "auto" {
 			return nil, nil
 		}
 		if errors.Is(err, ErrNotRunning) {
-			return nil, fmt.Errorf("%s=on: %w (go install ./cmd/hwnpud && hwnpud install, or %s=off)", ModeEnv, err, ModeEnv)
+			return nil, fmt.Errorf("%s=on: %w (go install ./cmd/hwnpu ./cmd/hwnpud && hwnpu service install, or %s=off)", ModeEnv, err, ModeEnv)
 		}
 		return nil, fmt.Errorf("%s=on: %w", ModeEnv, err)
 	}

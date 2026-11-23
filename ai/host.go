@@ -25,7 +25,7 @@ func AppFromSpec(s AppSpec) (*App, error) {
 	for _, u := range s.Uses {
 		role := airole.Lookup(u.Role)
 		if role == nil {
-			return nil, fmt.Errorf("ai: hwnpud knows no role %q (%s's use %s): hwnpud is of an older build than the app (hwnpud stop, go install ./cmd/hwnpud)", u.Role, s.Name, u.Name)
+			return nil, fmt.Errorf("ai: hwnpud knows no role %q (%s's use %s): hwnpud is of an older build than the app (go install ./cmd/hwnpud, then hwnpu service restart)", u.Role, s.Name, u.Name)
 		}
 		r := requirement{name: u.Name, role: role, as: u.As}
 		for _, t := range u.Tiers {

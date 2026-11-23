@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-var errService = errors.New("hwnpud install: only the Mac's LaunchAgent and systemd's user units; run hwnpud serve by hand")
+var errService = errors.New("hwnpu service install: only the Mac's LaunchAgent and systemd's user units; run it in the foreground with hwnpu service start")
 
 // Install is the Mac's and Linux's.
 func Install(string, io.Writer) error { return errService }
