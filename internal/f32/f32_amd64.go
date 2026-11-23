@@ -29,3 +29,5 @@ func axpyKernel(dst []float32, a float32, x []float32) int {
 	axpyAVX2(&dst[0], a, &x[0], n)
 	return n
 }
+
+func gluKernel(dst, gu []float32, alpha, limit, add float32) int { return 0 }

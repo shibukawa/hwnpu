@@ -70,6 +70,7 @@
 | Core AI で経路つきの専門家 (`llm.Routed`) | LFM2-8B-A1B が動く。プロンプト 138 tok/s (1 行ずつなら 24) | [moe.md](moe.md) |
 | 専門家を CPU で MXFP4 (`llm.HostRouted`)、丸ごと読む、プロンプトを部分の順に (wave) | M3 の Qwen3.6-35B-A3B: 11.0 tok/s、2602 トークンのプロンプト 21.5 秒、NE と合わせて 2.69 GB | [moe.md](moe.md) |
 | gpt-oss-20b、専門家は CPU、予算まで固定 | M3 17.3 tok/s、1 トークン 0.52 J。M2 13.9 tok/s、0.50 J | [moe.md](moe.md) |
+| 1 トークンの専門家: 活性化を NEON で (`f32.GLU`)、配列をトークンの間で使い回す | M2、合成の重みの gpt-oss-20b の 1 層、層の間 1.5 ms: 平均 1.51 → 1.39 ms、p99 6.7 → 5.9 ms (1 層の確保 217 KB → 3 KB) | [moe.md](moe.md) |
 
 ### 画像生成
 
@@ -104,15 +105,17 @@
 | ONNX のプログラムの sigmoid / SiLU を exp で (`ExpSigmoid`) | RTMDet-s の箱の誤差 98 → 5.5 px | 1 枚 6.6 → 9.3 ms | [vision-models.md](vision-models.md) |
 | PP-OCR の認識器を NPU で | 98 行のページ 1528 → 488 ms | 幅ごとにプログラム | [vision-models.md](vision-models.md) |
 | ホストの拡大縮小をクロージャなしで全部のコアに | 1 枚 37〜55 → 5〜7 ms | | [vision-models.md](vision-models.md) |
+| ホストの拡大縮小で組み込みの min / max、RGB の行を全部のコアで | M2、512² の画像: RTMDet-m 1 枚 19.3 → 15.9 ms (拡大縮小 5.7 → 2.6)、NE の YuNet 5.5 → 3.3 ms。バイトは同じ | | [vision-models.md](vision-models.md) |
 | NE の SigLIP 2 | base 1 枚 7.3〜7.9 ms (M3。AMD 84 ms) | | [vision-models.md](vision-models.md) |
 | AMD: Whisper large-v3-turbo | 復号 78 tok/s。30 秒の窓のエンコーダ 0.84 秒 | | [audio-models.md](audio-models.md) |
 | AMD: LFM3-Audio の読み上げ、MOSS-SoundEffect、Magenta RT2 の復号器 | 実時間の 0.43 倍、1 ステップ 2.8 秒、実時間の 0.3 倍 | | [audio-models.md](audio-models.md) |
-| 小さな CNN のための `milcpu`: 値のバッファの使い回し、AVX2 の深さ方向、直接と 1×1 の畳み込み、畳み込みと ReLU を 1 回で | Ryzen AI 9 365 の 1 コアで YuNet 320×256 が 12.6 → 2.3 ms、1 枚 243 → 約 30 mJ (ONNX Runtime 20 mJ、AMD の NPU 184 mJ) | | [vision-models.md](vision-models.md) |
+| 小さな CNN のための `milcpu`: 値のバッファの使い回し、AVX2 (amd64) と NEON (arm64) の深さ方向、直接と 1×1 の畳み込み、畳み込みと ReLU を 1 回で | Ryzen AI 9 365 の 1 コアで YuNet 320×256 が 12.6 → 2.3 ms、1 枚 243 → 約 30 mJ (ONNX Runtime 20 mJ、AMD の NPU 184 mJ)。M2 の 1 スレッドで Go のループ → NEON: YuNet 320×256 24.0 → 2.7 ms、640×480 89.6 → 9.0 ms (`face-detect --device cpu` 1 枚 92.7 → 10.6 ms)。SwiftF0 1.09 → 0.62 秒、Supertonic のエンコーダ 105 → 24 ms | | [vision-models.md](vision-models.md) |
 
 ### どこでも
 
 | 変更 | 得られたもの | 詳しく |
 |---|---|---|
+| サンプリング: 貪欲法と MTP の下書きを `vecops.MinMax` の塊で (top k と同じ)、logits は 1 回の答えで 1 つの配列に写す | M2、248320 の logits: 貪欲法 1 トークン 0.20 → 0.03 ms、top k 0.11 → 0.05 ms (トークンごとの複製が 1 MB のゴミだった) | [llm-decoding.md](llm-decoding.md) |
 | ディスクで同じファイルを共有 (`cache.Clone`) | M3 約 50 → 20 GiB。AMD の書き出し 2 つ 15.2 → 8.2 GiB (ext4 ではなし) | [distribution.md](distribution.md) |
 | 取得を 4 本並びに | Wi-Fi と NAS で 5 → 9 MB/s | [distribution.md](distribution.md) |
 | 会話の印は使っている輪の行だけ、変換の後にメモリを返す | 578 → 183 MB。2.4 GB → 154 MB | [memory-and-power.md](memory-and-power.md) |

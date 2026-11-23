@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ServiceFile is the definition of the installed service (the LaunchAgent's plist).
@@ -87,7 +88,7 @@ func Install(exe string, out io.Writer) error {
 		return err
 	}
 	if strings.Contains(exe, string(filepath.Separator)+"go-build") {
-		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpud install", exe)
+		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpu service install", exe)
 	}
 	socket := DefaultSocketPath()
 	for _, dir := range []string{filepath.Dir(PlistPath()), filepath.Dir(socket), filepath.Dir(LogPath())} {
@@ -105,6 +106,13 @@ func Install(exe string, out io.Writer) error {
 	}
 	if b, err := exec.Command("launchctl", "bootstrap", domain(), PlistPath()).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap %s: %v: %s", PlistPath(), err, strings.TrimSpace(string(b)))
+	}
+	// launchd binds the socket elsewhere and moves it to its path after bootstrap returns: a client
+	// right after install would find no socket
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
 	}
 	fmt.Fprintf(out, "installed %s: launchd starts %s when a client connects to %s (log: %s)\n", Label, exe, socket, LogPath())
 	return nil
@@ -151,8 +159,15 @@ func Installed() string {
 	return v.S
 }
 
+// uninstallQuiet unloads the LaunchAgent and waits until launchd has let it go: bootout returns
+// before a running hwnpud has exited, and a bootstrap before then fails (5: Input/output error).
 func uninstallQuiet() {
 	exec.Command("launchctl", "bootout", domain()+"/"+Label).Run()
+	for deadline := time.Now().Add(45 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if exec.Command("launchctl", "print", domain()+"/"+Label).Run() != nil {
+			return
+		}
+	}
 }
 
 func domain() string { return "gui/" + strconv.Itoa(os.Getuid()) }

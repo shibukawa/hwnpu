@@ -1673,12 +1673,12 @@ func directConv(bp *pool, x, w, bias, out *value, groups, sh, sw, dh, dw, pt, pl
 				}
 			}
 		})
-		parallel(len(pk.quads), func(lo, hi int) {
+		parallel(len(pk.blocks), func(lo, hi int) {
 			rows := make([]*float32, K)
-			for qi := lo; qi < hi; qi++ {
-				oq, w4, bq := pk.quads[qi], pk.w4[qi], pk.bias[qi]
-				g := oq.oc / perGroup
-				o := out.f[(b*cout+oq.oc)*oh*ow:][:oq.n*oh*ow]
+			for bi := lo; bi < hi; bi++ {
+				ob, wb, bb := pk.blocks[bi], pk.w[bi], pk.bias[bi]
+				g := ob.oc / perGroup
+				o := out.f[(b*cout+ob.oc)*oh*ow:][:ob.n*oh*ow]
 				for y := range oh {
 					j := 0
 					for ic := range cg {
@@ -1692,7 +1692,7 @@ func directConv(bp *pool, x, w, bias, out *value, groups, sh, sw, dh, dw, pt, pl
 							}
 						}
 					}
-					rowsInto(o, oh*ow, y*ow, ow, oq.n, rows, w4, &bq, relu)
+					rowsInto(o, oh*ow, y*ow, ow, ob.n, rows, wb, &bb, relu)
 				}
 			}
 		})
@@ -1700,11 +1700,11 @@ func directConv(bp *pool, x, w, bias, out *value, groups, sh, sw, dh, dw, pt, pl
 }
 
 // packedConv is a convolution's weights as directConv and pointwise take them: its channels in
-// quads, each quad's weights interleaved and its bias.
+// blocks, each block's weights interleaved and its bias.
 type packedConv struct {
-	quads []quad
-	w4    [][]float32
-	bias  [][4]float32
+	blocks []block
+	w      [][]float32
+	bias   [][8]float32
 }
 
 // packed is w and bias packed (packedConv), kept for the next runs when fixed (both are
@@ -1718,10 +1718,10 @@ func (pl *pool) packed(w, bias *value, groups int, fixed bool) *packedConv {
 	}
 	cout := w.shape[0]
 	K := len(w.f) / cout
-	pk := &packedConv{quads: quadsOf(cout, cout/groups)}
-	for _, oq := range pk.quads {
-		pk.w4 = append(pk.w4, interleave(nil, w.f[oq.oc*K:][:oq.n*K], oq.n, K))
-		pk.bias = append(pk.bias, biasOf(bias, oq.oc, oq.n))
+	pk := &packedConv{blocks: blocksOf(cout, cout/groups)}
+	for _, ob := range pk.blocks {
+		pk.w = append(pk.w, interleave(w.f[ob.oc*K:][:ob.n*K], ob.n, K))
+		pk.bias = append(pk.bias, biasOf(bias, ob.oc, ob.n))
 	}
 	if fixed && pl != nil {
 		if pl.convs == nil {
@@ -1732,61 +1732,66 @@ func (pl *pool) packed(w, bias *value, groups int, fixed bool) *packedConv {
 	return pk
 }
 
-// quad is up to four output channels of one group, from oc: the outputs a pass of
-// f32.WeightedRows4 computes from the same input rows.
-type quad struct{ oc, n int }
+// block is the output channels of one group from oc that a pass computes from the same input
+// rows: n of 8 (f32.WeightedRows8), 4 (f32.WeightedRows4) or 1 (f32.WeightedRows).
+type block struct{ oc, n int }
 
-// quadsOf cuts cout channels into quads, none across groups of perGroup.
-func quadsOf(cout, perGroup int) []quad {
-	var qs []quad
+// blocksOf cuts each group of perGroup of cout channels into blocks of 8, then one of 4, then
+// single channels.
+func blocksOf(cout, perGroup int) []block {
+	var bs []block
 	for g0 := 0; g0 < cout; g0 += perGroup {
-		for oc := g0; oc < g0+perGroup; oc += 4 {
-			qs = append(qs, quad{oc, min(4, g0+perGroup-oc)})
+		oc, end := g0, g0+perGroup
+		for ; end-oc >= 8; oc += 8 {
+			bs = append(bs, block{oc, 8})
+		}
+		if end-oc >= 4 {
+			bs = append(bs, block{oc, 4})
+			oc += 4
+		}
+		for ; oc < end; oc++ {
+			bs = append(bs, block{oc, 1})
 		}
 	}
-	return qs
+	return bs
 }
 
-// interleave is the weights of n (up to 4) output channels, K each, as WeightedRows4 takes
-// them: tap j's four together (w4[4j+o]), zeros for the channels past n.
-func interleave(w4, w []float32, n, K int) []float32 {
-	if cap(w4) < 4*K {
-		w4 = make([]float32, 4*K)
-	}
-	w4 = w4[:4*K]
-	clear(w4)
+// interleave is the weights of n output channels, K each, as the block's WeightedRows takes
+// them: tap j's n together (wb[n j+o]).
+func interleave(w []float32, n, K int) []float32 {
+	wb := make([]float32, n*K)
 	for o := range n {
 		for j := range K {
-			w4[4*j+o] = w[o*K+j]
+			wb[n*j+o] = w[o*K+j]
 		}
 	}
-	return w4
+	return wb
 }
 
 // biasOf is the bias of n channels from oc (zeros past them, and without a bias).
-func biasOf(bias *value, oc, n int) [4]float32 {
-	var b [4]float32
+func biasOf(bias *value, oc, n int) [8]float32 {
+	var b [8]float32
 	if bias != nil {
 		copy(b[:n], bias.f[oc:oc+n])
 	}
 	return b
 }
 
-// rowsInto writes columns [at, at+m) of n output planes (each of size plane, one after the
-// other in o) from rows: WeightedRows4 on four, WeightedRows on fewer.
-func rowsInto(o []float32, plane, at, m, n int, rows []*float32, w4 []float32, b *[4]float32, relu bool) {
-	if n == 4 {
-		dst := [4]*float32{&o[at], &o[plane+at], &o[2*plane+at], &o[3*plane+at]}
-		f32.WeightedRows4(&dst, m, rows, w4, b, relu)
-		return
-	}
-	var buf [max(pointwiseK, directK)]float32 // the taps' weights of one channel
-	wj := buf[:len(rows)]
-	for c := range n {
-		for j := range wj {
-			wj[j] = w4[4*j+c]
+// rowsInto writes columns [at, at+m) of a block's n output planes (each of size plane, one after
+// the other in o) from rows.
+func rowsInto(o []float32, plane, at, m, n int, rows []*float32, wb []float32, b *[8]float32, relu bool) {
+	switch n {
+	case 8:
+		var dst [8]*float32
+		for c := range dst {
+			dst[c] = &o[c*plane+at]
 		}
-		f32.WeightedRows(o[c*plane+at:][:m], rows, wj, b[c], relu)
+		f32.WeightedRows8(&dst, m, rows, wb, b, relu)
+	case 4:
+		dst := [4]*float32{&o[at], &o[plane+at], &o[2*plane+at], &o[3*plane+at]}
+		f32.WeightedRows4(&dst, m, rows, wb, (*[4]float32)(b[:4]), relu)
+	default:
+		f32.WeightedRows(o[at:][:m], rows, wb, b[0], relu)
 	}
 }
 
@@ -1797,7 +1802,7 @@ func rowsInto(o []float32, plane, at, m, n int, rows []*float32, w4 []float32, b
 const pointwiseK = 256
 
 // pointwise is a 1 x 1 convolution of stride 1 without pads into out: each output plane the
-// weighted sum of its group's input planes (f32.WeightedRows4, four output channels a pass),
+// weighted sum of its group's input planes (f32.WeightedRows8, eight output channels a pass),
 // in blocks of columns whose input stays in the core's first cache.
 func pointwise(bp *pool, x, w, bias, out *value, groups int, relu bool, pk *packedConv) {
 	n, cin := x.shape[0], x.shape[1]
@@ -1822,12 +1827,12 @@ func pointwise(bp *pool, x, w, bias, out *value, groups int, relu bool, pk *pack
 				for ic := range groups * cg {
 					copy(in[ic*st:][:m], x.f[(b*cin+ic)*N+c0:][:m])
 				}
-				for i, oq := range pk.quads {
-					g := oq.oc / perGroup
+				for i, ob := range pk.blocks {
+					g := ob.oc / perGroup
 					for ic := range cg {
 						rows[ic] = &in[(g*cg+ic)*st]
 					}
-					rowsInto(out.f[(b*cout+oq.oc)*N:], N, c0, m, oq.n, rows, pk.w4[i], &pk.bias[i], relu)
+					rowsInto(out.f[(b*cout+ob.oc)*N:], N, c0, m, ob.n, rows, pk.w[i], &pk.bias[i], relu)
 				}
 			}
 		})

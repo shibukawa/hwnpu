@@ -318,13 +318,3 @@ func (m *mtpDrafter) token(logits []float32) int32 {
 	}
 	return i
 }
-
-func argmax(v []float32) int32 {
-	best := 0
-	for i, x := range v {
-		if x > v[best] {
-			best = i
-		}
-	}
-	return int32(best)
-}

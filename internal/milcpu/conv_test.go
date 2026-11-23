@@ -66,6 +66,9 @@ func TestConv2dPaths(t *testing.T) {
 		{1, 32, 8, 20, 16, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, // 1 x 1
 		{1, 80, 6, 7, 80, 80, 9, 9, 1, 1, 1, 1, 4, 4, 4, 4}, // depthwise of 81 taps: the loop
 		{1, 3, 7, 300, 5, 1, 1, 7, 1, 3, 1, 1, 0, 0, 3, 3},  // a 1 D shape: direct
+		{1, 24, 9, 21, 15, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, // 1 x 1, blocks of 8, 4 and 1
+		{1, 12, 5, 37, 26, 2, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, // grouped 1 x 1, 13 a group
+		{1, 5, 11, 19, 13, 1, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1}, // direct, blocks of 8, 4 and 1
 	}
 	for i, c := range cases {
 		for _, withBias := range []bool{true, false} {

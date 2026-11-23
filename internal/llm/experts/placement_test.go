@@ -23,10 +23,14 @@ func fakeHost(L, E int) *Host {
 	return h
 }
 
-// fakeLock stands for mlock: the system's limit on wired memory is not the test's.
+// fakeLock stands for mlock: the system's limit on wired memory is not the test's. Nor is its
+// memory pressure: the placer is told none (the whole budget, no warning) unless the test gives
+// its own. Read from the machine, a Mac at the system's warning (pressure level 2, common on a
+// 16 GB one with a browser open) lowered TestPlacement's ceiling and it wired one expert too few.
 func fakeLock(pl *placer) *placer {
 	pl.lock = func([]byte) error { return nil }
 	pl.unlock = func([]byte) {}
+	pl.pressure = func() (mem.Pressure, bool) { return mem.Pressure{}, false }
 	return pl
 }
 

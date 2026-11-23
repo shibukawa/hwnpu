@@ -70,6 +70,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 | Routed experts through Core AI (`llm.Routed`) | LFM2-8B-A1B runs; prompts 138 tok/s against 24 a row at a time | [moe.md](moe.md) |
 | Experts on the CPU in MXFP4 (`llm.HostRouted`), read whole, prompt by parts (wave) | Qwen3.6-35B-A3B on an M3: 11.0 tok/s, 2602-token prompt 21.5 s, 2.69 GB with the NE | [moe.md](moe.md) |
 | gpt-oss-20b, experts on the CPU, wired by a budget | M3 17.3 tok/s, 0.52 J a token; M2 13.9 tok/s, 0.50 J | [moe.md](moe.md) |
+| A token's experts: activation in NEON (`f32.GLU`), arrays kept between tokens | M2, gpt-oss-20b's layer on synthetic weights with 1.5 ms between layers: mean 1.51 → 1.39 ms, p99 6.7 → 5.9 ms (217 KB → 3 KB allocated a layer) | [moe.md](moe.md) |
 
 ### Image generation
 
@@ -104,15 +105,17 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 | Sigmoid / SiLU with exp in ONNX programs (`ExpSigmoid`) | RTMDet-s box error 98 → 5.5 px | 6.6 → 9.3 ms an image | [vision-models.md](vision-models.md) |
 | PP-OCR's recognizer on the NPU | 98-line page 1528 → 488 ms | A program per width | [vision-models.md](vision-models.md) |
 | Host resize without closures, on every core | 37–55 → 5–7 ms a picture | | [vision-models.md](vision-models.md) |
+| Host resize with the built-in min / max, RGB rows on every core | M2, 512² picture: RTMDet-m 19.3 → 15.9 ms a picture (resize 5.7 → 2.6), YuNet on the NE 5.5 → 3.3 ms; same bytes | | [vision-models.md](vision-models.md) |
 | SigLIP 2 on the NE | base 7.3–7.9 ms a picture (M3; AMD 84 ms) | | [vision-models.md](vision-models.md) |
 | AMD: Whisper large-v3-turbo | Decoding 78 tok/s; 30 s window encoder 0.84 s | | [audio-models.md](audio-models.md) |
 | AMD: LFM3-Audio speech, MOSS-SoundEffect, Magenta RT2 decoder | 0.43× real time; 2.8 s a step; 0.3× real time | | [audio-models.md](audio-models.md) |
-| `milcpu` for small CNNs: buffers kept between values, AVX2 depthwise, direct and 1×1 convolutions, conv + ReLU in one pass | YuNet 320×256 on a Ryzen AI 9 365 core 12.6 → 2.3 ms, 243 → about 30 mJ a picture (ONNX Runtime 20 mJ, AMD's NPU 184 mJ) | | [vision-models.md](vision-models.md) |
+| `milcpu` for small CNNs: buffers kept between values, AVX2 (amd64) and NEON (arm64) depthwise, direct and 1×1 convolutions, conv + ReLU in one pass | YuNet 320×256 on a Ryzen AI 9 365 core 12.6 → 2.3 ms, 243 → about 30 mJ a picture (ONNX Runtime 20 mJ, AMD's NPU 184 mJ). M2, 1 thread, Go loops → NEON: YuNet 320×256 24.0 → 2.7 ms, 640×480 89.6 → 9.0 ms (`face-detect --device cpu` 92.7 → 10.6 ms a picture); SwiftF0 1.09 → 0.62 s, Supertonic encoder 105 → 24 ms | | [vision-models.md](vision-models.md) |
 
 ### Everywhere
 
 | Change | What it bought | Details |
 |---|---|---|
+| Sampling: the greedy pick and MTP's draft by blocks of `vecops.MinMax` (as top k), the logits copied into one array an answer | M2, 248320 logits: greedy 0.20 → 0.03 ms a token, top k 0.11 → 0.05 ms (a clone a token was 1 MB of garbage) | [llm-decoding.md](llm-decoding.md) |
 | Identical files shared on disk (`cache.Clone`) | M3 about 50 → 20 GiB; two AMD exports 15.2 → 8.2 GiB (not on ext4) | [distribution.md](distribution.md) |
 | Downloads 4 at a time | Wi-Fi and a NAS 5 → 9 MB/s | [distribution.md](distribution.md) |
 | Conversation marks keep ring rows in use; memory back after conversion | 578 → 183 MB; 2.4 GB → 154 MB | [memory-and-power.md](memory-and-power.md) |
