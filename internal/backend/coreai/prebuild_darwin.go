@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,9 @@ type BuildOptions struct {
 	// Packed writes the programs packed beside their export (PackedPath: what the shared layers
 	// carry for an architecture), not whole beside their sources.
 	Packed bool
+	// Left, when set, is why the program at asset is left to the device on arch, "" when it is
+	// not: a rule of the model's recipe (internal/recipe). Build compiles none of those.
+	Left func(asset, arch string) string
 }
 
 // DefaultJobs is the compiles Build runs at once by default: one for every 4 GB of memory beyond
@@ -56,6 +60,9 @@ type BuildResult struct {
 	Elapsed          time.Duration
 	// Skipped: the prebuilt program was there already (not Force).
 	Skipped bool
+	// Left is why the program is left to the device on the architecture (BuildOptions.Left):
+	// not compiled.
+	Left string
 	// Code and Weights are the sizes of the compiled regions (the ANE's LLIR bundle, what a
 	// distribution would carry) and of the weights (resources.bin) in Out.
 	Code, Weights int64
@@ -152,6 +159,15 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 	)
 	for i := range results {
 		r := &results[i]
+		if o.Left != nil {
+			if why := o.Left(r.Asset, r.Arch); why != "" {
+				r.Left = why
+				if o.Log != nil {
+					fmt.Fprintf(o.Log, "%s %s: left to the device by the recipe (%s)\n", filepath.Base(r.Asset), r.Arch, why)
+				}
+				continue
+			}
+		}
 		if !o.Force && sameSource(r.Asset, r.Out) && onANE(r.Out) {
 			r.Skipped = true
 			r.Code, r.Weights = sizes(r.Out)
@@ -264,13 +280,26 @@ func buildOne(ctx context.Context, tool, asset, arch, out string) error {
 	var stderr bytes.Buffer
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	t0 := time.Now()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("coreai-build: %v", err)
+	}
+	pid := cmd.Process.Pid
+	if err := cmd.Wait(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if lines := strings.Split(msg, "\n"); len(lines) > 3 {
 			msg = strings.Join(lines[len(lines)-3:], "\n")
 		}
+		if ctx.Err() == nil {
+			if why := logReason(pid, t0); why != "" {
+				msg = strings.TrimSpace(msg + "\n" + why)
+			}
+		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && ee.ExitCode() == -1 {
+			if msg != "" {
+				return fmt.Errorf("coreai-build crashed (%v): %s", ee.ProcessState, msg)
+			}
 			return fmt.Errorf("coreai-build crashed (%v)", ee.ProcessState)
 		}
 		if msg != "" {
@@ -292,6 +321,9 @@ func buildOne(ctx context.Context, tool, asset, arch, out string) error {
 		// it as off the NPU), so nothing is kept, nor an older output of the same kind
 		if _, err := os.Stat(out); err == nil && !onANE(out) {
 			os.RemoveAll(out)
+		}
+		if why := logReason(pid, t0); why != "" {
+			return fmt.Errorf("%w: %s", errOffANE, why)
 		}
 		return errOffANE
 	}
@@ -355,4 +387,69 @@ func sizes(out string) (code, weights int64) {
 		return nil
 	})
 	return
+}
+
+// logReason is what coreai-build (process pid, started at t0) logged of why it failed: its
+// compiler's errors go to os_log, not to its output (docs/known-issues.md). The last few lines
+// that say so, "" when none or the log is not to be read.
+func logReason(pid int, t0 time.Time) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/usr/bin/log", "show", "--info", "--style", "compact",
+		"--start", t0.Add(-time.Second).Format("2006-01-02 15:04:05"),
+		"--predicate", fmt.Sprintf("processID == %d", pid)).Output()
+	if err != nil {
+		return ""
+	}
+	return reasonLines(string(out))
+}
+
+// reasonLines are the last lines of a log that tell a failure, their messages alone, without
+// repeats.
+func reasonLines(log string) string {
+	var lines []string
+	for _, l := range strings.Split(log, "\n") {
+		low := strings.ToLower(l)
+		if !strings.Contains(low, "fail") && !strings.Contains(low, "unsupported") && !strings.Contains(low, "error") {
+			continue
+		}
+		// compact lines: DATE TIME TYPE PROCESS[PID:TID] [SUBSYSTEM:CATEGORY] MESSAGE
+		if i := strings.Index(l, "] "); i >= 0 {
+			l = l[i+2:]
+			if strings.HasPrefix(l, "[") {
+				if j := strings.Index(l, "] "); j >= 0 {
+					l = l[j+2:]
+				}
+			}
+		}
+		l = strings.TrimSpace(l)
+		if l != "" && !slices.Contains(lines, l) {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > 3 {
+		lines = lines[len(lines)-3:]
+	}
+	return strings.Join(lines, "; ")
+}
+
+// BuildToolVersion is coreai-build's version ("3605.6.3" of "coreai-build 3605.6.3").
+func BuildToolVersion() (string, error) {
+	tool, err := FindCoreAIBuild()
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(tool, "--version")
+	if os.Getenv("DEVELOPER_DIR") == "" {
+		cmd.Env = append(os.Environ(), "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("coreai-build --version: %v", err)
+	}
+	f := strings.Fields(string(out))
+	if len(f) == 0 {
+		return "", fmt.Errorf("coreai-build --version wrote nothing")
+	}
+	return f[len(f)-1], nil
 }

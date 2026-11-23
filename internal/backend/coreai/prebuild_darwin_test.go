@@ -67,3 +67,21 @@ func TestLeftToDevice(t *testing.T) {
 		}
 	}
 }
+
+// The reason of a failed compile is the log's lines of failures, their messages alone, the last
+// three without repeats.
+func TestReasonLines(t *testing.T) {
+	log := `Timestamp               Ty Process[PID:TID]
+2026-11-22 10:00:00.000 I  coreai-build[123:456] [com.apple.ane:compiler] Configuring bonded mode region_K
+2026-11-22 10:00:01.000 E  coreai-build[123:456] [com.apple.ane:compiler] RegAlloc: failed to allocate tensors with fixed L2 hint
+2026-11-22 10:00:01.000 E  coreai-build[123:456] [com.apple.ane:compiler] RegAlloc: failed to allocate tensors with fixed L2 hint
+2026-11-22 10:00:02.000 E  coreai-build[123:456] [com.apple.ane:compiler] Failed to compile function func_s1152x768
+`
+	want := "RegAlloc: failed to allocate tensors with fixed L2 hint; Failed to compile function func_s1152x768"
+	if got := reasonLines(log); got != want {
+		t.Errorf("reason %q, want %q", got, want)
+	}
+	if got := reasonLines("Timestamp\n"); got != "" {
+		t.Errorf("no failure: %q", got)
+	}
+}

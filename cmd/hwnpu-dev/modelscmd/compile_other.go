@@ -12,4 +12,4 @@ var errNoCompiler = errors.New("Core AI's programs are compiled for coreai-ARCH 
 // canCompile is why this OS cannot compile for coreai-ARCH.
 func canCompile() error { return errNoCompiler }
 
-func compile(context.Context, []string, []string, compileFlags) error { return errNoCompiler }
+func compile(context.Context, []string, []string, string, compileFlags) error { return errNoCompiler }

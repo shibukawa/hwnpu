@@ -1,0 +1,70 @@
+# How hwnpu-dev makes the models' conversions: what only the build needs, beside models.yaml
+# (what a run needs). hwnpu-dev models package and hwnpu-dev prebuild read it, so that whoever
+# runs them, on whatever machine, makes the same files (docs/model-recipes.md).
+#
+#   version     1
+#   tools       the versions of the tools the conversions were checked with: coreai-build
+#               (coreai-build --version, Xcode's Metal Toolchain). Another version stops the
+#               build (--any-tools builds all the same, for a check of a new toolchain)
+#   apple       what every model's Core AI exports are built with, unless its own says:
+#     archs     the architectures of the Neural Engine their programs are prebuilt for
+#               (coreai-build's names: h13g M1, h14g M2, h15g M3, ...)
+#     jobs      coreai-build's compiles at once (each takes one core and 1 to 3 GB; two at
+#               once have left programs off the Neural Engine that pass alone)
+#     prebuild  rules for programs of the exports, each for some architectures (arch: one or a
+#               list; every one when left out), some exports (export: a pattern of the
+#               export's name, * any characters; every one when left out) and some programs
+#               (programs: patterns of the programs' names without .aimodel):
+#                 do: device   not prebuilt: the device's compiler compiles it at its first
+#                              run (it takes programs coreai-build leaves off the Neural Engine)
+#                 why          what coreai-build did (its message in os_log), and
+#                 checked      the day it was seen (YYYY-MM-DD), both asked for
+#   models      MODEL (a model of models.yaml): {apple: ...} as above, its rules after those
+#               of apple. A build that fails on a program no rule names stops, and says the
+#               rule that would leave it to the device
+version: 1
+
+tools:
+  coreai-build: 3605.6.3
+
+apple:
+  archs: [h13g, h14g, h15g]
+  jobs: 2
+
+models:
+  FLUX.2-klein-4B:
+    apple:
+      jobs: 3
+      prebuild:
+        - arch: h13g
+          programs: [dit_single_*]
+          do: device
+          why: "RegAlloc: failed to allocate tensors with fixed L2 hint (Failed to compile function func_s1152x768, s768x1152, s1280x704, s704x1280); the M1 compiles them on the NPU, 50 to 59 min each"
+          checked: 2026-11-22
+  Chroma1-Flash:
+    apple:
+      prebuild:
+        - arch: h13g
+          programs: [dit_single_*]
+          do: device
+          why: "left off the Neural Engine (no compiled region), alone too, after 44 min to 3h17m each"
+          checked: 2026-11-23
+        - arch: h14g
+          programs: [dit_single_0, dit_single_8, dit_single_16]
+          do: device
+          why: "left off the Neural Engine (no compiled region), alone too, after 1h29m to 2h52m each"
+          checked: 2026-11-23
+  Chroma1-HD:
+    # Chroma1-Flash's programs with other weights
+    apple:
+      prebuild:
+        - arch: h13g
+          programs: [dit_single_*]
+          do: device
+          why: "as Chroma1-Flash's (the same programs)"
+          checked: 2026-11-23
+        - arch: h14g
+          programs: [dit_single_0, dit_single_8, dit_single_16]
+          do: device
+          why: "as Chroma1-Flash's (the same programs)"
+          checked: 2026-11-23
