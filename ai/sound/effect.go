@@ -48,6 +48,9 @@ func Effect(name string) ai.Use[*EffectGenerator] {
 var effectRole = &airole.Role{
 	Name:  "sfx",
 	Kinds: []chat.Kind{chat.KindSFX},
+	// 1: the decoder's export of this Mac's chip's rewrites (model-recipes.yaml: sin as it is on
+	// M3 and later), not the one prepared before
+	Revision: 1,
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		cpu := e.NPU.CPU(e.Model)
 		var p sfx.Paths
