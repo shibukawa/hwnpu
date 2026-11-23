@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -51,24 +52,23 @@ var (
 	DefaultTextRows = []int{80, 160}
 )
 
+// FromRecipe fills, for model name, the formats (text_format, dit_format) and the layers and blocks of a program
+// (text_group, single_group) o leaves out from model name's recipe (model-recipes.yaml
+// apple.convert).
+func (o *ConvertOptions) FromRecipe(name string) error {
+	if err := chat.FillConvert(name, map[string]*int{"text_group": &o.TextGroup, "single_group": &o.SingleGroup},
+		map[string]*string{"text_format": &o.TextFormat, "dit_format": &o.DitFormat}); err != nil {
+		return fmt.Errorf("flux3klein: %w", err)
+	}
+	return nil
+}
+
 func (o *ConvertOptions) defaults() {
 	if len(o.Sizes) == 0 {
 		o.Sizes = DefaultSizes
 	}
 	if len(o.TextRows) == 0 {
 		o.TextRows = DefaultTextRows
-	}
-	if o.TextFormat == "" {
-		o.TextFormat = "lut8" // Qwen3-VL's attention sinks: NaN at int8 on the Neural Engine (docs/design/image-apple.md)
-	}
-	if o.DitFormat == "" {
-		o.DitFormat = "lut8" // the Neural Engine reads lutN fastest; per-row int8 overflows on large outputs
-	}
-	if o.TextGroup <= 0 {
-		o.TextGroup = 4 // 0.4 GB at 8 bits (101 MB a layer)
-	}
-	if o.SingleGroup <= 0 {
-		o.SingleGroup = 5 // 0.6 GB at 8 bits (123 MB a block)
 	}
 }
 
@@ -96,6 +96,9 @@ func fnName(w, h, rows int) string {
 // text_encoder/, vae/) into out: the programs, text/, TimeFile and manifest.json.
 func Convert(root, out string, o ConvertOptions, log io.Writer) (err error) {
 	o.defaults()
+	if o.TextGroup <= 0 || o.SingleGroup <= 0 || o.TextFormat == "" || o.DitFormat == "" {
+		return fmt.Errorf("flux3klein: no formats or programs' groups (FromRecipe: model-recipes.yaml apple.convert)")
+	}
 	if log == nil {
 		log = io.Discard
 	}
@@ -347,6 +350,7 @@ func IsRepository(dir string) bool {
 // ExportName is the directory Prepare writes the export of name and o into: what changes the
 // programs is in it.
 func ExportName(name string, o ConvertOptions) string {
+	o.FromRecipe(name) // Prepare says what it lacks
 	o.defaults()
 	var sizes, rows []string
 	for _, s := range o.Sizes {

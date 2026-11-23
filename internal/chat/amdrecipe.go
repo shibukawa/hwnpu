@@ -46,6 +46,15 @@ func applyRecipe(m *Model, by string) error {
 	if err != nil {
 		return err
 	}
+	// the version of what it makes for Core AI: the recipe's apple.version, as amd's below
+	if v := f.AppleVersion(by); v > 0 {
+		if _, ok := m.Targets[cache.CoreAITarget]; !ok {
+			if m.Targets == nil {
+				m.Targets = map[string]int{}
+			}
+			m.Targets[cache.CoreAITarget] = v
+		}
+	}
 	r, ok := f.AMDOf(by)
 	if !ok {
 		return nil

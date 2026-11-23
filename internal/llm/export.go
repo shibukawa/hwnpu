@@ -26,9 +26,21 @@ func CoreAIExport(dir, name string) (export, done string) {
 // ExportDone reports whether the export (or program) whose mark is done is whole: the mark is
 // there (it holds the export's path, cache.WriteDone, or nothing: an earlier hwnpu's).
 func ExportDone(done string) bool {
-	_, err := os.Stat(done)
-	return err == nil
+	if _, err := os.Stat(done); err != nil {
+		return false
+	}
+	if StaleExport != nil {
+		if export, ok := cache.ReadDone(done); ok && StaleExport(export) {
+			return false
+		}
+	}
+	return true
 }
+
+// StaleExport, when set (internal/chat), reports whether the whole export (a directory) is of
+// another version than its model's recipe makes now (model-recipes.yaml apple.version): made
+// again, or fetched, as one missing. Its name stays when only the recipe's version is raised.
+var StaleExport func(export string) bool
 
 // StartExport makes export an empty directory, what an earlier conversion cut off removed.
 func StartExport(ctx context.Context, export string) error {

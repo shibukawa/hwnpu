@@ -37,11 +37,19 @@ type Tools struct {
 // Apple is how Core AI exports are built: their programs prebuilt for Archs, Jobs at a time,
 // but what a rule of Prebuild leaves to the device; their operations written as Rewrite says
 // for each chip.
+//
+// A model's has Version, the version of what it makes (raised when Convert or its Code
+// changes: testdata/apple-versions.txt), Code, the Go packages that write its programs after the
+// file's Code (those every conversion writes with), and Convert, the values its conversion is
+// made with.
 type Apple struct {
 	Archs    []string  `yaml:"archs"`
 	Jobs     int       `yaml:"jobs"`
 	Prebuild []Rule    `yaml:"prebuild"`
 	Rewrite  []Rewrite `yaml:"rewrite"`
+	Version  int       `yaml:"version"`
+	Code     Strings   `yaml:"code"`
+	Convert  Convert   `yaml:"convert"`
 }
 
 // Rewrite is how the programs of the chips of Arch write an operation some Neural Engines do not
@@ -134,12 +142,21 @@ func Parse(name string, raw []byte) (*File, error) {
 	if err := f.Apple.check("apple"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
 	}
+	if f.Apple.Version != 0 || f.Apple.Convert != nil {
+		return nil, fmt.Errorf("recipe: %s: apple: version and convert are a model's (models.NAME.apple)", name)
+	}
 	if err := f.AMD.check("amd"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
 	}
 	for _, m := range f.sortedModels() {
 		if a := f.Models[m].Apple; a != nil {
 			if err := a.check("models." + m + ".apple"); err != nil {
+				return nil, fmt.Errorf("recipe: %s: %w", name, err)
+			}
+			if a.Version < 1 {
+				return nil, fmt.Errorf("recipe: %s: models.%s.apple.version: %d (the version of what it makes, from 1)", name, m, a.Version)
+			}
+			if err := a.Convert.check("models." + m + ".apple.convert"); err != nil {
 				return nil, fmt.Errorf("recipe: %s: %w", name, err)
 			}
 		}

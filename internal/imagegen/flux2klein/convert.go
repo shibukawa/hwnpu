@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
@@ -148,7 +149,16 @@ func (o ConvertOptions) sizes() [][2]int {
 // SizeFunction is the function of a program of several sizes that runs at w x h.
 func SizeFunction(w, h int) string { return fmt.Sprintf("s%dx%d", w, h) }
 
-// defaults fills what o leaves out.
+// FromRecipe fills, for model name, the layers and blocks of a program o leaves out (text_group, double_group,
+// single_group) from model name's recipe (model-recipes.yaml apple.convert).
+func (o *ConvertOptions) FromRecipe(name string) error {
+	if err := chat.FillConvert(name, map[string]*int{"text_group": &o.TextGroup, "double_group": &o.DoubleGroup, "single_group": &o.SingleGroup}, nil); err != nil {
+		return fmt.Errorf("flux2klein: %w", err)
+	}
+	return nil
+}
+
+// defaults fills what o leaves out (after FromRecipe).
 func (o *ConvertOptions) defaults() {
 	if o.TextFormat == "" {
 		// lut8: Qwen3-VL-8B's attention sink came out NaN at int8 on the Neural Engine
@@ -159,15 +169,6 @@ func (o *ConvertOptions) defaults() {
 		// lut8: Chroma's (FLUX.1's) DiT put infinities in its later blocks at per-row int8 (the
 		// Neural Engine's integer sums of large inputs, docs/design/image-apple.md)
 		o.DitFormat = "lut8"
-	}
-	if o.TextGroup <= 0 {
-		o.TextGroup = 3 // 0.3 GB of weights at 8 bits (101 MB a layer)
-	}
-	if o.DoubleGroup <= 0 {
-		o.DoubleGroup = 2 // 0.5 GB at 8 bits (245 MB a block)
-	}
-	if o.SingleGroup <= 0 {
-		o.SingleGroup = 5 // 0.6 GB at 8 bits (123 MB a block)
 	}
 	if o.Width == 0 {
 		o.Width = 1024
@@ -190,6 +191,9 @@ const (
 // model.json and manifest.json.
 func Convert(root, out string, o ConvertOptions, log io.Writer) (err error) {
 	o.defaults()
+	if o.TextGroup <= 0 || o.DoubleGroup <= 0 || o.SingleGroup <= 0 {
+		return fmt.Errorf("flux2klein: no programs' groups (FromRecipe: model-recipes.yaml apple.convert)")
+	}
 	if log == nil {
 		log = io.Discard
 	}
@@ -594,6 +598,7 @@ func IsRepository(dir string) bool {
 // ExportName is the directory Prepare writes the export of name and o into: what changes the
 // programs is in it.
 func ExportName(name string, o ConvertOptions) string {
+	o.FromRecipe(name) // Prepare says what it lacks
 	o.defaults()
 	size := aspect.Tag(o.sizes()) + o.editTag()
 	return fmt.Sprintf("%s-%s-%s-%s-v%d.%s", strings.ToLower(name), size, o.TextFormat, o.DitFormat, ExportVersion, llm.BackendCoreAI)

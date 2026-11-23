@@ -122,6 +122,34 @@ models:
 - まだ見ないもの: コードや models.yaml から入る値 (`{sizes}` の大きさ、`{size}`、`{outputs}`)。これを変えたときは、手で版を上げる
 - 版 1 は、models.yaml の `amd_export` と Go のコードからレシピに移したときのもの (2026-11-23)。作るものは同じ (作り直してバイトまで同じことを見た) なので、作り直さず、取得元のピンした書き出しを `v1` にコピーして版だけ書き換え、ピンを `v1` に移す。2026-11-23 は 12 個 (LFM3 の 4 つ、Gemma 4 の 2 つ、Qwen3.5 の 3 つ、gpt-oss-20b の 2 つ、Qwen3.6-35B-A3B の q4) を移したところで NAS が書き込みを受けなくなった。残りの 34 個のピンは前の `v0-…` のまま (ピンはフォルダの名前によらず中身の digest で取るので、そのままで動く)
 
+### Apple の版 (`version`、`code`、`convert`)
+
+Core AI の書き出しは Go のコードが作る。どの値で作るかを `convert` に、どのコードが書くかを `code` に、その版を `version` に書く。AMD の `script`・`args`・`version` と同じ考え。
+
+```yaml
+apple:
+  code: [internal/mlpackage, internal/coreai/ailower, ...]   # どの変換も書くのに使うコード
+models:
+  flux-3-image-klein:
+    apple:
+      version: 1                # convert か code を変えたら上げる
+      code: [internal/imagegen/flux3klein, internal/imagegen/flux3klein/mil, ...]
+      convert:                  # 前はコードの定数だった値。コードの名前で書く
+        text_format: lut8
+        dit_format: lut8
+        text_group: 4
+        single_group: 5
+```
+
+- `version` は、そのモデルの Core AI の書き出しの版。取得元には `vN` のフォルダで置く (`converted/MODEL/coreai/EXPORT/v1`)。プリビルドは書き出しのバイト列で引くので、版によらない
+- **版 1 は、レシピに移す前と同じもの** (2026-11-24)。書き出しの名前も中身も前と同じ。取得元の前の書き出し (`v0-HASH`) は、同じ鍵なら版 1 として取る (AMD と同じ `Unversioned`)。取ったマシンが `v1` に置き直すので、コピーは要らない
+- **convert かコードを変えたら版を上げる**。`internal/recipe/testdata/apple-versions.txt` に、モデル、版、`convert` の指紋 (`AppleFingerprint`)、`code` の hash (`CodeHash`) を残してある。版が同じままどちらかが変わると `go test ./internal/recipe` が落ちる。版を上げたら `go test ./internal/recipe -run TestAppleVersions -update` で書き直す
+- `CodeHash` は、`code` の各パッケージの Go のファイル (テストを除く) を、コメントを除いて gofmt の形にしたものの hash。コメントや並べ方を直しただけでは変わらない。`.go` で終わる名前は、そのファイルだけ (変換のほかのこともするパッケージ: `internal/llm` の書き出しの部分、`internal/chat/model.go`)。`!FILE` は、そのパッケージのうち動かすときだけ読むファイルを除く (`internal/llm/experts/host.go`、`internal/llm/lfm3vl/preprocess.go`)
+- **作り直してバイトまで同じなら、版を上げなくてよい**。共通のコード (`apple.code`) はどのモデルも使うので、そこを直すと全部のモデルの test が落ちる。`tools/coreai/same-exports.sh BASE MODEL...` で作り直して同じことを見たら (変える前の commit と今の hwnpu-dev で、別々のキャッシュに `models package MODEL/coreai` を作り、名前と、`metadata.json` の `creationDate` のほかのバイトを比べる)、版はそのままで `-update` だけしてよい。PR にそう書く
+- 版を上げると、手元の書き出しも作り直す。書き出しの `entry.json` の版がレシピの版と違えば、なかったものとして取り直すか作り直す (`llm.StaleExport`)。名前は変わらなくてよい
+- `convert` の値を読むのは Core AI の書き出しを作るときだけ。Core ML や Intel の書き出し、`hwnpu-image convert` で手で作るときは、コードの既定のまま。動かすときにも要る値 (models.yaml の `npu.apple` の大きさと形式、`settings`) は models.yaml に残す。`settings` で変えたものはレシピより先に使う
+- 今 `convert` があるのは画像のモデル (FLUX.2 klein、FLUX.3 klein、Anima)。ほかのモデルは `version` と `code` だけで、値はまだコードにある (順にレシピに移す)
+
 ## 3. 通らないプログラムがあったとき
 
 `hwnpu-dev models package` と `hwnpu-dev prebuild` は、レシピにないプログラムが落ちると止まる。
@@ -150,7 +178,8 @@ MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をその
 ## 6. まだレシピにないもの (次の PR)
 
 - **ほかの置き換え**: 2 節の `rewrite` は、いまは MOSS の DAC の sin だけ。ほかはコードに直接書いてある (softmax を exp と逆数で、x / c を 1 / c 倍で、sigmoid と tanh を exp で、conv_transpose を polyphase で、など)。M1 と M2 以降で違うものから、書き方を `Ways` に足して移す。sin の表引きも、そのときに書き方として足す
-- **変換の設定**: 量子化の形式 (`npu.apple.formats`)、FLUX.2 klein の編集の組み合わせなど。いまは models.yaml とコードにある
+- **変換の設定 (Apple)**: 画像のモデルのほかは、値がまだコードにある。次に視覚と音声 (検出、姿勢、深度、OCR、MOSS、Magenta、Whisper、TTS)、そのあと言語モデル (prefill の長さ、区切りの段) を `convert` に移す。MOSS の DiT の段の数や形式は、動かすときと AMD の書き出しも読むので、manifest に書いてから移す
+- **動かすときにも読む値**: 量子化の形式 (`npu.apple.formats`)、FLUX.2 klein の編集の組み合わせなど。models.yaml に残す
 - **AMD の xdna1**: レシピは書けるが、hwnpu が `amd-xdna1` の書き出しを読んで動かすところ (`.amd-npu1` の名前、`cache.AMDTarget` の世代ごとの切り替え、`iron_export_lm.py` の xclbin を段ごとにした書き出しの読み込み) がまだない。xdna1 の機械で確かめてから `recipe.Built` に足す
 - **AMD の書き出しのキー**: 手で作った書き出し (Anima、DA3、SigLIP2 など) のキーはいまも名前だけで、ほかの多くもコードの版だけ。レシピの args を変えても、ピンのないものは前の書き出しを取ってしまう。args をキーに入れる (取得元の書き出しを作り直してピンし直すことになる)
 - **道具の版 (AMD)**: mlir-aie と Python の版 (`tools.iron`)
@@ -158,7 +187,9 @@ MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をその
 
 ## 7. 確かめ方
 
-- `go test ./internal/recipe`: 組み込みのレシピが読めること、M1 / M2 / M3 で規則が分かれること、AMD のコマンドの組み立て (置き場所、variants、世代の extra、skip)、AMD のレシピが変わったら版も上がっていること (`testdata/amd-versions.txt`)
+- `go test ./internal/recipe`: 組み込みのレシピが読めること、M1 / M2 / M3 で規則が分かれること、AMD のコマンドの組み立て (置き場所、variants、世代の extra、skip)、AMD のレシピが変わったら版も上がっていること (`testdata/amd-versions.txt`)、Apple の `convert` か `code` が変わったら版も上がっていること (`testdata/apple-versions.txt`)
+- `go test ./cmd/hwnpu-dev/modelscmd`: Core AI の書き出しのあるモデルに、どれも `apple.version` があること
+- `tools/coreai/same-exports.sh BASE MODEL...`: 変える前の commit と今のコードで書き出しを作って比べる。同じなら版を上げずに `-update` してよい
 - `go test ./internal/chat`: レシピの名前が models.yaml のモデルであること、`iron_export_lm.py` のレシピが `AMDExport` になること (`like` と variants も)
 - `go test ./internal/prep`: AMD の NPU で動かすモデルに、コードが読むスクリプトのレシピがあり、置き場所がコードの入れるものであること。コマンドが前のコードのものと同じこと
 - 作ったプリビルドが端末で仕上がるかは、オフラインではわからない。そのチップの Mac で Core AI のキャッシュを空にして描き、「the prebuilt program failed」が出ないこと、DiT の各部品が数十秒で開くことを見る ([known-issues](known-issues.md) 12 節)

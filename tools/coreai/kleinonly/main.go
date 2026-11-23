@@ -37,6 +37,9 @@ func main() {
 			only[k] = true
 		}
 		o := flux2klein.ConvertOptions{Width: 1024, Height: 1024, Only: only}
+		if err := o.FromRecipe("FLUX.2-klein-4B"); err != nil {
+			log.Fatal(err)
+		}
 		if err := flux2klein.Convert(os.Args[2], os.Args[3], o, os.Stderr); err != nil {
 			log.Fatal(err)
 		}
