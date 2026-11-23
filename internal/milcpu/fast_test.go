@@ -29,7 +29,7 @@ func TestElementBinary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := elementBinary(x, y, typ)
+			got, err := elementBinary(nil, x, y, typ)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,7 +64,7 @@ func TestConv1d(t *testing.T) {
 		{2, 16, 20, 16, 5, 1, 2, 3, 1, 1},
 	} {
 		x, w, b := val(c.n, c.cin, c.w), val(c.cout, c.cin/c.groups, c.k), val(c.cout)
-		got, err := conv1d(x, w, b, []int32{int32(c.s)}, []int32{int32(c.d)}, "custom", []int32{int32(c.pl), int32(c.pr)}, c.groups)
+		got, err := conv1d(nil, false, x, w, b, []int32{int32(c.s)}, []int32{int32(c.d)}, "custom", []int32{int32(c.pl), int32(c.pr)}, c.groups)
 		if err != nil {
 			t.Fatal(err)
 		}

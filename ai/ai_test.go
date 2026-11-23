@@ -449,20 +449,20 @@ func TestPreparedCache(t *testing.T) {
 	if err := m.write(bundle); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrBundleTarget) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0, nil); !errors.Is(err, ErrBundleTarget) {
 		t.Errorf("a prepared cache of another target: %v, want ErrBundleTarget", err)
 	}
 	// a file of it missing: not prepared
 	m.Targets = map[string]map[string]*record{"intel": m.Targets["some-other-npu"]}
 	m.write(bundle)
 	os.Remove(filepath.Join(bundle, "models", "whisper-large-v3-turbo", "program.xml"))
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrNotPrepared) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0, nil); !errors.Is(err, ErrNotPrepared) {
 		t.Errorf("a prepared cache with a file missing: %v, want ErrNotPrepared", err)
 	}
 	// a format this package does not read
 	m.Format = storeFormat + 1
 	m.write(bundle)
-	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0); !errors.Is(err, ErrBundleTarget) {
+	if _, err := store.find("transcribe:transcribe", airole.NPU{Target: "intel"}, whisper, 0, nil); !errors.Is(err, ErrBundleTarget) {
 		t.Errorf("a prepared cache of a later format: %v, want ErrBundleTarget", err)
 	}
 }

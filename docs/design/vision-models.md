@@ -29,7 +29,7 @@ Models that read images (not image generation, see [image-models.md](image-model
 | RTMDet-m | Core AI | NPU, IRON export made on first run | OpenVINO IR | same |
 | RTMO-s | Core AI | NPU, IRON export made on first run | OpenVINO IR | same |
 | PP-OCRv6-small | Core AI | CPU (no IRON form) | OpenVINO IR | same |
-| YuNet | Core AI | CPU by default; `--device npu` runs `iron_yunet.py`'s export | OpenVINO IR | ONNX Runtime |
+| YuNet | Core AI | CPU by default; `--device npu` runs `iron_yunet.py`'s export | OpenVINO IR | ONNX Runtime, else milcpu |
 | EfficientSAM encoder | Core AI | NPU, IRON export made on first run | OpenVINO IR | ONNX Runtime, else hwnpu's evaluator |
 | EfficientSAM decoder | host evaluator | host evaluator | host evaluator | host evaluator |
 | DA3, MoGe-2 | Core AI | NPU (`iron_da3.py`, `iron_moge.py` exports) | OpenVINO IR | — |
@@ -114,6 +114,8 @@ Turns an ONNX CNN (CSPNeXt, YOLOX-type) into one IRON graph. Switching operators
 - Apple / Intel: the whole ONNX graph as one `internal/onnx` program (12 outputs joined). Apple: 640×480 in 3.4 ms (M1), M3 Core AI 4.2–4.4 ms. Boxes and landmarks within 0.3 px of OpenCV's FaceDetectorYN.
 - AMD (`tools/amd/iron_yunet.py`): 1×1 + depthwise 3×3 fused into one 3×3 conv, biases on a ones channel, ReLU as ProjectionGEMM's clamp (`ReluGEMM`); pixels divided by 255 and the ones moved to im2col's last 8 columns (bfp16 shared exponent erased them: cos 0.69). Opened with `iron.GraphOptions.KeepRuns` (each command's run kept: host CPU 1.6 → 1.1 ms; its control code stays in the 64 MiB device heap, so not for large graphs). Matches FaceDetectorYN.
 - AMD energy at 320×256: NPU 29 ms and 127 mJ, CPU (ONNX Runtime 1 thread) 2.7 ms and 7.7 mJ. Operator switches (~250 µs each) dominate. Hence `device: {amd: cpu}`. This is about AMD's IRON only; Apple and Intel submit the whole graph, so they keep the NPU. Do not carry one vendor's result to another.
+- Without ONNX Runtime the CPU runs the ONNX graph converted to Core ML on `milcpu` (it went to AMD's NPU before). The store records which (`runtime: hwnpu`), and the role's `Usable` prepares it again when ONNX Runtime comes or goes. Ryzen AI 9 365, 320×256, `--repeat 2000`, 1 thread, package power from `gpu_metrics` less idle: `milcpu` 2.32 ms and about 30 mJ a picture (12.58 ms and 243 mJ before the kernels below), ONNX Runtime 1.32 2.15 ms and about 20 mJ, the NPU 30.7 ms and about 184 mJ. Same faces as ONNX Runtime (score 0.934 both). This way of measuring gives ONNX Runtime 20 mJ, not the 7.7 above: compare within one method.
+- `milcpu` for these CNNs (`internal/milcpu`, `internal/f32`): a run's buffers are kept for the next values (`pool.go`: the collector had 40 % of the CPU and woke every core); depthwise 3×3 of stride 1 from three padded rows a call (`f32.Depthwise3`, AVX2); other small convolutions (taps ≤ 64: YuNet's first, stride 2) as weighted sums of input rows cut into phases (`f32.WeightedRows4`, four output channels a pass, eight accumulators); 1×1 convolutions (≤ 256 input channels) the same way on blocks of packed columns instead of sgemm (planes of 4 KB multiples put every row's column in one set of L1: packed rows 16 floats apart); a conv followed only by a ReLU computes it; 2×2 max pool, ReLU, nearest 2× upsampling in their own loops. YuNet's program 11.6 → 1.85 ms (1 thread). On arm64 the same Go loops run without the vector code.
 
 ### EfficientSAM (`hwnpu-image segment`)
 

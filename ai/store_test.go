@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
@@ -45,5 +47,40 @@ func TestPreparedUnderAnotherName(t *testing.T) {
 	other := f.role("other", "", chat.KindTranscribe)
 	if p, err := NewApp("three", Define[*fakeModel](other, "transcribe")).withStore(st).Plan(ctx); err != nil || p.Ready() {
 		t.Errorf("another role: %v, %+v", err, p)
+	}
+}
+
+// A store its role's Usable refuses (prepared for what this machine no longer has: ONNX
+// Runtime for YuNet on the CPU) counts as not prepared, and the next Run prepares it again.
+func TestUnusableIsNotPrepared(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	role := f.role("transcribe", "", chat.KindTranscribe)
+	ctx := context.Background()
+	st := testStore(t)
+	app := NewApp("one", Define[*fakeModel](role, "whisper-large-v3-turbo")).withStore(st)
+	if err := app.Prepare(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	// what the first Prepare made does not run here any more; what Prepare makes now does
+	gone := false
+	role.Usable = func(airole.Files) error {
+		if gone && f.prepared == 1 {
+			return errors.New("gone")
+		}
+		return nil
+	}
+	if p, err := app.Plan(ctx); err != nil || !p.Ready() {
+		t.Fatalf("usable: %v, %+v", err, p)
+	}
+	gone = true
+	if p, err := app.Plan(ctx); err != nil || p.Ready() {
+		t.Fatalf("unusable: %v, %+v", err, p)
+	}
+	if err := app.Prepare(ctx, nil); err != nil || f.prepared != 2 {
+		t.Fatalf("prepared again: %v (prepared %d)", err, f.prepared)
+	}
+	if p, err := app.Plan(ctx); err != nil || !p.Ready() {
+		t.Errorf("after preparing again: %v, %+v", err, p)
 	}
 }

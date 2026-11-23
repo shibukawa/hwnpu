@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -268,6 +269,35 @@ func keys(m map[string][]string) []string {
 func (f *File) AMDExtra(model, gen string) []string {
 	m, _ := f.AMDOf(model)
 	return append(slices.Clone(f.AMD.Extra[gen]), m.Extra[gen]...)
+}
+
+// ToolsHash is the SHA-256 (hex) of the files of tools/amd the model's exports read
+// (amdtools.ScriptHash), of its args and each variant's, in order of the variants' GB: a change
+// of them changes what is made under the same recipe, and so asks for a new version too
+// (testdata/amd-versions.txt).
+func (m AMDModel) ToolsHash() (string, error) {
+	opts := func(args []string) []string {
+		var out []string
+		for _, a := range args {
+			if a != In && a != Out {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	all := []Strings{m.Args}
+	for _, gb := range slices.Sorted(maps.Keys(m.Variants)) {
+		all = append(all, m.Variants[gb])
+	}
+	h := sha256.New()
+	for _, args := range all {
+		s, err := amdtools.ScriptHash(m.Script, opts(args))
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte(s))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Fingerprint is what the version of a model's recipe stands for: the SHA-256 of all of it but

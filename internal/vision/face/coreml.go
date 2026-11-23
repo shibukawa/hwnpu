@@ -49,6 +49,11 @@ type programRunner struct {
 	w, h    int
 	p       *onnx.Program
 	prog    llmrunner.Program
+	// x is the input of the last picture, kept for the next (a picture of 320 x 256 is 1 MB of
+	// floats: on hwnpu's CPU executor, made anew each time, the garbage collector ran every
+	// few pictures); xw and xh its picture's size, outside which it is zeros
+	x      []float32
+	xw, xh int
 }
 
 func (r *programRunner) outputs() []string {
@@ -172,7 +177,11 @@ func (r *programRunner) run(ctx context.Context, px []uint8, pw, ph, W, H int) (
 	if err := r.use(ctx, W, H); err != nil {
 		return nil, err
 	}
-	x := make([]float32, 3*W*H) // B, G, R planes in 0..255, as cpuRunner's
+	if len(r.x) != 3*W*H || r.xw != pw || r.xh != ph {
+		r.x = make([]float32, 3*W*H) // B, G, R planes in 0..255, as cpuRunner's
+		r.xw, r.xh = pw, ph
+	}
+	x := r.x
 	for y := 0; y < ph; y++ {
 		for i := 0; i < pw; i++ {
 			p := (y*pw + i) * 3
@@ -184,25 +193,14 @@ func (r *programRunner) run(ctx context.Context, px []uint8, pw, ph, W, H int) (
 	if err != nil {
 		return nil, fmt.Errorf("face: %w", err)
 	}
-	out := r.p.Split(y)
+	// the outputs in the order of r.outputs(), float32 as the cells take them
+	parts := onnx.SplitFlat(y, r.p.OutShapes())
+	if len(parts) != 4*len(r.strides) {
+		return nil, fmt.Errorf("face: the program gave %d outputs, not %d", len(parts), 4*len(r.strides))
+	}
 	var cs []cells
-	for _, st := range r.strides {
-		c := cells{stride: st}
-		for _, f := range []struct {
-			k string
-			p *[]float32
-		}{{"cls", &c.cls}, {"obj", &c.obj}, {"bbox", &c.bbox}, {"kps", &c.kps}} {
-			t, ok := out[fmt.Sprintf("%s_%d", f.k, st)]
-			if !ok {
-				return nil, fmt.Errorf("face: the program gave no %s_%d", f.k, st)
-			}
-			v := make([]float32, len(t.F))
-			for i, e := range t.F {
-				v[i] = float32(e)
-			}
-			*f.p = v
-		}
-		cs = append(cs, c)
+	for i, st := range r.strides {
+		cs = append(cs, cells{stride: st, cls: parts[4*i], obj: parts[4*i+1], bbox: parts[4*i+2], kps: parts[4*i+3]})
 	}
 	return cs, nil
 }

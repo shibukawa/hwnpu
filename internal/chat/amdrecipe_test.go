@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -76,5 +77,43 @@ func TestNoAMDVersionInModels(t *testing.T) {
 		if r, ok := f.AMDOf(m.Recipe); ok && m.Targets[cache.AMDTarget] != r.Version {
 			t.Errorf("%s: version %d, its recipe's %d", m.Name, m.Targets[cache.AMDTarget], r.Version)
 		}
+	}
+}
+
+// Every pin is of its model's version: raising a recipe's version asks for a pin of it.
+func TestPinsOfVersion(t *testing.T) {
+	for _, m := range Catalog {
+		for target, pins := range m.Pins {
+			for export, p := range pins {
+				if !p.OfVersion(m.Targets[target]) {
+					t.Errorf("%s: %s %s is pinned at %s, of no version %d (hwnpu-dev models package %s/%s, then hwnpu-dev models pin %s)",
+						m.Name, target, export, p.At, m.Targets[target], m.Name, target, m.Name)
+				}
+			}
+		}
+	}
+	for _, c := range []struct {
+		at   string
+		v    int
+		want bool
+	}{{"v1", 1, true}, {"v0-1a2b3c4d", 1, true}, {"v0-1a2b3c4d", 0, true}, {"v1", 2, false}, {"v0-1a2b3c4d", 2, false}, {"v2-1a2b3c4d", 2, true}, {"v12", 12, true}} {
+		if got := (Pin{At: c.at}).OfVersion(c.v); got != c.want {
+			t.Errorf("%s of version %d: %v", c.at, c.v, got)
+		}
+	}
+}
+
+// A pin of the version before a raise is not taken: the version's export is made or fetched.
+func TestPinOfOldVersionNotTaken(t *testing.T) {
+	base, _ := Lookup("Qwen3.5-0.8B")
+	export := "Qwen3.5-0.8B.amd-npu2-q6"
+	p := placeOf("iron-lm", base, cache.AMDTarget, export, map[string]string{"model": base.Name})
+	if p.pin == nil || p.pin.At != base.Pins[cache.AMDTarget][export].At {
+		t.Fatalf("version %d: pin %+v not taken", base.Targets[cache.AMDTarget], p.pin)
+	}
+	raised := base
+	raised.Targets = map[string]int{cache.AMDTarget: base.Targets[cache.AMDTarget] + 1}
+	if p := placeOf("iron-lm", raised, cache.AMDTarget, export, map[string]string{"model": base.Name}); p.pin != nil || !strings.HasSuffix(p.entry.Path, fmt.Sprintf("/v%d", raised.Targets[cache.AMDTarget])) {
+		t.Errorf("raised to %d: pin %+v, path %s", raised.Targets[cache.AMDTarget], p.pin, p.entry.Path)
 	}
 }

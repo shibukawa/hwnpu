@@ -107,6 +107,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 | SigLIP 2 on the NE | base 7.3–7.9 ms a picture (M3; AMD 84 ms) | | [vision-models.md](vision-models.md) |
 | AMD: Whisper large-v3-turbo | Decoding 78 tok/s; 30 s window encoder 0.84 s | | [audio-models.md](audio-models.md) |
 | AMD: LFM3-Audio speech, MOSS-SoundEffect, Magenta RT2 decoder | 0.43× real time; 2.8 s a step; 0.3× real time | | [audio-models.md](audio-models.md) |
+| `milcpu` for small CNNs: buffers kept between values, AVX2 depthwise, direct and 1×1 convolutions, conv + ReLU in one pass | YuNet 320×256 on a Ryzen AI 9 365 core 12.6 → 2.3 ms, 243 → about 30 mJ a picture (ONNX Runtime 20 mJ, AMD's NPU 184 mJ) | | [vision-models.md](vision-models.md) |
 
 ### Everywhere
 

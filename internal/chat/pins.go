@@ -41,6 +41,27 @@ type Pin struct {
 
 func (p Pin) String() string { return p.At + " " + p.Digest }
 
+// Version is the version of the pin's folder (N of vN or vN-HASH; 0 of v0-HASH).
+func (p Pin) Version() int {
+	n := 0
+	for _, c := range strings.TrimPrefix(p.At, "v") {
+		if c < '0' || c > '9' {
+			break
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+// OfVersion reports whether the pin is of version v of its export (models.yaml targets, or
+// model-recipes.yaml amd.version): its folder's version is v; v0-HASH stands for version 1 too,
+// the version of the exports pinned before the recipes gave versions (2026-11-23). A pin of
+// another version is not taken (placeOf), so that raising a recipe's version does not take the
+// bytes of before.
+func (p Pin) OfVersion(v int) bool {
+	return p.Version() == v || p.Version() == 0 && v <= 1
+}
+
 var (
 	pinFolder = regexp.MustCompile(`^v[0-9]+(-[0-9a-f]{8,64})?$`)
 	pinDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)

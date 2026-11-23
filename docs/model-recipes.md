@@ -115,9 +115,11 @@ models:
 ```
 
 - `version` は、そのレシピが作るものの版。取得元には `vN` のフォルダで置く (`converted/MODEL/amd-xdna2/EXPORT/v1`)。前は models.yaml の `targets: {amd-xdna2: {version: N}}` だった。組み込みの models.yaml には書かない (自分の定義ファイルに書けば、そちらが優先)
-- **レシピを変えたら版を上げる**。版の中身は `internal/recipe/testdata/amd-versions.txt` に残してあり (レシピの指紋)、同じ版のままレシピを変えると `go test ./internal/recipe` が落ちる。版を上げたら `go test ./internal/recipe -run TestAMDVersions -update` で書き直す
+- **レシピか道具を変えたら版を上げる**。版の中身は `internal/recipe/testdata/amd-versions.txt` に残してある: レシピの指紋 (`Fingerprint`) と、そのスクリプトが読む `tools/amd` のファイルの hash (`ToolsHash`: スクリプトと、それが import するモジュール、全部のカーネル。`iron_export_lm.py` はそのアーキの分、`LMHash`)。同じ版のままどちらかが変わると `go test ./internal/recipe` が落ちる。版を上げたら `go test ./internal/recipe -run TestAMDVersions -update` で書き直す
+- **ピンはその版のもの**。ピンのフォルダの版 (`vN`) がモデルの版と違うと、そのピンは取らない (`chat.Pin.OfVersion`)。版を上げると、前のピンの書き出しではなく、その版のものを作るか取る。組み込みのピンがどれもその版のものであることは `go test ./internal/chat` (TestPinsOfVersion) が見る。レシピより前にピンした `v0-HASH` は版 1 のものとみなす
 - 版を上げたら、作り直して置き、ピンし直す (`hwnpu-dev models package MODEL/amd-xdna2`、`hwnpu-dev models pin MODEL`)。手元で確かめるときは、手元の前の書き出し (`~/.cache/hwnpu/entries/amd-xdna2/EXPORT`) を消してから作り直す
-- `vN` は道具 (`tools/amd`) の hash によらず取られる。道具を変えて書き出しが変わるときも版を上げる
+- `vN` は道具の hash によらず取られる (キーの比べから道具を除く)。道具が変わったことは、上の `ToolsHash` で版を上げさせて知らせる
+- まだ見ないもの: コードや models.yaml から入る値 (`{sizes}` の大きさ、`{size}`、`{outputs}`)。これを変えたときは、手で版を上げる
 - 版 1 は、models.yaml の `amd_export` と Go のコードからレシピに移したときのもの (2026-11-23)。作るものは同じ (作り直してバイトまで同じことを見た) なので、作り直さず、取得元のピンした書き出しを `v1` にコピーして版だけ書き換え、ピンを `v1` に移す。2026-11-23 は 12 個 (LFM3 の 4 つ、Gemma 4 の 2 つ、Qwen3.5 の 3 つ、gpt-oss-20b の 2 つ、Qwen3.6-35B-A3B の q4) を移したところで NAS が書き込みを受けなくなった。残りの 34 個のピンは前の `v0-…` のまま (ピンはフォルダの名前によらず中身の digest で取るので、そのままで動く)
 
 ## 3. 通らないプログラムがあったとき

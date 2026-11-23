@@ -35,6 +35,11 @@ type Role struct {
 	// Revision counts the changes to what Prepare makes that call for preparing again: a store
 	// prepared by an earlier revision counts as not prepared.
 	Revision int
+	// Usable, when not nil, says whether what Prepare made still runs here (nil when it does):
+	// a store whose files depend on what this machine had when it was prepared (ONNX Runtime's
+	// library for a model it put on the CPU) counts as not prepared when that is gone, so that
+	// Prepare decides again instead of the load failing.
+	Usable func(Files) error
 	// Remote is the role's model of an app whose models run in hwnpud (HWNPU_DAEMON): a value
 	// of the type Load returns whose methods call h's, the model Load loaded in hwnpud's engine
 	// (airpc.Call1(x.remote, ctx, "Estimate", img)). nil for a role that does not run through
