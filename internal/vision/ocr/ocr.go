@@ -627,7 +627,12 @@ func (r *Reader) convertProgram(ctx context.Context, src Source, model, name str
 		tag = fmt.Sprintf("%dx%dx%d", shape[0], shape[3], shape[2])
 	}
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	dir, stem := repoDir(r.s.Dir, src), fmt.Sprintf("%s-r%d-fp16-%s", name, Revision, tag)
+	dir := repoDir(r.s.Dir, src)
+	format, err := chat.ConvertFormat(ctx, filepath.Join(dir, name), r.s.Backend, "fp16")
+	if err != nil {
+		return "", err
+	}
+	stem := fmt.Sprintf("%s-r%d-%s-%s", name, Revision, format, tag)
 	path, done, export := llm.ProgramPath(dir, stem, r.s.Backend)
 	if !llm.ProgramReady(ctx, dir, stem, done, export) {
 		g, err := onnx.Load(model)
@@ -640,8 +645,8 @@ func (r *Reader) convertProgram(ctx context.Context, src Source, model, name str
 			bar.Done("failed")
 			return "", err
 		}
-		_, err = llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.s.Backend}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("PP-OCR %s from %s, %s, fp16 (hwnpu)", describe, src.Repo, tag)
+		_, err = llm.WritePart(path, p, nil, llm.Options{Format: format, Backend: r.s.Backend}, func(pkg *mlpackage.Package) {
+			pkg.Description = fmt.Sprintf("PP-OCR %s from %s, %s, %s (hwnpu)", describe, src.Repo, tag, format)
 			pkg.Metadata[llm.MetaArch] = "ppocr-" + name
 		})
 		if err != nil {

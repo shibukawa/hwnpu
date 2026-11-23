@@ -87,6 +87,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		export, done := llm.CoreAIExport(s.Dir, fmt.Sprintf("whisper-r%d.%d.%d-%s-c%d", whisper.EncoderArch.Revision,
 			whisper.CrossArch.Revision, whisper.Arch.Revision, format, wc.TargetPositions))
 		if !llm.FetchExport(ctx, export, done) {
+			// the quantizer of a lut format (apple.convert quant)
+			quant, err := chat.ConvertString(ctx, export, "quant")
+			if err != nil {
+				return Config{}, err
+			}
 			weights, err := checkpoint()
 			if err != nil {
 				return Config{}, err
@@ -98,7 +103,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			jobs := console.NewJobs(log)
 			for _, p := range progs {
 				f := cmp.Or(s.Format, p.arch.Format)
-				p.opts.Backend = s.Backend
+				p.opts.Backend, p.opts.Quant = s.Backend, quant
 				jobs.Add(p.role, func() (string, error) {
 					_, err := convert(config, weights, filepath.Join(export, p.role+".aimodel"), p.arch, f, p.opts, io.Discard)
 					return f, err
@@ -202,7 +207,7 @@ func convert(config, weights, out string, a *llm.Arch, format string, o llm.Opti
 	set()
 	opts.Format, opts.Seq, opts.Cache, opts.Backend = format, o.Seq, o.Cache, o.Backend
 	if strings.HasPrefix(format, "lut") {
-		opts.Quant = "kmeans-minmax"
+		opts.Quant = cmp.Or(o.Quant, "kmeans-minmax") // Core AI's from the recipe
 	}
 	target := "the Neural Engine"
 	switch o.Backend {

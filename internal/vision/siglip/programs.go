@@ -83,7 +83,11 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	bar := console.NewBar(log, "converting "+filepath.Base(out))
-	if err := Convert(chat.RepoDir(s.Repo), out, format); err != nil {
+	weights, err := chat.ConvertFormat(ctx, out, format, "fp16")
+	if err != nil {
+		return "", err
+	}
+	if err := Convert(chat.RepoDir(s.Repo), out, format, weights); err != nil {
 		bar.Done("failed")
 		return "", err
 	}
@@ -95,10 +99,11 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 }
 
 // Convert writes the export of the SigLIP 2 checkpoint root (config.json, model.safetensors,
-// tokenizer.json) into out in format (FormatCoreML or FormatCoreAI): the vision and text
+// tokenizer.json) into out in format (FormatCoreML or FormatCoreAI), the towers' weights in
+// weights (fp16; Core AI's from the recipe, chat.ConvertFormat): the vision and text
 // programs, text/tokenizer.json, text/embed.bin (the token embedding rows in fp16) and
 // model.json; out.done, written last, says it is whole.
-func Convert(root, out, format string) error {
+func Convert(root, out, format, weights string) error {
 	c, err := mil.ReadConfig(root, ProgramLabels)
 	if err != nil {
 		return err
@@ -115,8 +120,8 @@ func Convert(root, out, format string) error {
 		return err
 	}
 	for _, p := range []*mil.Part{mil.Vision(c), mil.Text(c)} {
-		if _, err := llm.WritePart(filepath.Join(out, p.Name+llm.ProgramExt(format)), p, wt, llm.Options{Backend: format, Format: "fp16"}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("SigLIP 2's %s tower of %s, fp16 (hwnpu)", p.Name, filepath.Base(root))
+		if _, err := llm.WritePart(filepath.Join(out, p.Name+llm.ProgramExt(format)), p, wt, llm.Options{Backend: format, Format: weights}, func(pkg *mlpackage.Package) {
+			pkg.Description = fmt.Sprintf("SigLIP 2's %s tower of %s, %s (hwnpu)", p.Name, filepath.Base(root), weights)
 		}); err != nil {
 			return fmt.Errorf("siglip: %s: %w", p.Name, err)
 		}

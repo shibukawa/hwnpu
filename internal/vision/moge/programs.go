@@ -121,7 +121,7 @@ func (e *Estimator) estimateProgram(ctx context.Context, s *sized, px []uint8, o
 // ConvertSize writes the programs of the MoGe-2 checkpoint (model.pt) for bw x bh patches into
 // d in format ("coreai": .aimodel; "coreml": vit.mlpackage and dense.mlpackage; "intel": vit.xml and dense.xml,
 // OpenVINO IR) and model.json; d.done, written last, says they are whole.
-func ConvertSize(checkpoint, d string, bw, bh int, format string) error {
+func ConvertSize(checkpoint, d string, bw, bh int, format, weights string) error {
 	wt, err := mil.OpenWeights(checkpoint)
 	if err != nil {
 		return err
@@ -138,7 +138,7 @@ func ConvertSize(checkpoint, d string, bw, bh int, format string) error {
 		return err
 	}
 	for _, p := range []*milpart.Part{mil.Vit(c), mil.Dense(c)} {
-		if _, err := llm.WritePart(filepath.Join(d, p.Name+depth.ProgramExt(format)), p, wt, llm.Options{Backend: depth.ProgramBackend(format), Format: "fp16"}, nil); err != nil {
+		if _, err := llm.WritePart(filepath.Join(d, p.Name+depth.ProgramExt(format)), p, wt, llm.Options{Backend: depth.ProgramBackend(format), Format: weights}, nil); err != nil {
 			return fmt.Errorf("moge: %s: %w", p.Name, err)
 		}
 	}
@@ -216,7 +216,11 @@ func makeSize(ctx context.Context, d string, x *Export, w, h int, logf func(stri
 			return err
 		}
 	}
-	if err := ConvertSize(x.Checkpoint, d, w/14, h/14, x.Format); err != nil {
+	weights, err := chat.ConvertFormat(ctx, d, depth.ProgramBackend(x.Format), "fp16")
+	if err != nil {
+		return err
+	}
+	if err := ConvertSize(x.Checkpoint, d, w/14, h/14, x.Format, weights); err != nil {
 		return err
 	}
 	llm.ShareExport(ctx, d)

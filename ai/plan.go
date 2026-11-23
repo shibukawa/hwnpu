@@ -518,7 +518,8 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 			report(StageCompile, "")
 			log.fn = func(line string) { report(StageCompile, line) }
 			t0 := time.Now()
-			l, err := it.req.role.Load(ctx, r.Files, airole.LoadEnv{Model: it.Model, Def: it.model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out, AllowOffNPU: p.AllowOffNPU})
+			// the model in the context too: what a load converts (a size at its first picture) is made from its recipe
+			l, err := it.req.role.Load(chat.WithModel(ctx, it.model), r.Files, airole.LoadEnv{Model: it.Model, Def: it.model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out, AllowOffNPU: p.AllowOffNPU})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
 			}

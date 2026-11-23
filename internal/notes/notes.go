@@ -19,6 +19,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
@@ -100,7 +101,11 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("%s-r%d-fp16", Arch, Revision)
+	format, err := chat.ConvertFormat(ctx, filepath.Join(s.Dir, Arch), s.Backend, "fp16")
+	if err != nil {
+		return "", "", err
+	}
+	name := fmt.Sprintf("%s-r%d-%s", Arch, Revision, format)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
 	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
@@ -118,7 +123,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		bar.Done("failed")
 		return "", "", err
 	}
-	_, err = llm.WritePart(program, p, nil, llm.Options{Format: "fp16", Backend: s.Backend}, func(pkg *mlpackage.Package) {
+	_, err = llm.WritePart(program, p, nil, llm.Options{Format: format, Backend: s.Backend}, func(pkg *mlpackage.Package) {
 		pkg.Description = "Basic Pitch's harmonic stacking and CNN, from the normalized log CQT of a window (hwnpu)"
 		pkg.Metadata[llm.MetaArch] = Arch
 	})

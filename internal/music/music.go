@@ -161,7 +161,20 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 
 func prepare(ctx context.Context, s Setup) (Paths, error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	format := cmp.Or(s.Format, "lut8")
+	// the depth and temporal transformers' format, and the quantizer of a lut format: the
+	// recipe's on Core AI (apple.convert format, quant), else lut8 by k-means of the weights' range
+	format, quant := cmp.Or(s.Format, "lut8"), "kmeans-minmax"
+	if s.Backend == llm.BackendCoreAI {
+		var err error
+		if s.Format == "" {
+			if format, err = chat.ConvertString(ctx, filepath.Join(s.Dir, "mrt2"), "format"); err != nil {
+				return Paths{}, err
+			}
+		}
+		if quant, err = chat.ConvertString(ctx, filepath.Join(s.Dir, "mrt2"), "quant"); err != nil {
+			return Paths{}, err
+		}
+	}
 	src := chat.RepoDir(s.Repo)
 	at := func(f string) string { return filepath.Join(src, filepath.FromSlash(f)) }
 	p := Paths{Dir: s.Dir, Checkpoint: at(Files[0])}
@@ -328,7 +341,7 @@ func prepare(ctx context.Context, s Setup) (Paths, error) {
 			}
 			opts := llm.Options{Format: c.format, Backend: s.Backend}
 			if c.format == "lut8" || c.format == "lut6" || c.format == "lut4" {
-				opts.Quant = "kmeans-minmax"
+				opts.Quant = quant
 			}
 			var lwArg llm.Weights
 			if w != nil {

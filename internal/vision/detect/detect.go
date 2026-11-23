@@ -88,7 +88,11 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	stem := filepath.Base(s.File)
 	stem = stem[:len(stem)-len(filepath.Ext(stem))]
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
-	name := fmt.Sprintf("%s-%s-r%d-fp16-%d", Arch, stem, Revision, Size)
+	format, err := chat.ConvertFormat(ctx, filepath.Join(s.Dir, Arch), s.Backend, "fp16")
+	if err != nil {
+		return "", "", err
+	}
+	name := fmt.Sprintf("%s-%s-r%d-%s-%d", Arch, stem, Revision, format, Size)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
 	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
@@ -106,8 +110,8 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		bar.Done("failed")
 		return "", "", err
 	}
-	_, err = llm.WritePart(program, p, nil, llm.Options{Format: "fp16", Backend: s.Backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("RTMDet from %s up to its head's convolutions, %dx%d, fp16 (hwnpu)", s.Repo, Size, Size)
+	_, err = llm.WritePart(program, p, nil, llm.Options{Format: format, Backend: s.Backend}, func(pkg *mlpackage.Package) {
+		pkg.Description = fmt.Sprintf("RTMDet from %s up to its head's convolutions, %dx%d, %s (hwnpu)", s.Repo, Size, Size, format)
 		pkg.Metadata[llm.MetaArch] = Arch
 	})
 	if err != nil {

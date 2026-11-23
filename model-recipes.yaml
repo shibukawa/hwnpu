@@ -296,6 +296,8 @@ models:
     apple:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/whisper, internal/transcribe]
+      # a lut's values by k-means over the weights' range (the format is the architecture's, lut8)
+      convert: {quant: kmeans-minmax}
     amd:
       version: 1
       script: iron_whisper.py
@@ -321,6 +323,8 @@ models:
     apple:
       version: 1
       code: [internal/music, internal/notes, internal/onnx]
+      # the depth and temporal transformers in lut8, a lut's values by k-means over the weights' range (the other programs fp16)
+      convert: {format: lut8, quant: kmeans-minmax}
     amd:
       version: 1
       # SpectroStream's decoder; the language model and MusicCoCa run on the CPU
@@ -365,6 +369,7 @@ models:
     apple:
       version: 1
       code: [internal/vision/depth, internal/vision/depth/mil, internal/imagegen/milpart]
+      convert: {format: fp16}
     amd:
       version: 1
       script: iron_da3.py
@@ -376,6 +381,7 @@ models:
     apple:
       version: 1
       code: [internal/vision/moge, internal/vision/moge/mil, internal/vision/depth/mil, internal/imagegen/milpart]
+      convert: {format: fp16}
     amd:
       version: 1
       script: iron_moge.py
@@ -386,6 +392,8 @@ models:
     apple:
       version: 1
       code: [internal/vision/siglip, internal/vision/siglip/mil, internal/imagegen/milpart]
+      # the two towers in fp16
+      convert: {format: fp16}
     amd:
       version: 1
       script: iron_siglip2.py
@@ -395,6 +403,7 @@ models:
     apple:
       version: 1
       code: [internal/vision/face, internal/onnx]
+      convert: {format: fp16}
     amd:
       version: 1
       script: iron_yunet.py
@@ -403,6 +412,8 @@ models:
     apple:
       version: 1
       code: [internal/vision/detect, internal/onnx]
+      # fp16: the convolutions' outputs are near fp32's at fp16, and the programs are small
+      convert: {format: fp16}
     amd:
       version: 1
       # {in} the ONNX file, {size} the detector's (detect.Size), {outputs} its heads
@@ -414,6 +425,7 @@ models:
     apple:
       version: 1
       code: [internal/pose, internal/onnx]
+      convert: {format: fp16}
     amd:
       version: 1
       # its pixels as they are (0 to 255), SiLU as an operator of its own (the GEMM epilogue's
@@ -427,6 +439,7 @@ models:
     apple:
       version: 1
       code: [internal/vision/segment, internal/onnx]
+      convert: {format: fp16}
     amd:
       version: 1
       # {in} the encoder's ONNX file
@@ -462,11 +475,14 @@ models:
     apple:
       version: 1
       code: [internal/pitch, internal/onnx]
+      convert: {format: fp16}
   basic-pitch:
     apple:
       version: 1
       code: [internal/notes, internal/onnx]
+      convert: {format: fp16}
   PP-OCRv6-small:
     apple:
       version: 1
       code: [internal/vision/ocr, internal/vision/detect, internal/onnx]
+      convert: {format: fp16}
