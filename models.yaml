@@ -1002,7 +1002,7 @@ models:
     memory: {amd: 3.9, apple: 4.9}
     # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst). Apple: the
     # export of the eight sizes and the edits at 512 x 512 below
-    # (flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v3.coreai, 7.76 GB packed) and the
+    # (flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v4.coreai, 7.76 GB packed) and the
     # chip's prebuilt programs (0.06 to 0.21 GB, the M2's the largest); an app's edits at 1024 x
     # 1024 (imagegen.Edit) fetch the export beside it too (its -device.coreai, 3.73 GB packed).
     # Converting here fetches the repository's diffusers layout instead (16 GB; not its

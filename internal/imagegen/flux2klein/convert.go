@@ -21,8 +21,10 @@ import (
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
 // again. 2: the edits of PrebuiltKeys keys or more in programs of their own (DeviceSuffix); 3:
-// those in an export of their own beside it (DeviceExport).
-const ExportVersion = 3
+// those in an export of their own beside it (DeviceExport); 4: 512 x 512's attention takes its
+// 1536 queries as two chunks of 768 (mil's headChunk: the prebuilt programs for an M3 failed to
+// load, docs/known-issues.md 12).
+const ExportVersion = 4
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {

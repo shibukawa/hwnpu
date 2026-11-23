@@ -442,3 +442,21 @@ func TestCtx(t *testing.T) {
 		}
 	}
 }
+
+// TestHeadChunk: rows between one chunk and two are halved (512 x 512's 1536 rows: the prebuilt
+// programs for an M3 failed with 1024 and 512); the other sizes and the edits keep HeadChunk.
+func TestHeadChunk(t *testing.T) {
+	for _, c := range []struct{ rows, want int }{
+		{1536, 768}, {1792, 896}, {1100, 576}, {1024, 1024}, {2048, 1024}, {2560, 1024}, {4608, 1024}, {3968, 1024}, {8704, 1024},
+	} {
+		if got := headChunk(c.rows); got != c.want {
+			t.Errorf("headChunk(%d) = %d, want %d", c.rows, got, c.want)
+		}
+	}
+	for _, sz := range [][2]int{{1024, 1024}, {768, 1152}, {768, 1024}, {704, 1280}, {1152, 768}, {1024, 768}, {1280, 704}} {
+		c := Dit{Width: sz[0], Height: sz[1], TextRows: TextRows}
+		if got := headChunk(c.Rows()); got != HeadChunk {
+			t.Errorf("%dx%d (%d rows): chunk %d, want %d", sz[0], sz[1], c.Rows(), got, HeadChunk)
+		}
+	}
+}
