@@ -1,4 +1,4 @@
-//go:build !amd64
+//go:build !amd64 && !arm64
 
 package f32
 
@@ -13,7 +13,13 @@ func wrowsKernel(dst []float32, rows []*float32, w []float32, bias float32, relu
 	return 0
 }
 
-func wrows4Kernel(dst *[4]*float32, n int, rows []*float32, w []float32, bias *[4]float32, relu bool) int {
+func wrows4Kernel(dst *[4]*float32, n int, rows []*float32, w []float32, ws int, bias *[4]float32, relu bool) int {
+	return 0
+}
+
+const wrows8Step = 0
+
+func wrows8Kernel(dst *[8]*float32, n int, rows []*float32, w []float32, bias *[8]float32, relu bool) int {
 	return 0
 }
 

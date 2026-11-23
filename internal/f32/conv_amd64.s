@@ -157,11 +157,12 @@ storew:
 	VZEROUPPER
 	RET
 
-// func wrows4AVX2(dst **float32, rows **float32, w *float32, k int, bias *float32, relu, n int)
-// For o < 4: dst[o][i] = bias[o] + sum over j < k of w[4j+o] rows[j][i], then max with 0 when
-// relu; n a multiple of 16. Each row's two vectors go into the four outputs' eight accumulators
+// func wrows4AVX2(dst **float32, rows **float32, w *float32, k int, bias *float32, relu, n, ws int)
+// For o < 4: dst[o][i] = bias[o] + sum over j < k of w[s j+o] rows[j][i], then max with 0 when
+// relu; n a multiple of 16, ws = 4 s the bytes from a tap's weights to the next's (16, or 32 for
+// half of WeightedRows8's). Each row's two vectors go into the four outputs' eight accumulators
 // (a load for four FMAs, eight chains side by side).
-TEXT ·wrows4AVX2(SB), NOSPLIT, $0-56
+TEXT ·wrows4AVX2(SB), NOSPLIT, $0-64
 	MOVQ dst+0(FP), AX
 	MOVQ rows+8(FP), BX
 	MOVQ w+16(FP), SI
@@ -201,7 +202,7 @@ tap4:
 	VFMADD231PS Y9, Y12, Y5
 	VFMADD231PS Y8, Y13, Y6
 	VFMADD231PS Y9, Y13, Y7
-	ADDQ $16, R9
+	ADDQ ws+56(FP), R9 // a tap's weights, in bytes
 	INCQ R11
 	CMPQ R11, R13
 	JLT  tap4
@@ -253,3 +254,4 @@ loopi:
 	JNZ  loopi
 	VZEROUPPER
 	RET
+

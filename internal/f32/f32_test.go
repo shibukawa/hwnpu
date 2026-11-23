@@ -45,7 +45,7 @@ func TestExp(t *testing.T) {
 }
 
 func TestAxpy(t *testing.T) {
-	for _, n := range []int{0, 3, 8, 21} {
+	for _, n := range []int{0, 3, 8, 21, 32, 37} {
 		d, x := make([]float32, n), make([]float32, n)
 		for i := range d {
 			d[i], x[i] = float32(i), float32(2*i+1)

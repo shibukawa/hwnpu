@@ -94,7 +94,7 @@ func WeightedRows(dst []float32, rows []*float32, w []float32, bias float32, rel
 // relu), each dst[o] holding n values. A row read once serves the four.
 func WeightedRows4(dst *[4]*float32, n int, rows []*float32, w []float32, bias *[4]float32, relu bool) {
 	w = w[:4*len(rows)]
-	done := wrows4Kernel(dst, n, rows, w, bias, relu)
+	done := wrows4Kernel(dst, n, rows, w, 4, bias, relu)
 	if done == n {
 		return
 	}
@@ -112,7 +112,7 @@ func WeightedRows4(dst *[4]*float32, n int, rows []*float32, w []float32, bias *
 		for o := range 4 {
 			d[o] = (*float32)(unsafe.Add(unsafe.Pointer(dst[o]), 4*(n-16)))
 		}
-		wrows4Kernel(&d, 16, rs, w, bias, relu)
+		wrows4Kernel(&d, 16, rs, w, 4, bias, relu)
 		return
 	}
 	for o := range 4 {
@@ -129,6 +129,54 @@ func WeightedRows4(dst *[4]*float32, n int, rows []*float32, w []float32, bias *
 		}
 		if relu {
 			for i := done; i < n; i++ {
+				d[i] = max(d[i], 0)
+			}
+		}
+	}
+}
+
+// WeightedRows8 is WeightedRows4 for eight outputs: dst[o][i] = bias[o] + the sum over j of
+// w[8j+o] rows[j][i] for o < 8 and i < n (then max(., 0) when relu). On arm64 a pass keeps its
+// eight outputs of 8 columns in 16 of the 32 registers (a row's two vectors read once for 16
+// FMAs); on amd64 it is two passes of WeightedRows4's (see wrows8Kernel).
+func WeightedRows8(dst *[8]*float32, n int, rows []*float32, w []float32, bias *[8]float32, relu bool) {
+	w = w[:8*len(rows)]
+	done := wrows8Kernel(dst, n, rows, w, bias, relu)
+	if done == n {
+		return
+	}
+	if done > 0 {
+		// the last step again, ending at n (overlapping, as Depthwise3's)
+		const s = wrows8Step
+		var moved [256]*float32
+		rs := moved[:0]
+		if len(rows) > len(moved) {
+			rs = make([]*float32, 0, len(rows))
+		}
+		for _, p := range rows {
+			rs = append(rs, (*float32)(unsafe.Add(unsafe.Pointer(p), 4*(n-s))))
+		}
+		var d [8]*float32
+		for o := range 8 {
+			d[o] = (*float32)(unsafe.Add(unsafe.Pointer(dst[o]), 4*(n-s)))
+		}
+		wrows8Kernel(&d, s, rs, w, bias, relu)
+		return
+	}
+	for o := range 8 {
+		d := unsafe.Slice(dst[o], n)
+		for i := range n {
+			d[i] = bias[o]
+		}
+		for j, p := range rows {
+			r := unsafe.Slice(p, n)
+			a := w[8*j+o]
+			for i := range n {
+				d[i] += a * r[i]
+			}
+		}
+		if relu {
+			for i := range n {
 				d[i] = max(d[i], 0)
 			}
 		}

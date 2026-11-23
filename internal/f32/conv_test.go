@@ -145,6 +145,50 @@ func TestWeightedRows4(t *testing.T) {
 	}
 }
 
+func TestWeightedRows8(t *testing.T) {
+	rng := rand.New(rand.NewPCG(11, 12))
+	for _, k := range []int{1, 3, 27, 64} {
+		for _, m := range []int{1, 7, 8, 9, 15, 16, 33, 128, 160} {
+			for _, relu := range []bool{false, true} {
+				rows, w := make([]*float32, k), make([]float32, 8*k)
+				src := make([][]float32, k)
+				for j := range k {
+					src[j] = make([]float32, m+1)
+					for i := range src[j] {
+						src[j][i] = rng.Float32()*2 - 1
+					}
+					rows[j] = &src[j][1]
+				}
+				for i := range w {
+					w[i] = rng.Float32()*2 - 1
+				}
+				bias := [8]float32{0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7, -0.8}
+				outs := make([][]float32, 8)
+				var dst [8]*float32
+				for o := range 8 {
+					outs[o] = make([]float32, m)
+					dst[o] = &outs[o][0]
+				}
+				WeightedRows8(&dst, m, rows, w, &bias, relu)
+				for o := range 8 {
+					for i := range m {
+						want := bias[o]
+						for j := range k {
+							want += w[8*j+o] * src[j][1+i]
+						}
+						if relu {
+							want = max(want, 0)
+						}
+						if d := outs[o][i] - want; d > 1e-4 || d < -1e-4 {
+							t.Fatalf("k %d m %d relu %v out %d [%d]: %v, want %v", k, m, relu, o, i, outs[o][i], want)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestDeinterleave2(t *testing.T) {
 	for _, m := range []int{1, 7, 8, 9, 16, 161} {
 		src := make([]float32, 2*m+1)
