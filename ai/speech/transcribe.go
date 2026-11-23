@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
@@ -35,8 +36,9 @@ func Transcribe(name string) ai.Use[*Transcriber] {
 //
 // A model of device cpu runs on hwnpu's CPU interpreter (slow).
 var transcribeRole = &airole.Role{
-	Name:  "transcribe",
-	Kinds: []chat.Kind{chat.KindTranscribe},
+	Name:   "transcribe",
+	Remote: func(h *airpc.Handle) io.Closer { return &Transcriber{remote: h} },
+	Kinds:  []chat.Kind{chat.KindTranscribe},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		cpu := e.NPU.CPU(e.Model)
 		if dir := first(e.Model.Programs["iron"]); dir != "" {
@@ -162,25 +164,44 @@ type Segment struct {
 
 // Transcriber turns speech into text (Whisper). It runs one request at a time; others wait.
 type Transcriber struct {
-	mu    sync.Mutex
-	t     *transcribe.Transcriber
-	dev   *hwnpu.Device
-	model string
-	cpu   bool
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	t      *transcribe.Transcriber
+	dev    *hwnpu.Device
+	model  string
+	cpu    bool
 }
 
 // OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
-func (t *Transcriber) OnCPU() bool { return t.cpu }
+func (t *Transcriber) OnCPU() bool {
+	if t.remote != nil {
+		return airpc.Value[bool](t.remote, "OnCPU")
+	}
+	return t.cpu
+}
 
 // Model is the name of the model in the definitions.
-func (t *Transcriber) Model() string { return t.model }
+func (t *Transcriber) Model() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Model")
+	}
+	return t.model
+}
 
 // OnNPU reports whether the programs were verified to run on the NPU.
-func (t *Transcriber) OnNPU() bool { return t.t.OnNPU() }
+func (t *Transcriber) OnNPU() bool {
+	if t.remote != nil {
+		return airpc.Value[bool](t.remote, "OnNPU")
+	}
+	return t.t.OnNPU()
+}
 
 // Transcribe turns speech (mono, at TranscribeRate, in [-1, 1]) into text. Speech longer than 30
 // seconds is read in windows, each starting where the last one's last whole segment ended.
 func (t *Transcriber) Transcribe(ctx context.Context, pcm []float32, o TranscribeOptions) (Transcript, error) {
+	if t.remote != nil {
+		return airpc.Call1[Transcript](t.remote, ctx, "Transcribe", pcm, o)
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t0 := time.Now()
@@ -262,6 +283,9 @@ func (t *Transcriber) transcribeStream(ctx context.Context, s flow.Stream[[]floa
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *Transcriber) Close() error {
+	if t.remote != nil {
+		return t.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	err := t.t.Close()

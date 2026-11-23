@@ -28,8 +28,10 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"testing"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
@@ -96,6 +98,16 @@ func Idle() time.Duration {
 		}
 	}
 	return DefaultIdle
+}
+
+// DefaultMode is what HWNPU_DAEMON is when it is not set: on (every program goes through
+// hwnpud, and fails when it does not answer), except in a test (go test), which runs in its own
+// process. hwnpud's engine sets it off for itself.
+func DefaultMode() string {
+	if testing.Testing() {
+		return "off"
+	}
+	return "on"
 }
 
 // Mode is HWNPU_DAEMON: "on", "auto" or "off" (anything else, and unset, is def).
@@ -293,6 +305,27 @@ func (c *Client) notRunning(err error) error {
 		return fmt.Errorf("%w at %s: %v", ErrNotRunning, c.Socket, err)
 	}
 	return err
+}
+
+// AIPath is the route of the sessions of the ai package (an app's Plan, Runtime and models run
+// in the engine: internal/aihost), upgraded from HTTP to AIProtocol.
+const (
+	AIPath     = "/hwnpud/v1/ai"
+	AIProtocol = "hwnpu-ai/1"
+)
+
+// DialAI opens a session of the ai package with the engine (airpc over the socket).
+func (c *Client) DialAI(ctx context.Context) (*airpc.Session, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", c.Socket)
+	if err != nil {
+		return nil, c.notRunning(err)
+	}
+	s, err := airpc.Dial(ctx, conn, AIPath, AIProtocol)
+	if err != nil {
+		return nil, fmt.Errorf("hwnpud at %s: %w", c.Socket, err)
+	}
+	return s, nil
 }
 
 // Load makes the model ready and loads it, writing the engine's log to log as it comes.

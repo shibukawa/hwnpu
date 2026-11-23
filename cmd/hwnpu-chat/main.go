@@ -57,7 +57,7 @@
 // from 30000 (or --listen), writes an OpenCode config for the server's chat models, and runs
 // OpenCode on this terminal with the arguments after --; when it exits, so does the server.
 //
-// With HWNPU_DAEMON=on (or auto, when it answers), chat goes through hwnpud (cmd/hwnpud): hwnpud
+// Unless HWNPU_DAEMON is off (it is on when unset), chat goes through hwnpud (cmd/hwnpud): hwnpud
 // makes the model ready and runs it, this process sends the conversation and writes the answers,
 // and the model stays loaded for the next run. Where the models are and come from (HWNPU_CACHE,
 // HWNPU_MODEL_SOURCE, ...) are then hwnpud's, read from ~/.config/hwnpu/.env: a shell of other

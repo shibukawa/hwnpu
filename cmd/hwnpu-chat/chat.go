@@ -44,7 +44,7 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if c.Prompt == "" && (len(c.Image) > 0 || len(c.Audio) > 0) {
 		return errors.New("--image and --audio go with a prompt (in the terminal: /image FILE, /audio FILE.wav)")
 	}
-	cl, err := daemon.Use(ctx, "off", logw())
+	cl, err := daemon.Use(ctx, daemon.DefaultMode(), logw())
 	if err != nil {
 		return err
 	}

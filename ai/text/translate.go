@@ -10,6 +10,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
@@ -21,6 +22,7 @@ func Translate(name string) ai.Use[*Translator] {
 
 var translateRole = &airole.Role{
 	Name:    "translate",
+	Remote:  func(h *airpc.Handle) io.Closer { return &Translator{remote: h} },
 	Kinds:   []chat.Kind{chat.KindChat},
 	Feature: "translation",
 	Prepare: prepareEngine,
@@ -79,16 +81,27 @@ type Pair struct{ Source, Target string }
 
 // Translator translates texts (PLaMo 3 Translate). It runs one request at a time; others wait.
 type Translator struct {
-	mu    sync.Mutex
-	e     *chat.Engine
-	model string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	e      *chat.Engine
+	model  string
 }
 
 // Model is the name of the model in the definitions.
-func (t *Translator) Model() string { return t.model }
+func (t *Translator) Model() string {
+	if t.remote != nil {
+		return airpc.Value[string](t.remote, "Model")
+	}
+	return t.model
+}
 
 // OnNPU reports whether the programs were verified to run on the NPU.
-func (t *Translator) OnNPU() bool { return t.e.OnNPU() }
+func (t *Translator) OnNPU() bool {
+	if t.remote != nil {
+		return airpc.Value[bool](t.remote, "OnNPU")
+	}
+	return t.e.OnNPU()
+}
 
 // Translate translates a text.
 func (t *Translator) Translate(ctx context.Context, text string, o TranslateOptions) (string, error) {
@@ -102,6 +115,9 @@ func (t *Translator) Translate(ctx context.Context, text string, o TranslateOpti
 func (t *Translator) Reply(ctx context.Context, text string, o TranslateOptions, fn func(Delta) bool) (Translation, error) {
 	if strings.TrimSpace(text) == "" {
 		return Translation{}, errors.New("text: nothing to translate")
+	}
+	if t.remote != nil {
+		return airpc.Call1[Translation](t.remote, ctx, "Reply", text, o, fn)
 	}
 	var msgs []chat.Message
 	for _, p := range o.History {
@@ -179,6 +195,9 @@ func (t *Translator) translateStream(ctx context.Context, s flow.Stream[flow.Tex
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *Translator) Close() error {
+	if t.remote != nil {
+		return t.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.e.Close()

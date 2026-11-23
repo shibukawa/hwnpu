@@ -25,7 +25,7 @@
 - `internal/dev.Keys` が全部の鍵と働きを持つ。`TestKeysUsed` は、コードが読む鍵が全部そこにあり、そこにある鍵が全部読まれて
   いることを確かめる。知らない鍵は標準エラーに一度だけ出す
 - 呼ぶたびに読む (`dev.Get`、`On`、`IsOff`、`Value`、`Int`)。テストの `t.Setenv` が効くように
-- hwnpud はクライアントのものを取らない: 実験は開発者自身のプロセスで動かす (`HWNPU_DAEMON=off`、hwnpu のコマンドの既定)。
+- hwnpud はクライアントのものを取らない: 実験は開発者自身のプロセスで動かす (`HWNPU_DAEMON=off`。既定は on)。
   Neural Engine のロックは今までどおり
 
 それぞれ別の変数だったもの:
