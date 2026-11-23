@@ -178,15 +178,14 @@ func parseJobs(sel []string) ([]job, error) {
 					ts = append(ts, t)
 				}
 			}
-			if len(ts) == 0 {
-				// what its recipe makes: the Core AI exports prebuilt for its architectures
-				recipes, err := recipe.Builtin()
-				if err != nil {
-					return nil, err
-				}
-				if r, ok := recipes.Models[m.Name]; ok && r.Apple != nil {
-					ts, archs = []string{cache.CoreAITarget}, recipes.AppleOf(m.Name).Archs
-				}
+			// and what its recipe makes: the Core AI exports (each of its rewrites), prebuilt
+			// for its architectures
+			recipes, err := recipe.Builtin()
+			if err != nil {
+				return nil, err
+			}
+			if r, ok := recipes.Models[m.Name]; ok && r.Apple != nil && !slices.Contains(ts, cache.CoreAITarget) {
+				ts, archs = append(ts, cache.CoreAITarget), recipes.AppleOf(m.Name).Archs
 			}
 			if len(ts) == 0 {
 				return nil, fmt.Errorf("%s: neither its definition nor its recipe (model-recipes.yaml) gives versions of targets: name one (%s/%s)", m.Name, m.Name, strings.Join(targets, ", "+m.Name+"/"))

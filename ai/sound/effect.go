@@ -66,7 +66,7 @@ var effectRole = &airole.Role{
 				}
 			}
 			if p, err = sfx.Prepare(e.Ctx, sfx.Setup{Dir: e.Dir, Repo: e.Model.Source(), Machine: e.Base.Machine,
-				TextFormat: e.Model.Settings["text-format"], DitFormat: e.Model.Settings["dit-format"], Backend: backend, Log: e.Log}); err != nil {
+				TextFormat: e.Model.Settings["text-format"], DitFormat: e.Model.Settings["dit-format"], Backend: backend, Model: e.Base.Name, Log: e.Log}); err != nil {
 				return f, err
 			}
 		}

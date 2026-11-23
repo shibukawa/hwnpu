@@ -42,7 +42,26 @@ models:
           checked: 2026-11-23                           # それを見た日
 ```
 
-- 知らないキー、知らない版、知らないチップの名前は、読むときに誤りにする
+置き換え (`rewrite`) は、チップによって通らない演算を、どう書くかを決める:
+
+```yaml
+  MOSS-SoundEffect-v2.0:
+    apple:
+      rewrite:
+        - arch: [h15g, h16g, h17g]      # 1 つか並び。省くと全部
+          op: sin                       # 演算 (recipe.Ways にあるもの)
+          as: native                    # 書き方。sin は series (既定) か native
+          why: "..."
+          checked: 2026-11-23
+```
+
+- 書き方の一覧と既定は `internal/recipe` の `Ways` (sin: `series` 範囲を縮めて級数、`native` 演算そのもの)。規則のないチップは既定
+- 置き換えは変換のときに選ぶ (書き出しにはバイトコードしか残らない)。そこで、既定でない置き換えを、その演算を持つ書き出しの名前に入れる (`hwnpu-dac-r3-fp16-sin-native.coreai`)。チップごとに自分の書き出しを取ってくる
+- `hwnpu-dev models package MODEL` は、置き換えの組ごとに 1 つずつ書き出しを作って置く (`Apple.RewriteArchs`)
+- 動かすときは、その Mac のチップ (`coreai.Arch`) の規則で選ぶ。比べるときは `HWNPU_DEV=rewrite=sin:series` (または `sin:native`) で、その Mac の分だけ上書きできる
+- 置き換えを使うモデルのコードは、`llm.Options.Rewrites` を読んで書き分け、書き出しの名前に `recipe.Suffix` を付ける (MOSS の DAC: `sfx.DACOps`)
+
+- 知らないキー、知らない版、知らないチップの名前、知らない演算と書き方は、読むときに誤りにする
 - `why` と `checked` は省けない。あとで Metal Toolchain が上がったときに、その規則がまだ要るかを確かめるため
 - パターンは `path.Match` の形 (`*` は何文字でも)
 
@@ -66,12 +85,15 @@ models:
 |---|---|---|---|
 | FLUX.2 klein 4B | `dit_single_*` を端末で (RegAlloc の L2 の割り付けに失敗) | 全部プリビルド | 全部プリビルド |
 | Chroma1-Flash / HD | `dit_single_*` を端末で | `dit_single_0/8/16` を端末で | 全部プリビルド |
+| MOSS-SoundEffect v2.0 (`-lut8` も) | sin は級数 | sin は級数 | sin はそのまま (`-sin-native` の書き出し) |
+
+MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をそのまま書くと、h13g と h14g は 1 段が Neural Engine の 8〜9 個の区間に分かれる (sin がその間で外に出る)。h15g、h16g、h17g は 1 区間に収まる。級数はどのチップでも 1 区間。sin の前の clip は、sin とまとめられて (NEFUSED_EW: EW: MAX) h15g でも通らないので、そのまま書くときは clip を外す (clip は丸めのためのもの)。音声のプリビルドは置かない (M1 で遅いか壊れていた) ので、DAC は全部端末に回す規則にしてある。
 
 どれも、落ちるまでに 1 本 1〜3 時間かかっていた。レシピに書いたので、もう試さない。
 
 ## 6. まだレシピにないもの (次の PR)
 
-- **置き換え (`do: rewrite`)**: 通らない演算を別の形で書く (sin を表引きか級数に、など)。変換のときにしかできない (書き出しにはバイトコードしか残らない) ので、`ailower` とモデルのコードに名前つきの置き換えを作り、レシピから選ぶ。選んだものは書き出しの名前とキーに入れる。いまはコードに直接書いてある (MOSS の DAC の snake の sin は級数、など)
+- **ほかの置き換え**: 2 節の `rewrite` は、いまは MOSS の DAC の sin だけ。ほかはコードに直接書いてある (softmax を exp と逆数で、x / c を 1 / c 倍で、sigmoid と tanh を exp で、conv_transpose を polyphase で、など)。M1 と M2 以降で違うものから、書き方を `Ways` に足して移す。sin の表引きも、そのときに書き方として足す
 - **変換の設定**: 量子化の形式 (`npu.apple.formats`)、FLUX.2 klein の編集の組み合わせなど。いまは models.yaml とコードにある
 - **AMD**: `iron_*.py` のスクリプトと引数。いまは models.yaml の `amd_export` (チャットのモデル) と Go のコード (画像、深さ、ラベルなど)、md のコマンドの例にある。次の形を考えている:
 

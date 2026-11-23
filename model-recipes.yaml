@@ -19,6 +19,14 @@
 #                              run (it takes programs coreai-build leaves off the Neural Engine)
 #                 why          what coreai-build did (its message in os_log), and
 #                 checked      the day it was seen (YYYY-MM-DD), both asked for
+#     rewrite   how some architectures' programs write an operation some Neural Engines do not
+#               run (arch as above; op, as: one of its ways, the default first):
+#                 sin: series  range reduction and a series of products and sums
+#                      native  the operation
+#               with why and checked as above. It is chosen at the conversion, so the chips of
+#               other rewrites take an export of their own, the rewrite in its name
+#               (hwnpu-dac-r3-fp16-sin-native.coreai); a chip no rule names takes the default.
+#               A run takes its own chip's (HWNPU_DEV=rewrite=sin:series over it, to compare)
 #   models      MODEL (a model of models.yaml): {apple: ...} as above, its rules after those
 #               of apple. A build that fails on a program no rule names stops, and says the
 #               rule that would leave it to the device
@@ -68,3 +76,20 @@ models:
           do: device
           why: "as Chroma1-Flash's (the same programs)"
           checked: 2026-11-23
+  MOSS-SoundEffect-v2.0: &moss
+    apple:
+      rewrite:
+        # coreai-build, each of the five decoder stages: with sin itself, h13g and h14g split
+        # the stage in 8 or 9 regions of the Neural Engine (sin off it between them), h15g,
+        # h16g and h17g keep it in one; the series is one region on all
+        - arch: [h15g, h16g, h17g]
+          op: sin
+          as: native
+          why: "one Neural Engine region a stage offline with sin (h13g, h14g: 8 to 9, sin off it); seen on the M3 for its sound: not yet"
+          checked: 2026-11-23
+      prebuild:
+        - programs: ["*"]
+          do: device
+          why: "audio prebuilts were slower or failed on the M1 (Whisper 2:48 to 4:08 first load, Magenta 'bad program image', MOSS 'Request cancelled'), and a bad one does not fall back"
+          checked: 2026-11-19
+  MOSS-SoundEffect-v2.0-lut8: *moss

@@ -30,6 +30,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/qwen3"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
@@ -111,8 +112,15 @@ type Setup struct {
 	// llm.CoreAIExport) or OpenVINO IR for Intel's NPU, kept in Dir/intel, whose lut8 is int8
 	// (llm.IntelFormat).
 	Backend string
-	Log     io.Writer
+	// Model is the model of the definitions whose recipe (model-recipes.yaml rewrite) says how
+	// the Core AI programs write the operations some Neural Engines do not run (DACOps), for the
+	// chip Arch ("": this Mac's); their exports are named by it (recipe.Suffix).
+	Model, Arch string
+	Log         io.Writer
 }
+
+// DACOps are the operations the decoder's stages have that a recipe may rewrite (snake's sin).
+var DACOps = []string{"sin"}
 
 // Paths are the files and programs of a prepared model.
 type Paths struct {
@@ -169,6 +177,13 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	}
 	p.TextCfg = cfg
 	coreai := s.Backend == llm.BackendCoreAI
+	var rewrites map[string]string
+	if coreai {
+		var err error
+		if rewrites, err = recipe.RewritesFor(s.Model, cmp.Or(s.Arch, chat.NPUArch()), s.Arch == ""); err != nil {
+			return p, err
+		}
+	}
 	dir, ext := s.Dir, llm.ProgramExt(s.Backend)
 	if intel {
 		dir = filepath.Join(s.Dir, s.Backend)
@@ -184,7 +199,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		part, rev, format := "text", Revision, text
 		switch {
 		case strings.HasPrefix(kind, "dac-"):
-			part, rev, format = "dac", DACRevision, "fp16"
+			part, rev, format = "dac", DACRevision, "fp16"+recipe.Suffix(rewrites, DACOps...)
 		case strings.HasPrefix(kind, "dit-"):
 			part, format = "dit", dit
 		}
@@ -275,7 +290,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		jobs = append(jobs, job{p.Blocks[i], dit, Blocks(first, DitGroup), ditW, llm.Options{}, fmt.Sprintf("dit-blocks-%d", first)})
 	}
 	for i, st := range DACStages() {
-		jobs = append(jobs, job{p.Stages[i], "fp16", st.Part(), vaeW, llm.Options{}, fmt.Sprintf("dac-%d", st.Index)})
+		jobs = append(jobs, job{p.Stages[i], "fp16", st.Part(), vaeW, llm.Options{Rewrites: rewrites}, fmt.Sprintf("dac-%d", st.Index)})
 	}
 	// what is missing: Core AI's exports not whole, the other programs without their .done
 	pending := map[string]string{} // the Core AI exports to write, and their marks

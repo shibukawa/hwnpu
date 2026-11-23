@@ -96,3 +96,58 @@ failed`, "2026-11-23")
 		t.Errorf("suggested rule does not leave it:\n%s", s)
 	}
 }
+
+// TestRewrites: MOSS's decoder writes sin itself on M3 and later, by its series on M1 and M2,
+// and a build converts an export of each.
+func TestRewrites(t *testing.T) {
+	f, err := Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"MOSS-SoundEffect-v2.0", "MOSS-SoundEffect-v2.0-lut8"} {
+		a := f.AppleOf(m)
+		for arch, want := range map[string]string{"h13g": "", "h14g": "", "h15g": "-sin-native", "h17g": "-sin-native", "h18g": ""} {
+			if got := Suffix(a.Rewrites(arch), "sin"); got != want {
+				t.Errorf("%s %s: %q, want %q", m, arch, got, want)
+			}
+		}
+		if got := a.RewriteArchs(); len(got) != 2 || Suffix(a.Rewrites(got[0])) != "" || Suffix(a.Rewrites(got[1])) != "-sin-native" {
+			t.Errorf("%s: RewriteArchs %v, want a default's then a native one's", m, got)
+		}
+		if _, ok := a.Left("hwnpu-dac-r3-fp16.coreai", "dac-0.aimodel", "h15g"); !ok {
+			t.Errorf("%s: the decoder is prebuilt", m)
+		}
+	}
+	if got := f.AppleOf("FLUX.2-klein-4B").RewriteArchs(); len(got) != 1 {
+		t.Errorf("FLUX.2 klein: RewriteArchs %v, want one", got)
+	}
+	if Suffix(map[string]string{"sin": "native"}, "exp") != "" {
+		t.Error("a suffix of an operation the programs do not have")
+	}
+	t.Setenv("HWNPU_DEV", "rewrite=sin:series")
+	if rw, err := RewritesFor("MOSS-SoundEffect-v2.0", "h15g", true); err != nil || len(rw) != 0 {
+		t.Errorf("rewrite=sin:series on h15g: %v %v, want none", rw, err)
+	}
+	if rw, _ := RewritesFor("MOSS-SoundEffect-v2.0", "h15g", false); rw["sin"] != "native" {
+		t.Errorf("another chip's: %v, want the recipe's", rw)
+	}
+	t.Setenv("HWNPU_DEV", "rewrite=sin:table")
+	if _, err := RewritesFor("MOSS-SoundEffect-v2.0", "h13g", true); err == nil {
+		t.Error("rewrite=sin:table: no error")
+	}
+}
+
+func TestParseRejectsRewrites(t *testing.T) {
+	head := "version: 1\ntools: {coreai-build: 1}\napple:\n  rewrite:\n"
+	for _, c := range []struct{ rule, want string }{
+		{"    - {op: cos, as: native, why: x, checked: 2026-11-23}", "op"},
+		{"    - {op: sin, as: table, why: x, checked: 2026-11-23}", "as"},
+		{"    - {op: sin, as: native, checked: 2026-11-23}", "why"},
+		{"    - {arch: m3, op: sin, as: native, why: x, checked: 2026-11-23}", "architecture"},
+	} {
+		_, err := Parse("t", []byte(head+c.rule+"\n"))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want an error of %q", c.rule, err, c.want)
+		}
+	}
+}
