@@ -2,7 +2,7 @@
 
 [日本語](hwnpud.ja.md)
 
-Status: step 1 is built on the Mac and on Linux with AMD's NPU, and step 3 on the Mac but the status and cache commands (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
+Status: step 1 is built on the Mac and on Linux with AMD's NPU, and step 3 on the Mac (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
 models: it downloads and keeps the converted models, holds the caches, loads the programs and runs
 them. hwnpu's commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`) and the apps built on
 the `ai` package reach it over a Unix domain socket. They pass what their run needs and draw what
@@ -30,7 +30,7 @@ Step 1 on the Mac (`cmd/hwnpud`, `internal/daemon`):
   shell. `uninstall`, `status`, `stop`.
 - `hwnpu-chat [chat]` goes through it with `HWNPU_DAEMON=on` (or `auto`): the load's log, then the
   conversation, the same output and line of statistics. The flags of how a model is converted
-  and run are refused there.
+  and run are refused there. (Step 3 moved it onto the `ai` package, below.)
 - Settings ([Settings](#settings)): `hello` gives hwnpud's settings and the `.env` files read; a
   changed file starts the next engine with the new settings; a client of other settings is told
   (`on`) or runs by itself (`auto`); `hwnpud status` shows them; a client's
@@ -39,13 +39,13 @@ Step 1 on the Mac (`cmd/hwnpud`, `internal/daemon`):
   (Core AI's entry 2.5 GB); the next run answers in 0.6 s from start to end, the model still in
   the engine.
 
-Step 3 on the Mac, but the status and cache commands (`internal/airpc`, `internal/aihost`, the `ai` package):
+Step 3 on the Mac (`internal/airpc`, `internal/aihost`, `internal/cachecmd`, the `ai` package):
 
 - Every program of the `ai` package goes through hwnpud: `HWNPU_DAEMON` is `on` unless it is set
   (`daemon.DefaultMode`), and a program whose hwnpud does not answer fails with what to do.
   `HWNPU_DAEMON=off` runs the models in the program's own process as before; a test (`go test`)
   and hwnpud's engine itself (which sets it off) run them there too. `hwnpu-chat [chat]` goes
-  through hwnpud by default as well.
+  through hwnpud by default as well, through the `ai` package like the rest (below).
 - A session (`internal/airpc`) is a connection to the socket upgraded from HTTP
   (`GET /hwnpud/v1/ai`, `Upgrade: hwnpu-ai/1`, through the supervisor's proxy to the engine),
   with a gob stream each way of messages multiplexed by id. The client calls the methods of the
@@ -93,13 +93,39 @@ Step 3 on the Mac, but the status and cache commands (`internal/airpc`, `interna
   stream has no flow control). Variadic methods (`MusicGenerator.Style`) send their slice.
 - The commands' and samples' model work all goes through `ai`. What stays in the program's own
   process: `hwnpu-image convert` (Anima's and Chroma's conversion, no NPU), `hwnpu-dev` (the
-  developer's process), `hwnpu cache`, `hwnpu memory` and the `status` commands (read here,
-  hwnpud's to serve later), and the logs of the Neural Engine's memory (`mem.NPUWired`, the
-  machine's, so a command still tells how much more it holds). `hwnpu-chat chat` goes through
-  the engine's chat route (`/hwnpud/v1/load`), not `ai`'s. A command's `--backend` sets this
-  process's `HWNPU_BACKEND`, which hwnpud does not take (it says that its own is used).
-- Not yet: the models bundled with an app (`Store.Models.Bundle`), one copy of a model shared by
-  two clients (each session loads its own), and `hwnpu cache` / `status` through hwnpud.
+  developer's process), `hwnpu issue`, and the logs of the Neural Engine's memory
+  (`mem.NPUWired`, the machine's, so a command still tells how much more it holds). A command's
+  `--backend` sets this process's `HWNPU_BACKEND`, which hwnpud does not take (it says that its
+  own is used).
+- `hwnpu-chat chat` runs its model through `ai` too, as its other commands do: the flags of how a
+  model is converted and run become an app's definition (`ai.Definition`) that hwnpud prepares,
+  instead of being refused, and the model's files are known to the cache's commands. The
+  engine's chat routes (`/hwnpud/v1/load`, `/v1/chat/completions`) stay, for the OpenAI API's
+  clients. What it gives up: a model the route loaded stayed in the engine until it was idle,
+  so the next run answered at once (0.6 s); through `ai` the model is unloaded when the last
+  client lets it go, and the next run loads it again from Apple's compiler's cache (Qwen3-0.6B:
+  0.5 s, the run 1.2 s from start to end).
+- One copy of a model for every client: the engine's Runtimes (one a session) share a model
+  loaded alike, the same role, model, files and settings of how it runs (`LoadSettings`,
+  `AllowOffNPU`): the first `Get` loads it, the next ones take it, and it is unloaded when the
+  last Runtime lets it go (`Release`, `Close`, a session that ends). Its calls take turns as
+  its type makes them (each runs one request at a time). An app's `InTurns` still releases its
+  own share of the others of the group. The model's log goes to the latest client's that holds
+  it. `hwnpud status` shows each model held and the clients holding it.
+- The cache's commands run in the engine (`internal/cachecmd`, `cachecmd.Host` on the same
+  session): `hwnpu cache` (info, ls, prune, clear, clean) and `hwnpu memory`, with the engine's
+  settings (its `HWNPU_CACHE` and sources, not the shell's), their output and their question
+  ("remove them?") at the client. `hwnpu status` and the apps' `status` show the engine's cache.
+  So hwnpud is the only process that removes from the cache: `ls` marks the units the models it
+  holds are loaded from ("in use"), `clear` and `prune` keep them ("kept: hwnpud holds
+  Qwen3-0.6B loaded, for 2 clients"), and the engine's own trimming to make room skips them
+  (`cache.SetInUse`: the engine runs for long, so what it once touched is not kept for good, as
+  a command's process keeps it). What removes waits for the loads and runs going on and keeps
+  the next from starting until it is done. With `HWNPU_DAEMON=off` they run here, as before.
+- A pointer to a zero value crosses as one (gob sends it as nil): `ChatOptions.Think` of false
+  is no thinking, not the model's own choice (`--no-think` thought anyway before).
+- Not yet: the models bundled with an app (`Store.Models.Bundle`), and an app's own
+  `Store.Models` in the status (it shows the engine's cache).
 - M3 (macOS 27, a hwnpud of the worktree on its own socket, the NAS's exports): `hwnpu-image depth` of a
   picture took 60 s the first time (hwnpud fetched and unpacked DA3-BASE's programs, 35 s, then
   compiled the picture's size at its first call, 24 s) and 0.2 s the next. `hwnpu-audio
@@ -121,6 +147,10 @@ Step 3 on the Mac, but the status and cache commands (`internal/airpc`, `interna
   0.3 s; `hwnpu-chat systemone` (d1-2B) 3m34s, then 0.45 s; `voice-agent models prepare`
   (Whisper, LFM3-1.7B, Supertonic 3) 2m49s. Core AI's `hwnpud/` grew from 18 entries to 54
   (2.5 to 8.9 GB); no other program's directory changed.
+- M3, one copy and the cache: two `hwnpu-chat -m Qwen3-0.6B` open at once held the model once
+  (`hwnpud status`: "Qwen3-0.6B (chat): loaded once, for 2 clients"; the second `Get` took the
+  first's); `hwnpu cache ls Qwen3-0.6B` marked its two units in use and `clear -y` kept them;
+  after both ended, the same `clear` would remove them.
 
 On Linux with AMD's NPU, the same supervisor and engine:
 
@@ -444,8 +474,9 @@ Each is small; the ones on the NPU wait for the lock in the background.
    commands' `list` / `status` and `hwnpu cache` as clients; `hwnpu config`; the policy in the pick
 3. The remote side of `ai.Runtime`, with `HWNPU_DAEMON=on` the default; samples interpreter, layers
    and parallax through the daemon, with the Core AI cache in `coreai-cache/<OS>/hwnpud/` only.
-   Built (above), but the status and cache commands through hwnpud
-4. Images and audio; the machine-wide scheduler (program budget, unloading, priority)
+   Built (above)
+4. Images and audio; the machine-wide scheduler (program budget, unloading, priority); one copy of
+   a model for every client is built (above)
 5. Release builds (a fixed identifier on the Mac), `daemon install`, a Homebrew tap; notarization
    when the paid account exists
 6. Windows, after it has been looked into on a real machine (the service, the socket, XRT)

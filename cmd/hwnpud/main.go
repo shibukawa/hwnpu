@@ -34,6 +34,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/shibukawa/hwnpu/internal/aihost"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/daemon"
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
@@ -81,7 +82,11 @@ type EngineCmd struct {
 func (c *EngineCmd) Run(ctx context.Context) error {
 	// the engine runs the models itself: its apps' (internal/aihost) are not sent on to hwnpud
 	os.Setenv(daemon.ModeEnv, "off")
-	e := &daemon.Engine{Idle: idle(c.Idle), Log: os.Stderr, AI: aihost.Handler(os.Stderr)}
+	e := &daemon.Engine{Idle: idle(c.Idle), Log: os.Stderr, Held: aihost.Held}
+	o := aihost.Options{Log: os.Stderr, Held: e.HeldDirs}
+	e.AI = o.Handler()
+	// what the cache keeps of the engine's are the models it holds loaded, not all it ever used
+	cache.SetInUse(o.UnitInUse)
 	return e.Run(ctx, c.Socket)
 }
 
@@ -204,6 +209,9 @@ func (c *StatusCmd) Run(ctx context.Context) error {
 		}
 	}
 	fmt.Println()
+	for _, m := range st.Held {
+		fmt.Printf("  %s (%s): loaded once, for %d %s\n", m.Model, m.Role, m.Uses, map[bool]string{true: "client", false: "clients"}[m.Uses == 1])
+	}
 	for _, m := range st.Models {
 		where := "all on the NPU"
 		if !m.OnNPU {

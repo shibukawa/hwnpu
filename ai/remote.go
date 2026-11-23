@@ -321,7 +321,7 @@ func (r *remoteRuntime) get(ctx context.Context, rt *Runtime, req requirement) (
 	h := r.s.Object(got.Handle)
 	m := req.role.Remote(h)
 	h.Bind(m)
-	rt.loaded[req.key()] = &loadedModel{closer: m, info: got.Loaded}
+	rt.loaded[req.key()] = &loadedModel{value: m, closer: m, info: got.Loaded}
 	return m, nil
 }
 
