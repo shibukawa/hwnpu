@@ -256,8 +256,8 @@ type located struct {
 // app runs now (its line-up changed, or the machine's memory did), so it is as good as not there.
 // A prepared cache that has the use for other NPUs alone is reported as ErrBundleTarget when
 // nothing else is found.
-func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (located, error) {
-	var mismatch error
+func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int, usable func(airole.Files) error) (located, error) {
+	var mismatch, unusable error
 	stale, older := "", false
 	target := targetKey(npu)
 	roots := append(append([]string(nil), s.Prepared...), s.dir())
@@ -289,6 +289,12 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (
 		if f := r.missing(); f != "" {
 			continue
 		}
+		if usable != nil {
+			if err := usable(r.Files); err != nil {
+				unusable = err
+				continue
+			}
+		}
 		if !r.compiled() {
 			compiledAs(m, target, key, want, r)
 		}
@@ -311,7 +317,7 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (
 			}
 			r = r.clone()
 			r.absolute(root)
-			if r.missing() == "" {
+			if r.missing() == "" && (usable == nil || usable(r.Files) == nil) {
 				return located{record: r, root: root, bundle: bundle}, nil
 			}
 		}
@@ -323,6 +329,8 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int) (
 		return located{}, fmt.Errorf("%w: %s is prepared as %s, and is %s now (the app's Plan and its Run prepare it)", ErrNotPrepared, key, stale, want.Name)
 	case stale != "":
 		return located{}, fmt.Errorf("%w: %s (%s) is prepared for another memory (the app's Plan and its Run prepare it)", ErrNotPrepared, key, want.Name)
+	case unusable != nil:
+		return located{}, fmt.Errorf("%w: %s (%s) was prepared for what is not here now: %v (the app's Plan and its Run prepare it again)", ErrNotPrepared, key, want.Name, unusable)
 	case older:
 		return located{}, fmt.Errorf("%w: %s (%s) was prepared by an earlier hwnpu, which left part of it to its first use (the app's Plan and its Run prepare it)", ErrNotPrepared, key, want.Name)
 	}

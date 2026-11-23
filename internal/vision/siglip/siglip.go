@@ -144,7 +144,11 @@ func (m *Model) load(ctx context.Context, g **iron.Graph, name string) error {
 	}
 	defer console.Loading(filepath.Join(m.dir, name))()
 	t0 := time.Now()
-	x, err := iron.OpenGraph(ctx, m.dev, filepath.Join(m.dir, name))
+	// the text graph's two commands hung the next Run's first command (ERT_CMD_STATE_TIMEOUT:
+	// the labels' second call of 8 texts, Ryzen AI 9 365, exports of IRON since 2026-11-12) unless
+	// an empty command runs before each Run, as the image models' graphs (GraphOptions.Barrier);
+	// it costs nothing measurable (131 ms a call, base). The vision graph's next Run is right.
+	x, err := iron.OpenGraphWith(ctx, m.dev, filepath.Join(m.dir, name), iron.GraphOptions{Barrier: name == "text"})
 	if err != nil {
 		return fmt.Errorf("siglip: %s: %w", name, err)
 	}

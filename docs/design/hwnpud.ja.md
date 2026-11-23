@@ -2,7 +2,7 @@
 
 [English](hwnpud.md)
 
-状態: Mac と、AMD の NPU の Linux で段取りの 1 を、Mac で段取りの 3 を実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
+状態: Mac と、AMD の NPU の Linux で段取りの 1 と 3 を実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
 キャッシュを持ち、プログラムを読み込んで動かす。hwnpu のコマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) と
 `ai` のパッケージで作ったアプリは Unix ドメインソケットでこれにつなぐ。自分の実行に要るものを渡し、返ってきたものを描くだけで、
 自分のプロセスで NPU を動かすこともモデルを管理することもしなくなる。Windows は実機で調べてから。
@@ -128,16 +128,39 @@ AMD の NPU の Linux でも、同じ監督役とエンジン:
   する。監督役は `LISTEN_FDS` からソケットを受け取り (この変数はエンジンに渡さない)、相手の uid を `SO_PEERCRED` で確かめる。
   ログはジャーナル (`journalctl --user -u hwnpud`)。systemd のユーザーのマネージャーは `~/.config/environment.d` の変数を
   サービスに渡すので、`install` が警告するのはそこにも `.env` にもない変数だけ
-- AMD の NPU ではエンジンはチャットのモデルを一度に 1 つ持つ: 1 つのモデルがハードウェアコンテキストを全部使うので、
-  別のモデルの読み込みは持っているモデルを、そのリクエストが終わってから閉じる (その間の新しいリクエストには渡さない)。
-  1 つのモデルへのリクエストは順番に動く (`chat.Engine` は生成を一度に 1 つ)。順は来た順
-- NPU のロック (`neural-engine.lock`) は AMD でも、チャットのモデルの IRON の書き出しを読むときに取る (hwnpud のエンジンでも、
-  自分のプロセスで動く `hwnpu-chat` でも)。`HWNPU_DAEMON=off` のクライアントは `waiting for the NPU: process N (hwnpud) is using it`
-  と出して、エンジンが待ち時間で終わるのを待つ。AMD の画像と音声はまだ取らない (段取りの 4)
+- AMD の NPU では、エンジンのチャットの道 (`/hwnpud/v1/load`、`/v1/chat/completions`。OpenAI の API のクライアントのために残す) は
+  チャットのモデルを一度に 1 つ持つ: 別のモデルの読み込みは持っているモデルを、そのリクエストが終わってから閉じる
+  (その間の新しいリクエストには渡さない)。1 つのモデルへのリクエストは順番に動く (`chat.Engine` は生成を一度に 1 つ)。順は来た順。
+  `ai` のセッションのモデル (段取りの 3、下) はこれに入らない: エンジンはそれらを並べて持ち (チャットのモデルどうしも)、
+  ほかのために閉じることはまだしない (段取りの 4 の予算)
+- NPU のロック (`neural-engine.lock`) は AMD でも、チャット、埋め込み、判定のモデルの IRON の書き出しを読むときに取る
+  (hwnpud のエンジンでも、`HWNPU_DAEMON=off` で動くプログラムでも)。そのプログラムは `waiting for the NPU: process N (hwnpud) is using it`
+  と出して、エンジンが待ち時間で終わるのを待つ。エンジンではどの役のモデルも 1 つのプロセスにある。`HWNPU_DAEMON=off` で
+  Whisper、読み上げ、画像のモデルを動かすプログラムはロックなしで NPU を開く (段取りの 4)
 - `hwnpud status` はエンジンの NPU のバッファ (固定される) を出す (`/proc/self/fdinfo` の `drm-total-memory`、`mem.DRMMemory`)
 - Ryzen AI 9 365 (`hwnpud install` のユニットと、別のソケットで `systemd-socket-activate`): LFM3-1.7B の書き出しは初回 2.6 秒で読み、
   17 tok/s で答える。次の実行は読み込みなしで始めから終わりまで 3.1 秒 (固定 1.62 GiB)。3 つのクライアントを同時に出すと
   1 つずつ順に答える (12 秒、24 秒、43 秒)。Qwen3.5-0.8B を読むと先に LFM3-1.7B を閉じる (その後 1.02 GiB)。`hwnpud stop` でサービスが終わり、次の接続でまた起きる
+
+AMD の NPU の Linux の段取りの 3: Mac と同じコードで、Mac だけのものはない。
+
+- ここでも `HWNPU_DAEMON` は既定で `on`: hwnpud が答えなければ、`ai` パッケージのコマンドはどれも失敗し、することを言う
+  (`hwnpud install`、または `HWNPU_DAEMON=off`)
+- エンジンはどのセッションのモデルも、役によらず並べて持つ (チャットのモデル 2 つ、チャットと Whisper など)。コマンドは NPU の上で
+  交互に流れ、あるモデルの呼び出しの間に別のモデルの呼び出しが入る。障壁の要るモデルの障壁 (`stepBarrier`、`GraphOptions.Barrier`)
+  はそれぞれのグラフが自分のものを動かすので効く
+- Ryzen AI 9 365 (2026-11-23、作業ツリーの `hwnpud serve` を別のソケットで、キャッシュの書き出し): hwnpud を通して `hwnpu-chat`
+  (LFM3-1.7B は 1.9 秒で読み、自分のプロセスと同じ 16.9 tok/s。Qwen3.5-0.8B と 4B)、`hwnpu-audio tts` と `transcribe`
+  (読み上げた文がそのまま書き起こされる。Whisper は 0.5 秒で読む)、`hwnpu-image generate` (FLUX.2 klein、28 秒)、`depth`、
+  `segment`、`detect`、`label`、`face-detect`、`hwnpu-chat search` (PLaMo-Embedding-1B)、`hwnpu cache info`、`hwnpu status` が動いた。
+  LFM3-1.7B の生成中に 2.6 秒の音声を 3 回 `transcribe` すると 1.0 秒が 2.2 秒ずつになり、チャットの 16.6 tok/s は変わらない。
+  チャットのモデル 2 つ (LFM3-1.7B と Qwen3.5-4B、固定 5.35 GiB) を同時に生成させると、単独の 16.6 と 7.7 tok/s が 6.1 と 5.7 tok/s に
+  なり、どちらも 3.5 分で終わった (順に動かすのとほぼ同じ)。カーネルのログには何も出ない。大きいモデル (Qwen3.6-35B-A3B) を
+  並べるのは試していない
+- 途中で見つかり (プログラム自身のプロセス、`HWNPU_DAEMON=off` でも起きる)、直したもの: SigLIP 2 の文のグラフが 2 回目の呼び出しで
+  止まった (ERT_CMD_STATE_TIMEOUT。`label` は 444 のラベルを 8 つずつ埋め込む)。画像のモデルと同じく `GraphOptions.Barrier` で直る。
+  ONNX Runtime があるときに CPU 向けに準備した YuNet は、それがなくなると読み込めなかった。`airole.Role.Usable` でストアが
+  準備されていないと数え、準備し直すと hwnpu の実行器 (`milcpu`。そのために何倍も速くした: [vision-models](vision-models.ja.md)) で動く
 
 ## なぜ
 
@@ -291,7 +314,7 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
   もの (`hwnpud engine`) なので、Mac では名前が同じで同じ Core AI のキャッシュに当たる。エンジンはいつも 1 つで、落ちたら
   監督役が新しく起こし、動いていたリクエストは失敗にする。NPU のメモリはプロセスとともに消える
 - **エンジンは NPU にプログラムがある間だけ NPU のロックを持つ**: Mac は今のとおり `neural-engine.lock`、Linux にも同じロック
-  (今はチャットのモデルの IRON の書き出しが取る)。使われずに降ろしたら放すので、自分のプロセスで NPU を開く道具 (`hwnpu-dev probe`、`aicheck`、IRON の道具) も
+  (今はチャット、埋め込み、判定のモデルの IRON の書き出しが取る)。使われずに降ろしたら放すので、自分のプロセスで NPU を開く道具 (`hwnpu-dev probe`、`aicheck`、IRON の道具) も
   順番を待って動く
 
 ## アプリをまたぐ割り振り
@@ -367,7 +390,9 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
    セマフォで待つだけで、呼び出しは `Task.detached` が Swift のプールで動かす。goroutine のスレッドは関係なく、
    `runtime.LockOSThread` も要らない
 5. Linux: 1 つのプロセスに 2 つのモデルを並べる (チャットと音声): 固定されるメモリ、ハードウェアコンテキスト、門で 2 つの
-   モデルのコマンドを交互に流しても障壁 (`stepBarrier` / `chunkBarrier`) が効くか
+   モデルのコマンドを交互に流しても障壁 (`stepBarrier` / `chunkBarrier`) が効くか。門なしで測った (Ryzen AI 9 365、上の段取りの 3):
+   チャットと Whisper、チャットのモデル 2 つがエンジンに並んで動き、呼び出しが交互に流れて結果は正しい。チャットのモデル 2 つは
+   NPU の時間をほぼ半分ずつ使った。まだ: 別のモデルの横で、NPU の空きより多くのコンテキストを取るモデル
 
 ## 段取り
 

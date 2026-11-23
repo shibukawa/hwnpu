@@ -56,7 +56,18 @@ type Program struct {
 	// consts are the const operations' values, decoded on the first run (no operation writes
 	// into its inputs; rounding to fp16 in place leaves fp16 weights as they are)
 	consts []*value
-	mu     sync.Mutex
+	// pool keeps the buffers of the values for the next ones (pool.go)
+	pool pool
+	// reluAfter[i]: operation i is a convolution whose value only the ReLU right after it
+	// reads, which it then computes itself (the ReLU passing its value on); reluNext tells
+	// eval so for the operation it runs
+	reluAfter []bool
+	reluNext  bool
+	// inline are the operations' inline constants, decoded at their first use
+	inline map[*milspec.Value]*value
+	// constOut are the values of the const operations (and constexpr_*), which stay
+	constOut map[string]bool
+	mu       sync.Mutex
 }
 
 // Options change how Run computes.
@@ -103,6 +114,22 @@ func LoadFunction(prog *milspec.Program, name string, weights io.ReaderAt) (*Pro
 	}
 	for _, o := range p.outputs {
 		p.lastUse[o] = len(p.ops)
+	}
+	p.constOut = map[string]bool{}
+	for _, op := range p.ops {
+		if t := op.GetType(); t == "const" || strings.HasPrefix(t, "constexpr_") {
+			p.constOut[op.GetOutputs()[0].GetName()] = true
+		}
+	}
+	p.reluAfter = make([]bool, len(p.ops))
+	for i := 0; i+1 < len(p.ops); i++ {
+		o := p.ops[i].GetOutputs()[0].GetName()
+		next := p.ops[i+1]
+		if p.ops[i].GetType() == "conv" && next.GetType() == "relu" && p.lastUse[o] == i+1 && len(next.GetInputs()) == 1 {
+			if a := next.GetInputs()["x"].GetArguments(); len(a) == 1 && a[0].GetName() == o {
+				p.reluAfter[i] = true
+			}
+		}
 	}
 	return p, nil
 }
@@ -157,13 +184,23 @@ func (p *Program) Run(inputs map[string]Tensor, opts Options) (map[string]Tensor
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// a convolution and the ReLU after it in one pass, unless each value is looked at
+	fuse := opts.Trace == nil && opts.Value == nil && !opts.RoundF16
 	for i, op := range p.ops {
 		var out *value
 		var err error
-		if c := p.consts[i]; c != nil {
-			out = c
-		} else if out, err = p.eval(op, vals); err == nil && (op.GetType() == "const" || strings.HasPrefix(op.GetType(), "constexpr_")) {
-			p.consts[i] = out
+		switch {
+		case p.consts[i] != nil:
+			out = p.consts[i]
+		case fuse && i > 0 && p.reluAfter[i-1]:
+			out = vals[op.GetInputs()["x"].GetArguments()[0].GetName()] // relu'd already
+		default:
+			p.reluNext = fuse && p.reluAfter[i]
+			out, err = p.eval(op, vals)
+			p.reluNext = false
+			if err == nil && (op.GetType() == "const" || strings.HasPrefix(op.GetType(), "constexpr_")) {
+				p.consts[i] = out
+			}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("milcpu: %s %s: %w", op.GetType(), opName(op), err)
@@ -198,11 +235,25 @@ func (p *Program) Run(inputs map[string]Tensor, opts Options) (map[string]Tensor
 		if opts.Value != nil && out.f != nil && op.GetType() != "const" {
 			opts.Value(o.GetName(), out.f)
 		}
+		if p.consts[i] == nil {
+			var from []*value
+			for _, arg := range op.GetInputs() {
+				for _, b := range arg.GetArguments() {
+					if n := b.GetName(); n != "" {
+						from = append(from, vals[n])
+					}
+				}
+			}
+			p.pool.hold(out.f, from)
+		}
 		vals[o.GetName()] = out
 		for _, arg := range op.GetInputs() {
 			for _, b := range arg.GetArguments() {
 				if n := b.GetName(); n != "" && p.lastUse[n] == i {
-					delete(vals, n)
+					if v, ok := vals[n]; ok {
+						delete(vals, n)
+						p.pool.drop(v.f)
+					}
 				}
 			}
 		}
@@ -214,6 +265,9 @@ func (p *Program) Run(inputs map[string]Tensor, opts Options) (map[string]Tensor
 			return nil, fmt.Errorf("milcpu: output %s not computed", o)
 		}
 		res[o] = v.tensor()
+	}
+	for _, v := range vals {
+		p.pool.give(v.f) // the caller's now (the outputs, and what nothing read)
 	}
 	return res, nil
 }

@@ -2,10 +2,12 @@ package vision
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +17,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/onnxrt"
 	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
@@ -30,10 +34,26 @@ func Faces(name string) ai.Use[*FaceDetector] {
 // directory of tools/amd/iron_yunet.py: AMD's NPU) or onnx (YuNet's ONNX file: the CPU, or
 // converted for Apple's and Intel's NPU), and the device (common.go).
 var facesRole = &airole.Role{
-	Remote:   func(h *airpc.Handle) io.Closer { return &FaceDetector{remote: h} },
-	Name:     "faces",
-	Revision: 1, // 1: the programs of every size made at Prepare
-	Kinds:    []chat.Kind{chat.KindFace},
+	Remote: func(h *airpc.Handle) io.Closer { return &FaceDetector{remote: h} },
+	Name:   "faces",
+	// 1: the programs of every size made at Prepare; 2: hwnpu's own executor on the CPU where
+	// ONNX Runtime is not here (AMD's NPU before)
+	Revision: 2,
+	// prepared for the CPU's runtime that was here: Prepare decides again once ONNX Runtime
+	// (HWNPU_ONNXRUNTIME) is gone (hwnpu's own executor in its place) or has come
+	Usable: func(f airole.Files) error {
+		if f.Values["device"] != "cpu" {
+			return nil
+		}
+		switch ort := onnxrt.Available(); {
+		case f.Values["runtime"] != "hwnpu" && !ort:
+			return errors.New("it runs on the CPU with ONNX Runtime, whose library does not load (HWNPU_ONNXRUNTIME)")
+		case f.Values["runtime"] == "hwnpu" && ort:
+			return errors.New("it runs on hwnpu's own executor, and ONNX Runtime is here now")
+		}
+		return nil
+	},
+	Kinds: []chat.Kind{chat.KindFace},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m := e.Model
 		flag := imagedev.DeviceFlag(m)
@@ -68,15 +88,13 @@ var facesRole = &airole.Role{
 			}
 			device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", shown(m.Name), orNone(e.NPU.Vendor))
 		}
-		if device == "cpu" && !onnxrt.Available() {
-			// the CPU runs YuNet with ONNX Runtime only: without it, AMD's NPU (its export) unless
-			// the CPU was asked for; elsewhere a prepare that fails now, not a load later
-			switch {
-			case flag != "cpu" && e.NPU.AMD() && program(m, "onnx") == "":
-				device, why = "npu", "ONNX Runtime, which runs it on the CPU, is not here: HWNPU_ONNXRUNTIME"
-			default:
-				return f, fmt.Errorf("%s runs on the CPU with ONNX Runtime, which is not here (HWNPU_ONNXRUNTIME: libonnxruntime's path; github.com/microsoft/onnxruntime/releases ships it in lib/)", shown(m.Name))
-			}
+		// the CPU runs the ONNX file with ONNX Runtime where its library loads, else the program
+		// converted from it on hwnpu's own executor (internal/milcpu): slower than ONNX Runtime
+		// and still far less time and energy than AMD's NPU (docs/amd-npu-models.md 17)
+		builtin := device == "cpu" && !onnxrt.Available()
+		if builtin {
+			f.SetValue("runtime", "hwnpu")
+			why = strings.TrimPrefix(why+"; hwnpu's own executor: ONNX Runtime, faster, is not here (HWNPU_ONNXRUNTIME)", "; ")
 		}
 		f.SetValue("device", device)
 		f.SetValue("why", why)
@@ -99,6 +117,15 @@ var facesRole = &airole.Role{
 			}
 		}
 		f.Set("onnx", path)
+		if builtin {
+			// the Core ML programs of every size now, which the executor runs (as the NPU's below)
+			dir := chat.ModelDir(e.Base)
+			if err := face.ConvertPrograms(e.Ctx, llm.BackendCoreML, path, dir, face.CPUSizes); err != nil {
+				return f, err
+			}
+			f.Set("programs", dir)
+			return f, nil
+		}
 		if device == "npu" {
 			// Apple's and Intel's NPU run the ONNX graph converted (at its first load) into the
 			// model's directory of programs, made now: the store finds a use whose files are all
@@ -127,6 +154,12 @@ var facesRole = &airole.Role{
 		}
 		n := threads(e.Def)
 		switch {
+		case f.Values["device"] == "cpu" && f.Values["runtime"] == "hwnpu":
+			milcpu.Threads = n
+			if d, err = face.OpenProgram(ctx, nil, llm.BackendCoreML, f.Path("onnx"), f.Path("programs")); err != nil {
+				return nil, err
+			}
+			d.Device = "cpu"
 		case f.Values["device"] == "cpu":
 			if d, err = face.OpenCPU(f.Path("onnx"), n); err != nil {
 				return nil, fmt.Errorf("%s runs on the CPU with ONNX Runtime here: %w", shown(e.Model), err)

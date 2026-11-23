@@ -2,7 +2,7 @@
 
 [日本語](hwnpud.ja.md)
 
-Status: step 1 is built on the Mac and on Linux with AMD's NPU, and step 3 on the Mac (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
+Status: steps 1 and 3 are built on the Mac and on Linux with AMD's NPU (below, "Built"); the rest is design. hwnpud is a per-user daemon on macOS and Linux that owns the NPU and the
 models: it downloads and keeps the converted models, holds the caches, loads the programs and runs
 them. hwnpu's commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`) and the apps built on
 the `ai` package reach it over a Unix domain socket. They pass what their run needs and draw what
@@ -162,14 +162,18 @@ On Linux with AMD's NPU, the same supervisor and engine:
   `SO_PEERCRED`. The log is the journal (`journalctl --user -u hwnpud`). systemd's user manager
   gives the service `~/.config/environment.d`'s variables, so `install` warns only of those
   neither it nor a `.env` file sets.
-- The engine holds one chat model at a time on AMD's NPU: one model uses all of its hardware
-  contexts, so a load of another closes the one held, once its requests have ended (no new
-  request gets it meanwhile). The requests of a model take turns on it (`chat.Engine` runs one
-  generation at a time), in the order they came.
-- The NPU lock (`neural-engine.lock`) is taken on AMD too, when a chat model's IRON export loads
-  (in hwnpud's engine and in `hwnpu-chat` run in its own process), so a client with
-  `HWNPU_DAEMON=off` prints `waiting for the NPU: process N (hwnpud) is using it` and waits
-  for the engine's idle exit. Images and audio on AMD do not take it yet (step 4).
+- The engine's chat routes (`/hwnpud/v1/load`, `/v1/chat/completions`, kept for the OpenAI API's
+  clients) hold one chat model at a time on AMD's NPU: a load of another closes the one held,
+  once its requests have ended (no new request gets it meanwhile). The requests of a model take
+  turns on it (`chat.Engine` runs one generation at a time), in the order they came. The models
+  of the `ai` sessions (step 3, below) are not among them: the engine holds those side by side,
+  chat models too, and nothing closes one for another yet (step 4's budget).
+- The NPU lock (`neural-engine.lock`) is taken on AMD too, when a chat, embedding or decision
+  model's IRON export loads (in hwnpud's engine and in a program run with `HWNPU_DAEMON=off`), so
+  such a program prints `waiting for the NPU: process N (hwnpud) is using it` and waits for the
+  engine's idle exit. In the engine every role's models share one process; a program with
+  `HWNPU_DAEMON=off` that runs Whisper, speech or a picture model opens the NPU without the lock
+  (step 4).
 - `hwnpud status` shows the engine's NPU buffers, which are pinned (`drm-total-memory` of
   `/proc/self/fdinfo`, `mem.DRMMemory`).
 - Ryzen AI 9 365 (`hwnpud install`'s units, and `systemd-socket-activate` for a second socket):
@@ -177,6 +181,31 @@ On Linux with AMD's NPU, the same supervisor and engine:
   3.1 s from start to end with no load (1.62 GiB pinned). Three clients at once are served one
   after the other (12 s, 24 s, 43 s). A load of Qwen3.5-0.8B closes LFM3-1.7B first (1.02 GiB
   pinned after). `hwnpud stop` ends the service; the next connection starts it again.
+
+Step 3 on Linux with AMD's NPU: the same code as on the Mac; nothing in it is the Mac's own.
+
+- `HWNPU_DAEMON` is `on` by default here too: with no hwnpud answering, every command of the
+  `ai` package fails and says what to do (`hwnpud install`, or `HWNPU_DAEMON=off`).
+- The engine holds the models of every session side by side, whatever their roles (two chat
+  models, a chat and Whisper, ...). Their commands interleave on the NPU, a call of one between
+  two calls of another; the barriers of the models that need one (`stepBarrier`,
+  `GraphOptions.Barrier`) hold, each graph running its own.
+- Ryzen AI 9 365 (2026-11-23, `hwnpud serve` of the worktree on its own socket, the cache's
+  exports): through hwnpud ran `hwnpu-chat` (LFM3-1.7B loaded in 1.9 s, 16.9 tok/s as in its own
+  process; Qwen3.5-0.8B and 4B), `hwnpu-audio tts` and `transcribe` (the spoken sentence
+  transcribed back exactly, Whisper loaded in 0.5 s), `hwnpu-image generate` (FLUX.2 klein, 28 s),
+  `depth`, `segment`, `detect`, `label`, `face-detect`, `hwnpu-chat search` (PLaMo-Embedding-1B),
+  `hwnpu cache info` and `hwnpu status`. With LFM3-1.7B generating, three `transcribe`s of 2.6 s
+  of speech took 2.2 s each instead of 1.0 s, the chat's 16.6 tok/s unchanged. Two chat models
+  generating at once (LFM3-1.7B and Qwen3.5-4B, 5.35 GiB pinned) went from 16.6 and 7.7 tok/s
+  alone to 6.1 and 5.7 tok/s, both ending in 3.5 min, about as one after the other would. The
+  kernel logged nothing. Two large models side by side (Qwen3.6-35B-A3B) were not tried.
+- Found on the way, in the programs' own processes as well (`HWNPU_DAEMON=off`), and fixed:
+  SigLIP 2's text graph hung its second call (ERT_CMD_STATE_TIMEOUT: `label` embeds its 444
+  labels 8 a call), which `GraphOptions.Barrier` cures as for the image models; and a YuNet
+  prepared for the CPU while ONNX Runtime was there failed to load once it was gone, where
+  `airole.Role.Usable` now makes the store count it as not prepared, and preparing again puts
+  it on hwnpu's own executor (`milcpu`, made several times faster for it: [vision-models](vision-models.md)).
 
 ## Why
 
@@ -368,7 +397,7 @@ The RPC is a model's call at the grain of the `ai` package's uses: `Transcribe(p
   Core AI cache. There is only ever one engine; the supervisor starts a new one when it dies and
   fails the requests that were running. The NPU memory goes with the process.
 - **The engine holds the NPU lock only while it has programs on the NPU**: `neural-engine.lock` on
-  the Mac as now, and the same lock on Linux (taken by the chat models' IRON exports so far). It releases the lock when it
+  the Mac as now, and the same lock on Linux (taken by the chat, embedding and decision models' IRON exports so far). It releases the lock when it
   unloads after going idle, so tools that open the NPU in their own process (`hwnpu-dev probe`,
   `aicheck`, the IRON tools) still run and wait their turn.
 
@@ -464,7 +493,10 @@ Each is small; the ones on the NPU wait for the lock in the background.
    `runtime.LockOSThread`.
 5. Linux: two models in one process side by side (chat and speech): pinned memory, hardware
    contexts, and commands of two models interleaved at the gate (the barrier `stepBarrier` /
-   `chunkBarrier` still holds).
+   `chunkBarrier` still holds). Measured without a gate (Ryzen AI 9 365, step 3 above): a chat
+   and Whisper, and two chat models, ran side by side in the engine, their calls interleaved and
+   their results right; two chat models shared the NPU's time about evenly. Not yet: models
+   whose contexts take more than the NPU has free beside another's.
 
 ## Steps
 

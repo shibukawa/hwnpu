@@ -29,7 +29,7 @@
 | RTMDet-m | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | 同じ |
 | RTMO-s | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | 同じ |
 | PP-OCRv6-small | Core AI | CPU (IRON の形なし) | OpenVINO IR | 同じ |
-| YuNet | Core AI | 既定は CPU。`--device npu` で `iron_yunet.py` の書き出し | OpenVINO IR | ONNX Runtime |
+| YuNet | Core AI | 既定は CPU。`--device npu` で `iron_yunet.py` の書き出し | OpenVINO IR | ONNX Runtime、なければ milcpu |
 | EfficientSAM の符号器 | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | ONNX Runtime、なければ hwnpu の評価器 |
 | EfficientSAM の復号器 | ホストの評価器 | ホストの評価器 | ホストの評価器 | ホストの評価器 |
 | DA3、MoGe-2 | Core AI | NPU (`iron_da3.py`、`iron_moge.py` の書き出し) | OpenVINO IR | — |
@@ -114,6 +114,8 @@ ONNX の CNN (CSPNeXt、YOLOX 型) を IRON のグラフ 1 つにする。AMD �
 - Apple / Intel: ONNX のグラフを丸ごと `internal/onnx` のプログラム 1 つに (12 の出力を 1 つに)。Apple: 640 × 480 で 3.4 ms (M1)、M3 の Core AI で 4.2〜4.4 ms。OpenCV の FaceDetectorYN と箱と目印が 0.3 px 以内
 - AMD (`tools/amd/iron_yunet.py`): 1 × 1 と深さ方向の 3 × 3 を 1 つの 3 × 3 に、バイアスは 1 のチャネルに、ReLU は ProjectionGEMM の clamp (`ReluGEMM`)。画素を 255 で割り、1 を im2col の最後の 8 列に離す (bfp16 の共有の指数で消えた。cos 0.69)。`iron.GraphOptions.KeepRuns` で開く (コマンドの run を持ち続ける。ホストの CPU 1.6 → 1.1 ms。制御コードがデバイスのヒープ 64 MiB に残るので大きなグラフには使わない)。FaceDetectorYN と一致
 - AMD の 320 × 256 のエネルギー: NPU 29 ms・127 mJ、CPU (ONNX Runtime 1 スレッド) 2.7 ms・7.7 mJ。演算の切り替え (1 回約 250 µs) が支配的。だから `device: {amd: cpu}`。これは AMD の IRON の話で、Apple と Intel はグラフをまとめて投入するので NPU のまま。あるベンダーの結果をほかへ持ち込まない
+- ONNX Runtime がなければ、CPU は ONNX のグラフを Core ML に変換したものを `milcpu` で動かす (前は AMD の NPU に回していた)。どちらかはストアに書き (`runtime: hwnpu`)、役の `Usable` が ONNX Runtime の出入りで準備し直させる。Ryzen AI 9 365、320 × 256、`--repeat 2000`、1 スレッド、`gpu_metrics` のパッケージ電力からアイドルを引く: `milcpu` 1 枚 2.32 ms・約 30 mJ (下の速くする前は 12.58 ms・243 mJ)、ONNX Runtime 1.32 は 2.15 ms・約 20 mJ、NPU は 30.7 ms・約 184 mJ。顔は ONNX Runtime と同じ (どちらも score 0.934)。この測り方では ONNX Runtime は上の 7.7 mJ でなく 20 mJ になる: 比べるのは同じ測り方どうしで
+- この種の CNN のための `milcpu` (`internal/milcpu`、`internal/f32`): 実行の値のバッファを次の値に使い回す (`pool.go`。GC が CPU の 4 割を取り、全部のコアを起こしていた)。stride 1 の深さ方向の 3 × 3 は、詰め物をした 3 行から 1 行を (`f32.Depthwise3`、AVX2)。ほかの小さな畳み込み (タップ 64 以下: YuNet の最初の stride 2) は、位相に分けた入力の行の重み付きの和で (`f32.WeightedRows4`、出力のチャネル 4 つずつ、累算器 8 つ)。1 × 1 の畳み込み (入力 256 チャネル以下) も同じく、詰めた列の塊で sgemm の代わりに (4 KB の倍数の面はどの行の同じ列も L1 の同じ組に入れた: 詰めた行を 16 個ずつずらす)。ReLU だけが読む畳み込みは ReLU も自分で計算。2 × 2 の max pool、ReLU、最近傍の 2 倍は専用のループ。YuNet のプログラム 11.6 → 1.85 ms (1 スレッド)。arm64 ではベクトルのコードなしで同じ Go のループ
 
 ### EfficientSAM (`hwnpu-image segment`)
 
