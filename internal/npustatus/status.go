@@ -20,6 +20,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -234,6 +235,9 @@ type StoreView interface {
 
 func cacheStatus(s StoreView, scan bool) CacheStatus {
 	c := CacheStatus{Root: cache.Root(), Layers: s.LayerNames()}
+	if r, ok := s.(interface{ Root() string }); ok {
+		c.Root = r.Root() // hwnpud's
+	}
 	c.Free, c.Total, _ = s.DiskSpace()
 	if l, err := s.Limits(); err != nil {
 		c.Limits = err.Error()
@@ -659,7 +663,16 @@ func (c Cmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	v := View{s}
+	var v StoreView = View{s}
+	// the cache is hwnpud's, unless HWNPU_DAEMON is off (its own settings, not this shell's)
+	rv, closeRemote, err := cachecmd.RemoteStore(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeRemote()
+	if rv != nil {
+		v = rv
+	}
 	var load Samplers
 	if c.Watch <= 0 {
 		st := Collect(ctx, v, true, c.Wake, &load)
@@ -706,7 +719,7 @@ const (
 // top is hwnpu status --watch on a terminal: the alternate screen, with what stays written
 // once at the top and the load redrawn in place below it every c.Watch (again all when the
 // terminal is resized), until Ctrl-C.
-func (c Cmd) top(ctx context.Context, v View, load *Samplers) error {
+func (c Cmd) top(ctx context.Context, v StoreView, load *Samplers) error {
 	out := os.Stdout
 	fmt.Fprint(out, altScreen)
 	defer fmt.Fprint(out, mainScreen)

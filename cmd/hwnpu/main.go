@@ -34,6 +34,10 @@
 // Linux amdxdna wakes for a few seconds). The processes that use it are listed with the NPU's
 // memory each holds.
 //
+// cache and memory run in hwnpud (internal/cachecmd) unless HWNPU_DAEMON is off: hwnpud reads its
+// own cache, removes what it does not hold loaded, and is the only process that removes; status
+// shows hwnpud's cache too.
+//
 // memory chooses the memory a model runs as on this machine: how a model runs on a machine of
 // some memory (its programs: models.yaml's variants) is the definition's, and the user chooses
 // only the machine, to run a model the smaller way beside other programs on a machine of more.
@@ -59,16 +63,17 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/npustatus"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
-	Status npustatus.Cmd `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
-	Cache  CacheCmd      `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
-	Memory MemoryCmd     `cmd:"" help:"The memory each model runs as on this machine, in every hwnpu command: choose a smaller one (hwnpu memory LFM3-1.7B 8) to run a model beside other programs, the way models.yaml defines for that memory."`
-	Issue  IssueCmd      `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
+	Status npustatus.Cmd      `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
+	Cache  cachecmd.CacheCmd  `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
+	Memory cachecmd.MemoryCmd `cmd:"" help:"The memory each model runs as on this machine, in every hwnpu command: choose a smaller one (hwnpu memory LFM3-1.7B 8) to run a model beside other programs, the way models.yaml defines for that memory."`
+	Issue  IssueCmd           `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
 }
 
 func main() {
@@ -79,7 +84,7 @@ func main() {
 		kong.Name("hwnpu"),
 		kong.Description("Look after what hwnpu keeps on this machine: the models downloaded and the programs converted from them."),
 		kong.UsageOnError(),
-		kong.Vars{"kinds": kindHelp, "max_size_env": cache.MaxSizeEnv},
+		kong.Vars{"kinds": cachecmd.KindHelp, "max_size_env": cache.MaxSizeEnv},
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	err := console.EndInterrupted(k.Run())
 	shared.Wait(console.Log(os.Stderr)) // what was made here goes in the sources written back to

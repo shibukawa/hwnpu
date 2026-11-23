@@ -30,7 +30,7 @@ None changes what a user gets by default, and none is a setting of the user's.
 - It is read at each call (`dev.Get`, `On`, `IsOff`, `Value`, `Int`), so that a test's
   `t.Setenv` takes.
 - hwnpud does not take a client's: an experiment runs in the developer's own process
-  (`HWNPU_DAEMON=off`, the default of hwnpu's commands), with the Neural Engine's lock as before.
+  (`HWNPU_DAEMON=off`; the default is on), with the Neural Engine's lock as before.
 
 What were variables of their own:
 

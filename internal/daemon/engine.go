@@ -37,6 +37,12 @@ type Engine struct {
 	Idle time.Duration
 	// Log receives what goes on outside a load (os.Stderr when nil, the service's log).
 	Log io.Writer
+	// AI serves the sessions of the ai package at AIPath (internal/aihost, which cmd/hwnpud
+	// gives it: the engine's package does not import the packages of models); nil for none.
+	// A session is a request going on until it ends, so the engine does not exit idle under it.
+	AI http.Handler
+	// Held are the models AI's sessions hold, for the status; nil for none.
+	Held func() []HeldModel
 
 	load    sync.Mutex // one load at a time; the next waits
 	mu      sync.Mutex
@@ -137,6 +143,18 @@ func (e *Engine) init() {
 	e.relay.base = e.Log
 }
 
+// HeldDirs are the directories of the chat models the engine holds (chat.ModelDir), which the
+// cache's commands leave.
+func (e *Engine) HeldDirs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, h := range e.models {
+		out = append(out, chat.ModelDir(h.model))
+	}
+	return out
+}
+
 // release ends a request's use of h.
 func (e *Engine) release(h *held) {
 	e.mu.Lock()
@@ -190,6 +208,9 @@ func (e *Engine) Handler() http.Handler {
 	mux.HandleFunc("GET /hwnpud/v1/status", e.status)
 	mux.HandleFunc("POST /hwnpud/v1/load", e.serveLoad)
 	mux.HandleFunc("POST /v1/chat/completions", e.completions)
+	if e.AI != nil {
+		mux.Handle("GET "+AIPath, e.AI)
+	}
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
 		e.server(nil, r).Handler().ServeHTTP(w, r)
 	})
@@ -210,6 +231,9 @@ func (e *Engine) status(w http.ResponseWriter, r *http.Request) {
 		st.Models = append(st.Models, h.info)
 	}
 	e.mu.Unlock()
+	if e.Held != nil {
+		st.Held = e.Held()
+	}
 	if b, ok := mem.NPUWired(); ok {
 		st.NPUBytes = b
 	} else if b, ok := mem.DRMMemory(); ok {

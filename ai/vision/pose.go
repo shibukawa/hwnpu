@@ -11,6 +11,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/pose"
 )
@@ -56,6 +57,7 @@ var poseCNN = cnn[*pose.Estimator]{
 // The definition of a pose model may give the settings threads and cpu, and the device
 // (common.go).
 var poseRole = &airole.Role{
+	Remote:  func(h *airpc.Handle) io.Closer { return &PoseEstimator{remote: h} },
 	Name:    "pose",
 	Kinds:   []chat.Kind{chat.KindPose},
 	Prepare: poseCNN.prepare,
@@ -102,6 +104,7 @@ type PoseOptions struct {
 // PoseEstimator finds the people in pictures and their keypoints. It runs one picture at a
 // time; others wait.
 type PoseEstimator struct {
+	remote        *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	mu            sync.Mutex
 	e             *pose.Estimator
 	closeDev      func()
@@ -110,16 +113,34 @@ type PoseEstimator struct {
 }
 
 // Model is the name of the model in the definitions.
-func (p *PoseEstimator) Model() string { return p.name }
+func (p *PoseEstimator) Model() string {
+	if p.remote != nil {
+		return airpc.Value[string](p.remote, "Model")
+	}
+	return p.name
+}
 
 // Device is where the model's network runs: npu or cpu.
-func (p *PoseEstimator) Device() string { return p.device }
+func (p *PoseEstimator) Device() string {
+	if p.remote != nil {
+		return airpc.Value[string](p.remote, "Device")
+	}
+	return p.device
+}
 
 // Where says where the model runs, for a log (Detector.Where).
-func (p *PoseEstimator) Where() string { return p.where }
+func (p *PoseEstimator) Where() string {
+	if p.remote != nil {
+		return airpc.Value[string](p.remote, "Where")
+	}
+	return p.where
+}
 
 // Estimate finds the people in a picture and their keypoints.
 func (p *PoseEstimator) Estimate(ctx context.Context, img image.Image, o PoseOptions) (*People, error) {
+	if p.remote != nil {
+		return airpc.Call1[*People](p.remote, ctx, "Estimate", img, o)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	score := o.Score
@@ -146,9 +167,16 @@ func (p *PoseEstimator) Estimate(ctx context.Context, img image.Image, o PoseOpt
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (p *PoseEstimator) Close() error {
+	if p.remote != nil {
+		return p.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	err := p.e.Close()
 	p.closeDev()
 	return err
+}
+
+func init() {
+	airole.Register(poseRole)
 }

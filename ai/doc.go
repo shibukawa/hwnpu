@@ -38,4 +38,9 @@
 // The models' downloads and programs are those of hwnpu's commands (hwnpu-chat, hwnpu-audio),
 // for the same NPU, through the same definitions and layers (Store.Models, modelstore): what
 // the commands prepared is used as it is, and what an app prepares they use.
+//
+// The planning, the preparing, the compiling and the models run in hwnpud (cmd/hwnpud,
+// docs/design/hwnpud.md) unless HWNPU_DAEMON is off: the app's code is the same, its models'
+// methods are called over hwnpud's socket, and Apple's compiler keeps one cache for every
+// program. A test, and HWNPU_DAEMON=off, run them in the app's own process.
 package ai
