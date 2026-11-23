@@ -2,7 +2,7 @@
 
 [English](hwnpud.md)
 
-状態: Mac と、AMD の NPU の Linux で段取りの 1 を、Mac で段取りの 3 を状態とキャッシュのコマンドのほかは実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
+状態: Mac と、AMD の NPU の Linux で段取りの 1 を、Mac で段取りの 3 を実装 (下の「実装したもの」)。残りは設計。hwnpud は macOS と Linux のユーザーごとのデーモンで、NPU とモデルを持つ: 変換済みのモデルを落として持ち、
 キャッシュを持ち、プログラムを読み込んで動かす。hwnpu のコマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) と
 `ai` のパッケージで作ったアプリは Unix ドメインソケットでこれにつなぐ。自分の実行に要るものを渡し、返ってきたものを描くだけで、
 自分のプロセスで NPU を動かすこともモデルを管理することもしなくなる。Windows は実機で調べてから。
@@ -23,14 +23,14 @@ Mac で段取りの 1 (`cmd/hwnpud`、`internal/daemon`):
 - `hwnpud install` は `~/Library/LaunchAgents/com.github.shibukawa.hwnpud.plist` (ログは `~/Library/Logs/hwnpud.log`)
   を書いて bootstrap する。シェルだけが設定している hwnpu の変数を警告する。`uninstall`、`status`、`stop`
 - `hwnpu-chat [chat]` は `HWNPU_DAEMON=on` (か `auto`) でこれを通る: 読み込みのログ、会話、同じ出力と統計の行。
-  モデルの変換と動かし方のフラグはそこでは断る
+  モデルの変換と動かし方のフラグはそこでは断る (段取り 3 で `ai` のパッケージに移した。下)
 - 設定 ([設定](#設定)): `hello` は hwnpud の設定と読んだ `.env` を返す。ファイルが変わると次のエンジンは新しい設定で
   起きる。設定の違うクライアントには知らせ (`on`)、自分で動く (`auto`)。`hwnpud status` に出す。クライアントの
   `HWNPU_MODEL_ALLOWLIST` は hwnpud の方針を狭める
 - M3: PLaMo 3 Translate 2B のプログラムは `hwnpud` の名前で初回 22 秒 (Core AI の項目 2.5 GB)。次の実行は
   モデルがエンジンに残っていて、始めから終わりまで 0.6 秒
 
-Mac で段取りの 3。状態とキャッシュのコマンドのほか (`internal/airpc`、`internal/aihost`、`ai` のパッケージ):
+Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd`、`ai` のパッケージ):
 
 - `ai` のパッケージを使うプログラムはすべて hwnpud を通る: `HWNPU_DAEMON` は設定しなければ `on`
   (`daemon.DefaultMode`)。hwnpud が答えなければ、どうすればよいかを添えてエラーにする。`HWNPU_DAEMON=off` は
@@ -72,13 +72,32 @@ Mac で段取りの 3。状態とキャッシュのコマンドのほか (`inter
   (作る側は数個先まで進んでいる: ストリームに流量の制御はない)。可変長引数のメソッド (`MusicGenerator.Style`)
   はスライスを送る
 - コマンドとサンプルのモデルの仕事はすべて `ai` を通る。自分のプロセスに残るもの: `hwnpu-image convert` (Anima と
-  Chroma の変換。NPU は使わない)、`hwnpu-dev` (開発者のプロセス)、`hwnpu cache`、`hwnpu memory`、`status` の
-  コマンド (ここで読む。後で hwnpud が出す)、Neural Engine のメモリのログ (`mem.NPUWired` は機械全体のものなので、
-  コマンドはどれだけ増えたかを今も出せる)。`hwnpu-chat chat` は `ai` ではなくエンジンのチャットの道
-  (`/hwnpud/v1/load`) を通る。コマンドの `--backend` はこのプロセスの `HWNPU_BACKEND` を設定するが、hwnpud は
-  それを取らない (自分のものを使うと言う)
-- まだのもの: アプリに同梱したモデル (`Store.Models.Bundle`)、2 つのクライアントでモデルを 1 つ共有すること
-  (セッションごとに読み込む)、`hwnpu cache` / `status` を hwnpud 経由にすること
+  Chroma の変換。NPU は使わない)、`hwnpu-dev` (開発者のプロセス)、`hwnpu issue`、Neural Engine のメモリのログ
+  (`mem.NPUWired` は機械全体のものなので、コマンドはどれだけ増えたかを今も出せる)。コマンドの `--backend` は
+  このプロセスの `HWNPU_BACKEND` を設定するが、hwnpud はそれを取らない (自分のものを使うと言う)
+- `hwnpu-chat chat` もほかのコマンドと同じく `ai` でモデルを動かす: モデルの変換と動かし方のフラグは断らずに
+  アプリの定義 (`ai.Definition`) にして hwnpud が用意し、モデルのファイルはキャッシュのコマンドにわかる。エンジンの
+  チャットの道 (`/hwnpud/v1/load`、`/v1/chat/completions`) は OpenAI の API のクライアントのために残す。あきらめた
+  もの: その道が読み込んだモデルは待ち時間までエンジンに残り、次の実行はすぐ答えた (0.6 秒)。`ai` では最後の
+  クライアントが手放すとモデルを降ろすので、次の実行は Apple のコンパイラーのキャッシュから読み込み直す
+  (Qwen3-0.6B で 0.5 秒、始めから終わりまで 1.2 秒)
+- モデルはクライアントがいくつでも 1 つ: エンジンの Runtime (セッションに 1 つ) は、同じに読み込むモデル (同じ役、
+  モデル、ファイル、動かし方の設定 `LoadSettings`、`AllowOffNPU`) を共有する。最初の `Get` が読み込み、次からは
+  それを使い、最後の Runtime が手放すと (`Release`、`Close`、終わったセッション) 降ろす。呼び出しはその型のとおり
+  順番に (どれも 1 回に 1 つ)。アプリの `InTurns` は今までどおり、グループのほかの自分の分を手放す。モデルの
+  ログは、それを持つ最後のクライアントのものに行く。`hwnpud status` は持っているモデルと、持つクライアントの数を出す
+- キャッシュのコマンドはエンジンで動く (`internal/cachecmd`、同じセッションの `cachecmd.Host`): `hwnpu cache`
+  (info、ls、prune、clear、clean) と `hwnpu memory`。エンジンの設定 (シェルのではなく、その `HWNPU_CACHE` とソース)
+  で動き、出力と問い (「remove them?」) はクライアントに。`hwnpu status` とアプリの `status` はエンジンのキャッシュを
+  出す。だからキャッシュから消すのは hwnpud だけ: `ls` は持っているモデルの読み込み元のユニットに「in use」と書き、
+  `clear` と `prune` はそれを残し (「kept: hwnpud holds Qwen3-0.6B loaded, for 2 clients」)、場所を空けるための
+  エンジン自身の刈り込みもそれを避ける (`cache.SetInUse`: エンジンは長く動くので、コマンドのプロセスのように一度
+  触れたものをずっと残しはしない)。消すものは進んでいる読み込みと実行を待ち、終わるまで次を始めさせない。
+  `HWNPU_DAEMON=off` なら今までどおりここで動く
+- ゼロの値へのポインタはそのまま渡る (gob は nil として送る): `ChatOptions.Think` が false なら考えない。モデルの
+  選びにはならない (以前は `--no-think` でも考えていた)
+- まだのもの: アプリに同梱したモデル (`Store.Models.Bundle`)、状態に出すアプリ自身の `Store.Models`
+  (エンジンのキャッシュを出す)
 - M3 (macOS 27、worktree の hwnpud を別のソケットで、NAS の書き出し): `hwnpu-image depth` の絵 1 枚は初回 60 秒
   (hwnpud が DA3-BASE のプログラムを取ってきて展開し 35 秒、絵の大きさを最初の呼び出しでコンパイルして 24 秒)、
   次は 0.2 秒。`hwnpu-audio transcribe` の日本語 6 秒は初回 75 秒 (Whisper の読み込みのコンパイルが 57 秒)、
@@ -96,6 +115,10 @@ Mac で段取りの 3。状態とキャッシュのコマンドのほか (`inter
   次は 0.3 秒。`hwnpu-chat systemone` (d1-2B) 3 分 34 秒、次は 0.45 秒。`voice-agent models prepare` (Whisper、
   LFM3-1.7B、Supertonic 3) 2 分 49 秒。Core AI の `hwnpud/` は 18 項目から 54 項目に (2.5 GB から 8.9 GB)。
   ほかのプログラムのディレクトリは変わらなかった
+- M3、モデル 1 つとキャッシュ: 同時に開いた 2 つの `hwnpu-chat -m Qwen3-0.6B` はモデルを 1 つだけ持った
+  (`hwnpud status`: 「Qwen3-0.6B (chat): loaded once, for 2 clients」。2 つ目の `Get` は 1 つ目のものを使った)。
+  `hwnpu cache ls Qwen3-0.6B` はその 2 つのユニットに in use と書き、`clear -y` は残した。2 つとも終わったあとは
+  同じ `clear` が消せる
 
 AMD の NPU の Linux でも、同じ監督役とエンジン:
 
@@ -353,9 +376,9 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 2. モデルの管理を hwnpud に: 一覧、状態、計画、進み具合つきの準備、ライセンス、gc。コマンドの `list` / `status` と
    `hwnpu cache` をクライアントに。`hwnpu config`。クライアントの方針をファミリーの選びに渡す
 3. `ai.Runtime` のリモートの側と、既定の `HWNPU_DAEMON=on`。samples の interpreter、layers、parallax をデーモン
-   経由にし、Core AI のキャッシュが `coreai-cache/<OS>/hwnpud/` だけになること。状態とキャッシュのコマンドの
-   hwnpud 経由のほかは実装した (上)
-4. 画像と音声。機械全体の割り振り (プログラムの予算、降ろす、優先度)
+   経由にし、Core AI のキャッシュが `coreai-cache/<OS>/hwnpud/` だけになること。実装した (上)
+4. 画像と音声。機械全体の割り振り (プログラムの予算、降ろす、優先度)。クライアントがいくつでもモデルを 1 つに
+   することは実装した (上)
 5. リリースのビルド (Mac は識別子を決める)、`daemon install`、Homebrew の tap。有償の契約ができたら公証
 6. Windows は実機で調べてから (サービス、ソケット、XRT)
 

@@ -300,7 +300,18 @@ var (
 	// usedHere are the units this process used (Touch): not removed while it runs.
 	usedHere = map[string]bool{}
 	busy     func() []string
+	// inUse, when set, says which units this process uses in place of usedHere (SetInUse)
+	inUse func(unit string) bool
 )
+
+// SetInUse sets what says whether this process uses a unit (its folder), in place of the units
+// it touched since it started (Touch): hwnpud's engine, which runs for long and knows the models
+// it holds loaded, sets it so that what it let go can be removed.
+func SetInUse(f func(unit string) bool) {
+	usedMu.Lock()
+	inUse = f
+	usedMu.Unlock()
+}
 
 // SetBusy sets what says the paths work is queued for (store's queue of writebacks): their
 // units are not removed.
@@ -364,8 +375,11 @@ func Removable(x Unit, now time.Time, keep time.Duration) bool {
 		return false
 	}
 	usedMu.Lock()
-	here := usedHere[x.Path]
+	here, f := usedHere[x.Path], inUse
 	usedMu.Unlock()
+	if f != nil {
+		here = f(x.Path)
+	}
 	if here {
 		return false
 	}

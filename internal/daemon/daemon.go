@@ -174,8 +174,10 @@ type Hello struct {
 // Status is the answer of GET /hwnpud/v1/status.
 type Status struct {
 	Hello
-	// Models are the models the engine holds.
+	// Models are the chat models the engine holds for its chat routes, Held the models the apps'
+	// sessions hold (one copy each, however many sessions use it).
 	Models []ModelInfo `json:"models"`
+	Held   []HeldModel `json:"held,omitempty"`
 	// NPUBytes is what the NPU holds, 0 when it is not known: on the Mac the Neural Engine's wired
 	// memory (the whole machine's), on Linux the engine's NPU buffers (pinned).
 	NPUBytes int64 `json:"npu_bytes"`
@@ -210,6 +212,14 @@ type ModelInfo struct {
 	NoThink    bool   `json:"no_think,omitempty"`
 	OnNPU      bool   `json:"on_npu"`
 	Device     string `json:"device,omitempty"`
+}
+
+// HeldModel is a model the apps' sessions hold in the engine (internal/aihost).
+type HeldModel struct {
+	Role  string `json:"role"`
+	Model string `json:"model"`
+	// Uses are the sessions (the apps' Runtimes) that hold it.
+	Uses int `json:"uses"`
 }
 
 // LoadEvent is a line of the answer of POST /hwnpud/v1/load (JSON lines): some of the log, then

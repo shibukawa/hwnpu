@@ -138,7 +138,10 @@ func serve(t *testing.T) *strings.Builder {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"protocol":1}`)
 	})
-	mux.Handle("GET "+daemon.AIPath, Handler(io.Discard))
+	o := Options{}
+	mux.Handle("GET "+daemon.AIPath, o.Handler())
+	cache.SetInUse(o.UnitInUse)
+	t.Cleanup(func() { cache.SetInUse(nil) })
 	srv := &http.Server{Handler: mux}
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })

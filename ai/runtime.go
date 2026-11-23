@@ -88,8 +88,10 @@ type Runtime struct {
 }
 
 type loadedModel struct {
-	closer io.Closer
-	info   Loaded
+	// value is the model Get gives, closer what releasing it closes: the model itself, or this
+	// Runtime's share of a model hwnpud's Runtimes share (sharedModel)
+	value, closer io.Closer
+	info          Loaded
 }
 
 // Loaded is a model a Runtime holds.
@@ -155,7 +157,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		return nil, errors.New("ai: the runtime is closed")
 	}
 	if l, ok := rt.loaded[r.key()]; ok {
-		return l.closer, nil
+		return l.value, nil
 	}
 	r, ok := rt.app.registered(r) // as registered: with its At and As
 	if !ok {
@@ -197,6 +199,16 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		loc.each(func(p *string) { cache.Touch(*p) })
 	}
 	t0 := time.Now()
+	// hwnpud's Runtimes share one copy of a model loaded alike (the same model, files and
+	// settings): one already loaded is this Runtime's too
+	key := ""
+	if rt.app.local {
+		key = shareKey(r, loc, rt)
+		if v, c, ok := shareHit(key, rt.o.log); ok {
+			rt.loaded[r.key()] = &loadedModel{value: v, closer: c, info: Loaded{Use: r.name, Role: r.role.Name, Model: loc.Model, MemoryGB: loc.MemoryGB, At: t0}}
+			return v, nil
+		}
+	}
 	log := rt.o.log // compiled (find): the load takes its programs from the compiler's cache
 	tell := func(Stage, string) {}
 	var loaded atomic.Bool // its load is over: the lines of its log after are not told
@@ -219,6 +231,13 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		}
 		tell(stage, "")
 	}
+	var share *relay
+	if key != "" {
+		// the shared model's log is that of a Runtime that holds it, the latest
+		share = &relay{}
+		share.attach(log)
+		log = share
+	}
 	l, err := r.role.Load(ctx, loc.Files, airole.LoadEnv{Model: loc.Model, Def: m, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log, AllowOffNPU: rt.o.allowOffNPU, Settings: rt.o.settings[r.role.Name]})
 	if err != nil {
 		loaded.Store(true)
@@ -238,8 +257,14 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		loc.Loaded = took
 		_ = rt.app.Store.put(ctx, r.key(), rt.npu, loc.record)
 	}
-	rt.loaded[r.key()] = &loadedModel{closer: l, info: Loaded{Use: r.name, Role: r.role.Name, Model: loc.Model, MemoryGB: loc.MemoryGB, At: t0, Took: time.Since(t0)}}
-	return l, nil
+	lm := &loadedModel{value: l, closer: l, info: Loaded{Use: r.name, Role: r.role.Name, Model: loc.Model, MemoryGB: loc.MemoryGB, At: t0, Took: time.Since(t0)}}
+	if key != "" {
+		var paths []string
+		loc.each(func(p *string) { paths = append(paths, *p) })
+		lm.value, lm.closer = shareAdd(key, r.role.Name, loc.Model, paths, l, share)
+	}
+	rt.loaded[r.key()] = lm
+	return lm.value, nil
 }
 
 // release unloads r, if it is loaded.

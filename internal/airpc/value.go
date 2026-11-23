@@ -32,15 +32,17 @@ func init() {
 // (gob.Register): the types a package's methods take or give behind an interface.
 func Register(v any) { gob.Register(v) }
 
-// boxes are the structs a value of each type is sent in (struct{ V T }): gob sends a nil
-// pointer, a value of an interface and a zero value only as a field.
+// boxes are the structs a value of each type is sent in (struct{ V T; P [][]int }): gob sends a
+// nil pointer, a value of an interface and a zero value only as a field. P are the paths of the
+// pointers that are not nil (pointers): gob sends a pointer to a zero value as none, and a
+// ChatOptions.Think of false would come as nil, the model's own choice.
 var boxes sync.Map
 
 func box(t reflect.Type) reflect.Type {
 	if b, ok := boxes.Load(t); ok {
 		return b.(reflect.Type)
 	}
-	b := reflect.StructOf([]reflect.StructField{{Name: "V", Type: t}})
+	b := reflect.StructOf([]reflect.StructField{{Name: "V", Type: t}, {Name: "P", Type: reflect.TypeFor[[][]int]()}})
 	boxes.Store(t, b)
 	return b
 }
@@ -73,6 +75,9 @@ func encode(t reflect.Type, v reflect.Value) ([]byte, error) {
 	b := reflect.New(box(t)).Elem()
 	if v.IsValid() {
 		b.Field(0).Set(v)
+		var ps [][]int
+		pointers(v, nil, 0, func(path []int) { ps = append(ps, path) })
+		b.Field(1).Set(reflect.ValueOf(ps))
 	}
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).EncodeValue(b); err != nil {
@@ -101,7 +106,55 @@ func decode(t reflect.Type, data []byte) (reflect.Value, error) {
 	}
 	out := reflect.New(t).Elem()
 	out.Set(b.Elem().Field(0))
+	for _, p := range b.Elem().Field(1).Interface().([][]int) {
+		allocate(out, p)
+	}
 	return out, nil
+}
+
+// pointers calls fn with the path (the fields' indices) of each pointer of v that is not nil: v
+// itself (an empty path), and those of its struct's exported fields, through pointers to
+// structs.
+func pointers(v reflect.Value, path []int, depth int, fn func(path []int)) {
+	if depth > 6 || !v.IsValid() {
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			return
+		}
+		fn(append([]int(nil), path...))
+		if v.Elem().Kind() == reflect.Struct {
+			pointers(v.Elem(), path, depth+1, fn)
+		}
+	case reflect.Struct:
+		t := v.Type()
+		for i := range t.NumField() {
+			if t.Field(i).IsExported() {
+				pointers(v.Field(i), append(path, i), depth+1, fn)
+			}
+		}
+	}
+}
+
+// allocate makes the pointer of v at path (pointers') point to a zero value when gob left it nil.
+func allocate(v reflect.Value, path []int) {
+	for _, i := range path {
+		for v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		if v.Kind() != reflect.Struct || i >= v.NumField() {
+			return
+		}
+		v = v.Field(i)
+	}
+	if v.Kind() == reflect.Pointer && v.IsNil() && v.CanSet() {
+		v.Set(reflect.New(v.Type().Elem()))
+	}
 }
 
 // funcFields calls fn with the path (the fields' indices) of each function of v that is not nil:

@@ -13,11 +13,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airpc"
+	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/internal/daemon"
+	"github.com/shibukawa/hwnpu/internal/npustatus"
+	"github.com/shibukawa/hwnpu/modelstore"
 
 	// the packages of models, for their roles
 	_ "github.com/shibukawa/hwnpu/ai/imagegen"
@@ -29,12 +34,33 @@ import (
 
 // Handler serves the sessions of the ai package (daemon.AIPath, upgraded to daemon.AIProtocol),
 // logging what they do to log.
-func Handler(log io.Writer) http.Handler {
+func Handler(log io.Writer) http.Handler { return Options{Log: log}.Handler() }
+
+// Options are what the sessions are served with.
+type Options struct {
+	// Log receives what the sessions do (nil: nowhere).
+	Log io.Writer
+	// Held are the directories of the models the engine holds outside the ai package (its chat
+	// models, daemon.Engine.HeldDirs), which the cache's commands leave too; nil for none.
+	Held func() []string
+}
+
+// Handler serves the sessions of the ai package (daemon.AIPath, upgraded to daemon.AIProtocol).
+func (o Options) Handler() http.Handler {
 	return airpc.Handler(daemon.AIProtocol, func(s *airpc.Session) any {
-		h := &Host{s: s, log: log, handles: map[string]uint64{}}
+		h := &Host{s: s, log: o.Log, held: o.Held, handles: map[string]uint64{}}
 		s.OnClose(h.closed)
 		return h
 	})
+}
+
+// Held are the models the sessions' Runtimes hold, one copy each, for the engine's status.
+func Held() []daemon.HeldModel {
+	var out []daemon.HeldModel
+	for _, m := range ai.Held() {
+		out = append(out, daemon.HeldModel{Role: m.Role, Model: m.Model, Uses: m.Uses})
+	}
+	return out
 }
 
 // loading keeps the loads and the runs of every session one at a time, as the engine's chat
@@ -43,8 +69,9 @@ var loading sync.Mutex
 
 // Host is a session's ai.Host: a client's app, planned and run, and one Runtime of it.
 type Host struct {
-	s   *airpc.Session
-	log io.Writer
+	s    *airpc.Session
+	log  io.Writer
+	held func() []string
 
 	mu      sync.Mutex
 	app     string
@@ -52,7 +79,10 @@ type Host struct {
 	handles map[string]uint64 // the models' objects of the session, by their uses' keys
 }
 
-var _ ai.Host = (*Host)(nil)
+var (
+	_ ai.Host       = (*Host)(nil)
+	_ cachecmd.Host = (*Host)(nil)
+)
 
 func (h *Host) logf(format string, args ...any) {
 	if h.log != nil {
@@ -176,7 +206,17 @@ func (h *Host) Get(ctx context.Context, key string) (ai.GotSpec, error) {
 	if !ok {
 		id = h.s.Register(m)
 		h.handles[key] = id
-		h.logf("%s: holds %s (%s) for %s", key, info.Model, info.Took.Round(1e6), h.app)
+		uses := 1
+		for _, m := range ai.Held() {
+			if m.Role == info.Role && m.Model == info.Model {
+				uses = m.Uses
+			}
+		}
+		if uses > 1 {
+			h.logf("%s: %s for %s, the copy %d Runtimes hold (loaded once)", key, info.Model, h.app, uses)
+		} else {
+			h.logf("%s: holds %s (%s) for %s", key, info.Model, info.Took.Round(1e6), h.app)
+		}
 	}
 	return ai.GotSpec{Handle: id, Loaded: info}, nil
 }
@@ -239,3 +279,74 @@ func (c *clientLog) Write(p []byte) (int, error) {
 }
 
 func (c *clientLog) Terminal() bool { return c.live }
+
+// Machine runs a command of the cache or of the memory (hwnpu cache, hwnpu memory) in the engine,
+// with the engine's settings, its output and its question at the client: what the engine's
+// models are loaded from stays (Env.InUse), and what removes waits for the loads going on and
+// keeps the next from starting until it is done.
+func (h *Host) Machine(ctx context.Context, r cachecmd.Request, out, errOut func([]byte), ask func(string) bool) error {
+	e := &cachecmd.Env{Ctx: ctx, Out: writer(out, false), Err: writer(errOut, false), Ask: ask, InUse: h.inUse}
+	if r.Command != "info" && r.Command != "ls" {
+		loading.Lock()
+		defer loading.Unlock()
+		h.logf("hwnpu %s for a client", r.Command)
+	}
+	return r.Exec(e)
+}
+
+// CacheState is the engine's cache, for hwnpu status.
+func (h *Host) CacheState(ctx context.Context, scan bool) (cachecmd.State, error) {
+	s, err := modelstore.Open(modelstore.Options{Log: io.Discard})
+	if err != nil {
+		return cachecmd.State{}, err
+	}
+	var held []string
+	for _, m := range ai.Held() {
+		held = append(held, m.Model)
+	}
+	return cachecmd.LocalState(s, npustatus.View{Store: s}.LayerNames(), scan, held), nil
+}
+
+// inUse says which model the engine holds loaded from a unit's files, "" for none.
+func (h *Host) inUse(x modelstore.Unit) string {
+	return Options{Held: h.held}.why(append([]string{x.Path}, x.Paths...))
+}
+
+// UnitInUse reports whether the engine holds a model loaded from the files of the unit of
+// folder unit (cache.SetInUse: what the cache does not remove, by a command or to make room).
+func (o Options) UnitInUse(unit string) bool { return o.why([]string{unit}) != "" }
+
+// why says which model the engine holds loaded from the files under paths (a unit's), "" for
+// none.
+func (o Options) why(paths []string) string {
+	under := func(p string) bool {
+		for _, q := range paths {
+			if q != "" && (p == q || strings.HasPrefix(p, q+string(filepath.Separator)) || strings.HasPrefix(q, p+string(filepath.Separator))) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, m := range ai.Held() {
+		for _, p := range m.Paths {
+			if under(p) {
+				return fmt.Sprintf("hwnpud holds %s loaded, for %d %s", m.Model, m.Uses, plural(m.Uses, "client"))
+			}
+		}
+	}
+	if o.Held != nil {
+		for _, d := range o.Held() {
+			if under(d) {
+				return "hwnpud holds the chat model of " + filepath.Base(d) + " loaded"
+			}
+		}
+	}
+	return ""
+}
+
+func plural(n int, s string) string {
+	if n == 1 {
+		return s
+	}
+	return s + "s"
+}

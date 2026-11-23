@@ -41,6 +41,8 @@ type Engine struct {
 	// gives it: the engine's package does not import the packages of models); nil for none.
 	// A session is a request going on until it ends, so the engine does not exit idle under it.
 	AI http.Handler
+	// Held are the models AI's sessions hold, for the status; nil for none.
+	Held func() []HeldModel
 
 	load    sync.Mutex // one load at a time; the next waits
 	mu      sync.Mutex
@@ -141,6 +143,18 @@ func (e *Engine) init() {
 	e.relay.base = e.Log
 }
 
+// HeldDirs are the directories of the chat models the engine holds (chat.ModelDir), which the
+// cache's commands leave.
+func (e *Engine) HeldDirs() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for _, h := range e.models {
+		out = append(out, chat.ModelDir(h.model))
+	}
+	return out
+}
+
 // release ends a request's use of h.
 func (e *Engine) release(h *held) {
 	e.mu.Lock()
@@ -217,6 +231,9 @@ func (e *Engine) status(w http.ResponseWriter, r *http.Request) {
 		st.Models = append(st.Models, h.info)
 	}
 	e.mu.Unlock()
+	if e.Held != nil {
+		st.Held = e.Held()
+	}
 	if b, ok := mem.NPUWired(); ok {
 		st.NPUBytes = b
 	} else if b, ok := mem.DRMMemory(); ok {
