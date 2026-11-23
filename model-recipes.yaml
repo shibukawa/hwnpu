@@ -95,6 +95,11 @@ models:
           do: device
           why: "left off the Neural Engine (no compiled region), alone too, after 44 min to 3h17m each"
           checked: 2026-11-23
+        - arch: h13g
+          programs: [dit_double_*]
+          do: device
+          why: "the M1 cannot finish them: ANELargeModelCompilerService crashes (SIGSEGV in ZinCompilerCoreLLIROnline::AllocateMemoryPools, ZinIrTensor::GetParentTensors) on each try, and the device compiles them (2h07m for dit_double_0 of the 8 sizes)"
+          checked: 2026-11-24
         - arch: h14g
           programs: [dit_single_0, dit_single_8, dit_single_16]
           do: device
@@ -110,6 +115,11 @@ models:
           do: device
           why: "as Chroma1-Flash's (the same programs)"
           checked: 2026-11-23
+        - arch: h13g
+          programs: [dit_double_*]
+          do: device
+          why: "as Chroma1-Flash's (the same programs)"
+          checked: 2026-11-24
         - arch: h14g
           programs: [dit_single_0, dit_single_8, dit_single_16]
           do: device
