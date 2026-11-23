@@ -969,7 +969,14 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	if pol != nil {
 		pol.open = nil
 	}
-	next := r.pick(slices.Clone(logits), gen, rng)
+	// pick changes the logits it is given: a copy, in one array for the whole answer (a clone a
+	// token was 1 MB of garbage a token for 248320 logits, more time than the pick)
+	var mine []float32
+	own := func(l []float32) []float32 {
+		mine = append(mine[:0], l...)
+		return mine
+	}
+	next := r.pick(own(logits), gen, rng)
 	for {
 		// next is generated and not in the cache yet
 		if over, err := take(next); over || err != nil {
@@ -1036,7 +1043,7 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 			if pol != nil && single {
 				pol.stepped(time.Since(t0))
 			}
-			next = r.pick(slices.Clone(logits), gen, rng)
+			next = r.pick(own(logits), gen, rng)
 			continue
 		}
 		// one call checks the drafts: each is kept when the sampling picks it from the logits

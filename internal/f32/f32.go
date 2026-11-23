@@ -1,5 +1,6 @@
 // Package f32 holds float32 vector loops of hwnpu's CPU executor (internal/milcpu): exp, sigmoid
-// and SiLU over arrays, and axpy, in AVX2 and FMA on amd64 and in Go elsewhere.
+// and SiLU over arrays, gated units, and axpy, in AVX2 and FMA on amd64, NEON on arm64 and in Go
+// elsewhere.
 package f32
 
 import "math"
@@ -39,6 +40,20 @@ func Axpy(dst []float32, a float32, x []float32) {
 	n := axpyKernel(dst, a, x)
 	for i := n; i < len(dst); i++ {
 		dst[i] += a * x[i]
+	}
+}
+
+// GLU writes the gated units of gu, gate and up interleaved (gu[2j], gu[2j+1]), into dst:
+// g / (1 + e^(-alpha g)) (u + add) with g the gate at most limit and u the up within [-limit,
+// limit]. SwiGLU is alpha 1, limit +Inf, add 0; gpt-oss's alpha 1.702, limit 7, add 1. e^x is
+// Exp's.
+func GLU(dst, gu []float32, alpha, limit, add float32) {
+	gu = gu[:2*len(dst)]
+	n := gluKernel(dst, gu, alpha, limit, add)
+	for j := n; j < len(dst); j++ {
+		g := min(gu[2*j], limit)
+		u := min(max(gu[2*j+1], -limit), limit)
+		dst[j] = g / (1 + exp(-alpha*g)) * (u + add)
 	}
 }
 

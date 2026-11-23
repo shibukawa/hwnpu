@@ -5,75 +5,77 @@
 #define FMLAE(d, n, m, i) WORD $(0x4F801000 | (((i)&1)<<21) | ((m)<<16) | (((i)>>1)<<11) | ((n)<<5) | (d))
 
 // func dw3NEON(dst, r0, r1, r2, w *float32, bias float32, relu, n int)
-// dw3AVX2 on NEON: 8 columns (two vectors) a pass, a row's taps in accumulators of their own;
-// n a multiple of 8.
+// dw3AVX2 on NEON: 8 columns (two vectors) a pass, a row's three taps in accumulators of their
+// own, added at the end in dw3AVX2's order (the same values); n a multiple of 8. Each chain
+// starts with an FMUL: begun from a copy of the bias or a zeroed register, the first FMLA waited
+// for it, and an M2 ran YuNet's depthwise convolutions 30 % slower.
 TEXT ·dw3NEON(SB), NOSPLIT, $0-64
 	MOVD  dst+0(FP), R0
 	MOVD  r0+8(FP), R1
 	MOVD  r1+16(FP), R2
 	MOVD  r2+24(FP), R3
 	MOVD  w+32(FP), R4
-	FMOVS bias+40(FP), F3
+	FMOVS bias+40(FP), F31
+	VDUP  V31.S[0], V31.S4
 	MOVD  relu+48(FP), R5
 	MOVD  n+56(FP), R6
-	VLD1  (R4), [V0.S4, V1.S4] // w[0:8]
-	FMOVS 32(R4), F2           // w[8]
-	VDUP  V3.S[0], V3.S4
-	VEOR  V4.B16, V4.B16, V4.B16
+	VLD1R.P 4(R4), [V16.S4]
+	VLD1R.P 4(R4), [V17.S4]
+	VLD1R.P 4(R4), [V18.S4]
+	VLD1R.P 4(R4), [V19.S4]
+	VLD1R.P 4(R4), [V20.S4]
+	VLD1R.P 4(R4), [V21.S4]
+	VLD1R.P 4(R4), [V22.S4]
+	VLD1R.P 4(R4), [V23.S4]
+	VLD1R   (R4), [V24.S4]
+	VMOVI $0, V30.B16
 loopd:
-	VLD1  (R1), [V16.S4, V17.S4]
-	ADD   $4, R1, R9
-	VLD1  (R9), [V18.S4, V19.S4]
-	ADD   $8, R1, R9
-	VLD1  (R9), [V20.S4, V21.S4]
-	ADD   $32, R1
-	VORR  V3.B16, V3.B16, V5.B16
-	VORR  V3.B16, V3.B16, V6.B16
-	FMLAE(5, 16, 0, 0)
-	FMLAE(6, 17, 0, 0)
-	FMLAE(5, 18, 0, 1)
-	FMLAE(6, 19, 0, 1)
-	FMLAE(5, 20, 0, 2)
-	FMLAE(6, 21, 0, 2)
-	VLD1  (R2), [V16.S4, V17.S4]
-	ADD   $4, R2, R9
-	VLD1  (R9), [V18.S4, V19.S4]
-	ADD   $8, R2, R9
-	VLD1  (R9), [V20.S4, V21.S4]
-	ADD   $32, R2
-	VEOR  V7.B16, V7.B16, V7.B16
-	VEOR  V8.B16, V8.B16, V8.B16
-	FMLAE(7, 16, 0, 3)
-	FMLAE(8, 17, 0, 3)
-	FMLAE(7, 18, 1, 0)
-	FMLAE(8, 19, 1, 0)
-	FMLAE(7, 20, 1, 1)
-	FMLAE(8, 21, 1, 1)
-	VLD1  (R3), [V16.S4, V17.S4]
-	ADD   $4, R3, R9
-	VLD1  (R9), [V18.S4, V19.S4]
-	ADD   $8, R3, R9
-	VLD1  (R9), [V20.S4, V21.S4]
-	ADD   $32, R3
-	VEOR  V9.B16, V9.B16, V9.B16
-	VEOR  V10.B16, V10.B16, V10.B16
-	FMLAE(9, 16, 1, 2)
-	FMLAE(10, 17, 1, 2)
-	FMLAE(9, 18, 1, 3)
-	FMLAE(10, 19, 1, 3)
-	FMLAE(9, 20, 2, 0)
-	FMLAE(10, 21, 2, 0)
-	VFADD V7.S4, V5.S4, V5.S4
-	VFADD V8.S4, V6.S4, V6.S4
-	VFADD V9.S4, V5.S4, V5.S4
-	VFADD V10.S4, V6.S4, V6.S4
-	CBZ   R5, stored
-	VFMAX V4.S4, V5.S4, V5.S4
-	VFMAX V4.S4, V6.S4, V6.S4
+	ADD    $4, R1, R7
+	ADD    $8, R1, R8
+	VLD1.P 32(R1), [V0.S4, V1.S4]
+	VLD1   (R7), [V2.S4, V3.S4]
+	VLD1   (R8), [V4.S4, V5.S4]
+	VFMUL  V16.S4, V0.S4, V10.S4
+	VFMUL  V16.S4, V1.S4, V11.S4
+	VFMLA  V17.S4, V2.S4, V10.S4
+	VFMLA  V17.S4, V3.S4, V11.S4
+	VFMLA  V18.S4, V4.S4, V10.S4
+	VFMLA  V18.S4, V5.S4, V11.S4
+	ADD    $4, R2, R7
+	ADD    $8, R2, R8
+	VLD1.P 32(R2), [V0.S4, V1.S4]
+	VLD1   (R7), [V2.S4, V3.S4]
+	VLD1   (R8), [V4.S4, V5.S4]
+	VFMUL  V19.S4, V0.S4, V12.S4
+	VFMUL  V19.S4, V1.S4, V13.S4
+	VFMLA  V20.S4, V2.S4, V12.S4
+	VFMLA  V20.S4, V3.S4, V13.S4
+	VFMLA  V21.S4, V4.S4, V12.S4
+	VFMLA  V21.S4, V5.S4, V13.S4
+	ADD    $4, R3, R7
+	ADD    $8, R3, R8
+	VLD1.P 32(R3), [V0.S4, V1.S4]
+	VLD1   (R7), [V2.S4, V3.S4]
+	VLD1   (R8), [V4.S4, V5.S4]
+	VFMUL  V22.S4, V0.S4, V14.S4
+	VFMUL  V22.S4, V1.S4, V15.S4
+	VFMLA  V23.S4, V2.S4, V14.S4
+	VFMLA  V23.S4, V3.S4, V15.S4
+	VFMLA  V24.S4, V4.S4, V14.S4
+	VFMLA  V24.S4, V5.S4, V15.S4
+	VFADD  V31.S4, V10.S4, V10.S4
+	VFADD  V31.S4, V11.S4, V11.S4
+	VFADD  V14.S4, V12.S4, V12.S4
+	VFADD  V15.S4, V13.S4, V13.S4
+	VFADD  V12.S4, V10.S4, V10.S4
+	VFADD  V13.S4, V11.S4, V11.S4
+	CBZ    R5, stored
+	VFMAX  V30.S4, V10.S4, V10.S4
+	VFMAX  V30.S4, V11.S4, V11.S4
 stored:
-	VST1.P [V5.S4, V6.S4], 32(R0)
-	SUBS  $8, R6, R6
-	BNE   loopd
+	VST1.P [V10.S4, V11.S4], 32(R0)
+	SUBS   $8, R6
+	BNE    loopd
 	RET
 
 // func maxpool2NEON(dst, a, b *float32, n int)
