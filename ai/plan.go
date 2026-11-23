@@ -188,7 +188,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		}
 		it := Item{Use: r.name, Role: r.role.Name, Why: why, model: m, req: r,
 			Model: m.Name, Repo: m.Source(), About: m.About, MemoryGB: m.MemoryFor(p.npu.Vendor), Disk: int64(m.DiskFor(p.npu.Vendor))}
-		loc, err := a.Store.find(r.key(), p.npu, m, r.role.Revision)
+		loc, err := a.Store.find(r.key(), p.npu, m, r.role.Revision, r.role.Usable)
 		switch {
 		case err == nil:
 			// a prepared cache is read only: what it holds counts as compiled (the first load
@@ -483,7 +483,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 		}
 		var r *record
 		if it.Ready {
-			loc, err := p.store.find(it.req.key(), p.npu, it.model, it.req.role.Revision)
+			loc, err := p.store.find(it.req.key(), p.npu, it.model, it.req.role.Revision, it.req.role.Usable)
 			if err != nil {
 				return err
 			}

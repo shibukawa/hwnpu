@@ -177,7 +177,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 	}
 	// a use is run only when it is prepared and compiled for this program on this NPU (Plan.Run,
 	// "models prepare"): no picture, no input waits for a download or a compile
-	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision)
+	loc, err := rt.app.Store.find(r.key(), rt.npu, m, r.role.Revision, r.role.Usable)
 	if err == nil && !loc.bundle && rt.npu.Target != "" && !rt.npu.CPU(m) && !loc.compiled() && !rt.o.compile {
 		err = fmt.Errorf("%w: %s (%s) is not compiled for %s on this machine's NPU yet (the app's Plan and its Run compile it)", ErrNotPrepared, r.key(), loc.Model, processName())
 	}
