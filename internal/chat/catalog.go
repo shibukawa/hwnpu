@@ -42,12 +42,14 @@ const (
 // NPUSpec is a model's export for one NPU vendor (models.yaml's npu): the weight formats it is
 // made in (Text for the text encoder, Dit for the DiT; "" for the defaults), the picture sizes
 // that are the default on every generation of the vendor's NPU (Sizes: the aspect ratio's name,
-// then width and height), and the sizes a generation overrides (ByGen: by generation, a chip on
-// Apple, xdna1 or xdna2 on AMD).
+// then width and height), the sizes a generation overrides (ByGen: by generation, a chip on
+// Apple, xdna1 or xdna2 on AMD), and the edits the export holds programs for (Edits: by aspect
+// ratio, the references of each as hwnpu-image names them: "1", "2@half", "1+2@half", ...).
 type NPUSpec struct {
 	Text, Dit string
 	Sizes     map[string][2]int
 	ByGen     map[string]map[string][2]int
+	Edits     map[string][]string
 }
 
 // SizesOn are the picture sizes of the aspect ratios on generation gen: its override where it has

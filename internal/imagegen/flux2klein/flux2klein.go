@@ -757,7 +757,7 @@ func (p *Pipeline) refDivs(refs [][]float32) ([]int, error) {
 }
 
 // GenerateAll is Generate of several pictures, each noises[k] under conds[k], with the same
-// references (on Apple's Neural Engine those of the edit's programs, UseEdit), their steps together: each group of the DiT's
+// references (on Apple's Neural Engine those of the export's edits), their steps together: each group of the DiT's
 // blocks runs every picture before the next group's weights are read (on AMD's NPU into the one
 // bank; on Apple's Neural Engine its program loaded), and the modulation rows and the DiT's
 // graphs are made once for all of them. step is told of the steps of all of them. A picture's
@@ -974,8 +974,8 @@ func (p *Pipeline) Unpack(x []float32) []float32 {
 // centre cropped to the picture's aspect ratio and scaled to its sides over div (bicubic), the
 // VAE's encoder of that size (the latents' means), 2 x 2 patches normalized by the VAE's batch-norm
 // statistics. div 1 reads the reference at the picture's size; 2 at half its sides, a quarter of
-// the rows a step carries (HasReferences). On Apple's Neural Engine the encoder is the edit's
-// programs' (UseEdit).
+// the rows a step carries (HasReferences). On Apple's Neural Engine the encoder is the export's
+// edits' (ProgramManifest.Edits).
 func (p *Pipeline) EncodeImage(ctx context.Context, img image.Image, div int) ([]float32, error) {
 	c := p.C
 	if p.prog != nil && p.prog.edit == nil {

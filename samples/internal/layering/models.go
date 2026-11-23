@@ -80,11 +80,22 @@ func (c *Calls) Draw(ctx context.Context, rt *ai.Runtime, prompt string, ref *im
 // smallest is the smallest size the model draws of the shape nearest w x h: what a layer hid is
 // drawn behind it and seen only where the layer moves aside, so the small size does (and on
 // Apple's Neural Engine a 512 x 512 picture's steps take a quarter of a 1024 x 1024 one's, whose
-// programs are also compiled at their first use).
+// programs are also compiled at their first use). Of the sizes the model edits at when it says
+// (Generator.EditSizes: FLUX.2 klein on Apple's Neural Engine edits at 1024 x 1024 and 512 x 512
+// alone, the 1024 ones compiled on the device), else of those it draws.
 func smallest(g *imagegen.Generator, w, h int) image.Point {
-	best := g.SizeFor(w, h)
+	sizes := g.EditSizes()
+	if len(sizes) == 0 {
+		sizes = g.Sizes()
+	}
+	best := sizes[0]
 	shape := func(p image.Point) float64 { return math.Log(float64(p.X) / float64(p.Y)) }
-	for _, s := range g.Sizes() {
+	for _, s := range sizes[1:] {
+		if math.Abs(shape(s)-shape(image.Pt(w, h))) < math.Abs(shape(best)-shape(image.Pt(w, h))) {
+			best = s
+		}
+	}
+	for _, s := range sizes {
 		if math.Abs(shape(s)-shape(best)) < 0.01 && s.X*s.Y < best.X*best.Y {
 			best = s
 		}

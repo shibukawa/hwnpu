@@ -165,14 +165,22 @@ type run struct {
 	cur     *BatchStats
 }
 
-// newRun is a run of the prompts at the size o asks (of the first reference, else the first).
+// newRun is a run of the prompts at the size o asks (of the first reference, else the first); an
+// edit's at the nearest size with an edit of its references (EditSizes).
 func (g *Generator) newRun(prompts []string, o Options) *run {
 	w, h := o.Width, o.Height
 	if (w <= 0 || h <= 0) && len(o.References) > 0 && o.References[0] != nil {
 		b := o.References[0].Bounds()
 		w, h = b.Dx(), b.Dy()
 	}
-	r := &run{g: g, prompts: prompts, o: o, size: g.SizeFor(w, h), t0: time.Now()}
+	size := g.SizeFor(w, h)
+	if len(o.References) > 0 && g.edits {
+		// the nearest size with an edit of these many (the family's draw says when there is none)
+		if s, _, err := g.editFor(w, h, len(o.References)); err == nil {
+			size = s
+		}
+	}
+	r := &run{g: g, prompts: prompts, o: o, size: size, t0: time.Now()}
 	r.out.Size = r.size
 	r.out.Images = make([]*image.RGBA, len(prompts))
 	r.out.Seeds = make([]uint64, len(prompts))

@@ -64,6 +64,22 @@ type ProgramManifest struct {
 	// Sizes, in an export of several sizes, are the parts of each that depend on the size
 	// (functions of the same programs); Dit, Doubles, Singles and Vae are one of them.
 	Sizes []SizeParts `json:"sizes,omitempty"`
+	// Edits are the programs of the edits the export holds, by picture size (ConvertOptions.Edits):
+	// the DiT's groups of each step are functions of the same programs as Sizes'.
+	Edits []EditSize `json:"edits,omitempty"`
+	// Device is the directory beside the export of the programs of the edits' steps marked
+	// Device (DeviceExport), "" for none.
+	Device string `json:"device,omitempty"`
+}
+
+// EditAt is the edits of m at pictures of w x h, false when it holds none.
+func (m *ProgramManifest) EditAt(w, h int) (EditSize, bool) {
+	for _, s := range m.Edits {
+		if s.Width == w && s.Height == h {
+			return s, true
+		}
+	}
+	return EditSize{}, false
 }
 
 // SizeParts are the parts of an export for pictures of Width x Height.
@@ -156,9 +172,8 @@ type progEngine struct {
 	checked  map[string]bool
 	ring     *runner.Ring
 	ringRefs string
-	// edit, when set, is the edit's programs at the pictures' size (UseEdit), editDir their export
-	edit    *EditSize
-	editDir string
+	// edit, when set, is the export's edits at the pictures' size (ProgramManifest.Edits)
+	edit *EditSize
 	// loader, when set, loads the programs in place of runner.Open (tests)
 	loader runner.OpenFunc
 }
@@ -174,7 +189,29 @@ func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer, logf f
 	if m.Version != ExportVersion {
 		return nil, fmt.Errorf("%s is of layout %d, this hwnpu reads %d: convert it again", dir, m.Version, ExportVersion)
 	}
-	return &progEngine{m: m, dir: dir, dev: dev, log: log, logf: logf, ahead: runner.Ahead(dev)}, nil
+	e := &progEngine{m: m, dir: dir, dev: dev, log: log, logf: logf, ahead: runner.Ahead(dev)}
+	if s, ok := m.EditAt(m.Dit.Width, m.Dit.Height); ok {
+		// the steps of the DeviceExport by their path there
+		dd, err := filepath.Abs(filepath.Join(filepath.Dir(dir), m.Device))
+		if err != nil {
+			return nil, err
+		}
+		for i, st := range s.Steps {
+			if !st.Device {
+				continue
+			}
+			at := func(gs []Group) []Group {
+				out := make([]Group, len(gs))
+				for k, g := range gs {
+					out[k] = Group{filepath.Join(dd, g.Name), g.First, g.Count}
+				}
+				return out
+			}
+			s.Steps[i].Doubles, s.Steps[i].Singles = at(st.Doubles), at(st.Singles)
+		}
+		e.edit = &s
+	}
+	return e, nil
 }
 
 // modulations makes the modulation rows of each of sigmas that are not made yet: the time
@@ -245,7 +282,8 @@ func (e *progEngine) load(ctx context.Context, name string) (runner.Program, err
 	return p, err
 }
 
-// path is the file of a program of the export (relative to it), or of the edit's (absolute).
+// path is the file of a program of the export (relative to it), or of the DeviceExport
+// (absolute).
 func (e *progEngine) path(name string) string {
 	if filepath.IsAbs(name) {
 		return name
@@ -314,7 +352,7 @@ func (e *progEngine) encode(ctx context.Context, xs [][]float32, ns []int) ([][]
 }
 
 // step is the DiT's groups of a step with references of the picture's sides over divs: the
-// export's for none, else the edit's (UseEdit), their names absolute.
+// size's for none, else the edit's (ProgramManifest.Edits).
 func (e *progEngine) step(divs []int) (doubles, singles []Group, err error) {
 	if len(divs) == 0 {
 		return e.m.Doubles, e.m.Singles, nil
@@ -324,20 +362,13 @@ func (e *progEngine) step(divs []int) (doubles, singles []Group, err error) {
 	}
 	st, ok := e.edit.Step(divs)
 	if !ok {
-		return nil, nil, fmt.Errorf("the edit's programs have no step of %s at %dx%d", mil.RefsName(divs), e.m.Dit.Width, e.m.Dit.Height)
+		return nil, nil, fmt.Errorf("the export has no edit of %s at %dx%d", mil.RefsName(divs), e.m.Dit.Width, e.m.Dit.Height)
 	}
-	abs := func(gs []Group) []Group {
-		out := make([]Group, len(gs))
-		for i, g := range gs {
-			out[i] = Group{filepath.Join(e.editDir, g.Name), g.First, g.Count}
-		}
-		return out
-	}
-	return abs(st.Doubles), abs(st.Singles), nil
+	return st.Doubles, st.Singles, nil
 }
 
-// errNoEdit is the error of references without the edit's programs.
-var errNoEdit = errors.New("editing (references) needs the edit's programs (PrepareEdit, UseEdit)")
+// errNoEdit is the error of references at a size the export holds no edits of.
+var errNoEdit = errors.New("the export holds no edits at this size (ProgramManifest.Edits)")
 
 // groups are the DiT's programs of a step in the order it runs them: the doubles, then the
 // singles.
@@ -442,7 +473,7 @@ func (e *progEngine) velocities(ctx context.Context, rows, xs [][]float32, refs 
 }
 
 // encodeReference runs the VAE's encoder of a reference of the picture's sides over div (the
-// edit's programs, a stage at a time) on its pixels (3, h, w) in [-1, 1]: the latents' means
+// export's edits', a stage at a time) on its pixels (3, h, w) in [-1, 1]: the latents' means
 // (32, h/8, w/8).
 func (e *progEngine) encodeReference(ctx context.Context, px []float32, div int) ([]float32, error) {
 	if e.edit == nil {
@@ -450,14 +481,11 @@ func (e *progEngine) encodeReference(ctx context.Context, px []float32, div int)
 	}
 	stages := e.edit.Encoders[div]
 	if len(stages) == 0 {
-		return nil, fmt.Errorf("the edit's programs have no encoder of a reference of the sides over %d at %dx%d", div, e.m.Dit.Width, e.m.Dit.Height)
-	}
-	names := make([]string, len(stages))
-	for i, s := range stages {
-		names[i] = filepath.Join(e.editDir, s)
+		return nil, fmt.Errorf("the export has no encoder of a reference of the sides over %d at %dx%d", div, e.m.Dit.Width, e.m.Dit.Height)
 	}
 	t0 := time.Now()
-	zs, err := runner.Stages(ctx, names, e.ahead, e.open, [][]float32{px}, runner.StageBudget,
+	// the stages of several sizes load in turn, as decodeAll's
+	zs, err := runner.Stages(ctx, stages, e.ahead && len(e.m.Sizes) == 0, e.open, [][]float32{px}, runner.StageBudget,
 		func(_ int, p runner.Program, x []float32) ([]float32, error) {
 			return p.Run(ctx, map[string][]float32{"x": x})
 		}, nil)
@@ -616,7 +644,7 @@ func scaled(xs []float32, s float32) []float32 {
 
 // generatePrograms is GenerateAll on Apple's Neural Engine: the pictures' steps together, each
 // group of the DiT's blocks running every picture before the next group loads. With references
-// (their latents of EncodeImage) the step is the edit's programs' (UseEdit).
+// (their latents of EncodeImage) the step is the export's edit's (ProgramManifest.Edits).
 func (p *Pipeline) generatePrograms(ctx context.Context, conds []Cond, refs, noises [][]float32, sigmas []float64, step StepFunc) ([][]float32, error) {
 	divs, err := p.refDivs(refs)
 	if err != nil {
@@ -695,37 +723,4 @@ func (p *Pipeline) DecodeAll(ctx context.Context, xs ...[]float32) ([]*image.RGB
 	// the VAE's stages, the largest of a picture's memory
 	debug.FreeOSMemory()
 	return p.prog.decodeAll(ctx, zs, p.Stage)
-}
-
-// UseEdit has an Apple pipeline draw from references too, with the edit's programs in dir (an
-// export of ConvertEdit of the same model, PrepareEdit) at the pictures' size.
-func (p *Pipeline) UseEdit(dir string) error {
-	if p.prog == nil {
-		return errors.New("flux2klein: the edit's programs are for Apple's Neural Engine (an IRON export edits by itself)")
-	}
-	m, err := ReadEditManifest(dir)
-	if err != nil {
-		return err
-	}
-	c := p.prog.m.Dit
-	if m.Hidden != c.Hidden || m.Latent != c.Latent {
-		return fmt.Errorf("flux2klein: %s is of a DiT of %d and patches of %d, the export's of %d and %d", dir, m.Hidden, m.Latent, c.Hidden, c.Latent)
-	}
-	s, ok := m.At(c.Width, c.Height)
-	if !ok {
-		var have []string
-		for _, s := range m.Sizes {
-			have = append(have, fmt.Sprintf("%dx%d", s.Width, s.Height))
-		}
-		return fmt.Errorf("flux2klein: %s edits at %v, not %dx%d", filepath.Base(dir), have, c.Width, c.Height)
-	}
-	if err := p.prog.closeDiT(); err != nil {
-		return err
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	p.prog.edit, p.prog.editDir = &s, abs
-	return nil
 }

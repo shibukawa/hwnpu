@@ -17,7 +17,8 @@ import (
 )
 
 // image: the Core AI exports hwnpu-image generate draws with, of every size it takes (--size):
-// FLUX.2 klein one of every size of models.yaml npu.apple with the edit's programs, Anima one of
+// FLUX.2 klein one of every size and edit of models.yaml npu.apple and one beside it of the edits
+// of 1024, Anima one of
 // every aspect, FLUX.3 klein and Chroma as hwnpu-image generate makes them now (FLUX.3 klein's
 // default sizes, Chroma one for 1:1 and one for 1:1s, until they hold every aspect in one as
 // docs/design/new-model-checklist.md 11.4 says).
@@ -31,25 +32,26 @@ func init() {
 			if err != nil {
 				return err
 			}
-			// every size of models.yaml npu.apple in one export (the weights once), as hwnpu-image
-			// generate makes it, and the edit's programs of those sizes beside it
-			spec := m.NPU["apple"]
-			setup := flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo, Name: m.Name,
-				ConvertOptions: flux2klein.ConvertOptions{Width: as[0].Width, Height: as[0].Height, Sizes: aspect.SizesOf(as), TextFormat: spec.Text, DitFormat: spec.Dit}, Log: e.Log}
+			// every size and edit of models.yaml npu.apple in one export (the weights once), as
+			// hwnpu-image generate makes it, and the export beside it of the edits of a reference of
+			// 1024 (flux2klein.DeviceExport)
+			o, err := flux2klein.AppleOptions(m, flux2klein.NPUGeneration("apple"), as[0].Width, as[0].Height, "", "")
+			if err != nil {
+				return err
+			}
+			setup := flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo, Name: m.Name, ConvertOptions: o, Log: e.Log}
 			dir, err := flux2klein.Prepare(ctx, setup)
 			if err != nil {
 				return err
 			}
-			man, err := flux2klein.ReadProgramManifest(dir)
+			dd, err := flux2klein.PrepareDevice(ctx, setup)
 			if err != nil {
-				return err
-			}
-			ed, err := flux2klein.PrepareEdit(ctx, setup, flux2klein.EditOptions{Patterns: flux2klein.EditPatterns, DitFormat: man.Formats["dit"]})
-			if err != nil {
-				return fmt.Errorf("the edit: %w", err)
+				return fmt.Errorf("the edits of 1024: %w", err)
 			}
 			f.Set("export", dir)
-			f.Set("edit", ed)
+			if dd != "" {
+				f.Set("device", dd)
+			}
 		case strings.HasPrefix(m.Family, "flux3-klein"):
 			dir, err := flux3klein.Prepare(ctx, flux3klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.3-klein"), Repo: m.Repo, Name: m.Name, Log: e.Log})
 			if err != nil {

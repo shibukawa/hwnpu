@@ -51,14 +51,16 @@ func TestBuildLeavesVAEToDevice(t *testing.T) {
 
 func TestLeftToDevice(t *testing.T) {
 	for dir, want := range map[string]bool{
-		"/x/m.coreai/vae_s3.aimodel":       true,
-		"/x/m.coreai/vae.aimodel/":         true,
-		"/x/m.coreai/VAE_decoder.aimodel":  true,
-		"/x/m.coreai/dit_single_0.aimodel": false,
-		"/x/vae.coreai/text_0.aimodel":     true,
-		"/x/m.coreai/text.aimodel":         true,
-		"/x/text.coreai/mods.aimodel":      false,
-		"/x/m.coreai/ctx.aimodel":          false,
+		"/x/m.coreai/vae_s3.aimodel":              true,
+		"/x/m.coreai/vae.aimodel/":                true,
+		"/x/m.coreai/VAE_decoder.aimodel":         true,
+		"/x/m.coreai/dit_single_0.aimodel":        false,
+		"/x/vae.coreai/text_0.aimodel":            true,
+		"/x/m.coreai/text.aimodel":                true,
+		"/x/text.coreai/mods.aimodel":             false,
+		"/x/m.coreai/ctx.aimodel":                 false,
+		"/x/m.coreai/dit_double_0_device.aimodel": true,
+		"/x/m_device.coreai/dit_double_0.aimodel": false,
 	} {
 		if got := LeftToDevice(dir); got != want {
 			t.Errorf("%s: %v", dir, got)

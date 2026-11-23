@@ -21,6 +21,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
 | 10 | M1 の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書きあり) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
+| 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -66,7 +67,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   # 1 種類ずつ作り、できたらすぐ取得元に置く (12 種類を一度に作ると、最後まで何も置かれない)
   export HWNPU_MODEL_SOURCE='https://…/llm?writeback=true'
   for a in h13c h13d h13s h14d h14s h15d h15m h15s h17p; do
-    hwnpu-dev models package ~/Library/Caches/hwnpu/models/FLUX.2-klein/flux.2-klein-4b-512+1024-lut8-lut8-v1.coreai/coreai-$a
+    hwnpu-dev models package ~/Library/Caches/hwnpu/models/FLUX.2-klein/flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v4.coreai/coreai-$a
   done
   ```
 
@@ -118,6 +119,16 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: 何もしなくてよい
 - 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_DEV=ailower.cut=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
 
+## 12. h15g の DMA のキャッシュの指定が端末の検査に落ちる (未報告)
+
+- **何が**: FLUX.2 klein の DiT (8 つの大きさの関数を持つプログラム) の h15g 向けの prebuilt が、M3 (macOS 27.2.1) で全部 `failedToSpecialize` になった。Core AI は関数が 1 つ仕上がらないとプログラムごと使わないので、DiT の 7 つの部品がどれも端末でコンパイルされた (1 つ 3〜19 分。初回が prebuilt のないときと同じ)。落ちていたのは 512² の関数だけ。端末の仕上げ (ANELargeModelCompilerService) が "tile_dma_src.dma_config2.cache_hint != ane_tile_dma_src_dma_config2_cache_hint_drop_v8"、"Instruction corresponding to oplayer … failed validation test"、"Invalid TD exists" を出す。M1 で作ったものとこの機械で作ったものは、日付と統計のファイルのほかはバイト単位で同じで、どちらも落ちる。`--min-deployment-version 27.2` でも `--expect-frequent-reshapes` でも同じ
+- **原因の形**: attention の、1536 個のキーに対する 512 行のクエリの塊 (1536 行を `HeadChunk` の 1024 行ずつに分けた残り)。attention だけのプログラムでも起きる (1 ヘッド、キーを分けなくても)。768 行ずつ、1536 行まとめて、1024 個のキーに 512 行、3072 個のキーに 512 行は通る。1792 個のキーに 1280 行と 512 行も落ちる。attention だけでは 3968 行や 4032 行も落ちたが、DiT の中では通る (周りの演算とまとめ方で変わる)。どの形で起きるかは、オフラインのコンパイラの割り付け次第で、読めない
+- **今**: 行が 1 塊より多く 2 塊より少ないとき、半分ずつ (64 の倍数) にする (`flux2klein/mil` の `headChunk`)。FLUX.2 klein で変わるのは 512² の文からの生成だけ (1536 行 → 768 + 768)。計算は同じ (行ごとの softmax)。書き出しの版を 4 にした (`ExportVersion`。3 までは編集の置き方)。M3 で、直した 512² の DiT の 7 部品は prebuilt から全部仕上がり、直す前のものは全部落ちた。編集の 5 通り (2560 行から) は変わらない
+- **作り直し**: 書き出しの名前が `-v4` になるので、FLUX.2 klein の書き出しと、各種類の prebuilt (6 節) を作り直して取得元に置く。v3 までの prebuilt は使われなくなる
+- **直ったら**: 何もしなくてよい
+- まだ見ていないもの: Chroma1-Flash も 512² は 1536 行で `HeadChunk` が 1024 (同じ形)。h15g 以外の種類の端末での検査 (この機械は h15g だけ)
+- 確かめ方: `coreai-build compile … --architecture h15g` で作った `.aimodelc` を M3 で開き (AIModel(contentsOf:))、`/usr/bin/log stream` に "cache_hint" が出るか。attention だけなら 1536 行、`HeadChunk` 1024 のもので足りる
+
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
 - 1 節: 画像のモデルを prebuilt で開き、`log show --predicate 'process == "launchd" AND eventMessage CONTAINS "ANELargeModel"'` に "deferred by 10 seconds" が出るか
@@ -125,6 +136,6 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - 3 節: FLUX.2 klein 1024² の初回に "vae_s0 … the prebuilt program failed" が出るか
 - 6、7 節: 6 節の確かめ方を、落ちる 9 種類と h18g で
 - 9 節: [apple-coreai](design/apple-coreai.md) の表と 9 節の表を測り直す
-- 10、11 節: 各節の確かめ方を
+- 10、11、12 節: 各節の確かめ方を
 
 確かめた日と OS、Metal Toolchain の版を、この文書の各節に書き足す。

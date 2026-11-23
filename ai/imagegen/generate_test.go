@@ -2,6 +2,7 @@ package imagegen
 
 import (
 	"image"
+	"slices"
 	"testing"
 	"time"
 
@@ -108,5 +109,45 @@ func TestSettings(t *testing.T) {
 func TestExportNone(t *testing.T) {
 	if _, err := Export(t.TempDir()); err == nil {
 		t.Error("an empty directory is an export")
+	}
+}
+
+// An edit's size and references: the nearest size with an edit of that many references (Apple's
+// edits of models.yaml), or any number of the picture's size (AMD's).
+func TestEditFor(t *testing.T) {
+	big, small := image.Pt(1024, 1024), image.Pt(512, 512)
+	g := &Generator{edits: true, sizes: []image.Point{big, small, {768, 1152}}, editSizes: []image.Point{big, small},
+		editRefs: map[image.Point][][]int{big: {{1}, {1, 2}, {1, 2, 2}}, small: {{1}, {1, 1}}}}
+	for _, c := range []struct {
+		w, h, n int
+		size    image.Point
+		divs    []int
+	}{
+		{1024, 1024, 1, big, []int{1}},
+		{1024, 1024, 2, big, []int{1, 2}},
+		{1024, 1024, 3, big, []int{1, 2, 2}},
+		{512, 512, 1, small, []int{1}},
+		{512, 512, 2, small, []int{1, 1}},
+		{512, 512, 3, big, []int{1, 2, 2}}, // three only at 1024
+		{1920, 1080, 2, big, []int{1, 2}},  // the nearest of the two
+	} {
+		s, d, err := g.editFor(c.w, c.h, c.n)
+		if err != nil || s != c.size || !slices.Equal(d, c.divs) {
+			t.Errorf("editFor(%d, %d, %d) = %v %v %v, want %v %v", c.w, c.h, c.n, s, d, err, c.size, c.divs)
+		}
+	}
+	if _, _, err := g.editFor(1024, 1024, 4); err == nil {
+		t.Error("4 references: no error")
+	}
+	if r := g.newRun([]string{"a"}, Options{Width: 512, Height: 512, References: make([]image.Image, 3)}); r.size != big {
+		t.Errorf("a run of 3 references at 512: %v", r.size)
+	}
+	// AMD's NPU: any number at every size, of the picture's size
+	g = &Generator{edits: true, sizes: []image.Point{big, small}}
+	if s, d, err := g.editFor(512, 512, 2); err != nil || s != small || !slices.Equal(d, []int{1, 1}) {
+		t.Errorf("AMD: %v %v %v", s, d, err)
+	}
+	if got := g.EditSizes(); len(got) != 2 {
+		t.Errorf("AMD's edit sizes %v", got)
 	}
 }
