@@ -107,6 +107,7 @@
 | NE の SigLIP 2 | base 1 枚 7.3〜7.9 ms (M3。AMD 84 ms) | | [vision-models.md](vision-models.md) |
 | AMD: Whisper large-v3-turbo | 復号 78 tok/s。30 秒の窓のエンコーダ 0.84 秒 | | [audio-models.md](audio-models.md) |
 | AMD: LFM3-Audio の読み上げ、MOSS-SoundEffect、Magenta RT2 の復号器 | 実時間の 0.43 倍、1 ステップ 2.8 秒、実時間の 0.3 倍 | | [audio-models.md](audio-models.md) |
+| 小さな CNN のための `milcpu`: 値のバッファの使い回し、AVX2 の深さ方向、直接と 1×1 の畳み込み、畳み込みと ReLU を 1 回で | Ryzen AI 9 365 の 1 コアで YuNet 320×256 が 12.6 → 2.3 ms、1 枚 243 → 約 30 mJ (ONNX Runtime 20 mJ、AMD の NPU 184 mJ) | | [vision-models.md](vision-models.md) |
 
 ### どこでも
 

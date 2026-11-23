@@ -5,6 +5,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"unsafe"
 
 	"github.com/shibukawa/hwnpu/internal/f32"
 	"github.com/shibukawa/hwnpu/internal/milspec"
@@ -30,8 +31,31 @@ func (p *Program) binding(b *milspec.Argument_Binding, vals map[string]*value) (
 		}
 		return v, true, nil
 	}
-	v, err := p.decode(b.GetValue())
+	// an inline constant (a stride, a pad, an axis) decoded once: no operation writes into its
+	// inputs, and Run holds p.mu
+	bv := b.GetValue()
+	if v, ok := p.inline[bv]; ok {
+		return v, true, nil
+	}
+	v, err := p.decode(bv)
+	if err == nil {
+		if p.inline == nil {
+			p.inline = map[*milspec.Value]*value{}
+		}
+		p.inline[bv] = v
+	}
 	return v, err == nil, err
+}
+
+// fixed reports whether the operation's input name is a constant of the program (an inline
+// value, or a const operation's), whose buffer stays from run to run; an absent input is too.
+func (p *Program) fixed(op *milspec.Operation, name string) bool {
+	a, ok := op.GetInputs()[name]
+	if !ok || len(a.GetArguments()) == 0 {
+		return true
+	}
+	n := a.GetArguments()[0].GetName()
+	return n == "" || p.constOut[n]
 }
 
 // reader reads the named inputs of an operation and keeps the first error.
@@ -162,12 +186,12 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 	case "add", "sub", "mul", "real_div", "maximum", "minimum":
 		x, y := r.floats("x"), r.floats("y")
 		if r.err == nil {
-			out, r.err = elementBinary(x, y, typ)
+			out, r.err = elementBinary(&p.pool, x, y, typ)
 		}
 	case "silu", "sigmoid", "relu", "tanh", "exp", "sqrt", "softplus", "abs", "erf", "cos", "sin", "elu":
 		x := r.floats("x")
 		if r.err == nil {
-			out = unary(x, typ)
+			out = unary(&p.pool, x, typ)
 		}
 	case "log":
 		x := r.floats("x")
@@ -236,7 +260,7 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		x := r.floats("x")
 		perm := r.ints("perm")
 		if r.err == nil {
-			out, r.err = transpose(x, perm)
+			out, r.err = transpose(&p.pool, x, perm)
 		}
 	case "tile":
 		x := r.floats("x")
@@ -254,7 +278,7 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		x := r.floats("x")
 		sh, sw := r.int("scale_factor_height", 1), r.int("scale_factor_width", 1)
 		if r.err == nil {
-			out, r.err = upsampleNearest(x, int(sh), int(sw))
+			out, r.err = upsampleNearest(&p.pool, x, int(sh), int(sw))
 		}
 	case "slice_by_index":
 		x := r.floats("x")
@@ -295,7 +319,7 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 			xs = append(xs, v)
 		}
 		if r.err == nil {
-			out, r.err = concat(xs, int(axis))
+			out, r.err = concat(&p.pool, xs, int(axis))
 		}
 	case "pow":
 		x, y := r.floats("x"), r.floats("y")
@@ -334,7 +358,7 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 			if padType == "valid" {
 				pad = []int32{0, 0, 0, 0}
 			}
-			out, r.err = maxPool2d(x, k, st, pad)
+			out, r.err = maxPool2d(&p.pool, x, k, st, pad)
 		}
 	case "conv":
 		x, w := r.floats("x"), r.floats("weight")
@@ -345,9 +369,9 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		groups := r.int("groups", 1)
 		if r.err == nil {
 			if len(x.shape) == 4 {
-				out, r.err = conv2d(x, w, b, strides, dil, padType, pad, int(groups))
+				out, r.err = conv2d(&p.pool, x, w, b, strides, dil, padType, pad, int(groups), p.reluNext, p.fixed(op, "weight") && p.fixed(op, "bias"))
 			} else {
-				out, r.err = conv1d(x, w, b, strides, dil, padType, pad, int(groups))
+				out, r.err = conv1d(&p.pool, p.fixed(op, "weight") && p.fixed(op, "bias"), x, w, b, strides, dil, padType, pad, int(groups))
 			}
 		}
 	case "constexpr_lut_to_dense":
@@ -500,8 +524,8 @@ func broadcast(x, y *value, f func(a, b float32) float32) (*value, error) {
 	return out, nil
 }
 
-func unary(x *value, typ string) *value {
-	out := &value{shape: x.shape, f: make([]float32, len(x.f))}
+func unary(pl *pool, x *value, typ string) *value {
+	out := &value{shape: x.shape, f: pl.get(len(x.f))}
 	var fn func(float64) float64
 	switch typ {
 	case "silu":
@@ -514,11 +538,7 @@ func unary(x *value, typ string) *value {
 		elementwise(len(x.f), func(lo, hi int) { f32.Exp(out.f[lo:hi], x.f[lo:hi]) })
 		return out
 	case "relu":
-		elementwise(len(x.f), func(lo, hi int) {
-			for i, v := range x.f[lo:hi] {
-				out.f[lo+i] = max(v, 0)
-			}
-		})
+		elementwise(len(x.f), func(lo, hi int) { f32.ReLU(out.f[lo:hi], x.f[lo:hi]) })
 		return out
 	case "tanh":
 		fn = math.Tanh
@@ -566,7 +586,7 @@ func elementwise(n int, f func(lo, hi int)) {
 // elementBinary is an elementwise add, sub, mul, real_div, maximum or minimum of x and y broadcast
 // (numpy's rules): the dimensions collapsed into runs where each operand moves by one or not
 // at all, and a typed loop over each run.
-func elementBinary(x, y *value, typ string) (*value, error) {
+func elementBinary(pl *pool, x, y *value, typ string) (*value, error) {
 	rank := max(len(x.shape), len(y.shape))
 	shape := make([]int, rank)
 	xs, ys := make([]int, rank), make([]int, rank)
@@ -595,7 +615,7 @@ func elementBinary(x, y *value, typ string) (*value, error) {
 		}
 	}
 	n := numel(shape)
-	out := &value{shape: shape, f: make([]float32, n)}
+	out := &value{shape: shape, f: pl.get(n)}
 	if rank == 0 {
 		out.shape = nil
 	}
@@ -1043,8 +1063,8 @@ func reshape(x *value, s []int32) (*value, error) {
 
 // permute copies x into a new layout: walking the output in order, the x offset starts at start
 // and moves by src[d] along output axis d.
-func permute(x *value, start int, shape []int, src []int) *value {
-	out := &value{shape: shape, f: make([]float32, numel(shape))}
+func permute(pl *pool, x *value, start int, shape []int, src []int) *value {
+	out := &value{shape: shape, f: pl.get(numel(shape))}
 	idx := make([]int, len(shape))
 	off := start
 	for i := range out.f {
@@ -1062,7 +1082,7 @@ func permute(x *value, start int, shape []int, src []int) *value {
 	return out
 }
 
-func transpose(x *value, perm []int32) (*value, error) {
+func transpose(pl *pool, x *value, perm []int32) (*value, error) {
 	if len(perm) != len(x.shape) {
 		return nil, fmt.Errorf("perm %v for shape %v", perm, x.shape)
 	}
@@ -1071,7 +1091,7 @@ func transpose(x *value, perm []int32) (*value, error) {
 	for i, p := range perm {
 		shape[i], src[i] = x.shape[p], st[p]
 	}
-	return permute(x, 0, shape, src), nil
+	return permute(pl, x, 0, shape, src), nil
 }
 
 func tile(x *value, reps []int32) (*value, error) {
@@ -1129,7 +1149,7 @@ func pixelShuffle(x *value, f int) (*value, error) {
 }
 
 // upsampleNearest repeats each pixel of x (..., H, W) as an sh x sw block.
-func upsampleNearest(x *value, sh, sw int) (*value, error) {
+func upsampleNearest(pl *pool, x *value, sh, sw int) (*value, error) {
 	n := len(x.shape)
 	if n < 2 || sh < 1 || sw < 1 {
 		return nil, fmt.Errorf("upsample of shape %v by %d x %d", x.shape, sh, sw)
@@ -1137,10 +1157,21 @@ func upsampleNearest(x *value, sh, sw int) (*value, error) {
 	H, W := x.shape[n-2], x.shape[n-1]
 	shape := append([]int(nil), x.shape...)
 	shape[n-2], shape[n-1] = H*sh, W*sw
-	out := &value{shape: shape, f: make([]float32, numel(shape))}
+	out := &value{shape: shape, f: pl.get(numel(shape))}
 	planes := numel(x.shape) / (H * W)
 	for p := 0; p < planes; p++ {
 		src, dst := x.f[p*H*W:][:H*W], out.f[p*H*sh*W*sw:]
+		if sh == 2 && sw == 2 {
+			// each row's columns twice, then the row twice
+			for y := range H {
+				s, d := src[y*W:][:W], dst[2*y*2*W:][:4*W]
+				for i, v := range s {
+					d[2*i], d[2*i+1] = v, v
+				}
+				copy(d[2*W:], d[:2*W])
+			}
+			continue
+		}
 		for y := 0; y < H*sh; y++ {
 			row := dst[y*W*sw:][:W*sw]
 			for xx := range row {
@@ -1199,7 +1230,7 @@ func sliceByIndex(x *value, begin, end, stride []int32, bm, em, sm []bool) (*val
 			outShape = append(outShape, n)
 		}
 	}
-	out := permute(x, base, shape, src)
+	out := permute(nil, x, base, shape, src)
 	out.shape = outShape
 	return out, nil
 }
@@ -1289,7 +1320,7 @@ func padEdges(x *value, pad []int32, mode string) (*value, error) {
 	return out, nil
 }
 
-func concat(xs []*value, a int) (*value, error) {
+func concat(pl *pool, xs []*value, a int) (*value, error) {
 	if len(xs) == 0 {
 		return nil, fmt.Errorf("nothing to concat")
 	}
@@ -1311,7 +1342,7 @@ func concat(xs []*value, a int) (*value, error) {
 		shape[ax] += x.shape[ax]
 	}
 	outer, _, inner := around(shape, ax)
-	out := &value{shape: shape, f: make([]float32, 0, numel(shape))}
+	out := &value{shape: shape, f: pl.get(numel(shape))[:0]}
 	for o := 0; o < outer; o++ {
 		for _, x := range xs {
 			w := x.shape[ax] * inner
@@ -1325,7 +1356,7 @@ func concat(xs []*value, a int) (*value, error) {
 // conv2d's over an image of one row (its products on sgemm, its depthwise convolutions in
 // parallel). A direct loop of one thread took 1.5 s of Supertonic 3's text encoder (128
 // characters), 91 % of it here.
-func conv1d(x, w, bias *value, stride, dil []int32, padType string, pad []int32, groups int) (*value, error) {
+func conv1d(pl *pool, fixed bool, x, w, bias *value, stride, dil []int32, padType string, pad []int32, groups int) (*value, error) {
 	if len(x.shape) != 3 || len(w.shape) != 3 {
 		return nil, fmt.Errorf("only 1 D convolutions are supported, got x %v weight %v", x.shape, w.shape)
 	}
@@ -1342,7 +1373,7 @@ func conv1d(x, w, bias *value, stride, dil []int32, padType string, pad []int32,
 	}
 	x2 := &value{shape: []int{x.shape[0], x.shape[1], 1, x.shape[2]}, f: x.f}
 	w2 := &value{shape: []int{w.shape[0], w.shape[1], 1, w.shape[2]}, f: w.f}
-	y, err := conv2d(x2, w2, bias, []int32{1, stride[0]}, []int32{1, dil[0]}, padType, p, groups)
+	y, err := conv2d(pl, x2, w2, bias, []int32{1, stride[0]}, []int32{1, dil[0]}, padType, p, groups, false, fixed)
 	if err != nil {
 		return nil, err
 	}
@@ -1352,7 +1383,7 @@ func conv1d(x, w, bias *value, stride, dil []int32, padType string, pad []int32,
 
 // conv2d is a grouped 2 D convolution of x (n, c_in, h, w) with weight (c_out, c_in/groups, kh,
 // kw), pad (top, bottom, left, right) for pad_type custom. The output channels run in parallel.
-func conv2d(x, w, bias *value, stride, dil []int32, padType string, pad []int32, groups int) (*value, error) {
+func conv2d(bp *pool, x, w, bias *value, stride, dil []int32, padType string, pad []int32, groups int, relu, fixed bool) (*value, error) {
 	if len(w.shape) != 4 {
 		return nil, fmt.Errorf("a 2 D convolution needs a weight of rank 4, got %v", w.shape)
 	}
@@ -1381,8 +1412,23 @@ func conv2d(x, w, bias *value, stride, dil []int32, padType string, pad []int32,
 	}
 	oh := (ih+pt+pb-dh*(kh-1)-1)/sh + 1
 	ow := (iw+pl+pr-dw*(kw-1)-1)/sw + 1
-	out := &value{shape: []int{n, cout, oh, ow}, f: make([]float32, n*cout*oh*ow)}
+	out := &value{shape: []int{n, cout, oh, ow}, f: bp.get(n * cout * oh * ow)}
 	perGroup := cout / groups
+	if cg == 1 && perGroup == 1 && kh == 3 && kw == 3 && sh == 1 && sw == 1 && dh == 1 && dw == 1 {
+		depthwise3(bp, x, w, bias, out, pt, pl, relu)
+		return out, nil
+	}
+	if kh == 1 && kw == 1 && sh == 1 && sw == 1 && pt == 0 && pl == 0 && oh == ih && ow == iw && cg <= pointwiseK {
+		pointwise(bp, x, w, bias, out, groups, relu, bp.packed(w, bias, groups, fixed))
+		return out, nil
+	}
+	if K := cg * kh * kw; kh*kw > 1 && K <= directK {
+		directConv(bp, x, w, bias, out, groups, sh, sw, dh, dw, pt, pl, relu, bp.packed(w, bias, groups, fixed))
+		return out, nil
+	}
+	if relu {
+		defer f32.ReLU(out.f, out.f)
+	}
 	if cg == 1 && perGroup == 1 {
 		// depthwise: a product of one row a channel, the direct loop
 		parallel(cout, func(lo, hi int) {
@@ -1406,6 +1452,8 @@ func conv2d(x, w, bias *value, stride, dil []int32, padType string, pad []int32,
 						row[i] = v
 					}
 				}
+			} else {
+				clear(o)
 			}
 			xg := x.f[(b*cin+g*cg)*ih*iw:][:cg*ih*iw]
 			var src sgemm.Source
@@ -1486,6 +1534,8 @@ func conv2dChannel(x, w, bias, out *value, oc, g, n, cin, cg, ih, iw, kh, kw, oh
 				for i := range o {
 					o[i] = bias.f[oc]
 				}
+			} else {
+				clear(o)
 			}
 			for ic := 0; ic < cg; ic++ {
 				xp := x.f[(b*cin+g*cg+ic)*ih*iw:][:ih*iw]
@@ -1520,6 +1570,267 @@ func conv2dChannel(x, w, bias, out *value, oc, g, n, cin, cg, ih, iw, kh, kw, oh
 				}
 			}
 		}
+	}
+}
+
+// depthwise3 is a depthwise 3 x 3 convolution of stride 1 into out (n, c, oh, ow): each
+// channel's plane copied into one padded by pt rows and pl columns (oh+2 x ow+2, zeros around),
+// then each output row from three of its rows (f32.Depthwise3: AVX2), with the ReLU after it
+// when relu. Before, nine passes of an axpy a row over the output, about 3 G multiply-adds a
+// second.
+func depthwise3(bp *pool, x, w, bias, out *value, pt, pl int, relu bool) {
+	n, c, ih, iw := x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+	oh, ow := out.shape[2], out.shape[3]
+	P := ow + 2
+	parallel(n*c, func(lo, hi int) {
+		pad := bp.work((oh + 2) * P)
+		defer bp.done(pad)
+		pp := *pad
+		clear(pp)
+		for plane := lo; plane < hi; plane++ {
+			ch := plane % c
+			src := x.f[plane*ih*iw:][:ih*iw]
+			for y := range ih {
+				if r := y + pt; r >= 0 && r < oh+2 {
+					row := pp[r*P:][:P]
+					a, b := max(0, -pl), min(iw, P-pl)
+					if a < b {
+						copy(row[pl+a:pl+b], src[y*iw+a:y*iw+b])
+					}
+				}
+			}
+			var w9 [9]float32
+			copy(w9[:], w.f[ch*9:ch*9+9])
+			var b float32
+			if bias != nil {
+				b = bias.f[ch]
+			}
+			o := out.f[plane*oh*ow:][:oh*ow]
+			for y := range oh {
+				f32.Depthwise3(o[y*ow:(y+1)*ow], pp[y*P:], pp[(y+1)*P:], pp[(y+2)*P:], &w9, b, relu)
+			}
+		}
+	})
+}
+
+// directK is the most taps (input channels of a group times the kernel's) a convolution is
+// computed directly with (directConv) rather than as a product on sgemm: YuNet's first, 3
+// channels by 3 x 3 of stride 2, took 1.2 ms of the 4.6 its run took on im2col and sgemm.
+const directK = 64
+
+// directConv is conv2d into out (n, cout, oh, ow) as weighted sums of input rows: each input
+// channel's plane padded and cut into sw phases (phase q of a padded row: its columns sw i + q),
+// so that a tap (ky, kx) of output row y is a run of one phase's row y sh + ky dh from column
+// kx dw / sw, and an output row the sum of the cg kh kw runs weighted by the taps
+// (f32.WeightedRows: AVX2), with the ReLU after it when relu.
+func directConv(bp *pool, x, w, bias, out *value, groups, sh, sw, dh, dw, pt, pl int, relu bool, pk *packedConv) {
+	n, cin, ih, iw := x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+	cout, cg, kh, kw := w.shape[0], w.shape[1], w.shape[2], w.shape[3]
+	oh, ow := out.shape[2], out.shape[3]
+	perGroup, K := cout/groups, cg*kh*kw
+	pw := ow + (kw-1)*dw/sw + 1     // a phase's row: every column a tap reads
+	pr := (oh-1)*sh + (kh-1)*dh + 1 // the padded rows the taps read
+	plane := sw * pr * pw           // a channel's phases
+	buf := bp.work(cin * plane)
+	defer bp.done(buf)
+	ph := *buf
+	for b := range n {
+		parallel(cin, func(lo, hi int) {
+			buf := bp.work(sw * pw)
+			defer bp.done(buf)
+			t := *buf // a padded row: t[j] = the input's column j - pl
+			for c := lo; c < hi; c++ {
+				src := x.f[(b*cin+c)*ih*iw:][:ih*iw]
+				for r := range pr {
+					phase := func(q int) []float32 { return ph[c*plane+(q*pr+r)*pw:][:pw] }
+					y := r - pt
+					if y < 0 || y >= ih {
+						for q := range sw {
+							clear(phase(q))
+						}
+						continue
+					}
+					s := src[y*iw:][:iw]
+					a, e := min(pl, len(t)), min(len(t), iw+pl)
+					clear(t[:a])
+					if a < e {
+						copy(t[a:e], s[a-pl:e-pl])
+					}
+					clear(t[max(a, e):])
+					switch sw {
+					case 1:
+						copy(phase(0), t)
+					case 2:
+						f32.Deinterleave2(phase(0), phase(1), t)
+					default:
+						for q := range sw {
+							row := phase(q)
+							for i := range row {
+								row[i] = t[sw*i+q]
+							}
+						}
+					}
+				}
+			}
+		})
+		parallel(len(pk.quads), func(lo, hi int) {
+			rows := make([]*float32, K)
+			for qi := lo; qi < hi; qi++ {
+				oq, w4, bq := pk.quads[qi], pk.w4[qi], pk.bias[qi]
+				g := oq.oc / perGroup
+				o := out.f[(b*cout+oq.oc)*oh*ow:][:oq.n*oh*ow]
+				for y := range oh {
+					j := 0
+					for ic := range cg {
+						base := (g*cg + ic) * plane
+						for ky := range kh {
+							r := y*sh + ky*dh
+							for kx := range kw {
+								q, off := kx*dw%sw, kx*dw/sw
+								rows[j] = &ph[base+(q*pr+r)*pw+off]
+								j++
+							}
+						}
+					}
+					rowsInto(o, oh*ow, y*ow, ow, oq.n, rows, w4, &bq, relu)
+				}
+			}
+		})
+	}
+}
+
+// packedConv is a convolution's weights as directConv and pointwise take them: its channels in
+// quads, each quad's weights interleaved and its bias.
+type packedConv struct {
+	quads []quad
+	w4    [][]float32
+	bias  [][4]float32
+}
+
+// packed is w and bias packed (packedConv), kept for the next runs when fixed (both are
+// constants of the program, whose buffers stay): repacking YuNet's every run made 180 KB.
+func (pl *pool) packed(w, bias *value, groups int, fixed bool) *packedConv {
+	key := unsafe.SliceData(w.f)
+	if fixed && pl != nil {
+		if pk, ok := pl.convs[key]; ok {
+			return pk
+		}
+	}
+	cout := w.shape[0]
+	K := len(w.f) / cout
+	pk := &packedConv{quads: quadsOf(cout, cout/groups)}
+	for _, oq := range pk.quads {
+		pk.w4 = append(pk.w4, interleave(nil, w.f[oq.oc*K:][:oq.n*K], oq.n, K))
+		pk.bias = append(pk.bias, biasOf(bias, oq.oc, oq.n))
+	}
+	if fixed && pl != nil {
+		if pl.convs == nil {
+			pl.convs = map[*float32]*packedConv{}
+		}
+		pl.convs[key] = pk
+	}
+	return pk
+}
+
+// quad is up to four output channels of one group, from oc: the outputs a pass of
+// f32.WeightedRows4 computes from the same input rows.
+type quad struct{ oc, n int }
+
+// quadsOf cuts cout channels into quads, none across groups of perGroup.
+func quadsOf(cout, perGroup int) []quad {
+	var qs []quad
+	for g0 := 0; g0 < cout; g0 += perGroup {
+		for oc := g0; oc < g0+perGroup; oc += 4 {
+			qs = append(qs, quad{oc, min(4, g0+perGroup-oc)})
+		}
+	}
+	return qs
+}
+
+// interleave is the weights of n (up to 4) output channels, K each, as WeightedRows4 takes
+// them: tap j's four together (w4[4j+o]), zeros for the channels past n.
+func interleave(w4, w []float32, n, K int) []float32 {
+	if cap(w4) < 4*K {
+		w4 = make([]float32, 4*K)
+	}
+	w4 = w4[:4*K]
+	clear(w4)
+	for o := range n {
+		for j := range K {
+			w4[4*j+o] = w[o*K+j]
+		}
+	}
+	return w4
+}
+
+// biasOf is the bias of n channels from oc (zeros past them, and without a bias).
+func biasOf(bias *value, oc, n int) [4]float32 {
+	var b [4]float32
+	if bias != nil {
+		copy(b[:n], bias.f[oc:oc+n])
+	}
+	return b
+}
+
+// rowsInto writes columns [at, at+m) of n output planes (each of size plane, one after the
+// other in o) from rows: WeightedRows4 on four, WeightedRows on fewer.
+func rowsInto(o []float32, plane, at, m, n int, rows []*float32, w4 []float32, b *[4]float32, relu bool) {
+	if n == 4 {
+		dst := [4]*float32{&o[at], &o[plane+at], &o[2*plane+at], &o[3*plane+at]}
+		f32.WeightedRows4(&dst, m, rows, w4, b, relu)
+		return
+	}
+	var buf [max(pointwiseK, directK)]float32 // the taps' weights of one channel
+	wj := buf[:len(rows)]
+	for c := range n {
+		for j := range wj {
+			wj[j] = w4[4*j+c]
+		}
+		f32.WeightedRows(o[c*plane+at:][:m], rows, wj, b[c], relu)
+	}
+}
+
+// pointwiseK is the most input channels a 1 x 1 convolution of stride 1 is computed with as
+// weighted sums of its input planes (pointwise) rather than as a product on sgemm: YuNet's
+// 32 to 64 channels at 64 x 80 took 0.41 ms on sgemm (packing what is read once), 0.33 here;
+// beyond a few hundred channels sgemm's blocking over them wins.
+const pointwiseK = 256
+
+// pointwise is a 1 x 1 convolution of stride 1 without pads into out: each output plane the
+// weighted sum of its group's input planes (f32.WeightedRows4, four output channels a pass),
+// in blocks of columns whose input stays in the core's first cache.
+func pointwise(bp *pool, x, w, bias, out *value, groups int, relu bool, pk *packedConv) {
+	n, cin := x.shape[0], x.shape[1]
+	cout, cg := w.shape[0], w.shape[1]
+	N := x.shape[2] * x.shape[3]
+	perGroup := cout / groups
+	cb := max(16, (8192/cg)&^15) // cg rows of cb floats: 32 KB, the core's first cache's 48 less the outputs
+	for b := range n {
+		blocks := (N + cb - 1) / cb
+		parallel(blocks, func(lo, hi int) {
+			rows := make([]*float32, cg)
+			// the block's input rows packed, cb+16 apart: planes of 4 KB multiples (YuNet's
+			// 64 x 80) put one column of every row in the same set of the first cache, whose
+			// 12 ways the rows then evicted each other from (slower than sgemm)
+			st := cb + 16
+			buf := bp.work(groups * cg * st)
+			defer bp.done(buf)
+			in := *buf
+			for blk := lo; blk < hi; blk++ {
+				c0 := blk * cb
+				m := min(cb, N-c0)
+				for ic := range groups * cg {
+					copy(in[ic*st:][:m], x.f[(b*cin+ic)*N+c0:][:m])
+				}
+				for i, oq := range pk.quads {
+					g := oq.oc / perGroup
+					for ic := range cg {
+						rows[ic] = &in[(g*cg+ic)*st]
+					}
+					rowsInto(out.f[(b*cout+oq.oc)*N:], N, c0, m, oq.n, rows, pk.w4[i], &pk.bias[i], relu)
+				}
+			}
+		})
 	}
 }
 
@@ -1592,7 +1903,7 @@ func shiftScale(data, scale, offset *value) (*value, error) {
 
 // maxPool2d is a 2 D max pool of x (n, c, h, w) with kernel k, strides st and pads (top, bottom,
 // left, right), the padding never chosen.
-func maxPool2d(x *value, k, st, pad []int32) (*value, error) {
+func maxPool2d(bp *pool, x *value, k, st, pad []int32) (*value, error) {
 	if len(x.shape) != 4 || len(k) != 2 || len(st) != 2 || len(pad) != 4 {
 		return nil, fmt.Errorf("max_pool of %v with kernel %v, strides %v, pad %v", x.shape, k, st, pad)
 	}
@@ -1600,7 +1911,19 @@ func maxPool2d(x *value, k, st, pad []int32) (*value, error) {
 	kh, kw, sh, sw := int(k[0]), int(k[1]), int(st[0]), int(st[1])
 	pt, pb, pl, pr := int(pad[0]), int(pad[1]), int(pad[2]), int(pad[3])
 	oh, ow := (h+pt+pb-kh)/sh+1, (w+pl+pr-kw)/sw+1
-	out := &value{shape: []int{n, c, oh, ow}, f: make([]float32, n*c*oh*ow)}
+	out := &value{shape: []int{n, c, oh, ow}, f: bp.get(n * c * oh * ow)}
+	if kh == 2 && kw == 2 && sh == 2 && sw == 2 && pt == 0 && pl == 0 && 2*oh <= h && 2*ow <= w {
+		// YuNet's: two rows to one, f32.MaxPool2 (AVX2)
+		parallel(n*c, func(lo, hi int) {
+			for p := lo; p < hi; p++ {
+				src, dst := x.f[p*h*w:(p+1)*h*w], out.f[p*oh*ow:(p+1)*oh*ow]
+				for i := range oh {
+					f32.MaxPool2(dst[i*ow:(i+1)*ow], src[2*i*w:], src[(2*i+1)*w:])
+				}
+			}
+		})
+		return out, nil
+	}
 	parallel(n*c, func(lo, hi int) {
 		for p := lo; p < hi; p++ {
 			src, dst := x.f[p*h*w:(p+1)*h*w], out.f[p*oh*ow:(p+1)*oh*ow]
