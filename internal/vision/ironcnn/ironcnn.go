@@ -22,6 +22,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 )
 
 // Export is model.json of an export: the graph's input grid and its outputs, each a
@@ -162,13 +163,19 @@ func (g *Graph) Run(ctx context.Context, px []float32) ([][]float32, error) {
 
 func (g *Graph) Close() error { return g.g.Close() }
 
-// Make makes the export of the ONNX file model in out with IRON's python (chat.IRONPython):
-// the graph from its input (size x size) to the values outputs, with iron_onnxcnn.py's options
-// opts.
-func Make(ctx context.Context, python []string, name, model, out string, size int, outputs, opts []string, log io.Writer) error {
-	args := append([]string{model, chat.ExportOut, "--size", fmt.Sprintf("%dx%d", size, size)}, opts...)
-	args = append(append(args, "--outputs"), outputs...)
-	return chat.RunIRON(ctx, python, name, "iron_onnxcnn.py", args, out, log)
+// Tool is the script of tools/amd whose exports the package reads.
+const Tool = "iron_onnxcnn.py"
+
+// Make makes the export of the ONNX file model in out with IRON's python (chat.IRONPython), as
+// the recipe of the model of the definitions named name says (model-recipes.yaml; its options):
+// the graph from its input (size x size, recipe.Size) to the values outputs (recipe.Outputs).
+func Make(ctx context.Context, python []string, name, model, out string, size int, outputs []string, log io.Writer) error {
+	m, ok := chat.Lookup(name)
+	if !ok {
+		return fmt.Errorf("ironcnn: %s is not a model of the definitions", name)
+	}
+	vars := map[string][]string{recipe.In: {model}, recipe.Size: {fmt.Sprintf("%dx%d", size, size)}, recipe.Outputs: outputs}
+	return chat.RunAMDRecipe(ctx, python, m, vars, out, log, Tool)
 }
 
 // LastConvs are the outputs of g's convolutions that no convolution reads (directly or

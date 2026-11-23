@@ -89,7 +89,7 @@ func ExportNPU(ctx context.Context, python []string, name, model, out string, lo
 	if err != nil {
 		return err
 	}
-	if err := ironcnn.Make(ctx, python, name, model, out, Size, names, nil, log); err != nil {
+	if err := ironcnn.Make(ctx, python, name, model, out, Size, names, log); err != nil {
 		return err
 	}
 	b, err := json.Marshal(headsJSON{names, scales})

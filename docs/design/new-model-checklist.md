@@ -411,7 +411,7 @@ A model is not done until a name, a family or a use prepares and runs it on ever
 
 1. **An export here** with its `NAME.done` (written last); a cut-off one is made again
 2. **An export in the sources** (`HWNPU_MODEL_SOURCE`): the entry of the same recipe, else one a person imported by name (`hwnpu-dev sources import`)
-3. **A conversion here**: download only the files the converter reads, check sha256, convert, write `.done`. Apple and Intel use the Go converters (`chat.Prepare`, `anima.Prepare`); AMD runs the IRON exporters built into hwnpu (`chat.PrepareAMD`, `amd_export`, `HWNPU_IRON_ENV`). Missing IRON: stop and say what to install (INSTALL_AMD.md)
+3. **A conversion here**: download only the files the converter reads, check sha256, convert, write `.done`. Apple and Intel use the Go converters (`chat.Prepare`, `anima.Prepare`); AMD runs the IRON exporters built into hwnpu (`chat.PrepareAMD`, model-recipes.yaml's `amd`, `HWNPU_IRON_ENV`). Missing IRON: stop and say what to install (INSTALL_AMD.md)
 4. **Not usable**: stop and say what is missing
 
 - Never download the whole repository (Sana's held 16.5 GB, 8.9 needed); share files models of a family hold in common

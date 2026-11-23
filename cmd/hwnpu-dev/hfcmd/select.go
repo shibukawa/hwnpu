@@ -277,7 +277,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 	if pinnedAMD {
 		// above
 	} else if m.Targets[cache.AMDTarget] == 0 {
-		amd.why = append(amd.why, "write targets.amd-xdna2.version")
+		amd.why = append(amd.why, "write models."+m.Name+".amd.version in model-recipes.yaml")
 	}
 	wants, err := amdWants(ctx, m)
 	switch {

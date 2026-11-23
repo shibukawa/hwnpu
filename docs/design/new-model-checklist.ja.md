@@ -411,7 +411,7 @@ KL だけで決めない。用途での答えを bf16 / fp16 と並べる:
 
 1. **手元の書き出し**で `NAME.done` (最後に書く) のあるもの。途中で切れたものは作り直す
 2. **取得元の書き出し** (`HWNPU_MODEL_SOURCE`): 同じレシピの項目、なければ人が名前で置いたもの (`hwnpu-dev sources import`)
-3. **手元での変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換し、`.done` を書く。Apple と Intel は Go の変換器 (`chat.Prepare`、`anima.Prepare`)。AMD は hwnpu に入った IRON の書き出し器 (`chat.PrepareAMD`、`amd_export`、`HWNPU_IRON_ENV`)。IRON がなければ止めて、入れるものを言う (INSTALL_AMD.md)
+3. **手元での変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換し、`.done` を書く。Apple と Intel は Go の変換器 (`chat.Prepare`、`anima.Prepare`)。AMD は hwnpu に入った IRON の書き出し器 (`chat.PrepareAMD`、model-recipes.yaml の `amd`、`HWNPU_IRON_ENV`)。IRON がなければ止めて、入れるものを言う (INSTALL_AMD.md)
 4. **使えない**: 止めて、何が足りないかを言う
 
 - リポジトリを丸ごと落とさない (Sana のものは 16.5 GB で、要るのは 8.9)。ファミリーで共通のファイルは共有する

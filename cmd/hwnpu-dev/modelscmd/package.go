@@ -167,6 +167,12 @@ func parseJobs(sel []string) ([]job, error) {
 				return nil, fmt.Errorf("%s: %w", s, err)
 			}
 			ts = []string{cache.CoreAITarget}
+		case recipe.GenerationOf(target) != "":
+			// an export for AMD's NPU of a generation: one its recipe makes, and hwnpu runs
+			if err := amdGeneration(m, recipe.GenerationOf(target)); err != nil {
+				return nil, fmt.Errorf("%s: %w", s, err)
+			}
+			ts = []string{target}
 		case target != "":
 			if !slices.Contains(targets, target) {
 				return nil, fmt.Errorf("%s: no target %q (%s, %s-ARCH)", s, target, strings.Join(targets, ", "), cache.CoreAITarget)
@@ -174,22 +180,46 @@ func parseJobs(sel []string) ([]job, error) {
 			ts = []string{target}
 		default:
 			for _, t := range targets {
-				if _, ok := m.Targets[t]; ok {
+				// (AMD's from its recipe, below, which gives its version too)
+				if _, ok := m.Targets[t]; ok && recipe.GenerationOf(t) == "" {
 					ts = append(ts, t)
 				}
 			}
-			if len(ts) == 0 {
-				// what its recipe makes: the Core AI exports prebuilt for its architectures
-				recipes, err := recipe.Builtin()
-				if err != nil {
-					return nil, err
+			recipes, err := recipe.Builtin()
+			if err != nil {
+				return nil, err
+			}
+			// and what its recipe makes: the exports for AMD's NPU of its generations (but
+			// on a Mac, which has no IRON), the Core AI exports (each of its rewrites)
+			// prebuilt for its architectures (on a Mac alone: elsewhere they cannot be
+			// compiled)
+			if _, ok := recipes.AMDOf(m.Recipe); ok {
+				gens, skips := recipes.AMDGenerations(m.Recipe)
+				for _, sk := range skips {
+					fmt.Fprintf(os.Stderr, "%s: not made for %s (model-recipes.yaml skip: %s, %s)\n", m.Name, sk.Generation, sk.Why, sk.Checked)
 				}
-				if r, ok := recipes.Models[m.Name]; ok && r.Apple != nil {
-					ts, archs = []string{cache.CoreAITarget}, recipes.AppleOf(m.Name).Archs
+				for _, gen := range gens {
+					t := recipe.AMDTarget(gen)
+					switch err := amdGeneration(m, gen); {
+					case err != nil:
+						fmt.Fprintf(os.Stderr, "%s: %v: skipped\n", m.Name, err)
+					case slices.Contains(ts, t):
+					case canExportAMD() != nil:
+						fmt.Fprintf(os.Stderr, "%s: its recipe's exports for AMD's NPU (%s/%s) are made on Linux or Windows with IRON: skipped here\n", m.Name, m.Name, t)
+					default:
+						ts = append(ts, t)
+					}
+				}
+			}
+			if r, ok := recipes.Models[m.Recipe]; ok && r.Apple != nil && !slices.Contains(ts, cache.CoreAITarget) {
+				if err := canCompile(); err != nil {
+					fmt.Fprintf(os.Stderr, "%s: its recipe's Core AI exports (%s/%s-ARCH) are made on a Mac: skipped here\n", m.Name, m.Name, cache.CoreAITarget)
+				} else {
+					ts, archs = append(ts, cache.CoreAITarget), recipes.AppleOf(m.Recipe).Archs
 				}
 			}
 			if len(ts) == 0 {
-				return nil, fmt.Errorf("%s: neither its definition nor its recipe (model-recipes.yaml) gives versions of targets: name one (%s/%s)", m.Name, m.Name, strings.Join(targets, ", "+m.Name+"/"))
+				return nil, fmt.Errorf("%s: neither its definition nor its recipe (model-recipes.yaml) gives versions of targets this machine makes: name one (%s/%s)", m.Name, m.Name, strings.Join(targets, ", "+m.Name+"/"))
 			}
 		}
 		for _, t := range ts {
@@ -235,9 +265,9 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 	var out []prepared
 	for _, j := range jobs {
 		if j.target == cache.AMDTarget && j.model.Kind == chat.KindChat {
-			// IRON's exports of chat models, every form of amd_export (sourcescmd.AMDForms)
+			// IRON's exports of chat models, every form of their recipe (sourcescmd.AMDForms)
 			if len(j.model.AMDExport) == 0 {
-				return out, fmt.Errorf("%s has no amd_export", j.model.Name)
+				return out, fmt.Errorf("%s has no recipe of iron_export_lm.py (model-recipes.yaml)", j.model.Name)
 			}
 			if missing == nil {
 				if err := (sourcescmd.AMDExport{Model: []string{j.model.Name}}).Make(ctx, memory); err != nil {
@@ -304,6 +334,26 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 	}
 	shared.Flush(ctx)
 	return out, ctx.Err()
+}
+
+// amdGeneration is why model m's export for generation gen of AMD's NPU is not made: its recipe
+// skips gen (model-recipes.yaml skip), or hwnpu does not run that generation's exports yet
+// (recipe.Built); nil when it is made.
+func amdGeneration(m chat.Model, gen string) error {
+	recipes, err := recipe.Builtin()
+	if err != nil {
+		return err
+	}
+	_, skips := recipes.AMDGenerations(m.Recipe)
+	for _, sk := range skips {
+		if sk.Generation == gen {
+			return fmt.Errorf("its recipe makes no export for %s (model-recipes.yaml skip: %s, %s)", gen, sk.Why, sk.Checked)
+		}
+	}
+	if !slices.Contains(recipe.Built, gen) {
+		return fmt.Errorf("hwnpu does not run the exports of %s (%s) yet: none is made", gen, recipe.AMDTarget(gen))
+	}
+	return nil
 }
 
 // forms are model m as machines of each memory run it (Model.On), once for each way to run it:

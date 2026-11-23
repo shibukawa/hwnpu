@@ -255,6 +255,14 @@ const snakeSmall = 1e-2
 // AI takes it off as another input (mg2), as it folds (v + mg) - mg into v (docs/design/audio-models.md).
 const Magic = 1536
 
+// SinSeries and SinNative are the ways of the rewrite "sin" (llm.Options.Rewrites): snake's sine
+// by range reduction and its series (the default: M1's Neural Engine has no sin), or the
+// operation itself.
+const (
+	SinSeries = "series"
+	SinNative = "native"
+)
+
 // sinTerms are sin(pi / 2 w) = w (b0 + b1 w^2 + ... + b4 w^8) for |w| <= 1, Taylor's terms (the
 // next, 3.6e-6, is under fp16's precision and its smallest normal number).
 var sinTerms = func() []float32 {
@@ -300,6 +308,12 @@ func (d *dac) snake(x *mlpackage.Var, name string) *mlpackage.Var {
 	}
 	vec := func(suffix string, v []float32) *mlpackage.Var {
 		return d.F16s(name+suffix, []int{1, c, 1, 1}, v)
+	}
+	if d.mg2 != nil && d.Opts.Rewrites["sin"] == SinNative {
+		// Core AI on a Neural Engine with sin (recipe rewrite sin: native): y unclipped, as the
+		// clip is for the rounding and a clip before sin is fused into it ("NEFUSED_EW: EW: MAX",
+		// which h15g's compiler rejects too)
+		return d.snakeOut(x, d.unary("sin", d.mul(x, vec("_alpha", big))), name, inv, small, root, sign, anySmall)
 	}
 	y := d.clip(d.mul(x, vec("_alpha", big)), -1500, 1500)
 	var w *mlpackage.Var

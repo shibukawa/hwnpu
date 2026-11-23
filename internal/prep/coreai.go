@@ -15,6 +15,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/notes"
 	"github.com/shibukawa/hwnpu/internal/pitch"
 	"github.com/shibukawa/hwnpu/internal/pose"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	"github.com/shibukawa/hwnpu/internal/sfx"
 	"github.com/shibukawa/hwnpu/internal/systemone"
 	"github.com/shibukawa/hwnpu/internal/vision/detect"
@@ -80,12 +81,21 @@ func init() {
 		if e.Model.Machine == 0 {
 			machines = []int{8, 16}
 		}
+		// and the decoder's export of each of the recipe's rewrites (model-recipes.yaml), for
+		// the chips of each
+		recipes, err := recipe.Builtin()
+		if err != nil {
+			return err
+		}
 		for _, gb := range machines {
-			p, err := sfx.Prepare(e.Ctx, sfx.Setup{Dir: chat.ModelDir(e.Model), Repo: e.Model.Source(), Machine: gb, Backend: llm.BackendCoreAI, Log: e.Log})
-			if err != nil {
-				return err
+			for _, arch := range recipes.AppleOf(e.Model.Name).RewriteArchs() {
+				p, err := sfx.Prepare(e.Ctx, sfx.Setup{Dir: chat.ModelDir(e.Model), Repo: e.Model.Source(), Machine: gb, Backend: llm.BackendCoreAI,
+					Model: e.Model.Name, Arch: arch, Log: e.Log})
+				if err != nil {
+					return err
+				}
+				f.Set(fmt.Sprintf("dir-%dg", gb), p.Dir)
 			}
-			f.Set(fmt.Sprintf("dir-%dg", gb), p.Dir)
 		}
 		return nil
 	})})

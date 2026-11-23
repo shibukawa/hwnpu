@@ -31,7 +31,7 @@ The NPUs:
 
 | Feature | In the cloud | hwnpu | Models | Apple | Intel | AMD |
 |---|---|---|---|---|---|---|
-| Chat, coding | OpenAI Chat Completions, Gemini, Bedrock | `hwnpu-chat`, `agent`, `serve` (`/v1/chat/completions`) | LFM3, Gemma 4, Qwen3.5 and others | ◎ | ○ | ◎ (models.yaml's `amd_export`) |
+| Chat, coding | OpenAI Chat Completions, Gemini, Bedrock | `hwnpu-chat`, `agent`, `serve` (`/v1/chat/completions`) | LFM3, Gemma 4, Qwen3.5 and others | ◎ | ○ | ◎ (model-recipes.yaml's `amd`) |
 | Questions about images | GPT's image input, Gemini | `hwnpu-chat -m vision` | LFM3-VL-2B, Gemma 4 E2B with images and audio | ◎ | ○ | ◎ |
 | Questions about audio | GPT's audio input, Gemini | `hwnpu-chat -m audio` | LFM3-Audio / Omni, Gemma 4 E2B | ◎ | ○ | ◎ |
 | Translation | Cloud Translation, Azure Translator, DeepL | `hwnpu-chat -m translate` | PLaMo 3 Translate 0.8B / 2B | ◎ | ○ | ◎ |

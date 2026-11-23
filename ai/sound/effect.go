@@ -50,6 +50,9 @@ var effectRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &EffectGenerator{remote: h} },
 	Name:   "sfx",
 	Kinds:  []chat.Kind{chat.KindSFX},
+	// 1: the decoder's export of this Mac's chip's rewrites (model-recipes.yaml: sin as it is on
+	// M3 and later), not the one prepared before
+	Revision: 1,
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		cpu := e.NPU.CPU(e.Model)
 		var p sfx.Paths
@@ -68,7 +71,7 @@ var effectRole = &airole.Role{
 				}
 			}
 			if p, err = sfx.Prepare(e.Ctx, sfx.Setup{Dir: e.Dir, Repo: e.Model.Source(), Machine: e.Base.Machine,
-				TextFormat: e.Model.Settings["text-format"], DitFormat: e.Model.Settings["dit-format"], Backend: backend, Log: e.Log}); err != nil {
+				TextFormat: e.Model.Settings["text-format"], DitFormat: e.Model.Settings["dit-format"], Backend: backend, Model: e.Base.Name, Log: e.Log}); err != nil {
 				return f, err
 			}
 		}

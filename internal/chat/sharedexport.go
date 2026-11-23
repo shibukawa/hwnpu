@@ -38,6 +38,11 @@ func placeOf(kind string, m Model, target, export string, r map[string]string) p
 	key := shared.Fingerprint(r)
 	v := m.Targets[target]
 	pin, pinned := PinOf(m, target, export)
+	if pinned && !pin.OfVersion(v) {
+		// a pin of another version (made before the recipe's version was raised): not taken,
+		// the version's export is made or fetched (hwnpu-dev models pin pins it then)
+		pinned = false
+	}
 	if pinned {
 		v = 0 // what is made here goes beside the pinned one, as v0-HASH of its recipe
 	}

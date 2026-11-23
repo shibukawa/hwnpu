@@ -94,7 +94,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (Config, error
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return chat.RunIRON(ctx, python, m.Name, AMDTool, []string{chat.RepoDir(m.Repo), chat.ExportOut}, out, log)
+		return chat.RunAMDRecipe(ctx, python, m, chat.InVar(chat.RepoDir(m.Repo)), out, log, AMDTool)
 	})
 	if err != nil {
 		return Config{}, err

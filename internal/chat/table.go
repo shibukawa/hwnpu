@@ -197,9 +197,6 @@ type modelEntry struct {
 	// Device is where the model runs by the vendor of the machine's NPU (amd: cpu); a file
 	// over another changes the vendors it names and keeps the others.
 	Device *map[string]string `yaml:"device"`
-	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU: its model
-	// and options (lfm3 --max-seq-len 12288 --q4), run when the export is not here.
-	AMDExport *string `yaml:"amd_export"`
 	// ExpertsCore are a mixture of experts' experts that every kind of text runs, by layer: the
 	// host wires them from the first run when not every expert fits (experts.Placement.Core;
 	// tools/moeusage finds them).
@@ -644,6 +641,9 @@ func (t *table) build() ([]Model, []Category, map[string]string, error) {
 			continue
 		}
 		m, err := toModel(name, e)
+		if err == nil {
+			err = applyRecipe(&m, t.recipeOf(name))
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("chat: %s: %w", strings.Join(t.origin[name], ", "), err))
 			continue
@@ -720,7 +720,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out.Hub, out.hubFiles = e.Hub, e.hubFiles // nor are its conversions
 	out.Exports = e.Exports                   // nor the pins of the base's (their folders are the base's)
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Disk: e.Disk, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
+		Memory: e.Memory, Bytes: e.Bytes, Disk: e.Disk, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, ExpertsCore: e.ExpertsCore, File: e.File, With: e.With,
 		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn,
 		Settings: e.Settings, Programs: e.Programs})
 	return &out, nil
@@ -736,7 +736,6 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		return *p
 	}
 	m.Family, m.Tag, m.About, m.Arch, m.File = get(e.Family), get(e.Tag), get(e.About), get(e.Arch), get(e.File)
-	m.AMDExport = strings.Fields(get(e.AMDExport))
 	if e.ExpertsCore != nil {
 		m.ExpertsCore = *e.ExpertsCore
 	}

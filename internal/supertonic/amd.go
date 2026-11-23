@@ -14,6 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
@@ -117,11 +118,12 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 		if err := chat.FetchFiles(ctx, want, log); err != nil {
 			return err
 		}
-		args := []string{filepath.Join(chat.RepoDir(m.Repo), "onnx"), chat.ExportOut, "--sizes"}
+		var sizes []string
 		for _, s := range Sizes {
-			args = append(args, fmt.Sprintf("%dx%d", s.T, s.L))
+			sizes = append(sizes, fmt.Sprintf("%dx%d", s.T, s.L))
 		}
-		return chat.RunIRON(ctx, python, m.Name, AMDTool, args, out, log)
+		vars := map[string][]string{recipe.In: {filepath.Join(chat.RepoDir(m.Repo), "onnx")}, recipe.Sizes: sizes}
+		return chat.RunAMDRecipe(ctx, python, m, vars, out, log, AMDTool)
 	})
 	if err != nil {
 		return "", err

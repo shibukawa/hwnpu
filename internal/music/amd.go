@@ -88,7 +88,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 		if err := chat.FetchFiles(ctx, []chat.File{{Repo: m.Repo, Name: Files[0]}}, log); err != nil {
 			return err
 		}
-		return chat.RunIRON(ctx, python, m.Name, AMDTool, []string{chat.RepoDir(m.Repo), chat.ExportOut}, out, log)
+		return chat.RunAMDRecipe(ctx, python, m, chat.InVar(chat.RepoDir(m.Repo)), out, log, AMDTool)
 	})
 	if err != nil {
 		return "", err

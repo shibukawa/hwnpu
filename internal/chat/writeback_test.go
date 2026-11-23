@@ -142,15 +142,22 @@ func TestSharedExport(t *testing.T) {
 		{"no version", "", "v0-", false},
 		{"version", "    targets: {amd-xdna2: {version: 3}}\n", "v3", true},
 		{"develop", "    targets: {amd-xdna2: {version: 3}}\n    develop: true\n", "v3-", false},
+		// the version of its recipe (model-recipes.yaml: LFM3-1.7B's is 1)
+		{"recipe", "", "v1", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			share := filepath.Join(share, strings.ReplaceAll(c.name, " ", "-"))
-			if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}, "version: 1\nmodels:\n  LFM3-1.7B:\n"+c.defs+"    machine: 8\n"); err != nil {
+			// a model of no recipe but for "recipe"
+			name, defs := "x-lm", "  x-lm:\n    from: hf:a/x-lm\n    kind: chat\n"+c.defs+"    machine: 8\n"
+			if c.name == "recipe" {
+				name, defs = "LFM3-1.7B", "  LFM3-1.7B:\n    machine: 8\n"
+			}
+			if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}, "version: 1\nmodels:\n"+defs); err != nil {
 				t.Fatal(err)
 			}
-			recipe := map[string]string{"model": "LFM3-1.7B", "target": cache.AMDTarget, "commit": testCommit, "tools": "t1"}
+			recipe := map[string]string{"model": name, "target": cache.AMDTarget, "commit": testCommit, "tools": "t1"}
 			t.Setenv(cache.RootEnv, t.TempDir())
-			out := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+			out := filepath.Join(t.TempDir(), name+".amd-npu2")
 			built := 0
 			if err := SharedExport(ctx, "iron-lm", recipe, out, nil, build(out, &built)); err != nil {
 				t.Fatal(err)
@@ -160,11 +167,11 @@ func TestSharedExport(t *testing.T) {
 				t.Fatalf("built %d", built)
 			}
 			es, _ := shared.ListEntries(ctx, shared.Sources()[0])
-			if len(es) != 1 || !strings.HasPrefix(es[0], "converted/LFM3-1.7B/amd-xdna2/LFM3-1.7B.amd-npu2/"+c.dir) || c.dir == "v3" && !strings.HasSuffix(es[0], "/v3") {
+			if len(es) != 1 || !strings.HasPrefix(es[0], "converted/"+name+"/amd-xdna2/"+name+".amd-npu2/"+c.dir) || (c.dir == "v3" || c.dir == "v1") && !strings.HasSuffix(es[0], "/"+c.dir) {
 				t.Fatalf("entries %v", es)
 			}
 			t.Setenv(cache.RootEnv, t.TempDir()) // another machine
-			out2 := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+			out2 := filepath.Join(t.TempDir(), name+".amd-npu2")
 			if err := SharedExport(ctx, "iron-lm", recipe, out2, nil, build(out2, &built)); err != nil {
 				t.Fatal(err)
 			}
@@ -175,7 +182,7 @@ func TestSharedExport(t *testing.T) {
 				t.Error("no .done")
 			}
 			recipe["tools"] = "t2"
-			out3 := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+			out3 := filepath.Join(t.TempDir(), name+".amd-npu2")
 			if err := SharedExport(ctx, "iron-lm", recipe, out3, nil, build(out3, &built)); err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +190,7 @@ func TestSharedExport(t *testing.T) {
 				t.Errorf("built %d with other tools, want %d", built, want)
 			}
 			recipe["commit"] = strings.Repeat("f", 40)
-			out4 := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+			out4 := filepath.Join(t.TempDir(), name+".amd-npu2")
 			before := built
 			if err := SharedExport(ctx, "iron-lm", recipe, out4, nil, build(out4, &built)); err != nil {
 				t.Fatal(err)
@@ -339,7 +346,7 @@ func TestFetchFiles(t *testing.T) {
 func TestSharedExportVersionWritten(t *testing.T) {
 	ctx := context.Background()
 	share := t.TempDir()
-	recipe := map[string]string{"model": "LFM3-1.7B", "target": cache.AMDTarget, "commit": testCommit, "tools": "t1"}
+	recipe := map[string]string{"model": "x-lm", "target": cache.AMDTarget, "commit": testCommit, "tools": "t1"}
 	built := 0
 	build := func(out string) func() error {
 		return func() error {
@@ -349,20 +356,20 @@ func TestSharedExportVersionWritten(t *testing.T) {
 		}
 	}
 	src := []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}
-	if _, err := withSources(t, src, "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n"); err != nil {
+	if _, err := withSources(t, src, "version: 1\nmodels:\n  x-lm:\n    from: hf:a/x-lm\n    kind: chat\n    machine: 8\n"); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(cache.RootEnv, t.TempDir())
-	out := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+	out := filepath.Join(t.TempDir(), "x-lm.amd-npu2")
 	if err := SharedExport(ctx, "iron-lm", recipe, out, nil, build(out)); err != nil {
 		t.Fatal(err)
 	}
 	shared.Flush(ctx)
-	if _, err := withSources(t, src, "version: 1\nmodels:\n  LFM3-1.7B:\n    targets: {amd-xdna2: {version: 2}}\n    machine: 8\n"); err != nil {
+	if _, err := withSources(t, src, "version: 1\nmodels:\n  x-lm:\n    from: hf:a/x-lm\n    kind: chat\n    targets: {amd-xdna2: {version: 2}}\n    machine: 8\n"); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(cache.RootEnv, t.TempDir()) // another machine
-	out2 := filepath.Join(t.TempDir(), "LFM3-1.7B.amd-npu2")
+	out2 := filepath.Join(t.TempDir(), "x-lm.amd-npu2")
 	if err := SharedExport(ctx, "iron-lm", recipe, out2, nil, build(out2)); err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +381,7 @@ func TestSharedExportVersionWritten(t *testing.T) {
 		t.Errorf("here: %+v %v", e, err)
 	}
 	es, _ := shared.ListEntries(ctx, shared.Sources()[0])
-	if !slices.ContainsFunc(es, func(p string) bool { return strings.HasSuffix(p, "LFM3-1.7B.amd-npu2/v2") }) {
+	if !slices.ContainsFunc(es, func(p string) bool { return strings.HasSuffix(p, "x-lm.amd-npu2/v2") }) {
 		t.Errorf("not put at the version: %v", es)
 	}
 	// taken here again without the sources

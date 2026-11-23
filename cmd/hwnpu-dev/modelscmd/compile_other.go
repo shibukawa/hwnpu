@@ -13,3 +13,6 @@ var errNoCompiler = errors.New("Core AI's programs are compiled for coreai-ARCH 
 func canCompile() error { return errNoCompiler }
 
 func compile(context.Context, []string, []string, string, compileFlags) error { return errNoCompiler }
+
+// canExportAMD is why this OS cannot make exports for AMD's NPU (IRON runs on Linux and Windows).
+func canExportAMD() error { return nil }

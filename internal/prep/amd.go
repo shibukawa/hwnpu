@@ -121,9 +121,9 @@ func init() {
 		return err
 	})})
 	Register(&Preparer{Name: "decision", Kinds: []chat.Kind{chat.KindDecision}, Targets: amd, Prepare: amdOnly(func(e airole.PrepareEnv, f *airole.Files) error {
-		// d1: an export of tools/amd/iron_export_lm.py d1 (models.yaml's amd_export), as a chat model's
+		// d1: an export of tools/amd/iron_export_lm.py d1 (its recipe, model-recipes.yaml), as a chat model's
 		if len(e.Model.AMDExport) == 0 {
-			fmt.Fprintf(e.Log, "%s: no amd_export: nothing to make for AMD's NPU\n", e.Model.Name)
+			fmt.Fprintf(e.Log, "%s: no recipe of iron_export_lm.py: nothing to make for AMD's NPU\n", e.Model.Name)
 			return nil
 		}
 		dir, err := chat.AMDExportOf(chat.WithModel(e.Ctx, e.Model), e.Model, e.Log)

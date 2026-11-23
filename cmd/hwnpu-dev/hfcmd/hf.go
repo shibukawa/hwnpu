@@ -690,7 +690,11 @@ func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin 
 	}
 	pinnedAMD := target == groupAMD && len(m.Pins[cache.AMDTarget]) > 0
 	if m.Targets[conv] == 0 && !pinnedAMD {
-		report("-", "targets."+conv+".version is not written", true)
+		what := "targets." + conv + ".version"
+		if target == groupAMD {
+			what = "models." + m.Name + ".amd.version of model-recipes.yaml"
+		}
+		report("-", what+" is not written", true)
 	}
 	if pinnedAMD {
 		for _, export := range slices.Sorted(maps.Keys(m.Pins[cache.AMDTarget])) {

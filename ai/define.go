@@ -12,6 +12,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
 
@@ -154,6 +155,11 @@ func spec(m chat.Model) string {
 	}
 	for _, k := range slices.Sorted(maps.Keys(m.Programs)) {
 		parts = append(parts, "programs."+k+"="+strings.Join(m.Programs[k], ","))
+	}
+	// the developers' rewrites over the recipe's (internal/recipe.RewritesFor): what is prepared
+	// with them is not what is prepared without
+	if v := devenv.Value("rewrite"); v != "" {
+		parts = append(parts, "dev.rewrite="+v)
 	}
 	return strings.Join(parts, ";")
 }

@@ -1479,7 +1479,7 @@ d1-2B と d1-Omni-2B (Liquid AI、System One API) は、それまで AMD の書�
   - full attention の層 (`SetCache`) はプロンプトの塊の中で前後両方を見る (MHA の `causal` を切る。鍵は呼び出しの行まで)。sliding attention と短い畳み込みは因果のまま
   - 出力は最後の行の最終 norm の隠れ状態 (2048)。頭 (埋め込みと共有) は装置に置かず、ホストが答えのラベルの行と内積を取る (`iron.Model.EmbedRow`: 書き出しの `embed.bin`)。装置で語を引かない (`draw` を飛ばす)
 - **実行** (`internal/systemone/amd.go`): 1 問がプロンプトの塊 1 回、位置 0 から。だから 1 問は塊 (`--prefill-chunk 1024`、`--max-seq-len 1024`) 以内。画像と音声は LFM3-VL / Omni の塔と placed の塊をそのまま使う。塔は結果を 1 つしか持たないので、1 つの要求で画像 1 枚と音声 1 本 (話した質問を含む) まで。塔は要求ごとに 1 回
-- models.yaml の `amd_export: d1 --max-seq-len 1024 --prefill-chunk 1024 --q4` (d1-Omni は `d1omni`)。書き出しは 2 分半 (RSS 7.7 GB)
+- model-recipes.yaml の `args: [d1, "{in}", "{out}", --max-seq-len 1024 --prefill-chunk 1024 --q4` (d1-Omni は `d1omni`)。書き出しは 2 分半 (RSS 7.7 GB)
 - Ryzen AI 9 365 で: 1 問 360 ms (CPU のインタプリタは 9 秒)、画像付き 1.5 秒 (塔の読み込み 0.5 秒を含む)。固定 1.57 GiB (塔の読み込み後) とプロセスの 0.46 GiB
 - 答え: 「傘は要るか」0.9875 (CPU のインタプリタ lut8 で 0.9917)、天気「rainy」0.9909 (0.9919)、犬の写真で dog 0.9987、d1-Omni に読み上げの音声で話題「weather」0.973
 

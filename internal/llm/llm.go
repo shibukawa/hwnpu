@@ -185,6 +185,10 @@ type Options struct {
 	Backend string
 	// Params holds the architecture's own settings by Param name; missing ones take the default.
 	Params map[string]string
+	// Rewrites are how the program writes operations some Neural Engines do not run, by the
+	// operation (sin: series, native): what a model's recipe chose for the chips its export is
+	// for (model-recipes.yaml rewrite, internal/recipe). Missing ones take the model's default.
+	Rewrites map[string]string
 }
 
 // SelectRows is w with the matrix name read as its rows rows alone, in this order (Get), for an

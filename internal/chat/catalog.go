@@ -121,9 +121,13 @@ type Model struct {
 	// as it is; Resolve, ResolveFor and Pick give it On the machine.
 	Variants map[int]Variant
 	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU when its
-	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
-	// NPU has no form of.
+	// export is not here: the exporter's model and options (PrepareAMD), from its recipe
+	// (model-recipes.yaml amd: the args but {in} and {out}); none for a model AMD's NPU has no
+	// form of from that script.
 	AMDExport []string
+	// Recipe is the model whose recipe (model-recipes.yaml) this one is made by: its own, else
+	// that of the model it is like (models.yaml like); "" for none.
+	Recipe string
 	// ExpertsCore are the experts of each layer that every kind of text runs (models.yaml's
 	// experts_core), wired from the first run when the experts do not all fit (Config.Experts).
 	ExpertsCore [][]int

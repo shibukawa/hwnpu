@@ -11,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 )
 
 // AMDTool is the IRON exporter of FLUX.3 klein (tools/amd, built into hwnpu).
@@ -44,18 +45,18 @@ func AMDExportName(name string) string {
 	return strings.ToLower(name) + ".amd-npu2"
 }
 
-// amdArgs are AMDTool's options: every size of sizes in one export (the first's graphs hold the
-// banks).
-func amdArgs(sizes [][2]int) []string {
-	args := []string{"--size"}
+// amdVars are the values of the recipe's placeholders (model-recipes.yaml): every size of sizes
+// in one export (the first's graphs hold the banks).
+func amdVars(m chat.Model, sizes [][2]int) map[string][]string {
+	var ss []string
 	for _, s := range sizes {
 		if s[0] == s[1] {
-			args = append(args, fmt.Sprint(s[0]))
+			ss = append(ss, fmt.Sprint(s[0]))
 		} else {
-			args = append(args, fmt.Sprintf("%dx%d", s[0], s[1]))
+			ss = append(ss, fmt.Sprintf("%dx%d", s[0], s[1]))
 		}
 	}
-	return args
+	return map[string][]string{recipe.In: {chat.RepoDir(m.Repo)}, recipe.Sizes: ss}
 }
 
 // AMDRecipe is what PrepareAMD's export of m at sizes is made from (a key of the shared layers):
@@ -63,7 +64,7 @@ func amdArgs(sizes [][2]int) []string {
 func AMDRecipe(m chat.Model, sizes [][2]int) map[string]string {
 	r := chat.PinnedRecipe(m, AMDTool, AMDExportVersion)
 	if r != nil {
-		r["args"] = strings.Join(amdArgs(sizes), " ")
+		r["args"] = strings.Join(chat.AMDOptions(m, amdVars(m, sizes), AMDTool), " ")
 	}
 	return r
 }
@@ -133,8 +134,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, sizes [][2]int, w, h int, log
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		args := append([]string{chat.RepoDir(m.Repo), chat.ExportOut}, amdArgs(sizes)...)
-		return chat.RunIRON(ctx, python, m.Name, AMDTool, args, out, log)
+		return chat.RunAMDRecipe(ctx, python, m, amdVars(m, sizes), out, log, AMDTool)
 	})
 	if err != nil {
 		return "", err
