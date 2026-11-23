@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Chroma1's text encoder (T5-XXL's encoder) and FLUX's VAE decoder on IRON: the two graphs
-iron_chroma.py's DiT needs before and after it on AMD's NPU.
+iron_chroma.py's DiT needed before and after it on AMD's NPU. Chroma1 is removed
+(docs/not-adopted/chroma1.md, iron_chroma.py with it); FLUX.2 and FLUX.3 klein still take the VAE
+(FluxVaeStage, HOST_NORM) from here.
 
   t5      T5-XXL's encoder (transformers' T5EncoderModel: 24 layers, 4096 wide, 64 heads of 64, a
           gated tanh-GELU FF of 10240, RMS norms without a mean, no 1/sqrt(d) on the scores, one

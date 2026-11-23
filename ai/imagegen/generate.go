@@ -21,7 +21,7 @@ import (
 )
 
 // Generate is the use of a model that draws pictures for an app: a model, a family or a use of
-// the definitions ("image", "FLUX.2-klein-4B", "anima", "chroma", "flux3-klein"). FLUX.2 klein
+// the definitions ("image", "FLUX.2-klein-4B", "anima", "flux3-klein"). FLUX.2 klein
 // also draws from reference pictures: on AMD's NPU at every size, on Apple's Neural Engine at the
 // sizes of models.yaml npu.apple's edits (512 x 512; 1024 x 1024 with Edit, whose programs of a
 // reference of 1024 are an export of their own, compiled on the device).
@@ -43,7 +43,7 @@ func Edit(name string) ai.Use[*Generator] {
 //	settings: text-format  the text encoder's weight format (Apple's and Intel's conversions)
 //	          dit-format   the DiT's weight format
 //	          size         the picture's size the export is converted for, where an export holds
-//	                       one size (Anima on Intel's NPU, Chroma on Apple's): an aspect ratio
+//	                       one size (Anima on Intel's NPU): an aspect ratio
 //	                       (1:1, 1:1s, 16:9, ...) or a side in pixels; default 1:1
 //	          dit          Anima: the diffusion model, a file of split_files/diffusion_models/
 //	          group        Anima: the DiT's blocks a program holds
@@ -53,7 +53,7 @@ func Edit(name string) ai.Use[*Generator] {
 //	programs: export       an export's directory (Export): of tools/amd/iron_*.py for AMD's NPU,
 //	                       or of hwnpu-image convert; run as it is
 //
-// A model of device cpu (Anima, Chroma) runs a Core ML export with hwnpu's CPU interpreter
+// A model of device cpu (Anima) runs a Core ML export with hwnpu's CPU interpreter
 // (slow; for checking without the NPU).
 const (
 	SettingTextFormat  = "text-format"
@@ -73,15 +73,14 @@ var (
 
 // The families of the models the generator draws with (chat.Model's Family's prefix).
 const (
-	famKlein  = "flux2-klein"
-	famFlux3  = "flux3-klein"
-	famAnima  = "anima"
-	famChroma = "chroma"
+	famKlein = "flux2-klein"
+	famFlux3 = "flux3-klein"
+	famAnima = "anima"
 )
 
 // familyOf is the family of the generator that draws with m, "" for none.
 func familyOf(m chat.Model) string {
-	for _, f := range []string{famKlein, famFlux3, famAnima, famChroma} {
+	for _, f := range []string{famKlein, famFlux3, famAnima} {
 		if strings.HasPrefix(m.Family, f) {
 			return f
 		}
@@ -98,7 +97,7 @@ func newRole(name string, edit bool) *airole.Role {
 		Remote: func(h *airpc.Handle) io.Closer { return &Generator{remote: h} },
 		Kinds:  []chat.Kind{chat.KindImage},
 		// 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
-		// 2: Anima, Chroma and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
+		// 2: Anima, Chroma (since removed) and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
 		// 3: FLUX.2 klein's export on Apple's of every size and edit in one, and one beside it
 		Revision: 3,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
@@ -107,7 +106,7 @@ func newRole(name string, edit bool) *airole.Role {
 			if dir := first(e.Model.Programs[ProgramExport]); dir != "" {
 				fam = exportFamily(dir)
 				if fam == "" {
-					return f, fmt.Errorf("ai/imagegen: %s is no export of a picture model (FLUX.2 klein, FLUX.3 klein, Anima, Chroma)", dir)
+					return f, fmt.Errorf("ai/imagegen: %s is no export of a picture model (FLUX.2 klein, FLUX.3 klein, Anima)", dir)
 				}
 			}
 			var err error
@@ -118,10 +117,8 @@ func newRole(name string, edit bool) *airole.Role {
 				f, err = prepareFlux3(e)
 			case famAnima:
 				f, err = prepareAnima(e)
-			case famChroma:
-				f, err = prepareChroma(e)
 			default:
-				return f, fmt.Errorf("ai/imagegen: %s is not drawn by the library (FLUX.2 klein, FLUX.3 klein, Anima and Chroma are)", e.Model.Name)
+				return f, fmt.Errorf("ai/imagegen: %s is not drawn by the library (FLUX.2 klein, FLUX.3 klein and Anima are)", e.Model.Name)
 			}
 			f.SetValue("family", fam)
 			f.SetValue("base", e.Base.Name)
@@ -141,8 +138,6 @@ func newRole(name string, edit bool) *airole.Role {
 				g.p, err = loadFlux3(ctx, g, f, e)
 			case famAnima:
 				g.p, err = loadAnima(ctx, g, f, e)
-			case famChroma:
-				g.p, err = loadChroma(ctx, g, f, e)
 			default:
 				err = fmt.Errorf("ai/imagegen: %s was prepared for no family the library draws (%q)", e.Model, g.family)
 			}
@@ -206,7 +201,7 @@ func (g *Generator) Model() string {
 	return g.name
 }
 
-// Family is the model's family: flux2-klein, flux3-klein, anima or chroma.
+// Family is the model's family: flux2-klein, flux3-klein or anima.
 func (g *Generator) Family() string {
 	if g.remote != nil {
 		return airpc.Value[string](g.remote, "Family")

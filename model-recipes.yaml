@@ -82,39 +82,6 @@ models:
           do: device
           why: "RegAlloc: failed to allocate tensors with fixed L2 hint (Failed to compile function func_s1152x768, s768x1152, s1280x704, s704x1280); the M1 compiles them on the NPU, 50 to 59 min each"
           checked: 2026-11-22
-  Chroma1-Flash:
-    amd: &chroma-amd
-      version: 1
-      # one export of the eight aspect ratios (aspect.Of(16))
-      script: iron_chroma.py
-      args: ["{in}", "{out}", --size, "{sizes}"]
-    apple:
-      prebuild:
-        - arch: h13g
-          programs: [dit_single_*]
-          do: device
-          why: "left off the Neural Engine (no compiled region), alone too, after 44 min to 3h17m each"
-          checked: 2026-11-23
-        - arch: h14g
-          programs: [dit_single_0, dit_single_8, dit_single_16]
-          do: device
-          why: "left off the Neural Engine (no compiled region), alone too, after 1h29m to 2h52m each"
-          checked: 2026-11-23
-  Chroma1-HD:
-    amd: *chroma-amd
-    # Chroma1-Flash's programs with other weights
-    apple:
-      prebuild:
-        - arch: h13g
-          programs: [dit_single_*]
-          do: device
-          why: "as Chroma1-Flash's (the same programs)"
-          checked: 2026-11-23
-        - arch: h14g
-          programs: [dit_single_0, dit_single_8, dit_single_16]
-          do: device
-          why: "as Chroma1-Flash's (the same programs)"
-          checked: 2026-11-23
   MOSS-SoundEffect-v2.0: &moss
     amd:
       version: 1

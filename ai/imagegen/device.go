@@ -17,26 +17,25 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // Export is the model an export's directory runs as (an ai.Definition the app defines and uses
-// by its ID): an export of tools/amd/iron_flux2klein.py, iron_flux3klein.py, iron_anima.py or
-// iron_chroma.py for AMD's NPU, or of hwnpu-image convert (Anima, Chroma) and the library's
-// conversions for Apple's Neural Engine or Intel's NPU. It is like the family's model of the
-// definitions (FLUX.2-klein-4B, flux-3-image-klein, Anima-Turbo, Chroma1-Flash), which names
+// by its ID): an export of tools/amd/iron_flux2klein.py, iron_flux3klein.py or iron_anima.py
+// for AMD's NPU, or of hwnpu-image convert (Anima) and the library's conversions for Apple's
+// Neural Engine or Intel's NPU. It is like the family's model of the definitions
+// (FLUX.2-klein-4B, flux-3-image-klein, Anima-Turbo), which names
 // it and its license; the export's own files say how it draws.
 func Export(dir string) (ai.Definition, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return ai.Definition{}, err
 	}
-	like := map[string]string{famKlein: "FLUX.2-klein-4B", famFlux3: "flux-3-image-klein", famAnima: "Anima-Turbo", famChroma: "Chroma1-Flash"}[exportFamily(abs)]
+	like := map[string]string{famKlein: "FLUX.2-klein-4B", famFlux3: "flux-3-image-klein", famAnima: "Anima-Turbo"}[exportFamily(abs)]
 	if like == "" {
-		return ai.Definition{}, fmt.Errorf("ai/imagegen: %s is no export of a picture model (FLUX.2 klein, FLUX.3 klein, Anima, Chroma)", dir)
+		return ai.Definition{}, fmt.Errorf("ai/imagegen: %s is no export of a picture model (FLUX.2 klein, FLUX.3 klein, Anima)", dir)
 	}
 	return ai.Definition{Like: like, Programs: map[string][]string{ProgramExport: {abs}}}, nil
 }
@@ -48,8 +47,6 @@ func exportFamily(dir string) string {
 		return famFlux3
 	case flux2klein.IsExport(dir):
 		return famKlein
-	case chroma.IsExport(dir):
-		return famChroma
 	case anima.IsProgramExport(dir) || len(anima.IronSizes(dir)) > 0:
 		return famAnima
 	}

@@ -30,8 +30,6 @@ var Keys = map[string]string{
 	"attention":            "grouped keeps a model's attention programs grouped on Core AI (llm.RefreshAttention)",
 	"rotate":               "0 keeps a chat model's weights unrotated, 1 rotates lut8 too (chat)",
 	"anima.attention":      "chunks: the heads of Anima's attention together on Apple's NPU too, as on Intel's",
-	"chroma.attention":     "chunks: Chroma's attention in chunks on Apple's NPU too, as on Intel's",
-	"chroma.keys":          "N: Chroma's text mask of N keys (a test of the mask)",
 	"rewrite":              "OP:WAY[+OP:WAY]: this Mac's programs write OP so, over model-recipes.yaml's rewrite (sin:series, sin:native), in an export of their name (recipe.RewritesFor)",
 	"ailower.cut":          "N: ailower lowers only the first N operations, the last one's value the output",
 	"ailower.divide":       "lowers x / c as a divide (not times 1 / c), which Core AI's Neural Engine miscomputes",

@@ -82,7 +82,7 @@ func TestReferenceNames(t *testing.T) {
 	}
 }
 
-// The settings of a definition: Anima's conversion, Chroma's square.
+// The settings of a definition: Anima's conversion.
 func TestSettings(t *testing.T) {
 	m := chat.Model{Name: "Anima-Turbo", File: "anima-turbo-v1.1.safetensors", Settings: map[string]string{SettingGroup: "2", SettingSize: "16:9", SettingDitFormat: "fp16"}}
 	o, err := animaOptions(m, "intel")
@@ -97,12 +97,6 @@ func TestSettings(t *testing.T) {
 	}
 	if _, err := animaOptions(chat.Model{Settings: map[string]string{SettingQChunk: "x"}}, "intel"); err == nil {
 		t.Error("qchunk x: no error")
-	}
-	for spec, want := range map[string]int{"": 1024, "1:1s": 512, "768": 768, "16:9": 0} {
-		side, err := chromaSide(chat.Model{Settings: map[string]string{SettingSize: spec}})
-		if side != want || (want == 0) != (err != nil) {
-			t.Errorf("chroma %q: %d, %v", spec, side, err)
-		}
 	}
 }
 

@@ -200,7 +200,7 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 				cache.SetSource(d.opts.CacheDir, key, path)
 			} else if _, err := os.Stat(src); err != nil {
 				// the recorded source is gone, but this package has the same bytes (a hard link of
-				// it, chroma.ConvertOptions.LinkFrom): record this one, or cache.Prune would take the
+				// it, as Chroma1's ConvertOptions.LinkFrom made, since removed): record this one, or cache.Prune would take the
 				// entry as unused, and the Neural Engine's compiled bundle with it (docs/design/image-apple.md)
 				cache.SetSource(d.opts.CacheDir, key, path)
 			}
