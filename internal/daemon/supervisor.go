@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,8 +97,11 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	launched := len(lns) > 0
 	s.launched = launched
 	if launched {
-		// the service manager's socket, which the engine's is beside
-		if a, ok := lns[0].Addr().(*net.UnixAddr); ok && a.Name != "" {
+		// the service manager's socket, which the engine's is beside. launchd binds it in a
+		// directory of root's (/var/run/com.apple.launchd.*) and moves it to the plist's path, and
+		// the listener keeps the first name, where the engine's cannot be made: on the Mac it is
+		// the path given (the plist's, DefaultSocketPath), on Linux systemd's own
+		if a, ok := lns[0].Addr().(*net.UnixAddr); ok && a.Name != "" && runtime.GOOS != "darwin" {
 			s.Socket = a.Name
 		}
 	} else {
