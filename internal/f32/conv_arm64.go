@@ -1,7 +1,7 @@
 package f32
 
-// The kernels of conv.go and Axpy on NEON (every arm64 core has it). Exp, Sigmoid and SiLU
-// stay Go's loops on arm64.
+// The kernels of conv.go and Axpy on NEON (every arm64 core has it); Exp, Sigmoid, SiLU and GLU
+// are f32_arm64.go's.
 
 //go:noescape
 func dw3NEON(dst, r0, r1, r2, w *float32, bias float32, relu, n int)
@@ -33,8 +33,6 @@ func flag(b bool) int {
 	}
 	return 0
 }
-
-func expKernel(dst, src []float32, mode int) int { return 0 }
 
 func axpyKernel(dst []float32, a float32, x []float32) int {
 	n := len(dst) &^ 15

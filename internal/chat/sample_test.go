@@ -96,3 +96,47 @@ func TestTopKBlocks(t *testing.T) {
 		}
 	}
 }
+
+// benchPick times a pick over n logits (Qwen3.5's vocabulary: 248320), copied into one array as
+// the engine does.
+func benchPick(b *testing.B, s Sampling, n int) {
+	r := rand.New(rand.NewPCG(1, 2))
+	logits := make([]float32, n)
+	for i := range logits {
+		logits[i] = float32(r.NormFloat64() * 3)
+	}
+	seen := []int32{1, 2, 3, 400, 5000}
+	var buf []float32
+	for b.Loop() {
+		buf = append(buf[:0], logits...)
+		s.pick(buf, seen, r)
+	}
+}
+
+func BenchmarkPickGreedy(b *testing.B) { benchPick(b, Sampling{}, 248320) }
+func BenchmarkPickTopK(b *testing.B) {
+	benchPick(b, Sampling{Temperature: 0.7, TopK: 20, TopP: 0.8}, 248320)
+}
+
+// TestArgmax checks argmax (blocks passed over by their largest) against a plain loop: the first
+// largest, with ties.
+func TestArgmax(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	for _, n := range []int{1, 5, 255, 256, 257, 1000, 248320} {
+		for range 20 {
+			l := make([]float32, n)
+			for i := range l {
+				l[i] = float32(r.IntN(50)) // ties
+			}
+			want := 0
+			for i, v := range l {
+				if v > l[want] {
+					want = i
+				}
+			}
+			if got := int(argmax(l)); got != want {
+				t.Fatalf("n %d: %d, want %d", n, got, want)
+			}
+		}
+	}
+}

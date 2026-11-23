@@ -72,3 +72,26 @@ func TestErf(t *testing.T) {
 		}
 	}
 }
+
+// TestGLU checks GLU (the vector loop and the tail) against the definition in float64: SwiGLU and
+// gpt-oss's clamped form.
+func TestGLU(t *testing.T) {
+	inf := float32(math.Inf(1))
+	for _, c := range []struct{ alpha, limit, add float32 }{{1, inf, 0}, {1.702, 7, 1}} {
+		for _, n := range []int{1, 7, 8, 13, 64, 2880} {
+			gu, got := make([]float32, 2*n), make([]float32, n)
+			for i := range gu {
+				gu[i] = float32(i%97)*0.25 - 12
+			}
+			GLU(got, gu, c.alpha, c.limit, c.add)
+			for j := range n {
+				g := math.Min(float64(gu[2*j]), float64(c.limit))
+				u := math.Min(math.Max(float64(gu[2*j+1]), -float64(c.limit)), float64(c.limit))
+				want := g / (1 + math.Exp(-float64(c.alpha)*g)) * (u + float64(c.add))
+				if d := math.Abs(float64(got[j]) - want); d > 4e-6*math.Max(1, math.Abs(want)) {
+					t.Fatalf("alpha %v n %d [%d]: %v, want %v", c.alpha, n, j, got[j], want)
+				}
+			}
+		}
+	}
+}

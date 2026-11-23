@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/f32"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/mxfp4"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
@@ -125,6 +126,9 @@ type Host struct {
 	first   int         // the first layer held
 	// zeros in place of the biases of experts that have none (hostLayer.gb, db nil)
 	zeroGate, zeroDown []float32
+	// runRow's arrays (*rowBufs), kept for the next token: made anew they were 217 KB a layer of
+	// gpt-oss-20b, and the collector's clearing and returning of them 16 % of the experts' CPU
+	rowBufs sync.Pool
 
 	// for HWNPU_DEV's moe.time: the bytes of the experts a row ran, and those of them not in memory
 	// when it chose them (read from the disk for it)
@@ -477,14 +481,18 @@ const runItems = 1024
 // The values are Run's (the same kernel a row, the experts added in the same order).
 func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []float32) {
 	H, I := h.shape.Hidden, h.shape.Inter
-	xv := mxfp4.NewVec(H)
+	K := len(idx)
+	bufs, _ := h.rowBufs.Get().(*rowBufs)
+	if bufs == nil || len(bufs.gu) < K {
+		bufs = newRowBufs(K, H, I)
+	}
+	defer h.rowBufs.Put(bufs)
+	xv := bufs.xv
 	xv.Quantize(x)
 	gb, ge := 2*I*H/2, 2*I*H/32 // an expert's bytes of blocks and scales, gate and up
 	db, de := H*I/2, H*I/32
 	nbG, nbD := H/mxfp4.Block, I/mxfp4.Block
-	alpha, limit := float32(h.act.Alpha), float32(h.act.Limit)
-	gptoss := h.act.Kind == ActGptOss
-	K := len(idx)
+	alpha, limit, add := h.act.glu()
 	rowsG, rowsD := max(rowPiece/H, 1), max(rowPiece/I, 1) // the rows of a piece
 	piecesG, piecesD := (2*I+rowsG-1)/rowsG, (H+rowsD-1)/rowsD
 	type expert struct {
@@ -496,7 +504,7 @@ func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []
 	}
 	ex := make([]expert, K)
 	for k := range ex {
-		ex[k].gu, ex[k].down = make([]float32, 2*I), make([]float32, H)
+		ex[k].gu, ex[k].down, ex[k].hv = bufs.gu[k], bufs.down[k], bufs.hv[k]
 	}
 	var left atomic.Int32
 	left.Store(int32(K * (piecesG + piecesD)))
@@ -512,20 +520,8 @@ func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []
 		if int(x.doneG.Add(1)) < piecesG {
 			return
 		}
-		act, gu := make([]float32, I), x.gu
-		if gptoss {
-			for j := range I {
-				g := min(gu[2*j], limit)
-				u := min(max(gu[2*j+1], -limit), limit)
-				act[j] = g / (1 + float32(math.Exp(float64(-alpha*g)))) * (u + 1)
-			}
-		} else {
-			for j := range I {
-				g := gu[2*j]
-				act[j] = g / (1 + float32(math.Exp(float64(-g)))) * gu[2*j+1]
-			}
-		}
-		x.hv = mxfp4.NewVec(I)
+		act := bufs.act[k]
+		f32.GLU(act, x.gu, alpha, limit, add)
 		x.hv.Quantize(act)
 		x.ready.Store(true)
 	}
@@ -534,6 +530,9 @@ func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []
 		dw, ds := hl.dw[e*db:(e+1)*db], hl.de[e*de:(e+1)*de]
 		lo, hi := p*rowsD, min((p+1)*rowsD, H)
 		mxfp4.Rows(x.down[lo:hi], dw[lo*nbD*16:hi*nbD*16], ds[lo*nbD:hi*nbD], x.hv)
+		if hl.db != nil {
+			addTo(x.down[lo:hi], h.downBias(hl, e)[lo:hi])
+		}
 	}
 	// a piece of expert k if one is free: of its down products when they can begin
 	take := func(k int) bool {
@@ -564,18 +563,45 @@ func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []
 		}
 	})
 	// added by the experts' numbers, as Run adds them
-	order := make([]int, len(idx))
+	order := bufs.order[:K]
 	for k := range order {
 		order[k] = k
 	}
 	slices.SortFunc(order, func(a, b int) int { return idx[a] - idx[b] })
 	for _, k := range order {
-		bias := h.downBias(hl, idx[k])
-		wt, y := w[k], ex[k].down
-		for c := range H {
-			out[c] += wt * (y[c] + bias[c])
-		}
+		f32.Axpy(out, w[k], ex[k].down)
 	}
+}
+
+// rowBufs are runRow's arrays for k experts: the gate and up products, the activations and
+// their vector, the down products (with their bias), and the row's vector.
+type rowBufs struct {
+	xv            *mxfp4.Vec
+	gu, act, down [][]float32
+	hv            []*mxfp4.Vec
+	order         []int
+}
+
+func newRowBufs(k, hidden, inter int) *rowBufs {
+	b := &rowBufs{xv: mxfp4.NewVec(hidden), order: make([]int, k)}
+	for range k {
+		b.gu = append(b.gu, make([]float32, 2*inter))
+		b.act = append(b.act, make([]float32, inter))
+		b.down = append(b.down, make([]float32, hidden))
+		b.hv = append(b.hv, mxfp4.NewVec(inter))
+	}
+	return b
+}
+
+// addTo adds b to a (the biases: f32.Axpy by 1 adds exactly).
+func addTo(a, b []float32) { f32.Axpy(a, 1, b) }
+
+// glu is the activation's form for f32.GLU: alpha, the limit and what is added to the up.
+func (a Act) glu() (alpha, limit, add float32) {
+	if a.Kind == ActGptOss {
+		return float32(a.Alpha), float32(a.Limit), 1
+	}
+	return 1, float32(math.Inf(1)), 0
 }
 
 // readPiece is the most a read of readIn asks for at once: an SSD's largest requests.
@@ -795,8 +821,7 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	}
 	gb, ge := 2*I*H/2, 2*I*H/32 // an expert's bytes of blocks and scales, gate and up
 	db, de := H*I/2, H*I/32
-	alpha, limit := float32(h.act.Alpha), float32(h.act.Limit)
-	gptoss := h.act.Kind == ActGptOss
+	alpha, limit, add := h.act.glu()
 	// the experts in groups of at most runItems rows of theirs, so that the products held at
 	// once are those of a step of a prompt however many rows the call has
 	group := func(es []int) {
@@ -830,20 +855,11 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 		}
 		mxfp4.Parallel(len(items), func(i int) {
 			ru, gu := items[i].ru, items[i].ru.gu[items[i].j]
-			bias := h.gateBias(hl, ru.e)
-			act := make([]float32, I)
-			if gptoss {
-				for j := range I {
-					g := min(gu[2*j]+bias[2*j], limit)
-					u := min(max(gu[2*j+1]+bias[2*j+1], -limit), limit)
-					act[j] = g / (1 + float32(math.Exp(float64(-alpha*g)))) * (u + 1)
-				}
-			} else {
-				for j := range I {
-					g, u := gu[2*j]+bias[2*j], gu[2*j+1]+bias[2*j+1]
-					act[j] = g / (1 + float32(math.Exp(float64(-g)))) * u
-				}
+			if hl.gb != nil {
+				addTo(gu, h.gateBias(hl, ru.e))
 			}
+			act := make([]float32, I)
+			f32.GLU(act, gu, alpha, limit, add)
 			v := mxfp4.NewVec(I)
 			v.Quantize(act)
 			ru.hv[items[i].j] = v
@@ -853,13 +869,12 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 		}
 		mxfp4.Run(jobs...)
 		for _, ru := range runs {
-			bias := h.downBias(hl, ru.e)
 			for j, r := range byExpert[ru.e] {
-				wt := w[r][byK[ru.e][j]]
-				o, y := out[r], ru.down[j]
-				for c := range H {
-					o[c] += wt * (y[c] + bias[c])
+				y := ru.down[j]
+				if hl.db != nil {
+					addTo(y, h.downBias(hl, ru.e))
 				}
+				f32.Axpy(out[r], w[r][byK[ru.e][j]], y)
 			}
 		}
 	}

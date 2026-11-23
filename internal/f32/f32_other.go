@@ -24,3 +24,5 @@ func wrows8Kernel(dst *[8]*float32, n int, rows []*float32, w []float32, bias *[
 }
 
 func deint2Kernel(even, odd, src []float32) int { return 0 }
+
+func gluKernel(dst, gu []float32, alpha, limit, add float32) int { return 0 }
