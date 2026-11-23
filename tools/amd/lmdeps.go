@@ -125,3 +125,25 @@ func LMHash(args []string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// ScriptHash is the SHA-256 (hex) of the files of tools/amd an export of script with args (a
+// recipe's, model-recipes.yaml) reads: for iron_export_lm.py, LMHash of its model and options;
+// for another, the script, the modules it imports (at any depth) and every kernel.
+func ScriptHash(script string, args []string) (string, error) {
+	if script == "iron_export_lm.py" {
+		return LMHash(args)
+	}
+	if !Has(script) {
+		return "", fs.ErrNotExist
+	}
+	h := sha256.New()
+	for _, p := range lmClosure(files, []string{script}) {
+		b, err := files.ReadFile(path.Clean(p))
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte(p + "\x00"))
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
