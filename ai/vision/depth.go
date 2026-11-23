@@ -14,6 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/vision/depth"
@@ -31,6 +32,7 @@ func Depth(name string) ai.Use[*DepthEstimator] {
 // iron_moge.py, or one Prepare made for Apple's or Intel's NPU.
 var depthRole = &airole.Role{
 	Name:     "depth",
+	Remote:   func(h *airpc.Handle) io.Closer { return &DepthEstimator{remote: h} },
 	Revision: 1, // 1: every size's programs made at Prepare
 	Kinds:    []chat.Kind{chat.KindDepth},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
@@ -196,26 +198,40 @@ type DepthOptions struct {
 
 // DepthEstimator estimates the depth of pictures. It runs one picture at a time; others wait.
 type DepthEstimator struct {
-	mu    sync.Mutex
-	da    *depth.Estimator
-	mg    *moge.Estimator
-	mv    *depth.Multi
-	dev   *hwnpu.Device
-	model chat.Model
-	name  string
-	dir   string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	da     *depth.Estimator
+	mg     *moge.Estimator
+	mv     *depth.Multi
+	dev    *hwnpu.Device
+	model  chat.Model
+	name   string
+	dir    string
 }
 
 // Model is the name of the model in the definitions.
-func (d *DepthEstimator) Model() string { return d.name }
+func (d *DepthEstimator) Model() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Model")
+	}
+	return d.name
+}
 
 // Export is the directory of the export or the programs the model runs from.
-func (d *DepthEstimator) Export() string { return d.dir }
+func (d *DepthEstimator) Export() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Export")
+	}
+	return d.dir
+}
 
 // Kind is what the model gives: "relative depth" (Depth Anything 3, as one view), "metric
 // depth" (Depth Anything 3 Metric, given the focal length; MoGe-2), or "views" (a multi-view
 // export: EstimateViews).
 func (d *DepthEstimator) Kind() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Kind")
+	}
 	switch {
 	case d.mv != nil:
 		return "views"
@@ -227,6 +243,9 @@ func (d *DepthEstimator) Kind() string {
 
 // Family is the model's family: "moge" for MoGe-2, "da3" for Depth Anything 3.
 func (d *DepthEstimator) Family() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Family")
+	}
 	if d.mg != nil {
 		return "moge"
 	}
@@ -236,6 +255,9 @@ func (d *DepthEstimator) Family() string {
 // Sizes are the input sizes of the model (W x H): a picture is stretched to the one nearest its
 // shape.
 func (d *DepthEstimator) Sizes() [][2]int {
+	if d.remote != nil {
+		return airpc.Value[[][2]int](d.remote, "Sizes")
+	}
 	switch {
 	case d.mg != nil:
 		return d.mg.Sizes
@@ -248,6 +270,9 @@ func (d *DepthEstimator) Sizes() [][2]int {
 // Views is how many pictures of one scene a multi-view export takes together (EstimateViews), 0
 // for a model of one picture.
 func (d *DepthEstimator) Views() int {
+	if d.remote != nil {
+		return airpc.Value[int](d.remote, "Views")
+	}
 	if d.mv == nil {
 		return 0
 	}
@@ -263,6 +288,9 @@ func (d *DepthEstimator) Estimate(ctx context.Context, img image.Image) (*DepthM
 
 // EstimateWith is Estimate with options.
 func (d *DepthEstimator) EstimateWith(ctx context.Context, img image.Image, o DepthOptions) (*DepthMap, error) {
+	if d.remote != nil {
+		return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	ctx = chat.WithModel(ctx, d.model)
@@ -315,6 +343,9 @@ type ViewOptions struct {
 // export (Views of them, each stretched to its size): each view's depth, of one scale for all,
 // its confidence and its camera (DepthMap.Camera). Took is of all of them.
 func (d *DepthEstimator) EstimateViews(ctx context.Context, imgs []image.Image, o ViewOptions) ([]*DepthMap, error) {
+	if d.remote != nil {
+		return airpc.Call1[[]*DepthMap](d.remote, ctx, "EstimateViews", imgs, o)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.mv == nil {
@@ -341,6 +372,9 @@ func (d *DepthEstimator) EstimateViews(ctx context.Context, imgs []image.Image, 
 // Warm loads the programs of every size once, which compiles them for the NPU (ai.Warmer: the
 // load of "models prepare"), so that a picture of any aspect does not wait for that.
 func (d *DepthEstimator) Warm(ctx context.Context) error {
+	if d.remote != nil {
+		return airpc.Call0(d.remote, ctx, "Warm")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.da == nil {
@@ -365,6 +399,9 @@ func DepthNode(u ai.Use[*DepthEstimator]) *flow.Node[image.Image, *DepthMap] {
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *DepthEstimator) Close() error {
+	if d.remote != nil {
+		return d.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var err error

@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
@@ -32,8 +33,9 @@ func Label(name string) ai.Use[*Labeler] {
 // Engine from the checkpoint converted into Core AI programs on the first run (with settings
 // cpu: interpreter, into Core ML packages that the CPU interpreter runs).
 var labelRole = &airole.Role{
-	Name:  "label",
-	Kinds: []chat.Kind{chat.KindLabel},
+	Remote: func(h *airpc.Handle) io.Closer { return &Labeler{remote: h} },
+	Name:   "label",
+	Kinds:  []chat.Kind{chat.KindLabel},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m := e.Model
 		dir := program(m, "export")
@@ -167,25 +169,49 @@ type Labels struct {
 // Labeler labels pictures and embeds pictures and texts in one space. It runs one call at a
 // time; others wait.
 type Labeler struct {
-	mu   sync.Mutex
-	m    *siglip.Model
-	dev  *hwnpu.Device
-	name string
-	dir  string
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	m      *siglip.Model
+	dev    *hwnpu.Device
+	name   string
+	dir    string
 }
 
 // Model is the name of the model in the definitions.
-func (l *Labeler) Model() string { return l.name }
+func (l *Labeler) Model() string {
+	if l.remote != nil {
+		return airpc.Value[string](l.remote, "Model")
+	}
+	return l.name
+}
 
 // Export is the directory of the export or the programs the model runs from.
-func (l *Labeler) Export() string { return l.dir }
+func (l *Labeler) Export() string {
+	if l.remote != nil {
+		return airpc.Value[string](l.remote, "Export")
+	}
+	return l.dir
+}
 
 // ImageSize is the side of the square pictures are stretched to, Dim the embeddings' length.
-func (l *Labeler) ImageSize() int { return l.m.Config.Image }
-func (l *Labeler) Dim() int       { return l.m.Dim() }
+func (l *Labeler) ImageSize() int {
+	if l.remote != nil {
+		return airpc.Value[int](l.remote, "ImageSize")
+	}
+	return l.m.Config.Image
+}
+func (l *Labeler) Dim() int {
+	if l.remote != nil {
+		return airpc.Value[int](l.remote, "Dim")
+	}
+	return l.m.Dim()
+}
 
 // EmbedPicture is a picture's embedding.
 func (l *Labeler) EmbedPicture(ctx context.Context, img image.Image) (*PictureEmbedding, error) {
+	if l.remote != nil {
+		return airpc.Call1[*PictureEmbedding](l.remote, ctx, "EmbedPicture", img)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t0 := time.Now()
@@ -198,6 +224,9 @@ func (l *Labeler) EmbedPicture(ctx context.Context, img image.Image) (*PictureEm
 
 // EmbedTexts are texts' embeddings (lowercased, as SigLIP 2 was trained).
 func (l *Labeler) EmbedTexts(ctx context.Context, texts []string) (*TextEmbeddings, error) {
+	if l.remote != nil {
+		return airpc.Call1[*TextEmbeddings](l.remote, ctx, "EmbedTexts", texts)
+	}
 	return l.texts(ctx, texts, "")
 }
 
@@ -221,6 +250,9 @@ func (l *Labeler) texts(ctx context.Context, texts []string, keep string) (*Text
 // once for any number of pictures. The embeddings are kept in the user cache directory, so that
 // a list of labels is embedded once.
 func (l *Labeler) Candidates(ctx context.Context, labels []string, o CandidateOptions) (*Candidates, error) {
+	if l.remote != nil {
+		return airpc.Call1[*Candidates](l.remote, ctx, "Candidates", labels, o)
+	}
 	tmpl := o.Template
 	if tmpl == "" {
 		tmpl = DefaultTemplate
@@ -247,6 +279,9 @@ func (l *Labeler) Candidates(ctx context.Context, labels []string, o CandidateOp
 // first: each label's on its own (a sigmoid, not a softmax over the labels), so that they need
 // not sum to 1 and a picture may have several or none.
 func (l *Labeler) Rank(e Embedding, c *Candidates, o RankOptions) []Scored {
+	if l.remote != nil {
+		return airpc.Value[[]Scored](l.remote, "Rank", e, c, o)
+	}
 	texts := make([][]float32, len(c.Embeddings))
 	for i, t := range c.Embeddings {
 		texts[i] = t
@@ -272,10 +307,18 @@ func (l *Labeler) Label(ctx context.Context, img image.Image, c *Candidates, o R
 
 // Probability is the model's probability that the text of embedding text describes the picture
 // of embedding picture.
-func (l *Labeler) Probability(picture, text Embedding) float64 { return l.m.Probability(picture, text) }
+func (l *Labeler) Probability(picture, text Embedding) float64 {
+	if l.remote != nil {
+		return airpc.Value[float64](l.remote, "Probability", picture, text)
+	}
+	return l.m.Probability(picture, text)
+}
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (l *Labeler) Close() error {
+	if l.remote != nil {
+		return l.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	err := l.m.Close()
@@ -283,4 +326,8 @@ func (l *Labeler) Close() error {
 		l.dev.Close()
 	}
 	return err
+}
+
+func init() {
+	airole.Register(labelRole)
 }

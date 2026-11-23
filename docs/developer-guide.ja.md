@@ -1146,5 +1146,6 @@ var depthRole = &airole.Role{
 - **NPU ごとの分かれ道**は `e.NPU` で見ます: `e.NPU.AMD()` なら IRON の書き出し、ほかは `e.NPU.Format` (`coreai`、`intel`) のプログラム
 - **一括と流れの両方**を出します。流れの形は、区切り (`Final`) ごとに一括を呼ぶところから始めて構いません
 - **モデルの値は `io.Closer`** で、1 回に 1 つの要求を通すようにします (中で排他する)
+- **役は hwnpud でも動きます** ([hwnpud](design/hwnpud.ja.md)): 登録し (`init` で `airole.Register`)、`Remote` を与えます。`Remote` は `*airpc.Handle` を包んだモデルの型を作り、モデルに触る公開のメソッドはそれぞれ `if d.remote != nil { return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o) }` で始めます (context を取らないものは `airpc.Value`、`Close` は `Release`)。引数と結果は gob で渡ります: 公開の欄、関数はコールバックに、ストリームはストリームに。ただのデータでないエンジンの状態を持つ結果は `airpc.RegisterRef` でエンジンに置いておきます
 - **テスト**は、偽の `Role` で計画から読み込みまでを NPU なしで回せます (`ai/ai_test.go`)。時刻に関わるものは `testing/synctest` を使います
 - 外のモジュールは `internal/airole` を import できないので、`Use` を作れるのは hwnpu の中のパッケージだけです

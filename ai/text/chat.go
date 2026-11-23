@@ -18,6 +18,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
@@ -29,6 +30,7 @@ func Chat(name string) ai.Use[*Chatter] {
 
 var chatRole = &airole.Role{
 	Name:    "chat",
+	Remote:  func(h *airpc.Handle) io.Closer { return &Chatter{remote: h} },
 	Kinds:   []chat.Kind{chat.KindChat},
 	Prepare: prepareEngine,
 	// 1: the attention programs of a model split at its attention are written again with the
@@ -124,6 +126,20 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 		fn["parameters"] = t.Parameters
 	}
 	return json.Marshal(map[string]any{"type": "function", "function": fn})
+}
+
+// GobEncode sends the tool to hwnpud as it was written (ParseTool's), not as MarshalJSON would
+// write it again.
+func (t Tool) GobEncode() ([]byte, error) { return t.MarshalJSON() }
+
+// GobDecode reads what GobEncode sent.
+func (t *Tool) GobDecode(raw []byte) error {
+	out, err := ParseTool(raw)
+	if err != nil {
+		return err
+	}
+	*t = out
+	return nil
 }
 
 // ToolCall is a call of a tool by the model. Arguments is a JSON object.
@@ -226,40 +242,92 @@ type Delta struct {
 
 // Chatter answers conversations with a chat model. It runs one request at a time; others wait.
 type Chatter struct {
-	mu    sync.Mutex
-	e     *chat.Engine
-	model string
-	def   chat.Model
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	mu     sync.Mutex
+	e      *chat.Engine
+	model  string
+	def    chat.Model
 }
 
 // Model is the name of the model in the definitions.
-func (c *Chatter) Model() string { return c.model }
+func (c *Chatter) Model() string {
+	if c.remote != nil {
+		return airpc.Value[string](c.remote, "Model")
+	}
+	return c.model
+}
 
 // Name is the model's name as it calls itself (the API's, the logs'): its definition's, or the
 // export's.
-func (c *Chatter) Name() string { return c.e.Name }
+func (c *Chatter) Name() string {
+	if c.remote != nil {
+		return airpc.Value[string](c.remote, "Name")
+	}
+	return c.e.Name
+}
 
 // Features are the model's features in the definitions (tools, vision, audio, translation, ...).
-func (c *Chatter) Features() []string { return slices.Clone(c.def.Features) }
+func (c *Chatter) Features() []string {
+	if c.remote != nil {
+		return airpc.Value[[]string](c.remote, "Features")
+	}
+	return slices.Clone(c.def.Features)
+}
 
 // Thinks reports whether the model thinks before it answers when ChatOptions does not say.
-func (c *Chatter) Thinks() bool { return !c.e.NoThink }
+func (c *Chatter) Thinks() bool {
+	if c.remote != nil {
+		return airpc.Value[bool](c.remote, "Thinks")
+	}
+	return !c.e.NoThink
+}
 
 // Translates reports whether the model is a translation model (ChatOptions.Translation).
-func (c *Chatter) Translates() bool { return c.e.Template == chat.Plamo3 }
+func (c *Chatter) Translates() bool {
+	if c.remote != nil {
+		return airpc.Value[bool](c.remote, "Translates")
+	}
+	return c.e.Template == chat.Plamo3
+}
 
 // Context is the most tokens a prompt and its answer can have together.
-func (c *Chatter) Context() int { return c.e.Context() }
+func (c *Chatter) Context() int {
+	if c.remote != nil {
+		return airpc.Value[int](c.remote, "Context")
+	}
+	return c.e.Context()
+}
 
 // Images and Audio report whether the model reads images and audio clips.
-func (c *Chatter) Images() bool { return c.e.Images() }
-func (c *Chatter) Audio() bool  { return c.e.Audio() }
+func (c *Chatter) Images() bool {
+	if c.remote != nil {
+		return airpc.Value[bool](c.remote, "Images")
+	}
+	return c.e.Images()
+}
+
+func (c *Chatter) Audio() bool {
+	if c.remote != nil {
+		return airpc.Value[bool](c.remote, "Audio")
+	}
+	return c.e.Audio()
+}
 
 // OnNPU reports whether the programs were verified to run on the NPU.
-func (c *Chatter) OnNPU() bool { return c.e.OnNPU() }
+func (c *Chatter) OnNPU() bool {
+	if c.remote != nil {
+		return airpc.Value[bool](c.remote, "OnNPU")
+	}
+	return c.e.OnNPU()
+}
 
 // Device is the NPU the model runs on, as the logs call it.
-func (c *Chatter) Device() string { return c.e.DeviceName() }
+func (c *Chatter) Device() string {
+	if c.remote != nil {
+		return airpc.Value[string](c.remote, "Device")
+	}
+	return c.e.DeviceName()
+}
 
 // Complete answers a conversation: its text, trimmed.
 func (c *Chatter) Complete(ctx context.Context, msgs []Message, o ChatOptions) (string, error) {
@@ -299,6 +367,9 @@ func (c *Chatter) Reply(ctx context.Context, msgs []Message, o ChatOptions, fn f
 	if len(msgs) == 0 {
 		return Answer{}, errors.New("text: no messages to answer")
 	}
+	if c.remote != nil {
+		return airpc.Call1[Answer](c.remote, ctx, "Reply", msgs, o, fn)
+	}
 	in, err := chatMessages(msgs)
 	if err != nil {
 		return Answer{}, err
@@ -332,6 +403,9 @@ func (c *Chatter) Reply(ctx context.Context, msgs []Message, o ChatOptions, fn f
 
 // Count is the tokens of the prompt the conversation is, with o's tools and thinking.
 func (c *Chatter) Count(ctx context.Context, msgs []Message, o ChatOptions) (int, error) {
+	if c.remote != nil {
+		return airpc.Call1[int](c.remote, ctx, "Count", msgs, o)
+	}
 	in, err := chatMessages(msgs)
 	if err != nil {
 		return 0, err
@@ -351,6 +425,9 @@ func (c *Chatter) Count(ctx context.Context, msgs []Message, o ChatOptions) (int
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (c *Chatter) Close() error {
+	if c.remote != nil {
+		return c.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.e.Close()
@@ -553,4 +630,10 @@ func chatTools(tools []Tool) ([]chat.Tool, error) {
 	return out, nil
 }
 
-func init() { airole.Register(chatRole) }
+func init() {
+	airole.Register(chatRole)
+	// what the callers of a model in hwnpud check for (errors.Is, errors.As)
+	airpc.RegisterError("text.ErrMedia", ErrMedia)
+	airpc.RegisterError("text.ErrContext", ErrContext)
+	airpc.RegisterErrorType("text.FormatError", (*FormatError)(nil))
+}

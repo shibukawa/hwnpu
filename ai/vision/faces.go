@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
@@ -29,6 +30,7 @@ func Faces(name string) ai.Use[*FaceDetector] {
 // directory of tools/amd/iron_yunet.py: AMD's NPU) or onnx (YuNet's ONNX file: the CPU, or
 // converted for Apple's and Intel's NPU), and the device (common.go).
 var facesRole = &airole.Role{
+	Remote:   func(h *airpc.Handle) io.Closer { return &FaceDetector{remote: h} },
 	Name:     "faces",
 	Revision: 1, // 1: the programs of every size made at Prepare
 	Kinds:    []chat.Kind{chat.KindFace},
@@ -159,6 +161,9 @@ func orNone(v string) string {
 // Warm loads the program of every size once, which compiles it for the NPU (ai.Warmer: the
 // load of "models prepare"), so that a camera of any size does not wait for that.
 func (d *FaceDetector) Warm(ctx context.Context) error {
+	if d.remote != nil {
+		return airpc.Call0(d.remote, ctx, "Warm")
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.d.Warm(ctx)
@@ -178,6 +183,7 @@ type Face struct {
 
 // FaceDetector finds the faces in pictures. It runs one picture at a time; others wait.
 type FaceDetector struct {
+	remote     *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	mu         sync.Mutex
 	d          *face.Detector
 	name       string
@@ -200,14 +206,27 @@ type FaceOptions struct {
 }
 
 // Model is the name of the model in the definitions.
-func (d *FaceDetector) Model() string { return d.name }
+func (d *FaceDetector) Model() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Model")
+	}
+	return d.name
+}
 
 // Device is where the model runs: npu or cpu (YuNet is a small graph that the definitions put
 // on the CPU beside AMD's NPU).
-func (d *FaceDetector) Device() string { return d.d.Device }
+func (d *FaceDetector) Device() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Device")
+	}
+	return d.d.Device
+}
 
 // Where says where the model runs, for a log: "the CPU (ONNX Runtime, 1 threads)", "the NPU".
 func (d *FaceDetector) Where() string {
+	if d.remote != nil {
+		return airpc.Value[string](d.remote, "Where")
+	}
 	if d.d.Device == "cpu" {
 		return fmt.Sprintf("the CPU (ONNX Runtime, %d threads)", d.threads)
 	}
@@ -221,6 +240,9 @@ func (d *FaceDetector) Detect(ctx context.Context, img image.Image) ([]Face, err
 
 // DetectWith is Detect with options.
 func (d *FaceDetector) DetectWith(ctx context.Context, img image.Image, o FaceOptions) ([]Face, error) {
+	if d.remote != nil {
+		return airpc.Call1[[]Face](d.remote, ctx, "DetectWith", img, o)
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if o.Size != [2]int{} && (o.Size[0] <= 0 || o.Size[1] <= 0 || o.Size[0]%32 != 0 || o.Size[1]%32 != 0) {
@@ -300,6 +322,9 @@ func HeadNode(o HeadOptions) *flow.Node[Found, Head] {
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *FaceDetector) Close() error {
+	if d.remote != nil {
+		return d.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.d.Close()

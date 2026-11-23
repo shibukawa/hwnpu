@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
 	"github.com/shibukawa/hwnpu/internal/vision/segment"
@@ -52,8 +53,9 @@ func segmentSetup(m chat.Model, log io.Writer) (segment.Setup, error) {
 // converted from its ONNX file (at its first load), elsewhere on the CPU (ONNX Runtime where its
 // library is here, else hwnpu's evaluator: slow); the mask decoder on the host.
 var segmentRole = &airole.Role{
-	Name:  "segment",
-	Kinds: []chat.Kind{chat.KindSegment},
+	Remote: func(h *airpc.Handle) io.Closer { return &Segmenter{remote: h} },
+	Name:   "segment",
+	Kinds:  []chat.Kind{chat.KindSegment},
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m := e.Model
 		s, err := segmentSetup(m, e.Log)
@@ -153,6 +155,9 @@ func (p Prompt) points() []segment.Point {
 // are decoded from (Segmenter.Masks), so that a picture is encoded once for several prompts.
 type PictureEncoding struct {
 	e *segment.Embedding
+	// remote is the encoding hwnpud holds, of a Segmenter in hwnpud (airpc.RegisterRef): it
+	// stays there, and is let go when this one is garbage collected
+	remote *airpc.Handle
 	// Took is how long encoding it took: Resize the picture's resizing, Encode the encoder's.
 	Took, Resize, Encode time.Duration
 }
@@ -240,6 +245,7 @@ func (m *Masks) Best() int {
 // Segmenter cuts out the things prompts pick in pictures. It runs one picture at a time; others
 // wait.
 type Segmenter struct {
+	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	mu     sync.Mutex
 	m      *segment.Model
 	dev    *hwnpu.Device
@@ -248,16 +254,34 @@ type Segmenter struct {
 }
 
 // Model is the name of the model in the definitions.
-func (s *Segmenter) Model() string { return s.name }
+func (s *Segmenter) Model() string {
+	if s.remote != nil {
+		return airpc.Value[string](s.remote, "Model")
+	}
+	return s.name
+}
 
 // Device is where the image encoder runs: npu or cpu.
-func (s *Segmenter) Device() string { return s.device }
+func (s *Segmenter) Device() string {
+	if s.remote != nil {
+		return airpc.Value[string](s.remote, "Device")
+	}
+	return s.device
+}
 
 // Where says where the image encoder runs, for a log: "AMD's NPU", "the CPU (ONNX Runtime)", ...
-func (s *Segmenter) Where() string { return s.m.Where() }
+func (s *Segmenter) Where() string {
+	if s.remote != nil {
+		return airpc.Value[string](s.remote, "Where")
+	}
+	return s.m.Where()
+}
 
 // Encode runs the image encoder on a picture.
 func (s *Segmenter) Encode(ctx context.Context, img image.Image) (*PictureEncoding, error) {
+	if s.remote != nil {
+		return airpc.Call1[*PictureEncoding](s.remote, ctx, "Encode", img)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t0 := time.Now()
@@ -273,6 +297,9 @@ func (s *Segmenter) Masks(e *PictureEncoding, p Prompt) (*Masks, error) {
 	pts := p.points()
 	if len(pts) == 0 {
 		return nil, errors.New("vision: a prompt of no points and no box")
+	}
+	if s.remote != nil {
+		return airpc.Call1[*Masks](s.remote, context.Background(), "Masks", e, p)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -299,6 +326,9 @@ func (s *Segmenter) Segment(ctx context.Context, img image.Image, p Prompt) (*Ma
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (s *Segmenter) Close() error {
+	if s.remote != nil {
+		return s.remote.Release() // the Runtime in hwnpud unloads it
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err := s.m.Close()
@@ -306,4 +336,10 @@ func (s *Segmenter) Close() error {
 		s.dev.Close()
 	}
 	return err
+}
+
+func init() {
+	airole.Register(segmentRole)
+	// a picture's encoding stays in hwnpud, where its masks are decoded
+	airpc.RegisterRef(func(e *PictureEncoding, h *airpc.Handle) { e.remote = h }, func(e *PictureEncoding) *airpc.Handle { return e.remote })
 }
