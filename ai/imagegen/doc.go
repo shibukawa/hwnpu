@@ -1,4 +1,4 @@
-// Package imagegen draws pictures: from a prompt (FLUX.2 klein, FLUX.3 klein, Anima, Chroma1),
+// Package imagegen draws pictures: from a prompt (FLUX.2 klein, FLUX.3 klein, Anima),
 // or from a prompt and reference pictures that it edits or composes from (FLUX.2 klein).
 //
 //	var draw = imagegen.Edit("image") // Generate draws from a prompt alone on Apple's Neural Engine

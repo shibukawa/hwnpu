@@ -33,15 +33,15 @@ apple:                          # どのモデルにも効く既定
   jobs: 2                       # coreai-build を何本同時に動かすか
 
 models:
-  Chroma1-Flash:                # models.yaml のモデルの名前
+  FLUX.2-klein-4B:              # models.yaml のモデルの名前
     apple:                      # archs と jobs は既定より優先し、prebuild は既定のあとに足す
       prebuild:
-        - arch: h14g                                    # 1 つか並び。省くと全部
-          export: "chroma1-flash-8sizes-*"              # 書き出しの名前のパターン。省くと全部
-          programs: [dit_single_0, dit_single_8, dit_single_16]   # プログラムの名前のパターン (.aimodel なし)
+        - arch: h13g                                    # 1 つか並び。省くと全部
+          export: "flux.2-klein-4b-8sizes-*"            # 書き出しの名前のパターン。省くと全部
+          programs: [dit_single_*]                      # プログラムの名前のパターン (.aimodel なし)
           do: device                                    # プリビルドせず、端末のコンパイラに任せる
-          why: "left off the Neural Engine (no compiled region), alone too"   # coreai-build が何をしたか
-          checked: 2026-11-23                           # それを見た日
+          why: "RegAlloc: failed to allocate tensors with fixed L2 hint"   # coreai-build が何をしたか
+          checked: 2026-11-22                           # それを見た日
 ```
 
 置き換え (`rewrite`) は、チップによって通らない演算を、どう書くかを決める:
@@ -97,10 +97,10 @@ models:
           checked: 2026-11-23
 ```
 
-- 置き場所 (`{...}`) は 1 つの引数まるごとで、動かすコードが入れる: `{in}` コードが用意したもの (チェックポイントのフォルダ、ONNX のファイル、Anima のフォルダ)、`{out}` 書き出しのフォルダ、`{sizes}` 大きさの並び (models.yaml の `npu.amd.sizes`、Chroma と Anima は `aspect.Of(16)`、Supertonic は `supertonic.Sizes`)、`{size}` (検出と姿勢の入力の大きさ)、`{outputs}` (コードが ONNX から選んだ出力)、`{text}` (MOSS の文のエンコーダーの形式)、`{dit}` (Anima の DiT のファイル)。コードが入れない置き場所を書くと、作るときに止まる
+- 置き場所 (`{...}`) は 1 つの引数まるごとで、動かすコードが入れる: `{in}` コードが用意したもの (チェックポイントのフォルダ、ONNX のファイル、Anima のフォルダ)、`{out}` 書き出しのフォルダ、`{sizes}` 大きさの並び (models.yaml の `npu.amd.sizes`、Anima は `aspect.Of(16)`、Supertonic は `supertonic.Sizes`)、`{size}` (検出と姿勢の入力の大きさ)、`{outputs}` (コードが ONNX から選んだ出力)、`{text}` (MOSS の文のエンコーダーの形式)、`{dit}` (Anima の DiT のファイル)。コードが入れない置き場所を書くと、作るときに止まる
 - スクリプトの名前は、動かすコードが読む書き出しのもの (`iron_whisper.py` の書き出しを読むのは Whisper のコード)。違うスクリプトを書くと、作るときに止まる
 - `iron_export_lm.py` の args のうち `{in}` と `{out}` を除いたものが、そのまま models.yaml の `amd_export` だったもの。書き出しの名前 (`-q4`、`-q6`、`-p16`) と取得元のキーになる。動かす側もこれを読む (`chat.Model.AMDExport`)
-- ほかのスクリプトの書き出しのキーは、前と同じで、コードの版 (`ExportVersion`) と、FLUX.2 klein、FLUX.3 klein、MOSS は args (`{in}` `{out}` を除く) も入る。手で作った書き出し (Chroma、Anima、DA3、MoGe、SigLIP2、YuNet) は名前だけ。キーの中身は前と同じにしたので、取得元の書き出しとピンはそのまま使える
+- ほかのスクリプトの書き出しのキーは、前と同じで、コードの版 (`ExportVersion`) と、FLUX.2 klein、FLUX.3 klein、MOSS は args (`{in}` `{out}` を除く) も入る。手で作った書き出し (Anima、DA3、MoGe、SigLIP2、YuNet) は名前だけ。キーの中身は前と同じにしたので、取得元の書き出しとピンはそのまま使える
 - `like` のモデル (自分の定義ファイルのものも) は、自分のレシピがなければ、似せたモデルのレシピで作る
 - 世代ごとに別のターゲット (`amd-xdna1`、`amd-xdna2`) に置く。hwnpu が動かすのは今は `amd-xdna2` だけ (`recipe.Built`) なので、xdna1 のレシピは読んで確かめるが、作らない
 
@@ -129,7 +129,7 @@ models:
 - 落ちたプログラムがある書き出しは、そのチップ向けのものを取得元に置かない。人によって置かれるものが変わらないようにするため。ほかのチップのものは置く
 - coreai-build のエラーは出力ではなく os_log に出る。そこで、落ちた coreai-build のプロセスのログ (`/usr/bin/log show --predicate 'processID == PID'`) から、理由の行を拾って表示する
 - 表示の最後に、そのプログラムを端末に回すときのレシピの規則を示す。プログラムの作り方を直すか、その規則を model-recipes.yaml に書き足して PR にする
-- 2 本同時のコンパイルで NPU から外れたものは、Build が最後に 1 本ずつ作り直してから判断する (Chroma の double で見た)
+- 2 本同時のコンパイルで NPU から外れたものは、Build が最後に 1 本ずつ作り直してから判断する (外した Chroma1 の double で見た)
 
 ## 4. 実機に回る仕組み
 
@@ -141,7 +141,6 @@ models:
 | モデル | M1 (h13g) | M2 (h14g) | M3 (h15g) |
 |---|---|---|---|
 | FLUX.2 klein 4B | `dit_single_*` を端末で (RegAlloc の L2 の割り付けに失敗) | 全部プリビルド | 全部プリビルド |
-| Chroma1-Flash / HD | `dit_single_*` を端末で | `dit_single_0/8/16` を端末で | 全部プリビルド |
 | MOSS-SoundEffect v2.0 (`-lut8` も) | sin は級数 | sin は級数 | sin はそのまま (`-sin-native` の書き出し) |
 
 MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をそのまま書くと、h13g、h14g、h14c (M2 Pro・Max) は 1 段が Neural Engine の 8〜9 個の区間に分かれる (sin がその間で外に出る)。h15g/c、h16g/s/c、h17g/s/c/d は 1 区間に収まる (h15s/m/d と h17p は coreai-build が落ちるので見ていない)。M3 では、この書き出しを取ってきて音を作れた。級数はどのチップでも 1 区間。sin の前の clip は、sin とまとめられて (NEFUSED_EW: EW: MAX) h15g でも通らないので、そのまま書くときは clip を外す (clip は丸めのためのもの)。音声のプリビルドは置かない (M1 で遅いか壊れていた) ので、DAC は全部端末に回す規則にしてある。
@@ -153,7 +152,7 @@ MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をその
 - **ほかの置き換え**: 2 節の `rewrite` は、いまは MOSS の DAC の sin だけ。ほかはコードに直接書いてある (softmax を exp と逆数で、x / c を 1 / c 倍で、sigmoid と tanh を exp で、conv_transpose を polyphase で、など)。M1 と M2 以降で違うものから、書き方を `Ways` に足して移す。sin の表引きも、そのときに書き方として足す
 - **変換の設定**: 量子化の形式 (`npu.apple.formats`)、FLUX.2 klein の編集の組み合わせなど。いまは models.yaml とコードにある
 - **AMD の xdna1**: レシピは書けるが、hwnpu が `amd-xdna1` の書き出しを読んで動かすところ (`.amd-npu1` の名前、`cache.AMDTarget` の世代ごとの切り替え、`iron_export_lm.py` の xclbin を段ごとにした書き出しの読み込み) がまだない。xdna1 の機械で確かめてから `recipe.Built` に足す
-- **AMD の書き出しのキー**: 手で作った書き出し (Anima、Chroma、DA3、SigLIP2 など) のキーはいまも名前だけで、ほかの多くもコードの版だけ。レシピの args を変えても、ピンのないものは前の書き出しを取ってしまう。args をキーに入れる (取得元の書き出しを作り直してピンし直すことになる)
+- **AMD の書き出しのキー**: 手で作った書き出し (Anima、DA3、SigLIP2 など) のキーはいまも名前だけで、ほかの多くもコードの版だけ。レシピの args を変えても、ピンのないものは前の書き出しを取ってしまう。args をキーに入れる (取得元の書き出しを作り直してピンし直すことになる)
 - **道具の版 (AMD)**: mlir-aie と Python の版 (`tools.iron`)
 - **Core AI の書き出しの固定**: `hwnpu-dev models pin` は AMD だけ
 

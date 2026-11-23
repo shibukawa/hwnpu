@@ -10,7 +10,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -19,9 +18,8 @@ import (
 // image: the Core AI exports hwnpu-image generate draws with, of every size it takes (--size):
 // FLUX.2 klein one of every size and edit of models.yaml npu.apple and one beside it of the edits
 // of 1024, Anima one of
-// every aspect, FLUX.3 klein and Chroma as hwnpu-image generate makes them now (FLUX.3 klein's
-// default sizes, Chroma one for 1:1 and one for 1:1s, until they hold every aspect in one as
-// docs/design/new-model-checklist.md 11.4 says).
+// every aspect, FLUX.3 klein as hwnpu-image generate makes it now (its default sizes, until it
+// holds every aspect in one as docs/design/new-model-checklist.md 11.4 says).
 func init() {
 	Register(&Preparer{Name: "image", Kinds: []chat.Kind{chat.KindImage}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {
 		m := e.Model
@@ -58,15 +56,6 @@ func init() {
 				return err
 			}
 			f.Set("export", dir)
-		case strings.HasPrefix(m.Family, "chroma"):
-			for _, side := range []int{1024, 512} { // 1:1 and 1:1s
-				dir, err := chroma.Prepare(ctx, chroma.Setup{Dir: filepath.Join(chat.ModelsDir(), "Chroma"), Repo: m.Repo, Name: m.Name,
-					ConvertOptions: chroma.ConvertOptions{Backend: llm.BackendCoreAI, Width: side, Height: side}, Log: e.Log})
-				if err != nil {
-					return fmt.Errorf("%dx%d: %w", side, side, err)
-				}
-				f.Set("export", dir)
-			}
 		case strings.HasPrefix(m.Family, "anima"):
 			// every aspect ratio in one export, as hwnpu-image generate makes it (its --size 1:1 and
 			// --qchunk 512 by default)

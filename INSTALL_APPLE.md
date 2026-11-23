@@ -106,7 +106,7 @@ macOS 27 has Core AI beside Core ML. Nothing more to install.
 - **Converting** writes a model's programs side by side, as many as the CPU's cores and the free memory allow (`HWNPU_JOBS=N` sets the number, `1` one at a time); on a terminal it shows a bar and a line for each program being written, erased when all are done
 - **The other commands** keep Core ML as the default; `--backend coreai` or `HWNPU_BACKEND=coreai` runs their converted models (`.mlpackage`, lowered to Core AI programs in Go) on Core AI
 
-- **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, Chroma, FLUX.2 klein), ocr, detect, pose, face-detect, depth, segment, label and embed; all of `hwnpu-audio` ([docs/design/audio-models.md](docs/design/audio-models.md))
+- **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, FLUX.2 klein, FLUX.3 klein), ocr, detect, pose, face-detect, depth, segment, label and embed; all of `hwnpu-audio` ([docs/design/audio-models.md](docs/design/audio-models.md))
 - **Results and speed**: as Core ML's (the same answers, objects and text; cosines of 0.9999 or more for embeddings and depth; a call within ±10 %)
 - **The difference** is how the compiled programs are kept. Core ML's cache holds about 4 GiB, and past it programs compile again at later starts too (minutes to tens of minutes for the large image generators). Core AI keeps them in its own cache (`~/Library/Caches/coreai-cache`) until the disk runs low. With both caches warm the starts are the same
 - **The cost**: the weights are on the disk three times (the converted `.mlpackage`, the lowered `.aimodel`, Core AI's cache). Below about 15 GB free, macOS removes the caches and the next start compiles again

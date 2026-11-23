@@ -43,14 +43,14 @@ How hwnpu finds, downloads, converts, shares and removes models. This file is th
 ### Licenses and the model policy
 
 - Every model has `license: {id, url, class, terms, accept}` (`TestBuiltinLicenses`). `class`: `open`, `conditional` (a revenue cap, a registration), `non-commercial` (the weights, even when outputs may be sold). Sources of each license: [../model-provenance.md](../model-provenance.md).
-- `content: [nsfw]` only on models that make NSFW pictures unasked (Anima, Chroma), not on models that can only if asked.
+- `content: [nsfw]` only on models that make NSFW pictures unasked (Anima), not on models that can only if asked.
 - Policy (`chat.Policy`, `internal/chat/policy.go`): `HWNPU_MODEL_ALLOWLIST` (also from `.env`) and `policy: [...]` in a user's file (not in the built-in one). Items: `+license:X`, `-license:X` (X = id or class), `+nsfw`.
   - `-` wins over `+`. Any `+license` turns the licenses into an allow-list: an unmatched or unknown license is refused.
   - `nsfw` models are refused without `+nsfw`. `+nsfw` only allows them; it changes no generation behaviour.
   - A use skips refused models; if none is left for this machine, it adds the allowed model of the same kind and features with the most open class. Refused models and why follow the pick's reason.
   - A model named directly (`-m`, a tag, a repository, an API request) is never swapped: `*chat.PolicyError` with the reason. A repository's license is unknown: `-license` lets it pass, `+license` refuses it.
   - Lists show refused models and why at the end; a column with everything refused shows `-`.
-  - The `image` use picks FLUX.2 klein 4B from 8 GB. Anima and Chroma are not picked by the use even with `+nsfw`; named, they run with `+nsfw`.
+  - The `image` use picks FLUX.2 klein 4B from 8 GB. Anima is not picked by the use even with `+nsfw`; named, it runs with `+nsfw`.
   - Examples (`TestPolicyPicks`): `-license:conditional` → chat 8 GB Qwen3-1.7B (LFM3 has a revenue cap), chat 16 GB gemma-4-E2B-it; `-license:lfm-open-1.0` → speech is an error (no alternative); `+license:open` → translate is an error (PLaMo 3 Translate is conditional).
 - License confirmation (`chat.AcceptLicense`): a model with `accept: true` (CircleStone Labs' Anima, for example) asks once on a terminal at first use by name and stores the answer in `~/.config/hwnpu/licenses.json`. Without a terminal it stops and asks for `--accept-license` or `HWNPU_ACCEPT_LICENSE=ID` (this run only). The answer is local and never shared; each machine answers.
 
@@ -93,7 +93,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/   a conversion; entry.json written last
 - A file the lock does not name is not read. A repository copied by hand without a lock (a gated checkpoint on a NAS) is not found, and the fetch goes on to Hugging Face.
 - The commit is decided once per repository: the models.yaml pin (`from: hf:OWNER/NAME@REV`), else the first source's lock, else the local lock, else Hugging Face's `main`. Every file comes from that commit whichever layer serves it. Only `hwnpu-dev sources update` moves a lock (re-downloads changed files only). When a source's lock moves, the local one follows and files with the same sha256 stay (`store.Record`).
 - Fast path: when the local lock names the file, its size matches and the commit is the decided one, no network and no source is asked.
-- Every original file, from any layer, lands in local `original/OWNER/NAME/FILE` (`chat.RepoDir`); `chat.Fetch(ctx, repo, name, log)` and `chat.FetchWeights` return the path. Parts shared by models (Chroma's T5-XXL and VAE) are in each repository's folder, hard-linked by sha256.
+- Every original file, from any layer, lands in local `original/OWNER/NAME/FILE` (`chat.RepoDir`); `chat.Fetch(ctx, repo, name, log)` and `chat.FetchWeights` return the path. Parts shared by models (Chroma1's T5-XXL and VAE were, before it was removed) are in each repository's folder, hard-linked by sha256.
 - `TARGET`: `amd-xdna2`, `coreai`, `coreai-ARCH` (prebuilt), `any` (tables, GPTQ codes). `VERSION`: `vN` when models.yaml has `targets.<target>.version: N` (matched if the recipe without the tools hash is the same), `vN-<8 hex>` with `develop: true`, `v0-<8 hex>` with no version.
 - A published version (`vN`) no layer has is taken from `v0-HASH` of the same key (the same bytes, made before the version was written) and written back as `vN` (`chat.fetchFrom`).
 - A folder is either whole or not: a conversion is whole when its `entry.json` exists; a repository holds only what its lock names. Readers never see half-written data.
@@ -256,7 +256,7 @@ Compression does not help (bf16 checkpoints: lz4 100%, zstd −3 77%; lut6 weigh
 - Fetching prebuilt as one archive for all chips (36.98 → 1.33 MB with zstd −19 --long): each Mac needs only its own.
 - Prebuilt for chat models: slower first load, and Qwen3.5-4B hung.
 - Exporting device-compiled Core AI results: inside SIP, per signing identity.
-- Sana (every model) and Qwen-Image-2.1 (Turbo and base, with the Qwen Research license prompt): removed from models.yaml. Qwen-Image has too many parameters for the NPU; Sana went with it, and its Core AI prebuilt did not reach the ANE for most parts anyway.
+- Sana (every model) and Qwen-Image-2.1 (Turbo and base, with the Qwen Research license prompt): removed from models.yaml. Qwen-Image has too many parameters for the NPU; Sana went with it, and its Core AI prebuilt did not reach the ANE for most parts anyway ([sana.md](../not-adopted/sana.md), [qwen-image.md](../not-adopted/qwen-image.md)).
 - MinIO as a tested S3 server: no longer maintained.
 - Writing into `~/models`: read-only legacy layer.
 - Large models in Cloudflare R2's free tier: it holds 10 GB, so only small ones go there.

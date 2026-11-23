@@ -205,7 +205,7 @@ The first run, empty Core AI and aned caches (a copy with a new signing identifi
 | Qwen3.5-4B, M2 | 12 min 26 s | loaded in 7 min 07 s, then no answer for 1 h 40 min | — |
 
 - It pays for large parts that take minutes each to compile (image DiTs: FLUX's `dit_single` about 7 min → 33 s). Small parts lose: finishing costs about 10 s a program (the service exits after each and launchd delays its respawn), and the first prebuilt of a process seemed to carry a fixed cost of minutes.
-- So prebuilt is built for FLUX.2 klein, Chroma1-Flash and Anima (DiT and other non-text, non-VAE parts), and not for chat models.
+- So prebuilt is built for FLUX.2 klein and Anima (and was for Chroma1-Flash, removed; DiT and other non-text, non-VAE parts), and not for chat models.
 - Step time is the same either way.
 
 Open problems in Core AI and `coreai-build`, Apple's report numbers and what to do when each is fixed: [known issues](../known-issues.md).
@@ -225,7 +225,7 @@ Tools in `tools/coreai`:
 | `aicheck cycle [-rounds N] PKG…` | What a program pays when it follows another |
 | `aicheck rules`, `limits`, `lint` | The Neural Engine's numeric rules against float32, its limits (call floor, program count, formats), and lint of exports |
 | `caiload` (Swift) | specialize, run, `-cycle` switching cost, from Core AI alone |
-| `chromafake`, `lutfake`, `lutscan -tile 16`, `kleinonly`, `bcdump` | Random-weight parts from a header, synthetic lut layers, equal neighbouring tables, FLUX.2 klein prepare / put, bytecode dump |
+| `lutfake`, `lutscan -tile 16`, `kleinonly`, `bcdump` | Synthetic lut layers, equal neighbouring tables, FLUX.2 klein prepare / put, bytecode dump |
 
 `aicheck run` and `probe` take the Neural Engine lock like the commands (`llm.LockNPU`): two processes on it at once have frozen a Mac, and another process compiling spoils timings.
 
@@ -298,7 +298,7 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 - Core AI's `.persistent` cache policy (`AIModelCache.specialize(…cachePolicy:)`, kept in `~/Library/Application Support/coreai-cache/`): avoids eviction recompiles, but hwnpu would have to delete entries itself (`deleteEntries(for:)`), and aned's code would still be evicted. Not decided.
 - Whether the same `.aimodel` loads across OS versions (the cache folder is per OS build).
 - The fixed minutes of the first prebuilt finish in a process, and Anima's 13-minute first step (with or without prebuilt): not investigated.
-- Why `coreai-build`'s VAE programs stripe and T5 is cancelled; remove `LeftToDevice` when fixed. The sources' FLUX.2 klein and Chroma1-Flash prebuilts still contain VAE / text parts (unused) to be repacked.
+- Why `coreai-build`'s VAE programs stripe and T5 is cancelled; remove `LeftToDevice` when fixed. The sources' FLUX.2 klein prebuilts still contain VAE / text parts (unused) to be repacked.
 - `coreai-build` crashes on 9 architectures and gives no ANE code for h18g (reported to Apple); whether an M6 compiles on the device is unknown.
 - aned's disk use not measured directly.
 - Input arrays written in place: not measured on M2 / M3; image and audio programs still copy.

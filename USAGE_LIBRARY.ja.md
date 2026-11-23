@@ -168,7 +168,7 @@ k.FatalIfErrorf(k.Run())
 
 `APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) と [samples/parallax](samples/parallax) (絵の深度を推定し、カメラで見る人の頭を追って、奥行きがあるように描く。窓は Ebitengine)、[samples/layers](samples/layers) (絵を深度で層に分け、隠れていた部分を描き足して PSD に書く) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
 
-- 今ある機能は音声と文、絵の深度と顔、画像の生成と編集 (FLUX.2 klein) です。ほかの画像のモデル (Anima、Chroma)、物体や姿勢の検出などは、まだコマンドからだけ使えます
+- 今ある機能は音声と文、絵の深度と顔、画像の生成と編集 (FLUX.2 klein) です。ほかの画像のモデル (Anima)、物体や姿勢の検出などは、まだコマンドからだけ使えます
 - 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) と Mac (M3、Core AI) です (3 つのサンプル、カメラ、窓)。Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
 - Apple の Neural Engine の FLUX.2 klein は、参照の絵から 1024 x 1024 (1024 の 1 枚と、512 の 0〜2 枚) と 512 x 512 (512 の 1 枚か 2 枚) で描きます。プロンプトから描くのと同じ書き出しです (`Generator.EditSizes`)
 
@@ -215,7 +215,7 @@ Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.el
 - Linux では `/dev/accel/accel0` に読み書きできる権限 (`render` グループ) が必要です
 - `GraphSource{Path: "model.xml"}` で OpenVINO IR (隣の `.bin` も読みます) を、`GraphSource{Blob: ...}` でコンパイル済み blob を渡せます。コンパイラに渡す追加のオプションは `BuildFlags` に `--config KEY="VALUE"` の形で書きます
 - NPU コンパイラが対応しない演算を含むモデルは、配置方針にかかわらず `ErrNotOnNPU` になり、原因の演算とビルドログが返ります
-- Intel の NPU に向けて OpenVINO IR に変換するのは、hwnpu-chat のモデル (LFM3 とその VL・Audio・d1、Gemma 4、Qwen3.5、Qwen3、PLaMo 3、PLaMo-Embedding)、Anima、`hwnpu-audio` の transcribe (Whisper)、tts、generate (Magenta RealTime 2、MOSS-SoundEffect)、pitch、notes、`hwnpu-image` の depth (DA3、MoGe-2)、face-detect (YuNet)、segment (EfficientSAM のエンコーダ)、detect、pose、ocr です。Chroma、FLUX.2 klein、SigLIP 2 (label) は AMD の NPU と Apple の Neural Engine だけです (Intel はまだ)。実機で動かしたのは LFM3、PLaMo 3 Translate、PLaMo-Embedding、Anima だけで、ほかは OpenVINO の CPU (`HWNPU_BACKEND=openvino`、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の「OpenVINO で切り分ける」) で変換から結果までを確かめた段階です ([docs/design/intel.ja.md](docs/design/intel.ja.md))
+- Intel の NPU に向けて OpenVINO IR に変換するのは、hwnpu-chat のモデル (LFM3 とその VL・Audio・d1、Gemma 4、Qwen3.5、Qwen3、PLaMo 3、PLaMo-Embedding)、Anima、`hwnpu-audio` の transcribe (Whisper)、tts、generate (Magenta RealTime 2、MOSS-SoundEffect)、pitch、notes、`hwnpu-image` の depth (DA3、MoGe-2)、face-detect (YuNet)、segment (EfficientSAM のエンコーダ)、detect、pose、ocr です。FLUX.2 klein、SigLIP 2 (label) は AMD の NPU と Apple の Neural Engine だけです (Intel はまだ)。実機で動かしたのは LFM3、PLaMo 3 Translate、PLaMo-Embedding、Anima だけで、ほかは OpenVINO の CPU (`HWNPU_BACKEND=openvino`、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の「OpenVINO で切り分ける」) で変換から結果までを確かめた段階です ([docs/design/intel.ja.md](docs/design/intel.ja.md))
 
 ## 診断
 

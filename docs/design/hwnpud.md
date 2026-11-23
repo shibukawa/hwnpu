@@ -92,7 +92,7 @@ Step 3 on the Mac (`internal/airpc`, `internal/aihost`, `internal/cachecmd`, the
   producer to stop, as a loop over an iterator does (the producer is a few chunks ahead: the
   stream has no flow control). Variadic methods (`MusicGenerator.Style`) send their slice.
 - The commands' and samples' model work all goes through `ai`. What stays in the program's own
-  process: `hwnpu-image convert` (Anima's and Chroma's conversion, no NPU), `hwnpu-dev` (the
+  process: `hwnpu-image convert` (Anima's conversion, no NPU), `hwnpu-dev` (the
   developer's process), `hwnpu issue`, and the logs of the Neural Engine's memory
   (`mem.NPUWired`, the machine's, so a command still tells how much more it holds). A command's
   `--backend` sets this process's `HWNPU_BACKEND`, which hwnpud does not take (it says that its

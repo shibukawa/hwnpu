@@ -1,4 +1,4 @@
-package mil
+package fluxvae
 
 import "fmt"
 

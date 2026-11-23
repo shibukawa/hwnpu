@@ -80,7 +80,7 @@ From the code (`Arch.Format`, `Config.Format()`, `defaultFormats`) and [models.y
 | gpt-oss-20b | lut8; `self_attn=lut8r`, `lm_head=lut6r`; experts MXFP4 on the CPU | — | experts mx4, attention q8x, head q4, router bf16 |
 | Qwen3.6-35B-A3B | lut8 mixers and shared expert, `lm_head=lut6r`, router gates fp16; experts MXFP4 on the CPU | — | `--q4` (experts and head q4, mixers q8) |
 | LFM2-8B-A1B | lut8, experts int8 | — | — |
-| Image models | text encoder and DiT lut8 (Chroma's T5 with `wo=fp16`; FLUX.3 klein's DiT lut8 with tables fitted to activations); Anima text and DiT int8 (the DiT as fast as fp16 and nearer it than lut8) | Anima fp16 | Anima's DiT q8 |
+| Image models | text encoder and DiT lut8 (FLUX.3 klein's DiT lut8 with tables fitted to activations); Anima text and DiT int8 (the DiT as fast as fp16 and nearer it than lut8) | Anima fp16 | Anima's DiT q8 |
 
 Image and audio details are in [image models](image-models.md), [image on Apple](image-apple.md), [image on AMD](image-amd.md), [audio](audio-models.md).
 
@@ -102,7 +102,7 @@ Why the LLM defaults are what they are (KL against the float reference unless sa
 - Neural Engine: `hwnpu-dev generate -package P.parts.json -score REF,...` runs a program without cache (`hwnpu-dev convert -seq 128`) over reference tokens (`ref_logits.py`, `ref_gemma4.py`). The first tokens weigh much (KL up to 8–13), so compare settings only on the same texts
 - Remove op error before blaming quantization: compare the same program on the Neural Engine and on Core ML's CPU. The ANE's `silu` alone was most of LFM3 lut8's loss (KL 0.058 → 0.022 with `blocks.SiLU`)
 - `hwnpu-dev formats` (`-ref lut8` when fp16 does not fit a part): next-token agreement and short questions. On short texts perplexity can be lower quantized; use agreement
-- Image generation: velocity relative RMS error along the reference trajectory (`chroma.TestCallsOnDevice`), and the final-latent cosine of free runs over several seeds. One-step error does not predict free runs (FLUX.3: 2.33 → 2.29 % velocity error, yet latent cosine 0.964 → 0.983)
+- Image generation: velocity relative RMS error along the reference trajectory (Chroma1's `TestCallsOnDevice`, removed), and the final-latent cosine of free runs over several seeds. One-step error does not predict free runs (FLUX.3: 2.33 → 2.29 % velocity error, yet latent cosine 0.964 → 0.983)
 - Audio and image encoders: by WER / CER (Whisper lut6 WER 4.43 → 4.87 %, so lut8)
 
 ## Choosing the format
@@ -128,7 +128,7 @@ What the sweeps found:
 - **Small models (≤ 2B) can break in the MLP at 4 bits**: Qwen3.5-0.8B README 0.055 but GPL 0.34 (GPTQ 0.30), AMD q6 0.044. Always look at the GPL
 - **Keep a checkpoint already in 4 bits in its own format**: gpt-oss's MXFP4 rounded to q4nx added 6.6 % weight error, KL README 0.052 → 0.135, wiki-ja 0.043 → 0.107. MXFP4 fits q6 exactly and mx4 as is
 - Distilled 8-step DiTs are weak at 4 bits (Anima q4nx latent cosine 0.777, q8 0.961). A large DiT can hold (Qwen-Image-2.1 20B lut4 with kmeans-minmax 0.935–0.981). Large DiT: MLP at 6 bits, attention at 8 (Qwen-Image-2.1's 7B DiT q6 MLP: −1.21 GB, pictures kept)
-- A pass run once a prompt (text encoder, Chroma's approximator) can take a larger format: it is not held through the steps. It still costs load, disk and compile-cache room, so raise only the weights that need it (Chroma's T5: lut8 with `wo=fp16`, 5.5 GB against fp16's 9.5)
+- A pass run once a prompt (text encoder, approximator) can take a larger format: it is not held through the steps. It still costs load, disk and compile-cache room, so raise only the weights that need it (Chroma1's T5, removed: lut8 with `wo=fp16`, 5.5 GB against fp16's 9.5)
 - Weights the calibration list leaves out are still rounded in the base format. Keep small ones a step up (Gemma 4's `per_layer` projections, 41M, `-format-for per_layer=lut8`, +0.01 GiB)
 
 ## Calibration

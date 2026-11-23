@@ -49,8 +49,6 @@ machine's memory class, and how the NPU's resident limit is probed. The Go API (
 |---|---|---|---|---|
 | Anima-Turbo | 46 s (9.6 / 36) | 698 J (121 / 577) | 56 / 329 J | 55×, 30.5 GB, 4.2 s |
 | Anima-Aesthetic | 3m18s (11 / 186) | 3.23 kJ (158 / 3.07 k) | 79 J / 1.82 kJ | 174×, 55.5 GB, 6.3 s |
-| Chroma1-Flash | 4m22s (23 / 238) | 4.45 kJ (345 / 4.10 k) | 182 J / 2.49 kJ | 573×, 142 GB, 14 s |
-| Chroma1-HD | 11m20s (32 / 648) | 11.89 kJ (493 / 11.39 k) | 277 J / 7.02 kJ | 953×, 234 GB, 22 s |
 
   - Idle is about 40 % of the running energy.
   - Preparing is 3–8 %: graph loads 4.5–8.8 s and bank re-reads from the page cache (10–18 GB/s), which grow

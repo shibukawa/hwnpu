@@ -27,7 +27,7 @@ hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集ま�
 | `hwnpu/ai/cli` | アプリのコマンドラインに足すサブコマンド: `models` (一覧、ダウンロード、コンパイル)、`status`。コマンドラインのライブラリに依存しない | v0 |
 | `hwnpu/ai/cli/konghelper` | そのサブコマンドの kong 用のアダプタ | v0 |
 | `hwnpu/ai/vision` | 深度 (`Depth`: 多視点も)、顔 (`Faces`)、顔から頭の位置 (`HeadOf`)、物体 (`Detect`)、姿勢 (`Pose`)、切り抜き (`Segment`)、OCR (`OCR`)、ラベルと埋め込み (`Label`) | v0 (2.6 節) |
-| `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`、`Edit`: FLUX.2 klein、FLUX.3 klein、Anima、Chroma。文から、FLUX.2 klein は文と参照の絵からも。`GenerateAll` で複数のプロンプトをまとめて) | v0 |
+| `hwnpu/ai/imagegen` | 画像の生成と編集 (`Generate`、`Edit`: FLUX.2 klein、FLUX.3 klein、Anima。文から、FLUX.2 klein は文と参照の絵からも。`GenerateAll` で複数のプロンプトをまとめて) | v0 |
 | `hwnpu/ai/sound` | 音楽 (`Music`: Magenta RealTime 2。できた 1 秒ごとに流す)、効果音 (`Effect`: MOSS-SoundEffect)、音高 (`Pitch`: SwiftF0)、採譜 (`Notes`: Basic Pitch)、MIDI の読み書き | v0 |
 
 - **機能ごとにパッケージを分ける**: 文字起こしだけを使うアプリに、画像の生成のコードを入れないため。`ai` は機能のパッケージを import しない。機能のパッケージが、自分のモデルの準備と読み込みのしかた (`internal/airole` の `Role`) を持ち、`ai.Define` で型のついた `Use` を作る
@@ -113,7 +113,7 @@ var (
 - **フラグは別のモデルにする**: コマンドのフラグのうちモデルの作り方や動かし方を変えるもの (`--format`、`--cpu`、手で変換したファイル、書き出しのディレクトリ) は、`Definition` を作ってその名前で動かす。モデルはいつも定義のとおりに動き、置き場の記録もフラグの組ごとに分かれる。キャッシュの場所を変える口 (`--cache`) は作らない
 - **計測の値は結果に入れる**: `speech.Transcript` の `Windows` (窓ごとの言語、トークン、特徴量・エンコーダー・デコードの時間) と `Took`、`speech.Audio.Stats` (フレーム数、使った乱数の種、全体と 3 つのプログラムの時間)、`imagegen.Pictures` (絵ごとの種、まとめて描いた組ごとのステップと VAE の段の時間、大きさのプログラムを開いた時間、参照とプロンプトの読み込みの時間、全体)。実行の記録 (`console.RecordRun`、電力量) はコマンドの `main` に置き、`ai` には入れない
 - **動かし方だけの設定は読み込みの設定**: 準備するものを変えない設定 (チャットの `--idle`、`--prompt-cache`、`--experts-key`、`--no-sparse`) は `ai.LoadSettings(role, map)` (`App.Open` のオプション、役割の `LoadEnv.Settings`)。別のモデルにはしない。サンプリングと考えるかどうかは要求ごとのオプション
-- **絵のモデルの設定** (`ai/imagegen`): 準備するものを変えるフラグは `Settings` にする。`text-format`、`dit-format` (Apple と Intel の変換の重みの形式)、`size` (1 つの大きさしか持たない書き出し: Intel の Anima、Apple の Chroma)、Anima の `dit`、`group`、`qchunk`、`resident-dit` (AMD で DiT の組を全部 NPU に置く)。書き出しのディレクトリは `Programs` の `export` (`imagegen.Export(dir)` が元のモデルを見分けて `Definition` を作る)。`--cpu` (Anima、Chroma の Core ML の書き出しを CPU のインタープリタで) は `Device: "cpu"`。絵ごとのもの (プロンプト、ネガティブ、ガイダンス、ステップ、種、サンプラー、shift、`--cfg-sigmas`、大きさ、参照とその大きさ `FILE@half`、`--batch`、`--keep-dit`) は `imagegen.Options`。Apple の FLUX.2 klein はコマンドと同じ 8 つの大きさの書き出しを 1 つ作る (前は 512 と 1024 だけで、コマンドと共有できなかった。役割の版を 2 に上げた)
+- **絵のモデルの設定** (`ai/imagegen`): 準備するものを変えるフラグは `Settings` にする。`text-format`、`dit-format` (Apple と Intel の変換の重みの形式)、`size` (1 つの大きさしか持たない書き出し: Intel の Anima)、Anima の `dit`、`group`、`qchunk`、`resident-dit` (AMD で DiT の組を全部 NPU に置く)。書き出しのディレクトリは `Programs` の `export` (`imagegen.Export(dir)` が元のモデルを見分けて `Definition` を作る)。`--cpu` (Anima の Core ML の書き出しを CPU のインタープリタで) は `Device: "cpu"`。絵ごとのもの (プロンプト、ネガティブ、ガイダンス、ステップ、種、サンプラー、shift、`--cfg-sigmas`、大きさ、参照とその大きさ `FILE@half`、`--batch`、`--keep-dit`) は `imagegen.Options`。Apple の FLUX.2 klein はコマンドと同じ 8 つの大きさの書き出しを 1 つ作る (前は 512 と 1024 だけで、コマンドと共有できなかった。役割の版を 2 に上げた)
 
 ### 2.4 音 (`ai/sound`)
 
@@ -500,7 +500,7 @@ layers split picture.png --layers 4 --png parts/
 | `ai/text` | `Translate` (前の 4 組を履歴に、`Reply`)、`Chat` (`Reply`、`Complete`、`CompleteStream`、`Count`)、`Embed`、`Decide`、`Format` (2.5 節) |
 | `ai/agent` | `New` (`Config`: `System`、`Tools`、`Options`、`ResetAfter`、`MaxMessages`、`Rounds`)、`Agent` (`Turn`、`TurnOptions`: `Gate`、`Text`、`Tool`。`Prime`、`Reset`、`History`)、`Tool`、`Args`、`Model` |
 | `ai/agent/voice` | `NewListener` (`Config`: `Transcriber`、`Agent`、`Voice`、`Wake`、`Shortcut`、`Pause`、`Follow`、`Speculate`、`BargeIn`、`Events`)、`NewVoice` (`Synth`、`Player`、`VoiceOptions`: `Say`、`Phrase`、`SayPhrase`、`Chime`、`Alarm`、`Stop`)、`NewWake`、`Splitter`、`Speakable`、`Hallucination` |
-| `ai/imagegen` | `Generate`、`Edit`、`Generator` (`Generate`、`GenerateAll`、`Sizes`、`SizeFor`、`SizeOf`、`Warm`)、`Options` (参照とその大きさ、種、ステップ、ネガティブとガイダンス、サンプラー、`Batch`、進み具合の `OnBatch` / `OnStep` / `OnStage` / `Drawn`、確かめるための `Checks`)、`Pictures`、`Export` (書き出しのディレクトリを `Definition` に)、`GenerateNode`。ファミリーごとに `klein.go`、`flux3.go`、`anima.go`、`chroma.go` |
+| `ai/imagegen` | `Generate`、`Edit`、`Generator` (`Generate`、`GenerateAll`、`Sizes`、`SizeFor`、`SizeOf`、`Warm`)、`Options` (参照とその大きさ、種、ステップ、ネガティブとガイダンス、サンプラー、`Batch`、進み具合の `OnBatch` / `OnStep` / `OnStage` / `Drawn`、確かめるための `Checks`)、`Pictures`、`Export` (書き出しのディレクトリを `Definition` に)、`GenerateNode`。ファミリーごとに `klein.go`、`flux3.go`、`anima.go` |
 | `ai/server/openai`、`ai/server/systemone` | OpenAI 互換の口と System One API の `http.Handler` (8 節) |
 | `ai/cli` | `List`、`Download`、`Prepare`、`Status`、`Run` (引数を渡す)、`WritePlan`、`Usage` |
 | `ai/cli/konghelper` | kong の構造体 `Models`、`Status` と `Bind` |

@@ -60,8 +60,8 @@ hwnpu は NPU だけで動かして消費電力を下げる。手法は次の順
 | 多モーダルの前処理 | `resize_golden.py`、`mel_golden.py`、`whisper_mel_golden.py` | PIL と ±1、librosa と 1e-4 |
 | エンコーダ・デコーダ (音声) | `tools/ref/ref_whisper.py`、`hwnpu-dev check` (`REF.x.bin`) | エンコーダ、交差注意のキーと値、デコーダを別々に。30 秒を超える音声は HF の窓の取り方 (次の窓はタイムスタンプから) に従う。30 秒ごとに切ると文字が落ちる |
 | 埋め込みのモデル | `embed_golden.py` | HF とコサイン 0.997 以上 |
-| 画像生成 | `tools/ref/compare_image.py`、モデルの `ref_*.py` | diffusers の fp32 との潜在のコサイン、VAE の PSNR。16 GB の Mac に fp32 で入らないモデルは、繰り返す層の重みを層の直前に読む (`tools/ref/stream_weights.py`) か、diffusers のブロックを meta デバイスに作って重みをブロックごとに渡す (`ref_chroma_lean.py`: M1 で 512² の DiT 1 回 98 秒。`--stats` でブロックごとの最大、`--dump` でブロックの入力) |
-| **参照がどうマスクするか** | `tools/ref/ref_chroma.py --mask keys` | diffusers の ChromaPipeline は 0/1 の文のマスクをスコアに足す: Chroma は詰め物を隠して学習したのに、隠れない。NPU の正しいマスクが誤りに見えた (0.9886) が、参照でキーを隠すと 0.99985。直すのは狙った部分だけ (同じ差し替えが T5 の bias のマスクも壊した)。NPU を疑う前に参照のマスクを読む |
+| 画像生成 | `tools/ref/compare_image.py`、モデルの `ref_*.py` | diffusers の fp32 との潜在のコサイン、VAE の PSNR。16 GB の Mac に fp32 で入らないモデルは、繰り返す層の重みを層の直前に読む (`tools/ref/stream_weights.py`) か、diffusers のブロックを meta デバイスに作って重みをブロックごとに渡す (`ref_chroma_lean.py`。`05c406c9` にある。Chroma1 と一緒に消した: M1 で 512² の DiT 1 回 98 秒。`--stats` でブロックごとの最大、`--dump` でブロックの入力) |
+| **参照がどうマスクするか** | `tools/ref/ref_chroma.py --mask keys` (`05c406c9` にある。Chroma1 と一緒に消した) | diffusers の ChromaPipeline は 0/1 の文のマスクをスコアに足す: Chroma は詰め物を隠して学習したのに、隠れない。NPU の正しいマスクが誤りに見えた (0.9886) が、参照でキーを隠すと 0.99985。直すのは狙った部分だけ (同じ差し替えが T5 の bias のマスクも壊した)。NPU を疑う前に参照のマスクを読む |
 | Go の型なしの定数 | 尺度を読む | 型なしの整数どうしの `T5FFScale/T5Scale` は `1/64 = 0`。`float32(a)/b` と書く |
 
 ## 3. Mac の Neural Engine に収まるか
@@ -116,7 +116,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - linear の出力の 1 行が fp16 の上限に近いと ANE でだけ NaN: 直後が正規化なら重みとバイアスを 1/64 に。部品を 1 つずつ CPU に移して探す
 - **行ごとの int8 の重みは大きな出力であふれる**: NE は int8 の符号の和を取ってから行の尺度を掛け、注意の吸い込みの行の 13000 の出力が NaN になった (Core ML の CPU は正しい)。lut8 は積の前に fp16 に戻すので正しい。層ごとに非有限の値を数えて探す
 - **重みに畳んだ尺度で積が fp16 の正規化の範囲を下回る** (小さなチャネルが消える)。射影の出力に掛ける。Core ML は linear の隣の定数倍をどのみち重みに畳む
-- **外れ値のチャネルのある行の norm**: 2 乗の平均は最大で割った写しから取り、x そのものに rsqrt / max を掛ける (`chroma/mil.t5Norm`)
+- **外れ値のチャネルのある行の norm**: 2 乗の平均は最大で割った写しから取り、x そのものに rsqrt / max を掛ける (Chroma1 の `mil.t5Norm`。`05c406c9` にある)
 - **NE の規則** (`aicheck rules`、M2 で測った。Core AI の CPU ではどれも起きない。[apple-coreai.md](apple-coreai.md)):
   - linear と畳み込みの和は**途中の和も** 2^15 未満 (reduce_sum は全範囲)
   - 最後の軸の slice で開始を 32 で割った余りが 1〜14 だと 4094 を超える値が Inf: `aicheck lint` (か `HWNPU_AILOWER_NOTES=1`)
@@ -250,7 +250,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - Apple: キャッシュのないプログラム (`hwnpu-dev convert -seq 128`) で `hwnpu-dev generate -package P.parts.json -score REF,...`。最初のトークンの重みが大きい (KL が 8〜13 まで): 設定は同じ文どうしで比べる
 - 小さな KL の差は 5 つの文では決められない: 約 128 位置の平均は全体の値の 0.6〜1.4 倍に散り、0.01 以下の差の設定は 34〜42 % の割合で逆順になった。僅差なら 512 トークンの塊を 24〜36 個 (256 をプロンプト、残り 256 を採点) 使い、塊ごとの平均の対の差に 95 % 区間を付ける。0 を含めば差なしとする。36 塊では区間は約 ±15 %。
 - チャットのモデルには、user の発話の中でなくアシスタントの答えとして文を読ませる: 発話の中では各位置で `<|im_end|>` を予測するため分布が変わる (Qwen3.6 のパープレキシティは発話中 106〜582、答えの形で 5.7〜10.9)。gpt-oss は wikitext-2 の書式を自分では書かず、答えの形でも 131、自分の答えでは 1.4。経路の規則を変えたときの KL は wikitext 調の文で 7 倍高かった。生成に効く変更はモデル自身の答えでも測る。
-- 画像生成: 参照の軌道に沿った速度の相対 RMS (参照の DiT の入力を 1 つずつ NPU に通す、`chroma.TestCallsOnDevice`) と、自由に回した最後の潜在。ステップとともに育つ誤差は軌道に沿ってでないと見えない
+- 画像生成: 参照の軌道に沿った速度の相対 RMS (参照の DiT の入力を 1 つずつ NPU に通す、外した Chroma1 の `TestCallsOnDevice`) と、自由に回した最後の潜在。ステップとともに育つ誤差は軌道に沿ってでないと見えない
 
 ### 5.2 部分ごとのビット数を CPU で掃く
 

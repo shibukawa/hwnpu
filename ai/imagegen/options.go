@@ -26,31 +26,27 @@ type Options struct {
 	// the time for each picture (Pictures.Seeds tells them).
 	Seed uint64
 	// Steps are the denoising steps; 0 is the model's own (FLUX.2 klein: 4; FLUX.3 klein: 16,
-	// the only ones it takes; Anima-Turbo 8, Anima-Aesthetic 25; Chroma1-Flash 8, Chroma1-HD 40).
+	// the only ones it takes; Anima-Turbo 8, Anima-Aesthetic 25).
 	Steps int
 	// Negative is the negative prompt of the classifier-free guidance, and Guidance its scale,
-	// the DiT twice a step (Anima, Chroma; 0: the model's own, 1: none). A Negative without a
+	// the DiT twice a step (Anima; 0: the model's own, 1: none). A Negative without a
 	// Guidance on a model that runs none by default (Anima-Turbo) runs a weak one (1.5); the
 	// distilled models (FLUX.2 and FLUX.3 klein) run none and refuse them.
 	Negative string
 	Guidance float64
 	// CFGSigmas, [lo, hi], run the guidance only at the steps whose sigma is in it (1 is pure
 	// noise; 0, 1 for every step); the others run the DiT once. Nil: the model's own (Anima 0.6
-	// to 1; Chroma its export's with its own sampler and steps).
+	// to 1).
 	CFGSigmas []float64
-	// Sampler is the solver (Anima: euler or dpm2m, DPM-Solver++ 2M; Chroma: euler, heun or
-	// dpm2m; "": the model's own).
+	// Sampler is the solver (Anima: euler or dpm2m, DPM-Solver++ 2M; "": the model's own).
 	Sampler string
 	// Shift is Anima's sigma schedule's shift (0: 3, its scheduler's).
 	Shift float64
-	// Batch is how many pictures GenerateAll draws together where the model does (FLUX.2 klein;
-	// Chroma on Apple's Neural Engine): their prompts are read, then their steps run together
+	// Batch is how many pictures GenerateAll draws together where the model does (FLUX.2 klein):
+	// their prompts are read, then their steps run together
 	// (a group of the DiT's weights read once for all of them), then the VAE. 0 and 1 draw a
 	// picture after another.
 	Batch int
-	// UnloadDiT unloads Chroma's DiT between the pictures of GenerateAll on Apple's Neural
-	// Engine, which keeps it loaded otherwise (the text encoder and the VAE are loaded for each).
-	UnloadDiT bool
 
 	// Progress, when not nil, is called after each step (step from 1) and once more when the
 	// pictures of the step are decoded (step == steps + 1).

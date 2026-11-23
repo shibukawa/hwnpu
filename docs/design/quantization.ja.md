@@ -80,7 +80,7 @@ Mac の専門家混合のモデルは専門家を CPU で回す ([MoE](moe.md) �
 | gpt-oss-20b | lut8。`self_attn=lut8r`、`lm_head=lut6r`。専門家は CPU の MXFP4 | — | 専門家 mx4、注意 q8x、出力層 q4、router bf16 |
 | Qwen3.6-35B-A3B | token mixer と共有の専門家 lut8、`lm_head=lut6r`、経路のゲート fp16。専門家は CPU の MXFP4 | — | `--q4` (専門家と出力層 q4、mixer q8) |
 | LFM2-8B-A1B | lut8、専門家 int8 | — | — |
-| 画像のモデル | テキストのエンコーダと DiT は lut8 (Chroma の T5 は `wo=fp16`。FLUX.3 klein の DiT は活性に合わせた表の lut8)。Anima はテキストも DiT も int8 (DiT は fp16 と同じ速さで lut8 より fp16 に近い) | Anima fp16 | Anima の DiT q8 |
+| 画像のモデル | テキストのエンコーダと DiT は lut8 (FLUX.3 klein の DiT は活性に合わせた表の lut8)。Anima はテキストも DiT も int8 (DiT は fp16 と同じ速さで lut8 より fp16 に近い) | Anima fp16 | Anima の DiT q8 |
 
 画像と音の詳細は [画像のモデル](image-models.md)、[Apple の画像](image-apple.md)、[AMD の画像](image-amd.md)、[音](audio-models.md)。
 
@@ -102,7 +102,7 @@ LLM の既定の理由 (断りがなければ float の参照に対する KL):
 - Neural Engine: `hwnpu-dev generate -package P.parts.json -score REF,...` がキャッシュなしのプログラム (`hwnpu-dev convert -seq 128`) を参照のトークン (`ref_logits.py`、`ref_gemma4.py`) で流す。文の先頭のトークンは重い (KL 最大 8〜13) ので、設定の比較は同じ文どうしでだけ
 - 量子化を疑う前に演算の誤差を除く: 同じプログラムを Neural Engine と Core ML の CPU で比べる。ANE の `silu` だけで LFM3 の lut8 の損の大半だった (`blocks.SiLU` で KL 0.058 → 0.022)
 - `hwnpu-dev formats` (fp16 が部品に入らないときは `-ref lut8`): 次のトークンの一致と短い問い。短い文では量子化した方が perplexity が低いことがある。一致で比べる
-- 画像の生成: 参照の軌跡の上の速度の相対 RMS 誤差 (`chroma.TestCallsOnDevice`) と、複数の種で自由に回した最後の潜在のコサイン。1 ステップの誤差は自由に回した結果を予測しない (FLUX.3: 速度誤差 2.33 → 2.29 % で、潜在のコサインは 0.964 → 0.983)
+- 画像の生成: 参照の軌跡の上の速度の相対 RMS 誤差 (外した Chroma1 の `TestCallsOnDevice`) と、複数の種で自由に回した最後の潜在のコサイン。1 ステップの誤差は自由に回した結果を予測しない (FLUX.3: 速度誤差 2.33 → 2.29 % で、潜在のコサインは 0.964 → 0.983)
 - 音声と画像のエンコーダ: WER / CER で (Whisper の lut6 は WER 4.43 → 4.87 % なので lut8)
 
 ## 形式を選ぶ
@@ -128,7 +128,7 @@ LLM の既定の理由 (断りがなければ float の参照に対する KL):
 - **小さなモデル (2B 以下) は MLP が 4 ビットで崩れることがある**: Qwen3.5-0.8B は README 0.055 だが GPL 0.34 (GPTQ で 0.30)、AMD の q6 で 0.044。いつも GPL を見る
 - **すでに 4 ビットのチェックポイントは自分の形式のまま**: gpt-oss の MXFP4 を q4nx に丸め直すと重みの誤差が 6.6 % 増え、KL は README 0.052 → 0.135、wiki-ja 0.043 → 0.107。MXFP4 は q6 にそのまま入り、mx4 ならそのまま
 - 蒸留した 8 ステップの DiT は 4 ビットに弱い (Anima の q4nx は潜在のコサイン 0.777、q8 は 0.961)。大きな DiT は持ちこたえることがある (Qwen-Image-2.1 20B の lut4 + kmeans-minmax で 0.935〜0.981)。大きな DiT は MLP を 6 ビット、注意を 8 ビットに (Qwen-Image-2.1 の 7B の DiT の MLP q6: −1.21 GB、絵は同じ)
-- プロンプトに 1 回だけ回すもの (テキストのエンコーダ、Chroma の approximator) は大きな形式にできる: ステップのあいだ持たない。ただし読み込み、ディスク、コンパイルのキャッシュの場所は使うので、要る重みだけ上げる (Chroma の T5: lut8 で `wo=fp16`、5.5 GB、fp16 は 9.5)
+- プロンプトに 1 回だけ回すもの (テキストのエンコーダ、approximator) は大きな形式にできる: ステップのあいだ持たない。ただし読み込み、ディスク、コンパイルのキャッシュの場所は使うので、要る重みだけ上げる (外した Chroma1 の T5: lut8 で `wo=fp16`、5.5 GB、fp16 は 9.5)
 - 校正の対象に入っていない重みも基の形式で丸められる。小さなものは 1 段上に (Gemma 4 の `per_layer` の射影 41M を `-format-for per_layer=lut8`、+0.01 GiB)
 
 ## 校正

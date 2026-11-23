@@ -842,7 +842,7 @@ models:
   # Image models: one export per model and NPU vendor holds every aspect ratio, the weights once;
   # never an export per size (docs/design/new-model-checklist.md, docs/design/image-models.md).
   # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
-  # sources) of tools/amd/iron_anima.py or iron_chroma.py, of the eight aspect ratios of --size
+  # sources) of tools/amd/iron_anima.py, of the eight aspect ratios of --size
   # in one (FLUX.2 klein's exported with IRON on its first run when the sources have none); on
   # Apple's and Intel's NPU Anima is downloaded and converted on its first run
   Anima-Turbo:
@@ -903,63 +903,6 @@ models:
     memory: {amd: 3.5, apple: 4.8}
     bytes: {amd: 4.24e9, apple: 5.9e9}
     about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
-  Chroma1-Flash:
-    family: chroma
-    tag: 1-flash
-    kind: image
-    from: hf:lodestones/Chroma1-Flash
-    exports:
-      amd-xdna2:
-        chroma1-flash.amd-npu2: v1 sha256:0f171d8a027d30ceb531511453c16aee351da9cb723a79adc6755ec031b04d9e
-    license: {id: apache-2.0, url: "https://huggingface.co/lodestones/Chroma1-Flash", class: open}
-    # trained uncensored (lodestones/Chroma's card: "Fully uncensored")
-    content: [nsfw]
-    sha256:
-      scheduler/scheduler_config.json: f7682ce6d9f1b12dcb8394c653ede50a0f7c724a5acd0a68f2bfb9f88756cd81
-      text_encoder/config.json: a5052c13f27780d720c78338cb51235395aabb2ed65813dbf6b305727727fb62
-      text_encoder/model.safetensors.index.json: c5809e56de8e23807f2a901d63a55d42773419080a072458da93c250e4436eac
-      text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
-      text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
-      transformer/config.json: 668b5652e1feeb73a7ac10ae98e4443350ff16a9b68570d8839971de4b16a877
-      transformer/diffusion_pytorch_model.safetensors.index.json: bc392d3de12793adafca3a1a8330097ffd3aca8d306b856dc5f71a3cbd573bd3
-      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: c759d67ca3ef50a9a1c242e3291c57f406646f226a95f43f66577996494986db
-      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 8dc761fbdf92b0abbc5a336dc717e6c682479792404ac2f9dbfc3b86e7760996
-      vae/config.json: d6f331696996196bb26517bafed04033bff2586d5042d18f6c21f48e8c04d666
-      vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
-    machine: 16
-    # AMD: the peak of a 1024 x 1024 run, the NPU's mappings and the process's RSS: 4643 MiB with
-    # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; docs/design/image-amd.md).
-    # Apple: the process's footprint at 1024 x 1024 (4.3 GB); the Neural Engine holds 6.9 GiB more
-    # (the DiT, docs/design/image-apple.md). AMD (2026-11-17, docs/design/image-amd.md): the peak of the eight aspect
-    # ratios, 3.47 to 3.62 GiB (the NPU's 3.44 and the process's 0.25 at most)
-    memory: {amd: 3.9, apple: 4.3}
-    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here). AMD: the
-    # export of all eight aspect ratios (chroma1-flash.amd-npu2, 18.85 GB) packed in the sources
-    # (files.tar.zst); Chroma1-HD's is as large
-    bytes: {amd: 16.24e9, apple: 2.75e10}
-    about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU and Apple's Neural Engine (about 9.5 min at 1024 x 1024 on an M1); Apache-2.0"
-  Chroma1-HD:
-    like: Chroma1-Flash
-    tag: 1-hd
-    from: hf:lodestones/Chroma1-HD
-    exports:
-      amd-xdna2:
-        chroma1-hd.amd-npu2: v1 sha256:370f1bdb59206ea99fb13e72dc705976022a74c0a4bc2f4841751e0d0913ff14
-    sha256:
-      scheduler/scheduler_config.json: 5420bd572b9a520774c50d79a8bb511f73bf58e691c2a38e4763435625cea197
-      text_encoder/config.json: a5052c13f27780d720c78338cb51235395aabb2ed65813dbf6b305727727fb62
-      text_encoder/model.safetensors.index.json: c5809e56de8e23807f2a901d63a55d42773419080a072458da93c250e4436eac
-      text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
-      text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
-      transformer/config.json: ccd21d38e4f3f2e745118d1e6604c51078067e346f7eeccfc03a4e1e64f5a6d6
-      transformer/diffusion_pytorch_model.safetensors.index.json: bc392d3de12793adafca3a1a8330097ffd3aca8d306b856dc5f71a3cbd573bd3
-      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 59f0b26eccaabb8301e4166e653f1bcdebd7c46a4a07b02fe33d7a2c46d78eba
-      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 65e6541afdabbb96568a3f8975eeef929f0a7e0eef3d2c4741b1bf911ac3a6d5
-      vae/config.json: e423b4a9e49572574de14faf263494416bc757e1bdd62645cfade7284a912565
-      vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
-    # named as chroma:1-hd: the family alone picks Chroma1-Flash
-    machine: 0
-    about: "Chroma1-HD: the undistilled full model (Flash bakes its guidance in), classifier-free guidance 3 (--guidance, --negative) with DPM-Solver++ 2M 25 steps, guided at sigma >= 0.6; AMD's NPU and Apple's Neural Engine; Apache-2.0"
   FLUX.2-klein-4B:
     family: flux2-klein
     tag: 4b
@@ -1311,7 +1254,7 @@ categories:
     aliases: [generate]
     about: image generation (hwnpu-image generate)
     # FLUX.2 klein from 8 GB (4.9 GB on Apple at 1024 x 1024, 41 s on an M1; 3.9 GB on AMD):
-    # Apache-2.0, safe by default, and edits too on AMD. Anima and Chroma (nsfw) are not picked
+    # Apache-2.0, safe by default, and edits too on AMD. Anima (nsfw) is not picked
     # even with +nsfw: named, they run (docs/design/image-models.md)
     picks:
       - {machine: 8, model: FLUX.2-klein-4B}

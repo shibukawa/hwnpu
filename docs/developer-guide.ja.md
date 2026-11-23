@@ -7,7 +7,7 @@
 hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりです。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモという位置付けです。アプリは複数のモデルを登録し、前もって準備し、つないで動かします。
 
 - 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、深度の推定、顔の検出と頭の位置、画像の生成と編集 (FLUX.2 klein)、モデルの間のつなぎ方、アプリに足すサブコマンド
-- まだないもの: FLUX.2 klein のほかの画像の生成 (Anima、Chroma)、物体・姿勢・切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
+- まだないもの: FLUX.2 klein のほかの画像の生成 (Anima)、物体・姿勢・切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
 - 実機で動かしたのは AMD の NPU (Ryzen AI 9 365) だけです。Mac と Intel は、コマンドと同じ準備と読み込みを呼びますが、このライブラリを通しては動かしていません
 - 計画の全体は [app-api.md](app-api.md)、作業の一覧は [app-api-tasks.md](app-api-tasks.md) (どちらも日本語)
 
@@ -747,7 +747,7 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
 - **そのほか**: `Seed` (0 で毎回違う)、`Steps` (0 でモデルの既定。FLUX.2 klein は 4)、`Progress` (段ごとに呼ばれる)
 - **時間とメモリ**: 1024×1024 で、文から約 30 秒、参照 1 枚の編集で約 1 分 (Ryzen AI 9 365)。動く間は最大 3.9 GB (AMD)。段の入れ替え ([9.5 節](#95-release-と画像の生成の段の入れ替え)) はパイプラインが自分でします
 - **どこで動くか**: AMD の NPU (IRON の書き出し 1 つに全部の大きさ) と Apple の Neural Engine (512×512 と 1024×1024 の書き出し。`Sizes()` が返します)。Apple で参照から描くには編集のプログラム (別の書き出し) が要ります。`imagegen.Edit` が準備し (チェックポイント 16 GB をダウンロードして変換)、最初の編集でコンパイルします。`imagegen.Generate` はそれを用意せず、Apple では参照を断ります。M3 で編集 1 枚が 512×512 で 39 秒、1024×1024 で 89 秒
-- まだない: Anima、Chroma、FLUX.3 klein (コマンド `hwnpu-image generate` にはあります)、まとめて描く (`--batch`)、参照を半分の大きさで読む (`@half`)
+- まだない: Anima、FLUX.3 klein (コマンド `hwnpu-image generate` にはあります)、まとめて描く (`--batch`)、参照を半分の大きさで読む (`@half`)
 
 ## 8. アプリのコマンドライン (`ai/cli`)
 
@@ -944,7 +944,7 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 画像の生成の入れ替えは、機種ごとに作りが違います (記録の値)。
 
 - **AMD**: 3 つの段は同時に動かないので、動く間だけ NPU に置きます。Anima の 1024² で、最大が 14.2 → 5.0 GiB。読み込みは 1 枚に数秒。DiT は 1 つのバンクに組ごとの重みを読み込みます (固定メモリが 7 × 464 → 464 MiB。`--resident-dit` で全部置く)
-- **Apple (Core AI)**: DiT の組を、順番が来たら読み込み、回したら閉じ、次の組を先に読みます。Anima-Turbo で、Neural Engine が抱える量が 2.53 → 0.57 GiB、1 枚の時間は同じ 49 秒 (M1)。Chroma は 8.3 → 2.2〜2.6 GiB で、入れ替えるほうが速い
+- **Apple (Core AI)**: DiT の組を、順番が来たら読み込み、回したら閉じ、次の組を先に読みます。Anima-Turbo で、Neural Engine が抱える量が 2.53 → 0.57 GiB、1 枚の時間は同じ 49 秒 (M1)。外した Chroma1 では 8.3 → 2.2〜2.6 GiB で、入れ替えるほうが速かった
 - **Intel**: 入るだけ持ち、入らなくなったら使っていないものを閉じて読み直します
 
 - `ai/imagegen` (FLUX.2 klein) は、この入れ替えを既定のまま持っています。アプリは生成のあと `Release` を呼んで残り (小さい部品) も下ろし、深度などの次のモデルに進みます ([6.9 節](#69-例-深度でレイヤーに分ける-sampleslayers) のサンプルがそうしています)
@@ -1106,7 +1106,7 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 
 ## 11. まだないもの
 
-- 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、FLUX.2 klein のほかの画像のモデル (Anima、Chroma、FLUX.3 klein を `ai/imagegen` に。今はコマンド `hwnpu-image generate` で作る)
+- 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、FLUX.2 klein のほかの画像のモデル (Anima、FLUX.3 klein を `ai/imagegen` に。今はコマンド `hwnpu-image generate` で作る)
 - 音: メトロノームの拍に合わせて作る音楽、鳴らしながら変える曲調 (`ai/sound` には流れの音楽、効果音、音高、採譜がある)
 - コマンドの載せ替え: `hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする (`hwnpu-audio` は済み)
 - 常駐の管理 (D9、D10)、ローカルサーバー (OpenAI 互換など)、配布用のバンドル、ビルドタグ

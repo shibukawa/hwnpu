@@ -79,7 +79,9 @@ decisions. History stays in git.
   Do not add dated entries, "was X, now Y", or PR numbers. History stays in git.
 - **Keep decisions not to do something.** A form tried and dropped, a model removed, a method rejected:
   put it in the file's `## Not adopted` section with a one-line reason (and the number, when the number
-  is the reason).
+  is the reason). A model removed, taken off models.yaml, or evaluated and not implemented also gets a
+  note of its own in [../not-adopted/](../not-adopted/README.md) (its config, how far it got, the commits
+  that hold its code, its problems, how to resume), and its long passages move there.
 - **Edit the topic file the change belongs to** (table above). Add a new file only for a new topic, and
   add it to the table.
 - **English first, then Japanese.** Change `NAME.md` and `NAME.ja.md` in the same commit, with the same
@@ -109,5 +111,5 @@ decisions. History stays in git.
 | [../intel-npu-models.md](../intel-npu-models.md) | Design of running converted models on Intel's NPU |
 | [../model-estimation.md](../model-estimation.md) ([日本語](../model-estimation.ja.md)) | Record of models evaluated on the NPUs, including those left out of models.yaml, with the verdict and why |
 | [../small-models-survey.md](../small-models-survey.md) | Survey of small (≤1B) non-chat models: pitch, singing, music, sound effects, pose |
-| [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Groundwork for bringing Qwen-Image-2.1 and Chroma1 to AMD's NPU |
+| [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Groundwork for bringing Qwen-Image-2.1 and Chroma1 to AMD's NPU (both since removed: [../not-adopted/](../not-adopted/README.md)) |
 | `../handoff-*.md` | Hand-off notes for checks on other machines (M1–M4, AMD, Intel): what to run and what to record |

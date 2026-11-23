@@ -319,7 +319,7 @@ hwnpu を NPU でモデルを動かす Go のライブラリの集まりにし�
 | `ai/flow` | 塊の流れ (`Stream[T]`、`iter.Seq2`) とモデルの間のネットワーク | v0 |
 | `ai/cli` (+ `konghelper`) | アプリに足すサブコマンド: `models`、`models download`、`models prepare`、`status` (`internal/npustatus` で `hwnpu status` と共有) | v0 |
 | `ai/vision` | `Depth` (用途 `depth`: Depth Anything 3、MoGe-2。`DepthMap.Near` が近さを 0〜1 で)、`Faces` (`face-detect`: YuNet。AMD の機械では CPU)、`HeadOf` / `NearestHead` / `HeadNode` (両目の間隔 63 mm とカメラの画角 60 度から頭の位置。モデルなし) | v0 |
-| `ai/imagegen` | `Generate` (用途 `image`): 文と参照の絵から絵を、`GenerateNode`。頼まれた形に一番近い書き出しの大きさ (`SizeFor`)。FLUX.2 klein だけ (Anima、Chroma、FLUX.3 klein は準備のときに断る) | v0 |
+| `ai/imagegen` | `Generate` (用途 `image`): 文と参照の絵から絵を、`GenerateNode`。頼まれた形に一番近い書き出しの大きさ (`SizeFor`)。FLUX.2 klein だけ (Anima、FLUX.3 klein は準備のときに断る) | v0 |
 | `ai/sound`、`ai/vision` の物体、姿勢、切り抜き、OCR、ラベル | 音楽、効果音、音高 | まだ |
 
 - 準備はコマンドの初回と同じ関数 (`transcribe.Prepare`、`speech.Prepare`、`chat.Prepare` と AMD の版) を同じ置き場に呼ぶので、アプリとコマンドは準備したものを共有する。
@@ -336,7 +336,7 @@ hwnpu を NPU でモデルを動かす Go のライブラリの集まりにし�
 
 ## 未解決
 
-- `ai`: 常駐の管理 (メモリの予算、投入の順番)、入力が 3 つ以上の節、モデルを下ろすタイミングをライブラリに任せること、辺ごとの計測、`ai/vision` の残り、`ai/imagegen` の Anima / Chroma / FLUX.3 klein、コマンドを `ai` に載せ替えること。Intel で `ai` を動かしていない (Mac では 3 つのサンプル、カメラ、窓まで動いた)。`text.Chat` と実物のマイクも未確認。列を分けて本当に同時に動かせるか (AMD) も未確認。
+- `ai`: 常駐の管理 (メモリの予算、投入の順番)、入力が 3 つ以上の節、モデルを下ろすタイミングをライブラリに任せること、辺ごとの計測、`ai/vision` の残り、`ai/imagegen` の Anima / FLUX.3 klein、コマンドを `ai` に載せ替えること。Intel で `ai` を動かしていない (Mac では 3 つのサンプル、カメラ、窓まで動いた)。`text.Chat` と実物のマイクも未確認。列を分けて本当に同時に動かせるか (AMD) も未確認。
 - `npuinfo`: Windows (Intel と AMD) で動かす。M2 以降の Mac で IOReport のチャンネル名を確かめる。AIE の状態と
   テレメトリを読み解く。共通の API。ブラウザで見る道具。
 - ライブラリの API は planned で、名前が変わりうる。

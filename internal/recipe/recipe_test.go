@@ -18,14 +18,13 @@ func TestBuiltin(t *testing.T) {
 	}
 }
 
-// FLUX.2 klein's single blocks go to the device on an M1 alone; Chroma's on an M1, and three of
-// them on an M2.
+// FLUX.2 klein's single blocks go to the device on an M1 alone.
 func TestLeft(t *testing.T) {
 	f, err := Builtin()
 	if err != nil {
 		t.Fatal(err)
 	}
-	flux, chroma := f.AppleOf("FLUX.2-klein-4B"), f.AppleOf("Chroma1-Flash")
+	flux := f.AppleOf("FLUX.2-klein-4B")
 	for _, c := range []struct {
 		a             Apple
 		program, arch string
@@ -36,17 +35,13 @@ func TestLeft(t *testing.T) {
 		{flux, "dit_double_0.aimodel", "h13g", false},
 		{flux, "dit_single_0.aimodel", "h14g", false},
 		{flux, "dit_single_0.aimodel", "h15g", false},
-		{chroma, "dit_single_31.aimodel", "h13g", true},
-		{chroma, "dit_single_8.aimodel", "h14g", true},
-		{chroma, "dit_single_24.aimodel", "h14g", false},
-		{chroma, "dit_single_8.aimodel", "h15g", false},
 	} {
 		if _, got := c.a.Left("x.coreai", c.program, c.arch); got != c.want {
 			t.Errorf("%s on %s: left %v, want %v", c.program, c.arch, got, c.want)
 		}
 	}
-	if flux.Jobs != 3 || chroma.Jobs != 2 || strings.Join(chroma.Archs, " ") != "h13g h14g h15g" {
-		t.Errorf("jobs %d %d, archs %v", flux.Jobs, chroma.Jobs, chroma.Archs)
+	if flux.Jobs != 3 || strings.Join(flux.Archs, " ") != "h13g h14g h15g" {
+		t.Errorf("jobs %d, archs %v", flux.Jobs, flux.Archs)
 	}
 	// a model without a recipe is built as apple says
 	if a := f.AppleOf("Qwen3-0.6B"); len(a.Prebuild) != 0 || a.Jobs != f.Apple.Jobs {

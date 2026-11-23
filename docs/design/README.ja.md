@@ -74,7 +74,7 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 ## これらのファイルの直し方
 
 - **記録ではなく今の状態を書く**。変更が書いてあることを覆したら、その文を書き換える。日付つきの項、「X だったが Y にした」、PR の番号は足さない。経緯は git に残る
-- **やらないと決めたことも残す**。試してやめた形、外したモデル、採らなかった手法は、ファイルの `## 採らなかったもの` の節に 1 行の理由 (数値が理由ならその数値) と書く
+- **やらないと決めたことも残す**。試してやめた形、外したモデル、採らなかった手法は、ファイルの `## 採らなかったもの` の節に 1 行の理由 (数値が理由ならその数値) と書く。外したモデル、models.yaml から外したモデル、調べて実装しなかったモデルは、[../not-adopted/](../not-adopted/README.md) にもモデルごとのメモを書く (config、どこまでできたか、コードが残るコミット、問題、再開のしかた)。長い記述はそちらへ移す
 - **変更が属する話題のファイルを直す** (上の表)。新しいファイルは新しい話題のときだけ足し、表にも足す
 - **英語を先に、日本語はその訳**。`NAME.md` と `NAME.ja.md` を同じコミットで、同じ見出しと表で直す
 - **数値には機械を添える** (「M1 16 GB」「Ryzen AI 9 365」など)。新しい数値が出たら古い数値と並べず置き換える
@@ -100,5 +100,5 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [../intel-npu-models.md](../intel-npu-models.md) | 変換したモデルを Intel の NPU で動かす設計 |
 | [../model-estimation.ja.md](../model-estimation.ja.md) | NPU で評価したモデルの記録。models.yaml に入れなかったものも、判断と理由とともに |
 | [../small-models-survey.md](../small-models-survey.md) | チャット以外の小さな (1B 以下) モデルの調査: 音程、歌声、音楽、効果音、姿勢 |
-| [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Qwen-Image-2.1 と Chroma1 を AMD の NPU へ入れるための下調べ |
+| [../image-models-survey-qwen-chroma.md](../image-models-survey-qwen-chroma.md) | Qwen-Image-2.1 と Chroma1 を AMD の NPU へ入れるための下調べ (どちらものちに外した: [../not-adopted/](../not-adopted/README.md)) |
 | `../handoff-*.md` | 別の機械 (M1〜M4、AMD、Intel) での確認の引き継ぎ: 何を動かし何を記録するか |

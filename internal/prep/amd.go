@@ -22,7 +22,7 @@ import (
 
 // The exports for AMD's NPU (amd-xdna2) of the kinds the library's roles do not make: those
 // their command makes with IRON on its first run (detect, pose, segment, sfx, music's decoder,
-// FLUX.3 klein), Chroma's and Anima's (made with their script of tools/amd: handmade.go), and the
+// FLUX.3 klein), Anima's (made with its script of tools/amd: handmade.go), and the
 // kinds that run on the CPU beside AMD's NPU (nothing to make).
 func init() {
 	amd := []string{cache.AMDTarget}
@@ -110,10 +110,8 @@ func init() {
 			} else {
 				dir, err = flux3klein.PrepareAMD(ctx, m, aspect.SizesOf(as), as[0].Width, as[0].Height, e.Log)
 			}
-		case strings.HasPrefix(m.Family, "chroma"):
-			dir, err = imageHandMade(e, true)
 		case strings.HasPrefix(m.Family, "anima"):
-			dir, err = imageHandMade(e, false)
+			dir, err = imageHandMade(e)
 		default:
 			err = fmt.Errorf("no image model of hwnpu-image generate of the family %q", m.Family)
 		}

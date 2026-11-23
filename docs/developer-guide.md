@@ -7,7 +7,7 @@
 hwnpu is a set of Go libraries that run AI models on the NPU. `hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` are demos that try its features one at a time. An app registers several models, prepares them ahead of time, and runs them joined together.
 
 - There now: speech to text, translation, chat, text to speech, a VAD by loudness, the depth of a picture, finding faces and where a head is, drawing and editing pictures (FLUX.2 klein), the ways of joining models, commands for an app's command line
-- Not there yet: the picture models other than FLUX.2 klein (Anima, Chroma); objects, poses, cutouts and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
+- Not there yet: the picture models other than FLUX.2 klein (Anima); objects, poses, cutouts and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
 - It was run on AMD's NPU (Ryzen AI 9 365) only. On a Mac and on Intel it calls the same preparing and loading as the commands, but it was not run through this library there
 - The whole plan is in [app-api.md](app-api.md) and the list of work in [app-api-tasks.md](app-api-tasks.md) (both in Japanese)
 
@@ -747,7 +747,7 @@ Every model has a batch form and a stream form.
 - **And**: `Seed` (0: another each time), `Steps` (0: the model's own; 4 for FLUX.2 klein), `Progress` (called after each step)
 - **Time and memory**: at 1024×1024 about 30 s from a prompt, about a minute for an edit of one reference (Ryzen AI 9 365). It peaks at 3.9 GB while it runs (AMD). The pipeline swaps its stages itself ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
 - **Where it runs**: AMD's NPU (one export of IRON with every size) and Apple's Neural Engine (the export of 512×512 and 1024×1024; `Sizes()` says which). On Apple drawing from references takes the edit's programs, an export of their own: `imagegen.Edit` prepares them (converted from the checkpoint, a 16 GB download) and the first edit compiles them; `imagegen.Generate` leaves them out and refuses references there. An edit on an M3: 39 s at 512×512, 89 s at 1024×1024
-- Not there yet: Anima, Chroma, FLUX.3 klein (the command `hwnpu-image generate` has them), several pictures together (`--batch`), a reference read at half size (`@half`)
+- Not there yet: Anima, FLUX.3 klein (the command `hwnpu-image generate` has them), several pictures together (`--batch`), a reference read at half size (`@half`)
 
 ## 8. The app's command line (`ai/cli`)
 
@@ -944,7 +944,7 @@ Both keep things from being in memory together, **at different levels**.
 Image generation's swapping is built differently for each NPU (figures of the records).
 
 - **AMD**: the three stages never run together, so each is on the NPU only while it runs. For Anima at 1024², the peak goes from 14.2 to 5.0 GiB; loading costs a few seconds a picture. The DiT reads each group's weights into one bank (pinned memory 7 × 464 → 464 MiB; `--resident-dit` keeps them all)
-- **Apple (Core AI)**: a group of the DiT is loaded when its turn comes, run, closed, and the next one is loaded ahead. For Anima-Turbo the Neural Engine holds 0.57 instead of 2.53 GiB, and a picture takes the same 49 s (M1). For Chroma it is 2.2 to 2.6 instead of 8.3 GiB, and swapping is the faster
+- **Apple (Core AI)**: a group of the DiT is loaded when its turn comes, run, closed, and the next one is loaded ahead. For Anima-Turbo the Neural Engine holds 0.57 instead of 2.53 GiB, and a picture takes the same 49 s (M1). For Chroma1 (since removed) it was 2.2 to 2.6 instead of 8.3 GiB, and swapping was the faster
 - **Intel**: holds what fits, and closes what was not used lately to load again when it does not
 
 - `ai/imagegen` (FLUX.2 klein) has this swapping as it is, on by default. An app calls `Release` after generating, to unload what is left (small parts), and goes on to the next model, the depth for one (the sample of [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers) does)
@@ -1106,7 +1106,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 ## 11. Not there yet
 
-- Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); the picture models other than FLUX.2 klein (Anima, Chroma, FLUX.3 klein into `ai/imagegen`; for now they are drawn with the command, `hwnpu-image generate`)
+- Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); the picture models other than FLUX.2 klein (Anima, FLUX.3 klein into `ai/imagegen`; for now they are drawn with the command, `hwnpu-image generate`)
 - Sound: music made on the beat of a metronome, and a style that changes while it plays (`ai/sound` has music as a stream, sound effects, pitch and notes)
 - Moving the commands: making `hwnpu-chat` and `hwnpu-image` only call this library (`hwnpu-audio` does)
 - Managing what stays loaded (D9, D10), a local server (OpenAI compatible and others), bundles to ship, build tags

@@ -98,7 +98,7 @@
 
 **言っていること**: タイルを入力と出力で違う大きさで持つ。XDNA2 の BFP16-BF16 の GEMM で 24.6 TFLOPS、4.54×。
 
-**対象の候補**: 画像の DiT の GEMM (Anima、FLUX、Chroma)、gpt-oss のプロンプトの専門家。[amd-llm](design/amd-llm.ja.md) の「IRON の GEMM は呼び出しの行に関係なく重みを全部の行の単位に流す」(短いプロンプトの 6 割) とも関係するかもしれない。
+**対象の候補**: 画像の DiT の GEMM (Anima、FLUX)、gpt-oss のプロンプトの専門家。[amd-llm](design/amd-llm.ja.md) の「IRON の GEMM は呼び出しの行に関係なく重みを全部の行の単位に流す」(短いプロンプトの 6 割) とも関係するかもしれない。
 
 ### 注意の融合: 2609.21264 ✓、STEEL 2607.09385 (a)、Zen-Attention 2508.17593 (a) — 未着手
 

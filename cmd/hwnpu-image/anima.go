@@ -7,13 +7,10 @@ import (
 	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"math"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
@@ -35,93 +32,28 @@ func (f convertFlags) options() (anima.ConvertOptions, error) {
 		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}, err
 }
 
-// side is the picture's side in pixels for the models whose sizes are still squares: 1:1 and
-// 1:1s, or a pixel count as before.
-func (f convertFlags) side() (int, error) {
-	w, h, err := aspect.ParseOrSide(f.Size, 16)
-	if err != nil {
-		return 0, err
-	}
-	if w != h {
-		return 0, fmt.Errorf("--size %s: this model takes 1:1 or 1:1s for now", f.Size)
-	}
-	return w, nil
-}
-
-// ConvertCmd is "hwnpu-image convert": an Anima directory or a Chroma repository into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).
+// ConvertCmd is "hwnpu-image convert": an Anima directory into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).
 type ConvertCmd struct {
-	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Chroma repository of lodestones."`
+	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/)."`
 	Model string `short:"m" required:"" type:"path" placeholder:"EXPORT" help:"The export to write."`
-	Text  string `type:"existingdir" placeholder:"DIR" help:"Chroma: the directory of T5's text_encoder/ and the VAE's vae/ (default: the repository)."`
-	// Chroma's
-	Tokenizer     string   `type:"existingfile" placeholder:"FILE" help:"Chroma: T5's tokenizer.json (Anima's t5_tokenizer/tokenizer.json: Chroma's repository has only spiece.model)."`
-	TextRows      int      `name:"text-rows" help:"Chroma: the text's rows (default 512, its pipeline's; fewer cut longer prompts)."`
-	Only          string   `placeholder:"PARTS" help:"Chroma: write these parts alone (text, mods, doubles, singles, vae), comma separated."`
-	DitFormatFor  []string `name:"dit-format-for" sep:"," placeholder:"PART=FORMAT" help:"Chroma: weight formats of the DiT's weights whose names hold PART (proj_mlp=lut4)."`
-	TextFormatFor []string `name:"text-format-for" sep:"," placeholder:"PART=FORMAT" help:"Chroma: weight formats of T5's weights whose names hold PART (wo=fp16)."`
-	DitQuant      string   `name:"dit-quant" placeholder:"NAME" help:"Chroma: the quantizer of the DiT's lut formats (uniform, kmeans, kmeans-minmax)."`
-	LinkFrom      []string `name:"link-from" sep:"," type:"path" placeholder:"EXPORT" help:"Chroma: exports to hard link the parts that come out the same from (T5's programs, the VAE's of the same size): compiled once for all of them."`
 	convertFlags
 }
 
 // Run converts the checkpoint.
 func (c *ConvertCmd) Run() error {
 	t0 := time.Now()
-	if chroma.IsRepository(c.Anima) {
-		backend, err := appleFormat("Chroma", c.Backend)
-		if err != nil {
-			return err
-		}
-		side, err := c.side()
-		if err != nil {
-			return err
-		}
-		o := chroma.ConvertOptions{Backend: backend, Width: side, Height: side, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
-			Tokenizer: c.Tokenizer, TextRows: c.TextRows}
-		if c.Only != "" {
-			o.Only = map[string]bool{}
-			for _, k := range strings.Split(c.Only, ",") {
-				o.Only[k] = true
-			}
-		}
-		if len(c.DitFormatFor) > 0 {
-			o.DitFormatFor = c.DitFormatFor
-		}
-		o.LinkFrom = c.LinkFrom
-		o.DitQuant = c.DitQuant
-		o.TextFormatFor = c.TextFormatFor
-		if c.Group > 0 { // single blocks a program; a double block weighs two
-			o.SingleGroup, o.DoubleGroup = c.Group, max(1, c.Group/2)
-		}
-		if err := chroma.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
-			return err
-		}
-	} else {
-		o, err := c.options()
-		if err != nil {
-			return err
-		}
-		o.Backend = cmp.Or(o.Backend, llm.BackendCoreAI)
-		text, dit := anima.Formats(o.Backend)
-		o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
-		if err := anima.Convert(anima.LayoutCheckpoint(c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
-			return err
-		}
+	o, err := c.options()
+	if err != nil {
+		return err
+	}
+	o.Backend = cmp.Or(o.Backend, llm.BackendCoreAI)
+	text, dit := anima.Formats(o.Backend)
+	o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
+	if err := anima.Convert(anima.LayoutCheckpoint(c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "%s: converted in %s\n", c.Model, console.Duration(time.Since(t0)))
 	return nil
-}
-
-// appleFormat is the program format --backend names for a model that converts for Apple's Neural
-// Engine alone: coreai (the default, what hwnpu-image runs) or coreml (what --cpu runs).
-func appleFormat(model, backend string) (string, error) {
-	switch backend {
-	case "", llm.BackendCoreAI:
-		return llm.BackendCoreAI, nil
-	case llm.BackendCoreML:
-		return llm.BackendCoreML, nil
-	}
-	return "", fmt.Errorf("%s converts for coreml or coreai (--backend %s)", model, backend)
 }
 
 // cacheDirOf is the compile cache of --cache: the user cache directory's hwnpu by default, "" for

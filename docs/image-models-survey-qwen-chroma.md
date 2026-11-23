@@ -1,5 +1,7 @@
 # Qwen-Image-2.1 と Chroma1 を AMD の NPU へ入れるための下調べ
 
+> どちらも実装したあと、サポートから外した。いまの扱いは [not-adopted/qwen-image.md](not-adopted/qwen-image.md) と [not-adopted/chroma1.md](not-adopted/chroma1.md) にある。この文書は当時の下調べの記録として残す。
+
 2026-11-11。移植はまだしていない。[docs/design/new-model-checklist.md](design/new-model-checklist.md) (紙の上の見積もり) と、最初から入れる最適化 (4.1、5、6、7.1、11) を、二つのモデルの構造に当てはめた。時間は Anima の実測 (DiT 17 TFLOP が 1 パス 4.55 s、約 3.75 TFLOPS) からの見積もり。Chroma の DiT は FLUX.1 schnell の試作 (worktree `t3-flux`、`tools/amd/iron_flux.py`) で測った 1 パス約 20 s と合っている。
 
 > 用語: Qwen-Image-2.1 と Chroma1-HD は蒸留していない本体 (そのまま使える公開モデル)。Turbo と Flash はそれを少ないステップ・CFG なしに蒸留した版。Anima-Base のような「学習途中のベース」ではない (Chroma1-HD は作者が微調整の土台としても勧めている)。

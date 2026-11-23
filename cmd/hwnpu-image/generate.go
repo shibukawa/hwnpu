@@ -28,13 +28,12 @@ import (
 // its own made from it (ai.Definition), prepared when it is not here (aicli.Ensure) and loaded by
 // a Runtime that compiles it at its first load (ai.CompileOnLoad); ai/imagegen draws.
 
-// GenerateCmd is "hwnpu-image generate": a picture from a prompt with FLUX.2 klein, FLUX.3 klein, Anima or Chroma1.
+// GenerateCmd is "hwnpu-image generate": a picture from a prompt with FLUX.2 klein, FLUX.3 klein or Anima.
 type GenerateCmd struct {
-	Prompts    []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language). Several draw a picture each, the model loaded once (FLUX.2 klein, and Chroma on Apple's Neural Engine, --batch of them together)."`
-	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: FLUX.2 klein 4B from 8 GB; flux2-klein, flux3-klein, chroma, anima-turbo and anima (Anima-Aesthetic) with HWNPU_MODEL_ALLOWLIST=+nsfw; a family alone picks for the machine's memory, or for the memory a tag names: image:8g), or an export's directory (AMD: of tools/amd/iron_anima.py, iron_chroma.py, iron_flux2klein.py or iron_flux3klein.py). On AMD's NPU a name runs NAME.amd-npu2 in the cache's entries/amd-xdna2 or ~/models, else one the sources hold, downloaded once (FLUX.2 and FLUX.3 klein's exported with IRON when they have none; one made by hand in entries/amd-xdna2 goes in the sources written back to on its first use); on Apple's and Intel's (Anima; Chroma1 and FLUX.2 and FLUX.3 klein on Apple's) the model is downloaded and converted on its first run."`
+	Prompts    []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language). Several draw a picture each, the model loaded once (FLUX.2 klein on Apple's Neural Engine, --batch of them together)."`
+	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: FLUX.2 klein 4B from 8 GB; flux2-klein, flux3-klein, anima-turbo and anima (Anima-Aesthetic) with HWNPU_MODEL_ALLOWLIST=+nsfw; a family alone picks for the machine's memory, or for the memory a tag names: image:8g), or an export's directory (AMD: of tools/amd/iron_anima.py, iron_flux2klein.py or iron_flux3klein.py). On AMD's NPU a name runs NAME.amd-npu2 in the cache's entries/amd-xdna2 or ~/models, else one the sources hold, downloaded once (FLUX.2 and FLUX.3 klein's exported with IRON when they have none; one made by hand in entries/amd-xdna2 goes in the sources written back to on its first use); on Apple's and Intel's (Anima; FLUX.2 and FLUX.3 klein on Apple's) the model is downloaded and converted on its first run."`
 	Out        string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
-	Batch      int       `name:"batch" default:"4" placeholder:"N" help:"Chroma and FLUX.2 klein on Apple's Neural Engine with several prompts: the pictures drawn together, N at a time (their prompts are read, then their steps run, then the VAE's stages over all of them, so that a program is loaded once for the N pictures; they are written together, when the last is drawn); FLUX.2 klein on AMD's NPU too, its steps together (a group of the DiT's weights read once for the N pictures; the VAE a picture after another); 1 draws one picture after another."`
-	KeepDiT    bool      `name:"keep-dit" default:"true" negatable:"" help:"Chroma on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (the text encoder and the VAE are loaded for each; Chroma on macOS 27 loads the DiT's groups for each step either way)."`
+	Batch      int       `name:"batch" default:"4" placeholder:"N" help:"FLUX.2 klein on Apple's Neural Engine with several prompts: the pictures drawn together, N at a time (their prompts are read, then their steps run, then the VAE's stages over all of them, so that a program is loaded once for the N pictures; they are written together, when the last is drawn); FLUX.2 klein on AMD's NPU too, its steps together (a group of the DiT's weights read once for the N pictures; the VAE a picture after another); 1 draws one picture after another."`
 	Steps      int       `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic 25 with dpm2m, the model card's 30 to 50 with euler)."`
 	Negative   string    `help:"The negative prompt of the classifier-free guidance (default empty; Anima's model card recommends \"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration\", without the score tags for Anima-Aesthetic)."`
 	Guidance   float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none, or 1.5 with a --negative)."`
@@ -46,7 +45,7 @@ type GenerateCmd struct {
 	Latents    string    `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
 	Image      []string  `name:"image" short:"i" placeholder:"FILE[@half]" help:"FLUX.2 klein: a reference image to edit or to compose from (PNG or JPEG; its centre cropped to the picture's shape and scaled to its size); repeat for up to 4, named image 1, image 2, ... in the prompt. FILE@half reads that reference at half the picture's sides (a quarter of its rows in each step: an edit at 1024 x 1024 in about two thirds of the time, with less of the reference's fine detail)."`
 	RefLatents []string  `name:"ref-latents" type:"existingfile" placeholder:"FILE" help:"FLUX.2 klein: a reference's latents as raw float32 (tokens x 128, normalized), for checks against tools/ref/ref_flux2klein.py; repeat for several."`
-	CPU        bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU (Anima, Chroma; slow; for checking)."`
+	CPU        bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU (Anima; slow; for checking)."`
 	Resident   bool      `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
 	Dump       string    `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py."`
 	convertFlags
@@ -126,7 +125,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 // options are the picture's options of the flags, but its size and references.
 func (c *GenerateCmd) options() (imagegen.Options, error) {
 	o := imagegen.Options{Seed: c.Seed, Steps: c.Steps, Negative: c.Negative, Guidance: c.Guidance, CFGSigmas: c.CFGSigmas,
-		Sampler: c.Sampler, Shift: c.Shift, Batch: c.Batch, UnloadDiT: !c.KeepDiT}
+		Sampler: c.Sampler, Shift: c.Shift, Batch: c.Batch}
 	var ck imagegen.Checks
 	if c.Noise != "" {
 		x, err := readF32(c.Noise)
@@ -234,10 +233,6 @@ func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Defini
 			set(imagegen.SettingResidentDiT, "true")
 		}
 		if c.Size != "1:1" && (vendor == "intel" || c.CPU) { // an export a size on Intel's NPU and Core ML's
-			set(imagegen.SettingSize, c.Size)
-		}
-	case strings.HasPrefix(fam, "chroma"):
-		if c.Size != "1:1" && (vendor != "amd" || c.CPU) { // an export a square on Apple's Neural Engine
 			set(imagegen.SettingSize, c.Size)
 		}
 	}

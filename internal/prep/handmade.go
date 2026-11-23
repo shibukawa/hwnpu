@@ -11,7 +11,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
 	"github.com/shibukawa/hwnpu/internal/recipe"
 )
 
@@ -47,10 +46,10 @@ func init() {
 	})})
 }
 
-// imageHandMade is the export of every aspect ratio of Chroma's or Anima's model m for AMD's NPU
-// (tools/amd/iron_chroma.py, iron_anima.py as their recipes say: {sizes} those of aspect.Of(16),
-// {dit} the model's file).
-func imageHandMade(e airole.PrepareEnv, chromaModel bool) (string, error) {
+// imageHandMade is the export of every aspect ratio of Anima's model m for AMD's NPU
+// (tools/amd/iron_anima.py as its recipe says: {sizes} those of aspect.Of(16), {dit} the model's
+// file).
+func imageHandMade(e airole.PrepareEnv) (string, error) {
 	var sizes []string
 	for _, a := range aspect.Of(16) {
 		if a.Width == a.Height {
@@ -71,18 +70,6 @@ func imageHandMade(e airole.PrepareEnv, chromaModel bool) (string, error) {
 			}
 			return true
 		}
-	}
-	if chromaModel {
-		return handMadeOf(e, "iron_chroma.py", func() (string, error) {
-			var want []chat.File
-			for _, file := range chroma.Files {
-				want = append(want, chat.File{Repo: e.Model.Repo, Name: file.Name})
-			}
-			if err := chat.FetchFiles(e.Ctx, want, e.Log); err != nil {
-				return "", err
-			}
-			return chat.RepoDir(e.Model.Repo), nil
-		}, vars, holds(chroma.IronSizes))
 	}
 	return handMadeOf(e, "iron_anima.py", func() (string, error) {
 		var want []chat.File

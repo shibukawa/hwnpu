@@ -71,8 +71,8 @@ Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd
   ループが終わったときには揃っている。途中でやめたループは、iterator のループと同じく作る側が止まるのを待つ
   (作る側は数個先まで進んでいる: ストリームに流量の制御はない)。可変長引数のメソッド (`MusicGenerator.Style`)
   はスライスを送る
-- コマンドとサンプルのモデルの仕事はすべて `ai` を通る。自分のプロセスに残るもの: `hwnpu-image convert` (Anima と
-  Chroma の変換。NPU は使わない)、`hwnpu-dev` (開発者のプロセス)、`hwnpu issue`、Neural Engine のメモリのログ
+- コマンドとサンプルのモデルの仕事はすべて `ai` を通る。自分のプロセスに残るもの: `hwnpu-image convert` (Anima の
+  変換。NPU は使わない)、`hwnpu-dev` (開発者のプロセス)、`hwnpu issue`、Neural Engine のメモリのログ
   (`mem.NPUWired` は機械全体のものなので、コマンドはどれだけ増えたかを今も出せる)。コマンドの `--backend` は
   このプロセスの `HWNPU_BACKEND` を設定するが、hwnpud はそれを取らない (自分のものを使うと言う)
 - `hwnpu-chat chat` もほかのコマンドと同じく `ai` でモデルを動かす: モデルの変換と動かし方のフラグは断らずに

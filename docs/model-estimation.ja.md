@@ -14,7 +14,7 @@ NPU で動かす価値があるかを確かめたモデルの記録。カタロ�
 
 同じ重みの層を 1 トークンに何度も回すループ型の言語モデルを、NPU で使う価値があるかを確かめた。移したのは ByteDance の Ouro (`internal/llm/ouro`、`tools/amd/iron_ouro.py`、トークナイザーの `gpt2Digits`) で、コードとテストは残してある。**判断: カタログには入れない。** NPU の上で速さ、メモリ、品質を合わせて見ると、小さいチャットのモデルは今のところ LFM3-1.7B が最もよい。
 
-構造と照合の詳しいことは [LLM のモデル](design/llm-models.ja.md) の Ouro の節、AMD の書き出しは [amd-llm](design/amd-llm.ja.md) の移植の覚え書きにある。
+構造と照合の詳しいことは [LLM のモデル](design/llm-models.ja.md) の Ouro の節、AMD の書き出しは [amd-llm](design/amd-llm.ja.md) の移植の覚え書きにある。一覧に戻すときの手順は [not-adopted/ouro.md](not-adopted/ouro.md)。
 
 ### 候補
 
