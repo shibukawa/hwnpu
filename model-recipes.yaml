@@ -46,6 +46,8 @@
 #     code      the Go packages that write its programs, after apple's code (a change of them
 #               is a change of the version, as amd's tools); !FILE leaves out a file of them
 #               only a run reads (experts' host.go, lfm3vl's preprocess.go)
+#     finish    what the build does to its Core AI exports once converted, as amd's finish
+#               (their tokenizer files made binary); a model without one leaves them as they are
 #     convert   the values its conversion is made with, by their names in its code
 #               (text_group, qchunk): what the code took as constants before. What a run reads
 #               too stays in models.yaml (npu.apple's sizes and formats)
@@ -379,7 +381,9 @@ models:
       args: ["{in}", "{out}"]
   flux-3-image-klein:
     apple:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/imagegen/flux3klein, internal/imagegen/flux3klein/mil, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
       # lut8: Qwen3-VL's attention sinks came out NaN at int8 on the Neural Engine, and per-row
       # int8 overflows on large outputs; a program: 4 of Qwen3-VL's layers (0.4 GB at 8 bits), 5
@@ -397,7 +401,9 @@ models:
       args: ["{in}", "{out}", --size, "{sizes}"]
   Anima-Aesthetic: &anima-amd
     apple:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
       code: [internal/imagegen/anima, internal/imagegen/anima/mil, internal/imagegen/milpart]
       # int8 both: the text's 1.0 GB at fp16 is over a program's limit, and the DiT is as fast at
       # int8 as at fp16 and nearer it than lut8; 4 DiT blocks a program; 512 queries an
@@ -441,7 +447,9 @@ models:
   moge-2-vitl: *moge-amd
   siglip2-base-patch16-224: &siglip-amd
     apple:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/vision/siglip, internal/vision/siglip/mil, internal/imagegen/milpart]
       # the two towers in fp16
       convert: {format: fp16}

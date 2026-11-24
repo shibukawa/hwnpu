@@ -534,7 +534,7 @@ func (u UpdateCmd) Run(d *devopt.Defs) error {
 
 // ImportCmd is hwnpu-dev sources import.
 type ImportCmd struct {
-	Dir    []string `arg:"" help:"Folders: a checkpoint (DIR, or DIR=OWNER/NAME[@REVISION] when its name is no model's of the definitions) or an export for AMD's NPU (NAME.amd-npu2*, with manifest.json or model.json)."`
+	Dir    []string `arg:"" help:"Folders: a checkpoint (DIR, or DIR=OWNER/NAME[@REVISION] when its name is no model's of the definitions) an export for AMD's NPU (NAME.amd-npu2*, with manifest.json or model.json), or with --finish a Core AI export (models/MODEL/NAME.coreai)."`
 	DryRun bool     `name:"dry-run" help:"Only show what each folder is taken for."`
 	Finish bool     `help:"Do to an export what its model's recipe's finish says (model-recipes.yaml models.NAME.amd.finish: its tokenizer files made binary) before putting it, in its folder: an export of the version before a recipe's finish was added, put as the new version without making it again."`
 }
@@ -584,6 +584,9 @@ func (ic ImportCmd) one(ctx context.Context, writes []shared.Source, dir, repo s
 	if strings.Contains(name, ".amd-npu2") {
 		return ic.export(ctx, writes, dir)
 	}
+	if strings.HasSuffix(name, ".coreai") {
+		return ic.coreAI(ctx, dir)
+	}
 	type part struct {
 		repo string
 		path func(string) string
@@ -630,6 +633,26 @@ func (ic ImportCmd) one(ctx context.Context, writes []shared.Source, dir, repo s
 				dir, p.repo, res.Commit, res.Put, float64(res.Bytes)/1e9, res.Had, res.Bad, res.Skipped)
 		}
 	}
+	return nil
+}
+
+// coreAI puts a Core AI export (NAME.coreai in its model's directory, models/MODEL) as its
+// model's conversion now: with --finish, finished as its recipe says (chat.FinishCoreAI) and put
+// as the recipe's version, an export of the version before without converting it again.
+func (ic ImportCmd) coreAI(ctx context.Context, dir string) error {
+	if !ic.Finish {
+		return errors.New("a Core AI export is put with --finish (as its recipe's version now)")
+	}
+	if ic.DryRun {
+		fmt.Printf("%s: coreai, finished and put as its recipe's version\n", dir)
+		return nil
+	}
+	rel, err := chat.PutCoreAI(ctx, dir)
+	if err != nil {
+		return err
+	}
+	shared.Flush(ctx)
+	fmt.Printf("%s: put as %s\n", dir, rel)
 	return nil
 }
 
