@@ -131,7 +131,11 @@ Removed on 2026-11-24: the DiT, the text mask, the export and its numbers are in
 | 1024² edit, 1 full reference | 59 s | 3.9 GB |
 | 1024² edit, 1 half reference | 37 s | 3.8 GB |
 | 1024² 2 full references | 1 min 41 s | 3.9 GB |
+| 1024² edit, 2 half references (6656 rows, 8.5 s a step) | 47 s | 3.8 GB |
+| 1024² edit, 3 half references (7680 rows, 10.4 s a step) | 56 s | 3.8 GB |
 | 512² 2 full references | 20 s | 1.6 GB |
+
+- References without a size asked (2026-11-25): models.yaml `npu.amd.edits`, the same as `npu.apple.edits` (1024²: 1 full, 2 half, 3 half; 512²: 1 or 2 full), so one call draws one picture on both. Another number at those sizes is refused (as on Apple); `--image FILE@half` still picks any combination the export holds; the rectangles take any number of full ones. The times above are wall clock of `hwnpu-image generate` (1 full reference: 13.1 s a step, 1 min 8 s).
 
 - Accuracy against CPU float32: 1024² generation latent 0.961, 512² 0.975; edits 0.996–0.999 (2 full references 0.9989 / 40.0 dB). The remaining gap comes from the text's pad rows.
 - Simulated per-format error in the DiT (first-step velocity): bfp16 weights 0.99992, bfp16 linear inputs 0.99989, bfp16 q/k 0.99989, all three 0.99964.

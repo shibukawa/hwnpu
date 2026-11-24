@@ -137,6 +137,9 @@ func loadKlein(ctx context.Context, g *Generator, f airole.Files, e airole.LoadE
 			g.sizes = points(aspect.SizesOf(as))
 		}
 		g.edits = true
+		if g.editRefs, err = amdEdits(g.model, as, g.sizes); err != nil {
+			return nil, err
+		}
 		if g.dev, err = openAMD(ctx); err != nil {
 			return nil, err
 		}
@@ -234,13 +237,15 @@ func (k *klein) draw(ctx context.Context, r *run) error {
 			divs[i], asked = o.ReferenceScales[i], true
 		}
 	}
-	if !asked && len(divs) > 0 && k.g.editRefs != nil {
-		for _, pat := range k.g.editRefs[r.size] {
-			if len(pat) == len(divs) {
-				copy(divs, pat)
-				break
+	if pats, ok := k.g.editRefs[r.size]; !asked && len(divs) > 0 && ok {
+		i := slices.IndexFunc(pats, func(p []int) bool { return len(p) == len(divs) })
+		if i < 0 { // a number the table leaves out (models.yaml npu edits): not drawn, as on Apple's
+			if _, _, err := k.g.editFor(r.size.X, r.size.Y, len(divs)); err != nil {
+				return err
 			}
+			return fmt.Errorf("ai/imagegen: %s draws from no %d reference(s) at %d x %d", k.g.name, len(divs), r.size.X, r.size.Y)
 		}
+		copy(divs, pats[i])
 	}
 	if len(divs) > 0 && !p.HasReferences(divs) {
 		how := "tools/amd/iron_flux2klein.py --refs compiled their rows"
@@ -331,6 +336,33 @@ func (k *klein) close() error {
 
 // referenceNames names references of the picture's sides over divs as Pipeline.References does:
 // "1+2@half".
+// amdEdits are the references of the edits of models.yaml's npu.amd edits, by the sizes of the
+// export (as the aspects as name them): those of the picture's size ("2") and of half its sides
+// ("2@half"), as Apple's export holds them (flux2klein.ParseReferences). The sizes the table
+// leaves out draw from any number of the picture's size.
+func amdEdits(m chat.Model, as []aspect.Aspect, sizes []image.Point) (map[image.Point][][]int, error) {
+	edits := m.NPU["amd"].Edits
+	if len(edits) == 0 {
+		return nil, nil
+	}
+	out := map[image.Point][][]int{}
+	for _, a := range as {
+		names, ok := edits[a.Name]
+		pt := image.Pt(a.Width, a.Height)
+		if !ok || !slices.Contains(sizes, pt) {
+			continue
+		}
+		for _, n := range names {
+			divs, err := flux2klein.ParseReferences(n)
+			if err != nil {
+				return nil, fmt.Errorf("%s: models.yaml npu amd edits %s: %w", m.Name, a.Name, err)
+			}
+			out[pt] = append(out[pt], slices.Sorted(slices.Values(divs)))
+		}
+	}
+	return out, nil
+}
+
 func referenceNames(divs []int) string {
 	full, half := 0, 0
 	for _, d := range divs {
