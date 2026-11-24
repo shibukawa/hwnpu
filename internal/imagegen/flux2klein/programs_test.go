@@ -222,8 +222,8 @@ func TestEngineEdit(t *testing.T) {
 }
 
 // models.yaml npu.apple's FLUX.2 klein is one export of its 8 sizes and 5 edits, named for both:
-// at 1024 x 1024 from a reference of 1024 and none, one or two of 512; at 512 x 512 from one or two
-// of 512.
+// at 1024 x 1024 from a reference of 1024, or two or three of 512; at 512 x 512 from one or two of
+// 512.
 func TestAppleOptions(t *testing.T) {
 	m, ok := chat.Lookup("FLUX.2-klein-4B")
 	if !ok {
@@ -233,14 +233,14 @@ func TestAppleOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Edit{{1024, 1024, [][]int{{1}, {1, 2}, {1, 2, 2}}}, {512, 512, [][]int{{1}, {1, 1}}}}
+	want := []Edit{{1024, 1024, [][]int{{1}, {2, 2}, {2, 2, 2}}}, {512, 512, [][]int{{1}, {1, 1}}}}
 	if len(o.Sizes) != 8 || !reflect.DeepEqual(o.Edits, want) {
 		t.Errorf("sizes %v, edits %v", o.Sizes, o.Edits)
 	}
 	if n := ExportName(m.Name, o); !strings.HasPrefix(n, "flux.2-klein-4b-8sizes-4d02f40a-5edits-") || !strings.HasSuffix(n, "-lut8-lut8-v5.coreai") {
 		t.Errorf("export name %s", n)
 	}
-	if f := EditFunction(1024, 1024, []int{2, 1, 2}); f != "s1024x1024_ref1h2" {
+	if f := EditFunction(1024, 1024, []int{2, 2, 2}); f != "s1024x1024_refh3" {
 		t.Errorf("edit function %s", f)
 	}
 	for _, bad := range []string{"", "0", "x@half", "3+2@half", "1@full"} {
