@@ -928,12 +928,10 @@ models:
     # Neural Engine; 3.1 GB at 512 x 512), measured (docs/design/image-apple.md, docs/design/image-models.md)
     memory: {amd: 3.9, apple: 4.9}
     # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst). Apple: the
-    # export of the eight sizes and the edits at 512 x 512 below
-    # (flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v5.coreai) and the
-    # chip's prebuilt programs (0.06 to 0.21 GB, the M2's the largest); an app's edits at 1024 x
-    # 1024 (imagegen.Edit) fetch the export beside it too (its -device.coreai, 3.73 GB packed).
-    # Converting here fetches the repository's diffusers layout instead (16 GB; not its
-    # single-file DiT)
+    # export of the eight sizes and the edits below, one for every chip
+    # (flux.2-klein-4b-8sizes-4d02f40a-5edits-cacbebeb-lut8-lut8-v6.coreai), and the chip's
+    # prebuilt programs (0.3 GB on an M3 at v5). Converting here fetches the repository's
+    # diffusers layout instead (16 GB; not its single-file DiT)
     bytes: {amd: 12.50e9, apple: 7.97e9}
     features: [edit]
     # The NPU exports: each vendor's weight formats and picture sizes. The sizes are the default on

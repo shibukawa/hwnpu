@@ -26,8 +26,11 @@ import (
 // 1536 queries as two chunks of 768 (mil's headChunk: the prebuilt programs for an M3 failed to
 // load, docs/known-issues.md 12); 5: an attention over 8192 keys or more joins its parts by their
 // log-sum-exp (milpart.PieceKeys), so that the edit at 1024 x 1024 with a reference of 1024 is in
-// the export, prebuilt (PrebuiltKeys).
-const ExportVersion = 5
+// the export, prebuilt (PrebuiltKeys); 6: two single blocks a program (model-recipes.yaml
+// single_group: five left the edit at 1024 x 1024 from three references of 512 off the Neural
+// Engine on an M1 and an M2, "RegAlloc: failed to allocate tensors with fixed L2 hint", and every
+// size off it on an M1).
+const ExportVersion = 6
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
