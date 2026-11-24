@@ -4,6 +4,8 @@
 
 作成: 2026-11-21。2026-11-20 からの論文の調査 ([handoff-amd-papers.md](handoff-amd-papers.md)) で拾った論文について、何を言っていて、hwnpu の実機で当てはまったかをまとめる。細かい数字と試し方は [docs/design/README.ja.md](design/README.ja.md) の各節にある。ここは一覧と、そこへの道案内。
 
+2026-11-23 に、別の調査の論文のうち hwnpu がすでに実装していたものを「[後から見た論文](#後から見た論文-すでに実装していたもの)」に足した。
+
 - AMD の NPU (XDNA2、Ryzen AI 9 365) の最適化の候補が中心。MoE の論文と、同じ時期に M2 で確かめた Apple の Neural Engine の論文も載せる
 - MoE の論文の全体の表は [docs/design/performance.ja.md](design/performance.ja.md)にある。ここでは AMD に関係するものだけ
 
@@ -19,6 +21,7 @@
 - **すでに同じ**: hwnpu がもともと同じことをしていた
 - **一部**: 当てはまったところと、違ったところがある
 - **未着手**: まだ試していない
+- **試して採らなかった**: 測ったが、既定にはしなかった
 
 ## 一覧
 
@@ -201,6 +204,34 @@ AMD の調査と同じ時期に、Neural Engine の論文の規則と上限を M
 
 直接の呼び出しは約 70 µs。Core AI を通すと約 160〜175 µs で、Core AI とドライバの分が約 100 µs ある。
 
+## 後から見た論文: すでに実装していたもの
+
+2026-11-23 に、2026-11-21 の arXiv の調査 (端末の NPU で LLM を速くする論文、約 50 本) を hwnpu の実装と突き合わせた。そのうち、hwnpu がすでに同じことをしていたものをここに置く。多くは論文を参考にせずに作ったもので、似た所と違う所を書く。論文は調査の側で要旨を見た程度 (a) で、Gemma 3 の XDNA2 の論文だけ本文を読んでいる (✓)。
+
+「文書での言及」の欄は、実装したときの hwnpu の文書に論文の名前が出ていたか。
+
+- **なし**: 論文を参考にせずに作り、後から同じだと分かった
+- **あり**: 調べてから作った (または調べて採らなかった)
+
+| 論文 | 言っていること | 結果 | hwnpu で同じもの | 違い、残り | 文書での言及 |
+|---|---|---|---|---|---|
+| mllm-NPU 2407.05858 (a) | プロンプトを固定の長さの塊で読み、コンパイル済みのグラフ 1 つを全部の長さで使う | **すでに同じ** | プロンプトを読むプログラムは Q=64 か 128 の 1 本で、どの長さも塊で回す。短い会話には短いプログラムの段 (`--tier`) ([llm-engine](design/llm-engine.ja.md)) | 外れ値の多い演算を CPU で並べて回す (shadow outlier)、ブロックの順を入れ替える配置はしていない | なし |
+| HeteroLLM 2501.14794 (a) | プロンプト (計算が律速) とデコード (帯域が律速) で分け方を変える | **すでに同じ** | プロンプトとデコードを別のプログラム (Q=64/128 と Q=1/8) にして、重みを分け合う ([llm-engine](design/llm-engine.ja.md)) | GPU と NPU に分けて同時に回すことはしない | なし |
+| Sarathi-Serve 2403.02310 (a) | プロンプトを塊で読み、デコードを止めない | **一部** | プロンプトは塊で読む | 使う人が 1 人なので、デコードとプロンプトの塊を 1 回に混ぜない。並行する要求 (OpenCode の題名や要約) は系列の退避 (`maxSaved`) で扱う | なし |
+| NITRO 2412.11053 (a) | Intel の NPU は形が固定なので、モデルを固定の形の部分に切って runtime で組む | **すでに同じ** | Intel も他と同じ部分の鎖 (`internal/llm/chain`) と、形の決まったプログラム ([intel](design/intel.ja.md)) | OpenVINO の runtime を使わず、Level Zero を直接呼ぶ | なし |
+| PagedAttention 2309.06180 (a) | KV を固定の大きさの塊に分け、表で引く | **一部** | 注意で分ける形: KV はホストの塊 (既定 8192)、塊ごとに重みのない注意のプログラムを呼び、float32 で合わせる (Flash-Decoding の合流、[llm-engine](design/llm-engine.ja.md)) | NPU の中でページの表を引かない (`gather` が CPU に落ちる)。塊は大きく、系列の間の共有 (copy-on-write) もない | あり ([kv-cache](kv-cache.md) で「利点がない」とした後、別の形で分けた) |
+| Prompt Lookup Decoding † (確かな arXiv 論文はない。よく引かれる 2401.15987 は別の論文) | プロンプトの n-gram から下書き | **すでに同じ** | `LookupDraft`。AMD は確かめるかどうかを `draftPolicy` で選ぶ ([llm-decoding](design/llm-decoding.ja.md)、[amd-llm](design/amd-llm.ja.md)) | | あり |
+| Multi-Token Prediction 2404.19737 (a) | 追加の出力ヘッドで先のトークンを予測し、自分で下書きする | **すでに同じ** | Qwen3.5 のチェックポイントの MTP の層で下書き (`mtpDrafter`、[llm-decoding](design/llm-decoding.ja.md)) | 学習はしない。MTP の層のないモデルには使えない。AMD と Intel はまだ | あり |
+| SGLang / RadixAttention 2312.07104 (a)、Prompt Cache 2311.04934 (a) | 共通の先頭の KV を要求の間で使い回す | **すでに同じ** | メモリの中で共通の先頭まで `Rewind`、ほかの系列を 2 本まで退避、ディスクのプロンプトストア (最も長い共通の先頭と 512 トークンごとの印、[llm-engine](design/llm-engine.ja.md)) | 木ではなく、モデルごとに 4 項目。Prompt Cache の、先頭でない部品の合成はしない | なし |
+| StreamingLLM 2309.17453 (a) | 先頭の数トークン (sink) と直近の窓だけ残す | **一部** | 窓を持つモデルのスライディングの層をリングに (`pos mod W`、[llm-engine](design/llm-engine.ja.md))。gpt-oss の学習した sink も扱う | 窓のない層で sink を残して古い行を捨てることはしていない (下の候補) | あり ([kv-cache](kv-cache.md)) |
+| Gated DeltaNet 2412.06464 (a) | 状態が固定の大きさの線形な注意 | **すでに同じ** | Qwen3.5 / 3.6 の GDN の層を Apple と AMD に移した ([llm-qwen](design/llm-qwen.ja.md)、[amd-llm](design/amd-llm.ja.md)) | 論文はアーキテクチャの提案。hwnpu はそれを採ったモデルを動かす | あり |
+| GPTQ 2210.17323 (a) | 2 次の情報で層ごとに 3〜4 ビットに | **すでに同じ** | `tools/amd/q4_gptq.py` ほか ([quantization](design/quantization.ja.md)) | | あり |
+| SqueezeLLM 2306.07629 (a) | 感度で重みづけした非一様の表と、外れ値を疎で別に持つ | **一部** | 入力のチャネルの E[x²] で重みづけした lut の表 (`wkmeans`、[quantization](design/quantization.ja.md)) | 外れ値を疎で別に持つことはしない | なし |
+| Gemma 3 を XDNA2 に 2602.06063 ✓ (調査の側) | 4 ビットの q4nx と、dequant と射影の融合、注意の塊の流し方 (FlowQKV、FlowKV) | **一部** | q4nx の `QGEMV` と、プロンプトの `DequantBFP` (FastFlowLM のカーネル、[amd-npu-models](amd-npu-models.md)) | デコードの層の組み方と FlowKV とは比べていない (下の候補) | なし (FastFlowLM のカーネルとしてはあり) |
+| Fiddler 2402.07033 (a) | 置いていない専門家は重みを運ばずに CPU で計算する | **一部** | Apple は専門家を全部 CPU で MXFP4 のまま回す (`llm.HostRouted`、[moe](design/moe.ja.md)) | AMD では外れた専門家を CPU で計算しない (下の候補) | なし |
+| ProMoE 2410.22134 (a)、MoE-Infinity 2401.14361 (a) | 予測で専門家を先読みし、使われ方でキャッシュを決める | **一部** | Fate の形の先読みと、校正した使用回数で選ぶ置き場 (上の Fate、2505.16056) | 学習した予測器や、要求ごとの記録は持たない | なし |
+| KIVI 2402.02750 (a)、KVQuant 2401.18079 (a) | KV を 2〜3 ビットに | **試して採らなかった** | int8 の KV を Neural Engine で測った: メモリは半分、速さは fp16 より 1 割遅い ([kv-cache](kv-cache.md) 3 節) | 2 ビットは試していない。100K を超える文脈を目指すときだけ | あり |
+
 ## 論文から始めて、別のことが分かったもの
 
 - **GDN の 0 の塊** ([amd](design/amd.ja.md)、[amd-llm](design/amd-llm.ja.md)): 設定のし直しを数える道具 (`tools/amd/elfconfigs`) で、GDN のカーネルの .bss の配列に aiecc が毎回 0 を書いていると分かった。論文にはない
@@ -217,3 +248,12 @@ handoff-amd-papers.md の 3〜9 節に、試し方を書いてある。
 3. タイルを入力と出力で違う大きさで持つ (2511.16041)。画像の DiT と長いプロンプト
 4. q4 の前に回転 (QuaRot の形)。Qwen3.5 / 3.6 の AMD の q4 の精度
 5. 重みの可逆圧縮 (ENEC)。設定のし直しを減らした後
+
+2026-11-23 の調査から (優先の順、まだ試していない。始め方は [handoff-npu-papers.md](handoff-npu-papers.md)):
+
+1. Gemma 3 を XDNA2 に (2602.06063) のデコードの層の組み方と FlowKV。密なモデルの 1 層を 1 つの常駐の配列にする残りの仕事 (HeteroMosaic の節) の手本
+2. AMD で、外れた専門家を CPU で計算する (Fiddler 2402.07033)。運ぶか CPU で回すかを、費用の見積もりで選ぶ
+3. 下書きを確かめる費用を減らす (sd.npu 2510.15312)。AMD の確かめる版はデコードの 1.67〜1.96 ステップ分かかる
+4. AWQ 風の scale を前の演算に畳む (AWQ 2306.00978)。Neural Engine の lut4 の精度 ([quantization](design/quantization.ja.md) の 5 番目)
+5. 長い文脈の KV を縮める (SnapKV 2404.14469、StreamingLLM の sink)。Neural Engine の費用は使った長さに比例する。出力が変わるので選べる設定に
+6. 外れた専門家を低い精度で読む (HOBBIT 2411.01433)。2 と組み合わせる。KL の確認の後ろで
