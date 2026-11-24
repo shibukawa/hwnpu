@@ -12,6 +12,13 @@ import (
 // before every word (add_dummy_prefix, extra whitespace removed) and, when the model was trained
 // with it, byte fallback. Nothing is put after the text; control pieces are not matched in it.
 func LoadSentencePieceUnigram(path string) (*Unigram, error) {
+	if u, err, ok := openBeside(path, loadUnigramBinary); ok {
+		return u, err
+	}
+	return cachedLoad(path, parseSentencePieceUnigramFile, (*Unigram).WriteBinary, loadUnigramBinary)
+}
+
+func parseSentencePieceUnigramFile(path string) (*Unigram, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -24,7 +31,8 @@ func LoadSentencePieceUnigram(path string) (*Unigram, error) {
 }
 
 func parseSentencePieceUnigram(raw []byte) (*Unigram, error) {
-	u := &Unigram{pieces: map[string]int32{}, unk: -1, space: "▁"}
+	pieces := map[string]int32{}
+	u := &Unigram{unk: -1, space: "▁"}
 	modelType, byteFallback := 1, false
 	dummyPrefix, removeSpaces, escapeSpaces := true, true, true
 	var cm []byte
@@ -52,8 +60,8 @@ func parseSentencePieceUnigram(raw []byte) (*Unigram, error) {
 			u.scores = append(u.scores, float64(score))
 			switch typ {
 			case spNormal, spUserDefined:
-				if _, ok := u.pieces[piece]; !ok {
-					u.pieces[piece] = id
+				if _, ok := pieces[piece]; !ok {
+					pieces[piece] = id
 				}
 				u.maxLen = max(u.maxLen, len(piece))
 				if typ == spNormal {
@@ -121,5 +129,6 @@ func parseSentencePieceUnigram(raw []byte) (*Unigram, error) {
 		}
 		u.norm = c
 	}
+	u.pieces = vocabTable(pieces)
 	return u, nil
 }

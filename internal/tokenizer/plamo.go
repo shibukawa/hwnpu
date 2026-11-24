@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -25,12 +26,13 @@ import (
 // crosses a cut. tokenization_plamo.py marks the cuts with U+EE00, a piece of its own that is
 // dropped, which is the same as searching the parts one by one.
 type plamo struct {
-	scores   map[string]int64 // piece → score × 10⁴, rounded as Python's round
-	ids      map[string]int32 // piece → id, the last of equal pieces
-	prefixes map[string]bool  // every prefix of a piece (the pieces included)
-	bytes    [256]int32       // the BYTE pieces
-	repeats  int              // break_around_repeated_chars_threshold (0: none)
-	spaces   int              // break_around_consecutive_spaces_threshold (0: none)
+	pieces   *strTable  // the pieces but the BYTE ones → their index k in ids and scores
+	ids      []int32    // by k: the piece's id, the last of equal pieces
+	scores   []int64    // by k: the score × 10⁴, rounded as Python's round
+	prefixes *strTable  // every prefix of a piece (the pieces included)
+	bytes    [256]int32 // the BYTE pieces
+	repeats  int        // break_around_repeated_chars_threshold (0: none)
+	spaces   int        // break_around_consecutive_spaces_threshold (0: none)
 }
 
 const (
@@ -38,8 +40,20 @@ const (
 )
 
 // LoadPlamo reads PLaMo's tokenizer.jsonl and the thresholds of the tokenizer_config.json beside
-// it (none when it is missing).
+// it (none when it is missing), or the binary file that stands for them (as Load).
 func LoadPlamo(path string) (*Tokenizer, error) {
+	if t, err, ok := openBeside(path, loadBinary); ok {
+		return t, err
+	}
+	return cachedLoad(path, loadPlamoText, (*Tokenizer).WriteBinary, loadBinary)
+}
+
+// plamoConfig is the tokenizer_config.json beside a tokenizer.jsonl.
+func plamoConfig(path string) string {
+	return strings.TrimSuffix(path, "tokenizer.jsonl") + "tokenizer_config.json"
+}
+
+func loadPlamoText(path string) (*Tokenizer, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -48,7 +62,7 @@ func LoadPlamo(path string) (*Tokenizer, error) {
 		Spaces  *int `json:"break_around_consecutive_spaces_threshold"`
 		Repeats *int `json:"break_around_repeated_chars_threshold"`
 	}
-	if b, err := os.ReadFile(strings.TrimSuffix(path, "tokenizer.jsonl") + "tokenizer_config.json"); err == nil {
+	if b, err := os.ReadFile(plamoConfig(path)); err == nil {
 		if err := json.Unmarshal(b, &cfg); err != nil {
 			return nil, fmt.Errorf("tokenizer: %s: tokenizer_config.json: %w", path, err)
 		}
@@ -68,8 +82,10 @@ func LoadPlamo(path string) (*Tokenizer, error) {
 }
 
 func parsePlamo(raw []byte, spaces, repeats int) (*Tokenizer, error) {
-	p := &plamo{scores: map[string]int64{}, ids: map[string]int32{}, prefixes: map[string]bool{}, spaces: spaces, repeats: repeats}
-	t := &Tokenizer{vocab: map[string]int32{}, addedID: map[string]int32{}, plamo: p}
+	p := &plamo{spaces: spaces, repeats: repeats}
+	t := &Tokenizer{addedID: map[string]int32{}, plamo: p}
+	vocab, scores, ids, prefixes := map[string]int32{}, map[string]int64{}, map[string]int32{}, map[string]bool{}
+	var tokens []string
 	for i := range p.bytes {
 		p.bytes[i] = -1
 	}
@@ -82,21 +98,25 @@ func parsePlamo(raw []byte, spaces, repeats int) (*Tokenizer, error) {
 		}
 		var row []any
 		if err := json.Unmarshal(line, &row); err != nil {
-			return nil, fmt.Errorf("line %d: %w", len(t.tokens)+1, err)
+			return nil, fmt.Errorf("line %d: %w", len(tokens)+1, err)
 		}
 		piece, ok1 := row[0].(string)
 		score, ok2 := row[1].(float64)
 		if len(row) < 2 || !ok1 || !ok2 {
-			return nil, fmt.Errorf("line %d is not [piece, score, ...]", len(t.tokens)+1)
+			return nil, fmt.Errorf("line %d is not [piece, score, ...]", len(tokens)+1)
 		}
 		kind := ""
 		if len(row) > 2 {
 			kind, _ = row[2].(string)
 		}
-		id := int32(len(t.tokens))
-		t.tokens = append(t.tokens, piece)
-		t.special = append(t.special, kind == "CONTROL" || kind == "UNKNOWN")
-		t.vocab[piece] = id
+		id := int32(len(tokens))
+		tokens = append(tokens, piece)
+		sp := byte(0)
+		if kind == "CONTROL" || kind == "UNKNOWN" {
+			sp = 1
+		}
+		t.special = append(t.special, sp)
+		vocab[piece] = id
 		if kind == "BYTE" {
 			var b int
 			if len(piece) != 6 || !strings.HasPrefix(piece, "<0x") || !strings.HasSuffix(piece, ">") {
@@ -111,18 +131,42 @@ func parsePlamo(raw []byte, spaces, repeats int) (*Tokenizer, error) {
 		if kind == "CONTROL" || kind == "UNKNOWN" {
 			t.control = append(t.control, piece)
 		}
-		p.ids[piece] = id
-		p.scores[piece] = int64(math.RoundToEven(score * 1e4))
+		ids[piece] = id
+		scores[piece] = int64(math.RoundToEven(score * 1e4))
 		for j := range piece {
 			if j > 0 {
-				p.prefixes[piece[:j]] = true
+				prefixes[piece[:j]] = true
 			}
 		}
-		p.prefixes[piece] = true
+		prefixes[piece] = true
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
+	t.tokens = newStrTable(tokens, nil, false)
+	t.vocab = vocabOver(t.tokens, vocab, nil)
+	if t.vocab == nil {
+		t.vocab = vocabTable(vocab)
+	}
+	// the pieces in the order of their ids, the prefixes sorted: the same file makes the same bytes
+	pieces := make([]string, 0, len(ids))
+	for piece := range ids {
+		pieces = append(pieces, piece)
+	}
+	sort.Slice(pieces, func(i, j int) bool { return ids[pieces[i]] < ids[pieces[j]] })
+	val := make([]int32, len(pieces))
+	for k, piece := range pieces {
+		val[k] = int32(k)
+		p.ids = append(p.ids, ids[piece])
+		p.scores = append(p.scores, scores[piece])
+	}
+	p.pieces = newStrTable(pieces, val, true)
+	pre := make([]string, 0, len(prefixes))
+	for s := range prefixes {
+		pre = append(pre, s)
+	}
+	sort.Strings(pre)
+	p.prefixes = newStrTable(pre, nil, true)
 	for b, id := range p.bytes {
 		if id < 0 {
 			return nil, fmt.Errorf("no byte piece <0x%02X>", b)
@@ -234,27 +278,29 @@ func (p *plamo) search(ids []int32, text string) []int32 {
 	next := make([]int, n+1)   // the length in bytes of the piece there, its bytes if negative
 	id := make([]int32, n+1)
 	var lens []int
+	var ks []int32
 	for i := n - 1; i >= 0; i-- {
 		if !utf8.RuneStart(text[i]) {
 			continue
 		}
 		cost[i] = math.MaxInt64
 		// every piece from i, the longest first
-		lens = lens[:0]
+		lens, ks = lens[:0], ks[:0]
 		for j := i; j < n; {
 			_, m := utf8.DecodeRuneInString(text[j:])
 			j += m
-			if !p.prefixes[text[i:j]] {
+			if !p.prefixes.has(text[i:j]) {
 				break
 			}
-			if _, ok := p.scores[text[i:j]]; ok {
+			if k, ok := p.pieces.find(text[i:j]); ok {
 				lens = append(lens, j-i)
+				ks = append(ks, k)
 			}
 		}
-		for k := len(lens) - 1; k >= 0; k-- {
-			l := lens[k]
-			if c := cost[i+l] - p.scores[text[i:i+l]]; c < cost[i] {
-				cost[i], next[i], id[i] = c, l, p.ids[text[i:i+l]]
+		for x := len(lens) - 1; x >= 0; x-- {
+			l, k := lens[x], ks[x]
+			if c := cost[i+l] - p.scores[k]; c < cost[i] {
+				cost[i], next[i], id[i] = c, l, p.ids[k]
 			}
 		}
 		_, m := utf8.DecodeRuneInString(text[i:])
@@ -279,13 +325,13 @@ func (p *plamo) search(ids []int32, text string) []int32 {
 func (p *plamo) decode(t *Tokenizer, ids []int32, skipSpecial bool) string {
 	var out []byte
 	for _, id := range ids {
-		if id < 0 || int(id) >= len(t.tokens) {
+		if id < 0 || int(id) >= t.tokens.n() {
 			continue
 		}
-		if t.special[id] && skipSpecial {
+		if t.special[id] != 0 && skipSpecial {
 			continue
 		}
-		s := t.tokens[id]
+		s := t.tokens.str(int(id))
 		if len(s) == 6 && strings.HasPrefix(s, "<0x") && p.bytes[hexByte(s[3:5])] == id {
 			out = append(out, byte(hexByte(s[3:5])))
 			continue

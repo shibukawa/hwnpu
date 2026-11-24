@@ -16,20 +16,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/shibukawa/hwnpu/internal/mapped"
 )
 
 // Tokenizer is a loaded BPE tokenizer, byte-level or with byte fallback.
 type Tokenizer struct {
-	vocab        map[string]int32
-	tokens       []string // by id; added tokens hold their content
-	special      []bool   // by id
-	ranks        map[[2]string]int
+	vocab        *strTable  // the model's vocabulary: token → id
+	tokens       *strTable  // by id; added tokens hold their content
+	special      []byte     // by id: 1 for an added token (PLaMo: a control or unknown piece)
+	merges       *pairTable // byte-level: the merges of pairs of symbols, by their ids (mergeSymbols)
+	byteSym      [256]int32 // byte-level: each byte's symbol (byteToRune's character)
 	ignoreMerges bool
 	added        []string // contents, longest first
 	addedID      map[string]int32
@@ -38,8 +42,9 @@ type Tokenizer struct {
 	style        style // the pre-tokenizer pattern
 	nfc          bool  // the text is put in Unicode normalization form C first
 
-	fallback *fallback // the BPE with byte fallback, or nil for byte-level
-	plamo    *plamo    // PLaMo's scored pieces (LoadPlamo), or nil
+	fallback *fallback    // the BPE with byte fallback, or nil for byte-level
+	plamo    *plamo       // PLaMo's scored pieces (LoadPlamo), or nil
+	file     *mapped.File // the binary file the tables are in (nil: built from the text)
 }
 
 // style is a pre-tokenizer pattern that split implements.
@@ -115,10 +120,20 @@ type file struct {
 	pairs [][2]string
 }
 
-// Load reads a tokenizer.json, or PLaMo's tokenizer.jsonl (LoadPlamo).
+// Load reads a tokenizer.json, or PLaMo's tokenizer.jsonl (LoadPlamo): the binary file that
+// stands for it (BinaryPath) when there is one, which needs neither of them; else the file,
+// kept as a binary file in the cache for the next time (cachedLoad).
 func Load(path string) (*Tokenizer, error) {
+	if t, err, ok := openBeside(path, loadBinary); ok {
+		return t, err
+	}
+	return cachedLoad(path, loadText, (*Tokenizer).WriteBinary, loadBinary)
+}
+
+// loadText reads a tokenizer.json, or PLaMo's tokenizer.jsonl.
+func loadText(path string) (*Tokenizer, error) {
 	if strings.HasSuffix(path, ".jsonl") {
-		return LoadPlamo(path)
+		return loadPlamoText(path)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -194,7 +209,7 @@ func parse(raw []byte) (*Tokenizer, error) {
 
 // newTokenizer holds the vocabulary and the added tokens of f.
 func newTokenizer(f *file) *Tokenizer {
-	t := &Tokenizer{vocab: f.Model.Vocab, ranks: map[[2]string]int{}, ignoreMerges: f.Model.IgnoreMerges, addedID: map[string]int32{}, cache: map[string][]int32{}}
+	t := &Tokenizer{vocab: vocabTable(f.Model.Vocab), ignoreMerges: f.Model.IgnoreMerges, addedID: map[string]int32{}, cache: map[string][]int32{}}
 	n := int32(0)
 	for _, id := range f.Model.Vocab {
 		n = max(n, id+1)
@@ -202,58 +217,137 @@ func newTokenizer(f *file) *Tokenizer {
 	for _, a := range f.AddedTokens {
 		n = max(n, a.ID+1)
 	}
-	t.tokens = make([]string, n)
-	t.special = make([]bool, n)
+	tokens := make([]string, n)
+	t.special = make([]byte, n)
 	for s, id := range f.Model.Vocab {
-		t.tokens[id] = s
+		tokens[id] = s
 	}
 	for _, a := range f.AddedTokens {
-		t.tokens[a.ID] = a.Content
-		t.special[a.ID] = true
+		tokens[a.ID] = a.Content
+		t.special[a.ID] = 1
 		t.addedID[a.Content] = a.ID
 		t.added = append(t.added, a.Content)
 		if a.Special {
 			t.control = append(t.control, a.Content)
 		}
 	}
-	sort.Slice(t.added, func(i, j int) bool { return len(t.added[i]) > len(t.added[j]) })
+	t.tokens = newStrTable(tokens, nil, false)
+	t.vocab = vocabOver(t.tokens, f.Model.Vocab, t.vocab)
+	sortAdded(t.added)
 	return t
 }
 
-// readMerges reads the merge ranks.
-func (t *Tokenizer) readMerges(f *file) error {
-	if f.pairs != nil {
-		if len(t.ranks) == 0 {
-			t.ranks = make(map[[2]string]int, len(f.pairs))
+// vocabOver is the vocabulary as an index of the tokens (indexOf) when each of its tokens is the
+// token of its id, one token an id (no added token in the place of one of them): the strings once
+// in a binary file rather than twice. Else it is table, the vocabulary's own.
+func vocabOver(tokens *strTable, vocab map[string]int32, table *strTable) *strTable {
+	ids := make([]int32, 0, len(vocab))
+	seen := make([]bool, tokens.n())
+	for s, id := range vocab {
+		if id < 0 || int(id) >= len(seen) || seen[id] || tokens.str(int(id)) != s {
+			return table
 		}
-		for i, pair := range f.pairs {
-			if _, dup := t.ranks[pair]; !dup {
-				t.ranks[pair] = i
-			}
-		}
-		return nil
+		seen[id] = true
+		ids = append(ids, id)
 	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return indexOf(tokens, ids)
+}
+
+// sortAdded orders added tokens longest first (the first that matches in a text is taken).
+func sortAdded(added []string) {
+	sort.SliceStable(added, func(i, j int) bool { return len(added[i]) > len(added[j]) })
+}
+
+// vocabTable is the table of a vocabulary, its tokens in the order of their ids (and of the
+// tokens, for ids given twice), so that the same vocabulary makes the same bytes.
+func vocabTable(vocab map[string]int32) *strTable {
+	strs := make([]string, 0, len(vocab))
+	for s := range vocab {
+		strs = append(strs, s)
+	}
+	sort.Slice(strs, func(i, j int) bool {
+		if a, b := vocab[strs[i]], vocab[strs[j]]; a != b {
+			return a < b
+		}
+		return strs[i] < strs[j]
+	})
+	val := make([]int32, len(strs))
+	for i, s := range strs {
+		val[i] = vocab[s]
+	}
+	return newStrTable(strs, val, true)
+}
+
+// pairsOf are the merges of f by rank, as "a b" or ["a", "b"] in the file.
+func pairsOf(f *file) ([][2]string, error) {
+	if f.pairs != nil {
+		return f.pairs, nil
+	}
+	pairs := make([][2]string, 0, len(f.Model.Merges))
 	for i, m := range f.Model.Merges {
 		var pair [2]string
 		var s string
 		if json.Unmarshal(m, &s) == nil {
 			a, b, ok := strings.Cut(s, " ")
 			if !ok {
-				return fmt.Errorf("merge %d %q has no space", i, s)
+				return nil, fmt.Errorf("merge %d %q has no space", i, s)
 			}
 			pair = [2]string{a, b}
 		} else if err := json.Unmarshal(m, &pair); err != nil {
-			return fmt.Errorf("merge %d: %w", i, err)
+			return nil, fmt.Errorf("merge %d: %w", i, err)
 		}
-		if _, dup := t.ranks[pair]; !dup {
-			t.ranks[pair] = i
-		}
+		pairs = append(pairs, pair)
 	}
+	return pairs, nil
+}
+
+// readMerges reads the merge ranks of the byte-level BPE (mergeSymbols).
+func (t *Tokenizer) readMerges(f *file) error {
+	pairs, err := pairsOf(f)
+	if err != nil {
+		return err
+	}
+	t.mergeSymbols(f.Model.Vocab, pairs)
 	return nil
 }
 
+// mergeSymbols makes the byte-level BPE's tables: each byte's symbol and the merges by the ids of
+// their symbols, a pair written twice at its first rank. A symbol that is no token (a merge's
+// part or what it makes, which the vocabulary need not hold) takes an id past the tokens': it
+// merges as the string did and is dropped from what Encode gives, as the string was.
+func (t *Tokenizer) mergeSymbols(vocab map[string]int32, pairs [][2]string) {
+	next := int32(t.tokens.n())
+	extra := map[string]int32{}
+	idOf := func(s string) int32 {
+		if id, ok := vocab[s]; ok {
+			return id
+		}
+		if id, ok := extra[s]; ok {
+			return id
+		}
+		extra[s] = next
+		next++
+		return next - 1
+	}
+	for b := range t.byteSym {
+		t.byteSym[b] = idOf(string(byteToRune[b]))
+	}
+	seen := make(map[[2]int32]bool, len(pairs))
+	entries := make([]pairEntry, 0, len(pairs))
+	for rank, pair := range pairs {
+		a, b := idOf(pair[0]), idOf(pair[1])
+		if seen[[2]int32{a, b}] {
+			continue
+		}
+		seen[[2]int32{a, b}] = true
+		entries = append(entries, pairEntry{a, b, int32(rank), idOf(pair[0] + pair[1])})
+	}
+	t.merges = newPairTable(entries)
+}
+
 // VocabSize is one more than the largest id.
-func (t *Tokenizer) VocabSize() int { return len(t.tokens) }
+func (t *Tokenizer) VocabSize() int { return t.tokens.n() }
 
 // Control returns the contents of the added tokens marked special (llama.cpp's control tokens,
 // such as "<|im_start|>"), in the order of tokenizer.json.
@@ -262,16 +356,17 @@ func (t *Tokenizer) Control() []string { return t.control }
 // ID returns the id of a token by its content (an added token such as "<|im_end|>", or a
 // vocabulary entry in its byte-level form).
 func (t *Tokenizer) ID(token string) (int32, bool) {
+	defer runtime.KeepAlive(t) // the tables may be in t's mapping (loadBinary)
 	if id, ok := t.addedID[token]; ok {
 		return id, true
 	}
-	id, ok := t.vocab[token]
-	return id, ok
+	return t.vocab.find(token)
 }
 
 // Encode turns text into token ids. Added tokens written in the text (such as "<|im_start|>")
 // become their ids.
 func (t *Tokenizer) Encode(text string) []int32 {
+	defer runtime.KeepAlive(t)
 	if t.plamo != nil {
 		return t.plamo.encode(nil, strings.ToValidUTF8(text, "\uFFFD"))
 	}
@@ -313,27 +408,32 @@ func (t *Tokenizer) encodeOrdinary(ids []int32, text string) []int32 {
 	return ids
 }
 
-// bpe merges the byte-level form of one piece of text.
+// bpe merges the byte-level form of one piece of text: the lowest ranked pair of neighbours, every
+// time it is there from the left, until no pair merges.
 func (t *Tokenizer) bpe(piece string) []int32 {
 	if ids, ok := t.cache[piece]; ok {
 		return ids
 	}
-	var word strings.Builder
-	var syms []string
-	for _, b := range []byte(piece) {
-		c := string(byteToRune[b])
-		word.WriteString(c)
-		syms = append(syms, c)
-	}
 	var ids []int32
-	if id, ok := t.vocab[word.String()]; ok && t.ignoreMerges {
-		ids = []int32{id}
-	} else {
+	if t.ignoreMerges {
+		var word strings.Builder
+		for _, b := range []byte(piece) {
+			word.WriteRune(byteToRune[b])
+		}
+		if id, ok := t.vocab.find(word.String()); ok {
+			ids = []int32{id}
+		}
+	}
+	if ids == nil {
+		syms := make([]int32, len(piece))
+		for i := 0; i < len(piece); i++ {
+			syms[i] = t.byteSym[piece[i]]
+		}
 		for len(syms) > 1 {
-			best, at := -1, -1
+			best, at, made := int32(-1), -1, int32(0)
 			for i := 0; i+1 < len(syms); i++ {
-				if r, ok := t.ranks[[2]string{syms[i], syms[i+1]}]; ok && (best < 0 || r < best) {
-					best, at = r, i
+				if r, id, ok := t.merges.find(syms[i], syms[i+1]); ok && (best < 0 || r < best) {
+					best, at, made = r, i, id
 				}
 			}
 			if at < 0 {
@@ -341,10 +441,10 @@ func (t *Tokenizer) bpe(piece string) []int32 {
 			}
 			// Merge every occurrence of the best pair, left to right.
 			first, second := syms[at], syms[at+1]
-			out := syms[:0:0]
+			out := syms[:0]
 			for i := 0; i < len(syms); {
 				if i+1 < len(syms) && syms[i] == first && syms[i+1] == second {
-					out = append(out, first+second)
+					out = append(out, made)
 					i += 2
 				} else {
 					out = append(out, syms[i])
@@ -353,11 +453,13 @@ func (t *Tokenizer) bpe(piece string) []int32 {
 			}
 			syms = out
 		}
+		n := int32(t.tokens.n())
+		ids = make([]int32, 0, len(syms))
 		for _, s := range syms {
-			if id, ok := t.vocab[s]; ok {
-				ids = append(ids, id)
+			// a symbol that is no token cannot happen with a complete byte-level vocabulary
+			if s < n {
+				ids = append(ids, s)
 			}
-			// A symbol outside the vocabulary cannot happen with a complete byte-level vocabulary.
 		}
 	}
 	t.cache[piece] = ids
@@ -367,6 +469,7 @@ func (t *Tokenizer) bpe(piece string) []int32 {
 // Decode turns token ids back into text. Added tokens are written as their content unless
 // skipSpecial is set.
 func (t *Tokenizer) Decode(ids []int32, skipSpecial bool) string {
+	defer runtime.KeepAlive(t)
 	if t.fallback != nil {
 		return t.fallback.decode(t, ids, skipSpecial)
 	}
@@ -375,16 +478,16 @@ func (t *Tokenizer) Decode(ids []int32, skipSpecial bool) string {
 	}
 	var out []byte
 	for _, id := range ids {
-		if id < 0 || int(id) >= len(t.tokens) {
+		if id < 0 || int(id) >= t.tokens.n() {
 			continue
 		}
-		if t.special[id] {
+		if t.special[id] != 0 {
 			if !skipSpecial {
-				out = append(out, t.tokens[id]...)
+				out = append(out, t.tokens.str(int(id))...)
 			}
 			continue
 		}
-		for _, r := range t.tokens[id] {
+		for _, r := range t.tokens.str(int(id)) {
 			if b, ok := runeToByte[r]; ok {
 				out = append(out, b)
 			}

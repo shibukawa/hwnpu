@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/shibukawa/hwnpu/internal/mapped"
 )
 
 // Unigram is a Hugging Face tokenizer.json of a Unigram model as T5's (sentencepiece converted):
@@ -18,7 +21,7 @@ import (
 // prepended to every word), the most likely segmentation of each word (Viterbi over the
 // pieces' log probabilities), and the post-processor's tokens after the text (T5's </s>).
 type Unigram struct {
-	pieces  map[string]int32
+	pieces  *strTable // piece → id, the first of equal pieces
 	scores  []float64
 	maxLen  int // the longest piece in bytes
 	unk     int32
@@ -29,10 +32,18 @@ type Unigram struct {
 	// bytes are the <0xNN> pieces when an unknown character becomes its UTF-8 bytes
 	// (sentencepiece's byte fallback), or nil.
 	bytes []int32
+	file  *mapped.File // the binary file the tables are in (nil: built from the model)
 }
 
-// LoadUnigram reads a Unigram tokenizer.json.
+// LoadUnigram reads a Unigram tokenizer.json, or the binary file that stands for it (as Load).
 func LoadUnigram(path string) (*Unigram, error) {
+	if u, err, ok := openBeside(path, loadUnigramBinary); ok {
+		return u, err
+	}
+	return cachedLoad(path, loadUnigramText, (*Unigram).WriteBinary, loadUnigramBinary)
+}
+
+func loadUnigramText(path string) (*Unigram, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -92,7 +103,8 @@ func parseUnigram(raw []byte) (*Unigram, error) {
 	if f.Model.UnkID == nil {
 		return nil, errors.New("Unigram without unk_id is not supported")
 	}
-	u := &Unigram{pieces: map[string]int32{}, unk: *f.Model.UnkID, space: "▁"}
+	pieces := map[string]int32{}
+	u := &Unigram{unk: *f.Model.UnkID, space: "▁"}
 	minScore := math.Inf(1)
 	for i, v := range f.Model.Vocab {
 		var piece string
@@ -103,8 +115,8 @@ func parseUnigram(raw []byte) (*Unigram, error) {
 		if err := json.Unmarshal(v[1], &score); err != nil {
 			return nil, err
 		}
-		if _, ok := u.pieces[piece]; !ok {
-			u.pieces[piece] = int32(i)
+		if _, ok := pieces[piece]; !ok {
+			pieces[piece] = int32(i)
 		}
 		u.scores = append(u.scores, score)
 		u.maxLen = max(u.maxLen, len(piece))
@@ -143,12 +155,14 @@ func parseUnigram(raw []byte) (*Unigram, error) {
 		}
 		u.after = append(u.after, st.IDs...)
 	}
+	u.pieces = vocabTable(pieces)
 	return u, nil
 }
 
 // Encode returns text's token ids with the post-processor's after them, as transformers'
 // tokenizer(text).input_ids. Added tokens written in the text (<extra_id_0>) are not split out.
 func (u *Unigram) Encode(text string) []int32 {
+	defer runtime.KeepAlive(u) // the tables may be in u's mapping (loadUnigramBinary)
 	if u.norm != nil {
 		text = u.norm.normalize(text)
 	}
@@ -178,7 +192,7 @@ func (u *Unigram) word(ids []int32, w string) []int32 {
 			if j < n && !utf8.RuneStart(w[j]) {
 				continue
 			}
-			id, ok := u.pieces[w[i:j]]
+			id, ok := u.pieces.find(w[i:j])
 			if !ok {
 				continue
 			}
