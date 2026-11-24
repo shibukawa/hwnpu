@@ -96,7 +96,8 @@ func weightFile(pkg string) string {
 }
 
 // digests remembers the packages hashed in this process (a package is hashed again when a file
-// of it changes size or time).
+// of it changes size or time); the compile cache keeps them for later processes
+// (cache.CachedTreeDigest).
 var digests struct {
 	sync.Mutex
 	m map[string]digestMemo
@@ -118,7 +119,7 @@ func stampOf(pkg string) string {
 	return b.String()
 }
 
-func digestOf(pkg string) ([]byte, error) {
+func digestOf(dir, pkg string) ([]byte, error) {
 	if r, err := filepath.EvalSymlinks(pkg); err == nil {
 		pkg = r
 	}
@@ -129,7 +130,7 @@ func digestOf(pkg string) ([]byte, error) {
 		return m.sum, nil
 	}
 	digests.Unlock()
-	sum, err := cache.TreeDigest(pkg)
+	sum, err := cache.CachedTreeDigest(dir, pkg)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +335,7 @@ func siblings(dir, pkg string, sum []byte) ([]member, error) {
 		if same, err := sameWeights(w, mine, weightFile(other)); err != nil || !same {
 			continue
 		}
-		osum, err := digestOf(other)
+		osum, err := digestOf(dir, other)
 		if err != nil {
 			return nil, err
 		}
@@ -353,7 +354,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	if abs, err := filepath.Abs(pkg); err == nil {
 		pkg = abs
 	}
-	sum, err := digestOf(pkg)
+	sum, err := digestOf(dir, pkg)
 	if err != nil {
 		return "", "", false, fmt.Errorf("coreai: %w", err)
 	}
@@ -441,7 +442,7 @@ func ungroup(dir, pkg string) (bool, error) {
 	if abs, err := filepath.Abs(pkg); err == nil {
 		pkg = abs
 	}
-	sum, err := digestOf(pkg)
+	sum, err := digestOf(dir, pkg)
 	if err != nil {
 		return false, fmt.Errorf("coreai: %w", err)
 	}

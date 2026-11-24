@@ -178,7 +178,7 @@ func TestResolveExports(t *testing.T) {
 		if g, _, cached, err := resolve(cdir, p); err != nil || g != gc || !cached {
 			t.Errorf("%s after the third size: %s (cached %v, %v), want %s", p, g, cached, err, gc)
 		}
-		s, _ := digestOf(p)
+		s, _ := digestOf(cdir, p)
 		if src, ok := cache.Source(cdir, singleKey(s)); !ok || src != p {
 			t.Errorf("%s: its record's source %q (%v)", p, src, ok)
 		}
