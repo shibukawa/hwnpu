@@ -260,23 +260,36 @@ func Resample(x []float32, from, to int) []float32 {
 	half := zeros / cutoff // the filter's half width, in input samples
 	n := int(math.Ceil(float64(len(x)) * ratio))
 	out := make([]float32, n)
-	for i := range out {
-		center := float64(i) / ratio
-		lo, hi := int(math.Ceil(center-half)), int(math.Floor(center+half))
-		var acc, wsum float64
-		for j := max(lo, 0); j <= min(hi, len(x)-1); j++ {
-			t := (float64(j) - center) * cutoff
-			sinc := 1.0
-			if t != 0 {
-				sinc = math.Sin(math.Pi*t) / (math.Pi * t)
+	// each output on its own: in parts of 4096 on every thread (a song is minutes of sines)
+	const part = 4096
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), (n+part-1)/part) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := int(next.Add(1) - 1); p*part < n; p = int(next.Add(1) - 1) {
+				for i := p * part; i < min(n, (p+1)*part); i++ {
+					center := float64(i) / ratio
+					lo, hi := int(math.Ceil(center-half)), int(math.Floor(center+half))
+					var acc, wsum float64
+					for j := max(lo, 0); j <= min(hi, len(x)-1); j++ {
+						t := (float64(j) - center) * cutoff
+						sinc := 1.0
+						if t != 0 {
+							sinc = math.Sin(math.Pi*t) / (math.Pi * t)
+						}
+						w := sinc * (0.5 + 0.5*math.Cos(math.Pi*t/zeros))
+						acc += w * float64(x[j])
+						wsum += w
+					}
+					if wsum != 0 {
+						out[i] = float32(acc / wsum)
+					}
+				}
 			}
-			w := sinc * (0.5 + 0.5*math.Cos(math.Pi*t/zeros))
-			acc += w * float64(x[j])
-			wsum += w
-		}
-		if wsum != 0 {
-			out[i] = float32(acc / wsum)
-		}
+		}()
 	}
+	wg.Wait()
 	return out
 }

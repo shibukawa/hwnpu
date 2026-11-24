@@ -2,6 +2,7 @@ package vecops
 
 import (
 	"math"
+	"math/big"
 	"math/rand"
 	"slices"
 	"testing"
@@ -512,5 +513,55 @@ func BenchmarkF16(b *testing.B) {
 				F16ToF32(src, half)
 			}
 		})
+	}
+}
+
+// fma32 is a fused float32 multiply-add, rounded once.
+func fma32(a, b, c float32) float32 {
+	z := new(big.Float).SetPrec(200).SetFloat64(float64(a) * float64(b)) // exact: 48 bits
+	z.Add(z, new(big.Float).SetPrec(200).SetFloat64(float64(c)))
+	f, _ := z.Float32()
+	return f
+}
+
+func TestLUTRows16(t *testing.T) {
+	if !HaveLUTRows {
+		t.Skip("no AVX2 and FMA")
+	}
+	rng := rand.New(rand.NewSource(1))
+	const stride, size = 77, 256
+	idx := make([]byte, 20*stride)
+	for i := range idx {
+		idx[i] = byte(rng.Intn(size))
+	}
+	table := make([]float32, 3*size)
+	for i := range table {
+		table[i] = float32(rng.NormFloat64())
+	}
+	x := make([]float32, stride)
+	for i := range x {
+		x[i] = float32(rng.NormFloat64())
+	}
+	var rows, off [16]int32
+	for l := range rows {
+		rows[l] = int32(min(l+2, 17) * stride) // the last rows repeated
+		off[l] = int32(l % 3 * size)
+	}
+	for _, c := range [][2]int{{0, 77}, {0, 4}, {3, 1}, {5, 2}, {10, 3}, {1, 64}, {13, 61}, {40, 37}} {
+		k0, n := c[0], c[1]
+		var acc, want [16]float32
+		for l := range acc {
+			acc[l] = float32(l) * 0.25
+			want[l] = acc[l]
+			for kk := range n {
+				want[l] = fma32(x[k0+kk], table[int(off[l])+int(idx[int(rows[l])+k0+kk])], want[l])
+			}
+		}
+		LUTRows16(&acc, x[k0:k0+n], idx, &rows, k0, &off, table)
+		for l := range acc {
+			if math.Float32bits(acc[l]) != math.Float32bits(want[l]) {
+				t.Fatalf("k0 %d n %d row %d: %g, want %g", k0, n, l, acc[l], want[l])
+			}
+		}
 	}
 }

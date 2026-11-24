@@ -978,6 +978,10 @@ func linear(x, w, bias *value) (*value, error) {
 			copy(out.f[i*n:(i+1)*n], bias.f[:n])
 		}
 	}
+	if w.lut != nil && m <= lutRowsMax && k >= 4 && vecops.HaveLUTRows {
+		w.lut.mulAdd(m, x.f, out.f)
+		return out, nil
+	}
 	var b sgemm.Source = sgemm.Transposed{Data: w.f, Stride: k, N: n}
 	if w.lut != nil {
 		b = w.lut
@@ -1076,6 +1080,73 @@ func (w *lutWeight) Pack(dst []float32, k0, kc, j0, nc int) {
 		if cols < sgemm.NR {
 			for kk := range kc {
 				clear(d[kk*sgemm.NR+cols : kk*sgemm.NR+sgemm.NR])
+			}
+		}
+	}
+}
+
+// lutRowsMax is the most rows of x a linear with a lutWeight multiplies by looking the weights
+// up as it goes (lutWeight.mulAdd); sgemm packs them for more, whose packing is then shared.
+const lutRowsMax = 8
+
+// mulAdd adds x (m, k) times the weight's transpose to out (m, n), with the sums sgemm makes:
+// for each output a sum over a KC block in order of k, added to out block after block. The
+// weights are looked up 16 rows at a time (vecops.LUTRows16), the rows split over Threads
+// goroutines: the products are of one token, which sgemm would run on one (sgemm.MinWork),
+// spending most of it packing the weights.
+func (w *lutWeight) mulAdd(m int, x, out []float32) {
+	blocks := (w.n + 15) / 16
+	threads := Threads
+	if threads <= 0 {
+		threads = runtime.GOMAXPROCS(0)
+	}
+	// at least 64 Ki weights a goroutine
+	per := max((blocks+threads-1)/threads, (64<<10)/(16*w.k), 1)
+	if per >= blocks {
+		w.mulAddRows(m, x, out, 0, blocks)
+		return
+	}
+	var wg sync.WaitGroup
+	for b := 0; b < blocks; b += per {
+		wg.Add(1)
+		go func(b0, b1 int) {
+			defer wg.Done()
+			w.mulAddRows(m, x, out, b0, b1)
+		}(b, min(blocks, b+per))
+	}
+	wg.Wait()
+}
+
+// mulAddRows is mulAdd for the blocks of 16 rows of the weight b0 to b1.
+func (w *lutWeight) mulAddRows(m int, x, out []float32, b0, b1 int) {
+	var rows, off [16]int32
+	var acc [16]float32
+	for b := b0; b < b1; b++ {
+		r0 := b * 16
+		lanes := min(16, w.n-r0)
+		for l := range rows {
+			rows[l] = int32(min(l, lanes-1) * w.k) // past the last row: the last row again
+		}
+		idx := w.idx[r0*w.k:]
+		for i := range m {
+			xi := x[i*w.k : (i+1)*w.k]
+			oi := out[i*w.n+r0 : i*w.n+r0+lanes]
+			for pc := 0; pc < w.k; pc += sgemm.KC {
+				end := min(pc+sgemm.KC, w.k)
+				acc = [16]float32{}
+				for s := pc; s < end; {
+					kb := s / w.bk
+					e := min(end, (kb+1)*w.bk)
+					for l := range off {
+						r := r0 + min(l, lanes-1)
+						off[l] = int32(((r/w.bn)*w.gk + kb) * w.size)
+					}
+					vecops.LUTRows16(&acc, xi[s:e], idx, &rows, s, &off, w.table)
+					s = e
+				}
+				for l := range oi {
+					oi[l] += acc[l]
+				}
 			}
 		}
 	}

@@ -13,9 +13,13 @@ import (
 func TestLinearKeptWeights(t *testing.T) {
 	r := rand.New(rand.NewPCG(1, 2))
 	for _, c := range []struct{ m, n, k, gn, gk int }{
-		{1, 300, 520, 300, 1}, // a table a row, k past one block of sgemm's
-		{3, 64, 96, 8, 4},     // a grid of blocks of rows and columns
-		{7, 33, 17, 1, 1},     // one table, n not a multiple of the panel
+		{1, 300, 520, 300, 1},   // a table a row, k past one block of sgemm's
+		{3, 64, 96, 8, 4},       // a grid of blocks of rows and columns
+		{7, 33, 17, 1, 1},       // one table, n not a multiple of the panel
+		{1, 3000, 300, 3000, 1}, // rows over several goroutines
+		{2, 40, 600, 5, 3},      // blocks of columns across sgemm's blocks
+		{12, 50, 70, 10, 2},     // more rows of x than lutRowsMax: sgemm packs the table
+		{1, 9, 3, 1, 1},         // k under 4
 	} {
 		const size = 256
 		idx := make([]byte, c.n*c.k)
@@ -34,7 +38,11 @@ func TestLinearKeptWeights(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want, err := linear(x, dense, nil)
+		bias := &value{shape: []int{c.n}, f: make([]float32, c.n)}
+		for i := range bias.f {
+			bias.f[i] = r.Float32()*2 - 1
+		}
+		want, err := linear(x, dense, bias)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,7 +50,7 @@ func TestLinearKeptWeights(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := linear(x, w, nil)
+		got, err := linear(x, w, bias)
 		if err != nil || !slices.Equal(got.f, want.f) {
 			t.Fatalf("%+v: the table's linear differs (%v)", c, err)
 		}

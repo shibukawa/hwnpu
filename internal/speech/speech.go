@@ -477,9 +477,7 @@ func (sp *Sampling) pick(l []float32, rng *rand.Rand) int {
 	}
 	lmin := float32(math.Inf(-1))
 	if sp.TopK > 0 && sp.TopK < len(l) {
-		sorted := slices.Clone(l)
-		slices.SortFunc(sorted, func(a, b float32) int { return cmp.Compare(b, a) })
-		lmin = sorted[sp.TopK-1]
+		lmin = kthLargest(l, sp.TopK)
 	}
 	lmax := l[argmax(l)]
 	p := make([]float64, len(l))
@@ -497,6 +495,51 @@ func (sp *Sampling) pick(l []float32, rng *rand.Rand) int {
 		}
 	}
 	return len(l) - 1
+}
+
+// kthLargest is the k-th largest of l (1 <= k <= len(l)), NaNs the smallest, as sorting it
+// would give: k kept in a min-heap, without sorting the whole vocabulary each code.
+func kthLargest(l []float32, k int) float32 {
+	h := make([]float32, 0, k)
+	for _, x := range l {
+		if x != x { // NaN
+			continue
+		}
+		if len(h) < k {
+			h = append(h, x)
+			for i := len(h) - 1; i > 0; { // up
+				p := (i - 1) / 2
+				if h[p] <= h[i] {
+					break
+				}
+				h[p], h[i] = h[i], h[p]
+				i = p
+			}
+			continue
+		}
+		if x <= h[0] {
+			continue
+		}
+		h[0] = x
+		for i := 0; ; { // down
+			c := 2*i + 1
+			if c >= k {
+				break
+			}
+			if c+1 < k && h[c+1] < h[c] {
+				c++
+			}
+			if h[i] <= h[c] {
+				break
+			}
+			h[i], h[c] = h[c], h[i]
+			i = c
+		}
+	}
+	if len(h) < k {
+		return float32(math.NaN())
+	}
+	return h[0]
 }
 
 func argmax(l []float32) int {
