@@ -27,3 +27,18 @@ func TestOpen(t *testing.T) {
 		t.Fatal("a missing file opened")
 	}
 }
+
+func TestAnon(t *testing.T) {
+	f, err := Anon(1 << 20)
+	if err != nil || f.Len() != 1<<20 {
+		t.Fatalf("%d, %v", f.Len(), err)
+	}
+	b := f.Bytes()
+	b[0], b[len(b)-1] = 1, 2
+	if b[0] != 1 || b[len(b)-1] != 2 || f.Close() != nil {
+		t.Fatal("not writable")
+	}
+	if f, err := Anon(0); err != nil || f.Len() != 0 || f.Close() != nil {
+		t.Fatalf("empty: %v", err)
+	}
+}

@@ -227,7 +227,8 @@ func OpenCPU(model string, threads int) (*Transcriber, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := onnxrt.OpenProgram(raw, op, threads)
+	defer raw.Close()
+	p, err := onnxrt.OpenProgram(raw.Bytes(), op, threads)
 	if err != nil {
 		return nil, err
 	}

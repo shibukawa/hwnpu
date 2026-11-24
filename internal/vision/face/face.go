@@ -127,11 +127,13 @@ func OpenCPU(path string, threads int) (*Detector, error) {
 	if err != nil {
 		return nil, err
 	}
-	b, err := onnxrt.ReadModel(path)
+	f, err := onnxrt.ReadModel(path)
 	if err != nil {
 		return nil, err
 	}
-	if b, err = onnxrt.FreeShapes(b); err != nil {
+	b, err := onnxrt.FreeShapes(f.Bytes())
+	f.Close()
+	if err != nil {
 		return nil, err
 	}
 	s, err := rt.Open(b, onnxrt.Options{Threads: threads})

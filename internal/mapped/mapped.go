@@ -10,7 +10,7 @@ type File struct {
 	mapped bool
 }
 
-// Bytes are the file's bytes. They must not be written, and not be used after Close.
+// Bytes are the file's bytes. They must not be written (but Anon's), and not be used after Close.
 func (f *File) Bytes() []byte { return f.b }
 
 // Len is the file's size.

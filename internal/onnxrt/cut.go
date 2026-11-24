@@ -2,10 +2,12 @@ package onnxrt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"google.golang.org/protobuf/encoding/protowire"
 
+	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/onnx"
 )
 
@@ -25,90 +27,151 @@ const (
 // inputs to values inside it is an onnx.Program's (Graph.Cut); from values inside it, what the
 // host computes before a program (Basic Pitch's CQT) is left out.
 func Cut(model []byte, inputs, outputs []string) ([]byte, error) {
-	return editField(model, modelGraph, func(graph []byte) ([]byte, error) {
-		type node struct {
-			field    []byte
-			ins, out []string
+	c, err := cut(model, inputs, outputs)
+	if err != nil {
+		return nil, err
+	}
+	return c.to(make([]byte, c.size())), nil
+}
+
+// pieces are a message as the parts of it in order: most are views of the model cut (its nodes
+// and initializers, untouched), so that the cut is written once, into memory of its size.
+type pieces [][]byte
+
+func (p pieces) size() int {
+	n := 0
+	for _, b := range p {
+		n += len(b)
+	}
+	return n
+}
+
+// to writes the pieces into out (of their size).
+func (p pieces) to(out []byte) []byte {
+	n := 0
+	for _, b := range p {
+		n += copy(out[n:], b)
+	}
+	return out[:n]
+}
+
+// cut is Cut as pieces: the model's fields but its graph as they are, the graph edited.
+func cut(model []byte, inputs, outputs []string) (pieces, error) {
+	var out pieces
+	found := false
+	for b := model; len(b) > 0; {
+		f, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return nil, protowire.ParseError(n)
 		}
-		var nodes []node
-		var rest []byte
-		for b := graph; len(b) > 0; {
-			num, typ, n := protowire.ConsumeTag(b)
-			if n < 0 {
-				return nil, protowire.ParseError(n)
+		m := protowire.ConsumeFieldValue(f, typ, b[n:])
+		if m < 0 {
+			return nil, protowire.ParseError(m)
+		}
+		if f == modelGraph && typ == protowire.BytesType && !found {
+			v, _ := protowire.ConsumeBytes(b[n:])
+			g, err := cutGraph(v, inputs, outputs)
+			if err != nil {
+				return nil, err
 			}
-			m := protowire.ConsumeFieldValue(num, typ, b[n:])
-			if m < 0 {
-				return nil, protowire.ParseError(m)
-			}
-			field := b[:n+m]
-			b = b[n+m:]
-			switch {
-			case num == graphNode && typ == protowire.BytesType:
-				v, _ := protowire.ConsumeBytes(field[n:])
-				nd := node{field: field}
-				for c := v; len(c) > 0; {
-					fn, ft, k := protowire.ConsumeTag(c)
-					if k < 0 {
-						return nil, protowire.ParseError(k)
-					}
-					l := protowire.ConsumeFieldValue(fn, ft, c[k:])
-					if l < 0 {
-						return nil, protowire.ParseError(l)
-					}
-					if ft == protowire.BytesType && (fn == nodeInput || fn == nodeOutput) {
-						str, _ := protowire.ConsumeBytes(c[k:])
-						if fn == nodeInput {
-							nd.ins = append(nd.ins, string(str))
-						} else {
-							nd.out = append(nd.out, string(str))
-						}
-					}
-					c = c[k+l:]
+			head := protowire.AppendTag(nil, f, protowire.BytesType)
+			out = append(append(out, protowire.AppendVarint(head, uint64(g.size()))), g...)
+			found = true
+		} else {
+			out = append(out, b[:n+m])
+		}
+		b = b[n+m:]
+	}
+	if !found {
+		return nil, errors.New("onnxrt: not an ONNX model (no graph)")
+	}
+	return out, nil
+}
+
+func cutGraph(graph []byte, inputs, outputs []string) (pieces, error) {
+	type node struct {
+		field    []byte
+		ins, out []string
+	}
+	var nodes []node
+	var rest pieces
+	for b := graph; len(b) > 0; {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return nil, protowire.ParseError(n)
+		}
+		m := protowire.ConsumeFieldValue(num, typ, b[n:])
+		if m < 0 {
+			return nil, protowire.ParseError(m)
+		}
+		field := b[:n+m]
+		b = b[n+m:]
+		switch {
+		case num == graphNode && typ == protowire.BytesType:
+			v, _ := protowire.ConsumeBytes(field[n:])
+			nd := node{field: field}
+			for c := v; len(c) > 0; {
+				fn, ft, k := protowire.ConsumeTag(c)
+				if k < 0 {
+					return nil, protowire.ParseError(k)
 				}
-				nodes = append(nodes, nd)
-			case num == graphInput || num == graphOutput || num == graphValueInfo:
-			default:
-				rest = append(rest, field...)
+				l := protowire.ConsumeFieldValue(fn, ft, c[k:])
+				if l < 0 {
+					return nil, protowire.ParseError(l)
+				}
+				if ft == protowire.BytesType && (fn == nodeInput || fn == nodeOutput) {
+					str, _ := protowire.ConsumeBytes(c[k:])
+					if fn == nodeInput {
+						nd.ins = append(nd.ins, string(str))
+					} else {
+						nd.out = append(nd.out, string(str))
+					}
+				}
+				c = c[k+l:]
 			}
+			nodes = append(nodes, nd)
+		case num == graphInput || num == graphOutput || num == graphValueInfo:
+		default:
+			rest = append(rest, field)
 		}
-		stop := map[string]bool{}
-		for _, in := range inputs {
-			stop[in] = true
+	}
+	stop := map[string]bool{}
+	for _, in := range inputs {
+		stop[in] = true
+	}
+	producer := map[string]int{}
+	for i, nd := range nodes {
+		for _, o := range nd.out {
+			producer[o] = i
 		}
-		producer := map[string]int{}
-		for i, nd := range nodes {
-			for _, o := range nd.out {
-				producer[o] = i
-			}
+	}
+	keep := make([]bool, len(nodes))
+	work := append([]string(nil), outputs...)
+	for len(work) > 0 {
+		v := work[len(work)-1]
+		work = work[:len(work)-1]
+		i, ok := producer[v]
+		if stop[v] || !ok || keep[i] {
+			continue
 		}
-		keep := make([]bool, len(nodes))
-		work := append([]string(nil), outputs...)
-		for len(work) > 0 {
-			v := work[len(work)-1]
-			work = work[:len(work)-1]
-			i, ok := producer[v]
-			if stop[v] || !ok || keep[i] {
-				continue
-			}
-			keep[i] = true
-			work = append(work, nodes[i].ins...)
+		keep[i] = true
+		work = append(work, nodes[i].ins...)
+	}
+	var out pieces
+	for i, nd := range nodes {
+		if keep[i] {
+			out = append(out, nd.field)
 		}
-		var out []byte
-		for i, nd := range nodes {
-			if keep[i] {
-				out = append(out, nd.field...)
-			}
-		}
-		out = append(out, rest...)
-		for _, name := range inputs {
-			out = appendValueInfo(out, graphInput, name)
-		}
-		for _, name := range outputs {
-			out = appendValueInfo(out, graphOutput, name)
-		}
-		return out, nil
-	})
+	}
+	out = append(out, rest...)
+	var io []byte
+	for _, name := range inputs {
+		io = appendValueInfo(io, graphInput, name)
+	}
+	for _, name := range outputs {
+		io = appendValueInfo(io, graphOutput, name)
+	}
+	return append(out, io), nil
 }
 
 // appendValueInfo appends a graph's field num (an input or an output): a ValueInfoProto of
@@ -155,11 +218,17 @@ func OpenProgram(model []byte, p *onnx.Program, threads int) (*Program, error) {
 	for _, in := range p.Inputs {
 		ins = append(ins, in.Name)
 	}
-	b, err := Cut(model, ins, p.Outputs)
+	c, err := cut(model, ins, p.Outputs)
 	if err != nil {
 		return nil, err
 	}
-	s, err := rt.Open(b, Options{Threads: threads})
+	// the cut in memory of its own, given back as soon as ONNX Runtime has its copy
+	buf, err := mapped.Anon(c.size())
+	if err != nil {
+		return nil, err
+	}
+	s, err := rt.Open(c.to(buf.Bytes()), Options{Threads: threads})
+	buf.Close()
 	if err != nil {
 		return nil, err
 	}
