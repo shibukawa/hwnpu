@@ -99,7 +99,9 @@ func newRole(name string, edit bool) *airole.Role {
 		// 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		// 2: Anima, Chroma (since removed) and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
 		// 3: FLUX.2 klein's export on Apple's of every size and edit in one, and one beside it
-		Revision: 3,
+		// 4: FLUX.2 klein's export v6 (two single blocks a program): the store's record of v4 is of a
+		// layout this hwnpu no longer reads (ai.Store.find does not look at the export's version)
+		Revision: 4,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 			var f airole.Files
 			fam := familyOf(e.Base)
