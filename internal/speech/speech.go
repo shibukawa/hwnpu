@@ -50,6 +50,9 @@ type Config struct {
 	// the depthformer's code tables), tokenizer.json, generation_config.json (optional), and
 	// audio_tokenizer/config.json.
 	Dir string
+	// Tokenizer is the tokenizer to load ("": Dir's tokenizer.json, or its binary file):
+	// Prepare's of chat.PrepareTokenizer.
+	Tokenizer string
 	// Weights is the file the host's tables are read from: the tables Prepare writes
 	// (TablesFile), or the checkpoint ("": model.safetensors in Dir).
 	Weights string
@@ -164,7 +167,7 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 	if err := s.Sampling.override(filepath.Join(c.Dir, "generation_config.json")); err != nil {
 		return nil, err
 	}
-	tok, err := tokenizer.Load(filepath.Join(c.Dir, "tokenizer.json"))
+	tok, err := tokenizer.Load(cmp.Or(c.Tokenizer, filepath.Join(c.Dir, "tokenizer.json")))
 	if err != nil {
 		return nil, err
 	}

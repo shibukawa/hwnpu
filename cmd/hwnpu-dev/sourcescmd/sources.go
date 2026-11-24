@@ -38,12 +38,13 @@ import (
 type Cmd struct {
 	devopt.Defs `embed:""`
 
-	List   ListCmd   `cmd:"" default:"1" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read (hwnpu-dev sources alone does it)."`
-	Ls     LsCmd     `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev sources list); with --original the repositories' locks."`
-	Import ImportCmd `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
-	Update UpdateCmd `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
-	Verify VerifyCmd `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
-	GC     GCCmd     `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); shows what would go unless --apply. What a writeback cut off left: hwnpu cache clean."`
+	List       ListCmd       `cmd:"" default:"1" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read (hwnpu-dev sources alone does it)."`
+	Ls         LsCmd         `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev sources list); with --original the repositories' locks."`
+	Import     ImportCmd     `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
+	Tokenizers TokenizersCmd `cmd:"" help:"Put the tokenizers of the models that run from their checkpoint (Apple's Neural Engine, Intel's NPU, the CPU) in the sources written back to, as their binary files (chat.PrepareTokenizer): a first run fetches them in place of the tokenizer's text."`
+	Update     UpdateCmd     `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
+	Verify     VerifyCmd     `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
+	GC         GCCmd         `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); shows what would go unless --apply. What a writeback cut off left: hwnpu cache clean."`
 }
 
 // AfterApply gives the subcommands the definitions' flag.

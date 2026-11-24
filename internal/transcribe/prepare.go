@@ -37,8 +37,8 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// files are the checkpoint's files besides the weights.
-var files = []string{"config.json", "generation_config.json", "tokenizer.json"}
+// files are the checkpoint's files besides the weights and the tokenizer (Config.Tokenizer).
+var files = []string{"config.json", "generation_config.json"}
 
 // Prepare downloads the checkpoint (chat.RepoDir) unless it is there, and converts its three
 // programs for the Neural Engine (or Intel's NPU, s.Backend) unless they are: the encoder (whisper-encoder), the cross
@@ -65,6 +65,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, err
 	}
 	c := Config{Dir: src}
+	// the tokenizer as its binary file (chat.PrepareTokenizer), not the checkpoint's text
+	if c.Tokenizer, err = chat.PrepareTokenizer(ctx, s.Repo, "tokenizer.json", log); err != nil {
+		return Config{}, err
+	}
 	intel := s.Backend == llm.BackendIntel
 	// the checkpoint is downloaded only to convert a program or write the tables from it: what
 	// was converted runs without it

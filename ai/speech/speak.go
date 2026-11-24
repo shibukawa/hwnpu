@@ -86,6 +86,7 @@ var speakRole = &airole.Role{
 		f.Set("codec", c.Codec)
 		f.Set("dir", c.Dir)
 		f.Set("weights", c.Weights)
+		f.Set("tokenizer", c.Tokenizer)
 		return f, nil
 	},
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
@@ -93,7 +94,7 @@ var speakRole = &airole.Role{
 			return loadSupertonic(ctx, f, e)
 		}
 		s, err := speech.Load(ctx, speech.Config{Text: f.Paths["text"], IronText: f.Path("iron-text"), Depth: f.Path("depth"),
-			Codec: f.Path("codec"), Dir: f.Path("dir"), Weights: f.Path("weights"),
+			Codec: f.Path("codec"), Dir: f.Path("dir"), Tokenizer: f.Path("tokenizer"), Weights: f.Path("weights"),
 			CacheDir: e.Cache, Device: e.NPU.Device, CPU: e.NPU.CPU(e.Def), Log: e.Log})
 		if err != nil {
 			return nil, err

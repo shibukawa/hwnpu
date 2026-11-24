@@ -81,6 +81,7 @@ var effectRole = &airole.Role{
 		f.Set("blocks", p.Blocks...)
 		f.Set("stages", p.Stages...)
 		f.Set("tables", p.Tables)
+		f.Set("tokenizer", p.Tokenizer)
 		f.Set("host-text", p.Host[""]...)
 		f.Set("host-dit", p.Host["dit."]...)
 		if p.AMD {
@@ -90,7 +91,7 @@ var effectRole = &airole.Role{
 	},
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 		p := sfx.Paths{Dir: f.Path("dir"), Text: f.Paths["text"], Context: f.Path("context"), Blocks: f.Paths["blocks"],
-			Stages: f.Paths["stages"], Tables: f.Path("tables"), AMD: f.Values["amd"] == "true"}
+			Stages: f.Paths["stages"], Tables: f.Path("tables"), Tokenizer: f.Path("tokenizer"), AMD: f.Values["amd"] == "true"}
 		if t, d := f.Paths["host-text"], f.Paths["host-dit"]; len(t) > 0 || len(d) > 0 {
 			p.Host = map[string][]string{"": t, "dit.": d}
 		}

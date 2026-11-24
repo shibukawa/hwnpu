@@ -284,7 +284,9 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if arch == "qwen35moe" {
 		// Qwen3.5's and Qwen3.6's MoE models are one architecture: the template tells them apart
 		arch = "qwen35"
-		if qwen36Template(filepath.Dir(c.Tokenizer)) {
+		// the chat_template.jinja beside the tokenizer given, or the checkpoint's (the tokenizer
+		// of PrepareTokenizer is a binary file elsewhere)
+		if qwen36Template(filepath.Dir(c.Tokenizer)) || qwen36Template(filepath.Dir(c.ModelConfig)) {
 			arch = "qwen36"
 		}
 	}

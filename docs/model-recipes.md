@@ -139,7 +139,8 @@ models:
 - 書き出しに、`finish` が挙げていないトークナイザーのファイル (`tokenizer.json`、`NAME_tokenizer.json`、`tokenizer.jsonl`) が残っていたら、ビルドは止まる。挙げ忘れたモデルが JSON のまま出ていかないように
 - `finish` を変えるのはレシピを変えること: 指紋 (`Fingerprint`) に入るので、版を上げないと `go test ./internal/recipe` が落ちる。手順の種類ごとの版 (`recipe.StepVersions`、tokenizer はバイナリの形の版) も指紋に入る
 - 前の版の書き出しを作り直さずに新しい版にするには: 手元の書き出しのフォルダで `hwnpu-dev sources import --finish DIR` (仕上げをして、今の版として置く)、それから `hwnpu-dev models pin MODEL`
-- 書き出しにない (元のチェックポイントから読む) トークナイザーは、初めに読んだときにキャッシュの根にバイナリのファイル (`KEY.tok`) を残し、次からはそれを mmap する
+- 書き出しにない (元のチェックポイントから読む: Apple、Intel、CPU のチャット、TTS、Whisper、sfx、d1) トークナイザーは、取得元のエントリ `tokenizer` (`converted/NAME/any/tokenizer/v0-HASH`、キーはリポジトリとコミットとファイルとバイナリの形の版) のバイナリのファイルを取ってきて使い、tokenizer.json は落とさない (`chat.PrepareTokenizer`)。取得元にないときは JSON を落としてここでバイナリにし、書き戻す取得元に置く。前もって全部置くには `hwnpu-dev sources tokenizers`
+- それ以外にテキストのまま読んだトークナイザー (手で渡したファイルなど) は、初めに読んだときにキャッシュの根にバイナリのファイル (`KEY.tok`) を残し、次からはそれを mmap する
 
 ### Apple の版 (`version`、`code`、`convert`)
 

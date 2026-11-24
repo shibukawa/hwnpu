@@ -47,8 +47,9 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// files are the checkpoint's files besides the weights; generation_config.json may be missing.
-var files = []string{"config.json", "tokenizer.json", "audio_tokenizer/config.json"}
+// files are the checkpoint's files besides the weights and the tokenizer (Config.Tokenizer);
+// generation_config.json may be missing.
+var files = []string{"config.json", "audio_tokenizer/config.json"}
 
 // Prepare downloads the checkpoint (chat.RepoDir) unless it is there, converts the programs hwnpu-audio tts
 // runs unless they are (the text model with a KV cache and its final hidden state out, 1 and 64
@@ -91,6 +92,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		format = llm.IntelFormat(format)
 	}
 	c := Config{Dir: src}
+	// the tokenizer as its binary file (chat.PrepareTokenizer), not the checkpoint's text
+	if c.Tokenizer, err = chat.PrepareTokenizer(ctx, s.Repo, "tokenizer.json", log); err != nil {
+		return Config{}, err
+	}
 	type prog struct {
 		config  string
 		weights func() (string, error)

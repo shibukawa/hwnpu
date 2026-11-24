@@ -75,7 +75,7 @@ func LoadIron(ctx context.Context, dev *hwnpu.Device, dir string) (*Transcriber,
 	if err != nil {
 		return nil, err
 	}
-	t, err := newTranscriber(dir, cfg)
+	t, err := newTranscriber(dir, "", cfg)
 	if err != nil {
 		return nil, err
 	}

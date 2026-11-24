@@ -1,8 +1,10 @@
 package tokenizer
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -41,6 +43,21 @@ func Exists(path string) bool {
 		}
 	}
 	return false
+}
+
+// BinaryCurrent reports whether path is a binary tokenizer file of this version (its header:
+// not read further).
+func BinaryCurrent(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var b [16]byte
+	if _, err := io.ReadFull(f, b[:]); err != nil {
+		return false
+	}
+	return string(b[:8]) == tokbinMagic && binary.LittleEndian.Uint32(b[8:]) == tokbinVersion
 }
 
 // CacheDir is where a tokenizer read from its text file (no binary file beside it: a
