@@ -3,11 +3,13 @@ package iron
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"unsafe"
 
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 
@@ -50,7 +52,9 @@ func (m *Model) openRouter() error {
 		return nil
 	}
 	E, K := er.Experts, er.Hidden
-	b, err := os.ReadFile(filepath.Join(m.dir, er.File))
+	// read straight into float32s (this runs on AMD's x86, little-endian as the file): no copy
+	// of the file beside them
+	all, err := readFloat32s(filepath.Join(m.dir, er.File))
 	if err != nil {
 		return fmt.Errorf("iron: experts_route: %w", err)
 	}
@@ -68,14 +72,11 @@ func (m *Model) openRouter() error {
 		}
 	}
 	for l, lay := range er.Layers {
-		n := int64(4 * (K*E + E))
-		if lay.Offset+n > int64(len(b)) {
+		n := int64(K*E + E)
+		if lay.Offset%4 != 0 || lay.Offset/4+n > int64(len(all)) {
 			return fmt.Errorf("iron: experts_route: layer %d past %s", l, er.File)
 		}
-		f := make([]float32, K*E+E)
-		for i := range f {
-			f[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[lay.Offset+int64(4*i):]))
-		}
+		f := all[lay.Offset/4 : lay.Offset/4+n : lay.Offset/4+n]
 		r.wt, r.bias = append(r.wt, f[:K*E]), append(r.bias, f[K*E:])
 		for _, k := range []string{lay.Norm, lay.YO, lay.RW} {
 			if _, ok := m.decode.m.Buffers[k]; !ok {
@@ -251,4 +252,35 @@ func (m *Model) waitGuesses() {
 func regionOf(v *version, name string) Region {
 	p := v.m.Buffers[name]
 	return Region{Name: name, Argument: p.Argument, Offset: p.Offset, Bytes: p.Bytes}
+}
+
+// readFloat32s reads a file of little-endian float32s into float32s, on a little-endian machine
+// without a copy of the file's bytes beside them.
+func readFloat32s(path string) ([]float32, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size()%4 != 0 {
+		return nil, fmt.Errorf("%s: %d bytes is not float32s", path, fi.Size())
+	}
+	v := make([]float32, fi.Size()/4)
+	if len(v) == 0 {
+		return v, nil
+	}
+	b := unsafe.Slice((*byte)(unsafe.Pointer(&v[0])), 4*len(v))
+	if _, err := io.ReadFull(f, b); err != nil {
+		return nil, err
+	}
+	if binary.NativeEndian.Uint16([]byte{1, 0}) != 1 { // big-endian: turn each around
+		for i := range v { // element i's own bytes, read before they are written
+			v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:]))
+		}
+	}
+	return v, nil
 }

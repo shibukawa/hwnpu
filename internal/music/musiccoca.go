@@ -104,14 +104,14 @@ func evalShapes(m *tflite.Model, given map[string]*onnx.Tensor, values []string)
 }
 
 // textFeed is the text program's inputs for the encoder's ids and paddings (TextIDs), the
-// embedding table (16000, 768) row major.
-func textFeed(table []float32, ids, pad []float64) map[string][]float32 {
+// embedding table (16000, 768) of fp16 values, row major: only the ids' rows are decoded.
+func textFeed(table []byte, ids, pad []float64) map[string][]float32 {
 	x := make([]float32, textLength*StyleDim)
 	mask := make([]float32, textLength)
 	paddings := make([]float32, textLength)
 	for i, id := range ids {
 		if id >= 0 && int(id) < textVocab {
-			copy(x[i*StyleDim:(i+1)*StyleDim], table[int(id)*StyleDim:(int(id)+1)*StyleDim])
+			hwnpu.DecodeF16(x[i*StyleDim:(i+1)*StyleDim], table[2*int(id)*StyleDim:2*(int(id)+1)*StyleDim])
 		}
 		mask[i], paddings[i] = float32(1-pad[i]), float32(pad[i])
 	}

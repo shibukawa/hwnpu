@@ -114,10 +114,22 @@ func (f *File) Instance(name string) (*Instance, bool) {
 	return nil, false
 }
 
+// sectionData is a section's bytes in data itself, or a copy of them where they are not there as
+// they are (compressed).
+func sectionData(data []byte, s *elf.Section) ([]byte, error) {
+	if s.Type != elf.SHT_NOBITS && s.Flags&elf.SHF_COMPRESSED == 0 && s.Offset <= uint64(len(data)) && s.Size <= uint64(len(data))-s.Offset {
+		lo, hi := int(s.Offset), int(s.Offset+s.Size)
+		return data[lo:hi:hi], nil
+	}
+	return s.Data()
+}
+
 // IsELF reports whether data starts like an ELF file.
 func IsELF(data []byte) bool { return len(data) >= 4 && bytes.Equal(data[:4], []byte(elf.ELFMAG)) }
 
-// Parse reads a full ELF.
+// Parse reads a full ELF. The PDIs and the control code are data's own bytes, not copies (the
+// file is mapped: tens of MB that the device's buffers take copies of), so data must stay as it
+// is for as long as the File is used.
 func Parse(data []byte) (*File, error) {
 	ef, err := elf.NewFile(bytes.NewReader(data))
 	if err != nil {
@@ -142,7 +154,7 @@ func Parse(data []byte) (*File, error) {
 				return nil, err
 			}
 		case s.Name == sectionPDI || strings.HasPrefix(s.Name, sectionPDI+"."):
-			b, err := s.Data()
+			b, err := sectionData(data, s)
 			if err != nil {
 				return nil, err
 			}
@@ -197,7 +209,7 @@ func Parse(data []byte) (*File, error) {
 			ms := ef.Sections[m]
 			switch {
 			case strings.HasPrefix(ms.Name, sectionCtrlText):
-				if in.Ctrl, err = ms.Data(); err != nil {
+				if in.Ctrl, err = sectionData(data, ms); err != nil {
 					return nil, err
 				}
 				ctrl = m

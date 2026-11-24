@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -202,6 +203,9 @@ type Pipeline struct {
 	checked map[string]bool
 	// iron runs an IRON export (AMD's NPU); nil for one of Convert
 	iron *ironPipe
+	// mods are the modulation rows of each step (sigma, next) made so far (modulations)
+	modsMu sync.Mutex
+	mods   map[[2]float64][]float32
 }
 
 // Open reads the export in dir for pictures of w x h, running its programs on dev: one of Convert
@@ -448,15 +452,30 @@ func (p *Pipeline) Encode(ctx context.Context, prompt string) (Cond, error) {
 }
 
 // modulations are the modulation rows of each step of sigmas (a step from sigmas[i] to
-// sigmas[i+1]): the time file's weights are read for them and dropped after.
+// sigmas[i+1]). Each step's are kept (a few hundred KB): the time file is opened only for a step
+// not made before, as a picture of the same steps as the last takes none.
 func (p *Pipeline) modulations(sigmas []float64) ([][]float32, error) {
-	te, err := readTimeFile(filepath.Join(p.dir, TimeFile), p.m.Dit.Hidden, p.m.Dit.TimeIn)
-	if err != nil {
-		return nil, err
+	p.modsMu.Lock()
+	defer p.modsMu.Unlock()
+	if p.mods == nil {
+		p.mods = map[[2]float64][]float32{}
 	}
+	var te *timeEmbed
 	out := make([][]float32, len(sigmas)-1)
 	for i := range out {
+		k := [2]float64{sigmas[i], sigmas[i+1]}
+		if out[i] = p.mods[k]; out[i] != nil {
+			continue
+		}
+		if te == nil {
+			var err error
+			if te, err = readTimeFile(filepath.Join(p.dir, TimeFile), p.m.Dit.Hidden, p.m.Dit.TimeIn); err != nil {
+				return nil, err
+			}
+			defer te.close()
+		}
 		out[i] = te.modulation(sigmas[i], sigmas[i+1])
+		p.mods[k] = out[i]
 	}
 	return out, nil
 }
