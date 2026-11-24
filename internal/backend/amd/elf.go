@@ -8,6 +8,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/aieelf"
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/ert"
+	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/types"
 	"github.com/shibukawa/hwnpu/internal/xdna"
 )
@@ -27,6 +28,9 @@ type elfProgram struct {
 	syncobj uint32
 	pdis    map[string]*buffer
 	infos   []types.KernelInfo
+	// mapping is the ELF file mapped, which file's PDIs and control code are in; nil when the
+	// ELF was given as bytes
+	mapping *mapped.File
 }
 
 func (d *device) loadELF(data []byte) (backend.Program, error) {
@@ -101,6 +105,11 @@ func (p *elfProgram) Close() error {
 		errs = append(errs, b.Close())
 	}
 	p.pdis = nil
+	if p.mapping != nil {
+		p.file = nil
+		errs = append(errs, p.mapping.Close())
+		p.mapping = nil
+	}
 	return errors.Join(errs...)
 }
 

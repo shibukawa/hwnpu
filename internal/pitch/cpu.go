@@ -59,11 +59,13 @@ func OpenCPU(model string, threads int) (*Detector, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := onnxrt.ReadModel(model)
+	f, err := onnxrt.ReadModel(model)
 	if err != nil {
 		return nil, err
 	}
-	if raw, err = onnxrt.Cut(raw, []string{feat}, []string{pit, voice}); err != nil {
+	raw, err := onnxrt.Cut(f.Bytes(), []string{feat}, []string{pit, voice})
+	f.Close()
+	if err != nil {
 		return nil, err
 	}
 	rt, err := onnxrt.Load()

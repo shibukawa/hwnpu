@@ -326,11 +326,21 @@ func TestMockPowerPolicy(t *testing.T) {
 // Acceptance requirement:compile-cache/reuse and /invalidate (Intel).
 func TestMockCompileCache(t *testing.T) {
 	dir := t.TempDir()
+	// the IR in a folder of its own, its weights made unreadable after the first compile
+	ir := t.TempDir()
+	for _, ext := range []string{".xml", ".bin"} {
+		b, err := os.ReadFile("internal/fixtures/openvino/affine_relu" + ext)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.WriteFile(filepath.Join(ir, "affine_relu"+ext), b, 0o644)
+	}
+	weights := filepath.Join(ir, "affine_relu.bin")
 	dev := openMock(t, hwnpu.WithCacheDir(dir))
 	gr, _ := dev.Graph()
 	compile := func(flags string) *hwnpu.Graph {
 		t.Helper()
-		g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: "internal/fixtures/openvino/affine_relu.xml", BuildFlags: flags})
+		g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: filepath.Join(ir, "affine_relu.xml"), BuildFlags: flags})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -355,7 +365,10 @@ func TestMockCompileCache(t *testing.T) {
 		t.Fatalf("cache entries: %v", entries)
 	}
 
+	// a cached blob is loaded without reading the weights (their digest is kept in the cache)
+	os.Chmod(weights, 0)
 	g = compile("")
+	os.Chmod(weights, 0o644)
 	if !g.Cached() || mockInt(t, "zemock_creates", 2) != irBefore+1 || mockInt(t, "zemock_creates", 1) != nativeBefore+1 {
 		t.Fatal("second compile should load the cached blob")
 	}

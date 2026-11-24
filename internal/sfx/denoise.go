@@ -32,8 +32,15 @@ type Timing struct {
 }
 
 // LoadTiming reads HostTensors (named without the "dit." prefix the programs' weights have).
+// The tables are only read: weights that can map them (Weights.Mapped) give them without a copy
+// (69 MB of float32 in an export's tables).
 func LoadTiming(w llm.Weights, prefix string) (*Timing, error) {
 	get := func(name string) ([]float32, error) {
+		if m, ok := w.(interface {
+			Mapped(string) ([]float32, error)
+		}); ok {
+			return m.Mapped(prefix + name)
+		}
 		v, _, err := w.Get(prefix + name)
 		return v, err
 	}

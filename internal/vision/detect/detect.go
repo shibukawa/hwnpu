@@ -271,7 +271,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, program string) (*Detector, er
 // OpenCPU loads the ONNX file (Prepare's model) into ONNX Runtime on threads threads of the CPU
 // (0 or 1: the calling thread), the graph up to the heads as the program has it.
 func OpenCPU(model string, threads int) (*Detector, error) {
-	g, err := onnx.Load(model)
+	g, err := onnx.LoadLazy(model) // ONNX Runtime holds the weights; the graph is for its heads
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +283,8 @@ func OpenCPU(model string, threads int) (*Detector, error) {
 	if err != nil {
 		return nil, err
 	}
-	prog, err := onnxrt.OpenProgram(b, p, threads)
+	defer b.Close()
+	prog, err := onnxrt.OpenProgram(b.Bytes(), p, threads)
 	if err != nil {
 		return nil, err
 	}

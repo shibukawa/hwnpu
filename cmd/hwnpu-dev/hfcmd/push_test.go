@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -140,19 +142,25 @@ func TestPush(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// the version written: it goes as v1
-	os.WriteFile(defs, []byte("version: 1\nhub: {push: me}\nmodels:\n  whisper-large-v3-turbo:\n    targets: {amd-xdna2: {version: 1}}\n    machine: 8\n"+noPin), 0o644)
+	// the version written (the recipe's, models.whisper-large-v3-turbo.amd.version): it goes as vN
+	rf, err := recipe.Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm, _ := rf.AMDOf("whisper-large-v3-turbo")
+	v := fmt.Sprintf("v%d", rm.Version)
+	os.WriteFile(defs, []byte(fmt.Sprintf("version: 1\nhub: {push: me}\nmodels:\n  whisper-large-v3-turbo:\n    targets: {amd-xdna2: {version: %d}}\n    machine: 8\n", rm.Version)+noPin), 0o644)
 	c := &devopt.Defs{Models: defs}
 	if err := (PushCmd{Sel: []string{"whisper-large-v3-turbo/amd-xdna2"}, Write: defs}).Run(c); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(hub.dir, "me/whisper-large-v3-turbo/amd-xdna2/whisper-large-v3-turbo.amd-npu2/v1/entry.json"))
+	b, _ := os.ReadFile(filepath.Join(hub.dir, "me/whisper-large-v3-turbo/amd-xdna2/whisper-large-v3-turbo.amd-npu2/"+v+"/entry.json"))
 	var e shared.Entry
-	if err := json.Unmarshal(b, &e); err != nil || e.Version != 1 || e.Pack == nil {
+	if err := json.Unmarshal(b, &e); err != nil || e.Version != rm.Version || e.Pack == nil {
 		t.Fatalf("on the hub: %s %v", b, err)
 	}
 	for _, f := range []string{"config.json", "README.md", e.Pack.Path} {
-		if _, err := os.Stat(filepath.Join(hub.dir, "me/whisper-large-v3-turbo", "amd-xdna2/whisper-large-v3-turbo.amd-npu2/v1", f)); err != nil && f == e.Pack.Path {
+		if _, err := os.Stat(filepath.Join(hub.dir, "me/whisper-large-v3-turbo", "amd-xdna2/whisper-large-v3-turbo.amd-npu2/"+v, f)); err != nil && f == e.Pack.Path {
 			t.Error(err)
 		}
 		if _, err := os.Stat(filepath.Join(hub.dir, "me/whisper-large-v3-turbo", f)); err != nil && f != e.Pack.Path {

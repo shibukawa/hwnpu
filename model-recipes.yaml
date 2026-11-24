@@ -46,6 +46,8 @@
 #     code      the Go packages that write its programs, after apple's code (a change of them
 #               is a change of the version, as amd's tools); !FILE leaves out a file of them
 #               only a run reads (experts' host.go, lfm3vl's preprocess.go)
+#     finish    what the build does to its Core AI exports once converted, as amd's finish
+#               (their tokenizer files made binary); a model without one leaves them as they are
 #     convert   the values its conversion is made with, by their names in its code
 #               (text_group, qchunk): what the code took as constants before. What a run reads
 #               too stays in models.yaml (npu.apple's sizes and formats)
@@ -64,6 +66,13 @@
 #               models.yaml's amd_export and hwnpu's code before (2026-11-23), copied as v1
 #     generations, extra  as amd's, over them (extra: after them)
 #     skip      generations the export is not made for: {generation, why, checked}
+#     finish    what the build does to the export once its script has made it, in order, each
+#               step one of (internal/finish):
+#                 tokenizer: [FILES]  the tokenizer files of the export (paths in it) written
+#                             as their binary files (tokenizer.tok), which the runtime maps,
+#                             and removed. An export that holds a tokenizer file its finish
+#                             does not name stops the build. A change of it is one of the
+#                             recipe (raise version)
 #   For iron_export_lm.py the args but {in} and {out} name the export (-q4, -p16) and key it in
 #   the sources; for the others the code's version (ExportVersion) keys it, and for
 #   iron_flux2klein.py, iron_flux3klein.py and iron_moss_sfx.py the args too
@@ -88,7 +97,9 @@ amd:
 models:
   FLUX.2-klein-4B:
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/tokenizer.json]}]
       # one export of every size of models.yaml npu.amd
       script: iron_flux2klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
@@ -110,7 +121,9 @@ models:
           checked: 2026-11-22
   MOSS-SoundEffect-v2.0: &moss
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer/tokenizer.json]}]
       # an export of each text encoder's format (sfx.Formats: fp16 on 16 GB, lut8 on 8 GB)
       script: iron_moss_sfx.py
       args: ["{in}", "{out}", --text, "{text}"]
@@ -143,7 +156,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [lfm3, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: &lm-extra
@@ -154,7 +169,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go"]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [lfm3vl, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
@@ -163,7 +180,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [lfm3audio, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
@@ -172,7 +191,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [lfm3omni, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
@@ -181,7 +202,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
@@ -190,7 +213,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
@@ -199,7 +224,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
@@ -208,7 +235,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
       extra: *lm-extra
@@ -217,7 +246,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
       extra: *lm-extra
@@ -226,7 +257,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       # 16 GB: 16 of each layer's 32 experts in places, the decode step routed on the host; every expert from 24 GB
       script: iron_export_lm.py
       args: [gptoss, "{in}", "{out}", --max-seq-len, "8192", --prefill-chunk, "256", --expert-places, "16", --host-route]
@@ -238,7 +271,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       # 32 places a layer on 16 GB, 128 on 24 GB, every expert from 48 GB
       script: iron_export_lm.py
       args: [qwen35moe, "{in}", "{out}", --max-seq-len, "4096", --prefill-chunk, "256", --q4, --expert-places, "32"]
@@ -251,7 +286,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.jsonl]}]
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
@@ -260,7 +297,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.jsonl]}]
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
@@ -269,7 +308,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.jsonl]}]
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
@@ -278,7 +319,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [d1, "{in}", "{out}", --max-seq-len, "1024", --prefill-chunk, "1024", --q4]
       extra: *lm-extra
@@ -287,7 +330,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_export_lm.py
       args: [d1omni, "{in}", "{out}", --max-seq-len, "1024", --prefill-chunk, "1024", --q4]
       extra: *lm-extra
@@ -299,7 +344,9 @@ models:
       # a lut's values by k-means over the weights' range (the format is the architecture's, lut8)
       convert: {quant: kmeans-minmax}
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_whisper.py
       args: ["{in}", "{out}"]
   LFM3-Audio-2B-TTS:
@@ -307,7 +354,9 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio, internal/llm/lfm3gen, internal/speech]
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json, text/tokenizer.json]}]
       script: iron_lfm3speech.py
       args: ["{in}", "{out}"]
   supertonic-3:
@@ -332,7 +381,9 @@ models:
       args: ["{in}", "{out}"]
   flux-3-image-klein:
     apple:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/imagegen/flux3klein, internal/imagegen/flux3klein/mil, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
       # lut8: Qwen3-VL's attention sinks came out NaN at int8 on the Neural Engine, and per-row
       # int8 overflows on large outputs; a program: 4 of Qwen3-VL's layers (0.4 GB at 8 bits), 5
@@ -343,12 +394,16 @@ models:
         text_group: 4
         single_group: 5
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/tokenizer.json]}]
       script: iron_flux3klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
   Anima-Aesthetic: &anima-amd
     apple:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
       code: [internal/imagegen/anima, internal/imagegen/anima/mil, internal/imagegen/milpart]
       # int8 both: the text's 1.0 GB at fp16 is over a program's limit, and the DiT is as fast at
       # int8 as at fp16 and nearer it than lut8; 4 DiT blocks a program; 512 queries an
@@ -359,7 +414,9 @@ models:
         group: 4
         qchunk: 512
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
       # {in} the folder of both repositories' files (diffusion_models/, text_encoders/, vae/,
       # diffusers/), {dit} the model's file
       script: iron_anima.py
@@ -390,12 +447,16 @@ models:
   moge-2-vitl: *moge-amd
   siglip2-base-patch16-224: &siglip-amd
     apple:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/vision/siglip, internal/vision/siglip/mil, internal/imagegen/milpart]
       # the two towers in fp16
       convert: {format: fp16}
     amd:
-      version: 1
+      version: 2
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [text/tokenizer.json]}]
       script: iron_siglip2.py
       args: ["{in}", "{out}"]
   siglip2-large-patch16-256: *siglip-amd

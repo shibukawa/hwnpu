@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/onnx"
 	"github.com/shibukawa/hwnpu/internal/tflite"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -26,7 +27,8 @@ type Styler struct {
 	text, music             *step
 	sp                      *tokenizer.Unigram
 	patches                 []int32
-	table                   []float32 // the text encoder's embeddings
+	table                   []byte // the text encoder's embeddings, fp16 rows of tableFile
+	tableFile               *mapped.File
 	mapper, prep, quantizer *tflite.Model
 }
 
@@ -39,12 +41,14 @@ func OpenStyler(ctx context.Context, dev *hwnpu.Device, p Paths) (*Styler, error
 		if s.sp, err = tokenizer.LoadSentencePieceUnigram(p.SPM); err != nil {
 			return nil, err
 		}
-		raw, err := os.ReadFile(p.TextTable)
-		if err != nil {
+		// mapped, kept fp16: a text takes 128 of its 16000 rows (textFeed)
+		if s.tableFile, err = mapped.Open(p.TextTable); err != nil {
 			return nil, err
 		}
-		s.table = make([]float32, len(raw)/2)
-		hwnpu.DecodeF16(s.table, raw)
+		if s.table = s.tableFile.Bytes(); len(s.table) != 2*textVocab*StyleDim {
+			s.Close()
+			return nil, fmt.Errorf("music: %s is not %d rows of %d fp16 values", p.TextTable, textVocab, StyleDim)
+		}
 		if s.text, err = openStep(ctx, dev, p.TextProgram); err != nil {
 			return nil, err
 		}
@@ -81,13 +85,17 @@ func (s *Styler) Close() error {
 			st.Close()
 		}
 	}
+	s.table = nil
+	s.tableFile.Close()
 	return nil
 }
 
 func (s *Styler) host(m **tflite.Model, path string) (*tflite.Model, error) {
 	if *m == nil {
 		var err error
-		if *m, err = tflite.Load(path); err != nil {
+		// the weights stay in the file, read by each node as it runs: not 5 to 6 times the
+		// file's size in float64 while the styler is kept
+		if *m, err = tflite.LoadLazy(path); err != nil {
 			return nil, err
 		}
 	}

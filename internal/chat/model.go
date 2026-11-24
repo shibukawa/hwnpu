@@ -383,10 +383,16 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		// for the few a model accepts (LFM2-8B-A1B: 13 of 95, 2.3 tokens/s against 15)
 		s.Draft = 1
 	}
-	for _, f := range TokenizerFiles(a.Name) {
+	// the tokenizer as its binary file (PrepareTokenizer: from the sources, or made here from
+	// the checkpoint's), the files beside it as they are (Qwen3.6's chat template)
+	files := TokenizerFiles(a.Name)
+	for _, f := range files[1:] {
 		if _, err := fetch(ctx, s.Repo, f, s.Log); err != nil {
 			return Config{}, err
 		}
+	}
+	if c.Tokenizer, err = PrepareTokenizer(ctx, s.Repo, files[0], s.Log); err != nil {
+		return Config{}, err
 	}
 	// the checkpoint is downloaded only when a program or the tables are to be written from it:
 	// what was converted runs without it (tables.go)
@@ -774,7 +780,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		// Core AI's drafts are of a part of the vocabulary (draftVocab), listed in the export
 		var rows []int32
 		if backend == llm.BackendCoreAI {
-			tok, err := tokenizer.Load(filepath.Join(src, TokenizerFiles(a.Name)[0]))
+			tok, err := tokenizer.Load(c.Tokenizer)
 			if err != nil {
 				return Config{}, err
 			}

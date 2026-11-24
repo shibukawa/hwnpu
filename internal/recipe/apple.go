@@ -54,11 +54,18 @@ func (f *File) AppleCode(model string) []string {
 	return out
 }
 
-// AppleFingerprint is the SHA-256 (hex) of model's apple.convert: what changes its exports'
-// programs. Not its prebuild rules, archs and jobs (which programs are prebuilt, not what they
+// AppleFingerprint is the SHA-256 (hex) of model's apple.convert and finish: what changes its
+// exports' programs and files. Not its prebuild rules, archs and jobs (which programs are prebuilt, not what they
 // are) or its rewrites (in the names of the exports they change).
 func (f *File) AppleFingerprint(model string) string {
 	b, _ := json.Marshal(f.ConvertOf(model)) // a map's keys in order
+	if fin := f.AppleFinish(model); len(fin) > 0 {
+		b, _ = json.Marshal(struct {
+			Convert Convert
+			Finish  []Step
+			Steps   map[string]int
+		}{f.ConvertOf(model), fin, finishVersions(fin)})
+	}
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }

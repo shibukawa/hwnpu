@@ -118,7 +118,7 @@ func TestRunIRONStaleDone(t *testing.T) {
 	os.WriteFile(out+".done", nil, 0o644)
 	// "python" writes the export: $1 is the script, $2 the directory it writes
 	python := []string{"/bin/sh", "-c", `mkdir -p "$2" && printf new > "$2/f"`, "sh"}
-	if err := RunIRON(context.Background(), python, "m", "iron_export_lm.py", []string{ExportOut}, out, io.Discard); err != nil {
+	if err := RunIRON(context.Background(), python, "m", "iron_export_lm.py", []string{ExportOut}, out, io.Discard, nil); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(out, "f")); string(b) != "new" {

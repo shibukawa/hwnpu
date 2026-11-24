@@ -26,3 +26,8 @@ var haveF16 = false
 func f32ToF16Kernel(dst []byte, src []float32) int { return 0 }
 
 func f16ToF32Kernel(dst []float32, src []byte) int { return 0 }
+
+const haveLUTRows = false
+
+func lutRowsKernel(acc *[16]float32, x *float32, n int, idx *byte, rows *[16]int32, off *[16]int32, table *float32) {
+}

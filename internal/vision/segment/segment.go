@@ -171,7 +171,8 @@ func OpenCPU(encoder, decoder string, threads int) (*Model, error) {
 		if err != nil {
 			return nil, err
 		}
-		s, err := r.Open(raw, onnxrt.Options{Threads: threads})
+		s, err := r.Open(raw.Bytes(), onnxrt.Options{Threads: threads})
+		raw.Close()
 		if err != nil {
 			return nil, err
 		}

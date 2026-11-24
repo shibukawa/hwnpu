@@ -5,6 +5,7 @@ import (
 	"container/heap"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -15,9 +16,21 @@ import (
 // outside the vocabulary becoming the byte tokens of its UTF-8 encoding, and pairs merge by
 // rank, the lowest first and the leftmost on a tie, as the tokenizers library's Word does.
 type fallback struct {
-	merges map[[2]int32]merge
-	byteID [256]int32
-	byteOf map[int32]byte
+	merges  *pairTable // pairs of ids → rank and the id they make
+	byteID  [256]int32 // the id each byte falls back to
+	byteTok [256]int32 // the id of each byte's token <0xNN>, -1 where a character stands for it
+	byteOf  map[int32]byte
+}
+
+// newFallback is the fallback of merges and the byte tokens (byteTok).
+func newFallback(merges *pairTable, byteID, byteTok [256]int32) *fallback {
+	fb := &fallback{merges: merges, byteID: byteID, byteTok: byteTok, byteOf: map[int32]byte{}}
+	for b, id := range byteTok {
+		if id >= 0 {
+			fb.byteOf[id] = byte(b)
+		}
+	}
+	return fb
 }
 
 type merge struct {
@@ -64,33 +77,36 @@ func parseFallback(raw []byte, f *file) (*Tokenizer, error) {
 	}
 
 	t := newTokenizer(f)
-	fb := &fallback{merges: map[[2]int32]merge{}, byteOf: map[int32]byte{}}
+	vocab := f.Model.Vocab
+	var byteID, byteTok [256]int32
 	for b := 0; b < 256; b++ {
-		id, ok := t.vocab[fmt.Sprintf("<0x%02X>", b)]
+		byteTok[b] = -1
+		id, ok := vocab[fmt.Sprintf("<0x%02X>", b)]
 		if !ok {
 			// Gemma 2's vocabulary has "\t" and no <0x09>: a byte that is a character of
 			// the vocabulary never falls back, as encode looks the character up first
-			if c, single := t.vocab[string(rune(b))]; b < 0x80 && single {
-				fb.byteID[b] = c
+			if c, single := vocab[string(rune(b))]; b < 0x80 && single {
+				byteID[b] = c
 				continue
 			}
 			return nil, fmt.Errorf("byte fallback without the byte token <0x%02X>", b)
 		}
-		fb.byteID[b], fb.byteOf[id] = id, byte(b)
+		byteID[b], byteTok[b] = id, id
 	}
+	merges := map[[2]int32]merge{}
 	// add notes the merge of pair at rank, unless first finds the pair already there.
 	var joined []byte
 	add := func(pair [2]string, rank int, first bool) error {
-		a, okA := t.vocab[pair[0]]
-		b, okB := t.vocab[pair[1]]
+		a, okA := vocab[pair[0]]
+		b, okB := vocab[pair[1]]
 		joined = append(append(joined[:0], pair[0]...), pair[1]...)
-		id, okM := t.vocab[string(joined)]
+		id, okM := vocab[string(joined)]
 		if !okA || !okB || !okM {
 			return fmt.Errorf("merge %q %q is not in the vocabulary", pair[0], pair[1])
 		}
 		key := [2]int32{a, b}
-		if _, dup := fb.merges[key]; !dup || !first {
-			fb.merges[key] = merge{rank, id}
+		if _, dup := merges[key]; !dup || !first {
+			merges[key] = merge{rank, id}
 		}
 		return nil
 	}
@@ -99,8 +115,8 @@ func parseFallback(raw []byte, f *file) (*Tokenizer, error) {
 	// pair of ids only when they are the same strings. That needs every id to be of one token.
 	direct := f.pairs != nil
 	if direct {
-		seen := make([]bool, len(t.tokens))
-		for _, id := range t.vocab {
+		seen := make([]bool, t.tokens.n())
+		for _, id := range vocab {
 			if id < 0 || seen[id] {
 				direct = false
 				break
@@ -109,24 +125,35 @@ func parseFallback(raw []byte, f *file) (*Tokenizer, error) {
 		}
 	}
 	if direct {
-		fb.merges = make(map[[2]int32]merge, len(f.pairs))
+		merges = make(map[[2]int32]merge, len(f.pairs))
 		for rank, pair := range f.pairs {
 			if err := add(pair, rank, true); err != nil {
 				return nil, err
 			}
 		}
 	} else {
-		if err := t.readMerges(f); err != nil {
+		pairs, err := pairsOf(f)
+		if err != nil {
 			return nil, err
 		}
-		for pair, rank := range t.ranks {
+		ranks := map[[2]string]int{}
+		for i, pair := range pairs {
+			if _, dup := ranks[pair]; !dup {
+				ranks[pair] = i
+			}
+		}
+		for pair, rank := range ranks {
 			if err := add(pair, rank, false); err != nil {
 				return nil, err
 			}
 		}
 	}
-	t.ranks = nil
-	t.fallback = fb
+	entries := make([]pairEntry, 0, len(merges))
+	for k, m := range merges {
+		entries = append(entries, pairEntry{k[0], k[1], int32(m.rank), m.id})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rank < entries[j].rank })
+	t.fallback = newFallback(newPairTable(entries), byteID, byteTok)
 	return t, nil
 }
 
@@ -171,7 +198,7 @@ func (fb *fallback) encode(t *Tokenizer, ids []int32, text string) []int32 {
 		if r == ' ' {
 			r = '▁'
 		}
-		if id, ok := t.vocab[string(r)]; ok {
+		if id, ok := t.vocab.find(string(r)); ok {
 			add(id)
 			continue
 		}
@@ -186,8 +213,8 @@ func (fb *fallback) encode(t *Tokenizer, ids []int32, text string) []int32 {
 		if l < 0 || syms[l].next < 0 {
 			return
 		}
-		if m, ok := fb.merges[[2]int32{syms[l].id, syms[syms[l].next].id}]; ok {
-			heap.Push(&q, fbPair{pos: l, rank: m.rank, id: m.id})
+		if rank, id, ok := fb.merges.find(syms[l].id, syms[syms[l].next].id); ok {
+			heap.Push(&q, fbPair{pos: l, rank: int(rank), id: id})
 		}
 	}
 	for i := range syms {
@@ -200,7 +227,7 @@ func (fb *fallback) encode(t *Tokenizer, ids []int32, text string) []int32 {
 			continue
 		}
 		r := &syms[l.next]
-		if m, ok := fb.merges[[2]int32{l.id, r.id}]; !ok || m.id != p.id {
+		if _, id, ok := fb.merges.find(l.id, r.id); !ok || id != p.id {
 			continue // stale: one side merged since
 		}
 		l.id, l.next, r.gone = p.id, r.next, true
@@ -230,7 +257,7 @@ func (fb *fallback) decode(t *Tokenizer, ids []int32, skipSpecial bool) string {
 		pending = pending[:0]
 	}
 	for _, id := range ids {
-		if id < 0 || int(id) >= len(t.tokens) {
+		if id < 0 || int(id) >= t.tokens.n() {
 			continue
 		}
 		if b, ok := fb.byteOf[id]; ok {
@@ -238,13 +265,13 @@ func (fb *fallback) decode(t *Tokenizer, ids []int32, skipSpecial bool) string {
 			continue
 		}
 		flush()
-		if t.special[id] {
+		if t.special[id] != 0 {
 			if !skipSpecial {
-				out.WriteString(t.tokens[id])
+				out.WriteString(t.tokens.str(int(id)))
 			}
 			continue
 		}
-		out.WriteString(strings.ReplaceAll(t.tokens[id], "▁", " "))
+		out.WriteString(strings.ReplaceAll(t.tokens.str(int(id)), "▁", " "))
 	}
 	flush()
 	return out.String()

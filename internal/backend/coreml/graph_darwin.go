@@ -183,7 +183,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 // directory owned by the graph.
 func (d *device) compiledModel(path string) (compiled string, cached bool, owned string, key string, err error) {
 	if d.opts.CacheDir != "" {
-		digest, err := cache.TreeDigest(path)
+		digest, err := cache.CachedTreeDigest(d.opts.CacheDir, path)
 		if err != nil {
 			return "", false, "", "", fmt.Errorf("coreml: %w", err)
 		}

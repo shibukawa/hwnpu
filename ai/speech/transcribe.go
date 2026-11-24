@@ -67,6 +67,7 @@ var transcribeRole = &airole.Role{
 			return f, err
 		}
 		f.Set("dir", c.Dir)
+		f.Set("tokenizer", c.Tokenizer)
 		f.Set("encoder", c.Encoder)
 		f.Set("cross", c.Cross)
 		f.Set("decoder", c.Decoder)
@@ -91,7 +92,7 @@ var transcribeRole = &airole.Role{
 					return nil, err
 				}
 			}
-			t, err = transcribe.Load(ctx, dev, transcribe.Config{Dir: f.Path("dir"), Encoder: f.Path("encoder"),
+			t, err = transcribe.Load(ctx, dev, transcribe.Config{Dir: f.Path("dir"), Tokenizer: f.Path("tokenizer"), Encoder: f.Path("encoder"),
 				Cross: f.Path("cross"), Decoder: f.Path("decoder"), Weights: f.Path("weights")})
 		}
 		if err != nil {

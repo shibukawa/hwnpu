@@ -63,6 +63,25 @@ func (w *Weights) Get(name string) ([]float32, []int, error) {
 	return nil, nil, fmt.Errorf("sfx: no tensor %s", name)
 }
 
+// Mapped is a tensor's values as Get gives them, in its safetensors file mapped (read only, valid
+// until Close) when it is stored as float32, else read as Get reads it.
+func (w *Weights) Mapped(name string) ([]float32, error) {
+	for i, f := range w.st {
+		rest, ok := strings.CutPrefix(name, w.pre[i])
+		if !ok {
+			continue
+		}
+		if _, ok := f.Lookup(rest); ok {
+			if v, ok, err := f.MapFloat32(rest); ok || err != nil {
+				return v, err
+			}
+			break
+		}
+	}
+	v, _, err := w.Get(name)
+	return v, err
+}
+
 func (w *Weights) Rows(name string, begin, end int) ([]float32, error) {
 	for i, f := range w.st {
 		rest, ok := strings.CutPrefix(name, w.pre[i])

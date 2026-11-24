@@ -15,6 +15,23 @@ func (g *Graph) Needed(outputs []string, stop map[string]bool) []*Node {
 	return g.needed(outputs, stop, nil)
 }
 
+// DecodeFor decodes for good (Tensor.Decode) the lazy initializers (LoadLazy) the nodes from the
+// values given to the outputs read: what the host evaluates again and again (Eval), the rest left
+// in the file.
+func (g *Graph) DecodeFor(given, outputs []string) {
+	stop := map[string]bool{}
+	for _, v := range given {
+		stop[v] = true
+	}
+	for _, n := range g.needed(outputs, stop, nil) {
+		for _, in := range n.In {
+			if t := g.Init[in]; t != nil {
+				t.Decode()
+			}
+		}
+	}
+}
+
 func (g *Graph) needed(outputs []string, stop map[string]bool, shapes map[string][]int) []*Node {
 	producer := map[string]int{}
 	for i, n := range g.Nodes {
@@ -106,7 +123,7 @@ func (g *Graph) EvalShapes(given map[string]*Tensor, shapes map[string][]int, ou
 			if !ok {
 				return nil, fmt.Errorf("onnx: %s %s: no value for its input %s", n.Op, n.Name, name)
 			}
-			ins[i] = v
+			ins[i] = v.Decoded() // a lazy initializer's values for this node alone
 		}
 		var outs []*Tensor
 		var err error
@@ -135,7 +152,7 @@ func (g *Graph) EvalShapes(given map[string]*Tensor, shapes map[string][]int, ou
 		if !ok {
 			return nil, fmt.Errorf("onnx: no value %s", o)
 		}
-		out[o] = v
+		out[o] = v.Decoded()
 	}
 	return out, nil
 }

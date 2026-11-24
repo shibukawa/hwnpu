@@ -1,6 +1,7 @@
 package speech
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -328,5 +329,26 @@ func TestFrames(t *testing.T) {
 	again, _ := s.Frames(context.Background(), h0, rand.New(rand.NewPCG(9, 9)), 1)
 	if fmt.Sprint(again[0]) != fmt.Sprint(frames[0]) {
 		t.Errorf("not deterministic: %v then %v", frames[0], again[0])
+	}
+}
+
+// kthLargest is the k-th of the logits sorted from the largest, ties and NaNs included.
+func TestKthLargest(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	for range 200 {
+		l := make([]float32, 1+r.IntN(300))
+		for i := range l {
+			l[i] = float32(r.IntN(40)) - 20 // many ties
+			if r.IntN(50) == 0 {
+				l[i] = float32(math.NaN())
+			}
+		}
+		sorted := slices.Clone(l)
+		slices.SortFunc(sorted, func(a, b float32) int { return cmp.Compare(b, a) })
+		k := 1 + r.IntN(len(l))
+		got, want := kthLargest(l, k), sorted[k-1]
+		if got != want && !(got != got && want != want) {
+			t.Fatalf("k %d of %d: %g, want %g", k, len(l), got, want)
+		}
 	}
 }

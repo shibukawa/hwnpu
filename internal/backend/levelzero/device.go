@@ -2,6 +2,7 @@ package levelzero
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -146,14 +147,17 @@ func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
 		return nil, fmt.Errorf("levelzero: the driver has no compiler for OpenVINO IR (install the NPU driver compiler): %w", types.ErrUnsupported)
 	}
 	xmlData, bin := src.XML, src.Bin
+	binPath := "" // the weights of a model read from a file: read only to be compiled
 	if xmlData == nil {
 		var err error
 		if xmlData, err = os.ReadFile(src.Path); err != nil {
 			return nil, err
 		}
 		if bin == nil {
-			bin, err = os.ReadFile(strings.TrimSuffix(src.Path, filepath.Ext(src.Path)) + ".bin")
-			if err != nil && !os.IsNotExist(err) {
+			binPath = strings.TrimSuffix(src.Path, filepath.Ext(src.Path)) + ".bin"
+			if _, err := os.Stat(binPath); os.IsNotExist(err) {
+				binPath = "" // an IR without weights
+			} else if err != nil {
 				return nil, err
 			}
 		}
@@ -167,7 +171,6 @@ func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
 		return nil, err
 	}
 	cv := d.entry.gprops.CompilerVersion
-	input := ovir.Serialize(cv.Major, cv.Minor, injected, bin)
 	flags := model.IOFlags(ovir.UseIndices(cv.Major, cv.Minor))
 	if src.BuildFlags != "" {
 		flags += " " + src.BuildFlags
@@ -184,7 +187,21 @@ func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
 	var key string
 	createFlags := uint32(ze.GraphFlagNone)
 	if d.opts.CacheDir != "" {
-		key = d.cacheKey(input, flags)
+		// The weights go in the key by their digest, kept in the cache by the file's size and time:
+		// a cached blob is loaded without reading them (GBs for an LLM) or copying them into the
+		// compiler's input.
+		weights := []byte("bytes:")
+		if binPath != "" {
+			sum, err := cache.CachedTreeDigest(d.opts.CacheDir, binPath)
+			if err != nil {
+				return nil, err
+			}
+			weights = append([]byte("file:"), sum...)
+		} else {
+			h := sha256.Sum256(bin)
+			weights = append(weights, h[:]...)
+		}
+		key = d.cacheKey(injected, weights, flags)
 		if blobPath, ok := cache.Lookup(d.opts.CacheDir, key, ".blob"); ok {
 			if blob, err := os.ReadFile(blobPath); err == nil {
 				if h, err := d.drv.graph.Create(d.ctx, d.entry.handle, ze.GraphFormatNative, blob, "", ze.GraphFlagNone); err == nil {
@@ -199,6 +216,13 @@ func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
 		}
 		createFlags = ze.GraphFlagDisableCache // like OpenVINO: our cache replaces the driver's
 	}
+	if binPath != "" {
+		var err error
+		if bin, err = os.ReadFile(binPath); err != nil {
+			return nil, err
+		}
+	}
+	input := ovir.Serialize(cv.Major, cv.Minor, injected, bin)
 	h, err := d.drv.graph.Create(d.ctx, d.entry.handle, ze.GraphFormatNGraphLite, input, flags, createFlags)
 	if err != nil {
 		// Ask the compiler which layers it supports, to tell unsupported operations apart from
@@ -232,12 +256,16 @@ func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
 	return d.finishGraph(h, rep, model)
 }
 
-// cacheKey covers the compiler input and everything about the driver that changes its output.
-func (d *device) cacheKey(input []byte, flags string) string {
+// cacheKey covers the compiler input (the IR as given to the compiler and a digest of its
+// weights) and everything about the driver that changes its output.
+func (d *device) cacheKey(xmlData, weights []byte, flags string) string {
 	e := d.entry
+	cv := e.gprops.CompilerVersion
 	return cache.Key(
-		[]byte("hwnpu-levelzero-v1"),
-		input,
+		[]byte("hwnpu-levelzero-v2"),
+		[]byte(fmt.Sprintf("ir=%d.%d", cv.Major, cv.Minor)), // ovir.Serialize's
+		xmlData,
+		weights,
 		[]byte(flags),
 		[]byte(fmt.Sprintf("driver=%d graph=%s compiler=%s device=%s/%#x",
 			d.drv.props.DriverVersion, ze.VersionString(d.drv.graph.Version), e.gprops.CompilerVersion,

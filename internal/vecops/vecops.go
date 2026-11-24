@@ -350,3 +350,31 @@ func F16Value(h uint16) float32 {
 	}
 	return math.Float32frombits(sign | (exp+127-15)<<23 | mant<<13)
 }
+
+// HaveLUTRows is whether LUTRows16 runs: AVX2 and FMA. The product in Go would not round as
+// sgemm's kernels do (fused), so a caller without it takes another way.
+var HaveLUTRows = haveLUTRows
+
+// LUTRows16 adds to each of 16 rows' sums the dot product of x with the row's values looked up
+// in a table: for kk in order, acc[l] = fma(x[kk], table[off[l]+idx[rows[l]+k0+kk]], acc[l]),
+// each a fused multiply-add as sgemm's kernels make. Every row offset rows[l]+k0+len(x) is at
+// most len(idx), every looked up index within table, and k0+len(x) at least 4. It needs
+// HaveLUTRows.
+func LUTRows16(acc *[16]float32, x []float32, idx []byte, rows *[16]int32, k0 int, off *[16]int32, table []float32) {
+	n := len(x)
+	if !haveLUTRows {
+		panic("vecops: LUTRows16 without AVX2 and FMA")
+	}
+	if n == 0 {
+		return
+	}
+	if k0+n < 4 {
+		panic("vecops: LUTRows16 needs k0+len(x) >= 4")
+	}
+	for _, r := range rows {
+		if r < 0 || int(r)+k0+n > len(idx) {
+			panic("vecops: LUTRows16 row out of range")
+		}
+	}
+	lutRowsKernel(acc, &x[0], n, &idx[k0], rows, off, &table[0])
+}

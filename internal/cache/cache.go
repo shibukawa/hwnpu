@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -56,14 +57,84 @@ func TreeDigest(root string) ([]byte, error) {
 	h := sha256.New()
 	for _, f := range files {
 		rel, _ := filepath.Rel(root, f)
-		data, err := os.ReadFile(f)
-		if err != nil {
+		// streamed, not read whole: a package's weights are hundreds of MB to GBs
+		if err := hashFile(h, filepath.ToSlash(rel), f); err != nil {
 			return nil, err
 		}
-		fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(rel), len(data))
-		h.Write(data)
 	}
 	return h.Sum(nil), nil
+}
+
+// hashFile writes "rel\0size\0" and the contents of f to h.
+func hashFile(h io.Writer, rel, f string) error {
+	r, err := os.Open(f)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	fi, err := r.Stat()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(h, "%s\x00%d\x00", rel, fi.Size())
+	if n, err := io.Copy(h, r); err != nil {
+		return err
+	} else if n != fi.Size() {
+		return fmt.Errorf("cache: %s changed while it was hashed", f)
+	}
+	return nil
+}
+
+// digestSuffix names an entry holding a TreeDigest (CachedTreeDigest).
+const digestSuffix = ".digest"
+
+// CachedTreeDigest is TreeDigest(root), kept in dir under a key of root's path and the sizes and
+// modification times of its files, so that a later process does not read the whole tree again
+// only to find its compiled model in the cache. A file rewritten in place with its old size and
+// modification time keeps the old digest; everything that writes a package or a weight file here
+// gives it a new modification time. root may be a file. With no dir it is TreeDigest.
+func CachedTreeDigest(dir, root string) ([]byte, error) {
+	if dir == "" {
+		return TreeDigest(root)
+	}
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	var stamp strings.Builder
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			fi, err := d.Info()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&stamp, "%s\x00%d\x00%d\n", path, fi.Size(), fi.ModTime().UnixNano())
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	key := Key([]byte("hwnpu-treedigest-v1"), []byte(root), []byte(stamp.String()))
+	if p, ok := Lookup(dir, key, digestSuffix); ok {
+		if b, err := os.ReadFile(p); err == nil && len(b) == sha256.Size {
+			return b, nil
+		}
+	}
+	sum, err := TreeDigest(root)
+	if err != nil {
+		return nil, err
+	}
+	// best effort: a digest not kept is read again next time
+	if _, err := Store(dir, key, digestSuffix, func(tmp string) error { return os.WriteFile(tmp, sum, 0o644) }); err == nil {
+		SetSource(dir, key, root)
+	}
+	return sum, nil
 }
 
 // Path returns where the entry for key with the given suffix lives.

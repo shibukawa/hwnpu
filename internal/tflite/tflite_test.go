@@ -128,3 +128,42 @@ func TestMusicCoCa(t *testing.T) {
 		}
 	}
 }
+
+// LoadLazy's graph of MusicCoCa's mapper (HWNPU_TEST_MUSICCOCA_DIR) gives Load's values, to the
+// bit, its weights left in the file.
+func TestLoadLazy(t *testing.T) {
+	dir := os.Getenv("HWNPU_TEST_MUSICCOCA_DIR")
+	if dir == "" {
+		t.Skip("HWNPU_TEST_MUSICCOCA_DIR is not set")
+	}
+	path := filepath.Join(dir, "mapper.tflite")
+	eager, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazy, err := LoadLazy(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, v := range lazy.Graph.Init {
+		if v.Lazy() {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("no lazy weight")
+	}
+	in := make([]float32, 768)
+	for i := range in {
+		in[i] = float32(math.Sin(float64(i)))
+	}
+	want := run(t, eager, tensor(in, onnx.Float, 1, 768), tensor(in, onnx.Float, 1, 768))
+	got := run(t, lazy, tensor(in, onnx.Float, 1, 768), tensor(in, onnx.Float, 1, 768))
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("value %d: %v, not %v", i, got[i], want[i])
+		}
+	}
+	t.Logf("%d lazy weights, %d values the same", n, len(want))
+}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -142,8 +143,8 @@ func TestSharedExport(t *testing.T) {
 		{"no version", "", "v0-", false},
 		{"version", "    targets: {amd-xdna2: {version: 3}}\n", "v3", true},
 		{"develop", "    targets: {amd-xdna2: {version: 3}}\n    develop: true\n", "v3-", false},
-		// the version of its recipe (model-recipes.yaml: LFM3-1.7B's is 1)
-		{"recipe", "", "v1", true},
+		// the version of its recipe (model-recipes.yaml models.LFM3-1.7B.amd.version)
+		{"recipe", "", lfm3RecipeDir(t), true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			share := filepath.Join(share, strings.ReplaceAll(c.name, " ", "-"))
@@ -167,7 +168,7 @@ func TestSharedExport(t *testing.T) {
 				t.Fatalf("built %d", built)
 			}
 			es, _ := shared.ListEntries(ctx, shared.Sources()[0])
-			if len(es) != 1 || !strings.HasPrefix(es[0], "converted/"+name+"/amd-xdna2/"+name+".amd-npu2/"+c.dir) || (c.dir == "v3" || c.dir == "v1") && !strings.HasSuffix(es[0], "/"+c.dir) {
+			if len(es) != 1 || !strings.HasPrefix(es[0], "converted/"+name+"/amd-xdna2/"+name+".amd-npu2/"+c.dir) || (c.dir == "v3" || c.name == "recipe") && !strings.HasSuffix(es[0], "/"+c.dir) {
 				t.Fatalf("entries %v", es)
 			}
 			t.Setenv(cache.RootEnv, t.TempDir()) // another machine
@@ -579,4 +580,15 @@ func TestFindExportPinned(t *testing.T) {
 	if d := cache.FindExport(name, have); d != "" {
 		t.Errorf("an export of other bytes than the pin's found: %s", d)
 	}
+}
+
+// lfm3RecipeDir is the sources' folder of LFM3-1.7B's export for AMD's NPU: vN, its recipe's
+// version.
+func lfm3RecipeDir(t *testing.T) string {
+	f, err := recipe.Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := f.AMDOf("LFM3-1.7B")
+	return fmt.Sprintf("v%d", m.Version)
 }

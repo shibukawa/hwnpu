@@ -266,7 +266,7 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 // output.
 func (r *Reader) cpuProgram(model, name string, shape []int) (runner.Program, error) {
 	t0 := time.Now()
-	g, err := onnx.Load(model)
+	g, err := onnx.LoadLazy(model) // ONNX Runtime holds the weights
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,8 @@ func (r *Reader) cpuProgram(model, name string, shape []int) (runner.Program, er
 	if err != nil {
 		return nil, err
 	}
-	p, err := onnxrt.OpenProgram(raw, NewProgram(g, shape), r.s.Threads)
+	defer raw.Close()
+	p, err := onnxrt.OpenProgram(raw.Bytes(), NewProgram(g, shape), r.s.Threads)
 	if err != nil {
 		return nil, fmt.Errorf("ocr: %s: %w", name, err)
 	}

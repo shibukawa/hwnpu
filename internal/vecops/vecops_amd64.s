@@ -539,3 +539,84 @@ floop:
 	SETNE  nan+24(FP)
 	VZEROUPPER
 	RET
+
+DATA lowbyte<>+0(SB)/4, $0xff
+GLOBL lowbyte<>(SB), RODATA|NOPTR, $4
+
+// One element of the 16 rows: the low bytes of Y7 (rows 0-7) and Y8 (8-15) are the indices,
+// offset by the rows' tables (Y4, Y5), the looked up values times x (BX) are added to Y0 and
+// Y1, and the next bytes shifted down.
+#define LUTSTEP \
+	VPAND        Y6, Y7, Y9 \
+	VPADDD       Y4, Y9, Y9 \
+	VPAND        Y6, Y8, Y10 \
+	VPADDD       Y5, Y10, Y10 \
+	VPCMPEQD     Y13, Y13, Y13 \
+	VGATHERDPS   Y13, (DX)(Y9*4), Y11 \
+	VPCMPEQD     Y13, Y13, Y13 \
+	VGATHERDPS   Y13, (DX)(Y10*4), Y12 \
+	VBROADCASTSS (BX), Y14 \
+	ADDQ         $4, BX \
+	VFMADD231PS  Y14, Y11, Y0 \
+	VFMADD231PS  Y14, Y12, Y1 \
+	VPSRLD       $8, Y7, Y7 \
+	VPSRLD       $8, Y8, Y8
+
+// The next 4 bytes of the 16 rows (row offsets Y2, Y3 from SI) into Y7 and Y8.
+#define LUTLOAD \
+	VPCMPEQD   Y13, Y13, Y13 \
+	VPGATHERDD Y13, (SI)(Y2*1), Y7 \
+	VPCMPEQD   Y13, Y13, Y13 \
+	VPGATHERDD Y13, (SI)(Y3*1), Y8
+
+// func lutRowsAVX2(acc *[16]float32, x *float32, n int, idx *byte, rows *[16]int32, off *[16]int32, table *float32)
+// The rows' bytes are read 4 at a time (a gather of dwords); the last 1-3 from the dword that
+// ends at the last byte, shifted (so nothing past the rows is read).
+TEXT ·lutRowsAVX2(SB), NOSPLIT, $0-56
+	MOVQ acc+0(FP), DI
+	MOVQ x+8(FP), BX
+	MOVQ n+16(FP), CX
+	MOVQ idx+24(FP), SI
+	MOVQ rows+32(FP), AX
+	MOVQ off+40(FP), R8
+	MOVQ table+48(FP), DX
+	VMOVUPS      0(DI), Y0
+	VMOVUPS      32(DI), Y1
+	VMOVDQU      0(AX), Y2
+	VMOVDQU      32(AX), Y3
+	VMOVDQU      0(R8), Y4
+	VMOVDQU      32(R8), Y5
+	VPBROADCASTD lowbyte<>(SB), Y6
+	MOVQ CX, R9
+	SHRQ $2, R9
+	JZ   luttail
+lutloop:
+	LUTLOAD
+	LUTSTEP
+	LUTSTEP
+	LUTSTEP
+	LUTSTEP
+	ADDQ $4, SI
+	DECQ R9
+	JNZ  lutloop
+luttail:
+	ANDQ $3, CX
+	JZ   lutdone
+	// the dword ending at the last byte: 4-CX bytes back, those shifted out
+	MOVQ $4, R10
+	SUBQ CX, R10
+	SUBQ R10, SI
+	LUTLOAD
+	SHLQ  $3, R10
+	MOVQ  R10, X15
+	VPSRLD X15, Y7, Y7
+	VPSRLD X15, Y8, Y8
+luttailloop:
+	LUTSTEP
+	DECQ CX
+	JNZ  luttailloop
+lutdone:
+	VMOVUPS Y0, 0(DI)
+	VMOVUPS Y1, 32(DI)
+	VZEROUPPER
+	RET

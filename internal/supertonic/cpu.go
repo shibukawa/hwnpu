@@ -35,7 +35,9 @@ func OpenCPU(dir string, threads int) (Stages, error) {
 			s.Close()
 			return nil, err
 		}
-		if *g.out, err = rt.Open(raw, onnxrt.Options{Threads: threads}); err != nil {
+		*g.out, err = rt.Open(raw.Bytes(), onnxrt.Options{Threads: threads})
+		raw.Close()
+		if err != nil {
 			s.Close()
 			return nil, fmt.Errorf("supertonic: %s: %w", g.file, err)
 		}

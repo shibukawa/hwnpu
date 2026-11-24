@@ -30,10 +30,19 @@ var timeTensors = []string{
 	"dit.norm_out.linear.weight",
 }
 
-// timeEmbed is the timesteps' embeddings and the modulations on the host.
+// timeEmbed is the timesteps' embeddings and the modulations on the host. The weights are the
+// file's bf16 values, mapped where the system maps files and decoded as they are multiplied: 305
+// MB that were 610 MB of float32 for each picture.
 type timeEmbed struct {
 	E, In int
-	w     [][]float32
+	w     [][]byte // bf16 rows, of f
+	f     *safetensors.File
+}
+
+// close lets the file go.
+func (e *timeEmbed) close() {
+	e.w = nil
+	e.f.Close()
 }
 
 func writeTimeFile(path string, w *mil.Weights) error {
@@ -56,20 +65,26 @@ func readTimeFile(path string, E, timeIn int) (*timeEmbed, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	e := &timeEmbed{E: E, In: timeIn}
+	e := &timeEmbed{E: E, In: timeIn, f: f}
 	outs := []int{E, E, E, E, 3 * E, 3 * E, 3 * E, 3 * E, 2 * E}
 	for i, n := range timeTensors {
-		v, err := f.Float32(n)
+		t, ok := f.Lookup(n)
+		if !ok || t.DType != "BF16" {
+			e.close()
+			return nil, fmt.Errorf("flux3klein: %s: no bf16 tensor %s", path, n)
+		}
+		v, err := f.Map(n)
 		if err != nil {
+			e.close()
 			return nil, err
 		}
 		in := E
 		if i == 0 || i == 2 {
 			in = timeIn
 		}
-		if len(v) != outs[i]*in {
-			return nil, fmt.Errorf("flux3klein: %s: %s holds %d values for (%d, %d)", path, n, len(v), outs[i], in)
+		if len(v) != 2*outs[i]*in {
+			e.close()
+			return nil, fmt.Errorf("flux3klein: %s: %s holds %d values for (%d, %d)", path, n, len(v)/2, outs[i], in)
 		}
 		e.w = append(e.w, v)
 	}
@@ -108,10 +123,10 @@ func (e *timeEmbed) modulation(sigma, next float64) []float32 {
 	return out
 }
 
-// linear is w (out, len(x)) times x, the rows in parallel, in float64.
-func linear(w, x []float32) []float32 {
+// linear is w (out, len(x)) of bf16 values times x, the rows in parallel, in float64.
+func linear(w []byte, x []float32) []float32 {
 	in := len(x)
-	out := make([]float32, len(w)/in)
+	out := make([]float32, len(w)/2/in)
 	var wg sync.WaitGroup
 	n := runtime.GOMAXPROCS(0)
 	per := (len(out) + n - 1) / n
@@ -121,10 +136,10 @@ func linear(w, x []float32) []float32 {
 		go func() {
 			defer wg.Done()
 			for o := lo; o < hi; o++ {
-				row := w[o*in : (o+1)*in]
+				row := w[2*o*in : 2*(o+1)*in]
 				s := 0.0
 				for i, v := range x {
-					s += float64(row[i]) * float64(v)
+					s += float64(math.Float32frombits(uint32(binary.LittleEndian.Uint16(row[2*i:]))<<16)) * float64(v)
 				}
 				out[o] = float32(s)
 			}

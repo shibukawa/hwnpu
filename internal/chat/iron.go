@@ -443,9 +443,8 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	tok := c.Tokenizer
 	if tok == "" {
 		tok = filepath.Join(c.IRON, "tokenizer.json")
-		if _, err := os.Stat(tok); err != nil {
-			jsonl := filepath.Join(c.IRON, "tokenizer.jsonl") // PLaMo's
-			if _, err := os.Stat(jsonl); err == nil {
+		if !tokenizer.Exists(tok) {
+			if jsonl := filepath.Join(c.IRON, "tokenizer.jsonl"); tokenizer.Exists(jsonl) { // PLaMo's
 				tok = jsonl
 			}
 		}

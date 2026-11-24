@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/whisper"
+	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
@@ -74,7 +75,7 @@ func LoadIron(ctx context.Context, dev *hwnpu.Device, dir string) (*Transcriber,
 	if err != nil {
 		return nil, err
 	}
-	t, err := newTranscriber(dir, cfg)
+	t, err := newTranscriber(dir, "", cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +87,11 @@ func LoadIron(ctx context.Context, dev *hwnpu.Device, dir string) (*Transcriber,
 		}
 	}()
 	H := m.Config.Hidden
-	if p.embed, err = os.ReadFile(filepath.Join(dir, "decoder", "embed.bin")); err != nil {
+	// mapped, not read: a token takes one row of the 133 MB
+	if p.embedFile, err = mapped.Open(filepath.Join(dir, "decoder", "embed.bin")); err != nil {
 		return nil, err
 	}
+	p.embed = p.embedFile.Bytes()
 	if p.positionRows, err = os.ReadFile(filepath.Join(dir, "decoder", "positions.bin")); err != nil {
 		return nil, err
 	}
@@ -112,7 +115,8 @@ func LoadIron(ctx context.Context, dev *hwnpu.Device, dir string) (*Transcriber,
 type ironPrograms struct {
 	m                   *IronMeta
 	enc, dec            *iron.Graph
-	embed, positionRows []byte // bf16 rows
+	embed, positionRows []byte // bf16 rows (embed of embedFile)
+	embedFile           *mapped.File
 	row                 []byte
 	logits              []float32
 	at                  int
@@ -129,6 +133,8 @@ func (p *ironPrograms) Close() error {
 			g.Close()
 		}
 	}
+	p.embed = nil
+	p.embedFile.Close()
 	return nil
 }
 

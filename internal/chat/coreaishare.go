@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
+	"github.com/shibukawa/hwnpu/internal/finish"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -46,9 +49,53 @@ func (coreAIShares) Fetch(ctx context.Context, export string) bool {
 	return fetchShared(ctx, CoreAIKind, m, r, export, r["export"])
 }
 
+// Put finishes the export made here as its model's recipe says (apple.finish: FinishCoreAI),
+// then puts it in the layers that are written.
 func (coreAIShares) Put(ctx context.Context, export string) {
+	if err := FinishCoreAI(ctx, export); err != nil {
+		fmt.Fprintf(sharedLog, "%s: %v\n", filepath.Base(export), err)
+		return
+	}
 	m, r := coreAIRecipe(ctx, export)
 	putShared(CoreAIKind, m, r, export, r["export"])
+}
+
+// FinishCoreAI does to the Core AI export made here what its model's recipe's finish says
+// (model-recipes.yaml models.NAME.apple.finish: its tokenizer files made binary), the model the
+// one of ctx (WithModel), else the one whose directory holds it. A model whose recipe gives no finish is left as it is: its
+// export may hold its tokenizer's text (FLUX.2 klein's until its next version).
+func FinishCoreAI(ctx context.Context, export string) error {
+	m, ok := ctx.Value(modelKey{}).(Model)
+	if !ok {
+		if m, _, ok = modelOfDir(export); !ok {
+			return nil
+		}
+	}
+	f, err := recipe.Builtin()
+	if err != nil {
+		return err
+	}
+	steps := f.AppleFinish(cmp.Or(m.Recipe, m.Name))
+	if len(steps) == 0 {
+		return nil
+	}
+	return finish.Run(export, steps)
+}
+
+// PutCoreAI finishes the Core AI export (FinishCoreAI) and puts it in the layers written back to
+// as the conversion of its model's recipe now (its version): hwnpu-dev sources import of an
+// export of the version before a recipe's finish, without converting it again.
+func PutCoreAI(ctx context.Context, export string) (string, error) {
+	if err := FinishCoreAI(ctx, export); err != nil {
+		return "", err
+	}
+	m, r := coreAIRecipe(ctx, export)
+	if r == nil {
+		return "", fmt.Errorf("%s: neither its model nor what it is made from is known", export)
+	}
+	p := placeOf(CoreAIKind, m, r["target"], r["export"], r)
+	putConverted(p, export, sharedLog)
+	return p.entry.Path, nil
 }
 
 // fetchShared makes dst (a directory) from the first source that has the conversion of kind of

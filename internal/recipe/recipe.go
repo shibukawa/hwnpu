@@ -50,6 +50,7 @@ type Apple struct {
 	Version  int       `yaml:"version"`
 	Code     Strings   `yaml:"code"`
 	Convert  Convert   `yaml:"convert"`
+	Finish   []Step    `yaml:"finish"`
 }
 
 // Rewrite is how the programs of the chips of Arch write an operation some Neural Engines do not
@@ -142,8 +143,8 @@ func Parse(name string, raw []byte) (*File, error) {
 	if err := f.Apple.check("apple"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
 	}
-	if f.Apple.Version != 0 || f.Apple.Convert != nil {
-		return nil, fmt.Errorf("recipe: %s: apple: version and convert are a model's (models.NAME.apple)", name)
+	if f.Apple.Version != 0 || f.Apple.Convert != nil || f.Apple.Finish != nil {
+		return nil, fmt.Errorf("recipe: %s: apple: version, convert and finish are a model's (models.NAME.apple)", name)
 	}
 	if err := f.AMD.check("amd"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
@@ -159,9 +160,15 @@ func Parse(name string, raw []byte) (*File, error) {
 			if err := a.Convert.check("models." + m + ".apple.convert"); err != nil {
 				return nil, fmt.Errorf("recipe: %s: %w", name, err)
 			}
+			if err := checkFinish("models."+m+".apple.finish", a.Finish); err != nil {
+				return nil, fmt.Errorf("recipe: %s: %w", name, err)
+			}
 		}
 		if a := f.Models[m].AMD; a != nil {
 			if err := a.check("models." + m + ".amd"); err != nil {
+				return nil, fmt.Errorf("recipe: %s: %w", name, err)
+			}
+			if err := checkFinish("models."+m+".amd.finish", a.Finish); err != nil {
 				return nil, fmt.Errorf("recipe: %s: %w", name, err)
 			}
 		}

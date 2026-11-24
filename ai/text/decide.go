@@ -82,11 +82,14 @@ var decideRole = &airole.Role{
 			f.Set("packages", c.Packages...)
 			f.Set("config", c.ModelConfig)
 			f.Set("weights", c.Weights)
+			f.Set("tokenizer", c.Tokenizer)
 			f.Set("vision", c.Vision...)
 			f.Set("audio", c.Audio...)
 			f.SetValue("name", e.Base.Name)
 		}
-		f.Set("tokenizer", ps["tokenizer"]...)
+		if t := ps["tokenizer"]; len(t) > 0 { // one converted by hand
+			f.Set("tokenizer", t...)
+		}
 		f.Set("calibration", ps["calibration"]...)
 		if v := ps["vision"]; len(v) > 0 {
 			f.Set("vision", v...)
