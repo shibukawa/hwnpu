@@ -122,6 +122,25 @@ models:
 - まだ見ないもの: コードや models.yaml から入る値 (`{sizes}` の大きさ、`{size}`、`{outputs}`)。これを変えたときは、手で版を上げる
 - 版 1 は、models.yaml の `amd_export` と Go のコードからレシピに移したときのもの (2026-11-23)。作るものは同じ (作り直してバイトまで同じことを見た) なので、作り直さず、取得元のピンした書き出しを `v1` にコピーして版だけ書き換え、ピンを `v1` に移す。2026-11-23 は 12 個 (LFM3 の 4 つ、Gemma 4 の 2 つ、Qwen3.5 の 3 つ、gpt-oss-20b の 2 つ、Qwen3.6-35B-A3B の q4) を移したところで NAS が書き込みを受けなくなった。残りの 34 個のピンは前の `v0-…` のまま (ピンはフォルダの名前によらず中身の digest で取るので、そのままで動く)
 
+#### 仕上げ (`finish`)
+
+```yaml
+  LFM3-1.7B:
+    amd:
+      version: 2
+      finish: [{tokenizer: [tokenizer.json]}]   # 書き出しにした後で、こうする
+  Anima-Turbo:
+    amd:
+      finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
+```
+
+- スクリプトや変換が書き出しを作った後、置く (`out.part` を `out` にする、`entry.json` を書く) 前に、ビルドがする手順。順に、一つの手順に一つの種類 (`internal/finish`、`recipe.Step`)
+- `tokenizer`: 書き出しの中のトークナイザーのファイル (書き出しの中のパス) を、それぞれ隣のバイナリのファイル (`tokenizer.tok`、`qwen_tokenizer.tok`) にして、元のファイルを消す。実行するときは JSON を読まずに、バイナリのファイルを mmap してそのまま引く (Gemma 4 の 32 MB の tokenizer.json で、読み込み 480 ms・194 MB → 0.6 ms・ほぼ 0)。バイナリのファイルは元と同じに符号化することを、書いた後で確かめる
+- 書き出しに、`finish` が挙げていないトークナイザーのファイル (`tokenizer.json`、`NAME_tokenizer.json`、`tokenizer.jsonl`) が残っていたら、ビルドは止まる。挙げ忘れたモデルが JSON のまま出ていかないように
+- `finish` を変えるのはレシピを変えること: 指紋 (`Fingerprint`) に入るので、版を上げないと `go test ./internal/recipe` が落ちる。手順の種類ごとの版 (`recipe.StepVersions`、tokenizer はバイナリの形の版) も指紋に入る
+- 前の版の書き出しを作り直さずに新しい版にするには: 手元の書き出しのフォルダで `hwnpu-dev sources import --finish DIR` (仕上げをして、今の版として置く)、それから `hwnpu-dev models pin MODEL`
+- 書き出しにない (元のチェックポイントから読む) トークナイザーは、初めに読んだときにキャッシュの根にバイナリのファイル (`KEY.tok`) を残し、次からはそれを mmap する
+
 ### Apple の版 (`version`、`code`、`convert`)
 
 Core AI の書き出しは Go のコードが作る。どの値で作るかを `convert` に、どのコードが書くかを `code` に、その版を `version` に書く。AMD の `script`・`args`・`version` と同じ考え。

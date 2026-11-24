@@ -39,6 +39,10 @@ const (
 	tokbinVersion = 1
 )
 
+// BinaryVersion is the version of the binary tokenizer file's layout (recipe.StepVersions'
+// tokenizer is it: a new one asks for the exports' new versions).
+const BinaryVersion = tokbinVersion
+
 // BinaryPath is the binary tokenizer file that stands for the tokenizer file at path:
 // tokenizer.json → tokenizer.tok, tokenizer.jsonl → tokenizer.tok, spm.model → spm.tok.
 func BinaryPath(path string) string {

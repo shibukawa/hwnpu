@@ -32,6 +32,17 @@ func openBeside[T any](path string, open func(string) (T, error)) (t T, err erro
 	return t, err, true
 }
 
+// Exists reports whether the tokenizer file at path is there to load: the file, or the binary
+// file that stands for it (an export's, made by its recipe's finish).
+func Exists(path string) bool {
+	for _, p := range []string{path, BinaryPath(path)} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // CacheDir is where a tokenizer read from its text file (no binary file beside it: a
 // checkpoint's own, or an export made before exports held binary files) is kept as a binary
 // file, so that the next process maps it rather than parse the text again: the cache's root,

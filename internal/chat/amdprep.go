@@ -17,6 +17,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/finish"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
@@ -229,10 +230,12 @@ func exportAMD(ctx context.Context, python []string, m Model, out string, logf f
 	// the recipe's (model-recipes.yaml) for the machine m runs as (Model.On), and the extra
 	// arguments of this generation
 	args := append([]string{m.AMDExport[0], ck, ExportOut}, m.AMDExport[1:]...)
+	var steps []recipe.Step
 	if f, err := recipe.Builtin(); err == nil {
 		args = append(args, f.AMDExtra(m.Recipe, AMDGeneration)...)
+		steps = f.AMDFinish(m.Recipe)
 	}
-	return RunIRON(ctx, python, m.Name, LMTool, args, out, log)
+	return RunIRON(ctx, python, m.Name, LMTool, args, out, log, steps)
 }
 
 // ExportOut stands in RunIRON's args for the directory the exporter writes.
@@ -240,9 +243,10 @@ const ExportOut = "{out}"
 
 // RunIRON runs one of hwnpu's IRON exporters (tools/amd, built into hwnpu) in IRON's
 // environment (python, of IRONPython): script with args, ExportOut the export's directory,
-// made beside out (out.part, its log out.log) and renamed to out when whole, out.done written
-// last. The exporter's latest line follows a bar on log.
-func RunIRON(ctx context.Context, python []string, name, script string, args []string, out string, log io.Writer) error {
+// made beside out (out.part, its log out.log), finished as the recipe says (finish.Run: its
+// tokenizer files made binary) and renamed to out when whole, out.done written last. The
+// exporter's latest line follows a bar on log.
+func RunIRON(ctx context.Context, python []string, name, script string, args []string, out string, log io.Writer, steps []recipe.Step) error {
 	tools, err := amdtools.Extract(cache.Sub("tools"))
 	if err != nil {
 		return err
@@ -309,6 +313,10 @@ func RunIRON(ctx context.Context, python []string, name, script string, args []s
 		bar.Done("failed")
 		os.RemoveAll(part)
 		return fmt.Errorf("exporting %s for AMD's NPU failed (%v); the end of %s:\n%s", name, err, logPath, tail(logPath, 15))
+	}
+	if err := finish.Run(part, steps); err != nil {
+		bar.Done("failed")
+		return fmt.Errorf("exporting %s for AMD's NPU: %w (the export is left in %s)", name, err, part)
 	}
 	os.RemoveAll(out) // one without its manifest: cut off by hand
 	if err := os.Rename(part, out); err != nil {

@@ -25,7 +25,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/envfile"
+	"github.com/shibukawa/hwnpu/internal/finish"
 	"github.com/shibukawa/hwnpu/internal/pose"
+	rcp "github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	"github.com/shibukawa/hwnpu/internal/vision/detect"
 	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
@@ -533,6 +535,7 @@ func (u UpdateCmd) Run(d *devopt.Defs) error {
 type ImportCmd struct {
 	Dir    []string `arg:"" help:"Folders: a checkpoint (DIR, or DIR=OWNER/NAME[@REVISION] when its name is no model's of the definitions) or an export for AMD's NPU (NAME.amd-npu2*, with manifest.json or model.json)."`
 	DryRun bool     `name:"dry-run" help:"Only show what each folder is taken for."`
+	Finish bool     `help:"Do to an export what its model's recipe's finish says (model-recipes.yaml models.NAME.amd.finish: its tokenizer files made binary) before putting it, in its folder: an export of the version before a recipe's finish was added, put as the new version without making it again."`
 }
 
 // importRepos are the repositories of folders whose name is no model's of the definitions.
@@ -665,6 +668,17 @@ func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir stri
 	if ic.DryRun {
 		fmt.Printf("%s: %s %s\n", dir, kind, e.Path)
 		return nil
+	}
+	if ic.Finish {
+		f, err := rcp.Builtin()
+		if err != nil {
+			return err
+		}
+		if err := finish.Run(dir, f.AMDFinish(m.Recipe)); err != nil {
+			return err
+		}
+	} else if left, err := finish.Leftover(dir); err == nil && len(left) > 0 {
+		return fmt.Errorf("the export holds %s, which its recipe's finish makes binary: --finish does it", strings.Join(left, ", "))
 	}
 	return describeAndPut(ctx, writes, m, e, dir)
 }
