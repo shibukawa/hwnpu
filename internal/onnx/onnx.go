@@ -45,8 +45,19 @@ type Tensor struct {
 	src *source
 }
 
-// source is a mapped model file lazy tensors read, unmapped once none is left.
-type source struct{ f *mapped.File }
+// source is what lazy tensors' bytes are in (a mapped model file), kept while one is left.
+type source struct{ keep any }
+
+// NewLazy is a lazy tensor (Tensor.Lazy) of shape and element type typ (Float, Float16, Int8,
+// ...) whose values are raw (little endian, as TensorProto.raw_data), in memory keep keeps (a
+// mapped file the tensors of a model share): another format's reader's LoadLazy (TFLite's).
+func NewLazy(shape []int, typ int, raw []byte, keep any) (*Tensor, error) {
+	size := map[int]int{Float: 4, Double: 8, Int64: 8, Int32: 4, Bool: 1, Uint8: 1, Int8: 1, Float16: 2}[typ]
+	if size == 0 || len(raw) < size*Len(shape) {
+		return nil, fmt.Errorf("onnx: %d bytes of type %d for shape %v", len(raw), typ, shape)
+	}
+	return &Tensor{Shape: shape, Type: typ, raw: raw[:size*Len(shape)], src: &source{keep: keep}}, nil
+}
 
 // Lazy reports whether the tensor's values are not read yet (LoadLazy): F is nil, Values reads
 // them.
@@ -216,7 +227,7 @@ func LoadLazy(path string) (*Graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	src := &source{f: f}
+	src := &source{keep: f}
 	runtime.AddCleanup(src, func(f *mapped.File) { f.Close() }, f)
 	g, err := parse(f.Bytes(), src)
 	if err != nil {

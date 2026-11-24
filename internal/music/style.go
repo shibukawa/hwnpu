@@ -93,7 +93,9 @@ func (s *Styler) Close() error {
 func (s *Styler) host(m **tflite.Model, path string) (*tflite.Model, error) {
 	if *m == nil {
 		var err error
-		if *m, err = tflite.Load(path); err != nil {
+		// the weights stay in the file, read by each node as it runs: not 5 to 6 times the
+		// file's size in float64 while the styler is kept
+		if *m, err = tflite.LoadLazy(path); err != nil {
 			return nil, err
 		}
 	}

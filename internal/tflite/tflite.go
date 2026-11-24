@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"slices"
 
+	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/onnx"
 )
 
@@ -86,6 +88,24 @@ func Load(path string) (*Model, error) {
 	return m, nil
 }
 
+// LoadLazy is Load of a model the host evaluates (onnx.Graph.Eval), with its weights left in
+// the mapped file (onnx's lazy tensors), read by the nodes that need them as they run, and the
+// fully connected layers' weights transposed then too: not the float64 values of every weight
+// (and of every transposed one) for as long as the model is kept, 5 to 6 times the file.
+func LoadLazy(path string) (*Model, error) {
+	f, err := mapped.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	lf := &lazyFile{f: f}
+	runtime.AddCleanup(lf, func(f *mapped.File) { f.Close() }, f)
+	m, err := parse(f.Bytes(), lf)
+	if err != nil {
+		return nil, fmt.Errorf("tflite: %s: %w", path, err)
+	}
+	return m, nil
+}
+
 // Model is a converted model: its main graph and the TFLite names of its inputs and outputs.
 type Model struct {
 	Graph        *onnx.Graph
@@ -96,7 +116,9 @@ type Model struct {
 }
 
 // Parse converts a TFLite model.
-func Parse(b []byte) (m *Model, err error) {
+func Parse(b []byte) (m *Model, err error) { return parse(b, nil) }
+
+func parse(b []byte, lazy *lazyFile) (m *Model, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("malformed model: %v", r)
@@ -116,7 +138,7 @@ func Parse(b []byte) (m *Model, err error) {
 	if len(subgraphs) == 0 {
 		return nil, fmt.Errorf("no subgraphs")
 	}
-	c := &converter{b: b, codes: codes, buffers: buffers, subgraphs: subgraphs, graphs: map[int]*onnx.Graph{}}
+	c := &converter{b: b, codes: codes, buffers: buffers, subgraphs: subgraphs, graphs: map[int]*onnx.Graph{}, lazy: lazy}
 	g, err := c.graph(0)
 	if err != nil {
 		return nil, err
@@ -143,7 +165,17 @@ type converter struct {
 	buffers   []table
 	subgraphs []table
 	graphs    map[int]*onnx.Graph
+	// lazy, when set, keeps b (the mapped file): weights of lazyMin elements or more are lazy
+	// tensors in it (LoadLazy)
+	lazy *lazyFile
 }
+
+// lazyMin is the least number of elements of a weight LoadLazy leaves in the file.
+const lazyMin = 4096
+
+// lazyFile is the mapped file of a model LoadLazy read, unmapped once none of its tensors is
+// left.
+type lazyFile struct{ f *mapped.File }
 
 // graph converts subgraph k.
 func (c *converter) graph(k int) (*onnx.Graph, error) {
@@ -166,7 +198,13 @@ func (c *converter) graph(k int) (*onnx.Graph, error) {
 				size := c.buffers[buf].uint64(2, 0)
 				data = c.b[off : off+size]
 			}
-			if len(data) > 0 {
+			if typ := t.uint8(1, 0); len(data) > 0 && c.lazy != nil && onnx.Len(shapes[i]) >= lazyMin && typ != 8 {
+				v, err := onnx.NewLazy(shapes[i], types[typ], data, c.lazy)
+				if err != nil {
+					return nil, fmt.Errorf("tensor %d (%s): %w", i, t.string(3), err)
+				}
+				g.Init[name(i)] = v
+			} else if len(data) > 0 {
 				v, err := decode(data, t.uint8(1, 0), shapes[i])
 				if err != nil {
 					return nil, fmt.Errorf("tensor %d (%s): %w", i, t.string(3), err)
@@ -369,7 +407,7 @@ func (c *converter) node(g *onnx.Graph, code int, opts table, ins, outs []string
 		var nodes []*onnx.Node
 		wt := nm + "_wT"
 		var in int
-		if w, ok := g.Init[ins[1]]; ok && len(w.Shape) == 2 {
+		if w, ok := g.Init[ins[1]]; ok && len(w.Shape) == 2 && !w.Lazy() {
 			in = w.Shape[1]
 			g.Init[wt] = transpose2(w)
 		} else if ws := shapes[idx[1]]; len(ws) == 2 {
