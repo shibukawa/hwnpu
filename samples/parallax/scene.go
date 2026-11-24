@@ -103,8 +103,8 @@ func Layers(near []float32, k float64) []float32 {
 // pixels larger (Spread), the far layers pulled apart (Layers, by far), and the near layers'
 // relief and roundness (Relief).
 type look struct {
-	edge               int
-	far, relief, round float64
+	edge                       int
+	far, relief, round, detail float64
 }
 
 // Relief is the nearness of a near layer of w x h, a thing cut out of the picture (in, where the
@@ -153,6 +153,61 @@ func Relief(near []float32, in []bool, w, h int, far, relief, round float64) []f
 	down := max(float64(vals[len(vals)*99/100])-1, 0)
 	for i, v := range out {
 		out[i] = float32(min(max(float64(v)-down, 0), 1))
+	}
+	return out
+}
+
+// Detail is a nearness of w x h with its small reliefs made k + 1 times as deep: each point's
+// difference from the nearness about it (a box of a 25th of the picture's larger side) is
+// added k times more. A depth model sees a thing's small parts, the rim of glasses before the
+// eyes, a nose, a strand of hair, a little nearer than what is about them, but by so little
+// that they would move with it; this brings them out without moving the thing as a whole.
+// k of 0 leaves the nearness as it is.
+func Detail(near []float32, w, h int, k float64) []float32 {
+	if k <= 0 {
+		return near
+	}
+	r := max(w, h) / 25
+	about := boxBlur(boxBlur(near, w, h, r, 1, 0), w, h, r, 0, 1)
+	out := make([]float32, len(near))
+	for i, n := range near {
+		out[i] = float32(min(max(float64(n)+k*float64(n-about[i]), 0), 1))
+	}
+	return out
+}
+
+// boxBlur is the mean of each pixel's run of 2r + 1 pixels along (dx, dy) (across or down) of
+// a nearness of w x h, the run cut at the border.
+func boxBlur(v []float32, w, h, r, dx, dy int) []float32 {
+	out := make([]float32, len(v))
+	lines, n := h, w // across: a line is a row
+	if dy == 1 {
+		lines, n = w, h
+	}
+	at := func(line, i int) int {
+		if dy == 1 {
+			return i*w + line
+		}
+		return line*w + i
+	}
+	for line := range lines {
+		var sum float64
+		count := 0
+		for i := 0; i <= min(r, n-1); i++ {
+			sum += float64(v[at(line, i)])
+			count++
+		}
+		for i := range n {
+			out[at(line, i)] = float32(sum / float64(count))
+			if j := i + r + 1; j < n {
+				sum += float64(v[at(line, j)])
+				count++
+			}
+			if j := i - r; j >= 0 {
+				sum -= float64(v[at(line, j)])
+				count--
+			}
+		}
 	}
 	return out
 }

@@ -24,7 +24,7 @@ go run ./parallax render picture.png -o deep.gif   # no window: the picture from
 
 | Command | What it does |
 |---|---|
-| `parallax show PICTURE` | The window. The layers are found from the depth (up to 3): a thing that stands before what is behind it (a person before the trees of a park) is parted out, and a picture whose depth goes on (cats lying on a blanket) moves by its depth alone. `--layers N` asks for N; `--layers 1` uses the depth alone (no picture model); `--head sweep` turns by itself; `--for 5m` closes after that long |
+| `parallax show PICTURE` | The window. The layers are found from the depth (up to 3): a thing that stands before what is behind it (a person before the trees of a park) is parted out, and a picture whose depth goes on (cats lying on a blanket) moves by its depth alone. `--layers N` asks for N; `--layers 1` uses the depth alone (no picture model); `--detail` brings out the small reliefs inside a thing (the rim of glasses, a nose; 2 by default, 0 as the depth says); `--head sweep` turns by itself; `--for 5m` closes after that long |
 | `parallax show DIR` | A picture already in layers (`layers split PICTURE --png DIR`): no models needed |
 | `parallax render PICTURE -o out.gif` | Writes the picture as seen from a head going around (`--frames`, `--width`, `--png DIR`) |
 | `parallax track` | The camera part alone: prints where your head is. `--frames a.png,b.png` uses pictures instead of a camera |

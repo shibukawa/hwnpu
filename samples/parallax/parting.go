@@ -306,9 +306,11 @@ func minShow(st stage) time.Duration {
 func stack(layers []layering.Layer, k look) *Scene {
 	var top *Scene
 	for i, l := range layers {
-		near := Layers(l.Near, k.far)
+		w, h := l.Img.Rect.Dx(), l.Img.Rect.Dy()
+		detailed := Detail(l.Near, w, h, k.detail)
+		near := Layers(detailed, k.far)
 		if i > 0 {
-			near = Relief(l.Near, alphaMask(l.Img), l.Img.Rect.Dx(), l.Img.Rect.Dy(), k.far, k.relief, k.round)
+			near = Relief(detailed, alphaMask(l.Img), w, h, k.far, k.relief, k.round)
 		}
 		s := NewScene(l.Img, near, k.edge, 0)
 		s.Behind, top = top, s
@@ -344,7 +346,7 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 		// by its depth alone (the depth's scene is the one already shown)
 		if o.Cuts = layering.Auto(src.near, w, h, c.Far, layering.AutoMost); len(o.Cuts) == 0 {
 			fmt.Fprintf(log, "no layers: the depth has no step along %.0f %% of a cut's outline, so the picture moves by its depth alone\n", 100*layering.StepOK)
-			return NewScene(src.img, src.near, c.edge(w), c.Far), nil
+			return c.depthScene(src.img, src.near), nil
 		}
 		fmt.Fprintf(log, "%d layers: the depth steps where it is cut\n", len(o.Cuts)+1)
 	}
