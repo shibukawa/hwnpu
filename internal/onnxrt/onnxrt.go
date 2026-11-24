@@ -34,6 +34,7 @@ const (
 	fnCreateSessionFromArray           = 8
 	fnRun                              = 9
 	fnCreateSessionOptions             = 10
+	fnDisableCpuMemArena               = 19
 	fnSetSessionGraphOptimizationLevel = 23
 	fnSetIntraOpNumThreads             = 24
 	fnSetInterOpNumThreads             = 25
@@ -110,7 +111,11 @@ func Available() bool {
 
 // Load loads ONNX Runtime once and makes its environment.
 func Load() (*Runtime, error) {
-	loadOnce.Do(func() { loaded, loadErr = load() })
+	loadOnce.Do(func() {
+		if loaded, loadErr = load(); loadErr == nil {
+			mallocTune()
+		}
+	})
 	return loaded, loadErr
 }
 
@@ -206,6 +211,12 @@ func (r *Runtime) Open(model []byte, o Options) (*Session, error) {
 		return nil, err
 	}
 	if err := r.call(fnSetSessionGraphOptimizationLevel, opts, optimizeAll); err != nil {
+		return nil, err
+	}
+	// no arena: each session's arena keeps the most its runs ever took, so OCR's three sessions
+	// (the detector, the recognizer at two widths) held 690 MB for one picture, 295 MB without
+	// (with mallocTune's threshold: malloc keeps what it is given otherwise); as fast
+	if err := r.call(fnDisableCpuMemArena, opts); err != nil {
 		return nil, err
 	}
 	for _, kv := range [][2]string{{"session.intra_op.allow_spinning", "0"}, {"session.inter_op.allow_spinning", "0"}} {

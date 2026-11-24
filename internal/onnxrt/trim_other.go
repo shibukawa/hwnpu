@@ -2,5 +2,7 @@
 
 package onnxrt
 
-// trim is glibc's malloc_trim on Linux: nothing here.
+// trim and mallocTune are glibc's malloc_trim and mallopt on Linux: nothing here.
 func trim() {}
+
+func mallocTune() {}
