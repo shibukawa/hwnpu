@@ -127,8 +127,13 @@ func TestWriteAttentionProbes(t *testing.T) {
 				g.Fail("form %q", form)
 			}
 		}}
-		path := filepath.Join(out, name+".aimodel")
-		if _, err := llm.WritePart(path, p, noWeights{}, llm.Options{Backend: llm.BackendCoreAI}, nil); err != nil {
+		// HWNPU_TEST_ATTN_PROBE_BACKEND=coreml writes Core ML packages, for aicheck run -cpu (milcpu)
+		backend, ext := llm.BackendCoreAI, ".aimodel"
+		if os.Getenv("HWNPU_TEST_ATTN_PROBE_BACKEND") == "coreml" {
+			backend, ext = llm.BackendCoreML, ".mlpackage"
+		}
+		path := filepath.Join(out, name+ext)
+		if _, err := llm.WritePart(path, p, noWeights{}, llm.Options{Backend: backend}, nil); err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
 		t.Logf("wrote %s", path)

@@ -93,7 +93,7 @@ models:
       script: iron_flux2klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
-      version: 1
+      version: 2
       code: [internal/imagegen/flux2klein, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
       # a program: 3 of Qwen3's layers (0.3 GB at 8 bits), 2 double blocks (0.5 GB), 5 single
       # blocks (0.6 GB); the formats are models.yaml's npu.apple (a run reads them)

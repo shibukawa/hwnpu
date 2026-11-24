@@ -26,13 +26,15 @@ func (noWeights) Close() error   { return nil }
 // TestHeadAttention checks that HeadAttention (a head and a chunk of queries at a time, the
 // softmax's sum divided before the product with the values or after it, a bias on the keys, the
 // keys in two parts with the bias on the second) gives what QChunkAttention gives, on the CPU
-// interpreter: chunks that do not divide the queries, more keys than queries and fewer.
+// interpreter: chunks that do not divide the queries, more keys than queries and fewer, and
+// PieceKeys keys or more (each part's softmax by itself, joined by their log-sum-exp).
 func TestHeadAttention(t *testing.T) {
 	const heads, d = 3, 4
 	for _, c := range []struct {
 		n, m, chunk int
 		masked      int // the last keys the bias hides (0: no bias)
-	}{{10, 7, 4, 0}, {6, 9, 0, 0}, {5, 5, 5, 0}, {8, 3, 1, 0}, {10, 7, 4, 3}, {6, 9, 0, 1}, {4, 6, 3, 5}} {
+	}{{10, 7, 4, 0}, {6, 9, 0, 0}, {5, 5, 5, 0}, {8, 3, 1, 0}, {10, 7, 4, 3}, {6, 9, 0, 1}, {4, 6, 3, 5},
+		{5, PieceKeys + 512, 2, 0}, {3, PieceKeys + 512, 0, 300}, {4, PieceKeys, 3, 0}} {
 		run := func(name string, body func(g *Graph, q, k, v, bias *mlpackage.Var) *mlpackage.Var) []float32 {
 			p := &Part{Name: name, Model: "test", Body: func(g *Graph) {
 				q := g.Input("q", 1, heads, c.n, d)
