@@ -86,7 +86,7 @@ func main() {
 // picture is what the commands share: the picture and how it is parted.
 type picture struct {
 	Picture string    `arg:"" type:"existingfile" name:"PICTURE" help:"The picture (PNG or JPEG)."`
-	Layers  int       `default:"3" help:"How many layers, 2 to 8: where to cut is found from the picture's depth (the cuts that leave each layer's depths closest together)."`
+	Layers  int       `default:"0" help:"How many layers, 2 to 8: where to cut is found from the picture's depth (the cuts that leave each layer's depths closest together). 0: how many is found too, up to 3, where the depth steps (a thing before what is behind it, as a person before the trees of a park); none where it goes on (cats lying on a blanket), and the picture is one layer that moves by its depth alone."`
 	Cuts    []float32 `placeholder:"NEARNESS,..." help:"Where to cut instead, as nearness from 0 (the farthest) to 1 (the nearest), ascending: 0.3,0.7 makes three layers. \"layers plan\" prints the cuts it finds."`
 	Far     float64   `default:"30" help:"How far the far end of the nearness is pulled apart before it is cut (0: not at all). A nearness is the inverse of the depth, so behind something right before the eye all the rest is close to 0."`
 }
@@ -94,8 +94,8 @@ type picture struct {
 // read is the picture and the nearness of its pixels. The depth model is unloaded once it has
 // answered.
 func (c *picture) read(ctx context.Context, rt *ai.Runtime, p *layering.Calls) (*image.RGBA, []float32, error) {
-	if len(c.Cuts) == 0 && (c.Layers < 2 || c.Layers > 8) {
-		return nil, nil, fmt.Errorf("--layers %d: 2 to 8", c.Layers)
+	if len(c.Cuts) == 0 && c.Layers != 0 && (c.Layers < 2 || c.Layers > 8) {
+		return nil, nil, fmt.Errorf("--layers %d: 2 to 8, or 0 to find how many from the depth", c.Layers)
 	}
 	f, err := os.Open(c.Picture)
 	if err != nil {
@@ -116,10 +116,14 @@ func (c *picture) read(ctx context.Context, rt *ai.Runtime, p *layering.Calls) (
 	return img, near, nil
 }
 
-// cuts are where the picture is cut: --cuts, else found from the nearness.
-func (c *picture) cuts(near []float32) []float32 {
-	if len(c.Cuts) > 0 {
+// cuts are where the picture is cut: --cuts, else found from the nearness (how many too with
+// --layers 0, none where the depth has no step).
+func (c *picture) cuts(img *image.RGBA, near []float32) []float32 {
+	switch {
+	case len(c.Cuts) > 0:
 		return c.Cuts
+	case c.Layers == 0:
+		return layering.Auto(near, img.Rect.Dx(), img.Rect.Dy(), c.Far, layering.AutoMost)
 	}
 	return layering.Cuts(near, c.Layers, c.Far)
 }
@@ -140,7 +144,7 @@ func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error
 	if err != nil {
 		return err
 	}
-	at := c.cuts(near)
+	at := c.cuts(img, near)
 	// each layer in a tint of its own, from the farthest: blue, green, yellow, red, ...
 	tints := []color.RGBA{{40, 90, 255, 255}, {40, 200, 120, 255}, {250, 210, 40, 255}, {255, 90, 40, 255},
 		{220, 40, 200, 255}, {40, 220, 230, 255}, {150, 255, 60, 255}, {255, 255, 255, 255}}
@@ -176,11 +180,34 @@ func (c *PlanCmd) Run(ctx context.Context, app *ai.App, p *layering.Calls) error
 		}
 		fmt.Printf("layer %d: nearness %.2f to %.2f, %.0f %% of the picture\n", l+1, from, to, 100*float64(share[l])/float64(len(near)))
 	}
-	cs := make([]string, len(at))
-	for i, x := range at {
-		cs[i] = fmt.Sprintf("%.2f", x)
+	// how much each cut steps in the depth, of the cuts found and of 2 and 3 layers' cuts
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	steps := func(at []float32) string {
+		s := layering.Steps(near, w, h, c.Far, at)
+		out := make([]string, len(at))
+		for i, x := range at {
+			out[i] = fmt.Sprintf("%.2f (steps along %.0f %%)", x, 100*s[i])
+		}
+		return strings.Join(out, ", ")
 	}
-	fmt.Printf("--cuts %s\n%s\n", strings.Join(cs, ","), file)
+	if len(at) == 0 {
+		fmt.Printf("no cut: the depth has no step along %.0f %% of a cut's outline; one layer, moved by its depth alone\n", 100*layering.StepOK)
+	} else {
+		fmt.Printf("cuts: %s\n", steps(at))
+	}
+	if len(c.Cuts) == 0 && c.Layers == 0 {
+		for n := 2; n <= layering.AutoMost; n++ {
+			fmt.Printf("  %d layers would cut at %s\n", n, steps(layering.Cuts(near, n, c.Far)))
+		}
+	}
+	if len(at) > 0 {
+		cs := make([]string, len(at))
+		for i, x := range at {
+			cs[i] = fmt.Sprintf("%.2f", x)
+		}
+		fmt.Printf("--cuts %s\n", strings.Join(cs, ","))
+	}
+	fmt.Println(file)
 	return nil
 }
 

@@ -361,3 +361,42 @@ func seam(img *image.RGBA, m []float32, w, h int) float64 {
 	slices.Sort(diffs)
 	return diffs[len(diffs)*3/4]
 }
+
+// stepNear is how much the nearness (on the curve it is cut on) differs on the two sides of an
+// outline where the outline is a step in the depth: a thing before what is behind it, not a
+// surface that goes on.
+const stepNear = 0.15
+
+// steep is the share of the outline of the cut at cut where the nearness steps: of the pairs of
+// neighbouring pixels on the two sides of the cut, those whose points a little way out on
+// either side (a 100th of the width, 2 pixels at least) differ by stepNear or more. A thing
+// that stands before what is behind it steps along most of its outline (a face before a wall
+// all of it); a surface going away from the eye (a blanket, a field) not at all, as nearness
+// that is cut there only because the cuts part it.
+func steep(c []float32, w, h int, cut float32) float64 {
+	d := max(w/100, 2)
+	var pairs, steps int
+	for y := range h {
+		for x := range w {
+			i := y*w + x
+			for _, o := range [2][2]int{{1, 0}, {0, 1}} {
+				x2, y2 := x+o[0], y+o[1]
+				xa, ya, xb, yb := x-o[0]*d, y-o[1]*d, x2+o[0]*d, y2+o[1]*d
+				if xa < 0 || ya < 0 || xb >= w || yb >= h {
+					continue
+				}
+				if (c[i] > cut) == (c[y2*w+x2] > cut) {
+					continue
+				}
+				pairs++
+				if math.Abs(float64(c[ya*w+xa]-c[yb*w+xb])) >= stepNear {
+					steps++
+				}
+			}
+		}
+	}
+	if pairs == 0 {
+		return 0
+	}
+	return float64(steps) / float64(pairs)
+}

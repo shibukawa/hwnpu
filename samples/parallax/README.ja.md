@@ -24,7 +24,7 @@ go run ./parallax render picture.png -o deep.gif   # 窓なし: 頭が一回り�
 
 | コマンド | 何をするか |
 |---|---|
-| `parallax show PICTURE` | 窓。`--layers 1` は深度だけ (画像のモデルなし)、`--head sweep` はひとりでに回る、`--for 5m` でその時間で閉じる |
+| `parallax show PICTURE` | 窓。層は深度から求める (3 つまで)。後ろのものの前に立つもの (公園の木の前の人) は層に分け、深度が続いている絵 (毛布に寝そべる猫) は深度だけで動かす。`--layers N` で N 層に、`--layers 1` は深度だけ (画像のモデルなし)、`--head sweep` はひとりでに回る、`--for 5m` でその時間で閉じる |
 | `parallax show DIR` | 層に分けてある絵 (`layers split PICTURE --png DIR`)。モデルは要らない |
 | `parallax render PICTURE -o out.gif` | 頭が一回りする間の絵を書く (`--frames`、`--width`、`--png DIR`) |
 | `parallax track` | カメラの部分だけ: 頭の位置を出す。`--frames a.png,b.png` でカメラの代わりに絵を使う |

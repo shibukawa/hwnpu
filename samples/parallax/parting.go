@@ -230,10 +230,11 @@ func logLine(s string) string {
 	return strings.Join(strings.Fields(b.String()), " ")
 }
 
-// newProgress is the progress of a picture to be made deep in n layers (1: its depth alone).
+// newProgress is the progress of a picture to be made deep in n layers (1: its depth alone; 0:
+// as many as its depth has steps).
 func newProgress(img image.Image, n int) *progress {
 	p := &progress{wDepth: 0.06, wLayers: 0.88}
-	if n <= 1 {
+	if n == 1 {
 		p.wDepth, p.wLayers = 0.85, 0
 	}
 	p.show(stageDepth, img, "Estimating how far each point of the picture is")
@@ -336,8 +337,17 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 	if prog == nil {
 		prog = newProgress(src.img, c.Layers)
 	}
-	w := src.img.Rect.Dx()
+	w, h := src.img.Rect.Dx(), src.img.Rect.Dy()
 	o := layering.Options{Layers: c.Layers, Far: c.Far, Edge: -1, Hint: c.Hint, Seed: c.Seed}
+	if c.Layers == 0 {
+		// how many layers too, from the depth: none where it has no step, and the picture moves
+		// by its depth alone (the depth's scene is the one already shown)
+		if o.Cuts = layering.Auto(src.near, w, h, c.Far, layering.AutoMost); len(o.Cuts) == 0 {
+			fmt.Fprintf(log, "no layers: the depth has no step along %.0f %% of a cut's outline, so the picture moves by its depth alone\n", 100*layering.StepOK)
+			return NewScene(src.img, src.near, c.edge(w), c.Far), nil
+		}
+		fmt.Fprintf(log, "%d layers: the depth steps where it is cut\n", len(o.Cuts)+1)
+	}
 	phases := newPhaseClock(rt)
 	defer phases.save()
 	o.Progress = func(s layering.Step) {

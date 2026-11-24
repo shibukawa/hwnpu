@@ -15,7 +15,7 @@
 // near thing moves aside there is a picture behind it. The camera is read through hwcamera (github.com/shibukawa/hwcamera).
 //
 //	parallax models prepare                    # download, convert and compile the models ahead
-//	parallax show picture.png                       # the window, following the head with the camera; the picture comes apart into 3 layers as it is shown
+//	parallax show picture.png                       # the window, following the head with the camera; the picture comes apart into layers where its depth steps (up to 3) as it is shown
 //	parallax show picture.png --layers 1            # with its depth alone, no layers
 //	parallax show picture.png --head pointer        # the pointer stands in for the head (no camera)
 //	parallax show picture.png --head sweep          # the view goes around by itself
@@ -113,7 +113,7 @@ type picture struct {
 	Far        float64 `default:"30" help:"How far the far end of the depth is pulled apart: 0 moves each point as its depth says (a thing twice as far moves half as much, so that behind something right before the eye all the rest moves as one); larger gives the far things more of the move, so that a bridge, the houses behind it and the mountains move apart."`
 	Relief     float64 `default:"1" help:"How deep a near layer is inside itself (a thing cut out of the picture, in layers): 1 as the depth model says, against --far's curve, which would flatten it; 0 flat, like a card."`
 	Round      float64 `default:"0.15" help:"How much rounder a near layer is made, from its outline in (a share of the nearness): an animal or a figure stands out as a body instead of a card. 0: as the depth says."`
-	Layers     int     `default:"3" help:"The layers the picture is parted into by its depth, with what each layer hid drawn in by the picture model, so that where a near thing moves aside there is a picture behind it instead of its edge stretched. The window shows the picture at once with its depth alone, and the parting goes on beside it (about a minute for each layer but the last), each step shown. 1: no layers. Where the picture model is not ready, the picture stays as it is."`
+	Layers     int     `default:"0" help:"The layers the picture is parted into by its depth, with what each layer hid drawn in by the picture model, so that where a near thing moves aside there is a picture behind it instead of its edge stretched. The window shows the picture at once with its depth alone, and the parting goes on beside it (about a minute for each layer but the last), each step shown. 0: how many is found from the depth, up to 3, where it steps (a person before the trees of a park); none where it goes on (cats lying on a blanket), which moves best by its depth alone. 1: no layers. Where the picture model is not ready, the picture stays as it is."`
 	Hint       string  `placeholder:"TEXT" help:"Words added to the request to draw what a layer hid: \"no people\", \"a calm sea\"."`
 	Seed       uint64  `default:"1" help:"The seed of the pictures drawn (0: from the time)."`
 	SaveLayers string  `name:"save-layers" type:"path" placeholder:"DIR" help:"Write the layers and their nearness into this directory once the picture is parted; \"parallax show DIR\" shows them again without the models."`
@@ -405,7 +405,7 @@ func (c *ShowCmd) make(ctx context.Context, rt *ai.Runtime, p *parts, img *image
 	prog.show(stageNear, depthColors(near, w, h), "The depth: the near warm, the far cool")
 	prog.set(func(p *progress) { p.total = p.wDepth })
 	scene := NewScene(img, near, c.edge(w), c.Far)
-	if c.Layers > 1 {
+	if c.Layers != 1 {
 		layered, err := c.part(ctx, rt, p, &source{img: img, near: near}, prog, os.Stderr)
 		switch {
 		case ctx.Err() != nil:
@@ -438,7 +438,7 @@ func (c *RenderCmd) Run(ctx context.Context, app *ai.App, p *parts) error {
 	if err != nil {
 		return err
 	}
-	if src != nil && c.Layers > 1 {
+	if src != nil && c.Layers != 1 {
 		if scene, err = c.part(ctx, rt, p, src, nil, os.Stderr); err != nil {
 			return err
 		}

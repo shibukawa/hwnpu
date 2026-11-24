@@ -289,3 +289,30 @@ func TestSplitKept(t *testing.T) {
 		t.Errorf("the near layer: %v %v", layers[1].Img.NRGBAAt(10, 200), layers[1].Img.NRGBAAt(10, 120))
 	}
 }
+
+// TestAuto: a thing before a wall is parted from it (its outline steps all round); a surface
+// going away from the eye (the nearness a ramp down the picture) is not cut at all.
+func TestAuto(t *testing.T) {
+	const w, h = 64, 48
+	ramp := make([]float32, w*h)
+	thing := make([]float32, w*h)
+	for y := range h {
+		for x := range w {
+			ramp[y*w+x] = float32(y) / h
+			thing[y*w+x] = 0.1
+			if x >= 20 && x < 44 && y >= 12 && y < 40 {
+				thing[y*w+x] = 0.9
+			}
+		}
+	}
+	if at := Auto(ramp, w, h, 30, AutoMost); len(at) != 0 {
+		t.Errorf("a ramp: cut at %v, want no cut (steps %v)", at, Steps(ramp, w, h, 30, Cuts(ramp, 2, 30)))
+	}
+	at := Auto(thing, w, h, 30, AutoMost)
+	if len(at) != 1 || at[0] <= 0.4 || at[0] >= 0.97 {
+		t.Fatalf("a thing before a wall: cuts %v, want one between the two (0.40 and 0.97 on the curve)", at)
+	}
+	if s := Steps(thing, w, h, 30, at)[0]; s < 0.99 {
+		t.Errorf("a thing before a wall steps along %.2f of its outline, want all", s)
+	}
+}
