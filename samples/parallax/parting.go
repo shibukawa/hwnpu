@@ -230,10 +230,11 @@ func logLine(s string) string {
 	return strings.Join(strings.Fields(b.String()), " ")
 }
 
-// newProgress is the progress of a picture to be made deep in n layers (1: its depth alone).
+// newProgress is the progress of a picture to be made deep in n layers (1: its depth alone; 0:
+// as many as its depth has steps).
 func newProgress(img image.Image, n int) *progress {
 	p := &progress{wDepth: 0.06, wLayers: 0.88}
-	if n <= 1 {
+	if n == 1 {
 		p.wDepth, p.wLayers = 0.85, 0
 	}
 	p.show(stageDepth, img, "Estimating how far each point of the picture is")
@@ -305,9 +306,11 @@ func minShow(st stage) time.Duration {
 func stack(layers []layering.Layer, k look) *Scene {
 	var top *Scene
 	for i, l := range layers {
-		near := Layers(l.Near, k.far)
+		w, h := l.Img.Rect.Dx(), l.Img.Rect.Dy()
+		detailed := Detail(l.Near, w, h, k.detail)
+		near := Layers(detailed, k.far)
 		if i > 0 {
-			near = Relief(l.Near, alphaMask(l.Img), l.Img.Rect.Dx(), l.Img.Rect.Dy(), k.far, k.relief, k.round)
+			near = Relief(detailed, alphaMask(l.Img), w, h, k.far, k.relief, k.round)
 		}
 		s := NewScene(l.Img, near, k.edge, 0)
 		s.Behind, top = top, s
@@ -336,8 +339,17 @@ func (c *picture) part(ctx context.Context, rt *ai.Runtime, p *parts, src *sourc
 	if prog == nil {
 		prog = newProgress(src.img, c.Layers)
 	}
-	w := src.img.Rect.Dx()
+	w, h := src.img.Rect.Dx(), src.img.Rect.Dy()
 	o := layering.Options{Layers: c.Layers, Far: c.Far, Edge: -1, Hint: c.Hint, Seed: c.Seed}
+	if c.Layers == 0 {
+		// how many layers too, from the depth: none where it has no step, and the picture moves
+		// by its depth alone (the depth's scene is the one already shown)
+		if o.Cuts = layering.Auto(src.near, w, h, c.Far, layering.AutoMost); len(o.Cuts) == 0 {
+			fmt.Fprintf(log, "no layers: the depth has no step along %.0f %% of a cut's outline, so the picture moves by its depth alone\n", 100*layering.StepOK)
+			return c.depthScene(src.img, src.near), nil
+		}
+		fmt.Fprintf(log, "%d layers: the depth steps where it is cut\n", len(o.Cuts)+1)
+	}
 	phases := newPhaseClock(rt)
 	defer phases.save()
 	o.Progress = func(s layering.Step) {

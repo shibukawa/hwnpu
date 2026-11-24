@@ -36,8 +36,9 @@ type Models struct {
 
 // Options are how a picture is parted.
 type Options struct {
-	// Layers is how many layers (2 to 8) when Cuts is empty: the cuts are then found from the
-	// nearness (Cuts of this package).
+	// Layers is how many layers (1 to 8) when Cuts is empty: the cuts are then found from the
+	// nearness (Cuts of this package). 0 finds how many too (Auto, up to AutoMost): none where
+	// the depth has no step, and the picture is then one layer.
 	Layers int
 	// Cuts are where to cut, as nearness on the curve of Far, ascending, each between 0 and 1.
 	Cuts []float32
@@ -131,6 +132,43 @@ func Curve(near []float32, far float64) []float32 { return curve(near, far) }
 // the curve of far, closest together.
 func Cuts(near []float32, n int, far float64) []float32 { return cuts(curve(near, far), n) }
 
+// AutoMost is the most layers Split finds from the depth (Options.Layers 0).
+const AutoMost = 3
+
+// StepOK is the least share of a cut's outline that steps in the depth (Steps) for the cut to
+// part a layer when the layers are found from the depth (Auto).
+const StepOK = 0.2
+
+// Steps is, for each cut of at, the share of its outline where the nearness steps: where what
+// is near the cut stands before what is behind it, instead of a surface going on past it. near
+// is row major, w x h; the cuts are on the curve of far.
+func Steps(near []float32, w, h int, far float64, at []float32) []float64 {
+	c := curve(near, far)
+	out := make([]float64, len(at))
+	for i, x := range at {
+		out[i] = steep(c, w, h, x)
+	}
+	return out
+}
+
+// Auto are the cuts of the most layers, up to most, whose every cut steps along StepOK of its
+// outline or more (Steps): a thing parted from what is behind it, so that it moves before it
+// with what it hid drawn in behind. None when no cut does: the depth goes on (animals lying on
+// a blanket, a field under the sky), and the picture moves best by its depth alone.
+func Auto(near []float32, w, h int, far float64, most int) []float32 {
+	for n := min(most, 8); n >= 2; n-- {
+		at := Cuts(near, n, far)
+		ok := true
+		for _, s := range Steps(near, w, h, far, at) {
+			ok = ok && s >= StepOK
+		}
+		if ok {
+			return at
+		}
+	}
+	return nil
+}
+
 // Soften is a mask (row major, w x h) with its edge made a ramp 2r pixels wide.
 func Soften(m []float32, w, h, r int) []float32 { return soften(m, w, h, r) }
 
@@ -142,10 +180,22 @@ func Stretch(img image.Image, w, h int) *image.RGBA { return stretch(img, w, h) 
 func Split(ctx context.Context, img *image.RGBA, near []float32, m Models, o Options) ([]Layer, error) {
 	at := o.Cuts
 	if len(at) == 0 {
-		if o.Layers < 2 || o.Layers > 8 {
-			return nil, fmt.Errorf("layering: %d layers; 2 to 8", o.Layers)
+		switch {
+		case o.Layers == 0:
+			at = Auto(near, img.Rect.Dx(), img.Rect.Dy(), o.Far, AutoMost)
+		case o.Layers < 1 || o.Layers > 8:
+			return nil, fmt.Errorf("layering: %d layers; 1 to 8, or 0 to find them from the depth", o.Layers)
+		case o.Layers > 1:
+			at = Cuts(near, o.Layers, o.Far)
 		}
-		at = Cuts(near, o.Layers, o.Far)
+		if len(at) == 0 {
+			// one layer: the picture and its nearness, nothing drawn
+			whole := make([]float32, len(near))
+			for i := range whole {
+				whole[i] = 1
+			}
+			return []Layer{{Img: cutOut(img, whole), Near: near}}, nil
+		}
 	}
 	for i, x := range at {
 		if x <= 0 || x >= 1 || i > 0 && x <= at[i-1] {

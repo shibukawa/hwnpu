@@ -24,7 +24,7 @@ go run ./layers split picture.png --layers 4 --png parts/
 
 | Option | What it does |
 |---|---|
-| `--layers N` | How many layers, 2 to 8 (default 3); the cuts are found from the depth |
+| `--layers N` | How many layers, 2 to 8; the cuts are found from the depth. By default how many is found too, up to 3: a cut is made where the depth steps along at least 20 % of its outline (a thing before what is behind it), and none where it goes on, which leaves one layer. `layers plan` prints how much each cut steps |
 | `--cuts 0.3,0.7` | Cut at these nearnesses instead (0 the farthest, 1 the nearest) |
 | `--png DIR` | Also writes each layer (`layer-N.png`), its nearness (`near-N.png`, 16-bit), and what the model was asked and drew. `parallax show DIR` shows these |
 | `--hint "no people"` | Words added to the request to draw what a layer hid |

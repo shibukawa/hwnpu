@@ -311,3 +311,24 @@ func TestLogLine(t *testing.T) {
 		}
 	}
 }
+
+// TestDetail: a thin rim a little nearer than the face about it is brought out k + 1 times as
+// far from it; a flat nearness stays as it is.
+func TestDetail(t *testing.T) {
+	const w, h = 100, 100
+	near := make([]float32, w*h)
+	for i := range near {
+		near[i] = 0.5
+	}
+	if out := Detail(near, w, h, 2); out[50*w+50] != 0.5 {
+		t.Errorf("a flat nearness: %v at the middle, want 0.5", out[50*w+50])
+	}
+	for y := range h {
+		near[y*w+50] = 0.53 // a rim down the middle
+	}
+	out := Detail(near, w, h, 2)
+	step := out[50*w+50] - out[50*w+20]
+	if step < 0.08 || step > 0.1 {
+		t.Errorf("a rim 0.03 nearer: %.3f nearer after, want about 0.09", step)
+	}
+}
