@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -82,5 +84,23 @@ func TestUnusableIsNotPrepared(t *testing.T) {
 	}
 	if p, err := app.Plan(ctx); err != nil || !p.Ready() {
 		t.Errorf("after preparing again: %v, %+v", err, p)
+	}
+}
+
+// A tokenizer the sources gave as its binary file alone (tokenizer.tok for tokenizer.json) is
+// there: a fresh cache's model prepared from them is not prepared again at every run.
+func TestTokenizerBinaryIsThere(t *testing.T) {
+	dir := t.TempDir()
+	tok := filepath.Join(dir, "tokenizer.json")
+	r := &record{}
+	r.Files.Set("tokenizer", tok)
+	if r.missing() != tok {
+		t.Fatalf("missing() = %q with no tokenizer, want %q", r.missing(), tok)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tokenizer.tok"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if m := r.missing(); m != "" {
+		t.Errorf("missing() = %q with tokenizer.tok there, want none", m)
 	}
 }

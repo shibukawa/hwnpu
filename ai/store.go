@@ -18,6 +18,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/tokenizer"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
 
@@ -173,14 +174,14 @@ func (r *record) absolute(root string) {
 	})
 }
 
-// missing is the first of the record's files (absolute) that is not there, "" when all are.
+// missing is the first of the record's files (absolute) that is not there, "" when all are. A
+// tokenizer file is there as its binary file too (tokenizer.Exists): what the sources give for
+// tokenizer.json is tokenizer.tok alone.
 func (r *record) missing() string {
 	miss := ""
 	r.each(func(p *string) {
-		if miss == "" {
-			if _, err := os.Stat(*p); err != nil {
-				miss = *p
-			}
+		if miss == "" && !tokenizer.Exists(*p) {
+			miss = *p
 		}
 	})
 	return miss
