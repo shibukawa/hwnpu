@@ -1494,3 +1494,24 @@ PlamoBiModel (前後両方を見る PLaMo の encoder)。それまで AMD の書
 - 精度 (Hugging Face の modeling_plamo.py を numpy の float32 で書き直した参照と、同じ語で): 行ごとの cosine 0.9993 以上、平均を取った埋め込みの cosine 0.99972〜0.99977 (Core ML の lut8 は 0.998)。文どうしの類似度は小数第 2〜3 位まで同じ
 - Ryzen AI 9 365 で: 128 のグラフ 176 ms (9 語の文)、1024 のグラフ 945 ms (482 語)。書き出し 20 秒。固定 1.89 GiB とプロセスの 0.08 GiB (models.yaml の memory を 1.3 から 2.1 に)
 - 未: 重みを q8 にする (固定とダウンロードは半分になる見込み。埋め込みの精度を確かめてから)、短い文が 128 のグラフ全体を回すこと (IRON の GEMM は塊の全行を回す)
+
+## 32. PP-OCRv6 small の検出器を AMD の NPU で試した (採らなかった、2026-11-25)
+
+AMD の機械で CPU (ONNX Runtime) に置いている 5 つのモデルのうち、NPU で得をしそうな大きさは PP-OCRv6 だけだった。YuNet と RTMDet-tiny は 17 節と 21.4 節で NPU が負け、SwiftF0 (3 万パラメータ) と Basic Pitch (4 万、2 秒の窓で 0.08 GFLOP) は YuNet (0.1 GFLOP) より小さい。検出器は 960 × 960 で 2.45 M パラメータ、19.5 GFLOP、242 ノード (認識器は 5.27 M、8 × 48 × 320 で 15.9 GFLOP)。
+
+`iron_onnxcnn.py` に足して検出器を 1 つのグラフにした (97 段、307〜320 演算、9 コマンド)。足したもの: 畳み込みの ReLU (エピローグの clamp) と erf GELU、2 × 2 の畳み込みと max pool (SAME_UPPER)、2 層の SE (ReLU と HardSigmoid、RSE の x (1 + s))、4 倍と 8 倍の最近傍 (2 倍を重ねる)、2 × 2 の ConvTranspose (位相ごとの GEMM、最後の 1 チャネルは 4 位相をホストで並べる)、格子の余白 3 (首の 7 × 7 の深さ方向)、7 × 7 の深さ方向を 56 チャネルずつの GridGEMM に。numpy の段は ONNX Runtime と 1e-5 で一致した。
+
+測定 (Ryzen AI 9 365、1 枚、エネルギーはパッケージ電力からアイドル約 4.9 W を引いた):
+
+| | 1 枚 | エネルギー | 0.3 を超える画素 (文字のない生成画像、ONNX Runtime は 100856) |
+|---|---|---|---|
+| CPU、ONNX Runtime 1 スレッド | 256 ms | 3.0 J | 100856 |
+| NPU、MEDIUM、GELU はエピローグ (x σ(1.702 x)) | 249 ms | 1.4 J | 31 |
+| NPU、MEDIUM、erf GELU の演算 | 276 ms | | 6460 |
+| NPU、バックボーンの密な畳み込みと stem の深さ方向だけ HIGH、erf GELU | 356 ms | 2.0 J | 77295 |
+| NPU、全部 HIGH、erf GELU | 601 ms | 3.3 J | 117140 |
+
+- 文字の画像 (2 行) は MEDIUM でも同じ文字を読み、枠の差は 1 px。文字のない生成画像では MEDIUM のマップが崩れ、CPU にない枠が 1 つ出た
+- 崩れるのは bfp16 (8 値で指数を共有) の誤差が首の 1 × 1 (384 → 96) あたりから層ごとに積もるため。GELU のエピローグ (シグモイドでの近似) は HIGH でも崩す (119 画素)
+- どの層を HIGH にするかは numpy で bfp16 を模して探した (960 で 1 回 22 秒。480 では差が出ない)。1 層ずつでは差がなく、効くのは段の組: stem と stage 1、バックボーンの 1 × 1 を MEDIUM にすると崩れ、深さ方向と首と頭は MEDIUM でよい
+- 速さと精度の両方で CPU に勝つ構成はなかったので、入れていない (変換器の拡張も)。認識器 (SVTR、Transformer を含む) も試していない
