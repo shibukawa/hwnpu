@@ -86,6 +86,15 @@ func FinishCoreAI(ctx context.Context, export string) error {
 // as the conversion of its model's recipe now (its version): hwnpu-dev sources import of an
 // export of the version before a recipe's finish, without converting it again.
 func PutCoreAI(ctx context.Context, export string) (string, error) {
+	// the model: WithModel's, else its entry.json's (a family's directory holds the exports of
+	// several: models/FLUX.2-klein), else the one whose directory holds it
+	if _, ok := ctx.Value(modelKey{}).(Model); !ok {
+		if e, err := shared.ReadEntry(export); err == nil && e.Model != "" {
+			if m := modelNamed(e.Model); m.Name != "" {
+				ctx = WithModel(ctx, m)
+			}
+		}
+	}
 	if err := FinishCoreAI(ctx, export); err != nil {
 		return "", err
 	}

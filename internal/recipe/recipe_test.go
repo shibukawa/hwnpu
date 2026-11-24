@@ -18,23 +18,26 @@ func TestBuiltin(t *testing.T) {
 	}
 }
 
-// FLUX.2 klein's single blocks go to the device on an M1 alone.
+// A recipe's prebuild rules leave programs to the device: MOSS's all of them; FLUX.2 klein's none
+// since its single blocks are two a program (they went to the device on an M1 at five, until
+// 2026-11-24).
 func TestLeft(t *testing.T) {
 	f, err := Builtin()
 	if err != nil {
 		t.Fatal(err)
 	}
-	flux := f.AppleOf("FLUX.2-klein-4B")
+	flux, moss := f.AppleOf("FLUX.2-klein-4B"), f.AppleOf("MOSS-SoundEffect-v2.0")
 	for _, c := range []struct {
 		a             Apple
 		program, arch string
 		want          bool
 	}{
-		{flux, "dit_single_0.aimodel", "h13g", true},
-		{flux, "dit_single_15", "h13g", true},
+		{flux, "dit_single_0.aimodel", "h13g", false},
 		{flux, "dit_double_0.aimodel", "h13g", false},
 		{flux, "dit_single_0.aimodel", "h14g", false},
 		{flux, "dit_single_0.aimodel", "h15g", false},
+		{moss, "decoder_0.aimodel", "h13g", true},
+		{moss, "decoder_0.aimodel", "h15g", true},
 	} {
 		if _, got := c.a.Left("x.coreai", c.program, c.arch); got != c.want {
 			t.Errorf("%s on %s: left %v, want %v", c.program, c.arch, got, c.want)

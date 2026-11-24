@@ -24,8 +24,13 @@ import (
 // again. 2: the edits of PrebuiltKeys keys or more in programs of their own (DeviceSuffix); 3:
 // those in an export of their own beside it (DeviceExport); 4: 512 x 512's attention takes its
 // 1536 queries as two chunks of 768 (mil's headChunk: the prebuilt programs for an M3 failed to
-// load, docs/known-issues.md 12).
-const ExportVersion = 4
+// load, docs/known-issues.md 12); 5: an attention over 8192 keys or more joins its parts by their
+// log-sum-exp (milpart.PieceKeys), so that the edit at 1024 x 1024 with a reference of 1024 is in
+// the export, prebuilt (PrebuiltKeys); 6: two single blocks a program (model-recipes.yaml
+// single_group: five left the edit at 1024 x 1024 from three references of 512 off the Neural
+// Engine on an M1 and an M2, "RegAlloc: failed to allocate tensors with fixed L2 hint", and every
+// size off it on an M1).
+const ExportVersion = 6
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
@@ -60,12 +65,15 @@ type Edit struct {
 }
 
 // PrebuiltKeys is the most keys (the DiT's rows) a program coreai-build compiles for the Neural
-// Engine takes, plus one: an attention over 8192 keys or more it leaves to the GPU (Metal
-// Toolchain 27.2, h13g to h15g, 2026-11-22: FLUX.2 klein at 1024 x 1024 with a reference of 1024,
-// 8704 keys, "NEFUSED_EW: KernelPreScales"; the keys in pieces of their own, or each piece's
-// softmax apart, as well; 8064 keys compile), where the device's compiler takes it. Such an edit's
-// steps are a program of their own (DeviceSuffix), so that the others keep their prebuilt.
-const PrebuiltKeys = 8192
+// Engine takes, plus one. An attention over 8192 keys or more joined by one softmax it left to the
+// GPU ("NEFUSED_EW: KernelPreScales"); with its parts joined by their log-sum-exp
+// (milpart.PieceKeys) the edit at 1024 x 1024 with a reference of 1024 (8704 keys) compiles for
+// the Neural Engine (Metal Toolchain 27.2, h13g and h15g, 2026-11-24). More, with half-size
+// references beside it (9728 and 10752 keys), still fail a group of single blocks ("Failed to
+// compile function ...: unexpected failure", h15g; a group of double blocks on h13g) though the
+// attention alone compiles: those edits' steps are a program of their own (DeviceSuffix), where
+// the device's compiler takes them, so that the others keep their prebuilt.
+const PrebuiltKeys = 8704 + 1
 
 // DeviceSuffix ends the name of a program the device compiles (coreai.LeftToDevice): the DiT's
 // groups of the edits of PrebuiltKeys keys or more.

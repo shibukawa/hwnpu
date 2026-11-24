@@ -134,15 +134,15 @@ func TestEngineFlow(t *testing.T) {
 
 // An export of 512² and 1024² is named for both and gives each size's functions.
 func TestSizes(t *testing.T) {
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024}); n != "flux.2-klein-4b-512+1024-lut8-lut8-v4.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024}); n != "flux.2-klein-4b-512+1024-lut8-lut8-v6.coreai" {
 		t.Errorf("export name %s", n)
 	}
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 768}); n != "flux.2-klein-4b-768x768-lut8-lut8-v4.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 768}); n != "flux.2-klein-4b-768x768-lut8-lut8-v6.coreai" {
 		t.Errorf("export name of another size %s", n)
 	}
 	// models.yaml npu.apple's 8: one export, named by their count and a hash of the list
 	eight := [][2]int{{1024, 1024}, {512, 512}, {768, 1152}, {768, 1024}, {704, 1280}, {1152, 768}, {1024, 768}, {1280, 704}}
-	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024, Height: 1024, Sizes: eight}); n != "flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v4.coreai" {
+	if n := ExportName("FLUX.2-klein-4B", ConvertOptions{Width: 1024, Height: 1024, Sizes: eight}); n != "flux.2-klein-4b-8sizes-4d02f40a-lut8-lut8-v6.coreai" {
 		t.Errorf("export name of 8 sizes %s", n)
 	}
 	m := &ProgramManifest{Dit: Config{Width: 1024, Height: 1024}, Vae: []string{"vae_s0.aimodel#s1024x1024"},
@@ -222,8 +222,8 @@ func TestEngineEdit(t *testing.T) {
 }
 
 // models.yaml npu.apple's FLUX.2 klein is one export of its 8 sizes and 5 edits, named for both:
-// at 1024 x 1024 from a reference of 1024 and none, one or two of 512; at 512 x 512 from one or two
-// of 512.
+// at 1024 x 1024 from a reference of 1024, or two or three of 512; at 512 x 512 from one or two of
+// 512.
 func TestAppleOptions(t *testing.T) {
 	m, ok := chat.Lookup("FLUX.2-klein-4B")
 	if !ok {
@@ -233,14 +233,14 @@ func TestAppleOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Edit{{1024, 1024, [][]int{{1}, {1, 2}, {1, 2, 2}}}, {512, 512, [][]int{{1}, {1, 1}}}}
+	want := []Edit{{1024, 1024, [][]int{{1}, {2, 2}, {2, 2, 2}}}, {512, 512, [][]int{{1}, {1, 1}}}}
 	if len(o.Sizes) != 8 || !reflect.DeepEqual(o.Edits, want) {
 		t.Errorf("sizes %v, edits %v", o.Sizes, o.Edits)
 	}
-	if n := ExportName(m.Name, o); !strings.HasPrefix(n, "flux.2-klein-4b-8sizes-4d02f40a-5edits-") || !strings.HasSuffix(n, "-lut8-lut8-v4.coreai") {
+	if n := ExportName(m.Name, o); !strings.HasPrefix(n, "flux.2-klein-4b-8sizes-4d02f40a-5edits-") || !strings.HasSuffix(n, "-lut8-lut8-v6.coreai") {
 		t.Errorf("export name %s", n)
 	}
-	if f := EditFunction(1024, 1024, []int{2, 1, 2}); f != "s1024x1024_ref1h2" {
+	if f := EditFunction(1024, 1024, []int{2, 2, 2}); f != "s1024x1024_refh3" {
 		t.Errorf("edit function %s", f)
 	}
 	for _, bad := range []string{"", "0", "x@half", "3+2@half", "1@full"} {

@@ -322,6 +322,57 @@ func KeyParts(lo, hi int) [][2]int {
 	return out
 }
 
+// PieceKeys is the keys from which HeadAttention's parts (KeyParts) are each a softmax of their
+// own, put together by their log-sum-exp (piecesJoined), in place of one softmax over all of them:
+// the largest of the parts' maxima and the sum of their sums, past 8192 keys, made a fused
+// elementwise layer the Neural Engine's compiler leaves off ("NEFUSED_EW: KernelPreScales (1,-1)";
+// coreai-build h13g and h15g, Metal Toolchain 27.2, 2026-11-24: FLUX.2 klein's edits at 1024 x
+// 1024 with a reference of 1024, 8704 keys, then went to the GPU, and were compiled on the
+// device). The same parts joined so are all on the Neural Engine. Fewer keys keep the one softmax
+// (their programs the same bytes as before).
+var PieceKeys = 8192 // a var for the probes of the tests (TestWriteSingleProbe); not changed elsewhere
+
+// keyPart is a part of HeadAttention's keys: [lo, hi) and its bias (nil: none).
+type keyPart struct {
+	lo, hi int
+	bias   *mlpackage.Var
+}
+
+// piecesJoined is the attention of the chunk of queries qc (1, 1, queries, d) over the parts' keys
+// ks and values vs, each part's softmax by itself: each part's output (its probabilities times
+// its values) weighted by the softmax of the parts' log-sum-exp (max + log of the sum) side by side
+// (1, queries, 1, parts). Its output is (1, 1, queries, d).
+func (g *Graph) piecesJoined(qc *mlpackage.Var, ks, vs []*mlpackage.Var, parts []keyPart) *mlpackage.Var {
+	c := qc.Shape[2]
+	var outs, lses []*mlpackage.Var
+	for i, p := range parts {
+		s := g.Reshape(g.MatMul(qc, ks[i], false, true), 1, c, 1, p.hi-p.lo)
+		if p.bias != nil {
+			s = g.Add(s, p.bias)
+		}
+		mx := g.Reduce("max", s, -1)
+		e := g.Unary("exp", g.Sub(s, mx))
+		sum := g.Reduce("sum", e, -1) // (1, queries, 1, 1)
+		outs = append(outs, g.MatMul(g.Reshape(g.Div(e, sum), 1, 1, c, p.hi-p.lo), vs[i], false, false))
+		lses = append(lses, g.Add(mx, g.Unary("log", sum)))
+	}
+	// the parts' weights: a softmax over their lse, its maximum taken off as an attention's own
+	// softmax does (a subtraction of two tensors of one shape is the layer the compiler leaves off)
+	l := g.Concat(-1, lses...) // (1, queries, 1, parts)
+	e := g.Unary("exp", g.Sub(l, g.Reduce("max", l, -1)))
+	w := g.Reshape(g.Div(e, g.Reduce("sum", e, -1)), 1, 1, c, len(parts))
+	var out *mlpackage.Var
+	for i := range outs {
+		x := g.Mul(outs[i], g.Slice(w, -1, i, i+1))
+		if out == nil {
+			out = x
+		} else {
+			out = g.Add(out, x)
+		}
+	}
+	return out
+}
+
 // HeadOptions are HeadAttention's.
 type HeadOptions struct {
 	// Chunk is the queries a chunk (0: all of them).
@@ -381,12 +432,8 @@ func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.
 		g.Fail("HeadAttention: split %d of %d keys, deferred %v", o.Split, m, o.Deferred)
 		return q
 	}
-	// the keys' parts: [lo, hi) and their bias (nil: none)
-	type span struct {
-		lo, hi int
-		bias   *mlpackage.Var
-	}
-	var parts []span
+	// the keys' parts
+	var parts []keyPart
 	for _, kind := range [][2]int{{0, o.Split}, {o.Split, m}} {
 		if kind[0] == kind[1] {
 			continue
@@ -397,7 +444,7 @@ func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.
 			cut = KeyParts(kind[0], kind[1])
 		}
 		for _, c := range cut {
-			p := span{lo: c[0], hi: c[1]}
+			p := keyPart{lo: c[0], hi: c[1]}
 			if biased {
 				p.bias = o.Bias
 				if c[1]-c[0] < o.Bias.Shape[3] {
@@ -438,6 +485,10 @@ func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.
 					return xs[0]
 				}
 				return g.Reduce(typ, g.Concat(-1, xs...), -1)
+			}
+			if len(parts) > 1 && m >= PieceKeys {
+				rows = append(rows, g.piecesJoined(qc, ks, vs, parts))
+				continue
 			}
 			var pms []*mlpackage.Var
 			for i, p := range parts {

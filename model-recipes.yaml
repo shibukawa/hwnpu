@@ -104,21 +104,24 @@ models:
       script: iron_flux2klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
-      version: 1
+      version: 4
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps (version 4; the
+      # programs as version 3's, so its prebuilt programs are the same)
+      finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/imagegen/flux2klein, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
-      # a program: 3 of Qwen3's layers (0.3 GB at 8 bits), 2 double blocks (0.5 GB), 5 single
-      # blocks (0.6 GB); the formats are models.yaml's npu.apple (a run reads them)
+      # a program: 3 of Qwen3's layers (0.3 GB at 8 bits), 2 double blocks (0.5 GB), 2 single
+      # blocks (0.26 GB); the formats are models.yaml's npu.apple (a run reads them).
+      # single_group 2: with 5 a program, coreai-build left the edit at 1024 x 1024 from three
+      # references of 512 (7680 rows) off the Neural Engine on h13g and h14g ("RegAlloc: failed to
+      # allocate tensors with fixed L2 hint"), and h13g every size of 1152 x 768 and up (the M1
+      # then compiled the single blocks on the device, 50 min to 2.5 h each). Offline, that edit
+      # passed with 2 a program on h13g (3 failed) and 3 on h14g (4 failed); 1152 x 768 and the edit
+      # from one reference of 1024 passed with 3 on h13g (2026-11-24)
       convert:
         text_group: 3
         double_group: 2
-        single_group: 5
+        single_group: 2
       jobs: 3
-      prebuild:
-        - arch: h13g
-          programs: [dit_single_*]
-          do: device
-          why: "RegAlloc: failed to allocate tensors with fixed L2 hint (Failed to compile function func_s1152x768, s768x1152, s1280x704, s704x1280); the M1 compiles them on the NPU, 50 to 59 min each"
-          checked: 2026-11-22
   MOSS-SoundEffect-v2.0: &moss
     amd:
       version: 2

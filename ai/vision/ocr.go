@@ -104,6 +104,7 @@ var ocrRole = &airole.Role{
 		}
 		r.Logf = logf(e.Log)
 		t := &TextReader{r: r, closeDev: closeDev, name: e.Model, device: "cpu"}
+		t.model, _ = chat.Lookup(e.Model)
 		switch {
 		case ort:
 			t.where = fmt.Sprintf("on the CPU (ONNX Runtime, %d threads)", n)
@@ -155,6 +156,7 @@ type TextReader struct {
 	r             *ocr.Reader
 	closeDev      func()
 	name          string
+	model         chat.Model // its programs are made at the first picture, from its recipe (chat.WithModel)
 	device, where string
 }
 
@@ -194,7 +196,7 @@ func (t *TextReader) Read(ctx context.Context, img image.Image, o OCROptions) (*
 	}
 	t.r.MinScore, t.r.Size = o.MinScore, o.Size
 	t0 := time.Now()
-	lines, err := t.r.Read(ctx, img)
+	lines, err := t.r.Read(chat.WithModel(ctx, t.model), img)
 	if err != nil {
 		return nil, err
 	}

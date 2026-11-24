@@ -2,11 +2,13 @@ package imagegen
 
 import (
 	"image"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 )
 
 func TestSizeFor(t *testing.T) {
@@ -143,5 +145,48 @@ func TestEditFor(t *testing.T) {
 	}
 	if got := g.EditSizes(); len(got) != 2 {
 		t.Errorf("AMD's edit sizes %v", got)
+	}
+	// AMD's with models.yaml npu.amd edits at 1024 and 512: those as Apple's, the other sizes any
+	// number of the picture's size, but only as the nearest
+	wide := image.Pt(1344, 768)
+	g = &Generator{edits: true, sizes: []image.Point{big, small, wide},
+		editRefs: map[image.Point][][]int{big: {{1}, {2, 2}, {2, 2, 2}}, small: {{1}, {1, 1}}}}
+	for _, c := range []struct {
+		w, h, n int
+		size    image.Point
+		divs    []int
+	}{
+		{1024, 1024, 1, big, []int{1}},
+		{1024, 1024, 2, big, []int{2, 2}},
+		{1024, 1024, 3, big, []int{2, 2, 2}},
+		{512, 512, 2, small, []int{1, 1}},
+		{512, 512, 3, big, []int{2, 2, 2}},
+		{1920, 1080, 2, wide, []int{1, 1}},
+		{1920, 1080, 4, wide, []int{1, 1, 1, 1}},
+	} {
+		s, d, err := g.editFor(c.w, c.h, c.n)
+		if err != nil || s != c.size || !slices.Equal(d, c.divs) {
+			t.Errorf("AMD: editFor(%d, %d, %d) = %v %v %v, want %v %v", c.w, c.h, c.n, s, d, err, c.size, c.divs)
+		}
+	}
+	for _, wh := range []image.Point{big, small} {
+		if s, d, err := g.editFor(wh.X, wh.Y, 4); err == nil {
+			t.Errorf("AMD: 4 references at %v: %v %v", wh, s, d)
+		}
+	}
+}
+
+// AMD's edits from models.yaml npu.amd edits: by the export's sizes, the references sorted.
+func TestAMDEdits(t *testing.T) {
+	m := chat.Model{Name: "m", NPU: map[string]chat.NPUSpec{"amd": {Edits: map[string][]string{
+		"1:1": {"1", "2@half", "3@half"}, "1:1s": {"1", "2"}, "16:9": {"1"}}}}}
+	as := []aspect.Aspect{{Name: "1:1", Width: 1024, Height: 1024}, {Name: "1:1s", Width: 512, Height: 512}, {Name: "16:9", Width: 1344, Height: 768}}
+	got, err := amdEdits(m, as, []image.Point{{1024, 1024}, {512, 512}}) // an export without 16:9
+	want := map[image.Point][][]int{{1024, 1024}: {{1}, {2, 2}, {2, 2, 2}}, {512, 512}: {{1}, {1, 1}}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("amdEdits = %v %v, want %v", got, err, want)
+	}
+	if got, err := amdEdits(chat.Model{}, as, nil); got != nil || err != nil {
+		t.Errorf("no edits: %v %v", got, err)
 	}
 }

@@ -99,7 +99,9 @@ func newRole(name string, edit bool) *airole.Role {
 		// 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		// 2: Anima, Chroma (since removed) and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
 		// 3: FLUX.2 klein's export on Apple's of every size and edit in one, and one beside it
-		Revision: 3,
+		// 4: FLUX.2 klein's export v6 (two single blocks a program): the store's record of v4 is of a
+		// layout this hwnpu no longer reads (ai.Store.find does not look at the export's version)
+		Revision: 4,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 			var f airole.Files
 			fam := familyOf(e.Base)
@@ -186,8 +188,10 @@ type Generator struct {
 	// at Prepare (Warm does nothing)
 	edits, warmAll, amd bool
 	// editSizes are the sizes it draws from references at, nil for every one of sizes; editRefs
-	// the references of each size's edits, each the picture's sides over 1 or 2 in order, nil for
-	// any number of the picture's size (FLUX.2 klein on Apple's: models.yaml npu.apple edits)
+	// the references of each size's edits, each the picture's sides over 1 or 2 in order
+	// (FLUX.2 klein: models.yaml npu.apple and npu.amd edits). A size it lacks (or a nil
+	// editRefs) draws from any number of the picture's size (AMD's sizes the table leaves out),
+	// and only when it is the nearest to the size asked
 	editSizes []image.Point
 	editRefs  map[image.Point][][]int
 	p         family
@@ -266,24 +270,32 @@ func byNearness(sizes []image.Point, w, h int) []image.Point {
 }
 
 // editFor is the size and the references (the picture's sides over each) of an edit from n
-// references for a picture of about w x h: the nearest of EditSizes with an edit of n.
+// references for a picture of about w x h: the nearest of EditSizes with an edit of n. A size
+// editRefs leaves out takes any number of the picture's size, but only as the nearest: an edit
+// of a number the table of the nearest sizes lacks (4 at 1024 x 1024) is not drawn at another
+// shape, so it fails as on Apple's.
 func (g *Generator) editFor(w, h, n int) (image.Point, []int, error) {
-	for _, s := range byNearness(g.EditSizes(), w, h) {
-		if g.editRefs == nil { // any number of the picture's size
+	sizes := byNearness(g.EditSizes(), w, h)
+	for i, s := range sizes {
+		refs, ok := g.editRefs[s]
+		if !ok {
+			if i > 0 {
+				continue
+			}
 			divs := make([]int, n)
 			for i := range divs {
 				divs[i] = 1
 			}
 			return s, divs, nil
 		}
-		for _, r := range g.editRefs[s] {
+		for _, r := range refs {
 			if len(r) == n {
 				return s, r, nil
 			}
 		}
 	}
 	var have []string
-	for _, s := range g.editSizes {
+	for _, s := range sizes {
 		for _, r := range g.editRefs[s] {
 			have = append(have, fmt.Sprintf("%s at %d x %d", referenceNames(r), s.X, s.Y))
 		}
