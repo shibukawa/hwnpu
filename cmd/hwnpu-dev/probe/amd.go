@@ -170,7 +170,7 @@ func (p *prober) amdRun(python []string, r amdResult) amdResult {
 		}
 	}()
 	t0 := time.Now()
-	if err := chat.RunIRON(p.ctx, python, name, "iron_probe.py", args, out, io.Discard); err != nil {
+	if err := chat.RunIRON(p.ctx, python, name, "iron_probe.py", args, out, io.Discard, nil); err != nil {
 		r.Error = "export: " + err.Error()
 		logAMD(r)
 		return r

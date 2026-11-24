@@ -35,6 +35,9 @@ type Config struct {
 	Dir                     string
 	Encoder, Cross, Decoder string
 	Weights                 string
+	// Tokenizer is the tokenizer to load ("": Dir's tokenizer.json, or its binary file):
+	// Prepare's of chat.PrepareTokenizer.
+	Tokenizer string
 }
 
 // generation is what decoding needs of generation_config.json.
@@ -98,7 +101,7 @@ func Load(ctx context.Context, dev *hwnpu.Device, c Config) (*Transcriber, error
 	if err != nil {
 		return nil, err
 	}
-	t, err := newTranscriber(c.Dir, dec.Config)
+	t, err := newTranscriber(c.Dir, c.Tokenizer, dec.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +133,9 @@ func Load(ctx context.Context, dev *hwnpu.Device, c Config) (*Transcriber, error
 }
 
 // newTranscriber reads the settings and the tokenizer of the checkpoint in dir.
-func newTranscriber(dir string, cfg *whisper.Config) (*Transcriber, error) {
+// newTranscriber reads the checkpoint's generation_config.json in dir and the tokenizer tok
+// ("": dir's tokenizer.json).
+func newTranscriber(dir, tok string, cfg *whisper.Config) (*Transcriber, error) {
 	t := &Transcriber{cfg: cfg, langs: map[int32]string{}}
 	raw, err := os.ReadFile(filepath.Join(dir, "generation_config.json"))
 	if err != nil {
@@ -145,7 +150,10 @@ func newTranscriber(dir string, cfg *whisper.Config) (*Transcriber, error) {
 	for tok, id := range t.gen.LangToID {
 		t.langs[id] = strings.TrimSuffix(strings.TrimPrefix(tok, "<|"), "|>")
 	}
-	if t.tok, err = tokenizer.Load(filepath.Join(dir, "tokenizer.json")); err != nil {
+	if tok == "" {
+		tok = filepath.Join(dir, "tokenizer.json")
+	}
+	if t.tok, err = tokenizer.Load(tok); err != nil {
 		return nil, err
 	}
 	return t, nil

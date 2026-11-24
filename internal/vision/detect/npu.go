@@ -67,7 +67,7 @@ func readHeads(dir, model string) ([]string, []float64, error) {
 			return h.Names, h.Scales, nil
 		}
 	}
-	g, err := onnx.Load(model)
+	g, err := onnx.LoadLazy(model)
 	if err != nil {
 		return nil, nil, err
 	}

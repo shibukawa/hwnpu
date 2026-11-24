@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/recipe"
+	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
 // AMDTool is the IRON exporter of MOSS-SoundEffect (tools/amd, built into hwnpu): the text
@@ -75,6 +76,9 @@ func IsIronExport(dir string) bool {
 		need = append(need, fmt.Sprintf("dit-blocks-%d/manifest.json", first))
 	}
 	for _, f := range need {
+		if f == "tokenizer/tokenizer.json" && tokenizer.Exists(filepath.Join(dir, f)) {
+			continue // or its binary file (the recipe's finish)
+		}
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			return false
 		}

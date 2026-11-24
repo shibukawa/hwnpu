@@ -20,6 +20,7 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/shibukawa/hwnpu/internal/dl"
+	"github.com/shibukawa/hwnpu/internal/mapped"
 )
 
 // apiVersion is the OrtApi this package asks for: every function it calls is in it, and any
@@ -226,6 +227,7 @@ func (r *Runtime) Open(model []byte, o Options) (*Session, error) {
 		return nil, err
 	}
 	runtime.KeepAlive(model)
+	trim()
 	var err error
 	if s.Inputs, err = s.names(fnSessionGetInputCount, fnSessionGetInputName); err == nil {
 		s.Outputs, err = s.names(fnSessionGetOutputCount, fnSessionGetOutputName)
@@ -385,13 +387,15 @@ func (r *Runtime) tensor(v uintptr) (Tensor, error) {
 	return t, nil
 }
 
-// ReadModel reads an ONNX file.
-func ReadModel(path string) ([]byte, error) {
-	b, err := os.ReadFile(path)
+// ReadModel maps an ONNX file, for Open (OpenProgram, Cut...), which ONNX Runtime takes its own
+// copy of: Close once it is open. Mapped, the file's bytes are the system's cache's, not the
+// process's own memory too (hundreds of MB of Supertonic's).
+func ReadModel(path string) (*mapped.File, error) {
+	f, err := mapped.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("onnxrt: %s: %w", filepath.Base(path), err)
 	}
-	return b, nil
+	return f, nil
 }
 
 func cstr(s string) []byte { return append([]byte(s), 0) }

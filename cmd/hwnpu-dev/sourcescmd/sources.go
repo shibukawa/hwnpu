@@ -25,7 +25,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/envfile"
+	"github.com/shibukawa/hwnpu/internal/finish"
 	"github.com/shibukawa/hwnpu/internal/pose"
+	rcp "github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	"github.com/shibukawa/hwnpu/internal/vision/detect"
 	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
@@ -36,12 +38,13 @@ import (
 type Cmd struct {
 	devopt.Defs `embed:""`
 
-	List   ListCmd   `cmd:"" default:"1" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read (hwnpu-dev sources alone does it)."`
-	Ls     LsCmd     `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev sources list); with --original the repositories' locks."`
-	Import ImportCmd `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
-	Update UpdateCmd `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
-	Verify VerifyCmd `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
-	GC     GCCmd     `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); shows what would go unless --apply. What a writeback cut off left: hwnpu cache clean."`
+	List       ListCmd       `cmd:"" default:"1" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read (hwnpu-dev sources alone does it)."`
+	Ls         LsCmd         `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev sources list); with --original the repositories' locks."`
+	Import     ImportCmd     `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
+	Tokenizers TokenizersCmd `cmd:"" help:"Put the tokenizers of the models that run from their checkpoint (Apple's Neural Engine, Intel's NPU, the CPU) in the sources written back to, as their binary files (chat.PrepareTokenizer): a first run fetches them in place of the tokenizer's text."`
+	Update     UpdateCmd     `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
+	Verify     VerifyCmd     `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
+	GC         GCCmd         `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); shows what would go unless --apply. What a writeback cut off left: hwnpu cache clean."`
 }
 
 // AfterApply gives the subcommands the definitions' flag.
@@ -531,8 +534,9 @@ func (u UpdateCmd) Run(d *devopt.Defs) error {
 
 // ImportCmd is hwnpu-dev sources import.
 type ImportCmd struct {
-	Dir    []string `arg:"" help:"Folders: a checkpoint (DIR, or DIR=OWNER/NAME[@REVISION] when its name is no model's of the definitions) or an export for AMD's NPU (NAME.amd-npu2*, with manifest.json or model.json)."`
+	Dir    []string `arg:"" help:"Folders: a checkpoint (DIR, or DIR=OWNER/NAME[@REVISION] when its name is no model's of the definitions) an export for AMD's NPU (NAME.amd-npu2*, with manifest.json or model.json), or with --finish a Core AI export (models/MODEL/NAME.coreai)."`
 	DryRun bool     `name:"dry-run" help:"Only show what each folder is taken for."`
+	Finish bool     `help:"Do to an export what its model's recipe's finish says (model-recipes.yaml models.NAME.amd.finish: its tokenizer files made binary) before putting it, in its folder: an export of the version before a recipe's finish was added, put as the new version without making it again."`
 }
 
 // importRepos are the repositories of folders whose name is no model's of the definitions.
@@ -579,6 +583,9 @@ func (ic ImportCmd) one(ctx context.Context, writes []shared.Source, dir, repo s
 	name := filepath.Base(dir)
 	if strings.Contains(name, ".amd-npu2") {
 		return ic.export(ctx, writes, dir)
+	}
+	if strings.HasSuffix(name, ".coreai") {
+		return ic.coreAI(ctx, dir)
 	}
 	type part struct {
 		repo string
@@ -629,6 +636,26 @@ func (ic ImportCmd) one(ctx context.Context, writes []shared.Source, dir, repo s
 	return nil
 }
 
+// coreAI puts a Core AI export (NAME.coreai in its model's directory, models/MODEL) as its
+// model's conversion now: with --finish, finished as its recipe says (chat.FinishCoreAI) and put
+// as the recipe's version, an export of the version before without converting it again.
+func (ic ImportCmd) coreAI(ctx context.Context, dir string) error {
+	if !ic.Finish {
+		return errors.New("a Core AI export is put with --finish (as its recipe's version now)")
+	}
+	if ic.DryRun {
+		fmt.Printf("%s: coreai, finished and put as its recipe's version\n", dir)
+		return nil
+	}
+	rel, err := chat.PutCoreAI(ctx, dir)
+	if err != nil {
+		return err
+	}
+	shared.Flush(ctx)
+	fmt.Printf("%s: put as %s\n", dir, rel)
+	return nil
+}
+
 // export puts an export for AMD's NPU made by hand: one of a model's recipe of iron_export_lm.py or first run
 // as hwnpu-dev models push does, any other under the model whose name begins it (its own name
 // when none), described by its name.
@@ -665,6 +692,17 @@ func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir stri
 	if ic.DryRun {
 		fmt.Printf("%s: %s %s\n", dir, kind, e.Path)
 		return nil
+	}
+	if ic.Finish {
+		f, err := rcp.Builtin()
+		if err != nil {
+			return err
+		}
+		if err := finish.Run(dir, f.AMDFinish(m.Recipe)); err != nil {
+			return err
+		}
+	} else if left, err := finish.Leftover(dir); err == nil && len(left) > 0 {
+		return fmt.Errorf("the export holds %s, which its recipe's finish makes binary: --finish does it", strings.Join(left, ", "))
 	}
 	return describeAndPut(ctx, writes, m, e, dir)
 }

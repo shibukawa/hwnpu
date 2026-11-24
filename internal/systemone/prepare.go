@@ -50,7 +50,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
 	}
-	for _, f := range []string{"config.json", "tokenizer.json", "calibration.json"} {
+	for _, f := range []string{"config.json", "calibration.json"} {
 		if _, err := chat.Fetch(ctx, s.Repo, f, log); err != nil {
 			return Config{}, err
 		}
@@ -82,6 +82,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return chat.ConvertProgram(ctx, config, weights, out, p, log)
 	}
 	c := Config{ModelConfig: config}
+	// the tokenizer as its binary file (chat.PrepareTokenizer), not the checkpoint's text
+	if c.Tokenizer, err = chat.PrepareTokenizer(ctx, s.Repo, "tokenizer.json", log); err != nil {
+		return Config{}, err
+	}
 	format := cmp.Or(s.Format, "lut8")
 	if s.Backend == llm.BackendIntel {
 		format = llm.IntelFormat(format)

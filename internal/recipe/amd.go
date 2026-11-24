@@ -34,6 +34,8 @@ type AMDModel struct {
 	Variants    map[int]Strings     `yaml:"variants"`
 	Extra       map[string][]string `yaml:"extra"`
 	Skip        []Skip              `yaml:"skip"`
+	// Finish is what the build does to the export once the script has made it, in order.
+	Finish []Step `yaml:"finish" json:",omitempty"`
 }
 
 // Skip is a generation a model's export is not made for: Why it is not (what was seen), Checked
@@ -305,6 +307,12 @@ func (m AMDModel) ToolsHash() (string, error) {
 func (m AMDModel) Fingerprint() string {
 	m.Version = 0
 	b, _ := json.Marshal(m) // a map's keys in order
+	if v := finishVersions(m.Finish); v != nil {
+		b, _ = json.Marshal(struct {
+			AMDModel
+			Steps map[string]int
+		}{m, v})
+	}
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }

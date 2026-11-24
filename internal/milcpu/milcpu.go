@@ -38,9 +38,54 @@ type value struct {
 	shape []int
 	f     []float32
 	i     []int32
-	b     []bool
-	s     string
-	str   bool
+	// q is integer weight data of 8 bits or fewer (the indices and quantized values of the
+	// constexpr operations), a byte each, signed (int8, int4) when qSigned: not 4 bytes each in i
+	q       []byte
+	qSigned bool
+	// lut is a weight kept as its 8 bit table (constexpr_lut_to_dense that only linear reads):
+	// f is nil, linear reads it as it is
+	lut *lutWeight
+	// f16 is a weight kept in fp16 (a const that only linear reads): f is nil, linear converts it
+	// as it packs it
+	f16 *f16Weight
+	b   []bool
+	s   string
+	str bool
+}
+
+// ints are the integer values of v: i, or q's.
+func (v *value) ints() []int32 {
+	if v.i != nil || v.q == nil {
+		return v.i
+	}
+	out := make([]int32, len(v.q))
+	for k, c := range v.q {
+		if v.qSigned {
+			out[k] = int32(int8(c))
+		} else {
+			out[k] = int32(c)
+		}
+	}
+	return out
+}
+
+// qAt is v's integer value k (i's or q's).
+func (v *value) qAt(k int) int32 {
+	if v.q == nil {
+		return v.i[k]
+	}
+	if v.qSigned {
+		return int32(int8(v.q[k]))
+	}
+	return int32(v.q[k])
+}
+
+// qLen is how many integer values v holds.
+func (v *value) qLen() int {
+	if v.q != nil {
+		return len(v.q)
+	}
+	return len(v.i)
 }
 
 func (v *value) tensor() Tensor { return Tensor{Shape: v.shape, Data: v.f} }
@@ -67,7 +112,11 @@ type Program struct {
 	inline map[*milspec.Value]*value
 	// constOut are the values of the const operations (and constexpr_*), which stay
 	constOut map[string]bool
-	mu       sync.Mutex
+	// lutLinear are the outputs of constexpr_lut_to_dense that only linears read as their
+	// weight: kept as their tables (lutWeight), not in float32; f16Linear those of fp16 consts,
+	// kept in fp16 (f16Weight)
+	lutLinear, f16Linear map[string]bool
+	mu                   sync.Mutex
 }
 
 // Options change how Run computes.
@@ -121,6 +170,13 @@ func LoadFunction(prog *milspec.Program, name string, weights io.ReaderAt) (*Pro
 			p.constOut[op.GetOutputs()[0].GetName()] = true
 		}
 	}
+	p.lutLinear = linearWeights(p.ops, p.outputs, func(op *milspec.Operation) bool {
+		return op.GetType() == "constexpr_lut_to_dense"
+	})
+	p.f16Linear = linearWeights(p.ops, p.outputs, func(op *milspec.Operation) bool {
+		v := op.GetAttributes()["val"]
+		return op.GetType() == "const" && v.GetBlobFileValue() != nil && v.GetType().GetTensorType().GetDataType() == milspec.DataType_FLOAT16
+	})
 	p.reluAfter = make([]bool, len(p.ops))
 	for i := 0; i+1 < len(p.ops); i++ {
 		o := p.ops[i].GetOutputs()[0].GetName()
@@ -132,6 +188,30 @@ func LoadFunction(prog *milspec.Program, name string, weights io.ReaderAt) (*Pro
 		}
 	}
 	return p, nil
+}
+
+// linearWeights are the outputs of the operations of ops that kind takes, of rank 2, that only
+// linears read, as their weight (not an output of the function).
+func linearWeights(ops []*milspec.Operation, outputs []string, kind func(*milspec.Operation) bool) map[string]bool {
+	out := map[string]bool{}
+	for _, op := range ops {
+		if kind(op) && len(typeShape(op.GetOutputs()[0].GetType())) == 2 {
+			out[op.GetOutputs()[0].GetName()] = true
+		}
+	}
+	for _, o := range outputs {
+		delete(out, o)
+	}
+	for _, op := range ops {
+		for k, arg := range op.GetInputs() {
+			for _, b := range arg.GetArguments() {
+				if n := b.GetName(); out[n] && (op.GetType() != "linear" || k != "weight") {
+					delete(out, n)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // Inputs returns the shapes of the program's inputs by name.
@@ -312,7 +392,10 @@ func sameShape(a, b []int) bool {
 }
 
 // decode turns a constant Value (immediate or in the weight file) into a value.
-func (p *Program) decode(v *milspec.Value) (*value, error) {
+func (p *Program) decode(v *milspec.Value) (*value, error) { return p.decodeAs(v, false) }
+
+// decodeAs is decode, a fp16 blob of rank 2 kept in fp16 (f16Weight) when asF16.
+func (p *Program) decodeAs(v *milspec.Value, asF16 bool) (*value, error) {
 	shape := typeShape(v.GetType())
 	dt := v.GetType().GetTensorType().GetDataType()
 	n := numel(shape)
@@ -323,6 +406,9 @@ func (p *Program) decode(v *milspec.Value) (*value, error) {
 		bt, raw, err := mlpackage.ReadBlob(p.weights, bf.GetOffset())
 		if err != nil {
 			return nil, err
+		}
+		if asF16 && bt == mlpackage.BlobFloat16 && len(shape) == 2 && len(raw) == 2*n {
+			return &value{shape: shape, f16: &f16Weight{n: shape[0], k: shape[1], h: raw}}, nil
 		}
 		return decodeRaw(bt, dt, raw, shape, n)
 	}
@@ -378,10 +464,7 @@ func decodeRaw(bt mlpackage.BlobDType, dt milspec.DataType, raw []byte, shape []
 	case mlpackage.BlobUInt8:
 		if dt != milspec.DataType_BOOL {
 			// uint8 data: the indices of an 8 bit table
-			out.i = make([]int32, len(raw))
-			for i, c := range raw {
-				out.i[i] = int32(c)
-			}
+			out.q = raw
 			break
 		}
 		out.b = make([]bool, len(raw))
@@ -390,34 +473,31 @@ func decodeRaw(bt mlpackage.BlobDType, dt milspec.DataType, raw []byte, shape []
 		}
 	case mlpackage.BlobUInt6:
 		// packed 6 bits at a time, low bits first
-		out.i = make([]int32, n)
-		for i := range out.i {
+		out.q = make([]byte, n)
+		for i := range out.q {
 			bit := 6 * i
 			v := uint32(raw[bit/8])
 			if bit/8+1 < len(raw) {
 				v |= uint32(raw[bit/8+1]) << 8
 			}
-			out.i[i] = int32(v>>(bit%8)) & 63
+			out.q[i] = byte(v>>(bit%8)) & 63
 		}
 	case mlpackage.BlobInt8:
-		out.i = make([]int32, len(raw))
-		for i, c := range raw {
-			out.i[i] = int32(int8(c))
-		}
+		out.q, out.qSigned = raw, true
 	case mlpackage.BlobUInt4, mlpackage.BlobInt4:
-		out.i = make([]int32, n)
-		for i := range out.i {
-			nib := int32(raw[i/2]>>(4*(i%2))) & 15
-			if bt == mlpackage.BlobInt4 && nib >= 8 {
-				nib -= 16
+		out.q, out.qSigned = make([]byte, n), bt == mlpackage.BlobInt4
+		for i := range out.q {
+			nib := raw[i/2] >> (4 * (i % 2)) & 15
+			if out.qSigned && nib >= 8 {
+				nib |= 0xf0 // as int8
 			}
-			out.i[i] = nib
+			out.q[i] = nib
 		}
 	default:
 		return nil, fmt.Errorf("blob type %d is not supported", bt)
 	}
-	if out.f != nil && len(out.f) != n || out.i != nil && len(out.i) != n {
-		return nil, fmt.Errorf("blob holds %d values for shape %v", max(len(out.f), len(out.i)), shape)
+	if out.f != nil && len(out.f) != n || out.i != nil && len(out.i) != n || out.q != nil && len(out.q) != n {
+		return nil, fmt.Errorf("blob holds %d values for shape %v", max(len(out.f), len(out.i), len(out.q)), shape)
 	}
 	return out, nil
 }

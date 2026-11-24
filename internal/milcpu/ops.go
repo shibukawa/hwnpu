@@ -11,6 +11,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/sgemm"
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // arg returns the operation's input called name: a bound value or an inline constant. ok is false when
@@ -109,10 +110,10 @@ func (r *reader) ints(name string, def ...int32) []int32 {
 		}
 		return def
 	}
-	if v.i == nil {
+	if v.i == nil && v.q == nil {
 		r.err = fmt.Errorf("input %s is not an int tensor", name)
 	}
-	return v.i
+	return v.ints()
 }
 
 func (r *reader) int(name string, def int32) int32 {
@@ -157,7 +158,7 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 	var out *value
 	switch typ := op.GetType(); typ {
 	case "const":
-		return p.decode(op.GetAttributes()["val"])
+		return p.decodeAs(op.GetAttributes()["val"], p.f16Linear[op.GetOutputs()[0].GetName()])
 	case "identity":
 		x := r.floats("x")
 		if r.err == nil {
@@ -239,8 +240,11 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 			out, r.err = reduce(x, axes, keep, typ)
 		}
 	case "linear":
-		x, w := r.floats("x"), r.floats("weight")
+		x, w := r.floats("x"), r.get("weight")
 		b := r.opt("bias")
+		if r.err == nil && w.f == nil && w.lut == nil && w.f16 == nil {
+			r.err = fmt.Errorf("input weight is not a float tensor")
+		}
 		if r.err == nil {
 			out, r.err = linear(x, w, b)
 		}
@@ -377,7 +381,11 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 	case "constexpr_lut_to_dense":
 		idx, lut := r.get("indices"), r.floats("lut")
 		if r.err == nil {
-			out, r.err = lutToDense(idx, lut)
+			if p.lutLinear[op.GetOutputs()[0].GetName()] {
+				out, r.err = newLUTWeight(idx, lut)
+			} else {
+				out, r.err = lutToDense(idx, lut)
+			}
 		}
 	case "constexpr_blockwise_shift_scale":
 		data, scale := r.get("data"), r.floats("scale")
@@ -970,8 +978,178 @@ func linear(x, w, bias *value) (*value, error) {
 			copy(out.f[i*n:(i+1)*n], bias.f[:n])
 		}
 	}
-	sgemm.MulAdd(m, n, k, sgemm.A{Data: x.f, Stride: k}, sgemm.Transposed{Data: w.f, Stride: k, N: n}, out.f, n, Threads)
+	if w.lut != nil && m <= lutRowsMax && k >= 4 && vecops.HaveLUTRows {
+		w.lut.mulAdd(m, x.f, out.f)
+		return out, nil
+	}
+	var b sgemm.Source = sgemm.Transposed{Data: w.f, Stride: k, N: n}
+	if w.lut != nil {
+		b = w.lut
+	} else if w.f16 != nil {
+		b = w.f16
+	}
+	sgemm.MulAdd(m, n, k, sgemm.A{Data: x.f, Stride: k}, b, out.f, n, Threads)
 	return out, nil
+}
+
+// f16Weight is a linear's weight (n, k) in fp16, converted as sgemm packs it: half the float32
+// weight's memory.
+type f16Weight struct {
+	n, k int
+	h    []byte
+}
+
+// Pack writes a block of the weight's panels, as sgemm.Transposed packs a float32 one.
+func (w *f16Weight) Pack(dst []float32, k0, kc, j0, nc int) {
+	var buf [sgemm.KC]float32
+	row := buf[:0]
+	if kc <= len(buf) {
+		row = buf[:kc]
+	} else {
+		row = make([]float32, kc)
+	}
+	for p := 0; p*sgemm.NR < nc; p++ {
+		d := dst[p*kc*sgemm.NR:][:kc*sgemm.NR]
+		c0 := j0 + p*sgemm.NR
+		cols := min(sgemm.NR, w.n-c0)
+		for c := range cols {
+			off := (c0+c)*w.k + k0
+			vecops.F16ToF32(row, w.h[2*off:2*(off+kc)])
+			for kk, v := range row {
+				d[kk*sgemm.NR+c] = v
+			}
+		}
+		if cols < sgemm.NR {
+			for kk := range kc {
+				clear(d[kk*sgemm.NR+cols : kk*sgemm.NR+sgemm.NR])
+			}
+		}
+	}
+}
+
+// lutWeight is a linear's weight (n, k) as its 8 bit table (constexpr_lut_to_dense): the index of
+// each element, a byte, and the table of each block of the grid (gn, gk), read as sgemm packs
+// it. A quarter of the float32 weight's memory, which it is not made into.
+type lutWeight struct {
+	n, k, size int
+	bn, bk, gk int // a block's rows and columns, the grid's columns
+	idx        []byte
+	table      []float32 // (gn, gk, size)
+}
+
+// newLUTWeight is the lutWeight of a constexpr_lut_to_dense of indices idx (n, k) and lut lut
+// (gn, gk, size, 1), as a value (no f).
+func newLUTWeight(idx, lut *value) (*value, error) {
+	if len(idx.shape) != 2 || idx.q == nil || idx.qSigned || len(lut.shape) != 4 || lut.shape[3] != 1 {
+		return nil, fmt.Errorf("indices %v and lut %v are not a linear's weight", idx.shape, lut.shape)
+	}
+	n, k, gn, gk, size := idx.shape[0], idx.shape[1], lut.shape[0], lut.shape[1], lut.shape[2]
+	if gn == 0 || gk == 0 || n%gn != 0 || k%gk != 0 || len(idx.q) != n*k || len(lut.f) != gn*gk*size {
+		return nil, fmt.Errorf("lut grid %v does not divide %v", lut.shape[:2], idx.shape)
+	}
+	for _, q := range idx.q {
+		if int(q) >= size {
+			return nil, fmt.Errorf("index %d of a table of %d", q, size)
+		}
+	}
+	w := &lutWeight{n: n, k: k, size: size, bn: n / gn, bk: k / gk, gk: gk, idx: idx.q, table: lut.f}
+	return &value{shape: idx.shape, lut: w}, nil
+}
+
+// Pack writes a block of the weight's panels, as sgemm.Transposed packs a float32 one.
+func (w *lutWeight) Pack(dst []float32, k0, kc, j0, nc int) {
+	for p := 0; p*sgemm.NR < nc; p++ {
+		d := dst[p*kc*sgemm.NR:][:kc*sgemm.NR]
+		c0 := j0 + p*sgemm.NR
+		cols := min(sgemm.NR, w.n-c0)
+		for c := range cols {
+			r := c0 + c
+			row := w.idx[r*w.k+k0:][:kc]
+			tables := w.table[(r/w.bn)*w.gk*w.size:]
+			if w.gk == 1 { // a table for the whole row
+				t := tables[:w.size]
+				for kk, q := range row {
+					d[kk*sgemm.NR+c] = t[q]
+				}
+				continue
+			}
+			for kk, q := range row {
+				d[kk*sgemm.NR+c] = tables[((k0+kk)/w.bk)*w.size+int(q)]
+			}
+		}
+		if cols < sgemm.NR {
+			for kk := range kc {
+				clear(d[kk*sgemm.NR+cols : kk*sgemm.NR+sgemm.NR])
+			}
+		}
+	}
+}
+
+// lutRowsMax is the most rows of x a linear with a lutWeight multiplies by looking the weights
+// up as it goes (lutWeight.mulAdd); sgemm packs them for more, whose packing is then shared.
+const lutRowsMax = 8
+
+// mulAdd adds x (m, k) times the weight's transpose to out (m, n), with the sums sgemm makes:
+// for each output a sum over a KC block in order of k, added to out block after block. The
+// weights are looked up 16 rows at a time (vecops.LUTRows16), the rows split over Threads
+// goroutines: the products are of one token, which sgemm would run on one (sgemm.MinWork),
+// spending most of it packing the weights.
+func (w *lutWeight) mulAdd(m int, x, out []float32) {
+	blocks := (w.n + 15) / 16
+	threads := Threads
+	if threads <= 0 {
+		threads = runtime.GOMAXPROCS(0)
+	}
+	// at least 64 Ki weights a goroutine
+	per := max((blocks+threads-1)/threads, (64<<10)/(16*w.k), 1)
+	if per >= blocks {
+		w.mulAddRows(m, x, out, 0, blocks)
+		return
+	}
+	var wg sync.WaitGroup
+	for b := 0; b < blocks; b += per {
+		wg.Add(1)
+		go func(b0, b1 int) {
+			defer wg.Done()
+			w.mulAddRows(m, x, out, b0, b1)
+		}(b, min(blocks, b+per))
+	}
+	wg.Wait()
+}
+
+// mulAddRows is mulAdd for the blocks of 16 rows of the weight b0 to b1.
+func (w *lutWeight) mulAddRows(m int, x, out []float32, b0, b1 int) {
+	var rows, off [16]int32
+	var acc [16]float32
+	for b := b0; b < b1; b++ {
+		r0 := b * 16
+		lanes := min(16, w.n-r0)
+		for l := range rows {
+			rows[l] = int32(min(l, lanes-1) * w.k) // past the last row: the last row again
+		}
+		idx := w.idx[r0*w.k:]
+		for i := range m {
+			xi := x[i*w.k : (i+1)*w.k]
+			oi := out[i*w.n+r0 : i*w.n+r0+lanes]
+			for pc := 0; pc < w.k; pc += sgemm.KC {
+				end := min(pc+sgemm.KC, w.k)
+				acc = [16]float32{}
+				for s := pc; s < end; {
+					kb := s / w.bk
+					e := min(end, (kb+1)*w.bk)
+					for l := range off {
+						r := r0 + min(l, lanes-1)
+						off[l] = int32(((r/w.bn)*w.gk + kb) * w.size)
+					}
+					vecops.LUTRows16(&acc, xi[s:e], idx, &rows, s, &off, w.table)
+					s = e
+				}
+				for l := range oi {
+					oi[l] += acc[l]
+				}
+			}
+		}
+	}
 }
 
 // matmul is the batched product of the last two axes, broadcasting the batch axes.
@@ -1867,7 +2045,7 @@ func blockIndex(shape, grid []int) []int {
 // lutToDense expands palettized indices with one table per block: lut has shape grid + [size, 1].
 func lutToDense(idx, lut *value) (*value, error) {
 	rank := len(idx.shape)
-	if idx.i == nil || len(lut.shape) != rank+2 || lut.shape[rank+1] != 1 {
+	if idx.i == nil && idx.q == nil || len(lut.shape) != rank+2 || lut.shape[rank+1] != 1 {
 		return nil, fmt.Errorf("indices %v and lut %v do not match", idx.shape, lut.shape)
 	}
 	grid, size := lut.shape[:rank], lut.shape[rank]
@@ -1877,9 +2055,9 @@ func lutToDense(idx, lut *value) (*value, error) {
 		}
 	}
 	blocks := blockIndex(idx.shape, grid)
-	out := &value{shape: idx.shape, f: make([]float32, len(idx.i))}
-	for i, q := range idx.i {
-		out.f[i] = lut.f[blocks[i]*size+int(q)]
+	out := &value{shape: idx.shape, f: make([]float32, idx.qLen())}
+	for i := range out.f {
+		out.f[i] = lut.f[blocks[i]*size+int(idx.qAt(i))]
 	}
 	return out, nil
 }
@@ -1887,18 +2065,18 @@ func lutToDense(idx, lut *value) (*value, error) {
 // shiftScale is (data - offset) * scale with one scale (and offset) per block.
 func shiftScale(data, scale, offset *value) (*value, error) {
 	rank := len(data.shape)
-	if data.i == nil || len(scale.shape) != rank {
+	if data.i == nil && data.q == nil || len(scale.shape) != rank {
 		return nil, fmt.Errorf("data %v and scale %v do not match", data.shape, scale.shape)
 	}
 	blocks := blockIndex(data.shape, scale.shape)
-	out := &value{shape: data.shape, f: make([]float32, len(data.i))}
-	for i, q := range data.i {
-		v := float32(q)
+	out := &value{shape: data.shape, f: make([]float32, data.qLen())}
+	for i := range out.f {
+		v := float32(data.qAt(i))
 		if offset != nil {
 			if offset.f != nil {
 				v -= offset.f[blocks[i]]
 			} else {
-				v -= float32(offset.i[blocks[i]])
+				v -= float32(offset.qAt(blocks[i]))
 			}
 		}
 		out.f[i] = v * scale.f[blocks[i]]

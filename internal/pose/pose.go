@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -178,7 +179,7 @@ func ExportNPU(ctx context.Context, python []string, name, model, out string, lo
 // OpenNPU loads an export of ExportNPU (dir) onto dev, and the ONNX file model for the host's
 // part: from the head's convolutions to the people.
 func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Estimator, error) {
-	g, err := onnx.Load(model)
+	g, err := onnx.LoadLazy(model)
 	if err != nil {
 		return nil, err
 	}
@@ -202,12 +203,17 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Estima
 	if err != nil {
 		return nil, err
 	}
+	var given []string
+	for _, o := range x.Outputs {
+		given = append(given, o.Name)
+	}
+	g.DecodeFor(given, outputs) // the host's part's weights; the NPU's stay in the file
 	return &Estimator{g: g, npu: npu}, nil
 }
 
 // Open loads the graph and the program on dev (nil: the CPU interpreter).
 func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Estimator, error) {
-	g, err := onnx.Load(model)
+	g, err := onnx.LoadLazy(model)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +236,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Estim
 // (0 or 1: the calling thread), the graph up to the program's outputs; the host's part is the
 // same.
 func OpenCPU(model string, threads int) (*Estimator, error) {
-	g, err := onnx.Load(model)
+	g, err := onnx.LoadLazy(model)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +250,8 @@ func OpenCPU(model string, threads int) (*Estimator, error) {
 	if err != nil {
 		return nil, err
 	}
-	prog, err := onnxrt.OpenProgram(raw, p, threads)
+	defer raw.Close()
+	prog, err := onnxrt.OpenProgram(raw.Bytes(), p, threads)
 	if err != nil {
 		return nil, err
 	}
@@ -261,6 +268,8 @@ func newEstimator(g *onnx.Graph, p *onnx.Program, prog runner.Program, program s
 		prog.Close()
 		return nil, fmt.Errorf("pose: %s gives %v, not the %d values of RTMO's head", program, y, total)
 	}
+	// the host's part's weights, read for good; the program's stay in the file (LoadLazy)
+	g.DecodeFor(append(slices.Clone(p.Outputs), slices.Collect(maps.Keys(p.Folded()))...), outputs)
 	return &Estimator{g: g, p: p, prog: prog}, nil
 }
 

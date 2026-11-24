@@ -214,7 +214,7 @@ func (p *Program) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (
 		var outs []*mlpackage.Var
 		p.widths, p.outShapes = nil, nil
 		for _, o := range p.Outputs {
-			x, ok := l.vals[o]
+			x, ok := l.get(o)
 			if !ok {
 				l.Fail("no value %s", o)
 			}
@@ -224,7 +224,8 @@ func (p *Program) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (
 			p.rows = FlatRows(p.outShapes)
 		}
 		for i, o := range p.Outputs {
-			v := l.v(l.vals[o])
+			x, _ := l.get(o)
+			v := l.v(x)
 			if p.Flat {
 				v = l.reshape(v, []int{1, p.rows, Len(p.outShapes[i]) / p.rows})
 				p.widths = append(p.widths, v.Shape[2])
@@ -285,6 +286,15 @@ func (l *lowering) op(typ string, in map[string]any, shape ...int) *mlpackage.Va
 }
 
 // node lowers one node, or computes it on the host when its inputs are all constants.
+// get is the value of name, a lazy initializer's (LoadLazy) read for the node that asks, not kept.
+func (l *lowering) get(name string) (val, bool) {
+	x, ok := l.vals[name]
+	if x.c != nil {
+		x.c = x.c.Decoded()
+	}
+	return x, ok
+}
+
 func (l *lowering) node(n *Node) {
 	in := make([]val, len(n.In))
 	allConst := true
@@ -292,7 +302,7 @@ func (l *lowering) node(n *Node) {
 		if name == "" {
 			continue
 		}
-		x, ok := l.vals[name]
+		x, ok := l.get(name)
 		if !ok {
 			l.Fail("%s %s: no value for %s", n.Op, n.Name, name)
 		}
@@ -802,7 +812,7 @@ func linearBiases(g *Graph, outputs []string) (map[string]*Tensor, map[string]st
 			if Len(c.Shape) != nn || len(c.Shape) > 0 && c.Shape[len(c.Shape)-1] != nn {
 				continue
 			}
-			bias[m.Out[0]], biased[n.Out[0]] = c, m.Out[0]
+			bias[m.Out[0]], biased[n.Out[0]] = c.Decoded(), m.Out[0]
 			break
 		}
 	}

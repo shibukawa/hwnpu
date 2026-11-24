@@ -4,7 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestKey(t *testing.T) {
@@ -88,4 +90,51 @@ func TestTreeDigestSymlink(t *testing.T) {
 	if string(a) != string(al) || string(al) == string(bl) {
 		t.Error("a linked tree is not hashed as its target")
 	}
+}
+
+func TestCachedTreeDigest(t *testing.T) {
+	dir, root := t.TempDir(), t.TempDir()
+	w := filepath.Join(root, "weight.bin")
+	os.WriteFile(w, []byte("weights"), 0o644)
+	want, _ := TreeDigest(root)
+	got, err := CachedTreeDigest(dir, root)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("first: %x, %v, want %x", got, err, want)
+	}
+	if src, ok := Source(dir, findKey(t, dir, digestSuffix)); !ok || src != root {
+		t.Errorf("source %q (%v), want %s", src, ok, root)
+	}
+	// kept: the files are not read again (unreadable now, the digest still comes)
+	os.Chmod(w, 0)
+	defer os.Chmod(w, 0o644)
+	if got, err = CachedTreeDigest(dir, root); err != nil || string(got) != string(want) {
+		t.Fatalf("kept: %x, %v, want %x", got, err, want)
+	}
+	os.Chmod(w, 0o644)
+	// a change of the file's time or size reads it again
+	os.WriteFile(w, []byte("Weights"), 0o644)
+	future := time.Now().Add(time.Hour)
+	os.Chtimes(w, future, future)
+	want, _ = TreeDigest(root)
+	if got, _ = CachedTreeDigest(dir, root); string(got) != string(want) {
+		t.Errorf("after a change: %x, want %x", got, want)
+	}
+	// a file of its own, and no cache directory
+	one, _ := CachedTreeDigest(dir, w)
+	if plain, _ := TreeDigest(w); string(one) != string(plain) || len(one) == 0 {
+		t.Errorf("a file: %x, want %x", one, plain)
+	}
+	if none, _ := CachedTreeDigest("", root); string(none) != string(want) {
+		t.Errorf("no cache directory: %x, want %x", none, want)
+	}
+}
+
+// findKey is the key of the one entry of dir with suffix.
+func findKey(t *testing.T, dir, suffix string) string {
+	t.Helper()
+	m, _ := filepath.Glob(filepath.Join(dir, "*"+suffix))
+	if len(m) == 0 {
+		t.Fatalf("no %s entry in %s", suffix, dir)
+	}
+	return strings.TrimSuffix(filepath.Base(m[0]), suffix)
 }

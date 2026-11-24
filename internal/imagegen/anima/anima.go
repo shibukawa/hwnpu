@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -107,7 +108,8 @@ type Pipeline struct {
 	eng                engine
 	qwen               *tokenizer.Tokenizer
 	t5                 *tokenizer.Unigram
-	qwenEmbed, t5Embed []byte // bf16 rows
+	qwenEmbed, t5Embed []byte // bf16 rows, of qwenFile and t5File
+	qwenFile, t5File   *mapped.File
 	// Logf, when set, is told what is done (the text's tokens and time).
 	Logf func(format string, args ...any)
 	// Stage, when set, is told of each stage of the VAE as it ends.
@@ -179,21 +181,29 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 	if p.t5, err = tokenizer.LoadUnigram(filepath.Join(td, "t5_tokenizer.json")); err != nil {
 		return fail(err)
 	}
-	if p.qwenEmbed, err = os.ReadFile(filepath.Join(td, "qwen_embed.bin")); err != nil {
+	// mapped, not read: a prompt takes a few hundred of their rows (311 MB and 66 MB)
+	if p.qwenFile, err = mapped.Open(filepath.Join(td, "qwen_embed.bin")); err != nil {
 		return fail(err)
 	}
-	if p.t5Embed, err = os.ReadFile(filepath.Join(td, "t5_embed.bin")); err != nil {
+	if p.t5File, err = mapped.Open(filepath.Join(td, "t5_embed.bin")); err != nil {
 		return fail(err)
 	}
+	p.qwenEmbed, p.t5Embed = p.qwenFile.Bytes(), p.t5File.Bytes()
 	return p, nil
 }
 
-// Close releases the device memory.
+// Close releases the device memory and the embeddings.
 func (p *Pipeline) Close() error {
+	p.qwenEmbed, p.t5Embed = nil, nil
+	p.qwenFile.Close()
+	p.t5File.Close()
+	p.qwenFile, p.t5File = nil, nil
 	if p.eng == nil {
 		return nil
 	}
-	return p.eng.close()
+	err := p.eng.close()
+	p.eng = nil
+	return err
 }
 
 func (p *Pipeline) logf(format string, args ...any) {

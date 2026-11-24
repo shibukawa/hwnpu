@@ -91,7 +91,7 @@ models:
     from: hf:LiquidAI/LFM3-1.7B
     exports:
       amd-xdna2:
-        LFM3-1.7B.amd-npu2-q4: v1 sha256:0b8f63d08a46191c555e2ac7a075a1f3cc5b2d0c5cedefb93c774a1668da3043
+        LFM3-1.7B.amd-npu2-q4: v2 sha256:308f6d6309c22c8d7cfaeb3351944fd68491118f6cf5fe0880ef25e757716d12
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-1.7B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, measured on an M1, 2026-11-15, docs/design/memory-and-power.md): the programs split
     # at the attention hold the weights once, 1.36 GiB on the Neural Engine and the process's
@@ -135,7 +135,7 @@ models:
     from: hf:LiquidAI/LFM3-VL-2B
     exports:
       amd-xdna2:
-        LFM3-VL-2B.amd-npu2-q4: v1 sha256:359a77ad764fb2f2b09bd5a0b5e33b14b9bae9ed75cba787d0856ec5f21d87f6
+        LFM3-VL-2B.amd-npu2-q4: v2 sha256:17bb79e29c20569194307160120b005ef5506a295e6cb4ff2aab3e6e2e1e0a67
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-VL-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.24 GiB on the Neural Engine and the process's
     # 0.25 GiB describing a picture; 2.14 + 0.23 GiB (2.6 GB) with text alone, the vision
@@ -153,7 +153,7 @@ models:
     from: hf:LiquidAI/LFM3-Audio-2B
     exports:
       amd-xdna2:
-        LFM3-Audio-2B.amd-npu2-q4: v1 sha256:9fd81e21c045339a092ca3ea0153e0b398078a11648e297feb991a6e9d4844ef
+        LFM3-Audio-2B.amd-npu2-q4: v2 sha256:1f28eac27f6987787ace7562a23b791b3685601d979203cc758e0d2768d4a813
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.18 GiB on the Neural Engine and the process's
     # 0.21 GiB answering about a clip (2.6 GB); 2.05 + 0.23 GiB (2.4 GB) with text alone
@@ -170,7 +170,7 @@ models:
     from: hf:LiquidAI/LFM3-Omni-2B
     exports:
       amd-xdna2:
-        LFM3-Omni-2B.amd-npu2-q4: v1 sha256:df5b99af45ba2c4c8c9ad6eb2c359974014d299a435e2bae2918ca6e6d2ae9d9
+        LFM3-Omni-2B.amd-npu2-q4: v2 sha256:4448e0f44bd2542708c714fe956112115448de49166e81fce4f7ebef71a6393d
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.63 GiB on the Neural Engine and the process's
     # 0.25 GiB with a picture and a clip; 2.40 + 0.23 GiB (2.8 GB) with text alone, both
@@ -188,7 +188,7 @@ models:
     from: hf:google/gemma-4-E2B-it
     exports:
       amd-xdna2:
-        gemma-4-E2B-it.amd-npu2-q4: v1 sha256:86dde1db0ceddb01d5ac6ae43aa27ec1f9ca6291a8447375da6539093ef36302
+        gemma-4-E2B-it.amd-npu2-q4: v2 sha256:ebbfa95ca865b3b000ca475b335f840f28b473e5694442cd34addb8a6554a72d
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 8
     # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 1.76 GiB on the NPU and
@@ -207,7 +207,7 @@ models:
     from: hf:google/gemma-4-E4B-it
     exports:
       amd-xdna2:
-        gemma-4-E4B-it.amd-npu2-q4: v1 sha256:6f91bcad57054506896664953642f01583aed126d90f91fdf4533679d02d745c
+        gemma-4-E4B-it.amd-npu2-q4: v2 sha256:e5f04a26523d887c3c056115cb142c414bd13f350ed26241b615c8f927218699
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 24
     # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 3.55 GiB on the NPU and
@@ -226,7 +226,7 @@ models:
     from: hf:Qwen/Qwen3.5-4B
     exports:
       amd-xdna2:
-        Qwen3.5-4B.amd-npu2-q4: v1 sha256:1a02544c674be95c92d060f15c5e04ff324fedd2a2e414e6c9da70977c4b48b6
+        Qwen3.5-4B.amd-npu2-q4: v2 sha256:4979c418285ced5ac4cd6136b730ec24a5350ffd9e003e9f11b0f4bbf1738240
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE", class: open}
     machine: 24
     memory: 4.2
@@ -241,7 +241,7 @@ models:
     from: hf:Qwen/Qwen3.5-0.8B
     exports:
       amd-xdna2:
-        Qwen3.5-0.8B.amd-npu2-q6: v1 sha256:b777937398639bd36981d23de984da644650894109f1eb07a02907023395d515
+        Qwen3.5-0.8B.amd-npu2-q6: v2 sha256:d317eeec972d735819d8e1b7d42a2ccd6e3a083c68333598d8407021e9d0f377
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.99 GiB on the Neural Engine
     # (the multi-token prediction layer's programs among it) and the process's 0.39 GiB, 1.5 GB;
@@ -264,7 +264,7 @@ models:
     from: hf:Qwen/Qwen3.5-2B
     exports:
       amd-xdna2:
-        Qwen3.5-2B.amd-npu2-q6: v1 sha256:709a0804f6b516b0619619339f2a2dfbb9dbeaf051d53ff1ae571816f66028f8
+        Qwen3.5-2B.amd-npu2-q6: v2 sha256:686f4a527bd8aba4a04ae740b26ac6eeabdd8533d8efd799ac28464b5763f6e0
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 1.67 GiB on the Neural Engine and the process's
     # 0.39 GiB (no whole program: its weights twice are over what the two may hold): for 8 GB
@@ -306,8 +306,8 @@ models:
     from: hf:openai/gpt-oss-20b
     exports:
       amd-xdna2:
-        gpt-oss-20b.amd-npu2: v1 sha256:6a7f778da6243838429633e4d2fc5a10ad4cd1c21302b6617d6222509509fd06
-        gpt-oss-20b.amd-npu2-p16: v1 sha256:912fc37aa82f3447595b13eedbd61e7a5816775e0dd278141ee5b54aeea8f6f6
+        gpt-oss-20b.amd-npu2: v2 sha256:84a8731ae40595c1a55170e08f7a87bd0468d0430ec2ac9e5238e8c1bef130bc
+        gpt-oss-20b.amd-npu2-p16: v2 sha256:245a88640be550c3c91536db5efe9660028ef3970eac1c88ab2249878e197762
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     # 16 GB: on AMD's NPU 16 of each layer's 32 experts in places (6.90 GiB pinned), the others
     # read from experts.bin with O_DIRECT when chosen, the decode step routed on the host so that
@@ -371,9 +371,9 @@ models:
     from: hf:Qwen/Qwen3.6-35B-A3B
     exports:
       amd-xdna2:
-        Qwen3.6-35B-A3B.amd-npu2-q4: v1 sha256:7a74cc166fe3d4bf232790321e9cabb088aa06cc92ae33d1d2520e60af081348
-        Qwen3.6-35B-A3B.amd-npu2-q4-p128: v1 sha256:dc8896f292ec2b11aa296b660e1fb5b4cbe86b6e17e7341818035ffac8fe3ca3
-        Qwen3.6-35B-A3B.amd-npu2-q4-p32: v1 sha256:99612a05029adb7980a0e6a8757e47c459a7fa7d97656e9fef1f8fc9243cc1d6
+        Qwen3.6-35B-A3B.amd-npu2-q4: v2 sha256:fcd175af74cb988265e6eb1ff16591e04ca9f76aa51edef7ce3e6b95c608a0ec
+        Qwen3.6-35B-A3B.amd-npu2-q4-p128: v2 sha256:6fab09463d73ff769d5e6dc3036c6ab8ad40bbbec4d3e5209ccd6b3f03116a7b
+        Qwen3.6-35B-A3B.amd-npu2-q4-p32: v2 sha256:739654d60779cf86410010ed75d01b53bca0782024eff772d97c6ac1144ef7b1
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
     # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design/moe.md): 24,188 MiB of the NPU's (the
     # experts and head at 4 bits, the mixers at 8) and the process's 880 MiB at its peak while
@@ -500,7 +500,7 @@ models:
     from: hf:pfnet/plamo-3-translate-8b@cc265d585980c39436db5b9c136cd6644f446807
     exports:
       amd-xdna2:
-        plamo-3-translate-8b.amd-npu2-q4: v1 sha256:88b36736bbaab70b13cb7a8111cb1e50c213ee425928ab7201e95addcb2d2a86
+        plamo-3-translate-8b.amd-npu2-q4: v2 sha256:7d8cf430e8e8c8059fcb25386f9da8f06a2faeecd9bf5c154570362ab29505f8
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     # the shards' sha256 as Hugging Face's API gives them, checked against the download (M1)
     sha256:
@@ -523,7 +523,7 @@ models:
     from: hf:pfnet/plamo-3-translate-2b
     exports:
       amd-xdna2:
-        plamo-3-translate-2b.amd-npu2-q4: v1 sha256:19e9e45bc4323b4e13e4183887babf7cb2571b956c7e62d7700c4247ab4148c9
+        plamo-3-translate-2b.amd-npu2-q4: v2 sha256:773c9277aafdcf5b96c0aa8a5043b563a38fcedbe253291699a24e9ad9024a8d
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-2b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.74 GiB on the Neural Engine (2.64 to 2.68
     # wired: the programs of the short context are functions of the same .aimodel, 0.1 GiB
@@ -541,7 +541,7 @@ models:
     from: hf:pfnet/plamo-3-translate-0.8b
     exports:
       amd-xdna2:
-        plamo-3-translate-0.8b.amd-npu2-q4: v1 sha256:8d57ce339a43ea321390876fa159ba131e806ce9c4023ad0e6de451a45f9e4ed
+        plamo-3-translate-0.8b.amd-npu2-q4: v2 sha256:5c6e816bbf650293672f1bef0d47751c35f4a11a42a3ac946b748a1c02ac4c1f
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-0.8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.82 GiB on the Neural Engine and the process's
     # 0.12 GiB; as AMD's
@@ -576,7 +576,7 @@ models:
     from: hf:openai/whisper-large-v3-turbo@41f01f3fe87f28c78e2fbf8b568835947dd65ed9
     exports:
       amd-xdna2:
-        whisper-large-v3-turbo.amd-npu2: v1 sha256:22067b533bb3fd8e3e2f9e699b8282fc8d88f45f31bfd03decafe7831837ff7c
+        whisper-large-v3-turbo.amd-npu2: v2 sha256:4b922d3bd9e5f14f9a58e309547e8ab9acc2b19a2818ace09eed7039a4051ed3
     # MIT by the model card (the repository has no license file; large-v3's card says apache-2.0)
     license: {id: mit, url: "https://huggingface.co/openai/whisper-large-v3-turbo", class: open}
     # pinned for the export for AMD's NPU (tools/amd/iron_whisper.py, a key of the sources)
@@ -599,7 +599,7 @@ models:
     from: hf:LiquidAI/LFM3-Audio-2B@2d6c1f99c129b3ef07a8d168bc0ff08e2bdb93f1
     exports:
       amd-xdna2:
-        lfm3-audio-2b-tts.amd-npu2: v1 sha256:596be6c8fda0c101987ca2e0efdbe1d0bff500088c91a421424603f5b5d1e570
+        lfm3-audio-2b-tts.amd-npu2: v2 sha256:7c36d04086bdcdae8fb7a663db1a04db96c8f6f789ec4596ec643fecc8cc52ec
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # pinned for the export for AMD's NPU (tools/amd/iron_lfm3speech.py, a key of the sources)
     sha256:
@@ -645,7 +645,7 @@ models:
     from: hf:LiquidAI/d1-2B
     exports:
       amd-xdna2:
-        d1-2B.amd-npu2-q4: v1 sha256:8fa921e6f4bbf5e8376ee20c03aee756efd2ca78bf5b8fdda2371a9967dc0a15
+        d1-2B.amd-npu2-q4: v2 sha256:71636094c9685812cd0405f54c3cafbf09fd6ba27b29e6788f513505f28873ae
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     # AMD's NPU: LFM3-VL's export read as d1 reads it (tools/amd/iron_d1.py): a question is one
@@ -659,7 +659,7 @@ models:
     from: hf:LiquidAI/d1-Omni-2B
     exports:
       amd-xdna2:
-        d1-Omni-2B.amd-npu2-q4: v1 sha256:c7cae5b3de233f08cb3f070faf18bed560bb875da6aa1537059cc395c0ae533e
+        d1-Omni-2B.amd-npu2-q4: v2 sha256:83a95e6135398e0948e8218ee62768cac010e40056240f3f3d08b59f4ba04a2a
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.8
@@ -808,7 +808,7 @@ models:
     from: hf:OpenMOSS-Team/MOSS-SoundEffect-v2.0@e35df4d82fbe87fcd5d14e5d100e349c0c3c076d
     exports:
       amd-xdna2:
-        moss-soundeffect-v2.0.amd-npu2: v1 sha256:9e753cbbcf98c5eb2637397ebc8a547fff50dac3efce40eec827779ca13cad03
+        moss-soundeffect-v2.0.amd-npu2: v2 sha256:3d402f753be305c85653ea8d4d9e5011b4740db373dfbabeab630bdf5b07fe06
     # the VAE is DAC's code (Descript, MIT); who trained its weights is not known
     license: {id: apache-2.0, url: "https://huggingface.co/OpenMOSS-Team/MOSS-SoundEffect-v2.0", class: open}
     # the text encoder is Qwen3-1.7B's checkpoint: linked from its download when it is here
@@ -825,7 +825,7 @@ models:
   MOSS-SoundEffect-v2.0-lut8:
     exports:
       amd-xdna2:
-        moss-soundeffect-v2.0-lut8.amd-npu2: v1 sha256:4fa7eed4c8bd1b65f51d94cc9b29565779ab54c28cc659dc8068ecbd25248ac6
+        moss-soundeffect-v2.0-lut8.amd-npu2: v2 sha256:6e0e1cc7b386553d5163b6e179a691c93559b941b0c5838e39ca6cb293448c6a
     like: MOSS-SoundEffect-v2.0
     bytes: {amd: 5.34e9, apple: 1.15e10}
     tag: v2.0-lut8
@@ -852,7 +852,7 @@ models:
     from: hf:circlestone-labs/Anima
     exports:
       amd-xdna2:
-        anima-turbo.amd-npu2: v1 sha256:d8eb54e7227afc9cdac33985248f9a7f41929de2ecaa176196573253a83a89bf
+        anima-turbo.amd-npu2: v2 sha256:8aced08cb647efd3624a76d6ee079dbdc0b582b0b0be6880f70e14c74da1538f
     # the weights for non-commercial use only (the pictures may be used commercially): asked once
     # before the first run (hwnpu-image --accept-license)
     license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", class: non-commercial, accept: true}
@@ -883,7 +883,7 @@ models:
     from: hf:circlestone-labs/Anima
     exports:
       amd-xdna2:
-        anima-aesthetic.amd-npu2: v1 sha256:ca4c10e5b5db54fa49e00cb9612120428b033d7879821f390166b5f961f6284e
+        anima-aesthetic.amd-npu2: v2 sha256:86a3bc9d1d262fa8f96805e30b8264582fad099121cd41f472dffc4f43b6f7da
     # the weights for non-commercial use only (the pictures may be used commercially): asked once
     # before the first run (hwnpu-image --accept-license)
     license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", class: non-commercial, accept: true}
@@ -910,7 +910,7 @@ models:
     from: hf:black-forest-labs/FLUX.2-klein-4B
     exports:
       amd-xdna2:
-        flux.2-klein-4b.amd-npu2: v1 sha256:0ca2de4af4023a1fe381d5194d727f5dab809357db7a529d0e1c0f24cc512276
+        flux.2-klein-4b.amd-npu2: v2 sha256:a88ef6556f8a7142c8feb125cb8e7c39f95abf64ce2231a3369c4ab3e9565c40
     license: {id: apache-2.0, url: "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B", class: open}
     sha256:
       text_encoder/model-00001-of-00002.safetensors: 8c0506e7f4936fa7e26183a4fd8da4e2bdbc5990ba64ae441f965d51228f36ea
@@ -982,7 +982,7 @@ models:
     from: hf:black-forest-labs/flux-3-image-klein
     exports:
       amd-xdna2:
-        flux-3-image-klein.amd-npu2: v1 sha256:8822a30928414fd299793ad413a9af2c461bdb6cb3535637e7d3a8110bf17e2d
+        flux-3-image-klein.amd-npu2: v2 sha256:42c794c6a50e7d3d246189b862b7fe60762805642c65bf111c377924cb989a52
     # FLUX Kommunity License: non-commercial and non-production use (commercial use only as a
     # Qualifying User); a gated repository. Asked once before the first run
     license: {id: flux-kommunity, url: "https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/main/LICENSE.md", class: non-commercial, terms: "non-commercial and non-production use; commercial use only as a Qualifying User", accept: true}
@@ -1143,7 +1143,7 @@ models:
     from: hf:google/siglip2-base-patch16-224
     exports:
       amd-xdna2:
-        siglip2-base-patch16-224.amd-npu2: v1 sha256:7ad62fae5e33986ad202a248d4c84a33a82fb2c13d40d8d991d0fb39e8e45459
+        siglip2-base-patch16-224.amd-npu2: v2 sha256:f4abb83e1990457a17673784c140b587d3e39ddd7ca60e71245affbbbee38195
     license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-base-patch16-224", class: open}
     machine: 8
     # M3: 0.45 GB of the process at most (embedding the 444 default labels) and 0.36 GB on the
@@ -1159,7 +1159,7 @@ models:
     from: hf:google/siglip2-large-patch16-256
     exports:
       amd-xdna2:
-        siglip2-large-patch16-256.amd-npu2: v1 sha256:e475eea4bfbfbcf4bcbcec64f9700e057ce37264ce08e6d0764c650c7f647ad4
+        siglip2-large-patch16-256.amd-npu2: v2 sha256:0d3fd481817692359e1363b0e1eedb5b27f66a5b31d117cf6f0b7835398c6e0a
     license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-large-patch16-256", class: open}
     machine: 16
     # M3: 1.8 GB of the process and 1.24 GB on the Neural Engine (Core AI: 1.56)

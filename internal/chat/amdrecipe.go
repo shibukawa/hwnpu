@@ -135,7 +135,11 @@ func RunAMDRecipe(ctx context.Context, python []string, m Model, vars map[string
 	if err != nil {
 		return err
 	}
-	return RunIRON(ctx, python, m.Name, c.Script, c.Args, out, log)
+	f, err := recipe.Builtin()
+	if err != nil {
+		return err
+	}
+	return RunIRON(ctx, python, m.Name, c.Script, c.Args, out, log, f.AMDFinish(m.Recipe))
 }
 
 // AMDOptions are the arguments of model m's recipe for AMD's NPU but those of recipe.In and

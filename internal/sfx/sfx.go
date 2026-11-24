@@ -51,6 +51,9 @@ var Files = []string{
 	"vae/vae_128d_48k.pth",
 }
 
+// tokenizerFile is Files' tokenizer.
+const tokenizerFile = "tokenizer/tokenizer.json"
+
 // bigFiles are Files' checkpoints: the text encoder's, the DiT's and the VAE's.
 var bigFiles = map[string]bool{Files[6]: true, Files[7]: true, Files[9]: true, Files[11]: true}
 
@@ -131,6 +134,9 @@ type Paths struct {
 	Stages  []string // the decoder's stages
 	TextCfg *qwen3.Config
 	Tables  string // TablesFile
+	// Tokenizer is the tokenizer to load ("": Dir's tokenizer/tokenizer.json, or its binary
+	// file): Prepare's of chat.PrepareTokenizer.
+	Tokenizer string
 	// Host are the files the host reads the text encoder's embedding table and final norm
 	// from (prefix "") and the DiT's HostTensors (prefix "dit."); nil: the checkpoint's. An
 	// export for AMD's NPU has its own (PrepareAMD).
@@ -161,11 +167,16 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	}
 	var small []string
 	for _, f := range Files {
-		if !bigFiles[f] {
+		if !bigFiles[f] && f != tokenizerFile {
 			small = append(small, f)
 		}
 	}
 	if err := fetch(small...); err != nil {
+		return p, err
+	}
+	// the tokenizer as its binary file (chat.PrepareTokenizer), not the repository's text
+	var err error
+	if p.Tokenizer, err = chat.PrepareTokenizer(ctx, s.Repo, tokenizerFile, log); err != nil {
 		return p, err
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
@@ -374,7 +385,7 @@ type Generator struct {
 func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 	g := &Generator{p: p, dev: dev}
 	var err error
-	if g.tok, err = tokenizer.Load(p.at("tokenizer/tokenizer.json")); err != nil {
+	if g.tok, err = tokenizer.Load(cmp.Or(p.Tokenizer, p.at(tokenizerFile))); err != nil {
 		return nil, err
 	}
 	text := map[string][]string{"": {p.at(Files[6]), p.at(Files[7])}}

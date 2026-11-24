@@ -11,9 +11,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"os"
+	"runtime"
 
 	"google.golang.org/protobuf/encoding/protowire"
+
+	"github.com/shibukawa/hwnpu/internal/mapped"
 )
 
 // Element types (TensorProto.DataType).
@@ -37,6 +39,54 @@ type Tensor struct {
 	F     []float64
 	// Type is the element type: Float, Double, Int64, Int32, Bool...
 	Type int
+	// raw are the bytes of an initializer of a graph LoadLazy read, in the mapped file (src):
+	// F is nil until Decode, Values decode them.
+	raw []byte
+	src *source
+}
+
+// source is what lazy tensors' bytes are in (a mapped model file), kept while one is left.
+type source struct{ keep any }
+
+// NewLazy is a lazy tensor (Tensor.Lazy) of shape and element type typ (Float, Float16, Int8,
+// ...) whose values are raw (little endian, as TensorProto.raw_data), in memory keep keeps (a
+// mapped file the tensors of a model share): another format's reader's LoadLazy (TFLite's).
+func NewLazy(shape []int, typ int, raw []byte, keep any) (*Tensor, error) {
+	size := map[int]int{Float: 4, Double: 8, Int64: 8, Int32: 4, Bool: 1, Uint8: 1, Int8: 1, Float16: 2}[typ]
+	if size == 0 || len(raw) < size*Len(shape) {
+		return nil, fmt.Errorf("onnx: %d bytes of type %d for shape %v", len(raw), typ, shape)
+	}
+	return &Tensor{Shape: shape, Type: typ, raw: raw[:size*Len(shape)], src: &source{keep: keep}}, nil
+}
+
+// Lazy reports whether the tensor's values are not read yet (LoadLazy): F is nil, Values reads
+// them.
+func (t *Tensor) Lazy() bool { return t.F == nil && t.src != nil }
+
+// Values are the tensor's values: F, or a lazy tensor's read now (and not kept: Decode keeps them).
+func (t *Tensor) Values() []float64 {
+	if !t.Lazy() {
+		return t.F
+	}
+	f := decodeRaw(t.raw, t.Type, Len(t.Shape))
+	runtime.KeepAlive(t.src)
+	return f
+}
+
+// Decoded is the tensor with its values: t, or a copy of a lazy one with them read (t stays lazy).
+func (t *Tensor) Decoded() *Tensor {
+	if !t.Lazy() {
+		return t
+	}
+	return &Tensor{Shape: t.Shape, F: t.Values(), Type: t.Type}
+}
+
+// Decode reads a lazy tensor's values into F for good.
+func (t *Tensor) Decode() {
+	if t.Lazy() {
+		t.F = t.Values()
+		t.raw, t.src = nil, nil
+	}
 }
 
 // Len is the number of elements of a shape.
@@ -55,6 +105,7 @@ func (t *Tensor) IsInt() bool {
 
 // Ints returns the elements as ints.
 func (t *Tensor) Ints() []int {
+	t = t.Decoded()
 	out := make([]int, len(t.F))
 	for i, v := range t.F {
 		switch {
@@ -149,13 +200,36 @@ type Graph struct {
 	Opset int
 }
 
-// Load reads an ONNX model file.
+// Load reads an ONNX model file (mapped while it is read).
 func Load(path string) (*Graph, error) {
-	raw, err := os.ReadFile(path)
+	f, err := mapped.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	g, err := Parse(raw)
+	defer f.Close()
+	g, err := parse(f.Bytes(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("onnx: %s: %w", path, err)
+	}
+	return g, nil
+}
+
+// lazyMin is the least number of elements of an initializer LoadLazy leaves unread: the
+// weights; shapes, axes and scales are read.
+const lazyMin = 4096
+
+// LoadLazy reads an ONNX model file but its weights' values (initializers of lazyMin elements or
+// more): those stay in the mapped file, Lazy, read by Values when a node needs them (Eval and
+// Program.Build read them so, without keeping them). For a graph whose weights ONNX Runtime
+// holds (the CPU's), whose host part reads few of them, if any: hundreds of MB of float64 less.
+func LoadLazy(path string) (*Graph, error) {
+	f, err := mapped.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	src := &source{keep: f}
+	runtime.AddCleanup(src, func(f *mapped.File) { f.Close() }, f)
+	g, err := parse(f.Bytes(), src)
 	if err != nil {
 		return nil, fmt.Errorf("onnx: %s: %w", path, err)
 	}
@@ -163,7 +237,10 @@ func Load(path string) (*Graph, error) {
 }
 
 // Parse reads an ONNX model (ModelProto).
-func Parse(raw []byte) (*Graph, error) {
+func Parse(raw []byte) (*Graph, error) { return parse(raw, nil) }
+
+// parse is Parse, lazy initializers in src's file (raw is its bytes) unless it is nil.
+func parse(raw []byte, src *source) (*Graph, error) {
 	g := &Graph{Init: map[string]*Tensor{}}
 	var graph []byte
 	err := each(raw, func(num protowire.Number, typ protowire.Type, b []byte, v uint64) error {
@@ -197,14 +274,14 @@ func Parse(raw []byte) (*Graph, error) {
 	if graph == nil {
 		return nil, fmt.Errorf("no graph")
 	}
-	if err := parseGraph(graph, g); err != nil {
+	if err := parseGraph(graph, g, src); err != nil {
 		return nil, err
 	}
 	return g, nil
 }
 
 // parseGraph reads a GraphProto into g.
-func parseGraph(graph []byte, g *Graph) error {
+func parseGraph(graph []byte, g *Graph, src *source) error {
 	err := each(graph, func(num protowire.Number, typ protowire.Type, b []byte, v uint64) error {
 		if typ != protowire.BytesType {
 			return nil
@@ -217,7 +294,7 @@ func parseGraph(graph []byte, g *Graph) error {
 			}
 			g.Nodes = append(g.Nodes, n)
 		case 5:
-			name, t, err := parseTensor(b)
+			name, t, err := parseTensor(b, src)
 			if err != nil {
 				return err
 			}
@@ -374,14 +451,14 @@ func parseAttr(msg []byte) (string, Attr, error) {
 		case 4:
 			a.S = string(b)
 		case 5:
-			_, t, err := parseTensor(b)
+			_, t, err := parseTensor(b, nil)
 			if err != nil {
 				return err
 			}
 			a.T = t
 		case 6:
 			a.G = &Graph{Init: map[string]*Tensor{}}
-			return parseGraph(b, a.G)
+			return parseGraph(b, a.G, nil)
 		case 7: // floats, packed or one by one
 			if typ == protowire.BytesType {
 				for i := 0; i+4 <= len(b); i += 4 {
@@ -452,7 +529,7 @@ func parseValueInfo(msg []byte) (ValueInfo, error) {
 	return vi, err
 }
 
-func parseTensor(msg []byte) (string, *Tensor, error) {
+func parseTensor(msg []byte, src *source) (string, *Tensor, error) {
 	t := &Tensor{}
 	var name string
 	var raw []byte
@@ -517,34 +594,17 @@ func parseTensor(msg []byte) (string, *Tensor, error) {
 		return "", nil, err
 	}
 	count := Len(t.Shape)
-	t.F = make([]float64, 0, count)
 	switch {
 	case raw != nil:
 		size := map[int]int{Float: 4, Double: 8, Int64: 8, Int32: 4, Bool: 1, Uint8: 1, Int8: 1, Float16: 2}[t.Type]
 		if size == 0 || len(raw) != size*count {
 			return "", nil, fmt.Errorf("tensor %s: %d bytes of type %d for shape %v", name, len(raw), t.Type, t.Shape)
 		}
-		for i := range count {
-			p := raw[i*size:]
-			var x float64
-			switch t.Type {
-			case Float:
-				x = float64(math.Float32frombits(binary.LittleEndian.Uint32(p)))
-			case Double:
-				x = math.Float64frombits(binary.LittleEndian.Uint64(p))
-			case Int64:
-				x = float64(int64(binary.LittleEndian.Uint64(p)))
-			case Int32:
-				x = float64(int32(binary.LittleEndian.Uint32(p)))
-			case Bool, Uint8:
-				x = float64(p[0])
-			case Int8:
-				x = float64(int8(p[0]))
-			case Float16:
-				x = f16(binary.LittleEndian.Uint16(p))
-			}
-			t.F = append(t.F, x)
+		if src != nil && count >= lazyMin {
+			t.raw, t.src = raw, src
+			return name, t, nil
 		}
+		t.F = decodeRaw(raw, t.Type, count)
 	case floats != nil:
 		t.F = floats
 	case doubles != nil:
@@ -561,10 +621,40 @@ func parseTensor(msg []byte) (string, *Tensor, error) {
 			}
 		}
 	}
+	if t.F == nil {
+		t.F = []float64{} // an empty tensor's values, not a shape alone
+	}
 	if len(t.F) != count {
 		return "", nil, fmt.Errorf("tensor %s: %d values for shape %v", name, len(t.F), t.Shape)
 	}
 	return name, t, nil
+}
+
+// decodeRaw is the values of count elements of type typ in raw (TensorProto.raw_data, little
+// endian; its size checked).
+func decodeRaw(raw []byte, typ, count int) []float64 {
+	size := map[int]int{Float: 4, Double: 8, Int64: 8, Int32: 4, Bool: 1, Uint8: 1, Int8: 1, Float16: 2}[typ]
+	f := make([]float64, count)
+	for i := range f {
+		p := raw[i*size:]
+		switch typ {
+		case Float:
+			f[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(p)))
+		case Double:
+			f[i] = math.Float64frombits(binary.LittleEndian.Uint64(p))
+		case Int64:
+			f[i] = float64(int64(binary.LittleEndian.Uint64(p)))
+		case Int32:
+			f[i] = float64(int32(binary.LittleEndian.Uint32(p)))
+		case Bool, Uint8:
+			f[i] = float64(p[0])
+		case Int8:
+			f[i] = float64(int8(p[0]))
+		case Float16:
+			f[i] = f16(binary.LittleEndian.Uint16(p))
+		}
+	}
+	return f
 }
 
 // f16 is the value of IEEE half precision bits.

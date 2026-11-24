@@ -1,11 +1,11 @@
 package amd
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 	"unsafe"
@@ -13,6 +13,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/aieelf"
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/ert"
+	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/power"
 	"github.com/shibukawa/hwnpu/internal/types"
 	"github.com/shibukawa/hwnpu/internal/xclbin"
@@ -205,10 +206,23 @@ func (d *device) LoadProgram(ctx context.Context, src types.ProgramSource) (back
 	}
 	data := src.Xclbin
 	if data == nil {
-		var err error
-		if data, err = os.ReadFile(src.Path); err != nil {
+		// mapped: a full ELF is up to 175 MB (an LLM's prompt.elf), of which the device's
+		// buffers take copies; the program keeps the mapping for its control code
+		m, err := mapped.Open(src.Path)
+		if err != nil {
 			return nil, err
 		}
+		if aieelf.IsELF(m.Bytes()) {
+			p, err := d.loadELF(m.Bytes())
+			if err != nil {
+				m.Close()
+				return nil, err
+			}
+			p.(*elfProgram).mapping = m
+			return p, nil
+		}
+		data = bytes.Clone(m.Bytes()) // an xclbin, a few MB
+		m.Close()
 	}
 	if aieelf.IsELF(data) {
 		return d.loadELF(data)
