@@ -1,6 +1,6 @@
 //===- q8_mv.cc - y = W x for q8 weights, and q8 to bf16 --------*- C++ -*-===//
 //
-// q8 is hwnpu's 8-bit block (tools/amd/iron_q4.py): 32 out-features by 256
+// q8 is bonsaiai's 8-bit block (tools/amd/iron_q4.py): 32 out-features by 256
 // in-features, a bf16 scale per 32 in-features of an out-feature (indexed
 // [k / 32, m], as q4nx's), then int8 codes in strips of 16 out-features, each
 // strip column-major ([m / 16, k, m % 16], as q4nx's nibbles). w = scale * code.

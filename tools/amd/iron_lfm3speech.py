@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """LFM3-Audio's speech output (LiquidAI/LFM3-Audio-2B, LFM Open License 1.0) on IRON: the export
-hwnpu-audio tts runs on AMD's NPU.
+bonsaiai-audio tts runs on AMD's NPU.
 
   python tools/amd/iron_lfm3speech.py ~/models/LFM3-Audio-2B ~/models/lfm3-audio-2b-tts.amd-npu2
 
 writes into OUT:
 
   text/   the text model, its final hidden state out (iron_lfm3tts.py: iron_export_lm.py with
-          the MLP and the head in q8), run by internal/speech as hwnpu-chat runs LFM3
+          the MLP and the head in q8), run by internal/speech as bonsaiai-chat runs LFM3
   depth/  one MaskGIT pass of the depthformer (a graph, iron_graph.py): x (64, 1024), each
           codebook's embedding of its code or the mask embedding in rows 0..11 (the host looks
           them up), and h (1, 2048), the text model's final hidden state; out (12, 2048), each

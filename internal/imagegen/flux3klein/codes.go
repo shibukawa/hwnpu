@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
-	"github.com/shibukawa/hwnpu/internal/palette"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // CodeIters are the passes of weighted Lloyd a table takes (tools/coreai/lutfit's).

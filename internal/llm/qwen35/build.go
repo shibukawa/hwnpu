@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 type builder struct {

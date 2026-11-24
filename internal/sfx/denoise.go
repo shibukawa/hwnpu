@@ -6,7 +6,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // HostTensors are the DiT's weights the host computes with: the time embedding, the time

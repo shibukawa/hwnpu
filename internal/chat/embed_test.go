@@ -16,10 +16,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/plamo"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/plamo"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 const tinyPlamo = `{"architectures": ["PlamoBiModel"], "hidden_size": 32, "hidden_size_per_head": 8,
@@ -116,13 +116,13 @@ func TestEmbedderPadding(t *testing.T) {
 		for i := range mask {
 			mask[i] = 1
 		}
-		hwnpu.EncodeF16(p.In["x"], x)
-		hwnpu.EncodeF16(p.In["mask"], mask)
+		bonsaiai.EncodeF16(p.In["x"], x)
+		bonsaiai.EncodeF16(p.In["mask"], mask)
 		if err := p.Run(); err != nil {
 			t.Fatal(err)
 		}
 		h := make([]float32, c.n*d)
-		hwnpu.DecodeF16(h, p.Out["y"])
+		bonsaiai.DecodeF16(h, p.Out["y"])
 		want := make([]float64, d)
 		var norm float64
 		for j := range want {
@@ -315,13 +315,13 @@ func TestRoute(t *testing.T) {
 	}
 }
 
-// With the real tokenizer (HWNPU_TEST_PLAMO_DIR holds tokenizer.model), a query's tokens are the BOS
+// With the real tokenizer (BONSAIAI_TEST_PLAMO_DIR holds tokenizer.model), a query's tokens are the BOS
 // and the tokenizer's tokens of the instruction and the text together, and the mean starts
 // exactly at the text.
 func TestPlamoQueryTokens(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_PLAMO_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_PLAMO_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_PLAMO_DIR is not set")
+		t.Skip("BONSAIAI_TEST_PLAMO_DIR is not set")
 	}
 	tok, err := tokenizer.LoadSentencePiece(filepath.Join(dir, "tokenizer.model"))
 	if err != nil {

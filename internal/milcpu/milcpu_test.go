@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/palette"
 )
 
 // run builds a one input program with build and runs it on x.

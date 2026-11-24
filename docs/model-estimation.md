@@ -25,13 +25,13 @@ The structure and checks are in the Ouro section of [LLM models](design/llm-mode
 | **Ouro-1.4B-Thinking** (ByteDance) | 1.4B | all 24 layers four times | ported and evaluated (below) |
 | Ouro-2.6B-Thinking (ByteDance) | 2.6B | all 48 layers four times | checked on the CPU only; lut8 breaks down (KL 0.13), so not exported for AMD |
 
-ByteDance's paper (arXiv 2510.25741) claims reasoning on par with 4B models for 1.4B and 8B models for 2.6B. hwnpu did not benchmark quality.
+ByteDance's paper (arXiv 2510.25741) claims reasoning on par with 4B models for 1.4B and 8B models for 2.6B. BonsaiAI did not benchmark quality.
 
 ### Ouro-1.4B-Thinking measured (Ryzen AI 9 365, AMD's NPU)
 
 - Format: MLP and output matrices 6 bit, attention 8 bit, embeddings on the host. Context 2048.
 - Against HF (`ironlm -forced` on readme.md, 256 + 64 tokens, `forced_logits.py`): 6 bit KL 0.026, top-1 agreement 98.4 %; bf16 KL 0.0022.
-- Speed: decode 268 ms a token at 300, 357 ms at 2047 (3.7–2.8 tokens/s); 3.6 tokens/s in hwnpu-chat. Prompts about 400 tokens/s.
+- Speed: decode 268 ms a token at 300, 357 ms at 2047 (3.7–2.8 tokens/s); 3.6 tokens/s in bonsaiai-chat. Prompts about 400 tokens/s.
 - Memory: 2.79 GiB pinned on the NPU (1.6 GB of it the KV cache), 0.82 GB of the process, 3.8 GB in all.
 - Output tried: on "17 × 23" it made a mistake once, noticed it and redid the sum. Mostly English, no tools.
 
@@ -68,7 +68,7 @@ thinkingmachines/Inkling-2-Mini (Apache 2.0, revision b85c3cfa), estimated witho
 - Loop: layers 6–17 (12 layers) run three times with the same weights, 48 layer runs a token. Rank-64 gates run between passes (`controllers`, forget and gain).
 - Parameters (from the header): text 26.07B (experts 24.46B, attention 0.64B, embeddings and head 0.93B), vision tower 0.32B, plus an MTP for speculative decoding (3 layers, 0.64 GB). The README gives 3.4B active a token, 5.4B effective with the passes.
 - Only a quantized checkpoint is published (about 20 GB): experts of layers 0–19 in 4 bit (NVFP4: an FP8 scale per 16), of layers 20–23 in FP8 (E4M3). No bf16 release.
-- Parts hwnpu does not have: `attn_res` (the residual gathered by attention over the outputs of blocks of 6 layers, with a query vector per layer), short convolutions (width 4) on the residual and on K and V, cross-pass queries (`middle_cycle_cross_pass_*`), attention sinks, relative position logits (d_rel 16, extent 1024), log scaling of attention, L2 clipping of q and k, a norm on V, soft caps on the MLP's gate and up (4, 25), a logit soft cap of 30.
+- Parts BonsaiAI does not have: `attn_res` (the residual gathered by attention over the outputs of blocks of 6 layers, with a query vector per layer), short convolutions (width 4) on the residual and on K and V, cross-pass queries (`middle_cycle_cross_pass_*`), attention sinks, relative position logits (d_rel 16, extent 1024), log scaling of attention, L2 clipping of q and k, a norm on V, soft caps on the MLP's gate and up (4, 25), a logit soft cap of 30.
 
 ### Memory estimate (AMD, in Qwen3.6's form: experts 4 bit, attention 8 bit, embeddings on the host)
 
@@ -95,6 +95,6 @@ thinkingmachines/Inkling-2-Mini (Apache 2.0, revision b85c3cfa), estimated witho
 ### If it is ported
 
 - Reference: transformers supports it (the HF blog in the README); check first whether it needs a newer transformers.
-- Quantization: rounding NVFP4 again into hwnpu's 4 bit (q4nx) rounds twice. Find out whether NVFP4's blocks of 16 with FP8 scales map onto q4 tables as they are.
-- The MoE parts (routing on the host, expert places, experts read from the disk) come from gpt-oss-20b and Qwen3.6. New code: the parts hwnpu does not have (above) and the gates between passes.
-- Apple: the README lists Macs of 32 GB and more. hwnpu would run the experts on the CPU, as for Qwen3.6.
+- Quantization: rounding NVFP4 again into BonsaiAI's 4 bit (q4nx) rounds twice. Find out whether NVFP4's blocks of 16 with FP8 scales map onto q4 tables as they are.
+- The MoE parts (routing on the host, expert places, experts read from the disk) come from gpt-oss-20b and Qwen3.6. New code: the parts BonsaiAI does not have (above) and the gates between passes.
+- Apple: the README lists Macs of 32 GB and more. BonsaiAI would run the experts on the CPU, as for Qwen3.6.

@@ -1,6 +1,6 @@
 // Package amdtools holds the IRON exporters of tools/amd (iron_export_lm.py and the modules and
-// kernels it reads), so that a hwnpu built with go install can export a model for AMD's NPU on
-// its first run without a checkout of hwnpu (internal/chat.PrepareAMD).
+// kernels it reads), so that a bonsaiai built with go install can export a model for AMD's NPU on
+// its first run without a checkout of bonsaiai (internal/chat.PrepareAMD).
 package amdtools
 
 import (

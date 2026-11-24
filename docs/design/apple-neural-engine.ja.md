@@ -6,7 +6,7 @@
 
 ## 上限
 
-| 上限 | 値 | hwnpu のすること |
+| 上限 | 値 | BonsaiAI のすること |
 |---|---|---|
 | 1 本のプログラムの重み | Core ML: 0.99 GiB は ANE で動き、1.02 GiB は CPU に落ちる (M1〜M3。M4 は 2 GB)。Core AI 自身の上限は [Core AI](apple-coreai.ja.md) | 層ごとに分ける ([Core ML](apple-coreml.ja.md))、または注意で分ける ([LLM のエンジン](llm-engine.ja.md)) |
 | テンソルのどの次元も | 16384 は収まる。16385 では演算が CPU に置かれる (M3)。出力に名前をつけるだけの恒等でも | `llm.NeuralEngineMaxDim`。KV キャッシュは 16384 ずつの塊 (`CacheChunks`)。幅の広い出力、入力、連結は分ける |
@@ -57,10 +57,10 @@ Core ML の計算の計画で見たもの (Core AI 自身の落とし穴は [Cor
 
 ### ハードウェアの決まり (M2、Core AI、`aicheck rules`。Core AI の CPU にはどれもない)
 
-| 決まり | 詳細 | hwnpu のすること |
+| 決まり | 詳細 | BonsaiAI のすること |
 |---|---|---|
 | 線形や畳み込みの和は 2^15 未満に | 32768 で Inf (32256 は正しい)。**途中の和も** (1024 入力の +1/−1 の半分ずつ: 和は 0 でも Inf)。`reduce_sum` は 51200 まで正しい | 値の範囲を抑える (MaxScaled、残差の倍率)。下の行ごとの int8 のあふれはこの決まりだろう |
-| 最後の軸の切り出しの始まりが 32 で割って 1〜14 | 4094 を超える値が Inf になる。始まり 0 と 15〜31 は正しい。ほかの軸は影響なし | `aicheck lint`、`HWNPU_DEV=ailower.notes=1`。27 の書き出しで当たるのは LFM2-8B-A1B の上位 4 つの経路の重み (≤ 1) だけで、害はない |
+| 最後の軸の切り出しの始まりが 32 で割って 1〜14 | 4094 を超える値が Inf になる。始まり 0 と 15〜31 は正しい。ほかの軸は影響なし | `aicheck lint`、`BONSAIAI_DEV=ailower.notes=1`。27 の書き出しで当たるのは LFM2-8B-A1B の上位 4 つの経路の重み (≤ 1) だけで、害はない |
 | log(1 + exp(x)) にまとめた softplus | x > 10.4 で 0 | `relu(x) + log(1 + exp(−|x|))` |
 | 行列積の中の小さな積 | 約 2^-16 より小さいと捨てる (注意のデータで当てはめた。1e-6 の積を 512 足すと 0)。要素ごとの積は保つ。値の小さい注意の `matmul(e, v)` で、重みの小さい多くの鍵が消えた (o が最大 79 % ずれる、[LLM のエンジン](llm-engine.ja.md)) | 大きくしてから後で割る: 注意で分けた形の注意は積の前に e に 1024/l を掛ける |
 | 内側の次元が 1 の行列積 | (1,8,M,1)·(1,8,1,128): M = 1 で相対誤差 0.28、M = 64 は正しい | 積 (外積) で書く |
@@ -83,12 +83,12 @@ Core ML の計算の計画で見たもの (Core AI 自身の落とし穴は [Cor
 
 ### 確かめ方
 
-1. 同じプログラムを ANE と CPU (`HWNPU_COREAI_UNITS=cpu`、`HWNPU_COREML_UNITS=cpu`) で動かし、位置ごとに比べる (ロジットの KL かコサイン)。詰め物は別に数える。
+1. 同じプログラムを ANE と CPU (`BONSAIAI_COREAI_UNITS=cpu`、`BONSAIAI_COREML_UNITS=cpu`) で動かし、位置ごとに比べる (ロジットの KL かコサイン)。詰め物は別に数える。
 2. 原因を探す前に、参照の fp16 と比べる。HF の fp16 も同じだけずれるなら移植の誤りではない (Whisper の符号器: 無音の位置の注意の sink で、ANE の誤りではない)。
-3. 最初の N 層だけ変換し (`hwnpu-dev convert -layers N`)、ずれの始まりを探す。
+3. 最初の N 層だけ変換し (`bonsaiai-dev convert -layers N`)、ずれの始まりを探す。
 4. ANE と CPU のインタプリタの間で演算ごとに二分する (`internal/vision/detect` の `TestBisect`)。または部品を 1 つずつ CPU に移す。
 
-CPU の `hwnpu-dev check` にはどれも出ない。
+CPU の `bonsaiai-dev check` にはどれも出ない。
 
 ## プロンプトのプログラム
 
@@ -103,17 +103,17 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 
 2 つのプロセスが同時に ANE を使うと M1 が固まった (予測が返らず、プロセスを殺せず、約 20 分で戻った)。そこで:
 
-- `llm.OpenDevice` は Core AI か Core ML のデバイスのとき、ユーザーのキャッシュの `hwnpu/neural-engine.lock` に排他の flock を取り、プロセスの終わりまで持つ。2 つ目のプロセスは `waiting for the Neural Engine: process N (NAME) is using it …` と出す。プロバイダを直接開く道具は `llm.LockNPU` を取る。
-- ロックを取ったあと `settle` は、前のプロセスのプログラムが ANE から消えるまで待つ (`mem.NPUWired` を 0.1 秒ごとに、最大 30 秒)。持ち主は見つけた hwnpu 以外の分 (`base N`) をファイルの 2 行目に書く。
+- `llm.OpenDevice` は Core AI か Core ML のデバイスのとき、ユーザーのキャッシュの `bonsaiai/neural-engine.lock` に排他の flock を取り、プロセスの終わりまで持つ。2 つ目のプロセスは `waiting for the Neural Engine: process N (NAME) is using it …` と出す。プロバイダを直接開く道具は `llm.LockNPU` を取る。
+- ロックを取ったあと `settle` は、前のプロセスのプログラムが ANE から消えるまで待つ (`mem.NPUWired` を 0.1 秒ごとに、最大 30 秒)。持ち主は見つけた BonsaiAI 以外の分 (`base N`) をファイルの 2 行目に書く。
 - 理由: プロセスのプログラムは終わったあとも ANE に残り (忙しい機械で最大 7 秒)、その間に読み込むプロセスは失敗しうる (`Request cancelled`)。別のプロセスのコンパイルが動いているプログラムを失敗させることもある。
-- ロックを飛ばす道はない (`HWNPU_NPU_LOCK` は 2026-11-22 になくした)。ほかのセッションが何時間もロックを持つことがある: ANE の仕事は順番を待つ。
+- ロックを飛ばす道はない (`BONSAIAI_NPU_LOCK` は 2026-11-22 になくした)。ほかのセッションが何時間もロックを持つことがある: ANE の仕事は順番を待つ。
 
 ## Neural Engine のメモリ
 
 - ANE の重みは、プロセスの RSS にも footprint にも `aned` にも出ない。`com.apple.driver.AppleH11ANEInterface` の下のカーネルの wired メモリで、`mem.NPUWired` が purego 経由の `mach_memory_info` で読む (root 不要、ゾーンは名前で探す)。何もしないとき 144〜192 KiB。
 - 機械全体の値なので、ロックを持って測る。
 - 同じ重みの 2 本のプログラム (Q=8 と Q=128) は 2 回分持つ: LFM3-1.7B lut6 で 2.43 GiB (1.21 GiB × 2)。
-- コンパイルしたばかりのプログラムは読み込んだ直後は ANE になく、最初の呼び出しで載る。`hwnpu-chat` は「the Neural Engine holds N GiB」と出し、重みの半分に満たないときは「so far」を添える。
+- コンパイルしたばかりのプログラムは読み込んだ直後は ANE になく、最初の呼び出しで載る。`bonsaiai-chat` は「the Neural Engine holds N GiB」と出し、重みの半分に満たないときは「so far」を添える。
 
 ## 採らなかったもの
 
@@ -126,7 +126,7 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 ## 未解決
 
 - 2 つのプロセスで ANE が固まる理由。Intel と AMD は試しておらず、ロックは Apple だけ。
-- システムの ANE のコンパイルのキャッシュの大きさと場所 (sudo が要る)。M1〜M4 の `hwnpu-dev probe cache` の結果は未記録。
+- システムの ANE のコンパイルのキャッシュの大きさと場所 (sudo が要る)。M1〜M4 の `bonsaiai-dev probe cache` の結果は未記録。
 - 16384 の上限で、どの形が CPU に落ちどれが残るか。
 - 重み以外の ANE のメモリ (KV、途中の値) を分けて見られない。
 - M1 Pro / Max / Ultra の上限 (M1 と同じとみなしている)。

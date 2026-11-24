@@ -1,8 +1,8 @@
 package mil
 
 import (
-	kmil "github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
-	"github.com/shibukawa/hwnpu/internal/imagegen/fluxvae"
+	kmil "github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/fluxvae"
 )
 
 // VaeStages is the decoder of a w x h picture in stages, each a program of its own: FLUX.3 klein's

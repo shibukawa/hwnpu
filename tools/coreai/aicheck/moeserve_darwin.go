@@ -16,14 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // moeServe runs a real checkpoint's mixture of experts layers on the Neural Engine for a driver
@@ -196,9 +196,9 @@ func moeServe(argv []string) error {
 			}
 			// the scale as the device sees it (fp16), the codes rounded against it
 			hb := make([]byte, 2)
-			hwnpu.EncodeF16(hb, []float32{s})
+			bonsaiai.EncodeF16(hb, []float32{s})
 			sv := make([]float32, 1)
-			hwnpu.DecodeF16(sv, hb)
+			bonsaiai.DecodeF16(sv, hb)
 			s = sv[0]
 			scale[r] = s
 			for c, v := range row {
@@ -232,7 +232,7 @@ func moeServe(argv []string) error {
 				wt[h*E+e] = gate[e*H+h]
 			}
 		}
-		hwnpu.EncodeF16(L.wr.Bytes(), wt)
+		bonsaiai.EncodeF16(L.wr.Bytes(), wt)
 		if cfg.ExpertBias {
 			if L.bias, err = tensor(pre + "expert_bias"); err != nil {
 				return err
@@ -291,7 +291,7 @@ func moeServe(argv []string) error {
 		if firstErr != nil {
 			return firstErr
 		}
-		hwnpu.EncodeF16(L.tbl.Bytes(), tblv)
+		bonsaiai.EncodeF16(L.tbl.Bytes(), tblv)
 		held[l] = L
 		fmt.Fprintf(os.Stderr, "moeserve: layer %d held (%.0fs)\n", l, time.Since(t).Seconds())
 	}
@@ -361,14 +361,14 @@ func moeServe(argv []string) error {
 		}
 		chosenAll := make([]int32, rows*K)
 		for r := 0; r < rows; r++ {
-			hwnpu.EncodeF16(xh, x[r*H:(r+1)*H])
+			bonsaiai.EncodeF16(xh, x[r*H:(r+1)*H])
 			t := time.Now()
 			copy(rx.Bytes(), xh)
 			reqR.Bind(ra["wr"].Index, L.wr)
 			if err := run(reqR); err != nil {
 				return err
 			}
-			hwnpu.DecodeF16(logits, ry.Bytes())
+			bonsaiai.DecodeF16(logits, ry.Bytes())
 			// sigmoid, the bias for the choice only, the chosen weights normalized
 			sig := make([]float32, E)
 			score := make([]float32, E)
@@ -393,21 +393,21 @@ func moeServe(argv []string) error {
 				if cfg.Scaling != 0 {
 					w *= cfg.Scaling
 				}
-				hwnpu.EncodeF16(bufE[fmt.Sprintf("r%d", k)].Bytes(), []float32{w})
+				bonsaiai.EncodeF16(bufE[fmt.Sprintf("r%d", k)].Bytes(), []float32{w})
 				reqE.Bind(ea[fmt.Sprintf("w%d", k)].Index, L.gu[e])
 				reqE.Bind(ea[fmt.Sprintf("d%d", k)].Index, L.dn[e])
 				fi[k] = float32(e)
 				chosenAll[r*K+k] = int32(e)
 			}
 			reqE.Bind(ea["S"].Index, L.tbl)
-			hwnpu.EncodeF16(bufE["i"].Bytes(), fi)
+			bonsaiai.EncodeF16(bufE["i"].Bytes(), fi)
 			copy(bufE["x"].Bytes(), xh)
 			t2 := time.Now()
 			tRouter += t2.Sub(t)
 			if err := run(reqE); err != nil {
 				return err
 			}
-			hwnpu.DecodeF16(yv, bufE["y"].Bytes())
+			bonsaiai.DecodeF16(yv, bufE["y"].Bytes())
 			tExperts += time.Since(t2)
 			copy(x[r*H:(r+1)*H], yv)
 			nRows++

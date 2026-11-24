@@ -3,7 +3,7 @@ package chat
 import (
 	"cmp"
 	"fmt"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 	"io"
 	"slices"
 	"strings"
@@ -25,7 +25,7 @@ func List(w io.Writer, ks ...Kind) {
 }
 
 // ListHave is List with the column of whether a model is here named column and filled by have
-// (hwnpu-image: its export on AMD's NPU).
+// (bonsaiai-image: its export on AMD's NPU).
 func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	of := func(m Model) bool { return len(ks) == 0 || slices.Contains(ks, m.Kind) }
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

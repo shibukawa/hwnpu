@@ -19,10 +19,10 @@ in [amd-llm.md](amd-llm.md).
 | Qwen3.5-4B (`qwen3.5:4b`) | `qwen35` | lut8 | `--q4` | 24 | 4.2 GB | strongest at code for its size |
 | Qwen2.5-Coder-7B-Instruct | `qwen2` | lut4 + GPTQ codes (`codes: faace07a`) | no export | 16, `not_on: [M1]` | 4.4 GB | no thinking, context 32768 |
 
-- On a Mac `hwnpu-chat` runs only Core AI. All parts of all these models are on the Neural
+- On a Mac `bonsaiai-chat` runs only Core AI. All parts of all these models are on the Neural
   Engine with Core AI. The generating program and the prompt program are two functions of one
   `.aimodel`, so the weights are held once ([Core AI](apple-coreai.md)).
-- Intel: the IR converts (`hwnpu-convert -backend intel`; the architecture's lut8 becomes int8).
+- Intel: the IR converts (`bonsaiai-convert -backend intel`; the architecture's lut8 becomes int8).
   Not measured on the NPU.
 - Facts: every small Qwen here gets Japanese facts wrong (Mt. Fuji's height, the author of
   『こころ』, the longest river). HF fp32 gets them wrong the same way, so it is the model, not the
@@ -58,7 +58,7 @@ checkpoint's `lm_head.weight` is a copy and is not read). 0.6B and 1.7B are the 
   conversations (`template_golden.py --text-content`: list contents are made strings first, as
   vLLM does).
 - Checks: fp64 reference 1e-4 (tied and untied), layer by layer, cached, split. Real weights
-  (`hwnpu-dev check`, 32 tokens):
+  (`bonsaiai-dev check`, 32 tokens):
 
   | | fp32 / fp16 | lut8 | lut6 |
   |---|---|---|---|
@@ -115,7 +115,7 @@ CPU, all 28 layers chained, KL against the float32 reference on a 64-token chat
   inside a layer q/k/v → o → gate/up → down. Tables are fixed first by weighted Lloyd; GPTQ picks
   only each weight's index. down's H (18944²) is 1.4 GB in float32. 77 min for the 7B on M1.
 - Codes are written as `palette.Codes` (`index.json`, `.idx`, `.tab`; `palette.CodesWriter`).
-  `hwnpu-chat --codes DIR` converts with them. The codes hash is in the program name, so a
+  `bonsaiai-chat --codes DIR` converts with them. The codes hash is in the program name, so a
   converted export can come from a source; converting needs `models/NAME/codes-HASH` or `--codes`.
 - **The Neural Engine silently gets per-column-block tables and scales wrong** (Core AI,
   macOS 27.2, M1): it uses the first column block's table for every column. int4-g32/g128 and
@@ -225,7 +225,7 @@ Japanese / English; Core ML CPU ~0.003). Fixes, now in `builder`:
 | 2B | lut6 (`Config.Format`, hidden 2048) | next token 260/283 of lut8, perplexity 3.75 vs 3.83, same 10/12 questions; 1.32 GiB vs 1.78 |
 | 4B | lut8 | lut6 KL 0.031–0.135, 21–24 of 26–30 tokens; answers break |
 
-- Real weights against HF / PyTorch fp32 (`hwnpu-dev check`): 0.8B fp32 per layer ≤0.0002,
+- Real weights against HF / PyTorch fp32 (`bonsaiai-dev check`): 0.8B fp32 per layer ≤0.0002,
   argmax 32/32, KL 0.0000; lut8 KL 0.0076. 4B all 32 layers (layer-streaming reference
   `tools/ref/ref_qwen35_stream.py`; activations up to 121, no fp16 overflow): fp16 KL
   0.0000–0.0001, lut8 0.0015–0.0050.

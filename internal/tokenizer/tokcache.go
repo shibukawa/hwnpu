@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // openBeside opens the binary file that stands for the tokenizer file at path (BinaryPath:
@@ -105,7 +105,7 @@ func sourceKey(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parts := [][]byte{[]byte(fmt.Sprintf("hwnpu-tokbin-v%d", tokbinVersion))}
+	parts := [][]byte{[]byte(fmt.Sprintf("bonsaiai-tokbin-v%d", tokbinVersion))}
 	files := []string{abs}
 	if strings.HasSuffix(abs, ".jsonl") {
 		files = append(files, plamoConfig(abs))

@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	shared "github.com/shibukawa/hwnpu/internal/store"
-	amdtools "github.com/shibukawa/hwnpu/tools/amd"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
+	amdtools "github.com/shibukawa/bonsaiai/tools/amd"
 )
 
 // place is where a conversion goes in the sources (docs/cache-sharing-design.md 7): its folder
@@ -40,7 +40,7 @@ func placeOf(kind string, m Model, target, export string, r map[string]string) p
 	pin, pinned := PinOf(m, target, export)
 	if pinned && !pin.OfVersion(v) {
 		// a pin of another version (made before the recipe's version was raised): not taken,
-		// the version's export is made or fetched (hwnpu-dev models pin pins it then)
+		// the version's export is made or fetched (bonsaiai-dev models pin pins it then)
 		pinned = false
 	}
 	if pinned {
@@ -222,7 +222,7 @@ type SharedRecipe struct {
 
 // SharedExportOr is SharedExport that, when no source has recipe's entry, takes the first of
 // others that a source has (each at the place its kind and recipe give under out's name: an
-// export made by hand that hwnpu-dev sources import put there, ImportedRecipe) before it builds.
+// export made by hand that bonsaiai-dev sources import put there, ImportedRecipe) before it builds.
 // What build makes is put as recipe's.
 func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer, build func() error) error {
 	if recipe == nil && len(others) == 0 {
@@ -320,16 +320,16 @@ func sharedPlace(kind string, recipe map[string]string, out string) place {
 	return placeOf(kind, modelNamed(recipe["model"]), recipe["target"], filepath.Base(out), r)
 }
 
-// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which hwnpu-dev models
+// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which bonsaiai-dev models
 // import puts in the sources.
 const ImportKind = "iron-import"
 
-// ImportedRecipe is the recipe hwnpu-dev sources import describes an export made by hand with
+// ImportedRecipe is the recipe bonsaiai-dev sources import describes an export made by hand with
 // (ImportKind): its model, target and name alone, so that a command finds one under the name it
 // would make the export with. Its "made" names the command as it was called when the first
-// entries were put (hwnpu-dev cache import): it is in the key, so it stays.
+// entries were put (bonsaiai-dev cache import): it is in the key, so it stays.
 func ImportedRecipe(m Model, target, export string) map[string]string {
-	return map[string]string{"model": m.Name, "target": target, "export": export, "made": "by hand (hwnpu-dev cache import)"}
+	return map[string]string{"model": m.Name, "target": target, "export": export, "made": "by hand (bonsaiai-dev cache import)"}
 }
 
 func hostName() string { h, _ := os.Hostname(); return h }
@@ -375,8 +375,8 @@ func ExportRecipe(ctx context.Context, m Model, tool string, args []string) map[
 }
 
 // PinnedRecipe is ExportRecipe for a model whose files the definitions pin all of (sha256: the
-// ONNX models), made by tool with arguments hwnpu works out in Go: version is the export's
-// version there, bumped by hand when what hwnpu passes the tool changes. nil when nothing is
+// ONNX models), made by tool with arguments bonsaiai works out in Go: version is the export's
+// version there, bumped by hand when what bonsaiai passes the tool changes. nil when nothing is
 // pinned.
 func PinnedRecipe(m Model, tool string, version int) map[string]string {
 	hash, err := amdtools.Hash()
@@ -399,8 +399,8 @@ func ExportKind(tool string) string {
 	return "iron-" + strings.TrimSuffix(strings.TrimPrefix(tool, "iron_"), ".py")
 }
 
-// AMDExportFormat is the form of the exports for AMD's NPU this hwnpu reads (every tool's): raise
-// it when hwnpu reads them in a way the exports made before cannot serve, so that the exports
+// AMDExportFormat is the form of the exports for AMD's NPU this bonsaiai reads (every tool's): raise
+// it when bonsaiai reads them in a way the exports made before cannot serve, so that the exports
 // models.yaml pins that were made before are refused (FormatTaken) and are made and pinned again.
 // From 2 it is in the recipes (format), and so in their keys.
 const AMDExportFormat = 1
@@ -412,7 +412,7 @@ func addFormat(r map[string]string) {
 	}
 }
 
-// FormatTaken reports whether this hwnpu reads entry e's form: for AMD's NPU, its recipe's
+// FormatTaken reports whether this bonsaiai reads entry e's form: for AMD's NPU, its recipe's
 // format (none: 1) is AMDExportFormat. Core AI exports carry theirs in their recipe and names
 // (lowering), and are taken by it.
 func FormatTaken(e shared.Entry) bool {

@@ -7,10 +7,10 @@ import (
 	"math"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/notes"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/notes"
 )
 
 // first is the first of ps, "" for none.
@@ -45,7 +45,7 @@ func programFormat(n airole.NPU) (string, error) {
 
 // openNPU opens the NPU n as the music and the sound effects run on it (not AMD's), with the
 // compile cache in cacheDir.
-func openNPU(ctx context.Context, n airole.NPU, cacheDir string) (*hwnpu.Device, error) {
+func openNPU(ctx context.Context, n airole.NPU, cacheDir string) (*bonsaiai.Device, error) {
 	if _, err := programFormat(n); err != nil {
 		return nil, err
 	}
@@ -72,7 +72,7 @@ type OffNPUError struct {
 }
 
 func (e *OffNPUError) Error() string {
-	return fmt.Sprintf("sound: %d programs are not all on the NPU, which has made a Mac sluggish and failed; ai.AllowOffNPU (hwnpu-audio --allow-off-npu) goes on anyway", len(e.Programs))
+	return fmt.Sprintf("sound: %d programs are not all on the NPU, which has made a Mac sluggish and failed; ai.AllowOffNPU (bonsaiai-audio --allow-off-npu) goes on anyway", len(e.Programs))
 }
 
 // checkNPU logs the programs not all on the NPU (off: Placement's lines) and refuses them with

@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
 )
 
 // MultiConfig is model.json of an export of tools/amd/iron_da3.py --views: DA3's any-view
@@ -61,7 +61,7 @@ type Camera struct {
 }
 
 // OpenMulti loads the export in dir onto dev.
-func OpenMulti(ctx context.Context, dev *hwnpu.Device, dir string) (*Multi, error) {
+func OpenMulti(ctx context.Context, dev *bonsaiai.Device, dir string) (*Multi, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
 	if err != nil {
 		return nil, err

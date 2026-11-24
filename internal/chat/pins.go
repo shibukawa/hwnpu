@@ -6,14 +6,14 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 func init() { cache.ExportStale = stalePinned }
 
 // stalePinned reports whether the export at dir has an entry.json (it was fetched or made by
-// hwnpu) whose bytes are not those models.yaml pins for it (by its entry's model and target, and
+// bonsaiai) whose bytes are not those models.yaml pins for it (by its entry's model and target, and
 // its folder's name): an export of before a pin moved. An export made by hand (no entry.json),
 // or one nothing pins, is not.
 func stalePinned(dir string) bool {
@@ -28,7 +28,7 @@ func stalePinned(dir string) bool {
 	return e.Digest() != pin.Digest || !FormatTaken(e)
 }
 
-// Pin is a conversion models.yaml's exports pin (hwnpu-dev models pin writes them): the folder
+// Pin is a conversion models.yaml's exports pin (bonsaiai-dev models pin writes them): the folder
 // of its entry in a source, converted/MODEL/TARGET/EXPORT/At (vN, vN-HASH or v0-HASH), and the
 // digest of what it holds (store.Entry.Digest). It is taken from that folder in any source, in
 // the model's repository on Hugging Face at the commit its hub pins, or here, when its entry has

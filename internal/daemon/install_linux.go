@@ -14,7 +14,7 @@ import (
 
 // Unit is the name of systemd's user units: Unit+".socket" listens, Unit+".service" runs the
 // supervisor at the first connection.
-const Unit = "hwnpud"
+const Unit = "bonsaiaid"
 
 // unitDir is where the user's own units are.
 func unitDir() string {
@@ -40,11 +40,11 @@ func unitPath(p string) string {
 	return `"` + r.Replace(p) + `"`
 }
 
-// SocketUnit is hwnpud.socket: systemd listens on socket (mode 0600) and passes it to the
+// SocketUnit is bonsaiaid.socket: systemd listens on socket (mode 0600) and passes it to the
 // service under SocketName.
 func SocketUnit(socket string) []byte {
 	return []byte(`[Unit]
-Description=hwnpud's socket: hwnpu's NPU and models (docs/design/hwnpud.md)
+Description=bonsaiaid's socket: bonsaiai's NPU and models (docs/design/bonsaiaid.md)
 
 [Socket]
 ListenStream=` + strings.ReplaceAll(socket, "%", "%%") + `
@@ -57,12 +57,12 @@ WantedBy=sockets.target
 `)
 }
 
-// ServiceUnit is hwnpud.service, which runs exe's supervisor. The supervisor stops the engine
+// ServiceUnit is bonsaiaid.service, which runs exe's supervisor. The supervisor stops the engine
 // itself (KillMode=mixed: SIGTERM to it alone, then SIGKILL to what is left), and it exits when
 // idle: systemd starts it again at the next connection.
 func ServiceUnit(exe string) []byte {
 	return []byte(`[Unit]
-Description=hwnpud: hwnpu's NPU and models (docs/design/hwnpud.md)
+Description=bonsaiaid: bonsaiai's NPU and models (docs/design/bonsaiaid.md)
 Requires=` + Unit + `.socket
 After=` + Unit + `.socket
 
@@ -87,13 +87,13 @@ func Install(exe string, out io.Writer) error {
 		return err
 	}
 	if strings.Contains(exe, string(filepath.Separator)+"go-build") {
-		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpu service install", exe)
+		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/bonsaiaid, then bonsaiai service install", exe)
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
-		return fmt.Errorf("hwnpu service install needs systemd's user units (systemctl): %w; run it in the foreground with hwnpu service start", err)
+		return fmt.Errorf("bonsaiai service install needs systemd's user units (systemctl): %w; run it in the foreground with bonsaiai service start", err)
 	}
 	if os.Getenv("XDG_RUNTIME_DIR") == "" {
-		return fmt.Errorf("hwnpu service install: XDG_RUNTIME_DIR is unset (no systemd user session here); run it in the foreground with hwnpu service start")
+		return fmt.Errorf("bonsaiai service install: XDG_RUNTIME_DIR is unset (no systemd user session here); run it in the foreground with bonsaiai service start")
 	}
 	socket := DefaultSocketPath()
 	if err := os.MkdirAll(unitDir(), 0o755); err != nil {

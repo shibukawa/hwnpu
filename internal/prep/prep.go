@@ -1,4 +1,4 @@
-// Package prep is what hwnpu-dev models package makes a model with, for the kinds the library's
+// Package prep is what bonsaiai-dev models package makes a model with, for the kinds the library's
 // roles (airole: ai/text, ai/speech, ai/vision, ai/imagegen) do not make, or make in part: each
 // preparer makes every program a command of the kind would convert for the target on any machine
 // (every size, every form), as its first run there does (the same functions, the same names, so
@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Preparer makes the models of its kinds ready for its targets (airole.PrepareEnv: the NPU).
@@ -45,5 +45,5 @@ func For(m chat.Model, target string) *Preparer {
 
 // notYet is the error of a target a preparer does not make yet.
 func notYet(m chat.Model, target string) error {
-	return fmt.Errorf("prep: %s (%s) for %s is not made by hwnpu-dev models package yet", m.Name, m.Kind, target)
+	return fmt.Errorf("prep: %s (%s) for %s is not made by bonsaiai-dev models package yet", m.Name, m.Kind, target)
 }

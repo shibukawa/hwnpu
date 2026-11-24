@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // limits measures the Neural Engine's limits that arXiv 2606.22283 and ANEForge (2606.17090)
@@ -130,7 +130,7 @@ func (m *limitRunner) loadAs(body func(g *milpart.Graph), opts llm.Options) (*lo
 			for i := range f {
 				f[i] = float32(rng.NormFloat64())
 			}
-			hwnpu.EncodeF16(b.Bytes(), f)
+			bonsaiai.EncodeF16(b.Bytes(), f)
 		}
 		req.Bind(a.Index, b)
 	}

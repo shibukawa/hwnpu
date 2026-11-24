@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // tinyMoEJSON is a small Qwen3.5-MoE as its checkpoint describes it (Qwen3.6-35B-A3B's config

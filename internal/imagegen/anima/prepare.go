@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima/mil"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // ExportVersion is the layout of the programs Convert writes. Prepare names its exports by it,
-// so that an export of an earlier layout is not loaded by a later hwnpu: 2 is the time part of
+// so that an export of an earlier layout is not loaded by a later bonsaiai: 2 is the time part of
 // mil.TimeRows rows and the patch embedding in the first group of blocks (docs/design/image-apple.md); 3 the
 // silu of the DiT and the text written with exp and real_div (blocks.SiLU, docs/design/apple-neural-engine.md); 4
 // the DiT's attention scale in the queries' norm, no multiply over the scores, its blocks' norms
@@ -132,7 +132,7 @@ func ExportName(o ConvertOptions) string {
 		o.TextFormat, o.DitFormat, o.Group, o.QChunk, exportVersion(o), cmp.Or(o.Backend, "coreml"))
 }
 
-// Prepare makes Anima ready in s.Dir (its checkpoint: RepoCheckpoint), as hwnpu-chat makes its models ready: it downloads the
+// Prepare makes Anima ready in s.Dir (its checkpoint: RepoCheckpoint), as bonsaiai-chat makes its models ready: it downloads the
 // checkpoint files that are missing, converts the export that is missing and returns its
 // directory. NAME.done, written last, says an export is whole; one cut off is converted again.
 func Prepare(ctx context.Context, s Setup) (string, error) {

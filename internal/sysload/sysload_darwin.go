@@ -12,7 +12,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 )
 
 // The flavors of host_statistics (<mach/host_info.h>) and their sizes in 32-bit words.

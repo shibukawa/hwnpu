@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // The mass program, given the rows' normalizers from the attention program over all the chunks

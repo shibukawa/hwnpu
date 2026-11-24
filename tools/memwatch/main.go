@@ -5,7 +5,7 @@
 // footprint + wired + Neural Engine together, models.yaml's memory, and with -csv FILE writes
 // the samples.
 //
-//	go run ./tools/memwatch [-csv FILE] hwnpu-chat chat -m MODEL "question"
+//	go run ./tools/memwatch [-csv FILE] bonsaiai-chat chat -m MODEL "question"
 package main
 
 import (
@@ -15,8 +15,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/sysload"
+	"github.com/shibukawa/bonsaiai/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/sysload"
 )
 
 func main() {

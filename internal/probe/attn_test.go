@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // The chunk attention program, called once per chunk and merged on the host, attends as one

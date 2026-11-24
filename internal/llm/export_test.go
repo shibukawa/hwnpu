@@ -53,7 +53,7 @@ func TestProgramPath(t *testing.T) {
 	if prog != filepath.Join(dir, "rtmo-r1-fp16-640.mlpackage") || done != prog+".done" || export != "" {
 		t.Errorf("Core ML: %s %s %q", prog, done, export)
 	}
-	// a mark of an earlier hwnpu, empty, still says done
+	// a mark of an earlier bonsaiai, empty, still says done
 	os.WriteFile(done, nil, 0o644)
 	if !ExportDone(done) {
 		t.Error("an empty mark is not done")

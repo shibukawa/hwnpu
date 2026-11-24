@@ -1,5 +1,5 @@
 // Package mil describes FLUX.2 [klein] 4B (black-forest-labs/FLUX.2-klein-4B) as MIL programs,
-// which hwnpu writes as Core AI programs for Apple's Neural Engine (llm.WritePart): the parts of
+// which bonsaiai writes as Core AI programs for Apple's Neural Engine (llm.WritePart): the parts of
 // tools/amd/iron_flux2klein.py's graphs. Qwen3-4B's first 27 layers in groups (the DiT reads the
 // hidden states after layers 9, 18 and 27), context_embedder of the three side by side, the DiT's
 // double-stream and single-stream blocks in groups (the first embedding the latents' patches, the
@@ -19,7 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
 )
 
 // Part is one program of FLUX.2 klein (milpart.Part).

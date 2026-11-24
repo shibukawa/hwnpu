@@ -1,4 +1,4 @@
-package hwnpu_test
+package bonsaiai_test
 
 import (
 	"context"
@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/fixtures"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/fixtures"
 )
 
 const (
@@ -20,11 +20,11 @@ const (
 	outDim    = fixtures.Out
 )
 
-func openApple(t *testing.T, opts ...hwnpu.Option) *hwnpu.Device {
+func openApple(t *testing.T, opts ...bonsaiai.Option) *bonsaiai.Device {
 	t.Helper()
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, append([]hwnpu.Option{hwnpu.WithVendor(hwnpu.VendorApple)}, opts...)...)
-	if errors.Is(err, hwnpu.ErrNoDevice) {
+	dev, err := bonsaiai.Open(ctx, append([]bonsaiai.Option{bonsaiai.WithVendor(bonsaiai.VendorApple)}, opts...)...)
+	if errors.Is(err, bonsaiai.ErrNoDevice) {
 		t.Skip("no Apple Neural Engine on this machine")
 	}
 	if err != nil {
@@ -39,14 +39,14 @@ func input() []float32 { return fixtures.LinearInput() }
 func reference(t *testing.T) []float32 { return fixtures.LinearOutput() }
 
 // run compiles the model, feeds the reference input and returns the output as float32.
-func run(t *testing.T, dev *hwnpu.Device, model string) (*hwnpu.Graph, []float32) {
+func run(t *testing.T, dev *bonsaiai.Device, model string) (*bonsaiai.Graph, []float32) {
 	t.Helper()
 	ctx := context.Background()
 	gr, err := dev.Graph()
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: model})
+	g, err := gr.Compile(ctx, bonsaiai.GraphSource{Path: model})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,9 +73,9 @@ func run(t *testing.T, dev *hwnpu.Device, model string) (*hwnpu.Graph, []float32
 
 	x := input()
 	switch in.DType {
-	case hwnpu.F16:
-		hwnpu.EncodeF16(inBuf.Bytes(), x)
-	case hwnpu.F32:
+	case bonsaiai.F16:
+		bonsaiai.EncodeF16(inBuf.Bytes(), x)
+	case bonsaiai.F32:
 		for i, v := range x {
 			binary.LittleEndian.PutUint32(inBuf.Bytes()[4*i:], math.Float32bits(v))
 		}
@@ -102,9 +102,9 @@ func run(t *testing.T, dev *hwnpu.Device, model string) (*hwnpu.Graph, []float32
 
 	y := make([]float32, batch*outDim)
 	switch out.DType {
-	case hwnpu.F16:
-		hwnpu.DecodeF16(y, outBuf.Bytes())
-	case hwnpu.F32:
+	case bonsaiai.F16:
+		bonsaiai.DecodeF16(y, outBuf.Bytes())
+	case bonsaiai.F32:
 		for i := range y {
 			y[i] = math.Float32frombits(binary.LittleEndian.Uint32(outBuf.Bytes()[4*i:]))
 		}
@@ -129,7 +129,7 @@ func TestEnumerateApple(t *testing.T) {
 	dev := openApple(t)
 	info := dev.Info()
 	t.Logf("%+v caps=%v", info, info.Caps)
-	if info.Vendor != hwnpu.VendorApple || info.Caps&hwnpu.CapGraph == 0 {
+	if info.Vendor != bonsaiai.VendorApple || info.Caps&bonsaiai.CapGraph == 0 {
 		t.Fatalf("unexpected info %+v", info)
 	}
 }
@@ -150,11 +150,11 @@ func TestFP16RunsOnNeuralEngine(t *testing.T) {
 func TestStrictRejectsFP32(t *testing.T) {
 	dev := openApple(t)
 	gr, _ := dev.Graph()
-	_, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: fp32Model})
-	if !errors.Is(err, hwnpu.ErrNotOnNPU) {
+	_, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Path: fp32Model})
+	if !errors.Is(err, bonsaiai.ErrNotOnNPU) {
 		t.Fatalf("err = %v, want ErrNotOnNPU", err)
 	}
-	var pe *hwnpu.PlacementError
+	var pe *bonsaiai.PlacementError
 	if !errors.As(err, &pe) || !pe.Report.Verified || len(pe.Report.Ops) == 0 {
 		t.Fatalf("report %+v", pe)
 	}
@@ -172,7 +172,7 @@ func TestStrictRejectsFP32(t *testing.T) {
 
 // Acceptance requirement:npu-only-execution/prefer-reports.
 func TestPreferRunsAndReports(t *testing.T) {
-	dev := openApple(t, hwnpu.WithPlacement(hwnpu.PlacementPrefer))
+	dev := openApple(t, bonsaiai.WithPlacement(bonsaiai.PlacementPrefer))
 	g, y := run(t, dev, fp32Model)
 	if rep := g.Placement(); rep.OnNPU() || len(rep.Ops) == 0 {
 		t.Fatalf("expected off-NPU operations, got %+v", rep)
@@ -184,7 +184,7 @@ func TestPreferRunsAndReports(t *testing.T) {
 func TestBindRejectsSmallBuffer(t *testing.T) {
 	dev := openApple(t)
 	gr, _ := dev.Graph()
-	g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: fp16Model})
+	g, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Path: fp16Model})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,8 +204,8 @@ func TestBindRejectsSmallBuffer(t *testing.T) {
 func TestUnsupportedSource(t *testing.T) {
 	dev := openApple(t)
 	gr, _ := dev.Graph()
-	_, err := gr.Compile(context.Background(), hwnpu.GraphSource{Format: hwnpu.GraphFormatOpenVINOIR})
-	if !errors.Is(err, hwnpu.ErrUnsupported) {
+	_, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Format: bonsaiai.GraphFormatOpenVINOIR})
+	if !errors.Is(err, bonsaiai.ErrUnsupported) {
 		t.Fatalf("err = %v, want ErrUnsupported", err)
 	}
 }
@@ -213,12 +213,12 @@ func TestUnsupportedSource(t *testing.T) {
 // Acceptance requirement:compile-cache/reuse and /invalidate (Apple).
 func TestCoreMLCompileCache(t *testing.T) {
 	dir := t.TempDir()
-	dev := openApple(t, hwnpu.WithCacheDir(dir), hwnpu.WithPlacement(hwnpu.PlacementPrefer))
+	dev := openApple(t, bonsaiai.WithCacheDir(dir), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer))
 	gr, _ := dev.Graph()
-	compile := func(path string) (*hwnpu.Graph, time.Duration) {
+	compile := func(path string) (*bonsaiai.Graph, time.Duration) {
 		t.Helper()
 		start := time.Now()
-		g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: path})
+		g, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Path: path})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,11 +256,11 @@ func TestCoreMLCompileCache(t *testing.T) {
 }
 
 func TestCoreMLHasNoPowerControls(t *testing.T) {
-	dev := openApple(t, hwnpu.WithPowerPolicy(hwnpu.PowerLow))
-	if c := dev.Info().Caps; c&(hwnpu.CapPowerControl|hwnpu.CapPowerMeter) != 0 {
+	dev := openApple(t, bonsaiai.WithPowerPolicy(bonsaiai.PowerLow))
+	if c := dev.Info().Caps; c&(bonsaiai.CapPowerControl|bonsaiai.CapPowerMeter) != 0 {
 		t.Fatalf("caps %v", c)
 	}
-	if _, err := dev.PowerSample(); !errors.Is(err, hwnpu.ErrUnsupported) {
+	if _, err := dev.PowerSample(); !errors.Is(err, bonsaiai.ErrUnsupported) {
 		t.Fatalf("PowerSample err = %v", err)
 	}
 }
@@ -271,10 +271,10 @@ func TestCoreMLBatchPadding(t *testing.T) {
 	ctx := context.Background()
 	dev := openApple(t)
 	gr, _ := dev.Graph()
-	if _, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "internal/fixtures/" + fixtures.CoreMLSmall}); !errors.Is(err, hwnpu.ErrNotOnNPU) {
+	if _, err := gr.Compile(ctx, bonsaiai.GraphSource{Path: "internal/fixtures/" + fixtures.CoreMLSmall}); !errors.Is(err, bonsaiai.ErrNotOnNPU) {
 		t.Fatalf("unpadded model: err = %v, want ErrNotOnNPU", err)
 	}
-	g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "internal/fixtures/" + fixtures.CoreMLSmallANE})
+	g, err := gr.Compile(ctx, bonsaiai.GraphSource{Path: "internal/fixtures/" + fixtures.CoreMLSmallANE})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestCoreMLBatchPadding(t *testing.T) {
 	out, _ := dev.AllocBuffer(args[1].Bytes)
 	defer in.Close()
 	defer out.Close()
-	hwnpu.EncodeF16(in.Bytes(), fixtures.SmallInput())
+	bonsaiai.EncodeF16(in.Bytes(), fixtures.SmallInput())
 	req, _ := g.NewRequest()
 	defer req.Close()
 	req.Bind(0, in)
@@ -303,7 +303,7 @@ func TestCoreMLBatchPadding(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := make([]float32, 128)
-		hwnpu.DecodeF16(got, out.Bytes())
+		bonsaiai.DecodeF16(got, out.Bytes())
 		compare(t, got, want, 0.02)
 	}
 }

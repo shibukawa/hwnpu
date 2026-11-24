@@ -7,11 +7,11 @@ import (
 	"runtime/debug"
 	"slices"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/tflite"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/tflite"
 )
 
 // musicCoCaRevision counts the changes to MusicCoCa's programs.
@@ -111,7 +111,7 @@ func textFeed(table []byte, ids, pad []float64) map[string][]float32 {
 	paddings := make([]float32, textLength)
 	for i, id := range ids {
 		if id >= 0 && int(id) < textVocab {
-			hwnpu.DecodeF16(x[i*StyleDim:(i+1)*StyleDim], table[2*int(id)*StyleDim:2*(int(id)+1)*StyleDim])
+			bonsaiai.DecodeF16(x[i*StyleDim:(i+1)*StyleDim], table[2*int(id)*StyleDim:2*(int(id)+1)*StyleDim])
 		}
 		mask[i], paddings[i] = float32(1-pad[i]), float32(pad[i])
 	}
@@ -208,7 +208,7 @@ func textProgram(model, table string) (Program, error) {
 	for i, v := range c.table.F {
 		f32[i] = float32(v)
 	}
-	hwnpu.EncodeF16(b, f32)
+	bonsaiai.EncodeF16(b, f32)
 	if err := os.WriteFile(table, b, 0o644); err != nil {
 		return nil, err
 	}

@@ -8,7 +8,7 @@
 //
 // The graphs run on Stages: the NPU (programs of fixed lengths, the text and the speech padded
 // and masked, with no ONNX Runtime: the host takes the embedding tables' rows and works out the
-// flow's sin and cos), or the CPU with ONNX Runtime (OpenCPU, HWNPU_ONNXRUNTIME).
+// flow's sin and cos), or the CPU with ONNX Runtime (OpenCPU, BONSAIAI_ONNXRUNTIME).
 package supertonic
 
 import (

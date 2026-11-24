@@ -15,7 +15,7 @@ softmax over their logits; each expert's gate and up interleaved (even and odd c
 gate clamped at 7 and the up to [-7, 7], ``(up + 1) * gate * sigmoid(1.702 gate)``, down with its
 bias, times the routing weight. ``check`` compares it with transformers' modules.
 
-    PY=~/.cache/hwnpu/dev/ref-venv/bin/python
+    PY=~/.cache/bonsaiai/dev/ref-venv/bin/python
     $PY tools/ref/ref_gptoss.py check MODEL_DIR [--layers 2]        # against transformers' modules
     $PY tools/ref/ref_gptoss.py ref MODEL_DIR WORK [--tokens 32] [--steps 3]   # an export's check/
     $PY tools/ref/ref_gptoss.py logits MODEL_DIR IDS OUT            # every position's logits
@@ -44,7 +44,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "amd"))
 
 FP4 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0])
-TEXT = ("The Neural Engine runs small language models at low power. hwnpu is a Go library for CPU "
+TEXT = ("The Neural Engine runs small language models at low power. bonsaiai is a Go library for CPU "
         "integrated NPUs: Apple, Intel and AMD. 日本の首都は東京です。")
 # What the harmony chat format puts before a user's text: a prompt starts as the model sees it.
 USER = "<|start|>user<|message|>"

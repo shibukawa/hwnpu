@@ -1,4 +1,4 @@
-"""Export one graph IRON compiled as a full ELF, in the manifest hwnpu's iron.Graph reads.
+"""Export one graph IRON compiled as a full ELF, in the manifest bonsaiai's iron.Graph reads.
 
 A graph here is any ``iron.Graph`` called with inputs (not a language model: no decode step,
 no prompt chunk, no KV cache): an image model's text encoder, a denoiser step, a VAE decoder.
@@ -30,7 +30,7 @@ MANIFEST_VERSION = 1
 
 
 def trim_zeros(path: Path, align: int = 4096) -> None:
-    """Cut a bank image's trailing zeros (whole ``align`` blocks): hwnpu reads a short image into
+    """Cut a bank image's trailing zeros (whole ``align`` blocks): bonsaiai reads a short image into
     a zeroed buffer, and past the weights a bank is the states and scratch, zeros."""
     import mmap
     import os

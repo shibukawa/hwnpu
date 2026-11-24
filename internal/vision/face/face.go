@@ -20,10 +20,10 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
 )
 
 // Export is model.json of an export: its sizes, each a directory WxH.
@@ -108,7 +108,7 @@ type runner interface {
 
 // Open reads the export (tools/amd/iron_yunet.py) in dir; a size's graph is loaded onto dev for
 // the first picture that takes it.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Detector, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string) (*Detector, error) {
 	x, err := readExport(dir)
 	if err != nil {
 		return nil, err
@@ -313,7 +313,7 @@ func IoU(a, b Face) float32 {
 // npuRunner runs the export's graph of the size asked (one on the device at a time).
 type npuRunner struct {
 	x    Export
-	dev  *hwnpu.Device
+	dev  *bonsaiai.Device
 	dir  string
 	w, h int
 	g    *iron.Graph

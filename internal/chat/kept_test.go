@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-// The memory a user chose to run a model as is kept in hwnpu's directory of settings, by model,
+// The memory a user chose to run a model as is kept in bonsaiai's directory of settings, by model,
 // and read by every command that resolves the model: a 16 GB machine that keeps 8 for
 // LFM3-1.7B runs it as models.yaml defines it for 8 GB (no whole program of short
 // conversations) and says so; a machine given (--memory) is over what is kept; 0 forgets it; a
-// file that is not one of hwnpu's keeps nothing.
+// file that is not one of bonsaiai's keeps nothing.
 func TestChosenMemory(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv(MemoryEnv, "16")

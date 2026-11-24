@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // GptOss is the chat format of openai/gpt-oss (chat_template.jinja of gpt-oss-20b, the harmony

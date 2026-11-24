@@ -2,20 +2,20 @@
 
 [English](architecture.md)
 
-hwnpu が乗るベンダーのスタック、コードの分け方、cgo を使わないための規約、テストのしかた、モデルの
+BonsaiAI が乗るベンダーのスタック、コードの分け方、cgo を使わないための規約、テストのしかた、モデルの
 変換のしかた。公開 API は [api.ja.md](api.ja.md)、各バックエンドはそれぞれのファイル
 ([Neural Engine](apple-neural-engine.ja.md)、[Core AI](apple-coreai.ja.md)、[Core ML](apple-coreml.ja.md)、[Intel](intel.ja.md)、[AMD](amd.ja.md))。
 
 ## ベンダーのソフトウェアスタック
 
-| ベンダー | OS | hwnpu の経路 | バックエンド名 |
+| ベンダー | OS | BonsaiAI の経路 | バックエンド名 |
 |---|---|---|---|
 | Intel NPU (Core Ultra、Meteor Lake 以降) | Linux、Windows | Level Zero のローダ (`libze_loader.so.1` / `ze_loader.dll`) + NPU のグラフ拡張を purego で | `levelzero` |
-| Intel (NPU なしでの確認) | どれでも | OpenVINO IR を OpenVINO 自身で (CPU プラグイン、または `HWNPU_DEV=ov.device=NPU`) | `openvino` (`HWNPU_BACKEND=openvino` のときだけ) |
+| Intel (NPU なしでの確認) | どれでも | OpenVINO IR を OpenVINO 自身で (CPU プラグイン、または `BONSAIAI_DEV=ov.device=NPU`) | `openvino` (`BONSAIAI_BACKEND=openvino` のときだけ) |
 | AMD XDNA (Ryzen AI、Phoenix 以降) | Linux | カーネルドライバ `amdxdna` の ioctl と mmap を `golang.org/x/sys/unix` で (purego すら不要) | `xdna` |
-| AMD XDNA | Windows (試験は Linux) | XRT (`xrt_coreutil.dll`) を、実行時に読む小さな C のライブラリ `native/xrtshim` 経由で | `xrt` (Linux では `HWNPU_BACKEND=xrt` のときだけ) |
+| AMD XDNA | Windows (試験は Linux) | XRT (`xrt_coreutil.dll`) を、実行時に読む小さな C のライブラリ `native/xrtshim` 経由で | `xrt` (Linux では `BONSAIAI_BACKEND=xrt` のときだけ) |
 | Apple Neural Engine | macOS | Core ML を `purego/objc` で | `coreml` (既定) |
-| Apple Neural Engine | macOS 27 | Core AI を Swift の shim (`libcaishim.dylib`、埋め込み、purego で読む) で | `coreai` (`WithBackend("coreai")`、`HWNPU_BACKEND=coreai`) |
+| Apple Neural Engine | macOS 27 | Core AI を Swift の shim (`libcaishim.dylib`、埋め込み、purego で読む) で | `coreai` (`WithBackend("coreai")`、`BONSAIAI_BACKEND=coreai`) |
 
 ### Intel
 
@@ -88,7 +88,7 @@ Intel はグラフ実行機 (ネットワーク全体をドライバがコンパ
 カーネル実行機 (IRON / mlir-aie / Peano のカーネルを AIE タイル配列に流す、公開のドライバ内コンパイラなし)。
 API はこの違いを隠さない。
 
-層: ドライバ → hwnpu の中核 (モデルとカーネルの実行) → 用途別のヘルパ (チャット、埋め込み、画像、音声、
+層: ドライバ → BonsaiAI の中核 (モデルとカーネルの実行) → 用途別のヘルパ (チャット、埋め込み、画像、音声、
 `internal/` の中)。
 
 ### バックエンドの選定の理由
@@ -102,11 +102,11 @@ API はこの違いを隠さない。
 
 ## パッケージ構成
 
-モジュールは `github.com/shibukawa/hwnpu`。
+モジュールは `github.com/shibukawa/bonsaiai`。
 
 | パス | 内容 |
 |---|---|
-| `hwnpu.go`、`device.go`、`graph.go`、`kernel.go`、`options.go`、`float16.go` | 公開 API ([api.ja.md](api.ja.md)) |
+| `bonsaiai.go`、`device.go`、`graph.go`、`kernel.go`、`options.go`、`float16.go` | 公開 API ([api.ja.md](api.ja.md)) |
 | `backends.go`、`backends_darwin.go` | 組み込むバックエンドの登録 (Level Zero、xrt、xdna、OpenVINO はどこでも。Core ML、Core AI は darwin) |
 | `models.go` | `ModelsYAML`: 埋め込んだ `models.yaml` |
 | `modelstore/`、`npuinfo/` | 公開パッケージ ([api.ja.md](api.ja.md)) |
@@ -123,7 +123,7 @@ API はこの違いを隠さない。
 | `internal/llm` (+ `blocks`、`archs`、アーキテクチャごとのパッケージ、`decode`、`chain`、`runner`、`paged`、`experts`、`iron`、`check`) | 言語モデルなどの変換器と実行器 |
 | `internal/chat`、`internal/imagegen/*`、`internal/speech`、`internal/transcribe`、`internal/vision`、`internal/audio` … | コマンドの裏の用途別のエンジン |
 | `internal/cache`、`internal/store`、`internal/power`、`internal/mem`、`internal/sysload` | コンパイルキャッシュとモデルの置き場、エネルギーのカウンタ、ページ境界のメモリと NPU のメモリ、負荷 |
-| `cmd/hwnpu`、`cmd/hwnpu-chat`、`cmd/hwnpu-image`、`cmd/hwnpu-audio`、`cmd/hwnpu-dev` | コマンド ([cli.ja.md](cli.ja.md)) |
+| `cmd/bonsaiai`、`cmd/bonsaiai-chat`、`cmd/bonsaiai-image`、`cmd/bonsaiai-audio`、`cmd/bonsaiai-dev` | コマンド ([cli.ja.md](cli.ja.md)) |
 | `native/xrtshim`、`internal/backend/coreai/shim` | 実行時に読む shim (XRT 用の C、Core AI 用の Swift) |
 | `tools/` | Python の参照 (`tools/ref`)、IRON の書き出し (`tools/amd`)、Core ML / Core AI / OpenVINO の補助 |
 
@@ -165,13 +165,13 @@ func BindAddr(fptr any, addr uintptr)                  // DDI テーブルの関
 | 偽のドライバ | `testdata/zemock` (偽の Level Zero、`cc` があればビルド)、`internal/xdna/xdnasim` (Go で書いた偽の amdxdna) | 不要 |
 | fixture | `internal/fixtures` の小さなモデル (`gen_models.py` で作り直す) | 不要 |
 | 変換器 | 合成の重み (`llm.NewSynthetic`)、プログラムと `weight.bin` のダイジェスト、`modeling_*.py` から書いた fp64 の forward、`milcpu` と PyTorch の照合 | 不要 |
-| 実機 | Mac での Core ML / Core AI の試験。各 NPU での `hwnpu-dev report` (passthrough の設計、サンプルのモデル)。書き出し済みのプログラムは `HWNPU_TEST_PREBUILT` | 要 |
-| 電力 | 同じモデルを `PowerLow` と `PowerPerformance` で、`hwnpu-dev powerbench` (mJ/トークン) | 要 |
+| 実機 | Mac での Core ML / Core AI の試験。各 NPU での `bonsaiai-dev report` (passthrough の設計、サンプルのモデル)。書き出し済みのプログラムは `BONSAIAI_TEST_PREBUILT` | 要 |
+| 電力 | 同じモデルを `PowerLow` と `PowerPerformance` で、`bonsaiai-dev powerbench` (mJ/トークン) | 要 |
 
 試験は全部 `CGO_ENABLED=0 go test ./...` で動く。
 
-診断: `hwnpu-dev info [-model M]` (デバイス、版、ライブラリの解決先、モデルの配置)、`hwnpu status` と
-`hwnpu issue` (機械、`npuinfo` による NPU の状態、プロセス、キャッシュ。`--wake` なしでは NPU を起こさない)、
+診断: `bonsaiai-dev info [-model M]` (デバイス、版、ライブラリの解決先、モデルの配置)、`bonsaiai status` と
+`bonsaiai issue` (機械、`npuinfo` による NPU の状態、プロセス、キャッシュ。`--wake` なしでは NPU を起こさない)、
 `go run ./npuinfo/cmd/npuinfo` (生の JSON)。[cli.ja.md](cli.ja.md) を参照。
 
 ## Go での変換の流れ
@@ -193,8 +193,8 @@ func BindAddr(fptr any, addr uintptr)                  // DDI テーブルの関
 
 | コマンド | すること |
 |---|---|
-| `hwnpu-dev convert` | モデルを組み立てる: アーキテクチャは `config.json` から判別 (`-arch` で指定)、`-backend coreml` (`.mlpackage`) か `intel` (OpenVINO IR + `out.parts.json`)、`-target` (大きさの上限で分割を決めるチップ。`none` は分けない)、`-layers N` (最初の N 層だけ)、`-archs` (ホワイトリストの一覧)。アーキテクチャ固有のパラメータはフラグになる (LFM3: `-post-scale`、`-conv`、`-attn`、`-hidden-out`) |
-| `hwnpu-dev check` | 参照と照合する: 埋め込み、各層単独 (参照の入力を与える)、最終 norm と出力層、モデル全体。層の相対 RMS 誤差が `-tol` (既定 0.01) を超えると終了コード 1 で最初の層を示す。`-package` は既存の `.mlpackage` のロジットを照合 |
+| `bonsaiai-dev convert` | モデルを組み立てる: アーキテクチャは `config.json` から判別 (`-arch` で指定)、`-backend coreml` (`.mlpackage`) か `intel` (OpenVINO IR + `out.parts.json`)、`-target` (大きさの上限で分割を決めるチップ。`none` は分けない)、`-layers N` (最初の N 層だけ)、`-archs` (ホワイトリストの一覧)。アーキテクチャ固有のパラメータはフラグになる (LFM3: `-post-scale`、`-conv`、`-attn`、`-hidden-out`) |
+| `bonsaiai-dev check` | 参照と照合する: 埋め込み、各層単独 (参照の入力を与える)、最終 norm と出力層、モデル全体。層の相対 RMS 誤差が `-tol` (既定 0.01) を超えると終了コード 1 で最初の層を示す。`-package` は既存の `.mlpackage` のロジットを照合 |
 | `tools/ref/ref_logits.py` | PyTorch fp32 の隠れ状態とロジットを書く (多くの実装で `output_hidden_states` の最後は最終 norm の後なので、デコーダ層への hook で取る。`hidden[0]` は `get_input_embeddings()` への hook)、`REF.json`、エンコーダは `--encoder` |
 
 ### NPU なしの確認
@@ -290,6 +290,6 @@ Linux の AMD (xclbin と full ELF)、全 NPU での小さな LLM は済んで�
 | Intel での ioctl 直叩き | ファームウェアのジョブ形式が UMD の内部 |
 | purego からの XRT の C API | コンテキストは C++ 専用、カーネルを開く API は deprecated、可変長引数 |
 | ONNX Runtime の EP をバックエンドに | EP はグラフを分けて黙って CPU に回すので厳格モードが成り立たない。ONNX Runtime は `models.yaml` が CPU に置くモデルの CPU の実行系 (`internal/onnxrt`、float32、CPU の EP) としてだけ使う |
-| 別モジュールの `contrib/`、`cmd/hwnpuinfo`、公開の `xdna/` と `levelzero/` のヘルパ | 不要だった: CPU の実行系は `internal/onnxrt`、診断は `hwnpu-dev info` と `hwnpu status` |
+| 別モジュールの `contrib/`、`cmd/bonsaiaiinfo`、公開の `xdna/` と `levelzero/` のヘルパ | 不要だった: CPU の実行系は `internal/onnxrt`、診断は `bonsaiai-dev info` と `bonsaiai status` |
 | 量子化済みの公開物の量子化し直し | 実行先ごとに bf16 から量子化する。量子化済みのものは劣化なしに並べ替えられる形式のときだけ使う |
 | 32 ビット | C の構造体は全て 64 ビット前提 |

@@ -1,10 +1,10 @@
 # KV キャッシュの省メモリ化と高速化: 手法の調査と Neural Engine への当てはめ
 
-作成: 2026-10-29。対象は hwnpu の生成 (`hwnpu-dev generate`、`internal/llm/decode`) と LFM3-1.7B。実測は M3 (16 GB、macOS 27.0.1)。
+作成: 2026-10-29。対象は BonsaiAI の生成 (`bonsaiai-dev generate`、`internal/llm/decode`) と LFM3-1.7B。実測は M3 (16 GB、macOS 27.0.1)。
 
 ## 1. 前提: 今の方式と、何が高いか
 
-hwnpu の KV キャッシュは、ホストのバッファをプログラムの入出力として渡す ([docs/design/llm-engine.md](design/llm-engine.md))。Core ML の状態 (MLState) に置く方式も作って比べたが、速さは同じで CPU の使用率が下がるだけだった ([llm-engine](design/llm-engine.md))。
+BonsaiAI の KV キャッシュは、ホストのバッファをプログラムの入出力として渡す ([docs/design/llm-engine.md](design/llm-engine.md))。Core ML の状態 (MLState) に置く方式も作って比べたが、速さは同じで CPU の使用率が下がるだけだった ([llm-engine](design/llm-engine.md))。
 
 | 項目 | 値 (LFM3-1.7B、lut4、2 分割) |
 |---|---|
@@ -34,15 +34,15 @@ Neural Engine (Core ML) 側の制約で、手法の実現性が決まる。
 | **スライディング窓** (直近 W トークンだけ見る層のキャッシュを W に固定する。llama.cpp の iSWA は SWA 層だけ別の小さなキャッシュを持つ) | メモリ、容量の費用 | 不要 (モデルが既にそう) | リングバッファ: ホストが `pos mod W` の行に書き、マスクで有効な行を示す。K には RoPE を掛けてから保存するので、行の順番は結果に効かない (softmax は鍵の順に依らない) | **実装済み** ([docs/design/llm-engine.md](design/llm-engine.md))。11 層のうち 5 層が窓 256 なので、長い容量が要るのは 6 層。容量 1K あたりの費用が 5.5 ms から 2.8 ms に下がり、4K で 27.7 ms (−26%)、8K で 38.5 ms。出力はリングなしと同一 |
 | **退避・圧縮** (StreamingLLM: 先頭の数トークン (attention sink) と直近の窓を残す。H2O: 注意の累積が大きいトークンを残す。SnapKV: プロンプトの末尾の窓から見て重要な位置だけ残す) | メモリ、容量の費用 (容量を小さく固定できる) | 不要 | 残す行の選択はホストが行い、マスクで示す。ANE 側は何も変わらない。SnapKV に要る注意の重みは、プログラムの出力に足せば取れる | 固定の容量 (たとえば 4K) で終わりのない生成をするのに使える。精度の取引があるので選べる設定にする。StreamingLLM の「先頭を残す」は実装が簡単 |
 | **PagedAttention** (キャッシュをページ単位で管理し、断片化と予約の無駄を減らす。vLLM) | メモリ (複数の系列を同時に扱うとき) | 不要 | ページ表による間接参照は `gather` で CPU 行き。形も固定にならない | 系列が 1 つで、バッファを事前に確保する今の方式では利点がない。「容量の段階」(後述) が粗い粒度で同じ役割をする |
-| **FlashAttention / Flash-Decoding** (注意の計算を塊に分けて中間データの読み書きを減らす。Flash-Decoding は鍵の軸を塊に分けて並列に計算し、softmax の部分和 (log-sum-exp) で合流する) | 帯域、長い文脈の遅延 | 不要 | カーネルは Core ML のコンパイラが決めるので、hwnpu からは触れない。ただし Flash-Decoding の「鍵の軸を固定の塊に分けて部分和で合流する」形はプログラムの単位で再現でき、**使っている塊だけを動かせば費用が容量ではなく長さに比例する** | 容量の費用を減らす本命の 1 つ。塊ごとのプログラムが要るので Core ML の呼び出しが増える (1 回約 55 µs)。設計は 4 節 |
+| **FlashAttention / Flash-Decoding** (注意の計算を塊に分けて中間データの読み書きを減らす。Flash-Decoding は鍵の軸を塊に分けて並列に計算し、softmax の部分和 (log-sum-exp) で合流する) | 帯域、長い文脈の遅延 | 不要 | カーネルは Core ML のコンパイラが決めるので、BonsaiAI からは触れない。ただし Flash-Decoding の「鍵の軸を固定の塊に分けて部分和で合流する」形はプログラムの単位で再現でき、**使っている塊だけを動かせば費用が容量ではなく長さに比例する** | 容量の費用を減らす本命の 1 つ。塊ごとのプログラムが要るので Core ML の呼び出しが増える (1 回約 55 µs)。設計は 4 節 |
 | **層をまたぐ共有** (CLA: 隣の層で K/V を共有。YOCO: 前半の層が作った K/V を後半が cross-attention で使う。Apple の on-device モデルは後半 37.5% の層の K/V 射影を外して前半のを使い、キャッシュを 37.5% 減らした) | メモリ、容量の費用 | 要 | 動くはず (共有先の入力を同じバッファに Bind するだけ) | モデルの構造なので変えられない。Apple が自社モデルでこれを選んでいることは、ANE では容量が高いという今回の観測と合う |
 | **プロンプトのキャッシュ** (システムプロンプトなど共通の前置きの K/V を保存して再利用) | 読み込みの時間 | 不要 | ホストのバッファそのものを保存すればよい | 実装が最も簡単。チャットの往復で system プロンプトの prefill を省ける |
-| **容量の段階** (1K、4K、8K の容量のプログラムを用意し、文脈が伸びたら大きいほうへキャッシュを移す) | 容量の費用 (短いうちは速い) | 不要 | **実装済み** (`hwnpu-dev convert -cache a,b,c`、`chain.Grow`、`decode.Session.Migrate`)。キャッシュの移し替えはホストのバッファのコピーで 0 秒。段階の読み込みは 6〜30 秒 (配置の検証をキャッシュして半分にした) で、裏で読み込むと生成が半分以下に落ちるので先に全部読み込む | 動いている段階は単独と同じ速さ (1024 で 19.2 ms)。重みは段階ごとに重複 (0.8 GiB ずつ) |
+| **容量の段階** (1K、4K、8K の容量のプログラムを用意し、文脈が伸びたら大きいほうへキャッシュを移す) | 容量の費用 (短いうちは速い) | 不要 | **実装済み** (`bonsaiai-dev convert -cache a,b,c`、`chain.Grow`、`decode.Session.Migrate`)。キャッシュの移し替えはホストのバッファのコピーで 0 秒。段階の読み込みは 6〜30 秒 (配置の検証をキャッシュして半分にした) で、裏で読み込むと生成が半分以下に落ちるので先に全部読み込む | 動いている段階は単独と同じ速さ (1024 で 19.2 ms)。重みは段階ごとに重複 (0.8 GiB ずつ) |
 | **重みなしの注意プログラム** (層を「射影と MLP (重みあり、容量に依らない)」と「キャッシュに対する注意 (重みなし、容量ごと)」に分ける) | 容量の段階の重複 | 不要 | 分けた分だけ Core ML の呼び出しが増える (11 層 × 2〜3 回 × 55 µs ≈ 1〜2 ms)。重みなしのプログラムはコンパイルも読み込みも速いはず (未確認) | 容量の段階や塊分けと組み合わせる土台。未検証 |
 
 ## 3. 容量に比例する費用の内訳
 
-費用がどこから来るかを `hwnpu-dev probe kv` で切り分けた (M3、11 層 lut4、1 トークン、全部 ANE。レポートは `npu_profiles/npuprobe-m3-kv.md` と `npu_profiles/npuprobe-m3-kv-mha.md`)。
+費用がどこから来るかを `bonsaiai-dev probe kv` で切り分けた (M3、11 層 lut4、1 トークン、全部 ANE。レポートは `npu_profiles/npuprobe-m3-kv.md` と `npu_profiles/npuprobe-m3-kv-mha.md`)。
 
 | 容量 | host (GQA、K/V を tile で 16 ヘッドに複製) | state (MLState) | host-mha (16 の Q ヘッドがそれぞれ K/V を持つ。複製なし、キャッシュ 4 倍) | host-int8 (キャッシュを int8 とトークンごとの fp16 スケールで渡し、`cast` と `mul` で戻す) |
 |---|---|---|---|---|
@@ -85,7 +85,7 @@ host の値は実行ごとに 46〜55 ms (8K) の幅で揺れる。int8 は同�
 | 2 | 容量の段階と移し替え | **実装済み** ([docs/design/llm-engine.md](design/llm-engine.md)): `-cache 1024,4096,8192`、切り替えは 0 秒で出力は同一。端から端の利得はスワップのある機械では示せず、空いた機械で測り直す | 段階の読み込みは 6〜30 秒。裏で読み込むと生成が半分以下になるので、既定は先に全部読み込む |
 | 3 | プロンプトのキャッシュ | チャットの 2 回目以降の prefill がなくなる | バッファの保存と復元だけ |
 | 4 | StreamingLLM 型の退避 (設定) | 固定の容量で終わりのない生成 | マスクと書き込み位置の規則 |
-| 5 | 塊分けの注意 (Flash-Decoding の形) | 16K を超える文脈。使っている塊だけ動かせば費用が長さに比例 | 実装済み ([llm-engine](design/llm-engine.md)): 16320 を超えるキャッシュは 16384 ずつの塊。LFM3-1.7B で 32K 138 ms/token、64K 363 ms/token、全部 ANE。使っている塊だけ動かす形は**実装済み** ([docs/design/llm-engine.md](design/llm-engine.md)、`--paged 8192`、hwnpu-chat の既定): 全注意の層の前後でモデルを分け、ホストが持つキャッシュに対して塊ごとに重みなしの注意を呼ぶ。注意だけの計測では、塊 8192、Q=8 で 6 層の注意が 1K あたり 1.09 ms と使った長さに比例し、付け替えの費用も入力の複製もない。文脈は 262144 (メモリは会話とともに 1 トークン 12 KiB)。モデル全体の Mac での計測はこれから |
+| 5 | 塊分けの注意 (Flash-Decoding の形) | 16K を超える文脈。使っている塊だけ動かせば費用が長さに比例 | 実装済み ([llm-engine](design/llm-engine.md)): 16320 を超えるキャッシュは 16384 ずつの塊。LFM3-1.7B で 32K 138 ms/token、64K 363 ms/token、全部 ANE。使っている塊だけ動かす形は**実装済み** ([docs/design/llm-engine.md](design/llm-engine.md)、`--paged 8192`、bonsaiai-chat の既定): 全注意の層の前後でモデルを分け、ホストが持つキャッシュに対して塊ごとに重みなしの注意を呼ぶ。注意だけの計測では、塊 8192、Q=8 で 6 層の注意が 1K あたり 1.09 ms と使った長さに比例し、付け替えの費用も入力の複製もない。文脈は 262144 (メモリは会話とともに 1 トークン 12 KiB)。モデル全体の Mac での計測はこれから |
 | 6 | KV の int8 | メモリが半分 (計測済み: ANE に載り、1 割遅い) | `decode` でホスト側の量子化 (KIVI の K は列ごと、V はトークンごと)。100K 超を塊分けと一緒に目指すときだけ |
 
 学習し直しが要るもの (MQA、MLA、層をまたぐ共有) は、LFM3 では使えない。ただし新しいモデルを選ぶときの基準にはなる: Apple の on-device モデルのように層をまたぐ共有を持つモデルや、MLA のモデルは、ANE では容量の費用が小さくて済む。 モデルを選ぶ基準と候補、費用の式、メモリを減らす手法の順番は [model-fit.md](model-fit.md) にまとめた。
@@ -102,5 +102,5 @@ host の値は実行ごとに 46〜55 ms (8K) の幅で揺れる。int8 は同�
 - [Flash-Decoding for long-context inference](https://pytorch.org/blog/flash-decoding/)
 - llama.cpp [kv-cache: add SWA support (#13194)](https://github.com/ggml-org/llama.cpp/pull/13194) (SWA 層だけ別の小さなキャッシュ、`--swa-full`)
 - [WWDC 24: Running Mistral 7B with Core ML](https://huggingface.co/blog/mistral-coreml) (Core ML の状態による KV キャッシュ)、[Deploying Transformers on the Apple Neural Engine](https://machinelearning.apple.com/research/neural-engine-transformers)
-- Apple Developer Forums: [KV-Cache MLState Not Updating During Prefill Stage](https://developer.apple.com/forums/thread/783612) (状態で複数トークンの prefill をしたときの未解決の報告。hwnpu はホストのバッファなので当たらない)
+- Apple Developer Forums: [KV-Cache MLState Not Updating During Prefill Stage](https://developer.apple.com/forums/thread/783612) (状態で複数トークンの prefill をしたときの未解決の報告。BonsaiAI はホストのバッファなので当たらない)
 - Anemll ([ngaut/Anemll](https://github.com/ngaut/Anemll)): ANE 向けの LLM 変換。状態の KV キャッシュで文脈は 2K〜4K 固定。同じ制約に当たっている

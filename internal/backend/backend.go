@@ -6,7 +6,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // Provider enumerates and opens devices of one backend.

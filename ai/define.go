@@ -11,9 +11,9 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
 // Definition is a model an app makes as it runs, as a definition file would (models.yaml): most
@@ -35,11 +35,11 @@ type Definition struct {
 	// Kind is what the model is (chat, transcribe, speech, ...), and From where it is downloaded
 	// from: hf:OWNER/NAME or hf:OWNER/NAME@REVISION. Both are Like's when "".
 	Kind, From string
-	// Arch is the structure (hwnpu-dev convert -archs), "" for Like's or config.json's.
+	// Arch is the structure (bonsaiai-dev convert -archs), "" for Like's or config.json's.
 	Arch string
 	// About says what it is, for the lists.
 	About string
-	// Device is where it runs: npu, or cpu (hwnpu's CPU interpreter or the CPU's runtime, as its
+	// Device is where it runs: npu, or cpu (bonsaiai's CPU interpreter or the CPU's runtime, as its
 	// role runs it), on every NPU; "" for Like's.
 	Device string
 	// Format, Context, Paged, Prefill and Tier are how a chat model runs (models.yaml's format,

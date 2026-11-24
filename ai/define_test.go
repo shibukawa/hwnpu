@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 func TestCatalogAndNormalize(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/bonsaiai/ai/text"
 )
 
 // message is a message of a chat request.

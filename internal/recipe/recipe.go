@@ -1,5 +1,5 @@
-// Package recipe reads model-recipes.yaml: how hwnpu-dev makes the models' conversions, what only
-// the build needs (models.yaml holds what a run needs). hwnpu-dev models package and hwnpu-dev
+// Package recipe reads model-recipes.yaml: how bonsaiai-dev makes the models' conversions, what only
+// the build needs (models.yaml holds what a run needs). bonsaiai-dev models package and bonsaiai-dev
 // prebuild build with it, so that whoever runs them makes the same files (docs/model-recipes.md).
 package recipe
 
@@ -15,8 +15,8 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/shibukawa/hwnpu"
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	"github.com/shibukawa/bonsaiai"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 )
 
 // File is a recipes file.
@@ -42,7 +42,7 @@ type Tools struct {
 // changes: testdata/apple-versions.txt), Code, the Go packages that write its programs after the
 // file's Code (those every conversion writes with), and Convert, the values its conversion is
 // made with; and Prebuilt, whether its exports' programs are prebuilt for Archs when a build
-// names no architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT): the image
+// names no architecture (bonsaiai-dev models package MODEL, bonsaiai-dev prebuild EXPORT): the image
 // generators', whose programs take the device minutes to hours to compile. Another model's are
 // small, and a Mac loads them slower from prebuilt programs than it compiles them
 // (docs/known-issues.md 9); a build that names architectures compiles any model's, to measure it.
@@ -256,7 +256,7 @@ var (
 
 // Builtin is the embedded model-recipes.yaml.
 func Builtin() (*File, error) {
-	builtinOnce.Do(func() { builtin, builtinErr = Parse("model-recipes.yaml", hwnpu.RecipesYAML) })
+	builtinOnce.Do(func() { builtin, builtinErr = Parse("model-recipes.yaml", bonsaiai.RecipesYAML) })
 	return builtin, builtinErr
 }
 
@@ -366,7 +366,7 @@ func Suggest(model, program, arch, why, today string) string {
 }
 
 // RewritesFor are the rewrites of model's programs for arch (Apple.Rewrites of the built-in
-// recipes); for this Mac's (here), with the developers' rewrite items over them (HWNPU_DEV=rewrite=sin:series),
+// recipes); for this Mac's (here), with the developers' rewrite items over them (BONSAIAI_DEV=rewrite=sin:series),
 // to compare the ways on one chip.
 func RewritesFor(model, arch string, here bool) (map[string]string, error) {
 	f, err := Builtin()

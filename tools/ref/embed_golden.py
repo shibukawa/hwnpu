@@ -1,4 +1,4 @@
-"""Reference sentence embeddings of PLaMo-Embedding-1B, for checking hwnpu-chat's embedder.
+"""Reference sentence embeddings of PLaMo-Embedding-1B, for checking bonsaiai-chat's embedder.
 
     python embed_golden.py MODEL_DIR OUT.json
 
@@ -6,10 +6,10 @@ MODEL_DIR holds the model with its remote code (modeling_plamo.py, tokenization_
 OUT.json holds {"queries": [...], "documents": [...]}, each {"text", "ids", "embedding"}: the
 embedding from the model's own encode_query or encode_document (as the model card uses them),
 and the ids of the tokenizer with its special tokens (the BOS), for a query with the instruction
-before the text. internal/chat's TestPlamoEmbeddingGolden compares hwnpu-chat's with them on a
+before the text. internal/chat's TestPlamoEmbeddingGolden compares bonsaiai-chat's with them on a
 Mac:
 
-    HWNPU_TEST_PLAMO_DIR=MODEL_DIR HWNPU_TEST_PLAMO_EMBED_REF=OUT.json go test -run PlamoEmbeddingGolden ./internal/chat/
+    BONSAIAI_TEST_PLAMO_DIR=MODEL_DIR BONSAIAI_TEST_PLAMO_EMBED_REF=OUT.json go test -run PlamoEmbeddingGolden ./internal/chat/
 
 Needs torch, transformers and sentencepiece; modeling_plamo.py is written for transformers 4.47
 (see docs/design/llm-models.md).

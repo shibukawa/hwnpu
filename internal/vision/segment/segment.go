@@ -5,9 +5,9 @@
 // The encoder (a ViT at 1024 x 1024) turns a picture into an embedding once: on AMD's NPU from an
 // export of tools/amd/iron_efficientsam.py, on Intel's NPU as OpenVINO IR converted from its ONNX
 // file (OpenProgram), else on the CPU with ONNX Runtime when its library is there, else with
-// hwnpu's evaluator (internal/onnx; slow). The decoder turns the embedding and
+// bonsaiai's evaluator (internal/onnx; slow). The decoder turns the embedding and
 // a prompt (points in or out of the thing, or a box) into three masks at the picture's size and
-// the IoU it predicts for each, on the host with hwnpu's evaluator, per prompt.
+// the IoU it predicts for each, on the host with bonsaiai's evaluator, per prompt.
 package segment
 
 import (
@@ -25,12 +25,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
 )
 
 // Size is the encoder's picture: every picture is stretched to Size x Size.
@@ -113,7 +113,7 @@ type Model struct {
 	npu   *iron.Graph    // the encoder on AMD's NPU
 	prog  runner.Program // or a program of OpenProgram (Apple's Neural Engine, Intel's NPU)
 	ort   *ort           // or on the CPU with ONNX Runtime
-	enc   *onnx.Graph    // or with hwnpu's evaluator
+	enc   *onnx.Graph    // or with bonsaiai's evaluator
 	x     *exportConfig  // the NPU export's model.json
 	// progName is the program's file
 	progName string
@@ -131,7 +131,7 @@ type ort struct {
 }
 
 // OpenNPU loads an export of ExportNPU (dir) onto dev, and the decoder's ONNX file.
-func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, decoder string) (*Model, error) {
+func OpenNPU(ctx context.Context, dev *bonsaiai.Device, dir, decoder string) (*Model, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
 	if err != nil {
 		return nil, err
@@ -155,7 +155,7 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, decoder string) (*Mode
 }
 
 // OpenCPU loads the encoder into ONNX Runtime on threads threads (0 or 1: the calling thread)
-// when its library is there (onnxrt.Available), else into hwnpu's evaluator, and the decoder.
+// when its library is there (onnxrt.Available), else into bonsaiai's evaluator, and the decoder.
 func OpenCPU(encoder, decoder string, threads int) (*Model, error) {
 	dec, err := onnx.Load(decoder)
 	if err != nil {
@@ -185,7 +185,7 @@ func OpenCPU(encoder, decoder string, threads int) (*Model, error) {
 	return m, nil
 }
 
-// Where is where the encoder runs: "AMD's NPU", "the CPU (ONNX Runtime)" or "the CPU (hwnpu's
+// Where is where the encoder runs: "AMD's NPU", "the CPU (ONNX Runtime)" or "the CPU (bonsaiai's
 // evaluator, slow)".
 func (m *Model) Where() string {
 	switch {
@@ -199,7 +199,7 @@ func (m *Model) Where() string {
 	case m.ort != nil:
 		return "the CPU (ONNX Runtime)"
 	}
-	return "the CPU (hwnpu's evaluator, slow)"
+	return "the CPU (bonsaiai's evaluator, slow)"
 }
 
 func (m *Model) Close() error {

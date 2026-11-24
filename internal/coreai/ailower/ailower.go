@@ -28,15 +28,15 @@ import (
 	"strings"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
-// Producer is the producer string of the bytecode hwnpu writes.
-const Producer = "hwnpu-ailower"
+// Producer is the producer string of the bytecode bonsaiai writes.
+const Producer = "bonsaiai-ailower"
 
 // FormatVersion is the version of what the lowering writes for the same MIL program, part of the
 // key of a Core AI export in the shared layers (chat's): raised by hand when a change makes the
@@ -384,16 +384,16 @@ func (p *Program) writeAsset(dir string, write func(io.Writer) (int64, error)) e
 	return nil
 }
 
-// IOFile is the file of an asset hwnpu writes that names its inputs and outputs (ReadIO).
-const IOFile = "hwnpu-io.json"
+// IOFile is the file of an asset bonsaiai writes that names its inputs and outputs (ReadIO).
+const IOFile = "bonsaiai-io.json"
 
-// ioFile is the file of a function's inputs and outputs: IOFile for main, hwnpu-io-NAME.json for
+// ioFile is the file of a function's inputs and outputs: IOFile for main, bonsaiai-io-NAME.json for
 // the functions of a program with several (LowerFunctions).
 func ioFile(fn string) string {
 	if fn == "" || fn == "main" {
 		return IOFile
 	}
-	return "hwnpu-io-" + fn + ".json"
+	return "bonsaiai-io-" + fn + ".json"
 }
 
 // ReadIO reads the inputs and outputs of an asset written by WriteAsset.
@@ -488,7 +488,7 @@ func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block, name string)
 		l.vals[argNames[i]] = ins[i]
 	}
 	outputs := block.GetOutputs()
-	cut := 0 // HWNPU_DEV=ailower.cut=N: only the first N operations, the last one's value the output
+	cut := 0 // BONSAIAI_DEV=ailower.cut=N: only the first N operations, the last one's value the output
 	fmt.Sscan(devenv.Value("ailower.cut"), &cut)
 	for i, op := range block.GetOperations() {
 		if cut > 0 && i >= cut {
@@ -649,7 +649,7 @@ func (l *lowerer) constRaw(elem string, shape []int, raw []byte) val {
 		sum := sha256.Sum256(raw)
 		key, ok := l.blobKeys[sum]
 		if !ok {
-			key = fmt.Sprintf("hwnpu_%d", len(l.blobKeys))
+			key = fmt.Sprintf("bonsaiai_%d", len(l.blobKeys))
 			l.blobKeys[sum] = key
 			l.w.Blob("aicode", key, 16, raw)
 		}

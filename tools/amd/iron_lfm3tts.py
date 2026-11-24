@@ -1,13 +1,13 @@
-"""LFM3-Audio's text model for speaking (hwnpu-audio tts) on IRON's shared decoder (``iron.lm``).
+"""LFM3-Audio's text model for speaking (bonsaiai-audio tts) on IRON's shared decoder (``iron.lm``).
 
 ``python iron_lfm3tts.py CHECKPOINT OUT --q4`` (iron_export_lm.py with this module's model, the
 MLP and the head in q8: main) exports LFM3-Audio-2B's text model (``lfm.`` of the checkpoint, no
 audio encoder) as ``Lfm3`` does, with two differences for internal/speech:
 
 - the final norm's output, the hidden state the depthformer reads, is written to the state
-  ``hwnpu_hidden`` (1, hidden) before the head, both in a prompt chunk (its last row) and in a
+  ``bonsaiai_hidden`` (1, hidden) before the head, both in a prompt chunk (its last row) and in a
   decode step; the host reads it after each call
-- the token embeddings are the host's (``--q4``: iron_hostple's ``hwnpu_embed_rows``), so the
+- the token embeddings are the host's (``--q4``: iron_hostple's ``bonsaiai_embed_rows``), so the
   host writes the row a decode step reads: a token's, or after an audio frame the sum of its
   codes' feedback rows, which is no token's
 
@@ -21,7 +21,7 @@ import iron
 from iron_lfm3 import Lfm3, Lfm3Config
 from ml_dtypes import bfloat16
 
-HIDDEN = "hwnpu_hidden"
+HIDDEN = "bonsaiai_hidden"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -32,7 +32,7 @@ class Lfm3TtsConfig(Lfm3Config):
 
 
 class Lfm3Tts(Lfm3):
-    """LFM3-Audio's text model, its final hidden state out in ``hwnpu_hidden``."""
+    """LFM3-Audio's text model, its final hidden state out in ``bonsaiai_hidden``."""
 
     config = Lfm3TtsConfig
 

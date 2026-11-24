@@ -2,7 +2,7 @@
 
 [English](cache-sharing.md)
 
-hwnpu は、モデルを手で変換させません。初めて使うときに、ダウンロードして、NPU 向けに変換して、**キャッシュ**に置きます。この文書は、そのキャッシュを次の順に説明します。
+BonsaiAI は、モデルを手で変換させません。初めて使うときに、ダウンロードして、NPU 向けに変換して、**キャッシュ**に置きます。この文書は、そのキャッシュを次の順に説明します。
 
 1. [1 台の機械でのキャッシュ](#1-1-台の機械でのキャッシュ) (全員向け)
 2. [家庭や社内で共有する](#2-nas-や-s3-でキャッシュを共有する): NAS、Web サーバー、S3
@@ -20,26 +20,26 @@ hwnpu は、モデルを手で変換させません。初めて使うときに�
 ### 1.1 初めて使うとき
 
 ```
-hwnpu-chat -m LFM3-1.7B
+bonsaiai-chat -m LFM3-1.7B
    │
    ├─ チェックポイント (元の重み)   → Hugging Face から取る
    ├─ NPU 向けの変換               → この機械で作る (数分)
    └─ 答える
 ```
 
-ダウンロードしたファイルも、変換の結果も、キャッシュに残ります。2 回目は数秒で始まり、同じモデルを使うほかの hwnpu のコマンドも同じファイルを使います。
+ダウンロードしたファイルも、変換の結果も、キャッシュに残ります。2 回目は数秒で始まり、同じモデルを使うほかの BonsaiAI のコマンドも同じファイルを使います。
 
 ### 1.2 置き場所
 
-hwnpu が書くものは、1 つのフォルダに収まります。
+BonsaiAI が書くものは、1 つのフォルダに収まります。
 
 | OS | キャッシュの根 |
 |---|---|
-| macOS | `~/Library/Caches/hwnpu` (iCloud には同期されません) |
-| Linux | `$XDG_CACHE_HOME/hwnpu` (`~/.cache/hwnpu`) |
-| Windows | `%LOCALAPPDATA%\hwnpu` |
+| macOS | `~/Library/Caches/bonsaiai` (iCloud には同期されません) |
+| Linux | `$XDG_CACHE_HOME/bonsaiai` (`~/.cache/bonsaiai`) |
+| Windows | `%LOCALAPPDATA%\bonsaiai` |
 
-外付けのディスクなどへ移すときは `HWNPU_CACHE=/mnt/big/hwnpu`。自分の設定 (`models.yaml`、`licenses.json`、`run.json`) はキャッシュの外にあるので、キャッシュを消しても失いません。
+外付けのディスクなどへ移すときは `BONSAIAI_CACHE=/mnt/big/bonsaiai`。自分の設定 (`models.yaml`、`licenses.json`、`run.json`) はキャッシュの外にあるので、キャッシュを消しても失いません。
 
 ### 1.3 中身
 
@@ -53,13 +53,13 @@ hwnpu が書くものは、1 つのフォルダに収まります。
 
 キャッシュは増え続けるわけではありません。ダウンロードの前にディスクの空きを確かめ (既定は 10 GB 残す)、上限を決めてあれば、最近使っていないモデルから消します。
 
-### 1.4 手入れ: `hwnpu cache`
+### 1.4 手入れ: `bonsaiai cache`
 
 ```
-hwnpu cache                          根、ディスクの空き、上限、種類ごとの量
-hwnpu cache ls [-s]                  単位ごとの大きさと最後に使った時刻 (-s: 大きい順)
-hwnpu cache prune --max-size 200GB   最近使っていないものから消して収める
-hwnpu cache clear Qwen3-1.7B         モデルを 1 つ消す (名前、OWNER/NAME、glob)
+bonsaiai cache                          根、ディスクの空き、上限、種類ごとの量
+bonsaiai cache ls [-s]                  単位ごとの大きさと最後に使った時刻 (-s: 大きい順)
+bonsaiai cache prune --max-size 200GB   最近使っていないものから消して収める
+bonsaiai cache clear Qwen3-1.7B         モデルを 1 つ消す (名前、OWNER/NAME、glob)
 ```
 
 `prune` と `clear` は `-n` で、消さずに何が消えるかだけ見せます。最近 1 時間に使ったものと、アップロード待ちのものは残ります。消したものは、次に使うときにまた作ります。
@@ -67,8 +67,8 @@ hwnpu cache clear Qwen3-1.7B         モデルを 1 つ消す (名前、OWNER/NA
 上限の設定は 2 つです (環境変数か `.env`。3.2 節)。
 
 ```
-HWNPU_CACHE_MIN_FREE=10GB     これより空きが減るダウンロードは始めない (0 でなし、5% のような割合も)
-HWNPU_CACHE_MAX_SIZE=200GB    これを超えないよう、古いものから消す
+BONSAIAI_CACHE_MIN_FREE=10GB  これより空きが減るダウンロードは始めない (0 でなし、5% のような割合も)
+BONSAIAI_CACHE_MAX_SIZE=200GB  これを超えないよう、古いものから消す
 ```
 
 ### 1.5 モデルが使うメモリを選ぶ
@@ -76,12 +76,12 @@ HWNPU_CACHE_MAX_SIZE=200GB    これを超えないよう、古いものから�
 モデルには、メモリの小さい機械向けの形があるものがあります。大きな機械で、ほかのプログラムと一緒に動かしたいときは、小さい機械として扱うよう指定します。
 
 ```
-hwnpu memory                      この機械のメモリと、選んだもの
-hwnpu memory LFM3-1.7B 8          どのコマンドでも 8 GB の形で動かす
-hwnpu memory LFM3-1.7B --forget   この機械のメモリに戻す
+bonsaiai memory                      この機械のメモリと、選んだもの
+bonsaiai memory LFM3-1.7B 8          どのコマンドでも 8 GB の形で動かす
+bonsaiai memory LFM3-1.7B --forget   この機械のメモリに戻す
 ```
 
-選んだものは設定のフォルダ (`~/.config/hwnpu/run.json`) に残り、キャッシュにはないので `prune` で消えません。形を変えても前の形のプログラムはキャッシュに残ります。すぐ消すなら `hwnpu cache clear NAME`。
+選んだものは設定のフォルダ (`~/.config/bonsaiai/run.json`) に残り、キャッシュにはないので `prune` で消えません。形を変えても前の形のプログラムはキャッシュに残ります。すぐ消すなら `bonsaiai cache clear NAME`。
 
 ---
 
@@ -91,13 +91,13 @@ hwnpu memory LFM3-1.7B --forget   この機械のメモリに戻す
 
 共有しないと、機械ごとに同じチェックポイントを落とし、同じ変換をやり直します。遅いのは変換です (AMD の NPU では初回の書き出しに数分、モデルによっては数時間)。共有すると、**最初の 1 台が作って共有の場所に置き、ほかの機械は結果を落とすだけ**になります。
 
-そのために **取得元** (source) を並べます。hwnpu は Hugging Face に行く前に、これを順に探します。
+そのために **取得元** (source) を並べます。BonsaiAI は Hugging Face に行く前に、これを順に探します。
 
 ```
 1. この機械のキャッシュ             いつも最初。いつも書く
-2. HWNPU_MODEL_SOURCE、_1、_2 ...   共有の場所。番号の順
+2. BONSAIAI_MODEL_SOURCE、_1、_2 ...   共有の場所。番号の順
 3. アプリと一緒に入れたモデル        読むだけ (モデルを同梱するアプリ向け)
-4. Hugging Face                     いちばん最後。HWNPU_MODEL_HUGGING_FACE=false で使わない
+4. Hugging Face                     いちばん最後。BONSAIAI_MODEL_HUGGING_FACE=false で使わない
    └─ どこにもなければ、この機械で作る
 ```
 
@@ -112,7 +112,7 @@ hwnpu memory LFM3-1.7B --forget   この機械のメモリに戻す
 **フォルダ** (NFS や SMB でマウントした NAS、外付けのディスク):
 
 ```
-HWNPU_MODEL_SOURCE=file:///mnt/nas/hwnpu?writeback=true
+BONSAIAI_MODEL_SOURCE=file:///mnt/nas/bonsaiai?writeback=true
 ```
 
 Windows は `file:///C:/models` か `file://server/share`。
@@ -120,22 +120,22 @@ Windows は `file:///C:/models` か `file://server/share`。
 **WebDAV** (Synology、UGREEN、Nextcloud、`dav_methods` を入れた nginx):
 
 ```
-HWNPU_MODEL_SOURCE=https://USER:PASSWORD@nas.local:5006/hwnpu?writeback=true
+BONSAIAI_MODEL_SOURCE=https://USER:PASSWORD@nas.local:5006/bonsaiai?writeback=true
 ```
 
-URL に利用者とパスワードがなければ、`~/.netrc`、次に `HWNPU_WEBDAV_USER` と `HWNPU_WEBDAV_PASSWORD` を見ます。NAS の証明書は自己署名のことが多いので、その証明書だけを信じるには `?tls_sha256=` を付けます (値は `openssl s_client -connect HOST:PORT </dev/null | openssl x509 -noout -fingerprint -sha256`)。信頼できる LAN で手早く試すだけなら `?insecure=true` で検証を省けます。
+URL に利用者とパスワードがなければ、`~/.netrc`、次に `BONSAIAI_WEBDAV_USER` と `BONSAIAI_WEBDAV_PASSWORD` を見ます。NAS の証明書は自己署名のことが多いので、その証明書だけを信じるには `?tls_sha256=` を付けます (値は `openssl s_client -connect HOST:PORT </dev/null | openssl x509 -noout -fingerprint -sha256`)。信頼できる LAN で手早く試すだけなら `?insecure=true` で検証を省けます。
 
 **HTTP** (同じフォルダを配る静的な Web サーバー。nginx など): 読むだけです。
 
 ```
-HWNPU_MODEL_SOURCE=http://models.corp.example/hwnpu
+BONSAIAI_MODEL_SOURCE=http://models.corp.example/bonsaiai
 ```
 
 **S3** (AWS、Cloudflare R2、RustFS などの S3 互換):
 
 ```
-HWNPU_MODEL_SOURCE=s3://my-bucket/hwnpu?region=ap-northeast-1&writeback=true
-HWNPU_MODEL_SOURCE_1=s3://models/hwnpu?endpoint=http://rustfs.lab:9000&path_style=true&profile=rustfs
+BONSAIAI_MODEL_SOURCE=s3://my-bucket/bonsaiai?region=ap-northeast-1&writeback=true
+BONSAIAI_MODEL_SOURCE_1=s3://models/bonsaiai?endpoint=http://rustfs.lab:9000&path_style=true&profile=rustfs
 ```
 
 鍵は AWS の環境変数 (`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`) か、`~/.aws` のプロファイル (`profile=NAME`。静的な鍵だけ)。SSO の人は先に環境変数へ出します: `eval "$(aws configure export-credentials --profile X --format env)"`。公開バケットは `no_sign=true`、Cloudflare R2 は `region=auto`。
@@ -143,35 +143,35 @@ HWNPU_MODEL_SOURCE_1=s3://models/hwnpu?endpoint=http://rustfs.lab:9000&path_styl
 効いているものは次で確かめます。
 
 ```
-hwnpu-dev sources      根、取得元、書き戻すか、Hugging Face を読むか
-hwnpu-dev sources ls           取得元の中身
+bonsaiai-dev sources      根、取得元、書き戻すか、Hugging Face を読むか
+bonsaiai-dev sources ls           取得元の中身
 ```
 
 ### 2.3 設定を置く場所
 
-変数は `.env` に書けます。hwnpu は起動したときに `.env.local` と `.env` を読み、前にあるものが勝ちます。
+変数は `.env` に書けます。BonsaiAI は起動したときに `.env.local` と `.env` を読み、前にあるものが勝ちます。
 
 1. プロセスの環境変数
 2. カレントディレクトリ
-3. ユーザーのフォルダ: `~/.config/hwnpu/` (Windows は `%LOCALAPPDATA%\hwnpu\`)
-4. 機械のフォルダ (管理者が置く): `/etc/hwnpu/` (macOS は `/Library/Application Support/hwnpu/`、Windows は `%ProgramData%\hwnpu\`)
+3. ユーザーのフォルダ: `~/.config/bonsaiai/` (Windows は `%LOCALAPPDATA%\bonsaiai\`)
+4. 機械のフォルダ (管理者が置く): `/etc/bonsaiai/` (macOS は `/Library/Application Support/bonsaiai/`、Windows は `%ProgramData%\bonsaiai\`)
 
-読むのは `HWNPU_`、`HF_`、`AWS_` で始まる名前だけなので、ほかのプロジェクトの `.env` を拾っても困りません。パスワードや鍵は、git に入れない慣例の `.env.local` に。ログと `hwnpu-dev sources` は、URL の利用者とパスワードを出しません。
+読むのは `BONSAIAI_`、`HF_`、`AWS_` で始まる名前だけなので、ほかのプロジェクトの `.env` を拾っても困りません。パスワードや鍵は、git に入れない慣例の `.env.local` に。ログと `bonsaiai-dev sources` は、URL の利用者とパスワードを出しません。
 
 ### 2.4 3 つの組み方
 
 **家庭: NAS を 1 台。** NAS をマウントする (または WebDAV を使う) 設定を、全部の機械に `?writeback=true` 付きで同じに書きます。最初にダウンロードや変換をした機械が NAS を埋め、ほかは読むだけ。Mac と Ryzen AI のミニ PC は同じ NAS を共有できますが、変換した形はそれぞれの NPU 向けのものを置きます (4 節)。
 
-**社内: 書く人 1 つ、読む人たくさん。** 1 台の機械か CI のジョブ (ビルド係) にだけ、`?writeback=true` と書き込みの権限を渡します。ほかの人には同じ取得元を読むだけで渡します (`http://` の URL で足りる。S3 なら読むだけの鍵)。社内のネットワークから外に出したくなければ `HWNPU_MODEL_HUGGING_FACE=false`。変数は `/etc/hwnpu/.env` に置けば、各人は何も設定しません。読む人は共有を壊せず、書ける人は元から信頼している人です (書き出したプログラムは NPU で動くので)。
+**社内: 書く人 1 つ、読む人たくさん。** 1 台の機械か CI のジョブ (ビルド係) にだけ、`?writeback=true` と書き込みの権限を渡します。ほかの人には同じ取得元を読むだけで渡します (`http://` の URL で足りる。S3 なら読むだけの鍵)。社内のネットワークから外に出したくなければ `BONSAIAI_MODEL_HUGGING_FACE=false`。変数は `/etc/bonsaiai/.env` に置けば、各人は何も設定しません。読む人は共有を壊せず、書ける人は元から信頼している人です (書き出したプログラムは NPU で動くので)。
 
 **何段か重ねる。** 取得元は順に探し、最初に答えたものが勝ちます。後ろの取得元で見つかったものは、手前の書き戻す取得元にも置かれます。部屋の中の速い NAS を、遠い S3 の手前に置けば、2 段のキャッシュになります。
 
 ```
-HWNPU_MODEL_SOURCE=file:///mnt/nas/hwnpu?writeback=true        # 速い。部屋の中
-HWNPU_MODEL_SOURCE_1=s3://corp-models/hwnpu?writeback=true     # 全拠点で共有
+BONSAIAI_MODEL_SOURCE=file:///mnt/nas/bonsaiai?writeback=true  # 速い。部屋の中
+BONSAIAI_MODEL_SOURCE_1=s3://corp-models/bonsaiai?writeback=true  # 全拠点で共有
 ```
 
-**ネットに出ない。** `HWNPU_MODEL_HUGGING_FACE=false` なら Hugging Face に一切つながず、どの取得元にもないモデルはダウンロードでなくエラーになります。先に、つながる機械で取得元を埋めておきます。
+**ネットに出ない。** `BONSAIAI_MODEL_HUGGING_FACE=false` なら Hugging Face に一切つながず、どの取得元にもないモデルはダウンロードでなくエラーになります。先に、つながる機械で取得元を埋めておきます。
 
 ### 2.5 共有されたモデルを機械はどう使うか
 
@@ -185,15 +185,15 @@ HWNPU_MODEL_SOURCE_1=s3://corp-models/hwnpu?writeback=true     # 全拠点で共
 取得元はサーバーの仕組みを持たないフォルダの木なので、コマンドで整えます。
 
 ```
-hwnpu-dev sources update [MODEL...]   モデルを Hugging Face の新しいコミットに移す (変わったファイルだけ落とす)
-hwnpu-dev sources verify DIR --sums   変換結果を entry.json と照らす
-hwnpu-dev sources gc 1 --older-than 90 --apply   取得元 1 の、90 日より前に作った変換を消す
+bonsaiai-dev sources update [MODEL...]   モデルを Hugging Face の新しいコミットに移す (変わったファイルだけ落とす)
+bonsaiai-dev sources verify DIR --sums   変換結果を entry.json と照らす
+bonsaiai-dev sources gc 1 --older-than 90 --apply   取得元 1 の、90 日より前に作った変換を消す
                                     (--model、--kind、--key も。--apply がなければ見せるだけ)
-hwnpu cache clean                   書き戻しが切れて残したものを消す: 書きかけのフォルダ、一時ファイル、
+bonsaiai cache clean                   書き戻しが切れて残したものを消す: 書きかけのフォルダ、一時ファイル、
                                     S3 の 1 時間を過ぎた分割アップロード
 ```
 
-モデルのファイルは、`update` するまで `hwnpu-lock.json` のコミットに留まるので、チーム全体が同じバイトで動き、うっかり新しい版に移ることはありません。S3 は、バケットのライフサイクルの規則に「未完了の分割アップロードを数日で中止」を足しておくと安心です。
+モデルのファイルは、`update` するまで `bonsaiai-lock.json` のコミットに留まるので、チーム全体が同じバイトで動き、うっかり新しい版に移ることはありません。S3 は、バケットのライフサイクルの規則に「未完了の分割アップロードを数日で中止」を足しておくと安心です。
 
 書いている途中で機械が落ちても、読む側には壊れたものが見えません。変換結果は `entry.json` があって初めて見え、元のファイルは lock が名指して初めて使われます。
 
@@ -205,17 +205,17 @@ hwnpu cache clean                   書き戻しが切れて残したものを�
 
 | 変数 | 働き |
 |---|---|
-| `HWNPU_MODEL_SOURCE`、`_1`、`_2`、… | 取得元の URL。番号の順に探す (3.3) |
-| `HWNPU_MODEL_HUGGING_FACE` | `false` で Hugging Face につながない。既定は `true` |
-| `HWNPU_CACHE` | この機械のキャッシュの根 |
-| `HWNPU_CACHE_MIN_FREE` | 残す空き。既定 `10GB`、`0` でなし、`5%` |
-| `HWNPU_CACHE_MAX_SIZE` | キャッシュの上限。超えたら古いものから消す。既定はなし |
-| `HWNPU_WEBDAV_USER`、`HWNPU_WEBDAV_PASSWORD` | URL にも `~/.netrc` にもないときの WebDAV の利用者 |
+| `BONSAIAI_MODEL_SOURCE`、`_1`、`_2`、… | 取得元の URL。番号の順に探す (3.3) |
+| `BONSAIAI_MODEL_HUGGING_FACE` | `false` で Hugging Face につながない。既定は `true` |
+| `BONSAIAI_CACHE` | この機械のキャッシュの根 |
+| `BONSAIAI_CACHE_MIN_FREE` | 残す空き。既定 `10GB`、`0` でなし、`5%` |
+| `BONSAIAI_CACHE_MAX_SIZE` | キャッシュの上限。超えたら古いものから消す。既定はなし |
+| `BONSAIAI_WEBDAV_USER`、`BONSAIAI_WEBDAV_PASSWORD` | URL にも `~/.netrc` にもないときの WebDAV の利用者 |
 | `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`AWS_PROFILE` | S3 の鍵 |
 | `HF_TOKEN` | gated の Hugging Face のリポジトリ (CI 向け。普段はサインインを勧める) |
-| `HWNPU_MEMORY` | その機械を何 GB として扱うか |
-| `HWNPU_COREAI_PREBUILT` | `off` で Core AI のコンパイル済みの部品を使わない (4.1) |
-| `HWNPU_MODELS`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_BACKEND`、`HWNPU_DEVICE` | 自分のモデルの定義、ライセンスの確認、使う NPU |
+| `BONSAIAI_MEMORY` | その機械を何 GB として扱うか |
+| `BONSAIAI_COREAI_PREBUILT` | `off` で Core AI のコンパイル済みの部品を使わない (4.1) |
+| `BONSAIAI_MODELS`、`BONSAIAI_ACCEPT_LICENSE`、`BONSAIAI_BACKEND`、`BONSAIAI_DEVICE` | 自分のモデルの定義、ライセンスの確認、使う NPU |
 
 ### 3.2 `.env` ファイル
 
@@ -244,18 +244,18 @@ URL の後ろに足せる設定:
 
 ### 3.4 コマンド
 
-`hwnpu cache` (利用者向け):
+`bonsaiai cache` (利用者向け):
 
 | コマンド | 働き |
 |---|---|
-| `hwnpu cache` | 根、空き、上限、種類ごとの量、取得元 |
+| `bonsaiai cache` | 根、空き、上限、種類ごとの量、取得元 |
 | `ls [-k KIND] [-s] [PATTERN]` | 単位ごとの大きさと最後に使った時刻 |
 | `prune [--max-size S] [--older-than 30d]` | 最近使っていないものから消す |
 | `clear PATTERN [--kind K] [--all]` | 名前の単位を消す (端末では確かめる。`-y`) |
 | `clean [-n] [-y]` | 書き戻す取得元から、切れた書き戻しの残りを消す |
-| `hwnpu memory [MODEL [GB\|--forget]]` | モデルを何 GB の形で動かすか |
+| `bonsaiai memory [MODEL [GB\|--forget]]` | モデルを何 GB の形で動かすか |
 
-`hwnpu-dev models` (変換を作る人向け。`MODEL/TARGET` の TARGET は `amd-xdna2`、`coreai`、`coreai-ARCH`、`coreai-all`):
+`bonsaiai-dev models` (変換を作る人向け。`MODEL/TARGET` の TARGET は `amd-xdna2`、`coreai`、`coreai-ARCH`、`coreai-all`):
 
 | コマンド | すること |
 |---|---|
@@ -264,7 +264,7 @@ URL の後ろに足せる設定:
 | `push MODEL...` | ここで手で作った AMD の書き出しを、書き戻す取得元へ |
 | `hf plan\|push\|check\|sizes` | 取得元の変換を Hugging Face に上げる ([prebuilt](prebuilt.md)) |
 
-`hwnpu-dev sources` (共有の取得元を管理する人向け):
+`bonsaiai-dev sources` (共有の取得元を管理する人向け):
 
 | コマンド | すること |
 |---|---|
@@ -279,7 +279,7 @@ URL の後ろに足せる設定:
 
 ```
 original/OWNER/NAME/config.json …        モデルのファイル。Hugging Face と同じ並び
-original/OWNER/NAME/hwnpu-lock.json      コミットと、ファイルごとの SHA-256 と大きさ
+original/OWNER/NAME/bonsaiai-lock.json   コミットと、ファイルごとの SHA-256 と大きさ
 converted/MODEL/TARGET/EXPORT/VERSION/…  変換結果。entry.json を最後に書く
 ```
 
@@ -293,7 +293,7 @@ p, _ := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json")
 w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 ```
 
-[USAGE_LIBRARY.ja.md](../USAGE_LIBRARY.ja.md) を見てください。hwnpu のどのコマンドも、裏で同じ探し方をしています。
+[USAGE_LIBRARY.ja.md](../USAGE_LIBRARY.ja.md) を見てください。BonsaiAI のどのコマンドも、裏で同じ探し方をしています。
 
 ---
 
@@ -307,23 +307,23 @@ w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 | 取得元で共有 | Core AI の書き出しと表: する。Core ML のプログラム: まだ | チャットのモデル、初回に作る画像のモデルの書き出し、表: する | チェックポイントだけ。プログラムはまだ |
 | 機械に縛られる | Neural Engine のコンパイル (Mac ごと) | なし。IRON の JIT のキャッシュは手元だけ | Level Zero の blob (ドライバとデバイス) |
 | 作るのに要る道具 | コンパイル済みの部品を作るなら Xcode 27 と Metal Toolchain | IRON、mlir-aie、Peano、Python | OpenVINO |
-| 読むだけの機械に要るもの | hwnpu だけ | hwnpu だけ (IRON は要らない) | チェックポイント (プログラムを共有するまで) |
+| 読むだけの機械に要るもの | BonsaiAI だけ | BonsaiAI だけ (IRON は要らない) | チェックポイント (プログラムを共有するまで) |
 
 ### 4.1 Apple
 
 - **Core AI** (`target coreai`): `.aimodel` は機械によらないバイトコードで、どの Mac も同じです。最初に変換した Mac が取得元に置き、ほかの Mac は落とすだけで、チェックポイントも要りません。コマンドが行を引く表 (`tables.safetensors`) も同じに共有します。
 - **初回のコンパイルは Mac ごと**です。Core AI は部品ごとに初めて読むとき、Neural Engine 向けにコンパイルします (部品ごとに数秒から数分)。その結果は Core AI 自身のキャッシュにあり、OS のビルドに縛られて共有できません。
-- **コンパイル済みの部品**がそれを縮めます。Xcode 27 のある開発機で `hwnpu-dev models package EXPORT/coreai-all` を走らせると、チップの世代ごと (`h13g` = M1、`h14g` = M2、`h15g` = M3 ...) に部品をコンパイルし、重み (大きさの約 99 %。`.aimodel` から組み立て直す) を外して、書き出しの隣に置きます。1 世代で書き出しの 1〜2 % です。Mac は自分のチップのものを取り、数十分のコンパイルが 1 秒から 1 分で済みます。効くのは Neural Engine に乗る部品のあるモデルだけなので、モデルを選んで置きます。使わないなら `HWNPU_COREAI_PREBUILT=off`。ディスクが足りなくなったときは、数秒で作り直せるので、この機械のコンパイル済みの部品の写しから先に消します。
+- **コンパイル済みの部品**がそれを縮めます。Xcode 27 のある開発機で `bonsaiai-dev models package EXPORT/coreai-all` を走らせると、チップの世代ごと (`h13g` = M1、`h14g` = M2、`h15g` = M3 ...) に部品をコンパイルし、重み (大きさの約 99 %。`.aimodel` から組み立て直す) を外して、書き出しの隣に置きます。1 世代で書き出しの 1〜2 % です。Mac は自分のチップのものを取り、数十分のコンパイルが 1 秒から 1 分で済みます。効くのは Neural Engine に乗る部品のあるモデルだけなので、モデルを選んで置きます。使わないなら `BONSAIAI_COREAI_PREBUILT=off`。ディスクが足りなくなったときは、数秒で作り直せるので、この機械のコンパイル済みの部品の写しから先に消します。
 - **Core ML** の Neural Engine 向けのプログラムは、今も Mac ごとに作ります。コンパイル済みの `.mlmodelc` は OS の版に、e5 のバンドルは機械に縛られます。
 
 ### 4.2 AMD XDNA 2 (Linux)
 
 - モデルは **IRON の書き出し**に変換します。`manifest.json`、NPU のプログラム (`xclbin`、命令の ELF)、重みのフォルダで、チャットのモデルで 0.5〜2 GB ほどです。手元では `entries/amd-xdna2/`、取得元では `converted/MODEL/amd-xdna2/EXPORT/vN/` に置かれます。
-- 取得元では書き出しを **1 つに詰めたファイル** `files.tar.zst` (tar と zstd) と、中のファイルの大きさと SHA-256 を並べた `entry.json` だけにします。落とし (切れたら続きから)、展開しながらファイルごとに照らし、手元には展開したものだけを残します。チャットの 13 モデルで 65.7 GB が 55.2 GB (16% 減) になり、WebDAV でファイルごとの送りもなくなります。前の hwnpu がばらで置いたものも、今までどおりファイルごとに取れます。版を上げても中のファイルが前の版と同じ (`entry.json` の digest が同じ) ときは、詰め直して送らず、取得元の中で前の版の `files.tar.zst` を写します (WebDAV の COPY、フォルダはハードリンク。S3 は送ります)。
+- 取得元では書き出しを **1 つに詰めたファイル** `files.tar.zst` (tar と zstd) と、中のファイルの大きさと SHA-256 を並べた `entry.json` だけにします。落とし (切れたら続きから)、展開しながらファイルごとに照らし、手元には展開したものだけを残します。チャットの 13 モデルで 65.7 GB が 55.2 GB (16% 減) になり、WebDAV でファイルごとの送りもなくなります。前の BonsaiAI がばらで置いたものも、今までどおりファイルごとに取れます。版を上げても中のファイルが前の版と同じ (`entry.json` の digest が同じ) ときは、詰め直して送らず、取得元の中で前の版の `files.tar.zst` を写します (WebDAV の COPY、フォルダはハードリンク。S3 は送ります)。
 - 書き出しの鍵は、モデル、チェックポイントのコミット、定義の sha256、書き出しの設定 (model-recipes.yaml のレシピの args)、同梱した IRON の道具のうちその書き出しが読むものの hash の指紋です。読むものは `iron_export_lm.py` と共通のモジュール、モデルのアーキのモジュール (`tools/amd/lmdeps.go` の表から import を辿ったもの)、全部のカーネルです。1 つのモデルの書き出し (Gemma 4 の層ごとの表) や画像のモデルの道具を変えても、ほかのチャットのモデルの書き出しはそのまま当たります。出力の変わる直しは鍵 (か版) を変えるので、古い書き出しに当たりません。
 - IRON のない機械 (社内ではこれがふつう) は、書き出しを落とし、数秒の「準備」だけで NPU で動きます。
 - 初回に自分のプログラムを作る画像のモデル (`detect`、`pose`、`segment`、FLUX.2 klein) も同じ共有です。取得元にあればそれを使い、なければ IRON で作って書き戻します。
-- **手で作った**プログラム (一部の画像や音のモデル、深さ、顔、ラベル、AMD のレシピのないモデル) は、`entries/amd-xdna2/` か `~/models` にあります。一度 `hwnpu-dev sources import ~/models` で取得元に置けば、要る機械が名前で取り、手元に写しを残します。手で作ったものを初めて使った機械が、自動で書き戻しもします。
+- **手で作った**プログラム (一部の画像や音のモデル、深さ、顔、ラベル、AMD のレシピのないモデル) は、`entries/amd-xdna2/` か `~/models` にあります。一度 `bonsaiai-dev sources import ~/models` で取得元に置けば、要る機械が名前で取り、手元に写しを残します。手で作ったものを初めて使った機械が、自動で書き戻しもします。
 - IRON のコンパイルのキャッシュ (`iron/`。開発機では数十 GB) は共有しません。書き出す道具の作業の跡です。
 
 ### 4.3 Intel
@@ -333,7 +333,7 @@ w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 
 ### 4.4 新しいチップを足すとき
 
-エントリに何を入れるか、どれが機械に縛られるかは、チップのバックエンドが決めます。共有するには、変換した結果を新しいフォルダに書き、最後にファイルの大きさと SHA-256 と鍵のレシピを書いた `entry.json` を置き、`target` の名前を世代の階層から選び (広い名前 `amd`、世代 `amd-xdna2`)、`hwnpu-dev models push` と読む側がファイルを分かるよう種類 (kind) を登録します。探す、写す、照らす、書き戻すの共通の部分は変えなくて済みます。
+エントリに何を入れるか、どれが機械に縛られるかは、チップのバックエンドが決めます。共有するには、変換した結果を新しいフォルダに書き、最後にファイルの大きさと SHA-256 と鍵のレシピを書いた `entry.json` を置き、`target` の名前を世代の階層から選び (広い名前 `amd`、世代 `amd-xdna2`)、`bonsaiai-dev models push` と読む側がファイルを分かるよう種類 (kind) を登録します。探す、写す、照らす、書き戻すの共通の部分は変えなくて済みます。
 
 ---
 
@@ -353,7 +353,7 @@ chat.Fetch / modelstore.File
             → 落としながら、書き戻す取得元へ tee する
 ```
 
-コミットはリポジトリごとに 1 回決めます。定義の固定、なければ最初の取得元の lock、なければこの機械の lock、なければ Hugging Face の `main`。ファイルはどの層から来ても、そのコミットのものです。だから 2 台が同じモデルの違うバイトで動くことはなく、新しいコミットへ移るのは `hwnpu-dev sources update` のときだけです。
+コミットはリポジトリごとに 1 回決めます。定義の固定、なければ最初の取得元の lock、なければこの機械の lock、なければ Hugging Face の `main`。ファイルはどの層から来ても、そのコミットのものです。だから 2 台が同じモデルの違うバイトで動くことはなく、新しいコミットへ移るのは `bonsaiai-dev sources update` のときだけです。
 
 ### 5.2 エントリと鍵
 
@@ -375,11 +375,11 @@ chat.Fetch / modelstore.File
 
 書いている途中のものを、読む側に見せません。
 
-- ファイルは同じフォルダの一時の名前 (`.put-…`) に書いて名前を変えます (S3 は PUT が終わるまで見えない)。変換結果は最後に `entry.json` を書いて初めて見え、元のファイルは `hwnpu-lock.json` が名指して初めて使われます。
+- ファイルは同じフォルダの一時の名前 (`.put-…`) に書いて名前を変えます (S3 は PUT が終わるまで見えない)。変換結果は最後に `entry.json` を書いて初めて見え、元のファイルは `bonsaiai-lock.json` が名指して初めて使われます。
 - **tee**: Hugging Face から落とすバイトを、落としながら書き戻す取得元へ送り、大きさと SHA-256 が合ったときだけ確定します。取得元が 64 MiB 遅れたとき、`.part` から続けたときは tee を外れ、落とし終えてからキューで置きます。遅い取得元がダウンロードを遅くしたり止めたりすることはありません。
 - **変換しながら置く**: 手元の変換の間、書き出しのフォルダを見て、3 秒触られていないファイルから 4 本ずつ置きます。変換が終わるころには大半が置かれていて、最後は後から変わったファイルと `entry.json` だけです。
 - アップロードは **キュー** (4 本) に入れて進めます。コマンドは終わる前に済むのを待ち、途中で止められたら `work/queue` に残して次の起動で続けます。失敗は `work/queue.log` に残し、コマンドは失敗にしません。
-- 書いている途中のフォルダには `.writing-ID` の印 (機械、プロセス、最後に書いた時刻) を置き、5 分ごとに書き直します。`hwnpu cache clean` は、印かファイルが最近 1 時間に変わったフォルダを残すので、ほかの機械がアップロードしているものを消しません。
+- 書いている途中のフォルダには `.writing-ID` の印 (機械、プロセス、最後に書いた時刻) を置き、5 分ごとに書き直します。`bonsaiai cache clean` は、印かファイルが最近 1 時間に変わったフォルダを残すので、ほかの機械がアップロードしているものを消しません。
 - lock は読んで足して書きます。2 台が同時に同じリポジトリへ足すと片方が消えることがありますが、消えたものは次に読む機械が足し直します。
 
 ### 5.4 通信
@@ -400,7 +400,7 @@ chat.Fetch / modelstore.File
 
 ### 5.6 まだないもの
 
-- 組織 `hwnpu` の Hugging Face に、変換済みのモデルを CI で作って照合して置き、手元で変換する前の最後の層として読む仕組み。今は変換結果の共有は、*自分の*取得元を通してです。
+- 組織 `bonsaiai` の Hugging Face に、変換済みのモデルを CI で作って照合して置き、手元で変換する前の最後の層として読む仕組み。今は変換結果の共有は、*自分の*取得元を通してです。
 - Core ML と OpenVINO のプログラムのエントリ化と、共有の取得元での `host` のエントリ。
 - 手元のキャッシュの、全種類の書き出しを 1 つの `converted/` にまとめること (一部は今も `models/` と `entries/`)。
 - AMD と Intel の NPU の世代を、対象の名前で見分けること。

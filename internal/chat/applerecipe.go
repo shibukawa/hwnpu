@@ -5,10 +5,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // AppleConvert is the apple.convert of model name's recipe (model-recipes.yaml: its own, or

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // LUT4 is a palettized matrix: Indices holds one Bits wide entry per element in row major

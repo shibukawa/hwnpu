@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 func TestAMDSuffix(t *testing.T) {
@@ -113,7 +113,7 @@ func TestLastLine(t *testing.T) {
 // take it (made with other tools, gemma-4's int8 table), so it is not of a process that made it
 // while this one waited.
 func TestRunIRONStaleDone(t *testing.T) {
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	t.Setenv("NPU_CACHE_HOME", t.TempDir())
 	out := filepath.Join(t.TempDir(), "m.amd-npu2")
 	os.MkdirAll(out, 0o755)
@@ -159,7 +159,7 @@ func TestAMDExportOfSourcesFirst(t *testing.T) {
 		t.Errorf("put in the source: %v", es)
 	}
 
-	// a source has it (put by name, as hwnpu-dev sources import and models pin do)
+	// a source has it (put by name, as bonsaiai-dev sources import and models pin do)
 	made := filepath.Join(t.TempDir(), own)
 	os.MkdirAll(made, 0o755)
 	os.WriteFile(filepath.Join(made, "manifest.json"), []byte(`{"by":"source"}`), 0o644)

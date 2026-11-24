@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 )
 
 // BuildOptions says how Build compiles.
@@ -398,7 +398,7 @@ func buildOne(ctx context.Context, tool, asset, arch, out string) error {
 		return fmt.Errorf("coreai-build wrote %v, not %s of the asset's hash", names, filepath.Base(out))
 	}
 	if !onANE(built) {
-		// no Neural Engine region: the compiler left the program to the GPU (hwnpu would refuse
+		// no Neural Engine region: the compiler left the program to the GPU (bonsaiai would refuse
 		// it as off the NPU), so nothing is kept, nor an older output of the same kind
 		if _, err := os.Stat(out); err == nil && !onANE(out) {
 			os.RemoveAll(out)

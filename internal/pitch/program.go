@@ -3,9 +3,9 @@ package pitch
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch names SwiftF0's program in its metadata.

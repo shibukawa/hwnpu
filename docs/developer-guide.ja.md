@@ -1,10 +1,10 @@
-# 開発者向けガイド: hwnpu でアプリを作る (`ai` のパッケージ群)
+# 開発者向けガイド: BonsaiAI でアプリを作る (`ai` のパッケージ群)
 
 [English](developer-guide.md)
 
 > **v0**: この API は最初の版で、形はまだ変わります。この文書は、使い方の説明と、API の設計を今の段階で見直すための材料を兼ねています。設計の論点は [10 節](#10-設計の論点) に番号をつけて並べました (「D4 は案 B で」のように指してください)。
 
-hwnpu は、NPU で AI のモデルを動かす Go のライブラリの集まりです。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、その機能を 1 つずつ試すためのデモという位置付けです。アプリは複数のモデルを登録し、前もって準備し、つないで動かします。
+BonsaiAI は、NPU で AI のモデルを動かす Go のライブラリの集まりです。`bonsaiai-chat`、`bonsaiai-image`、`bonsaiai-audio` は、その機能を 1 つずつ試すためのデモという位置付けです。アプリは複数のモデルを登録し、前もって準備し、つないで動かします。
 
 - 今あるもの: 文字起こし、翻訳、チャット、読み上げ、音量の VAD、深度の推定、顔の検出と頭の位置、画像の生成と編集 (FLUX.2 klein)、モデルの間のつなぎ方、アプリに足すサブコマンド
 - まだないもの: FLUX.2 klein のほかの画像の生成 (Anima)、物体・姿勢・切り抜き・OCR、音楽と効果音、常駐の管理、ローカルサーバー ([11 節](#11-まだないもの))
@@ -23,7 +23,7 @@ ai.NewApp(uses...)  →  app.Plan(ctx)   →   plan.Run(ctx, fn)     →    app.
 
 | パッケージ | 役割 |
 |---|---|
-| `github.com/shibukawa/hwnpu/ai` | `App` (登録)、`Use[T]` (型のついた取っ手)、`Plan` (計画と準備)、`Runtime` (実行)、`Store` (置き場) |
+| `github.com/shibukawa/bonsaiai/ai` | `App` (登録)、`Use[T]` (型のついた取っ手)、`Plan` (計画と準備)、`Runtime` (実行)、`Store` (置き場) |
 | `.../ai/speech` | 文字起こし `Transcribe`、読み上げ `Speak`、音量の VAD、WAV の読み書き |
 | `.../ai/text` | 翻訳 `Translate`、チャット `Chat` |
 | `.../ai/vision` | 深度の推定 `Depth`、顔の検出 `Faces`、顔から頭の位置 `HeadOf` |
@@ -34,10 +34,10 @@ ai.NewApp(uses...)  →  app.Plan(ctx)   →   plan.Run(ctx, fn)     →    app.
 
 **用語**
 
-- **用途 (use)**: `transcribe` や `translate` のような、目的の名前。models.yaml の `categories` にあり、機械のメモリに合うモデルを選びます。`hwnpu-chat list` で見られます
+- **用途 (use)**: `transcribe` や `translate` のような、目的の名前。models.yaml の `categories` にあり、機械のメモリに合うモデルを選びます。`bonsaiai-chat list` で見られます
 - **ファミリーとタグ**: `plamo3translate:2b` のように、モデルの系列とその中の 1 つ
 - **役割 (role)**: モデルが何として動くか (`transcribe`、`translate`、`chat`、`speak`)。機能のパッケージの関数 (`speech.Transcribe` など) が決めます
-- **置き場 (store)**: モデルのファイルとプログラムのある場所。既定はコマンドと同じキャッシュ (`~/.cache/hwnpu` など) です
+- **置き場 (store)**: モデルのファイルとプログラムのある場所。既定はコマンドと同じキャッシュ (`~/.cache/bonsaiai` など) です
 - **対象 (target)**: プログラムがどの NPU 向けか。`coreai` (Apple)、`intel`、`amd-xdna2`
 
 ## 2. 最小の例
@@ -53,8 +53,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/speech"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/speech"
 )
 
 // 使うモデルは、パッケージの変数にしておく
@@ -154,7 +154,7 @@ helper := text.Chat("chat").As(8)       // どの機械でも、8 GB の機械�
 | `app.Memory(gb)` | アプリ全体を gb GB の機械として計画する (小さい機械向けに準備するとき)。`At` の段もそのメモリで決まる |
 
 - `At` と `As` は新しい `Use` を返します。元の値は変わりません
-- 利用者の側の調整も、コマンドと同じに効きます: `HWNPU_MEMORY` (機械のメモリを言い換える)、`hwnpu memory MODEL GB` (モデルごと)、`HWNPU_MODEL_ALLOWLIST` (使ってよいモデル)
+- 利用者の側の調整も、コマンドと同じに効きます: `BONSAIAI_MEMORY` (機械のメモリを言い換える)、`bonsaiai memory MODEL GB` (モデルごと)、`BONSAIAI_MODEL_ALLOWLIST` (使ってよいモデル)
 - 選ばれたモデルと理由は `plan.Items[i].Model` と `.Why` に入ります。`plan.MemoryGB()` は同時に動かす合計、`plan.MachineGB()` は機械のメモリです
 
 ### 3.3 アプリ独自の定義
@@ -207,7 +207,7 @@ err = plan.Run(ctx, func(p ai.Progress) {   // p.Stage: prepare、compile、done
 
 | 段 | 中身 | NPU |
 |---|---|---|
-| ダウンロードと変換 | 取得元 (手元のキャッシュ、`HWNPU_MODEL_SOURCE*`、同梱、Hugging Face) から取り、プログラムに変換する。取得元に変換済みのものがあれば取るだけ | 要らない |
+| ダウンロードと変換 | 取得元 (手元のキャッシュ、`BONSAIAI_MODEL_SOURCE*`、同梱、Hugging Face) から取り、プログラムに変換する。取得元に変換済みのものがあれば取るだけ | 要らない |
 | コンパイル | 各モデルを 1 回読み込む。Apple の Neural Engine のコンパイルは初回に数秒から数分かかり (Gemma 4 で 100 秒)、結果はその機械のもの | 要る |
 
 - `plan.Run` は途中で切れても、もう一度呼べば続きから進みます
@@ -223,7 +223,7 @@ err = plan.Run(ctx, func(p ai.Progress) {   // p.Stage: prepare、compile、done
 
 ```go
 app.Store = ai.Store{
-	Models:   modelstore.Options{Root: cacheDir, Sources: []string{"https://models.example.com/hwnpu"}},
+	Models:   modelstore.Options{Root: cacheDir, Sources: []string{"https://models.example.com/bonsaiai"}},
 	Prepared: []string{filepath.Join(resources, "prepared")},
 }
 ```
@@ -246,7 +246,7 @@ err = stt.Release(rt)               // 下ろしてメモリを空ける。次�
 rt.Loaded()                         // 今持っているモデル: 用途、モデル、メモリ、読み込みにかかった時間
 ```
 
-- **ネットワークにも変換にもコンパイルにも触りません。** 準備されていない用途や、このプログラム向けにコンパイルされていない用途は `ai.ErrNotPrepared` です。`APP models prepare` (`Plan.Run`) が先に全部用意するので、アプリの実行中にダウンロードやコンパイルを待つことはありません (アプリが遅いのか準備が遅いのか、使う人には区別がつかないため)。アプリのコマンドは `konghelper.Open(ctx, app)` で Runtime を開きます。用意できていないモデルがあれば、コマンドが始まる前に、そのモデルを挙げて `APP models prepare` を案内して失敗します (`app.Run` の前に確かめるだけなら `konghelper.Ready`)。`Plan.Run` は、hwnpu のコマンドと同じ見た目で、標準エラー (`Plan.Log` があればそこ) に出します: 端末ではモデルの段ごとにスピナーとストップウォッチの行、その上にダウンロードやプログラムのバー、灰色のログ、最後に全体の時間。端末でなければ、段の始まりと終わりの行です。`Plan.Brief` はログを省き、`Plan.Quiet` は何も出しません。どちらでもコールバックには全部届くので (`Progress.Message` がログの行)、アプリは自分の見せ方もできます。自分の窓を持つアプリは `ai.WithLoading(fn)` を足します: `Get` が読み込むモデルごとに `fn` が呼ばれ (`ai.Progress`。`StageLoad` のあと `StageDone`)、`Since` と、前回この機械で読み込みにかかった時間 `Expected` (ストアに記録) が付くので、止まって見えないように経過時間とバーを出せます
+- **ネットワークにも変換にもコンパイルにも触りません。** 準備されていない用途や、このプログラム向けにコンパイルされていない用途は `ai.ErrNotPrepared` です。`APP models prepare` (`Plan.Run`) が先に全部用意するので、アプリの実行中にダウンロードやコンパイルを待つことはありません (アプリが遅いのか準備が遅いのか、使う人には区別がつかないため)。アプリのコマンドは `konghelper.Open(ctx, app)` で Runtime を開きます。用意できていないモデルがあれば、コマンドが始まる前に、そのモデルを挙げて `APP models prepare` を案内して失敗します (`app.Run` の前に確かめるだけなら `konghelper.Ready`)。`Plan.Run` は、BonsaiAI のコマンドと同じ見た目で、標準エラー (`Plan.Log` があればそこ) に出します: 端末ではモデルの段ごとにスピナーとストップウォッチの行、その上にダウンロードやプログラムのバー、灰色のログ、最後に全体の時間。端末でなければ、段の始まりと終わりの行です。`Plan.Brief` はログを省き、`Plan.Quiet` は何も出しません。どちらでもコールバックには全部届くので (`Progress.Message` がログの行)、アプリは自分の見せ方もできます。自分の窓を持つアプリは `ai.WithLoading(fn)` を足します: `Get` が読み込むモデルごとに `fn` が呼ばれ (`ai.Progress`。`StageLoad` のあと `StageDone`)、`Since` と、前回この機械で読み込みにかかった時間 `Expected` (ストアに記録) が付くので、止まって見えないように経過時間とバーを出せます
 - **`APP models prepare` のあとの実行は、ネットワークに触らず、コンパイルもしません。** 入力で決まるプログラム (YuNet の大きさ、DA3 の縦横比) を持つ役割は、Prepare で全部作り、モデルは `ai.Warmer` です。`models prepare` の読み込みが `Warm` を呼び、それぞれを 1 回読み込んでコンパイルします。Prepare で作るものを変えた役割は `Revision` を上げ、前の版で準備した置き場は準備されていない扱いになります
 - **置き場の記録が今の選び方と違えば、準備されていない扱いです。** 別のモデルで準備してある (アプリの構成が変わった、機械のメモリの設定が変わった) とき、前のものを黙って読み込みません
 - **読み込みは 1 つずつ**進みます。モデルは、それぞれ 1 回に 1 つの要求を通します (ほかは待ちます)。別のモデルどうしは同時に呼べます
@@ -718,7 +718,7 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
 - **`Face`**: 箱、確かさ、目・鼻・口の端の位置 (絵の画素)。`RightEye` は本人の右目 (絵では左側)
 - **`Head`**: カメラの前の頭の位置。`X`、`Y` はカメラの視野の中の −1〜1 (`X` は本人から見た右が正。フレームとは左右が逆)、`Z` はカメラからの距離 (メートル)。距離は、フレームの中の両目の間隔から、ピンホールのカメラとして出します (`HeadOptions.FOV` が水平の画角、既定は 60 度。`Eyes` が両目の間隔、既定は 63 mm)。カメラを向いた顔での目安です
 - **YuNet は実写の顔のモデル**です。アニメの絵の顔は見つけません (Anima で作った人物の絵で 0 件でした)
-- **どこで動くか**: 深度は NPU。YuNet は、AMD の NPU の機械では定義 (models.yaml の `device`) が CPU に置きます (小さなグラフで、CPU のほうが 1 枚の時間も電力も 10 分の 1)。CPU では ONNX Runtime が要ります (`HWNPU_ONNXRUNTIME` にライブラリの場所)。`FaceDetector.Device()` が `npu` か `cpu` を返します
+- **どこで動くか**: 深度は NPU。YuNet は、AMD の NPU の機械では定義 (models.yaml の `device`) が CPU に置きます (小さなグラフで、CPU のほうが 1 枚の時間も電力も 10 分の 1)。CPU では ONNX Runtime が要ります (`BONSAIAI_ONNXRUNTIME` にライブラリの場所)。`FaceDetector.Device()` が `npu` か `cpu` を返します
 - Apple の Neural Engine と Intel の NPU では、深度のプログラムは絵の形ごとに、その形の絵が初めて来たときに変換します (数秒。最初の読み込みでコンパイル)
 - **深度のモデルの選び方**: `vision.Depth("depth")` は機械のメモリで選びます (8 GB から DA3-SMALL、16 GB から DA3-BASE、24 GB から DA3MONO-LARGE)。名前で決めることもできます (`vision.Depth("moge-2-vitl")`)。AMD の NPU (Ryzen AI 9 365) で 3 枚の絵 (1024×672 が 1 枚、1024×1024 が 2 枚) にかけた値です
 
@@ -747,7 +747,7 @@ artist.Release(rt)                        // 画像のモデルを下ろして�
 - **そのほか**: `Seed` (0 で毎回違う)、`Steps` (0 でモデルの既定。FLUX.2 klein は 4)、`Progress` (段ごとに呼ばれる)
 - **時間とメモリ**: 1024×1024 で、文から約 30 秒、参照 1 枚の編集で約 1 分 (Ryzen AI 9 365)。動く間は最大 3.9 GB (AMD)。段の入れ替え ([9.5 節](#95-release-と画像の生成の段の入れ替え)) はパイプラインが自分でします
 - **どこで動くか**: AMD の NPU (IRON の書き出し 1 つに全部の大きさ) と Apple の Neural Engine (512×512 と 1024×1024 の書き出し。`Sizes()` が返します)。Apple で参照から描くには編集のプログラム (別の書き出し) が要ります。`imagegen.Edit` が準備し (チェックポイント 16 GB をダウンロードして変換)、最初の編集でコンパイルします。`imagegen.Generate` はそれを用意せず、Apple では参照を断ります。M3 で編集 1 枚が 512×512 で 39 秒、1024×1024 で 89 秒
-- まだない: Anima、FLUX.3 klein (コマンド `hwnpu-image generate` にはあります)、まとめて描く (`--batch`)、参照を半分の大きさで読む (`@half`)
+- まだない: Anima、FLUX.3 klein (コマンド `bonsaiai-image generate` にはあります)、まとめて描く (`--batch`)、参照を半分の大きさで読む (`@half`)
 
 ## 8. アプリのコマンドライン (`ai/cli`)
 
@@ -802,7 +802,7 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error { ... }
 | `APP models` | `cli.List` | 使うモデルの一覧: 状態 (missing、ready, not compiled、compiled、bundled)、落とす量、メモリ、ライセンス、同時に動かす合計とこの機械でモデルに使える量、アプリが構成で選んだ理由、ネットワーク。`--json` |
 | `APP models download` | `cli.Download` | ダウンロードと変換。NPU は要りません。`--accept-license`、`-q` |
 | `APP models prepare` (`compile`) | `cli.Prepare` | download のあと、各モデルを 1 回読み込んでコンパイル |
-| `APP status` | `cli.Status` | `hwnpu status` と同じ: デバイス、ドライバ、負荷、電力、使っているプロセスと NPU のメモリ、キャッシュ。`-w 2s`、`--json`、`--wake` |
+| `APP status` | `cli.Status` | `bonsaiai status` と同じ: デバイス、ドライバ、負荷、電力、使っているプロセスと NPU のメモリ、キャッシュ。`-w 2s`、`--json`、`--wake` |
 
 ```
 $ interpreter models
@@ -813,7 +813,7 @@ transcribe  transcribe  whisper-large-v3-turbo  compiled  -         2.2 GB  mit
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  plamo-community-license (conditional)
 speech      speak       LFM3-Audio-2B-TTS       compiled  -         2.9 GB  lfm-open-1.0 (conditional)
 
-Their checkpoints are here or come from the sources; about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB. ...
+Their checkpoints are here or come from the sources; about 7.8 GB running together; bonsaiai counts on about 9 GB for models on a machine of 16 GB. ...
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
 
 The network:
@@ -822,7 +822,7 @@ The network:
 ```
 
 - ほかのコマンドラインのライブラリ (cobra、urfave/cli など) のアダプタは置いていません。(1) の関数を、そのライブラリのコマンドから呼んでください
-- `cli.Status` は標準出力に書きます (`hwnpu status` と同じ表示のため)。`cli.List` と `cli.Download` / `cli.Prepare` は、書く先を `Out` と `Log` で変えられます
+- `cli.Status` は標準出力に書きます (`bonsaiai status` と同じ表示のため)。`cli.List` と `cli.Download` / `cli.Prepare` は、書く先を `Out` と `Log` で変えられます
 
 ## 9. 制約とルール
 
@@ -893,7 +893,7 @@ NPU は 1 つで、メモリは固定され、プログラムの形は決まっ�
 - **呼び出しどうしは独立です。** `Transcribe`、`Translate`、`Speak`、`Complete` は、前の呼び出しの結果に依りません (翻訳の履歴も、会話のメッセージも、呼ぶ側が毎回渡します)。だから 1 つのモデルに複数の入力を交互に通せます
 - **L と R の音声**: 入力はモノラルです (文字起こしと VAD は 16 kHz のモノラル)。ステレオは 2 本のモノラルの流れに分け、それぞれに VAD をかけ、同じ文字起こしのモデルに通します。実測: 13.3 秒の音声 2 本を同時に通すと 2.8 秒 (1 本 1.4 秒の 2 倍)。9.2 節の合計には 2 本ぶんが入ります
 - **同じモデルを 2 つ読み込んでも速くなりません**: NPU が 1 つの待ち行列なので、合計は同じで、メモリだけ倍になります (2 つ読み込む形は測っていません)
-- **まとめて 1 回で処理する入力 (バッチ) は、ほとんどありません。** プログラムの形は固定で、文字起こしは 30 秒の窓 1 本、チャットと翻訳は 1 系列、埋め込みは 1 文ずつです。例外は画像で、画像の生成は数枚をまとめて描け (`hwnpu-image --batch`)、ラベル付けの文は 8 つずつです
+- **まとめて 1 回で処理する入力 (バッチ) は、ほとんどありません。** プログラムの形は固定で、文字起こしは 30 秒の窓 1 本、チャットと翻訳は 1 系列、埋め込みは 1 文ずつです。例外は画像で、画像の生成は数枚をまとめて描け (`bonsaiai-image --batch`)、ラベル付けの文は 8 つずつです
 - チャットのモデルは、直前の会話 (と、その前の長い会話 2 つまで) の続きなら読み直しを省きます (結果は変わりません)。それより多くの会話を 1 つのモデルに交互に通すと、その省略が効かなくなります (遅くなるだけ)
 
 ### 9.4 メモリ
@@ -905,11 +905,11 @@ $ interpreter models
 ...
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  ...
 ...
-about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB.
+about 7.8 GB running together; bonsaiai counts on about 9 GB for models on a machine of 16 GB.
 ```
 
-- 収まらないときは、その下に注意が出ます (「Together they take more than hwnpu counts on for models here ...」)。16 GB のうち 9 GB は、ユーザーが無理なくモデルに回せる量の目安で、機械の上限ではありません (統合 GPU では、GPU に割り当てるメモリによっても変わります)
-- ほかの機械ではどうなるかは、`HWNPU_MEMORY=8 interpreter models` のように、機械のメモリを言い換えて見られます
+- 収まらないときは、その下に注意が出ます (「Together they take more than bonsaiai counts on for models here ...」)。16 GB のうち 9 GB は、ユーザーが無理なくモデルに回せる量の目安で、機械の上限ではありません (統合 GPU では、GPU に割り当てるメモリによっても変わります)
+- ほかの機械ではどうなるかは、`BONSAIAI_MEMORY=8 interpreter models` のように、機械のメモリを言い換えて見られます
 - プログラムからは `interpreter models --json` (`memory_gb`、`machine_gb`、`usable_gb`、`fits`、モデルごとの `memory_gb`)、または `plan.MemoryGB()`、`plan.MachineGB()`、`plan.UsableGB()`、`plan.Fits()`
 - **実際に使っている量**は `APP status` が出します: NPU を使っているプロセスごとの、プロセスのメモリと NPU のメモリ (`-w 2s` で見続けられます)
 
@@ -948,13 +948,13 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 - **Intel**: 入るだけ持ち、入らなくなったら使っていないものを閉じて読み直します
 
 - `ai/imagegen` (FLUX.2 klein) は、この入れ替えを既定のまま持っています。アプリは生成のあと `Release` を呼んで残り (小さい部品) も下ろし、深度などの次のモデルに進みます ([6.9 節](#69-例-深度でレイヤーに分ける-sampleslayers) のサンプルがそうしています)
-- 3 つ目の仕組みとして、AMD のチャットのモデルは、しばらく使わないと固定メモリを手放し、次の要求で 1〜2 秒かけて読み直します (`hwnpu-chat --idle`)。`ai` からはまだ使えません
+- 3 つ目の仕組みとして、AMD のチャットのモデルは、しばらく使わないと固定メモリを手放し、次の要求で 1〜2 秒かけて読み直します (`bonsaiai-chat --idle`)。`ai` からはまだ使えません
 - この 3 つを 1 つの「常駐の管理」(メモリの予算、追い出してよいもの) にまとめるのが [D9](#10-設計の論点) です
 - 読み直しの時間 (実測、AMD): 文字起こし 0.5〜1.2 秒、翻訳 8B 5〜9 秒、2B 約 3 秒、読み上げ 2.3〜3.8 秒。Apple では、コンパイル済みなら数秒、初回は数十秒から数分です
 
 ### 9.6 プロセス
 
-- **Mac: Neural Engine を使う hwnpu のプロセスは 1 つずつ**です。2 つ同時に使うと M1 の OS が固まったので、最初にデバイスを開いたプロセスが、終わるまでロックを持ちます ([docs/design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md))。常駐するアプリが動いている間、`hwnpu-chat` などのコマンドは待ちます。アプリが NPU を手放す口 (`Suspend`) はまだありません
+- **Mac: Neural Engine を使う BonsaiAI のプロセスは 1 つずつ**です。2 つ同時に使うと M1 の OS が固まったので、最初にデバイスを開いたプロセスが、終わるまでロックを持ちます ([docs/design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md))。常駐するアプリが動いている間、`bonsaiai-chat` などのコマンドは待ちます。アプリが NPU を手放す口 (`Suspend`) はまだありません
 - AMD と Intel にはこのロックがありません。AMD では別々のプロセスが同じ NPU を使えますが、時間を分け合います (ほかのプロセスが NPU を使っていて、コマンドが最大 50 倍遅くなった記録があります。[docs/design/new-model-checklist.ja.md](design/new-model-checklist.ja.md))。Intel は試していません
 - Mac では macOS 自身のサービス (写真の解析、Apple Intelligence) も Neural Engine を使います。それが動いている間、チャットが 0.7 トークン/秒に落ちた記録があります ([docs/design/llm-engine.ja.md](design/llm-engine.ja.md))。アプリからは止められません
 - **1 プロセスに `App` は 1 つ**と考えてください。置き場の設定がプロセスに 1 つだからです ([D8](#10-設計の論点))
@@ -1031,7 +1031,7 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 
 **D10. 並行** — 今: モデルごとに 1 回に 1 つ。モデルどうしの順番は決めない (NPU のドライバ任せ)。モデルごとにデバイスを開く。
 
-- **未定**: 音声を先に通す、背景の仕事を待たせる、といった優先度の口。Mac では Neural Engine のロックをプロセスが生きている間持つので、常駐するアプリがほかの hwnpu のコマンドを待たせる
+- **未定**: 音声を先に通す、背景の仕事を待たせる、といった優先度の口。Mac では Neural Engine のロックをプロセスが生きている間持つので、常駐するアプリがほかの BonsaiAI のコマンドを待たせる
 
 ### 流れ
 
@@ -1074,7 +1074,7 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 **D19. 入力と出力のデバイス** — 今: ライブラリは持たない。流れを受け取り、流れを返すだけ。サンプルが hwcamera でマイク (とカメラ) を流れに直す (`samples/internal/capture`)。
 
 - 理由: ライブラリ本体の依存を増やさない。入力はファイルでもネットワークでも同じ形になる
-- 別の案: hwcamera を流れに直す部分を、hwnpu の別のモジュール (本体の依存にならない) として出す。アプリごとに同じコードを書かずに済み、「ためる」「最新だけ」の決まりを 1 か所に置ける
+- 別の案: hwcamera を流れに直す部分を、BonsaiAI の別のモジュール (本体の依存にならない) として出す。アプリごとに同じコードを書かずに済み、「ためる」「最新だけ」の決まりを 1 か所に置ける
 - **未定**: その別のモジュールを作るか。音の出力 (再生) の口をどこに置くか
 
 **D20. 実時間で回るかを測る口と、順番を決める口** — 今: どちらもない。アプリは単独の時間を自分で測って足す (9.2 節)。
@@ -1106,13 +1106,13 @@ about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machin
 
 ## 11. まだないもの
 
-- 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、FLUX.2 klein のほかの画像のモデル (Anima、FLUX.3 klein を `ai/imagegen` に。今はコマンド `hwnpu-image generate` で作る)
+- 画像: 物体、姿勢、切り抜き、OCR、ラベル (`ai/vision` に足す)、FLUX.2 klein のほかの画像のモデル (Anima、FLUX.3 klein を `ai/imagegen` に。今はコマンド `bonsaiai-image generate` で作る)
 - 音: メトロノームの拍に合わせて作る音楽、鳴らしながら変える曲調 (`ai/sound` には流れの音楽、効果音、音高、採譜がある)
-- コマンドの載せ替え: `hwnpu-chat`、`hwnpu-image` を、このライブラリを呼ぶだけにする (`hwnpu-audio` は済み)
+- コマンドの載せ替え: `bonsaiai-chat`、`bonsaiai-image` を、このライブラリを呼ぶだけにする (`bonsaiai-audio` は済み)
 - 常駐の管理 (D9、D10)、ローカルサーバー (OpenAI 互換など)、配布用のバンドル、ビルドタグ
 - 順番と中身は [app-api-tasks.md](app-api-tasks.md)
 
-## 12. hwnpu の開発者向け: 機能のパッケージを足す
+## 12. BonsaiAI の開発者向け: 機能のパッケージを足す
 
 機能のパッケージは、`internal/airole` の `Role` を 1 つ持ち、`ai.Define` で `Use` を作ります。`ai` はそれ以外を知りません。
 
@@ -1146,6 +1146,6 @@ var depthRole = &airole.Role{
 - **NPU ごとの分かれ道**は `e.NPU` で見ます: `e.NPU.AMD()` なら IRON の書き出し、ほかは `e.NPU.Format` (`coreai`、`intel`) のプログラム
 - **一括と流れの両方**を出します。流れの形は、区切り (`Final`) ごとに一括を呼ぶところから始めて構いません
 - **モデルの値は `io.Closer`** で、1 回に 1 つの要求を通すようにします (中で排他する)
-- **役は hwnpud でも動きます** ([hwnpud](design/hwnpud.ja.md)): 登録し (`init` で `airole.Register`)、`Remote` を与えます。`Remote` は `*airpc.Handle` を包んだモデルの型を作り、モデルに触る公開のメソッドはそれぞれ `if d.remote != nil { return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o) }` で始めます (context を取らないものは `airpc.Value`、`Close` は `Release`)。引数と結果は gob で渡ります: 公開の欄、関数はコールバックに、ストリームはストリームに。ただのデータでないエンジンの状態を持つ結果は `airpc.RegisterRef` でエンジンに置いておきます
+- **役は bonsaiaid でも動きます** ([bonsaiaid](design/bonsaiaid.ja.md)): 登録し (`init` で `airole.Register`)、`Remote` を与えます。`Remote` は `*airpc.Handle` を包んだモデルの型を作り、モデルに触る公開のメソッドはそれぞれ `if d.remote != nil { return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o) }` で始めます (context を取らないものは `airpc.Value`、`Close` は `Release`)。引数と結果は gob で渡ります: 公開の欄、関数はコールバックに、ストリームはストリームに。ただのデータでないエンジンの状態を持つ結果は `airpc.RegisterRef` でエンジンに置いておきます
 - **テスト**は、偽の `Role` で計画から読み込みまでを NPU なしで回せます (`ai/ai_test.go`)。時刻に関わるものは `testing/synctest` を使います
-- 外のモジュールは `internal/airole` を import できないので、`Use` を作れるのは hwnpu の中のパッケージだけです
+- 外のモジュールは `internal/airole` を import できないので、`Use` を作れるのは BonsaiAI の中のパッケージだけです

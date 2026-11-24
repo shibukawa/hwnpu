@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 func readF32(t *testing.T, path string) []float32 {
@@ -59,9 +59,9 @@ func (r *refNote) UnmarshalJSON(b []byte) error {
 
 // The note making, given the reference's activations, makes the reference's notes exactly.
 func TestNotesFromReference(t *testing.T) {
-	ref := os.Getenv("HWNPU_TEST_BASICPITCH_REF")
+	ref := os.Getenv("BONSAIAI_TEST_BASICPITCH_REF")
 	if ref == "" {
-		t.Skip("HWNPU_TEST_BASICPITCH_REF is not set")
+		t.Skip("BONSAIAI_TEST_BASICPITCH_REF is not set")
 	}
 	var meta struct {
 		Frames int       `json:"frames"`
@@ -113,13 +113,13 @@ func compareNotes(t *testing.T, got []Note, want []refNote, tol float64, ampTol 
 	}
 }
 
-// With the real model (HWNPU_TEST_BASICPITCH_FILE = nmp.onnx) and a reference of ref_basic_pitch.py, the
+// With the real model (BONSAIAI_TEST_BASICPITCH_FILE = nmp.onnx) and a reference of ref_basic_pitch.py, the
 // host's front end gives the graph's normalized log CQT, the program on the CPU interpreter in
 // fp16 its activations, and the whole the reference's notes.
 func TestMatchesONNX(t *testing.T) {
-	path, ref := os.Getenv("HWNPU_TEST_BASICPITCH_FILE"), os.Getenv("HWNPU_TEST_BASICPITCH_REF")
+	path, ref := os.Getenv("BONSAIAI_TEST_BASICPITCH_FILE"), os.Getenv("BONSAIAI_TEST_BASICPITCH_REF")
 	if path == "" || ref == "" {
-		t.Skip("HWNPU_TEST_BASICPITCH_FILE and HWNPU_TEST_BASICPITCH_REF are not set")
+		t.Skip("BONSAIAI_TEST_BASICPITCH_FILE and BONSAIAI_TEST_BASICPITCH_REF are not set")
 	}
 	g, err := onnx.Load(path)
 	if err != nil {

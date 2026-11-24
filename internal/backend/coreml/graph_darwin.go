@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
 	"github.com/ebitengine/purego/objc"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // MLFeatureType and MLMultiArrayDataType values.
@@ -83,7 +83,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	cache.Touch(src.Path) // the model it is of is used now (the cache's LRU)
 	g := &graph{}
 	compiled := src.Path
-	// HWNPU_DEV=coreml.trace=1 prints how long each phase of loading takes, to see where a slow load
+	// BONSAIAI_DEV=coreml.trace=1 prints how long each phase of loading takes, to see where a slow load
 	// goes. It is not part of the API.
 	trace := devenv.On("coreml.trace")
 	phase := time.Now()
@@ -105,11 +105,11 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	var config objc.ID
 	err := withPool(func() error {
 		config = send(send(class("MLModelConfiguration"), "alloc"), "init")
-		// HWNPU_COREML_UNITS=cpu|gpu loads the model on the CPU or the GPU instead, as the
-		// baselines hwnpu-dev powerbench compares the Neural Engine with. It is not part of the API.
+		// BONSAIAI_COREML_UNITS=cpu|gpu loads the model on the CPU or the GPU instead, as the
+		// baselines bonsaiai-dev powerbench compares the Neural Engine with. It is not part of the API.
 		units := computeUnitsCPUAndNeuralEngine
 		want := src.Units
-		if env := os.Getenv("HWNPU_COREML_UNITS"); env != "" {
+		if env := os.Getenv("BONSAIAI_COREML_UNITS"); env != "" {
 			want = env
 		}
 		switch want {
@@ -144,7 +144,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		// compiled model, function and OS: with a cache directory it is kept beside the model.
 		placementKey := ""
 		if key != "" {
-			placementKey = cache.Key([]byte("hwnpu-coreml-placement-v1"), []byte(key), []byte(src.Function), []byte(src.Units+"|"+os.Getenv("HWNPU_COREML_UNITS")))
+			placementKey = cache.Key([]byte("bonsaiai-coreml-placement-v1"), []byte(key), []byte(src.Function), []byte(src.Units+"|"+os.Getenv("BONSAIAI_COREML_UNITS")))
 		}
 		cachedPlan := false
 		if placementKey != "" {
@@ -164,7 +164,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			if err == nil && placementKey != "" && g.placement.Verified {
 				if raw, e := json.Marshal(g.placement); e == nil {
 					cache.Store(d.opts.CacheDir, placementKey, ".json", func(tmp string) error { return os.WriteFile(tmp, raw, 0o644) }) // best effort
-					// hwnpu cache ls names its model by it; Prune removes it when that is gone
+					// bonsaiai cache ls names its model by it; Prune removes it when that is gone
 					cache.SetSource(d.opts.CacheDir, placementKey, src.Path)
 				}
 			}
@@ -192,7 +192,7 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 			osVersion = goString(send(send(class("NSProcessInfo"), "processInfo"), "operatingSystemVersionString"))
 			return nil
 		})
-		key = cache.Key([]byte("hwnpu-coreml-v1"), digest, []byte(osVersion))
+		key = cache.Key([]byte("bonsaiai-coreml-v1"), digest, []byte(osVersion))
 		if p, ok := cache.Lookup(d.opts.CacheDir, key, ".mlmodelc"); ok {
 			if src, recorded := cache.Source(d.opts.CacheDir, key); !recorded {
 				// stored before entries recorded their source: share its weights now, once
@@ -289,8 +289,8 @@ func describeArgs(model objc.ID) ([]types.ArgInfo, error) {
 
 // Metadata keys written by tools/coreml/ane_pad.py.
 const (
-	metaLogicalBatch = "hwnpu.logical_batch"
-	metaPaddedBatch  = "hwnpu.padded_batch"
+	metaLogicalBatch = "bonsaiai.logical_batch"
+	metaPaddedBatch  = "bonsaiai.padded_batch"
 )
 
 // creatorMetadata returns the model's user defined metadata (coremltools user_defined_metadata).

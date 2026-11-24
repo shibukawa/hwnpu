@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 func relErr(w, q []float32) float64 {
@@ -43,11 +43,11 @@ func TestQuantizeGaussian(t *testing.T) {
 	t.Logf("with outliers, 16 row tables: rel RMS err %.4f", relErr(w, q.Dequantize()))
 }
 
-// Error on real weights when HWNPU_TEST_LFM3_DIR is set, for a few block shapes.
+// Error on real weights when BONSAIAI_TEST_LFM3_DIR is set, for a few block shapes.
 func TestQuantizeLFM3(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_LFM3_DIR not set")
+		t.Skip("BONSAIAI_TEST_LFM3_DIR not set")
 	}
 	f, err := safetensors.Open(filepath.Join(dir, "LFM3-1.7B.safetensors"))
 	if err != nil {

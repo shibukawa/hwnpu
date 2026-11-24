@@ -19,9 +19,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch registers the LFM3-VL vision encoder with the whitelist. It has no model_type of its own

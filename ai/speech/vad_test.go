@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/flow"
 )
 
 // clip is 16 kHz audio of parts: a tone of amplitude amp (0 for the background noise alone) for

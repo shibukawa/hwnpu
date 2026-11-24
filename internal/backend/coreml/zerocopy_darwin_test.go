@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // Checks whether Core ML writes outputs straight into the bound buffers (outputBackings).

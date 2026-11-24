@@ -1,4 +1,4 @@
-// Package sgemm multiplies float32 matrices on the CPU, the inner loop of hwnpu's own CPU
+// Package sgemm multiplies float32 matrices on the CPU, the inner loop of bonsaiai's own CPU
 // executor (internal/milcpu): convolutions as products with their im2col matrix, linears and
 // matmuls. It is GotoBLAS's scheme: B packed in panels of NR columns, A in panels of MR rows, a
 // register-blocked kernel of MR x NR (AVX2 and FMA on amd64, else Go) over a block of KC.

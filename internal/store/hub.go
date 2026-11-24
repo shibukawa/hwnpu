@@ -14,14 +14,14 @@ import (
 
 // The converted models on Hugging Face (docs/prebuilt.md 5): repositories that hold, for a
 // model, what a source holds under converted/MODEL/ (TARGET/EXPORT/VERSION/...), put there by
-// hwnpu-dev models hf push. The definitions name each repository with the commit each target reads
+// bonsaiai-dev models hf push. The definitions name each repository with the commit each target reads
 // (models.yaml's hub): a Mac reads the commit of coreai-<its architecture>, else of apple; a
 // machine with AMD's NPU the commit of amd-xdna2. They are read after the sources and the
 // bundled models, and before the models' own repositories, read only.
 
-// HubEnv=false keeps hwnpu from reading the converted models on Hugging Face (they are made
+// HubEnv=false keeps bonsaiai from reading the converted models on Hugging Face (they are made
 // here, or come from the sources, instead). HuggingFaceEnv=false keeps it off them too.
-const HubEnv = "HWNPU_MODEL_HUB"
+const HubEnv = "BONSAIAI_MODEL_HUB"
 
 // HubEndpoint is Hugging Face's address (tests replace it).
 var HubEndpoint = "https://huggingface.co"
@@ -229,14 +229,14 @@ func (h Hub) Has(ctx context.Context, key string) (int64, bool, error) {
 }
 
 func (h Hub) readOnly() error {
-	return fmt.Errorf("store: %s is read only (hwnpu-dev models hf push puts conversions there)", h)
+	return fmt.Errorf("store: %s is read only (bonsaiai-dev models hf push puts conversions there)", h)
 }
 
 func (h Hub) Put(context.Context, string, string) error   { return h.readOnly() }
 func (h Hub) Write(context.Context, string, []byte) error { return h.readOnly() }
 func (h Hub) Delete(context.Context, string) error        { return h.readOnly() }
 
-// List lists nothing: Hugging Face's files are not listed through the layers (hwnpu-dev models hf
+// List lists nothing: Hugging Face's files are not listed through the layers (bonsaiai-dev models hf
 // check reads them).
 func (h Hub) List(context.Context, string) ([]string, error) { return nil, nil }
 
@@ -263,7 +263,7 @@ func HubGet(ctx context.Context, repo, rev, rest, dst string, bar func(done, tot
 	return n, err
 }
 
-// SetHubToken makes the requests to repo carry tok (hwnpu-dev models hf, which signed in to write).
+// SetHubToken makes the requests to repo carry tok (bonsaiai-dev models hf, which signed in to write).
 func SetHubToken(repo, tok string) {
 	hubMu.Lock()
 	hubTokens[repo] = tok

@@ -15,10 +15,10 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/shibukawa/hwnpu/internal/accelfs"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/accelfs"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
 )
 
 // Node is an amdxdna device node.

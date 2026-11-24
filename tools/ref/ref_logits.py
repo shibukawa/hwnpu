@@ -4,7 +4,7 @@
 
 MODEL_DIR holds config.json, the tokenizer and the checkpoint (and modeling_*.py for models
 that need trust_remote_code; symlinks to downloaded files are fine). Runs on the CPU in float32
-and writes, for readers without numpy (hwnpu-dev check and the Go tests), little endian and row major:
+and writes, for readers without numpy (bonsaiai-dev check and the Go tests), little endian and row major:
 
     OUT_PREFIX.ids.bin     int32 (seq)                       token ids
     OUT_PREFIX.hidden.bin  float32 (layers + 1, seq, hidden) token embeddings, then each layer's output
@@ -12,7 +12,7 @@ and writes, for readers without numpy (hwnpu-dev check and the Go tests), little
     OUT_PREFIX.json        model_type, seq, sizes, text, dtype, output
 
 and the same arrays in OUT_PREFIX.npz. The hidden states are taken with hooks rather than from
-output_hidden_states, so that they mean the same for every model, as hwnpu's programs expect:
+output_hidden_states, so that they mean the same for every model, as bonsaiai's programs expect:
 entry 0 is the output of the token embedding table (before position embeddings, scaling or an
 embedding norm, which the program does: an embedding module with an embed_scale, as Gemma's,
 has it divided out), and entry i + 1 the output of layer i (before a final norm;
@@ -31,7 +31,7 @@ import time
 
 import numpy as np
 
-TEXT = "The Neural Engine runs small language models at low power. hwnpu is a Go library for CPU integrated NPUs: Apple, Intel and AMD."
+TEXT = "The Neural Engine runs small language models at low power. bonsaiai is a Go library for CPU integrated NPUs: Apple, Intel and AMD."
 
 
 def decoder_layers(model, n):
@@ -144,7 +144,7 @@ def hook_passes(model, captured):
 
 
 def stack_passes(captured, n, passes):
-    """The hidden states of a looped model as hwnpu's layers of every pass (internal/llm/ouro): the
+    """The hidden states of a looped model as bonsaiai's layers of every pass (internal/llm/ouro): the
     token embeddings, then each layer's output in each pass, the last layer of a pass but the last
     after the final norm, which the next pass starts from."""
     import torch
@@ -168,7 +168,7 @@ def stack_hidden(captured, n):
 
 def save(prefix, ids, hs, logits, cfg, text, encoder, tok, extra=None):
     """Writes the reference files. extra holds more arrays by name, written as PREFIX.NAME.bin
-    (float32): the values of program inputs besides x that hwnpu-dev check feeds a layer."""
+    (float32): the values of program inputs besides x that bonsaiai-dev check feeds a layer."""
     extra = extra or {}
     np.savez(prefix + ".npz", input_ids=ids[0].numpy().astype(np.int32), hidden=hs, logits=logits, **extra)
     for name, v in extra.items():

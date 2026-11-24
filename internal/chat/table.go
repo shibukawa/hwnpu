@@ -16,19 +16,19 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/shibukawa/hwnpu"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
-// The definitions of the models (docs/model-table.md): hwnpu's models.yaml, embedded, and files
+// The definitions of the models (docs/model-table.md): bonsaiai's models.yaml, embedded, and files
 // of the user's that add to it and override it, written as differences (UserModelsFile,
 // ModelsEnv, -models). Catalog, Categories and the aliases are made from them.
 
 // ModelsEnv lists more definition files, separated as PATH is (':', ';' on Windows).
-const ModelsEnv = "HWNPU_MODELS"
+const ModelsEnv = "BONSAIAI_MODELS"
 
 // ModelsUsage is the usage of the -models flag of the commands that pick models.
-const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/hwnpu/models.yaml) and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
+const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/bonsaiai/models.yaml) and yours (~/.config/bonsaiai/models.yaml, %LOCALAPPDATA%\\bonsaiai\\models.yaml on Windows, BONSAIAI_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
 
 // LoadUserModels is LoadModels of the user's files and those of -models (comma separated), with
 // warnings to log.
@@ -36,7 +36,7 @@ func LoadUserModels(flagValue string, log io.Writer) error {
 	return LoadModels(strings.Split(flagValue, ","), true, log)
 }
 
-// TableVersion is the version of the definition files this hwnpu reads.
+// TableVersion is the version of the definition files this bonsaiai reads.
 const TableVersion = 1
 
 // Builtin is what ModelFiles calls the embedded models.yaml.
@@ -57,23 +57,23 @@ func init() {
 	}
 }
 
-// UserModelsFile is the user's own definition file: models.yaml in hwnpu's directory of
-// settings, ~/.config/hwnpu ($XDG_CONFIG_HOME) and %LOCALAPPDATA%\hwnpu on Windows, which is
+// UserModelsFile is the user's own definition file: models.yaml in bonsaiai's directory of
+// settings, ~/.config/bonsaiai ($XDG_CONFIG_HOME) and %LOCALAPPDATA%\bonsaiai on Windows, which is
 // read when it is there.
 func UserModelsFile() string {
 	if runtime.GOOS == "windows" {
 		if d := os.Getenv("LOCALAPPDATA"); d != "" {
-			return filepath.Join(d, "hwnpu", "models.yaml")
+			return filepath.Join(d, "bonsaiai", "models.yaml")
 		}
 	}
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
-		return filepath.Join(d, "hwnpu", "models.yaml")
+		return filepath.Join(d, "bonsaiai", "models.yaml")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "hwnpu", "models.yaml")
+	return filepath.Join(home, ".config", "bonsaiai", "models.yaml")
 }
 
 // LoadModels reads the definitions: the built-in models.yaml, then with user set the user's
@@ -95,7 +95,7 @@ type Definitions struct {
 // (an app's models made from flags: ai.Definition).
 func LoadModelsWith(files []string, texts []Definitions, user bool, log io.Writer) error {
 	t := newTable(log)
-	if err := t.add(Builtin, hwnpu.ModelsYAML, true); err != nil {
+	if err := t.add(Builtin, bonsaiai.ModelsYAML, true); err != nil {
 		return err
 	}
 	if user {
@@ -153,7 +153,7 @@ func LoadModelsWith(files []string, texts []Definitions, user bool, log io.Write
 	setHub(catalog)
 	shared.SetSources(sources, hf)
 	if user {
-		shared.SetBundles(BundleDirs(configdir.New("", "hwnpu"), ""))
+		shared.SetBundles(BundleDirs(configdir.New("", "bonsaiai"), ""))
 	}
 	digests, pinned = map[string]map[string]string{}, map[string][]pinnedFile{}
 	for _, m := range catalog {
@@ -213,7 +213,7 @@ type modelEntry struct {
 	License *License `yaml:"license"`
 	// Content is what the model may make that the policy refuses unless allowed: [nsfw].
 	Content *[]string `yaml:"content"`
-	// RunEntry is how hwnpu-chat runs a chat model when its flags do not say (prefill, format,
+	// RunEntry is how bonsaiai-chat runs a chat model when its flags do not say (prefill, format,
 	// context, paged, tier), on a machine of machine GB.
 	RunEntry `yaml:",inline"`
 	// Variants change memory and how the model runs on machines of more memory, by the least
@@ -232,7 +232,7 @@ type modelEntry struct {
 	// what they are made from, not vN.
 	Develop *bool `yaml:"develop"`
 	// Hub are the model's conversions on Hugging Face: by repository (OWNER/NAME), the commit
-	// each target reads (amd-xdna2, apple, coreai-ARCH), which hwnpu-dev models hf push writes
+	// each target reads (amd-xdna2, apple, coreai-ARCH), which bonsaiai-dev models hf push writes
 	// (docs/prebuilt.md 5.1). A file over another changes the repositories and targets it
 	// names and keeps the others.
 	Hub *map[string]map[string]string `yaml:"hub"`
@@ -240,7 +240,7 @@ type modelEntry struct {
 	// (LFM3-1.7B.amd-npu2-q4), "FOLDER sha256:DIGEST": the folder of the entry in a source
 	// (converted/MODEL/TARGET/EXPORT/FOLDER, also its path in the model's repository on Hugging
 	// Face) and the digest of what it holds (store.Entry.Digest). An export pinned is taken from
-	// there whatever tools made it, and only with that digest; hwnpu-dev models pin writes them.
+	// there whatever tools made it, and only with that digest; bonsaiai-dev models pin writes them.
 	// A file over another changes the targets and exports it names and keeps the others.
 	Exports *map[string]map[string]string `yaml:"exports"`
 	About   *string                       `yaml:"about"`
@@ -248,7 +248,7 @@ type modelEntry struct {
 	// (a speech model's format, a chat model's draft): what a command's flags give, written as a
 	// model of its own (ai.Definition). Each role reads the names it knows.
 	Settings *map[string]string `yaml:"settings"`
-	// Programs are files converted beforehand (by hand, hwnpu-dev convert, or an export of
+	// Programs are files converted beforehand (by hand, bonsaiai-dev convert, or an export of
 	// IRON), by the name the model's role reads them as: the role uses them as they are and
 	// converts nothing of them.
 	Programs *map[string][]string `yaml:"programs"`
@@ -305,7 +305,7 @@ type categoryEntry struct {
 
 // tableFile is a definition file. NPUs and Builds are designed (docs/model-table.md) but not
 // read yet: a file that has them gets a warning. Sources, Search and Cache were read before the
-// sources moved to the environment (HWNPU_MODEL_SOURCE: docs/cache-sharing-design.md 7): a file that
+// sources moved to the environment (BONSAIAI_MODEL_SOURCE: docs/cache-sharing-design.md 7): a file that
 // has them is refused with what to do.
 type tableFile struct {
 	Version    int                       `yaml:"version"`
@@ -319,7 +319,7 @@ type tableFile struct {
 	Cache      any                       `yaml:"cache"`
 	// Policy are items of the model policy (+nsfw, -license:non-commercial), read before PolicyEnv's.
 	Policy []string `yaml:"policy"`
-	// Hub is where hwnpu-dev models hf push puts the conversions (docs/prebuilt.md 4.6).
+	// Hub is where bonsaiai-dev models hf push puts the conversions (docs/prebuilt.md 4.6).
 	Hub *struct {
 		// Push is the namespace on Hugging Face (an account or an organization): the
 		// repositories are PUSH/MODEL.
@@ -370,13 +370,13 @@ func newTable(log io.Writer) *table {
 
 func (t *table) warn(file, format string, args ...any) {
 	if t.log != nil {
-		fmt.Fprintf(t.log, "hwnpu: %s: %s\n", file, fmt.Sprintf(format, args...))
+		fmt.Fprintf(t.log, "bonsaiai: %s: %s\n", file, fmt.Sprintf(format, args...))
 	}
 }
 
-// add merges a file. The built-in one is read strictly: anything this hwnpu does not know is an
-// error. A user's file is too, except that a file of a newer version may have keys this hwnpu
-// does not know (warned and skipped), so that a file written for a newer hwnpu still starts an
+// add merges a file. The built-in one is read strictly: anything this bonsaiai does not know is an
+// error. A user's file is too, except that a file of a newer version may have keys this bonsaiai
+// does not know (warned and skipped), so that a file written for a newer bonsaiai still starts an
 // older one.
 func (t *table) add(name string, raw []byte, builtin bool) error {
 	var head struct {
@@ -389,12 +389,12 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 	switch {
 	case head.Version == TableVersion:
 	case head.Version > TableVersion && !builtin:
-		t.warn(name, "version %d is newer than this hwnpu's (%d): what it does not know is skipped", head.Version, TableVersion)
+		t.warn(name, "version %d is newer than this bonsaiai's (%d): what it does not know is skipped", head.Version, TableVersion)
 		opts = nil
 	case head.Version == 0:
 		return fmt.Errorf("chat: %s: no version (write version: %d at its top)", name, TableVersion)
 	default:
-		return fmt.Errorf("chat: %s: version %d is not one this hwnpu reads (%d)", name, head.Version, TableVersion)
+		return fmt.Errorf("chat: %s: version %d is not one this bonsaiai reads (%d)", name, head.Version, TableVersion)
 	}
 	var f tableFile
 	if err := yaml.UnmarshalWithOptions(raw, &f, opts...); err != nil {
@@ -414,7 +414,7 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 			if builtin {
 				return fmt.Errorf("chat: %s: %s is not read yet", name, key)
 			}
-			t.warn(name, "%s is not read by this version of hwnpu yet (docs/model-table.md); skipped", key)
+			t.warn(name, "%s is not read by this version of bonsaiai yet (docs/model-table.md); skipped", key)
 		}
 	}
 	if len(f.Policy) > 0 {
@@ -612,23 +612,23 @@ func (t *table) addCategory(file, name string, e *categoryEntry, builtin bool) e
 
 // kinds are the kinds a model may have, with the commands that run them.
 var kinds = map[Kind]string{
-	KindChat:       "hwnpu-chat (chat, agent, serve)",
-	KindEmbed:      "hwnpu-chat (search, serve)",
-	KindTranscribe: "hwnpu-audio transcribe",
-	KindSpeech:     "hwnpu-audio tts",
-	KindDecision:   "hwnpu-chat systemone",
-	KindImage:      "hwnpu-image generate",
-	KindDepth:      "hwnpu-image depth",
-	KindFace:       "hwnpu-image face-detect",
-	KindPitch:      "hwnpu-audio pitch",
-	KindPose:       "hwnpu-image pose",
-	KindDetect:     "hwnpu-image detect",
-	KindOCR:        "hwnpu-image ocr",
-	KindLabel:      "hwnpu-image label, embed",
-	KindSegment:    "hwnpu-image segment",
-	KindNotes:      "hwnpu-audio notes",
-	KindMusic:      "hwnpu-audio generate",
-	KindSFX:        "hwnpu-audio generate -m sfx",
+	KindChat:       "bonsaiai-chat (chat, agent, serve)",
+	KindEmbed:      "bonsaiai-chat (search, serve)",
+	KindTranscribe: "bonsaiai-audio transcribe",
+	KindSpeech:     "bonsaiai-audio tts",
+	KindDecision:   "bonsaiai-chat systemone",
+	KindImage:      "bonsaiai-image generate",
+	KindDepth:      "bonsaiai-image depth",
+	KindFace:       "bonsaiai-image face-detect",
+	KindPitch:      "bonsaiai-audio pitch",
+	KindPose:       "bonsaiai-image pose",
+	KindDetect:     "bonsaiai-image detect",
+	KindOCR:        "bonsaiai-image ocr",
+	KindLabel:      "bonsaiai-image label, embed",
+	KindSegment:    "bonsaiai-image segment",
+	KindNotes:      "bonsaiai-audio notes",
+	KindMusic:      "bonsaiai-audio generate",
+	KindSFX:        "bonsaiai-audio generate -m sfx",
 }
 
 // build makes the catalog, the categories and the aliases of what was merged.
@@ -770,7 +770,7 @@ func toModel(name string, e *modelEntry) (Model, error) {
 	src := get(e.From)
 	repo, ok := strings.CutPrefix(src, "hf:")
 	if !ok {
-		return m, fmt.Errorf("model %s: from %q is not hf:OWNER/NAME (a model of your own: put it in a source as original/OWNER/NAME with its hwnpu-lock.json)", name, src)
+		return m, fmt.Errorf("model %s: from %q is not hf:OWNER/NAME (a model of your own: put it in a source as original/OWNER/NAME with its bonsaiai-lock.json)", name, src)
 	}
 	repo, m.Revision, _ = strings.Cut(repo, "@")
 	if strings.Count(repo, "/") != 1 || !safeName(repo) || strings.HasSuffix(repo, "/") {
@@ -827,7 +827,7 @@ func toModel(name string, e *modelEntry) (Model, error) {
 	if e.Features != nil {
 		for _, f := range *e.Features {
 			if !slices.ContainsFunc(Features, func(k struct{ Name, About string }) bool { return k.Name == f }) {
-				return m, fmt.Errorf("model %s: feature %q is not one of hwnpu-chat list's", name, f)
+				return m, fmt.Errorf("model %s: feature %q is not one of bonsaiai-chat list's", name, f)
 			}
 		}
 		m.Features = slices.Clone(*e.Features)
@@ -947,7 +947,7 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		return m, fmt.Errorf("model %s: %w", name, err)
 	}
 	if !run.zero() && m.Kind != KindChat {
-		return m, fmt.Errorf("model %s: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", name)
+		return m, fmt.Errorf("model %s: prefill, format, context, paged, tier and codes are for chat models (bonsaiai-chat)", name)
 	}
 	m.Run = run
 	if e.Variants != nil {

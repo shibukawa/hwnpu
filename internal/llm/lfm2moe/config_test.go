@@ -3,7 +3,7 @@ package lfm2moe
 import (
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // LFM2-8B-A1B's config.json, its layer types shortened to 6 layers.

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
 )
 
 // The settings and programs a chat model's definition may give (ai.Definition), besides its
@@ -25,7 +25,7 @@ import (
 //	          codes       a directory of lookup tables chosen against the activations, for lutN weights
 //	          format_for  SUBSTRING=FORMAT,...: another weight format for the tensors so named
 //	programs: iron        on AMD's NPU, an export of tools/amd/iron_export_lm.py (its directory)
-//	          packages    the programs converted by hwnpu-dev convert, with the same -cache and
+//	          packages    the programs converted by bonsaiai-dev convert, with the same -cache and
 //	                      different -seq; with config and weights (default: the checkpoint's)
 //	          tokenizer   tokenizer.json (default: the checkpoint's, or the export's)
 //	          vision      the vision encoder, a package per image size (default: the one converted)
@@ -41,7 +41,7 @@ import (
 //	             the role's name; off: none)
 //	sparse       off reads the whole cache on every call of a model split at its attention
 
-// prepareEngine makes a chat model ready as hwnpu-chat does on its first run, with the same
+// prepareEngine makes a chat model ready as bonsaiai-chat does on its first run, with the same
 // programs for the same NPU, so that what one prepared the other uses.
 func prepareEngine(e airole.PrepareEnv) (f airole.Files, err error) {
 	m, ps, set := e.Model, e.Model.Programs, e.Model.Settings
@@ -74,7 +74,7 @@ func prepareEngine(e airole.PrepareEnv) (f airole.Files, err error) {
 		f.Set("iron", iron)
 		return f, nil
 	}
-	// hwnpu-chat's defaults with the model's definition for the memory it runs as (models.yaml's
+	// bonsaiai-chat's defaults with the model's definition for the memory it runs as (models.yaml's
 	// context, paged, prefill, format and tier, Model.On), so that the programs are the ones it
 	// converts
 	tiers, err := chat.Tiers(cmp.Or(m.Run.Tier, chat.DefaultTiers))

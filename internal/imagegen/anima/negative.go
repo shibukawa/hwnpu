@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima/mil"
 )
 
 // EmptyCondFile is the empty prompt's conditioning in an export's text/: its one row (the

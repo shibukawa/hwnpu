@@ -9,10 +9,10 @@ import (
 )
 
 // TestUnigramT5 compares Unigram with transformers' T5TokenizerFast (testdata/t5_golden.json,
-// written by it) on Anima's t5_tokenizer/tokenizer.json, which HWNPU_TEST_T5_TOKENIZER_FILE names or
+// written by it) on Anima's t5_tokenizer/tokenizer.json, which BONSAIAI_TEST_T5_TOKENIZER_FILE names or
 // ~/models/Anima/diffusers holds; skipped without it.
 func TestUnigramT5(t *testing.T) {
-	path := os.Getenv("HWNPU_TEST_T5_TOKENIZER_FILE")
+	path := os.Getenv("BONSAIAI_TEST_T5_TOKENIZER_FILE")
 	if path == "" {
 		home, _ := os.UserHomeDir()
 		path = filepath.Join(home, "models", "Anima", "diffusers", "t5_tokenizer", "tokenizer.json")

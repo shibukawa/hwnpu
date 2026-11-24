@@ -1,6 +1,6 @@
 """Gemma 4 whose prompt chunks skip the KV-shared layers for every row but the last.
 
-An application kept in hwnpu over amd/IRON's Gemma 4 (``iron.applications.gemma4``),
+An application kept in bonsaiai over amd/IRON's Gemma 4 (``iron.applications.gemma4``),
 exported by ``iron_export_lm.py gemma4`` and ``gemma4mm``.
 
 Gemma 4's last ``num_kv_shared_layers`` layers (20 of E2B's 35) write no keys or
@@ -62,7 +62,7 @@ def install_tail_boundary() -> None:
     import iron.common.graph.compiled as compiled
     from iron.common.image import packaging
 
-    if getattr(compiled.plan, "_hwnpu_tail", False):
+    if getattr(compiled.plan, "_bonsaiai_tail", False):
         return
     plan = compiled.plan
 
@@ -82,7 +82,7 @@ def install_tail_boundary() -> None:
         reasons = [*chosen.reasons, f"Gemma4Tail: a command starts at the tail (step {at}): {commands}"]
         return dataclasses.replace(chosen, reasons=reasons, commands=tuple(commands))
 
-    tail_plan._hwnpu_tail = True
+    tail_plan._bonsaiai_tail = True
     compiled.plan = tail_plan
 
 
@@ -96,7 +96,7 @@ class _Tail(Call):
 class Gemma4Tail(Gemma4):
     """``Gemma4`` whose prompt chunks run the shared layers on their last row alone."""
 
-    hwnpu_name = "Gemma4"  # the manifest's model: hwnpu's chat format for Gemma 4
+    bonsaiai_name = "Gemma4"  # the manifest's model: bonsaiai's chat format for Gemma 4
 
     @property
     def first_shared(self) -> int:

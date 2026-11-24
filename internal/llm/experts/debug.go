@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 )
 
-// DebugOpt reads the item moe.NAME of HWNPU_DEV (internal/dev): "time" prints what the experts took; "usage=FILE" adds the counts of the
+// DebugOpt reads the item moe.NAME of BONSAIAI_DEV (internal/dev): "time" prints what the experts took; "usage=FILE" adds the counts of the
 // experts each layer ran to FILE (Usage) when the experts close; "trace=FILE" writes every row's
 // experts in order (a line "LAYER ROWS E E E E" a row, for trying placements on, tools/moeusage);
 // "prefault=0" leaves their pages to the first runs, "prefault=wait" has every page in before the
@@ -23,13 +23,13 @@ func DebugOpt(name string) (string, bool) {
 	return devenv.Get("moe." + name)
 }
 
-// DebugTime is whether HWNPU_DEV asks for the experts' times (moe.time).
+// DebugTime is whether BONSAIAI_DEV asks for the experts' times (moe.time).
 func DebugTime() bool {
 	_, ok := DebugOpt("time")
 	return ok
 }
 
-// traceFile is HWNPU_DEV's moe.trace=FILE.
+// traceFile is BONSAIAI_DEV's moe.trace=FILE.
 type traceFile struct {
 	f *os.File
 	w *bufio.Writer

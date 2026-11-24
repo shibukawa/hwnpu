@@ -3,19 +3,19 @@
 Qwen2.5-Coder-7B is 30 GB in float32 and the 14B 59 GB, more than a 16 GB Mac holds. This builds
 transformers' own modules (Qwen2DecoderLayer, Qwen2RotaryEmbedding, Qwen2RMSNorm) one layer at a
 time, its weights read from the safetensors checkpoint in float32 (about 0.9 GB for a 7B layer),
-runs the text through it and drops it. It writes what ref_logits.py writes, for hwnpu-dev check
-and hwnpu-dev generate -score:
+runs the text through it and drops it. It writes what ref_logits.py writes, for bonsaiai-dev check
+and bonsaiai-dev generate -score:
 
     OUT_PREFIX.ids.bin     int32 (seq)                       token ids
     OUT_PREFIX.hidden.bin  float32 (layers + 1, seq, hidden) token embeddings, then each layer's output
     OUT_PREFIX.logits.bin  float32 (seq, vocab) logits
     OUT_PREFIX.json        model_type, seq, sizes, text, dtype, output
 
-    PY=~/.cache/hwnpu/dev/ref-venv/bin/python
+    PY=~/.cache/bonsaiai/dev/ref-venv/bin/python
     $PY tools/ref/ref_qwen2.py MODEL_DIR OUT_PREFIX [--seq 64] [--text "..."] [--chat]
 
 --chat puts the text in a user turn of the model's chat template (the system turn and the
-assistant's start included), as hwnpu-chat would give it.
+assistant's start included), as bonsaiai-chat would give it.
 
 --stats OUT.safetensors --calib FILE... instead runs the files' texts (up to --calib-tokens
 each) through the model and writes the mean square of each linear layer's inputs by in-feature,
@@ -34,7 +34,7 @@ import torch
 from safetensors import safe_open
 
 TEXT = ("Write a Go function that returns the n-th Fibonacci number using iteration, and explain "
-        "its time complexity in one sentence. hwnpu は CPU 内蔵の NPU で動く Go のライブラリです。")
+        "its time complexity in one sentence. bonsaiai は CPU 内蔵の NPU で動く Go のライブラリです。")
 
 
 class Checkpoint:

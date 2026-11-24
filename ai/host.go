@@ -9,23 +9,23 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
-// What hwnpud's engine (internal/aihost) does with the app a client sends: it makes the app
+// What bonsaiaid's engine (internal/aihost) does with the app a client sends: it makes the app
 // again (AppFromSpec), whose models run in the engine's process, plans and runs it, opens it and
-// gets its uses by their keys. These are for hwnpud; an app uses App, Plan and Runtime.
+// gets its uses by their keys. These are for bonsaiaid; an app uses App, Plan and Runtime.
 
 // AppFromSpec is the app a client sent (App.Spec), its roles those this process registered
-// (airole.Lookup), its models run here whatever HWNPU_DAEMON says. The client's model policy
+// (airole.Lookup), its models run here whatever BONSAIAI_DAEMON says. The client's model policy
 // narrows this process's (chat.AllowedAlso).
 func AppFromSpec(s AppSpec) (*App, error) {
 	a := &App{Name: s.Name, Store: s.Store.store(), memory: s.Memory, turns: s.Turns, local: true, allowlist: s.Allowlist}
 	for _, u := range s.Uses {
 		role := airole.Lookup(u.Role)
 		if role == nil {
-			return nil, fmt.Errorf("ai: hwnpud knows no role %q (%s's use %s): hwnpud is of an older build than the app (go install ./cmd/hwnpud, then hwnpu service restart)", u.Role, s.Name, u.Name)
+			return nil, fmt.Errorf("ai: bonsaiaid knows no role %q (%s's use %s): bonsaiaid is of an older build than the app (go install ./cmd/bonsaiaid, then bonsaiai service restart)", u.Role, s.Name, u.Name)
 		}
 		r := requirement{name: u.Name, role: role, as: u.As}
 		for _, t := range u.Tiers {
@@ -36,7 +36,7 @@ func AppFromSpec(s AppSpec) (*App, error) {
 	return a, nil
 }
 
-// allowed is nil when the policy, narrowed by the client's of an app hwnpud made, allows m.
+// allowed is nil when the policy, narrowed by the client's of an app bonsaiaid made, allows m.
 func (a *App) allowed(m chat.Model) error {
 	if strings.TrimSpace(a.allowlist) == "" {
 		return nil
@@ -44,12 +44,12 @@ func (a *App) allowed(m chat.Model) error {
 	return chat.AllowedAlso(m, a.allowlist)
 }
 
-// Spec is the plan as hwnpud sends it to its client.
+// Spec is the plan as bonsaiaid sends it to its client.
 func (p *Plan) Spec() PlanSpec {
 	return PlanSpec{Items: p.Items, Target: p.npu.Target, Machine: p.machine, Licenses: p.Licenses()}
 }
 
-// RunTo is Run with Quiet, the models' logs written to log as they come: hwnpud's run of a
+// RunTo is Run with Quiet, the models' logs written to log as they come: bonsaiaid's run of a
 // client's plan, whose client shows them.
 func (p *Plan) RunTo(ctx context.Context, log io.Writer, fn func(Progress)) error {
 	p.Quiet, p.logTo = true, log
@@ -98,7 +98,7 @@ func (rt *Runtime) LoadedKeys() []string {
 	return out
 }
 
-// sharing are the models hwnpud's Runtimes (of apps AppFromSpec made) hold, one copy of each: two
+// sharing are the models bonsaiaid's Runtimes (of apps AppFromSpec made) hold, one copy of each: two
 // clients that use the same model, loaded alike, load it once. Its calls take turns as its
 // type makes them (each runs one request at a time); it is unloaded when the last Runtime
 // releases it.
@@ -233,7 +233,7 @@ func (r *relay) Terminal() bool {
 	return false
 }
 
-// HeldModel is a model hwnpud's Runtimes hold (Held).
+// HeldModel is a model bonsaiaid's Runtimes hold (Held).
 type HeldModel struct {
 	Role, Model string
 	// Uses are the Runtimes that hold it; Paths the files it was loaded from.
@@ -241,7 +241,7 @@ type HeldModel struct {
 	Paths []string
 }
 
-// Held are the models hwnpud's Runtimes hold now, one copy each: for its status, and so that
+// Held are the models bonsaiaid's Runtimes hold now, one copy each: for its status, and so that
 // what removes the cache's units leaves the files of the models loaded.
 func Held() []HeldModel {
 	sharing.Lock()

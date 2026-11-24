@@ -4,20 +4,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
-	"github.com/shibukawa/hwnpu/internal/music"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	"github.com/shibukawa/hwnpu/internal/sfx"
-	"github.com/shibukawa/hwnpu/internal/speech"
-	"github.com/shibukawa/hwnpu/internal/supertonic"
-	"github.com/shibukawa/hwnpu/internal/transcribe"
-	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
-	"github.com/shibukawa/hwnpu/internal/vision/segment"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein"
+	"github.com/shibukawa/bonsaiai/internal/music"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/sfx"
+	"github.com/shibukawa/bonsaiai/internal/speech"
+	"github.com/shibukawa/bonsaiai/internal/supertonic"
+	"github.com/shibukawa/bonsaiai/internal/transcribe"
+	"github.com/shibukawa/bonsaiai/internal/vision/ironcnn"
+	"github.com/shibukawa/bonsaiai/internal/vision/segment"
 )
 
-// The scripts of tools/amd whose exports hwnpu reads, by kind: a model of the kind with an
+// The scripts of tools/amd whose exports bonsaiai reads, by kind: a model of the kind with an
 // export for AMD's NPU must have a recipe of one.
 var amdScripts = map[chat.Kind][]string{
 	chat.KindTranscribe: {transcribe.AMDTool},
@@ -38,7 +38,7 @@ var amdScripts = map[chat.Kind][]string{
 var allVars = map[string][]string{recipe.In: {"/in"}, recipe.Sizes: {"1024"}, recipe.Size: {"640x640"},
 	recipe.Outputs: {"a"}, recipe.Text: {"fp16"}, recipe.DiT: {"dit.safetensors"}}
 
-// Every model of the definitions that hwnpu makes an export for AMD's NPU of has a recipe of a
+// Every model of the definitions that bonsaiai makes an export for AMD's NPU of has a recipe of a
 // script its code reads, and the recipe's placeholders are values its code gives.
 func TestAMDRecipes(t *testing.T) {
 	for _, m := range chat.Catalog {

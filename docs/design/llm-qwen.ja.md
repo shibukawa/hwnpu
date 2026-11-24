@@ -18,10 +18,10 @@ Qwen3.5 の MTP の層) は [llm-decoding.md](llm-decoding.ja.md)。KV キャッ
 | Qwen3.5-4B (`qwen3.5:4b`) | `qwen35` | lut8 | `--q4` | 24 | 4.2 GB | 大きさのわりにコードに最も強い |
 | Qwen2.5-Coder-7B-Instruct | `qwen2` | lut4 + GPTQ の codes (`codes: faace07a`) | 書き出しなし | 16、`not_on: [M1]` | 4.4 GB | 考えない、文脈 32768 |
 
-- Mac の `hwnpu-chat` は Core AI だけで動く。Core AI ではどのモデルも全部の部品が Neural Engine に
+- Mac の `bonsaiai-chat` は Core AI だけで動く。Core AI ではどのモデルも全部の部品が Neural Engine に
   載る。生成のプログラムとプロンプトを読むプログラムは 1 つの `.aimodel` の 2 つの関数なので、重みは
   1 回分だけ持つ ([Core AI](apple-coreai.ja.md))
-- Intel: IR は作れる (`hwnpu-convert -backend intel`。アーキテクチャの lut8 は int8 になる)。NPU で
+- Intel: IR は作れる (`bonsaiai-convert -backend intel`。アーキテクチャの lut8 は int8 になる)。NPU で
   は測っていない
 - 事実: ここの小さな Qwen はどれも日本語の事実 (富士山の標高、『こころ』の作者、日本一長い川) を誤る。
   HF の fp32 でも同じように誤るので、移植や量子化ではなくモデルの限界。MODEL.md のチャットのおすすめ
@@ -55,7 +55,7 @@ SwiGLU。出力の行列は埋め込みと共有 (`tie_word_embeddings`。チェ
   いる途中から流す (Qwen3.5 と同じ)。jinja2 の 9 会話と一字一句一致 (`template_golden.py
   --text-content`: 部品の列の content を先に文字列にする。vLLM も同じ)
 - 照合: fp64 の正解と 1e-4 (共有あり・なし)、1 層ずつ、キャッシュつき、分けた形。実物の重み
-  (`hwnpu-dev check`、32 トークン):
+  (`bonsaiai-dev check`、32 トークン):
 
   | | fp32 / fp16 | lut8 | lut6 |
   |---|---|---|---|
@@ -109,7 +109,7 @@ Qwen3 のもの。
   gate/up → down の順。表は先に重みつきの Lloyd 法で固定し、GPTQ は各重みの表の位置だけを選ぶ。down の
   H (18944²) は float32 で 1.4 GB。M1 で 7B 全体 77 分
 - codes は `palette.Codes` (`index.json`、`.idx`、`.tab`。`palette.CodesWriter`) に書く。
-  `hwnpu-chat --codes DIR` で変換に使う。codes のハッシュがプログラムの名前に入るので、変換済みのもの
+  `bonsaiai-chat --codes DIR` で変換に使う。codes のハッシュがプログラムの名前に入るので、変換済みのもの
   は取得元から取れる。変換するには `models/NAME/codes-HASH` か `--codes` が要る
 - **Neural Engine は列のブロックごとの表とスケールを黙って誤る** (Core AI、macOS 27.2、M1): どの列にも
   最初の列のブロックの表を使う。int4-g32 / g128、int8-g32 も誤る (コサイン 0.966〜0.984)。行ごとの
@@ -215,7 +215,7 @@ ANE の `silu` と `softplus` が長いプロンプトを壊していた (lut8 �
 | 2B | lut6 (`Config.Format`、hidden 2048) | lut8 との一致 260/283、perplexity 3.75 対 3.83、12 問の正解が同じ 10。1.32 GiB 対 1.78 |
 | 4B | lut8 | lut6 は KL 0.031〜0.135、26〜30 トークン中 21〜24。答えが崩れる |
 
-- 実物の重みと HF / PyTorch の fp32 (`hwnpu-dev check`): 0.8B の fp32 で各層 0.0002 以下、argmax 32/32、
+- 実物の重みと HF / PyTorch の fp32 (`bonsaiai-dev check`): 0.8B の fp32 で各層 0.0002 以下、argmax 32/32、
   KL 0.0000。lut8 は KL 0.0076。4B の 32 層全部 (層を 1 つずつ読む参照 `tools/ref/ref_qwen35_stream.py`。
   活性は最大 121 で fp16 はあふれない): fp16 KL 0.0000〜0.0001、lut8 0.0015〜0.0050
 - 2B の fp16 は作れない: 最後の層と出力層で 1.04 GiB になり、1 部分の上限を超える

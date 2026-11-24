@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 // FLUX.2 klein 4B: 4 Euler steps without guidance, from a prompt and up to four reference
@@ -42,7 +42,7 @@ func prepareKlein(e airole.PrepareEnv, edit bool) (f airole.Files, err error) {
 			if man.Device != "" {
 				dd := flux2klein.DeviceExport(dir)
 				if !llm.FetchExport(chat.WithModel(e.Ctx, base), dd, dd+".done") {
-					return f, fmt.Errorf("ai/imagegen: %s draws its edits of a reference of the picture's size with %s beside it, which is missing (hwnpu-image convert makes both)", dir, filepath.Base(dd))
+					return f, fmt.Errorf("ai/imagegen: %s draws its edits of a reference of the picture's size with %s beside it, which is missing (bonsaiai-image convert makes both)", dir, filepath.Base(dd))
 				}
 				f.Set("device", dd)
 			}
@@ -72,7 +72,7 @@ func prepareKlein(e airole.PrepareEnv, edit bool) (f airole.Files, err error) {
 		f.Set("export", dir)
 		return f, nil
 	}
-	// every size and edit of models.yaml npu.apple in one export (the weights once), as hwnpu-image's
+	// every size and edit of models.yaml npu.apple in one export (the weights once), as bonsaiai-image's
 	spec := m.NPU["apple"]
 	o, err := flux2klein.AppleOptions(m, flux2klein.NPUGeneration(vendor), as[0].Width, as[0].Height,
 		setting(m, SettingTextFormat, spec.Text), setting(m, SettingDitFormat, spec.Dit))

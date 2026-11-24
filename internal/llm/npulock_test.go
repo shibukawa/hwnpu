@@ -80,14 +80,14 @@ func repeat(v int64, n int) []int64 {
 
 func TestLockBase(t *testing.T) {
 	for content, want := range map[string]int64{
-		"":                                  0,
-		"process 12 (hwnpu-chat)\n":         0,
-		"process 12 (hwnpu-chat)\nbase 0\n": 0,
-		"process 12 (hwnpu-image)\nbase 629145600\n": 629145600,
-		"process 12 (hwnpu-image)\nbase -5\n":        0,
-		"process 12 (hwnpu-image)\nbase x\n":         0,
+		"":                                     0,
+		"process 12 (bonsaiai-chat)\n":         0,
+		"process 12 (bonsaiai-chat)\nbase 0\n": 0,
+		"process 12 (bonsaiai-image)\nbase 629145600\n": 629145600,
+		"process 12 (bonsaiai-image)\nbase -5\n":        0,
+		"process 12 (bonsaiai-image)\nbase x\n":         0,
 		// what a shorter content leaves of a longer one before it
-		"process 7 (hwnpu-chat)\nbase 12\n145600\n": 12,
+		"process 7 (bonsaiai-chat)\nbase 12\n145600\n": 12,
 	} {
 		if got := lockBase([]byte(content)); got != want {
 			t.Errorf("%q: base %d, want %d", content, got, want)

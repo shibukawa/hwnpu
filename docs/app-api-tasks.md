@@ -27,7 +27,7 @@
 | **B1** | `ai`: 登録、計画、準備、置き場の目録、取得元 | どこでも | A3 | 大 | 一部 (登録、計画、ダウンロードとコンパイルの 2 段、目録、機械のメモリごとの構成、ライセンスの同意。取得元と層は `modelstore`。取得と変換の分割、バイト数の進み具合は残り) |
 | **B2** | `ai`: 実行 (`Open`、文字起こし、翻訳、チャット、読み上げ、音量の VAD) | どこでも、確認は Mac | B1 | 中 | v0 済み (aix1 と Mac (M3) で確認。Intel での確認は残り) |
 | **B0** | 流れの型 (`Chunk`、`Stream`) と塊をまとめる道具、3 つのつなぎ方 (`ai/flow`: 一括、`Async` / `Latest` / `Hold`、`Metronome` / `Pace` / `Live`) | どこでも | — | 小 | 済み |
-| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `hwnpu-audio transcribe` / `tts` → `hwnpu-chat` → `hwnpu-image` の順 | どこでも | B2、J1、J2 | 大 | 済み (土台: カタログ、アプリの作るモデル (`ai.Definition`)、`cli.Ensure` と `ai.CompileOnLoad`、`ai.LoadSettings`、計測の値 (app-api.md 2.3 節)。`hwnpu-audio`、`hwnpu-chat`、`hwnpu-image` の全部のサブコマンドが `ai` の上で動き、aix1 で旧版と同じ出力を確認。Mac と Intel では `ai` を通して未確認) |
+| **B3** | コマンドを `ai` の上に載せ替える (コマンドはライブラリのデモにする): `bonsaiai-audio transcribe` / `tts` → `bonsaiai-chat` → `bonsaiai-image` の順 | どこでも | B2、J1、J2 | 大 | 済み (土台: カタログ、アプリの作るモデル (`ai.Definition`)、`cli.Ensure` と `ai.CompileOnLoad`、`ai.LoadSettings`、計測の値 (app-api.md 2.3 節)。`bonsaiai-audio`、`bonsaiai-chat`、`bonsaiai-image` の全部のサブコマンドが `ai` の上で動き、aix1 で旧版と同じ出力を確認。Mac と Intel では `ai` を通して未確認) |
 | B7 | `ai/cli`: アプリに足すサブコマンド (`models`、`status`)。コマンドラインのライブラリに依存しない関数と、kong のアダプタ `ai/cli/konghelper` | どこでも | B1 | 小 | 済み |
 | B9 | ネットワークと呼び出しの宣言 (`flow` の節、`App.From(...).To(...)` / `Run`、`ai.NewCall(...).Then(...)`、プログラムの節 (`Each`、`Route`、`Both`、`With`)、動いている間の設定の変更) | どこでも | B0 | 中 | v0 済み (入力が 3 つ以上の節、モデルを下ろすタイミング、辺ごとの計測は残り。developer-guide.ja.md の D21) |
 | **B8** | 常駐の管理: メモリの予算、使っていないモデルの追い出し、NPU への投入の順番、デバイスの共有 ([architecture](design/architecture.md)) | どこでも、確認は Mac と aix1 | B2 | 大 | 未着手 |
@@ -37,13 +37,13 @@
 | **D3** | 読み上げを実時間より速くする (今は lut8 で実時間の約 0.5 倍) | Mac | — | 中 | 未着手 |
 | C1 | `internal/ws`: WebSocket (RFC 6455) の最小限の実装 | どこでも | — | 小 | 未着手 |
 | C2 | `ai/server`: 共通の部分 (互換の口をまとめる Handler、トークン、許すディレクトリ) と独自のストリーム | どこでも | B2、C1 | 中 | 未着手 (互換のパッケージは単独の `http.Handler` として先にできた: `ai/server/openai`、`ai/server/systemone`) |
-| C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 一部 (3 つを `text.Chatter` と `text.Embedder` の上に移し、`response_format` を足した。`hwnpu-chat serve` が使う。音声の 3 つと `Mount` は残り) |
+| C3 | `ai/server/openai`: 今の 3 つを移し、音声の 3 つを足す | どこでも | C2 | 中 | 一部 (3 つを `text.Chatter` と `text.Embedder` の上に移し、`response_format` を足した。`bonsaiai-chat serve` が使う。音声の 3 つと `Mount` は残り) |
 | C4 | `ai/server/googlecloud`: Speech-to-Text、Text-to-Speech、Translation v2、Vision の REST | どこでも | C2 | 中 | 未着手 |
 | **D1** | `samples/interpreter`: 同時通訳のサンプル | Mac | C2 | 中 | 一部 (マイク (hwcamera) か録音を読んで、訳した音声を書く形は済み、aix1 と Mac で確認。訳した音声のスピーカーでの再生 (oto) と速さの調整 (`--speed`) も済み。ブラウザのマイクと WebSocket は残り) |
 | D2 | 測定: 日本語の読み上げ、3 つのモデルの同居、1 発話の遅れ | Mac (M3、M1) | B2 | 小 | 未着手 |
-| E1 | ビルドタグと `hwnpu.Target()`、`hwnpu.Built()` | どこでも | — | 小 | 未着手 |
-| E2 | `hwnpu_noconvert`: 変換をタグで外せるようにする | どこでも | B1、E1 | 大 | 未着手 |
-| E3 | バンドルの形式、`hwnpu-dev bundle`、実行時の照合 | どこでも、確認は Mac | A1、B1、E1 | 中 | 未着手 |
+| E1 | ビルドタグと `bonsaiai.Target()`、`bonsaiai.Built()` | どこでも | — | 小 | 未着手 |
+| E2 | `bonsaiai_noconvert`: 変換をタグで外せるようにする | どこでも | B1、E1 | 大 | 未着手 |
+| E3 | バンドルの形式、`bonsaiai-dev bundle`、実行時の照合 | どこでも、確認は Mac | A1、B1、E1 | 中 | 未着手 |
 | F1 | `internal/onnx` に LSTM と If | どこでも | — | 中 | 未着手 |
 | F2 | Silero VAD を Neural Engine で | Mac | F1、B2 | 小 | 未着手 |
 | G1 | Whisper を AMD の NPU で | aix1 | — | 大 | 済み ([docs/design/audio-models.md](design/audio-models.md)) |
@@ -53,11 +53,11 @@
 | **I1** | 決まった形で答える生成 (JSON Schema、`response_format`) | どこでも、確認は Mac | — | 中 | 一部 (照らすだけ: `text.Format` が system で伝え、答えの JSON をスキーマと照らして `FormatError`。`/v1/chat/completions` の `response_format`。文法でデコードを縛るのは残り) |
 | I2 | 仕事の API (`/v1/jobs`、`/v1/capabilities`、`/v1/tools`) | どこでも | C2 | 中 | 未着手 |
 | **I3** | A2A の口 (Agent Card、JSON-RPC、SSE、push notification) | どこでも | I2 | 中 | 未着手 |
-| I5 | `hwnpu-mcp`: MCP しか話さない頭脳のための口 | どこでも | I2 | 小 | 未着手 |
+| I5 | `bonsaiai-mcp`: MCP しか話さない頭脳のための口 | どこでも | I2 | 小 | 未着手 |
 | I4 | 仕事の種類ごとの時間と電力量の目安 | Mac、aix1 | I2 | 小 | 未着手 |
-| **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 一部 (深度 (多視点、空、確信度、法線、点も)、顔、頭の位置、物体、姿勢、切り抜き、OCR、ラベルと埋め込みは済み、aix1 で hwnpu-image の旧版と同じ出力を確認 (app-api.md 2.4 節)。新しい役割の Mac と Intel での確認は残り) |
-| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein。Chroma1 も入れたが、のちに外した) | どこでも、確認は aix1 と Mac | B2 | 大 | 済み (FLUX.2 klein の文からの生成と参照からの編集、FLUX.3 klein、Anima、`GenerateAll` でまとめて描く。`hwnpu-image generate` はこの上で動き、aix1 で旧版とバイトまで同じ絵。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Mac と Intel の Anima、FLUX.3 klein は `ai` を通しては未確認) |
-| J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 一部 (`Music`、`Effect`、`Pitch`、`Notes`、`hwnpu-audio` が上で動く。音楽は 1 秒ごとの流れまで。メトロノームの拍に合わせる形と、鳴らしながら曲調を変える節はまだ) |
+| **J1** | `ai/vision`: 深度 (DA3、MoGe-2)、顔 (YuNet) から。続いて物体、姿勢、切り抜き、OCR、ラベル | どこでも、確認は aix1 と Mac | B2 | 中 | 一部 (深度 (多視点、空、確信度、法線、点も)、顔、頭の位置、物体、姿勢、切り抜き、OCR、ラベルと埋め込みは済み、aix1 で bonsaiai-image の旧版と同じ出力を確認 (app-api.md 2.4 節)。新しい役割の Mac と Intel での確認は残り) |
+| **J2** | `ai/imagegen`: 画像の生成 (FLUX.2 klein から。続いて Anima、FLUX.3 klein。Chroma1 も入れたが、のちに外した) | どこでも、確認は aix1 と Mac | B2 | 大 | 済み (FLUX.2 klein の文からの生成と参照からの編集、FLUX.3 klein、Anima、`GenerateAll` でまとめて描く。`bonsaiai-image generate` はこの上で動き、aix1 で旧版とバイトまで同じ絵。Mac の編集は別の書き出しの編集のプログラム (`imagegen.Edit`)。Mac と Intel の Anima、FLUX.3 klein は `ai` を通しては未確認) |
+| J3 | `ai/sound`: 音楽 (メトロノームに合わせて塊を出す)、効果音、音高、採譜 | どこでも | B2 | 中 | 一部 (`Music`、`Effect`、`Pitch`、`Notes`、`bonsaiai-audio` が上で動く。音楽は 1 秒ごとの流れまで。メトロノームの拍に合わせる形と、鳴らしながら曲調を変える節はまだ) |
 | **J4** | `samples/parallax` の擬似立体: 絵 (Anima のアニメの絵。今はコマンドで作ったファイル) → 深度 → カメラ (hwcamera、または絵のファイル) の顔の位置 → Ebitengine の Kage のシェーダーで描く | aix1、Mac | J1 | 中 | 一部 (深度、頭の追跡、シェーダーは済み。Mac で実物のカメラと窓 (Metal) も確認。絵の生成をライブラリから呼ぶのは残り) |
 | **J4b** | `samples/layers` のレイヤー分割: 絵 → 深度 → 手前の層を切り出す → 塗って FLUX.2 klein に裏を描かせる → その絵の深度 → 次の層、を繰り返して PSD に書く | aix1、Mac | J1、J2 | 中 | 済み (aix1 と Mac で確認。層ごとの深度も持ち、擬似立体のサンプルは窓の横で層に分けて、途中経過と進み具合を窓に出す。分ける処理は `samples/internal/layering`) |
 
@@ -76,7 +76,7 @@ F1 ─→ F2 (B2 も要る)、G3
 G1、G2: 単独で進められる (AMD で同時通訳を動かすのに要る)
 ```
 
-J1 と J2 は、`cmd/hwnpu-image` の中にある準備の手順 (`amdExport`、`openImageDevice` など) を `internal` に移すところから始める。B3 の `hwnpu-image` の載せ替えと同じ作業になる。
+J1 と J2 は、`cmd/bonsaiai-image` の中にある準備の手順 (`amdExport`、`openImageDevice` など) を `internal` に移すところから始める。B3 の `bonsaiai-image` の載せ替えと同じ作業になる。
 
 B0 (流れの型) は単独で始められ、B2 の流れの形、B5、B6、C2 がこれを使う。B5 と B6 は B2 のあと。D3 (読み上げの速さ) は単独で進められる。
 
@@ -88,7 +88,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### A1. Core ML のパッケージを決定的に書く
 
-- 問題: 同じ入力で変換し直しても、パッケージのバイトが毎回変わる。コンパイルのキャッシュのキーは中身のハッシュ (`internal/backend/coreml/graph_darwin.go` の `compiledModel`、`cache.TreeDigest` と OS の版) なので、hwnpu の `.mlmodelc` のキャッシュも ANE 自身のキャッシュも外れる。Gemma 4 は起動に 100 秒、SANA の書き出しの作り直しでは 18 分かかった
+- 問題: 同じ入力で変換し直しても、パッケージのバイトが毎回変わる。コンパイルのキャッシュのキーは中身のハッシュ (`internal/backend/coreml/graph_darwin.go` の `compiledModel`、`cache.TreeDigest` と OS の版) なので、BonsaiAI の `.mlmodelc` のキャッシュも ANE 自身のキャッシュも外れる。Gemma 4 は起動に 100 秒、SANA の書き出しの作り直しでは 18 分かかった
 - 原因は 2 つ (`internal/mlpackage/package.go` の `write`)
   - `Manifest.json` の 2 つの UUID が乱数 (`uuid()` は `rand.Read`)。handoff-ane-cache.md 4 節に記録がある
   - `proto.Marshal` を決定的なモードなしで呼んでいる。Go の protobuf は map のフィールドを順不同で書く。MIL の属性や関数は map なので、`model.mlmodel` も揃わないおそれがある
@@ -99,7 +99,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
   - `json.MarshalIndent` の map は鍵の順に並ぶので、そのままでよい
 - 合格の条件
   - 小さなモデル (LFM3 の小さい構成、YuNet の ONNX から、Anima の VAE の段の 1 つ) を同じ入力で 2 回変換し、`cache.TreeDigest` が一致するテスト (`internal/mlpackage`、`internal/onnx`、`internal/imagegen/milpart`)
-  - Mac: 1 つのモデルを変換し直し、2 回目の読み込みで hwnpu のキャッシュに当たること (`HWNPU_DEV=coreml.trace=1`)
+  - Mac: 1 つのモデルを変換し直し、2 回目の読み込みで BonsaiAI のキャッシュに当たること (`BONSAIAI_DEV=coreml.trace=1`)
 - 注意: 直したあとの最初の変換は、前の (乱数入りの) 書き出しと別物になる。利用者の機械では一度だけコンパイルし直すことになる。[docs/design/README.md](design/README.md) に書く
 
 ### A2. OpenVINO IR と AMD の書き出しが決定的かを確かめる
@@ -120,7 +120,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 ### A4. models.yaml: 全ファイルの sha256、ライセンス
 
 - sha256 が付いているのは、今は 43 モデルのうち 15 だけ (Qwen3-1.7B、Sana と SANA 1.5、Anima の 3 つ、MOSS-SoundEffect、ONNX のモデル 7 つ)。LFM3、Gemma 4、Qwen3.5、PLaMo 3、Whisper、DA3、MoGe-2、SigLIP 2 などには付いていない。チェックポイントの全ファイルに付ける
-- 固定する道具 `hwnpu-dev pin NAME`: リポジトリのファイルを落とすか、HF の API の LFS の oid を読み、`sha256:` と `from: ...@REVISION` を models.yaml に書く
+- 固定する道具 `bonsaiai-dev pin NAME`: リポジトリのファイルを落とすか、HF の API の LFS の oid を読み、`sha256:` と `from: ...@REVISION` を models.yaml に書く
 - ライセンスの項目を足す (`chat.Model` と docs/model-table.md)
   - `license`: SPDX の名前か、`gemma`、`apple-amlr` などの独自の名前
   - `redistribute`: `yes`、`no`、`terms` (規約に従えば可)
@@ -155,11 +155,11 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### B3. CLI の載せ替え
 
-- `hwnpu-audio transcribe`、`tts`、`hwnpu-chat -m translate` を `ai` の上に載せる。CLI は計画と準備を自動で行ってから動かす (今と同じ動き)
+- `bonsaiai-audio transcribe`、`tts`、`bonsaiai-chat -m translate` を `ai` の上に載せる。CLI は計画と準備を自動で行ってから動かす (今と同じ動き)
 - 合格の条件: 出力が今と同じ (同じ種で、読み上げのバイトが一致する)
 
 - 載せ替えの前に、コマンドにだけある設定をライブラリの口に出す: 重みの形式 (`--format`)、`--cpu` (CPU のインタープリター)、手で変換したプログラムや書き出しのディレクトリ、窓ごとの時間、`--cache`
-- `cmd/hwnpu-audio`、`cmd/hwnpu-image`、`cmd/hwnpu-chat` の `backend.go` は同じ処理 (`HWNPU_BACKEND`、Mac では Core AI) を 3 回書いている。`internal/airole` の `Here` に寄せる
+- `cmd/bonsaiai-audio`、`cmd/bonsaiai-image`、`cmd/bonsaiai-chat` の `backend.go` は同じ処理 (`BONSAIAI_BACKEND`、Mac では Core AI) を 3 回書いている。`internal/airole` の `Here` に寄せる
 
 ### B8. 常駐の管理
 
@@ -171,13 +171,13 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### B4. アプリのための Neural Engine のロックの方針
 
-- 今: Core ML のときは、プロセスが生きている間、ファイルのロック (`internal/llm/npulock.go`。外す道はない) を持ち続ける。同時通訳のアプリを開いたままにすると、ほかの hwnpu のコマンドやアプリはずっと待つ
+- 今: Core ML のときは、プロセスが生きている間、ファイルのロック (`internal/llm/npulock.go`。外す道はない) を持ち続ける。同時通訳のアプリを開いたままにすると、ほかの BonsaiAI のコマンドやアプリはずっと待つ
 - ロックの理由 (`npulock.go` のコメント): 2 つのプロセスが同時に Neural Engine を使うと、M1 の Mac が固まった。予測が返らず、Ctrl+C でも kill -9 でもプロセスが終わらず、次のコマンドもその後ろで止まった。ロックを外すのは危ない
 - 決めること (案)
   - ロックはそのまま、プロセスに 1 つとする。その代わり、常駐するアプリには「NPU を手放す」API (`rt.Suspend()` でモデルを閉じてロックを放し、`rt.Resume()` で取り直す) を用意する
   - ほかのプロセスが待っていることをアプリに知らせる。ロックのファイルに待ち手の印を書く
   - 同時に使って固まるのが M1 だけか、M2 と M3 でも起きるかを、壊れてもよい状態で確かめるかどうか (固まると再起動が要る)
-- 合格の条件: 方針が決まり、`ai` の文書に書いてある。常駐するサンプル (D1) が、ほかの hwnpu のコマンドの実行をずっと止めないこと
+- 合格の条件: 方針が決まり、`ai` の文書に書いてある。常駐するサンプル (D1) が、ほかの BonsaiAI のコマンドの実行をずっと止めないこと
 
 ### B5. 文字起こしを流しながら
 
@@ -220,7 +220,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### C3. `ai/server/openai`
 
-- 今の `internal/chat/server.go` の 3 つ (`/v1/models`、`/v1/chat/completions`、`/v1/embeddings`) を移し、`hwnpu-chat serve` はこれを使う
+- 今の `internal/chat/server.go` の 3 つ (`/v1/models`、`/v1/chat/completions`、`/v1/embeddings`) を移し、`bonsaiai-chat serve` はこれを使う
 - 足すもの: `POST /v1/audio/transcriptions` (`response_format` の json、text、verbose_json、srt、vtt)、`/v1/audio/translations`、`/v1/audio/speech` (`response_format` の wav と pcm。mp3 などは符号器が要るので断る)
 - モデルの名前: `whisper-1` → `transcribe`、`tts-1` と `gpt-4o-mini-tts` → `speech`。それ以外は models.yaml の名前か用途
 - 合格の条件: OpenAI の公式の SDK (Python か JS) で `base_url` だけを変えて、文字起こしと読み上げが呼べる
@@ -251,23 +251,23 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 ### E1. ビルドタグ
 
-- [app-api.md](app-api.md) の 7 節。`backends.go` と `backends_darwin.go` を、バックエンドごとのファイルに分ける。例: `backend_coreml.go` は `//go:build darwin && (hwnpu_apple || !(hwnpu_amd || hwnpu_intel))`
-- `hwnpu_apple` を darwin 以外で付けたら、コンパイルを失敗させる
-- `hwnpu.Target()` (`apple`、`amd-npu1`、`amd-npu2`、`intel`、`""`) と `hwnpu.Built()`
-- 合格の条件: 次の組み合わせで `go build ./...` と `go vet` が通る (GitHub のホストランナーで回せる)。darwin/arm64 の (なし)、`hwnpu_apple`。linux/amd64 の (なし)、`hwnpu_amd`、`hwnpu_intel`。windows/amd64 の (なし)、`hwnpu_amd,hwnpu_intel`
+- [app-api.md](app-api.md) の 7 節。`backends.go` と `backends_darwin.go` を、バックエンドごとのファイルに分ける。例: `backend_coreml.go` は `//go:build darwin && (bonsaiai_apple || !(bonsaiai_amd || bonsaiai_intel))`
+- `bonsaiai_apple` を darwin 以外で付けたら、コンパイルを失敗させる
+- `bonsaiai.Target()` (`apple`、`amd-npu1`、`amd-npu2`、`intel`、`""`) と `bonsaiai.Built()`
+- 合格の条件: 次の組み合わせで `go build ./...` と `go vet` が通る (GitHub のホストランナーで回せる)。darwin/arm64 の (なし)、`bonsaiai_apple`。linux/amd64 の (なし)、`bonsaiai_amd`、`bonsaiai_intel`。windows/amd64 の (なし)、`bonsaiai_amd,bonsaiai_intel`
 
-### E2. `hwnpu_noconvert`
+### E2. `bonsaiai_noconvert`
 
 - 変換の処理 (`internal/llm` の変換、`internal/onnx` の書き換え、`internal/mlpackage` と `internal/ovir` の書き出し、IRON の書き出しの起動) を、タグの付いたファイルに分ける。タグがあるときは `ErrNoConvert` を返す代わりのファイルを置く
-- 合格の条件: `hwnpu_apple,hwnpu_noconvert` のバイナリでバンドルから文字起こしが動く。`go version -m` と `go tool nm` で、変換のパッケージが入っていないこと。バイナリの大きさを比べて書く
+- 合格の条件: `bonsaiai_apple,bonsaiai_noconvert` のバイナリでバンドルから文字起こしが動く。`go version -m` と `go tool nm` で、変換のパッケージが入っていないこと。バイナリの大きさを比べて書く
 
 ### E3. バンドル
 
-- [app-api.md](app-api.md) の 6 節。目録 `hwnpu-bundle.json`、`hwnpu-dev bundle -target T -use ... -memory 8,16 -o DIR`、`ai.Open` の照合 (`ErrBundleTarget`)
+- [app-api.md](app-api.md) の 6 節。目録 `bonsaiai-bundle.json`、`bonsaiai-dev bundle -target T -use ... -memory 8,16 -o DIR`、`ai.Open` の照合 (`ErrBundleTarget`)
 - 中身の並びは prebuilt.md の 4 節と同じにする
 - `apple` で `.mlmodelc` を入れるのは Mac で作ったときだけ。ほかの機械で作るときは `.mlpackage`
 - 再配布できないライセンス (A4 の `redistribute: no`) は失敗にする (`-allow-license` で明示したときだけ通す)
-- 合格の条件: Linux で作った `apple` のバンドルを Mac にコピーし、`hwnpu_apple,hwnpu_noconvert` のサンプルが変換もダウンロードもせずに動く
+- 合格の条件: Linux で作った `apple` のバンドルを Mac にコピーし、`bonsaiai_apple,bonsaiai_noconvert` のサンプルが変換もダウンロードもせずに動く
 
 ## 7. F: Silero VAD
 
@@ -280,7 +280,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 ### F2. Silero VAD を Neural Engine で
 
 - 32 ms ごとに NPU を呼ぶと、呼び出しのコストが勝つ。0.5 秒分 (16 ステップ) を 1 つのプログラムに展開し、LSTM の状態を入出力にする
-- 合格の条件: `all on the NPU`。音量の VAD と、録音での区切りの違いを比べる。電力を CPU の実行器と比べる (`hwnpu-dev powerbench`)。NPU が負けるなら、AMD の YuNet と同じく CPU を既定にする判断を書く
+- 合格の条件: `all on the NPU`。音量の VAD と、録音での区切りの違いを比べる。電力を CPU の実行器と比べる (`bonsaiai-dev powerbench`)。NPU が負けるなら、AMD の YuNet と同じく CPU を既定にする判断を書く
 
 ## 8. G: AMD
 
@@ -323,12 +323,12 @@ AMD では翻訳 (PLaMo 3 Translate) は NPU で動く。しかし文字起こ�
 - `input-required`: 同意の要るモデルのサインイン (デバイスフローの URL とコードを渡す)、ライセンスへの同意
 - 合格の条件: 公式の Python の SDK (`a2a-sdk`) のクライアントから、Agent Card を読み、書き起こしの仕事を送り、SSE で進み具合を受け、成果物の文字とファイルを取れる。途中で取り消せる。Google ADK の `RemoteA2aAgent` から呼べるかも確かめる
 
-### I5. `hwnpu-mcp`
+### I5. `bonsaiai-mcp`
 
 - MCP しか話さない頭脳 (Claude Code、エディタ) のための口
 - stdio の MCP サーバー。ツールは `capabilities`、`submit_job`、`get_job`、`wait_job` (最大 50 秒待つ)、`cancel_job`。結果のファイルは resource で返す
 - Go の MCP の実装は、依存を増やさない方針なら JSON-RPC を自分で書く (stdio なら小さい。I3 の JSON-RPC と共通にできる)
-- 合格の条件: Claude Code から `hwnpu-mcp` を登録し、「この録音を書き起こして要点を 3 つ」を頼むと、書き起こしは手元で、要点はクラウドのモデルが作る
+- 合格の条件: Claude Code から `bonsaiai-mcp` を登録し、「この録音を書き起こして要点を 3 つ」を頼むと、書き起こしは手元で、要点はクラウドのモデルが作る
 
 ### I4. 時間と電力量の目安
 

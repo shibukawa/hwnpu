@@ -11,19 +11,19 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/shibukawa/hwnpu"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // userFiles loads the built-in definitions with files of the given contents over them, the
-// user's own file and HWNPU_MODELS left out, and puts the built-in ones back after the test. It
+// user's own file and BONSAIAI_MODELS left out, and puts the built-in ones back after the test. It
 // returns the warnings.
 func userFiles(t *testing.T, contents ...string) (string, error) {
 	t.Helper()
 	return withSources(t, nil, contents...)
 }
 
-// withSources is userFiles with the sources of the URLs (HWNPU_MODEL_SOURCE, _1, ...) and no
+// withSources is userFiles with the sources of the URLs (BONSAIAI_MODEL_SOURCE, _1, ...) and no
 // others the environment has.
 func withSources(t *testing.T, urls []string, contents ...string) (string, error) {
 	t.Helper()
@@ -43,8 +43,8 @@ func withSources(t *testing.T, urls []string, contents ...string) (string, error
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	t.Setenv(ModelsEnv, "")
 	t.Setenv(PolicyEnv, "")
-	if os.Getenv("HWNPU_CACHE") == "" {
-		t.Setenv("HWNPU_CACHE", t.TempDir())
+	if os.Getenv("BONSAIAI_CACHE") == "" {
+		t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	}
 	oldSystem := SystemModelsFile
 	SystemModelsFile = func() string { return "" }
@@ -104,11 +104,11 @@ func TestBuiltinModels(t *testing.T) {
 	}
 }
 
-// TestBuiltinStrict checks that the built-in file has no key this hwnpu does not read: it is
+// TestBuiltinStrict checks that the built-in file has no key this bonsaiai does not read: it is
 // read strictly, so this is LoadModels's own check, done here to fail with the line.
 func TestBuiltinStrict(t *testing.T) {
 	var f tableFile
-	if err := yaml.UnmarshalWithOptions(hwnpu.ModelsYAML, &f, yaml.DisallowUnknownField()); err != nil {
+	if err := yaml.UnmarshalWithOptions(bonsaiai.ModelsYAML, &f, yaml.DisallowUnknownField()); err != nil {
 		t.Fatal(yaml.FormatError(err, false, true))
 	}
 	if f.Version != TableVersion {
@@ -225,7 +225,7 @@ func TestUserErrors(t *testing.T) {
 		{"no version", "models: {}\n", "no version"},
 		{"bad kind", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: video\n", "kind"},
 		{"not hf", "version: 1\nmodels:\n  x:\n    from: s3:bucket/x\n    kind: chat\n", "not hf:OWNER/NAME"},
-		{"search", "version: 1\nsearch: [mirror, hf]\n", "HWNPU_MODEL_SOURCE"},
+		{"search", "version: 1\nsearch: [mirror, hf]\n", "BONSAIAI_MODEL_SOURCE"},
 		{"sources", "version: 1\nsources:\n  m: {type: path, path: /tmp}\n", "not read any more"},
 		{"cache", "version: 1\ncache:\n  layers: []\n", "not read any more"},
 		{"target version", "version: 1\nmodels:\n  LFM3-1.7B:\n    targets: {coreai: {version: 0}}\n", "version of 1 or more"},
@@ -298,7 +298,7 @@ func TestWith(t *testing.T) {
 	}
 }
 
-// TestNewerVersion checks that a file of a newer version starts this hwnpu: its unknown keys are
+// TestNewerVersion checks that a file of a newer version starts this bonsaiai: its unknown keys are
 // warned about and skipped.
 func TestNewerVersion(t *testing.T) {
 	warn, err := userFiles(t, "version: 2\nmodels:\n  LFM3-1.7B:\n    memory: 3.1\n    future_field: 1\n")
@@ -317,7 +317,7 @@ func TestResolveForKind(t *testing.T) {
 	if m, err := ResolveFor("transcribe", KindTranscribe, nil); err != nil || m.Name != "whisper-large-v3-turbo" {
 		t.Errorf("transcribe: %+v, %v", m, err)
 	}
-	if _, err := ResolveFor("LFM3-1.7B", KindTranscribe, nil); err == nil || !strings.Contains(err.Error(), "hwnpu-chat") {
+	if _, err := ResolveFor("LFM3-1.7B", KindTranscribe, nil); err == nil || !strings.Contains(err.Error(), "bonsaiai-chat") {
 		t.Errorf("a chat model for transcription: %v", err)
 	}
 	m, err := ResolveFor("kotoba-tech/kotoba-whisper-v2.2@main", KindTranscribe, nil)
@@ -329,7 +329,7 @@ func TestResolveForKind(t *testing.T) {
 func TestUserModelsFileEnv(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	if got, want := UserModelsFile(), filepath.Join(dir, "hwnpu", "models.yaml"); got != want && os.Getenv("LOCALAPPDATA") == "" {
+	if got, want := UserModelsFile(), filepath.Join(dir, "bonsaiai", "models.yaml"); got != want && os.Getenv("LOCALAPPDATA") == "" {
 		t.Errorf("%s, want %s", got, want)
 	}
 }

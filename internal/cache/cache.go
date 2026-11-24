@@ -18,7 +18,7 @@ import (
 	"time"
 
 	// the .env files are read before any variable is (docs/cache-sharing-design.md 7.4)
-	_ "github.com/shibukawa/hwnpu/internal/envfile"
+	_ "github.com/shibukawa/bonsaiai/internal/envfile"
 )
 
 // Key hashes the parts with length prefixes, so ("ab","c") and ("a","bc") differ.
@@ -120,7 +120,7 @@ func CachedTreeDigest(dir, root string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	key := Key([]byte("hwnpu-treedigest-v1"), []byte(root), []byte(stamp.String()))
+	key := Key([]byte("bonsaiai-treedigest-v1"), []byte(root), []byte(stamp.String()))
 	if p, ok := Lookup(dir, key, digestSuffix); ok {
 		if b, err := os.ReadFile(p); err == nil && len(b) == sha256.Size {
 			return b, nil

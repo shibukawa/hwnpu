@@ -1,5 +1,5 @@
-"""Serve hwnpu's openvino backend (internal/backend/openvino): compile OpenVINO IR with OpenVINO
-and run it on buffers hwnpu shares with this process as files mapped in memory.
+"""Serve bonsaiai's openvino backend (internal/backend/openvino): compile OpenVINO IR with OpenVINO
+and run it on buffers bonsaiai shares with this process as files mapped in memory.
 
     python -I serve_ir.py [--device CPU] [--precision f32]
 
@@ -11,9 +11,9 @@ One JSON request per line on stdin, one JSON reply per line on stdout:
     {"op": "free", "id": N}               -> {}
 
 A failure replies {"error": TEXT}. An argument's name is the one Level Zero would report: a
-Parameter's name for an input, the name of the layer that makes a Result for an output, so that the IR hwnpu-dev convert writes binds by the same names as on
+Parameter's name for an input, the name of the layer that makes a Result for an output, so that the IR bonsaiai-dev convert writes binds by the same names as on
 Intel's NPU. The device is CPU (to check the IR on any machine) or NPU (OpenVINO's own NPU
-plugin, to compare against hwnpu's Level Zero backend on an Intel machine).
+plugin, to compare against bonsaiai's Level Zero backend on an Intel machine).
 """
 import argparse
 import json

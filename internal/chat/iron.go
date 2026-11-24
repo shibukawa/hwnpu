@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // ironSession is the sequence of a model IRON compiled for AMD's NPU (internal/llm/iron). The
@@ -47,7 +47,7 @@ func (s *ironSession) Q() int { return s.m.Manifest.Config.PrefillChunk }
 
 // Qs: the check of drafts' rows first when the export has it (iron_export_lm.py --verify), so
 // that a generation checks that many less one drafts a call (Engine.Draft); else the decode
-// step's 1. HWNPU_DEV=iron.drafts=0 leaves the check unused.
+// step's 1. BONSAIAI_DEV=iron.drafts=0 leaves the check unused.
 func (s *ironSession) Qs() []int {
 	if r := s.m.VerifyRows(); r > 1 && !devenv.IsOff("iron.drafts") {
 		return []int{r, s.Q()}
@@ -387,7 +387,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	if err := llm.LockNPU(ctx); err != nil { // one process's chat model on the NPU at a time
 		return nil, err
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +415,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		return fail(err)
 	}
 	// the experts a mixture of experts runs, counted as the host's experts count them
-	// (experts.Placement.Usage, HWNPU_DEV=moe.usage=FILE): the same files and tools
+	// (experts.Placement.Usage, BONSAIAI_DEV=moe.usage=FILE): the same files and tools
 	if L, E := m.ExpertsShape(); L > 0 {
 		dbg, _ := experts.DebugOpt("usage")
 		for _, p := range []string{c.Experts.Usage, dbg} {

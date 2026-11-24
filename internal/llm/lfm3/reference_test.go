@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // tinyD1 is a small d1 model as its checkpoint describes it: LFM3 under the text_config of an
@@ -46,7 +46,7 @@ func f16(t *testing.T, w llm.Weights, name string) []float64 {
 }
 
 // reference is the LFM3 forward pass written out directly, in float64, from modeling_lfm3.py as
-// hwnpu-dev check confirmed it against PyTorch (sandwich RMS norms, the gated short convolution of
+// bonsaiai-dev check confirmed it against PyTorch (sandwich RMS norms, the gated short convolution of
 // Lfm2ShortConv, attention with QK norm, rotate_half RoPE over the first partial_rotary_factor
 // of each head, repeat_kv and a sigmoid gate per head, SwiGLU), and for a d1 model from
 // llama.cpp's graph of it (src/models/lfm3.cpp: the full attention layers bidirectional, the rest

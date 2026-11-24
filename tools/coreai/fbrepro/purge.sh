@@ -14,10 +14,10 @@ keep=${2:-11}
 aicheck=${AICHECK:-./aicheck}
 dir=$(mktemp -d /tmp/fbrepro-purge.XXXXXX)
 cp "$aicheck" "$dir/aicheck"
-codesign -s - -f -i "hwnpu.fbrepro.purge.$(date +%s)" "$dir/aicheck" 2>/dev/null
+codesign -s - -f -i "bonsaiai.fbrepro.purge.$(date +%s)" "$dir/aicheck" 2>/dev/null
 load() {
   local t0=$(date +%s)
-  HWNPU_DAEMON=off "$dir/aicheck" run -calls 1 "$prog" > "$dir/$1.log" 2>&1
+  BONSAIAI_DAEMON=off "$dir/aicheck" run -calls 1 "$prog" > "$dir/$1.log" 2>&1
   echo "$1: $(( $(date +%s) - t0 ))s  $(tail -1 "$dir/$1.log")"
 }
 start=$(date "+%Y-%m-%d %H:%M:%S")

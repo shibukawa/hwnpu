@@ -9,10 +9,10 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // Setup is what Prepare makes ready.
@@ -33,11 +33,11 @@ type Setup struct {
 // sources (StatsRepo).
 const StatsFile = "flux3-klein.x2.safetensors"
 
-// StatsRepo is the repository of the sources (HWNPU_MODEL_SOURCE: original/StatsRepo/StatsFile,
-// its hwnpu-lock.json of no commit) that holds StatsFile: it is hwnpu's, not on Hugging Face.
+// StatsRepo is the repository of the sources (BONSAIAI_MODEL_SOURCE: original/StatsRepo/StatsFile,
+// its bonsaiai-lock.json of no commit) that holds StatsFile: it is bonsaiai's, not on Hugging Face.
 // StatsSHA256 is its SHA-256: a file that differs is not taken.
 const (
-	StatsRepo   = "hwnpu/flux-3-image-klein-calibration"
+	StatsRepo   = "bonsaiai/flux-3-image-klein-calibration"
 	StatsSHA256 = "5cfe6955407ad2240933e1ec51107c6f5c279c990d9bae0e834ee743bf8bd83b"
 )
 
@@ -133,7 +133,7 @@ func stats(ctx context.Context, dir string, log io.Writer) string {
 	}
 	sum, err := store.FileSHA256(p)
 	if err != nil || sum != statsSum {
-		fmt.Fprintf(log, "%s of %s is not the one hwnpu fits the tables to (SHA-256 %s, want %s): not taken\n", StatsFile, StatsRepo, sum, statsSum)
+		fmt.Fprintf(log, "%s of %s is not the one bonsaiai fits the tables to (SHA-256 %s, want %s): not taken\n", StatsFile, StatsRepo, sum, statsSum)
 		return ""
 	}
 	return p

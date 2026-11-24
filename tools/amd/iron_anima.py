@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Anima (circlestone-labs/Anima) on IRON: the graphs cmd/hwnpu-image runs on AMD's NPU.
+"""Anima (circlestone-labs/Anima) on IRON: the graphs cmd/bonsaiai-image runs on AMD's NPU.
 
-An application of amd/IRON kept in hwnpu (IRON has none for an image model). Anima is NVIDIA's
+An application of amd/IRON kept in bonsaiai (IRON has none for an image model). Anima is NVIDIA's
 Cosmos-Predict2 2B DiT with Qwen3-0.6B as its text encoder, an LLM adapter from Qwen3's
 hidden states to the T5-sized embeddings the DiT cross-attends to, and the Qwen-Image VAE
 (Wan 2.1's, one frame). The graphs, each exported by iron_graph.py into a directory of its own:
@@ -1269,7 +1269,7 @@ def export_dit(root: Path, out: Path, c: DitConfig, check: bool, sfx: str = "") 
     w = dit_weights(root)
     rng = np.random.default_rng(0)
     R = c.rows
-    # checkpoint: the diffusion model, by which hwnpu-image picks Anima-Turbo's 8 steps without
+    # checkpoint: the diffusion model, by which bonsaiai-image picks Anima-Turbo's 8 steps without
     # guidance or the others' 30 with it (anima.Pipeline.Distilled)
     meta = dict(config=dataclasses.asdict(c), weights=dataclasses.asdict(DIT_FMT), checkpoint=ARGS.dit)
     # dit_in

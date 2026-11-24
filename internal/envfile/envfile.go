@@ -1,9 +1,9 @@
-// Package envfile reads hwnpu's settings from .env files (docs/cache-sharing-design.md 7.4) into the
+// Package envfile reads bonsaiai's settings from .env files (docs/cache-sharing-design.md 7.4) into the
 // environment when a program starts: .env.local and .env of the current directory, of the
-// user's settings (~/.config/hwnpu, %LOCALAPPDATA%\hwnpu) and of the machine's (/etc/hwnpu,
-// /Library/Application Support/hwnpu, %ProgramData%\hwnpu), in that order. A variable the
-// environment sets, or a file before sets, wins. Only hwnpu's, Hugging Face's and AWS's
-// variables are read (HWNPU_, HF_, AWS_): a project's own .env changes nothing else.
+// user's settings (~/.config/bonsaiai, %LOCALAPPDATA%\bonsaiai) and of the machine's (/etc/bonsaiai,
+// /Library/Application Support/bonsaiai, %ProgramData%\bonsaiai), in that order. A variable the
+// environment sets, or a file before sets, wins. Only bonsaiai's, Hugging Face's and AWS's
+// variables are read (BONSAIAI_, HF_, AWS_): a project's own .env changes nothing else.
 //
 // A file has a variable a line: NAME=VALUE, with an optional "export " before it; '#' starts a
 // comment; a VALUE in single quotes is taken as written, one in double quotes may have \n, \",
@@ -23,7 +23,7 @@ import (
 )
 
 // Prefixes are the beginnings of the variables a file may set.
-var Prefixes = []string{"HWNPU_", "HF_", "AWS_"}
+var Prefixes = []string{"BONSAIAI_", "HF_", "AWS_"}
 
 // Loaded are the files read, in order, and what each set.
 var Loaded []File
@@ -57,28 +57,28 @@ func Dirs() []string {
 func UserDir() string {
 	if runtime.GOOS == "windows" {
 		if d := os.Getenv("LOCALAPPDATA"); d != "" {
-			return filepath.Join(d, "hwnpu")
+			return filepath.Join(d, "bonsaiai")
 		}
 	}
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
-		return filepath.Join(d, "hwnpu")
+		return filepath.Join(d, "bonsaiai")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "hwnpu")
+	return filepath.Join(home, ".config", "bonsaiai")
 }
 
 // MachineDir is the folder of the machine's settings, which its administrator puts there.
 func MachineDir() string {
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(cmp.Or(os.Getenv("ProgramData"), `C:\ProgramData`), "hwnpu")
+		return filepath.Join(cmp.Or(os.Getenv("ProgramData"), `C:\ProgramData`), "bonsaiai")
 	case "darwin":
-		return "/Library/Application Support/hwnpu"
+		return "/Library/Application Support/bonsaiai"
 	}
-	return "/etc/hwnpu"
+	return "/etc/bonsaiai"
 }
 
 // Load reads the files of Dirs.
@@ -113,7 +113,7 @@ func LoadFile(p string) (File, bool) {
 	return f, ok
 }
 
-// readFile calls set for each of hwnpu's variables of the file p in order; ok is false when there
+// readFile calls set for each of bonsaiai's variables of the file p in order; ok is false when there
 // is no such file.
 func readFile(p string, set func(k, v string)) (ok bool, err error) {
 	in, err := os.Open(p)
@@ -158,8 +158,8 @@ func Original() []string {
 }
 
 // Environ is the environment a process started now with base would have after reading the files
-// of Dirs as they are now (hwnpud gives it to its engine, so that a file changed is read
-// without restarting hwnpud), and the files read. Under go test the files are not read, as Load.
+// of Dirs as they are now (bonsaiaid gives it to its engine, so that a file changed is read
+// without restarting bonsaiaid), and the files read. Under go test the files are not read, as Load.
 func Environ(base []string) (env []string, files []string, err error) {
 	if testing.Testing() {
 		return slices.Clone(base), nil, nil

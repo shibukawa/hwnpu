@@ -77,7 +77,7 @@ func gatedHub(t *testing.T, agreed *atomic.Bool, valid *atomic.Value) *atomic.In
 func signedOut(t *testing.T, terminal bool, in string) {
 	t.Setenv("HF_TOKEN", "")
 	t.Setenv("HF_TOKEN_PATH", filepath.Join(t.TempDir(), "none"))
-	t.Setenv("HWNPU_HF_CLIENT_ID", "")
+	t.Setenv("BONSAIAI_HF_CLIENT_ID", "")
 	oi, os_, op := interactive, stdin, pollEvery
 	interactive, stdin, pollEvery = func() bool { return terminal }, strings.NewReader(in), time.Millisecond
 	oauthTok, oauthRefresh = "", ""

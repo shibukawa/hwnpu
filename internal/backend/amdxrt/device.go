@@ -8,11 +8,11 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/aieelf"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/power"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/xclbin"
+	"github.com/shibukawa/bonsaiai/internal/aieelf"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/power"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/xclbin"
 )
 
 type device struct {

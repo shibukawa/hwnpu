@@ -19,11 +19,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/vision/depth"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/vision/depth"
 )
 
 // Export is model.json of an export: its sizes, each a directory WxH.
@@ -80,7 +80,7 @@ func readExport(dir string) (*Export, error) {
 // Estimator is a loaded export; one size's graphs are on the device at a time.
 type Estimator struct {
 	Export
-	dev *hwnpu.Device
+	dev *bonsaiai.Device
 	dir string
 	cur *sized
 	// FovX, when not 0, is the camera's horizontal field of view in degrees: the focal length
@@ -115,7 +115,7 @@ func (s *sized) close() error {
 }
 
 // Open reads the export in dir.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Estimator, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string) (*Estimator, error) {
 	x, err := readExport(dir)
 	if err != nil {
 		return nil, err

@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 // An xclbin per step (NPU1): each step of a version is one dispatch of a kernel of an xclbin,
@@ -29,8 +29,8 @@ const slotAlign = 16
 
 type stepRun struct {
 	s       *Step
-	prog    *hwnpu.Program
-	run     *hwnpu.Run
+	prog    *bonsaiai.Program
+	run     *bonsaiai.Run
 	program *Program // nil for a static stream
 	stream  []uint32 // the stream: static, or the last one built
 	off     int      // the slot's word offset in its buffer
@@ -39,14 +39,14 @@ type stepRun struct {
 
 // stepStreams are a version's instruction buffers, by xclbin.
 type stepStreams struct {
-	static, dynamic map[string]*hwnpu.Buffer
+	static, dynamic map[string]*bonsaiai.Buffer
 }
 
 func align(n int) int { return (n + slotAlign - 1) / slotAlign * slotAlign }
 
 // loadSteps loads a version's xclbins (shared by every version, in m.xclbins), makes its
 // steps' runs and writes the static streams.
-func (m *Model) loadSteps(ctx context.Context, kr hwnpu.KernelRunner, dir string, v *version) error {
+func (m *Model) loadSteps(ctx context.Context, kr bonsaiai.KernelRunner, dir string, v *version) error {
 	var static []byte
 	if v.m.Insts != "" {
 		var err error
@@ -61,7 +61,7 @@ func (m *Model) loadSteps(ctx context.Context, kr hwnpu.KernelRunner, dir string
 		prog, ok := m.xclbins[s.Xclbin]
 		if !ok {
 			var err error
-			if prog, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, s.Xclbin)}); err != nil {
+			if prog, err = kr.Load(ctx, bonsaiai.ProgramSource{Path: filepath.Join(dir, s.Xclbin)}); err != nil {
 				return fmt.Errorf("iron: %s: %w", s.Xclbin, err)
 			}
 			m.xclbins[s.Xclbin] = prog
@@ -109,9 +109,9 @@ func (m *Model) loadSteps(ctx context.Context, kr hwnpu.KernelRunner, dir string
 			return fmt.Errorf("iron: step %d (%s): %w", i, s.Kernel, err)
 		}
 	}
-	v.streams.static = map[string]*hwnpu.Buffer{}
+	v.streams.static = map[string]*bonsaiai.Buffer{}
 	for x, n := range words {
-		buf, err := m.dev.AllocBuffer(4*n, hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+		buf, err := m.dev.AllocBuffer(4*n, bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 		if err != nil {
 			return fmt.Errorf("iron: static streams of %s (%d KiB): %w", x, n>>8, err)
 		}
@@ -133,7 +133,7 @@ func (m *Model) loadSteps(ctx context.Context, kr hwnpu.KernelRunner, dir string
 }
 
 // place writes the step's stream into its slot of buf and binds the slot (not synced).
-func (r *stepRun) place(buf *hwnpu.Buffer) error {
+func (r *stepRun) place(buf *bonsaiai.Buffer) error {
 	b := buf.Bytes()[4*r.off:]
 	for i, w := range r.stream {
 		binary.LittleEndian.PutUint32(b[4*i:], w)
@@ -180,9 +180,9 @@ func (m *Model) buildStreams(v *version, values map[string]int64) error {
 		for _, b := range v.streams.dynamic {
 			b.Close()
 		}
-		v.streams.dynamic = map[string]*hwnpu.Buffer{}
+		v.streams.dynamic = map[string]*bonsaiai.Buffer{}
 		for x, n := range words {
-			buf, err := m.dev.AllocBuffer(4*n, hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+			buf, err := m.dev.AllocBuffer(4*n, bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 			if err != nil {
 				return fmt.Errorf("iron: per-call streams of %s (%d KiB): %w", x, n>>8, err)
 			}
@@ -211,8 +211,8 @@ func (m *Model) runSteps(ctx context.Context, v *version, values map[string]int6
 	if err := m.buildStreams(v, values); err != nil {
 		return err
 	}
-	var last hwnpu.Fence
-	var ctxProg *hwnpu.Program
+	var last bonsaiai.Fence
+	var ctxProg *bonsaiai.Program
 	n := 0
 	for i, r := range v.steps {
 		if last != nil && (r.prog != ctxProg || n >= stepWindow) {
@@ -244,7 +244,7 @@ func (v *version) closeSteps() []error {
 			errs = append(errs, r.run.Close())
 		}
 	}
-	for _, bufs := range []map[string]*hwnpu.Buffer{v.streams.static, v.streams.dynamic} {
+	for _, bufs := range []map[string]*bonsaiai.Buffer{v.streams.static, v.streams.dynamic} {
 		for _, b := range bufs {
 			errs = append(errs, b.Close())
 		}

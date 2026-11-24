@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"strings"
 
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // SystemModelsFile is the definition file of the machine, which its administrator puts there
@@ -20,18 +20,18 @@ import (
 var SystemModelsFile = func() string {
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(cmp.Or(os.Getenv("ProgramData"), `C:\ProgramData`), "hwnpu", "models.yaml")
+		return filepath.Join(cmp.Or(os.Getenv("ProgramData"), `C:\ProgramData`), "bonsaiai", "models.yaml")
 	case "darwin":
-		return "/Library/Application Support/hwnpu/models.yaml"
+		return "/Library/Application Support/bonsaiai/models.yaml"
 	}
-	return "/etc/hwnpu/models.yaml"
+	return "/etc/bonsaiai/models.yaml"
 }
 
 var sha256RE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // hubFile asks the hub (a HEAD, no download) for a file's SHA-256 (X-Linked-Etag, a file in
 // LFS: the large ones) and the commit it is of. Either is "" when it does not say, and both when
-// hwnpu keeps off Hugging Face.
+// bonsaiai keeps off Hugging Face.
 func hubFile(ctx context.Context, repo, name string) (sum, commit string) {
 	if !shared.HuggingFace() {
 		return "", ""
@@ -67,8 +67,8 @@ const BundleFolder = "models"
 
 // BundleDirs are the folders of models app installs with it: folder (BundleFolder when "") of
 // each of its resource folders that has it (configdir's QueryResourceFolders: next to the
-// executable, X.app/Contents/Resources, PREFIX/share/APP, $XDG_DATA_DIRS/APP). hwnpu's commands
-// read hwnpu's (LoadModels); an application that embeds hwnpu says its own (modelstore).
+// executable, X.app/Contents/Resources, PREFIX/share/APP, $XDG_DATA_DIRS/APP). bonsaiai's commands
+// read bonsaiai's (LoadModels); an application that embeds bonsaiai says its own (modelstore).
 func BundleDirs(app configdir.ConfigDir, folder string) []string {
 	var dirs []string
 	for _, c := range app.QueryResourceFolders() {

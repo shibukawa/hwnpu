@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // The two-level attention (decode.Sparse) reads a long cache in two ways: the keys of the buckets

@@ -9,7 +9,7 @@ before the later layers' inputs are taken. The weights are the export's own (iro
 pad_tree and SinkAttention: padded to the residual's 3072, q, k and v stacked, the head's rows to
 201216), so iron_q4.weight_key finds them.
 
-    PY=~/.cache/hwnpu/dev/ref-venv/bin/python
+    PY=~/.cache/bonsaiai/dev/ref-venv/bin/python
     $PY tools/amd/gptoss_gptq.py ~/models/gpt-oss-20b OUT [--seqs 64 --length 512]
     python tools/amd/iron_export_lm.py gptoss CKPT EXPORT --q4-codes OUT/codes ...
 

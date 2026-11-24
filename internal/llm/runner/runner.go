@@ -11,15 +11,15 @@ import (
 	"io"
 	"strings"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/chain"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Program is a loaded model.
@@ -38,7 +38,7 @@ type Program interface {
 }
 
 // Open loads the model at path on dev, or with the CPU interpreter when dev is nil.
-func Open(ctx context.Context, dev *hwnpu.Device, path string) (Program, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, path string) (Program, error) {
 	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
@@ -60,7 +60,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (Program, error) 
 		return nil, err
 	}
 	// the program keeps the context it is taken with for every run, so it must not be the
-	// caller's: hwnpu-chat loads under a signal.NotifyContext whose stop cancels it once the
+	// caller's: bonsaiai-chat loads under a signal.NotifyContext whose stop cancels it once the
 	// model is up, and the vision encoder then failed every image with "context canceled"
 	// (the context of a run is checked in Run)
 	return &devProgram{c: c, p: c.Program(context.Background()), meta: meta}, nil
@@ -136,7 +136,7 @@ func F16(ctx context.Context, p Program, in map[string][]float32) ([]byte, error
 		return nil, err
 	}
 	out := make([]byte, 2*len(y))
-	hwnpu.EncodeF16(out, y)
+	bonsaiai.EncodeF16(out, y)
 	return out, nil
 }
 
@@ -146,7 +146,7 @@ func (p *devProgram) feed(ctx context.Context, in map[string][]float32) error {
 		if !ok || len(v) != count(p.p.InShape[name]) {
 			return fmt.Errorf("runner: input %s needs %v values, got %d", name, p.p.InShape[name], len(v))
 		}
-		hwnpu.EncodeF16(buf, v)
+		bonsaiai.EncodeF16(buf, v)
 	}
 	return ctx.Err()
 }
@@ -157,7 +157,7 @@ func (p *devProgram) Run(ctx context.Context, in map[string][]float32) ([]float3
 		if !ok || len(v) != count(p.p.InShape[name]) {
 			return nil, fmt.Errorf("runner: input %s needs %v values, got %d", name, p.p.InShape[name], len(v))
 		}
-		hwnpu.EncodeF16(buf, v)
+		bonsaiai.EncodeF16(buf, v)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -166,7 +166,7 @@ func (p *devProgram) Run(ctx context.Context, in map[string][]float32) ([]float3
 		return nil, err
 	}
 	y := make([]float32, count(p.Output()))
-	hwnpu.DecodeF16(y, p.p.Out["y"])
+	bonsaiai.DecodeF16(y, p.p.Out["y"])
 	return y, nil
 }
 
@@ -235,7 +235,7 @@ func (p *cpuProgram) Run(ctx context.Context, in map[string][]float32) ([]float3
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// HWNPU_DEV=cpu.f16 rounds every operation's result to fp16, about the Neural Engine's
+		// BONSAIAI_DEV=cpu.f16 rounds every operation's result to fp16, about the Neural Engine's
 		// storage precision: to find values a program overflows on the NPU
 		res, err := part.Run(feed, milcpu.Options{RoundF16: devenv.On("cpu.f16")})
 		if err != nil {
@@ -253,11 +253,11 @@ func (p *cpuProgram) Close() error {
 	return nil
 }
 
-// OpenSession loads a causal model converted with a KV cache (hwnpu-dev convert -cache), one or more
+// OpenSession loads a causal model converted with a KV cache (bonsaiai-dev convert -cache), one or more
 // packages of the same cache length and different tokens per call, on dev (nil: the CPU
 // interpreter), and starts a decode session over them; the packages share one cache. Close the
 // returned closer after the session.
-func OpenSession(ctx context.Context, dev *hwnpu.Device, paths []string, m llm.Cached) (*decode.Session, io.Closer, error) {
+func OpenSession(ctx context.Context, dev *bonsaiai.Device, paths []string, m llm.Cached) (*decode.Session, io.Closer, error) {
 	progs, closers, err := OpenPrograms(ctx, dev, paths)
 	if err != nil {
 		return nil, nil, err
@@ -277,7 +277,7 @@ func OpenSession(ctx context.Context, dev *hwnpu.Device, paths []string, m llm.C
 
 // OpenPrograms loads the programs of OpenSession without a session: a tier a session moves to
 // (decode.Session.Migrate, then Add for the others).
-func OpenPrograms(ctx context.Context, dev *hwnpu.Device, paths []string) ([]decode.Program, io.Closer, error) {
+func OpenPrograms(ctx context.Context, dev *bonsaiai.Device, paths []string) ([]decode.Program, io.Closer, error) {
 	var closers multiCloser
 	var progs []decode.Program
 	var first *chain.Chain
@@ -416,7 +416,7 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 					b = p.Out[name]
 				}
 				v := make([]float32, count(sh))
-				hwnpu.DecodeF16(v, b)
+				bonsaiai.DecodeF16(v, b)
 				in[name] = milcpu.Tensor{Shape: sh, Data: v}
 			}
 			res, err := parts[i].prog.Run(in, milcpu.Options{})
@@ -430,7 +430,7 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 						continue
 					}
 				}
-				hwnpu.EncodeF16(p.Out[name], o.Data)
+				bonsaiai.EncodeF16(p.Out[name], o.Data)
 			}
 		}
 		return nil
@@ -503,16 +503,16 @@ func attentionCPU(path string, chunk int) (*decode.Attention, io.Closer, error) 
 			if 2*len(x) != len(b) {
 				return fmt.Errorf("runner: attention input %s has %d bytes for %v", name, len(b), in[name])
 			}
-			hwnpu.DecodeF16(x, b)
+			bonsaiai.DecodeF16(x, b)
 			vals[name] = milcpu.Tensor{Shape: in[name], Data: x}
 		}
 		res, err := prog.Run(vals, milcpu.Options{})
 		if err != nil {
 			return err
 		}
-		hwnpu.EncodeF16(a.O, res["o"].Data)
-		hwnpu.EncodeF16(a.M, res["m"].Data)
-		hwnpu.EncodeF16(a.L, res["l"].Data)
+		bonsaiai.EncodeF16(a.O, res["o"].Data)
+		bonsaiai.EncodeF16(a.M, res["m"].Data)
+		bonsaiai.EncodeF16(a.L, res["l"].Data)
 		return nil
 	}
 	return a, f, nil
@@ -538,14 +538,14 @@ func massCPU(path string) (*decode.Mass, io.Closer, error) {
 			if 2*len(x) != len(b) {
 				return fmt.Errorf("runner: mass input %s has %d bytes for %v", name, len(b), in[name])
 			}
-			hwnpu.DecodeF16(x, b)
+			bonsaiai.DecodeF16(x, b)
 			vals[name] = milcpu.Tensor{Shape: in[name], Data: x}
 		}
 		res, err := prog.Run(vals, milcpu.Options{})
 		if err != nil {
 			return err
 		}
-		hwnpu.EncodeF16(ms.W, res["w"].Data)
+		bonsaiai.EncodeF16(ms.W, res["w"].Data)
 		return nil
 	}
 	return ms, f, nil

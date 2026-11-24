@@ -76,19 +76,19 @@ NPU2 でどのモデルも使う形。グラフの 1 回の呼び出しを 1 つ
 
 - Windows の AMD の NPU ドライバは XRT の C++ ライブラリ (`xrt_coreutil.dll`) からしか使えない。`native/xrtshim` は C の ABI を出す小さな C++ のライブラリで、Go が purego (`internal/dl`) で実行時に読む。利用者側は cgo なしのまま。
 - API: デバイス (数、開く、名前、BDF、platform / electrical の JSON、XRT の版)、バッファ (host_only、cacheable、メモリグループ、map、address、sync)、ハードウェアコンテキスト (xclbin は `register_xclbin`、full ELF は `xrt::elf`)、カーネル (`xrt::kernel`、`xrt::ext::kernel`、`group_id`)、run (引数、`get_ctrl_scratchpad_bo`、start でスクラッチパッドを同期、wait、state)。エラーは malloc した文字列で返し、Go が写して解放する (スレッドローカルの最後のエラーは、ゴルーチンがスレッドを移るので使えない)。
-- 選び方: Windows では常に、Linux では `HWNPU_BACKEND=xrt` のときだけ。`amd` (xdna) より先に登録するので、`hwnpu.Open(WithVendor(AMD))` はこれを選ぶ。
-- `xrt_coreutil.dll` は検索パスの外 (`System32\AMD`、ドライバストア) にあるので、先に絶対パスで (または `HWNPU_XRT_CORE` で) 読み込み、xrtshim の import をそれに解決させる。shim は `HWNPU_XRTSHIM` で指定できる。XRT のヘッダ 2.21.75 (Apache-2.0) を `native/xrtshim/include` に同梱し、`make-importlib.ps1` が DLL の export から import library を作る。
+- 選び方: Windows では常に、Linux では `BONSAIAI_BACKEND=xrt` のときだけ。`amd` (xdna) より先に登録するので、`bonsaiai.Open(WithVendor(AMD))` はこれを選ぶ。
+- `xrt_coreutil.dll` は検索パスの外 (`System32\AMD`、ドライバストア) にあるので、先に絶対パスで (または `BONSAIAI_XRT_CORE` で) 読み込み、xrtshim の import をそれに解決させる。shim は `BONSAIAI_XRTSHIM` で指定できる。XRT のヘッダ 2.21.75 (Apache-2.0) を `native/xrtshim/include` に同梱し、`make-importlib.ps1` が DLL の export から import library を作る。
 - XRT 2.21 の落とし穴: (1) `run.wait(timeout)` が時間切れになったコマンドをもう一度待つと `qds_device::wait() unexpected command state`。待ちは時間を区切らない。(2) xclbin のカーネルの命令列の引数は専用のメモリグループ (`group_id(1)`) にあり、グループ 0 の cacheable のバッファは「local copy」を作れずに失敗する。命令列のバッファは Go のメモリに持ち、結ぶときにそのグループの XRT のバッファに写す。(3) full ELF のカーネルは開いている間、制御コードを 64 MiB のヒープに置く (音声の塔 39.8 MiB が `ENOSPC` になった)。使う run がなくなったらカーネルを閉じる。
 - 電力: electrical の JSON の `power_consumption_watts` を 50 ms ごとに読んで積分する (`power.Integrator`)。Linux 7.0 の標準ドライバでは出ない。
-- Linux で XRT 2.21.75 を root なしで展開して確かめた: passthrough (xclbin) が PASS、relu-axpy・bounded-relu (スクラッチパッド)・walk (引き継ぐ値) がビット単位で一致、Gemma 4 E2B 6.1 tok/s (xdna と同じ)、多モーダルの hwnpu-chat で画像と音声の答えが正しい。zig の x86_64-windows-gnu でコンパイルが通る。
+- Linux で XRT 2.21.75 を root なしで展開して確かめた: passthrough (xclbin) が PASS、relu-axpy・bounded-relu (スクラッチパッド)・walk (引き継ぐ値) がビット単位で一致、Gemma 4 E2B 6.1 tok/s (xdna と同じ)、多モーダルの bonsaiai-chat で画像と音声の答えが正しい。zig の x86_64-windows-gnu でコンパイルが通る。
 
 ## ビルド時のコンパイラとしての IRON
 
-- AMD に公開されたグラフのコンパイラはなく、演算ごとの xclbin は切り替え 1 回 0.46 ms かかる (`tools/amd/ctxbench`: 3 つのコンテキストを交互に 2.960 ms、単独の合計 1.571 ms。まとめて投入しても縮まない)。100 演算なら 1 トークン 46 ms。そこで [amd/IRON](https://github.com/amd/IRON) (Apache-2.0) と mlir-aie で書き出し時にコンパイルし、モデルの 1 回の呼び出しを 1 つの full ELF にして、hwnpu が Go で動かす。「変換は Go だけで」の唯一の例外で、利用者の機械には Python も XRT も要らない。
-- 書き出しの道具: `tools/amd/iron_export.py` (IRON の `CompiledGraph` → ELF + manifest: コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ、`carried`、`images` = バンクの初期像 `arg_<種類>.bin`。`--check` は乱数の入力と `graph.reference()` の出力、引き継ぐ値のあるグラフでは `check/calls.json` を書く)。`iron_export_lm.py` (言語モデル)、`iron_graph.py` + `iron.Graph` (それ以外のグラフ。1 つの ELF が複数の重みのバンク `variants` を持てる)。`hwnpu-dev xclbin` は XRT の xclbinutil なしで IRON の設計をビルドする。
-- 実行側の道具: `tools/amd/ironcheck` (書き出しをその check と照合)、`irongraph` (`-runs N`、`-swap -variant`)、`ironlm` (言語モデル)、`gemvbench`、`ctxbench`、`elfconfigs` (ELF ごとの設定のし直し)、`HWNPU_DEV=iron.timing=1` (コマンドごとの時間)、`--command-per-step` (ステップごとに 1 コマンド。時間を測るためだけ)。
+- AMD に公開されたグラフのコンパイラはなく、演算ごとの xclbin は切り替え 1 回 0.46 ms かかる (`tools/amd/ctxbench`: 3 つのコンテキストを交互に 2.960 ms、単独の合計 1.571 ms。まとめて投入しても縮まない)。100 演算なら 1 トークン 46 ms。そこで [amd/IRON](https://github.com/amd/IRON) (Apache-2.0) と mlir-aie で書き出し時にコンパイルし、モデルの 1 回の呼び出しを 1 つの full ELF にして、BonsaiAI が Go で動かす。「変換は Go だけで」の唯一の例外で、利用者の機械には Python も XRT も要らない。
+- 書き出しの道具: `tools/amd/iron_export.py` (IRON の `CompiledGraph` → ELF + manifest: コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ、`carried`、`images` = バンクの初期像 `arg_<種類>.bin`。`--check` は乱数の入力と `graph.reference()` の出力、引き継ぐ値のあるグラフでは `check/calls.json` を書く)。`iron_export_lm.py` (言語モデル)、`iron_graph.py` + `iron.Graph` (それ以外のグラフ。1 つの ELF が複数の重みのバンク `variants` を持てる)。`bonsaiai-dev xclbin` は XRT の xclbinutil なしで IRON の設計をビルドする。
+- 実行側の道具: `tools/amd/ironcheck` (書き出しをその check と照合)、`irongraph` (`-runs N`、`-swap -variant`)、`ironlm` (言語モデル)、`gemvbench`、`ctxbench`、`elfconfigs` (ELF ごとの設定のし直し)、`BONSAIAI_DEV=iron.timing=1` (コマンドごとの時間)、`--command-per-step` (ステップごとに 1 コマンド。時間を測るためだけ)。
 - ビルド環境: mlir-aie の wheel は Python 3.12 が要る (uv)。IRON は mlir-aie の nightly を固定する。装置は `aie_utils.set_current_device(from_name("npu2", n_cols=8))`。大きな書き出し (Qwen3.6: 30 分、ピーク RSS 60 GB 中 53.8 GB) はほかの大きな仕事と並べない。置き場は `~/models` (`/tmp` は tmpfs)。長いものは `systemd-run --user` で。
-- 書き出しの名前: `~/models/NAME.amd-npu2-q4` (または `NAME.amd-npu2`)。AMD の NPU だけの機械では、hwnpu-chat が `-m NAME` にこれを選ぶ。
+- 書き出しの名前: `~/models/NAME.amd-npu2-q4` (または `NAME.amd-npu2`)。AMD の NPU だけの機械では、bonsaiai-chat が `-m NAME` にこれを選ぶ。
 
 ## 費用のモデル (速さを決めるもの)
 
@@ -107,13 +107,13 @@ NPU2 でどのモデルも使う形。グラフの 1 回の呼び出しを 1 つ
 
 ## 共有のカーネルと演算子の選び方
 
-hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON の演算子に差し込む (`tools/amd/iron_q4.py`、`tools/amd/kernels/`):
+BonsaiAI は書き出し時に、IRON を変えずに自前のカーネルを IRON の演算子に差し込む (`tools/amd/iron_q4.py`、`tools/amd/kernels/`):
 
 - 量子化した GEMV `QGEMV` (q4nx、q6、q8: `q4_mv.cc`、`q6_mv.cc`、`q8_mv.cc`)、`QGEMVAdd` (出力が出るときにバイアスと残差を足す、`kernels/mv_add.h`)、`QGEMVGlu` (gate と up を 1 つの表、1 つの演算子に)、プロンプトと DiT の `QDequant` / `q4_dequant`。形式とモデルごとの選択は [quantization](quantization.md)。
-- QGEMV は 1 列 1 コア (`iron_q4.q_linear`、cores 0 = 16384 出力まで 1、越えると 2。`HWNPU_Q_CORES`、`HWNPU_Q_CORES_UP_TO`): 設定 92 → 36 KB (q8、2048 出力)、速さは同じ、ビット単位で同じ。`QGEMVGlu` は 2 コアのまま (`HWNPU_GLU_CORES`。1 コアでは 2 本の累算で遅い)。デコード: LFM3-1.7B 15.6 → 17.2〜17.3 tok/s (sandwich と合わせて)、Gemma 4 E2B 9.3 → 9.7、Qwen3.5-0.8B 18.5 → 18.7。
-- sandwich を次の GEMV の中で (`iron_q4.sandwich_operator`、`sandwich_linear`、`Q_SANDWICH`): 各コアが y = r + rms(h)·w_post と n = rms(y)·w_pre を作ってから n の GEMV をする (SandwichAdd と同じ和と丸め)。LFM3 で使う (`HWNPU_LFM3_SANDWICH_GEMV`)。これだけでは変わらない (15.5 tok/s)。
+- QGEMV は 1 列 1 コア (`iron_q4.q_linear`、cores 0 = 16384 出力まで 1、越えると 2。`BONSAIAI_Q_CORES`、`BONSAIAI_Q_CORES_UP_TO`): 設定 92 → 36 KB (q8、2048 出力)、速さは同じ、ビット単位で同じ。`QGEMVGlu` は 2 コアのまま (`BONSAIAI_GLU_CORES`。1 コアでは 2 本の累算で遅い)。デコード: LFM3-1.7B 15.6 → 17.2〜17.3 tok/s (sandwich と合わせて)、Gemma 4 E2B 9.3 → 9.7、Qwen3.5-0.8B 18.5 → 18.7。
+- sandwich を次の GEMV の中で (`iron_q4.sandwich_operator`、`sandwich_linear`、`Q_SANDWICH`): 各コアが y = r + rms(h)·w_post と n = rms(y)·w_pre を作ってから n の GEMV をする (SandwichAdd と同じ和と丸め)。LFM3 で使う (`BONSAIAI_LFM3_SANDWICH_GEMV`)。これだけでは変わらない (15.5 tok/s)。
 - GEMV は 64 行のブロックを割り切る数の列しか使わない: 8 列でブロックが揃うように詰める (`iron_gdn.COLUMN_ALIGN` 64)。量子化した射影は出力 64 の倍数 × 入力 512 の倍数。
-- hwnpu のカーネルはコアの丸めを最近接偶数にする。AIE のコアは切り捨てで始まり、bf16 / bfp16 に狭めるたびに、平均のある入力の和が下に寄る (IRON の `DequantBFP` も同じ: 平均 1 の入力でコサイン 0.968、`QDequant` の bf16 は 0.99994)。言語モデルのプロンプトは `DequantBFP` のまま (そこでは bf16 が 5〜9 % 遅く、何も変わらない)。
+- BonsaiAI のカーネルはコアの丸めを最近接偶数にする。AIE のコアは切り捨てで始まり、bf16 / bfp16 に狭めるたびに、平均のある入力の和が下に寄る (IRON の `DequantBFP` も同じ: 平均 1 の入力でコサイン 0.968、`QDequant` の bf16 は 0.99994)。言語モデルのプロンプトは `DequantBFP` のまま (そこでは bf16 が 5〜9 % 遅く、何も変わらない)。
 - `iron_silu.SiLUF32` (`kernels/silu_f32.cc`): シグモイドを float32 で。IRON の bf16 の表の SiLU は x = −8 から下でちょうど 0、[−6, 2] で 1 % ずれる。
 - `exp2_mid.h`: softmax の exp を bf16 の 1 limb で。4608² × 24 ヘッドの注意で 102.7 → 83.2 ms、誤差は同じ (Anima 以外の画像のモデルの既定)。注意の sink (`iron_sinks.py`) と窓の注意 (`iron_window.py`) は [moe](moe.md) / [amd-llm](amd-llm.md)。
 
@@ -121,12 +121,12 @@ hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON 
 
 - NPU のバッファ (amdxdna の `BO_SHARE`) は全ページが固定され、RSS に出ない: Gemma 4 E2B は RSS 0.43 GB で、`Unevictable` が 9.3 GB 増えた。測るのは accel の fd の `/proc/PID/fdinfo` の `drm-total-memory`、またはプロセスの `smaps` の `/dev/accel/accel0` の写像の大きさ (どちらもほかのプロセスが混ざらない)。確保はページを固定して 0 で埋め 0.33 秒/GiB、解放 0.11 秒/GiB。
 - 固定を減らす手 (詳細はモデルのファイル): PLE と埋め込みをホストの表に (`iron.HostTable`、[amd-llm](amd-llm.md))。塔は最初に使うときに読む (`growBanks`)。画像の段は走る間だけ読み、DiT の群は 1 つのバンクで入れ替え (`iron.GraphOptions.SwapVariants`)、VAE の段はバッファを共有 (`GraphOptions.Buffers`) ([image-amd](image-amd.md))。DiT の重みを 8 ビットに。多く固定しても速くはならない (MoE で 35 GB 固定しても同じ)。
-- 待つ間の解放 (`hwnpu-chat -idle`、既定 5m、0 で解放しない): その間要求がなければ、`chat.Engine` が会話をホストに写し (`putAside`)、`iron.Model.Release` がデバイスのバッファと命令列を全部放してデバイスを閉じる。次の要求で同じ書き出しを `Reload` し、写しか prompt store から続ける。モデルは manifest、ホストの表、塔の前処理を残すので、`Images`、`Context`、メディアのトークン数は答えられる。放した間の実行は `errReleased`。E2B q4 1775 MiB → 0、読み直し 0.8 秒。画像と音声の E2B 2818 MiB → 0、2.0 秒。専門家を CPU で動かす MoE では、`-idle` は中核のものだけを wired に残す。対象は IRON だけ: Neural Engine と Intel のプログラムは読み直しに数十秒から数分かかる。
+- 待つ間の解放 (`bonsaiai-chat -idle`、既定 5m、0 で解放しない): その間要求がなければ、`chat.Engine` が会話をホストに写し (`putAside`)、`iron.Model.Release` がデバイスのバッファと命令列を全部放してデバイスを閉じる。次の要求で同じ書き出しを `Reload` し、写しか prompt store から続ける。モデルは manifest、ホストの表、塔の前処理を残すので、`Images`、`Context`、メディアのトークン数は答えられる。放した間の実行は `errReleased`。E2B q4 1775 MiB → 0、読み直し 0.8 秒。画像と音声の E2B 2818 MiB → 0、2.0 秒。専門家を CPU で動かす MoE では、`-idle` は中核のものだけを wired に残す。対象は IRON だけ: Neural Engine と Intel のプログラムは読み直しに数十秒から数分かかる。
 - 並んだ書き出しは、同じファイルとバンクの同じ先頭をディスクで共有する (`iron.ShareExport`、[distribution](distribution.md))。
 
 ## 電力
 
-- `SET_STATE(SET_POWER_MODE)` は `DRM_ROOT_ONLY` でデバイス全体に効くので、hwnpu は触らない。電力ポリシーはコンテキストの QoS priority に写す (LOW 0x280、NORMAL 0x200、HIGH 0x180。0 はドライバの中で HIGH)。
+- `SET_STATE(SET_POWER_MODE)` は `DRM_ROOT_ONLY` でデバイス全体に効くので、BonsaiAI は触らない。電力ポリシーはコンテキストの QoS priority に写す (LOW 0x280、NORMAL 0x200、HIGH 0x180。0 はドライバの中で HIGH)。
 - 計測: NPU のセンサー (`GET_INFO(QUERY_SENSORS)`、mW、`Scope = npu`) があればそれ。DKMS 版のドライバだけが持ち、標準の Linux 7.0 にはない。なければ amdgpu の hwmon の `power1_input` (PPT、APU のパッケージ全体、µW、root 不要。`Scope = package`)。どちらかがあれば `CapPowerMeter`。どちらも瞬間値なので、最初の `PowerSample` から裏で 50 ms ごとに読んで台形で積分する (`power.Integrator`、XRT の electrical の JSON と共通)。デバイスを閉じると止まる。テストでは `Provider.Hwmon` で探す場所を差し替える。パッケージの電力のもう 1 つの手は RAPL。
 - amdxdna への問い合わせ (GET_INFO、GET_ARRAY、デバイスを開くこと) は寝ている NPU を起こし、自動サスペンドの待ち 5 秒の間起こしたままにする。監視は `power/runtime_status` が active のときだけ問い合わせる ([memory-and-power](memory-and-power.md))。
 - 数字 (パッケージ全体、冷ましてからのアイドル 4.7 W): GEMV 12.3 W、32 MiB を読んで 3〜5 mJ (CPU は読むだけで 18〜28 W、7〜12 mJ)。Gemma 4 E2B の生成中は平均 11.8 W、1 トークン 1.93 J (アイドル込み)。
@@ -138,7 +138,7 @@ hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON 
 | 2 秒を超えるコマンドは `ERT_CMD_STATE_TIMEOUT` で終わる | 書き出しで分ける (`SCRATCHPAD_WORDS`: 密なモデルは 24、Gemma 4 の tail の書き出しは 32) |
 | コマンドの制御コードは、開いているほかのものと合わせて 64 MiB のデバイスヒープに収まらなければならない (`CREATE_BO: invalid argument`、`ENOSPC`) | コマンドを分ける。`ENOSPC` ならデコード / verify の run を捨てて再試行 (IRON と同じ)。使う run のないカーネルを閉じる |
 | 1 つの shim のチャネルに 3 本を超える転送を積むと (タスクキューは 4 段) コマンドが止まる | 古いものを待ってから積む。後の転送が前のものを終わらせる形では、先に積むのは 2 本まで |
-| 続けて 2 回止める、またはモデルがコンテキストを作る間にファームウェアへ毎秒 2 回問い合わせると、SMU が戻らなくなった (`aie2_smu_init: Access power failed`、`failed to init smu`、メールボックスのタイムアウト)。`modprobe -r` も戻らず、再起動だけが直す | 止めない (上)。読み込み中に `hwnpu status` を回さない。代わりに fdinfo の `drm-total-memory` を読む |
+| 続けて 2 回止める、またはモデルがコンテキストを作る間にファームウェアへ毎秒 2 回問い合わせると、SMU が戻らなくなった (`aie2_smu_init: Access power failed`、`failed to init smu`、メールボックスのタイムアウト)。`modprobe -r` も戻らず、再起動だけが直す | 止めない (上)。読み込み中に `bonsaiai status` を回さない。代わりに fdinfo の `drm-total-memory` を読む |
 | グラフの 2 回目、または次の塊の最初のコマンドが止まる | 各回の前に、別のハードウェアコンテキストで空のコマンドを流す (`iron.GraphOptions.Barrier`、`stepBarrier`、`chunkBarrier`、約 0.3〜0.5 ms)。同じコンテキストの空のコマンドでは効かない。グラフは `irongraph -runs 3` で確かめる。原因は不明 |
 | 測るために ELF の `load_pdi` やプログラムの書き込みを書き換える | 読み込みの手順を崩すと NPU と SMU が止まり、再起動が要った。しない |
 | ホストの手順が読むものが、コマンドの間に上書きされうる (IRON のアリーナはホストの読みを使用と数えない) | 状態に写す。ホストの手順のある書き出しはモデル全体の深さで確かめる |

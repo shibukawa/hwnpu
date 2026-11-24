@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // tinyMTP is tinyJSON with a multi-token prediction layer.
@@ -229,7 +229,7 @@ func TestMTPPaged(t *testing.T) {
 	}
 }
 
-var _ = hwnpu.EncodeF16
+var _ = bonsaiai.EncodeF16
 
 // mtpWeights are synthetic weights of the model and its MTP layer.
 func mtpWeights(c *MTP) llm.Synthetic {

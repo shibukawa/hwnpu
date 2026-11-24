@@ -12,26 +12,26 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
-// ProgramKind is the kind of manifest.json of an export of hwnpu-image convert.
+// ProgramKind is the kind of manifest.json of an export of bonsaiai-image convert.
 const ProgramKind = "anima-programs"
 
-// ProgramManifest is manifest.json of an export of hwnpu-image convert: the programs (Core ML
+// ProgramManifest is manifest.json of an export of bonsaiai-image convert: the programs (Core ML
 // packages, or OpenVINO IR .xml) by part, relative to the export's directory.
 type ProgramManifest struct {
 	Kind    string `json:"kind"`
 	Backend string `json:"backend"` // coreml, coreai or intel
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
-	// Formats are the weight formats of the parts (text, dit), as hwnpu-dev convert's -format.
+	// Formats are the weight formats of the parts (text, dit), as bonsaiai-dev convert's -format.
 	Formats map[string]string `json:"formats"`
 	Text    string            `json:"text"`
 	Time    string            `json:"time"`
@@ -89,13 +89,13 @@ func (m *ProgramManifest) At(w, h int) error {
 	return fmt.Errorf("the export holds %v, not %dx%d", m.SizeList(), w, h)
 }
 
-// IsProgramExport reports whether dir holds an export of hwnpu-image convert.
+// IsProgramExport reports whether dir holds an export of bonsaiai-image convert.
 func IsProgramExport(dir string) bool {
 	m, err := ReadProgramManifest(dir)
 	return err == nil && m.Kind == ProgramKind
 }
 
-// ReadProgramManifest reads dir/manifest.json of an export of hwnpu-image convert.
+// ReadProgramManifest reads dir/manifest.json of an export of bonsaiai-image convert.
 func ReadProgramManifest(dir string) (*ProgramManifest, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
@@ -106,7 +106,7 @@ func ReadProgramManifest(dir string) (*ProgramManifest, error) {
 		return nil, err
 	}
 	if m.Kind != ProgramKind {
-		return nil, fmt.Errorf("anima: %s is not an export of hwnpu-image convert", dir)
+		return nil, fmt.Errorf("anima: %s is not an export of bonsaiai-image convert", dir)
 	}
 	return &m, nil
 }
@@ -255,7 +255,7 @@ const (
 	progHidden = 1024
 )
 
-func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
+func openPrograms(ctx context.Context, dev *bonsaiai.Device, dir string, w, h int, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
 	m, err := ReadProgramManifest(dir)
 	var dc DitConfig
 	tc := TextConfig{Rows: progRows, Hidden: progHidden, T5Vocab: 32128, QwenVocab: 151936}
@@ -356,7 +356,7 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, 
 
 // openProgram loads one program of an export onto dev (with the CPU interpreter when dev is nil;
 // an Intel export then runs on OpenVINO's CPU plugin) and fails unless it is all on the NPU.
-func openProgram(ctx context.Context, dev *hwnpu.Device, dir, backend, name string) (runner.Program, error) {
+func openProgram(ctx context.Context, dev *bonsaiai.Device, dir, backend, name string) (runner.Program, error) {
 	if name == "" {
 		return nil, errors.New("anima: the manifest misses a part")
 	}
@@ -364,7 +364,7 @@ func openProgram(ctx context.Context, dev *hwnpu.Device, dir, backend, name stri
 		// for checking: OpenVINO's CPU plugin through tools/ov/run_ir.py
 		py := ovcpu.Python()
 		if py == "" {
-			return nil, errors.New("anima: an Intel export runs without the NPU on OpenVINO's CPU, which needs HWNPU_OV_PYTHON")
+			return nil, errors.New("anima: an Intel export runs without the NPU on OpenVINO's CPU, which needs BONSAIAI_OV_PYTHON")
 		}
 		return &ovProgram{py: py, xml: filepath.Join(dir, name), precision: devenv.Value("ov.precision")}, nil
 	}

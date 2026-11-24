@@ -8,13 +8,13 @@ Core ML のバックエンド (`internal/backend/coreml`、macOS arm64) は**ベ
 
 | どこ | どう |
 |---|---|
-| 公開のライブラリ (`hwnpu.Open`) | `backends_darwin.go` で最初に登録され、Apple の既定のデバイス。Core AI は名前で (`WithBackend("coreai")`、`HWNPU_BACKEND=coreai`) |
-| CPU で動かす | `GraphSource.Units` / `HWNPU_COREML_UNITS=cpu` でパッケージを Core ML の CPU で動かす (参照、ANE のほうが悪いモデル) |
-| バックエンドを指定しない `llm.OpenDevice` | `coreml` を優先。`hwnpu-dev generate` と `formats` が使う |
-| `hwnpu-dev info`、`powerbench`、`probe`、`report` | Core ML のデバイスと配置の報告 (`MLComputePlan` が演算ごとのデバイスを示す) |
+| 公開のライブラリ (`bonsaiai.Open`) | `backends_darwin.go` で最初に登録され、Apple の既定のデバイス。Core AI は名前で (`WithBackend("coreai")`、`BONSAIAI_BACKEND=coreai`) |
+| CPU で動かす | `GraphSource.Units` / `BONSAIAI_COREML_UNITS=cpu` でパッケージを Core ML の CPU で動かす (参照、ANE のほうが悪いモデル) |
+| バックエンドを指定しない `llm.OpenDevice` | `coreml` を優先。`bonsaiai-dev generate` と `formats` が使う |
+| `bonsaiai-dev info`、`powerbench`、`probe`、`report` | Core ML のデバイスと配置の報告 (`MLComputePlan` が演算ごとのデバイスを示す) |
 | `aicheck run -coreml` | Core AI の結果が怪しいときの比べる相手 |
 
-`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は `coreml` を Core AI と読む。プログラムの形式 `.mlpackage` (MIL) は今も多くのモデルの変換先で、Core AI がそれを下げ、`milcpu` が動かす。
+`bonsaiai-chat`、`bonsaiai-image`、`bonsaiai-audio` は `coreml` を Core AI と読む。プログラムの形式 `.mlpackage` (MIL) は今も多くのモデルの変換先で、Core AI がそれを下げ、`milcpu` が動かす。
 
 ## 仕組み
 
@@ -24,19 +24,19 @@ Core ML のバックエンド (`internal/backend/coreml`、macOS arm64) は**ベ
 
 ## 上限
 
-| 上限 | 値 | hwnpu のすること |
+| 上限 | 値 | BonsaiAI のすること |
 |---|---|---|
 | 1 つのパッケージの重み | 0.99 GiB は ANE で動き、1.02 GiB は CPU に落ちる (M1〜M3、どの形式も)。M4 は 2 GB | 変換のときに層ごとに分ける (下) |
 | 仕事が少なすぎる | 小さなモデルは fp16 でも CPU に残る ((32, 256)→256 は CPU、(64, 512)→512 は ANE。1 行の部品) | 8 行に。小さな部品をまとめる。バッチの詰め物 (`tools/coreml/ane_pad.py`) |
 | ANE のコンパイルのキャッシュ | 約 4 GiB ([Neural Engine](apple-neural-engine.ja.md)) | 少なく小さなプログラムに |
-| hwnpu のキャッシュ | `WithCacheDir` (コマンドは `~/Library/Caches/hwnpu`) の `.mlmodelc` と配置の結果。鍵はパッケージの木のダイジェスト | `cache.Prune`。変換し直すと古い項目が残る |
+| BonsaiAI のキャッシュ | `WithCacheDir` (コマンドは `~/Library/Caches/bonsaiai`) の `.mlmodelc` と配置の結果。鍵はパッケージの木のダイジェスト | `cache.Prune`。変換し直すと古い項目が残る |
 | e5 bundle のキャッシュ | `~/Library/Caches/<プロセス名>/com.apple.e5rt.e5bundlecache`。上限は見えない (49 GB) | テストのバイナリはコマンドの名前でビルドする |
 
-Core ML が CPU に置く演算と代わりの形は [Neural Engine](apple-neural-engine.ja.md) にある。部品は `hwnpu-dev info -model PART.mlpackage` で確かめる (`all on the NPU`)。
+Core ML が CPU に置く演算と代わりの形は [Neural Engine](apple-neural-engine.ja.md) にある。部品は `bonsaiai-dev info -model PART.mlpackage` で確かめる (`all on the NPU`)。
 
 ### 層ごとに分ける
 
-- `hwnpu-dev convert -target m1|m2|m3|m4|any|none` (既定 `any`) と `-parts N`。`llm.PlanSplit` が見積もったバイト数で釣り合わせる。出力は `out.partN.mlpackage` と `out.parts.json`。`internal/llm/chain` が部分 i の出力を部分 i+1 の入力につなぐ (写しなし)。
+- `bonsaiai-dev convert -target m1|m2|m3|m4|any|none` (既定 `any`) と `-parts N`。`llm.PlanSplit` が見積もったバイト数で釣り合わせる。出力は `out.partN.mlpackage` と `out.parts.json`。`internal/llm/chain` が部分 i の出力を部分 i+1 の入力につなぐ (写しなし)。
 - 切れ目をまたぐ値は参照と同じ尺度の残差の流れでなければならない (port-architecture のスキルに書いてある)。そうでないと切れ目が見つからない。
 
 ## 数値

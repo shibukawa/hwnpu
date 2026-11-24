@@ -46,7 +46,7 @@ type Usage struct {
 	Root  string
 	Units []Unit
 	// Other are the bytes of each folder of the root that is not in units (prompts, history,
-	// work, ...): never removed by hwnpu cache prune.
+	// work, ...): never removed by bonsaiai cache prune.
 	Other map[string]int64
 	Bytes int64 // all of the root's
 }
@@ -305,7 +305,7 @@ var (
 )
 
 // SetInUse sets what says whether this process uses a unit (its folder), in place of the units
-// it touched since it started (Touch): hwnpud's engine, which runs for long and knows the models
+// it touched since it started (Touch): bonsaiaid's engine, which runs for long and knows the models
 // it holds loaded, sets it so that what it let go can be removed.
 func SetInUse(f func(unit string) bool) {
 	usedMu.Lock()
@@ -368,7 +368,7 @@ func Touch(path string) {
 	}
 }
 
-// Removable reports whether hwnpu may remove x now: not used in the last keep (another process
+// Removable reports whether bonsaiai may remove x now: not used in the last keep (another process
 // may read it), nor by this process, nor with work queued for it.
 func Removable(x Unit, now time.Time, keep time.Duration) bool {
 	if now.Sub(x.Used) < keep {
@@ -419,7 +419,7 @@ func (x Unit) Remove() error {
 func (x Unit) remove() (int64, error) {
 	entries := CoreAIEntries(x)
 	if x.Kind == KindOriginal {
-		if err := os.Remove(filepath.Join(x.Path, "hwnpu-lock.json")); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(x.Path, "bonsaiai-lock.json")); err != nil && !os.IsNotExist(err) {
 			return 0, err
 		}
 	}

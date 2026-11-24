@@ -6,8 +6,8 @@ import (
 	"maps"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // LoadSettings reach the loads of the role they are for, the later names over the earlier, and

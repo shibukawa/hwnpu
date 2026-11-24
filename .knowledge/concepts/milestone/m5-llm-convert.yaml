@@ -6,7 +6,7 @@ summary: >-
   LFM3-1.7B で全演算が ANE に載り、PyTorch 参照とのロジット一致まで確認した。
 lifecycle: active
 facts:
-  outcome: cmd/hwnpu-convert が config.json と safetensors (bf16) または GGUF から、固定系列長の ML Program を書き出す
+  outcome: cmd/bonsaiai-convert が config.json と safetensors (bf16) または GGUF から、固定系列長の ML Program を書き出す
   packages:
     - internal/mlpackage: MIL プログラムの組み立て (protobuf)、weight.bin (MILBlob 形式)、Manifest.json
     - internal/milspec, internal/mlspec: coremltools 9.0 の .proto から protoc-gen-go で生成 (google.golang.org/protobuf 依存を追加)
@@ -33,7 +33,7 @@ open_questions:
     resolution: >-
       2026-10-29 ホストが持つバッファを入出力に渡す方式で実装した。注意層は kv_k_N/kv_v_N (1, kv_heads, cache, head_dim) を入力に取り新しい K/V を
       出力、畳み込み層は直前 6 行の窓 win_conv_N を入出力、マスクと RoPE の表はホストが位置から作って渡す (llm.Cached.StepInputs)。
-      prefill は同じプログラムを 1 回 Q トークンずつ回す。cmd/hwnpu-generate と internal/tokenizer で日本語の文書を生成できた。
+      prefill は同じプログラムを 1 回 Q トークンずつ回す。cmd/bonsaiai-generate と internal/tokenizer で日本語の文書を生成できた。
       TestCachedMatchesFull で CPU 上のキャッシュなしのプログラムと相対誤差 6e-4 以内 (4 通りの改変を検出)。MLState と prefill 専用のプログラムは未着手
   embedding-table:
     text: 埋め込み表 (128000x2048) をホスト側で引くために、配布物にどの形式で入れるか (今は元チェックポイントから直接読んでいる)

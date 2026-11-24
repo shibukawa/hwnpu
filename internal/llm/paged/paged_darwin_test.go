@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // On the Neural Engine, the attention over a chunk keeps the many lightly weighted keys when the
@@ -29,7 +29,7 @@ func TestSmallValuesOnNeuralEngine(t *testing.T) {
 	if coreai.OnCPU() {
 		t.Skip("on Core AI's CPU")
 	}
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{CacheDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)

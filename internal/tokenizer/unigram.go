@@ -13,7 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/shibukawa/hwnpu/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
 )
 
 // Unigram is a Hugging Face tokenizer.json of a Unigram model as T5's (sentencepiece converted):

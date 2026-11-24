@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
 )
 
 // lintProgram finds in an .aimodel's bytecode what ailower.LintPackage finds in a package: the

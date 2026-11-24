@@ -11,13 +11,13 @@ Facts about the Neural Engine itself are in [Neural Engine](apple-neural-engine.
 
 | Where | How |
 |---|---|
-| Public library (`hwnpu.Open`) | Registered first in `backends_darwin.go`: the default Apple device. Core AI by name (`WithBackend("coreai")`, `HWNPU_BACKEND=coreai`) |
-| CPU runs | `GraphSource.Units` / `HWNPU_COREML_UNITS=cpu` run a package on Core ML's CPU (references, models the ANE runs worse) |
-| `llm.OpenDevice` with no backend named | Prefers `coreml`; used by `hwnpu-dev generate` and `formats` |
-| `hwnpu-dev info`, `powerbench`, `probe`, `report` | Core ML device, placement report (`MLComputePlan` shows each op's device) |
+| Public library (`bonsaiai.Open`) | Registered first in `backends_darwin.go`: the default Apple device. Core AI by name (`WithBackend("coreai")`, `BONSAIAI_BACKEND=coreai`) |
+| CPU runs | `GraphSource.Units` / `BONSAIAI_COREML_UNITS=cpu` run a package on Core ML's CPU (references, models the ANE runs worse) |
+| `llm.OpenDevice` with no backend named | Prefers `coreml`; used by `bonsaiai-dev generate` and `formats` |
+| `bonsaiai-dev info`, `powerbench`, `probe`, `report` | Core ML device, placement report (`MLComputePlan` shows each op's device) |
 | `aicheck run -coreml` | Core ML as a comparison when Core AI's result looks wrong |
 
-`hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` read `coreml` as Core AI. The program format
+`bonsaiai-chat`, `bonsaiai-image` and `bonsaiai-audio` read `coreml` as Core AI. The program format
 `.mlpackage` (MIL) is still what most models convert to; Core AI lowers it, `milcpu` runs it.
 
 ## How it works
@@ -32,19 +32,19 @@ Facts about the Neural Engine itself are in [Neural Engine](apple-neural-engine.
 
 ## Limits
 
-| Limit | Value | What hwnpu does |
+| Limit | Value | What BonsaiAI does |
 |---|---|---|
 | Weights per package | 0.99 GiB runs on the ANE, 1.02 GiB falls to the CPU (M1–M3, every format); M4 2 GB | Split by layers at conversion (below) |
 | Too little work | Small models stay on the CPU even in fp16 ((32, 256)→256 on CPU, (64, 512)→512 on ANE; one-row parts) | 8 rows; merge small parts; batch padding (`tools/coreml/ane_pad.py`) |
 | ANE compile cache | About 4 GiB (see [Neural Engine](apple-neural-engine.md)) | Fewer, smaller programs |
-| hwnpu's cache | `.mlmodelc` and placement results in `WithCacheDir` (commands: `~/Library/Caches/hwnpu`), keyed by the package's tree digest | `cache.Prune`; converting again leaves old entries |
+| BonsaiAI's cache | `.mlmodelc` and placement results in `WithCacheDir` (commands: `~/Library/Caches/bonsaiai`), keyed by the package's tree digest | `cache.Prune`; converting again leaves old entries |
 | e5 bundle cache | `~/Library/Caches/<process>/com.apple.e5rt.e5bundlecache`, no cap seen (49 GB) | Build test binaries with the command's name |
 
-Ops Core ML puts on the CPU and their stand-ins are in [Neural Engine](apple-neural-engine.md). Check a part with `hwnpu-dev info -model PART.mlpackage` (`all on the NPU`).
+Ops Core ML puts on the CPU and their stand-ins are in [Neural Engine](apple-neural-engine.md). Check a part with `bonsaiai-dev info -model PART.mlpackage` (`all on the NPU`).
 
 ### Splitting by layers
 
-- `hwnpu-dev convert -target m1|m2|m3|m4|any|none` (default `any`) and `-parts N`; `llm.PlanSplit`
+- `bonsaiai-dev convert -target m1|m2|m3|m4|any|none` (default `any`) and `-parts N`; `llm.PlanSplit`
   balances by estimated bytes. Output `out.partN.mlpackage` and `out.parts.json`; `internal/llm/chain`
   binds part i's output as part i+1's input, no copies.
 - What crosses a cut must be the residual stream at the reference's scale (the port-architecture

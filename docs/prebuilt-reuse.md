@@ -1,6 +1,6 @@
 # Core AI の prebuilt を部品ごとに差分で作る (作る側)
 
-書き出しを作り直したとき (版が上がる、一部の部品だけ変わるなど) に、変わっていない部品の `.aimodelc` は前の書き出しのものを流用し、変わった部品だけを `coreai-build` にかける。範囲は作る側 (`hwnpu-dev prebuild -packed` / `-put`、`hwnpu-dev models package MODEL[/coreai-ARCH]`) だけ。端末が部品ごとに取る仕組みは別の課題 (7節)。
+書き出しを作り直したとき (版が上がる、一部の部品だけ変わるなど) に、変わっていない部品の `.aimodelc` は前の書き出しのものを流用し、変わった部品だけを `coreai-build` にかける。範囲は作る側 (`bonsaiai-dev prebuild -packed` / `-put`、`bonsaiai-dev models package MODEL[/coreai-ARCH]`) だけ。端末が部品ごとに取る仕組みは別の課題 (7節)。
 
 ## 実装の状態 (2026-11-26)
 
@@ -8,7 +8,7 @@
 - コード: `internal/backend/coreai/record.go` (記録の形、`MarkDevice`)、`reuse_darwin.go` (候補、判断、写す、待避、記録を書く)、`prebuild_darwin.go` の `Build`、`pack_darwin.go` の `checkPacked`
 - テスト: `internal/backend/coreai/reuse_darwin_test.go` (9節の場合を全部)
 - 実機での確かめ (M1、偽の新しい書き出しに FLUX.2 klein v5 の `ctx` と `dit_double_0` を写して): 記録を足した v5 から `dit_double_0` の h14g を流用 (0.6 秒、重みの写像を読み直して確かめた。写したものは v5 のものとバイトまで同じ)。記録がなければ流用せずコンパイルに回った。`-mark failedToSpecialize` のあとは作らずに止まり、レシピの決まりを提案した
-- Qwen3.5-0.8B で、記録のある版上げと、ビルドの選択を変えた一部の作り直しと、そのあとの推論を確かめた (M1、h13g、2026-11-26)。どれも、Core AI のキャッシュが空のプロセスで、端末でコンパイルしたもの (`HWNPU_COREAI_PREBUILT=off`) と同じ seed で同じ文を出し、prebuilt の失敗はなかった (端末の印は17部品とも `ok`)
+- Qwen3.5-0.8B で、記録のある版上げと、ビルドの選択を変えた一部の作り直しと、そのあとの推論を確かめた (M1、h13g、2026-11-26)。どれも、Core AI のキャッシュが空のプロセスで、端末でコンパイルしたもの (`BONSAIAI_COREAI_PREBUILT=off`) と同じ seed で同じ文を出し、prebuilt の失敗はなかった (端末の印は17部品とも `ok`)
   - r1 を一から: 17部品 6分22秒
   - r1 → r2 (今のコードの書き出し): 大きい9部品 (`model.part1`〜`7`、`*.mass`) を r1 から流用し、中身の変わった注意の8部品だけを作って 10 秒。読み込みは端末のコンパイルの 22 秒に対して 1.8 秒
   - レシピに `sr-q8.attn*` の `do: device` を足すと: その4部品は `ARCH.prev` に移り (束は13部品)、端末でコンパイルされた (読み込み 7.0 秒)
@@ -43,10 +43,10 @@
     "vae_s0": { "source": "e190…", "result": "left", "rule": "LeftToDevice" },
     "dit_double_0": { "source": "…", "result": "built", "tool": "coreai-build-3605.6.3",
                       "jobs": 3, "built": "2026-11-25T10:35:30Z", "seconds": 1212,
-                      "device": { "status": "ok", "checked": "2026-11-26", "function": "s1024x1024", "by": "hwnpu-image" } },
+                      "device": { "status": "ok", "checked": "2026-11-26", "function": "s1024x1024", "by": "bonsaiai-image" } },
     "dit_single_0": { "source": "…", "result": "reused", "from": "…-v5.coreai", "jobs": 3,
                       "device": { "status": "failedToSpecialize", "checked": "2026-11-26",
-                                  "function": "s1024x1024", "by": "hwnpu-dev prebuild -mark" } }
+                                  "function": "s1024x1024", "by": "bonsaiai-dev prebuild -mark" } }
   }
 }
 ```
@@ -61,9 +61,9 @@
 ### 2.1 記録の前の prebuilt に記録を足す (`-record`)
 
 ```sh
-hwnpu-dev prebuild -record -n                  # 足すものを並べる
-hwnpu-dev prebuild -record                     # 手元のキャッシュの全部と、書き戻す取得元 (設定があれば) の全部の束
-hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだけ
+bonsaiai-dev prebuild -record -n                  # 足すものを並べる
+bonsaiai-dev prebuild -record                     # 手元のキャッシュの全部と、書き戻す取得元 (設定があれば) の全部の束
+bonsaiai-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだけ
 ```
 
 - 記録のない (または `legacy` の) 部品に、ファイルから分かることで項目を書く (`coreai.Backfill`): `metadata.json` の `producer` と `creationDate`、`result: built`、`jobs` は今のレシピの `jobs`、`backfilled` にその日。取得元の束は、ここまでどれもレシピで作って置いたもの (落ちた部品のある書き出しは置かない) なので、記録のあとに作ったものと同じに扱う
@@ -76,7 +76,7 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 1. 部品ごとに、レシピの決まり (`do: device`) と `LeftToDevice` を先に見る。当たれば作らない (流用もしない)
 2. `-force` でなければ、候補から同じ source のものを探す。候補は次のフォルダの `*.ARCH.aimodelc`:
    - 今の書き出しの `NAME.coreai.prebuilt/ARCH` (その場所にあるもの) と、その待避場所 `ARCH.prev`
-   - 同じフォルダ (同じモデルの `HWNPU_CACHE/models/<dir>/`) のほかの書き出しの `*.coreai.prebuilt/ARCH` と `ARCH.prev`
+   - 同じフォルダ (同じモデルの `BONSAIAI_CACHE/models/<dir>/`) のほかの書き出しの `*.coreai.prebuilt/ARCH` と `ARCH.prev`
 3. 同じ source の候補のどれかに、端末で落ちた印 (`device.status` が `ok` と `unchecked` のほか) があれば、作らずにその部品を失敗にする。同じ入力からは同じものができるので、作り直しても同じになる。今までの失敗と同じ流れで、レシピの `do: device` の決まりを提案して止まり、その書き出しのそのチップの分は取得元に置かない。印のあとでも作りたいときは `-force`
 4. 候補を、その場所のもの、端末で `ok` のもの、そのほかの順に見て、4節の条件を全部満たす最初のものを使う。その場所のものならそのまま (「prebuilt already」)、ほかのものなら一時フォルダに写して (APFS の clone) から置き換える (「taken from X」)
 5. どれも使えなければ今までどおりコンパイルする。候補があって外れたときは、最初に外れた理由をログに出す (`dit_double_0.aimodel h15g: compiling (not the one of …-v5.coreai: made by coreai-build-3605.5.0, coreai-build-3605.6.3 here)`)
@@ -84,7 +84,7 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 7. 置き換える部品の前のもの (条件を満たさなかったもの、`-force` で作り直すもの) は、消さずに `ARCH.prev/` へ移し、記録の項目も `ARCH.prev/build.json` へ移す。次に作るときの候補になる。移すのは新しいものができてから (コンパイルが落ちたときは前のものがその場所に残る)
 8. 終わったら `build.json` を書き、今までどおり `-packed` / `-put` で束にする。記録だけが変わったとき (`-mark` のあとなど) も、`-put` で取得元の束が置き換わる (`revision`)
 
-パックしない作り方 (`hwnpu-dev prebuild` で `-packed` も `-put` もないとき、`.aimodelc` を `.aimodel` の横に丸ごと置く) は今までのまま (同じ source で NE に乗っていれば飛ばす)。
+パックしない作り方 (`bonsaiai-dev prebuild` で `-packed` も `-put` もないとき、`.aimodelc` を `.aimodel` の横に丸ごと置く) は今までのまま (同じ source で NE に乗っていれば飛ばす)。
 
 ## 4. 流用する条件 (全部満たすときだけ)
 
@@ -92,7 +92,7 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 |---|---|---|
 | 1 | 元のプログラムが同じ | 新しい `X.aimodel/main.hash` と候補の `main.hash` (索引の鍵)、候補の `metadata.json` の `sourceHash`、記録の `source` |
 | 2 | チップが同じ | フォルダ (`ARCH`) と名前 (`X.ARCH.aimodelc`) |
-| 3 | `coreai-build` の版が同じ | 候補の `metadata.json` の `producer` と、今の `coreai-build --version` (`hwnpu-dev prebuild` は版がレシピの `tools.coreai-build` と違えば `--any-tools` なしでは止まる)。版が分からないときは、その場所にあるもののほかは使わない |
+| 3 | `coreai-build` の版が同じ | 候補の `metadata.json` の `producer` と、今の `coreai-build --version` (`bonsaiai-dev prebuild` は版がレシピの `tools.coreai-build` と違えば `--any-tools` なしでは止まる)。版が分からないときは、その場所にあるもののほかは使わない |
 | 4 | その部品に当たるレシピの決まりが同じ | 今回 `do: device` なら作らない (1)。記録の `result` が `left` のものは使わない。今のレシピの決まりは `do: device` しかないので、決まりの中身のダイジェストまでは比べていない (決まりの種類が増えたら足す) |
 | 5 | 前回の結果が良い | 記録の `result` が `built` か `reused`、`jobs` が今の `-j` 以下 (前より多く同時に作ったものは使わない。1本ずつ作ったものは何本同時の作り方にも使える)、`onANE`、端末で落ちた印がない (3) |
 | 6 | 詰めた形が同じ | 記録の `pack` が `PackFormat`。候補の `resources.bin.map.json` を新しい `main.mlirb` から作り直して、大きさと SHA-256 が写像の書くものと同じこと (`checkPacked`。重みを一度読む。FLUX.2 の DiT 1本で 1 秒ほど)。`-n` では読まない |
@@ -103,10 +103,10 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 
 - **手で** (`-mark`): 検証のあとに打つ。`-programs` はパターン (path.Match)、なければ全部。`-function` は落ちた関数
   ```sh
-  hwnpu-dev prebuild -mark failedToSpecialize -arch h15g -programs 'dit_single_*' -function s1024x1024 EXPORT_DIR
-  hwnpu-dev prebuild -mark ok -arch h15g EXPORT_DIR
+  bonsaiai-dev prebuild -mark failedToSpecialize -arch h15g -programs 'dit_single_*' -function s1024x1024 EXPORT_DIR
+  bonsaiai-dev prebuild -mark ok -arch h15g EXPORT_DIR
   ```
-- **動かしたときに自動で** (設定なし): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) を Core AI が開けたら `ok`、`the prebuilt program failed` のメッセージに `failedToSpecialize` があれば `failedToSpecialize` を、その束の `build.json` に書く (`coreai.DeviceMark`、`markPrebuilt`)
+- **動かしたときに自動で** (設定なし): `bonsaiai-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) を Core AI が開けたら `ok`、`the prebuilt program failed` のメッセージに `failedToSpecialize` があれば `failedToSpecialize` を、その束の `build.json` に書く (`coreai.DeviceMark`、`markPrebuilt`)
   - 書くのは記録 (`build.json`) のある束だけ。記録のない束に新しく作ることはしない
   - ほかの失敗 ("Request cancelled" など) は書かない。ほかのプロセスが Neural Engine を使っていたせいのこともあり、書くと良い部品を作る側が断ることになる。`failedToSpecialize` は部品の側の失敗で、毎回同じになる
   - 書くのは記録が変わるときだけ (`Record.NeedsMark`: `ok` の上に `ok`、同じ関数の同じ失敗は書き直さない)。関数ごとにプロセスで1回。書けないとき (アプリの読み取り専用の置き場所など) は黙って続ける
@@ -119,9 +119,9 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 ## 6. 決めたこと (2026-11-26)
 
 1. **`build.json` は束に入れる**。`PackedRoot` の中に置くので `coreai.Bundle` がそのまま入れる。ほかの開発機が前の版の束を取れば、記録も付いてくる。束のバイトは変わるが、鍵 (`ProgramsDigest`) と `Holds` (`.aimodelc` の一覧) は変わらない。束の entry の `revision` が記録の SHA-256 で、記録だけが変わった束 (端末の印、`-record`) も取得元で置き換わる (2.1節)
-2. **端末の結果は、動かしたときに自動で書き (設定なし。`failedToSpecialize` と `ok` だけ)、手 (`-mark`) でも書ける**。はじめに入れた `HWNPU_DEV=coreai.mark-prebuilt` はなくした。確かめの段 (5節の最後) は次
+2. **端末の結果は、動かしたときに自動で書き (設定なし。`failedToSpecialize` と `ok` だけ)、手 (`-mark`) でも書ける**。はじめに入れた `BONSAIAI_DEV=coreai.mark-prebuilt` はなくした。確かめの段 (5節の最後) は次
 3. **記録のない今の prebuilt には、マージのときに `-record` で記録を足す** (取得元の全部の束と、各開発機の手元のキャッシュ)。フラグで信用する道 (はじめに入れた `-trust-old`) はなくした。記録のないものは、その場所では今までどおり使い、ほかの書き出しへは流用しない
-4. **前の版を取得元から自動では引かない**。前の書き出しの名前を作る方法 (版を下げる) はモデルによって脆く、取得元を一覧する API もない。前の版の prebuilt が手元になければ、`hwnpu-dev models fetch` で前の書き出しの `coreai-ARCH` を取ってから作る (同じモデルのフォルダに入るので候補になる)
+4. **前の版を取得元から自動では引かない**。前の書き出しの名前を作る方法 (版を下げる) はモデルによって脆く、取得元を一覧する API もない。前の版の prebuilt が手元になければ、`bonsaiai-dev models fetch` で前の書き出しの `coreai-ARCH` を取ってから作る (同じモデルのフォルダに入るので候補になる)
 
 ## 7. 範囲の外 (別の課題)
 

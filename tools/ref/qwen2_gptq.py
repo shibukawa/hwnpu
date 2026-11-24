@@ -12,9 +12,9 @@ then picks each weight's entry in column order and moves its error onto the colu
 quantized. lm_head is done last on the final norm's output.
 
 Writes a codes directory (internal/palette.Codes: index.json, KEY.idx, KEY.tab, the key
-q4_gptq.key's) that hwnpu-dev convert -codes and hwnpu-chat -codes read:
+q4_gptq.key's) that bonsaiai-dev convert -codes and bonsaiai-chat -codes read:
 
-    PY=~/.cache/hwnpu/dev/ref-venv/bin/python
+    PY=~/.cache/bonsaiai/dev/ref-venv/bin/python
     $PY tools/ref/qwen2_gptq.py MODEL_DIR OUT --calib FILE... [--fmt lut4] [--col-block 0]
 """
 import argparse

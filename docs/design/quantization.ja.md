@@ -25,7 +25,7 @@ NPU ごとの重みの形式、形式と校正の方法の選び方、モデル�
 | 1 行 | 742 µs | 466 | 449 | 387 | 329 | 351 |
 | 64 行 | 808 | 506 | 515 | 477 | 379 | 382 |
 
-呼び出しの下限 約 160 µs を引くと、fp16 は約 58 GB/s、int8 と lut8 は約 55 GB/s。lut4 は約 90 G 要素/秒で頭打ちになり、lut8 の 1.3〜1.4 倍にとどまる。M3 (Core ML、E2B の大きさの層 6 つ) では lut4 / lut6 / lut8 / fp16 が 1.81 / 2.65 / 3.49 / 6.52 ms。`hwnpu-dev probe` の速さはモデルの速さではない: M1 で probe は int8 を 62 GB/s で読むが、Gemma 4 E2B の部品は約 48 GB/s で、int8 は lut6 より遅かった。実際の部品を `HWNPU_PROFILE=1` で測る。
+呼び出しの下限 約 160 µs を引くと、fp16 は約 58 GB/s、int8 と lut8 は約 55 GB/s。lut4 は約 90 G 要素/秒で頭打ちになり、lut8 の 1.3〜1.4 倍にとどまる。M3 (Core ML、E2B の大きさの層 6 つ) では lut4 / lut6 / lut8 / fp16 が 1.81 / 2.65 / 3.49 / 6.52 ms。`bonsaiai-dev probe` の速さはモデルの速さではない: M1 で probe は int8 を 62 GB/s で読むが、Gemma 4 E2B の部品は約 48 GB/s で、int8 は lut6 より遅かった。実際の部品を `BONSAIAI_PROFILE=1` で測る。
 
 形式は Neural Engine のコンパイルのキャッシュ (約 3.5〜4 GiB) に入るプログラムの数も変える。LFM3 の lut6 の 4 本は入らず起動のたびにコンパイルし直したので、`-tier auto` は 6 ビットと 8 ビットの形式で段階を持たない。[Neural Engine](apple-neural-engine.ja.md) を参照。
 
@@ -48,7 +48,7 @@ NPU ごとの重みの形式、形式と校正の方法の選び方、モデル�
 8192 × 2048 の GEMV: q4 0.30〜0.35 ms、q6 0.42〜0.47、q8 0.43〜0.50。q6 は q8 とほぼ同じ時間 (上位ビットを取り出す計算で律速)。得るのはメモリ (q8 の 76 %) と精度 (相対 RMS q4 0.071、q6 0.022、q8 0.005)。精度に効く数値の点:
 
 - q8 と q6 の GEMV は、32 項の部分和を scale を掛ける前に 2 つの bf16 (上位と残り) に分ける: 1 つの bf16 ではコサイン 0.9998、2 つで 0.999992
-- コアは切り捨ての丸めで始まる。hwnpu は最近接偶数の丸めにする (Anima の DiT の速度誤差 q8 0.088 → 0.031)。書き出し直すと効く
+- コアは切り捨ての丸めで始まる。BonsaiAI は最近接偶数の丸めにする (Anima の DiT の速度誤差 q8 0.088 → 0.031)。書き出し直すと効く
 
 [AMD の LLM](amd-llm.md) と [AMD](amd.md) を参照。
 
@@ -57,12 +57,12 @@ NPU ごとの重みの形式、形式と校正の方法の選び方、モデル�
 Mac の専門家混合のモデルは専門家を CPU で回す ([MoE](moe.md) を参照):
 
 - gpt-oss-20b: チェックポイントの MXFP4 (e2m1、32 個ごとに 2 の冪の scale) のまま。丸め直さない
-- Qwen3.6-35B-A3B: bf16 の専門家を gpt-oss の形の MXFP4 に派生させる (`hwnpu-dev mxfp4`、`qwen35.DeriveMXFP4`、専門家 17.1 GB、全体 22.0 GB)。`mxfp4.Encode` は OCP の scale (最大値の指数 − 2) とその周りの 3 つを試して二乗誤差の小さいものを取り、値は最も近い e2m1 に (同じ距離は偶数)。正規分布の値で相対誤差 0.113。KL は測っていない
+- Qwen3.6-35B-A3B: bf16 の専門家を gpt-oss の形の MXFP4 に派生させる (`bonsaiai-dev mxfp4`、`qwen35.DeriveMXFP4`、専門家 17.1 GB、全体 22.0 GB)。`mxfp4.Encode` は OCP の scale (最大値の指数 − 2) とその周りの 3 つを試して二乗誤差の小さいものを取り、値は最も近い e2m1 に (同じ距離は偶数)。正規分布の値で相対誤差 0.113。KL は測っていない
 - LFM2-8B-A1B: 専門家を int8 の実行時の重みとして Neural Engine で (Core AI、M2 以降)
 
 ## モデルの系統ごとの既定
 
-コード (`Arch.Format`、`Config.Format()`、`defaultFormats`) と [models.yaml](../../models.yaml) から。hwnpu-chat は lut の表を `kmeans-minmax` で当てはめる。変換器だけの既定は `uniform`。
+コード (`Arch.Format`、`Config.Format()`、`defaultFormats`) と [models.yaml](../../models.yaml) から。bonsaiai-chat は lut の表を `kmeans-minmax` で当てはめる。変換器だけの既定は `uniform`。
 
 | モデル | Apple (Neural Engine) | Intel | AMD (model-recipes.yaml `amd`) |
 |---|---|---|---|
@@ -99,9 +99,9 @@ LLM の既定の理由 (断りがなければ float の参照に対する KL):
 - **KL(参照 ‖ 量子化)**: 400 位置 (256 トークンをプロンプトとして読み、その後 1 つずつ) の平均、中央値、95 パーセンタイルと最上位の一致。**BOS をつける** (LFM3 は BOS なしだと 4 倍悪く見える)
 - 5 つの文は `~/models/calib`: README、GPL-3 (校正に使わない。合わせすぎを見るため)、wiki40b-ja (評価分)、wikitext-2 (試験分)、Go のコード。変わり続けるものは `testdata/texts` に固定した写しがある
 - 参照: CPU の fp32 (HF) か、同じ NPU の bf16。NPU の量子化の KL は CPU の見積もりと合うこと (LFM3 0.036 と 0.035)。合わなければまず NPU の演算を疑う
-- Neural Engine: `hwnpu-dev generate -package P.parts.json -score REF,...` がキャッシュなしのプログラム (`hwnpu-dev convert -seq 128`) を参照のトークン (`ref_logits.py`、`ref_gemma4.py`) で流す。文の先頭のトークンは重い (KL 最大 8〜13) ので、設定の比較は同じ文どうしでだけ
+- Neural Engine: `bonsaiai-dev generate -package P.parts.json -score REF,...` がキャッシュなしのプログラム (`bonsaiai-dev convert -seq 128`) を参照のトークン (`ref_logits.py`、`ref_gemma4.py`) で流す。文の先頭のトークンは重い (KL 最大 8〜13) ので、設定の比較は同じ文どうしでだけ
 - 量子化を疑う前に演算の誤差を除く: 同じプログラムを Neural Engine と Core ML の CPU で比べる。ANE の `silu` だけで LFM3 の lut8 の損の大半だった (`blocks.SiLU` で KL 0.058 → 0.022)
-- `hwnpu-dev formats` (fp16 が部品に入らないときは `-ref lut8`): 次のトークンの一致と短い問い。短い文では量子化した方が perplexity が低いことがある。一致で比べる
+- `bonsaiai-dev formats` (fp16 が部品に入らないときは `-ref lut8`): 次のトークンの一致と短い問い。短い文では量子化した方が perplexity が低いことがある。一致で比べる
 - 画像の生成: 参照の軌跡の上の速度の相対 RMS 誤差 (外した Chroma1 の `TestCallsOnDevice`) と、複数の種で自由に回した最後の潜在のコサイン。1 ステップの誤差は自由に回した結果を予測しない (FLUX.3: 速度誤差 2.33 → 2.29 % で、潜在のコサインは 0.964 → 0.983)
 - 音声と画像のエンコーダ: WER / CER で (Whisper の lut6 は WER 4.43 → 4.87 % なので lut8)
 
@@ -115,7 +115,7 @@ LLM の既定の理由 (断りがなければ float の参照に対する KL):
 | KL < 0.05 (CPU、HF に対して) | 4 ビットを既定にできる |
 | KL 0.05〜0.2 | 答えで決める (LFM3 の lut6 はここ) |
 | KL ≥ 1 | 使えない |
-| `hwnpu-dev formats` で 90 % 以上、正解の数も同じ | 小さい方を取る |
+| `bonsaiai-dev formats` で 90 % 以上、正解の数も同じ | 小さい方を取る |
 | 85〜90 %、または算数や事実の新しい誤り | 1 つ上の形式のまま |
 | 80 % 未満、または答えが繰り返す | 使えない (Qwen3.5 の lut4: 60〜76 %) |
 
@@ -138,7 +138,7 @@ LLM の既定の理由 (断りがなければ float の参照に対する KL):
 | 順 | 方法 | 道具 | 結果 |
 |---|---|---|---|
 | 1 | 丸め (RTN) | `iron_q4.quantize_fmt`、`palette.QuantizeBits` | 基準。重みの誤差の最小は出力の誤差の最小ではない |
-| 1b | **ブロックの最小と最大を残す k-means** (データ不要) | `-quant kmeans-minmax` (`palette.KMeansMinMax`) | Qwen-Image-2.1 の DiT、4 ブロックを fp16 と比べて: 一様 4.9 % → 3.2 % (ただの k-means は 12.6 %: 外れ値を切る)。hwnpu-chat と音楽のモデルの既定 |
+| 1b | **ブロックの最小と最大を残す k-means** (データ不要) | `-quant kmeans-minmax` (`palette.KMeansMinMax`) | Qwen-Image-2.1 の DiT、4 ブロックを fp16 と比べて: 一様 4.9 % → 3.2 % (ただの k-means は 12.6 %: 外れ値を切る)。bonsaiai-chat と音楽のモデルの既定 |
 | 2 | **入力のチャネルごとの E[x²] で重みづけした表** (一様な段から Lloyd) | `q4_gptq.py --lut-fit wkmeans`、`palette.QuantizeWeightedMinMax`、`tools/coreai/lutfit` | LFM3 の lut6 0.050 → 0.038、lut4 0.66 → 0.33 (GPTQ と)。FLUX.3 の DiT の lut8 は潜在のコサイン 0.964 → 0.998 |
 | 3 | **GPTQ** (各列の誤差を後の列に送る、H = E[xxᵀ]) | `tools/amd/q4_gptq.py`、`qwen2_gptq.py`、`gptoss_gptq.py`、`anima_gptq.py` … | AMD の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、PLaMo 3 0.058 → 0.040。Apple の LFM3 の lut6 0.074 → 0.050 |
 | 4 | lut の前に回転 (下) | `llm.Rotate`、`tools/quant/rotkl` | Qwen3.5 でどの形式も KL が約半分 |
@@ -161,7 +161,7 @@ LLM の既定の理由 (断りがなければ float の参照に対する KL):
 codes:
 
 - `palette.Codes` (`index.json`、重みごとの `.idx` と `.tab`。Go からは `palette.CodesWriter`) に書く。チェックポイントの重みの形と bf16 の値のハッシュで引く (`iron_q4.weight_key` = `palette.WeightKey`) ので、モデルごとの名前の対応は要らない。書き出しが重みを並べ替えたりつないだりすると当たらない。ログの「N weights took the chosen codes」で数を確かめる。1 つとして量子化する融合した重み (PLaMo 3 の `gate_up_proj`) は当たる
-- AMD: `iron_export_lm.py --q4-codes DIR`。Apple: `hwnpu-dev convert -codes DIR`、`hwnpu-chat --codes DIR` (lutN だけ。プログラムの名前に codes のハッシュが入る。例 `gemma4-r1-lut6-gptq-27b3b448-per_layer.lut8-...`)
+- AMD: `iron_export_lm.py --q4-codes DIR`。Apple: `bonsaiai-dev convert -codes DIR`、`bonsaiai-chat --codes DIR` (lutN だけ。プログラムの名前に codes のハッシュが入る。例 `gemma4-r1-lut6-gptq-27b3b448-per_layer.lut8-...`)
 - models.yaml の `codes: HASH` があると codes で変換する。codes は書き出しと一緒に取得元に置き、取得元から取る (`chat.putCodes`、`fetchCodes`、`converted/MODEL/any/codes-HASH`)。書き出しの鍵が変わったとき、codes がないと誰も作り直せないため。[配布](distribution.md) を参照
 - GPTQ が既定なのは Qwen2.5-Coder-7B だけ。ほかは使うときに指定する。AMD のレシピは校正しない
 
@@ -173,7 +173,7 @@ codes:
 - `rotkl` を CPU で (milcpu、float32、256 トークン、kmeans-minmax): Qwen3.5-2B の lut8 0.0047 → 0.0033、lut6 0.0560 → 0.0267、lut4 0.6026 → 0.3664。0.8B の lut6 0.0749 → 0.0388。fp16 に丸めても範囲は崩れない
 - lut4 は回しても使えず、今の lut6 に届く lut4 の組み合わせもない (一番近い出力層 lut4 で 0.062)。回転で得るのは lut6 の精度で、速さではない
 - Neural Engine で (`rotkl -ane -per-part 6`、M2、2B、128 トークン、CPU の fp16 と比べる): lut6 0.0537 → **0.0288**。lut8 は 0.0079 → 0.0091 (NE 自身の fp16 の誤差に隠れる)
-- **Apple の Qwen3.5 の lut6 の書き出し (2B) は既定で回す**: `chat.Prepare` は回せるモデルを、Core AI と Core ML で lut6 以下のときだけ回す (書き出しの名前に `-rot`。`HWNPU_DEV=rotate=0` で回さない、`=1` で lut8 も)。AMD と Intel の書き出しは回さない。Qwen3.6 も回さない (専門家は CPU の MXFP4 で、量子化し直すことになる)。結果と MTP、表の扱いは [Qwen](llm-qwen.ja.md)
+- **Apple の Qwen3.5 の lut6 の書き出し (2B) は既定で回す**: `chat.Prepare` は回せるモデルを、Core AI と Core ML で lut6 以下のときだけ回す (書き出しの名前に `-rot`。`BONSAIAI_DEV=rotate=0` で回さない、`=1` で lut8 も)。AMD と Intel の書き出しは回さない。Qwen3.6 も回さない (専門家は CPU の MXFP4 で、量子化し直すことになる)。結果と MTP、表の扱いは [Qwen](llm-qwen.ja.md)
 
 ## 失敗の形
 
@@ -211,8 +211,8 @@ codes:
 ## 未解決
 
 - AWQ 風の scale (書いていない)
-- 回した書き出しを `hwnpu-chat --package` で直接渡すと、表は回していない `tables.safetensors` を選ぶ
-- Neural Engine の GPTQ をほかのモデルに: E4B (lean でも 16 GB の Mac に大きすぎる)、`per_layer` を校正に入れる、lut4 + GPTQ のチャット、問いを増やした比較と hwnpu-agent の課題、M2 と M3
+- 回した書き出しを `bonsaiai-chat --package` で直接渡すと、表は回していない `tables.safetensors` を選ぶ
+- Neural Engine の GPTQ をほかのモデルに: E4B (lean でも 16 GB の Mac に大きすぎる)、`per_layer` を校正に入れる、lut4 + GPTQ のチャット、問いを増やした比較と bonsaiai-agent の課題、M2 と M3
 - Qwen3.6 の派生の MXFP4 の専門家の精度 (bf16 との KL、MXFP4 の GPTQ)。AMD の GPTQ の codes は書き出しに入っていない
 - Qwen2.5-Coder 14B (変換も校正もしていない)。Qwen2.5-Coder の AMD の形
 - gpt-oss の AMD の注意を GPTQ と合わせて q6 に (注意は層の転送の 36 %)

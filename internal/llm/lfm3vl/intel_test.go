@@ -6,17 +6,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
 )
 
 // The vision encoder lowered to OpenVINO IR computes the reference's image embeddings on
-// OpenVINO's CPU (TestAgainstFP64 for Intel's NPU). Needs HWNPU_OV_PYTHON. The IR's output is
+// OpenVINO's CPU (TestAgainstFP64 for Intel's NPU). Needs BONSAIAI_OV_PYTHON. The IR's output is
 // fp16.
 func TestIntelIR(t *testing.T) {
 	py := ovcpu.Python()
 	if py == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	cfg, err := ParseConfig([]byte(tiny))
 	if err != nil {

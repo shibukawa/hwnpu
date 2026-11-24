@@ -3,10 +3,10 @@ package ouro
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch registers Ouro with the whitelist in internal/llm. 8 bit tables by default, as for the

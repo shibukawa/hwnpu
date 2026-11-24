@@ -11,18 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/recipe"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
 )
 
 // Export is model.json of an export: the graph's input grid and its outputs, each a
@@ -56,7 +56,7 @@ type Output struct {
 }
 
 // Dir is where the export of a model of models.yaml is kept: NAME.amd-npu2 (NAME in lower case,
-// as hwnpu-chat's AMD exports) in entries/amd-xdna2 under cache.Root, or in ~/models where one
+// as bonsaiai-chat's AMD exports) in entries/amd-xdna2 under cache.Root, or in ~/models where one
 // was made before (cache.ExportRoots); a new one goes to the first.
 func Dir(name string) string {
 	n := strings.ToLower(name) + ".amd-npu2"
@@ -124,7 +124,7 @@ type Graph struct {
 }
 
 // Open loads the export in dir onto dev.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Graph, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string) (*Graph, error) {
 	x, err := Read(dir)
 	if err != nil {
 		return nil, err
@@ -239,7 +239,7 @@ var ErrNoIRON = errors.New("no IRON")
 
 // FirstRunExport is the export of tool (tools/amd's script) that model m runs from on AMD's NPU,
 // in Dir(m.Name): here, from the shared layers, else made with IRON (fetch downloads what export
-// reads, export makes the export of it in dir), as hwnpu-image's first run makes it. have says
+// reads, export makes the export of it in dir), as bonsaiai-image's first run makes it. have says
 // whether a directory holds one; version is the export's (chat.PinnedRecipe). One made by hand
 // here goes in the sources written back to, described as a first run's.
 func FirstRunExport(ctx context.Context, m chat.Model, tool string, version int, have func(dir string) error, fetch func() (string, error), export func(python []string, model, dir string) error, log io.Writer) (string, error) {

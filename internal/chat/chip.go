@@ -35,7 +35,7 @@ func Chip() string { return chipName() }
 var ExportChips = []string{"M1", "M2"}
 
 // ActAsChip makes the process convert as a Mac of chip (of Chips; "" for this machine's) would:
-// hwnpu-dev models package makes each chip's Core AI exports on any machine. It returns what
+// bonsaiai-dev models package makes each chip's Core AI exports on any machine. It returns what
 // undoes it.
 func ActAsChip(chip string) (undo func()) {
 	was := chipName
@@ -52,7 +52,7 @@ var archChips = map[string]string{"h13": "M1", "h14": "M2", "h15": "M3", "h16": 
 // TakesExportsOf reports whether a Mac whose Neural Engine is of the architecture arch (h13g)
 // takes the Core AI exports made as a Mac of chip converts (ActAsChip): its own chip's, or, when
 // its chip is none of ExportChips, those of the last of them (the M2, which stands for the later
-// ones). hwnpu-dev models package prebuilds an export for the architectures that take it alone:
+// ones). bonsaiai-dev models package prebuilds an export for the architectures that take it alone:
 // where a chip has an export of its own (an M1's FLUX.2 klein), the others' is not its to load.
 func TakesExportsOf(arch, chip string) bool {
 	own := archChips[arch[:min(len(arch), 3)]]

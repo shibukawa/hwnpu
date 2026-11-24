@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // MusicCoCa's audio preprocessor and music encoder on the host give the reference's features
-// and embedding (HWNPU_TEST_MUSICCOCA_AUDIO_REF, mcc_audio_ref.py's prefix).
+// and embedding (BONSAIAI_TEST_MUSICCOCA_AUDIO_REF, mcc_audio_ref.py's prefix).
 func TestMusicCoCaAudio(t *testing.T) {
-	dir, ref := os.Getenv("HWNPU_TEST_MUSICCOCA_DIR"), os.Getenv("HWNPU_TEST_MUSICCOCA_AUDIO_REF")
+	dir, ref := os.Getenv("BONSAIAI_TEST_MUSICCOCA_DIR"), os.Getenv("BONSAIAI_TEST_MUSICCOCA_AUDIO_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_TEST_MUSICCOCA_DIR and HWNPU_TEST_MUSICCOCA_AUDIO_REF are not set")
+		t.Skip("BONSAIAI_TEST_MUSICCOCA_DIR and BONSAIAI_TEST_MUSICCOCA_AUDIO_REF are not set")
 	}
 	var meta struct {
 		Tokens []int `json:"tokens"`

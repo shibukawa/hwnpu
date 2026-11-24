@@ -8,23 +8,23 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/music"
-	"github.com/shibukawa/hwnpu/internal/notes"
-	"github.com/shibukawa/hwnpu/internal/pitch"
-	"github.com/shibukawa/hwnpu/internal/pose"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	"github.com/shibukawa/hwnpu/internal/sfx"
-	"github.com/shibukawa/hwnpu/internal/systemone"
-	"github.com/shibukawa/hwnpu/internal/vision/detect"
-	"github.com/shibukawa/hwnpu/internal/vision/siglip"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/music"
+	"github.com/shibukawa/bonsaiai/internal/notes"
+	"github.com/shibukawa/bonsaiai/internal/pitch"
+	"github.com/shibukawa/bonsaiai/internal/pose"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/sfx"
+	"github.com/shibukawa/bonsaiai/internal/systemone"
+	"github.com/shibukawa/bonsaiai/internal/vision/detect"
+	"github.com/shibukawa/bonsaiai/internal/vision/siglip"
 )
 
 // The kinds whose programs are of one shape, converted in Go from the model's files: what their
-// command's first run converts for Core AI (hwnpu-image detect, pose, label and embed;
-// hwnpu-audio pitch, notes, generate and generate -m sfx; hwnpu-chat search and systemone).
+// command's first run converts for Core AI (bonsaiai-image detect, pose, label and embed;
+// bonsaiai-audio pitch, notes, generate and generate -m sfx; bonsaiai-chat search and systemone).
 func init() {
 	Register(&Preparer{Name: "detect", Kinds: []chat.Kind{chat.KindDetect}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {
 		file, err := onlyFile(e.Model, ".onnx")
@@ -116,7 +116,7 @@ func coreAIOnly(prepare func(airole.PrepareEnv, *airole.Files) error) func(airol
 	}
 }
 
-// onlyFile is the one file of extension ext the definitions pin of m (hwnpu-image's).
+// onlyFile is the one file of extension ext the definitions pin of m (bonsaiai-image's).
 func onlyFile(m chat.Model, ext string) (string, error) {
 	var files []string
 	for f := range maps.Keys(m.SHA256) {

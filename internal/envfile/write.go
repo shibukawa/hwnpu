@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// UserFile is the user's .env, which hwnpu config writes and hwnpud reads.
+// UserFile is the user's .env, which bonsaiai config writes and bonsaiaid reads.
 func UserFile() string {
 	if d := UserDir(); d != "" {
 		return filepath.Join(d, ".env")
@@ -20,7 +20,7 @@ func UserFile() string {
 // Var is a variable of a file.
 type Var struct{ Name, Value string }
 
-// Read is the variables of hwnpu's that the file p sets, in order (the first of a name is the one
+// Read is the variables of bonsaiai's that the file p sets, in order (the first of a name is the one
 // used); ok is false when there is no such file.
 func Read(p string) (vars []Var, ok bool, err error) {
 	ok, err = readFile(p, func(k, v string) { vars = append(vars, Var{k, v}) })

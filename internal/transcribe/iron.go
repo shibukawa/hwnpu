@@ -9,11 +9,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/whisper"
-	"github.com/shibukawa/hwnpu/internal/mapped"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/whisper"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // AMD's NPU runs the two graphs of tools/amd/iron_whisper.py (an export NAME.amd-npu2: encoder/,
@@ -59,7 +59,7 @@ func readIronMeta(dir string) (*IronMeta, error) {
 }
 
 // LoadIron loads the export of tools/amd/iron_whisper.py in dir on dev, AMD's NPU.
-func LoadIron(ctx context.Context, dev *hwnpu.Device, dir string) (*Transcriber, error) {
+func LoadIron(ctx context.Context, dev *bonsaiai.Device, dir string) (*Transcriber, error) {
 	m, err := readIronMeta(dir)
 	if err != nil {
 		return nil, err

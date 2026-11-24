@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/systemone"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/systemone"
 )
 
 // Decide is the use of a decision model (Liquid AI's d1) for an app: a model, a family or a use
@@ -29,12 +29,12 @@ func Decide(name string) ai.Use[*Decider] {
 //	settings: seqs         the prompt lengths of the programs, comma separated (512): a prompt
 //	                       runs on the shortest that holds it
 //	          format       the programs' weight format (lut8)
-//	programs: packages     the model converted by hwnpu-dev convert, with different -seq; with
+//	programs: packages     the model converted by bonsaiai-dev convert, with different -seq; with
 //	                       config, weights, tokenizer and calibration (default: next to config)
 //	          vision       the vision encoder, a package per image size: questions about images
 //	          audio        the audio encoder, a package per clip length (d1-Omni)
 //
-// A model of device cpu runs on hwnpu's CPU interpreter (slow; for checking). On AMD's NPU a
+// A model of device cpu runs on bonsaiai's CPU interpreter (slow; for checking). On AMD's NPU a
 // model runs from its export of tools/amd/iron_export_lm.py d1 (its recipe, model-recipes.yaml).
 var decideRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &Decider{remote: h} },
@@ -140,7 +140,7 @@ type Decision struct {
 // Decider answers typed questions about a state with a decision model. It runs one question at a
 // time.
 type Decider struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	m      *systemone.Model
 	model  string
 	cpu    bool
@@ -212,7 +212,7 @@ func (e kindError) Unwrap() []error { return []error{e.kind, e.err} }
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *Decider) Close() error {
 	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
+		return d.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	return d.m.Close()
 }

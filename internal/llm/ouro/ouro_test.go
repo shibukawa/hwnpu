@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // tiny is a small Ouro: 3 layers run 3 times (Ouro-1.4B runs 24 four times), grouped query
@@ -366,7 +366,7 @@ func TestPassesShareWeights(t *testing.T) {
 
 // Each layer of each pass on its own, fed the reference's hidden state, gives the reference's next
 // hidden state (the last layer of a pass but the last with model.norm after it); so does the head
-// after the last layer. This is what hwnpu-dev check does with a real checkpoint.
+// after the last layer. This is what bonsaiai-dev check does with a real checkpoint.
 func TestLayerByLayer(t *testing.T) {
 	c := tinyConfig(t)
 	w := synthetic(c)
@@ -404,12 +404,12 @@ func TestPartsMatchWhole(t *testing.T) {
 	for _, parts := range []int{2, 3, 4} {
 		path, plan := writeParts(t, c, w, llm.Options{Seq: n, Format: "fp16"}, parts)
 		p := cpuProgram(t, path)
-		hwnpu.EncodeF16(p.In["x"], feed["x"])
+		bonsaiai.EncodeF16(p.In["x"], feed["x"])
 		if err := p.Run(); err != nil {
 			t.Fatal(err)
 		}
 		got := make([]float32, len(whole))
-		hwnpu.DecodeF16(got, p.Out["y"])
+		bonsaiai.DecodeF16(got, p.Out["y"])
 		if e := relErr32(got, whole); e > 2e-3 {
 			t.Errorf("%d parts %v: relative error %g", parts, plan, e)
 		}

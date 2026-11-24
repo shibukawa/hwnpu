@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // The program, called once per chunk and merged, attends as one softmax over the whole cache:

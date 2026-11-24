@@ -7,11 +7,11 @@ import (
 	"math"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/sgemm"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/sgemm"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // The text's two graphs on AMD's NPU (tools/amd/iron_supertonic.py's TextGraph): the text
@@ -54,7 +54,7 @@ func textDir(dir, kind string, s Size) string {
 	return filepath.Join(dir, fmt.Sprintf("%s-t%d", kind, s.T))
 }
 
-func openAMDText(ctx context.Context, amd *hwnpu.Device, c Config, dir string) (*amdText, error) {
+func openAMDText(ctx context.Context, amd *bonsaiai.Device, c Config, dir string) (*amdText, error) {
 	t := &amdText{relK: map[string][][]float32{}, relV: map[string][][]float32{}}
 	var err error
 	if t.dpRows, err = table(filepath.Join(c.Dir, "onnx", Graphs.Duration), dpTable, dpWidth); err != nil {

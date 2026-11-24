@@ -1,7 +1,7 @@
 """Gated DeltaNet's recurrence as an IRON operator (Qwen3.5 / Qwen3.6's linear attention).
 
 IRON has the kernel (mlir-aie's ssm/gated_delta_rule.cc) but no operator; this is one, in
-hwnpu as iron_q4's operators are. Its kernel is kernels/gdn.cc: the same recurrence, with
+bonsaiai as iron_q4's operators are. Its kernel is kernels/gdn.cc: the same recurrence, with
 the block gathered in the core from a row of the column and silu applied there.
 
 GatedDeltaRule takes the short convolution's output (before silu) of the model's fused

@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-// RootEnv moves the root of everything hwnpu keeps (Root) elsewhere: an external disk, a
+// RootEnv moves the root of everything bonsaiai keeps (Root) elsewhere: an external disk, a
 // machine's shared disk (docs/cache-sharing-design.md 7.3).
-const RootEnv = "HWNPU_CACHE"
+const RootEnv = "BONSAIAI_CACHE"
 
-// Root is the one directory hwnpu writes what it keeps under: hwnpu in the OS's cache directory
+// Root is the one directory bonsaiai writes what it keeps under: bonsaiai in the OS's cache directory
 // that does not roam (~/Library/Caches on macOS, $XDG_CACHE_HOME or ~/.cache on Linux,
 // %LOCALAPPDATA% on Windows), or RootEnv. Under it (docs/cache-sharing-design.md 7.3):
 //
@@ -39,13 +39,13 @@ func Root() string {
 	if err != nil {
 		d = os.TempDir()
 	}
-	return filepath.Join(d, "hwnpu")
+	return filepath.Join(d, "bonsaiai")
 }
 
 var setRoot atomic.Pointer[string]
 
 // SetRoot moves Root to dir for this process, over RootEnv ("" for RootEnv's again): an
-// application that keeps hwnpu's files where it says (modelstore.Options.Root).
+// application that keeps bonsaiai's files where it says (modelstore.Options.Root).
 func SetRoot(dir string) {
 	if dir == "" {
 		setRoot.Store(nil)
@@ -56,7 +56,7 @@ func SetRoot(dir string) {
 
 // testRoot is Root under go test without RootEnv: a directory of the process's own.
 var testRoot = sync.OnceValue(func() string {
-	d, err := os.MkdirTemp("", "hwnpu-test-cache")
+	d, err := os.MkdirTemp("", "bonsaiai-test-cache")
 	if err != nil {
 		panic(err)
 	}
@@ -68,7 +68,7 @@ func Sub(elem ...string) string {
 	return filepath.Join(append([]string{Root()}, elem...)...)
 }
 
-// AMDTarget is the target (docs/model-table.md 4.1) of the exports for AMD's NPU hwnpu makes:
+// AMDTarget is the target (docs/model-table.md 4.1) of the exports for AMD's NPU bonsaiai makes:
 // XDNA 2 (IRON's npu2).
 const AMDTarget = "amd-xdna2"
 
@@ -100,7 +100,7 @@ func ExportRoots() []string {
 }
 
 // ExportStale says whether an export found by name is not the one the definitions pin (an
-// export fetched or made by hwnpu, its entry.json of other bytes than models.yaml's exports pin):
+// export fetched or made by bonsaiai, its entry.json of other bytes than models.yaml's exports pin):
 // FindExport passes it by, and the export is fetched again at the pin. The chat package sets it.
 var ExportStale = func(dir string) bool { return false }
 

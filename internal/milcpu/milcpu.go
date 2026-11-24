@@ -1,4 +1,4 @@
-// Package milcpu runs ML Programs on the CPU in float32, as a reference for hwnpu's converters.
+// Package milcpu runs ML Programs on the CPU in float32, as a reference for bonsaiai's converters.
 // It covers the operations that internal/mlpackage's builder emits, not the whole MIL spec, and
 // favors being obviously correct over speed (only the matrix products are parallel).
 //
@@ -22,9 +22,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/mlspec"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlspec"
 )
 
 // Tensor is a float32 tensor in row major order. A nil Shape is a scalar.
@@ -130,7 +130,7 @@ type Options struct {
 	// value (before RoundF16), to find what overflows fp16 (65504).
 	Trace func(typ, name string, maxAbs, rms float32)
 	// Value, when set, is called with each operation's output name and values (after
-	// RoundF16), to compare a value inside the program (aicheck's HWNPU_DEV=ailower.cut).
+	// RoundF16), to compare a value inside the program (aicheck's BONSAIAI_DEV=ailower.cut).
 	Value func(name string, data []float32)
 }
 

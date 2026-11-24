@@ -1,6 +1,6 @@
-// Package airpc calls the methods of Go values in another process over one connection: hwnpud's
-// session of the ai package (docs/design/hwnpud.md), in which an app's Plan, Runtime and models
-// run in hwnpud's engine and the app calls them as if they were its own.
+// Package airpc calls the methods of Go values in another process over one connection: bonsaiaid's
+// session of the ai package (docs/design/bonsaiaid.md), in which an app's Plan, Runtime and models
+// run in bonsaiaid's engine and the app calls them as if they were its own.
 //
 // A session is a connection (a Unix domain socket, upgraded from HTTP: Handler, Dial) with a
 // gob stream each way, of messages multiplexed by id. The server end holds objects by id (Root,

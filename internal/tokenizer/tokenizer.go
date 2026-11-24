@@ -24,7 +24,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/shibukawa/hwnpu/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
 )
 
 // Tokenizer is a loaded BPE tokenizer, byte-level or with byte fallback.

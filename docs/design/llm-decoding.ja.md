@@ -12,8 +12,8 @@
 |---|---|---|
 | `--draft N` | 8 | 生成のプログラムの 1 回のトークン数。下書きは N − 1。0 か 1 でなし (Q=1) |
 | `--mtp` | `auto` | チェックポイントに MTP の層があれば (Qwen3.5) それからも下書き。`off` はプロンプトだけ |
-| `HWNPU_DEV=mtp.drafts` | 2 (`mtpDrafts`) | MTP の下書きを続けていくつ |
-| `HWNPU_DEV=iron.drafts=0` | | AMD: 確かめる版を使わない |
+| `BONSAIAI_DEV=mtp.drafts` | 2 (`mtpDrafts`) | MTP の下書きを続けていくつ |
+| `BONSAIAI_DEV=iron.drafts=0` | | AMD: 確かめる版を使わない |
 | `--think` / `--no-think` | 考える (モデルの `no_think` があればそれ) | 答える前に考えさせる |
 | `--think-budget N` | 1024 | 答えに移らせるまでの思考のトークン数。0 で無制限 |
 | `--rep` | 1.05 | 答えのトークンへの繰り返しの罰 |
@@ -71,7 +71,7 @@ LFM3-1.7B lut4、Core ML: Q=1 61.5 ms、Q=8 72.0 ms (+17%)、Q=64 103.2 ms)。Q=
 
 ### 測った値 (プロンプトからの下書き)
 
-M3 16 GB、Core AI、LFM3-1.7B lut6、`hwnpu-chat serve`、温度 0、思考なし、同じプロンプトを 3 回 (3 回の差は 1% 以内):
+M3 16 GB、Core AI、LFM3-1.7B lut6、`bonsaiai-chat serve`、温度 0、思考なし、同じプロンプトを 3 回 (3 回の差は 1% 以内):
 
 | | 散文 300 トークン (「自転車のギアの仕組み」) | 1159 トークンの Go のファイルを写し返す 600 トークン |
 |---|---|---|
@@ -84,7 +84,7 @@ M3 16 GB、Core AI、LFM3-1.7B lut6、`hwnpu-chat serve`、温度 0、思考な�
 
 ## Qwen3.5 の MTP の下書き
 
-Qwen3.5 のチェックポイントは複数トークン予測の層 (`mtp.`) を 1 つ持つ。hwnpu はそれを下書きのモデルに
+Qwen3.5 のチェックポイントは複数トークン予測の層 (`mtp.`) を 1 つ持つ。BonsaiAI はそれを下書きのモデルに
 使う。
 
 ### 層 (`internal/llm/qwen35/mtp.go`、`-arch qwen35-mtp`)

@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/vision/detect"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/vision/detect"
 )
 
 // Detect is the use of a model that finds objects and their labels (RTMDet, COCO's 80 classes)
@@ -59,7 +59,7 @@ var detectCNN = cnn[*detect.Detector]{
 	},
 	openNPU: detect.OpenNPU,
 	openCPU: detect.OpenCPU,
-	open: func(ctx context.Context, dev *hwnpu.Device, _, program string) (*detect.Detector, error) {
+	open: func(ctx context.Context, dev *bonsaiai.Device, _, program string) (*detect.Detector, error) {
 		return detect.Open(ctx, dev, program)
 	},
 	onNPU: (*detect.Detector).OnNPU,
@@ -111,7 +111,7 @@ type DetectOptions struct {
 
 // Detector finds the objects in pictures. It runs one picture at a time; others wait.
 type Detector struct {
-	remote        *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote        *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu            sync.Mutex
 	d             *detect.Detector
 	closeDev      func()
@@ -203,7 +203,7 @@ func (b Box) add(p image.Point) Box {
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *Detector) Close() error {
 	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
+		return d.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 // TestVAEPeak checks the VAE's peak follows run's rule: the stages share a buffer a bank kind, as
@@ -52,7 +52,7 @@ func writeGraph(t *testing.T, dir string, bank, arg int) {
 // within the VAE's peak (Qwen-Image's 512² DiT would otherwise set the run's peak, docs/design/image-amd.md).
 func TestPrefetchFits(t *testing.T) {
 	if !iron.Prefetch {
-		t.Skip("HWNPU_DEV=iron.prefetch=0")
+		t.Skip("BONSAIAI_DEV=iron.prefetch=0")
 	}
 	root := t.TempDir()
 	writeGraph(t, filepath.Join(root, "dit_in"), 10, 6)

@@ -20,12 +20,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/llm/whisper"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/llm/whisper"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // Config names a checkpoint's directory (config.json, generation_config.json, tokenizer.json)
@@ -92,7 +92,7 @@ type converted struct {
 
 // Load reads the checkpoint's settings and tokenizer and loads the programs on dev (nil: the CPU
 // interpreter).
-func Load(ctx context.Context, dev *hwnpu.Device, c Config) (*Transcriber, error) {
+func Load(ctx context.Context, dev *bonsaiai.Device, c Config) (*Transcriber, error) {
 	raw, err := os.ReadFile(filepath.Join(c.Dir, "config.json"))
 	if err != nil {
 		return nil, err
@@ -200,7 +200,7 @@ func (p *converted) encode(ctx context.Context, mel []float32) error {
 	buf := make([]byte, 2*n)
 	for i := 0; i < p.cfg.DecoderLayers; i++ {
 		for j, name := range []string{"xk", "xv"} {
-			hwnpu.EncodeF16(buf, kv[(2*i+j)*n:(2*i+j+1)*n])
+			bonsaiai.EncodeF16(buf, kv[(2*i+j)*n:(2*i+j+1)*n])
 			if err := p.sess.SetInputF16(fmt.Sprintf("%s_%d", name, i), buf); err != nil {
 				return err
 			}

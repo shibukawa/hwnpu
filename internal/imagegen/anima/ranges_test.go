@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	hcache "github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	hcache "github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // rangeProgram is a group of the DiT's blocks that first runs its mil.BlockRanges on the same
@@ -40,21 +40,21 @@ func (p *rangeProgram) Run(ctx context.Context, in map[string][]float32) ([]floa
 // also given over what their projection's weights give for white input of unit variance (the
 // scale mil folds into the weights).
 //
-// HWNPU_TEST_ANIMA_EXPORT is the export (a .coreai directory), HWNPU_TEST_ANIMA_DIR the Anima directory
-// its checkpoint is in, HWNPU_TEST_ANIMA_RANGES_OUT where the range programs are kept (compiled the first
-// time: minutes each at 1024 x 1024), HWNPU_TEST_ANIMA_PROMPTS the prompts, | between them, drawn
-// with seeds 1, 2... HWNPU_TEST_ANIMA_STEPS the steps (default: the model's).
+// BONSAIAI_TEST_ANIMA_EXPORT is the export (a .coreai directory), BONSAIAI_TEST_ANIMA_DIR the Anima directory
+// its checkpoint is in, BONSAIAI_TEST_ANIMA_RANGES_OUT where the range programs are kept (compiled the first
+// time: minutes each at 1024 x 1024), BONSAIAI_TEST_ANIMA_PROMPTS the prompts, | between them, drawn
+// with seeds 1, 2... BONSAIAI_TEST_ANIMA_STEPS the steps (default: the model's).
 func TestBlockRanges(t *testing.T) {
-	export, root := os.Getenv("HWNPU_TEST_ANIMA_EXPORT"), os.Getenv("HWNPU_TEST_ANIMA_DIR")
+	export, root := os.Getenv("BONSAIAI_TEST_ANIMA_EXPORT"), os.Getenv("BONSAIAI_TEST_ANIMA_DIR")
 	if export == "" || root == "" {
-		t.Skip("HWNPU_TEST_ANIMA_EXPORT and HWNPU_TEST_ANIMA_DIR")
+		t.Skip("BONSAIAI_TEST_ANIMA_EXPORT and BONSAIAI_TEST_ANIMA_DIR")
 	}
 	ctx := context.Background()
 	m, err := ReadProgramManifest(export)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := cmp.Or(os.Getenv("HWNPU_TEST_ANIMA_RANGES_OUT"), t.TempDir())
+	dir := cmp.Or(os.Getenv("BONSAIAI_TEST_ANIMA_RANGES_OUT"), t.TempDir())
 	w, err := mil.OpenWeights(root, filepath.Join(root, "diffusers"), m.Dit)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestBlockRanges(t *testing.T) {
 		return out
 	}
 
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend(llm.BackendCoreAI), hwnpu.WithCacheDir(hcache.Root()))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend(llm.BackendCoreAI), bonsaiai.WithCacheDir(hcache.Root()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,9 +176,9 @@ func TestBlockRanges(t *testing.T) {
 		pe.blocks[g].p = &rangeProgram{Program: pe.blocks[g].p, ranges: rp, note: note}
 	}
 
-	prompts := strings.Split(cmp.Or(os.Getenv("HWNPU_TEST_ANIMA_PROMPTS"), "1girl, solo, silver hair, red eyes, school uniform, cherry blossoms, outdoors, smile"), "|")
+	prompts := strings.Split(cmp.Or(os.Getenv("BONSAIAI_TEST_ANIMA_PROMPTS"), "1girl, solo, silver hair, red eyes, school uniform, cherry blossoms, outdoors, smile"), "|")
 	steps := p.DefaultSteps()
-	fmt.Sscan(os.Getenv("HWNPU_TEST_ANIMA_STEPS"), &steps)
+	fmt.Sscan(os.Getenv("BONSAIAI_TEST_ANIMA_STEPS"), &steps)
 	for i, prompt := range prompts {
 		cond, err := p.Encode(ctx, prompt)
 		if err != nil {

@@ -1,5 +1,5 @@
 // Package openai serves an app's text models with the OpenAI API, as an http.Handler for the
-// app to serve or to mount in a server of its own (hwnpu-chat serve uses it):
+// app to serve or to mount in a server of its own (bonsaiai-chat serve uses it):
 //
 //	GET  /v1/models            the models served
 //	POST /v1/chat/completions  the chat models (text.Chat, and translation models), streamed with
@@ -41,9 +41,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/text"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Server serves chat and embedding models with the OpenAI API. Each model runs one request at a
@@ -127,7 +127,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 
 // describe is a model's entry in /v1/models: with its kind and its features (capabilities).
 func describe(name string, kind chat.Kind, features []string, more map[string]any) map[string]any {
-	m := map[string]any{"id": name, "object": "model", "created": 0, "owned_by": "hwnpu", "kind": kind,
+	m := map[string]any{"id": name, "object": "model", "created": 0, "owned_by": "bonsaiai", "kind": kind,
 		"capabilities": append([]string{}, features...)}
 	for k, v := range more {
 		m[k] = v
@@ -171,7 +171,7 @@ func route(model string, names, others []string, kind chat.Kind, other string) (
 	}
 	switch len(names) {
 	case 0:
-		return -1, http.StatusNotFound, fmt.Sprintf("no %s model is loaded: add one to --model (hwnpu-chat list shows them)", kind)
+		return -1, http.StatusNotFound, fmt.Sprintf("no %s model is loaded: add one to --model (bonsaiai-chat list shows them)", kind)
 	case 1:
 		return 0, 0, ""
 	}

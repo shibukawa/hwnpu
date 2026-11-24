@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/power"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/power"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
 )
 
 // packagePowerPath finds the package power the amdgpu driver reports on an APU (its hwmon's

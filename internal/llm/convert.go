@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Convert writes the model as one package at out, or, over the Neural Engine size limit of the
@@ -160,13 +160,13 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 // Param's name), as the program was built with them, and of the checkpoint, the weight format and
 // the description (the IR's; a package has a field of its own).
 const (
-	MetaArch  = "com.github.shibukawa.hwnpu.arch"
-	MetaParam = "com.github.shibukawa.hwnpu.param."
+	MetaArch  = "com.github.shibukawa.bonsaiai.arch"
+	MetaParam = "com.github.shibukawa.bonsaiai.param."
 	// MetaSoftcap is the soft cap the host applies to the logits (LogitSoftcap), when not 0.
-	MetaSoftcap     = "com.github.shibukawa.hwnpu.softcap"
-	MetaSource      = "com.github.shibukawa.hwnpu.source"
-	MetaFormat      = "com.github.shibukawa.hwnpu.format"
-	MetaDescription = "com.github.shibukawa.hwnpu.description"
+	MetaSoftcap     = "com.github.shibukawa.bonsaiai.softcap"
+	MetaSource      = "com.github.shibukawa.bonsaiai.source"
+	MetaFormat      = "com.github.shibukawa.bonsaiai.format"
+	MetaDescription = "com.github.shibukawa.bonsaiai.description"
 )
 
 // metadata is what a part's metadata records of how it was built.
@@ -257,7 +257,7 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 	start := time.Now()
 	stop := console.Spin(log, filepath.Base(path)) // a part takes up to a minute: show it goes on
 	rec, err := WritePart(path, model, w, opts, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("%s from %s, seq %d, %s (hwnpu-dev convert)", a.Title, w.Source(), opts.Seq, opts.Format)
+		pkg.Description = fmt.Sprintf("%s from %s, seq %d, %s (bonsaiai-dev convert)", a.Title, w.Source(), opts.Seq, opts.Format)
 		if opts.Start > 0 || opts.Layers > 0 {
 			pkg.Description += fmt.Sprintf(", layers %d-%d", opts.Start, opts.Start+opts.Layers-1)
 		}
@@ -363,7 +363,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		form = "tile"
 	}
 	apath := base + ".attn" + ext
-	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-dev convert)", a.Title, opts.Paged, opts.Seq, form)
+	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (bonsaiai-dev convert)", a.Title, opts.Paged, opts.Seq, form)
 	var ins, outs []mlpackage.Feature
 	if intel {
 		_, ins, outs, err = writeIR(apath, &mlpackage.Package{Description: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
@@ -396,7 +396,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 // for Intel's NPU (ext .xml) base.mass.xml.
 func writeMass(base, ext string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
 	path := base + ".mass" + ext
-	desc := fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (hwnpu-dev convert)", title, chunk, seq, form)
+	desc := fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (bonsaiai-dev convert)", title, chunk, seq, form)
 	var ins, outs []mlpackage.Feature
 	var err error
 	if ext == ".xml" {
@@ -508,7 +508,7 @@ func AddSmaller(path, form string, model paged.Shape, from int) error {
 // written in for backend, from the model's (its architecture's attn: grouped or tile): Core AI
 // runs a grouped attention of several kv heads faster a kv head at a time (paged.Heads). One kv
 // head for all the heads written so leaves the Neural Engine (Gemma 4 E2B, PLaMo 3 Translate
-// 0.8B): it stays grouped. HWNPU_DEV=attention=grouped keeps the model's own form, for comparing
+// 0.8B): it stays grouped. BONSAIAI_DEV=attention=grouped keeps the model's own form, for comparing
 // the two: the programs are written again when it changes (RefreshAttention).
 func attentionForm(backend, form string, sh paged.Shape) string {
 	if backend == BackendCoreAI && form == "grouped" && sh.KVHeads > 1 && devenv.Value("attention") != "grouped" {
@@ -571,7 +571,7 @@ func RefreshAttention(path, form string, model paged.Shape) error {
 // (attentionForm).
 func writeAttention(stem, backend string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
 	form = attentionForm(backend, form, sh)
-	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-dev convert)", title, chunk, seq, form)
+	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (bonsaiai-dev convert)", title, chunk, seq, form)
 	build := func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
 		return paged.Build(b, sh, form, seq, chunk)
 	}

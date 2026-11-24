@@ -18,8 +18,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 func main() {

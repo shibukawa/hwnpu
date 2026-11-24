@@ -13,9 +13,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Config is the subset of config.json the conversion needs.

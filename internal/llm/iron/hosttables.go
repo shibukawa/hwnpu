@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // HostTable is a table of rows by token kept on the host (tools/amd/iron_hostple.py: Gemma 4's
@@ -32,7 +32,7 @@ type HostTable struct {
 
 // EmbedTable is the buffer of the host table of the token embeddings (tools/amd/iron_hostple.py's
 // EMBED): the rows a call reads in place of a gather on the device.
-const EmbedTable = "hwnpu_embed_rows"
+const EmbedTable = "bonsaiai_embed_rows"
 
 // HostTableInt8 is the HostTable.Format of a part stored as a scale and int8 values.
 const HostTableInt8 = "int8"

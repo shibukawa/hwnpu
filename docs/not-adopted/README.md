@@ -1,6 +1,6 @@
 # サポートしていないモデルのメモ
 
-ここには、hwnpu がいまサポートしていないモデルのメモを置きます。対象は次の三つです。
+ここには、BonsaiAI がいまサポートしていないモデルのメモを置きます。対象は次の三つです。
 
 - 実装したあとで外したモデル
 - コードは残っていても models.yaml の一覧から外したモデル
@@ -41,7 +41,7 @@
 
 | モデル | 書いてある場所 | 見送った理由 |
 |---|---|---|
-| Anima-Base v1.0 | [docs/design/image-models.ja.md](../design/image-models.ja.md) の「採らなかったもの」 | LoRA の土台として使うもので、hwnpu は LoRA を読まない。`iron_anima.py` ではいまも書き出せる |
+| Anima-Base v1.0 | [docs/design/image-models.ja.md](../design/image-models.ja.md) の「採らなかったもの」 | LoRA の土台として使うもので、BonsaiAI は LoRA を読まない。`iron_anima.py` ではいまも書き出せる |
 | LongCat-Image-Edit | 同じ表 | 6.3B の DiT と 16.6 GB の文の符号器で重すぎる |
 | OmniGen2 | 同じ表 | 絵の質が低い |
 | Inkling 2 Small、Mini | [docs/model-estimation.ja.md](../model-estimation.ja.md) | Small は 594B の MoE で NPU には大きすぎる。Mini は見積もりだけで後回し |

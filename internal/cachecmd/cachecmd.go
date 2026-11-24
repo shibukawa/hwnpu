@@ -1,7 +1,7 @@
-// Package cachecmd is hwnpu's commands of the cache and of the memory a model runs as (hwnpu
-// cache, hwnpu memory). They run in hwnpud's engine unless HWNPU_DAEMON is off
-// (docs/design/hwnpud.md, Models and caches): hwnpud is then the only process that removes from
-// the cache, it reads the cache of its own settings (HWNPU_CACHE, the sources), and it leaves the
+// Package cachecmd is bonsaiai's commands of the cache and of the memory a model runs as (bonsaiai
+// cache, bonsaiai memory). They run in bonsaiaid's engine unless BONSAIAI_DAEMON is off
+// (docs/design/bonsaiaid.md, Models and caches): bonsaiaid is then the only process that removes from
+// the cache, it reads the cache of its own settings (BONSAIAI_CACHE, the sources), and it leaves the
 // files of the models it holds loaded. The command's output and its question come back to the
 // client's terminal.
 package cachecmd
@@ -15,11 +15,11 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/daemon"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/daemon"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
 // Env is where a command writes, how it asks, and what it leaves.
@@ -28,12 +28,12 @@ type Env struct {
 	Out, Err io.Writer
 	// Ask asks a question of yes or no on the user's terminal; nil when there is none.
 	Ask func(prompt string) bool
-	// InUse says why a unit's files are in use (a model hwnpud holds loaded), "" when they are
+	// InUse says why a unit's files are in use (a model bonsaiaid holds loaded), "" when they are
 	// not: those are listed as in use and not removed. nil for none.
 	InUse func(x modelstore.Unit) string
 }
 
-// Request is a command as it is sent to hwnpud: its name and its flags.
+// Request is a command as it is sent to bonsaiaid: its name and its flags.
 type Request struct {
 	Command string // info, ls, prune, clear, clean, memory
 	Ls      LsCmd
@@ -59,19 +59,19 @@ func (r Request) Exec(e *Env) error {
 	case "memory":
 		return r.Memory.exec(e)
 	}
-	return fmt.Errorf("hwnpu: no command %q of the cache", r.Command)
+	return fmt.Errorf("bonsaiai: no command %q of the cache", r.Command)
 }
 
-// Host is what hwnpud's engine serves of the cache on a session (internal/aihost).
+// Host is what bonsaiaid's engine serves of the cache on a session (internal/aihost).
 type Host interface {
 	// Machine runs a command of the cache or of the memory, its output and its errors' lines to
 	// out and errOut, its question to ask (nil: none).
 	Machine(ctx context.Context, r Request, out, errOut func([]byte), ask func(string) bool) error
-	// CacheState is what hwnpu status shows of the cache (its units read when scan).
+	// CacheState is what bonsaiai status shows of the cache (its units read when scan).
 	CacheState(ctx context.Context, scan bool) (State, error)
 }
 
-// State is the cache as hwnpud sees it.
+// State is the cache as bonsaiaid sees it.
 type State struct {
 	Root       string
 	Layers     []string
@@ -82,10 +82,10 @@ type State struct {
 	LimitsErr  string
 	Usage      cache.Usage
 	UsageErr   string
-	HeldModels []string // the models hwnpud holds loaded
+	HeldModels []string // the models bonsaiaid holds loaded
 }
 
-// run runs r in hwnpud, or here with HWNPU_DAEMON=off.
+// run runs r in bonsaiaid, or here with BONSAIAI_DAEMON=off.
 func run(ctx context.Context, r Request) error {
 	s, h, err := dial(ctx)
 	if err != nil {
@@ -99,7 +99,7 @@ func run(ctx context.Context, r Request) error {
 	return airpc.Call0(h, ctx, "Machine", r, write(os.Stdout), write(os.Stderr), terminalAsk())
 }
 
-// dial opens a session with hwnpud (nil with HWNPU_DAEMON=off, or auto when it does not answer)
+// dial opens a session with bonsaiaid (nil with BONSAIAI_DAEMON=off, or auto when it does not answer)
 // and the handle of its Host.
 func dial(ctx context.Context) (*airpc.Session, *airpc.Handle, error) {
 	c, err := daemon.Use(ctx, daemon.DefaultMode(), console.Log(os.Stderr))
@@ -155,8 +155,8 @@ func (e *Env) held(units []modelstore.Unit) {
 	}
 }
 
-// RemoteStore is what hwnpu status reads of the cache, from hwnpud's (npustatus.StoreView):
-// nil, nil with HWNPU_DAEMON=off. close ends its session.
+// RemoteStore is what bonsaiai status reads of the cache, from bonsaiaid's (npustatus.StoreView):
+// nil, nil with BONSAIAI_DAEMON=off. close ends its session.
 func RemoteStore(ctx context.Context) (view *StoreView, close func(), err error) {
 	s, h, err := dial(ctx)
 	if err != nil || s == nil {
@@ -165,7 +165,7 @@ func RemoteStore(ctx context.Context) (view *StoreView, close func(), err error)
 	return &StoreView{ctx: ctx, h: h}, func() { s.Close() }, nil
 }
 
-// StoreView is hwnpud's cache as npustatus reads a store.
+// StoreView is bonsaiaid's cache as npustatus reads a store.
 type StoreView struct {
 	ctx context.Context
 	h   *airpc.Handle
@@ -179,13 +179,13 @@ func (v *StoreView) state(scan bool) State {
 	return st
 }
 
-// Root is the root of hwnpud's cache.
+// Root is the root of bonsaiaid's cache.
 func (v *StoreView) Root() string { return v.state(false).Root }
 
 func (v *StoreView) DiskSpace() (int64, int64, error) {
 	st := v.state(false)
 	if st.DiskErr != "" {
-		return 0, 0, fmt.Errorf("hwnpud: %s", st.DiskErr)
+		return 0, 0, fmt.Errorf("bonsaiaid: %s", st.DiskErr)
 	}
 	return st.Free, st.Total, nil
 }
@@ -193,7 +193,7 @@ func (v *StoreView) DiskSpace() (int64, int64, error) {
 func (v *StoreView) Limits() (cache.Limits, error) {
 	st := v.state(false)
 	if st.LimitsErr != "" {
-		return cache.Limits{}, fmt.Errorf("hwnpud: %s", st.LimitsErr)
+		return cache.Limits{}, fmt.Errorf("bonsaiaid: %s", st.LimitsErr)
 	}
 	return st.Limits, nil
 }
@@ -201,14 +201,14 @@ func (v *StoreView) Limits() (cache.Limits, error) {
 func (v *StoreView) Usage() (cache.Usage, error) {
 	st := v.state(true)
 	if st.UsageErr != "" {
-		return cache.Usage{}, fmt.Errorf("hwnpud: %s", st.UsageErr)
+		return cache.Usage{}, fmt.Errorf("bonsaiaid: %s", st.UsageErr)
 	}
 	return st.Usage, nil
 }
 
 func (v *StoreView) LayerNames() []string { return v.state(false).Layers }
 
-// LocalState is State read in this process (hwnpud's engine): s's, with the models held.
+// LocalState is State read in this process (bonsaiaid's engine): s's, with the models held.
 func LocalState(s *modelstore.Store, layers []string, scan bool, held []string) State {
 	st := State{Root: cache.Root(), Layers: layers, HeldModels: held}
 	var err error

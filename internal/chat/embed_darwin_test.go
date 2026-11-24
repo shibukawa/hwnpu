@@ -10,24 +10,24 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend/coreml"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreml"
 )
 
 // Compares the embeddings of PLaMo-Embedding-1B on the Neural Engine with those of the Hugging
 // Face implementation written by tools/ref/embed_golden.py: the same tokens, and the same
-// direction. Needs HWNPU_TEST_PLAMO_DIR with config.json, tokenizer.model and model.safetensors (the
-// programs are converted there when missing) and HWNPU_TEST_PLAMO_EMBED_REF (default
-// HWNPU_TEST_PLAMO_DIR/embed_golden.json).
+// direction. Needs BONSAIAI_TEST_PLAMO_DIR with config.json, tokenizer.model and model.safetensors (the
+// programs are converted there when missing) and BONSAIAI_TEST_PLAMO_EMBED_REF (default
+// BONSAIAI_TEST_PLAMO_DIR/embed_golden.json).
 func TestPlamoEmbeddingGolden(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_PLAMO_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_PLAMO_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_PLAMO_DIR not set")
+		t.Skip("BONSAIAI_TEST_PLAMO_DIR not set")
 	}
 	ctx := context.Background()
 	if infos, err := (coreml.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Neural Engine")
 	}
-	path := os.Getenv("HWNPU_TEST_PLAMO_EMBED_REF")
+	path := os.Getenv("BONSAIAI_TEST_PLAMO_EMBED_REF")
 	if path == "" {
 		path = filepath.Join(dir, "embed_golden.json")
 	}
@@ -51,7 +51,7 @@ func TestPlamoEmbeddingGolden(t *testing.T) {
 	}
 	c.Log = os.Stderr
 	if d, err := os.UserCacheDir(); err == nil {
-		c.CacheDir = filepath.Join(d, "hwnpu")
+		c.CacheDir = filepath.Join(d, "bonsaiai")
 	}
 	e, err := LoadEmbedder(ctx, c)
 	if err != nil {

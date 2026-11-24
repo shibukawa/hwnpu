@@ -3,9 +3,9 @@ package levelzero
 import (
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/ovir"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/ze"
+	"github.com/shibukawa/bonsaiai/internal/ovir"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/ze"
 )
 
 // The arguments take the IR's names: the driver's name when it is one, else a debug or tensor

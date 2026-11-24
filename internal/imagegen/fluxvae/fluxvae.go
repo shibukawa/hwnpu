@@ -6,7 +6,7 @@
 // programs of FLUX.2 and FLUX.3 are the same bytes.
 package fluxvae
 
-import "github.com/shibukawa/hwnpu/internal/imagegen/milpart"
+import "github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
 
 // Part is one program (milpart.Part).
 type Part = milpart.Part

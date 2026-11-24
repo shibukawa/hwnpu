@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
 )
 
 // requirement is a model an app uses: the name it is picked by and the role it fills.
@@ -60,7 +60,7 @@ type Requirement interface {
 type Use[T io.Closer] struct{ req requirement }
 
 // Define makes the Use of a role's model named name: a model, a family or a use of the
-// definitions (models.yaml; hwnpu-chat list shows them). It is for hwnpu's own packages of
+// definitions (models.yaml; bonsaiai-chat list shows them). It is for bonsaiai's own packages of
 // models, which hold the roles; an app gets its uses from those.
 func Define[T io.Closer](role *airole.Role, name string) Use[T] {
 	return Use[T]{requirement{name: strings.TrimSpace(name), role: role}}
@@ -130,7 +130,7 @@ func (u Use[T]) Release(rt *Runtime) error { return rt.release(u.req) }
 type App struct {
 	// Name is the app's name, in its commands' help and its logs.
 	Name string
-	// Store is where the models come from and are kept; the zero value is that of hwnpu's
+	// Store is where the models come from and are kept; the zero value is that of bonsaiai's
 	// commands.
 	Store Store
 
@@ -140,7 +140,7 @@ type App struct {
 	memory int
 	// turns are the groups of uses (their keys) that run one at a time (InTurns)
 	turns [][]string
-	// local is an app hwnpud made of a client's (AppFromSpec), whose models run in this
+	// local is an app bonsaiaid made of a client's (AppFromSpec), whose models run in this
 	// process, and allowlist that client's model policy
 	local     bool
 	allowlist string
@@ -201,7 +201,7 @@ func (a *App) turnOf(key string) []string {
 
 // Memory makes uses and families pick their models, and the models their programs, for a machine
 // of gb GB instead of this one (a cache to ship for smaller machines): the uses' At count for
-// that memory too. 0 is this machine's, with the memory chosen for a model (hwnpu memory,
+// that memory too. 0 is this machine's, with the memory chosen for a model (bonsaiai memory,
 // modelstore.Store.SetMemory).
 func (a *App) Memory(gb int) *App {
 	a.memory = gb

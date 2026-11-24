@@ -12,10 +12,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3gen"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3gen"
 )
 
 // DefaultCache is the KV cache of the text model's programs Prepare converts: the TTS prompt and
@@ -24,7 +24,7 @@ const DefaultCache = 2048
 
 // TablesFile holds the tables the host reads while it speaks (the text model's token embedding,
 // the depthformer's code tables, the feedback table and the mask embedding), so that it runs
-// without the checkpoint. It is apart from chat.TablesFile, which hwnpu-chat writes in the same
+// without the checkpoint. It is apart from chat.TablesFile, which bonsaiai-chat writes in the same
 // directory for the same checkpoint's text model.
 const TablesFile = "speech-tables.safetensors"
 
@@ -51,7 +51,7 @@ type Setup struct {
 // generation_config.json may be missing.
 var files = []string{"config.json", "audio_tokenizer/config.json"}
 
-// Prepare downloads the checkpoint (chat.RepoDir) unless it is there, converts the programs hwnpu-audio tts
+// Prepare downloads the checkpoint (chat.RepoDir) unless it is there, converts the programs bonsaiai-audio tts
 // runs unless they are (the text model with a KV cache and its final hidden state out, 1 and 64
 // tokens per call; the depthformer; the codec decoder of 64 frames per call), and writes the
 // tables the host reads. The checkpoint is downloaded only when something is converted or written

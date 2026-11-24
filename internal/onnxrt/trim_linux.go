@@ -3,7 +3,7 @@ package onnxrt
 import (
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/dl"
 )
 
 var (

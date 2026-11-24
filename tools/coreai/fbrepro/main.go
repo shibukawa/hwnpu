@@ -24,9 +24,9 @@ import (
 	"math/rand"
 	"os"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 func main() {

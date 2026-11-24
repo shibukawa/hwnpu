@@ -100,7 +100,7 @@ func writing(ctx context.Context, s Source, markers []string, now time.Time) (bo
 		}
 		var m writingMark
 		if json.Unmarshal(b, &m) != nil {
-			continue // not one hwnpu wrote whole: Write moves it into place
+			continue // not one bonsaiai wrote whole: Write moves it into place
 		}
 		if now.Sub(m.Seen) < WritingStale {
 			return true, nil

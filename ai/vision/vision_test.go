@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/flow"
 )
 
 func near(a, b, tol float64) bool { return math.Abs(a-b) <= tol }

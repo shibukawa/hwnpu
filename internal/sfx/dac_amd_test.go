@@ -9,28 +9,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
-// TestAMDDAC compares the decoder's stages on AMD's NPU (HWNPU_TEST_SFX_AMD_EXPORT: an export with dac-N/,
-// tools/amd/iron_moss_dac.py) with the Core ML stages on the CPU interpreter (HWNPU_TEST_SFX_CPU_DAC_DIR:
-// a directory of hwnpu-dac-N-rREV-fp16.mlpackage) over standard normal latents (or
-// HWNPU_TEST_SFX_LATENTS: 1500 rows of 128 float32).
+// TestAMDDAC compares the decoder's stages on AMD's NPU (BONSAIAI_TEST_SFX_AMD_EXPORT: an export with dac-N/,
+// tools/amd/iron_moss_dac.py) with the Core ML stages on the CPU interpreter (BONSAIAI_TEST_SFX_CPU_DAC_DIR:
+// a directory of bonsaiai-dac-N-rREV-fp16.mlpackage) over standard normal latents (or
+// BONSAIAI_TEST_SFX_LATENTS: 1500 rows of 128 float32).
 func TestAMDDAC(t *testing.T) {
-	amdDir, cpuDir := os.Getenv("HWNPU_TEST_SFX_AMD_EXPORT"), os.Getenv("HWNPU_TEST_SFX_CPU_DAC_DIR")
+	amdDir, cpuDir := os.Getenv("BONSAIAI_TEST_SFX_AMD_EXPORT"), os.Getenv("BONSAIAI_TEST_SFX_CPU_DAC_DIR")
 	if amdDir == "" || cpuDir == "" {
-		t.Skip("HWNPU_TEST_SFX_AMD_EXPORT and HWNPU_TEST_SFX_CPU_DAC_DIR are not set")
+		t.Skip("BONSAIAI_TEST_SFX_AMD_EXPORT and BONSAIAI_TEST_SFX_CPU_DAC_DIR are not set")
 	}
 	ctx := context.Background()
 	x := Noise(7)
-	if f := os.Getenv("HWNPU_TEST_SFX_LATENTS"); f != "" {
+	if f := os.Getenv("BONSAIAI_TEST_SFX_LATENTS"); f != "" {
 		x = readF32(t, f)
 	}
 	seconds := 5.0
 	samples := int(seconds) * SampleRate
 
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		t.Skip(err)
 	}
@@ -62,7 +62,7 @@ func TestAMDDAC(t *testing.T) {
 	}
 	var stages []Program
 	for _, st := range DACStages() {
-		p, err := runner.Open(ctx, nil, filepath.Join(cpuDir, fmt.Sprintf("hwnpu-dac-%d-r%d-fp16.mlpackage", st.Index, DACRevision)))
+		p, err := runner.Open(ctx, nil, filepath.Join(cpuDir, fmt.Sprintf("bonsaiai-dac-%d-r%d-fp16.mlpackage", st.Index, DACRevision)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +86,7 @@ func TestAMDDAC(t *testing.T) {
 	if snr < 20 {
 		t.Errorf("SNR %.1f dB", snr)
 	}
-	if out := os.Getenv("HWNPU_TEST_SFX_WAV_OUT"); out != "" {
+	if out := os.Getenv("BONSAIAI_TEST_SFX_WAV_OUT"); out != "" {
 		writeTestWAV(t, out+"-amd.wav", got)
 		writeTestWAV(t, out+"-cpu.wav", want)
 	}

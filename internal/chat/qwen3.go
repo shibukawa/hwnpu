@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // Qwen3 is the chat format of Qwen/Qwen3 (the chat_template of Qwen3-0.6B's tokenizer_config.json,

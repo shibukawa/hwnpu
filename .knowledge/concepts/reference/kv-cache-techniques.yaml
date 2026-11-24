@@ -22,13 +22,13 @@ facts:
   not_applicable:
     - MQA、MLA (TransMLA)、層をまたぐ共有 (CLA、YOCO、Apple の 37.5%): 学習し直しや追加学習が要る。新しいモデルを選ぶ基準にはなる
     - PagedAttention: 系列が 1 つで事前確保なら利点がなく、ページ表の間接参照は gather で CPU 行き
-    - FlashAttention のカーネル最適化: Core ML のコンパイラの中で、hwnpu からは触れない
+    - FlashAttention のカーネル最適化: Core ML のコンパイラの中で、bonsaiai からは触れない
     - KV 量子化 (KIVI 2 ビット、KVQuant 3 ビット): メモリは減るが ANE の速さには効かない。int8 の入力を cast で戻す形は ANE に載り 1 割遅い (計測済み、backend:apple-coreml の kv_int8)。100K 超を塊分けと一緒に目指すときだけ
   external_observations:
     - Apple の on-device モデル (Foundation Models 2025) は後半 37.5% の層の K/V 射影を外して前半のを使い、キャッシュを 37.5% 減らした。ANE で容量が高いという観測と合う
     - llama.cpp の iSWA (PR 13194) は SWA 層だけ窓の大きさの別キャッシュを持つ (--swa-full で全長に戻す)。LFM3 のリングバッファと同じ発想
     - Anemll (ANE 向け LLM 変換) は MLState の KV キャッシュで文脈が 2K〜4K 固定。同じ制約に当たっている
-    - Apple Developer Forums に、MLState で複数トークンの prefill をすると一部の状態が更新されないという未解決の報告がある。hwnpu はホストのバッファなので当たらない
+    - Apple Developer Forums に、MLState で複数トークンの prefill をすると一部の状態が更新されないという未解決の報告がある。bonsaiai はホストのバッファなので当たらない
   sources:
     - https://arxiv.org/abs/2507.13575
     - https://arxiv.org/abs/2405.12981

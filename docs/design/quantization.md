@@ -25,7 +25,7 @@ Speed follows the weight bytes. M2, Core AI, a constant 4096 × 4096 linear (`ai
 | 1 row | 742 µs | 466 | 449 | 387 | 329 | 351 |
 | 64 rows | 808 | 506 | 515 | 477 | 379 | 382 |
 
-Minus the ~160 µs call floor: fp16 about 58 GB/s, int8 and lut8 about 55 GB/s; lut4 tops out near 90 G elements/s, so lut4 is only 1.3–1.4× lut8. On an M3 (Core ML, six E2B-size layers) lut4 / lut6 / lut8 / fp16 took 1.81 / 2.65 / 3.49 / 6.52 ms. `hwnpu-dev probe`'s speeds are not the model's: on an M1, probe reads int8 at 62 GB/s but Gemma 4 E2B's parts at about 48 GB/s, so int8 was slower than lut6. Measure the real parts with `HWNPU_PROFILE=1`.
+Minus the ~160 µs call floor: fp16 about 58 GB/s, int8 and lut8 about 55 GB/s; lut4 tops out near 90 G elements/s, so lut4 is only 1.3–1.4× lut8. On an M3 (Core ML, six E2B-size layers) lut4 / lut6 / lut8 / fp16 took 1.81 / 2.65 / 3.49 / 6.52 ms. `bonsaiai-dev probe`'s speeds are not the model's: on an M1, probe reads int8 at 62 GB/s but Gemma 4 E2B's parts at about 48 GB/s, so int8 was slower than lut6. Measure the real parts with `BONSAIAI_PROFILE=1`.
 
 A format also changes how many programs fit the Neural Engine's compile cache (about 3.5–4 GiB). LFM3 lut6 with four programs did not fit and every start recompiled, so `-tier auto` drops the tiers for 6 and 8 bit formats. See [Neural Engine](apple-neural-engine.md).
 
@@ -48,7 +48,7 @@ A format also changes how many programs fit the Neural Engine's compile cache (a
 GEMV of 8192 × 2048: q4 0.30–0.35 ms, q6 0.42–0.47, q8 0.43–0.50. q6 takes about q8's time (bound by unpacking the top bits); its gain is memory (76 % of q8) and accuracy (relative RMS q4 0.071, q6 0.022, q8 0.005). Numeric details that matter for accuracy:
 
 - q8 and q6 GEMV split each 32-term partial sum into two bf16s (high and rest) before the scale: one bf16 gives cosine 0.9998, two 0.999992
-- The cores start in floor rounding; hwnpu sets round to nearest even (Anima DiT velocity error q8 0.088 → 0.031). Takes effect on a new export
+- The cores start in floor rounding; BonsaiAI sets round to nearest even (Anima DiT velocity error q8 0.088 → 0.031). Takes effect on a new export
 
 See [AMD LLMs](amd-llm.md) and [AMD](amd.md).
 
@@ -57,12 +57,12 @@ See [AMD LLMs](amd-llm.md) and [AMD](amd.md).
 Mixture-of-experts models on a Mac run their experts on the CPU (see [MoE](moe.md)):
 
 - gpt-oss-20b: the checkpoint's own MXFP4 (e2m1, a power-of-two scale per 32), not rounded again
-- Qwen3.6-35B-A3B: experts derived from bf16 to gpt-oss's MXFP4 layout (`hwnpu-dev mxfp4`, `qwen35.DeriveMXFP4`, 17.1 GB of experts, 22.0 GB in all). `mxfp4.Encode` tries the OCP scale (exponent of the max − 2) and the 3 around it, keeps the least squared error, rounds each value to the nearest e2m1 (ties to even). Relative error 0.113 on Gaussian values; KL not measured
+- Qwen3.6-35B-A3B: experts derived from bf16 to gpt-oss's MXFP4 layout (`bonsaiai-dev mxfp4`, `qwen35.DeriveMXFP4`, 17.1 GB of experts, 22.0 GB in all). `mxfp4.Encode` tries the OCP scale (exponent of the max − 2) and the 3 around it, keeps the least squared error, rounds each value to the nearest e2m1 (ties to even). Relative error 0.113 on Gaussian values; KL not measured
 - LFM2-8B-A1B: experts in int8 as runtime weights on the Neural Engine (Core AI, M2 and later)
 
 ## Default per model family
 
-From the code (`Arch.Format`, `Config.Format()`, `defaultFormats`) and [models.yaml](../../models.yaml). hwnpu-chat fits lut tables with `kmeans-minmax`; the plain converter's default is `uniform`.
+From the code (`Arch.Format`, `Config.Format()`, `defaultFormats`) and [models.yaml](../../models.yaml). bonsaiai-chat fits lut tables with `kmeans-minmax`; the plain converter's default is `uniform`.
 
 | Model | Apple (Neural Engine) | Intel | AMD (model-recipes.yaml `amd`) |
 |---|---|---|---|
@@ -99,9 +99,9 @@ Why the LLM defaults are what they are (KL against the float reference unless sa
 - **KL(reference ‖ quantized)**: mean, median, 95th percentile and top-1 agreement over 400 positions (256 tokens read as a prompt, then one at a time), **with a BOS** (LFM3 without one looks 4× worse)
 - Five texts in `~/models/calib`: README, GPL-3 (never used for calibration, to catch overfitting), wiki40b-ja (eval), wikitext-2 (test), Go code. Frozen copies of the changing ones are in `testdata/texts`
 - Reference: fp32 on the CPU (HF) or bf16 on the same NPU. The NPU's quantized KL must match the CPU estimate (LFM3 0.036 against 0.035); if not, suspect the NPU's arithmetic first
-- Neural Engine: `hwnpu-dev generate -package P.parts.json -score REF,...` runs a program without cache (`hwnpu-dev convert -seq 128`) over reference tokens (`ref_logits.py`, `ref_gemma4.py`). The first tokens weigh much (KL up to 8–13), so compare settings only on the same texts
+- Neural Engine: `bonsaiai-dev generate -package P.parts.json -score REF,...` runs a program without cache (`bonsaiai-dev convert -seq 128`) over reference tokens (`ref_logits.py`, `ref_gemma4.py`). The first tokens weigh much (KL up to 8–13), so compare settings only on the same texts
 - Remove op error before blaming quantization: compare the same program on the Neural Engine and on Core ML's CPU. The ANE's `silu` alone was most of LFM3 lut8's loss (KL 0.058 → 0.022 with `blocks.SiLU`)
-- `hwnpu-dev formats` (`-ref lut8` when fp16 does not fit a part): next-token agreement and short questions. On short texts perplexity can be lower quantized; use agreement
+- `bonsaiai-dev formats` (`-ref lut8` when fp16 does not fit a part): next-token agreement and short questions. On short texts perplexity can be lower quantized; use agreement
 - Image generation: velocity relative RMS error along the reference trajectory (Chroma1's `TestCallsOnDevice`, removed), and the final-latent cosine of free runs over several seeds. One-step error does not predict free runs (FLUX.3: 2.33 → 2.29 % velocity error, yet latent cosine 0.964 → 0.983)
 - Audio and image encoders: by WER / CER (Whisper lut6 WER 4.43 → 4.87 %, so lut8)
 
@@ -115,7 +115,7 @@ Why the LLM defaults are what they are (KL against the float reference unless sa
 | KL < 0.05 (CPU, against HF) | 4 bits can be the default |
 | KL 0.05–0.2 | Decide by the answers (LFM3 lut6 is here) |
 | KL ≥ 1 | Not usable |
-| `hwnpu-dev formats` ≥ 90 % and as many questions right | Take the smaller |
+| `bonsaiai-dev formats` ≥ 90 % and as many questions right | Take the smaller |
 | 85–90 %, or new arithmetic or fact errors | Keep the next larger |
 | < 80 %, or repeating answers | Not usable (Qwen3.5 lut4: 60–76 %) |
 
@@ -138,7 +138,7 @@ Keep the format, choose the codes better. Try in order:
 | Order | Method | Tools | Result |
 |---|---|---|---|
 | 1 | Rounding (RTN) | `iron_q4.quantize_fmt`, `palette.QuantizeBits` | Baseline. Least weight error is not least output error |
-| 1b | **k-means keeping each block's min and max** (no data) | `-quant kmeans-minmax` (`palette.KMeansMinMax`) | Qwen-Image-2.1 DiT, 4 blocks vs fp16: uniform 4.9 % → 3.2 % (plain k-means 12.6 %: it clips outliers). hwnpu-chat's and the music model's default |
+| 1b | **k-means keeping each block's min and max** (no data) | `-quant kmeans-minmax` (`palette.KMeansMinMax`) | Qwen-Image-2.1 DiT, 4 blocks vs fp16: uniform 4.9 % → 3.2 % (plain k-means 12.6 %: it clips outliers). bonsaiai-chat's and the music model's default |
 | 2 | **Tables weighted by E[x²]** of each input channel (Lloyd from the uniform levels) | `q4_gptq.py --lut-fit wkmeans`, `palette.QuantizeWeightedMinMax`, `tools/coreai/lutfit` | LFM3 lut6 0.050 → 0.038, lut4 0.66 → 0.33 (with GPTQ). FLUX.3 DiT lut8 latent cosine 0.964 → 0.998 |
 | 3 | **GPTQ** (each column's error pushed onto later columns, H = E[xxᵀ]) | `tools/amd/q4_gptq.py`, `qwen2_gptq.py`, `gptoss_gptq.py`, `anima_gptq.py` … | AMD wiki-ja: E2B 0.221 → 0.081, E4B 0.083 → 0.049, LFM3 0.071 → 0.038, PLaMo 3 0.058 → 0.040. Apple LFM3 lut6 0.074 → 0.050 |
 | 4 | Rotation before lut (below) | `llm.Rotate`, `tools/quant/rotkl` | Qwen3.5 KL about half at every format |
@@ -161,7 +161,7 @@ Cost: fp32 on the CPU, 25–60 min for 2B models, 2.4 h for E4B (over 30 GB). On
 Codes:
 
 - Written as `palette.Codes` (`index.json`, per-weight `.idx` and `.tab`; `palette.CodesWriter` from Go). Looked up by a hash of the checkpoint weight's shape and bf16 values (`iron_q4.weight_key` = `palette.WeightKey`), so no name mapping per model. If an export reorders or concatenates weights they do not match; check the log's "N weights took the chosen codes". Fused weights quantized as one (PLaMo 3's `gate_up_proj`) match
-- AMD: `iron_export_lm.py --q4-codes DIR`. Apple: `hwnpu-dev convert -codes DIR`, `hwnpu-chat --codes DIR` (lutN only; the program name gets the codes hash, e.g. `gemma4-r1-lut6-gptq-27b3b448-per_layer.lut8-...`)
+- AMD: `iron_export_lm.py --q4-codes DIR`. Apple: `bonsaiai-dev convert -codes DIR`, `bonsaiai-chat --codes DIR` (lutN only; the program name gets the codes hash, e.g. `gemma4-r1-lut6-gptq-27b3b448-per_layer.lut8-...`)
 - models.yaml `codes: HASH` makes a model convert with codes. They are put to and fetched from the source with the export (`chat.putCodes`, `fetchCodes`, `converted/MODEL/any/codes-HASH`), since without them nobody can rebuild the export when its key changes. See [distribution](distribution.md)
 - GPTQ is the default only for Qwen2.5-Coder-7B. Elsewhere it is opt-in; the AMD recipes do not calibrate
 
@@ -173,7 +173,7 @@ Codes:
 - `rotkl` on the CPU (milcpu, float32, 256 tokens, kmeans-minmax): Qwen3.5-2B lut8 0.0047 → 0.0033, lut6 0.0560 → 0.0267, lut4 0.6026 → 0.3664; 0.8B lut6 0.0749 → 0.0388. fp16 rounding does not break the range
 - lut4 stays unusable even rotated, and no lut4 mix reaches today's lut6 (closest: head lut4, 0.062), so rotation buys accuracy for lut6, not speed
 - On the Neural Engine (`rotkl -ane -per-part 6`, M2, 2B, 128 tokens against the CPU's fp16): lut6 0.0537 → **0.0288**; lut8 0.0079 → 0.0091 (the NE's own fp16 error hides the gain)
-- **Default for Qwen3.5's lut6 exports on Apple** (the 2B): `chat.Prepare` rotates rotatable models at lut6 and below on Core AI and Core ML (`-rot` in the export name; `HWNPU_DEV=rotate=0` off, `=1` lut8 too). AMD and Intel exports are not rotated; Qwen3.6 is not (its experts are MXFP4 on the CPU and would need re-quantizing). Results and the MTP / table handling: [Qwen](llm-qwen.md)
+- **Default for Qwen3.5's lut6 exports on Apple** (the 2B): `chat.Prepare` rotates rotatable models at lut6 and below on Core AI and Core ML (`-rot` in the export name; `BONSAIAI_DEV=rotate=0` off, `=1` lut8 too). AMD and Intel exports are not rotated; Qwen3.6 is not (its experts are MXFP4 on the CPU and would need re-quantizing). Results and the MTP / table handling: [Qwen](llm-qwen.md)
 
 ## Failure modes
 
@@ -211,8 +211,8 @@ Codes:
 ## Open
 
 - AWQ-style scales (not written)
-- `hwnpu-chat --package` with a rotated export picks the unrotated `tables.safetensors`
-- GPTQ on the Neural Engine for more models: E4B (too big for a 16 GB Mac even lean), `per_layer` in the calibration, lut4 + GPTQ chat, larger question sets and hwnpu-agent tasks, M2 and M3
+- `bonsaiai-chat --package` with a rotated export picks the unrotated `tables.safetensors`
+- GPTQ on the Neural Engine for more models: E4B (too big for a 16 GB Mac even lean), `per_layer` in the calibration, lut4 + GPTQ chat, larger question sets and bonsaiai-agent tasks, M2 and M3
 - Accuracy of Qwen3.6's derived MXFP4 experts (KL vs bf16, GPTQ for MXFP4); its AMD GPTQ codes are not in the export
 - Qwen2.5-Coder 14B (not converted or calibrated); AMD form of Qwen2.5-Coder
 - AMD q6 attention with GPTQ for gpt-oss (attention is 36 % of a layer's transfer)

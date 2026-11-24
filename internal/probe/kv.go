@@ -5,7 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // KV cache probe models: one token through layers of the probe's size (lut4 weights) with real
@@ -120,7 +120,7 @@ func WriteKVPackage(dir, mode string, layers, cache int, seed uint64) error {
 	if err != nil {
 		return err
 	}
-	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("kv %s %d layers cache %d lut4", mode, layers, cache)
+	pkg.Metadata["com.github.shibukawa.bonsaiai.probe"] = fmt.Sprintf("kv %s %d layers cache %d lut4", mode, layers, cache)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
 	var g *weightGen
 	var werr error

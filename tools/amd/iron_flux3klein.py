@@ -15,7 +15,7 @@ The rows: the text's are a slot of ``text_slot`` (512) rows, the prompt's R (80,
 tokens rounded up to 80) and pads past them; the keys of every attention are bounded to the real
 ones (nk, a word of each call), so one export serves every prompt length up to 480 tokens. The
 image's are its N patches padded with zeros to whole rounds of the attention's 512 rows
-(``image_rows``: 4096 for every one of hwnpu's eight aspect ratios but 512 x 512's 1024; 832 x 1248
+(``image_rows``: 4096 for every one of bonsaiai's eight aspect ratios but 512 x 512's 1024; 832 x 1248
 is 4056 patches), the pads no keys (image_modes' nk = N). The single blocks' rows are [the image's
 padded rows, the text's slot] (attention and MLP do not care about the order: RoPE is a row's own),
 each part modulated by its stream's rows; their keys are packed as [the image's N, the text's slot]

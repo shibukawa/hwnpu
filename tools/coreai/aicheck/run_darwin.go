@@ -13,13 +13,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/backend/coreml"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreml"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // run loads each package with the Core AI backend (lowering it), runs it on random inputs
@@ -30,14 +30,14 @@ import (
 // with milcpu running ref, the package it was lowered from. With coreML the packages run on Core ML instead, to tell Core AI's errors from the program's.
 func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls int, ref string) error {
 	ctx := context.Background()
-	// one hwnpu process on the Neural Engine at a time, as the commands (llm.OpenDevice)
+	// one bonsaiai process on the Neural Engine at a time, as the commands (llm.OpenDevice)
 	if coreML || !coreai.OnCPU() {
 		if err := llm.LockNPU(ctx); err != nil {
 			return err
 		}
 	}
 	if os.Getenv("AICHECK_ENUMERATE") != "" { // as the commands do: every backend's devices first
-		if _, err := hwnpu.Enumerate(ctx); err != nil {
+		if _, err := bonsaiai.Enumerate(ctx); err != nil {
 			return err
 		}
 	}
@@ -98,8 +98,8 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 						f[i] = c
 					}
 				}
-				hwnpu.EncodeF16(b.Bytes(), f)
-				hwnpu.DecodeF16(f, b.Bytes()) // the values the device sees
+				bonsaiai.EncodeF16(b.Bytes(), f)
+				bonsaiai.DecodeF16(f, b.Bytes()) // the values the device sees
 				in[a.Name] = milcpu.Tensor{Shape: a.Dims, Data: f}
 			} else {
 				outs = append(outs, a)
@@ -133,7 +133,7 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			if err != nil {
 				return err
 			}
-			var cut []string // the output of HWNPU_DEV=ailower.cut: a value inside the package
+			var cut []string // the output of BONSAIAI_DEV=ailower.cut: a value inside the package
 			for _, o := range outs {
 				cut = append(cut, o.Name)
 			}
@@ -149,7 +149,7 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			}
 			for _, o := range outs {
 				got := make([]float32, o.Bytes/2)
-				hwnpu.DecodeF16(got, bufs[o.Index].Bytes())
+				bonsaiai.DecodeF16(got, bufs[o.Index].Bytes())
 				w, ok := want[o.Name]
 				if !ok {
 					w.Data = inside[o.Name]

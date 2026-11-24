@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 const tinyAudio = `{"model_type": "lfm3_audio", "lfm": {"hidden_size": 48}, "codebooks": 4, "audio_vocab_size": 17, "maskgit_steps": 2,

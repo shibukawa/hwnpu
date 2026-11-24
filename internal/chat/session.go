@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
 )
 
 // session is the sequence in a model's cache: decode.Session for the models converted for Core

@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // cpuProgram loads the parts of a manifest on the CPU interpreter as a decode.Program: y of each
@@ -63,7 +63,7 @@ func cpuProgram(t *testing.T, manifest string) decode.Program {
 					continue
 				}
 				v := make([]float32, count(sh))
-				hwnpu.DecodeF16(v, p.In[name])
+				bonsaiai.DecodeF16(v, p.In[name])
 				in[name] = milcpu.Tensor{Shape: sh, Data: v}
 			}
 			res, err := prog.Run(in, milcpu.Options{})
@@ -77,7 +77,7 @@ func cpuProgram(t *testing.T, manifest string) decode.Program {
 						continue
 					}
 				}
-				hwnpu.EncodeF16(p.Out[name], o.Data)
+				bonsaiai.EncodeF16(p.Out[name], o.Data)
 			}
 		}
 		return nil

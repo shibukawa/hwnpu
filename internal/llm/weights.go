@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/gguf"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/gguf"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // OpenWeights opens a safetensors or GGUF checkpoint of the architecture by its extension. A

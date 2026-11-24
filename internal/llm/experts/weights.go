@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // Routing is how a layer's router picks and weighs its experts from its logits.

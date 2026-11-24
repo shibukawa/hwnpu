@@ -1,6 +1,6 @@
 # おすすめのモデル
 
-hwnpu が動かすモデルを、用途と機械のメモリの量で選べるようにまとめました。数値は 2026-11-06 の main のものです。Apple のチャットのモデルは、Core AI (macOS 27) で 2026-11-15 に、画像のモデルは 2026-11-16 に M1 で測り直した値です。各 NPU が扱うデータ形式と、モデルの変換の仕方は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にあります。
+BonsaiAI が動かすモデルを、用途と機械のメモリの量で選べるようにまとめました。数値は 2026-11-06 の main のものです。Apple のチャットのモデルは、Core AI (macOS 27) で 2026-11-15 に、画像のモデルは 2026-11-16 に M1 で測り直した値です。各 NPU が扱うデータ形式と、モデルの変換の仕方は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にあります。
 
 English: [MODEL.md](MODEL.md)
 
@@ -8,7 +8,7 @@ English: [MODEL.md](MODEL.md)
 
 列は機械に積んだメモリの量です。OS とふだんのアプリの分を引いて、モデルに使える量の目安を 2 行目に書きました。NPU のバッファは固定されたメモリで、スワップに逃がせません。目安を超えると、ほかのアプリがスワップに追い出されます。
 
-hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選びます。用途の欄の名前 (`-m translate`、`-m chat`) で、機械のメモリの列のモデルを動かし、ダウンロードもそのモデルの分だけです。ファミリーの名前でも同じように選びます (`-m plamo3translate`、`-m gemma4`)。Docker のイメージのようにタグを付けると、メモリによらずそのモデルです。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m chat:e4b`) か、表の列 (`-m chat:24g`、`-m plamo3translate:8g`。そのメモリの機械で動かすもの) です。この機械でどれが選ばれるかは `hwnpu-chat list` に出ます。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。hwnpu-audio transcribe (`-m transcribe`)、hwnpu-audio tts (`-m speech`)、hwnpu-chat systemone (`-m decision`) も同じように選びます。表は [models.yaml](models.yaml) (`categories` と、各モデルの `machine`) から来ていて、hwnpu に組み込まれています。自分のファイルで、モデルを足す、列のモデルを替える、あるモデルを別のモデルに差し替える (エイリアス) ができます。書くのは差分だけです ([docs/model-table.md](docs/model-table.md))。
+bonsaiai-chat と bonsaiai-chat agent は、この表から自分でモデルを選びます。用途の欄の名前 (`-m translate`、`-m chat`) で、機械のメモリの列のモデルを動かし、ダウンロードもそのモデルの分だけです。ファミリーの名前でも同じように選びます (`-m plamo3translate`、`-m gemma4`)。Docker のイメージのようにタグを付けると、メモリによらずそのモデルです。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m chat:e4b`) か、表の列 (`-m chat:24g`、`-m plamo3translate:8g`。そのメモリの機械で動かすもの) です。この機械でどれが選ばれるかは `bonsaiai-chat list` に出ます。`BONSAIAI_MEMORY=24` で 24 GB の機械と同じに選びます。bonsaiai-audio transcribe (`-m transcribe`)、bonsaiai-audio tts (`-m speech`)、bonsaiai-chat systemone (`-m decision`) も同じように選びます。表は [models.yaml](models.yaml) (`categories` と、各モデルの `machine`) から来ていて、BonsaiAI に組み込まれています。自分のファイルで、モデルを足す、列のモデルを替える、あるモデルを別のモデルに差し替える (エイリアス) ができます。書くのは差分だけです ([docs/model-table.md](docs/model-table.md))。
 
 <table>
 <thead>
@@ -32,79 +32,79 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 </thead>
 <tbody>
 <tr>
-<th>チャット、コーディング<br><sub>hwnpu-chat、hwnpu-chat agent <code>-m chat</code></sub></th>
+<th>チャット、コーディング<br><sub>bonsaiai-chat、bonsaiai-chat agent <code>-m chat</code></sub></th>
 <td><b>LFM3-1.7B</b> (Apple 1.7 GB、AMD 2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (AMD 2.4 GB、Apple 2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>、2.2〜2.4 GB)<br>コードも書く<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.1 GB。Apple だけ)<br>プログラム 1 本で、長いプロンプトを読むのは遅い (<code>--prefill on</code> で速く、+0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>、M1 で 1.1 GB、M2 以降 1.6 GB、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱い</td>
 <td><b>Gemma 4 E2B</b> (AMD 2.4 GB、Apple 2.3 GB)<br>長い文脈 (131072 で +0.8 GB) も<br><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br>短い会話なら<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.3 GB)<br>プロンプトを読むプログラムを別に持ち、読むのが 5 倍速い</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br>長い文脈 (131072 で +2.1 GB) も</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br><i>Apple (16 GB から) と AMD (16 GB から。48 GB 未満は置く専門家を減らして) では名前で動く: Qwen3.6-35B-A3B (MoE、<code>-m Qwen3.6-35B-A3B</code>。16 GB の M3 で 10.9〜11、Ryzen AI 9 365 で 8.8〜8.9 トークン/秒。用途からは選ばれない)</i></td>
 </tr>
 <tr>
-<th>画像を読む<br><sub>hwnpu-chat <code>-m vision</code> (<code>image_url</code>、<code>/image</code>)</sub></th>
+<th>画像を読む<br><sub>bonsaiai-chat <code>-m vision</code> (<code>image_url</code>、<code>/image</code>)</sub></th>
 <td><b>LFM3-VL-2B</b> (2.6〜2.7 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6〜2.7 GB)</td>
 </tr>
 <tr>
-<th>文字起こし<br><sub>hwnpu-audio transcribe</sub></th>
+<th>文字起こし<br><sub>bonsaiai-audio transcribe</sub></th>
 <td colspan="6"><b>Whisper large-v3-turbo</b> (約 1.9 GB)<br>99 言語、タイムスタンプつき、30 秒を 0.6 秒で読む</td>
 </tr>
 <tr>
-<th>音高 (F0)<br><sub>hwnpu-audio pitch</sub></th>
+<th>音高 (F0)<br><sub>bonsaiai-audio pitch</sub></th>
 <td colspan="6"><b>SwiftF0</b> (約 0.06 GB)<br>声や楽器 1 つの音高を 16 ms ごとに、有声の確からしさつき。41 秒を 0.24 秒</td>
 </tr>
 <tr>
-<th>音符 (MIDI)<br><sub>hwnpu-audio notes</sub></th>
+<th>音符 (MIDI)<br><sub>bonsaiai-audio notes</sub></th>
 <td colspan="6"><b>Basic Pitch</b> (約 0.07 GB)<br>どの楽器でも、和音も、ピッチベンドつきで MIDI に。実時間の 35 倍</td>
 </tr>
 <tr>
-<th>人の姿勢<br><sub>hwnpu-image pose</sub></th>
+<th>人の姿勢<br><sub>bonsaiai-image pose</sub></th>
 <td colspan="6"><b>RTMO-s</b> (約 0.23 GB)<br>画像の人と 17 の関節点を 1 回で (人の検出器は不要)。1 枚約 0.1 秒</td>
 </tr>
 <tr>
-<th>物の検出<br><sub>hwnpu-image detect</sub></th>
+<th>物の検出<br><sub>bonsaiai-image detect</sub></th>
 <td><b>RTMDet-s</b> (約 0.1 GB)<br>物の枠と COCO の 80 種類のラベル。M1 の Neural Engine で 1 枚 9 ms</td>
 <td colspan="5"><b>RTMDet-m</b> (約 0.2 GB)<br>より正確 (box AP 49.1、s は 44.6)。1 枚 18 ms</td>
 </tr>
 <tr>
-<th>文字 (OCR)<br><sub>hwnpu-image ocr</sub></th>
+<th>文字 (OCR)<br><sub>bonsaiai-image ocr</sub></th>
 <td colspan="6"><b>PP-OCRv6 small</b> (約 0.45 GB)<br>文字の行と枠と中身、50 言語 (日本語、中国語、英語など)。M1 で論文 1 ページ 98 行が 0.5 秒</td>
 </tr>
 <tr>
-<th>音楽生成<br><sub>hwnpu-audio generate</sub></th>
+<th>音楽生成<br><sub>bonsaiai-audio generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (約 1.0 GB)<br>文や録音で指定した曲調の 48 kHz ステレオの音楽。MIDI の音符を弾く、録音の続きを作る、できたそばから流すこともできる。実時間の約 1.4 倍の速さ。重みは CC-BY 4.0 (使うときは「Magenta RealTime 2 by Google DeepMind」と表示)</td>
 </tr>
 <tr>
-<th>効果音<br><sub>hwnpu-audio generate -m sfx</sub></th>
+<th>効果音<br><sub>bonsaiai-audio generate -m sfx</sub></th>
 <td><b>MOSS-SoundEffect v2.0</b> (約 2.2 GB。文の符号器は lut8、5 層だけ fp16)</td>
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (約 2.3 GB。文の符号器は fp16)<br>英語か中国語の説明から最長 30 秒の 48 kHz モノラルの効果音。M1 でカードの 100 ステップなら 10 秒に約 4 分 (<code>-steps 50</code> で半分)。Apache-2.0</td>
 </tr>
 <tr>
-<th>音声を読む (音声についての質問)<br><sub>hwnpu-chat <code>-m audio</code> (<code>input_audio</code>、<code>/audio</code>)</sub></th>
+<th>音声を読む (音声についての質問)<br><sub>bonsaiai-chat <code>-m audio</code> (<code>input_audio</code>、<code>/audio</code>)</sub></th>
 <td><b>LFM3-Audio-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0〜3.1 GB、画像も)</td>
 </tr>
 <tr>
-<th>翻訳<br><sub>hwnpu-chat <code>-m translate</code></sub></th>
+<th>翻訳<br><sub>bonsaiai-chat <code>-m translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (1.0 GB)<br>2B の 3 倍速、訳は 2B の言い換え程度の違い</td>
 <td colspan="5"><b>PLaMo 3 Translate 8B</b> (Apple で 8.2 GB、AMD で約 6.5 GB)<br>訳語が 2B より的確。M3 で 10〜11 トークン/秒 (読み込み 4 秒)、M2 で 9〜10 (起動のたびに 35〜41 秒)<br>M1 では <b>PLaMo 3 Translate 2B</b> (3.2 GB) を選ぶ: 8B は 0.8 トークン/秒 (<code>-m plamo3translate:8b</code> なら 8B)</td>
 </tr>
 <tr>
-<th>画像生成<br><sub>hwnpu-image</sub></th>
-<td colspan="6"><b>FLUX.2 klein 4B</b> 1024 × 1024 (AMD 3.9 GB、Apple 4.9 GB。<code>--size 512</code> で AMD 1.9 GB、Apple 3.1 GB)<br>主力: Apache-2.0、4 ステップで M1 で 41 秒 (512 × 512 は 11 秒)、AMD で 29 秒。AMD では参照画像の編集と合成も (<code>--image</code>)<br>オプトイン (<code>HWNPU_MODEL_ALLOWLIST=+nsfw</code> で、<code>-m</code> で名前を指定): <b>Anima-Turbo</b> (Apple 4.8 GB、M1 で 48 秒。Danbooru のタグ)、<b>Anima-Aesthetic</b> (<code>-m anima</code>、25 ステップと CFG で約 4.5 倍の時間)</td>
+<th>画像生成<br><sub>bonsaiai-image</sub></th>
+<td colspan="6"><b>FLUX.2 klein 4B</b> 1024 × 1024 (AMD 3.9 GB、Apple 4.9 GB。<code>--size 512</code> で AMD 1.9 GB、Apple 3.1 GB)<br>主力: Apache-2.0、4 ステップで M1 で 41 秒 (512 × 512 は 11 秒)、AMD で 29 秒。AMD では参照画像の編集と合成も (<code>--image</code>)<br>オプトイン (<code>BONSAIAI_MODEL_ALLOWLIST=+nsfw</code> で、<code>-m</code> で名前を指定): <b>Anima-Turbo</b> (Apple 4.8 GB、M1 で 48 秒。Danbooru のタグ)、<b>Anima-Aesthetic</b> (<code>-m anima</code>、25 ステップと CFG で約 4.5 倍の時間)</td>
 </tr>
 <tr>
-<th>読み上げ<br><sub>hwnpu-audio tts</sub></th>
+<th>読み上げ<br><sub>bonsaiai-audio tts</sub></th>
 <td colspan="6"><b>LFM3-Audio-2B</b> (約 2.4 GB)</td>
 </tr>
 <tr>
-<th>文の埋め込み、検索<br><sub>hwnpu-chat <code>-m embedding</code> (<code>/v1/embeddings</code>)</sub></th>
+<th>文の埋め込み、検索<br><sub>bonsaiai-chat <code>-m embedding</code> (<code>/v1/embeddings</code>)</sub></th>
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.2〜1.3 GB)</td>
 </tr>
 <tr>
-<th>状態の判定<br><sub>hwnpu-chat systemone</sub></th>
+<th>状態の判定<br><sub>bonsaiai-chat systemone</sub></th>
 <td colspan="6"><b>d1-2B</b> (約 2.4 GB、画像も)<br><b>d1-Omni-2B</b> (約 2.8 GB、画像と音声)</td>
 </tr>
 <tr>
-<th>いくつも同時に<br><sub>hwnpu-chat <code>serve -m A,B,…</code></sub></th>
+<th>いくつも同時に<br><sub>bonsaiai-chat <code>serve -m A,B,…</code></sub></th>
 <td>LFM3-1.7B + PLaMo 3 Translate 0.8B (Apple 2.7 GB、AMD 3.2 GB)</td>
 <td>Gemma 4 E2B + PLaMo-Embedding-1B (3.5〜3.6 GB)<br>+ PLaMo 3 Translate 2B (AMD 6.3 GB、Apple 6.7 GB)</td>
 <td>Gemma 4 E4B + PLaMo-Embedding-1B + PLaMo 3 Translate 2B (AMD 8.0 GB、Apple 8.4 GB)</td>
@@ -113,11 +113,11 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 </tbody>
 </table>
 
-- 画像生成 (`-m image`、hwnpu-image generate の既定) は、8 GB から FLUX.2 klein 4B です。頼まなくても NSFW の絵を描くことがある Anima は、`HWNPU_MODEL_ALLOWLIST=+nsfw` でオプトインして名前で指定したとき (`-m anima-turbo`) だけ動きます。オプトインしても用途からは選びません。ライセンスでモデルを絞るときも同じ変数を使います ([docs/model-provenance.md](docs/model-provenance.md))
+- 画像生成 (`-m image`、bonsaiai-image generate の既定) は、8 GB から FLUX.2 klein 4B です。頼まなくても NSFW の絵を描くことがある Anima は、`BONSAIAI_MODEL_ALLOWLIST=+nsfw` でオプトインして名前で指定したとき (`-m anima-turbo`) だけ動きます。オプトインしても用途からは選びません。ライセンスでモデルを絞るときも同じ変数を使います ([docs/model-provenance.md](docs/model-provenance.md))
 - 括弧の中は、起動して短い会話をしたときの想定のメモリです (次の節)。長い会話では KV キャッシュの分が増えます
 - 32 GB を超えても、今は大きなモデルがありません。メモリの多い機械では、上の表の組み合わせを同時に動かすか、長い文脈に使います
-- 8 GB の機械では、メモリの小さい方の動かし方になります (LFM3-1.7B は短い会話用の 1 本なし、Qwen3-1.7B はプロンプト用のプログラムなし)。メモリの多い機械でほかのプログラムと一緒に動かすときは、`hwnpu memory LFM3-1.7B 8` (または `hwnpu-chat --memory 8`) で、どのコマンドでもそのモデルは 8 GB の形で動きます ([docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.8)
-- 小さな機械では、`--context` で文脈を短くすると KV キャッシュの分が減ります。hwnpu-chat は KV キャッシュが物理メモリの 4 分の 1 を超えるとき、文脈を自分で縮めます
+- 8 GB の機械では、メモリの小さい方の動かし方になります (LFM3-1.7B は短い会話用の 1 本なし、Qwen3-1.7B はプロンプト用のプログラムなし)。メモリの多い機械でほかのプログラムと一緒に動かすときは、`bonsaiai memory LFM3-1.7B 8` (または `bonsaiai-chat --memory 8`) で、どのコマンドでもそのモデルは 8 GB の形で動きます ([docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.8)
+- 小さな機械では、`--context` で文脈を短くすると KV キャッシュの分が減ります。bonsaiai-chat は KV キャッシュが物理メモリの 4 分の 1 を超えるとき、文脈を自分で縮めます
 
 ## モデルごとのメモリ
 
@@ -144,15 +144,15 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | PLaMo 3 Translate 8B | 翻訳 | Apple で約 8.2 GB (M1: 4 ビットの表で Neural Engine に 3.81 GiB とプロセスの最大 4.1 GB)。AMD で約 6.5 GB (q4、重みからの見積もり) | 9 KiB/トークン (262144 で 2.25 GiB) | M1、M2、M3 で実測 (Apple)、AMD は未実行 |
 | PLaMo 3 Translate 0.8B | 翻訳 | 1.0 GB (M1: Neural Engine に 0.82 GiB とプロセスの 0.12 GiB) | 1 KiB/トークン (262144 で 0.28 GiB) | 実測 (AMD と M1) |
 | PLaMo-Embedding-1B | 文の埋め込み | AMD 1.3 GB、Apple 1.2 GB (M1: Neural Engine に 1.05 GiB とプロセスの 0.03 GiB) | なし | AMD は重みから見込み、Apple は M1 で実測 |
-| MoGe-2 ViT-S / B / L (AMD) | メートルの深度、点群、法線 (hwnpu-image depth) | 1.9 GB (S)、2.1 GB (B)、2.6 GB (L) | なし | 実測 |
-| Depth Anything 3 Mono / Metric Large、Small、Base (AMD) | 深度推定 (hwnpu-image depth) | 1.4 GB (Large)、0.75 GB (Base)、0.5 GB (Small) | なし | 実測 |
-| FLUX.2 klein 4B (1024 × 1024、AMD) | 画像生成、参照画像の編集 (hwnpu-image generate `-m flux2-klein`、`--image`) | 3.9 GB (NPU の最大 3.4 GiB は VAE の段、それにプロセスの 0.2 GiB。編集でも同じ。512 × 512 では 1.9 GB。文の符号器と DiT は 1 組ずつ読む) | なし | 実測 |
-| FLUX.2 klein 4B (1024 × 1024、Apple) | 画像生成 (hwnpu-image generate `-m flux2-klein`。編集は AMD) | 4.9 GB (M1: VAE の段でプロセス 3.8 GiB、Neural Engine 0.8 GiB。Neural Engine は DiT のときの 2.3 GiB が最大。512 × 512 で 3.1 GB) | なし | 実測 (M1) |
-| FLUX.3 klein (1024 × 1024、AMD) | 画像生成 (hwnpu-image generate `-m flux3-klein`。文からの生成) | 3.9 GB (NPU のバッファとプロセスの和の最大 3.6 GiB。512 × 512 で 2.7 GB。テキストエンコーダーと DiT は組ごとに読む) | なし | 実測 |
-| FLUX.3 klein (1024 × 1024、Apple) | 画像生成 (hwnpu-image generate `-m flux3-klein`。文からの生成) | プロセスで最大 4.1 GB (M3。Neural Engine の分は未測定) | なし | 実測 (M3) |
-| DA3-SMALL、DA3MONO-LARGE、MoGe-2 ViT-S (Apple) | 深度推定 (hwnpu-image depth) | 1 つの大きさのプログラム (fp16)。縦横比ごとに初めて使うときに変換 | なし | 未測定 |
-| SigLIP 2 Base / Large (Apple) | ラベル付け、画像と文の埋め込み (hwnpu-image label、embed) | 約 0.9 / 3.3 GB (M3: プロセスの footprint 最大 0.45 / 1.8 GB と、Neural Engine に 0.36 / 1.24 GB。Core AI では 0.48 / 1.56 GB) | なし (1 枚、文 8 つずつ) | M3 で実測 |
-| EfficientSAM-Ti / S (Apple) | 点や箱で指定する切り抜き (hwnpu-image segment) | プロセスの footprint 約 0.22 / 0.25 GB (M3。符号器は Neural Engine、復号器は CPU) | なし (1 枚ずつ) | M3 で実測 |
+| MoGe-2 ViT-S / B / L (AMD) | メートルの深度、点群、法線 (bonsaiai-image depth) | 1.9 GB (S)、2.1 GB (B)、2.6 GB (L) | なし | 実測 |
+| Depth Anything 3 Mono / Metric Large、Small、Base (AMD) | 深度推定 (bonsaiai-image depth) | 1.4 GB (Large)、0.75 GB (Base)、0.5 GB (Small) | なし | 実測 |
+| FLUX.2 klein 4B (1024 × 1024、AMD) | 画像生成、参照画像の編集 (bonsaiai-image generate `-m flux2-klein`、`--image`) | 3.9 GB (NPU の最大 3.4 GiB は VAE の段、それにプロセスの 0.2 GiB。編集でも同じ。512 × 512 では 1.9 GB。文の符号器と DiT は 1 組ずつ読む) | なし | 実測 |
+| FLUX.2 klein 4B (1024 × 1024、Apple) | 画像生成 (bonsaiai-image generate `-m flux2-klein`。編集は AMD) | 4.9 GB (M1: VAE の段でプロセス 3.8 GiB、Neural Engine 0.8 GiB。Neural Engine は DiT のときの 2.3 GiB が最大。512 × 512 で 3.1 GB) | なし | 実測 (M1) |
+| FLUX.3 klein (1024 × 1024、AMD) | 画像生成 (bonsaiai-image generate `-m flux3-klein`。文からの生成) | 3.9 GB (NPU のバッファとプロセスの和の最大 3.6 GiB。512 × 512 で 2.7 GB。テキストエンコーダーと DiT は組ごとに読む) | なし | 実測 |
+| FLUX.3 klein (1024 × 1024、Apple) | 画像生成 (bonsaiai-image generate `-m flux3-klein`。文からの生成) | プロセスで最大 4.1 GB (M3。Neural Engine の分は未測定) | なし | 実測 (M3) |
+| DA3-SMALL、DA3MONO-LARGE、MoGe-2 ViT-S (Apple) | 深度推定 (bonsaiai-image depth) | 1 つの大きさのプログラム (fp16)。縦横比ごとに初めて使うときに変換 | なし | 未測定 |
+| SigLIP 2 Base / Large (Apple) | ラベル付け、画像と文の埋め込み (bonsaiai-image label、embed) | 約 0.9 / 3.3 GB (M3: プロセスの footprint 最大 0.45 / 1.8 GB と、Neural Engine に 0.36 / 1.24 GB。Core AI では 0.48 / 1.56 GB) | なし (1 枚、文 8 つずつ) | M3 で実測 |
+| EfficientSAM-Ti / S (Apple) | 点や箱で指定する切り抜き (bonsaiai-image segment) | プロセスの footprint 約 0.22 / 0.25 GB (M3。符号器は Neural Engine、復号器は CPU) | なし (1 枚ずつ) | M3 で実測 |
 | Anima-Turbo、Anima-Aesthetic (1024 × 1024) | 画像生成 (オプトイン、`+nsfw`) | AMD 3.5 GB (NPU は VAE の段で最大 2.4 GiB、プロセス 0.9 GiB)、Apple 4.8 GB (M1: プロセス 3.1 GiB、Neural Engine 1.4 GiB) | なし | 実測 (AMD と M1) |
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |
 | d1-2B、d1-Omni-2B | 状態の判定 | 約 2.4 GB、約 2.8 GB | 短い入力のみ | 重みから見込み |
@@ -173,7 +173,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 - 「M1」と書いた値は 16 GB の M1 で 2026-11-15 に測りました ([docs/design/memory-and-power.ja.md](docs/design/memory-and-power.ja.md))。2 回目からの起動で 200 トークンの答えを出す間、プロセスの footprint と Neural Engine の分を 0.1 秒ごとに見た、和の最大です。初めて動かすときは、変換のためにプロセスが一時的に大きくなります (最大で Qwen3-0.6B 2.0 GiB、PLaMo 3 Translate 0.8B 2.3、2B 2.7、LFM3 の VL、Audio、Omni 2.8〜2.9、Qwen3.5-0.8B 3.0、Qwen3.5-2B 6.0 GiB)。Gemma 4 E4B、Qwen3.5-4B、PLaMo 3 Translate 8B は Core AI では測り直していません
 - 画像のモデルの「M1」は、同じ測り方で 2026-11-16 に測りました ([docs/design/image-models.ja.md](docs/design/image-models.ja.md))。2 回目からの起動で 1 枚を描く間の和の最大で、1024 × 1024 では VAE の最後の段が最大です
 - Core AI では、長い会話の 2 段の注意のために 8 個ごとの平均も持つので、会話で増える分は 8 分の 9 になります (LFM3-1.7B で 13.5 KiB/トークン、262144 で 3.4 GiB。Gemma 4 E2B で 6.75 KiB)
-- Neural Engine の分はそのドライバーのカーネルのメモリで、どのプロセスの RSS にも footprint にも出ません (アクティビティモニタや `top` には見えません)。hwnpu-chat は読み込んだ後にその量を表示します。その場でコンパイルしたプログラムは、最初の呼び出しで Neural Engine に載ります
+- Neural Engine の分はそのドライバーのカーネルのメモリで、どのプロセスの RSS にも footprint にも出ません (アクティビティモニタや `top` には見えません)。bonsaiai-chat は読み込んだ後にその量を表示します。その場でコンパイルしたプログラムは、最初の呼び出しで Neural Engine に載ります
 - Qwen3-0.6B と Qwen3-1.7B も、Core AI ではほかのチャットのモデルと同じく注意で分けて動かします (28 層すべてが注意。M1 で Qwen3-0.6B は 32 トークン/秒、Qwen3-1.7B は 22)。文脈は 40960 で、キャッシュは会話とともに増え、メモリの 4 分の 1 を超える分は文脈を縮めます (16 GB で 32768)。Core ML の頃は 4096 のキャッシュを持つ 1 本のプログラムで、Qwen3-0.6B は約 3.9 GB、Qwen3-1.7B は 4.5 GB (16 GB からは 7.6 GB) でした。16 GB 未満の機械では、Qwen3-1.7B は生成のプログラムがプロンプトも 1 回 8 トークンずつ読む 1 本で動かします (models.yaml の `prefill: off` と `variants`)。Core ML で測ると、新しい 1822 トークンのプロンプトを読むのに 16.8 秒、プロンプト用のプログラムでは 3.4 秒でした (`--prefill on` でいつでも)。Core AI ではプロンプト用のプログラムは同じ重みの関数で、足しても Neural Engine に 0.16 GiB、合わせて 0.3 GB しか増えません。AMD の NPU 向けの書き出しはまだありません
 - 数えていないもの: Gemma 4 の層ごとの埋め込みの表 (E2B で int8 の 2.4 GB。2026-11-17 より前に変換した bf16 のものは 4.7 GB。[docs/design/performance.ja.md](docs/design/performance.ja.md)) と、トークンの埋め込みの表 (0.5〜0.75 GB) は、ファイルのまま置いて、使う行だけを読みます。OS のページキャッシュに入りますが、メモリが足りなければ捨てられます
 - 同じモデルの複数の書き出し (文だけと画像と音声つきなど) は、ディスクの上で同じファイルを共有できます (Btrfs、XFS、APFS、ReFS)。メモリの上では共有しないので、同時に動かせば別々に数えます

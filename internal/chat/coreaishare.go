@@ -14,14 +14,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
-	"github.com/shibukawa/hwnpu/internal/finish"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
+	"github.com/shibukawa/bonsaiai/internal/finish"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // CoreAIKind is the kind of entry of a Core AI export in the shared layers.
@@ -87,7 +87,7 @@ func FinishCoreAI(ctx context.Context, export string) error {
 }
 
 // PutCoreAI finishes the Core AI export (FinishCoreAI) and puts it in the layers written back to
-// as the conversion of its model's recipe now (its version): hwnpu-dev sources import of an
+// as the conversion of its model's recipe now (its version): bonsaiai-dev sources import of an
 // export of the version before a recipe's finish, without converting it again.
 func PutCoreAI(ctx context.Context, export string) (string, error) {
 	// the model: WithModel's, else its entry.json's (a family's directory holds the exports of
@@ -268,7 +268,7 @@ func prebuiltPrograms(root string) []string {
 func bundleDir(root string) string { return root + ".shared" }
 
 // PutPrebuilt puts the packed prebuilt programs of the export for arch (coreai.PackedRoot, made
-// here by hwnpu-dev models package MODEL/coreai-ARCH) in the sources that are written back to, in the background, as
+// here by bonsaiai-dev models package MODEL/coreai-ARCH) in the sources that are written back to, in the background, as
 // one file (coreai.Bundle). The export's model is its entry.json's, else ctx's (WithModel), else
 // the one whose directory holds it.
 func PutPrebuilt(ctx context.Context, export, arch string) error {
@@ -277,7 +277,7 @@ func PutPrebuilt(ctx context.Context, export, arch string) error {
 		return fmt.Errorf("%s: not a Core AI export of a model of the definitions (it has no entry.json, and its directory is no model's: name the model)", export)
 	}
 	if len(shared.Writebacks()) == 0 {
-		return errors.New("no source is written back to (HWNPU_MODEL_SOURCE...?writeback=true)")
+		return errors.New("no source is written back to (BONSAIAI_MODEL_SOURCE...?writeback=true)")
 	}
 	root := coreai.PackedRoot(export, arch)
 	dir := bundleDir(root)

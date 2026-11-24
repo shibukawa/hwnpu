@@ -97,6 +97,6 @@ func TestProfile(t *testing.T) {
 	b.Reset()
 	WriteProfile(&b)
 	if b.Len() != 0 {
-		t.Errorf("without HWNPU_PROFILE: %q", b.String())
+		t.Errorf("without BONSAIAI_PROFILE: %q", b.String())
 	}
 }

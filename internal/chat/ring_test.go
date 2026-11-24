@@ -9,12 +9,12 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/plamo3"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/plamo3"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // tinyPlamo3 is a PLaMo 3 of 4 layers, every second one full, whose other layers see a window of
@@ -79,7 +79,7 @@ func ringPaths(t *testing.T, backend string) (cfg *plamo3.Config, w llm.Weights,
 // session on the long ones from the start; then both go back to a mark taken at 5 tokens, before
 // the move (decode.Session.Remark), and on from there. It returns the largest relative error of
 // its logits.
-func checkRings(t *testing.T, dev *hwnpu.Device, backend string) float64 {
+func checkRings(t *testing.T, dev *bonsaiai.Device, backend string) float64 {
 	t.Helper()
 	ctx := context.Background()
 	cfg, w, short, long := ringPaths(t, backend)

@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	shared "github.com/shibukawa/hwnpu/internal/store"
-	"github.com/shibukawa/hwnpu/internal/store/s3fake"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/store/s3fake"
 )
 
 // hub serves files as Hugging Face does (OWNER/NAME/resolve/REV/FILE) and counts the requests.
@@ -139,7 +139,7 @@ func clearCommits() {
 }
 
 // TestFollowLock checks that the machine's cache follows the sources' lock: when it moves to
-// another commit (hwnpu-dev sources update), a file of the old one is fetched again, and one that
+// another commit (bonsaiai-dev sources update), a file of the old one is fetched again, and one that
 // is the same in both is kept (its SHA-256 the new lock's).
 func TestFollowLock(t *testing.T) {
 	cacheHere(t)
@@ -175,7 +175,7 @@ func TestFollowLock(t *testing.T) {
 	}
 }
 
-// TestLegacyFile checks that a file of an earlier hwnpu's models/NAME is moved into the
+// TestLegacyFile checks that a file of an earlier bonsaiai's models/NAME is moved into the
 // repository's folder when it is the one asked for (the SHA-256 Hugging Face says), and fetched
 // again when it is not.
 func TestLegacyFile(t *testing.T) {
@@ -222,7 +222,7 @@ func TestBundle(t *testing.T) {
 	}
 }
 
-// TestHuggingFaceOff checks that HWNPU_MODEL_HUGGING_FACE=false never asks Hugging Face.
+// TestHuggingFaceOff checks that BONSAIAI_MODEL_HUGGING_FACE=false never asks Hugging Face.
 func TestHuggingFaceOff(t *testing.T) {
 	cacheHere(t)
 	share := t.TempDir()

@@ -6,17 +6,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
 )
 
 // The audio encoder lowered to OpenVINO IR computes the reference's embeddings of a clip shorter
 // than the program on OpenVINO's CPU (TestAgainstFP64 for Intel's NPU), from both checkpoint
-// layouts. Needs HWNPU_OV_PYTHON. The IR's output is fp16.
+// layouts. Needs BONSAIAI_OV_PYTHON. The IR's output is fp16.
 func TestIntelIR(t *testing.T) {
 	py := ovcpu.Python()
 	if py == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	for _, js := range []string{tiny, tinyOmni} {
 		cfg, err := ParseConfig([]byte(js))

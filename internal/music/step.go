@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/chain"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // step runs a program of named fp16 inputs and outputs, on a device or the CPU interpreter.
@@ -25,12 +25,12 @@ type step struct {
 }
 
 // openStep loads the program at path on dev (nil: the CPU interpreter).
-func openStep(ctx context.Context, dev *hwnpu.Device, path string) (*step, error) {
+func openStep(ctx context.Context, dev *bonsaiai.Device, path string) (*step, error) {
 	return openStepOn(ctx, dev, path, "")
 }
 
 // openStepOn is openStep on the Core ML units given ("gpu", "cpu"; "": the Neural Engine).
-func openStepOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*step, error) {
+func openStepOn(ctx context.Context, dev *bonsaiai.Device, path, units string) (*step, error) {
 	if dev == nil {
 		prog, f, err := milcpu.OpenPackage(path)
 		if err != nil {
@@ -105,13 +105,13 @@ func openStepOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*st
 			if len(v)*2 != len(b) {
 				return nil, fmt.Errorf("music: input %s of %d values, want %d", name, len(v), len(b)/2)
 			}
-			hwnpu.EncodeF16(b, v)
+			bonsaiai.EncodeF16(b, v)
 		}
 		if err := p.Run(); err != nil {
 			return nil, err
 		}
 		for name, b := range p.Out {
-			hwnpu.DecodeF16(outs[name], b)
+			bonsaiai.DecodeF16(outs[name], b)
 		}
 		return outs, nil
 	}}, nil

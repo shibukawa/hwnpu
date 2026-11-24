@@ -18,12 +18,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 type design struct {
 	name string
-	run  *hwnpu.Run
+	run  *bonsaiai.Run
 }
 
 func median(t []float64) float64 {
@@ -33,7 +33,7 @@ func median(t []float64) float64 {
 
 func main() {
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -45,14 +45,14 @@ func main() {
 		dir := f[0]
 		m, _ := strconv.Atoi(f[1])
 		k, _ := strconv.Atoi(f[2])
-		prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, "final.xclbin")})
+		prog, err := kr.Load(ctx, bonsaiai.ProgramSource{Path: filepath.Join(dir, "final.xclbin")})
 		if err != nil {
 			log.Fatalf("%s: %v", dir, err)
 		}
 		defer prog.Close()
 		kern, _ := prog.Kernel("MLIR_AIE")
 		code, _ := os.ReadFile(filepath.Join(dir, "insts.bin"))
-		instr, err := dev.AllocBuffer(len(code), hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+		instr, err := dev.AllocBuffer(len(code), bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -101,7 +101,7 @@ func main() {
 	t = t[:0]
 	for i := 0; i < n; i++ {
 		s := time.Now()
-		var fs []hwnpu.Fence
+		var fs []bonsaiai.Fence
 		for _, d := range ds {
 			f, err := d.run.Submit()
 			if err != nil {

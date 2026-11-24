@@ -8,19 +8,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
-// The checkpoint split at its attention (HWNPU_TEST_LFM3_DIR, not with -short: slow, on
+// The checkpoint split at its attention (BONSAIAI_TEST_LFM3_DIR, not with -short: slow, on
 // the CPU interpreter) gives the logits of the same checkpoint converted whole with its cache in
 // the program, step by step over a prompt that crosses several chunks: the real layout (6 full
 // attention layers, sliding rings and convolutions in the parts), not only the tiny model's.
 func TestPagedCheckpoint(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_LFM3_DIR")
 	if dir == "" || testing.Short() {
-		t.Skip("HWNPU_TEST_LFM3_DIR is not set, or -short")
+		t.Skip("BONSAIAI_TEST_LFM3_DIR is not set, or -short")
 	}
 	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
 	if err != nil {

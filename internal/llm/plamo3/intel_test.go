@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/chain"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
 )
 
 // writeIRParts is writeParts for Intel's NPU: the parts are OpenVINO IR.
@@ -45,10 +45,10 @@ func writeIRParts(t *testing.T, c *Config, w llm.Weights, opts llm.Options, n in
 // TestCachedMatchesFull on OpenVINO's CPU: the program with a KV cache lowered to OpenVINO IR and
 // run through internal/llm/chain (the rings of the sliding layers, YaRN's scaled scores) gives
 // the logits of the MIL program without a cache, also in steps padded past the tokens, with a
-// program of 1 token per call sharing the cache. Needs HWNPU_OV_PYTHON.
+// program of 1 token per call sharing the cache. Needs BONSAIAI_OV_PYTHON.
 func TestIntelIRCached(t *testing.T) {
 	if ovcpu.Python() == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "openvino", "")
@@ -116,10 +116,10 @@ func TestIntelIRCached(t *testing.T) {
 // TestPagedMatchesFull on OpenVINO's CPU: the parts and the attention program of the model split
 // at its attention (the full layers), lowered to OpenVINO IR and run through internal/llm/chain, with one program
 // of 4 tokens per call and one of 1 sharing the host's cache, give the logits of the MIL program
-// without a cache. Needs HWNPU_OV_PYTHON.
+// without a cache. Needs BONSAIAI_OV_PYTHON.
 func TestIntelIRPaged(t *testing.T) {
 	if ovcpu.Python() == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "openvino", "")

@@ -12,7 +12,7 @@ the scale and minimum fitted to the weights GPTQ has already corrected. No cost 
 
 Runs on the CPU in the reference environment (PyTorch, Hugging Face, fp32):
 
-  ~/.cache/hwnpu/dev/ref-venv/bin/python tools/amd/q4_gptq.py lfm3 ~/.cache/hwnpu/models/LFM3-1.7B OUT
+  ~/.cache/bonsaiai/dev/ref-venv/bin/python tools/amd/q4_gptq.py lfm3 ~/.cache/bonsaiai/models/LFM3-1.7B OUT
 
 writes OUT/codes (each weight's blocks, named by a hash of its shape and bf16 values) and prints
 the KL of the quantized model's logits from the bf16 weights' on the evaluation texts (EVAL).
@@ -30,7 +30,7 @@ calibration texts and made an unseen one (the GPL) worse than rounding.
 
 --fmt-q4, --fmt-q8 and --head lutN do the same for Apple's lookup tables (internal/palette's
 Uniform tables of 16 rows): GPTQ chooses each weight's entry of its fixed table, and OUT/codes
-holds the indices and tables (KEY.idx, KEY.tab) that hwnpu-dev convert -codes reads.
+holds the indices and tables (KEY.idx, KEY.tab) that bonsaiai-dev convert -codes reads.
 
 The calibration texts (CALIB) include general English and Japanese, in ~/models/calib:
 wikitext-2-raw-v1's train split (wikitext2-train.txt) and test split (wikitext2-test.txt, from
@@ -420,7 +420,7 @@ def load(path: Path, spec):
     if spec.get("last_pass"):
         # the last pass, and no cache: its remote code's cache does not build under the old
         # transformers it needs
-        m.hwnpu_forward = {"exit_at_step": m.config.total_ut_steps - 1, "use_cache": False}
+        m.bonsaiai_forward = {"exit_at_step": m.config.total_ut_steps - 1, "use_cache": False}
         m.config.use_cache = False
     if "text" in spec:
         m = TextLM(m, spec["text"], spec["head"])
@@ -477,7 +477,7 @@ def texts(paths, tok, bos: int, length: int, count: int):
 def logits_of(m, ids):
     import torch
 
-    return m(input_ids=torch.tensor([ids]), **getattr(m, "hwnpu_forward", {})).logits[0].float()
+    return m(input_ids=torch.tensor([ids]), **getattr(m, "bonsaiai_forward", {})).logits[0].float()
 
 
 def kl_stats(ref, q):
@@ -575,7 +575,7 @@ def main(argv=None) -> int:
         index[k] = dict(name=name, fmt=fmt, shape=list(lin.weight.shape))
 
     def put_lut(name, lin, fmt, idx, table):
-        """lutN for hwnpu-dev convert -codes (internal/palette.LoadCodes): the indices (rows, cols)
+        """lutN for bonsaiai-dev convert -codes (internal/palette.LoadCodes): the indices (rows, cols)
         uint8 and the tables (rows / LUT_GROUP, 2^bits) float32 (fp16 values), raw."""
         codes_dir.mkdir(parents=True, exist_ok=True)
         k = key(lin.weight.detach().numpy())

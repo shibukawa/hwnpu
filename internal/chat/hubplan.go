@@ -7,15 +7,15 @@ import (
 	"path"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
-// What hwnpu-dev models hf plan and push look for in the sources: the entries a model's conversions
+// What bonsaiai-dev models hf plan and push look for in the sources: the entries a model's conversions
 // have now, as the commands would look for them (docs/prebuilt.md 4.1). The exports for AMD's
 // NPU are known by their recipes (ExportRecipe, PinnedRecipe); the Core AI exports, their
 // prebuilt programs and the tables by the names the sources hold them under, each taken only
-// when it is what this hwnpu would make of the model now.
+// when it is what this bonsaiai would make of the model now.
 
 // Takes reports whether got, found at want's place, is what want describes: the same key, or
 // for a version that is published (vN) the same recipe but for the tools' hash.
@@ -28,7 +28,7 @@ func Takes(want, got shared.Entry) bool {
 }
 
 // TakesPinned reports whether got is the export models.yaml pins for want (its digest, in a
-// form this hwnpu reads); false when it pins none.
+// form this bonsaiai reads); false when it pins none.
 func TakesPinned(want, got shared.Entry) bool {
 	pin, ok := PinOfEntry(want)
 	return ok && got.Digest() == pin.Digest && FormatTaken(got)
@@ -48,7 +48,7 @@ func CoreAIWant(ctx context.Context, m Model, export string) (shared.Entry, bool
 
 // TablesWant is the entry of model m's tables that got (an entry of tables found in a source)
 // would be if made now: the same tables of the same architecture, of the model's files and the
-// tables' version of this hwnpu. false when got is not tables, or the model's files are not known.
+// tables' version of this bonsaiai. false when got is not tables, or the model's files are not known.
 func TablesWant(ctx context.Context, m Model, got shared.Entry) (shared.Entry, bool) {
 	if got.Kind != TablesKind {
 		return shared.Entry{}, false
@@ -74,7 +74,7 @@ func PrebuiltWant(m Model, export, arch, digest string) shared.Entry {
 	return placeOf(PrebuiltKind, m, CoreAITarget+"-"+arch, export, r).entry
 }
 
-// IsPrebuilt reports whether e is an entry of prebuilt programs this hwnpu reads (of its
+// IsPrebuilt reports whether e is an entry of prebuilt programs this bonsaiai reads (of its
 // format), and gives their export and architecture.
 func IsPrebuilt(e shared.Entry) (export, arch string, ok bool) {
 	if e.Kind != PrebuiltKind || e.Recipe["format"] != fmt.Sprint(prebuiltFormat) {

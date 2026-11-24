@@ -69,7 +69,7 @@
 ## ロジックが残っているコミット
 
 - **最後にコードがあったコミット: `2d5e46f6d26bc8c073e9be07b7d650f6b899ac7c`** (#222 の親)。
-  - Go: `internal/imagegen/sana/` (変換、パイプライン、`progEngine` と `ironEngine`、スケジューラ)、`internal/imagegen/sana/mil/` (Gemma 2、caption、DiT、VAE の MIL)、`cmd/hwnpu-image/sana.go`
+  - Go: `internal/imagegen/sana/` (変換、パイプライン、`progEngine` と `ironEngine`、スケジューラ)、`internal/imagegen/sana/mil/` (Gemma 2、caption、DiT、VAE の MIL)、`cmd/bonsaiai-image/sana.go`
   - AMD: `tools/amd/iron_sana.py`、`tools/amd/iron_dwconv.py` (深さ方向の畳み込み)
   - 参照: `tools/ref/ref_sana.py`
   - 記録: `docs/design.md` の 16.119、16.122、16.138、16.139、16.145、16.148、16.152、16.160、16.189、16.224、16.233、16.240
@@ -90,18 +90,18 @@
   - Gemma 2 の 128 行の文の関数で、ANE が 1〜2 分止まったあと `Request cancelled` になりました。そのあとは暇になるまで、どのプロセスでも失敗し続けました。原因は分かっていません。
   - Core AI では、1024² の `vae_s0` が `empty reset layer candidates in SS cost model` で GPU に回りました。チャンネルの繰り返し (`tile`) を 0/1 の 1 × 1 の畳み込みにして直しました。
   - `coreai-build` のための手当てが要りました。
-    - DiT の出力に `× 1` を入れる (`redefinition of symbol named 'hwnpu_N'` への対策)
+    - DiT の出力に `× 1` を入れる (`redefinition of symbol named 'bonsaiai_N'` への対策)
     - VAE の norm の最大は、チャンネルを最後の軸に移してから取る
     - 1 段に 1 ブロック
     - multiscale の群の 1 × 1 の畳み込みを、ブロック対角の密な 1 × 1 にする
 
 ## 再開するときの手順と注意
 
-1. `2d5e46f6` から `internal/imagegen/sana`、`cmd/hwnpu-image/sana.go`、`tools/amd/iron_sana.py`、`iron_dwconv.py`、`tools/ref/ref_sana.py` を戻します。models.yaml の2つの項目も戻します。
+1. `2d5e46f6` から `internal/imagegen/sana`、`cmd/bonsaiai-image/sana.go`、`tools/amd/iron_sana.py`、`iron_dwconv.py`、`tools/ref/ref_sana.py` を戻します。models.yaml の2つの項目も戻します。
 2. 今の作りに合わせて直す必要があります。外したあとに入った仕組みは次のとおりです。
    - 8 サイズを1つの書き出しにまとめる (`internal/imagegen/aspect`)
    - model-recipes.yaml の `apple` と `amd` (`version`、`code`、`convert`)
-   - hwnpud がキャッシュを一手に書く仕組み
+   - bonsaiaid がキャッシュを一手に書く仕組み
    - `iron_dit.py` に移した共通部品
 3. Gemma 2 の利用規約が文の符号器に付くことを、models.yaml の `license` に書きます。
 4. 8 GB の枠に戻すなら、FLUX.2 klein と絵とメモリを比べてからにします。

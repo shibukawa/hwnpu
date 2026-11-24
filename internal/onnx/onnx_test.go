@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 func readF32(t *testing.T, path string) []float32 {
@@ -66,13 +66,13 @@ func TestEvalOps(t *testing.T) {
 	}
 }
 
-// With RTMO-s (HWNPU_TEST_RTMO_FILE = its model.onnx) and a reference of rtmo_ref.py (HWNPU_TEST_RTMO_REF), the
+// With RTMO-s (BONSAIAI_TEST_RTMO_FILE = its model.onnx) and a reference of rtmo_ref.py (BONSAIAI_TEST_RTMO_REF), the
 // program of the graph up to the head's outputs gives the reference's on the CPU interpreter in
 // fp16, and the graph's tail evaluated on the host from them gives its people and keypoints.
 func TestRTMO(t *testing.T) {
-	path, ref := os.Getenv("HWNPU_TEST_RTMO_FILE"), os.Getenv("HWNPU_TEST_RTMO_REF")
+	path, ref := os.Getenv("BONSAIAI_TEST_RTMO_FILE"), os.Getenv("BONSAIAI_TEST_RTMO_REF")
 	if path == "" || ref == "" {
-		t.Skip("HWNPU_TEST_RTMO_FILE and HWNPU_TEST_RTMO_REF are not set")
+		t.Skip("BONSAIAI_TEST_RTMO_FILE and BONSAIAI_TEST_RTMO_REF are not set")
 	}
 	g, err := Load(path)
 	if err != nil {
@@ -167,9 +167,9 @@ func TestRTMO(t *testing.T) {
 
 // The cut of RTMO at its top-k and non-maximum suppression is the head's outputs.
 func TestRTMOCut(t *testing.T) {
-	path := os.Getenv("HWNPU_TEST_RTMO_FILE")
+	path := os.Getenv("BONSAIAI_TEST_RTMO_FILE")
 	if path == "" {
-		t.Skip("HWNPU_TEST_RTMO_FILE is not set")
+		t.Skip("BONSAIAI_TEST_RTMO_FILE is not set")
 	}
 	g, err := Load(path)
 	if err != nil {

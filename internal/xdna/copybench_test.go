@@ -9,11 +9,11 @@ import (
 )
 
 // TestCopyExpertCost: an expert's bytes from a mapped file (in the page cache) into another
-// buffer, then flushed, as a miss of the experts' slots would (HWNPU_TEST_COPYBENCH_FILE=FILE).
+// buffer, then flushed, as a miss of the experts' slots would (BONSAIAI_TEST_COPYBENCH_FILE=FILE).
 func TestCopyExpertCost(t *testing.T) {
-	path := os.Getenv("HWNPU_TEST_COPYBENCH_FILE")
+	path := os.Getenv("BONSAIAI_TEST_COPYBENCH_FILE")
 	if path == "" {
-		t.Skip("HWNPU_TEST_COPYBENCH_FILE=FILE")
+		t.Skip("BONSAIAI_TEST_COPYBENCH_FILE=FILE")
 	}
 	f, err := os.Open(path)
 	if err != nil {

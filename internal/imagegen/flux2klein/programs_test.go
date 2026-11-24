@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // fakeProgram records its inputs and gives y of out values: its first input's first value plus

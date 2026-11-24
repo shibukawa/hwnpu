@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreml"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreml"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // Reports where Core ML plans to run a few program shapes, to learn which forms the Neural

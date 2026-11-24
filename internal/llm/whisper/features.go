@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3audio"
 )
 
 // The feature extractor of Whisper (transformers' WhisperFeatureExtractor).

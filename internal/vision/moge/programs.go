@@ -11,13 +11,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/vision/depth"
-	"github.com/shibukawa/hwnpu/internal/vision/moge/mil"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/vision/depth"
+	"github.com/shibukawa/bonsaiai/internal/vision/moge/mil"
 )
 
 // ExportVersion is the layout of the programs Prepare and ConvertSize write. 2: the dense head's
@@ -178,7 +178,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	pt := filepath.Join(chat.RepoDir(s.Repo), "model.pt")
 	format := depth.ExportFormat(s.Backend)
 	// the export beside the checkpoint, in the model's directory (as every model's); the one an
-	// earlier hwnpu kept in the models' directory is removed (its sizes are converted again)
+	// earlier bonsaiai kept in the models' directory is removed (its sizes are converted again)
 	old := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	os.RemoveAll(old)
 	os.Remove(old + ".done")
@@ -228,7 +228,7 @@ func makeSize(ctx context.Context, d string, x *Export, w, h int, logf func(stri
 }
 
 // PrepareSizes makes every size of the export of Prepare at dir (its model.json's sizes), as the
-// first picture of each aspect does (hwnpu-dev models package).
+// first picture of each aspect does (bonsaiai-dev models package).
 func PrepareSizes(ctx context.Context, dir string, logf func(string, ...any)) error {
 	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
 	if err != nil {

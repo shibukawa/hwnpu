@@ -6,19 +6,19 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
-// image: the Core AI exports hwnpu-image generate draws with, of every size it takes (--size):
+// image: the Core AI exports bonsaiai-image generate draws with, of every size it takes (--size):
 // FLUX.2 klein one of every size and edit of models.yaml npu.apple and one beside it of the edits
 // of 1024, Anima one of
-// every aspect, FLUX.3 klein as hwnpu-image generate makes it now (its default sizes, until it
+// every aspect, FLUX.3 klein as bonsaiai-image generate makes it now (its default sizes, until it
 // holds every aspect in one as docs/design/new-model-checklist.md 11.4 says).
 func init() {
 	Register(&Preparer{Name: "image", Kinds: []chat.Kind{chat.KindImage}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {
@@ -31,7 +31,7 @@ func init() {
 				return err
 			}
 			// every size and edit of models.yaml npu.apple in one export (the weights once), as
-			// hwnpu-image generate makes it, and the export beside it of the edits of a reference of
+			// bonsaiai-image generate makes it, and the export beside it of the edits of a reference of
 			// 1024 (flux2klein.DeviceExport)
 			o, err := flux2klein.AppleOptions(m, flux2klein.NPUGeneration("apple"), as[0].Width, as[0].Height, "", "")
 			if err != nil {
@@ -57,7 +57,7 @@ func init() {
 			}
 			f.Set("export", dir)
 		case strings.HasPrefix(m.Family, "anima"):
-			// every aspect ratio in one export, as hwnpu-image generate makes it (its --size 1:1, the
+			// every aspect ratio in one export, as bonsaiai-image generate makes it (its --size 1:1, the
 			// rest from the recipe)
 			w, h, err := anima.ParseAspect("1:1")
 			if err != nil {
@@ -73,7 +73,7 @@ func init() {
 			}
 			f.Set("export", dir)
 		default:
-			return fmt.Errorf("no image model of hwnpu-image generate of the family %q", cmp.Or(m.Family, "(none)"))
+			return fmt.Errorf("no image model of bonsaiai-image generate of the family %q", cmp.Or(m.Family, "(none)"))
 		}
 		return nil
 	})})

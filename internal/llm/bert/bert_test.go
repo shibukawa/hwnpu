@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
 )
 
 const tiny = `{"architectures": ["BertModel"], "model_type": "bert", "vocab_size": 40, "hidden_size": 32,
@@ -250,11 +250,11 @@ func TestConfig(t *testing.T) {
 
 // The program lowered to OpenVINO IR for Intel's NPU and run with OpenVINO's CPU plugin
 // (internal/ovcpu) computes the reference, with and without padding; skipped without
-// HWNPU_OV_PYTHON. The IR's output is fp16.
+// BONSAIAI_OV_PYTHON. The IR's output is fp16.
 func TestIntelIR(t *testing.T) {
 	py := ovcpu.Python()
 	if py == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	cfg, err := ParseConfig([]byte(tiny))
 	if err != nil {
@@ -285,18 +285,18 @@ func TestIntelIR(t *testing.T) {
 	}
 }
 
-// A real checkpoint (HWNPU_TEST_BERT_DIR: config.json and model.safetensors, such as
+// A real checkpoint (BONSAIAI_TEST_BERT_DIR: config.json and model.safetensors, such as
 // sentence-transformers/all-MiniLM-L6-v2) lowered to OpenVINO IR gives the last hidden state
 // the MIL program gives with milcpu (whose agreement with PyTorch is checked on the Mac): the same
 // in fp16, and with the quantization's error in int8 and int4, measured as the cosine of the
-// mean pooled sentence embedding. Needs HWNPU_OV_PYTHON.
+// mean pooled sentence embedding. Needs BONSAIAI_OV_PYTHON.
 //
 // all-MiniLM-L6-v2 (2026-10-30): int8 0.9995, int4 0.934 (per row) to 0.961 (groups of 32) with
 // the mse scales, 0.909 per row with the uniform ones; lut4 gives 0.23 and lut8 0.9988 with milcpu.
 func TestIntelIRCheckpoint(t *testing.T) {
-	dir, py := os.Getenv("HWNPU_TEST_BERT_DIR"), ovcpu.Python()
+	dir, py := os.Getenv("BONSAIAI_TEST_BERT_DIR"), ovcpu.Python()
 	if dir == "" || py == "" {
-		t.Skip("HWNPU_TEST_BERT_DIR or HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_TEST_BERT_DIR or BONSAIAI_OV_PYTHON is not set")
 	}
 	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
 	if err != nil {
@@ -308,7 +308,7 @@ func TestIntelIRCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	// "hello world, this is hwnpu" and padding, in the uncased BERT vocabulary
+	// "hello world, this is bonsaiai" and padding, in the uncased BERT vocabulary
 	ids := []int32{101, 7592, 2088, 1010, 2023, 2003, 1044, 2860, 14289, 102, 0, 0, 0, 0, 0, 0}
 	mask := []float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0}
 	const tokens = 10

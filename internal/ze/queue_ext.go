@@ -4,7 +4,7 @@ import (
 	"structs"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/dl"
 )
 
 // QueueExtName is ZE_COMMAND_QUEUE_NPU_EXT_NAME.

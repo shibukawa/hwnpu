@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 func readF32(t *testing.T, path string) []float32 {
@@ -99,8 +99,8 @@ func run(t *testing.T, model string, shape []int, x []float32) ([]float32, []int
 	if _, err := llm.WritePart(dir, p, nil, llm.Options{Format: "fp16"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	var dev *hwnpu.Device
-	if os.Getenv("HWNPU_TEST_NPU") != "" {
+	var dev *bonsaiai.Device
+	if os.Getenv("BONSAIAI_TEST_NPU") != "" {
 		d, _, err := llm.OpenDevice(context.Background(), "", t.TempDir())
 		if err != nil {
 			t.Fatal(err)
@@ -128,12 +128,12 @@ func run(t *testing.T, model string, shape []int, x []float32) ([]float32, []int
 }
 
 // The detector's and the recognizer's programs (the CPU interpreter, fp16 weights) against ONNX
-// Runtime (or on the NPU with HWNPU_TEST_NPU), from the reference's inputs
+// Runtime (or on the NPU with BONSAIAI_TEST_NPU), from the reference's inputs
 // (tools/ref/ref_detect_ocr.py ocrdet / ocrrec):
 //
-//	HWNPU_TEST_OCR_DET_FILE=det/inference.onnx HWNPU_TEST_OCR_DET_REF=ref/ocrdet-sample HWNPU_TEST_OCR_REC_FILE=rec/inference.onnx HWNPU_TEST_OCR_REC_REF=ref/ocrrec-line go test ./internal/vision/ocr -run Programs -v
+//	BONSAIAI_TEST_OCR_DET_FILE=det/inference.onnx BONSAIAI_TEST_OCR_DET_REF=ref/ocrdet-sample BONSAIAI_TEST_OCR_REC_FILE=rec/inference.onnx BONSAIAI_TEST_OCR_REC_REF=ref/ocrrec-line go test ./internal/vision/ocr -run Programs -v
 func TestPrograms(t *testing.T) {
-	if m, ref := os.Getenv("HWNPU_TEST_OCR_DET_FILE"), os.Getenv("HWNPU_TEST_OCR_DET_REF"); m != "" && ref != "" {
+	if m, ref := os.Getenv("BONSAIAI_TEST_OCR_DET_FILE"), os.Getenv("BONSAIAI_TEST_OCR_DET_REF"); m != "" && ref != "" {
 		want := readF32(t, ref+".prob.bin")
 		x := readF32(t, ref+".x.bin")
 		side := int(math.Sqrt(float64(len(want))))
@@ -154,7 +154,7 @@ func TestPrograms(t *testing.T) {
 			t.Errorf("the text pixels differ: %d of %d", both, over)
 		}
 	}
-	if m, ref := os.Getenv("HWNPU_TEST_OCR_REC_FILE"), os.Getenv("HWNPU_TEST_OCR_REC_REF"); m != "" && ref != "" {
+	if m, ref := os.Getenv("BONSAIAI_TEST_OCR_REC_FILE"), os.Getenv("BONSAIAI_TEST_OCR_REC_REF"); m != "" && ref != "" {
 		want := readF32(t, ref+".prob.bin")
 		x := readF32(t, ref+".x.bin")
 		W := len(x) / (3 * Height)
@@ -196,14 +196,14 @@ func TestPrograms(t *testing.T) {
 	}
 }
 
-// TestRead reads a picture through Open (downloading into HWNPU_TEST_OCR_DIR) on the CPU
-// interpreter and prints its lines; HWNPU_TEST_OCR_WANT, lines separated by |, must each be read.
-// For a whole page against PaddleOCR's pipeline, compare hwnpu-image ocr's output with
+// TestRead reads a picture through Open (downloading into BONSAIAI_TEST_OCR_DIR) on the CPU
+// interpreter and prints its lines; BONSAIAI_TEST_OCR_WANT, lines separated by |, must each be read.
+// For a whole page against PaddleOCR's pipeline, compare bonsaiai-image ocr's output with
 // tools/ref/ref_ppocr.py's (tools/ref/compare_ocr.py).
 func TestRead(t *testing.T) {
-	dir, pic := os.Getenv("HWNPU_TEST_OCR_DIR"), os.Getenv("HWNPU_TEST_OCR_PICTURE_FILE")
+	dir, pic := os.Getenv("BONSAIAI_TEST_OCR_DIR"), os.Getenv("BONSAIAI_TEST_OCR_PICTURE_FILE")
 	if dir == "" || pic == "" {
-		t.Skip("HWNPU_TEST_OCR_DIR and HWNPU_TEST_OCR_PICTURE_FILE are not set")
+		t.Skip("BONSAIAI_TEST_OCR_DIR and BONSAIAI_TEST_OCR_PICTURE_FILE are not set")
 	}
 	r, err := Open(context.Background(), nil, Setup{Dir: dir,
 		Det: Source{Repo: "PaddlePaddle/PP-OCRv6_small_det_onnx"}, Rec: Source{Repo: "PaddlePaddle/PP-OCRv6_small_rec_onnx"}})
@@ -231,7 +231,7 @@ func TestRead(t *testing.T) {
 		all = append(all, l.Text)
 	}
 	t.Logf("times %+v, %d recognizer calls", r.Times, r.Calls)
-	if want := os.Getenv("HWNPU_TEST_OCR_WANT"); want != "" {
+	if want := os.Getenv("BONSAIAI_TEST_OCR_WANT"); want != "" {
 		for _, w := range strings.Split(want, "|") {
 			found := false
 			for _, l := range all {

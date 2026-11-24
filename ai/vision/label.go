@@ -9,16 +9,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vision/siglip"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/vision/siglip"
 )
 
 // Label is the use of a model that labels pictures and embeds pictures and texts in one space
@@ -75,15 +75,15 @@ var labelRole = &airole.Role{
 		if err != nil {
 			return nil, err
 		}
-		var dev *hwnpu.Device
+		var dev *bonsaiai.Device
 		switch {
 		case siglip.IsProgramFormat(x.Format) && interpreter(e.Def):
 		case siglip.IsProgramFormat(x.Format):
-			if dev, _, err = llm.OpenDevice(ctx, imagedev.ExportDevice(x.Format, e.NPU.Device), e.Cache, hwnpu.WithPlacement(hwnpu.PlacementStrict)); err != nil {
+			if dev, _, err = llm.OpenDevice(ctx, imagedev.ExportDevice(x.Format, e.NPU.Device), e.Cache, bonsaiai.WithPlacement(bonsaiai.PlacementStrict)); err != nil {
 				return nil, err
 			}
 		default:
-			if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+			if dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD)); err != nil {
 				return nil, err
 			}
 		}
@@ -143,7 +143,7 @@ type CandidateOptions struct {
 	// "{}" the label alone).
 	Template string
 	// NoCache embeds the labels again instead of taking the embeddings kept in the user cache
-	// directory (hwnpu/siglip) from before.
+	// directory (bonsaiai/siglip) from before.
 	NoCache bool
 }
 
@@ -169,10 +169,10 @@ type Labels struct {
 // Labeler labels pictures and embeds pictures and texts in one space. It runs one call at a
 // time; others wait.
 type Labeler struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	m      *siglip.Model
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	name   string
 	dir    string
 }
@@ -317,7 +317,7 @@ func (l *Labeler) Probability(picture, text Embedding) float64 {
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (l *Labeler) Close() error {
 	if l.remote != nil {
-		return l.remote.Release() // the Runtime in hwnpud unloads it
+		return l.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()

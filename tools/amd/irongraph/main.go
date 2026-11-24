@@ -1,5 +1,5 @@
 // Command irongraph runs a graph exported by tools/amd/iron_graph.py on an AMD NPU through
-// hwnpu and compares its outputs with graph.reference()'s (check/).
+// bonsaiai and compares its outputs with graph.reference()'s (check/).
 //
 //	go run ./tools/amd/irongraph [-runs N] DIR
 package main
@@ -17,8 +17,8 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 func values(b []byte, dtype string) []float64 {
@@ -59,7 +59,7 @@ func main() {
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		log.Fatal(err)
 	}

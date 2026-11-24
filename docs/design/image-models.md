@@ -2,11 +2,11 @@
 
 [日本語](image-models.ja.md)
 
-The image-generation models hwnpu runs (`hwnpu-image generate`), and the pipeline rules shared by every NPU: samplers, guidance, editing, batching, sizes and exports. How each NPU runs them: [AMD](image-amd.md), [Apple and Intel](image-apple.md). Command flags: [cli.md](cli.md). Downloads and sources: [distribution.md](distribution.md).
+The image-generation models BonsaiAI runs (`bonsaiai-image generate`), and the pipeline rules shared by every NPU: samplers, guidance, editing, batching, sizes and exports. How each NPU runs them: [AMD](image-amd.md), [Apple and Intel](image-apple.md). Command flags: [cli.md](cli.md). Downloads and sources: [distribution.md](distribution.md).
 
 ## Pipeline
 
-A picture is three parts, all on the NPU: a text encoder reads the prompt, a DiT denoises the latents for N steps, a VAE decodes them. The tools ComfyUI and diffusers split a UI/workflow from the model run; hwnpu does only the model run.
+A picture is three parts, all on the NPU: a text encoder reads the prompt, a DiT denoises the latents for N steps, a VAE decodes them. The tools ComfyUI and diffusers split a UI/workflow from the model run; BonsaiAI does only the model run.
 
 - A picture's time is the DiT's passes: steps × passes a step (2 with classifier-free guidance) × one pass. The text and the VAE take seconds. Cut the number of passes first, then a pass's time.
 - Judge every change from the same noise against the CPU float32 reference (`tools/ref/ref_*.py`): the final latent's cosine and the picture's PSNR, on several prompts × seeds; look at the pictures too. One seed's cosine varies a lot.
@@ -22,13 +22,13 @@ A picture is three parts, all on the NPU: a text encoder reads the prompt, a DiT
 | Anima-Aesthetic (`anima:aesthetic`, the family's default) | Anima-Turbo's programs, other weights | DPM-Solver++ 2M 25, CFG 4 at σ ≥ 0.6 | as Anima-Turbo, nsfw | 8 | 3.5 / 4.8 | about 4.5× Anima-Turbo; AMD 1024² 2 min 22 s, 2.71 kJ |
 
 - Anima's VAE, tokenizers and configs come from `circlestone-labs/Anima-Base-v1.0-Diffusers` (`with: diffusers`); the field `file` picks which checkpoint of the repository a model is (`--dit`'s default). Anima-Base's checkpoints start with `net.` (not `model.diffusion_model.`); `iron_anima.py`, `ref_anima.py` and `mil.OpenWeights` still tell them apart.
-- Licenses with `accept: true` are asked once on the terminal and kept in `licenses.json` beside the user's config; without a terminal, `--accept-license` or `HWNPU_ACCEPT_LICENSE=ID` (this run only) (`chat.AcceptLicense`).
-- `content: [nsfw]` models (Anima) need `+nsfw` in `HWNPU_MODEL_ALLOWLIST` to run by name.
+- Licenses with `accept: true` are asked once on the terminal and kept in `licenses.json` beside the user's config; without a terminal, `--accept-license` or `BONSAIAI_ACCEPT_LICENSE=ID` (this run only) (`chat.AcceptLicense`).
+- `content: [nsfw]` models (Anima) need `+nsfw` in `BONSAIAI_MODEL_ALLOWLIST` to run by name.
 - Memory = the peak of the NPU's memory plus the process's (AMD: `drm-total-memory` of the accel fd + `RssAnon + RssShmem`; Apple: `ri_phys_footprint + ri_neural_footprint`), measured at 1024², the second run. The peak is usually the VAE's last stages. See [memory-and-power.md](memory-and-power.md).
 
 ## The main model: use `image`
 
-`image` (alias `generate`, `hwnpu-image generate`'s default) picks **FLUX.2 klein 4B from 8 GB**, on every NPU.
+`image` (alias `generate`, `bonsaiai-image generate`'s default) picks **FLUX.2 klein 4B from 8 GB**, on every NPU.
 
 - Why: Apache-2.0, does not draw NSFW unless asked, edits on AMD, about Anima-Turbo's memory (4.9 vs 4.8 GB on an M1) and faster (41 vs 48 s).
 - On an 8 GB machine (about 3 GB free for a model) 1024² peaks over that; `--size 1:1s` (512², 3.1 GB on Apple, 1.9 GB on AMD) fits.
@@ -56,7 +56,7 @@ Measured (Anima-Aesthetic, 512², AMD, 6 pictures against 100 Euler steps): Eule
 
 ## Reference-image editing (FLUX.2 klein)
 
-`hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 ... the living room from image 2."`
+`bonsaiai-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 ... the living room from image 2."`
 
 - `-i`/`--image` up to 4 times (BFL's limit for klein); the prompt calls them image 1, image 2, … in order. A reference is centre-cropped to the picture's shape and scaled to its size; `FILE@half` reads it at half the picture's sides (a quarter of its rows; `@full` is the default). A file actually named `FILE@half` is read as is.
 - A reference's latents (the VAE encoder's mean, patched, normalized by the batch-norm stats) follow the picture's rows; the RoPE's first axis is 10, 20, 30, 40. The modulations are the picture's; only the picture's rows are read at the end.
@@ -108,7 +108,7 @@ What it saves: Anima's per-size Apple exports were 2.9 GB each with the weights 
 What it costs (accepted: the repeated download is worse):
 
 - Core AI compiles every function of an `.aimodel` together: the first run compiles all sizes (FLUX.2 klein on an M1: 10 min for 512², 40 min for 512² and 1024²). With a prebuilt only the finish is local, but the VAE uses no prebuilt, so its sizes compile on every machine's first run.
-- One size the Neural Engine compiler rejects takes **all** sizes of that part off the NPU. Before putting an export in the sources, compile each size alone offline per chip (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`, then look for `Falling back` in `/usr/bin/log`); the per-chip prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT`) must end with `0 failed`.
+- One size the Neural Engine compiler rejects takes **all** sizes of that part off the NPU. Before putting an export in the sources, compile each size alone offline per chip (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`, then look for `Falling back` in `/usr/bin/log`); the per-chip prebuilt (`bonsaiai-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT`) must end with `0 failed`.
 - Adding a size remakes the export and every prebuilt.
 
 ### Names and keys
@@ -118,7 +118,7 @@ What it costs (accepted: the repeated download is worse):
 | AMD | `NAME.amd-npu2`, the model's name in lower case: `anima-turbo`, `anima-aesthetic`, `flux.2-klein-4b`, `flux-3-image-klein`. Anima's (6.13 GB) are packed in the sources (`files.tar.zst`). Size names (`-512`, `-aspects`) are gone |
 | Apple | the export's name carries its sizes by `aspect.Tag` (`8sizes-` + the sizes' CRC-32), so another set of sizes is another export |
 
-- The key: `chat.PinnedRecipe(model, tool, version)` plus the exporter's arguments (`AMDRecipe`); it needs every read file's `sha256:` in models.yaml (no pins, no sharing). Raise `AMDExportVersion` (FLUX.2 and FLUX.3 klein: 2) by hand when the exporter's input or output changes (sizes, a format, a layout). The bundled `tools/amd` hash is in the key, so any change there misses the recipe entry; an export imported by name (`iron-import`, `hwnpu-dev sources import`, `chat.ImportedRecipe`) is found by the name alone, so a changed export needs a new name or the old one removed from the sources.
+- The key: `chat.PinnedRecipe(model, tool, version)` plus the exporter's arguments (`AMDRecipe`); it needs every read file's `sha256:` in models.yaml (no pins, no sharing). Raise `AMDExportVersion` (FLUX.2 and FLUX.3 klein: 2) by hand when the exporter's input or output changes (sizes, a format, a layout). The bundled `tools/amd` hash is in the key, so any change there misses the recipe entry; an export imported by name (`iron-import`, `bonsaiai-dev sources import`, `chat.ImportedRecipe`) is found by the name alone, so a changed export needs a new name or the old one removed from the sources.
 - The first run puts the export in the sources (`chat.SharedExportOr`, written back to `?writeback=true` sources). A local export of the same name that lacks the asked size is moved to `NAME.amd-npu2.replaced`, the sources' current one fetched (or IRON exports it), and moved back if neither works.
 - Where each model comes from on the first run: FLUX.2 and FLUX.3 klein on AMD: local → sources → exported with IRON (`PrepareAMD`); Anima on AMD: local or the sources; Apple and Intel: downloaded and converted. Details: [distribution.md](distribution.md).
 - Apple's per-size exports are being moved to the one-export form in this order: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (its eight `npu.apple.sizes`) → FLUX.3 klein (Chroma1 was removed); chips M1, M2, M3 (h13g, h14g, h15g) first.
@@ -138,7 +138,7 @@ What it costs (accepted: the repeated download is worse):
 | Chroma1-Flash, Chroma1-HD (removed) | M1's compiler crashes on the DiT's 8-size prebuilts (each part then compiles on the device for about 2 h); FLUX.2 klein covers the use, smaller and faster. `internal/imagegen/chroma`, `iron_chroma.py` removed; FLUX.1's VAE moved to `internal/imagegen/fluxvae`, `iron_chroma_parts.py` stays for FLUX's AMD VAE ([notes](../not-adopted/chroma1.md)) |
 | Qwen-Image-2.1, -Turbo (removed) | 7B DiT and Qwen3-VL-8B: too many parameters to use on an NPU (17 GB of programs past the Neural Engine's compile cache; 1024² ~1.5 min on AMD at best) ([notes](../not-adopted/qwen-image.md)) |
 | Sana-Sprint 0.6B / 1.6B (removed) | 2 steps and fast (12–32 s at 1024²) but much worse pictures than Sana. Exporters refuse `guidance_embeds` checkpoints ([notes](../not-adopted/sana.md)) |
-| Anima-Base v1.0 (removed) | its use is as a LoRA base; hwnpu loads no LoRA. Anima-Aesthetic has the same structure and time. `-m anima:base` fails (`TestImageMemoryTags`); `iron_anima.py --dit anima-base-v1.0.safetensors` still exports |
+| Anima-Base v1.0 (removed) | its use is as a LoRA base; BonsaiAI loads no LoRA. Anima-Aesthetic has the same structure and time. `-m anima:base` fails (`TestImageMemoryTags`); `iron_anima.py --dit anima-base-v1.0.safetensors` still exports |
 | Per-size exports, size subsets | repeated downloads (above) |
 | LongCat-Image-Edit, OmniGen2 (as edit models) | LongCat: 6.3B DiT + 16.6 GB text encoder; OmniGen2: lower quality |
 | Reusing the references' K/V from the first step (FLUX.2 klein 9B-KV's way, on the 4B weights) | latent cosine 0.46 to the right edit: needs a model trained for it |

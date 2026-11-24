@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """EfficientSAM's image encoder (a plain ViT at 1024 x 1024 and its neck) as one IRON graph,
 from the ONNX export of yunyangx/EfficientSAM (efficientsam_{ti,s}_encoder.onnx, Apache-2.0):
-what cmd/hwnpu-image segment runs on AMD's NPU. The prompt's mask decoder runs on the host
+what cmd/bonsaiai-image segment runs on AMD's NPU. The prompt's mask decoder runs on the host
 (internal/onnx, per point or box).
 
   input   patches (4096, 768): the picture stretched to 1024 x 1024, normalized (ImageNet's

@@ -7,11 +7,11 @@ import (
 	"slices"
 	"strconv"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/chain"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
 )
 
 // mtpDrafter guesses drafts with a checkpoint's multi-token prediction layer (Config.MTP,
@@ -77,7 +77,7 @@ const mtpKeep = 4096
 // mtpSeq of them.
 const mtpStart = 512
 
-// mtpDrafts is the most drafts in a row the layer guesses (HWNPU_DEV=mtp.drafts overrides it): each
+// mtpDrafts is the most drafts in a row the layer guesses (BONSAIAI_DEV=mtp.drafts overrides it): each
 // after the first costs a call of the layer and is right less often.
 var mtpDrafts = 2
 

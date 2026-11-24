@@ -31,11 +31,11 @@ func TestKeysShareThePolicy(t *testing.T) {
 
 func TestNumberedSources(t *testing.T) {
 	src, _ := KeyByName("model-source")
-	if !src.List() || !src.Owns("HWNPU_MODEL_SOURCE_2") || src.Owns("HWNPU_MODEL_SOURCES") {
+	if !src.List() || !src.Owns("BONSAIAI_MODEL_SOURCE_2") || src.Owns("BONSAIAI_MODEL_SOURCES") {
 		t.Fatalf("%+v", src)
 	}
 	p := filepath.Join(t.TempDir(), ".env")
-	os.WriteFile(p, []byte("# mine\nHWNPU_MODEL_SOURCE_10=s3://c\nHWNPU_CACHE=/x\nHWNPU_MODEL_SOURCE=file:///a\nHWNPU_MODEL_SOURCE_2=https://b\n"), 0o600)
+	os.WriteFile(p, []byte("# mine\nBONSAIAI_MODEL_SOURCE_10=s3://c\nBONSAIAI_CACHE=/x\nBONSAIAI_MODEL_SOURCE=file:///a\nBONSAIAI_MODEL_SOURCE_2=https://b\n"), 0o600)
 	items, set, err := GetIn(p, src)
 	if err != nil || !set || fmt.Sprint(items) != "[file:///a https://b s3://c]" {
 		t.Fatalf("items %q %v %v", items, set, err)
@@ -44,13 +44,13 @@ func TestNumberedSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
-	if want := "# mine\nHWNPU_MODEL_SOURCE=https://b\nHWNPU_MODEL_SOURCE_1=s3://c\nHWNPU_CACHE=/x\n"; string(b) != want {
+	if want := "# mine\nBONSAIAI_MODEL_SOURCE=https://b\nBONSAIAI_MODEL_SOURCE_1=s3://c\nBONSAIAI_CACHE=/x\n"; string(b) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", b, want)
 	}
 	if err := SetIn(p, src, nil); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != "# mine\nHWNPU_CACHE=/x\n" {
+	if b, _ := os.ReadFile(p); string(b) != "# mine\nBONSAIAI_CACHE=/x\n" {
 		t.Fatalf("after removing all: %q", b)
 	}
 }

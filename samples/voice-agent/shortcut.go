@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/agent/voice"
+	"github.com/shibukawa/bonsaiai/ai/agent/voice"
 )
 
 // Shortcuts answer the requests that need no model at once: the time and the date, setting,

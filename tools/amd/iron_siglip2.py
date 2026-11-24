@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SigLIP 2 (google/siglip2-base-patch16-224 and the other fixed-size checkpoints, Apache-2.0)
-on IRON: the graphs hwnpu-image label and embed run on AMD's NPU.
+on IRON: the graphs bonsaiai-image label and embed run on AMD's NPU.
 
 SigLIP 2's two towers map a picture and a text into one space of embeddings; their cosine,
 scaled and shifted by the model's two constants, is the logit of "the text describes the

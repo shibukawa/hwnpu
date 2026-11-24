@@ -10,15 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vision/depth"
-	"github.com/shibukawa/hwnpu/internal/vision/moge"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/vision/depth"
+	"github.com/shibukawa/bonsaiai/internal/vision/moge"
 )
 
 // Depth is the use of a model of a picture's depth (Depth Anything 3, MoGe-2) for an app: a
@@ -198,12 +198,12 @@ type DepthOptions struct {
 
 // DepthEstimator estimates the depth of pictures. It runs one picture at a time; others wait.
 type DepthEstimator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	da     *depth.Estimator
 	mg     *moge.Estimator
 	mv     *depth.Multi
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	model  chat.Model
 	name   string
 	dir    string
@@ -400,7 +400,7 @@ func DepthNode(u ai.Use[*DepthEstimator]) *flow.Node[image.Image, *DepthMap] {
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *DepthEstimator) Close() error {
 	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
+		return d.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

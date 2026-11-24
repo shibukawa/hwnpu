@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // RefreshAttention writes the attention program of a Core AI conversion from before the form a

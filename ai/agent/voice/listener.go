@@ -35,9 +35,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/agent"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/ai/speech"
+	"github.com/shibukawa/bonsaiai/ai/agent"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/speech"
 )
 
 // Transcriber turns speech into text: *speech.Transcriber (Whisper), or another model.

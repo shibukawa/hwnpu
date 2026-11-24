@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // TestCodesShared puts the codes a conversion read here in a shared layer and makes their
@@ -71,7 +71,7 @@ func TestCodesShared(t *testing.T) {
 }
 
 // TestCodesRecipeByDir names the model of the codes by the model's directory alone, as
-// hwnpu-chat calls it (Setup.Dir, no WithModel): the codes are in it, and modelOfDir looks from
+// bonsaiai-chat calls it (Setup.Dir, no WithModel): the codes are in it, and modelOfDir looks from
 // a path's parent up.
 func TestCodesRecipeByDir(t *testing.T) {
 	m, ok := Lookup("Qwen2.5-Coder-7B-Instruct")

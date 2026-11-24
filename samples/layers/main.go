@@ -37,11 +37,11 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/cli/konghelper"
-	"github.com/shibukawa/hwnpu/ai/imagegen"
-	"github.com/shibukawa/hwnpu/ai/vision"
-	"github.com/shibukawa/hwnpu/samples/internal/layering"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/cli/konghelper"
+	"github.com/shibukawa/bonsaiai/ai/imagegen"
+	"github.com/shibukawa/bonsaiai/ai/vision"
+	"github.com/shibukawa/bonsaiai/samples/internal/layering"
 )
 
 // The models: the depth of a picture, and the one that draws what a layer hid.
@@ -75,7 +75,7 @@ func main() {
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("layers"),
-		kong.Description("Part a picture into layers by depth, with what each layer hid drawn in, as a Photoshop document: a sample of hwnpu's ai package."),
+		kong.Description("Part a picture into layers by depth, with what each layer hid drawn in, as a Photoshop document: a sample of bonsaiai's ai package."),
 		kong.UsageOnError(),
 		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),

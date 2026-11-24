@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // Qwen35 is the chat format of Qwen/Qwen3.5 (chat_template.jinja of Qwen3.5-4B, the same for

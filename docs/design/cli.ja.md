@@ -2,7 +2,7 @@
 
 [English](cli.md)
 
-コマンドの設計: 家族の分け方、引数の解析、端末の表示、Ctrl+C、手入れ用の `hwnpu` コマンド。使い方は
+コマンドの設計: 家族の分け方、引数の解析、端末の表示、Ctrl+C、手入れ用の `bonsaiai` コマンド。使い方は
 [CHAT.ja.md](../../CHAT.ja.md)、[USAGE_IMAGE.ja.md](../../USAGE_IMAGE.ja.md)、[USAGE_AUDIO.ja.md](../../USAGE_AUDIO.ja.md)、
 [USAGE_DEV.ja.md](../../USAGE_DEV.ja.md)、[USAGE_LLM_AMD.ja.md](../../USAGE_LLM_AMD.ja.md)、[PROBE.ja.md](../../PROBE.ja.md) を見る。
 
@@ -13,14 +13,14 @@
 
 | 実行ファイル | サブコマンド | 備考 |
 |---|---|---|
-| `hwnpu` | `status`、`issue`、`cache` (`ls`、`prune`、`clear`、`clean`)、`memory` | 機械の手入れ: NPU、キャッシュ、メモリの区分、不具合の報告 |
-| `hwnpu-chat` | `chat` (既定)、`agent`、`search`、`serve`、`opencode`、`systemone`、`list` | 言語モデル: チャット、コーディングエージェント、埋め込み、OpenAI 互換 API、d1 の判定 |
-| `hwnpu-image` | `generate`、`depth`、`face-detect`、`pose`、`detect`、`ocr`、`label`、`embed`、`segment`、`convert`、`list` | 画像の生成と視覚のモデル |
-| `hwnpu-audio` | `generate` (音楽。`-m sfx` で効果音)、`tts`、`transcribe`、`pitch`、`notes`、`list` | `list` は music、sfx、speech、transcribe、pitch、notes |
-| `hwnpud` | `serve` (既定)、`install`、`uninstall`、`status`、`stop` | NPU とモデルを持つユーザーごとのプロセス。`hwnpu-chat` と `ai` のパッケージを使うコマンドとアプリは既定でこれを通る (`HWNPU_DAEMON=off` で自分のプロセス) ([hwnpud](hwnpud.ja.md)) |
-| `hwnpu-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`report`、`mxfp4`、`xclbin`、`models` (`fetch`、`package`、`push`、`hf`)、`sources` (`list`、`ls`、`import`、`update`、`verify`、`gc`) | 開発用。利用者向けではない |
+| `bonsaiai` | `status`、`issue`、`cache` (`ls`、`prune`、`clear`、`clean`)、`memory` | 機械の手入れ: NPU、キャッシュ、メモリの区分、不具合の報告 |
+| `bonsaiai-chat` | `chat` (既定)、`agent`、`search`、`serve`、`opencode`、`systemone`、`list` | 言語モデル: チャット、コーディングエージェント、埋め込み、OpenAI 互換 API、d1 の判定 |
+| `bonsaiai-image` | `generate`、`depth`、`face-detect`、`pose`、`detect`、`ocr`、`label`、`embed`、`segment`、`convert`、`list` | 画像の生成と視覚のモデル |
+| `bonsaiai-audio` | `generate` (音楽。`-m sfx` で効果音)、`tts`、`transcribe`、`pitch`、`notes`、`list` | `list` は music、sfx、speech、transcribe、pitch、notes |
+| `bonsaiaid` | `serve` (既定)、`install`、`uninstall`、`status`、`stop` | NPU とモデルを持つユーザーごとのプロセス。`bonsaiai-chat` と `ai` のパッケージを使うコマンドとアプリは既定でこれを通る (`BONSAIAI_DAEMON=off` で自分のプロセス) ([bonsaiaid](bonsaiaid.ja.md)) |
+| `bonsaiai-dev` | `check`、`convert`、`generate`、`formats`、`irdiff`、`info`、`probe`、`powerbench`、`report`、`mxfp4`、`xclbin`、`models` (`fetch`、`package`、`push`、`hf`)、`sources` (`list`、`ls`、`import`、`update`、`verify`、`gc`) | 開発用。利用者向けではない |
 
-- 音楽と効果音は同じ `hwnpu-audio generate`: 違うのはモデルだけで、出力 (48 kHz ステレオの WAV、スピーカー) も
+- 音楽と効果音は同じ `bonsaiai-audio generate`: 違うのはモデルだけで、出力 (48 kHz ステレオの WAV、スピーカー) も
   表示も同じ。音楽だけのフラグ (`--codes`、`--continue`、`--notes`) を効果音のモデルに付けるとエラー
 - 8 GB 向けの形はモデルのセレクター (models.yaml の項目かメモリのタグ) で選び、環境変数では選ばない。
   [memory-and-power.ja.md](memory-and-power.ja.md) を見る
@@ -35,11 +35,11 @@
 - 手で変換したプログラムを渡すフラグは、ヘルプの "Converted by hand" の組にまとめる。チェックポイントの
   ディレクトリは `--checkpoint DIR` (`-model` は `-m` とぶつかる)。音声の符号器は `--audio-encoder`
 - モデルの定義に任せるだけのフラグはポインタにする (`Tier *string`、`Think *bool`)。与えていないことと空の値を分ける
-- `hwnpu-dev` は `passthrough:"all"` の kong の殻: 道具ごとに `cmd/hwnpu-dev/NAME` のパッケージで `Main` を持ち、
+- `bonsaiai-dev` は `passthrough:"all"` の kong の殻: 道具ごとに `cmd/bonsaiai-dev/NAME` のパッケージで `Main` を持ち、
   標準の `flag` のフラグのまま。`os.Args` と `flag.CommandLine` を差し替えて `Main` を呼ぶ。`probe` は自分を
-  子プロセスで起動するので、`probe.ChildArgs` (`["probe"]`) を前に付ける。`hwnpu-dev models` は普通の kong の
+  子プロセスで起動するので、`probe.ChildArgs` (`["probe"]`) を前に付ける。`bonsaiai-dev models` は普通の kong の
   サブコマンド
-- `hwnpu-dev models` は、手元、取得元、Hugging Face にあるモデルの変換を扱うものをまとめる。コマンドとフラグはどの
+- `bonsaiai-dev models` は、手元、取得元、Hugging Face にあるモデルの変換を扱うものをまとめる。コマンドとフラグはどの
   OS でも同じで、裏で動く処理が違う。変換は取得元のフォルダ (`converted/MODEL/TARGET`) と同じく `MODEL/TARGET`
   で呼ぶ: `amd-xdna2`、`coreai` (汎用の `.aimodel` の書き出し)、`coreai-ARCH` (Neural Engine の世代 `h14g` などに
   コンパイルしたもの。`coreai-all` で全部)。`fetch` が持ってきて、`package` が作り、`push` は手で作ったものを取得元に
@@ -54,20 +54,20 @@
   `StartProgram`、chat の `convert` と `convertShared`、表、`SharedExportOr`、画像の書き出し) で止めて一覧に出す。
   チェックポイントも持ってくる (取得元のロックが挙げるファイル。なければチャットのモデルの config、トークナイザ、
   重み。`--no-checkpoint` で外す)。あとでそのモデルで変換を試せるように。
-- `hwnpu-dev sources` は取得元の保守: `list` (引数なしでもこれ。根と効いている取得元)、`ls`、`import` (手で作った
-  フォルダ)、`update` (ロックを新しいコミットへ)、`verify`、`gc`。書き戻しが切れて残したものは `hwnpu cache clean`。
-  前の名前の `hwnpu-dev cache` と `hwnpu-dev prebuild` は 2026-11-22 に外した。`flush` (どのコマンドもキューを待つ)、
+- `bonsaiai-dev sources` は取得元の保守: `list` (引数なしでもこれ。根と効いている取得元)、`ls`、`import` (手で作った
+  フォルダ)、`update` (ロックを新しいコミットへ)、`verify`、`gc`。書き戻しが切れて残したものは `bonsaiai cache clean`。
+  前の名前の `bonsaiai-dev cache` と `bonsaiai-dev prebuild` は 2026-11-22 に外した。`flush` (どのコマンドもキューを待つ)、
   `gc --orphans`、`migrate` (NAS は移し終えた) も
-- `hwnpu-dev report` は利用者に issue のために頼む実機の確認: テスト用モデルを `internal/fixtures` から埋め込む
+- `bonsaiai-dev report` は利用者に issue のために頼む実機の確認: テスト用モデルを `internal/fixtures` から埋め込む
   (Core ML が実ファイルを要するので一時ディレクトリに書き出す)。同じ計算 (64×512 · 512×512 + バイアス + ReLU) を
   Core ML と OpenVINO IR で持ち、ベンダー間で比べる。NPU の許容誤差は絶対値 0.05 と相対値 2 % (fp16 の誤差は
   0.028)。確認項目は列挙、厳格モードでのコンパイル、結果、コンパイルと実行の時間、fp32 の Core ML モデルが
   厳格モードで拒否されること。Level Zero loader の読み込み結果をいつも載せる (Windows には `/dev/accel` が無く、
   Intel の NPU の有無はこれでしか分からない)。`-power` と `-cache` で、電力計のある機械では 1 回あたりの電力量も
-- `aiecc` は `AIE_XCLBINUTIL` の実行ファイルをサブコマンドなしで呼ぶので、実行ファイルの名前が `hwnpu-xclbin`
-  か `xclbinutil` なら `xclbin` として動く (`go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-dev`)
+- `aiecc` は `AIE_XCLBINUTIL` の実行ファイルをサブコマンドなしで呼ぶので、実行ファイルの名前が `bonsaiai-xclbin`
+  か `xclbinutil` なら `xclbin` として動く (`go build -o ~/.local/bin/bonsaiai-xclbin ./cmd/bonsaiai-dev`)
 
-## hwnpu-chat
+## bonsaiai-chat
 
 ### モデルの選び方
 
@@ -108,10 +108,10 @@
 - モデルを読み込んでから、127.0.0.1 の 30000〜49151 番 (IANA と macOS の一時ポート 49152 番以降を避ける) で、
   乱数で選んだ位置から空きを探して開く。見つけた listener のまま `http.Server.Serve` に渡すので、その間に
   ほかに取られない。`--listen` で指定もできる
-- OpenCode の設定 (プロバイダー `hwnpu`、`@ai-sdk/openai-compatible`、チャットのモデルごとの文脈と出力の上限) を
+- OpenCode の設定 (プロバイダー `bonsaiai`、`@ai-sdk/openai-compatible`、チャットのモデルごとの文脈と出力の上限) を
   キャッシュの `opencode/opencode.json` に書き、`OPENCODE_CONFIG` で渡す。カスタム設定はグローバルより強く、
   プロジェクトの `opencode.json` より弱い
-- モデルは `-m hwnpu/NAME` で選ぶ: TUI では先頭に、`opencode run` では `run` の後ろに。ほかのサブコマンドは `-m` を
+- モデルは `-m bonsaiai/NAME` で選ぶ: TUI では先頭に、`opencode run` では `run` の後ろに。ほかのサブコマンドは `-m` を
   受け付けないので付けず、設定の `model` に任せる。`-m` に複数書くとチャットのモデルを全部設定に並べ、最初を使う
 - OpenCode は `os/exec` で起動し、標準入力、出力、エラーにこのプロセスのものをそのまま渡す (パイプを挟まないので、
   raw モード、代替画面、マウス、端末への問い合わせが通る)。サーバーのログはファイルに。SIGINT はこのプロセスで
@@ -182,7 +182,7 @@ Pi (pi.dev) のループを Go で書き、エンジンを `ai/text` の `Chatte
 
 ### systemone
 
-`hwnpu-chat systemone` は llama.cpp の `POST /v1/systemone` (TypeSafe 互換の System One API) に d1 のモデルで
+`bonsaiai-chat systemone` は llama.cpp の `POST /v1/systemone` (TypeSafe 互換の System One API) に d1 のモデルで
 答える: ファイルか標準入力の要求 1 つ、または `--listen ADDR` で `/v1/systemone` と `/v1/models`
 (`output_modalities: ["decisions"]`) を出す。質問ごとに 1 回、プロンプトが入る最短の `--seq` のプログラムで動かす。
 `--cpu` は確認用に `milcpu` で動かす。モデルの詳細は [llm-models.ja.md](llm-models.ja.md)。
@@ -215,19 +215,19 @@ Pi (pi.dev) のループを Go で書き、エンジンを `ai/text` の `Chatte
   `1 - 0.04 / (x - 0.6)` (見積もりちょうどで 90 %、2 倍で 97 %)、99 % を超えない。`(estimated)` と出し、残り時間は
   出さない。分けたモデルは `console.LoadingPart(bytes)` で部分を知らせ、失敗した読み込み (`Bar.Failed`) は覚えない。
   見積もりはプロセスの中だけ。大きさは `llm.ProgramBytes`、`llm.PartBytes`
-- hwnpu-chat の読み込みの行: `[1/2] Qwen3-0.6B 15s, 8 tokens per call, 1 part, all on the NPU`、続けて
+- bonsaiai-chat の読み込みの行: `[1/2] Qwen3-0.6B 15s, 8 tokens per call, 1 part, all on the NPU`、続けて
   `loaded … in 34s, 2 programs, all on the NPU` と `ready after 35s: converting, loading and compiling 35s`
-  (`console.Prepared`)。ファイル名は `HWNPU_PROFILE=1` のときだけ
-- hwnpu-image: 書き出しと読み込みは部品ごとの数えとスピナー、ステップのバー (1 ステップの時間と残り時間)、VAE の段の
+  (`console.Prepared`)。ファイル名は `BONSAIAI_PROFILE=1` のときだけ
+- bonsaiai-image: 書き出しと読み込みは部品ごとの数えとスピナー、ステップのバー (1 ステップの時間と残り時間)、VAE の段の
   バーは `Pipeline.Stage` (`StageFunc`) で受ける。最後の要約は、最初のステップがほかの平均より 5 秒以上長いとき分けて
   出す (コンパイルと最初の呼び出しを含む): `8 steps in 5m25s (3.7 s a step; the first 4m59s, with loading and compiling)`
 - 最後の行 (`console.Times`): `took 3m12s: downloading 2m40s, converting, loading and compiling 25s, running 6.2s`。
   `console.Running()` を呼んだコマンドだけが出す (会話とサーバーは出さない)。処理の途中の読み込みは準備に数える
   (`console.Loading()`。`iron.Graph.Use` が読み直す重みの組は `console.Reading()`)。途中で別のモデルを読むコマンドは
   `console.Preparing()` で準備に戻す。ダウンロードの時間は `fetch` の中で測る (重なりは 1 回、サインインの待ちと
-  ハッシュの確認を含む)。Core ML が最初の呼び出しで行うコンパイルと `--play` は処理の側。`HWNPU_ENERGY` があれば
+  ハッシュの確認を含む)。Core ML が最初の呼び出しで行うコンパイルと `--play` は処理の側。`BONSAIAI_ENERGY` があれば
   段階ごとの電力量が続く ([memory-and-power.ja.md](memory-and-power.ja.md))
-- `HWNPU_PROFILE=1` (全コマンド、`console.Profile`): ダウンロード 1 件ずつ (時間、バイト数、速さ、`REPO@REV/FILE`)、
+- `BONSAIAI_PROFILE=1` (全コマンド、`console.Profile`): ダウンロード 1 件ずつ (時間、バイト数、速さ、`REPO@REV/FILE`)、
   大きさを集めた時間、プログラムの読み込み 1 件ずつ (中の読み込みは字下げ、`runner.Open` の中の同じパスは 1 回)、
   重みの組の読み直しを 1 行、`decode.WriteProfile`。ダウンロードのバーは最初のバイトから始まるので、プロファイルの
   時間は Hub と CDN の待ちを含む (swift-f0: 1.68 秒対 0.2 秒)
@@ -247,21 +247,21 @@ Pi (pi.dev) のループを Go で書き、エンジンを `ai/text` の `Chatte
 - `stop()` の後はコマンドが自分で扱う: チャットの 1 ターンの Ctrl+C は答えだけを止める。OpenCode の端末。`serve` と
   `systemone --listen` は Ctrl+C が通常の終わり方: `stop()`、モデルを閉じ、終了コード 0 (閉じるのに約 0.2 秒で、猶予より
   長い)。読み込み中の Ctrl+C はすぐ終わる
-- 使うのは `hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`。止めても結果を出す `hwnpu-dev probe`、`generate`、
+- 使うのは `bonsaiai`、`bonsaiai-chat`、`bonsaiai-image`、`bonsaiai-audio`。止めても結果を出す `bonsaiai-dev probe`、`generate`、
   `formats` は自分の扱いのまま
 - 計測 (AMD、Ctrl+C から終わるまで): Anima Turbo 1024² 0.11〜0.27 秒、1024² の VAE の段 0.42〜0.87 秒、gpt-oss-20b の
   読み込み中 0.72〜1.47 秒。残るのはカーネルの片付けで、ピン留めしたメモリが多いほど長い (12 GiB で 1.5 秒)
 
-## hwnpu status
+## bonsaiai status
 
-- 出すもの: hwnpu の版 (モジュールとコミット)、OS、CPU、メモリ、コマンドが動かす NPU (`chat.HereVendor`、
-  `HWNPU_BACKEND`)、デバイス、NPU の今 (`npuinfo` を OS ごとに要約: Linux は amdxdna の状態、ファームウェア、タイル、
+- 出すもの: BonsaiAI の版 (モジュールとコミット)、OS、CPU、メモリ、コマンドが動かす NPU (`chat.HereVendor`、
+  `BONSAIAI_BACKEND`)、デバイス、NPU の今 (`npuinfo` を OS ごとに要約: Linux は amdxdna の状態、ファームウェア、タイル、
   クロック、文脈、gpu_metrics の忙しさと電力。macOS は ANE の起きているか、IOReport の電力と読み出し。Windows は
   計算専用のアダプターとプロセスごとの使用率)、NPU を使っているプロセスとその NPU のメモリ、キャッシュと層。
   `--json` で全部
-- 読むことで NPU を起こさない: 既定では `hwnpu.Enumerate` を呼ばない (デバイスを開くと amdxdna は起きる)。NPU の有無と
+- 読むことで NPU を起こさない: 既定では `bonsaiai.Enumerate` を呼ばない (デバイスを開くと amdxdna は起きる)。NPU の有無と
   種類は OS から決める (Linux はドライバ名 `amdxdna`/`intel_vpu`、macOS は I/O Registry の ANE、Windows は計算専用の
-  アダプターの PCI ベンダー、または `HWNPU_BACKEND`)。`--wake` でデバイスを開き、寝ている NPU にも問い合わせる。
+  アダプターの PCI ベンダー、または `BONSAIAI_BACKEND`)。`--wake` でデバイスを開き、寝ている NPU にも問い合わせる。
   `--wake` なしで `runtime_active_time` が増えないことを確かめた。macOS では「device: not opened」を出さない (開いても
   起こすものも分かることも増えない)
 - 端末での `-w 2s` は top のように: 代替画面 (`\x1b[?1049h`)。固定の部分 (`writeFixed`: 版、機械、NPU、デバイス、
@@ -294,32 +294,32 @@ Pi (pi.dev) のループを Go で書き、エンジンを `ai/text` の `Chatte
     `H11ANE` にはない)。`ANE`/`IOP State` は読み込まれている間ずっと `Running` で、負荷には使えない。`AMC Stats` の
     `ANE RD` は M3 にない
 
-## hwnpu issue
+## bonsaiai issue
 
-- 実行の記録: `hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は引数 (`console.RecordRun`)、`console.Log` の行 (進み具合の
+- 実行の記録: `bonsaiai-chat`、`bonsaiai-image`、`bonsaiai-audio` は引数 (`console.RecordRun`)、`console.Log` の行 (進み具合の
   行は最後の状態、色なし)、終わり方 (`console.EndInterrupted`) を、キャッシュの下の `logs/<prog>-<time>-<pid>.log` に
-  書く。コマンドごとに最後の 10 回 (`console.RunsKept`)。`HWNPU_NO_RUN_LOG` で止まる。端末かどうかの判定は変えない
+  書く。コマンドごとに最後の 10 回 (`console.RunsKept`)。`BONSAIAI_NO_RUN_LOG` で止まる。端末かどうかの判定は変えない
   (`teeRun` も `Terminal()` を持つ)
-- `hwnpu issue` (`--list`、`--run N`、`--lines` (80)、`--print`、`--title`、`-y`、`--wake`): 直近 1 週間で失敗した最後の
+- `bonsaiai issue` (`--list`、`--run N`、`--lines` (80)、`--print`、`--title`、`-y`、`--wake`): 直近 1 週間で失敗した最後の
   実行 (なければ最後の実行) の、コマンド、エラー、ログの末尾、status を Markdown にする
-- 伏せるもの: ホーム (`~`)、ユーザー名と本名、ホスト名、`HWNPU_MODEL_SOURCE*` のホストとフォルダ、公開のもの
+- 伏せるもの: ホーム (`~`)、ユーザー名と本名、ホスト名、`BONSAIAI_MODEL_SOURCE*` のホストとフォルダ、公開のもの
   (Hugging Face、GitHub) 以外の URL のホスト、URL のパスワード、トークン (`token=`、`hf_`、`AKIA`、Bearer)、メール
   アドレス。空白を含む 40 文字を超える引数 (プロンプト) は文字数に。プロセスのコマンドラインは載せない
-- 送り方: `gh` は使わない。`https://github.com/shibukawa/hwnpu/issues/new?title=...&body=...` を `open` (macOS)、
+- 送り方: `gh` は使わない。`https://github.com/shibukawa/bonsaiai/issues/new?title=...&body=...` を `open` (macOS)、
   `xdg-open` (Linux)、`rundll32 url.dll,FileProtocolHandler` (Windows。`start` では cmd が `&` を読む) で開く。画面の
   ボタンを押すまで送られない。7500 バイトを超えるならログを 2/3 ずつ削り、それでも長ければ `logs/issue-TIME.md` を
   貼るよう案内する (下書きはいつもそこに残す)
 
-## hwnpu cache、hwnpu memory
+## bonsaiai cache、bonsaiai memory
 
-- `hwnpu cache` (情報、`ls`、`prune`、`clear`、`clean`): [distribution.ja.md](distribution.ja.md) を見る
-- `hwnpu memory [MODEL [GB]] [--forget]`: モデルをどのメモリの区分で動かすか。`run.json` に残す。
+- `bonsaiai cache` (情報、`ls`、`prune`、`clear`、`clean`): [distribution.ja.md](distribution.ja.md) を見る
+- `bonsaiai memory [MODEL [GB]] [--forget]`: モデルをどのメモリの区分で動かすか。`run.json` に残す。
   [memory-and-power.ja.md](memory-and-power.ja.md) を見る
 
 ## 採らなかったもの
 
-- 古い単独の実行ファイル (`hwnpu-depth`、`hwnpu-music`、`hwnpu-sfx`、`hwnpu-tts`、`hwnpu-transcribe`、`hwnpu-pitch`、
-  `hwnpu-notes`、`hwnpu-systemone`、`hwnpu-pose`、`hwnpu-agent`、`hwnpu-check`、`hwnpu-convert`、`hwnpuinfo`、`npuprobe`、
+- 古い単独の実行ファイル (`bonsaiai-depth`、`bonsaiai-music`、`bonsaiai-sfx`、`bonsaiai-tts`、`bonsaiai-transcribe`、`bonsaiai-pitch`、
+  `bonsaiai-notes`、`bonsaiai-systemone`、`bonsaiai-pose`、`bonsaiai-agent`、`bonsaiai-check`、`bonsaiai-convert`、`bonsaiaiinfo`、`npuprobe`、
   `powerbench`、`report` など): 家族にまとめ、ラッパーは残さない
 - チャットのモデルを用途で選ぶ (`-use chat|embed`): 同じ用途のモデルは増えるので名前で選ぶ
 - 並列のダウンロード: 速さの配分が変わるとファイルごとの残り時間が狂う (4 GB と 1 GB を 100 MB/s で並列に落とすと
@@ -342,8 +342,8 @@ Pi (pi.dev) のループを Go で書き、エンジンを `ai/text` の `Chatte
 - 検索: `fetch` に `query` を付けて該当の段落を切り出す (長いページは前半だけが届き、関係ない数値を拾う)。ja で 0 件か
   外れのとき en も引く。モデルの検索語に日本語が無く課題にあるときは課題の文で引く
 - 埋め込みのサーバー: 複数の文をまとめて流す (今は 1 文ずつ)
-- `hwnpu status`: macOS と Windows の要約は初めクロスビルドだけ。Windows の CPU と GPU の負荷は読まない
-- `hwnpu issue`: GitHub が URL で受け付ける長さをブラウザで確かめていない
-- `hwnpu-audio` の Ctrl+C は実機で確かめていない
+- `bonsaiai status`: macOS と Windows の要約は初めクロスビルドだけ。Windows の CPU と GPU の負荷は読まない
+- `bonsaiai issue`: GitHub が URL で受け付ける長さをブラウザで確かめていない
+- `bonsaiai-audio` の Ctrl+C は実機で確かめていない
 - 見積もりのバーの、言語モデルの parts.json の鎖、Intel、AMD での確認 (ビルドだけ)
 - 小さなモデルでは、OpenCode の題名の要求で最初の答えが 1〜2 分遅れる

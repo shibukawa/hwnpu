@@ -7,11 +7,11 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/f32"
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/sgemm"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/f32"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/sgemm"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // arg returns the operation's input called name: a bound value or an inline constant. ok is false when

@@ -1,5 +1,5 @@
 // Package xdnasim simulates the amdxdna kernel driver behind xdna.Driver, for tests on machines
-// without a Ryzen AI NPU. It enforces the rules of drivers/accel/amdxdna that hwnpu relies on:
+// without a Ryzen AI NPU. It enforces the rules of drivers/accel/amdxdna that bonsaiai relies on:
 //
 //   - a device heap (BO_DEV_HEAP, a multiple of 64 MiB) must exist and be mapped before
 //     BO_DEV objects can be created (EAGAIN otherwise); BO_DEV objects are not mappable
@@ -19,8 +19,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/ert"
-	"github.com/shibukawa/hwnpu/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/ert"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
 )
 
 // Exec is the simulated work of one command. Mem resolves a device address range to memory and

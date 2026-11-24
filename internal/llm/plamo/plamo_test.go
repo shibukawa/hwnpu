@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
-	"github.com/shibukawa/hwnpu/internal/palette"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // tiny is a small PlamoBiModel with multi query attention; matrix rows are multiples of the lut4
@@ -274,7 +274,7 @@ func relErr(got []float32, ref []float64) float64 {
 }
 
 // The program computes PlamoBiModel's last hidden state with and without padding, for multi
-// query and grouped query attention; layer by layer, as hwnpu-dev check runs it, gives the same.
+// query and grouped query attention; layer by layer, as bonsaiai-dev check runs it, gives the same.
 func TestAgainstReference(t *testing.T) {
 	ids := []int32{1, 17, 5, 33, 9, 0, 21}
 	for _, c := range []struct {
@@ -427,12 +427,12 @@ func TestPlamoEmbedding1B(t *testing.T) {
 }
 
 // runIR writes the program as OpenVINO IR for Intel's NPU and runs it with OpenVINO's CPU plugin
-// (internal/ovcpu); the test is skipped without HWNPU_OV_PYTHON.
+// (internal/ovcpu); the test is skipped without BONSAIAI_OV_PYTHON.
 func runIR(t *testing.T, c *Config, w llm.Weights, opts llm.Options, x, mask []float32) []float32 {
 	t.Helper()
 	py := ovcpu.Python()
 	if py == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	opts.Backend = "intel"
 	path := filepath.Join(t.TempDir(), "m.xml")
@@ -486,15 +486,15 @@ func TestIntelIR(t *testing.T) {
 	}
 }
 
-// The real PLaMo-Embedding-1B (HWNPU_TEST_PLAMO_DIR: config.json, tokenizer.model and
+// The real PLaMo-Embedding-1B (BONSAIAI_TEST_PLAMO_DIR: config.json, tokenizer.model and
 // model.safetensors) lowered to OpenVINO IR gives the sentence embeddings (the mean of the rows
 // after the BOS, as internal/chat pools them) that the fp16 MIL program gives with milcpu: the
-// same in fp16, and with the quantization's error in int8 and int4. Needs HWNPU_OV_PYTHON. The
+// same in fp16, and with the quantization's error in int8 and int4. Needs BONSAIAI_OV_PYTHON. The
 // lut4 and lut8 programs, which the Neural Engine runs, are measured the same way with milcpu.
 func TestIntelIRCheckpoint(t *testing.T) {
-	dir, py := os.Getenv("HWNPU_TEST_PLAMO_DIR"), ovcpu.Python()
+	dir, py := os.Getenv("BONSAIAI_TEST_PLAMO_DIR"), ovcpu.Python()
 	if dir == "" || py == "" {
-		t.Skip("HWNPU_TEST_PLAMO_DIR or HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_TEST_PLAMO_DIR or BONSAIAI_OV_PYTHON is not set")
 	}
 	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
 	if err != nil {

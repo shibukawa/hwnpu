@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // TestTee puts a file in a folder and on WebDAV as it is "downloaded": in place and named in the
@@ -30,7 +30,7 @@ func TestTee(t *testing.T) {
 		"webdav": func() (Source, func() []string) {
 			d := newDAV(t)
 			st := openDAV(t, d)
-			return Source{Store: st, Writeback: true}, func() []string { return files(t, filepath.Join(d.root, "hwnpu")) }
+			return Source{Store: st, Writeback: true}, func() []string { return files(t, filepath.Join(d.root, "bonsaiai")) }
 		},
 	}
 	for kind, mk := range sources {

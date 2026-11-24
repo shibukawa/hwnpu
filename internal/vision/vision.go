@@ -1,5 +1,5 @@
 // Package vision turns images into LFM3-VL image embeddings for the text model's input, with
-// vision encoder programs converted by hwnpu-dev convert -arch lfm3-vision, one per image size (the
+// vision encoder programs converted by bonsaiai-dev convert -arch lfm3-vision, one per image size (the
 // Neural Engine runs fixed shapes). An image is resized to the program whose aspect ratio is
 // closest to the size the checkpoint's image processor would give it (smart_resize), so its
 // embeddings match the reference exactly when that size has a program, and approximately
@@ -20,10 +20,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // Start and End are the tokens around an image's embeddings.
@@ -46,7 +46,7 @@ type sized struct {
 
 // Load reads the checkpoint's config.json and image processor settings in dir and loads the
 // vision encoder packages on dev (nil: the CPU interpreter).
-func Load(ctx context.Context, dev *hwnpu.Device, dir string, packages []string) (*Encoder, error) {
+func Load(ctx context.Context, dev *bonsaiai.Device, dir string, packages []string) (*Encoder, error) {
 	_, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), lfm3vl.Arch.Name)
 	if err != nil {
 		return nil, err

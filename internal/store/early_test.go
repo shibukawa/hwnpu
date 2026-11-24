@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // counted is a folder store that counts the puts of each key.

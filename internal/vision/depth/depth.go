@@ -21,10 +21,10 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
 )
 
 // Config is model.json of one size of an export (iron_da3.py): its directory's graphs.
@@ -96,7 +96,7 @@ func IsExport(dir string) bool {
 // the last picture's aspect.
 type Estimator struct {
 	Export
-	dev *hwnpu.Device
+	dev *bonsaiai.Device
 	dir string
 	cur *sized
 	// Logf, when set, is told what is done.
@@ -112,7 +112,7 @@ type sized struct {
 
 // Open reads the export in dir; a size's graphs are loaded onto dev for the first picture
 // that takes it.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Estimator, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string) (*Estimator, error) {
 	x, err := readExport(dir)
 	if err != nil {
 		return nil, err

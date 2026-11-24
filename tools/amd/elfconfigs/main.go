@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/aieelf"
+	"github.com/shibukawa/bonsaiai/internal/aieelf"
 )
 
 func main() {

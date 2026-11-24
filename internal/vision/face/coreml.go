@@ -7,13 +7,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	llmrunner "github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	llmrunner "github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // ProgramRevision counts the changes to the programs OpenProgram writes that call for
@@ -25,7 +25,7 @@ const ProgramRevision = 1
 // on dev (nil: the CPU interpreter, Core ML's): the whole graph, its 12 outputs (each stride's
 // cls, obj, bbox and kps) in one program per size, converted into dir when a picture first
 // takes the size. The sizes are CPUSizes'.
-func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, path, dir string) (*Detector, error) {
+func OpenProgram(ctx context.Context, dev *bonsaiai.Device, backend, path, dir string) (*Detector, error) {
 	g, err := onnx.Load(path)
 	if err != nil {
 		return nil, err
@@ -43,7 +43,7 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, path, dir stri
 // programRunner runs a size's program, loaded for the first picture that takes it.
 type programRunner struct {
 	g       *onnx.Graph
-	dev     *hwnpu.Device
+	dev     *bonsaiai.Device
 	backend string
 	dir     string
 	strides []int
@@ -51,7 +51,7 @@ type programRunner struct {
 	p       *onnx.Program
 	prog    llmrunner.Program
 	// x is the input of the last picture, kept for the next (a picture of 320 x 256 is 1 MB of
-	// floats: on hwnpu's CPU executor, made anew each time, the garbage collector ran every
+	// floats: on bonsaiai's CPU executor, made anew each time, the garbage collector ran every
 	// few pictures); xw and xh its picture's size, outside which it is zeros
 	x      []float32
 	xw, xh int
@@ -126,7 +126,7 @@ func (r *programRunner) convert(ctx context.Context, W, H int) (string, error) {
 		return "", err
 	}
 	_, err = llm.WritePart(path, r.program(W, H), nil, llm.Options{Format: format, Backend: r.backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, %s (hwnpu)", W, H, format)
+		pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, %s (bonsaiai)", W, H, format)
 	})
 	if err != nil {
 		return "", fmt.Errorf("face: %w", err)

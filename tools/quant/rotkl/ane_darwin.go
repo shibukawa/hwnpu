@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // runANE runs the model's layers on the Neural Engine (Core AI) in parts of up to perPart layers,
@@ -69,13 +69,13 @@ func runPart(ctx context.Context, dev backend.Device, model llm.Model, w llm.Wei
 				out = b
 			}
 		case a.Name == "x":
-			hwnpu.EncodeF16(b.Bytes(), x)
+			bonsaiai.EncodeF16(b.Bytes(), x)
 		default:
 			ones := make([]float32, a.Bytes/2)
 			for i := range ones {
 				ones[i] = 1
 			}
-			hwnpu.EncodeF16(b.Bytes(), ones)
+			bonsaiai.EncodeF16(b.Bytes(), ones)
 		}
 	}
 	f, err := req.Submit()
@@ -86,6 +86,6 @@ func runPart(ctx context.Context, dev backend.Device, model llm.Model, w llm.Wei
 		return nil, err
 	}
 	h := make([]float32, len(out.Bytes())/2)
-	hwnpu.DecodeF16(h, out.Bytes())
+	bonsaiai.DecodeF16(h, out.Bytes())
 	return h, nil
 }

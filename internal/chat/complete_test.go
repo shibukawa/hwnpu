@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // Complete renders, generates and parses in one call on the tiny model (CPU interpreter):

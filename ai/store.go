@@ -15,17 +15,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
 // Store is where an app's models come from and where they are kept prepared.
 type Store struct {
 	// Models are where the models' files come from and this machine's cache they are kept in,
-	// as hwnpu's commands read them (modelstore: this machine's cache, HWNPU_MODEL_SOURCE*, the
+	// as bonsaiai's commands read them (modelstore: this machine's cache, BONSAIAI_MODEL_SOURCE*, the
 	// models bundled with the app, Hugging Face), and the app's own definition files
 	// (Models.Files). The zero value is the commands': what they downloaded and converted is
 	// used as it is, and what the app prepares they use.
@@ -216,7 +216,7 @@ func readManifest(root string, mine bool) (*manifest, error) {
 		if mine && m.Format < storeFormat {
 			return empty, nil
 		}
-		return nil, fmt.Errorf("%w: %s is of format %d, this hwnpu reads %d", ErrBundleTarget, file, m.Format, storeFormat)
+		return nil, fmt.Errorf("%w: %s is of format %d, this bonsaiai reads %d", ErrBundleTarget, file, m.Format, storeFormat)
 	}
 	if m.Targets == nil {
 		m.Targets = map[string]map[string]*record{}
@@ -301,9 +301,9 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int, u
 		}
 		return located{record: r, root: root, bundle: bundle}, nil
 	}
-	// the same model prepared for the role under another use's name (another app's: hwnpu-audio's
+	// the same model prepared for the role under another use's name (another app's: bonsaiai-audio's
 	// whisper-large-v3-turbo, interpreter's transcribe) is as good: its files are the model's,
-	// and what hwnpud compiled for one is compiled for the other
+	// and what bonsaiaid compiled for one is compiled for the other
 	role, _, _ := strings.Cut(key, ":")
 	for i, root := range roots {
 		bundle := i < len(s.Prepared)
@@ -333,14 +333,14 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int, u
 	case unusable != nil:
 		return located{}, fmt.Errorf("%w: %s (%s) was prepared for what is not here now: %v (the app's Plan and its Run prepare it again)", ErrNotPrepared, key, want.Name, unusable)
 	case older:
-		return located{}, fmt.Errorf("%w: %s (%s) was prepared by an earlier hwnpu, which left part of it to its first use (the app's Plan and its Run prepare it)", ErrNotPrepared, key, want.Name)
+		return located{}, fmt.Errorf("%w: %s (%s) was prepared by an earlier bonsaiai, which left part of it to its first use (the app's Plan and its Run prepare it)", ErrNotPrepared, key, want.Name)
 	}
 	return located{}, fmt.Errorf("%w: %s (the app's Plan and its Run prepare it)", ErrNotPrepared, key)
 }
 
 // compiledAs marks r compiled for this program when another use's record of the same model in
 // m says this program compiled it: Apple's compiler keeps its cache by the program and the
-// model's programs, not by the use (hwnpud compiles every app's).
+// model's programs, not by the use (bonsaiaid compiles every app's).
 func compiledAs(m *manifest, target, key string, want chat.Model, r *record) {
 	role, _, _ := strings.Cut(key, ":")
 	for other, o := range m.Targets[target] {

@@ -9,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // IsGraph reports whether path is a graph export (tools/amd/iron_graph.py: a directory with a
@@ -53,7 +53,7 @@ type programMeta struct {
 	} `json:"program"`
 }
 
-func OpenGraphProgram(ctx context.Context, dev *hwnpu.Device, dir string) (*GraphProgram, error) {
+func OpenGraphProgram(ctx context.Context, dev *bonsaiai.Device, dir string) (*GraphProgram, error) {
 	g, err := OpenGraph(ctx, dev, dir)
 	if err != nil {
 		return nil, fmt.Errorf("iron: %s: %w", filepath.Base(dir), err)

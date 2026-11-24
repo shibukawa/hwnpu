@@ -16,7 +16,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // An export for AMD's NPU or of Core AI goes in a source as one file (docs/cache-sharing-design.md

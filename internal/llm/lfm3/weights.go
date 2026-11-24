@@ -5,7 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 func pow(a, b float64) float64 { return math.Pow(a, b) }

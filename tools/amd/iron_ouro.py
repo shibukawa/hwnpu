@@ -1,6 +1,6 @@
 """Ouro (ByteDance's OuroForCausalLM, e.g. ByteDance/Ouro-1.4B-Thinking) on IRON's shared decoder (``iron.lm``).
 
-An application of amd/IRON kept in hwnpu (IRON has none for Ouro), exported by
+An application of amd/IRON kept in bonsaiai (IRON has none for Ouro), exported by
 ``iron_export_lm.py ouro`` like PLaMo 3's (iron_plamo3.py). Its shape is read
 from the checkpoint's ``config.json``; the structure follows its remote code
 ``modeling_ouro.py``:
@@ -13,7 +13,7 @@ from the checkpoint's ``config.json``; the structure follows its remote code
 - Each pass keeps keys and values of its own for every layer
   (UniversalTransformerCache's slot ``pass * layers + layer``): pass 0's are
   the layers' own ``cache``, the later passes' are in ``passes`` (their buffers
-  ``passes.P.layers.L.cache.keys``, which hwnpu reads as KV caches by the
+  ``passes.P.layers.L.cache.keys``, which bonsaiai reads as KV caches by the
   ``.cache.`` in the name).
 - Each layer is sandwich-normed as Gemma's (IRON's ``SandwichLayer``): Ouro's
   ``input_layernorm``, the attention, ``input_layernorm_2``, the residual;
@@ -47,12 +47,12 @@ from iron.lm.checkpoint import renamed
 from iron.operators.copy import Copy
 
 # A q6 or q8 MLP's gate and up as one table (iron_q4's glu_param), as iron_qwen35.FUSE_GLU.
-# HWNPU_OURO_FUSE_GLU=0 keeps them apart.
-FUSE_GLU = os.environ.get("HWNPU_OURO_FUSE_GLU", "1") != "0"
+# BONSAIAI_OURO_FUSE_GLU=0 keeps them apart.
+FUSE_GLU = os.environ.get("BONSAIAI_OURO_FUSE_GLU", "1") != "0"
 
 # A prompt chunk's command starts every LAYERS_PER_COMMAND layer runs (install_cuts).
-# HWNPU_OURO_LAYERS_PER_COMMAND=0 leaves the cuts to IRON's packaging alone.
-LAYERS_PER_COMMAND = int(os.environ.get("HWNPU_OURO_LAYERS_PER_COMMAND", "12"))
+# BONSAIAI_OURO_LAYERS_PER_COMMAND=0 leaves the cuts to IRON's packaging alone.
+LAYERS_PER_COMMAND = int(os.environ.get("BONSAIAI_OURO_LAYERS_PER_COMMAND", "12"))
 
 # The last step recorded before each cut's layer run (Ouro.layer), for install_cuts.
 _CUT_AFTER: list = []
@@ -90,7 +90,7 @@ def install_cuts() -> None:
     """
     import iron.common.graph.compiled as compiled
 
-    if LAYERS_PER_COMMAND <= 0 or getattr(compiled.plan, "_hwnpu_ouro", False):
+    if LAYERS_PER_COMMAND <= 0 or getattr(compiled.plan, "_bonsaiai_ouro", False):
         return
     plan = compiled.plan
 
@@ -105,7 +105,7 @@ def install_cuts() -> None:
         reasons = [*chosen.reasons, f"Ouro: a command starts every {LAYERS_PER_COMMAND} layer runs: {sorted(cuts)}"]
         return dataclasses.replace(chosen, reasons=reasons, commands=commands)
 
-    cut_plan._hwnpu_ouro = True
+    cut_plan._bonsaiai_ouro = True
     compiled.plan = cut_plan
 
 
@@ -176,7 +176,7 @@ class Ouro(CausalLM):
 
     config = OuroConfig
     layer_class = OuroLayer
-    hwnpu_name = "Ouro"
+    bonsaiai_name = "Ouro"
     # Ouro's sandwich norms by SandwichLayer's names (whole dotted names: post_attention_layernorm
     # does not take post_attention_layernorm_2)
     renames = {

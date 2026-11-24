@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/vision"
+	"github.com/shibukawa/bonsaiai/ai/vision"
 )
 
 // View is where the eye is before the picture.

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // The activation statistics come from Setup.Dir first, else from a source's StatsRepo (a

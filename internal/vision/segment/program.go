@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // ProgramRevision counts the changes to the encoder's program that call for converting it again.
@@ -36,7 +36,7 @@ func EncoderProgram(g *onnx.Graph) *onnx.Program {
 // ML packages, or OpenVINO IR for Intel's NPU) on dev, converted into dir unless it is there
 // (NAME.done), and loads the decoder's ONNX file for the host. The conversion's progress goes to
 // log (nil for none).
-func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decoder, dir string, log io.Writer) (*Model, error) {
+func OpenProgram(ctx context.Context, dev *bonsaiai.Device, backend, encoder, decoder, dir string, log io.Writer) (*Model, error) {
 	dec, err := onnx.Load(decoder)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 
 // ConvertEncoder converts the encoder (its ONNX file) into a program of backend in dir unless it
 // is there (or a shared layer has it), and returns its path: what OpenProgram loads, made with no
-// device (hwnpu-dev models package).
+// device (bonsaiai-dev models package).
 func ConvertEncoder(ctx context.Context, backend, encoder, dir string, log io.Writer) (string, error) {
 	stem := strings.TrimSuffix(filepath.Base(encoder), filepath.Ext(encoder))
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
@@ -78,7 +78,7 @@ func ConvertEncoder(ctx context.Context, backend, encoder, dir string, log io.Wr
 			return "", fmt.Errorf("segment: %w", err)
 		}
 		if _, err := llm.WritePart(path, EncoderProgram(g), nil, llm.Options{Format: format, Backend: backend}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("EfficientSAM's image encoder (%s), %dx%d, %s (hwnpu)", filepath.Base(encoder), Size, Size, format)
+			pkg.Description = fmt.Sprintf("EfficientSAM's image encoder (%s), %dx%d, %s (bonsaiai)", filepath.Base(encoder), Size, Size, format)
 		}); err != nil {
 			bar.Done("failed")
 			return "", fmt.Errorf("segment: %w", err)

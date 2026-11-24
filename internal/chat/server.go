@@ -23,7 +23,7 @@ import (
 // request goes to the model of its endpoint's kind that its model field names, or to the only
 // one of that kind whatever it names. Each model runs one request at a time; the others wait.
 //
-// hwnpu-chat serves with ai/server/openai, the same API on the ai package's models; this one
+// bonsaiai-chat serves with ai/server/openai, the same API on the ai package's models; this one
 // stays for the tests of the engine through the API until they move there.
 type Server struct {
 	Chats     []*Engine
@@ -43,7 +43,7 @@ type Server struct {
 	// text (ID.json), for finding out what a client sends.
 	Dump string
 	// Count numbers the requests' ids; nil for the Server's own. Servers made for each request
-	// (hwnpud's engine) share one, so that the ids do not repeat.
+	// (bonsaiaid's engine) share one, so that the ids do not repeat.
 	Count *atomic.Int64
 
 	n atomic.Int64
@@ -88,7 +88,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 // describe is a model's entry in /v1/models: with its kind, and its features (capabilities)
 // when it is one of the catalog.
 func describe(name string, kind Kind, more map[string]any) map[string]any {
-	m := map[string]any{"id": name, "object": "model", "created": 0, "owned_by": "hwnpu", "kind": kind}
+	m := map[string]any{"id": name, "object": "model", "created": 0, "owned_by": "bonsaiai", "kind": kind}
 	if c, ok := Lookup(name); ok {
 		m["capabilities"] = append([]string{}, c.Features...)
 	}
@@ -134,7 +134,7 @@ func route(model string, names, others []string, kind Kind, other string) (int, 
 	}
 	switch len(names) {
 	case 0:
-		return -1, http.StatusNotFound, fmt.Sprintf("no %s model is loaded: add one to --model (hwnpu-chat list shows them)", kind)
+		return -1, http.StatusNotFound, fmt.Sprintf("no %s model is loaded: add one to --model (bonsaiai-chat list shows them)", kind)
 	case 1:
 		return 0, 0, ""
 	}
@@ -368,8 +368,8 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	usage := map[string]any{
 		"prompt_tokens": stats.Prompt, "completion_tokens": stats.Generated, "total_tokens": stats.Prompt + stats.Generated,
 		"prompt_tokens_details": map[string]any{"cached_tokens": stats.Reused},
-		// hwnpu's own, for hwnpu-chat's line of statistics through hwnpud (UsageStats)
-		"hwnpu": UsageStats{PrefillMS: stats.Prefill.Milliseconds(), DecodeMS: stats.Decode.Milliseconds(),
+		// bonsaiai's own, for bonsaiai-chat's line of statistics through bonsaiaid (UsageStats)
+		"bonsaiai": UsageStats{PrefillMS: stats.Prefill.Milliseconds(), DecodeMS: stats.Decode.Milliseconds(),
 			Drafted: stats.Drafted, Accepted: stats.Accepted, ThinkCut: stats.ThinkCut, ThinkLooped: stats.ThinkLooped, Looped: stats.Looped},
 	}
 	if !req.Stream {
@@ -554,7 +554,7 @@ func apiError(w http.ResponseWriter, code int, typ, ecode, msg string) {
 	writeJSON(w, code, map[string]any{"error": e})
 }
 
-// UsageStats is what a chat completion's usage tells besides the OpenAI fields, under "hwnpu":
+// UsageStats is what a chat completion's usage tells besides the OpenAI fields, under "bonsaiai":
 // the times of reading the prompt and of generating, the drafts, and why the thinking or the
 // answer was cut.
 type UsageStats struct {

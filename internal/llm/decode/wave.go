@@ -5,7 +5,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // Marked is a point of the sequence that Steps marked: after one of its steps, with the logits

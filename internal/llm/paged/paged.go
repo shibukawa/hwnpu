@@ -21,7 +21,7 @@ import (
 	"math"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Shape is the attention's heads, and the scale of its scores.
@@ -70,7 +70,7 @@ const Version = 1
 // OutScale multiplies the values' weights e/l before their product with the values (Version).
 const OutScale = 1024
 
-// DefaultChunk is the chunk length hwnpu-chat converts with: 8 and 64 query rows are on the
+// DefaultChunk is the chunk length bonsaiai-chat converts with: 8 and 64 query rows are on the
 // Neural Engine, 8 rows at their fastest per key (1.09 ms per 1K over 6 layers on an M3), and the
 // host's merge is a few percent of a step.
 const DefaultChunk = 8192

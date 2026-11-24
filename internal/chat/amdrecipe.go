@@ -6,8 +6,8 @@ import (
 	"io"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
 )
 
 // LMTool is the script of tools/amd that exports the language models (and d1's decision
@@ -102,7 +102,7 @@ func lmArgs(args []string) ([]string, error) {
 	return out, nil
 }
 
-// AMDGeneration is the generation of AMD's NPU the exports hwnpu runs are of (cache.AMDTarget).
+// AMDGeneration is the generation of AMD's NPU the exports bonsaiai runs are of (cache.AMDTarget).
 var AMDGeneration = recipe.GenerationOf(cache.AMDTarget)
 
 // AMDCommand is how model m's export for AMD's NPU (cache.AMDTarget) is made, as its recipe says
@@ -123,7 +123,7 @@ func AMDCommand(m Model, vars map[string][]string, want ...string) (recipe.Comma
 		return c, err
 	}
 	if len(want) > 0 && !slices.Contains(want, c.Script) {
-		return c, fmt.Errorf("model-recipes.yaml models.%s.amd.script: %s, but hwnpu reads the exports of %v for %s", m.Recipe, c.Script, want, m.Name)
+		return c, fmt.Errorf("model-recipes.yaml models.%s.amd.script: %s, but bonsaiai reads the exports of %v for %s", m.Recipe, c.Script, want, m.Name)
 	}
 	return c, nil
 }

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package hwnpu_test
+package bonsaiai_test
 
 import (
 	"context"
@@ -17,13 +17,13 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/fixtures"
-	"github.com/shibukawa/hwnpu/internal/ze"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/fixtures"
+	"github.com/shibukawa/bonsaiai/internal/ze"
 )
 
 // mockLib is the path of the zemock Level Zero stand-in built by TestMain, or "" when no C
-// compiler is available. When HWNPU_ZE_LOADER is already set (e.g. to a real loader on an Intel
+// compiler is available. When BONSAIAI_ZE_LOADER is already set (e.g. to a real loader on an Intel
 // machine) the mock is not used and the mock tests skip.
 var mockLib string
 
@@ -55,12 +55,12 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func openMock(t *testing.T, opts ...hwnpu.Option) *hwnpu.Device {
+func openMock(t *testing.T, opts ...bonsaiai.Option) *bonsaiai.Device {
 	t.Helper()
 	if mockLib == "" {
 		t.Skip("zemock is not available (no C compiler, or a real Level Zero loader is configured)")
 	}
-	dev, err := hwnpu.Open(context.Background(), append([]hwnpu.Option{hwnpu.WithBackend("levelzero")}, opts...)...)
+	dev, err := bonsaiai.Open(context.Background(), append([]bonsaiai.Option{bonsaiai.WithBackend("levelzero")}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,10 +102,10 @@ func putF32s(b []byte, v []float32) {
 }
 
 // runAffine binds x to the input, runs and returns y.
-func runAffine(t *testing.T, dev *hwnpu.Device, g *hwnpu.Graph, x []float32) []float32 {
+func runAffine(t *testing.T, dev *bonsaiai.Device, g *bonsaiai.Graph, x []float32) []float32 {
 	t.Helper()
 	args := g.Args()
-	if len(args) != 2 || args[0].Kind != hwnpu.ArgInput || args[1].Kind != hwnpu.ArgOutput || args[0].DType != hwnpu.F32 {
+	if len(args) != 2 || args[0].Kind != bonsaiai.ArgInput || args[1].Kind != bonsaiai.ArgOutput || args[0].DType != bonsaiai.F32 {
 		t.Fatalf("args %v", args)
 	}
 	in, _ := dev.AllocBuffer(args[0].Bytes)
@@ -146,7 +146,7 @@ func TestMockEnumerate(t *testing.T) {
 	dev := openMock(t)
 	info := dev.Info()
 	t.Logf("%+v caps=%v", info, info.Caps)
-	if info.Vendor != hwnpu.VendorIntel || info.Name != "Mock Intel NPU" || info.Caps&hwnpu.CapCompile == 0 ||
+	if info.Vendor != bonsaiai.VendorIntel || info.Name != "Mock Intel NPU" || info.Caps&bonsaiai.CapCompile == 0 ||
 		!strings.Contains(info.Driver, "ZE_extension_graph 1.12") || !strings.Contains(info.Driver, "compiler 7.3") {
 		t.Fatalf("unexpected info %+v", info)
 	}
@@ -160,7 +160,7 @@ func TestMockNativeBlob(t *testing.T) {
 	blob = binary.LittleEndian.AppendUint32(blob, math.Float32bits(3))
 	blob = binary.LittleEndian.AppendUint32(blob, math.Float32bits(-1))
 	gr, _ := dev.Graph()
-	g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Blob: blob})
+	g, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Blob: blob})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestMockNativeBlob(t *testing.T) {
 func TestMockOpenVINOIR(t *testing.T) {
 	dev := openMock(t)
 	gr, _ := dev.Graph()
-	g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: "internal/fixtures/openvino/affine_relu.xml", BuildFlags: `--config PERFORMANCE_HINT="LATENCY"`})
+	g, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Path: "internal/fixtures/openvino/affine_relu.xml", BuildFlags: `--config PERFORMANCE_HINT="LATENCY"`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestMockOpenVINOIR(t *testing.T) {
 
 // Acceptance milestone:m2-intel/unsupported-ops and requirement:npu-only-execution (Intel).
 func TestMockUnsupportedOperation(t *testing.T) {
-	dev := openMock(t, hwnpu.WithPlacement(hwnpu.PlacementPrefer)) // even Prefer cannot run it
+	dev := openMock(t, bonsaiai.WithPlacement(bonsaiai.PlacementPrefer)) // even Prefer cannot run it
 	src, err := os.ReadFile("internal/fixtures/openvino/affine_relu.xml")
 	if err != nil {
 		t.Fatal(err)
@@ -205,16 +205,16 @@ func TestMockUnsupportedOperation(t *testing.T) {
 	xml := strings.Replace(string(src), `type="ReLU"`, `type="Sin"`, 1)
 	bin, _ := os.ReadFile("internal/fixtures/openvino/affine_relu.bin")
 	gr, _ := dev.Graph()
-	_, err = gr.Compile(context.Background(), hwnpu.GraphSource{Format: hwnpu.GraphFormatOpenVINOIR, XML: []byte(xml), Bin: bin})
-	if !errors.Is(err, hwnpu.ErrNotOnNPU) {
+	_, err = gr.Compile(context.Background(), bonsaiai.GraphSource{Format: bonsaiai.GraphFormatOpenVINOIR, XML: []byte(xml), Bin: bin})
+	if !errors.Is(err, bonsaiai.ErrNotOnNPU) {
 		t.Fatalf("err = %v, want ErrNotOnNPU", err)
 	}
-	var pe *hwnpu.PlacementError
+	var pe *bonsaiai.PlacementError
 	errors.As(err, &pe)
-	if len(pe.Report.Ops) != 1 || pe.Report.Ops[0] != (hwnpu.OpPlacement{Name: "y", Type: "Sin", Device: "unsupported"}) || pe.Report.NPUOps != 2 {
+	if len(pe.Report.Ops) != 1 || pe.Report.Ops[0] != (bonsaiai.OpPlacement{Name: "y", Type: "Sin", Device: "unsupported"}) || pe.Report.NPUOps != 2 {
 		t.Fatalf("report %+v", pe.Report)
 	}
-	var be *hwnpu.BuildError
+	var be *bonsaiai.BuildError
 	if !errors.As(err, &be) || !strings.Contains(be.Log, "unsupported operation Sin") {
 		t.Fatalf("build log missing: %v", err)
 	}
@@ -225,12 +225,12 @@ func TestMockUnsupportedOperation(t *testing.T) {
 func TestMockBuildError(t *testing.T) {
 	dev := openMock(t)
 	gr, _ := dev.Graph()
-	_, err := gr.Compile(context.Background(), hwnpu.GraphSource{Blob: []byte("garbage")})
-	var be *hwnpu.BuildError
-	if !errors.As(err, &be) || be.Log != "not a zemock blob" || errors.Is(err, hwnpu.ErrNotOnNPU) {
+	_, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Blob: []byte("garbage")})
+	var be *bonsaiai.BuildError
+	if !errors.As(err, &be) || be.Log != "not a zemock blob" || errors.Is(err, bonsaiai.ErrNotOnNPU) {
 		t.Fatalf("err = %#v", err)
 	}
-	var de *hwnpu.DriverError
+	var de *bonsaiai.DriverError
 	if !errors.As(err, &de) || de.Op != "pfnCreate2" || de.Msg != "ZE_RESULT_ERROR_INVALID_NATIVE_BINARY" {
 		t.Fatalf("driver error %#v", de)
 	}
@@ -241,14 +241,14 @@ func TestMockBuildError(t *testing.T) {
 func TestMockRequestsKeepTheirArguments(t *testing.T) {
 	dev := openMock(t)
 	gr, _ := dev.Graph()
-	g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: "internal/fixtures/openvino/affine_relu.xml"})
+	g, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Path: "internal/fixtures/openvino/affine_relu.xml"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer g.Close()
 	type pair struct {
-		req     *hwnpu.Request
-		in, out *hwnpu.Buffer
+		req     *bonsaiai.Request
+		in, out *bonsaiai.Buffer
 	}
 	var ps []pair
 	for k := 0; k < 2; k++ {
@@ -296,21 +296,21 @@ func mockInt(t *testing.T, sym string, args ...uint32) int32 {
 // Acceptance milestone:m3-power/policy-mapping (Intel).
 func TestMockPowerPolicy(t *testing.T) {
 	cases := []struct {
-		policy                      hwnpu.PowerPolicy
+		policy                      bonsaiai.PowerPolicy
 		priority, options, workload int32
 	}{
-		{hwnpu.PowerDefault, 0, 0, -1},
-		{hwnpu.PowerLow, 1, 0, 1},          // low priority, background workload
-		{hwnpu.PowerBalanced, 0, 0, -1},    // normal priority
-		{hwnpu.PowerPerformance, 2, 1, -1}, // high priority, turbo
+		{bonsaiai.PowerDefault, 0, 0, -1},
+		{bonsaiai.PowerLow, 1, 0, 1},          // low priority, background workload
+		{bonsaiai.PowerBalanced, 0, 0, -1},    // normal priority
+		{bonsaiai.PowerPerformance, 2, 1, -1}, // high priority, turbo
 	}
 	for _, c := range cases {
-		dev := openMock(t, hwnpu.WithPowerPolicy(c.policy))
-		if dev.Info().Caps&hwnpu.CapPowerControl == 0 || dev.PowerPolicy() != c.policy {
+		dev := openMock(t, bonsaiai.WithPowerPolicy(c.policy))
+		if dev.Info().Caps&bonsaiai.CapPowerControl == 0 || dev.PowerPolicy() != c.policy {
 			t.Fatalf("%v: caps %v policy %v", c.policy, dev.Info().Caps, dev.PowerPolicy())
 		}
 		gr, _ := dev.Graph()
-		g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: "internal/fixtures/openvino/affine_relu.xml"})
+		g, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Path: "internal/fixtures/openvino/affine_relu.xml"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -336,11 +336,11 @@ func TestMockCompileCache(t *testing.T) {
 		os.WriteFile(filepath.Join(ir, "affine_relu"+ext), b, 0o644)
 	}
 	weights := filepath.Join(ir, "affine_relu.bin")
-	dev := openMock(t, hwnpu.WithCacheDir(dir))
+	dev := openMock(t, bonsaiai.WithCacheDir(dir))
 	gr, _ := dev.Graph()
-	compile := func(flags string) *hwnpu.Graph {
+	compile := func(flags string) *bonsaiai.Graph {
 		t.Helper()
-		g, err := gr.Compile(context.Background(), hwnpu.GraphSource{Path: filepath.Join(ir, "affine_relu.xml"), BuildFlags: flags})
+		g, err := gr.Compile(context.Background(), bonsaiai.GraphSource{Path: filepath.Join(ir, "affine_relu.xml"), BuildFlags: flags})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +356,7 @@ func TestMockCompileCache(t *testing.T) {
 		var fn func() uint32
 		purego.RegisterLibFunc(&fn, h, "zemock_last_graph_flags")
 		if fn()&1 == 0 {
-			t.Error("the driver cache was not disabled while hwnpu caches")
+			t.Error("the driver cache was not disabled while bonsaiai caches")
 		}
 	}
 	g.Close()
@@ -388,13 +388,13 @@ func TestMockCompileCache(t *testing.T) {
 func TestMockPowerSample(t *testing.T) {
 	dev := openMock(t)
 	s, err := dev.PowerSample()
-	if dev.Info().Caps&hwnpu.CapPowerMeter == 0 {
-		if !errors.Is(err, hwnpu.ErrUnsupported) {
+	if dev.Info().Caps&bonsaiai.CapPowerMeter == 0 {
+		if !errors.Is(err, bonsaiai.ErrUnsupported) {
 			t.Fatalf("err = %v, want ErrUnsupported", err)
 		}
 		return
 	}
-	if err != nil || s.Scope != hwnpu.ScopePackage {
+	if err != nil || s.Scope != bonsaiai.ScopePackage {
 		t.Fatalf("%+v %v", s, err)
 	}
 }

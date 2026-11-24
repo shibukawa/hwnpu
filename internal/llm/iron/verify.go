@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 )
 
 // The version checking drafts (tools/amd/iron_verify.py, iron_export_lm.py --verify): a call of

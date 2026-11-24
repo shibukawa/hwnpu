@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // An export made on another machine names the checkpoint in that machine's cache: it is read
@@ -22,7 +22,7 @@ func TestLocalCheckpoint(t *testing.T) {
 		if err := os.WriteFile(local, []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		other := filepath.Join("/Users/someone/Library/Caches/hwnpu", rel)
+		other := filepath.Join("/Users/someone/Library/Caches/bonsaiai", rel)
 		if got := localCheckpoint(other); got != local {
 			t.Errorf("localCheckpoint(%s) = %s, want %s", other, got, local)
 		}
@@ -30,7 +30,7 @@ func TestLocalCheckpoint(t *testing.T) {
 			t.Errorf("localCheckpoint(%s) = %s, want it kept", local, got)
 		}
 	}
-	missing := "/Users/someone/Library/Caches/hwnpu/original/none/model.safetensors"
+	missing := "/Users/someone/Library/Caches/bonsaiai/original/none/model.safetensors"
 	if got := localCheckpoint(missing); got != missing {
 		t.Errorf("localCheckpoint(%s) = %s, want it kept", missing, got)
 	}

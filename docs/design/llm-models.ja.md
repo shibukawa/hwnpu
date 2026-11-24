@@ -12,7 +12,7 @@ PLaMo-Embedding-1B、BERT の系列のモデルごとの記録と、トークナ
 ## 概要
 
 「移植」= Hugging Face の `modeling_*.py` を Go (`internal/llm/<arch>`) に移すこと。
-[new-model-checklist.md](new-model-checklist.md) と `port-architecture` スキルを参照。Mac では `hwnpu-chat` は
+[new-model-checklist.md](new-model-checklist.md) と `port-architecture` スキルを参照。Mac では `bonsaiai-chat` は
 Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器はまず `.mlpackage` を書き、それを下ろす。
 
 | モデル (models.yaml) | アーキテクチャ | 種類 | Apple の既定 | Intel | AMD |
@@ -21,8 +21,8 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 | LFM3-VL-2B | `lfm3` + `lfm3-vision` | chat + 画像 512×512 | テキスト部 lut8、符号器 fp16 | 変換できる | q4 |
 | LFM3-Audio-2B | `lfm3` + `lfm3-audio-encoder` | chat + 音声入力 (30 秒) | テキスト部 lut8、符号器 fp16 | 変換できる | q4 |
 | LFM3-Omni-2B | 両方の塔 | chat + 画像 + 音声 | テキスト部 lut8 | 変換できる | q4 |
-| LFM3-Audio-2B-TTS | `lfm3` + `lfm3-depthformer` + `lfm3-codec` | speech (`hwnpu-audio tts`) | テキスト部 lut8、depthformer とコーデック fp16 | — | [audio-models.md](audio-models.md) |
-| d1-2B / d1-Omni-2B | d1 モードの `lfm3` (+ 塔) | decision (`hwnpu-chat systemone`) | lut8 | 変換できる | — |
+| LFM3-Audio-2B-TTS | `lfm3` + `lfm3-depthformer` + `lfm3-codec` | speech (`bonsaiai-audio tts`) | テキスト部 lut8、depthformer とコーデック fp16 | — | [audio-models.md](audio-models.md) |
+| d1-2B / d1-Omni-2B | d1 モードの `lfm3` (+ 塔) | decision (`bonsaiai-chat systemone`) | lut8 | 変換できる | — |
 | gemma-4-E2B-it / E4B-it | `gemma4` | chat (tools、thinking)、テキストのみ | lut6 | 変換できる | q4、画像と音声も |
 | plamo-3-translate-0.8b / 2b / 8b | `plamo3` | chat (translation) | lut8。8B は lut4 | int8。8B は行ごとの int4 | q4 |
 | Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking、道具なし) | lut8。Mac では動かしていない | int8。変換はできるが実機では動かしていない | q4 で MLP と head は q6。HF と比べて KL 0.026 (1 位の一致 98.4 %)、3.6 トークン/秒 |
@@ -45,7 +45,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   `tile` の 1 回 73.5 ms → 40.7 ms)、`hidden-out` (1: 最終の隠れ状態 h も出す。TTS が使う)。
 - 既定は lut6: bf16 との KL 0.23 nats (lut4 は 1.39)。コードの課題は lut4 の 13〜27 往復に対し 6 往復。プログラム 1 本の重みは
   1.21 GiB (lut4 は 0.81)。
-- 独立した fp64 の forward (`reference_test.go`、約 3e-7) と `hwnpu-dev check` で照合済み。
+- 独立した fp64 の forward (`reference_test.go`、約 3e-7) と `bonsaiai-dev check` で照合済み。
 - 注意で 7 部分に分け、文脈 262144 ([llm-engine.md](llm-engine.md))。
 - Core AI、M1 16 GB: 35.2〜35.5 トークン/秒、2 回目の準備 4.5 秒。メモリは models.yaml のとおり (1.7 GB。16 GB では短い文脈の段階込みで 3.1 GB)。
 - Intel: int8。int4 では次のトークンが fp16 と同じなのは 52 位置中 22 (int4-g128 29、int4-g32 33、ANE の lut4 26)、int8 は 51。
@@ -85,7 +85,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 - projector: パッチごとの LayerNorm (eps 1e-6)、2×2 のパッチの連結 (上の左、上の右、下の左、下の右。5 次元の reshape と
   transpose)、linear、GELU (erf)、linear。
 - 固定の形: 画像の大きさごとにプログラム 1 つ (`-image 幅x高さ`、2×パッチの倍数。既定 512x512)。`-seq` は使わない。
-  パッケージのメタデータにアーキテクチャと設定の値 (`com.github.shibukawa.hwnpu.arch`、`...param.image`) を書き、実行側はこれで大きさを知る。
+  パッケージのメタデータにアーキテクチャと設定の値 (`com.github.shibukawa.bonsaiai.arch`、`...param.image`) を書き、実行側はこれで大きさを知る。
 - 前処理 (`lfm3vl.Processor`): `preprocessor_config.json` / `processor_config.json` の平均、標準偏差、`resample` (2 bilinear、
   3 bicubic)、画素数の範囲。`SmartResize` = llama.cpp の静止画の smart_resize。`Resize` = PIL / torchvision のアンチエイリアス付きの
   縮小拡大を浮動小数点で書いたもの (横、縦の順、各段で 8 ビットに丸める)。PIL と ±1 以内。
@@ -155,7 +155,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
     空白にし、画像ごとの印をユーザーの番の先頭に置く。画像は 1 要求に 1 回だけ埋め込む。d1-Omni: `data:audio/` の files と `input_audio`
     部分も同じ。話された質問 (`instructions` の種類 `input_audio`) は質問文の位置の印になる。いずれも `<|vision_start|>`/`<|vision_end|>`
     で囲む。符号器がなければ 501。
-- コマンド: `hwnpu-chat systemone` (`--vision`、`--audio-encoder`。`/v1/systemone` と、`output_modalities: ["decisions"]` の `/v1/models`)。
+- コマンド: `bonsaiai-chat systemone` (`--vision`、`--audio-encoder`。`/v1/systemone` と、`output_modalities: ["decisions"]` の `/v1/models`)。
   NPU のない機械向けに `milcpu` の CPU モード (遅い)。
 - M3、lut8: NPU と CPU のインタプリタの確率の差は 1e-3 程度。2 回目以降、文章 4 問で 0.13 秒、画像 4 問で 0.9 秒。日本語の問い合わせ、
   合成画像 (色と左右)、d1-Omni の話された質問は、どれも期待どおりに答えた。
@@ -187,7 +187,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 - 全注意の層で分ける (`llm.Paged`、文脈 131072)。Core ML では分けない lut6 の部分は ANE のキャッシュに残らず (毎回約 100 秒)、注意で 8 部分に
   分けると 1.9 秒。
 - 照合: 小さな合成モデルで `modeling_gemma4.py` をループで書いた fp64 の forward と 1.6e-6。改変 15 個をすべて検出。実物の E2B
-  (`hwnpu-dev check`、`<bos>` から 31 トークン): 欠け・不一致 0、argmax 31/31、KL 0.0000 (fp16)。`-f16` で最悪の層 0.0098、KL 0.0004。参照の
+  (`bonsaiai-dev check`、`<bos>` から 31 トークン): 欠け・不一致 0、argmax 31/31、KL 0.0000 (fp16)。`-f16` で最悪の層 0.0098、KL 0.0004。参照の
   `tools/ref/ref_gemma4.py` は text config から `Gemma4ForCausalLM` を fp32 で組み、PLE の行を必要なときだけ読む (20 GB でなく 9 GB)。
 - **重みは lut6** (`Arch.Format`):
 
@@ -201,7 +201,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   - lut4 が粗いのは、サンドイッチ norm のため層の出力の大半が層の中で作り直され、4 ビットの重みの誤差がほぼそのまま出るから。1 つの群を
     fp16 に残しても半分程度にしかならない。lut4 は富士山を 3778 m と答え、事実の質問に答えなかった。lut6 と lut8 は答える (3776 m、夏目漱石、信濃川)。
   - Neural Engine の上 (128 トークン、fp32 の参照): lut6 の丸めは KL 平均 1.02 (英) / 1.16 (日)、lut8 は 0.10 / 0.10 (2.16 GiB、lut6 は 1.60)。
-- **GPTQ の符号 (任意)**: E2B で `hwnpu-chat --codes DIR --format-for per_layer=lut8`: ANE の KL 1.02 → 0.56 (英)、1.16 → 0.94 (日)、
+- **GPTQ の符号 (任意)**: E2B で `bonsaiai-chat --codes DIR --format-for per_layer=lut8`: ANE の KL 1.02 → 0.56 (英)、1.16 → 0.94 (日)、
   中央値 0.25 → 0.08。速さは同じで +0.01 GiB。事実の 12 問は 10/12 → 11/12。`per_layer` の射影 (41M) は校正の対象に入っていないので、GPTQ と
   合わせるときは lut8 にするのが効く。校正は `q4_gptq.py` の `load_gemma4_lean` (表を memmap、約 9 GB) で 16 GB の Mac に入る (M1 で 87 分)。
   既定にしない: 符号 2.1 GB の配り方が決まっていない。書き出しの名前に符号のハッシュと規則が入る。詳細は [quantization.md](quantization.md)。
@@ -230,7 +230,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 | 1 トークンの KV | 1 KiB | 7 KiB | 9 KiB |
 | Apple の形式 | lut8 | lut8 | **lut4** (`Config.Format`、hidden ≥ 4096) |
 | Intel の形式 | int8 | int8 | **行ごとの int4** (`Config.IntelFormat`) |
-| プログラム (hwnpu-chat) | 2 本 | Core AI で 2 本 (1 つの `.aimodel` の関数) | 1 本 (`prefill: off`) |
+| プログラム (bonsaiai-chat) | 2 本 | Core AI で 2 本 (1 つの `.aimodel` の関数) | 1 本 (`prefill: off`) |
 | models.yaml の `machine` | 8 | 16 | 16、`not_on: [M1]` |
 
 - 2B の形式 (M3 の ANE で fp16 と比べる、キャッシュ 4096、1 回 8 トークン): 次のトークンが同じなのは lut6 89%、lut8 98%。1 回は fp16
@@ -238,15 +238,15 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 - 0.8B (M3、Core AI): lut8 で、短い 1 文は 72 トークン/秒。1214 トークンの日本語の文書を 0.52 秒で読み、118 トークン/秒で訳す (写すコードを prompt lookup の下書きが当てる)。訳は 20/20 が fp16 と同じ (lut6 は 16/20)。
 - 2B (M3、Core AI): 短い 1 文 23 トークン/秒、同じ 1214 トークンの文書を 1.9 秒で読み 38.6 トークン/秒で訳す。NE の重み 2.47 GiB。
 - 8B: Neural Engine の重みは lut8 7.58 GiB、lut6 5.66、lut4 3.77。lut4 は訳を保つ: 20 文中 13 文が lut8 と一字一句同じで、残りは正しい言い換え。
-  lut8 に対する答えのトークンの KL 0.305、argmax 88% (`hwnpu-dev generate -write-ref` / `-score`)。速さ (lut4): M3、Core AI で短い 1 文 14.5 トークン/秒、
+  lut8 に対する答えのトークンの KL 0.305、argmax 88% (`bonsaiai-dev generate -write-ref` / `-score`)。速さ (lut4): M3、Core AI で短い 1 文 14.5 トークン/秒、
   1214 トークンの文書を 12.8 秒で読み (1 回 8 トークンのプログラム 1 本、prefill なし) 23 トークン/秒で訳す。2 回目からの起動 0.3〜0.4 秒 (初回は書き出し 4 GB のダウンロード込みで 2 分 22 秒)、NE に 3.80 GiB。Core ML の頃: M2 9.4〜10.1 トークン/秒だが毎回の起動に 35〜41 秒 (コンパイルのキャッシュに 1.2〜2.1 GiB しか残らない)。M1 は
   0.8 トークン/秒 (M1 の NE が全速で動かせる 2.8 GiB を超える) なので `not_on: [M1]` で、M1 では 2B を選ぶ。M3 の lut8 は 5.8〜6.5 トークン/秒 (Core ML)。
   メモリは models.yaml のとおり (Apple のピーク 8.2 GB)。
 - Intel の 8B: int8 (7.6 GiB) は Core Ultra 5 135U の NPU が持てた約 4.6 GB を超える。行ごとの int4 (3.8 GiB、1 本)。同じ int4 の丸めを M1 の
   ANE で動かすと、20 文中 12 文が lut8 と同じで、残りは言い換え。
-- 照合 (2B): 小さなモデルで fp64 と 6.5e-5。`hwnpu-dev check` で欠け・余り 0、argmax 31/31 (fp32)、`-f16` で KL 0.0001。0.8B と 8B は HF の fp32
+- 照合 (2B): 小さなモデルで fp64 と 6.5e-5。`bonsaiai-dev check` で欠け・余り 0、argmax 31/31 (fp32)、`-f16` で KL 0.0001。0.8B と 8B は HF の fp32
   と照合していない (構造は 2B と同じ)。
-- hwnpu-chat の翻訳: 前の組を履歴として持つ。`--to`、`--from`、`--form`、`/to LANG`。サーバーは `glossary` も受ける ([cli.md](cli.md))。
+- bonsaiai-chat の翻訳: 前の組を履歴として持つ。`--to`、`--from`、`--form`、`/to LANG`。サーバーは `glossary` も受ける ([cli.md](cli.md))。
   下書きは当たらない (出力の言語がプロンプトと違う)。
 - トークナイザーのファイルはアーキテクチャで選ぶ (`tokenizer.jsonl`、`tokenizer_config.json`)。
 
@@ -257,8 +257,8 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   `post_attention_layernorm_2`、残差)。注意は素の多頭注意 (16 ヘッド、GQA なし)、RoPE θ 10⁶、bias なし、ヘッドごとの norm なし、
   `lm_head` は埋め込みと別、語彙は 49152 (SmolLM のもの)。層の全体を 1 トークンにつき `total_ut_steps` (4) 回、同じ重みで回す。
   回の終わりごとに `model.norm` を通し、次の回はその値から始める。出力層は最後の回の値を読む。KV は回ごと・層ごとに持つ。
-- hwnpu は回を層として扱う: `Layers()` は層 × 回 (1.4B は 24 × 4 = 96、2.6B は 48 × 4 = 192)。層 v は層 v mod 層数の重みを使い
-  (`llm.Looped`)、キャッシュは回ごとの `kv_k_v`。これでキャッシュ、部分への分割、`hwnpu-dev check` が普通のデコーダーと同じに動く。
+- BonsaiAI は回を層として扱う: `Layers()` は層 × 回 (1.4B は 24 × 4 = 96、2.6B は 48 × 4 = 192)。層 v は層 v mod 層数の重みを使い
+  (`llm.Looped`)、キャッシュは回ごとの `kv_k_v`。これでキャッシュ、部分への分割、`bonsaiai-dev check` が普通のデコーダーと同じに動く。
   1 つのプログラムは、層の回をいくつ組み立てても、その層の重みを 1 度だけ持つ (ビルダーが定数を名前で覚えている。
   `TestPassesShareWeights`)。`llm.EstimateBytes` は回ごとに数える (`llm.Looped`) ので、2 回以上を組み立てる部分では実際より大きく見積もる。
   KV キャッシュは 24 層のモデルの 4 倍で、fp16 で 1 トークンあたり 1.4B は 768 KiB、2.6B は 1.5 MiB。
@@ -269,7 +269,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   `model.norm`) は入力を 1/4 にしてから二乗する。注意と MLP の後の norm は最大 54 と 25 だが、行の RMS が 0.0002 まで小さくなるので、
   入力をそのまま使う (Qwen3 と同じ 1/64 にすると、そうした行の二乗が fp16 の下限を割る)。最初の層の norm は埋め込みをそのまま読む。
 - 照合 (1.4B-Thinking): 小さなモデル (3 層 × 3 回) で fp64 と 8e-7、1 層ずつ 6e-7、キャッシュ付きで部分に分けて 3.5e-4。回の間の norm を
-  外す、層のキャッシュを回の間で共有する、MLP の後の norm を外す、のどれでもテストが失敗する。`hwnpu-dev check` (30 トークン): 欠け 0、
+  外す、層のキャッシュを回の間で共有する、MLP の後の norm を外す、のどれでもテストが失敗する。`bonsaiai-dev check` (30 トークン): 欠け 0、
   形の違い 0、余り 2 (ゲート)。fp32 で最悪の層 0.0004、argmax 30/30、KL 0.0000。`-f16` で最悪の層 0.0012、argmax 30/30、KL 0.0000。
   参照値は transformers 4.54 での `tools/ref/ref_logits.py` (リモートコードは 5.x で動かない: `pad_token_id`、`create_causal_mask`)。
   各層を回ごとに記録し、回の間の norm も記録する (`hook_passes`)。2.6B-Thinking (192 層、残差は最大 161): `-f16` で最悪の層 0.0020、argmax 30/30、KL 0.0000。
@@ -305,7 +305,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   `tools/ref/embed_golden.py`)。全演算 ANE。
 - ANE の注意点: 層 3 の MLP が BOS の 1 チャンネルに 1.2e3 を作り、残差に残る。RMSNorm の `x*x` は fp16 を超えるが、ANE は崩れなかった
   (二乗の和を広い範囲で計算しているらしい)。milcpu の `RoundF16` はそこで inf になるので、このモデルでは層 4 より後ろの比較に使えない。
-- 埋め込みの API (`chat.Embedder`、`/v1/embeddings`、端末は `hwnpu-chat search`):
+- 埋め込みの API (`chat.Embedder`、`/v1/embeddings`、端末は `bonsaiai-chat search`):
   - BOS (`<|startoftext|>`) を付けて符号化する。クエリは `QueryPrefix + text` (「次の文章に対して、関連する文章を検索してください: 」) で、
     BOS と前置きのトークンを平均から外す。本文のトークンだけを平均し、長さ 1 に揃える。
   - `--embed-seq` (既定 128、1024) の長さごとのプログラム。入る最短のものに右詰めの詰め物とマスクで流す。
@@ -316,7 +316,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 ## BERT の系列 (`internal/llm/bert`)
 
 - 符号器は移植済みで、lut8 (Apple) か int8 (Intel) に変換できる。all-MiniLM-L6-v2 の fp16 とのコサイン類似度は lut4 で 0.23、lut8 で 0.9988。
-- hwnpu-chat からは使えない: WordPiece のトークナイザーがない (`tokenizer.Load` が拒否する)。models.yaml にない
+- bonsaiai-chat からは使えない: WordPiece のトークナイザーがない (`tokenizer.Load` が拒否する)。models.yaml にない
   ([not-adopted/bert.md](../not-adopted/bert.md))。
 
 ## トークナイザー (`internal/tokenizer`)
@@ -336,7 +336,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
   ピース、byte fallback のない BPE、バイトのピースの欠け。
 - PLaMo-Embedding の `Decode(ids, false)` は `Encode` の逆 (区切りごとに先頭の ▁ を落とす)。HF の decode は特殊トークンの前に空白を足すので
   往復しない。`skipSpecial` は HF の `skip_special_tokens=True` と同じく区切りをつないでから戻す。
-- 正解: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`。実物の語彙のテストは `HWNPU_TEST_PLAMO_DIR`、`HWNPU_TEST_GEMMA4_DIR` が要る。
+- 正解: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`。実物の語彙のテストは `BONSAIAI_TEST_PLAMO_DIR`、`BONSAIAI_TEST_GEMMA4_DIR` が要る。
   スコアの同点と user-defined をまたぐ結合は実物の語彙では起きないので、小さなモデルのテスト (`TestSentencePiece`) が受け持つ。
 - PLaMo のトークナイザーの正解を作る環境: Python 3.12、`sentencepiece==0.2.0` (0.2.2 は `SentencePieceProcessor.Init` がない)、`protobuf`、
   `transformers<5`。
@@ -386,13 +386,13 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 ## 未解決
 
 - d1-Omni-2B: README の例の team が billing 0.45 対 shipping 0.52 (README は billing) で、CPU の fp16 でも同じ。HF は最大 `d1_set_size` (16) 問を
-  まとめて読み、hwnpu は llama.cpp と同じく 1 問ずつ読む。HF とは比べていない (torch がない)。
+  まとめて読み、BonsaiAI は llama.cpp と同じく 1 問ずつ読む。HF とは比べていない (torch がない)。
 - d1-2B / Omni は、HF とも llama.cpp の `/v1/systemone` の確率とも比べていない。
 - LFM3-Audio: 思考ありで温度 0 だと思考が繰り返して答えに届かないことがある。
 - PLaMo-Embedding: 1024 トークンの文での最終層の最大値 (5e4 より大きくなるかもしれない)。複数の文をまとめて流すこと (今は 1 文ずつ)。
 - Gemma 4: E4B の GPTQ (16 GB では校正できない)、`per_layer` を GPTQ の対象に入れること、問いと agent の課題を増やした比較、M2 と M3。
 - PLaMo 3 8B: HF の fp32 との KL、GPTQ の符号と `--lut-fit wkmeans` (fp32 の校正は約 34 GB)、長い文脈のパスキー、M4、Intel と AMD の実機、Core AI での値。
-- PLaMo 3 0.8B: HF の fp32 との `hwnpu-dev check`、パスキー、AMD と Intel。
+- PLaMo 3 0.8B: HF の fp32 との `bonsaiai-dev check`、パスキー、AMD と Intel。
 - BERT: WordPiece のトークナイザー。
 - Ouro: Neural Engine (配置、速さ、プログラム全体で 96 / 192 個のキャッシュ。`UnpagedContext` の 1024 は見当)、Intel の NPU、lut6 と lut4
   の GPTQ の符号 (2.6B では lut8 にも)、AMD での 2.6B (q8)、回を減らす (`total_ut_steps` 3) 価値があるか。

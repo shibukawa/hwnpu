@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // streamFn builds a function of two weights over the inline limit (resources), one of them used

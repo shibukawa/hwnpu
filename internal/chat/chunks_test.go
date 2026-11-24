@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // checkShorter steps sess and ref, the same model's programs with and without the attention over
@@ -66,7 +66,7 @@ func checkShorter(t *testing.T, cfg *lfm3.Config, w llm.Weights, sess, ref *deco
 // shorterSessions converts a tiny LFM3 split at its attention in chunks of 32, programs of 1 and
 // 4 tokens per call, and opens it on dev (nil: the CPU interpreter) twice: with the attention
 // programs over chunks of 8 and 16 (llm.AddSmaller) and without.
-func shorterSessions(t *testing.T, dev *hwnpu.Device, backend string) (*lfm3.Config, llm.Weights, *decode.Session, *decode.Session) {
+func shorterSessions(t *testing.T, dev *bonsaiai.Device, backend string) (*lfm3.Config, llm.Weights, *decode.Session, *decode.Session) {
 	t.Helper()
 	ctx := context.Background()
 	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
@@ -172,7 +172,7 @@ func hybridPaths(t *testing.T, backend string) (cfg *lfm3.Config, w llm.Weights,
 // checkMigrate steps a session of the whole programs to 14 tokens, moves it to the programs split
 // at their attention (decode.Session.Migrate) and goes on to 50, against a session split from the
 // start, and returns the largest relative error of its logits.
-func checkMigrate(t *testing.T, dev *hwnpu.Device, backend string) float64 {
+func checkMigrate(t *testing.T, dev *bonsaiai.Device, backend string) float64 {
 	t.Helper()
 	ctx := context.Background()
 	cfg, w, whole, split := hybridPaths(t, backend)

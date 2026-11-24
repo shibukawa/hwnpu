@@ -19,9 +19,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
 )
 
 // Program is the loaded program: its fp16 input and output buffers by name and their shapes.
@@ -1357,17 +1357,17 @@ func (s *Session) writeInputs(st *step, emb [][]float32) error {
 	// (Gemma 4's), and the NaN would reach the tokens' rows through attention (0 * NaN).
 	for i := range q {
 		e := emb[min(i, v-1)]
-		hwnpu.EncodeF16(x[2*i*s.hidden:2*(i+1)*s.hidden], e[:s.hidden])
+		bonsaiai.EncodeF16(x[2*i*s.hidden:2*(i+1)*s.hidden], e[:s.hidden])
 		off := s.hidden
 		for _, lk := range s.lookups {
-			hwnpu.EncodeF16(p.In[lk.Input][2*i*lk.Width:2*(i+1)*lk.Width], e[off:off+lk.Width])
+			bonsaiai.EncodeF16(p.In[lk.Input][2*i*lk.Width:2*(i+1)*lk.Width], e[off:off+lk.Width])
 			off += lk.Width
 		}
 	}
 	if last, ok := p.In["last"]; ok && rows(p) == 1 {
 		// one-hot: the program's output layer reads the last token's row alone
 		clear(last)
-		hwnpu.EncodeF16(last[2*(v-1):2*v], []float32{1})
+		bonsaiai.EncodeF16(last[2*(v-1):2*v], []float32{1})
 	}
 	inputs := s.m.StepInputs
 	if p.RunPart != nil {
@@ -1378,7 +1378,7 @@ func (s *Session) writeInputs(st *step, emb [][]float32) error {
 			if 2*len(vals) != len(b) {
 				return fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
 			}
-			hwnpu.EncodeF16(b, vals)
+			bonsaiai.EncodeF16(b, vals)
 		}
 	}
 	return nil
@@ -1468,9 +1468,9 @@ func (s *Session) attend(st *step, att *Attention, i, rows, valid, used int, one
 		if err := att.Run(s.chunks[kc.out][j], s.chunks[vc.out][j], mask); err != nil {
 			return fmt.Errorf("decode: attention of layer %d over chunk %d: %w", layer, j, err)
 		}
-		hwnpu.DecodeF16(st.o[0], att.O)
-		hwnpu.DecodeF16(st.o[1], att.M)
-		hwnpu.DecodeF16(st.o[2], att.L)
+		bonsaiai.DecodeF16(st.o[0], att.O)
+		bonsaiai.DecodeF16(st.o[1], att.M)
+		bonsaiai.DecodeF16(st.o[2], att.L)
 		st.merge.Add(st.o[0], st.o[1], st.o[2])
 	}
 	s.addSink(layer, st.merge, q)
@@ -1498,7 +1498,7 @@ func (s *Session) noteSinks(p Program, layer int) {
 		return
 	}
 	v := make([]float32, len(b)/2)
-	hwnpu.DecodeF16(v, b)
+	bonsaiai.DecodeF16(v, b)
 	if s.sinks == nil {
 		s.sinks = map[int][]float32{}
 	}
@@ -1586,9 +1586,9 @@ func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, mas
 			if err := a.Run(s.chunks[kc.out][j], s.chunks[vc.out][j], mask); err != nil {
 				return fmt.Errorf("decode: attention of layer %d over chunk %d: %w", layer, j, err)
 			}
-			hwnpu.DecodeF16(sm.o[0], a.O)
-			hwnpu.DecodeF16(sm.o[1], a.M)
-			hwnpu.DecodeF16(sm.o[2], a.L)
+			bonsaiai.DecodeF16(sm.o[0], a.O)
+			bonsaiai.DecodeF16(sm.o[1], a.M)
+			bonsaiai.DecodeF16(sm.o[2], a.L)
 			sm.merge.Add(sm.o[0], sm.o[1], sm.o[2])
 		}
 		s.addSink(layer, sm.merge, sm.q)
@@ -1609,7 +1609,7 @@ func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, mas
 func putAttnOut(p Program, layer int, res []float32) {
 	b, ok := p.In[fmt.Sprintf("attn_ot_%d", layer)]
 	if !ok {
-		hwnpu.EncodeF16(p.In[fmt.Sprintf("attn_o_%d", layer)], res)
+		bonsaiai.EncodeF16(p.In[fmt.Sprintf("attn_o_%d", layer)], res)
 		return
 	}
 	sh := p.InShape[fmt.Sprintf("attn_ot_%d", layer)]
@@ -1620,7 +1620,7 @@ func putAttnOut(p Program, layer int, res []float32) {
 			copy(t[(i*heads+h)*d:(i*heads+h+1)*d], res[(h*q+i)*d:(h*q+i+1)*d])
 		}
 	}
-	hwnpu.EncodeF16(b, t)
+	bonsaiai.EncodeF16(b, t)
 }
 
 // stepMasks makes the masks of the chunks the step's q tokens from pos fall in: query t (position
@@ -1639,7 +1639,7 @@ func (st *step) stepMasks(pos, q, used int) error {
 			v[k] = -1e4
 		}
 		st.hide = make([]byte, 2*c)
-		hwnpu.EncodeF16(st.hide, v)
+		bonsaiai.EncodeF16(st.hide, v)
 	}
 	for j := pos / c; j < used; j++ {
 		var b Buf
@@ -1755,7 +1755,7 @@ func (s *Session) keepHidden(p Program, q, v int) int {
 		}
 		for r := from; r <= last; r++ {
 			row := make([]float32, s.hidden)
-			hwnpu.DecodeF16(row, h[2*r*s.hidden:2*(r+1)*s.hidden])
+			bonsaiai.DecodeF16(row, h[2*r*s.hidden:2*(r+1)*s.hidden])
 			s.lastRows = append(s.lastRows, row)
 		}
 		s.last = s.lastRows[len(s.lastRows)-1]
@@ -1806,7 +1806,7 @@ func (s *Session) row(p Program, i int) []float32 {
 		defer profRows(profKeyOf(p), time.Now())
 	}
 	logits := make([]float32, s.vocab)
-	hwnpu.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])
+	bonsaiai.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])
 	if !s.raw {
 		llm.Softcap(logits, s.softcap)
 	}

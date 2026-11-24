@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 const vitPrefix = "model.backbone.pretrained."

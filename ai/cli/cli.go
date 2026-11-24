@@ -32,11 +32,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/npustatus"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/npustatus"
 )
 
 // ListOptions are how List writes.
@@ -150,7 +150,7 @@ func WritePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 	if len(turns) > 0 {
 		together = "at once (" + strings.Join(turns, "; ") + " in turns)"
 	}
-	running := fmt.Sprintf("about %s %s; hwnpu counts on about %.0f GB for models on a machine of %d GB", gb(p.MemoryGB()), together, p.UsableGB(), p.MachineGB())
+	running := fmt.Sprintf("about %s %s; bonsaiai counts on about %.0f GB for models on a machine of %d GB", gb(p.MemoryGB()), together, p.UsableGB(), p.MachineGB())
 	switch {
 	case p.Compiled():
 		fmt.Fprintf(w, "All here and compiled; %s.\n", running)
@@ -164,7 +164,7 @@ func WritePlan(w io.Writer, app *ai.App, p *ai.Plan) {
 		fmt.Fprintf(w, "%s; %s. \"models download\" downloads and converts; \"models prepare\" compiles for the NPU too.\n", down, running)
 	}
 	if !p.Fits() {
-		fmt.Fprintf(w, "Together they take more than hwnpu counts on for models here, and the NPU's memory cannot be swapped out: the other applications may be pushed to swap. The app is to pick smaller models for this memory (ai.Use's At and As) or run them one after another (App.InTurns).\n")
+		fmt.Fprintf(w, "Together they take more than bonsaiai counts on for models here, and the NPU's memory cannot be swapped out: the other applications may be pushed to swap. The app is to pick smaller models for this memory (ai.Use's At and As) or run them one after another (App.InTurns).\n")
 	}
 	for _, it := range p.Items {
 		if strings.Contains(it.Why, "by the app") {
@@ -255,7 +255,7 @@ func prepare(ctx context.Context, app *ai.App, c PrepareOptions, noCompile bool)
 	if err != nil {
 		return err
 	}
-	// Run shows what it does on the log as hwnpu's commands do (Plan.Quiet): the stages with
+	// Run shows what it does on the log as bonsaiai's commands do (Plan.Quiet): the stages with
 	// their times, the downloads' and programs' bars, the logs in gray
 	p.NoCompile, p.Log, p.Brief = noCompile, c.Log, c.Quiet
 	if !noCompile && p.Target() == "" {
@@ -346,7 +346,7 @@ type StatusOptions struct {
 	Wake bool
 }
 
-// Status writes the NPU's status on the standard output, as hwnpu status does: the device, its
+// Status writes the NPU's status on the standard output, as bonsaiai status does: the device, its
 // driver and firmware, how busy it is, its power, the processes that use it and the memory
 // each holds, and the app's cache of models.
 func Status(ctx context.Context, app *ai.App, o StatusOptions) error {

@@ -1,8 +1,8 @@
-// Package imagedev is where hwnpu's models of pictures run and how their devices are opened, as
-// hwnpu-image and the ai/vision package pick them: the device backend (on a Mac Core AI's, which
+// Package imagedev is where bonsaiai's models of pictures run and how their devices are opened, as
+// bonsaiai-image and the ai/vision package pick them: the device backend (on a Mac Core AI's, which
 // needs macOS 27), the program format converted for it, the exports of IRON that AMD's NPU runs
 // (made with IRON on the first run where none is here), and the CPU's three ways (ONNX Runtime,
-// hwnpu's own executor, the CPU interpreter).
+// bonsaiai's own executor, the CPU interpreter).
 package imagedev
 
 import (
@@ -16,19 +16,19 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
-	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai/internal/vision/ironcnn"
 )
 
-// Device is the device backend opened for the one named (name, else HWNPU_BACKEND, else the
+// Device is the device backend opened for the one named (name, else BONSAIAI_BACKEND, else the
 // NPU found): on a Mac Core AI's, whatever names Apple's Neural Engine (coreml included, as
-// HWNPU_BACKEND may for the other commands); Core ML is not used.
+// BONSAIAI_BACKEND may for the other commands); Core ML is not used.
 func Device(name string) string {
 	if name == "" {
 		name = strings.TrimSpace(os.Getenv(llm.BackendEnv))
@@ -44,7 +44,7 @@ func Device(name string) string {
 
 // ErrNoCoreAI explains that a Mac without Core AI has no device for the models of pictures.
 func ErrNoCoreAI(err error) error {
-	return fmt.Errorf("hwnpu-image runs on Apple's Neural Engine through Core AI, which needs macOS 27 (--cpu runs on the CPU): %w", err)
+	return fmt.Errorf("bonsaiai-image runs on Apple's Neural Engine through Core AI, which needs macOS 27 (--cpu runs on the CPU): %w", err)
 }
 
 // Format is the program format converted for on the device named: coreai on a Mac (an error
@@ -63,7 +63,7 @@ func Format(ctx context.Context, name string) (string, error) {
 
 // Open opens the device of Device(name), with the compile cache in cacheDir, and returns it with
 // the program format it runs (coreai on a Mac).
-func Open(ctx context.Context, name, cacheDir string, opts ...hwnpu.Option) (*hwnpu.Device, string, error) {
+func Open(ctx context.Context, name, cacheDir string, opts ...bonsaiai.Option) (*bonsaiai.Device, string, error) {
 	d := Device(name)
 	dev, format, err := llm.OpenDevice(ctx, d, cacheDir, opts...)
 	if d == llm.BackendCoreAI {
@@ -87,10 +87,10 @@ func ExportDevice(format, name string) string {
 
 // OpenProgramDevice opens the NPU for converted programs (Core AI's or OpenVINO IR), or none for
 // the CPU interpreter (cpu, which runs Core ML packages): the device backend named ("":
-// HWNPU_BACKEND or the NPU found; a Mac's is Core AI's), with the compile cache in cacheDir (""
+// BONSAIAI_BACKEND or the NPU found; a Mac's is Core AI's), with the compile cache in cacheDir (""
 // for the user cache directory's). what names the model for the error on an NPU that runs
 // neither. The closer closes the device.
-func OpenProgramDevice(ctx context.Context, cpu bool, cacheDir, name, what string) (*hwnpu.Device, string, func(), error) {
+func OpenProgramDevice(ctx context.Context, cpu bool, cacheDir, name, what string) (*bonsaiai.Device, string, func(), error) {
 	if cpu {
 		return nil, llm.BackendCoreML, func() {}, nil
 	}
@@ -148,7 +148,7 @@ func OnlyFile(m chat.Model, ext string) (string, error) {
 
 // ProgramDevice reports whether a model of ONNX files that is converted on Apple's and Intel's
 // NPU (EfficientSAM's encoder, YuNet) runs as a converted program on this machine's NPU
-// (vendor): on Apple's and Intel's, unless flag (a command's --device), HWNPU_DEVICE or
+// (vendor): on Apple's and Intel's, unless flag (a command's --device), BONSAIAI_DEVICE or
 // models.yaml says cpu.
 func ProgramDevice(m chat.Model, vendor, flag string) bool {
 	if vendor != "apple" && vendor != "intel" {
@@ -159,7 +159,7 @@ func ProgramDevice(m chat.Model, vendor, flag string) bool {
 }
 
 // CPURoute is where an ONNX model m runs (chat.ConvertedDevice) and logs it: ort, ONNX Runtime
-// on the CPU when its library is here; builtin, hwnpu's own CPU executor on the converted
+// on the CPU when its library is here; builtin, bonsaiai's own CPU executor on the converted
 // program (internal/milcpu, on threads goroutines) when it is not, or with interp (the CPU
 // interpreter, a command's --cpu: all the cores); neither, the NPU. flag is a command's --device.
 func CPURoute(ctx context.Context, m chat.Model, flag string, interp bool, threads int, logf func(string, ...any)) (ort, builtin bool) {
@@ -181,7 +181,7 @@ func CPURoute(ctx context.Context, m chat.Model, flag string, interp bool, threa
 		return true, false
 	}
 	milcpu.Threads = max(1, threads)
-	logf("%s on the CPU with hwnpu's own executor (%s; ONNX Runtime, faster, is not here: HWNPU_ONNXRUNTIME)", m.Name, why)
+	logf("%s on the CPU with bonsaiai's own executor (%s; ONNX Runtime, faster, is not here: BONSAIAI_ONNXRUNTIME)", m.Name, why)
 	return false, true
 }
 
@@ -190,7 +190,7 @@ func CPURoute(ctx context.Context, m chat.Model, flag string, interp bool, threa
 // layers or made on the first run with IRON when it is not there (minutes): fetch downloads the
 // ONNX file, export makes the export of it in dir, version is the export's (ironcnn.Version or
 // the model's own). It is "" where m runs elsewhere: another NPU, interp (the CPU interpreter),
-// flag cpu (a command's --device; or models.yaml's device for AMD, HWNPU_DEVICE), or no export
+// flag cpu (a command's --device; or models.yaml's device for AMD, BONSAIAI_DEVICE), or no export
 // and no IRON to make one with (then the CPU, said through logf). log takes the shared layers'
 // lines.
 func AMDCNNExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), log io.Writer, version int, fetch func() (string, error), export func(python []string, model, dir string) error) string {
@@ -210,11 +210,11 @@ func AMDFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bo
 	dir := ironcnn.Dir(m.Name)
 	if have(dir) == nil {
 		// one made by hand here goes in the sources written back to, described as a first run's
-		// (as hwnpu-dev cache import describes it), so that other machines' first runs find it
+		// (as bonsaiai-dev cache import describes it), so that other machines' first runs find it
 		chat.ShareMadeHere(m, dir, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), log)
 		return dir
 	}
-	// none here: from the shared layers, else made as hwnpu-chat makes its models'
+	// none here: from the shared layers, else made as bonsaiai-chat makes its models'
 	// (chat.PrepareAMD), with IRON
 	errNoIRON := errors.New("no IRON")
 	err := chat.SharedExport(ctx, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), dir, log, func() error {
@@ -242,7 +242,7 @@ func AMDFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bo
 }
 
 // DeviceFlag is the device the definition of m gives for every NPU, as an app's model of its own
-// does (ai.Definition's Device): chosen as a command's --device is, over HWNPU_DEVICE and the
+// does (ai.Definition's Device): chosen as a command's --device is, over BONSAIAI_DEVICE and the
 // fallbacks of a model without a form for this NPU. "" when it gives none, or not for every NPU.
 func DeviceFlag(m chat.Model) string {
 	d := ""

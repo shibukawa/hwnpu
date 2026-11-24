@@ -7,16 +7,16 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima/mil"
 )
 
 // TestEmptyCond checks EmptyCond against diffusers' conditioning of an empty prompt: the row
-// tools/ref/ref_anima.py's encode("") gives, as raw float32 in HWNPU_TEST_ANIMA_NEGATIVE_REF, of the
-// checkpoint HWNPU_TEST_ANIMA_DIT in HWNPU_TEST_ANIMA_DIR (skipped without them).
+// tools/ref/ref_anima.py's encode("") gives, as raw float32 in BONSAIAI_TEST_ANIMA_NEGATIVE_REF, of the
+// checkpoint BONSAIAI_TEST_ANIMA_DIT in BONSAIAI_TEST_ANIMA_DIR (skipped without them).
 func TestEmptyCond(t *testing.T) {
-	ref, root, dit := os.Getenv("HWNPU_TEST_ANIMA_NEGATIVE_REF"), os.Getenv("HWNPU_TEST_ANIMA_DIR"), os.Getenv("HWNPU_TEST_ANIMA_DIT")
+	ref, root, dit := os.Getenv("BONSAIAI_TEST_ANIMA_NEGATIVE_REF"), os.Getenv("BONSAIAI_TEST_ANIMA_DIR"), os.Getenv("BONSAIAI_TEST_ANIMA_DIT")
 	if ref == "" || root == "" || dit == "" {
-		t.Skip("HWNPU_TEST_ANIMA_NEGATIVE_REF, HWNPU_TEST_ANIMA_DIR and HWNPU_TEST_ANIMA_DIT not set")
+		t.Skip("BONSAIAI_TEST_ANIMA_NEGATIVE_REF, BONSAIAI_TEST_ANIMA_DIR and BONSAIAI_TEST_ANIMA_DIT not set")
 	}
 	b, err := os.ReadFile(ref)
 	if err != nil {

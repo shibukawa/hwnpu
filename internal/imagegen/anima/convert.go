@@ -4,15 +4,15 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // ConvertOptions select what Convert writes.
@@ -25,7 +25,7 @@ type ConvertOptions struct {
 	// Dit is the diffusion model's file in diffusion_models/ (anima-turbo-v1.1.safetensors).
 	Dit string
 	// TextFormat and DitFormat are the weight formats of the text encoder and the DiT, as
-	// hwnpu-dev convert's -format: fp16, lut4/6/8 (Core ML), int8, int4... (Intel). The VAE's are fp16.
+	// bonsaiai-dev convert's -format: fp16, lut4/6/8 (Core ML), int8, int4... (Intel). The VAE's are fp16.
 	TextFormat, DitFormat string
 	// Group is the DiT's blocks a program holds.
 	Group int

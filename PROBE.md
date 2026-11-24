@@ -1,6 +1,6 @@
-# Proving hwnpu on your machine
+# Proving BonsaiAI on your machine
 
-How to check, on a real machine, that hwnpu runs its NPU, how fast an LLM sized model runs there, how large a model the NPU accepts and how much energy it uses, all with `go run` from the module path. Nothing has to be cloned or downloaded besides Go modules: the tools generate their models in Go, so neither Python nor model files are needed (on AMD's NPU, IRON's Python environment, which hwnpu needs there anyway).
+How to check, on a real machine, that BonsaiAI runs its NPU, how fast an LLM sized model runs there, how large a model the NPU accepts and how much energy it uses, all with `go run` from the module path. Nothing has to be cloned or downloaded besides Go modules: the tools generate their models in Go, so neither Python nor model files are needed (on AMD's NPU, IRON's Python environment, which BonsaiAI needs there anyway).
 
 日本語: [PROBE.ja.md](PROBE.ja.md)
 
@@ -8,17 +8,17 @@ How to check, on a real machine, that hwnpu runs its NPU, how fast an LLM sized 
 
 | Machine | 1. Does it work | 2. Speed and size limit | 3. Energy |
 |---|---|---|---|
-| Apple Silicon Mac | `hwnpu-dev report` | `hwnpu-dev probe` | `hwnpu-dev powerbench -decode 8,16 -gpu` (sudo) |
-| Intel Core Ultra, Linux | `hwnpu-dev report` | `hwnpu-dev probe` | `hwnpu-dev probe` run as root (RAPL) |
-| Intel Core Ultra, Windows | `hwnpu-dev report` | `hwnpu-dev probe` | not available yet |
-| AMD Ryzen AI, Linux | `hwnpu-dev report` | `hwnpu-dev probe` with IRON's environment (below) | the same run (amdgpu PPT, no root) |
+| Apple Silicon Mac | `bonsaiai-dev report` | `bonsaiai-dev probe` | `bonsaiai-dev powerbench -decode 8,16 -gpu` (sudo) |
+| Intel Core Ultra, Linux | `bonsaiai-dev report` | `bonsaiai-dev probe` | `bonsaiai-dev probe` run as root (RAPL) |
+| Intel Core Ultra, Windows | `bonsaiai-dev report` | `bonsaiai-dev probe` | not available yet |
+| AMD Ryzen AI, Linux | `bonsaiai-dev report` | `bonsaiai-dev probe` with IRON's environment (below) | the same run (amdgpu PPT, no root) |
 
 Set up the machine first: [INSTALL_APPLE.md](INSTALL_APPLE.md), [INSTALL_INTEL.md](INSTALL_INTEL.md), [INSTALL_AMD.md](INSTALL_AMD.md). Go 1.27 or later is needed; an older `go` command downloads it by itself (`GOTOOLCHAIN=auto`, the default).
 
 ### 1. Does it work
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest report -o report.md
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest report -o report.md
 ```
 
 It compiles small embedded models for every NPU found, compares the results with fp32 references and measures latency. If this fails, the steps below fail the same way; the report says why (driver, library, placement).
@@ -26,31 +26,31 @@ It compiles small embedded models for every NPU found, compares the results with
 ### 2. Speed and size limit
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe
 ```
 
 It takes about 40 minutes and writes `npuprobe-<machine>-<time>.md` and `.json` to the current directory; what was measured is kept if it is interrupted with Ctrl-C. `bench` or `limit` after the command name runs one part only. `split` checks a model over the limit run in parts (see below). The speculative decoding measurement (verify, below) runs only when `verify` is given.
 
-On AMD's NPU the probe exports its shapes with IRON, the same exporters hwnpu-chat runs on its first start (built into hwnpu-dev), so IRON's virtual environment is needed ([INSTALL_AMD.md](INSTALL_AMD.md)); no model files are downloaded:
+On AMD's NPU the probe exports its shapes with IRON, the same exporters bonsaiai-chat runs on its first start (built into bonsaiai-dev), so IRON's virtual environment is needed ([INSTALL_AMD.md](INSTALL_AMD.md)); no model files are downloaded:
 
 ```bash
-HWNPU_IRON_ENV=~/IRON/ironenv go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
+BONSAIAI_IRON_ENV=~/IRON/ironenv go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe
 ```
 
-It takes about 20 minutes (each of its 39 graphs is exported in 5 to 55 seconds and timed for 3) and runs bench, verify and attn (below). Close other programs that use the NPU first (`pgrep -fa 'hwnpu|iron_'`): another model running on it moved a step of FLUX.2 klein from 1.3 to 2.3 s.
+It takes about 20 minutes (each of its 39 graphs is exported in 5 to 55 seconds and timed for 3) and runs bench, verify and attn (below). Close other programs that use the NPU first (`pgrep -fa 'bonsaiai|iron_'`): another model running on it moved a step of FLUX.2 klein from 1.3 to 2.3 s.
 
 ### 3. Energy
 
 On Apple, energy needs `powermetrics`, which needs root; the tool asks for the sudo password once:
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest powerbench -decode 8,16 -gpu -o power.md
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest powerbench -decode 8,16 -gpu -o power.md
 ```
 
-On Intel with Linux, hwnpu-dev probe reads the RAPL energy counters when it can, which needs root. Build the command, then run it with sudo:
+On Intel with Linux, bonsaiai-dev probe reads the RAPL energy counters when it can, which needs root. Build the command, then run it with sudo:
 
 ```bash
-GOBIN=$PWD go install github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
+GOBIN=$PWD go install github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe
 ```
 
 ```bash
@@ -70,13 +70,13 @@ Every model has the shape of one decoding step of an LLM: one token goes through
 
 The generators are in [internal/probe](internal/probe/model.go). The Intel models were checked with OpenVINO 2026.4, which read them and ran them on the CPU.
 
-## What hwnpu-dev probe measures
+## What bonsaiai-dev probe measures
 
-**bench** runs 8 and 16 layers in every format (on Apple fp16, int8, lut4, lut6, lut8 and int4: lut6 and lut8 are lut4's tables with 64 and 256 entries, the weights of `hwnpu-dev convert -bits 6` and `8`) on the NPU and, on Apple, on the CPU and the GPU through Core ML for comparison. Each model runs for at least 3 seconds after two warm-up calls.
+**bench** runs 8 and 16 layers in every format (on Apple fp16, int8, lut4, lut6, lut8 and int4: lut6 and lut8 are lut4's tables with 64 and 256 entries, the weights of `bonsaiai-dev convert -bits 6` and `8`) on the NPU and, on Apple, on the CPU and the GPU through Core ML for comparison. Each model runs for at least 3 seconds after two warm-up calls.
 
 **limit** grows the model in each format (2, 4, 8, 12, 16, 24, 32, … layers) until it leaves the NPU, then bisects to one layer between the largest model on the NPU and the smallest not on it. It then loads several models just under the boundary at once, enough to hold twice the failing size, and runs each again with all of them loaded. If they all stay on the NPU at the same speed, the limit is per model and a larger network can be split into several models. Models that leave the NPU run only once, since they can be very slow on the CPU.
 
-**split** runs only when asked for with `hwnpu-dev probe split`. It builds a model larger than the limit (64 layers by default, 1.8 GiB of lut4) and splits it into parts small enough for the NPU (2 and 4 by default). The output buffer of each part is bound as the input of the next, and the parts run in order, as a split LLM generates one token. Each layer has the same weights however the model is split, so running the parts in order computes the whole model. It checks three things:
+**split** runs only when asked for with `bonsaiai-dev probe split`. It builds a model larger than the limit (64 layers by default, 1.8 GiB of lut4) and splits it into parts small enough for the NPU (2 and 4 by default). The output buffer of each part is bound as the input of the next, and the parts run in order, as a split LLM generates one token. Each layer has the same weights however the model is split, so running the parts in order computes the whole model. It checks three things:
 
 - whether every part stays on the NPU with all of them loaded
 - the time per token (every part once) against the parts' own times added up. A large gap means the weights are loaded again at every switch between parts
@@ -85,29 +85,29 @@ The generators are in [internal/probe](internal/probe/model.go). The Intel model
 It also records the peak resident memory (RSS) of the process that ran the parts, without the system's own Core ML and Neural Engine processes. `-layout functions` writes the parts as the functions of one package instead of a package each, and loads each function as a model of its own.
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split -split-layers 128 -parts 2,3,4   # machines with a 2 GiB limit such as the M4 (3.7 GiB)
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe split
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe split -split-layers 128 -parts 2,3,4   # machines with a 2 GiB limit such as the M4 (3.7 GiB)
 ```
 
-**kv** runs only when asked for, as `hwnpu-dev probe kv`. It passes one token through 11 lut4 layers of the bench size with real attention, over a KV cache of each length (256, 1024 and 4096 tokens by default), the cache held either in host buffers bound as inputs and outputs (`host`) or in Core ML states, MLState (`state`). `-kv-cache`, `-kv-layers` and `-kv-modes` change them. `-kv-modes host-mha` gives each of the 16 query heads its own keys and values instead of repeating the 4 cached heads (a cache 4 times as large), to tell the cost of the repeat and of reading the cache apart. `host-int8` passes the cache as int8 with an fp16 scale per token and casts it back in the program (Core ML specification version 10, macOS 26 and later). `host-chunk` splits the cache into chunks of at most 16384 tokens, each passed as an input of its own (`host-chunk8192` sets the chunk length): the form that puts contexts over the 16384 dimension limit on the Neural Engine.
+**kv** runs only when asked for, as `bonsaiai-dev probe kv`. It passes one token through 11 lut4 layers of the bench size with real attention, over a KV cache of each length (256, 1024 and 4096 tokens by default), the cache held either in host buffers bound as inputs and outputs (`host`) or in Core ML states, MLState (`state`). `-kv-cache`, `-kv-layers` and `-kv-modes` change them. `-kv-modes host-mha` gives each of the 16 query heads its own keys and values instead of repeating the 4 cached heads (a cache 4 times as large), to tell the cost of the repeat and of reading the cache apart. `host-int8` passes the cache as int8 with an fp16 scale per token and casts it back in the program (Core ML specification version 10, macOS 26 and later). `host-chunk` splits the cache into chunks of at most 16384 tokens, each passed as an input of its own (`host-chunk8192` sets the chunk length): the form that puts contexts over the 16384 dimension limit on the Neural Engine.
 
-**attn** runs only when asked for, as `hwnpu-dev probe attn` (Core ML only). It builds attention without weights over one chunk of a KV cache: the program a model split at its attention would call once per used chunk and layer (docs/model-fit.md T2). It checks where the program is placed and times one call with one chunk bound. Core ML puts the forms with little work (one row over a chunk of 1024) on the CPU; those are measured on to give the CPU's time. Then, for each used length (4096, 16384, 65536 and 262144 tokens by default), it times one step's attention: every layer's chunks in buffers of their own, the outputs merged on the host in float32. The report gives the time per step, the part of it spent merging, and the process's peak resident memory, which show whether the cost follows the tokens used instead of the capacity, what binding many buffers costs, and whether the inputs are copied. `-attn-chunks` (chunk lengths, 1024, 2048, 4096, 8192 and 16384 by default), `-attn-tokens` (query rows per call, 1, 8 and 64), `-attn-forms` (`grouped` and `tile`, `grouped` by default), `-attn-used` and `-attn-layers` (6 by default, LFM3-1.7B's full attention layers) change them. At 262144 the 6 layers hold 3 GiB of buffers at once.
+**attn** runs only when asked for, as `bonsaiai-dev probe attn` (Core ML only). It builds attention without weights over one chunk of a KV cache: the program a model split at its attention would call once per used chunk and layer (docs/model-fit.md T2). It checks where the program is placed and times one call with one chunk bound. Core ML puts the forms with little work (one row over a chunk of 1024) on the CPU; those are measured on to give the CPU's time. Then, for each used length (4096, 16384, 65536 and 262144 tokens by default), it times one step's attention: every layer's chunks in buffers of their own, the outputs merged on the host in float32. The report gives the time per step, the part of it spent merging, and the process's peak resident memory, which show whether the cost follows the tokens used instead of the capacity, what binding many buffers costs, and whether the inputs are copied. `-attn-chunks` (chunk lengths, 1024, 2048, 4096, 8192 and 16384 by default), `-attn-tokens` (query rows per call, 1, 8 and 64), `-attn-forms` (`grouped` and `tile`, `grouped` by default), `-attn-used` and `-attn-layers` (6 by default, LFM3-1.7B's full attention layers) change them. At 262144 the 6 layers hold 3 GiB of buffers at once.
 
-**seam** runs only when asked for, as `hwnpu-dev probe seam` (Core ML only). It builds a model split at its attention: weighted parts (40 lut4 layers by default, 1.14 GiB, about LFM3-1.7B in lut6) in one more part than there are attention layers, with the chunk attention of attn between each two, all loaded at once. It times a step three ways: the parts alone, the attention alone, and the two interleaved (part, attention, part, …). What the interleaved step takes over the two apart, divided by the switches, is the cost of one seam between a program with weights and one without. Alternating two programs with weights has cost a reload of the Neural Engine, 35 ms a call; a seam within one chain cost 0.1 ms. `-seam-layers`, `-seam-format`, `-seam-tokens` (8 and 64 by default), `-seam-chunk` (8192), `-seam-used` (8192 and 65536), `-seam-form` and `-attn-layers` change it.
+**seam** runs only when asked for, as `bonsaiai-dev probe seam` (Core ML only). It builds a model split at its attention: weighted parts (40 lut4 layers by default, 1.14 GiB, about LFM3-1.7B in lut6) in one more part than there are attention layers, with the chunk attention of attn between each two, all loaded at once. It times a step three ways: the parts alone, the attention alone, and the two interleaved (part, attention, part, …). What the interleaved step takes over the two apart, divided by the switches, is the cost of one seam between a program with weights and one without. Alternating two programs with weights has cost a reload of the Neural Engine, 35 ms a call; a seam within one chain cost 0.1 ms. `-seam-layers`, `-seam-format`, `-seam-tokens` (8 and 64 by default), `-seam-chunk` (8192), `-seam-used` (8192 and 65536), `-seam-form` and `-attn-layers` change it.
 
-**cache** runs only when asked for, as `hwnpu-dev probe cache` (Core ML only). It measures the Neural Engine's own cache of compiled programs, the reason a program that hwnpu's compile cache holds loads in 0.1 s on one run and compiles again for one or two minutes on the next ([docs/handoff-ane-cache.md](docs/handoff-ane-cache.md)). A configuration writes N programs of S GiB once (`-cache-sizes`, 0.5 and 1 GiB of fp16 by default; N from `-cache-totals`, 1 to 8 GiB), then loads them in order and runs each once in a new process per round (`-cache-rounds`, 3), keeping hwnpu's compile cache; a load and first call of `-cache-hit` (1 s) or less is a hit. The report gives the hits of every round, the largest total that stays warm per size, and the size of `~/Library/Caches/NAME/com.apple.e5rt.e5bundlecache` after each round. `-cache-hold open` keeps every program open instead of closing each before the next, `-cache-order reverse` reverses every other round (an LRU then hits more), `-cache-passes 2` loads again within the same process, `-cache-names other` adds a round under a copy of the executable named other (then one under its own name again), and `-cache-keep` with `-dir` keeps the programs for a later run, after a restart. The probe holds hwnpu's Neural Engine lock while it runs; quit other programs that use the Neural Engine. The defaults write up to 8 GiB of programs into a temporary directory and take an hour or more.
+**cache** runs only when asked for, as `bonsaiai-dev probe cache` (Core ML only). It measures the Neural Engine's own cache of compiled programs, the reason a program that BonsaiAI's compile cache holds loads in 0.1 s on one run and compiles again for one or two minutes on the next ([docs/handoff-ane-cache.md](docs/handoff-ane-cache.md)). A configuration writes N programs of S GiB once (`-cache-sizes`, 0.5 and 1 GiB of fp16 by default; N from `-cache-totals`, 1 to 8 GiB), then loads them in order and runs each once in a new process per round (`-cache-rounds`, 3), keeping BonsaiAI's compile cache; a load and first call of `-cache-hit` (1 s) or less is a hit. The report gives the hits of every round, the largest total that stays warm per size, and the size of `~/Library/Caches/NAME/com.apple.e5rt.e5bundlecache` after each round. `-cache-hold open` keeps every program open instead of closing each before the next, `-cache-order reverse` reverses every other round (an LRU then hits more), `-cache-passes 2` loads again within the same process, `-cache-names other` adds a round under a copy of the executable named other (then one under its own name again), and `-cache-keep` with `-dir` keeps the programs for a later run, after a restart. The probe holds BonsaiAI's Neural Engine lock while it runs; quit other programs that use the Neural Engine. The defaults write up to 8 GiB of programs into a temporary directory and take an hour or more.
 
-**resident** runs only when asked for, as `hwnpu-dev probe resident` (Intel and Apple). It measures how much the NPU holds at once: programs of `-resident-size` GiB (0.25 GiB of fp16 by default) are loaded one after another and kept open, each run once, until a load fails or `-resident-max-gb` (60 % of the RAM, at most 16) is reached; then every held program runs again. After running out of memory, the oldest program is closed and the failed one loaded again: whether closing a program gives its memory back, which hwnpu-image's reloading of Anima's programs counts on. `-resident-hold close` loads, runs and closes each in turn up to the same total, to tell a limit on what is held from one on what has been loaded. `-resident-formats int8` tells whether the limit counts the weights' bytes, and `-resident-run=false` loads without running. The child reports each load as it goes, so when the driver kills it (0xc0000005 on Intel) the report keeps what was held before. Intel's NPU (Core Ultra 5 135U) failed with ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's fp16 programs held at once. The report gives each load's time and, on Windows, the process's private memory after it. A load that does not fail is not a program that stays on the NPU: Core ML evicts without an error and loads the program onto the Neural Engine again at its next call, so an Apple Mac reaches `-resident-max-gb` however little the Neural Engine keeps. With `-resident-cycle` (the default; open only), after each load every held program runs in turn twice and the second pass is timed: the report gives the most held at full speed in turn and the least held where a call in turn was over twice as slow (the M1 ran parts in turn 12 times slower past about 2.9 GiB). Running in turn stops after 3 slow steps in a row, the loads go on. On Apple each load also records what the wired memory of the Neural Engine's driver grew by: what it really holds, not the weights added up. `-resident-size` takes several sizes, comma separated (`0.57,1.2`: the sizes of Anima's DiT groups and text encoder), each a run of its own.
+**resident** runs only when asked for, as `bonsaiai-dev probe resident` (Intel and Apple). It measures how much the NPU holds at once: programs of `-resident-size` GiB (0.25 GiB of fp16 by default) are loaded one after another and kept open, each run once, until a load fails or `-resident-max-gb` (60 % of the RAM, at most 16) is reached; then every held program runs again. After running out of memory, the oldest program is closed and the failed one loaded again: whether closing a program gives its memory back, which bonsaiai-image's reloading of Anima's programs counts on. `-resident-hold close` loads, runs and closes each in turn up to the same total, to tell a limit on what is held from one on what has been loaded. `-resident-formats int8` tells whether the limit counts the weights' bytes, and `-resident-run=false` loads without running. The child reports each load as it goes, so when the driver kills it (0xc0000005 on Intel) the report keeps what was held before. Intel's NPU (Core Ultra 5 135U) failed with ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's fp16 programs held at once. The report gives each load's time and, on Windows, the process's private memory after it. A load that does not fail is not a program that stays on the NPU: Core ML evicts without an error and loads the program onto the Neural Engine again at its next call, so an Apple Mac reaches `-resident-max-gb` however little the Neural Engine keeps. With `-resident-cycle` (the default; open only), after each load every held program runs in turn twice and the second pass is timed: the report gives the most held at full speed in turn and the least held where a call in turn was over twice as slow (the M1 ran parts in turn 12 times slower past about 2.9 GiB). Running in turn stops after 3 slow steps in a row, the loads go on. On Apple each load also records what the wired memory of the Neural Engine's driver grew by: what it really holds, not the weights added up. `-resident-size` takes several sizes, comma separated (`0.57,1.2`: the sizes of Anima's DiT groups and text encoder), each a run of its own.
 
 **verify** runs the bench models on the NPU with K tokens per call (1 to 128 by default): the call that checks K drafted tokens in speculative decoding, or reads a chunk of the prompt, which reads every weight once whatever K is. While the time per call barely grows with K, the call is bound by reading the weights and checking K drafts costs about as much as generating one token. Past some K the compute runs out and the time grows with K. The report gives that rate in TFLOPS and the K at which reading the weights and computing take as long, from the ratio of the NPU's compute to its weight reading: about the most speculative decoding can gain, and the prompt chunk that uses the NPU best. Attention is only the per-token stand-in; there is none among the drafted tokens. The formats are those the NPU runs (fp16, int8, lut4, lut6 and lut8 on Apple).
 
-**On AMD's NPU** (Ryzen AI, XDNA2) there is no graph backend: hwnpu runs IRON exports there, so the probe builds its graphs with `tools/amd/iron_probe.py` from random weights, with the operators hwnpu's exports use, and times them through `internal/llm/iron` as hwnpu runs a model. The numbers are therefore the ceilings of the paths the models take, not of IRON's samples ([docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md), measured before hwnpu had its own kernels).
+**On AMD's NPU** (Ryzen AI, XDNA2) there is no graph backend: BonsaiAI runs IRON exports there, so the probe builds its graphs with `tools/amd/iron_probe.py` from random weights, with the operators BonsaiAI's exports use, and times them through `internal/llm/iron` as BonsaiAI runs a model. The numbers are therefore the ceilings of the paths the models take, not of IRON's samples ([docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md), measured before BonsaiAI had its own kernels).
 
-- **bench**: the same 8 and 16 layers in q4 (q4nx, 5 bits a weight), q6 (6.5 bits), q8 (8.5 bits) and bf16, one row a call, two ways. `layers` runs each layer's seven linears and the SwiGLU's product one after another, as hwnpu's exports of the chat models run a decode step: IRON loads every operator that follows another onto the cores again. `stream` puts the same bytes in GEMVs of one shape back to back, which are not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's `GptOssStep`, [docs/design/moe.md](docs/design/moe.md)).
-- **verify**: the layers with K rows a call, on the path each K takes in hwnpu: 1 row the decode step's QGEMV, 2 to 8 rows of q8 or q6 QGEMVRows (the call that checks drafts, `--verify`), multiples of 256 the prompt chunk's GEMM (q4 and q8 dequantize their weights on the device at every call; bfp16, the image DiTs' weights packed on the host, are read by the GEMM as they are). The default K are 1, 2, 4, 8, 256, 1024 and 4096, at the first `-layers` (8) unless `-layers` is given.
+- **bench**: the same 8 and 16 layers in q4 (q4nx, 5 bits a weight), q6 (6.5 bits), q8 (8.5 bits) and bf16, one row a call, two ways. `layers` runs each layer's seven linears and the SwiGLU's product one after another, as BonsaiAI's exports of the chat models run a decode step: IRON loads every operator that follows another onto the cores again. `stream` puts the same bytes in GEMVs of one shape back to back, which are not loaded again: the time is the weights' transfer, the ceiling of a decode step run as one resident array (gpt-oss-20b's `GptOssStep`, [docs/design/moe.md](docs/design/moe.md)).
+- **verify**: the layers with K rows a call, on the path each K takes in bonsaiai: 1 row the decode step's QGEMV, 2 to 8 rows of q8 or q6 QGEMVRows (the call that checks drafts, `--verify`), multiples of 256 the prompt chunk's GEMM (q4 and q8 dequantize their weights on the device at every call; bfp16, the image DiTs' weights packed on the host, are read by the GEMM as they are). The default K are 1, 2, 4, 8, 256, 1024 and 4096, at the first `-layers` (8) unless `-layers` is given.
 - **attn**: the image DiTs' attention as FLUX.2 klein's export has it (`iron_mha.ImageMHA`, QKᵀ and P·V through bfp16, the softmax's exponential on one bf16 limb), 24 heads of 128, 1536 and 4608 rows (512² and 1024² with 512 rows of text; `-image-rows`, `-image-heads`, `-image-dim`).
 
-`hwnpu-dev probe` on AMD runs all three; `bench`, `verify` or `attn` runs one. `-formats` takes q4, q6, q8, bf16 and bfp16 there.
+`bonsaiai-dev probe` on AMD runs all three; `bench`, `verify` or `attn` runs one. `-formats` takes q4, q6, q8, bf16 and bfp16 there.
 
 Each measurement runs in a child process of its own, so a framework or driver that aborts (Core ML's GPU path has asserted on some graphs) costs one row of the report, with the error, not the run.
 
@@ -142,11 +142,11 @@ Options:
 
 ## Results so far
 
-The Apple results below were measured through Core ML, before hwnpu's chat and image models moved to Core AI (macOS 27, [docs/design/apple-coreai.md](docs/design/apple-coreai.md)). What depends on the hardware still holds: the Neural Engine reads weights at about 62 to 64 GB/s (44 to 48 on the M1; Core AI's chat models read theirs at 48 GB/s on an M1, [docs/design/performance.md](docs/design/performance.md)). What depends on Core ML does not carry over: the 1 GiB limit is Core ML's (one Core AI program holds 2.5 to 3 GiB on an M3), and Core AI's large programs run in turn pay 50 to 70 ms each instead of the M1's limit on the total. The probe has no Core AI path yet.
+The Apple results below were measured through Core ML, before BonsaiAI's chat and image models moved to Core AI (macOS 27, [docs/design/apple-coreai.md](docs/design/apple-coreai.md)). What depends on the hardware still holds: the Neural Engine reads weights at about 62 to 64 GB/s (44 to 48 on the M1; Core AI's chat models read theirs at 48 GB/s on an M1, [docs/design/performance.md](docs/design/performance.md)). What depends on Core ML does not carry over: the 1 GiB limit is Core ML's (one Core AI program holds 2.5 to 3 GiB on an M3), and Core AI's large programs run in turn pay 50 to 70 ms each instead of the M1's limit on the total. The probe has no Core AI path yet.
 
 ### AMD Ryzen AI 9 365 (Strix Point, XDNA2, 32 cores; Linux, amdxdna 0.7, firmware 1.1.2.64)
 
-`hwnpu-dev probe` with the defaults, 2026-11-19, no other program on the NPU (report: [npuprobe-strix.md](npu_profiles/npuprobe-strix.md)). A decode step, one row a call, 16 layers (0.97 B weights) in every format the exports use:
+`bonsaiai-dev probe` with the defaults, 2026-11-19, no other program on the NPU (report: [npuprobe-strix.md](npu_profiles/npuprobe-strix.md)). A decode step, one row a call, 16 layers (0.97 B weights) in every format the exports use:
 
 | format | bits a weight | weights | form | ms/token | tokens/s | weights GB/s | G weights/s | net W | mJ/token |
 |---|---|---|---|---|---|---|---|---|---|
@@ -164,7 +164,7 @@ G weights/s is the weights read a second: a model of N billion weights decodes a
 - **The NPU reads weights at 53 to 55 GB/s in q4, q8 and bf16**, when the operators are not loaded again (stream), as the DMA's ceiling of 55 to 57 GB/s. The Neural Engine reads at 62 to 65 GB/s (M2, M3, M4), so with 4-bit weights the M3 is 1.5 times as fast per token at the ceiling (7.5 ms against 11.6, 129 G weights/s against 84; q4nx is 5 bits a weight with its scales and minimums, lut4 a little over 4).
 - **q6 is slower than q8 although it reads fewer bytes**: it alone stays under the ceiling, at 38 GB/s, because its kernel unpacks four 6 bit codes from three bytes on the cores, and that work, not the transfer, bounds it. It reads 47 G weights/s against q8's 51 (20.7 against 19.0 ms at the ceiling, 40.2 against 38.2 in the layers form), and checking 8 drafts costs 3.9 steps against q8's 2.9 (below). On AMD q6 only saves memory (a quarter less than q8); q8 is both faster and closer to the original. q4 is the fastest by far.
 - **As the chat models' exports run a step, the ceiling is far off**: q4 reaches 19 GB/s, a third of it. A layer is 8 operators, and an operator that follows another is loaded onto the cores again (about 67 µs plus 1.2 µs a KB of its programs, [docs/design/moe.md](docs/design/moe.md)): 20 of q4's 31 ms. In that form every format but q4 takes about the same time (38 to 41 ms), the reloads hiding what the formats save. bf16 hides it best (47 GB/s), its transfers being 3.6 times as long. gpt-oss-20b, whose step is one resident array, runs at 93 % of the ceiling; for the other models that form is the largest gain left on AMD (2.7 times for q4, by these numbers).
-- Energy: a token of q4 at the ceiling costs 136 mJ above idle, against 37 mJ on the M3's Neural Engine (lut4, `hwnpu-dev powerbench`). The meters differ (amdgpu's PPT is the whole package, powermetrics' figure the Neural Engine's own), so take the ratio as rough. The layers form costs more energy, not only time (293 against 136 mJ).
+- Energy: a token of q4 at the ceiling costs 136 mJ above idle, against 37 mJ on the M3's Neural Engine (lut4, `bonsaiai-dev powerbench`). The meters differ (amdgpu's PPT is the whole package, powermetrics' figure the Neural Engine's own), so take the ratio as rough. The layers form costs more energy, not only time (293 against 136 mJ).
 
 K rows a call (8 layers, 0.49 B weights):
 
@@ -197,7 +197,7 @@ q4 has no call for 2 to 8 rows (QGEMVRows is q8 and q6 only).
 
 The image DiTs' attention (24 heads of 128): 12.8 ms at 1536 rows (2.3 TFLOPS), 81.8 ms at 4608 rows (3.2 TFLOPS). It is a fifth of the GEMMs' rate: what is left of a DiT block's time on AMD is the attention (FLUX.2 klein's single block: attention 118 of 198 ms before the exponential's change, [docs/design/image-amd.md](docs/design/image-amd.md)).
 
-Where the power goes (amdgpu's gpu_metrics, the SMU's own split, sampled every 50 ms; `hwnpu-dev probe` reports it on AMD). At rest the package draws 4.4 W:
+Where the power goes (amdgpu's gpu_metrics, the SMU's own split, sampled every 50 ms; `bonsaiai-dev probe` reports it on AMD). At rest the package draws 4.4 W:
 
 | run | package W | above rest | NPU rail | CPU cores | the rest of the package | DRAM GB/s |
 |---|---|---|---|---|---|---|
@@ -225,7 +225,7 @@ Size limit, one model at a time:
 - The limit is per model: three 0.91 GiB fp16 models loaded at once (2.7 GiB) all stayed on the Neural Engine, each at 45 ms per call, the same as alone.
 - A lut4 model that falls to the CPU is extremely slow (5 to 13 seconds per call at 1.0 to 1.4 GiB): probably because the CPU path expands the tables to fp16, four times the size, on a 16 GB machine.
 
-Speed and energy at 16 layers (0.97 B weights). Speed from `hwnpu-dev probe bench`, energy from `hwnpu-dev powerbench` on the same model shapes:
+Speed and energy at 16 layers (0.97 B weights). Speed from `bonsaiai-dev probe bench`, energy from `bonsaiai-dev powerbench` on the same model shapes:
 
 | format | weights | asked for | placed on | ms/token | tokens/s | weights GB/s | CPU use | mJ/token |
 |---|---|---|---|---|---|---|---|---|
@@ -246,7 +246,7 @@ Speed and energy at 16 layers (0.97 B weights). Speed from `hwnpu-dev probe benc
 - fp16 at 1 B is over the size limit and runs on the CPU.
 - The CPU is limited by the arithmetic, not the bytes: about 30 ms per token in every format, at 3.3 to 3.7 cores busy. Quantization only pays on the NPU and the GPU.
 
-A model over the limit run in parts (`hwnpu-dev probe split`, 64 layers of lut4, 1.81 GiB, 3.9 B weights; report: [npuprobe-m3-split.md](npu_profiles/npuprobe-m3-split.md)):
+A model over the limit run in parts (`bonsaiai-dev probe split`, 64 layers of lut4, 1.81 GiB, 3.9 B weights; report: [npuprobe-m3-split.md](npu_profiles/npuprobe-m3-split.md)):
 
 | split | each part | placement | ms/call of each part | ms/token | parts added up | weights GB/s | CPU use | error against the GPU after each part |
 |---|---|---|---|---|---|---|---|---|
@@ -270,7 +270,7 @@ Against the parts written as the functions of one package (`-layout functions,fi
 - The 1 GiB limit counts the whole package, not the function loaded. Split a model into a package per part.
 - With a package per part, the peak memory of the process is about the weights of one part: it falls with more parts, at almost the same speed.
 
-K tokens per call (`hwnpu-dev probe verify -formats lut4 -layers 16`, 0.97 B weights in lut4):
+K tokens per call (`bonsaiai-dev probe verify -formats lut4 -layers 16`, 0.97 B weights in lut4):
 
 | K | ms/call | × K=1 | ms/token | TFLOPS |
 |---|---|---|---|---|
@@ -284,9 +284,9 @@ K tokens per call (`hwnpu-dev probe verify -formats lut4 -layers 16`, 0.97 B wei
 - Up to 64 tokens per call take about as long as one: the call is bound by reading the weights (59 GB/s). Generating one token uses 0.24 TFLOPS, under 2% of the Neural Engine's compute.
 - At 64 tokens the compute reaches 13.7 TFLOPS, three quarters of the M3's 18 TOPS (fp16). Reading the weights once takes as long as computing about 58 tokens at that rate.
 - 128 tokens take 2.7 times as long as 64, slower per token than 64: past the limit, splitting a prompt into calls of 64 is faster than calls of 128.
-- So speculative decoding can check up to about 60 drafted tokens for the time of one, and a prompt is read fastest in chunks of about 64 tokens (about 7,000 tokens/s for 1 B weights). LFM3-1.7B converted with `hwnpu-dev convert -seq` behaved alike: 13.7 ms for 1 token, 15.2 ms for 48, 30.0 ms for 96 (11 TFLOPS).
+- So speculative decoding can check up to about 60 drafted tokens for the time of one, and a prompt is read fastest in chunks of about 64 tokens (about 7,000 tokens/s for 1 B weights). LFM3-1.7B converted with `bonsaiai-dev convert -seq` behaved alike: 13.7 ms for 1 token, 15.2 ms for 48, 30.0 ms for 96 (11 TFLOPS).
 
-Every format again on macOS 27.2.1 (`hwnpu-dev probe bench` and `hwnpu-dev probe verify -layers 8`, 2026-11-20). 16 layers (0.97 B) on the Neural Engine; fp16 at 16 layers falls to the CPU, so its row is 8 layers:
+Every format again on macOS 27.2.1 (`bonsaiai-dev probe bench` and `bonsaiai-dev probe verify -layers 8`, 2026-11-20). 16 layers (0.97 B) on the Neural Engine; fp16 at 16 layers falls to the CPU, so its row is 8 layers:
 
 | format | bits a weight | weights | ms/token | weights GB/s | G weights/s | M2 G weights/s |
 |---|---|---|---|---|---|---|
@@ -316,7 +316,7 @@ K tokens per call (8 layers, 0.49 B weights):
 
 ### Apple M2 (MacBook Air, 16 GB, macOS 27.2)
 
-`hwnpu-dev probe` with the defaults (bench and limit; report: [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)). 16 layers (0.97 B), against the M3 above:
+`bonsaiai-dev probe` with the defaults (bench and limit; report: [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)). 16 layers (0.97 B), against the M3 above:
 
 | format | weights | unit | M2 ms/token | M3 ms/token | M2 weights GB/s | M3 weights GB/s |
 |---|---|---|---|---|---|---|
@@ -329,10 +329,10 @@ K tokens per call (8 layers, 0.49 B weights):
 
 - The size limit is the M3's to the layer: fp16 8 layers (0.91 GiB) on the Neural Engine and 9 (1.02 GiB) not, int8 17 and 18, lut4 35 (0.99 GiB) and 36. Three fp16 models of 0.91 GiB loaded at once all stay on the Neural Engine at 15 to 16 ms a call, as alone.
 - lut4 runs at the M3's speed, so decoding bound by the weights should be about as fast. The CPU is about a fifth slower.
-- int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only the tables (lut4, lut6, lut8) did, and the chip makes the difference, not the OS: rerun on the M3 with the M2's macOS 27.2 (the same Core ML, Build 26B123), `hwnpu-dev probe bench` still gives int8 on the Neural Engine 42.2 ms at 16 layers (23 GB/s) and fp16 45.6 ms at 8 layers (21 GB/s), as on 27.0.1, and only lut4 7.6 ms (64 GB/s) (report: [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)).
+- int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only the tables (lut4, lut6, lut8) did, and the chip makes the difference, not the OS: rerun on the M3 with the M2's macOS 27.2 (the same Core ML, Build 26B123), `bonsaiai-dev probe bench` still gives int8 on the Neural Engine 42.2 ms at 16 layers (23 GB/s) and fp16 45.6 ms at 8 layers (21 GB/s), as on 27.0.1, and only lut4 7.6 ms (64 GB/s) (report: [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)).
 - lut4 put on the CPU over the limit is as slow as on the M3 (40 layers 6.3 s a call, 48 layers 17.7 s).
 - Compiling takes longer than on the M3 (lut4 32 layers: 25 s).
-- **No limit on the total of parts run in turn, unlike the M1** (`hwnpu-dev probe split -formats lut4 -parts 8 -ref none -split-layers N`, 2026-11-09; the same sizes as the M1's table below; reports: [96](npu_profiles/npuprobe-m2-split-96.md), [100](npu_profiles/npuprobe-m2-split-100.md), [104](npu_profiles/npuprobe-m2-split-104.md), [128](npu_profiles/npuprobe-m2-split-128.md) layers). Up to 3.62 GiB, the parts loaded at once and run one after another take their own times added up, at 63 GB/s:
+- **No limit on the total of parts run in turn, unlike the M1** (`bonsaiai-dev probe split -formats lut4 -parts 8 -ref none -split-layers N`, 2026-11-09; the same sizes as the M1's table below; reports: [96](npu_profiles/npuprobe-m2-split-96.md), [100](npu_profiles/npuprobe-m2-split-100.md), [104](npu_profiles/npuprobe-m2-split-104.md), [128](npu_profiles/npuprobe-m2-split-128.md) layers). Up to 3.62 GiB, the parts loaded at once and run one after another take their own times added up, at 63 GB/s:
 
 | total | parts | Neural Engine holds | ms/token | parts alone added up | weights GB/s |
 |---|---|---|---|---|---|
@@ -343,7 +343,7 @@ K tokens per call (8 layers, 0.49 B weights):
 
   So the M1 alone slows down past about 2.9 GiB; the M2, the M3 (Qwen3.5-4B in lut8, 3.96 GiB in one program, at its expected 8 tokens/s, [docs/design/llm-qwen.md](docs/design/llm-qwen.md)) and the M4 (3.62 GiB) do not.
 
-Every format, as on AMD above (`hwnpu-dev probe bench`, macOS 27.2.1, 2026-11-20; report: [npuprobe-m2-formats.md](npu_profiles/npuprobe-m2-formats.md)). 16 layers (0.97 B) on the Neural Engine; fp16 at 16 layers (1.81 GiB) is over the limit and falls to the CPU, so its row is 8 layers:
+Every format, as on AMD above (`bonsaiai-dev probe bench`, macOS 27.2.1, 2026-11-20; report: [npuprobe-m2-formats.md](npu_profiles/npuprobe-m2-formats.md)). 16 layers (0.97 B) on the Neural Engine; fp16 at 16 layers (1.81 GiB) is over the limit and falls to the CPU, so its row is 8 layers:
 
 | format | bits a weight | weights | ms/token | weights GB/s | G weights/s | AMD at its ceiling (stream), G weights/s |
 |---|---|---|---|---|---|---|
@@ -357,7 +357,7 @@ Every format, as on AMD above (`hwnpu-dev probe bench`, macOS 27.2.1, 2026-11-20
 - Per weight the M2 is 1.45 times AMD's ceiling in 4 bits, 1.8 times in 6, 1.25 times in 8 and 1.1 times in 16; against AMD's layers form, as its chat models run now (q4: 31 G weights/s), 3.9 times in 4 bits.
 - The GPU is fastest with int4 (12.8 ms), slower than the Neural Engine with lut4 or lut6. The GPU run of int8 at 16 layers stopped on an exception in Core ML (NSException).
 
-K tokens per call in every format the Neural Engine runs (`hwnpu-dev probe verify -layers 8`, 0.49 B weights, macOS 27.2.1, 2026-11-20; report: [npuprobe-m2-verify.md](npu_profiles/npuprobe-m2-verify.md)):
+K tokens per call in every format the Neural Engine runs (`bonsaiai-dev probe verify -layers 8`, 0.49 B weights, macOS 27.2.1, 2026-11-20; report: [npuprobe-m2-verify.md](npu_profiles/npuprobe-m2-verify.md)):
 
 | format | K=1 ms | G weights/s | K=8 × K=1 | K=64 × K=1 | K=64 TFLOPS | K=128 × K=1 | K=128 TFLOPS |
 |---|---|---|---|---|---|---|---|
@@ -373,7 +373,7 @@ K tokens per call in every format the Neural Engine runs (`hwnpu-dev probe verif
 
 ### Apple M1 (MacBook Pro 13", 16 GB, macOS 27.2)
 
-`hwnpu-dev probe` with the defaults (bench and limit; report: [npuprobe-m1.md](npu_profiles/npuprobe-m1.md)). `hwnpu-dev report` passes all four checks. 16 layers (0.97 B), against the M2 and the M3 above:
+`bonsaiai-dev probe` with the defaults (bench and limit; report: [npuprobe-m1.md](npu_profiles/npuprobe-m1.md)). `bonsaiai-dev report` passes all four checks. 16 layers (0.97 B), against the M2 and the M3 above:
 
 | format | weights | unit | M1 ms/token | M2 ms/token | M3 ms/token | M1 weights GB/s | M2 weights GB/s | M3 weights GB/s |
 |---|---|---|---|---|---|---|---|---|
@@ -384,14 +384,14 @@ K tokens per call in every format the Neural Engine runs (`hwnpu-dev probe verif
 | lut4 | 0.45 GiB | GPU | 83.2 | 55.4 | 65.1 | 6 | 9 | 7 |
 | every format | | CPU | 38 or so | 35 or so | 27 to 30 | | | |
 
-- The size limit is the M2's and the M3's to the layer: fp16 8 layers (0.91 GiB) on the Neural Engine and 9 (1.02 GiB) not, int8 17 and 18, lut4 35 (0.99 GiB) and 36. Three fp16 models of 0.91 GiB loaded at once all stay on the Neural Engine at 15.4 ms a call, as alone. Parts under 1 GiB (`hwnpu-dev convert`'s default `-target any`) fit every chip measured so far.
+- The size limit is the M2's and the M3's to the layer: fp16 8 layers (0.91 GiB) on the Neural Engine and 9 (1.02 GiB) not, int8 17 and 18, lut4 35 (0.99 GiB) and 36. Three fp16 models of 0.91 GiB loaded at once all stay on the Neural Engine at 15.4 ms a call, as alone. Parts under 1 GiB (`bonsaiai-dev convert`'s default `-target any`) fit every chip measured so far.
 - int8 and fp16 run at full speed, as on the M2: about 62 GB/s (0.49 B fp16: 15.6 ms), about 90% of the M1's memory bandwidth (68 GB/s). Of the three chips only the M3 is slow with them.
 - lut4 is the slow format on the M1: 44 GB/s at 16 layers and 39 to 45 GB/s at every size from 2 to 35 layers, against 62 for int8 on the same chip. The memory is not what holds it back; unpacking the 4 bit tables seems to cost on the M1's Neural Engine. lut4 is still the fastest format per token, since it reads half the bytes, but 1.4 times faster than int8 (11.0 against 15.7 ms), not 2.
 - The GPU is slower than on the M2 and the M3 (int4 14.8 ms against 8.5; fp16 55 GB/s against 76 to 79). So on the M1 the Neural Engine with lut4 is the fastest unit, ahead of the GPU with int4 (11.0 against 14.8 ms); on the M2 and the M3 the two are about even.
 - The CPU takes about 38 ms per token in every format, at about 5 cores busy.
 - lut4 put on the CPU over the limit is slow, though less than on the M2 (36 layers 2.7 s a call, 40 layers 3.3 s, 48 layers 6.3 s).
 - Compiling is quicker than on the M2 (lut4 32 layers: 16.2 s against 25 s).
-- **The M1 has a limit on the total too, when the parts run in turn** (`hwnpu-dev probe split -formats lut4 -parts 8 -ref none`, 2026-11-08; report: [npuprobe-m1-split-104.md](npu_profiles/npuprobe-m1-split-104.md)). Up to 2.83 GiB of weights, all the parts loaded and run one after another take their own times added up; from 2.95 GiB every token takes about 12 times as long, as if parts were loaded again on each call. The number of parts does not matter (2.95 GiB in 4 parts: 986 ms). The M4 runs 3.62 GiB in 8 parts at its full speed (below). `hwnpu-dev probe limit`'s several models (3 × 0.99 GiB) did not show it, because each model is timed alone, many calls in a row:
+- **The M1 has a limit on the total too, when the parts run in turn** (`bonsaiai-dev probe split -formats lut4 -parts 8 -ref none`, 2026-11-08; report: [npuprobe-m1-split-104.md](npu_profiles/npuprobe-m1-split-104.md)). Up to 2.83 GiB of weights, all the parts loaded and run one after another take their own times added up; from 2.95 GiB every token takes about 12 times as long, as if parts were loaded again on each call. The number of parts does not matter (2.95 GiB in 4 parts: 986 ms). The M4 runs 3.62 GiB in 8 parts at its full speed (below). `bonsaiai-dev probe limit`'s several models (3 × 0.99 GiB) did not show it, because each model is timed alone, many calls in a row:
 
 | total | parts | Neural Engine holds | ms/token | parts alone added up | weights GB/s |
 |---|---|---|---|---|---|
@@ -408,7 +408,7 @@ K tokens per call in every format the Neural Engine runs (`hwnpu-dev probe verif
 
 ### Apple M4
 
-A model over the limit run in parts (`hwnpu-dev probe split -split-layers 128 -parts 2,4`, 128 layers of lut4, 3.62 GiB, 7.8 B weights):
+A model over the limit run in parts (`bonsaiai-dev probe split -split-layers 128 -parts 2,4`, 128 layers of lut4, 3.62 GiB, 7.8 B weights):
 
 | split | each part | ms/token | weights GB/s |
 |---|---|---|---|
@@ -417,12 +417,12 @@ A model over the limit run in parts (`hwnpu-dev probe split -split-layers 128 -p
 | 8 ways | 16 layers, 0.45 GiB | 59.4 | 66 |
 | 16 ways | 8 layers, 0.23 GiB | 60.6 | 64 |
 
-- Each further part adds about 0.15 ms per token (2.3 ms from 2 to 16 parts): the fixed cost of one Core ML call. In 4 parts under 1 GiB that is 0.6 ms, about 1% of a token. The smaller the parts, the larger the share, so split into the fewest parts under the limit (as `hwnpu-dev convert` does).
+- Each further part adds about 0.15 ms per token (2.3 ms from 2 to 16 parts): the fixed cost of one Core ML call. In 4 parts under 1 GiB that is 0.6 ms, about 1% of a token. The smaller the parts, the larger the share, so split into the fewest parts under the limit (as `bonsaiai-dev convert` does).
 - The split does not change the error; it was the same after each part in 2 and in 4 parts.
-- So the M4 loses nothing running the same parts under 1 GiB as the M3 (`hwnpu-dev convert`'s default `-target any`). Every part is loaded at once, but the peak memory of the process while loading is about the weights of one part (on the M3, 1.03 GiB in 2 parts and 0.55 GiB in 4; table above), so finer parts help a machine short of memory.
+- So the M4 loses nothing running the same parts under 1 GiB as the M3 (`bonsaiai-dev convert`'s default `-target any`). Every part is loaded at once, but the peak memory of the process while loading is about the weights of one part (on the M3, 1.03 GiB in 2 parts and 0.55 GiB in 4; table above), so finer parts help a machine short of memory.
 - The Neural Engine reads the weights at about the M3's speed (65 GB/s).
 
-### KV cache (Apple M3, `hwnpu-dev probe kv`)
+### KV cache (Apple M3, `bonsaiai-dev probe kv`)
 
 11 lut4 layers, one token, all on the Neural Engine (report: [npuprobe-m3-kv.md](npu_profiles/npuprobe-m3-kv.md)):
 
@@ -440,17 +440,17 @@ A model over the limit run in parts (`hwnpu-dev probe split -split-layers 128 -p
 - An int8 cache does not make it faster either (report: [npuprobe-m3-kv-int8.md](npu_profiles/npuprobe-m3-kv-int8.md)). `host-int8` stays on the Neural Engine with half the memory, but takes 11.9 / 29.5 / 50.8 ms at 1024 / 4096 / 8192 against 10.8 / 27.6 / 46.5 ms for `host` in the same run: a tenth slower, for the cast over the whole cache. Quantizing the cache saves memory, not time.
 - The Neural Engine takes tensor dimensions up to 16384 (report: [npuprobe-m3-kv-limit.md](npu_profiles/npuprobe-m3-kv-limit.md)). With `-kv-layers 2`, a key axis of 16384 (cache 16383) stays on the Neural Engine at 16.6 ms; 16385 (cache 16384) puts 39 attention operations on the CPU, at 117 ms.
 - A cache in chunks stays on the Neural Engine past that limit (`-kv-layers 6`, LFM3-1.7B's full attention layers; reports: [npuprobe-m3-kv-chunk.md](npu_profiles/npuprobe-m3-kv-chunk.md) and [npuprobe-m3-kv-chunk-long.md](npu_profiles/npuprobe-m3-kv-chunk-long.md)). `host-chunk` takes 13.2 / 43.4 / 84.0 / 201.6 ms at 4096 / 16320 / 32768 / 65536, all on the Neural Engine, and is no slower than the plain `host` (14.5 / 49.1 ms at 4096 / 16320). Each chunk is an input of its own, and the chunks meet in elementwise operations only. Holding the chunks on an axis of one tensor and reducing over it, or weighting each chunk by its share of the sum, put every operation on the CPU from two chunks on.
-- Attention without weights called per chunk and merged on the host costs in proportion to the tokens used, not to the capacity (`hwnpu-dev probe attn`; report: [npuprobe-m3-attn.md](npu_profiles/npuprobe-m3-attn.md)). Grouped, Q=8, chunks of 8192, 6 layers: 8.8 / 17.4 / 69.5 / 295.7 ms at 4096 / 16384 / 65536 / 262144 tokens used. Binding each chunk's own buffers does not change the time per call, and the peak resident memory is the KV bytes (3 GiB at 262144) plus about 0.1 GiB: the inputs are not copied. Core ML puts the forms with little work on the CPU (Q=1 up to chunks of 8192, Q=8 up to 2048); with Q=1 the CPU is twice as fast as the Neural Engine (0.41 against 0.80 ms per 1K).
+- Attention without weights called per chunk and merged on the host costs in proportion to the tokens used, not to the capacity (`bonsaiai-dev probe attn`; report: [npuprobe-m3-attn.md](npu_profiles/npuprobe-m3-attn.md)). Grouped, Q=8, chunks of 8192, 6 layers: 8.8 / 17.4 / 69.5 / 295.7 ms at 4096 / 16384 / 65536 / 262144 tokens used. Binding each chunk's own buffers does not change the time per call, and the peak resident memory is the KV bytes (3 GiB at 262144) plus about 0.1 GiB: the inputs are not copied. Core ML puts the forms with little work on the CPU (Q=1 up to chunks of 8192, Q=8 up to 2048); with Q=1 the CPU is twice as fast as the Neural Engine (0.41 against 0.80 ms per 1K).
 
 ### Wanted
 
-M4 and later Apple chips (does the 1 GiB limit change with the chip or the RAM?), Intel Core Ultra on Linux and Windows (the Intel backend has not run on real hardware yet), AMD Ryzen AI for `hwnpu-dev report` and `hwnpu-dev probe` on other chips than Strix Point (Krackan Point, Strix Halo), and Core AI's path in the probe on Apple (the same shapes as Core AI programs; not written yet). Open an issue with the `.md` files.
+M4 and later Apple chips (does the 1 GiB limit change with the chip or the RAM?), Intel Core Ultra on Linux and Windows (the Intel backend has not run on real hardware yet), AMD Ryzen AI for `bonsaiai-dev report` and `bonsaiai-dev probe` on other chips than Strix Point (Krackan Point, Strix Halo), and Core AI's path in the probe on Apple (the same shapes as Core AI programs; not written yet). Open an issue with the `.md` files.
 
-The M1 again, for the formats compared as on AMD, the M2 and the M3 above: `bench` now runs lut6 and lut8 too (the weights of `hwnpu-dev convert -bits 6` and `8`) and gives G weights/s, and `verify` runs every format the Neural Engine takes:
+The M1 again, for the formats compared as on AMD, the M2 and the M3 above: `bench` now runs lut6 and lut8 too (the weights of `bonsaiai-dev convert -bits 6` and `8`) and gives G weights/s, and `verify` runs every format the Neural Engine takes:
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe bench
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe verify -layers 8
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe bench
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe verify -layers 8
 ```
 
 ## Limits of these measurements
@@ -459,4 +459,4 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe verify -layers 8
 - No KV cache: real decoding adds the attention over the context, small next to the weights at short contexts.
 - Core ML's compute plan is an estimate of placement; CPU use is the cross-check.
 - AMD's stream form is a stand-in for a step as one resident array: the same bytes, without what such an array adds (its phases' fixed 25 to 35 µs, a command boundary a layer, [docs/design/moe.md](docs/design/moe.md)).
-- `hwnpu-dev powerbench -decode` and the Intel paths of hwnpu-dev probe have not been run on hardware other than the M3 yet.
+- `bonsaiai-dev powerbench -decode` and the Intel paths of bonsaiai-dev probe have not been run on hardware other than the M3 yet.

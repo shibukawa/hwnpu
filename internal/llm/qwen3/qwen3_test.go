@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // tiny is a small Qwen3 with what Qwen3-0.6B has: grouped query attention (4 heads sharing 2
@@ -323,7 +323,7 @@ func TestMatchesReference(t *testing.T) {
 }
 
 // Each layer on its own, fed the reference's hidden state, gives the reference's next hidden
-// state; so does the head after the last layer. This is what hwnpu-dev check does with a real
+// state; so does the head after the last layer. This is what bonsaiai-dev check does with a real
 // checkpoint.
 func TestLayerByLayer(t *testing.T) {
 	c := tinyConfig(t)

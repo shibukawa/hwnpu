@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """MOSS-SoundEffect's DAC decoder (vae/vae_128d_48k.pth) on IRON: the five stages of
-internal/sfx's DACStages as graphs, which hwnpu-audio generate -m sfx runs on AMD's NPU.
+internal/sfx's DACStages as graphs, which bonsaiai-audio generate -m sfx runs on AMD's NPU.
 
   python tools/amd/iron_moss_dac.py ~/models/MOSS-SoundEffect-v2.0 OUT
 

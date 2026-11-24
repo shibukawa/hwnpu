@@ -2,7 +2,7 @@ package chat
 
 import (
 	"context"
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"io"
 	"net/http"
 	"net/http/httptest"

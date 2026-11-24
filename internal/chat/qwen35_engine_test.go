@@ -13,8 +13,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/qwen35"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/qwen35"
 )
 
 // tinyQwen35 is a small Qwen3.5 text model: Gated DeltaNet and full attention layers.

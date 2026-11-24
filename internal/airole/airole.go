@@ -1,6 +1,6 @@
 // Package airole is what the ai package and its packages of models (ai/speech, ai/text,
 // ai/vision) agree on: how a kind of model is made ready and loaded. It is internal so that the
-// packages of models are hwnpu's own; an app gets its uses from them.
+// packages of models are bonsaiai's own; an app gets its uses from them.
 package airole
 
 import (
@@ -12,10 +12,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // Role is a kind of use: what its models are, how one is made ready and how it is loaded.
@@ -40,10 +40,10 @@ type Role struct {
 	// library for a model it put on the CPU) counts as not prepared when that is gone, so that
 	// Prepare decides again instead of the load failing.
 	Usable func(Files) error
-	// Remote is the role's model of an app whose models run in hwnpud (HWNPU_DAEMON): a value
-	// of the type Load returns whose methods call h's, the model Load loaded in hwnpud's engine
+	// Remote is the role's model of an app whose models run in bonsaiaid (BONSAIAI_DAEMON): a value
+	// of the type Load returns whose methods call h's, the model Load loaded in bonsaiaid's engine
 	// (airpc.Call1(x.remote, ctx, "Estimate", img)). nil for a role that does not run through
-	// hwnpud yet: an app of it runs with HWNPU_DAEMON=off.
+	// bonsaiaid yet: an app of it runs with BONSAIAI_DAEMON=off.
 	Remote func(h *airpc.Handle) io.Closer
 }
 
@@ -150,8 +150,8 @@ func (n NPU) CPU(m chat.Model) bool { return m.DeviceFor(n.Vendor) == "cpu" }
 // AMD reports whether the NPU is AMD's, which runs IRON's exports instead of converted programs.
 func (n NPU) AMD() bool { return n.Target == cache.AMDTarget }
 
-// Here is this machine's NPU, picked as hwnpu-chat, hwnpu-audio and hwnpu-image pick it:
-// HWNPU_BACKEND, else the NPU found; on a Mac Core AI's (macOS 27), which runs the Neural Engine
+// Here is this machine's NPU, picked as bonsaiai-chat, bonsaiai-audio and bonsaiai-image pick it:
+// BONSAIAI_BACKEND, else the NPU found; on a Mac Core AI's (macOS 27), which runs the Neural Engine
 // for them (Core ML is not used).
 func Here(ctx context.Context) NPU {
 	device := strings.TrimSpace(os.Getenv(llm.BackendEnv))
@@ -185,10 +185,10 @@ func Here(ctx context.Context) NPU {
 var registered []*Role
 
 // Register adds r to the roles For finds: each package of models registers its roles, so that a
-// tool (hwnpu-dev models package) makes a model ready as the app would, by its kind alone.
+// tool (bonsaiai-dev models package) makes a model ready as the app would, by its kind alone.
 func Register(r *Role) { registered = append(registered, r) }
 
-// Lookup is the role registered as name (Role.Name), nil when none is: how hwnpud's engine finds
+// Lookup is the role registered as name (Role.Name), nil when none is: how bonsaiaid's engine finds
 // the roles of an app's uses (internal/aihost), whose packages it imports.
 func Lookup(name string) *Role {
 	for _, r := range registered {

@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/vision/ironcnn"
 )
 
 // NPUOutputs are the graph's values an export of tools/amd/iron_onnxcnn.py gives for the heads,
@@ -110,7 +110,7 @@ type npuHeads struct {
 
 // OpenNPU loads an export of tools/amd/iron_onnxcnn.py (dir) of the ONNX file model onto dev:
 // the heads of Heads, or the values before their Exp and Mul by the stride.
-func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Detector, error) {
+func OpenNPU(ctx context.Context, dev *bonsaiai.Device, dir, model string) (*Detector, error) {
 	x, err := ironcnn.Read(dir)
 	if err != nil {
 		return nil, err

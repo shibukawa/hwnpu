@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 func TestLegacyNormal(t *testing.T) {
@@ -23,14 +23,14 @@ func TestLegacyNormal(t *testing.T) {
 	}
 }
 
-// mccRef prepares MusicCoCa's text side in the model's directory (HWNPU_TEST_MRT_DIR) and gives
-// mcc_ref.py's prefix (HWNPU_TEST_MUSICCOCA_REF).
+// mccRef prepares MusicCoCa's text side in the model's directory (BONSAIAI_TEST_MRT_DIR) and gives
+// mcc_ref.py's prefix (BONSAIAI_TEST_MUSICCOCA_REF).
 func mccRef(t *testing.T) (Paths, string) {
-	dir, ref := os.Getenv("HWNPU_TEST_MRT_DIR"), os.Getenv("HWNPU_TEST_MUSICCOCA_REF")
+	dir, ref := os.Getenv("BONSAIAI_TEST_MRT_DIR"), os.Getenv("BONSAIAI_TEST_MUSICCOCA_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_TEST_MRT_DIR and HWNPU_TEST_MUSICCOCA_REF are not set")
+		t.Skip("BONSAIAI_TEST_MRT_DIR and BONSAIAI_TEST_MUSICCOCA_REF are not set")
 	}
-	p, err := Prepare(context.Background(), Setup{Dir: dir, Repo: "google/magenta-realtime-2", Text: true, AudioStyle: os.Getenv("HWNPU_TEST_MUSICCOCA_AUDIO_REF") != ""})
+	p, err := Prepare(context.Background(), Setup{Dir: dir, Repo: "google/magenta-realtime-2", Text: true, AudioStyle: os.Getenv("BONSAIAI_TEST_MUSICCOCA_AUDIO_REF") != ""})
 	if err != nil {
 		t.Fatal(err)
 	}

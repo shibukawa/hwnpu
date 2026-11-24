@@ -7,11 +7,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Translate is the use of a translation model (PLaMo 3 Translate) for an app: a model, a family
@@ -81,7 +81,7 @@ type Pair struct{ Source, Target string }
 
 // Translator translates texts (PLaMo 3 Translate). It runs one request at a time; others wait.
 type Translator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	e      *chat.Engine
 	model  string
@@ -196,7 +196,7 @@ func (t *Translator) translateStream(ctx context.Context, s flow.Stream[flow.Tex
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *Translator) Close() error {
 	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
+		return t.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()

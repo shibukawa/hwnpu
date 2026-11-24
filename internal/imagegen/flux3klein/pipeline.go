@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // ProgramKind is the kind of manifest.json of an export of Convert.
@@ -186,7 +186,7 @@ type Pipeline struct {
 	W, H int
 	m    *ProgramManifest
 	dir  string
-	dev  *hwnpu.Device
+	dev  *bonsaiai.Device
 	log  io.Writer
 	tok  *tokenizer.Tokenizer
 	emb  *os.File
@@ -210,7 +210,7 @@ type Pipeline struct {
 
 // Open reads the export in dir for pictures of w x h, running its programs on dev: one of Convert
 // (Apple's Neural Engine) or of tools/amd/iron_flux3klein.py (AMD's NPU).
-func Open(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	if IsIronExport(dir) {
 		p := &Pipeline{W: w, H: h, dir: dir, dev: dev, log: log, checked: map[string]bool{}}
 		if err := p.openIron(ctx, dev, dir, w, h); err != nil {
@@ -224,7 +224,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.W
 		return nil, err
 	}
 	if m.Version != ExportVersion {
-		return nil, fmt.Errorf("flux3klein: %s is of layout %d, this hwnpu reads %d: convert it again", dir, m.Version, ExportVersion)
+		return nil, fmt.Errorf("flux3klein: %s is of layout %d, this bonsaiai reads %d: convert it again", dir, m.Version, ExportVersion)
 	}
 	if _, err := m.variant(w, h, 1); err != nil {
 		return nil, fmt.Errorf("flux3klein: %w", err)

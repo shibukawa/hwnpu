@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // Run does steps to the export in dir, then checks that it holds no tokenizer file the steps do
@@ -59,7 +59,7 @@ func Run(dir string, steps []recipe.Step) error {
 	return nil
 }
 
-// Check reports what keeps the export in dir, made by hand (hwnpu-dev sources import, its first
+// Check reports what keeps the export in dir, made by hand (bonsaiai-dev sources import, its first
 // use here: chat.ShareMadeHere) or converted (chat.FinishCoreAI), out of the sources: a tokenizer
 // file not made binary yet (Leftover). how is what makes it binary, for the message ("": nothing
 // in hand does, the recipe lacks a finish for it). The tools' check data is left out of every

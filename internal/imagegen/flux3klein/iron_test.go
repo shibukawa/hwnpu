@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 func ironTestConfig(w, h int) IronConfig {

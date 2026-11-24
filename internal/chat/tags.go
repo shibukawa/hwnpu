@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 )
 
 // Category is a use that names the model recommended for it on the machine (MODEL.md's rows):
@@ -36,9 +36,9 @@ var Categories []Category
 
 // MemoryEnv overrides the machine's memory, in GB, that names without a tag pick by (to pick
 // as another machine would, or where the memory cannot be read).
-const MemoryEnv = "HWNPU_MEMORY"
+const MemoryEnv = "BONSAIAI_MEMORY"
 
-// MachineMemory is the machine's memory in GB (GiB, rounded: a 16 GB Mac is 16): HWNPU_MEMORY
+// MachineMemory is the machine's memory in GB (GiB, rounded: a 16 GB Mac is 16): BONSAIAI_MEMORY
 // when set, else the physical memory, else 8, the smallest column of MODEL.md.
 func MachineMemory() int {
 	if v := os.Getenv(MemoryEnv); v != "" {

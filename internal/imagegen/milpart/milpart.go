@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Part is one program of an image model: a model for llm.WritePart whose Build runs Body.

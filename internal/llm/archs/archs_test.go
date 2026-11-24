@@ -3,10 +3,10 @@ package archs
 import (
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
-// hwnpu-dev convert makes one flag of each setting name for all the architectures (llm.BindFlags),
+// bonsaiai-dev convert makes one flag of each setting name for all the architectures (llm.BindFlags),
 // so two architectures may share a name only with the same default.
 func TestParamNames(t *testing.T) {
 	seen := map[string]string{}

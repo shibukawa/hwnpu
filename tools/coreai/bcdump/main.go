@@ -1,5 +1,5 @@
 // Command bcdump prints an MLIR bytecode file's tables and IR (mlirbc.Read): for comparing what
-// hwnpu writes with what coreai-core writes.
+// bonsaiai writes with what coreai-core writes.
 //
 //	go run ./tools/coreai/bcdump model.aimodel/main.mlirb
 package main
@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
 )
 
 func main() {

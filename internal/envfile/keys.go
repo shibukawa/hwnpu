@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// Key is a setting by the name hwnpu config gives it (model-allowlist), and the variable of the
-// .env files that holds it (HWNPU_MODEL_ALLOWLIST): the files keep the variables, which every
+// Key is a setting by the name bonsaiai config gives it (model-allowlist), and the variable of the
+// .env files that holds it (BONSAIAI_MODEL_ALLOWLIST): the files keep the variables, which every
 // process reads, and the users use the keys.
 type Key struct {
 	Name string
@@ -187,25 +187,25 @@ func (k Key) all(v string) []string {
 	return out
 }
 
-// Keys are the settings hwnpu config knows.
+// Keys are the settings bonsaiai config knows.
 var Keys = []Key{
-	{Name: "model-source", Env: "HWNPU_MODEL_SOURCE", Numbered: true, Help: "where the models are looked for before Hugging Face, in order: URLs (file:///..., https://USER@host/dav, s3://BUCKET/PREFIX; ?writeback=true puts there what is made here)"},
-	{Name: "model-allowlist", Env: "HWNPU_MODEL_ALLOWLIST", Sep: ",", Sign: "+", Help: "what the model policy allows: nsfw (the models that may make NSFW pictures), license:open (only these licenses or classes), ... (docs/model-provenance.md)"},
-	{Name: "model-denylist", Env: "HWNPU_MODEL_ALLOWLIST", Sep: ",", Sign: "-", Help: "what the model policy refuses: license:non-commercial, license:conditional, license:ID, ... (wins over model-allowlist)"},
-	{Name: "model-hugging-face", Env: "HWNPU_MODEL_HUGGING_FACE", Help: "false: never fetch from Hugging Face"},
-	{Name: "accept-license", Env: "HWNPU_ACCEPT_LICENSE", Sep: ",", Help: "licenses accepted without asking: their ids, or all"},
-	{Name: "models", Env: "HWNPU_MODELS", Sep: string(os.PathListSeparator), Help: "more definition files of models (models.yaml)"},
-	{Name: "cache", Env: "HWNPU_CACHE", Help: "where the models are kept (default: hwnpu in the user cache directory)"},
-	{Name: "cache-min-free", Env: "HWNPU_CACHE_MIN_FREE", Help: "the disk's space downloads leave free (10GB, 5%, 0)"},
-	{Name: "cache-max-size", Env: "HWNPU_CACHE_MAX_SIZE", Help: "the most the cache holds (200GB)"},
-	{Name: "memory", Env: "HWNPU_MEMORY", Help: "the machine's memory in GB that models are picked by"},
-	{Name: "backend", Env: "HWNPU_BACKEND", Help: "the backend to run on"},
-	{Name: "device", Env: "HWNPU_DEVICE", Help: "the device to run on"},
-	{Name: "coreai-prebuilt", Env: "HWNPU_COREAI_PREBUILT", Help: "off: compile Core AI's programs on the device even when prebuilt ones are there"},
-	{Name: "coreai-units", Env: "HWNPU_COREAI_UNITS", Help: "cpu: run Core AI's programs off the Neural Engine"},
-	{Name: "daemon-idle", Env: "HWNPU_DAEMON_IDLE", Help: "how long hwnpud keeps the models without a request (5m; 0 always)"},
-	{Name: "webdav-user", Env: "HWNPU_WEBDAV_USER", Help: "the WebDAV source's user"},
-	{Name: "webdav-password", Env: "HWNPU_WEBDAV_PASSWORD", Help: "the WebDAV source's password"},
+	{Name: "model-source", Env: "BONSAIAI_MODEL_SOURCE", Numbered: true, Help: "where the models are looked for before Hugging Face, in order: URLs (file:///..., https://USER@host/dav, s3://BUCKET/PREFIX; ?writeback=true puts there what is made here)"},
+	{Name: "model-allowlist", Env: "BONSAIAI_MODEL_ALLOWLIST", Sep: ",", Sign: "+", Help: "what the model policy allows: nsfw (the models that may make NSFW pictures), license:open (only these licenses or classes), ... (docs/model-provenance.md)"},
+	{Name: "model-denylist", Env: "BONSAIAI_MODEL_ALLOWLIST", Sep: ",", Sign: "-", Help: "what the model policy refuses: license:non-commercial, license:conditional, license:ID, ... (wins over model-allowlist)"},
+	{Name: "model-hugging-face", Env: "BONSAIAI_MODEL_HUGGING_FACE", Help: "false: never fetch from Hugging Face"},
+	{Name: "accept-license", Env: "BONSAIAI_ACCEPT_LICENSE", Sep: ",", Help: "licenses accepted without asking: their ids, or all"},
+	{Name: "models", Env: "BONSAIAI_MODELS", Sep: string(os.PathListSeparator), Help: "more definition files of models (models.yaml)"},
+	{Name: "cache", Env: "BONSAIAI_CACHE", Help: "where the models are kept (default: bonsaiai in the user cache directory)"},
+	{Name: "cache-min-free", Env: "BONSAIAI_CACHE_MIN_FREE", Help: "the disk's space downloads leave free (10GB, 5%, 0)"},
+	{Name: "cache-max-size", Env: "BONSAIAI_CACHE_MAX_SIZE", Help: "the most the cache holds (200GB)"},
+	{Name: "memory", Env: "BONSAIAI_MEMORY", Help: "the machine's memory in GB that models are picked by"},
+	{Name: "backend", Env: "BONSAIAI_BACKEND", Help: "the backend to run on"},
+	{Name: "device", Env: "BONSAIAI_DEVICE", Help: "the device to run on"},
+	{Name: "coreai-prebuilt", Env: "BONSAIAI_COREAI_PREBUILT", Help: "off: compile Core AI's programs on the device even when prebuilt ones are there"},
+	{Name: "coreai-units", Env: "BONSAIAI_COREAI_UNITS", Help: "cpu: run Core AI's programs off the Neural Engine"},
+	{Name: "daemon-idle", Env: "BONSAIAI_DAEMON_IDLE", Help: "how long bonsaiaid keeps the models without a request (5m; 0 always)"},
+	{Name: "webdav-user", Env: "BONSAIAI_WEBDAV_USER", Help: "the WebDAV source's user"},
+	{Name: "webdav-password", Env: "BONSAIAI_WEBDAV_PASSWORD", Help: "the WebDAV source's password"},
 	{Name: "hf-token", Env: "HF_TOKEN", Help: "Hugging Face's token"},
 	{Name: "hf-endpoint", Env: "HF_ENDPOINT", Help: "another Hugging Face endpoint (a mirror)"},
 	{Name: "aws-profile", Env: "AWS_PROFILE", Help: "the AWS profile of an s3:// source"},
@@ -213,7 +213,7 @@ var Keys = []Key{
 	{Name: "aws-secret-access-key", Env: "AWS_SECRET_ACCESS_KEY", Help: "the AWS secret of an s3:// source"},
 }
 
-// KeyByName is the key of the name hwnpu config gives it.
+// KeyByName is the key of the name bonsaiai config gives it.
 func KeyByName(name string) (Key, bool) {
 	for _, k := range Keys {
 		if k.Name == name {

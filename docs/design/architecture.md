@@ -2,20 +2,20 @@
 
 [日本語](architecture.ja.md)
 
-The vendor stacks hwnpu sits on, how the code is split, the rules that keep it free of cgo, how it is
+The vendor stacks BonsaiAI sits on, how the code is split, the rules that keep it free of cgo, how it is
 tested, and how models are converted. The public API is in [api.md](api.md); each backend has its
 own file ([Neural Engine](apple-neural-engine.md), [Core AI](apple-coreai.md), [Core ML](apple-coreml.md), [Intel](intel.md), [AMD](amd.md)).
 
 ## Vendor software stacks
 
-| Vendor | OS | Path hwnpu takes | Backend name |
+| Vendor | OS | Path BonsaiAI takes | Backend name |
 |---|---|---|---|
 | Intel NPU (Core Ultra, Meteor Lake and later) | Linux, Windows | Level Zero loader (`libze_loader.so.1` / `ze_loader.dll`) + the NPU graph extension, through purego | `levelzero` |
-| Intel (checks without the NPU) | any | OpenVINO IR run by OpenVINO itself (CPU plugin, or `HWNPU_DEV=ov.device=NPU`) | `openvino` (only with `HWNPU_BACKEND=openvino`) |
+| Intel (checks without the NPU) | any | OpenVINO IR run by OpenVINO itself (CPU plugin, or `BONSAIAI_DEV=ov.device=NPU`) | `openvino` (only with `BONSAIAI_BACKEND=openvino`) |
 | AMD XDNA (Ryzen AI, Phoenix and later) | Linux | `amdxdna` kernel driver, ioctl and mmap through `golang.org/x/sys/unix` (not even purego) | `xdna` |
-| AMD XDNA | Windows (Linux for tests) | XRT (`xrt_coreutil.dll`) through `native/xrtshim`, a small C library loaded at run time | `xrt` (on Linux only with `HWNPU_BACKEND=xrt`) |
+| AMD XDNA | Windows (Linux for tests) | XRT (`xrt_coreutil.dll`) through `native/xrtshim`, a small C library loaded at run time | `xrt` (on Linux only with `BONSAIAI_BACKEND=xrt`) |
 | Apple Neural Engine | macOS | Core ML through `purego/objc` | `coreml` (default) |
-| Apple Neural Engine | macOS 27 | Core AI through a Swift shim (`libcaishim.dylib`, embedded, loaded with purego) | `coreai` (`WithBackend("coreai")`, `HWNPU_BACKEND=coreai`) |
+| Apple Neural Engine | macOS 27 | Core AI through a Swift shim (`libcaishim.dylib`, embedded, loaded with purego) | `coreai` (`WithBackend("coreai")`, `BONSAIAI_BACKEND=coreai`) |
 
 ### Intel
 
@@ -88,7 +88,7 @@ Intel is a graph machine (a whole network compiled by the driver, no public user
 kernel machine (IRON / mlir-aie / Peano kernels poured into the AIE tile array, no public driver
 compiler). The API does not hide this.
 
-Layering: drivers → hwnpu core (model and kernel execution) → helpers per use (chat, embeddings,
+Layering: drivers → BonsaiAI core (model and kernel execution) → helpers per use (chat, embeddings,
 images, speech) in `internal/`.
 
 ### Why each backend
@@ -103,11 +103,11 @@ images, speech) in `internal/`.
 
 ## Package layout
 
-Module `github.com/shibukawa/hwnpu`.
+Module `github.com/shibukawa/bonsaiai`.
 
 | Path | What |
 |---|---|
-| `hwnpu.go`, `device.go`, `graph.go`, `kernel.go`, `options.go`, `float16.go` | Public API ([api.md](api.md)) |
+| `bonsaiai.go`, `device.go`, `graph.go`, `kernel.go`, `options.go`, `float16.go` | Public API ([api.md](api.md)) |
 | `backends.go`, `backends_darwin.go` | Register the backends compiled in (Level Zero, xrt, xdna, OpenVINO everywhere; Core ML, Core AI on darwin) |
 | `models.go` | `ModelsYAML`: the embedded `models.yaml` |
 | `modelstore/`, `npuinfo/` | Public packages ([api.md](api.md)) |
@@ -124,7 +124,7 @@ Module `github.com/shibukawa/hwnpu`.
 | `internal/llm` (+ `blocks`, `archs`, one package per architecture, `decode`, `chain`, `runner`, `paged`, `experts`, `iron`, `check`) | Converters and runners for language and other models |
 | `internal/chat`, `internal/imagegen/*`, `internal/speech`, `internal/transcribe`, `internal/vision`, `internal/audio`, … | Per-use engines behind the commands |
 | `internal/cache`, `internal/store`, `internal/power`, `internal/mem`, `internal/sysload` | Compile cache and model store, energy counters, page-aligned memory and NPU memory, load |
-| `cmd/hwnpu`, `cmd/hwnpu-chat`, `cmd/hwnpu-image`, `cmd/hwnpu-audio`, `cmd/hwnpu-dev` | Commands ([cli.md](cli.md)) |
+| `cmd/bonsaiai`, `cmd/bonsaiai-chat`, `cmd/bonsaiai-image`, `cmd/bonsaiai-audio`, `cmd/bonsaiai-dev` | Commands ([cli.md](cli.md)) |
 | `native/xrtshim`, `internal/backend/coreai/shim` | Shims loaded at run time (C for XRT, Swift for Core AI) |
 | `tools/` | Python references (`tools/ref`), IRON exporters (`tools/amd`), Core ML / Core AI / OpenVINO helpers |
 
@@ -167,13 +167,13 @@ func BindAddr(fptr any, addr uintptr)                  // DDI table function poi
 | Fake drivers | `testdata/zemock` (fake Level Zero, built when `cc` exists), `internal/xdna/xdnasim` (fake amdxdna in Go) | no |
 | Fixtures | small models in `internal/fixtures` (regenerated with `gen_models.py`) | no |
 | Converter | synthetic weights (`llm.NewSynthetic`), digests of program and `weight.bin`, fp64 forward written from `modeling_*.py`, `milcpu` against PyTorch | no |
-| On device | Core ML / Core AI tests on a Mac; `hwnpu-dev report` (passthrough design, sample models) on each NPU; `HWNPU_TEST_PREBUILT` for prebuilt programs | yes |
-| Power | the same model under `PowerLow` and `PowerPerformance`, `hwnpu-dev powerbench` (mJ/token) | yes |
+| On device | Core ML / Core AI tests on a Mac; `bonsaiai-dev report` (passthrough design, sample models) on each NPU; `BONSAIAI_TEST_PREBUILT` for prebuilt programs | yes |
+| Power | the same model under `PowerLow` and `PowerPerformance`, `bonsaiai-dev powerbench` (mJ/token) | yes |
 
 All tests run with `CGO_ENABLED=0 go test ./...`.
 
-Diagnostics: `hwnpu-dev info [-model M]` (devices, versions, library paths, placement of a model),
-`hwnpu status` and `hwnpu issue` (machine, NPU state via `npuinfo`, processes, cache; no NPU wake
+Diagnostics: `bonsaiai-dev info [-model M]` (devices, versions, library paths, placement of a model),
+`bonsaiai status` and `bonsaiai issue` (machine, NPU state via `npuinfo`, processes, cache; no NPU wake
 unless `--wake`), `go run ./npuinfo/cmd/npuinfo` (raw JSON). See [cli.md](cli.md).
 
 ## Conversion pipeline in Go
@@ -195,8 +195,8 @@ unless `--wake`), `go run ./npuinfo/cmd/npuinfo` (raw JSON). See [cli.md](cli.md
 
 | Command | Does |
 |---|---|
-| `hwnpu-dev convert` | Builds a model: architecture detected from `config.json` (`-arch` to force), `-backend coreml` (`.mlpackage`) or `intel` (OpenVINO IR + `out.parts.json`), `-target` (chip whose size limit decides the split; `none` never splits), `-layers N` (first N layers only), `-archs` (list the whitelist). Architecture parameters become flags (LFM3: `-post-scale`, `-conv`, `-attn`, `-hidden-out`) |
-| `hwnpu-dev check` | Compares against the reference: embedding, each layer alone (fed the reference input), final norm and head, whole model. Exit 1 at the first layer over `-tol` (relative RMS, default 0.01). `-package` checks an existing `.mlpackage`'s logits |
+| `bonsaiai-dev convert` | Builds a model: architecture detected from `config.json` (`-arch` to force), `-backend coreml` (`.mlpackage`) or `intel` (OpenVINO IR + `out.parts.json`), `-target` (chip whose size limit decides the split; `none` never splits), `-layers N` (first N layers only), `-archs` (list the whitelist). Architecture parameters become flags (LFM3: `-post-scale`, `-conv`, `-attn`, `-hidden-out`) |
+| `bonsaiai-dev check` | Compares against the reference: embedding, each layer alone (fed the reference input), final norm and head, whole model. Exit 1 at the first layer over `-tol` (relative RMS, default 0.01). `-package` checks an existing `.mlpackage`'s logits |
 | `tools/ref/ref_logits.py` | Writes PyTorch fp32 hidden states and logits (hooks on the decoder layers, since `output_hidden_states` often ends after the final norm; `hidden[0]` from a hook on `get_input_embeddings()`), `REF.json`, `--encoder` for encoders |
 
 ### Checking without an NPU
@@ -294,6 +294,6 @@ AMD on Linux (xclbin and full ELF), and small LLMs on every NPU are done. Left:
 | Direct ioctl on Intel | The firmware job format is private to the UMD |
 | XRT's C API from purego | C++-only contexts, deprecated kernel open, variadic calls |
 | ONNX Runtime's EPs as a backend | EPs split graphs and send ops to the CPU silently, so strict mode cannot hold; ONNX Runtime is used only as a CPU executor (`internal/onnxrt`, float32, CPU EP) for models `models.yaml` places on the CPU |
-| A separate `contrib/` module, `cmd/hwnpuinfo`, public `xdna/` and `levelzero/` helper packages | Not needed: the CPU runner lives in `internal/onnxrt`, diagnostics in `hwnpu-dev info` and `hwnpu status` |
+| A separate `contrib/` module, `cmd/bonsaiaiinfo`, public `xdna/` and `levelzero/` helper packages | Not needed: the CPU runner lives in `internal/onnxrt`, diagnostics in `bonsaiai-dev info` and `bonsaiai status` |
 | Re-quantizing published quantized checkpoints | Each target is quantized from bf16; a quantized checkpoint is used only when its format can be rearranged without loss |
 | 32-bit platforms | All C structs are written for 64 bit |

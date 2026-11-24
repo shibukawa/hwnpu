@@ -2,7 +2,7 @@
 
 Which models to use for what, and how much memory they take: [MODEL.md](MODEL.md).
 
-What each NPU computes in, what hwnpu accepts, and how to prepare models. Facts from vendor documentation are linked; observations from hwnpu's own tests are marked as such.
+What each NPU computes in, what BonsaiAI accepts, and how to prepare models. Facts from vendor documentation are linked; observations from BonsaiAI's own tests are marked as such.
 
 Japanese: [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)
 
@@ -10,11 +10,11 @@ Japanese: [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)
 
 | | Intel NPU | Apple Neural Engine | AMD XDNA NPU |
 |---|---|---|---|
-| hwnpu backend | `levelzero` | `coreml` | `xdna` |
-| What hwnpu loads | OpenVINO IR (`.xml` + `.bin`), or a blob compiled by the same driver | Core ML model (`.mlpackage`, `.mlmodel`, `.mlmodelc`) | xclbin + instruction stream built with IRON / mlir-aie (kernels, not models) |
+| BonsaiAI backend | `levelzero` | `coreml` | `xdna` |
+| What BonsaiAI loads | OpenVINO IR (`.xml` + `.bin`), or a blob compiled by the same driver | Core ML model (`.mlpackage`, `.mlmodel`, `.mlmodelc`) | xclbin + instruction stream built with IRON / mlir-aie (kernels, not models) |
 | Native compute | fp16; int8 for quantized models | fp16; int8-int8 on newer chips (A17 Pro, M4) | int8, int16, bf16; XDNA2 adds block floating point (BFP16) |
 | fp32 models | Accepted, executed in fp16 | Placed on the CPU (strict mode rejects them) | Converted to bf16 by AMD's tools; fp32 is emulated, not native |
-| Shapes | Static only | Static recommended; hwnpu uses the default shape | Fixed by the kernel |
+| Shapes | Static only | Static recommended; BonsaiAI uses the default shape | Fixed by the kernel |
 | Who compiles for the device | Driver compiler, at load time (cached with `WithCacheDir`) | Core ML, at load time (cached with `WithCacheDir`) | Offline, with mlir-aie and Peano |
 | Placement check | Compiler result; unsupported ops are listed | `MLComputePlan` (estimate) | Always NPU |
 
@@ -22,7 +22,7 @@ Japanese: [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)
 
 **Accepted formats**
 
-- OpenVINO IR v11. hwnpu reads the `.xml` and the `.bin` next to it, and passes them to the driver compiler like the OpenVINO NPU plugin does.
+- OpenVINO IR v11. BonsaiAI reads the `.xml` and the `.bin` next to it, and passes them to the driver compiler like the OpenVINO NPU plugin does.
 - A compiled blob from the same driver and compiler version. Blobs are not portable across driver versions, so ship IR and let `WithCacheDir` keep the blobs.
 
 **Data types**
@@ -33,13 +33,13 @@ Japanese: [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)
 
 | ArgInfo.DType | Size | Notes |
 |---|---|---|
-| `F32`, `F16`, `BF16`, `F64` | 4, 2, 2, 8 | Use `hwnpu.EncodeF16` / `DecodeF16` for fp16. |
+| `F32`, `F16`, `BF16`, `F64` | 4, 2, 2, 8 | Use `bonsaiai.EncodeF16` / `DecodeF16` for fp16. |
 | `U8`, `I8`, `I16`, `I32`, `I64` | 1, 1, 2, 4, 8 | |
 
 **Constraints**
 
-- Shapes must be static. hwnpu rejects IR with dynamic dimensions.
-- The model's opset must be supported by the driver compiler. `hwnpu-dev info` shows the compiler version.
+- Shapes must be static. BonsaiAI rejects IR with dynamic dimensions.
+- The model's opset must be supported by the driver compiler. `bonsaiai-dev info` shows the compiler version.
 - An operation the compiler does not support fails the load with `ErrNotOnNPU`, listing the operation. The NPU never falls back to the CPU.
 
 **Converting**
@@ -56,9 +56,9 @@ Japanese: [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)
 
 **Data types**
 
-- The Neural Engine computes in fp16. In hwnpu's tests, an fp32 ML Program was placed entirely on the CPU, so strict mode rejects fp32 models.
+- The Neural Engine computes in fp16. In BonsaiAI's tests, an fp32 ML Program was placed entirely on the CPU, so strict mode rejects fp32 models.
 - Weights can be compressed: Core ML supports int8 and int4 linear quantization and palettization to 1 to 8 bits for weights, and int8 for activations. W8A8 uses a faster int8-int8 path on newer hardware such as A17 Pro and M4 ([coremltools optimization overview](https://apple.github.io/coremltools/docs-guides/source/opt-overview.html)).
-- hwnpu supports multi-array inputs and outputs only (no image or dictionary features):
+- BonsaiAI supports multi-array inputs and outputs only (no image or dictionary features):
 
 | Core ML multi-array type | ArgInfo.DType |
 |---|---|
@@ -70,13 +70,13 @@ Japanese: [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)
 
 **Constraints**
 
-- hwnpu uses each input's default shape. Flexible shapes are not supported.
-- Observed in hwnpu's tests (macOS 27): small models are placed on the CPU even in fp16. A linear layer with a (64, 512) input and 512 outputs ran on the Neural Engine; (32, 256) and smaller ran on the CPU, as did 1x1 convolutions up to 256 channels at 32x32. Batch small inputs together if they must run on the Neural Engine.
+- BonsaiAI uses each input's default shape. Flexible shapes are not supported.
+- Observed in BonsaiAI's tests (macOS 27): small models are placed on the CPU even in fp16. A linear layer with a (64, 512) input and 512 outputs ran on the Neural Engine; (32, 256) and smaller ran on the CPU, as did 1x1 convolutions up to 256 channels at 32x32. Batch small inputs together if they must run on the Neural Engine.
 - Placement is an estimate from `MLComputePlan` (macOS 14.4 or later). Core ML does not report where a prediction actually ran.
 
 **Padding small models to reach the Neural Engine**
 
-Core ML decides placement from the whole model's cost, not from a fixed threshold. In hwnpu's tests (macOS 27):
+Core ML decides placement from the whole model's cost, not from a fixed threshold. In BonsaiAI's tests (macOS 27):
 
 | Model (fp16) | Placement |
 |---|---|
@@ -96,12 +96,12 @@ Growing the **batch** (first) dimension is what moves a model to the Neural Engi
 python tools/coreml/ane_pad.py model.mlpackage model_ane.mlpackage --verify
 ```
 
-It records the original and padded batch in the model's metadata. hwnpu reads them: `ArgInfo.Dims` and `Bytes` keep the original batch, `ArgInfo.PaddedDims` shows the shape that runs, and hwnpu copies the caller's rows into zero padded buffers and copies the results back.
+It records the original and padded batch in the model's metadata. BonsaiAI reads them: `ArgInfo.Dims` and `Bytes` keep the original batch, `ArgInfo.PaddedDims` shows the shape that runs, and BonsaiAI copies the caller's rows into zero padded buffers and copies the results back.
 
-**Measure before you adopt padding.** For the 3 layer MLP above, one row took 73 µs on the CPU and 280 µs when padded to 64 rows on the Neural Engine; 64 rows on the CPU took 62 µs (measured through hwnpu by hwnpu-dev powerbench). Starting the Neural Engine costs more than this model's work, so Core ML's choice of the CPU was right for latency. Slower is still worth it if the Neural Engine uses less energy, so measure energy, not only latency:
+**Measure before you adopt padding.** For the 3 layer MLP above, one row took 73 µs on the CPU and 280 µs when padded to 64 rows on the Neural Engine; 64 rows on the CPU took 62 µs (measured through BonsaiAI by bonsaiai-dev powerbench). Starting the Neural Engine costs more than this model's work, so Core ML's choice of the CPU was right for latency. Slower is still worth it if the Neural Engine uses less energy, so measure energy, not only latency:
 
 ```bash
-go run ./cmd/hwnpu-dev powerbench
+go run ./cmd/bonsaiai-dev powerbench
 ```
 
 It asks for the sudo password once, runs powermetrics (CPU, GPU and ANE rails) while each model runs, subtracts idle power, and prints the energy per call (mJ/call = net power / calls per second). It measures the built-in `mlp_small` pair by default; pass `-model a.mlpackage -model b.mlpackage` for your own models, and `-rate 100` to compare at a fixed request rate, which is closer to how a small model runs in practice. `-json` and `-raw` keep the results and the raw powermetrics output. powermetrics values are estimates, so compare models on the same Mac only.
@@ -117,7 +117,7 @@ On an M3 MacBook Air the padded `mlp_small` did not pay off. Back-to-back, the C
 
 ### Where the Neural Engine pays off
 
-Measured on an M3 MacBook Air (macOS 27) with `hwnpu-dev powerbench`: each model ran back-to-back, once with Core ML limited to the CPU and once with the CPU and the Neural Engine, and energy is the power above idle divided by calls per second (10 s per phase, 2 rounds).
+Measured on an M3 MacBook Air (macOS 27) with `bonsaiai-dev powerbench`: each model ran back-to-back, once with Core ML limited to the CPU and once with the CPU and the Neural Engine, and energy is the power above idle divided by calls per second (10 s per phase, 2 rounds).
 
 | model | work per call | CPU only: latency / energy | Neural Engine: latency / energy | NPU energy vs CPU |
 |---|---|---|---|---|
@@ -131,7 +131,7 @@ Measured on an M3 MacBook Air (macOS 27) with `hwnpu-dev powerbench`: each model
 
 The break-even point is around 200 MFLOP per call (a 1.6 M parameter, 2 layer encoder over 64 tokens). Below it, Core ML's fixed cost per call dominates and the CPU wins; above it, the Neural Engine is 2 to 3 times faster and uses a quarter of the energy, about 1 TFLOP per joule against 0.25 on the CPU. The Neural Engine is not low power in absolute terms (it drew up to 6 W here), but it finishes the same work with much less energy.
 
-all-MiniLM-L6-v2, a real embedding model, behaves like the synthetic encoder of the same size even though Core ML keeps the token embedding lookup, the first layer norm and the pooling on the CPU (148 of 170 operations on the Neural Engine). hwnpu's strict mode rejects such a split model; open it with `WithPlacement(PlacementPrefer)`.
+all-MiniLM-L6-v2, a real embedding model, behaves like the synthetic encoder of the same size even though Core ML keeps the token embedding lookup, the first layer norm and the pooling on the CPU (148 of 170 operations on the Neural Engine). BonsaiAI's strict mode rejects such a split model; open it with `WithPlacement(PlacementPrefer)`.
 
 Idle power varied between 0.45 W and 1.06 W during the run, so results near the break-even point (the d256 row) are within noise.
 
@@ -140,7 +140,7 @@ Reproduce with:
 ```bash
 python tools/coreml/gen_sweep.py build/sweep
 python tools/coreml/convert_minilm.py build/minilm/minilm_s128_b1.mlpackage --seq 128
-go run ./cmd/hwnpu-dev powerbench -model 'build/sweep/*.mlpackage' -model 'build/minilm/*.mlpackage' -json build/power-sweep.json
+go run ./cmd/bonsaiai-dev powerbench -model 'build/sweep/*.mlpackage' -model 'build/minilm/*.mlpackage' -json build/power-sweep.json
 python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 ```
 
@@ -150,13 +150,13 @@ python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 
 **Accepted formats**
 
-- An xclbin with an AIE partition and DPU kernel metadata, plus the instruction stream, as produced by IRON / mlir-aie (`aiecc`). hwnpu runs **kernels**: it does not take ONNX or other model files, because AMD's model compiler (Vitis AI, used by ONNX Runtime) is not a public library.
+- An xclbin with an AIE partition and DPU kernel metadata, plus the instruction stream, as produced by IRON / mlir-aie (`aiecc`). BonsaiAI runs **kernels**: it does not take ONNX or other model files, because AMD's model compiler (Vitis AI, used by ONNX Runtime) is not a public library.
 
 **Data types**
 
 - The AIE-ML cores compute natively in int8, int16 and bf16. XDNA2 (Strix Point and later) adds a block floating point format (BFP16) in which eight values share an exponent ([GEMM optimization across Ryzen AI generations](https://arxiv.org/pdf/2512.13282)). fp32 is emulated. Native fp16 support was not found in the documentation.
 - Buffers are raw bytes: the kernel defines their layout and type. Scalars are set with `SetUint32`, `SetUint64` or `SetBytes`, in the sizes listed by `Kernel.Args()`.
-- hwnpu has fp16 helpers only. Convert bf16 in your code (the upper 16 bits of an fp32 value, with rounding).
+- BonsaiAI has fp16 helpers only. Convert bf16 in your code (the upper 16 bits of an fp32 value, with rounding).
 
 **Constraints**
 
@@ -166,61 +166,61 @@ python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 
 **Running models on AMD**
 
-- For ONNX models, AMD's supported route is ONNX Runtime with the Vitis AI execution provider (Ryzen AI Software). AMD's documentation describes int8 quantization for CNNs and bf16 for transformers there, with fp32 models converted to bf16. hwnpu does not cover this route yet.
+- For ONNX models, AMD's supported route is ONNX Runtime with the Vitis AI execution provider (Ryzen AI Software). AMD's documentation describes int8 quantization for CNNs and bf16 for transformers there, with fp32 models converted to bf16. BonsaiAI does not cover this route yet.
 
 ## Preparing models: convert once, in Go, before distribution
 
-hwnpu cannot convert models at load time without heavy dependencies (OpenVINO's C++ frontends, coremltools in Python, AMD's closed compiler), and converting on every machine would spend time and power against hwnpu's goal. So models are converted once by the developer, with one artifact per vendor in the precision that vendor's NPU reads fastest, and distributed (S3, NFS, a private Hugging Face repository). At load time the application picks the artifact for the device it finds and lets the vendor compile it; `WithCacheDir` keeps that result per machine.
+BonsaiAI cannot convert models at load time without heavy dependencies (OpenVINO's C++ frontends, coremltools in Python, AMD's closed compiler), and converting on every machine would spend time and power against BonsaiAI's goal. So models are converted once by the developer, with one artifact per vendor in the precision that vendor's NPU reads fastest, and distributed (S3, NFS, a private Hugging Face repository). At load time the application picks the artifact for the device it finds and lets the vendor compile it; `WithCacheDir` keeps that result per machine.
 
-The converter needs no Python: LLMs share a handful of block structures (norm, attention or convolution, gated MLP), so `hwnpu-dev convert` builds the graph in Go from `config.json` and reads the weights from the safetensors or GGUF checkpoint. The supported architectures are a whitelist (`-archs` lists them), so far Liquid AI's LFM3 (also the text model of LFM3-VL checkpoints, and the d1 decision models such as d1-2B), LFM3-VL's vision encoder (`-arch lfm3-vision`), the audio encoder of LFM3-Audio and LFM3-Omni (`-arch lfm3-audio-encoder`), their speech output (the depthformer `-arch lfm3-depthformer` and the liquid codec's decoder, `model_type` liquid_codec), Google's Gemma 4 (the text model of gemma-4-E2B-it), Qwen's Qwen3.5 (the text model of the dense checkpoints such as Qwen3.5-4B: Gated DeltaNet and full attention layers; checked on the CPU, not yet on the Neural Engine), Qwen's Qwen3.5-MoE (`qwen3_5_moe`, Qwen3.6-35B-A3B: the same token mixers, every layer's MLP 256 experts of which 8 a token and a shared expert; for Core AI alone, cut at every layer's experts as gpt-oss-20b is: the router's logits and the shared expert on the Neural Engine, the experts on the CPU in 4 bit MXFP4 from a checkpoint `hwnpu-dev mxfp4` derives from the release a layer at a time), Qwen's dense Qwen3 (Qwen3-0.6B and 1.7B: Q and K norms, every layer full attention; runs on the Neural Engine), BERT encoders (all-MiniLM-L6-v2, E5, BGE, GTE and the like) and PLaMo's bidirectional encoder (PLaMo-Embedding-1B), and Preferred Networks' PLaMo 3 (PLaMo 3 Translate 2B: sliding window and full attention layers, YaRN; checked on the CPU and OpenVINO's CPU, not yet on the Neural Engine or Intel's NPU itself), ByteDance's Ouro (Ouro-1.4B-Thinking and 2.6B-Thinking: a looped decoder whose layers run four times on each token with the same weights, each pass with keys and values of its own; checked on the CPU, not yet on the Neural Engine or Intel's NPU), and OpenAI's Whisper (whisper-large-v3-turbo, kotoba-whisper and the like: `model_type` whisper is the text decoder, `-arch whisper-encoder` the audio encoder and `-arch whisper-cross` the cross attention's keys and values; `hwnpu-audio transcribe` transcribes with them), detected from `config.json`. It writes Core ML packages, or with `-backend intel` OpenVINO IR for Intel's NPU (`out.xml`, `out.bin` and `out.parts.json`; the program is built as for Core ML and translated by `internal/ovlower`, with the weights in `-format int4`, `int4-g128` or `int8` (int4 in place of lut4 and int8 in place of lut6 and lut8 by default, so BERT and PLaMo-Embedding, whose sentence embeddings 4 bits spoil, get int8), see [docs/intel-npu-models.md](docs/intel-npu-models.md)). So far the IR is checked with OpenVINO's CPU plugin for BERT and PLaMo-Embedding, not yet on Intel's NPU itself. The AMD writer is not implemented yet.
+The converter needs no Python: LLMs share a handful of block structures (norm, attention or convolution, gated MLP), so `bonsaiai-dev convert` builds the graph in Go from `config.json` and reads the weights from the safetensors or GGUF checkpoint. The supported architectures are a whitelist (`-archs` lists them), so far Liquid AI's LFM3 (also the text model of LFM3-VL checkpoints, and the d1 decision models such as d1-2B), LFM3-VL's vision encoder (`-arch lfm3-vision`), the audio encoder of LFM3-Audio and LFM3-Omni (`-arch lfm3-audio-encoder`), their speech output (the depthformer `-arch lfm3-depthformer` and the liquid codec's decoder, `model_type` liquid_codec), Google's Gemma 4 (the text model of gemma-4-E2B-it), Qwen's Qwen3.5 (the text model of the dense checkpoints such as Qwen3.5-4B: Gated DeltaNet and full attention layers; checked on the CPU, not yet on the Neural Engine), Qwen's Qwen3.5-MoE (`qwen3_5_moe`, Qwen3.6-35B-A3B: the same token mixers, every layer's MLP 256 experts of which 8 a token and a shared expert; for Core AI alone, cut at every layer's experts as gpt-oss-20b is: the router's logits and the shared expert on the Neural Engine, the experts on the CPU in 4 bit MXFP4 from a checkpoint `bonsaiai-dev mxfp4` derives from the release a layer at a time), Qwen's dense Qwen3 (Qwen3-0.6B and 1.7B: Q and K norms, every layer full attention; runs on the Neural Engine), BERT encoders (all-MiniLM-L6-v2, E5, BGE, GTE and the like) and PLaMo's bidirectional encoder (PLaMo-Embedding-1B), and Preferred Networks' PLaMo 3 (PLaMo 3 Translate 2B: sliding window and full attention layers, YaRN; checked on the CPU and OpenVINO's CPU, not yet on the Neural Engine or Intel's NPU itself), ByteDance's Ouro (Ouro-1.4B-Thinking and 2.6B-Thinking: a looped decoder whose layers run four times on each token with the same weights, each pass with keys and values of its own; checked on the CPU, not yet on the Neural Engine or Intel's NPU), and OpenAI's Whisper (whisper-large-v3-turbo, kotoba-whisper and the like: `model_type` whisper is the text decoder, `-arch whisper-encoder` the audio encoder and `-arch whisper-cross` the cross attention's keys and values; `bonsaiai-audio transcribe` transcribes with them), detected from `config.json`. It writes Core ML packages, or with `-backend intel` OpenVINO IR for Intel's NPU (`out.xml`, `out.bin` and `out.parts.json`; the program is built as for Core ML and translated by `internal/ovlower`, with the weights in `-format int4`, `int4-g128` or `int8` (int4 in place of lut4 and int8 in place of lut6 and lut8 by default, so BERT and PLaMo-Embedding, whose sentence embeddings 4 bits spoil, get int8), see [docs/intel-npu-models.md](docs/intel-npu-models.md)). So far the IR is checked with OpenVINO's CPU plugin for BERT and PLaMo-Embedding, not yet on Intel's NPU itself. The AMD writer is not implemented yet.
 
 ```bash
-go run ./cmd/hwnpu-dev convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o lfm3.mlpackage -seq 32
+go run ./cmd/bonsaiai-dev convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o lfm3.mlpackage -seq 32
 ```
 
-The package takes `x`, the fp16 token embeddings `(1, seq, hidden)`, and returns `y`, the logits `(1, seq, vocab)`. The embedding lookup stays on the host because Core ML always places `gather` on the CPU. BERT and PLaMo-Embedding packages take a second input, `mask` (fp16 `(1, seq)`, 1 for tokens and 0 for padding), and return the last hidden state `(1, seq, hidden)`; pooling (mean or CLS) and normalization into a sentence embedding are left to the host. Gemma 4 has a second embedding table, the per-layer embeddings (262144 x 8960 for E2B, 4.7 GB in bf16), which also stays on the host: its packages take the rows of the tokens as `ple` (fp16 `(1, seq, 8960)`). A d1 decision model (d1-2B) takes `mask` too and returns the final hidden state; the host reads the logits of the answer labels at the prompt's last token from it (`hwnpu-chat systemone`, the System One API of llama.cpp's server). The LFM3-VL vision encoder is converted for one image size (`-image WIDTHxHEIGHT`): it takes the image's normalized patches `(1, patches, 3*patch*patch)` and returns its embeddings in the text model's input `(1, tokens, hidden)`, which the host puts between `<|vision_start|>` and `<|vision_end|>` (`internal/vision`). The audio encoder is converted for clips of up to a number of mel frames (`-frames`): it takes the clip's log mel frames `(1, frames, 128)` followed by zeros and a `mask` of them, and returns `(1, frames/8, hidden)`, the clip's own rows first (`internal/audio`). The weights are 4 bit lookup tables (`-format lut4`), one table of 16 fp16 values per 16 output rows, which is the only compressed layout the Neural Engine runs at full speed (see below). `-format fp16` keeps the weights as they are, for checking the graph.
+The package takes `x`, the fp16 token embeddings `(1, seq, hidden)`, and returns `y`, the logits `(1, seq, vocab)`. The embedding lookup stays on the host because Core ML always places `gather` on the CPU. BERT and PLaMo-Embedding packages take a second input, `mask` (fp16 `(1, seq)`, 1 for tokens and 0 for padding), and return the last hidden state `(1, seq, hidden)`; pooling (mean or CLS) and normalization into a sentence embedding are left to the host. Gemma 4 has a second embedding table, the per-layer embeddings (262144 x 8960 for E2B, 4.7 GB in bf16), which also stays on the host: its packages take the rows of the tokens as `ple` (fp16 `(1, seq, 8960)`). A d1 decision model (d1-2B) takes `mask` too and returns the final hidden state; the host reads the logits of the answer labels at the prompt's last token from it (`bonsaiai-chat systemone`, the System One API of llama.cpp's server). The LFM3-VL vision encoder is converted for one image size (`-image WIDTHxHEIGHT`): it takes the image's normalized patches `(1, patches, 3*patch*patch)` and returns its embeddings in the text model's input `(1, tokens, hidden)`, which the host puts between `<|vision_start|>` and `<|vision_end|>` (`internal/vision`). The audio encoder is converted for clips of up to a number of mel frames (`-frames`): it takes the clip's log mel frames `(1, frames, 128)` followed by zeros and a `mask` of them, and returns `(1, frames/8, hidden)`, the clip's own rows first (`internal/audio`). The weights are 4 bit lookup tables (`-format lut4`), one table of 16 fp16 values per 16 output rows, which is the only compressed layout the Neural Engine runs at full speed (see below). `-format fp16` keeps the weights as they are, for checking the graph.
 
-**Splitting a large model**: the Neural Engine takes a model only when its weight file is under a limit that depends on the chip; a larger model is placed on the CPU as a whole. The limit is per model, so `hwnpu-dev convert` splits a model over it into the fewest parts under it, balanced by size. `-target` picks the chip (the default, `any`, is the smallest limit of the known chips).
+**Splitting a large model**: the Neural Engine takes a model only when its weight file is under a limit that depends on the chip; a larger model is placed on the CPU as a whole. The limit is per model, so `bonsaiai-dev convert` splits a model over it into the fewest parts under it, balanced by size. `-target` picks the chip (the default, `any`, is the smallest limit of the known chips).
 
 | `-target` | limit per model | source |
 |---|---|---|
-| `m1` | 1 GiB | assumed, from a report of half the M4's; to be measured with `hwnpu-dev probe limit` |
-| `m2` | 1 GiB | assumed the same as the M3's; to be measured with `hwnpu-dev probe limit` |
-| `m3` | 1 GiB | `hwnpu-dev probe limit`: 0.99 GiB on the Neural Engine, 1.02 GiB on the CPU, in every format ([PROBE.md](PROBE.md)) |
+| `m1` | 1 GiB | assumed, from a report of half the M4's; to be measured with `bonsaiai-dev probe limit` |
+| `m2` | 1 GiB | assumed the same as the M3's; to be measured with `bonsaiai-dev probe limit` |
+| `m3` | 1 GiB | `bonsaiai-dev probe limit`: 0.99 GiB on the Neural Engine, 1.02 GiB on the CPU, in every format ([PROBE.md](PROBE.md)) |
 | `m4` | 2 GB | measured: a 4 B model in lut4 (2 GB) ran on the Neural Engine |
 
-The estimated weights of each part fill at most 97% of the limit, and after writing, the actual weight file of each part is checked to be under it. A split model is written as `out.part1.mlpackage`, `out.part2.mlpackage`, … with `out.parts.json`, which lists the parts in order with their inputs and outputs. Each part's input `x` is the hidden state entering its first layer (the token embeddings for the first part); other inputs such as `mask` go to every part. Run the parts in order with the buffer of each part's output `y` bound as the next part's `x`; the last part's `y` is the model's output. On the M3 the parts ran as fast as one model would (`hwnpu-dev probe split` in PROBE.md). On the M4 too, 4 parts of 0.91 GiB ran as fast as 2 of 1.81 GiB, with the same error (58.8 and 58.3 ms per token). Every part is loaded at once, but the peak memory of the process while loading is about the weights of one part, so finer parts help a machine short of memory (on the M3, 1.81 GiB in 2 parts peaked at 1.03 GiB, in 4 at 0.55 GiB). The default `any`, one set of packages for every chip, is the one to use. Writing the parts as the functions of one package does not work: the limit counts the whole package, and every function falls to the CPU. `-parts N` sets the number of parts, and `-target none` turns splitting off. `-archs` lists the per chip limits after the architectures.
+The estimated weights of each part fill at most 97% of the limit, and after writing, the actual weight file of each part is checked to be under it. A split model is written as `out.part1.mlpackage`, `out.part2.mlpackage`, … with `out.parts.json`, which lists the parts in order with their inputs and outputs. Each part's input `x` is the hidden state entering its first layer (the token embeddings for the first part); other inputs such as `mask` go to every part. Run the parts in order with the buffer of each part's output `y` bound as the next part's `x`; the last part's `y` is the model's output. On the M3 the parts ran as fast as one model would (`bonsaiai-dev probe split` in PROBE.md). On the M4 too, 4 parts of 0.91 GiB ran as fast as 2 of 1.81 GiB, with the same error (58.8 and 58.3 ms per token). Every part is loaded at once, but the peak memory of the process while loading is about the weights of one part, so finer parts help a machine short of memory (on the M3, 1.81 GiB in 2 parts peaked at 1.03 GiB, in 4 at 0.55 GiB). The default `any`, one set of packages for every chip, is the one to use. Writing the parts as the functions of one package does not work: the limit counts the whole package, and every function falls to the CPU. `-parts N` sets the number of parts, and `-target none` turns splitting off. `-archs` lists the per chip limits after the architectures.
 
 ```bash
-go run ./cmd/hwnpu-dev convert -config config.json -weights model.safetensors -o model.mlpackage -seq 32 -target m3
+go run ./cmd/bonsaiai-dev convert -config config.json -weights model.safetensors -o model.mlpackage -seq 32 -target m3
 ```
 
-A conversion can be checked without a Mac. `tools/ref/ref_logits.py` saves reference activations from the Hugging Face implementation, and `hwnpu-dev check` runs the graph on the CPU in fp32 and compares it layer by layer. Each layer is fed the reference's own input, so errors do not pile up and the first wrong layer stands out; tensors in the checkpoint that the conversion does not read are reported too. With `-package` it compares a written package's logits (lut4, for example) with the reference.
+A conversion can be checked without a Mac. `tools/ref/ref_logits.py` saves reference activations from the Hugging Face implementation, and `bonsaiai-dev check` runs the graph on the CPU in fp32 and compares it layer by layer. Each layer is fed the reference's own input, so errors do not pile up and the first wrong layer stands out; tensors in the checkpoint that the conversion does not read are reported too. With `-package` it compares a written package's logits (lut4, for example) with the reference.
 
 ```bash
 python tools/ref/ref_logits.py build/lfm3 build/lfm3/ref --seq 32
-go run ./cmd/hwnpu-dev check -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -ref build/lfm3/ref
-go run ./cmd/hwnpu-dev check -package lfm3.mlpackage -ref build/lfm3/ref
+go run ./cmd/bonsaiai-dev check -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -ref build/lfm3/ref
+go run ./cmd/bonsaiai-dev check -package lfm3.mlpackage -ref build/lfm3/ref
 ```
 
-A split model or a single one generates text with `hwnpu-dev generate`.`hwnpu-dev generate` builds a chat prompt with a tokenizer written in Go (the byte-level BPE of `tokenizer.json`), looks up the embeddings in the checkpoint and generates on the Neural Engine one token at a time.
+A split model or a single one generates text with `bonsaiai-dev generate`.`bonsaiai-dev generate` builds a chat prompt with a tokenizer written in Go (the byte-level BPE of `tokenizer.json`), looks up the embeddings in the checkpoint and generates on the Neural Engine one token at a time.
 
-Long text needs a KV cache. Converted with `-cache N`, the program takes `-seq` tokens per call (1 for generating), reads the keys and values of the tokens before them (and LFM3's convolution state) as inputs, and outputs the new ones. The cache lives in host buffers that `hwnpu-dev generate` appends to after every call. Each part holds only its own layers' cache, so it combines with splitting. Give `-package` the `.mlpackage` of a single model or the `.parts.json` of a split one.
+Long text needs a KV cache. Converted with `-cache N`, the program takes `-seq` tokens per call (1 for generating), reads the keys and values of the tokens before them (and LFM3's convolution state) as inputs, and outputs the new ones. The cache lives in host buffers that `bonsaiai-dev generate` appends to after every call. Each part holds only its own layers' cache, so it combines with splitting. Give `-package` the `.mlpackage` of a single model or the `.parts.json` of a split one.
 
 ```bash
-go run ./cmd/hwnpu-dev convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-kv.mlpackage -seq 1 -cache 4096 -quant kmeans-minmax -parts 2
-go run ./cmd/hwnpu-dev generate -package build/lfm3/lfm3-kv.parts.json -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "Write an internal memo on why we should use Go."
+go run ./cmd/bonsaiai-dev convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-kv.mlpackage -seq 1 -cache 4096 -quant kmeans-minmax -parts 2
+go run ./cmd/bonsaiai-dev generate -package build/lfm3/lfm3-kv.parts.json -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "Write an internal memo on why we should use Go."
 ```
 
 The cache of a sliding attention layer (5 of LFM3's 24 layers, window 256) is a ring buffer of the window's length, so only the 6 full attention layers need the long cache. LFM3-1.7B (lut4, 2 parts) on an M3 takes 19.1 ms per token with a cache of 1024 tokens, 27.7 ms with 4096 and 38.5 ms with 8192: the cost follows the cache's capacity, not how much of it is used, so pick the length you need. The Neural Engine takes tensor dimensions up to 16384, so with `-cache` plus `-seq` over 16384 the attention runs on the CPU and is very slow (the converter warns).
 
-Since the cost follows the capacity, a short context runs faster on a short cache. `-cache 1024,4096,8192`, increasing lengths separated by commas, writes the parts of each length (`out.c1024.part1.mlpackage`, ...) as tiers of one `out.parts.json`. `hwnpu-dev generate` loads every tier first by default (`-preload all`), starts on the shortest and moves the cache over to the next when it fills. The output is the same as on the long tier from the start. Loading a tier takes 6 to 30 seconds, and generating while one loads in the background runs at less than half speed, so use a background preload (`-preload 0.5`) only when that is acceptable. The weights are written once per tier (0.8 GiB each for LFM3-1.7B in lut4), and every tier is in memory. A model with a cache takes 15 to 20 seconds to load even with its compiled cache (about 1 second without a KV cache; not investigated yet). A model converted without a cache computes the whole `-seq` window for every token and drops the oldest tokens when it is full (about 34 ms at seq 128).
+Since the cost follows the capacity, a short context runs faster on a short cache. `-cache 1024,4096,8192`, increasing lengths separated by commas, writes the parts of each length (`out.c1024.part1.mlpackage`, ...) as tiers of one `out.parts.json`. `bonsaiai-dev generate` loads every tier first by default (`-preload all`), starts on the shortest and moves the cache over to the next when it fills. The output is the same as on the long tier from the start. Loading a tier takes 6 to 30 seconds, and generating while one loads in the background runs at less than half speed, so use a background preload (`-preload 0.5`) only when that is acceptable. The weights are written once per tier (0.8 GiB each for LFM3-1.7B in lut4), and every tier is in memory. A model with a cache takes 15 to 20 seconds to load even with its compiled cache (about 1 second without a KV cache; not investigated yet). A model converted without a cache computes the whole `-seq` window for every token and drops the oldest tokens when it is full (about 34 ms at seq 128).
 
-With `-paged 8192`, LFM3 and Gemma 4 cost in proportion to the tokens used instead of the capacity. The model is split before and after its full attention layers (7 parts for LFM3-1.7B), and only their attention runs on a program without weights (`out.attn.mlpackage`), once per chunk of 8192 tokens of a cache the host holds, the chunks merged on the host. The host allocates a chunk when the sequence reaches it, so the memory grows with the conversation too (12 KiB a token). `-cache` is then the longest sequence, and the model's longest, 262144, does not slow a short conversation. `-seq` must be at most the chunk. The attention over chunks of 8192 is on the Neural Engine with 8 and 64 tokens per call; with 1 token per call Core ML puts it on the CPU, where it is faster. It does not combine with tiers (`-cache a,b`). `go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 8 -cache 262144 -paged 8192 -o DIR/lfm3-p8192-q8.mlpackage` writes `lfm3-p8192-q8.parts.json`. Gemma 4 converts the same way (8 parts for E2B, cut at its 7 full attention layers). 4 of those layers use an earlier layer's keys and values, so the host attends over that layer's cache, and the cache is 3 layers', 6 KiB a token. The IR for Intel's NPU (`-backend intel`) is written the same way (`out.partN.xml` and `out.attn.xml`). hwnpu-chat (chat, agent, serve) converts LFM3, its VL, Audio and Omni checkpoints and Gemma 4 this way ([CHAT.md](CHAT.md), [docs/design/llm-engine.md](docs/design/llm-engine.md)).
+With `-paged 8192`, LFM3 and Gemma 4 cost in proportion to the tokens used instead of the capacity. The model is split before and after its full attention layers (7 parts for LFM3-1.7B), and only their attention runs on a program without weights (`out.attn.mlpackage`), once per chunk of 8192 tokens of a cache the host holds, the chunks merged on the host. The host allocates a chunk when the sequence reaches it, so the memory grows with the conversation too (12 KiB a token). `-cache` is then the longest sequence, and the model's longest, 262144, does not slow a short conversation. `-seq` must be at most the chunk. The attention over chunks of 8192 is on the Neural Engine with 8 and 64 tokens per call; with 1 token per call Core ML puts it on the CPU, where it is faster. It does not combine with tiers (`-cache a,b`). `go run ./cmd/bonsaiai-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 8 -cache 262144 -paged 8192 -o DIR/lfm3-p8192-q8.mlpackage` writes `lfm3-p8192-q8.parts.json`. Gemma 4 converts the same way (8 parts for E2B, cut at its 7 full attention layers). 4 of those layers use an earlier layer's keys and values, so the host attends over that layer's cache, and the cache is 3 layers', 6 KiB a token. The IR for Intel's NPU (`-backend intel`) is written the same way (`out.partN.xml` and `out.attn.xml`). bonsaiai-chat (chat, agent, serve) converts LFM3, its VL, Audio and Omni checkpoints and Gemma 4 this way ([CHAT.md](CHAT.md), [docs/design/llm-engine.md](docs/design/llm-engine.md)).
 
 ### Choosing the source checkpoint
 
-Convert from the official bf16 checkpoint. Use a published quantized checkpoint only when it can be repacked without loss into the target's format, which is a one way move to a finer or wider scheme: symmetric int4 (GPTQ without reordering, compressed-tensors W4A16) fits Intel's symmetric int4, AWQ fits AMD's asymmetric uint4 with groups of 128. No published 4 bit format fits the Neural Engine's lookup tables, and re-quantizing a 4 bit checkpoint into another 4 bit format compounds the error: for LFM3-1.7B, bf16 to lut4 gives KL 0.95 nats against the bf16 model, the official QAD Q4_0 GGUF re-palettized gives 0.94 even though it starts closer (its own deviation is 0.35). Always measure the result: `tools/ref/ref_logits.py` saves the PyTorch hidden states and logits, `hwnpu-dev check`, `tools/ref/eval_logits.py` and the Go tests compare the package with them layer by layer.
+Convert from the official bf16 checkpoint. Use a published quantized checkpoint only when it can be repacked without loss into the target's format, which is a one way move to a finer or wider scheme: symmetric int4 (GPTQ without reordering, compressed-tensors W4A16) fits Intel's symmetric int4, AWQ fits AMD's asymmetric uint4 with groups of 128. No published 4 bit format fits the Neural Engine's lookup tables, and re-quantizing a 4 bit checkpoint into another 4 bit format compounds the error: for LFM3-1.7B, bf16 to lut4 gives KL 0.95 nats against the bf16 model, the official QAD Q4_0 GGUF re-palettized gives 0.94 even though it starts closer (its own deviation is 0.35). Always measure the result: `tools/ref/ref_logits.py` saves the PyTorch hidden states and logits, `bonsaiai-dev check`, `tools/ref/eval_logits.py` and the Go tests compare the package with them layer by layer.
 
 ### What the Neural Engine accepts (M3, macOS 27.0.1)
 

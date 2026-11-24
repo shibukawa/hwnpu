@@ -16,7 +16,7 @@ import (
 	"regexp"
 	"strings"
 
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // HubFile is a file of a repository's tree on Hugging Face at a commit.
@@ -117,7 +117,7 @@ type Import struct {
 
 // ImportOriginal puts the files of a folder dir that are files of Hugging Face repository repo
 // (OWNER/NAME[@REVISION]) at its commit, with the same contents, in s as the repository's
-// (original/OWNER/NAME/ and its hwnpu-lock.json). name maps a file's path in dir to its path in
+// (original/OWNER/NAME/ and its bonsaiai-lock.json). name maps a file's path in dir to its path in
 // the repository ("" leaves it out; nil: the same). A file s already names is not read again.
 // Files that are not the repository's (programs, logs) are left out.
 func ImportOriginal(ctx context.Context, s shared.Source, repo, dir string, name func(string) string, log io.Writer) (Import, error) {
@@ -130,7 +130,7 @@ func ImportOriginal(ctx context.Context, s shared.Source, repo, dir string, name
 	have := shared.Lock{}
 	if l, err := shared.ReadLock(ctx, s, base); err == nil {
 		if l.Commit != commit {
-			return res, fmt.Errorf("%s holds %s of %.12s, not %.12s (hwnpu-dev sources update moves it)", s, base, l.Commit, commit)
+			return res, fmt.Errorf("%s holds %s of %.12s, not %.12s (bonsaiai-dev sources update moves it)", s, base, l.Commit, commit)
 		}
 		have = l
 	}

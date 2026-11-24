@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/console"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // File is a file of a model's repository and where fetch puts it.

@@ -9,7 +9,7 @@ models reproduce that shape with random weights:
 The sizes follow Llama 3.2 1B (d 2048, MLP 8192, grouped query attention with 512 wide k and v,
 about 61 M parameters per layer, so 16 layers are 0.97 B parameters without the embedding
 table). Attention over a KV cache is left out: with one query it is a small read next to the
-weights (about 2 MB per 1000 tokens of context per layer pair) and it needs state, which hwnpu
+weights (about 2 MB per 1000 tokens of context per layer pair) and it needs state, which bonsaiai
 does not support yet. q, k and v are still computed and mixed so that every weight is read.
 
     python gen_decode.py OUT_DIR [--layers 4,16] [--formats fp16,int8,lut4,int4]
@@ -21,7 +21,7 @@ formats:
     int4  linear symmetric int4, per block of 32 inputs (0.5 byte, macOS 15 and later)
 
 Writes dec_l{layers}_{format}.mlpackage and decode.json (parameters and bytes of weights per
-token). Measure with go run ./cmd/hwnpu-dev powerbench -one -gpu -model 'OUT_DIR/*.mlpackage', then
+token). Measure with go run ./cmd/bonsaiai-dev powerbench -one -gpu -model 'OUT_DIR/*.mlpackage', then
 python gen_decode.py OUT_DIR --report powerbench.json.
 Needs coremltools >= 8 and numpy.
 """
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("--layers", default="4,16")
     ap.add_argument("--formats", default="fp16,int8,lut4,int4")
-    ap.add_argument("--report", help="hwnpu-dev powerbench -json result to summarize")
+    ap.add_argument("--report", help="bonsaiai-dev powerbench -json result to summarize")
     a = ap.parse_args()
     if a.report:
         report(a.out, a.report)

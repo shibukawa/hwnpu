@@ -1,6 +1,6 @@
 // Package ovcpu runs an OpenVINO IR with OpenVINO's CPU plugin through tools/ov/run_ir.py, so
-// that the IR hwnpu writes for Intel's NPU (internal/ovlower) can be checked on any machine,
-// macOS included. It is for tests: HWNPU_OV_PYTHON names a Python interpreter that has the
+// that the IR bonsaiai writes for Intel's NPU (internal/ovlower) can be checked on any machine,
+// macOS included. It is for tests: BONSAIAI_OV_PYTHON names a Python interpreter that has the
 // openvino and numpy packages, and the tests that need it are skipped without it.
 package ovcpu
 
@@ -15,8 +15,8 @@ import (
 	"strings"
 )
 
-// Python is the interpreter from HWNPU_OV_PYTHON, or "" when it is not set.
-func Python() string { return os.Getenv("HWNPU_OV_PYTHON") }
+// Python is the interpreter from BONSAIAI_OV_PYTHON, or "" when it is not set.
+func Python() string { return os.Getenv("BONSAIAI_OV_PYTHON") }
 
 func script() string {
 	_, file, _, _ := runtime.Caller(0)

@@ -28,14 +28,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3gen"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3gen"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // Config says where the model is.
@@ -60,7 +60,7 @@ type Config struct {
 	CacheDir string
 	CPU      bool
 	// Device is the device backend to run on (llm.OpenDevice's name: coreai for Core AI's
-	// programs; "": HWNPU_BACKEND, else the NPU found).
+	// programs; "": BONSAIAI_BACKEND, else the NPU found).
 	Device string
 	// IronText is, on AMD's NPU, the text model's export of tools/amd/iron_lfm3tts.py (in place
 	// of Text); Depth and Codec are then graphs of tools/amd/iron_lfm3speech.py (or Core ML
@@ -107,7 +107,7 @@ type Synth struct {
 	cprog runner.Program
 	cfr   int // the codec program's frames
 
-	dev     *hwnpu.Device
+	dev     *bonsaiai.Device
 	closers []io.Closer
 
 	// Sampling of the speech codes.
@@ -151,8 +151,8 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 	t0 := time.Now()
 	if c.IronText != "" {
 		// AMD's NPU: the text model's export of tools/amd/iron_lfm3tts.py, loaded first (before
-		// the tables are mapped, as hwnpu-chat loads an export)
-		if s.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+		// the tables are mapped, as bonsaiai-chat loads an export)
+		if s.dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD)); err != nil {
 			return nil, err
 		}
 		t, err := openIronText(ctx, s.dev, c.IronText, s.text.HiddenSize, logf)

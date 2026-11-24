@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a language model IRON compiles (an iron.lm.CausalLM) for hwnpu.
+"""Export a language model IRON compiles (an iron.lm.CausalLM) for bonsaiai.
 
 Writes, into a directory:
 
@@ -17,7 +17,7 @@ Writes, into a directory:
   check/           with --check: a prompt and the logits after it and after a few
                    greedy steps (IRON's graph on the host with random weights)
 
-hwnpu writes a call's values and reads its logits; it never uses the token the device
+bonsaiai writes a call's values and reads its logits; it never uses the token the device
 draws. Run in IRON's virtual environment; no NPU is needed.
 
   python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it OUT --max-seq-len 4096
@@ -48,7 +48,7 @@ MODELS = {
     # Gemma 4 with its vision and audio towers (one image and one clip a prompt).
     "gemma4mm": ("iron_gemma4", "Gemma4TailMultimodal"),
     "gemma4mmfull": ("iron.applications.gemma4.model", "Gemma4Multimodal"),
-    # LFM3 (LFM3-1.7B): an application kept in hwnpu (iron_lfm3.py), IRON has none.
+    # LFM3 (LFM3-1.7B): an application kept in bonsaiai (iron_lfm3.py), IRON has none.
     "lfm3": ("iron_lfm3", "Lfm3"),
     # LFM3-VL (LFM3-VL-2B): LFM3 with its vision tower, for one image size (iron_lfm3vl.py).
     "lfm3vl": ("iron_lfm3vl", "Lfm3Vl"),
@@ -61,7 +61,7 @@ MODELS = {
     # hidden state out (iron_d1.py).
     "d1": ("iron_d1", "D1Vl"),
     "d1omni": ("iron_d1", "D1Omni"),
-    # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in hwnpu (iron_plamo3.py).
+    # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in bonsaiai (iron_plamo3.py).
     "plamo3": ("iron_plamo3", "Plamo3"),
     # Ouro (ByteDance/Ouro-1.4B-Thinking): a looped decoder, its layers run total_ut_steps times
     # a token, a cache a pass (iron_ouro.py).
@@ -175,7 +175,7 @@ _TOWER = {}
 
 
 def _vision_grid(compiled) -> dict:
-    """Every scratchpad word of the vision tower for each image size it can run at, as hwnpu
+    """Every scratchpad word of the vision tower for each image size it can run at, as bonsaiai
     feeds it: the image resized on the host to the processor's size (out_height by
     out_width, hk by wk blocks of pool * patch pixels, hk * wk soft tokens at most the
     budget), so the tower's own resampling is 1:1. Keyed by (hk, wk)."""
@@ -428,18 +428,18 @@ def version_manifest(compiled, elf_name: str) -> dict:
 
 
 def host_steps(compiled) -> list:
-    """The version's host steps hwnpu runs itself (a step's fn with an ``hwnpu`` dict: Qwen3.6's
+    """The version's host steps bonsaiai runs itself (a step's fn with a ``bonsaiai`` dict: Qwen3.6's
     prompt experts, iron_qwen35.MoEHost): before which command, what it is, and the placement,
     shape and type of what it reads and writes. Any other host step is refused."""
     rec, seq = compiled.recording, compiled.sequence
     edges = list(compiled.plan.commands)
     out = []
     for h in rec.host:
-        info = getattr(h.fn, "hwnpu", None)
+        info = getattr(h.fn, "bonsaiai", None)
         if info is None and not h.reads and not h.writes:
             continue  # a command's end alone (iron_qwen35's decode step: on_host(lambda: None))
         if info is None:
-            raise SystemExit(f"{rec.name}: a host step ({h.fn!r}) hwnpu does not know")
+            raise SystemExit(f"{rec.name}: a host step ({h.fn!r}) bonsaiai does not know")
         if h.at not in edges:
             raise SystemExit(f"{rec.name}: host step {info['kind']} at step {h.at}, no command's start")
 
@@ -494,14 +494,14 @@ def write_banks(versions, banks: dict, out: Path) -> dict:
             if b.size > length:
                 raise SystemExit(f"weight {handle.name}: {b.size} bytes in a buffer of {length}")
             if b.size > (64 << 20) and not b.any():
-                continue  # zeros (the image starts as zeros): gpt-oss's places, which hwnpu fills
+                continue  # zeros (the image starts as zeros): gpt-oss's places, which bonsaiai fills
             images[kind][offset : offset + b.size] = b
     names = {}
     for kind, img in images.items():
         img.flush()
         name = f"bank_{kind}.bin"
         # The raw bytes, without the .npy header; runs of zeros left as holes (gpt-oss's places
-        # for experts that hwnpu fills, GPTOSS_EXPERT_PLACES: gigabytes)
+        # for experts that bonsaiai fills, GPTOSS_EXPERT_PLACES: gigabytes)
         with open(out / name, "wb") as f:
             step = 16 << 20
             for at in range(0, img.size, step):
@@ -521,7 +521,7 @@ SHIFT = {"core": 2, "repeat": 16, "addr": 0}
 
 def write_words(versions, man: dict, out: Path) -> None:
     """The scratchpad words IRON computes for a few calls, as each command's slot -> word
-    (shifted as written), in check/words.json: what hwnpu must write for the same values."""
+    (shifted as written), in check/words.json: what bonsaiai must write for the same values."""
     L, C = _CONFIG["max_seq_len"], _CONFIG["prefill_chunk"]
     calls = {
         "decode": [dict(token=7, position=p, start=0, rows=1, rope_start=0) for p in (0, 1, 19, 100, L - 1)],
@@ -551,7 +551,7 @@ def write_words(versions, man: dict, out: Path) -> None:
 def write_steps(files: dict, out: Path) -> None:
     """The files of the versions packaged as an xclbin per step: their xclbins, and their
     stream programs, each checked against the dispatch library mlir-aie built for it over
-    calls across the context (check/streams.json keeps a few for hwnpu to check)."""
+    calls across the context (check/streams.json keeps a few for bonsaiai to check)."""
     import iron_stream
 
     for name, b in files["xclbins"].items():
@@ -598,7 +598,7 @@ def export(model, versions, out: Path) -> dict:
     vm = {}
     files = dict(xclbins={}, programs={}, checks=[], insts=[], insts_words=0)
     for name, v in versions.items():
-        if os.environ.get("HWNPU_EXPORT_STEPS"):  # each version's operators in order (docs/design/amd-llm.md)
+        if os.environ.get("BONSAIAI_EXPORT_STEPS"): # each version's operators in order (docs/design/amd-llm.md)
             with open(out / f"{name}.steps.txt", "w") as f:
                 for st in v.sequence.steps:
                     f.write(f"{type(st.op).__name__} {' '.join(repr(st.op).split())[:240]}\n")
@@ -625,10 +625,10 @@ def export(model, versions, out: Path) -> dict:
         for a in m["arguments"]:
             if a["kind"] not in ("input", "output", "feedback") and not a["kind"].startswith("pool"):
                 banks[a["kind"]] = max(banks.get(a["kind"], 0), a["bytes"])
-    conv_pairs = model.hwnpu_conv_pairs() if hasattr(model, "hwnpu_conv_pairs") else []
+    conv_pairs = model.bonsaiai_conv_pairs() if hasattr(model, "bonsaiai_conv_pairs") else []
     for e in conv_pairs:
         # the convolution's own state is the prompt chunk's alone: a resident, at the same place
-        # in every version, listed in the decode step's too (the checkpoints and hwnpu read it)
+        # in every version, listed in the decode step's too (the checkpoints and bonsaiai read it)
         for k in ("state", "conv"):
             have = [m["buffers"][e[k]] for m in vm.values() if e[k] in m["buffers"]]
             if not have or any(h != have[0] for h in have):
@@ -639,13 +639,13 @@ def export(model, versions, out: Path) -> dict:
         # Qwen35Moe: the commands whose scratchpad the device writes (iron_moe.py), and the
         # routing programs that write them, known once the lowering has placed their words.
         vm["decode"]["fed"] = model.program_rows(vm["decode"]["kernels"])
-    if getattr(model, "hwnpu_logit_parts", 0):
+    if getattr(model, "bonsaiai_logit_parts", 0):
         # gpt-oss's decode step (iron_gptoss_layer.py's head): the logits are [column block][even
-        # k-blocks' sum, odd ones'][that many rows], which hwnpu adds
-        vm["decode"]["logit_parts"] = int(model.hwnpu_logit_parts)
-    if getattr(model, "hwnpu_no_step_barrier", False):
+        # k-blocks' sum, odd ones'][that many rows], which bonsaiai adds
+        vm["decode"]["logit_parts"] = int(model.bonsaiai_logit_parts)
+    if getattr(model, "bonsaiai_no_step_barrier", False):
         # a decode step on one resident array: no empty command in a second hardware context
-        # before it (hwnpu's stepBarrier, which there puts the whole array back)
+        # before it (bonsaiai's stepBarrier, which there puts the whole array back)
         vm["decode"]["no_step_barrier"] = True
     images = write_banks(versions, banks, out)
     write_steps(files, out)
@@ -653,7 +653,7 @@ def export(model, versions, out: Path) -> dict:
         if (model.text if hasattr(model, "towers") else model).rope_row(n, 0) != 0:
             raise SystemExit("rope_row is not the chunk's start: not supported yet")
     mm = None
-    kind = getattr(model, "hwnpu_kind", None)
+    kind = getattr(model, "bonsaiai_kind", None)
     if kind == "lfm3omni":
         # LFM3-Omni: LFM3-VL's vision tower and LFM3-Audio's encoder, each run between the
         # vision markers
@@ -748,7 +748,7 @@ def export(model, versions, out: Path) -> dict:
         # so far. A host that copies the slot a position reads goes back to it.
         checkpoints=_checkpoints(vm["decode"]["buffers"], recurrent, c),
         # Qwen3.6's folded Gated DeltaNet: the convolution's rows in two homes, which the host
-        # copies between around a prompt chunk (iron_qwen35's hwnpu_conv_pairs)
+        # copies between around a prompt chunk (iron_qwen35's bonsaiai_conv_pairs)
         conv_pairs=conv_pairs or None,
         # The ring caches (a sliding window's, when 3 rings are under max_seq_len), which no
         # copy of a slot brings back.
@@ -767,9 +767,9 @@ def export(model, versions, out: Path) -> dict:
     host_tables = iron_hostple.write(model, vm["decode"]["buffers"], out)
     if host_tables:
         m["host_tables"] = host_tables
-    # gpt-oss and Qwen3.6 with fewer places than experts (--expert-places): hwnpu fills the places'
+    # gpt-oss and Qwen3.6 with fewer places than experts (--expert-places): bonsaiai fills the places'
     # tables from experts.bin (internal/llm/iron/pool.go), the same buffers in every version
-    pool = model.hwnpu_experts_pool() if hasattr(model, "hwnpu_experts_pool") else None
+    pool = model.bonsaiai_experts_pool() if hasattr(model, "bonsaiai_experts_pool") else None
     if pool:
         for layer in pool["layers"]:
             for k in ("gu", "dn"):
@@ -777,7 +777,7 @@ def export(model, versions, out: Path) -> dict:
                 if len(have) != 1 or "decode" not in vm or layer[k] not in vm["decode"]["buffers"]:
                     raise SystemExit(f"experts_pool: {layer[k]} is not one buffer of the versions")
         m["experts_pool"] = pool
-    route = model.hwnpu_experts_route() if hasattr(model, "hwnpu_experts_route") else None
+    route = model.bonsaiai_experts_route() if hasattr(model, "bonsaiai_experts_route") else None
     if route:
         dec = vm["decode"]["buffers"]
         for layer in route["layers"]:
@@ -793,7 +793,7 @@ def export(model, versions, out: Path) -> dict:
 def _cache_rows(model, buffers) -> dict:
     """By KV cache buffer (".cache." in its name), its rows: the first dimension of the state the
     name leads to from the model (model.layers.4.cache.keys). Names that lead nowhere are left
-    out, and hwnpu takes max_seq_len rows for them."""
+    out, and bonsaiai takes max_seq_len rows for them."""
     out = {}
     for name in buffers:
         if ".cache." not in name:
@@ -810,9 +810,9 @@ def _cache_rows(model, buffers) -> dict:
 
 
 def _name(model) -> str:
-    """The model's name in the manifest, which picks hwnpu's chat format: a variant's
-    ``hwnpu_name`` (Gemma4Tail is Gemma4), else its class's."""
-    return getattr(model, "hwnpu_name", type(model).__name__)
+    """The model's name in the manifest, which picks bonsaiai's chat format: a variant's
+    ``bonsaiai_name`` (Gemma4Tail is Gemma4), else its class's."""
+    return getattr(model, "bonsaiai_name", type(model).__name__)
 
 
 def _is_checkpoints(state) -> bool:
@@ -887,7 +887,7 @@ def prompt_attention_profile(model, pipelines: int) -> None:
 def install_command_per_step(out: Path) -> None:
     """Cut a prompt chunk's full ELF into a command a step (each runs on its own, as the plan's
     commands queue them), and write each command's operator into out/steps.json, so that
-    HWNPU_DEV=iron.timing's times say which operator they are. The decode step (no input tensor
+    BONSAIAI_DEV=iron.timing's times say which operator they are. The decode step (no input tensor
     beyond its token) is left as it is."""
     import dataclasses
 
@@ -954,12 +954,12 @@ def main(argv=None) -> int:
                          "qwen35moe, not measured with more; 1 is IRON's default without a profile, which left a "
                          "chunk's attention on one pipeline)")
     ap.add_argument("--command-per-step", action="store_true",
-                    help="for measuring: the prompt chunk a command per step (HWNPU_DEV=iron.timing times each), "
+                    help="for measuring: the prompt chunk a command per step (BONSAIAI_DEV=iron.timing times each), "
                          "the steps' operators by command in OUT/steps.json")
     ap.add_argument("--expert-places", type=int, default=None, metavar="N",
                     help="gpt-oss and qwen35moe: N places of an expert's tables a layer (gpt-oss: a multiple of 4, at "
                          "most 56; Qwen3.6: at most its 256), the experts in experts.bin and copied into a place when "
-                         "chosen (hwnpu's pool.go): GPTOSS_EXPERT_PLACES, iron_qwen35.POOL")
+                         "chosen (bonsaiai's pool.go): GPTOSS_EXPERT_PLACES, iron_qwen35.POOL")
     ap.add_argument("--host-route", action="store_true",
                     help="gpt-oss: the decode step's routing on the host (always for 128 experts): GPTOSS_HOST_ROUTE")
     ap.add_argument("--scan-window", action="store_true",
@@ -1062,10 +1062,10 @@ def main(argv=None) -> int:
 
         used = iron_q4.CODES_USED
         print(f"--q4-codes: {used['hit']} weights took the chosen codes, {used['miss']} were rounded")
-    if getattr(model, "hwnpu_kind", None) in ("lfm3audio", "lfm3omni"):  # its words by grid of frames, as Gemma 4's audio
+    if getattr(model, "bonsaiai_kind", None) in ("lfm3audio", "lfm3omni"):  # its words by grid of frames, as Gemma 4's audio
         at = model.config.audio_token_id
         _TOWER.update(audio=model.towers[at], audio_input=model.tower_inputs[at], audio_kind="lfm3audio")
-    if hasattr(model, "towers") and not getattr(model, "hwnpu_kind", None):  # Gemma 4's towers take words by grid
+    if hasattr(model, "towers") and not getattr(model, "bonsaiai_kind", None):  # Gemma 4's towers take words by grid
         it = model.config.image_token_id
         at = model.config.audio_token_id
         _TOWER.update(vision=model.towers[it], vision_input=model.tower_inputs[it],
@@ -1079,7 +1079,7 @@ def main(argv=None) -> int:
         print(f"compiling again: {again}")
         versions = compile_versions(model, full_elf=False if a.per_step else None)
         m = export(model, versions, a.out)
-    # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
+    # What bonsaiai-chat reads beside the model: the tokenizer and the chat format.
     for name in ("tokenizer.json", "tokenizer.jsonl", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
                  "processor_config.json", "calibration.json"):
         src = Path(a.checkpoint) / name

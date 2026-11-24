@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
 )
 
 // The exports for AMD's NPU that their command takes as made by hand with a script of tools/amd
@@ -59,7 +59,7 @@ func imageHandMade(e airole.PrepareEnv) (string, error) {
 		}
 	}
 	vars := map[string][]string{recipe.Sizes: sizes}
-	// one of an earlier hwnpu by the same name may hold 1024 x 1024 alone: made again
+	// one of an earlier bonsaiai by the same name may hold 1024 x 1024 alone: made again
 	holds := func(sizesOf func(string) [][2]int) func(string) bool {
 		return func(dir string) bool {
 			have := sizesOf(dir)

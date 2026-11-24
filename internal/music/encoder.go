@@ -3,9 +3,9 @@ package music
 import (
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // encoderLevels are the encoder's residual units encoder_0 to encoder_5, which run on the two

@@ -1,15 +1,15 @@
 // Package dev reads the developers' switches: experiments, measurements and traces, none of them a
 // setting of the user's. They are items of one variable, separated by commas:
 //
-//	HWNPU_DEV=attention=grouped,moe.time,moe.prefetch=0,ailower.trace
+//	BONSAIAI_DEV=attention=grouped,moe.time,moe.prefetch=0,ailower.trace
 //
 // An item is a key (on) or KEY=VALUE; a key's group goes before a dot (moe., iron., coreai.).
 // Keys lists them all, with what they do; an item of a key it does not know is told once on
 // standard error. The variable is read at each call, so that a test's t.Setenv takes.
 //
-// They change what a process does for the one who set them: hwnpud does not take a client's
-// (docs/design/hwnpud.md), and a run with them is a run of the developer's own process
-// (HWNPU_DAEMON=off).
+// They change what a process does for the one who set them: bonsaiaid does not take a client's
+// (docs/design/bonsaiaid.md), and a run with them is a run of the developer's own process
+// (BONSAIAI_DAEMON=off).
 package dev
 
 import (
@@ -22,7 +22,7 @@ import (
 )
 
 // Env is the variable.
-const Env = "HWNPU_DEV"
+const Env = "BONSAIAI_DEV"
 
 // Keys are the keys an item may have, with what each does.
 var Keys = map[string]string{
@@ -87,7 +87,7 @@ func Get(key string) (string, bool) {
 		k = strings.TrimSpace(k)
 		if _, known := Keys[k]; !known {
 			if _, done := warned.LoadOrStore(k, true); !done {
-				fmt.Fprintf(os.Stderr, "%s: %q is not a key hwnpu knows (internal/dev.Keys)\n", Env, k)
+				fmt.Fprintf(os.Stderr, "%s: %q is not a key bonsaiai knows (internal/dev.Keys)\n", Env, k)
 			}
 			continue
 		}

@@ -39,7 +39,7 @@ func TestPatchRows(t *testing.T) {
 func TestTokenIDs(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	dir := filepath.Join(home, "models", "siglip2-base-patch16-224.amd-npu2")
-	if d := os.Getenv("HWNPU_TEST_SIGLIP_EXPORT"); d != "" {
+	if d := os.Getenv("BONSAIAI_TEST_SIGLIP_EXPORT"); d != "" {
 		dir = d
 	}
 	m, err := Open(t.Context(), nil, dir)

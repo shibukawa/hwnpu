@@ -1,7 +1,7 @@
 /*
- * zemock: a tiny stand-in for the Level Zero loader + Intel NPU driver, used to test hwnpu's
+ * zemock: a tiny stand-in for the Level Zero loader + Intel NPU driver, used to test bonsaiai's
  * Level Zero backend on machines without an Intel NPU. It is NOT a model of the real driver's
- * performance or numerics; it only reproduces the API contract hwnpu relies on:
+ * performance or numerics; it only reproduces the API contract bonsaiai relies on:
  *
  *  - one driver (NPU driver UUID) with one VPU device and the graph extension "ZE_extension_graph" 1.12
  *  - native blobs: "ZEMOCKB1" | u32 n | f32 scale | f32 bias, computing y = relu(scale * x + bias)

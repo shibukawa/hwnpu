@@ -91,7 +91,7 @@ func TestCategories(t *testing.T) {
 func TestMachineMemory(t *testing.T) {
 	t.Setenv(MemoryEnv, "24GB")
 	if n := MachineMemory(); n != 24 {
-		t.Errorf("HWNPU_MEMORY=24GB: %d", n)
+		t.Errorf("BONSAIAI_MEMORY=24GB: %d", n)
 	}
 	t.Setenv(MemoryEnv, "")
 	if n := MachineMemory(); n <= 0 {
@@ -114,7 +114,7 @@ func TestRouteByFamily(t *testing.T) {
 }
 
 // TestImageMemoryTags checks the image families picked by a machine's memory written as a tag
-// (hwnpu-image generate -m image:8g), in any case, with or without a space, and of any size, not
+// (bonsaiai-image generate -m image:8g), in any case, with or without a space, and of any size, not
 // only MODEL.md's columns.
 func TestImageMemoryTags(t *testing.T) {
 	setPolicy(t, "+nsfw") // Anima's
@@ -142,16 +142,16 @@ func TestDevice(t *testing.T) {
 	if m.DeviceFor("amd") != "cpu" || m.DeviceFor("apple") != "npu" || m.DeviceFor("intel") != "npu" {
 		t.Errorf("YuNet's devices %v", m.Device)
 	}
-	t.Setenv("HWNPU_DEVICE", "")
+	t.Setenv("BONSAIAI_DEVICE", "")
 	if d, why, _ := ChooseDevice(m, "amd", ""); d != "cpu" || !strings.Contains(why, "models.yaml") {
 		t.Errorf("amd: %s (%s)", d, why)
 	}
 	if d, _, _ := ChooseDevice(m, "amd", "npu"); d != "npu" {
 		t.Errorf("--device npu: %s", d)
 	}
-	t.Setenv("HWNPU_DEVICE", "NPU")
-	if d, why, _ := ChooseDevice(m, "amd", ""); d != "npu" || why != "HWNPU_DEVICE" {
-		t.Errorf("HWNPU_DEVICE: %s (%s)", d, why)
+	t.Setenv("BONSAIAI_DEVICE", "NPU")
+	if d, why, _ := ChooseDevice(m, "amd", ""); d != "npu" || why != "BONSAIAI_DEVICE" {
+		t.Errorf("BONSAIAI_DEVICE: %s (%s)", d, why)
 	}
 	if _, _, err := ChooseDevice(m, "amd", "gpu"); err == nil {
 		t.Error("--device gpu: no error")

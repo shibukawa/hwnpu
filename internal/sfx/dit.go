@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // The DiT's shape (transformer/config.json: WanAudioModel, dit_variant 1.3B, vae_type dac).

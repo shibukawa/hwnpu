@@ -10,7 +10,7 @@ iron_moeprobe's layers):
      expert tables, as B's operators read them (``e0`` .. ``e7``, times an expert's bytes)
   B  iron_moeprobe's MoEGateUp and MoEDown (the 8 experts and the shared one, read in place)
 
-MoERoute's ``image`` is a buffer of the version's feedback argument (``Feedback``): hwnpu puts
+MoERoute's ``image`` is a buffer of the version's feedback argument (``Feedback``): bonsaiai puts
 command B's ctrl scratchpad there, so B reads the offsets A wrote, and the host neither reads
 the logits nor writes the experts. A word of the image is ``(id * scale + bias) << shift`` by a
 program (a weight, four int32 a word), written once the lowering has placed B's words

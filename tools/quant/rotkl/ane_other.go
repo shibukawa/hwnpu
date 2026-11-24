@@ -5,7 +5,7 @@ package main
 import (
 	"errors"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 func runANE(llm.Model, llm.Weights, llm.Options, []float32, string, int) ([]float32, error) {

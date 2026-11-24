@@ -70,17 +70,17 @@ func TestEncodeDecode(t *testing.T) {
 }
 
 // TestLFM3 checks the LFM3 tokenizer against the ids Hugging Face gave for the reference prompt
-// (tools/ref/ref_logits.py). It needs HWNPU_TEST_LFM3_DIR with tokenizer.json.
+// (tools/ref/ref_logits.py). It needs BONSAIAI_TEST_LFM3_DIR with tokenizer.json.
 func TestLFM3(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_LFM3_DIR not set")
+		t.Skip("BONSAIAI_TEST_LFM3_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := "The Neural Engine runs small language models at low power. hwnpu is a Go library for CPU integrated NPUs:"
+	text := "The Neural Engine runs small language models at low power. bonsaiai is a Go library for CPU integrated NPUs:"
 	want := []int32{597, 57760, 8944, 10295, 1710, 3368, 4841, 462, 2419, 1909, 22, 311, 1121, 19724, 355, 267, 4156, 9798, 374, 29609, 13418, 38284, 7335, 34}
 	if got := tk.Encode(text); !slices.Equal(got, want) {
 		t.Errorf("Encode = %v\nwant     %v", got, want)
@@ -149,11 +149,11 @@ func TestNFC(t *testing.T) {
 }
 
 // TestQwen35 checks the Qwen3.5 tokenizer against the ids Hugging Face's tokenizers gave. It needs
-// HWNPU_TEST_QWEN35_DIR with tokenizer.json (any Qwen3.5 size: they share it).
+// BONSAIAI_TEST_QWEN35_DIR with tokenizer.json (any Qwen3.5 size: they share it).
 func TestQwen35(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_QWEN35_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_QWEN35_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_QWEN35_DIR not set")
+		t.Skip("BONSAIAI_TEST_QWEN35_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {
@@ -163,7 +163,7 @@ func TestQwen35(t *testing.T) {
 		text string
 		want []int32
 	}{
-		{"The Neural Engine runs small language models at low power. hwnpu is a Go library for CPU integrated NPUs: Apple, Intel and AMD. 日本の首都は東京です。",
+		{"The Neural Engine runs small language models at low power. bonsaiai is a Go library for CPU integrated NPUs: Apple, Intel and AMD. 日本の首都は東京です。",
 			[]int32{760, 58439, 7943, 8213, 2526, 3992, 3983, 506, 3238, 2279, 13, 304, 1468, 5409, 369, 264, 5805, 6522, 364, 13540, 17708, 41814, 3440, 25, 7905, 11, 15153, 321, 23547, 13, 237829, 110161, 14876, 115197, 36298, 1710}},
 		{"Café 1234 ﬁ नमस्ते <|im_start|>user\nこんにちは<|im_end|>\n<think>\n\n</think>\n\n",
 			[]int32{34, 2492, 933, 220, 16, 17, 18, 19, 31422, 68337, 149518, 84237, 150104, 153348, 220, 248045, 846, 198, 85951, 248046, 198, 248068, 271, 248069, 271}},

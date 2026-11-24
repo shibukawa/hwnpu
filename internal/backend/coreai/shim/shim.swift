@@ -87,7 +87,7 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
         case .success(let m):
             do {
                 guard let f = try m.loadFunction(named: name) else {
-                    return .failure(NSError(domain: "hwnpu", code: 1, userInfo: [NSLocalizedDescriptionKey: "no function \(name)"]))
+                    return .failure(NSError(domain: "bonsaiai", code: 1, userInfo: [NSLocalizedDescriptionKey: "no function \(name)"]))
                 }
                 return .success(Fn(model: m, fn: f, inputs: f.descriptor.inputNames, outputs: f.descriptor.outputNames))
             } catch {
@@ -114,7 +114,7 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
     }
 }
 
-/// Deletes Core AI's cache entries of the .aimodel at path (before hwnpu removes it: an asset
+/// Deletes Core AI's cache entries of the .aimodel at path (before bonsaiai removes it: an asset
 /// replaced by one that holds several programs' weights once).
 @_cdecl("cai_forget")
 public func cai_forget(_ path: UnsafePointer<CChar>) {

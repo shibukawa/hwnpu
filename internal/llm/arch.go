@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch describes one supported architecture.
@@ -42,7 +42,7 @@ type Arch struct {
 	// LastRow reports that the architecture builds Options.LastRow.
 	LastRow bool
 	// Revision counts the changes to the programs the architecture builds that call for
-	// converting a model again, the weights and options the same: hwnpu-chat names its
+	// converting a model again, the weights and options the same: bonsaiai-chat names its
 	// conversions by it (Rev), so that it does not load one of an earlier revision. 1: silu
 	// written with exp and real_div (blocks.SiLU, 2026-11-07).
 	Revision int
@@ -237,7 +237,7 @@ type Windowed interface {
 // Unpaged is a Paged model that runs faster in one piece, with its cache in the program, than
 // split at its attention: every layer of Qwen3 attends, so a split model calls the Neural Engine
 // twice a layer (on an M1, Qwen3-0.6B generates 11 to 12 tokens/s whole with a cache of 4096,
-// 5.9 split in chunks of 1024 and 3 in chunks of 8192, with Core ML). hwnpu-chat splits it only
+// 5.9 split in chunks of 1024 and 3 in chunks of 8192, with Core ML). bonsaiai-chat splits it only
 // when told (-paged N), and gives it a cache of UnpagedContext tokens otherwise: the longest
 // whole program Core ML runs (Qwen3-0.6B's 28 layers of keys and values fail to predict from
 // 8192). With Core AI it splits it anyway: on an M3, Qwen3-0.6B generates 19 tokens/s whole and
@@ -282,7 +282,7 @@ type HostRouted interface {
 
 // HostDerived is a HostRouted model whose release does not hold its experts in the form the host
 // runs (Qwen3.6-35B-A3B's are bf16, 64 GB): a checkpoint with them in MXFP4 is derived from the
-// release (hwnpu-dev mxfp4), and the model runs from that one.
+// release (bonsaiai-dev mxfp4), and the model runs from that one.
 type HostDerived interface {
 	HostRouted
 	// Derive writes the derived checkpoint of the Hugging Face repository repo (OWNER/NAME)

@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	amdtools "github.com/shibukawa/hwnpu/tools/amd"
+	amdtools "github.com/shibukawa/bonsaiai/tools/amd"
 )
 
 // AMD is how the exports for AMD's NPU are made: for each generation of Generations, with the
@@ -50,7 +50,7 @@ type Skip struct {
 // IRON's npu1) and xdna2 (Strix, Krackan: npu2).
 var Generations = []string{"xdna1", "xdna2"}
 
-// Built are the generations hwnpu runs the exports of, so that the build makes them: those of
+// Built are the generations bonsaiai runs the exports of, so that the build makes them: those of
 // the others are skipped (amd-xdna1 is not read yet).
 var Built = []string{"xdna2"}
 

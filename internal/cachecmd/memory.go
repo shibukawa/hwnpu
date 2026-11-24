@@ -9,11 +9,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
-// MemoryCmd is hwnpu memory.
+// MemoryCmd is bonsaiai memory.
 type MemoryCmd struct {
 	Model  string `arg:"" optional:"" help:"A model: its name (LFM3-1.7B), its repository, or a family or a use (the model it picks here). None: the models with a memory chosen."`
 	GB     string `arg:"" optional:"" name:"gb" help:"The memory to run it as, in GB (8, 16g): as on a machine of that much memory. None: show what it runs as."`
@@ -54,7 +54,7 @@ func (c MemoryCmd) exec(e *Env) error {
 			return err
 		}
 		if before.GB != mem.GB {
-			defer fmt.Fprintf(e.Out, "The programs %s made for %d GB stay in the cache until it is pruned; hwnpu cache clear %s removes them all, and the next run gets those of %d GB alone.\n", mem.Model, before.GB, mem.Model, mem.GB)
+			defer fmt.Fprintf(e.Out, "The programs %s made for %d GB stay in the cache until it is pruned; bonsaiai cache clear %s removes them all, and the next run gets those of %d GB alone.\n", mem.Model, before.GB, mem.Model, mem.GB)
 		}
 	default:
 		mem, err = s.Memory(c.Model)
@@ -88,9 +88,9 @@ func listMemories(e *Env, s *modelstore.Store) error {
 
 // describe says how a model runs as mem says.
 func describe(mem modelstore.Memory) string {
-	src := fmt.Sprintf("this machine's memory; hwnpu memory %s GB chooses another", mem.Model)
+	src := fmt.Sprintf("this machine's memory; bonsaiai memory %s GB chooses another", mem.Model)
 	if mem.Chosen != 0 {
-		src = fmt.Sprintf("chosen, this machine %d GB; hwnpu memory %s --forget forgets it", mem.Machine, mem.Model)
+		src = fmt.Sprintf("chosen, this machine %d GB; bonsaiai memory %s --forget forgets it", mem.Machine, mem.Model)
 	}
 	return fmt.Sprintf("%s: runs as on a machine of %d GB (%s)\n  %s", mem.Model, mem.GB, src, how(mem.Model, mem.GB))
 }

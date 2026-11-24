@@ -22,7 +22,7 @@ import (
 	"github.com/hajimehoshi/ebiten/v2/text/v2"
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/shibukawa/hwnpu/ai/vision"
+	"github.com/shibukawa/bonsaiai/ai/vision"
 )
 
 //go:embed parallax.kage
@@ -447,7 +447,7 @@ func (g *game) drawBuild(dst *ebiten.Image) {
 
 // drawLoading draws the second line of the panel while a model is made ready: what is done to
 // it, the time it has taken, and when its load took a known time the last time here, a bar of
-// the time gone over that (slowing toward its end, never full, as hwnpu's load bars do) and the
+// the time gone over that (slowing toward its end, never full, as bonsaiai's load bars do) and the
 // time left; then the newest line of its log (a download's share and bytes).
 func (g *game) drawLoading(dst *ebiten.Image, l loading, sw, y float64) {
 	what := map[string]string{"depth": "the depth model", "image": "the picture model", "face-detect": "the face model"}[l.use]

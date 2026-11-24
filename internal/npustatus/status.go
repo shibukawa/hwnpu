@@ -1,5 +1,5 @@
-// Package npustatus is hwnpu status: this machine's NPU (the device, its driver, how busy it is,
-// what uses it), what hwnpu runs on, and the cache. It is the command of hwnpu and of the apps
+// Package npustatus is bonsaiai status: this machine's NPU (the device, its driver, how busy it is,
+// what uses it), what bonsaiai runs on, and the cache. It is the command of bonsaiai and of the apps
 // made with the ai package (cli.Status).
 package npustatus
 
@@ -18,32 +18,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/cachecmd"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/sysload"
-	"github.com/shibukawa/hwnpu/modelstore"
-	"github.com/shibukawa/hwnpu/npuinfo"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cachecmd"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/sysload"
+	"github.com/shibukawa/bonsaiai/modelstore"
+	"github.com/shibukawa/bonsaiai/npuinfo"
 )
 
-// Status is what hwnpu status shows: this machine, its NPU and what uses it, what hwnpu runs
+// Status is what bonsaiai status shows: this machine, its NPU and what uses it, what bonsaiai runs
 // on, and the cache.
 type Status struct {
-	Time       time.Time          `json:"time"`
-	Version    string             `json:"version"` // hwnpu's: the module's version, the commit it was built from
-	OS         string             `json:"os"`
-	OSVersion  string             `json:"os_version,omitempty"`
-	Arch       string             `json:"arch"`
-	CPU        string             `json:"cpu,omitempty"`
-	Memory     int64              `json:"memory_bytes,omitempty"`
-	Vendor     string             `json:"vendor"`                  // the NPU the commands run on: amd, apple, intel ("" for none)
-	BackendEnv string             `json:"hwnpu_backend,omitempty"` // HWNPU_BACKEND
-	Devices    []hwnpu.DeviceInfo `json:"devices,omitempty"`
-	// Opened says the devices were opened (--wake): Devices is what hwnpu finds then.
+	Time       time.Time             `json:"time"`
+	Version    string                `json:"version"` // bonsaiai's: the module's version, the commit it was built from
+	OS         string                `json:"os"`
+	OSVersion  string                `json:"os_version,omitempty"`
+	Arch       string                `json:"arch"`
+	CPU        string                `json:"cpu,omitempty"`
+	Memory     int64                 `json:"memory_bytes,omitempty"`
+	Vendor     string                `json:"vendor"`                     // the NPU the commands run on: amd, apple, intel ("" for none)
+	BackendEnv string                `json:"bonsaiai_backend,omitempty"` // BONSAIAI_BACKEND
+	Devices    []bonsaiai.DeviceInfo `json:"devices,omitempty"`
+	// Opened says the devices were opened (--wake): Devices is what bonsaiai finds then.
 	Opened    bool   `json:"devices_opened"`
 	EnumError string `json:"enumerate_error,omitempty"`
 	// Load is how busy the CPU, the GPUs and the NPU are, and the memory each uses.
@@ -53,7 +53,7 @@ type Status struct {
 	// Processes are the processes that use the NPU now.
 	Processes []Process   `json:"processes,omitempty"`
 	Cache     CacheStatus `json:"cache"`
-	// Info is all that npuinfo read (hwnpu status --json).
+	// Info is all that npuinfo read (bonsaiai status --json).
 	Info *npuinfo.Info `json:"npuinfo,omitempty"`
 }
 
@@ -100,7 +100,7 @@ type CacheStatus struct {
 	Layers []string         `json:"layers"`
 }
 
-// version is hwnpu's version: the module's, and the commit of a build from a checkout.
+// version is bonsaiai's version: the module's, and the commit of a build from a checkout.
 func version() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -168,15 +168,15 @@ func Collect(ctx context.Context, s StoreView, scan, wake bool, load *Samplers) 
 
 var (
 	enumerated bool
-	devs       []hwnpu.DeviceInfo
+	devs       []bonsaiai.DeviceInfo
 	enumErr    string
 )
 
-// devices are the NPUs hwnpu finds, looked for once (status --watch: not every time).
-func devices(ctx context.Context) ([]hwnpu.DeviceInfo, string) {
+// devices are the NPUs bonsaiai finds, looked for once (status --watch: not every time).
+func devices(ctx context.Context) ([]bonsaiai.DeviceInfo, string) {
 	if !enumerated {
 		enumerated = true
-		d, err := hwnpu.Enumerate(ctx)
+		d, err := bonsaiai.Enumerate(ctx)
 		devs = d
 		if err != nil {
 			enumErr = err.Error()
@@ -186,7 +186,7 @@ func devices(ctx context.Context) ([]hwnpu.DeviceInfo, string) {
 }
 
 // vendorOf is the NPU the commands run on, as the OS tells of it without opening a device: the
-// vendor HWNPU_BACKEND names, else the driver's (Linux), the ANE (macOS), the vendor of a
+// vendor BONSAIAI_BACKEND names, else the driver's (Linux), the ANE (macOS), the vendor of a
 // compute-only adapter (Windows). "" for none.
 func vendorOf(info *npuinfo.Info) string {
 	if os.Getenv(llm.BackendEnv) != "" {
@@ -236,7 +236,7 @@ type StoreView interface {
 func cacheStatus(s StoreView, scan bool) CacheStatus {
 	c := CacheStatus{Root: cache.Root(), Layers: s.LayerNames()}
 	if r, ok := s.(interface{ Root() string }); ok {
-		c.Root = r.Root() // hwnpud's
+		c.Root = r.Root() // bonsaiaid's
 	}
 	c.Free, c.Total, _ = s.DiskSpace()
 	if l, err := s.Limits(); err != nil {
@@ -481,10 +481,10 @@ func (st Status) Write(w io.Writer, args bool) {
 	st.writeLive(w, args)
 }
 
-// writeFixed writes what does not change while hwnpu status --watch runs: hwnpu, the machine,
+// writeFixed writes what does not change while bonsaiai status --watch runs: bonsaiai, the machine,
 // the device, the cache.
 func (st Status) writeFixed(w io.Writer) {
-	fmt.Fprintf(w, "hwnpu:    %s\n", st.Version)
+	fmt.Fprintf(w, "bonsaiai: %s\n", st.Version)
 	sys := st.OS + "/" + st.Arch
 	if st.OSVersion != "" {
 		sys += ", " + st.OSVersion
@@ -644,12 +644,12 @@ func sizeOr(n int64) string {
 	return cache.FormatSize(n)
 }
 
-// Cmd is hwnpu status.
+// Cmd is bonsaiai status.
 type Cmd struct {
 	JSON  bool          `help:"Write all that was read as JSON (npuinfo's too)."`
 	Watch time.Duration `short:"w" help:"Show it again every this long (2s) until Ctrl-C: on a terminal, as top does (what stays on top, the load below it, redrawn in place)." placeholder:"EVERY"`
-	Wake  bool          `help:"Open the NPU and ask it too (its driver's and firmware's details, what hwnpu finds): on Linux this wakes a sleeping NPU for a few seconds."`
-	// Store is the store whose cache and layers are shown: the zero value is that of hwnpu's
+	Wake  bool          `help:"Open the NPU and ask it too (its driver's and firmware's details, what bonsaiai finds): on Linux this wakes a sleeping NPU for a few seconds."`
+	// Store is the store whose cache and layers are shown: the zero value is that of bonsaiai's
 	// commands, an app gives its own (ai.Store.Models).
 	Store modelstore.Options `kong:"-"`
 }
@@ -664,7 +664,7 @@ func (c Cmd) Run(ctx context.Context) error {
 		return err
 	}
 	var v StoreView = View{s}
-	// the cache is hwnpud's, unless HWNPU_DAEMON is off (its own settings, not this shell's)
+	// the cache is bonsaiaid's, unless BONSAIAI_DAEMON is off (its own settings, not this shell's)
 	rv, closeRemote, err := cachecmd.RemoteStore(ctx)
 	if err != nil {
 		return err
@@ -716,7 +716,7 @@ const (
 	moveToLineF = "\x1b[%d;1H"
 )
 
-// top is hwnpu status --watch on a terminal: the alternate screen, with what stays written
+// top is bonsaiai status --watch on a terminal: the alternate screen, with what stays written
 // once at the top and the load redrawn in place below it every c.Watch (again all when the
 // terminal is resized), until Ctrl-C.
 func (c Cmd) top(ctx context.Context, v StoreView, load *Samplers) error {

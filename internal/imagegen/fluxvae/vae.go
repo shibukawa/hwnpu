@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // VaeOp is one module of the decoder a stage runs: "in" (the latents unscaled, z / scaling_factor

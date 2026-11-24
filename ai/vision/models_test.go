@@ -7,10 +7,10 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/vision/segment"
-	"github.com/shibukawa/hwnpu/internal/vision/siglip"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/vision/segment"
+	"github.com/shibukawa/bonsaiai/internal/vision/siglip"
 )
 
 // TestSettings: what the definition of a model of pictures says (common.go).

@@ -7,17 +7,17 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // cnn is how a model of one ONNX file that is converted for the NPU (RTMDet, RTMO) is made
-// ready and loaded, as hwnpu-image does: on AMD's NPU an export of tools/amd/iron_onnxcnn.py
+// ready and loaded, as bonsaiai-image does: on AMD's NPU an export of tools/amd/iron_onnxcnn.py
 // (from the shared layers, or made with IRON on the first run), on Apple's and Intel's NPU the
-// file converted, on the CPU the file with ONNX Runtime, or the converted program on hwnpu's own
+// file converted, on the CPU the file with ONNX Runtime, or the converted program on bonsaiai's own
 // executor without ONNX Runtime, or on the CPU interpreter (settings cpu: interpreter).
 type cnn[T io.Closer] struct {
 	// what names the model in the errors (RTMDet).
@@ -31,9 +31,9 @@ type cnn[T io.Closer] struct {
 	convert func(ctx context.Context, m, base chat.Model, backend string, log io.Writer) (model, program string, err error)
 	// openNPU loads an export of AMD's NPU, openCPU the file into ONNX Runtime, open a
 	// converted program (dev nil: on the CPU); onNPU says whether that one runs all on the NPU.
-	openNPU func(ctx context.Context, dev *hwnpu.Device, dir, model string) (T, error)
+	openNPU func(ctx context.Context, dev *bonsaiai.Device, dir, model string) (T, error)
 	openCPU func(model string, threads int) (T, error)
-	open    func(ctx context.Context, dev *hwnpu.Device, model, program string) (T, error)
+	open    func(ctx context.Context, dev *bonsaiai.Device, model, program string) (T, error)
 	onNPU   func(T) bool
 }
 
@@ -65,7 +65,7 @@ func (c cnn[T]) prepare(e airole.PrepareEnv) (f airole.Files, err error) {
 	}
 	backend := e.NPU.Format
 	if interp || builtin {
-		backend = llm.BackendCoreML // what the CPU interpreter and hwnpu's executor run
+		backend = llm.BackendCoreML // what the CPU interpreter and bonsaiai's executor run
 	}
 	if backend == "" {
 		return f, fmt.Errorf("this machine's NPU runs neither Core AI programs nor OpenVINO IR (--device cpu runs %s on the CPU)", c.what)
@@ -86,7 +86,7 @@ func (c cnn[T]) load(ctx context.Context, f airole.Files, e airole.LoadEnv) (t T
 	m := e.Def
 	n := threads(m)
 	if dir := f.Path("export"); dir != "" {
-		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 		if err != nil {
 			return t, "", "", nil, err
 		}

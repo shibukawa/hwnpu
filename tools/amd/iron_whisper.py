@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Whisper (openai/whisper-large-v3-turbo and the other multilingual checkpoints, MIT) on IRON:
-the graphs hwnpu-audio transcribe runs on AMD's NPU.
+the graphs bonsaiai-audio transcribe runs on AMD's NPU.
 
 Two graphs, each exported by iron_graph.py:
 

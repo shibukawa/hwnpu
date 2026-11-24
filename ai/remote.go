@@ -11,25 +11,25 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/daemon"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/daemon"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
-// An app's models run in hwnpud (docs/design/hwnpud.md) unless HWNPU_DAEMON is off: Plan, its
-// Run and Open send the app (AppSpec) over a session with hwnpud's engine (internal/aihost),
+// An app's models run in bonsaiaid (docs/design/bonsaiaid.md) unless BONSAIAI_DAEMON is off: Plan, its
+// Run and Open send the app (AppSpec) over a session with bonsaiaid's engine (internal/aihost),
 // which plans, prepares, compiles and loads the models in its own process, so that Apple's
-// compiler keeps one cache for every program (coreai-cache/<OS>/hwnpud/) and a model one
+// compiler keeps one cache for every program (coreai-cache/<OS>/bonsaiaid/) and a model one
 // program prepared is compiled for the next. A Use's Get gives a model of the app's own type
-// whose methods call the one hwnpud loaded (airole.Role.Remote; every role of hwnpu's packages
+// whose methods call the one bonsaiaid loaded (airole.Role.Remote; every role of bonsaiai's packages
 // has one). The app's code is the same
-// either way. A test (go test) and hwnpud's engine itself run the models in their own process.
+// either way. A test (go test) and bonsaiaid's engine itself run the models in their own process.
 
-// Host is what hwnpud's engine serves on a session of the ai package (internal/aihost): an app's
-// plan and its run, and one Runtime with its models. It is for hwnpud; an app uses App, Plan and
+// Host is what bonsaiaid's engine serves on a session of the ai package (internal/aihost): an app's
+// plan and its run, and one Runtime with its models. It is for bonsaiaid; an app uses App, Plan and
 // Runtime.
 type Host interface {
 	Plan(ctx context.Context, app AppSpec) (PlanSpec, error)
@@ -40,7 +40,7 @@ type Host interface {
 	CloseRuntime(ctx context.Context) error
 }
 
-// AppSpec is an app as it is sent to hwnpud: its uses, their groups of InTurns, its memory and
+// AppSpec is an app as it is sent to bonsaiaid: its uses, their groups of InTurns, its memory and
 // its store.
 type AppSpec struct {
 	Name   string
@@ -48,7 +48,7 @@ type AppSpec struct {
 	Turns  [][]string
 	Memory int
 	Store  StoreSpec
-	// Allowlist is the client's model policy (its HWNPU_MODEL_ALLOWLIST): it narrows hwnpud's.
+	// Allowlist is the client's model policy (its BONSAIAI_MODEL_ALLOWLIST): it narrows bonsaiaid's.
 	Allowlist string
 }
 
@@ -66,8 +66,8 @@ type TierSpec struct {
 }
 
 // StoreSpec is an app's Store as it is sent: what is unset (the environment's sources, Hugging
-// Face, the limits) stays unset, for hwnpud's settings. The paths are the client's, which are
-// hwnpud's too (the same user on the same machine).
+// Face, the limits) stays unset, for bonsaiaid's settings. The paths are the client's, which are
+// bonsaiaid's too (the same user on the same machine).
 type StoreSpec struct {
 	Root           string
 	Sources        []string
@@ -82,7 +82,7 @@ type StoreSpec struct {
 	AppDefinitions []Definition
 }
 
-// PlanSpec is a Plan as hwnpud sends it back.
+// PlanSpec is a Plan as bonsaiaid sends it back.
 type PlanSpec struct {
 	Items    []Item
 	Target   string
@@ -90,14 +90,14 @@ type PlanSpec struct {
 	Licenses []License
 }
 
-// RunSpec is how hwnpud runs a Plan (its fields of the same names); Live says that the client's
+// RunSpec is how bonsaiaid runs a Plan (its fields of the same names); Live says that the client's
 // log redraws its bars.
 type RunSpec struct {
 	NoCompile, AcceptLicenses, AllowOffNPU bool
 	Live                                   bool
 }
 
-// OpenSpec are an Open's options as hwnpud takes them (CompileOnLoad, AllowOffNPU,
+// OpenSpec are an Open's options as bonsaiaid takes them (CompileOnLoad, AllowOffNPU,
 // LoadSettings); Live says that the client's log (WithLog) redraws its bars.
 type OpenSpec struct {
 	Compile, AllowOffNPU bool
@@ -105,7 +105,7 @@ type OpenSpec struct {
 	Live                 bool
 }
 
-// GotSpec is a model hwnpud loaded for a Get: the object of the session that is the model, and
+// GotSpec is a model bonsaiaid loaded for a Get: the object of the session that is the model, and
 // what Runtime.Loaded says of it.
 type GotSpec struct {
 	Handle uint64
@@ -120,7 +120,7 @@ func init() {
 	airpc.RegisterErrorType("chat.PolicyError", (*chat.PolicyError)(nil))
 }
 
-// Spec is the app as it is sent to hwnpud. It is for hwnpud's sessions.
+// Spec is the app as it is sent to bonsaiaid. It is for bonsaiaid's sessions.
 func (a *App) Spec() (AppSpec, error) {
 	s := AppSpec{Name: a.Name, Memory: a.memory, Turns: a.turns, Allowlist: os.Getenv(chat.PolicyEnv)}
 	for _, r := range a.requirements() {
@@ -132,7 +132,7 @@ func (a *App) Spec() (AppSpec, error) {
 	}
 	o := a.Store.Models
 	if o.Bundle != nil {
-		return s, fmt.Errorf("ai: %s's models bundled with it (Store.Models.Bundle) are not read through hwnpud yet (%s=off reads them here)", a.Name, daemon.ModeEnv)
+		return s, fmt.Errorf("ai: %s's models bundled with it (Store.Models.Bundle) are not read through bonsaiaid yet (%s=off reads them here)", a.Name, daemon.ModeEnv)
 	}
 	s.Store = StoreSpec{Root: o.Root, Sources: o.Sources, SourcesSet: o.Sources != nil, Files: o.Files, Definitions: o.Definitions,
 		Prepared: a.Store.Prepared, AppDefinitions: a.Store.Definitions}
@@ -162,16 +162,16 @@ func (s StoreSpec) store() Store {
 	return Store{Models: o, Prepared: s.Prepared, Definitions: s.AppDefinitions}
 }
 
-// daemonClient is this process's client of hwnpud, asked once for a socket (daemon.Use:
-// HWNPU_DAEMON, the protocol, the settings that differ): nil to run the models here.
+// daemonClient is this process's client of bonsaiaid, asked once for a socket (daemon.Use:
+// BONSAIAI_DAEMON, the protocol, the settings that differ): nil to run the models here.
 var daemonClient struct {
 	sync.Mutex
-	socket string // asked of the hwnpud of this socket ("": not asked)
+	socket string // asked of the bonsaiaid of this socket ("": not asked)
 	c      *daemon.Client
 }
 
-// through is hwnpud's client when the app's models run there: never for an app hwnpud made
-// (AppFromSpec), else as HWNPU_DAEMON says (on unless it is set, off in a test).
+// through is bonsaiaid's client when the app's models run there: never for an app bonsaiaid made
+// (AppFromSpec), else as BONSAIAI_DAEMON says (on unless it is set, off in a test).
 func (a *App) through(ctx context.Context) (*daemon.Client, error) {
 	if a.local || daemon.Mode(daemon.DefaultMode()) == "off" {
 		return nil, nil
@@ -189,7 +189,7 @@ func (a *App) through(ctx context.Context) (*daemon.Client, error) {
 	return c, nil
 }
 
-// remoteRoles is nil when every use of the app has a role that runs through hwnpud.
+// remoteRoles is nil when every use of the app has a role that runs through bonsaiaid.
 func (a *App) remoteRoles() error {
 	var missing []string
 	for _, r := range a.requirements() {
@@ -200,11 +200,11 @@ func (a *App) remoteRoles() error {
 	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("ai: the models of %s (%s) do not run through hwnpud yet; %s=off runs them in this process",
+	return fmt.Errorf("ai: the models of %s (%s) do not run through bonsaiaid yet; %s=off runs them in this process",
 		a.Name, strings.Join(missing, ", "), daemon.ModeEnv)
 }
 
-// session opens a session with hwnpud's engine and the handle of its Host.
+// session opens a session with bonsaiaid's engine and the handle of its Host.
 func (a *App) session(ctx context.Context, c *daemon.Client) (*airpc.Session, *airpc.Handle, AppSpec, error) {
 	spec, err := a.Spec()
 	if err != nil {
@@ -217,7 +217,7 @@ func (a *App) session(ctx context.Context, c *daemon.Client) (*airpc.Session, *a
 	return s, s.Object(0).Bind(reflect.TypeFor[Host]()), spec, nil
 }
 
-// planRemote is Plan made by hwnpud.
+// planRemote is Plan made by bonsaiaid.
 func (a *App) planRemote(ctx context.Context, c *daemon.Client) (*Plan, error) {
 	if err := a.remoteRoles(); err != nil {
 		return nil, err
@@ -243,7 +243,7 @@ func (a *App) planRemote(ctx context.Context, c *daemon.Client) (*Plan, error) {
 	return p, nil
 }
 
-// runRemote is Run in hwnpud: the stages are told to fn, the models' logs written to log (nil
+// runRemote is Run in bonsaiaid: the stages are told to fn, the models' logs written to log (nil
 // for none) as they come.
 func (p *Plan) runRemote(ctx context.Context, fn func(Progress), log io.Writer) error {
 	s, host, spec, err := p.remote.session(ctx, p.client)
@@ -264,14 +264,14 @@ func (p *Plan) runRemote(ctx context.Context, fn func(Progress), log io.Writer) 
 	return err
 }
 
-// remoteRuntime is a Runtime whose models hwnpud holds: a session, its Host, and the target
-// hwnpud's NPU is.
+// remoteRuntime is a Runtime whose models bonsaiaid holds: a session, its Host, and the target
+// bonsaiaid's NPU is.
 type remoteRuntime struct {
 	s    *airpc.Session
 	host *airpc.Handle
 }
 
-// openRemote is Open in hwnpud.
+// openRemote is Open in bonsaiaid.
 func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (*Runtime, error) {
 	if err := a.remoteRoles(); err != nil {
 		return nil, err
@@ -290,7 +290,7 @@ func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (
 		logFn = func(b []byte) { w.Write(b) }
 		o.Live = console.Live(w)
 	}
-	// the log and the loading's are kept: hwnpud's models write their logs after their loads too
+	// the log and the loading's are kept: bonsaiaid's models write their logs after their loads too
 	out, err := host.CallKeep(ctx, "Open", spec, o, logFn, rt.o.loading)
 	if err != nil {
 		s.Close()
@@ -301,13 +301,13 @@ func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (
 	return rt, nil
 }
 
-// get is Runtime.get in hwnpud: the model hwnpud loaded, as the role's type of this process.
+// get is Runtime.get in bonsaiaid: the model bonsaiaid loaded, as the role's type of this process.
 // The caller holds rt.mu.
 func (r *remoteRuntime) get(ctx context.Context, rt *Runtime, req requirement) (io.Closer, error) {
 	if req.role.Remote == nil {
 		return nil, rt.app.remoteRoles()
 	}
-	// hwnpud releases the others of the use's group of InTurns as it loads it
+	// bonsaiaid releases the others of the use's group of InTurns as it loads it
 	for _, k := range rt.app.turnOf(req.key()) {
 		if l, ok := rt.loaded[k]; ok && k != req.key() {
 			delete(rt.loaded, k)
@@ -325,7 +325,7 @@ func (r *remoteRuntime) get(ctx context.Context, rt *Runtime, req requirement) (
 	return m, nil
 }
 
-// release is Runtime.release in hwnpud.
+// release is Runtime.release in bonsaiaid.
 func (r *remoteRuntime) release(rt *Runtime, req requirement) error {
 	l, ok := rt.loaded[req.key()]
 	if !ok {
@@ -336,7 +336,7 @@ func (r *remoteRuntime) release(rt *Runtime, req requirement) error {
 	return airpc.Call0(r.host, context.Background(), "Release", req.key())
 }
 
-// close is Runtime.Close in hwnpud: its models unloaded, the session ended.
+// close is Runtime.Close in bonsaiaid: its models unloaded, the session ended.
 func (r *remoteRuntime) close(rt *Runtime) error {
 	for _, l := range rt.loaded {
 		l.closer.Close()

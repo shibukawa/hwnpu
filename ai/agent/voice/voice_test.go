@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/agent"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/ai/speech"
-	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/bonsaiai/ai/agent"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/speech"
+	"github.com/shibukawa/bonsaiai/ai/text"
 )
 
 func TestWake(t *testing.T) {

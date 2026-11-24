@@ -1,4 +1,4 @@
-"""Reference outputs for hwnpu-image detect (RTMDet) and ocr (PP-OCRv6) with ONNX Runtime, for
+"""Reference outputs for bonsaiai-image detect (RTMDet) and ocr (PP-OCRv6) with ONNX Runtime, for
 internal/vision/detect's TestRTMDet and internal/vision/ocr's TestPrograms.
 
     python ref_detect_ocr.py rtmdet rtmdet-s-coco.onnx football-match.jpg ref/rtmdet-football

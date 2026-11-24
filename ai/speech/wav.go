@@ -3,9 +3,9 @@ package speech
 import (
 	"io"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
-	"github.com/shibukawa/hwnpu/internal/speech"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3audio"
+	"github.com/shibukawa/bonsaiai/internal/speech"
 )
 
 // ReadWAV decodes a WAV file (PCM of 8, 16, 24 or 32 bits, or 32 bit float) into mono samples in

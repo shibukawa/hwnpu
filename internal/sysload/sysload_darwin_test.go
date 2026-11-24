@@ -55,7 +55,7 @@ func TestParseGPUTimes(t *testing.T) {
       }
   +-o AGXDeviceUserClient  <class AGXDeviceUserClient>
       {
-        "IOUserClientCreator" = "pid 900, hwnpu-chat"
+        "IOUserClientCreator" = "pid 900, bonsaiai-chat"
       }
 `
 	g := parseGPUTimes(text)

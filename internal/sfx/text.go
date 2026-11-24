@@ -10,9 +10,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/qwen3"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/qwen3"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // PromptRows are the rows the text encoder's programs take: a prompt of more tokens is cut there

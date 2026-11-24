@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // Weights reads a FLUX.2 klein repository's checkpoints under one set of names: "dit." and the

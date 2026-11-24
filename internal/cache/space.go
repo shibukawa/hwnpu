@@ -17,24 +17,24 @@ import (
 // How much of the disk the cache takes (docs/cache-sharing-design.md 7.7). Every download into the
 // root asks Room first:
 //
-//   - HWNPU_CACHE_MIN_FREE (10GB unless set; 0 for none) is what is left free on the root's disk:
+//   - BONSAIAI_CACHE_MIN_FREE (10GB unless set; 0 for none) is what is left free on the root's disk:
 //     a download that would leave less is not started.
-//   - HWNPU_CACHE_MAX_SIZE (none unless set) is the most the cache holds: before a download that
+//   - BONSAIAI_CACHE_MAX_SIZE (none unless set) is the most the cache holds: before a download that
 //     would go over, the units least recently used are removed (LRU) until it fits, and when the
-//     disk is short of HWNPU_CACHE_MIN_FREE too. Without it nothing is removed by itself (hwnpu
+//     disk is short of BONSAIAI_CACHE_MIN_FREE too. Without it nothing is removed by itself (bonsaiai
 //     cache prune and clear remove).
 //
 // A size is bytes, or a number with KB, MB, GB, TB (powers of 1000) or KiB, MiB, GiB, TiB;
-// HWNPU_CACHE_MIN_FREE may be a percentage of the disk too (5%).
+// BONSAIAI_CACHE_MIN_FREE may be a percentage of the disk too (5%).
 const (
-	MaxSizeEnv = "HWNPU_CACHE_MAX_SIZE"
-	MinFreeEnv = "HWNPU_CACHE_MIN_FREE"
+	MaxSizeEnv = "BONSAIAI_CACHE_MAX_SIZE"
+	MinFreeEnv = "BONSAIAI_CACHE_MIN_FREE"
 )
 
-// DefaultMinFree is HWNPU_CACHE_MIN_FREE when it is not set.
+// DefaultMinFree is BONSAIAI_CACHE_MIN_FREE when it is not set.
 const DefaultMinFree int64 = 10e9
 
-// KeepRecent is how recently a unit was used for it not to be removed by itself or by hwnpu
+// KeepRecent is how recently a unit was used for it not to be removed by itself or by bonsaiai
 // cache prune: another process may be reading it.
 const KeepRecent = time.Hour
 
@@ -268,10 +268,10 @@ func Room(need int64, path string, log func(format string, args ...any)) error {
 	}
 	switch {
 	case short > 0:
-		return fmt.Errorf("%w: %s %s has %s free: less than %s would be left (%s; hwnpu cache prune frees room, %s moves the cache)",
+		return fmt.Errorf("%w: %s %s has %s free: less than %s would be left (%s; bonsaiai cache prune frees room, %s moves the cache)",
 			ErrNoRoom, what, root, FormatSize(free), FormatSize(minFree), MinFreeEnv, RootEnv)
 	case over > 0:
-		return fmt.Errorf("%w: %s the cache (%s) would go %s over %s=%s: what is left was used in the last %v or is in use (hwnpu cache clear removes it)",
+		return fmt.Errorf("%w: %s the cache (%s) would go %s over %s=%s: what is left was used in the last %v or is in use (bonsaiai cache clear removes it)",
 			ErrNoRoom, what, root, FormatSize(over), MaxSizeEnv, FormatSize(l.MaxSize), KeepRecent)
 	}
 	added += need

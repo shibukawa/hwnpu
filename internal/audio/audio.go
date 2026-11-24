@@ -1,5 +1,5 @@
 // Package audio turns audio clips into LFM3-Audio / LFM3-Omni audio embeddings for the text
-// model's input, with audio encoder programs converted by hwnpu-dev convert -arch lfm3-audio-encoder,
+// model's input, with audio encoder programs converted by bonsaiai-dev convert -arch lfm3-audio-encoder,
 // one per clip length (the Neural Engine runs fixed shapes). A clip runs on the shortest program
 // that holds it, its frames followed by zeros and masked, which gives the same embeddings as
 // encoding the clip alone.
@@ -17,10 +17,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3audio"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // Encoder holds the loaded audio encoder programs.
@@ -36,7 +36,7 @@ type sized struct {
 
 // Load reads the checkpoint's config.json in dir and loads the audio encoder packages on dev
 // (nil: the CPU interpreter).
-func Load(ctx context.Context, dev *hwnpu.Device, dir string, packages []string) (*Encoder, error) {
+func Load(ctx context.Context, dev *bonsaiai.Device, dir string, packages []string) (*Encoder, error) {
 	_, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), lfm3audio.Arch.Name)
 	if err != nil {
 		return nil, err

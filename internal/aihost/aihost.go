@@ -1,10 +1,10 @@
-// Package aihost is hwnpud's side of the ai package (docs/design/hwnpud.md): it serves the
-// sessions an app opens with hwnpud's engine (ai.Host over internal/airpc) and runs the app's
+// Package aihost is bonsaiaid's side of the ai package (docs/design/bonsaiaid.md): it serves the
+// sessions an app opens with bonsaiaid's engine (ai.Host over internal/airpc) and runs the app's
 // plan, its preparing and compiling, and its models in the engine's process, so that Apple's
-// compiler keeps one cache (coreai-cache/<OS>/hwnpud/) for every program.
+// compiler keeps one cache (coreai-cache/<OS>/bonsaiaid/) for every program.
 //
 // It imports the packages of models, whose roles (airole.Register) the apps' uses name; the
-// engine's package (internal/daemon) does not, and cmd/hwnpud joins the two (daemon.Engine.AI).
+// engine's package (internal/daemon) does not, and cmd/bonsaiaid joins the two (daemon.Engine.AI).
 package aihost
 
 import (
@@ -17,19 +17,19 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/cachecmd"
-	"github.com/shibukawa/hwnpu/internal/daemon"
-	"github.com/shibukawa/hwnpu/internal/npustatus"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/cachecmd"
+	"github.com/shibukawa/bonsaiai/internal/daemon"
+	"github.com/shibukawa/bonsaiai/internal/npustatus"
+	"github.com/shibukawa/bonsaiai/modelstore"
 
 	// the packages of models, for their roles
-	_ "github.com/shibukawa/hwnpu/ai/imagegen"
-	_ "github.com/shibukawa/hwnpu/ai/sound"
-	_ "github.com/shibukawa/hwnpu/ai/speech"
-	_ "github.com/shibukawa/hwnpu/ai/text"
-	_ "github.com/shibukawa/hwnpu/ai/vision"
+	_ "github.com/shibukawa/bonsaiai/ai/imagegen"
+	_ "github.com/shibukawa/bonsaiai/ai/sound"
+	_ "github.com/shibukawa/bonsaiai/ai/speech"
+	_ "github.com/shibukawa/bonsaiai/ai/text"
+	_ "github.com/shibukawa/bonsaiai/ai/vision"
 )
 
 // Handler serves the sessions of the ai package (daemon.AIPath, upgraded to daemon.AIProtocol),
@@ -86,7 +86,7 @@ var (
 
 func (h *Host) logf(format string, args ...any) {
 	if h.log != nil {
-		fmt.Fprintf(h.log, "hwnpud engine: "+format+"\n", args...)
+		fmt.Fprintf(h.log, "bonsaiaid engine: "+format+"\n", args...)
 	}
 }
 
@@ -280,7 +280,7 @@ func (c *clientLog) Write(p []byte) (int, error) {
 
 func (c *clientLog) Terminal() bool { return c.live }
 
-// Machine runs a command of the cache or of the memory (hwnpu cache, hwnpu memory) in the engine,
+// Machine runs a command of the cache or of the memory (bonsaiai cache, bonsaiai memory) in the engine,
 // with the engine's settings, its output and its question at the client: what the engine's
 // models are loaded from stays (Env.InUse), and what removes waits for the loads going on and
 // keeps the next from starting until it is done.
@@ -289,12 +289,12 @@ func (h *Host) Machine(ctx context.Context, r cachecmd.Request, out, errOut func
 	if r.Command != "info" && r.Command != "ls" {
 		loading.Lock()
 		defer loading.Unlock()
-		h.logf("hwnpu %s for a client", r.Command)
+		h.logf("bonsaiai %s for a client", r.Command)
 	}
 	return r.Exec(e)
 }
 
-// CacheState is the engine's cache, for hwnpu status.
+// CacheState is the engine's cache, for bonsaiai status.
 func (h *Host) CacheState(ctx context.Context, scan bool) (cachecmd.State, error) {
 	s, err := modelstore.Open(modelstore.Options{Log: io.Discard})
 	if err != nil {
@@ -330,14 +330,14 @@ func (o Options) why(paths []string) string {
 	for _, m := range ai.Held() {
 		for _, p := range m.Paths {
 			if under(p) {
-				return fmt.Sprintf("hwnpud holds %s loaded, for %d %s", m.Model, m.Uses, plural(m.Uses, "client"))
+				return fmt.Sprintf("bonsaiaid holds %s loaded, for %d %s", m.Model, m.Uses, plural(m.Uses, "client"))
 			}
 		}
 	}
 	if o.Held != nil {
 		for _, d := range o.Held() {
 			if under(d) {
-				return "hwnpud holds the chat model of " + filepath.Base(d) + " loaded"
+				return "bonsaiaid holds the chat model of " + filepath.Base(d) + " loaded"
 			}
 		}
 	}

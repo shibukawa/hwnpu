@@ -14,7 +14,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
 )
 
 func main() {

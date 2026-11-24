@@ -21,7 +21,7 @@ func (l sameUser) Accept() (net.Conn, error) {
 			return nil, err
 		}
 		if uid, ok := peerUID(c); ok && uid != os.Getuid() {
-			fmt.Fprintf(l.log, "hwnpud: refused a connection of user %d\n", uid)
+			fmt.Fprintf(l.log, "bonsaiaid: refused a connection of user %d\n", uid)
 			c.Close()
 			continue
 		}

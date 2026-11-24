@@ -1,16 +1,16 @@
 # 引き継ぎ: Neural Engine のコンパイル済みキャッシュの限界を M1〜M4 で測る
 
-作成: 2026-11-10、整理: 2026-11-21。Sana の Mac 対応 (#99、[docs/design/vision-models.md](design/vision-models.md)) で、hwnpu のキャッシュがあっても読み込みに 1〜2 分かかる原因を調べた。その続きとして、システム側のキャッシュが何をどれだけ持つかを測るためのメモ。
+作成: 2026-11-10、整理: 2026-11-21。Sana の Mac 対応 (#99、[docs/design/vision-models.md](design/vision-models.md)) で、BonsaiAI のキャッシュがあっても読み込みに 1〜2 分かかる原因を調べた。その続きとして、システム側のキャッシュが何をどれだけ持つかを測るためのメモ。
 
-**今の位置づけ**: これは **Core ML** の話。その後 Mac のコマンドは全部 Core AI になり (hwnpu-image [apple-coreai](design/apple-coreai.md)、hwnpu-chat [apple-coreai](design/apple-coreai.md)、hwnpu-audio も)、Core ML は `--cpu` の CPU のインタプリタでしか使わない。Sana もやめた ([image-models](design/image-models.md))。Core AI のキャッシュは別物で (`~/Library/Caches/coreai-cache/<OS>/<実行ファイル名>/`)、Core ML の約 4 GiB を超える 17 GB の書き出しでも残る ([docs/design/apple-coreai.md](design/apple-coreai.md))。なので下の 2 節の計測は急がない。前の版の「結果で決まること」(Sana の常駐や読む順) は外した。
+**今の位置づけ**: これは **Core ML** の話。その後 Mac のコマンドは全部 Core AI になり (bonsaiai-image [apple-coreai](design/apple-coreai.md)、bonsaiai-chat [apple-coreai](design/apple-coreai.md)、bonsaiai-audio も)、Core ML は `--cpu` の CPU のインタプリタでしか使わない。Sana もやめた ([image-models](design/image-models.md))。Core AI のキャッシュは別物で (`~/Library/Caches/coreai-cache/<OS>/<実行ファイル名>/`)、Core ML の約 4 GiB を超える 17 GB の書き出しでも残る ([docs/design/apple-coreai.md](design/apple-coreai.md))。なので下の 2 節の計測は急がない。前の版の「結果で決まること」(Sana の常駐や読む順) は外した。
 
-測る道具は `hwnpu-dev probe cache` (旧 `cmd/npuprobe`。下の 4 節に動かし方)。
+測る道具は `bonsaiai-dev probe cache` (旧 `cmd/npuprobe`。下の 4 節に動かし方)。
 
 ## 1. 分かっていること
 
 ### 1.1 「キャッシュがあるのに遅い」の正体
 
-hwnpu のキャッシュ (`--cache`、既定は `~/Library/Caches/hwnpu`) が持つのは次の 2 つ:
+BonsaiAI のキャッシュ (`--cache`、既定は `~/Library/Caches/bonsaiai`) が持つのは次の 2 つ:
 
 - コンパイル済みの `.mlmodelc`
 - 配置の確認 (`MLComputePlan`) の結果
@@ -43,23 +43,23 @@ M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae
 ### 1.4 キャッシュの置き場所 (分かった範囲)
 
 - `~/Library/Caches/<実行ファイル名>/com.apple.e5rt.e5bundlecache/<OS のビルド>/<ハッシュ>/`: 実行ファイルごとにある
-  - `hwnpu-image` には 16 GB 溜まっていた。書き出しを何度も作り直した残りで、削除済み
+  - `bonsaiai-image` には 16 GB 溜まっていた。書き出しを何度も作り直した残りで、削除済み
 - 1.1 の計測で使ったテスト (`zzload.test`) の同じ場所は 36 KB しかなかった。それでも 2 回目は 0.1 秒で当たったので、当たりを持っているのはこのディレクトリではない
 - `~/Library/Caches/com.apple.e5rt.e5bundlecache`: 11 MB
 - [quantization](design/quantization.md) の見立てでは、本体は `aned` 側 (sudo が要り未確認)。実行ファイル名で分かれるのか、プロセスをまたいで共有されるのかも、ちゃんと調べていない
 
 ### 1.5 測るときの注意
 
-- **書き出しを作り直すと別物になる**: `internal/mlpackage` が Manifest.json に乱数の UUID を書くため、パッケージのバイトが変わり、hwnpu のキャッシュも Neural Engine のキャッシュも当たらなくなる。測るときは同じパッケージを使い回すこと
+- **書き出しを作り直すと別物になる**: `internal/mlpackage` が Manifest.json に乱数の UUID を書くため、パッケージのバイトが変わり、BonsaiAI のキャッシュも Neural Engine のキャッシュも当たらなくなる。測るときは同じパッケージを使い回すこと
 - **ほかのプロセスに注意する**: ほかのプロセスが Neural Engine でコンパイルしていると、配置の確認が数分かかることがある (M1 で 2 分を超えた)。Neural Engine のロック ([apple-neural-engine](design/apple-neural-engine.md)、`llm.OpenDevice`) を取らないテストや他のツールが動いていないか確かめること
-- **実行ファイル名で分かれる可能性がある**: キャッシュが実行ファイル名で分かれるなら、`go test` (`<pkg>.test`) と `hwnpu-dev` と `hwnpu-image` で結果が違うかもしれない。1.4 の置き場所の謎と合わせて確かめる
+- **実行ファイル名で分かれる可能性がある**: キャッシュが実行ファイル名で分かれるなら、`go test` (`<pkg>.test`) と `bonsaiai-dev` と `bonsaiai-image` で結果が違うかもしれない。1.4 の置き場所の謎と合わせて確かめる
 
 ### 1.6 容量の内側でも当たらない: Gemma 4 ([docs/design/llm-models.md](design/llm-models.md)、[apple-coreml](design/apple-coreml.md)、M3)
 
 容量だけでは説明できない外れがある。Gemma 4 E2B は、合計が容量より小さくても当たらない。
 
 - 起動は毎回 98 秒。4 部分とも `MLModel` の読み込みが 22〜25 秒で、4 回続けて起動しても一度も当たらない
-- hwnpu 側のコンパイル済みキャッシュは毎回当たっている (0.7〜0.8 秒)。外れているのは Neural Engine 側
+- BonsaiAI 側のコンパイル済みキャッシュは毎回当たっている (0.7〜0.8 秒)。外れているのは Neural Engine 側
 - 次のことは、どれも原因ではなかった:
   - CPU に落ちる演算: 最後の `reshape` を無くし (`-logits folded`)、全部 NPU に載せても外れる
   - 部分の大きさ: 0.51〜0.55 GiB の 3 部分 (`-parts 3`) に分けても、3 回とも 16〜28 秒の外れ
@@ -78,7 +78,7 @@ M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae
 
 ### 1.7 M2 の結果と、M1 の SANA 1.5 (2026-11-10〜11)
 
-- M2 (Mac14,2、macOS 27.2、16 GB) の `hwnpu-dev probe cache` (容量、2026-11-10):
+- M2 (Mac14,2、macOS 27.2、16 GB) の `bonsaiai-dev probe cache` (容量、2026-11-10):
   - fp16 の 0.45 GiB は 16 本 (7.25 GiB) まで当たり、20 本 (9.06 GiB) で外れる
   - 1.02 GiB は 1 本は当たり、2〜3 本は 3 回目から当たり、4 本以上は外れる。システムのキャッシュは 1.02 GiB で重みの約 3 倍、0.91 GiB までは約 1 倍
   - int8 は合計約 3 GiB、lut4 は合計約 1 GiB まで
@@ -87,7 +87,7 @@ M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae
 
 ## 2. 残り (急がない、Core ML を Neural Engine でまた使うときに)
 
-M2 の容量は済み (1.7)。残りは `hwnpu-dev probe cache` の 4 節のコマンドで、結果は `npu_profiles/npuprobe-<chip>-cache.md` と `.json` に:
+M2 の容量は済み (1.7)。残りは `bonsaiai-dev probe cache` の 4 節のコマンドで、結果は `npu_profiles/npuprobe-<chip>-cache.md` と `.json` に:
 
 - **容量** (M1、M3、M4): 大きさ S のプログラム N 本の合計を 1〜8 GB に振り、全部当たり続ける最大の合計。バイト数で決まるのか本数で決まるのか (M2 は合成の層の本数で決まるように見えた)
 - **載せたまま / 閉じる**、**押し出され方** (同じ順と逆順)、**プロセスとの関係** (プロセスの中の読み直し、実行ファイル名、再起動の後): 1 台でよい
@@ -99,35 +99,35 @@ M2 の容量は済み (1.7)。残りは `hwnpu-dev probe cache` の 4 節のコ�
 - `internal/llm/runner`: `runner.Open` (1 本の読み込み)
 - `internal/llm/chain`: 部品の読み込みと配置の確認
 - `internal/backend/coreml/graph_darwin.go`: コンパイル済みキャッシュ (`compiledModel`)、配置のキャッシュ
-  - `HWNPU_DEV=coreml.trace=1` で読み込みの内訳が出る
+  - `BONSAIAI_DEV=coreml.trace=1` で読み込みの内訳が出る
 - `internal/backend/coreml/plan_darwin.go`: `MLComputePlan`
   - 待ちは 10 分 (#99 で 2 分から延ばした)
   - 内部の失敗は 1 回だけやり直す
 - `internal/mlpackage/package.go`: `uuid()` (書き出しのたびにバイトが変わる元)
-- `cmd/hwnpu-dev/probe` (`cache.go`)、`internal/probe`: 合成プログラム、子プロセスでの計測 (`child.go`)、報告 (`report.go`)
+- `cmd/bonsaiai-dev/probe` (`cache.go`)、`internal/probe`: 合成プログラム、子プロセスでの計測 (`child.go`)、報告 (`report.go`)
 
-## 4. 動かし方 (`hwnpu-dev probe cache`)
+## 4. 動かし方 (`bonsaiai-dev probe cache`)
 
-1 つの構成は「S GiB のプログラム N 本」。プログラムは構成ごとに別物で、一度だけ書いて使い回す。回ごとに新しいプロセスがそれを順に読み、1 回ずつ実行する。hwnpu のコンパイルのキャッシュ (`.mlmodelc` と配置) は構成ごとのディレクトリに残すので、読み込みが長ければ Neural Engine のコンパイルのやり直し。読み込みと最初の呼び出しが `-cache-hit` (既定 1 秒) 以下なら当たり。実行中は hwnpu の Neural Engine のロックを持つ (子プロセスはロックなしで開く)。
+1 つの構成は「S GiB のプログラム N 本」。プログラムは構成ごとに別物で、一度だけ書いて使い回す。回ごとに新しいプロセスがそれを順に読み、1 回ずつ実行する。BonsaiAI のコンパイルのキャッシュ (`.mlmodelc` と配置) は構成ごとのディレクトリに残すので、読み込みが長ければ Neural Engine のコンパイルのやり直し。読み込みと最初の呼び出しが `-cache-hit` (既定 1 秒) 以下なら当たり。実行中は BonsaiAI の Neural Engine のロックを持つ (子プロセスはロックなしで開く)。
 
 ```bash
 # 容量 (全チップ): fp16 の 0.5 GiB と 1 GiB、合計 1〜8 GiB、各 3 回。1 時間以上かかる
-go run ./cmd/hwnpu-dev probe cache -o npu_profiles/npuprobe-m1-cache.md
+go run ./cmd/bonsaiai-dev probe cache -o npu_profiles/npuprobe-m1-cache.md
 
 # 本数で決まるかを見るなら、小さいプログラムを足す (0.25 GiB の 16 本 = 4 GiB など)
-go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.25,0.5,1,2 -cache-totals 2,3,4,5,6
+go run ./cmd/bonsaiai-dev probe cache -cache-sizes 0.25,0.5,1,2 -cache-totals 2,3,4,5,6
 
 # 載せたまま / 閉じる
-go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 3,4,5,6 -cache-hold close,open
+go run ./cmd/bonsaiai-dev probe cache -cache-sizes 0.5 -cache-totals 3,4,5,6 -cache-hold close,open
 
 # 押し出され方: 容量を少し超える合計で、同じ順と 1 回おきの逆順。回を増やす
-go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 5 -cache-order same,reverse -cache-rounds 5
+go run ./cmd/bonsaiai-dev probe cache -cache-sizes 0.5 -cache-totals 5 -cache-order same,reverse -cache-rounds 5
 
 # プロセスの中での読み直しと実行ファイル名
-go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 2,5 -cache-passes 2 -cache-names hwnpu-image,other
+go run ./cmd/bonsaiai-dev probe cache -cache-sizes 0.5 -cache-totals 2,5 -cache-passes 2 -cache-names bonsaiai-image,other
 
 # 再起動の後: プログラムを -dir に残し、再起動してから同じ指定でもう一度 (1 回目から当たるか)
-go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 2 -dir ~/probe-cache -cache-keep
+go run ./cmd/bonsaiai-dev probe cache -cache-sizes 0.5 -cache-totals 2 -dir ~/probe-cache -cache-keep
 ```
 
 報告の見方:
@@ -138,7 +138,7 @@ go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 2 -dir ~/probe
 
 注意:
 
-- `go run` の実行ファイル名は `hwnpu-dev`。`go build -o` で別の名前にすると、名前で分かれるかの比較にもなる
+- `go run` の実行ファイル名は `bonsaiai-dev`。`go build -o` で別の名前にすると、名前で分かれるかの比較にもなる
 - 既定の -dir は一時ディレクトリ。`-cache-keep` なしでは構成が終わるたびに消す。最大で合計 (8 GiB) の 2 倍ほどの空きが要る (パッケージと `.mlmodelc`)
 - `-cache-hold open` は合計の分だけメモリを使う。16 GB の機械では 8 GiB の構成を避ける (`-cache-totals` で絞る)
-- ほかに Neural Engine を使うもの (Xcode のプレビュー、写真の解析など) を止めてから。hwnpu の別のコマンドはロックで待つ
+- ほかに Neural Engine を使うもの (Xcode のプレビュー、写真の解析など) を止めてから。BonsaiAI の別のコマンドはロックで待つ

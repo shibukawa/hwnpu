@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // A model prepared for a role under one use's name is ready for another use of the same model
-// (hwnpu-audio's whisper-large-v3-turbo, interpreter's transcribe).
+// (bonsaiai-audio's whisper-large-v3-turbo, interpreter's transcribe).
 func TestPreparedUnderAnotherName(t *testing.T) {
 	ownDefinitions(t)
 	var f fakes

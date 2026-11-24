@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Embed is the use of an embedding model (PLaMo-Embedding) for an app: a model, a family or a
@@ -26,7 +26,7 @@ func Embed(name string) ai.Use[*Embedder] {
 //
 //	settings: seqs      the sequence lengths the programs are converted for, comma separated
 //	                    (128,1024): a text runs on the shortest that holds it
-//	programs: packages  the programs converted by hwnpu-dev convert, with different -seq; with
+//	programs: packages  the programs converted by bonsaiai-dev convert, with different -seq; with
 //	                    config and weights (default: the checkpoint's)
 //
 // On AMD's NPU a model runs from its export of tools/amd/iron_plamo_embed.py.
@@ -117,7 +117,7 @@ var (
 
 // Embedder turns texts into vectors for search. It runs one text at a time; others wait.
 type Embedder struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	e      *chat.Embedder
 	model  string
 }
@@ -162,7 +162,7 @@ func (e *Embedder) Embed(ctx context.Context, text string, o EmbedOptions) (Embe
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (e *Embedder) Close() error {
 	if e.remote != nil {
-		return e.remote.Release() // the Runtime in hwnpud unloads it
+		return e.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	return e.e.Close()
 }

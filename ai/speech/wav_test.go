@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/flow"
 )
 
 func TestWAVAndChunks(t *testing.T) {

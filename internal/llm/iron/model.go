@@ -13,13 +13,13 @@ import (
 	"syscall"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/f32"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/f32"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // errReleased is a call to a model that Release left without its device memory.
@@ -31,8 +31,8 @@ const ddrAperture = 0x80000000
 // Model is a loaded IRON language model: the arena's banks and its versions' programs.
 type Model struct {
 	Manifest *Manifest
-	dev      *hwnpu.Device
-	banks    map[string]*hwnpu.Buffer
+	dev      *bonsaiai.Device
+	banks    map[string]*bonsaiai.Buffer
 	decode   *version
 	prompt   *version
 	placed   *version  // a prompt chunk with the towers' soft tokens at their placeholders
@@ -45,7 +45,7 @@ type Model struct {
 	rings    bool      // some of those arrays are rings of the last positions (a sliding layer's window)
 	ringAt   int       // the rings hold the positions before it
 	// xclbins are the programs of the versions packaged as an xclbin per step, by file.
-	xclbins map[string]*hwnpu.Program
+	xclbins map[string]*bonsaiai.Program
 	dir     string            // the export's directory
 	vlProc  *lfm3vl.Processor // LFM3-VL's image processor, read on the first image
 	// hostTables are the tables kept on the host (HostTable), filled before each call
@@ -69,22 +69,22 @@ type Model struct {
 
 type version struct {
 	m    *Version
-	prog *hwnpu.Program
+	prog *bonsaiai.Program
 	// args holds the version's own buffers (input, output, feedback); the banks are shared.
-	args map[string]*hwnpu.Buffer
+	args map[string]*bonsaiai.Buffer
 	// run is the decode step's one command, kept: its control code stays in the device heap.
 	// A prompt chunk's commands are made for each call instead (newRun): their control code
 	// (89 MiB for Gemma 4 E2B) is larger than the device heap (64 MiB on Linux 7.0).
-	run *hwnpu.Run
+	run *bonsaiai.Run
 	// barrier is the decode step's empty command (chunkBarrier), kept.
-	barrier *hwnpu.Run
+	barrier *bonsaiai.Run
 	// stepProg is the decode ELF loaded again, a hardware context of its own, and stepRun its
 	// empty command (stepBarrier).
-	stepProg *hwnpu.Program
-	stepRun  *hwnpu.Run
+	stepProg *bonsaiai.Program
+	stepRun  *bonsaiai.Run
 	// runs are a decode step's commands when it is several (Qwen3.6's: two a layer), each
 	// kept as run is; runs[0] is run.
-	runs []*hwnpu.Run
+	runs []*bonsaiai.Run
 	// perCall: the check of drafts' commands made for each call (verify.go), their control
 	// code not fitting the device heap beside the decode step's.
 	perCall bool
@@ -94,7 +94,7 @@ type version struct {
 }
 
 // Open loads the model exported in dir onto dev.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, ...any)) (*Model, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string, logf func(string, ...any)) (*Model, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -130,9 +130,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 
 // load allocates the arena's banks and the versions' buffers on dev, reads the weights into
 // them and loads the programs: what Open does, and Reload again after Release.
-func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
+func (m *Model) load(ctx context.Context, dev *bonsaiai.Device) error {
 	man, dir, logf := m.Manifest, m.dir, m.logf
-	m.dev, m.banks, m.xclbins, m.kv = dev, map[string]*hwnpu.Buffer{}, map[string]*hwnpu.Program{}, nil
+	m.dev, m.banks, m.xclbins, m.kv = dev, map[string]*bonsaiai.Buffer{}, map[string]*bonsaiai.Program{}, nil
 	if err := m.loadBanks(); err != nil {
 		return err
 	}
@@ -141,7 +141,7 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 		return err
 	}
 	for name, v := range man.Versions {
-		ver := &version{m: v, args: map[string]*hwnpu.Buffer{}}
+		ver := &version{m: v, args: map[string]*bonsaiai.Buffer{}}
 		switch name {
 		case "decode":
 			m.decode = ver // its run is made once every program's PDIs are in the heap
@@ -159,7 +159,7 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			return fmt.Errorf("iron: unknown version %s", name)
 		}
 		if v.ELF != "" {
-			if ver.prog, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, v.ELF)}); err != nil {
+			if ver.prog, err = kr.Load(ctx, bonsaiai.ProgramSource{Path: filepath.Join(dir, v.ELF)}); err != nil {
 				return fmt.Errorf("iron: %s: %w", name, err)
 			}
 		}
@@ -167,11 +167,11 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			if _, ok := m.banks[a.Kind]; ok {
 				continue
 			}
-			var opts []hwnpu.BufferOption
+			var opts []bonsaiai.BufferOption
 			if a.Kind == "feedback" && len(v.Fed) > 0 {
 				// the fed commands' ctrl scratchpads: device heap memory, as the scratchpad
 				// a run makes for itself (IRON's feedback is the next run's scratchpad)
-				opts = append(opts, hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+				opts = append(opts, bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 			}
 			buf, err := dev.AllocBuffer(max(a.Bytes, 4096), opts...)
 			if err != nil {
@@ -266,7 +266,7 @@ func (m *Model) Released() bool { return m.released }
 
 // Reload loads the model released by Release onto dev again: the weights from the export, the
 // caches and states at zero.
-func (m *Model) Reload(ctx context.Context, dev *hwnpu.Device) error {
+func (m *Model) Reload(ctx context.Context, dev *bonsaiai.Device) error {
 	if !m.released {
 		return errors.New("iron: Reload of a model that is not released")
 	}
@@ -472,7 +472,7 @@ func (m *Model) version(name string) *version {
 	return nil
 }
 
-func (m *Model) buffer(v *version, kind string) *hwnpu.Buffer {
+func (m *Model) buffer(v *version, kind string) *bonsaiai.Buffer {
 	if b, ok := m.banks[kind]; ok {
 		return b
 	}
@@ -480,7 +480,7 @@ func (m *Model) buffer(v *version, kind string) *hwnpu.Buffer {
 }
 
 // newRun makes the run of command k of v with every argument bound.
-func (m *Model) newRun(v *version, k int) (*hwnpu.Run, error) {
+func (m *Model) newRun(v *version, k int) (*bonsaiai.Run, error) {
 	kern, err := v.prog.Kernel(v.m.Kernels[k].Name)
 	if err != nil {
 		return nil, err
@@ -615,7 +615,7 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		}
 		// (a version on one resident array says it needs none: there the barrier's change of
 		// hardware context puts the array's whole configuration back, 2.4 ms a step.
-		// HWNPU_DEV=iron.barrier=1 or 0 overrides the manifest, to measure.)
+		// BONSAIAI_DEV=iron.barrier=1 or 0 overrides the manifest, to measure.)
 		barrier := !v.m.NoStepBarrier
 		if e := devenv.Value("iron.barrier"); e != "" {
 			barrier = e != "0"
@@ -669,7 +669,7 @@ func (m *Model) decodeRuns() error {
 	for _, f := range v.m.Fed {
 		fed[f.Command] = f
 	}
-	runs := make([]*hwnpu.Run, 0, len(v.m.Kernels))
+	runs := make([]*bonsaiai.Run, 0, len(v.m.Kernels))
 	fail := func(err error) error {
 		for _, r := range runs {
 			r.Close()
@@ -709,7 +709,7 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 	for _, f := range v.m.Fed {
 		fed[f.Command] = f
 	}
-	var fences []hwnpu.Fence
+	var fences []bonsaiai.Fence
 	var err error
 	// The host's words of the fed commands, into their scratchpads (buffers of the feedback
 	// argument) before any command runs: a host write of a word shares a cache line with the
@@ -733,7 +733,7 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 			return err
 		}
 	}
-	// HWNPU_DEV=iron.timing: each command waited for and timed alone. Experts in places (pool.go):
+	// BONSAIAI_DEV=iron.timing: each command waited for and timed alone. Experts in places (pool.go):
 	// each command waited for, and a fed one's choices routed to the places before it runs
 	timing := devenv.On("iron.timing")
 	var routed map[int]*fedRoute
@@ -743,7 +743,7 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 			routed[m.routes[i].command] = &m.routes[i]
 		}
 	}
-	// HWNPU_DEV=iron.sync=1: each command waited for as with places, to measure what that costs
+	// BONSAIAI_DEV=iron.sync=1: each command waited for as with places, to measure what that costs
 	hosted := m.router != nil && v == m.decode
 	syncEach := routed != nil || hosted || devenv.On("iron.sync")
 	for k, run := range v.runs {
@@ -766,7 +766,7 @@ func (m *Model) runCommands(ctx context.Context, v *version, values map[string]i
 				}
 			}
 		}
-		var f hwnpu.Fence
+		var f bonsaiai.Fence
 		if f, err = run.Submit(); err != nil {
 			err = fmt.Errorf("iron: decode command %d: %w", k, err)
 			break
@@ -1106,7 +1106,7 @@ func (m *Model) Buffers(version string) map[string]Placement {
 }
 
 // Device is the device the model is loaded on.
-func (m *Model) Device() *hwnpu.Device { return m.dev }
+func (m *Model) Device() *bonsaiai.Device { return m.dev }
 
 func int32Bytes(xs []int32) []byte {
 	b := make([]byte, 4*len(xs))
@@ -1162,7 +1162,7 @@ func (m *Model) chunkBarrier(ctx context.Context) error {
 
 // emptyRun makes a run of prog's empty instance (mlir-aie's aiecc_empty, no control code) with
 // v's arguments bound, or nil when prog has none.
-func (m *Model) emptyRun(v *version, prog *hwnpu.Program) (*hwnpu.Run, error) {
+func (m *Model) emptyRun(v *version, prog *bonsaiai.Program) (*bonsaiai.Run, error) {
 	name := ""
 	for _, k := range prog.Kernels() {
 		if strings.HasSuffix(k, ":aiecc_empty") {
@@ -1208,7 +1208,7 @@ func (m *Model) stepBarrier(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if v.stepProg, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(m.dir, v.m.ELF)}); err != nil {
+			if v.stepProg, err = kr.Load(ctx, bonsaiai.ProgramSource{Path: filepath.Join(m.dir, v.m.ELF)}); err != nil {
 				return fmt.Errorf("iron: the step barrier: %w", err)
 			}
 		}

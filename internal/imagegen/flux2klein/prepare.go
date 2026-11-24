@@ -9,9 +9,9 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // Setup is what Prepare makes ready.
@@ -41,7 +41,7 @@ var Files = []string{
 	"vae/diffusion_pytorch_model.safetensors",
 }
 
-// Prepare makes FLUX.2 klein ready in s.Dir for Apple's Neural Engine, as hwnpu-chat makes its
+// Prepare makes FLUX.2 klein ready in s.Dir for Apple's Neural Engine, as bonsaiai-chat makes its
 // models ready: it downloads the checkpoint files that are missing, converts the export that is
 // missing and returns its directory. NAME.done, written last, says an export is whole; one cut
 // off is converted again.

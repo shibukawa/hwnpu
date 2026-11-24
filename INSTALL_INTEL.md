@@ -1,8 +1,8 @@
-# Setting up an Intel NPU for hwnpu
+# Setting up an Intel NPU for BonsaiAI
 
-This guide prepares an Intel Core Ultra machine (Meteor Lake, Arrow Lake, Lunar Lake, Panther Lake, Wildcat Lake) so that hwnpu can use its NPU, and shows how to check the result.
+This guide prepares an Intel Core Ultra machine (Meteor Lake, Arrow Lake, Lunar Lake, Panther Lake, Wildcat Lake) so that BonsaiAI can use its NPU, and shows how to check the result.
 
-> **Status.** The Intel backend has been tested against a simulated Level Zero driver only, and hwnpu-chat and hwnpu-chat agent with the same programs on OpenVINO's CPU. Running `hwnpu-dev report` on real hardware (step 4) and the chat (step 6), and sending the results back, is the most useful help right now.
+> **Status.** The Intel backend has been tested against a simulated Level Zero driver only, and bonsaiai-chat and bonsaiai-chat agent with the same programs on OpenVINO's CPU. Running `bonsaiai-dev report` on real hardware (step 4) and the chat (step 6), and sending the results back, is the most useful help right now.
 
 Japanese: [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)
 
@@ -13,11 +13,11 @@ Japanese: [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)
 | Linux (x86-64) | Yes | Ubuntu 24.04 / 26.04 with Intel's NPU driver packages (step 1). |
 | Windows 11 (x86-64) | Yes | With Intel's NPU driver (step 2). |
 | WSL2 | **No** | WSL2 passes only the GPU to Linux (`/dev/dxg`). The NPU is not visible inside WSL2, so use Windows directly. |
-| macOS | Not applicable | Macs have no Intel NPU. On Apple Silicon hwnpu uses Core ML instead. |
+| macOS | Not applicable | Macs have no Intel NPU. On Apple Silicon BonsaiAI uses Core ML instead. |
 
-## What hwnpu needs
+## What BonsaiAI needs
 
-hwnpu talks to the NPU through **Level Zero** and the NPU graph extension, loaded at run time with purego. No cgo, no OpenVINO runtime.
+BonsaiAI talks to the NPU through **Level Zero** and the NPU graph extension, loaded at run time with purego. No cgo, no OpenVINO runtime.
 
 | Component | Linux | Windows |
 |---|---|---|
@@ -104,34 +104,34 @@ sudo chown root:render /dev/accel/accel0 && sudo chmod g+rw /dev/accel/accel0
    where.exe ze_loader.dll
    ```
 
-   hwnpu loads `ze_loader.dll` through the normal DLL search path. Where the NPU driver installs it is **not verified yet**. If `where.exe` finds nothing, look under `C:\Windows\System32` and the driver's folder, or take `ze_loader.dll` from a [Level Zero release](https://github.com/oneapi-src/level-zero/releases), and point hwnpu at it:
+   BonsaiAI loads `ze_loader.dll` through the normal DLL search path. Where the NPU driver installs it is **not verified yet**. If `where.exe` finds nothing, look under `C:\Windows\System32` and the driver's folder, or take `ze_loader.dll` from a [Level Zero release](https://github.com/oneapi-src/level-zero/releases), and point BonsaiAI at it:
 
    ```powershell
-   $env:HWNPU_ZE_LOADER = "C:\path\to\ze_loader.dll"
+   $env:BONSAIAI_ZE_LOADER = "C:\path\to\ze_loader.dll"
    ```
 
 WSL2 cannot be used: it exposes the GPU (`/dev/dxg`) but not the NPU.
 
-## 3. Get hwnpu
+## 3. Get BonsaiAI
 
 ```bash
-git clone https://github.com/shibukawa/hwnpu.git
+git clone https://github.com/shibukawa/bonsaiai.git
 ```
 
 ```bash
-cd hwnpu
+cd bonsaiai
 ```
 
 On a machine without Go you can cross-compile the report on another machine and copy the single executable; the test models are embedded:
 
 ```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o hwnpu-dev.exe ./cmd/hwnpu-dev
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bonsaiai-dev.exe ./cmd/bonsaiai-dev
 ```
 
 ## 4. Check the installation
 
 ```bash
-go run ./cmd/hwnpu-dev info
+go run ./cmd/bonsaiai-dev info
 ```
 
 An Intel NPU appears with `backend: levelzero`. The `driver` line lists the Level Zero version, the driver version, the graph extension, the compiler version and whether the NPU command queue extension (turbo, workload type) is available.
@@ -139,7 +139,7 @@ An Intel NPU appears with `backend: levelzero`. The `driver` line lists the Leve
 Then run the report and keep the Markdown file:
 
 ```bash
-go run ./cmd/hwnpu-dev report -o report.md
+go run ./cmd/bonsaiai-dev report -o report.md
 ```
 
 For each Intel NPU it compiles two OpenVINO IR models in strict mode, compares the results with fp32 references (the NPU computes in fp16, so small differences are expected), and measures latency.
@@ -147,54 +147,54 @@ For each Intel NPU it compiles two OpenVINO IR models in strict mode, compares t
 To compare power policies, run it twice. On Linux the package energy (RAPL) is readable by root only, so run these with `sudo` to get the energy columns:
 
 ```bash
-go run ./cmd/hwnpu-dev report -power low -o low.md
+go run ./cmd/bonsaiai-dev report -power low -o low.md
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev report -power performance -o performance.md
+go run ./cmd/bonsaiai-dev report -power performance -o performance.md
 ```
 
 To measure the NPU with generated models, run the probe. It builds LLM decode shaped OpenVINO IR models in Go and measures 0.5 B and 1 B weights in fp16, int8 and int4 (`bench`; with energy per token when the RAPL counters are readable, as root on Linux). Then it grows the model in each format until the driver no longer builds it, bisects to the boundary, and loads several models just under it at once (`limit`). It needs no Python and no model files, takes from tens of minutes to an hour, and writes `npuprobe-<machine>-<time>.md`. It runs without cloning:
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe
 ```
 
-Run `hwnpu-dev report` first: if the small models there fail, the probe will fail the same way. How to read the results: [PROBE.md](PROBE.md).
+Run `bonsaiai-dev report` first: if the small models there fail, the probe will fail the same way. How to read the results: [PROBE.md](PROBE.md).
 
 ## 5. Preparing models
 
-hwnpu takes models in two forms:
+BonsaiAI takes models in two forms:
 
 - **OpenVINO IR** (`model.xml` and `model.bin`): compiled by the driver compiler when loaded. Convert from ONNX, PyTorch or TensorFlow with OpenVINO's `ovc` tool or `openvino.convert_model` (this needs OpenVINO only on the machine that converts). Use static shapes: the NPU does not run dynamic shapes.
-- **Compiled blob**: the output of a previous compilation for the same driver and compiler. With `hwnpu.WithCacheDir(dir)` hwnpu stores and reuses blobs itself.
+- **Compiled blob**: the output of a previous compilation for the same driver and compiler. With `bonsaiai.WithCacheDir(dir)` BonsaiAI stores and reuses blobs itself.
 
 ```go
-dev, _ := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorIntel), hwnpu.WithCacheDir(cacheDir))
+dev, _ := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorIntel), bonsaiai.WithCacheDir(cacheDir))
 gr, _ := dev.Graph()
-g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.xml"})
+g, err := gr.Compile(ctx, bonsaiai.GraphSource{Path: "model.xml"})
 ```
 
-A model with an operation the NPU compiler does not support fails with `hwnpu.ErrNotOnNPU`; the error lists the operations and includes the compiler log.
+A model with an operation the NPU compiler does not support fails with `bonsaiai.ErrNotOnNPU`; the error lists the operations and includes the compiler log.
 
-## 6. hwnpu-chat and hwnpu-chat agent
+## 6. bonsaiai-chat and bonsaiai-chat agent
 
 The chat and the agent run on Intel's NPU with the same commands as on a Mac (not yet tried on the hardware; see "What to check" below).
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest              # talk in the terminal
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest agent "summarize the README"
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-chat@latest        # talk in the terminal
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-chat@latest agent "summarize the README"
 ```
 
 The first run:
 
 1. Downloads the checkpoint from Hugging Face (3.5 GB for LFM3-1.7B).
 2. Converts it to OpenVINO IR in `intel/` of the model's directory. Since 2026-11-04 it is split at the full attention layers (`-paged`) as for the Neural Engine, with a context of 262144 (`lfm3-int8-grouped-p8192-c262144-q8.parts.json` and `-q64`, 7 parts each and a graph without weights for the attention): a step costs in proportion to the conversation, and the KV cache's memory grows with it (12 KiB a token). Checked on OpenVINO's CPU (`-backend openvino`), not yet on the NPU. The earlier form, whole (four graphs, one that generates and one that reads prompts for each of the caches 4096 and 16320, `lfm3-int8-c4096-q8.xml` and so on), is `-paged -1`.
-3. Has the driver compiler compile them for the NPU, which **can take minutes each** for a large model. The results stay in the compile cache (`-cache`, by default `hwnpu` in the user cache directory), so later runs start faster.
+3. Has the driver compiler compile them for the NPU, which **can take minutes each** for a large model. The results stay in the compile cache (`-cache`, by default `bonsaiai` in the user cache directory), so later runs start faster.
 
 | Flag | Meaning |
 |---|---|
-| `-backend` | The NPU: `levelzero` (also `intel`), `coreml`, `openvino`. Default: `HWNPU_BACKEND`, else the NPU found |
+| `-backend` | The NPU: `levelzero` (also `intel`), `coreml`, `openvino`. Default: `BONSAIAI_BACKEND`, else the NPU found |
 | `-format` | The chat model's weights. On Intel's NPU `int8` (LFM3's default), `int4-g128`, `int4`, `fp16` |
 | `-paged -1` | Not split at the full attention layers: one graph instead of one per part, at a cost that follows the context's capacity (then `-tier` applies) |
 | `-tier none` | (with `-paged -1`) No shorter cache to start on: two graphs instead of four, half the first compilation and the memory |
@@ -203,20 +203,20 @@ The first run:
 Starting small makes failures easier to tell apart:
 
 ```bash
-hwnpu-chat --paged -1 --tier none --context 4096
+bonsaiai-chat --paged -1 --tier none --context 4096
 ```
 
 ### What to check
 
-1. Whether `hwnpu-chat --paged -1 --tier none --context 4096` gets to `ready:`. If it stops, please send the message (it includes the compiler's log).
+1. Whether `bonsaiai-chat --paged -1 --tier none --context 4096` gets to `ready:`. If it stops, please send the message (it includes the compiler's log).
 2. Whether it answers questions correctly, and the tokens per second shown after each answer.
-3. Whether the defaults (`hwnpu-chat` alone) load, how long the compilation takes, and whether memory suffices.
-4. Whether `hwnpu-chat agent` calls its tools.
-5. The accuracy and speed of int8, int4-g128 and int4 with `hwnpu-dev formats` (next section).
+3. Whether the defaults (`bonsaiai-chat` alone) load, how long the compilation takes, and whether memory suffices.
+4. Whether `bonsaiai-chat agent` calls its tools.
+5. The accuracy and speed of int8, int4-g128 and int4 with `bonsaiai-dev formats` (next section).
 
-### Comparing weight formats (hwnpu-dev formats)
+### Comparing weight formats (bonsaiai-dev formats)
 
-`hwnpu-dev formats` converts the chat model in each format, loads it on the NPU, reads a fixed conversation (Japanese, and English with code) through it 8 tokens per call as hwnpu-chat generates, and prints:
+`bonsaiai-dev formats` converts the chat model in each format, loads it on the NPU, reads a fixed conversation (Japanese, and English with code) through it 8 tokens per call as bonsaiai-chat generates, and prints:
 
 | Column | Meaning |
 |---|---|
@@ -226,15 +226,15 @@ hwnpu-chat --paged -1 --tier none --context 4096
 | perplexity | Of the answers' tokens; lower is better, and comparable without a reference |
 
 ```bash
-go run ./cmd/hwnpu-dev formats                                    # int8, int4-g128 and int4 against fp16
-go run ./cmd/hwnpu-dev formats -formats int4-g128 -ref int8       # when fp16 does not fit the NPU
-go run ./cmd/hwnpu-dev formats -json formats.json                 # also write the results to a file
+go run ./cmd/bonsaiai-dev formats                                    # int8, int4-g128 and int4 against fp16
+go run ./cmd/bonsaiai-dev formats -formats int4-g128 -ref int8       # when fp16 does not fit the NPU
+go run ./cmd/bonsaiai-dev formats -json formats.json                 # also write the results to a file
 ```
 
 The fp16 reference has 3.2 GiB of weights, which the NPU compiler may take long over or reject. Use `-ref int8` then (nearly the same as fp16), or, with OpenVINO installed, compute only the reference on the CPU:
 
 ```bash
-HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-dev formats -ref-backend openvino
+BONSAIAI_OV_PYTHON=~/ov/bin/python go run ./cmd/bonsaiai-dev formats -ref-backend openvino
 ```
 
 The programs stay in `intel/formats/` of the model's directory, so later runs skip the conversion and the compilation. On OpenVINO's CPU on Linux x86 (`-backend openvino`) the results were as below; the numbers from the NPU will decide Intel's default format.
@@ -246,42 +246,42 @@ The programs stay in `intel/formats/` of the model's directory, so later runs sk
 | int4-g128 | 0.83 | 80% | 4.28 |
 | int4 | 0.81 | 76% | 4.89 |
 
-To use a format in hwnpu-chat and hwnpu-chat agent, pass it as `--format int4-g128`.
+To use a format in bonsaiai-chat and bonsaiai-chat agent, pass it as `--format int4-g128`.
 
 ### Telling problems apart with OpenVINO
 
-When hwnpu's Level Zero path fails, running the same IR with OpenVINO tells whether the problem is hwnpu's or the model's (the IR's). With a Python that has OpenVINO:
+When BonsaiAI's Level Zero path fails, running the same IR with OpenVINO tells whether the problem is BonsaiAI's or the model's (the IR's). With a Python that has OpenVINO:
 
 ```bash
 python3 -m venv ~/ov && ~/ov/bin/pip install openvino numpy
-HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_DEV=ov.device=NPU hwnpu-chat --backend openvino --tier none --context 4096
+BONSAIAI_OV_PYTHON=~/ov/bin/python BONSAIAI_DEV=ov.device=NPU bonsaiai-chat --backend openvino --tier none --context 4096
 ```
 
-`HWNPU_DEV=ov.device=NPU` runs on OpenVINO's NPU plugin, `CPU` (the default) on the CPU. On Windows, set `HWNPU_OV_PYTHON` to the path of `python.exe`.
+`BONSAIAI_DEV=ov.device=NPU` runs on OpenVINO's NPU plugin, `CPU` (the default) on the CPU. On Windows, set `BONSAIAI_OV_PYTHON` to the path of `python.exe`.
 
-The commands without `--backend` (hwnpu-image, hwnpu-audio) run on OpenVINO the same way with the environment variable `HWNPU_BACKEND=openvino`. The commands then take the machine for an Intel one and hand what they convert for Intel's NPU (OpenVINO IR) to OpenVINO, so the Intel path can be checked from the conversion to the result on a machine without Intel's NPU (an AMD one, say).
+The commands without `--backend` (bonsaiai-image, bonsaiai-audio) run on OpenVINO the same way with the environment variable `BONSAIAI_BACKEND=openvino`. The commands then take the machine for an Intel one and hand what they convert for Intel's NPU (OpenVINO IR) to OpenVINO, so the Intel path can be checked from the conversion to the result on a machine without Intel's NPU (an AMD one, say).
 
 ## 7. All the checks at once (Windows)
 
-`tools/intel/hwnpu-intel-check.ps1` (PowerShell 5.1) runs steps 4 and 6 and more in one go, each with `go run` in the clone and a time limit, and packs the logs into a zip under `%USERPROFILE%\hwnpu-intel-logs`: the machine and the driver, each command's output, its time and memory. A test that fails does not stop the others, and running it again with the same `-Out` skips the tests that passed.
+`tools/intel/bonsaiai-intel-check.ps1` (PowerShell 5.1) runs steps 4 and 6 and more in one go, each with `go run` in the clone and a time limit, and packs the logs into a zip under `%USERPROFILE%\bonsaiai-intel-logs`: the machine and the driver, each command's output, its time and memory. A test that fails does not stop the others, and running it again with the same `-Out` skips the tests that passed.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
+powershell -ExecutionPolicy Bypass -File .\tools\intel\bonsaiai-intel-check.ps1 -Level quick
 ```
 
-`-Level quick` (about 30 minutes) checks the device, `hwnpu-dev report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-chat agent, hwnpu-dev formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Qwen3, Anima at 1024 x 1024, hwnpu-dev probe and the models not yet run on an Intel machine (OCR, RTMDet, RTMO, YuNet, DA3, MoGe-2, SwiftF0, Basic Pitch, Whisper, LFM3-Audio's speech, Magenta RealTime 2, MOSS-SoundEffect: about 19 GB more of downloads, 11 GB less with `-Skip sfx`). `-List` shows the tests, `-Only` and `-Skip` choose them.
+`-Level quick` (about 30 minutes) checks the device, `bonsaiai-dev report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, bonsaiai-chat agent, bonsaiai-dev formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Qwen3, Anima at 1024 x 1024, bonsaiai-dev probe and the models not yet run on an Intel machine (OCR, RTMDet, RTMO, YuNet, DA3, MoGe-2, SwiftF0, Basic Pitch, Whisper, LFM3-Audio's speech, Magenta RealTime 2, MOSS-SoundEffect: about 19 GB more of downloads, 11 GB less with `-Skip sfx`). `-List` shows the tests, `-Only` and `-Skip` choose them.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `runtime library not found ... libze_loader.so.1` | Install `libze1` (step 1), or set `HWNPU_ZE_LOADER` to the loader's path. |
+| `runtime library not found ... libze_loader.so.1` | Install `libze1` (step 1), or set `BONSAIAI_ZE_LOADER` to the loader's path. |
 | `found /dev/accel/accel0 but cannot use it` | The device exists but Level Zero failed; the message carries the reason. |
 | `permission denied` on `/dev/accel/accel0` | Add the user to `render` and log in again (step 1). |
 | No device, `/dev/accel/accel0` missing | Check `sudo dmesg \| grep -i vpu` for firmware load errors; reinstall `intel-fw-npu` from the same release as the driver. |
 | `MAPPED_INFERENCE_VERSION is NOT compatible` | Driver, compiler and firmware are from different releases. Reinstall all packages of one release. |
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` is missing. Install it, or load precompiled blobs. |
-| `ZE_extension_graph version ... is not supported` | The driver is too old for hwnpu (graph extension 1.5 or later is needed). Update the driver. |
-| hwnpu-chat stops with `chain: part 0 has no output y` | The argument names the driver reports do not match the IR's. Please send the message and the output of `hwnpu-dev info`. |
-| hwnpu-chat runs out of memory while loading | `--tier none` halves the graphs; `--format int4-g128` halves the weights. |
+| `ZE_extension_graph version ... is not supported` | The driver is too old for BonsaiAI (graph extension 1.5 or later is needed). Update the driver. |
+| bonsaiai-chat stops with `chain: part 0 has no output y` | The argument names the driver reports do not match the IR's. Please send the message and the output of `bonsaiai-dev info`. |
+| bonsaiai-chat runs out of memory while loading | `--tier none` halves the graphs; `--format int4-g128` halves the weights. |
 | Need more detail from Level Zero | Run with `ZE_ENABLE_LOADER_DEBUG_TRACE=1`. |

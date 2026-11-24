@@ -8,7 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // LFM2 is the chat format of LiquidAI's LFM2 models (LFM2-8B-A1B): ChatML turns without thinking,

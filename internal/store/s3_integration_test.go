@@ -15,19 +15,19 @@ import (
 )
 
 // TestS3Server runs the S3 store against a real server (RustFS: docs/cache-sharing-design.md 7.2), when
-// HWNPU_TEST_S3_ENDPOINT names it (with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY). The bucket
-// is HWNPU_TEST_S3_BUCKET, which must be there (Cloudflare R2: region auto), or hwnpu-test, made
-// if missing; the region is HWNPU_TEST_S3_REGION, else us-east-1.
+// BONSAIAI_TEST_S3_ENDPOINT names it (with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY). The bucket
+// is BONSAIAI_TEST_S3_BUCKET, which must be there (Cloudflare R2: region auto), or bonsaiai-test, made
+// if missing; the region is BONSAIAI_TEST_S3_REGION, else us-east-1.
 func TestS3Server(t *testing.T) {
-	ep := os.Getenv("HWNPU_TEST_S3_ENDPOINT")
+	ep := os.Getenv("BONSAIAI_TEST_S3_ENDPOINT")
 	if ep == "" {
-		t.Skip("HWNPU_TEST_S3_ENDPOINT is not set")
+		t.Skip("BONSAIAI_TEST_S3_ENDPOINT is not set")
 	}
 	ctx := context.Background()
-	region := cmp.Or(os.Getenv("HWNPU_TEST_S3_REGION"), "us-east-1")
-	bucket := os.Getenv("HWNPU_TEST_S3_BUCKET")
+	region := cmp.Or(os.Getenv("BONSAIAI_TEST_S3_REGION"), "us-east-1")
+	bucket := os.Getenv("BONSAIAI_TEST_S3_BUCKET")
 	if bucket == "" {
-		bucket = "hwnpu-test"
+		bucket = "bonsaiai-test"
 		c, err := s3.New(s3.WithEndpoint(ep), s3.WithRegion(region))
 		if err != nil {
 			t.Fatal(err)
@@ -39,7 +39,7 @@ func TestS3Server(t *testing.T) {
 	old := partSize
 	partSize = 5 << 20 // S3's least part
 	t.Cleanup(func() { partSize = old })
-	st, err := OpenS3(S3Config{Name: "s3-test", Bucket: bucket, Prefix: "hwnpu-it/", Endpoint: ep, Region: region})
+	st, err := OpenS3(S3Config{Name: "s3-test", Bucket: bucket, Prefix: "bonsaiai-it/", Endpoint: ep, Region: region})
 	if err != nil {
 		t.Fatal(err)
 	}

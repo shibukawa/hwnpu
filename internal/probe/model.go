@@ -1,4 +1,4 @@
-// Package probe generates the models hwnpu-dev probe and hwnpu-dev powerbench measure: LLM decode shaped
+// Package probe generates the models bonsaiai-dev probe and bonsaiai-dev powerbench measure: LLM decode shaped
 // graphs with random weights, as Core ML ML Programs or OpenVINO IR, without Python.
 package probe
 
@@ -8,8 +8,8 @@ import (
 	"math/rand/v2"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/ovir"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/ovir"
 )
 
 // The probe models have the shape of LLM decoding (tools/coreml/gen_decode.py): one token through
@@ -126,7 +126,7 @@ func Split(layers, n int) []Part {
 // WriteMLPackage writes the probe model as an ML Program with weights in the given format:
 // fp16, int8 (symmetric, one scale per output row), lut4 (a 16 entry table per 16 rows, the
 // layout the Neural Engine runs at full speed), lut6 and lut8 (as lut4 with 64 and 256 entries,
-// the tables of hwnpu-dev convert's -bits 6 and 8) or int4 (one scale per 32 inputs, which Core ML
+// the tables of bonsaiai-dev convert's -bits 6 and 8) or int4 (one scale per 32 inputs, which Core ML
 // runs on the CPU or the GPU only).
 func WriteMLPackage(dir, format string, layers int, seed uint64) error {
 	return WriteMLPackagePart(dir, format, Whole(layers), seed)
@@ -139,7 +139,7 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 		return err
 	}
 	tokens := max(part.Tokens, 1)
-	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode layers %d-%d %s %d tokens", part.First, part.First+part.Layers-1, format, tokens)
+	pkg.Metadata["com.github.shibukawa.bonsaiai.probe"] = fmt.Sprintf("decode layers %d-%d %s %d tokens", part.First, part.First+part.Layers-1, format, tokens)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
 	y, err := buildPart(b, format, part, seed)
 	if err != nil {
@@ -159,7 +159,7 @@ func WriteMLPackageParts(dir, format string, parts []Part, seed uint64) error {
 	if err != nil {
 		return err
 	}
-	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode %d parts %s", len(parts), format)
+	pkg.Metadata["com.github.shibukawa.bonsaiai.probe"] = fmt.Sprintf("decode %d parts %s", len(parts), format)
 	var fns []mlpackage.Function
 	for i, part := range parts {
 		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)

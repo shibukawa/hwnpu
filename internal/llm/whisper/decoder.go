@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch registers the text decoder with the whitelist: what model_type whisper selects.
@@ -108,7 +108,7 @@ func (m *decoder) output(v *mlpackage.Var, name string) {
 }
 
 // Build writes the decoder without a KV cache, for opts.Seq tokens from position 0 (what
-// hwnpu-dev check runs). Its inputs are x, the token embeddings (1, seq, d_model), and for each built
+// bonsaiai-dev check runs). Its inputs are x, the token embeddings (1, seq, d_model), and for each built
 // layer N xk_N and xv_N, the cross attention's keys and values of the clip (1, heads, 1500,
 // head_dim) that the cross program computes; its output y is the logits (1, seq, vocab), or the
 // hidden state after the last built layer of a truncated program.

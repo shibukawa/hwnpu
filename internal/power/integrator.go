@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // Interval is how often an Integrator samples the power.

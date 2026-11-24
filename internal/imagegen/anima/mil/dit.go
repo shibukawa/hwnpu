@@ -5,11 +5,11 @@ import (
 	"math"
 	"slices"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // The Cosmos-Predict2 2B DiT's shape (transformer/config.json).
@@ -254,7 +254,7 @@ func ditBlock(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, qchun
 	attend := func(q, k, vin *mlpackage.Var, name string, cross bool) *mlpackage.Var {
 		v := head(g.Linear(vin, name, "", E), "", false, 1)
 		if g.Opts.Backend == llm.BackendIntel || devenv.Value("anima.attention") == "chunks" {
-			// HWNPU_DEV=anima.attention=chunks: the heads together on Apple's too, to tell this
+			// BONSAIAI_DEV=anima.attention=chunks: the heads together on Apple's too, to tell this
 			// attention's rounding from the rest's (convert into a directory of its own)
 			return g.QChunkAttention(q, k, v, 1, nil, qchunk)
 		}

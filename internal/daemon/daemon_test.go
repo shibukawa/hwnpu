@@ -35,10 +35,10 @@ func fakeEngine(socket string) int {
 		return 1
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /hwnpud/v1/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /bonsaiaid/v1/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONValue(w, http.StatusOK, Status{Hello: Hello{Protocol: Protocol, PID: os.Getpid()}, Models: []ModelInfo{{Name: "fake", Context: 4096, OnNPU: true}}})
 	})
-	mux.HandleFunc("POST /hwnpud/v1/load", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /bonsaiaid/v1/load", func(w http.ResponseWriter, r *http.Request) {
 		var req LoadRequest
 		json.NewDecoder(r.Body).Decode(&req)
 		f := &frames{w: w, rc: http.NewResponseController(w), ok: true}
@@ -49,7 +49,7 @@ func fakeEngine(socket string) int {
 		}
 		fmt.Fprintf(f, "downloading %s\n", req.Model)
 		fmt.Fprintf(f, "terminal %v\n", req.Terminal)
-		if v := os.Getenv("HWNPU_CACHE"); v != "" {
+		if v := os.Getenv("BONSAIAI_CACHE"); v != "" {
 			fmt.Fprintf(f, "cache %s\n", v)
 		}
 		f.send(LoadEvent{Model: &ModelInfo{Name: req.Model, Context: 4096, OnNPU: true}})
@@ -69,7 +69,7 @@ func fakeEngine(socket string) int {
 // shortDir is a directory whose sockets' paths fit in sun_path (104 bytes on a Mac; t.TempDir is
 // long there).
 func shortDir(t *testing.T) string {
-	d, err := os.MkdirTemp("/tmp", "hwnpud")
+	d, err := os.MkdirTemp("/tmp", "bonsaiaid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestSupervisor(t *testing.T) {
 }
 
 // TestRestartByHand: a supervisor not started by the service manager ends at restart with
-// ErrRestart, for hwnpud serve to run itself again.
+// ErrRestart, for bonsaiaid serve to run itself again.
 func TestRestartByHand(t *testing.T) {
 	c, done := startSupervisor(t)
 	ctx := context.Background()
@@ -207,7 +207,7 @@ func TestRestartByHand(t *testing.T) {
 	if _, err := c.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest(http.MethodPost, c.URL("/hwnpud/v1/restart"), nil)
+	req, _ := http.NewRequest(http.MethodPost, c.URL("/bonsaiaid/v1/restart"), nil)
 	resp, err := c.HTTP.Do(req)
 	if err != nil || resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("restart: %v, %v", resp, err)
@@ -230,7 +230,7 @@ func TestListenUnixReplacesStaleSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ListenUnix(path); err == nil || !strings.Contains(err.Error(), "another hwnpud") {
+	if _, err := ListenUnix(path); err == nil || !strings.Contains(err.Error(), "another bonsaiaid") {
 		t.Fatalf("a second listener on a live socket: %v", err)
 	}
 	ln.Close() // the file stays, as when a process dies
@@ -276,7 +276,7 @@ func TestUseOffAndAuto(t *testing.T) {
 	}
 }
 
-// TestSettings: hwnpud tells its settings, a changed .env starts the next engine with the new
+// TestSettings: bonsaiaid tells its settings, a changed .env starts the next engine with the new
 // ones, and a client of other settings is told (on) or runs by itself (auto).
 func TestSettings(t *testing.T) {
 	var mu sync.Mutex
@@ -284,7 +284,7 @@ func TestSettings(t *testing.T) {
 	environ := func() ([]string, []string, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		return []string{"PATH=" + os.Getenv("PATH"), "HWNPU_CACHE=" + cache, "HWNPU_MODEL_SOURCE=https://me:pw@nas/llm", "HF_TOKEN=hf_x", extra}, []string{"/u/.env"}, nil
+		return []string{"PATH=" + os.Getenv("PATH"), "BONSAIAI_CACHE=" + cache, "BONSAIAI_MODEL_SOURCE=https://me:pw@nas/llm", "HF_TOKEN=hf_x", extra}, []string{"/u/.env"}, nil
 	}
 	c, _ := startSupervisorWith(t, environ)
 	ctx := context.Background()
@@ -292,7 +292,7 @@ func TestSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"HWNPU_CACHE": "/a", "HWNPU_MODEL_SOURCE": "https://me:xxxxx@nas/llm", "HF_TOKEN": Secret}
+	want := map[string]string{"BONSAIAI_CACHE": "/a", "BONSAIAI_MODEL_SOURCE": "https://me:xxxxx@nas/llm", "HF_TOKEN": Secret}
 	if fmt.Sprint(h.Settings) != fmt.Sprint(want) || len(h.Files) != 1 {
 		t.Fatalf("hello's settings %v %v, want %v", h.Settings, h.Files, want)
 	}
@@ -311,10 +311,10 @@ func TestSettings(t *testing.T) {
 	mu.Lock()
 	cache = "/b"
 	mu.Unlock()
-	if h, _ := c.Hello(ctx); fmt.Sprint(h.Pending) != "[HWNPU_CACHE]" {
+	if h, _ := c.Hello(ctx); fmt.Sprint(h.Pending) != "[BONSAIAI_CACHE]" {
 		t.Fatalf("pending %v", h.Pending)
 	}
-	// reload (hwnpu config set, and the supervisor every few seconds) stops the engine of the old
+	// reload (bonsaiai config set, and the supervisor every few seconds) stops the engine of the old
 	if h, err := c.Reload(ctx); err != nil || h.Engine != 0 || len(h.Pending) != 0 {
 		t.Fatalf("reload: %+v, %v", h, err)
 	}
@@ -332,23 +332,23 @@ func TestSettings(t *testing.T) {
 	_ = second
 	// the model policy is reported, but a client's own is not a difference
 	mu.Lock()
-	extra = "HWNPU_MODEL_ALLOWLIST=+nsfw"
+	extra = "BONSAIAI_MODEL_ALLOWLIST=+nsfw"
 	mu.Unlock()
-	if h, _ := c.Hello(ctx); h.Settings["HWNPU_MODEL_ALLOWLIST"] != "+nsfw" || fmt.Sprint(h.Pending) != "[HWNPU_MODEL_ALLOWLIST]" {
+	if h, _ := c.Hello(ctx); h.Settings["BONSAIAI_MODEL_ALLOWLIST"] != "+nsfw" || fmt.Sprint(h.Pending) != "[BONSAIAI_MODEL_ALLOWLIST]" {
 		t.Fatalf("hello with a policy: %v, pending %v", h.Settings, h.Pending)
 	}
 
 	t.Setenv(SocketEnv, c.Socket)
-	t.Setenv("HWNPU_CACHE", "/here")
-	t.Setenv("HWNPU_MODEL_SOURCE", "https://nas/llm")
-	t.Setenv("HF_TOKEN", "hf_y")                                 // set on both sides: not a difference
-	t.Setenv("HWNPU_MODEL_ALLOWLIST", "-license:non-commercial") // the client's: it narrows, not a difference
+	t.Setenv("BONSAIAI_CACHE", "/here")
+	t.Setenv("BONSAIAI_MODEL_SOURCE", "https://nas/llm")
+	t.Setenv("HF_TOKEN", "hf_y")                                    // set on both sides: not a difference
+	t.Setenv("BONSAIAI_MODEL_ALLOWLIST", "-license:non-commercial") // the client's: it narrows, not a difference
 	t.Setenv(ModeEnv, "auto")
 	var out bytes.Buffer
 	if cl, err := Use(ctx, "off", &out); cl != nil || err != nil {
 		t.Fatalf("auto with other settings: %v, %v", cl, err)
 	}
-	if s := out.String(); !strings.Contains(s, "HWNPU_CACHE is /here here, /b in hwnpud") || !strings.Contains(s, "running here") || strings.Contains(s, "HF_TOKEN") {
+	if s := out.String(); !strings.Contains(s, "BONSAIAI_CACHE is /here here, /b in bonsaiaid") || !strings.Contains(s, "running here") || strings.Contains(s, "HF_TOKEN") {
 		t.Fatalf("auto's log: %q", s)
 	}
 	t.Setenv(ModeEnv, "on")
@@ -356,11 +356,11 @@ func TestSettings(t *testing.T) {
 	if cl, err := Use(ctx, "off", &out); cl == nil || err != nil {
 		t.Fatalf("on with other settings: %v, %v", cl, err)
 	}
-	if s := out.String(); !strings.Contains(s, "through hwnpud with its settings") || !strings.Contains(s, "/u/.env") {
+	if s := out.String(); !strings.Contains(s, "through bonsaiaid with its settings") || !strings.Contains(s, "/u/.env") {
 		t.Fatalf("on's log: %q", s)
 	}
-	t.Setenv("HWNPU_CACHE", "/b")
-	t.Setenv("HWNPU_MODEL_SOURCE", "https://me:other@nas/llm") // passwords are not compared
+	t.Setenv("BONSAIAI_CACHE", "/b")
+	t.Setenv("BONSAIAI_MODEL_SOURCE", "https://me:other@nas/llm") // passwords are not compared
 	out.Reset()
 	if cl, _ := Use(ctx, "off", &out); cl == nil || out.Len() != 0 {
 		t.Fatalf("the same settings: %v, %q", cl, out.String())
@@ -368,7 +368,7 @@ func TestSettings(t *testing.T) {
 }
 
 func TestEngineSocketPath(t *testing.T) {
-	if got := EngineSocketPath("/a/hwnpud.sock"); got != "/a/hwnpud-engine.sock" {
+	if got := EngineSocketPath("/a/bonsaiaid.sock"); got != "/a/bonsaiaid-engine.sock" {
 		t.Fatal(got)
 	}
 }
@@ -387,7 +387,7 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 // The engine is not given systemd's activation variables, which name the supervisor's
 // descriptors.
 func TestWithoutActivation(t *testing.T) {
-	got := withoutActivation([]string{"A=1", "LISTEN_PID=4", "LISTEN_FDS=1", "LISTEN_FDNAMES=hwnpud", "LISTEN_FDSX=2"})
+	got := withoutActivation([]string{"A=1", "LISTEN_PID=4", "LISTEN_FDS=1", "LISTEN_FDNAMES=bonsaiaid", "LISTEN_FDSX=2"})
 	if strings.Join(got, " ") != "A=1 LISTEN_FDSX=2" {
 		t.Fatalf("%v", got)
 	}

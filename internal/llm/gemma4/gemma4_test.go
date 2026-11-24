@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // tiny is a small Gemma 4 text model with everything E2B has: sliding and full layers with
@@ -438,7 +438,7 @@ func TestMatchesReference(t *testing.T) {
 
 // Each layer on its own, fed the reference's hidden state, per-layer inputs and shared keys and
 // values, gives the reference's next hidden state; so does the head after the last layer. This
-// is what hwnpu-dev check does with a real checkpoint.
+// is what bonsaiai-dev check does with a real checkpoint.
 func TestLayerByLayer(t *testing.T) {
 	c := tinyConfig(t)
 	w := newWeights(c)

@@ -1,6 +1,6 @@
 """LFM3-Omni (Liquid AI's LFM3-Omni-2B) on IRON: LFM3 with LFM3-VL's vision tower and LFM3-Audio's audio encoder.
 
-An application of amd/IRON kept in hwnpu, exported by ``iron_export_lm.py lfm3omni``: images
+An application of amd/IRON kept in bonsaiai, exported by ``iron_export_lm.py lfm3omni``: images
 and audio in, text out (the speech output is not built). The text model is ``iron_lfm3.Lfm3``
 under ``text_config``, the vision tower ``iron_lfm3vl.VisionTower`` under ``vision_config`` and
 the audio encoder ``iron_lfm3audio.AudioTower`` under ``audio_encoder_config`` (its LFM2 stack
@@ -87,7 +87,7 @@ class Lfm3Omni(Multimodal):
     """LFM3-Omni with images and audio in: ``Lfm3`` with both towers, their soft tokens at their placeholders."""
 
     config = Lfm3OmniConfig
-    hwnpu_kind = "lfm3omni"  # the multimodal manifest iron_export_lm.py writes
+    bonsaiai_kind = "lfm3omni"  # the multimodal manifest iron_export_lm.py writes
 
     def __init__(self, config: Lfm3OmniConfig, weights):
         assert config.vision is not None and config.audio is not None

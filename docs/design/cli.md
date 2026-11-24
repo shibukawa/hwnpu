@@ -3,7 +3,7 @@
 [日本語](cli.ja.md)
 
 How the commands are designed: the families, argument parsing, the terminal display, Ctrl+C, and the
-`hwnpu` housekeeping command. For usage see [CHAT.md](../../CHAT.md), [USAGE_IMAGE.md](../../USAGE_IMAGE.md),
+`bonsaiai` housekeeping command. For usage see [CHAT.md](../../CHAT.md), [USAGE_IMAGE.md](../../USAGE_IMAGE.md),
 [USAGE_AUDIO.md](../../USAGE_AUDIO.md), [USAGE_DEV.md](../../USAGE_DEV.md), [USAGE_LLM_AMD.md](../../USAGE_LLM_AMD.md)
 and [PROBE.md](../../PROBE.md).
 
@@ -14,14 +14,14 @@ were removed without wrappers.
 
 | Binary | Subcommands | Notes |
 |---|---|---|
-| `hwnpu` | `status`, `issue`, `cache` (`ls`, `prune`, `clear`, `clean`), `memory` | Looks after the machine: the NPU, the cache, the memory class, bug reports |
-| `hwnpu-chat` | `chat` (default), `agent`, `search`, `serve`, `opencode`, `systemone`, `list` | Language models: chat, coding agent, embeddings, OpenAI-compatible API, d1 decisions |
-| `hwnpu-image` | `generate`, `depth`, `face-detect`, `pose`, `detect`, `ocr`, `label`, `embed`, `segment`, `convert`, `list` | Image generation and vision models |
-| `hwnpu-audio` | `generate` (music; `-m sfx` sound effects), `tts`, `transcribe`, `pitch`, `notes`, `list` | `list` covers music, sfx, speech, transcribe, pitch, notes |
-| `hwnpud` | `serve` (default), `install`, `uninstall`, `status`, `stop` | The per-user process that owns the NPU and the models; `hwnpu-chat` and the commands and apps of the `ai` package go through it by default (`HWNPU_DAEMON=off` runs them in their own process) ([hwnpud](hwnpud.md)) |
-| `hwnpu-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`fetch`, `package`, `push`, `hf`), `sources` (`list`, `ls`, `import`, `update`, `verify`, `gc`) | Development tools, not for end users |
+| `bonsaiai` | `status`, `issue`, `cache` (`ls`, `prune`, `clear`, `clean`), `memory` | Looks after the machine: the NPU, the cache, the memory class, bug reports |
+| `bonsaiai-chat` | `chat` (default), `agent`, `search`, `serve`, `opencode`, `systemone`, `list` | Language models: chat, coding agent, embeddings, OpenAI-compatible API, d1 decisions |
+| `bonsaiai-image` | `generate`, `depth`, `face-detect`, `pose`, `detect`, `ocr`, `label`, `embed`, `segment`, `convert`, `list` | Image generation and vision models |
+| `bonsaiai-audio` | `generate` (music; `-m sfx` sound effects), `tts`, `transcribe`, `pitch`, `notes`, `list` | `list` covers music, sfx, speech, transcribe, pitch, notes |
+| `bonsaiaid` | `serve` (default), `install`, `uninstall`, `status`, `stop` | The per-user process that owns the NPU and the models; `bonsaiai-chat` and the commands and apps of the `ai` package go through it by default (`BONSAIAI_DAEMON=off` runs them in their own process) ([bonsaiaid](bonsaiaid.md)) |
+| `bonsaiai-dev` | `check`, `convert`, `generate`, `formats`, `irdiff`, `info`, `probe`, `powerbench`, `report`, `mxfp4`, `xclbin`, `models` (`fetch`, `package`, `push`, `hf`), `sources` (`list`, `ls`, `import`, `update`, `verify`, `gc`) | Development tools, not for end users |
 
-- Music and sound effects share `hwnpu-audio generate`: only the model differs, the output (48 kHz
+- Music and sound effects share `bonsaiai-audio generate`: only the model differs, the output (48 kHz
   stereo WAV, speaker) and display are the same. Music-only flags (`--codes`, `--continue`, `--notes`)
   are an error with a sound-effect model.
 - The 8 GB form of a model is picked by the model selector (models.yaml entry or memory tag), not by an
@@ -41,11 +41,11 @@ were removed without wrappers.
   `--audio-encoder`.
 - Flags that only fall back to the model definition are pointers (`Tier *string`, `Think *bool`), so
   "not given" differs from an empty value.
-- `hwnpu-dev` is a kong shell with `passthrough:"all"`: each tool is a package `cmd/hwnpu-dev/NAME` with
+- `bonsaiai-dev` is a kong shell with `passthrough:"all"`: each tool is a package `cmd/bonsaiai-dev/NAME` with
   `Main`, keeps its std `flag` flags, and gets `os.Args` and `flag.CommandLine` replaced before `Main`.
   `probe` runs itself as a child process, so `probe.ChildArgs` (`["probe"]`) is put in front.
-  `hwnpu-dev models` is a real kong subcommand.
-- `hwnpu-dev models` gathers what works on the models' conversions here, in the sources and on Hugging
+  `bonsaiai-dev models` is a real kong subcommand.
+- `bonsaiai-dev models` gathers what works on the models' conversions here, in the sources and on Hugging
   Face, with the same commands and flags on every OS; what runs behind them differs. Each conversion is
   named `MODEL/TARGET` as the sources' folders are (`converted/MODEL/TARGET`): `amd-xdna2`, `coreai` (the
   generic `.aimodel` exports) and `coreai-ARCH` (those compiled for an architecture of the Neural Engine,
@@ -63,12 +63,12 @@ were removed without wrappers.
   `convertShared`, the tables, `SharedExportOr` and the image exports) and is listed. It brings the
   checkpoint too (the files the sources' lock names, else a chat model's config, tokenizer and
   weights; `--no-checkpoint` leaves it), so that conversions can be tried on the model afterwards.
-- `hwnpu-dev sources` is the upkeep of the sources: `list` (alone: the root and the sources in effect),
+- `bonsaiai-dev sources` is the upkeep of the sources: `list` (alone: the root and the sources in effect),
   `ls`, `import` (folders made by hand), `update` (locks to a new commit), `verify`, `gc`. What a cut-off
-  writeback left is `hwnpu cache clean`'s. `hwnpu-dev cache` and `hwnpu-dev prebuild`, the names of
+  writeback left is `bonsaiai cache clean`'s. `bonsaiai-dev cache` and `bonsaiai-dev prebuild`, the names of
   before, were removed on 2026-11-22, with `flush` (every command waits for the queue), `gc --orphans`
   and `migrate` (the NAS was moved).
-- `hwnpu-dev report` is the hardware check users run for an issue: test models embedded from
+- `bonsaiai-dev report` is the hardware check users run for an issue: test models embedded from
   `internal/fixtures` (written to a temp dir, as Core ML needs real files); the same 64×512 · 512×512 + bias
   + ReLU in Core ML and OpenVINO IR to compare vendors; NPU tolerance 0.05 absolute and 2 % relative (fp16
   error is 0.028); checks enumeration, strict compile, results, compile and run times, and that an fp32
@@ -76,9 +76,9 @@ were removed without wrappers.
   `/dev/accel`, it is the only sign of an Intel NPU). `-power` and `-cache` add energy per call where a
   meter exists.
 - `aiecc` calls the `AIE_XCLBINUTIL` binary with no subcommand, so when the executable is named
-  `hwnpu-xclbin` or `xclbinutil` it runs as `xclbin` (`go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-dev`).
+  `bonsaiai-xclbin` or `xclbinutil` it runs as `xclbin` (`go build -o ~/.local/bin/bonsaiai-xclbin ./cmd/bonsaiai-dev`).
 
-## hwnpu-chat
+## bonsaiai-chat
 
 ### Model selection
 
@@ -121,10 +121,10 @@ were removed without wrappers.
 - Loads the models, then listens on 127.0.0.1 at a free port in 30000–49151 (below IANA's and macOS's
   ephemeral range from 49152), starting from a random port. The listener found is passed to
   `http.Server.Serve` as it is, so nobody takes the port in between. `--listen` overrides.
-- Writes an OpenCode config (provider `hwnpu`, `@ai-sdk/openai-compatible`, each chat model's context and
+- Writes an OpenCode config (provider `bonsaiai`, `@ai-sdk/openai-compatible`, each chat model's context and
   output limits) to `opencode/opencode.json` in the cache and passes it in `OPENCODE_CONFIG`. A custom
   config ranks above the global one and below a project's `opencode.json`.
-- The model is chosen with `-m hwnpu/NAME`: first when the TUI runs, after `run` for `opencode run`. Other
+- The model is chosen with `-m bonsaiai/NAME`: first when the TUI runs, after `run` for `opencode run`. Other
   OpenCode subcommands reject `-m`, so it is not added and the config's `model` decides. With several
   `-m` models all chat models go in the config and the first is used.
 - OpenCode runs by `os/exec` with this process's stdin, stdout and stderr (no pipes, so raw mode, the
@@ -200,7 +200,7 @@ Search-first (`--tools search[,fetch] --search-first`):
 
 ### systemone
 
-`hwnpu-chat systemone` answers llama.cpp's `POST /v1/systemone` (TypeSafe-compatible System One API)
+`bonsaiai-chat systemone` answers llama.cpp's `POST /v1/systemone` (TypeSafe-compatible System One API)
 with a d1 model: one request from a file or stdin, or `--listen ADDR` to serve `/v1/systemone` and
 `/v1/models` (`output_modalities: ["decisions"]`). Each question is one run on the shortest `--seq`
 program that holds the prompt. `--cpu` runs `milcpu` for checking. Model details: [llm-models.md](llm-models.md).
@@ -234,10 +234,10 @@ program that holds the prompt. `--cpu` runs `milcpu` for checking. Model details
   (90 % at the estimate, 97 % at twice), never past 99 %; `(estimated)`, no time left. Split models report
   parts with `console.LoadingPart(bytes)`; failed loads (`Bar.Failed`) are not learned. Estimates live in
   the process only. Sizes: `llm.ProgramBytes`, `llm.PartBytes`.
-- hwnpu-chat load lines: `[1/2] Qwen3-0.6B 15s, 8 tokens per call, 1 part, all on the NPU`, then `loaded
+- bonsaiai-chat load lines: `[1/2] Qwen3-0.6B 15s, 8 tokens per call, 1 part, all on the NPU`, then `loaded
   … in 34s, 2 programs, all on the NPU` and `ready after 35s: converting, loading and compiling 35s`
-  (`console.Prepared`). File names only with `HWNPU_PROFILE=1`.
-- hwnpu-image: per-part counts and spinners for export and load; a step bar (time per step, time left);
+  (`console.Prepared`). File names only with `BONSAIAI_PROFILE=1`.
+- bonsaiai-image: per-part counts and spinners for export and load; a step bar (time per step, time left);
   the VAE's stage bar via `Pipeline.Stage` (`StageFunc`). The summary separates a first step that is
   ≥ 5 s longer than the mean of the others (it holds compiles and first calls): `8 steps in 5m25s (3.7 s a
   step; the first 4m59s, with loading and compiling)`.
@@ -246,9 +246,9 @@ program that holds the prompt. `--cpu` runs `milcpu` for checking. Model details
   Loads during the run count as preparing (`console.Loading()`; `console.Reading()` for weight banks read
   again by `iron.Graph.Use`); `console.Preparing()` returns to preparing for commands that load another
   model mid-run. Download time is measured in `fetch` (overlaps counted once; sign-in wait and hash check
-  included). Core ML's compile at the first call and `--play` count as running. With `HWNPU_ENERGY` the
+  included). Core ML's compile at the first call and `--play` count as running. With `BONSAIAI_ENERGY` the
   energy of each phase follows ([memory-and-power.md](memory-and-power.md)).
-- `HWNPU_PROFILE=1` (all commands, `console.Profile`): each download (time, bytes, speed,
+- `BONSAIAI_PROFILE=1` (all commands, `console.Profile`): each download (time, bytes, speed,
   `REPO@REV/FILE`), the size planning, each program load (nested loads indented, same path inside
   `runner.Open` counted once), weight bank re-reads as one line, and `decode.WriteProfile`. A download
   bar starts at the first byte, so the profile's time includes the Hub/CDN wait (swift-f0: 1.68 s vs 0.2 s).
@@ -268,21 +268,21 @@ program that holds the prompt. `--cpu` runs `milcpu` for checking. Model details
 - After `stop()` the command handles Ctrl+C itself: a chat turn's Ctrl+C stops only the answer;
   OpenCode's terminal. `serve` and `systemone --listen` treat Ctrl+C as the normal end: `stop()`, close the
   model, exit 0 (closing takes ~0.2 s, longer than the grace). Ctrl+C during loading still ends at once.
-- Used by `hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`. `hwnpu-dev probe`, `generate`, `formats`
+- Used by `bonsaiai`, `bonsaiai-chat`, `bonsaiai-image`, `bonsaiai-audio`. `bonsaiai-dev probe`, `generate`, `formats`
   keep their own handling (they print results when stopped).
 - Measured (AMD, Ctrl+C to exit): Anima Turbo 1024² 0.11–0.27 s; a 1024² VAE stage 0.42–0.87 s;
   gpt-oss-20b during loading 0.72–1.47 s. What remains is the kernel's cleanup, which grows with pinned memory (12 GiB: 1.5 s).
 
-## hwnpu status
+## bonsaiai status
 
-- Shows: hwnpu version (module, commit), OS, CPU, memory, the NPU the commands use (`chat.HereVendor`,
-  `HWNPU_BACKEND`), devices, the NPU now (`npuinfo` summarized per OS: Linux amdxdna state, firmware,
+- Shows: BonsaiAI version (module, commit), OS, CPU, memory, the NPU the commands use (`chat.HereVendor`,
+  `BONSAIAI_BACKEND`), devices, the NPU now (`npuinfo` summarized per OS: Linux amdxdna state, firmware,
   tiles, clocks, contexts, gpu_metrics busy and power; macOS ANE awake, IOReport power and reads; Windows
   compute-only adapter and per-process use), processes using the NPU and their NPU memory, the cache and
   its layers. `--json` writes everything.
-- Reading must not wake the NPU: by default `hwnpu.Enumerate` is not called (opening the device wakes
+- Reading must not wake the NPU: by default `bonsaiai.Enumerate` is not called (opening the device wakes
   amdxdna). The NPU's presence and kind come from the OS (Linux driver name `amdxdna`/`intel_vpu`, macOS
-  I/O Registry ANE, Windows compute-only adapter PCI vendor, or `HWNPU_BACKEND`). `--wake` opens devices
+  I/O Registry ANE, Windows compute-only adapter PCI vendor, or `BONSAIAI_BACKEND`). `--wake` opens devices
   and queries a sleeping NPU. Checked: `runtime_active_time` does not grow without `--wake`. macOS does
   not print "device: not opened" (opening there wakes nothing and tells nothing more).
 - `-w 2s` on a terminal works like top: alternate screen (`\x1b[?1049h`); the fixed part (`writeFixed`:
@@ -317,35 +317,35 @@ program that holds the prompt. `--cpu` runs `milcpu` for checking. Model details
     (`FirmwareKnown`; M3's `H11ANE` has none). `ANE`/`IOP State` stays `Running` while loaded, useless for
     load. `AMC Stats` `ANE RD` does not exist on M3.
 
-## hwnpu issue
+## bonsaiai issue
 
-- Run log: `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio` record their arguments (`console.RecordRun`), the
+- Run log: `bonsaiai-chat`, `bonsaiai-image`, `bonsaiai-audio` record their arguments (`console.RecordRun`), the
   `console.Log` lines (last state of progress lines, no colors) and how they ended
   (`console.EndInterrupted`) to `logs/<prog>-<time>-<pid>.log` under the cache. Last 10 runs per command
-  (`console.RunsKept`). `HWNPU_NO_RUN_LOG` turns it off. Terminal detection is unchanged (`teeRun` has
+  (`console.RunsKept`). `BONSAIAI_NO_RUN_LOG` turns it off. Terminal detection is unchanged (`teeRun` has
   `Terminal()`).
-- `hwnpu issue` (`--list`, `--run N`, `--lines` (80), `--print`, `--title`, `-y`, `--wake`): the last run
+- `bonsaiai issue` (`--list`, `--run N`, `--lines` (80), `--print`, `--title`, `-y`, `--wake`): the last run
   that failed in the past week (else the last run): command, error, log tail and status as Markdown.
-- Redacted: home (`~`), user name and real name, host name, `HWNPU_MODEL_SOURCE*` hosts and folders, hosts
+- Redacted: home (`~`), user name and real name, host name, `BONSAIAI_MODEL_SOURCE*` hosts and folders, hosts
   of URLs other than public ones (Hugging Face, GitHub), URL passwords, tokens (`token=`, `hf_`, `AKIA`,
   Bearer), e-mail addresses. Arguments over 40 chars with spaces (prompts) become their length; process
   command lines are left out.
-- Sending: no `gh`. It opens `https://github.com/shibukawa/hwnpu/issues/new?title=...&body=...` with `open`
+- Sending: no `gh`. It opens `https://github.com/shibukawa/bonsaiai/issues/new?title=...&body=...` with `open`
   (macOS), `xdg-open` (Linux), or `rundll32 url.dll,FileProtocolHandler` (Windows; `start` would let cmd
   read the `&`). Nothing is sent until the user presses the button. Over 7500 bytes the log is cut by 2/3
   steps; still too long, the user is told to paste `logs/issue-TIME.md`, which is always written.
 
-## hwnpu cache, hwnpu memory
+## bonsaiai cache, bonsaiai memory
 
-- `hwnpu cache` (info, `ls`, `prune`, `clear`, `clean`): see [distribution.md](distribution.md).
-- `hwnpu memory [MODEL [GB]] [--forget]`: the memory class a model runs as, kept in `run.json`; see
+- `bonsaiai cache` (info, `ls`, `prune`, `clear`, `clean`): see [distribution.md](distribution.md).
+- `bonsaiai memory [MODEL [GB]] [--forget]`: the memory class a model runs as, kept in `run.json`; see
   [memory-and-power.md](memory-and-power.md).
 
 ## Not adopted
 
-- Old single binaries (`hwnpu-depth`, `hwnpu-music`, `hwnpu-sfx`, `hwnpu-tts`, `hwnpu-transcribe`,
-  `hwnpu-pitch`, `hwnpu-notes`, `hwnpu-systemone`, `hwnpu-pose`, `hwnpu-agent`, `hwnpu-check`,
-  `hwnpu-convert`, `hwnpuinfo`, `npuprobe`, `powerbench`, `report` …): folded into the families, no wrappers.
+- Old single binaries (`bonsaiai-depth`, `bonsaiai-music`, `bonsaiai-sfx`, `bonsaiai-tts`, `bonsaiai-transcribe`,
+  `bonsaiai-pitch`, `bonsaiai-notes`, `bonsaiai-systemone`, `bonsaiai-pose`, `bonsaiai-agent`, `bonsaiai-check`,
+  `bonsaiai-convert`, `bonsaiaiinfo`, `npuprobe`, `powerbench`, `report` …): folded into the families, no wrappers.
 - Choosing a chat model by use (`-use chat|embed`): models of one use will multiply; names instead.
 - Parallel downloads: per-file time left is wrong when the bandwidth shifts (4 GB + 1 GB at 100 MB/s show
   80 s and 20 s; both end at 50 s, the same as one at a time).
@@ -368,8 +368,8 @@ program that holds the prompt. `--cpu` runs `milcpu` for checking. Model details
   unrelated numbers); also searching ja → en when ja finds nothing; using the task's text when the model's
   query has no Japanese but the task does.
 - Embedding server: batching several texts in one run (now one at a time).
-- `hwnpu status`: macOS and Windows summaries only cross-built at first; Windows CPU/GPU load not read.
-- `hwnpu issue`: the length GitHub accepts in the URL is not checked in a browser.
-- Ctrl+C on `hwnpu-audio` not checked on hardware.
+- `bonsaiai status`: macOS and Windows summaries only cross-built at first; Windows CPU/GPU load not read.
+- `bonsaiai issue`: the length GitHub accepts in the URL is not checked in a browser.
+- Ctrl+C on `bonsaiai-audio` not checked on hardware.
 - Load-estimate bars on LLM parts.json chains, Intel and AMD: only built.
 - OpenCode's title request delays the first answer by 1–2 minutes on a small model.

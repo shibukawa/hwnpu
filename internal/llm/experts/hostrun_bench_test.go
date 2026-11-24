@@ -53,12 +53,12 @@ func BenchmarkHostRun(b *testing.B) {
 }
 
 // TestHostRunGap times Host.Run on synthetic weights with a pause between the layers
-// (HWNPU_TEST_GPTOSS_GAP, as the Neural Engine's part between them: the workers sleep): the median
+// (BONSAIAI_TEST_GPTOSS_GAP, as the Neural Engine's part between them: the workers sleep): the median
 // and the tail.
 func TestHostRunGap(t *testing.T) {
-	gap, _ := time.ParseDuration(os.Getenv("HWNPU_TEST_GPTOSS_GAP"))
+	gap, _ := time.ParseDuration(os.Getenv("BONSAIAI_TEST_GPTOSS_GAP"))
 	if gap <= 0 {
-		t.Skip("HWNPU_TEST_GPTOSS_GAP: the pause between layers")
+		t.Skip("BONSAIAI_TEST_GPTOSS_GAP: the pause between layers")
 	}
 	h, r := syntheticHost(t)
 	x := [][]float32{make([]float32, 2880)}

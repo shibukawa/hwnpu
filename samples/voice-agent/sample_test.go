@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/agent"
+	"github.com/shibukawa/bonsaiai/ai/agent"
 )
 
 func TestNormalizeNumbers(t *testing.T) {

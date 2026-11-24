@@ -6,13 +6,13 @@ Intel's NPU through Level Zero and its graph extension (`internal/ze`, `internal
 
 ## State
 
-- Real hardware: HP EliteBook 630 G11, Core Ultra 5 135U (Meteor Lake, NPU 3720), 32 GB, Windows 11 25H2, NPU driver 32.0.100.5540 (Level Zero 1.16, `ZE_extension_graph` 1.18, compiler 8.3). Run with `tools/intel/hwnpu-intel-check.ps1` (levels standard / full).
-- Runs on it, all on the NPU: `report`, LFM3-1.7B (`--paged=-1 --context 4096`, and the default 262144 context in 7 parts; 17–25 tok/s with drafts), thinking answers, `hwnpu-chat agent` read and write, PLaMo 3 Translate 0.8B (ja→en and en→ja, 25–31 tok/s).
+- Real hardware: HP EliteBook 630 G11, Core Ultra 5 135U (Meteor Lake, NPU 3720), 32 GB, Windows 11 25H2, NPU driver 32.0.100.5540 (Level Zero 1.16, `ZE_extension_graph` 1.18, compiler 8.3). Run with `tools/intel/bonsaiai-intel-check.ps1` (levels standard / full).
+- Runs on it, all on the NPU: `report`, LFM3-1.7B (`--paged=-1 --context 4096`, and the default 262144 context in 7 parts; 17–25 tok/s with drafts), thinking answers, `bonsaiai-chat agent` read and write, PLaMo 3 Translate 0.8B (ja→en and en→ja, 25–31 tok/s).
 - Everything else (the vision, audio and image commands, Gemma 4, Qwen3, Qwen3.5, Whisper) is checked only on OpenVINO's CPU (below). Whether the NPU compiler accepts those graphs, their speed and their memory are open.
 
 ## Loading the library
 
-1. `HWNPU_ZE_LOADER`, 2. `libze_loader.so.1` / `ze_loader.dll` on the normal search path, 3. known places (Linux `/usr/lib/x86_64-linux-gnu`, `/usr/local/lib`; Windows `%SystemRoot%\System32`, oneAPI's `bin`). On failure `ErrLibrary` lists the paths tried. `internal/dl` loads with purego (Unix) or `syscall.LoadLibrary` (Windows). No cgo.
+1. `BONSAIAI_ZE_LOADER`, 2. `libze_loader.so.1` / `ze_loader.dll` on the normal search path, 3. known places (Linux `/usr/lib/x86_64-linux-gnu`, `/usr/local/lib`; Windows `%SystemRoot%\System32`, oneAPI's `bin`). On failure `ErrLibrary` lists the paths tried. `internal/dl` loads with purego (Unix) or `syscall.LoadLibrary` (Windows). No cgo.
 
 ## Init and device
 
@@ -68,19 +68,19 @@ Placement check on Intel (the NPU compiler never hands ops to another device):
 - Execution: command queue (optional NPU extension for turbo) → command list → first `GraphInitialize` or `AppendGraphInitialize` → `AppendGraphExecute` → close → execute with a fence. `Fence.Wait` loops `zeFenceHostSynchronize(50 ms)` while watching `ctx.Done()`.
 - Argument values are captured when the command is appended, so each request is re-recorded from `SetArgumentValue` (a lock per graph). `Bind` on a finished request is allowed (rebinding is what the paged attention chain does).
 - C layouts (`ze_graph_desc_2_t`, `ze_graph_argument_properties_3_t`, …) are Go structs checked by golden tests against `testdata/abi/levelzero_abi.json` (sizes and offsets from the official headers; clang on macOS arm64 and gcc on Linux amd64 agree).
-- `testdata/zemock/zemock.c` is a fake driver built with `cc` at test start and loaded through `HWNPU_ZE_LOADER`.
+- `testdata/zemock/zemock.c` is a fake driver built with `cc` at test start and loaded through `BONSAIAI_ZE_LOADER`.
 
 ## Programs for Intel
 
 - One converter for Apple and Intel: the architecture builds MIL, `internal/ovlower` lowers it op by op to IR (`out.xml` + `out.bin`, `out.partN.xml`, `out.parts.json` with `meta`). Unknown ops or inputs stop with an error. Every milcpu op lowers except `read_state` (probes only). Op table: [../intel-npu-models.md](../intel-npu-models.md).
-- Where programs go: `<model>/intel/` (hwnpu-chat), extension `.intel` in an export directory. Converters take `Backend` (`-backend intel`, `hwnpu-image convert --backend intel`, `depth.Setup.Backend`, `sana.ConvertOptions.Backend`, `systemone.Setup.Backend`, `music.WriteProgram` / `llm.WriteIR`).
+- Where programs go: `<model>/intel/` (bonsaiai-chat), extension `.intel` in an export directory. Converters take `Backend` (`-backend intel`, `bonsaiai-image convert --backend intel`, `depth.Setup.Backend`, `sana.ConvertOptions.Backend`, `systemone.Setup.Backend`, `music.WriteProgram` / `llm.WriteIR`).
 - Commands treat the machine as Intel through `chat.HereVendor`; `llm.ProgramBackend` takes the program form name (`intel`) as well as the backend name.
 - Weight formats: the NPU cannot read lookup tables, so `llm.IntelFormat` maps `lut4` → `int4` and `lut6` / `lut8` → `int8`; lut weights are rejected with that hint. Arch overrides (`Arch.IntelFormat`, `llm.IntelFormatter`) choose int8 for LFM3, BERT, PLaMo-Embedding, PLaMo 3 ≤ 2B; int4 per row for PLaMo 3 8B (hidden ≥ 4096); SANA 1.5 1.6B's DiT stays fp16 (`sana.FormatsFor`: per-row int8 breaks the picture); MOSS's text model keeps 5 layers fp16. Details: [quantization](quantization.md).
 - LLMs split at the attention (`llm.convertPaged`): parts `out.partN.xml` and the attention program `out.attn.xml` (built in MIL, lowered by `ovlower`). Intel's default LFM3 form: `lfm3-int8-grouped-p8192-c262144-q8.parts.json`. Engine side: [llm-engine](llm-engine.md).
-- hwnpu-chat keeps two programs per model on Intel (8 and 64 tokens, `onePrograms` off), so weights are held twice; `prefill: off` in models.yaml keeps one (used for PLaMo 3 8B, 3.8 GiB at int4).
+- bonsaiai-chat keeps two programs per model on Intel (8 and 64 tokens, `onePrograms` off), so weights are held twice; `prefill: off` in models.yaml keeps one (used for PLaMo 3 8B, 3.8 GiB at int4).
 - The `.bin` of the 8- and 64-token programs is shared on disk where the file system can clone ([distribution](distribution.md)).
 
-### Weight formats on Meteor Lake (`hwnpu-formats`, LFM3-1.7B, cache 4096, 8 tokens a call)
+### Weight formats on Meteor Lake (`bonsaiai-formats`, LFM3-1.7B, cache 4096, 8 tokens a call)
 
 | Format | ms a call | Next token = fp16 | Perplexity |
 |---|---|---|---|
@@ -93,19 +93,19 @@ int8 stays the default: per-group int4 is slower than int8 here, per-row int4 is
 
 ## Checking without the NPU (OpenVINO's CPU)
 
-- `HWNPU_BACKEND=openvino` (or `--backend openvino`, device `HWNPU_DEV=ov.device`) runs Intel's IR on OpenVINO's CPU plugin (`internal/backend/openvino`, Python via `HWNPU_OV_PYTHON`, `serve_ir.py` / `run_ir.py`). Same conversion, argument names and host code as the NPU; only the compiler and device differ. pip's openvino also works on a Mac.
+- `BONSAIAI_BACKEND=openvino` (or `--backend openvino`, device `BONSAIAI_DEV=ov.device`) runs Intel's IR on OpenVINO's CPU plugin (`internal/backend/openvino`, Python via `BONSAIAI_OV_PYTHON`, `serve_ir.py` / `run_ir.py`). Same conversion, argument names and host code as the NPU; only the compiler and device differ. pip's openvino also works on a Mac.
 - `serve_ir.py` and `run_ir.py` block the `openvino_telemetry` module (its side process read deleted scripts and failed).
 - Opening the backend cleans `/dev/shm` buffer directories left by crashed processes (8.4 GB in a day).
-- `hwnpu-dev irdiff A.mlpackage …`: lowers a Core ML package to IR and compares milcpu with OpenVINO's CPU on the same random inputs — finds ops that do not lower before writing an Intel path.
+- `bonsaiai-dev irdiff A.mlpackage …`: lowers a Core ML package to IR and compares milcpu with OpenVINO's CPU on the same random inputs — finds ops that do not lower before writing an Intel path.
 - Tests `TestIntelIR*` (lfm3, gemma4, lfm3vl, lfm3audio, plamo3, bert, plamo, qwen3, qwen35 fp16/int8, whisper; paged forms for gemma4 and lfm3): relative error ≤ 1e-3 against milcpu (paged: 2.8e-3 gemma4, 5.7e-4 lfm3). `TestImageOps`: ≤ 3e-4.
-- Real checkpoints with `HWNPU_BACKEND=openvino` on the Ryzen AI machine's CPU agree with the CPU, AMD's NPU or milcpu: RTMO-s pose, RTMDet-m detect (boxes within 0.1 px), PP-OCRv6 small, SwiftF0 (f0 within 0.013 %), Basic Pitch (notes identical), YuNet, DA3-SMALL (depth corr 0.9994), MoGe-2 ViT-S (0.9998), EfficientSAM-S (same mask), Qwen3.5-0.8B int8 chat, LFM3-Audio-2B TTS → Whisper large-v3-turbo round trip, Magenta RT2 small (12 codes the same), Sana 600M 1024² int8, MOSS-SoundEffect v2.0 (16 programs, 18 s a step, not listened to), Anima (latent cosine 0.99985, PSNR 37.9 dB in f32; 25.5 dB with f16 inference).
+- Real checkpoints with `BONSAIAI_BACKEND=openvino` on the Ryzen AI machine's CPU agree with the CPU, AMD's NPU or milcpu: RTMO-s pose, RTMDet-m detect (boxes within 0.1 px), PP-OCRv6 small, SwiftF0 (f0 within 0.013 %), Basic Pitch (notes identical), YuNet, DA3-SMALL (depth corr 0.9994), MoGe-2 ViT-S (0.9998), EfficientSAM-S (same mask), Qwen3.5-0.8B int8 chat, LFM3-Audio-2B TTS → Whisper large-v3-turbo round trip, Magenta RT2 small (12 codes the same), Sana 600M 1024² int8, MOSS-SoundEffect v2.0 (16 programs, 18 s a step, not listened to), Anima (latent cosine 0.99985, PSNR 37.9 dB in f32; 25.5 dB with f16 inference).
 
 ## Memory limits and residency
 
-- The driver keeps graph weights in memory the NPU can see. On the 135U, Anima 512² fp16 failed at `dit_blocks_24.xml` with `pfnGraphInitialize: ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` at about 4.6 GB held (text 1.2 GB + 6 DiT groups of 0.57 GB). Yet `hwnpu-dev probe resident` stacks 0.23 GiB programs to 16 GB without error, so the limit is not a plain total; per-program size or the real graphs' shape is still to be split (`resident-large`: 0.57 and 1.2 GiB programs).
+- The driver keeps graph weights in memory the NPU can see. On the 135U, Anima 512² fp16 failed at `dit_blocks_24.xml` with `pfnGraphInitialize: ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` at about 4.6 GB held (text 1.2 GB + 6 DiT groups of 0.57 GB). Yet `bonsaiai-dev probe resident` stacks 0.23 GiB programs to 16 GB without error, so the limit is not a plain total; per-program size or the real graphs' shape is still to be split (`resident-large`: 0.57 and 1.2 GiB programs).
 - A load can also fail as the compiler's `std::bad_alloc` ("bad allocation"). `types.IsOutOfMemory` treats Level Zero's `OUT_OF_HOST_MEMORY` / `OUT_OF_DEVICE_MEMORY` and "bad allocation" / "bad_alloc" as out of memory.
 - Anima on Intel (`anima.progEngine`): parts are slots; on out of memory, close other parts and load again. Order: text (once a prompt) first, then the DiT group used most recently (MRU: with 7 groups and 4 places, 4 reloads a step; LRU would be 7), then time, patch and final layers. The VAE stage makes room the same way. Tested with fake NPUs (`residency_test.go`); on the real NPU the reload first worked at 1024².
-- `hwnpu-dev probe resident`: loads 0.25 GiB programs one by one (kept open, run once each) until a load fails or `-resident-max-gb` (60 % of RAM, ≤ 16); then runs all again; on out of memory closes the oldest and retries. Flags `-resident-hold open|close`, `-resident-formats int8`, `-resident-size a,b`, `-resident-run=false` (load only), `-resident-cycle`. On Windows it records the process's private memory (`K32GetProcessMemoryInfo`) after each load; `maxRSS` returns the peak working set. The child reports each program as an `npuprobe-progress` line and each stage on stderr, so a crash keeps what was loaded.
+- `bonsaiai-dev probe resident`: loads 0.25 GiB programs one by one (kept open, run once each) until a load fails or `-resident-max-gb` (60 % of RAM, ≤ 16); then runs all again; on out of memory closes the oldest and retries. Flags `-resident-hold open|close`, `-resident-formats int8`, `-resident-size a,b`, `-resident-run=false` (load only), `-resident-cycle`. On Windows it records the process's private memory (`K32GetProcessMemoryInfo`) after each load; `maxRSS` returns the peak working set. The child reports each program as an `npuprobe-progress` line and each stage on stderr, so a crash keeps what was loaded.
 - One run ended with the child killed by 0xc0000005 inside the driver while loading. If out of memory can be a crash rather than an error, the close-and-reload above does not help, and a self-imposed limit below the crash total is needed.
 
 ### Windows job time limit (TDR)

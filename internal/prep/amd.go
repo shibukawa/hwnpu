@@ -6,18 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
-	"github.com/shibukawa/hwnpu/internal/music"
-	"github.com/shibukawa/hwnpu/internal/pose"
-	"github.com/shibukawa/hwnpu/internal/sfx"
-	"github.com/shibukawa/hwnpu/internal/vision/detect"
-	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
-	"github.com/shibukawa/hwnpu/internal/vision/segment"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein"
+	"github.com/shibukawa/bonsaiai/internal/music"
+	"github.com/shibukawa/bonsaiai/internal/pose"
+	"github.com/shibukawa/bonsaiai/internal/sfx"
+	"github.com/shibukawa/bonsaiai/internal/vision/detect"
+	"github.com/shibukawa/bonsaiai/internal/vision/ironcnn"
+	"github.com/shibukawa/bonsaiai/internal/vision/segment"
 )
 
 // The exports for AMD's NPU (amd-xdna2) of the kinds the library's roles do not make: those
@@ -113,7 +113,7 @@ func init() {
 		case strings.HasPrefix(m.Family, "anima"):
 			dir, err = imageHandMade(e)
 		default:
-			err = fmt.Errorf("no image model of hwnpu-image generate of the family %q", m.Family)
+			err = fmt.Errorf("no image model of bonsaiai-image generate of the family %q", m.Family)
 		}
 		f.Set("export", dir)
 		return err

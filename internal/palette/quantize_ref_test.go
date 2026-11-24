@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // quantizeRef is QuantizeBits written plainly, the way it was before its blocks were read in

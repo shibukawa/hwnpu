@@ -40,8 +40,8 @@ func TestRemoveCoreAIEntries(t *testing.T) {
 	export("models/C/c-r1-fp16.aimodel", pb)
 	os.MkdirAll(filepath.Join(root, "models/C/c-r1-fp16"+PrebuiltSuffix, "c.h13g.aimodelc"), 0o755)
 	os.WriteFile(filepath.Join(root, "models/C/c-r1-fp16"+PrebuiltSuffix, "c.h13g.aimodelc", "main.hash"), pb, 0o644)
-	gone := []string{entry("26B1", "hwnpu-image", alone), entry("26A9", "hwnpud", alone)}
-	kept := []string{entry("26B1", "hwnpu-image", shared), entry("26B1", "hwnpud", pb)}
+	gone := []string{entry("26B1", "bonsaiai-image", alone), entry("26A9", "bonsaiaid", alone)}
+	kept := []string{entry("26B1", "bonsaiai-image", shared), entry("26B1", "bonsaiaid", pb)}
 
 	u, err := Scan()
 	if err != nil {

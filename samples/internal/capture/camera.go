@@ -8,7 +8,7 @@ import (
 
 	"github.com/shibukawa/hwcamera"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/flow"
 )
 
 // CameraOptions are how a camera is read. The zero value is the system's default camera in a

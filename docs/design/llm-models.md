@@ -15,7 +15,7 @@ forms in [amd-llm.md](amd-llm.md). The models and their defaults are in
 
 "Port" = Hugging Face's `modeling_*.py` moved to Go (`internal/llm/<arch>`); see
 [new-model-checklist.md](new-model-checklist.md) and the `port-architecture` skill. On a Mac,
-`hwnpu-chat` runs only Core AI ([apple-coreai.md](apple-coreai.md)); the Go converter still writes
+`bonsaiai-chat` runs only Core AI ([apple-coreai.md](apple-coreai.md)); the Go converter still writes
 a `.mlpackage` first, then lowers it.
 
 | Model (models.yaml) | Arch | Kind | Apple default | Intel | AMD |
@@ -24,8 +24,8 @@ a `.mlpackage` first, then lowers it.
 | LFM3-VL-2B | `lfm3` + `lfm3-vision` | chat + images 512×512 | text lut8, encoder fp16 | converts | q4 |
 | LFM3-Audio-2B | `lfm3` + `lfm3-audio-encoder` | chat + audio in (30 s) | text lut8, encoder fp16 | converts | q4 |
 | LFM3-Omni-2B | both towers | chat + images + audio | text lut8 | converts | q4 |
-| LFM3-Audio-2B-TTS | `lfm3` + `lfm3-depthformer` + `lfm3-codec` | speech (`hwnpu-audio tts`) | text lut8, depthformer and codec fp16 | — | see [audio-models.md](audio-models.md) |
-| d1-2B / d1-Omni-2B | `lfm3` in d1 mode (+ towers) | decision (`hwnpu-chat systemone`) | lut8 | converts | — |
+| LFM3-Audio-2B-TTS | `lfm3` + `lfm3-depthformer` + `lfm3-codec` | speech (`bonsaiai-audio tts`) | text lut8, depthformer and codec fp16 | — | see [audio-models.md](audio-models.md) |
+| d1-2B / d1-Omni-2B | `lfm3` in d1 mode (+ towers) | decision (`bonsaiai-chat systemone`) | lut8 | converts | — |
 | gemma-4-E2B-it / E4B-it | `gemma4` | chat (tools, thinking), text only | lut6 | converts | q4, images and audio too |
 | plamo-3-translate-0.8b / 2b / 8b | `plamo3` | chat (translation) | lut8; 8B lut4 | int8; 8B int4 by rows | q4 |
 | Ouro-1.4B-Thinking / 2.6B-Thinking | `ouro` | chat (thinking, no tools) | lut8, not run on a Mac | int8, converts, not run on hardware | q4 with MLP and head q6: KL 0.026 against HF (top-1 98.4 %), 3.6 tokens/s |
@@ -49,7 +49,7 @@ Defaults come from `llm.Arch.Format` / `IntelFormat`, or per checkpoint from `Co
   ms a call vs `tile`), `hidden-out` (1: also output the final hidden state h; used by TTS).
 - Default lut6: KL 0.23 nats against bf16 (lut4 1.39); a coding task took 6 rounds vs 13–27 with lut4.
   1.21 GiB a program vs 0.81 for lut4.
-- Checked against an independent fp64 forward (`reference_test.go`, ~3e-7) and `hwnpu-dev check`.
+- Checked against an independent fp64 forward (`reference_test.go`, ~3e-7) and `bonsaiai-dev check`.
 - Split into 7 parts at the attention, context 262144 ([llm-engine.md](llm-engine.md)).
 - Core AI, M1 16 GB: 35.2–35.5 tok/s; second start 4.5 s. Memory per models.yaml (1.7 GB; 3.1 GB on
   16 GB with the short-context tier).
@@ -99,7 +99,7 @@ Defaults come from `llm.Arch.Format` / `IntelFormat`, or per checkpoint from `Co
   lower right; a 5-D reshape and transpose), linear, GELU (erf), linear.
 - Fixed shapes: one program per image size (`-image WxH`, multiples of 2×patch; default 512x512).
   `-seq` is not used. The package metadata carries the arch and param values
-  (`com.github.shibukawa.hwnpu.arch`, `...param.image`) so the runtime knows the size.
+  (`com.github.shibukawa.bonsaiai.arch`, `...param.image`) so the runtime knows the size.
 - Preprocessing (`lfm3vl.Processor`): mean/std, `resample` (2 bilinear, 3 bicubic) and pixel limits
   from `preprocessor_config.json` / `processor_config.json`. `SmartResize` = llama.cpp's still-image
   smart_resize. `Resize` = PIL/torchvision antialiased resize in float (horizontal then vertical,
@@ -193,7 +193,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
     Images are embedded once per request. d1-Omni: `data:audio/` files and `input_audio` parts the same
     way; a spoken question (`instructions` of type `input_audio`) is a marker at the question's place.
     All wrapped in `<|vision_start|>`/`<|vision_end|>`. Missing encoder → 501.
-- Command: `hwnpu-chat systemone` (`--vision`, `--audio-encoder`; `/v1/systemone` and `/v1/models`
+- Command: `bonsaiai-chat systemone` (`--vision`, `--audio-encoder`; `/v1/systemone` and `/v1/models`
   with `output_modalities: ["decisions"]`). CPU mode via `milcpu` for machines without an NPU (slow).
 - M3, lut8: NPU vs CPU interpreter probabilities differ by ~1e-3. After the first call, 4 text
   questions 0.13 s, 4 image questions 0.9 s. Japanese tickets, synthetic images (colors and sides),
@@ -232,7 +232,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
 - Split at the full-attention layers (`llm.Paged`, context 131072). Unsplit, on Core ML, the lut6 parts
   never stayed in the ANE cache (~100 s every start); split into 8 parts at the attention, 1.9 s.
 - Checks: tiny synthetic model vs a loop-written fp64 forward of `modeling_gemma4.py` 1.6e-6; 15
-  mutations all caught. Real E2B (`hwnpu-dev check`, 31 tokens from `<bos>`): 0 missing / mismatched,
+  mutations all caught. Real E2B (`bonsaiai-dev check`, 31 tokens from `<bos>`): 0 missing / mismatched,
   argmax 31/31, KL 0.0000 (fp16); `-f16` worst layer 0.0098, KL 0.0004. Reference
   `tools/ref/ref_gemma4.py` builds `Gemma4ForCausalLM` in fp32 from the text config and reads PLE rows
   lazily (9 GB instead of 20 GB).
@@ -250,7 +250,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
     Mt. Fuji 3778 m and skipped factual questions; lut6 and lut8 answer them (3776 m, 夏目漱石, 信濃川).
   - On the ANE (128 tokens, fp32 reference): lut6 rounding KL mean 1.02 (en) / 1.16 (ja); lut8 0.10 /
     0.10 at 2.16 vs 1.60 GiB.
-- **GPTQ codes (optional)**: `hwnpu-chat --codes DIR --format-for per_layer=lut8` on E2B: ANE KL
+- **GPTQ codes (optional)**: `bonsaiai-chat --codes DIR --format-for per_layer=lut8` on E2B: ANE KL
   1.02 → 0.56 (en), 1.16 → 0.94 (ja), median 0.25 → 0.08; same speed, +0.01 GiB. 12 factual questions:
   10/12 → 11/12. The `per_layer` projections (41M) are not in the calibration set, so lut8 for them
   matters with GPTQ. Calibration fits a 16 GB Mac with `q4_gptq.py`'s `load_gemma4_lean` (memmapped
@@ -285,7 +285,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
 | KV a token | 1 KiB | 7 KiB | 9 KiB |
 | Apple format | lut8 | lut8 | **lut4** (`Config.Format`, hidden ≥ 4096) |
 | Intel format | int8 | int8 | **int4 by rows** (`Config.IntelFormat`) |
-| Programs (hwnpu-chat) | two | two on Core AI (functions of one `.aimodel`) | one (`prefill: off`) |
+| Programs (bonsaiai-chat) | two | two on Core AI (functions of one `.aimodel`) | one (`prefill: off`) |
 | models.yaml `machine` | 8 | 16 | 16, `not_on: [M1]` |
 
 - 2B formats (M3 ANE vs fp16, cache 4096, 8 tokens a call): next token same lut6 89%, lut8 98%; call
@@ -298,7 +298,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   at 38.6 tok/s; NE weights 2.47 GiB.
 - 8B: lut8 7.58 GiB, lut6 5.66, lut4 3.77 on the Neural Engine. lut4 keeps translations: 13/20 sentences
   word for word as lut8, the rest correct rewordings; answer-token KL vs lut8 0.305, argmax 88%
-  (`hwnpu-dev generate -write-ref` / `-score`). Speed (lut4): M3, Core AI: short sentence 14.5 tok/s,
+  (`bonsaiai-dev generate -write-ref` / `-score`). Speed (lut4): M3, Core AI: short sentence 14.5 tok/s,
   the 1214-token document read in 12.8 s (one program of 8 tokens a call: prefill off) and translated at
   23 tok/s; start 0.3–0.4 s from the second run (first 2 min 22 s with a 4 GB download of the export);
   NE holds 3.80 GiB. Core ML era: M2 9.4–10.1 tok/s but 35–41 s every start (compile cache keeps only 1.2–2.1 GiB);
@@ -306,9 +306,9 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   there. M3 lut8 5.8–6.5 tok/s (Core ML). Memory per models.yaml (Apple 8.2 GB peak).
 - Intel 8B: int8 (7.6 GiB) is over the ~4.6 GB a Core Ultra 5 135U NPU held; int4 by rows (3.8 GiB, one
   program). int4 rounding run on the M1 ANE: 12/20 same as lut8, rest rewordings.
-- Checks (2B): tiny model vs fp64 6.5e-5; `hwnpu-dev check` 0 missing / unused, argmax 31/31 (fp32),
+- Checks (2B): tiny model vs fp64 6.5e-5; `bonsaiai-dev check` 0 missing / unused, argmax 31/31 (fp32),
   `-f16` KL 0.0001. 0.8B and 8B not checked against HF fp32 (structure as the 2B).
-- Translation in hwnpu-chat: earlier pairs are kept as history; `--to`, `--from`, `--form`, `/to LANG`;
+- Translation in bonsaiai-chat: earlier pairs are kept as history; `--to`, `--from`, `--form`, `/to LANG`;
   the server takes `glossary` ([cli.md](cli.md)). Draft tokens never hit (output language differs from
   the prompt).
 - Tokenizer files are chosen by arch (`tokenizer.jsonl`, `tokenizer_config.json`).
@@ -322,9 +322,9 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   vocabulary 49152 (SmolLM's). The whole stack runs `total_ut_steps` (4) times on each token with the
   same weights; after each pass `model.norm` is applied and the next pass starts from the normed
   state; the head reads the last pass's. Each pass keeps keys and values of its own for every layer.
-- hwnpu treats the passes as layers: `Layers()` is layers × passes (1.4B: 24 × 4 = 96, 2.6B: 48 × 4 =
+- BonsaiAI treats the passes as layers: `Layers()` is layers × passes (1.4B: 24 × 4 = 96, 2.6B: 48 × 4 =
   192), layer v the weights of layer v mod layers (`llm.Looped`), the caches `kv_k_v` per pass. The
-  caches, the parts and `hwnpu-dev check` then work as for any decoder. A program holds a layer's
+  caches, the parts and `bonsaiai-dev check` then work as for any decoder. A program holds a layer's
   weights once however many of its passes it builds (the builder keeps the constants by name:
   `TestPassesShareWeights`); `llm.EstimateBytes` counts them for every pass (`llm.Looped`), which is
   over the stored size of a part that builds more than one pass. The KV cache is 4× a 24-layer
@@ -340,7 +340,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   values). The first layer's norm reads the embeddings as they are.
 - Checks (1.4B-Thinking): the tiny model (3 layers × 3 passes) against fp64 8e-7, layer by layer 6e-7,
   with a cache in parts 3.5e-4; breaking the norm between passes, sharing a layer's cache between
-  passes or dropping the norm after the MLP each fail them. `hwnpu-dev check` (30 tokens): 0 missing,
+  passes or dropping the norm after the MLP each fail them. `bonsaiai-dev check` (30 tokens): 0 missing,
   0 mismatched, 2 unused (the gate); fp32 worst layer 0.0004, argmax 30/30, KL 0.0000; `-f16` worst
   layer 0.0012, argmax 30/30, KL 0.0000. The reference is `tools/ref/ref_logits.py` with transformers
   4.54 (the remote code fails on 5.x: `pad_token_id`, `create_causal_mask`); it records each layer
@@ -388,7 +388,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
 - ANE note: layer 3's MLP puts 1.2e3 in one BOS channel that stays in the residual; RMSNorm's `x*x`
   exceeds fp16 there, but the ANE did not break (it seems to sum squares in a wider range). milcpu's
   `RoundF16` gives inf there, so it is useless past layer 4 for this model.
-- Embedding API (`chat.Embedder`, `/v1/embeddings`, terminal `hwnpu-chat search`):
+- Embedding API (`chat.Embedder`, `/v1/embeddings`, terminal `bonsaiai-chat search`):
   - Encode with BOS (`<|startoftext|>`). A query is `QueryPrefix + text` ("次の文章に対して、関連する文章を検索してください: "),
     and BOS plus the prefix's tokens are left out of the mean. Mean pooling over the text's tokens,
     normalized to length 1.
@@ -402,7 +402,7 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
 
 - Encoder ported; converts with lut8 (Apple) or int8 (Intel). all-MiniLM-L6-v2: cosine to fp16 lut4
   0.23, lut8 0.9988.
-- Not usable from hwnpu-chat: no WordPiece tokenizer (`tokenizer.Load` rejects it). Not in models.yaml
+- Not usable from bonsaiai-chat: no WordPiece tokenizer (`tokenizer.Load` rejects it). Not in models.yaml
   ([not-adopted/bert.md](../not-adopted/bert.md)).
 
 ## Tokenizers (`internal/tokenizer`)
@@ -425,7 +425,7 @@ Depends only on `golang.org/x/text`. Each is checked against HF tokenizers.
   adds spaces before special tokens, so HF does not round-trip. `skipSpecial` joins segments first, as
   HF's `skip_special_tokens=True`.
 - Golden data: `tools/ref/tokenizer_golden.py` → `internal/tokenizer/testdata/*.json`; real-vocab tests
-  need `HWNPU_TEST_PLAMO_DIR`, `HWNPU_TEST_GEMMA4_DIR`. Score ties and merges across user-defined pieces never
+  need `BONSAIAI_TEST_PLAMO_DIR`, `BONSAIAI_TEST_GEMMA4_DIR`. Score ties and merges across user-defined pieces never
   occur in the real vocab, so the tiny-model tests (`TestSentencePiece`) cover them.
 - Reference env for PLaMo's tokenizer: Python 3.12, `sentencepiece==0.2.0` (0.2.2 lacks
   `SentencePieceProcessor.Init`), `protobuf`, `transformers<5`.
@@ -483,7 +483,7 @@ what jinja2 / transformers render, character for character (`tools/ref/template_
 ## Open
 
 - d1-Omni-2B: the README example's team comes out billing 0.45 vs shipping 0.52 (README: billing), the
-  same in fp16 on the CPU. HF reads up to `d1_set_size` (16) questions together; hwnpu reads one at a
+  same in fp16 on the CPU. HF reads up to `d1_set_size` (16) questions together; BonsaiAI reads one at a
   time as llama.cpp does. Not compared with HF (no torch).
 - d1-2B / Omni not compared against HF or llama.cpp's `/v1/systemone` probabilities.
 - LFM3-Audio: with thinking at temperature 0 the thinking can loop and never answer.
@@ -493,7 +493,7 @@ what jinja2 / transformers render, character for character (`tools/ref/template_
   agent tasks, M2/M3.
 - PLaMo 3 8B: HF fp32 KL, GPTQ codes and `--lut-fit wkmeans` (fp32 calibration ~34 GB), long-context
   passkeys, M4, Intel and AMD on hardware, Core AI numbers.
-- PLaMo 3 0.8B: `hwnpu-dev check` against HF fp32, passkeys, AMD and Intel.
+- PLaMo 3 0.8B: `bonsaiai-dev check` against HF fp32, passkeys, AMD and Intel.
 - BERT: a WordPiece tokenizer.
 - Ouro: the Neural Engine (placement, speed, the 96 / 192 caches of a whole program; `UnpagedContext`
   1024 is a guess), Intel's NPU, GPTQ codes for lut6/lut4 (and for the 2.6B's lut8), the 2.6B on AMD (q8), and whether fewer passes

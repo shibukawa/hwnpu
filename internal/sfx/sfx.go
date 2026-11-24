@@ -23,15 +23,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/qwen3"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/qwen3"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // The files of the repository the programs are converted from and run with. The checkpoints
@@ -203,9 +203,9 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		}
 	}
 	// Core AI: three exports (llm.CoreAIExport), what is converted again apart: the text
-	// encoder's parts (hwnpu-text-rREV-FORMAT.coreai), the DiT's (hwnpu-dit-…) and the
-	// decoder's stages (hwnpu-dac-rDACREV-fp16.coreai), each program KIND.aimodel in its export.
-	// Core ML and Intel: a program each, hwnpu-KIND-rREV-FORMAT.EXT with its .done
+	// encoder's parts (bonsaiai-text-rREV-FORMAT.coreai), the DiT's (bonsaiai-dit-…) and the
+	// decoder's stages (bonsaiai-dac-rDACREV-fp16.coreai), each program KIND.aimodel in its export.
+	// Core ML and Intel: a program each, bonsaiai-KIND-rREV-FORMAT.EXT with its .done
 	exportOf := func(kind string) (string, string) {
 		part, rev, format := "text", Revision, text
 		switch {
@@ -214,7 +214,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		case strings.HasPrefix(kind, "dit-"):
 			part, format = "dit", dit
 		}
-		return llm.CoreAIExport(s.Dir, fmt.Sprintf("hwnpu-%s-r%d-%s", part, rev, format))
+		return llm.CoreAIExport(s.Dir, fmt.Sprintf("bonsaiai-%s-r%d-%s", part, rev, format))
 	}
 	name := func(kind, format string) string {
 		if coreai {
@@ -225,7 +225,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		if strings.HasPrefix(kind, "dac-") {
 			rev = DACRevision
 		}
-		return filepath.Join(dir, fmt.Sprintf("hwnpu-%s-r%d-%s%s", kind, rev, format, ext))
+		return filepath.Join(dir, fmt.Sprintf("bonsaiai-%s-r%d-%s%s", kind, rev, format, ext))
 	}
 	for i := range TextSplit(text) {
 		p.Text = append(p.Text, name(fmt.Sprintf("text-%d", i), text))
@@ -370,7 +370,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 // Generator generates sound effects.
 type Generator struct {
 	p     Paths
-	dev   *hwnpu.Device
+	dev   *bonsaiai.Device
 	tok   *tokenizer.Tokenizer
 	textW *Weights // the embedding table and the final norm
 	ditW  *Weights // the host's tensors
@@ -382,7 +382,7 @@ type Generator struct {
 
 // Open reads the tokenizer and host weights (p.Tables, p.Host, else the checkpoints); Load loads
 // the DiT's and the decoder's programs, and Encode the text encoder's for a prompt.
-func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
+func Open(p Paths, dev *bonsaiai.Device) (*Generator, error) {
 	g := &Generator{p: p, dev: dev}
 	var err error
 	if g.tok, err = tokenizer.Load(cmp.Or(p.Tokenizer, p.at(tokenizerFile))); err != nil {
@@ -589,7 +589,7 @@ func channels(x []float32, n, c int) []float32 {
 func (p Paths) String() string {
 	f := func(path string) string {
 		if d := filepath.Dir(path); filepath.Ext(d) == ".coreai" {
-			path = d // Core AI: the export's name holds the format (hwnpu-text-r1-fp16.coreai)
+			path = d // Core AI: the export's name holds the format (bonsaiai-text-r1-fp16.coreai)
 		}
 		b := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		return b[strings.LastIndex(b, "-")+1:]

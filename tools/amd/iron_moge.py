@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal, MIT) on IRON: the graphs cmd/hwnpu-image depth runs on
+"""MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal, MIT) on IRON: the graphs cmd/bonsaiai-image depth runs on
 AMD's NPU for a metric point map, depth, normals and a mask from one picture.
 
 MoGe-2 is DINOv2's ViT (some of its layers after the final norm, each projected by a 1 x 1
@@ -429,7 +429,7 @@ def export(w: Weights, mc: dict, out: Path, c: Config, check: bool) -> None:
         n = -(-H * W // 256) * 256
         shapes[f"n{i}"] = (n, pad64(c.neck[i]))
     # the three heads: one program, a bank image each (the same shapes), read in turn into
-    # one bank by hwnpu (iron.GraphOptions.SwapVariants): the work area of one head pinned
+    # one bank by bonsaiai (iron.GraphOptions.SwapVariants): the work area of one head pinned
     t0 = time.time()
     g = Head(c, w, HEADS[0])
     cg = g.compile(**shapes)

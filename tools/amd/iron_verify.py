@@ -9,7 +9,7 @@ decode steps on Qwen3.5-0.8B, 9 on PLaMo 3 0.8B).
 
 ``install(Model, rows)`` adds the version to a model class (``iron_export_lm.py --verify``):
 ``shapes`` gains token ids of ``rows``, and ``forward`` keeps every row for the head on those.
-The token it draws (from the last row) is carried as a prompt chunk's; hwnpu reads the logits.
+The token it draws (from the last row) is carried as a prompt chunk's; bonsaiai reads the logits.
 """
 
 import numpy as np
@@ -62,7 +62,7 @@ def install_functional() -> None:
     forms when the rows are not bounded (iron.lm's modules call them through F)."""
     import iron.functional as F
 
-    if getattr(F.causal_conv1d, "hwnpu_rows", False):
+    if getattr(F.causal_conv1d, "bonsaiai_rows", False):
         return
     base = F.causal_conv1d
 
@@ -71,7 +71,7 @@ def install_functional() -> None:
             return causal_conv1d_rows(x, taps, state)
         return base(x, taps, state)
 
-    causal_conv1d.hwnpu_rows = True
+    causal_conv1d.bonsaiai_rows = True
     F.causal_conv1d = causal_conv1d
 
 
@@ -92,7 +92,7 @@ def install_cache() -> None:
     from iron.lm.blocks import KVCache
     from iron.operators.mha import MHA
 
-    if getattr(KVCache.attend, "hwnpu_rows", False):
+    if getattr(KVCache.attend, "bonsaiai_rows", False):
         return
     base_init, base_attend = KVCache.__init__, KVCache.attend
 
@@ -119,7 +119,7 @@ def install_cache() -> None:
             self.rows_o[j : j + 1] = o.reshape(1, H * D)
         return self.rows_o
 
-    __init__.hwnpu_rows = attend.hwnpu_rows = True
+    __init__.bonsaiai_rows = attend.bonsaiai_rows = True
     KVCache.__init__, KVCache.attend = __init__, attend
 
 

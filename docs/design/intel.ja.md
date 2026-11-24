@@ -6,13 +6,13 @@ Intel の NPU を Level Zero とその graph 拡張で使う (`internal/ze`、`i
 
 ## 現状
 
-- 実機: HP EliteBook 630 G11、Core Ultra 5 135U (Meteor Lake、NPU 3720)、32 GB、Windows 11 25H2、NPU ドライバ 32.0.100.5540 (Level Zero 1.16、`ZE_extension_graph` 1.18、コンパイラ 8.3)。`tools/intel/hwnpu-intel-check.ps1` (standard / full の段階) で回す。
-- この機械で通ったもの (全部 NPU): `report`、LFM3-1.7B (`--paged=-1 --context 4096` と、既定の文脈 262144 の 7 部分。下書きつきで 17〜25 tok/s)、考える答え、`hwnpu-chat agent` の read と write、PLaMo 3 Translate 0.8B (ja→en と en→ja、25〜31 tok/s)。
+- 実機: HP EliteBook 630 G11、Core Ultra 5 135U (Meteor Lake、NPU 3720)、32 GB、Windows 11 25H2、NPU ドライバ 32.0.100.5540 (Level Zero 1.16、`ZE_extension_graph` 1.18、コンパイラ 8.3)。`tools/intel/bonsaiai-intel-check.ps1` (standard / full の段階) で回す。
+- この機械で通ったもの (全部 NPU): `report`、LFM3-1.7B (`--paged=-1 --context 4096` と、既定の文脈 262144 の 7 部分。下書きつきで 17〜25 tok/s)、考える答え、`bonsaiai-chat agent` の read と write、PLaMo 3 Translate 0.8B (ja→en と en→ja、25〜31 tok/s)。
 - それ以外 (画像・音・絵のコマンド、Gemma 4、Qwen3、Qwen3.5、Whisper) は OpenVINO の CPU でだけ確かめた (下)。NPU のコンパイラがそのグラフを受け付けるか、速さ、メモリは未解決。
 
 ## ライブラリの読み込み
 
-1. `HWNPU_ZE_LOADER`、2. 通常の検索パスの `libze_loader.so.1` / `ze_loader.dll`、3. 既知の場所 (Linux `/usr/lib/x86_64-linux-gnu`、`/usr/local/lib`。Windows `%SystemRoot%\System32`、oneAPI の `bin`)。失敗したら `ErrLibrary` に試したパスを並べる。`internal/dl` が purego (Unix) か `syscall.LoadLibrary` (Windows) で読む。cgo は使わない。
+1. `BONSAIAI_ZE_LOADER`、2. 通常の検索パスの `libze_loader.so.1` / `ze_loader.dll`、3. 既知の場所 (Linux `/usr/lib/x86_64-linux-gnu`、`/usr/local/lib`。Windows `%SystemRoot%\System32`、oneAPI の `bin`)。失敗したら `ErrLibrary` に試したパスを並べる。`internal/dl` が purego (Unix) か `syscall.LoadLibrary` (Windows) で読む。cgo は使わない。
 
 ## 初期化とデバイス
 
@@ -68,19 +68,19 @@ Intel での配置の検証 (NPU のコンパイラは演算を他の装置に�
 - 実行: コマンドキュー (turbo のための NPU 拡張は任意) → コマンドリスト → 初回だけ `GraphInitialize` か `AppendGraphInitialize` → `AppendGraphExecute` → close → fence 付きで実行。`Fence.Wait` は `ctx.Done()` を見ながら `zeFenceHostSynchronize(50 ms)` を繰り返す。
 - 引数の値はコマンドを積んだ時点で取り込まれるので、要求ごとに `SetArgumentValue` から積み直す (グラフごとのロック)。終わった要求への `Bind` は許す (注意の塊の鎖が付け替えを使う)。
 - C の配置 (`ze_graph_desc_2_t`、`ze_graph_argument_properties_3_t` など) は Go の struct で書き、`testdata/abi/levelzero_abi.json` (公式ヘッダから求めたサイズとオフセット。macOS arm64 の clang と Linux amd64 の gcc で同じ) と golden テストで突き合わせる。
-- `testdata/zemock/zemock.c` は偽のドライバ。テストの開始時に `cc` でビルドし、`HWNPU_ZE_LOADER` で読ませる。
+- `testdata/zemock/zemock.c` は偽のドライバ。テストの開始時に `cc` でビルドし、`BONSAIAI_ZE_LOADER` で読ませる。
 
 ## Intel 向けのプログラム
 
 - 変換器は Apple と Intel で 1 つ。アーキテクチャが MIL を組み、`internal/ovlower` が 1 演算ずつ IR に下ろす (`out.xml` + `out.bin`、`out.partN.xml`、`meta` 付きの `out.parts.json`)。知らない演算や入力はエラーで止める。milcpu の演算は `read_state` (プローブだけ) を除いて全部下ろせる。演算の表は [../intel-npu-models.md](../intel-npu-models.md)。
-- 置き場: `<model>/intel/` (hwnpu-chat)、書き出しのディレクトリでは拡張子 `.intel`。変換器は `Backend` を受ける (`-backend intel`、`hwnpu-image convert --backend intel`、`depth.Setup.Backend`、`sana.ConvertOptions.Backend`、`systemone.Setup.Backend`、`music.WriteProgram` / `llm.WriteIR`)。
+- 置き場: `<model>/intel/` (bonsaiai-chat)、書き出しのディレクトリでは拡張子 `.intel`。変換器は `Backend` を受ける (`-backend intel`、`bonsaiai-image convert --backend intel`、`depth.Setup.Backend`、`sana.ConvertOptions.Backend`、`systemone.Setup.Backend`、`music.WriteProgram` / `llm.WriteIR`)。
 - コマンドは `chat.HereVendor` で機械を Intel として扱う。`llm.ProgramBackend` はバックエンド名だけでなくプログラムの形式名 (`intel`) も受ける。
 - 重みの形式: NPU は表を読めないので、`llm.IntelFormat` が `lut4` → `int4`、`lut6` / `lut8` → `int8` に読み替える。lut の重みはこの案内つきで断る。アーキテクチャごとの上書き (`Arch.IntelFormat`、`llm.IntelFormatter`) は、LFM3、BERT、PLaMo-Embedding、PLaMo 3 の 2B 以下を int8、PLaMo 3 8B (隠れ層 4096 以上) を行ごとの int4 にする。SANA 1.5 1.6B の DiT は fp16 のまま (`sana.FormatsFor`。行ごとの int8 で絵が崩れる)。MOSS の文のモデルは 5 層を fp16 に残す。詳細は [quantization](quantization.md)。
 - LLM は注意の前後で分ける (`llm.convertPaged`): 部分 `out.partN.xml` と注意のプログラム `out.attn.xml` (MIL で組み `ovlower` で下ろす)。Intel の LFM3 の既定の形は `lfm3-int8-grouped-p8192-c262144-q8.parts.json`。実行側は [llm-engine](llm-engine.md)。
-- Intel の hwnpu-chat はモデルごとに 2 本 (8 トークンと 64 トークン、`onePrograms` でない) を持つので、重みを 2 回持つ。models.yaml の `prefill: off` で 1 本にする (PLaMo 3 8B で使う。int4 で 3.8 GiB)。
+- Intel の bonsaiai-chat はモデルごとに 2 本 (8 トークンと 64 トークン、`onePrograms` でない) を持つので、重みを 2 回持つ。models.yaml の `prefill: off` で 1 本にする (PLaMo 3 8B で使う。int4 で 3.8 GiB)。
 - 8 トークンと 64 トークンのプログラムの `.bin` は、ファイルシステムが複製を共有できるところでディスクを共有する ([distribution](distribution.md))。
 
-### Meteor Lake での重みの形式 (`hwnpu-formats`、LFM3-1.7B、キャッシュ 4096、1 回 8 トークン)
+### Meteor Lake での重みの形式 (`bonsaiai-formats`、LFM3-1.7B、キャッシュ 4096、1 回 8 トークン)
 
 | 形式 | 1 回の ms | 次のトークンが fp16 と同じ | パープレキシティ |
 |---|---|---|---|
@@ -93,19 +93,19 @@ Intel での配置の検証 (NPU のコンパイラは演算を他の装置に�
 
 ## NPU なしで確かめる (OpenVINO の CPU)
 
-- `HWNPU_BACKEND=openvino` (または `--backend openvino`、装置は `HWNPU_DEV=ov.device`) で、Intel の IR を OpenVINO の CPU プラグインで動かす (`internal/backend/openvino`、Python は `HWNPU_OV_PYTHON`、`serve_ir.py` / `run_ir.py`)。変換、引数の名前、ホストの処理は NPU と同じで、違うのはコンパイラと装置だけ。pip の openvino は Mac でも動く。
+- `BONSAIAI_BACKEND=openvino` (または `--backend openvino`、装置は `BONSAIAI_DEV=ov.device`) で、Intel の IR を OpenVINO の CPU プラグインで動かす (`internal/backend/openvino`、Python は `BONSAIAI_OV_PYTHON`、`serve_ir.py` / `run_ir.py`)。変換、引数の名前、ホストの処理は NPU と同じで、違うのはコンパイラと装置だけ。pip の openvino は Mac でも動く。
 - `serve_ir.py` と `run_ir.py` は `openvino_telemetry` のモジュールを読ませない (別プロセスが消したスクリプトを読みにいって失敗していた)。
 - バックエンドを開くとき、落ちたプロセスが `/dev/shm` に残した共有バッファのディレクトリ (1 日で 8.4 GB) を片付ける。
-- `hwnpu-dev irdiff A.mlpackage …`: Core ML のパッケージを IR に下ろし、同じ乱数の入力で milcpu と OpenVINO の CPU を比べる。Intel の経路を書く前に、下ろせない演算を見つけられる。
+- `bonsaiai-dev irdiff A.mlpackage …`: Core ML のパッケージを IR に下ろし、同じ乱数の入力で milcpu と OpenVINO の CPU を比べる。Intel の経路を書く前に、下ろせない演算を見つけられる。
 - テスト `TestIntelIR*` (lfm3、gemma4、lfm3vl、lfm3audio、plamo3、bert、plamo、qwen3、qwen35 の fp16 / int8、whisper。gemma4 と lfm3 は分けた形も): milcpu と相対誤差 1e-3 以内 (分けた形は gemma4 2.8e-3、lfm3 5.7e-4)。`TestImageOps`: 3e-4 以内。
-- 実物のチェックポイントを `HWNPU_BACKEND=openvino` で Ryzen AI の機械の CPU で動かし、CPU、AMD の NPU、milcpu と合った: RTMO-s の pose、RTMDet-m の detect (箱 0.1 ピクセル以内)、PP-OCRv6 small、SwiftF0 (f0 0.013 % 以内)、Basic Pitch (音符が同じ)、YuNet、DA3-SMALL (深度の相関 0.9994)、MoGe-2 ViT-S (0.9998)、EfficientSAM-S (同じマスク)、Qwen3.5-0.8B int8 のチャット、LFM3-Audio-2B の TTS → Whisper large-v3-turbo の往復、Magenta RT2 small (12 符号が同じ)、Sana 600M 1024² int8、MOSS-SoundEffect v2.0 (16 本、1 ステップ 18 秒、耳では未確認)、Anima (f32 で潜在のコサイン 0.99985、PSNR 37.9 dB。f16 の推論では 25.5 dB)。
+- 実物のチェックポイントを `BONSAIAI_BACKEND=openvino` で Ryzen AI の機械の CPU で動かし、CPU、AMD の NPU、milcpu と合った: RTMO-s の pose、RTMDet-m の detect (箱 0.1 ピクセル以内)、PP-OCRv6 small、SwiftF0 (f0 0.013 % 以内)、Basic Pitch (音符が同じ)、YuNet、DA3-SMALL (深度の相関 0.9994)、MoGe-2 ViT-S (0.9998)、EfficientSAM-S (同じマスク)、Qwen3.5-0.8B int8 のチャット、LFM3-Audio-2B の TTS → Whisper large-v3-turbo の往復、Magenta RT2 small (12 符号が同じ)、Sana 600M 1024² int8、MOSS-SoundEffect v2.0 (16 本、1 ステップ 18 秒、耳では未確認)、Anima (f32 で潜在のコサイン 0.99985、PSNR 37.9 dB。f16 の推論では 25.5 dB)。
 
 ## メモリの上限と常駐
 
-- ドライバはグラフの重みを NPU から見えるメモリに置く。135U では Anima 512² fp16 が、約 4.6 GB (text 1.2 GB + DiT の 6 群 × 0.57 GB) を持ったところで `dit_blocks_24.xml` が `pfnGraphInitialize: ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` になった。一方 `hwnpu-dev probe resident` は 0.23 GiB のプログラムを 16 GB までエラーなしで積めるので、上限は単純な合計ではない。1 本の大きさか本物のグラフの形かはまだ分けていない (`resident-large`: 0.57 と 1.2 GiB のプログラム)。
+- ドライバはグラフの重みを NPU から見えるメモリに置く。135U では Anima 512² fp16 が、約 4.6 GB (text 1.2 GB + DiT の 6 群 × 0.57 GB) を持ったところで `dit_blocks_24.xml` が `pfnGraphInitialize: ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` になった。一方 `bonsaiai-dev probe resident` は 0.23 GiB のプログラムを 16 GB までエラーなしで積めるので、上限は単純な合計ではない。1 本の大きさか本物のグラフの形かはまだ分けていない (`resident-large`: 0.57 と 1.2 GiB のプログラム)。
 - 読み込みはコンパイラの `std::bad_alloc` ("bad allocation") でも失敗する。`types.IsOutOfMemory` は Level Zero の `OUT_OF_HOST_MEMORY` / `OUT_OF_DEVICE_MEMORY` と "bad allocation" / "bad_alloc" をメモリ不足とみなす。
 - Intel の Anima (`anima.progEngine`): 部品を slot にし、メモリ不足ならほかの部品を閉じて読み直す。閉じる順は text (プロンプトごとに 1 回)、次に DiT の群で最後に使ったもの (MRU。7 群に 4 か所でステップあたり 4 群の読み直し。LRU なら 7)、最後に時刻・パッチ・最後の層。VAE の段も同じ規則で場所を作る。偽の NPU (`residency_test.go`) で確かめた。実機では 1024² で読み直しが働いた。
-- `hwnpu-dev probe resident`: 0.25 GiB のプログラムを 1 本ずつ読み (開いたまま、1 回ずつ実行)、読み込みが失敗するか `-resident-max-gb` (RAM の 60 %、最大 16) まで続け、最後に全部をもう一度実行する。メモリ不足なら一番古いものを閉じて読み直す。フラグは `-resident-hold open|close`、`-resident-formats int8`、`-resident-size a,b`、`-resident-run=false` (読むだけ)、`-resident-cycle`。Windows では各読み込みの後にプロセスの private メモリ (`K32GetProcessMemoryInfo`) を記録し、`maxRSS` は peak working set を返す。子プロセスは 1 本ごとに `npuprobe-progress` の行を、各段階を stderr に出すので、落ちてもそこまでの分が残る。
+- `bonsaiai-dev probe resident`: 0.25 GiB のプログラムを 1 本ずつ読み (開いたまま、1 回ずつ実行)、読み込みが失敗するか `-resident-max-gb` (RAM の 60 %、最大 16) まで続け、最後に全部をもう一度実行する。メモリ不足なら一番古いものを閉じて読み直す。フラグは `-resident-hold open|close`、`-resident-formats int8`、`-resident-size a,b`、`-resident-run=false` (読むだけ)、`-resident-cycle`。Windows では各読み込みの後にプロセスの private メモリ (`K32GetProcessMemoryInfo`) を記録し、`maxRSS` は peak working set を返す。子プロセスは 1 本ごとに `npuprobe-progress` の行を、各段階を stderr に出すので、落ちてもそこまでの分が残る。
 - 1 回、読み込み中に子がドライバの中で 0xc0000005 で落ちた。メモリ不足がエラーでなく異常終了になりうるなら、上の閉じて読み直す手は効かず、落ちる合計より手前に自分で上限を置く形が要る。
 
 ### Windows のジョブの時間の上限 (TDR)

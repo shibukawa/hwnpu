@@ -8,19 +8,19 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 // LFM3-VL's vision tower on the NPU gives the soft tokens Hugging Face's does: an export in
-// HWNPU_TEST_IRON_VL_EXPORT, and in HWNPU_TEST_IRON_VL_CHECK an image's patches in raster order (patches.bin,
+// BONSAIAI_TEST_IRON_VL_EXPORT, and in BONSAIAI_TEST_IRON_VL_CHECK an image's patches in raster order (patches.bin,
 // float32) and the soft tokens Hugging Face computed from them (soft.bin, float32).
 func TestLfm3VlTowerOnDevice(t *testing.T) {
-	dir, check := os.Getenv("HWNPU_TEST_IRON_VL_EXPORT"), os.Getenv("HWNPU_TEST_IRON_VL_CHECK")
+	dir, check := os.Getenv("BONSAIAI_TEST_IRON_VL_EXPORT"), os.Getenv("BONSAIAI_TEST_IRON_VL_CHECK")
 	if dir == "" || check == "" {
-		t.Skip("HWNPU_TEST_IRON_VL_EXPORT and HWNPU_TEST_IRON_VL_CHECK are not set")
+		t.Skip("BONSAIAI_TEST_IRON_VL_EXPORT and BONSAIAI_TEST_IRON_VL_CHECK are not set")
 	}
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		t.Skip(err)
 	}
@@ -107,15 +107,15 @@ func argmax(x []float32) int {
 }
 
 // LFM3-Audio's audio encoder on the NPU gives the soft tokens Hugging Face's does: an export in
-// HWNPU_TEST_IRON_AUDIO_EXPORT, and in HWNPU_TEST_IRON_AUDIO_CHECK a clip's log-mel features (features.bin,
+// BONSAIAI_TEST_IRON_AUDIO_EXPORT, and in BONSAIAI_TEST_IRON_AUDIO_CHECK a clip's log-mel features (features.bin,
 // float32, frames by mels) and the soft tokens Hugging Face computed from them (soft.bin).
 func TestLfm3AudioTowerOnDevice(t *testing.T) {
-	dir, check := os.Getenv("HWNPU_TEST_IRON_AUDIO_EXPORT"), os.Getenv("HWNPU_TEST_IRON_AUDIO_CHECK")
+	dir, check := os.Getenv("BONSAIAI_TEST_IRON_AUDIO_EXPORT"), os.Getenv("BONSAIAI_TEST_IRON_AUDIO_CHECK")
 	if dir == "" || check == "" {
-		t.Skip("HWNPU_TEST_IRON_AUDIO_EXPORT and HWNPU_TEST_IRON_AUDIO_CHECK are not set")
+		t.Skip("BONSAIAI_TEST_IRON_AUDIO_EXPORT and BONSAIAI_TEST_IRON_AUDIO_CHECK are not set")
 	}
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		t.Skip(err)
 	}

@@ -32,8 +32,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
 )
 
 // groupMin is the least weight file grouped: the programs without weights (attention over a
@@ -88,7 +88,7 @@ var (
 // singleKey is the cache key of a package by its contents (cache.TreeDigest): its asset when
 // lowered alone, and its record.
 func singleKey(digest []byte) string {
-	return cache.Key([]byte("hwnpu-coreai-v1"), digest, []byte(ailower.Producer))
+	return cache.Key([]byte("bonsaiai-coreai-v1"), digest, []byte(ailower.Producer))
 }
 
 func weightFile(pkg string) string {
@@ -380,7 +380,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 		return a, "main", ok, nil
 	}
 	sort.Slice(members, func(i, j int) bool { return hex.EncodeToString(members[i].sum) < hex.EncodeToString(members[j].sum) })
-	parts := [][]byte{[]byte("hwnpu-coreai-group-v1"), []byte(ailower.Producer)}
+	parts := [][]byte{[]byte("bonsaiai-coreai-group-v1"), []byte(ailower.Producer)}
 	var paths, names []string
 	for _, m := range members {
 		parts = append(parts, m.sum)

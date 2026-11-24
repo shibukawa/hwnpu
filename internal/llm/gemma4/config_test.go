@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // The config.json of google/gemma-4-E2B-it parses to what modeling_gemma4.py builds from it.

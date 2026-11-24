@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/mxfp4"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/mxfp4"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // bf16 is v rounded to bf16 (to nearest even), as raw little endian bytes and back as values.

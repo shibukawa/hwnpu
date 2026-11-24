@@ -7,14 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/console"
 )
 
 // profile adds up where the steps of programs split at their attention spend their time, by
 // tokens per step and stages: each part's run (with its syncs) and the attention over the
 // session's cache between them. Programs of as many tokens per step but other stages (the model's
 // and its multi-token prediction layer's, both 8) are apart: added up together, the model's later
-// parts looked a third as long as they are. It is on when HWNPU_PROFILE is set, and WriteProfile
+// parts looked a third as long as they are. It is on when BONSAIAI_PROFILE is set, and WriteProfile
 // prints it.
 var profile = struct {
 	sync.Mutex
@@ -62,7 +62,7 @@ func profStep(k profKey) *profSteps {
 }
 
 // WriteProfile prints the time per step of each part and attention, by tokens per step, when
-// HWNPU_PROFILE is set; otherwise nothing.
+// BONSAIAI_PROFILE is set; otherwise nothing.
 func WriteProfile(w io.Writer) {
 	if !profile.on {
 		return

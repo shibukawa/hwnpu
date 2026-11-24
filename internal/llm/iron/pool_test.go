@@ -5,7 +5,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
 )
 
 // testPool is a pool of P places for E experts in L layers, the places holding experts 0..P-1.

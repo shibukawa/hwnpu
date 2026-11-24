@@ -2,7 +2,7 @@
 
 [日本語](vision-models.ja.md)
 
-Models that read images (not image generation, see [image-models.md](image-models.md)): detection, pose, OCR, segmentation, depth, faces, labels and embeddings. All run from `hwnpu-image`. Most are distributed only as ONNX and go through one shared path (`internal/onnx`).
+Models that read images (not image generation, see [image-models.md](image-models.md)): detection, pose, OCR, segmentation, depth, faces, labels and embeddings. All run from `bonsaiai-image`. Most are distributed only as ONNX and go through one shared path (`internal/onnx`).
 
 ## Models and commands
 
@@ -30,20 +30,20 @@ Models that read images (not image generation, see [image-models.md](image-model
 | RTMO-s | Core AI | NPU, IRON export made on first run | OpenVINO IR | same |
 | PP-OCRv6-small | Core AI | CPU (no IRON form) | OpenVINO IR | same |
 | YuNet | Core AI | CPU by default; `--device npu` runs `iron_yunet.py`'s export | OpenVINO IR | ONNX Runtime, else milcpu |
-| EfficientSAM encoder | Core AI | NPU, IRON export made on first run | OpenVINO IR | ONNX Runtime, else hwnpu's evaluator |
+| EfficientSAM encoder | Core AI | NPU, IRON export made on first run | OpenVINO IR | ONNX Runtime, else BonsaiAI's evaluator |
 | EfficientSAM decoder | host evaluator | host evaluator | host evaluator | host evaluator |
 | DA3, MoGe-2 | Core AI | NPU (`iron_da3.py`, `iron_moge.py` exports) | OpenVINO IR | — |
 | SigLIP 2 | Core AI | NPU (`iron_siglip2.py` export) | no form yet | — |
 
-- **Apple: Core AI only.** `hwnpu-image` on a Mac needs macOS 27; without Core AI it fails (`errNoCoreAI`), no fallback to Core ML. `--backend coreml` and `HWNPU_BACKEND=coreml` are read as Core AI. Programs are written straight as `.aimodel` from ONNX or the checkpoint. See [apple-coreai.md](apple-coreai.md).
+- **Apple: Core AI only.** `bonsaiai-image` on a Mac needs macOS 27; without Core AI it fails (`errNoCoreAI`), no fallback to Core ML. `--backend coreml` and `BONSAIAI_BACKEND=coreml` are read as Core AI. Programs are written straight as `.aimodel` from ONNX or the checkpoint. See [apple-coreai.md](apple-coreai.md).
 - `--cpu` (detect, pose, ocr; label/embed too) runs the Core ML `.mlpackage` on the CPU interpreter (`milcpu`). It checks a conversion; it is slow.
-- **Intel** (checked only through OpenVINO's CPU plugin, `HWNPU_BACKEND=openvino`, on a Ryzen machine): pose, detect, ocr, face-detect, depth (DA3, MoGe-2), segment give the same results as the CPU or AMD paths. Whether the NPU compiler accepts DepthToSpace, ConvolutionBackpropData, Clamp, MaxPool and EfficientSAM's 4096-token attention is not checked. See [intel.md](intel.md).
-- **Placement**: models.yaml `device` per vendor (`{amd: cpu}`; an unnamed vendor means npu). Override order: `--device`, `HWNPU_DEVICE`, models.yaml (`chat.ChooseDevice`, which also returns the reason). `chat.ConvertedDevice` puts ONNX models with no NPU form on the CPU. A model with no form for this NPU falls back and says so; only an explicit `--device npu` is an error. `hwnpu-image list` shows RUNS FROM (`CPU (ONNX Runtime)` or the export).
-- `hwnpu-image` holds the Neural Engine lock (`llm.OpenDevice`); placement is strict (it says why when it cannot verify). `aicheck run` and `probe` take the lock too (`llm.LockNPU`). See [apple-neural-engine.md](apple-neural-engine.md).
+- **Intel** (checked only through OpenVINO's CPU plugin, `BONSAIAI_BACKEND=openvino`, on a Ryzen machine): pose, detect, ocr, face-detect, depth (DA3, MoGe-2), segment give the same results as the CPU or AMD paths. Whether the NPU compiler accepts DepthToSpace, ConvolutionBackpropData, Clamp, MaxPool and EfficientSAM's 4096-token attention is not checked. See [intel.md](intel.md).
+- **Placement**: models.yaml `device` per vendor (`{amd: cpu}`; an unnamed vendor means npu). Override order: `--device`, `BONSAIAI_DEVICE`, models.yaml (`chat.ChooseDevice`, which also returns the reason). `chat.ConvertedDevice` puts ONNX models with no NPU form on the CPU. A model with no form for this NPU falls back and says so; only an explicit `--device npu` is an error. `bonsaiai-image list` shows RUNS FROM (`CPU (ONNX Runtime)` or the export).
+- `bonsaiai-image` holds the Neural Engine lock (`llm.OpenDevice`); placement is strict (it says why when it cannot verify). `aicheck run` and `probe` take the lock too (`llm.LockNPU`). See [apple-neural-engine.md](apple-neural-engine.md).
 
 ### CPU path
 
-- `internal/onnxrt`: ONNX Runtime's shared library through purego (no cgo). Needs OrtApi 16 or newer, calls by table index. 1 thread by default, no spinning (`session.*.allow_spinning = 0`). Library from `HWNPU_ONNXRUNTIME` or the system; never downloaded (the user decides how native libraries are shipped). `HWNPU_ONNXRUNTIME=none` disables it.
+- `internal/onnxrt`: ONNX Runtime's shared library through purego (no cgo). Needs OrtApi 16 or newer, calls by table index. 1 thread by default, no spinning (`session.*.allow_spinning = 0`). Library from `BONSAIAI_ONNXRUNTIME` or the system; never downloaded (the user decides how native libraries are shipped). `BONSAIAI_ONNXRUNTIME=none` disables it.
 - `onnxrt.Cut` cuts the ONNX graph between two values; `onnxrt.Program` returns the same inputs/outputs as `onnx.Program` (rows for `Flat`), so the host code (box decoding, keypoints, CTC) is unchanged.
 - Without ONNX Runtime: milcpu with `internal/sgemm` (GotoBLAS-style float32 GEMM; AVX2 / AVX-512 on amd64, NEON 6×16 on arm64, 106 GFLOPS on one M3 thread; im2col packed while filling B) and SIMD exp / sigmoid / SiLU / erf (`internal/f32`). `--threads` (default 1: the least CPU time and energy).
 
@@ -84,7 +84,7 @@ Turns an ONNX CNN (CSPNeXt, YOLOX-type) into one IRON graph. Switching operators
 
 ## Per model
 
-### RTMDet (`hwnpu-image detect`)
+### RTMDet (`bonsaiai-image detect`)
 
 - Program: up to the head convolutions (class logits and 4 box distances per level). The graph then transposes, sigmoids, decodes, takes top 5000 and runs per-class NMS on the host. The host decodes only cells whose logit beats the min score's logit (sigmoid is monotonic). The Neural Engine has no transpose. Input fit into 640×640.
 - `detect.Open` gets the class count from output sizes and strides (no second ONNX read; m's weights were 529 MB as float64).
@@ -92,13 +92,13 @@ Turns an ONNX CNN (CSPNeXt, YOLOX-type) into one IRON graph. Switching operators
 - Accuracy (s vs ONNX Runtime): score diff 0.063 / 0.042, boxes 5.5 / 6.7 px (score ≥ 0.1); objects ≥ 0.3 the same.
 - AMD: RTMDet-m 0.33 s a picture, 1.86 J; CPU ONNX Runtime 1 thread 0.54 s and 8.2–10.7 J (balanced), milcpu 1.0 s and 16 J. Same objects as ONNX Runtime, scores within 0.013, boxes 1.3–7.6 px. 565 MiB pinned, 98 MiB process. tiny and s stay on the CPU (Not adopted).
 
-### RTMO-s (`hwnpu-image pose`)
+### RTMO-s (`bonsaiai-image pose`)
 
 - RGB 0–255 stretched to 640×640. All 370 ops up to 2000 anchors' scores, boxes, pose features and visibility on the NPU; TopK, NMS and the per-person coordinate classifier (DCC, GAU, sin/cos embedding) on the host evaluator.
 - Apple: M1 about 100 ms a picture (network 9–100 ms, host 36–43 ms), footprint 232 MB; M3 Core AI 87–88 ms, of which 70 ms host. Versus the ONNX reference: boxes 1.6 px, visible keypoints 3.4 px (as much as fp16 weights alone).
 - AMD: up to the head convs on the NPU (`ironcnn.LastConvs`), 8 outputs to the host. HIGH with SiLU as an op: keypoints within 2 px, scores within 0.03, 0.22 s a picture. 327 MiB pinned, 215 MiB process. MEDIUM (0.15 s) moved keypoint scores by 0.13 and low-confidence boxes by 97 px.
 
-### PP-OCRv6 small (`hwnpu-image ocr`)
+### PP-OCRv6 small (`bonsaiai-image ocr`)
 
 - Detector at 960×960, 1280×736 or 736×1280 (the one that shrinks least); image top-left, rest zero after normalization. 13 ms on M1. Versus PaddleOCR 3's default (no shrinking, multiples of 32): 94 of 98 lines of a paper page the same (CER 0.12 %).
 - Recognizer: logits (8 lines × 160 steps × 18710 classes) are the output; the softmax is computed by `Decode` only near the max. The last linear is split into two of 9355 classes stacked as (…, 2, 9355) (same order as (…, 18710)); its bias is folded in. All on the NPU.
@@ -109,23 +109,23 @@ Turns an ONNX CNN (CSPNeXt, YOLOX-type) into one IRON graph. Switching operators
 - Line order is PaddleOCR's `sorted_boxes` (top down, left first within 10 px), so two-column pages interleave. "〜" (U+301C) is in the dictionary but never read (the model, PaddleOCR too).
 - AMD: CPU (ONNX Runtime 1.8 s for 3 lines).
 
-### YuNet (`hwnpu-image face-detect`)
+### YuNet (`bonsaiai-image face-detect`)
 
 - Apple / Intel: the whole ONNX graph as one `internal/onnx` program (12 outputs joined). Apple: 640×480 in 3.4 ms (M1), M3 Core AI 4.2–4.4 ms. Boxes and landmarks within 0.3 px of OpenCV's FaceDetectorYN.
 - AMD (`tools/amd/iron_yunet.py`): 1×1 + depthwise 3×3 fused into one 3×3 conv, biases on a ones channel, ReLU as ProjectionGEMM's clamp (`ReluGEMM`); pixels divided by 255 and the ones moved to im2col's last 8 columns (bfp16 shared exponent erased them: cos 0.69). Opened with `iron.GraphOptions.KeepRuns` (each command's run kept: host CPU 1.6 → 1.1 ms; its control code stays in the 64 MiB device heap, so not for large graphs). Matches FaceDetectorYN.
 - AMD energy at 320×256: NPU 29 ms and 127 mJ, CPU (ONNX Runtime 1 thread) 2.7 ms and 7.7 mJ. Operator switches (~250 µs each) dominate. Hence `device: {amd: cpu}`. This is about AMD's IRON only; Apple and Intel submit the whole graph, so they keep the NPU. Do not carry one vendor's result to another.
-- Without ONNX Runtime the CPU runs the ONNX graph converted to Core ML on `milcpu` (it went to AMD's NPU before). The store records which (`runtime: hwnpu`), and the role's `Usable` prepares it again when ONNX Runtime comes or goes. Ryzen AI 9 365, 320×256, `--repeat 2000`, 1 thread, package power from `gpu_metrics` less idle: `milcpu` 2.32 ms and about 30 mJ a picture (12.58 ms and 243 mJ before the kernels below), ONNX Runtime 1.32 2.15 ms and about 20 mJ, the NPU 30.7 ms and about 184 mJ. Same faces as ONNX Runtime (score 0.934 both). This way of measuring gives ONNX Runtime 20 mJ, not the 7.7 above: compare within one method.
+- Without ONNX Runtime the CPU runs the ONNX graph converted to Core ML on `milcpu` (it went to AMD's NPU before). The store records which (`runtime: bonsaiai`), and the role's `Usable` prepares it again when ONNX Runtime comes or goes. Ryzen AI 9 365, 320×256, `--repeat 2000`, 1 thread, package power from `gpu_metrics` less idle: `milcpu` 2.32 ms and about 30 mJ a picture (12.58 ms and 243 mJ before the kernels below), ONNX Runtime 1.32 2.15 ms and about 20 mJ, the NPU 30.7 ms and about 184 mJ. Same faces as ONNX Runtime (score 0.934 both). This way of measuring gives ONNX Runtime 20 mJ, not the 7.7 above: compare within one method.
 - `milcpu` for these CNNs (`internal/milcpu`, `internal/f32`): a run's buffers are kept for the next values (`pool.go`: the collector had 40 % of the CPU and woke every core); depthwise 3×3 of stride 1 from three padded rows a call (`f32.Depthwise3`); other small convolutions (taps ≤ 64: YuNet's first, stride 2) as weighted sums of input rows cut into phases (output channels in blocks of 8, then 4, then single ones: `f32.WeightedRows8`, `WeightedRows4`, `WeightedRows`); 1×1 convolutions (≤ 256 input channels) the same way on blocks of packed columns instead of sgemm (planes of 4 KB multiples put every row's column in one set of L1: packed rows 16 floats apart); a conv followed only by a ReLU computes it; 2×2 max pool, ReLU, nearest 2× upsampling in their own loops. YuNet's program 11.6 → 1.85 ms (1 thread). The kernels are AVX2/FMA on amd64 and NEON on arm64 (with `f32.Axpy`, and exp, sigmoid, SiLU and `f32.GLU` in `f32_arm64.s`: Cephes' expf in the AVX2 loop's steps). On NEON a block of 8 is eight outputs of 8 columns in 16 of the 32 registers (a row's two vectors and the tap's two of weights read for 16 FMAs). On amd64 it is two passes of 4: eight outputs a pass (8 columns of AVX2, whose 16 registers it fills, or 32 of AVX-512) were no faster on Zen 5, where `WeightedRows4` already runs FMAs at the core's peak (about 145 GFLOPS); amd64's results are bit-identical to the 4-channel blocks'. The NEON kernels were checked under qemu-user (the tests, YuNet's faces, 22 Core ML packages against the Go loops) and on an M2 (this Mac's 15 packages: within 7e-6 of the largest value against the Go loops). M2, 1 thread: YuNet 320×256 24.0 → 2.7 ms, 640×480 89.6 → 9.0 ms (`face-detect --device cpu` 92.7 → 10.6 ms a picture), SwiftF0 1.09 → 0.62 s, Supertonic's encoder 105 → 24 ms. `dw3NEON` starts each chain with an FMUL and adds the bias last (dw3AVX2's order): begun from a copy of the bias or a zeroed register, the first FMLA waited for it, and YuNet 640×480 took 10.0 ms instead of 9.0. The 8-channel blocks are what make the 1×1 convolutions faster than 4 on the M2 (`wrows8NEON` 1.66 s against `wrows4NEON` 1.99 s of a profile).
 
-### EfficientSAM (`hwnpu-image segment`)
+### EfficientSAM (`bonsaiai-image segment`)
 
 - Encoder (1024×1024 ViT + neck) on the NPU; prompt decoder (point/box encoding, mask decoding) on the host evaluator per prompt (If, ScatterND, shapes that change with the number of points). Host resizes to 1024×1024 with ONNX's bilinear (half_pixel) first (`segment.OpenProgram`).
 - AMD (`tools/amd/iron_efficientsam.py`; 64-dim heads fit IRON's MHA): encoder Ti 0.34 s, S 0.48 s (CPU ONNX Runtime 1.9 s, 4.5 s). NPU vs CPU mask IoU 0.93–1.0; the top mask written by default ≥ 0.989. Ti 118 MiB pinned / 274 MiB process, S 158 / 267 MiB.
-- Apple: encoder on the Neural Engine by default (`--device cpu` or `HWNPU_DEVICE=cpu` for the CPU). M3: S 0.35 s (Core ML) / 0.43 s (Core AI), Ti 0.15 / 0.19 s; all on the Neural Engine; mask IoU vs CPU 0.9994 (S), 0.9986 (Ti). First compile Ti 13 s, S 22 s. Footprint 0.22–0.27 GB. A picture 0.72 s on M3 (decoder 0.28 s).
+- Apple: encoder on the Neural Engine by default (`--device cpu` or `BONSAIAI_DEVICE=cpu` for the CPU). M3: S 0.35 s (Core ML) / 0.43 s (Core AI), Ti 0.15 / 0.19 s; all on the Neural Engine; mask IoU vs CPU 0.9994 (S), 0.9986 (Ti). First compile Ti 13 s, S 22 s. Footprint 0.22–0.27 GB. A picture 0.72 s on M3 (decoder 0.28 s).
 - Decoder on the host: 0.28 s on M3, 0.6–0.7 s on AMD. Matches ONNX's reference evaluator (IoU prediction 1e-6, mask sign on every pixel).
-- CPU encoder: ONNX Runtime, else hwnpu's evaluator (Ti 16–30 s, S 33 s; no external dependency).
+- CPU encoder: ONNX Runtime, else BonsaiAI's evaluator (Ti 16–30 s, S 33 s; no external dependency).
 
-### Depth Anything 3 (`hwnpu-image depth`)
+### Depth Anything 3 (`bonsaiai-image depth`)
 
 - DA3MONO-LARGE (0.33B, DINOv2 ViT-L + DPT; relative depth and sky), DA3METRIC-LARGE (same; meters = depth × focal px / 300, needs `--focal` or `--fov`), DA3-SMALL / BASE (multi-view models run as one view; depth and confidence).
 - Sizes: the official sizes (long side 504, short side a multiple of 14) for 9 aspect ratios; the host uses the picture's official size if present, else the nearest aspect ratio (`depth.Official`, `Choose`). Stretching to a near size cost 6–12 % against the official output, more than the NPU's 1 %.
@@ -153,7 +153,7 @@ look is from grey maps side by side.
 - Nearness (the inverse of depth) leaves everything behind a close object near 0; `samples/parallax`
   spreads it with log(1 + k·n) / log(1 + k), k = 30 by default.
 
-### MoGe-2 (`hwnpu-image depth -m moge`)
+### MoGe-2 (`bonsaiai-image depth -m moge`)
 
 - Metric depth, points, normals and a mask without knowing the focal length (DA3METRIC needs it). DINOv2 + ConvStack neck + 3 heads (points, normals, mask). No normalization (`res_block_*_norm` none). All 3×3 pad by replicating edges.
 - `model.pt` is read without torch (`internal/torchzip`; only dict and tensor reconstruction from the zip's pickle). Post-processing in Go (`internal/vision/moge`): focal length and z shift by one-variable Levenberg–Marquardt on a 64×64 subsample (`TestRecoverFocalShift`).
@@ -161,10 +161,10 @@ look is from grey maps side by side.
 - Apple (`internal/vision/moge/mil`): ViT from depth/mil; neck and heads one program (replicate as `pad` + valid conv; Core ML wants `pad` even with `pad_type` valid). ViT-S: head outputs cosine ≥ 0.99993, scale logit 1.6885 vs 1.6853; 0.3–0.5 s a picture.
 - The mask head's last `pixel_shuffle` (256 ch → 64×400×400) on a 700×700 `dense` left the Neural Engine on M1 Core AI (`empty reset layer candidates in SS cost model`, sent to GPU). It is split into row bands (`mil.deconv2`, `shuffleRows` up to 256 rows); same values.
 
-### SigLIP 2 (`hwnpu-image label`, `embed`)
+### SigLIP 2 (`bonsaiai-image label`, `embed`)
 
 - Host (`internal/vision/siglip`): resize (PIL bilinear) to [−1, 1], patches; text lower-cased (trained so; Transformers' tokenizer does not), Gemma tokenizer, cut to 63 tokens + `<eos>`, padded to 64, no mask; template `this is a photo of {}.`. Embeddings normalized; probability = sigmoid(cos × exp(logit_scale) + bias).
-- Label embeddings are cached in the user cache (`hwnpu/siglip/NAME-HASH.f32`); a label list is computed once.
+- Label embeddings are cached in the user cache (`bonsaiai/siglip/NAME-HASH.f32`); a label list is computed once.
 - Text tower: 8 texts a call; rows token-major so 8 texts become one attention of 8 × heads heads. Missing texts are filled with copies of the first (zero rows make fp16 LayerNorm 0/0).
 - AMD (`iron_siglip2.py`, `--precision HIGHEST`, `--gelu erf`): exact GELU instead of IRON's table tanh GELU (5× bf16 rounding, invisible against IRON's reference). Image cosine 0.9998–0.9999 vs Transformers float32. Ryzen AI 9 365: base 84 ms a picture, 131 ms for 8 texts, 760 MiB; large 353 ms / 491 ms, 1579 MiB.
 - Apple (`internal/vision/siglip/mil`, `siglip.Prepare`): converted in Go on first run from `config.json`, `tokenizer.json`, `model.safetensors` to `NAME-v1` (vision and text programs, `text/embed.bin` fp16 token table read by the host, `model.json`); base 1.9 s, large 3.5 s. Both towers fp16. LayerNorm divides each row by its max first (`ScaledLayerNorm`); tanh GELU written with exp. The probe query is a constant placed on 8 rows (a one-row part leaves the Neural Engine).
@@ -176,15 +176,15 @@ look is from grey maps side by side.
 |---|---|---|
 | The Neural Engine's `sigmoid` and `tanh` drift through a deep CNN (80 SiLUs in RTMDet-s) | box 98 px, score 0.35 off, an object lost (CPU fp16: 7.5 px) | `ExpSigmoid`: 5.5 px, score 0.063. Costs 2 ops: s 6.6 → 9.3 ms, m 12.2 → 18.2 ms; accuracy wins. `0.5 x (1 + tanh(x/2))` also drifts |
 | Any op on a tensor wider than 16384 on an axis, even the output identity | PP-OCR's 18710-class softmax, bias add and output on the CPU | logits as output, linear split in two, bias folded |
-| Core AI on the Neural Engine computes `divide_v1` by a constant wrong (×√2 instead of ÷√2, plus a per-channel offset) | PP-OCR detector cosine 0.05, recognizer −0.42 | `ailower` writes `x × (1/c)`; only ONNX graphs write such divides, so other programs' bytes are unchanged. `HWNPU_DEV=ailower.divide=1` restores the divide for checks |
-| Core AI's CPU sums `reduce_mean` in fp32 then stores fp16 before 1/n | −inf where \|mean\| > 65504/n (an SE block of 57600 elements) | only matters on Core AI's CPU (`HWNPU_COREAI_UNITS=cpu`); not fixed, it would change every program's hash |
+| Core AI on the Neural Engine computes `divide_v1` by a constant wrong (×√2 instead of ÷√2, plus a per-channel offset) | PP-OCR detector cosine 0.05, recognizer −0.42 | `ailower` writes `x × (1/c)`; only ONNX graphs write such divides, so other programs' bytes are unchanged. `BONSAIAI_DEV=ailower.divide=1` restores the divide for checks |
+| Core AI's CPU sums `reduce_mean` in fp32 then stores fp16 before 1/n | −inf where \|mean\| > 65504/n (an SE block of 57600 elements) | only matters on Core AI's CPU (`BONSAIAI_COREAI_UNITS=cpu`); not fixed, it would change every program's hash |
 | Core AI `max_pool` | did not lower | `pad_v1` (−inf) + `primitive.max_pool_2d_v1`, as coreai-torch writes it |
 | Core AI `conv_transpose` with MIL's pads (may be negative) | — | full output with padding 0, `slice_v1`, `pad_v1` with 0, then bias |
 | `pad` replicate / reflect | — | `#aicode.padding_mode_v1<replicate>` / `<reflect>` |
 
 - Core AI and Core ML match when both caches are warm (M3, three new processes each: Core AI 0.01–0.05 s faster per command). Core ML's cache (~4 GiB) evicts; Core AI keeps its programs until the disk runs low. See [apple-coreai.md](apple-coreai.md).
 - Per call on M3, Core AI vs Core ML: PP-OCR detector 13.0 / 9.7 ms, recognizer 8×320 5.1 / 4.0 ms, RTMDet-m 10.2 / 13.5 ms, RTMO-s 8.0 / 4.9 ms, YuNet 1.2 / 0.9 ms, DA3-BASE ViT 106 / 103 ms. Core AI first compile 1.6–38 s per part (RTMO 36–38 s). Neural Engine memory is higher on Core AI (OCR 27 → 40 MB, RTMDet 56 → 89 MB).
-- Checking tools: `aicheck run -cpu PKG` (Core AI) and `-coreml` vs milcpu; `HWNPU_DEV=ailower.cut=N` cuts after op N and compares that value; `AICHECK_WORST=1` prints the worst elements.
+- Checking tools: `aicheck run -cpu PKG` (Core AI) and `-coreml` vs milcpu; `BONSAIAI_DEV=ailower.cut=N` cuts after op N and compares that value; `AICHECK_WORST=1` prints the worst elements.
 - Host resize (`lfm3vl.ResizeRGB`, PIL bilinear) is row-parallel without per-pixel closures: 5–7 ms instead of 37–55 ms, same bytes (`TestResizeRGBSameBytes`). Rounding to a byte uses the built-in `min` / `max`: `math.Max` and `math.Min` are calls (for NaN and signed zeros, which the sums are not) and took a third of the CPU. `lfm3vl.RGB` drops alpha a row at a time on the cores. M2, 512² to 640²: resize 4.2 → 1.2 ms, RTMDet-m's `Pixels` 5.4 → 2.2 ms; bytes the same as before on 140 resizes (bilinear and bicubic, RGBA and NRGBA, up and down).
 
 ## Exports on AMD and sharing
@@ -194,7 +194,7 @@ look is from grey maps side by side.
 
 ## Open
 
-- Power not measured: Apple's vision models (`hwnpu-dev powerbench` needs sudo), RTMO and EfficientSAM on AMD, SigLIP 2.
+- Power not measured: Apple's vision models (`bonsaiai-dev powerbench` needs sudo), RTMO and EfficientSAM on AMD, SigLIP 2.
 - Intel's real NPU for every model; SigLIP 2 has no Intel form (same MIL could be lowered to IR, unchecked).
 - M1 / M2 / M4 on Core AI (docs/handoff-coreai-vision.md). On M1, EfficientSAM's encoder attention (4096 × 4096 × heads) passes 64 MiB.
 - Why the Core AI divide error does not reproduce in a 3-op program; whether it differs by chip.
@@ -218,4 +218,4 @@ look is from grey maps side by side.
 - DA3NESTED, DA3-LARGE, DA3-GIANT: CC BY-NC.
 - BiRefNet for cutouts: deformable conv; EfficientSAM (plain ViT) instead.
 - A vision-language model (LFM3-VL) for boxes: tens of tokens per box, seconds a picture, misses small objects, coordinates drift. A one-stage detector gives all boxes in one pass; a VLM fits as a later step describing crops.
-- Core ML for `hwnpu-image` on a Mac: Core AI only (Core ML kept for `--cpu` exports).
+- Core ML for `bonsaiai-image` on a Mac: Core AI only (Core ML kept for `--cpu` exports).

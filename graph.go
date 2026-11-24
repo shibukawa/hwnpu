@@ -1,11 +1,11 @@
-package hwnpu
+package bonsaiai
 
 import (
 	"context"
 	"errors"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend"
 )
 
 // GraphRunner compiles graphs for a device.
@@ -50,7 +50,7 @@ func (g *Graph) AllocInput(index int) (*Buffer, error) {
 		return nil, ErrClosed
 	}
 	if index < 0 || index >= len(g.args) || g.args[index].Kind != ArgInput {
-		return nil, fmt.Errorf("hwnpu: argument %d is not an input", index)
+		return nil, fmt.Errorf("bonsaiai: argument %d is not an input", index)
 	}
 	size := g.args[index].Bytes
 	if a, ok := g.be.(backend.InputAllocator); ok {
@@ -119,14 +119,14 @@ func (r *Request) Bind(index int, b *Buffer) error {
 		return ErrClosed
 	}
 	if index < 0 || index >= len(r.g.args) {
-		return fmt.Errorf("hwnpu: argument index %d out of range [0,%d)", index, len(r.g.args))
+		return fmt.Errorf("bonsaiai: argument index %d out of range [0,%d)", index, len(r.g.args))
 	}
 	if b == nil || b.be == nil {
-		return errors.New("hwnpu: nil or closed buffer")
+		return errors.New("bonsaiai: nil or closed buffer")
 	}
 	a := r.g.args[index]
 	if b.Size() < a.Bytes {
-		return fmt.Errorf("hwnpu: buffer of %d bytes is too small for %s", b.Size(), a)
+		return fmt.Errorf("bonsaiai: buffer of %d bytes is too small for %s", b.Size(), a)
 	}
 	return r.be.Bind(index, b.be)
 }
@@ -135,7 +135,7 @@ func (r *Request) Bind(index int, b *Buffer) error {
 func (r *Request) BindName(name string, b *Buffer) error {
 	a, ok := r.g.Arg(name)
 	if !ok {
-		return fmt.Errorf("hwnpu: no argument named %q", name)
+		return fmt.Errorf("bonsaiai: no argument named %q", name)
 	}
 	return r.Bind(a.Index, b)
 }

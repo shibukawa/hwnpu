@@ -59,12 +59,12 @@ func TestSplitModel(t *testing.T) {
 	}
 }
 
-// TestSplitModelFiles compares the two readings of real tokenizers: HWNPU_TEST_TOKENIZERS is a list
+// TestSplitModelFiles compares the two readings of real tokenizers: BONSAIAI_TEST_TOKENIZERS is a list
 // of tokenizer.json files (or directories searched for them), separated as PATH is.
 func TestSplitModelFiles(t *testing.T) {
-	list := os.Getenv("HWNPU_TEST_TOKENIZERS")
+	list := os.Getenv("BONSAIAI_TEST_TOKENIZERS")
 	if list == "" {
-		t.Skip("HWNPU_TEST_TOKENIZERS")
+		t.Skip("BONSAIAI_TEST_TOKENIZERS")
 	}
 	var files []string
 	for _, p := range filepath.SplitList(list) {

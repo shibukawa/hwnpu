@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/samples/internal/layering"
+	"github.com/shibukawa/bonsaiai/samples/internal/layering"
 )
 
 // layered is a scene of w x h whose left half is far and blue with a white stripe, and whose

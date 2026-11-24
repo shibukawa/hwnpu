@@ -12,16 +12,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
-	"github.com/shibukawa/hwnpu/internal/music"
-	"github.com/shibukawa/hwnpu/internal/notes"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3audio"
+	"github.com/shibukawa/bonsaiai/internal/music"
+	"github.com/shibukawa/bonsaiai/internal/notes"
 )
 
 // The music's audio: 48 kHz stereo, its samples interleaved (left, right), 25 frames of the
@@ -30,7 +30,7 @@ const (
 	MusicRate      = music.SampleRate
 	MusicFrameRate = music.FrameRate
 	// MusicGain is what magenta-rt multiplies the samples by when it writes them as 16 bit
-	// integers: hwnpu-audio writes and plays the music at it.
+	// integers: bonsaiai-audio writes and plays the music at it.
 	MusicGain = 0.5
 	// StyleCodes are the codes of a style (MusicCoCa's 12).
 	StyleCodes = music.StyleCodes
@@ -46,7 +46,7 @@ func Music(name string) ai.Use[*MusicGenerator] {
 //
 //	settings: format   the language model's weight format: lut8 (the default), lut6 or fp16
 //
-// A model of device cpu runs on hwnpu's CPU interpreter (slow). On AMD's NPU SpectroStream's
+// A model of device cpu runs on bonsaiai's CPU interpreter (slow). On AMD's NPU SpectroStream's
 // decoder runs as the graph of tools/amd/iron_magenta.py (exported on the first preparation),
 // the language model and MusicCoCa on the CPU interpreter.
 //
@@ -92,7 +92,7 @@ var musicRole = &airole.Role{
 		var err error
 		switch {
 		case m.amd:
-			if m.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+			if m.dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD)); err != nil {
 				return nil, err
 			}
 		case !m.cpu:
@@ -133,13 +133,13 @@ func musicPaths(p *music.Paths) map[string]*string {
 // MusicGenerator makes music (Magenta RealTime 2): styles from texts and audio (Style), then
 // the music of a style, as it is made (Generate). It runs one request at a time; others wait.
 type MusicGenerator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	g      *music.Generator
 	p      music.Paths
-	dev    *hwnpu.Device // the generator's (AMD's NPU: its decoder's)
-	side   *hwnpu.Device // MusicCoCa's and SpectroStream's encoder's: dev, nil on AMD's NPU (the CPU)
-	st     *music.Styler // loaded at the first style
+	dev    *bonsaiai.Device // the generator's (AMD's NPU: its decoder's)
+	side   *bonsaiai.Device // MusicCoCa's and SpectroStream's encoder's: dev, nil on AMD's NPU (the CPU)
+	st     *music.Styler    // loaded at the first style
 	model  string
 	// cpu: the model's device is cpu; amd: the decoder runs on AMD's NPU, the rest on the CPU;
 	// allow: programs placed off the NPU are run (ai.AllowOffNPU)
@@ -155,7 +155,7 @@ func (m *MusicGenerator) Model() string {
 	return m.model
 }
 
-// OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
+// OnCPU reports whether the model runs on bonsaiai's CPU interpreter (its definition's device cpu).
 func (m *MusicGenerator) OnCPU() bool {
 	if m.remote != nil {
 		return airpc.Value[bool](m.remote, "OnCPU")
@@ -663,7 +663,7 @@ func (m *MusicGenerator) generate(ctx context.Context, o MusicOptions, stats *Mu
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (m *MusicGenerator) Close() error {
 	if m.remote != nil {
-		return m.remote.Release() // the Runtime in hwnpud unloads it
+		return m.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

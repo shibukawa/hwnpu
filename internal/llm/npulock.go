@@ -11,20 +11,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 )
 
-// The Neural Engine is used by one hwnpu process at a time: two at once have frozen a Mac (M1:
+// The Neural Engine is used by one bonsaiai process at a time: two at once have frozen a Mac (M1:
 // predictions that never return, processes that neither Ctrl+C nor kill -9 ends, the next
 // commands stuck behind them). OpenDevice takes an exclusive lock on a file for the Core ML
 // backend and keeps it while the process lives (the kernel drops it when the process ends); a
-// second process waits for it, saying which process holds it. It is not skipped: hwnpud
-// (docs/design/hwnpud.md) is how several apps share the Neural Engine.
+// second process waits for it, saying which process holds it. It is not skipped: bonsaiaid
+// (docs/design/bonsaiaid.md) is how several apps share the Neural Engine.
 //
 // AMD's NPU takes the same lock for a chat model's IRON export (chat's loadIRON): one chat model
 // uses all of its hardware contexts, a second process's CREATE_HWCTX right after another's
-// contexts ended fails now and then, and hwnpud's engine holds the NPU for every client.
+// contexts ended fails now and then, and bonsaiaid's engine holds the NPU for every client.
 
 var npuLock struct {
 	sync.Mutex
@@ -99,7 +99,7 @@ func lockNPU(ctx context.Context) error {
 //
 // What is on the Neural Engine is known for the whole machine alone (mem.NPUWired), other
 // programs' share included. To tell the two apart, a process writes into the lock file what was
-// on it when its own wait ended (base: nothing of hwnpu's): the next process waits for what is
+// on it when its own wait ended (base: nothing of bonsaiai's): the next process waits for what is
 // over that.
 const (
 	lockBaseKey = "base "                // the lock file's second line: lockBaseKey and the bytes
@@ -112,7 +112,7 @@ const (
 )
 
 // lockBase is the base a lock file's content names, 0 when it names none (a file of an older
-// hwnpu, or of a process that could not read the memory).
+// bonsaiai, or of a process that could not read the memory).
 func lockBase(content []byte) int64 {
 	for _, line := range strings.Split(string(content), "\n") {
 		if v, ok := strings.CutPrefix(line, lockBaseKey); ok {
@@ -171,6 +171,6 @@ func npuName() string {
 }
 
 // LockNPU takes the NPU's lock as OpenDevice does, for what opens the device by other means:
-// hwnpu-dev probe cache, whose measurements another process compiling for the Neural Engine
+// bonsaiai-dev probe cache, whose measurements another process compiling for the Neural Engine
 // would spoil, and the chat models' IRON exports on AMD. It is held until the process ends.
 func LockNPU(ctx context.Context) error { return lockNPU(ctx) }

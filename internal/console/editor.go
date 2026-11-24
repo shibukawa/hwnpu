@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -37,7 +37,7 @@ type Editor struct {
 }
 
 // NewEditor returns an editor of standard input with the history called name (kept in the user
-// cache directory, hwnpu/history/NAME; "" for none).
+// cache directory, bonsaiai/history/NAME; "" for none).
 func NewEditor(name string) *Editor {
 	e := &Editor{in: bufio.NewReader(os.Stdin), out: os.Stdout, edit: Terminal(os.Stdin) && Terminal(os.Stdout), cols: func() int { return columns(os.Stdout) }}
 	if name != "" {

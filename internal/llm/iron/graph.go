@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
 )
 
 // GraphManifest is manifest.json of a graph exported by tools/amd/iron_graph.py: one IRON graph
@@ -81,10 +81,10 @@ func PinnedBytes(dir string) (pinned, banks int64, err error) {
 // Graph is a loaded graph export: its banks, its program and its own buffers.
 type Graph struct {
 	Manifest *GraphManifest
-	dev      *hwnpu.Device
+	dev      *bonsaiai.Device
 	dir      string
-	banks    map[string]*hwnpu.Buffer   // the variant in use
-	variants []map[string]*hwnpu.Buffer // every variant's banks (one, with no variants or swapped)
+	banks    map[string]*bonsaiai.Buffer   // the variant in use
+	variants []map[string]*bonsaiai.Buffer // every variant's banks (one, with no variants or swapped)
 	// swapped (GraphOptions.SwapVariants): one set of banks, the variant in use (cur) read into
 	// them by Use
 	swapped bool
@@ -92,17 +92,17 @@ type Graph struct {
 	// prefetch (GraphOptions.Prefetch): a second set of banks, spare, the next variant read
 	// into it while the commands run (pending, until Use takes it)
 	prefetch bool
-	spare    map[string]*hwnpu.Buffer
+	spare    map[string]*bonsaiai.Buffer
 	pending  chan prefetched
 	v        *version
 	// keep (GraphOptions.KeepRuns): each command's run, made by the first Run
 	keep bool
-	runs []*hwnpu.Run
+	runs []*bonsaiai.Run
 	// barrier (GraphOptions.Barrier): the ELF loaded again and its empty command
 	barrier     bool
 	lent        map[string]bool // the kinds whose buffers GraphOptions.Buffers lent (not closed)
-	barrierProg *hwnpu.Program
-	barrierRun  *hwnpu.Run
+	barrierProg *bonsaiai.Program
+	barrierRun  *bonsaiai.Run
 	// Timing, when set, is told each command's run time.
 	Timing func(command int, run time.Duration)
 	// After, when set, is called after each command of Run, before the next: a host step
@@ -127,7 +127,7 @@ func (g *Graph) Named(name string) (b []byte, fromDevice, toDevice func() error,
 		func() error { return buf.SyncToDevice(p.Offset, p.Bytes) }, nil
 }
 
-// Prefetch is the image pipelines' GraphOptions.Prefetch: on unless HWNPU_DEV=iron.prefetch=0.
+// Prefetch is the image pipelines' GraphOptions.Prefetch: on unless BONSAIAI_DEV=iron.prefetch=0.
 var Prefetch = !devenv.IsOff("iron.prefetch")
 
 // GraphOptions are OpenGraphWith's choices.
@@ -162,7 +162,7 @@ type GraphOptions struct {
 	// an argument's is taken as it is. Allocating a device buffer pins and zeroes its pages in
 	// the kernel, 0.33 s a GiB, and closing it 0.11 s a GiB: a VAE's stages, each a graph with
 	// work areas of 1 to 3 GiB, share one (anima.VAE). Not with variants.
-	Buffers map[string]*hwnpu.Buffer
+	Buffers map[string]*bonsaiai.Buffer
 }
 
 // ClearParallel zeroes b on several threads (a lent bank's work area: GiBs).
@@ -186,12 +186,12 @@ func ClearParallel(b []byte) {
 }
 
 // OpenGraph loads the graph exported in dir onto dev.
-func OpenGraph(ctx context.Context, dev *hwnpu.Device, dir string) (*Graph, error) {
+func OpenGraph(ctx context.Context, dev *bonsaiai.Device, dir string) (*Graph, error) {
 	return OpenGraphWith(ctx, dev, dir, GraphOptions{})
 }
 
 // OpenGraphWith is OpenGraph with options.
-func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt GraphOptions) (*Graph, error) {
+func OpenGraphWith(ctx context.Context, dev *bonsaiai.Device, dir string, opt GraphOptions) (*Graph, error) {
 	defer console.Loading(dir)()
 	man, err := ReadGraphManifest(dir)
 	if err != nil {
@@ -211,7 +211,7 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 		g.prefetch = opt.Prefetch
 		images = images[:1]
 	}
-	lent := func(kind string, n int) *hwnpu.Buffer {
+	lent := func(kind string, n int) *bonsaiai.Buffer {
 		if b := opt.Buffers[kind]; b != nil && b.Size() >= n && len(images) == 1 && !g.swapped {
 			if g.lent == nil {
 				g.lent = map[string]bool{}
@@ -222,7 +222,7 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 		return nil
 	}
 	for i, img := range images {
-		banks := map[string]*hwnpu.Buffer{}
+		banks := map[string]*bonsaiai.Buffer{}
 		g.variants = append(g.variants, banks)
 		for kind, b := range man.Banks {
 			need := max(b.Bytes, 4096)
@@ -256,7 +256,7 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 	}
 	g.banks = g.variants[0]
 	if g.prefetch {
-		g.spare = map[string]*hwnpu.Buffer{}
+		g.spare = map[string]*bonsaiai.Buffer{}
 		for kind, b := range man.Banks {
 			buf, err := dev.AllocBuffer(max(b.Bytes, 4096))
 			if err != nil {
@@ -269,9 +269,9 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 	if err != nil {
 		return fail(err)
 	}
-	v := &version{m: man.Graph, args: map[string]*hwnpu.Buffer{}}
+	v := &version{m: man.Graph, args: map[string]*bonsaiai.Buffer{}}
 	g.v = v
-	if v.prog, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, v.m.ELF)}); err != nil {
+	if v.prog, err = kr.Load(ctx, bonsaiai.ProgramSource{Path: filepath.Join(dir, v.m.ELF)}); err != nil {
 		return fail(err)
 	}
 	for _, a := range v.m.Arguments {
@@ -323,7 +323,7 @@ func (g *Graph) takePrefetch() (prefetched, bool) {
 }
 
 // readVariant reads variant i's images into banks and syncs them to the device.
-func (g *Graph) readVariant(i int, banks map[string]*hwnpu.Buffer) (int64, error) {
+func (g *Graph) readVariant(i int, banks map[string]*bonsaiai.Buffer) (int64, error) {
 	var read int64
 	for kind, b := range g.Manifest.Banks {
 		name := b.Image
@@ -410,7 +410,7 @@ func (g *Graph) Use(i int) error {
 		return nil
 	}
 	var read int64
-	done := console.Reading() // preparing, in the times and HWNPU_ENERGY's energy
+	done := console.Reading() // preparing, in the times and BONSAIAI_ENERGY's energy
 	defer func() { done(read) }()
 	if r, ok := g.takePrefetch(); ok && r.variant == i && r.err == nil {
 		g.banks, g.spare = g.spare, g.banks
@@ -481,7 +481,7 @@ func readPrefix(path string, dst []byte) (int, error) {
 	return n, errors.Join(errs...)
 }
 
-func (g *Graph) buffer(kind string) *hwnpu.Buffer {
+func (g *Graph) buffer(kind string) *bonsaiai.Buffer {
 	if b, ok := g.banks[kind]; ok {
 		return b
 	}
@@ -577,7 +577,7 @@ func (g *Graph) Run(ctx context.Context, values map[string]int64) error {
 		if err != nil {
 			return err
 		}
-		var run *hwnpu.Run
+		var run *bonsaiai.Run
 		if g.keep && k < len(g.runs) && g.runs[k] != nil {
 			run = g.runs[k]
 		} else if run, err = kern.NewRun(); err != nil {
@@ -585,7 +585,7 @@ func (g *Graph) Run(ctx context.Context, values map[string]int64) error {
 		}
 		if g.keep {
 			if len(g.runs) < len(v.m.Kernels) {
-				g.runs = make([]*hwnpu.Run, len(v.m.Kernels))
+				g.runs = make([]*bonsaiai.Run, len(v.m.Kernels))
 			}
 			g.runs[k] = run
 		}
@@ -626,7 +626,7 @@ func (g *Graph) runBarrier(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if g.barrierProg, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(g.dir, g.v.m.ELF)}); err != nil {
+			if g.barrierProg, err = kr.Load(ctx, bonsaiai.ProgramSource{Path: filepath.Join(g.dir, g.v.m.ELF)}); err != nil {
 				return fmt.Errorf("iron: %s: the barrier: %w", g.Manifest.Name, err)
 			}
 		}
@@ -668,7 +668,7 @@ func (g *Graph) runBarrier(ctx context.Context) error {
 // Bank is the device buffer of the graph's bank of kind (the variant in use), nil for none: to
 // lend it to another graph of the same weights at the same places (GraphOptions.Buffers), as
 // the lengths of PLaMo-Embedding's export share one copy of them.
-func (g *Graph) Bank(kind string) *hwnpu.Buffer { return g.banks[kind] }
+func (g *Graph) Bank(kind string) *bonsaiai.Buffer { return g.banks[kind] }
 
 // ImageBytes is the size of the image of the graph's bank of kind (its weights; zeros past it).
 func (g *Graph) ImageBytes(kind string) (int64, error) {

@@ -1,5 +1,5 @@
-# How hwnpu-dev makes the models' conversions: what only the build needs, beside models.yaml
-# (what a run needs). hwnpu-dev models package and hwnpu-dev prebuild read it, so that whoever
+# How bonsaiai-dev makes the models' conversions: what only the build needs, beside models.yaml
+# (what a run needs). bonsaiai-dev models package and bonsaiai-dev prebuild read it, so that whoever
 # runs them, on whatever machine, makes the same files (docs/model-recipes.md).
 #
 #   version     1
@@ -26,20 +26,20 @@
 #                      native  the operation
 #               with why and checked as above. It is chosen at the conversion, so the chips of
 #               other rewrites take an export of their own, the rewrite in its name
-#               (hwnpu-dac-r3-fp16-sin-native.coreai); a chip no rule names takes the default.
-#               A run takes its own chip's (HWNPU_DEV=rewrite=sin:series over it, to compare)
+#               (bonsaiai-dac-r3-fp16-sin-native.coreai); a chip no rule names takes the default.
+#               A run takes its own chip's (BONSAIAI_DEV=rewrite=sin:series over it, to compare)
 #     code      the Go packages (directories of the module, or one .go file of one) every Core AI
 #               conversion writes its programs with: MIL, its lowering, the weights' writing
 #   amd         what every model's exports for AMD's NPU are made with, unless its own says:
 #     generations  the generations of the NPU they are made for: xdna1 (Phoenix, Hawk Point:
 #               IRON's npu1), xdna2 (Strix, Krackan: npu2). Each goes as its own target
-#               (amd-xdna2); hwnpu runs amd-xdna2's alone yet, so xdna1's are not made
+#               (amd-xdna2); bonsaiai runs amd-xdna2's alone yet, so xdna1's are not made
 #     extra     GEN: arguments after every script's own for that generation
 #   models      MODEL (a model of models.yaml): {apple: ..., amd: ...}. apple as above, its rules
 #               after those of apple. A build that fails on a program no rule names stops, and
 #               says the rule that would leave it to the device. A model's apple also has:
 #     prebuilt  true: its exports' programs are prebuilt for archs when the build names no
-#               architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT) and
+#               architecture (bonsaiai-dev models package MODEL, bonsaiai-dev prebuild EXPORT) and
 #               put in the sources, where a Mac of the chip takes them at its first run. The
 #               image generators alone: the device compiles a program of theirs in minutes to
 #               hours. Another model's programs are small, and a Mac loads them slower from
@@ -73,7 +73,7 @@
 #               do not give amd-xdna2's then). Raise it whenever the recipe changes:
 #               internal/recipe/testdata/amd-versions.txt holds what each version is, and its
 #               test fails on a recipe changed under the same version. 1: the exports of
-#               models.yaml's amd_export and hwnpu's code before (2026-11-23), copied as v1
+#               models.yaml's amd_export and bonsaiai's code before (2026-11-23), copied as v1
 #     generations, extra  as amd's, over them (extra: after them)
 #     skip      generations the export is not made for: {generation, why, checked}
 #     finish    what the build does to the export once its script has made it, in order, each
@@ -109,14 +109,16 @@ amd:
 models:
   FLUX.2-klein-4B:
     amd:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
       # one export of every size of models.yaml npu.amd
       script: iron_flux2klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
-      version: 4
+      version: 5
+      # (version 5: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps (version 4; the
       # programs as version 3's, so its prebuilt programs are the same)
@@ -138,14 +140,16 @@ models:
   MOSS-SoundEffect-v2.0: &moss
     amd:
       # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
-      version: 3
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer/tokenizer.json]}]
       # an export of each text encoder's format (sfx.Formats: fp16 on 16 GB, lut8 on 8 GB)
       script: iron_moss_sfx.py
       args: ["{in}", "{out}", --text, "{text}"]
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/sfx]
       rewrite:
         # coreai-build, each of the five decoder stages: with sin itself, h13g, h14g and h14c
@@ -170,11 +174,13 @@ models:
   # OPTIONS; the options name the export (-q4, -q6, -p16) and key it in the sources
   LFM3-1.7B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -184,11 +190,13 @@ models:
         xdna1: [--cols, "4"]
   LFM3-VL-2B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go"]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -196,11 +204,13 @@ models:
       extra: *lm-extra
   LFM3-Audio-2B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -208,11 +218,13 @@ models:
       extra: *lm-extra
   LFM3-Omni-2B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -220,11 +232,13 @@ models:
       extra: *lm-extra
   gemma-4-E2B-it:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -232,11 +246,13 @@ models:
       extra: *lm-extra
   gemma-4-E4B-it:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -244,11 +260,13 @@ models:
       extra: *lm-extra
   Qwen3.5-4B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -256,11 +274,13 @@ models:
       extra: *lm-extra
   Qwen3.5-0.8B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -268,11 +288,13 @@ models:
       extra: *lm-extra
   Qwen3.5-2B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -280,11 +302,13 @@ models:
       extra: *lm-extra
   gpt-oss-20b:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       # 16 GB: 16 of each layer's 32 experts in places, the decode step routed on the host; every expert from 24 GB
@@ -295,11 +319,13 @@ models:
       extra: *lm-extra
   Qwen3.6-35B-A3B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       # 32 places a layer on 16 GB, 128 on 24 GB, every expert from 48 GB
@@ -311,11 +337,13 @@ models:
       extra: *lm-extra
   plamo-3-translate-8b:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.jsonl]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -323,11 +351,13 @@ models:
       extra: *lm-extra
   plamo-3-translate-2b:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.jsonl]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -335,11 +365,13 @@ models:
       extra: *lm-extra
   plamo-3-translate-0.8b:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.jsonl]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -347,11 +379,13 @@ models:
       extra: *lm-extra
   d1-2B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -359,11 +393,13 @@ models:
       extra: *lm-extra
   d1-Omni-2B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
-      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
-      version: 3
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what bonsaiai reads of it)
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
@@ -372,50 +408,59 @@ models:
 
   whisper-large-v3-turbo:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/whisper, internal/transcribe]
       # a lut's values by k-means over the weights' range (the format is the architecture's, lut8)
       convert: {quant: kmeans-minmax}
     amd:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}]
       script: iron_whisper.py
       args: ["{in}", "{out}"]
   LFM3-Audio-2B-TTS:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio, internal/llm/lfm3gen, internal/speech]
     amd:
       # 3: text/ without the text model's copy of the tokenizer and the chat's format
-      version: 3
+      version: 4
+      # (version 4: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}]
       script: iron_lfm3speech.py
       args: ["{in}", "{out}"]
   supertonic-3:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/supertonic, internal/onnx]
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # {in} the repository's onnx/; the sizes of supertonic.Sizes (T x L)
       script: iron_supertonic.py
       args: ["{in}", "{out}", --sizes, "{sizes}"]
   magenta-realtime-2-small:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/music, internal/notes, internal/onnx]
       # the depth and temporal transformers in lut8, a lut's values by k-means over the weights' range (the other programs fp16)
       convert: {format: lut8, quant: kmeans-minmax}
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # SpectroStream's decoder; the language model and MusicCoCa run on the CPU
       script: iron_magenta.py
       args: ["{in}", "{out}"]
   flux-3-image-klein:
     apple:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
@@ -429,14 +474,16 @@ models:
         text_group: 4
         single_group: 5
     amd:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
       script: iron_flux3klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
   Anima-Aesthetic: &anima-amd
     apple:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
@@ -450,7 +497,8 @@ models:
         group: 4
         qchunk: 512
     amd:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
       # {in} the folder of both repositories' files (diffusion_models/, text_encoders/, vae/,
@@ -460,11 +508,13 @@ models:
   Anima-Turbo: *anima-amd
   DA3-BASE: &da3-amd
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/vision/depth, internal/vision/depth/mil, internal/imagegen/milpart]
       convert: {format: fp16}
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       script: iron_da3.py
       args: ["{in}", "{out}"]
   DA3-SMALL: *da3-amd
@@ -472,25 +522,29 @@ models:
   DA3METRIC-LARGE: *da3-amd
   moge-2-vits: &moge-amd
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/vision/moge, internal/vision/moge/mil, internal/vision/depth/mil, internal/imagegen/milpart]
       convert: {format: fp16}
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       script: iron_moge.py
       args: ["{in}", "{out}"]
   moge-2-vitb: *moge-amd
   moge-2-vitl: *moge-amd
   siglip2-base-patch16-224: &siglip-amd
     apple:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/vision/siglip, internal/vision/siglip/mil, internal/imagegen/milpart]
       # the two towers in fp16
       convert: {format: fp16}
     amd:
-      version: 2
+      version: 3
+      # (version 3: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
       script: iron_siglip2.py
@@ -498,21 +552,25 @@ models:
   siglip2-large-patch16-256: *siglip-amd
   YuNet:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/vision/face, internal/onnx]
       convert: {format: fp16}
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       script: iron_yunet.py
       args: ["{in}", "{out}"]
   RTMDet-tiny: &rtmdet-amd
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/vision/detect, internal/onnx]
       # fp16: the convolutions' outputs are near fp32's at fp16, and the programs are small
       convert: {format: fp16}
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # {in} the ONNX file, {size} the detector's (detect.Size), {outputs} its heads
       script: iron_onnxcnn.py
       args: ["{in}", "{out}", --size, "{size}", --outputs, "{outputs}"]
@@ -520,11 +578,13 @@ models:
   RTMDet-m: *rtmdet-amd
   RTMO-s:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/pose, internal/onnx]
       convert: {format: fp16}
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # its pixels as they are (0 to 255), SiLU as an operator of its own (the GEMM epilogue's
       # vtanh is a few ulps off near 0) and bf16's products (HIGH) in place of bfp16's: at MEDIUM
       # the keypoints' scores moved by up to 0.13 from ONNX Runtime's and a doubtful person's box
@@ -534,52 +594,63 @@ models:
         --precision, HIGH, --dw-precision, HIGH, --outputs, "{outputs}"]
   EfficientSAM-Ti: &efficientsam-amd
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/vision/segment, internal/onnx]
       convert: {format: fp16}
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       # {in} the encoder's ONNX file
       script: iron_efficientsam.py
       args: ["{in}", "{out}"]
   EfficientSAM-S: *efficientsam-amd
   plamo-embedding-1b:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo, internal/chat/embed.go]
     amd:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, tools/amd's files and tokenizer.tok's magic changed with it)
       script: iron_plamo_embed.py
       args: ["{in}", "{out}"]
 
   LFM2-8B-A1B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go"]
   Qwen2.5-Coder-7B-Instruct:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-0.6B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-1.7B:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   swift-f0:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/pitch, internal/onnx]
       convert: {format: fp16}
   basic-pitch:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/notes, internal/onnx]
       convert: {format: fp16}
   PP-OCRv6-small:
     apple:
-      version: 1
+      version: 2
+      # (version 2: the name became BonsaiAI, which the programs carry: ailower's producer, the metadata keys, tokenizer.tok's magic)
       code: [internal/vision/ocr, internal/vision/detect, internal/onnx]
       convert: {format: fp16}

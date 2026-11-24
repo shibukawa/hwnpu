@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	kmil "github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	kmil "github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // Weights reads a FLUX.3 klein repository's checkpoints under one set of names: "dit." and the

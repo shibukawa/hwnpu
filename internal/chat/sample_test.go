@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // Sampling the logits before a soft cap, with the cap left to pick (softcap), chooses as sampling

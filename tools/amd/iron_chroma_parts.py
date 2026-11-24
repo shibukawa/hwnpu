@@ -387,7 +387,7 @@ def t5_tokenizer_json(tok: Path) -> dict:
     """tokenizers' T5 tokenizer.json from the repository's spiece.model and tokenizer_config.json,
     for a repository without a tokenizer.json (Chroma1's): the Unigram's pieces and scores, the
     normalizer's precompiled charsmap, the extra ids after the pieces (last to first, as
-    T5TokenizerFast), </s> after the text. The form of Anima's t5_tokenizer.json, which hwnpu's Go
+    T5TokenizerFast), </s> after the text. The form of Anima's t5_tokenizer.json, which bonsaiai's Go
     tokenizer reads (FLUX.1's newer one has a normalizer Sequence it does not). Read with protobuf's
     wire format: the IRON environment has no sentencepiece or transformers."""
     import base64
@@ -515,7 +515,7 @@ ATTN_ROWS = 4096  # the mid block's attention over at most this many pixels in o
 # HOST_NORM: a GroupNorm as two operators and a host step (iron_groupnorm: the channels' sums and
 # sums of squares in one pass, the host's float64 arithmetic between two commands, then y = x a
 # + b), in place of group_norm's 20 operators. The stage's meta lists its norms (``norms``) for
-# hwnpu's anima.VAE; IRON's reference cannot run such a stage (the row the host writes is zero).
+# bonsaiai's anima.VAE; IRON's reference cannot run such a stage (the row the host writes is zero).
 HOST_NORM = [False]
 
 

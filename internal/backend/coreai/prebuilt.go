@@ -182,7 +182,7 @@ func NothingToPrebuild(export string) bool {
 	return true
 }
 
-// isAsset reports whether dir is a Core AI program hwnpu lowered or converted: its bytecode and
+// isAsset reports whether dir is a Core AI program bonsaiai lowered or converted: its bytecode and
 // hash are there.
 func isAsset(dir string) bool {
 	if !strings.EqualFold(filepath.Ext(dir), ".aimodel") {

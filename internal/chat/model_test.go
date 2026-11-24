@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/palette"
-	"github.com/shibukawa/hwnpu/internal/vision"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/vision"
 )
 
 // fetch downloads a missing file, goes on from a download cut off, and leaves a file that is

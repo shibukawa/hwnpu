@@ -6,7 +6,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/flow"
 )
 
 // VADOptions tune VAD, a detector of speech by loudness. The zero value of a field takes its

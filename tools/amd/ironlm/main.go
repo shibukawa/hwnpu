@@ -1,5 +1,5 @@
 // Command ironlm runs a language model exported by tools/amd/iron_export_lm.py on an AMD NPU
-// through hwnpu, and checks it against the logits the export recorded (check/).
+// through bonsaiai, and checks it against the logits the export recorded (check/).
 //
 //	go run ./tools/amd/ironlm DIR
 package main
@@ -19,10 +19,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 type check struct {
@@ -105,7 +105,7 @@ func main() {
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func generate(ctx context.Context, m *iron.Model, text, tokPath string, maxToken
 	}
 	el := time.Since(t).Seconds()
 	if p1, err := dev.PowerSample(); perr == nil && err == nil && len(out) > 0 {
-		fmt.Printf("\n\ngeneration: %.2f W on average (%s), %.2f J per token", hwnpu.AveragePower(p0, p1), p1.Scope, (p1.EnergyJ-p0.EnergyJ)/float64(len(out)))
+		fmt.Printf("\n\ngeneration: %.2f W on average (%s), %.2f J per token", bonsaiai.AveragePower(p0, p1), p1.Scope, (p1.EnergyJ-p0.EnergyJ)/float64(len(out)))
 	}
 	fmt.Printf("\n\n%d prompt tokens in %.2f s (%.0f tokens/s); %d tokens in %.2f s (%.1f tokens/s)\n",
 		len(ids), ttft.Seconds(), float64(len(ids))/ttft.Seconds(), len(out), el, float64(len(out))/el)
@@ -457,7 +457,7 @@ func benchDepth(ctx context.Context, m *iron.Model) {
 		}
 		chunk := time.Since(t).Seconds()
 		if p1, err := dev.PowerSample(); perr == nil && err == nil {
-			fmt.Printf("chunk of %d from %d: %.1f J, %.2f W on average (%s)\n", n, start, p1.EnergyJ-p0.EnergyJ, hwnpu.AveragePower(p0, p1), p1.Scope)
+			fmt.Printf("chunk of %d from %d: %.1f J, %.2f W on average (%s)\n", n, start, p1.EnergyJ-p0.EnergyJ, bonsaiai.AveragePower(p0, p1), p1.Scope)
 		}
 		t = time.Now()
 		if _, err := m.Step(ctx, toks[start+n], start+n); err != nil {

@@ -1,5 +1,5 @@
 """float32 reference of a Qwen3.5-MoE text model (qwen3_5_moe: Qwen3.6-35B-A3B) from the checkpoint
-hwnpu-dev mxfp4 writes (its experts MXFP4, dequantized here exactly; the gate and up projections
+bonsaiai-dev mxfp4 writes (its experts MXFP4, dequantized here exactly; the gate and up projections
 interleaved there, the gate the even rows), a decoder layer at a time: transformers'
 Qwen3_5MoeForCausalLM is built on the meta device and each layer's weights are read just before it
 runs and dropped after (stream_weights.py), about 4 GB held.

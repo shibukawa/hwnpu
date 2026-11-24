@@ -13,7 +13,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // Message is one message of a conversation, in the shape of the OpenAI chat API.

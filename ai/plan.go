@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/daemon"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/daemon"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // Plan is what making an app's models ready takes. Making it downloads nothing.
@@ -33,7 +33,7 @@ type Plan struct {
 	// their models, for an app that has shown them and has the user's agreement. Without it Run
 	// fails with a *LicenseError at a model whose license is not accepted yet.
 	AcceptLicenses bool
-	// Quiet shows nothing: without it Run shows what it does on Log as hwnpu's commands do. On
+	// Quiet shows nothing: without it Run shows what it does on Log as bonsaiai's commands do. On
 	// a terminal that is a line for each stage of each model with a spinner and its time,
 	// redrawn until it is done; the downloads' and programs' own bars over it while they go;
 	// what they log in gray; and the time of it all at the end. Elsewhere it is a line as each
@@ -52,12 +52,12 @@ type Plan struct {
 	npu     airole.NPU
 	machine int
 	turns   [][]string // App.InTurns
-	// remote is the app of a plan hwnpud made (and runs), client its client, licenses what it
+	// remote is the app of a plan bonsaiaid made (and runs), client its client, licenses what it
 	// said of the models' licenses
 	remote   *App
 	client   *daemon.Client
 	licenses []License
-	// logTo is where a Quiet Run writes the models' logs (RunTo: hwnpud's, to its client)
+	// logTo is where a Quiet Run writes the models' logs (RunTo: bonsaiaid's, to its client)
 	logTo io.Writer
 }
 
@@ -110,7 +110,7 @@ type License struct {
 	// URL is where its text is: the license's, else the model's page.
 	URL string `json:"url"`
 	// Accept is true when the license asks to be agreed to before the model is downloaded;
-	// Accepted when it has been (on this machine, or by HWNPU_ACCEPT_LICENSE).
+	// Accepted when it has been (on this machine, or by BONSAIAI_ACCEPT_LICENSE).
 	Accept   bool `json:"accept"`
 	Accepted bool `json:"accepted"`
 }
@@ -129,7 +129,7 @@ func (e *LicenseError) Error() string {
 }
 
 // resolve finds the model a requirement means for a machine of memory GB (0: this one, with the
-// memory chosen for each model, hwnpu memory), as hwnpu's commands find it: by the name of the
+// memory chosen for each model, bonsaiai memory), as bonsaiai's commands find it: by the name of the
 // requirement's tier for that memory (Use.At), picked as a machine of its own memory would when
 // it has one (Use.As).
 func resolve(r requirement, memory int) (m chat.Model, why string, err error) {
@@ -140,7 +140,7 @@ func resolve(r requirement, memory int) (m chat.Model, why string, err error) {
 		return m, "", fmt.Errorf("ai: %w", err)
 	}
 	if !ok {
-		return m, "", fmt.Errorf("ai: no model, family or use %q in the definitions (hwnpu-chat list shows them)", name)
+		return m, "", fmt.Errorf("ai: no model, family or use %q in the definitions (bonsaiai-chat list shows them)", name)
 	}
 	if err := r.role.Accepts(m); err != nil {
 		return m, "", err
@@ -212,12 +212,12 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 // amd-xdna2; "" when no NPU runs the models here (Run then downloads and converts only).
 func (p *Plan) Target() string { return p.npu.Target }
 
-// MachineGB is the memory of the machine the plan is for, in GB: this one's (HWNPU_MEMORY, else
+// MachineGB is the memory of the machine the plan is for, in GB: this one's (BONSAIAI_MEMORY, else
 // what it has), or the app's Memory. The uses picked their models for it, and MemoryGB is to fit
 // in it beside everything else the machine runs.
 func (p *Plan) MachineGB() int { return p.machine }
 
-// usable is about how much of a machine's memory hwnpu counts on for models, in GB, by the memory
+// usable is about how much of a machine's memory bonsaiai counts on for models, in GB, by the memory
 // it has: MODEL.md's second row, what a user can give models without strain beside the OS and the
 // everyday applications. It is a working assumption, not a limit of the machine (with an
 // integrated GPU it also moves with the memory the GPU is given). The NPU's buffers are pinned
@@ -428,7 +428,7 @@ func stripANSI(s string) string {
 	return sb.String()
 }
 
-// Run makes the uses ready, in order, as hwnpu's commands do on their first run. For each that
+// Run makes the uses ready, in order, as bonsaiai's commands do on their first run. For each that
 // is not ready it takes what is missing from the shared layers or downloads it (checked against
 // the definitions' sha256 where they have one), converts the programs unless a layer has them,
 // and puts what it downloaded and made into the layers that take it (Store.Models). Then, unless
@@ -455,7 +455,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 		}
 	}
 	if p.remote != nil {
-		// hwnpud prepares and compiles: the stages are shown here, the models' logs as they come
+		// bonsaiaid prepares and compiles: the stages are shown here, the models' logs as they come
 		var log io.Writer
 		if show != nil && !p.Brief {
 			log = show.log

@@ -3,10 +3,10 @@ package plamo3
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch registers PLaMo 3 with the whitelist in internal/llm.
@@ -19,7 +19,7 @@ var Arch = &llm.Arch{
 	// 8 bit tables: on an M3's Neural Engine the next token is fp16's at 98% of a conversation's
 	// positions with lut8, 89% with lut6, for 8% more time per call (57.8 ms against 53.7); lut4
 	// is unusable (KL 1.91 nats on the CPU). The two programs of lut8 (4.9 GiB) are over the Neural
-	// Engine's compile cache, so hwnpu-chat keeps the one that generates and reads the prompts
+	// Engine's compile cache, so bonsaiai-chat keeps the one that generates and reads the prompts
 	// with it, which short texts to translate hardly feel (docs/design/llm-models.md). The 8B takes
 	// lut4 (Config.Format).
 	Format: "lut8",

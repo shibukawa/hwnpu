@@ -8,10 +8,10 @@ import (
 	"testing"
 
 	"encoding/binary"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // The operations of the image models' ONNX graphs (internal/onnx: PP-OCR, RTMDet, RTMO, YuNet)
@@ -23,7 +23,7 @@ func TestImageOps(t *testing.T) {
 	if err != nil || len(infos) == 0 {
 		t.Skip("no Core AI:", err)
 	}
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	dir := filepath.Join(t.TempDir(), "m.mlpackage")
 	pkg, err := mlpackage.Create(dir)
 	if err != nil {

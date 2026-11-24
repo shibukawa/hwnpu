@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// GC is what hwnpu-dev sources gc removes from a source: the entries chosen (their folders). What
-// a writeback cut off left is hwnpu cache clean's (PlanClean). Nothing is removed until Apply.
+// GC is what bonsaiai-dev sources gc removes from a source: the entries chosen (their folders). What
+// a writeback cut off left is bonsaiai cache clean's (PlanClean). Nothing is removed until Apply.
 type GC struct {
 	Entries []Entry  // the entries removed
 	Bytes   int64    // what the entries' files held

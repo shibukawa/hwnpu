@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 func handExport(t *testing.T, dir, mark string) {

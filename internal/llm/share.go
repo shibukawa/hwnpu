@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // WeightFile is the file of a program's weights: weight.bin in a package, the .bin next to an IR's
@@ -32,7 +32,7 @@ func weightFiles(dir string) []string {
 
 // shareWeights makes the weights of the program at path a clone of the same bytes of another
 // program in its directory, if there is one (cache.Clone): the programs of a model that differ only
-// in their tokens per call (hwnpu-chat's 8 and 64) have the same weights, which would otherwise
+// in their tokens per call (bonsaiai-chat's 8 and 64) have the same weights, which would otherwise
 // take the disk twice. Best effort.
 func shareWeights(path string) {
 	w := WeightFile(path)

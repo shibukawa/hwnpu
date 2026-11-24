@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """YuNet (OpenCV Zoo's face_detection_yunet_2023mar.onnx, MIT) on IRON: the graph
-cmd/hwnpu-image face-detect runs on AMD's NPU.
+cmd/bonsaiai-image face-detect runs on AMD's NPU.
 
 YuNet is a tiny face detector (53 thousand parameters): a 3 x 3 convolution with stride 2,
 then blocks of a 1 x 1 convolution and a 3 x 3 depthwise one (and ReLU), 2 x 2 max pools

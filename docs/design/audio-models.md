@@ -2,7 +2,7 @@
 
 [日本語](audio-models.ja.md)
 
-All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `transcribe`, `pitch`, `notes`, `list`). Its flags and subcommands are in [cli.md](cli.md). Audio input to chat models (LFM3-Audio, d1-Omni) is in [llm-models.md](llm-models.md); the encoder is summarized here.
+All audio models run through one command, `bonsaiai-audio` (`generate`, `tts`, `transcribe`, `pitch`, `notes`, `list`). Its flags and subcommands are in [cli.md](cli.md). Audio input to chat models (LFM3-Audio, d1-Omni) is in [llm-models.md](llm-models.md); the encoder is summarized here.
 
 ## Overview
 
@@ -15,7 +15,7 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 | `swift-f0` (MIT) | pitch (F0) | all on the NE | IR, CPU only | CPU (ONNX Runtime, or milcpu) | 0.06 GB |
 | `basic-pitch` (Apache-2.0) | notes, MIDI | partly off the NE | IR, CPU only | CPU (ONNX Runtime, or milcpu) | 0.07 GB |
 
-- "IR, CPU only": Intel programs are written (lut8 read as int8 by `llm.IntelFormat`) and the whole path was checked on OpenVINO's CPU (`HWNPU_BACKEND=openvino`), never on an Intel NPU. See [intel.md](intel.md).
+- "IR, CPU only": Intel programs are written (lut8 read as int8 by `llm.IntelFormat`) and the whole path was checked on OpenVINO's CPU (`BONSAIAI_BACKEND=openvino`), never on an Intel NPU. See [intel.md](intel.md).
 - Magenta RT2 weights are CC-BY 4.0: credit "Magenta RealTime 2 by Google DeepMind" where the music is used.
 - SwiftF0 and Basic Pitch are published as ONNX only; they come from Hugging Face mirrors byte-identical to the official files, pinned by revision and sha256 (`internal/pitch` checks the sha256 too).
 
@@ -23,7 +23,7 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 
 ### Apple: Core AI only
 
-- On a Mac `hwnpu-audio` uses Core AI alone (macOS 27). Without Core AI it fails with `errNoCoreAI` ("needs macOS 27"). `HWNPU_BACKEND` empty, `coreml` or `coreai` all mean Core AI (`audioDevice`, `cmd/hwnpu-audio/backend.go`). See [apple-coreai.md](apple-coreai.md).
+- On a Mac `bonsaiai-audio` uses Core AI alone (macOS 27). Without Core AI it fails with `errNoCoreAI` ("needs macOS 27"). `BONSAIAI_BACKEND` empty, `coreml` or `coreai` all mean Core AI (`audioDevice`, `cmd/bonsaiai-audio/backend.go`). See [apple-coreai.md](apple-coreai.md).
 - Every model writes Core AI programs directly from the checkpoint (no `.mlpackage` step). Exports are `NAME.coreai` beside the checkpoint (`llm.CoreAIExport`); Intel IR goes in `Dir/intel`.
 - Core ML is kept only for the CPU interpreter: `--cpu`, and pitch/notes on a machine without ONNX Runtime.
 - The TTS text model's 1-token and 64-token programs are two functions of one `.aimodel` (`chat.ConvertShared`): weights once on disk and in the cache (0.81 + 0.82 GiB in 2 parts; Core ML needed 3.4 GB in 4).
@@ -33,7 +33,7 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 ### AMD: IRON graphs per model
 
 - The converter does not write AMD programs; each model has an IRON export in `tools/amd` (`iron_whisper.py`, `iron_lfm3speech.py`, `iron_moss_sfx.py` + `iron_moss_dac.py`, `iron_magenta.py`, `iron_supertonic.py`). Details in `../amd-npu-models.md`; shared IRON pieces in [amd.md](amd.md).
-- `hwnpu-audio` uses AMD when an AMD NPU is present and `HWNPU_BACKEND` is empty or `amd`/`xdna`/`iron` (`onAMD`). `PrepareAMD` (per package) takes the export from here, else from the sources, else exports with IRON and writes back. The key needs pinned sha256 in models.yaml (`chat.PinnedRecipe`); `like` does not inherit sha256, so `MOSS-SoundEffect-v2.0-lut8` lists them again.
+- `bonsaiai-audio` uses AMD when an AMD NPU is present and `BONSAIAI_BACKEND` is empty or `amd`/`xdna`/`iron` (`onAMD`). `PrepareAMD` (per package) takes the export from here, else from the sources, else exports with IRON and writes back. The key needs pinned sha256 in models.yaml (`chat.PinnedRecipe`); `like` does not inherit sha256, so `MOSS-SoundEffect-v2.0-lut8` lists them again.
 - `iron.GraphProgram` turns a graph export into a `runner.Program`: meta `program` gives the program's shape; padded rows/columns are filled with 0 on input and cut on output. So the host code (sampling, MaskGIT, CFG, chunking) is shared with Apple/Intel.
 - Models without an AMD export (pitch, notes) fall to the CPU (`chat.ConvertedDevice`).
 - Exports in the sources: whisper 1.81 GB, LFM3-Audio TTS 3.13 GB, MOSS 6.3 GB (fp16) / 5.3 GB (lut8), Magenta decoder 0.09 GB, Supertonic 3 0.27 GB. See [distribution.md](distribution.md).
@@ -72,7 +72,7 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 ### Accuracy
 
 - Encoder fp16 vs fp32 cosine 0.9978. Layers 20–21 make attention-sink values (~300) at silent positions; tiny input errors move which positions become sinks. HF in fp16 shows the same (0.9978), so it is fp16 itself, not the NE. Speech positions are right and transcripts unchanged.
-- To check NE numerics: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`, `HWNPU_TEST_WHISPER_REF`, `HWNPU_TEST_WHISPER_ENCODERS`, `HWNPU_TEST_WHISPER_LAYER` with `-layers N`), NE vs Core ML CPU vs HF.
+- To check NE numerics: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`, `BONSAIAI_TEST_WHISPER_REF`, `BONSAIAI_TEST_WHISPER_ENCODERS`, `BONSAIAI_TEST_WHISPER_LAYER` with `-layers N`), NE vs Core ML CPU vs HF.
 - Formats (turbo, M3): LibriSpeech dummy (73 clips, 481 s) WER: HF fp32 4.43 %, fp16 4.43 %, lut8 4.43 %, lut6 4.87 %. Japanese (48 `say` clips) CER: 3.60 / 3.60 / 3.74 / 3.94 %. **Default lut8.**
 - AMD: random-input encoder vs IRON reference cosine 0.9999 (8 layers) → 0.99 (32 layers), but real speech transcribes right; 88.3 s English in 3 windows, same text and cuts.
 
@@ -101,10 +101,10 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 - ISTFT (`speech.ISTFT`) on the host = llama.cpp's; 24 kHz output.
 - Sampling defaults: LFM3-Audio temperature 1.0, top-k 128, penalty 1.1, window 4096; Omni 0.4, no top-k, 1.2, 64; `generation_config.json` `audio_*` overrides. Go PCG RNG: same seed does not give llama.cpp's sound.
 - Text model format lut8: at lut4 the speech transcribed back broken (M3); lut8 matched word for word.
-- `hwnpu-dev convert` uses `-codec-frames` (not `-frames`) because flags are shared across archs (`TestParamNames`).
+- `bonsaiai-dev convert` uses `-codec-frames` (not `-frames`) because flags are shared across archs (`TestParamNames`).
 
 AMD (`iron_lfm3speech.py`, export `lfm3-audio-2b-tts.amd-npu2`):
-- Text model from `iron_export_lm.py lfm3tts` via `iron_lfm3tts.py` (MLP and head q8, `--q4`), writing h to state `hwnpu_hidden`; host embedding rows (`hwnpu_embed_rows`) let the host write the feedback row (`iron.Model.StepRow`). `iron_export_lm.py` itself is left unchanged so `amdtools.LMHash` and all chat exports keep their keys.
+- Text model from `iron_export_lm.py lfm3tts` via `iron_lfm3tts.py` (MLP and head q8, `--q4`), writing h to state `bonsaiai_hidden`; host embedding rows (`bonsaiai_embed_rows`) let the host write the feedback row (`iron.Model.StepRow`). `iron_export_lm.py` itself is left unchanged so `amdtools.LMHash` and all chat exports keep their keys.
 - Depthformer: 12 codebook rows packed into MHA's 64 rows; heads of 32 laid out in 64 as [x0..x15, 0×16, x16..x31, 0×16] so rotate_half pairs stay right; RMSNorm over 64 with weights / √2 and eps / 2.
 - Codec: 64 frames a call; 6× copy by the host; short conv as per-tap products written to a state shifted by k rows.
 - Host tables in `tables.safetensors` (bf16).
@@ -167,7 +167,7 @@ Numbers:
 - LM format: lut8 default (NE KL 0.0064 at temperature 1.3; fp16 0.0002). `--format` fp16 / lut6.
 - Footprint (M1): codes given 0.42 GB, audio style 0.55 GB, text style 0.97 GB, continuation 0.96 GB.
 
-## MOSS-SoundEffect v2.0 (`internal/sfx`, `hwnpu-audio generate -m sfx`)
+## MOSS-SoundEffect v2.0 (`internal/sfx`, `bonsaiai-audio generate -m sfx`)
 
 - Structure (OpenMOSS MOSS-TTS `moss_soundeffect_v2`): Qwen3-1.7B last hidden state (after final norm) as text encoder, Wan 2.1 1.3B DiT (30 blocks, width 1536, 12 heads, cross attention to 512 text rows), DAC VAE (128 latent channels, 50/s, 48 kHz mono, rates 8 5 4 3 2). Flow matching Euler, shift 5, card defaults 100 steps, CFG 4.
 - Negative prompt is empty → context all zeros, no text encoder pass. Always denoise 30 s (1500 frames) and cut the asked length; prompt gets " duration: 10.0s".
@@ -203,10 +203,10 @@ Numbers:
 - All convs along the height axis (`conv1d`, x as (1, C, T, 1)). Core AI's width-axis conv with kernel > 1, ≥ 512 channels and a computed input is wrong (1.26 rel. RMS).
 - Dilation as rows (`phaseConv`): T frames as (1, C, T/d, d), an undilated k × 1 height conv. Core AI's dilated convs and explicit `pad` before a conv were wrong. Frames per call chosen so outputs are multiples of 9: 1026, 3195, 3996, 4500, 7992.
 - Transposed convs of stride ≠ 2 as polyphase (kernel-2 conv to s·Cout channels, reshape/transpose to time). Core ML put stride 5 and 7 on the CPU and stride 8/4/3 were 22/45/4 % off on the NE (M1).
-- M1 (h13) fixes: `sin` goes to the GPU; clip fused into elementwise ("NEFUSED_EW: EW: MAX") and the subtraction of constant-scaled inputs ("KernelPreScales") are rejected; stage 3 at 4998 frames "unexpected failure", 4500 works. M3 and later (h15g/c, h16g/s/c, h17g/s/c/d) take `hwnpu-dac-r3-fp16-sin-native.coreai` instead: sin itself, unclipped (model-recipes.yaml rewrite; offline one region a stage, vs 8–9 on h13g/h14g/h14c).
+- M1 (h13) fixes: `sin` goes to the GPU; clip fused into elementwise ("NEFUSED_EW: EW: MAX") and the subtraction of constant-scaled inputs ("KernelPreScales") are rejected; stage 3 at 4998 frames "unexpected failure", 4500 works. M3 and later (h15g/c, h16g/s/c, h17g/s/c/d) take `bonsaiai-dac-r3-fp16-sin-native.coreai` instead: sin itself, unclipped (model-recipes.yaml rewrite; offline one region a stage, vs 8–9 on h13g/h14g/h14c).
 - Check placement offline: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine`, then `manifest.plist` `mps.fullyPlacedOnANE`; reasons in `/usr/bin/log show --predicate 'process == "coreai-build"'` (zsh's `log` is a builtin).
 - Core ML export (`--cpu` only) uses plain `sin`; Intel keeps the older fp16 series and `(v + 1536) − 1536` rounding with an input constant.
-- Reference pitfall: the `runner` CPU path computes in fp32 unless `HWNPU_DEV=cpu.f16=1`, so fp16 rounding tricks do nothing there. Decide the reference's precision first (aicheck runs milcpu with `RoundF16`).
+- Reference pitfall: the `runner` CPU path computes in fp32 unless `BONSAIAI_DEV=cpu.f16=1`, so fp16 rounding tricks do nothing there. Decide the reference's precision first (aicheck runs milcpu with `RoundF16`).
 
 ### AMD (`iron_moss_sfx.py`, `iron_moss_dac.py`, `sfx.AMDExportVersion` 2)
 
@@ -264,7 +264,7 @@ Numbers:
 ## Not adopted
 
 - SpectroStream on the GPU in fp32: the goal is the NPU; block scales made the NE decoder right (rel. 6.8e-3) and faster (10 s decoded in 2.0 s vs 4.5 s GPU). `--decoder-on` removed.
-- Core ML on the Neural Engine for `hwnpu-audio`: Core AI only on Macs.
+- Core ML on the Neural Engine for `bonsaiai-audio`: Core AI only on Macs.
 - Whisper lut6: WER 4.87 % vs 4.43 %, the encoder loses most. Whisper fp16 as default: 2 parts and about half the decode speed, same transcripts.
 - Whisper encoder `qchunk` 500: no speed gain. `LayerNormMax`: no change (not an fp16 overflow).
 - MOSS text encoder plain int8 (inf on the NE), lut4 (127 %), kmeans-minmax lut8 (19 %). DiT lut6 (12.5 %).
@@ -274,7 +274,7 @@ Numbers:
 - Fusing Snake into the following GEMM on AMD: IRON's GEMM has no post-op hook, and before a 7-tap im2col it would cost 7×. Faster kernel instead.
 - MOSS DAC GEMMs at MEDIUM on AMD (see above).
 - MMAudio for sound effects: its text features use Apple DFN5B-CLIP under a research-only license.
-- Separate commands `hwnpu-transcribe`, `hwnpu-tts`, `hwnpu-pitch`, `hwnpu-notes`, `hwnpu-music`, `hwnpu-sfx`: merged into `hwnpu-audio`.
+- Separate commands `bonsaiai-transcribe`, `bonsaiai-tts`, `bonsaiai-pitch`, `bonsaiai-notes`, `bonsaiai-music`, `bonsaiai-sfx`: merged into `bonsaiai-audio`.
 - Not handled: chat replies as speech (`<|mixed_start|>`), streaming TTS output, LFM3-Audio raw ASR, LFM3-Omni TTS (`model.depth_decoder`), ftfy `fix_text` for MOSS prompts, Magenta's true CFG (3× batch).
 
 ## Open
@@ -283,7 +283,7 @@ Numbers:
 - Intel NPU hardware: all audio models only checked on OpenVINO's CPU (MOSS: 20 steps, 18 s a step; whether the NPU compiler takes ConvolutionBackpropData, Elu, etc.).
 - M2: Core ML NE decoding of SpectroStream once hung the machine; not re-checked with block scales or Core AI.
 - MOSS DAC r3 speed and values on an M3 device (the offline compile places it).
-- macOS 26 error path of `hwnpu-audio` not checked on a real machine.
+- macOS 26 error path of `bonsaiai-audio` not checked on a real machine.
 - Whisper: real recordings (noise, overlap), Japanese on AMD, temperature fallback, `condition_on_prev_tokens`; `-v` reports `ja` for English windows and long English has many capitals (also on Core ML). No `/v1/audio/transcriptions` API.
 - Whisper on AMD: LayerNorm not fused into the GEMV (~1.9 ms; `QGEMVQKV` normalizes by RMS only); IRON's per-op fixed cost (~0.13–0.15 ms) bounds small decoders.
 - LFM3-Audio TTS on AMD: skip the unused head (0.27 GB), run `depth_linear` once a frame (4 ms), depthformer weights q8.

@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 func f32s(v ...float32) safetensors.Out {

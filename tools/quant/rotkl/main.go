@@ -8,9 +8,9 @@
 //	    -tokenizer DIR/tokenizer.json -text FILE -seq 128 -format fp16 -o ref.bin
 //	go run ./tools/quant/rotkl ... -format lut4 -rotate 1 -ref ref.bin -o lut4r.bin
 //
-// -rotate is the architecture's setting (llm.RotateParam, as hwnpu-dev convert takes it).
+// -rotate is the architecture's setting (llm.RotateParam, as bonsaiai-dev convert takes it).
 //
-// The format's table fitting is hwnpu-chat's (kmeans-minmax for lutN, 16 rows a table).
+// The format's table fitting is bonsaiai-chat's (kmeans-minmax for lutN, 16 rows a table).
 package main
 
 import (
@@ -24,12 +24,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
-	"github.com/shibukawa/hwnpu/internal/llm/check"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	_ "github.com/shibukawa/bonsaiai/internal/llm/archs"
+	"github.com/shibukawa/bonsaiai/internal/llm/check"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 func main() {
@@ -146,7 +146,7 @@ func run(config, weights, tokPath, textPath string, seq int, rotate bool, seed i
 	return nil
 }
 
-// buildRun is hwnpu-dev check's: the program into a weight file in dir, run on the CPU with x and
+// buildRun is bonsaiai-dev check's: the program into a weight file in dir, run on the CPU with x and
 // ones for any other input.
 func buildRun(model llm.Model, w llm.Weights, opts llm.Options, x []float32, dir string, f16 bool) ([]float32, error) {
 	path := filepath.Join(dir, "weight.bin")

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/notes"
+	"github.com/shibukawa/bonsaiai/internal/notes"
 )
 
 func TestPianoRoll(t *testing.T) {

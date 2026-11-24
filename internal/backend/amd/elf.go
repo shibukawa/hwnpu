@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/aieelf"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/ert"
-	"github.com/shibukawa/hwnpu/internal/mapped"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/aieelf"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/ert"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
 )
 
 // elfProgram is a full ELF (AIE2P): one hardware context for the whole partition and no

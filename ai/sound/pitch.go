@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/pitch"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/pitch"
 )
 
 // The pitch's audio and frames: 16 kHz mono in, a frame every 16 ms out.
@@ -47,7 +47,7 @@ var pitchRole = &airole.Role{
 		}
 		c, dev, err := convertedLoad(ctx, f, e, r, convertedOpener{
 			cpu: func(model string, threads int) (io.Closer, error) { return pitch.OpenCPU(model, threads) },
-			npu: func(ctx context.Context, dev *hwnpu.Device, model, program string) (io.Closer, error) {
+			npu: func(ctx context.Context, dev *bonsaiai.Device, model, program string) (io.Closer, error) {
 				return pitch.Open(ctx, dev, model, program)
 			}})
 		if err != nil {
@@ -60,10 +60,10 @@ var pitchRole = &airole.Role{
 // PitchDetector tells the pitch (F0) of a voice or an instrument (SwiftF0), and how sure it is
 // that there is one, every 16 ms. It runs one request at a time; others wait.
 type PitchDetector struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	d      *pitch.Detector
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	r      route
 	model  string
 }
@@ -149,7 +149,7 @@ func (d *PitchDetector) Detect(ctx context.Context, pcm []float32, o PitchOption
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *PitchDetector) Close() error {
 	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
+		return d.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

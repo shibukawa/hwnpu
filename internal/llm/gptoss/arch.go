@@ -3,8 +3,8 @@ package gptoss
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch registers gpt-oss with the whitelist in internal/llm.

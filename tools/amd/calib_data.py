@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the calibration and evaluation texts q4_gptq.py reads (CALIB_DATA, ~/models/calib).
 
-  ~/.cache/hwnpu/dev/ref-venv/bin/python tools/amd/calib_data.py [OUT]
+  ~/.cache/bonsaiai/dev/ref-venv/bin/python tools/amd/calib_data.py [OUT]
 
 From the parquet files on Hugging Face, read with pyarrow:
 

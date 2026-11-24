@@ -6,15 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
-// On the Neural Engine (HWNPU_TEST_NPU), the program gives a window's activations.
+// On the Neural Engine (BONSAIAI_TEST_NPU), the program gives a window's activations.
 func TestOnDevice(t *testing.T) {
-	path, ref := os.Getenv("HWNPU_TEST_BASICPITCH_FILE"), os.Getenv("HWNPU_TEST_BASICPITCH_REF")
-	if path == "" || ref == "" || os.Getenv("HWNPU_TEST_NPU") == "" {
-		t.Skip("HWNPU_TEST_BASICPITCH_FILE, HWNPU_TEST_BASICPITCH_REF and HWNPU_TEST_NPU are not set")
+	path, ref := os.Getenv("BONSAIAI_TEST_BASICPITCH_FILE"), os.Getenv("BONSAIAI_TEST_BASICPITCH_REF")
+	if path == "" || ref == "" || os.Getenv("BONSAIAI_TEST_NPU") == "" {
+		t.Skip("BONSAIAI_TEST_BASICPITCH_FILE, BONSAIAI_TEST_BASICPITCH_REF and BONSAIAI_TEST_NPU are not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "", "")

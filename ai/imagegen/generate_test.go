@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
 )
 
 func TestSizeFor(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 func readBin[T float32 | int32](t *testing.T, path string) []T {
@@ -58,12 +58,12 @@ func run(t *testing.T, m *Model, ins ...*onnx.Tensor) []float64 {
 	return out[m.OutputValues[0]].F
 }
 
-// MusicCoCa's TFLite models (HWNPU_TEST_MUSICCOCA_DIR, their directory) evaluated on the host give the
-// reference's embedding, mapped embedding and codes (HWNPU_TEST_MUSICCOCA_REF, mcc_ref.py's prefix).
+// MusicCoCa's TFLite models (BONSAIAI_TEST_MUSICCOCA_DIR, their directory) evaluated on the host give the
+// reference's embedding, mapped embedding and codes (BONSAIAI_TEST_MUSICCOCA_REF, mcc_ref.py's prefix).
 func TestMusicCoCa(t *testing.T) {
-	dir, ref := os.Getenv("HWNPU_TEST_MUSICCOCA_DIR"), os.Getenv("HWNPU_TEST_MUSICCOCA_REF")
+	dir, ref := os.Getenv("BONSAIAI_TEST_MUSICCOCA_DIR"), os.Getenv("BONSAIAI_TEST_MUSICCOCA_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_TEST_MUSICCOCA_DIR and HWNPU_TEST_MUSICCOCA_REF are not set")
+		t.Skip("BONSAIAI_TEST_MUSICCOCA_DIR and BONSAIAI_TEST_MUSICCOCA_REF are not set")
 	}
 	load := func(name string) *Model {
 		m, err := Load(filepath.Join(dir, name))
@@ -129,12 +129,12 @@ func TestMusicCoCa(t *testing.T) {
 	}
 }
 
-// LoadLazy's graph of MusicCoCa's mapper (HWNPU_TEST_MUSICCOCA_DIR) gives Load's values, to the
+// LoadLazy's graph of MusicCoCa's mapper (BONSAIAI_TEST_MUSICCOCA_DIR) gives Load's values, to the
 // bit, its weights left in the file.
 func TestLoadLazy(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_MUSICCOCA_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_MUSICCOCA_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_MUSICCOCA_DIR is not set")
+		t.Skip("BONSAIAI_TEST_MUSICCOCA_DIR is not set")
 	}
 	path := filepath.Join(dir, "mapper.tflite")
 	eager, err := Load(path)

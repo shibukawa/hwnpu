@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/vision/ocr"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/vision/ocr"
 )
 
 // OCR is the use of a model that reads the text in pictures (PP-OCR: a text detector and a
@@ -88,7 +88,7 @@ var ocrRole = &airole.Role{
 		ort, builtin := imagedev.CPURoute(ctx, named(m), imagedev.DeviceFlag(m), interp, n, logf(e.Log))
 		cpu := interp || builtin
 		var (
-			dev      *hwnpu.Device
+			dev      *bonsaiai.Device
 			closeDev = func() {}
 		)
 		if !ort {
@@ -111,7 +111,7 @@ var ocrRole = &airole.Role{
 		case interp:
 			t.where = imagedev.Placement(true, false)
 		case builtin:
-			t.where = "on the CPU (hwnpu's own executor)"
+			t.where = "on the CPU (bonsaiai's own executor)"
 		default:
 			t.device, t.where = "npu", "on the NPU"
 		}
@@ -151,7 +151,7 @@ type OCROptions struct {
 
 // TextReader reads the text in pictures. It runs one picture at a time; others wait.
 type TextReader struct {
-	remote        *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote        *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu            sync.Mutex
 	r             *ocr.Reader
 	closeDev      func()
@@ -219,7 +219,7 @@ func (t *TextReader) Read(ctx context.Context, img image.Image, o OCROptions) (*
 // Close unloads the models. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *TextReader) Close() error {
 	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
+		return t.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()

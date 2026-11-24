@@ -3,19 +3,19 @@
 __pycache__/
 
 # binaries of go build ./cmd/NAME (or ./tools/...) in the root, and of go build in a tool's directory
-/hwnpu-agent
-/hwnpu-agent.exe
-/hwnpu-chat
-/hwnpu-dev
-/hwnpu-dev.exe
-/hwnpu-xclbin
-/hwnpu-chat.exe
-/hwnpu
-/hwnpu.exe
-/hwnpu-audio
-/hwnpu-audio.exe
-/hwnpu-image
-/hwnpu-image.exe
+/bonsaiai-agent
+/bonsaiai-agent.exe
+/bonsaiai-chat
+/bonsaiai-dev
+/bonsaiai-dev.exe
+/bonsaiai-xclbin
+/bonsaiai-chat.exe
+/bonsaiai
+/bonsaiai.exe
+/bonsaiai-audio
+/bonsaiai-audio.exe
+/bonsaiai-image
+/bonsaiai-image.exe
 /ctxbench
 /ctxbench.exe
 /gemvbench

@@ -16,23 +16,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/console"
 )
 
 // Gated repositories: a model whose repository on Hugging Face asks people to agree to its terms
 // first (FLUX.1-schnell) answers 401 to a download without a token and 403 to one of an account
 // that has not agreed. hfToken finds a token as huggingface_hub does (HF_TOKEN, then the token
 // file `hf auth login` writes), else the one this process signed in for. With none, and a person
-// at the terminal, signIn signs in to Hugging Face by OAuth's device flow (the app hwnpu,
+// at the terminal, signIn signs in to Hugging Face by OAuth's device flow (the app bonsaiai,
 // hfClientID, asks only for openid and gated-repos: reading public gated repositories the
-// account has agreed to, nothing private) and keeps the token in memory only: hwnpu writes no
+// account has agreed to, nothing private) and keeps the token in memory only: bonsaiai writes no
 // token anywhere. A 403 sends the person to the repository's page to agree, then tries again.
-// Without a terminal (hwnpu-chat serve, scripts), HF_TOKEN; the error says how to do it by hand.
+// Without a terminal (bonsaiai-chat serve, scripts), HF_TOKEN; the error says how to do it by hand.
 // A 401 of a repository the hub's API does not call gated (a name that does not exist or is
 // private) stays the download's error: no sign-in for it.
 
-// hfClientID is hwnpu's public OAuth app on Hugging Face (no secret: device flow);
-// HWNPU_HF_CLIENT_ID replaces it.
+// hfClientID is bonsaiai's public OAuth app on Hugging Face (no secret: device flow);
+// BONSAIAI_HF_CLIENT_ID replaces it.
 const hfClientID = "0b76f16c-f622-43f3-8b2c-b8ec136b77f4"
 
 var (
@@ -129,7 +129,7 @@ func gate(ctx context.Context, repo string, status int, sent string, log io.Writ
 			return nil // another download signed in meanwhile
 		}
 		if sent != "" && sent == oauthTok && oauthRefresh != "" {
-			// hwnpu's app gives tokens of 15 minutes, less than a big download takes
+			// bonsaiai's app gives tokens of 15 minutes, less than a big download takes
 			if tok, refresh, err := refreshToken(ctx); err == nil {
 				oauthTok, oauthRefresh = tok, cmp.Or(refresh, oauthRefresh)
 				return nil
@@ -186,7 +186,7 @@ func signIn(ctx context.Context, log io.Writer) (string, string, error) {
 		return "", "", fmt.Errorf("chat: signing in to Hugging Face: no device code in the answer")
 	}
 	where := cmp.Or(dev.Complete, dev.VerificationURI)
-	fmt.Fprintf(log, "Open %s and enter the code %s (Hugging Face shows hwnpu asking to read gated repositories you agreed to)\n",
+	fmt.Fprintf(log, "Open %s and enter the code %s (Hugging Face shows bonsaiai asking to read gated repositories you agreed to)\n",
 		where, console.Highlight(dev.UserCode))
 	every := pollEvery
 	if dev.Interval > 0 && time.Duration(dev.Interval)*time.Second > every {
@@ -252,8 +252,8 @@ func refreshToken(ctx context.Context) (string, string, error) {
 	return tok.AccessToken, tok.RefreshToken, nil
 }
 
-// clientID is the OAuth app to sign in with: HWNPU_HF_CLIENT_ID, else hwnpu's.
-func clientID() string { return cmp.Or(os.Getenv("HWNPU_HF_CLIENT_ID"), hfClientID) }
+// clientID is the OAuth app to sign in with: BONSAIAI_HF_CLIENT_ID, else bonsaiai's.
+func clientID() string { return cmp.Or(os.Getenv("BONSAIAI_HF_CLIENT_ID"), hfClientID) }
 
 // httpError is postForm's for an answer that is not 2xx, with its body.
 type httpError struct {

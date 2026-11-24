@@ -8,16 +8,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/whisper"
-	"github.com/shibukawa/hwnpu/internal/transcribe"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/whisper"
+	"github.com/shibukawa/bonsaiai/internal/transcribe"
 )
 
 // TranscribeRate is the samples a second Transcriber reads.
@@ -34,7 +34,7 @@ func Transcribe(name string) ai.Use[*Transcriber] {
 //	settings: format    the programs' weight format: lut8 (the default), lut6, lut4 or fp16
 //	programs: iron      on AMD's NPU, an export of tools/amd/iron_whisper.py (its directory)
 //
-// A model of device cpu runs on hwnpu's CPU interpreter (slow).
+// A model of device cpu runs on bonsaiai's CPU interpreter (slow).
 var transcribeRole = &airole.Role{
 	Name:   "transcribe",
 	Remote: func(h *airpc.Handle) io.Closer { return &Transcriber{remote: h} },
@@ -80,13 +80,13 @@ var transcribeRole = &airole.Role{
 	},
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 		var (
-			dev *hwnpu.Device
+			dev *bonsaiai.Device
 			t   *transcribe.Transcriber
 			err error
 		)
 		cpu := e.NPU.CPU(e.Def)
 		if dir := f.Path("iron"); dir != "" {
-			if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+			if dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD)); err != nil {
 				return nil, err
 			}
 			t, err = transcribe.LoadIron(ctx, dev, dir)
@@ -169,15 +169,15 @@ type Segment struct {
 
 // Transcriber turns speech into text (Whisper). It runs one request at a time; others wait.
 type Transcriber struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	t      *transcribe.Transcriber
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	model  string
 	cpu    bool
 }
 
-// OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
+// OnCPU reports whether the model runs on bonsaiai's CPU interpreter (its definition's device cpu).
 func (t *Transcriber) OnCPU() bool {
 	if t.remote != nil {
 		return airpc.Value[bool](t.remote, "OnCPU")
@@ -289,7 +289,7 @@ func (t *Transcriber) transcribeStream(ctx context.Context, s flow.Stream[[]floa
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *Transcriber) Close() error {
 	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
+		return t.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()

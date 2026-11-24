@@ -14,22 +14,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/finish"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	shared "github.com/shibukawa/hwnpu/internal/store"
-	amdtools "github.com/shibukawa/hwnpu/tools/amd"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/finish"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
+	amdtools "github.com/shibukawa/bonsaiai/tools/amd"
 )
 
 // IRONEnv names IRON's environment, in which PrepareAMD runs the exporter: a virtual
 // environment's directory, its python, or a script that sets it up (sourced by bash, as
 // INSTALL_AMD.md's). Without it, python3 on PATH is tried.
-const IRONEnv = "HWNPU_IRON_ENV"
+const IRONEnv = "BONSAIAI_IRON_ENV"
 
-// AMDRoot is where the exports for AMD's NPU hwnpu makes go: entries/amd-xdna2 under cache.Root
+// AMDRoot is where the exports for AMD's NPU bonsaiai makes go: entries/amd-xdna2 under cache.Root
 // (NAME.amd-npu2, NAME.amd-npu2-q4). They are looked for there and then in ~/models, where
 // exports were kept before and the exporters run by hand write (cache.ExportRoots).
 func AMDRoot() string { return cache.Entries(cache.AMDTarget) }
@@ -83,14 +83,14 @@ func FindAMDExport(m Model) string {
 	return ""
 }
 
-// handMadeNames are the names of exports of model m made by hand that hwnpu-chat runs:
+// handMadeNames are the names of exports of model m made by hand that bonsaiai-chat runs:
 // NAME.amd-npu2-q4, else NAME.amd-npu2.
 func handMadeNames(m Model) []string {
 	return []string{m.Name + ".amd-npu2-q4", m.Name + ".amd-npu2"}
 }
 
 // OnlyAMD reports whether the NPU models run on is AMD's: no backend named (backend or
-// HWNPU_BACKEND), no Apple or Intel NPU, and an AMD one.
+// BONSAIAI_BACKEND), no Apple or Intel NPU, and an AMD one.
 func OnlyAMD(ctx context.Context, backend string) bool {
 	if backend != "" || strings.TrimSpace(os.Getenv(llm.BackendEnv)) != "" {
 		return false
@@ -98,9 +98,9 @@ func OnlyAMD(ctx context.Context, backend string) bool {
 	if _, _, err := llm.FindDevice(ctx, ""); err == nil {
 		return false
 	}
-	infos, _ := hwnpu.Enumerate(ctx)
+	infos, _ := bonsaiai.Enumerate(ctx)
 	for _, info := range infos {
-		if info.Vendor == hwnpu.VendorAMD {
+		if info.Vendor == bonsaiai.VendorAMD {
 			return true
 		}
 	}
@@ -108,8 +108,8 @@ func OnlyAMD(ctx context.Context, backend string) bool {
 }
 
 // AMDExport is the export of the model use names (a name, a use or a family picked for the
-// machine's memory, logged to log, or a repository OWNER/NAME) that hwnpu-chat runs when the
-// only NPU is AMD's, which runs no programs of hwnpu-dev convert. It is "" when that is not so
+// machine's memory, logged to log, or a repository OWNER/NAME) that bonsaiai-chat runs when the
+// only NPU is AMD's, which runs no programs of bonsaiai-dev convert. It is "" when that is not so
 // (OnlyAMD). As the other NPUs' models are prepared on their first run, a model of the
 // definitions with a recipe of iron_export_lm.py and no export here is made ready by PrepareAMD: its checkpoint
 // downloaded into dir and exported with IRON.
@@ -161,7 +161,7 @@ func AMDExportOf(ctx context.Context, m Model, log io.Writer) (string, error) {
 		if d := AMDNamed(ctx, m, handMadeNames(m), isExport, log); d != "" {
 			return d, nil
 		}
-		msg := fmt.Sprintf("%s has no form for AMD's NPU: hwnpu has no recipe of tools/amd/iron_export_lm.py for it (model-recipes.yaml), and neither %s nor the sources have %s.amd-npu2-q4 or %s.amd-npu2; --model takes an export's directory too",
+		msg := fmt.Sprintf("%s has no form for AMD's NPU: bonsaiai has no recipe of tools/amd/iron_export_lm.py for it (model-recipes.yaml), and neither %s nor the sources have %s.amd-npu2-q4 or %s.amd-npu2; --model takes an export's directory too",
 			m.Name, strings.Join(cache.ExportRoots(), " or "), m.Name, m.Name)
 		if names := amdExports(); len(names) > 0 {
 			msg += ". The exports here: " + strings.Join(names, ", ")
@@ -209,10 +209,10 @@ func noteHandOverPin(m Model, dir string, log io.Writer) {
 
 // PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as its recipe
 // says: from the shared layers when one has it (SharedExport; else one made by hand under its
-// name that hwnpu-dev sources import put there), else it checks that IRON's
+// name that bonsaiai-dev sources import put there), else it checks that IRON's
 // environment is there (IRONEnv), downloads the checkpoint (RepoDir: only the files the
 // exporter reads), and runs tools/amd/iron_export_lm.py (the copy
-// built into hwnpu) in that environment into DIR.part, renamed to the export when it is done.
+// built into bonsaiai) in that environment into DIR.part, renamed to the export when it is done.
 // Its output goes to DIR.log. A cut-off export is made again.
 func PrepareAMD(ctx context.Context, m Model, log io.Writer) (string, error) {
 	return prepareAMD(ctx, m, log, "")
@@ -234,7 +234,7 @@ func prepareAMD(ctx context.Context, m Model, log io.Writer, byHand string) (str
 	if len(shared.Sources()) > 0 {
 		recipe = ExportRecipe(ctx, m, "iron_export_lm.py", m.AMDExport)
 	}
-	// else one made by hand under its name and put in the sources (hwnpu-dev sources import)
+	// else one made by hand under its name and put in the sources (bonsaiai-dev sources import)
 	imported := []SharedRecipe{{Kind: ImportKind, Recipe: ImportedRecipe(m, cache.AMDTarget, filepath.Base(out))}}
 	if byHand != "" {
 		ok, err := FetchShared(ctx, "iron-lm", recipe, imported, out, log)
@@ -291,7 +291,7 @@ func exportAMD(ctx context.Context, python []string, m Model, out string, logf f
 // ExportOut stands in RunIRON's args for the directory the exporter writes.
 const ExportOut = "{out}"
 
-// RunIRON runs one of hwnpu's IRON exporters (tools/amd, built into hwnpu) in IRON's
+// RunIRON runs one of bonsaiai's IRON exporters (tools/amd, built into bonsaiai) in IRON's
 // environment (python, of IRONPython): script with args, ExportOut the export's directory,
 // made beside out (out.part, its log out.log), finished as the recipe says (finish.Run: its
 // tokenizer files made binary) and renamed to out when whole, out.done written last. The

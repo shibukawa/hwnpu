@@ -1,10 +1,10 @@
-# Developer guide: building apps with hwnpu (the `ai` packages)
+# Developer guide: building apps with BonsaiAI (the `ai` packages)
 
 [日本語](developer-guide.ja.md)
 
 > **v0**: this API is a first version and its shape will still change. This document is both a guide to using it and material for reviewing its design at this stage. The design questions are numbered in [section 10](#10-design-questions), to be referred to ("D4: option B").
 
-hwnpu is a set of Go libraries that run AI models on the NPU. `hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` are demos that try its features one at a time. An app registers several models, prepares them ahead of time, and runs them joined together.
+BonsaiAI is a set of Go libraries that run AI models on the NPU. `bonsaiai-chat`, `bonsaiai-image` and `bonsaiai-audio` are demos that try its features one at a time. An app registers several models, prepares them ahead of time, and runs them joined together.
 
 - There now: speech to text, translation, chat, text to speech, a VAD by loudness, the depth of a picture, finding faces and where a head is, drawing and editing pictures (FLUX.2 klein), the ways of joining models, commands for an app's command line
 - Not there yet: the picture models other than FLUX.2 klein (Anima); objects, poses, cutouts and OCR; music and sound effects, managing what stays loaded, a local server ([section 11](#11-not-there-yet))
@@ -23,7 +23,7 @@ uses                    bytes to download,   compile for the NPU         store a
 
 | Package | What it is for |
 |---|---|
-| `github.com/shibukawa/hwnpu/ai` | `App` (registration), `Use[T]` (a typed handle), `Plan` (planning and preparing), `Runtime` (running), `Store` (where things are kept) |
+| `github.com/shibukawa/bonsaiai/ai` | `App` (registration), `Use[T]` (a typed handle), `Plan` (planning and preparing), `Runtime` (running), `Store` (where things are kept) |
 | `.../ai/speech` | Speech to text `Transcribe`, text to speech `Speak`, a VAD by loudness, reading and writing WAV |
 | `.../ai/text` | Translation `Translate`, chat `Chat` |
 | `.../ai/vision` | The depth of a picture `Depth`, finding faces `Faces`, where a head is from its face `HeadOf` |
@@ -34,10 +34,10 @@ uses                    bytes to download,   compile for the NPU         store a
 
 **Words**
 
-- **Use**: the name of a purpose, such as `transcribe` or `translate`. Uses are models.yaml's `categories`; each picks a model that fits the machine's memory. `hwnpu-chat list` shows them
+- **Use**: the name of a purpose, such as `transcribe` or `translate`. Uses are models.yaml's `categories`; each picks a model that fits the machine's memory. `bonsaiai-chat list` shows them
 - **Family and tag**: a line of models and one of them, as in `plamo3translate:2b`
 - **Role**: what a model runs as (`transcribe`, `translate`, `chat`, `speak`). The function of a package of models (`speech.Transcribe` and the others) decides it
-- **Store**: where the models' files and programs are. By default it is the commands' cache (`~/.cache/hwnpu` and the like)
+- **Store**: where the models' files and programs are. By default it is the commands' cache (`~/.cache/bonsaiai` and the like)
 - **Target**: which NPU the programs are for: `coreai` (Apple), `intel`, `amd-xdna2`
 
 ## 2. The smallest example
@@ -53,8 +53,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/speech"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/speech"
 )
 
 // the models the app uses are kept in package variables
@@ -154,7 +154,7 @@ helper := text.Chat("chat").As(8)       // on every machine, pick as an 8 GB mac
 | `app.Memory(gb)` | Plan the whole app as for a machine of gb GB (to prepare for smaller machines). The tiers of `At` count for that memory too |
 
 - `At` and `As` return a new `Use`. The value they are called on does not change
-- What the user sets works as it does for the commands: `HWNPU_MEMORY` (calls the machine's memory something else), `hwnpu memory MODEL GB` (by model), `HWNPU_MODEL_ALLOWLIST` (which models may be used)
+- What the user sets works as it does for the commands: `BONSAIAI_MEMORY` (calls the machine's memory something else), `bonsaiai memory MODEL GB` (by model), `BONSAIAI_MODEL_ALLOWLIST` (which models may be used)
 - The model picked and why are in `plan.Items[i].Model` and `.Why`. `plan.MemoryGB()` is what the models take together and `plan.MachineGB()` the machine's memory
 
 ### 3.3 Definitions of the app's own
@@ -207,7 +207,7 @@ err = plan.Run(ctx, func(p ai.Progress) {   // p.Stage: prepare, compile, done
 
 | Stage | What it does | NPU |
 |---|---|---|
-| Download and convert | Takes the files from the sources (this machine's cache, `HWNPU_MODEL_SOURCE*`, models bundled with the app, Hugging Face) and converts them into programs. When a source has the converted programs, it only takes them | Not needed |
+| Download and convert | Takes the files from the sources (this machine's cache, `BONSAIAI_MODEL_SOURCE*`, models bundled with the app, Hugging Face) and converts them into programs. When a source has the converted programs, it only takes them | Not needed |
 | Compile | Loads each model once. Compiling for Apple's Neural Engine takes from seconds to minutes on the first load (100 s for Gemma 4), and what it makes belongs to the machine | Needed |
 
 - A `plan.Run` that was cut off goes on from where it stopped when called again
@@ -223,7 +223,7 @@ When a model's license asks to be accepted (`License.Accept`), `plan.Run` return
 
 ```go
 app.Store = ai.Store{
-	Models:   modelstore.Options{Root: cacheDir, Sources: []string{"https://models.example.com/hwnpu"}},
+	Models:   modelstore.Options{Root: cacheDir, Sources: []string{"https://models.example.com/bonsaiai"}},
 	Prepared: []string{filepath.Join(resources, "prepared")},
 }
 ```
@@ -246,7 +246,7 @@ err = stt.Release(rt)               // unloads it and frees its memory; the next
 rt.Loaded()                         // the models held now: use, model, memory, how long loading took
 ```
 
-- **It touches no network, converts and compiles nothing.** A use that is not prepared, or not compiled for this program, is `ai.ErrNotPrepared`: `APP models prepare` (`Plan.Run`) makes them all ready ahead, so that a user never waits on a download or a compile while the app runs, which they could not tell from the app being slow. An app's commands open their Runtime with `konghelper.Open(ctx, app)`, which fails before the command starts, naming the models that are not ready and saying to run `APP models prepare` (`konghelper.Ready` checks alone, before `app.Run`). `Plan.Run` shows its work as hwnpu's commands do, on standard error unless `Plan.Log` says where: on a terminal a line for each stage of each model with a spinner and a stopwatch, the downloads' and programs' bars over it while they go, the logs in gray, and the time of it all; elsewhere a line as each stage begins and ends. `Plan.Brief` leaves out the logs, `Plan.Quiet` shows nothing; the callback is told it all either way (`Progress.Message` has the logs' lines), for an app that shows it its own way. An app with a window of its own adds `ai.WithLoading(fn)`: `fn` gets each model a `Get` loads (`ai.Progress`, `StageLoad` then `StageDone`), with `Since` and `Expected`, how long its load took the last time on this machine (kept in the store), so that the window can show a time and a bar instead of looking still
+- **It touches no network, converts and compiles nothing.** A use that is not prepared, or not compiled for this program, is `ai.ErrNotPrepared`: `APP models prepare` (`Plan.Run`) makes them all ready ahead, so that a user never waits on a download or a compile while the app runs, which they could not tell from the app being slow. An app's commands open their Runtime with `konghelper.Open(ctx, app)`, which fails before the command starts, naming the models that are not ready and saying to run `APP models prepare` (`konghelper.Ready` checks alone, before `app.Run`). `Plan.Run` shows its work as BonsaiAI's commands do, on standard error unless `Plan.Log` says where: on a terminal a line for each stage of each model with a spinner and a stopwatch, the downloads' and programs' bars over it while they go, the logs in gray, and the time of it all; elsewhere a line as each stage begins and ends. `Plan.Brief` leaves out the logs, `Plan.Quiet` shows nothing; the callback is told it all either way (`Progress.Message` has the logs' lines), for an app that shows it its own way. An app with a window of its own adds `ai.WithLoading(fn)`: `fn` gets each model a `Get` loads (`ai.Progress`, `StageLoad` then `StageDone`), with `Since` and `Expected`, how long its load took the last time on this machine (kept in the store), so that the window can show a time and a bar instead of looking still
 - **After `APP models prepare` a run needs no network and compiles nothing.** A role whose programs depend on the input (YuNet's sizes, DA3's aspects) makes them all at its Prepare, and its model is an `ai.Warmer`: the load of `models prepare` calls `Warm`, which loads each once to compile it. A role that changes what its Prepare makes raises its `Revision`, and a store prepared by an earlier one counts as not prepared
 - **A store whose record is not what is picked now counts as not prepared.** When the use was prepared as another model (the app's line-up changed, or the machine's memory setting did), the old one is not loaded in its place
 - **Loads run one at a time.** Each model runs one request at a time (others wait). Different models may be called at the same time
@@ -718,7 +718,7 @@ Every model has a batch form and a stream form.
 - **`Face`**: the box, how sure the model is, and the eyes, the nose and the corners of the mouth (in the picture's pixels). `RightEye` is the person's own right eye (on the picture's left)
 - **`Head`**: where a head is before the camera. `X` and `Y` are across the camera's view, −1 to 1 (`X` to the person's own right: mirrored from the frame); `Z` is how far it is from the camera in meters, from how far apart the eyes are in the frame, by a pinhole camera (`HeadOptions.FOV` is the horizontal field of view, 60 degrees by default; `Eyes` the distance between the eyes, 63 mm by default). It is an estimate for a face that looks at the camera
 - **YuNet is a model of real faces.** It does not find the faces of anime pictures (none in a picture of a person made with Anima)
-- **Where they run**: depth on the NPU. On a machine with AMD's NPU the definitions (models.yaml's `device`) put YuNet on the CPU (a small graph: a tenth of the time and of the energy there). On the CPU it needs ONNX Runtime (`HWNPU_ONNXRUNTIME` is the library's path). `FaceDetector.Device()` is `npu` or `cpu`
+- **Where they run**: depth on the NPU. On a machine with AMD's NPU the definitions (models.yaml's `device`) put YuNet on the CPU (a small graph: a tenth of the time and of the energy there). On the CPU it needs ONNX Runtime (`BONSAIAI_ONNXRUNTIME` is the library's path). `FaceDetector.Device()` is `npu` or `cpu`
 - On Apple's Neural Engine and Intel's NPU the depth's program of a shape is converted when a picture of that shape first comes (seconds; its first load compiles it)
 - **Which depth model**: `vision.Depth("depth")` picks by the machine's memory (DA3-SMALL from 8 GB, DA3-BASE from 16 GB, DA3MONO-LARGE from 24 GB). A name fixes it (`vision.Depth("moge-2-vitl")`). These are the values on AMD's NPU (Ryzen AI 9 365) over three pictures (one of 1024×672, two of 1024×1024)
 
@@ -747,7 +747,7 @@ Every model has a batch form and a stream form.
 - **And**: `Seed` (0: another each time), `Steps` (0: the model's own; 4 for FLUX.2 klein), `Progress` (called after each step)
 - **Time and memory**: at 1024×1024 about 30 s from a prompt, about a minute for an edit of one reference (Ryzen AI 9 365). It peaks at 3.9 GB while it runs (AMD). The pipeline swaps its stages itself ([section 9.5](#95-release-and-image-generation-swapping-its-stages))
 - **Where it runs**: AMD's NPU (one export of IRON with every size) and Apple's Neural Engine (the export of 512×512 and 1024×1024; `Sizes()` says which). On Apple drawing from references takes the edit's programs, an export of their own: `imagegen.Edit` prepares them (converted from the checkpoint, a 16 GB download) and the first edit compiles them; `imagegen.Generate` leaves them out and refuses references there. An edit on an M3: 39 s at 512×512, 89 s at 1024×1024
-- Not there yet: Anima, FLUX.3 klein (the command `hwnpu-image generate` has them), several pictures together (`--batch`), a reference read at half size (`@half`)
+- Not there yet: Anima, FLUX.3 klein (the command `bonsaiai-image generate` has them), several pictures together (`--batch`), a reference read at half size (`@half`)
 
 ## 8. The app's command line (`ai/cli`)
 
@@ -802,7 +802,7 @@ func (c *RunCmd) Run(ctx context.Context, app *ai.App) error { ... }
 | `APP models` | `cli.List` | The models the app uses: their state (missing; ready, not compiled; compiled; bundled), bytes to download, memory, license, what they take together and what this machine has for models, why the app's line-up picked them, the network. `--json` |
 | `APP models download` | `cli.Download` | Downloads and converts. No NPU is needed. `--accept-license`, `-q` |
 | `APP models prepare` (`compile`) | `cli.Prepare` | As download, then loads each model once to compile it |
-| `APP status` | `cli.Status` | `hwnpu status`: the device, its driver, how busy it is, its power, the processes that use it and the NPU's memory each holds, the cache. `-w 2s`, `--json`, `--wake` |
+| `APP status` | `cli.Status` | `bonsaiai status`: the device, its driver, how busy it is, its power, the processes that use it and the NPU's memory each holds, the cache. `-w 2s`, `--json`, `--wake` |
 
 ```
 $ interpreter models
@@ -813,7 +813,7 @@ transcribe  transcribe  whisper-large-v3-turbo  compiled  -         2.2 GB  mit
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  plamo-community-license (conditional)
 speech      speak       LFM3-Audio-2B-TTS       compiled  -         2.9 GB  lfm-open-1.0 (conditional)
 
-Their checkpoints are here or come from the sources; about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB. ...
+Their checkpoints are here or come from the sources; about 7.8 GB running together; bonsaiai counts on about 9 GB for models on a machine of 16 GB. ...
 translate: plamo3translate:2b on machines of 16 GB and up, by the app; ...
 
 The network:
@@ -822,7 +822,7 @@ The network:
 ```
 
 - There are no adapters for other command line libraries (cobra, urfave/cli and the like): call the functions of (1) from that library's commands
-- `cli.Status` writes on the standard output (it is `hwnpu status`'s display). `cli.List` and `cli.Download` / `cli.Prepare` write where `Out` and `Log` say
+- `cli.Status` writes on the standard output (it is `bonsaiai status`'s display). `cli.List` and `cli.Download` / `cli.Prepare` write where `Out` and `Log` say
 
 ## 9. Constraints and rules
 
@@ -893,7 +893,7 @@ The delays measured (the recording paced as a microphone, counted from the end o
 - **Calls are independent.** `Transcribe`, `Translate`, `Speak` and `Complete` do not depend on the call before (a translation's history and a conversation's messages are given by the caller each time). So several inputs can take turns through one model
 - **Left and right audio**: inputs are mono (a transcriber and a VAD read mono at 16 kHz). Stereo is split into two mono streams, each with its own VAD, into the same transcriber. Measured: two clips of 13.3 s at the same time take 2.8 s (twice the 1.4 s of one). Both count in the sum of section 9.2
 - **Loading the same model twice is not faster**: the NPU being one queue, the total is the same and only the memory doubles (loading two was not measured)
-- **Hardly anything takes several inputs in one call (a batch).** Programs have fixed shapes: one 30 s window for speech to text, one sequence for chat and translation, one text at a time for embeddings. The exceptions are of pictures: image generation draws a few together (`hwnpu-image --batch`), and labels are read 8 texts at a time
+- **Hardly anything takes several inputs in one call (a batch).** Programs have fixed shapes: one 30 s window for speech to text, one sequence for chat and translation, one text at a time for embeddings. The exceptions are of pictures: image generation draws a few together (`bonsaiai-image --batch`), and labels are read 8 texts at a time
 - A chat model skips reading again what continues the conversation before (or one of the two long ones before that); the result is the same. With more conversations taking turns through one model, that saving is lost (it is only slower)
 
 ### 9.4 Memory
@@ -905,11 +905,11 @@ $ interpreter models
 ...
 translate   translate   plamo-3-translate-2b    missing   -         2.7 GB  ...
 ...
-about 7.8 GB running together; hwnpu counts on about 9 GB for models on a machine of 16 GB.
+about 7.8 GB running together; bonsaiai counts on about 9 GB for models on a machine of 16 GB.
 ```
 
-- When they do not fit, a note follows ("Together they take more than hwnpu counts on for models here ..."). The 9 GB of 16 is a working assumption of what a user can give models without strain, not a limit of the machine (with an integrated GPU it also moves with the memory the GPU is given)
-- What it is on another machine is seen by calling the machine's memory something else: `HWNPU_MEMORY=8 interpreter models`
+- When they do not fit, a note follows ("Together they take more than bonsaiai counts on for models here ..."). The 9 GB of 16 is a working assumption of what a user can give models without strain, not a limit of the machine (with an integrated GPU it also moves with the memory the GPU is given)
+- What it is on another machine is seen by calling the machine's memory something else: `BONSAIAI_MEMORY=8 interpreter models`
 - From a program: `interpreter models --json` (`memory_gb`, `machine_gb`, `usable_gb`, `fits`, and each model's `memory_gb`), or `plan.MemoryGB()`, `plan.MachineGB()`, `plan.UsableGB()`, `plan.Fits()`
 - **What is taken now** is in `APP status`: for each process that uses the NPU, the process's memory and the NPU's (`-w 2s` keeps showing it)
 
@@ -948,13 +948,13 @@ Image generation's swapping is built differently for each NPU (figures of the re
 - **Intel**: holds what fits, and closes what was not used lately to load again when it does not
 
 - `ai/imagegen` (FLUX.2 klein) has this swapping as it is, on by default. An app calls `Release` after generating, to unload what is left (small parts), and goes on to the next model, the depth for one (the sample of [section 6.9](#69-example-parting-a-picture-into-layers-by-depth-sampleslayers) does)
-- A third mechanism: a chat model on AMD gives its pinned memory back after a while without a request and loads again in a second or two at the next one (`hwnpu-chat --idle`). It cannot be used from `ai` yet
+- A third mechanism: a chat model on AMD gives its pinned memory back after a while without a request and loads again in a second or two at the next one (`bonsaiai-chat --idle`). It cannot be used from `ai` yet
 - Making one thing of the three (a budget of memory, what may be evicted) is [D9](#10-design-questions)
 - The time to load again (measured, AMD): speech to text 0.5 to 1.2 s, the translator 5 to 9 s (8B) or about 3 s (2B), the speaker 2.3 to 3.8 s. On Apple it is seconds once compiled, and tens of seconds to minutes the first time
 
 ### 9.6 Processes
 
-- **On a Mac, one hwnpu process uses the Neural Engine at a time.** Two at once froze an M1's OS, so the process that first opens the device holds a lock until it ends ([docs/design/apple-neural-engine.md](design/apple-neural-engine.md)). While an app that stays running runs, commands such as `hwnpu-chat` wait. There is no API yet for an app to let the NPU go (`Suspend`)
+- **On a Mac, one BonsaiAI process uses the Neural Engine at a time.** Two at once froze an M1's OS, so the process that first opens the device holds a lock until it ends ([docs/design/apple-neural-engine.md](design/apple-neural-engine.md)). While an app that stays running runs, commands such as `bonsaiai-chat` wait. There is no API yet for an app to let the NPU go (`Suspend`)
 - AMD and Intel have no such lock. On AMD, processes can use the same NPU, sharing its time (commands were up to 50 times slower with another process on the NPU: [docs/design/new-model-checklist.md](design/new-model-checklist.md)). Intel was not tried
 - On a Mac, macOS's own services (photo analysis, Apple Intelligence) use the Neural Engine too. While they ran, chat fell to 0.7 tokens a second ([docs/design/llm-engine.md](design/llm-engine.md)). An app cannot stop them
 - **Take a process to have one `App`.** The store's settings are one per process ([D8](#10-design-questions))
@@ -1031,7 +1031,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 **D10. Concurrency** — now: one request at a time for each model. Nothing orders the models among themselves (the NPU's driver does). Each model opens its own device.
 
-- **Not decided**: an API of priorities (audio first, background work waits). On a Mac the process holds the Neural Engine's lock while it lives, so an app that stays running makes the other hwnpu commands wait
+- **Not decided**: an API of priorities (audio first, background work waits). On a Mac the process holds the Neural Engine's lock while it lives, so an app that stays running makes the other BonsaiAI commands wait
 
 ### Streams
 
@@ -1074,7 +1074,7 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 **D19. Input and output devices** — now: the library has none. It takes streams and gives streams. The samples make streams of the microphone (and the camera) with hwcamera (`samples/internal/capture`).
 
 - Why: the library's dependencies do not grow. An input from a file or a network has the same shape
-- Option: the code that makes streams of hwcamera as another module of hwnpu (not a dependency of the library). Apps then do not each write it, and the rules of "keep" and "the newest only" are in one place
+- Option: the code that makes streams of hwcamera as another module of BonsaiAI (not a dependency of the library). Apps then do not each write it, and the rules of "keep" and "the newest only" are in one place
 - **Not decided**: whether to make that module; where an API for playing sound goes
 
 **D20. An API to measure whether a pipeline keeps up, and one to order the calls** — now: neither. An app measures each stage alone and adds them up (section 9.2).
@@ -1106,13 +1106,13 @@ For each: what it is now, why, and the other options. Those **not decided** are 
 
 ## 11. Not there yet
 
-- Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); the picture models other than FLUX.2 klein (Anima, FLUX.3 klein into `ai/imagegen`; for now they are drawn with the command, `hwnpu-image generate`)
+- Pictures: objects, poses, cutouts, OCR, labels (to add to `ai/vision`); the picture models other than FLUX.2 klein (Anima, FLUX.3 klein into `ai/imagegen`; for now they are drawn with the command, `bonsaiai-image generate`)
 - Sound: music made on the beat of a metronome, and a style that changes while it plays (`ai/sound` has music as a stream, sound effects, pitch and notes)
-- Moving the commands: making `hwnpu-chat` and `hwnpu-image` only call this library (`hwnpu-audio` does)
+- Moving the commands: making `bonsaiai-chat` and `bonsaiai-image` only call this library (`bonsaiai-audio` does)
 - Managing what stays loaded (D9, D10), a local server (OpenAI compatible and others), bundles to ship, build tags
 - Their order and details are in [app-api-tasks.md](app-api-tasks.md)
 
-## 12. For hwnpu's developers: adding a package of models
+## 12. For BonsaiAI's developers: adding a package of models
 
 A package of models has a `Role` of `internal/airole` and makes its `Use` with `ai.Define`. `ai` knows nothing else of it.
 
@@ -1146,6 +1146,6 @@ var depthRole = &airole.Role{
 - **What differs by NPU** is read from `e.NPU`: an export of IRON when `e.NPU.AMD()`, else programs in `e.NPU.Format` (`coreai`, `intel`)
 - **Give both a batch form and a stream form.** The stream form may start as a batch call at each segment (`Final`)
 - **A model's value is an `io.Closer`** and runs one request at a time (it locks inside)
-- **The role also runs in hwnpud** ([hwnpud](design/hwnpud.md)): register it (`airole.Register` in an `init`) and give it `Remote`, which makes the model's type around an `*airpc.Handle`; each public method that touches the model starts with `if d.remote != nil { return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o) }` (`airpc.Value` for one without a context, `Release` for `Close`). Its arguments and results cross with gob: exported fields, functions as callbacks, streams as streams; a result holding the engine's state that is not plain data stays there with `airpc.RegisterRef`
+- **The role also runs in bonsaiaid** ([bonsaiaid](design/bonsaiaid.md)): register it (`airole.Register` in an `init`) and give it `Remote`, which makes the model's type around an `*airpc.Handle`; each public method that touches the model starts with `if d.remote != nil { return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o) }` (`airpc.Value` for one without a context, `Release` for `Close`). Its arguments and results cross with gob: exported fields, functions as callbacks, streams as streams; a result holding the engine's state that is not plain data stays there with `airpc.RegisterRef`
 - **Tests** can go from the plan to the load without an NPU, with a fake `Role` (`ai/ai_test.go`). What depends on time uses `testing/synctest`
-- A module outside cannot import `internal/airole`, so only packages inside hwnpu can make a `Use`
+- A module outside cannot import `internal/airole`, so only packages inside BonsaiAI can make a `Use`

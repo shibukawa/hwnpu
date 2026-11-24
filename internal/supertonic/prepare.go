@@ -12,12 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // Arch names the programs in their metadata; Revision counts the changes to them that call for
@@ -66,8 +66,8 @@ type Config struct {
 	Durations, Encoders, Estimators, Vocoders []string
 	// AMD is the export of PrepareAMD (the graphs), run on Device, AMD's NPU.
 	AMD     string
-	Device  *hwnpu.Device // nil: the CPU
-	Threads int           // ONNX Runtime's threads on the CPU (0: 4)
+	Device  *bonsaiai.Device // nil: the CPU
+	Threads int              // ONNX Runtime's threads on the CPU (0: 4)
 }
 
 // stage is a graph made into programs of Sizes.
@@ -151,7 +151,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				return c, err
 			}
 			if _, err := llm.WritePart(program, p, nil, llm.Options{Format: "fp16", Backend: s.Backend}, func(pkg *mlpackage.Package) {
-				pkg.Description = fmt.Sprintf("Supertonic 3's %s, %s, fp16 (hwnpu)", st.name, about)
+				pkg.Description = fmt.Sprintf("Supertonic 3's %s, %s, fp16 (bonsaiai)", st.name, about)
 				pkg.Metadata[llm.MetaArch] = Arch
 				if sin != nil {
 					pkg.Metadata[metaSin] = string(sin)

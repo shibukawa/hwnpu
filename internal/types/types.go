@@ -1,4 +1,4 @@
-// Package types holds the value types shared by the public hwnpu API and its backends.
+// Package types holds the value types shared by the public bonsaiai API and its backends.
 // The public package re-exports them as aliases.
 package types
 
@@ -160,7 +160,7 @@ type ArgInfo struct {
 	Bytes      int
 	// PaddedDims is the shape the device actually runs when the model was padded to reach the
 	// NPU (Core ML models processed by tools/coreml/ane_pad.py); nil otherwise. Callers always
-	// use Dims and Bytes: hwnpu copies to and from the padded buffers.
+	// use Dims and Bytes: bonsaiai copies to and from the padded buffers.
 	PaddedDims []int
 }
 
@@ -189,7 +189,7 @@ type GraphSource struct {
 	Function string
 	// Units are where Core ML runs the graph: "" the Neural Engine (with the CPU), "gpu" the GPU
 	// (with the CPU) or "cpu" the CPU; for a graph that the Neural Engine of a chip cannot run.
-	// HWNPU_COREML_UNITS overrides it for every graph.
+	// BONSAIAI_COREML_UNITS overrides it for every graph.
 	Units string
 }
 

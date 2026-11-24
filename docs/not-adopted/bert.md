@@ -12,7 +12,7 @@
 
 ## どの config で動かしていたか
 
-- arch は `bert` です。models.yaml の項目はなく、`hwnpu-dev convert` にリポジトリを直接渡していました。
+- arch は `bert` です。models.yaml の項目はなく、`bonsaiai-dev convert` にリポジトリを直接渡していました。
 - 形式の既定は Apple が lut8、Intel が int8 です (`Arch.IntelFormat`、`DefaultFormatFor`。`internal/llm/archs/archs_test.go` で固定)。
 - 入力は `x` と `mask` (語が 1、埋め草が 0) です。出力は最後の隠れ状態で、プーリングはホストに任せます。
 
@@ -24,7 +24,7 @@
 | Intel | 変換できます。int8 が既定で、int4 は 0.91〜0.94 でした (`0287e300` の測定) |
 | AMD | していません |
 
-- `hwnpu-check` は符号器も扱えます。余分な入力には 1 を入れ、隠れ状態は argmax と KL なしで比べます。
+- `bonsaiai-check` は符号器も扱えます。余分な入力には 1 を入れ、隠れ状態は argmax と KL なしで比べます。
 
 ## ロジックが残っている場所
 
@@ -36,7 +36,7 @@ main にそのまま残っています。
 
 ## 問題と一覧に入れない理由
 
-- **トークナイザーがない:** WordPiece のトークナイザーを作っていません。`tokenizer.Load` が断るので、hwnpu-chat からは使えません。
+- **トークナイザーがない:** WordPiece のトークナイザーを作っていません。`tokenizer.Load` が断るので、bonsaiai-chat からは使えません。
 - **用途が重なる:** 文の埋め込みは、PLaMo-Embedding-1B (`plamo-bi`) が一覧にあり、日本語も扱えます。
 
 ## 再開するときの手順と注意

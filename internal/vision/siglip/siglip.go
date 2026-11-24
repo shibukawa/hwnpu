@@ -20,12 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // Export is model.json of an export of tools/amd/iron_siglip2.py.
@@ -86,7 +86,7 @@ func IsExport(dir string) bool {
 // Model is a loaded export. Each tower's graph is loaded when first used.
 type Model struct {
 	Export
-	dev          *hwnpu.Device
+	dev          *bonsaiai.Device
 	dir          string
 	vision, text *iron.Graph
 	prog         programs // the towers of an export of Prepare (Format coreml)
@@ -101,7 +101,7 @@ type Model struct {
 
 // Open reads the export in dir: IRON's graphs for AMD's NPU dev, or the Core ML packages of
 // Prepare for dev (nil: the CPU interpreter).
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Model, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string) (*Model, error) {
 	x, err := ReadExport(dir)
 	if err != nil {
 		return nil, err

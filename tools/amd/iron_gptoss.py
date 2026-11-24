@@ -1,6 +1,6 @@
 """gpt-oss (``gpt_oss``: openai/gpt-oss-20b) on IRON's shared decoder (``iron.lm``).
 
-An application of amd/IRON kept in hwnpu (IRON has none for gpt-oss), exported by
+An application of amd/IRON kept in bonsaiai (IRON has none for gpt-oss), exported by
 ``iron_export_lm.py gptoss``. The structure follows transformers' modeling_gpt_oss.py (checked
 against it in tools/ref/ref_gptoss.py):
 
@@ -72,13 +72,13 @@ KV_RING = os.environ.get("GPTOSS_KV_RING", "1") == "1"
 # Where the experts do not all have a place (moe.EXPERTS, GPTOSS_EXPERT_PLACES, below the
 # checkpoint's): every expert's tables go to the export's experts.bin (by layer, the gate-up
 # tables of every expert then the down ones, as a layer's tables would be with every expert),
-# the places' tables in the image are zeros, and hwnpu fills them (internal/llm/iron/pool.go).
+# the places' tables in the image are zeros, and bonsaiai fills them (internal/llm/iron/pool.go).
 POOL = dict(out=None, layers={})
 # The decode step's routing on the host (GPTOSS_HOST_ROUTE=1, and always for more than 32
 # experts, which GptOssStep's router and routing do not hold): a layer's command ends after its
-# attention (no R and T phases); hwnpu reads its residual, runs the router (router.bin: by layer
+# attention (no R and T phases); bonsaiai reads its residual, runs the router (router.bin: by layer
 # the weight transposed (HP, E) and the bias (E), float32) and writes the next command's experts'
-# offsets (per-call values) and routing weights (a state) before it submits it. hwnpu stops after
+# offsets (per-call values) and routing weights (a state) before it submits it. bonsaiai stops after
 # each command anyway when the experts have fewer places than experts.
 HOST_ROUTE = os.environ.get("GPTOSS_HOST_ROUTE", "0") == "1"
 ROUTE = dict(layers={})
@@ -348,7 +348,7 @@ class SinkCache(KVCache):
         if RESIDENT:
             # The decode step's array of the layer's keys and values (GptOssStep reads a group's
             # key and value of a row together; IRON's operators take no such view of one array, so
-            # the prompt chunk keeps keys and values, and hwnpu copies a chunk's rows here and a
+            # the prompt chunk keeps keys and values, and bonsaiai copies a chunk's rows here and a
             # decode step's back: internal/llm/iron's joinKV and splitKV). A chunk of rows more
             # than the context: the attention's objects reach past the call's row
             _, G, D = self.keys.shape
@@ -356,7 +356,7 @@ class SinkCache(KVCache):
 
             # A sliding layer's is a ring of its window: the rows its attention reads are all the
             # ring holds, in any order (position p's row is p % 128), one object of the attention.
-            # hwnpu fills it from the keys and values where a sequence goes back, and splits the
+            # bonsaiai fills it from the keys and values where a sequence goes back, and splits the
             # steps' rows before the ring takes their place (rows.go's ringsTo and stepAt)
             self.kv_ring = KV_RING and window is not None and window + 1 == gl.TOK
             self.kv = iron.state((gl.TOK if self.kv_ring else c.max_seq_len + c.prefill_chunk, 2, G, D))
@@ -410,7 +410,7 @@ class GptOssMoe(iron.Graph):
         gu = np.concatenate([moe.gate_up_table(gc[e], ge[e], gb[e]) for e in range(self.n)])
         dn = np.concatenate([moe.down_table(dc[e], de[e], db[e]) for e in range(self.n)])
         self.gu_bytes, self.dn_bytes = gu.size // self.n, dn.size // self.n
-        if moe.EXPERTS < self.n:  # the places' tables zeros (hwnpu fills them), every expert's in experts.bin
+        if moe.EXPERTS < self.n:  # the places' tables zeros (bonsaiai fills them), every expert's in experts.bin
             self.write_pool(gu, dn)
             gu = np.zeros(moe.EXPERTS * self.gu_bytes, np.uint8)
             dn = np.zeros(moe.EXPERTS * self.dn_bytes, np.uint8)
@@ -512,7 +512,7 @@ class GptOssMoe(iron.Graph):
         iron.on_host(MoEHost("moe_route_mx4", self.index, self.n, self.top, C, moe), logits, moe.hn,
                      writes=(moe.counts, moe.xs))
         GU, D = group_operators()
-        # each slot's expert (the graph's slot<i>, which hwnpu's route sets each pass): its tables' offsets
+        # each slot's expert (the graph's slot<i>, which bonsaiai's route sets each pass): its tables' offsets
         slots = call.slots  # the overflow slots' (slot e < 32 is expert e's)
         a = GU.step(self.gu, moe.counts, moe.xs, rows=self.gu.shape[0],
                     **{f"w{i}": s * self.gu_bytes for i, s in slots.items()})
@@ -542,12 +542,12 @@ class MoEStates:
 
 
 class MoEHost:
-    """A host step of a prompt chunk's experts: ``hwnpu`` names it for hwnpu (which runs its own
+    """A host step of a prompt chunk's experts: ``bonsaiai`` names it for bonsaiai (which runs its own
     in Go: internal/llm/iron's moeHostRouteMX4 and moeHostCombine); called, the reference's."""
 
     def __init__(self, kind: str, layer: int, experts: int, top: int, C: int, states: MoEStates):
         self.kind, self.layer, self.experts, self.top, self.C, self.states = kind, layer, experts, top, C, states
-        self.hwnpu = dict(kind=kind, layer=layer, experts=experts, top=top, cap=moe.CAP, tokens=C,
+        self.bonsaiai = dict(kind=kind, layer=layer, experts=experts, top=top, cap=moe.CAP, tokens=C,
                           in_features=moe.HIDDEN, kt=moe.KT, slots=moe.SLOTS, places=moe.EXPERTS,
                           slot_values=[""] * moe.EXPERTS + [f"slot{i}" for i in range(moe.EXPERTS, moe.SLOTS)])
 
@@ -562,7 +562,7 @@ class MoEHost:
         v = np.take_along_axis(lg, ids, 1)
         w = np.exp(v - v[:, :1])
         w = (w / w.sum(1, keepdims=True)).astype(bfloat16).astype(np.float32)
-        # one pass's slots (the reference's: hwnpu's route splits a chunk needing more into passes)
+        # one pass's slots (the reference's: bonsaiai's route splits a chunk needing more into passes)
         plan = moe.plan_slots(np.bincount(ids.reshape(-1), minlength=self.experts))
         rows = np.zeros((moe.SLOTS, moe.CAP, moe.HIDDEN), bfloat16)
         seen = np.zeros(self.experts, np.int64)
@@ -626,11 +626,11 @@ class GptOssLayer(DecoderLayer):
 class GptOss(CausalLM):
     """gpt-oss on ``config``'s shape and a checkpoint's ``weights`` (module docstring): the decode
     step and a prompt chunk (its experts routed on the host), the body taking each layer's chosen experts' offsets (``e<layer>_<i>``), which
-    command B's scratchpad gets from the layer's MoERoute (``hwnpu_fed``)."""
+    command B's scratchpad gets from the layer's MoERoute (``bonsaiai_fed``)."""
 
     config = GptOssConfig
     layer_class = GptOssLayer
-    hwnpu_name = "GptOss"
+    bonsaiai_name = "GptOss"
 
     def __init__(self, config: GptOssConfig, weights):
         super().__init__(config, pad_tree(weights))
@@ -683,7 +683,7 @@ class GptOss(CausalLM):
         bound = getattr(ids, "valid", None) or {}
         return Copy.step(self.embed_rows[: bound[0]] if 0 in bound else self.embed_rows[: shape[0]])
 
-    def hwnpu_experts_pool(self):
+    def bonsaiai_experts_pool(self):
         """The manifest's experts_pool where the layers' tables have fewer places than experts
         (GPTOSS_EXPERT_PLACES): experts.bin and, by layer, its tables' buffers and place there."""
         if not POOL["layers"]:
@@ -695,7 +695,7 @@ class GptOss(CausalLM):
                     layers=[dict(gu=f"model.layers.{l}.mlp.gu", dn=f"model.layers.{l}.mlp.dn", **POOL["layers"][l])
                             for l in range(L)])
 
-    def hwnpu_experts_route(self):
+    def bonsaiai_experts_route(self):
         """The manifest's experts_route where the decode step routes on the host (host_route):
         router.bin and, by layer, the buffers of its residual, its norm's weight and the next
         command's routing weights."""
@@ -712,7 +712,7 @@ class GptOss(CausalLM):
                                  **ROUTE["layers"][l]) for l in range(L)])
 
     def head(self, x):
-        # The padded head's logits whole: hwnpu reads the first vocab_size (iron.Model.logits),
+        # The padded head's logits whole: bonsaiai reads the first vocab_size (iron.Model.logits),
         # and a cut would be a copy of its own.
         return self.lm_head(self.model.norm(x))
 
@@ -726,7 +726,7 @@ class GptOss(CausalLM):
         return moe_class(cls, layers).from_checkpoint(path, **kwargs)
 
     def draw(self, logits, call):
-        # no draw on the device (its commands end at host steps); hwnpu draws from the logits
+        # no draw on the device (its commands end at host steps); bonsaiai draws from the logits
         return logits, iron.carry(token=call.token + 0, position=call.position + 1)
 
     @functools.wraps(CausalLM.body)
@@ -834,11 +834,11 @@ class GptOss(CausalLM):
                 call.feedback.append((l, image.name))
                 iron.on_host(lambda: None)  # the next command's words are this one's routing's
             h, rw = yo, yw
-        # the logits as GptOssStep's head sends them: two partial sums a row, which hwnpu adds
-        self.hwnpu_logit_parts = 2 * gl.MT
-        # one array a step, loaded once: hwnpu's barrier before a step (another hardware context,
+        # the logits as GptOssStep's head sends them: two partial sums a row, which bonsaiai adds
+        self.bonsaiai_logit_parts = 2 * gl.MT
+        # one array a step, loaded once: bonsaiai's barrier before a step (another hardware context,
         # which puts the array's configuration back: 2.4 ms a step) is not needed (docs/design/README.md)
-        self.hwnpu_no_step_barrier = True
+        self.bonsaiai_no_step_barrier = True
         return self.draw(yh, call)
 
     class Recompile(Exception):

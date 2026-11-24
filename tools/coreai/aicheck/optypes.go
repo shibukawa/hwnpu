@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // opTypes prints the MIL operation types of the packages and how often each occurs.

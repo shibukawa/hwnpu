@@ -6,15 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend/coreml"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreml"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
 )
 
 // A model split at its attention runs on the Neural Engine after the context it was loaded under
-// is canceled (hwnpu-chat loads under a signal.NotifyContext and stops it once the model is up),
+// is canceled (bonsaiai-chat loads under a signal.NotifyContext and stops it once the model is up),
 // with the logits of the CPU interpreter. The attention program kept the load's context, so every
 // call returned "context canceled" while its submission ran on: the answers came out empty, the
 // next bind failed and closing the session freed chunks under a running prediction.
@@ -23,7 +23,7 @@ func TestPagedOnNeuralEngine(t *testing.T) {
 	if infos, err := (coreml.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Neural Engine")
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend("coreml"), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer), bonsaiai.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestSparseOnNeuralEngine(t *testing.T) {
 	if infos, err := (coreml.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Neural Engine")
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend("coreml"), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer), bonsaiai.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // The programs Prepare converts for Core AI (llm.ConvertAI: 1 and 4 tokens per call of a model
@@ -23,7 +23,7 @@ func TestConvertAIOnNeuralEngine(t *testing.T) {
 	if infos, err := (coreai.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Core AI")
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreai"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend("coreai"), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer), bonsaiai.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestShorterChunksOnNeuralEngine(t *testing.T) {
 	if infos, err := (coreai.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Core AI")
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreai"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend("coreai"), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer), bonsaiai.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestMigrateToPagedOnNeuralEngine(t *testing.T) {
 	if infos, err := (coreai.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Core AI")
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreai"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend("coreai"), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer), bonsaiai.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestMigrateRingsOnNeuralEngine(t *testing.T) {
 	if infos, err := (coreai.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Core AI")
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreai"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend("coreai"), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer), bonsaiai.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
 	if err != nil {
 		t.Fatal(err)
 	}

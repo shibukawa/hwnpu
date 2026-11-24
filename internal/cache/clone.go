@@ -223,7 +223,7 @@ func CanCloneIn(dir string) bool {
 	if err != nil {
 		return false
 	}
-	_, err = f.WriteString("hwnpu")
+	_, err = f.WriteString("bonsaiai")
 	f.Close()
 	defer os.Remove(f.Name())
 	if err != nil {

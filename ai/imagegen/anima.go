@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 // Anima (circlestone-labs/Anima): Qwen3-0.6B and Anima's LLM adapter read the prompt, the
@@ -119,31 +119,31 @@ func loadAnima(ctx context.Context, g *Generator, f airole.Files, e airole.LoadE
 		sizes = man.SizeList()
 		a.sized = len(sizes) > 1
 		if !e.NPU.CPU(e.Def) {
-			var opts []hwnpu.Option
+			var opts []bonsaiai.Option
 			if e.Cache != "" {
-				opts = append(opts, hwnpu.WithCacheDir(e.Cache))
+				opts = append(opts, bonsaiai.WithCacheDir(e.Cache))
 			}
 			if llm.AppleFormat(man.Backend) {
-				// on Core AI (an older Core ML export is lowered to Core AI as it loads). One hwnpu
+				// on Core AI (an older Core ML export is lowered to Core AI as it loads). One bonsaiai
 				// process at a time uses the Neural Engine, as the other models' devices are opened
 				// (llm.OpenDevice): beside a chat a stage of the VAE failed
 				if err := llm.LockNPU(ctx); err != nil {
 					return nil, err
 				}
-				opts = append(opts, hwnpu.WithBackend(exportDevice(man.Backend, e.NPU)))
+				opts = append(opts, bonsaiai.WithBackend(exportDevice(man.Backend, e.NPU)))
 			} else if e.NPU.Device != "" {
-				opts = append(opts, hwnpu.WithBackend(e.NPU.Device))
+				opts = append(opts, bonsaiai.WithBackend(e.NPU.Device))
 			}
-			if g.dev, err = hwnpu.Open(ctx, opts...); err != nil {
+			if g.dev, err = bonsaiai.Open(ctx, opts...); err != nil {
 				return nil, err
 			}
 		}
 	} else {
 		sizes = anima.IronSizes(a.dir)
 		a.sized = len(sizes) > 1
-		var opts []hwnpu.Option
+		var opts []bonsaiai.Option
 		if e.Cache != "" {
-			opts = append(opts, hwnpu.WithCacheDir(e.Cache))
+			opts = append(opts, bonsaiai.WithCacheDir(e.Cache))
 		}
 		var err error
 		if g.dev, err = openAMD(ctx, opts...); err != nil {

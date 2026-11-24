@@ -13,37 +13,37 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // A source is a place models are looked for in before Hugging Face (docs/cache-sharing-design.md 7): a
 // folder (a mounted NAS, a local disk), an HTTP server (WebDAV, or any server read only) or S3.
-// The sources are HWNPU_MODEL_SOURCE, then HWNPU_MODEL_SOURCE_1, _2, ... (every variable that
-// starts with HWNPU_MODEL_SOURCE, in the order of its number), each a URL:
+// The sources are BONSAIAI_MODEL_SOURCE, then BONSAIAI_MODEL_SOURCE_1, _2, ... (every variable that
+// starts with BONSAIAI_MODEL_SOURCE, in the order of its number), each a URL:
 //
-//	file:///mnt/llm/hwnpu          a folder (file:///C:/models, file://server/share on Windows)
+//	file:///mnt/llm/bonsaiai          a folder (file:///C:/models, file://server/share on Windows)
 //	https://USER:PASSWORD@host/dav a WebDAV folder; read with GETs, so any HTTP server serves it
-//	                               read only (the password: here, ~/.netrc or HWNPU_WEBDAV_PASSWORD;
+//	                               read only (the password: here, ~/.netrc or BONSAIAI_WEBDAV_PASSWORD;
 //	                               ?tls_sha256=HEX trusts a NAS's own certificate, ?insecure=true
 //	                               any certificate)
 //	s3://BUCKET/PREFIX?endpoint=http://host:9000&region=R&profile=P&path_style=true&no_sign=true
 //
 // ?writeback=true puts in the source what is made here and what is read from a later source or
-// Hugging Face (a forward proxy). HWNPU_MODEL_HUGGING_FACE=false keeps hwnpu off Hugging Face:
+// Hugging Face (a forward proxy). BONSAIAI_MODEL_HUGGING_FACE=false keeps bonsaiai off Hugging Face:
 // everything comes from the sources.
 //
 // What a source holds:
 //
 //	original/OWNER/NAME/FILE...                      a repository's files, as on Hugging Face
-//	original/OWNER/NAME/hwnpu-lock.json              their commit, SHA-256 and sizes (Lock)
+//	original/OWNER/NAME/bonsaiai-lock.json              their commit, SHA-256 and sizes (Lock)
 //	converted/MODEL/TARGET/EXPORT/VERSION/...        what was converted (Entry): VERSION is vN,
 //	converted/MODEL/TARGET/EXPORT/VERSION/entry.json vN-HASH (develop) or v0-HASH (no version)
 
 // SourceEnv is the first source's variable; SourceEnv_1, _2, ... follow it.
-const SourceEnv = "HWNPU_MODEL_SOURCE"
+const SourceEnv = "BONSAIAI_MODEL_SOURCE"
 
-// HuggingFaceEnv=false keeps hwnpu off Hugging Face (true, the default: the last source).
-const HuggingFaceEnv = "HWNPU_MODEL_HUGGING_FACE"
+// HuggingFaceEnv=false keeps bonsaiai off Hugging Face (true, the default: the last source).
+const HuggingFaceEnv = "BONSAIAI_MODEL_HUGGING_FACE"
 
 // Source is a place models are looked for in.
 type Source struct {
@@ -192,7 +192,7 @@ func FromEnv() ([]Source, bool, error) {
 		if rest != "" {
 			num, ok := strings.CutPrefix(rest, "_")
 			if !ok {
-				continue // another variable (HWNPU_MODEL_SOURCES)
+				continue // another variable (BONSAIAI_MODEL_SOURCES)
 			}
 			i, err := strconv.Atoi(num)
 			if err != nil || i < 0 {

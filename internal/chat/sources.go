@@ -14,19 +14,19 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // Where the files of the models come from (docs/cache-sharing-design.md 7), in layers: the machine's
-// own cache (cache.Root: original/OWNER/NAME, with its hwnpu-lock.json), the sources of the
-// environment (HWNPU_MODEL_SOURCE, HWNPU_MODEL_SOURCE_1, ...: internal/store), the models an
+// own cache (cache.Root: original/OWNER/NAME, with its bonsaiai-lock.json), the sources of the
+// environment (BONSAIAI_MODEL_SOURCE, BONSAIAI_MODEL_SOURCE_1, ...: internal/store), the models an
 // application installs with it (store.SetBundles), and Hugging Face last unless
-// HWNPU_MODEL_HUGGING_FACE=false. A repository's files in a layer are those its hwnpu-lock.json
+// BONSAIAI_MODEL_HUGGING_FACE=false. A repository's files in a layer are those its bonsaiai-lock.json
 // names, of the commit it names: a model that does not pin a commit takes the commit of the first
 // lock after the machine's cache, so that every machine of the sources runs the same files
-// (hwnpu-dev sources update moves the lock), and the machine's cache follows it. A file read from a
+// (bonsaiai-dev sources update moves the lock), and the machine's cache follows it. A file read from a
 // later layer goes in the machine's cache and in the sources before with ?writeback=true (in the
 // background).
 
@@ -54,7 +54,7 @@ type pinnedFile struct{ repo, name string }
 
 // RepoDir is the folder of the files of repo (OWNER/NAME, or OWNER/NAME@REVISION) here:
 // original/OWNER/NAME under the cache's root, as in a source. Whatever the revision, a repository
-// has one folder: its hwnpu-lock.json says which commit the files are of.
+// has one folder: its bonsaiai-lock.json says which commit the files are of.
 func RepoDir(repo string) string {
 	base, _, _ := strings.Cut(repo, "@")
 	return cache.Sub(filepath.FromSlash(shared.OriginalKey(base, "")))
@@ -64,7 +64,7 @@ func RepoDir(repo string) string {
 // unless it is there. repo is Model.Source(): OWNER/NAME or OWNER/NAME@REVISION. The file is of the
 // commit the model pins, or the first source's lock names, or the one the machine's cache has; it
 // is looked for in the sources (shared.Sources), then on Hugging Face (unless
-// HWNPU_MODEL_HUGGING_FACE=false). A file the definitions pin (sha256) is checked; one that
+// BONSAIAI_MODEL_HUGGING_FACE=false). A file the definitions pin (sha256) is checked; one that
 // differs is removed. A pinned file another repository of the same SHA-256 has here is linked from
 // there first (sameFile).
 func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error) {
@@ -151,7 +151,7 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 		fmt.Fprintf(log, "%v\n", err)
 	}
 	if !shared.HuggingFace() {
-		return "", fmt.Errorf("chat: %s of %s is in none of the sources (%s), and %s=false keeps hwnpu off Hugging Face: %w",
+		return "", fmt.Errorf("chat: %s of %s is in none of the sources (%s), and %s=false keeps bonsaiai off Hugging Face: %w",
 			name, repo, sourceNames(ss), shared.HuggingFaceEnv, errNotFound)
 	}
 	from := repo
@@ -219,10 +219,10 @@ func here(ctx context.Context, local shared.Source, base, commit, name, want, pa
 }
 
 // adopt takes a file at path that the machine's lock does not name (one of another commit, from
-// before the lock moved; or one of an earlier hwnpu's models/NAME/, LegacyModelDir) when it has
+// before the lock moved; or one of an earlier bonsaiai's models/NAME/, LegacyModelDir) when it has
 // the SHA-256 it should have: the one the definitions pin, a source's lock names or Hugging Face
 // says (a file in LFS), and reports whether it did. One that differs is removed. A file whose
-// SHA-256 is not known is taken only when hwnpu keeps off Hugging Face (else it comes again: a
+// SHA-256 is not known is taken only when bonsaiai keeps off Hugging Face (else it comes again: a
 // small file, not in LFS).
 func adopt(ctx context.Context, local shared.Source, repo, commit, name, want, path string, log io.Writer) bool {
 	base, _, _ := strings.Cut(repo, "@")
@@ -278,7 +278,7 @@ func adopt(ctx context.Context, local shared.Source, repo, commit, name, want, p
 	}
 	if c == "" {
 		if l, err := shared.ReadLock(ctx, local, base); err == nil {
-			c = l.Commit // hwnpu off Hugging Face, no source's lock: the commit of what is here
+			c = l.Commit // bonsaiai off Hugging Face, no source's lock: the commit of what is here
 		}
 	}
 	if shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: got, Size: fi.Size()}, true) != nil {
@@ -296,14 +296,14 @@ func short(commit string) string {
 	return commit[:min(12, len(commit))]
 }
 
-// LegacyModelDir is where an earlier hwnpu kept the files of repo base: models/NAME under the
+// LegacyModelDir is where an earlier bonsaiai kept the files of repo base: models/NAME under the
 // cache's root. A file asked for that is there is moved to RepoDir when it is the right one.
 func LegacyModelDir(base string) string { return cache.Sub("models", path.Base(base)) }
 
 // lockedCommit is the commit fetch takes the files of repo from: the revision the definitions
 // pin when it is a commit, else the one this process took them from before; for main, else the
 // one of the first source with a lock of the repository, else the one of the machine's cache
-// (what is here: Hugging Face is not asked whether main moved; hwnpu-dev sources update moves it);
+// (what is here: Hugging Face is not asked whether main moved; bonsaiai-dev sources update moves it);
 // for another branch or tag, the one Hugging Face says it is. "" for any (Hugging Face's main).
 func lockedCommit(ctx context.Context, repo string) string {
 	if c, ok := servedCommit(repo); ok {

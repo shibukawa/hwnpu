@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
 )
 
 // lowerTo lowers each package and writes OUT/NAME.aimodel.

@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-// Clean is what a writeback cut off left in a source (hwnpu cache clean, docs/cache-sharing-design.md
+// Clean is what a writeback cut off left in a source (bonsaiai cache clean, docs/cache-sharing-design.md
 // 7.1). A folder is whole or it is not: an entry's folder (converted/MODEL/TARGET/EXPORT/VERSION)
 // with no entry.json is not, and goes whole; in a repository's folder (original/OWNER/NAME) the
-// files its hwnpu-lock.json does not name go, all of them with no lock. The temporary files of
+// files its bonsaiai-lock.json does not name go, all of them with no lock. The temporary files of
 // an upload (.put-) and the markers of writebacks no longer going on (.writing-) go too. A
 // folder with a marker written in the last WritingStale, or a file changed then (a writeback of
-// a hwnpu before the markers), is being written and is left as it is, as is everything outside
+// a bonsaiai before the markers), is being written and is left as it is, as is everything outside
 // converted/ and original/. In S3, the multipart uploads under them initiated more than
 // WritingStale ago, which a Put cut off left and S3 keeps the parts of unlisted, are aborted.
 type Clean struct {
@@ -88,7 +88,7 @@ func listAll(ctx context.Context, st Store, prefix string) ([]listed, error) {
 }
 
 // busy reports whether folder d of s, which holds ls, is being written: a marker of it written in
-// the last WritingStale, or a file of it changed then (a writeback of a hwnpu before the markers,
+// the last WritingStale, or a file of it changed then (a writeback of a bonsaiai before the markers,
 // a marker that could not be written).
 func busy(ctx context.Context, s Source, ls []listed, now time.Time) (bool, error) {
 	var markers []string
@@ -184,7 +184,7 @@ func planFolder(ctx context.Context, s Source, d string, ls []listed, now time.T
 		case errors.Is(err, ErrNotFound):
 			f.Whole = true
 		case err != nil:
-			return f, err // one this hwnpu cannot read: left as it is
+			return f, err // one this bonsaiai cannot read: left as it is
 		default:
 			keep = func(k string) bool {
 				name := strings.TrimPrefix(k, d+"/")

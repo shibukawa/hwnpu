@@ -11,13 +11,13 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	shared "github.com/shibukawa/hwnpu/internal/store"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // PLaMo-Embedding on AMD's NPU is an export of tools/amd/iron_plamo_embed.py: a graph a sequence
@@ -100,12 +100,12 @@ func PrepareEmbedderAMD(ctx context.Context, m Model, log io.Writer) (string, er
 
 // amdEmbed runs an export of EmbedAMDTool.
 type amdEmbed struct {
-	dev    *hwnpu.Device
-	graphs []amdEmbedGraph // shortest first
-	emb    *os.File        // embed.bin: a bf16 row a token
-	shared []*hwnpu.Buffer // the banks the graphs share
-	work   []int64         // where each's work area starts (its image's end: the weights')
-	cur    int             // the graph run last (-1: none)
+	dev    *bonsaiai.Device
+	graphs []amdEmbedGraph    // shortest first
+	emb    *os.File           // embed.bin: a bf16 row a token
+	shared []*bonsaiai.Buffer // the banks the graphs share
+	work   []int64            // where each's work area starts (its image's end: the weights')
+	cur    int                // the graph run last (-1: none)
 }
 
 type amdEmbedGraph struct {
@@ -129,7 +129,7 @@ func LoadEmbedderAMD(ctx context.Context, dir, name string, log io.Writer) (*Emb
 		return nil, err
 	}
 	if a.Name != "plamo-bi" {
-		return nil, fmt.Errorf("chat: %s is not an embedding model hwnpu-chat runs (only PLaMo-Embedding)", a.Title)
+		return nil, fmt.Errorf("chat: %s is not an embedding model bonsaiai-chat runs (only PLaMo-Embedding)", a.Title)
 	}
 	if model.Hidden() != mj.Hidden {
 		return nil, fmt.Errorf("chat: %s: graphs of %d for a model of %d", dir, mj.Hidden, model.Hidden())
@@ -151,7 +151,7 @@ func LoadEmbedderAMD(ctx context.Context, dir, name string, log io.Writer) (*Emb
 	}
 	x := &amdEmbed{cur: -1}
 	e.amd = x
-	if x.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+	if x.dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD)); err != nil {
 		e.Close()
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func LoadEmbedderAMD(ctx context.Context, dir, name string, log io.Writer) (*Emb
 	slices.Sort(seqs)
 	// the longest first: its banks (as large as any's) are lent to the others, whose weights
 	// are at the same places (one pinned copy)
-	var lend map[string]*hwnpu.Buffer
+	var lend map[string]*bonsaiai.Buffer
 	for i := len(seqs) - 1; i >= 0; i-- {
 		g, err := iron.OpenGraphWith(ctx, x.dev, filepath.Join(dir, fmt.Sprintf("s%d", seqs[i])), iron.GraphOptions{Buffers: lend})
 		if err != nil {
@@ -173,7 +173,7 @@ func LoadEmbedderAMD(ctx context.Context, dir, name string, log io.Writer) (*Emb
 		}
 		x.graphs = append([]amdEmbedGraph{{seqs[i], g}}, x.graphs...)
 		if lend == nil {
-			lend = map[string]*hwnpu.Buffer{}
+			lend = map[string]*bonsaiai.Buffer{}
 			for kind := range g.Manifest.Banks {
 				n, err := g.ImageBytes(kind)
 				if err != nil {

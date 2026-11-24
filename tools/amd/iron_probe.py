@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The graphs hwnpu-dev probe times on AMD's NPU: the shapes of PROBE.md's models, built from
-random weights with the operators hwnpu's exports use, so that the numbers are the ceilings of
+"""The graphs bonsaiai-dev probe times on AMD's NPU: the shapes of PROBE.md's models, built from
+random weights with the operators bonsaiai's exports use, so that the numbers are the ceilings of
 the production paths (not of IRON's samples, docs/amd-xdna2-bench.md).
 
   layers  ``--layers`` Llama 3.2 1B sized layers (hidden 2048, MLP 8192, q 2048, k and v 512:

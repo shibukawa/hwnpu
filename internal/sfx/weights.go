@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/torchzip"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/torchzip"
 )
 
 // Weights reads MOSS-SoundEffect's checkpoints as llm.Weights: the DAC VAE's .pth by its
@@ -130,7 +130,7 @@ func (w *Weights) WriteTables(names []string, out string) error {
 			return fmt.Errorf("sfx: no tensor %s", name)
 		}
 	}
-	return safetensors.Write(out, ts, map[string]string{"format": "pt", "hwnpu": "host tables", "source": w.desc})
+	return safetensors.Write(out, ts, map[string]string{"format": "pt", "bonsaiai": "host tables", "source": w.desc})
 }
 
 func (w *Weights) Close() error {

@@ -2,7 +2,7 @@
 """A convolutional ONNX graph (RTMDet's CSPNeXt: convolutions with SiLU, depthwise 5 x 5,
 channel attention, residual adds, concatenations; RTMO's YOLOX backbone: a Focus, splits,
 grouped convolutions, and the transformer layer of its neck) as one IRON graph: what
-cmd/hwnpu-image runs on AMD's NPU in place of the CPU.
+cmd/bonsaiai-image runs on AMD's NPU in place of the CPU.
 
 Every tensor is a channel-last grid zero-padded by P pixels on each side (``G``): rows of Wp
 pixels, the image's pixel (y, x) at band + y Wp + P + x, its channels padded to a multiple of

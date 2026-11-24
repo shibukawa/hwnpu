@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // rules checks the Neural Engine's numerical rules that arXiv 2606.22283 describes, on small
@@ -31,7 +31,7 @@ import (
 //   - inner1: a matmul of inner dimension 1 (memory: ane-matmul-inner-dim-1)
 //   - div: a division by a constant
 //
-// HWNPU_COREAI_UNITS=cpu runs the same programs on Core AI's CPU, to tell the engine's errors
+// BONSAIAI_COREAI_UNITS=cpu runs the same programs on Core AI's CPU, to tell the engine's errors
 // from the lowering's.
 //
 //	aicheck rules [-only slice,conv,...]
@@ -118,7 +118,7 @@ func (r *ruleRunner) call(body func(g *milpart.Graph), in map[string][]float32) 
 			if !ok {
 				return nil, "", fmt.Errorf("no values for input %s", a.Name)
 			}
-			hwnpu.EncodeF16(b.Bytes(), v)
+			bonsaiai.EncodeF16(b.Bytes(), v)
 		} else {
 			out, outN = b, a.Bytes/2
 		}
@@ -131,7 +131,7 @@ func (r *ruleRunner) call(body func(g *milpart.Graph), in map[string][]float32) 
 		return nil, "", err
 	}
 	got := make([]float32, outN)
-	hwnpu.DecodeF16(got, out.Bytes())
+	bonsaiai.DecodeF16(got, out.Bytes())
 	return got, where, nil
 }
 
@@ -146,9 +146,9 @@ func fill(n int, v float32) []float32 {
 // f16 rounds to fp16.
 func f16(v float32) float32 {
 	b := make([]byte, 2)
-	hwnpu.EncodeF16(b, []float32{v})
+	bonsaiai.EncodeF16(b, []float32{v})
 	o := make([]float32, 1)
-	hwnpu.DecodeF16(o, b)
+	bonsaiai.DecodeF16(o, b)
 	return o[0]
 }
 
@@ -439,7 +439,7 @@ func (r *ruleRunner) inner1M(M int) error {
 	return nil
 }
 
-// div: x / 3 and x / 7 (ailower turns it into a multiply unless HWNPU_DEV=ailower.divide=1).
+// div: x / 3 and x / 7 (ailower turns it into a multiply unless BONSAIAI_DEV=ailower.divide=1).
 func (r *ruleRunner) div() error {
 	const n = 64 * 1024
 	xs := make([]float32, n)

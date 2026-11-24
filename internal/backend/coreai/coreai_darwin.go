@@ -29,16 +29,16 @@ import (
 	"time"
 	"unsafe"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
 	"github.com/ebitengine/purego"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
-	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
+	"github.com/shibukawa/bonsaiai/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 //go:embed libcaishim.dylib
@@ -71,11 +71,11 @@ const (
 // UnitsEnv names the environment variable that moves the programs off the Neural Engine, for
 // telling a lowering's errors from the Neural Engine's (and checking a lowering while another
 // process has the Neural Engine): "cpu" runs them on Core AI's CPU alone. As Core ML's
-// HWNPU_COREML_UNITS. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
+// BONSAIAI_COREML_UNITS. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
 // above 1.1) overflows there, where the Neural Engine and the GPU are right (docs/design/vision-models.md).
-const UnitsEnv = "HWNPU_COREAI_UNITS"
+const UnitsEnv = "BONSAIAI_COREAI_UNITS"
 
-// HWNPU_DEV=coreai.copy gives the programs' inputs buffers of the host's, copied into Core AI's
+// BONSAIAI_DEV=coreai.copy gives the programs' inputs buffers of the host's, copied into Core AI's
 // arrays at every run, instead of those arrays themselves (graph.AllocInput): for telling what
 // the copies cost, and whether an error is of the arrays.
 
@@ -120,7 +120,7 @@ func markPrebuilt(dir, fn, msg string) {
 			fmt.Fprintf(os.Stderr, "coreai: %s: the record of the prebuilt program: %v\n", key, err)
 		}
 	} else if d.Bad() {
-		fmt.Fprintf(os.Stderr, "coreai: %s: written %s in %s (hwnpu-dev prebuild takes it for no later export)\n", key, d.Status, filepath.Join(filepath.Base(root), RecordFile))
+		fmt.Fprintf(os.Stderr, "coreai: %s: written %s in %s (bonsaiai-dev prebuild takes it for no later export)\n", key, d.Status, filepath.Join(filepath.Base(root), RecordFile))
 	}
 }
 
@@ -131,7 +131,7 @@ func load() error {
 			return
 		}
 		sum := sha256.Sum256(shimLib)
-		dir := filepath.Join(os.TempDir(), "hwnpu-coreai")
+		dir := filepath.Join(os.TempDir(), "bonsaiai-coreai")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			loadErr = err
 			return
@@ -268,7 +268,7 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 		dir, fn, cached, err = resolve(d.opts.CacheDir, path)
 		return dir, fn, cached, "", dir, err
 	}
-	tmp, err := os.MkdirTemp("", "hwnpu-coreai-*.aimodel")
+	tmp, err := os.MkdirTemp("", "bonsaiai-coreai-*.aimodel")
 	if err != nil {
 		return "", "", false, "", "", err
 	}
@@ -281,11 +281,11 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 
 // PrebuiltEnv set to off makes Core AI compile a program on the device even when a prebuilt one
 // (coreai-build's .aimodelc, Prebuilt) lies beside it.
-const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
+const PrebuiltEnv = "BONSAIAI_COREAI_PREBUILT"
 
 // Prebuilt is the program coreai-build compiled for this device's architecture for the asset at
 // dir, or "" without one of the same source (main.hash): X.ARCH.aimodelc beside X.aimodel
-// (hwnpu-dev models package MODEL/coreai-ARCH), else the packed one beside the export (PackedPath, from the shared
+// (bonsaiai-dev models package MODEL/coreai-ARCH), else the packed one beside the export (PackedPath, from the shared
 // layers; Assemble makes it whole). Core AI loads it without the Neural Engine compiler's pass
 // over the program: the device finishes the compiled regions (ANELargeModelCompilerService), 3
 // to 5 times faster for a large program, and fills the same cache entry (the hash is the
@@ -367,7 +367,7 @@ func packed(pb string) bool {
 
 // hasEntry reports whether Core AI's cache holds the program of the asset at dir for this
 // process: its entries are under the OS's build and the executable's name
-// (~/Library/Caches/coreai-cache/26B123/hwnpu-image/HASH/DEVICE/model.aimodelx). An entry
+// (~/Library/Caches/coreai-cache/26B123/bonsaiai-image/HASH/DEVICE/model.aimodelx). An entry
 // without main-this.odix makes Core AI compile the bytecode again; one without its delegates
 // fails to load, and is lowered again. Anything it cannot read says no.
 func hasEntry(dir string) bool {
@@ -414,7 +414,7 @@ func coreAICacheDir() string {
 
 func init() { cache.SetRestorable(restorableEntries) }
 
-// restorableEntries are the entries of Core AI's cache (of hwnpu's executables, this OS build)
+// restorableEntries are the entries of Core AI's cache (of bonsaiai's executables, this OS build)
 // of the programs in the cache's exports that have a prebuilt program for this device: they hold
 // the program's weights again, and the prebuilt program makes them again in seconds rather than
 // the Neural Engine compiler's minutes, so a disk short of room loses them first (cache.Room,
@@ -445,7 +445,7 @@ func restorableEntries() []string {
 	exes, _ := os.ReadDir(base)
 	var out []string
 	for _, e := range exes {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "hwnpu") {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "bonsaiai") {
 			continue
 		}
 		for h := range hashes {

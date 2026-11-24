@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/dl"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -38,7 +38,7 @@ func reluModel() []byte {
 func runtimeOrSkip(t *testing.T) *Runtime {
 	r, err := Load()
 	if errors.Is(err, dl.ErrNotFound) {
-		t.Skip("no ONNX Runtime (HWNPU_ONNXRUNTIME)")
+		t.Skip("no ONNX Runtime (BONSAIAI_ONNXRUNTIME)")
 	}
 	if err != nil {
 		t.Fatal(err)

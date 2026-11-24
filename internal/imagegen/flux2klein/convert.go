@@ -13,11 +13,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
@@ -37,7 +37,7 @@ type ConvertOptions struct {
 	// Width and Height are the picture's size in pixels, multiples of 16.
 	Width, Height int
 	// TextFormat and DitFormat are the weight formats of Qwen3-4B and of the DiT, as
-	// hwnpu-convert's -format (default lut8 both). The VAE's are fp16.
+	// bonsaiai-convert's -format (default lut8 both). The VAE's are fp16.
 	TextFormat, DitFormat string
 	// TextGroup is Qwen3's layers a program holds at most (a group ends at each hidden state the
 	// DiT reads, mil.TextGroups); DoubleGroup and SingleGroup the DiT's blocks.
@@ -113,7 +113,7 @@ func (o ConvertOptions) editTag() string {
 	return fmt.Sprintf("-%dedits-%08x", n, crc32.ChecksumIEEE([]byte(b.String())))
 }
 
-// ParseReferences is the references hwnpu-image names name ("1", "2@half", "1+2@half"; models.yaml
+// ParseReferences is the references bonsaiai-image names name ("1", "2@half", "1+2@half"; models.yaml
 // npu's edits) as the picture's sides over each: 1 for one of its size, 2 for half its sides.
 func ParseReferences(name string) ([]int, error) {
 	var divs []int

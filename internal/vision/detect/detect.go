@@ -28,15 +28,15 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
 )
 
 // Size is the picture's size the model takes.
@@ -111,7 +111,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	_, err = llm.WritePart(program, p, nil, llm.Options{Format: format, Backend: s.Backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("RTMDet from %s up to its head's convolutions, %dx%d, %s (hwnpu)", s.Repo, Size, Size, format)
+		pkg.Description = fmt.Sprintf("RTMDet from %s up to its head's convolutions, %dx%d, %s (bonsaiai)", s.Repo, Size, Size, format)
 		pkg.Metadata[llm.MetaArch] = Arch
 	})
 	if err != nil {
@@ -260,7 +260,7 @@ func HeadShapes(classes int) [][]int {
 
 // Open loads the program on dev (nil: the CPU interpreter). Its classes are what its output
 // holds besides the boxes: (classes + 4) values a cell.
-func Open(ctx context.Context, dev *hwnpu.Device, program string) (*Detector, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, program string) (*Detector, error) {
 	prog, err := runner.Open(ctx, dev, program)
 	if err != nil {
 		return nil, err

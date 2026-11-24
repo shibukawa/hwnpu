@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Magenta RealTime 2 (google/magenta-realtime-2: code Apache-2.0, weights CC-BY 4.0) on IRON:
-SpectroStream's decoder, which hwnpu-audio generate runs on AMD's NPU (the language model runs
+SpectroStream's decoder, which bonsaiai-audio generate runs on AMD's NPU (the language model runs
 on the CPU: internal/music).
 
   python tools/amd/iron_magenta.py ~/models/magenta-realtime-2 ~/models/magenta-realtime-2-small.amd-npu2

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // weightFileBytes builds the model with opts and returns the size of its weight file.
@@ -30,7 +30,7 @@ func weightFileBytes(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options)
 	return info.Size()
 }
 
-// The size estimate that hwnpu-dev convert splits by matches the weight files the parts get, and a
+// The size estimate that bonsaiai-dev convert splits by matches the weight files the parts get, and a
 // split covers every layer once with each part under its budget.
 func TestSplitSizes(t *testing.T) {
 	cfg := tinyConfig()

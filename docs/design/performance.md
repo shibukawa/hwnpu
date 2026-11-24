@@ -84,7 +84,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 | Core AI: load the next program ahead, swap DiT groups | A Chroma DiT call 7.2 → 5.4–5.8 s; NE holds 8.3 → 2.2–2.6 GiB | | [image-apple.md](image-apple.md) |
 | `--batch` on Core AI | A Chroma DiT call 5.4 → 5.05 s a picture | Host memory per picture | [image-apple.md](image-apple.md) |
 | Every size as functions of one export | One download for all sizes (Anima's per-size exports were 2.9 GB each) | First compile pays all sizes | [image-apple.md](image-apple.md) |
-| Prebuilt per chip (`hwnpu-dev models package MODEL/coreai-ARCH`) | FLUX.2 klein first run on an M1 40 min → 7 min 48 s | Not for chat models or VAEs | [apple-coreai.md](apple-coreai.md) |
+| Prebuilt per chip (`bonsaiai-dev models package MODEL/coreai-ARCH`) | FLUX.2 klein first run on an M1 40 min → 7 min 48 s | Not for chat models or VAEs | [apple-coreai.md](apple-coreai.md) |
 | FLUX.2 klein 4B on Core AI | M1: 512² 11 s, 1024² 41 s a picture | | [image-apple.md](image-apple.md) |
 | Host memory back between VAE stages | FLUX.2 klein 1024² peak 5.8 → 4.1 GB | +0.4 s decoding | [image-apple.md](image-apple.md) |
 | AMD: DiT weights as bfp16 on the host | A step: Anima-Turbo 1024² 4.1 → 3.6–3.8 s, Chroma1-Flash 29.9 → 22.8–25.4 s, Chroma1-HD 27.5 → 20.2 s | 9 bits a weight; export 3–4× longer | [image-amd.md](image-amd.md) |
@@ -128,10 +128,10 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 - **Noise**: swap on the M3 and the power state on AMD move numbers up to 1.4×. Compare only pairs measured back to back. On AMD check no other process holds `/dev/accel`; on a Mac look at `top` (`mediaanalysisd`)
 - **4 bits on AMD**: loss depends on the model (LFM3 KL 0.036, E2B 0.097); export without `--q4` for bf16
 - **Anima's DiT at 8 bits on AMD**: a seed whose trajectory branches easily can change the composition (1 of 4 prompts)
-- **Kernel fixes live in the export**: an AMD export keeps the kernels it was made with (rounding, merged operators) until exported again. An export from a newer exporter can be refused by an older hwnpu (gpt-oss's resident step)
+- **Kernel fixes live in the export**: an AMD export keeps the kernels it was made with (rounding, merged operators) until exported again. An export from a newer exporter can be refused by an older BonsaiAI (gpt-oss's resident step)
 - **`-idle`**: the next request pays 0.8–2 s. **Towers on use**: the first image or clip waits 0.5–0.7 s, and the old and new banks are both pinned for that moment
 - **AMD barriers**: the chunk barrier costs 0.3–0.5 ms a chunk; the step barrier 0.3 ms a step (skipped for gpt-oss's resident step, where it would reload the array: 2.4 ms)
-- **Timing AMD**: `HWNPU_DEV=iron.timing=1` adds each command's round trip; read `ironlm -forced`'s step time. An `array=True` parameter that differs by layer reloads the array each command and still passes the check
+- **Timing AMD**: `BONSAIAI_DEV=iron.timing=1` adds each command's round trip; read `ironlm -forced`'s step time. An `array=True` parameter that differs by layer reloads the array each command and still passes the check
 - **Disk sharing depends on the file system**: ext4 shares nothing; use Btrfs or XFS (Windows: Dev Drive)
 - **Core AI's first run** compiles every part once, and a multi-function `.aimodel` compiles all functions (Chroma1-Flash: 1 h 14 min for 512² and 1024²). The cache is per OS build and process name: after an OS update, or from `aicheck` / `go test`, programs compile again. macOS purges it when the disk is low (seen at 11–22 GB free); converting needs room too
 - **A layout version in an export's name** means converting and compiling again once; pictures are not bit for bit the previous version's (sums in another order); the old export stays until deleted
@@ -141,7 +141,7 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 
 ### The ceiling is how fast the NPU reads DRAM
 
-`hwnpu-dev probe` ([PROBE.md](../../PROBE.md)), 16 layers (0.97 B):
+`bonsaiai-dev probe` ([PROBE.md](../../PROBE.md)), 16 layers (0.97 B):
 
 | | M1 | M2 | M3 | AMD (Ryzen AI 9 365) |
 |---|---|---|---|---|
@@ -160,13 +160,13 @@ Machines: Apple numbers are from the Neural Engine of an M1, M2 or M3 (16 GB, ma
 
 ### What newer chips may bring (estimate, not measured)
 
-| | NPU read, expected | Generation vs M3 | Runs on hwnpu |
+| | NPU read, expected | Generation vs M3 | Runs on BonsaiAI |
 |---|---|---|---|
 | Apple M6 (two Neural Engines, 170 GB/s) | The same if one engine still reads 64 GB/s; up to 2× if both run at once | 1.1–2× | Yes |
 | Snapdragon X2 Elite (80 TOPS, 152 GB/s) | 75–100 GB/s | 1.3–1.6× | No backend |
 | Snapdragon X2 Elite Extreme (228 GB/s) | 115–150 GB/s | 1.8–2.2× | No backend |
 
-To check a new machine: `hwnpu-dev probe`, "weights GB/s" for lut4 at 16 layers. About 64 means generation like the M3's.
+To check a new machine: `bonsaiai-dev probe`, "weights GB/s" for lut4 at 16 layers. About 64 means generation like the M3's.
 
 ### What software can still move
 
@@ -199,8 +199,8 @@ Cross-cutting speed ideas measured and left out (model-bringing ones are in [new
 - One command a token (gpt-oss): mlir-aie reads the scratchpad once a sequence, so routing broke (cosine 0.877)
 - The bfp16 matrix instruction for decode attention scores: no faster, outputs 3.6 % off
 - Prompt sandwich norms as one operator (`SandwichRows`): no faster (small configurations); GDN kernels at `-Os`: no smaller
-- Gemma 4's MLP gate and up with GELU as one operator: 9.3 → 9.9 tok/s but KL up (0.154 → 0.158) and logits drift; off by default (`HWNPU_GEMMA4_FUSE_GLU=1`)
-- Polling expert workers on the Mac (`HWNPU_MXFP4_SPIN`), threads at USER_INTERACTIVE, workers kept awake over a layer: slowed the NE's calls or no gain; code removed
+- Gemma 4's MLP gate and up with GELU as one operator: 9.3 → 9.9 tok/s but KL up (0.154 → 0.158) and logits drift; off by default (`BONSAIAI_GEMMA4_FUSE_GLU=1`)
+- Polling expert workers on the Mac (`BONSAIAI_MXFP4_SPIN`), threads at USER_INTERACTIVE, workers kept awake over a layer: slowed the NE's calls or no gain; code removed
 - Wiring Qwen3.6's experts up to a budget on 16 GB: 8.6–8.8 against 10.6 tok/s unwired; experts over 3/4 of memory are not wired
 - Core AI on image DiTs: more bits a weight (int8 is fastest on the NE), q / k / v as one linear, groups of 7 blocks, the softmax sum divided after P·V in self-attention (overflows fp16), 1/256 in int8 value weights (pictures changed), a norm's row-max division as a constant
 - Core AI: a VAE stage's fp16 output passed on as is, Sana-style loading ahead for small parts: within the noise
@@ -213,9 +213,9 @@ Cross-cutting speed ideas measured and left out (model-bringing ones are in [new
 - Two-level attention: Qwen3.5 passkeys; `Refresh` 4 or 16 by default (14–32 % faster a call, KL not measured on the NE); where it starts (about 57K); the copies in `choose` (12 % of a call at 128K)
 - Slowing past 128K (1.14 → 1.43 ms a 1K); the first calls after a 256K prompt (1.29 s each)
 - The NE's memory beyond the weights (KV, intermediates) is not told apart
-- The M4 and later: limits (`hwnpu-dev probe limit`, `probe split`), and whether a larger default part pays
+- The M4 and later: limits (`bonsaiai-dev probe limit`, `probe split`), and whether a larger default part pays
 - `blocks.SiLU` in the towers and multimodal models (VL descriptions, TTS) not compared with before
-- `hwnpu-chat agent` with Gemma 4 / Qwen3.5 on Apple; Gemma 4 and the prompt store
+- `bonsaiai-chat agent` with Gemma 4 / Qwen3.5 on Apple; Gemma 4 and the prompt store
 - d1-Omni-2B's team answer differs from its README (HF reads 16 questions together); LFM3-Audio TTS against llama.cpp's audio; PLaMo-Embedding long texts; BERT on the ANE with real weights
 - GPTQ codes in the answers (KL falls on the NE; 12 questions do not tell); lut4 + wkmeans on the NE
 - Qwen3.5-2B lut6 against HF's bf16 (only against lut8 so far); Whisper's formats on real recordings
@@ -225,7 +225,7 @@ Cross-cutting speed ideas measured and left out (model-bringing ones are in [new
 
 ### Intel
 
-**Nothing has run on a real NPU**; only accuracy on OpenVINO's CPU ([intel.md](intel.md)). Open: whether the driver's compiler accepts the models and the split form, argument names (`argNames`), int8 against int4-g128 speed, size limits (the 2 GiB of `-target intel` is a placeholder), the cost of re-recording command lists, memory with tiers, real checkpoints in hwnpu-chat, IR sharing on Linux, PLaMo 3 and Anima on hardware.
+**Nothing has run on a real NPU**; only accuracy on OpenVINO's CPU ([intel.md](intel.md)). Open: whether the driver's compiler accepts the models and the split form, argument names (`argNames`), int8 against int4-g128 speed, size limits (the 2 GiB of `-target intel` is a placeholder), the cost of re-recording command lists, memory with tiers, real checkpoints in bonsaiai-chat, IR sharing on Linux, PLaMo 3 and Anima on hardware.
 
 ### AMD
 

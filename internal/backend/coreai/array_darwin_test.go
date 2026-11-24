@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // An input's buffer that is an array of Core AI's (graph.AllocInput) is run as it is, with what
@@ -22,7 +22,7 @@ func TestInputArrays(t *testing.T) {
 	if err != nil || len(infos) == 0 {
 		t.Skip("no Core AI:", err)
 	}
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	dir := filepath.Join(t.TempDir(), "m.mlpackage")
 	pkg, err := mlpackage.Create(dir)
 	if err != nil {

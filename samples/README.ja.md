@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-hwnpu の [`ai`](../USAGE_LIBRARY.ja.md) パッケージで作った小さなアプリです。使うモデルを宣言し、この機械の NPU 向けに準備し、プログラム自身の処理とつなぎます。AMD の NPU (Ryzen AI) と Apple の Neural Engine (macOS 27、Core AI) で動きます。
+BonsaiAI の [`ai`](../USAGE_LIBRARY.ja.md) パッケージで作った小さなアプリです。使うモデルを宣言し、この機械の NPU 向けに準備し、プログラム自身の処理とつなぎます。AMD の NPU (Ryzen AI) と Apple の Neural Engine (macOS 27、Core AI) で動きます。
 
 | サンプル | 何をするか | モデル | ダウンロード (Apple / AMD) |
 |---|---|---|---|
@@ -11,11 +11,11 @@ hwnpu の [`ai`](../USAGE_LIBRARY.ja.md) パッケージで作った小さなア
 | [parallax](parallax/README.ja.md) | 絵を奥行きがあるように見せる。カメラの前の頭の動きに合わせて向きが変わる | Depth Anything 3、YuNet、FLUX.2 klein | 16.5 GB / 14.9 GB |
 | [layers](layers/README.ja.md) | 絵を深度で層に分け、各層が隠していた部分を描き足して、Photoshop の文書に書く | Depth Anything 3、FLUX.2 klein | 16.5 GB / 14.9 GB |
 
-ダウンロード量は 16 GB の機械の場合です (モデルは機械のメモリで選ばれます)。1 回だけで、モデルは hwnpu のキャッシュに残り、サンプルとコマンドで共有します。この機械で落とす量は `go run ./SAMPLE models` が出します。parallax と layers は同じモデルを使うので、両方動かしてもダウンロードは 1 つ分です。
+ダウンロード量は 16 GB の機械の場合です (モデルは機械のメモリで選ばれます)。1 回だけで、モデルは BonsaiAI のキャッシュに残り、サンプルとコマンドで共有します。この機械で落とす量は `go run ./SAMPLE models` が出します。parallax と layers は同じモデルを使うので、両方動かしてもダウンロードは 1 つ分です。
 
 ## 動かし方
 
-サンプルは独立した Go のモジュールで、このチェックアウトの hwnpu を使ってビルドします ([go.mod](go.mod) の `replace`)。このディレクトリで実行します:
+サンプルは独立した Go のモジュールで、このチェックアウトの BonsaiAI を使ってビルドします ([go.mod](go.mod) の `replace`)。このディレクトリで実行します:
 
 ```bash
 cd samples
@@ -24,7 +24,7 @@ go run ./interpreter models prepare    # 最初にダウンロード、変換、
 go run ./interpreter run talk.wav -o out.wav
 ```
 
-どのサンプルにも同じ `models` (`list`、`download`、`prepare`) と `status` のコマンドがあります。モデルは hwnpu のキャッシュに置かれ、コマンド (`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`) と共有します。どれかが準備したものは、ほかも使います。
+どのサンプルにも同じ `models` (`list`、`download`、`prepare`) と `status` のコマンドがあります。モデルは BonsaiAI のキャッシュに置かれ、コマンド (`bonsaiai-chat`、`bonsaiai-image`、`bonsaiai-audio`) と共有します。どれかが準備したものは、ほかも使います。
 
 - モデルの初回はダウンロードと NPU 向けのコンパイルで数分かかります。Apple の FLUX.2 klein の編集のプログラムは最大 1 時間ほどです (prebuilt でなくす予定)。2 回目からは数秒で始まります。
 - Apple の Core AI は、コンパイルした結果をプロセスの名前ごとに持ちます。`go run` と自分でビルドしたバイナリは別々にコンパイルされるので、1 度ビルドして (`go build -o bin/ ./...`) バイナリを動かすのがおすすめです。
@@ -32,7 +32,7 @@ go run ./interpreter run talk.wav -o out.wav
 
 ## 必要なもの
 
-- hwnpu が動かす NPU: AMD Ryzen AI (Linux) か、macOS 27 の Apple Silicon の Mac。[INSTALL_AMD.ja.md](../INSTALL_AMD.ja.md)、[INSTALL_APPLE.ja.md](../INSTALL_APPLE.ja.md) を見てください。
+- BonsaiAI が動かす NPU: AMD Ryzen AI (Linux) か、macOS 27 の Apple Silicon の Mac。[INSTALL_AMD.ja.md](../INSTALL_AMD.ja.md)、[INSTALL_APPLE.ja.md](../INSTALL_APPLE.ja.md) を見てください。
 - マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (cgo なし)。Mac ではターミナルのアプリにその許可が要ります (システム設定 › プライバシーとセキュリティ)。初めて使うときに聞かれます。
 - parallax の窓は [Ebitengine](https://ebitengine.org) です。Linux では Ebitengine がビルドに使う X11/OpenGL のライブラリが要ります。画面のない機械では `-tags headless` でビルドします (`render` と `track` は動きます)。
 
@@ -44,4 +44,4 @@ go run ./interpreter run talk.wav -o out.wav
 | `internal/capture` | マイクとカメラを `ai/flow` の流れに (hwcamera)、スピーカー (oto) |
 | `internal/layering` | 絵を深度で層に分ける処理。layers と parallax が共有 |
 
-hwcamera、oto (スピーカー)、Ebitengine はこのモジュールだけの依存で、hwnpu のライブラリには入りません。
+hwcamera、oto (スピーカー)、Ebitengine はこのモジュールだけの依存で、BonsaiAI のライブラリには入りません。

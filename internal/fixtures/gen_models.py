@@ -1,4 +1,4 @@
-"""Generate the hwnpu model fixtures.
+"""Generate the bonsaiai model fixtures.
 
 Usage (needs numpy; the Core ML part also needs coremltools >= 8):
     python gen_models.py [--only coreml|openvino]
