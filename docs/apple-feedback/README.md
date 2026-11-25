@@ -5,7 +5,7 @@ Drafts written 2026-11-25 for the problems of [known-issues.md](../known-issues.
 | File | Kind | known-issues.md | FB |
 |---|---|---|---|
 | [compile-disk-and-time.md](compile-disk-and-time.md) | new | 14 | |
-| [purged-programs-silent-recompile.md](purged-programs-silent-recompile.md) | new | 8 | |
+| [purged-programs-silent-recompile.md](purged-programs-silent-recompile.md) | new | 8 | FB25724246 |
 | [sin-off-ane-m1-m2.md](sin-off-ane-m1-m2.md) | new | 10 | |
 | [offline-stricter-than-device.md](offline-stricter-than-device.md) | new | 11 | |
 | [h15g-dma-cache-hint.md](h15g-dma-cache-hint.md) | new | 12 | |

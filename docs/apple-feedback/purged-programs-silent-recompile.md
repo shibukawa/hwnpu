@@ -1,5 +1,7 @@
 # Compiled Neural Engine programs are purged under storage pressure while Core AI's cache entry stays, and Core AI silently recompiles
 
+Filed as FB25724246 (2026-11-25).
+
 - **Area**: Core AI / Neural Engine (aned), Storage (CacheDelete)
 - **Type**: Incorrect/Unexpected behavior
 
