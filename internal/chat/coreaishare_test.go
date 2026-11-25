@@ -221,6 +221,37 @@ func TestPrebuiltShared(t *testing.T) {
 	if e, err := shared.ReadEntryAt(ctx, l, es[0]); err != nil || len(e.Holds) != 2 {
 		t.Fatalf("fewer programs replaced the layer's: %v %v", e.Holds, err)
 	}
+	// the record of the build changed (a device's mark): it replaces the layer's, of the same
+	// programs, and a machine that has them does not fetch them again for it
+	os.MkdirAll(more, 0o755)
+	os.WriteFile(filepath.Join(more, "main.hash"), []byte("h1"), 0o644)
+	os.WriteFile(filepath.Join(more, "resources.bin"+coreai.MapSuffix), []byte("{}"), 0o644)
+	root := coreai.PackedRoot(here, "h14g")
+	os.WriteFile(filepath.Join(root, coreai.RecordFile), []byte(`{"format":1}`), 0o644)
+	if err := PutPrebuilt(here, "h14g"); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	e, err := shared.ReadEntryAt(ctx, l, es[0])
+	if err != nil || e.Revision == "" || e.Revision != coreai.RecordDigest(root) || len(e.Holds) != 2 {
+		t.Fatalf("the record did not replace the layer's: %+v %v", e, err)
+	}
+	marker := filepath.Join(coreai.PackedRoot(there, "h14g"), "here")
+	os.WriteFile(marker, nil, 0o644)
+	FetchPrebuilt(ctx, there, "h14g")
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("fetched again for the record alone")
+	}
+	// fewer programs with another record do not replace them either
+	os.RemoveAll(more)
+	os.WriteFile(filepath.Join(root, coreai.RecordFile), []byte(`{"format":1,"arch":"h14g"}`), 0o644)
+	if err := PutPrebuilt(here, "h14g"); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	if e, err := shared.ReadEntryAt(ctx, l, es[0]); err != nil || len(e.Holds) != 2 {
+		t.Fatalf("fewer programs replaced the layer's: %v %v", e.Holds, err)
+	}
 	// a miss makes nothing here: nothing begins to be put for it (store.StartEarly would mark
 	// the folder and watch it until the process ends)
 	filepath.WalkDir(l.Store.(shared.Dir).Root, func(p string, d os.DirEntry, err error) error {

@@ -161,6 +161,35 @@ func (d Dir) Put(ctx context.Context, key, src string) error {
 	return os.Rename(tmp.Name(), p)
 }
 
+// Copy makes the object from the object to as well: a hard link where it can (the folder's
+// files are never written in place: Put renames a new file over one), else a copy through Put.
+func (d Dir) Copy(ctx context.Context, from, to string) error {
+	src, err := d.file(from)
+	if err != nil {
+		return err
+	}
+	dst, err := d.file(to)
+	if err != nil {
+		return err
+	}
+	if fi, err := os.Stat(src); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("store: %s: %s: %w", d.Name, from, ErrNotFound)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".put-*")
+	if err != nil {
+		return err
+	}
+	tmp.Close()
+	os.Remove(tmp.Name())
+	if os.Link(src, tmp.Name()) == nil {
+		return os.Rename(tmp.Name(), dst)
+	}
+	return d.Put(ctx, to, src)
+}
+
 func (d Dir) Write(_ context.Context, key string, b []byte) error {
 	p, err := d.file(key)
 	if err != nil {

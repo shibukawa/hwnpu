@@ -44,9 +44,6 @@ type BuildOptions struct {
 	Tool string
 	// Model is the model of the exports, for the record of a packed build (RecordFile).
 	Model string
-	// TrustOld takes, in a packed build, the prebuilt programs of other exports made before
-	// records (how they were built is not known) when the rest holds (reuse_darwin.go).
-	TrustOld bool
 }
 
 // DefaultJobs is the compiles Build runs at once by default: one for every 4 GB of memory beyond
@@ -170,7 +167,7 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 			fmt.Fprintf(o.Log, format, a...)
 		}
 	}
-	u := &reuser{tool: version, jobs: jobs, trustOld: o.TrustOld, dry: o.DryRun, log: logf}
+	u := &reuser{tool: version, jobs: jobs, dry: o.DryRun, log: logf}
 	build := buildOne
 	if o.Packed {
 		build = func(ctx context.Context, tool, asset, arch, out string) error {
@@ -186,6 +183,13 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 			if why := o.Left(r.Asset, r.Arch); why != "" {
 				r.Left = why
 				logf("%s %s: left to the device by the recipe (%s)\n", name, r.Arch, why)
+				if o.Packed && !o.DryRun {
+					// one prebuilt before the rule goes aside: a device would take it from the
+					// bundle
+					if err := u.stash(r.Asset, r.Arch, r.Out); err != nil {
+						logf("%s %s: %v\n", name, r.Arch, err)
+					}
+				}
 				continue
 			}
 		}

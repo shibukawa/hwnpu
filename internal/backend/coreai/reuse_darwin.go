@@ -56,11 +56,10 @@ const prevSuffix = ".prev"
 
 // reuser decides, for a packed build, which programs to take from earlier builds.
 type reuser struct {
-	tool     string // coreai-build's version, "" when not known
-	jobs     int
-	trustOld bool
-	dry      bool
-	log      func(format string, a ...any)
+	tool string // coreai-build's version, "" when not known
+	jobs int
+	dry  bool
+	log  func(format string, a ...any)
 
 	indexes map[string]map[string][]*candidate // by export and arch, by source
 
@@ -187,10 +186,8 @@ func (u *reuser) check(c *candidate, src string, inPlace bool) string {
 		return fmt.Sprintf("packed in format %d, %d here", c.rec.Pack, PackFormat)
 	}
 	e := c.entry
-	if e == nil || e.Legacy && (e.Device == nil || e.Device.Status != DeviceOK) {
-		if !inPlace && !u.trustOld {
-			return "no record of how it was built (" + RecordFile + "; -trust-old takes it)"
-		}
+	if !inPlace && (e == nil || e.Legacy && (e.Device == nil || e.Device.Status != DeviceOK)) {
+		return "no record of how it was built (" + RecordFile + ": hwnpu-dev prebuild -record writes those of earlier builds)"
 	}
 	if e != nil {
 		switch {

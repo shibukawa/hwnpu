@@ -4,10 +4,17 @@
 
 ## 実装の状態 (2026-11-26)
 
-- 入れたもの: 記録 (`build.json`)、流用の判断 (4節の6つの条件)、待避場所 (`ARCH.prev`)、端末の結果の記録 (`-mark` と `HWNPU_DEV=coreai.mark-prebuilt`)、`-trust-old`
+- 入れたもの: 記録 (`build.json`)、流用の判断 (4節の6つの条件)、待避場所 (`ARCH.prev`)、端末の結果の記録 (`-mark` と `HWNPU_DEV=coreai.mark-prebuilt`)、記録の前に作った prebuilt に記録を足す `-record` (取得元の束にも)、記録が変わった束を取得元で置き換える `revision`
 - コード: `internal/backend/coreai/record.go` (記録の形、`MarkDevice`)、`reuse_darwin.go` (候補、判断、写す、待避、記録を書く)、`prebuild_darwin.go` の `Build`、`pack_darwin.go` の `checkPacked`
 - テスト: `internal/backend/coreai/reuse_darwin_test.go` (9節の場合を全部)
-- 実機での確かめ (M1、偽の新しい書き出しに FLUX.2 klein v5 の `ctx` と `dit_double_0` を写して): `-trust-old` で `dit_double_0` の h14g を v5 から流用 (0.6 秒、重みの写像を読み直して確かめた。写したものは v5 のものとバイトまで同じ)。`-trust-old` なしでは記録がないので流用せずコンパイルに回った。`-mark failedToSpecialize` のあとは作らずに止まり、レシピの決まりを提案した
+- 実機での確かめ (M1、偽の新しい書き出しに FLUX.2 klein v5 の `ctx` と `dit_double_0` を写して): 記録を足した v5 から `dit_double_0` の h14g を流用 (0.6 秒、重みの写像を読み直して確かめた。写したものは v5 のものとバイトまで同じ)。記録がなければ流用せずコンパイルに回った。`-mark failedToSpecialize` のあとは作らずに止まり、レシピの決まりを提案した
+- Qwen3.5-0.8B で、記録のある版上げと、ビルドの選択を変えた一部の作り直しと、そのあとの推論を確かめた (M1、h13g、2026-11-26)。どれも、Core AI のキャッシュが空のプロセスで、端末でコンパイルしたもの (`HWNPU_COREAI_PREBUILT=off`) と同じ seed で同じ文を出し、prebuilt の失敗はなかった (`HWNPU_DEV=coreai.mark-prebuilt` で17部品とも `ok`)
+  - r1 を一から: 17部品 6分22秒
+  - r1 → r2 (今のコードの書き出し): 大きい9部品 (`model.part1`〜`7`、`*.mass`) を r1 から流用し、中身の変わった注意の8部品だけを作って 10 秒。読み込みは端末のコンパイルの 22 秒に対して 1.8 秒
+  - レシピに `sr-q8.attn*` の `do: device` を足すと: その4部品は `ARCH.prev` に移り (束は13部品)、端末でコンパイルされた (読み込み 7.0 秒)
+  - その決まりを外すと: 4部品は `ARCH.prev` から戻った (端末の `ok` も引き継ぐ)
+  - `-j 1 EXPORT/model.part3.aimodel`: 「2 at once, 1 now」で `model.part3` だけ作り直し (1分50秒)、そのあとの通常の作り方では17部品ともそのまま
+- `-record` を手元のフォルダの取得元 (`file://`) で確かめた: origin/main のコードで置いた記録のない束 (今の NAS の束と同じ形) に記録を足して置き直し、鍵と部品の一覧はそのまま、束の中の部品は元とバイトまで同じ、2回目は何もしない
 - 手元の FLUX.2 klein の書き出しを `-n` で見ると、v1 (512+1024) の `ctx` は v5 のものと同じ source で流用の候補になる。v5 と v6 の DiT は source が違う (ExportVersion で変わった) ので作り直しになる。流用が効くのは、部品のバイト列が変わらない版上げ (レシピの別の部品の変更、VAE だけの変更など)
 
 ## 1. なぜハッシュだけにしないか
@@ -51,6 +58,19 @@
 - `legacy: true`: 記録ができる前に作られた prebuilt (どう作られたか分からない)。今ある prebuilt を、その場で「作ってある」と飛ばしたときや `-mark` で印を付けたときに、ファイルから分かること (`metadata.json` の `producer` と `creationDate`) だけで書く
 - 記録は `Build` の終わりに一度書く (`-n` では書かない)。途中でプロセスが殺されると書かれない (その部品は次に `legacy` として拾われる)
 
+### 2.1 記録の前の prebuilt に記録を足す (`-record`)
+
+```sh
+hwnpu-dev prebuild -record -n                  # 足すものを並べる
+hwnpu-dev prebuild -record                     # 手元のキャッシュの全部と、書き戻す取得元 (設定があれば) の全部の束
+hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだけ
+```
+
+- 記録のない (または `legacy` の) 部品に、ファイルから分かることで項目を書く (`coreai.Backfill`): `metadata.json` の `producer` と `creationDate`、`result: built`、`jobs` は今のレシピの `jobs`、`backfilled` にその日。取得元の束は、ここまでどれもレシピで作って置いたもの (落ちた部品のある書き出しは置かない) なので、記録のあとに作ったものと同じに扱う
+- 端末で落ちた印 (`-mark` で付けたもの) は残す
+- 取得元の束は、entry に `revision` のない (記録のない) ものだけを取ってきて、記録を足して束ね直し、置き直す。`revision` が変わるので置き換わる (`store.PutEntry`)。端末は部品の一覧 (`Holds`) が同じなので取り直さない
+- 手元のキャッシュの束は、取得元の束を置き換えても書き換わらない (端末は記録のために取り直さない)。開発機ごとに `-record` を一度打つ (取得元の分は、もう記録があるので何もしない)
+
 ## 3. 作る流れ
 
 1. 部品ごとに、レシピの決まり (`do: device`) と `LeftToDevice` を先に見る。当たれば作らない (流用もしない)
@@ -60,8 +80,9 @@
 3. 同じ source の候補のどれかに、端末で落ちた印 (`device.status` が `ok` と `unchecked` のほか) があれば、作らずにその部品を失敗にする。同じ入力からは同じものができるので、作り直しても同じになる。今までの失敗と同じ流れで、レシピの `do: device` の決まりを提案して止まり、その書き出しのそのチップの分は取得元に置かない。印のあとでも作りたいときは `-force`
 4. 候補を、その場所のもの、端末で `ok` のもの、そのほかの順に見て、4節の条件を全部満たす最初のものを使う。その場所のものならそのまま (「prebuilt already」)、ほかのものなら一時フォルダに写して (APFS の clone) から置き換える (「taken from X」)
 5. どれも使えなければ今までどおりコンパイルする。候補があって外れたときは、最初に外れた理由をログに出す (`dit_double_0.aimodel h15g: compiling (not the one of …-v5.coreai: made by coreai-build-3605.5.0, coreai-build-3605.6.3 here)`)
-6. 置き換える部品の前のもの (条件を満たさなかったもの、`-force` で作り直すもの) は、消さずに `ARCH.prev/` へ移し、記録の項目も `ARCH.prev/build.json` へ移す。次に作るときの候補になる。移すのは新しいものができてから (コンパイルが落ちたときは前のものがその場所に残る)
-7. 終わったら `build.json` を書き、今までどおり `-packed` / `-put` で束にする
+6. 今回レシピが `do: device` にした部品の prebuilt がその場所にあれば、`ARCH.prev` へ移す。束に入って端末がそれを使うことがないように。決まりを外したときは、ほかの条件を満たせば `ARCH.prev` から戻す
+7. 置き換える部品の前のもの (条件を満たさなかったもの、`-force` で作り直すもの) は、消さずに `ARCH.prev/` へ移し、記録の項目も `ARCH.prev/build.json` へ移す。次に作るときの候補になる。移すのは新しいものができてから (コンパイルが落ちたときは前のものがその場所に残る)
+8. 終わったら `build.json` を書き、今までどおり `-packed` / `-put` で束にする。記録だけが変わったとき (`-mark` のあとなど) も、`-put` で取得元の束が置き換わる (`revision`)
 
 パックしない作り方 (`hwnpu-dev prebuild` で `-packed` も `-put` もないとき、`.aimodelc` を `.aimodel` の横に丸ごと置く) は今までのまま (同じ source で NE に乗っていれば飛ばす)。
 
@@ -76,7 +97,7 @@
 | 5 | 前回の結果が良い | 記録の `result` が `built` か `reused`、`jobs` が今の `-j` 以下 (前より多く同時に作ったものは使わない。1本ずつ作ったものは何本同時の作り方にも使える)、`onANE`、端末で落ちた印がない (3) |
 | 6 | 詰めた形が同じ | 記録の `pack` が `PackFormat`。候補の `resources.bin.map.json` を新しい `main.mlirb` から作り直して、大きさと SHA-256 が写像の書くものと同じこと (`checkPacked`。重みを一度読む。FLUX.2 の DiT 1本で 1 秒ほど)。`-n` では読まない |
 
-記録のない候補 (今ある prebuilt) は、その場所のもの (今の書き出しのもの) だけ今までどおり使う。ほかの書き出しのものは、条件 4 と 5 が分からないので使わない。`-trust-old` (`hwnpu-dev models package` も `--trust-old`) のときは、残りの条件 (1、2、3、5 の `onANE`、6) だけで使う。`-mark ok` で端末で通った印を付けたものは、`legacy` でも使う。
+記録のない候補は、その場所のもの (今の書き出しのもの) だけ今までどおり使う。ほかの書き出しのものは、条件 4 と 5 が分からないので使わない (`-mark ok` で端末で通った印を付けたものは使う)。記録の前に作った prebuilt には、一度 `-record` で記録を足す (2.1節)。フラグで流用の判断が変わることはない。
 
 ## 5. 端末の結果を記録に戻す
 
@@ -85,7 +106,7 @@
   hwnpu-dev prebuild -mark failedToSpecialize -arch h15g -programs 'dit_single_*' -function s1024x1024 EXPORT_DIR
   hwnpu-dev prebuild -mark ok -arch h15g EXPORT_DIR
   ```
-- **開発機で半自動** (`HWNPU_DEV=coreai.mark-prebuilt`): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) を Core AI が開けたら `ok`、`the prebuilt program failed` で開けなければ `failedToSpecialize` (メッセージにその語があるとき) か `failed` を、手元の `build.json` に書く。関数ごとにプロセスで1回。書いたものは、次に `-put` するまで取得元には上がらない
+- **開発機で半自動** (`HWNPU_DEV=coreai.mark-prebuilt`): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) を Core AI が開けたら `ok`、`the prebuilt program failed` で開けなければ `failedToSpecialize` (メッセージにその語があるとき) か `failed` を、手元の `build.json` に書く。関数ごとにプロセスで1回。書いたものは、次に `-put` するまで取得元には上がらない (`-put` すれば `revision` が変わって置き換わる)
 - 落ちた印は、別の関数の `ok` では消えない (どれかの関数が落ちれば、その部品は使えない)。関数を書かない `-mark ok` (人が部品全体を確かめた) は消す
 - チップが違う機械では確かめられないので、印のない部品は `unchecked` と同じに扱う (流用してよい)
 
@@ -93,9 +114,9 @@
 
 ## 6. 決めたこと (2026-11-26)
 
-1. **`build.json` は束に入れる**。`PackedRoot` の中に置くので `coreai.Bundle` がそのまま入れる。ほかの開発機が前の版の束を取れば、記録も付いてくる。束のバイトは変わるが、鍵 (`ProgramsDigest`) と `Holds` (`.aimodelc` の一覧) は変わらない
+1. **`build.json` は束に入れる**。`PackedRoot` の中に置くので `coreai.Bundle` がそのまま入れる。ほかの開発機が前の版の束を取れば、記録も付いてくる。束のバイトは変わるが、鍵 (`ProgramsDigest`) と `Holds` (`.aimodelc` の一覧) は変わらない。束の entry の `revision` が記録の SHA-256 で、記録だけが変わった束 (端末の印、`-record`) も取得元で置き換わる (2.1節)
 2. **端末の結果は、手 (`-mark`) と開発機の半自動 (`HWNPU_DEV=coreai.mark-prebuilt`) で書く**。確かめの段 (5節の最後) は次
-3. **記録のない今の prebuilt は、ほかの書き出しへは `-trust-old` のときだけ流用する** (`-mark ok` を付けたものは除く)。その場所のものは今までどおり使う
+3. **記録のない今の prebuilt には、マージのときに `-record` で記録を足す** (取得元の全部の束と、各開発機の手元のキャッシュ)。フラグで信用する道 (はじめに入れた `-trust-old`) はなくした。記録のないものは、その場所では今までどおり使い、ほかの書き出しへは流用しない
 4. **前の版を取得元から自動では引かない**。前の書き出しの名前を作る方法 (版を下げる) はモデルによって脆く、取得元を一覧する API もない。前の版の prebuilt が手元になければ、`hwnpu-dev models fetch` で前の書き出しの `coreai-ARCH` を取ってから作る (同じモデルのフォルダに入るので候補になる)
 
 ## 7. 範囲の外 (別の課題)
@@ -124,7 +145,10 @@ M3 (h15g) の FLUX.2 klein v6 の DiT 13本は、全部を作り直して 1時�
 - 前回は `left` → 作る。記録が `failed` → 作る。前は3本同時、今は1本 → 作る。NE に乗っていない → 作る。`pack` が違う → 作る
 - 待避場所 (`ARCH.prev`) からの流用
 - source が違う → 作る (理由なし)
-- 記録のない前の prebuilt → 作る。`-trust-old` なら流用。その場所のものは使う。`-mark ok` を付けたものは流用
+- 記録のない前の prebuilt → 作る。`-record` (`Backfill`) で記録を足したものは流用、その印 (`failedToSpecialize`) は残る。その場所のものは使う。`-mark ok` を付けたものは流用
+- 今回レシピが `do: device` にした部品の、その場所の prebuilt は `ARCH.prev` へ移す (束で端末へ行かないように)。決まりを外すと `ARCH.prev` から戻す
+- `Backfill`: ファイルから書く、端末の印を残す、記録のあるものは書き直さない
+- 取得元 (`chat` の `TestPrebuiltShared`): 記録が変わった束は同じ部品の束を置き換え、部品を持つ機械は取り直さない。部品の少ない束は、記録が違っても置き換えない
 - 実際に写す: 写したもの、記録 (`reused`、`from`、端末の結果を引き継ぐ、`LeftToDevice` の項目)、その場所にあった古いものの待避と `ARCH.prev/build.json`、もう一度作るとその場所のものを使う
 - 写像が別のバイト列に合わなければ使わない (`checkPacked`)
 - `-mark`: パターン、`legacy` の項目、別の関数の `ok` では消えない、関数なしの `ok` で消える

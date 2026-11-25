@@ -16,7 +16,7 @@ func canCompile() error { return nil }
 // export's model when model is "") and puts them in the sources written back to (compileFlags).
 func compile(ctx context.Context, paths, archs []string, model string, p compileFlags) error {
 	return prebuild.Run(ctx, paths, prebuild.Options{Model: model, Archs: archs, Jobs: p.Jobs, Force: p.Force, DryRun: p.DryRun,
-		Packed: p.Packed || !p.NoPush, Put: !p.NoPush && !p.Packed, AnyTools: p.AnyTools, TrustOld: p.TrustOld, Log: os.Stderr})
+		Packed: p.Packed || !p.NoPush, Put: !p.NoPush && !p.Packed, AnyTools: p.AnyTools, Log: os.Stderr})
 }
 
 // canExportAMD is why this OS cannot make exports for AMD's NPU: IRON (mlir-aie, Peano) runs on

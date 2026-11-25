@@ -1,6 +1,7 @@
 package coreai
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // The record of a build (RecordFile, in a PackedRoot beside the packed programs, so that the
@@ -79,9 +81,12 @@ type ProgramRecord struct {
 	Seconds int    `json:"seconds,omitempty"`
 	// From is the export it was copied from (ResultReused).
 	From string `json:"from,omitempty"`
+	// Backfilled is the day the entry was written after the build, from the program's files, by
+	// hwnpu-dev prebuild -record (Backfill), "" when the build wrote it.
+	Backfilled string `json:"backfilled,omitempty"`
 	// Legacy: the prebuilt program was made before records, and how (the compiles at once, the
 	// recipe) is not known. Another export takes it only when a device finished it
-	// (DeviceOK) or the build trusts such ones (BuildOptions.TrustOld).
+	// (DeviceOK), or once Backfill recorded it.
 	Legacy bool   `json:"legacy,omitempty"`
 	Error  string `json:"error,omitempty"`
 	// Device is what a device of the architecture made of it, nil when none was asked.
@@ -151,6 +156,17 @@ func WriteRecord(root string, r *Record) error {
 	}
 	os.Chmod(tmp.Name(), 0o644)
 	return os.Rename(tmp.Name(), filepath.Join(root, RecordFile))
+}
+
+// RecordDigest is the SHA-256 of the record in root (hex), "" when there is none: the revision of
+// the entry of the shared layers that carries root (store.Entry.Revision).
+func RecordDigest(root string) string {
+	b, err := os.ReadFile(filepath.Join(root, RecordFile))
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // ProgramKey is the program at asset's name in a record of its export: its path in it without
@@ -244,6 +260,9 @@ func legacyRecord(dir, source string) *ProgramRecord {
 	if m, err := readMetadata(dir); err == nil {
 		e.Tool = m.Producer
 		e.Built = m.CreationDate
+		if t, err := time.Parse("20060102T150405Z", m.CreationDate); err == nil {
+			e.Built = t.UTC().Format(time.RFC3339)
+		}
 	}
 	return e
 }
@@ -277,4 +296,45 @@ func packedPrograms(root, arch string) []packedProgram {
 		return filepath.SkipDir
 	})
 	return out
+}
+
+// Backfill gives the prebuilt programs for arch in root (a PackedRoot) that have no entry in its
+// record, or a Legacy one, an entry of what their files say (the coreai-build of their
+// metadata.json, when it made them), as built jobs at once (0: not known) by the recipe's build
+// and not failed on a device unless one said so: the prebuilt programs made before records, all
+// by the recipes' builds since they were put in the shared layers, taken for later exports like
+// those built since (hwnpu-dev prebuild -record, 2026-11-26). It returns the keys written; the
+// record is written only when there is one.
+func Backfill(root, arch, export, model string, jobs int, today string) ([]string, error) {
+	rec, err := ReadRecord(root)
+	if err != nil {
+		return nil, err
+	}
+	if rec == nil {
+		rec = &Record{Arch: arch, Pack: PackFormat, Export: export, Model: model, Programs: map[string]*ProgramRecord{}}
+	}
+	if rec.Model == "" {
+		rec.Model = model
+	}
+	var keys []string
+	for _, p := range packedPrograms(root, arch) {
+		old := rec.Programs[p.key]
+		if old != nil && old.Source == p.source && !old.Legacy {
+			continue
+		}
+		e := legacyRecord(p.dir, p.source)
+		e.Legacy, e.Jobs, e.Backfilled = false, jobs, today
+		if old != nil && old.Source == p.source {
+			e.Device = old.Device
+		}
+		if rec.Tool == "" {
+			rec.Tool = e.Tool
+		}
+		rec.Programs[p.key] = e
+		keys = append(keys, p.key)
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	return keys, WriteRecord(root, rec)
 }

@@ -28,7 +28,6 @@ type compileFlags struct {
 	Packed   bool `help:"For coreai-ARCH, pack the programs beside the export (EXPORT.prebuilt/ARCH) without putting them in the sources."`
 	NoPush   bool `help:"For coreai-ARCH, leave the programs whole beside their sources, not packed nor put in the sources."`
 	AnyTools bool `help:"For coreai-ARCH, build with a coreai-build of another version than model-recipes.yaml's tools (to check a new Metal Toolchain)."`
-	TrustOld bool `help:"For coreai-ARCH, take the prebuilt programs of earlier exports made before builds were recorded (build.json) when their source is the same."`
 }
 
 // isPath reports whether a selection is a folder or a program rather than a model's name.

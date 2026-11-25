@@ -21,7 +21,9 @@
 // same coreai-build, no rule leaving it to the device, no more compiles at once, on the Neural
 // Engine, and no device failed it (-mark, or HWNPU_DEV=coreai.mark-prebuilt on a run). One a
 // device failed is not compiled again (it would be the same): the run says the rule that leaves
-// it to the device. -trust-old takes those made before records too (docs/prebuilt-reuse.md).
+// it to the device. Prebuilt programs made before records are given theirs once with -record
+// (here and in the sources written back to); without one a program is kept where it is but taken for
+// no other export (docs/prebuilt-reuse.md).
 //
 // With -put (or -packed) the programs are packed beside the export (EXPORT.prebuilt/ARCH, each
 // without its weights, which a device makes again from the export's bytecode) and -put puts
@@ -53,13 +55,13 @@ func Main() {
 	put := flag.Bool("put", false, "pack the programs and put each architecture's in the sources written back to")
 	model := flag.String("model", "", "the model whose recipe to build with (default: the one each export is of, its entry.json)")
 	anyTools := flag.Bool("any-tools", false, "build with a coreai-build of another version than model-recipes.yaml's")
-	trustOld := flag.Bool("trust-old", false, "take the prebuilt programs of other exports made before builds were recorded (build.json)")
+	record := flag.Bool("record", false, "write the records (build.json) of prebuilt programs made before records, compiling nothing: of the exports given, else of every export in the cache and every entry of prebuilt programs in the sources written back to (fetched, recorded, put again)")
 	mark := flag.String("mark", "", "write what a device made of the exports' prebuilt programs for -arch (ok, or the failure: failedToSpecialize) in their build.json, compiling nothing")
 	programs := flag.String("programs", "", "with -mark, the programs, comma separated patterns (dit_single_*; default: all)")
 	function := flag.String("function", "", "with -mark, the function that failed (s1024x1024)")
 	flag.Parse()
-	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: hwnpu-dev prebuild [-arch LIST] [-j N] [-force] [-n] [-put] [-trust-old] [-model NAME] EXPORT_DIR_OR_PROGRAM...\n       hwnpu-dev prebuild -mark STATUS -arch LIST [-programs LIST] [-function F] EXPORT_DIR...")
+	if flag.NArg() == 0 && !*record {
+		fmt.Fprintln(os.Stderr, "usage: hwnpu-dev prebuild [-arch LIST] [-j N] [-force] [-n] [-put] [-model NAME] EXPORT_DIR_OR_PROGRAM...\n       hwnpu-dev prebuild -mark STATUS -arch LIST [-programs LIST] [-function F] EXPORT_DIR...\n       hwnpu-dev prebuild -record [-n] [EXPORT_DIR...]")
 		os.Exit(2)
 	}
 	// the definitions (the models of the exports) and the sources of the environment
@@ -82,7 +84,16 @@ func Main() {
 		}
 		return
 	}
-	o := Options{Model: *model, Jobs: *jobs, Force: *force, DryRun: *dry, Packed: *packed, Put: *put, AnyTools: *anyTools, TrustOld: *trustOld, Log: os.Stderr}
+	if *record {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		if err := Record(ctx, flag.Args(), *dry, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "hwnpu-dev prebuild -record:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	o := Options{Model: *model, Jobs: *jobs, Force: *force, DryRun: *dry, Packed: *packed, Put: *put, AnyTools: *anyTools, Log: os.Stderr}
 	switch *archs {
 	case "":
 	case "all":
