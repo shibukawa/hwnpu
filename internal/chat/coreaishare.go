@@ -175,7 +175,7 @@ func coreAIExportName(export string) (string, bool) {
 const PrebuiltKind = "coreai-prebuilt"
 
 // prebuiltFormat is the version of what coreai.Pack writes, part of the key.
-const prebuiltFormat = 2
+const prebuiltFormat = coreai.PackFormat
 
 func init() { coreai.FetchPrebuilt = FetchPrebuilt }
 
@@ -291,6 +291,10 @@ func PutPrebuilt(ctx context.Context, export, arch string) error {
 	// what it holds: a source replaces an entry of the same key that holds less (one put by a
 	// build that had not made them all)
 	p.entry.Holds = prebuiltPrograms(root)
+	// and the record of their build (coreai.RecordFile): a source takes it over its own when it
+	// changed (the device's marks), though a machine that has the programs does not fetch them
+	// again for it
+	p.entry.Revision = coreai.RecordDigest(root)
 	putConverted(p, dir, labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"})
 	return nil
 }

@@ -26,6 +26,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	devenv "github.com/shibukawa/hwnpu/internal/dev"
@@ -91,6 +92,42 @@ const kindNoRetry = 0x100
 
 // prebuiltOnce says once a process that its programs come from prebuilt ones.
 var prebuiltOnce sync.Once
+
+// markedPrebuilt are the programs and functions markPrebuilt wrote of.
+var markedPrebuilt sync.Map
+
+// markPrebuilt writes what the device made of the function fn of the packed prebuilt program of
+// the asset at dir (msg: its error, "" when it opened) in the record of the export's prebuilt
+// programs, when they have one (DeviceMark): a build then takes the program for a later export
+// only when no device failed it (docs/prebuilt-reuse.md). Once a process a function; quiet when
+// the record cannot be written (a folder of an application, read only).
+func markPrebuilt(dir, fn, msg string) {
+	export, ok := ExportOf(dir)
+	arch := Arch()
+	if !ok || arch == "" {
+		return
+	}
+	if _, done := markedPrebuilt.LoadOrStore(dir+"#"+fn, true); done {
+		return
+	}
+	d, ok := DeviceMark(fn, msg, time.Now().Format("2006-01-02"), filepath.Base(os.Args[0]))
+	if !ok {
+		return
+	}
+	root := PackedRoot(export, arch)
+	key := ProgramKey(export, dir)
+	rec, err := ReadRecord(root)
+	if err != nil || rec == nil || !rec.NeedsMark(key, sourceHex(dir), d) {
+		return
+	}
+	if _, err := MarkDevice(export, arch, []string{key}, d); err != nil {
+		if devenv.On("coreai.debug") {
+			fmt.Fprintf(os.Stderr, "coreai: %s: the record of the prebuilt program: %v\n", key, err)
+		}
+	} else if d.Bad() {
+		fmt.Fprintf(os.Stderr, "coreai: %s: written %s in %s (hwnpu-dev prebuild takes it for no later export)\n", key, d.Status, filepath.Join(filepath.Base(root), RecordFile))
+	}
+}
 
 func load() error {
 	loadOnce.Do(func() {
@@ -508,7 +545,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		if isCut(dir) {
 			kind |= kindNoRetry
 		}
-		name, prebuilt := dir, false
+		name, prebuilt, packedPB := dir, false, false
 		if !isCut(dir) && !hasEntry(dir) {
 			// no entry yet: a prebuilt program fills it, here or from the shared layers
 			pb := Prebuilt(dir)
@@ -522,7 +559,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 					fmt.Fprintf(os.Stderr, "coreai: %s: %v; compiled on the device\n", filepath.Base(pb), err)
 				} else {
 					defer done() // Core AI's entry holds the program once it is open
-					name, prebuilt = p, true
+					name, prebuilt, packedPB = p, true, pb == PackedPath(dir, Arch())
 				}
 			}
 		}
@@ -537,12 +574,18 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			// on the device as without it
 			msg := goString(e)
 			fmt.Fprintf(os.Stderr, "coreai: %s: the prebuilt program failed (%s), compiled on the device\n", filepath.Base(name), msg)
+			if packedPB {
+				markPrebuilt(dir, fn, msg)
+			}
 			name = dir
 			if fn != "main" {
 				name += "#" + fn
 			}
 			g.h = caiOpen(cString(name), kind, &retried, &e)
 		} else if g.h != 0 && prebuilt {
+			if packedPB {
+				markPrebuilt(dir, fn, "")
+			}
 			prebuiltOnce.Do(func() {
 				console.Notef("  prebuilt programs (%s) finished on the device in place of the Neural Engine compiler (%s=off compiles them)\n", Arch(), PrebuiltEnv)
 			})
