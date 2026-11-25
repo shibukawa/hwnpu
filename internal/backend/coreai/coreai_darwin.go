@@ -267,11 +267,11 @@ const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
 // source's), so the asset itself loads from the entry afterwards (docs/design/apple-coreai.md). The program
 // it holds runs a few percent slower than one compiled on the device.
 func Prebuilt(dir string) string {
-	if os.Getenv(PrebuiltEnv) == "off" || LeftToDevice(dir) {
+	if os.Getenv(PrebuiltEnv) == "off" {
 		return ""
 	}
 	arch := Arch()
-	if arch == "" {
+	if arch == "" || LeftToDevice(dir, arch) {
 		return ""
 	}
 	want, err := os.ReadFile(filepath.Join(dir, "main.hash"))
