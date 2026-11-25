@@ -295,7 +295,8 @@ def write_host(root: Path, out: Path, random: bool) -> None:
     w = iron_dit.Checkpoint(root / "transformer", random=random)
     names = [n for n in w.index if n.startswith("condition_embedder.time_") or n.endswith("scale_shift_table")]
     write_safetensors(d / "timing.safetensors", {n: (w[n], "F32") for n in sorted(names)})
-    for f in ("tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json", "text_encoder/config.json"):
+    # the tokenizer (made binary by the recipe's finish; internal/sfx reads no tokenizer_config.json)
+    for f in ("tokenizer/tokenizer.json", "text_encoder/config.json"):
         (out / f).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root / f, out / f)
 

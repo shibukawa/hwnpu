@@ -88,3 +88,24 @@ func TestCheck(t *testing.T) {
 		t.Errorf("no finish: %v", err)
 	}
 }
+
+// A remove step removes files the runtime does not read, after a tokenizer step before it that
+// may read them (PLaMo's tokenizer_config.json), and passes when they are gone already.
+func TestRemove(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(tiny), 0o644)
+	os.WriteFile(filepath.Join(dir, "tokenizer_config.json"), []byte(`{}`), 0o644)
+	steps := []recipe.Step{{Tokenizer: []string{"tokenizer.json"}}, {Remove: []string{"tokenizer_config.json"}}}
+	if err := Run(dir, steps); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tokenizer_config.json")); err == nil {
+		t.Error("tokenizer_config.json is still there")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tokenizer.tok")); err != nil {
+		t.Error("no tokenizer.tok")
+	}
+	if err := Run(dir, steps); err != nil {
+		t.Errorf("again: %v", err)
+	}
+}

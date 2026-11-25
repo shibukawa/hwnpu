@@ -73,6 +73,8 @@
 #                             and removed. An export that holds a tokenizer file its finish
 #                             does not name stops the build. A change of it is one of the
 #                             recipe (raise version)
+#                 remove: [FILES]     files of the export the runtime does not read, removed
+#                             (tokenizer_config.json, after the tokenizer step that may read it)
 #   For iron_export_lm.py the args but {in} and {out} name the export (-q4, -p16) and key it in
 #   the sources; for the others the code's version (ExportVersion) keys it, and for
 #   iron_flux2klein.py, iron_flux3klein.py and iron_moss_sfx.py the args too
@@ -124,7 +126,8 @@ models:
       jobs: 3
   MOSS-SoundEffect-v2.0: &moss
     amd:
-      version: 2
+      # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer/tokenizer.json]}]
       # an export of each text encoder's format (sfx.Formats: fp16 on 16 GB, lut8 on 8 GB)
@@ -159,9 +162,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [lfm3, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: &lm-extra
@@ -172,9 +176,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go"]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [lfm3vl, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
@@ -183,9 +188,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [lfm3audio, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
@@ -194,9 +200,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [lfm3omni, "{in}", "{out}", --max-seq-len, "12288", --q4]
       extra: *lm-extra
@@ -205,9 +212,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
@@ -216,9 +224,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [gemma4, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
@@ -227,9 +236,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4]
       extra: *lm-extra
@@ -238,9 +248,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
       extra: *lm-extra
@@ -249,9 +260,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [qwen35, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q6, --head, q6, --verify, "3"]
       extra: *lm-extra
@@ -260,9 +272,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       # 16 GB: 16 of each layer's 32 experts in places, the decode step routed on the host; every expert from 24 GB
       script: iron_export_lm.py
       args: [gptoss, "{in}", "{out}", --max-seq-len, "8192", --prefill-chunk, "256", --expert-places, "16", --host-route]
@@ -274,9 +287,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       # 32 places a layer on 16 GB, 128 on 24 GB, every expert from 48 GB
       script: iron_export_lm.py
       args: [qwen35moe, "{in}", "{out}", --max-seq-len, "4096", --prefill-chunk, "256", --q4, --expert-places, "32"]
@@ -289,9 +303,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.jsonl]}]
+      finish: [{tokenizer: [tokenizer.jsonl]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
@@ -300,9 +315,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.jsonl]}]
+      finish: [{tokenizer: [tokenizer.jsonl]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
@@ -311,9 +327,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.jsonl]}]
+      finish: [{tokenizer: [tokenizer.jsonl]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [plamo3, "{in}", "{out}", --max-seq-len, "8192", --q4]
       extra: *lm-extra
@@ -322,9 +339,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [d1, "{in}", "{out}", --max-seq-len, "1024", --prefill-chunk, "1024", --q4]
       extra: *lm-extra
@@ -333,9 +351,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
-      version: 2
+      # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
       script: iron_export_lm.py
       args: [d1omni, "{in}", "{out}", --max-seq-len, "1024", --prefill-chunk, "1024", --q4]
       extra: *lm-extra

@@ -23,6 +23,11 @@ import (
 func Run(dir string, steps []recipe.Step) error {
 	made := map[string]string{}
 	for _, s := range steps {
+		for _, f := range s.Remove {
+			if err := os.Remove(filepath.Join(dir, filepath.FromSlash(f))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("finish: remove %s: %w", f, err)
+			}
+		}
 		for _, f := range s.Tokenizer {
 			src := filepath.Join(dir, filepath.FromSlash(f))
 			dst := tokenizer.BinaryPath(src)
