@@ -40,6 +40,10 @@ var decideRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &Decider{remote: h} },
 	Name:   "decide",
 	Kinds:  []chat.Kind{chat.KindDecision},
+	// 1: the tokenizer as its binary file (chat.PrepareTokenizer) in the files, as "tokenizer":
+	// a store prepared before named none, and Load then read the checkpoint's tokenizer.json, which
+	// a checkpoint fetched since is without
+	Revision: 1,
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		m, ps := e.Model, e.Model.Programs
 		if e.NPU.AMD() && len(ps["packages"]) == 0 && !e.NPU.CPU(m) {

@@ -104,7 +104,10 @@ var speakRole = &airole.Role{
 	// 1: Supertonic's programs of its text's graphs (durations, encoders), with no ONNX Runtime
 	// 2: Supertonic on AMD's NPU (amd: supertonic.PrepareAMD's export)
 	// 3: its text's graphs in the export too (no programs)
-	Revision: 3,
+	// 4: the tokenizer as its binary file (chat.PrepareTokenizer) in the files, as "tokenizer": a
+	// store prepared before named none, and Load then read the checkpoint's tokenizer.json, which a
+	// checkpoint fetched since is without
+	Revision: 4,
 }
 
 // SpeakOptions are how a text is spoken (LFM3-Audio's settings).
