@@ -148,6 +148,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
   同じプログラムを Core AI の CPU で動かすと 0.999996 なので、書き出しは正しい。M2 (h14g) と M3 (h15g) では、同じ書き出しのプリビルトで絵が正しく出る
 - **今**: M1 の書き出しには 8192 キー以上の関数を入れない。1024² の絵の参照が 1 枚のとき、M1 では参照を 512 で読む (models.yaml の `npu.apple.generation_edits`、5632 キー)。書き出しは M1 用に 1 つ (名前の編集の hash が違う)。ほかのチップは今までどおり
+- **確かめた結果** (2026-11-25、M1): M1 用の書き出しの h13g のプリビルト 14 本は、M1 の上で全部仕上がった (`the prebuilt program failed` は 0 回、DiT の端末でのコンパイルも 0 回)。空の Core AI キャッシュからの初回は 18 分 15 秒。文からの生成 5 サイズ (512²、1024²、1280 × 704、704 × 1280、768 × 1024) と編集 5 通りの絵が正しく出た。本物の `dit_single_0` (13 関数) の 2 つの関数も、CPU との余弦が 0.999999 だった。時間は [design/image-apple.ja.md](design/image-apple.ja.md)
 - **直ったら**: `generation_edits` の M1 を消せば、M1 もほかのチップと同じ書き出しを使う (M1 用の書き出しとプリビルトは使われなくなる)
 - 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`HWNPU_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`hwnpu-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
 

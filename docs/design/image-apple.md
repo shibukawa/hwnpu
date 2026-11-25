@@ -199,6 +199,21 @@ Chroma1 (Flash, HD) was removed on 2026-11-24: its programs, formats and numbers
 | Anima-Aesthetic (25 steps, CFG on 17) | M1 16 GB | | 3 m 51–57 s of steps (CFG step 11.0–11.2 s, other 5.6–5.7 s) | as Anima-Turbo |
 
 - First run (conversion + NE compile): FLUX.2 klein 40 min (both sizes), FLUX.3 klein about 50 min, Anima-Turbo 1024² about 21 min. The first run's memory peak is higher (FLUX.2 klein 1024²: 7.00 GB).
+- FLUX.2 klein v6 on an M1 from its own export's prebuilt programs (2026-11-25, macOS 27.2.1; the row above is v1 to v5, compiled on the device, five single blocks a program):
+
+  | | time | a step |
+  |---|---|---|
+  | first run from an empty Core AI cache (512²) | 18 min 15 s: the 13 DiT programs finished from their prebuilts (a double group 1 min 35 s, a single group 1 min 16 s), the VAE compiled on the device (1 min 21 s) | |
+  | 512² | 15 s of steps and VAE | 3.5 s |
+  | 1024² | 58 s | 12.3–12.4 s |
+  | 1280 × 704, 704 × 1280 | 49 s | 10.0–10.1 s |
+  | 768 × 1024 | 44 s | 9.0 s |
+  | edit at 1024², one reference (read at 512) | 1 min 29 s (the reference 16 s at its first use, the encoder compiled on the device) | 16.0 s |
+  | edit at 1024², two and three references of 512 | 1 min 29 s, 1 min 44 s | 19.9 s, 23.4 s |
+  | edit at 512², one and two references | 28 s, 43 s | 5.5 s, 9.0 s |
+
+  No prebuilt program failed and none of the DiT was compiled on the device. A step at 1024² is 12.4 s where v5's groups of five single blocks compiled on the device took 9.1 s: 13 programs a step in place of 7 (a group of two single blocks alone takes 1.0 s at 4608 rows, a double group 1.0 to 1.3 s). Larger single groups for the M1's export would win some of it back (three a program compile offline for h13g but for the edit from three references of 512).
+- FLUX.3 klein on an M1 from the sources' export and h13g prebuilt programs (2026-11-25): 512² in 1 min 14 s (4.0–4.4 s a step), 1024² in 4 min 45 s (16.8–17.2 s a step, VAE 9.3 s); the first run 49 min 33 s with the export's download (7 min 25 s) while three offline compiles ran beside it. No prebuilt program failed.
 - Measure with an executable named `hwnpu-image`: Core AI's cache is per executable name, and another name compiles everything again (see [apple-coreai.md](apple-coreai.md)). To time one part from the production cache, build `tools/coreai/aicheck` as `hwnpu-image` and run `run -calls N EXPORT/PART.aimodel#FUNCTION`.
 - Memory is the peak of `ri_phys_footprint + ri_neural_footprint` (`proc_pid_rusage`). `mem.NPUWired` is machine-wide and includes other processes. See [memory-and-power.md](memory-and-power.md).
 - Low power mode halved image generation speed on an M3; no difference seen on an M1.
