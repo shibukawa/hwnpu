@@ -257,10 +257,13 @@ const Magic = 1536
 
 // SinSeries and SinNative are the ways of the rewrite "sin" (llm.Options.Rewrites): snake's sine
 // by range reduction and its series (the default: M1's Neural Engine has no sin), or the
-// operation itself.
+// operation itself. SinNativeClipped is the operation after the clip, as DACRevision 2 wrote it:
+// no recipe takes it, it is the program coreai-build puts on the GPU where the M3 runs it on the
+// Neural Engine (tools/coreai/fbrepro dac, docs/apple-feedback/offline-stricter-than-device.md).
 const (
-	SinSeries = "series"
-	SinNative = "native"
+	SinSeries        = "series"
+	SinNative        = "native"
+	SinNativeClipped = "native-clip"
 )
 
 // sinTerms are sin(pi / 2 w) = w (b0 + b1 w^2 + ... + b4 w^8) for |w| <= 1, Taylor's terms (the
@@ -308,6 +311,9 @@ func (d *dac) snake(x *mlpackage.Var, name string) *mlpackage.Var {
 	}
 	vec := func(suffix string, v []float32) *mlpackage.Var {
 		return d.F16s(name+suffix, []int{1, c, 1, 1}, v)
+	}
+	if d.mg2 != nil && d.Opts.Rewrites["sin"] == SinNativeClipped {
+		return d.snakeOut(x, d.unary("sin", d.clip(d.mul(x, vec("_alpha", big)), -1500, 1500)), name, inv, small, root, sign, anySmall)
 	}
 	if d.mg2 != nil && d.Opts.Rewrites["sin"] == SinNative {
 		// Core AI on a Neural Engine with sin (recipe rewrite sin: native): y unclipped, as the

@@ -6,10 +6,15 @@
 //	go run ./tools/coreai/fbrepro cos OUT.aimodel          cos alone
 //	go run ./tools/coreai/fbrepro clipew OUT.aimodel       conv -> reshape -> per-channel mul -> clip
 //	go run ./tools/coreai/fbrepro prescale OUT.aimodel     a*c1 - b*c2
-//	go run ./tools/coreai/fbrepro snake [-clip] [-square] OUT.aimodel
+//	go run ./tools/coreai/fbrepro snake [-clip] [-preclip] [-square] OUT.aimodel
 //	                                                       a Snake block as the DAC's (conv, sin, conv,
-//	                                                       reshape, mul), then a clip with -clip; -square
-//	                                                       writes sin(y) as y*y
+//	                                                       reshape, mul), then a clip with -clip; -preclip
+//	                                                       clips alpha*y before sin (the DAC's r2);
+//	                                                       -square writes sin(y) as y*y
+//	go run ./tools/coreai/fbrepro dac -pth vae_128d_48k.pth [-stage 4] [-sin native-clip] OUT.aimodel
+//	                                                       a stage of MOSS-SoundEffect's DAC decoder
+//	                                                       for Core AI, its sine written as -sin says
+//	                                                       (series, native, native-clip: the r2 way)
 //	go run ./tools/coreai/fbrepro attn [-rows 1536] [-keys 1536] [-chunk 1024] [-head 128] OUT.aimodel
 //	                                                       one head's attention, the queries in chunks
 //	                                                       (1536 rows by 1024: a chunk of 512 is left)
@@ -28,6 +33,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/sfx"
 )
 
 func main() {
@@ -40,10 +46,14 @@ func main() {
 	t := fs.Int("t", 4096, "frames")
 	clip := fs.Bool("clip", false, "snake: end with a clip")
 	square := fs.Bool("square", false, "snake: y*y in place of sin(y)")
+	preclip := fs.Bool("preclip", false, "snake: clip alpha*y to ±1500 before sin (the DAC's r2)")
 	rows := fs.Int("rows", 1536, "attn: query rows")
 	keys := fs.Int("keys", 1536, "attn: keys")
 	chunk := fs.Int("chunk", 1024, "attn: query rows a chunk")
 	head := fs.Int("head", 128, "attn: head size")
+	pth := fs.String("pth", "", "dac: the checkpoint's vae_128d_48k.pth")
+	stage := fs.Int("stage", 4, "dac: the stage (sfx.DACStages)")
+	sinWay := fs.String("sin", sfx.SinNativeClipped, "dac: series, native or native-clip")
 	fs.Parse(os.Args[2:])
 	if fs.NArg() != 1 {
 		usage()
@@ -86,6 +96,9 @@ func main() {
 			alpha, _ := g.B.F16s("alpha", []int{1, *c, 1, 1}, absVals(vals(*c, 1), 0.1))
 			inv, _ := g.B.F16s("inv", []int{1, *c, 1, 1}, recip(alpha32(g, *c)))
 			ay := g.Mul(y, alpha)
+			if *preclip {
+				ay = clipOp(g, ay, -1500, 1500)
+			}
 			var s *mlpackage.Var
 			if *square {
 				s = g.Mul(ay, ay)
@@ -108,6 +121,26 @@ func main() {
 			v := g.Input("v", 1, 1, *keys, *head)
 			g.Output(g.HeadAttention(q, k, v, milpart.HeadOptions{Chunk: *chunk, Whole: true}))
 		}
+	case "dac":
+		w, err := sfx.OpenWeights([]string{*pth}, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer w.Close()
+		st := sfx.DACStages()
+		if *stage < 0 || *stage >= len(st) {
+			log.Fatalf("no stage %d (0 to %d)", *stage, len(st)-1)
+		}
+		part := st[*stage].Part()
+		opts := llm.Options{Backend: llm.BackendCoreAI, Rewrites: map[string]string{"sin": *sinWay}}
+		if _, err := llm.WriteAI(out, map[string]string{"fbrepro": "dac", "sin": *sinWay}, func(b *mlpackage.Builder) (ins, outs []mlpackage.Feature, err error) {
+			ins, o, err := part.Build(b, w, opts)
+			return ins, []mlpackage.Feature{o}, err
+		}); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(out)
+		return
 	default:
 		usage()
 	}
@@ -148,6 +181,6 @@ func clipOp(g *milpart.Graph, x *mlpackage.Var, lo, hi float32) *mlpackage.Var {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fbrepro sin|cos|clipew|prescale|snake|attn [flags] OUT.aimodel")
+	fmt.Fprintln(os.Stderr, "usage: fbrepro sin|cos|clipew|prescale|snake|dac|attn [flags] OUT.aimodel")
 	os.Exit(2)
 }

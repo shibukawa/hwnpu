@@ -55,9 +55,11 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 
 ## offline-stricter-than-device.md (new, known-issues 11)
 
-- `snake -clip` passes offline for h15g, so this small program does not reproduce it.
-- It needs the DAC's stage 4 as hwnpu wrote it before r3 (Snake with `sin` and a clip): a MOSS-SoundEffect export from a commit before `DACRevision` 3, then `aicheck merge` with `HWNPU_DEV=ailower.cut=47` for the first 47 operations (known-issues 11).
-- Compile it with `offline.sh h15g`, and load it on an M3 with `load.sh`.
+- `fbrepro dac -pth vae_128d_48k.pth -stage 4 -sin native-clip dac4-native-clip.aimodel` writes MOSS-SoundEffect's DAC stage 4 with its sine as hwnpu's r2 wrote it (`sin(clip(alpha x, ±1500))`, sfx's `SinNativeClipped`). `-sin native` writes it without the clip (the M3's export today), `-sin series` with the polynomial. `vae_128d_48k.pth` is the checkpoint's `vae/` file.
+- `offline.sh h15g dac4-native-clip.aimodel dac4-native.aimodel`: on 2026-11-25 the clipped stage is not on the Neural Engine for h15g, h16g and h17g (exit 0, "Procedure compilation phase failed", "Falling back to full compile on GPU"); without the clip, and with the polynomial, it is.
+- The compiler's own message is `<private>` in the log. The layer it named when first seen ("NEFUSED_EW: EW: MAX") needs private data shown, or a sysdiagnose.
+- A small Snake block with the same clip before `sin` (`fbrepro snake -preclip`) passes offline, so it does not reproduce.
+- The device side (the M3 puts the clipped stage on the Neural Engine) is to confirm on an M3 with `load.sh dac4-native-clip.aimodel`.
 
 ## h15g-dma-cache-hint.md (new, known-issues 12)
 
