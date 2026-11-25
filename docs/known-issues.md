@@ -2,7 +2,7 @@
 
 作成: 2026-11-19。対象: Apple の Core AI (macOS 27.2.1 26B131) と `coreai-build` (Metal Toolchain 27.2.47.0、coreai-build 3605.6.3)。
 
-hwnpu が今どう回避しているか、Apple の側で直ったときに hwnpu で何をするか、を問題ごとにまとめる。調べた経緯と数値は [docs/design/README.md](design/README.md) の各節にある。Apple への報告 (Feedback Assistant) の番号も書いた。
+hwnpu が今どう回避しているか、Apple の側で直ったときに hwnpu で何をするか、を問題ごとにまとめる。調べた経緯と数値は [docs/design/README.md](design/README.md) の各節にある。Apple への報告 (Feedback Assistant) の番号も書いた。未報告のものの下書きと再現の手順は [apple-feedback/](apple-feedback/README.md)。
 
 OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各問題がまだあるかを見て、直ったものだけをこの文書の手順で外す。
 
@@ -17,12 +17,13 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 5 | ANE のコンパイルと prebuilt の仕上げが機械全体で 1 本ずつ | FB25624259 | なし | 読み込みを並べるか測る |
 | 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | FB25624336 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
 | 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
-| 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | 未報告 | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
+| 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | 未報告 (下書き [purged-programs-silent-recompile.md](apple-feedback/purged-programs-silent-recompile.md)) | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
 | 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
-| 10 | M1 の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
-| 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書きあり) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
-| 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
-| 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
+| 10 | M1 (と M2: `sin`) の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 (下書き [sin-off-ane-m1-m2.md](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
+| 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書き [offline-stricter-than-device.md](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
+| 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 (下書き [h15g-dma-cache-hint.md](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
+| 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
+| 14 | 1024² の VAE の段の ANE のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使う (Anima) | 未報告 (下書き [compile-disk-and-time.md](apple-feedback/compile-disk-and-time.md)) | なし (初回は 70 GB 以上空ける) | VAE の prebuilt を M2 以降で使うか測り直す (#336) |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -152,6 +153,14 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: `generation_edits` の M1 を消せば、M1 もほかのチップと同じ書き出しを使う (M1 用の書き出しとプリビルトは使われなくなる)
 - 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`HWNPU_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`hwnpu-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
 
+## 14. 1024² の VAE の段のコンパイルが長く、ディスクを大きく使う (未報告)
+
+- **何が**: Anima の VAE の段 (832 KB、8 つの大きさの関数) を M2 の端末でコンパイルすると、`vae_s6.aimodel#s1024x1024` だけで 871 秒かかり、その間に空きが 99.1 GB から 48.2 GB に減った (コンパイルが終わると戻る。2026-11-25)。10 段で約 70 分 (1 段 1〜15 分)。FLUX.2 klein の VAE は 10 段で 104 秒
+- 空きが足りないと "Failed to allocate memory for file backing" で GPU に回る。その前に空きが 15 GB ほどを切り、8 節の消去が起きる
+- **今**: 回避はない。Anima の初回は 70 GB 以上空けて動かす
+- **直ったら**: 何もしなくてよい。VAE の prebuilt を M2 以降で使うか (#336) は、この問題とは別に測る
+- 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` で時間と空きの最小値を見る ([apple-feedback/repro.md](apple-feedback/repro.md))
+
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
 - 1 節: 画像のモデルを prebuilt で開き、`log show --predicate 'process == "launchd" AND eventMessage CONTAINS "ANELargeModel"'` に "deferred by 10 seconds" が出るか
@@ -159,6 +168,6 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - 3 節: FLUX.2 klein 1024² の初回に "vae_s0 … the prebuilt program failed" が出るか
 - 6、7 節: 6 節の確かめ方を、落ちる 9 種類と h18g で
 - 9 節: [apple-coreai](design/apple-coreai.md) の表と 9 節の表を測り直す
-- 10、11、12 節: 各節の確かめ方を
+- 10、11、12、14 節: 各節の確かめ方を ([apple-feedback/repro.md](apple-feedback/repro.md) の道具)
 
 確かめた日と OS、Metal Toolchain の版を、この文書の各節に書き足す。
