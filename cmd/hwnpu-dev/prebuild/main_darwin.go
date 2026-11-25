@@ -35,7 +35,7 @@ import (
 )
 
 func Main() {
-	archs := flag.String("arch", "", "the architectures, comma separated (default: the recipe's, model-recipes.yaml; all: "+strings.Join(coreai.Archs, " ")+")")
+	archs := flag.String("arch", "", "the architectures, comma separated (default: the recipe's for a model it prebuilds, model-recipes.yaml prebuilt, none for another; all: "+strings.Join(coreai.Archs, " ")+")")
 	jobs := flag.Int("j", 0, fmt.Sprintf("compiles at once (default: the recipe's, else %d here: one for every 4 GB of memory beyond 6, at most half the cores)", coreai.DefaultJobs()))
 	force := flag.Bool("force", false, "compile again over prebuilt programs that are there")
 	dry := flag.Bool("n", false, "list what would be compiled")

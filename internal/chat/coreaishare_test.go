@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -170,7 +171,7 @@ func TestPrebuiltShared(t *testing.T) {
 	os.MkdirAll(packed, 0o755)
 	os.WriteFile(filepath.Join(packed, "main.hash"), []byte("h1"), 0o644)
 	os.WriteFile(filepath.Join(packed, "resources.bin"+coreai.MapSuffix), []byte("{}"), 0o644)
-	if err := PutPrebuilt(here, "h14g"); err != nil {
+	if err := PutPrebuilt(ctx, here, "h14g"); err != nil {
 		t.Fatal(err)
 	}
 	shared.Flush(ctx)
@@ -201,7 +202,7 @@ func TestPrebuiltShared(t *testing.T) {
 	os.MkdirAll(more, 0o755)
 	os.WriteFile(filepath.Join(more, "main.hash"), []byte("h1"), 0o644)
 	os.WriteFile(filepath.Join(more, "resources.bin"+coreai.MapSuffix), []byte("{}"), 0o644)
-	if err := PutPrebuilt(here, "h14g"); err != nil {
+	if err := PutPrebuilt(ctx, here, "h14g"); err != nil {
 		t.Fatal(err)
 	}
 	shared.Flush(ctx)
@@ -214,12 +215,39 @@ func TestPrebuiltShared(t *testing.T) {
 	}
 	// fewer put after do not replace them
 	os.RemoveAll(more)
-	if err := PutPrebuilt(here, "h14g"); err != nil {
+	if err := PutPrebuilt(ctx, here, "h14g"); err != nil {
 		t.Fatal(err)
 	}
 	shared.Flush(ctx)
 	if e, err := shared.ReadEntryAt(ctx, l, es[0]); err != nil || len(e.Holds) != 2 {
 		t.Fatalf("fewer programs replaced the layer's: %v %v", e.Holds, err)
+	}
+	// an export converted here with no source to put it in has no entry.json, and a family's
+	// directory (models/FLUX.2-klein) is no model's: the build names the model (WithModel), and
+	// a machine that took the export from a source (its entry.json there) finds the programs
+	local := filepath.Join(t.TempDir(), "FLUX.2-klein", "flux.2-klein-4b-8sizes-v6.coreai")
+	os.MkdirAll(filepath.Join(local, "dit.aimodel"), 0o755)
+	os.WriteFile(filepath.Join(local, "dit.aimodel", "main.mlirb"), []byte("bytecode"), 0o644)
+	os.WriteFile(filepath.Join(local, "dit.aimodel", "main.hash"), []byte("h9"), 0o644)
+	lp := filepath.Join(coreai.PackedRoot(local, "h13g"), "dit.h13g.aimodelc")
+	os.MkdirAll(lp, 0o755)
+	os.WriteFile(filepath.Join(lp, "main.hash"), []byte("h9"), 0o644)
+	os.WriteFile(filepath.Join(lp, "resources.bin"+coreai.MapSuffix), []byte("{}"), 0o644)
+	if err := PutPrebuilt(ctx, local, "h13g"); err == nil || !strings.Contains(err.Error(), "name the model") {
+		t.Errorf("an export of no known model: %v, want an error that asks for the model", err)
+	}
+	flux, ok := Lookup("FLUX.2-klein-4B")
+	if !ok {
+		t.Fatal("FLUX.2-klein-4B is not in models.yaml")
+	}
+	if err := PutPrebuilt(WithModel(ctx, flux), local, "h13g"); err != nil {
+		t.Fatalf("the model named: %v", err)
+	}
+	shared.Flush(ctx)
+	if es, err := shared.ListEntries(ctx, l); err != nil || !slices.ContainsFunc(es, func(e string) bool {
+		return strings.HasPrefix(e, "converted/FLUX.2-klein-4B/coreai-h13g/flux.2-klein-4b-8sizes-v6.coreai/")
+	}) {
+		t.Errorf("entries in the layer: %v, %v", es, err)
 	}
 	// a miss makes nothing here: nothing begins to be put for it (store.StartEarly would mark
 	// the folder and watch it until the process ends)

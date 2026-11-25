@@ -13,10 +13,11 @@
 hwnpu-dev models package FLUX.2-klein-4B
 ```
 
-- レシピがあるモデルは、ターゲットを書かなくてよい。Core AI の書き出しを作り、レシピのチップ (`archs`) 向けにプリビルドし、取得元 (`HWNPU_MODEL_SOURCE …?writeback=true`) に置く
+- ターゲットを書かなくてよい。Core AI の書き出しを作り、取得元 (`HWNPU_MODEL_SOURCE …?writeback=true`) に置く。レシピに `prebuilt: true` のあるモデル (画像生成: FLUX.2 klein、FLUX.3 klein、Anima) は、続けてレシピのチップ (`archs`) 向けにプリビルドして置く。ほかのモデルはプリビルドしない (部品が小さく、Mac ではプリビルトから読むほうが端末のコンパイルより遅い: [known-issues](known-issues.md) 9 節)
+- 書き戻す取得元がないときは、作ったものは手元に残る (プリビルトは書き出しの隣の `EXPORT.prebuilt/ARCH`)。エラーにはしない
 - `MODEL/coreai-h14g` のようにチップを書くと、そのチップだけを作る。並列数と、実機に回すプログラムは、そのときもレシピのとおり
 - チップによって書き出しが違うモデル (FLUX.2 klein は M1 だけ別: models.yaml の `npu.apple.generation_edits`) は、M1 として作った書き出しを h13 の種類 (h13g、h13s、…) だけに、M2 として作った書き出しをそのほかの種類だけにプリビルドする (`chat.TakesExportsOf`)。ほかのチップの書き出しのプリビルトは作らない。手元の書き出しを `hwnpu-dev prebuild EXPORT_DIR` で作るときは、この振り分けがないので `-arch` で種類を名指しする
-- 手元の書き出しだけをプリビルドするときは `hwnpu-dev prebuild -put EXPORT_DIR`。どのモデルのレシピかは、書き出しの `entry.json` の `model` から決める (`-model NAME` で指定もできる)
+- 手元の書き出しだけをプリビルドするときは `hwnpu-dev prebuild -put EXPORT_DIR`。どのモデルのレシピかは、書き出しの `entry.json` の `model` から決める (`-model NAME` で指定もできる)。`-arch` を書かないと、`prebuilt: true` のモデルの書き出しだけをレシピのチップ向けに作り、ほかのモデルの書き出しは一言出して飛ばす。測り直すときは `-arch` (`models package` なら `MODEL/coreai-ARCH`) で名指しすれば、どのモデルでも作る
 - `-arch` と `-j` は、レシピより優先する。確かめのとき以外は書かない
 - AMD のレシピ (`amd`) があるモデルは、Linux と Windows ではターゲットを書かなくても、レシピの世代 (`generations`) の書き出し (`amd-xdna2`) を作る。Mac では AMD の分を、ほかの OS では Core AI のプリビルドの分を、一言出して飛ばす
 - `MODEL/amd-xdna2` のように世代のターゲットを書くと、その世代だけを作る。hwnpu がまだ動かさない世代 (`amd-xdna1`) と、レシピが `skip` する世代は、理由を出して止まる
@@ -30,12 +31,13 @@ tools:
   coreai-build: 3605.6.3        # coreai-build --version。違う版では止まる (--any-tools で作れる)
 
 apple:                          # どのモデルにも効く既定
-  archs: [h13g, h14g, h15g]     # プリビルドするチップ (h13g M1、h14g M2、h15g M3)
+  archs: [h13g, h14g, h15g]     # プリビルドするチップ (h13g M1、h14g M2、h15g M3)。プリビルドするのは prebuilt: true のモデルだけ
   jobs: 2                       # coreai-build を何本同時に動かすか
 
 models:
   FLUX.2-klein-4B:              # models.yaml のモデルの名前
     apple:                      # archs と jobs は既定より優先し、prebuild は既定のあとに足す
+      prebuilt: true            # チップを名指さないビルドでも archs 向けにプリビルドする (画像生成のモデルだけ)
       prebuild:
         - arch: h13g                                    # 1 つか並び。省くと全部
           export: "flux.2-klein-4b-8sizes-*"            # 書き出しの名前のパターン。省くと全部

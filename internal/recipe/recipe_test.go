@@ -46,6 +46,13 @@ func TestLeft(t *testing.T) {
 	if flux.Jobs != 3 || strings.Join(flux.Archs, " ") != "h13g h14g h15g" {
 		t.Errorf("jobs %d, archs %v", flux.Jobs, flux.Archs)
 	}
+	// the image generators alone are prebuilt when a build names no architecture
+	for model, want := range map[string]bool{"FLUX.2-klein-4B": true, "flux-3-image-klein": true, "Anima-Turbo": true, "Anima-Aesthetic": true,
+		"MOSS-SoundEffect-v2.0": false, "LFM3-1.7B": false, "whisper-large-v3-turbo": false, "DA3-BASE": false, "no-such-model": false} {
+		if got := f.AppleOf(model).Prebuilt; got != want {
+			t.Errorf("%s: prebuilt %v, want %v", model, got, want)
+		}
+	}
 	// a model without a recipe is built as apple says
 	if a := f.AppleOf("Qwen3-0.6B"); len(a.Prebuild) != 0 || a.Jobs != f.Apple.Jobs {
 		t.Errorf("no recipe: %+v", a)

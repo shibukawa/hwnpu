@@ -103,7 +103,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
   - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
   - M1、M2 では測っていない
-- **今**: 画像生成のモデル (FLUX.2 klein、Anima) にだけ prebuilt を置く。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
+- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) にだけ prebuilt を置く。model-recipes.yaml の `apple.prebuilt: true` がその印で、`hwnpu-dev models package MODEL` と `hwnpu-dev prebuild EXPORT` は、チップを名指さなければ印のあるモデルだけをプリビルドする。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
 - **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
