@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 )
 
 // draftPolicy decides, call by call, whether checking the drafts of a prompt lookup pays, where
@@ -24,8 +24,8 @@ import (
 // following the text at no cost. The cost is a constant and not the calls' times, so that the
 // choices, and with them the call that computes each token, are the same from run to run.
 //
-// HWNPU_DEV=draft.policy=0 checks every draft, as before; HWNPU_DEV=draft.ratio is the cost of a check in
-// steps; HWNPU_DEV=draft.trace=FILE adds a line a call, "KIND MATCH DRAFTS RIGHT MS" (step, check,
+// BONSAIAI_DEV=draft.policy=0 checks every draft, as before; BONSAIAI_DEV=draft.ratio is the cost of a check in
+// steps; BONSAIAI_DEV=draft.trace=FILE adds a line a call, "KIND MATCH DRAFTS RIGHT MS" (step, check,
 // leave, and left when the drafts left unchecked are known: tools/amd/draft_analyze.py reads it).
 type draftPolicy struct {
 	ok, bad [draftBuckets]float64 // drafts that were right, and drafts that ended a run, decayed
@@ -40,7 +40,7 @@ const (
 	draftMargin  = 0.03 // a check must bring this much more than its cost
 	draftPrior   = 4.0  // the prior's weight, in drafts
 	draftDecay   = 0.99
-	// draftCheckSteps is what a check costs in steps unless HWNPU_DEV=draft.ratio says: between the
+	// draftCheckSteps is what a check costs in steps unless BONSAIAI_DEV=draft.ratio says: between the
 	// two models measured (1.95 and 1.68).
 	draftCheckSteps = 1.8
 )

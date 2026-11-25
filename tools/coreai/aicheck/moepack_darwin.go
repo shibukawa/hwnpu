@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // moePack is moe with fewer arrays to bind: an expert's weights in one int8 array (H, 3I), gate
@@ -183,8 +183,8 @@ func moePack(argv []string) error {
 				}
 			}
 			raw := make([]byte, 2*S)
-			hwnpu.EncodeF16(raw, sv)
-			hwnpu.DecodeF16(sv, raw)
+			bonsaiai.EncodeF16(raw, sv)
+			bonsaiai.DecodeF16(sv, raw)
 			if gather {
 				copy(tb[e*S:], sv)
 			} else {
@@ -203,7 +203,7 @@ func moePack(argv []string) error {
 			held[l][e] = x
 		}
 		if gather {
-			hwnpu.EncodeF16(tables[l].Bytes(), tb)
+			bonsaiai.EncodeF16(tables[l].Bytes(), tb)
 			if l == 0 {
 				copy(tableV, tb)
 			}
@@ -217,12 +217,12 @@ func moePack(argv []string) error {
 	for i := range xv {
 		xv[i] = float32(rng.NormFloat64())
 	}
-	hwnpu.EncodeF16(xb.Bytes(), xv)
-	hwnpu.DecodeF16(xv, xb.Bytes())
+	bonsaiai.EncodeF16(xb.Bytes(), xv)
+	bonsaiai.DecodeF16(xv, xb.Bytes())
 	req.Bind(args["x"].Index, xb)
 	for k := 0; k < K; k++ {
 		r, _ := alloc(fmt.Sprintf("r%d", k))
-		hwnpu.EncodeF16(r.Bytes(), []float32{1 / float32(K)})
+		bonsaiai.EncodeF16(r.Bytes(), []float32{1 / float32(K)})
 		req.Bind(args[fmt.Sprintf("r%d", k)].Index, r)
 	}
 	var ib backend.Buffer
@@ -248,7 +248,7 @@ func moePack(argv []string) error {
 			for k, e := range chosen {
 				f[k] = float32(e)
 			}
-			hwnpu.EncodeF16(ib.Bytes(), f)
+			bonsaiai.EncodeF16(ib.Bytes(), f)
 		}
 	}
 	run := func() error {
@@ -269,7 +269,7 @@ func moePack(argv []string) error {
 		return err
 	}
 	got := make([]float32, H)
-	hwnpu.DecodeF16(got, yb.Bytes())
+	bonsaiai.DecodeF16(got, yb.Bytes())
 	want := make([]float32, H)
 	for _, e := range chosen {
 		x := held[0][e]

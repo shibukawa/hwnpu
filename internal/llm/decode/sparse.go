@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
 )
 
 // Sparse is the two-level attention of a session split at its attention (SetSparse): past a
@@ -224,9 +224,9 @@ func (s *Session) attendSparse(st *step, layer int, kc, vc *kvCache, pos, rows, 
 		if err := att.Run(k, v, mask); err != nil {
 			return err
 		}
-		hwnpu.DecodeF16(ss.o[0], att.O)
-		hwnpu.DecodeF16(ss.o[1], att.M)
-		hwnpu.DecodeF16(ss.o[2], att.L)
+		bonsaiai.DecodeF16(ss.o[0], att.O)
+		bonsaiai.DecodeF16(ss.o[1], att.M)
+		bonsaiai.DecodeF16(ss.o[2], att.L)
 		return nil
 	}
 	// every summary but the sinks', which are read exactly
@@ -344,7 +344,7 @@ func (s *Session) summarize(l *sparseLayer, kc, vc *kvCache, n int) error {
 			L := c.c.span(j)
 			dst := c.out[b/C].Bytes()
 			for h := range c.c.heads {
-				hwnpu.DecodeF16(vals, src[2*(h*L+slot)*d:2*(h*L+slot+S)*d])
+				bonsaiai.DecodeF16(vals, src[2*(h*L+slot)*d:2*(h*L+slot+S)*d])
 				clear(mean)
 				for r := range S {
 					for i, x := range vals[r*d : (r+1)*d] {
@@ -354,7 +354,7 @@ func (s *Session) summarize(l *sparseLayer, kc, vc *kvCache, n int) error {
 				for i := range mean {
 					mean[i] /= float32(S)
 				}
-				hwnpu.EncodeF16(dst[2*(h*C+b%C)*d:2*(h*C+b%C+1)*d], mean)
+				bonsaiai.EncodeF16(dst[2*(h*C+b%C)*d:2*(h*C+b%C+1)*d], mean)
 			}
 		}
 	}
@@ -383,7 +383,7 @@ func (s *Session) choose(st *step, l *sparseLayer, layer int, kc, vc *kvCache, n
 			}
 		}
 	}
-	hwnpu.EncodeF16(mass.R, ss.r)
+	bonsaiai.EncodeF16(mass.R, ss.r)
 	copy(mass.Q, att.Q)
 	for g := range G {
 		if cap(ss.mass[g]) < n {
@@ -400,7 +400,7 @@ func (s *Session) choose(st *step, l *sparseLayer, layer int, kc, vc *kvCache, n
 		if err := mass.Run(l.kb[j], m); err != nil {
 			return fmt.Errorf("decode: weights of the summaries of layer %d, chunk %d: %w", layer, j, err)
 		}
-		hwnpu.DecodeF16(ss.w, mass.W)
+		bonsaiai.DecodeF16(ss.w, mass.W)
 		for g := range G {
 			copy(ss.mass[g][j*C:min(n, (j+1)*C)], ss.w[g*C:g*C+min(n-j*C, C)])
 		}
@@ -527,7 +527,7 @@ func (s *Session) rangeMask(m *rangeMask, q, lo, hi int) (Buf, error) {
 		}
 	}
 	enc := make([]byte, 2*len(row))
-	hwnpu.EncodeF16(enc, row)
+	bonsaiai.EncodeF16(enc, row)
 	for t := range q {
 		copy(m.b.Bytes()[2*(t*C+a):2*(t*C+b)], enc)
 	}
@@ -577,7 +577,7 @@ func (s *Session) tailMask(ss *sparseStep, g, C, q, tail0, pos0, tail, pos int) 
 			}
 			vals[x-a] = v
 		}
-		hwnpu.EncodeF16(ss.gmasks[g].Bytes()[2*(t*C+a):2*(t*C+b)], vals)
+		bonsaiai.EncodeF16(ss.gmasks[g].Bytes()[2*(t*C+a):2*(t*C+b)], vals)
 	}
 	return ss.gmasks[g], nil
 }

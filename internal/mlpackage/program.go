@@ -1,6 +1,6 @@
 // Package mlpackage writes Core ML model packages (.mlpackage) holding an ML Program, without
 // coremltools: the MIL program as protobuf, the weights in the MILBlob storage format and the
-// package manifest. It covers the operations hwnpu's converters emit, not the whole MIL spec.
+// package manifest. It covers the operations bonsaiai's converters emit, not the whole MIL spec.
 package mlpackage
 
 import (
@@ -9,8 +9,8 @@ import (
 	"math"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // Data types of program values, in MIL's numbering.

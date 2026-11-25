@@ -11,14 +11,14 @@ import (
 // license and what they may make (content). Rules come from the policy of the user's definition
 // files and from PolicyEnv, items separated by commas:
 //
-//	HWNPU_MODEL_ALLOWLIST=-license:non-commercial,+nsfw
+//	BONSAIAI_MODEL_ALLOWLIST=-license:non-commercial,+nsfw
 //
 // + allows and - refuses; a - wins over a +. A +license makes the licenses a list of what is
 // allowed: a model none of its +s match is refused, as is one of no license known. Models of
 // content nsfw are refused unless +nsfw.
 
 // PolicyEnv is the environment's model policy (and a .env file's).
-const PolicyEnv = "HWNPU_MODEL_ALLOWLIST"
+const PolicyEnv = "BONSAIAI_MODEL_ALLOWLIST"
 
 // LicenseClasses are a license's classes (License.Class): what it allows of commercial use.
 var LicenseClasses = []string{
@@ -82,7 +82,7 @@ func ParsePolicy(items []string, from string) ([]Rule, error) {
 		takes, ok := policyKeys[key]
 		switch {
 		case !ok:
-			return nil, bad("has no key hwnpu knows")
+			return nil, bad("has no key bonsaiai knows")
 		case !takes && valued:
 			return nil, bad("takes no value")
 		case takes && value == "":
@@ -133,7 +133,7 @@ func refused(rules []Rule, m Model) string {
 			return fmt.Sprintf("it may make NSFW pictures unasked (%s in %s)", deny[0], deny[0].From)
 		}
 		if len(allow) == 0 {
-			return fmt.Sprintf("it may make NSFW pictures unasked; hwnpu config add model-allowlist nsfw (+nsfw in %s) allows it", PolicyEnv)
+			return fmt.Sprintf("it may make NSFW pictures unasked; bonsaiai config add model-allowlist nsfw (+nsfw in %s) allows it", PolicyEnv)
 		}
 	}
 	allow, deny := of("license")
@@ -173,8 +173,8 @@ func policyFromEnv() ([]Rule, error) {
 }
 
 // AllowedAlso is Allowed with a client's own policy too (its PolicyEnv, items separated by
-// commas): hwnpud runs a model that its own policy allows and so does the client's, the rules of
-// the definition files with the client's items. A client narrows hwnpud's policy, never widens
+// commas): bonsaiaid runs a model that its own policy allows and so does the client's, the rules of
+// the definition files with the client's items. A client narrows bonsaiaid's policy, never widens
 // it. items "" is no policy of the client's.
 func AllowedAlso(m Model, items string) error {
 	if err := Allowed(m); err != nil {

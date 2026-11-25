@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/qwen35"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/qwen35"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // tinyQwen35MTP is tinyQwen35 with a multi-token prediction layer.
@@ -153,13 +153,13 @@ func mtpFromStart(t *testing.T, cfg *qwen35.Config, mm *qwen35.MTP, w llm.Weight
 			}
 		}
 		for name, v := range in {
-			hwnpu.EncodeF16(p.In[name], v)
+			bonsaiai.EncodeF16(p.In[name], v)
 		}
 		if err := p.Run(); err != nil {
 			t.Fatal(err)
 		}
 		out := make([]float32, len(p.Out["y"])/2)
-		hwnpu.DecodeF16(out, p.Out["y"])
+		bonsaiai.DecodeF16(out, p.Out["y"])
 		return out
 	}
 	x, err := llm.Embed(w, cfg, seq)

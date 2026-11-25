@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 func readBin[T float32 | int32](t *testing.T, path string) []T {
@@ -37,12 +37,12 @@ func relErr(got, want []float32) float64 {
 	return math.Sqrt(se / sw)
 }
 
-// refDir is where the Hugging Face repository is (HWNPU_TEST_MRT_EXPORT, the layout of
-// google/magenta-realtime-2) and the reference of mrt_ss_ref.py (HWNPU_TEST_MRT_REF).
+// refDir is where the Hugging Face repository is (BONSAIAI_TEST_MRT_EXPORT, the layout of
+// google/magenta-realtime-2) and the reference of mrt_ss_ref.py (BONSAIAI_TEST_MRT_REF).
 func refDirs(t *testing.T) (string, string) {
-	dir, ref := os.Getenv("HWNPU_TEST_MRT_EXPORT"), os.Getenv("HWNPU_TEST_MRT_REF")
+	dir, ref := os.Getenv("BONSAIAI_TEST_MRT_EXPORT"), os.Getenv("BONSAIAI_TEST_MRT_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_TEST_MRT_EXPORT and HWNPU_TEST_MRT_REF are not set")
+		t.Skip("BONSAIAI_TEST_MRT_EXPORT and BONSAIAI_TEST_MRT_REF are not set")
 	}
 	return dir, ref
 }
@@ -108,10 +108,10 @@ func TestDecoderMatchesReference(t *testing.T) {
 		for k, v := range feed {
 			tensors[k] = milcpu.Tensor{Shape: []int{1, 1, len(v), 1}, Data: v}
 		}
-		opts := milcpu.Options{RoundF16: os.Getenv("HWNPU_TEST_MRT_F16") != "", FlushSubnormals: os.Getenv("HWNPU_TEST_MRT_F16") == "ftz"}
-		if os.Getenv("HWNPU_TEST_MRT_TRACE") != "" {
+		opts := milcpu.Options{RoundF16: os.Getenv("BONSAIAI_TEST_MRT_F16") != "", FlushSubnormals: os.Getenv("BONSAIAI_TEST_MRT_F16") == "ftz"}
+		if os.Getenv("BONSAIAI_TEST_MRT_TRACE") != "" {
 			opts.Trace = func(typ, name string, m, rms float32) {
-				if m > 1e4 || m != m || os.Getenv("HWNPU_TEST_MRT_TRACE") == "all" {
+				if m > 1e4 || m != m || os.Getenv("BONSAIAI_TEST_MRT_TRACE") == "all" {
 					t.Logf("trace: %s %s: max %.4g rms %.4g", typ, name, m, rms)
 				}
 			}

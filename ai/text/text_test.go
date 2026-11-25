@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
-// The options' zero values are hwnpu-chat's defaults; Unlimited and a budget below 0 are none.
+// The options' zero values are bonsaiai-chat's defaults; Unlimited and a budget below 0 are none.
 func TestRequestDefaults(t *testing.T) {
 	r := request(nil, DefaultSampling, 0, 0)
 	if r.MaxTokens != 1024 || r.Temperature != 0.1 || r.TopK != 50 || r.Repetition != 1.05 || r.TopP != 0 {

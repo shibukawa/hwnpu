@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// clockTick is USER_HZ, the unit of /proc/PID/stat's times (100 on every Linux hwnpu runs on).
+// clockTick is USER_HZ, the unit of /proc/PID/stat's times (100 on every Linux bonsaiai runs on).
 const clockTick = time.Second / 100
 
 // readProcs reads /proc/PID/stat (utime, stime), /proc/PID/statm (resident) and the DRM

@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/notes"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/notes"
 )
 
 // NotesRate is the samples a second a NoteTranscriber reads (mono).
@@ -41,7 +41,7 @@ var notesRole = &airole.Role{
 		}
 		c, dev, err := convertedLoad(ctx, f, e, r, convertedOpener{
 			cpu: func(model string, threads int) (io.Closer, error) { return notes.OpenCPU(model, threads) },
-			npu: func(ctx context.Context, dev *hwnpu.Device, model, program string) (io.Closer, error) {
+			npu: func(ctx context.Context, dev *bonsaiai.Device, model, program string) (io.Closer, error) {
 				return notes.Open(ctx, dev, model, program)
 			}})
 		if err != nil {
@@ -58,7 +58,7 @@ var notesRole = &airole.Role{
 // NoteTranscriber writes down the notes of music (Basic Pitch): any instrument, several notes
 // at once, with their pitch bends. It runs one request at a time; others wait.
 type NoteTranscriber struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	t      *notes.Transcriber
 	r      route
@@ -161,7 +161,7 @@ func (t *NoteTranscriber) Transcribe(ctx context.Context, pcm []float32, o Notes
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (t *NoteTranscriber) Close() error {
 	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
+		return t.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()

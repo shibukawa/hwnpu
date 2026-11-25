@@ -9,32 +9,32 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // moe runs the mixture of experts layers of a model cut at them (llm.Routed, the manifest's
 // Experts) between the parts: after a part that outputs moe_logits_N, the host picks each row's
 // experts from the logits, runs the experts' program on the row (moe_x_N) with the chosen
 // experts' arrays bound and writes the result into the next part's input moe_o_N. Every layer's
-// experts are held in the program's own input arrays (hwnpu.Graph.AllocInput), read once from the
+// experts are held in the program's own input arrays (bonsaiai.Graph.AllocInput), read once from the
 // weights file; the chains that Share one load them once.
 type moe struct {
-	g       *hwnpu.Graph
-	req     *hwnpu.Request
+	g       *bonsaiai.Graph
+	req     *bonsaiai.Request
 	shape   experts.Shape
 	routing experts.Routing
-	x, i, r *hwnpu.Buffer
-	y       *hwnpu.Buffer
+	x, i, r *bonsaiai.Buffer
+	y       *bonsaiai.Buffer
 	sArg    int
 	guArg   []int
 	dnArg   []int
 	layers  map[int]*moeLayer
-	bufs    []*hwnpu.Buffer
-	locked  [][]byte   // the memory HWNPU_MOE_WIRE wired, unwired by close
+	bufs    []*bonsaiai.Buffer
+	locked  [][]byte   // the memory BONSAIAI_MOE_WIRE wired, unwired by close
 	mu      sync.Mutex // one row at a time: the chains that share it run in turn
 	// the programs of one expert on all the rows of a call, by its rows (experts.BuildRows)
 	rows map[int]*moeRows
@@ -42,13 +42,13 @@ type moe struct {
 	host *experts.Host
 	bias map[int][]float32
 
-	// what the experts took, for HWNPU_DEV's moe.time: the chain's runs, the rows a layer's experts
+	// what the experts took, for BONSAIAI_DEV's moe.time: the chain's runs, the rows a layer's experts
 	// ran on, their time and the time of the calls alone
 	Runs, Calls  int
 	Time, Called time.Duration
 }
 
-// report prints what the experts took with HWNPU_DEV's moe.time.
+// report prints what the experts took with BONSAIAI_DEV's moe.time.
 func (m *moe) report() {
 	if m == nil || m.Calls == 0 || !experts.DebugTime() {
 		return
@@ -60,10 +60,10 @@ func (m *moe) report() {
 
 // moeRows is a loaded program of one expert on the rows of a call.
 type moeRows struct {
-	g                    *hwnpu.Graph
-	req                  *hwnpu.Request
-	x, i, r, zero        *hwnpu.Buffer
-	ys                   [2]*hwnpu.Buffer // the calls' outputs in turn, each the next call's acc
+	g                    *bonsaiai.Graph
+	req                  *bonsaiai.Request
+	x, i, r, zero        *bonsaiai.Buffer
+	ys                   [2]*bonsaiai.Buffer // the calls' outputs in turn, each the next call's acc
 	sArg, gu, dn, acc, y int
 }
 
@@ -73,8 +73,8 @@ type moeRows struct {
 const minRows = 3
 
 type moeLayer struct {
-	gu, dn []*hwnpu.Buffer
-	scales *hwnpu.Buffer
+	gu, dn []*bonsaiai.Buffer
+	scales *bonsaiai.Buffer
 	bias   []float32
 }
 
@@ -90,7 +90,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		}
 		return &moe{shape: rec.Shape, routing: rec.Routing, host: h}, nil
 	}
-	g, err := c.gr.Compile(ctx, hwnpu.GraphSource{Path: rec.Program.Path, Units: c.units})
+	g, err := c.gr.Compile(ctx, bonsaiai.GraphSource{Path: rec.Program.Path, Units: c.units})
 	if err != nil {
 		return nil, fmt.Errorf("chain: the experts' program: %w", err)
 	}
@@ -99,20 +99,20 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		m.close()
 		return nil, err
 	}
-	arg := func(name string) (hwnpu.ArgInfo, error) {
+	arg := func(name string) (bonsaiai.ArgInfo, error) {
 		a, ok := g.Arg(name)
 		if !ok {
 			return a, fmt.Errorf("chain: the experts' program has no %s", name)
 		}
 		return a, nil
 	}
-	own := func(name string) (*hwnpu.Buffer, error) {
+	own := func(name string) (*bonsaiai.Buffer, error) {
 		a, err := arg(name)
 		if err != nil {
 			return nil, err
 		}
-		var b *hwnpu.Buffer
-		if a.Kind == hwnpu.ArgOutput {
+		var b *bonsaiai.Buffer
+		if a.Kind == bonsaiai.ArgOutput {
 			b, err = c.dev.AllocBuffer(a.Bytes)
 		} else {
 			b, err = g.AllocInput(a.Index)
@@ -124,7 +124,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		return b, m.req.Bind(a.Index, b)
 	}
 	for _, p := range []struct {
-		b    **hwnpu.Buffer
+		b    **bonsaiai.Buffer
 		name string
 	}{{&m.x, "x"}, {&m.i, "i"}, {&m.r, "r"}, {&m.y, "y"}} {
 		if *p.b, err = own(p.name); err != nil {
@@ -167,7 +167,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		return nil, err
 	}
 	defer f.Close()
-	read := func(b *hwnpu.Buffer, name string) error {
+	read := func(b *bonsaiai.Buffer, name string) error {
 		sec, t, err := f.Section(name)
 		if err != nil {
 			return err
@@ -178,23 +178,23 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		_, err = io.ReadFull(sec, b.Bytes())
 		return err
 	}
-	alloc := func(index int) (*hwnpu.Buffer, error) {
+	alloc := func(index int) (*bonsaiai.Buffer, error) {
 		b, err := g.AllocInput(index)
 		if err == nil {
 			m.bufs = append(m.bufs, b)
 		}
 		return b, err
 	}
-	// HWNPU_MOE_WIRE wires the experts' arrays into memory (mlock): short of memory, the system
+	// BONSAIAI_MOE_WIRE wires the experts' arrays into memory (mlock): short of memory, the system
 	// compresses or swaps out the experts no row chose for a while, and a prompt's calls then wait
 	// for them (an M2 of 16 GB: 14.3 s to 43.3 s for the same prompt, the binding of the arrays
 	// alone growing). Off by default: wiring 7.2 GB of 16 pushes the other applications out.
-	wire := os.Getenv("HWNPU_MOE_WIRE") != "" && os.Getenv("HWNPU_MOE_WIRE") != "0"
+	wire := os.Getenv("BONSAIAI_MOE_WIRE") != "" && os.Getenv("BONSAIAI_MOE_WIRE") != "0"
 	var wired int64
 	var wireErr error
 	if wire {
 		read0 := read
-		read = func(b *hwnpu.Buffer, name string) error {
+		read = func(b *bonsaiai.Buffer, name string) error {
 			if err := read0(b, name); err != nil {
 				return err
 			}
@@ -244,7 +244,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		m.layers[l] = ml
 	}
 	if wireErr != nil {
-		fmt.Fprintf(os.Stderr, "chain: HWNPU_MOE_WIRE: %.2f GiB of the experts wired, the rest not: %v\n", float64(wired)/(1<<30), wireErr)
+		fmt.Fprintf(os.Stderr, "chain: BONSAIAI_MOE_WIRE: %.2f GiB of the experts wired, the rest not: %v\n", float64(wired)/(1<<30), wireErr)
 	}
 	if experts.DebugTime() {
 		fmt.Fprintf(os.Stderr, "chain: the experts of %d layers held (%.2f GiB wired), placement %v\n", len(rec.Layers), float64(wired)/(1<<30), g.Placement())
@@ -254,7 +254,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 
 // loadRows loads a program of one expert on a call's rows (experts.BuildRows).
 func loadRows(ctx context.Context, c *Chain, path string) (*moeRows, error) {
-	g, err := c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units})
+	g, err := c.gr.Compile(ctx, bonsaiai.GraphSource{Path: path, Units: c.units})
 	if err != nil {
 		return nil, fmt.Errorf("chain: the experts' program of rows: %w", err)
 	}
@@ -274,7 +274,7 @@ func loadRows(ctx context.Context, c *Chain, path string) (*moeRows, error) {
 		idx[n] = a.Index
 	}
 	mr.sArg, mr.gu, mr.dn, mr.acc, mr.y = idx["S"], idx["gu"], idx["dn"], idx["acc"], idx["y"]
-	in := func(n string) (*hwnpu.Buffer, error) {
+	in := func(n string) (*bonsaiai.Buffer, error) {
 		b, err := g.AllocInput(idx[n])
 		if err == nil {
 			err = mr.req.Bind(idx[n], b)
@@ -282,7 +282,7 @@ func loadRows(ctx context.Context, c *Chain, path string) (*moeRows, error) {
 		return b, err
 	}
 	fail := func(err error) (*moeRows, error) {
-		for _, b := range []*hwnpu.Buffer{mr.x, mr.i, mr.r, mr.zero, mr.ys[0], mr.ys[1]} {
+		for _, b := range []*bonsaiai.Buffer{mr.x, mr.i, mr.r, mr.zero, mr.ys[0], mr.ys[1]} {
 			if b != nil {
 				b.Close()
 			}
@@ -385,7 +385,7 @@ func (m *moe) run(ctx context.Context, layer int, xs, logits, out []byte, rows i
 		vecops.F32ToF16(m.i.Bytes(), fi)
 		vecops.F32ToF16(m.r.Bytes(), w)
 		copy(m.x.Bytes(), xs[2*row*H:2*(row+1)*H])
-		for _, b := range []*hwnpu.Buffer{m.x, m.i, m.r} {
+		for _, b := range []*bonsaiai.Buffer{m.x, m.i, m.r} {
 			b.SyncToDevice(0, b.Size())
 		}
 		t0 := time.Now()
@@ -407,7 +407,7 @@ func (t *tier) moeHooks() (map[*Part]int, error) {
 	hooks := map[*Part]int{}
 	for i, p := range t.parts {
 		for _, a := range p.g.Args() {
-			if a.Kind == hwnpu.ArgOutput && strings.HasPrefix(a.Name, "moe_logits_") {
+			if a.Kind == bonsaiai.ArgOutput && strings.HasPrefix(a.Name, "moe_logits_") {
 				var layer int
 				if _, err := fmt.Sscanf(a.Name, "moe_logits_%d", &layer); err != nil {
 					return nil, fmt.Errorf("chain: part %d: output %s", i, a.Name)
@@ -555,7 +555,7 @@ func (m *moe) runRows(ctx context.Context, mr *moeRows, ml *moeLayer, xs, logits
 		y := mr.ys[n%2]
 		for _, b := range []struct {
 			i int
-			b *hwnpu.Buffer
+			b *bonsaiai.Buffer
 		}{{mr.gu, ml.gu[e]}, {mr.dn, ml.dn[e]}, {mr.acc, acc}, {mr.y, y}} {
 			if err := mr.req.Bind(b.i, b.b); err != nil {
 				return err

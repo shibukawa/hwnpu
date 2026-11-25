@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 const testCommit = "0123456789abcdef0123456789abcdef01234567"
@@ -203,7 +203,7 @@ func TestSharedExport(t *testing.T) {
 	}
 }
 
-// TestSharedExportImported takes an export made by hand that hwnpu-dev sources import put in the
+// TestSharedExportImported takes an export made by hand that bonsaiai-dev sources import put in the
 // source (ImportedRecipe) when the source has none of the recipe's, without building it or
 // putting it again; with neither, it builds and puts the recipe's.
 func TestSharedExportImported(t *testing.T) {

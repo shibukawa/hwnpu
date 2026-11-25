@@ -6,18 +6,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
-// On the Neural Engine (HWNPU_TEST_NPU), the prepared programs (HWNPU_TEST_SFX_DIR, the model's
-// directory, prepared by hwnpu-audio generate -m sfx) generate the reference's sound from its noise in 4 steps
-// (tools/ref/ref_moss_sfx.py run --steps 4 --seconds 10, HWNPU_TEST_SFX_REF; the prompt in
-// HWNPU_TEST_SFX_PROMPT).
+// On the Neural Engine (BONSAIAI_TEST_NPU), the prepared programs (BONSAIAI_TEST_SFX_DIR, the model's
+// directory, prepared by bonsaiai-audio generate -m sfx) generate the reference's sound from its noise in 4 steps
+// (tools/ref/ref_moss_sfx.py run --steps 4 --seconds 10, BONSAIAI_TEST_SFX_REF; the prompt in
+// BONSAIAI_TEST_SFX_PROMPT).
 func TestGenerateOnDevice(t *testing.T) {
 	dir, ref := refDir(t)
-	prompt := os.Getenv("HWNPU_TEST_SFX_PROMPT")
-	if prompt == "" || os.Getenv("HWNPU_TEST_NPU") == "" {
-		t.Skip("HWNPU_TEST_SFX_PROMPT and HWNPU_TEST_NPU are not set")
+	prompt := os.Getenv("BONSAIAI_TEST_SFX_PROMPT")
+	if prompt == "" || os.Getenv("BONSAIAI_TEST_NPU") == "" {
+		t.Skip("BONSAIAI_TEST_SFX_PROMPT and BONSAIAI_TEST_NPU are not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "", "")
@@ -25,7 +25,7 @@ func TestGenerateOnDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dev.Close()
-	p, err := Prepare(ctx, Setup{Dir: dir, Repo: "OpenMOSS-Team/MOSS-SoundEffect-v2.0", TextFormat: os.Getenv("HWNPU_TEST_SFX_TEXT_FORMAT")})
+	p, err := Prepare(ctx, Setup{Dir: dir, Repo: "OpenMOSS-Team/MOSS-SoundEffect-v2.0", TextFormat: os.Getenv("BONSAIAI_TEST_SFX_TEXT_FORMAT")})
 	if err != nil {
 		t.Fatal(err)
 	}

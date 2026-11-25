@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 // An IRON model's device memory is pinned host memory that the process's resident size does
@@ -86,7 +86,7 @@ func (e *Engine) Released() bool {
 // reload loads a released model again (e.mu held).
 func (e *Engine) reload(ctx context.Context) error {
 	t0 := time.Now()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		return fmt.Errorf("chat: %s: opening the NPU again: %w", e.Name, err)
 	}

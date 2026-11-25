@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // repeats tells a generation that goes round in circles with a period too long for looping, or

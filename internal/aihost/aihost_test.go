@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/daemon"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/daemon"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
 // counts are what the fake role did in the engine's end.
@@ -109,8 +109,8 @@ func init() {
 	airole.Register(localRole)
 }
 
-// serve runs an engine's routes of hwnpud for the ai package (hello and the sessions) on a socket
-// of the test's, and points the app's end at it (HWNPU_DAEMON=on).
+// serve runs an engine's routes of bonsaiaid for the ai package (hello and the sessions) on a socket
+// of the test's, and points the app's end at it (BONSAIAI_DAEMON=on).
 func serve(t *testing.T) *strings.Builder {
 	t.Helper()
 	dir := t.TempDir()
@@ -127,14 +127,14 @@ func serve(t *testing.T) *strings.Builder {
 		cache.SetRoot("")
 		chat.LoadModels(nil, false, nil)
 	})
-	sock := filepath.Join(dir, "hwnpud.sock")
+	sock := filepath.Join(dir, "bonsaiaid.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := &strings.Builder{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /hwnpud/v1/hello", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /bonsaiaid/v1/hello", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"protocol":1}`)
 	})
@@ -155,7 +155,7 @@ func testStore(t *testing.T) ai.Store {
 	return ai.Store{Models: modelstore.Options{Root: t.TempDir(), Sources: []string{}, HuggingFace: &off}}
 }
 
-func TestThroughHwnpud(t *testing.T) {
+func TestThroughBonsaiaid(t *testing.T) {
 	serve(t)
 	ctx := context.Background()
 	use := ai.Define[*fakeModel](fakeRole, "transcribe")
@@ -167,7 +167,7 @@ func TestThroughHwnpud(t *testing.T) {
 		t.Fatal(err)
 	}
 	if p.Ready() || len(p.Items) != 1 || p.Target() != "intel" || p.Items[0].Model != "whisper-large-v3-turbo" || p.MachineGB() != 8 {
-		t.Fatalf("plan through hwnpud for %q: %+v", p.Target(), p.Items)
+		t.Fatalf("plan through bonsaiaid for %q: %+v", p.Target(), p.Items)
 	}
 	if ls := p.Licenses(); len(ls) != 1 || ls[0].Model != "whisper-large-v3-turbo" {
 		t.Errorf("licenses %+v", ls)
@@ -176,7 +176,7 @@ func TestThroughHwnpud(t *testing.T) {
 		t.Error("a plan prepared")
 	}
 
-	// the run is hwnpud's: its stages and lines are told here, the models' logs written here
+	// the run is bonsaiaid's: its stages and lines are told here, the models' logs written here
 	var log strings.Builder
 	var stages []ai.Stage
 	var lines []string
@@ -209,7 +209,7 @@ func TestThroughHwnpud(t *testing.T) {
 		t.Errorf("the next plan: %v, %+v", err, p)
 	}
 
-	// the Runtime's models are hwnpud's; their methods are called from here
+	// the Runtime's models are bonsaiaid's; their methods are called from here
 	var loadLog strings.Builder
 	rt, err := app.Open(ctx, ai.WithLog(&loadLog))
 	if err != nil {
@@ -240,12 +240,12 @@ func TestThroughHwnpud(t *testing.T) {
 		t.Errorf("Echo: %q %q %v", out, words, err)
 	}
 	if _, err := m.Echo(ctx, "", nil); !errors.Is(err, ai.ErrNotPrepared) {
-		t.Errorf("a sentinel through hwnpud: %v", err)
+		t.Errorf("a sentinel through bonsaiaid: %v", err)
 	}
 	if m.Name() != "whisper-large-v3-turbo" {
 		t.Errorf("Name %q", m.Name())
 	}
-	// Release unloads it in hwnpud; the next Get loads it again
+	// Release unloads it in bonsaiaid; the next Get loads it again
 	if err := use.Release(rt); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestThroughHwnpud(t *testing.T) {
 		t.Errorf("close: closed %d", counts.closed.Load())
 	}
 
-	// a use not prepared is ErrNotPrepared as it is here; the app's definitions go to hwnpud
+	// a use not prepared is ErrNotPrepared as it is here; the app's definitions go to bonsaiaid
 	d := ai.Definition{Like: "whisper-large-v3-turbo", Settings: map[string]string{"format": "lut4"}}
 	other := ai.Define[*fakeModel](fakeRole, d.ID())
 	app2 := ai.NewApp("other", other)
@@ -288,11 +288,11 @@ func TestThroughHwnpud(t *testing.T) {
 	}
 }
 
-func TestRoleNotThroughHwnpud(t *testing.T) {
+func TestRoleNotThroughBonsaiaid(t *testing.T) {
 	serve(t)
 	app := ai.NewApp("local", ai.Define[*fakeModel](localRole, "speech"))
 	app.Store = testStore(t)
-	if _, err := app.Plan(context.Background()); err == nil || !strings.Contains(err.Error(), "do not run through hwnpud") {
+	if _, err := app.Plan(context.Background()); err == nil || !strings.Contains(err.Error(), "do not run through bonsaiaid") {
 		t.Errorf("a role without Remote: %v", err)
 	}
 	if _, err := app.Open(context.Background()); err == nil || !strings.Contains(err.Error(), daemon.ModeEnv+"=off") {
@@ -300,7 +300,7 @@ func TestRoleNotThroughHwnpud(t *testing.T) {
 	}
 }
 
-// fakeEncoding is what a fake model's Encode gives: its state stays in hwnpud (a reference, as
+// fakeEncoding is what a fake model's Encode gives: its state stays in bonsaiaid (a reference, as
 // vision.PictureEncoding's).
 type fakeEncoding struct {
 	of     string
@@ -329,7 +329,7 @@ func (f *fakeModel) Decode(e *fakeEncoding, suffix string) (string, error) {
 	return e.of + suffix, nil
 }
 
-// TestEngineState: a model's result that holds state of hwnpud's (Segmenter.Encode's) stays
+// TestEngineState: a model's result that holds state of bonsaiaid's (Segmenter.Encode's) stays
 // there behind a handle and is used there again.
 func TestEngineState(t *testing.T) {
 	serve(t)
@@ -359,6 +359,6 @@ func TestEngineState(t *testing.T) {
 		}
 	}
 	if _, err := m.Decode(&fakeEncoding{}, "x"); err == nil {
-		t.Error("an encoding of this process decoded with hwnpud's state")
+		t.Error("an encoding of this process decoded with bonsaiaid's state")
 	}
 }

@@ -3,9 +3,9 @@ package flux2klein
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/backend/amd"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/backend/amd"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
 )
 
 // NPUGeneration is the generation of this machine's NPU of vendor as models.yaml names it: the

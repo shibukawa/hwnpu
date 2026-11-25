@@ -20,10 +20,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/envfile"
+	"github.com/shibukawa/bonsaiai/internal/envfile"
 )
 
-// Supervisor holds hwnpud's socket and the engine behind it. It never touches the NPU: when the
+// Supervisor holds bonsaiaid's socket and the engine behind it. It never touches the NPU: when the
 // engine dies (Core AI takes a process down when its own conversion fails) the socket stays and
 // the next request starts a new engine.
 type Supervisor struct {
@@ -62,8 +62,8 @@ type child struct {
 }
 
 // ErrRestart is what Run returns when a restart was asked of a supervisor the service manager did
-// not start: its caller runs the executable again (hwnpud serve does, in the same process).
-var ErrRestart = errors.New("hwnpud: restart")
+// not start: its caller runs the executable again (bonsaiaid serve does, in the same process).
+var ErrRestart = errors.New("bonsaiaid: restart")
 
 // Run serves until ctx ends, the idle time passes (when the service manager started it), or a
 // quit request.
@@ -122,35 +122,35 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if r.Context().Err() != nil {
 				return // the client went away
 			}
-			writeError(w, http.StatusBadGateway, fmt.Sprintf("hwnpud's engine: %v (its log: %s)", err, LogWhere()))
+			writeError(w, http.StatusBadGateway, fmt.Sprintf("bonsaiaid's engine: %v (its log: %s)", err, LogWhere()))
 		},
 	}
 	s.last.Store(time.Now().UnixNano())
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /hwnpud/v1/hello", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /bonsaiaid/v1/hello", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONValue(w, http.StatusOK, s.hello())
 	})
-	mux.HandleFunc("GET /hwnpud/v1/status", s.status)
-	mux.HandleFunc("POST /hwnpud/v1/start", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /bonsaiaid/v1/status", s.status)
+	mux.HandleFunc("POST /bonsaiaid/v1/start", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.ensureEngine(r.Context(), engineSocket); err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
 		writeJSONValue(w, http.StatusOK, s.hello())
 	})
-	mux.HandleFunc("POST /hwnpud/v1/restart", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /bonsaiaid/v1/restart", func(w http.ResponseWriter, r *http.Request) {
 		// the service manager starts the next at the next connection; one started by hand runs
 		// its executable again itself
 		s.restart.Store(true)
 		w.WriteHeader(http.StatusNoContent)
 		go s.shutdown()
 	})
-	mux.HandleFunc("POST /hwnpud/v1/reload", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /bonsaiaid/v1/reload", func(w http.ResponseWriter, r *http.Request) {
 		s.reload(1) // this request is one
 		writeJSONValue(w, http.StatusOK, s.hello())
 	})
-	mux.HandleFunc("POST /hwnpud/v1/quit", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /bonsaiaid/v1/quit", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		go s.shutdown()
 	})
@@ -166,7 +166,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if launched {
 		how = "started by " + serviceManager()
 	}
-	fmt.Fprintf(s.Log, "hwnpud %s (protocol %d, pid %d): %s on %s\n", Build(), Protocol, os.Getpid(), how, s.Socket)
+	fmt.Fprintf(s.Log, "bonsaiaid %s (protocol %d, pid %d): %s on %s\n", Build(), Protocol, os.Getpid(), how, s.Socket)
 
 	errs := make(chan error, len(lns))
 	for _, ln := range lns {
@@ -210,12 +210,12 @@ func (s *Supervisor) watch(ctx context.Context, launched bool, stop chan struct{
 		}
 		since := time.Since(time.Unix(0, s.last.Load()))
 		if s.replaced() {
-			fmt.Fprintf(s.Log, "hwnpud: %s has been replaced; exiting for %s to start the new one\n", s.exe, serviceManager())
+			fmt.Fprintf(s.Log, "bonsaiaid: %s has been replaced; exiting for %s to start the new one\n", s.exe, serviceManager())
 			s.shutdown()
 			return
 		}
 		if s.Idle > 0 && since > s.Idle {
-			fmt.Fprintf(s.Log, "hwnpud: idle for %s; exiting\n", since.Round(time.Second))
+			fmt.Fprintf(s.Log, "bonsaiaid: idle for %s; exiting\n", since.Round(time.Second))
 			s.shutdown()
 			return
 		}
@@ -239,7 +239,7 @@ func (s *Supervisor) reload(others int64) []string {
 	if len(names) == 0 {
 		return nil
 	}
-	fmt.Fprintf(s.Log, "hwnpud: %s changed; stopping the engine for the next request to start it with them\n", strings.Join(names, ", "))
+	fmt.Fprintf(s.Log, "bonsaiaid: %s changed; stopping the engine for the next request to start it with them\n", strings.Join(names, ", "))
 	s.stopEngine()
 	return names
 }
@@ -314,7 +314,7 @@ func (s *Supervisor) engineRunning() bool {
 func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 	env, _, err := s.environ()
 	if err != nil {
-		fmt.Fprintf(s.Log, "hwnpud: %v\n", err)
+		fmt.Fprintf(s.Log, "bonsaiaid: %v\n", err)
 	}
 	set := watched(env)
 	s.mu.Lock()
@@ -322,7 +322,7 @@ func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 	if s.child != nil && s.active.Load() <= 1 {
 		if names := changed(s.running, set); len(names) > 0 {
 			s.mu.Unlock()
-			fmt.Fprintf(s.Log, "hwnpud: %s changed; starting the engine again\n", strings.Join(names, ", "))
+			fmt.Fprintf(s.Log, "bonsaiaid: %s changed; starting the engine again\n", strings.Join(names, ", "))
 			s.stopEngine()
 			s.mu.Lock()
 		}
@@ -335,11 +335,11 @@ func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // a Ctrl-C at the terminal of a supervisor run by hand is the supervisor's to pass on
 		if err := cmd.Start(); err != nil {
 			s.mu.Unlock()
-			return fmt.Errorf("hwnpud: starting the engine: %w", err)
+			return fmt.Errorf("bonsaiaid: starting the engine: %w", err)
 		}
 		c = &child{cmd: cmd, done: make(chan struct{})}
 		s.child, s.running = c, set
-		fmt.Fprintf(s.Log, "hwnpud: engine started (pid %d)\n", cmd.Process.Pid)
+		fmt.Fprintf(s.Log, "bonsaiaid: engine started (pid %d)\n", cmd.Process.Pid)
 		go func() {
 			err := cmd.Wait()
 			s.mu.Lock()
@@ -349,9 +349,9 @@ func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 			s.mu.Unlock()
 			close(c.done)
 			if err != nil {
-				fmt.Fprintf(s.Log, "hwnpud: engine (pid %d) ended: %v\n", cmd.Process.Pid, err)
+				fmt.Fprintf(s.Log, "bonsaiaid: engine (pid %d) ended: %v\n", cmd.Process.Pid, err)
 			} else {
-				fmt.Fprintf(s.Log, "hwnpud: engine (pid %d) exited\n", cmd.Process.Pid)
+				fmt.Fprintf(s.Log, "bonsaiaid: engine (pid %d) exited\n", cmd.Process.Pid)
 			}
 		}()
 	}
@@ -365,9 +365,9 @@ func (s *Supervisor) ensureEngine(ctx context.Context, socket string) error {
 		}
 		select {
 		case <-c.done:
-			return fmt.Errorf("hwnpud: the engine ended as it started (its log: %s)", LogWhere())
+			return fmt.Errorf("bonsaiaid: the engine ended as it started (its log: %s)", LogWhere())
 		case <-deadline:
-			return errors.New("hwnpud: the engine does not answer on " + socket)
+			return errors.New("bonsaiaid: the engine does not answer on " + socket)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(20 * time.Millisecond):
@@ -394,7 +394,7 @@ func (s *Supervisor) stopEngine() {
 
 // ListenUnix listens on a Unix domain socket at path, only for this user: it makes the directory,
 // and replaces a socket file that nothing answers on (one left by a process that died). A socket
-// that answers is an error: another hwnpud runs.
+// that answers is an error: another bonsaiaid runs.
 func ListenUnix(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -402,7 +402,7 @@ func ListenUnix(path string) (net.Listener, error) {
 	if _, err := os.Lstat(path); err == nil {
 		if conn, err := net.DialTimeout("unix", path, time.Second); err == nil {
 			conn.Close()
-			return nil, fmt.Errorf("another hwnpud answers on %s (hwnpu service stop ends it)", path)
+			return nil, fmt.Errorf("another bonsaiaid answers on %s (bonsaiai service stop ends it)", path)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
@@ -427,5 +427,5 @@ func writeJSONValue(w http.ResponseWriter, code int, v any) {
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSONValue(w, code, map[string]any{"error": map[string]any{"message": msg, "type": "hwnpud_error"}})
+	writeJSONValue(w, code, map[string]any{"error": map[string]any{"message": msg, "type": "bonsaiaid_error"}})
 }

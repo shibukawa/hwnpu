@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // tiny is a small PLaMo 3 with what PLaMo 3 Translate 2B has: sliding and full layers (every
@@ -345,7 +345,7 @@ func TestMatchesReference(t *testing.T) {
 }
 
 // Each layer on its own, fed the reference's hidden state, gives the reference's next hidden
-// state; so does the head after the last layer. This is what hwnpu-dev check does with a real
+// state; so does the head after the last layer. This is what bonsaiai-dev check does with a real
 // checkpoint.
 func TestLayerByLayer(t *testing.T) {
 	c := tinyConfig(t)

@@ -1,5 +1,5 @@
 // Command gemvbench runs a bf16 GEMV design built by amd/IRON (iron.operators.GEMV) on an
-// AMD NPU through hwnpu, checks it against the CPU and reports the time and the bandwidth
+// AMD NPU through bonsaiai, checks it against the CPU and reports the time and the bandwidth
 // of reading the matrix.
 //
 //	go run ./tools/amd/gemvbench -xclbin final.xclbin -insts insts.bin -M 8192 -K 2048
@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 func bf16(f float32) uint16 {
@@ -42,7 +42,7 @@ func main() {
 	flag.Parse()
 	ctx := context.Background()
 
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func main() {
 		log.Fatal(err)
 	}
 	t0 := time.Now()
-	prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: *xclbin})
+	prog, err := kr.Load(ctx, bonsaiai.ProgramSource{Path: *xclbin})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	instr, err := dev.AllocBuffer(len(code), hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+	instr, err := dev.AllocBuffer(len(code), bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 	if err != nil {
 		log.Fatal(err)
 	}

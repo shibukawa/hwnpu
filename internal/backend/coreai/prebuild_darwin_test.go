@@ -32,7 +32,7 @@ func TestBuildLeavesVAEToDevice(t *testing.T) {
 		t.Errorf("log:\n%s", log.String())
 	}
 
-	// a prebuilt VAE program of the same source beside it (from an earlier hwnpu) is not taken
+	// a prebuilt VAE program of the same source beside it (from an earlier bonsaiai) is not taken
 	vae := filepath.Join(export, "vae_s0.aimodel")
 	pb := PrebuiltPath(vae, "h13g")
 	os.MkdirAll(pb, 0o755)

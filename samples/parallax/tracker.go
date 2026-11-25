@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/ai/vision"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/vision"
 )
 
 // tracker is the part of the app that follows the viewer's head: a network that keeps running

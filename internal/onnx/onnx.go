@@ -15,7 +15,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 
-	"github.com/shibukawa/hwnpu/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
 )
 
 // Element types (TensorProto.DataType).

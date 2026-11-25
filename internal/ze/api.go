@@ -7,11 +7,11 @@ import (
 	"runtime"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/dl"
 )
 
 // LoaderEnv overrides the Level Zero loader path.
-const LoaderEnv = "HWNPU_ZE_LOADER"
+const LoaderEnv = "BONSAIAI_ZE_LOADER"
 
 // API holds the bound core Level Zero functions.
 type API struct {

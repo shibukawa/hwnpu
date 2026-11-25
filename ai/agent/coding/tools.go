@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/bonsaiai/ai/text"
 )
 
 // Names are the tools, in the order they are offered: read, edit, write, bash, search, fetch.

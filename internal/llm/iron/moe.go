@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 )
 
-// HostStep is a host step of a version that hwnpu runs itself, before command Command
+// HostStep is a host step of a version that bonsaiai runs itself, before command Command
 // (tools/amd/iron_export_lm.py's host_steps): a prompt chunk's experts of Qwen3.6, routed on
 // the host (tools/amd/iron_moep.py, iron_qwen35.MoEHost). Kind is moe_route (reads the
 // router's logits and the normed rows; writes the experts' row counts and x's stream) or

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 // A decode step whose sliding layers keep a ring of their window (rows.go's kvJoin.ring) goes
@@ -14,14 +14,14 @@ import (
 // the ring, the steps from it again give the same logits, bit for bit (the ring is filled from
 // the keys and values, each position in its own slot), and so do the steps after the rows are
 // exported, the sequence run on, and the rows imported again. Needs a gpt-oss export in
-// HWNPU_TEST_IRON_KVRING_EXPORT and the NPU.
+// BONSAIAI_TEST_IRON_KVRING_EXPORT and the NPU.
 func TestKVRingRewindOnDevice(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_IRON_KVRING_EXPORT")
+	dir := os.Getenv("BONSAIAI_TEST_IRON_KVRING_EXPORT")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_IRON_KVRING_EXPORT is not set")
+		t.Skip("BONSAIAI_TEST_IRON_KVRING_EXPORT is not set")
 	}
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		t.Skip(err)
 	}

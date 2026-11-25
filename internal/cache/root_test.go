@@ -33,7 +33,7 @@ func TestRoot(t *testing.T) {
 }
 
 // TestDone checks that a mark holds its path relative to itself, and that a mark of an earlier
-// hwnpu (an absolute path) still reads where the directory is now.
+// bonsaiai (an absolute path) still reads where the directory is now.
 func TestDone(t *testing.T) {
 	d := t.TempDir()
 	prog := filepath.Join(d, "lfm3-lut8.mlpackage")
@@ -55,7 +55,7 @@ func TestDone(t *testing.T) {
 	if p, ok := ReadDone(filepath.Join(moved, "lfm3-lut8.done")); !ok || p != filepath.Join(moved, "lfm3-lut8.mlpackage") {
 		t.Errorf("moved: %q %v", p, ok)
 	}
-	// an earlier hwnpu's absolute path, of a directory since moved
+	// an earlier bonsaiai's absolute path, of a directory since moved
 	old := filepath.Join(moved, "old.done")
 	os.WriteFile(old, []byte("/elsewhere/lfm3-lut8.mlpackage"), 0o644)
 	if p, ok := ReadDone(old); !ok || p != filepath.Join(moved, "lfm3-lut8.mlpackage") {

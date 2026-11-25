@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // gatherCheck checks the experts picked inside the program: a constant table of E experts'
@@ -71,7 +71,7 @@ func gatherCheck(args []string) error {
 			s := float32(1/(73*math.Sqrt(float64(in)))) * (0.5 + rng.Float32())
 			scales[r] = mlpackage.Float16Bits(s)
 			sv := make([]float32, 1)
-			hwnpu.DecodeF16(sv, []byte{byte(scales[r]), byte(scales[r] >> 8)})
+			bonsaiai.DecodeF16(sv, []byte{byte(scales[r]), byte(scales[r] >> 8)})
 			for c := 0; c < in; c++ {
 				q := int8(rng.Intn(255) - 127)
 				data[r*in+c] = byte(q)
@@ -83,8 +83,8 @@ func gatherCheck(args []string) error {
 			tbl[i] = float32(rng.NormFloat64() / math.Sqrt(float64(in)))
 		}
 		raw := make([]byte, 2*len(tbl))
-		hwnpu.EncodeF16(raw, tbl)
-		hwnpu.DecodeF16(tbl, raw)
+		bonsaiai.EncodeF16(raw, tbl)
+		bonsaiai.DecodeF16(tbl, raw)
 	}
 	table := func(g *milpart.Graph, name string, n int, off int) *mlpackage.Var {
 		if *int8w {
@@ -253,15 +253,15 @@ func gatherCheck(args []string) error {
 	for i := range xv {
 		xv[i] = float32(rng.NormFloat64())
 	}
-	hwnpu.EncodeF16(pg.x.Bytes(), xv)
-	hwnpu.DecodeF16(xv, pg.x.Bytes())
+	bonsaiai.EncodeF16(pg.x.Bytes(), xv)
+	bonsaiai.DecodeF16(xv, pg.x.Bytes())
 	copy(pd.x.Bytes(), pg.x.Bytes())
 	setIdx := func(ix []int) {
 		f := make([]float32, len(ix))
 		for j, v := range ix {
 			f[j] = float32(v)
 		}
-		hwnpu.EncodeF16(pg.i.Bytes(), f)
+		bonsaiai.EncodeF16(pg.i.Bytes(), f)
 	}
 	ref := func(ix []int) []float32 {
 		y := make([]float32, k*o)
@@ -297,7 +297,7 @@ func gatherCheck(args []string) error {
 		if err := call(pg); err != nil {
 			return fmt.Errorf("gather: %w", err)
 		}
-		hwnpu.DecodeF16(got, pg.y.Bytes())
+		bonsaiai.DecodeF16(got, pg.y.Bytes())
 		want := ref(ix)
 		// which expert each output matches best, to tell a wrong pick from rounding
 		picked := make([]int, k)
@@ -317,7 +317,7 @@ func gatherCheck(args []string) error {
 	if err := call(pd); err != nil {
 		return fmt.Errorf("dense: %w", err)
 	}
-	hwnpu.DecodeF16(got, pd.y.Bytes())
+	bonsaiai.DecodeF16(got, pd.y.Bytes())
 	fmt.Printf("  dense against the host: cos %.6f\n", cosine(got, ref(first)))
 
 	timeIt := func(step func() error) (time.Duration, error) {

@@ -490,7 +490,7 @@ func (s *Session) serveCall(m *msg) {
 	}
 	n := ft.NumIn() - off
 	if len(m.Values) != n {
-		fail(fmt.Errorf("airpc: %s takes %d arguments, sent %d (hwnpud and this program are of other builds?)", m.Method, n, len(m.Values)))
+		fail(fmt.Errorf("airpc: %s takes %d arguments, sent %d (bonsaiaid and this program are of other builds?)", m.Method, n, len(m.Values)))
 		return
 	}
 	ctx, cancel := context.WithCancel(s.ctx)

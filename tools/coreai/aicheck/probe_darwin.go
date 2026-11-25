@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/backend/coreml"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreml"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // probes are small MIL programs of the pieces the models are made of, for finding which keeps
@@ -457,7 +457,7 @@ func randW(n, fan int) []float32 {
 }
 
 // int8Linear is a linear of an int8 weight (out x in) with a scale per block of colBlock columns
-// of each row (hwnpu's int8 format: per row, colBlock = in).
+// of each row (bonsaiai's int8 format: per row, colBlock = in).
 func int8Linear(out, in, colBlock int) func(g *milpart.Graph) {
 	return func(g *milpart.Graph) {
 		x := g.Input("x", 1, 256, in)

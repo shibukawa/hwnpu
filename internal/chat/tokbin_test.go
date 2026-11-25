@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	shared "github.com/shibukawa/hwnpu/internal/store"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 const tinyBPEJSON = `{

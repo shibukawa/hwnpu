@@ -1,5 +1,5 @@
 // Package mil describes SigLIP 2 (google/siglip2-*, the fixed-size checkpoints) as MIL programs,
-// which hwnpu writes as Core ML packages for Apple's Neural Engine (llm.WritePart): the two
+// which bonsaiai writes as Core ML packages for Apple's Neural Engine (llm.WritePart): the two
 // graphs of tools/amd/iron_siglip2.py, the vision tower with its attention pooling head and
 // the text tower on Labels texts a call.
 //
@@ -15,9 +15,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // TextLen is a text's tokens: SigLIP's texts are padded to 64, as it was trained.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """PLaMo-Embedding (pfnet/plamo-embedding-1b, PlamoBiModel, Apache-2.0) on IRON: the graphs
-hwnpu-chat's search and embeddings run on AMD's NPU.
+bonsaiai-chat's search and embeddings run on AMD's NPU.
 
 PlamoBiModel is the PLaMo decoder with its attention made bidirectional (modeling_plamo.py, as
-hwnpu's Core ML conversion reads it: internal/llm/plamo): pre-norm layers of attention and a
+bonsaiai's Core ML conversion reads it: internal/llm/plamo): pre-norm layers of attention and a
 SwiGLU MLP, each added to the residual, then a final RMS norm. The attention has one fused qkv
 projection (here three linears of its rows), multi-query keys and values (one head), an RMS norm
 of each head's queries and keys with a weight a head (eps 1e-6, no weight inside the norm),
@@ -11,7 +11,7 @@ rotate-half RoPE of base 10000 at positions 0..rows-1, and sees every token of t
 padding's keys left out). The host pools: the mean over the text's own tokens of the last hidden
 state, leaving out the BOS and a query's instruction (internal/chat's meanPool).
 
-One graph a sequence length (--seqs, default 128 and 1024 as hwnpu's Core ML programs), each
+One graph a sequence length (--seqs, default 128 and 1024 as bonsaiai's Core ML programs), each
 exported by iron_graph.py into its folder sNNN:
 
   input   x (seq, hidden): the token embedding rows of the text, zeros after them (the host looks

@@ -1,22 +1,22 @@
-# Using hwnpu as a Go library (planned)
+# Using BonsaiAI as a Go library (planned)
 
 [日本語](USAGE_LIBRARY.ja.md)
 
 > **Planned**: the Go library API is not settled yet. Names and arguments may change without notice.
 
-How to use hwnpu's Go API, and notes for each NPU. For the commands (hwnpu-chat, hwnpu-image, hwnpu-audio, hwnpu-dev), start from [README.md](README.md).
+How to use BonsaiAI's Go API, and notes for each NPU. For the commands (bonsaiai-chat, bonsaiai-image, bonsaiai-audio, bonsaiai-dev), start from [README.md](README.md).
 
 ## Basics
 
 ```go
-dev, err := hwnpu.Open(ctx)
+dev, err := bonsaiai.Open(ctx)
 if err != nil { ... }
 defer dev.Close()
 
 gr, _ := dev.Graph()
-g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.mlpackage"})
-if errors.Is(err, hwnpu.ErrNotOnNPU) {
-	// err is a *hwnpu.PlacementError. The ops placed off the NPU are in Report.Ops
+g, err := gr.Compile(ctx, bonsaiai.GraphSource{Path: "model.mlpackage"})
+if errors.Is(err, bonsaiai.ErrNotOnNPU) {
+	// err is a *bonsaiai.PlacementError. The ops placed off the NPU are in Report.Ops
 }
 defer g.Close()
 
@@ -24,27 +24,27 @@ in, _ := g.Arg("x")
 out, _ := g.Arg("y")
 x, _ := dev.AllocBuffer(in.Bytes)
 y, _ := dev.AllocBuffer(out.Bytes)
-hwnpu.EncodeF16(x.Bytes(), input)
+bonsaiai.EncodeF16(x.Bytes(), input)
 
 req, _ := g.NewRequest()
 req.BindName("x", x)
 req.BindName("y", y)
 err = req.Run(ctx)
-hwnpu.DecodeF16(result, y.Bytes())
+bonsaiai.DecodeF16(result, y.Bytes())
 ```
 
 ## Power and cache
 
 ```go
-dev, err := hwnpu.Open(ctx,
-	hwnpu.WithPowerPolicy(hwnpu.PowerLow), // Intel: low priority + background
-	hwnpu.WithCacheDir(cacheDir),          // save compiled results and reuse them
+dev, err := bonsaiai.Open(ctx,
+	bonsaiai.WithPowerPolicy(bonsaiai.PowerLow), // Intel: low priority + background
+	bonsaiai.WithCacheDir(cacheDir),       // save compiled results and reuse them
 )
 
 before, err := dev.PowerSample() // ErrUnsupported on devices whose energy cannot be read
 // ... inference ...
 after, _ := dev.PowerSample()
-fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" is the whole CPU package
+fmt.Println(bonsaiai.AveragePower(before, after), "W", after.Scope) // "package" is the whole CPU package
 ```
 
 - The power policy works only on devices with `CapPowerControl`. Core ML has no power setting
@@ -53,22 +53,22 @@ fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" is
 
 ## Models' files (modelstore)
 
-`github.com/shibukawa/hwnpu/modelstore` finds and fetches the files of the models as hwnpu's commands do: this machine's cache, then the sources (`HWNPU_MODEL_SOURCE`: folders, WebDAV and HTTP, S3), then the models the application installs with it, then Hugging Face (docs/cache-sharing-design.md 7).
+`github.com/shibukawa/bonsaiai/modelstore` finds and fetches the files of the models as BonsaiAI's commands do: this machine's cache, then the sources (`BONSAIAI_MODEL_SOURCE`: folders, WebDAV and HTTP, S3), then the models the application installs with it, then Hugging Face (docs/cache-sharing-design.md 7).
 
 ```go
 app := configdir.New("", "myapp") // github.com/shibukawa/configdir v1.1.0
 s, err := modelstore.Open(modelstore.Options{
 	Bundle: &app, // the installer's models/ in the app's resource folder (nil: none)
-	// Root: "" (HWNPU_CACHE, else hwnpu in the user cache directory), Sources: nil (the environment's)
+	// Root: "" (BONSAIAI_CACHE, else bonsaiai in the user cache directory), Sources: nil (the environment's)
 })
 config, err := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json") // a local path
 weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safetensors (or its shards)
 ```
 
 - The settings are the process's: `Open` sets them for everything in it
-- `Options.Files` are definition files of the app's own (models.yaml's format: models, uses, aliases), read over hwnpu's, the machine's and the user's
-- The bundled models are in the layout of a source (`original/OWNER/NAME/` with `hwnpu-lock.json`) and are used in place (linked, not copied)
-- `Options.Limits` (nil: `HWNPU_CACHE_MAX_SIZE`, `HWNPU_CACHE_MIN_FREE`) bounds the cache: a download that would leave the disk with less than `MinFree` (10 GB unless set) fails with `modelstore.ErrNoRoom`; with a `MaxSize`, the units least recently used are removed first to make room. `s.Usage()`, `s.PlanPrune(o)`, `s.Prune(o)` and `s.Remove(units)` are what `hwnpu cache` does
+- `Options.Files` are definition files of the app's own (models.yaml's format: models, uses, aliases), read over BonsaiAI's, the machine's and the user's
+- The bundled models are in the layout of a source (`original/OWNER/NAME/` with `bonsaiai-lock.json`) and are used in place (linked, not copied)
+- `Options.Limits` (nil: `BONSAIAI_CACHE_MAX_SIZE`, `BONSAIAI_CACHE_MIN_FREE`) bounds the cache: a download that would leave the disk with less than `MinFree` (10 GB unless set) fails with `modelstore.ErrNoRoom`; with a `MaxSize`, the units least recently used are removed first to make room. `s.Usage()`, `s.PlanPrune(o)`, `s.Prune(o)` and `s.Remove(units)` are what `bonsaiai cache` does
 
 ```go
 s, err := modelstore.Open(modelstore.Options{Limits: &modelstore.Limits{MaxSize: 100e9, MinFree: 20e9}})
@@ -78,10 +78,10 @@ gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) //
 
 ## Apps that combine models (ai)
 
-`github.com/shibukawa/hwnpu/ai` is a set of packages for an app to register the models it uses, download and compile them ahead of time, and run them on the NPU (v0: its shape will still change; how to use it and the open design questions are in [docs/developer-guide.md](docs/developer-guide.md), the plan in [docs/app-api.md](docs/app-api.md), in Japanese). It prepares models the way hwnpu-chat, hwnpu-image and hwnpu-audio do on their first run, in the same cache, so models prepared by the commands are used as they are.
+`github.com/shibukawa/bonsaiai/ai` is a set of packages for an app to register the models it uses, download and compile them ahead of time, and run them on the NPU (v0: its shape will still change; how to use it and the open design questions are in [docs/developer-guide.md](docs/developer-guide.md), the plan in [docs/app-api.md](docs/app-api.md), in Japanese). It prepares models the way bonsaiai-chat, bonsaiai-image and bonsaiai-audio do on their first run, in the same cache, so models prepared by the commands are used as they are.
 
 ```go
-// Register the models the app uses. Names are models, families or uses of models.yaml (hwnpu-chat list)
+// Register the models the app uses. Names are models, families or uses of models.yaml (bonsaiai-chat list)
 var (
 	stt = speech.Transcribe("transcribe")
 	tr  = text.Translate("translate").
@@ -166,7 +166,7 @@ k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` lists the models and what they take (with what they take together and what this machine has for models), `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `hwnpu status`. The working examples are [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language, and [samples/parallax](samples/parallax), which estimates the depth of a picture, follows the viewer's head with the camera, and draws the picture as if it had depth (its window is Ebitengine), and [samples/layers](samples/layers), which parts a picture into layers by depth, draws what each layer hid, and writes a PSD. The samples are a module of their own (`samples/go.mod`) and take the microphone and the camera from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
+`APP models` lists the models and what they take (with what they take together and what this machine has for models), `APP models download` downloads and converts them (no NPU is needed), and `APP models prepare` also loads each once to compile it for the NPU. `APP status` is `bonsaiai status`. The working examples are [samples/interpreter](samples/interpreter), which interprets speech, from the microphone or a recording, into speech in another language, and [samples/parallax](samples/parallax), which estimates the depth of a picture, follows the viewer's head with the camera, and draws the picture as if it had depth (its window is Ebitengine), and [samples/layers](samples/layers), which parts a picture into layers by depth, draws what each layer hid, and writes a PSD. The samples are a module of their own (`samples/go.mod`) and take the microphone and the camera from [hwcamera](https://github.com/shibukawa/hwcamera), which is not a dependency of the library.
 
 - So far it has the models of speech and text, the depth and the faces of pictures, and drawing and editing pictures (FLUX.2 klein). The other picture models (Anima), object and pose detection and the others are only in the commands yet
 - It was run on AMD's NPU (Ryzen AI 9 365) and on a Mac (M3, Core AI): the three samples, the camera and the window. On Intel the commands do the same preparing and loading, but they were not run through `ai`
@@ -178,10 +178,10 @@ AMD's NPU runs kernels built with IRON / mlir-aie (an xclbin and an instruction 
 
 ```go
 kr, err := dev.Kernel() // ErrUnsupported on anything but AMD
-prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: "final.xclbin"})
+prog, err := kr.Load(ctx, bonsaiai.ProgramSource{Path: "final.xclbin"})
 k, err := prog.Kernel("MLIR_AIE")
 
-instr, _ := dev.AllocBuffer(len(insts), hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+instr, _ := dev.AllocBuffer(len(insts), bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 in, _ := dev.AllocBuffer(n)
 out, _ := dev.AllocBuffer(n)
 copy(instr.Bytes(), insts)
@@ -204,23 +204,23 @@ On Strix Point and later (XDNA2), the full ELF IRON builds (`design.elf`, which 
 
 ## Notes for Apple
 
-- Core ML cannot be told "the Neural Engine only". hwnpu allows only the CPU and the Neural Engine, and checks with the estimate of `MLComputePlan` (macOS 14.4 or later) that every op is placed on the Neural Engine. It is an estimate, so it does not guarantee the placement at run time
+- Core ML cannot be told "the Neural Engine only". BonsaiAI allows only the CPU and the Neural Engine, and checks with the estimate of `MLComputePlan` (macOS 14.4 or later) that every op is placed on the Neural Engine. It is an estimate, so it does not guarantee the placement at run time
 - The Neural Engine assumes fp16. fp32 models and models that are too small are placed on the CPU. Convert to an fp16 ML Program with coremltools
 - A model that is too small can be put on the Neural Engine by padding it along the batch with `tools/coreml/ane_pad.py`. Small models can get slower, though, so read [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md) before using it
-- `hwnpu-chat` and `hwnpu-image` run on Core AI alone on a Mac (macOS 27 is needed; Core ML is not used, and `hwnpu-image --cpu` runs a Core ML export on the CPU interpreter for checking). On macOS 27 the other commands' converted models also run on Core AI (`--backend coreai` or `HWNPU_BACKEND=coreai`; Core ML is the default). The results and speed are the same; the difference is that Core AI keeps the compiled results until the disk runs low (Core ML compiles again on later runs once they go over about 4 GiB). The commands it works with and the costs are in section 5 of [INSTALL_APPLE.md](INSTALL_APPLE.md)
+- `bonsaiai-chat` and `bonsaiai-image` run on Core AI alone on a Mac (macOS 27 is needed; Core ML is not used, and `bonsaiai-image --cpu` runs a Core ML export on the CPU interpreter for checking). On macOS 27 the other commands' converted models also run on Core AI (`--backend coreai` or `BONSAIAI_BACKEND=coreai`; Core ML is the default). The results and speed are the same; the difference is that Core AI keeps the compiled results until the disk runs low (Core ML compiles again on later runs once they go over about 4 GiB). The commands it works with and the costs are in section 5 of [INSTALL_APPLE.md](INSTALL_APPLE.md)
 
 ## Notes for Intel
 
-- It needs the Intel NPU driver (`intel-level-zero-npu`, `intel-driver-compiler-npu`, `intel-fw-npu`) and the Level Zero loader (`libze1`). The loader's location can also be given with the environment variable `HWNPU_ZE_LOADER`
+- It needs the Intel NPU driver (`intel-level-zero-npu`, `intel-driver-compiler-npu`, `intel-fw-npu`) and the Level Zero loader (`libze1`). The loader's location can also be given with the environment variable `BONSAIAI_ZE_LOADER`
 - On Linux it needs read and write access to `/dev/accel/accel0` (the `render` group)
 - `GraphSource{Path: "model.xml"}` passes OpenVINO IR (the `.bin` next to it is read too), and `GraphSource{Blob: ...}` a compiled blob. Extra options for the compiler go in `BuildFlags` in the form `--config KEY="VALUE"`
 - A model with ops the NPU compiler does not support fails with `ErrNotOnNPU` whatever the placement policy, and the ops at fault and the build log are returned
-- Converted to OpenVINO IR for Intel's NPU are hwnpu-chat's models (LFM3 and its VL, Audio and d1, Gemma 4, Qwen3.5, Qwen3, PLaMo 3, PLaMo-Embedding), Anima, `hwnpu-audio`'s transcribe (Whisper), tts, generate (Magenta RealTime 2, MOSS-SoundEffect), pitch and notes, and `hwnpu-image`'s depth (DA3, MoGe-2), face-detect (YuNet), segment (EfficientSAM's encoder), detect, pose and ocr. FLUX.2 klein and SigLIP 2 (label) are on AMD's NPU and Apple's Neural Engine only (not Intel yet). Only LFM3, PLaMo 3 Translate, PLaMo-Embedding and Anima have run on the hardware; the others are checked from conversion to results on OpenVINO's CPU (`HWNPU_BACKEND=openvino`, "Telling problems apart with OpenVINO" in [INSTALL_INTEL.md](INSTALL_INTEL.md)) ([docs/design/intel.md](docs/design/intel.md))
+- Converted to OpenVINO IR for Intel's NPU are bonsaiai-chat's models (LFM3 and its VL, Audio and d1, Gemma 4, Qwen3.5, Qwen3, PLaMo 3, PLaMo-Embedding), Anima, `bonsaiai-audio`'s transcribe (Whisper), tts, generate (Magenta RealTime 2, MOSS-SoundEffect), pitch and notes, and `bonsaiai-image`'s depth (DA3, MoGe-2), face-detect (YuNet), segment (EfficientSAM's encoder), detect, pose and ocr. FLUX.2 klein and SigLIP 2 (label) are on AMD's NPU and Apple's Neural Engine only (not Intel yet). Only LFM3, PLaMo 3 Translate, PLaMo-Embedding and Anima have run on the hardware; the others are checked from conversion to results on OpenVINO's CPU (`BONSAIAI_BACKEND=openvino`, "Telling problems apart with OpenVINO" in [INSTALL_INTEL.md](INSTALL_INTEL.md)) ([docs/design/intel.md](docs/design/intel.md))
 
 ## Diagnostics
 
 ```bash
-go run ./cmd/hwnpu-dev info -model internal/fixtures/coreml/linear_relu_fp16.mlpackage
+go run ./cmd/bonsaiai-dev info -model internal/fixtures/coreml/linear_relu_fp16.mlpackage
 ```
 
 ## Tests

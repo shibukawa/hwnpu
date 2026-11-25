@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 const (
@@ -22,20 +22,20 @@ const (
 // A model's hub is merged by repository and by target, the repositories of the files read last
 // first; hub.push is the last file's; a model like another does not take its hub.
 func TestHubDefinitions(t *testing.T) {
-	if HubPush != "hwnpu" || HubPushFile != Builtin {
+	if HubPush != "bonsaiai" || HubPushFile != Builtin {
 		t.Fatalf("built in: push %q from %q", HubPush, HubPushFile)
 	}
 	_, err := userFiles(t, `version: 1
 models:
   whisper-large-v3-turbo:
     hub:
-      hwnpu/whisper-large-v3-turbo: {amd-xdna2: `+commitA+`, apple: `+commitB+`}
+      bonsaiai/whisper-large-v3-turbo: {amd-xdna2: `+commitA+`, apple: `+commitB+`}
 `, `version: 1
 hub: {push: myorg}
 models:
   whisper-large-v3-turbo:
     hub:
-      hwnpu/whisper-large-v3-turbo: {apple: `+commitC+`}
+      bonsaiai/whisper-large-v3-turbo: {apple: `+commitC+`}
       myorg/whisper-large-v3-turbo: {amd-xdna2: `+commitC+`, coreai-h14g: main}
   whisper-like:
     like: whisper-large-v3-turbo
@@ -48,7 +48,7 @@ models:
 		t.Errorf("push %q from %q", HubPush, HubPushFile)
 	}
 	m, _ := Lookup("whisper-large-v3-turbo")
-	if len(m.Hub) != 2 || m.Hub[0].Repo != "myorg/whisper-large-v3-turbo" || m.Hub[1].Repo != "hwnpu/whisper-large-v3-turbo" {
+	if len(m.Hub) != 2 || m.Hub[0].Repo != "myorg/whisper-large-v3-turbo" || m.Hub[1].Repo != "bonsaiai/whisper-large-v3-turbo" {
 		t.Fatalf("hub %+v", m.Hub)
 	}
 	if p := m.Hub[1].Pins; p["amd-xdna2"] != commitA || p["apple"] != commitC {
@@ -61,9 +61,9 @@ models:
 
 func TestHubErrors(t *testing.T) {
 	for _, tc := range []struct{ name, file, want string }{
-		{"repo", "version: 1\nmodels:\n  LFM3-1.7B:\n    hub: {hwnpu: {apple: main}}\n", "OWNER/NAME"},
-		{"target", "version: 1\nmodels:\n  LFM3-1.7B:\n    hub: {hwnpu/x: {mac: main}}\n", "not a target"},
-		{"commit", "version: 1\nmodels:\n  LFM3-1.7B:\n    hub: {hwnpu/x: {apple: abc}}\n", "not a commit"},
+		{"repo", "version: 1\nmodels:\n  LFM3-1.7B:\n    hub: {bonsaiai: {apple: main}}\n", "OWNER/NAME"},
+		{"target", "version: 1\nmodels:\n  LFM3-1.7B:\n    hub: {bonsaiai/x: {mac: main}}\n", "not a target"},
+		{"commit", "version: 1\nmodels:\n  LFM3-1.7B:\n    hub: {bonsaiai/x: {apple: abc}}\n", "not a commit"},
 		{"push", "version: 1\nhub: {push: \"a/b\"}\n", "namespace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,7 +75,7 @@ func TestHubErrors(t *testing.T) {
 	}
 }
 
-// Every model of the built-in definitions with a hub is published as hwnpu-dev models hf push wants
+// Every model of the built-in definitions with a hub is published as bonsaiai-dev models hf push wants
 // it: its files' commit is pinned, and each target it pins a commit for has a version.
 func TestBuiltinHub(t *testing.T) {
 	for _, m := range Catalog {
@@ -109,9 +109,9 @@ func TestHubLayer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auths = append(auths, r.Header.Get("Authorization"))
 		switch r.URL.Path {
-		case "/hwnpu/m/resolve/" + commitA + "/amd-xdna2/m.amd-npu2/v1/entry.json":
+		case "/bonsaiai/m/resolve/" + commitA + "/amd-xdna2/m.amd-npu2/v1/entry.json":
 			io.WriteString(w, "amd")
-		case "/hwnpu/gated/resolve/" + commitA + "/amd-xdna2/g/v1/entry.json":
+		case "/bonsaiai/gated/resolve/" + commitA + "/amd-xdna2/g/v1/entry.json":
 			if r.Header.Get("Authorization") != "Bearer tok" {
 				http.Error(w, "sign in", http.StatusUnauthorized)
 				return
@@ -125,10 +125,10 @@ func TestHubLayer(t *testing.T) {
 	defer func(e string) { shared.HubEndpoint = e }(shared.HubEndpoint)
 	shared.HubEndpoint = srv.URL
 	shared.SetHub(map[string][]shared.HubRepo{
-		"m":     {{Repo: "hwnpu/m", Pins: map[string]string{"amd-xdna2": commitA, "apple": commitB}}},
-		"gated": {{Repo: "hwnpu/gated", Pins: map[string]string{"amd-xdna2": commitA}}},
+		"m":     {{Repo: "bonsaiai/m", Pins: map[string]string{"amd-xdna2": commitA, "apple": commitB}}},
+		"gated": {{Repo: "bonsaiai/gated", Pins: map[string]string{"amd-xdna2": commitA}}},
 	}, func() string { return "" }, func(ctx context.Context, repo string, status int, sent string) (string, error) {
-		if repo != "hwnpu/gated" || status != http.StatusUnauthorized || sent != "" {
+		if repo != "bonsaiai/gated" || status != http.StatusUnauthorized || sent != "" {
 			t.Errorf("asked for %s %d %q", repo, status, sent)
 		}
 		return "tok", nil
@@ -142,7 +142,7 @@ func TestHubLayer(t *testing.T) {
 	if auths[0] != "" {
 		t.Errorf("a token went to a repository that did not ask: %q", auths[0])
 	}
-	for _, key := range []string{"original/hwnpu/m/config.json", "converted/other/amd-xdna2/x/v1/entry.json", "converted/m/intel-npu4/x/v1/entry.json"} {
+	for _, key := range []string{"original/bonsaiai/m/config.json", "converted/other/amd-xdna2/x/v1/entry.json", "converted/m/intel-npu4/x/v1/entry.json"} {
 		n := len(auths)
 		if _, err := h.Read(ctx, key); err == nil || !strings.Contains(err.Error(), "not there") || len(auths) != n {
 			t.Errorf("%s: %v (%d requests)", key, err, len(auths)-n)

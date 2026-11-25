@@ -2,7 +2,7 @@
 // to how parts are written.
 //
 //	go run ./tools/coreai/kleinonly parts ROOT OUT singles[,doubles,...]   flux2klein.Convert's Only, 512² and 1024²
-//	go run ./tools/coreai/kleinonly prepare [WxH]                         hwnpu-image's preparation of the export for the size
+//	go run ./tools/coreai/kleinonly prepare [WxH]                         bonsaiai-image's preparation of the export for the size
 //	                                                                       (fetched, or converted and written back, with entry.json); prints its folder
 //	go run ./tools/coreai/kleinonly put EXPORT                            put an export made here in the sources written back to
 package main
@@ -15,18 +15,18 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatal("usage: kleinonly parts ROOT OUT KINDS | prepare [WxH]")
 	}
-	// the definitions and the sources of the environment (HWNPU_MODEL_SOURCE), as hwnpu-image reads them
+	// the definitions and the sources of the environment (BONSAIAI_MODEL_SOURCE), as bonsaiai-image reads them
 	if err := chat.LoadUserModels("", os.Stderr); err != nil {
 		log.Fatal(err)
 	}

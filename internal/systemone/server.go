@@ -37,7 +37,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data": []map[string]any{{
-			"id": s.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
+			"id": s.Name, "object": "model", "created": 0, "owned_by": "bonsaiai",
 			"architecture": map[string]any{"input_modalities": []string{"text"}, "output_modalities": []string{"decisions"}},
 		}},
 	})

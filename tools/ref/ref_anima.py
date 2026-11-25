@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Anima (circlestone-labs/Anima) on the CPU with diffusers' modules: the reference hwnpu's
-NPU pipeline (cmd/hwnpu-image, tools/amd/iron_anima.py) is checked against.
+"""Anima (circlestone-labs/Anima) on the CPU with diffusers' modules: the reference bonsaiai's
+NPU pipeline (cmd/bonsaiai-image, tools/amd/iron_anima.py) is checked against.
 
 Reads ComfyUI's split files as the official repository ships them (the diffusion model with
 its LLM adapter, Qwen3-0.6B, the Qwen-Image VAE) and the configs and tokenizers of

@@ -8,8 +8,8 @@ import (
 	"math"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // HostTables names the tables whose rows the host looks up while it runs m (llm.TokenRow): the
@@ -113,7 +113,7 @@ func WriteTables(w Weights, names []string, groups map[string]int, out string) e
 		}
 		ts = append(ts, safetensors.Out{Name: name, DType: "F32", Shape: shape, Size: int64(len(b)), Data: bytes.NewReader(b)})
 	}
-	return safetensors.Write(out, ts, map[string]string{"format": "pt", "hwnpu": "host tables", "source": w.Source()})
+	return safetensors.Write(out, ts, map[string]string{"format": "pt", "bonsaiai": "host tables", "source": w.Source()})
 }
 
 // int8Table is the tensors WriteTables stores matrix name in, a scale every group values: the

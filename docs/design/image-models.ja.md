@@ -2,11 +2,11 @@
 
 [English](image-models.md)
 
-hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの NPU でも共通のパイプラインの決まり: 解き方、ガイダンス、編集、まとめて描く、大きさ、書き出し。NPU ごとの動かし方は [AMD](image-amd.ja.md)、[Apple と Intel](image-apple.ja.md)。コマンドのフラグは [cli.ja.md](cli.ja.md)、取得と取得元は [distribution.ja.md](distribution.ja.md)。
+BonsaiAI が動かす画像生成のモデル (`bonsaiai-image generate`) と、どの NPU でも共通のパイプラインの決まり: 解き方、ガイダンス、編集、まとめて描く、大きさ、書き出し。NPU ごとの動かし方は [AMD](image-amd.ja.md)、[Apple と Intel](image-apple.ja.md)。コマンドのフラグは [cli.ja.md](cli.ja.md)、取得と取得元は [distribution.ja.md](distribution.ja.md)。
 
 ## パイプライン
 
-1 枚は 3 つの部品で、どれも NPU で動く: 文の符号器がプロンプトを読み、DiT が潜在を N ステップでノイズ除去し、VAE が復号する。ComfyUI や diffusers は UI とワークフローをモデルの実行と分けている。hwnpu が受け持つのはモデルの実行だけ。
+1 枚は 3 つの部品で、どれも NPU で動く: 文の符号器がプロンプトを読み、DiT が潜在を N ステップでノイズ除去し、VAE が復号する。ComfyUI や diffusers は UI とワークフローをモデルの実行と分けている。BonsaiAI が受け持つのはモデルの実行だけ。
 
 - 1 枚の時間は DiT を回す回数で決まる: ステップ数 × 1 ステップの回数 (classifier-free guidance で 2) × 1 回。文と VAE は数秒。まず回数を減らし、次に 1 回を速くする。
 - どの変更も、同じノイズから CPU の float32 の参照 (`tools/ref/ref_*.py`) と比べる: 最後の潜在のコサインと絵の PSNR を、いくつかのプロンプト × 種で。絵も見る。種 1 つのコサインは大きくばらつく。
@@ -22,13 +22,13 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 | Anima-Aesthetic (`anima:aesthetic`、ファミリーの既定) | Anima-Turbo のプログラムに別の重み | DPM-Solver++ 2M 25、CFG 4 は σ ≥ 0.6 | Anima-Turbo と同じ、nsfw | 8 | 3.5 / 4.8 | Anima-Turbo の約 4.5 倍。AMD 1024² 2 分 22 秒、2.71 kJ |
 
 - Anima の VAE、トークナイザー、設定は `circlestone-labs/Anima-Base-v1.0-Diffusers` から (`with: diffusers`)。欄 `file` はリポジトリのどのチェックポイントがそのモデルかを選ぶ (`--dit` の既定)。Anima-Base のチェックポイントは名前の頭が `net.` (`model.diffusion_model.` でない) で、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は今も見分ける。
-- `accept: true` のライセンスは端末で一度だけ聞き、利用者の設定の隣の `licenses.json` に残す。端末がなければ `--accept-license` か `HWNPU_ACCEPT_LICENSE=ID` (その回だけ) (`chat.AcceptLicense`)。
-- `content: [nsfw]` のモデル (Anima) は、名前で動かすのに `HWNPU_MODEL_ALLOWLIST` の `+nsfw` が要る。
+- `accept: true` のライセンスは端末で一度だけ聞き、利用者の設定の隣の `licenses.json` に残す。端末がなければ `--accept-license` か `BONSAIAI_ACCEPT_LICENSE=ID` (その回だけ) (`chat.AcceptLicense`)。
+- `content: [nsfw]` のモデル (Anima) は、名前で動かすのに `BONSAIAI_MODEL_ALLOWLIST` の `+nsfw` が要る。
 - メモリ = NPU のメモリとプロセスのメモリの和の最大 (AMD: accel の fd の `drm-total-memory` + `RssAnon + RssShmem`。Apple: `ri_phys_footprint + ri_neural_footprint`)。1024² の 2 回目で測る。最大はたいてい VAE の最後の段。[memory-and-power.ja.md](memory-and-power.ja.md)。
 
 ## 主力: 用途 `image`
 
-`image` (別名 `generate`、`hwnpu-image generate` の既定) は、どの NPU でも **8 GB から FLUX.2 klein 4B** を選ぶ。
+`image` (別名 `generate`、`bonsaiai-image generate` の既定) は、どの NPU でも **8 GB から FLUX.2 klein 4B** を選ぶ。
 
 - 理由: Apache-2.0、頼まなければ NSFW を描かない、AMD では編集もできる、Anima-Turbo とほぼ同じメモリ (M1 で 4.9 と 4.8 GB) で速い (41 と 48 秒)。
 - 8 GB の機械 (モデルに使えるのは約 3 GB) では 1024² の最大がそれを超える。`--size 1:1s` (512²、Apple 3.1 GB、AMD 1.9 GB) なら入る。
@@ -56,7 +56,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 ## 参照画像の編集 (FLUX.2 klein)
 
-`hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 ... the living room from image 2."`
+`bonsaiai-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 ... the living room from image 2."`
 
 - `-i`/`--image` を 4 回まで (BFL の klein の上限)。プロンプトでは渡した順に image 1、image 2 と呼ぶ。参照は中央を絵の形に切り出し、絵の大きさに縮める。`FILE@half` はその参照を絵の半分の辺で読む (行は 4 分の 1。既定は `@full`)。`FILE@half` という名前のファイルがあれば、それをそのまま読む。
 - 参照の潜在 (VAE の符号器の平均をパッチにし、バッチ正規化の統計で正規化) を絵の行の後ろに並べ、RoPE の最初の軸を 10、20、30、40 にする。変調は絵の行と同じ。最後に絵の行だけ読む。
@@ -108,7 +108,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 払うもの (ダウンロードの重複のほうが重いので受け入れた):
 
 - Core AI は 1 本の `.aimodel` の関数を全部まとめてコンパイルする: 初回は全部の大きさをコンパイルする (M1 の FLUX.2 klein で 512² だけ 10 分、512² と 1024² で 40 分)。prebuilt があれば端末では仕上げだけだが、VAE は prebuilt を使わないので、その大きさはどの機械でも初回にコンパイルする。
-- 1 つの大きさを Neural Engine のコンパイラが通さないと、その部品の **全部の** 大きさが NPU から落ちる。取得元に置く前に、チップごとに大きさを 1 つずつオフラインでコンパイルし (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、そのあと `/usr/bin/log` で `Falling back` を探す)、チップごとの prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT`) は `0 failed` で終わること。
+- 1 つの大きさを Neural Engine のコンパイラが通さないと、その部品の **全部の** 大きさが NPU から落ちる。取得元に置く前に、チップごとに大きさを 1 つずつオフラインでコンパイルし (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、そのあと `/usr/bin/log` で `Falling back` を探す)、チップごとの prebuilt (`bonsaiai-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT`) は `0 failed` で終わること。
 - 大きさを足すと、書き出しと prebuilt を全部作り直す。
 
 ### 名前と鍵
@@ -118,7 +118,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 | AMD | `NAME.amd-npu2`、モデルの名前の小文字: `anima-turbo`、`anima-aesthetic`、`flux.2-klein-4b`、`flux-3-image-klein`。Anima (6.13 GB) は取得元に詰めて置く (`files.tar.zst`)。大きさの名前 (`-512`、`-aspects`) はもうない |
 | Apple | 書き出しの名前に `aspect.Tag` で大きさが入る (`8sizes-` と大きさの CRC-32)。大きさの組が違えば別の書き出し |
 
-- 鍵: `chat.PinnedRecipe(model, tool, version)` と書き出しの道具の引数 (`AMDRecipe`)。道具が読む全部のファイルの `sha256:` が models.yaml に要る (固定がなければ共有しない)。道具に渡すものか道具が書くもの (大きさ、形式、並べ方) が変わったら `AMDExportVersion` (FLUX.2 と FLUX.3 klein は 2) を手で上げる。組み込みの `tools/amd` のハッシュも鍵に入るので、そこが変わると作り方の項目は見つからなくなる。名前で取り込んだ書き出し (`iron-import`、`hwnpu-dev sources import`、`chat.ImportedRecipe`) は名前だけで探すので、中身を変えたら名前を変えるか、取得元の古いものを消す。
+- 鍵: `chat.PinnedRecipe(model, tool, version)` と書き出しの道具の引数 (`AMDRecipe`)。道具が読む全部のファイルの `sha256:` が models.yaml に要る (固定がなければ共有しない)。道具に渡すものか道具が書くもの (大きさ、形式、並べ方) が変わったら `AMDExportVersion` (FLUX.2 と FLUX.3 klein は 2) を手で上げる。組み込みの `tools/amd` のハッシュも鍵に入るので、そこが変わると作り方の項目は見つからなくなる。名前で取り込んだ書き出し (`iron-import`、`bonsaiai-dev sources import`、`chat.ImportedRecipe`) は名前だけで探すので、中身を変えたら名前を変えるか、取得元の古いものを消す。
 - 初回が書き出しを取得元に置く (`chat.SharedExportOr`、`?writeback=true` の取得元へ書き戻す)。同じ名前の手元の書き出しに頼まれた大きさがなければ、`NAME.amd-npu2.replaced` に退けて取得元の今のものを取り (なければ IRON で書き出す)、どちらもできなければ戻す。
 - 初回にどこから来るか: AMD の FLUX.2 と FLUX.3 klein は 手元 → 取得元 → IRON で書き出す (`PrepareAMD`)。AMD の Anima は手元か取得元。Apple と Intel は取得して変換する。詳しくは [distribution.ja.md](distribution.ja.md)。
 - Apple の大きさごとの書き出しは、この順に 1 つの形へ移している: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (`npu.apple.sizes` の 8 つ) → FLUX.3 klein (Chroma1 は外した)。チップは M1、M2、M3 (h13g、h14g、h15g) から。
@@ -138,7 +138,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 | Chroma1-Flash、Chroma1-HD (外した) | M1 のコンパイラが DiT の 8 サイズのプリビルドで落ちる (そのたびに端末で 1 部品 2 時間ほどコンパイルする)。用途は FLUX.2 klein で足り、軽くて速い。`internal/imagegen/chroma`、`iron_chroma.py` は消し、FLUX.1 の VAE は `internal/imagegen/fluxvae` に移した。`iron_chroma_parts.py` は FLUX の AMD の VAE が使うので残す ([メモ](../not-adopted/chroma1.md)) |
 | Qwen-Image-2.1、-Turbo (外した) | 7B の DiT と Qwen3-VL-8B: NPU で使うにはパラメータが多すぎる (プログラム 17 GB は Neural Engine のコンパイルのキャッシュを超える。AMD でも 1024² で速くて約 1.5 分) ([メモ](../not-adopted/qwen-image.md)) |
 | Sana-Sprint 0.6B / 1.6B (外した) | 2 ステップで速い (1024² で 12〜32 秒) が、絵の質が Sana よりかなり低い。書き出しの道具は `guidance_embeds` のチェックポイントを断る ([メモ](../not-adopted/sana.md)) |
-| Anima-Base v1.0 (外した) | 取り柄は LoRA の学習のもとになること。hwnpu は LoRA を読まない。同じ構造・同じ時間の Anima-Aesthetic で足りる。`-m anima:base` は断る (`TestImageMemoryTags`)。`iron_anima.py --dit anima-base-v1.0.safetensors` は今も書き出せる |
+| Anima-Base v1.0 (外した) | 取り柄は LoRA の学習のもとになること。BonsaiAI は LoRA を読まない。同じ構造・同じ時間の Anima-Aesthetic で足りる。`-m anima:base` は断る (`TestImageMemoryTags`)。`iron_anima.py --dit anima-base-v1.0.safetensors` は今も書き出せる |
 | 大きさごとの書き出し、一部の大きさだけのもの | ダウンロードの重複 (上) |
 | LongCat-Image-Edit、OmniGen2 (編集のモデルとして) | LongCat は DiT 6.3B と文の符号器 16.6 GB。OmniGen2 は質が下 |
 | 参照の K/V を 1 ステップ目から使い回す (FLUX.2 klein 9B-KV の方式を 4B の重みで) | 正しい編集との潜在のコサイン 0.46。その学習をしたモデルでないと使えない |

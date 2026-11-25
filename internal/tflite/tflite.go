@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/mapped"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // The builtin operators the converter takes (schema.fbs's BuiltinOperator).

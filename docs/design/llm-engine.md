@@ -45,7 +45,7 @@ without weights), `internal/llm/chain` (parts in a chain), `internal/llm/runner`
   key axis is 16385 or more goes to the CPU (M3: 16.6 ms → 117 ms for 2 layers; a 16384 cache made a
   token 375 ms, load 140 s).
 - So a whole program's cache plus Q must stay ≤ 16384: `chat.DefaultContext` = 16384 − 64 = 16320 for a
-  model not split at its attention, with prompt programs of 64 tokens. `hwnpu-dev convert` warns when
+  model not split at its attention, with prompt programs of 64 tokens. `bonsaiai-dev convert` warns when
   `-cache + -seq` exceeds the limit.
 - Past 16320, a whole program's cache is split into input chunks of 16384 (`llm.CacheChunks`,
   `CacheChunkOver` = 16320, `CacheChunkLen` = 16384; the last chunk shorter). `blocks.ChunkedSDPA` merges
@@ -77,7 +77,7 @@ without weights), `internal/llm/chain` (parts in a chain), `internal/llm/runner`
 The default for every model that allows it (`llm.Paged`: LFM3 and its VL, Audio and Omni checkpoints,
 Gemma 4, Qwen3.5, PLaMo 3; Qwen3 only on Core AI), on Core ML, Core AI and Intel.
 
-- Conversion (`hwnpu-dev convert -paged N`, `llm.Options.Paged`, `llm.PlanPaged`): parts end before each
+- Conversion (`bonsaiai-dev convert -paged N`, `llm.Options.Paged`, `llm.PlanPaged`): parts end before each
   full attention layer N and output `attn_q_N` (after RoPE / norm), the step's `kv_k_N_new` and
   `kv_v_N_new` (and LFM3's gate `attn_gate_N`); the next part takes `attn_o_N` and computes the rest of
   layer N. Rings and convolution windows stay inside the parts. Outputs are bound by name across parts
@@ -117,7 +117,7 @@ Gemma 4, Qwen3.5, PLaMo 3; Qwen3 only on Core AI), on Core ML, Core AI and Intel
 - Each attention layer costs a host round trip (about 0.4 ms fixed per call on Core AI); models with many
   attention layers pay it per layer. The whole-program tier (below) removes it for short conversations.
 
-### Flags (hwnpu-chat)
+### Flags (bonsaiai-chat)
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -142,7 +142,7 @@ Gemma 4, Qwen3.5, PLaMo 3; Qwen3 only on Core AI), on Core ML, Core AI and Intel
   fits first.
 - `llm.AddSmaller` adds them to an existing export without reconverting (`Manifest.Smaller`,
   `OUT.attnC.<ext>`): weight parts do not depend on the chunk length. `chain` drops a shorter program that
-  is not all on the NPU (`Chain.Chunks`); hwnpu-chat uses only chunks every program of a tier has
+  is not all on the NPU (`Chain.Chunks`); bonsaiai-chat uses only chunks every program of a tier has
   (`commonSmaller`).
 - Core ML puts small attentions on the CPU: grouped Q=1 up to chunk 8192, Q=8 up to 2048, Q=64 from 1024 on
   the ANE (M3 and M4 alike; set by Core ML on macOS 27, not the chip). Hence Core ML starts at 4096.
@@ -156,7 +156,7 @@ Gemma 4, Qwen3.5, PLaMo 3; Qwen3 only on Core AI), on Core ML, Core AI and Intel
 - `paged.Heads` (Core AI, kv heads ≥ 2; `llm.attentionForm`): queries of a kv head as (1, 1, rows, d),
   scores laid out (1, rows, 1, keys), scale on the queries, max and sum over the last axis with `reduce_sum`.
   5–26% faster per call (M1). With 1 kv head (Gemma 4 E2B, PLaMo 3 0.8B) it leaves the Neural Engine, so
-  those stay `grouped`. `HWNPU_DEV=attention=grouped` forces the old form for comparison.
+  those stay `grouped`. `BONSAIAI_DEV=attention=grouped` forces the old form for comparison.
 - `llm.RefreshAttention` rewrites the attention programs of an older export (`Manifest.AttnForm`); weight
   parts stay. `chat.Prepare` calls it after `AddMass`.
 - The mass program (`paged.BuildMass`) stays `grouped`.
@@ -252,7 +252,7 @@ A tier switch costs about 15 ms once (Core ML).
 - M3, LFM3-1.7B, OpenCode's first request (7,854 tokens): 14.6 s cold → 0.2 s after a restart (the store
   read itself 17–36 ms, the rest writing ANE buffers); 0.7 s with the request text changed (from mark
   7680). Writing adds under 0.5 s. Greedy output matches a cold read.
-- hwnpu-agent's prompts (617 tokens of system and tools) are below `minStored` and are not stored.
+- bonsaiai-agent's prompts (617 tokens of system and tools) are below `minStored` and are not stored.
 
 ## Two-level (sparse) attention (`decode.Sparse`, `--sparse`)
 
@@ -289,7 +289,7 @@ phrase).
 
 ## Long-context numbers (M3 16 GB, Core AI, LFM3-1.7B lut6 grouped)
 
-macOS 27.2.1, `hwnpu-chat serve` with the defaults (`--paged 8192`, two-level attention past about 48K,
+macOS 27.2.1, `bonsaiai-chat serve` with the defaults (`--paged 8192`, two-level attention past about 48K,
 drafts of 7), `--prompt-cache off --no-think`, temperature 0, a fresh server per run. Read = time to the
 first token. Generate = tokens/s of the answer right after the prompt (100–256 tokens; it moves with how
 many drafts are taken, so a range). The documents are this repository's English docs and Go source.
@@ -331,7 +331,7 @@ with `--max-seq-len` and keep the cache in the device bank ([LLMs on AMD](amd-ll
 
 ## Pitfalls
 
-- Attention programs must run with the step program's context, not the loading context: hwnpu-chat
+- Attention programs must run with the step program's context, not the loading context: bonsaiai-chat
   cancels the load context once ready, and a call under it returned `context canceled` while the
   prediction kept running (empty answers, `cannot bind while a submission is running`, SIGSEGV on close).
   `TestPagedOnNeuralEngine` covers it.
@@ -345,8 +345,8 @@ with `--max-seq-len` and keep the cache in the device bank ([LLMs on AMD](amd-ll
   checked.
 - Two-level attention approximates peaked attention badly: a small Gemma 4 with norm weights near 1 (scores
   near 30) gives relative error 1.3–1.6 against full attention (0.068 with normal weights).
-- `HWNPU_PROFILE=1` (`decode.WriteProfile`) splits a step into parts, host attention per layer, and the
-  logits read; hwnpu-chat prints it after each answer with the Neural Engine's memory.
+- `BONSAIAI_PROFILE=1` (`decode.WriteProfile`) splits a step into parts, host attention per layer, and the
+  logits read; bonsaiai-chat prints it after each answer with the Neural Engine's memory.
 
 ## Tests
 
@@ -399,7 +399,7 @@ checks that deliberate breaks (row offset, missing ring copy, mask shift) fail.
 - Store: keep set-aside sequences (`Save`) in the store, thin old per-request end marks, int8 rows.
 - KV-only prompt programs for models whose every layer writes a cache (drop LFM3's output layer, about
   0.19 GiB).
-- Long-range recall still trails PyTorch at 24K–32K after the attention fix: three pass phrases, hwnpu
+- Long-range recall still trails PyTorch at 24K–32K after the attention fix: three pass phrases, BonsaiAI
   lut6 2 of 3 at 25K (PyTorch fp16 3) and 0 of 3 on another 33K text (PyTorch 2); lut8 0 of 3 on the text
   lut6 now answers. The rest of the NE path (weight parts, other matmuls) not yet checked the same way.
 - The same small-product loss likely applies to other attention written as `matmul(e or softmax, v)`:

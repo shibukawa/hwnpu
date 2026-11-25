@@ -65,7 +65,7 @@
 package mlspec
 
 import (
-	milspec "github.com/shibukawa/hwnpu/internal/milspec"
+	milspec "github.com/shibukawa/bonsaiai/internal/milspec"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

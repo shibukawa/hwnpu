@@ -7,22 +7,22 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
-// TestUngroupOnDevice loads, on Core AI (HWNPU_TEST_NPU, M1), two exports' package of the
+// TestUngroupOnDevice loads, on Core AI (BONSAIAI_TEST_NPU, M1), two exports' package of the
 // same weights: Qwen-Image's VAE norm and convolution of 1152 channels at 32 x 32, which runs on
 // the Neural Engine, and at 64 x 64, which the Neural Engine's compiler fails on (docs/design/image-apple.md). Lowered together, the first would be off the Neural Engine too: the group is taken
 // apart and the first runs on it alone.
 func TestUngroupOnDevice(t *testing.T) {
-	if os.Getenv("HWNPU_TEST_NPU") == "" {
-		t.Skip("HWNPU_TEST_NPU not set")
+	if os.Getenv("BONSAIAI_TEST_NPU") == "" {
+		t.Skip("BONSAIAI_TEST_NPU not set")
 	}
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	ctx := context.Background()
 	const c = 1152
 	rng := rand.New(rand.NewPCG(1, 2))

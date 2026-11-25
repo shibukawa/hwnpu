@@ -6,7 +6,7 @@ lifecycle: proposed
 facts:
   batch_padding:
     tool: tools/coreml/ane_pad.py (ML Program のバッチ次元を書き換え、ANE に全演算が載る最小のバッチを探す)
-    runtime: Core ML バックエンドがメタデータ hwnpu.logical_batch / hwnpu.padded_batch を読み、元の形状で受け渡しする (ArgInfo.PaddedDims)
+    runtime: Core ML バックエンドがメタデータ bonsaiai.logical_batch / bonsaiai.padded_batch を読み、元の形状で受け渡しする (ArgInfo.PaddedDims)
     feature_padding: 特徴量方向のゼロ埋めは全結合と ReLU なら正確だが正規化を壊し、試したモデルでは ANE に移らなかった
   motivation: 小型LLMのように系列長やKVキャッシュが変わるモデルをNPUに載せるため
   intel_mechanism: コンパイラの重み分離機能 (OpenVINO compileWS、コンパイラ6.3以降が必要)

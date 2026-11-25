@@ -45,7 +45,7 @@ func RegisterErrorType(name string, sample error) {
 	typed[name] = reflect.TypeOf(sample)
 }
 
-// ErrClosed is the error of a call on a session that has ended (hwnpud's engine exited).
+// ErrClosed is the error of a call on a session that has ended (bonsaiaid's engine exited).
 var ErrClosed = errors.New("airpc: the session has ended")
 
 // wireError is an error as it crosses.

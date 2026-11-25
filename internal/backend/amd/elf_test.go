@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/aieelf"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/xdna/xdnasim"
+	"github.com/shibukawa/bonsaiai/internal/aieelf"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/xdna/xdnasim"
 )
 
 var testPDI = []byte("SIMULATED-PDI:elf-copy")

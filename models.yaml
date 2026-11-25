@@ -1,20 +1,20 @@
-# The models hwnpu knows, and the models each use recommends on a machine of each memory
-# (MODEL.md's table). hwnpu embeds this file; a file of your own adds to it and overrides it:
-# ~/.config/hwnpu/models.yaml (%LOCALAPPDATA%\hwnpu\models.yaml on Windows), HWNPU_MODELS, or
-# --models FILE (hwnpu-chat; -models for the others). Write only what changes there. The design is docs/model-table.md.
+# The models bonsaiai knows, and the models each use recommends on a machine of each memory
+# (MODEL.md's table). bonsaiai embeds this file; a file of your own adds to it and overrides it:
+# ~/.config/bonsaiai/models.yaml (%LOCALAPPDATA%\bonsaiai\models.yaml on Windows), BONSAIAI_MODELS, or
+# --models FILE (bonsaiai-chat; -models for the others). Write only what changes there. The design is docs/model-table.md.
 #
-# models: NAME: what -m (hwnpu-chat, hwnpu-image), -use (the others) and the API call it.
+# models: NAME: what -m (bonsaiai-chat, bonsaiai-image), -use (the others) and the API call it.
 #   family, tag   FAMILY:TAG picks it (plamo3translate:2b); the family alone picks the tag of the
 #                 largest machine up to this machine's memory
-#   kind          chat, embedding (hwnpu-chat: chat, agent, search, serve), transcribe (hwnpu-audio transcribe),
-#                 speech (hwnpu-audio tts), decision (hwnpu-chat systemone), image, depth, face-detect (hwnpu-image),
-#                 pitch (hwnpu-audio pitch), pose (hwnpu-image pose), notes (hwnpu-audio notes), music, sfx (hwnpu-audio generate),
-#                 label (hwnpu-image label, embed)
+#   kind          chat, embedding (bonsaiai-chat: chat, agent, search, serve), transcribe (bonsaiai-audio transcribe),
+#                 speech (bonsaiai-audio tts), decision (bonsaiai-chat systemone), image, depth, face-detect (bonsaiai-image),
+#                 pitch (bonsaiai-audio pitch), pose (bonsaiai-image pose), notes (bonsaiai-audio notes), music, sfx (bonsaiai-audio generate),
+#                 label (bonsaiai-image label, embed)
 #   device        where it runs by the NPU's vendor (amd, apple, intel): npu (the default) or cpu;
-#                 a command's --device and HWNPU_DEVICE override it
+#                 a command's --device and BONSAIAI_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory). It is looked for
-#                 in the sources first (HWNPU_MODEL_SOURCE, _1, ...: docs/cache-sharing-design.md 7)
+#                 in the sources first (BONSAIAI_MODEL_SOURCE, _1, ...: docs/cache-sharing-design.md 7)
 #   targets       the version of what is converted for each target ({coreai: {version: 1}}),
 #                 bumped by hand when what is made changes: the sources keep it as vN (v0-HASH
 #                 with no version). amd-xdna2's is model-recipes.yaml's (models.NAME.amd.version);
@@ -24,18 +24,18 @@
 #                 repository on Hugging Face) and the digest of its files (their paths, sizes and SHA-256).
 #                 Taken from that folder whatever tools made it, and only with that digest; what is
 #                 made here instead goes beside it as v0-HASH; none (a file of your own) drops the
-#                 pin. hwnpu-dev models pin writes them (docs/prebuilt.md 5.3)
+#                 pin. bonsaiai-dev models pin writes them (docs/prebuilt.md 5.3)
 #   develop       true: in development; what is converted goes in the sources as vN-HASH
 #   hub           the model's conversions on Hugging Face, by repository: the commit each target
-#                 reads there ({hwnpu/NAME: {amd-xdna2: COMMIT, apple: COMMIT}}; coreai-ARCH before
-#                 apple on a Mac of that Neural Engine). hwnpu-dev models hf push writes it (docs/prebuilt.md)
-#   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
+#                 reads there ({bonsaiai/NAME: {amd-xdna2: COMMIT, apple: COMMIT}}; coreai-ARCH before
+#                 apple on a Mac of that Neural Engine). bonsaiai-dev models hf push writes it (docs/prebuilt.md)
+#   arch          the structure, one of bonsaiai-dev convert -archs (default: from config.json)
 #   license       the weights' license: {id, url, class, terms, accept}. class is what it allows of
 #                 commercial use: open, conditional (a cap of revenue, a registration) or
 #                 non-commercial (the weights, even when what they make may be sold); accept asks
 #                 the user once before the first run. Every model has one (docs/model-provenance.md)
 #   content       what it may make unasked that the model policy refuses unless allowed: [nsfw]
-#                 (HWNPU_MODEL_ALLOWLIST=+nsfw)
+#                 (BONSAIAI_MODEL_ALLOWLIST=+nsfw)
 #   sha256        FILE: the SHA-256 of a file of the repository, checked from any source; a file
 #                 another model pins with the same SHA-256 and has downloaded is linked from its
 #                 directory instead of downloaded (Qwen3-1.7B and MOSS-SoundEffect's text encoder)
@@ -45,17 +45,17 @@
 #   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
 #   disk          what the model keeps in the cache to run (its conversion unpacked and its tables;
 #                 not the checkpoint, which only converting reads), GB, a table by vendor; a vendor
-#                 it leaves out is not known. hwnpu-dev models hf sizes --write models.yaml writes it from
+#                 it leaves out is not known. bonsaiai-dev models hf sizes --write models.yaml writes it from
 #                 what the sources hold (Core AI's: at its version). Preparing takes bytes and disk
 #                 at once for a while (a packed export is unpacked beside its pack)
 #                 memory and bytes take one number, or a table by the NPU's vendor where they
 #                 differ (memory: {amd: 3.5, apple: 4.1}); a vendor the table leaves out takes its
 #                 largest. The table may name Apple's chips too (M1, M2, ...), where one differs
 #                 from the others (memory: {amd: 2.2, apple: 3.1, M1: 1.7})
-#   features      what it can do besides its kind (hwnpu-chat list explains them)
+#   features      what it can do besides its kind (bonsaiai-chat list explains them)
 #   no_think      answers without thinking unless asked (its chat template's own default)
 #   prefill, format, context, paged, tier
-#                 how hwnpu-chat runs a chat model when its flags (--prefill, --format, --context,
+#                 how bonsaiai-chat runs a chat model when its flags (--prefill, --format, --context,
 #                 --paged, --tier) do not say: auto, on or off; a weight format (lut8); tokens; a
 #                 chunk of tokens or -1; auto, none or a list of caches
 #   variants      the model on machines of more memory than machine, by the least memory in GB:
@@ -72,16 +72,16 @@
 #   that much memory (GB) or more runs. A file of your own replaces a column's model, or drops it
 #   with remove: true.
 # aliases: NAME: OTHER runs OTHER wherever NAME is picked (a use, a family's tag, -m or -use, a request).
-# policy: [ITEM, ...] (a file of your own only) the model policy, before HWNPU_MODEL_ALLOWLIST's
+# policy: [ITEM, ...] (a file of your own only) the model policy, before BONSAIAI_MODEL_ALLOWLIST's
 #   items (comma separated): -license:ID or -license:CLASS refuses, +license:... allows only what
 #   it names, +nsfw allows the models of content nsfw. A - wins. A use picks the next model
 #   allowed; a model named is refused with why (docs/model-provenance.md 2)
 version: 1
 
-# hub: push: the namespace on Hugging Face hwnpu-dev models hf push puts the conversions in (PUSH/MODEL);
+# hub: push: the namespace on Hugging Face bonsaiai-dev models hf push puts the conversions in (PUSH/MODEL);
 #   a file of your own gives another (an account or an organization of yours)
 hub:
-  push: hwnpu
+  push: bonsaiai
 
 models:
   LFM3-1.7B:
@@ -89,9 +89,6 @@ models:
     tag: 1.7b
     kind: chat
     from: hf:LiquidAI/LFM3-1.7B
-    exports:
-      amd-xdna2:
-        LFM3-1.7B.amd-npu2-q4: v3 sha256:1c9cdec418630eb21a750408524ce3f283c1e96fc6ad5b76c6af3caec18d345d
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-1.7B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, measured on an M1, 2026-11-15, docs/design/memory-and-power.md): the programs split
     # at the attention hold the weights once, 1.36 GiB on the Neural Engine and the process's
@@ -115,7 +112,7 @@ models:
     # tokens/s, 1503 tokens of prompt in 8.6-10.9 s; an M2 12.0-13.7 tokens/s, 1624 in 13-14.5 s,
     # loaded in 3.1 s and 8.0 GB (the experts' 7.23 GiB in the process's memory; the first run,
     # converting, 12.9 GB). Short of memory the system compresses the experts and a prompt takes
-    # up to 3 times as long: HWNPU_MOE_WIRE=1 wires them. Not on an M1: its Neural Engine does
+    # up to 3 times as long: BONSAIAI_MOE_WIRE=1 wires them. Not on an M1: its Neural Engine does
     # not take the gather_nd that picks the experts' scales. Not picked by a use: 8.0 GB on 16 GB
     family: lfm2
     tag: 8b-a1b
@@ -133,9 +130,6 @@ models:
     tag: 2b
     kind: chat
     from: hf:LiquidAI/LFM3-VL-2B
-    exports:
-      amd-xdna2:
-        LFM3-VL-2B.amd-npu2-q4: v3 sha256:96056ffcbb4cc59b6c9ac001c8d178a777d8db18043f3eef0fb345dba2dbb688
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-VL-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.24 GiB on the Neural Engine and the process's
     # 0.25 GiB describing a picture; 2.14 + 0.23 GiB (2.6 GB) with text alone, the vision
@@ -151,9 +145,6 @@ models:
     tag: 2b
     kind: chat
     from: hf:LiquidAI/LFM3-Audio-2B
-    exports:
-      amd-xdna2:
-        LFM3-Audio-2B.amd-npu2-q4: v3 sha256:aadee6abc51dadce0a439aa62723e1b4432dbd3f4fca5c1c764dce32df92011c
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.18 GiB on the Neural Engine and the process's
     # 0.21 GiB answering about a clip (2.6 GB); 2.05 + 0.23 GiB (2.4 GB) with text alone
@@ -162,15 +153,12 @@ models:
     bytes: {amd: 1.97e9, apple: 4.0e9}
     disk: {amd: 2.79e9}
     features: [tools, thinking, audio]
-    about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-audio tts)"
+    about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: bonsaiai-audio tts)"
   LFM3-Omni-2B:
     family: lfm3-omni
     tag: 2b
     kind: chat
     from: hf:LiquidAI/LFM3-Omni-2B
-    exports:
-      amd-xdna2:
-        LFM3-Omni-2B.amd-npu2-q4: v3 sha256:e37776cd0ecb1a6a579a426e10ea2e74ba0d5a5fdeb9199ef830fa39e341667f
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.63 GiB on the Neural Engine and the process's
     # 0.25 GiB with a picture and a clip; 2.40 + 0.23 GiB (2.8 GB) with text alone, both
@@ -186,9 +174,6 @@ models:
     tag: e2b
     kind: chat
     from: hf:google/gemma-4-E2B-it
-    exports:
-      amd-xdna2:
-        gemma-4-E2B-it.amd-npu2-q4: v3 sha256:bd3cb3fb28a12d05024b7f08d5e649625ebbbb130280309d8efb8feff084cc34
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 8
     # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 1.76 GiB on the NPU and
@@ -205,9 +190,6 @@ models:
     tag: e4b
     kind: chat
     from: hf:google/gemma-4-E4B-it
-    exports:
-      amd-xdna2:
-        gemma-4-E4B-it.amd-npu2-q4: v3 sha256:e1297fa463b7302ba5bdda5beb745f6c1aa8b7147d31fecbc4675236af305c03
     license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 24
     # AMD (2026-11-17, docs/design/performance.md): the peak of a chat, 3.55 GiB on the NPU and
@@ -224,9 +206,6 @@ models:
     tag: 4b
     kind: chat
     from: hf:Qwen/Qwen3.5-4B
-    exports:
-      amd-xdna2:
-        Qwen3.5-4B.amd-npu2-q4: v3 sha256:5350985e0df1af6f917671eca71e7a859e6fce23a75305c2c0fd6516154ee185
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE", class: open}
     machine: 24
     memory: 4.2
@@ -239,9 +218,6 @@ models:
     tag: 0.8b
     kind: chat
     from: hf:Qwen/Qwen3.5-0.8B
-    exports:
-      amd-xdna2:
-        Qwen3.5-0.8B.amd-npu2-q6: v3 sha256:c9442f72e7cbca22aa4188f5eb585d28c3bee14b7e7d475170798209d8108011
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.99 GiB on the Neural Engine
     # (the multi-token prediction layer's programs among it) and the process's 0.39 GiB, 1.5 GB;
@@ -262,9 +238,6 @@ models:
     tag: 2b
     kind: chat
     from: hf:Qwen/Qwen3.5-2B
-    exports:
-      amd-xdna2:
-        Qwen3.5-2B.amd-npu2-q6: v3 sha256:aaf69839535c10775f2cd9f94e51606995458cb9d876ab86660f93a4a0289a72
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 1.67 GiB on the Neural Engine and the process's
     # 0.39 GiB (no whole program: its weights twice are over what the two may hold): for 8 GB
@@ -304,10 +277,6 @@ models:
     tag: 20b
     kind: chat
     from: hf:openai/gpt-oss-20b
-    exports:
-      amd-xdna2:
-        gpt-oss-20b.amd-npu2: v3 sha256:bf6508e866ed89454ea903a2eddf1d24eb31d4ff9bdea73d6e8abad782f62ec7
-        gpt-oss-20b.amd-npu2-p16: v3 sha256:eef366590d8c33bbb51a91c5373105f874729cd945c58c8755b85a7a0435d9e5
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     # 16 GB: on AMD's NPU 16 of each layer's 32 experts in places (6.90 GiB pinned), the others
     # read from experts.bin with O_DIRECT when chosen, the decode step routed on the host so that
@@ -369,18 +338,13 @@ models:
     tag: 35b-a3b
     kind: chat
     from: hf:Qwen/Qwen3.6-35B-A3B
-    exports:
-      amd-xdna2:
-        Qwen3.6-35B-A3B.amd-npu2-q4: v3 sha256:2a1b6d18f76851c7a814a26b1d019a5dd683f676aac56798c37a025ed70b80e8
-        Qwen3.6-35B-A3B.amd-npu2-q4-p128: v3 sha256:cd333280c58fe41a220790e42e8ecb867cdf479f370a8e54e04337d2521c0f67
-        Qwen3.6-35B-A3B.amd-npu2-q4-p32: v3 sha256:d8d72422b03a418a270e67d6de237c60e98784b96b107cf71c00b2f3bd7d4940
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
     # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design/moe.md): 24,188 MiB of the NPU's (the
     # experts and head at 4 bits, the mixers at 8) and the process's 880 MiB at its peak while
     # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB.
     # Below 48 GB its experts in places (--expert-places P, docs/design/moe.md): the others in
     # experts.bin (20.1 GB), copied into a place when chosen, read with O_DIRECT where the file
-    # does not fit beside the places (measured with HWNPU_MOE_DEBUG=direct=1, 2026-11-21, a
+    # does not fit beside the places (measured with BONSAIAI_MOE_DEBUG=direct=1, 2026-11-21, a
     # 1173-token prompt then 200 tokens, the peak of the NPU's buffers and the process's): 32
     # places 7.6 GiB, 33-38 % of the decode's choices copied in; 128 places 16.0 GiB, 6-7 %. The
     # logits the same to the bit as with every expert. Re-exported from main after the array
@@ -498,9 +462,6 @@ models:
     tag: 8b
     kind: chat
     from: hf:pfnet/plamo-3-translate-8b@cc265d585980c39436db5b9c136cd6644f446807
-    exports:
-      amd-xdna2:
-        plamo-3-translate-8b.amd-npu2-q4: v3 sha256:02646983e7ac32778177dd2a35425123a93161822bd08ecd9010b2fcc957673b
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     # the shards' sha256 as Hugging Face's API gives them, checked against the download (M1)
     sha256:
@@ -521,9 +482,6 @@ models:
     tag: 2b
     kind: chat
     from: hf:pfnet/plamo-3-translate-2b
-    exports:
-      amd-xdna2:
-        plamo-3-translate-2b.amd-npu2-q4: v3 sha256:78ad2ccbfe46f00174176b1462c3171f719e5d485f5905208a2032172566cb83
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-2b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 2.74 GiB on the Neural Engine (2.64 to 2.68
     # wired: the programs of the short context are functions of the same .aimodel, 0.1 GiB
@@ -539,9 +497,6 @@ models:
     tag: 0.8b
     kind: chat
     from: hf:pfnet/plamo-3-translate-0.8b
-    exports:
-      amd-xdna2:
-        plamo-3-translate-0.8b.amd-npu2-q4: v3 sha256:10cd7ac39279d4dae67bc4f211a017d7c403c31b6fb8176ef517fccec05d42f0
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-0.8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.82 GiB on the Neural Engine and the process's
     # 0.12 GiB; as AMD's
@@ -556,12 +511,9 @@ models:
     tag: 1b
     kind: embedding
     from: hf:pfnet/plamo-embedding-1b
-    exports:
-      amd-xdna2:
-        plamo-embedding-1b.amd-npu2: v1 sha256:bf1b0ea10b3d3aed6150cf09e25909665bf7262923bda8d5e991a3e7452cab1c
     license: {id: apache-2.0, url: "https://huggingface.co/pfnet/plamo-embedding-1b/blob/main/LICENSE.txt", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 1.05 GiB on the Neural Engine and the process's
-    # 0.03 GiB (hwnpu-chat search); AMD (Ryzen AI 9 365, 2026-11-23, its export of
+    # 0.03 GiB (bonsaiai-chat search); AMD (Ryzen AI 9 365, 2026-11-23, its export of
     # tools/amd/iron_plamo_embed.py in bf16, the graphs of 128 and 1024 tokens sharing one bank):
     # 1.89 GiB pinned and the process's 0.08 GiB
     machine: 8
@@ -574,9 +526,6 @@ models:
     tag: large-v3-turbo
     kind: transcribe
     from: hf:openai/whisper-large-v3-turbo@41f01f3fe87f28c78e2fbf8b568835947dd65ed9
-    exports:
-      amd-xdna2:
-        whisper-large-v3-turbo.amd-npu2: v2 sha256:4b922d3bd9e5f14f9a58e309547e8ab9acc2b19a2818ace09eed7039a4051ed3
     # MIT by the model card (the repository has no license file; large-v3's card says apache-2.0)
     license: {id: mit, url: "https://huggingface.co/openai/whisper-large-v3-turbo", class: open}
     # pinned for the export for AMD's NPU (tools/amd/iron_whisper.py, a key of the sources)
@@ -597,9 +546,6 @@ models:
     tag: 2b
     kind: speech
     from: hf:LiquidAI/LFM3-Audio-2B@2d6c1f99c129b3ef07a8d168bc0ff08e2bdb93f1
-    exports:
-      amd-xdna2:
-        lfm3-audio-2b-tts.amd-npu2: v3 sha256:d39d6268997d83eaa49501a09f085fae59072c34b129aebc5f2e34eba1de5c3f
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # pinned for the export for AMD's NPU (tools/amd/iron_lfm3speech.py, a key of the sources)
     sha256:
@@ -625,9 +571,6 @@ models:
     # on Apple all on the Neural Engine; on AMD IRON graphs (tools/amd/iron_supertonic.py), the
     # text graphs' windowed relative attention on the host
     from: hf:Supertone/supertonic-3@3cadd1ee6394adea1bd021217a0e650ede09a323
-    exports:
-      amd-xdna2:
-        supertonic-3.amd-npu2: v1 sha256:8e8829ddebd0a5ffe990549d9f7b23d1794cb843f93c4412c7a60e817f2edf9c
     license: {id: openrail-m, url: "https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE", class: conditional, terms: "BigScience Open RAIL-M: commercial use allowed; the use restrictions of its Attachment A (no unlawful use, harm to minors, disinformation, harassment, ...) bind every use and pass on to derivatives"}
     sha256:
       onnx/duration_predictor.onnx: c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db
@@ -643,9 +586,6 @@ models:
     tag: 2b
     kind: decision
     from: hf:LiquidAI/d1-2B
-    exports:
-      amd-xdna2:
-        d1-2B.amd-npu2-q4: v3 sha256:5991517646cf9e89118b92fde45511581ee9d40728ebad09ad7cc5dce8126936
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     # AMD's NPU: LFM3-VL's export read as d1 reads it (tools/amd/iron_d1.py): a question is one
@@ -657,9 +597,6 @@ models:
     tag: 2b
     kind: decision
     from: hf:LiquidAI/d1-Omni-2B
-    exports:
-      amd-xdna2:
-        d1-Omni-2B.amd-npu2-q4: v3 sha256:852ed7cce4502856cb38ed014d19b1024f13549eb58570ca06689709ec8fdaef
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.8
@@ -683,9 +620,6 @@ models:
     kind: pose
     # OpenMMLab MMPose's RTMO-s (Apache-2.0), the ONNX export Transformers.js reads
     from: hf:Xenova/RTMO-s@d8c526187f341d287753831c9c8b1ecc4855bba1
-    exports:
-      amd-xdna2:
-        rtmo-s.amd-npu2: v1 sha256:ce0935c443e48213fa3f2f86a93eb046b2c36f043fc015c9e470e1561375b389
     license: {id: apache-2.0, url: "https://github.com/open-mmlab/mmpose/blob/main/LICENSE", class: open}
     sha256: {onnx/model.onnx: 1cd6a3517658903233e9ccb78666554862f57f0944b6886e2048093594aef4e7}
     # AMD's NPU: an export of tools/amd/iron_onnxcnn.py (its transformer layer included, at
@@ -698,7 +632,7 @@ models:
     bytes: 4.0e7
     disk: {amd: 0.06e9}
     about: "RTMO-s: the people in an image and their 17 COCO keypoints in one pass, without a person detector; 9.9M parameters, images stretched to 640x640"
-  # hwnpu-image detect: OpenMMLab MMDetection's RTMDet (Apache-2.0), MMDeploy's ONNX exports of
+  # bonsaiai-image detect: OpenMMLab MMDetection's RTMDet (Apache-2.0), MMDeploy's ONNX exports of
   # its COCO weights in one repository; sha256 names the model's file
   RTMDet-tiny:
     family: rtmdet
@@ -727,9 +661,6 @@ models:
     bytes: 4.0e7
     about: "RTMDet-s: the objects in an image, boxes and COCO's 80 labels (44.6 box AP); 8.9M parameters, images fit into 640x640"
   RTMDet-m:
-    exports:
-      amd-xdna2:
-        rtmdet-m.amd-npu2: v1 sha256:b8d05f61a992eae5d4c520b4ac626035aef3706e7e0f0313bda2fd2fb68e37ff
     like: RTMDet-tiny
     tag: m
     sha256: {rtmdet-m-coco.onnx: 07921f4ee8c477b00abfce3c3bfff53bbc528c41abfa0193f981afbafcff95d4}
@@ -743,7 +674,7 @@ models:
     bytes: 1.1e8
     disk: {amd: 0.19e9}
     about: "RTMDet-m: the objects in an image, boxes and COCO's 80 labels (49.1 box AP); 24.7M parameters, images fit into 640x640"
-  # hwnpu-image ocr: PaddleOCR's PP-OCRv6 (Apache-2.0), the ONNX files PaddlePaddle publishes: the
+  # bonsaiai-image ocr: PaddleOCR's PP-OCRv6 (Apache-2.0), the ONNX files PaddlePaddle publishes: the
   # recognizer's repository, and the detector's in with (its files' sha256 under detector/)
   PP-OCRv6-small:
     family: ppocr
@@ -784,9 +715,6 @@ models:
     # Google DeepMind's Magenta RealTime 2 (code Apache-2.0, weights CC-BY 4.0: credit "Magenta
     # RealTime 2 by Google DeepMind" where the music is used)
     from: hf:google/magenta-realtime-2@010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc
-    exports:
-      amd-xdna2:
-        magenta-realtime-2-small.amd-npu2: v1 sha256:d8cb14695922f3ca870a2801d8f83b0d1e29e1a4cff3278b8bf4da666542219b
     license: {id: cc-by-4.0, url: "https://huggingface.co/google/magenta-realtime-2", class: open, terms: "credit Magenta RealTime 2 by Google DeepMind where the music is used"}
     # pinned for the export for AMD's NPU (tools/amd/iron_magenta.py, a key of the sources)
     sha256:
@@ -802,13 +730,10 @@ models:
     tag: v2.0
     kind: sfx
     # OpenMOSS's MOSS-SoundEffect v2.0 (code and weights Apache-2.0): Qwen3-1.7B reads the
-    # prompt, a 1.3B Wan DiT denoises, the DAC VAE decodes; hwnpu-audio runs it. The machine
+    # prompt, a 1.3B Wan DiT denoises, the DAC VAE decodes; bonsaiai-audio runs it. The machine
     # picks the text encoder's format (sfx.Formats): fp16 here, lut8 with 5 layers in fp16 in
     # the -lut8 one (moss-soundeffect:8g)
     from: hf:OpenMOSS-Team/MOSS-SoundEffect-v2.0@e35df4d82fbe87fcd5d14e5d100e349c0c3c076d
-    exports:
-      amd-xdna2:
-        moss-soundeffect-v2.0.amd-npu2: v3 sha256:7cc7aa56f8dedcc0c26455eb5c87d9263269895639413e7cd475f1b2ade7b057
     # the VAE is DAC's code (Descript, MIT); who trained its weights is not known
     license: {id: apache-2.0, url: "https://huggingface.co/OpenMOSS-Team/MOSS-SoundEffect-v2.0", class: open}
     # the text encoder is Qwen3-1.7B's checkpoint: linked from its download when it is here
@@ -823,9 +748,6 @@ models:
     bytes: {amd: 6.42e9, apple: 1.15e10}
     about: "MOSS-SoundEffect v2.0 (1.3B DiT, Qwen3-1.7B text encoder in fp16, DAC VAE): up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
   MOSS-SoundEffect-v2.0-lut8:
-    exports:
-      amd-xdna2:
-        moss-soundeffect-v2.0-lut8.amd-npu2: v3 sha256:5ce7ae7d33f739570965b74681e1c41d9185858b0f627158d537083dcf3f658f
     like: MOSS-SoundEffect-v2.0
     bytes: {amd: 5.34e9, apple: 1.15e10}
     tag: v2.0-lut8
@@ -841,7 +763,7 @@ models:
 
   # Image models: one export per model and NPU vendor holds every aspect ratio, the weights once;
   # never an export per size (docs/design/new-model-checklist.md, docs/design/image-models.md).
-  # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
+  # bonsaiai-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
   # sources) of tools/amd/iron_anima.py, of the eight aspect ratios of --size
   # in one (FLUX.2 klein's exported with IRON on its first run when the sources have none); on
   # Apple's and Intel's NPU Anima is downloaded and converted on its first run
@@ -850,13 +772,10 @@ models:
     tag: v1.1
     kind: image
     from: hf:circlestone-labs/Anima
-    exports:
-      amd-xdna2:
-        anima-turbo.amd-npu2: v2 sha256:8aced08cb647efd3624a76d6ee079dbdc0b582b0b0be6880f70e14c74da1538f
     # the weights for non-commercial use only (the pictures may be used commercially): asked once
-    # before the first run (hwnpu-image --accept-license)
+    # before the first run (bonsaiai-image --accept-license)
     license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", class: non-commercial, accept: true}
-    # makes NSFW pictures even with safe in the prompt: +nsfw in HWNPU_MODEL_ALLOWLIST picks it
+    # makes NSFW pictures even with safe in the prompt: +nsfw in BONSAIAI_MODEL_ALLOWLIST picks it
     content: [nsfw]
     file: anima-turbo-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
@@ -881,13 +800,10 @@ models:
     tag: aesthetic
     kind: image
     from: hf:circlestone-labs/Anima
-    exports:
-      amd-xdna2:
-        anima-aesthetic.amd-npu2: v2 sha256:86a3bc9d1d262fa8f96805e30b8264582fad099121cd41f472dffc4f43b6f7da
     # the weights for non-commercial use only (the pictures may be used commercially): asked once
-    # before the first run (hwnpu-image --accept-license)
+    # before the first run (bonsaiai-image --accept-license)
     license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", class: non-commercial, accept: true}
-    # makes NSFW pictures even with safe in the prompt: +nsfw in HWNPU_MODEL_ALLOWLIST picks it
+    # makes NSFW pictures even with safe in the prompt: +nsfw in BONSAIAI_MODEL_ALLOWLIST picks it
     content: [nsfw]
     file: anima-aesthetic-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
@@ -908,9 +824,6 @@ models:
     tag: 4b
     kind: image
     from: hf:black-forest-labs/FLUX.2-klein-4B
-    exports:
-      amd-xdna2:
-        flux.2-klein-4b.amd-npu2: v2 sha256:a88ef6556f8a7142c8feb125cb8e7c39f95abf64ce2231a3369c4ab3e9565c40
     license: {id: apache-2.0, url: "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B", class: open}
     sha256:
       text_encoder/model-00001-of-00002.safetensors: 8c0506e7f4936fa7e26183a4fd8da4e2bdbc5990ba64ae441f965d51228f36ea
@@ -983,7 +896,7 @@ models:
           "3:2": 1248x832
           "4:3": 1168x880
           "16:9": 1344x768
-        # the references an edit takes at these sizes when hwnpu-image's --image names no size
+        # the references an edit takes at these sizes when bonsaiai-image's --image names no size
         # (FILE@half): npu.apple's edits, so that one call draws one picture on both (keep the two
         # the same). The export runs more (tools/amd/iron_flux2klein.py: every mix of up to 4 of
         # 12800 rows or less), named by --image FILE@half; another number here is refused, as on
@@ -992,7 +905,7 @@ models:
           "1:1": ["1", "2@half", "3@half"]
           "1:1s": ["1", "2"]
     about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image; on Apple's Neural Engine at 1024 x 1024 and 512 x 512, in the same export); AMD's NPU (about 29 s at 1024 x 1024, an edit from one reference 1 min, from two or three (of 512) 47 to 56 s) and Apple's Neural Engine (text to image: about 41 s at 1024 x 1024, 11 s at 512 x 512 on an M1); Apache-2.0"
-  # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
+  # bonsaiai-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
   # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
   # converted when a picture first takes it
   flux-3-image-klein:
@@ -1000,9 +913,6 @@ models:
     tag: klein
     kind: image
     from: hf:black-forest-labs/flux-3-image-klein
-    exports:
-      amd-xdna2:
-        flux-3-image-klein.amd-npu2: v2 sha256:42c794c6a50e7d3d246189b862b7fe60762805642c65bf111c377924cb989a52
     # FLUX Kommunity License: non-commercial and non-production use (commercial use only as a
     # Qualifying User); a gated repository. Asked once before the first run
     license: {id: flux-kommunity, url: "https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/main/LICENSE.md", class: non-commercial, terms: "non-commercial and non-production use; commercial use only as a Qualifying User", accept: true}
@@ -1047,9 +957,6 @@ models:
     tag: mono-large
     kind: depth
     from: hf:depth-anything/DA3MONO-LARGE
-    exports:
-      amd-xdna2:
-        da3mono-large.amd-npu2: v1 sha256:2db0b574b9a04314b4fceabf4ea69412bf554fcf46eae6a8f7023d4af3217ce4
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3MONO-LARGE", class: open}
     machine: 24
     memory: 1.4
@@ -1062,9 +969,6 @@ models:
     tag: base
     kind: depth
     from: hf:depth-anything/DA3-BASE
-    exports:
-      amd-xdna2:
-        da3-base.amd-npu2: v1 sha256:f6828def85885f562a9d17b334e5a29b37e9183ffd9432f1e55355eb2e532d4a
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-BASE", class: open}
     machine: 16
     memory: 0.75
@@ -1075,10 +979,6 @@ models:
     tag: small
     kind: depth
     from: hf:depth-anything/DA3-SMALL
-    exports:
-      amd-xdna2:
-        da3-small-mv3.amd-npu2: v1 sha256:5ca2a9ab513577ece04c82e4b5ac9a9bbbf28f45305e65a40820a91ae88a6f78
-        da3-small.amd-npu2: v1 sha256:f380216667073b56cb0776ea77f07121c234a4ac983aa64ef87fd1fd86ed5d8f
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-SMALL", class: open}
     machine: 8
     memory: 0.5
@@ -1089,9 +989,6 @@ models:
     tag: large
     kind: depth
     from: hf:depth-anything/DA3METRIC-LARGE
-    exports:
-      amd-xdna2:
-        da3metric-large.amd-npu2: v1 sha256:cf62176aaf6d0d85f4150b4ca78de63071cba6b3de4cd64dc6a75aa5ff347e1c
     license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3METRIC-LARGE", class: open}
     machine: 8
     memory: 1.4
@@ -1102,9 +999,6 @@ models:
     tag: vitl
     kind: depth
     from: hf:Ruicheng/moge-2-vitl-normal
-    exports:
-      amd-xdna2:
-        moge-2-vitl.amd-npu2: v1 sha256:30aea38f6f875a976d231a91e03bf6d5618a13db78797c057e20e1fe6dcf6936
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 24
     memory: 2.6
@@ -1115,9 +1009,6 @@ models:
     tag: vitb
     kind: depth
     from: hf:Ruicheng/moge-2-vitb-normal
-    exports:
-      amd-xdna2:
-        moge-2-vitb.amd-npu2: v1 sha256:aa02e7395122ae16bb610791a4c8afc1f843fa4efe6f8bf8de7752a050425582
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 16
     memory: 2.1
@@ -1128,9 +1019,6 @@ models:
     tag: vits
     kind: depth
     from: hf:Ruicheng/moge-2-vits-normal
-    exports:
-      amd-xdna2:
-        moge-2-vits.amd-npu2: v1 sha256:50bca72460bcf4684aa5c32709237f349aa48fda53eb3d80815b154ac62ee4ef
     license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 8
     memory: 1.9
@@ -1141,9 +1029,6 @@ models:
     tag: 2023mar
     kind: face-detect
     from: hf:opencv/face_detection_yunet
-    exports:
-      amd-xdna2:
-        yunet.amd-npu2: v1 sha256:9b248bde9dc8bba520f77ac36082eb6818ca1b1fad5cc926599494432df393b2
     license: {id: mit, url: "https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/LICENSE", class: open}
     # AMD's NPU (IRON) switches its array for each operator: 29 ms and 127 mJ a picture at
     # 320 x 256, the CPU (onnxruntime, 1 thread) 2.7 ms and 7.7 mJ (docs/amd-npu-models.md 17).
@@ -1154,7 +1039,7 @@ models:
     memory: 0.03
     bytes: 0.23e6
     about: "YuNet (OpenCV Zoo, MIT): faces' boxes and five landmarks (eyes, nose, mouth corners)"
-  # hwnpu-image label and embed: on AMD's NPU the export ~/models/NAME.amd-npu2 of
+  # bonsaiai-image label and embed: on AMD's NPU the export ~/models/NAME.amd-npu2 of
   # tools/amd/iron_siglip2.py (--precision HIGHEST); on Apple's Neural Engine the checkpoint is
   # downloaded and converted on the first run (internal/vision/siglip, fp16; docs/design/vision-models.md);
   # Intel's NPU has no form yet
@@ -1163,9 +1048,6 @@ models:
     tag: base
     kind: label
     from: hf:google/siglip2-base-patch16-224
-    exports:
-      amd-xdna2:
-        siglip2-base-patch16-224.amd-npu2: v2 sha256:a8c37876e4f9d31023cadb1a350194aa26ab7e84d60191859e5fe42205f8c957
     license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-base-patch16-224", class: open}
     machine: 8
     # M3: 0.45 GB of the process at most (embedding the 444 default labels) and 0.36 GB on the
@@ -1179,9 +1061,6 @@ models:
     tag: large
     kind: label
     from: hf:google/siglip2-large-patch16-256
-    exports:
-      amd-xdna2:
-        siglip2-large-patch16-256.amd-npu2: v2 sha256:a74788b0a3494e17d5cce383c047b62d657a01e428363251bcd9a8779c1ebd94
     license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-large-patch16-256", class: open}
     machine: 16
     # M3: 1.8 GB of the process and 1.24 GB on the Neural Engine (Core AI: 1.56)
@@ -1189,20 +1068,17 @@ models:
     # AMD: the export for the NPU as the sources hold it (its files as they are)
     bytes: {amd: 1.87e9, apple: 3.57e9}
     about: "SigLIP 2 Large: the same at 256 x 256, closer labels and embeddings, about 3 times the work"
-  # hwnpu-image segment: EfficientSAM (Meta's, Apache-2.0), the authors' ONNX exports of its
+  # bonsaiai-image segment: EfficientSAM (Meta's, Apache-2.0), the authors' ONNX exports of its
   # image encoder and its prompt's mask decoder; sha256 names each file. The encoder runs on
   # AMD's NPU from an export of tools/amd/iron_efficientsam.py made on the first run, on Apple's
   # Neural Engine and Intel's NPU converted from its ONNX file on the first run (M3: 0.4 s for S,
-  # all on the Neural Engine; docs/design/vision-models.md), elsewhere on the CPU (ONNX Runtime, else hwnpu's
+  # all on the Neural Engine; docs/design/vision-models.md), elsewhere on the CPU (ONNX Runtime, else bonsaiai's
   # evaluator); the decoder on the host, per prompt
   EfficientSAM-Ti:
     family: efficientsam
     tag: ti
     kind: segment
     from: hf:yunyangx/EfficientSAM@1cf49585c39567bfc49e991ab8eb31f491ad4877
-    exports:
-      amd-xdna2:
-        efficientsam-ti.amd-npu2: v1 sha256:5ec385fb8b2c18f1782d5001c66a21d4a2f062e669c8db458d63250d30d7485d
     license: {id: apache-2.0, url: "https://github.com/yformer/EfficientSAM/blob/main/LICENSE", class: open}
     sha256: {efficientsam_ti_encoder.onnx: 84ed466ffcc5c1f8d08409bc34a23bb364ab2c15e402cb12d4335a42be0e0951, efficientsam_ti_decoder.onnx: a62f8fa5ea080447c0689418d69e58f1e83e0b7adf9c142e2bd9bcc8045c0b11}
     device: {amd: npu}
@@ -1213,9 +1089,6 @@ models:
     disk: {amd: 0.03e9}
     about: "EfficientSAM-Ti: the mask of the thing a point or a box picks in a picture (Segment Anything's prompts); a ViT-Tiny at 1024 x 1024, 10M parameters"
   EfficientSAM-S:
-    exports:
-      amd-xdna2:
-        efficientsam-s.amd-npu2: v1 sha256:4183513f65acfe022aad726b159a9824107b67f5181824d5977101e80f7c90ae
     like: EfficientSAM-Ti
     tag: s
     sha256: {efficientsam_s_encoder.onnx: 3eea4544db4647570ca5bea8ab6bbe057f2fc767ad089c14b8f67f482a2493ed, efficientsam_s_decoder.onnx: d40a537f617c8ced3b2034b6971bc16cc291c49d3d80f740a394cdb78f0e1d06}
@@ -1256,84 +1129,84 @@ categories:
       - {machine: 8, model: plamo-embedding-1b}
   transcribe:
     aliases: [transcription, asr]
-    about: speech to text (hwnpu-audio transcribe)
+    about: speech to text (bonsaiai-audio transcribe)
     picks:
       - {machine: 8, model: whisper-large-v3-turbo}
   speech:
     aliases: [tts]
-    about: text to speech (hwnpu-audio tts)
+    about: text to speech (bonsaiai-audio tts)
     picks:
       - {machine: 8, model: supertonic-3}
       - {machine: 16, model: LFM3-Audio-2B-TTS}
   decision:
     aliases: [systemone]
-    about: typed questions about a state (hwnpu-chat systemone)
+    about: typed questions about a state (bonsaiai-chat systemone)
     picks:
       - {machine: 8, model: d1-2B}
   image:
     aliases: [generate]
-    about: image generation (hwnpu-image generate)
+    about: image generation (bonsaiai-image generate)
     # FLUX.2 klein from 8 GB (4.9 GB on Apple at 1024 x 1024, 41 s on an M1; 3.9 GB on AMD):
     # Apache-2.0, safe by default, and edits too on AMD. Anima (nsfw) is not picked
     # even with +nsfw: named, they run (docs/design/image-models.md)
     picks:
       - {machine: 8, model: FLUX.2-klein-4B}
   depth:
-    about: depth estimation (hwnpu-image depth)
+    about: depth estimation (bonsaiai-image depth)
     picks:
       - {machine: 8, model: DA3-SMALL}
       - {machine: 16, model: DA3-BASE}
       - {machine: 24, model: DA3MONO-LARGE}
   face-detect:
-    about: face detection (hwnpu-image face-detect)
+    about: face detection (bonsaiai-image face-detect)
     picks:
       - {machine: 8, model: YuNet}
   pitch:
     aliases: [f0]
-    about: the pitch (F0) of a voice or an instrument (hwnpu-audio pitch)
+    about: the pitch (F0) of a voice or an instrument (bonsaiai-audio pitch)
     picks:
       - {machine: 8, model: swift-f0}
   pose:
     aliases: [keypoints]
-    about: people and their 17 keypoints in an image (hwnpu-image pose)
+    about: people and their 17 keypoints in an image (bonsaiai-image pose)
     picks:
       - {machine: 8, model: RTMO-s}
   detect:
     aliases: [object-detect, objects]
-    about: the objects in an image, boxes and labels (hwnpu-image detect)
+    about: the objects in an image, boxes and labels (bonsaiai-image detect)
     picks:
       - {machine: 8, model: RTMDet-s}
       - {machine: 16, model: RTMDet-m}
   ocr:
     aliases: [text]
-    about: the text in an image, its lines and boxes (hwnpu-image ocr)
+    about: the text in an image, its lines and boxes (bonsaiai-image ocr)
     picks:
       - {machine: 8, model: PP-OCRv6-small}
   label:
     aliases: [labels, classify, zero-shot, image-embedding]
-    about: labels of an image from any candidates, embeddings of images and texts (hwnpu-image label, embed)
+    about: labels of an image from any candidates, embeddings of images and texts (bonsaiai-image label, embed)
     picks:
       - {machine: 8, model: siglip2-base-patch16-224}
       - {machine: 16, model: siglip2-large-patch16-256}
   segment:
     aliases: [sam, cutout-point]
-    about: the mask of the thing a point or a box picks in a picture (hwnpu-image segment)
+    about: the mask of the thing a point or a box picks in a picture (bonsaiai-image segment)
     picks:
       - {machine: 8, model: EfficientSAM-Ti}
       - {machine: 16, model: EfficientSAM-S}
   notes:
     aliases: [midi]
-    about: the notes of music, as MIDI (hwnpu-audio notes)
+    about: the notes of music, as MIDI (bonsaiai-audio notes)
     picks:
       - {machine: 8, model: basic-pitch}
   music:
     aliases: [music-generation]
-    about: music from a text of its style (hwnpu-audio generate)
+    about: music from a text of its style (bonsaiai-audio generate)
     picks:
       - {machine: 8, model: magenta-realtime-2-small}
   sfx:
     aliases: [sound-effects, sound-effect]
-    about: sound effects from a text (hwnpu-audio generate)
+    about: sound effects from a text (bonsaiai-audio generate)
     picks:
       - {machine: 8, model: MOSS-SoundEffect-v2.0-lut8}
       - {machine: 16, model: MOSS-SoundEffect-v2.0}

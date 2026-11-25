@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // TestRunLog keeps a run's arguments, the lines of its log (a bar's last state, no colors) and
@@ -15,10 +15,10 @@ import (
 func TestRunLog(t *testing.T) {
 	cache.SetRoot(t.TempDir())
 	defer cache.SetRoot("")
-	t.Setenv("HWNPU_NO_RUN_LOG", "")
+	t.Setenv("BONSAIAI_NO_RUN_LOG", "")
 	args := os.Args
 	defer func() { os.Args = args }()
-	os.Args = []string{"/bin/hwnpu-test", "-m", "x", "a prompt"}
+	os.Args = []string{"/bin/bonsaiai-test", "-m", "x", "a prompt"}
 	RecordRun()
 	w := Log(os.Stderr)
 	fmt.Fprint(w, "loading\n")
@@ -30,7 +30,7 @@ func TestRunLog(t *testing.T) {
 		t.Fatalf("%d runs", len(runs))
 	}
 	r := runs[0]
-	if strings.Join(r.Args, "|") != "hwnpu-test|-m|x|a prompt" || r.Error != "it broke here" || r.End.IsZero() || !r.Failed() {
+	if strings.Join(r.Args, "|") != "bonsaiai-test|-m|x|a prompt" || r.Error != "it broke here" || r.End.IsZero() || !r.Failed() {
 		t.Errorf("run %+v", r)
 	}
 	if strings.Join(r.Lines, "|") != "loading|downloading 100%|no new line" {

@@ -13,8 +13,8 @@ verify program is in [amd-llm.md](amd-llm.md). The cache and the split are in
 |---|---|---|
 | `--draft N` | 8 | tokens per call of the generating program; drafts = N − 1. 0 or 1: off (Q=1) |
 | `--mtp` | `auto` | also draft from the checkpoint's MTP layer when it has one (Qwen3.5); `off`: prompt only |
-| `HWNPU_DEV=mtp.drafts` | 2 (`mtpDrafts`) | MTP drafts in a row |
-| `HWNPU_DEV=iron.drafts=0` | | AMD: do not use the verify program |
+| `BONSAIAI_DEV=mtp.drafts` | 2 (`mtpDrafts`) | MTP drafts in a row |
+| `BONSAIAI_DEV=iron.drafts=0` | | AMD: do not use the verify program |
 | `--think` / `--no-think` | on, unless the model's `no_think` | let the model think first |
 | `--think-budget N` | 1024 | thinking tokens before it is made to answer; 0: no limit |
 | `--rep` | 1.05 | repetition penalty on the answer's tokens |
@@ -74,7 +74,7 @@ call. Agents copy what they read into what they write, so answers repeat the pro
 
 ### Measured (prompt lookup)
 
-M3 16 GB, Core AI, LFM3-1.7B lut6, `hwnpu-chat serve`, temperature 0, no thinking, the same prompt three
+M3 16 GB, Core AI, LFM3-1.7B lut6, `bonsaiai-chat serve`, temperature 0, no thinking, the same prompt three
 times (the runs agreed within 1%):
 
 | | Prose, 300 tokens ("how a bicycle gear works") | Copying a 1159-token Go file back, 600 tokens |
@@ -90,7 +90,7 @@ times (the runs agreed within 1%):
 
 ## Qwen3.5 MTP drafts
 
-The Qwen3.5 checkpoints carry one multi-token prediction layer (`mtp.`). hwnpu uses it as the
+The Qwen3.5 checkpoints carry one multi-token prediction layer (`mtp.`). BonsaiAI uses it as the
 draft model.
 
 ### The layer (`internal/llm/qwen35/mtp.go`, `-arch qwen35-mtp`)

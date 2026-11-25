@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // Gemma4 is the chat format of google/gemma-4-E2B-it: its chat_template.jinja ("Gemma 4

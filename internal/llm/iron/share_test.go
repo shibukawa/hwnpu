@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // ShareExport shares an export's files with the exports next to it once, again after the export

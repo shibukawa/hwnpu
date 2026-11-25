@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // sharedMark is the file in an export that says ShareExport went over it. A file of the export

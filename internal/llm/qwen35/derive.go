@@ -19,14 +19,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/mxfp4"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/mxfp4"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // Source reads the files of a checkpoint: small ones whole and ranges of the shards, so that a
 // checkpoint far larger than the disk's free space (Qwen3.6-35B-A3B's 72 GB) is read a layer at a
-// time from where it is (DirSource, or Hugging Face with HTTPSource in cmd/hwnpu-dev/mxfp4). A
+// time from where it is (DirSource, or Hugging Face with HTTPSource in cmd/bonsaiai-dev/mxfp4). A
 // file that is not there is an error wrapping fs.ErrNotExist.
 type Source interface {
 	ReadFile(name string) ([]byte, error)
@@ -54,11 +54,11 @@ func (d DirSource) ReadRange(name string, off, n int64) ([]byte, error) {
 }
 
 // DeriveFiles are the files besides config.json and the weights that DeriveMXFP4 copies when the
-// source has them: what hwnpu reads to tokenize and chat.
+// source has them: what bonsaiai reads to tokenize and chat.
 var DeriveFiles = []string{"tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "generation_config.json", "special_tokens_map.json", "vocab.json", "merges.txt", "LICENSE"}
 
 // DeriveKey is the key DeriveMXFP4 adds to config.json: what it did, and from what.
-const DeriveKey = "hwnpu_mxfp4"
+const DeriveKey = "bonsaiai_mxfp4"
 
 // DeriveMXFP4 writes into out a checkpoint of a Qwen3.5-MoE model (qwen3_5_moe) whose experts
 // are MXFP4, which the host runs as they are (MoE.HostExperts, llm.HostRouted): the release's
@@ -195,7 +195,7 @@ func DeriveMXFP4(src Source, from, out string, log io.Writer) error {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return err
 	}
-	cfg[DeriveKey] = map[string]any{"from": from, "experts": "mxfp4 (gate and up interleaved, the gate the even rows; hwnpu-dev mxfp4)", "dropped": []string{"model.visual.", "mtp."}}
+	cfg[DeriveKey] = map[string]any{"from": from, "experts": "mxfp4 (gate and up interleaved, the gate the even rows; bonsaiai-dev mxfp4)", "dropped": []string{"model.visual.", "mtp."}}
 	cb, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

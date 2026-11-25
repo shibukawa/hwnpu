@@ -1,4 +1,4 @@
-# hwnpu
+# BonsaiAI
 
 [日本語](README.ja.md)
 
@@ -9,7 +9,7 @@ Commands, written in Go without cgo, that run the NPU built into the CPU (a Go l
 
 | Platform | Backend | Status |
 |---|---|---|
-| macOS (Apple Silicon) | Core ML (and Core AI on macOS 27; hwnpu-image and hwnpu-audio run on Core AI alone) | Done. Checked on M1 and M3 |
+| macOS (Apple Silicon) | Core ML (and Core AI on macOS 27; bonsaiai-image and bonsaiai-audio run on Core AI alone) | Done. Checked on M1 and M3 |
 | Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR) | Done. Only some models run on the hardware so far |
 | Linux (AMD Ryzen AI) | amdxdna ioctl (exports from IRON / mlir-aie) | Done. Checked on a Ryzen AI 9 365 (Strix Point) |
 | Windows (AMD Ryzen AI) | XRT (xrtshim) | Done. Untested on Windows |
@@ -18,9 +18,9 @@ Commands, written in Go without cgo, that run the NPU built into the CPU (a Go l
 ## Try it
 
 ```bash
-go run ./cmd/hwnpu-chat "What is the capital of Japan?"   # the first run downloads the model and converts it for the NPU
-go run ./cmd/hwnpu-chat list                               # the models, and which one this machine picks
-go run ./cmd/hwnpu-dev report -o report.md                 # check that hwnpu runs this machine's NPU
+go run ./cmd/bonsaiai-chat "What is the capital of Japan?"   # the first run downloads the model and converts it for the NPU
+go run ./cmd/bonsaiai-chat list                               # the models, and which one this machine picks
+go run ./cmd/bonsaiai-dev report -o report.md                 # check that bonsaiai runs this machine's NPU
 ```
 
 Setup: [Apple](INSTALL_APPLE.md), [Intel](INSTALL_INTEL.md), [AMD](INSTALL_AMD.md).
@@ -29,15 +29,15 @@ Setup: [Apple](INSTALL_APPLE.md), [Intel](INSTALL_INTEL.md), [AMD](INSTALL_AMD.m
 
 | Command | What it does | Guide |
 |---|---|---|
-| `hwnpu-chat` | Chat, translation, a coding agent (`agent`), an OpenAI compatible server (`serve`), embedding search (`search`), typed judgments (`systemone`) | [CHAT.md](CHAT.md); AMD: [USAGE_LLM_AMD.md](USAGE_LLM_AMD.md) |
-| `hwnpu-image` | Image generation (FLUX.2 klein, FLUX.3 klein, Anima) and editing (FLUX.2 klein), depth, faces, objects, poses, text (OCR), labels, cutouts | [USAGE_IMAGE.md](USAGE_IMAGE.md) |
-| `hwnpu-audio` | Music and sound effects, speech, transcription, pitch, notes | [USAGE_AUDIO.md](USAGE_AUDIO.md) |
-| `hwnpu` | The NPU's status and what uses it (`status`), a draft issue about a command that failed (`issue`), the cache of models: what it holds, the disk's free space, removing what is not used (`cache`, `cache prune`, `cache clear`), the memory a model runs as (`memory`) | [docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.7, 7.8 |
-| `hwnpu-dev` | Checks, NPU measurements (`probe`), model conversion and comparison | [USAGE_DEV.md](USAGE_DEV.md), [PROBE.md](PROBE.md) |
+| `bonsaiai-chat` | Chat, translation, a coding agent (`agent`), an OpenAI compatible server (`serve`), embedding search (`search`), typed judgments (`systemone`) | [CHAT.md](CHAT.md); AMD: [USAGE_LLM_AMD.md](USAGE_LLM_AMD.md) |
+| `bonsaiai-image` | Image generation (FLUX.2 klein, FLUX.3 klein, Anima) and editing (FLUX.2 klein), depth, faces, objects, poses, text (OCR), labels, cutouts | [USAGE_IMAGE.md](USAGE_IMAGE.md) |
+| `bonsaiai-audio` | Music and sound effects, speech, transcription, pitch, notes | [USAGE_AUDIO.md](USAGE_AUDIO.md) |
+| `bonsaiai` | The NPU's status and what uses it (`status`), a draft issue about a command that failed (`issue`), the cache of models: what it holds, the disk's free space, removing what is not used (`cache`, `cache prune`, `cache clear`), the memory a model runs as (`memory`) | [docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.7, 7.8 |
+| `bonsaiai-dev` | Checks, NPU measurements (`probe`), model conversion and comparison | [USAGE_DEV.md](USAGE_DEV.md), [PROBE.md](PROBE.md) |
 
-`-m` takes a model's name (`-m gemma-4-E2B-it`), a family (`-m gemma4`) or a use (`-m translate`); a family or a use picks the model that fits the machine's memory. The models come from the embedded [models.yaml](models.yaml), and a file of your own adds or replaces them ([docs/model-table.md](docs/model-table.md)). To run a model beside other programs on a machine of more memory, `hwnpu memory LFM3-1.7B 8` runs it the 8 GB way in every command.
+`-m` takes a model's name (`-m gemma-4-E2B-it`), a family (`-m gemma4`) or a use (`-m translate`); a family or a use picks the model that fits the machine's memory. The models come from the embedded [models.yaml](models.yaml), and a file of your own adds or replaces them ([docs/model-table.md](docs/model-table.md)). To run a model beside other programs on a machine of more memory, `bonsaiai memory LFM3-1.7B 8` runs it the 8 GB way in every command.
 
-When a command fails, `go run ./cmd/hwnpu issue` writes a draft issue about it: the command, its error, the end of its log and this machine's NPU (`hwnpu status`). The home folder, the user's and the machine's names, the sources' addresses and tokens are hidden, and a prompt given on the command line is replaced by its length. It opens GitHub's page of a new issue with the draft filled in; nothing is sent until you press the button there.
+When a command fails, `go run ./cmd/bonsaiai issue` writes a draft issue about it: the command, its error, the end of its log and this machine's NPU (`bonsaiai status`). The home folder, the user's and the machine's names, the sources' addresses and tokens are hidden, and a prompt given on the command line is replaced by its length. It opens GitHub's page of a new issue with the draft filled in; nothing is sent until you press the button there.
 
 ## As a library (planned)
 
@@ -47,7 +47,7 @@ The Go library API is planned and not settled yet. Its current shape is in [USAG
 
 - [MODEL.md](MODEL.md): the recommended model for each use and amount of memory
 - [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md): the data types each NPU computes in, and how models are prepared
-- [CLOUD_AI_COMPATIBILITY.md](CLOUD_AI_COMPATIBILITY.md): which features of cloud AI APIs hwnpu can take over
+- [CLOUD_AI_COMPATIBILITY.md](CLOUD_AI_COMPATIBILITY.md): which features of cloud AI APIs BonsaiAI can take over
 - [docs/design/README.md](docs/design/README.md): design notes and measurements (Japanese)
 
 ## Tests

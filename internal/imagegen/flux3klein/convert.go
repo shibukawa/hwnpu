@@ -15,10 +15,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
@@ -34,7 +34,7 @@ type ConvertOptions struct {
 	Sizes    [][2]int
 	TextRows []int
 	// TextFormat and DitFormat are the weight formats of Qwen3-VL and of the DiT, as
-	// hwnpu-convert's -format (default lut8 both). The VAE's and context_embedder's are fp16.
+	// bonsaiai-convert's -format (default lut8 both). The VAE's and context_embedder's are fp16.
 	TextFormat, DitFormat string
 	// Stats, when set, is a safetensors file of the DiT's inputs' mean squares (FitCodes): the
 	// DiT's lut8 tables are then fitted to the activations (weighted Lloyd from the uniform

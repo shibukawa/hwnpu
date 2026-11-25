@@ -1,4 +1,4 @@
-// Package f32 holds float32 vector loops of hwnpu's CPU executor (internal/milcpu): exp, sigmoid
+// Package f32 holds float32 vector loops of bonsaiai's CPU executor (internal/milcpu): exp, sigmoid
 // and SiLU over arrays, gated units, and axpy, in AVX2 and FMA on amd64, NEON on arm64 and in Go
 // elsewhere.
 package f32

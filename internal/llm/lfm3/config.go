@@ -17,7 +17,7 @@ import (
 	"os"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
 )
 
 // Config is the subset of config.json the conversion needs.

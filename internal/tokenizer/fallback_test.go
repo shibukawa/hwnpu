@@ -73,19 +73,19 @@ func TestFallback(t *testing.T) {
 }
 
 // TestGemma4 checks Gemma 4's tokenizer against the ids Hugging Face gave
-// (testdata/gemma-4-E2B-it.json, from tools/ref/tokenizer_golden.py). It needs HWNPU_TEST_GEMMA4_DIR
-// with tokenizer.json; HWNPU_TEST_GEMMA4_TOKENS_REF may name another golden file (one with --random).
+// (testdata/gemma-4-E2B-it.json, from tools/ref/tokenizer_golden.py). It needs BONSAIAI_TEST_GEMMA4_DIR
+// with tokenizer.json; BONSAIAI_TEST_GEMMA4_TOKENS_REF may name another golden file (one with --random).
 func TestGemma4(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_GEMMA4_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_GEMMA4_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_GEMMA4_DIR not set")
+		t.Skip("BONSAIAI_TEST_GEMMA4_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	golden := "testdata/gemma-4-E2B-it.json"
-	if g := os.Getenv("HWNPU_TEST_GEMMA4_TOKENS_REF"); g != "" {
+	if g := os.Getenv("BONSAIAI_TEST_GEMMA4_TOKENS_REF"); g != "" {
 		golden = g
 	}
 	raw, err := os.ReadFile(golden)

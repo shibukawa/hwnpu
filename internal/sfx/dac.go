@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // The DAC VAE's decoder (vae/vae_128d_48k.pth: decoder_dim 2048, decoder_rates 8 5 4 3 2,

@@ -14,13 +14,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // moeShape is a mixture of experts layer's sizes: hidden, an expert's intermediate width, the
@@ -238,8 +238,8 @@ func moe(args []string) error {
 		for i := range f {
 			f[i] = gen()
 		}
-		hwnpu.EncodeF16(b.Bytes(), f)
-		hwnpu.DecodeF16(f, b.Bytes()) // as the device sees them
+		bonsaiai.EncodeF16(b.Bytes(), f)
+		bonsaiai.DecodeF16(f, b.Bytes()) // as the device sees them
 		return f
 	}
 
@@ -320,7 +320,7 @@ func moe(args []string) error {
 			reqDyn.Bind(dynArgs[fmt.Sprintf("dn%d", k)].Index, x.dn)
 			reqDyn.Bind(dynArgs[fmt.Sprintf("sgu%d", k)].Index, x.sgu)
 			reqDyn.Bind(dynArgs[fmt.Sprintf("sdn%d", k)].Index, x.sdn)
-			hwnpu.EncodeF16(rbs[k].Bytes(), repeat(weights[k], T))
+			bonsaiai.EncodeF16(rbs[k].Bytes(), repeat(weights[k], T))
 		}
 	}
 	runReq := func(r backend.Request) error {
@@ -350,7 +350,7 @@ func moe(args []string) error {
 		return fmt.Errorf("experts_i8: %w", err)
 	}
 	got := make([]float32, T*H)
-	hwnpu.DecodeF16(got, yb.Bytes())
+	bonsaiai.DecodeF16(got, yb.Bytes())
 	want := make([]float32, T*H)
 	for k, e := range chosen {
 		x := held[0][e]
@@ -499,7 +499,7 @@ func moe(args []string) error {
 				pcopy(slots[k].dn.Bytes(), x.dn.Bytes())
 				copy(slots[k].sgu.Bytes(), x.sgu.Bytes())
 				copy(slots[k].sdn.Bytes(), x.sdn.Bytes())
-				hwnpu.EncodeF16(rbs[k].Bytes(), repeat(weights[k], T))
+				bonsaiai.EncodeF16(rbs[k].Bytes(), repeat(weights[k], T))
 			}
 		}
 		// the copied experts give the reference's output (the arrays are read at each call)
@@ -508,7 +508,7 @@ func moe(args []string) error {
 			return err
 		}
 		got := make([]float32, T*H)
-		hwnpu.DecodeF16(got, yb.Bytes())
+		bonsaiai.DecodeF16(got, yb.Bytes())
 		copyCos = cosine(got, want)
 		copyRun, err = timeIt(*calls, func() error {
 			l := rng.Intn(*layers)
@@ -569,7 +569,7 @@ func moe(args []string) error {
 			return err
 		}
 		t := time.Now()
-		hwnpu.DecodeF16(logits, outBuf.Bytes())
+		bonsaiai.DecodeF16(logits, outBuf.Bytes())
 		topK(logits[:E], Ktot)
 		topkTime += time.Since(t)
 		return nil
@@ -690,7 +690,7 @@ func relErr(a, b []float32) float64 {
 	return math.Sqrt(d / n)
 }
 
-// locked runs a command holding hwnpu's Neural Engine lock (for tools of other languages that
+// locked runs a command holding bonsaiai's Neural Engine lock (for tools of other languages that
 // load programs, such as tools/coreai/moebind).
 func locked(args []string) error {
 	if len(args) == 0 {

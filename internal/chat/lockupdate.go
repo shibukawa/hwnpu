@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // PlaceEntry is the entry (no files yet) of the conversion of kind of model m for target that
@@ -22,7 +22,7 @@ func PlaceEntry(kind string, m Model, target, export string, recipe map[string]s
 	return placeOf(kind, m, target, export, r).entry
 }
 
-// LockedRepos are the repositories s holds files of (their hwnpu-lock.json), in order.
+// LockedRepos are the repositories s holds files of (their bonsaiai-lock.json), in order.
 func LockedRepos(ctx context.Context, s shared.Source) ([]string, error) {
 	keys, err := s.Store.List(ctx, "original/")
 	if err != nil {
@@ -47,7 +47,7 @@ type LockUpdate struct {
 // UpdateLock moves the files of repo (OWNER/NAME[@REVISION]) in source s to the commit Hugging
 // Face serves for the revision (main): each file its lock names that has another SHA-256 there
 // is downloaded and put again, one the commit does not have is dropped, and the lock is written
-// with the new commit last (hwnpu-dev sources update). A source with no lock of repo is left.
+// with the new commit last (bonsaiai-dev sources update). A source with no lock of repo is left.
 func UpdateLock(ctx context.Context, s shared.Source, repo string, log io.Writer) (LockUpdate, error) {
 	var u LockUpdate
 	if log == nil {
@@ -85,7 +85,7 @@ func UpdateLock(ctx context.Context, s shared.Source, repo string, log io.Writer
 	}
 	work := cache.Sub("work", "update", strings.ReplaceAll(base, "/", "--")+"@"+u.To)
 	defer os.RemoveAll(work)
-	// the files are put before the lock names them: marked, so that hwnpu cache clean leaves them
+	// the files are put before the lock names them: marked, so that bonsaiai cache clean leaves them
 	done, err := shared.MarkWriting(ctx, s, "original/"+base)
 	if err != nil {
 		return u, err

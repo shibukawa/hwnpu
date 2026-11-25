@@ -8,16 +8,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
-// SpectroStream's encoder (HWNPU_TEST_MRT_DIR, HWNPU_TEST_MRT_ENCODER_REF: mrt_enc_ref.py's prefix, the bins
+// SpectroStream's encoder (BONSAIAI_TEST_MRT_DIR, BONSAIAI_TEST_MRT_ENCODER_REF: mrt_enc_ref.py's prefix, the bins
 // written as enc.*.bin) gives the reference's STFT, embeddings and codes on the CPU interpreter.
 func TestEncoderMatchesReference(t *testing.T) {
-	dir, ref := os.Getenv("HWNPU_TEST_MRT_DIR"), os.Getenv("HWNPU_TEST_MRT_ENCODER_REF")
+	dir, ref := os.Getenv("BONSAIAI_TEST_MRT_DIR"), os.Getenv("BONSAIAI_TEST_MRT_ENCODER_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_TEST_MRT_DIR and HWNPU_TEST_MRT_ENCODER_REF are not set")
+		t.Skip("BONSAIAI_TEST_MRT_DIR and BONSAIAI_TEST_MRT_ENCODER_REF are not set")
 	}
 	wav := readF32(t, ref+".wav.bin", false)
 	spec, frames := STFT(wav)
@@ -36,7 +36,7 @@ func TestEncoderMatchesReference(t *testing.T) {
 	if err := WriteProgram(path, &Encoder{Frames: T}, ew, llm.Options{Format: "fp16"}); err != nil {
 		t.Fatal(err)
 	}
-	if os.Getenv("HWNPU_TEST_MRT_TRACE") != "" {
+	if os.Getenv("BONSAIAI_TEST_MRT_TRACE") != "" {
 		prog, f, err := milcpu.OpenPackage(path)
 		if err != nil {
 			t.Fatal(err)
@@ -117,9 +117,9 @@ func TestEncoderMatchesReference(t *testing.T) {
 // EncodeAudio, the encoder's program of 41 frames over windows of 25 with 16 before, gives the
 // reference's codes over the whole clip (CPU interpreter).
 func TestEncodeAudioMatchesReference(t *testing.T) {
-	dir, ref := os.Getenv("HWNPU_TEST_MRT_DIR"), os.Getenv("HWNPU_TEST_MRT_ENCODER_REF")
+	dir, ref := os.Getenv("BONSAIAI_TEST_MRT_DIR"), os.Getenv("BONSAIAI_TEST_MRT_ENCODER_REF")
 	if dir == "" || ref == "" {
-		t.Skip("HWNPU_TEST_MRT_DIR and HWNPU_TEST_MRT_ENCODER_REF are not set")
+		t.Skip("BONSAIAI_TEST_MRT_DIR and BONSAIAI_TEST_MRT_ENCODER_REF are not set")
 	}
 	ctx := context.Background()
 	p, err := Prepare(ctx, Setup{Dir: dir, Repo: "google/magenta-realtime-2", Encoder: true})

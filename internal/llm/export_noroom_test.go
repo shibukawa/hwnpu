@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // An export the cache had no room for is not converted here instead: that would need the

@@ -32,8 +32,8 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/cli"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/cli"
 )
 
 // Bind is the kong option that gives the commands of this package, and the app's own, the
@@ -131,7 +131,7 @@ func Open(ctx context.Context, app *ai.App, opts ...ai.Option) (*ai.Runtime, err
 	return app.Open(ctx, opts...)
 }
 
-// Status is the command of the NPU's status (cli.Status), as hwnpu status.
+// Status is the command of the NPU's status (cli.Status), as bonsaiai status.
 type Status struct {
 	JSON  bool          `help:"Write all that was read as JSON."`
 	Watch time.Duration `short:"w" help:"Show it again every this long (2s) until Ctrl-C: on a terminal, as top does." placeholder:"EVERY"`

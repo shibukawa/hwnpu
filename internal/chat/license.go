@@ -38,7 +38,7 @@ type License struct {
 
 // LicenseEnv accepts licenses without asking: their ids, comma separated, or "all" (for scripts
 // and servers, where nothing can be asked).
-const LicenseEnv = "HWNPU_ACCEPT_LICENSE"
+const LicenseEnv = "BONSAIAI_ACCEPT_LICENSE"
 
 // LicensesFile is where the accepted licenses are kept: licenses.json beside the user's
 // models.yaml (UserModelsFile).

@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // TimeFile is an export's file of the timesteps' embeddings and the modulations' weights (bf16, as

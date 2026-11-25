@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/imagegen"
-	"github.com/shibukawa/hwnpu/samples/internal/layering"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/imagegen"
+	"github.com/shibukawa/bonsaiai/samples/internal/layering"
 )
 
 // source is the picture and its nearness as the scene was first made from them: what is parted
@@ -100,7 +100,7 @@ type phaseClock struct {
 func newPhaseClock(rt *ai.Runtime) *phaseClock {
 	c := &phaseClock{rt: rt, last: map[string]float64{}}
 	if dir, err := os.UserCacheDir(); err == nil {
-		c.file = filepath.Join(dir, "hwnpu", "parallax", "phases.json")
+		c.file = filepath.Join(dir, "bonsaiai", "parallax", "phases.json")
 		if b, err := os.ReadFile(c.file); err == nil {
 			_ = json.Unmarshal(b, &c.last)
 		}

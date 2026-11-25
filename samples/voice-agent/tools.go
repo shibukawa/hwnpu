@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/shibukawa/hwnpu/ai/agent"
+	"github.com/shibukawa/bonsaiai/ai/agent"
 )
 
 // Tools are the functions the model may call: the time, timers, the weather (Open-Meteo), the
@@ -39,7 +39,7 @@ type Tools struct {
 
 // userAgent is what the tools tell the services they ask: Wikipedia asks a client to name
 // itself.
-const userAgent = "hwnpu-voice-agent-sample/0.1 (https://github.com/shibukawa/hwnpu)"
+const userAgent = "bonsaiai-voice-agent-sample/0.1 (https://github.com/shibukawa/bonsaiai)"
 
 // List is the tools, for the agent.
 func (t *Tools) List() []agent.Tool {

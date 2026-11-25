@@ -2,7 +2,7 @@
 
 作成: 2026-11-19。対象: Apple の Core AI (macOS 27.2.1 26B131) と `coreai-build` (Metal Toolchain 27.2.47.0、coreai-build 3605.6.3)。
 
-hwnpu が今どう回避しているか、Apple の側で直ったときに hwnpu で何をするか、を問題ごとにまとめる。調べた経緯と数値は [docs/design/README.md](design/README.md) の各節にある。Apple への報告 (Feedback Assistant) の番号も書いた。未報告のものの下書きと再現の手順は [apple-feedback/](apple-feedback/README.md)。
+BonsaiAI が今どう回避しているか、Apple の側で直ったときに BonsaiAI で何をするか、を問題ごとにまとめる。調べた経緯と数値は [docs/design/README.md](design/README.md) の各節にある。Apple への報告 (Feedback Assistant) の番号も書いた。未報告のものの下書きと再現の手順は [apple-feedback/](apple-feedback/README.md)。
 
 OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各問題がまだあるかを見て、直ったものだけをこの文書の手順で外す。
 
@@ -39,12 +39,12 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   1. `DistinctNeighbours` の呼び出しを除き、`ailower.FormatVersion` を 3 に上げる (書くものが変わるので、取得元の鍵も変わる)
   2. 6 節の「作り直し」をする (書き出し、prebuilt、チャットのモデルのすべて)
   3. 直った Metal Toolchain を、prebuilt を作る機械の最低限として docs に書く (古い `coreai-build` では同じ部品がまた GPU に回る)
-- 確かめ方: `tools/coreai/lutfake -dup N` (合成の 1 層) は `Builder.LUT` を通るので、今は再現しない。再現には `DistinctNeighbours` を外した hwnpu で書くか、Apple への追記に添えた再現 (lut8 の 256 × 256 の 1 層。リポジトリにはない) を使う。モデルにその並びがあるかは `tools/coreai/lutscan -tile 16` で見る
+- 確かめ方: `tools/coreai/lutfake -dup N` (合成の 1 層) は `Builder.LUT` を通るので、今は再現しない。再現には `DistinctNeighbours` を外した BonsaiAI で書くか、Apple への追記に添えた再現 (lut8 の 256 × 256 の 1 層。リポジトリにはない) を使う。モデルにその並びがあるかは `tools/coreai/lutscan -tile 16` で見る
 
 ## 3. 端末で仕上がらない `.aimodelc` (FB25624294)
 
 - **何が**: FLUX.2 klein の `vae_s0` の 1024² の関数は、`coreai-build` は通るのに、端末の仕上げで "Too many kernel bytes" から `failedToSpecialize` になる
-- **今**: hwnpu は失敗を見て、その部品だけ端末でコンパイルする ("the prebuilt program failed (failedToSpecialize), compiled on the device")。約 20 秒余計にかかる
+- **今**: BonsaiAI は失敗を見て、その部品だけ端末でコンパイルする ("the prebuilt program failed (failedToSpecialize), compiled on the device")。約 20 秒余計にかかる
 - **直ったら**: 何もしなくてよい。置いてある prebuilt のまま、その行が出なくなる
 
 ## 4. prebuilt から仕上げたプログラムの呼び出しが遅い (FB25624318)
@@ -55,7 +55,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 ## 5. コンパイルと仕上げが 1 本ずつ (FB25624259)
 
-- **何が**: aned は ANE のコンパイルも prebuilt の仕上げも、機械全体で 1 本ずつ回す。hwnpu が並べて頼んでも待つ
+- **何が**: aned は ANE のコンパイルも prebuilt の仕上げも、機械全体で 1 本ずつ回す。BonsaiAI が並べて頼んでも待つ
 - **今**: 回避はない (並べても速くならないので、読み込みは順に頼んでいる)
 - **直ったら**: 部品を並べて開く (Core AI の読み込みの先回り、#171) と初回が縮むか測る。縮むなら、並べる数を決めて既定にする
 
@@ -67,14 +67,14 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
   ```sh
   # 1 種類ずつ作り、できたらすぐ取得元に置く (12 種類を一度に作ると、最後まで何も置かれない)
-  export HWNPU_MODEL_SOURCE='https://…/llm?writeback=true'
+  export BONSAIAI_MODEL_SOURCE='https://…/llm?writeback=true'
   for a in h13c h13d h13s h14d h14s h15d h15m h15s h17p; do
-    hwnpu-dev models package ~/Library/Caches/hwnpu/models/FLUX.2-klein/flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v4.coreai/coreai-$a
+    bonsaiai-dev models package ~/Library/Caches/bonsaiai/models/FLUX.2-klein/flux.2-klein-4b-8sizes-4d02f40a-5edits-fa7f0afe-lut8-lut8-v4.coreai/coreai-$a
   done
   ```
 
   Anima も同じに (書き出しが取得元にあるもの)。全種類が通るようになれば `--arch all` でよい
-- **作り直し** (書き出しが変わったとき。2 節、FormatVersion を上げたとき): 書き出しを作って置き (`hwnpu-image` か `tools/coreai/kleinonly prepare` を取得元の書き戻しありで)、その書き出しに上の prebuild をする。チャットのモデルは `hwnpu-chat` を書き戻しありで 1 回ずつ動かす (9 節)。2026-11-19 の作り直しの記録は [docs/design/distribution.md](design/distribution.md)
+- **作り直し** (書き出しが変わったとき。2 節、FormatVersion を上げたとき): 書き出しを作って置き (`bonsaiai-image` か `tools/coreai/kleinonly prepare` を取得元の書き戻しありで)、その書き出しに上の prebuild をする。チャットのモデルは `bonsaiai-chat` を書き戻しありで 1 回ずつ動かす (9 節)。2026-11-19 の作り直しの記録は [docs/design/distribution.md](design/distribution.md)
 - 確かめ方: `xcrun coreai-build compile X.aimodel --platform macOS --architecture h13c --preferred-compute neural-engine --output out/` が落ちず、`out/…/manifest.plist` に `mps.fullyPlacedOnANE` があること。失敗の理由は stderr でなく os_log (プロセス `coreai-build`、ANEHostCompiler) に出る
 
 ## 7. h18g (M6) で ANE に乗らない (FB25625077、FB25624336)
@@ -86,7 +86,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 ## 8. ディスクが少ないと仕上げたプログラムが消える (未報告)
 
 - **何が**: 空きが少ないと macOS の `deleted` が消せるものを消す (CD_NEAR_LOW_DISK_EVENT)。Core AI のキャッシュと aned の仕上げたプログラムも消える。仕上げた直後に消えると aned が `Model load failed … isPreCompiledModel=1` を出し、Core AI が OS の中で端末のコンパイルに切り替える。M1 で初回の最初のステップが 5〜15 分かかった。22 GB 空いていても消し始めた。[docs/design/distribution.md](design/distribution.md)
-- **今**: hwnpu では直せない (失敗が見えない)。初回を測るとき、使うときは 25 GB 以上空ける
+- **今**: BonsaiAI では直せない (失敗が見えない)。初回を測るとき、使うときは 25 GB 以上空ける
 - **直ったら**: 何もしなくてよい。Core AI のキャッシュの方針を `.persistent` にすれば ([docs/design/apple-coreai.md](design/apple-coreai.md)) Core AI の分は消えなくなるが、aned の分は残るので、それだけでは足りない
 
 ## 9. 画像以外のモデルに prebuilt を置かない ([apple-coreai](design/apple-coreai.md))
@@ -104,8 +104,8 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
   - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
   - M1、M2 では測っていない
-- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) にだけ prebuilt を置く。model-recipes.yaml の `apple.prebuilt: true` がその印で、`hwnpu-dev models package MODEL` と `hwnpu-dev prebuild EXPORT` は、チップを名指さなければ印のあるモデルだけをプリビルドする。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
-- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
+- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) にだけ prebuilt を置く。model-recipes.yaml の `apple.prebuilt: true` がその印で、`bonsaiai-dev models package MODEL` と `bonsaiai-dev prebuild EXPORT` は、チップを名指さなければ印のあるモデルだけをプリビルドする。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
+- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/bonsaiai/models/NAME/` の下)
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
 
@@ -119,7 +119,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた ([docs/design/audio-models.md](design/audio-models.md))。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。[docs/design/audio-models.md](design/audio-models.md)
 - **今**: DAC は、どの機種でもオフラインで通る形 (r3) にした。prebuilt を作るなら、オフラインで乗る形で書く
 - **直ったら**: 何もしなくてよい
-- 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_DEV=ailower.cut=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
+- 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `BONSAIAI_DEV=ailower.cut=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
 
 ## 12. h15g の DMA のキャッシュの指定が端末の検査に落ちる (未報告)
 
@@ -151,7 +151,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: M1 の書き出しには 8192 キー以上の関数を入れない。1024² の絵の参照が 1 枚のとき、M1 では参照を 512 で読む (models.yaml の `npu.apple.generation_edits`、5632 キー)。書き出しは M1 用に 1 つ (名前の編集の hash が違う)。ほかのチップは今までどおり
 - **確かめた結果** (2026-11-25、M1): M1 用の書き出しの h13g のプリビルト 14 本は、M1 の上で全部仕上がった (`the prebuilt program failed` は 0 回、DiT の端末でのコンパイルも 0 回)。空の Core AI キャッシュからの初回は 18 分 15 秒。文からの生成 5 サイズ (512²、1024²、1280 × 704、704 × 1280、768 × 1024) と編集 5 通りの絵が正しく出た。本物の `dit_single_0` (13 関数) の 2 つの関数も、CPU との余弦が 0.999999 だった。時間は [design/image-apple.ja.md](design/image-apple.ja.md)
 - **直ったら**: `generation_edits` の M1 を消せば、M1 もほかのチップと同じ書き出しを使う (M1 用の書き出しとプリビルトは使われなくなる)
-- 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`HWNPU_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`hwnpu-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
+- 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`BONSAIAI_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`bonsaiai-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
 
 ## 14. 1024² の VAE の段のコンパイルが長く、ディスクを大きく使う (未報告)
 

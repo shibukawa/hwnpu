@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-var errService = errors.New("hwnpu service install: only the Mac's LaunchAgent and systemd's user units; run it in the foreground with hwnpu service start")
+var errService = errors.New("bonsaiai service install: only the Mac's LaunchAgent and systemd's user units; run it in the foreground with bonsaiai service start")
 
 // Install is the Mac's and Linux's.
 func Install(string, io.Writer) error { return errService }
@@ -22,7 +22,7 @@ func Installed() string { return "" }
 func ServiceFile() string { return "" }
 
 // LogWhere is the supervisor's standard error here.
-func LogWhere() string { return "hwnpud serve's standard error" }
+func LogWhere() string { return "bonsaiaid serve's standard error" }
 
 // ServiceEnviron is the Mac's and Linux's.
 func ServiceEnviron() []string { return nil }

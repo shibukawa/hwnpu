@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
 )
 
 // A binary tokenizer file (BinaryExt) holds a loaded tokenizer's tables (flat.go) as they are in
@@ -22,7 +22,7 @@ import (
 // Unigram (WriteBinary) when an export is built, and it stands in for the file beside it of the
 // same name: Load, LoadPlamo and LoadUnigram take it first.
 //
-//	"HWNPUTOK"  u32 version  u32 n  n bytes of JSON: the kind, the small settings (meta) and
+//	"BONSAITK"  u32 version  u32 n  n bytes of JSON: the kind, the small settings (meta) and
 //	            where each section is
 //	the sections, each from a multiple of 8: little-endian arrays of int32, uint32, int64,
 //	float64, or bytes
@@ -33,7 +33,7 @@ import (
 const BinaryExt = ".tok"
 
 const (
-	tokbinMagic = "HWNPUTOK"
+	tokbinMagic = "BONSAITK"
 	// tokbinVersion changes with the layout, the hashes of the tables (strHash, pairHash) or
 	// what the tables mean
 	tokbinVersion = 1

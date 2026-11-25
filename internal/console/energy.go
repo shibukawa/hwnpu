@@ -7,10 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/power"
+	"github.com/shibukawa/bonsaiai/internal/power"
 )
 
-// The energy of a command's phases (HWNPU_ENERGY): the package power integrated (power.Integrator,
+// The energy of a command's phases (BONSAIAI_ENERGY): the package power integrated (power.Integrator,
 // every 50 ms) and split at each change of phase as the times are, with the idle power measured
 // before the command so that the energy above idle can be told too.
 var energy struct {
@@ -20,13 +20,13 @@ var energy struct {
 	acc   [2]float64 // joules in each phase (preparing, running)
 }
 
-// MeasureEnergy starts the energy accounting when HWNPU_ENERGY is set (its value: the seconds of
+// MeasureEnergy starts the energy accounting when BONSAIAI_ENERGY is set (its value: the seconds of
 // idle to measure first, 5 when it is not a number): the idle power over that time, then each
 // phase's energy from now, told by Times. Call it first in a command's main: the idle seconds
 // are not counted in the times. Without a meter (only AMD's APUs on Linux have one now) it says
 // so and does nothing.
 func MeasureEnergy(w io.Writer) {
-	v := os.Getenv("HWNPU_ENERGY")
+	v := os.Getenv("BONSAIAI_ENERGY")
 	if v == "" {
 		return
 	}
@@ -36,16 +36,16 @@ func MeasureEnergy(w io.Writer) {
 	}
 	read, err := power.PackagePower()
 	if err != nil {
-		fmt.Fprintf(w, "HWNPU_ENERGY: %v\n", err)
+		fmt.Fprintf(w, "BONSAIAI_ENERGY: %v\n", err)
 		return
 	}
 	m := power.NewIntegrator(read)
 	a, err := m.Sample()
 	if err != nil {
-		fmt.Fprintf(w, "HWNPU_ENERGY: %v\n", err)
+		fmt.Fprintf(w, "BONSAIAI_ENERGY: %v\n", err)
 		return
 	}
-	fmt.Fprintf(w, "measuring the idle power for %s (HWNPU_ENERGY)\n", Duration(time.Duration(idle*float64(time.Second))))
+	fmt.Fprintf(w, "measuring the idle power for %s (BONSAIAI_ENERGY)\n", Duration(time.Duration(idle*float64(time.Second))))
 	time.Sleep(time.Duration(idle * float64(time.Second)))
 	b, err := m.Sample()
 	if err != nil {
@@ -69,7 +69,7 @@ func energyChange(i int) {
 	}
 }
 
-// energyLine is Times' line of the phases' energy, "" without HWNPU_ENERGY: the package's joules
+// energyLine is Times' line of the phases' energy, "" without BONSAIAI_ENERGY: the package's joules
 // while preparing and running, and the same above the idle power (each phase's time, downloads
 // included, at the idle power taken off).
 func energyLine(prep, run time.Duration) string {

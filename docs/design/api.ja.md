@@ -2,7 +2,7 @@
 
 [English](api.md)
 
-ほかのモジュールが import できるパッケージ: `github.com/shibukawa/hwnpu` (デバイス、バッファ、グラフ、
+ほかのモジュールが import できるパッケージ: `github.com/shibukawa/bonsaiai` (デバイス、バッファ、グラフ、
 カーネル)、`modelstore` (モデルのファイル)、`npuinfo` (OS が NPU について教えること)。API はまだ固まって
 いない (`USAGE_LIBRARY.md` は「planned」)。モデルのエンジンは形が決まるまで `internal/` に置く。
 使い方の例: [../../USAGE_LIBRARY.ja.md](../../USAGE_LIBRARY.ja.md)。
@@ -52,9 +52,9 @@ func (d *Device) PowerSample() (PowerSample, error) // CapPowerMeter が無け�
 | `xdna` | Kernel、PowerControl。ドライバのセンサーか APU のパッケージ電力 (amdgpu の hwmon) があれば PowerMeter |
 | `xrt` | Kernel。取れれば PowerMeter |
 
-登録の順: darwin では Core ML が Core AI より先 (ライブラリの既定は Core ML。Mac の `hwnpu-chat` は Core AI
-だけを使う。[cli.ja.md](cli.ja.md) を参照)。`xrt` は `xdna` より先で、Windows 以外では `HWNPU_BACKEND=xrt`
-のときだけ列挙する。`openvino` は `HWNPU_BACKEND=openvino` のときだけ。
+登録の順: darwin では Core ML が Core AI より先 (ライブラリの既定は Core ML。Mac の `bonsaiai-chat` は Core AI
+だけを使う。[cli.ja.md](cli.ja.md) を参照)。`xrt` は `xdna` より先で、Windows 以外では `BONSAIAI_BACKEND=xrt`
+のときだけ列挙する。`openvino` は `BONSAIAI_BACKEND=openvino` のときだけ。
 
 ## バッファと完了待ち
 
@@ -88,7 +88,7 @@ type GraphSource struct {
 	XML, Bin   []byte      // OpenVINO IR
 	BuildFlags string      // 例: `--inputs_precisions="0:fp16" --config NPU_PLATFORM="4000"`
 	Function   string      // 複数の関数を持つ ML Program の 1 つ (macOS 15 以降)。関数どうしは重みを共有する
-	Units      string      // Core ML: "" Neural Engine (+CPU)、"cpu"、"gpu"。HWNPU_COREML_UNITS が上書き
+	Units      string      // Core ML: "" Neural Engine (+CPU)、"cpu"、"gpu"。BONSAIAI_COREML_UNITS が上書き
 }
 
 type GraphRunner interface {
@@ -197,7 +197,7 @@ type PlacementError struct {
 | Core ML | `MLComputePlan`: 全演算の推奨デバイスが Neural Engine であること。推定で、実行時の保証ではない |
 | Core AI | 自分のコンパイルキャッシュ: MPSGraph の delegate のマニフェスト (`mps.fullyPlacedOnANE`。method は `coreai-cache-manifest`) |
 | Level Zero | 対応レイヤーの問い合わせ (`levelzero-query-network`)。NPU プラグインはフォールバックしないので、コンパイルが通れば NPU で動く |
-| OpenVINO | `HWNPU_DEV=ov.device=NPU` のときだけ確かめた扱い |
+| OpenVINO | `BONSAIAI_DEV=ov.device=NPU` のときだけ確かめた扱い |
 | AMD | xclbin / ELF は NPU 専用なので常に満たす |
 
 ## 電力
@@ -220,7 +220,7 @@ func AveragePower(a, b PowerSample) float64 // (b.EnergyJ - a.EnergyJ) / dt
 |---|---|---|
 | Level Zero | Low: キューの優先度を低く + workload type を "background"。Balanced: 通常の優先度。Performance: 高い優先度 + turbo (turbo と workload type は拡張が要る) | RAPL、パッケージ全体、たいてい root |
 | xdna | ハードウェアコンテキストの QoS の優先度 (Low / Normal / High) | ドライバのセンサー、または amdgpu のパッケージ電力 |
-| Core ML / Core AI | なし (CapPowerControl なし) | API にはない。`npuinfo` (IOReport) と `hwnpu-dev powerbench` を使う |
+| Core ML / Core AI | なし (CapPowerControl なし) | API にはない。`npuinfo` (IOReport) と `bonsaiai-dev powerbench` を使う |
 
 詳しくは [memory-and-power.ja.md](memory-and-power.ja.md)。
 
@@ -248,26 +248,26 @@ type VersionError struct{ Component, Have, Need string }
 | `WithPowerPolicy(PowerPolicy)` | CapPowerControl が無ければ無視 |
 | `WithCacheDir(dir)` | コンパイル結果を保存して使い回す。キーはモデル、ビルドフラグ、ドライバ / コンパイラ (または OS) の版。コンパイルは電力を使うので起動ごとに繰り返さない |
 
-環境変数: `HWNPU_BACKEND` (コマンドのバックエンド。`openvino` / `xrt` を列挙させる)、`HWNPU_ZE_LOADER`
-(Level Zero のローダのパス)、`HWNPU_COREML_UNITS` と `HWNPU_COREAI_UNITS` (プログラムを Neural Engine から
+環境変数: `BONSAIAI_BACKEND` (コマンドのバックエンド。`openvino` / `xrt` を列挙させる)、`BONSAIAI_ZE_LOADER`
+(Level Zero のローダのパス)、`BONSAIAI_COREML_UNITS` と `BONSAIAI_COREAI_UNITS` (プログラムを Neural Engine から
 外す。例: `cpu` でエンジンの誤差とモデルの誤差を分ける)。
 
 ## modelstore
 
-`github.com/shibukawa/hwnpu/modelstore` は、hwnpu のコマンドと同じやり方でモデルのファイルを探して取る。
+`github.com/shibukawa/bonsaiai/modelstore` は、BonsaiAI のコマンドと同じやり方でモデルのファイルを探して取る。
 層は次の順:
 
 | # | 層 | 設定 |
 |---|---|---|
-| 0 | この機械のキャッシュ (常に書き戻す) | `Options.Root` (`HWNPU_CACHE`、無ければユーザーのキャッシュディレクトリの `hwnpu`) |
-| 1 | 取得元: `file://`、`http(s)://` (WebDAV か、読むだけのサーバ)、`s3://`。`?writeback=true` で後の層から読んだものを置く | `Options.Sources` (`HWNPU_MODEL_SOURCE`、`HWNPU_MODEL_SOURCE_1` …) |
+| 0 | この機械のキャッシュ (常に書き戻す) | `Options.Root` (`BONSAIAI_CACHE`、無ければユーザーのキャッシュディレクトリの `bonsaiai`) |
+| 1 | 取得元: `file://`、`http(s)://` (WebDAV か、読むだけのサーバ)、`s3://`。`?writeback=true` で後の層から読んだものを置く | `Options.Sources` (`BONSAIAI_MODEL_SOURCE`、`BONSAIAI_MODEL_SOURCE_1` …) |
 | 2 | 同梱のモデル。読むだけで、その場で使う (ハードリンク、できなければシンボリックリンク) | `Options.Bundle` (`configdir.ConfigDir`)、`BundleFolder` |
-| 3 | Hugging Face | `Options.HuggingFace` が false でなければ (`HWNPU_MODEL_HUGGING_FACE`) |
+| 3 | Hugging Face | `Options.HuggingFace` が false でなければ (`BONSAIAI_MODEL_HUGGING_FACE`) |
 
-- リポジトリのファイルは、その `hwnpu-lock.json` が挙げる 1 つのコミットのもの (モデルが固定したコミット、
+- リポジトリのファイルは、その `bonsaiai-lock.json` が挙げる 1 つのコミットのもの (モデルが固定したコミット、
   無ければ手元のキャッシュより後の最初の lock、無ければ手元、無ければ Hugging Face の `main`)。ファイルは
   ルートの `original/OWNER/NAME` に置く (`Store.Dir`)。
-- 層はプロセスの設定: `Open` はプロセスの中の hwnpu のコード全部に効く。
+- 層はプロセスの設定: `Open` はプロセスの中の BonsaiAI のコード全部に効く。
 - API: `Open`、`File(ctx, repo, name)`、`Weights(ctx, repo)`、`Dir`、`Layers`、`NotFound(err)`。ディスク:
   `Usage`、`Limits` (`Options.Limits`)、`DiskSpace`、`PlanPrune` / `Prune`、`Remove`、`PlanClean` / `Clean`
   (取得元)、`ErrNoRoom`。モデルごとのメモリの区分: `Memory`、`SetMemory`、`Memories`。
@@ -276,7 +276,7 @@ type VersionError struct{ Component, Have, Need string }
 
 ## npuinfo
 
-`github.com/shibukawa/hwnpu/npuinfo` は、OS とドライバが NPU について教えること (デバイス、使っている
+`github.com/shibukawa/bonsaiai/npuinfo` は、OS とドライバが NPU について教えること (デバイス、使っている
 プロセス、忙しさ、電力、メモリ) を読む。アクティビティモニタも Linux のいつもの道具もこれを見せない。
 
 ```go
@@ -284,7 +284,7 @@ info, err := npuinfo.GetWithContext(ctx, npuinfo.Options{Wake: false, SampleInte
 // info.Linux / info.Windows / info.Darwin (動いている OS の分だけ)、info.Errors (一部の失敗)
 ```
 
-- 標準ライブラリだけを import し、hwnpu のほかのパッケージも使わない。別のモジュールに切り出せる
+- 標準ライブラリだけを import し、BonsaiAI のほかのパッケージも使わない。別のモジュールに切り出せる
   (gopsutil など)。型はどの OS でもビルドでき、別の機械の JSON を読める。`go run ./npuinfo/cmd/npuinfo`
   が JSON を書く。OS ごとの項目は [../../npuinfo/README.ja.md](../../npuinfo/README.ja.md)。
 - OS が返すものをそのまま OS ごとの構造体に入れる。共通の API は後で考える。
@@ -310,14 +310,14 @@ GPU、NPU、Neural を含むパフォーマンスカウンターの全部) が�
 
 ## アプリに組み込むライブラリ `ai` (v0)
 
-hwnpu を NPU でモデルを動かす Go のライブラリの集まりにし、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` はその機能を試すデモにしていく (名前は変えない)。設計と作業: [../app-api.md](../app-api.md)、[../app-api-tasks.md](../app-api-tasks.md)。使い方と決まり: [../developer-guide.ja.md](../developer-guide.ja.md)。
+BonsaiAI を NPU でモデルを動かす Go のライブラリの集まりにし、`bonsaiai-chat`、`bonsaiai-image`、`bonsaiai-audio` はその機能を試すデモにしていく (名前は変えない)。設計と作業: [../app-api.md](../app-api.md)、[../app-api-tasks.md](../app-api-tasks.md)。使い方と決まり: [../developer-guide.ja.md](../developer-guide.ja.md)。
 
 | パッケージ | 中身 | 状態 |
 |---|---|---|
 | `ai` | `App` がアプリの使うモデルを登録し、`Use[T]` は型のついた取っ手 (`stt.Get(ctx, rt)` が `*speech.Transcriber` を返す)。`Plan` (足りないもの、ダウンロードの量、メモリ、ライセンス。ダウンロードと変換、NPU 向けのコンパイルの 2 段)。`Runtime` は準備済みの置き場からだけ読む | v0 |
 | `ai/speech`、`ai/text` | 文字起こし、読み上げ、音量の VAD、WAV。翻訳、チャット。機能のパッケージが自分のモデルの準備と読み込み (`internal/airole.Role`) を持ち、`ai` はそれらを import しないので、アプリには使う機能だけが入る | v0 |
 | `ai/flow` | 塊の流れ (`Stream[T]`、`iter.Seq2`) とモデルの間のネットワーク | v0 |
-| `ai/cli` (+ `konghelper`) | アプリに足すサブコマンド: `models`、`models download`、`models prepare`、`status` (`internal/npustatus` で `hwnpu status` と共有) | v0 |
+| `ai/cli` (+ `konghelper`) | アプリに足すサブコマンド: `models`、`models download`、`models prepare`、`status` (`internal/npustatus` で `bonsaiai status` と共有) | v0 |
 | `ai/vision` | `Depth` (用途 `depth`: Depth Anything 3、MoGe-2。`DepthMap.Near` が近さを 0〜1 で)、`Faces` (`face-detect`: YuNet。AMD の機械では CPU)、`HeadOf` / `NearestHead` / `HeadNode` (両目の間隔 63 mm とカメラの画角 60 度から頭の位置。モデルなし) | v0 |
 | `ai/imagegen` | `Generate` (用途 `image`): 文と参照の絵から絵を、`GenerateNode`。頼まれた形に一番近い書き出しの大きさ (`SizeFor`)。FLUX.2 klein だけ (Anima、FLUX.3 klein は準備のときに断る) | v0 |
 | `ai/sound`、`ai/vision` の物体、姿勢、切り抜き、OCR、ラベル | 音楽、効果音、音高 | まだ |
@@ -347,7 +347,7 @@ hwnpu を NPU でモデルを動かす Go のライブラリの集まりにし�
 |---|---|
 | グラフの実行とカーネルの実行を隠す 1 つのインターフェース | Intel と AMD は根本で違い、隠すと両方で使いにくくなる |
 | `CompileSet` (複数のソースを一度にコンパイルし重みを共有) | 重みの共有は複数の関数を持つ ML Program (`GraphSource.Function`) で行う |
-| アプリ側でキャッシュするための `Graph.NativeBlob` | `WithCacheDir` が hwnpu の中でコンパイル結果を持つ |
-| `WithLibraryPath`、`HWNPU_ACCEL_DEVICE`、`WithTurbo`、`WithWorkloadType`、`WithQoS` | `WithPowerPolicy` が turbo、workload type、QoS に写る。ローダは `HWNPU_ZE_LOADER` で指定する |
+| アプリ側でキャッシュするための `Graph.NativeBlob` | `WithCacheDir` が BonsaiAI の中でコンパイル結果を持つ |
+| `WithLibraryPath`、`BONSAIAI_ACCEL_DEVICE`、`WithTurbo`、`WithWorkloadType`、`WithQoS` | `WithPowerPolicy` が turbo、workload type、QoS に写る。ローダは `BONSAIAI_ZE_LOADER` で指定する |
 | 別々に学習したモデルの間で隠れ状態を渡す | 互換でなく、組み合わせごとに学習が要る |
 | 用途ごとのインターフェースを今公開する | 2 つ目の組み合わせが動くまで待ち、API を早く固めすぎない |

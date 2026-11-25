@@ -9,13 +9,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
 type fakeModel struct{}
@@ -67,7 +67,7 @@ func TestCommands(t *testing.T) {
 		return b.String()
 	}
 	if s := list(); !strings.Contains(s, "demo's models, for this machine's NPU (intel)") || !strings.Contains(s, "missing") || !strings.Contains(s, "1.6 GB to download") ||
-		!strings.Contains(s, "hwnpu counts on about 3 GB for models on a machine of 8 GB") {
+		!strings.Contains(s, "bonsaiai counts on about 3 GB for models on a machine of 8 GB") {
 		t.Errorf("the list before anything:\n%s", s)
 	}
 	var out, log bytes.Buffer

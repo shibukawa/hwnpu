@@ -15,7 +15,7 @@ import (
 
 	"github.com/shibukawa/configdir"
 
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 func put(t *testing.T, path string, b []byte) {

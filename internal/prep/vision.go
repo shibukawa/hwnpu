@@ -5,18 +5,18 @@ import (
 	"io"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/vision/depth"
-	"github.com/shibukawa/hwnpu/internal/vision/face"
-	"github.com/shibukawa/hwnpu/internal/vision/moge"
-	"github.com/shibukawa/hwnpu/internal/vision/ocr"
-	"github.com/shibukawa/hwnpu/internal/vision/segment"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/vision/depth"
+	"github.com/shibukawa/bonsaiai/internal/vision/face"
+	"github.com/shibukawa/bonsaiai/internal/vision/moge"
+	"github.com/shibukawa/bonsaiai/internal/vision/ocr"
+	"github.com/shibukawa/bonsaiai/internal/vision/segment"
 )
 
 // depth: DA3's and MoGe-2's export with every size (depth.Sizes, moge.Aspects), which
-// hwnpu-image depth converts as a picture first takes its aspect.
+// bonsaiai-image depth converts as a picture first takes its aspect.
 func init() {
 	Register(&Preparer{Name: "depth", Kinds: []chat.Kind{chat.KindDepth}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {
 		m := e.Model

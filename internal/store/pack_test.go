@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // TestPackedEntries puts an export for AMD's NPU in a source as one pack beside entry.json
@@ -30,7 +30,7 @@ func TestPackedEntries(t *testing.T) {
 	e := describeAt(t, exp, rel, recipe)
 	root := t.TempDir()
 	far := Source{Store: Dir{Name: "far", Root: root}, Writeback: true}
-	// loose files an hwnpu before put there
+	// loose files a bonsaiai before put there
 	write(t, filepath.Join(root, filepath.FromSlash(rel), "bank.bin"), "old")
 	if err := PutEntry(ctx, far, exp); err != nil {
 		t.Fatal(err)

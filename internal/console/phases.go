@@ -62,7 +62,7 @@ func Preparing() { change(func() { phases.running = false }) }
 // Loading counts the time until done as preparing, then goes back to the phase before: for a
 // program converted, compiled or loaded while the work goes on (a picture of a new size, a
 // stage of a pipeline). Time of the work going on at the same time counts as preparing. what
-// (a program's path) names it in the profile (HWNPU_PROFILE).
+// (a program's path) names it in the profile (BONSAIAI_PROFILE).
 func Loading(what string) (done func()) {
 	var depth int
 	var again bool // inside a load of the same (runner.Open of a chain.Open): listed once
@@ -116,7 +116,7 @@ var reads struct {
 }
 
 // Downloading counts the time until stop as downloading. what (REPOSITORY/FILE) names it in the
-// profile (HWNPU_PROFILE), with the bytes stop is given (negative: none).
+// profile (BONSAIAI_PROFILE), with the bytes stop is given (negative: none).
 func Downloading(what string) (stop func(bytes int64)) {
 	change(func() { phases.active++ })
 	start := time.Now()
@@ -168,7 +168,7 @@ func Times(w io.Writer) {
 	}
 }
 
-// Done writes the command's last lines: Times, and the profile with HWNPU_PROFILE.
+// Done writes the command's last lines: Times, and the profile with BONSAIAI_PROFILE.
 func Done(w io.Writer) {
 	Times(w)
 	WriteProfile(w)

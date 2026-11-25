@@ -8,11 +8,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/mapped"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/tflite"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/tflite"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // StyleCodes are the codes of a MusicCoCa style the model reads.
@@ -34,7 +34,7 @@ type Styler struct {
 
 // OpenStyler loads the programs prepared (Setup.Text, Setup.AudioStyle) on dev (nil: the CPU
 // interpreter).
-func OpenStyler(ctx context.Context, dev *hwnpu.Device, p Paths) (*Styler, error) {
+func OpenStyler(ctx context.Context, dev *bonsaiai.Device, p Paths) (*Styler, error) {
 	s := &Styler{p: p}
 	var err error
 	if p.TextProgram != "" {

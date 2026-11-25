@@ -1,4 +1,4 @@
-module github.com/shibukawa/hwnpu
+module github.com/shibukawa/bonsaiai
 
 go 1.27.0
 

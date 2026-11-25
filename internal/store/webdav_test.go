@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"golang.org/x/net/webdav"
 )
 
@@ -73,7 +73,7 @@ func openDAV(t *testing.T, d *davServer) *WebDAV {
 	t.Setenv("NETRC", filepath.Join(t.TempDir(), "none"))
 	t.Setenv(WebDAVUserEnv, "u")
 	t.Setenv(WebDAVPasswordEnv, "p")
-	st, err := OpenWebDAV(WebDAVConfig{Name: "nas", URL: d.URL + "/dav/hwnpu"})
+	st, err := OpenWebDAV(WebDAVConfig{Name: "nas", URL: d.URL + "/dav/bonsaiai"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestWebDAV(t *testing.T) {
 	if err := st.Write(ctx, "top", nil); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(filepath.Join(d.root, "hwnpu", "blobs", "sha256", "ab", "big")); err != nil || !bytes.Equal(b, big) {
+	if b, err := os.ReadFile(filepath.Join(d.root, "bonsaiai", "blobs", "sha256", "ab", "big")); err != nil || !bytes.Equal(b, big) {
 		t.Fatalf("on the server: %d bytes, %v", len(b), err)
 	}
 	if n, ok, err := st.Has(ctx, "blobs/sha256/ab/big"); err != nil || !ok || n != int64(len(big)) {
@@ -134,7 +134,7 @@ func TestWebDAV(t *testing.T) {
 	if _, err := st.Read(ctx, "a/none"); !isNotFound(err) {
 		t.Errorf("Read of none: %v", err)
 	}
-	os.WriteFile(filepath.Join(d.root, "hwnpu", "blobs", ".put-left"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(d.root, "bonsaiai", "blobs", ".put-left"), []byte("x"), 0o644)
 	keys, err := st.List(ctx, "")
 	if err != nil || strings.Join(keys, " ") != "blobs/sha256/ab/big entries/amd/k@1.json top" {
 		t.Errorf("List: %v %v", keys, err)
@@ -192,7 +192,7 @@ func TestWebDAVSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the same server read only, as plain HTTP
-	ro, err := ParseSource("ro", strings.Replace(d.URL, "//", "//u:p@", 1)+"/dav/hwnpu")
+	ro, err := ParseSource("ro", strings.Replace(d.URL, "//", "//u:p@", 1)+"/dav/bonsaiai")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestWebDAVGC(t *testing.T) {
 	if err := g.Apply(ctx, l); err != nil {
 		t.Fatal(err)
 	}
-	conv := filepath.Join(d.root, "hwnpu", "converted")
+	conv := filepath.Join(d.root, "bonsaiai", "converted")
 	if _, err := os.Stat(filepath.Join(conv, "x")); err == nil {
 		t.Error("x's folders are left")
 	}
@@ -286,7 +286,7 @@ func TestWebDAVSignIn(t *testing.T) {
 func TestWebDAVSelfSigned(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	write(t, filepath.Join(root, "hwnpu", "a.txt"), "aaa")
+	write(t, filepath.Join(root, "bonsaiai", "a.txt"), "aaa")
 	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(root), LockSystem: webdav.NewMemLS()}
 	srv := httptest.NewTLSServer(h)
 	defer srv.Close()
@@ -302,7 +302,7 @@ func TestWebDAVSelfSigned(t *testing.T) {
 		{"?insecure=true", true},
 		{"?insecure=true&writeback=true", true},
 	} {
-		s, err := ParseSource("nas", srv.URL+"/dav/hwnpu"+c.query)
+		s, err := ParseSource("nas", srv.URL+"/dav/bonsaiai"+c.query)
 		if err != nil {
 			t.Fatalf("%q: %v", c.query, err)
 		}
@@ -323,7 +323,7 @@ func TestWebDAVDown(t *testing.T) {
 	ctx := context.Background()
 	dead := httptest.NewServer(http.NotFoundHandler())
 	dead.Close() // its port refuses connections now
-	nas, err := ParseSource("nas", dead.URL+"/dav/hwnpu?writeback=true")
+	nas, err := ParseSource("nas", dead.URL+"/dav/bonsaiai?writeback=true")
 	if err != nil {
 		t.Fatal(err)
 	}

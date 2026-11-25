@@ -13,12 +13,12 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/ovir"
-	"github.com/shibukawa/hwnpu/internal/power"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/ze"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/ovir"
+	"github.com/shibukawa/bonsaiai/internal/power"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/ze"
 )
 
 const bufferAlignment = 4096
@@ -262,7 +262,7 @@ func (d *device) cacheKey(xmlData, weights []byte, flags string) string {
 	e := d.entry
 	cv := e.gprops.CompilerVersion
 	return cache.Key(
-		[]byte("hwnpu-levelzero-v2"),
+		[]byte("bonsaiai-levelzero-v2"),
 		[]byte(fmt.Sprintf("ir=%d.%d", cv.Major, cv.Minor)), // ovir.Serialize's
 		xmlData,
 		weights,
@@ -346,7 +346,7 @@ func (d *device) runOnce(record func(list ze.Handle) error) error {
 }
 
 // argNames names the arguments as the IR does, which is what the callers bind by (the MIL names
-// hwnpu-dev convert keeps: x, y, kv_*, ...). The driver reports a name, a debug name and the tensor
+// bonsaiai-dev convert keeps: x, y, kv_*, ...). The driver reports a name, a debug name and the tensor
 // names of each argument; which of them carries the IR's name depends on the driver and the
 // compiler, so the first that is a name of the IR wins. Failing all, the arguments are matched to
 // the IR's Parameters and Results in order, which is how the compiler numbers them when the model

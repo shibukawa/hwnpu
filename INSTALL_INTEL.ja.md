@@ -1,8 +1,8 @@
-# Intel NPU を hwnpu で使うための準備
+# Intel NPU を BonsaiAI で使うための準備
 
-Intel Core Ultra（Meteor Lake、Arrow Lake、Lunar Lake、Panther Lake、Wildcat Lake）の NPU を hwnpu から使えるようにし、動作を確かめる手順です。
+Intel Core Ultra（Meteor Lake、Arrow Lake、Lunar Lake、Panther Lake、Wildcat Lake）の NPU を BonsaiAI から使えるようにし、動作を確かめる手順です。
 
-> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。hwnpu-chat と hwnpu-chat agent は、同じプログラムを OpenVINO の CPU で動かして確かめました。実機で手順 4 の `hwnpu-dev report` と手順 6 のチャットを実行し、結果を送っていただけるのがいちばん助かります。
+> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。bonsaiai-chat と bonsaiai-chat agent は、同じプログラムを OpenVINO の CPU で動かして確かめました。実機で手順 4 の `bonsaiai-dev report` と手順 6 のチャットを実行し、結果を送っていただけるのがいちばん助かります。
 
 English: [INSTALL_INTEL.md](INSTALL_INTEL.md)
 
@@ -13,11 +13,11 @@ English: [INSTALL_INTEL.md](INSTALL_INTEL.md)
 | Linux（x86-64） | 対応 | Ubuntu 24.04 / 26.04 と Intel の NPU ドライバパッケージ（手順 1）。 |
 | Windows 11（x86-64） | 対応 | Intel の NPU ドライバ（手順 2）。 |
 | WSL2 | **非対応** | WSL2 が Linux 側に渡すのは GPU（`/dev/dxg`）だけで、NPU は WSL2 の中から見えない。Windows で直接使う。 |
-| macOS | 該当なし | Mac には Intel NPU がない。Apple Silicon では hwnpu は Core ML を使う。 |
+| macOS | 該当なし | Mac には Intel NPU がない。Apple Silicon では BonsaiAI は Core ML を使う。 |
 
-## hwnpu が必要とするもの
+## BonsaiAI が必要とするもの
 
-hwnpu は **Level Zero** と NPU のグラフ拡張を、purego で実行時に読み込んで NPU を使います。cgo も OpenVINO のランタイムも使いません。
+BonsaiAI は **Level Zero** と NPU のグラフ拡張を、purego で実行時に読み込んで NPU を使います。cgo も OpenVINO のランタイムも使いません。
 
 | 部品 | Linux | Windows |
 |---|---|---|
@@ -104,34 +104,34 @@ sudo chown root:render /dev/accel/accel0 && sudo chmod g+rw /dev/accel/accel0
    where.exe ze_loader.dll
    ```
 
-   hwnpu は、通常の DLL 検索パスで `ze_loader.dll` を読み込みます。NPU ドライバがこの DLL をどこに置くかは、**まだ確認できていません**。`where.exe` で見つからない場合は、`C:\Windows\System32` やドライバのフォルダを探してください。見つからなければ [Level Zero のリリース](https://github.com/oneapi-src/level-zero/releases) から `ze_loader.dll` を取得し、その場所を hwnpu に指定します。
+   BonsaiAI は、通常の DLL 検索パスで `ze_loader.dll` を読み込みます。NPU ドライバがこの DLL をどこに置くかは、**まだ確認できていません**。`where.exe` で見つからない場合は、`C:\Windows\System32` やドライバのフォルダを探してください。見つからなければ [Level Zero のリリース](https://github.com/oneapi-src/level-zero/releases) から `ze_loader.dll` を取得し、その場所を BonsaiAI に指定します。
 
    ```powershell
-   $env:HWNPU_ZE_LOADER = "C:\path\to\ze_loader.dll"
+   $env:BONSAIAI_ZE_LOADER = "C:\path\to\ze_loader.dll"
    ```
 
 WSL2 は使えません。WSL2 に渡されるのは GPU（`/dev/dxg`）だけで、NPU は見えないためです。
 
-## 3. hwnpu を取得する
+## 3. BonsaiAI を取得する
 
 ```bash
-git clone https://github.com/shibukawa/hwnpu.git
+git clone https://github.com/shibukawa/bonsaiai.git
 ```
 
 ```bash
-cd hwnpu
+cd bonsaiai
 ```
 
 Go のない機械で試すときは、別の機械でクロスビルドした実行ファイルを持っていきます。テスト用のモデルは埋め込まれているので、ファイルは 1 つで済みます。
 
 ```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o hwnpu-dev.exe ./cmd/hwnpu-dev
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bonsaiai-dev.exe ./cmd/bonsaiai-dev
 ```
 
 ## 4. 動作を確かめる
 
 ```bash
-go run ./cmd/hwnpu-dev info
+go run ./cmd/bonsaiai-dev info
 ```
 
 Intel NPU が `backend: levelzero` として表示されます。`driver` の行には、Level Zero の版、ドライバの版、グラフ拡張、コンパイラの版、NPU 用コマンドキュー拡張（ターボやワークロード種別）の有無が出ます。
@@ -139,7 +139,7 @@ Intel NPU が `backend: levelzero` として表示されます。`driver` の行
 次に報告を作り、Markdown のファイルを保存します。
 
 ```bash
-go run ./cmd/hwnpu-dev report -o report.md
+go run ./cmd/bonsaiai-dev report -o report.md
 ```
 
 Intel NPU ごとに、2 つの OpenVINO IR モデルを厳格モードでコンパイルし、結果を fp32 の参照値と比べ、実行時間を測ります。NPU は内部で fp16 を使うので、小さな誤差は想定どおりです。
@@ -147,54 +147,54 @@ Intel NPU ごとに、2 つの OpenVINO IR モデルを厳格モードでコン�
 電力ポリシーの効果を比べるときは、2 回実行します。Linux では CPU パッケージの電力量（RAPL）を root しか読めないので、電力量の欄を出すには `sudo` で実行してください。
 
 ```bash
-go run ./cmd/hwnpu-dev report -power low -o low.md
+go run ./cmd/bonsaiai-dev report -power low -o low.md
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev report -power performance -o performance.md
+go run ./cmd/bonsaiai-dev report -power performance -o performance.md
 ```
 
-生成したモデルで NPU を測るには、hwnpu-dev probe を使います。LLM の生成と同じ形の OpenVINO IR のモデルを Go で作り、0.5B と 1B の重みで fp16、int8、int4 の速さを測ります (`bench`。RAPL を読めるとき、つまり Linux で root のときは 1 トークンあたりのエネルギーも)。次に形式ごとにモデルを大きくしながら、ドライバがコンパイルできなくなる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込みます (`limit`)。Python もモデルのファイルも要りません。数十分から 1 時間ほどかかり、結果は `npuprobe-<機種>-<日時>.md` に書き出します。クローンしなくても動きます。
+生成したモデルで NPU を測るには、bonsaiai-dev probe を使います。LLM の生成と同じ形の OpenVINO IR のモデルを Go で作り、0.5B と 1B の重みで fp16、int8、int4 の速さを測ります (`bench`。RAPL を読めるとき、つまり Linux で root のときは 1 トークンあたりのエネルギーも)。次に形式ごとにモデルを大きくしながら、ドライバがコンパイルできなくなる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込みます (`limit`)。Python もモデルのファイルも要りません。数十分から 1 時間ほどかかり、結果は `npuprobe-<機種>-<日時>.md` に書き出します。クローンしなくても動きます。
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe
 ```
 
-先に `hwnpu-dev report` を動かしてください。そこで小さなモデルが失敗するなら、探索も同じように失敗します。結果の読み方は [PROBE.ja.md](PROBE.ja.md) にあります。
+先に `bonsaiai-dev report` を動かしてください。そこで小さなモデルが失敗するなら、探索も同じように失敗します。結果の読み方は [PROBE.ja.md](PROBE.ja.md) にあります。
 
 ## 5. モデルの用意
 
-hwnpu が受け取るモデルの形式は 2 つです。
+BonsaiAI が受け取るモデルの形式は 2 つです。
 
 - **OpenVINO IR**（`model.xml` と `model.bin`）。読み込むときにドライバ内コンパイラがコンパイルします。ONNX、PyTorch、TensorFlow からは、OpenVINO の `ovc` コマンドか `openvino.convert_model` で変換します（OpenVINO が要るのは変換する機械だけです）。NPU は動的な形状を扱えないので、形状は固定してください。
-- **コンパイル済みの blob**。同じドライバとコンパイラで以前にコンパイルした結果です。`hwnpu.WithCacheDir(dir)` を指定すれば、hwnpu が blob を保存して再利用します。
+- **コンパイル済みの blob**。同じドライバとコンパイラで以前にコンパイルした結果です。`bonsaiai.WithCacheDir(dir)` を指定すれば、BonsaiAI が blob を保存して再利用します。
 
 ```go
-dev, _ := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorIntel), hwnpu.WithCacheDir(cacheDir))
+dev, _ := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorIntel), bonsaiai.WithCacheDir(cacheDir))
 gr, _ := dev.Graph()
-g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.xml"})
+g, err := gr.Compile(ctx, bonsaiai.GraphSource{Path: "model.xml"})
 ```
 
-NPU のコンパイラが対応しない演算を含むモデルは、`hwnpu.ErrNotOnNPU` で失敗します。エラーには、原因の演算とコンパイラのログが含まれます。
+NPU のコンパイラが対応しない演算を含むモデルは、`bonsaiai.ErrNotOnNPU` で失敗します。エラーには、原因の演算とコンパイラのログが含まれます。
 
-## 6. hwnpu-chat と hwnpu-chat agent
+## 6. bonsaiai-chat と bonsaiai-chat agent
 
 Mac と同じコマンドで、チャットとエージェントが Intel NPU で動きます (実機での確認はまだです。下の「確かめてほしいこと」を参照)。
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest              # 端末で対話
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest agent "README を要約して"
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-chat@latest        # 端末で対話
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-chat@latest agent "README を要約して"
 ```
 
 初回は次のことが起きます。
 
 1. Hugging Face からチェックポイントを取ってくる (LFM3-1.7B で 3.5 GB)。
 2. OpenVINO IR に変換する。置き場所はモデルのディレクトリの `intel/`。2026 年 11 月 4 日からは、Neural Engine と同じく全注意の層の前後で分けて (`-paged`) 文脈 262144 で変換する (`lfm3-int8-grouped-p8192-c262144-q8.parts.json` と `-q64`。それぞれ 7 部分と、重みのない注意のグラフ 1 つ)。1 ステップの費用は会話の長さに比例し、KV キャッシュのメモリも会話とともに増える (1 トークン 12 KiB)。OpenVINO の CPU (`-backend openvino`) では確かめたが、NPU の実機では未確認。分けない以前の形 (キャッシュ 4096 と 16320 のそれぞれに生成用と読み込み用の 4 つ、`lfm3-int8-c4096-q8.xml` など) は `-paged -1` で使える。
-3. ドライバ内コンパイラが NPU 向けにコンパイルする。大きなモデルでは **1 つに数分かかることがあります**。結果はコンパイルキャッシュ (`-cache`、既定はユーザーキャッシュの `hwnpu`) に残るので、2 回目からは速くなります。
+3. ドライバ内コンパイラが NPU 向けにコンパイルする。大きなモデルでは **1 つに数分かかることがあります**。結果はコンパイルキャッシュ (`-cache`、既定はユーザーキャッシュの `bonsaiai`) に残るので、2 回目からは速くなります。
 
 | フラグ | 意味 |
 |---|---|
-| `-backend` | 使う NPU。`levelzero` (`intel` でも同じ)、`coreml`、`openvino`。既定は `HWNPU_BACKEND`、なければ見つかった NPU |
+| `-backend` | 使う NPU。`levelzero` (`intel` でも同じ)、`coreml`、`openvino`。既定は `BONSAIAI_BACKEND`、なければ見つかった NPU |
 | `-format` | チャットモデルの重みの形式。Intel では `int8` (LFM3 の既定)、`int4-g128`、`int4`、`fp16` |
 | `-paged -1` | 全注意の層で分けない。グラフが部分ごとではなく 1 つになり、文脈の容量に比例した費用になる (そのとき `-tier` が効く) |
 | `-tier none` | (`-paged -1` のとき) 短いキャッシュの段を作らない。グラフが 4 つから 2 つになり、初回のコンパイルとメモリが半分になる |
@@ -203,20 +203,20 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest agent "README を要約�
 最初は小さく始めると切り分けやすいです。
 
 ```bash
-hwnpu-chat --paged -1 --tier none --context 4096
+bonsaiai-chat --paged -1 --tier none --context 4096
 ```
 
 ### 確かめてほしいこと
 
-1. `hwnpu-chat --paged -1 --tier none --context 4096` が `ready:` まで進むか。止まったら、そのときのメッセージ (コンパイラのログを含む) をください。
+1. `bonsaiai-chat --paged -1 --tier none --context 4096` が `ready:` まで進むか。止まったら、そのときのメッセージ (コンパイラのログを含む) をください。
 2. 質問に正しく答えるか。トークン/秒 (答えの後に表示) はいくつか。
-3. 既定の設定 (`hwnpu-chat` だけ) で読み込めるか、コンパイルにどれくらいかかるか、メモリは足りるか。
-4. `hwnpu-chat agent` がツールを呼べるか。
-5. `hwnpu-dev formats` で int8、int4-g128、int4 の精度と速さを比べる (下の節)。
+3. 既定の設定 (`bonsaiai-chat` だけ) で読み込めるか、コンパイルにどれくらいかかるか、メモリは足りるか。
+4. `bonsaiai-chat agent` がツールを呼べるか。
+5. `bonsaiai-dev formats` で int8、int4-g128、int4 の精度と速さを比べる (下の節)。
 
-### 重みの形式を比べる (hwnpu-dev formats)
+### 重みの形式を比べる (bonsaiai-dev formats)
 
-`hwnpu-dev formats` は、チャットモデルを形式ごとに変換して NPU に載せ、決まった会話 (日本語と、英語とコード) を hwnpu-chat と同じ 1 回 8 トークンで読ませて、次の表を出します。
+`bonsaiai-dev formats` は、チャットモデルを形式ごとに変換して NPU に載せ、決まった会話 (日本語と、英語とコード) を bonsaiai-chat と同じ 1 回 8 トークンで読ませて、次の表を出します。
 
 | 列 | 意味 |
 |---|---|
@@ -226,15 +226,15 @@ hwnpu-chat --paged -1 --tier none --context 4096
 | perplexity | 答えの部分のパープレキシティ。低いほどよい。基準がなくても比べられる |
 
 ```bash
-go run ./cmd/hwnpu-dev formats                                    # int8、int4-g128、int4 を fp16 と比べる
-go run ./cmd/hwnpu-dev formats -formats int4-g128 -ref int8       # fp16 が NPU に載らないとき
-go run ./cmd/hwnpu-dev formats -json formats.json                 # 結果をファイルにも書く
+go run ./cmd/bonsaiai-dev formats                                    # int8、int4-g128、int4 を fp16 と比べる
+go run ./cmd/bonsaiai-dev formats -formats int4-g128 -ref int8       # fp16 が NPU に載らないとき
+go run ./cmd/bonsaiai-dev formats -json formats.json                 # 結果をファイルにも書く
 ```
 
 基準の fp16 は重みが 3.2 GiB あり、NPU のコンパイルに時間がかかるか、失敗することがあります。そのときは `-ref int8` (fp16 とほぼ同じ) にするか、OpenVINO が入っていれば基準だけ CPU で計算します。
 
 ```bash
-HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-dev formats -ref-backend openvino
+BONSAIAI_OV_PYTHON=~/ov/bin/python go run ./cmd/bonsaiai-dev formats -ref-backend openvino
 ```
 
 変換結果はモデルのディレクトリの `intel/formats/` に残り、2 回目からは変換もコンパイルも省かれます。Linux x86 の OpenVINO CPU (`-backend openvino`) では次のようになりました。NPU での数字を送ってもらえると、Intel の既定の形式を決められます。
@@ -246,42 +246,42 @@ HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-dev formats -ref-backend open
 | int4-g128 | 0.83 | 80% | 4.28 |
 | int4 | 0.81 | 76% | 4.89 |
 
-形式を決めたら、hwnpu-chat と hwnpu-chat agent では `--format int4-g128` のように指定します。
+形式を決めたら、bonsaiai-chat と bonsaiai-chat agent では `--format int4-g128` のように指定します。
 
 ### OpenVINO で切り分ける
 
-hwnpu の Level Zero の経路で失敗するとき、同じ IR を OpenVINO で動かすと、hwnpu の問題かモデル (IR) の問題かを切り分けられます。OpenVINO の入った Python を用意して:
+BonsaiAI の Level Zero の経路で失敗するとき、同じ IR を OpenVINO で動かすと、BonsaiAI の問題かモデル (IR) の問題かを切り分けられます。OpenVINO の入った Python を用意して:
 
 ```bash
 python3 -m venv ~/ov && ~/ov/bin/pip install openvino numpy
-HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_DEV=ov.device=NPU hwnpu-chat --backend openvino --tier none --context 4096
+BONSAIAI_OV_PYTHON=~/ov/bin/python BONSAIAI_DEV=ov.device=NPU bonsaiai-chat --backend openvino --tier none --context 4096
 ```
 
-`HWNPU_DEV=ov.device=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `HWNPU_OV_PYTHON` に `python.exe` のパスを指定します。
+`BONSAIAI_DEV=ov.device=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `BONSAIAI_OV_PYTHON` に `python.exe` のパスを指定します。
 
-`--backend` のないコマンド (hwnpu-image、hwnpu-audio) も、環境変数 `HWNPU_BACKEND=openvino` で同じように OpenVINO で動きます。このときコマンドは機械を Intel のものとして扱い、Intel の NPU に向けた変換 (OpenVINO IR) をそのまま OpenVINO に渡すので、Intel の NPU のない機械 (AMD の機械など) でも Intel の経路を変換から結果まで確かめられます。
+`--backend` のないコマンド (bonsaiai-image、bonsaiai-audio) も、環境変数 `BONSAIAI_BACKEND=openvino` で同じように OpenVINO で動きます。このときコマンドは機械を Intel のものとして扱い、Intel の NPU に向けた変換 (OpenVINO IR) をそのまま OpenVINO に渡すので、Intel の NPU のない機械 (AMD の機械など) でも Intel の経路を変換から結果まで確かめられます。
 
 ## 7. まとめて確かめる (Windows)
 
-`tools/intel/hwnpu-intel-check.ps1` (PowerShell 5.1) は、手順 4 と 6 などをクローンの中の `go run` で時間の上限をつけて順に動かし、ログを `%USERPROFILE%\hwnpu-intel-logs` の zip にまとめます。中身は機種とドライバ、各コマンドの出力、時間、メモリです。失敗したテストがあっても次に進み、同じ `-Out` で再実行すると成功したテストは飛ばします。
+`tools/intel/bonsaiai-intel-check.ps1` (PowerShell 5.1) は、手順 4 と 6 などをクローンの中の `go run` で時間の上限をつけて順に動かし、ログを `%USERPROFILE%\bonsaiai-intel-logs` の zip にまとめます。中身は機種とドライバ、各コマンドの出力、時間、メモリです。失敗したテストがあっても次に進み、同じ `-Out` で再実行すると成功したテストは飛ばします。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
+powershell -ExecutionPolicy Bypass -File .\tools\intel\bonsaiai-intel-check.ps1 -Level quick
 ```
 
-`-Level quick` (30 分ほど) はデバイス、`hwnpu-dev report`、小さな LFM3-1.7B のチャット。`standard` (既定。数時間、初回は 25 GB ほどのダウンロード) は、LFM3-1.7B の既定の設定、hwnpu-chat agent、hwnpu-dev formats、PLaMo 3 Translate、PLaMo-Embedding、Gemma 4 E2B、512 × 512 の Anima を足します。`full` はさらにチャットへの画像と音声、Qwen3.5、Qwen3、1024 × 1024 の Anima、hwnpu-dev probe と、Intel の実機ではまだ動かしていないモデル (OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、SwiftF0、Basic Pitch、Whisper、LFM3-Audio の読み上げ、Magenta RealTime 2、MOSS-SoundEffect。ダウンロードは 19 GB ほど増え、`-Skip sfx` で 11 GB 減ります)。`-List` でテストの一覧、`-Only` と `-Skip` で選べます。
+`-Level quick` (30 分ほど) はデバイス、`bonsaiai-dev report`、小さな LFM3-1.7B のチャット。`standard` (既定。数時間、初回は 25 GB ほどのダウンロード) は、LFM3-1.7B の既定の設定、bonsaiai-chat agent、bonsaiai-dev formats、PLaMo 3 Translate、PLaMo-Embedding、Gemma 4 E2B、512 × 512 の Anima を足します。`full` はさらにチャットへの画像と音声、Qwen3.5、Qwen3、1024 × 1024 の Anima、bonsaiai-dev probe と、Intel の実機ではまだ動かしていないモデル (OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、SwiftF0、Basic Pitch、Whisper、LFM3-Audio の読み上げ、Magenta RealTime 2、MOSS-SoundEffect。ダウンロードは 19 GB ほど増え、`-Skip sfx` で 11 GB 減ります)。`-List` でテストの一覧、`-Only` と `-Skip` で選べます。
 
 ## うまくいかないとき
 
 | 症状 | 原因と対処 |
 |---|---|
-| `runtime library not found ... libze_loader.so.1` | `libze1` を入れる（手順 1）か、`HWNPU_ZE_LOADER` にローダーのパスを指定する。 |
+| `runtime library not found ... libze_loader.so.1` | `libze1` を入れる（手順 1）か、`BONSAIAI_ZE_LOADER` にローダーのパスを指定する。 |
 | `found /dev/accel/accel0 but cannot use it` | デバイスはあるが Level Zero の初期化に失敗している。理由はメッセージに含まれる。 |
 | `/dev/accel/accel0` で `permission denied` | 利用者を `render` グループに加え、ログインし直す（手順 1）。 |
 | デバイスがなく `/dev/accel/accel0` もない | `sudo dmesg \| grep -i vpu` でファームウェアの読み込みエラーを確かめる。ドライバと同じリリースの `intel-fw-npu` を入れ直す。 |
 | `MAPPED_INFERENCE_VERSION is NOT compatible` | ドライバ、コンパイラ、ファームウェアのリリースがずれている。1 つのリリースのパッケージをすべて入れ直す。 |
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` が入っていない。入れるか、コンパイル済みの blob を使う。 |
 | `ZE_extension_graph version ... is not supported` | ドライバが古い（グラフ拡張 1.5 以降が必要）。ドライバを更新する。 |
-| hwnpu-chat が `chain: part 0 has no output y` で止まる | ドライバが返す引数の名前が IR の名前と合わない。メッセージと `hwnpu-dev info` の結果を送ってほしい。 |
-| hwnpu-chat の読み込み中にメモリが足りなくなる | `--tier none` でグラフを半分にする。`--format int4-g128` で重みを半分にする。 |
+| bonsaiai-chat が `chain: part 0 has no output y` で止まる | ドライバが返す引数の名前が IR の名前と合わない。メッセージと `bonsaiai-dev info` の結果を送ってほしい。 |
+| bonsaiai-chat の読み込み中にメモリが足りなくなる | `--tier none` でグラフを半分にする。`--format int4-g128` で重みを半分にする。 |
 | Level Zero の詳しい情報がほしい | `ZE_ENABLE_LOADER_DEBUG_TRACE=1` を付けて実行する。 |

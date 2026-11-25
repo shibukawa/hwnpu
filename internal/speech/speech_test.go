@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3gen"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3gen"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // An STFT taken as the codec's frames are (a Hann window of n_fft every hop over the signal

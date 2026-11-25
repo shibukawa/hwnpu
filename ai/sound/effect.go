@@ -12,14 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/sfx"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/sfx"
 )
 
 // The sound effects' audio: 48 kHz mono, up to EffectMaxSeconds.
@@ -43,7 +43,7 @@ func Effect(name string) ai.Use[*EffectGenerator] {
 //	                       model's machine, fp16 from 16 GB)
 //	          dit-format   the DiT's weight format, lut8 (the default) or fp16
 //
-// A model of device cpu runs on hwnpu's CPU interpreter (slow). On AMD's NPU the model runs as
+// A model of device cpu runs on bonsaiai's CPU interpreter (slow). On AMD's NPU the model runs as
 // the graphs of tools/amd/iron_moss_sfx.py (exported on the first preparation; dit-format does
 // not change them).
 var effectRole = &airole.Role{
@@ -107,7 +107,7 @@ var effectRole = &airole.Role{
 		switch {
 		case g.cpu:
 		case p.AMD:
-			g.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+			g.dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 		default:
 			g.dev, err = openNPU(ctx, e.NPU, e.Cache)
 		}
@@ -128,11 +128,11 @@ var effectRole = &airole.Role{
 // let go before the DiT's, which are loaded at the first sound and kept. It runs one request at
 // a time; others wait.
 type EffectGenerator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	g      *sfx.Generator
 	p      sfx.Paths
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	loaded bool // the DiT's and the decoder's programs
 	model  string
 	// cpu: the model's device is cpu; allow: programs placed off the NPU are run
@@ -148,7 +148,7 @@ func (g *EffectGenerator) Model() string {
 	return g.model
 }
 
-// OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
+// OnCPU reports whether the model runs on bonsaiai's CPU interpreter (its definition's device cpu).
 func (g *EffectGenerator) OnCPU() bool {
 	if g.remote != nil {
 		return airpc.Value[bool](g.remote, "OnCPU")
@@ -230,7 +230,7 @@ type EffectStats struct {
 // placement is what loading programs says of where they run.
 type placement struct {
 	cpu          bool
-	dev          *hwnpu.Device
+	dev          *bonsaiai.Device
 	off, unknown []string
 }
 
@@ -375,7 +375,7 @@ func (g *EffectGenerator) Warm(ctx context.Context) error {
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (g *EffectGenerator) Close() error {
 	if g.remote != nil {
-		return g.remote.Release() // the Runtime in hwnpud unloads it
+		return g.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

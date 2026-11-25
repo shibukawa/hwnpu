@@ -11,16 +11,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/speech"
-	"github.com/shibukawa/hwnpu/internal/supertonic"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/speech"
+	"github.com/shibukawa/bonsaiai/internal/supertonic"
 )
 
 // Speak is the use of a model of text to speech (LFM3-Audio, Supertonic 3) for an app: a model,
@@ -41,7 +41,7 @@ func Speak(name string) ai.Use[*Speaker] {
 //	          checkpoint the checkpoint's directory of those (config.json, model.safetensors,
 //	                     tokenizer.json, audio_tokenizer/config.json)
 //
-// A model of device cpu runs on hwnpu's CPU interpreter (slow).
+// A model of device cpu runs on bonsaiai's CPU interpreter (slow).
 var speakRole = &airole.Role{
 	Name:   "speak",
 	Remote: func(h *airpc.Handle) io.Closer { return &Speaker{remote: h} },
@@ -157,11 +157,11 @@ type SpeakStats struct {
 
 // Speaker speaks texts (LFM3-Audio). It runs one request at a time; others wait.
 type Speaker struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	s      *speech.Synth // LFM3-Audio's, or
 	st     *supertonic.Synth
-	dev    *hwnpu.Device // Supertonic's NPU (nil: the CPU)
+	dev    *bonsaiai.Device // Supertonic's NPU (nil: the CPU)
 	model  string
 	// styles are Supertonic's voices read, by name
 	styles map[string]supertonic.Style
@@ -308,7 +308,7 @@ func (s *Speaker) speakStream(ctx context.Context, in flow.Stream[flow.Text], op
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (s *Speaker) Close() error {
 	if s.remote != nil {
-		return s.remote.Release() // the Runtime in hwnpud unloads it
+		return s.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -489,7 +489,7 @@ func prepareSupertonic(e airole.PrepareEnv) (f airole.Files, err error) {
 func loadSupertonic(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 	c := supertonic.Config{Dir: f.Path("supertonic"), Durations: f.Paths["durations"], Encoders: f.Paths["encoders"], Estimators: f.Paths["estimators"], Vocoders: f.Paths["vocoders"], AMD: f.Path("amd")}
 	if c.AMD != "" {
-		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 		if err != nil {
 			return nil, err
 		}

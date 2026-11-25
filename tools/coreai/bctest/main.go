@@ -15,12 +15,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
 )
 
 func main() {
 	out := os.Args[1]
-	w := mlirbc.NewWriter("hwnpu", map[string][]byte{"aicode": {0x05}})
+	w := mlirbc.NewWriter("bonsaiai", map[string][]byte{"aicode": {0x05}})
 	A := func(s string) int { return w.Attr("aicode", s) }
 	T := func(s string) int { return w.Type("aicode", s) }
 	tensor := func(shape, elem string) int {
@@ -87,7 +87,7 @@ func main() {
 		for i := 0; i < 64*16; i++ {
 			binary.LittleEndian.PutUint16(lut[2*i:], f16(float32(rng.NormFloat64()/8)))
 		}
-		ki, kl := fmt.Sprintf("hwnpu_w%d_idx", l), fmt.Sprintf("hwnpu_w%d_lut", l)
+		ki, kl := fmt.Sprintf("bonsaiai_w%d_idx", l), fmt.Sprintf("bonsaiai_w%d_lut", l)
 		w.Blob("aicode", ki, 16, idx)
 		w.Blob("aicode", kl, 16, lut)
 		wi := cst(tensor("64, 64, 1, 1", "uint4"), "#aicode.serialization.dense_resource<"+ki+">")
@@ -120,7 +120,7 @@ func main() {
 	sum := sha256.Sum256(b)
 	must(os.WriteFile(filepath.Join(out, "main.mlirb"), b, 0o644))
 	must(os.WriteFile(filepath.Join(out, "main.hash"), sum[:], 0o644))
-	must(os.WriteFile(filepath.Join(out, "metadata.json"), []byte(`{"assetVersion":"2.0","producer":"hwnpu","creationDate":"20261112T000000Z"}`), 0o644))
+	must(os.WriteFile(filepath.Join(out, "metadata.json"), []byte(`{"assetVersion":"2.0","producer":"bonsaiai","creationDate":"20261112T000000Z"}`), 0o644))
 	fmt.Printf("wrote %s (%d bytes)\n", out, len(b))
 }
 

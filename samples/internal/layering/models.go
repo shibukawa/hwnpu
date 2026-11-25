@@ -5,9 +5,9 @@ import (
 	"image"
 	"math"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/imagegen"
-	"github.com/shibukawa/hwnpu/ai/vision"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/imagegen"
+	"github.com/shibukawa/bonsaiai/ai/vision"
 )
 
 // Calls are the two calls of an app that the parting runs: the depth of a picture, and the

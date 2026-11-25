@@ -5,7 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,13 +13,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/whisper"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/whisper"
 )
 
-// DefaultRepo is the checkpoint hwnpu-audio transcribe uses when not told.
+// DefaultRepo is the checkpoint bonsaiai-audio transcribe uses when not told.
 const DefaultRepo = "openai/whisper-large-v3-turbo"
 
 // Setup says what Prepare downloads and converts.
@@ -190,8 +190,8 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// convert writes one program with the converter's defaults (hwnpu-dev convert's), the lookup tables
-// fitted as hwnpu-chat fits them.
+// convert writes one program with the converter's defaults (bonsaiai-dev convert's), the lookup tables
+// fitted as bonsaiai-chat fits them.
 func convert(config, weights, out string, a *llm.Arch, format string, o llm.Options, log io.Writer) (string, error) {
 	_, model, err := llm.LoadConfig(config, a.Name)
 	if err != nil {

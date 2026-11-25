@@ -10,21 +10,21 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	hcache "github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	hcache "github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // Export is the model an export's directory runs as (an ai.Definition the app defines and uses
 // by its ID): an export of tools/amd/iron_flux2klein.py, iron_flux3klein.py or iron_anima.py
-// for AMD's NPU, or of hwnpu-image convert (Anima) and the library's conversions for Apple's
+// for AMD's NPU, or of bonsaiai-image convert (Anima) and the library's conversions for Apple's
 // Neural Engine or Intel's NPU. It is like the family's model of the definitions
 // (FLUX.2-klein-4B, flux-3-image-klein, Anima-Turbo), which names
 // it and its license; the export's own files say how it draws.
@@ -53,7 +53,7 @@ func exportFamily(dir string) string {
 	return ""
 }
 
-// The helpers below are hwnpu-image's (cmd/hwnpu-image/backend.go and anima.go), for the
+// The helpers below are bonsaiai-image's (cmd/bonsaiai-image/backend.go and anima.go), for the
 // devices and the exports the families run on.
 
 // exportDevice is the device backend to open for an export of the program format: Core AI's for
@@ -68,16 +68,16 @@ func exportDevice(format string, n airole.NPU) string {
 
 // placement is the placement the families' programs are loaded with: strict, so that a program
 // off the NPU, or one whose placement is not verified, says why, unless the app allows them.
-func placement(e airole.LoadEnv) hwnpu.Option {
+func placement(e airole.LoadEnv) bonsaiai.Option {
 	if e.AllowOffNPU {
-		return hwnpu.WithPlacement(hwnpu.PlacementPrefer)
+		return bonsaiai.WithPlacement(bonsaiai.PlacementPrefer)
 	}
-	return hwnpu.WithPlacement(hwnpu.PlacementStrict)
+	return bonsaiai.WithPlacement(bonsaiai.PlacementStrict)
 }
 
 // openAMD opens AMD's NPU for an export of IRON.
-func openAMD(ctx context.Context, opts ...hwnpu.Option) (*hwnpu.Device, error) {
-	return hwnpu.Open(ctx, append(opts, hwnpu.WithVendor(hwnpu.VendorAMD))...)
+func openAMD(ctx context.Context, opts ...bonsaiai.Option) (*bonsaiai.Device, error) {
+	return bonsaiai.Open(ctx, append(opts, bonsaiai.WithVendor(bonsaiai.VendorAMD))...)
 }
 
 // logfOf is a log's printf, a line each.
@@ -92,7 +92,7 @@ func logfOf(w io.Writer) func(format string, args ...any) {
 // aspectsAMD is the export of model m for AMD's NPU that draws w x h, of every aspect ratio by
 // the name NAME.amd-npu2 (an older one of 1024 x 1024 alone by that name draws that size only),
 // here or in the sources (chat.AMDNamed): made by hand with tool, which the error tells how to
-// run for every aspect ratio when there is none. (hwnpu-image's, cmd/hwnpu-image/anima.go.)
+// run for every aspect ratio when there is none. (bonsaiai-image's, cmd/bonsaiai-image/anima.go.)
 func aspectsAMD(ctx context.Context, m chat.Model, w, h int, tool string, sizes func(dir string) [][2]int, log io.Writer) (string, error) {
 	names := []string{strings.ToLower(m.Name) + ".amd-npu2"}
 	draws := func(d string) bool { return isDir(d) && slices.Contains(sizes(d), [2]int{w, h}) }

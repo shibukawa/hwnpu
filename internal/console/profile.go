@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-// Profile is on when HWNPU_PROFILE is set: the logs keep their details (the files of the
+// Profile is on when BONSAIAI_PROFILE is set: the logs keep their details (the files of the
 // programs), and the command's last lines list each download and each program loaded with its
 // time (WriteProfile), and what the packages that keep a profile of their own add (OnProfile:
 // the steps of a language model, internal/llm/decode).
-var Profile = os.Getenv("HWNPU_PROFILE") != ""
+var Profile = os.Getenv("BONSAIAI_PROFILE") != ""
 
 const (
 	kindDownload = "download"
@@ -56,7 +56,7 @@ func OnProfile(f func(io.Writer)) {
 	prof.mu.Unlock()
 }
 
-// WriteProfile writes, when HWNPU_PROFILE is set, the downloads (bytes, time, speed) and the
+// WriteProfile writes, when BONSAIAI_PROFILE is set, the downloads (bytes, time, speed) and the
 // programs loaded (time; a load inside another indented under it) in the order they started,
 // and what OnProfile added.
 func WriteProfile(w io.Writer) {

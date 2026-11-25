@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // HiddenBuffer is the state the export of tools/amd/iron_lfm3tts.py writes the text model's final
 // hidden state to (after the final norm, before the head), in a prompt chunk and a decode step.
-const HiddenBuffer = "hwnpu_hidden"
+const HiddenBuffer = "bonsaiai_hidden"
 
 // ironText is the text model on AMD's NPU: an export of tools/amd/iron_lfm3tts.py (iron.Model),
 // its token embeddings the host's, so that a decode step reads the row the host writes
@@ -26,7 +26,7 @@ type ironText struct {
 	row    []byte
 }
 
-func openIronText(ctx context.Context, dev *hwnpu.Device, dir string, hidden int, logf func(string, ...any)) (*ironText, error) {
+func openIronText(ctx context.Context, dev *bonsaiai.Device, dir string, hidden int, logf func(string, ...any)) (*ironText, error) {
 	m, err := iron.Open(ctx, dev, dir, logf)
 	if err != nil {
 		return nil, fmt.Errorf("speech: text model: %w", err)

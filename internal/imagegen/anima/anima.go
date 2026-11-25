@@ -1,6 +1,6 @@
 // Package anima runs Anima (circlestone-labs/Anima), an image model, on an NPU: on AMD's, the
 // graphs tools/amd/iron_anima.py exports; on Apple's Neural Engine and Intel's NPU, the Core ML
-// packages and OpenVINO IR of internal/imagegen/anima/mil (hwnpu-image convert). The host does
+// packages and OpenVINO IR of internal/imagegen/anima/mil (bonsaiai-image convert). The host does
 // what is not a tensor computation.
 //
 // Anima is NVIDIA's Cosmos-Predict2 2B DiT with Qwen3-0.6B as its text encoder, an LLM adapter
@@ -36,10 +36,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/mapped"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // DitConfig is the DiT's shape (iron_anima.DitConfig; for the Core ML and OpenVINO exports, the
@@ -79,7 +79,7 @@ type TextConfig struct {
 }
 
 // engine runs the models of an export: the IRON graphs on AMD's NPU (ironEngine), or the
-// programs hwnpu-image convert writes for Apple's Neural Engine and Intel's NPU (progEngine).
+// programs bonsaiai-image convert writes for Apple's Neural Engine and Intel's NPU (progEngine).
 type engine interface {
 	// text runs the text encoder and the adapter on the embedding rows qx and tx (Text.Rows of
 	// Text.Hidden each, zeros past nq and nt): the conditioning, the same shape.
@@ -136,19 +136,19 @@ func (p *Pipeline) dump(name string, xs []float32) {
 type StageFunc func(i, n int, d time.Duration)
 
 // Open loads the export in dir onto dev: an IRON export (text/, dit_in/, dit_blocks/, dit_out/,
-// vae/, AMD's NPU), or one of hwnpu-image convert (manifest.json and the programs, Apple's
+// vae/, AMD's NPU), or one of bonsaiai-image convert (manifest.json and the programs, Apple's
 // Neural Engine or Intel's NPU; with dev nil, the CPU interpreter, Core ML packages only).
 //
-// log, when not nil, is shown each program of an export of hwnpu-image convert as it loads (on a
+// log, when not nil, is shown each program of an export of bonsaiai-image convert as it loads (on a
 // terminal, a line with a spinner: the first load compiles it for the NPU, minutes at 1024 x 1024).
-func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string, log io.Writer) (*Pipeline, error) {
 	return OpenAt(ctx, dev, dir, 0, 0, log)
 }
 
 // OpenAt is Open for pictures of w x h, one of the sizes the export holds (IronSizes,
 // ProgramManifest.SizeList); 0 x 0 is the export's own (an IRON export's first size, an export of
-// hwnpu-image convert's Width x Height).
-func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
+// bonsaiai-image convert's Width x Height).
+func OpenAt(ctx context.Context, dev *bonsaiai.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{dir: dir}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()

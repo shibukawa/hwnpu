@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/bonsaiai/ai/text"
 )
 
 // script is a model that answers from a script, one answer a round, and keeps what it read.

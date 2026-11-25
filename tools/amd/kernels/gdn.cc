@@ -1,7 +1,7 @@
 //===- gdn.cc - Gated DeltaNet's recurrence, rows gathered in the core -*- C++ -*-===//
 //
 // mlir-aie's ssm/gated_delta_rule.cc (Copyright (C) 2026 Advanced Micro Devices,
-// Inc., Apache-2.0 WITH LLVM-exception), changed for hwnpu's GatedDeltaRule
+// Inc., Apache-2.0 WITH LLVM-exception), changed for bonsaiai's GatedDeltaRule
 // operator (tools/amd/iron_gdn.py):
 //
 //   gdn_gather  fills row t of the block from a row of the core's column: the

@@ -3,7 +3,7 @@ package anima
 import (
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // TestFilesPinned checks that models.yaml pins the sha256 of every file Prepare downloads for each

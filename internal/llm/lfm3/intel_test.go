@@ -10,12 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/chain"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // writeIRParts is writeParts for Intel's NPU: the parts are OpenVINO IR.
@@ -45,14 +45,14 @@ func writeIRParts(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, n 
 }
 
 // The program with a KV cache lowered to OpenVINO IR, run through internal/llm/chain on
-// OpenVINO's CPU (the openvino backend, as hwnpu-chat runs it), gives the logits of the MIL
+// OpenVINO's CPU (the openvino backend, as bonsaiai-chat runs it), gives the logits of the MIL
 // program without a cache at every position: the IR's arguments bind by the names decode uses,
 // the convolution windows, the rings of the sliding layer and the cached keys and values come
 // back through the host buffers, in one part and in several, and two programs (prompts and
-// generation) share one cache. Needs HWNPU_OV_PYTHON.
+// generation) share one cache. Needs BONSAIAI_OV_PYTHON.
 func TestIntelIRCached(t *testing.T) {
 	if ovcpu.Python() == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, backend, err := llm.OpenDevice(ctx, "openvino", "")
@@ -132,14 +132,14 @@ func TestIntelIRCached(t *testing.T) {
 	}
 }
 
-// The real LFM3-1.7B (HWNPU_TEST_LFM3_DIR: config.json, tokenizer.json and model.safetensors) in
+// The real LFM3-1.7B (BONSAIAI_TEST_LFM3_DIR: config.json, tokenizer.json and model.safetensors) in
 // Intel's weight formats, generating one token per call on OpenVINO's CPU through
 // internal/llm/chain: how often the most likely next token is the fp16 program's, and the
-// logits' relative error against it, over a Japanese and an English text. Needs HWNPU_OV_PYTHON.
+// logits' relative error against it, over a Japanese and an English text. Needs BONSAIAI_OV_PYTHON.
 func TestIntelIRCheckpoint(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_LFM3_DIR")
 	if dir == "" || ovcpu.Python() == "" {
-		t.Skip("HWNPU_TEST_LFM3_DIR or HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_TEST_LFM3_DIR or BONSAIAI_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "openvino", "")
@@ -173,7 +173,7 @@ func TestIntelIRCheckpoint(t *testing.T) {
 		rows = append(rows, r)
 	}
 	// FORMAT,SUBSTRING=FORMAT... (llm.Options.FormatFor) in IR on OpenVINO; coreml:FORMAT... the
-	// Neural Engine's program (lut tables fitted as hwnpu-chat fits them) on the CPU interpreter
+	// Neural Engine's program (lut tables fitted as bonsaiai-chat fits them) on the CPU interpreter
 	logits := func(format string) [][]float32 {
 		dir, err := os.MkdirTemp("", "lfm3-intel")
 		if err != nil {
@@ -230,7 +230,7 @@ func TestIntelIRCheckpoint(t *testing.T) {
 	}
 	ref := logits("fp16")
 	formats := []string{"int8", "int4-g128", "int4"}
-	if f := os.Getenv("HWNPU_TEST_LFM3_FORMATS"); f != "" {
+	if f := os.Getenv("BONSAIAI_TEST_LFM3_FORMATS"); f != "" {
 		formats = strings.Split(f, ";")
 	}
 	for _, format := range formats {
@@ -250,10 +250,10 @@ func TestIntelIRCheckpoint(t *testing.T) {
 // TestPagedMatchesFull on OpenVINO's CPU: the parts (with the gate passed from the part before
 // each attention to the part after) and the attention program, lowered to OpenVINO IR and run
 // through internal/llm/chain, give the logits of the MIL program without a cache, in steps of 3
-// tokens over the chunks' boundaries. Needs HWNPU_OV_PYTHON.
+// tokens over the chunks' boundaries. Needs BONSAIAI_OV_PYTHON.
 func TestIntelIRPaged(t *testing.T) {
 	if ovcpu.Python() == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "openvino", "")

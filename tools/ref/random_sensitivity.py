@@ -2,7 +2,7 @@
 with weights drawn as IRON's checks draw them (iron.common.graph.fill: a matrix normal at
 deviation 1/sqrt(in-features), a vector 1 + normal/10, a bias normal/10).
 
-    ~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/random_sensitivity.py MODEL CKPT [--seq 32] [--seed 0]
+    ~/.cache/bonsaiai/dev/ref-venv/bin/python tools/ref/random_sensitivity.py MODEL CKPT [--seq 32] [--seed 0]
 
 MODEL is one of tools/amd/q4_gptq.py's. For each set of weights, runs the text twice, in float32
 and wholly in bf16 (weights and arithmetic, as the NPU and IRON's reference both round, in their
@@ -20,7 +20,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "amd"))
 import q4_gptq  # noqa: E402
 
-TEXT = "The Neural Engine runs small language models at low power. 日本の首都は東京です。hwnpu is a Go library for NPUs."
+TEXT = "The Neural Engine runs small language models at low power. 日本の首都は東京です。bonsaiai is a Go library for NPUs."
 
 
 def draw(m, seed: int):

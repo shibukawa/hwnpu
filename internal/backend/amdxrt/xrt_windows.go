@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/dl"
 )
 
 // preloadXRT loads xrt_coreutil.dll by its full path before the shim, so that the shim's

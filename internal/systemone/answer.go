@@ -6,7 +6,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // Answer is the answer to one question, written as llama.cpp writes it.

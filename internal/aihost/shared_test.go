@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/cachecmd"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cachecmd"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
 // heldUses are the Runtimes that hold the fake model in the engine, 0 when none does.
@@ -96,8 +96,8 @@ func TestSharedLoad(t *testing.T) {
 	rt2.Close()
 }
 
-// TestCacheThroughHwnpud: hwnpu cache runs in the engine, which keeps what it holds loaded.
-func TestCacheThroughHwnpud(t *testing.T) {
+// TestCacheThroughBonsaiaid: bonsaiai cache runs in the engine, which keeps what it holds loaded.
+func TestCacheThroughBonsaiaid(t *testing.T) {
 	serve(t)
 	root := t.TempDir()
 	t.Setenv(cache.RootEnv, root)
@@ -138,7 +138,7 @@ func TestCacheThroughHwnpud(t *testing.T) {
 		t.Error("a model let go was not removed")
 	}
 	if v, closeFn, err := cachecmd.RemoteStore(ctx); err != nil || v == nil || v.Root() != root {
-		t.Errorf("the status's view of hwnpud's cache: %v %v", v, err)
+		t.Errorf("the status's view of bonsaiaid's cache: %v %v", v, err)
 	} else {
 		closeFn()
 	}

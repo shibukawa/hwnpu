@@ -8,17 +8,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
 )
 
-// On OpenVINO's CPU: the model split at its attention, converted to OpenVINO IR as hwnpu-chat
+// On OpenVINO's CPU: the model split at its attention, converted to OpenVINO IR as bonsaiai-chat
 // converts it for Intel's NPU, with a program of 4 tokens per call and one of 1 sharing the
-// host's cache, gives the logits of the MIL program without a cache. Needs HWNPU_OV_PYTHON.
+// host's cache, gives the logits of the MIL program without a cache. Needs BONSAIAI_OV_PYTHON.
 func TestIntelIRPaged(t *testing.T) {
 	if ovcpu.Python() == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "openvino", "")

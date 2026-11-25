@@ -2,7 +2,7 @@
 
 [English](audio-models.md)
 
-音のモデルはすべて 1 つのコマンド `hwnpu-audio` (`generate`、`tts`、`transcribe`、`pitch`、`notes`、`list`) で動く。フラグとサブコマンドは [cli.md](cli.md)。チャットのモデル (LFM3-Audio、d1-Omni) への音声入力は [llm-models.md](llm-models.md) にあり、ここでは符号器だけをまとめる。
+音のモデルはすべて 1 つのコマンド `bonsaiai-audio` (`generate`、`tts`、`transcribe`、`pitch`、`notes`、`list`) で動く。フラグとサブコマンドは [cli.md](cli.md)。チャットのモデル (LFM3-Audio、d1-Omni) への音声入力は [llm-models.md](llm-models.md) にあり、ここでは符号器だけをまとめる。
 
 ## 概要
 
@@ -15,7 +15,7 @@
 | `swift-f0` (MIT) | 音高 (F0) | 全部 NE | IR、CPU でだけ | CPU (ONNX Runtime か milcpu) | 0.06 GB |
 | `basic-pitch` (Apache-2.0) | 音符、MIDI | 一部が NE の外 | IR、CPU でだけ | CPU (ONNX Runtime か milcpu) | 0.07 GB |
 
-- 「IR、CPU でだけ」: Intel のプログラムは書く (lut8 は `llm.IntelFormat` で int8 に読み替え) が、通しで確かめたのは OpenVINO の CPU (`HWNPU_BACKEND=openvino`) だけで、Intel の NPU の実機では動かしていない。[intel.md](intel.md)
+- 「IR、CPU でだけ」: Intel のプログラムは書く (lut8 は `llm.IntelFormat` で int8 に読み替え) が、通しで確かめたのは OpenVINO の CPU (`BONSAIAI_BACKEND=openvino`) だけで、Intel の NPU の実機では動かしていない。[intel.md](intel.md)
 - Magenta RT2 の重みは CC-BY 4.0。音楽を使うところに「Magenta RealTime 2 by Google DeepMind」と表示する
 - SwiftF0 と Basic Pitch は ONNX でしか配られていない。公式とバイト単位で同じ Hugging Face のミラーから、リビジョンと sha256 で固定して取る (`internal/pitch` も sha256 を確かめる)
 
@@ -23,7 +23,7 @@
 
 ### Apple: Core AI だけ
 
-- Mac の `hwnpu-audio` は Core AI だけを使う (macOS 27)。Core AI がなければ `errNoCoreAI` (「macOS 27 が要る」) で止まる。`HWNPU_BACKEND` が空、`coreml`、`coreai` のどれでも Core AI (`audioDevice`、`cmd/hwnpu-audio/backend.go`)。[apple-coreai.md](apple-coreai.md)
+- Mac の `bonsaiai-audio` は Core AI だけを使う (macOS 27)。Core AI がなければ `errNoCoreAI` (「macOS 27 が要る」) で止まる。`BONSAIAI_BACKEND` が空、`coreml`、`coreai` のどれでも Core AI (`audioDevice`、`cmd/bonsaiai-audio/backend.go`)。[apple-coreai.md](apple-coreai.md)
 - どのモデルもチェックポイントから Core AI のプログラムを直接書く (`.mlpackage` を経ない)。書き出しはチェックポイントの横の `NAME.coreai` (`llm.CoreAIExport`)、Intel の IR は `Dir/intel`
 - Core ML は CPU のインタプリタのためだけに残す: `--cpu` と、ONNX Runtime のない機械の pitch と notes
 - 読み上げの文のモデルの 1 トークンと 64 トークンのプログラムは、1 本の `.aimodel` の関数 2 つ (`chat.ConvertShared`)。重みはディスクにもキャッシュにも 1 回分 (2 部分で 0.81 + 0.82 GiB。Core ML では 4 本で 3.4 GB)
@@ -33,7 +33,7 @@
 ### AMD: モデルごとの IRON のグラフ
 
 - 変換器は AMD のプログラムを書かないので、モデルごとに `tools/amd` の IRON の書き出しがある (`iron_whisper.py`、`iron_lfm3speech.py`、`iron_moss_sfx.py` と `iron_moss_dac.py`、`iron_magenta.py`、`iron_supertonic.py`)。詳細は `../amd-npu-models.md`、共通の IRON の部品は [amd.md](amd.md)
-- AMD の NPU があり `HWNPU_BACKEND` が空か `amd`/`xdna`/`iron` なら AMD で動く (`onAMD`)。パッケージごとの `PrepareAMD` が、手元、取得元、なければ IRON で書き出して取得元へ書き戻す。鍵には models.yaml の sha256 の固定が要る (`chat.PinnedRecipe`)。`like` は sha256 を引き継がないので、`MOSS-SoundEffect-v2.0-lut8` にも同じものを書いた
+- AMD の NPU があり `BONSAIAI_BACKEND` が空か `amd`/`xdna`/`iron` なら AMD で動く (`onAMD`)。パッケージごとの `PrepareAMD` が、手元、取得元、なければ IRON で書き出して取得元へ書き戻す。鍵には models.yaml の sha256 の固定が要る (`chat.PinnedRecipe`)。`like` は sha256 を引き継がないので、`MOSS-SoundEffect-v2.0-lut8` にも同じものを書いた
 - `iron.GraphProgram` がグラフの書き出しを `runner.Program` にする: meta の `program` がプログラムの形を言い、詰めた行と列は入れるときに 0 で埋め、出すときに外す。そのためホストの道 (抽選、MaskGIT、CFG、チャンク) は Apple と Intel と同じ
 - AMD の書き出しのないモデル (pitch、notes) は CPU になる (`chat.ConvertedDevice`)
 - 取得元にある書き出し: whisper 1.81 GB、LFM3-Audio の読み上げ 3.13 GB、MOSS 6.3 GB (fp16) / 5.3 GB (lut8)、Magenta の復号器 0.09 GB、Supertonic 3 0.27 GB。[distribution.md](distribution.md)
@@ -72,7 +72,7 @@
 ### 精度
 
 - 符号器の fp16 は fp32 とコサイン 0.9978。層 20〜21 が無音の位置に注意の吸い込み先 (約 300) を作り、入力のわずかな誤差でどの位置がそうなるかが入れ替わる。HF を fp16 で動かしても同じ (0.9978) なので、fp16 そのものの誤差で NE の誤りではない。音声の位置は合っていて書き起こしは変わらない
-- NE の数値の確かめ方: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`、`HWNPU_TEST_WHISPER_REF`、`HWNPU_TEST_WHISPER_ENCODERS`、`HWNPU_TEST_WHISPER_LAYER` と `-layers N`)。NE、Core ML の CPU、HF を比べる
+- NE の数値の確かめ方: `TestEncoderOnDevice` (`internal/transcribe/device_test.go`、`BONSAIAI_TEST_WHISPER_REF`、`BONSAIAI_TEST_WHISPER_ENCODERS`、`BONSAIAI_TEST_WHISPER_LAYER` と `-layers N`)。NE、Core ML の CPU、HF を比べる
 - 形式 (turbo、M3): LibriSpeech の dummy (73 本、481 秒) の WER は HF fp32 4.43 %、fp16 4.43 %、lut8 4.43 %、lut6 4.87 %。日本語 (`say` の 48 本) の CER は 3.60 / 3.60 / 3.74 / 3.94 %。**既定は lut8**
 - AMD: 乱数の入力で符号器と IRON の参照のコサインは 0.9999 (8 層) → 0.99 (32 層) と広がるが、実際の音声は正しく書き起こす。88.3 秒の英語を 3 つの窓で同じ文と切れ目
 
@@ -101,10 +101,10 @@
 - ISTFT (`speech.ISTFT`) はホストで llama.cpp と同じ。出力は 24 kHz
 - サンプリングの既定: LFM3-Audio は温度 1.0、top-k 128、罰則 1.1、窓 4096。Omni は 0.4、top-k なし、1.2、64。`generation_config.json` の `audio_*` が上書き。乱数は Go の PCG で、同じ種でも llama.cpp と同じ音にはならない
 - 文のモデルは lut8: lut4 では読み上げを書き起こし直すと崩れた (M3)。lut8 は一字一句一致
-- `hwnpu-dev convert` では `-frames` でなく `-codec-frames` (設定のフラグは全アーキテクチャで共有、`TestParamNames`)
+- `bonsaiai-dev convert` では `-frames` でなく `-codec-frames` (設定のフラグは全アーキテクチャで共有、`TestParamNames`)
 
 AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
-- 文のモデルは `iron_lfm3tts.py` 経由の `iron_export_lm.py lfm3tts` (MLP と head は q8、`--q4`)。h を状態 `hwnpu_hidden` に書く。ホストの埋め込みの表 (`hwnpu_embed_rows`) で、ホストが feedback の行を書ける (`iron.Model.StepRow`)。`iron_export_lm.py` そのものは変えない (`amdtools.LMHash` とチャットの書き出しの鍵が変わらないように)
+- 文のモデルは `iron_lfm3tts.py` 経由の `iron_export_lm.py lfm3tts` (MLP と head は q8、`--q4`)。h を状態 `bonsaiai_hidden` に書く。ホストの埋め込みの表 (`bonsaiai_embed_rows`) で、ホストが feedback の行を書ける (`iron.Model.StepRow`)。`iron_export_lm.py` そのものは変えない (`amdtools.LMHash` とチャットの書き出しの鍵が変わらないように)
 - depthformer: 12 の符号帳の行を MHA の 64 行に詰める。32 の頭を 64 に [x0..x15, 0×16, x16..x31, 0×16] と並べ、rotate_half の対を保つ。64 の上の RMSNorm は重みを √2 で割り eps を半分に
 - codec: 1 回 64 フレーム。6 倍の複製はホスト。短い畳み込みはタップごとの積を状態に k 行ずらして書いて足す
 - ホストの表は `tables.safetensors` (bf16)
@@ -167,7 +167,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 - 言語モデルの形式: 既定 lut8 (NE で温度 1.3 の KL 0.0064。fp16 は 0.0002)。`--format` で fp16 / lut6
 - footprint (M1): 符号を渡して 0.42 GB、録音の曲調 0.55 GB、文の曲調 0.97 GB、続き 0.96 GB
 
-## MOSS-SoundEffect v2.0 (`internal/sfx`、`hwnpu-audio generate -m sfx`)
+## MOSS-SoundEffect v2.0 (`internal/sfx`、`bonsaiai-audio generate -m sfx`)
 
 - 構造 (OpenMOSS の MOSS-TTS の `moss_soundeffect_v2`): 文の符号器は Qwen3-1.7B の最後の隠れ状態 (最後の norm の後)、DiT は Wan 2.1 の 1.3B (30 ブロック、幅 1536、12 ヘッド、文の 512 行への交差注意)、VAE は DAC (潜在 128 チャネル、1 秒に 50、48 kHz モノラル、rates 8 5 4 3 2)。flow matching のオイラー法、shift 5、カードの既定は 100 ステップ、CFG 4
 - 負のプロンプトは空なので文脈はすべて 0、文の符号器は回さない。いつも 30 秒 (1500 フレーム) を消して欲しい長さを切り出す。プロンプトに「 duration: 10.0s」を付ける
@@ -206,7 +206,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 - M1 (h13) のための直し: `sin` は GPU に回る。要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX") と定数倍した入力どうしの引き算 ("KernelPreScales") は受け付けない。段 3 の 4998 フレームは "unexpected failure"、4500 は通る。M3 も同じ書き出し
 - 配置をオフラインで確かめる: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine`、`manifest.plist` の `mps.fullyPlacedOnANE`。理由は `/usr/bin/log show --predicate 'process == "coreai-build"'` (zsh の `log` は組み込み)
 - Core ML の書き出し (`--cpu` だけ) は `sin` のまま。Intel は前の fp16 の級数と、入力の定数での `(v + 1536) − 1536` の丸めのまま
-- 参照の落とし穴: `runner` の CPU の経路は `HWNPU_DEV=cpu.f16=1` がないと fp32 で計算し、fp16 の丸めの技が効かない。比べる前に参照の精度を決める (aicheck は milcpu を `RoundF16` で動かす)
+- 参照の落とし穴: `runner` の CPU の経路は `BONSAIAI_DEV=cpu.f16=1` がないと fp32 で計算し、fp16 の丸めの技が効かない。比べる前に参照の精度を決める (aicheck は milcpu を `RoundF16` で動かす)
 
 ### AMD (`iron_moss_sfx.py`、`iron_moss_dac.py`、`sfx.AMDExportVersion` 2)
 
@@ -264,7 +264,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 ## 採らなかったもの
 
 - SpectroStream を GPU の fp32 で: 目的は NPU。ブロックの尺度で NE の復号器が正しく (相対 6.8e-3)、速くなった (10 秒の復号 2.0 秒、GPU 4.5 秒)。`--decoder-on` は外した
-- `hwnpu-audio` で Core ML を Neural Engine に使うこと: Mac では Core AI だけ
+- `bonsaiai-audio` で Core ML を Neural Engine に使うこと: Mac では Core AI だけ
 - Whisper の lut6: WER 4.87 % (lut8 4.43 %)、主に符号器で落ちる。Whisper の fp16 を既定に: 2 部分で生成が半分ほどの速さ、書き起こしは同じ
 - Whisper の符号器の `qchunk` 500: 速くならない。`LayerNormMax`: 変わらない (fp16 のあふれではない)
 - MOSS の文の符号器の素の int8 (NE で inf)、lut4 (127 %)、kmeans-minmax の lut8 (19 %)。DiT の lut6 (12.5 %)
@@ -274,7 +274,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 - AMD で Snake を後ろの GEMM に融合: IRON の GEMM に後処理の口がなく、7 タップの im2col の前では 7 倍の計算。カーネルを速くした
 - AMD の MOSS の DAC の GEMM を MEDIUM に (上)
 - 効果音の MMAudio: 文の特徴の Apple DFN5B-CLIP が研究専用の許諾
-- 別々のコマンド `hwnpu-transcribe`、`hwnpu-tts`、`hwnpu-pitch`、`hwnpu-notes`、`hwnpu-music`、`hwnpu-sfx`: `hwnpu-audio` にまとめた
+- 別々のコマンド `bonsaiai-transcribe`、`bonsaiai-tts`、`bonsaiai-pitch`、`bonsaiai-notes`、`bonsaiai-music`、`bonsaiai-sfx`: `bonsaiai-audio` にまとめた
 - 扱わないもの: チャットの返答を音声に (`<|mixed_start|>`)、読み上げの流し出し、LFM3-Audio の生の ASR、LFM3-Omni の読み上げ (`model.depth_decoder`)、MOSS のプロンプトの ftfy の `fix_text`、Magenta の本当の CFG (3 倍のバッチ)
 
 ## 未解決
@@ -283,7 +283,7 @@ AMD (`iron_lfm3speech.py`、書き出し `lfm3-audio-2b-tts.amd-npu2`):
 - Intel の NPU の実機: 音のモデルはどれも OpenVINO の CPU でだけ確かめた (MOSS は 20 ステップ、1 ステップ 18 秒)。NPU のコンパイラが ConvolutionBackpropData、Elu などを受け付けるか
 - M2: Core ML の NE での SpectroStream の復号が機械を重くしたことがある。ブロックの尺度や Core AI では確かめていない
 - MOSS の DAC r3 の M3 の実機での速さと値 (オフラインのコンパイルでは乗る)
-- macOS 26 での `hwnpu-audio` のエラーを実機で確かめていない
+- macOS 26 での `bonsaiai-audio` のエラーを実機で確かめていない
 - Whisper: 実際の録音 (雑音、話者の重なり)、AMD での日本語、温度を上げてのやり直し、`condition_on_prev_tokens`。`-v` が英語の窓でも `ja` と出る、長い英語に大文字が多い (Core ML でも同じ)。`/v1/audio/transcriptions` の API はない
 - AMD の Whisper: LayerNorm を GEMV に融合していない (約 1.9 ms。`QGEMVQKV` の正規化は RMS だけ)。IRON の演算 1 つの固定費 (約 0.13〜0.15 ms) が小さな復号器を決める
 - AMD の読み上げ: 使わない head (0.27 GB) を外す、`depth_linear` をフレームに 1 回 (4 ms)、depthformer の重みを q8 に

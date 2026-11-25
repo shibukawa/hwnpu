@@ -7,11 +7,11 @@ prog=$1
 aicheck=${AICHECK:-./aicheck}
 dir=$(mktemp -d /tmp/fbrepro-load.XXXXXX)
 cp "$aicheck" "$dir/aicheck"
-codesign -s - -f -i "hwnpu.fbrepro.$(date +%s).$$" "$dir/aicheck" 2>/dev/null
+codesign -s - -f -i "bonsaiai.fbrepro.$(date +%s).$$" "$dir/aicheck" 2>/dev/null
 ( while :; do echo "$(date +%T) $(df -k "$HOME" | awk 'NR==2{printf "%.1f", $4/1048576}')"; sleep 5; done ) > "$dir/disk.log" &
 sampler=$!
 t0=$(date +%s)
-HWNPU_DAEMON=off "$dir/aicheck" run -calls 1 "$prog" > "$dir/run.log" 2>&1
+BONSAIAI_DAEMON=off "$dir/aicheck" run -calls 1 "$prog" > "$dir/run.log" 2>&1
 rc=$?
 kill $sampler
 echo "rc=$rc wall=$(( $(date +%s) - t0 ))s"

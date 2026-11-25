@@ -82,7 +82,7 @@ type ProgramRecord struct {
 	// From is the export it was copied from (ResultReused).
 	From string `json:"from,omitempty"`
 	// Backfilled is the day the entry was written after the build, from the program's files, by
-	// hwnpu-dev prebuild -record (Backfill), "" when the build wrote it.
+	// bonsaiai-dev prebuild -record (Backfill), "" when the build wrote it.
 	Backfilled string `json:"backfilled,omitempty"`
 	// Legacy: the prebuilt program was made before records, and how (the compiles at once, the
 	// recipe) is not known. Another export takes it only when a device finished it
@@ -103,7 +103,7 @@ type DeviceCheck struct {
 	Function string `json:"function,omitempty"`
 	// Message is the device's error.
 	Message string `json:"message,omitempty"`
-	// By is what checked it (hwnpu-image, hwnpu-dev prebuild -mark).
+	// By is what checked it (bonsaiai-image, bonsaiai-dev prebuild -mark).
 	By string `json:"by,omitempty"`
 }
 
@@ -303,7 +303,7 @@ func packedPrograms(root, arch string) []packedProgram {
 // metadata.json, when it made them), as built jobs at once (0: not known) by the recipe's build
 // and not failed on a device unless one said so: the prebuilt programs made before records, all
 // by the recipes' builds since they were put in the shared layers, taken for later exports like
-// those built since (hwnpu-dev prebuild -record, 2026-11-26). It returns the keys written; the
+// those built since (bonsaiai-dev prebuild -record, 2026-11-26). It returns the keys written; the
 // record is written only when there is one.
 func Backfill(root, arch, export, model string, jobs int, today string) ([]string, error) {
 	rec, err := ReadRecord(root)

@@ -1,11 +1,11 @@
-package hwnpu
+package bonsaiai
 
 import (
 	"context"
 	"errors"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend"
 )
 
 // Enumerate lists the devices of every backend compiled into the binary. Backends that fail to

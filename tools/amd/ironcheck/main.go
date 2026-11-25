@@ -1,5 +1,5 @@
 // Command ironcheck runs a graph exported by tools/amd/iron_export.py on an AMD NPU through
-// hwnpu (no IRON, no XRT) and compares its outputs with graph.reference()'s.
+// bonsaiai (no IRON, no XRT) and compares its outputs with graph.reference()'s.
 //
 //	go run ./tools/amd/ironcheck DIR
 package main
@@ -17,7 +17,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 type handle struct {
@@ -94,7 +94,7 @@ func (f form) eval(v int64) int64 {
 
 // writeWords writes the scratchpad words of a call with the graph's per-call values: a
 // value a core reads is held shifted left by 2, an address as it is (IRON's Parameter.shift).
-func writeWords(m *manifest, run *hwnpu.Run, values map[string]int64, verbose bool) {
+func writeWords(m *manifest, run *bonsaiai.Run, values map[string]int64, verbose bool) {
 	if len(m.Parameters) == 0 {
 		return
 	}
@@ -121,7 +121,7 @@ func writeWords(m *manifest, run *hwnpu.Run, values map[string]int64, verbose bo
 // runCarried runs check/calls.json, a host-driven sequence of a graph with carried values:
 // each call's values go to the scratchpad and the carry buffer's first plane, and its next
 // values come from Affine forms or the carry buffer's second plane.
-func runCarried(ctx context.Context, dir string, m *manifest, run *hwnpu.Run, args map[string]*hwnpu.Buffer) {
+func runCarried(ctx context.Context, dir string, m *manifest, run *bonsaiai.Run, args map[string]*bonsaiai.Buffer) {
 	var calls []struct {
 		Values map[string]int64 `json:"values"`
 		Next   map[string]int64 `json:"next"`
@@ -139,7 +139,7 @@ func runCarried(ctx context.Context, dir string, m *manifest, run *hwnpu.Run, ar
 	t0 := time.Now()
 	for i, call := range calls {
 		writeWords(m, run, call.Values, i == 0)
-		var carry *hwnpu.Buffer
+		var carry *bonsaiai.Buffer
 		if c.Carry != nil {
 			carry = args[c.Carry.Argument]
 			for j, name := range c.Carry.Names {
@@ -196,7 +196,7 @@ func main() {
 		log.Fatalf("%d commands: only one is supported yet", len(m.Kernels))
 	}
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func main() {
 		log.Fatal(err)
 	}
 	t0 := time.Now()
-	prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, m.ELF)})
+	prog, err := kr.Load(ctx, bonsaiai.ProgramSource{Path: filepath.Join(dir, m.ELF)})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	args := map[string]*hwnpu.Buffer{}
+	args := map[string]*bonsaiai.Buffer{}
 	run, err := k.NewRun()
 	if err != nil {
 		log.Fatal(err)

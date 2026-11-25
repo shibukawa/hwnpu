@@ -204,7 +204,7 @@ type Version struct {
 	// NoStepBarrier: the decode step runs without Model.stepBarrier (checked at export for
 	// the model: gpt-oss on its one array).
 	NoStepBarrier bool `json:"no_step_barrier,omitempty"`
-	// Host are the host steps hwnpu runs between the commands (Qwen3.6's prompt experts: moe.go).
+	// Host are the host steps bonsaiai runs between the commands (Qwen3.6's prompt experts: moe.go).
 	Host []HostStep `json:"host"`
 }
 

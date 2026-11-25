@@ -11,17 +11,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
-	"github.com/shibukawa/hwnpu/internal/vision/face"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai/internal/vision/face"
 )
 
 // Faces is the use of a model that finds faces (YuNet) for an app: a model, a family or a use
@@ -36,20 +36,20 @@ func Faces(name string) ai.Use[*FaceDetector] {
 var facesRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &FaceDetector{remote: h} },
 	Name:   "faces",
-	// 1: the programs of every size made at Prepare; 2: hwnpu's own executor on the CPU where
+	// 1: the programs of every size made at Prepare; 2: bonsaiai's own executor on the CPU where
 	// ONNX Runtime is not here (AMD's NPU before)
 	Revision: 2,
 	// prepared for the CPU's runtime that was here: Prepare decides again once ONNX Runtime
-	// (HWNPU_ONNXRUNTIME) is gone (hwnpu's own executor in its place) or has come
+	// (BONSAIAI_ONNXRUNTIME) is gone (bonsaiai's own executor in its place) or has come
 	Usable: func(f airole.Files) error {
 		if f.Values["device"] != "cpu" {
 			return nil
 		}
 		switch ort := onnxrt.Available(); {
-		case f.Values["runtime"] != "hwnpu" && !ort:
-			return errors.New("it runs on the CPU with ONNX Runtime, whose library does not load (HWNPU_ONNXRUNTIME)")
-		case f.Values["runtime"] == "hwnpu" && ort:
-			return errors.New("it runs on hwnpu's own executor, and ONNX Runtime is here now")
+		case f.Values["runtime"] != "bonsaiai" && !ort:
+			return errors.New("it runs on the CPU with ONNX Runtime, whose library does not load (BONSAIAI_ONNXRUNTIME)")
+		case f.Values["runtime"] == "bonsaiai" && ort:
+			return errors.New("it runs on bonsaiai's own executor, and ONNX Runtime is here now")
 		}
 		return nil
 	},
@@ -89,12 +89,12 @@ var facesRole = &airole.Role{
 			device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", shown(m.Name), orNone(e.NPU.Vendor))
 		}
 		// the CPU runs the ONNX file with ONNX Runtime where its library loads, else the program
-		// converted from it on hwnpu's own executor (internal/milcpu): slower than ONNX Runtime
+		// converted from it on bonsaiai's own executor (internal/milcpu): slower than ONNX Runtime
 		// and still far less time and energy than AMD's NPU (docs/amd-npu-models.md 17)
 		builtin := device == "cpu" && !onnxrt.Available()
 		if builtin {
-			f.SetValue("runtime", "hwnpu")
-			why = strings.TrimPrefix(why+"; hwnpu's own executor: ONNX Runtime, faster, is not here (HWNPU_ONNXRUNTIME)", "; ")
+			f.SetValue("runtime", "bonsaiai")
+			why = strings.TrimPrefix(why+"; bonsaiai's own executor: ONNX Runtime, faster, is not here (BONSAIAI_ONNXRUNTIME)", "; ")
 		}
 		f.SetValue("device", device)
 		f.SetValue("why", why)
@@ -154,7 +154,7 @@ var facesRole = &airole.Role{
 		}
 		n := threads(e.Def)
 		switch {
-		case f.Values["device"] == "cpu" && f.Values["runtime"] == "hwnpu":
+		case f.Values["device"] == "cpu" && f.Values["runtime"] == "bonsaiai":
 			milcpu.Threads = n
 			if d, err = face.OpenProgram(ctx, nil, llm.BackendCoreML, f.Path("onnx"), f.Path("programs")); err != nil {
 				return nil, err
@@ -216,7 +216,7 @@ type Face struct {
 
 // FaceDetector finds the faces in pictures. It runs one picture at a time; others wait.
 type FaceDetector struct {
-	remote     *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote     *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu         sync.Mutex
 	d          *face.Detector
 	name       string
@@ -356,7 +356,7 @@ func HeadNode(o HeadOptions) *flow.Node[Found, Head] {
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (d *FaceDetector) Close() error {
 	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
+		return d.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()

@@ -1,5 +1,5 @@
 // Package mil describes FLUX.3 [klein] (black-forest-labs/flux-3-image-klein) as MIL programs,
-// which hwnpu writes as Core AI programs for Apple's Neural Engine (llm.WritePart). Qwen3-VL's
+// which bonsaiai writes as Core AI programs for Apple's Neural Engine (llm.WritePart). Qwen3-VL's
 // language model up to the last hidden state the DiT reads (after layers 4, 8, ..., 32) in groups,
 // context_embedder of the eight side by side, the DiT's text and image mode blocks (each stream
 // attending to itself), its single blocks over [text, image] in groups (the last ending with
@@ -17,8 +17,8 @@ import (
 	"os"
 	"path/filepath"
 
-	kmil "github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
+	kmil "github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
 )
 
 // Part is one program of FLUX.3 klein (milpart.Part).

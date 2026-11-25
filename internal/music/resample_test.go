@@ -6,13 +6,13 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3audio"
 )
 
-// Resample gives resampy's samples (HWNPU_TEST_RESAMPY_REF: a 48 kHz stereo WAV's mean, HWNPU_TEST_MUSICCOCA_WAV_FILE,
-// resampled to 16 kHz by resampy) and so the reference's style codes (HWNPU_TEST_MUSICCOCA_AUDIO_REF).
+// Resample gives resampy's samples (BONSAIAI_TEST_RESAMPY_REF: a 48 kHz stereo WAV's mean, BONSAIAI_TEST_MUSICCOCA_WAV_FILE,
+// resampled to 16 kHz by resampy) and so the reference's style codes (BONSAIAI_TEST_MUSICCOCA_AUDIO_REF).
 func TestResampleStyle(t *testing.T) {
-	wavPath, ref := os.Getenv("HWNPU_TEST_MUSICCOCA_WAV_FILE"), os.Getenv("HWNPU_TEST_MUSICCOCA_AUDIO_REF")
+	wavPath, ref := os.Getenv("BONSAIAI_TEST_MUSICCOCA_WAV_FILE"), os.Getenv("BONSAIAI_TEST_MUSICCOCA_AUDIO_REF")
 	if wavPath == "" || ref == "" {
 		t.Skip()
 	}
@@ -26,7 +26,7 @@ func TestResampleStyle(t *testing.T) {
 		mono[i] = (ch[0][i] + ch[1][i]) / 2
 	}
 	x := Resample(mono, SampleRate, ClipRate)
-	want := readF32(t, os.Getenv("HWNPU_TEST_RESAMPY_REF"), false)
+	want := readF32(t, os.Getenv("BONSAIAI_TEST_RESAMPY_REF"), false)
 	n := min(len(x), len(want))
 	t.Logf("%d vs %d samples: relative error %.3g", len(x), len(want), math.Sqrt(relErr32(x[:n], want[:n])))
 	p, _ := mccRef(t)

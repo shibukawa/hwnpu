@@ -1,11 +1,11 @@
 # モデルのライセンスと内容、使ってよいモデルの指定 (設計案)
 
-作成: 2026-11-15。状態: 1 段 (調査) と 2 段 (models.yaml の `license` と `content`、`HWNPU_MODEL_ALLOWLIST` の指定) を実装 ([docs/design/distribution.md](design/distribution.md))。3 段と 4 段は設計案。
+作成: 2026-11-15。状態: 1 段 (調査) と 2 段 (models.yaml の `license` と `content`、`BONSAIAI_MODEL_ALLOWLIST` の指定) を実装 ([docs/design/distribution.md](design/distribution.md))。3 段と 4 段は設計案。
 
 ## 0. 実装したもの (2026-11-15)
 
 - models.yaml の全モデルに `license` (`class`: `open`、`conditional`、`non-commercial`)、Anima と Chroma1 (のちに外した: [not-adopted/chroma1.md](not-adopted/chroma1.md)) に `content: [nsfw]`
-- `HWNPU_MODEL_ALLOWLIST` と利用者の models.yaml の `policy:` (2 節の決まりのとおり)。用途は許されたモデルに回し、なければ同じ種類のほかのモデル、名前で指したものはエラー。`hwnpu-chat list` などが弾いたモデルと理由を出す
+- `BONSAIAI_MODEL_ALLOWLIST` と利用者の models.yaml の `policy:` (2 節の決まりのとおり)。用途は許されたモデルに回し、なければ同じ種類のほかのモデル、名前で指したものはエラー。`bonsaiai-chat list` などが弾いたモデルと理由を出す
 - 既定で Anima と Chroma1 を選ばなくなった (`+nsfw` でオプトイン)
 
 お客さんの規程でモデルの選び方がきびしいことがある (商用で使えないライセンスの禁止、NSFW を出すモデルの禁止)。用途の既定 (`categories` の `picks`) が機械のメモリで変わるので、「承認したモデル」を利用者が手で守るのは難しい。そこで、モデルごとにライセンスと内容の印を models.yaml に持たせ、利用者が allow と deny で絞れるようにする。
@@ -19,12 +19,12 @@
 
 ## 2. 指定の書き方
 
-環境変数 `HWNPU_MODEL_ALLOWLIST` (と `.env`、利用者の models.yaml の `policy:`) に、`+` (許す) と `-` (弾く) の項目をカンマで並べる。
+環境変数 `BONSAIAI_MODEL_ALLOWLIST` (と `.env`、利用者の models.yaml の `policy:`) に、`+` (許す) と `-` (弾く) の項目をカンマで並べる。
 
 ```sh
-HWNPU_MODEL_ALLOWLIST=-license:non-commercial,-license:conditional
-HWNPU_MODEL_ALLOWLIST=+nsfw
-HWNPU_MODEL_ALLOWLIST=+license:open,+license:plamo-community-license
+BONSAIAI_MODEL_ALLOWLIST=-license:non-commercial,-license:conditional
+BONSAIAI_MODEL_ALLOWLIST=+nsfw
+BONSAIAI_MODEL_ALLOWLIST=+license:open,+license:plamo-community-license
 ```
 
 | 項目 | 当たるもの |
@@ -38,7 +38,7 @@ HWNPU_MODEL_ALLOWLIST=+license:open,+license:plamo-community-license
 - `+license` が 1 つでもあれば許可リストになる。どれにも当たらないモデルと、ライセンスの分からないモデル (Hugging Face のリポジトリを `OWNER/NAME` で指したもの) は弾く
 - 「重みは非商用、生成物は商用可」(Anima) も `license:non-commercial` に入れる (2026-11-15 に決定)。重みを商用の製品で動かせないため
 - `nsfw` だけは既定で弾く。`+nsfw` でオプトインする。`+nsfw` は NSFW を出すモードではなく、「頼んでいなくても NSFW を出しやすいモデル (`content: [nsfw]`) も選んでよい」という意味。生成の振る舞い (ネガティブプロンプトなど) は変えない
-- 弾かれたとき: 用途の既定は次の候補に回し、一言出す。候補がなければエラー。`-m`、`-use`、API のリクエストで名前を指したときは、差し替えずにエラー。一覧 (`hwnpu-chat list` など) は弾かれた理由を出す
+- 弾かれたとき: 用途の既定は次の候補に回し、一言出す。候補がなければエラー。`-m`、`-use`、API のリクエストで名前を指したときは、差し替えずにエラー。一覧 (`bonsaiai-chat list` など) は弾かれた理由を出す
 - 利用者の models.yaml や `aliases` で足したモデルにも同じ判定をかける
 
 ## 3. 調査の結果 (2026-11-15)

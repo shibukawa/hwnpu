@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-TEXT = ("The Neural Engine runs small language models at low power. hwnpu is a Go library for CPU "
+TEXT = ("The Neural Engine runs small language models at low power. bonsaiai is a Go library for CPU "
         "integrated NPUs: Apple, Intel and AMD. 日本の首都は東京です。")
 
 

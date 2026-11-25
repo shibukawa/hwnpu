@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
-// AMDTool is the IRON exporter of MOSS-SoundEffect (tools/amd, built into hwnpu): the text
+// AMDTool is the IRON exporter of MOSS-SoundEffect (tools/amd, built into bonsaiai): the text
 // encoder's, the DiT's and the DAC decoder's stages' graphs (iron_moss_dac.py) and the host's
 // tables.
 const AMDTool = "iron_moss_sfx.py"
@@ -129,7 +129,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, text string, log io.Writer) (
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, fmtText), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (bonsaiai-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; downloading the checkpoint and exporting it with IRON (about three minutes once IRON's kernels are built)\n", m.Name)

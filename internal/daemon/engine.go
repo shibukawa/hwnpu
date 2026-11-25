@@ -18,15 +18,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 )
 
 // Engine loads the chat models and runs them, behind the supervisor. It is the only process of
-// hwnpud on the NPU: it takes the NPU's lock with its first model (llm.OpenDevice, and the IRON
+// bonsaiaid on the NPU: it takes the NPU's lock with its first model (llm.OpenDevice, and the IRON
 // export's load on AMD) and gives it back when it exits, after Idle without a request.
 //
 // The requests of one model take their turns on it (chat.Engine runs one generation at a time).
@@ -37,7 +37,7 @@ type Engine struct {
 	Idle time.Duration
 	// Log receives what goes on outside a load (os.Stderr when nil, the service's log).
 	Log io.Writer
-	// AI serves the sessions of the ai package at AIPath (internal/aihost, which cmd/hwnpud
+	// AI serves the sessions of the ai package at AIPath (internal/aihost, which cmd/bonsaiaid
 	// gives it: the engine's package does not import the packages of models); nil for none.
 	// A session is a request going on until it ends, so the engine does not exit idle under it.
 	AI http.Handler
@@ -123,7 +123,7 @@ func (e *Engine) Run(ctx context.Context, socket string) error {
 			case <-t.C:
 			}
 			if e.Idle > 0 && e.active.Load() == 0 && time.Since(time.Unix(0, e.last.Load())) > e.Idle {
-				fmt.Fprintf(e.Log, "hwnpud engine: idle for %s; closing the models\n", e.Idle)
+				fmt.Fprintf(e.Log, "bonsaiaid engine: idle for %s; closing the models\n", e.Idle)
 				srv.Close()
 				return
 			}
@@ -187,7 +187,7 @@ func (e *Engine) evictIRON() {
 	}
 	e.mu.Unlock()
 	for _, h := range out {
-		fmt.Fprintf(e.Log, "hwnpud engine: closing %s for the next model (AMD's NPU holds one chat model)\n", h.model.Name)
+		fmt.Fprintf(e.Log, "bonsaiaid engine: closing %s for the next model (AMD's NPU holds one chat model)\n", h.model.Name)
 		h.e.Close()
 	}
 }
@@ -205,8 +205,8 @@ func (e *Engine) closeAll() {
 // holds (a chat completion naming a model it does not hold loads it first).
 func (e *Engine) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /hwnpud/v1/status", e.status)
-	mux.HandleFunc("POST /hwnpud/v1/load", e.serveLoad)
+	mux.HandleFunc("GET /bonsaiaid/v1/status", e.status)
+	mux.HandleFunc("POST /bonsaiaid/v1/load", e.serveLoad)
 	mux.HandleFunc("POST /v1/chat/completions", e.completions)
 	if e.AI != nil {
 		mux.Handle("GET "+AIPath, e.AI)
@@ -341,7 +341,7 @@ func (e *Engine) loadAny(ctx context.Context, req LoadRequest, log io.Writer) (*
 		Translator: ce.Template == chat.Plamo3, NoThink: ce.NoThink, OnNPU: ce.OnNPU(), Device: ce.DeviceName()}}
 	e.models[m.Name] = h
 	e.aliases[key] = m.Name
-	fmt.Fprintf(e.Log, "hwnpud engine: holds %s\n", m.Name)
+	fmt.Fprintf(e.Log, "bonsaiaid engine: holds %s\n", m.Name)
 	return h, nil
 }
 
@@ -401,7 +401,7 @@ func (e *Engine) completions(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatBackend is the backend the engine converts for and runs on: Core AI on a Mac (as
-// hwnpu-chat), else HWNPU_BACKEND or the NPU found.
+// bonsaiai-chat), else BONSAIAI_BACKEND or the NPU found.
 func chatBackend() string {
 	name := strings.TrimSpace(os.Getenv(llm.BackendEnv))
 	if runtime.GOOS == "darwin" {
@@ -413,7 +413,7 @@ func chatBackend() string {
 	return name
 }
 
-// loadChat makes ready and loads the chat model req names, as hwnpu-chat does with its default
+// loadChat makes ready and loads the chat model req names, as bonsaiai-chat does with its default
 // flags: the model's definition for the memory it runs as. holding gives the model of a name
 // already held, which is not loaded twice. On AMD's NPU (an IRON export, iron) evict closes the
 // IRON models held before it loads another: one chat model takes all of the NPU's hardware
@@ -422,7 +422,7 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 	backend := chatBackend()
 	if backend == llm.BackendCoreAI {
 		if _, _, err := llm.FindDevice(ctx, backend); err != nil {
-			return chat.Model{}, nil, false, fmt.Errorf("hwnpud runs on Apple's Neural Engine through Core AI, which needs macOS 27: %w", err)
+			return chat.Model{}, nil, false, fmt.Errorf("bonsaiaid runs on Apple's Neural Engine through Core AI, which needs macOS 27: %w", err)
 		}
 	}
 	root := cache.Root()
@@ -487,8 +487,8 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 }
 
 // placement is how a mixture of experts' experts are placed: the model's core first, then by
-// hwnpud's own counts of the experts it runs.
+// bonsaiaid's own counts of the experts it runs.
 func placement(m chat.Model) experts.Placement {
 	return experts.Placement{Core: m.ExpertsCore, Idle: DefaultIdle, Ceiling: filepath.Join(chat.ModelDir(m), "experts-usage", "ceiling"),
-		Usage: chat.ExpertsUsage(chat.ModelDir(m), "hwnpud")}
+		Usage: chat.ExpertsUsage(chat.ModelDir(m), "bonsaiaid")}
 }

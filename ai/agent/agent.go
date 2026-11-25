@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/bonsaiai/ai/text"
 )
 
 // Model answers a conversation: *text.Chatter, or a fake in tests.

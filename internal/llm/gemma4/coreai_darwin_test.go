@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
-// The programs hwnpu-chat converts of Gemma 4 for Core AI (llm.ConvertAI), on the Neural Engine:
+// The programs bonsaiai-chat converts of Gemma 4 for Core AI (llm.ConvertAI), on the Neural Engine:
 // one of 1 token per call and one of 4 that only writes the caches (KVOnly). The latter's one part
 // (layers 0 and 1, and layer 2's keys and values) begins at the layer the former's first part
 // begins at, so the two are functions of one Core AI program. Reading the beginning of the
@@ -24,7 +24,7 @@ func TestConvertAIKVOnlyOnNeuralEngine(t *testing.T) {
 	if infos, err := (coreai.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
 		t.Skip("no Core AI")
 	}
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreai"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend("coreai"), bonsaiai.WithPlacement(bonsaiai.PlacementPrefer), bonsaiai.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
 	if err != nil {
 		t.Fatal(err)
 	}

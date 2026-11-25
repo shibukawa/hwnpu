@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 // HostNorm is a GroupNorm of a VAE stage whose small arithmetic the host does between two

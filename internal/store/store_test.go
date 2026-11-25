@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/store/s3fake"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/store/s3fake"
 )
 
 func write(t *testing.T, p, body string) {
@@ -476,7 +476,7 @@ func TestGC(t *testing.T) {
 	if _, err := FetchEntry(ctx, []Source{s}, ra, func(Entry) bool { return true }, dst+"2", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a after gc: %v", err)
 	}
-	// what a writeback cut off is hwnpu cache clean's: gc leaves it
+	// what a writeback cut off is bonsaiai cache clean's: gc leaves it
 	g, _ = PlanGC(ctx, s, func(Entry) bool { return true })
 	if slices.Contains(g.keys, "converted/c/t/c.x/v1/half") {
 		t.Fatalf("gc takes what a writeback cut off: %+v", g.keys)
@@ -486,10 +486,10 @@ func TestGC(t *testing.T) {
 // TestParseSource reads the URLs of the sources and their order in the environment.
 func TestParseSource(t *testing.T) {
 	for _, c := range []struct{ url, want, err string }{
-		{"file:///mnt/llm/hwnpu?writeback=true", "folder /mnt/llm/hwnpu", ""},
+		{"file:///mnt/llm/bonsaiai?writeback=true", "folder /mnt/llm/bonsaiai", ""},
 		{"file:///mnt/x?writeback=nope", "", "not true or false"},
 		{"file://relative/x", "", "share of Windows"},
-		{"https://me:secret@nas:5006/hwnpu", "https://nas:5006/hwnpu/, read only", ""},
+		{"https://me:secret@nas:5006/bonsaiai", "https://nas:5006/bonsaiai/, read only", ""},
 		{"http://nas/dav?writeback=1", "webdav http://nas/dav/", ""},
 		{"s3://bucket/pre?endpoint=http://h:9100&path_style=true&no_sign=true", "s3://bucket/pre/ at http://h:9100", ""},
 		{"s3:///x", "", "no bucket"},

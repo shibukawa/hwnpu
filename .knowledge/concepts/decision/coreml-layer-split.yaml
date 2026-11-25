@@ -5,8 +5,8 @@ summary: >-
   ANE の大きさの上限はモデル 1 つごと (M3 は 1 GiB、M4 は 1.8 GiB 以上) で、層の境目で分けた部分を出力バッファから次の入力へ直結して
   順に動かせば、劣化なし・遅延ほぼなしで上限を超えられる。分割数を増やすと消費メモリが大きく減り、遅くなるのは境目 1 つにつき約 0.1〜0.16 ms。
   そこで配布物は分けない 1 つのパッケージにし、実行時に Go で MIL を境目で切り分けて、チップの上限とメモリの予算から分割数を決める。
-  変換時の分割は hwnpu-convert -target (チップごとの上限、推定サイズで均等に分ける、out.partN.mlpackage と out.parts.json) として入っており、
-  部分をつないで動かす internal/llm/chain、生成の hwnpu-generate、KV キャッシュ (-cache) をその上に実装した。
+  変換時の分割は bonsaiai-convert -target (チップごとの上限、推定サイズで均等に分ける、out.partN.mlpackage と out.parts.json) として入っており、
+  部分をつないで動かす internal/llm/chain、生成の bonsaiai-generate、KV キャッシュ (-cache) をその上に実装した。
   実行時の切り分けは未実装。1 つのパッケージの関数として分ける案は、上限がパッケージ全体で数えられるので使えない。
 lifecycle: proposed
 authority: authored
@@ -20,14 +20,14 @@ facts:
     - 6 ビット LUT など 4 ビットより大きい形式や、感度の高いテンソルを fp16 に残す構成
     - 同じ配布物を、メモリの少ない機械では細かく、多い機械では粗く (速く) 分けて動かす
   implemented: >-
-    2026-10-29。hwnpu-convert -target / -parts (llm.PlanSplit、out.parts.json の型 llm.Manifest、1 部分を書く llm.WritePart)、internal/llm/chain
-    (部分を読み込み、出力バッファを次の x に Bind)、internal/tokenizer (byte-level BPE、LFM3 の参照 24 トークンと一致)、cmd/hwnpu-generate
+    2026-10-29。bonsaiai-convert -target / -parts (llm.PlanSplit、out.parts.json の型 llm.Manifest、1 部分を書く llm.WritePart)、internal/llm/chain
+    (部分を読み込み、出力バッファを次の x に Bind)、internal/tokenizer (byte-level BPE、LFM3 の参照 24 トークンと一致)、cmd/bonsaiai-generate
     (チャットの書式、貪欲法かサンプリング、KV キャッシュなしで固定長の窓を毎トークン動かし、満ちたら古い 4 分の 1 を捨てる)。
     TestPartsMatchWhole で 1〜3 分割の連鎖が 1 部分とビット単位で一致 (fp16、lut4)。LFM3-1.7B lut4 は 1/2/4/8 分割とも全部 ANE で 34 ms/token 前後
     (backend:apple-coreml の lfm3_generation)
   tiers: >-
-    2026-10-30 容量の段階を実装 (hwnpu-convert -cache a,b,c → Manifest.Tiers、chain.Grow/Preload/LoadAll、decode.Session.Migrate、
-    hwnpu-generate -preload)。切り替えは 0 秒で出力は固定の長い段階と同一、常駐させても動いている段階は単独と同じ速さ (1024 で 19.2 ms)。
+    2026-10-30 容量の段階を実装 (bonsaiai-convert -cache a,b,c → Manifest.Tiers、chain.Grow/Preload/LoadAll、decode.Session.Migrate、
+    bonsaiai-generate -preload)。切り替えは 0 秒で出力は固定の長い段階と同一、常駐させても動いている段階は単独と同じ速さ (1024 で 19.2 ms)。
     段階の読み込み (6〜30 秒) を裏で行うと生成が半分以下になるので既定は先に全部読み込む。端から端の利得 (見込み約 20%) はスワップ 9 GB の機械では
     1〜2% しか示せず、空いた機械での測り直しが要る (docs/design/llm-engine.md)
   tradeoff: >-
@@ -38,9 +38,9 @@ facts:
       配布物は分けない 1 つの .mlpackage (1 GiB を超えてよい)。チップごとの上限やメモリの量によらず 1 種類で済み、manifest と sha256 も 1 つ。
       分割数ごとに配布物を作る案と、固定の分割で配る案は採らない (rejected_alternatives)
     converter: >-
-      hwnpu-convert は今まで通り 1 つのパッケージを書く。1 GiB を超えるときはエラーにせず、そのまま ANE では動かないので分割して使うことを表示する。
+      bonsaiai-convert は今まで通り 1 つのパッケージを書く。1 GiB を超えるときはエラーにせず、そのまま ANE では動かないので分割して使うことを表示する。
       境目の候補は分割器がグラフから見つけるので、変換器もアーキテクチャのパッケージも変えない。
-      層の境目を優先させたいときだけ、Build が層の出力の値の名前をメタデータ (com.github.shibukawa.hwnpu.cuts) に残す (演算は足さないのでダイジェストは変わらない)
+      層の境目を優先させたいときだけ、Build が層の出力の値の名前をメタデータ (com.github.shibukawa.bonsaiai.cuts) に残す (演算は足さないのでダイジェストは変わらない)
     splitter: >-
       internal/mlpackage に分割器を置く。model.mlmodel (protobuf) を読み、main 関数の演算列 (トポロジカル順) で、前後をまたぐ値が 1 つ
       (と関数の入力) だけになる位置を境目の候補にする。定数 (const、constexpr_*) はまたぐ値に数えず、使う部分へ複製する
@@ -57,7 +57,7 @@ facts:
       同じ分け方なら 2 回目からは切り分けもコンパイルもしない。分割数を変えると最初の 1 回だけ切り分けとコンパイルが要る (M3 で 16 層 1 部分 8 秒)。
       キャッシュは分割数ごとに増えるので、使っていない分け方は古い順に消せるようにする
     runtime: >-
-      新しい公開パッケージ (仮: github.com/shibukawa/hwnpu/chain) に置く。Open(ctx, runner, path, policy) が切り分け、コンパイル、全部分の読み込みを行い、
+      新しい公開パッケージ (仮: github.com/shibukawa/bonsaiai/chain) に置く。Open(ctx, runner, path, policy) が切り分け、コンパイル、全部分の読み込みを行い、
       部分 i の出力バッファを部分 i+1 の x に、追加の入力は 1 つのバッファを全部分に Bind する (npuprobe split と同じで、コピーなし)。
       Chain は x と追加の入力、出力 y を 1 つのモデルのように見せ、Run は部分を順に動かす。Parts() で今の分け方と各部分の配置を返す。
       どの部分も厳格モードで全演算 ANE を確かめる
@@ -66,7 +66,7 @@ facts:
       増やす (速くする) 向きでは、新しい部分を読み込み終えてから入れ替える。新しい分け方はキャッシュになければ別の goroutine で切り分けとコンパイルをしてから入れ替える。
       最初の版は生成の要求と要求の間だけで行い、KV キャッシュを持ったままの入れ替えは扱わない (open_questions.reshape-with-state)
     checking: >-
-      分割器と鎖は milcpu でも動かせるので、Mac なしで確かめられる。hwnpu-check に -parts n を足し、切り分けた部分を順に実行して、
+      分割器と鎖は milcpu でも動かせるので、Mac なしで確かめられる。bonsaiai-check に -parts n を足し、切り分けた部分を順に実行して、
       まとめた実行とビット単位で一致すること、境目の隠れ状態が参照の hidden と合うことを見る
     measurement: >-
       npuprobe split に消費メモリの列を足す: 子プロセスの最大 RSS (getrusage)、全部分を読み込んだあとと実行中の phys_footprint
@@ -94,7 +94,7 @@ acceptance:
   digests-unchanged:
     text: 変換器の TestBuildTiny のダイジェストが変わらない
   ane-run:
-    text: Mac で、1 GiB を超える実物のモデルを Parts 2/4/8 で開き、全部分が ANE に載り、hwnpu-check で分けないとき (CPU の milcpu) と同じ精度になる。Reshape で分割数を変えても出力が変わらない
+    text: Mac で、1 GiB を超える実物のモデルを Parts 2/4/8 で開き、全部分が ANE に載り、bonsaiai-check で分けないとき (CPU の milcpu) と同じ精度になる。Reshape で分割数を変えても出力が変わらない
   memory-measured:
     text: npuprobe split が分割数ごとの消費メモリを出し、M3 と M4 で記録される
 open_questions:
@@ -121,7 +121,7 @@ open_questions:
       KV キャッシュは層ごとなので部分ごとに持てる。MLState (状態の演算が ANE に載るか未確認) か、入出力のバッファとしてホストが持つ方式か
     state: answered
     resolution: >-
-      2026-10-29 入出力のバッファとしてホストが持つ方式を実装 (llm.Cached、internal/llm/decode、hwnpu-convert -cache)。各部分は自分の層の
+      2026-10-29 入出力のバッファとしてホストが持つ方式を実装 (llm.Cached、internal/llm/decode、bonsaiai-convert -cache)。各部分は自分の層の
       kv_k_N/kv_v_N と win_conv_N を持ち、全部 ANE に載る。LFM3-1.7B でキャッシュ 1024 なら 20.6 ms/token (backend:apple-coreml の kv_cache_host)。
       MLState と比べた結果、速さは同じで CPU use だけが下がる (backend:apple-coreml の mlstate_kv)。ホスト側バッファのままにする
       (CPU インタプリタで確かめられ、容量の違うプログラムへの移し替えや分割と扱いやすいため)

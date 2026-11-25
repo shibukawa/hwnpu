@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3audio"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
 )
 
 // ImageSize returns the size the vision tower takes an image of w x h pixels at (Gemma 4's
@@ -24,7 +24,7 @@ func (m *Model) ImageSize(w, h int) (ow, oh, tokens int, err error) {
 	}
 	v := mm.Vision
 	if lfm3Vision(mm.Kind) {
-		// one image size: every image is resized (stretched) to it, as hwnpu's Core ML programs
+		// one image size: every image is resized (stretched) to it, as bonsaiai's Core ML programs
 		return v.Width, v.Height, v.ImageTokens, nil
 	}
 	side := v.PoolingKernelSize * v.PatchSize

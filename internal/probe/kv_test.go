@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // The cache in chunks attends as the plain cache does: the same cache bytes and the same visible

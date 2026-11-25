@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 // With SwapVariants a graph keeps one set of banks: Use reads the variant's image into the
@@ -31,7 +31,7 @@ func TestGraphSwapVariants(t *testing.T) {
 		man.Variants = append(man.Variants, map[string]string{"scratch": n})
 	}
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend(simBackend))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend(simBackend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +42,8 @@ func TestGraphSwapVariants(t *testing.T) {
 	}
 	defer buf.Close()
 	copy(buf.Bytes(), imgs[0])
-	banks := map[string]*hwnpu.Buffer{"scratch": buf}
-	g := &Graph{Manifest: man, dev: dev, dir: dir, banks: banks, variants: []map[string]*hwnpu.Buffer{banks}, swapped: true}
+	banks := map[string]*bonsaiai.Buffer{"scratch": buf}
+	g := &Graph{Manifest: man, dev: dev, dir: dir, banks: banks, variants: []map[string]*bonsaiai.Buffer{banks}, swapped: true}
 
 	if g.Variants() != 3 {
 		t.Fatalf("%d variants, want 3", g.Variants())

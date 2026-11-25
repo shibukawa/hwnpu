@@ -13,7 +13,7 @@ import (
 const listenFDsStart = 3
 
 // activated returns the listeners systemd passed this process (LISTEN_FDS, LISTEN_PID,
-// LISTEN_FDNAMES: hwnpud.socket's FileDescriptorName is the socket name), nil when systemd did
+// LISTEN_FDNAMES: bonsaiaid.socket's FileDescriptorName is the socket name), nil when systemd did
 // not start it with any. The variables are taken out of the environment, so that the engine
 // does not see them as its own.
 func activated(name string) ([]net.Listener, error) {

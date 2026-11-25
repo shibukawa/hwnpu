@@ -10,13 +10,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // moe4 times experts in 4 bits on the Neural Engine: two signed codes an int8, 16 hi + (lo + 8),
@@ -255,10 +255,10 @@ func moe4(argv []string) error {
 			for i := range sd {
 				sd[i] = float32(1/(7*math.Sqrt(float64(I)))) * (0.5 + rng.Float32())
 			}
-			hwnpu.EncodeF16(x.sgu.Bytes(), sg)
-			hwnpu.DecodeF16(sg, x.sgu.Bytes())
-			hwnpu.EncodeF16(x.sdn.Bytes(), sd)
-			hwnpu.DecodeF16(sd, x.sdn.Bytes())
+			bonsaiai.EncodeF16(x.sgu.Bytes(), sg)
+			bonsaiai.DecodeF16(sg, x.sgu.Bytes())
+			bonsaiai.EncodeF16(x.sdn.Bytes(), sd)
+			bonsaiai.DecodeF16(sd, x.sdn.Bytes())
 			gb, db := x.gu.Bytes(), x.dn.Bytes()
 			if *native {
 				nib := func(buf []byte, i, c int) { // element i of a packed int4 array
@@ -344,12 +344,12 @@ func moe4(argv []string) error {
 	for i := range xv {
 		xv[i] = float32(rng.NormFloat64())
 	}
-	hwnpu.EncodeF16(xb.Bytes(), xv)
-	hwnpu.DecodeF16(xv, xb.Bytes())
+	bonsaiai.EncodeF16(xb.Bytes(), xv)
+	bonsaiai.DecodeF16(xv, xb.Bytes())
 	req.Bind(args["x"].Index, xb)
 	for k := 0; k < K; k++ {
 		r, _ := alloc(fmt.Sprintf("r%d", k))
-		hwnpu.EncodeF16(r.Bytes(), []float32{1 / float32(K)})
+		bonsaiai.EncodeF16(r.Bytes(), []float32{1 / float32(K)})
 		req.Bind(args[fmt.Sprintf("r%d", k)].Index, r)
 	}
 	yb, _ := alloc("y")
@@ -379,7 +379,7 @@ func moe4(argv []string) error {
 		return err
 	}
 	got := make([]float32, H)
-	hwnpu.DecodeF16(got, yb.Bytes())
+	bonsaiai.DecodeF16(got, yb.Bytes())
 	want := make([]float32, H)
 	for _, e := range chosen {
 		x := held[0][e]
@@ -490,7 +490,7 @@ func fdivCheck() error {
 		return err
 	}
 	got := make([]float32, 5*n)
-	hwnpu.DecodeF16(got, out.Bytes())
+	bonsaiai.DecodeF16(got, out.Bytes())
 	bad := 0
 	for i := 0; i < n; i++ {
 		b := i%256 - 128

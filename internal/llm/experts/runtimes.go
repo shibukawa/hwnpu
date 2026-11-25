@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// runTimes keeps, for HWNPU_DEV's moe.time, how long a row's layer of experts took (one row:
+// runTimes keeps, for BONSAIAI_DEV's moe.time, how long a row's layer of experts took (one row:
 // a generated token) by what its experts were: all wired, some not wired but every page of
 // them in memory (the page cache kept them, or the prefetcher brought them in), or some with
 // pages out of memory when the row came, guessed by the prefetcher (not in yet) or not.

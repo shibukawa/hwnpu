@@ -41,7 +41,7 @@ KT, MT, PR, GROUP = 320, 32, 16, 32
 BLOCK = MT * KT // GROUP + MT * KT // 2 + 2 * MT  # 5504: the exponents (a byte a group), the codes, the bias
 # EXPERTS: the places of a layer's tables, an expert's tables each: every expert (32), or fewer
 # where the layer's experts do not all stay on the device (GPTOSS_EXPERT_PLACES, a multiple of 4:
-# hwnpu copies an expert in from the export's experts.bin when it is chosen and not in a place,
+# bonsaiai copies an expert in from the export's experts.bin when it is chosen and not in a place,
 # internal/llm/iron/pool.go). A prompt pass's fixed slots are the places
 TOP = 4
 EXPERTS = int(os.environ.get("GPTOSS_EXPERT_PLACES", "32"))
@@ -746,14 +746,14 @@ assert SLOTS % TOP == 0 and SLOTS <= COUNT_WORDS
 def plan_slots(counts):
     """The slots of one pass for each expert's rows ``counts``: (expert, first row, rows) of each
     slot, expert e's first CAP rows in slot e, its further ones in the overflow slots in turn, the
-    unused ones (0, 0, 0) (hwnpu's moeHostRouteMX4 plans the same way)."""
+    unused ones (0, 0, 0) (bonsaiai's moeHostRouteMX4 plans the same way)."""
     counts = [int(c) for c in counts]
     out = [(e, 0, min(CAP, c)) for e, c in enumerate(counts)]
     for e, c in enumerate(counts):
         for r in range(CAP, c, CAP):
             out.append((e, r, min(CAP, c - r)))
     if len(out) > SLOTS:
-        raise NotImplementedError(f"{len(out)} slots of {SLOTS} (hwnpu splits the chunk into passes)")
+        raise NotImplementedError(f"{len(out)} slots of {SLOTS} (bonsaiai splits the chunk into passes)")
     return out + [(0, 0, 0)] * (SLOTS - len(out))
 
 

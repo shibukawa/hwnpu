@@ -112,7 +112,7 @@ func TestRewrites(t *testing.T) {
 		if got := a.RewriteArchs(); len(got) != 2 || Suffix(a.Rewrites(got[0])) != "" || Suffix(a.Rewrites(got[1])) != "-sin-native" {
 			t.Errorf("%s: RewriteArchs %v, want a default's then a native one's", m, got)
 		}
-		if _, ok := a.Left("hwnpu-dac-r3-fp16.coreai", "dac-0.aimodel", "h15g"); !ok {
+		if _, ok := a.Left("bonsaiai-dac-r3-fp16.coreai", "dac-0.aimodel", "h15g"); !ok {
 			t.Errorf("%s: the decoder is prebuilt", m)
 		}
 	}
@@ -122,14 +122,14 @@ func TestRewrites(t *testing.T) {
 	if Suffix(map[string]string{"sin": "native"}, "exp") != "" {
 		t.Error("a suffix of an operation the programs do not have")
 	}
-	t.Setenv("HWNPU_DEV", "rewrite=sin:series")
+	t.Setenv("BONSAIAI_DEV", "rewrite=sin:series")
 	if rw, err := RewritesFor("MOSS-SoundEffect-v2.0", "h15g", true); err != nil || len(rw) != 0 {
 		t.Errorf("rewrite=sin:series on h15g: %v %v, want none", rw, err)
 	}
 	if rw, _ := RewritesFor("MOSS-SoundEffect-v2.0", "h15g", false); rw["sin"] != "native" {
 		t.Errorf("another chip's: %v, want the recipe's", rw)
 	}
-	t.Setenv("HWNPU_DEV", "rewrite=sin:table")
+	t.Setenv("BONSAIAI_DEV", "rewrite=sin:table")
 	if _, err := RewritesFor("MOSS-SoundEffect-v2.0", "h13g", true); err == nil {
 		t.Error("rewrite=sin:table: no error")
 	}

@@ -6,16 +6,16 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
-// Reads the LFM3-1.7B checkpoints when HWNPU_TEST_LFM3_DIR points at them and checks the Q6_K and
+// Reads the LFM3-1.7B checkpoints when BONSAIAI_TEST_LFM3_DIR points at them and checks the Q6_K and
 // Q4_0 decoders against the bf16 weights: the QAD checkpoint is a fine tune of the same model,
 // so the rows should correlate strongly even though they are not identical.
 func TestLFM3Checkpoints(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_LFM3_DIR not set")
+		t.Skip("BONSAIAI_TEST_LFM3_DIR not set")
 	}
 	g, err := Open(filepath.Join(dir, "LFM3-1.7B-QAD-Q4_0.gguf"))
 	if err != nil {

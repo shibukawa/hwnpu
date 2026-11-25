@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/recipe"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
 )
 
 // The built-in recipes name models of models.yaml, and every model with an export of
@@ -67,7 +67,7 @@ func TestLMArgs(t *testing.T) {
 
 // The built-in models.yaml gives no version of amd-xdna2: model-recipes.yaml's recipes do.
 func TestNoAMDVersionInModels(t *testing.T) {
-	for i, l := range strings.Split(string(hwnpu.ModelsYAML), "\n") {
+	for i, l := range strings.Split(string(bonsaiai.ModelsYAML), "\n") {
 		if l = strings.TrimSpace(l); !strings.HasPrefix(l, "#") && strings.HasPrefix(l, "targets:") && strings.Contains(l, cache.AMDTarget) {
 			t.Errorf("models.yaml:%d gives a version of amd-xdna2: write it in model-recipes.yaml (models.NAME.amd.version)", i+1)
 		}
@@ -86,7 +86,7 @@ func TestPinsOfVersion(t *testing.T) {
 		for target, pins := range m.Pins {
 			for export, p := range pins {
 				if !p.OfVersion(m.Targets[target]) {
-					t.Errorf("%s: %s %s is pinned at %s, of no version %d (hwnpu-dev models package %s/%s, then hwnpu-dev models pin %s)",
+					t.Errorf("%s: %s %s is pinned at %s, of no version %d (bonsaiai-dev models package %s/%s, then bonsaiai-dev models pin %s)",
 						m.Name, target, export, p.At, m.Targets[target], m.Name, target, m.Name)
 				}
 			}
@@ -107,6 +107,7 @@ func TestPinsOfVersion(t *testing.T) {
 func TestPinOfOldVersionNotTaken(t *testing.T) {
 	base, _ := Lookup("Qwen3.5-0.8B")
 	export := "Qwen3.5-0.8B.amd-npu2-q6"
+	base.Pins = map[string]map[string]Pin{cache.AMDTarget: {export: {At: fmt.Sprintf("v%d", base.Targets[cache.AMDTarget]), Digest: "sha256:" + strings.Repeat("0", 64)}}}
 	p := placeOf("iron-lm", base, cache.AMDTarget, export, map[string]string{"model": base.Name})
 	if p.pin == nil || p.pin.At != base.Pins[cache.AMDTarget][export].At {
 		t.Fatalf("version %d: pin %+v not taken", base.Targets[cache.AMDTarget], p.pin)

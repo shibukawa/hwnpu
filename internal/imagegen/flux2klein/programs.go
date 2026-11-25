@@ -13,13 +13,13 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // ProgramKind is the kind of manifest.json of an export of Convert.
@@ -45,7 +45,7 @@ type ProgramManifest struct {
 	Kind    string `json:"kind"`
 	Backend string `json:"backend"`
 	Version int    `json:"version"` // ExportVersion
-	// Formats are the weight formats of the parts (text, dit, vae), as hwnpu-convert's -format.
+	// Formats are the weight formats of the parts (text, dit, vae), as bonsaiai-convert's -format.
 	Formats map[string]string `json:"formats"`
 	Dit     Config            `json:"dit"`
 	Text    TextConfig        `json:"text"`
@@ -136,7 +136,7 @@ func ReadProgramManifest(dir string) (*ProgramManifest, error) {
 		return nil, err
 	}
 	if m.Kind != ProgramKind {
-		return nil, fmt.Errorf("flux2klein: %s is not an export of hwnpu-image convert", dir)
+		return nil, fmt.Errorf("flux2klein: %s is not an export of bonsaiai-image convert", dir)
 	}
 	return &m, nil
 }
@@ -157,7 +157,7 @@ func writeProgramManifest(dir string, m *ProgramManifest) error {
 type progEngine struct {
 	m    *ProgramManifest
 	dir  string
-	dev  *hwnpu.Device
+	dev  *bonsaiai.Device
 	log  io.Writer
 	logf func(string, ...any)
 	// time is the time embedding's weights (TimeFile), read when a sigma's modulation rows are
@@ -178,7 +178,7 @@ type progEngine struct {
 	loader runner.OpenFunc
 }
 
-func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer, logf func(string, ...any)) (*progEngine, error) {
+func openPrograms(dev *bonsaiai.Device, dir string, w, h int, log io.Writer, logf func(string, ...any)) (*progEngine, error) {
 	m, err := ReadProgramManifest(dir)
 	if err != nil {
 		return nil, err
@@ -187,7 +187,7 @@ func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer, logf f
 		return nil, err
 	}
 	if m.Version != ExportVersion {
-		return nil, fmt.Errorf("%s is of layout %d, this hwnpu reads %d: convert it again", dir, m.Version, ExportVersion)
+		return nil, fmt.Errorf("%s is of layout %d, this bonsaiai reads %d: convert it again", dir, m.Version, ExportVersion)
 	}
 	e := &progEngine{m: m, dir: dir, dev: dev, log: log, logf: logf, ahead: runner.Ahead(dev)}
 	if s, ok := m.EditAt(m.Dit.Width, m.Dit.Height); ok {
@@ -553,7 +553,7 @@ func pixel(v float32) uint8 {
 }
 
 // openProgramPipeline reads an export of Convert in dir for pictures of w x h (0: its default).
-func openProgramPipeline(dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
+func openProgramPipeline(dev *bonsaiai.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{dev: dev, dir: dir}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()

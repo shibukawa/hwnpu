@@ -1,6 +1,6 @@
-package hwnpu
+package bonsaiai
 
-import "github.com/shibukawa/hwnpu/internal/vecops"
+import "github.com/shibukawa/bonsaiai/internal/vecops"
 
 // EncodeF16 writes src as IEEE 754 half precision, little endian, into dst.
 // dst must hold 2*len(src) bytes. Values are rounded to nearest even.

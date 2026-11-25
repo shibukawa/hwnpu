@@ -1,4 +1,4 @@
-# NPU papers we drew on, and what held up in hwnpu
+# NPU papers we drew on, and what held up in BonsaiAI
 
 [日本語](reference-paper.ja.md)
 
@@ -16,13 +16,13 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 
 **Result labels**
 - **Held**: the claim held on our hardware, and we used it to speed something up or fix something
-- **Already done**: hwnpu already did the same thing
+- **Already done**: BonsaiAI already did the same thing
 - **Partly**: parts held and parts did not
 - **Not started**: not tried yet
 
 ## At a glance
 
-| Paper | Claim | Result | hwnpu sections |
+| Paper | Claim | Result | BonsaiAI sections |
 |---|---|---|---|
 | HeteroMosaic 2607.12839 ✓ | Reconfiguring the datapath (reloading the PDI) is expensive. Switching DMA settings is nearly free | **Held.** One reconfiguration costs 40 µs + 2.3 µs/KB, about 70 % of dense-model decode time. Fusing ops took LFM3 from 11.2 to 16.9 tok/s, among others | [amd](design/amd.md), [README](design/README.md).278 |
 | 2606.07586 ✓ (Llama-3.2-1B on XDNA2) | Reuse the XRT context. Pass BOs zero-copy. Skip host syncs for buffers only the NPU touches | **Already done.** The IRON path already syncs only the ranges it uses | end of [amd](design/amd.md) |
@@ -32,7 +32,7 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 | STEEL 2607.09385 (a) | Place FlashAttention pipeline stages with the causal mask's sparsity in mind | **Not started** | |
 | Zen-Attention 2508.17593 (a) | Fold attention to cut DRAM bandwidth | **Not started** | |
 | MR-GPTQ 2509.23202 (a), QuaRot / SpinQuant † | Rotate with a Hadamard transform before quantizing, to flatten outliers | **Not started on AMD.** On Apple's lut formats it roughly halved the KL (not in the product yet) | [apple-neural-engine](design/apple-neural-engine.md) |
-| TileFuse 2606.11357 ✓ | BFP16 kernels are not accurate enough for end-to-end LLMs | **Check only.** hwnpu checks every bfp16 use with KL or cosine | [moe](design/moe.md), [image-amd](design/image-amd.md) |
+| TileFuse 2606.11357 ✓ | BFP16 kernels are not accurate enough for end-to-end LLMs | **Check only.** BonsaiAI checks every bfp16 use with KL or cosine | [moe](design/moe.md), [image-amd](design/image-amd.md) |
 | ENEC 2604.03298 (a, Ascend) | Lossless weight compression removes the transfer bound | **Not started.** Decode today is bound by reconfiguration, not bandwidth, so this waits | |
 | 2505.16056 (Not All Models Suit Expert Offloading) | A cache about twice the active experts is enough. LFU beats LRU | **Partly.** AMD's expert places (`--expert-places`) are now chosen by usage count | [moe](design/moe.md), [moe](design/moe.md) |
 | EStream 2609.06551 (Hexagon) | Keep experts in a bank × slot pool, addressed as base + slot × size. Read with O_DIRECT | **Held.** It is the basis of AMD's expert places. gpt-oss-120b reads with O_DIRECT | [moe](design/moe.md), handoff-amd-moe.md |
@@ -52,7 +52,7 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 - Group operations by xclbin. Drive the NPU from a single thread
 
 **What we checked** ([amd](design/amd.md))
-- In hwnpu's full ELF, every change of operator puts a `load_pdi` and the array configuration (including core program memory) into the control code
+- In BonsaiAI's full ELF, every change of operator puts a `load_pdi` and the array configuration (including core program memory) into the control code
 - One reconfiguration costs 40 µs + 2.3 µs/KB. This is what lay behind 16.75's "about 80 µs per operator of a different kind"
 - The estimate matched real decode times within 10 % (LFM3-1.7B: 98 ms estimated against 92.6 ms measured; Gemma 4 E2B: 138 ms against 137 ms)
 - gpt-oss-20b's decode does not fit the pattern: it is a single resident operation (`GptOssStep`)
@@ -88,7 +88,7 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 - Reorder with multi-dimensional DMA addressing instead of tiling weights on the host ahead of time
 - When the output transfer can be amortized, use a single C buffer (+13–18 %)
 
-**Relation to hwnpu**
+**Relation to BonsaiAI**
 - The bfp16 datapath is already used for the DiT and for gpt-oss's prompt experts
 - One DMA dimension holds at most 1023 words, so the 4-D TAP that would reorder weights into consumption order does not fit ([moe](design/moe.md)). The expert tables are reordered on the host instead
 - 16.278's `ShortConvChunk` also hits this limit: `length_parameter`, which would cut the DMA by row count, cannot be used, so every row of the chunk is moved
@@ -107,7 +107,7 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 - STEEL: places the pipeline stages with the causal mask's sparsity in mind
 - Zen-Attention: folds attention and chooses tiles to cut DRAM bandwidth. Attention up to 4×, end to end up to 32 %
 
-**Relation to hwnpu**: the targets are the prompt's causal attention and the DiT's attention. Fusion also cuts the number of reconfigurations, which agrees with [amd](design/amd.md). 2609.21264 is written in IRON, so if its code is published, the quickest route is to compare it in the same shape as today's `iron_mha.py`.
+**Relation to BonsaiAI**: the targets are the prompt's causal attention and the DiT's attention. Fusion also cuts the number of reconfigurations, which agrees with [amd](design/amd.md). 2609.21264 is written in IRON, so if its code is published, the quickest route is to compare it in the same shape as today's `iron_mha.py`.
 
 ### Rotation: MR-GPTQ 2509.23202 (a), QuaRot / SpinQuant † — not started on AMD, partly on Apple
 
@@ -130,13 +130,13 @@ AMD's q4 might benefit (most of Qwen3.6's gap to HF, cosine 0.986–0.996, comes
 
 **Claim**: fused W4A16/W8A16 kernels on XDNA2. "BFP16 kernels are not accurate enough for end-to-end LLMs."
 
-**Relation to hwnpu**: hwnpu uses bfp16 for the DiT's attention and MLP (checked by latent cosine, [image-amd](design/image-amd.md)) and for gpt-oss's prompt experts (KL measured, [moe](design/moe.md)). A new LLM that uses bfp16 should go through the same KL sweep. We have not re-measured.
+**Relation to BonsaiAI**: BonsaiAI uses bfp16 for the DiT's attention and MLP (checked by latent cosine, [image-amd](design/image-amd.md)) and for gpt-oss's prompt experts (KL measured, [moe](design/moe.md)). A new LLM that uses bfp16 should go through the same KL sweep. We have not re-measured.
 
 ### ENEC 2604.03298 (a, Ascend) — not started
 
 **Claim**: fixed-length block codes and branch-free decoding remove the weight-transfer bound. Up to 6.3× end to end.
 
-**Relation to hwnpu**: as 16.266 shows, dense-model decode is bound by reconfiguration, not bandwidth, so this only helps once reconfiguration is cut. First measure the entropy of q4nx's codes and scales; if it does not fall below 2.5 bits per code, decoding probably costs more than it saves.
+**Relation to BonsaiAI**: as 16.266 shows, dense-model decode is bound by reconfiguration, not bandwidth, so this only helps once reconfiguration is cut. First measure the entropy of q4nx's codes and scales; if it does not fall below 2.5 bits per code, decoding probably costs more than it saves.
 
 ## MoE
 
@@ -146,7 +146,7 @@ The full table is chapter 13 of [docs/design/performance.md](design/performance.
 
 **Claim**: measures local routing consistency across 20 MoEs. A cache of about twice the active experts is enough. LFU beats LRU by 3–5 points.
 
-**Relation to hwnpu**
+**Relation to BonsaiAI**
 - AMD's expert places (`--expert-places`, [moe](design/moe.md)) choose which experts to keep by calibrated usage count
 - Qwen3.6-35B-A3B: 7.5 GiB on a 16 GB machine, 5.8–6.0 tok/s ([moe](design/moe.md))
 - The places are larger than "twice the active experts" (gpt-oss-20b on a 16 GB machine keeps about 5×: 20 of the 32 per layer)
@@ -158,7 +158,7 @@ The full table is chapter 13 of [docs/design/performance.md](design/performance.
 - Weights live in a bank × slot DMA-BUF pool, addressed as base + slot × stride. The route descriptor is passed at call time
 - Experts are read with O_DIRECT (two at once reach 95 % of the bandwidth)
 
-**Relation to hwnpu**
+**Relation to BonsaiAI**
 - The positions `MoERoute` writes to the scratchpad ([moe](design/moe.md)) follow the same idea as the paper's "expert virtualization". It became the basis of AMD's places, which hold only some of the experts ([moe](design/moe.md))
 - gpt-oss-120b reads its expert files with O_DIRECT (handoff-amd-moe.md 4)
 
@@ -166,7 +166,7 @@ The full table is chapter 13 of [docs/design/performance.md](design/performance.
 
 **Claim**: predicts the next layer's gate from the current layer's input. 79–84 % correct during generation.
 
-**Relation to hwnpu**
+**Relation to BonsaiAI**
 - Apple's gpt-oss-20b: the next layer's prediction holds 86–87 % of the experts in its top 4. Prefetching made every budget 3–6 % faster
 - AMD's gpt-oss-120b: prefetching the next layer's top 4 cut misses from 9.8 to 3.1 % and took it from 9.2 to 9.7–9.9 tok/s (handoff-amd-moe.md 4)
 
@@ -174,7 +174,7 @@ The full table is chapter 13 of [docs/design/performance.md](design/performance.
 
 **Claim**: only the prompt runs on the Neural Engine, through Core ML. Routing, gather and write-back stay on the CPU.
 
-**Relation to hwnpu**: it matches hwnpu's decision not to put gather on the Neural Engine ([moe](design/moe.md)). The paper does not cover generation.
+**Relation to BonsaiAI**: it matches BonsaiAI's decision not to put gather on the Neural Engine ([moe](design/moe.md)). The paper does not cover generation.
 
 ## Apple Neural Engine (checked on an M2, [apple-neural-engine](design/apple-neural-engine.md))
 
@@ -182,13 +182,13 @@ Around the same time as the AMD survey, we checked the Neural Engine papers' rul
 
 ### 2606.22283 (reverse engineering) — partly
 
-| Rule in the paper | On the M2 | What hwnpu does |
+| Rule in the paper | On the M2 | What BonsaiAI does |
 |---|---|---|
 | linear / conv outputs must stay below 2^15 | Holds, **including partial sums**: Inf once one reaches 32768 | Ranges were already kept down. Added to the checks for a new model |
 | A width-axis slice with a nonzero start multiplies by 16 | Only when the start mod 32 is 1–14 | `aicheck lint` looks for it. Nothing in our exports is affected |
 | softplus(+inf) is 0 | 0 for x > 10.4 | ailower's softplus was rewritten (worst relative error 1 → 0.0014) |
 | Denormals inside a matmul become 0 (the paper says M1) | The M2 too | Covered by the range checks |
-| About 128 programs per process | Up to **112**. Beyond that Core AI silently runs the program on the GPU | hwnpu now says so when a load fails near the limit |
+| About 128 programs per process | Up to **112**. Beyond that Core AI silently runs the program on the GPU | BonsaiAI now says so when a load fails near the limit |
 | A step at 5 experts per program (M1) | **Not on the M2** (time grows with top-k) | |
 
 ### 2611.19101 (roofline) — held

@@ -8,9 +8,9 @@ import (
 	"math"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // EstimatorProgram is vector_estimator as a program of a text of T characters and a latent of
@@ -159,7 +159,7 @@ type npuSize struct {
 // OpenNPU opens the programs of c (of the same Sizes) on dev (nil: the CPU interpreter), the
 // embedding tables from the model's graphs; cpu (nil for none) runs what no program holds. A
 // Config of the text's programs alone (no Estimators and Vocoders) opens those (OpenAMD's).
-func OpenNPU(ctx context.Context, dev *hwnpu.Device, cpu Stages, c Config) (Stages, error) {
+func OpenNPU(ctx context.Context, dev *bonsaiai.Device, cpu Stages, c Config) (Stages, error) {
 	n := len(c.Durations)
 	flow := len(c.Estimators) > 0 || len(c.Vocoders) > 0
 	if n == 0 || len(c.Encoders) != n || flow && (len(c.Estimators) != n || len(c.Vocoders) != n) {

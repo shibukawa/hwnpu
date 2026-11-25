@@ -3,7 +3,7 @@ package chat
 import (
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
 )
 
 // hubArch is this Mac's architecture of the Neural Engine (h14g), the target of the prebuilt

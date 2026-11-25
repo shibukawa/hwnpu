@@ -35,7 +35,7 @@ func TestFormatOf(t *testing.T) {
 }
 
 // ProgramBackend takes a device backend or the program format OpenDevice returns: the commands
-// pass the latter (hwnpu-image pose, detect, ocr, hwnpu-audio pitch, notes), which made "intel"
+// pass the latter (bonsaiai-image pose, detect, ocr, bonsaiai-audio pitch, notes), which made "intel"
 // "" and every one of them refuse Intel's NPU.
 func TestProgramBackend(t *testing.T) {
 	for in, want := range map[string]string{

@@ -1,4 +1,4 @@
-// Package chain runs a model written in parts (hwnpu-dev convert's out.parts.json) as one model: it
+// Package chain runs a model written in parts (bonsaiai-dev convert's out.parts.json) as one model: it
 // loads every part, a package of its own, and binds the output buffer of each part as the input x
 // of the next, so that nothing is copied between them. An input named like an output of an
 // earlier part is bound to that output (Gemma 4's per-layer inputs and shared keys and values);
@@ -24,33 +24,33 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
 )
 
 // Part is one loaded part.
 type Part struct {
 	llm.PartRecord
-	Placement hwnpu.PlacementReport
+	Placement bonsaiai.PlacementReport
 	Cached    bool // compiled from the device's cache
 
-	g   *hwnpu.Graph
-	req *hwnpu.Request
+	g   *bonsaiai.Graph
+	req *bonsaiai.Request
 	// the part's buffers that a stage of a model split at its attention syncs around it
-	ins, outs []*hwnpu.Buffer
+	ins, outs []*bonsaiai.Buffer
 }
 
 // tier is one loaded set of parts with its buffers.
 type tier struct {
 	parts             []*Part
-	inputs, outputs   map[string]*hwnpu.Buffer
+	inputs, outputs   map[string]*bonsaiai.Buffer
 	inShape, outShape map[string][]int
 	passed            map[string]bool // outputs bound as inputs of a later part
-	out               *hwnpu.Buffer
-	bufs              []*hwnpu.Buffer
+	out               *bonsaiai.Buffer
+	bufs              []*bonsaiai.Buffer
 	loadTime          time.Duration
 
 	// of a model split at its attention
@@ -70,13 +70,13 @@ type tier struct {
 
 // attention is the loaded program without weights that attends over one chunk of the cache.
 type attention struct {
-	g          *hwnpu.Graph
-	req        *hwnpu.Request
+	g          *bonsaiai.Graph
+	req        *bonsaiai.Request
 	k, v, mask int // the arguments bound per call
-	q, o, m, l *hwnpu.Buffer
-	bufs       []*hwnpu.Buffer
-	dev        *hwnpu.Device
-	placement  hwnpu.PlacementReport
+	q, o, m, l *bonsaiai.Buffer
+	bufs       []*bonsaiai.Buffer
+	dev        *bonsaiai.Device
+	placement  bonsaiai.PlacementReport
 	mass       *mass // the two-level attention's, nil when the manifest has none
 	chunk      int   // of a shorter chunk's (llm.Manifest.Smaller); 0 for the manifest's Paged
 	// family is the tier's attention programs, over every chunk length: a buffer for one of
@@ -86,11 +86,11 @@ type attention struct {
 
 // newBuf allocates a buffer of n bytes for the attention programs of the tier: as the input of
 // that size of one of them, its keys and values (a chunk of the cache) before its mask, which
-// the backend may run without copying it (hwnpu.Graph.AllocInput: with Core AI a chunk of 8192
+// the backend may run without copying it (bonsaiai.Graph.AllocInput: with Core AI a chunk of 8192
 // of LFM3-1.7B, 16 MiB of keys and values, was copied in 0.56 of the call's 2.07 ms on an M1),
 // else of the device. A buffer bound to an input of another shape of its size is copied as one
 // of the device's (a mask of 128 rows over 4096 keys is as large as LFM3-1.7B's 1024 keys).
-func (a *attention) newBuf(n int) (*hwnpu.Buffer, error) {
+func (a *attention) newBuf(n int) (*bonsaiai.Buffer, error) {
 	family := append([]*attention{a}, a.family...)
 	for _, f := range family {
 		if f.g.Args()[f.k].Bytes == n {
@@ -108,19 +108,19 @@ func (a *attention) newBuf(n int) (*hwnpu.Buffer, error) {
 // mass is the loaded program without weights that weighs a chunk of bucket summaries for the
 // two-level attention (decode.Sparse).
 type mass struct {
-	g         *hwnpu.Graph
-	req       *hwnpu.Request
+	g         *bonsaiai.Graph
+	req       *bonsaiai.Request
 	k, mask   int
-	q, r, w   *hwnpu.Buffer
-	bufs      []*hwnpu.Buffer
-	placement hwnpu.PlacementReport
+	q, r, w   *bonsaiai.Buffer
+	bufs      []*bonsaiai.Buffer
+	placement bonsaiai.PlacementReport
 }
 
 // Chain is a loaded model in parts.
 type Chain struct {
-	dev   *hwnpu.Device
+	dev   *bonsaiai.Device
 	units string // GraphSource.Units of every part
-	gr    hwnpu.GraphRunner
+	gr    bonsaiai.GraphRunner
 	tiers []llm.Tier
 	index int   // the tier loaded
 	cur   *tier // never nil after Open
@@ -141,7 +141,7 @@ type preload struct {
 
 // Open loads the model at path on dev: a manifest of parts (out.parts.json), whose first tier is
 // loaded when it has several, or a single package.
-func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, path string) (*Chain, error) {
 	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
@@ -152,7 +152,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 
 // Options are how OpenWith loads a model.
 type Options struct {
-	// Units are the units every part runs on (hwnpu.GraphSource.Units: "gpu", "cpu"; "" the
+	// Units are the units every part runs on (bonsaiai.GraphSource.Units: "gpu", "cpu"; "" the
 	// Neural Engine).
 	Units string
 	// Experts says which of the experts the host runs stay wired when they do not all fit
@@ -161,7 +161,7 @@ type Options struct {
 }
 
 // OpenWith is Open with o.
-func OpenWith(ctx context.Context, dev *hwnpu.Device, path string, o Options) (*Chain, error) {
+func OpenWith(ctx context.Context, dev *bonsaiai.Device, path string, o Options) (*Chain, error) {
 	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
@@ -170,9 +170,9 @@ func OpenWith(ctx context.Context, dev *hwnpu.Device, path string, o Options) (*
 	return open(ctx, dev, man, nil, nil, o)
 }
 
-// OpenOn is Open with every part run on the units given (hwnpu.GraphSource.Units: "gpu", "cpu";
+// OpenOn is Open with every part run on the units given (bonsaiai.GraphSource.Units: "gpu", "cpu";
 // "" the Neural Engine).
-func OpenOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*Chain, error) {
+func OpenOn(ctx context.Context, dev *bonsaiai.Device, path, units string) (*Chain, error) {
 	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
@@ -185,13 +185,13 @@ func OpenOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*Chain,
 // buffers of the same inputs of c's loaded tier, so that both chains continue one sequence
 // (decode.Session.Add): the same model converted with another number of tokens per call. The
 // buffers stay c's; close the new chain before c, and do not Grow either chain while they share.
-func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
+func (c *Chain) Share(ctx context.Context, dev *bonsaiai.Device, path string) (*Chain, error) {
 	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
 		return nil, err
 	}
-	shared := map[string]*hwnpu.Buffer{}
+	shared := map[string]*bonsaiai.Buffer{}
 	for name, b := range c.cur.inputs {
 		if llm.CacheInput(name) {
 			shared[name] = b
@@ -202,7 +202,7 @@ func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Cha
 
 // open loads the model of man; shared are cache buffers of another chain (Share) and sharedMoE
 // its experts, nil for none.
-func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer, sharedMoE *moe, o Options) (*Chain, error) {
+func open(ctx context.Context, dev *bonsaiai.Device, man *llm.Manifest, shared map[string]*bonsaiai.Buffer, sharedMoE *moe, o Options) (*Chain, error) {
 	units := o.Units
 	gr, err := dev.Graph()
 	if err != nil {
@@ -260,7 +260,7 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 		cur = append(cur, p)
 		layer := -1
 		for _, a := range p.g.Args() {
-			if a.Kind == hwnpu.ArgOutput && strings.HasPrefix(a.Name, "attn_q_") {
+			if a.Kind == bonsaiai.ArgOutput && strings.HasPrefix(a.Name, "attn_q_") {
 				if _, err := fmt.Sscanf(a.Name, "attn_q_%d", &layer); err != nil {
 					return fmt.Errorf("chain: part %d: output %s", i, a.Name)
 				}
@@ -321,7 +321,7 @@ func loadAttention(ctx context.Context, c *Chain, path string) (*attention, erro
 	a := &attention{dev: c.dev}
 	var err error
 	loaded := console.LoadingPart(llm.PartBytes(path))
-	a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units})
+	a.g, err = c.gr.Compile(ctx, bonsaiai.GraphSource{Path: path, Units: c.units})
 	loaded(err == nil)
 	if err != nil {
 		return a, fmt.Errorf("chain: the attention program (%s): %w", path, err)
@@ -372,7 +372,7 @@ func loadMass(ctx context.Context, c *Chain, path string) (*mass, error) {
 	ms := &mass{}
 	var err error
 	loaded := console.LoadingPart(llm.PartBytes(path))
-	ms.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units})
+	ms.g, err = c.gr.Compile(ctx, bonsaiai.GraphSource{Path: path, Units: c.units})
 	loaded(err == nil)
 	if err != nil {
 		return nil, fmt.Errorf("chain: the mass program (%s): %w", path, err)
@@ -414,7 +414,7 @@ func loadMass(ctx context.Context, c *Chain, path string) (*mass, error) {
 }
 
 // program is the attention as decode takes it, run under ctx (that of the tier's program, not
-// the load's: hwnpu-chat cancels the context it loads under once the model is up).
+// the load's: bonsaiai-chat cancels the context it loads under once the model is up).
 func (a *attention) program(ctx context.Context, chunk int) *decode.Attention {
 	return &decode.Attention{
 		Chunk: chunk,
@@ -425,7 +425,7 @@ func (a *attention) program(ctx context.Context, chunk int) *decode.Attention {
 				i int
 				b decode.Buf
 			}{{a.k, k}, {a.v, v}, {a.mask, mask}} {
-				hb, ok := x.b.(*hwnpu.Buffer)
+				hb, ok := x.b.(*bonsaiai.Buffer)
 				if !ok {
 					return fmt.Errorf("chain: a chunk not allocated by the attention program")
 				}
@@ -438,7 +438,7 @@ func (a *attention) program(ctx context.Context, chunk int) *decode.Attention {
 			if err := a.req.Run(ctx); err != nil {
 				return err
 			}
-			for _, b := range []*hwnpu.Buffer{a.o, a.m, a.l} {
+			for _, b := range []*bonsaiai.Buffer{a.o, a.m, a.l} {
 				b.SyncFromDevice(0, b.Size())
 			}
 			return nil
@@ -459,7 +459,7 @@ func (ms *mass) program(ctx context.Context) *decode.Mass {
 				i int
 				b decode.Buf
 			}{{ms.k, k}, {ms.mask, mask}} {
-				hb, ok := x.b.(*hwnpu.Buffer)
+				hb, ok := x.b.(*bonsaiai.Buffer)
 				if !ok {
 					return fmt.Errorf("chain: a chunk not allocated by the attention program")
 				}
@@ -509,10 +509,10 @@ func (a *attention) close() {
 
 // load compiles and binds one tier's parts. Inputs named in shared are bound to those buffers
 // instead of new ones, and are not owned.
-func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[string]*hwnpu.Buffer) (*tier, error) {
+func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[string]*bonsaiai.Buffer) (*tier, error) {
 	start := time.Now()
-	t := &tier{inputs: map[string]*hwnpu.Buffer{}, outputs: map[string]*hwnpu.Buffer{}, inShape: map[string][]int{}, outShape: map[string][]int{}, passed: map[string]bool{}}
-	alloc := func(size int) (*hwnpu.Buffer, error) {
+	t := &tier{inputs: map[string]*bonsaiai.Buffer{}, outputs: map[string]*bonsaiai.Buffer{}, inShape: map[string][]int{}, outShape: map[string][]int{}, passed: map[string]bool{}}
+	alloc := func(size int) (*bonsaiai.Buffer, error) {
 		b, err := c.dev.AllocBuffer(size)
 		if err == nil {
 			t.bufs = append(t.bufs, b)
@@ -524,7 +524,7 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 		p := &Part{PartRecord: lp}
 		// the load's bar goes by the parts loaded and the time of the ones before
 		loaded := console.LoadingPart(llm.PartBytes(lp.Path))
-		p.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: lp.Path, Units: c.units})
+		p.g, err = c.gr.Compile(ctx, bonsaiai.GraphSource{Path: lp.Path, Units: c.units})
 		loaded(err == nil)
 		if err != nil {
 			t.close()
@@ -536,11 +536,11 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 			t.close()
 			return nil, err
 		}
-		var out *hwnpu.Buffer
+		var out *bonsaiai.Buffer
 		for _, a := range p.g.Args() {
-			var b *hwnpu.Buffer
+			var b *bonsaiai.Buffer
 			switch {
-			case a.Kind == hwnpu.ArgOutput:
+			case a.Kind == bonsaiai.ArgOutput:
 				if b, err = alloc(a.Bytes); err != nil {
 					t.close()
 					return nil, err
@@ -585,7 +585,7 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 				t.close()
 				return nil, err
 			}
-			if a.Kind == hwnpu.ArgOutput {
+			if a.Kind == bonsaiai.ArgOutput {
 				p.outs = append(p.outs, b)
 			} else {
 				p.ins = append(p.ins, b)
@@ -599,7 +599,7 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 	}
 	t.outputs["y"] = t.out
 	for _, a := range t.parts[len(t.parts)-1].g.Args() {
-		if a.Kind == hwnpu.ArgOutput && a.Name == "y" {
+		if a.Kind == bonsaiai.ArgOutput && a.Name == "y" {
 			t.outShape["y"] = a.Dims
 		}
 	}
@@ -716,11 +716,11 @@ func (t *tier) runMany(ctx context.Context, i, n int, step func(c int) error, ra
 	parts := t.stages[i]
 	// by step, what the stage's parts so far hand on: the buffers and their contents
 	type kept struct {
-		b *hwnpu.Buffer
+		b *bonsaiai.Buffer
 		v []byte
 	}
 	inner := make([][]kept, n)
-	keep := func(c int, b *hwnpu.Buffer, v []byte) {
+	keep := func(c int, b *bonsaiai.Buffer, v []byte) {
 		for j := range inner[c] {
 			if inner[c][j].b == b {
 				inner[c][j].v = append(inner[c][j].v[:0], v...)
@@ -734,7 +734,7 @@ func (t *tier) runMany(ctx context.Context, i, n int, step func(c int) error, ra
 		names := t.partIn(part)
 		hands := t.hands(part)
 		layer, routed := t.moeAt[part]
-		var xb, lb, ob *hwnpu.Buffer
+		var xb, lb, ob *bonsaiai.Buffer
 		var xs, lgs, outs [][]byte
 		var rows []int
 		if routed {
@@ -798,8 +798,8 @@ func (t *tier) partIn(part *Part) []string {
 }
 
 // hands is the outputs of part that a part after it takes as an input.
-func (t *tier) hands(part *Part) []*hwnpu.Buffer {
-	var out []*hwnpu.Buffer
+func (t *tier) hands(part *Part) []*bonsaiai.Buffer {
+	var out []*bonsaiai.Buffer
 	after := false
 	for _, p := range t.parts {
 		if p == part {
@@ -838,7 +838,7 @@ func (t *tier) stageIn(i int) []string {
 // attention after one of them, which the session writes (attn_o_N, attn_ot_N), and that of the
 // experts after one of their parts (moe_o_N).
 func (t *tier) carry(i int) [][]byte {
-	from := map[*hwnpu.Buffer]int{} // the stage that writes a buffer, or after which it is written
+	from := map[*bonsaiai.Buffer]int{} // the stage that writes a buffer, or after which it is written
 	for s, parts := range t.stages {
 		for _, part := range parts {
 			for _, b := range part.outs {
@@ -859,7 +859,7 @@ func (t *tier) carry(i int) [][]byte {
 		}
 	}
 	var out [][]byte
-	var seen []*hwnpu.Buffer
+	var seen []*bonsaiai.Buffer
 	for _, parts := range t.stages[i+1:] {
 		for _, part := range parts {
 			for _, b := range part.ins {
@@ -885,10 +885,10 @@ func (c *Chain) Program(ctx context.Context) decode.Program {
 }
 
 // Input returns the buffer of a model input (x, or another input such as mask).
-func (c *Chain) Input(name string) *hwnpu.Buffer { return c.cur.inputs[name] }
+func (c *Chain) Input(name string) *bonsaiai.Buffer { return c.cur.inputs[name] }
 
 // Output returns the buffer of the last part's output.
-func (c *Chain) Output() *hwnpu.Buffer { return c.cur.out }
+func (c *Chain) Output() *bonsaiai.Buffer { return c.cur.out }
 
 // Parts returns the loaded parts in order.
 func (c *Chain) Parts() []*Part { return c.cur.parts }

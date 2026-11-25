@@ -11,14 +11,14 @@ import (
 	"testing"
 )
 
-// RunName is the file in hwnpu's directory of settings (beside the user's models.yaml,
+// RunName is the file in bonsaiai's directory of settings (beside the user's models.yaml,
 // UserModelsFile) that keeps the memory the user chose to run each model as (ChooseMemory).
 const RunName = "run.json"
 
-// RunFile is the path of RunName: hwnpu's directory of settings (~/.config/hwnpu,
-// $XDG_CONFIG_HOME/hwnpu, %LOCALAPPDATA%\hwnpu) of this machine, not the cache, so that what is
+// RunFile is the path of RunName: bonsaiai's directory of settings (~/.config/bonsaiai,
+// $XDG_CONFIG_HOME/bonsaiai, %LOCALAPPDATA%\bonsaiai) of this machine, not the cache, so that what is
 // chosen stays when the cache's models are pruned and is not shared with another machine that
-// reads the same cache (HWNPU_CACHE). "" for none: in go test without XDG_CONFIG_HOME, which
+// reads the same cache (BONSAIAI_CACHE). "" for none: in go test without XDG_CONFIG_HOME, which
 // never reads the machine's.
 func RunFile() string {
 	if testing.Testing() && os.Getenv("XDG_CONFIG_HOME") == "" {
@@ -63,9 +63,9 @@ func readRun() runFile {
 }
 
 // ChosenMemory is the memory, in GB, the user chose to run model m as on this machine
-// (ChooseMemory), 0 for none. Every command of hwnpu runs m so (Resolve, ResolveFor, Pick's
+// (ChooseMemory), 0 for none. Every command of bonsaiai runs m so (Resolve, ResolveFor, Pick's
 // model): a 16 GB machine that keeps 8 for LFM3-1.7B, to run it beside other programs, runs it
-// as models.yaml defines it for 8 GB (its variants), not as for 16, in hwnpu-chat and in an
+// as models.yaml defines it for 8 GB (its variants), not as for 16, in bonsaiai-chat and in an
 // application alike, and converts or fetches the programs of that alone. How a model runs on a
 // machine of some memory is the definition's (models.yaml); the user chooses only the machine.
 func ChosenMemory(m Model) int { return readRun().Models[m.Name].Memory }
@@ -131,7 +131,7 @@ func runsAs(m Model, machine int, given bool, log io.Writer) int {
 		return machine
 	}
 	if log != nil {
-		fmt.Fprintf(log, "%s: runs as on a machine of %d GB, as chosen (%s; hwnpu memory %s --forget forgets it)\n", m.Name, gb, RunFile(), m.Name)
+		fmt.Fprintf(log, "%s: runs as on a machine of %d GB, as chosen (%s; bonsaiai memory %s --forget forgets it)\n", m.Name, gb, RunFile(), m.Name)
 	}
 	return gb
 }

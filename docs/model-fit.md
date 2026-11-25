@@ -1,6 +1,6 @@
 # Neural Engine に合うモデルの条件と、少ないメモリで速く賢くするための手法 (調査と提案)
 
-作成: 2026-11-01。対象は hwnpu のチャットのエンジン (`cmd/hwnpu-chat`、`internal/chat`、`internal/llm/decode`) と、今動いている LFM3-1.7B と Gemma 4 E2B。数値は [docs/design/README.md](design/README.md)と [kv-cache.md](kv-cache.md) の M3 (16 GB、macOS 27) の実測から取り、見込みはその実測の係数で計算した。候補モデルの構成は Hugging Face に届かない環境で調べたので、config.json を直接見ていない値には **要確認** を付けた (二次情報の出典は 7 節)。
+作成: 2026-11-01。対象は BonsaiAI のチャットのエンジン (`cmd/bonsaiai-chat`、`internal/chat`、`internal/llm/decode`) と、今動いている LFM3-1.7B と Gemma 4 E2B。数値は [docs/design/README.md](design/README.md)と [kv-cache.md](kv-cache.md) の M3 (16 GB、macOS 27) の実測から取り、見込みはその実測の係数で計算した。候補モデルの構成は Hugging Face に届かない環境で調べたので、config.json を直接見ていない値には **要確認** を付けた (二次情報の出典は 7 節)。
 
 ## 1. 要約
 
@@ -14,9 +14,9 @@ Neural Engine で 1 トークンにかかる時間は、実測ではほぼ次の
 
 | 順 | 手法 | 何に効くか | 見込み (M3) | 変更の量 |
 |---|---|---|---|---|
-| 1 | LFM3 を lut6 にする (3 節 T7) | 賢さ | lut4 の KL 0.89 を Gemma の例 (2.54 → 0.25) から 0.2〜0.3 に。1 トークン +6 ms、重み +0.4 GiB | 変更なし。`hwnpu-dev check` で KL を測って既定を変えるだけ |
+| 1 | LFM3 を lut6 にする (3 節 T7) | 賢さ | lut4 の KL 0.89 を Gemma の例 (2.54 → 0.25) から 0.2〜0.3 に。1 トークン +6 ms、重み +0.4 GiB | 変更なし。`bonsaiai-dev check` で KL を測って既定を変えるだけ |
 | 2 | LFM3 の注意を `SDPAGrouped` の形にする (T1) | 速さ | 16K で 64 → 45〜50 ms。Gemma 4 の係数 (0.22 ms) と LFM3 の係数 (0.47 ms) の差がこの形の差 | 数十行 |
-| 3 | 重みなしの注意プログラムに分け、使っている塊だけ動かす (T2) | 速さとメモリ | 費用が容量でなく長さに比例。段階 (tiers) が要らなくなり、段階ごとの重みの重複 (0.5〜0.7 GiB) が消える | 数百行。先に境目の費用を `hwnpu-dev probe` で測る |
+| 3 | 重みなしの注意プログラムに分け、使っている塊だけ動かす (T2) | 速さとメモリ | 費用が容量でなく長さに比例。段階 (tiers) が要らなくなり、段階ごとの重みの重複 (0.5〜0.7 GiB) が消える | 数百行。先に境目の費用を `bonsaiai-dev probe` で測る |
 | 4 | 生成と prefill のプログラムを 1 本にする (T3) | メモリ | 常駐 2.3 GiB → 1.5 GiB 前後 (16320 のみ)。要求ごとの切り替え 35 ms も消える | 小。Q=16 の費用を `TestCallTimes` で測る |
 | 5 | 退避した系列と system プロンプトの K/V をディスクに置き、埋め込み表を変換時に書き出す (T4、T5) | メモリとディスク | 写し 105 MB × 2 と埋め込みのキャッシュ (最大 256 MB) がプロセスから消える。OpenCode の初回 prefill 13〜17 秒が消える。実行時に 3.5〜10 GB のチェックポイントが要らなくなる | 小〜中 |
 | 6 | 活性を見た表の当てはめ (T8) | 賢さ | lut4 のまま KL を下げる。「重みの誤差が最小の表が最良ではない」(MODEL_ARCHITECTURE.md) の解決策。GPTQ で段を選ぶ部分は入れた (lut6 の KL が半分、[quantization](design/quantization.md))。表そのものの当てはめは残り | 中 |
@@ -60,14 +60,14 @@ Neural Engine で 1 トークンにかかる時間は、実測ではほぼ次の
 
 - 今の LFM3 は `blocks.SDPA` で、K/V を `tile` で 4 ヘッドから 16 ヘッドに複製してから注意を計算する。16K では層ごとに K と V それぞれ 64 MB の写しを毎ステップ作る (6 層で 768 MB)。Gemma 4 は `blocks.SDPAGrouped` (問い合わせのヘッドを系列の軸に積む) で、この形にしたとき 16320 の 1 トークンが 90〜150 ms から 47 ms になった ([llm-models](design/llm-models.md))。
 - 2 節の係数の差 (0.47 対 0.22) がそのままなら、LFM3 の 16K は 13.4 + 6 × 0.22 × 16.3 + 3 ≈ 38 ms。写しの分だけでも 10 ms 前後は減る見込み。Q=8 (投機的デコード) では行が 4 × 8 = 32 になるので、行列積の効率も上がる。
-- [llm-engine](design/llm-engine.md) で CPU に落ちた「問い合わせを (kv ヘッド, グループ) の行列にする」形は `hwnpu-dev probe` の試作で、`SDPAGrouped` (問い合わせのヘッドを系列の軸に積む) はそれとは別の並べ方。Gemma 4 では全演算が ANE に載っている ([llm-models](design/llm-models.md))。LFM3 (16 Q / 4 KV) で同じになるかは配置の確認が要る。
+- [llm-engine](design/llm-engine.md) で CPU に落ちた「問い合わせを (kv ヘッド, グループ) の行列にする」形は `bonsaiai-dev probe` の試作で、`SDPAGrouped` (問い合わせのヘッドを系列の軸に積む) はそれとは別の並べ方。Gemma 4 では全演算が ANE に載っている ([llm-models](design/llm-models.md))。LFM3 (16 Q / 4 KV) で同じになるかは配置の確認が要る。
 - やること: `lfm3/build.go` の `m.SDPA` を `m.SDPAGrouped(q, k, v, 1/sqrt(hd), mask)` に (`ChunkedSDPA` にも同じ並べ方を足す)。`TestPlacementVariants` で配置、`TestCallTimes` で費用、`TestCachedMatchesFull` で一致を確かめる。
 - 2026-11-02: `-attn grouped` で試した ([docs/design/llm-engine.md](design/llm-engine.md))。M3 の c16320 で Q=8 の 1 回が 73.5 → 40.7 ms、NPU に載り、貪欲法の答えは tile と同じ。OpenCode の 7.9K の prefill は 14.6 → 10.9 秒、生成は 60 → 34 ms/token。既定にするかは未決
 - 2026-11-02 (lut6 と組み合わせ): lut6 でも効く。Q=8 84.1 → 42.8 ms、Q=64 109.7 → 90.9 ms ([docs/design/quantization.md](design/quantization.md))
 
 ### T2. 重みなしの注意プログラムに分け、使っている塊だけ動かす (速さとメモリ)
 
-**実装済み** (2026-11-04、[docs/design/llm-engine.md](design/llm-engine.md)): `hwnpu-dev convert -paged 8192`、hwnpu-chat と hwnpu-chat agent の LFM3 の既定。文脈は 262144。Mac での全体の計測はこれから。
+**実装済み** (2026-11-04、[docs/design/llm-engine.md](design/llm-engine.md)): `bonsaiai-dev convert -paged 8192`、bonsaiai-chat と bonsaiai-chat agent の LFM3 の既定。文脈は 262144。Mac での全体の計測はこれから。
 
 **Gemma 4 と Intel の NPU にも** (2026-11-04、[docs/design/llm-engine.md](design/llm-engine.md)): Gemma 4 E2B は 8 部分、鍵と値を共有する層は元の層のキャッシュを読むので 1 トークン 6 KiB、文脈 131072。M3 で 81,691 トークンの合言葉を答え、その長さで 96.7 ms/token。分けない形と同じ答えで短い会話も速く、起動は毎回の 50〜100 秒から 2 秒に。LFM3-VL は文脈 128000。`-backend intel` も分けた IR を書く。
 
@@ -76,22 +76,22 @@ kv-cache.md 4 節 (b) の設計。層を「射影と MLP と畳み込み (重み
 - **速さ**: 塊 (たとえば 1024) のプログラムを 1 つコンパイルして全部の塊に使い回し、使っている塊だけ呼ぶ。合流 (塊ごとの最大値、指数の和、分子) はホストで行う (1 トークンあたり 16 ヘッド × 128 の小さな計算。Q=8 でも同じ)。費用は容量でなく長さに比例し、16K の容量で 2K しか使っていなければ 1K の段階と同じ速さになる。prefill も同じで、7.4K のプロンプトが 16K 容量の費用 (13 秒) を払わなくなる。
 - **メモリ**: 段階 (`-tier`) が要らなくなる。段階は重みを段階ごとに重複させる (0.5〜0.7 GiB、2 本ずつ) ので、その分が消える。[llm-engine](design/llm-engine.md) の「中間の段階 12288」も不要。
 - **費用**: 呼び出しが増える。全注意 6 層 × (使っている塊の数 + 1) 回 × 55 µs で、8K 使用・塊 1024 なら 6 × 9 × 55 µs ≈ 3 ms。1K では今より遅いが、4K を超えると得。
-- **先に測ること**: プログラムの切り替えの費用。重みのある 2 本 (Q=1 と Q=8、各 0.81 GiB) を交互に呼ぶと 1 回 35 ms かかった ([llm-decoding](design/llm-decoding.md)) が、鎖の部分 (0.4 GiB × 2) を続けて呼ぶ境目は 0.1 ms ([apple-coreml](design/apple-coreml.md))。前者は ANE に載る重みの量の上限で載せ直しが起きていると見ている。重みなしのプログラムを間に挟んだときにどちらになるかを `hwnpu-dev probe` で先に測る (合格条件: 境目 1 つ 0.2 ms 以下)。載せ直しが起きるなら、重みなしの注意を「重みありの部分の関数」として同じパッケージに入れる形 ([apple-coreml](design/apple-coreml.md) の multifunction は重みの合計が上限を超える問題だったので、重みなしの関数なら上限に足さない見込み) を試す。
+- **先に測ること**: プログラムの切り替えの費用。重みのある 2 本 (Q=1 と Q=8、各 0.81 GiB) を交互に呼ぶと 1 回 35 ms かかった ([llm-decoding](design/llm-decoding.md)) が、鎖の部分 (0.4 GiB × 2) を続けて呼ぶ境目は 0.1 ms ([apple-coreml](design/apple-coreml.md))。前者は ANE に載る重みの量の上限で載せ直しが起きていると見ている。重みなしのプログラムを間に挟んだときにどちらになるかを `bonsaiai-dev probe` で先に測る (合格条件: 境目 1 つ 0.2 ms 以下)。載せ直しが起きるなら、重みなしの注意を「重みありの部分の関数」として同じパッケージに入れる形 ([apple-coreml](design/apple-coreml.md) の multifunction は重みの合計が上限を超える問題だったので、重みなしの関数なら上限に足さない見込み) を試す。
 - 重みなしのプログラムはコンパイルも読み込みも速いはず ([llm-engine](design/llm-engine.md) の 6〜30 秒は ANE 向けのコンパイルで、重みの処理と見ている。未確認)。
-- 2026-11-04 ([docs/design/llm-engine.md](design/llm-engine.md)、`hwnpu-dev probe attn`): 重みなしの注意だけを測った。コンパイルは 0.1〜0.3 秒。Q=8 は塊 4096 から ANE (それより小さいと Core ML が CPU に置く)。塊 8192 で 6 層の注意は 1K あたり 1.09 ms、使った長さに比例し、塊ごとにバッファを付け替えても費用は増えず、入力は複製されない (262144 で RSS 3.1 GiB)。重みありとの切り替え (`hwnpu-dev probe seam`、1.13 GiB の 7 部分と 6 層の注意を同時に読み込み) では載せ直しは起きず、境目の固定費はない (8192 使用で交互と和の差が −0.03 ms)。65536 使用では交互にすると注意が 1〜7% 遅くなる。Q=8 の 1 ステップは 8192 使用で 29.0 ms、65536 で 95.3 ms
+- 2026-11-04 ([docs/design/llm-engine.md](design/llm-engine.md)、`bonsaiai-dev probe attn`): 重みなしの注意だけを測った。コンパイルは 0.1〜0.3 秒。Q=8 は塊 4096 から ANE (それより小さいと Core ML が CPU に置く)。塊 8192 で 6 層の注意は 1K あたり 1.09 ms、使った長さに比例し、塊ごとにバッファを付け替えても費用は増えず、入力は複製されない (262144 で RSS 3.1 GiB)。重みありとの切り替え (`bonsaiai-dev probe seam`、1.13 GiB の 7 部分と 6 層の注意を同時に読み込み) では載せ直しは起きず、境目の固定費はない (8192 使用で交互と和の差が −0.03 ms)。65536 使用では交互にすると注意が 1〜7% 遅くなる。Q=8 の 1 ステップは 8192 使用で 29.0 ms、65536 で 95.3 ms
 
 ### T3. 生成と prefill のプログラムを 1 本にする (メモリ)
 
 - 今は段階ごとに Q=8 (生成) と Q=64 (prefill) の 2 本で、重みが 2 回 ANE に載り、要求ごとに切り替え 35 ms を払う。
 - 実測 ([llm-engine](design/llm-engine.md)、c16320): Q=8 68.5 ms、Q=64 100.8 ms (635 tokens/s)。Q=8 だけで prefill すると 8 ÷ 0.0685 ≈ 117 tokens/s で、OpenCode の 7.4K が 12 秒 → 63 秒になるので、Q=8 だけでは足りない。
 - Q=16 は未計測。Q=1 → Q=8 が +15%、Q=8 → Q=64 が +47% なので、Q=16 は +5〜10% の見込みで、prefill は 230 tokens/s 前後 (7.4K が 32 秒)。T2 で prefill が長さに比例するようになれば、7.4K は 16K 容量の費用を払わないので、この見込みはさらに縮む。
-- やること: `hwnpu-dev convert -seq 16` で c16320 を作り、`HWNPU_TEST_CHAT_CALL_PKGS` で `TestCallTimes` を回す。生成の費用が Q=8 の +10% 以内なら、`chat.Prepare` の 2 本を 1 本にする (`-draft 16`)。下書きの幅 15 は n-gram の下書きでは当たりが続かないので ([llm-engine](design/llm-engine.md): 7 個と 3 個の差は 10%)、幅は 8 のままで Q=16 の残りを prefill にだけ使う。
+- やること: `bonsaiai-dev convert -seq 16` で c16320 を作り、`BONSAIAI_TEST_CHAT_CALL_PKGS` で `TestCallTimes` を回す。生成の費用が Q=8 の +10% 以内なら、`chat.Prepare` の 2 本を 1 本にする (`-draft 16`)。下書きの幅 15 は n-gram の下書きでは当たりが続かないので ([llm-engine](design/llm-engine.md): 7 個と 3 個の差は 10%)、幅は 8 のままで Q=16 の残りを prefill にだけ使う。
 - 2026-11-02: Q=16 を計測した ([docs/design/llm-engine.md](design/llm-engine.md)): 73.4 ms で Q=8 (69.2 ms) の +6%。1 本化は費用の面で成り立つ。grouped の後で測り直す
 - 2026-11-02 (grouped): `-attn grouped` の 3 本を `TestCallTimes` で: Q=8 41.4 ms、Q=16 47.8 ms (+15%)、Q=64 82.4 ms。交互の Q=8/Q=64 は 159.5 ms (切り替え約 18 ms)。grouped では Q=16 の 1 本化は見合わない ([docs/design/cli.md](design/cli.md) の追記)
 
 ### T4. 退避した系列と system プロンプトの K/V をディスクに置く (メモリ、初回の速さ)
 
-- `Session.Save` の写し (16K で 105 MB、最大 2 本) はプロセスに持たなくてよい。`~/Library/Caches/hwnpu` に書き、`Rewind` のときに読む (105 MB は SSD から 0.1 秒以下)。
+- `Session.Save` の写し (16K で 105 MB、最大 2 本) はプロセスに持たなくてよい。`~/Library/Caches/bonsaiai` に書き、`Rewind` のときに読む (105 MB は SSD から 0.1 秒以下)。
 - 同じ仕組みで system プロンプト (OpenCode は system と道具だけで 7.4K) の K/V を保存すれば、[llm-decoding](design/llm-decoding.md) と 16.37 が挙げた「初回の prefill 13〜17 秒」が消える。鍵はプロンプトのトークン列のハッシュとモデルの名前と容量。
 - 保存するときに int8 (KIVI: K は列ごと、V はトークンごとのスケール) にすれば半分。生きているキャッシュを int8 にすると 1 割遅くなる (kv-cache.md 3 節) が、写しには費用がない。
 - 2026-11-01: 読んだプロンプトの K/V をディスクに置き、再起動後に共通の先頭から戻す仕組みを実装した ([docs/design/llm-engine.md](design/llm-engine.md)、`-prompt-cache`)。退避した系列をプロセスから外す分と int8 は未着手。
@@ -99,7 +99,7 @@ kv-cache.md 4 節 (b) の設計。層を「射影と MLP と畳み込み (重み
 ### T5. 埋め込み表を変換時に書き出す (メモリとディスク)
 
 - 実行時に埋め込みの行をチェックポイントから `ReadAt` で引く (`llm.TokenRow`) ために、3.5 GB (LFM3) や 10.2 GB (Gemma 4 E2B) の safetensors を開いたままにしている。ページキャッシュがほかのものを追い出す。
-- `hwnpu-dev convert` が `embed.bin` (fp16 の行。LFM3 で 65536 × 2048 × 2 B = 256 MB、Gemma 4 E2B で 768 MB、PLE の表 262144 × 8960 は 4.5 GB → 行ごとのスケール付き int8 で 2.3 GB) を書き、`chat.Prepare` は変換が終わったらチェックポイントを消してよいことにする。
+- `bonsaiai-dev convert` が `embed.bin` (fp16 の行。LFM3 で 65536 × 2048 × 2 B = 256 MB、Gemma 4 E2B で 768 MB、PLE の表 262144 × 8960 は 4.5 GB → 行ごとのスケール付き int8 で 2.3 GB) を書き、`chat.Prepare` は変換が終わったらチェックポイントを消してよいことにする。
 - `chat.Engine.emb` の行のキャッシュは float32 (上限 2^26 値 = 256 MB)。fp16 のまま持てば半分、`embed.bin` を写像すればキャッシュ自体が要らない。
 
 ### T6. prefill も使っている塊だけ (速さ)
@@ -111,9 +111,9 @@ T2 と同じ仕組みで、プロンプトの前半は前半の塊しか見な�
 - LFM3-1.7B の lut4 は bf16 に対して KL 0.89 nats、argmax 9/24 (MODEL_ARCHITECTURE.md) で、「富士山 4,076 m」([cli](design/cli.md)) や「OpenCode の指示の取り違え」の有力な原因。Gemma 4 E2B は lut4 2.54 → lut6 0.25 → lut8 0.048 で、lut6 で富士山と信濃川に正答した ([llm-models](design/llm-models.md))。
 - 費用: 重み 0.81 → 1.2 GiB (2 部分のまま)、1 トークン +6 ms (1K で 19 → 25 ms、16K で 64 → 70 ms)。常駐は 2 本で +0.8 GiB。
 - 混ぜる形: `-format-for` で感度の高い群だけ lut8 にする。候補は出力の rms が 0.008 と小さい `out_proj`、`o_proj`、`w2` (MODEL_ARCHITECTURE.md の誤差の床の話) と出力層 (65536 × 2048、lut4 64 MB → lut8 128 MB、+1 ms)。
-- やること: `hwnpu-dev convert -format lut6` と `hwnpu-dev check -package` で KL と argmax を測り、`lfm3.Arch.Format` を変える。`chat.Prepare` は形式を名前に入れる ([llm-models](design/llm-models.md) の `embed-lut8-s128` と同じ) ので古いパッケージと混ざらない。
+- やること: `bonsaiai-dev convert -format lut6` と `bonsaiai-dev check -package` で KL と argmax を測り、`lfm3.Arch.Format` を変える。`chat.Prepare` は形式を名前に入れる ([llm-models](design/llm-models.md) の `embed-lut8-s128` と同じ) ので古いパッケージと混ざらない。
 - 2026-11-02: lut6 を M3 で試した ([docs/design/llm-engine.md](design/llm-engine.md)): 富士山が 3,776 m になり、ほかは変わらず (『こころ』と川は lut6 でも誤り)。12〜15 tokens/s (lut4 は 18〜24)。KL は参照ロジット (LFM3 のリモートコードが要る) 待ち
-- 2026-11-02 (KL): `hwnpu-dev check -package` で bf16 の参照 (32 トークンの英文) に対し、lut6 は KL 0.232 nats、argmax 23/32、cosine 0.963。lut4 は KL 1.387、argmax 16/32、cosine 0.816。見込みの 0.2〜0.3 どおりで、賢さの面では lut6 に変える価値がある。速さ (12〜15 対 18〜24 tokens/s) と重み (+0.4 GiB) との引き換えは未決 ([docs/design/llm-engine.md](design/llm-engine.md))
+- 2026-11-02 (KL): `bonsaiai-dev check -package` で bf16 の参照 (32 トークンの英文) に対し、lut6 は KL 0.232 nats、argmax 23/32、cosine 0.963。lut4 は KL 1.387、argmax 16/32、cosine 0.816。見込みの 0.2〜0.3 どおりで、賢さの面では lut6 に変える価値がある。速さ (12〜15 対 18〜24 tokens/s) と重み (+0.4 GiB) との引き換えは未決 ([docs/design/llm-engine.md](design/llm-engine.md))
 - 2026-11-02 (grouped と組み合わせ): lut6 + grouped の Q=8 は 42.8 ms で、今の既定 lut4 + tile の 69.2 ms より 38% 速く、lut4 + grouped (41.4) との差は 3%。コーディングの課題は 6 往復で終わる (lut4 は 13〜27)。既定にした: `lfm3.Config.Format` が lut6、`attn` が grouped、パッケージ名は `lfm3-lut6-grouped-c16320-q8` ([docs/design/quantization.md](design/quantization.md))
 
 ### T8. 活性を見た表の当てはめ (賢さ)
@@ -123,7 +123,7 @@ MODEL_ARCHITECTURE.md の「表の値の選び方」の表は、重みの誤差�
 1. **重み付き k-means**: 列 j の重みを E[x_j²] (その入力チャンネルの活性の二乗平均) にして、Σ_j E[x_j²] (w_ij − q_ij)² を最小にする。GPTQ や OBQ のヘッセ行列の対角に当たる。`palette.QuantizeBits` に重みの引数を足すだけで、校正データは `tools/ref/ref_logits.py` の隠れ状態か、`milcpu` で数十文を流して集める。
 2. **AWQ 式のスケールの折り込み**: 重要な入力チャンネル j を s_j 倍してから量子化し、s_j の逆数を前の演算に折り込む (q/k/v/gate/up の射影なら直前の RMSNorm の重み、`w2` なら `up_proj` の行、`o_proj` なら `v_proj` の行)。数学的に同じで実行時の費用は 0。ANE の表は 16 行ごとなので、列を伸ばすと行の範囲が広がる取引があり、AWQ と同じく s^α (α を 0〜1 で探索) で決める。
 3. **GPTQ 式の誤差の補償**: 列を順に量子化し、誤差をまだ量子化していない列に送る。表引き形式でも使える (GPTVQ)。1 と 2 の後で足りなければ。
-- 2026-11-06 ([docs/design/quantization.md](design/quantization.md)): 3 を先に入れた。`tools/amd/q4_gptq.py` が CPU で H を集めて GPTQ で各重みの段を選び (表は今の Uniform のまま)、`hwnpu-dev convert -codes DIR` が読む。LFM3 の lut6 は CPU の見積もりで KL が半分 (README 0.070 → 0.027、wiki40b-ja 0.112 → 0.068)、Go の変換で 0.074 → 0.050。lut4 は 2.7 → 0.66 で、まだ使えない。AMD の q4nx にも同じ道で入れた (E2B の KL 0.120 → 0.092、日本語 0.221 → 0.081)。1 (重み付き k-means で表そのものを合わせる) と 2 (AWQ 式のスケール) は試していない。lut4 を使える水準に近づけるなら次はこれら
+- 2026-11-06 ([docs/design/quantization.md](design/quantization.md)): 3 を先に入れた。`tools/amd/q4_gptq.py` が CPU で H を集めて GPTQ で各重みの段を選び (表は今の Uniform のまま)、`bonsaiai-dev convert -codes DIR` が読む。LFM3 の lut6 は CPU の見積もりで KL が半分 (README 0.070 → 0.027、wiki40b-ja 0.112 → 0.068)、Go の変換で 0.074 → 0.050。lut4 は 2.7 → 0.66 で、まだ使えない。AMD の q4nx にも同じ道で入れた (E2B の KL 0.120 → 0.092、日本語 0.221 → 0.081)。1 (重み付き k-means で表そのものを合わせる) と 2 (AWQ 式のスケール) は試していない。lut4 を使える水準に近づけるなら次はこれら
 
 ### T9. 下書きモデルによる投機的デコード (速さ。優先度は低い)
 
@@ -133,10 +133,10 @@ MODEL_ARCHITECTURE.md の「表の値の選び方」の表は、重みの誤差�
 
 ### T10. ANE 側のメモリの計測 (観測)
 
-`hwnpu-dev probe split` に aned と ANECompilerService の `phys_footprint` を足す ([apple-coreml](design/apple-coreml.md) の未確定事項)。T2 と T3 の効果はこれがないと半分しか見えない。
+`bonsaiai-dev probe split` に aned と ANECompilerService の `phys_footprint` を足す ([apple-coreml](design/apple-coreml.md) の未確定事項)。T2 と T3 の効果はこれがないと半分しか見えない。
 
-- 2026-11-02: `footprint` で hwnpu-chat だけ測った ([docs/design/llm-engine.md](design/llm-engine.md)): 読み込み直後に 2 本 1,968 MB、4 本 2,807 MB。aned は sudo が要り未計測
-- 2026-11-07: 重みは aned ではなくカーネルの wired メモリ (`com.apple.driver.AppleH11ANEInterface`) にあり、`mach_memory_info` で root なしで読める。`mem.NPUWired` にし、hwnpu-chat の読み込みのログと `hwnpu-dev probe split` の「Neural Engine」の列に出す。LFM3 lut6 の 2 本で 2.43 GiB ([docs/design/apple-neural-engine.md](design/apple-neural-engine.md))
+- 2026-11-02: `footprint` で bonsaiai-chat だけ測った ([docs/design/llm-engine.md](design/llm-engine.md)): 読み込み直後に 2 本 1,968 MB、4 本 2,807 MB。aned は sudo が要り未計測
+- 2026-11-07: 重みは aned ではなくカーネルの wired メモリ (`com.apple.driver.AppleH11ANEInterface`) にあり、`mach_memory_info` で root なしで読める。`mem.NPUWired` にし、bonsaiai-chat の読み込みのログと `bonsaiai-dev probe split` の「Neural Engine」の列に出す。LFM3 lut6 の 2 本で 2.43 GiB ([docs/design/apple-neural-engine.md](design/apple-neural-engine.md))
 
 ### 採らないもの
 
@@ -159,7 +159,7 @@ MODEL_ARCHITECTURE.md の「表の値の選び方」の表は、重みの誤差�
 | **幅広く浅い** | 同じバイト数なら層が減り、注意の回数と演算の数 (1 層 70 前後) が減る。prefill (Q=64) の行列積の効率も上がる。1 トークンの生成は行列とベクトルの積で幅に依らない | 24 層 × 2048 は 36 層 × 1536 より有利。MobileLLM 型の「深く細い」設計は ANE には不利 |
 | **KV ヘッドの数と head_dim** | KV のメモリと `tile` の写しの量。`SDPAGrouped` の形なら少ないほど問い合わせの行が増えて効率が上がる | 1〜2 KV ヘッドが最良。16384 の軸の上限に head_dim は関係ない |
 | **使えない構造** | 形が固定で、動的な索引は CPU 行き | MoE (ルーティングは `gather`。全専門家を密に計算する形は重みのバイト数どおりに遅い)、学習済みの疎な注意 (MiniCPM4 の InfLLM v2、DeepSeek の DSA)、MTP の頭、画像の可変の形 |
-| **ライセンスと言語** | hwnpu-chat の目録に載せるため | Apache 2.0 (Qwen、Granite、Jamba、RWKV)、MIT (Phi)、各社の条件 (Gemma、LFM、Nemotron)。日本語は Gemma 4、Qwen3.5、PLaMo 3 が強い |
+| **ライセンスと言語** | bonsaiai-chat の目録に載せるため | Apache 2.0 (Qwen、Granite、Jamba、RWKV)、MIT (Phi)、各社の条件 (Gemma、LFM、Nemotron)。日本語は Gemma 4、Qwen3.5、PLaMo 3 が強い |
 
 Apple の on-device モデル (Foundation Models、約 3B) は後半 37.5% の層の K/V 射影を外して前半のを使い、2 ビットの QAT で、まさにこの基準で作られている (kv-cache.md 6 節)。重みは公開されていないので、公開物で最も近いのは Gemma 4 E2B (PLE と KV の共有)。
 
@@ -216,7 +216,7 @@ prefill (Q=64) は塊の形が要る。塊の中は (I + tril(β K Kᵀ))⁻¹ �
 
 **YOCO / GMU** (Phi-4-mini-flash)。cross-attention は外から K/V を受ける普通の `SDPA` で、鎖が部分の間で共有の K/V を渡す仕組み (Gemma 4 の `shared_k_*`、[llm-models](design/llm-models.md)) がそのまま使える。GMU は要素ごと。
 
-**交互の窓付きと全注意** (PLaMo 3)。`blocks` にすべて揃っており、arch パッケージ (config の読み方と重みの名前) だけ。`port-architecture` スキルの手順で、`hwnpu-dev check` の照合まで 1 日の作業。
+**交互の窓付きと全注意** (PLaMo 3)。`blocks` にすべて揃っており、arch パッケージ (config の読み方と重みの名前) だけ。`port-architecture` スキルの手順で、`bonsaiai-dev check` の照合まで 1 日の作業。
 
 ### 5.4 推奨
 
@@ -230,10 +230,10 @@ prefill (Q=64) は塊の形が要る。塊の中は (I + tril(β K Kᵀ))⁻¹ �
 
 新しいモデルを入れるときの全部の手順 (Mac に収まるか、量子化の形式と校正の方法の選び方、各 NPU の教訓) は [docs/design/new-model-checklist.md](design/new-model-checklist.md)。
 
-- 時間の式の係数: `TestCallTimes` (`HWNPU_TEST_CHAT_CALL_PKGS`) で 1 本ごとの 1 回の費用を測り、2 節の表に行を足す。T1 と T3 の判断はこれで決まる。
-- メモリ: `hwnpu-dev probe split` にシステム側の `phys_footprint` を足す (T10)。スワップが 1 GB 未満の機械で測る ([llm-decoding](design/llm-decoding.md) の条件)。
-- 賢さ: `hwnpu-dev check -package` の KL と argmax、`tools/ref/eval_logits.py`。チャットの体感は [llm-models](design/llm-models.md) の 4 問 (富士山、17 × 23、『こころ』、信濃川) を揃えて比べる。
-- 新しいアーキテクチャ: `.claude/skills/port-architecture` の合格条件 (fp64 の参照との一致、改変の検出、`hwnpu-dev check` の層ごとの照合、ANE の配置)。GDN と Mamba2 の塊の形は、`TestCachedMatchesFull` と同じく「1 トークンずつ」と「Q=64 の塊」の一致で確かめる。
+- 時間の式の係数: `TestCallTimes` (`BONSAIAI_TEST_CHAT_CALL_PKGS`) で 1 本ごとの 1 回の費用を測り、2 節の表に行を足す。T1 と T3 の判断はこれで決まる。
+- メモリ: `bonsaiai-dev probe split` にシステム側の `phys_footprint` を足す (T10)。スワップが 1 GB 未満の機械で測る ([llm-decoding](design/llm-decoding.md) の条件)。
+- 賢さ: `bonsaiai-dev check -package` の KL と argmax、`tools/ref/eval_logits.py`。チャットの体感は [llm-models](design/llm-models.md) の 4 問 (富士山、17 × 23、『こころ』、信濃川) を揃えて比べる。
+- 新しいアーキテクチャ: `.claude/skills/port-architecture` の合格条件 (fp64 の参照との一致、改変の検出、`bonsaiai-dev check` の層ごとの照合、ANE の配置)。GDN と Mamba2 の塊の形は、`TestCachedMatchesFull` と同じく「1 トークンずつ」と「Q=64 の塊」の一致で確かめる。
 
 ## 7. 参照
 

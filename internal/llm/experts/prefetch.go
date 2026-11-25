@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // prefetcher guesses the next layer's experts while a row's experts run (one row: a generated
@@ -30,7 +30,7 @@ type prefetcher struct {
 	rows   chan prefRow  // the rows to guess the next layer's experts from
 	ranN   map[int]*atomic.Int64
 
-	// for HWNPU_DEV's moe.time: how many of the experts run the guess had in its top n and its
+	// for BONSAIAI_DEV's moe.time: how many of the experts run the guess had in its top n and its
 	// whole, the runs of experts not wired, and those of them brought in before
 	topN, topAll, runs, misses, covered atomic.Int64
 	late                                atomic.Int64
@@ -106,7 +106,7 @@ func hostRouters(rec *HostRecord, sh Shape, floats func(string, int) ([]float32,
 	return out
 }
 
-// prefetchN is how many guessed experts are brought in: HWNPU_DEV's moe.prefetch=N (0: none),
+// prefetchN is how many guessed experts are brought in: BONSAIAI_DEV's moe.prefetch=N (0: none),
 // else as many as a token runs (topK), at least 4: gpt-oss-20b's 4 of 32 (the guess's top 4 hold
 // 86 % of the experts run), Qwen3.6-35B-A3B's 8 of 256 (its top 4 hold 44–47 %, its top 8
 // 72–80 %).

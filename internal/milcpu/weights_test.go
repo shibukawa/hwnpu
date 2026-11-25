@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // linear of a weight kept as its table (lutWeight) or in fp16 (f16Weight) is linear of the same

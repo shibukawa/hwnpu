@@ -9,14 +9,14 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
-// convertPaged converts the model split at its attention with hwnpu-dev convert's code path.
+// convertPaged converts the model split at its attention with bonsaiai-dev convert's code path.
 func convertPaged(t *testing.T, cfg *Config, w llm.Weights, q, cache, chunk int) *llm.Manifest {
 	t.Helper()
 	return convertPagedModel(t, cfg, w, q, cache, chunk)
@@ -175,7 +175,7 @@ func cpuPaged(t *testing.T, man *llm.Manifest, allocated *int) decode.Program {
 					b = p.Out[name]
 				}
 				v := make([]float32, count(sh))
-				hwnpu.DecodeF16(v, b)
+				bonsaiai.DecodeF16(v, b)
 				in[name] = milcpu.Tensor{Shape: sh, Data: v}
 			}
 			res, err := parts[i].prog.Run(in, milcpu.Options{})
@@ -189,7 +189,7 @@ func cpuPaged(t *testing.T, man *llm.Manifest, allocated *int) decode.Program {
 						continue
 					}
 				}
-				hwnpu.EncodeF16(p.Out[name], o.Data)
+				bonsaiai.EncodeF16(p.Out[name], o.Data)
 			}
 		}
 		return nil
@@ -213,16 +213,16 @@ func cpuPaged(t *testing.T, man *llm.Manifest, allocated *int) decode.Program {
 			if 2*len(x) != len(b) {
 				return fmt.Errorf("attention input %s: %d bytes for %v", name, len(b), in[name])
 			}
-			hwnpu.DecodeF16(x, b)
+			bonsaiai.DecodeF16(x, b)
 			vals[name] = milcpu.Tensor{Shape: in[name], Data: x}
 		}
 		res, err := aprog.Run(vals, milcpu.Options{})
 		if err != nil {
 			return err
 		}
-		hwnpu.EncodeF16(a.O, res["o"].Data)
-		hwnpu.EncodeF16(a.M, res["m"].Data)
-		hwnpu.EncodeF16(a.L, res["l"].Data)
+		bonsaiai.EncodeF16(a.O, res["o"].Data)
+		bonsaiai.EncodeF16(a.M, res["m"].Data)
+		bonsaiai.EncodeF16(a.L, res["l"].Data)
 		return nil
 	}
 	if man.Mass != nil {
@@ -237,14 +237,14 @@ func cpuPaged(t *testing.T, man *llm.Manifest, allocated *int) decode.Program {
 			vals := map[string]milcpu.Tensor{}
 			for name, b := range map[string][]byte{"q": ms.Q, "r": ms.R, "k": k.Bytes(), "mask": mask.Bytes()} {
 				x := make([]float32, count(min[name]))
-				hwnpu.DecodeF16(x, b)
+				bonsaiai.DecodeF16(x, b)
 				vals[name] = milcpu.Tensor{Shape: min[name], Data: x}
 			}
 			res, err := mprog.Run(vals, milcpu.Options{})
 			if err != nil {
 				return err
 			}
-			hwnpu.EncodeF16(ms.W, res["w"].Data)
+			bonsaiai.EncodeF16(ms.W, res["w"].Data)
 			return nil
 		}
 		a.Mass = ms

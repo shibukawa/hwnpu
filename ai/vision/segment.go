@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/vision/segment"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/vision/segment"
 )
 
 // Segment is the use of a model that cuts out the thing a prompt picks in a picture
@@ -51,7 +51,7 @@ func segmentSetup(m chat.Model, log io.Writer) (segment.Setup, error) {
 // (common.go). The image encoder runs on AMD's NPU from an export of
 // tools/amd/iron_efficientsam.py (made with IRON on the first run), on Apple's and Intel's NPU
 // converted from its ONNX file (at its first load), elsewhere on the CPU (ONNX Runtime where its
-// library is here, else hwnpu's evaluator: slow); the mask decoder on the host.
+// library is here, else bonsaiai's evaluator: slow); the mask decoder on the host.
 var segmentRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &Segmenter{remote: h} },
 	Name:   "segment",
@@ -80,7 +80,7 @@ var segmentRole = &airole.Role{
 			f.Set("export", export)
 		case imagedev.ProgramDevice(m, e.NPU.Vendor, flag):
 			// Intel's NPU runs the encoder converted from its ONNX file to OpenVINO IR, Apple's
-			// Neural Engine the same as Core AI's program (M3: 0.4 s where hwnpu's evaluator
+			// Neural Engine the same as Core AI's program (M3: 0.4 s where bonsaiai's evaluator
 			// takes 33 s, the mask's IoU with the CPU's 0.9994; docs/design/vision-models.md),
 			// converted into the model's directory at its first load
 			dir := chat.ModelDir(e.Base)
@@ -94,21 +94,21 @@ var segmentRole = &airole.Role{
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 		var (
 			sm  *segment.Model
-			dev *hwnpu.Device
+			dev *bonsaiai.Device
 			err error
 		)
 		device := "npu"
 		switch {
 		case f.Path("export") != "":
-			if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+			if dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD)); err != nil {
 				return nil, err
 			}
 			sm, err = segment.OpenNPU(ctx, dev, f.Path("export"), f.Path("decoder"))
 		case f.Path("programs") != "":
 			var backend string
-			var opts []hwnpu.Option
+			var opts []bonsaiai.Option
 			if e.NPU.Vendor == "apple" {
-				opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+				opts = append(opts, bonsaiai.WithPlacement(bonsaiai.PlacementStrict))
 			}
 			if dev, backend, err = imagedev.Open(ctx, e.NPU.Device, e.Cache, opts...); err != nil {
 				return nil, err
@@ -155,7 +155,7 @@ func (p Prompt) points() []segment.Point {
 // are decoded from (Segmenter.Masks), so that a picture is encoded once for several prompts.
 type PictureEncoding struct {
 	e *segment.Embedding
-	// remote is the encoding hwnpud holds, of a Segmenter in hwnpud (airpc.RegisterRef): it
+	// remote is the encoding bonsaiaid holds, of a Segmenter in bonsaiaid (airpc.RegisterRef): it
 	// stays there, and is let go when this one is garbage collected
 	remote *airpc.Handle
 	// Took is how long encoding it took: Resize the picture's resizing, Encode the encoder's.
@@ -245,10 +245,10 @@ func (m *Masks) Best() int {
 // Segmenter cuts out the things prompts pick in pictures. It runs one picture at a time; others
 // wait.
 type Segmenter struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	m      *segment.Model
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	name   string
 	device string
 }
@@ -327,7 +327,7 @@ func (s *Segmenter) Segment(ctx context.Context, img image.Image, p Prompt) (*Ma
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (s *Segmenter) Close() error {
 	if s.remote != nil {
-		return s.remote.Release() // the Runtime in hwnpud unloads it
+		return s.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -340,6 +340,6 @@ func (s *Segmenter) Close() error {
 
 func init() {
 	airole.Register(segmentRole)
-	// a picture's encoding stays in hwnpud, where its masks are decoded
+	// a picture's encoding stays in bonsaiaid, where its masks are decoded
 	airpc.RegisterRef(func(e *PictureEncoding, h *airpc.Handle) { e.remote = h }, func(e *PictureEncoding) *airpc.Handle { return e.remote })
 }

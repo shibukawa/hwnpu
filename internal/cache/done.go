@@ -19,7 +19,7 @@ func WriteDone(done, path string) error {
 }
 
 // ReadDone reads the mark done: the path it holds, relative to the mark's directory. A mark of
-// an earlier hwnpu holds an absolute path; when that is not there (the directory was moved),
+// an earlier bonsaiai holds an absolute path; when that is not there (the directory was moved),
 // the same name beside the mark is taken.
 func ReadDone(done string) (string, bool) {
 	b, err := os.ReadFile(done)

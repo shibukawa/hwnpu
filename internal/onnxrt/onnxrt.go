@@ -3,7 +3,7 @@
 // (models.yaml's device: a small model whose operators cost more on the NPU than its
 // arithmetic, docs/amd-npu-models.md 17).
 //
-// The library is HWNPU_ONNXRUNTIME (a path) or the system's libonnxruntime (onnxruntime.dll on
+// The library is BONSAIAI_ONNXRUNTIME (a path) or the system's libonnxruntime (onnxruntime.dll on
 // Windows, libonnxruntime.dylib on macOS); ONNX Runtime's releases ship it
 // (github.com/microsoft/onnxruntime/releases, lib/). Only float32 tensors are read and
 // written. A session runs on the calling thread unless asked for more, and never spins.
@@ -19,8 +19,8 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
-	"github.com/shibukawa/hwnpu/internal/dl"
-	"github.com/shibukawa/hwnpu/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
 )
 
 // apiVersion is the OrtApi this package asks for: every function it calls is in it, and any
@@ -84,9 +84,9 @@ var (
 	loadErr  error
 )
 
-// candidates are the library's paths to try: HWNPU_ONNXRUNTIME, then the system's names.
+// candidates are the library's paths to try: BONSAIAI_ONNXRUNTIME, then the system's names.
 func candidates() []string {
-	c := []string{os.Getenv("HWNPU_ONNXRUNTIME")}
+	c := []string{os.Getenv("BONSAIAI_ONNXRUNTIME")}
 	switch runtime.GOOS {
 	case "windows":
 		c = append(c, "onnxruntime.dll")
@@ -98,10 +98,10 @@ func candidates() []string {
 	return c
 }
 
-// Available reports whether ONNX Runtime's library loads (HWNPU_ONNXRUNTIME "none": never, to
-// run hwnpu's own CPU executor in its place).
+// Available reports whether ONNX Runtime's library loads (BONSAIAI_ONNXRUNTIME "none": never, to
+// run bonsaiai's own CPU executor in its place).
 func Available() bool {
-	if os.Getenv("HWNPU_ONNXRUNTIME") == "none" {
+	if os.Getenv("BONSAIAI_ONNXRUNTIME") == "none" {
 		return false
 	}
 	_, err := Load()
@@ -117,7 +117,7 @@ func Load() (*Runtime, error) {
 func load() (*Runtime, error) {
 	lib, err := dl.Open(candidates()...)
 	if err != nil {
-		return nil, fmt.Errorf("onnxrt: ONNX Runtime's library (set HWNPU_ONNXRUNTIME to libonnxruntime's path; github.com/microsoft/onnxruntime/releases ships it in lib/): %w", err)
+		return nil, fmt.Errorf("onnxrt: ONNX Runtime's library (set BONSAIAI_ONNXRUNTIME to libonnxruntime's path; github.com/microsoft/onnxruntime/releases ships it in lib/): %w", err)
 	}
 	base, err := lib.Sym("OrtGetApiBase")
 	if err != nil {
@@ -136,7 +136,7 @@ func load() (*Runtime, error) {
 	if r.api, _, _ = purego.SyscallN(fns[0], apiVersion); r.api == 0 {
 		return nil, fmt.Errorf("onnxrt: %s (ONNX Runtime %s) does not serve API version %d", lib.Path, r.Version, apiVersion)
 	}
-	id := cstr("hwnpu")
+	id := cstr("bonsaiai")
 	if err := r.call(fnCreateEnv, loggingWarning, ptr(&id[0]), ptr(&r.env)); err != nil {
 		return nil, err
 	}

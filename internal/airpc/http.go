@@ -14,7 +14,7 @@ import (
 // Handler serves sessions over HTTP connections upgraded to protocol proto (GET with
 // Connection: Upgrade and Upgrade: proto, answered 101): each is a session whose root is
 // root(s). It returns when the session ends, so that a server counting its requests sees the
-// session as one going on (hwnpud's engine does not exit idle while an app uses it).
+// session as one going on (bonsaiaid's engine does not exit idle while an app uses it).
 func Handler(proto string, root func(s *Session) any) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Upgrade"), proto) {
@@ -44,7 +44,7 @@ func Dial(ctx context.Context, conn net.Conn, path, proto string) (*Session, err
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://hwnpud"+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://bonsaiaid"+path, nil)
 	if err != nil {
 		conn.Close()
 		return nil, err

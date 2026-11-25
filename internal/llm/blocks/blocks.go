@@ -13,9 +13,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/palette"
 )
 
 // Graph is a program under construction with its weight source and options.
@@ -201,7 +201,7 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		case "uniform":
 			search = false
 		case "kmeans", "kmeans-minmax":
-			// the tables' fitting of a lutN model (hwnpu-chat's), for a weight FormatFor makes
+			// the tables' fitting of a lutN model (bonsaiai-chat's), for a weight FormatFor makes
 			// integer: the scales' search
 			if !strings.HasPrefix(g.Opts.Format, "lut") {
 				g.Fail("quantizer %q is not for %s; use uniform or mse", g.Opts.Quant, format)
@@ -547,7 +547,7 @@ func (g *Graph) SDPAGrouped(q, k, v *mlpackage.Var, scale float64, mask func() *
 // n, and the weighted values that times the largest value, in fp16. Holding the parts on an axis
 // of one tensor, or weighting each part by its share of the whole, put the whole program on the
 // CPU, and the sums taken by reduce_sum made the placement of 64 tokens per call change from one
-// compile to the next (M3, macOS 27.0.1; hwnpu-dev probe kv -kv-modes host-chunk, TestChunkedSDPAOnNeuralEngine).
+// compile to the next (M3, macOS 27.0.1; bonsaiai-dev probe kv -kv-modes host-chunk, TestChunkedSDPAOnNeuralEngine).
 func (g *Graph) ChunkedSDPA(q *mlpackage.Var, ks, vs, masks []*mlpackage.Var) *mlpackage.Var {
 	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
 	rows := []int{1, nh, s, 1}

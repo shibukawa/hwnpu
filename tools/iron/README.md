@@ -1,6 +1,6 @@
 # IRON benchmarks for the AMD NPU
 
-Builds mlir-aie (IRON) example designs for npu2 (Strix Point and later), runs them through hwnpu's public kernel API and checks the output against IRON's own references. Results and their reading: [docs/amd-xdna2-bench.md](../../docs/amd-xdna2-bench.md).
+Builds mlir-aie (IRON) example designs for npu2 (Strix Point and later), runs them through BonsaiAI's public kernel API and checks the output against IRON's own references. Results and their reading: [docs/amd-xdna2-bench.md](../../docs/amd-xdna2-bench.md).
 
 | file | what it does |
 |---|---|
@@ -31,13 +31,13 @@ iron/bin/pip install -r mlir-aie/utils/peano-requirements.txt
 ```
 
 ```bash
-go build -o ironbench ./tools/iron/ironbench && go build -o hwnpu-xclbin ./cmd/hwnpu-dev
+go build -o ironbench ./tools/iron/ironbench && go build -o bonsaiai-xclbin ./cmd/bonsaiai-dev
 ```
 
 Environment:
 
 ```bash
-export PATH=$PWD/iron/bin:$PATH PEANO_INSTALL_DIR=$(iron/bin/pip show llvm-aie | awk '/^Location:/ {print $2 "/llvm-aie"}') MLIR_AIE_SRC=$PWD/mlir-aie AIE_XCLBINUTIL=$PWD/hwnpu-xclbin IRONBENCH=$PWD/ironbench OUT=$PWD/iron-out
+export PATH=$PWD/iron/bin:$PATH PEANO_INSTALL_DIR=$(iron/bin/pip show llvm-aie | awk '/^Location:/ {print $2 "/llvm-aie"}') MLIR_AIE_SRC=$PWD/mlir-aie AIE_XCLBINUTIL=$PWD/bonsaiai-xclbin IRONBENCH=$PWD/ironbench OUT=$PWD/iron-out
 ```
 
 Examples:
@@ -69,7 +69,7 @@ tools/iron/bench.sh q4gemv 16384x4096 16384 4096 8 4
 The LFM3 layer reads the checkpoint (config.json, model.safetensors) and a reference of `tools/ref/ref_logits.py` for its input:
 
 ```bash
-tools/iron/bench.sh lfm3conv layer0 ~/.cache/hwnpu/models/LFM3-1.7B ref/lfm3-1.7b
+tools/iron/bench.sh lfm3conv layer0 ~/.cache/bonsaiai/models/LFM3-1.7B ref/lfm3-1.7b
 ```
 
 `gemm` takes `NAME DTIN DTOUT M K N m k n COLS EMU`: M must be a multiple of 4m, N of n x COLS, m of 2r where (r, s, t) is the MMUL shape (i8 8x8x8, i16 4x4x8, bf16 4x8x8, bf16 emulated 8x8x8). Checking a 4096³ result in numpy takes minutes.

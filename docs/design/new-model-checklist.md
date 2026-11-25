@@ -6,12 +6,12 @@ Problems found late while bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4, Qwe
 
 ## Policy: power over speed
 
-hwnpu runs on the NPU alone to use less power. Weigh methods in this order:
+BonsaiAI runs on the NPU alone to use less power. Weigh methods in this order:
 
 - **When the total time is the same, keep the work on the NPU.** A form a little faster with work moved to the CPU (attention over a short context, say) is not taken. The GPU is never used
 - **Read fewer weight bytes.** Reading weights is most of a token's energy; fewer bits, no layers a program does not need, and MoE help speed and power at once
 - **Cut waste on the NPU.** Programs reloaded because they do not fit the NPU's memory, or one op on the CPU making the NPU and CPU take turns, cost power even at the same speed
-- Measure power with `hwnpu-dev powerbench` (mJ a token; the Mac needs sudo) or `HWNPU_ENERGY` ([memory-and-power.md](memory-and-power.md)). When it cannot be measured, compare weight bytes read, `mem.NPUWired` and CPU use
+- Measure power with `bonsaiai-dev powerbench` (mJ a token; the Mac needs sudo) or `BONSAIAI_ENERGY` ([memory-and-power.md](memory-and-power.md)). When it cannot be measured, compare weight bytes read, `mem.NPUWired` and CPU use
 
 | Stage | What it decides | Where |
 |---|---|---|
@@ -46,19 +46,19 @@ Estimate from config.json alone with [model-fit.md](../model-fit.md) (sections 2
 
 ## 2. A correct structure (CPU)
 
-On top of `port-architecture`'s pass conditions (1e-4 against fp64, one layer at a time matching all at once, breaking it to see the test fail, `hwnpu-dev check` layer by layer):
+On top of `port-architecture`'s pass conditions (1e-4 against fp64, one layer at a time matching all at once, breaking it to see the test fail, `bonsaiai-dev check` layer by layer):
 
 | What to check | Tools | Lesson |
 |---|---|---|
 | The download is intact | `sha256sum` against HF's `x-linked-etag` | Large downloads had sparse bit flips (LFM3-Audio / Omni: about 10 places of 2–6 bytes). Random-weight checks and value ranges do not show them |
-| Compare **with a BOS** | `tools/ref/ref_logits.py`, `hwnpu-dev check`, `ironlm -forced -bos` | Without a BOS LFM3's KL looks 4× worse and layer 0's activations become outliers. Use the tokens the chat format really puts first |
-| Real weights | `hwnpu-dev check`; AMD `ironlm -forced` + `tools/ref/forced_logits.py` | With random weights the NPU and CPU disagree (flat logits, bf16 / bfp16 rounding spreads). Decide on real weights |
-| Real weights **of every size** | `hwnpu-dev check` | Other sizes take other paths through the config (Qwen3.5-0.8B has as many value heads as key heads). Check every size that goes into the catalog |
+| Compare **with a BOS** | `tools/ref/ref_logits.py`, `bonsaiai-dev check`, `ironlm -forced -bos` | Without a BOS LFM3's KL looks 4× worse and layer 0's activations become outliers. Use the tokens the chat format really puts first |
+| Real weights | `bonsaiai-dev check`; AMD `ironlm -forced` + `tools/ref/forced_logits.py` | With random weights the NPU and CPU disagree (flat logits, bf16 / bfp16 rounding spreads). Decide on real weights |
+| Real weights **of every size** | `bonsaiai-dev check` | Other sizes take other paths through the config (Qwen3.5-0.8B has as many value heads as key heads). Check every size that goes into the catalog |
 | Tokenizer matches HF | `tools/ref/tokenizer_golden.py` | 0 mismatches over fixed and thousands of random texts. Make the tests fail when ties (PLaMo), NFC / combining marks (Qwen3.5) or byte fallback (Gemma 4) are handled the other way |
 | Chat format matches jinja2 to the character | `tools/ref/template_golden.py` | Tool calls, thinking, dropping earlier thinking |
 | Chat defaults per size | The template, the model card | Qwen3.5-0.8B / 2B answer without thinking by default, 4B thinks; made to think, the small ones ran to the budget. The catalog's `no_think` follows the default |
 | Multimodal preprocessing | `resize_golden.py`, `mel_golden.py`, `whisper_mel_golden.py` | ±1 against PIL, 1e-4 against librosa |
-| Encoder-decoders (speech) | `tools/ref/ref_whisper.py`, `hwnpu-dev check` (`REF.x.bin`) | Check the encoder, the cross keys / values and the decoder apart. Over 30 s follow HF's windowing (next window from the timestamps); cutting every 30 s drops text |
+| Encoder-decoders (speech) | `tools/ref/ref_whisper.py`, `bonsaiai-dev check` (`REF.x.bin`) | Check the encoder, the cross keys / values and the decoder apart. Over 30 s follow HF's windowing (next window from the timestamps); cutting every 30 s drops text |
 | Embedding models | `embed_golden.py` | Cosine 0.997 or more against HF |
 | Image generation | `tools/ref/compare_image.py`, the model's `ref_*.py` | Latent cosine against diffusers' fp32, VAE PSNR. A model too big for a 16 GB Mac in fp32: read the repeated layers' weights just before each layer (`tools/ref/stream_weights.py`), or build diffusers' blocks on the meta device and assign a block's weights at a time (`ref_chroma_lean.py` at `05c406c9`, removed with Chroma1: a 512² DiT call in 98 s on an M1; `--stats` per-block largest values, `--dump` block inputs) |
 | **How the reference masks** | `tools/ref/ref_chroma.py --mask keys` (at `05c406c9`, removed with Chroma1) | diffusers' ChromaPipeline adds its 0/1 text mask to the scores: pads are not hidden though Chroma was trained with them hidden. The NPU's correct masking looked wrong (0.9886) until the reference masked keys (0.99985). Patch only the part meant (the same patch also broke T5's bias mask). Read the reference's masks before blaming the NPU |
@@ -82,7 +82,7 @@ Nothing here can be settled without a Mac. If you have none, write a handoff (`d
 
 ### 3.2 Does all of it run on the NPU?
 
-Check each part with `hwnpu-dev info -model PART.mlpackage` (Core ML's placement) and Core AI's own placement (3.5). What fell off before:
+Check each part with `bonsaiai-dev info -model PART.mlpackage` (Core ML's placement) and Core AI's own placement (3.5). What fell off before:
 
 - Attention that copies K/V with `tile`, or queries as a matrix → `SDPAGrouped`. The order alone changes placement
 - A `transpose` / `reshape` in the last part → take the output token-first. Elementwise ops after the output layer → the host's sampling on the top values (`llm.LogitSoftcap`)
@@ -96,12 +96,12 @@ Check each part with `hwnpu-dev info -model PART.mlpackage` (Core ML's placement
 
 ### 3.3 Does fp16 overflow?
 
-Check each layer's relative RMS error is under 0.01 with `hwnpu-dev check -f16`. Layers that pass alone can drift as a whole. Look also at:
+Check each layer's relative RMS error is under 0.01 with `bonsaiai-dev check -f16`. Layers that pass alone can drift as a whole. Look also at:
 
 - The whole `-f16` run and the cosine **per position**, the prompt's or speech's positions apart from the padding's
 - Where massive activations (attention sinks) arise: each layer's largest values in HF's hidden states (`REF.hidden.bin`)
 - **Before hunting a cause, compare with HF in fp16.** If it drifts as much, the port is fine (Whisper: 0.9978 both)
-- Programs of the first N layers (`hwnpu-dev convert -layers N`) on the ANE and Core ML's CPU against HF show where drift starts
+- Programs of the first N layers (`bonsaiai-dev convert -layers N`) on the ANE and Core ML's CPU against HF show where drift starts
 
 What helped:
 
@@ -110,7 +110,7 @@ What helped:
 - Residuals at 1/32 and division by each row's maximum before a norm (Anima; a fixed scale made subnormals)
 - Choose the residual's scale from the reference's largest value per layer, not by trying (the fp32 reference prints them)
 - Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16)
-- The ANE's own `sigmoid`, `tanh`, `softplus`, `silu` and `gelu` are inaccurate: write them with exp (`blocks.SiLU`, `onnx.Program.ExpSigmoid`, GELU as `x / (1 + exp(-1.5958 (x + 0.044715 x³)))`). `hwnpu-dev check` on the CPU does not show this: compare the per-position KL on the ANE with Core ML's CPU (`HWNPU_COREML_UNITS=cpu`), and bisect values on the ANE against the CPU interpreter (`TestBisect`)
+- The ANE's own `sigmoid`, `tanh`, `softplus`, `silu` and `gelu` are inaccurate: write them with exp (`blocks.SiLU`, `onnx.Program.ExpSigmoid`, GELU as `x / (1 + exp(-1.5958 (x + 0.044715 x³)))`). `bonsaiai-dev check` on the CPU does not show this: compare the per-position KL on the ANE with Core ML's CPU (`BONSAIAI_COREML_UNITS=cpu`), and bisect values on the ANE against the CPU interpreter (`TestBisect`)
 - A one-row computation every later layer takes (a diffusion timestep embedding) drifted 1 % on the ANE: compute it on the host in fp32
 - Linear attention's sums pass fp16 though residuals do not: divide each head's query rows by their maximum, scale keys down before the sums, floor the denominator
 - One row of a linear's output near fp16's limit became NaN on the ANE only: when a norm follows, scale the linear's weight and bias by 1/64. Find such parts by moving one part at a time to the CPU
@@ -119,7 +119,7 @@ What helped:
 - **A norm of rows with outlier channels**: take the mean square of the max-divided copy, but multiply x itself by rsqrt / max (Chroma1's `mil.t5Norm` at `05c406c9`)
 - **The NE's rules** (`aicheck rules`, measured on an M2; Core AI's CPU has none of them, see [apple-coreai.md](apple-coreai.md)):
   - a linear's / convolution's sum **and partial sums** must stay under 2^15 (reduce_sum keeps the full range)
-  - a slice of the last axis starting at 1..14 mod 32 turns values over 4094 into Inf: run `aicheck lint` (or `HWNPU_DEV=ailower.notes=1`)
+  - a slice of the last axis starting at 1..14 mod 32 turns values over 4094 into Inf: run `aicheck lint` (or `BONSAIAI_DEV=ailower.notes=1`)
   - products under fp16's normal range are flushed inside a matmul, not elementwise
   - `ailower` already rewrites softplus and a matmul of inner dimension 1
 
@@ -128,12 +128,12 @@ What helped:
 - Every part is all on the NPU
 - The second and **third** starts take a few seconds (the second alone can miss two programs that evict each other). Record each part's first compile time
 - A model whose programs are past what the NE holds must keep what runs every step in the fewest bytes, run other parts once per run, and batch prompts (`--batch`). Record the load times
-- On an M1, `HWNPU_PROFILE=1` part times hold steady call to call. When parts run in turn hold more than about 2.9 GiB, the same part varies and calls are 10× slower (a reload). Parts run in the wrong order hit it too (each conditioning through every DiT group). Not every model past 2.9 GiB reloads: test a reload hypothesis by changing the weights' size before acting on it
-- **Keep the disk free**: macOS purges compile caches when free space is low (seen at 11–22 GB free; keep 25 GB free when timing a first run), and the next run compiles again (minutes per part). Test binaries get a cache of their own name: build them as the command's name in a directory (`go test -c -o DIR/hwnpu-image`) ([apple-coreai.md](apple-coreai.md))
+- On an M1, `BONSAIAI_PROFILE=1` part times hold steady call to call. When parts run in turn hold more than about 2.9 GiB, the same part varies and calls are 10× slower (a reload). Parts run in the wrong order hit it too (each conditioning through every DiT group). Not every model past 2.9 GiB reloads: test a reload hypothesis by changing the weights' size before acting on it
+- **Keep the disk free**: macOS purges compile caches when free space is low (seen at 11–22 GB free; keep 25 GB free when timing a first run), and the next run compiles again (minutes per part). Test binaries get a cache of their own name: build them as the command's name in a directory (`go test -c -o DIR/bonsaiai-image`) ([apple-coreai.md](apple-coreai.md))
 - **`mem.NPUWired` is the whole machine's.** A measured process takes the NE lock (`llm.LockNPU`) so the value before it starts is near 0; after the lock, wait for it to settle (programs of an ended process stay 0.1–7 s). Check nothing else uses the NE before taking a failure as the program's: another process compiling made programs fail ("Unable to compute the prediction", `Request cancelled`)
 - Keep the CPU free while programs compile (a CPU reference beside it timed out a placement check; `planTimeout` is 30 min)
 - **A graph change that keeps the program's name raises `llm.Arch.Revision`** (`-rN` in the name; image models' export version), or old programs are reused
-- Record the KL and argmax of `hwnpu-dev check -package` per format (section 5)
+- Record the KL and argmax of `bonsaiai-dev check -package` per format (section 5)
 
 ### 3.5 Core AI (macOS 27)
 
@@ -141,12 +141,12 @@ A model whose parts pass 3.1–3.4 can still fail on Core AI. Check on the M1 to
 
 - **Every op needs a lowering.** `aicheck lower OUT PKG` stops at the first missing one. Write a new one as coreai-torch does: convert a small torch module with coreai-torch, print the program, read the bytecode with `tools/coreai/bcdump`
 - **Compare every part with the CPU interpreter on Core AI and on Core ML**: `aicheck run -cpu PKG...` and `aicheck run -cpu -coreml PKG...`. A part all on the NE can be wrong on Core AI alone (PP-OCR's detector 0.05 against 0.9999)
-- **Find the op with `HWNPU_DEV=ailower.cut=N aicheck run -cpu PKG`** (`AICHECK_WORST=1`). Look at what the error is, not only where it is largest (fit a line between input and output: the NE multiplied where it should divide). Test against the real part, not a small copy
-- **Tell lowering errors from the NE's with `HWNPU_COREAI_UNITS=cpu`.** Traps: Core AI's CPU overflows a `reduce_mean` whose sum passes fp16; the CPU interpreter implements only what it implements (`elu` alpha 1 alone); `runner` computes in fp32 unless `HWNPU_DEV=cpu.f16=1`, aicheck with fp16 rounding: decide the reference's precision first
+- **Find the op with `BONSAIAI_DEV=ailower.cut=N aicheck run -cpu PKG`** (`AICHECK_WORST=1`). Look at what the error is, not only where it is largest (fit a line between input and output: the NE multiplied where it should divide). Test against the real part, not a small copy
+- **Tell lowering errors from the NE's with `BONSAIAI_COREAI_UNITS=cpu`.** Traps: Core AI's CPU overflows a `reduce_mean` whose sum passes fp16; the CPU interpreter implements only what it implements (`elu` alpha 1 alone); `runner` computes in fp32 unless `BONSAIAI_DEV=cpu.f16=1`, aicheck with fp16 rounding: decide the reference's precision first
 - **NE pitfalls**: `divide_v1` by a constant is miscomputed (ailower writes a product by the reciprocal); `(v + c) - c` is folded to `v` even with c an input; a width convolution with kernel over 1 and 512+ channels whose input is computed comes out wrong (run it along the height); dilated convolutions are wrong at some lengths (lay frames out as rows of the dilation); an explicit `pad` before a convolution went wrong; a (1×1)·(1×N) matmul is wrong on the M3 (use mul)
 - **Several functions in one `.aimodel` compile as one**: one function the compiler fails takes all of them off the NE. Look at each size's part alone first, and try small rewrites in `aicheck probe` (a `tile` channel repeat → a 1 × 1 convolution of 0/1 weights). Adjacent lut tables must not be identical (`coreai-build` left a part off the NE)
 - **Compare starts with both caches warm** (three starts of each backend in new processes, right after a run of each)
-- **Read `HWNPU_PROFILE` by stages** (programs of the same tokens per call are summed apart). Before acting on a part's time, check parts read at about 62 GB/s
+- **Read `BONSAIAI_PROFILE` by stages** (programs of the same tokens per call are summed apart). Before acting on a part's time, check parts read at about 62 GB/s
 - **A recurrent state touched per row costs as much as weights**: count the bytes activations and states move too (Qwen3.5's chunked GDN)
 - **A draft head over part of the vocabulary** (`llm.Options.HeadRows`): decide by drafts taken, not coverage
 - `aicheck run` / `probe` take the NE lock: two processes on the NE at once have frozen a Mac
@@ -157,13 +157,13 @@ Details in [moe.md](moe.md).
 
 - **Does the experts' form fit `internal/llm/experts`?** SwiGLU without biases, sigmoid or softmax scores, a choice bias, top k normalized and scaled. Shared experts, biases and clamps (gpt-oss) need the program extended
 - **Time the layer's shape first**: `aicheck moe -model NAME -layers L -copy` and `aicheck moepack -two`. `aicheck probe gnd16_const gnd16_pts_w1` tells whether the chip takes the scales' gather (M2 and M3 do, M1 does not)
-- **Separate the experts' error from the port's**: the rest in transformers and the MoE blocks through `aicheck moeserve` (`tools/ref/lfm2moe_ane.py`), then `hwnpu-dev generate -score` with and without the cache
+- **Separate the experts' error from the port's**: the rest in transformers and the MoE blocks through `aicheck moeserve` (`tools/ref/lfm2moe_ane.py`), then `bonsaiai-dev generate -score` with and without the cache
 - **In the architecture**: implement `llm.Routed`; a part ends where a MoE layer begins (`moe_x_N`, `moe_logits_N` in fp16), the next starts adding `moe_o_N`; cut by `llm.PlanRouted`
 - **Count rows**: drafts are off and one tier runs for a MoE model; a prompt call runs each chosen expert once over its rows (`experts.BuildRows`), 128 tokens a call
 - **Count which experts run** over many kinds of text (`tools/moeusage`: `collect.sh MODEL OUT`, `analyze.py OUT`). Experts every kind runs go to models.yaml's `experts_core`; check the core pays at the places you ship (Qwen3.6 on AMD has none)
-- **Host-run experts (`llm.HostRouted`)**: measure reading and computing apart (`HWNPU_DEV=moe.time`). Measure the SSD first. Do not compare settings on one repeated question (the page cache warms): use a list of questions of different fields and languages (`--prompt-cache off`). Look at a CPU profile (`mincore` and the kernel took 66 %). Time with the NE's pause between layers (`HWNPU_TEST_QWEN36_GAP`) and a long prompt (20+ steps). Check the free disk before deriving an MXFP4 checkpoint (`hwnpu-dev mxfp4`)
-- **Compare generated text from stderr**: `hwnpu-chat` writes thinking there, so a short run's stdout is empty. Keep measuring binaries' names (Core AI's cache is per process name, 1.8 GB a model)
-- **On AMD, experts that do not fit go in places** (`iron_export_lm.py --expert-places P`): check with `HWNPU_DEV=moe.check` and against an export with every expert placed; give a 16 GB machine a `variants` entry; run by the model's name (only the name gives the core and counts)
+- **Host-run experts (`llm.HostRouted`)**: measure reading and computing apart (`BONSAIAI_DEV=moe.time`). Measure the SSD first. Do not compare settings on one repeated question (the page cache warms): use a list of questions of different fields and languages (`--prompt-cache off`). Look at a CPU profile (`mincore` and the kernel took 66 %). Time with the NE's pause between layers (`BONSAIAI_TEST_QWEN36_GAP`) and a long prompt (20+ steps). Check the free disk before deriving an MXFP4 checkpoint (`bonsaiai-dev mxfp4`)
+- **Compare generated text from stderr**: `bonsaiai-chat` writes thinking there, so a short run's stdout is empty. Keep measuring binaries' names (Core AI's cache is per process name, 1.8 GB a model)
+- **On AMD, experts that do not fit go in places** (`iron_export_lm.py --expert-places P`): check with `BONSAIAI_DEV=moe.check` and against an export with every expert placed; give a 16 GB machine a `variants` entry; run by the model's name (only the name gives the core and counts)
 - **Check a model that is not MoE stays as it was** (same text, same speed, not converted again)
 
 ## 4. The AMD (IRON) and Intel forms
@@ -189,7 +189,7 @@ Details in [amd.md](amd.md), [amd-llm.md](amd-llm.md) and [image-amd.md](image-a
 | IRON's compile cache keys on an operator's parameters | Give an operator whose build you change a form parameter |
 | Read the kernel headers IRON compiles, not an mlir-aie checkout | They differ |
 | The cores' rounding to nearest even | Floor rounding pulls sums down |
-| Images and audio in the final export form | Send an image and a clip through `hwnpu-chat` after any export change |
+| Images and audio in the final export form | Send an image and a clip through `bonsaiai-chat` after any export change |
 | Layers with state copied at chunk boundaries | For rollback marks and the prompt store; a ring cache: check rollback and export / import bit for bit (`TestKVRingRewindOnDevice`) |
 
 **Limits**
@@ -207,14 +207,14 @@ Details in [amd.md](amd.md), [amd-llm.md](amd-llm.md) and [image-amd.md](image-a
 | A hidden size not whole blocks on 8 columns (2880) | Carry the residual padded with zeros, rescale the norm's weight and eps |
 | Per-call row bounds | Every per-call word must be affine in one per-call value: fixed chunks and one `start`; `ProjectionGEMM` takes multiples of 256 rows |
 | HIGHEST GEMMs need N a multiple of 64; RMSNorm weight ≤ 4096; DMA loop ≤ 64 | HIGH / MEDIUM, fold the weight into the next linear, commands of 262144 rows |
-| Do not poll `hwnpu status` while a model loads | Followed by a mailbox timeout and an SMU needing a reboot; read `/proc/PID/fdinfo` |
+| Do not poll `bonsaiai status` while a model loads | Followed by a mailbox timeout and an SMU needing a reboot; read `/proc/PID/fdinfo` |
 | Big exports | Qwen3.6: 30 min, peak RSS 54 GB. /tmp is RAM: export under `~/models`; run long ones with `systemd-run --user` |
 
 **Speed** (generation is bound by operator switches; prompts too)
 
 | Method | Lesson |
 |---|---|
-| Count the decode step's operators and switches first | `model.record().steps`, `HWNPU_EXPORT_STEPS=1` and `elfconfigs`; time each with `--command-per-step` and `HWNPU_DEV=iron.timing` (a command costs about 0.1 ms of its own). Read times only from that export |
+| Count the decode step's operators and switches first | `model.record().steps`, `BONSAIAI_EXPORT_STEPS=1` and `elfconfigs`; time each with `--command-per-step` and `BONSAIAI_DEV=iron.timing` (a command costs about 0.1 ms of its own). Read times only from that export |
 | **Fewer operators in the decode step** | Bias and residual in the GEMV (`into_linear`), gate and up as one table (`QGEMVGlu`), sandwich norms as one (`SandwichAdd`), one RoPE for q and k, short convolution as one (`ShortConvStep`), state slots read in place (`slots=`), QGEMV on one core a column |
 | **Fewer operators in a prompt chunk** | One short-convolution operator (`ShortConvChunk`, `GdnConvChunk`). Merging small configurations (RMSNorm, add) does not pay |
 | A decode step as one resident array (`GptOssStep`) | Removes reloads (gpt-oss 79 → 49 ms); costs a core program within 16 KB and every operand declared every step. An `array=True` parameter that differs by layer makes an array a layer: read the commands' times after any export change |
@@ -232,7 +232,7 @@ Details in [amd.md](amd.md), [amd-llm.md](amd-llm.md) and [image-amd.md](image-a
 | Large image parts | Text encoders and DiTs in groups in one bank (`SwapVariants`); check a group switch (`irongraph -swap -variant 1`) |
 | No other user of `/dev/accel` while measuring | Another user made commands up to 50× slower |
 
-The export's name: `~/models/NAME.amd-npu2-q4` (or `NAME.amd-npu2`); on a machine with only AMD's NPU, hwnpu-chat picks it for `-m NAME`.
+The export's name: `~/models/NAME.amd-npu2-q4` (or `NAME.amd-npu2`); on a machine with only AMD's NPU, bonsaiai-chat picks it for `-m NAME`.
 
 ### 4.2 Intel
 
@@ -247,7 +247,7 @@ To IR with `ovlower`, int8 by default (int4 matched fp16's next token only 22/52
 - **KL(reference ‖ quantized)**: mean, median, 95th percentile and top-1 over 400 positions (256 read as a prompt, then one at a time), **with a BOS**
 - Five texts in `~/models/calib`: the README (frozen in `testdata/texts` with `GPL-3` and `model.go`), GPL-3 (**never used for calibration**, to catch overfitting), wiki40b-ja (evaluation part), wikitext-2 (test part), Go code
 - The reference is HF fp32 on the CPU or bf16 on the same NPU. The quantized KL on the NPU should match the CPU estimate; if not, suspect the NPU's arithmetic
-- Apple: `hwnpu-dev generate -package P.parts.json -score REF,...` on a program without a cache (`hwnpu-dev convert -seq 128`). The first tokens weigh much (KL up to 8–13): compare settings on the same texts only
+- Apple: `bonsaiai-dev generate -package P.parts.json -score REF,...` on a program without a cache (`bonsaiai-dev convert -seq 128`). The first tokens weigh much (KL up to 8–13): compare settings on the same texts only
 - Five texts are too few to settle a small KL difference: the mean over about 128 positions varied from 0.6 to 1.4 times the all-text value, and settings differing by 0.01 or less were ordered oppositely 34–42% of the time. For close comparisons, score 24–36 chunks of 512 tokens (256 as prompt, 256 scored) and put a 95% interval on the paired differences between chunk means; call no difference if the interval includes zero. With 36 chunks the interval was about ±15%.
 - For chat models, score the text as the assistant's answer, not inside a user turn: the latter makes the model predict `<|im_end|>` at every position and changes the distribution (Qwen3.6 perplexity 106–582 in a user turn vs 5.7–10.9 as an answer). gpt-oss does not write wikitext-2 formatting itself, and its answer-shaped perplexity was 131 vs 1.4 on its own answers; a routing-rule KL was 7× higher on wikitext-like text. Also measure changes on the model's own generated answers.
 - Image generation: the velocity's relative RMS along the reference trajectory (each reference DiT input through the NPU, Chroma1's `TestCallsOnDevice`, removed), and the final latents of free runs. Errors that grow with the steps show only along the trajectory
@@ -274,7 +274,7 @@ The format stays, so speed and memory stay.
 |---|---|---|---|
 | 1 | Rounding (RTN); q4nx picks the least error of 9 candidates | `iron_q4.quantize_fmt`, `palette.QuantizeBits` | The baseline; least weight error is not least output error |
 | 1b | **k-means tables keeping each block's min and max** (lut4, no data) | `-quant kmeans-minmax` | Default for lut4. Plain k-means clips outliers |
-| 2 | **GPTQ** | `tools/amd/q4_gptq.py` → AMD `--q4-codes`; Apple `hwnpu-dev convert -codes`, `hwnpu-chat --codes`, models.yaml `codes:` | Damp 0.1 × mean diag(H) (0.01 overfits). Calibrate on general text (wikitext-2 + wiki40b-ja, 64 × 512); leave the BOS out of H; quantize earlier layers first; `--q8 gptq` to calibrate every projection |
+| 2 | **GPTQ** | `tools/amd/q4_gptq.py` → AMD `--q4-codes`; Apple `bonsaiai-dev convert -codes`, `bonsaiai-chat --codes`, models.yaml `codes:` | Damp 0.1 × mean diag(H) (0.01 overfits). Calibrate on general text (wikitext-2 + wiki40b-ja, 64 × 512); leave the BOS out of H; quantize earlier layers first; `--q8 gptq` to calibrate every projection |
 | 3 | Fitting Apple's lut tables: k-means weighted by E[x²] | `q4_gptq.py --lut-fit wkmeans` | Start from uniform tables |
 | 4 | Rotation before lut (`llm.Rotate`) | `tools/quant/rotkl` | Halves KL for Qwen3.5 (NE lut6 0.054 → 0.029); default for its lut6 exports |
 | — | One format up (AMD q6) | `--mlp q6` | When calibration does not fix it |
@@ -293,12 +293,12 @@ The format stays, so speed and memory stay.
 | KL under 0.05 (against HF on the CPU) | 4 bits can be the default |
 | KL 0.05–0.2 | Decide by the answers (section 9) |
 | KL 1 or more | Not usable |
-| `hwnpu-dev formats`: 90 %+ of the reference's next tokens and as many short questions right | Take the smaller format |
+| `bonsaiai-dev formats`: 90 %+ of the reference's next tokens and as many short questions right | Take the smaller format |
 | 85–90 %, or new mistakes in arithmetic or facts | Keep the next larger format |
 | Under 80 %, or repeating answers | Not usable |
 | Audio / image encoders | Decide by WER / CER (Whisper stays lut8) |
 
-- Speed follows weight bytes (ANE lut4 / lut6 / lut8 a call: 1.81 / 2.65 / 3.49 ms); probe's read speed per format is not the model's: measure real parts with `HWNPU_PROFILE=1`
+- Speed follows weight bytes (ANE lut4 / lut6 / lut8 a call: 1.81 / 2.65 / 3.49 ms); probe's read speed per format is not the model's: measure real parts with `BONSAIAI_PROFILE=1`
 - fp16 is the reference; when it does not fit a part, use lut8 (`-ref lut8`) and check lut8 against HF
 - Compare by agreement with the reference, not perplexity (quantized can be lower on short text)
 - The format may differ by size: decide per checkpoint (`Formatter`)
@@ -310,7 +310,7 @@ Details in [memory-and-power.md](memory-and-power.md).
 | What to measure | Tools | Lesson |
 |---|---|---|
 | AMD pinned memory | `/proc/meminfo` `Unevictable`, banks in `manifest.json` | Mostly weights and work areas; KV under 5 %. GDN layers keep a frame a chunk boundary, so pinned memory grows with the context |
-| The Mac's footprint and NE memory | `hwnpu-dev probe split`, `HWNPU_PROFILE=1`, `mem.NPUWired` | NE weights are kernel wired memory. They arrive at the first call, not at load: measure after one call |
+| The Mac's footprint and NE memory | `bonsaiai-dev probe split`, `BONSAIAI_PROFILE=1`, `mem.NPUWired` | NE weights are kernel wired memory. They arrive at the first call, not at load: measure after one call |
 | Peaks over a run | `go run ./tools/memwatch [-csv FILE] CMD...` (every 0.1 s) | mlock'd file pages are not in the footprint; `footprint PID`, `vmmap -summary PID` for the breakdown |
 | Conversation marks | | Copy only ring rows in use (`ringRows`) |
 | After a conversion | | `debug.FreeOSMemory` |
@@ -325,12 +325,12 @@ Details in [memory-and-power.md](memory-and-power.md).
 
 | What to measure | Tools |
 |---|---|
-| One call | `TestCallTimes` (`HWNPU_TEST_CHAT_CALL_PKGS`) |
-| Generation, prompts, startup (second start) | `hwnpu-dev generate`, `hwnpu-chat`'s log |
-| Comparing formats | `hwnpu-dev formats` |
-| AMD GEMV, power | `tools/amd/gemvbench`, `hwnpu-dev powerbench` |
-| One run's energy by phase | `HWNPU_ENERGY=10 hwnpu-image ...` (chat, audio too) |
-| A step broken down | `HWNPU_PROFILE=1` |
+| One call | `TestCallTimes` (`BONSAIAI_TEST_CHAT_CALL_PKGS`) |
+| Generation, prompts, startup (second start) | `bonsaiai-dev generate`, `bonsaiai-chat`'s log |
+| Comparing formats | `bonsaiai-dev formats` |
+| AMD GEMV, power | `tools/amd/gemvbench`, `bonsaiai-dev powerbench` |
+| One run's energy by phase | `BONSAIAI_ENERGY=10 bonsaiai-image ...` (chat, audio too) |
+| A step broken down | `BONSAIAI_PROFILE=1` |
 
 Bring these in from the start ([llm-engine.md](llm-engine.md), [llm-decoding.md](llm-decoding.md)):
 
@@ -374,15 +374,15 @@ Do not decide by KL alone. Put answers next to bf16 / fp16 for the model's use:
 
 | Use | How to check |
 |---|---|
-| Chat | Four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River) and `hwnpu-chat agent`'s task (does `go test` pass?). When a small model errs, ask fp16: if it errs alike, it is the model's limit |
-| Translation | KL and agreement **on the translation's tokens only**; how many of 44 texts match bf16 word for word. `hwnpu-dev formats` perplexity means nothing here |
+| Chat | Four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River) and `bonsaiai-chat agent`'s task (does `go test` pass?). When a small model errs, ask fp16: if it errs alike, it is the model's limit |
+| Translation | KL and agreement **on the translation's tokens only**; how many of 44 texts match bf16 word for word. `bonsaiai-dev formats` perplexity means nothing here |
 | Image descriptions, TTS | The same images / audio; TTS output back through ASR |
 | Transcription | LibriSpeech's 73 validation clips; 12 Japanese texts in four `say` voices; clips matching HF fp32, WER / CER; audio over 30 s |
 | Embeddings | Cosine against HF |
 | Detection, OCR | Objects against ONNX Runtime and a graph with only its weights in fp16 (`tools/ref/onnx_f16_weights.py`). OCR: run the vendor's whole pipeline (`ref_ppocr.py`, `compare_ocr.py`); pad as the vendor does |
 | Image generation | Images from the same noise; 3 prompts × 2 seeds next to the reference. A distilled few-step model spreads small conditioning changes: judge a part by its own error against fp32 and a grid of pictures. Generate every aspect ratio once on the lowest machine and look at each |
 
-In practice: fp16 comparison programs double the disk (remove after); Core ML and Core AI make a cache per process name (several GB each); a stalled download never times out; `hwnpu-dev formats` shows an unsplit program's weights as 0.00 GiB.
+In practice: fp16 comparison programs double the disk (remove after); Core ML and Core AI make a cache per process name (several GB each); a stalled download never times out; `bonsaiai-dev formats` shows an unsplit program's weights as 0.00 GiB.
 
 **The record**: the model's facts, numbers, what was adopted and what was not (with why) in its topic file under `docs/design/`; a row in [performance.md](performance.md); models.yaml's measured values (section 11). What could not be measured goes into `docs/handoff-*.md` with what to bring, the commands and the expected values. Whether it went into models.yaml or not, a section in [model-estimation.md](../model-estimation.md): the verdict and why, what it was compared with, where its code stays.
 
@@ -395,7 +395,7 @@ Models will be chained (speech recognition → LLM → TTS) and run together in 
 | Each part's pinned size | AMD: `/dev/accel/accel0` mappings in `smaps`. Mac: weights and `phys_footprint` | Memory budget |
 | Each part's reload time | AMD `Release` / `Reload`; Mac with the cache hit | Whether it may be evicted |
 | Parts run together vs in turn | The flow | Only parts run in turn load a stage at a time |
-| AMD: the longest command | `hwnpu-chat` / `irongraph` logs | Others wait for it |
+| AMD: the longest command | `bonsaiai-chat` / `irongraph` logs | Others wait for it |
 | Mac: total weights and switch time | `TestCallTimes` alternating | A switch costs 15–35 ms |
 | Input / output kinds and conditions | Model card, preprocessing | Matching connected models |
 | Streaming, time to first output | Feed chunks | Delay of a speech chain |
@@ -410,8 +410,8 @@ A model is not done until a name, a family or a use prepares and runs it on ever
 ### 11.1 Order of preparation
 
 1. **An export here** with its `NAME.done` (written last); a cut-off one is made again
-2. **An export in the sources** (`HWNPU_MODEL_SOURCE`): the entry of the same recipe, else one a person imported by name (`hwnpu-dev sources import`)
-3. **A conversion here**: download only the files the converter reads, check sha256, convert, write `.done`. Apple and Intel use the Go converters (`chat.Prepare`, `anima.Prepare`); AMD runs the IRON exporters built into hwnpu (`chat.PrepareAMD`, model-recipes.yaml's `amd`, `HWNPU_IRON_ENV`). Missing IRON: stop and say what to install (INSTALL_AMD.md)
+2. **An export in the sources** (`BONSAIAI_MODEL_SOURCE`): the entry of the same recipe, else one a person imported by name (`bonsaiai-dev sources import`)
+3. **A conversion here**: download only the files the converter reads, check sha256, convert, write `.done`. Apple and Intel use the Go converters (`chat.Prepare`, `anima.Prepare`); AMD runs the IRON exporters built into BonsaiAI (`chat.PrepareAMD`, model-recipes.yaml's `amd`, `BONSAIAI_IRON_ENV`). Missing IRON: stop and say what to install (INSTALL_AMD.md)
 4. **Not usable**: stop and say what is missing
 
 - Never download the whole repository (Sana's held 16.5 GB, 8.9 needed); share files models of a family hold in common
@@ -421,17 +421,17 @@ A model is not done until a name, a family or a use prepares and runs it on ever
 
 | Field | What | How | Pitfalls |
 |---|---|---|---|
-| `bytes` | The download | Sum of HF's `lfs.size` for the files fetched. Where preparation fetches the export from the sources instead (AMD's NPU; Apple's Core AI exports of the image models): the export's size as the sources hold it, in a vendor table (`{amd: 12.50e9, apple: 7.87e9}`), on Apple with the largest chip's prebuilt programs added. That is `pack.size` of the entry's `entry.json` when the entry is packed (`files.tar.zst`), else the sum of its `files` (`hwnpu-dev sources ls` prints the unpacked size) | GB is 10⁹; `du -h` prints GiB. The export on the disk is not the download: a packed one is smaller (FLUX.2 klein 16.0 GB on the disk, 12.5 GB packed). An export of pictures kept as files holds a program of each size with the weights, several times the checkpoint (DA3MONO-LARGE 6.59 GB against 1.4 GB). A vendor the table leaves out takes the largest value |
-| `disk` | What stays on the disk to run | The conversion unpacked plus its tables, by vendor (`{amd: 2.28e9}`): the sum of `files` of the entries. Written by `hwnpu-dev models hf sizes --write models.yaml` from the sources (AMD: the export of the model itself, not its variants'; Core AI: only exports at the model's version, so after a Mac ran it once) | Not the checkpoint (only converting reads it), nor Core AI's own compiled programs on a Mac (outside hwnpu's cache). A vendor the table leaves out is unknown (`-` in `hwnpu-chat list`), not the largest value. Preparing needs `bytes` and `disk` at once for a while |
+| `bytes` | The download | Sum of HF's `lfs.size` for the files fetched. Where preparation fetches the export from the sources instead (AMD's NPU; Apple's Core AI exports of the image models): the export's size as the sources hold it, in a vendor table (`{amd: 12.50e9, apple: 7.87e9}`), on Apple with the largest chip's prebuilt programs added. That is `pack.size` of the entry's `entry.json` when the entry is packed (`files.tar.zst`), else the sum of its `files` (`bonsaiai-dev sources ls` prints the unpacked size) | GB is 10⁹; `du -h` prints GiB. The export on the disk is not the download: a packed one is smaller (FLUX.2 klein 16.0 GB on the disk, 12.5 GB packed). An export of pictures kept as files holds a program of each size with the weights, several times the checkpoint (DA3MONO-LARGE 6.59 GB against 1.4 GB). A vendor the table leaves out takes the largest value |
+| `disk` | What stays on the disk to run | The conversion unpacked plus its tables, by vendor (`{amd: 2.28e9}`): the sum of `files` of the entries. Written by `bonsaiai-dev models hf sizes --write models.yaml` from the sources (AMD: the export of the model itself, not its variants'; Core AI: only exports at the model's version, so after a Mac ran it once) | Not the checkpoint (only converting reads it), nor Core AI's own compiled programs on a Mac (outside BonsaiAI's cache). A vendor the table leaves out is unknown (`-` in `bonsaiai-chat list`), not the largest value. Preparing needs `bytes` and `disk` at once for a while |
 | `memory` | The peak while running | Sample every 0.1 s over a whole run (`tools/memwatch`; AMD: accel mappings + RSS) | The peak of the run, not after loading (text stage, VAE) |
 | `machine` | Least machine memory the family recommends it for | `memory` + room for the OS and apps | Keep models of the same size alike |
 | `file` | The checkpoint file when a repository holds several | File list | Tensor prefixes can differ |
 | `device` | Where it runs per vendor | Energy of one run on the NPU and CPU | Small models lose on AMD's NPU (YuNet 137 mJ against 10 mJ) |
 
-- **Licenses to accept** (`license: {id, url, terms, accept: true}`): asked once on a terminal, kept in `~/.config/hwnpu/licenses.json`; otherwise `--accept-license` / `HWNPU_ACCEPT_LICENSE`
+- **Licenses to accept** (`license: {id, url, terms, accept: true}`): asked once on a terminal, kept in `~/.config/bonsaiai/licenses.json`; otherwise `--accept-license` / `BONSAIAI_ACCEPT_LICENSE`
 - **Values that differ by NPU**: a table by vendor (`memory: {amd: 3.5, apple: 4.1}`), a chip may be named (`M1: 1.7`); a vendor left out takes the largest
 - **Uses pick by memory like their families**: give a use's `picks` the same steps as its family
-- **Check**: `hwnpu-image list` / `hwnpu-chat list` with `HWNPU_MEMORY=8`, `16`, `24`; each NPU shows the right size, memory and RUNS FROM
+- **Check**: `bonsaiai-image list` / `bonsaiai-chat list` with `BONSAIAI_MEMORY=8`, `16`, `24`; each NPU shows the right size, memory and RUNS FROM
 
 An example measurement script (AMD):
 
@@ -456,12 +456,12 @@ done
 
 - **The sizes are models.yaml's** (`npu.amd.sizes`, `npu.apple.sizes`: the eight ratios `--size` takes, `internal/imagegen/aspect`); the command reads them to parse `--size` and to make the export
 - **Apple (Core AI)**: a part whose graph depends on size is one `.aimodel` with a function per size (`s{W}x{H}`, `llm.WriteAIFunctions`); size-independent parts are one function; the manifest's `sizes` lists each size's parts (`ProgramManifest.At`); the name carries the sizes (`aspect.Tag`). The part count must not depend on size
-- **Its cost on Apple**: Core AI compiles all functions of an `.aimodel` together, and one size the compiler fails takes that part off the NPU for all sizes. Before putting an export in the sources, compile each size alone offline for every chip (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`, look for `Falling back` in `/usr/bin/log`). Then `hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT` must end with `0 failed`. VAEs get no prebuilt (`coreai.LeftToDevice`)
+- **Its cost on Apple**: Core AI compiles all functions of an `.aimodel` together, and one size the compiler fails takes that part off the NPU for all sizes. Before putting an export in the sources, compile each size alone offline for every chip (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`, look for `Falling back` in `/usr/bin/log`). Then `bonsaiai-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT` must end with `0 failed`. VAEs get no prebuilt (`coreai.LeftToDevice`)
 - **AMD (IRON)**: the first size's graphs hold the banks, other sizes' graphs are in `sizes/WxH/` on the same banks (`share_banks`). A size not in whole rounds of 512 rows runs padded with keys bounded by `nk`; graphs that depend only on padded rows are shared
 - **The key**: `chat.PinnedRecipe(model, tool, version)` plus the exporter's arguments; it needs every input file's `sha256:` in models.yaml. Raise the export version by hand whenever inputs or outputs change
-- **The first run puts it in the sources** (`chat.SharedExportOr`, `?writeback=true`); hand-made exports via `hwnpu-dev sources import DIR` or first use
-- **Check from the other side**: `hwnpu-dev sources ls N`, then move the local export aside and run by name: it must come from the source and draw the same bytes
-- **The checkpoint in the sources** is read only with its `hwnpu-lock.json`
+- **The first run puts it in the sources** (`chat.SharedExportOr`, `?writeback=true`); hand-made exports via `bonsaiai-dev sources import DIR` or first use
+- **Check from the other side**: `bonsaiai-dev sources ls N`, then move the local export aside and run by name: it must come from the source and draw the same bytes
+- **The checkpoint in the sources** is read only with its `bonsaiai-lock.json`
 - **Check every size's picture** on the lowest machine (a broken function shows only there)
 - **Record the export's time, size and peak RSS** for models.yaml and the user's message
 

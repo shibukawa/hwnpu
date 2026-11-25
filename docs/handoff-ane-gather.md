@@ -2,7 +2,7 @@
 
 作成: 2026-11-18、整理: 2026-11-21。M1 (16 GB、macOS 27、ビルド 26B131) で調べ、M3 と M2 で続けた。コードは main に入っている (2 節)。
 
-**済んだこと**: M1 と M3 の調査 (1 節、1b 節)、LFM2-8B-A1B を hwnpu-chat に組み込み (1b の「hwnpu に組み込んだ」)、M2 での LFM2-8B-A1B と MoE の 1 層 (1c 節、[docs/design/apple-neural-engine.md](design/apple-neural-engine.md))。gpt-oss-20b の専門家を Neural Engine に置く道 (A) は止め、CPU の MXFP4 にした (1b の最後、[docs/design/apple-coreai.md](design/apple-coreai.md))。**残りは 3 節** (M4 での配置、ANE のコンパイラが外す理由)。
+**済んだこと**: M1 と M3 の調査 (1 節、1b 節)、LFM2-8B-A1B を bonsaiai-chat に組み込み (1b の「BonsaiAI に組み込んだ」)、M2 での LFM2-8B-A1B と MoE の 1 層 (1c 節、[docs/design/apple-neural-engine.md](design/apple-neural-engine.md))。gpt-oss-20b の専門家を Neural Engine に置く道 (A) は止め、CPU の MXFP4 にした (1b の最後、[docs/design/apple-coreai.md](design/apple-coreai.md))。**残りは 3 節** (M4 での配置、ANE のコンパイラが外す理由)。
 
 目的: Apple 向けの MoE (gpt-oss-20b、Qwen3.6-35B-A3B など) が無いのは、専門家の選択 (gather) が Neural Engine に載らないため ([docs/design/moe.md](design/moe.md) の gpt-oss の節、[model-fit.md](model-fit.md) 4 節)。この判断は Core ML 時代のもので、Core AI では試していなかった。ANE のコンパイラの中身を調べ、流用できるものを探した。
 
@@ -168,7 +168,7 @@ config は Hugging Face のもの。MoE の層の専門家を全部、Core AI �
 
 ### 実際の LFM2-8B-A1B で生成 (M3、`aicheck moeserve` + `tools/ref/lfm2moe_ane.py`)
 
-本物のチェックポイント (bf16、16.7 GB、`~/Library/Caches/hwnpu/original/LiquidAI/LFM2-8B-A1B`) で、MoE の 22 層を Neural Engine に、残り (conv、注意、密な 2 層、埋め込み、頭) を transformers の float32 (CPU) にして貪欲に 48 トークン生成した。専門家は行ごとの int8 (absmax / 127、拡大は fp16)。gate|up (H, 2I) と down (H, I) の 2 配列で、拡大は層ごとの表から ANE の gather で取る。全層の専門家 (7.75 GB) を持たせたまま、ルーターも ANE で回す (ルーターの重みは層ごとの入力配列)。選択 (sigmoid + expert_bias の top-4、正規化) はホストで行う。基準は同じモデルの専門家を bf16 → float32 で CPU で計算したもの。
+本物のチェックポイント (bf16、16.7 GB、`~/Library/Caches/bonsaiai/original/LiquidAI/LFM2-8B-A1B`) で、MoE の 22 層を Neural Engine に、残り (conv、注意、密な 2 層、埋め込み、頭) を transformers の float32 (CPU) にして貪欲に 48 トークン生成した。専門家は行ごとの int8 (absmax / 127、拡大は fp16)。gate|up (H, 2I) と down (H, I) の 2 配列で、拡大は層ごとの表から ANE の gather で取る。全層の専門家 (7.75 GB) を持たせたまま、ルーターも ANE で回す (ルーターの重みは層ごとの入力配列)。選択 (sigmoid + expert_bias の top-4、正規化) はホストで行う。基準は同じモデルの専門家を bf16 → float32 で CPU で計算したもの。
 
 | | 結果 |
 |---|---|
@@ -180,23 +180,23 @@ config は Hugging Face のもの。MoE の層の専門家を全部、Core AI �
 
 全体の 820 ms/トークンは、CPU の PyTorch (conv の参照実装) とパイプの往復が大半。ANE の部分だけなら、注意・conv を ANE に載せて (lfm3 と同じ形) 1 トークン 90〜100 ms、10 tok/s 前後の見込み。
 
-### hwnpu に組み込んだ (M3、2026-11-19)
+### BonsaiAI に組み込んだ (M3、2026-11-19)
 
-LFM2-8B-A1B が hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動く。専門家は Neural Engine、選択はホスト。
+LFM2-8B-A1B が bonsaiai-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動く。専門家は Neural Engine、選択はホスト。
 
 - `internal/llm/lfm2moe` (新しいアーキテクチャ、`lfm2_moe`): LFM2 の conv と注意 (`out_proj`、`q_layernorm`、gate と sandwich norm なし)、密な 2 層、ルーターまで。lfm3 は触っていない
 - `llm.Routed` (arch.go) と `llm.PlanRouted` (split.go): MoE の層ごとに部品を切る。部品は `moe_x_N` (ffn_norm の出力) と `moe_logits_N` (fp16 のルーター) を出して終わり、次の部品は `moe_o_N` を足して始まる。ConvertAI は専門家のプログラム (`model.experts.aimodel`) と行ごと int8 の専門家 (`model.experts.safetensors`、7.22 GiB) を書き、manifest の `experts` に記す。Core AI だけ、paged と tiers なし
 - `internal/llm/experts`: 専門家のプログラム (2 配列 + 拡大の gather、silu は exp/real_div)、選択 (`Routing.Choose`)、重みファイルの書き出し
 - `internal/llm/chain/moe.go`: `moe_logits_N` を出す部品の後で、行ごとに上位 k 個を選んで専門家のプログラムを呼ぶ。入力 `last` があれば有効な行だけ。全層の専門家はプログラム自身の入力配列に一度だけ読み込み、`Share` した chain と共有する
 - chat: MoE のモデルは cache tiers なし (export ごとに専門家のファイルが付くため)、draft なし (1 回 8 行だと専門家も 8 行: 2.3 tok/s)。LFM2 の会話形式 (`chat.LFM2`、think なし)
-- `hwnpu-dev generate -score` を KV キャッシュのあるモデルにも (1 トークンずつ)
+- `bonsaiai-dev generate -score` を KV キャッシュのあるモデルにも (1 トークンずつ)
 
 | LFM2-8B-A1B (M3 16 GB、lut8 + 専門家 int8) | 結果 |
 |---|---|
-| 変換 (hwnpu-dev convert) | 21 s、23 部品 + 専門家 |
+| 変換 (bonsaiai-dev convert) | 21 s、23 部品 + 専門家 |
 | 読み込み | 2.7 s (コンパイル済み)、全部品 NPU |
-| 生成 (hwnpu-dev generate、1 トークン 1 回) | 15.4 tok/s (64.7 ms/トークン) |
-| 生成 (hwnpu-chat) | 14.1 tok/s |
+| 生成 (bonsaiai-dev generate、1 トークン 1 回) | 15.4 tok/s (64.7 ms/トークン) |
+| 生成 (bonsaiai-chat) | 14.1 tok/s |
 | 基準 (bf16 専門家、float32) の生成した 48 トークンでの KL | キャッシュなし 0.0062 (argmax 48/48)、キャッシュあり 1 トークンずつ 0.0056 (47/48) |
 
 外れた 1 か所は基準でも ' through' 53% と ' than' 43% の僅差。そこでキャッシュあり生成の文が分かれる。
@@ -222,7 +222,7 @@ LFM2-8B-A1B が hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動�
 
 gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2 tok/s ほど)。時間の大半は重みの要素ごとの演算 (cast、+128、floor_div、×16、−)。int8 の 1 層 1.7 ms も cast が律速と見られる (Neural Engine の要素ごとの演算は約 16〜26 G 要素/s)。
 
-値: Core AI の CPU (`HWNPU_COREAI_UNITS=cpu`) では正しい (cos 0.9998) が、Neural Engine では NaN。取り出しだけのプログラムは Neural Engine で全部の int8 について正しい (`aicheck fdiv`)。`mod` を入れたプログラムは GPU に回る。どこで無限大になるかは未調査 (`HWNPU_DEV=ailower.cut` で切り分ける)。
+値: Core AI の CPU (`BONSAIAI_COREAI_UNITS=cpu`) では正しい (cos 0.9998) が、Neural Engine では NaN。取り出しだけのプログラムは Neural Engine で全部の int8 について正しい (`aicheck fdiv`)。`mod` を入れたプログラムは GPU に回る。どこで無限大になるかは未調査 (`BONSAIAI_DEV=ailower.cut` で切り分ける)。
 
 ### gpt-oss-20b の専門家を 4 ビットで Neural Engine に (A の道、M3、2026-11-19、`aicheck mx`)
 
@@ -240,7 +240,7 @@ gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2
 
 M2 でも LFM2-8B-A1B (専門家を Neural Engine、拡大は gather_nd) が動いた。
 
-| LFM2-8B-A1B (hwnpu-chat) | M2 | M3 |
+| LFM2-8B-A1B (bonsaiai-chat) | M2 | M3 |
 | --- | --- | --- |
 | 配置 | 全部 NPU | 全部 NPU |
 | 生成 | 12.0〜13.1 tok/s | 14.1 tok/s |
@@ -249,9 +249,9 @@ M2 でも LFM2-8B-A1B (専門家を Neural Engine、拡大は gather_nd) が動�
 | 初回 (取得・変換・コンパイル) | 17.5 分、最大 12.9 GB | — |
 | 2 回目以降の読み込み | 3.1〜3.2 s、8.0 GB | — |
 
-M2 のプロンプトの時間のばらつきは**メモリ不足**による (M2 での `HWNPU_DEV=moe.time` と `vm_stat`)。呼び出しの数は同じ (36,410 層行) で、遅い回ほど専門家の 1 層行が長く (0.42 → 0.54 → 1.21 ms)、ページの展開が多い (0.5 M → 1.53 M)。同じ配列のまま 2 度目を呼ぶと 1.26〜1.32 ms で変わらず、延びるのは結び付けた最初の呼び出しだけ (2.32 → 3.97 ms)。スワップ 5.5〜7.75 GB 使用、圧縮に約 6.6 GB。熱 (`pmset -g therm` に記録なし) とほかの Neural Engine の利用 (2 度目も遅くなるはず) ではない。`memory_pressure` は空き 68〜75% と出て判断に使えない。
+M2 のプロンプトの時間のばらつきは**メモリ不足**による (M2 での `BONSAIAI_DEV=moe.time` と `vm_stat`)。呼び出しの数は同じ (36,410 層行) で、遅い回ほど専門家の 1 層行が長く (0.42 → 0.54 → 1.21 ms)、ページの展開が多い (0.5 M → 1.53 M)。同じ配列のまま 2 度目を呼ぶと 1.26〜1.32 ms で変わらず、延びるのは結び付けた最初の呼び出しだけ (2.32 → 3.97 ms)。スワップ 5.5〜7.75 GB 使用、圧縮に約 6.6 GB。熱 (`pmset -g therm` に記録なし) とほかの Neural Engine の利用 (2 度目も遅くなるはず) ではない。`memory_pressure` は空き 68〜75% と出て判断に使えない。
 
-- `HWNPU_MOE_WIRE=1`: 専門家の配列を mlock で固定する (既定は off。16 GB で 7.2 GB 固定すると他のアプリが押し出される。メモリが足りない 16 GB の機械で勧める)。M2 (1,624 トークン、スワップ 7.9 GB 使用) で 3 回ずつ交互に: WIRE 13.2 / 13.1 / 12.7 s (展開 0.07〜0.31 M)、なし 14.4 / 13.9 / 13.6 s (0.42〜0.65 M)。以前の mlock の試しも 13.4〜14.8 s と遅い回が出なかった。M3 では 9.2〜9.6 → 8.7 s、生成 15.3 → 16.1 tok/s
+- `BONSAIAI_MOE_WIRE=1`: 専門家の配列を mlock で固定する (既定は off。16 GB で 7.2 GB 固定すると他のアプリが押し出される。メモリが足りない 16 GB の機械で勧める)。M2 (1,624 トークン、スワップ 7.9 GB 使用) で 3 回ずつ交互に: WIRE 13.2 / 13.1 / 12.7 s (展開 0.07〜0.31 M)、なし 14.4 / 13.9 / 13.6 s (0.42〜0.65 M)。以前の mlock の試しも 13.4〜14.8 s と遅い回が出なかった。M3 では 9.2〜9.6 → 8.7 s、生成 15.3 → 16.1 tok/s
 - 結び付けは費用ではない: 層と専門家ごとに request を持って配列を一度だけ結び付けても (試して外した)、メモリに余裕があれば M2 も M3 も同じ (M2 14.5 s、0.38〜0.39 ms の層行。M3 9.2〜9.3 s)。「最初の呼び出し 2.32 ms、2 度目 1.26 ms」は遅い回でだけ開く差で、圧縮されたページの展開だった。M2 の最良 14.5 s と M3 の 8.7〜9.2 s の差はチップの差 (生成と同じ割合)
 - やらないこと: プロンプトを層ごとに全部の塊を回す順に変え、専門家を層ごとに 1 度だけ結び付ける。結び付けがほぼ無料なので速い回は速くならない
 - MoE の 1 層 (`aicheck moe`、[docs/design/apple-neural-engine.md](design/apple-neural-engine.md)): M1 の「1 プログラムに専門家 5 個まで」の段は M2 にない (M3 と同じ)。実行時の重みは定数の重みの半分の速さ (gpt-oss の専門家で 26 GB/s と 50〜52 GB/s)
@@ -284,7 +284,7 @@ probe (int16 の索引は fp16 の入力をプログラムの中で int16 に変
 
 ## 3. 確かめること
 
-M2 と M3 は済んだ。残りは M4 と、ANE のコンパイラの返事を読むこと。測る前に、ほかの hwnpu のプロセスが Neural Engine を使っていないことを確かめる (`ps -ax | grep -E "hwnpu|aicheck"`)。aicheck は NPU のロックを取るので順番待ちになるが、時間はずれる。
+M2 と M3 は済んだ。残りは M4 と、ANE のコンパイラの返事を読むこと。測る前に、ほかの BonsaiAI のプロセスが Neural Engine を使っていないことを確かめる (`ps -ax | grep -E "bonsaiai|aicheck"`)。aicheck は NPU のロックを取るので順番待ちになるが、時間はずれる。
 
 ### 3.1 M4 での配置
 
@@ -303,7 +303,7 @@ COREML=1 /tmp/aicheck probe linear gnd_const gnd_input gnd_mm gaa_input gaa_cons
 
 ### 3.2 M4 での MoE の 1 層 (あれば)
 
-M2 と M3 は済み (1b、1c)。M4 では `aicheck moe -model gptoss -layers 4 -calls 200 -copy`、`aicheck moe -model qwen3moe -layers 1 -calls 100 -topk 6` (段差が無いか) と、LFM2-8B-A1B の hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B`) の生成とプロンプトの速さ。
+M2 と M3 は済み (1b、1c)。M4 では `aicheck moe -model gptoss -layers 4 -calls 200 -copy`、`aicheck moe -model qwen3moe -layers 1 -calls 100 -topk 6` (段差が無いか) と、LFM2-8B-A1B の bonsaiai-chat (`-m LiquidAI/LFM2-8B-A1B`) の生成とプロンプトの速さ。
 
 ### 3.3 ANE のコンパイラが gather を外す理由 (sudo)
 
@@ -312,7 +312,7 @@ M2 と M3 は済み (1b、1c)。M4 では `aicheck moe -model gptoss -layers 4 -
 ```sh
 open tools/coreai/logging/private-data.mobileconfig
 # システム設定 → 一般 → デバイス管理 (または プライバシーとセキュリティ → プロファイル) で
-# 「Unified log private data (hwnpu)」をインストール (管理者のパスワード)
+# 「Unified log private data (bonsaiai)」をインストール (管理者のパスワード)
 /usr/bin/log show --last 1m --info | grep -c "<private>"    # 減ったか確かめる
 ```
 
@@ -335,7 +335,7 @@ grep errorMsg /tmp/anec_stream.log | grep -v '""' | sort | uniq -c
 ### 3.4 残っている小さなこと
 
 - `anec.mx_dequant` (MXFP4) が新しい世代で使えれば、gpt-oss の専門家を 4 bit のまま入力にできるかもしれない (M3 は MX の定数も入力も Neural Engine に載らなかった。1b の最後)
-- 4 ビットを int8 に 2 つ詰めて `floor_div` で取り出す形が Neural Engine で NaN になる所 (`HWNPU_DEV=ailower.cut` で切り分ける。速さで負けるので急がない)
+- 4 ビットを int8 に 2 つ詰めて `floor_div` で取り出す形が Neural Engine で NaN になる所 (`BONSAIAI_DEV=ailower.cut` で切り分ける。速さで負けるので急がない)
 - 結び付けの費用が層の数で増える理由 (Core AI の覚えている配列の上限か、16 GB の機械のメモリ圧か)。24 GB 以上の機械で比べたい
 
 ## 4. 注意

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/speech"
+	"github.com/shibukawa/bonsaiai/ai/speech"
 )
 
 // Synth makes speech of a text: *speech.Speaker (LFM3-Audio), or another model of speech.

@@ -1,5 +1,5 @@
-# hwnpu-image label's labels when none are given: common things, places and kinds of picture,
-# one a line (the lines with # are left out). Written for hwnpu; --labels-file replaces them.
+# bonsaiai-image label's labels when none are given: common things, places and kinds of picture,
+# one a line (the lines with # are left out). Written for bonsaiai; --labels-file replaces them.
 # people
 person
 man

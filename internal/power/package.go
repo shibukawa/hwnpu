@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // PackagePower reads the package power the amdgpu driver reports on an AMD APU (its hwmon's

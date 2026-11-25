@@ -8,23 +8,23 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
-// TestCoreAIAgainstCPU checks the Core AI programs (HWNPU_TEST_NPU set; HWNPU_TEST_MRT_DIR, the
+// TestCoreAIAgainstCPU checks the Core AI programs (BONSAIAI_TEST_NPU set; BONSAIAI_TEST_MRT_DIR, the
 // model's directory: the models' magenta-realtime-2 by default) against the Core ML packages run
 // with the CPU interpreter, Core ML's Neural Engine beside them: the language model's logits
 // forced along the CPU's greedy frames (the KL at temperature 1.3 and the same most likely token),
 // MusicCoCa's text embeddings and SpectroStream's decoder on the same input (cosines).
 func TestCoreAIAgainstCPU(t *testing.T) {
-	if os.Getenv("HWNPU_TEST_NPU") == "" {
-		t.Skip("HWNPU_TEST_NPU is not set")
+	if os.Getenv("BONSAIAI_TEST_NPU") == "" {
+		t.Skip("BONSAIAI_TEST_NPU is not set")
 	}
-	dir := os.Getenv("HWNPU_TEST_MRT_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_MRT_DIR")
 	if dir == "" {
 		home, _ := os.UserCacheDir()
-		dir = filepath.Join(home, "hwnpu", "models", "magenta-realtime-2")
+		dir = filepath.Join(home, "bonsaiai", "models", "magenta-realtime-2")
 	}
 	ctx := context.Background()
 	setup := Setup{Dir: dir, Repo: "google/magenta-realtime-2", Text: true}
@@ -50,7 +50,7 @@ func TestCoreAIAgainstCPU(t *testing.T) {
 	defer ml.Close()
 	type side struct {
 		name string
-		dev  *hwnpu.Device
+		dev  *bonsaiai.Device
 		p    Paths
 	}
 	sides := []side{{"cpu", nil, pml}, {"coreml", ml, pml}, {"coreai", ai, pai}}

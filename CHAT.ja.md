@@ -6,10 +6,10 @@ LFM3-1.7B と PLaMo-Embedding-1B を Apple の Neural Engine だけで動かし�
 
 同じコマンドが Intel の NPU (Core Ultra) でも動きます。モデルは OpenVINO IR に変換され、NPU のドライバがコンパイルします。実機ではまだ試していません。[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の 6 節を見てください。
 
-hwnpu-chat はサブコマンドで使い分けます。`chat` (省略したときのもの。`hwnpu-chat` だけなら端末で対話、`hwnpu-chat "..."` ならその質問に答えて終わる)、`agent` (7 節)、`search` (4 節)、`serve` (3 節)、`opencode` (6 節)、`list` です。使うモデルは `-m` (`--model`) に名前で指定します。選べるモデルの名前と用途は `list` で出ます。
+bonsaiai-chat はサブコマンドで使い分けます。`chat` (省略したときのもの。`bonsaiai-chat` だけなら端末で対話、`bonsaiai-chat "..."` ならその質問に答えて終わる)、`agent` (7 節)、`search` (4 節)、`serve` (3 節)、`opencode` (6 節)、`list` です。使うモデルは `-m` (`--model`) に名前で指定します。選べるモデルの名前と用途は `list` で出ます。
 
 ```bash
-go run ./cmd/hwnpu-chat list
+go run ./cmd/bonsaiai-chat list
 ```
 
 | 名前 | 用途 | 機能 | ターミナル | `serve` のとき (3 節) |
@@ -34,37 +34,37 @@ go run ./cmd/hwnpu-chat list
 | `audio` | ユーザーのメッセージの音声 (`input_audio`、WAV) を読む。対話では `/audio FILE.wav` |
 
 - ターミナルで動かすのは `-m` に指定した 1 つのモデルです。チャットのモデルは `chat` と `agent`、埋め込みモデルは `search` で使います。サーバー (`serve`) はいくつでも動かせます (例 `-m LFM3-1.7B,plamo-embedding-1b`)
-- 用途かファミリーの名前を書くと、機械のメモリに合うモデルを [MODEL.ja.md](MODEL.ja.md) の表のとおりに選びます。`-m translate` は 8 GB の機械で PLaMo 3 Translate 0.8B、16 GB 以上で 8B です (M1 では 8B が遅すぎるので 2B)。`-m chat` は 8 GB で LFM3-1.7B、16 GB で Gemma 4 E2B、24 GB 以上で E4B です。Docker のイメージのようにタグで決めることもできます。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m gemma4:e4b`、`-m chat:e4b`) か、機械のメモリ、つまり MODEL.ja.md の表の列 (`-m chat:24g` は 24 GB の機械で動かすもの、`-m plamo3translate:8g`) です。用途は `chat` (`code`、`agent`)、`vision`、`audio`、`translate`、`embedding` (`embed`、`search`) です。ファミリーとタグ、この機械でどれが選ばれるかは `hwnpu-chat list` に出ます。ダウンロードと変換は選ばれたモデルの分だけです。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。API のリクエストの `model` も同じ書き方ができます
-- モデル、用途、選ばれるモデルは、hwnpu に組み込まれた [models.yaml](models.yaml) から来ます。自分のファイル `~/.config/hwnpu/models.yaml` (Windows は `%LOCALAPPDATA%\hwnpu\models.yaml`。`HWNPU_MODELS` と `--models FILE` も) に差分だけを書くと、それに重ねて読みます。自分のモデル (`like:` で別のモデルの欄を引き継ぐ、`from: hf:OWNER/NAME@REVISION`)、用途の列 (`categories: translate: picks: [{machine: 8, model: ...}]`)、あるモデルが選ばれるところで別のモデルを動かすエイリアス (`aliases: plamo-3-translate-0.8b: my-distill`) が書けます。読んだファイルとエイリアスは `hwnpu-chat list` に出ます (docs/model-table.md)
-- 取得元: Hugging Face より先に (または代わりに) 共有の場所からモデルを取れます。環境変数か `.env` (カレントディレクトリ、`~/.config/hwnpu/`、`/etc/hwnpu/`) に URL で書きます: `HWNPU_MODEL_SOURCE=file:///mnt/nas/hwnpu?writeback=true` (マウントしたフォルダ)、`HWNPU_MODEL_SOURCE_1=https://USER:PASSWORD@nas:5006/hwnpu` (WebDAV。読むだけならどの HTTP サーバーでも)、`HWNPU_MODEL_SOURCE_2=s3://models/hwnpu?endpoint=http://rustfs.lab:9000&profile=rustfs`。番号の順に探します。`?writeback=true` を付けると、手元で落としたものと変換したものをそこへ置き、次の機械はどちらも要りません。`HWNPU_MODEL_HUGGING_FACE=false` で Hugging Face に出ません。取得元には `original/OWNER/NAME/` (コミットとファイルの sha256 を書いた `hwnpu-lock.json` と一緒に) と `converted/` があり、`hwnpu-dev sources update` で Hugging Face の新しいコミットに移します (docs/cache-sharing-design.md 7 節)。`sha256: {config.json: ...}` を書くと、どこから取ってもそのファイルを確かめます
-- 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-m OWNER/NAME` で指定でき、hwnpu-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します
-- 同意の要るリポジトリ (FLUX.1 [schnell] のように、Hugging Face のページで利用条件への同意を求めるもの): そのページで同意してから、端末で最初にダウンロードすると Hugging Face にサインインします。表示されるコードを https://hf.co/oauth/device に入れると、hwnpu に「同意済みの同意制リポジトリを読む」ことだけを許すか Hugging Face が尋ねます (ほかのことや非公開のリポジトリは許しません)。トークンはそのプロセスの中だけに持ち、保存しません。アカウントがまだ同意していなければそう表示するので、同意して Enter を押します。手持ちのトークンがあればそちらを使います: `HF_TOKEN`、または `hf auth login` が保存したもの (`~/.cache/huggingface/token`)。端末のないとき (`serve`、スクリプト) は `HF_TOKEN` に read のトークンを入れます
+- 用途かファミリーの名前を書くと、機械のメモリに合うモデルを [MODEL.ja.md](MODEL.ja.md) の表のとおりに選びます。`-m translate` は 8 GB の機械で PLaMo 3 Translate 0.8B、16 GB 以上で 8B です (M1 では 8B が遅すぎるので 2B)。`-m chat` は 8 GB で LFM3-1.7B、16 GB で Gemma 4 E2B、24 GB 以上で E4B です。Docker のイメージのようにタグで決めることもできます。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m gemma4:e4b`、`-m chat:e4b`) か、機械のメモリ、つまり MODEL.ja.md の表の列 (`-m chat:24g` は 24 GB の機械で動かすもの、`-m plamo3translate:8g`) です。用途は `chat` (`code`、`agent`)、`vision`、`audio`、`translate`、`embedding` (`embed`、`search`) です。ファミリーとタグ、この機械でどれが選ばれるかは `bonsaiai-chat list` に出ます。ダウンロードと変換は選ばれたモデルの分だけです。`BONSAIAI_MEMORY=24` で 24 GB の機械と同じに選びます。API のリクエストの `model` も同じ書き方ができます
+- モデル、用途、選ばれるモデルは、BonsaiAI に組み込まれた [models.yaml](models.yaml) から来ます。自分のファイル `~/.config/bonsaiai/models.yaml` (Windows は `%LOCALAPPDATA%\bonsaiai\models.yaml`。`BONSAIAI_MODELS` と `--models FILE` も) に差分だけを書くと、それに重ねて読みます。自分のモデル (`like:` で別のモデルの欄を引き継ぐ、`from: hf:OWNER/NAME@REVISION`)、用途の列 (`categories: translate: picks: [{machine: 8, model: ...}]`)、あるモデルが選ばれるところで別のモデルを動かすエイリアス (`aliases: plamo-3-translate-0.8b: my-distill`) が書けます。読んだファイルとエイリアスは `bonsaiai-chat list` に出ます (docs/model-table.md)
+- 取得元: Hugging Face より先に (または代わりに) 共有の場所からモデルを取れます。環境変数か `.env` (カレントディレクトリ、`~/.config/bonsaiai/`、`/etc/bonsaiai/`) に URL で書きます: `BONSAIAI_MODEL_SOURCE=file:///mnt/nas/bonsaiai?writeback=true` (マウントしたフォルダ)、`BONSAIAI_MODEL_SOURCE_1=https://USER:PASSWORD@nas:5006/bonsaiai` (WebDAV。読むだけならどの HTTP サーバーでも)、`BONSAIAI_MODEL_SOURCE_2=s3://models/bonsaiai?endpoint=http://rustfs.lab:9000&profile=rustfs`。番号の順に探します。`?writeback=true` を付けると、手元で落としたものと変換したものをそこへ置き、次の機械はどちらも要りません。`BONSAIAI_MODEL_HUGGING_FACE=false` で Hugging Face に出ません。取得元には `original/OWNER/NAME/` (コミットとファイルの sha256 を書いた `bonsaiai-lock.json` と一緒に) と `converted/` があり、`bonsaiai-dev sources update` で Hugging Face の新しいコミットに移します (docs/cache-sharing-design.md 7 節)。`sha256: {config.json: ...}` を書くと、どこから取ってもそのファイルを確かめます
+- 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-m OWNER/NAME` で指定でき、bonsaiai-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します
+- 同意の要るリポジトリ (FLUX.1 [schnell] のように、Hugging Face のページで利用条件への同意を求めるもの): そのページで同意してから、端末で最初にダウンロードすると Hugging Face にサインインします。表示されるコードを https://hf.co/oauth/device に入れると、BonsaiAI に「同意済みの同意制リポジトリを読む」ことだけを許すか Hugging Face が尋ねます (ほかのことや非公開のリポジトリは許しません)。トークンはそのプロセスの中だけに持ち、保存しません。アカウントがまだ同意していなければそう表示するので、同意して Enter を押します。手持ちのトークンがあればそちらを使います: `HF_TOKEN`、または `hf auth login` が保存したもの (`~/.cache/huggingface/token`)。端末のないとき (`serve`、スクリプト) は `HF_TOKEN` に read のトークンを入れます
 
 ## 1. 対話する
 
 ```bash
-go run ./cmd/hwnpu-chat
+go run ./cmd/bonsaiai-chat
 ```
 
 引数は要りません。最初の起動では次のことを自動で行います (M3 で、落とす時間を除いて約 4 分: 変換に 2 分少々、コンパイルに 2 分)。2 回目からはコンパイル済みのものを読み込むだけで、数秒から 1 分ほどで始まります。読み込みの間は進み具合を表示します。
 
-1. Hugging Face の [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) から `config.json`、`tokenizer.json`、`model.safetensors` (3.5 GB) を `~/Library/Caches/hwnpu/original/LiquidAI/LFM3-1.7B` に落とします (変換したプログラムは `~/Library/Caches/hwnpu/models/LFM3-1.7B`。どちらも `HWNPU_CACHE` で移せます)。途中で切れても、もう一度起動すれば続きから落とします
-2. Neural Engine 用に、6 ビットの表と grouped 注意で、全注意の層で分けて変換します (`lfm3-lut6-grouped-p8192-c262144-q8.parts.json` と `-q128-last`。それぞれ 7 部分で合わせて約 1.2 GiB と、重みのない注意のプログラム 1 つ)。生成するもの (1 回 8 トークン: 本物 1 つと推測 7 つをまとめて確かめる。3 節) と、1 回 128 トークンでプロンプトを読むものです (ロジットは最後の行だけ計算する)。2026 年 11 月 6 日までの `-q64` (1 回 64 トークン) より 2 割ほど速く読み、`-q64` はもう読まれないので消して構いません ([docs/design/apple-neural-engine.ja.md](docs/design/apple-neural-engine.ja.md))。2 つは 1 つの KV キャッシュを共有します。全注意の層の注意は、hwnpu-chat が自分の持つキャッシュに対して 8192 トークンの塊ごとに計算します (`--paged`、2 節)。このため 1 ステップの費用は会話の長さに比例し、キャッシュのメモリも会話とともに増えるので、文脈はモデルの上限の 262144 トークンです。2026 年 11 月 4 日までの既定 (`lfm3-lut6-grouped-c16320-q8.mlpackage`、文脈 16320、費用は容量に比例) のファイルはもう読まれないので消して構いません。2026 年 11 月までの既定は 4 ビットの表と tile 注意 (`lfm3-c16320-q8.mlpackage`) で、そのファイルはもう読まれないので消して構いません。bf16 のモデルとの近さは lut4 の 6 倍 (KL 1.39 → 0.23 nats)、コーディングの課題は 13〜27 往復が 6 往復になり、grouped 注意のおかげで 1 回の呼び出しは以前より 38% 速いままです ([docs/design/quantization.ja.md](docs/design/quantization.ja.md))
-3. Neural Engine 向けにコンパイルします (1〜2 分)。結果は `~/Library/Caches/hwnpu` に残ります。同じ重みのファイル (生成用と読み込み用のプログラム、そのコンパイル結果) は macOS ではディスクの上で 1 つ分を共有し (APFS の clone。普通のファイルのまま)、プログラムを消したものと 30 日使わなかったもののコンパイル結果は起動時に消します ([docs/design/distribution.ja.md](docs/design/distribution.ja.md))
+1. Hugging Face の [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) から `config.json`、`tokenizer.json`、`model.safetensors` (3.5 GB) を `~/Library/Caches/bonsaiai/original/LiquidAI/LFM3-1.7B` に落とします (変換したプログラムは `~/Library/Caches/bonsaiai/models/LFM3-1.7B`。どちらも `BONSAIAI_CACHE` で移せます)。途中で切れても、もう一度起動すれば続きから落とします
+2. Neural Engine 用に、6 ビットの表と grouped 注意で、全注意の層で分けて変換します (`lfm3-lut6-grouped-p8192-c262144-q8.parts.json` と `-q128-last`。それぞれ 7 部分で合わせて約 1.2 GiB と、重みのない注意のプログラム 1 つ)。生成するもの (1 回 8 トークン: 本物 1 つと推測 7 つをまとめて確かめる。3 節) と、1 回 128 トークンでプロンプトを読むものです (ロジットは最後の行だけ計算する)。2026 年 11 月 6 日までの `-q64` (1 回 64 トークン) より 2 割ほど速く読み、`-q64` はもう読まれないので消して構いません ([docs/design/apple-neural-engine.ja.md](docs/design/apple-neural-engine.ja.md))。2 つは 1 つの KV キャッシュを共有します。全注意の層の注意は、bonsaiai-chat が自分の持つキャッシュに対して 8192 トークンの塊ごとに計算します (`--paged`、2 節)。このため 1 ステップの費用は会話の長さに比例し、キャッシュのメモリも会話とともに増えるので、文脈はモデルの上限の 262144 トークンです。2026 年 11 月 4 日までの既定 (`lfm3-lut6-grouped-c16320-q8.mlpackage`、文脈 16320、費用は容量に比例) のファイルはもう読まれないので消して構いません。2026 年 11 月までの既定は 4 ビットの表と tile 注意 (`lfm3-c16320-q8.mlpackage`) で、そのファイルはもう読まれないので消して構いません。bf16 のモデルとの近さは lut4 の 6 倍 (KL 1.39 → 0.23 nats)、コーディングの課題は 13〜27 往復が 6 往復になり、grouped 注意のおかげで 1 回の呼び出しは以前より 38% 速いままです ([docs/design/quantization.ja.md](docs/design/quantization.ja.md))
+3. Neural Engine 向けにコンパイルします (1〜2 分)。結果は `~/Library/Caches/bonsaiai` に残ります。同じ重みのファイル (生成用と読み込み用のプログラム、そのコンパイル結果) は macOS ではディスクの上で 1 つ分を共有し (APFS の clone。普通のファイルのまま)、プログラムを消したものと 30 日使わなかったもののコンパイル結果は起動時に消します ([docs/design/distribution.ja.md](docs/design/distribution.ja.md))
 
 起動したら、`>` に続けて話しかけます。引数に質問を書くと、それに答えて終わります。
 
 ```bash
-go run ./cmd/hwnpu-chat "日本の首都は？"
-go run ./cmd/hwnpu-chat -m translate "桜が満開です。"
+go run ./cmd/bonsaiai-chat "日本の首都は？"
+go run ./cmd/bonsaiai-chat -m translate "桜が満開です。"
 ```
 
 - モデルはまず考えて (`<think>`、薄い色で表示) から答えます。`/think off` で考えずに答え、`/think on` で戻ります
 - `/reset` で会話を消し、`/exit` か Ctrl-D で終わります。Ctrl-C は答えを止めます。行末の `\` で次の行に続けます
-- 入力はシェルのように編集できます: ↑ ↓ (Ctrl-P、Ctrl-N) で前に打ったものを出し (`~/Library/Caches/hwnpu/history/chat` に 1000 件まで残り、次の起動でも出せる)、← → と Home、End、Ctrl-A、Ctrl-E、Ctrl-K、Ctrl-U、Ctrl-W が使えます。日本語は 2 桁幅で扱います。貼り付けた複数行はそのまま 1 つの入力になり、改行は `⏎` と表示します。入力中の Ctrl-C は行を消し、空の行での Ctrl-C は終了です
-- AMD の NPU では、書き出しが手元になければ、ほかの NPU と同じく初回に用意します: チェックポイントを落とし、IRON で書き出します (`tools/amd/iron_export_lm.py`、書き出し方は model-recipes.yaml の `amd`)。行き先は `~/models/NAME.amd-npu2-q4`。IRON の環境 (INSTALL_AMD.ja.md の 2) が要り、`HWNPU_IRON_ENV` (仮想環境か、それを整えるスクリプト) か PATH の python3 で探します。なければ、何を入れればよいかを言って止まります。`hwnpu-chat list` の RUNS FROM の列に、モデルごとの書き出しが出ます
-- 読み込みの表示や説明は灰色で出し、Neural Engine に全部載ったら `all on the NPU` を緑、載らなかったら `NOT all on the NPU` を赤で出します。端末でないときと `NO_COLOR` を設定したときは色を付けません (`hwnpu-chat agent` も同じ)。AMD の NPU でも書き出しの部分 (`decode`、`prompt`) ごとに `all on the NPU` と出し、ホストで動くステップ (Qwen3.6 のプロンプトの専門家) があれば `NOT all on the NPU` と出します
-- 答えは標準出力に、それ以外 (読み込み、考えた内容、統計) は標準エラー出力に出すので、`hwnpu-chat "..." > answer.txt` なら答えだけが残ります
+- 入力はシェルのように編集できます: ↑ ↓ (Ctrl-P、Ctrl-N) で前に打ったものを出し (`~/Library/Caches/bonsaiai/history/chat` に 1000 件まで残り、次の起動でも出せる)、← → と Home、End、Ctrl-A、Ctrl-E、Ctrl-K、Ctrl-U、Ctrl-W が使えます。日本語は 2 桁幅で扱います。貼り付けた複数行はそのまま 1 つの入力になり、改行は `⏎` と表示します。入力中の Ctrl-C は行を消し、空の行での Ctrl-C は終了です
+- AMD の NPU では、書き出しが手元になければ、ほかの NPU と同じく初回に用意します: チェックポイントを落とし、IRON で書き出します (`tools/amd/iron_export_lm.py`、書き出し方は model-recipes.yaml の `amd`)。行き先は `~/models/NAME.amd-npu2-q4`。IRON の環境 (INSTALL_AMD.ja.md の 2) が要り、`BONSAIAI_IRON_ENV` (仮想環境か、それを整えるスクリプト) か PATH の python3 で探します。なければ、何を入れればよいかを言って止まります。`bonsaiai-chat list` の RUNS FROM の列に、モデルごとの書き出しが出ます
+- 読み込みの表示や説明は灰色で出し、Neural Engine に全部載ったら `all on the NPU` を緑、載らなかったら `NOT all on the NPU` を赤で出します。端末でないときと `NO_COLOR` を設定したときは色を付けません (`bonsaiai-chat agent` も同じ)。AMD の NPU でも書き出しの部分 (`decode`、`prompt`) ごとに `all on the NPU` と出し、ホストで動くステップ (Qwen3.6 のプロンプトの専門家) があれば `NOT all on the NPU` と出します
+- 答えは標準出力に、それ以外 (読み込み、考えた内容、統計) は標準エラー出力に出すので、`bonsaiai-chat "..." > answer.txt` なら答えだけが残ります
 - 会話の 2 回目以降は、前回からの差分だけを読みます
 - 答えのあとに、読んだトークン数と生成の速さ (M3 で約 15 tokens/s) を出します
 
@@ -73,28 +73,28 @@ go run ./cmd/hwnpu-chat -m translate "桜が満開です。"
 `-m LFM3-VL-2B`、`-m LFM3-Audio-2B`、`-m LFM3-Omni-2B` で Liquid AI のマルチモーダルのチェックポイントを使えます。初回はそれを落とし (3.8、4.0、4.3 GB)、テキスト部を同じ手順で、ただし 8 ビットの表 (lut8、2 部分ずつ) で変換します。4 ビットの表では画像の説明を誤り、音声を聞き違えるためです ([docs/design/llm-models.ja.md](docs/design/llm-models.ja.md))。チェックポイントにあるエンコーダも fp16 で変換します。視覚エンコーダは 512x512 の画像用 (画像はこの大きさに引き伸ばす)、音声エンコーダは 30 秒までのクリップ用です。
 
 ```bash
-go run ./cmd/hwnpu-chat -m LFM3-VL-2B
+go run ./cmd/bonsaiai-chat -m LFM3-VL-2B
 ```
 
-- 対話では `/image FILE 質問` で画像を、`/audio FILE.wav 質問` で音声を送れます。引数に質問を書くときは `--image FILE`、`--audio FILE.wav` です (`hwnpu-chat -m LFM3-VL-2B --image photo.jpg "何が写っている？"`)。サーバーはユーザーのメッセージの `image_url` (data URL) と `input_audio` (base64 の WAV) を読みます
+- 対話では `/image FILE 質問` で画像を、`/audio FILE.wav 質問` で音声を送れます。引数に質問を書くときは `--image FILE`、`--audio FILE.wav` です (`bonsaiai-chat -m LFM3-VL-2B --image photo.jpg "何が写っている？"`)。サーバーはユーザーのメッセージの `image_url` (data URL) と `input_audio` (base64 の WAV) を読みます
 - M3 で grouped 注意 (2026 年 11 月からの既定) なら 1 トークン約 36 ms (以前は 41 ms)。画像の説明中は約 70 ms (投機的デコードの推測が当たらない)。約 300 トークンの画像つきプロンプトの読み込みは 0.7 秒。LFM3-1.7B と同じく 4096 の段階は付きません (2 節の `--tier`)
 - テキスト部は LFM3-1.7B と同じく全注意の層で分けて変換し (`lfm3-lut8-grouped-p8192-c128000-q8.parts.json` と `-q128-last`、7 部分ずつ。11 月 6 日までの `-q64` は消して構いません)、文脈はモデルの上限の 128000 トークンです。キャッシュは会話とともに 1 トークン 12 KiB ずつ増え、128000 で 1.46 GiB。M3 では全部が Neural Engine に載り、2 回目の起動は 1.4 秒と 4.2 秒で、画像の説明、計算、富士山の高さの答えは分けない形 (文脈 16320) と 1 トークンも違わず、生成は 24.0、33.2、36.0 tokens/s (分けない形は 11.9、26.7、29.4)。プロンプトの先頭に置いた合言葉は 16K、64K、120K トークンで正しく答え、読み込みは 20 秒、171 秒、497 秒、その長さでの生成は 25.2、58.6、68.1 ms/token。LFM3-Audio-2B と LFM3-Omni-2B も同じ形で動き (音声の書き起こし、画像の説明)、120K の合言葉を正しく答えました (読み込み 525 秒と 512 秒、プロセスのメモリ 1.7 GB)。2026 年 11 月 4 日、[docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md)。これは全部の鍵を読んだときで、2 段の注意 (`--sparse`、既定) では 120K の読み込みが VL 431 秒、Audio 516 秒、Omni 501 秒 (同じ日の VL の全部を読む形は 583 秒)、その長さの 1 回の呼び出しは 111〜120 ms (同じく 179 ms) で、3 つとも合言葉を答えました (11 月 6 日、[llm-engine](docs/design/llm-engine.ja.md))。それまでの `lfm3-lut8-grouped-c16320-*` はもう読まれないので消して構いません
-- 返答は文字です。LFM3-Audio の音声出力は `hwnpu-audio tts` (5 節)
+- 返答は文字です。LFM3-Audio の音声出力は `bonsaiai-audio tts` (5 節)
 - ほかの画像の大きさやクリップの長さを使うには、エンコーダを自分で変換して `--package`、`--vision`、`--audio-encoder` で渡します (5 節)
 
 ### Gemma 4 E2B と E4B を使う
 
-`-m gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/original/google/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし (変換したものを持つ取得元 (docs/cache-sharing.ja.md) があれば、代わりに書き出しと表の 4.9 GB を落とし、変換はしません)、8 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で、LFM3-1.7B と同じく全注意の層の前後で分けて変換します (`gemma4-lut6-p8192-c131072-q8.parts.json` と `-q128-last`。それぞれ 8 部分で約 1.6 GiB と、重みのない注意のプログラム 1 つ。プロンプトは 1 回 128 トークンで読み、KV を共有する後ろの 20 層は最後のトークンの行だけを計算するので、16K で 27.8 → 13 秒、64K で 205 → 95 秒 ([docs/design/apple-neural-engine.ja.md](docs/design/apple-neural-engine.ja.md))。11 月 6 日までの `-q64` は消して構いません)。初回の変換は M3 で約 3 分、コンパイルも約 3 分で、2 回目からの起動は 2 秒ほどです (分けない 2 部分のプログラムは、Neural Engine のコンパイルのキャッシュに残らず毎回 50〜100 秒かかっていました。[docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)、[docs/design/apple-coreml.ja.md](docs/design/apple-coreml.ja.md)、[docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md))。2026 年 11 月 4 日までの `gemma4-lut6-c16320-*` と、それより前の `gemma4-c16320-*` はもう読まれないので消して構いません。
+`-m gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/bonsaiai/original/google/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし (変換したものを持つ取得元 (docs/cache-sharing.ja.md) があれば、代わりに書き出しと表の 4.9 GB を落とし、変換はしません)、8 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で、LFM3-1.7B と同じく全注意の層の前後で分けて変換します (`gemma4-lut6-p8192-c131072-q8.parts.json` と `-q128-last`。それぞれ 8 部分で約 1.6 GiB と、重みのない注意のプログラム 1 つ。プロンプトは 1 回 128 トークンで読み、KV を共有する後ろの 20 層は最後のトークンの行だけを計算するので、16K で 27.8 → 13 秒、64K で 205 → 95 秒 ([docs/design/apple-neural-engine.ja.md](docs/design/apple-neural-engine.ja.md))。11 月 6 日までの `-q64` は消して構いません)。初回の変換は M3 で約 3 分、コンパイルも約 3 分で、2 回目からの起動は 2 秒ほどです (分けない 2 部分のプログラムは、Neural Engine のコンパイルのキャッシュに残らず毎回 50〜100 秒かかっていました。[docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)、[docs/design/apple-coreml.ja.md](docs/design/apple-coreml.ja.md)、[docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md))。2026 年 11 月 4 日までの `gemma4-lut6-c16320-*` と、それより前の `gemma4-c16320-*` はもう読まれないので消して構いません。
 
 ```bash
-go run ./cmd/hwnpu-chat -m gemma-4-E2B-it
+go run ./cmd/bonsaiai-chat -m gemma-4-E2B-it
 ```
 
 - チャットの書式は Gemma 4 の `chat_template.jinja` を Go に移したもので、思考 (`<|think|>`、`reasoning_content` に返す) と道具の呼び出しに対応します
 - 層ごとの埋め込みの表 (4.7 GB) はホストに置き、トークンごとに 1 行 (17.5 KB) を読みます
-- 文脈はモデルの上限の 131072 トークンです。全注意の 7 層のうち 4 層は層 14 の鍵と値を使うので、hwnpu-chat が持つキャッシュは 3 層分で、1 トークン 6 KiB (131072 で 0.75 GiB) ずつ会話とともに増えます。M3 の実測 ([docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md)): 短い質問の生成は 23.6〜36.0 tokens/s (分けない文脈 16320 のプログラムは同じ答えで 13.3〜28.2)。81,691 トークンのプロンプトを 299 秒 (273 tokens/s) で読み、先頭に置いた合言葉を正しく答え、その長さで 1 トークン 96.7 ms。そのときのプロセスのメモリ (footprint) は 1.1 GB。16K、64K、125K でも合言葉を正しく答え、読み込みは 27 秒、224 秒、709 秒、その長さでの生成は 23.9、82.4、119.5 ms/token、メモリは 0.7、1.2、2.4 GB。これは全部の鍵を読んだときで、2 段の注意 (`--sparse`、既定) では 64K と 125K の読み込みが 204 秒と 521 秒、生成が 73.9 と 92.4 ms/token で、どちらも正しく答えました ([docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md))
-- Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`--package` で自分で変換したものを使うときは `hwnpu-dev convert` の `-format` を省けば lut6 になります。詳細は [docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)
-- `-m gemma-4-E4B-it` で一回り大きい E4B (ダウンロード 16.0 GB、変換したものを持つ取得元からなら 7.7 GB、幅 2560 の 42 層) を同じ手順で使えます。E2B より遅くなります。文脈は同じく 131072 で、キャッシュは 1 トークン 16 KiB (131072 で 2 GiB)。生成用と読み込み用のプログラム 2 本 (6.5 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) に収まらないので、生成用の 1 本 (1 回 8 トークン) だけを変換して読み込み、プロンプトもそれで読みます (`--prefill auto`)。M3 で 2 回目からの起動は 4 秒ほど、短い質問の生成は 13〜16 tokens/s。代わりに長いプロンプトの読み込みは 2 本のときの 4.4 倍かかります (16K で 183 秒、2 本なら 42 秒)。`--prefill on` で 2 本にできますが、起動は毎回 80 秒前後、質問ごとに 1〜3 秒の切り替えがかかります。125K の合言葉は (2 本で) 正しく答えましたが、スワップが 14 GB に達しました ([docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md))。1 本で 2 段の注意 (既定) のときも 64K と 125K の合言葉を答え、その長さの 1 回の呼び出しは 217 ms と 276 ms ですが、読み込みは 21 分と 56 分かかります。16 GB の機械では E2B を勧めます。12B 以上の Gemma 4 は別のアーキテクチャで、hwnpu-chat では動きません
+- 文脈はモデルの上限の 131072 トークンです。全注意の 7 層のうち 4 層は層 14 の鍵と値を使うので、bonsaiai-chat が持つキャッシュは 3 層分で、1 トークン 6 KiB (131072 で 0.75 GiB) ずつ会話とともに増えます。M3 の実測 ([docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md)): 短い質問の生成は 23.6〜36.0 tokens/s (分けない文脈 16320 のプログラムは同じ答えで 13.3〜28.2)。81,691 トークンのプロンプトを 299 秒 (273 tokens/s) で読み、先頭に置いた合言葉を正しく答え、その長さで 1 トークン 96.7 ms。そのときのプロセスのメモリ (footprint) は 1.1 GB。16K、64K、125K でも合言葉を正しく答え、読み込みは 27 秒、224 秒、709 秒、その長さでの生成は 23.9、82.4、119.5 ms/token、メモリは 0.7、1.2、2.4 GB。これは全部の鍵を読んだときで、2 段の注意 (`--sparse`、既定) では 64K と 125K の読み込みが 204 秒と 521 秒、生成が 73.9 と 92.4 ms/token で、どちらも正しく答えました ([docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md))
+- Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`--package` で自分で変換したものを使うときは `bonsaiai-dev convert` の `-format` を省けば lut6 になります。詳細は [docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)
+- `-m gemma-4-E4B-it` で一回り大きい E4B (ダウンロード 16.0 GB、変換したものを持つ取得元からなら 7.7 GB、幅 2560 の 42 層) を同じ手順で使えます。E2B より遅くなります。文脈は同じく 131072 で、キャッシュは 1 トークン 16 KiB (131072 で 2 GiB)。生成用と読み込み用のプログラム 2 本 (6.5 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) に収まらないので、生成用の 1 本 (1 回 8 トークン) だけを変換して読み込み、プロンプトもそれで読みます (`--prefill auto`)。M3 で 2 回目からの起動は 4 秒ほど、短い質問の生成は 13〜16 tokens/s。代わりに長いプロンプトの読み込みは 2 本のときの 4.4 倍かかります (16K で 183 秒、2 本なら 42 秒)。`--prefill on` で 2 本にできますが、起動は毎回 80 秒前後、質問ごとに 1〜3 秒の切り替えがかかります。125K の合言葉は (2 本で) 正しく答えましたが、スワップが 14 GB に達しました ([docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md))。1 本で 2 段の注意 (既定) のときも 64K と 125K の合言葉を答え、その長さの 1 回の呼び出しは 217 ms と 276 ms ですが、読み込みは 21 分と 56 分かかります。16 GB の機械では E2B を勧めます。12B 以上の Gemma 4 は別のアーキテクチャで、bonsaiai-chat では動きません
 
 ### PLaMo 3 Translate で訳す
 
@@ -105,9 +105,9 @@ Preferred Networks の翻訳モデル PLaMo 3 Translate 2B は `-m plamo-3-trans
 `-m plamo-3-translate-8b` (`-m plamo3translate:8b`。`-m translate` は 16 GB から選ぶ。M1 では選ばない) は 8B です (ダウンロード 17.1 GB)。大きいので、2B が崩れる 4 ビットの表 (lut4) でも訳が保たれます。20 文のうち 13 文は lut8 と一字一句同じ訳で、残りの 7 文も正しい言い換えでした。長めの段落 4 つも同じでした。1 本のプログラムが Neural Engine に 3.81 GiB を持ち、M1 が全速で動かせる 2.8 GiB を超えるので、M1 では 1 秒に 0.8 トークン (1 文 15〜20 秒) です。M2 では 1 秒に 9〜10 トークンですが、起動のたびの読み込みに 35〜41 秒かかります (コンパイルのキャッシュに一部しか残らない)。M3 では 10〜11 トークンで、読み込みは 4 秒ほどです。訳語は 0.8B より的確です (build time を「ビルド時間」、gently を「優しく」)。Intel の NPU では行ごとの int4 (3.8 GiB、1 本) で動かします。int8 (7.6 GiB) は載らないためです。試しておらず、精度も確かめていません。AMD の書き出し (`--q4`、固定 約 6.5 GB) は試していません。
 
 ```bash
-go run ./cmd/hwnpu-chat -m plamo-3-translate-2b
-go run ./cmd/hwnpu-chat -m plamo-3-translate-2b --to ja --form plain
-go run ./cmd/hwnpu-chat -m ~/models/plamo-3-translate-2b.amd-npu2-q4
+go run ./cmd/bonsaiai-chat -m plamo-3-translate-2b
+go run ./cmd/bonsaiai-chat -m plamo-3-translate-2b --to ja --form plain
+go run ./cmd/bonsaiai-chat -m ~/models/plamo-3-translate-2b.amd-npu2-q4
 ```
 
 重みの形式 ([docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)): M3 の Neural Engine で、次のトークンが fp16 と同じになるのは lut8 で 98%、lut6 で 89%。1 回の呼び出しは lut8 が 57.8 ms、lut6 が 53.7 ms。lut4 は使えません (CPU で KL 1.91 nats。Intel の int8 は 0.0025)。lut8 の 2 本のプログラム (4.9 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) を超えるので、生成用の 1 本 (1 回 8 トークン) だけでプロンプトも読みます。短い文ではほとんど変わりませんが、数千トークンの文書は読み込みが 10 倍ほど遅くなります。速さを優先するなら `--format lut6` で、2 本になります。
@@ -122,16 +122,16 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 
 | フラグ | 既定 | |
 |---|---|---|
-| `-m`、`--model NAME` | `LFM3-1.7B` (`search` は `embedding`) | 動かすモデル: `hwnpu-chat list` の名前、用途やファミリー (`translate`、`plamo3translate`、`plamo3translate:2b`)、リポジトリ `OWNER/NAME`、書き出したディレクトリ (`/`、`.`、`~` で始まるもの。AMD の NPU では `tools/amd/iron_export_lm.py` の書き出し)。`serve` と `opencode` はカンマ区切りでいくつでも |
+| `-m`、`--model NAME` | `LFM3-1.7B` (`search` は `embedding`) | 動かすモデル: `bonsaiai-chat list` の名前、用途やファミリー (`translate`、`plamo3translate`、`plamo3translate:2b`)、リポジトリ `OWNER/NAME`、書き出したディレクトリ (`/`、`.`、`~` で始まるもの。AMD の NPU では `tools/amd/iron_export_lm.py` の書き出し)。`serve` と `opencode` はカンマ区切りでいくつでも |
 | `--listen ADDR` | `127.0.0.1:8080` | `serve`: OpenAI 互換のサーバーのアドレス (3 節) |
 | `--image FILE`、`--audio FILE.wav` | なし | 引数に質問を書いた `chat`: 一緒に送る画像か音声 |
 | `--think` | `true` | 答える前に考えさせる |
 | `--think-budget N` | `1024` | 考えるトークン数の上限。超えたら答えに移らせる (0 は無制限) |
 | `--tier A,B` | モデルの定義、なければ `auto` | `--context` より短いキャッシュ。会話はプロンプトが収まる最も短いもので始まり、伸びたら長いものへ移る (1 ステップの費用は、使った量ではなくキャッシュの容量に比例する)。空で無し。`auto` は 4 ビットの表のモデルなら `4096`、6 と 8 ビットなら無し: Neural Engine はコンパイルしたプログラムを約 4 GiB の独自のキャッシュに持ち、lut6 の LFM3-1.7B のプログラム 4 本 (4.8 GiB) は互いに追い出し合って起動のたびにどれかをコンパイルし直す (4 回続けて起動して 110、92、77、62 秒)。2 本の 2.4 GiB なら残り、起動は 3 秒。Core AI (macOS 27) で注意で分けるモデル (`--paged`) の `auto` は別で、重みの 2 倍が 2.5 GiB に収まるモデル (LFM3-1.7B、Qwen3-0.6B) は、会話の短いうちだけ注意をプログラムの中に持つ 1 本 (LFM3-1.7B はキャッシュ 2048) で動く (M3 で 8 % 速い)。M1 ではその 1 本の方が遅いので持たない (LFM3-1.7B 33.6 → 39.9 トークン/秒、[docs/design/apple-coreai.ja.md](docs/design/apple-coreai.ja.md))。8 GB の機械では、LFM3-1.7B と Qwen3.5-0.8B は既定でこの 1 本を持たない (models.yaml の `tier: none`。重みをもう 1 組持つので、LFM3-1.7B は 1.7 GB が 3.1 GB になる。`--tier auto` で持つ。[memory-and-power](docs/design/memory-and-power.ja.md))。窓の長いモデル (PLaMo 3: 窓 2048) は、代わりに文脈 512 のプログラムで始め、512 トークンを越えたらモデルの文脈のプログラムに移る (PLaMo 3 Translate 2B は M1 で 12.9 → 19.0 トークン/秒、訳文は同じ。[llm-engine](docs/design/llm-engine.ja.md))。`none` で無し |
-| `--draft N` | `8` | 生成するプログラムの 1 回のトークン数: 本物 1 つと推測 N-1 個をまとめて確かめる (投機的デコード、3 節)。`0` か `1` で 1 回 1 トークン。AMD の NPU では、`--verify 3` で書き出したものは 1 回に推測 2 つを確かめる (今は Qwen3.5) が、当たりそうな推測だけ確かめる。`HWNPU_DEV=draft.policy=0` で全部確かめ、`HWNPU_DEV=draft.ratio` で確認の費用を設定し、`HWNPU_DEV=draft.trace=FILE` で判断を記録する。`HWNPU_DEV=iron.drafts=0` で下書きを使わない |
-| `--mtp auto\|off` | `auto` | `auto`: チェックポイントに複数トークン予測の層 (Qwen3.5 の `mtp.`) があれば、その層の推測も使う (多くて 2 つ、`HWNPU_DEV=mtp.drafts` で変えられる)。`off`: プロンプトからの推測だけ |
+| `--draft N` | `8` | 生成するプログラムの 1 回のトークン数: 本物 1 つと推測 N-1 個をまとめて確かめる (投機的デコード、3 節)。`0` か `1` で 1 回 1 トークン。AMD の NPU では、`--verify 3` で書き出したものは 1 回に推測 2 つを確かめる (今は Qwen3.5) が、当たりそうな推測だけ確かめる。`BONSAIAI_DEV=draft.policy=0` で全部確かめ、`BONSAIAI_DEV=draft.ratio` で確認の費用を設定し、`BONSAIAI_DEV=draft.trace=FILE` で判断を記録する。`BONSAIAI_DEV=iron.drafts=0` で下書きを使わない |
+| `--mtp auto\|off` | `auto` | `auto`: チェックポイントに複数トークン予測の層 (Qwen3.5 の `mtp.`) があれば、その層の推測も使う (多くて 2 つ、`BONSAIAI_DEV=mtp.drafts` で変えられる)。`off`: プロンプトからの推測だけ |
 | `--prefill auto` | `auto` | 生成用のほかに、1 回 64 トークンでプロンプトを読むプログラムを持つか。`auto` は持つが、2 本の重みが Neural Engine のコンパイルのキャッシュ (約 4 GiB) を超えるなら持たず (Gemma 4 E4B)、生成用のプログラムがプロンプトも読む (長いプロンプトは遅い)。`on` で常に持ち、`off` で持たない |
-| `--memory GB` | 選んだメモリ (`hwnpu memory`)、なければ `HWNPU_MEMORY`、なければ機械のメモリ | モデルを、メモリ GB の機械のように動かす (下の「メモリの小さい形で動かす」)。16 GB の Mac で `--memory 8` なら、ほかのプログラムと一緒に動かせるよう 8 GB の形で動かす。そのモデルのメモリとして残り、どのコマンドも守る |
+| `--memory GB` | 選んだメモリ (`bonsaiai memory`)、なければ `BONSAIAI_MEMORY`、なければ機械のメモリ | モデルを、メモリ GB の機械のように動かす (下の「メモリの小さい形で動かす」)。16 GB の Mac で `--memory 8` なら、ほかのプログラムと一緒に動かせるよう 8 GB の形で動かす。そのモデルのメモリとして残り、どのコマンドも守る |
 | `--prompt-cache DIR` | コンパイルキャッシュの `prompts` | 読んだプロンプトをディスクに残し、起動し直した後も、先頭が同じプロンプト (エージェントの system と道具) を読み直さない (3 節)。`off` で無し |
 | `--system TEXT` | なし | 対話の system メッセージ (翻訳モデルでは参考文脈) |
 | `--to LANG` | なし | 翻訳モデル (PLaMo 3 Translate) が訳す先の言語。なしなら日本語を含む文は `en`、ほかは `ja` |
@@ -141,19 +141,19 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--temp`、`--top-k`、`--top-p`、`--rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
 | `--seed` | `0` | サンプリングの seed。どの答えにも同じものを使う。0 なら答えごとに引き、答えの後に (`seed N`) と出す |
 | `--context N` | `0` | プロンプトと答えを合わせた最大トークン数。`0` は、注意で分けたモデル (`--paged`) ならモデルの上限 (LFM3-1.7B と Qwen3.5 は 262144、LFM3-VL、Audio、Omni は 128000、Gemma 4 は 131072)、それ以外は 16320。変えると、その長さで変換し直す。分けないモデルで 16320 を超えるとキャッシュを塊に分ける |
-| `--paged N` | `0` | 全注意の層でモデルを分け、hwnpu-chat が持つキャッシュに対して N トークンの塊ごとに注意を計算する。1 ステップの費用が `--context` ではなく会話の長さに比例し、キャッシュのメモリも会話とともに増える (LFM3-1.7B で 1 トークン 12 KiB、262144 で 3 GiB。メモリの 4 分の 1 を超えるなら文脈を縮める)。`0` はモデルが許すとき 8192 (LFM3 とその VL、Audio、Omni、Gemma 4、Qwen3.5。Neural Engine でも Intel の NPU でも)、`-1` で分けない (そのとき `--tier` が効く) |
+| `--paged N` | `0` | 全注意の層でモデルを分け、bonsaiai-chat が持つキャッシュに対して N トークンの塊ごとに注意を計算する。1 ステップの費用が `--context` ではなく会話の長さに比例し、キャッシュのメモリも会話とともに増える (LFM3-1.7B で 1 トークン 12 KiB、262144 で 3 GiB。メモリの 4 分の 1 を超えるなら文脈を縮める)。`0` はモデルが許すとき 8192 (LFM3 とその VL、Audio、Omni、Gemma 4、Qwen3.5。Neural Engine でも Intel の NPU でも)、`-1` で分けない (そのとき `--tier` が効く) |
 | `--sparse` | `true` | 注意で分けたモデル (`--paged`) で会話が約 48K を超えたら、1 回の呼び出しで鍵 16384 (プロンプトを読むときは 32768) だけを正確に読み (その呼び出しにとって重い 8 トークンのバケット、最後の 512、最初の 4)、ほかのバケットは鍵と値の平均 1 つで読む。128K 以上で呼び出しが数分の 1 になる ([docs/design/llm-engine.ja.md](docs/design/llm-engine.ja.md))。`false` で毎回キャッシュ全体を読む |
-| `--package A,B` | なし | `hwnpu-dev convert` で自分で変換したチャットのプログラムを使う (5 節) |
+| `--package A,B` | なし | `bonsaiai-dev convert` で自分で変換したチャットのプログラムを使う (5 節) |
 | `--dump DIR` | なし | サーバーで、要求、プロンプト、生成した文を要求ごとに保存する |
 | `--embed-seq A,B` | `128,1024` | 埋め込みモデルを変換する長さ。文はそれが収まる最も短いもので動き、最も長いものが 1 つの文の最大トークン数になる |
-| `--embed-package A,B` | なし | `hwnpu-dev convert` で自分で変換した埋め込みのプログラムを使う (エンコーダは `-seq` だけ)。`config.json` と `model.safetensors` はモデルの置き場に置く |
+| `--embed-package A,B` | なし | `bonsaiai-dev convert` で自分で変換した埋め込みのプログラムを使う (エンコーダは `-seq` だけ)。`config.json` と `model.safetensors` はモデルの置き場に置く |
 
 `--think` から `--context` まで、`--package`、`--config`、`--weights`、`--tokenizer` はチャットのモデルの、`--embed-` で始まるものは埋め込みモデルのフラグです。`--package` とその仲間 (と `--embed-package`) は、`-m` にその用途のモデルが 1 つのときだけ使えます。
 
-**メモリの小さい形で動かす**: モデルをメモリいくつの機械でどう動かすか (短い会話用の 1 本を持つか、プロンプト用のプログラムを持つか) は、調べた結果として models.yaml に書いてあり (`variants`)、hwnpu-chat は機械のメモリで選びます。8 GB の機械では、LFM3-1.7B と Qwen3.5-0.8B は短い会話用の 1 本を持たず (`tier: none`)、Qwen3-1.7B は生成のプログラムがプロンプトも読みます (`prefill: off`)。
+**メモリの小さい形で動かす**: モデルをメモリいくつの機械でどう動かすか (短い会話用の 1 本を持つか、プロンプト用のプログラムを持つか) は、調べた結果として models.yaml に書いてあり (`variants`)、bonsaiai-chat は機械のメモリで選びます。8 GB の機械では、LFM3-1.7B と Qwen3.5-0.8B は短い会話用の 1 本を持たず (`tier: none`)、Qwen3-1.7B は生成のプログラムがプロンプトも読みます (`prefill: off`)。
 
-- メモリの多い機械でも、ほかのプログラムと一緒に動かしたいときは `--memory 8` (またはメモリのタグ: `lfm3:8g`) で 8 GB の形で動かせます。モデルの用意ができた時点で、そのメモリがモデル管理の設定 (`~/.config/hwnpu/run.json`) に残り、次からはフラグなしでも、hwnpu-chat 以外のコマンドでも 8 GB の形で動きます (起動のときに `LFM3-1.7B: runs as on a machine of 8 GB, as chosen …` と出ます)。`hwnpu memory LFM3-1.7B 8` でも同じで、`hwnpu memory` で見て、`hwnpu memory LFM3-1.7B --forget` で忘れます ([docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.8)
-- 優先の順は、その実行のメモリのタグか `--memory`、選んだメモリ、`HWNPU_MEMORY`、機械のメモリです
+- メモリの多い機械でも、ほかのプログラムと一緒に動かしたいときは `--memory 8` (またはメモリのタグ: `lfm3:8g`) で 8 GB の形で動かせます。モデルの用意ができた時点で、そのメモリがモデル管理の設定 (`~/.config/bonsaiai/run.json`) に残り、次からはフラグなしでも、bonsaiai-chat 以外のコマンドでも 8 GB の形で動きます (起動のときに `LFM3-1.7B: runs as on a machine of 8 GB, as chosen …` と出ます)。`bonsaiai memory LFM3-1.7B 8` でも同じで、`bonsaiai memory` で見て、`bonsaiai memory LFM3-1.7B --forget` で忘れます ([docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.8)
+- 優先の順は、その実行のメモリのタグか `--memory`、選んだメモリ、`BONSAIAI_MEMORY`、機械のメモリです
 - 残るのはメモリだけです。`--tier` や `--prefill` などのフラグはその実行だけに効きます
 - 家族の名前 (`lfm3`) は、この機械のメモリで選びます。選ばれたモデルにメモリが選んであれば、そのメモリの形で動きます
 
@@ -185,23 +185,23 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 ## 3. OpenAI 互換のサーバー
 
 ```bash
-go run ./cmd/hwnpu-chat serve
+go run ./cmd/bonsaiai-chat serve
 ```
 
 ```bash
-go run ./cmd/hwnpu-chat serve --listen 127.0.0.1:8080 -m LFM3-1.7B,plamo-embedding-1b
+go run ./cmd/bonsaiai-chat serve --listen 127.0.0.1:8080 -m LFM3-1.7B,plamo-embedding-1b
 ```
 
 | エンドポイント | |
 |---|---|
-| `GET /v1/models` | 読み込んだモデルの名前 (`LFM3-1.7B`、`plamo-embedding-1b`)、用途 `kind` (`chat` か `embedding`)、機能 `capabilities` (`hwnpu-chat list` にあるモデルのみ)、`context_length`、埋め込みモデルは `dimensions` も |
+| `GET /v1/models` | 読み込んだモデルの名前 (`LFM3-1.7B`、`plamo-embedding-1b`)、用途 `kind` (`chat` か `embedding`)、機能 `capabilities` (`bonsaiai-chat list` にあるモデルのみ)、`context_length`、埋め込みモデルは `dimensions` も |
 | `POST /v1/chat/completions` | `stream` (SSE)、`tools` と `tool_calls`、`reasoning_content`、`max_tokens`、`temperature`、`top_p`、`top_k`、`repetition_penalty`、`seed`、`stop`、`stream_options.include_usage` |
 | `POST /v1/embeddings` | `input` (文字列かその配列)、`encoding_format` (`float` か `base64`)、`dimensions` (モデルの 2048 のみ)、OpenAI にないものとして `input_type` (`query` か `document`、4 節) と `truncate` |
 
 - 考えるかどうかは `--think` (既定 true) で決め、要求ごとに `reasoning_effort` (none、minimal、low で考えない、medium、high で考える) か `chat_template_kwargs.enable_thinking` で変えられます
 - `--think-budget` (既定 1024) は考えるトークン数の上限です。超えたら「もう時間がない」という一文で思考を閉じ、そこまでの考えで答えさせます。小さなモデルは放っておくと数千トークン考え (1 トークン 64 ms なら数分)、エージェントはその間待たされます。切ったときはログに `thinking cut` と出ます。`0` で無制限
 - 要求は 1 つずつ処理します。前の要求と共通の先頭は読み直さず、`usage.prompt_tokens_details.cached_tokens` にその数が入ります。別の会話が割り込んでも、長い会話は 2 本まで取っておいて戻ります
-- 読んだプロンプトはディスクにも残します (`--prompt-cache`、既定は `~/Library/Caches/hwnpu/prompts`)。起動し直した後、先頭が同じプロンプトは、共通の先頭の中の最後の印 (512 トークンごとと各プロンプトの終わりに取る) からディスクで戻り、残りだけを読みます。ログに `N tokens from the prompt store` と出ます。モデルと変換ごとに 1024 トークン以上の系列を 4 本まで残し、LFM3-1.7B で 1 トークンあたり約 19 KiB (全注意の層の K/V が 1 トークン 12 KiB、印ごとのリングと窓とロジットが 3.5 MB。OpenCode の最初の要求 7.9K トークンで 145 MB)、使われていないものから消します。M3 では、その要求を冷えた状態で読むと 14.6 秒、ストアから戻すと 0.2 秒です。`--prompt-cache off` で止まります
+- 読んだプロンプトはディスクにも残します (`--prompt-cache`、既定は `~/Library/Caches/bonsaiai/prompts`)。起動し直した後、先頭が同じプロンプトは、共通の先頭の中の最後の印 (512 トークンごとと各プロンプトの終わりに取る) からディスクで戻り、残りだけを読みます。ログに `N tokens from the prompt store` と出ます。モデルと変換ごとに 1024 トークン以上の系列を 4 本まで残し、LFM3-1.7B で 1 トークンあたり約 19 KiB (全注意の層の K/V が 1 トークン 12 KiB、印ごとのリングと窓とロジットが 3.5 MB。OpenCode の最初の要求 7.9K トークンで 145 MB)、使われていないものから消します。M3 では、その要求を冷えた状態で読むと 14.6 秒、ストアから戻すと 0.2 秒です。`--prompt-cache off` で止まります
 - 堂々めぐりを始めたら止めます。短い同じ並びの繰り返しのほか、同じ行 (やトークンの並び) が 3 回目以降も戻ってくる繰り返しです。小さなモデルは知らないことを聞かれるとこれに落ちます (「- Gifu? Already.」「- Mie? Already.」…)。下書きをもう 1 回清書する答えは止めません。思考の中なら `--think-budget` に届いたときと同じく思考を閉じて答えさせます。ログに `stopped repeating itself` か `thinking cut going round in circles` と出ます
 - `seed` を省くか 0 にすると要求ごとに新しい seed を引きます。使った seed は応答 (ストリームなら各チャンクにも) の `seed` とログに出ます。その `seed` で送り直せば同じ答えになります
 - `--dump DIR` で、要求、プロンプト、生成した文を要求ごとに保存します。クライアントが何を送っているかを調べるときに使います
@@ -214,10 +214,10 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 ## 4. 埋め込み (PLaMo-Embedding-1B)
 
 ```bash
-go run ./cmd/hwnpu-chat search -m plamo-embedding-1b
+go run ./cmd/bonsaiai-chat search -m plamo-embedding-1b
 ```
 
-[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) は日本語 (と英語) の文を 2048 個の数のベクトルにします。意味の近い文ほど同じ向きのベクトルになります。最初の起動で `config.json`、`tokenizer.model`、`model.safetensors` (2.1 GB) を `~/Library/Caches/hwnpu/original/pfnet/plamo-embedding-1b` に落とし、チャットのモデルと同じく `--embed-seq` の長さごとに 1 回ずつ変換します。 AMD の NPU では `tools/amd/iron_plamo_embed.py` の書き出し (2.1 GB。チャットのモデルの書き出しと同じく取得元か Hugging Face から取る) で動きます。128 語と 1024 語のグラフが重みを 1 つ共有し、Ryzen AI 9 365 で短い文 0.18 秒、500 語で 0.9 秒、埋め込みは参照と cosine 0.9997 です ([docs/amd-npu-models.md](docs/amd-npu-models.md) 30 節)。`--embed-seq` と `--embed-package` はそこでは効きません。
+[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) は日本語 (と英語) の文を 2048 個の数のベクトルにします。意味の近い文ほど同じ向きのベクトルになります。最初の起動で `config.json`、`tokenizer.model`、`model.safetensors` (2.1 GB) を `~/Library/Caches/bonsaiai/original/pfnet/plamo-embedding-1b` に落とし、チャットのモデルと同じく `--embed-seq` の長さごとに 1 回ずつ変換します。 AMD の NPU では `tools/amd/iron_plamo_embed.py` の書き出し (2.1 GB。チャットのモデルの書き出しと同じく取得元か Hugging Face から取る) で動きます。128 語と 1024 語のグラフが重みを 1 つ共有し、Ryzen AI 9 365 で短い文 0.18 秒、500 語で 0.9 秒、埋め込みは参照と cosine 0.9997 です ([docs/amd-npu-models.md](docs/amd-npu-models.md) 30 節)。`--embed-seq` と `--embed-package` はそこでは効きません。
 
 ターミナルでは、入力した 1 行ずつが検索の対象の文書として溜まり、`?` (全角の `？` も可) で始まる行が検索の問い (クエリ) になります。文書をクエリとのコサイン類似度の高い順に並べます。`/list` で文書の一覧、`/reset` で文書を消し、`/exit` か Ctrl-D で終わります。
 
@@ -244,18 +244,18 @@ curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"m
 
 ## 5. 自分で変換したプログラムを使う
 
-ほかの量子化やキャッシュの長さを試すときは、`hwnpu-dev convert` で同じキャッシュの長さのものを 2 つ変換し、`--package` にカンマで並べます。
+ほかの量子化やキャッシュの長さを試すときは、`bonsaiai-dev convert` で同じキャッシュの長さのものを 2 つ変換し、`--package` にカンマで並べます。
 
 ```bash
-go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 1 -cache 16320 -parts 2 -o DIR/lfm3-16k-q1.mlpackage
+go run ./cmd/bonsaiai-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 1 -cache 16320 -parts 2 -o DIR/lfm3-16k-q1.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 64 -cache 16320 -o DIR/lfm3-16k-q64.mlpackage
+go run ./cmd/bonsaiai-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 64 -cache 16320 -o DIR/lfm3-16k-q64.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-chat --package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage --config DIR/config.json --weights DIR/model.safetensors
+go run ./cmd/bonsaiai-chat --package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage --config DIR/config.json --weights DIR/model.safetensors
 ```
 
 ### 画像を読む（LFM3-VL-2B）
@@ -263,39 +263,39 @@ go run ./cmd/hwnpu-chat --package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.ml
 `-m LFM3-VL-2B` (1 節) なら以下を自動で行います。ほかの画像の大きさを使うときは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`--vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます（[docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)）。
 
 ```bash
-go run ./cmd/hwnpu-dev convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
+go run ./cmd/bonsaiai-dev convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-chat --package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpackage --vision DIR/vision-512x512.mlpackage --config DIR/config.json --weights DIR/model.safetensors
+go run ./cmd/bonsaiai-chat --package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpackage --vision DIR/vision-512x512.mlpackage --config DIR/config.json --weights DIR/model.safetensors
 ```
 
 ### 音声を読む（LFM3-Audio-2B）
 
-`-m LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`--audio-encoder` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-audio tts` で行います（[docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)）。
+`-m LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`--audio-encoder` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `bonsaiai-audio tts` で行います（[docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)）。
 
 ```bash
-go run ./cmd/hwnpu-dev convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
+go run ./cmd/bonsaiai-dev convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
 ```
 
 ### 音声で話す（LFM3-Audio-2B の TTS）
 
-`hwnpu-audio tts --lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-m speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (hwnpu-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（[docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)）。
+`bonsaiai-audio tts --lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-m speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (bonsaiai-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（[docs/design/llm-models.ja.md](docs/design/llm-models.ja.md)）。
 
 ```bash
-go run ./cmd/hwnpu-dev convert -backend coreai -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.aimodel
+go run ./cmd/bonsaiai-dev convert -backend coreai -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev convert -backend coreai -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.aimodel
+go run ./cmd/bonsaiai-dev convert -backend coreai -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev convert -backend coreai -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.aimodel
+go run ./cmd/bonsaiai-dev convert -backend coreai -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json --depth DIR/depth.aimodel --codec DIR/codec.aimodel --lang ja -o out.wav こんにちは
+go run ./cmd/bonsaiai-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json --depth DIR/depth.aimodel --codec DIR/codec.aimodel --lang ja -o out.wav こんにちは
 ```
 
 ## 6. OpenCode から使う
@@ -303,15 +303,15 @@ go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json --dep
 プロジェクトのディレクトリで次のように起動すると、サーバーと OpenCode をまとめて動かします。
 
 ```bash
-go run ./cmd/hwnpu-chat opencode
+go run ./cmd/bonsaiai-chat opencode
 ```
 
-- モデルを読み込んだあと、30000〜49151 番の空いたポート (macOS が外向きの接続に使う 49152 番以降は避けます) でサーバーを開き、そのサーバーを使う OpenCode の設定を `~/Library/Caches/hwnpu/opencode/opencode.json` に書いて、環境変数 `OPENCODE_CONFIG` で OpenCode に渡します。プロジェクトのファイルには何も書きません
-- OpenCode はこの端末の標準入力、出力、エラーをそのまま受け継ぐので、画面の描画、マウス、キー操作は単独で起動したときと同じです。サーバーのログは `~/Library/Caches/hwnpu/opencode/server.log` に書き、画面を乱しません
+- モデルを読み込んだあと、30000〜49151 番の空いたポート (macOS が外向きの接続に使う 49152 番以降は避けます) でサーバーを開き、そのサーバーを使う OpenCode の設定を `~/Library/Caches/bonsaiai/opencode/opencode.json` に書いて、環境変数 `OPENCODE_CONFIG` で OpenCode に渡します。プロジェクトのファイルには何も書きません
+- OpenCode はこの端末の標準入力、出力、エラーをそのまま受け継ぐので、画面の描画、マウス、キー操作は単独で起動したときと同じです。サーバーのログは `~/Library/Caches/bonsaiai/opencode/server.log` に書き、画面を乱しません
 - OpenCode を終えるとサーバーも止まり、OpenCode の終了コードで終わります
-- `--` のあとの引数は OpenCode に渡します (例: `hwnpu-chat opencode -- --continue`、`hwnpu-chat opencode -- run "main.go のバグを直して"`)。`--listen` を付けるとそのアドレスで開き、`--bin` で OpenCode のコマンドを変えられます
+- `--` のあとの引数は OpenCode に渡します (例: `bonsaiai-chat opencode -- --continue`、`bonsaiai-chat opencode -- run "main.go のバグを直して"`)。`--listen` を付けるとそのアドレスで開き、`--bin` で OpenCode のコマンドを変えられます
 - `opencode run` は標準入力が閉じるまで待つので、スクリプトから使うときは `< /dev/null` を付けます
-- OpenCode はプロジェクトの `opencode.json` を `OPENCODE_CONFIG` より優先します。プロジェクトに別の `hwnpu` プロバイダーを書いてあると、そちらのアドレスが使われます
+- OpenCode はプロジェクトの `opencode.json` を `OPENCODE_CONFIG` より優先します。プロジェクトに別の `bonsaiai` プロバイダーを書いてあると、そちらのアドレスが使われます
 
 手で設定するときは、プロジェクトのディレクトリに `opencode.json` を置きます。モデル名は `GET /v1/models` が返す名前にします。
 
@@ -319,9 +319,9 @@ go run ./cmd/hwnpu-chat opencode
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "hwnpu": {
+    "bonsaiai": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "hwnpu (Neural Engine)",
+      "name": "bonsaiai (Neural Engine)",
       "options": { "baseURL": "http://127.0.0.1:8080/v1" },
       "models": {
         "LFM3-1.7B": {
@@ -333,7 +333,7 @@ go run ./cmd/hwnpu-chat opencode
       }
     }
   },
-  "model": "hwnpu/LFM3-1.7B",
+  "model": "bonsaiai/LFM3-1.7B",
   "permission": {
     "bash": { "*": "ask", "go *": "allow", "ls*": "allow", "cat *": "allow", "pwd": "allow" }
   }
@@ -344,24 +344,24 @@ go run ./cmd/hwnpu-chat opencode
 - 1.7B のモデルは見当違いのコマンドを作ることがあります。`bash` は許すコマンドを絞っておくと安全です
 - M3 での例: 「main.go の add 関数のバグを直して」で、ファイルを読み、`a - b` を `a + b` に直し、`go run` で確かめるまでを 12 往復で行いました。最初の要求は 7.4K トークンを 13 秒で読み、2 回目以降はプロンプトの 99% を再利用して 0.1〜0.5 秒で読みます。生成は 1 トークン約 64 ms (約 15 tokens/s) です
 
-## 7. `hwnpu-chat agent`: エンジンを直接呼ぶコーディングエージェント
+## 7. `bonsaiai-chat agent`: エンジンを直接呼ぶコーディングエージェント
 
-`hwnpu-chat agent` は、read、edit、write、bash の 4 つの道具を持つコーディングエージェントです。[Pi](https://pi.dev) のループを Go で書き、hwnpu-chat と同じエンジンを HTTP を挟まずに呼びます。OpenCode の最初の要求は system prompt と 10 個の道具で約 7.4K トークンですが、エージェントの system prompt と 4 つの宣言は約 630 トークンで、文脈 (LFM3-1.7B は 262144) のほぼ全部を課題に使えます。脇の要求 (OpenCode は最初に題名を頼みます) もないので、課題がすぐ始まります。
+`bonsaiai-chat agent` は、read、edit、write、bash の 4 つの道具を持つコーディングエージェントです。[Pi](https://pi.dev) のループを Go で書き、bonsaiai-chat と同じエンジンを HTTP を挟まずに呼びます。OpenCode の最初の要求は system prompt と 10 個の道具で約 7.4K トークンですが、エージェントの system prompt と 4 つの宣言は約 630 トークンで、文脈 (LFM3-1.7B は 262144) のほぼ全部を課題に使えます。脇の要求 (OpenCode は最初に題名を頼みます) もないので、課題がすぐ始まります。
 
 ```bash
-go run ./cmd/hwnpu-chat agent "main.go の add 関数のバグを直して"
-go run ./cmd/hwnpu-chat agent -C ~/src/demo --yes "mul 関数を足して mul(2, 3) を表示して"
-go run ./cmd/hwnpu-chat agent
+go run ./cmd/bonsaiai-chat agent "main.go の add 関数のバグを直して"
+go run ./cmd/bonsaiai-chat agent -C ~/src/demo --yes "mul 関数を足して mul(2, 3) を表示して"
+go run ./cmd/bonsaiai-chat agent
 ```
 
 - コマンドラインに課題を書くとそれを行って終わります (モデルが答えたら 0、それ以外は 1)。書かなければ端末で課題を受け付け、1 つの会話として続きます (`/reset` でやり直し、`/exit` で終了、Ctrl-C で今の課題を止めます)
 - `-C` (既定はカレントディレクトリ) の中で働きます。パスはそこからの相対、コマンドはそこで実行し、その外のファイルには書きません。そこに `AGENTS.md` があれば system prompt に入れます (4000 文字まで)
 - コマンドの実行とファイルの変更の前に端末で確認します。`--yes` なら確認せず、`--allow "go *,ls*,cat *"` ならパターンに合うコマンドは確認なしで実行します (`&&` や `;` でつないだ各部分が合うこと)。端末がなく `--yes` もないときはそれ以外を実行しません (スクリプトからうっかり 1.7B のモデルを野放しにしないため)
 - `--tools search` で 5 つ目の道具 search を出し、それだけにすると、知識をモデルに頼らず調べて答えるアシスタントになります。1.7B のモデルは事実の記憶が弱く (lut4 では富士山を「約 4,000 m」、『こころ』の作者を別人と答えました)、検索結果が前にあれば数値を写して出典を挙げます。`--search` で検索先を選びます。`wikipedia` (鍵なし。記事は主題の名前で見つかるので、山・川・小説・人物の名前であって文の質問ではない)、`brave` (Brave Search API、鍵は `BRAVE_API_KEY`)、ウェブなら [SearXNG](https://searxng.org) の URL (`http://localhost:8888` など。DuckDuckGo はブラウザ以外の要求を拒むので入れていません)。小さなモデルは検索するかどうかを安定して決められず、プロンプトの一文で変わるので、`--search-first` で各課題の最初の往復を検索にします。モデルが記憶から答えたらその往復は捨て、課題の 1 行目で検索したものに置き換えます。答えが前にあっても検索し続けるので、1 課題の検索は 4 回までで、5 回目には手元の結果から答えるよう求めます。`--tools search,fetch` なら fetch も出し、結果の抜粋に答えが無いときにページを文章として読みます (先頭 6000 文字、タグとスクリプトは除く)。fetch があれば思考は時間に見合います。M3 で Wikipedia を使った 5 問は、思考ありで 190 秒、なしで 201 秒。思考ありでは英語で検索して英語版の記事を fetch し、富士山の高さ (3,776.24 m)、日本一長い川 (信濃川)、市の人口を出典つきで当て、17 × 23 は計算し、『こころ』の作者だけ Wikipedia の検索が「『こころ』 作者」で小説を出さず外しました。思考なしは 5 問中 2 問で、富士山のページを読むと長い混乱した答えになりました。search だけ (fetch も思考もなし) では 1 問: 富士山を記事の冒頭から 1 回の検索 (約 3 秒) で。SearXNG でウェブを検索すると (`--search http://localhost:8888`、思考あり、324 秒) 5 問中 4 問が正解で『こころ』も当たり、残る富士山は記事の後ろの節にある別の山の高さを混ぜて崩れました。ウェブ検索は Wikipedia 自身の検索が外すものを見つけ、残る弱さは 1.7B のモデルの側です (日本語の名前をローマ字にして検索して外す、長いページから違う数字を拾う)。詳しくは [docs/design/cli.ja.md](docs/design/cli.ja.md)
-- `--tools read,bash` で道具を減らし (コードについての質問など)、`--system FILE` で system prompt の冒頭を差し替え、`--no-think` で考えずに答え、`--draft` で hwnpu-chat と同じ投機的デコードの幅 (8) を変え、`--tier` で会話が短いうちに使う短いキャッシュ (4096) を変え、`--keep-thinking` で課題の途中の考えを会話に残し、`--steps` で往復の上限 (30)、`-n` で答えの長さ (2048) を変え、`--dump DIR` で要求、プロンプト、生成文を JSON に書き出して prompt を比べられます
+- `--tools read,bash` で道具を減らし (コードについての質問など)、`--system FILE` で system prompt の冒頭を差し替え、`--no-think` で考えずに答え、`--draft` で bonsaiai-chat と同じ投機的デコードの幅 (8) を変え、`--tier` で会話が短いうちに使う短いキャッシュ (4096) を変え、`--keep-thinking` で課題の途中の考えを会話に残し、`--steps` で往復の上限 (30)、`-n` で答えの長さ (2048) を変え、`--dump DIR` で要求、プロンプト、生成文を JSON に書き出して prompt を比べられます
 - 会話が文脈に収まらなくなるときも、モデルに要約は頼みません。答えのために `-n` トークンを残せなくなったら、古い道具の結果から順に先頭 1 行と行数に畳み、最新 4 つはそのまま残します
-- 1.7B のモデルには規則より強制が効きます (Pi を小さなモデル向けに調整した little-coder の知見)。会話の中で read していないファイルへの `edit` と `write` は断り、先に読むよう促します。思考は `--think-budget` トークン (1024、hwnpu-chat と同じ) で閉じ、考えた分から答えさせます。最終回答を書いたあとに道具の呼び出しを付けることを繰り返すときは 2 回目の回答で課題を終え、同じ呼び出しが 2 回続いたら実行せずに止めるよう促し、3 回目と往復切れのときは道具なしの要求を 1 回出して要約を書かせます。`main.go` のつもりで書く `/main.go` のようなパスは相対として扱い、見たことのないディレクトリへの `cd` は断って残りのコマンドを示し、作業ディレクトリの長い絶対パスは `.` にして見せます
-- M3 での例、「main.go の add 関数のバグを直して」(`a - b` → `a + b`): 8 要求、53 秒 (モデルがコンパイル済みのとき。読み込みはそのとき約 15 秒、初回は Core ML のコンパイルで約 3 分。今の hwnpu-chat は Core AI で動く)。最初の要求は 629 トークンを 1.3 秒で読み、以後は新しいメッセージの分だけ (0.1〜0.4 秒)、生成は 15〜16 tokens/s でした。ファイルを読み、edit で 1 行を直し、読み直し、`cd /tmp` を試して断られ、`go run main.go` で 5 を見て、要約を書いて終わりました。前の形の prompt では 1.7B のモデルの弱さが見えます。system prompt に作業ディレクトリの絶対パスを書くと 30 往復写し間違え続け、`/main.go` を「外」と断るとまた 30 往復、最終回答のあとに `echo done` を付け続けて止まりませんでした。詳しくは [docs/design/cli.ja.md](docs/design/cli.ja.md) にあります
+- 1.7B のモデルには規則より強制が効きます (Pi を小さなモデル向けに調整した little-coder の知見)。会話の中で read していないファイルへの `edit` と `write` は断り、先に読むよう促します。思考は `--think-budget` トークン (1024、bonsaiai-chat と同じ) で閉じ、考えた分から答えさせます。最終回答を書いたあとに道具の呼び出しを付けることを繰り返すときは 2 回目の回答で課題を終え、同じ呼び出しが 2 回続いたら実行せずに止めるよう促し、3 回目と往復切れのときは道具なしの要求を 1 回出して要約を書かせます。`main.go` のつもりで書く `/main.go` のようなパスは相対として扱い、見たことのないディレクトリへの `cd` は断って残りのコマンドを示し、作業ディレクトリの長い絶対パスは `.` にして見せます
+- M3 での例、「main.go の add 関数のバグを直して」(`a - b` → `a + b`): 8 要求、53 秒 (モデルがコンパイル済みのとき。読み込みはそのとき約 15 秒、初回は Core ML のコンパイルで約 3 分。今の bonsaiai-chat は Core AI で動く)。最初の要求は 629 トークンを 1.3 秒で読み、以後は新しいメッセージの分だけ (0.1〜0.4 秒)、生成は 15〜16 tokens/s でした。ファイルを読み、edit で 1 行を直し、読み直し、`cd /tmp` を試して断られ、`go run main.go` で 5 を見て、要約を書いて終わりました。前の形の prompt では 1.7B のモデルの弱さが見えます。system prompt に作業ディレクトリの絶対パスを書くと 30 往復写し間違え続け、`/main.go` を「外」と断るとまた 30 往復、最終回答のあとに `echo done` を付け続けて止まりませんでした。詳しくは [docs/design/cli.ja.md](docs/design/cli.ja.md) にあります
 
 ## 8. 限界
 

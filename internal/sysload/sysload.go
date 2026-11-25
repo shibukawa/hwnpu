@@ -1,4 +1,4 @@
-// Package sysload reads how busy the machine is for hwnpu status: the CPU's load and the memory in
+// Package sysload reads how busy the machine is for bonsaiai status: the CPU's load and the memory in
 // use, and each GPU's load and memory, as the OS tells them without root.
 package sysload
 

@@ -3,7 +3,7 @@ package iron
 import "fmt"
 
 // ConvPair is a folded Gated DeltaNet layer's two homes of its short convolution's last Rows
-// rows (tools/amd/iron_qwen35.py's hwnpu_conv_pairs): the decode step's, the pair of floats
+// rows (tools/amd/iron_qwen35.py's bonsaiai_conv_pairs): the decode step's, the pair of floats
 // ahead of each of Columns runs of the state (Run floats each; each of the pair's two halves a
 // copy of the column's rows, Seg bf16 a row, packed, zero after), and the prompt chunk's, the
 // convolution's own state (Rows by Columns * Seg bf16). Both are checkpoints of slots alike.

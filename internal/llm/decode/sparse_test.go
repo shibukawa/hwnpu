@@ -6,8 +6,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // The fake model of these tests has one layer whose attention the host runs: its queries, keys
@@ -69,10 +69,10 @@ func fakeProgram(q, n int, tab **tables, out *[]float32, mass bool) Program {
 	p.RunPart = func(i int) error {
 		if i == 1 {
 			*out = make([]float32, fH*q*fD)
-			hwnpu.DecodeF16(*out, p.In["attn_o_1"])
+			bonsaiai.DecodeF16(*out, p.In["attn_o_1"])
 			return nil
 		}
-		hwnpu.DecodeF16(x, p.In["x"])
+		bonsaiai.DecodeF16(x, p.In["x"])
 		put := func(name string, heads int, rows [][]float32) {
 			vals := make([]float32, heads*q*fD)
 			for t := range q {
@@ -81,7 +81,7 @@ func fakeProgram(q, n int, tab **tables, out *[]float32, mass bool) Program {
 					copy(vals[(h*q+t)*fD:(h*q+t+1)*fD], r[h*fD:(h+1)*fD])
 				}
 			}
-			hwnpu.EncodeF16(p.Out[name], vals)
+			bonsaiai.EncodeF16(p.Out[name], vals)
 		}
 		put("attn_q_1", fH, (*tab).q)
 		put("kv_k_1_new", fG, (*tab).k)
@@ -94,7 +94,7 @@ func fakeProgram(q, n int, tab **tables, out *[]float32, mass bool) Program {
 
 func dec(b []byte) []float32 {
 	x := make([]float32, len(b)/2)
-	hwnpu.DecodeF16(x, b)
+	bonsaiai.DecodeF16(x, b)
 	return x
 }
 
@@ -141,9 +141,9 @@ func fakeAttentionOf(q, chunk int, mass bool) *Attention {
 				m[h*q+t], l[h*q+t] = float32(top), float32(sum)
 			}
 		}
-		hwnpu.EncodeF16(a.O, o)
-		hwnpu.EncodeF16(a.M, m)
-		hwnpu.EncodeF16(a.L, l)
+		bonsaiai.EncodeF16(a.O, o)
+		bonsaiai.EncodeF16(a.M, m)
+		bonsaiai.EncodeF16(a.L, l)
 		return nil
 	}
 	if mass {
@@ -159,7 +159,7 @@ func fakeAttentionOf(q, chunk int, mass bool) *Attention {
 					}
 				}
 			}
-			hwnpu.EncodeF16(ms.W, w)
+			bonsaiai.EncodeF16(ms.W, w)
 			return nil
 		}
 		a.Mass = ms
@@ -185,7 +185,7 @@ func twoLevel(tab *tables, sp Sparse, pick, pos, valid, q int, chosen [][]int) (
 	}
 	r16 := func(x []float32) []float32 { // through fp16, as the cache holds them
 		b := make([]byte, 2*len(x))
-		hwnpu.EncodeF16(b, x)
+		bonsaiai.EncodeF16(b, x)
 		return dec(b)
 	}
 	mean := func(rows [][]float32, g, b int) []float32 {

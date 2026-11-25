@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/pose"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/pose"
 )
 
 // Pose is the use of a model that finds people and their 17 keypoints (RTMO) for an app: a
@@ -48,7 +48,7 @@ var poseCNN = cnn[*pose.Estimator]{
 	},
 	openNPU: pose.OpenNPU,
 	openCPU: pose.OpenCPU,
-	open: func(ctx context.Context, dev *hwnpu.Device, model, program string) (*pose.Estimator, error) {
+	open: func(ctx context.Context, dev *bonsaiai.Device, model, program string) (*pose.Estimator, error) {
 		return pose.Open(ctx, dev, model, program)
 	},
 	onNPU: (*pose.Estimator).OnNPU,
@@ -104,7 +104,7 @@ type PoseOptions struct {
 // PoseEstimator finds the people in pictures and their keypoints. It runs one picture at a
 // time; others wait.
 type PoseEstimator struct {
-	remote        *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote        *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu            sync.Mutex
 	e             *pose.Estimator
 	closeDev      func()
@@ -168,7 +168,7 @@ func (p *PoseEstimator) Estimate(ctx context.Context, img image.Image, o PoseOpt
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (p *PoseEstimator) Close() error {
 	if p.remote != nil {
-		return p.remote.Release() // the Runtime in hwnpud unloads it
+		return p.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

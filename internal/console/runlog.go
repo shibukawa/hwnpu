@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
-// What a command did is kept for hwnpu issue: RecordRun at its start writes its arguments to a
+// What a command did is kept for bonsaiai issue: RecordRun at its start writes its arguments to a
 // file of logs/ under the cache's root, the writers of Log copy their lines to it (the last
 // state of a line of progress, without the colors), and EndInterrupted adds how it ended. The
 // last RunsKept runs of each command are kept.
@@ -38,10 +38,10 @@ var (
 	runLine []byte // the line being written (a bar's line is written again after \r)
 )
 
-// RecordRun starts keeping this run of the command (its os.Args), unless HWNPU_NO_RUN_LOG is
+// RecordRun starts keeping this run of the command (its os.Args), unless BONSAIAI_NO_RUN_LOG is
 // set. Where logs/ cannot be written, nothing is kept.
 func RecordRun() {
-	if os.Getenv("HWNPU_NO_RUN_LOG") != "" {
+	if os.Getenv("BONSAIAI_NO_RUN_LOG") != "" {
 		return
 	}
 	runMu.Lock()

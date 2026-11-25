@@ -7,11 +7,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/imagedev"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // The settings and programs the definition of a model of pictures may give (ai.Definition), as
@@ -19,15 +19,15 @@ import (
 //
 //	settings: threads   the CPU's threads where it runs on the CPU (1, the default: the least
 //	                    CPU time and energy)
-//	settings: cpu       interpreter: the converted programs on hwnpu's CPU interpreter instead
+//	settings: cpu       interpreter: the converted programs on bonsaiai's CPU interpreter instead
 //	                    of the NPU (slow; for checking a conversion), of a model of device cpu
 //	programs: export    an export's directory (tools/amd/iron_*.py, or one Prepare made): depth,
 //	                    faces and labels
 //	programs: onnx      faces: an ONNX file of YuNet
 //
 // A model of device cpu runs on the CPU: its ONNX files with ONNX Runtime where its library is
-// here, else on hwnpu's own executor. A device the definition gives for every NPU (an app's
-// Definition.Device) is chosen as a command's --device is: over HWNPU_DEVICE, and an NPU without
+// here, else on bonsaiai's own executor. A device the definition gives for every NPU (an app's
+// Definition.Device) is chosen as a command's --device is: over BONSAIAI_DEVICE, and an NPU without
 // a form of the model is then an error rather than the CPU.
 
 // threads is the CPU's threads of model m (its settings' threads, at least 1).
@@ -36,7 +36,7 @@ func threads(m chat.Model) int {
 	return max(1, n)
 }
 
-// interpreter reports whether model m runs its converted programs on hwnpu's CPU interpreter.
+// interpreter reports whether model m runs its converted programs on bonsaiai's CPU interpreter.
 func interpreter(m chat.Model) bool { return m.Settings["cpu"] == "interpreter" }
 
 // program is the first of the programs of model m named name, "" for none.
@@ -50,13 +50,13 @@ func program(m chat.Model, name string) string {
 // openDevice opens the NPU a model of pictures runs on: AMD's for an export of IRON, else the
 // one of the programs' format (imagedev.Open: on a Mac Core AI's, which needs macOS 27), where
 // Apple's Neural Engine is to run every operation.
-func openDevice(ctx context.Context, e airole.LoadEnv) (*hwnpu.Device, error) {
+func openDevice(ctx context.Context, e airole.LoadEnv) (*bonsaiai.Device, error) {
 	if e.NPU.AMD() {
-		return hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		return bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	}
-	var opts []hwnpu.Option
+	var opts []bonsaiai.Option
 	if llm.AppleFormat(e.NPU.Format) {
-		opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		opts = append(opts, bonsaiai.WithPlacement(bonsaiai.PlacementStrict))
 	}
 	dev, _, err := imagedev.Open(ctx, e.NPU.Device, e.Cache, opts...)
 	return dev, err

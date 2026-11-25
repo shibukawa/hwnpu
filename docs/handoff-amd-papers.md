@@ -1,6 +1,6 @@
 # 引き継ぎ: 論文から拾った AMD の NPU の最適化の候補
 
-作成: 2026-11-20、整理: 2026-11-21。arXiv の「NPU」の検索 (505 件) と、AMD XDNA、端末の LLM の論文の調査から、hwnpu の AMD の経路 (IRON、`internal/llm/iron`、`internal/backend/amd`) に入れられそうなものを選んだ。全体の一覧 (`docs/npu-optimization-papers.md`: MoE 以外、`docs/moe-papers.md`: MoE) は、このリポジトリにはまだ入っていない。
+作成: 2026-11-20、整理: 2026-11-21。arXiv の「NPU」の検索 (505 件) と、AMD XDNA、端末の LLM の論文の調査から、BonsaiAI の AMD の経路 (IRON、`internal/llm/iron`、`internal/backend/amd`) に入れられそうなものを選んだ。全体の一覧 (`docs/npu-optimization-papers.md`: MoE 以外、`docs/moe-papers.md`: MoE) は、このリポジトリにはまだ入っていない。
 
 論文ごとの結果 (当てはまったか) の一覧は [reference-paper.ja.md](reference-paper.ja.md)。
 
@@ -35,9 +35,9 @@
 | Anima-Aesthetic 1024² (DPM 25) | 2 分 37 秒、2.84 kJ | [image-amd](design/image-amd.md) |
 
 測り方:
-- `HWNPU_DEV=iron.timing=1`: コマンドとホストの手順ごとの時間 (コマンドごとに待つので、プロンプトの時間は数倍にふくらむ)
+- `BONSAIAI_DEV=iron.timing=1`: コマンドとホストの手順ごとの時間 (コマンドごとに待つので、プロンプトの時間は数倍にふくらむ)
 - `iron_export_lm.py --command-per-step`: プロンプトを手順ごとのコマンドに切って内訳を見る ([amd](design/amd.md))
-- `HWNPU_ENERGY`: 電力量 (package)
+- `BONSAIAI_ENERGY`: 電力量 (package)
 - `go run ./tools/amd/irongraph`、`tools/amd/ironlm`: 照合
 
 ## 1. 演算子の切り替えの上乗せを減らす — 済み ([docs/design/amd.md](design/amd.md)、[amd-llm](design/amd-llm.md)、[moe](design/moe.md), [amd](design/amd.md), [amd-llm](design/amd-llm.md))
@@ -59,7 +59,7 @@
 
 **出典**: 2512.13282 ✓ (Ryzen AI の 2 世代の GEMM、XDNA2 で int8 38 TOPS、bf16 14.7 TOPS)。XDNA2 では bf16 を bfp16 のデータパスに通す。多次元の DMA の番地で並べ替え、ホストで重みを前もってタイルにしない。shim あたり 16 を超える BD は、同期してから使い回す。
 
-**hwnpu で困っていること**: 「DMA の 1 次元の大きさは 1023 語まで: 重みを消費順に並べ替える 4 次元の TAP は通らないので、表の順のまま流す」([moe](design/moe.md))。そのため次のことが起きている。
+**BonsaiAI で困っていること**: 「DMA の 1 次元の大きさは 1023 語まで: 重みを消費順に並べ替える 4 次元の TAP は通らないので、表の順のまま流す」([moe](design/moe.md))。そのため次のことが起きている。
 - 専門家の表を「[組][k ブロック][gate/up][コア]」の並びに作り直している
 - プロンプトの MoE で x をホストが 2 回、4 回と並べ直している
 
@@ -116,7 +116,7 @@
 
 **出典**: TileFuse 2606.11357 ✓ (XDNA2 の W4A16/W8A16 の融合カーネル)。「BFP16 のカーネルは LLM の端から端までには精度が足りない」と書いている。
 
-**対象**: hwnpu は bfp16 を DiT の注意と MLP ([image-amd](design/image-amd.md))、gpt-oss の専門家のプロンプト ([moe](design/moe.md)) に使っている。DiT は潜在のコサインで確かめ済みで、gpt-oss は KL を測っている。新しい LLM で bfp16 を使うときは、[moe](design/moe.md) と同じ KL の掃引を通す。
+**対象**: BonsaiAI は bfp16 を DiT の注意と MLP ([image-amd](design/image-amd.md))、gpt-oss の専門家のプロンプト ([moe](design/moe.md)) に使っている。DiT は潜在のコサインで確かめ済みで、gpt-oss は KL を測っている。新しい LLM で bfp16 を使うときは、[moe](design/moe.md) と同じ KL の掃引を通す。
 
 ## 8. 重みの可逆圧縮でデコードの帯域を稼ぐ (優先: 低、研究寄り)
 
@@ -138,5 +138,5 @@ MoE の論文と順位つきの候補は別の資料 (`docs/moe-papers.md`、未
 - **IRON のコンパイルのキャッシュは演算子の引数で引く**: build の中を変えても古い設計が動く。形を変えたら、形の引数を足す ([moe](design/moe.md) の `sink_form`)
 - **ホストが読む領域**は、ホストの手順の直前の演算の出力か、状態に写したものだけ ([moe](design/moe.md))
 - **書き出しは重い**: Qwen3.6 で 29 分、最大 RSS 50 GB。他の重い仕事と並べない ([moe](design/moe.md))
-- **NPU を他のセッションと分け合う**: 2026-11-20 は別のセッションが gpt-oss-120b の hwnpu-chat を続けて回していて、小さな試しの時間が 2〜5 倍に揺れた。比べるものは同じ回の中で交互に回し、`/dev/accel/accel0` を開いているプロセスを先に見る
+- **NPU を他のセッションと分け合う**: 2026-11-20 は別のセッションが gpt-oss-120b の bonsaiai-chat を続けて回していて、小さな試しの時間が 2〜5 倍に揺れた。比べるものは同じ回の中で交互に回し、`/dev/accel/accel0` を開いているプロセスを先に見る
 - 結果は docs/design/ の話題のファイル ([design/README.md](design/README.md)) に今の状態として書く (測った表、採らなかったもの、試し方)

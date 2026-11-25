@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
 )
 
 // A store keeps prompts read earlier on disk, so that a prompt that begins like one of them is

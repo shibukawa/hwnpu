@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // EntryFile is the file in an entry's directory that describes it: written last, so that a
 // directory with it is whole.
 const EntryFile = "entry.json"
 
-// EntryFormat is the version of EntryFile this hwnpu reads and writes.
+// EntryFormat is the version of EntryFile this bonsaiai reads and writes.
 const EntryFormat = 1
 
 // The scopes of what is shared (docs/cache-sharing-design.md 6).
@@ -221,7 +221,7 @@ func parseEntry(b []byte) (Entry, error) {
 		return e, fmt.Errorf("store: %s: %w", EntryFile, err)
 	}
 	if e.Format != EntryFormat {
-		return e, fmt.Errorf("store: %s of format %d, not the %d this hwnpu reads", EntryFile, e.Format, EntryFormat)
+		return e, fmt.Errorf("store: %s of format %d, not the %d this bonsaiai reads", EntryFile, e.Format, EntryFormat)
 	}
 	for _, f := range e.Files {
 		if !SafeKey(f.Path) || len(f.SHA256) != 64 || strings.ToLower(f.SHA256) != f.SHA256 {

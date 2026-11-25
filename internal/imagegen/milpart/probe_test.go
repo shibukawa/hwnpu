@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // TestWriteAttentionProbes writes attentions alone (no weights: they compile in seconds) as Core
 // AI programs, to time the forms of an image DiT's attention at a model's shape with aicheck run
-// -calls N before changing its export (docs/design/image-apple.md). HWNPU_TEST_ATTN_PROBE_OUT is where
-// they go, HWNPU_TEST_ATTN_PROBE_SHAPE "heads,queries,keys,head_dim" (Qwen-Image at 1024 x 1024:
-// 32,4096,4608,128; Chroma: 24,4608,4608,128), HWNPU_TEST_ATTN_PROBE the comma separated forms
+// -calls N before changing its export (docs/design/image-apple.md). BONSAIAI_TEST_ATTN_PROBE_OUT is where
+// they go, BONSAIAI_TEST_ATTN_PROBE_SHAPE "heads,queries,keys,head_dim" (Qwen-Image at 1024 x 1024:
+// 32,4096,4608,128; Chroma: 24,4608,4608,128), BONSAIAI_TEST_ATTN_PROBE the comma separated forms
 // (default: all), each FORM or FORM:CHUNK (queries a chunk; default 512):
 //
 //	old    QChunkAttention, the scale on the scores, the bias added
@@ -29,21 +29,21 @@ import (
 //	       own): its output, softmax over these keys, and each row's log-sum-exp (lse, (1, H,
 //	       queries, 1)), which join puts together with the other parts'
 //	pieces PARTS pieces and their join (joinSoftmax) in one program; kpieces the pieces of KeyParts
-//	join   (joinmm: and a projection after, as the next program's start) the output of PARTS pieces (HWNPU_TEST_ATTN_PROBE_PARTS, default 2) of the queries
+//	join   (joinmm: and a projection after, as the next program's start) the output of PARTS pieces (BONSAIAI_TEST_ATTN_PROBE_PARTS, default 2) of the queries
 //	       and head_dim of SHAPE: each part's output weighted by exp(lse - the parts' largest)
 func TestWriteAttentionProbes(t *testing.T) {
-	out := os.Getenv("HWNPU_TEST_ATTN_PROBE_OUT")
+	out := os.Getenv("BONSAIAI_TEST_ATTN_PROBE_OUT")
 	if out == "" {
-		t.Skip("HWNPU_TEST_ATTN_PROBE_OUT")
+		t.Skip("BONSAIAI_TEST_ATTN_PROBE_OUT")
 	}
 	H, n, m, D := 32, 4096, 4608, 128
-	if s := os.Getenv("HWNPU_TEST_ATTN_PROBE_SHAPE"); s != "" {
+	if s := os.Getenv("BONSAIAI_TEST_ATTN_PROBE_SHAPE"); s != "" {
 		if _, err := fmt.Sscanf(s, "%d,%d,%d,%d", &H, &n, &m, &D); err != nil {
 			t.Fatal(err)
 		}
 	}
 	forms := "old,fold,head,headn,split"
-	if s := os.Getenv("HWNPU_TEST_ATTN_PROBE"); s != "" {
+	if s := os.Getenv("BONSAIAI_TEST_ATTN_PROBE"); s != "" {
 		forms = s
 	}
 	for _, f := range strings.Split(forms, ",") {
@@ -54,7 +54,7 @@ func TestWriteAttentionProbes(t *testing.T) {
 		}
 		name := fmt.Sprintf("attn_%s_%d_h%d_q%d_k%d", form, chunk, H, n, m)
 		parts := 2
-		if s := os.Getenv("HWNPU_TEST_ATTN_PROBE_PARTS"); s != "" {
+		if s := os.Getenv("BONSAIAI_TEST_ATTN_PROBE_PARTS"); s != "" {
 			fmt.Sscan(s, &parts)
 		}
 		if form == "join" || form == "joinmm" {
@@ -68,7 +68,7 @@ func TestWriteAttentionProbes(t *testing.T) {
 					ls = append(ls, g.Input(fmt.Sprintf("lse%d", i), 1, H, n, 1))
 				}
 				var x *mlpackage.Var
-				switch os.Getenv("HWNPU_TEST_ATTN_PROBE_JOIN") {
+				switch os.Getenv("BONSAIAI_TEST_ATTN_PROBE_JOIN") {
 				case "two":
 					x = joinTwo(g, os_[0], os_[1], ls[0], ls[1])
 				case "softmax":
@@ -127,9 +127,9 @@ func TestWriteAttentionProbes(t *testing.T) {
 				g.Fail("form %q", form)
 			}
 		}}
-		// HWNPU_TEST_ATTN_PROBE_BACKEND=coreml writes Core ML packages, for aicheck run -cpu (milcpu)
+		// BONSAIAI_TEST_ATTN_PROBE_BACKEND=coreml writes Core ML packages, for aicheck run -cpu (milcpu)
 		backend, ext := llm.BackendCoreAI, ".aimodel"
-		if os.Getenv("HWNPU_TEST_ATTN_PROBE_BACKEND") == "coreml" {
+		if os.Getenv("BONSAIAI_TEST_ATTN_PROBE_BACKEND") == "coreml" {
 			backend, ext = llm.BackendCoreML, ".mlpackage"
 		}
 		path := filepath.Join(out, name+ext)

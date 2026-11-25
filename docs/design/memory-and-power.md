@@ -2,7 +2,7 @@
 
 [日本語](memory-and-power.ja.md)
 
-How hwnpu measures energy and memory, what power control each NPU offers, how a model is run for a
+How BonsaiAI measures energy and memory, what power control each NPU offers, how a model is run for a
 machine's memory class, and how the NPU's resident limit is probed. The Go API (`WithPowerPolicy`,
 `PowerSample`, `AveragePower`) is in [api.md](api.md); NE-specific memory limits in
 [apple-neural-engine.md](apple-neural-engine.md); KV cache memory in [llm-engine.md](llm-engine.md).
@@ -27,20 +27,20 @@ machine's memory class, and how the NPU's resident limit is probed. The Go API (
 | Intel, Linux | RAPL `/sys/class/powercap/intel-rapl:N` | package | Usually needs root. Counter wrap handled |
 | AMD, Linux | NPU sensor (`QUERY_SENSORS`) when the driver has one (AMD's DKMS driver); else amdgpu hwmon `power1_input` (PPT, µW, no root) | npu / package | Linux 7.0's in-tree amdxdna has no NPU sensor. Both are instantaneous: a background goroutine samples every 50 ms from the first `PowerSample` and integrates by trapezoids (`power.Integrator`), stopped on close |
 | AMD, Windows (xrtshim) | XRT electrical info (watts) | — | `CapPowerMeter` when it reads |
-| Apple | none in the API | — | `hwnpu-dev powerbench` (root) for measurements; `hwnpu status` shows IOReport power only with root |
+| Apple | none in the API | — | `bonsaiai-dev powerbench` (root) for measurements; `bonsaiai status` shows IOReport power only with root |
 
 - Tests: `Provider.Hwmon` moves the hwmon path; `xdnasim.NoSensors` simulates Linux 7.0.
-- macOS IOReport energy (`Energy Model` ANE and `CPU Energy`) reads all 0 without root. `hwnpu status`
+- macOS IOReport energy (`Energy Model` ANE and `CPU Energy`) reads all 0 without root. `bonsaiai status`
   says "power not readable without root" rather than 0.00 W ([cli.md](cli.md)).
 
-### HWNPU_ENERGY (per-phase energy of a run)
+### BONSAIAI_ENERGY (per-phase energy of a run)
 
-- `HWNPU_ENERGY=SECONDS` (not a number: 5): `console.MeasureEnergy` at the start of `main` measures the idle
+- `BONSAIAI_ENERGY=SECONDS` (not a number: 5): `console.MeasureEnergy` at the start of `main` measures the idle
   power for that long (not counted in the run's times), then splits the package energy at each phase
   change (converting/loading/compiling vs running). Under the `took …` line it prints each phase's energy
   and that energy minus idle power × the phase's time (`energyLine`).
 - Source: `power.PackagePower` (amdgpu PPT), so AMD APUs on Linux only for now; elsewhere it says so and
-  does nothing. Called by hwnpu-image, hwnpu-chat, hwnpu-audio.
+  does nothing. Called by bonsaiai-image, bonsaiai-chat, bonsaiai-audio.
 - Phase rules are those of the time line ([cli.md](cli.md)): loads and weight-bank re-reads
   (`iron.Graph.Use`, `console.Reading`) during the run count as preparing.
 - Measured (AMD APU, Linux; one 1024² image, files in the page cache, idle 6.7–7.1 W):
@@ -58,11 +58,11 @@ machine's memory class, and how the NPU's resident limit is probed. The Go API (
 
 ### powerbench (Apple)
 
-- `hwnpu-dev powerbench` (darwin): asks the sudo password once, starts `sudo -n powermetrics -f plist` per
+- `bonsaiai-dev powerbench` (darwin): asks the sudo password once, starts `sudo -n powermetrics -f plist` per
   measurement, runs each model continuously on its own thread (or `-rate` calls/s), and reports CPU / GPU /
   ANE power minus idle and mJ per call. A model that reaches the NE is also measured CPU-only (`-cpu=false`
   skips). `-decode 8,16` generates LLM decode models (energy per token).
-- `HWNPU_COREML_UNITS=cpu|gpu` loads Core ML with `MLComputeUnitsCPUOnly` / `CPUAndGPU`; for measurement
+- `BONSAIAI_COREML_UNITS=cpu|gpu` loads Core ML with `MLComputeUnitsCPUOnly` / `CPUAndGPU`; for measurement
   only, not public API. Sweeps: `tools/coreml/gen_sweep.py`.
 - Result (M3): break-even about 200 MFLOP per call. Above it the ANE is 2–3× faster at about 1/4 the energy
   (≈1 TFLOP/J vs CPU 0.25 TFLOP/J). Below it Core ML's fixed cost per call (≈55 µs) and ANE startup win,
@@ -77,7 +77,7 @@ machine's memory class, and how the NPU's resident limit is probed. The Go API (
 | A whole run's peaks | `go run ./tools/memwatch [-csv FILE] CMD …`: footprint, wired, `mem.NPUWired`, system free % and pressure every 0.1 s; prints peaks and models.yaml's `memory` | Breakdown: `footprint PID`, `vmmap -summary PID` |
 | AMD pinned memory | Rise of `Unevictable` in `/proc/meminfo`; a process's share = sizes of its `/dev/accel/accel0` mappings in smaps; export `manifest.json` banks | Pinned pages are in neither RSS nor swap. Mostly weights and work areas; KV < 5 % |
 | Windows | `K32GetProcessMemoryInfo` private bytes; `maxRSS` = peak working set | |
-| During a run | `HWNPU_PROFILE=1`, hwnpu-chat's load log ("the Neural Engine holds …"), `hwnpu status` process table | |
+| During a run | `BONSAIAI_PROFILE=1`, bonsaiai-chat's load log ("the Neural Engine holds …"), `bonsaiai status` process table | |
 
 - Value to record for a model: the second run (after conversion and compile); the first run's peak is the
   conversion's.
@@ -88,7 +88,7 @@ machine's memory class, and how the NPU's resident limit is probed. The Go API (
 
 ### Current values (M1 16 GB, macOS 27.2.1, Core AI)
 
-`hwnpu-chat -m NAME --temp 0 -n 200 "…"`, second run. "Total" = max of NE + process, in GB.
+`bonsaiai-chat -m NAME --temp 0 -n 200 "…"`, second run. "Total" = max of NE + process, in GB.
 
 | Model | Neural Engine | Process | Total | Conversion peak (process) |
 |---|---|---|---|---|
@@ -128,7 +128,7 @@ per-flag choice. The user only chooses which memory class this machine counts as
   the machine's memory.
 - `memory`: GB the model takes; per vendor and per chip (`chat.PerVendor`):
   `memory: {amd: 2.2, apple: 3.1, M1: 1.7}`. On Apple's NPU the chip's key (`chat.Chips`: M1–M5, the same
-  names as `not_on`) wins. `hwnpu-chat list` shows it; comparing candidates of one family (`Model.Memory`)
+  names as `not_on`) wins. `bonsaiai-chat list` shows it; comparing candidates of one family (`Model.Memory`)
   ignores the chip.
 - `variants: {16: {…}}`: per-memory differences of the run fields (`chat.Run`: `prefill`, `format`,
   `context`, `paged`, `tier`). `tier` takes the same values as `--tier` (`auto`, `none`, lengths).
@@ -147,28 +147,28 @@ at once on 8 GB: LFM3-1.7B + PLaMo 3 Translate 0.8B (Apple 2.7 GB, AMD 3.2 GB).
 
 ### Choosing the class
 
-- `hwnpu memory LFM3-1.7B 8` (no args: list; `--forget`). `hwnpu-chat --memory 8` or a memory tag
+- `bonsaiai memory LFM3-1.7B 8` (no args: list; `--forget`). `bonsaiai-chat --memory 8` or a memory tag
   (`lfm3:8g`, `:8GB`, `:8gb`) also keep the choice once the model is prepared (`keepMemory`). API:
   `modelstore.Store` `Memory`, `SetMemory`, `Memories`.
 - Kept in `run.json` in the settings folder beside the user's models.yaml (`chat.RunFile`,
-  `{"models": {"LFM3-1.7B": {"memory": 8}}}`). Not in the cache (`hwnpu cache prune` would drop it, and a
-  shared `HWNPU_CACHE` would carry it to other machines). Not in models.yaml (machine edits would break
+  `{"models": {"LFM3-1.7B": {"memory": 8}}}`). Not in the cache (`bonsaiai cache prune` would drop it, and a
+  shared `BONSAIAI_CACHE` would carry it to other machines). Not in models.yaml (machine edits would break
   comments). `go test` reads and writes it only with `XDG_CONFIG_HOME` set.
 - Applied in `lookupOn` (Resolve, ResolveFor, ResolveForKinds, `serve`, `modelstore`): every command that
   resolves the model runs it so and converts or fetches only that class's programs. One log line at start:
-  `LFM3-1.7B: runs as on a machine of 8 GB, as chosen (…/run.json; hwnpu memory LFM3-1.7B --forget forgets it)`.
-- Precedence: this run's memory tag or `--memory` → chosen memory → `HWNPU_MEMORY` (whole run, not kept) →
+  `LFM3-1.7B: runs as on a machine of 8 GB, as chosen (…/run.json; bonsaiai memory LFM3-1.7B --forget forgets it)`.
+- Precedence: this run's memory tag or `--memory` → chosen memory → `BONSAIAI_MEMORY` (whole run, not kept) →
   the machine's memory.
 - A family name picks the model by the machine's memory (the choice is per model, unknown before picking);
   the picked model then runs in its chosen class.
 - `--tier`, `--prefill`, `--format`, `--context`, `--paged` are not kept: this run only; otherwise the
   definition's values for the class.
-- Programs of the previous class stay in the cache until LRU removes them; `hwnpu memory` suggests
-  `hwnpu cache clear NAME`.
+- Programs of the previous class stay in the cache until LRU removes them; `bonsaiai memory` suggests
+  `bonsaiai cache clear NAME`.
 - Only chat models have `variants` now; image and audio models get the same handling when they add them.
 - Within a run the KV cache is capped at 1/4 of physical memory ([llm-engine.md](llm-engine.md)).
 
-## Residency probe (`hwnpu-dev probe resident`)
+## Residency probe (`bonsaiai-dev probe resident`)
 
 Measures how much the NPU holds at once. Usage: [PROBE.md](../../PROBE.md).
 
@@ -204,8 +204,8 @@ Known results:
 ## Not adopted
 
 - AMD device-wide power mode (`SET_STATE(SET_POWER_MODE)`): root, and it changes the NPU for every user.
-- Selecting the 8 GB form of a model by an env var (`HWNPU_MEMORY`) as the user's means: the model selector
-  (tag) and `hwnpu memory` instead; `HWNPU_MEMORY` stays as a whole-run override only.
+- Selecting the 8 GB form of a model by an env var (`BONSAIAI_MEMORY`) as the user's means: the model selector
+  (tag) and `bonsaiai memory` instead; `BONSAIAI_MEMORY` stays as a whole-run override only.
 - Keeping the memory choice in the cache or in models.yaml (see above).
 - Users choosing `--tier` / `--prefill` per model to fit memory: the definition decides per class.
 - Dropping the short-conversation program for Qwen3-0.6B on 8 GB (fits; 2× faster on M3).
@@ -213,10 +213,10 @@ Known results:
 
 ## Open
 
-- Intel: whether the power policies change measured power on hardware (`hwnpu-dev report -power low` vs
+- Intel: whether the power policies change measured power on hardware (`bonsaiai-dev report -power low` vs
   `-power performance`).
 - NPU-only power on Intel, Windows and Apple (no API without root).
-- `HWNPU_ENERGY` on machines other than AMD APUs (RAPL, Windows).
+- `BONSAIAI_ENERGY` on machines other than AMD APUs (RAPL, Windows).
 - M2/M3 hardware for the "M2+ form" memory and 8 GB speed without the extra program (on M3 with it was 8 %
   faster).
 - Not measured on Core AI: Gemma 4 E2B process share, Gemma 4 E4B, Qwen3.5-4B, PLaMo 3 Translate 8B

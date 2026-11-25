@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/mlspec"
+	"github.com/shibukawa/bonsaiai/internal/mlspec"
 	"google.golang.org/protobuf/proto"
 )
 

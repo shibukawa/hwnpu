@@ -407,7 +407,7 @@ def main():
              cond=cond.float().cpu().numpy() if cond is not None else np.zeros(0, np.float32),
              noise=noise.cpu().numpy(), sigmas=np.array(sigmas), step_in=np.stack(step_in),
              step_out=np.stack(step_out), latents=lat.cpu().numpy(), quant=label)
-    noise.cpu().numpy().astype("<f4").tofile(a.out + ".noise.f32")  # hwnpu-image generate --noise
+    noise.cpu().numpy().astype("<f4").tofile(a.out + ".noise.f32")  # bonsaiai-image generate --noise
     if ref is not None:
         z, x = torch.from_numpy(ref["latents"]).double().ravel(), lat.cpu().double().ravel()
         cos = float(z @ x / z.norm() / x.norm())

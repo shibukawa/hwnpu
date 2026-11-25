@@ -10,21 +10,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/check"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/check"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
 )
 
 // TestEncoderOnDevice runs encoder packages on the Neural Engine and on Core ML's CPU
-// (HWNPU_COREML_UNITS=cpu, fp32 there) and compares both with transformers' fp32 encoder output,
+// (BONSAIAI_COREML_UNITS=cpu, fp32 there) and compares both with transformers' fp32 encoder output,
 // the checklist's 3.3 check for arithmetic the CPU interpreter does not show (the ANE's own
-// layer_norm, rounding inside its operations). HWNPU_TEST_WHISPER_REF is a prefix written by
+// layer_norm, rounding inside its operations). BONSAIAI_TEST_WHISPER_REF is a prefix written by
 // tools/ref/ref_whisper.py (PREFIX.x.bin the mel frames, PREFIX.logits.bin the output);
-// HWNPU_TEST_WHISPER_ENCODERS is a comma separated list of encoder .mlpackage directories.
+// BONSAIAI_TEST_WHISPER_ENCODERS is a comma separated list of encoder .mlpackage directories.
 func TestEncoderOnDevice(t *testing.T) {
-	prefix, pkgs := os.Getenv("HWNPU_TEST_WHISPER_REF"), os.Getenv("HWNPU_TEST_WHISPER_ENCODERS")
+	prefix, pkgs := os.Getenv("BONSAIAI_TEST_WHISPER_REF"), os.Getenv("BONSAIAI_TEST_WHISPER_ENCODERS")
 	if prefix == "" || pkgs == "" {
-		t.Skip("HWNPU_TEST_WHISPER_REF and HWNPU_TEST_WHISPER_ENCODERS are not set")
+		t.Skip("BONSAIAI_TEST_WHISPER_REF and BONSAIAI_TEST_WHISPER_ENCODERS are not set")
 	}
 	ref, err := check.LoadRef(prefix)
 	if err != nil {
@@ -35,7 +35,7 @@ func TestEncoderOnDevice(t *testing.T) {
 		t.Fatalf("%s.x.bin: %v", prefix, err)
 	}
 	want := ref.Logits
-	if l := os.Getenv("HWNPU_TEST_WHISPER_LAYER"); l != "" { // packages of the first N layers (hwnpu-dev convert -layers)
+	if l := os.Getenv("BONSAIAI_TEST_WHISPER_LAYER"); l != "" { // packages of the first N layers (bonsaiai-dev convert -layers)
 		n, err := strconv.Atoi(l)
 		if err != nil {
 			t.Fatal(err)
@@ -50,23 +50,23 @@ func TestEncoderOnDevice(t *testing.T) {
 	}
 	ctx := context.Background()
 	cache, _ := os.UserCacheDir()
-	dev, _, err := llm.OpenDevice(ctx, "", filepath.Join(cache, "hwnpu"))
+	dev, _, err := llm.OpenDevice(ctx, "", filepath.Join(cache, "bonsaiai"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dev.Close()
 	units := []string{"npu", "cpu"}
-	if u := os.Getenv("HWNPU_TEST_WHISPER_UNITS"); u != "" {
+	if u := os.Getenv("BONSAIAI_TEST_WHISPER_UNITS"); u != "" {
 		units = strings.Split(u, ",")
 	}
 	for _, pkg := range strings.Split(pkgs, ",") {
 		var outs [][]float32
 		for _, u := range units {
 			if u != "npu" {
-				os.Setenv("HWNPU_COREML_UNITS", u)
+				os.Setenv("BONSAIAI_COREML_UNITS", u)
 			}
 			p, err := runner.Open(ctx, dev, pkg)
-			os.Unsetenv("HWNPU_COREML_UNITS")
+			os.Unsetenv("BONSAIAI_COREML_UNITS")
 			if err != nil {
 				t.Fatalf("%s on %s: %v", pkg, u, err)
 			}

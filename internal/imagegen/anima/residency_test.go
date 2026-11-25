@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // fakeNPU loads programs while their sizes fit in room, and fails as Intel's driver does past it.

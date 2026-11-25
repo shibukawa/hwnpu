@@ -1,4 +1,4 @@
-// Package mil describes MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal) as MIL programs, which hwnpu
+// Package mil describes MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal) as MIL programs, which bonsaiai
 // writes as Core ML packages for Apple's Neural Engine (llm.WritePart), for one picture size
 // each: the ViT (DINOv2, depth/mil's, its layers' projections summed and the scale head on the
 // class token) and the rest (the ConvStack neck over five scales and the points, normal and mask
@@ -10,10 +10,10 @@ import (
 	"math"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/torchzip"
-	dmil "github.com/shibukawa/hwnpu/internal/vision/depth/mil"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/torchzip"
+	dmil "github.com/shibukawa/bonsaiai/internal/vision/depth/mil"
 )
 
 type graph = milpart.Graph

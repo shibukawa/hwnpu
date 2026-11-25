@@ -1,25 +1,25 @@
 # モデルの定義ファイル (models.yaml) (設計案)
 
-作成: 2026-11-09。状態: 1 段、取得元の切り替え (3 段の一部: path、s3、全体の探索順、sha256)、hwnpu-tts / hwnpu-systemone の自動の準備 (4.5 段の一部) を実装。ほかは設計案。
+作成: 2026-11-09。状態: 1 段、取得元の切り替え (3 段の一部: path、s3、全体の探索順、sha256)、bonsaiai-tts / bonsaiai-systemone の自動の準備 (4.5 段の一部) を実装。ほかは設計案。
 
 ## 0. 実装したもの (2026-11-09)
 
-- 直下の `models.yaml` (`hwnpu.ModelsYAML` で組み込み) から `chat.Catalog`、`chat.Categories`、`chat.Aliases` を作る (`internal/chat/table.go`)。`models`、`categories`、`aliases` と、モデルの `family`、`tag`、`kind`、`from` (`hf:` だけ、`@REVISION` 可)、`arch`、`machine`、`memory`、`bytes`、`features`、`no_think`、`about`、`like`、`remove`
-- ユーザーのファイル (`~/.config/hwnpu/models.yaml`、Windows は `%LOCALAPPDATA%\hwnpu\models.yaml`)、`HWNPU_MODELS`、`-models` を差分として重ねる。用途の `picks` は列ごと。版の扱いは 13 節のとおり (組み込みは厳しく、ユーザーの知らないモデルへの上書きと新しい版の知らないキーは警告)。`sources`、`npus`、`builds`、`cache` は、ユーザーのファイルにあれば「まだ読まない」と警告して飛ばす
-- `hwnpu-chat list` と `-list` (hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
-- hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
-- 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
-- 取得元 (`internal/chat/sources.go`): 2026-11-15 から定義のファイルの `sources`、`search`、`cache.layers` と `from: SOURCE:NAME` は読まない。環境変数か `.env` の URL (`HWNPU_MODEL_SOURCE`、`_1`、... と `HWNPU_MODEL_HUGGING_FACE`) にした (docs/cache-sharing-design.md 7 節、[docs/design/distribution.md](design/distribution.md))。下の 5 節の `sources` と `search` の例は、それより前の設計
+- 直下の `models.yaml` (`bonsaiai.ModelsYAML` で組み込み) から `chat.Catalog`、`chat.Categories`、`chat.Aliases` を作る (`internal/chat/table.go`)。`models`、`categories`、`aliases` と、モデルの `family`、`tag`、`kind`、`from` (`hf:` だけ、`@REVISION` 可)、`arch`、`machine`、`memory`、`bytes`、`features`、`no_think`、`about`、`like`、`remove`
+- ユーザーのファイル (`~/.config/bonsaiai/models.yaml`、Windows は `%LOCALAPPDATA%\bonsaiai\models.yaml`)、`BONSAIAI_MODELS`、`-models` を差分として重ねる。用途の `picks` は列ごと。版の扱いは 13 節のとおり (組み込みは厳しく、ユーザーの知らないモデルへの上書きと新しい版の知らないキーは警告)。`sources`、`npus`、`builds`、`cache` は、ユーザーのファイルにあれば「まだ読まない」と警告して飛ばす
+- `bonsaiai-chat list` と `-list` (bonsaiai-transcribe、bonsaiai-tts、bonsaiai-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
+- bonsaiai-transcribe、bonsaiai-tts、bonsaiai-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。bonsaiai-tts と bonsaiai-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
+- 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: bonsaiai-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、bonsaiai-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、bonsaiai-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
+- 取得元 (`internal/chat/sources.go`): 2026-11-15 から定義のファイルの `sources`、`search`、`cache.layers` と `from: SOURCE:NAME` は読まない。環境変数か `.env` の URL (`BONSAIAI_MODEL_SOURCE`、`_1`、... と `BONSAIAI_MODEL_HUGGING_FACE`) にした (docs/cache-sharing-design.md 7 節、[docs/design/distribution.md](design/distribution.md))。下の 5 節の `sources` と `search` の例は、それより前の設計
   - 確かめたこと: テスト (共有フォルダを先に、なければ HF。`hf` のない探索順は HF に出ない。sha256 の違う写しを飛ばす。固定したリビジョンのフォルダを先に。`SOURCE:NAME` のモデル。偽の aws で S3 の URL、endpoint、profile、no_sign と、ないもの。aws がないときのエラー)。sha256 の確認と探索順を壊すとテストが落ちる。M3 で、whisper-large-v3-turbo の写しを置いたフォルダだけを探索順にして (`search: [share]`)、空のモデルのフォルダから取得、変換、表、書き起こしまで通った (HF への通信なし)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
 - 別のリポジトリでも、同じ SHA-256 を `sha256` に書いたファイルは 1 度だけ落とす (2026-11-11): `fetch` は落とす前に、同じ SHA-256 のファイルをモデルの置き場所のほかのモデルのディレクトリに探し、あればハードリンク (できなければ写し) にして SHA-256 を確かめる。違えば消して取得元から。Qwen3-1.7B の 2 つのファイルと MOSS-SoundEffect v2.0 の `text_encoder/` (4.1 GB)
 - 2 つのリポジトリを読むモデル (OCR の検出器と認識器) は、`from` に主のリポジトリ、`with: {役割: hf:OWNER/NAME@REV}` にほかのリポジトリを書く (`Model.With`、2026-11-11)。`with` のリポジトリのファイルの `sha256` は `役割/ファイル名` のキーで書く。`like` は `with` を引き継ぐ
 - 確かめたこと (M3、2026-11-09):
-  - hwnpu-transcribe: 表を書いて書き起こし、チェックポイントを退けても同じ結果
-  - hwnpu-tts: 初回にダウンロード (4 GB、6 分半)、変換 4 本、表 (0.67 GB) まで自動で通った。「こんにちは」(1.6 秒) と「今日はいい天気ですね。散歩に行きましょう。」(5.0 秒を 3.3 秒で生成) を hwnpu-transcribe で書き起こすと、どちらも元の文。チェックポイント (本体とコーデック) を退けても読み上げ、読み込み 3.2 秒
-  - hwnpu-systemone: d1-2B の変換 (lut8、512 トークン、2 部分) と視覚エンコーダ、表 (0.52 GB) まで自動で通った。「二重に請求された、返事がない、怒っている」問い合わせに、担当 billing (0.98)、怒っているか 0.996、緊急度 1 (やや緊急、0.45)。チェックポイントを退けても同じ答え、読み込み 1.1 秒
+  - bonsaiai-transcribe: 表を書いて書き起こし、チェックポイントを退けても同じ結果
+  - bonsaiai-tts: 初回にダウンロード (4 GB、6 分半)、変換 4 本、表 (0.67 GB) まで自動で通った。「こんにちは」(1.6 秒) と「今日はいい天気ですね。散歩に行きましょう。」(5.0 秒を 3.3 秒で生成) を bonsaiai-transcribe で書き起こすと、どちらも元の文。チェックポイント (本体とコーデック) を退けても読み上げ、読み込み 3.2 秒
+  - bonsaiai-systemone: d1-2B の変換 (lut8、512 トークン、2 部分) と視覚エンコーダ、表 (0.52 GB) まで自動で通った。「二重に請求された、返事がない、怒っている」問い合わせに、担当 billing (0.98)、怒っているか 0.996、緊急度 1 (やや緊急、0.45)。チェックポイントを退けても同じ答え、読み込み 1.1 秒
 - 画像を読む用途は `vision` だけにし、`image` は別名にしない (画像生成の用途 `image` のために空けておく)
-- チャットのモデルの動かし方 (`prefill`、`format`、`context`、`paged`) と、機械のメモリごとの違い (`variants`) (2026-11-11、6.2 節)。hwnpu-chat のフラグ (`--prefill` など) を与えなければ、モデルのこの欄が既定になる
+- チャットのモデルの動かし方 (`prefill`、`format`、`context`、`paged`) と、機械のメモリごとの違い (`variants`) (2026-11-11、6.2 節)。bonsaiai-chat のフラグ (`--prefill` など) を与えなければ、モデルのこの欄が既定になる
 
 
 モデルの選び方、取得元、NPU ごとのビルド設定を、コードから 1 つの YAML に移す。既定のファイルはバイナリに組み込み、利用者はユーザーフォルダに置いたファイルで上書きする。
@@ -40,7 +40,7 @@
 | 重みの形式 | `llm.Arch.Format`、`Formatter` (チェックポイントで変わるもの)、`Arch.IntelFormat`、`llm.IntelFormat` | Gemma 4 lut6、PLaMo 3 lut8、Qwen3.5 lut8 (2B だけ lut6)、LFM3 lut6 (多モーダルは lut8)、無指定は lut4。Intel は lut4 → int4、lut6 / lut8 → int8、LFM3 は int8 |
 | 文脈 | `Setup.Context` | 0: 分けられるモデルは学習時の最長、それ以外は 16320 |
 | 塊 | `Setup.Paged` | 分けられるモデルは 8192 |
-| 下書き | hwnpu-chat の `--draft` | 8 |
+| 下書き | bonsaiai-chat の `--draft` | 8 |
 | プロンプト用のプログラム | `PrefillAuto`、`compileCacheBytes`、`neuralEngineHold` | コンパイルのキャッシュ 3.5 GiB を超えるなら持たない。M1 は 2.8 GiB |
 | 段階 | `autoTiers` | lut4 か Intel なら 4096、それ以外はなし |
 | MTP | `Setup.MTP` | auto |
@@ -50,9 +50,9 @@
 
 読む順 (あとのものが前のものを上書き):
 
-1. 組み込みの既定: リポジトリの直下の `models.yaml` (MODEL.md の隣。PR を出す人が見つけやすいように)。直下のパッケージ `hwnpu` が `go:embed` で組み込む
-2. ユーザー: macOS と Linux は `~/.config/hwnpu/models.yaml` (`$XDG_CONFIG_HOME` があればその下。macOS でも同じ場所にする。`os.UserConfigDir` の `~/Library/Application Support` は手で置くには深い)、Windows は `%LOCALAPPDATA%\hwnpu\models.yaml` (共有フォルダのドライブ文字や `aws` のプロファイルなど機械ごとの値が入るので、ローミングしない方に置く)
-3. 環境変数 `HWNPU_MODELS` (`:` 区切り、Windows では `;`) と、hwnpu-chat / hwnpu-chat agent の `--models FILE` (何度でも指定できる)
+1. 組み込みの既定: リポジトリの直下の `models.yaml` (MODEL.md の隣。PR を出す人が見つけやすいように)。直下のパッケージ `bonsaiai` が `go:embed` で組み込む
+2. ユーザー: macOS と Linux は `~/.config/bonsaiai/models.yaml` (`$XDG_CONFIG_HOME` があればその下。macOS でも同じ場所にする。`os.UserConfigDir` の `~/Library/Application Support` は手で置くには深い)、Windows は `%LOCALAPPDATA%\bonsaiai\models.yaml` (共有フォルダのドライブ文字や `aws` のプロファイルなど機械ごとの値が入るので、ローミングしない方に置く)
+3. 環境変数 `BONSAIAI_MODELS` (`:` 区切り、Windows では `;`) と、bonsaiai-chat / bonsaiai-chat agent の `--models FILE` (何度でも指定できる)
 
 重ね方: ユーザーのファイルには**差分だけ**を書き、既定と合成する。既定のファイルを写して直す必要はない。
 
@@ -92,7 +92,7 @@ sources:
   lab-s3:
     type: s3                           # aws コマンドで取る (5 節)
     bucket: models
-    prefix: hwnpu/
+    prefix: bonsaiai/
     endpoint: http://rustfs.lab:9000   # 互換実装。省けば AWS
     region: us-east-1
     profile: rustfs                    # ~/.aws/config のプロファイル。省けば既定の認証
@@ -170,14 +170,14 @@ builds:
 | `intel-npu5` | Panther Lake (Core Ultra シリーズ 3) | 同 |
 
 - 別名として、IRON の呼び方 `amd-npu1` / `amd-npu2` と、開発の名前 (`strix`、`lunarlake` など) も受け付ける。`-list` や `-explain` が出すのは上の名前だけ
-- 世代を見分けるコードは、Apple のほかはまだない (`hwnpu.Enumerate` は会社しか返さない)。2 段で足す
+- 世代を見分けるコードは、Apple のほかはまだない (`bonsaiai.Enumerate` は会社しか返さない)。2 段で足す
 - 配布 (docs/prebuilt.md) のサブフォルダの名前も、これに揃える (`amd-npu2/` → `amd-xdna2/`)。書き出しの中身 (IRON の `npu2` のデバイス) はそのまま
 
 「LFM3 の M2 以降の既定はこれ、M1 はこれ」は、`npu: apple` の行と `npu: apple-m1` の行の 2 行で書く。広い名前の行が既定、狭い名前の行が例外になる (6 節)。
 
 ## 5. 取得元
 
-2026-11-15: この節の `sources`、`search`、`from: SOURCE:NAME` は docs/cache-sharing-design.md 7 節 (環境変数の URL、`original/` と `hwnpu-lock.json`) に置き換えた。リビジョンとハッシュの固定 (5.3 節) とエイリアス (5.1 節) はそのまま。
+2026-11-15: この節の `sources`、`search`、`from: SOURCE:NAME` は docs/cache-sharing-design.md 7 節 (環境変数の URL、`original/` と `bonsaiai-lock.json`) に置き換えた。リビジョンとハッシュの固定 (5.3 節) とエイリアス (5.1 節) はそのまま。
 
 | type | 書き方 | 取り方 |
 |---|---|---|
@@ -190,7 +190,7 @@ S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試�
 - `endpoint` は `--endpoint-url`、`profile` は `--profile`、`region` は `--region`、`no_sign` は `--no-sign-request` で渡す。ほかは `aws` の通常の設定 (`AWS_*` の環境変数、`~/.aws/config`) がそのまま効く
 - RustFS のようにパス形式のアドレスが要る実装は、`~/.aws/config` のそのプロファイルに `s3 = addressing_style = path` を書く (`aws` にコマンドラインの指定がないため)。docs に手順を書く
 - `aws` が見つからないときは、`from` に S3 を使っているモデルを選んだときだけ、入れ方と一緒にエラーを出す
-- 取るのは、HF のリポジトリと同じ並び (`config.json`、トークナイザー、safetensors) か、変換済みの並び (`hwnpu.json` があるもの、docs/prebuilt.md 4 節)。`hwnpu.json` があれば変換済みとして読む
+- 取るのは、HF のリポジトリと同じ並び (`config.json`、トークナイザー、safetensors) か、変換済みの並び (`bonsaiai.json` があるもの、docs/prebuilt.md 4 節)。`bonsaiai.json` があれば変換済みとして読む
 
 ### 5.1 エイリアス (蒸留モデルへの差し替え)
 
@@ -213,7 +213,7 @@ aliases:
 
 - `aliases` の左の名前が選ばれるところ (用途の `picks`、`plamo3translate:0.8b`、`-use plamo-3-translate-0.8b`、API の `model`) では、どこでも右のモデルを使う。`translate` の表を書き直さなくてよい
 - エイリアスは 1 段だけ (右の名前をさらに置き換えない)。左右に知らない名前があればエラー
-- `-list` と起動のログには「plamo-3-translate-0.8b → plamo-distill-0.8b (~/.config/hwnpu/models.yaml)」と出す
+- `-list` と起動のログには「plamo-3-translate-0.8b → plamo-distill-0.8b (~/.config/bonsaiai/models.yaml)」と出す
 - 読み込むときにも 10.1 節のうち安いもの (アーキテクチャ、config、トークナイザー、会話の型、特別なトークンの id) を確かめ、合わなければ何が違うかを出して止める。黙って崩れた答えを返さないため
 - `like` で足したモデルは `tag` を持たないので、ファミリーのタグの選択には出ない (エイリアスか名前で選ぶ)。`tag` を書けば出る
 
@@ -232,20 +232,20 @@ models:
   LFM3-1.7B:
     from: hf:LiquidAI/LFM3-1.7B          # 元のチェックポイント (変換の元)
     prebuilt:                            # ネイティブの変換済み (省けばなし)
-      from: hf:hwnpu/LFM3-1.7B
+      from: hf:bonsaiai/LFM3-1.7B
       npus: [apple, amd-xdna2]           # 配っている NPU。選ぶときにネットを見ないで済むように書く
 ```
 
 使う NPU と、6 節で決まった設定について、上から順に探す。
 
 1. **手元にあるもの**: 前に落としたか変換したプログラムが、設定と合えばそれを使う (今の `.done` と同じ)
-2. **ネイティブの変換済み**: `prebuilt` がその NPU を配っていて、`hwnpu.json` のその組の設定と `format_version`、元のチェックポイントのハッシュ (5.3 節) が合えば、その NPU のサブフォルダだけを落とす。元のチェックポイントは落とさない
+2. **ネイティブの変換済み**: `prebuilt` がその NPU を配っていて、`bonsaiai.json` のその組の設定と `format_version`、元のチェックポイントのハッシュ (5.3 節) が合えば、その NPU のサブフォルダだけを落とす。元のチェックポイントは落とさない
 3. **手元で変換**: `from` のチェックポイントを落として、今と同じに変換する。Apple と Intel は Go の変換器で。AMD は IRON の道具 (mlir-aie、Peano、Python) が要るので、入っていればそれで書き出し、なければ 4 へ
 4. **使えない**: 何が足りないか (配っていない、道具がない) を出して止める
 
-- 2 で合わないのは、ユーザーの `builds` で形式などを変えたとき、hwnpu が古くて `format_version` を読めないとき。`-explain` と起動のログに、変換済みを使わなかった理由を出す
+- 2 で合わないのは、ユーザーの `builds` で形式などを変えたとき、BonsaiAI が古くて `format_version` を読めないとき。`-explain` と起動のログに、変換済みを使わなかった理由を出す
 - `-prebuilt auto` (既定) / `off` (常に手元で変換。変換器を確かめるとき) / `only` (手元で変換しない。変換に時間をかけたくない機械、CI)
-- `from` に変換済みの並び (`hwnpu.json` があるもの) を書けば、`prebuilt` を書かなくてもそれを読む。元のチェックポイントを渡さない独自のモデル向け。この場合は 3 がない
+- `from` に変換済みの並び (`bonsaiai.json` があるもの) を書けば、`prebuilt` を書かなくてもそれを読む。元のチェックポイントを渡さない独自のモデル向け。この場合は 3 がない
 - **選ぶとき (用途やファミリーのタグ) は、この NPU で使えるモデルだけを候補にする**: `prebuilt.npus` に入っているか、手元で変換できる (アーキテクチャがその NPU の変換に対応している、AMD なら道具がある) もの。8 GB の AMD の機械で 0.8B の書き出しも道具もなければ、次の候補に落ちる。`-list` には「この NPU では使えない」と理由を出す
 
 ### 5.3 リビジョンとハッシュで固定する
@@ -265,7 +265,7 @@ models:
 - **組み込みのファイル**: すべてのモデルにコミットと `sha256` を書く。`go test` で、ないもの、コミットが 40 桁でないものを落とす
 - **確かめ方**: 落としながら sha256 を計算し (読み直さない)、合わなければファイルを消して止める。HF の LFS のファイルは ETag が sha256 なので、落とす前にも食い違いが分かる。S3 の ETag は分割アップロードで sha256 にならないので、こちらは落としながらの計算だけを使う
 - **構造の変化**: `config.json`、トークナイザー、会話の型のハッシュが変われば、別のモデルとして扱う。変換済み、表 (`tables.safetensors`)、GPTQ の符号は、元のチェックポイントのハッシュと一緒に記録し、合わなければ使わない
-- **ネイティブの変換済み**: `hwnpu.json` に、作った元のコミットとハッシュを書く (docs/prebuilt.md 4 節)。定義ファイルの固定と合わなければ使わない (5.2 節の 2 を飛ばして 3 へ)
+- **ネイティブの変換済み**: `bonsaiai.json` に、作った元のコミットとハッシュを書く (docs/prebuilt.md 4 節)。定義ファイルの固定と合わなければ使わない (5.2 節の 2 を飛ばして 3 へ)
 - **固定を上げる**: 上流が更新されたら、ビルド・アップロードツール (9 節) か skill (10 節) が新しいコミットのハッシュを取り、量子化の KL を測り直してから、定義ファイルを直す PR を出す。配布のビルド番号もそこで上げる
 - **ユーザーのファイル**: 固定しない `from: hf:OWNER/NAME` も書ける (手元で試すとき)。そのときは初めて落としたときのコミットとハッシュを `source.json` に書き、以後はそれを使い続ける。上流が更新されても勝手には変わらない。新しくするのは `-update NAME` で頼んだときだけ。起動のログに「固定していない」と出す
 - **今ある手元のキャッシュ**: `source.json` のないモデルのフォルダは、初回に一度だけ手元のファイルの sha256 を計算し (10 GB で数十秒)、定義ファイルと合えばそのまま使う。合わなければ変換し直す
@@ -318,7 +318,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 2. 同じ具体さなら、あとに書いたもの (ユーザーのファイルは既定のあと) が勝つ
 3. 欄ごとに決める。`apple-m1` の行が `prefill` だけを書けば、`format` は `apple` の行のまま
 
-`hwnpu-chat explain NAME` (案) で、決まった設定と、それぞれがどのファイルのどの行から来たかを出す。
+`bonsaiai-chat explain NAME` (案) で、決まった設定と、それぞれがどのファイルのどの行から来たかを出す。
 
 コードに残すもの: Q (8、64、128)、最後の行だけ、`-kv`、`state-rows`、`hidden-out`、エンコーダの fp16。これらはモデルの構造と上の設定から決まる。
 
@@ -349,30 +349,30 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
       16: {memory: 2.3, prefill: auto}   # 16 GB 以上
 ```
 
-- 動かし方の欄は `prefill` (auto、on、off)、`format` (重みの形式)、`context` (トークン)、`paged` (塊のトークン、-1 は分けない)、`tier` (会話の短いうちに使う短いキャッシュ。auto、none、長さの並び。LFM3-1.7B は 8 GB で `none`、16 GB から `auto`: 短い会話用の 1 本は重みをもう 1 組持ち、8 GB の機械の目安を越える)。hwnpu-chat の同じ名前のフラグの既定になり、フラグを与えればフラグが勝つ。チャットのモデルだけが持てる
+- 動かし方の欄は `prefill` (auto、on、off)、`format` (重みの形式)、`context` (トークン)、`paged` (塊のトークン、-1 は分けない)、`tier` (会話の短いうちに使う短いキャッシュ。auto、none、長さの並び。LFM3-1.7B は 8 GB で `none`、16 GB から `auto`: 短い会話用の 1 本は重みをもう 1 組持ち、8 GB の機械の目安を越える)。bonsaiai-chat の同じ名前のフラグの既定になり、フラグを与えればフラグが勝つ。チャットのモデルだけが持てる
 - `variants` のキーは機械のメモリ (GB)。機械が持つ最大のキーの差分を 1 つだけ、モデルの欄の上に重ねる (16 と 32 があれば、32 GB の機械では 32 の差分だけ)。差分が書けるのは `memory` と動かし方の 5 つで、書いた欄だけが変わる。AMD の書き出しの引数の差分は model-recipes.yaml の `variants` (同じ GB のキー) に書き、それで AMD の書き出しが別になる (gpt-oss-20b: 16 GB は専門家の置き場 16 個の `--expert-places 16 --host-route`、書き出しの名前は `-p16` つき。24 GB 以上は全部置く書き出し)。キーは `machine` より大きくなければならない (`machine` の欄がモデル自身)
-- どの機械の差分か: 名前で選んだとき (`-m Qwen3-1.7B`) はこの機械のメモリ (`HWNPU_MEMORY` で上書き)、ファミリーと用途では選ぶときの機械 (`qwen3:16g` なら 16 GB)。ファミリーで同じ列の候補を比べる `memory` も、その機械の差分のもの (8 GB で、Qwen3-0.6B の 1.6 GB と Qwen3-1.7B の 2.1 GB から 1.7B)
-- `hwnpu-chat list` の MEMORY はこの機械の差分のもの。`chat.Lookup` と `chat.Catalog` は差分を当てる前のモデル、`Model.On(machine)` が当てたもの
+- どの機械の差分か: 名前で選んだとき (`-m Qwen3-1.7B`) はこの機械のメモリ (`BONSAIAI_MEMORY` で上書き)、ファミリーと用途では選ぶときの機械 (`qwen3:16g` なら 16 GB)。ファミリーで同じ列の候補を比べる `memory` も、その機械の差分のもの (8 GB で、Qwen3-0.6B の 1.6 GB と Qwen3-1.7B の 2.1 GB から 1.7B)
+- `bonsaiai-chat list` の MEMORY はこの機械の差分のもの。`chat.Lookup` と `chat.Catalog` は差分を当てる前のモデル、`Model.On(machine)` が当てたもの
 - ユーザーのファイルは、名前を書いた差分だけを替え、ほかは残す (`device` と同じ)。`like` は動かし方と差分を引き継ぐ
 - `builds` (6 節) を実装するときは、`builds` の欄がモデルの欄と差分より先に来る (NPU ごとの事情の方が具体的)。今は NPU で分ける必要がない (Qwen3-1.7B は Apple だけ)
 
 ## 7. ほかの部分とのつながり
 
-- **ほかのコマンドも同じ表で選ぶ**: 用途に `transcribe`、`speech`、`decision`、`image` を足し、モデルの `kind` で、どのコマンドが読むかを分ける (`-use chat` を hwnpu-transcribe に渡せばエラー)。MODEL.md の表は全部の行が定義ファイルから来る。コマンドごとの今の形と、要る作業:
+- **ほかのコマンドも同じ表で選ぶ**: 用途に `transcribe`、`speech`、`decision`、`image` を足し、モデルの `kind` で、どのコマンドが読むかを分ける (`-use chat` を bonsaiai-transcribe に渡せばエラー)。MODEL.md の表は全部の行が定義ファイルから来る。コマンドごとの今の形と、要る作業:
 
 | コマンド | 今 | 要る作業 | 段 |
 |---|---|---|---|
-| hwnpu-chat、hwnpu-chat agent (埋め込みを含む) | `-m` で名前、用途、タグ。自動で落として変換 | 定義ファイルから読むだけ | 1 |
-| hwnpu-transcribe | `-use OWNER/NAME` (既定 whisper-large-v3-turbo)。自動で落として変換 (`transcribe.Prepare`) | `-use` を同じ解決 (用途 `transcribe`、ファミリー `whisper`) に。kotoba-whisper (Apache-2.0) を日本語のタグに。表の書き出し (T5) と、チェックポイントを遅れて落とす仕組みを chat と揃える | 1 の続き |
-| hwnpu-tts | `-model DIR` に手で変換したものを渡す (CHAT.md 7 節の手順) | 自動の準備 (`speech.Prepare`: テキスト部、depthformer、コーデックの変換) を作り、`-use` に。T5 (テキストの埋め込み、depth の表) も。用途 `speech` | 3 のあと |
-| hwnpu-systemone | `-model DIR` に手で変換したもの | 自動の準備 (d1 の本体、視覚と音声のエンコーダ) と `-use`。T5 (埋め込み、ラベルの行)。用途 `decision` | 3 のあと |
-| hwnpu-image | `-m` で名前、ファミリー (`anima`、`moge`)、用途 (`image`、`depth`)。AMD は `~/models/NAME.amd-npu2`、Mac / Intel の Anima は自動で落として変換 | AMD の書き出しを自動で作る (Python の iron_*.py) か取得する | 済み (2026-11-10、[docs/design/distribution.md](design/distribution.md)) |
-| hwnpu-dev formats | `-use` で chat の名前 | chat と同じ解決になる。候補の形式を `builds` から取る (10.2 節で skill が使う) | 2 |
-| hwnpu-dev convert、hwnpu-dev check、hwnpu-dev generate | `-config`、`-weights`、`-package` でファイルを直に | 開発用なので、ファイルを直に渡す形は残す。hwnpu-dev convert には `-use NAME -npu NPU` を足し、`builds` で決まる設定で変換する (ビルドツールの土台) | 4 |
+| bonsaiai-chat、bonsaiai-chat agent (埋め込みを含む) | `-m` で名前、用途、タグ。自動で落として変換 | 定義ファイルから読むだけ | 1 |
+| bonsaiai-transcribe | `-use OWNER/NAME` (既定 whisper-large-v3-turbo)。自動で落として変換 (`transcribe.Prepare`) | `-use` を同じ解決 (用途 `transcribe`、ファミリー `whisper`) に。kotoba-whisper (Apache-2.0) を日本語のタグに。表の書き出し (T5) と、チェックポイントを遅れて落とす仕組みを chat と揃える | 1 の続き |
+| bonsaiai-tts | `-model DIR` に手で変換したものを渡す (CHAT.md 7 節の手順) | 自動の準備 (`speech.Prepare`: テキスト部、depthformer、コーデックの変換) を作り、`-use` に。T5 (テキストの埋め込み、depth の表) も。用途 `speech` | 3 のあと |
+| bonsaiai-systemone | `-model DIR` に手で変換したもの | 自動の準備 (d1 の本体、視覚と音声のエンコーダ) と `-use`。T5 (埋め込み、ラベルの行)。用途 `decision` | 3 のあと |
+| bonsaiai-image | `-m` で名前、ファミリー (`anima`、`moge`)、用途 (`image`、`depth`)。AMD は `~/models/NAME.amd-npu2`、Mac / Intel の Anima は自動で落として変換 | AMD の書き出しを自動で作る (Python の iron_*.py) か取得する | 済み (2026-11-10、[docs/design/distribution.md](design/distribution.md)) |
+| bonsaiai-dev formats | `-use` で chat の名前 | chat と同じ解決になる。候補の形式を `builds` から取る (10.2 節で skill が使う) | 2 |
+| bonsaiai-dev convert、bonsaiai-dev check、bonsaiai-dev generate | `-config`、`-weights`、`-package` でファイルを直に | 開発用なので、ファイルを直に渡す形は残す。bonsaiai-dev convert には `-use NAME -npu NPU` を足し、`builds` で決まる設定で変換する (ビルドツールの土台) | 4 |
 
-- hwnpu-tts と hwnpu-systemone は、今は実行時もチェックポイント (`model.safetensors`) を開く。T5 を入れるまでは、11.4 節のチェックポイントの削除の対象から外す
+- bonsaiai-tts と bonsaiai-systemone は、今は実行時もチェックポイント (`model.safetensors`) を開く。T5 を入れるまでは、11.4 節のチェックポイントの削除の対象から外す
 - **MODEL.md の表**: `categories` と `models` の `memory` から作れる。`go test` で、MODEL.md の表と定義ファイルが食い違っていないかを確かめる (表の生成は後回し)
-- **hwnpu-dev convert**: 今は `Arch.Format` を既定にしている。同じ `builds` を読み、`-npu` で当てはめるようにする。`Arch.Format` と `Formatter` は最後に消す
+- **bonsaiai-dev convert**: 今は `Arch.Format` を既定にしている。同じ `builds` を読み、`-npu` で当てはめるようにする。`Arch.Format` と `Formatter` は最後に消す
 - **配布 (docs/prebuilt.md)**: `prebuilt/models.yaml` の `targets` は、ここの `builds` で NPU ごとに決まる 1 組と同じものにする。`prebuilt/models.yaml` には、配るモデル、取得元のリビジョン、更新番号 `build` だけを残す
 - **AMD**: `amd-xdna2` の `format` (q4、q6) から書き出しの名前 (今の `NAME.amd-npu2-q4`) を決める。配布が入れば、取得元から落とす
 
@@ -383,10 +383,10 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 | 1 | `models.yaml` を組み込み、`models` と `categories` を移す。ユーザーのファイルと `-models` を差分として重ね、`aliases` を入れる。`-list` に出どころ | Go の `Catalog` と `Categories` が YAML から作られる |
 | 2 | `builds` と `npus` を入れ、2 節の既定を移す。AMD と Intel の世代を見分ける。`-explain` | `DefaultFormatFor`、`autoTiers`、`neuralEngineHold`、`-draft` の既定がルールになる |
 | 3 | `sources` (path、s3) と `like`、`source.json`、コミットと sha256 の固定 (5.3 節) | 蒸留モデル、共有フォルダ、S3。上流の更新で黙って変わらない |
-| 3.5 | 変換済みの並び (`hwnpu.json`) と `prebuilt` を読み、5.2 節の順で探す。`-prebuilt` | docs/prebuilt.md の配布が始まれば、ダウンロードと読み込みだけになる |
-| 4 | hwnpu-dev convert と配布の `targets` を同じルールに | 7 節 |
-| 4.5 | ロック、オフライン、キャッシュの削除、Windows の置き場所 (11 節)。hwnpu-tts と hwnpu-systemone の自動の準備と `-use` (7 節) | 1 段のあとならいつでも。ロックは 3 段 (取得元を足す) より前に |
-| 5 | ビルド・アップロードツール (`cmd/hwnpu-build`) | 9 節。aix1 の CI がこれを呼ぶ |
+| 3.5 | 変換済みの並び (`bonsaiai.json`) と `prebuilt` を読み、5.2 節の順で探す。`-prebuilt` | docs/prebuilt.md の配布が始まれば、ダウンロードと読み込みだけになる |
+| 4 | bonsaiai-dev convert と配布の `targets` を同じルールに | 7 節 |
+| 4.5 | ロック、オフライン、キャッシュの削除、Windows の置き場所 (11 節)。bonsaiai-tts と bonsaiai-systemone の自動の準備と `-use` (7 節) | 1 段のあとならいつでも。ロックは 3 段 (取得元を足す) より前に |
+| 5 | ビルド・アップロードツール (`cmd/bonsaiai-build`) | 9 節。aix1 の CI がこれを呼ぶ |
 | 6 | 定義ファイルを作る skill | 10 節。`-explain` (2 段) と `like` (3 段) が要る |
 | 7 | 素直なデコーダの型 `decoder` (12.2 節)。Anima の Qwen3 を取り出し、Qwen3-0.6B で確かめ、ChatML の会話の型を足す | 1 段のあとならいつでも。Llama 型の蒸留モデルが定義ファイルだけで使える |
 
@@ -394,10 +394,10 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 
 ## 9. ロードの側に持たないもの
 
-- **変換したものの書き戻し**: hwnpu-chat などのロードの側は、取得元を読むだけにする。手元の変換 (5.2 節の 3) は今と同じに残すが、その結果は手元のキャッシュに置くだけで、取得元には上げない。変換して配るのは別のビルド・アップロードツール (仮に `cmd/hwnpu-build`) の役目
+- **変換したものの書き戻し**: bonsaiai-chat などのロードの側は、取得元を読むだけにする。手元の変換 (5.2 節の 3) は今と同じに残すが、その結果は手元のキャッシュに置くだけで、取得元には上げない。変換して配るのは別のビルド・アップロードツール (仮に `cmd/bonsaiai-build`) の役目
   - 同じ `models.yaml` を読み、`builds` で NPU ごとに決まる 1 組を変換し、照合して、取得元 (Hugging Face、共有フォルダ、S3) に上げる
   - docs/prebuilt.md の aix1 の CI は、このツールを呼ぶ
-  - 社内で蒸留モデルを配る人も、同じツールで共有フォルダや S3 に変換済みのものを置ける。ロードの側は `hwnpu.json` があれば変換済みとして読む (5 節)
+  - 社内で蒸留モデルを配る人も、同じツールで共有フォルダや S3 に変換済みのものを置ける。ロードの側は `bonsaiai.json` があれば変換済みとして読む (5 節)
 
 ## 10. 定義ファイルを作る支援 (skill)
 
@@ -411,9 +411,9 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 |---|---|---|
 | アーキテクチャ | `llm.Detect` (`model_type`、`architectures`) | 新しい構造。port-architecture の skill で移植する |
 | config の設定 | `llm.LoadConfig` (知らない設定はエラーになる。例: 別の RoPE の拡張、別の注意の窓) | 設定を足すのも port-architecture の範囲 |
-| テンソル | `hwnpu-dev check` の `tensors: 0 missing, 0 mismatched` | 名前の付け方が違う (別の学習の道具で保存した、など) |
+| テンソル | `bonsaiai-dev check` の `tensors: 0 missing, 0 mismatched` | 名前の付け方が違う (別の学習の道具で保存した、など) |
 | トークナイザー | `tokenizer.Load` が読めるか。今読めるのは BPE (GPT-2 式の ByteLevel、GPT-4 / Qwen3 / Qwen3.5 の区切り、byte fallback) と PLaMo の `tokenizer.jsonl` | SentencePiece の unigram、独自の正規化や前処理、Python のコードで実装したトークナイザー (`trust_remote_code`)。トークナイザーの実装を足す必要がある |
-| 会話の型 | 元のモデルの `chat_template` と同じか (`tokenizer_config.json` か `chat_template.jinja` を比べる)。hwnpu はアーキテクチャごとの型を Go で持つ (`chat.TemplateFor`) | 型が違えば、答えが崩れるか、ツールの呼び出しが読めない。違いを報告して止める |
+| 会話の型 | 元のモデルの `chat_template` と同じか (`tokenizer_config.json` か `chat_template.jinja` を比べる)。BonsaiAI はアーキテクチャごとの型を Go で持つ (`chat.TemplateFor`) | 型が違えば、答えが崩れるか、ツールの呼び出しが読めない。違いを報告して止める |
 | 語彙 | 特別なトークン (BOS、EOS、`<think>`、ツールの呼び出しの印) が元のモデルと同じ id か | 違えば会話の型と同じ扱い |
 
 ### 10.2 形式を決める
@@ -422,7 +422,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 2. 大きさを数え (6.1 節)、既定の `builds` で何が選ばれるかを `-explain` で見る。元のモデルと同じファミリーと大きさなら、多くはそのまま当たる
 3. 候補の形式を、軽いものから順に測る
    - CPU: `q4_gptq.py --method rtn` で部分ごとのビット数を掃く (5.2 節)
-   - NPU: `hwnpu-dev formats` (参照との次のトークンの一致、KL、perplexity、1 回の時間)、Apple は `hwnpu-dev generate -score`
+   - NPU: `bonsaiai-dev formats` (参照との次のトークンの一致、KL、perplexity、1 回の時間)、Apple は `bonsaiai-dev generate -score`
    - 5 種の文で、校正に使わない GPL を必ず見る。蒸留モデルは元のモデルより量子化に弱いことがある (小さいモデルほど 4 ビットで崩れる)
 4. 届かなければ校正 (GPTQ、表の当てはめ) を試す (5.3 節)。符号の置き場所は `codes` に、取得元と同じ書き方で書く
 5. メモリ: 決めた形式で読み込み、Neural Engine が抱える分とプロセスの分を測る (6 節)。M1 の 2.8 GiB、コンパイルのキャッシュ 3.5 GiB を超えないか。超えるなら `prefill` か形式を変える
@@ -432,7 +432,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 
 skill は最後に、どちらにするかを聞く。
 
-**手元だけ** (社内の蒸留モデル、共有フォルダや S3 の取得元): ユーザーのファイル (`~/.config/hwnpu/models.yaml`) か、指定されたファイルに差分を書く。既定のファイルは変えない。
+**手元だけ** (社内の蒸留モデル、共有フォルダや S3 の取得元): ユーザーのファイル (`~/.config/bonsaiai/models.yaml`) か、指定されたファイルに差分を書く。既定のファイルは変えない。
 
 **このプロジェクトに PR を出す** (誰でも Hugging Face から取れるモデル): 既定に入れるのに要るものを揃え、PR まで出す。
 
@@ -453,10 +453,10 @@ skill は最後に、どちらにするかを聞く。
 
 | | macOS | Linux | Windows |
 |---|---|---|---|
-| ユーザーの定義ファイル | `~/.config/hwnpu/models.yaml` | `$XDG_CONFIG_HOME/hwnpu/models.yaml` (`~/.config`) | `%LOCALAPPDATA%\hwnpu\models.yaml` |
-| モデルのキャッシュ | `~/Library/Caches/hwnpu/models` (今と同じ) | `$XDG_CACHE_HOME/hwnpu/models` (`~/.cache`) | `%LOCALAPPDATA%\hwnpu\models` (`os.UserCacheDir`) |
+| ユーザーの定義ファイル | `~/.config/bonsaiai/models.yaml` | `$XDG_CONFIG_HOME/bonsaiai/models.yaml` (`~/.config`) | `%LOCALAPPDATA%\bonsaiai\models.yaml` |
+| モデルのキャッシュ | `~/Library/Caches/bonsaiai/models` (今と同じ) | `$XDG_CACHE_HOME/bonsaiai/models` (`~/.cache`) | `%LOCALAPPDATA%\bonsaiai\models` (`os.UserCacheDir`) |
 
-`HWNPU_CACHE` でキャッシュの場所を変えられる (外付けのディスク、共有の機械)。
+`BONSAIAI_CACHE` でキャッシュの場所を変えられる (外付けのディスク、共有の機械)。
 
 ### 11.2 ロック
 
@@ -469,12 +469,12 @@ skill は最後に、どちらにするかを聞く。
 
 ### 11.3 オフライン
 
-`-offline` か `HWNPU_OFFLINE=1` (`HF_HUB_OFFLINE=1` も同じに扱う) で、ネットに一切出ない。
+`-offline` か `BONSAIAI_OFFLINE=1` (`HF_HUB_OFFLINE=1` も同じに扱う) で、ネットに一切出ない。
 
 - 手元のキャッシュと、`path` の取得元 (共有フォルダ) だけを使う。HF と S3 は見ない
 - 選ぶとき (用途、ファミリーのタグ) は、手元に揃っているモデルだけを候補にする。揃っていなければ、何が足りないかと、つながる機械で準備するコマンドを出す
 - 固定 (5.3 節) は `source.json` の記録で確かめる。ネットを見ないので、上流の更新は気にしない
-- 準備だけをするコマンド: `hwnpu-chat prepare NAME,...` (案) (ダウンロードと変換をして終わる)。キャッシュのフォルダを写せば、つながらない機械でもそのまま動く (Apple の Neural Engine のコンパイルだけは向こうで起きる)
+- 準備だけをするコマンド: `bonsaiai-chat prepare NAME,...` (案) (ダウンロードと変換をして終わる)。キャッシュのフォルダを写せば、つながらない機械でもそのまま動く (Apple の Neural Engine のコンパイルだけは向こうで起きる)
 - ネットにつながらないときに自動でオフラインに切り替えることはしない。黙って古いものを使わないため。つながらなければ、`-offline` を示してエラーにする
 
 ### 11.4 キャッシュの削除 (積極的に)
@@ -500,9 +500,9 @@ cache:
 ```
 
 - 消す前に、何をどれだけ消すかを 1 行ずつログに出す
-- `-keep-checkpoint` で、その実行だけ元のチェックポイントを残す。hwnpu-dev formats と skill は既定で残す
-- `hwnpu-chat cache` で、モデルごとのディスクの使用量、最後に使った日時、消す候補を出す。`--clean` で今すぐ消す、`--rm NAME` でそのモデルを消す
-- 消さないもの: `~/models` の AMD の書き出し (利用者が作ったもの)、`path` の取得元 (`copy: false` で読んでいる共有フォルダ)、`--codes` (hwnpu-chat) に渡された符号のフォルダ
+- `-keep-checkpoint` で、その実行だけ元のチェックポイントを残す。bonsaiai-dev formats と skill は既定で残す
+- `bonsaiai-chat cache` で、モデルごとのディスクの使用量、最後に使った日時、消す候補を出す。`--clean` で今すぐ消す、`--rm NAME` でそのモデルを消す
+- 消さないもの: `~/models` の AMD の書き出し (利用者が作ったもの)、`path` の取得元 (`copy: false` で読んでいる共有フォルダ)、`--codes` (bonsaiai-chat) に渡された符号のフォルダ
 
 ## 12. モデル固有の情報: どこまで定義ファイルに来るか
 
@@ -533,7 +533,7 @@ cache:
 |---|---|---|
 | 1. 机上の見積もり | | 「10.1 節の確かめ (アーキテクチャ、トークナイザー、会話の型) が通れば、移植は要らず 5 節から」を足す |
 | 5.4 形式の決め方 | `Formatter` (config の `Format()`) で決める | `builds` の `size` のルールで決める (6.1 節) |
-| 5.3 校正 | `hwnpu-chat --codes` | `builds` の `codes` に、取得元と同じ書き方で |
+| 5.3 校正 | `bonsaiai-chat --codes` | `builds` の `codes` に、取得元と同じ書き方で |
 | 4.1 AMD | `iron_export_lm.py` の引数 (`--mlp q6` など) を手で | `npu: amd-xdna2` の `builds` に書き、ビルドツールが渡す |
 | 9. 記録 | docs/design/ の話題のファイル ([design/README.md](design/README.md)) | 加えて `models.yaml` (`size`、`memory`、コミットと sha256)。MODEL.md は定義ファイルと食い違えば `go test` が落ちる |
 | 新しい節 | | 「手元か PR か」(10.3 節) と、skill の使い方 |
@@ -552,7 +552,7 @@ models:
     from: team-share:my-distill-1b
 ```
 
-- 型は今の `llm.Archs()` の一覧 (`hwnpu-dev convert -archs`): `lfm3`、`gemma4`、`qwen35`、`plamo3`、`bert`、`plamo`、`whisper`、エンコーダ類
+- 型は今の `llm.Archs()` の一覧 (`bonsaiai-dev convert -archs`): `lfm3`、`gemma4`、`qwen35`、`plamo3`、`bert`、`plamo`、`whisper`、エンコーダ類
 - `arch` を書くのは、蒸留や独自の学習で `model_type` が元と違う名前になったとき (`MyDistillForCausalLM` など)。中身が同じ構造なら、型を名指しすれば通る。違う構造なら、型の `LoadConfig` が知らない設定でエラーにする (10.1 節)
 - 型の中身 (Gemma 4 の層ごとの埋め込み、Qwen3.5 の Gated DeltaNet、LFM3 の短い畳み込み、MoE の経路、Neural Engine 向けの書き換え) は定義ファイルに出さない。出すと組み合わせが爆発し、正しさを確かめられなくなる
 
@@ -590,8 +590,8 @@ models:
 |---|---|
 | 形式 | YAML (`goccy/go-yaml`)。コメントで値の理由を残す |
 | 組み込みの置き場所 | リポジトリの直下の `models.yaml` |
-| ユーザーのファイル | `~/.config/hwnpu/models.yaml`、Windows は `%LOCALAPPDATA%\hwnpu\models.yaml`。差分だけを書く |
-| 版が違うとき | 組み込みのファイルは厳しく読む (知らないキー、知らない名前はエラー、`go test` で落ちる)。ユーザーのファイルの「知らないモデルへの上書き」と、`version` が自分より新しいときの知らないキーは、警告を出して読み飛ばす。hwnpu を更新しても、古い hwnpu に戻しても、ユーザーのファイルで起動できなくならないため |
+| ユーザーのファイル | `~/.config/bonsaiai/models.yaml`、Windows は `%LOCALAPPDATA%\bonsaiai\models.yaml`。差分だけを書く |
+| 版が違うとき | 組み込みのファイルは厳しく読む (知らないキー、知らない名前はエラー、`go test` で落ちる)。ユーザーのファイルの「知らないモデルへの上書き」と、`version` が自分より新しいときの知らないキーは、警告を出して読み飛ばす。BonsaiAI を更新しても、古い BonsaiAI に戻しても、ユーザーのファイルで起動できなくならないため |
 | NPU の名前 | 世代で: `apple-m1`…、`amd-xdna1` / `amd-xdna2`、`intel-npu3` / `npu4` / `npu5` |
 | S3 | `aws` コマンド。`endpoint`、`profile`、`region` を設定できる |
 | 固定 | コミットとファイルごとの sha256 |

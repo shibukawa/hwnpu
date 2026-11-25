@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // TestCNNLayout checks the grids' layout: the input's pixel (y, x) at band + y wp + P + x with

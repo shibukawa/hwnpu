@@ -10,8 +10,8 @@ import (
 
 	"github.com/ebitengine/purego/objc"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // outputCopies counts outputs that Core ML did not write into the bound buffer and that

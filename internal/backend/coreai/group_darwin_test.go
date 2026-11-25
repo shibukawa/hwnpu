@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // fakePackage writes an .mlpackage of a model file and a weight file of the given blobs.
@@ -39,7 +39,7 @@ func fakePackage(t *testing.T, dir, name, model string, blobs ...[]byte) string 
 func fill(n int, b ...byte) []byte { return bytes.Repeat(b, n/len(b)) }
 
 func TestResolveGroups(t *testing.T) {
-	t.Setenv("HWNPU_CACHE", t.TempDir()) // the locks
+	t.Setenv("BONSAIAI_CACHE", t.TempDir()) // the locks
 	models, cdir := t.TempDir(), t.TempDir()
 	w := [][]byte{fill(groupMin, 1, 2), fill(groupMin/2, 3), fill(groupMin/4, 4), fill(4096, 5)}
 	other := [][]byte{fill(groupMin, 2, 1), fill(groupMin/2, 3), fill(groupMin/4, 4), fill(4096, 5)}
@@ -63,7 +63,7 @@ func TestResolveGroups(t *testing.T) {
 	}
 	forget = func(p string) { forgot = append(forgot, p) }
 
-	// q128 was lowered alone by an earlier hwnpu
+	// q128 was lowered alone by an earlier bonsaiai
 	s128, _ := cache.TreeDigest(q128)
 	old := cache.Path(cdir, singleKey(s128), ".aimodel")
 	os.MkdirAll(old, 0o755)
@@ -133,7 +133,7 @@ func TestResolveGroups(t *testing.T) {
 // name, in the directories beside each other (Anima's): they go together, and an export made
 // later joins them in a larger group that replaces the smaller one.
 func TestResolveExports(t *testing.T) {
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	model, cdir := t.TempDir(), t.TempDir()
 	saveOne, saveMany, saveForget := lowerOne, lowerMany, forget
 	t.Cleanup(func() { lowerOne, lowerMany, forget = saveOne, saveMany, saveForget })
@@ -192,7 +192,7 @@ func TestResolveExports(t *testing.T) {
 // alone, also when the other is loaded first afterwards or an export made later has their weights
 // (Qwen-Image's VAE stage at 1024 x 1024 put the one at 512 x 512 off the Neural Engine).
 func TestUngroup(t *testing.T) {
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	model, cdir := t.TempDir(), t.TempDir()
 	saveOne, saveMany, saveForget := lowerOne, lowerMany, forget
 	t.Cleanup(func() { lowerOne, lowerMany, forget = saveOne, saveMany, saveForget })

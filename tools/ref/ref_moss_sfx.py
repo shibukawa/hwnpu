@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """MOSS-SoundEffect v2.0 (OpenMOSS-Team/MOSS-SoundEffect-v2.0) on the CPU in fp32: the reference
-the sound effects' NPU programs (internal/sfx, hwnpu-audio generate -m sfx) are checked against.
+the sound effects' NPU programs (internal/sfx, bonsaiai-audio generate -m sfx) are checked against.
 
 The modules are those of OpenMOSS/MOSS-TTS moss_soundeffect_v2 (Apache-2.0): the DAC VAE's
 (diffsynth/models/dac_vae.py, without audiotools), the Wan DiT's (wan_video_dit.py,
@@ -17,7 +17,7 @@ torch, transformers and numpy.
           velocity of the conditional and the unconditional passes for the first --dump steps,
           the final latents and OUT.wav
 
-  ~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_moss_sfx.py vae MOSS OUT --wav in.wav --seconds 4
+  ~/.cache/bonsaiai/dev/ref-venv/bin/python tools/ref/ref_moss_sfx.py vae MOSS OUT --wav in.wav --seconds 4
 """
 
 import argparse

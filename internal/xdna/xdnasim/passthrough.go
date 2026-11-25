@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/xclbin"
-	"github.com/shibukawa/hwnpu/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/xclbin"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
 )
 
 // A simulated IRON style passthrough design: kernel "MLIR_AIE" with the argument layout of

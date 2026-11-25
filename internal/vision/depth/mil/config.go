@@ -1,4 +1,4 @@
-// Package mil describes Depth Anything 3 (depth-anything/DA3*) as MIL programs, which hwnpu
+// Package mil describes Depth Anything 3 (depth-anything/DA3*) as MIL programs, which bonsaiai
 // writes as Core ML packages for Apple's Neural Engine (llm.WritePart): the two graphs of
 // tools/amd/iron_da3.py, the ViT (the patch embedding and the blocks up to the last feature)
 // and the head (DPT, or DualDPT's depth branch), for one picture size each.
@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // Patch is DINOv2's patch size.

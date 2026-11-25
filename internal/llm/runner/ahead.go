@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu"
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	"github.com/shibukawa/bonsaiai"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 )
 
 // Ahead reports whether the programs that run in turn on dev load one ahead (InTurn, Ring): on
-// Core AI, where a load is not a compile once its cache holds the program. HWNPU_DEV=load-ahead=0
+// Core AI, where a load is not a compile once its cache holds the program. BONSAIAI_DEV=load-ahead=0
 // turns it off, to measure without it.
-func Ahead(dev *hwnpu.Device) bool {
+func Ahead(dev *bonsaiai.Device) bool {
 	return dev != nil && dev.Info().Backend == "coreai" && !devenv.IsOff("load-ahead")
 }
 
@@ -19,9 +19,9 @@ func Ahead(dev *hwnpu.Device) bool {
 // after it, rather than all being held: on Core AI, which fails to run more than the Neural Engine
 // holds where Core ML evicts (Qwen-Image's 8 groups on an M1, docs/design/image-apple.md), and loads a group
 // from its cache in 20 ms. Where they can all be held that is no faster: a group pays for
-// following another group either way (docs/design/image-apple.md). HWNPU_DEV=hold-dit=1 holds them all as Core
+// following another group either way (docs/design/image-apple.md). BONSAIAI_DEV=hold-dit=1 holds them all as Core
 // ML does, to measure it.
-func Swap(dev *hwnpu.Device) bool {
+func Swap(dev *bonsaiai.Device) bool {
 	return dev != nil && dev.Info().Backend == "coreai" && !devenv.On("hold-dit")
 }
 

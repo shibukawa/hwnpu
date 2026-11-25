@@ -8,10 +8,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // AIProgram is one of the programs ConvertAI writes: the model built with Options (tokens per
@@ -220,7 +220,7 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 				if _, has := ls.Shape(n); !has {
 					hint := ""
 					if _, ok := model.(HostDerived); ok {
-						hint = " (its release's experts are not MXFP4: write a checkpoint with them in MXFP4 with hwnpu-dev mxfp4, and convert from that)"
+						hint = " (its release's experts are not MXFP4: write a checkpoint with them in MXFP4 with bonsaiai-dev mxfp4, and convert from that)"
 					}
 					return nil, fmt.Errorf("llm: %s's experts run from the checkpoint's MXFP4 tensors, and %s has no %s%s", a.Title, path, n, hint)
 				}
@@ -284,7 +284,7 @@ func writeAIPaged(man *Manifest, a *Arch, pm Paged, out string, o Options) error
 	}
 	var ins, outs []mlpackage.Feature
 	mpath := out + ".mass.aimodel"
-	_, ins, outs, err = writeAI(mpath, map[string]string{MetaDescription: fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (hwnpu-dev convert)", a.Title, o.Paged, o.Seq, form)},
+	_, ins, outs, err = writeAI(mpath, map[string]string{MetaDescription: fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (bonsaiai-dev convert)", a.Title, o.Paged, o.Seq, form)},
 		func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
 			return paged.BuildMass(b, sh, form, o.Seq, o.Paged)
 		})
@@ -301,7 +301,7 @@ func writeAIPaged(man *Manifest, a *Arch, pm Paged, out string, o Options) error
 func writeAIExperts(rm Routed, w Weights, base, title string, seqs []int, log io.Writer) (*ExpertsRecord, error) {
 	sh := rm.ExpertShape()
 	ppath := base + ".experts.aimodel"
-	desc := fmt.Sprintf("%s: %d of %d experts of %d x %d on a row, their weights given at run time (hwnpu-dev convert)", title, sh.TopK, sh.Experts, sh.Hidden, sh.Inter)
+	desc := fmt.Sprintf("%s: %d of %d experts of %d x %d on a row, their weights given at run time (bonsaiai-dev convert)", title, sh.TopK, sh.Experts, sh.Hidden, sh.Inter)
 	_, ins, outs, err := writeAI(ppath, map[string]string{MetaDescription: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
 		return experts.Build(b, sh)
 	})
@@ -311,7 +311,7 @@ func writeAIExperts(rm Routed, w Weights, base, title string, seqs []int, log io
 	var rows []PartRecord
 	for _, q := range seqs {
 		rpath := fmt.Sprintf("%s.experts.q%d.aimodel", base, q)
-		desc := fmt.Sprintf("%s: an expert of %d x %d on %d rows, its weights given at run time (hwnpu-dev convert)", title, sh.Hidden, sh.Inter, q)
+		desc := fmt.Sprintf("%s: an expert of %d x %d on %d rows, its weights given at run time (bonsaiai-dev convert)", title, sh.Hidden, sh.Inter, q)
 		_, ins, outs, err := writeAI(rpath, map[string]string{MetaDescription: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
 			return experts.BuildRows(b, sh, q)
 		})

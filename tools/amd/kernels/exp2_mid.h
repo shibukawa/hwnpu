@@ -12,8 +12,8 @@
 // time in the accurate exponentials: 102.8 ms a block with them, 83.4 with the instruction
 // (FLUX.2 klein at 1024 x 1024, docs/design/image-amd.md).
 //===----------------------------------------------------------------------===//
-#ifndef HWNPU_EXP2_MID_H
-#define HWNPU_EXP2_MID_H
+#ifndef BONSAIAI_EXP2_MID_H
+#define BONSAIAI_EXP2_MID_H
 
 #define exp2_bf16 exp2_bf16_exact
 #include "common/exp2_bf16.h"

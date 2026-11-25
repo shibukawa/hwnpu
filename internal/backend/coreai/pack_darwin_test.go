@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
 )
 
 // TestPackAssemble packs a prebuilt program whose weights are its asset's blobs in another order,
@@ -88,12 +88,12 @@ func TestPackAssemble(t *testing.T) {
 	}
 }
 
-// TestPackReal packs and assembles a prebuilt program of coreai-build's (HWNPU_TEST_PREBUILT: the
+// TestPackReal packs and assembles a prebuilt program of coreai-build's (BONSAIAI_TEST_PREBUILT: the
 // X.ARCH.aimodelc beside its X.aimodel).
 func TestPackReal(t *testing.T) {
-	full := os.Getenv("HWNPU_TEST_PREBUILT")
+	full := os.Getenv("BONSAIAI_TEST_PREBUILT")
 	if full == "" {
-		t.Skip("HWNPU_TEST_PREBUILT is not set")
+		t.Skip("BONSAIAI_TEST_PREBUILT is not set")
 	}
 	asset := filepath.Join(filepath.Dir(full), filepath.Base(full)[:len(filepath.Base(full))-len(".h14g.aimodelc")]+".aimodel")
 	dir := t.TempDir()
@@ -116,7 +116,7 @@ func TestPackReal(t *testing.T) {
 	}
 }
 
-// TestRestorableEntries lists Core AI's entries, of hwnpu's executables, of the programs that
+// TestRestorableEntries lists Core AI's entries, of bonsaiai's executables, of the programs that
 // have a prebuilt one for this device here: not another's, not a program's without one.
 func TestRestorableEntries(t *testing.T) {
 	arch := Arch()
@@ -125,7 +125,7 @@ func TestRestorableEntries(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("HWNPU_CACHE", filepath.Join(home, "cache"))
+	t.Setenv("BONSAIAI_CACHE", filepath.Join(home, "cache"))
 	base := coreAICacheDir()
 	export := filepath.Join(home, "cache", "models", "Sana", "x.coreai")
 	asset := func(name, hash string, prebuilt bool) {
@@ -140,14 +140,14 @@ func TestRestorableEntries(t *testing.T) {
 			os.WriteFile(filepath.Join(pb, "main.hash"), []byte(hash), 0o644)
 			os.WriteFile(m, []byte("<key>mps.fullyPlacedOnANE</key>"), 0o644)
 		}
-		for _, exe := range []string{"hwnpu-image", "other-app"} {
+		for _, exe := range []string{"bonsaiai-image", "other-app"} {
 			os.MkdirAll(filepath.Join(base, exe, hex.EncodeToString([]byte(hash)), "ID", "model.aimodelx"), 0o755)
 		}
 	}
 	asset("dit", "with", true)
 	asset("vae", "none", false)
 	got := restorableEntries()
-	want := filepath.Join(base, "hwnpu-image", hex.EncodeToString([]byte("with")))
+	want := filepath.Join(base, "bonsaiai-image", hex.EncodeToString([]byte("with")))
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("restorable %v, want %s", got, want)
 	}

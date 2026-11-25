@@ -6,21 +6,21 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 // A model with recurrent states (LFM3's short convolutions) goes back to a position by its rows
 // and the slot of its states there (StateAt): after the sequence ran past it, within the same
 // chunk and into the next, reading the same tokens again from it gives the same logits. The
 // positions are one before a chunk boundary, on it, and past it. Needs an LFM3 export in
-// HWNPU_TEST_IRON_RECURRENT_EXPORT and the NPU.
+// BONSAIAI_TEST_IRON_RECURRENT_EXPORT and the NPU.
 func TestStateRewindOnDevice(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_IRON_RECURRENT_EXPORT")
+	dir := os.Getenv("BONSAIAI_TEST_IRON_RECURRENT_EXPORT")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_IRON_RECURRENT_EXPORT is not set")
+		t.Skip("BONSAIAI_TEST_IRON_RECURRENT_EXPORT is not set")
 	}
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		t.Skip(err)
 	}

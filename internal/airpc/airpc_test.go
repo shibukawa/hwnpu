@@ -46,7 +46,7 @@ type result struct {
 	Took  time.Duration
 }
 
-// service is the object the tests call: what a model of ai/vision or ai/text is to hwnpud.
+// service is the object the tests call: what a model of ai/vision or ai/text is to bonsaiaid.
 type service struct {
 	stopped   atomic.Int64
 	cancelled atomic.Int64

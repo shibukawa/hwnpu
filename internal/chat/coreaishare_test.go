@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	shared "github.com/shibukawa/hwnpu/internal/store"
-	"github.com/shibukawa/hwnpu/internal/store/s3fake"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/store/s3fake"
 )
 
 // TestCoreAIShared puts a Core AI export made here in a shared layer, a folder (a NAS) and an S3
@@ -25,7 +25,7 @@ func TestCoreAIShared(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "id")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
 	t.Setenv("AWS_PROFILE", "")
-	s3, err := shared.OpenS3(shared.S3Config{Name: "lab", Bucket: "models", Prefix: "hwnpu", Endpoint: srv.URL})
+	s3, err := shared.OpenS3(shared.S3Config{Name: "lab", Bucket: "models", Prefix: "bonsaiai", Endpoint: srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestTablesShared(t *testing.T) {
 }
 
 // TestPrebuiltShared puts the packed prebuilt programs of an export for an architecture in a
-// shared layer (hwnpu-dev models package MODEL/coreai-ARCH) and makes them again beside the same export on
+// shared layer (bonsaiai-dev models package MODEL/coreai-ARCH) and makes them again beside the same export on
 // another machine, under converted/MODEL/coreai-ARCH. An export of other programs (another
 // main.hash) does not take them.
 func TestPrebuiltShared(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // Vendors are the NPU vendors a model's Device names (types.Vendor's names).
@@ -30,7 +30,7 @@ func (m Model) DeviceFor(vendor string) string {
 }
 
 // ChooseDevice is where m runs on a machine whose NPU is vendor's: flag (a command's --device)
-// when given, else HWNPU_DEVICE, else the definitions' (DeviceFor). why says which.
+// when given, else BONSAIAI_DEVICE, else the definitions' (DeviceFor). why says which.
 func ChooseDevice(m Model, vendor, flag string) (device, why string, err error) {
 	pick := func(d, from string) (string, string, error) {
 		d = strings.ToLower(strings.TrimSpace(d))
@@ -42,8 +42,8 @@ func ChooseDevice(m Model, vendor, flag string) (device, why string, err error) 
 	switch {
 	case flag != "":
 		return pick(flag, "--device")
-	case os.Getenv("HWNPU_DEVICE") != "":
-		return pick(os.Getenv("HWNPU_DEVICE"), "HWNPU_DEVICE")
+	case os.Getenv("BONSAIAI_DEVICE") != "":
+		return pick(os.Getenv("BONSAIAI_DEVICE"), "BONSAIAI_DEVICE")
 	}
 	if _, ok := m.Device[vendor]; ok {
 		return m.DeviceFor(vendor), "models.yaml (" + vendor + ")", nil
@@ -138,7 +138,7 @@ func (m Model) DiskFor(vendor string) float64 {
 }
 
 // HereVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
-// HWNPU_BACKEND naming a backend of Intel's programs (intel, levelzero, openvino) makes it
+// BONSAIAI_BACKEND naming a backend of Intel's programs (intel, levelzero, openvino) makes it
 // "intel", and coreml or coreai "apple": with openvino, a machine without Intel's NPU runs the commands'
 // Intel path on OpenVINO's CPU, the IR it converts included.
 var HereVendor = sync.OnceValue(hereVendor)
@@ -150,7 +150,7 @@ func hereVendor() string {
 	case llm.ProgramBackend(b) == llm.BackendCoreML: // coreml, coreai
 		return "apple"
 	}
-	infos, _ := hwnpu.Enumerate(context.Background())
+	infos, _ := bonsaiai.Enumerate(context.Background())
 	for _, info := range infos {
 		if v := info.Vendor.String(); slices.Contains(Vendors, v) {
 			return v
@@ -159,7 +159,7 @@ func hereVendor() string {
 	return ""
 }
 
-// ConvertedDevice is where m, a model hwnpu converts from ONNX for Core ML and OpenVINO (RTMDet,
+// ConvertedDevice is where m, a model bonsaiai converts from ONNX for Core ML and OpenVINO (RTMDet,
 // RTMO, PP-OCR, SwiftF0, Basic Pitch), runs on a machine whose NPU is vendor's: ChooseDevice's
 // pick, except that an NPU with no converted form (AMD's, or none) runs it on the CPU with ONNX
 // Runtime unless --device npu (flag) asks for the NPU.

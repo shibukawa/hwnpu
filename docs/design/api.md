@@ -2,7 +2,7 @@
 
 [日本語](api.ja.md)
 
-The packages other modules can import: `github.com/shibukawa/hwnpu` (devices, buffers, graphs,
+The packages other modules can import: `github.com/shibukawa/bonsaiai` (devices, buffers, graphs,
 kernels), `modelstore` (model files) and `npuinfo` (what the OS says about NPUs). The API is not frozen
 yet (`USAGE_LIBRARY.md` says "planned"); model engines stay in `internal/` until their shape is settled.
 How-to examples: [../../USAGE_LIBRARY.md](../../USAGE_LIBRARY.md).
@@ -54,8 +54,8 @@ Capabilities by backend (from the providers):
 | `xrt` | Kernel; PowerMeter where available |
 
 Registration order: Core ML before Core AI on darwin (Core ML is the default backend for the library;
-`hwnpu-chat` on a Mac uses Core AI only, see [cli.md](cli.md)); `xrt` before `xdna`, listing itself
-outside Windows only with `HWNPU_BACKEND=xrt`; `openvino` only with `HWNPU_BACKEND=openvino`.
+`bonsaiai-chat` on a Mac uses Core AI only, see [cli.md](cli.md)); `xrt` before `xdna`, listing itself
+outside Windows only with `BONSAIAI_BACKEND=xrt`; `openvino` only with `BONSAIAI_BACKEND=openvino`.
 
 ## Buffers and completion
 
@@ -89,7 +89,7 @@ type GraphSource struct {
 	XML, Bin   []byte      // OpenVINO IR
 	BuildFlags string      // e.g. `--inputs_precisions="0:fp16" --config NPU_PLATFORM="4000"`
 	Function   string      // one function of a multi-function ML Program (macOS 15+); functions share weights
-	Units      string      // Core ML: "" Neural Engine (+CPU), "cpu", "gpu"; HWNPU_COREML_UNITS overrides
+	Units      string      // Core ML: "" Neural Engine (+CPU), "cpu", "gpu"; BONSAIAI_COREML_UNITS overrides
 }
 
 type GraphRunner interface {
@@ -200,7 +200,7 @@ records the result in `Graph.Placement`.
 | Core ML | `MLComputePlan`: every op's preferred device must be the Neural Engine. An estimate, not a runtime guarantee |
 | Core AI | its compile cache: the MPSGraph delegate's manifest (`mps.fullyPlacedOnANE`; method `coreai-cache-manifest`) |
 | Level Zero | supported-layer query (`levelzero-query-network`); the NPU plugin does not fall back, so a successful compile means it runs on the NPU |
-| OpenVINO | verified only with `HWNPU_DEV=ov.device=NPU` |
+| OpenVINO | verified only with `BONSAIAI_DEV=ov.device=NPU` |
 | AMD | xclbin / ELF are NPU-only: always satisfied |
 
 ## Power
@@ -223,7 +223,7 @@ func AveragePower(a, b PowerSample) float64 // (b.EnergyJ - a.EnergyJ) / dt
 |---|---|---|
 | Level Zero | Low: low queue priority + "background" workload type; Balanced: normal priority; Performance: high priority + turbo (turbo and workload type need the extension) | RAPL, package scope, usually root |
 | xdna | hardware context QoS priority (Low / Normal / High) | driver sensor, or amdgpu package power |
-| Core ML / Core AI | none (no CapPowerControl) | none in the API; see `npuinfo` (IOReport) and `hwnpu-dev powerbench` |
+| Core ML / Core AI | none (no CapPowerControl) | none in the API; see `npuinfo` (IOReport) and `bonsaiai-dev powerbench` |
 
 More in [memory-and-power.md](memory-and-power.md).
 
@@ -251,26 +251,26 @@ type VersionError struct{ Component, Have, Need string }
 | `WithPowerPolicy(PowerPolicy)` | Ignored without CapPowerControl |
 | `WithCacheDir(dir)` | Store compiled graphs and reuse them. Key: the model, the build flags, the driver / compiler (or OS) version. Compiling costs power, so it is not repeated each start |
 
-Environment: `HWNPU_BACKEND` (backend for the commands; makes `openvino` / `xrt` list),
-`HWNPU_ZE_LOADER` (path of the Level Zero loader), `HWNPU_COREML_UNITS` and `HWNPU_COREAI_UNITS`
+Environment: `BONSAIAI_BACKEND` (backend for the commands; makes `openvino` / `xrt` list),
+`BONSAIAI_ZE_LOADER` (path of the Level Zero loader), `BONSAIAI_COREML_UNITS` and `BONSAIAI_COREAI_UNITS`
 (move programs off the Neural Engine, e.g. `cpu` to separate engine errors from model errors).
 
 ## modelstore
 
-`github.com/shibukawa/hwnpu/modelstore` finds and fetches model files the way hwnpu's commands do.
+`github.com/shibukawa/bonsaiai/modelstore` finds and fetches model files the way BonsaiAI's commands do.
 Layers, in order:
 
 | # | Layer | Set by |
 |---|---|---|
-| 0 | this machine's cache (always written back to) | `Options.Root` (`HWNPU_CACHE`, else `hwnpu` in the user cache directory) |
-| 1 | sources: `file://`, `http(s)://` (WebDAV or any read-only server), `s3://`; `?writeback=true` stores what later layers give | `Options.Sources` (`HWNPU_MODEL_SOURCE`, `HWNPU_MODEL_SOURCE_1`, …) |
+| 0 | this machine's cache (always written back to) | `Options.Root` (`BONSAIAI_CACHE`, else `bonsaiai` in the user cache directory) |
+| 1 | sources: `file://`, `http(s)://` (WebDAV or any read-only server), `s3://`; `?writeback=true` stores what later layers give | `Options.Sources` (`BONSAIAI_MODEL_SOURCE`, `BONSAIAI_MODEL_SOURCE_1`, …) |
 | 2 | bundled models, read only, used in place (hard link, else symlink) | `Options.Bundle` (a `configdir.ConfigDir`), `BundleFolder` |
-| 3 | Hugging Face | unless `Options.HuggingFace` is false (`HWNPU_MODEL_HUGGING_FACE`) |
+| 3 | Hugging Face | unless `Options.HuggingFace` is false (`BONSAIAI_MODEL_HUGGING_FACE`) |
 
-- A repository's files are those its `hwnpu-lock.json` names, of one commit (the model's pin, else the
+- A repository's files are those its `bonsaiai-lock.json` names, of one commit (the model's pin, else the
   first lock after the local cache, else the local one, else Hugging Face's `main`). Files live under
   `original/OWNER/NAME` of the root (`Store.Dir`).
-- The layers are a process setting: `Open` sets them for all of hwnpu's code in the process.
+- The layers are a process setting: `Open` sets them for all of BonsaiAI's code in the process.
 - API: `Open`, `File(ctx, repo, name)`, `Weights(ctx, repo)`, `Dir`, `Layers`, `NotFound(err)`;
   disk: `Usage`, `Limits` (`Options.Limits`), `DiskSpace`, `PlanPrune` / `Prune`, `Remove`,
   `PlanClean` / `Clean` (sources), `ErrNoRoom`; memory class per model: `Memory`, `SetMemory`, `Memories`.
@@ -279,7 +279,7 @@ Design: [distribution.md](distribution.md), [../cache-sharing-design.md](../cach
 
 ## npuinfo
 
-`github.com/shibukawa/hwnpu/npuinfo` reads what the OS and drivers tell about NPUs: devices, the
+`github.com/shibukawa/bonsaiai/npuinfo` reads what the OS and drivers tell about NPUs: devices, the
 processes using them, how busy they are, power, memory. Activity Monitor and the usual Linux tools show
 none of this.
 
@@ -288,7 +288,7 @@ info, err := npuinfo.GetWithContext(ctx, npuinfo.Options{Wake: false, SampleInte
 // info.Linux / info.Windows / info.Darwin (only the running OS), info.Errors (partial failures)
 ```
 
-- Standard library only, nothing else from hwnpu, so it can become its own module (gopsutil etc.). Types
+- Standard library only, nothing else from BonsaiAI, so it can become its own module (gopsutil etc.). Types
   build on every OS so a viewer can decode another machine's JSON. `go run ./npuinfo/cmd/npuinfo`
   writes JSON. Per-OS fields are in [../../npuinfo/README.md](../../npuinfo/README.md).
 - OS-specific structs as the OS gives them; a common API comes later.
@@ -314,8 +314,8 @@ performance counter set whose name contains GPU, NPU or Neural) but has only bee
 
 ## Library `ai` for applications (v0)
 
-hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-chat`, `hwnpu-image` and
-`hwnpu-audio` become demos of them (names unchanged). Design and tasks: [../app-api.md](../app-api.md),
+BonsaiAI is becoming a set of Go libraries for running models on an NPU; `bonsaiai-chat`, `bonsaiai-image` and
+`bonsaiai-audio` become demos of them (names unchanged). Design and tasks: [../app-api.md](../app-api.md),
 [../app-api-tasks.md](../app-api-tasks.md); usage and rules: [../developer-guide.md](../developer-guide.md).
 
 | Package | Content | State |
@@ -323,7 +323,7 @@ hwnpu is becoming a set of Go libraries for running models on an NPU; `hwnpu-cha
 | `ai` | `App` registers the models an app uses; `Use[T]` is a typed handle (`stt.Get(ctx, rt)` returns `*speech.Transcriber`); `Plan` (what is missing, download size, memory, licenses; two stages: download/convert, then compile on the NPU); `Runtime` loads only from the prepared store | v0 |
 | `ai/speech`, `ai/text` | Transcribe, speak, loudness VAD, WAV; translate, chat. Each package owns its models' preparation and loading (`internal/airole.Role`); `ai` imports none of them, so an app links only what it uses | v0 |
 | `ai/flow` | Chunk streams (`Stream[T]`, `iter.Seq2`) and the network between models | v0 |
-| `ai/cli` (+ `konghelper`) | Subcommands for an app: `models`, `models download`, `models prepare`, `status` (shared with `hwnpu status` through `internal/npustatus`) | v0 |
+| `ai/cli` (+ `konghelper`) | Subcommands for an app: `models`, `models download`, `models prepare`, `status` (shared with `bonsaiai status` through `internal/npustatus`) | v0 |
 | `ai/vision` | `Depth` (use `depth`: Depth Anything 3, MoGe-2; `DepthMap.Near` gives nearness 0–1), `Faces` (`face-detect`: YuNet; CPU on AMD machines), `HeadOf` / `NearestHead` / `HeadNode` (head position from the eye spacing, 63 mm, and the camera's field of view, 60°; no model) | v0 |
 | `ai/imagegen` | `Generate` (use `image`): text and reference images to a picture, `GenerateNode`; the export's size nearest the asked shape (`SizeFor`). FLUX.2 klein only (Anima and FLUX.3 klein refuse at preparation) | v0 |
 | `ai/sound`; objects, pose, segmentation, OCR, labels in `ai/vision` | music, sound effects, pitch | not yet |
@@ -380,7 +380,7 @@ longest command, streaming) per the [new-model checklist](new-model-checklist.md
 |---|---|
 | One interface hiding graph vs kernel execution | Intel and AMD differ at the root; hiding it would make both awkward |
 | `CompileSet` (compile several sources at once, sharing weights) | Weight sharing is done by multi-function ML Programs (`GraphSource.Function`) |
-| `Graph.NativeBlob` for app-side caching | `WithCacheDir` keeps compiled results inside hwnpu |
-| `WithLibraryPath`, `HWNPU_ACCEL_DEVICE`, `WithTurbo`, `WithWorkloadType`, `WithQoS` | `WithPowerPolicy` maps to turbo, workload type and QoS; `HWNPU_ZE_LOADER` names the loader |
+| `Graph.NativeBlob` for app-side caching | `WithCacheDir` keeps compiled results inside BonsaiAI |
+| `WithLibraryPath`, `BONSAIAI_ACCEL_DEVICE`, `WithTurbo`, `WithWorkloadType`, `WithQoS` | `WithPowerPolicy` maps to turbo, workload type and QoS; `BONSAIAI_ZE_LOADER` names the loader |
 | Passing hidden states between separately trained models | Not compatible; needs training per pair |
 | Publishing per-use interfaces now | Wait for a second working combination so the API is not frozen too early |

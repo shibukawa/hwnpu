@@ -12,13 +12,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 const tinyLFM3 = `{"hidden_size": 64, "intermediate_size": 96, "num_hidden_layers": 3, "num_attention_heads": 16,
@@ -64,12 +64,12 @@ func cpuPackage(t *testing.T, model llm.Model, w llm.Weights, opts llm.Options) 
 		in := map[string]milcpu.Tensor{}
 		for name, sh := range p.InShape {
 			v := make([]float32, count(sh))
-			hwnpu.DecodeF16(v, p.In[name])
+			bonsaiai.DecodeF16(v, p.In[name])
 			in[name] = milcpu.Tensor{Shape: sh, Data: v}
 		}
 		res, err := prog.Run(in, milcpu.Options{})
 		for name, o := range res {
-			hwnpu.EncodeF16(p.Out[name], o.Data)
+			bonsaiai.EncodeF16(p.Out[name], o.Data)
 		}
 		return err
 	}
@@ -151,13 +151,13 @@ func pagedSession(t *testing.T, cfg *lfm3.Config, w llm.Weights, cache, chunk in
 }
 
 // pagedSessionOn is pagedSession on dev (nil: the CPU interpreter), loaded under ctx.
-func pagedSessionOn(t *testing.T, ctx context.Context, dev *hwnpu.Device, cfg *lfm3.Config, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
+func pagedSessionOn(t *testing.T, ctx context.Context, dev *bonsaiai.Device, cfg *lfm3.Config, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
 	t.Helper()
 	return pagedSessionOf(t, ctx, dev, lfm3.Arch, cfg, w, cache, chunk, qs...)
 }
 
 // pagedSessionOf is pagedSessionOn for a model of any architecture.
-func pagedSessionOf(t *testing.T, ctx context.Context, dev *hwnpu.Device, a *llm.Arch, cfg llm.Cached, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
+func pagedSessionOf(t *testing.T, ctx context.Context, dev *bonsaiai.Device, a *llm.Arch, cfg llm.Cached, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
 	t.Helper()
 	var paths []string
 	for _, q := range qs {

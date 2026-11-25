@@ -6,7 +6,7 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/shibukawa/hwnpu/internal/sgemm"
+	"github.com/shibukawa/bonsaiai/internal/sgemm"
 )
 
 // Needed returns the nodes of g that the outputs depend on, in the graph's (topological) order,

@@ -2,7 +2,7 @@
 NPU export (bf16 or 4-bit) can be scored against the checkpoint itself and not only against
 another export.
 
-    ~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/forced_logits.py MODEL CKPT RUN.bin... [--split 256]
+    ~/.cache/bonsaiai/dev/ref-venv/bin/python tools/ref/forced_logits.py MODEL CKPT RUN.bin... [--split 256]
 
 MODEL is one of tools/amd/q4_gptq.py's (gemma4, plamo3, lfm3, lfm3vl, qwen35, ...), loaded as it
 loads them (the text model alone, in float32). RUN.bin is a file `ironlm -forced -logits` wrote;

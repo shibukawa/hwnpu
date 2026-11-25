@@ -10,18 +10,18 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // On AMD's NPU SpectroStream's decoder runs as the graph of tools/amd/iron_magenta.py (an export
 // NAME.amd-npu2 with decoder/), the language model, MusicCoCa and the encoder as Core ML packages
 // on the CPU interpreter.
 
-// AMDTool is the IRON exporter of SpectroStream's decoder (tools/amd, built into hwnpu).
+// AMDTool is the IRON exporter of SpectroStream's decoder (tools/amd, built into bonsaiai).
 const AMDTool = "iron_magenta.py"
 
 // AMDExportVersion is the version of PrepareAMD's exports (a key of the shared layers:
@@ -81,7 +81,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), chat.PinnedRecipe(m, AMDTool, AMDExportVersion), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (bonsaiai-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export of SpectroStream's decoder for AMD's NPU here or in the sources; exporting it with IRON\n", m.Name)
@@ -101,7 +101,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 
 // OpenAMD loads the programs of p as Open does on the CPU interpreter, SpectroStream's decoder
 // the graph of the export p.IronDecoder on amd, AMD's NPU.
-func OpenAMD(ctx context.Context, amd *hwnpu.Device, p Paths) (*Generator, error) {
+func OpenAMD(ctx context.Context, amd *bonsaiai.Device, p Paths) (*Generator, error) {
 	if p.IronDecoder == "" {
 		return nil, fmt.Errorf("music: no export of SpectroStream's decoder for AMD's NPU")
 	}

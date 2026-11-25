@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 func textWeights(t *testing.T, dir string) *Weights {
@@ -41,13 +41,13 @@ func readI32(t *testing.T, path string) []int32 {
 	return v
 }
 
-// The prompt's tokens are the reference's (HWNPU_TEST_SFX_REF of tools/ref/ref_moss_sfx.py text, the
-// prompt in HWNPU_TEST_SFX_PROMPT with --seconds 10).
+// The prompt's tokens are the reference's (BONSAIAI_TEST_SFX_REF of tools/ref/ref_moss_sfx.py text, the
+// prompt in BONSAIAI_TEST_SFX_PROMPT with --seconds 10).
 func TestPromptIDs(t *testing.T) {
 	dir, ref := refDir(t)
-	prompt := os.Getenv("HWNPU_TEST_SFX_PROMPT")
+	prompt := os.Getenv("BONSAIAI_TEST_SFX_PROMPT")
 	if prompt == "" {
-		t.Skip("HWNPU_TEST_SFX_PROMPT is not set")
+		t.Skip("BONSAIAI_TEST_SFX_PROMPT is not set")
 	}
 	tok, err := tokenizer.Load(filepath.Join(dir, "tokenizer", "tokenizer.json"))
 	if err != nil {
@@ -60,15 +60,15 @@ func TestPromptIDs(t *testing.T) {
 	}
 }
 
-// On the Neural Engine (HWNPU_TEST_NPU; the format in HWNPU_TEST_SFX_TEXT_FORMAT, fp16 by default)
+// On the Neural Engine (BONSAIAI_TEST_NPU; the format in BONSAIAI_TEST_SFX_TEXT_FORMAT, fp16 by default)
 // the text encoder's output is the reference's.
 func TestTextOnDevice(t *testing.T) {
 	dir, ref := refDir(t)
-	prompt := os.Getenv("HWNPU_TEST_SFX_PROMPT")
-	if prompt == "" || os.Getenv("HWNPU_TEST_NPU") == "" {
-		t.Skip("HWNPU_TEST_SFX_PROMPT and HWNPU_TEST_NPU are not set")
+	prompt := os.Getenv("BONSAIAI_TEST_SFX_PROMPT")
+	if prompt == "" || os.Getenv("BONSAIAI_TEST_NPU") == "" {
+		t.Skip("BONSAIAI_TEST_SFX_PROMPT and BONSAIAI_TEST_NPU are not set")
 	}
-	format := os.Getenv("HWNPU_TEST_SFX_TEXT_FORMAT")
+	format := os.Getenv("BONSAIAI_TEST_SFX_TEXT_FORMAT")
 	if format == "" {
 		format = "fp16"
 	}
@@ -84,7 +84,7 @@ func TestTextOnDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := os.Getenv("HWNPU_TEST_SFX_OUT")
+	out := os.Getenv("BONSAIAI_TEST_SFX_OUT")
 	if out == "" {
 		out = t.TempDir()
 	}
@@ -142,12 +142,12 @@ func cosine(a, b []float32) float64 {
 	return ab / math.Sqrt(aa*bb)
 }
 
-// textOpts are the options of HWNPU_TEST_SFX_QUANT and HWNPU_TEST_SFX_FORMAT_FOR (comma separated) for
+// textOpts are the options of BONSAIAI_TEST_SFX_QUANT and BONSAIAI_TEST_SFX_FORMAT_FOR (comma separated) for
 // trying the text encoder's formats.
 func textOpts(format string) llm.Options {
 	o := TextOptions(format)
-	o.Quant = os.Getenv("HWNPU_TEST_SFX_QUANT")
-	if ff := os.Getenv("HWNPU_TEST_SFX_FORMAT_FOR"); ff != "" {
+	o.Quant = os.Getenv("BONSAIAI_TEST_SFX_QUANT")
+	if ff := os.Getenv("BONSAIAI_TEST_SFX_FORMAT_FOR"); ff != "" {
 		o.FormatFor = strings.Split(ff, ",")
 	}
 	return o

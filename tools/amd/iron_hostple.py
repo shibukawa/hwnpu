@@ -25,7 +25,7 @@ says format "int8": the host expands a row to bf16 as it writes it. Half the fil
 2.2 GiB, E4B 5.25 -> 2.65), KL 0.00005 from the bf16 table (tools/amd/ple_quant_kl.py,
 docs/design/performance.md). The device's buffer and what the layers compute are unchanged.
 
-The manifest names the tables in host_tables (iron_export_lm.export). hwnpu's iron.Model fills
+The manifest names the tables in host_tables (iron_export_lm.export). bonsaiai's iron.Model fills
 them.
 """
 
@@ -35,17 +35,17 @@ import os
 import numpy as np
 from ml_dtypes import bfloat16
 
-PLE = "hwnpu_ple_rows"
+PLE = "bonsaiai_ple_rows"
 # A decode step's per-layer inputs, every layer's at once before the first layer (Gemma4's
 # layer computes each layer's: a GEMV, an RMSNorm, a copy, an add and a product, each a
-# reconfiguration of the array, docs/design/amd.md). HWNPU_GEMMA4_BATCH_PLE=0 keeps a layer's own.
-BATCH_PLE = os.environ.get("HWNPU_GEMMA4_BATCH_PLE", "1") != "0"
+# reconfiguration of the array, docs/design/amd.md). BONSAIAI_GEMMA4_BATCH_PLE=0 keeps a layer's own.
+BATCH_PLE = os.environ.get("BONSAIAI_GEMMA4_BATCH_PLE", "1") != "0"
 # The MLP's gate and up as one table, run by QGEMVGlu with gelu (iron_q4.glu_param): one
 # operator of a decode step in place of two GEMVs, a GELU and a product. Off unless
-# HWNPU_GEMMA4_FUSE_GLU=1: E2B's decode 9.3 -> 9.9 tokens/s, but its KL from Hugging Face's
+# BONSAIAI_GEMMA4_FUSE_GLU=1: E2B's decode 9.3 -> 9.9 tokens/s, but its KL from Hugging Face's
 # float32 0.154 -> 0.158 (median 0.068 -> 0.074, docs/design/amd-llm.md), where LFM3's did not move.
-FUSE_GLU = os.environ.get("HWNPU_GEMMA4_FUSE_GLU", "0") == "1"
-EMBED = "hwnpu_embed_rows"
+FUSE_GLU = os.environ.get("BONSAIAI_GEMMA4_FUSE_GLU", "0") == "1"
+EMBED = "bonsaiai_embed_rows"
 # A prompt chunk's commands end where their scratchpad words would pass IRON's limit (32).
 # Each of IRON's gathers took words of its own, so the chunk was 15 commands for E2B; without
 # them it is 7, one of them 3.7 s at position 3072, near amdxdna's cutoff (tdr_timeout_ms
@@ -62,9 +62,9 @@ _HOST_EMBED: dict[int, bool] = {}  # by id of the model: its embeddings on the h
 
 
 def _keep() -> set:
-    """What stays bf16 with q4: attention where install's attn is "bf16". HWNPU_Q4_KEEP (comma
+    """What stays bf16 with q4: attention where install's attn is "bf16". BONSAIAI_Q4_KEEP (comma
     separated: head, attn, mlp) names it instead, to measure what each costs."""
-    env = os.environ.get("HWNPU_Q4_KEEP")
+    env = os.environ.get("BONSAIAI_Q4_KEEP")
     if env is not None:
         return set(filter(None, env.split(",")))
     return {"attn"} if _Q4["attn"] == "bf16" else set()
@@ -92,7 +92,7 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
         if attn not in ("bf16", "q8", "q4"):
             raise ValueError(f"attention in {attn}: bf16, q8 or q4")
         _Q4["attn"] = attn
-    if getattr(G, "hwnpu_host_ple", False):
+    if getattr(G, "bonsaiai_host_ple", False):
         return
     base_init = G.__init__
 
@@ -234,14 +234,14 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
     G.lookup = lookup
     G.body = body
     G.layer = layer
-    G.hwnpu_host_ple = True
+    G.bonsaiai_host_ple = True
 
 
 # A decode step's post-norms, residuals and next norms as SandwichAdd (iron_sandwich): after
 # the attention (post-attention norm, residual, pre-feed-forward norm) and after the per-layer
 # input (its norm, residual, layer_scalar, the next layer's input norm), in place of seven
-# operators a layer (docs/design/amd-llm.md). HWNPU_GEMMA4_FUSED_NORMS=0 keeps IRON's.
-FUSED_NORMS = os.environ.get("HWNPU_GEMMA4_FUSED_NORMS", "1") != "0"
+# operators a layer (docs/design/amd-llm.md). BONSAIAI_GEMMA4_FUSED_NORMS=0 keeps IRON's.
+FUSED_NORMS = os.environ.get("BONSAIAI_GEMMA4_FUSED_NORMS", "1") != "0"
 
 
 def fused_norms(model, x) -> bool:
@@ -277,7 +277,7 @@ def text_model(model):
 def ple_int8(rows: np.ndarray, layers: int, path, chunk: int = 8192) -> None:
     """Write the table rows (vocab, layers * ple_dim, bf16) to path as ple.bin's format "int8": a
     row is layers parts, each an fp16 scale (the slice's largest magnitude / 127) followed by its
-    ple_dim values rounded to int8. hwnpu expands a value to bf16(q * scale)."""
+    ple_dim values rounded to int8. bonsaiai expands a value to bf16(q * scale)."""
     n, width = rows.shape
     e = width // layers
     with open(path, "wb") as f:

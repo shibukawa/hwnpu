@@ -1,9 +1,9 @@
 // Package amdxrt implements the AMD Ryzen AI (XDNA) backend through XRT, for Windows, where
-// AMD's NPU driver is reached only through XRT's C++ library (xrt_coreutil.dll). hwnpu has no
+// AMD's NPU driver is reached only through XRT's C++ library (xrt_coreutil.dll). bonsaiai has no
 // cgo, so it calls XRT through xrtshim, a small C library of its own (native/xrtshim), loaded
-// at run time. On Linux, hwnpu talks to the amdxdna driver itself (internal/backend/amd); this
+// at run time. On Linux, bonsaiai talks to the amdxdna driver itself (internal/backend/amd); this
 // backend runs there too, against the XRT packages, which is how it is tested, but lists a
-// device only when asked (HWNPU_BACKEND=xrt).
+// device only when asked (BONSAIAI_BACKEND=xrt).
 package amdxrt
 
 import (
@@ -15,11 +15,11 @@ import (
 	"strconv"
 	"sync/atomic"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
-// Name is the backend's name, and the value of HWNPU_BACKEND that turns it on outside Windows.
+// Name is the backend's name, and the value of BONSAIAI_BACKEND that turns it on outside Windows.
 const Name = "xrt"
 
 // Provider is the XRT backend provider.
@@ -29,11 +29,11 @@ func (Provider) Name() string { return Name }
 
 var enabled atomic.Bool
 
-// Enable makes the backend list its devices outside Windows without HWNPU_BACKEND=xrt.
+// Enable makes the backend list its devices outside Windows without BONSAIAI_BACKEND=xrt.
 func Enable() { enabled.Store(true) }
 
 func listing() bool {
-	return runtime.GOOS == "windows" || os.Getenv("HWNPU_BACKEND") == Name || enabled.Load()
+	return runtime.GOOS == "windows" || os.Getenv("BONSAIAI_BACKEND") == Name || enabled.Load()
 }
 
 func (Provider) Enumerate(ctx context.Context) ([]types.DeviceInfo, error) {

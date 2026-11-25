@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 func TestFindWatts(t *testing.T) {
@@ -34,7 +34,7 @@ func TestFindWatts(t *testing.T) {
 
 func TestNotListedUnlessAsked(t *testing.T) {
 	if listing() {
-		t.Skip("listing is on (Windows, or HWNPU_BACKEND=xrt)")
+		t.Skip("listing is on (Windows, or BONSAIAI_BACKEND=xrt)")
 	}
 	infos, err := Provider{}.Enumerate(context.Background())
 	if err != nil || len(infos) != 0 {
@@ -43,7 +43,7 @@ func TestNotListedUnlessAsked(t *testing.T) {
 }
 
 // TestDevice runs on an AMD NPU through XRT with the shim built (native/xrtshim): set
-// HWNPU_XRTSHIM to it.
+// BONSAIAI_XRTSHIM to it.
 func TestDevice(t *testing.T) {
 	if os.Getenv(ShimEnv) == "" {
 		t.Skip("set " + ShimEnv + " to a built xrtshim")

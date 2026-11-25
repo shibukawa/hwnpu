@@ -33,14 +33,14 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/agent"
-	"github.com/shibukawa/hwnpu/ai/agent/voice"
-	"github.com/shibukawa/hwnpu/ai/cli/konghelper"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/ai/speech"
-	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/samples/internal/capture"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/agent"
+	"github.com/shibukawa/bonsaiai/ai/agent/voice"
+	"github.com/shibukawa/bonsaiai/ai/cli/konghelper"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/speech"
+	"github.com/shibukawa/bonsaiai/ai/text"
+	"github.com/shibukawa/bonsaiai/samples/internal/capture"
 )
 
 // The models: the transcriber, the chat model and the speaker. The chat model is picked as a
@@ -73,7 +73,7 @@ func main() {
 	app := ai.NewApp("voice-agent", transcribe, chatModel, speak)
 	k := kong.Parse(&cli,
 		kong.Name("voice-agent"),
-		kong.Description("A small voice assistant on the NPU, called by its name: a sample of hwnpu's ai package."),
+		kong.Description("A small voice assistant on the NPU, called by its name: a sample of bonsaiai's ai package."),
 		kong.UsageOnError(),
 		konghelper.Bind(ctx, app))
 	k.FatalIfErrorf(k.Run())
@@ -142,7 +142,7 @@ func (c common) open(ctx context.Context, app *ai.App, textOnly bool) (*assistan
 		}
 		dir := ""
 		if d, err := os.UserCacheDir(); err == nil {
-			dir = filepath.Join(d, "hwnpu", "voice-agent", "phrases")
+			dir = filepath.Join(d, "bonsaiai", "voice-agent", "phrases")
 		}
 		o := voice.VoiceOptions{Speak: speech.SpeakOptions{Language: "ja", Voice: c.Voice, Seed: c.Seed}, Dir: dir, Log: indented}
 		if speed := c.Speed; tts.Paces() {

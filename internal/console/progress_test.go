@@ -146,7 +146,7 @@ func TestBarNested(t *testing.T) {
 // TestBarLineNarrow keeps the share, the time and a download's sizes on a narrow terminal: the
 // label is shortened first, then the bar.
 func TestBarLineNarrow(t *testing.T) {
-	label := "downloading anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai from HWNPU_MODEL_SOURCE (webdav https://192.168.1.127:5006/llm/)"
+	label := "downloading anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai from BONSAIAI_MODEL_SOURCE (webdav https://192.168.1.127:5006/llm/)"
 	detail := "1.23 / 3.90 GB, 43.4 MB/s"
 	for _, cols := range []int{120, 80, 60, 50} {
 		line := barLine(label, "⠋", 0.31, 28*time.Second, detail, cols)

@@ -9,11 +9,11 @@ import (
 )
 
 // TestWordsMatchIRON compares the scratchpad words this package writes with the ones IRON
-// computed at export time for the same calls (check/words.json of HWNPU_TEST_IRON_EXPORT).
+// computed at export time for the same calls (check/words.json of BONSAIAI_TEST_IRON_EXPORT).
 func TestWordsMatchIRON(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_IRON_EXPORT")
+	dir := os.Getenv("BONSAIAI_TEST_IRON_EXPORT")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_IRON_EXPORT not set")
+		t.Skip("BONSAIAI_TEST_IRON_EXPORT not set")
 	}
 	m, err := ReadManifest(dir)
 	if err != nil {

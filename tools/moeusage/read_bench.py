@@ -9,7 +9,7 @@ cache first (POSIX_FADV_DONTNEED):
     direct    reads around it (O_DIRECT) into an aligned buffer, a range a read
     direct4   the same in pieces of 2 MiB on 4 threads
 
-Linux only (macOS has F_NOCACHE for O_DIRECT). It needs numpy: ~/.cache/hwnpu/dev/ref-venv/bin/python. On a Ryzen AI 9 365's NVMe (2026-11-21,
+Linux only (macOS has F_NOCACHE for O_DIRECT). It needs numpy: ~/.cache/bonsaiai/dev/ref-venv/bin/python. On a Ryzen AI 9 365's NVMe (2026-11-21,
 docs/design.md 16.284), an expert of gpt-oss-20b (13.2 MB in 4 ranges): 13.9, 16.7, 13.7, 3.0 and
 2.6 ms (0.95 GB/s through the page cache, 4.4 GB/s around it); of Qwen3.6-35B-A3B (6.3 MB of
 bf16 in 2 ranges): 6.9, 6.9, 6.7, 1.4 and 1.5 ms. The copies of an export's experts (iron's

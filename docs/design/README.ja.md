@@ -1,15 +1,15 @@
-# hwnpu の設計
+# BonsaiAI の設計
 
 [English](README.md)
 
-hwnpu は、CPU に内蔵された NPU でモデルを動かす Go のライブラリとコマンドの集まりである。対象は
+BonsaiAI は、CPU に内蔵された NPU でモデルを動かす Go のライブラリとコマンドの集まりである。対象は
 Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVINO IR)、AMD の XDNA
 (amdxdna の ioctl、IRON)。cgo なし、GPU なし。ここのファイルは今の設計と今の決定だけを書く。経緯は git に残る。
 
 ## 目標
 
 - **NPU で動き、それを保証する。** ONNX Runtime の EP や OpenVINO の AUTO は、未対応の演算を黙って
-  CPU や GPU に回す。hwnpu は既定で厳格モードとし、NPU だけで完結しないグラフは実行前にエラーにして、
+  CPU や GPU に回す。BonsaiAI は既定で厳格モードとし、NPU だけで完結しないグラフは実行前にエラーにして、
   載らなかった演算を返す ([API](api.ja.md))。
 - **電力を少なく。** 電力ポリシーを第一級の設定にし、バックエンドが許す範囲でエネルギーを読む
   ([メモリと電力](memory-and-power.ja.md))。
@@ -32,7 +32,7 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 |---|---|
 | NPU だけ | 一部を CPU に移すと少し速くなる場合でも、仕事は NPU に置く。CPU は NPU ができないこと (サンプリング、トークナイザー、小さなホストの手順) だけを行い、NPU の方が CPU より遅いモデルは `models.yaml` (`device: {amd: cpu}`) で CPU に置く |
 | GPU なし | バックエンドにも逃げ道にもしない。Core ML の compute units は既定で GPU を含まない |
-| 速さより電力 | 合計時間が同じなら NPU に置く。読む重みのバイトを減らす (ビット数、使わない層を省く、MoE)。NPU の無駄を減らす (載りきらず読み直すプログラム、NPU と CPU の交互の実行)。`hwnpu-dev powerbench` で mJ/トークンを測り、測れないときは読む重みのバイト、NPU のメモリ (`mem.NPUWired`)、CPU 使用率で比べる |
+| 速さより電力 | 合計時間が同じなら NPU に置く。読む重みのバイトを減らす (ビット数、使わない層を省く、MoE)。NPU の無駄を減らす (載りきらず読み直すプログラム、NPU と CPU の交互の実行)。`bonsaiai-dev powerbench` で mJ/トークンを測り、測れないときは読む重みのバイト、NPU のメモリ (`mem.NPUWired`)、CPU 使用率で比べる |
 | cgo なし | purego、`golang.org/x/sys` の ioctl、実行時に読む小さな C / Swift の shim (`native/xrtshim`、Core AI の `libcaishim.dylib`)。`CGO_ENABLED=0` で全部ビルドできる |
 | 既定は厳格 | `PlacementStrict` は NPU で動くと確かめられないグラフを拒む |
 | 変換は一度、Go で | 公式の bf16 のチェックポイント (`config.json` + safetensors / GGUF) から各 NPU の形式へ直接。間に ONNX を置かない。量子化済みの公開物は劣化なしに並べ替えられるときだけ使い、量子化し直しはしない |
@@ -63,9 +63,9 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [vision-models.ja.md](vision-models.ja.md) | 検出、姿勢、OCR、領域分割、深度、顔、SigLIP 2、ONNX だけのモデル |
 | [audio-models.ja.md](audio-models.ja.md) | Whisper、TTS、Magenta RT2、MOSS-SoundEffect、SwiftF0、Basic Pitch |
 | [distribution.ja.md](distribution.ja.md) | `models.yaml`、キャッシュの置き場、取得元 (フォルダ、WebDAV、S3)、ダウンロード、利用条件つきのリポジトリ、ライセンス、書き出し済みの配布、ディスクの共有 (clone / reflink)、掃除 |
-| [hwnpud.ja.md](hwnpud.ja.md) | hwnpud (設計、未実装): Mac と Linux で NPU とモデルをユーザーごとの 1 つのプロセスが持つ。モデルとキャッシュの管理、ソケット、監督役とエンジン、アプリをまたぐ割り振り、入れ方と配り方、署名 |
-| [variables.ja.md](variables.ja.md) | hwnpu の環境変数: 設定、機械のライブラリ、開発者のスイッチ (`HWNPU_DEV`)、テストのもの (`HWNPU_TEST_<群>_<役>`、`HWNPU_TEST_NPU`)、前の名前 |
-| [cli.ja.md](cli.ja.md) | コマンド (`hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio`、`hwnpu-dev` …)、OpenAI の API、OpenCode、端末の表示、Ctrl+C |
+| [bonsaiaid.ja.md](bonsaiaid.ja.md) | bonsaiaid (設計、未実装): Mac と Linux で NPU とモデルをユーザーごとの 1 つのプロセスが持つ。モデルとキャッシュの管理、ソケット、監督役とエンジン、アプリをまたぐ割り振り、入れ方と配り方、署名 |
+| [variables.ja.md](variables.ja.md) | BonsaiAI の環境変数: 設定、機械のライブラリ、開発者のスイッチ (`BONSAIAI_DEV`)、テストのもの (`BONSAIAI_TEST_<群>_<役>`、`BONSAIAI_TEST_NPU`)、前の名前 |
+| [cli.ja.md](cli.ja.md) | コマンド (`bonsaiai`、`bonsaiai-chat`、`bonsaiai-image`、`bonsaiai-audio`、`bonsaiai-dev` …)、OpenAI の API、OpenCode、端末の表示、Ctrl+C |
 | [memory-and-power.ja.md](memory-and-power.ja.md) | エネルギーの測り方、電力ポリシー、メモリの測り方、機械のメモリの区分、常駐 |
 | [quantization.ja.md](quantization.ja.md) | 重みの形式 (lut4/6/8、int8、q4/q6/q8、mxfp4)、GPTQ、回転、モデルごとの選択 |
 | [new-model-checklist.ja.md](new-model-checklist.ja.md) | 新しいモデルを入れるときのチェックリスト |
@@ -89,13 +89,13 @@ Apple の Neural Engine (Core ML、Core AI)、Intel の NPU (Level Zero、OpenVI
 | [../kv-cache.md](../kv-cache.md) | KV キャッシュの省メモリ化と高速化の手法の調査と、Neural Engine への当てはめ |
 | [../model-fit.md](../model-fit.md) | Neural Engine に合うモデルの条件と、少ないメモリで速く賢くする手法 (調査と提案) |
 | [../model-table.md](../model-table.md) | `models.yaml` の設計 (モデルの定義、選び方、取得元、NPU ごとの書き出し) |
-| [../model-provenance.md](../model-provenance.md) | モデルのライセンスと内容、使ってよいモデルの指定 (`HWNPU_MODEL_ALLOWLIST`) |
+| [../model-provenance.md](../model-provenance.md) | モデルのライセンスと内容、使ってよいモデルの指定 (`BONSAIAI_MODEL_ALLOWLIST`) |
 | [../cache-sharing.ja.md](../cache-sharing.ja.md) ([English](../cache-sharing.md)) | モデルのキャッシュとその共有の利用者向けの説明 |
 | [../cache-sharing-design.md](../cache-sharing-design.md) | 変換済みモデルの配布とキャッシュの共有の設計の記録 (層、取得元、lock) |
 | [../prebuilt.md](../prebuilt.md) | 取得元 (NAS) の変換済みモデルを Hugging Face に上げて読み戻す設計 |
 | [../prebuilt-reuse.md](../prebuilt-reuse.md) | Core AI の prebuilt を作り直すとき、変わらない部品を前の書き出しから流用する (記録 build.json、流用の条件、端末の結果の印) |
-| [../known-issues.md](../known-issues.md) | Core AI / coreai-build の既知の問題、hwnpu の回避策、Apple が直したときにすること |
-| [../reference-paper.ja.md](../reference-paper.ja.md) ([English](../reference-paper.md)) | 参考にした NPU の論文と、hwnpu の実機で当てはまったか |
+| [../known-issues.md](../known-issues.md) | Core AI / coreai-build の既知の問題、BonsaiAI の回避策、Apple が直したときにすること |
+| [../reference-paper.ja.md](../reference-paper.ja.md) ([English](../reference-paper.md)) | 参考にした NPU の論文と、BonsaiAI の実機で当てはまったか |
 | [../amd-npu-models.md](../amd-npu-models.md) | 変換したモデルを AMD の NPU (IRON) で動かす設計 |
 | [../amd-xdna2-bench.md](../amd-xdna2-bench.md) | XDNA2 (Strix Point) のデータ型と、IRON のサンプルでの実測 |
 | [../intel-npu-models.md](../intel-npu-models.md) | 変換したモデルを Intel の NPU で動かす設計 |

@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 // CodesKind is the kind of entry of the lookup tables chosen against the activations (GPTQ's
@@ -18,7 +18,7 @@ const CodesKind = "codes"
 // codesRecipe is what the codes of hash for the model whose directory is dir are, their key in
 // the shared layers: the model's part (modelRecipe) and the hash of their index. The programs
 // converted with them can be taken from the sources, but only while the sources hold the
-// conversion of this hwnpu: when what it writes changes (ailower.FormatVersion), a conversion
+// conversion of this bonsaiai: when what it writes changes (ailower.FormatVersion), a conversion
 // needs the codes again, and the machine that chose them may not have them any more.
 func codesRecipe(ctx context.Context, dir, hash string) (Model, map[string]string) {
 	// the model of the directory the codes lie in (modelOfDir looks from a path's parent up)

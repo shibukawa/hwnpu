@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // Where a model's converted programs go in its directory. Core AI's are an export: a directory
 // NAME.coreai beside the checkpoint, holding the programs (.aimodel) and what they need, and
 // NAME.coreai.done beside it once it is whole (cache.WriteDone, holding the export's path), as
-// every command's are (hwnpu-chat's, the image models', the audio models'). An export is what
+// every command's are (bonsaiai-chat's, the image models', the audio models'). An export is what
 // is converted at once: one that is cut off is converted again from nothing. Core ML's packages
 // (what the CPU interpreter runs) and Intel's OpenVINO IR keep their own places.
 
@@ -24,7 +24,7 @@ func CoreAIExport(dir, name string) (export, done string) {
 }
 
 // ExportDone reports whether the export (or program) whose mark is done is whole: the mark is
-// there (it holds the export's path, cache.WriteDone, or nothing: an earlier hwnpu's).
+// there (it holds the export's path, cache.WriteDone, or nothing: an earlier bonsaiai's).
 func ExportDone(done string) bool {
 	if _, err := os.Stat(done); err != nil {
 		return false
@@ -54,7 +54,7 @@ func StartExport(ctx context.Context, export string) error {
 }
 
 // FinishExport marks export whole (done, written last) and removes old, the files and
-// directories an earlier hwnpu kept the same programs in (a model's coreai/, NAME.aimodel and
+// directories an earlier bonsaiai kept the same programs in (a model's coreai/, NAME.aimodel and
 // NAME.aimodel.done), which nothing reads any more.
 func FinishExport(export, done string, old ...string) error {
 	if err := cache.WriteDone(done, export); err != nil {
@@ -79,7 +79,7 @@ type fetchOnlyKey struct{}
 
 // WithFetchOnly is ctx in which nothing is converted: what is neither here nor in the shared
 // layers is not made (MayConvert), while the files a conversion would read are still fetched
-// (hwnpu-dev models fetch, which brings a model here and to the sources written back to, to
+// (bonsaiai-dev models fetch, which brings a model here and to the sources written back to, to
 // try conversions on it after).
 func WithFetchOnly(ctx context.Context) context.Context {
 	return context.WithValue(ctx, fetchOnlyKey{}, true)
@@ -93,7 +93,7 @@ func FetchOnly(ctx context.Context) bool { b, _ := ctx.Value(fetchOnlyKey{}).(bo
 type NotFetchedError struct{ What string }
 
 func (e *NotFetchedError) Error() string {
-	return filepath.Base(e.What) + " is neither here nor in the sources, and nothing is converted now (hwnpu-dev models package makes it)"
+	return filepath.Base(e.What) + " is neither here nor in the sources, and nothing is converted now (bonsaiai-dev models package makes it)"
 }
 
 // MayConvert is called where a conversion would start, once what it makes was looked for here
@@ -178,7 +178,7 @@ func ProgramPath(dir, name, backend string) (program, done, export string) {
 	return program, program + ".done", ""
 }
 
-// OldCoreAIProgram is where an earlier hwnpu kept the single Core AI program NAME in dir
+// OldCoreAIProgram is where an earlier bonsaiai kept the single Core AI program NAME in dir
 // (NAME.aimodel and its mark), for FinishExport to remove.
 func OldCoreAIProgram(dir, name string) []string {
 	p := filepath.Join(dir, name+ProgramExt(BackendCoreAI))

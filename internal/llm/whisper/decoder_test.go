@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 func tinyDecoder(t *testing.T, edit string) *Decoder {
@@ -212,7 +212,7 @@ func TestDecoderCached(t *testing.T) {
 	defer cl.Close()
 	for name, v := range kv {
 		b := make([]byte, 2*len(v))
-		hwnpu.EncodeF16(b, v)
+		bonsaiai.EncodeF16(b, v)
 		if err := s.SetInputF16(name, b); err != nil {
 			t.Fatal(err)
 		}

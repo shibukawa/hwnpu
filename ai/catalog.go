@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Catalog is what the definitions name (models.yaml, the machine's, the user's, the app's
@@ -147,7 +147,7 @@ func (e *NoModelError) Error() string {
 	return fmt.Sprintf("ai: no %s model, family or use %q in the definitions", e.Role, e.Name)
 }
 
-// Find is the model name means for u's role on this machine, as hwnpu's commands find it: a
+// Find is the model name means for u's role on this machine, as bonsaiai's commands find it: a
 // model by its name or repository, or the one a family (with a tag, or for the machine's
 // memory) or a use picks; through the aliases. A name the definitions do not have is a
 // *NoModelError; a model the role does not run is an error that says so.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a graph IRON compiled as a full ELF, for hwnpu to run without IRON or XRT.
+"""Export a graph IRON compiled as a full ELF, for bonsaiai to run without IRON or XRT.
 
 Writes, into a directory:
 
@@ -70,7 +70,7 @@ def _parameters(compiled) -> list:
         entry = dict(name=p.name, index=int(p.index), dtype=p.dtype, kind=p.kind)
         w = words.get(p.name)
         if w is None or w.form is None:
-            raise SystemExit(f"parameter {p.name} has no Affine form; hwnpu cannot compute it")
+            raise SystemExit(f"parameter {p.name} has no Affine form; bonsaiai cannot compute it")
         entry["form"] = _form(w.form)
         out.append(entry)
     return out
@@ -121,7 +121,7 @@ def manifest(compiled, elf_name: str) -> dict:
 
     art = compiled.artifacts
     if not art.full_elf:
-        raise SystemExit("the graph was packaged as an xclbin per step; hwnpu runs full ELFs only")
+        raise SystemExit("the graph was packaged as an xclbin per step; bonsaiai runs full ELFs only")
     seq = compiled.sequence
     sizes = seq.buffer_sizes
     commands = [

@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // The multi-token prediction layer's output layer is the model's, over its whole vocabulary:

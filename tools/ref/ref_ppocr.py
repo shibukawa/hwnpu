@@ -6,9 +6,9 @@ picture: the lines' text and score.
     python ref_ppocr.py DET_DIR REC_DIR [--fit WxH | --native] PICTURE... > ref.jsonl
 
 DET_DIR and REC_DIR hold each repository's inference.onnx and inference.yml. --fit scales the
-picture to fit the detector's size, at the top left (hwnpu-image ocr's way, 960x960 by default);
+picture to fit the detector's size, at the top left (bonsaiai-image ocr's way, 960x960 by default);
 --native keeps it at its size in multiples of 32 (PaddleOCR 3's default). Compare with
-hwnpu-image ocr's JSON lines by compare_ocr.py. Needs numpy, onnxruntime, opencv-python, pyclipper,
+bonsaiai-image ocr's JSON lines by compare_ocr.py. Needs numpy, onnxruntime, opencv-python, pyclipper,
 pyyaml.
 """
 import json, math, sys

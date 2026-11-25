@@ -10,20 +10,20 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/recipe"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // On AMD's NPU the four graphs run as the graphs of tools/amd/iron_supertonic.py (an export
 // NAME.amd-npu2 of each of Sizes; the text's relative attention and the duration's last layers
 // on the host, amd_text.go): no ONNX Runtime and no programs of Prepare.
 
-// AMDTool is the IRON exporter of the model's graphs (tools/amd, built into hwnpu).
+// AMDTool is the IRON exporter of the model's graphs (tools/amd, built into bonsaiai).
 const AMDTool = "iron_supertonic.py"
 
 // AMDExportVersion is the version of PrepareAMD's exports (a key of the shared layers:
@@ -107,7 +107,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (string, error
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), chat.PinnedRecipe(m, AMDTool, AMDExportVersion), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (bonsaiai-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; exporting its graphs with IRON\n", m.Name)
@@ -181,7 +181,7 @@ func readAMDHost(path string) (amdHost, error) {
 		}
 	}
 	if len(h.theta) != ropeDim || len(h.rowsB) == 0 || len(h.rowsB)%512 != 0 || len(h.rowsW) != len(h.rowsB)*len(h.b2) {
-		return h, fmt.Errorf("supertonic: %s is not of this hwnpu's export", path)
+		return h, fmt.Errorf("supertonic: %s is not of this bonsaiai's export", path)
 	}
 	h.blocks = len(h.rowsB) / 512
 	return h, nil
@@ -237,7 +237,7 @@ func (h amdHost) angles(n, m int) []float32 {
 
 // OpenAMD opens the export dir's graphs on amd, AMD's NPU (the embedding tables from the model's
 // graphs in c.Dir).
-func OpenAMD(ctx context.Context, amd *hwnpu.Device, c Config, dir string) (Stages, error) {
+func OpenAMD(ctx context.Context, amd *bonsaiai.Device, c Config, dir string) (Stages, error) {
 	text, err := openAMDText(ctx, amd, c, dir)
 	if err != nil {
 		return nil, err

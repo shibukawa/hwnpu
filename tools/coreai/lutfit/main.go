@@ -1,7 +1,7 @@
 // Command lutfit fits the lookup tables of a model's linear weights against its activations: each
 // table of a block of rows (and columns) by weighted Lloyd, every weight's error counted by the
 // mean square of the layer's input at its column (palette.QuantizeWeighted), and writes them as
-// codes (palette.CodesWriter) that hwnpu-dev convert -codes and hwnpu-chat -codes read in place
+// codes (palette.CodesWriter) that bonsaiai-dev convert -codes and bonsaiai-chat -codes read in place
 // of the format's own fitting. The mean squares come from a calibration run in float32
 // (tools/ref/ref_qwen2.py --stats): WEIGHT.x2 by in-feature for each weight they name; the weights
 // without one are left to the format's fitting.
@@ -19,10 +19,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
-	"github.com/shibukawa/hwnpu/internal/palette"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	_ "github.com/shibukawa/bonsaiai/internal/llm/archs"
+	"github.com/shibukawa/bonsaiai/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 func main() {

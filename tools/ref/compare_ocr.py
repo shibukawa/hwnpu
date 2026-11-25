@@ -1,8 +1,8 @@
-"""Compares the lines of two OCR outputs in JSON lines (ref_ppocr.py's, hwnpu-image ocr's): for
+"""Compares the lines of two OCR outputs in JSON lines (ref_ppocr.py's, bonsaiai-image ocr's): for
 each picture, how many lines of score 0.5 or more are the same, and the character error rate of
 the whole text. A third argument lists the lines that differ.
 
-    python compare_ocr.py ref.jsonl hwnpu.jsonl [v]
+    python compare_ocr.py ref.jsonl bonsaiai.jsonl [v]
 """
 import json, sys
 def load(p):

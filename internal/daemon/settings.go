@@ -8,51 +8,51 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/envfile"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/envfile"
 )
 
-// The settings of where the models are and where they come from are hwnpud's: one cache that
-// every client shares, one set of sources. hwnpud reads them from the .env files
-// (~/.config/hwnpu/.env, the machine's) and from the environment it was started with, never
+// The settings of where the models are and where they come from are bonsaiaid's: one cache that
+// every client shares, one set of sources. bonsaiaid reads them from the .env files
+// (~/.config/bonsaiai/.env, the machine's) and from the environment it was started with, never
 // from a client's: a client of other settings would make a second copy of the models, or fetch
 // them from elsewhere. What is a client's to choose (the model, its memory, the model policy's
 // narrowing: LoadRequest) goes with each request.
 
-// settingNames are the variables of hwnpud's side that Settings reports and a client compares
+// settingNames are the variables of bonsaiaid's side that Settings reports and a client compares
 // with its own.
 var settingNames = []string{
-	"HWNPU_CACHE",
-	"HWNPU_CACHE_MIN_FREE",
-	"HWNPU_CACHE_MAX_SIZE",
-	"HWNPU_MODEL_HUGGING_FACE",
-	"HWNPU_MODELS",
-	"HWNPU_BACKEND",
-	"HWNPU_DEVICE",
-	"HWNPU_MEMORY",
-	"HWNPU_ACCEPT_LICENSE",
-	"HWNPU_COREAI_PREBUILT",
-	"HWNPU_COREAI_UNITS",
-	"HWNPU_WEBDAV_USER",
+	"BONSAIAI_CACHE",
+	"BONSAIAI_CACHE_MIN_FREE",
+	"BONSAIAI_CACHE_MAX_SIZE",
+	"BONSAIAI_MODEL_HUGGING_FACE",
+	"BONSAIAI_MODELS",
+	"BONSAIAI_BACKEND",
+	"BONSAIAI_DEVICE",
+	"BONSAIAI_MEMORY",
+	"BONSAIAI_ACCEPT_LICENSE",
+	"BONSAIAI_COREAI_PREBUILT",
+	"BONSAIAI_COREAI_UNITS",
+	"BONSAIAI_WEBDAV_USER",
 	"HF_ENDPOINT",
 	chat.PolicyEnv,
 }
 
 // clientNames are the settings of settingNames a client may have of its own: the model policy.
-// hwnpud's is its own, from the .env files; a client's goes with each request and narrows it
+// bonsaiaid's is its own, from the .env files; a client's goes with each request and narrows it
 // (LoadRequest.Allowlist), so it is reported but not compared.
 var clientNames = []string{chat.PolicyEnv}
 
-// settingPrefixes are beginnings of the names of such variables (HWNPU_MODEL_SOURCE_1, ...).
-var settingPrefixes = []string{"HWNPU_MODEL_SOURCE"}
+// settingPrefixes are beginnings of the names of such variables (BONSAIAI_MODEL_SOURCE_1, ...).
+var settingPrefixes = []string{"BONSAIAI_MODEL_SOURCE"}
 
 // secretNames are the credentials among them: reported as set or not, never their values.
-var secretNames = []string{"HWNPU_WEBDAV_PASSWORD", "HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"}
+var secretNames = []string{"BONSAIAI_WEBDAV_PASSWORD", "HF_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"}
 
 // Secret is the value Settings gives a credential that is set.
 const Secret = "(set)"
 
-// Settings are hwnpud's settings in env (KEY=VALUE): the variables of settingNames and
+// Settings are bonsaiaid's settings in env (KEY=VALUE): the variables of settingNames and
 // settingPrefixes, with the passwords of URLs taken out, and secretNames as Secret.
 func Settings(env []string) map[string]string {
 	out := map[string]string{}
@@ -88,11 +88,11 @@ func redactURL(v string) string {
 	return u.Redacted()
 }
 
-// Mismatch is a setting of a client that hwnpud does not have: hwnpud's is used.
+// Mismatch is a setting of a client that bonsaiaid does not have: bonsaiaid's is used.
 type Mismatch struct {
 	Name  string
 	Here  string // "" unset
-	There string // hwnpud's, "" unset
+	There string // bonsaiaid's, "" unset
 }
 
 func (m Mismatch) String() string {
@@ -102,10 +102,10 @@ func (m Mismatch) String() string {
 		}
 		return v
 	}
-	return fmt.Sprintf("%s is %s here, %s in hwnpud", m.Name, show(m.Here), show(m.There))
+	return fmt.Sprintf("%s is %s here, %s in bonsaiaid", m.Name, show(m.Here), show(m.There))
 }
 
-// Compare is how the settings here differ from hwnpud's, by name: those a client may have of
+// Compare is how the settings here differ from bonsaiaid's, by name: those a client may have of
 // its own (the model policy) are not compared.
 func Compare(here, there map[string]string) []Mismatch {
 	var out []Mismatch
@@ -132,14 +132,14 @@ func union(a, b map[string]string) []string {
 }
 
 // watched are the variables of env an engine is started again for when they change: all of
-// hwnpu's, Hugging Face's and AWS's (envfile.Prefixes), not only those Settings reports, but not
-// hwnpud's own (HWNPU_DAEMON*), which the supervisor reads when it starts. The values stay in
+// bonsaiai's, Hugging Face's and AWS's (envfile.Prefixes), not only those Settings reports, but not
+// bonsaiaid's own (BONSAIAI_DAEMON*), which the supervisor reads when it starts. The values stay in
 // the supervisor: only the names are told.
 func watched(env []string) map[string]string {
 	out := map[string]string{}
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(k, "HWNPU_DAEMON") {
+		if strings.HasPrefix(k, "BONSAIAI_DAEMON") {
 			continue
 		}
 		if slices.ContainsFunc(envfile.Prefixes, func(p string) bool { return strings.HasPrefix(k, p) }) {

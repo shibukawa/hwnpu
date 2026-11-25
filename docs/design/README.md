@@ -1,8 +1,8 @@
-# hwnpu design
+# BonsaiAI design
 
 [日本語](README.ja.md)
 
-hwnpu is a Go library and a set of commands that run models on the NPU built into the CPU package:
+BonsaiAI is a Go library and a set of commands that run models on the NPU built into the CPU package:
 the Apple Neural Engine (Core ML, Core AI), Intel's NPU (Level Zero, OpenVINO IR) and AMD's XDNA
 (amdxdna ioctl, IRON). No cgo, no GPU. These files hold the current design and the current
 decisions. History stays in git.
@@ -10,7 +10,7 @@ decisions. History stays in git.
 ## Goals
 
 - **Run on the NPU, and say so.** ONNX Runtime's EPs and OpenVINO's AUTO move unsupported ops to the
-  CPU or GPU without telling. hwnpu is strict by default: a graph that does not run entirely on the NPU
+  CPU or GPU without telling. BonsaiAI is strict by default: a graph that does not run entirely on the NPU
   fails before it runs, with the ops that did not fit ([API](api.md)).
 - **Use little power.** The power policy is a first-class option, and the energy is read where the
   backend allows ([memory and power](memory-and-power.md)).
@@ -34,7 +34,7 @@ decisions. History stays in git.
 |---|---|
 | NPU only | Work stays on the NPU even when moving a part to the CPU would be a little faster. The CPU runs only what the NPU cannot (sampling, tokenizers, small host steps), and models that the NPU runs worse than the CPU are placed on the CPU by `models.yaml` (`device: {amd: cpu}`) |
 | No GPU | Not a backend and not a fallback. Core ML's compute units never include the GPU by default |
-| Power over speed | At equal total time keep the work on the NPU. Read fewer weight bytes (fewer bits, skip unused layers, MoE). Cut waste on the NPU (programs reloaded because they do not fit, NPU and CPU taking turns). Measure mJ/token with `hwnpu-dev powerbench`; when power cannot be read, compare weight bytes read, NPU memory (`mem.NPUWired`) and CPU use |
+| Power over speed | At equal total time keep the work on the NPU. Read fewer weight bytes (fewer bits, skip unused layers, MoE). Cut waste on the NPU (programs reloaded because they do not fit, NPU and CPU taking turns). Measure mJ/token with `bonsaiai-dev powerbench`; when power cannot be read, compare weight bytes read, NPU memory (`mem.NPUWired`) and CPU use |
 | No cgo | purego, `golang.org/x/sys` ioctl, and small C or Swift shims loaded at run time (`native/xrtshim`, Core AI's `libcaishim.dylib`). `CGO_ENABLED=0` builds everything |
 | Strict by default | `PlacementStrict` refuses a graph that is not verified to run on the NPU |
 | Convert once, in Go | From the official bf16 checkpoint (`config.json` + safetensors / GGUF) straight to each NPU's format. No ONNX in between. A published quantized checkpoint is used only when it can be rearranged without loss; it is never re-quantized |
@@ -65,9 +65,9 @@ decisions. History stays in git.
 | [vision-models.md](vision-models.md) | Detection, pose, OCR, segmentation, depth, face, SigLIP 2, ONNX-only models |
 | [audio-models.md](audio-models.md) | Whisper, TTS, Magenta RT2, MOSS-SoundEffect, SwiftF0, Basic Pitch |
 | [distribution.md](distribution.md) | `models.yaml`, the cache root, sources (folder, WebDAV, S3), downloads, gated repositories, licenses, prebuilt distribution, disk sharing (clone / reflink), cleanup |
-| [hwnpud.md](hwnpud.md) | hwnpud (design, not built): one per-user process on the Mac and Linux owns the NPU and the models; model and cache management, socket, supervisor and engine, scheduling across apps, installing and distributing, signing |
-| [variables.md](variables.md) | hwnpu's environment variables: the settings, the machine's libraries, the developers' switches (`HWNPU_DEV`) and the tests' (`HWNPU_TEST_<GROUP>_<ROLE>`, `HWNPU_TEST_NPU`), with the names before |
-| [cli.md](cli.md) | The commands (`hwnpu`, `hwnpu-chat`, `hwnpu-image`, `hwnpu-audio`, `hwnpu-dev` …), the OpenAI API, OpenCode, terminal display, Ctrl+C |
+| [bonsaiaid.md](bonsaiaid.md) | bonsaiaid (design, not built): one per-user process on the Mac and Linux owns the NPU and the models; model and cache management, socket, supervisor and engine, scheduling across apps, installing and distributing, signing |
+| [variables.md](variables.md) | BonsaiAI's environment variables: the settings, the machine's libraries, the developers' switches (`BONSAIAI_DEV`) and the tests' (`BONSAIAI_TEST_<GROUP>_<ROLE>`, `BONSAIAI_TEST_NPU`), with the names before |
+| [cli.md](cli.md) | The commands (`bonsaiai`, `bonsaiai-chat`, `bonsaiai-image`, `bonsaiai-audio`, `bonsaiai-dev` …), the OpenAI API, OpenCode, terminal display, Ctrl+C |
 | [memory-and-power.md](memory-and-power.md) | Energy measurement, power policy, memory measurement, machine memory classes, residency |
 | [quantization.md](quantization.md) | Weight formats (lut4/6/8, int8, q4/q6/q8, mxfp4), GPTQ, rotation, per-model choices |
 | [new-model-checklist.md](new-model-checklist.md) | The checklist for bringing in a new model |
@@ -100,13 +100,13 @@ decisions. History stays in git.
 | [../kv-cache.md](../kv-cache.md) | Survey of KV cache memory and speed methods and how they map to the Neural Engine |
 | [../model-fit.md](../model-fit.md) | Which models fit the Neural Engine, and methods to make them faster and smarter in less memory (survey and proposals) |
 | [../model-table.md](../model-table.md) | Design of `models.yaml` (model definitions, selection, sources, per-NPU builds) |
-| [../model-provenance.md](../model-provenance.md) | Model licenses and content, and the allowlist of models (`HWNPU_MODEL_ALLOWLIST`) |
+| [../model-provenance.md](../model-provenance.md) | Model licenses and content, and the allowlist of models (`BONSAIAI_MODEL_ALLOWLIST`) |
 | [../cache-sharing.md](../cache-sharing.md) ([日本語](../cache-sharing.ja.md)) | User guide to the model cache and sharing it |
 | [../cache-sharing-design.md](../cache-sharing-design.md) | Design record of distributing converted models and sharing caches (layers, sources, locks) |
 | [../prebuilt.md](../prebuilt.md) | Design for uploading converted models from a source (NAS) to Hugging Face and reading them back |
 | [../prebuilt-reuse.md](../prebuilt-reuse.md) | Rebuilding Core AI prebuilt programs: taking unchanged programs from an earlier export (the build record build.json, the conditions, device marks; Japanese) |
-| [../known-issues.md](../known-issues.md) | Known Core AI / coreai-build problems, hwnpu's workarounds, and what to do when Apple fixes them |
-| [../reference-paper.md](../reference-paper.md) ([日本語](../reference-paper.ja.md)) | NPU papers drawn on, and whether they held up on hwnpu's hardware |
+| [../known-issues.md](../known-issues.md) | Known Core AI / coreai-build problems, BonsaiAI's workarounds, and what to do when Apple fixes them |
+| [../reference-paper.md](../reference-paper.md) ([日本語](../reference-paper.ja.md)) | NPU papers drawn on, and whether they held up on BonsaiAI's hardware |
 | [../amd-npu-models.md](../amd-npu-models.md) | Design of running converted models on AMD's NPU (IRON) |
 | [../amd-xdna2-bench.md](../amd-xdna2-bench.md) | Data types and measured performance of XDNA2 (Strix Point) with IRON samples |
 | [../intel-npu-models.md](../intel-npu-models.md) | Design of running converted models on Intel's NPU |

@@ -27,17 +27,17 @@ import (
 	"unsafe"
 
 	"github.com/goccy/go-yaml"
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
-	"github.com/shibukawa/hwnpu/internal/vecops"
-	"github.com/shibukawa/hwnpu/internal/vision/detect"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vision/detect"
 )
 
 // Revision counts the changes to the programs that call for converting them again.
@@ -119,7 +119,7 @@ type Reader struct {
 	Logf func(format string, args ...any)
 
 	s        Setup
-	dev      *hwnpu.Device
+	dev      *bonsaiai.Device
 	chars    []string // the CTC classes: blank, the dictionary, a space
 	detModel string
 	recModel string
@@ -132,7 +132,7 @@ type Reader struct {
 // Open downloads the repositories' files into s.Dir unless they are there and reads the
 // recognizer's dictionary. The programs are converted and loaded onto dev (nil: the CPU
 // interpreter) when a picture first takes their size.
-func Open(ctx context.Context, dev *hwnpu.Device, s Setup) (*Reader, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, s Setup) (*Reader, error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
 	s.Log = log
 	r := &Reader{Thresh: 0.2, BoxThresh: 0.45, Unclip: 1.4, Sizes: Sizes, Widths: Widths, Batch: Batch, Columns: Columns,
@@ -589,7 +589,7 @@ func sortKey(h uint16) uint16 {
 	return h ^ (uint16(int16(h)>>15) | 0x8000)
 }
 
-// f16s are fp16 values' little-endian bytes as uint16s (the machines hwnpu runs on are
+// f16s are fp16 values' little-endian bytes as uint16s (the machines bonsaiai runs on are
 // little-endian).
 func f16s(b []byte) []uint16 {
 	if len(b) == 0 {
@@ -647,7 +647,7 @@ func (r *Reader) convertProgram(ctx context.Context, src Source, model, name str
 			return "", err
 		}
 		_, err = llm.WritePart(path, p, nil, llm.Options{Format: format, Backend: r.s.Backend}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("PP-OCR %s from %s, %s, %s (hwnpu)", describe, src.Repo, tag, format)
+			pkg.Description = fmt.Sprintf("PP-OCR %s from %s, %s, %s (bonsaiai)", describe, src.Repo, tag, format)
 			pkg.Metadata[llm.MetaArch] = "ppocr-" + name
 		})
 		if err != nil {
@@ -664,7 +664,7 @@ func (r *Reader) convertProgram(ctx context.Context, src Source, model, name str
 
 // PreparePrograms converts the programs of every size the reader takes by default: the
 // detector's (Sizes) and the recognizer's (Widths, each at its batch), as the first picture of
-// each does (hwnpu-dev models package). The reader is opened with no device.
+// each does (bonsaiai-dev models package). The reader is opened with no device.
 func (r *Reader) PreparePrograms(ctx context.Context) error {
 	for _, sz := range r.Sizes {
 		if _, err := r.convertProgram(ctx, r.s.Det, r.detModel, "det", []int{1, 3, sz[1], sz[0]}, "text detector"); err != nil {

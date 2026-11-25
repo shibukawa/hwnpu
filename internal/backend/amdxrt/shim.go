@@ -13,15 +13,15 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/dl"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // ShimEnv names the shim library to load, before the default names.
-const ShimEnv = "HWNPU_XRTSHIM"
+const ShimEnv = "BONSAIAI_XRTSHIM"
 
 // XRTEnv names XRT's xrt_coreutil.dll on Windows, before the places AMD's driver installs it.
-const XRTEnv = "HWNPU_XRT_CORE"
+const XRTEnv = "BONSAIAI_XRT_CORE"
 
 // shimABI is the xrtshim ABI this package binds (XS_ABI in native/xrtshim/xrtshim.h).
 const shimABI = 1
@@ -134,7 +134,7 @@ func bindShim(candidates ...string) (*shim, error) {
 		}
 	}
 	if v := s.abi(); v != shimABI {
-		return nil, fmt.Errorf("amdxrt: %s has ABI %d, this hwnpu needs %d: rebuild native/xrtshim", lib.Path, v, shimABI)
+		return nil, fmt.Errorf("amdxrt: %s has ABI %d, this bonsaiai needs %d: rebuild native/xrtshim", lib.Path, v, shimABI)
 	}
 	return s, nil
 }

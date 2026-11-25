@@ -1,6 +1,6 @@
 //===- q6_mv.cc - y = W x for q6 weights, and q6 to bf16 --------*- C++ -*-===//
 //
-// q6 is hwnpu's 6-bit block (tools/amd/iron_q4.py), q8's with 6-bit codes: 32
+// q6 is bonsaiai's 6-bit block (tools/amd/iron_q4.py), q8's with 6-bit codes: 32
 // out-features by 256 in-features, a bf16 scale per 32 in-features of an
 // out-feature (indexed [k / 32, m]), then the codes in q8's order (strips of
 // 16 out-features, each column-major: [m / 16, k, m % 16]) stored as

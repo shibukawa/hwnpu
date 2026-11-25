@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // ReplayState brings a Gated DeltaNet's recurrent state st_rec_N from before a step to after its
@@ -32,9 +32,9 @@ func (c *Config) ReplayState(name string, before, rows []byte, rowShape []int, n
 		go func(h int) {
 			defer wg.Done()
 			s := make([]float32, dk*dv)
-			hwnpu.DecodeF16(s, before[2*h*dk*dv:2*(h+1)*dk*dv])
+			bonsaiai.DecodeF16(s, before[2*h*dk*dv:2*(h+1)*dk*dv])
 			r := make([]float32, q*w)
-			hwnpu.DecodeF16(r, rows[2*h*q*w:2*(h+1)*q*w])
+			bonsaiai.DecodeF16(r, rows[2*h*q*w:2*(h+1)*q*w])
 			delta := make([]float32, dv)
 			for t := 0; t < n; t++ {
 				row := r[t*w : (t+1)*w]
@@ -63,7 +63,7 @@ func (c *Config) ReplayState(name string, before, rows []byte, rowShape []int, n
 					}
 				}
 			}
-			hwnpu.EncodeF16(after[2*h*dk*dv:2*(h+1)*dk*dv], s)
+			bonsaiai.EncodeF16(after[2*h*dk*dv:2*(h+1)*dk*dv], s)
 		}(h)
 	}
 	wg.Wait()

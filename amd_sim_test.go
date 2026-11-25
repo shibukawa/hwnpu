@@ -1,4 +1,4 @@
-package hwnpu_test
+package bonsaiai_test
 
 import (
 	"bytes"
@@ -6,11 +6,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/amd"
-	"github.com/shibukawa/hwnpu/internal/xdna"
-	"github.com/shibukawa/hwnpu/internal/xdna/xdnasim"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/amd"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/xdna/xdnasim"
 )
 
 // A simulated AMD NPU registered as backend "xdna-sim" (see internal/xdna/xdnasim).
@@ -29,9 +29,9 @@ func init() {
 	})
 }
 
-func openSimAMD(t *testing.T, opts ...hwnpu.Option) *hwnpu.Device {
+func openSimAMD(t *testing.T, opts ...bonsaiai.Option) *bonsaiai.Device {
 	t.Helper()
-	dev, err := hwnpu.Open(context.Background(), append([]hwnpu.Option{hwnpu.WithBackend("xdna-sim")}, opts...)...)
+	dev, err := bonsaiai.Open(context.Background(), append([]bonsaiai.Option{bonsaiai.WithBackend("xdna-sim")}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,12 +42,12 @@ func openSimAMD(t *testing.T, opts ...hwnpu.Option) *hwnpu.Device {
 // Acceptance milestone:m4-amd/kernel-run through the public API, written like IRON host code.
 func TestAMDPassthroughPublicAPI(t *testing.T) {
 	ctx := context.Background()
-	dev := openSimAMD(t, hwnpu.WithPowerPolicy(hwnpu.PowerLow))
+	dev := openSimAMD(t, bonsaiai.WithPowerPolicy(bonsaiai.PowerLow))
 	info := dev.Info()
-	if info.Vendor != hwnpu.VendorAMD || info.Name != "AMD NPU npu4 (Strix Point), 8 columns" || info.Caps&hwnpu.CapKernel == 0 {
+	if info.Vendor != bonsaiai.VendorAMD || info.Name != "AMD NPU npu4 (Strix Point), 8 columns" || info.Caps&bonsaiai.CapKernel == 0 {
 		t.Fatalf("%+v", info)
 	}
-	if _, err := dev.Graph(); !errors.Is(err, hwnpu.ErrUnsupported) {
+	if _, err := dev.Graph(); !errors.Is(err, bonsaiai.ErrUnsupported) {
 		t.Fatalf("Graph() = %v, want ErrUnsupported", err)
 	}
 
@@ -55,7 +55,7 @@ func TestAMDPassthroughPublicAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prog, err := kr.Load(ctx, hwnpu.ProgramSource{Xclbin: xdnasim.PassthroughXclbin()})
+	prog, err := kr.Load(ctx, bonsaiai.ProgramSource{Xclbin: xdnasim.PassthroughXclbin()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,11 +73,11 @@ func TestAMDPassthroughPublicAPI(t *testing.T) {
 
 	const n = 4096
 	insts := xdnasim.PassthroughInstructions(n)
-	instr, _ := dev.AllocBuffer(len(insts), hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+	instr, _ := dev.AllocBuffer(len(insts), bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 	in, _ := dev.AllocBuffer(n)
 	unused, _ := dev.AllocBuffer(n)
 	out, _ := dev.AllocBuffer(n)
-	for _, b := range []*hwnpu.Buffer{instr, in, unused, out} {
+	for _, b := range []*bonsaiai.Buffer{instr, in, unused, out} {
 		defer b.Close()
 	}
 	copy(instr.Bytes(), insts)
@@ -108,23 +108,23 @@ func TestAMDPassthroughPublicAPI(t *testing.T) {
 	}
 
 	s, err := dev.PowerSample()
-	if err != nil || s.Scope != hwnpu.ScopeNPU || s.Watts <= 0 {
+	if err != nil || s.Scope != bonsaiai.ScopeNPU || s.Watts <= 0 {
 		t.Fatalf("power %+v %v", s, err)
 	}
 }
 
 func TestKernelUnsupportedOnGraphDevices(t *testing.T) {
 	ctx := context.Background()
-	infos, _ := hwnpu.Enumerate(ctx)
+	infos, _ := bonsaiai.Enumerate(ctx)
 	for _, info := range infos {
-		if info.Caps&hwnpu.CapKernel != 0 {
+		if info.Caps&bonsaiai.CapKernel != 0 {
 			continue
 		}
-		dev, err := hwnpu.OpenDevice(ctx, info)
+		dev, err := bonsaiai.OpenDevice(ctx, info)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := dev.Kernel(); !errors.Is(err, hwnpu.ErrUnsupported) {
+		if _, err := dev.Kernel(); !errors.Is(err, bonsaiai.ErrUnsupported) {
 			t.Errorf("%s: Kernel() = %v", info.Name, err)
 		}
 		dev.Close()

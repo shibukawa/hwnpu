@@ -9,8 +9,8 @@ import (
 )
 
 // dirPrefix starts the name of a device's directory of shared buffers, followed by the
-// process id of the hwnpu process that made it: hwnpu-openvino-PID-RANDOM.
-const dirPrefix = "hwnpu-openvino-"
+// process id of the bonsaiai process that made it: bonsaiai-openvino-PID-RANDOM.
+const dirPrefix = "bonsaiai-openvino-"
 
 // makeDir makes the directory of a device's shared buffers in shmDir, named by this process.
 func makeDir() (string, error) {

@@ -13,20 +13,20 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
-// CacheCmd is hwnpu cache.
+// CacheCmd is bonsaiai cache.
 type CacheCmd struct {
 	Info  InfoCmd  `cmd:"" default:"1" help:"Where the cache is, what it holds by kind, the disk's free space, the limits and the layers models are read from (the command when none is named)."`
 	Ls    LsCmd    `cmd:"" help:"What the cache holds (or what PATTERN names) by model and kind: the units, size, when last used; the least recently used first (--units: each unit)."`
 	Prune PruneCmd `cmd:"" help:"Remove the units least recently used until the cache holds --max-size, or those not used for --older-than. Units used in the last hour are kept."`
 	Clear ClearCmd `cmd:"" help:"Remove the units PATTERN names (a model's name, OWNER/NAME, a glob: 'Qwen*'), of --kind, or --all. Core AI's compiled programs of the exports in them (~/Library/Caches/coreai-cache) go too, as with prune."`
-	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (HWNPU_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its hwnpu-lock.json does not name, the temporary files of uploads, in S3 the uploads in parts cut off over an hour ago. Folders being written now are left."`
+	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (BONSAIAI_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its bonsaiai-lock.json does not name, the temporary files of uploads, in S3 the uploads in parts cut off over an hour ago. Folders being written now are left."`
 }
 
-// open opens hwnpu's store as the commands do, its downloads' log to e.Err.
+// open opens bonsaiai's store as the commands do, its downloads' log to e.Err.
 func (e *Env) open() (*modelstore.Store, error) {
 	return modelstore.Open(modelstore.Options{Log: e.Err})
 }
@@ -34,7 +34,7 @@ func (e *Env) open() (*modelstore.Store, error) {
 // KindHelp names the kinds of units, for the commands' help (kong's ${kinds}).
 var KindHelp = strings.Join(cache.Kinds, ", ")
 
-// InfoCmd is hwnpu cache info.
+// InfoCmd is bonsaiai cache info.
 type InfoCmd struct{}
 
 func (c InfoCmd) Run(ctx context.Context) error { return run(ctx, Request{Command: "info"}) }
@@ -63,7 +63,7 @@ func (InfoCmd) exec(e *Env) error {
 	} else {
 		fmt.Fprintf(e.Out, "limits: %s (%s, %s)\n", l, cache.MaxSizeEnv, cache.MinFreeEnv)
 		if derr == nil && free < l.MinFreeOf(total) {
-			fmt.Fprintf(e.Out, "        %s: downloads stop until hwnpu cache prune or clear frees room\n", "the disk has less free")
+			fmt.Fprintf(e.Out, "        %s: downloads stop until bonsaiai cache prune or clear frees room\n", "the disk has less free")
 		}
 	}
 	fmt.Fprintf(e.Out, "holds:  %s\n", cache.FormatSize(u.Bytes))
@@ -235,7 +235,7 @@ func summary(e *Env, gs []group) {
 	fmt.Fprintf(e.Out, "%d units, %s\n", n, cache.FormatSize(total))
 }
 
-// LsCmd is hwnpu cache ls.
+// LsCmd is bonsaiai cache ls.
 type LsCmd struct {
 	Patterns []string `arg:"" optional:"" name:"pattern" help:"Units to list: a model's name, OWNER/NAME, a glob (all when left out)."`
 	Kind     []string `short:"k" help:"Only units of these kinds (${kinds})." placeholder:"KIND,..."`
@@ -286,7 +286,7 @@ func pick(units []modelstore.Unit, patterns, kinds []string) []modelstore.Unit {
 	return out
 }
 
-// PruneCmd is hwnpu cache prune.
+// PruneCmd is bonsaiai cache prune.
 type PruneCmd struct {
 	MaxSize   string   `help:"Remove the units least recently used until the cache holds at most this (200GB; ${max_size_env} when left out)." placeholder:"SIZE"`
 	OlderThan string   `help:"Remove the units not used for this long (30d, 12h, 2w)." placeholder:"AGE"`
@@ -341,7 +341,7 @@ func remove(e *Env, s *modelstore.Store, units []modelstore.Unit, dryRun, yes bo
 		return nil
 	}
 	if len(units) > 30 {
-		summary(e, groups(units)) // hwnpu cache ls --units lists each
+		summary(e, groups(units)) // bonsaiai cache ls --units lists each
 	} else {
 		table(e, units)
 	}
@@ -388,7 +388,7 @@ func remove(e *Env, s *modelstore.Store, units []modelstore.Unit, dryRun, yes bo
 	return err
 }
 
-// ClearCmd is hwnpu cache clear.
+// ClearCmd is bonsaiai cache clear.
 type ClearCmd struct {
 	Patterns []string `arg:"" optional:"" name:"pattern" help:"Units to remove: a model's name (its files, programs and exports), OWNER/NAME, a glob."`
 	Kind     []string `short:"k" help:"Only units of these kinds (${kinds})." placeholder:"KIND,..."`
@@ -452,7 +452,7 @@ func parseAge(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// CleanCmd is hwnpu cache clean.
+// CleanCmd is bonsaiai cache clean.
 type CleanCmd struct {
 	Yes    bool `short:"y" help:"Do not ask."`
 	DryRun bool `short:"n" help:"Show what would be removed, and remove nothing."`
@@ -473,7 +473,7 @@ func (c CleanCmd) exec(e *Env) error {
 		return err
 	}
 	if len(plans) == 0 {
-		fmt.Fprintln(e.Out, "no source is written back to (HWNPU_MODEL_SOURCE ?writeback=true)")
+		fmt.Fprintln(e.Out, "no source is written back to (BONSAIAI_MODEL_SOURCE ?writeback=true)")
 		return nil
 	}
 	var folders, files, uploads int

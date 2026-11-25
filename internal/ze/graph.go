@@ -6,7 +6,7 @@ import (
 	"structs"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/dl"
 )
 
 // GraphExtName is ZE_GRAPH_EXT_NAME. Older drivers publish versioned names such as

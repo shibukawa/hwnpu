@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
 
-	"github.com/shibukawa/hwnpu/internal/f32"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/f32"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // A decode step routed on the host (Manifest.ExpertsRoute: gpt-oss's 128 experts, which
@@ -36,9 +36,9 @@ type hostRouter struct {
 	// prefetch: the next layer's experts guessed from this layer's residual (its norm's weight
 	// and router, as the Mac's experts.prefetcher) and copied into its places while the next
 	// command runs, which reads none of them (expertPool.inflight: a place is waited for when it
-	// is run or copied over). guess: how many (HWNPU_DEV=moe.prefetch=N, 0 none)
+	// is run or copied over). guess: how many (BONSAIAI_DEV=moe.prefetch=N, 0 none)
 	guess     int
-	guess2    int      // two layers ahead (HWNPU_DEV=moe.prefetch2=N)
+	guess2    int      // two layers ahead (BONSAIAI_DEV=moe.prefetch2=N)
 	fetched   [][]bool // by layer and place: brought in by a guess, not yet run
 	raw       []float32
 	guessed   []int

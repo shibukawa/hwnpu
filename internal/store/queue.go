@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 )
 
 // What is written back to the sources goes in the background, after it is whole here
@@ -50,7 +50,7 @@ var (
 
 func queueDir() string { return cache.Sub("work", "queue") }
 
-// the units of the cache work is queued for are not removed (cache.Room, hwnpu cache prune)
+// the units of the cache work is queued for are not removed (cache.Room, bonsaiai cache prune)
 func init() { cache.SetBusy(queuedPaths) }
 
 // queuedPaths are the paths here the jobs of the queue put in the sources.
@@ -255,11 +255,11 @@ func runJob(file string) error {
 	case "original":
 		err = PutOriginal(ctx, *src, j.Repo, j.Commit, j.Name, j.Path, j.SHA256)
 		if errors.Is(err, ErrOtherCommit) {
-			logQueue("%s: %v (left as it is: hwnpu-dev sources update moves it)", describe(j), err)
+			logQueue("%s: %v (left as it is: bonsaiai-dev sources update moves it)", describe(j), err)
 			err = nil
 		}
 	default:
-		err = fmt.Errorf("a job %q this hwnpu does not know", j.Op)
+		err = fmt.Errorf("a job %q this bonsaiai does not know", j.Op)
 	}
 	if os.IsNotExist(err) {
 		err = nil // what was to go is gone here

@@ -9,7 +9,7 @@ pitfalls, prompt programs, the lock between processes and the ANE's memory. The 
 
 ## Limits
 
-| Limit | Value | What hwnpu does |
+| Limit | Value | What BonsaiAI does |
 |---|---|---|
 | Weights per program | Core ML: 0.99 GiB runs on the ANE, 1.02 GiB falls to the CPU (M1–M3; M4 2 GB). Core AI's own limit is in [Core AI](apple-coreai.md) | Split by layers ([Core ML](apple-coreml.md)), or at the attention ([LLM engine](llm-engine.md)) |
 | Any tensor dimension | 16384 fits; 16385 puts the ops on the CPU (M3), even an identity naming the output | `llm.NeuralEngineMaxDim`; KV caches in chunks of 16384 (`CacheChunks`); wide outputs, inputs and concats split |
@@ -63,10 +63,10 @@ program.
 
 ### Hardware rules (M2, Core AI, `aicheck rules`; Core AI's CPU has none of them)
 
-| Rule | Detail | What hwnpu does |
+| Rule | Detail | What BonsaiAI does |
 |---|---|---|
 | A linear's or conv's sum must stay under 2^15 | 32768 gives Inf (32256 right), **partial sums too** (+1/−1 halves of 1024 inputs: sum 0 but Inf). `reduce_sum` is right to 51200 | Range control (MaxScaled, residual scales). The per-row int8 overflow below is likely this rule |
-| Slice of the last axis starting at 1..14 mod 32 | Values over 4094 become Inf. Starts 0 and 15–31 right; other axes unaffected | `aicheck lint`, `HWNPU_DEV=ailower.notes=1`. Of 27 exports only LFM2-8B-A1B's top-4 routing weights (≤ 1) hit it: harmless |
+| Slice of the last axis starting at 1..14 mod 32 | Values over 4094 become Inf. Starts 0 and 15–31 right; other axes unaffected | `aicheck lint`, `BONSAIAI_DEV=ailower.notes=1`. Of 27 exports only LFM2-8B-A1B's top-4 routing weights (≤ 1) hit it: harmless |
 | softplus fused as log(1 + exp(x)) | 0 for x > 10.4 | `relu(x) + log(1 + exp(−|x|))` |
 | Tiny products inside a matmul | Dropped below about 2^-16 (fitted on attention data; products of 1e-6 summed over 512 give 0). Elementwise mul keeps them. In attention's `matmul(e, v)` with small values it erased the many lightly weighted keys (o off by up to 79 %, see [LLM engine](llm-engine.md)) | Scale up, divide later: the split form's attention multiplies e by 1024/l before the product |
 | matmul with inner dimension 1 | (1,8,M,1)·(1,8,1,128): M = 1 rel. error 0.28; M = 64 right | Written as a mul (outer product) |
@@ -99,15 +99,15 @@ program.
 
 ### How to check
 
-1. Compare the same program on the ANE and on the CPU (`HWNPU_COREAI_UNITS=cpu`,
-   `HWNPU_COREML_UNITS=cpu`), per position (KL of logits, or cosine), counting padding apart.
+1. Compare the same program on the ANE and on the CPU (`BONSAIAI_COREAI_UNITS=cpu`,
+   `BONSAIAI_COREML_UNITS=cpu`), per position (KL of logits, or cosine), counting padding apart.
 2. Compare with the reference run in fp16 before hunting a cause. If HF's fp16 drifts as much, the
    port is not wrong (Whisper's encoder: an attention sink at silent positions, not an ANE error).
-3. Convert the first N layers (`hwnpu-dev convert -layers N`) and find where the drift starts.
+3. Convert the first N layers (`bonsaiai-dev convert -layers N`) and find where the drift starts.
 4. Bisect a graph op by op between the ANE and the CPU interpreter (`TestBisect` in
    `internal/vision/detect`), or move one part at a time to the CPU.
 
-`hwnpu-dev check` on the CPU does not show any of these.
+`bonsaiai-dev check` on the CPU does not show any of these.
 
 ## Prompt programs
 
@@ -126,17 +126,17 @@ per call and computes logits for the last row only.
 Two processes using the ANE at once froze an M1 (predictions never returned, unkillable processes,
 back after about 20 minutes). So:
 
-- `llm.OpenDevice` takes an exclusive flock on `hwnpu/neural-engine.lock` in the user cache for a
+- `llm.OpenDevice` takes an exclusive flock on `bonsaiai/neural-engine.lock` in the user cache for a
   Core AI or Core ML device and holds it until the process ends. The second process prints
   `waiting for the Neural Engine: process N (NAME) is using it …`. Tools that open a provider directly
   take `llm.LockNPU`.
 - After taking the lock, `settle` waits until the previous process's programs are gone from the ANE
-  (`mem.NPUWired`, polled every 0.1 s, up to 30 s). The holder writes the non-hwnpu share it found
+  (`mem.NPUWired`, polled every 0.1 s, up to 30 s). The holder writes the non-bonsaiai share it found
   (`base N`) as the file's second line.
 - Why: a process's programs stay on the ANE after it ends (up to 7 s on a busy machine); a process
   that loads meanwhile may fail (`Request cancelled`). Another process compiling can also make a
   working program fail.
-- The lock cannot be skipped (`HWNPU_NPU_LOCK` was removed on 2026-11-22). Other sessions may
+- The lock cannot be skipped (`BONSAIAI_NPU_LOCK` was removed on 2026-11-22). Other sessions may
   hold it for hours: queue ANE work.
 
 ## Neural Engine memory
@@ -148,7 +148,7 @@ back after about 20 minutes). So:
 - The same weights in two programs (Q=8 and Q=128) are held twice: LFM3-1.7B lut6, 2.43 GiB
   (1.21 GiB × 2).
 - A program compiled just now is not on the ANE right after loading; it comes on at its first call.
-  `hwnpu-chat` logs "the Neural Engine holds N GiB", adding "so far" when it is under half the
+  `bonsaiai-chat` logs "the Neural Engine holds N GiB", adding "so far" when it is under half the
   weights.
 
 ## Not adopted
@@ -163,7 +163,7 @@ back after about 20 minutes). So:
 ## Open
 
 - Why two processes at once freeze the ANE. Intel and AMD were not tried; the lock is Apple only.
-- Size and location of the system ANE compile cache (needs sudo); `hwnpu-dev probe cache` results on
+- Size and location of the system ANE compile cache (needs sudo); `bonsaiai-dev probe cache` results on
   M1–M4 not recorded.
 - Which shapes at the 16384 limit fall to the CPU and which stay.
 - The ANE's memory beyond weights (KV, intermediates) is not told apart.

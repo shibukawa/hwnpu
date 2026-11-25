@@ -3,7 +3,7 @@ package anima
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
 )
 
 // Aspect is an aspect ratio name of --size and the picture's size in pixels it stands for.

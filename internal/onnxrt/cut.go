@@ -7,8 +7,8 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 
-	"github.com/shibukawa/hwnpu/internal/mapped"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 // The fields of onnx.proto Cut reads and writes.

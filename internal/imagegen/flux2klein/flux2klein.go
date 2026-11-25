@@ -42,11 +42,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // Config is the DiT's shape (iron_flux2klein.KleinConfig).
@@ -161,7 +161,7 @@ type Pipeline struct {
 	Text  TextConfig
 	Model Model
 
-	dev *hwnpu.Device
+	dev *bonsaiai.Device
 	dir string
 	// base is the shape of the IRON export's first size: its picture's step is the blocks' graphs
 	// without a suffix (C is the size drawn)
@@ -189,14 +189,14 @@ type Pipeline struct {
 
 // Open reads the export in dir: of tools/amd/iron_flux2klein.py on AMD's NPU, or of Convert on
 // Apple's Neural Engine (log, when not nil, shows the programs loading).
-func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, dir string, log io.Writer) (*Pipeline, error) {
 	return OpenAt(ctx, dev, dir, 0, 0, log)
 }
 
 // OpenAt is Open for pictures of w x h, one of the sizes the export holds (an export of Convert:
 // ConvertOptions.Sizes; an IRON one: IronSizes); 0 x 0 is the export's default (an IRON export's
 // first size).
-func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
+func OpenAt(ctx context.Context, dev *bonsaiai.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	if IsProgramExport(dir) {
 		return openProgramPipeline(dev, dir, w, h, log)
 	}
@@ -342,7 +342,7 @@ func (p *Pipeline) dump(name string, b []byte) {
 // MaxReferences is the model's limit of reference images.
 const MaxReferences = 4
 
-// References are the references the export runs, as hwnpu-image names them: "0" (text to image),
+// References are the references the export runs, as bonsaiai-image names them: "0" (text to image),
 // "2" (two of the picture's size), "2@half" (two of half its sides), "1+2@half" (a mix): every
 // mix of up to MaxReferences whose step's rows the export's blocks were compiled for
 // (tools/amd/iron_flux2klein.py --refs) and whose sizes it has an encoder for.

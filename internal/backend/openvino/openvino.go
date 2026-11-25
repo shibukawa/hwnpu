@@ -1,13 +1,13 @@
-// Package openvino runs OpenVINO IR (what hwnpu-dev convert -backend intel writes) with OpenVINO
-// itself, through a Python process (serve_ir.py, embedded) that shares the buffers with hwnpu as
+// Package openvino runs OpenVINO IR (what bonsaiai-dev convert -backend intel writes) with OpenVINO
+// itself, through a Python process (serve_ir.py, embedded) that shares the buffers with bonsaiai as
 // files mapped in memory. It is for checking the Intel path without Intel's NPU: on OpenVINO's
-// CPU plugin, hwnpu-chat (chat, agent, serve) and the tests run the same IR, by the same argument names,
-// as on the NPU through Level Zero. With HWNPU_DEV=ov.device=NPU it runs on OpenVINO's NPU plugin
+// CPU plugin, bonsaiai-chat (chat, agent, serve) and the tests run the same IR, by the same argument names,
+// as on the NPU through Level Zero. With BONSAIAI_DEV=ov.device=NPU it runs on OpenVINO's NPU plugin
 // instead, to compare with the Level Zero backend on an Intel machine.
 //
-// The backend lists a device only when asked: HWNPU_BACKEND=openvino, or Enable. HWNPU_OV_PYTHON names a
-// Python interpreter with the openvino and numpy packages (default python3, python on Windows), HWNPU_DEV=ov.device the
-// OpenVINO device (default CPU), HWNPU_DEV=ov.precision the CPU plugin's inference precision (default
+// The backend lists a device only when asked: BONSAIAI_BACKEND=openvino, or Enable. BONSAIAI_OV_PYTHON names a
+// Python interpreter with the openvino and numpy packages (default python3, python on Windows), BONSAIAI_DEV=ov.device the
+// OpenVINO device (default CPU), BONSAIAI_DEV=ov.precision the CPU plugin's inference precision (default
 // f32; f16 is nearer to what the NPU computes).
 package openvino
 
@@ -27,16 +27,16 @@ import (
 	"sync"
 	"sync/atomic"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 //go:embed serve_ir.py
 var serveScript []byte
 
-// Name is the backend's name, and the value of HWNPU_BACKEND that turns it on.
+// Name is the backend's name, and the value of BONSAIAI_BACKEND that turns it on.
 const Name = "openvino"
 
 // Provider is the OpenVINO backend provider.
@@ -53,12 +53,12 @@ func ovDevice() string {
 
 var enabled atomic.Bool
 
-// Enable makes the backend list its device without HWNPU_BACKEND=openvino (a command told to run
+// Enable makes the backend list its device without BONSAIAI_BACKEND=openvino (a command told to run
 // on it).
 func Enable() { enabled.Store(true) }
 
 func (Provider) Enumerate(ctx context.Context) ([]types.DeviceInfo, error) {
-	if !supported || os.Getenv("HWNPU_BACKEND") != Name && !enabled.Load() {
+	if !supported || os.Getenv("BONSAIAI_BACKEND") != Name && !enabled.Load() {
 		return nil, nil
 	}
 	dev := ovDevice()
@@ -77,7 +77,7 @@ func (Provider) Enumerate(ctx context.Context) ([]types.DeviceInfo, error) {
 }
 
 func python() string {
-	if p := os.Getenv("HWNPU_OV_PYTHON"); p != "" {
+	if p := os.Getenv("BONSAIAI_OV_PYTHON"); p != "" {
 		return p
 	}
 	if runtime.GOOS == "windows" {
@@ -193,7 +193,7 @@ func (d *device) AllocBuffer(size int, kind types.BufferKind) (backend.Buffer, e
 	return &buffer{d: d, path: path, b: b}, nil
 }
 
-// buffer is a file mapped by hwnpu and the Python process both.
+// buffer is a file mapped by bonsaiai and the Python process both.
 type buffer struct {
 	d    *device
 	path string

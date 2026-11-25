@@ -22,14 +22,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
 )
 
 // basic_pitch's constants.
@@ -124,7 +124,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	_, err = llm.WritePart(program, p, nil, llm.Options{Format: format, Backend: s.Backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = "Basic Pitch's harmonic stacking and CNN, from the normalized log CQT of a window (hwnpu)"
+		pkg.Description = "Basic Pitch's harmonic stacking and CNN, from the normalized log CQT of a window (bonsaiai)"
 		pkg.Metadata[llm.MetaArch] = Arch
 	})
 	if err != nil {
@@ -178,7 +178,7 @@ type Transcriber struct {
 }
 
 // Open loads the graph and the program on dev (nil: the CPU interpreter).
-func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Transcriber, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, model, program string) (*Transcriber, error) {
 	g, err := onnx.Load(model)
 	if err != nil {
 		return nil, err

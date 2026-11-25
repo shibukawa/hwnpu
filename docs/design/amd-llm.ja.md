@@ -13,11 +13,11 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | `gemma4` | `iron_gemma4.Gemma4Tail` (KV を共有する層を最後の行だけにした IRON の `Gemma4`) | Gemma 4 E2B、E4B |
 | `gemma4mm` | `iron_gemma4.Gemma4TailMultimodal` | 画像と音声つきの Gemma 4 E2B |
 | `gemma4full`、`gemma4mmfull` | IRON のままの `Gemma4`、`Gemma4Multimodal` | 照合用のみ |
-| `lfm3` | `iron_lfm3.Lfm3` (hwnpu のもの。IRON にはない) | LFM3-1.7B |
+| `lfm3` | `iron_lfm3.Lfm3` (BonsaiAI のもの。IRON にはない) | LFM3-1.7B |
 | `lfm3vl`、`lfm3audio`、`lfm3omni` | `iron_lfm3vl`、`iron_lfm3audio`、`iron_lfm3omni` | LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B |
-| `plamo3` | `iron_plamo3.Plamo3` (hwnpu のもの) | PLaMo 3 Translate 0.8B、2B、8B |
-| `d1`、`d1omni` | `iron_d1.D1Vl`、`iron_d1.D1Omni` (hwnpu の) | d1-2B、d1-Omni-2B (System One の判断モデル): LFM3-VL / Omni の full attention の層をプロンプトの塊で双方向にし、最終の隠れ状態を出す ([amd-npu-models.md](../amd-npu-models.md) 29 節) |
-| `ouro` | `iron_ouro.Ouro` (hwnpu のもの。IRON にはない) | Ouro-1.4B-Thinking (評価のみで models.yaml にはない。[model-estimation.ja.md](../model-estimation.ja.md))。2.6B は書き出していない |
+| `plamo3` | `iron_plamo3.Plamo3` (BonsaiAI のもの) | PLaMo 3 Translate 0.8B、2B、8B |
+| `d1`、`d1omni` | `iron_d1.D1Vl`、`iron_d1.D1Omni` (BonsaiAI の) | d1-2B、d1-Omni-2B (System One の判断モデル): LFM3-VL / Omni の full attention の層をプロンプトの塊で双方向にし、最終の隠れ状態を出す ([amd-npu-models.md](../amd-npu-models.md) 29 節) |
+| `ouro` | `iron_ouro.Ouro` (BonsaiAI のもの。IRON にはない) | Ouro-1.4B-Thinking (評価のみで models.yaml にはない。[model-estimation.ja.md](../model-estimation.ja.md))。2.6B は書き出していない |
 | `qwen35` | `iron_qwen35.Qwen35` (GDN は `iron_gdn.py`) | Qwen3.5-0.8B、2B、4B |
 
 今の書き出しの指定は [model-recipes.yaml](../../model-recipes.yaml) の `iron_export_lm.py` の `args`:
@@ -31,7 +31,7 @@ AMD XDNA 2 (Ryzen AI、NPU2) で IRON を通して動かす密な言語モデル
 | Qwen3.5-0.8B、2B | `qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3` |
 | Qwen3.5-4B | `qwen35 --max-seq-len 4096 --q4` |
 
-書き出しの名前は `~/models/NAME.amd-npu2-q4` (または `NAME.amd-npu2`)。AMD の NPU だけの機械では `hwnpu-chat -m NAME` がそれを選ぶ。`hwnpu-chat -iron DIR` と `hwnpu-agent -iron DIR` は書き出しのディレクトリを読み、トークナイザー (`tokenizer.json`、PLaMo は `tokenizer.jsonl`) とチャットの書式もそこから取る。`NoThink` などカタログの指定は `-iron DIR` には効かない (要求で `enable_thinking: false` を渡す)。
+書き出しの名前は `~/models/NAME.amd-npu2-q4` (または `NAME.amd-npu2`)。AMD の NPU だけの機械では `bonsaiai-chat -m NAME` がそれを選ぶ。`bonsaiai-chat -iron DIR` と `bonsaiai-agent -iron DIR` は書き出しのディレクトリを読み、トークナイザー (`tokenizer.json`、PLaMo は `tokenizer.jsonl`) とチャットの書式もそこから取る。`NoThink` などカタログの指定は `-iron DIR` には効かない (要求で `enable_thinking: false` を渡す)。
 
 IRON にアプリケーションのないモデルは IRON の部品 (`Linear.split`、`CausalConv1d`、`Checkpoints`、`MHA`、`SandwichLayer` …) で書く。LFM3 と PLaMo 3 はそれだけで書けた。
 
@@ -64,7 +64,7 @@ IRON にアプリケーションのないモデルは IRON の部品 (`Linear.sp
 | `--command-per-step` | なし | 測るため: 1 手順 1 コマンド、`OUT/steps.json` |
 | `--check N`、`--random-weights SEED` | | 照合を書く / 乱数の重み |
 
-`HWNPU_EXPORT_STEPS=1` で版ごとの演算の並び (`<版>.steps.txt`) を書く。
+`BONSAIAI_EXPORT_STEPS=1` で版ごとの演算の並び (`<版>.steps.txt`) を書く。
 
 書き出しの時間 (文脈 4096、塊 1024): E2B 約 6 分 (最大 RSS 19.3 GB)、画像と音声つきの E2B 10 分半、E4B 8 分 (27.4 GB)、PLaMo 3 q4 4 分半、LFM3-1.7B q4 2 分半、Qwen3.5-0.8B 2 分。
 
@@ -109,7 +109,7 @@ Gemma 4 を 256 にするとスライディング窓の層がリングになり 
 | 窓の層は窓の中だけを読む (`iron_window.py`、既定) | プロンプト: `start + chunk` で終わる `chunk + window` 個 (64 に切り上げ、E2B は 1536) の鍵と値を `Copy` で共有の作業用の状態に写し、IRON の `MHA` を掛ける。窓の層のキャッシュは `chunk` 行多い。デコード: `window + 1` 個をその場で読む (`kv_offset` を足した `MHA` の派生クラス、名前は `MHA` のまま)。キャッシュは位置で引くままなので、どの位置からでもやり直せる | 位置 3072 の窓の層の注意 112 → 66 ms。E2B 4K 7.84 → 6.87 秒 (−12 %)、PLaMo 3 q4 8K 60.3 → 53.1 秒。デコード −2 % (E2B)、−14 % (PLaMo 3、位置 8191) |
 | GDN の rule は有効な行のあるブロックだけ (`gdn_zero_y`) | 有効な行のないブロックは x を読み流して 0 を書く | 演算子 27 → 5 ms (256 行に 32 行) |
 | GDN の SiLU を rule の前で 1 回 (`GdnSiLU`、`iron_gdn.silu_operator`、`GDR_PRESILU`) | rule は値の列 16 本の slice ごとに行を読み直し、そのたびに q、k、v の SiLU をかけ直していた | 演算子 30.4 → 9.8 ms。Qwen3.5-0.8B の 512 の塊 0.9 → 0.5 秒。ロジットはビット単位で同じ |
-| LFM3 の短い畳み込みを 1 演算子に (`ShortConvChunk`、`iron_shortconv.short_conv_chunk_operator`、`kernels/short_conv.cc`) | B·x、7 タップ、C· を 1 つに。8 列 1 コアずつ、8 行のタイル、前の 6 行を `hist` に、`valid` は RTP。in_proj は 6144 出力の GEMM 1 回。IRON の形は 1 層約 26 演算。本文の層だけ (LFM3-Audio のエンコーダは前のまま)。`HWNPU_LFM3_CHUNK_CONV=0` | 参照とビット単位で同じ |
+| LFM3 の短い畳み込みを 1 演算子に (`ShortConvChunk`、`iron_shortconv.short_conv_chunk_operator`、`kernels/short_conv.cc`) | B·x、7 タップ、C· を 1 つに。8 列 1 コアずつ、8 行のタイル、前の 6 行を `hist` に、`valid` は RTP。in_proj は 6144 出力の GEMM 1 回。IRON の形は 1 層約 26 演算。本文の層だけ (LFM3-Audio のエンコーダは前のまま)。`BONSAIAI_LFM3_CHUNK_CONV=0` | 参照とビット単位で同じ |
 | Qwen3.5 の GDN の畳み込みと SiLU を 1 つに (`GdnConvChunk`) | 1 列 2 コア (4 コアは memtile の DMA チャネルが 10 本要り、6 本を超える)。呼び出しの行より後は 0。`QWEN35_CHUNK_CONV=0` | 8704 チャネル: 3 行 3.99 → 0.95 ms |
 
 今のプロンプトの時間 (`ironlm -record` の最初の呼び出し、NPU をほかが使っていないとき):
@@ -125,16 +125,16 @@ Gemma 4 を 256 にするとスライディング窓の層がリングになり 
 
 ## デコードのプログラム
 
-AMD のデコードは重みのバイト数ではなく演算の数で決まる: 演算が替わるたびに配列の設定を書き直す (約 40 µs + 2.3 µs/KB。密なモデルの 1 トークンの 7 割前後)。Qwen3.5-0.8B は bf16、q4、q6 で同じ時間。だから演算をまとめる。数は `HWNPU_EXPORT_STEPS=1` と `elfconfigs` で数える。
+AMD のデコードは重みのバイト数ではなく演算の数で決まる: 演算が替わるたびに配列の設定を書き直す (約 40 µs + 2.3 µs/KB。密なモデルの 1 トークンの 7 割前後)。Qwen3.5-0.8B は bf16、q4、q6 で同じ時間。だから演算をまとめる。数は `BONSAIAI_EXPORT_STEPS=1` と `elfconfigs` で数える。
 
 | まとめたもの | モデル | 既定 / 切り替え |
 |---|---|---|
 | `QGEMVAdd`: 射影の bias と残差を GEMV の出口で足す | Qwen3.5、gpt-oss | オン |
-| `QGEMVGlu`: gate と up を 1 つの表で `silu(Gx)·(Ux)` | Qwen3.5 (q6 / q8)、LFM3 (q4) | オン。`HWNPU_LFM3_FUSE_GLU=0` |
-| `QGEMVGlu` の GELU 版 (`Q_GLU_GELU`) | Gemma 4 | **オフ**。`HWNPU_GEMMA4_FUSE_GLU=1` (採らなかったもの) |
-| `ShortConvStep` (`iron_shortconv.py`): デコードの短い畳み込みを 1 演算子に。状態の slot を呼び出しごとのオフセットで直接読み書きする (`short_conv_operator(slots=)`、前後の Copy なし)。in_proj は QGEMV 1 回 | LFM3 | オン。`HWNPU_LFM3_FUSED_CONV=0`、`HWNPU_LFM3_SLOTS_CONV=0` |
-| `SandwichAdd` (`iron_sandwich.py`、`kernels/sandwich_add.cc`): post norm、残差、次の norm を 1 コアで。二乗和は float32、bf16 への丸めは 1 回。Gemma の layer_scalar には `scale` (丸めてから積、IRON と同じ) | LFM3、Gemma 4 | オン。`HWNPU_LFM3_FUSED_NORMS=0`、`HWNPU_GEMMA4_FUSED_NORMS=0` |
-| Gemma 4 の per-layer input を最初の層の前で 35 層分まとめて (35 × 256 行の GEMV 1 つ、RMSNorm 1 つ …) | Gemma 4 | オン。`HWNPU_GEMMA4_BATCH_PLE=0`。ロジットはビット単位で同じ |
+| `QGEMVGlu`: gate と up を 1 つの表で `silu(Gx)·(Ux)` | Qwen3.5 (q6 / q8)、LFM3 (q4) | オン。`BONSAIAI_LFM3_FUSE_GLU=0` |
+| `QGEMVGlu` の GELU 版 (`Q_GLU_GELU`) | Gemma 4 | **オフ**。`BONSAIAI_GEMMA4_FUSE_GLU=1` (採らなかったもの) |
+| `ShortConvStep` (`iron_shortconv.py`): デコードの短い畳み込みを 1 演算子に。状態の slot を呼び出しごとのオフセットで直接読み書きする (`short_conv_operator(slots=)`、前後の Copy なし)。in_proj は QGEMV 1 回 | LFM3 | オン。`BONSAIAI_LFM3_FUSED_CONV=0`、`BONSAIAI_LFM3_SLOTS_CONV=0` |
+| `SandwichAdd` (`iron_sandwich.py`、`kernels/sandwich_add.cc`): post norm、残差、次の norm を 1 コアで。二乗和は float32、bf16 への丸めは 1 回。Gemma の layer_scalar には `scale` (丸めてから積、IRON と同じ) | LFM3、Gemma 4 | オン。`BONSAIAI_LFM3_FUSED_NORMS=0`、`BONSAIAI_GEMMA4_FUSED_NORMS=0` |
+| Gemma 4 の per-layer input を最初の層の前で 35 層分まとめて (35 × 256 行の GEMV 1 つ、RMSNorm 1 つ …) | Gemma 4 | オン。`BONSAIAI_GEMMA4_BATCH_PLE=0`。ロジットはビット単位で同じ |
 | GDN のデコードの演算子に畳み込みとゲートつきの norm を入れる (`Qwen35Layer.fold`) | Qwen3.5 | オン |
 | GDN の配列を Worker の局所バッファに (`gdn_bind`): 状態の 3 つの limb だけ (`s_hi`、`s_mid` / `s_lo` は定数の位置)。`blk`、`u_row`、`y_keep` は静的 (全部にするとプログラムが 16 KB を超えた) | Qwen3.5 / 3.6 | オン。GDN 1 回の 0 の塊 258 → 61 KB |
 | GDN の列を 64 にそろえる (`iron_gdn.COLUMN_ALIGN`) | Qwen3.5 | 0.8B / 2B の融合した射影は 97 ブロック (素数) で 1 列でしか回らなかった: 571 → 217 µs |
@@ -164,7 +164,7 @@ LFM3 のデコードの残り (226 回): QGEMV の設定は 1 つ 75〜97 KB (�
 
 - KV キャッシュはホストから読み書きできる arena の bank の中に位置ごとに並び、どの版でも配置が同じ (E2B: 15 層 × 鍵 / 値、1 位置 18 KiB)。`Mark` / `Rewind` は位置だけを動かす: 次の呼び出しが上書きする
 - `iron.Model.ExportRows` / `ImportRows` が位置の範囲を写す。prompt store と `Save` は `rowSource` (`RowBytes`、`ExportRows`) を通して使う。store のキーはモデルの名前、manifest の更新時刻、bank の大きさ。2736 トークンで 1 項目 51 MB。再起動のあとの同じ要求は 13.2 秒 → 0.0 秒
-- 状態のあるモデル (LFM3 の畳み込み、Qwen3.5 の GDN): IRON の `Checkpoints` は塊の境ごとに slot を持つ (slot k は位置 k × 塊までの後の状態)。`StateAt(pos)` / `SetStateAt` は pos から始まる呼び出しが読む slot だけを写し (LFM3 の 13 層で 312 KiB)、KV の行と合わせて pos の系列が全部戻る。`Prompt` は呼び出しを塊の境で切る。印、`Rewind`、`Save`、store がこの写しを持つ。`TestStateRewindOnDevice` (`HWNPU_TEST_IRON_RECURRENT_EXPORT`)
+- 状態のあるモデル (LFM3 の畳み込み、Qwen3.5 の GDN): IRON の `Checkpoints` は塊の境ごとに slot を持つ (slot k は位置 k × 塊までの後の状態)。`StateAt(pos)` / `SetStateAt` は pos から始まる呼び出しが読む slot だけを写し (LFM3 の 13 層で 312 KiB)、KV の行と合わせて pos の系列が全部戻る。`Prompt` は呼び出しを塊の境で切る。印、`Rewind`、`Save`、store がこの写しを持つ。`TestStateRewindOnDevice` (`BONSAIAI_TEST_IRON_RECURRENT_EXPORT`)
 - `Resumable()` はリングのある (`Rings > 0`) か slot の合わない書き出しを拒む。エンジンは restartable でなくこれも満たさない書き出しを読み込まない
 - `Engine.markTurns`: restartable でない状態のあるモデルでは、prefill が最後のターンの見出し (`<|im_start|>assistant\n`) の後にも印を付ける。チャットの型が前の思考を外すので、共通の先頭は前のアシスタントのターンまでだから
 - `ironSession.StepTokens`: トークン数 × ステップの時間が塊より短ければ、短い読みをデコードのステップで読む (セッションが両方の時間を覚える)
@@ -203,11 +203,11 @@ LFM3 のデコードの残り (226 回): QGEMV の設定は 1 つ 75〜97 KB (�
 - `iron.Model.Keep`: 一部の行だけを採るとき、ホストが `rows_state` の行 kept−1 を slot に写す (Qwen3.5-0.8B で 18 層 × 1.1 MB、1.5 ms)。余分な鍵と値の行は後で上書きされる。塊の境をまたぐ確認はデコードのステップで (`SpeculateTokens`)
 - 制御コード: 確かめる版の ELF 30 MB とデコードの 26 MB を 64 MiB のヒープに両方置く。入らなければ呼び出しごとに作る (`perCall`)
 - 合格: `ironlm -verify` — 3 行のロジットがデコード 3 ステップとビット単位で同じ、`Keep` の後のステップもビット単位で同じ
-- Qwen3.5-0.8B q6 (デコード 82 ms のとき): 確かめる版 104.5 ms (1.27 ステップ)。プロンプトからの下書き 2 つ (`LookupDraft`) で、英語のコード 82.4 → 72.1 ms/トークン、日本語の説明 82.5 → 61.7。`hwnpu-chat -iron` は版があれば使い、`HWNPU_DEV=iron.drafts=0` で使わない。カタログで `--verify 3` を持つのは Qwen3.5-0.8B と 2B だけ
+- Qwen3.5-0.8B q6 (デコード 82 ms のとき): 確かめる版 104.5 ms (1.27 ステップ)。プロンプトからの下書き 2 つ (`LookupDraft`) で、英語のコード 82.4 → 72.1 ms/トークン、日本語の説明 82.5 → 61.7。`bonsaiai-chat -iron` は版があれば使い、`BONSAIAI_DEV=iron.drafts=0` で使わない。カタログで `--verify 3` を持つのは Qwen3.5-0.8B と 2B だけ
 
 ### 下書きの選択的な確認
 
-3 行の確認は今、Qwen3.5-0.8B でデコード 1.96 ステップ分、2B で 1.67 ステップ分かかる。Ryzen AI 9 365 では全部の下書きを確かめると、散文は下書きなしより遅かった。AMD だけで使う `chat.draftPolicy` は、手前の一致の長さごとに採用率 q を数え、`1 + q + q²` が確認の費用 (既定はデコード 1.8 ステップ、3 % の余裕を加える) を超えるときだけ確かめる。確かめなかった下書きも、後のトークンと照らして q を更新する。`HWNPU_DEV=draft.policy=0` で全部確かめ、`HWNPU_DEV=draft.ratio` で費用を変え、`HWNPU_DEV=draft.trace=FILE` で判断を記録する。Apple と Intel は変わらない。
+3 行の確認は今、Qwen3.5-0.8B でデコード 1.96 ステップ分、2B で 1.67 ステップ分かかる。Ryzen AI 9 365 では全部の下書きを確かめると、散文は下書きなしより遅かった。AMD だけで使う `chat.draftPolicy` は、手前の一致の長さごとに採用率 q を数え、`1 + q + q²` が確認の費用 (既定はデコード 1.8 ステップ、3 % の余裕を加える) を超えるときだけ確かめる。確かめなかった下書きも、後のトークンと照らして q を更新する。`BONSAIAI_DEV=draft.policy=0` で全部確かめ、`BONSAIAI_DEV=draft.ratio` で費用を変え、`BONSAIAI_DEV=draft.trace=FILE` で判断を記録する。Apple と Intel は変わらない。
 
 Ryzen AI 9 365 で 300 トークン、温度 0 のとき、0.8B の散文は全部確かめる 14.6 tok/s から採否を使うと 18.8 (下書きなしも 18.8)、2B は 9.6 → 11.5 (下書きなしは 11.2)。写しの多い答えの速さも保った: 0.8B のコードは 26.9 → 27.2 tok/s、2B の JSON は 14.2 → 13.6。温度 0 でも下書きの有無で文が変わることがある。原因は未調査。
 
@@ -271,8 +271,8 @@ KL(HF ‖ NPU)、README / GPL-3 / wiki40b-ja の 400 行ずつ (`ironlm -forced`
 
 - **LFM3** (`iron_lfm3.py`): 畳み込みの層は `in_proj` を B、C、x に分け、B·x を `CausalConv1d` (幅 7、状態は `Checkpoints`) に通し、C を掛けて `out_proj`。全注意の層は q と k をヘッドごとに RMSNorm、RoPE は周波数の後ろ半分を 0 (「zero-tail」)、ヘッドごとの sigmoid のゲートは `gate_proj` の行をヘッドの列数だけ繰り返して要素ごとの積に。スライディング窓の層は窓 256、θ 10000。sandwich norm、SwiGLU、最後の `embedding_norm`、頭は埋め込み
 - **PLaMo 3** (`iron_plamo3.py`、照合は `iron_plamo3_check.py`): RMSNorm は `(offset + w)·x` で offset は norm ごと (1、注意の後 1/5、MLP の後 1/5^1.5)。float32 で重みに足して bf16 に丸める。8 層に 1 層 (7、15、23) が全体、ほかは窓 2048。窓の RoPE は θ 10000、全体の層は θ 10⁶ の YaRN (倍率 256、元の文脈 4096、beta 32 と 1。config.json の `rope_parameters` ではなく `rope_scaling_factor` と `initial_context_length` から作る)、`rope_attention_scaling` は 0.1 ln 256 + 1。`lm_head` は tie なし、埋め込みの尺度なし。トークナイザーと PFML3 のチャットの書式は [LLM のモデル](llm-models.ja.md)
-- **Ouro** (`iron_ouro.py`): ループ型のデコーダーで、24 層を 1 トークンにつき同じ重みで 4 回回す ([LLM のモデル](llm-models.ja.md))。IRON の `SandwichLayer` に Ouro の norm の名前を付け替える (`input_layernorm_2` → `post_attention_layernorm`、`post_attention_layernorm` → `pre_feedforward_layernorm`、`post_attention_layernorm_2` → `post_feedforward_layernorm`)。`self.layers` は `model.layers` を 4 回並べたもの。`Ouro.layer` が 2 回目以降の回に、その回の `KVCache` を call 経由で渡し (`call.ouro_cache`。バッファは `passes.P.layers.L.cache.keys` で、ランタイムは名前の `.cache.` で KV キャッシュと見なす)、回の最後の層の後に `model.norm` を通す。重みはバンクに 1 度だけ置かれる (IRON の `walk` は同じモジュールを 1 度しか取らない)。チェックポイントの `model.early_exit_gate` は木から外す (IRON は余った重みをエラーにする)。MLP と head は q6 で、gate と up を 1 つの表にする (`QGEMVGlu`、`HWNPU_OURO_FUSE_GLU=0` で外す)。注意は q8。ホストで丸めたときの KL (5 つの評価の文の平均、`q4_gptq.py ouro --method rtn`、transformers 4.54) は q4 0.130、q6 0.013、q8 0.0012。文脈 2048: キャッシュは 96 層 × 1 位置 8 KiB (2048 で 1.6 GB)、バンクは 2.86 GB。書き出しは 43〜48 秒、RSS のピーク 7.7 GB。プロンプトの塊のコマンドは 12 層ごとに切る (`install_cuts`、`HWNPU_OURO_LAYERS_PER_COMMAND`): 4 回とも同じ重みを読むので IRON の切れ目 (コマンドのスクラッチパッドの語の数による) が来ず、塊が 1 つのコマンドで命令列が 233 MB (bf16 で 160 MB) になり、64 MiB のデバイスのヒープに入らなかった (`control code buffer: CREATE_BO: resource temporarily unavailable`。ほかの書き出しで最大のコマンドは 37 MB)。いまは約 29 MB のコマンドが 8 つ。デコードは 1 つのまま (36 MB)。Ryzen AI 9 365 で (2026-11-22): Hugging Face と比べて (`ironlm -forced` で readme.md の 256 + 64 トークン、transformers 4.54 の `forced_logits.py`) q6 は KL 0.026 / 中央値 0.0036 / 95 パーセンタイル 0.108、1 位の一致 98.4 %。bf16 は KL 0.0022、98.4 %。q6 のデコードは 300 で 1 トークン 268 ms (3.6〜3.7 トークン/秒)、1024 で 312 ms、2047 で 357 ms。bf16 は 321 ms。1024 の塊は 0 から 2.50 秒、1024 から 3.11 秒 (409 / 329 トークン/秒。どのコマンドも 2 秒の制限より十分短い)。固定されるメモリ 2.79 GiB (`drm-total-memory`)、プロセス 0.82 GB、読み込み 1.1 秒。hwnpu-chat で動く (貪欲に 3.6 トークン/秒)。
-- **Gemma 4**: IRON のアプリケーション。hwnpu はプロンプトの forward を差し替え (`Gemma4Tail`)、PLE と埋め込みをホストに移す (`iron_hostple`)。モデル名は `Gemma4` のまま (`hwnpu_name`。チャットの書式はこれで決まる)
+- **Ouro** (`iron_ouro.py`): ループ型のデコーダーで、24 層を 1 トークンにつき同じ重みで 4 回回す ([LLM のモデル](llm-models.ja.md))。IRON の `SandwichLayer` に Ouro の norm の名前を付け替える (`input_layernorm_2` → `post_attention_layernorm`、`post_attention_layernorm` → `pre_feedforward_layernorm`、`post_attention_layernorm_2` → `post_feedforward_layernorm`)。`self.layers` は `model.layers` を 4 回並べたもの。`Ouro.layer` が 2 回目以降の回に、その回の `KVCache` を call 経由で渡し (`call.ouro_cache`。バッファは `passes.P.layers.L.cache.keys` で、ランタイムは名前の `.cache.` で KV キャッシュと見なす)、回の最後の層の後に `model.norm` を通す。重みはバンクに 1 度だけ置かれる (IRON の `walk` は同じモジュールを 1 度しか取らない)。チェックポイントの `model.early_exit_gate` は木から外す (IRON は余った重みをエラーにする)。MLP と head は q6 で、gate と up を 1 つの表にする (`QGEMVGlu`、`BONSAIAI_OURO_FUSE_GLU=0` で外す)。注意は q8。ホストで丸めたときの KL (5 つの評価の文の平均、`q4_gptq.py ouro --method rtn`、transformers 4.54) は q4 0.130、q6 0.013、q8 0.0012。文脈 2048: キャッシュは 96 層 × 1 位置 8 KiB (2048 で 1.6 GB)、バンクは 2.86 GB。書き出しは 43〜48 秒、RSS のピーク 7.7 GB。プロンプトの塊のコマンドは 12 層ごとに切る (`install_cuts`、`BONSAIAI_OURO_LAYERS_PER_COMMAND`): 4 回とも同じ重みを読むので IRON の切れ目 (コマンドのスクラッチパッドの語の数による) が来ず、塊が 1 つのコマンドで命令列が 233 MB (bf16 で 160 MB) になり、64 MiB のデバイスのヒープに入らなかった (`control code buffer: CREATE_BO: resource temporarily unavailable`。ほかの書き出しで最大のコマンドは 37 MB)。いまは約 29 MB のコマンドが 8 つ。デコードは 1 つのまま (36 MB)。Ryzen AI 9 365 で (2026-11-22): Hugging Face と比べて (`ironlm -forced` で readme.md の 256 + 64 トークン、transformers 4.54 の `forced_logits.py`) q6 は KL 0.026 / 中央値 0.0036 / 95 パーセンタイル 0.108、1 位の一致 98.4 %。bf16 は KL 0.0022、98.4 %。q6 のデコードは 300 で 1 トークン 268 ms (3.6〜3.7 トークン/秒)、1024 で 312 ms、2047 で 357 ms。bf16 は 321 ms。1024 の塊は 0 から 2.50 秒、1024 から 3.11 秒 (409 / 329 トークン/秒。どのコマンドも 2 秒の制限より十分短い)。固定されるメモリ 2.79 GiB (`drm-total-memory`)、プロセス 0.82 GB、読み込み 1.1 秒。bonsaiai-chat で動く (貪欲に 3.6 トークン/秒)。
+- **Gemma 4**: IRON のアプリケーション。BonsaiAI はプロンプトの forward を差し替え (`Gemma4Tail`)、PLE と埋め込みをホストに移す (`iron_hostple`)。モデル名は `Gemma4` のまま (`bonsaiai_name`。チャットの書式はこれで決まる)
 - **密な Qwen3.5**: モデルは [Qwen](llm-qwen.ja.md)。GDN の演算子は Qwen3.6 と共通 ([MoE](moe.ja.md))
 
 ## 移植の照合
@@ -283,13 +283,13 @@ KL(HF ‖ NPU)、README / GPL-3 / wiki40b-ja の 400 行ずつ (`ironlm -forced`
 - LFM3 の `forced_logits.py`: チェックポイントの `auto_map` で transformers がリモートコードを読もうとする。config.json から `auto_map` を消した置き場を渡す
 - `ironlm -record` はその書き出し自身のロジットを `check/` として書き、別の書き出しをそれに照らす (作り直しの「ビット単位で同じ」はこれで確かめる)
 - `ironlm -depth` は文脈まで塊の境ごとに塊とステップを測る。`-bench` は数トークンの呼び出し、`-steps N` はデコードの速さ。新旧を交互に、NPU をほかが使っていないときに
-- 演算ごとの時間: `--command-per-step` と `HWNPU_DEV=iron.timing=1` (和は普通の書き出しより約 1 割多い)
-- 書き出しを変えたら、`hwnpu-chat` で画像 1 枚と音声 1 本を通して塔を確かめる
+- 演算ごとの時間: `--command-per-step` と `BONSAIAI_DEV=iron.timing=1` (和は普通の書き出しより約 1 割多い)
+- 書き出しを変えたら、`bonsaiai-chat` で画像 1 枚と音声 1 本を通して塔を確かめる
 - 落としたチェックポイントは `x-linked-etag` の sha256 と照らす: LFM3-Audio と Omni の safetensors に、乱数の重みの照合では見つからないビットの反転があった
 
 ## 採らなかったもの
 
-- GPU や 2 台目の機械でプロンプトを速くする (oMLX の Prefill Accelerator): hwnpu は省電力が目標。代わりに計算を減らす (Gemma 4 の tail)
+- GPU や 2 台目の機械でプロンプトを速くする (oMLX の Prefill Accelerator): BonsaiAI は省電力が目標。代わりに計算を減らす (Gemma 4 の tail)
 - プロンプトの塊で下書きを確かめる: デコード 3〜9 ステップ分かかり、prompt lookup の 1 回 1.07〜1.3 トークンの採用では取り返せない
 - 出力層を 2 段にする (2〜3 ビットの写しで候補を選び、正確に採点): 貪欲な選択では Qwen3.5-0.8B の 34 %、Qwen3.5-2B / Qwen3.6 の 50 %、gpt-oss の 40 % を読むが、上位 64 個を残すと 56〜83 % かそれ以上。Gemma 4 E2B は写しの誤差が大きく使えない。出力層は 1 ステップの 5〜15 % なので、NPU の実装なしに得られるのは数 % と見積もる。
 - 注意のモデルのプロンプトの塊 2048 (2 割遅い) や 256 (Gemma 4 の窓の層がリングになる)
@@ -308,7 +308,7 @@ KL(HF ‖ NPU)、README / GPL-3 / wiki40b-ja の 400 行ずつ (`ironlm -forced`
 - 画像と音声つきの Gemma 4: 同じ書き出しでも走らせるたびに 1 つの問いの答えが変わった。調べていない
 - ホストは塊の行ごとに全部の層の PLE を書くが、共有の層が読むのは最後の行だけ (1 行あたり 20 層 × 512 バイトが無駄)
 - 短いプロンプトの GEMM と重みの展開 (16 トークンの 6 割): 呼び出しの行に従う GEMM か、量子化の重みを直接読む数行の GEMM が要る。16 行の `QGEMVRows` は今の GEMM と同じくらいの見積もり
-- デコード: 今のまとめ方の先は gpt-oss の `GptOssStep` のような 1 配列の形 ([MoE](moe.ja.md))。最初の関門はコアのプログラムが 16 KB に収まるか。GDN を 1 列 1 コアに (設定がほぼ半分、1 トークン約 12 ms の見積もり) は、デコードとプロンプトの版と hwnpu の `conv_pairs` が共有する状態の並びを変える必要がある
+- デコード: 今のまとめ方の先は gpt-oss の `GptOssStep` のような 1 配列の形 ([MoE](moe.ja.md))。最初の関門はコアのプログラムが 16 KB に収まるか。GDN を 1 列 1 コアに (設定がほぼ半分、1 トークン約 12 ms の見積もり) は、デコードとプロンプトの版と BonsaiAI の `conv_pairs` が共有する状態の並びを変える必要がある
 - Gemma 4: PLE の gate と projection を q8 の QGEMV に。GELU と積を KL を悪くせずにまとめる
 - デコードのまとめで作り直して測る: Gemma 4 E4B、`gemma4mm`、LFM3-Audio、LFM3-Omni
 - 確かめる版: q4 の `QGEMVRows` (Gemma 4、PLaMo 3、LFM3)、Gemma 4 の共有の層と窓の注意、リングのキャッシュ、MTP の下書き、注意を数行の MHA 1 回に、状態の写しを減らす

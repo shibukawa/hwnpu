@@ -13,7 +13,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/shibukawa/hwnpu/npuinfo"
+	"github.com/shibukawa/bonsaiai/npuinfo"
 )
 
 func main() {

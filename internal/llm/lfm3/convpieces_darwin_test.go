@@ -9,19 +9,19 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreml"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreml"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // Runs growing prefixes of conv layer 0 on the Neural Engine in fp16 and compares each with a
 // float32 computation here, to find the operation that loses precision.
 func TestConvPieces(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_LFM3_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_LFM3_DIR not set")
+		t.Skip("BONSAIAI_TEST_LFM3_DIR not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)

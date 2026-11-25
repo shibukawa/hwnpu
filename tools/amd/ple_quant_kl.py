@@ -15,7 +15,7 @@ from those of the bf16 tables, on the evaluation texts. Each variant rounds the 
 are looked up: with a scale per row or per layer's slice of a row, that is what a table stored so
 gives. The other weights stay fp32, so the KL is the table's alone.
 
-  ~/hwnpu-dev/refenv/bin/python tools/amd/ple_quant_kl.py CKPT OUT.json [--eval FILES]
+  ~/bonsaiai-dev/refenv/bin/python tools/amd/ple_quant_kl.py CKPT OUT.json [--eval FILES]
 
 Variants (bytes a row of E2B: 35 layers x 256, bf16 17920):
   fp8-tensor   E4M3, one scale for the table (the article's)            8960

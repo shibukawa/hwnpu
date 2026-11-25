@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/vision/depth/mil"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/vision/depth/mil"
 )
 
 // ExportVersion is the layout of the programs Prepare and ConvertSize write; an export of
@@ -166,7 +166,7 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// Prepare makes a DA3 ready for Apple's Neural Engine (or Intel's NPU, s.Backend) in s.Dir, as hwnpu-chat makes its models
+// Prepare makes a DA3 ready for Apple's Neural Engine (or Intel's NPU, s.Backend) in s.Dir, as bonsaiai-chat makes its models
 // ready: it downloads the checkpoint's config.json when missing and writes the export's
 // model.json; each size is taken from the shared layers or converted when a picture first takes
 // it (seconds; its first load compiles it), the checkpoint's weights downloaded then.
@@ -181,7 +181,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	format := ExportFormat(s.Backend)
-	// the export in the model's directory (as every model's); the one an earlier hwnpu kept in
+	// the export in the model's directory (as every model's); the one an earlier bonsaiai kept in
 	// the models' directory is removed (its sizes are converted again)
 	old := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	os.RemoveAll(old)
@@ -284,7 +284,7 @@ func (e *Estimator) Warm(ctx context.Context) error {
 }
 
 // fetchCheckpoint downloads the checkpoint's weights (model.safetensors of Repo) for converting a
-// size, unless they are there; an export without Repo (of an earlier hwnpu) had them downloaded
+// size, unless they are there; an export without Repo (of an earlier bonsaiai) had them downloaded
 // by Prepare.
 func (x *Export) fetchCheckpoint(ctx context.Context, log io.Writer) error {
 	if x.Repo == "" {

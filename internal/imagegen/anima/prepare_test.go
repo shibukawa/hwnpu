@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/aspect"
 )
 
 // TestExportName puts what changes the programs, and the layout version, in the name.

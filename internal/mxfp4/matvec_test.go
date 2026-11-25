@@ -7,14 +7,14 @@ import (
 	"time"
 )
 
-// TestTokenTime times a token's experts at gpt-oss-20b's shape (HWNPU_DEV=mxfp4.bench=LAYERS): 4 of
+// TestTokenTime times a token's experts at gpt-oss-20b's shape (BONSAIAI_DEV=mxfp4.bench=LAYERS): 4 of
 // 32 experts a layer, gate_up 5760 rows and down 2880 of 2880, over weights larger than the
 // caches.
 func TestTokenTime(t *testing.T) {
 	n, _ := Opt("bench")
 	layers, _ := strconv.Atoi(n)
 	if layers == 0 {
-		t.Skip("HWNPU_DEV=mxfp4.bench=LAYERS")
+		t.Skip("BONSAIAI_DEV=mxfp4.bench=LAYERS")
 	}
 	const H, I, E, K = 2880, 2880, 32, 4
 	nb := H / Block

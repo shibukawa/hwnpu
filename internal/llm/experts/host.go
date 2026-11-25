@@ -13,10 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/f32"
-	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/mxfp4"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/f32"
+	"github.com/shibukawa/bonsaiai/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/mxfp4"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // MXFP4 names a layer's experts in a checkpoint of OCP's MXFP4, every expert of the layer in one
@@ -24,7 +24,7 @@ import (
 // rows), (experts, 2·inter, hidden/32, 16) bytes and (experts, 2·inter, hidden/32) scales, the
 // down projection (experts, hidden, inter/32, 16) and (experts, hidden, inter/32), their biases
 // (experts, 2·inter) and (experts, hidden), none when their names are empty (Qwen3.6's experts,
-// which hwnpu-dev mxfp4 writes in this form).
+// which bonsaiai-dev mxfp4 writes in this form).
 //
 // Router and Norm name the layer's router (experts, hidden) with its bias RouterBias (none when
 // empty) and the norm before it (hidden), its weight plus NormOffset (1 for a zero centered norm),
@@ -130,7 +130,7 @@ type Host struct {
 	// gpt-oss-20b, and the collector's clearing and returning of them 16 % of the experts' CPU
 	rowBufs sync.Pool
 
-	// for HWNPU_DEV's moe.time: the bytes of the experts a row ran, and those of them not in memory
+	// for BONSAIAI_DEV's moe.time: the bytes of the experts a row ran, and those of them not in memory
 	// when it chose them (read from the disk for it)
 	// reads: the experts are not all wired, and a run reads the ones it chose that are not in
 	// memory whole from the file before it touches them (readIn)
@@ -140,8 +140,8 @@ type Host struct {
 	// the rows' runs whose experts were all in memory and the others', and their time (ns)
 	dbgIn, dbgOut, dbgInTime, dbgOutTime atomic.Int64
 	dbgRead                              atomic.Int64 // the bytes readChosen read
-	times                                *runTimes    // HWNPU_DEV's moe.time: a row's layers by what their experts were
-	trace                                *traceFile   // HWNPU_DEV's moe.trace=FILE: every row's experts
+	times                                *runTimes    // BONSAIAI_DEV's moe.time: a row's layers by what their experts were
+	trace                                *traceFile   // BONSAIAI_DEV's moe.trace=FILE: every row's experts
 }
 
 // OpenHost maps the experts of rec, all of them wired when they fit (Host.wiring).

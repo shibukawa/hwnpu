@@ -1,4 +1,4 @@
-// Command ironbench (tools/iron) runs an IRON design (opcode 3, instr, ninstr, bo0..bo4) through hwnpu's
+// Command ironbench (tools/iron) runs an IRON design (opcode 3, instr, ninstr, bo0..bo4) through bonsaiai's
 // public API and times it. Buffers are bound in order: inputs from files, then outputs.
 //
 //	ironbench -xclbin final.xclbin -insts insts.bin -in a.bin,b.bin -out 1048576 -save c.bin -runs 50
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 type result struct {
@@ -50,7 +50,7 @@ func split(s string) []string {
 
 func run(xclbin, instsPath, in, out, save string, runs, warmup int) error {
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD))
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
@@ -61,7 +61,7 @@ func run(xclbin, instsPath, in, out, save string, runs, warmup int) error {
 	}
 	var r result
 	start := time.Now()
-	prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: xclbin})
+	prog, err := kr.Load(ctx, bonsaiai.ProgramSource{Path: xclbin})
 	if err != nil {
 		return fmt.Errorf("load: %w", err)
 	}
@@ -75,7 +75,7 @@ func run(xclbin, instsPath, in, out, save string, runs, warmup int) error {
 	if err != nil {
 		return err
 	}
-	instr, err := dev.AllocBuffer(len(insts), hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+	instr, err := dev.AllocBuffer(len(insts), bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 	if err != nil {
 		return fmt.Errorf("alloc instr: %w", err)
 	}
@@ -83,7 +83,7 @@ func run(xclbin, instsPath, in, out, save string, runs, warmup int) error {
 	copy(instr.Bytes(), insts)
 	instr.SyncToDevice(0, len(insts))
 
-	var bufs, outs []*hwnpu.Buffer
+	var bufs, outs []*bonsaiai.Buffer
 	for _, f := range split(in) {
 		data, err := os.ReadFile(f)
 		if err != nil {

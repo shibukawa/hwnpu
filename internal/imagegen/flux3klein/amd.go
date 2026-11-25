@@ -9,12 +9,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/recipe"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/recipe"
 )
 
-// AMDTool is the IRON exporter of FLUX.3 klein (tools/amd, built into hwnpu).
+// AMDTool is the IRON exporter of FLUX.3 klein (tools/amd, built into bonsaiai).
 const AMDTool = "iron_flux3klein.py"
 
 // AMDExportVersion is the version of PrepareAMD's exports (a key of the shared layers:
@@ -76,7 +76,7 @@ const amdExportTime = "about 11 minutes once IRON's kernels are built"
 // PrepareAMD makes an export of FLUX.3 klein (m) for AMD's NPU that draws pictures of w x h ready
 // and returns its directory: the export of every size of sizes (AMDExportName) here
 // (cache.ExportRoots; one made by hand goes in the sources written back to: chat.ShareMadeByHand),
-// else from the shared layers (AMDRecipe, or one made by hand that hwnpu-dev sources import put there
+// else from the shared layers (AMDRecipe, or one made by hand that bonsaiai-dev sources import put there
 // under its name), else it downloads the checkpoint (AMDFiles) and exports every size of sizes in
 // one with IRON in IRON's environment (chat.IRONEnv), in the cache's entries/amd-xdna2, and puts
 // that in the sources written back to.
@@ -119,7 +119,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, sizes [][2]int, w, h int, log
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, sizes), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (bonsaiai-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; downloading the checkpoint and exporting it with IRON (%s in one; %s on a Ryzen AI 9 365)\n",

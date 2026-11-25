@@ -1,9 +1,9 @@
 """d1 (Liquid AI's d1-2B and d1-Omni-2B, the System One decision models) on IRON.
 
-An application of amd/IRON kept in hwnpu, exported by ``iron_export_lm.py d1`` (d1-2B: LFM3-VL's
+An application of amd/IRON kept in bonsaiai, exported by ``iron_export_lm.py d1`` (d1-2B: LFM3-VL's
 checkpoint layout, ``model_type`` lfm3_vl) and ``d1omni`` (d1-Omni-2B: LFM3-Omni's). The models
 are LFM3-VL and LFM3-Omni (``iron_lfm3vl``, ``iron_lfm3omni``) read as d1 reads them
-(``architectures`` D1Model, ``d1_attention`` "set"), as llama.cpp and hwnpu's Core ML programs do:
+(``architectures`` D1Model, ``d1_attention`` "set"), as llama.cpp and bonsaiai's Core ML programs do:
 
 - one call reads the whole prompt from position 0: the full attention layers attend both ways
   over the call's rows (``SetCache``), the sliding attention layers and the short convolutions
@@ -12,7 +12,7 @@ are LFM3-VL and LFM3-Omni (``iron_lfm3vl``, ``iron_lfm3omni``) read as d1 reads 
   the logits of the answer labels from it and the rows of the token embeddings (tied to the head),
   which a ``--q4`` export holds on the host (``embed.bin``) as LFM3's do.
 
-So hwnpu runs the export's prompt chunk once a question, from 0, with a prompt of at most a chunk
+So bonsaiai runs the export's prompt chunk once a question, from 0, with a prompt of at most a chunk
 (``--prefill-chunk``, ``--max-seq-len`` the same); images and clips go through the towers and the
 placed chunk as LFM3-VL's and LFM3-Omni's. The decode step is built (IRON's ``CausalLM`` has one)
 and never run.
@@ -36,7 +36,7 @@ class SetCache(KVCache):
 
     The chunk's rows are written as ``KVCache`` writes them and every query attends to every key
     of the call (MHA with ``causal`` off, its keys bounded by the call's rows): of the whole
-    prompt when the call starts at 0, which is how hwnpu runs a d1 export. A decode step attends
+    prompt when the call starts at 0, which is how bonsaiai runs a d1 export. A decode step attends
     as ``KVCache`` does (causal; never run).
     """
 
@@ -78,7 +78,7 @@ class D1(Lfm3):
         return xn
 
     def draw(self, hidden, call):
-        # No token drawn on the device (the output is no logits); hwnpu reads the hidden state.
+        # No token drawn on the device (the output is no logits); bonsaiai reads the hidden state.
         # A placed chunk's call carries no token (IRON's from_rows): its position stands in.
         token = call.token if getattr(call, "token", None) is not None else call.position
         return hidden, iron.carry(token=token + 0, position=call.position + 1)
@@ -102,7 +102,7 @@ class D1Vl(Multimodal):
     """d1-2B: ``D1`` with LFM3-VL's vision tower, an image's soft tokens at its placeholders."""
 
     config = Lfm3VlConfig
-    hwnpu_kind = "lfm3vl"  # the towers and the placed chunk as LFM3-VL's (iron_export_lm.py)
+    bonsaiai_kind = "lfm3vl"  # the towers and the placed chunk as LFM3-VL's (iron_export_lm.py)
 
     def __init__(self, config: Lfm3VlConfig, weights):
         assert config.vision is not None
@@ -116,7 +116,7 @@ class D1Omni(Multimodal):
     """d1-Omni-2B: ``D1`` with LFM3-Omni's vision tower and audio encoder."""
 
     config = Lfm3OmniConfig
-    hwnpu_kind = "lfm3omni"
+    bonsaiai_kind = "lfm3omni"
 
     def __init__(self, config: Lfm3OmniConfig, weights):
         assert config.vision is not None and config.audio is not None

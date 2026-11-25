@@ -1,6 +1,6 @@
 # Recommended models
 
-Which model hwnpu runs best for each use, by how much memory the machine has. The numbers are those of main on 2026-11-06; Apple's chat models were measured again with Core AI (macOS 27) on an M1 on 2026-11-15, its image models on 2026-11-16. What each NPU computes in and how models are converted are in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
+Which model BonsaiAI runs best for each use, by how much memory the machine has. The numbers are those of main on 2026-11-06; Apple's chat models were measured again with Core AI (macOS 27) on an M1 on 2026-11-15, its image models on 2026-11-16. What each NPU computes in and how models are converted are in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
 
 Japanese: [MODEL.ja.md](MODEL.ja.md)
 
@@ -8,7 +8,7 @@ Japanese: [MODEL.ja.md](MODEL.ja.md)
 
 The columns are the memory installed in the machine. The second header row is roughly what is left for models after the OS and everyday applications. NPU buffers are pinned and cannot be swapped out: going over that amount pushes other applications to swap.
 
-hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under each use (`-m translate`, `-m chat`) runs the model of the machine's column, downloading only that one. A family picks the same way (`-m plamo3translate`, `-m gemma4`), and a tag chooses one whatever the memory, like a Docker image's: a model's (`-m plamo3translate:2b`, `-m chat:e4b`) or a column's (`-m chat:24g`, `-m plamo3translate:8g`: what a machine of that memory runs). `hwnpu-chat list` shows what each name picks on the machine; `HWNPU_MEMORY=24` picks as a machine of 24 GB would. hwnpu-audio transcribe (`-m transcribe`), hwnpu-audio tts (`-m speech`) and hwnpu-chat systemone (`-m decision`) pick the same way. The table comes from [models.yaml](models.yaml) (its `categories` and the models' `machine`), which hwnpu embeds; a file of your own adds models, replaces a column's model or points a model to another (aliases), written as differences only: see [docs/model-table.md](docs/model-table.md).
+bonsaiai-chat and bonsaiai-chat agent pick from this table themselves: the name under each use (`-m translate`, `-m chat`) runs the model of the machine's column, downloading only that one. A family picks the same way (`-m plamo3translate`, `-m gemma4`), and a tag chooses one whatever the memory, like a Docker image's: a model's (`-m plamo3translate:2b`, `-m chat:e4b`) or a column's (`-m chat:24g`, `-m plamo3translate:8g`: what a machine of that memory runs). `bonsaiai-chat list` shows what each name picks on the machine; `BONSAIAI_MEMORY=24` picks as a machine of 24 GB would. bonsaiai-audio transcribe (`-m transcribe`), bonsaiai-audio tts (`-m speech`) and bonsaiai-chat systemone (`-m decision`) pick the same way. The table comes from [models.yaml](models.yaml) (its `categories` and the models' `machine`), which BonsaiAI embeds; a file of your own adds models, replaces a column's model or points a model to another (aliases), written as differences only: see [docs/model-table.md](docs/model-table.md).
 
 <table>
 <thead>
@@ -32,79 +32,79 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 </thead>
 <tbody>
 <tr>
-<th>Chat, coding<br><sub>hwnpu-chat, hwnpu-chat agent <code>-m chat</code></sub></th>
+<th>Chat, coding<br><sub>bonsaiai-chat, bonsaiai-chat agent <code>-m chat</code></sub></th>
 <td><b>LFM3-1.7B</b> (1.7 GB on Apple, 2.2 GB on AMD)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.4 GB on AMD, 2.3 GB on Apple)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>, 2.2 to 2.4 GB)<br>writes code too<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.1 GB; Apple only)<br>in one program, slower to read long prompts (<code>--prefill on</code> for faster, +0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>, 1.1 GB on an M1, 1.6 GB on an M2 or later, 1.5 GB download)<br>the smallest download, weak at facts</td>
 <td><b>Gemma 4 E2B</b> (2.4 GB on AMD, 2.3 GB on Apple)<br>with a long context too (+0.8 GB at 131072)<br><b>Gemma 4 E4B</b> (4.3 GB on AMD, 4.0 GB on Apple)<br>for short conversations<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.3 GB)<br>with a program of its own to read prompts, 5 times faster at it</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.3 GB on AMD, 4.0 GB on Apple)<br>with a long context too (+2.1 GB at 131072)</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.3 GB on AMD, 4.0 GB on Apple)<br><i>by name on Apple (from 16 GB) and AMD (from 16 GB, fewer experts in place below 48 GB): Qwen3.6-35B-A3B (MoE, <code>-m Qwen3.6-35B-A3B</code>; 10.9–11 tokens/s on a 16 GB M3, 8.8–8.9 on a Ryzen AI 9 365; not picked by a use)</i></td>
 </tr>
 <tr>
-<th>Reading images<br><sub>hwnpu-chat <code>-m vision</code> (<code>image_url</code>, <code>/image</code>)</sub></th>
+<th>Reading images<br><sub>bonsaiai-chat <code>-m vision</code> (<code>image_url</code>, <code>/image</code>)</sub></th>
 <td><b>LFM3-VL-2B</b> (2.6 to 2.7 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 to 2.7 GB)</td>
 </tr>
 <tr>
-<th>Transcription<br><sub>hwnpu-audio transcribe</sub></th>
+<th>Transcription<br><sub>bonsaiai-audio transcribe</sub></th>
 <td colspan="6"><b>Whisper large-v3-turbo</b> (about 1.9 GB)<br>99 languages, with timestamps, 30 seconds read in 0.6 s</td>
 </tr>
 <tr>
-<th>Pitch (F0)<br><sub>hwnpu-audio pitch</sub></th>
+<th>Pitch (F0)<br><sub>bonsaiai-audio pitch</sub></th>
 <td colspan="6"><b>SwiftF0</b> (about 0.06 GB)<br>the pitch of one voice or instrument every 16 ms, with a voicing confidence; 41 seconds in 0.24 s</td>
 </tr>
 <tr>
-<th>Notes (MIDI)<br><sub>hwnpu-audio notes</sub></th>
+<th>Notes (MIDI)<br><sub>bonsaiai-audio notes</sub></th>
 <td colspan="6"><b>Basic Pitch</b> (about 0.07 GB)<br>any instrument, chords too, with pitch bends, as MIDI; 35 times real time</td>
 </tr>
 <tr>
-<th>People's poses<br><sub>hwnpu-image pose</sub></th>
+<th>People's poses<br><sub>bonsaiai-image pose</sub></th>
 <td colspan="6"><b>RTMO-s</b> (about 0.23 GB)<br>the people in an image and their 17 keypoints in one pass (no person detector); about 0.1 s an image</td>
 </tr>
 <tr>
-<th>Objects<br><sub>hwnpu-image detect</sub></th>
+<th>Objects<br><sub>bonsaiai-image detect</sub></th>
 <td><b>RTMDet-s</b> (about 0.1 GB)<br>boxes and COCO's 80 labels; 9 ms an image on the M1's Neural Engine</td>
 <td colspan="5"><b>RTMDet-m</b> (about 0.2 GB)<br>more accurate (49.1 box AP, s 44.6); 18 ms an image</td>
 </tr>
 <tr>
-<th>Text (OCR)<br><sub>hwnpu-image ocr</sub></th>
+<th>Text (OCR)<br><sub>bonsaiai-image ocr</sub></th>
 <td colspan="6"><b>PP-OCRv6 small</b> (about 0.45 GB)<br>lines of text, their boxes and what they say, 50 languages (Japanese, Chinese, English, ...); a page of 98 lines in 0.5 s on an M1</td>
 </tr>
 <tr>
-<th>Music generation<br><sub>hwnpu-audio generate</sub></th>
+<th>Music generation<br><sub>bonsaiai-audio generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (about 1.0 GB)<br>48 kHz stereo music in the style of texts or recordings, playing a MIDI file's notes or going on from a clip, streamed as it comes, about 1.4 times faster than real time; weights CC-BY 4.0 (credit "Magenta RealTime 2 by Google DeepMind" where the music is used)</td>
 </tr>
 <tr>
-<th>Sound effects<br><sub>hwnpu-audio generate -m sfx</sub></th>
+<th>Sound effects<br><sub>bonsaiai-audio generate -m sfx</sub></th>
 <td><b>MOSS-SoundEffect v2.0</b> (about 2.2 GB; the text encoder in lut8 with 5 layers in fp16)</td>
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (about 2.3 GB; the text encoder in fp16)<br>up to 30 s of 48 kHz mono from an English or Chinese description; 10 s in about 4 minutes at the card's 100 steps on an M1 (<code>-steps 50</code>: half); Apache-2.0</td>
 </tr>
 <tr>
-<th>Reading audio (questions about it)<br><sub>hwnpu-chat <code>-m audio</code> (<code>input_audio</code>, <code>/audio</code>)</sub></th>
+<th>Reading audio (questions about it)<br><sub>bonsaiai-chat <code>-m audio</code> (<code>input_audio</code>, <code>/audio</code>)</sub></th>
 <td><b>LFM3-Audio-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 to 3.1 GB, images too)</td>
 </tr>
 <tr>
-<th>Translation<br><sub>hwnpu-chat <code>-m translate</code></sub></th>
+<th>Translation<br><sub>bonsaiai-chat <code>-m translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (1.0 GB)<br>3 times as fast as the 2B, translations differing from it by rewordings</td>
 <td colspan="5"><b>PLaMo 3 Translate 8B</b> (8.2 GB on Apple, about 6.5 GB on AMD)<br>more apt wording than the 2B; 10 to 11 tokens/s on an M3 (loading in 4 s), 9 to 10 on an M2 (35 to 41 s every start)<br>on an M1 <b>PLaMo 3 Translate 2B</b> (3.2 GB) instead: the 8B is 0.8 tokens/s there (<code>-m plamo3translate:8b</code> still runs it)</td>
 </tr>
 <tr>
-<th>Image generation<br><sub>hwnpu-image</sub></th>
-<td colspan="6"><b>FLUX.2 klein 4B</b> 1024 × 1024 (3.9 GB on AMD, 4.9 GB on Apple; at <code>--size 512</code> 1.9 GB on AMD, 3.1 GB on Apple)<br>the main model: Apache-2.0, 4 steps, 41 s on an M1 (11 s at 512 × 512), 29 s on AMD; edits and composes from reference images on AMD (<code>--image</code>)<br>Opt-in (<code>HWNPU_MODEL_ALLOWLIST=+nsfw</code>, named with <code>-m</code>): <b>Anima-Turbo</b> (4.8 GB on Apple, 48 s on an M1; Danbooru tags), <b>Anima-Aesthetic</b> (<code>-m anima</code>, 25 steps with guidance, about 4.5 times as long)</td>
+<th>Image generation<br><sub>bonsaiai-image</sub></th>
+<td colspan="6"><b>FLUX.2 klein 4B</b> 1024 × 1024 (3.9 GB on AMD, 4.9 GB on Apple; at <code>--size 512</code> 1.9 GB on AMD, 3.1 GB on Apple)<br>the main model: Apache-2.0, 4 steps, 41 s on an M1 (11 s at 512 × 512), 29 s on AMD; edits and composes from reference images on AMD (<code>--image</code>)<br>Opt-in (<code>BONSAIAI_MODEL_ALLOWLIST=+nsfw</code>, named with <code>-m</code>): <b>Anima-Turbo</b> (4.8 GB on Apple, 48 s on an M1; Danbooru tags), <b>Anima-Aesthetic</b> (<code>-m anima</code>, 25 steps with guidance, about 4.5 times as long)</td>
 </tr>
 <tr>
-<th>Speech<br><sub>hwnpu-audio tts</sub></th>
+<th>Speech<br><sub>bonsaiai-audio tts</sub></th>
 <td colspan="6"><b>LFM3-Audio-2B</b> (about 2.4 GB)</td>
 </tr>
 <tr>
-<th>Sentence embeddings, search<br><sub>hwnpu-chat <code>-m embedding</code> (<code>/v1/embeddings</code>)</sub></th>
+<th>Sentence embeddings, search<br><sub>bonsaiai-chat <code>-m embedding</code> (<code>/v1/embeddings</code>)</sub></th>
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.2 to 1.3 GB)</td>
 </tr>
 <tr>
-<th>Decisions on a state<br><sub>hwnpu-chat systemone</sub></th>
+<th>Decisions on a state<br><sub>bonsaiai-chat systemone</sub></th>
 <td colspan="6"><b>d1-2B</b> (about 2.4 GB, images too)<br><b>d1-Omni-2B</b> (about 2.8 GB, images and audio)</td>
 </tr>
 <tr>
-<th>Several at once<br><sub>hwnpu-chat <code>serve -m A,B,…</code></sub></th>
+<th>Several at once<br><sub>bonsaiai-chat <code>serve -m A,B,…</code></sub></th>
 <td>LFM3-1.7B + PLaMo 3 Translate 0.8B (2.7 GB on Apple, 3.2 GB on AMD)</td>
 <td>Gemma 4 E2B + PLaMo-Embedding-1B (3.5 to 3.6 GB)<br>+ PLaMo 3 Translate 2B (6.3 GB on AMD, 6.7 GB on Apple)</td>
 <td>Gemma 4 E4B + PLaMo-Embedding-1B + PLaMo 3 Translate 2B (8.0 GB on AMD, 8.4 GB on Apple)</td>
@@ -113,11 +113,11 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 </tbody>
 </table>
 
-- Image generation (`-m image`, the default of hwnpu-image generate) is FLUX.2 klein 4B from 8 GB. Anima, which may draw NSFW pictures unasked, runs only when you opt in with `HWNPU_MODEL_ALLOWLIST=+nsfw` and name it (`-m anima-turbo`): the use does not pick it even then. The same variable narrows the models by license ([docs/model-provenance.md](docs/model-provenance.md))
+- Image generation (`-m image`, the default of bonsaiai-image generate) is FLUX.2 klein 4B from 8 GB. Anima, which may draw NSFW pictures unasked, runs only when you opt in with `BONSAIAI_MODEL_ALLOWLIST=+nsfw` and name it (`-m anima-turbo`): the use does not pick it even then. The same variable narrows the models by license ([docs/model-provenance.md](docs/model-provenance.md))
 - The figure in parentheses is the expected memory after starting and a short conversation (next section). Long conversations add the KV cache
 - Past 32 GB there is no larger model yet. A machine with more memory runs the combinations above at once, or long contexts
-- A machine of 8 GB runs the models the way that takes less memory (LFM3-1.7B without its whole program of short conversations, Qwen3-1.7B without a program of its own to read prompts). To run one beside other programs on a machine of more memory, `hwnpu memory LFM3-1.7B 8` (or `hwnpu-chat --memory 8`) runs it the 8 GB way in every command ([docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.8)
-- On a small machine, a shorter `--context` cuts the KV cache. hwnpu-chat shrinks the context itself when the KV cache would be over a quarter of the physical memory
+- A machine of 8 GB runs the models the way that takes less memory (LFM3-1.7B without its whole program of short conversations, Qwen3-1.7B without a program of its own to read prompts). To run one beside other programs on a machine of more memory, `bonsaiai memory LFM3-1.7B 8` (or `bonsaiai-chat --memory 8`) runs it the 8 GB way in every command ([docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.8)
+- On a small machine, a shorter `--context` cuts the KV cache. bonsaiai-chat shrinks the context itself when the KV cache would be over a quarter of the physical memory
 
 ## Memory per model
 
@@ -126,7 +126,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | Model | Use | At start | Growth with the conversation (KV cache) | Basis |
 |---|---|---|---|---|
 | LFM3-1.7B | Chat, coding | 2.2 GB on AMD. On Apple 1.7 GB (1.36 GiB on the Neural Engine and 0.23 GiB of the process); 3.1 GB on an M2 or later from 16 GB (the program of short conversations holds the weights once more: 2.64 GiB and 0.21 GiB) | 12 KiB/token (3 GiB at 262144) | measured (AMD and an M1; an M2's programs loaded on the M1 with `--tier 2048`) |
-| LFM2-8B-A1B | Chat, tool calls (`-m lfm2`; Apple's M2 and later, not an M1) | 8.0 GB on an M2 (the experts' 7.23 GiB in the process's memory, `HWNPU_MOE_WIRE=1` wires them when memory is short); 12.9 GB at the first run's conversion | 13.5 KiB/token with the means of 8 positions (1.65 GiB at 128000) | measured (an M2; speed on an M3 too) |
+| LFM2-8B-A1B | Chat, tool calls (`-m lfm2`; Apple's M2 and later, not an M1) | 8.0 GB on an M2 (the experts' 7.23 GiB in the process's memory, `BONSAIAI_MOE_WIRE=1` wires them when memory is short); 12.9 GB at the first run's conversion | 13.5 KiB/token with the means of 8 positions (1.65 GiB at 128000) | measured (an M2; speed on an M3 too) |
 | Gemma 4 E2B | Chat, coding | 2.4 GB on AMD (2026-11-17), 2.3 GB on Apple (an M1 with Core AI: 1.66 GiB on the Neural Engine; the process not measured with Core AI) | 6 KiB/token (0.75 GiB at 131072) | measured |
 | Gemma 4 E2B with images and audio | Images, audio (one image and 30 seconds a prompt) | 3.4 GB (2.4 GB until an image or audio arrives) | 6 KiB/token | measured |
 | Gemma 4 E4B | Chat, coding | 4.3 GB on AMD (2026-11-17), 4.0 GB on Apple | 16 KiB/token (2 GiB at 131072) | measured |
@@ -145,15 +145,15 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | PLaMo 3 Translate 8B | Translation | about 8.2 GB on Apple (M1: 3.81 GiB on the Neural Engine in 4 bit tables and the process's 4.1 GB at its peak); about 6.5 GB on AMD (q4, estimated from the weights) | 9 KiB/token (2.25 GiB at 262144) | measured on an M1, M2 and M3 (Apple); AMD not run |
 | PLaMo 3 Translate 0.8B | Translation | 1.0 GB (M1: 0.82 GiB on the Neural Engine and 0.12 GiB of the process) | 1 KiB/token (0.28 GiB at 262144) | measured (AMD and an M1) |
 | PLaMo-Embedding-1B | Sentence embeddings | 1.3 GB on AMD, 1.2 GB on Apple (M1: 1.05 GiB on the Neural Engine and 0.03 GiB of the process) | none | AMD estimated from the weights; Apple measured on an M1 |
-| MoGe-2 ViT-S / B / L (AMD) | Metric depth, points, normals (hwnpu-image depth) | 1.9 GB (S), 2.1 GB (B), 2.6 GB (L) | none | measured |
-| Depth Anything 3 Mono / Metric Large, Small, Base (AMD) | Depth estimation (hwnpu-image depth) | 1.4 GB (Large), 0.75 GB (Base), 0.5 GB (Small) | none | measured |
-| FLUX.2 klein 4B (1024 × 1024, AMD) | Image generation, editing reference images (hwnpu-image generate `-m flux2-klein`, `--image`) | 3.9 GB (the NPU's 3.4 GiB peak, in the VAE's stages, and the process's 0.2 GiB; the same for an edit; 1.9 GB at 512 × 512; the text encoder and the DiT are read a group at a time) | none | measured |
-| FLUX.2 klein 4B (1024 × 1024, Apple) | Image generation (hwnpu-image generate `-m flux2-klein`; editing runs on AMD) | 4.9 GB (M1: in the VAE's stages 3.8 GiB of the process and 0.8 GiB on the Neural Engine; 2.3 GiB on the Neural Engine at most, in the DiT; 3.1 GB at 512 × 512) | none | measured (M1) |
-| FLUX.3 klein (1024 × 1024, AMD) | Image generation (hwnpu-image generate `-m flux3-klein`; text to image) | 3.9 GB (the NPU's buffers and the process's 3.6 GiB at the peak; 2.7 GB at 512 × 512; the text encoder and the DiT are read a group at a time) | none | measured |
-| FLUX.3 klein (1024 × 1024, Apple) | Image generation (hwnpu-image generate `-m flux3-klein`; text to image) | 4.1 GB of process memory at most (M3; the Neural Engine's own not measured) | none | measured (M3) |
-| DA3-SMALL, DA3MONO-LARGE, MoGe-2 ViT-S (Apple) | Depth estimation (hwnpu-image depth) | the programs of one size (fp16), converted for each aspect on first use | none | not measured |
-| SigLIP 2 Base / Large (Apple) | Labels, embeddings of pictures and texts (hwnpu-image label, embed) | About 0.9 / 3.3 GB (M3: a footprint of 0.45 / 1.8 GB at most, and 0.36 / 1.24 GB on the Neural Engine; 0.48 / 1.56 GB with Core AI) | none (a picture, 8 texts at a time) | Measured on an M3 |
-| EfficientSAM-Ti / S (Apple) | The cutout a point or a box picks (hwnpu-image segment) | A footprint of about 0.22 / 0.25 GB (M3; the encoder on the Neural Engine, the decoder on the CPU) | none (a picture at a time) | Measured on an M3 |
+| MoGe-2 ViT-S / B / L (AMD) | Metric depth, points, normals (bonsaiai-image depth) | 1.9 GB (S), 2.1 GB (B), 2.6 GB (L) | none | measured |
+| Depth Anything 3 Mono / Metric Large, Small, Base (AMD) | Depth estimation (bonsaiai-image depth) | 1.4 GB (Large), 0.75 GB (Base), 0.5 GB (Small) | none | measured |
+| FLUX.2 klein 4B (1024 × 1024, AMD) | Image generation, editing reference images (bonsaiai-image generate `-m flux2-klein`, `--image`) | 3.9 GB (the NPU's 3.4 GiB peak, in the VAE's stages, and the process's 0.2 GiB; the same for an edit; 1.9 GB at 512 × 512; the text encoder and the DiT are read a group at a time) | none | measured |
+| FLUX.2 klein 4B (1024 × 1024, Apple) | Image generation (bonsaiai-image generate `-m flux2-klein`; editing runs on AMD) | 4.9 GB (M1: in the VAE's stages 3.8 GiB of the process and 0.8 GiB on the Neural Engine; 2.3 GiB on the Neural Engine at most, in the DiT; 3.1 GB at 512 × 512) | none | measured (M1) |
+| FLUX.3 klein (1024 × 1024, AMD) | Image generation (bonsaiai-image generate `-m flux3-klein`; text to image) | 3.9 GB (the NPU's buffers and the process's 3.6 GiB at the peak; 2.7 GB at 512 × 512; the text encoder and the DiT are read a group at a time) | none | measured |
+| FLUX.3 klein (1024 × 1024, Apple) | Image generation (bonsaiai-image generate `-m flux3-klein`; text to image) | 4.1 GB of process memory at most (M3; the Neural Engine's own not measured) | none | measured (M3) |
+| DA3-SMALL, DA3MONO-LARGE, MoGe-2 ViT-S (Apple) | Depth estimation (bonsaiai-image depth) | the programs of one size (fp16), converted for each aspect on first use | none | not measured |
+| SigLIP 2 Base / Large (Apple) | Labels, embeddings of pictures and texts (bonsaiai-image label, embed) | About 0.9 / 3.3 GB (M3: a footprint of 0.45 / 1.8 GB at most, and 0.36 / 1.24 GB on the Neural Engine; 0.48 / 1.56 GB with Core AI) | none (a picture, 8 texts at a time) | Measured on an M3 |
+| EfficientSAM-Ti / S (Apple) | The cutout a point or a box picks (bonsaiai-image segment) | A footprint of about 0.22 / 0.25 GB (M3; the encoder on the Neural Engine, the decoder on the CPU) | none (a picture at a time) | Measured on an M3 |
 | Anima-Turbo, Anima-Aesthetic (1024 × 1024) | Image generation (opt-in, `+nsfw`) | 3.5 GB on AMD (the NPU's 2.4 GiB peak in the VAE's stages and the process's 0.9 GiB); 4.8 GB on Apple (M1: 3.1 GiB of the process and 1.4 GiB on the Neural Engine) | none | measured (AMD and an M1) |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |
@@ -174,7 +174,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 - The values marked M1 were measured on an M1 of 16 GB on 2026-11-15 ([docs/design/memory-and-power.md](docs/design/memory-and-power.md)): from the second start on, the peak of the process's footprint and the Neural Engine's share together, sampled every 0.1 s while it answers 200 tokens. The first start converts the model, and the process is larger for a while (at most 2.0 GiB for Qwen3-0.6B, 2.3 for PLaMo 3 Translate 0.8B, 2.7 for the 2B, 2.8 to 2.9 for LFM3's VL, Audio and Omni, 3.0 for Qwen3.5-0.8B and 6.0 GiB for Qwen3.5-2B). Gemma 4 E4B, Qwen3.5-4B and PLaMo 3 Translate 8B were not measured again with Core AI
 - The image models marked M1 were measured the same way on 2026-11-16 ([docs/design/image-models.md](docs/design/image-models.md)), drawing one picture from the second start on. Their peak is in the VAE's last stages at 1024 × 1024.
 - With Core AI the cache of a conversation also keeps the means of every 8 positions (the two-level attention of long conversations), so it grows by nine eighths of the table (13.5 KiB/token for LFM3-1.7B, 3.4 GiB at 262144; 6.75 KiB for Gemma 4 E2B)
-- The Neural Engine's share is kernel memory of its driver, in no process's RSS or footprint (Activity Monitor and `top` do not show it). hwnpu-chat says how much it is after loading; a program compiled just then comes onto the Neural Engine at its first call
+- The Neural Engine's share is kernel memory of its driver, in no process's RSS or footprint (Activity Monitor and `top` do not show it). bonsaiai-chat says how much it is after loading; a program compiled just then comes onto the Neural Engine at its first call
 - Qwen3-0.6B and Qwen3-1.7B are split at their attention with Core AI as the other chat models are (all 28 of their layers attend; on an M1 Qwen3-0.6B generates 32 tokens/s and Qwen3-1.7B 22). Their context is 40960, the cache growing with the conversation, and cut to what a quarter of the memory holds (32768 on 16 GB). With Core ML they were one program with a cache of 4096 inside, about 3.9 GB for Qwen3-0.6B and 4.5 GB for Qwen3-1.7B (7.6 GB from 16 GB). Below 16 GB of memory Qwen3-1.7B runs as one program, the one that generates reading the prompts too, 8 tokens per call (models.yaml's `prefill: off` and its `variants`): with Core ML a new prompt of 1822 tokens took 16.8 s, 3.4 s with the program that reads prompts (`--prefill on` to have it anyway). With Core AI that program is a function over the same weights: it adds 0.16 GiB on the Neural Engine, 0.3 GB in all. AMD's NPU has no export for them yet
 - Not counted: Gemma 4's per-layer embedding table (2.4 GB for E2B in int8, 4.7 GB in bf16 as converted before 2026-11-17; [docs/design/performance.md](docs/design/performance.md)) and the token embedding tables (0.5 to 0.75 GB) stay files, and only the rows used are read. They go into the OS's page cache, which drops them when memory runs short
 - Several exports of one model (text only, and with images and audio, for example) can share their files on the disk (Btrfs, XFS, APFS, ReFS). Memory is not shared: run at once, they count separately

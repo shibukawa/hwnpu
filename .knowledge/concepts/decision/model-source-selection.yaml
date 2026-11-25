@@ -40,7 +40,7 @@ facts:
   vendor_formats:
     apple: LUT 4 ビット、出力チャンネル 16 行ごとに 1 表 (per_grouped_channel)。列方向のブロック化 (16x64 など) や入力 32 個ごとの int4 (Q4_0 相当) は ANE に載らず CPU に落ちる。int4 は行ごとのスケールだけ ANE 可
     intel: 対称 int4 (NF4 可)、チャンネルごとか 128 個ごと、計算は int8/fp16 (OpenVINO GenAI の推奨)。未検証
-    amd: 非対称 uint4、AWQ、128 個ごと、活性 bf16 (Quark の推奨)。hwnpu の AMD バックエンドはモデルを扱えず、カーネルが必要。未検証
+    amd: 非対称 uint4、AWQ、128 個ごと、活性 bf16 (Quark の推奨)。bonsaiai の AMD バックエンドはモデルを扱えず、カーネルが必要。未検証
     qualcomm: QNN context binary。チップ世代と SDK に結び付き、公式ツールか AI Hub でしか作れない。Go だけでは配布物を作れない (記憶ベース、未調査)
   distribution:
     layout: s3://models/<モデル>/<revision>/<実行先>/ に manifest.json (元リポジトリとコミット、変換ツール版、量子化設定、sha256、必要な OS/ドライバ)、モデル本体、tokenizer.json、config.json

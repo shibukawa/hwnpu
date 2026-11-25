@@ -14,9 +14,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/audio"
-	"github.com/shibukawa/hwnpu/internal/pyjson"
-	"github.com/shibukawa/hwnpu/internal/vision"
+	"github.com/shibukawa/bonsaiai/internal/audio"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/vision"
 )
 
 // Request is a parsed System One request.

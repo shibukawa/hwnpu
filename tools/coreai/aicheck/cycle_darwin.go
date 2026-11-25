@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // cycle loads every package at once and times their calls two ways: each called rounds times in
@@ -63,7 +63,7 @@ func cycle(pkgs []string, rounds int) error {
 				for i := range f {
 					f[i] = float32(rng.NormFloat64() * 0.5)
 				}
-				hwnpu.EncodeF16(b.Bytes(), f)
+				bonsaiai.EncodeF16(b.Bytes(), f)
 			}
 		}
 		ps = append(ps, prog{filepath.Base(path), g, req})

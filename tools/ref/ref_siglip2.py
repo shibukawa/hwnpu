@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SigLIP 2 (google/siglip2-*, Apache-2.0) on the CPU with Hugging Face's Transformers: the
-reference hwnpu-image label and embed (tools/amd/iron_siglip2.py, internal/vision/siglip) are
+reference bonsaiai-image label and embed (tools/amd/iron_siglip2.py, internal/vision/siglip) are
 checked against.
 
 The images go through the model's own processor (resized to the model's size with PIL's

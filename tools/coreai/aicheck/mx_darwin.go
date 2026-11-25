@@ -10,14 +10,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreai"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/mxfp4"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mxfp4"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // mx times experts in MXFP4 on the Neural Engine, given as Core AI's MX arrays: e2m1 values two
@@ -204,8 +204,8 @@ func mx(argv []string) error {
 		for i := range xv {
 			xv[i] = float32(rng.NormFloat64())
 		}
-		hwnpu.EncodeF16(xb.Bytes(), xv)
-		hwnpu.DecodeF16(xv, xb.Bytes())
+		bonsaiai.EncodeF16(xb.Bytes(), xv)
+		bonsaiai.DecodeF16(xv, xb.Bytes())
 		req.Bind(args["x"].Index, xb)
 		yb, _ := alloc("y")
 		req.Bind(args["y"].Index, yb)
@@ -220,7 +220,7 @@ func mx(argv []string) error {
 			return err
 		}
 		got := make([]float32, H)
-		hwnpu.DecodeF16(got, yb.Bytes())
+		bonsaiai.DecodeF16(got, yb.Bytes())
 		want := make([]float32, H)
 		for _, c := range cw {
 			mxExpert(want, c.gu, c.sgu, c.dn, c.sdn, xv, I, 1/float32(K))
@@ -248,7 +248,7 @@ func mx(argv []string) error {
 		for i, b := range e {
 			f[i] = float32(math.Ldexp(1, int(b)-127))
 		}
-		hwnpu.EncodeF16(dst, f)
+		bonsaiai.EncodeF16(dst, f)
 	}
 	held := make([][]expert, *layers)
 	t = time.Now()
@@ -279,12 +279,12 @@ func mx(argv []string) error {
 	for i := range xv {
 		xv[i] = float32(rng.NormFloat64())
 	}
-	hwnpu.EncodeF16(xb.Bytes(), xv)
-	hwnpu.DecodeF16(xv, xb.Bytes())
+	bonsaiai.EncodeF16(xb.Bytes(), xv)
+	bonsaiai.DecodeF16(xv, xb.Bytes())
 	req.Bind(args["x"].Index, xb)
 	for k := 0; k < K; k++ {
 		r, _ := alloc(fmt.Sprintf("r%d", k))
-		hwnpu.EncodeF16(r.Bytes(), []float32{1 / float32(K)})
+		bonsaiai.EncodeF16(r.Bytes(), []float32{1 / float32(K)})
 		req.Bind(args[fmt.Sprintf("r%d", k)].Index, r)
 	}
 	yb, _ := alloc("y")
@@ -314,7 +314,7 @@ func mx(argv []string) error {
 		return err
 	}
 	got := make([]float32, H)
-	hwnpu.DecodeF16(got, yb.Bytes())
+	bonsaiai.DecodeF16(got, yb.Bytes())
 	want := make([]float32, H)
 	for _, e := range chosen {
 		x := held[0][e]
@@ -377,8 +377,8 @@ func mxExpert(out []float32, gu, sgu, dn, sdn []byte, x []float32, I int, r floa
 		a[j] = g / (1 + float32(math.Exp(float64(-g)))) * u
 	}
 	ab := make([]byte, 2*I)
-	hwnpu.EncodeF16(ab, a)
-	hwnpu.DecodeF16(a, ab)
+	bonsaiai.EncodeF16(ab, a)
+	bonsaiai.DecodeF16(a, ab)
 	d := make([]float32, len(out))
 	mxRef(d, dn, sdn, a)
 	for o := range out {

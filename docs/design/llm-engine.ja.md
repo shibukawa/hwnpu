@@ -28,7 +28,7 @@
 ### テンソルの上限: 1 次元 16384
 
 - Neural Engine は 1 次元 16384 まで (`llm.NeuralEngineMaxDim`)。鍵の軸が 16385 以上の注意は CPU に置かれる (M3: 2 層で 16.6 ms → 117 ms。キャッシュ 16384 で 1 トークン 375 ms、読み込み 140 秒)。
-- そのため分けないプログラムはキャッシュ + Q を 16384 以下にする: 注意で分けないモデルの `chat.DefaultContext` は 16384 − 64 = 16320 で、プロンプトのプログラムは 64 トークン。`hwnpu-dev convert` は `-cache + -seq` が上限を超えると警告する。
+- そのため分けないプログラムはキャッシュ + Q を 16384 以下にする: 注意で分けないモデルの `chat.DefaultContext` は 16384 − 64 = 16320 で、プロンプトのプログラムは 64 トークン。`bonsaiai-dev convert` は `-cache + -seq` が上限を超えると警告する。
 - 16320 を超える分けないプログラムのキャッシュは、16384 ずつの入力の塊に分ける (`llm.CacheChunks`、`CacheChunkOver` = 16320、`CacheChunkLen` = 16384、最後は短い)。`blocks.ChunkedSDPA` が塊とステップ自身のトークン (`mask_TYPE_self`) を、プログラムの中で要素ごとの演算だけで合わせる: 指数は全体の最大値に ln 4n を足した値から取り (和を fp16 に収める)、指数の和と重み付きの値は行列積 (`e @ 1`、`e @ V`)、割るのは最後に 1 回。規則はキャッシュの長さだけで決まるので、1 トークンと 64 トークンのプログラムがバッファを共有できる。リングは分けない。この経路は注意で分ける形より 1 トークンが遅く、分けられるモデルはすべて分けるのが既定。
 
 ## 2 つのプログラムで 1 つのキャッシュ
@@ -43,7 +43,7 @@
 
 分けられるモデル (`llm.Paged`: LFM3 とその VL、Audio、Omni、Gemma 4、Qwen3.5、PLaMo 3。Qwen3 は Core AI だけ) はすべて分けるのが既定で、Core ML、Core AI、Intel で動く。
 
-- 変換 (`hwnpu-dev convert -paged N`、`llm.Options.Paged`、`llm.PlanPaged`): 全注意の層 N の前で部分を終え、`attn_q_N` (RoPE や norm の後)、そのステップの `kv_k_N_new` と `kv_v_N_new` (LFM3 はゲート `attn_gate_N` も) を出す。次の部分は `attn_o_N` を受けて層 N の残りを計算する。リングと畳み込みの窓は部分の中のまま。部分の間の出力は名前で結ぶ (`chain`)。重みの予算を超える区間はさらに分ける。manifest に `paged` と `attention`。
+- 変換 (`bonsaiai-dev convert -paged N`、`llm.Options.Paged`、`llm.PlanPaged`): 全注意の層 N の前で部分を終え、`attn_q_N` (RoPE や norm の後)、そのステップの `kv_k_N_new` と `kv_v_N_new` (LFM3 はゲート `attn_gate_N` も) を出す。次の部分は `attn_o_N` を受けて層 N の残りを計算する。リングと畳み込みの窓は部分の中のまま。部分の間の出力は名前で結ぶ (`chain`)。重みの予算を超える区間はさらに分ける。manifest に `paged` と `attention`。
 - 注意のプログラム (`internal/llm/paged`、`out.attn.<ext>`) は重みがない: 塊 1 つへの注意で、塊の中で正規化した出力 o、行ごとの最大値 m、指数の和 l を返す。和は 1 との行列積 (Core ML の Q=64 では `reduce_sum` の配置がコンパイルごとに ANE と CPU で入れ替わる)。
 - o は `matmul(e, v) / l` ではなく `matmul(e · (S / l), v) · (1/S)`、S = 1024 (`paged.Version` 1、`paged.OutScale`)。Neural Engine は行列積の中で約 2^-16 より小さい積を捨て、値の小さい層 (LFM3-1.7B の層 18、|v| ≤ 0.7) では重みの小さい多くの鍵が分子から消えた (塊の o が最大 79 % ずれ、変えた後は最大 0.4 %。3.3 万トークンの文書の合言葉 3 つ: 0 → 3)。|v| < 32 なら途中の和は NE の 2^15 未満。費用: 8192 の鍵への 128 行の呼び出しが 5.5 → 5.95 ms (M3)、8 行は変わらない。`Manifest.AttnVersion` に記録し、古い注意のプログラムは `RefreshAttention` が書き直す (重みがないので数秒)。`TestSmallValuesOnNeuralEngine` が実機で確かめる (前は 4.6 %、今は 0.3 %)。
 - `decode.Session` が部分を順に動かす。部分の間で、そのステップの鍵と値を自分のキャッシュに書き (注意の前に書くので、ステップのトークンが自分を見る)、使っている塊ごとに注意を呼び、float32 で合わせ (`paged.Merge`、Flash-Decoding の合流)、`attn_o_N` に書く。マスクが要るのはステップのトークンが入る塊 (多くて 2 つ) だけで、それより前の塊はゼロのマスク。
@@ -55,7 +55,7 @@
 - Qwen3 (`llm.Unpaged`、28 層すべてが注意) は既定では Core AI だけで分ける (`pagedChunk`)。Core ML と Intel では `--paged` を与えたときだけ。分けないときの文脈は 4096 (28 層の鍵と値を 1 本に持つとそれを超えて失敗する)。M3 の Core AI で分けて短い塊つき: 22 トークンのプロンプトで 19.1 → 36.1 tokens/s、2149 トークンで 18.0 → 21.6、プロンプト 3.6 → 1.7 秒。Core ML では差が小さく (M3 19.0 → 21.2)、M1 の Core ML では分けると遅かったので、選んだときだけ。
 - 注意の層ごとにホストとの往復が 1 回ある (Core AI で 1 回約 0.4 ms の固定費)。注意の層の多いモデルは層の数だけ払う。短い会話では分けない 1 本の段 (下) がこれをなくす。
 
-### フラグ (hwnpu-chat)
+### フラグ (bonsaiai-chat)
 
 | フラグ | 既定 | 意味 |
 |---|---|---|
@@ -72,14 +72,14 @@
 
 - 1 層の 1 回の費用は、固定の約 0.36 ms と 1K の鍵あたり約 0.14 ms (M3、Core AI、LFM3-1.7B、8 トークン: 1024 で 0.50、2048 で 0.63、4096 で 0.93、8192 で 1.49 ms)。n を覆う 1 つの塊は、長い塊 1 つより、短い塊いくつかより安い。
 - `decode.Program.Smaller` が短い塊の注意のプログラムを持つ (それぞれ次と `Attn` を割り切る)。セッションはキャッシュを会話を覆う一番短い塊で持つ (`Session.fit`): ステップが塊を越える前に、行を同じ位置のまま次の長さへ移す (ヘッドごとに連続する行をまとめて、最大 4096 行)。`Reset`、`Rewind`、`Truncate` の後の次のステップで短い塊に戻す。`ImportRows` も先に合わせる。
-- `llm.AddSmaller` が書き出し済みのモデルに変換し直さずに足す (`Manifest.Smaller`、`OUT.attnC.<ext>`)。重みのある部分は塊の長さによらない。`chain` は NPU に全部載らない短いプログラムを外し (`Chain.Chunks`)、hwnpu-chat は 1 つの段のプログラムがみな持つ塊だけ使う (`commonSmaller`)。
+- `llm.AddSmaller` が書き出し済みのモデルに変換し直さずに足す (`Manifest.Smaller`、`OUT.attnC.<ext>`)。重みのある部分は塊の長さによらない。`chain` は NPU に全部載らない短いプログラムを外し (`Chain.Chunks`)、bonsaiai-chat は 1 つの段のプログラムがみな持つ塊だけ使う (`commonSmaller`)。
 - Core ML は小さい注意を CPU に置く: grouped の Q=1 は塊 8192 まで、Q=8 は 2048 まで CPU、Q=64 は 1024 から ANE (M3 と M4 で同じ。機種でなく macOS 27 の Core ML の判断)。そのため Core ML は 4096 から。
 - 結果 (M3、LFM3-1.7B、64 トークン): 150 トークンの会話で Core AI 44.1 → 53.7 tokens/s、Core ML 42.4 → 47.9。2183 トークンで Core AI 40.3 → 45.0 (プロンプト 1.6 → 1.1 秒)。
 
 ### 注意のプログラムの形
 
 - `grouped` (`blocks.SDPAGrouped`、LFM3 の `attn` の既定): kv ヘッドごとに、重ねた問い合わせのヘッドとの積 1 回。K/V を `tile` で複製しない。`tile` も選べる。
-- `paged.Heads` (Core AI、kv ヘッド 2 つ以上。`llm.attentionForm`): kv ヘッド 1 つ分の問い合わせを (1, 1, 行, d) にし、スコアを (1, 行, 1, キー) に並べ、倍率は問い合わせに掛け、最大値と和は最後の軸で `reduce_sum`。1 回が 5〜26% 速い (M1)。kv ヘッドが 1 つ (Gemma 4 E2B、PLaMo 3 0.8B) だと Neural Engine から外れるので `grouped` のまま。`HWNPU_DEV=attention=grouped` で比べるために前の形にできる。
+- `paged.Heads` (Core AI、kv ヘッド 2 つ以上。`llm.attentionForm`): kv ヘッド 1 つ分の問い合わせを (1, 1, 行, d) にし、スコアを (1, 行, 1, キー) に並べ、倍率は問い合わせに掛け、最大値と和は最後の軸で `reduce_sum`。1 回が 5〜26% 速い (M1)。kv ヘッドが 1 つ (Gemma 4 E2B、PLaMo 3 0.8B) だと Neural Engine から外れるので `grouped` のまま。`BONSAIAI_DEV=attention=grouped` で比べるために前の形にできる。
 - `llm.RefreshAttention` が前の書き出しの注意のプログラムを書き直す (`Manifest.AttnForm`)。重みの部分はそのまま。`chat.Prepare` が `AddMass` の後に呼ぶ。
 - mass のプログラム (`paged.BuildMass`) は `grouped` のまま。
 
@@ -124,7 +124,7 @@
 - `Engine.prefill` はメモリ内の再利用より先へ進めるときだけストアを使い、プロンプトが収まる最も短い段で戻す。`Stats.Restored` が戻したトークン数 (`Reused` と `usage.cached_tokens` に含まれる)。サーバーのログは `(N tokens from the prompt store)`。
 - 大きさ (LFM3-1.7B): 行は 1 トークン 12,288 バイト、印 1 つ 3.45 MB、印込みで 1 トークン約 18.7 KiB。7,857 トークンの項目が 145 MB。
 - M3、LFM3-1.7B、OpenCode の最初の要求 (7,854 トークン): 冷えた読み 14.6 秒 → 再起動後 0.2 秒 (ストアの読み出し自体は 17〜36 ms、残りは ANE のバッファへの書き戻し)。依頼の文を変えても 0.7 秒 (印 7680 から)。書き込みの上乗せは 0.5 秒以内。貪欲法の出力は冷えた読みと一致。
-- hwnpu-agent のプロンプト (system と道具で 617 トークン) は `minStored` 未満で保存しない。
+- bonsaiai-agent のプロンプト (system と道具で 617 トークン) は `minStored` 未満で保存しない。
 
 ## 2 段の注意 (`decode.Sparse`、`--sparse`)
 
@@ -143,7 +143,7 @@ CPU での確認 (LFM3-1.7B、PyTorch bf16、128K、10/50/90% に合言葉): 既
 
 ## 長い文脈の数値 (M3 16 GB、Core AI、LFM3-1.7B lut6 grouped)
 
-macOS 27.2.1。`hwnpu-chat serve` を既定のまま (`--paged 8192`、約 48K を超えたら 2 段の注意、下書き 7)、`--prompt-cache off --no-think`、温度 0、1 回ごとにサーバーを起動し直す。読み = 最初のトークンまでの時間。生成 = プロンプトの直後の答え (100〜256 トークン) の tokens/s (採られた下書きの数で動くので幅がある)。文書はこのリポジトリの英語の docs と Go のソース。
+macOS 27.2.1。`bonsaiai-chat serve` を既定のまま (`--paged 8192`、約 48K を超えたら 2 段の注意、下書き 7)、`--prompt-cache off --no-think`、温度 0、1 回ごとにサーバーを起動し直す。読み = 最初のトークンまでの時間。生成 = プロンプトの直後の答え (100〜256 トークン) の tokens/s (採られた下書きの数で動くので幅がある)。文書はこのリポジトリの英語の docs と Go のソース。
 
 | プロンプト (トークン) | 読み、2 段 | 生成、2 段 | 読み、全部 (`--no-sparse`) | 生成、全部 |
 |---|---|---|---|---|
@@ -175,13 +175,13 @@ Level Zero と OpenVINO はもともと終わった要求の付け替えを許�
 
 ## 落とし穴
 
-- 注意のプログラムは、読み込みの文脈ではなく段の `Program` の文脈で動かす: hwnpu-chat は ready になると読み込みの文脈を取り消すので、その下の呼び出しは `context canceled` を返し、予測は裏で走り続けた (空の答え、`cannot bind while a submission is running`、終了時の SIGSEGV)。`TestPagedOnNeuralEngine` が見る。
+- 注意のプログラムは、読み込みの文脈ではなく段の `Program` の文脈で動かす: bonsaiai-chat は ready になると読み込みの文脈を取り消すので、その下の呼び出しは `context canceled` を返し、予測は裏で走り続けた (空の答え、`cannot bind while a submission is running`、終了時の SIGSEGV)。`TestPagedOnNeuralEngine` が見る。
 - Core ML: 1 つのプログラムの中で塊を合わせる形のいくつかは CPU に落ちる (塊を 1 つの軸に並べて縮約、各塊を `和_J / 全体の和` で重み付け、和に先に 1/n を掛ける)。和を先に足し、最後に 1 回だけ割る。
 - Core ML の Q=64: `reduce_sum` の配置がコンパイルごとに揺れる。1 との行列積を使う。
 - MLState: `write_state` の値をそのまま使うと ANE のコンパイルが `error code: -14` で失敗する。読み直してから使う。
 - とても長いプロンプトを読んだ直後の数回は遅い (256K で 1 回 1.29 秒、その後 350 ms)。原因は確かめていない。
 - 2 段の注意は尖った注意を近似しにくい: ノルムの重みを 1 前後にした小さな Gemma 4 (点数が 30 に届く) で、全部を読む形との相対誤差 1.3〜1.6 (普通の重みでは 0.068)。
-- `HWNPU_PROFILE=1` (`decode.WriteProfile`) は 1 ステップを部分、層ごとのホストの注意、ロジットの読み出しに分ける。hwnpu-chat は答えのたびに Neural Engine が抱えるメモリと一緒に出す。
+- `BONSAIAI_PROFILE=1` (`decode.WriteProfile`) は 1 ステップを部分、層ごとのホストの注意、ロジットの読み出しに分ける。bonsaiai-chat は答えのたびに Neural Engine が抱えるメモリと一緒に出す。
 
 ## テスト
 
@@ -212,7 +212,7 @@ Level Zero と OpenVINO はもともと終わった要求の付け替えを許�
 - `choose` のホストの時間 (選び直したバケットの memmove) が 128K で 1 回約 13 ms (12%)。
 - ストア: 退避した系列 (`Save`) もストアに置く、要求ごとの終わりの古い印を間引く、行を int8 に。
 - 全部の層がキャッシュを書くモデルの KV だけのプロンプトのプログラム (LFM3 の出力層、約 0.19 GiB を外す)。
-- 注意を直した後も、2.4 万〜3.2 万トークンでの遠くの想起は PyTorch に届かない: 合言葉 3 つで、hwnpu の lut6 は 2.5 万で 3 つ中 2 つ (PyTorch の fp16 は 3)、別の 3.3 万の文書で 0 (PyTorch は 2)。lut8 は lut6 が今は答える文書で 0。NE の道の残り (重みの部分、ほかの行列積) は同じやり方ではまだ見ていない。
+- 注意を直した後も、2.4 万〜3.2 万トークンでの遠くの想起は PyTorch に届かない: 合言葉 3 つで、BonsaiAI の lut6 は 2.5 万で 3 つ中 2 つ (PyTorch の fp16 は 3)、別の 3.3 万の文書で 0 (PyTorch は 2)。lut8 は lut6 が今は答える文書で 0。NE の道の残り (重みの部分、ほかの行列積) は同じやり方ではまだ見ていない。
 - 同じ小さな積の取りこぼしは、`matmul(e または softmax, v)` で書いたほかの注意にもあるだろう: `blocks.ChunkedSDPA` / `ChunkedSDPAGrouped` (分けない長いキャッシュ。e を log(4·塊の数) だけ下げてもいる)、`blocks.SDPA` / `SDPAGrouped` (softmax のあと積)、画像のモデルの `milpart` の注意 (e·(1/sum))。直すと重みのあるプログラムを書き出し直す (アーキテクチャごとに `Revision`)。
 - 上の長い文脈の表は注意を直す前に測った (今はプロンプトの読みが数 % 遅い)。
 - 測っていない: M2/M3 での `Heads` の形、M2/M3 と PLaMo 3 0.8B / 8B のリングの段、サーバーでいくつもの会話が段を行き来するとき、Intel の NPU の実機での分けたモデル。

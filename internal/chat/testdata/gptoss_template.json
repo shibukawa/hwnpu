@@ -553,7 +553,7 @@
   "messages": [
    {
     "role": "user",
-    "content": "Find hwnpu"
+    "content": "Find bonsaiai"
    },
    {
     "role": "assistant",
@@ -565,7 +565,7 @@
       "type": "function",
       "function": {
        "name": "search",
-       "arguments": "{\"query\": \"hwnpu \\\"npu\\\"\", \"topn\": 3}"
+       "arguments": "{\"query\": \"bonsaiai \\\"npu\\\"\", \"topn\": 3}"
       }
      }
     ]
@@ -573,7 +573,7 @@
    {
     "role": "tool",
     "tool_call_id": "s1",
-    "content": "{\"hits\": [\"github.com/shibukawa/hwnpu\"]}\nline 2"
+    "content": "{\"hits\": [\"github.com/shibukawa/bonsaiai\"]}\nline 2"
    },
    {
     "role": "assistant",
@@ -585,6 +585,6 @@
     "content": "Thanks!"
    }
   ],
-  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.\nCalls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Tools\n\n## functions\n\nnamespace functions {\n\n// Searches the web.\ntype search = (_: {\nquery: string,\n// Results\ntopn?: number, // default: 10,\nsites?: string[],\nscores?: number[] | null,\nmode?: \"fast\" | \"deep\", // default: fast,\nsafe?: boolean, // default: true,\nnote?: string | null,\n}) => any;\n\n} // namespace functions<|end|><|start|>user<|message|>Find hwnpu<|end|><|start|>assistant to=functions.search<|channel|>commentary json<|message|>{\"query\": \"hwnpu \\\"npu\\\"\", \"topn\": 3}<|call|><|start|>functions.search to=assistant<|channel|>commentary<|message|>\"{\\\"hits\\\": [\\\"github.com/shibukawa/hwnpu\\\"]}\\nline 2\"<|end|><|start|>assistant<|channel|>final<|message|>It is on GitHub.<|end|><|start|>user<|message|>Thanks!<|end|><|start|>assistant"
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.\nCalls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Tools\n\n## functions\n\nnamespace functions {\n\n// Searches the web.\ntype search = (_: {\nquery: string,\n// Results\ntopn?: number, // default: 10,\nsites?: string[],\nscores?: number[] | null,\nmode?: \"fast\" | \"deep\", // default: fast,\nsafe?: boolean, // default: true,\nnote?: string | null,\n}) => any;\n\n} // namespace functions<|end|><|start|>user<|message|>Find bonsaiai<|end|><|start|>assistant to=functions.search<|channel|>commentary json<|message|>{\"query\": \"bonsaiai \\\"npu\\\"\", \"topn\": 3}<|call|><|start|>functions.search to=assistant<|channel|>commentary<|message|>\"{\\\"hits\\\": [\\\"github.com/shibukawa/bonsaiai\\\"]}\\nline 2\"<|end|><|start|>assistant<|channel|>final<|message|>It is on GitHub.<|end|><|start|>user<|message|>Thanks!<|end|><|start|>assistant"
  }
 ]

@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // A d1 model on AMD's NPU is an export of tools/amd/iron_export_lm.py d1 (d1omni for d1-Omni,
@@ -66,7 +66,7 @@ func LoadAMD(ctx context.Context, c AMDConfig) (*Model, error) {
 	if err := llm.LockNPU(ctx); err != nil { // one process's language model on the NPU at a time
 		return nil, err
 	}
-	if m.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+	if m.dev, err = bonsaiai.Open(ctx, bonsaiai.WithVendor(bonsaiai.VendorAMD)); err != nil {
 		return nil, err
 	}
 	iron.ShareExport(c.Dir, func(f string, a ...any) { logf("  "+f, a...) })

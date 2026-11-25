@@ -22,7 +22,7 @@
 最後に models.yaml にあったのは `2d5e46f6` です (`git show 2d5e46f6:models.yaml` の `Qwen-Image-2.1-Turbo:` と `Qwen-Image-2.1:`)。
 
 - `family: qwen-image`。`tag` は `2.1-turbo` と `2.1` で、family だけで呼ぶと Turbo になります。
-- `license` は `{id: qwen-research, class: non-commercial, accept: true}` です。名前で選んだときに一度だけ端末で同意を聞き、`~/.config/hwnpu/licenses.json` に残していました。ここで作ったライセンス確認の仕組みは、今も Anima などで使っています。
+- `license` は `{id: qwen-research, class: non-commercial, accept: true}` です。名前で選んだときに一度だけ端末で同意を聞き、`~/.config/bonsaiai/licenses.json` に残していました。ここで作ったライセンス確認の仕組みは、今も Anima などで使っています。
 - `machine: 16` (Turbo)、`machine: 0` (蒸留なし)。
 - `memory: {amd: 4.2, apple: 6.0}`、`bytes: 3.25e10`。
 - 形式:
@@ -61,7 +61,7 @@
 ## ロジックが残っているコミット
 
 - **最後にコードがあったコミット: `2d5e46f6d26bc8c073e9be07b7d650f6b899ac7c`** (#222 の親)。
-  - Go: `internal/imagegen/qwenimage/` (変換、`progEngine`、VAE のタイル `runTiled`、DiT の入れ替え `swapDiT`)、`internal/imagegen/qwenimage/mil/`、`cmd/hwnpu-image/qwenimage.go`
+  - Go: `internal/imagegen/qwenimage/` (変換、`progEngine`、VAE のタイル `runTiled`、DiT の入れ替え `swapDiT`)、`internal/imagegen/qwenimage/mil/`、`cmd/bonsaiai-image/qwenimage.go`
   - AMD: `tools/amd/iron_qwenimage.py`
   - 参照: `tools/ref/ref_qwenimage21.py` (`--stream` で重みを流し読み)、`tools/ref/qwenimage_quant.py`、`tools/coreai/qwenimage_dit.py`、`tools/coreai/qlut/`
   - 記録: `docs/design.md` の 16.155、16.157、16.165、16.167、16.181、16.184、16.211、16.216
@@ -91,8 +91,8 @@
 2. 大きさの壁は変わっていません。再開するなら、次のどちらかのときです。
    - 小さい版 (DiT が数 B 以下) が出たとき
    - ANE のコンパイル済みキャッシュが大きくなったとき
-3. `2d5e46f6` から `internal/imagegen/qwenimage`、`cmd/hwnpu-image/qwenimage.go`、`tools/amd/iron_qwenimage.py`、参照の道具を戻します。そのうえで、今の仕組みに合わせて直します。
+3. `2d5e46f6` から `internal/imagegen/qwenimage`、`cmd/bonsaiai-image/qwenimage.go`、`tools/amd/iron_qwenimage.py`、参照の道具を戻します。そのうえで、今の仕組みに合わせて直します。
    - 8 サイズを1つの書き出しにまとめる
    - model-recipes.yaml の `apple` と `amd`
-   - hwnpud がキャッシュを一手に書く仕組み
+   - bonsaiaid がキャッシュを一手に書く仕組み
 4. M1 の Core AI では、プリビルドと端末のコンパイルの問題に気をつけます ([chroma.md](chroma.md) の h13g の問題も参照)。

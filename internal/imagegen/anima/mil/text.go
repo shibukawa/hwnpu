@@ -2,10 +2,10 @@ package mil
 
 import (
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/milpart"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // The text encoder's and the adapter's shape (text_encoder/config.json, text_conditioner/config.json).

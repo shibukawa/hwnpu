@@ -1,12 +1,12 @@
-package hwnpu
+package bonsaiai
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 type fakeDevice struct{ rep types.PlacementReport }

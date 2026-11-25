@@ -1,5 +1,5 @@
 """GPTQ for gpt-oss's attention on Apple's Neural Engine: codes of q/k/v/o_proj chosen against each
-layer's inputs, which hwnpu-dev convert -codes and hwnpu-chat --codes read.
+layer's inputs, which bonsaiai-dev convert -codes and bonsaiai-chat --codes read.
 
 The attention's projections in lut8 (palette.Uniform, a table of 256 levels for 16 rows) raise the
 KL on plain text from 0.036 to 0.29 on the Neural Engine (docs/design/performance.md); fp16 keeps it but
@@ -22,7 +22,7 @@ positions), the KL from the float32 reference with the projections rounded to th
 Measured (32 sequences of 512 tokens, damp 0.01): lut8 0.31 -> 0.17, int8 0.099 -> 0.043. lutrow
 (about 10 minutes on an M3): 0.070 -> 0.083 at damp 0.01, the calibration's kinds of text better
 and README, the GPL and Go worse; 0.070 -> 0.059 at 0.1, README and Go still worse. On the Neural
-Engine (hwnpu-dev convert -codes OUT/codes-lut8r) the median KL of each text halves (0.016-0.030
+Engine (bonsaiai-dev convert -codes OUT/codes-lut8r) the median KL of each text halves (0.016-0.030
 -> 0.006-0.010) but a few positions of README and Go grow (11.5, 4.4): the mean 0.059 -> 0.069.
 """
 

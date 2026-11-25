@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/bonsaiai"
 )
 
 // An export with towers loads only the start of its bank that the decode step and the prompt
@@ -53,13 +53,13 @@ func TestLazyTowerBanks(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend(simBackend))
+	dev, err := bonsaiai.Open(ctx, bonsaiai.WithBackend(simBackend))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer dev.Close()
-	m := &Model{Manifest: man(true), dir: dir, dev: dev, banks: map[string]*hwnpu.Buffer{}, logf: t.Logf}
-	m.decode = &version{m: m.Manifest.Versions["decode"], args: map[string]*hwnpu.Buffer{}}
+	m := &Model{Manifest: man(true), dir: dir, dev: dev, banks: map[string]*bonsaiai.Buffer{}, logf: t.Logf}
+	m.decode = &version{m: m.Manifest.Versions["decode"], args: map[string]*bonsaiai.Buffer{}}
 	defer m.Release()
 	if err := m.loadBanks(); err != nil {
 		t.Fatal(err)

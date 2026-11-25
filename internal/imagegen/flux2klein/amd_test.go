@@ -3,14 +3,15 @@ package flux2klein
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
 func kleinModel(t *testing.T) chat.Model {
@@ -69,12 +70,14 @@ func TestAMDExportName(t *testing.T) {
 	}
 }
 
-// TestAMDImportedPlace: the export made by hand of FLUX.2 klein that hwnpu-dev sources import put
+// TestAMDImportedPlace: the export made by hand of FLUX.2 klein that bonsaiai-dev sources import put
 // in a source is found where it put it, and the first run's is another entry, of every size.
 func TestAMDImportedPlace(t *testing.T) {
 	m := kleinModel(t)
 	name := AMDExportName(m.Name)
-	want := "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b.amd-npu2/v0-2d2e30e3"
+	// pinned: what is made here goes beside the pinned export, as v0-HASH of its recipe
+	m.Pins = map[string]map[string]chat.Pin{cache.AMDTarget: {name: {At: fmt.Sprintf("v%d", m.Targets[cache.AMDTarget]), Digest: "sha256:" + strings.Repeat("0", 64)}}}
+	want := "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b.amd-npu2/v0-0491c4d4"
 	if got := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name)).Path; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
@@ -129,7 +132,7 @@ func TestPrepareAMDHere(t *testing.T) {
 	}
 }
 
-// TestPrepareAMDImported takes an export made by hand that a source holds (hwnpu-dev models
+// TestPrepareAMDImported takes an export made by hand that a source holds (bonsaiai-dev models
 // import), without the checkpoint or IRON, into the cache's entries.
 func TestPrepareAMDImported(t *testing.T) {
 	noSources(t)

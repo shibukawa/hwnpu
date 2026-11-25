@@ -8,13 +8,13 @@ import (
 )
 
 func TestUnits(t *testing.T) {
-	exe := `/home/me/go/bin/hwnpud "a" 100%\x`
+	exe := `/home/me/go/bin/bonsaiaid "a" 100%\x`
 	svc := string(ServiceUnit(exe))
-	if !strings.Contains(svc, `ExecStart="/home/me/go/bin/hwnpud \"a\" 100%%\\x" serve`) {
+	if !strings.Contains(svc, `ExecStart="/home/me/go/bin/bonsaiaid \"a\" 100%%\\x" serve`) {
 		t.Errorf("service:\n%s", svc)
 	}
-	sock := string(SocketUnit("/run/user/1000/hwnpud.sock"))
-	for _, want := range []string{"ListenStream=/run/user/1000/hwnpud.sock\n", "SocketMode=0600\n", "FileDescriptorName=" + SocketName + "\n"} {
+	sock := string(SocketUnit("/run/user/1000/bonsaiaid.sock"))
+	for _, want := range []string{"ListenStream=/run/user/1000/bonsaiaid.sock\n", "SocketMode=0600\n", "FileDescriptorName=" + SocketName + "\n"} {
 		if !strings.Contains(sock, want) {
 			t.Errorf("socket has no %q:\n%s", want, sock)
 		}

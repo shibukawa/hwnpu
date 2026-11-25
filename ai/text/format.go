@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Format asks a chat model for its answer as JSON (the OpenAI API's response_format): any JSON

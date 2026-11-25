@@ -100,12 +100,12 @@
 
 1. **M1 で DiT が仕上がらない:** M1 (h13g) では、8 サイズの DiT のプリビルドを開くと、`ANELargeModelCompilerService` が毎回 SIGSEGV で落ちます。
    - 落ちる場所は二つで、`ZinCompilerCoreLLIROnline::AllocateMemoryPools` から `ZinIrTensor::GetParentTensors` に入ったところと、`AneHloToZinPass` のハッシュ表です。
-   - Core AI は端末でのコンパイルに戻らず、失敗にします。hwnpu は自分で端末コンパイルに回しますが、1 部品 2 時間かかります。
+   - Core AI は端末でのコンパイルに戻らず、失敗にします。BonsaiAI は自分で端末コンパイルに回しますが、1 部品 2 時間かかります。
    - 単ブロックはもともと端末に回しているので、M1 では DiT の 10 部品すべてが端末でのコンパイルになり、初回は 15〜20 時間かかる見込みでした。
    - Apple には Feedback Assistant で報告しました (2026-11-24)。
 2. **M2 も重い:** h14g では単ブロックのうち 3 本が Neural Engine に載らず、1 本 1.5〜3 時間の端末コンパイルになります。
 3. **大きい:** 書き出しは 1 モデル 19 GB あり、Flash と HD の 2 つで NAS を 38 GB 使います。プリビルドを作る時間も長く、FLUX.3 klein に移るのが遅れていました。
-4. **代わりがある:** FLUX.2 klein 4B も Apache-2.0 です。M1 で 1024² が 41 秒で描け、編集もできます。Chroma にしかないのは「検閲なし」くらいで、hwnpu の既定の用途には向きません。
+4. **代わりがある:** FLUX.2 klein 4B も Apache-2.0 です。M1 で 1024² が 41 秒で描け、編集もできます。Chroma にしかないのは「検閲なし」くらいで、BonsaiAI の既定の用途には向きません。
 
 ## 再開するときの手順と注意
 

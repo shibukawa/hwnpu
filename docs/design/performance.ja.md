@@ -84,7 +84,7 @@
 | Core AI: 次のプログラムを先に読む、DiT の組を入れ替える | Chroma の DiT 1 回 7.2 → 5.4〜5.8 秒。NE が持つもの 8.3 → 2.2〜2.6 GiB | | [image-apple.md](image-apple.md) |
 | Core AI の `--batch` | Chroma の DiT 1 回 1 枚 5.4 → 5.05 秒 | 1 枚ごとのホストのメモリ | [image-apple.md](image-apple.md) |
 | 全部の大きさを 1 つの書き出しの関数に | 全部の大きさで 1 回のダウンロード (Anima の大きさごとの書き出しは 1 つ 2.9 GB だった) | 初回のコンパイルは全部の大きさの分 | [image-apple.md](image-apple.md) |
-| チップごとの prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH`) | M1 の FLUX.2 klein の初回 40 分 → 7 分 48 秒 | チャットのモデルと VAE には作らない | [apple-coreai.md](apple-coreai.md) |
+| チップごとの prebuilt (`bonsaiai-dev models package MODEL/coreai-ARCH`) | M1 の FLUX.2 klein の初回 40 分 → 7 分 48 秒 | チャットのモデルと VAE には作らない | [apple-coreai.md](apple-coreai.md) |
 | Core AI の FLUX.2 klein 4B | M1: 512² 11 秒、1024² 41 秒 / 枚 | | [image-apple.md](image-apple.md) |
 | VAE の段の間にホストのメモリを返す | FLUX.2 klein 1024² の最大 5.8 → 4.1 GB | 復号 +0.4 秒 | [image-apple.md](image-apple.md) |
 | AMD: DiT の重みをホストで bfp16 に | 1 ステップ: Anima-Turbo 1024² 4.1 → 3.6〜3.8 秒、Chroma1-Flash 29.9 → 22.8〜25.4 秒、Chroma1-HD 27.5 → 20.2 秒 | 1 重み 9 ビット。書き出しが 3〜4 倍長い | [image-amd.md](image-amd.md) |
@@ -128,10 +128,10 @@
 - **ばらつき**: M3 のスワップ、AMD の電源の状態で数値が最大 1.4 倍動く。続けて測った組だけを比べる。AMD ではほかに `/dev/accel` を使うプロセスがないか、Mac では `top` (`mediaanalysisd`) を見る
 - **AMD の 4 ビット**: 失うものはモデルで違う (LFM3 の KL 0.036、E2B 0.097)。bf16 なら `--q4` なしで書き出す
 - **AMD の Anima の DiT の 8 ビット**: 軌道が分かれやすい種では構図が変わることがある (4 プロンプトに 1 つ)
-- **カーネルの直しは書き出しの中にある**: AMD の書き出しは、作ったときのカーネル (丸め、まとめた演算子) を書き出し直すまで持つ。新しい書き出し器の書き出しを古い hwnpu が拒むことがある (gpt-oss の常駐の 1 歩)
+- **カーネルの直しは書き出しの中にある**: AMD の書き出しは、作ったときのカーネル (丸め、まとめた演算子) を書き出し直すまで持つ。新しい書き出し器の書き出しを古い BonsaiAI が拒むことがある (gpt-oss の常駐の 1 歩)
 - **`-idle`**: 次の要求が 0.8〜2 秒払う。**使うときに読む塔**: 最初の画像か音声が 0.5〜0.7 秒待ち、その間は古い bank と新しい bank の両方が固定される
 - **AMD の barrier**: 塊の barrier は 1 塊 0.3〜0.5 ms、1 歩の barrier は 1 歩 0.3 ms (gpt-oss の常駐の 1 歩では配列を載せ直す 2.4 ms になるので飛ばす)
-- **AMD の時間の測り方**: `HWNPU_DEV=iron.timing=1` は各コマンドの往復を足す。`ironlm -forced` の 1 歩の時間を読む。層で違う `array=True` の引数はコマンドごとに配列を載せ直し、それでも確認は通る
+- **AMD の時間の測り方**: `BONSAIAI_DEV=iron.timing=1` は各コマンドの往復を足す。`ironlm -forced` の 1 歩の時間を読む。層で違う `array=True` の引数はコマンドごとに配列を載せ直し、それでも確認は通る
 - **ディスクの共有はファイルシステムによる**: ext4 は何も共有しない。Btrfs か XFS に (Windows は Dev Drive)
 - **Core AI の初回**はどの部分も 1 回コンパイルし、関数の多い `.aimodel` は全部の関数をコンパイルする (Chroma1-Flash の 512² と 1024² で 1 時間 14 分)。キャッシュは OS のビルドとプロセスの名前ごと: OS の更新の後、`aicheck` や `go test` からはコンパイルし直す。ディスクが減ると macOS が消す (空き 11〜22 GB で見た)。変換にも空きが要る
 - **書き出しの名前に配置の版**があると、1 回変換とコンパイルをし直す。絵は前の版とビット単位では同じでない (和の順が違う)。古い書き出しは消すまで残る
@@ -141,7 +141,7 @@
 
 ### 上限は NPU が DRAM を読む速さ
 
-`hwnpu-dev probe` ([PROBE.md](../../PROBE.md))、16 層 (0.97 B):
+`bonsaiai-dev probe` ([PROBE.md](../../PROBE.md))、16 層 (0.97 B):
 
 | | M1 | M2 | M3 | AMD (Ryzen AI 9 365) |
 |---|---|---|---|---|
@@ -160,13 +160,13 @@
 
 ### 新しいチップで何が変わるか (見積もり、測っていない)
 
-| | NPU の読みの見込み | M3 に対する生成 | hwnpu で動くか |
+| | NPU の読みの見込み | M3 に対する生成 | BonsaiAI で動くか |
 |---|---|---|---|
 | Apple M6 (Neural Engine 2 つ、170 GB/s) | 1 つが 64 GB/s のままなら同じ。両方を同時に使えれば 2 倍まで | 1.1〜2 倍 | 動く |
 | Snapdragon X2 Elite (80 TOPS、152 GB/s) | 75〜100 GB/s | 1.3〜1.6 倍 | バックエンドなし |
 | Snapdragon X2 Elite Extreme (228 GB/s) | 115〜150 GB/s | 1.8〜2.2 倍 | バックエンドなし |
 
-新しい機械で確かめる: `hwnpu-dev probe` の 16 層の lut4 の "weights GB/s"。約 64 なら生成は M3 と同じ。
+新しい機械で確かめる: `bonsaiai-dev probe` の 16 層の lut4 の "weights GB/s"。約 64 なら生成は M3 と同じ。
 
 ### ソフトウェアでまだ動かせるところ
 
@@ -199,8 +199,8 @@ AMD の手法で Apple と Intel に持っていけそうなもの (試してい
 - 1 トークン 1 コマンド (gpt-oss): mlir-aie は scratchpad を 1 列に 1 回しか読まず、経路が壊れた (コサイン 0.877)
 - デコードの注意のスコアに bfp16 の行列命令: 速くならず、出力が 3.6 % ずれる
 - プロンプトの sandwich norm を 1 つの演算子に (`SandwichRows`): 速くならない (設定が小さい)。GDN のカーネルを `-Os` に: 小さくならない
-- Gemma 4 の MLP の gate と up を GELU つきで 1 つの演算子に: 9.3 → 9.9 tok/s だが KL が上がり (0.154 → 0.158)、ロジットがずれる。既定はオフ (`HWNPU_GEMMA4_FUSE_GLU=1`)
-- Mac で専門家の worker を回し続ける (`HWNPU_MXFP4_SPIN`)、スレッドを USER_INTERACTIVE に、層の間 worker を起こしておく: NE の呼び出しが遅くなるか得がない。コードは消した
+- Gemma 4 の MLP の gate と up を GELU つきで 1 つの演算子に: 9.3 → 9.9 tok/s だが KL が上がり (0.154 → 0.158)、ロジットがずれる。既定はオフ (`BONSAIAI_GEMMA4_FUSE_GLU=1`)
+- Mac で専門家の worker を回し続ける (`BONSAIAI_MXFP4_SPIN`)、スレッドを USER_INTERACTIVE に、層の間 worker を起こしておく: NE の呼び出しが遅くなるか得がない。コードは消した
 - 16 GB で Qwen3.6 の専門家を予算まで固定: 固定なしの 10.6 に対し 8.6〜8.8 tok/s。メモリの 3/4 を超える専門家は固定しない
 - 画像の DiT の Core AI: 重みのビットを増やす (NE では int8 が最速)、q / k / v を 1 つの linear に、7 ブロックの組、自己注意で softmax の和を P·V の後に割る (fp16 を超える)、値の int8 の重みに 1/256 (絵が変わった)、norm の行の最大の割り算を定数に
 - Core AI: VAE の段の fp16 の出力をそのまま次へ、小さな部分の先読み: ばらつきの中
@@ -213,9 +213,9 @@ AMD の手法で Apple と Intel に持っていけそうなもの (試してい
 - 2 段の注意: Qwen3.5 のパスキー。`Refresh` を既定で 4 か 16 に (1 回 14〜32 % 速いが NE で KL を測っていない)。始める位置 (約 57K)。`choose` の写し (128K で 1 回の 12 %)
 - 128K を超えてからの遅れ (1K あたり 1.14 → 1.43 ms)。256K のプロンプトの後の最初の数回 (1 回 1.29 秒)
 - NE のメモリのうち重み以外 (KV、途中の値) を分けていない
-- M4 以降: 上限 (`hwnpu-dev probe limit`、`probe split`) と、既定の部分を大きくして得か
+- M4 以降: 上限 (`bonsaiai-dev probe limit`、`probe split`) と、既定の部分を大きくして得か
 - 塔と多モーダルのモデルの `blocks.SiLU` (VL の説明、TTS) を前と比べていない
-- Apple での Gemma 4 / Qwen3.5 の `hwnpu-chat agent`、Gemma 4 とプロンプトの保存
+- Apple での Gemma 4 / Qwen3.5 の `bonsaiai-chat agent`、Gemma 4 とプロンプトの保存
 - d1-Omni-2B のチームの答えが README と逆 (HF は 16 問をまとめて読む)。LFM3-Audio の TTS を llama.cpp の音と。PLaMo-Embedding の長い文。BERT の本物の重みを ANE で
 - GPTQ の codes で答えが良くなるか (NE で KL は下がる。12 問では決まらない)。NE で lut4 + wkmeans
 - Qwen3.5-2B の lut6 を HF の bf16 と (今は lut8 とだけ)。Whisper の形式を実際の録音で
@@ -225,7 +225,7 @@ AMD の手法で Apple と Intel に持っていけそうなもの (試してい
 
 ### Intel
 
-**実機の NPU ではまだ何も動かしていない**。OpenVINO の CPU で精度だけ ([intel.md](intel.md))。残り: ドライバのコンパイラがモデルと分けた形を受けるか、引数の名前 (`argNames`)、int8 と int4-g128 の速さ、大きさの上限 (`-target intel` の 2 GiB は仮)、コマンドリストを記録し直す費用、段つきのメモリ、hwnpu-chat での本物のチェックポイント、Linux での IR の共有、実機での PLaMo 3 と Anima。
+**実機の NPU ではまだ何も動かしていない**。OpenVINO の CPU で精度だけ ([intel.md](intel.md))。残り: ドライバのコンパイラがモデルと分けた形を受けるか、引数の名前 (`argNames`)、int8 と int4-g128 の速さ、大きさの上限 (`-target intel` の 2 GiB は仮)、コマンドリストを記録し直す費用、段つきのメモリ、bonsaiai-chat での本物のチェックポイント、Linux での IR の共有、実機での PLaMo 3 と Anima。
 
 ### AMD
 

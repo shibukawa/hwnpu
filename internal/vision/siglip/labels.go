@@ -17,7 +17,7 @@ import (
 //go:embed labels.txt
 var labelsTxt string
 
-// DefaultLabels are hwnpu-image label's labels when none are given: common things, places and
+// DefaultLabels are bonsaiai-image label's labels when none are given: common things, places and
 // kinds of picture (labels.txt).
 func DefaultLabels() []string { return ParseLabels(labelsTxt) }
 

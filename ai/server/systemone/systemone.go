@@ -1,5 +1,5 @@
 // Package systemone serves a decision model (text.Decide) with the System One API of llama.cpp's
-// server, as an http.Handler (hwnpu-chat systemone --listen uses it):
+// server, as an http.Handler (bonsaiai-chat systemone --listen uses it):
 //
 //	POST /v1/systemone  typed questions about a state (text.Decider.Decide)
 //	GET  /v1/models     the model, as a decision model (output_modalities ["decisions"])
@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/bonsaiai/ai/text"
 )
 
 // Server serves a decision model.
@@ -40,7 +40,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data": []map[string]any{{
-			"id": s.D.Name(), "object": "model", "created": 0, "owned_by": "hwnpu",
+			"id": s.D.Name(), "object": "model", "created": 0, "owned_by": "bonsaiai",
 			"architecture": map[string]any{"input_modalities": []string{"text"}, "output_modalities": []string{"decisions"}},
 		}},
 	})

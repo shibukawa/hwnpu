@@ -17,9 +17,9 @@ import (
 )
 
 // TestInterruptHelper is the command the tests below run and interrupt, in the way
-// HWNPU_TEST_INTERRUPT_HELPER names.
+// BONSAIAI_TEST_INTERRUPT_HELPER names.
 func TestInterruptHelper(t *testing.T) {
-	mode := os.Getenv("HWNPU_TEST_INTERRUPT_HELPER")
+	mode := os.Getenv("BONSAIAI_TEST_INTERRUPT_HELPER")
 	if mode == "" {
 		t.Skip("the helper of the interrupt tests")
 	}
@@ -58,7 +58,7 @@ func TestInterruptHelper(t *testing.T) {
 func interrupt(t *testing.T, mode string, at ...string) (out string, err error, took time.Duration) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestInterruptHelper$")
-	cmd.Env = append(os.Environ(), "HWNPU_TEST_INTERRUPT_HELPER="+mode)
+	cmd.Env = append(os.Environ(), "BONSAIAI_TEST_INTERRUPT_HELPER="+mode)
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)

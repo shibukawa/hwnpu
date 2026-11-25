@@ -11,7 +11,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // Tensor describes one tensor of the file.
@@ -136,11 +136,11 @@ func (f *File) Float32(name string) ([]float32, error) {
 	return f.Float32Range(name, 0, t.Len())
 }
 
-// ScaleSuffix names the scales of a matrix stored in int8 (hwnpu's own layout, not the
+// ScaleSuffix names the scales of a matrix stored in int8 (bonsaiai's own layout, not the
 // reference's): an I8 matrix NAME of (rows, cols) and an F16 matrix NAME + ScaleSuffix of (rows,
 // cols / group), each value standing for q * the scale of its row's group. Float32Range expands
 // it (Gemma 4's per-layer embeddings in the tables file, docs/design/performance.md).
-const ScaleSuffix = ".hwnpu_scale"
+const ScaleSuffix = ".bonsaiai_scale"
 
 // Float32Range reads elements [begin, end) of a tensor, in row major order, as float32.
 func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {

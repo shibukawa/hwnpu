@@ -13,8 +13,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 // ironEngine runs the IRON graphs of tools/amd/iron_anima.py on AMD's NPU: text, dit_in, the
@@ -32,7 +32,7 @@ import (
 var ResidentDiT = false
 
 type ironEngine struct {
-	dev                      *hwnpu.Device
+	dev                      *bonsaiai.Device
 	dir                      string
 	dit                      DitConfig
 	// sfx names the DiT's graphs of the picture's rows (rows: its patches padded to whole
@@ -97,7 +97,7 @@ func graphRows(tokens int) int {
 
 // openIron reads the export's manifests for pictures of w x h (0 x 0: its first size); the graphs
 // are loaded when they run.
-func openIron(ctx context.Context, dev *hwnpu.Device, dir string, w, h int) (*ironEngine, DitConfig, TextConfig, error) {
+func openIron(ctx context.Context, dev *bonsaiai.Device, dir string, w, h int) (*ironEngine, DitConfig, TextConfig, error) {
 	e := &ironEngine{dev: dev, dir: dir}
 	var dc DitConfig
 	var tc TextConfig

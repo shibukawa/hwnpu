@@ -1,5 +1,5 @@
 #!/bin/bash
-# same-exports.sh BASE MODEL[/coreai]...: makes the models' Core AI exports with the hwnpu-dev of
+# same-exports.sh BASE MODEL[/coreai]...: makes the models' Core AI exports with the bonsaiai-dev of
 # BASE (a commit) and with this checkout's, each into a cache of its own, and says whether they
 # are the same: the same names, the same bytes but metadata.json's creationDate (and the caches'
 # own paths in a JSON file). When they are,
@@ -10,31 +10,31 @@
 # from Hugging Face into it); no export is fetched or put in the sources. The programs are not
 # prebuilt. WORK (default a new temporary directory)
 # keeps the caches: 2 x the exports' size on the disk; they are removed when the two are the same.
-# CHIP (default M1) is the chip whose exports are made (hwnpu-dev models package --chip): M2 for
+# CHIP (default M1) is the chip whose exports are made (bonsaiai-dev models package --chip): M2 for
 # the other chips' where the M1 has an export of its own (a recipe's rewrite for h13g).
 set -euo pipefail
 [ $# -ge 2 ] || { sed -n '2,10p' "$0"; exit 2; }
 base=$1; shift
 root=$(git rev-parse --show-toplevel)
 work=${WORK:-$(mktemp -d)}
-mine=${HWNPU_CACHE:-$HOME/Library/Caches/hwnpu}
+mine=${BONSAIAI_CACHE:-$HOME/Library/Caches/bonsaiai}
 models=()
 for m in "$@"; do models+=("${m%/coreai}/coreai"); done
 
 mkdir -p "$work/bin-base" "$work/bin-new"
 git -C "$root" worktree add -q --detach "$work/src-base" "$base"
 trap 'git -C "$root" worktree remove --force "$work/src-base" 2>/dev/null || true' EXIT
-(cd "$work/src-base" && go build -o "$work/bin-base/" ./cmd/hwnpu-dev)
-(cd "$root" && go build -o "$work/bin-new/" ./cmd/hwnpu-dev)
+(cd "$work/src-base" && go build -o "$work/bin-base/" ./cmd/bonsaiai-dev)
+(cd "$root" && go build -o "$work/bin-new/" ./cmd/bonsaiai-dev)
 
-unset HWNPU_MODEL_SOURCE
+unset BONSAIAI_MODEL_SOURCE
 # originals missing here come from Hugging Face into this machine's original/ (linked)
 for side in base new; do
-	export HWNPU_CACHE="$work/cache-$side"
-	mkdir -p "$HWNPU_CACHE"
-	ln -sfn "$mine/original" "$HWNPU_CACHE/original"
+	export BONSAIAI_CACHE="$work/cache-$side"
+	mkdir -p "$BONSAIAI_CACHE"
+	ln -sfn "$mine/original" "$BONSAIAI_CACHE/original"
 	echo "== $side ($([ $side = base ] && echo "$base" || echo this checkout)): ${models[*]}"
-	"$work/bin-$side/hwnpu-dev" models package "${models[@]}" --chip "${CHIP:-M1}" --memory 16
+	"$work/bin-$side/bonsaiai-dev" models package "${models[@]}" --chip "${CHIP:-M1}" --memory 16
 done
 
 # the same exports, file for file, but metadata.json's creationDate

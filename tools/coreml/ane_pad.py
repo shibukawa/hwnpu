@@ -4,12 +4,12 @@ Core ML places small models on the CPU even in fp16. Growing the batch (first) d
 every input and output, and filling the extra rows with zeros at run time, does not change the
 results of models that process rows independently (most inference models). This tool searches
 for the smallest padded batch at which Core ML's compute plan puts every operation on the
-Neural Engine, and writes the padded model with metadata that hwnpu reads:
+Neural Engine, and writes the padded model with metadata that bonsaiai reads:
 
-    hwnpu.logical_batch   the original batch size users see
-    hwnpu.padded_batch    the batch size the model was rebuilt with
+    bonsaiai.logical_batch  the original batch size users see
+    bonsaiai.padded_batch  the batch size the model was rebuilt with
 
-hwnpu then copies the caller's rows into a zero padded buffer and copies the results back.
+bonsaiai then copies the caller's rows into a zero padded buffer and copies the results back.
 
 Usage (macOS with coremltools >= 8):
     python ane_pad.py model.mlpackage padded.mlpackage [--candidates 16,32,64,...] [--verify]
@@ -143,8 +143,8 @@ def main():
         print(f"batch {batch}: {on_ne} op(s) on the Neural Engine, elsewhere: {off or 'none'}")
         if off:
             continue
-        padded.user_defined_metadata["hwnpu.logical_batch"] = str(logical)
-        padded.user_defined_metadata["hwnpu.padded_batch"] = str(batch)
+        padded.user_defined_metadata["bonsaiai.logical_batch"] = str(logical)
+        padded.user_defined_metadata["bonsaiai.padded_batch"] = str(batch)
         if args.verify:
             print(f"max abs difference on the original rows: {verify(model, padded, logical, batch):.6g}")
         padded.save(args.dst)

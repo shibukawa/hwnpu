@@ -24,7 +24,7 @@ The evaluation texts run alongside, three times: with the checkpoint's weights, 
 export's rounding, with GPTQ's codes. At the end the head gives each its logits and the script
 prints the KL from the checkpoint's (mean over the positions past --eval-skip).
 
-    ~/.cache/hwnpu/dev/ref-venv/bin/python tools/amd/qwen36_gptq.py   # 40 layers about 4.3 hours ~/models/Qwen3.6-35B-A3B OUT
+    ~/.cache/bonsaiai/dev/ref-venv/bin/python tools/amd/qwen36_gptq.py   # 40 layers about 4.3 hours ~/models/Qwen3.6-35B-A3B OUT
     python tools/amd/iron_export_lm.py qwen35moe CKPT EXPORT --q4 --q4-codes OUT/codes
 
 OUT/codes is iron_q4.load_codes' layout (index.json and KEY.npy, keyed by iron_q4.weight_key).

@@ -12,16 +12,16 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/ovir"
-	"github.com/shibukawa/hwnpu/internal/ovlower"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/coreai/ailower"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/ovir"
+	"github.com/shibukawa/bonsaiai/internal/ovlower"
 )
 
-// Manifest is out.parts.json, written by hwnpu-dev convert for a split model: the parts in the
+// Manifest is out.parts.json, written by bonsaiai-dev convert for a split model: the parts in the
 // order they run, each part's y bound as the next part's x.
 type Manifest struct {
 	Model    string       `json:"model"`
@@ -32,7 +32,7 @@ type Manifest struct {
 	Target   string       `json:"target"`
 	MaxBytes int64        `json:"max_bytes"` // the target's limit on a part's weight file
 	Parts    []PartRecord `json:"parts,omitempty"`
-	// Tiers are the same model converted with KV caches of increasing length (hwnpu-dev convert
+	// Tiers are the same model converted with KV caches of increasing length (bonsaiai-dev convert
 	// -cache a,b,c). A step costs in proportion to the cache's length, so a sequence starts on the
 	// shortest tier and moves to the next when it fills (internal/llm/chain). With tiers, Cache
 	// and Parts are empty.
@@ -337,9 +337,9 @@ func SplitFunction(path string) (string, string) {
 	return path, ""
 }
 
-// MetaFile is the file of a Core AI program hwnpu writes that holds its metadata (as a Core ML
+// MetaFile is the file of a Core AI program bonsaiai writes that holds its metadata (as a Core ML
 // package's user-defined metadata, ReadMeta).
-const MetaFile = "hwnpu-meta.json"
+const MetaFile = "bonsaiai-meta.json"
 
 func writeAIMeta(path string, meta map[string]string) error {
 	if len(meta) == 0 {
@@ -563,7 +563,7 @@ func ReadMeta(m *Manifest) (map[string]string, error) {
 		}
 		meta := map[string]string{}
 		for k, v := range rt {
-			if strings.HasPrefix(k, "com.github.shibukawa.hwnpu.") {
+			if strings.HasPrefix(k, "com.github.shibukawa.bonsaiai.") {
 				meta[k] = v
 			}
 		}

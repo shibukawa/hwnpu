@@ -20,7 +20,7 @@ import numpy as np
 MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 SENTENCES = [
     "The Neural Engine runs small models at low power.",
-    "hwnpu is a Go library for CPU integrated NPUs.",
+    "bonsaiai is a Go library for CPU integrated NPUs.",
     "It is raining in Tokyo today.",
 ]
 
@@ -101,7 +101,7 @@ def main():
         compute_precision=ct.precision.FLOAT16,
         minimum_deployment_target=ct.target.macOS14,
     )
-    ml.short_description = f"{MODEL}, seq {a.seq}, batch {a.batch}, fp16 (hwnpu tools/coreml/convert_minilm.py)"
+    ml.short_description = f"{MODEL}, seq {a.seq}, batch {a.batch}, fp16 (bonsaiai tools/coreml/convert_minilm.py)"
     on_ne, off = placement(ml)
     print(f"placement: {on_ne} op(s) on the Neural Engine, elsewhere: {sorted(set(off)) or 'none'}")
     ml.save(a.out)

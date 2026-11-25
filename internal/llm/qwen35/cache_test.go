@@ -5,10 +5,10 @@ import (
 	"math"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 // cpuProgram builds the program with a cache and runs it on the CPU interpreter as a
@@ -34,7 +34,7 @@ func cpuProgram(t *testing.T, cfg llm.Cached, w llm.Weights, opts llm.Options, s
 		in := map[string]milcpu.Tensor{}
 		for name, sh := range p.InShape {
 			v := make([]float32, count(sh))
-			hwnpu.DecodeF16(v, p.In[name])
+			bonsaiai.DecodeF16(v, p.In[name])
 			in[name] = milcpu.Tensor{Shape: sh, Data: v}
 		}
 		res, err := prog.Run(in, milcpu.Options{})
@@ -42,7 +42,7 @@ func cpuProgram(t *testing.T, cfg llm.Cached, w llm.Weights, opts llm.Options, s
 			return err
 		}
 		for name, o := range res {
-			hwnpu.EncodeF16(p.Out[name], o.Data)
+			bonsaiai.EncodeF16(p.Out[name], o.Data)
 		}
 		return nil
 	}

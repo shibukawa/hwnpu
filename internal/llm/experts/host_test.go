@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/mxfp4"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/mxfp4"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
-// Host's experts of gpt-oss-20b's layer 0 (HWNPU_TEST_GPTOSS_CKPT_DIR: the checkpoint's directory) against
+// Host's experts of gpt-oss-20b's layer 0 (BONSAIAI_TEST_GPTOSS_CKPT_DIR: the checkpoint's directory) against
 // the experts dequantized in float64 (transformers' convert_moe_packed_tensors and GptOssExperts).
 func TestHostGptOss(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_GPTOSS_CKPT_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_GPTOSS_CKPT_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_GPTOSS_CKPT_DIR: gpt-oss-20b's checkpoint")
+		t.Skip("BONSAIAI_TEST_GPTOSS_CKPT_DIR: gpt-oss-20b's checkpoint")
 	}
 	sh := Shape{Hidden: 2880, Inter: 2880, Experts: 32, TopK: 4}
 	rec := &HostRecord{Checkpoint: filepath.Join(dir, "model.safetensors.index.json"), Act: Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, Layers: map[int]MXFP4{}}
@@ -165,9 +165,9 @@ func TestHostRowMatchesRows(t *testing.T) {
 	}{{"gptoss", Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, true, "1"}, {"silu", Act{Kind: ActSiLU}, false, "1"}, {"silu not wired", Act{Kind: ActSiLU}, false, "0"}} {
 		t.Run(c.name, func(t *testing.T) {
 			rec := writeHost(t, sh, 2, c.act, c.bias)
-			t.Setenv("HWNPU_MOE_WIRE", c.wire)
+			t.Setenv("BONSAIAI_MOE_WIRE", c.wire)
 			run := func(debug string) [][]float32 {
-				t.Setenv("HWNPU_DEV", debug)
+				t.Setenv("BONSAIAI_DEV", debug)
 				h, err := OpenHost(rec, sh)
 				if err != nil {
 					t.Fatal(err)

@@ -1,4 +1,4 @@
-package hwnpu
+package bonsaiai
 
 import (
 	"context"
@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 type (
@@ -57,7 +57,7 @@ func (r kernelRunner) Load(ctx context.Context, src ProgramSource) (*Program, er
 		return nil, ErrClosed
 	}
 	if src.Xclbin == nil && src.ELF == nil && src.Path == "" {
-		return nil, errors.New("hwnpu: ProgramSource needs Xclbin, ELF or Path")
+		return nil, errors.New("bonsaiai: ProgramSource needs Xclbin, ELF or Path")
 	}
 	p, err := r.kd.LoadProgram(ctx, src)
 	if err != nil {
@@ -92,7 +92,7 @@ func (p *Program) Kernel(name string) (*Kernel, error) {
 			return &Kernel{p: p, info: k}, nil
 		}
 	}
-	return nil, fmt.Errorf("hwnpu: no kernel %q (have %v)", name, p.Kernels())
+	return nil, fmt.Errorf("bonsaiai: no kernel %q (have %v)", name, p.Kernels())
 }
 
 // Close releases the program. Close its runs first.
@@ -146,7 +146,7 @@ func (r *Run) record(err error) *Run {
 // SetBuffer sets a buffer argument.
 func (r *Run) SetBuffer(index int, b *Buffer) *Run {
 	if b == nil || b.be == nil {
-		return r.record(fmt.Errorf("hwnpu: argument %d: nil or closed buffer", index))
+		return r.record(fmt.Errorf("bonsaiai: argument %d: nil or closed buffer", index))
 	}
 	return r.record(r.be.SetBuffer(index, b.be))
 }
@@ -155,10 +155,10 @@ func (r *Run) SetBuffer(index int, b *Buffer) *Run {
 // address of b plus off (IRON's per-step dispatches take parts of one arena bank).
 func (r *Run) SetBufferAt(index int, b *Buffer, off, n int) *Run {
 	if b == nil || b.be == nil {
-		return r.record(fmt.Errorf("hwnpu: argument %d: nil or closed buffer", index))
+		return r.record(fmt.Errorf("bonsaiai: argument %d: nil or closed buffer", index))
 	}
 	if off < 0 || n <= 0 || off+n > len(b.be.Bytes()) {
-		return r.record(fmt.Errorf("hwnpu: argument %d: [%d, %d) of a %d byte buffer", index, off, off+n, len(b.be.Bytes())))
+		return r.record(fmt.Errorf("bonsaiai: argument %d: [%d, %d) of a %d byte buffer", index, off, off+n, len(b.be.Bytes())))
 	}
 	if off == 0 && n == len(b.be.Bytes()) {
 		return r.record(r.be.SetBuffer(index, b.be))
@@ -167,7 +167,7 @@ func (r *Run) SetBufferAt(index int, b *Buffer, off, n int) *Run {
 		SetBufferAt(index int, b backend.Buffer, off, n int) error
 	})
 	if !ok {
-		return r.record(fmt.Errorf("hwnpu: argument %d: this device takes whole buffers only: %w", index, ErrUnsupported))
+		return r.record(fmt.Errorf("bonsaiai: argument %d: this device takes whole buffers only: %w", index, ErrUnsupported))
 	}
 	return r.record(s.SetBufferAt(index, b.be, off, n))
 }
@@ -223,16 +223,16 @@ func (r *Run) Scratchpad() []byte {
 // Scratchpad returns nil.
 func (r *Run) UseScratchpad(b *Buffer, off, n int) error {
 	if b == nil || b.be == nil {
-		return fmt.Errorf("hwnpu: scratchpad: nil or closed buffer")
+		return fmt.Errorf("bonsaiai: scratchpad: nil or closed buffer")
 	}
 	if off < 0 || n <= 0 || off+n > len(b.be.Bytes()) {
-		return fmt.Errorf("hwnpu: scratchpad: [%d, %d) of a %d byte buffer", off, off+n, len(b.be.Bytes()))
+		return fmt.Errorf("bonsaiai: scratchpad: [%d, %d) of a %d byte buffer", off, off+n, len(b.be.Bytes()))
 	}
 	s, ok := r.be.(interface {
 		UseScratchpad(b backend.Buffer, off, n int) error
 	})
 	if !ok {
-		return fmt.Errorf("hwnpu: this device's runs read their own scratchpad only: %w", ErrUnsupported)
+		return fmt.Errorf("bonsaiai: this device's runs read their own scratchpad only: %w", ErrUnsupported)
 	}
 	return s.UseScratchpad(b.be, off, n)
 }

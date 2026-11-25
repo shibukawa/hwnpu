@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/anima"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // IronConfig is the DiT's shape in an export of tools/amd/iron_flux3klein.py (its Flux3Config).
@@ -146,7 +146,7 @@ func IronSizes(dir string) [][2]int {
 
 // ironPipe runs an IRON export on AMD's NPU (Pipeline's, when it is one).
 type ironPipe struct {
-	dev   *hwnpu.Device
+	dev   *bonsaiai.Device
 	c     IronConfig // the size drawn
 	text  ironText
 	taps  []int             // the text graph's groups whose outputs the DiT reads, in mil.TextTaps' order
@@ -155,7 +155,7 @@ type ironPipe struct {
 }
 
 // openIron reads the IRON export in dir for pictures of w x h into p.
-func (p *Pipeline) openIron(ctx context.Context, dev *hwnpu.Device, dir string, w, h int) error {
+func (p *Pipeline) openIron(ctx context.Context, dev *bonsaiai.Device, dir string, w, h int) error {
 	if dev == nil {
 		return errors.New("an IRON export runs on AMD's NPU only")
 	}

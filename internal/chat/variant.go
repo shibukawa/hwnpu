@@ -8,9 +8,9 @@ import (
 	"strings"
 )
 
-// Run is how hwnpu-chat runs a chat model when its flags do not say: models.yaml's prefill,
+// Run is how bonsaiai-chat runs a chat model when its flags do not say: models.yaml's prefill,
 // format, context, paged and tier, the defaults of --prefill, --format, --context, --paged and
-// --tier ("" and 0: hwnpu-chat's own).
+// --tier ("" and 0: bonsaiai-chat's own).
 type Run struct {
 	Prefill string // PrefillAuto, PrefillOn or PrefillOff
 	Format  string // the weight format of its programs (lut8, int8, ...)
@@ -147,7 +147,7 @@ func toVariants(m Model, es map[int]*variantEntry) (map[int]Variant, error) {
 			return nil, fmt.Errorf("variant of %d GB: %w", gb, err)
 		}
 		if !r.zero() && m.Kind != KindChat {
-			return nil, fmt.Errorf("variant of %d GB: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", gb)
+			return nil, fmt.Errorf("variant of %d GB: prefill, format, context, paged, tier and codes are for chat models (bonsaiai-chat)", gb)
 		}
 		v := Variant{Run: r}
 		if e.Memory != nil {

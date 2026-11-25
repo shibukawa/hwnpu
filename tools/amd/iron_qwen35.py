@@ -1,6 +1,6 @@
 """Qwen3.5 / Qwen3.6 text models (``qwen3_5``, ``qwen3_5_moe``) on IRON's shared decoder (``iron.lm``).
 
-An application of amd/IRON kept in hwnpu (IRON has none for Qwen3.5), exported by
+An application of amd/IRON kept in bonsaiai (IRON has none for Qwen3.5), exported by
 ``iron_export_lm.py qwen35``. Its shape is read from the checkpoint's ``config.json`` (the
 root, or its ``text_config``); the structure follows transformers' modeling_qwen3_5.py:
 
@@ -23,7 +23,7 @@ root, or its ``text_config``); the structure follows transformers' modeling_qwen
   routed on the device (iron_moe.py): a layer is two commands of the decode step, and the
   experts are q4nx tables read in place. A prompt chunk's experts are routed on the host
   (iron_moep.py). With ``install(places=P)`` a layer's tables hold P places, the experts in
-  the export's experts.bin (hwnpu's pool.go copies the chosen ones in).
+  the export's experts.bin (bonsaiai's pool.go copies the chosen ones in).
 """
 
 import dataclasses
@@ -98,7 +98,7 @@ QUANT: dict[str, str] = {}
 # a layer's tables hold P places of an expert's tables and the shared expert after them (the
 # operators read the shared one as the table's last), the places zeros in the image; every
 # expert's tables go to the export's experts.bin (by layer, the gate-up tables of every expert
-# then the down ones), from which hwnpu copies an expert into a place when it is chosen
+# then the down ones), from which bonsaiai copies an expert into a place when it is chosen
 # (internal/llm/iron/pool.go, as gpt-oss's GPTOSS_EXPERT_PLACES).
 POOL = dict(out=None, places=0, layers={})
 
@@ -208,7 +208,7 @@ class GatedDeltaNet(iron.Graph):
         # the state's first pair of each column, the norm's weight in out_proj. With prompt too
         # (a prompt chunk besides): the chunk runs IRON's convolution on a state of its own and
         # the plain operator past each column's pair (iron_gdn's pairs), and the host copies the
-        # convolution's rows between the two around the chunk (hwnpu's conv_pairs).
+        # convolution's rows between the two around the chunk (bonsaiai's conv_pairs).
         self.fold, self.prompt = fold, prompt
         dk, dv, K = c.linear_key_head_dim, c.linear_value_head_dim, c.linear_conv_kernel_dim
         self.shape = (H, KH, dk, dv)
@@ -440,7 +440,7 @@ class Qwen35Layer(DecoderLayer):
 
     # GatedDeltaNet's fold (the decode step's convolution and gated norm in its operator), with a
     # prompt chunk too (GatedDeltaNet's prompt: the host copies the convolution's rows between
-    # the two around a chunk, hwnpu's conv_pairs)
+    # the two around a chunk, bonsaiai's conv_pairs)
     fold = True
     prompt = True
 
@@ -533,8 +533,8 @@ class Qwen35(CausalLM):
             Copy.step(ids, dtype=np.int32)
         return super().body(ids, **values)
 
-    def hwnpu_conv_pairs(self) -> list:
-        """For hwnpu: each folded Gated DeltaNet layer's two homes of the convolution's rows
+    def bonsaiai_conv_pairs(self) -> list:
+        """For bonsaiai: each folded Gated DeltaNet layer's two homes of the convolution's rows
         (the state's pair ahead of each column's run, the decode step's; the convolution's own
         state, the prompt chunk's), which the host copies between around a prompt chunk."""
         out = []
@@ -627,7 +627,7 @@ class SparseMoe(iron.Graph):
         self.gu_bytes = gu_t.nbytes // (N + 1)
         self.down_bytes = dn_t.nbytes // (N + 1)
         P = self.places = POOL["places"] or N
-        if P < N:  # the places zeros (hwnpu fills them), then the shared expert; every expert's in experts.bin
+        if P < N:  # the places zeros (bonsaiai fills them), then the shared expert; every expert's in experts.bin
             gb, db = gu_t.reshape(-1).view(np.uint8), dn_t.reshape(-1).view(np.uint8)
             self.write_pool(gb[: N * self.gu_bytes], db[: N * self.down_bytes])
             g = np.zeros(((P + 1) * self.gu_bytes,), np.uint8)
@@ -736,15 +736,15 @@ class MoEStates:
 
 
 class MoEHost:
-    """A host step of a prompt chunk's experts: ``hwnpu`` names it for hwnpu (which runs its own
+    """A host step of a prompt chunk's experts: ``bonsaiai`` names it for bonsaiai (which runs its own
     in Go); called, it is the reference's (iron_moep's route_chunk, plan, stream_x, combine)."""
 
     def __init__(self, kind: str, layer: int, experts: int, C: int, states: MoEStates):
         self.kind, self.layer, self.experts, self.C, self.states = kind, layer, experts, C, states
-        self.hwnpu = dict(kind=kind, layer=layer, experts=experts, top=iron_moep.TOP,
+        self.bonsaiai = dict(kind=kind, layer=layer, experts=experts, top=iron_moep.TOP,
                           cap=iron_moep.CAP, tokens=C)
         if POOL["places"] and POOL["places"] < experts:  # the places, filled between passes (pool.go)
-            self.hwnpu["places"] = POOL["places"]
+            self.bonsaiai["places"] = POOL["places"]
 
     def __call__(self, *args):
         getattr(self, self.kind)(*args)
@@ -772,7 +772,7 @@ class Qwen35MoeLayer(Qwen35Layer):
     # operator; a prompt chunk (PROMPT) runs IRON's convolution on a state of its own, the host
     # copying the rows between the two (GatedDeltaNet's prompt). With the fold, the next decode
     # step's first command hung on the device after the last layer's experts (B) ran
-    # (ERT_CMD_STATE_TIMEOUT; docs/design/moe.md) until hwnpu ran an empty command in another
+    # (ERT_CMD_STATE_TIMEOUT; docs/design/moe.md) until bonsaiai ran an empty command in another
     # hardware context before each step (internal/llm/iron's stepBarrier, docs/design/moe.md).
     fold = True
     prompt = PROMPT
@@ -801,11 +801,11 @@ class Qwen35Moe(Qwen35):
 
     Its body takes a scratchpad value per layer and chosen expert (``e<layer>_<i>``), which no
     host gives: command B's scratchpad is in the feedback argument, where the layer's MoERoute
-    writes them (``hwnpu_fed``)."""
+    writes them (``bonsaiai_fed``)."""
 
     layer_class = Qwen35MoeLayer
     host_tables = False  # its routed decode step reads the embeddings on the device
-    hwnpu_name = "Qwen35Moe"
+    bonsaiai_name = "Qwen35Moe"
 
     @classmethod
     def from_checkpoint(cls, path, **kwargs):
@@ -823,7 +823,7 @@ class Qwen35Moe(Qwen35):
 
     def draw(self, logits, call):
         # No draw on the device: its commands end at host steps, so no Emit carries a drawn
-        # token, and hwnpu draws from the logits anyway.
+        # token, and bonsaiai draws from the logits anyway.
         return logits, iron.carry(token=call.token + 0, position=call.position + 1)
 
     def record(self, **shapes):
@@ -853,7 +853,7 @@ class Qwen35Moe(Qwen35):
         finally:
             causal.Call = made
 
-    def hwnpu_experts_pool(self):
+    def bonsaiai_experts_pool(self):
         """The manifest's experts_pool where the layers' tables have fewer places than experts
         (install(places=...)): experts.bin and, by layer, its tables' buffers and place there."""
         if not POOL["layers"]:

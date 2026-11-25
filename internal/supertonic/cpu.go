@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
 )
 
 // Graphs are the model's four ONNX files, in its onnx/ directory.

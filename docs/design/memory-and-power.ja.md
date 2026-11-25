@@ -25,19 +25,19 @@
 | Intel、Linux | RAPL `/sys/class/powercap/intel-rapl:N` | package | 通常 root が要る。カウンタの巻き戻りに対応 |
 | AMD、Linux | ドライバにあれば NPU のセンサー (`QUERY_SENSORS`、AMD の DKMS のドライバ)。なければ amdgpu の hwmon の `power1_input` (PPT、µW、root 不要) | npu / package | Linux 7.0 の標準の amdxdna には NPU のセンサーがない。どちらも瞬間値なので、最初の `PowerSample` から 50 ms ごとに読んで台形で積分する裏の処理を回す (`power.Integrator`)。閉じると止める |
 | AMD、Windows (xrtshim) | XRT の electrical info (W) | — | 読めれば `CapPowerMeter` |
-| Apple | API にはない | — | 計測は `hwnpu-dev powerbench` (root)。`hwnpu status` の IOReport の電力も root のときだけ |
+| Apple | API にはない | — | 計測は `bonsaiai-dev powerbench` (root)。`bonsaiai status` の IOReport の電力も root のときだけ |
 
 - テスト: `Provider.Hwmon` で hwmon の場所を差し替える。`xdnasim.NoSensors` で Linux 7.0 と同じくセンサーなし
-- macOS の IOReport のエネルギー (`Energy Model` の ANE と `CPU Energy`) は root でないと全部 0。`hwnpu status` は
+- macOS の IOReport のエネルギー (`Energy Model` の ANE と `CPU Energy`) は root でないと全部 0。`bonsaiai status` は
   0.00 W ではなく「power not readable without root」と出す ([cli.ja.md](cli.ja.md))
 
-### HWNPU_ENERGY (1 回の実行の段階ごとの電力量)
+### BONSAIAI_ENERGY (1 回の実行の段階ごとの電力量)
 
-- `HWNPU_ENERGY=秒数` (数でなければ 5): `main` の最初の `console.MeasureEnergy` が、その秒数だけ待機電力を測り (実行の
+- `BONSAIAI_ENERGY=秒数` (数でなければ 5): `main` の最初の `console.MeasureEnergy` が、その秒数だけ待機電力を測り (実行の
   時間には数えない)、段階 (変換・読み込み・コンパイルと、実行) が変わるたびにパッケージの電力量を分ける。`took …` の行の
   下に、各段階の電力量と、待機電力 × その段階の時間を引いた値を出す (`energyLine`)
 - 源は `power.PackagePower` (amdgpu の PPT) なので、今は Linux の AMD の APU だけ。ほかではそう言って何もしない。
-  hwnpu-image、hwnpu-chat、hwnpu-audio で呼ぶ
+  bonsaiai-image、bonsaiai-chat、bonsaiai-audio で呼ぶ
 - 段階の数え方は時間の行と同じ ([cli.ja.md](cli.ja.md)): 実行の途中の読み込みと重みの組の読み直し (`iron.Graph.Use`、
   `console.Reading`) は準備に数える
 - 計測 (Linux の AMD の APU。1024² の 1 枚、ファイルはページキャッシュにある、待機 6.7〜7.1 W):
@@ -54,11 +54,11 @@
 
 ### powerbench (Apple)
 
-- `hwnpu-dev powerbench` (darwin): sudo のパスワードを最初に一度だけ聞き、計測ごとに `sudo -n powermetrics -f plist` を
+- `bonsaiai-dev powerbench` (darwin): sudo のパスワードを最初に一度だけ聞き、計測ごとに `sudo -n powermetrics -f plist` を
   起動する。各モデルを別スレッドで呼び続け (`-rate` で一定頻度)、CPU / GPU / ANE の電力から待機を引いた値と、1 回あたりの
   mJ を出す。Neural Engine に載るモデルは CPU だけの場合も測る (`-cpu=false` で省く)。`-decode 8,16` は言語モデルの
   デコードの形のモデルを作る (1 トークンあたりの電力量)
-- `HWNPU_COREML_UNITS=cpu|gpu` で Core ML を `MLComputeUnitsCPUOnly` / `CPUAndGPU` で読み込む。計測専用で、公開の API に
+- `BONSAIAI_COREML_UNITS=cpu|gpu` で Core ML を `MLComputeUnitsCPUOnly` / `CPUAndGPU` で読み込む。計測専用で、公開の API に
   はしない。大きさを変えた合成モデルは `tools/coreml/gen_sweep.py`
 - 結果 (M3): 損益分岐点は 1 回あたり約 200 MFLOP。それより大きいと ANE は 2〜3 倍速く、電力量は約 4 分の 1 (約 1 TFLOP/J
   対 CPU 0.25 TFLOP/J)。小さいと Core ML の 1 回の固定費 (約 55 µs) と ANE の起動が勝ち、CPU が有利。詳しくは
@@ -73,7 +73,7 @@
 | 1 回の実行の最大 | `go run ./tools/memwatch [-csv FILE] CMD …`: footprint、wired、`mem.NPUWired`、システムの空きの割合と逼迫を 0.1 秒ごと。最大と models.yaml の `memory` を出す | 内訳は `footprint PID`、`vmmap -summary PID` |
 | AMD の固定メモリ | `/proc/meminfo` の `Unevictable` の増え。プロセスの分は smaps の `/dev/accel/accel0` の写像の大きさの和。書き出しの `manifest.json` の組 | 固定したページは RSS にもスワップにも出ない。ほとんどが重みと作業領域で、KV は 5 % 未満 |
 | Windows | `K32GetProcessMemoryInfo` の private。`maxRSS` は peak working set | |
-| 実行中 | `HWNPU_PROFILE=1`、hwnpu-chat の読み込みのログ (「the Neural Engine holds …」)、`hwnpu status` のプロセスの表 | |
+| 実行中 | `BONSAIAI_PROFILE=1`、bonsaiai-chat の読み込みのログ (「the Neural Engine holds …」)、`bonsaiai status` のプロセスの表 | |
 
 - モデルの値は 2 回目 (変換とコンパイルが済んだ後) を取る。1 回目の最大は変換の分
 - 変換の後は `debug.FreeOSMemory` を呼ぶ (Go がチェックポイントの分をなかなか返さなかった: 起動直後 2.4 GB → 154 MB)
@@ -82,7 +82,7 @@
 
 ### 今の値 (M1 16 GB、macOS 27.2.1、Core AI)
 
-`hwnpu-chat -m NAME --temp 0 -n 200 "…"` の 2 回目。「合わせて」は Neural Engine + プロセスの和の最大を GB で。
+`bonsaiai-chat -m NAME --temp 0 -n 200 "…"` の 2 回目。「合わせて」は Neural Engine + プロセスの和の最大を GB で。
 
 | モデル | Neural Engine | プロセス | 合わせて | 変換のときのプロセスの最大 |
 |---|---|---|---|---|
@@ -122,7 +122,7 @@
 - `machine`: そのモデルを出す最小の区分。ファミリーや用途の名前 (`lfm3`、`qwen3.5`) は機械のメモリで選ぶ
 - `memory`: モデルが使う GB。ベンダーごと、チップごと (`chat.PerVendor`): `memory: {amd: 2.2, apple: 3.1, M1: 1.7}`。
   Apple の NPU では、その Mac のチップの欄 (`chat.Chips`: M1〜M5、`not_on` と同じ名前) があればそれを取る。
-  `hwnpu-chat list` が出す。同じファミリーの候補を比べる値 (`Model.Memory`) はチップを見ない
+  `bonsaiai-chat list` が出す。同じファミリーの候補を比べる値 (`Model.Memory`) はチップを見ない
 - `variants: {16: {…}}`: メモリごとの動かし方の差分 (`chat.Run`: `prefill`、`format`、`context`、`paged`、`tier`)。
   `tier` は `--tier` と同じ値 (`auto`、`none`、長さの並び)
 - 8 GB の機械の目安は 1 モデル約 3 GB
@@ -140,25 +140,25 @@
 
 ### 区分の選び方
 
-- `hwnpu memory LFM3-1.7B 8` (引数なしで一覧、`--forget` で忘れる)。`hwnpu-chat --memory 8` やメモリのタグ (`lfm3:8g`、
+- `bonsaiai memory LFM3-1.7B 8` (引数なしで一覧、`--forget` で忘れる)。`bonsaiai-chat --memory 8` やメモリのタグ (`lfm3:8g`、
   `:8GB`、`:8gb`) で用意したモデルも、用意が済んだらその選択を残す (`keepMemory`)。API は `modelstore.Store` の
   `Memory`、`SetMemory`、`Memories`
 - 置き場所は設定のフォルダの `run.json` (`chat.RunFile`: ユーザーの models.yaml の隣、
-  `{"models": {"LFM3-1.7B": {"memory": 8}}}`)。キャッシュには置かない (`hwnpu cache prune` で消え、`HWNPU_CACHE` を共有すると
+  `{"models": {"LFM3-1.7B": {"memory": 8}}}`)。キャッシュには置かない (`bonsaiai cache prune` で消え、`BONSAIAI_CACHE` を共有すると
   ほかの機械に移る)。models.yaml にも書かない (機械が書き戻すとコメントが崩れる)。`go test` は `XDG_CONFIG_HOME` がなければ
   読み書きしない
 - 守るところは `lookupOn` (Resolve、ResolveFor、ResolveForKinds、`serve`、`modelstore`): モデルを解決するコマンドはどれも
   その区分で動かし、その区分のプログラムだけを変換するか取ってくる。起動時に 1 行:
-  `LFM3-1.7B: runs as on a machine of 8 GB, as chosen (…/run.json; hwnpu memory LFM3-1.7B --forget forgets it)`
-- 優先の順: その実行のメモリのタグか `--memory` → 選んだメモリ → `HWNPU_MEMORY` (実行全体の上書き、残さない) → 機械のメモリ
+  `LFM3-1.7B: runs as on a machine of 8 GB, as chosen (…/run.json; bonsaiai memory LFM3-1.7B --forget forgets it)`
+- 優先の順: その実行のメモリのタグか `--memory` → 選んだメモリ → `BONSAIAI_MEMORY` (実行全体の上書き、残さない) → 機械のメモリ
 - ファミリーの名前がどのモデルを選ぶかは機械のメモリで決める (選択はモデルごとで、選ぶ前には分からない)。選んだモデルに
   区分が選んであれば、その区分で動く
 - `--tier`、`--prefill`、`--format`、`--context`、`--paged` は残さない: その実行だけ。なければその区分の定義の値
-- 前の区分のプログラムは LRU で消えるまでキャッシュに残る。`hwnpu memory` が `hwnpu cache clear NAME` を勧める
+- 前の区分のプログラムは LRU で消えるまでキャッシュに残る。`bonsaiai memory` が `bonsaiai cache clear NAME` を勧める
 - `variants` を持つのは今チャットのモデルだけ。画像や音声のモデルに足してもそのまま効く
 - 実行中の KV キャッシュは物理メモリの 4 分の 1 まで ([llm-engine.ja.md](llm-engine.ja.md))
 
-## 一度に持てる量の調べ方 (`hwnpu-dev probe resident`)
+## 一度に持てる量の調べ方 (`bonsaiai-dev probe resident`)
 
 NPU が一度に持てる量を測る。使い方は [PROBE.ja.md](../../PROBE.ja.md)。
 
@@ -190,8 +190,8 @@ NPU が一度に持てる量を測る。使い方は [PROBE.ja.md](../../PROBE.j
 ## 採らなかったもの
 
 - AMD のデバイス全体の電力モード (`SET_STATE(SET_POWER_MODE)`): root が要り、全ユーザーの NPU を変える
-- 8 GB 向けの形を使う人が環境変数 (`HWNPU_MEMORY`) で選ぶ: モデルのセレクター (タグ) と `hwnpu memory` で選ぶ。
-  `HWNPU_MEMORY` は実行全体の上書きとしてだけ残す
+- 8 GB 向けの形を使う人が環境変数 (`BONSAIAI_MEMORY`) で選ぶ: モデルのセレクター (タグ) と `bonsaiai memory` で選ぶ。
+  `BONSAIAI_MEMORY` は実行全体の上書きとしてだけ残す
 - メモリの選択をキャッシュや models.yaml に残す (上のとおり)
 - 使う人がメモリに合わせて `--tier` や `--prefill` をモデルごとに選ぶ: 区分ごとに定義が決める
 - 8 GB で Qwen3-0.6B の短い会話用の 1 本を外す (目安に収まり、M3 で 2 倍速い)
@@ -199,9 +199,9 @@ NPU が一度に持てる量を測る。使い方は [PROBE.ja.md](../../PROBE.j
 
 ## 未解決
 
-- Intel: ポリシーの違いが実機で電力に表れるか (`hwnpu-dev report -power low` と `-power performance` を比べる)
+- Intel: ポリシーの違いが実機で電力に表れるか (`bonsaiai-dev report -power low` と `-power performance` を比べる)
 - Intel、Windows、Apple で NPU 単体の電力を読む手段 (root なしの API がない)
-- AMD の APU 以外での `HWNPU_ENERGY` (RAPL、Windows)
+- AMD の APU 以外での `BONSAIAI_ENERGY` (RAPL、Windows)
 - 「M2 以降の形」のメモリと、8 GB で 1 本を読まないときの速さの M2 と M3 の実機での確認 (M3 では 1 本つきが 8 % 速かった)
 - Core AI で測っていないもの: Gemma 4 E2B のプロセスの分、Gemma 4 E4B、Qwen3.5-4B、PLaMo 3 Translate 8B (Neural Engine
   3.81 GiB + プロセス 0.3 GiB 前後のはず)、d1

@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
 )
 
 func readF32(t *testing.T, path string) []float32 {
@@ -44,16 +44,16 @@ func TestSuppress(t *testing.T) {
 	}
 }
 
-// TestRTMDet checks the program (on the CPU interpreter, or on the NPU with HWNPU_TEST_NPU)
+// TestRTMDet checks the program (on the CPU interpreter, or on the NPU with BONSAIAI_TEST_NPU)
 // against ONNX Runtime (tools/ref/ref_detect_ocr.py rtmdet): the scores and boxes of every
-// anchor the graph lays out ($HWNPU_TEST_DETECT_REF.scores.bin, .boxes.bin from the reference's
+// anchor the graph lays out ($BONSAIAI_TEST_DETECT_REF.scores.bin, .boxes.bin from the reference's
 // input .x.bin), and the objects.
 //
-//	HWNPU_TEST_DETECT_FILE=rtmdet-s-coco.onnx HWNPU_TEST_DETECT_REF=ref/rtmdet-football go test ./internal/vision/detect -run RTMDet -v
+//	BONSAIAI_TEST_DETECT_FILE=rtmdet-s-coco.onnx BONSAIAI_TEST_DETECT_REF=ref/rtmdet-football go test ./internal/vision/detect -run RTMDet -v
 func TestRTMDet(t *testing.T) {
-	path, ref := os.Getenv("HWNPU_TEST_DETECT_FILE"), os.Getenv("HWNPU_TEST_DETECT_REF")
+	path, ref := os.Getenv("BONSAIAI_TEST_DETECT_FILE"), os.Getenv("BONSAIAI_TEST_DETECT_REF")
 	if path == "" || ref == "" {
-		t.Skip("HWNPU_TEST_DETECT_FILE and HWNPU_TEST_DETECT_REF are not set")
+		t.Skip("BONSAIAI_TEST_DETECT_FILE and BONSAIAI_TEST_DETECT_REF are not set")
 	}
 	g, err := onnx.Load(path)
 	if err != nil {
@@ -68,8 +68,8 @@ func TestRTMDet(t *testing.T) {
 	if _, err := llm.WritePart(dir, p, nil, llm.Options{Format: "fp16"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	var dev *hwnpu.Device
-	if os.Getenv("HWNPU_TEST_NPU") != "" {
+	var dev *bonsaiai.Device
+	if os.Getenv("BONSAIAI_TEST_NPU") != "" {
 		d, _, err := llm.OpenDevice(context.Background(), "", t.TempDir())
 		if err != nil {
 			t.Fatal(err)

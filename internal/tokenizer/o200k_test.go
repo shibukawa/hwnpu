@@ -42,19 +42,19 @@ func TestSplitO200k(t *testing.T) {
 }
 
 // TestGptOss checks gpt-oss's tokenizer (o200k_harmony) against the ids Hugging Face gave
-// (testdata/gpt-oss-20b.json, from tools/ref/tokenizer_golden.py). It needs HWNPU_TEST_GPTOSS_DIR with
-// tokenizer.json; HWNPU_TEST_GPTOSS_TOKENS_REF names another golden file (one with --random cases).
+// (testdata/gpt-oss-20b.json, from tools/ref/tokenizer_golden.py). It needs BONSAIAI_TEST_GPTOSS_DIR with
+// tokenizer.json; BONSAIAI_TEST_GPTOSS_TOKENS_REF names another golden file (one with --random cases).
 func TestGptOss(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_GPTOSS_DIR")
+	dir := os.Getenv("BONSAIAI_TEST_GPTOSS_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_TEST_GPTOSS_DIR not set")
+		t.Skip("BONSAIAI_TEST_GPTOSS_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	golden := "testdata/gpt-oss-20b.json"
-	if g := os.Getenv("HWNPU_TEST_GPTOSS_TOKENS_REF"); g != "" {
+	if g := os.Getenv("BONSAIAI_TEST_GPTOSS_TOKENS_REF"); g != "" {
 		golden = g
 	}
 	raw, err := os.ReadFile(golden)

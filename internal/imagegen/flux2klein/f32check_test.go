@@ -5,13 +5,13 @@ package flux2klein
 // the Neural Engine (the export's programs), to tell how far the export is from float32 and why
 // (docs/design/image-apple.md):
 //
-//	HWNPU_TEST_KLEIN_F32=cpu HWNPU_TEST_KLEIN_FORMAT=fp16   the parts with fp16 weights on the CPU: v_cpufp16.f32
-//	HWNPU_TEST_KLEIN_F32=cpu HWNPU_TEST_KLEIN_FORMAT=lut8   the parts in the export's format on the CPU: v_cpulut8.f32
-//	HWNPU_TEST_KLEIN_F32=npu                           the export's programs: v_npu.f32, against v_cpufp16.f32
-//	HWNPU_TEST_KLEIN_F32=group                         each group alone on the CPU's (lut8) input
+//	BONSAIAI_TEST_KLEIN_F32=cpu BONSAIAI_TEST_KLEIN_FORMAT=fp16   the parts with fp16 weights on the CPU: v_cpufp16.f32
+//	BONSAIAI_TEST_KLEIN_F32=cpu BONSAIAI_TEST_KLEIN_FORMAT=lut8   the parts in the export's format on the CPU: v_cpulut8.f32
+//	BONSAIAI_TEST_KLEIN_F32=npu                           the export's programs: v_npu.f32, against v_cpufp16.f32
+//	BONSAIAI_TEST_KLEIN_F32=group                         each group alone on the CPU's (lut8) input
 //
-// HWNPU_TEST_KLEIN_EXPORT is the export (its default size), HWNPU_TEST_KLEIN_DIR the checkpoint's
-// repository, HWNPU_TEST_KLEIN_OUT a directory with dump/ctx.bf16 of a run with --dump (the text rows:
+// BONSAIAI_TEST_KLEIN_EXPORT is the export (its default size), BONSAIAI_TEST_KLEIN_DIR the checkpoint's
+// repository, BONSAIAI_TEST_KLEIN_OUT a directory with dump/ctx.bf16 of a run with --dump (the text rows:
 // both sides take the same), where the files are written. The seed is 1.
 
 import (
@@ -22,12 +22,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein/mil"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux2klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
 )
 
 func readF32s(b []byte) []float32 {
@@ -47,13 +47,13 @@ func writeF32s(path string, x []float32) {
 }
 
 func TestF32Check(t *testing.T) {
-	mode := os.Getenv("HWNPU_TEST_KLEIN_F32")
+	mode := os.Getenv("BONSAIAI_TEST_KLEIN_F32")
 	if mode == "" {
 		t.Skip()
 	}
-	exp, root, out := os.Getenv("HWNPU_TEST_KLEIN_EXPORT"), os.Getenv("HWNPU_TEST_KLEIN_DIR"), os.Getenv("HWNPU_TEST_KLEIN_OUT")
+	exp, root, out := os.Getenv("BONSAIAI_TEST_KLEIN_EXPORT"), os.Getenv("BONSAIAI_TEST_KLEIN_DIR"), os.Getenv("BONSAIAI_TEST_KLEIN_OUT")
 	if exp == "" || root == "" || out == "" {
-		t.Fatal("HWNPU_TEST_KLEIN_EXPORT, HWNPU_TEST_KLEIN_DIR and HWNPU_TEST_KLEIN_OUT")
+		t.Fatal("BONSAIAI_TEST_KLEIN_EXPORT, BONSAIAI_TEST_KLEIN_DIR and BONSAIAI_TEST_KLEIN_OUT")
 	}
 	m, err := ReadProgramManifest(exp)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestF32Check(t *testing.T) {
 	var h []float32
 	switch mode {
 	case "cpu":
-		fmt := os.Getenv("HWNPU_TEST_KLEIN_FORMAT")
+		fmt := os.Getenv("BONSAIAI_TEST_KLEIN_FORMAT")
 		if fmt == "" {
 			fmt = "fp16"
 		}
@@ -146,7 +146,7 @@ func TestF32Check(t *testing.T) {
 		}
 		writeF32s(filepath.Join(out, "v_cpu"+fmt+".f32"), h)
 	case "group":
-		dev, _, err := llm.OpenDevice(ctx, llm.BackendCoreAI, cache.Root(), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		dev, _, err := llm.OpenDevice(ctx, llm.BackendCoreAI, cache.Root(), bonsaiai.WithPlacement(bonsaiai.PlacementStrict))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +172,7 @@ func TestF32Check(t *testing.T) {
 			prev = want
 		}
 	case "npu":
-		dev, _, err := llm.OpenDevice(ctx, llm.BackendCoreAI, cache.Root(), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		dev, _, err := llm.OpenDevice(ctx, llm.BackendCoreAI, cache.Root(), bonsaiai.WithPlacement(bonsaiai.PlacementStrict))
 		if err != nil {
 			t.Fatal(err)
 		}

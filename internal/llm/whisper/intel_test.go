@@ -8,19 +8,19 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
 )
 
-// On OpenVINO's CPU: the three programs converted to OpenVINO IR as hwnpu-audio transcribe
+// On OpenVINO's CPU: the three programs converted to OpenVINO IR as bonsaiai-audio transcribe
 // converts them for Intel's NPU give what the MIL programs give: the encoder's last hidden state,
 // the cross program's keys and values, and the decoder with a KV cache (programs of 1 and 3
-// tokens per call sharing it) the logits of WhisperDecoder at every step. Needs HWNPU_OV_PYTHON.
+// tokens per call sharing it) the logits of WhisperDecoder at every step. Needs BONSAIAI_OV_PYTHON.
 func TestIntelIR(t *testing.T) {
 	if ovcpu.Python() == "" {
-		t.Skip("HWNPU_OV_PYTHON is not set")
+		t.Skip("BONSAIAI_OV_PYTHON is not set")
 	}
 	ctx := context.Background()
 	dev, _, err := llm.OpenDevice(ctx, "openvino", "")
@@ -92,7 +92,7 @@ func TestIntelIR(t *testing.T) {
 		defer cl.Close()
 		for name, v := range kv {
 			b := make([]byte, 2*len(v))
-			hwnpu.EncodeF16(b, v)
+			bonsaiai.EncodeF16(b, v)
 			if err := s.SetInputF16(name, b); err != nil {
 				t.Fatal(err)
 			}

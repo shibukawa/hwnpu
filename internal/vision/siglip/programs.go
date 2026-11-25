@@ -14,13 +14,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/vision/siglip/mil"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/vision/siglip/mil"
 )
 
 // ExportVersion counts the changes to the programs of Prepare that call for converting again
@@ -51,7 +51,7 @@ type Setup struct {
 	Log    io.Writer
 }
 
-// Prepare makes a SigLIP 2 ready for Apple's Neural Engine in s.Dir, as hwnpu-chat makes its
+// Prepare makes a SigLIP 2 ready for Apple's Neural Engine in s.Dir, as bonsaiai-chat makes its
 // models ready: it downloads the checkpoint when missing and converts it, in Go, into the
 // export NAME-vN.FORMAT (the two towers in fp16, the tokenizer and the token embedding table the
 // host looks up), whose directory it returns. The first load compiles the programs.
@@ -63,7 +63,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	root := filepath.Join(s.Dir, s.Name)
 	format := cmp.Or(s.Format, FormatCoreML)
 	// the export in the model's directory (as every model's); the one an
-	// earlier hwnpu kept in the models' directory is removed when this one is made
+	// earlier bonsaiai kept in the models' directory is removed when this one is made
 	old := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	out := filepath.Join(root, filepath.Base(old))
 	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
@@ -121,7 +121,7 @@ func Convert(root, out, format, weights string) error {
 	}
 	for _, p := range []*mil.Part{mil.Vision(c), mil.Text(c)} {
 		if _, err := llm.WritePart(filepath.Join(out, p.Name+llm.ProgramExt(format)), p, wt, llm.Options{Backend: format, Format: weights}, func(pkg *mlpackage.Package) {
-			pkg.Description = fmt.Sprintf("SigLIP 2's %s tower of %s, %s (hwnpu)", p.Name, filepath.Base(root), weights)
+			pkg.Description = fmt.Sprintf("SigLIP 2's %s tower of %s, %s (bonsaiai)", p.Name, filepath.Base(root), weights)
 		}); err != nil {
 			return fmt.Errorf("siglip: %s: %w", p.Name, err)
 		}
@@ -217,7 +217,7 @@ func (m *Model) program(ctx context.Context, p *runner.Program, name string) err
 	return nil
 }
 
-func where(dev *hwnpu.Device) string {
+func where(dev *bonsaiai.Device) string {
 	if dev == nil {
 		return "on the CPU interpreter"
 	}

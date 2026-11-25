@@ -1,10 +1,10 @@
-"""The per-call instruction streams of an xclbin per step (NPU1), as programs hwnpu runs.
+"""The per-call instruction streams of an xclbin per step (NPU1), as programs bonsaiai runs.
 
 On an xclbin a per-call value is a dispatch-time scalar: mlir-aie generates, per design, C++
 that builds the instruction stream (a TXN) from the scalars (dispatch_gen.cpp, compiled to a
 dispatch library). That code is straight-line: typed assignments, arithmetic, selects, guards
 that refuse a call, and calls of aie_runtime's TXN encoders (aie/Runtime/TxnEncoding.h).
-``parse`` turns it into a program of those operations, ``run`` runs one as hwnpu's Go
+``parse`` turns it into a program of those operations, ``run`` runs one as bonsaiai's Go
 interpreter does (internal/llm/iron/stream.go), so that an export can hold each design's
 program and check it against the dispatch library.
 

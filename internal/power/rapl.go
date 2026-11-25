@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // RAPL is a package energy counter.

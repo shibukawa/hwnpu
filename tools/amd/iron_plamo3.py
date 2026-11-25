@@ -1,6 +1,6 @@
 """PLaMo 3 (Preferred Networks' Plamo3ForCausalLM, e.g. pfnet/plamo-3-translate-2b) on IRON's shared decoder (``iron.lm``).
 
-An application of amd/IRON kept in hwnpu (IRON has none for PLaMo 3), exported by
+An application of amd/IRON kept in bonsaiai (IRON has none for PLaMo 3), exported by
 ``iron_export_lm.py plamo3`` like LFM3's (iron_lfm3.py). Its shape is read from
 the checkpoint's ``config.json``; the structure follows its ``modeling_plamo.py``:
 
@@ -25,7 +25,7 @@ the checkpoint's ``config.json``; the structure follows its ``modeling_plamo.py`
 - No embedding scale (``scale_embedding`` false); the head is ``lm_head``.
 
 Checkpoints without a tokenizer.json (PLaMo's is tokenizer.jsonl) load with no
-tokenizer: IRON's command line then takes token ids only, and hwnpu tokenizes.
+tokenizer: IRON's command line then takes token ids only, and bonsaiai tokenizes.
 
 With install() (``iron_export_lm.py plamo3 --q4``) the MLP's projections and the head are
 q4nx, the attention's in ``attn`` (q8 by default; iron_q4's formats), the fused ``qkv_proj`` and

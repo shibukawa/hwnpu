@@ -43,13 +43,13 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/cli/konghelper"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/ai/imagegen"
-	"github.com/shibukawa/hwnpu/ai/vision"
-	"github.com/shibukawa/hwnpu/samples/internal/capture"
-	"github.com/shibukawa/hwnpu/samples/internal/layering"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/cli/konghelper"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/imagegen"
+	"github.com/shibukawa/bonsaiai/ai/vision"
+	"github.com/shibukawa/bonsaiai/samples/internal/capture"
+	"github.com/shibukawa/bonsaiai/samples/internal/layering"
 )
 
 // The models: the depth of the picture, the one that draws what a layer of the picture hid, and
@@ -95,7 +95,7 @@ func main() {
 	app, p := build()
 	k := kong.Parse(&cmds,
 		kong.Name("parallax"),
-		kong.Description("Show a picture as if it were deep, turning with the viewer's head: a sample of hwnpu's ai package."),
+		kong.Description("Show a picture as if it were deep, turning with the viewer's head: a sample of bonsaiai's ai package."),
 		kong.UsageOnError(),
 		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),

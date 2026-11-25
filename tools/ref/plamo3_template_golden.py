@@ -33,7 +33,7 @@ CASES = [
         "messages": [U("The NPU runs the model at low power.\n\n  Indented line, two  spaces.")],
         "kwargs": {
             "target_lang": "ja",
-            "context": "hwnpu is a Go library for the NPUs built into CPUs.",
+            "context": "bonsaiai is a Go library for the NPUs built into CPUs.",
             "glossary": [{"source": "NPU", "target": "NPU"}, {"source": "model", "target": "モデル"}],
             "form": "polite",
         },

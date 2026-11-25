@@ -946,11 +946,11 @@ def operators():
 # The cores a column of a plain QGEMV (q_linear): 2 (a memtile splits each column block between
 # two), or 1: half the configuration a switch to it writes, as fast for the decode step's
 # projections (LFM3-1.7B 15.6 -> 17.1 tokens/s, the same bits, docs/design/amd.md). 0 (the default):
-# 1 up to Q_CORES_UP_TO out-features, 2 past it (a head's). HWNPU_Q_CORES, HWNPU_Q_CORES_UP_TO.
-Q_CORES = int(os.environ.get("HWNPU_Q_CORES", "0"))  # 0: by the out-features (Q_CORES_UP_TO)
-Q_CORES_UP_TO = int(os.environ.get("HWNPU_Q_CORES_UP_TO", "16384"))
-# The same for QGEMVGlu (glu_linear). HWNPU_GLU_CORES.
-GLU_CORES = int(os.environ.get("HWNPU_GLU_CORES", "2"))
+# 1 up to Q_CORES_UP_TO out-features, 2 past it (a head's). BONSAIAI_Q_CORES, BONSAIAI_Q_CORES_UP_TO.
+Q_CORES = int(os.environ.get("BONSAIAI_Q_CORES", "0"))  # 0: by the out-features (Q_CORES_UP_TO)
+Q_CORES_UP_TO = int(os.environ.get("BONSAIAI_Q_CORES_UP_TO", "16384"))
+# The same for QGEMVGlu (glu_linear). BONSAIAI_GLU_CORES.
+GLU_CORES = int(os.environ.get("BONSAIAI_GLU_CORES", "2"))
 
 
 def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = None, adds=()):
@@ -1102,7 +1102,7 @@ def install_linear() -> None:
     """Make iron.functional.linear run q_linear on the weights q_param made."""
     import iron.functional as F
 
-    if getattr(F.linear, "hwnpu_q4", False):
+    if getattr(F.linear, "bonsaiai_q4", False):
         return
     base = F.linear
     _BASE["linear"] = base
@@ -1120,7 +1120,7 @@ def install_linear() -> None:
         rows = int(np.prod(y.shape)) // bias.shape[0]
         return (y.reshape(rows, bias.shape[0]) + bias).reshape(y.shape)
 
-    linear.hwnpu_q4 = True
+    linear.bonsaiai_q4 = True
     F.linear = linear
     _install_split()
     _install_residual()
@@ -1155,7 +1155,7 @@ def _install_residual() -> None:
     from iron.lm.blocks import Linear
 
     base = Linear.body
-    if getattr(base, "hwnpu_residual", False):
+    if getattr(base, "bonsaiai_residual", False):
         return
 
     def body(self, x):
@@ -1170,7 +1170,7 @@ def _install_residual() -> None:
                 *x.shape[:-1], entry[1])
         return base(self, x)
 
-    body.hwnpu_residual = True
+    body.bonsaiai_residual = True
     Linear.body = body
 
 
@@ -1199,7 +1199,7 @@ def _install_split() -> None:
     from iron.lm.blocks import Linear
 
     base = Linear.split
-    if getattr(base, "hwnpu_q4", False):
+    if getattr(base, "bonsaiai_q4", False):
         return
 
     def split(self, x, *rows: int, **gemv) -> list:
@@ -1229,7 +1229,7 @@ def _install_split() -> None:
             end += r
         return out
 
-    split.hwnpu_q4 = True
+    split.bonsaiai_q4 = True
     Linear.split = split
 
 
@@ -1242,7 +1242,7 @@ def _fix_bfp_fits() -> None:
     from iron.common.declare.operand import Operand
 
     base = Operand.fits
-    if getattr(base, "hwnpu", False):
+    if getattr(base, "bonsaiai", False):
         return
 
     def fits(self, tap):
@@ -1264,7 +1264,7 @@ def _fix_bfp_fits() -> None:
             return self.op.dev.dma_bd_fits(0, 0, byte_tap, np.uint8)
         return base(self, tap)
 
-    fits.hwnpu = True
+    fits.bonsaiai = True
     Operand.fits = fits
 
 
@@ -1688,7 +1688,7 @@ def install_glu() -> None:
     from iron.lm.blocks import GatedMLP
 
     base = GatedMLP.body
-    if getattr(base, "hwnpu_glu", False):
+    if getattr(base, "bonsaiai_glu", False):
         return
 
     def body(self, x):
@@ -1697,7 +1697,7 @@ def install_glu() -> None:
             return base(self, x)
         return self.down_proj(glu_linear(x, gu, self.act))
 
-    body.hwnpu_glu = True
+    body.bonsaiai_glu = True
     GatedMLP.body = body
 
 

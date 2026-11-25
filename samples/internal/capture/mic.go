@@ -13,7 +13,7 @@ import (
 
 	"github.com/shibukawa/hwcamera/audio"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/flow"
 )
 
 // MicOptions are how a microphone is read. The zero value is the system's default input at

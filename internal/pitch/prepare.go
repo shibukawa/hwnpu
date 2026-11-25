@@ -10,12 +10,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // ModelFile is the model's file in its repository.
@@ -61,7 +61,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	_, err = llm.WritePart(program, &Program{Frames: ProgramFrames}, m.Weights(), llm.Options{Format: format, Backend: s.Backend}, func(p *mlpackage.Package) {
-		p.Description = fmt.Sprintf("SwiftF0's CNN (swift-f0 0.3.0), %d frames a call, %s (hwnpu)", ProgramFrames, format)
+		p.Description = fmt.Sprintf("SwiftF0's CNN (swift-f0 0.3.0), %d frames a call, %s (bonsaiai)", ProgramFrames, format)
 		p.Metadata[llm.MetaArch] = Arch
 	})
 	if err != nil {
@@ -106,7 +106,7 @@ type Detector struct {
 }
 
 // Open loads the model and its program on dev (nil: the CPU interpreter).
-func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Detector, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, model, program string) (*Detector, error) {
 	m, err := Load(model)
 	if err != nil {
 		return nil, err

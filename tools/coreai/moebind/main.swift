@@ -1,6 +1,6 @@
 // moebind times how a mixture of experts program (aicheck moe's experts_i8, lowered with
 // aicheck lower) takes the experts' weights passed at run time in three ways: Core AI arrays
-// (NDArray, as hwnpu's shim passes them), views of IOSurfaces and views of Metal buffers,
+// (NDArray, as bonsaiai's shim passes them), views of IOSurfaces and views of Metal buffers,
 // each with the same experts at every call and with others chosen at every call.
 //
 //	swiftc -O -parse-as-library tools/coreai/moebind/main.swift -o /tmp/moebind

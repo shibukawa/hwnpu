@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/ovcpu"
-	"github.com/shibukawa/hwnpu/internal/ovir"
-	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/ovcpu"
+	"github.com/shibukawa/bonsaiai/internal/ovir"
+	"github.com/shibukawa/bonsaiai/internal/palette"
 )
 
 const f16 = mlpackage.Float16
@@ -80,7 +80,7 @@ func (p *program) op(typ string, inputs map[string]any, shape ...int) *mlpackage
 }
 
 // check runs the program with milcpu and, lowered, with OpenVINO's CPU plugin when
-// HWNPU_OV_PYTHON is set, and compares every output. It returns the lowered model.
+// BONSAIAI_OV_PYTHON is set, and compares every output. It returns the lowered model.
 func (p *program) check(outs ...*mlpackage.Var) *ovir.Model {
 	t := p.t
 	t.Helper()
@@ -94,7 +94,7 @@ func (p *program) check(outs ...*mlpackage.Var) *ovir.Model {
 	}
 	defer f.Close()
 	xmlPath := filepath.Join(p.dir, "m.xml")
-	if _, err := WriteFiles(xmlPath, "test", prog.GetFunctions()["main"], f, map[string]string{"com.github.shibukawa.hwnpu.arch": "test"}); err != nil {
+	if _, err := WriteFiles(xmlPath, "test", prog.GetFunctions()["main"], f, map[string]string{"com.github.shibukawa.bonsaiai.arch": "test"}); err != nil {
 		t.Fatal(err)
 	}
 	xml, err := os.ReadFile(xmlPath)
@@ -105,7 +105,7 @@ func (p *program) check(outs ...*mlpackage.Var) *ovir.Model {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(xml), `<com.github.shibukawa.hwnpu.arch value="test"/>`) {
+	if !strings.Contains(string(xml), `<com.github.shibukawa.bonsaiai.arch value="test"/>`) {
 		t.Error("the metadata is not in rt_info")
 	}
 	for i, o := range outs {
@@ -115,7 +115,7 @@ func (p *program) check(outs ...*mlpackage.Var) *ovir.Model {
 	}
 	py := ovcpu.Python()
 	if py == "" {
-		t.Log("HWNPU_OV_PYTHON is not set: the IR is not run")
+		t.Log("BONSAIAI_OV_PYTHON is not set: the IR is not run")
 		return m
 	}
 	mp, err := milcpu.Load(prog, f)

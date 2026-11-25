@@ -14,8 +14,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
 )
 
 // GridShape is a padded channel-last grid of the VAE (iron_anima.GridShape): H rows of W
@@ -53,7 +53,7 @@ func (g GridShape) Pixel(y, x int) int { return 1 + g.Wp() + y*g.Wp() + 1 + x }
 // every stage (iron.GraphOptions.Buffers: filled from the stage's image, zeroed past it), and a
 // stage's output buffer is the next stage's input buffer, with no copy.
 type VAE struct {
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	stages []string // each stage's directory
 	in     GridShape
 	Width  int
@@ -77,7 +77,7 @@ type stageInfo struct {
 }
 
 // OpenVAE reads the stages' manifests in dir; Decode loads each stage onto dev as it runs.
-func OpenVAE(ctx context.Context, dev *hwnpu.Device, dir string) (*VAE, error) {
+func OpenVAE(ctx context.Context, dev *bonsaiai.Device, dir string) (*VAE, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return nil, err
@@ -272,8 +272,8 @@ func (v *VAE) run(ctx context.Context, latents []float32, channels int) (out []b
 	}
 	// the buffers the stages share: a bank kind's (the largest stage's size), and the input,
 	// which is the stage before's output
-	banks := map[string]*hwnpu.Buffer{}
-	var in *hwnpu.Buffer
+	banks := map[string]*bonsaiai.Buffer{}
+	var in *bonsaiai.Buffer
 	defer func() {
 		for _, b := range banks {
 			b.Close()
@@ -299,7 +299,7 @@ func (v *VAE) run(ctx context.Context, latents []float32, channels int) (out []b
 	for i, dir := range v.stages {
 		t0 := time.Now()
 		si := v.info[i]
-		lend := map[string]*hwnpu.Buffer{}
+		lend := map[string]*bonsaiai.Buffer{}
 		for kind := range si.banks {
 			lend[kind] = banks[kind]
 		}
@@ -307,7 +307,7 @@ func (v *VAE) run(ctx context.Context, latents []float32, channels int) (out []b
 		if handed {
 			lend[si.inKind] = in
 		}
-		var next *hwnpu.Buffer // this stage's output, the next one's input
+		var next *bonsaiai.Buffer // this stage's output, the next one's input
 		if i+1 < len(v.stages) && si.outKind != "" && v.info[i+1].inKind != "" && v.info[i+1].inBytes == si.outBytes {
 			if next, err = v.dev.AllocBuffer(max(si.outBytes, 4096)); err != nil {
 				return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)

@@ -22,15 +22,15 @@ import (
 	"sync"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/palette"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 var hubURL = "https://huggingface.co/"
@@ -154,7 +154,7 @@ var compileCacheBytes int64 = 7 << 29 // 3.5 GiB
 // m1HoldBytes is what an M1's Neural Engine holds of the programs loaded together before every
 // call slows down about 12 times, as if parts were loaded again on each: lut4 parts holding 2.86
 // GiB ran at their own times added up, 2.97 GiB at 828 against 72 ms a token, whatever the number
-// of parts (hwnpu-dev probe split, PROBE.md). The M2 (3.65 GiB at full speed), the M3 and the M4 have no
+// of parts (bonsaiai-dev probe split, PROBE.md). The M2 (3.65 GiB at full speed), the M3 and the M4 have no
 // such limit below the compile cache, so the programs are the same files on every chip and an M1
 // only loads fewer of them: the one that generates reads the prompts too (onePrograms).
 const m1HoldBytes = 2867 << 20 // 2.8 GiB
@@ -169,7 +169,7 @@ var neuralEngineHold = func() int64 {
 	return 0
 }
 
-// DefaultTiers is the --tier of hwnpu-chat (chat, agent, serve): auto, a cache of 4096 to run on
+// DefaultTiers is the --tier of bonsaiai-chat (chat, agent, serve): auto, a cache of 4096 to run on
 // while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
 const DefaultTiers = "auto"
 
@@ -257,7 +257,7 @@ type Setup struct {
 	Tiers []int
 	// Backend picks the device the programs are converted for and run on (llm.FindDevice): a
 	// device backend (coreml, coreai, levelzero, openvino) or a program format (coreml, intel);
-	// empty for HWNPU_BACKEND or the NPU found. coreai converts Core AI's programs (.aimodel, in
+	// empty for BONSAIAI_BACKEND or the NPU found. coreai converts Core AI's programs (.aimodel, in
 	// an export NAME.coreai beside the checkpoint) from the checkpoint, the parts of the same
 	// layers of the programs of one cache as the functions of one (llm.ConvertAI).
 	Backend string
@@ -490,7 +490,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// bits or fewer: lut6's error about halves (Qwen3.5-2B, docs/design/moe.md), while lut8's was
 	// within the Neural Engine's own (0.8B and 4B: the same answers, 0 to 3.5 % faster), which
 	// is not worth converting again. Other programs, named -rot, and their own tables.
-	// HWNPU_DEV=rotate=0 keeps them unrotated, =1 rotates lut8 too
+	// BONSAIAI_DEV=rotate=0 keeps them unrotated, =1 rotates lut8 too
 	rotate := devenv.Value("rotate")
 	if rotatable(a, model) && (backend == llm.BackendCoreAI || backend == llm.BackendCoreML) && rotate != "0" &&
 		(rotate == "1" || format == "lut6" || format == "lut4") {
@@ -1093,7 +1093,7 @@ func pagedChunk(model llm.Model, want int, backend string) int {
 // encoders are the programs of the multimodal checkpoints besides the text model, converted when
 // config.json has them: LFM3-VL's and LFM3-Omni's vision encoder for one image size (an image is
 // stretched to it), LFM3-Audio's and LFM3-Omni's audio encoder for clips of up to 30 seconds. They
-// stay in fp16 as hwnpu-dev convert's examples convert them (docs/design/llm-models.md); files are
+// stay in fp16 as bonsaiai-dev convert's examples convert them (docs/design/llm-models.md); files are
 // what else of the repository they read.
 var encoders = []struct {
 	arch, param, value string
@@ -1476,7 +1476,7 @@ func fetchHFTee(ctx context.Context, repo, name, path string, log io.Writer, tee
 		have = fi.Size()
 	}
 	// the version of the file the part is of (its ETag): the rest is asked for only if the file
-	// is still that one (If-Range), else the whole file comes again. A part of an earlier hwnpu,
+	// is still that one (If-Range), else the whole file comes again. A part of an earlier bonsaiai,
 	// with no ETag kept, goes on as before
 	etag, _ := os.ReadFile(part + ".etag")
 	var resp *http.Response

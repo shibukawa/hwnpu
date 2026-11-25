@@ -21,7 +21,7 @@ facts:
     未知の機種と any には測定済みの最小値 (今は M3 の 64) を使う
 acceptance:
   per-chip-k: {text: 既知の機種ごとに既定の K を持ち、npuprobe verify で測った値か推定かを区別できる}
-  used-by-convert: {text: hwnpu-convert などが -seq などを指定しないとき、対象の機種の K を既定に使える}
+  used-by-convert: {text: bonsaiai-convert などが -seq などを指定しないとき、対象の機種の K を既定に使える}
 verification:
   m3-measured: {state: passed, method: manual, authority: observed, scope: {backend: coreml, chip: m3}, evidence: {path: PROBE.md, locator: "Apple M3, K tokens per call"}, basis: [{path: PROBE.md, input_hash: 5802925e595c6d87d70d5c3724017a7b61d7d45315549969a400b7759ac652bd}, {path: cmd/npuprobe/verify.go, input_hash: 377165608f80d4ab4e72394b08ab3a5aea0f29b6955637e61a4cde41d1f9bbc9}]}
   m4-measured: {state: not_run, method: manual, scope: {backend: coreml, chip: m4}}

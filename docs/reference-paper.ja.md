@@ -1,8 +1,8 @@
-# 参考にした NPU の論文と、hwnpu で確かめた結果
+# 参考にした NPU の論文と、BonsaiAI で確かめた結果
 
 [English](reference-paper.md)
 
-作成: 2026-11-21。2026-11-20 からの論文の調査 ([handoff-amd-papers.md](handoff-amd-papers.md)) で拾った論文について、何を言っていて、hwnpu の実機で当てはまったかをまとめる。細かい数字と試し方は [docs/design/README.ja.md](design/README.ja.md) の各節にある。ここは一覧と、そこへの道案内。
+作成: 2026-11-21。2026-11-20 からの論文の調査 ([handoff-amd-papers.md](handoff-amd-papers.md)) で拾った論文について、何を言っていて、BonsaiAI の実機で当てはまったかをまとめる。細かい数字と試し方は [docs/design/README.ja.md](design/README.ja.md) の各節にある。ここは一覧と、そこへの道案内。
 
 - AMD の NPU (XDNA2、Ryzen AI 9 365) の最適化の候補が中心。MoE の論文と、同じ時期に M2 で確かめた Apple の Neural Engine の論文も載せる
 - MoE の論文の全体の表は [docs/design/performance.ja.md](design/performance.ja.md)にある。ここでは AMD に関係するものだけ
@@ -15,14 +15,14 @@
 2026 年のものは査読前のプレプリントが多い。
 
 **結果の欄の言葉**
-- **当てはまった**: 論文の主張が hwnpu の実機でも成り立ち、それを使って速くしたか、直した
-- **すでに同じ**: hwnpu がもともと同じことをしていた
+- **当てはまった**: 論文の主張が BonsaiAI の実機でも成り立ち、それを使って速くしたか、直した
+- **すでに同じ**: BonsaiAI がもともと同じことをしていた
 - **一部**: 当てはまったところと、違ったところがある
 - **未着手**: まだ試していない
 
 ## 一覧
 
-| 論文 | 言っていること | 結果 | hwnpu の節 |
+| 論文 | 言っていること | 結果 | BonsaiAI の節 |
 |---|---|---|---|
 | HeteroMosaic 2607.12839 ✓ | データパスの設定のし直し (PDI の読み直し) は高い。DMA の切り替えはほぼ無料 | **当てはまった**。1 回 40 µs + 2.3 µs/KB。密なモデルのデコードの時間の 7 割前後がこれ。演算をまとめて LFM3 11.2 → 16.9 tok/s ほか | [amd](design/amd.ja.md)、[amd-llm](design/amd-llm.ja.md) |
 | 2606.07586 ✓ (XDNA2 の Llama-3.2-1B) | XRT のコンテキストを使い回す。BO をゼロコピーで回す。NPU だけが使うバッファの同期を省く | **すでに同じ**。IRON の経路は使う範囲だけを同期していた | [amd](design/amd.ja.md) の最後 |
@@ -32,7 +32,7 @@
 | STEEL 2607.09385 (a) | 因果マスクの疎を考えた FlashAttention の段の配置 | **未着手** | |
 | Zen-Attention 2508.17593 (a) | 注意を畳み、DRAM の帯域を減らす | **未着手** | |
 | MR-GPTQ 2509.23202 (a)、QuaRot / SpinQuant † | 量子化の前にアダマールで回して外れ値をならす | AMD は**未着手**。Apple の lut で試して KL が約半分 (製品には未投入) | [apple-neural-engine](design/apple-neural-engine.ja.md) |
-| TileFuse 2606.11357 ✓ | BFP16 のカーネルは LLM の端から端までには精度が足りない | **確認だけ**。hwnpu は bfp16 の所を KL かコサインで確かめている | [moe](design/moe.ja.md)、[image-amd](design/image-amd.ja.md) |
+| TileFuse 2606.11357 ✓ | BFP16 のカーネルは LLM の端から端までには精度が足りない | **確認だけ**。BonsaiAI は bfp16 の所を KL かコサインで確かめている | [moe](design/moe.ja.md)、[image-amd](design/image-amd.ja.md) |
 | ENEC 2604.03298 (a, Ascend) | 重みの可逆圧縮で転送の律速を外す | **未着手**。今のデコードは帯域より設定のし直しで決まるので、後回し | |
 | 2505.16056 (Not All Models Suit Expert Offloading) | 活性の専門家の約 2 倍のキャッシュで足りる。LFU が LRU より良い | **一部**。AMD の置き場 (`--expert-places`) を使用回数で選ぶ形に入った | [moe](design/moe.ja.md)、[moe](design/moe.ja.md) |
 | EStream 2609.06551 (Hexagon) | 専門家を銀行 × 枠の置き場に。番地は 先頭 + 枠 × 大きさ。O_DIRECT で読む | **当てはまった**。AMD の置き場の設計の下敷き。gpt-oss-120b は O_DIRECT で読む | [moe](design/moe.ja.md)、handoff-amd-moe.md |
@@ -52,7 +52,7 @@
 - 同じ xclbin の操作をまとめる。NPU を扱うスレッドは 1 本にする
 
 **確かめたこと** ([amd](design/amd.ja.md))
-- hwnpu の full ELF では、演算子が変わるたびに `load_pdi` と配列の設定 (コアのプログラムメモリを含む) が制御コードに入る
+- BonsaiAI の full ELF では、演算子が変わるたびに `load_pdi` と配列の設定 (コアのプログラムメモリを含む) が制御コードに入る
 - 1 回の費用は 40 µs + 2.3 µs/KB。[moe](design/moe.ja.md) の「違う種類の演算子 1 個 約 80 µs」の中身はこれだった
 - 見積もりは実機のデコードと 1 割以内で合った (LFM3-1.7B 92.6 ms に対して 98 ms、Gemma 4 E2B 137 ms に対して 138 ms)
 - gpt-oss-20b のデコードは常駐の 1 演算 (`GptOssStep`) なので当てはまらない
@@ -88,7 +88,7 @@
 - 多次元の DMA の番地で並べ替え、ホストで重みを前もってタイルにしない
 - 出力の転送が償却できるとき、C のバッファを 1 つにする (+13〜18 %)
 
-**hwnpu との関係**
+**BonsaiAI との関係**
 - bfp16 のデータパスは、DiT と gpt-oss のプロンプトの専門家ですでに使っている
 - DMA の 1 次元は 1023 語までで、重みを消費順に並べ替える 4 次元の TAP が通らない ([moe](design/moe.ja.md))。そのため専門家の表をホストで並べ直している
 - [amd-llm](design/amd-llm.ja.md) の `ShortConvChunk` も、行の数で DMA を切る `length_parameter` がこの制限に当たり、塊の全部の行を動かしている
@@ -107,7 +107,7 @@
 - STEEL: 因果マスクの疎を考えて、パイプラインの段を置く
 - Zen-Attention: 注意を畳み、タイルを決めて DRAM の帯域を減らす。注意 最大 4×、端から端まで 最大 32 %
 
-**hwnpu との関係**: プロンプトの因果な注意と、DiT の注意が対象。融合は設定のし直しの回数も減らすので、[amd](design/amd.ja.md) の結果とも向きが合う。2609.21264 は IRON で書いているので、コードが公開されていれば今の `iron_mha.py` と比べるのが早い。
+**BonsaiAI との関係**: プロンプトの因果な注意と、DiT の注意が対象。融合は設定のし直しの回数も減らすので、[amd](design/amd.ja.md) の結果とも向きが合う。2609.21264 は IRON で書いているので、コードが公開されていれば今の `iron_mha.py` と比べるのが早い。
 
 ### 回転: MR-GPTQ 2509.23202 (a)、QuaRot / SpinQuant † — AMD は未着手、Apple で一部
 
@@ -130,13 +130,13 @@ AMD の q4 (Qwen3.6 の HF とのコサイン 0.986〜0.996 の差の大半が q
 
 **言っていること**: XDNA2 の W4A16/W8A16 の融合カーネル。「BFP16 のカーネルは LLM の端から端までには精度が足りない」。
 
-**hwnpu との関係**: hwnpu は bfp16 を、DiT の注意と MLP (潜在のコサインで確かめた、[image-amd](design/image-amd.ja.md)) と、gpt-oss の専門家のプロンプト (KL を測った、[moe](design/moe.ja.md)) に使っている。新しい LLM で bfp16 を使うときは、同じ KL の掃引を通す。測り直してはいない。
+**BonsaiAI との関係**: BonsaiAI は bfp16 を、DiT の注意と MLP (潜在のコサインで確かめた、[image-amd](design/image-amd.ja.md)) と、gpt-oss の専門家のプロンプト (KL を測った、[moe](design/moe.ja.md)) に使っている。新しい LLM で bfp16 を使うときは、同じ KL の掃引を通す。測り直してはいない。
 
 ### ENEC 2604.03298 (a, Ascend) — 未着手
 
 **言っていること**: 長さ固定のブロックの符号と分岐なしの復号で、重みの転送の律速を外す。端から端まで最大 6.3×。
 
-**hwnpu との関係**: [amd](design/amd.ja.md) のとおり、密なモデルのデコードは帯域より設定のし直しで決まっている。効くのはそれを減らした後。先に q4nx の符号とスケールのエントロピーを測る (2.5 ビット/符号を切らないなら見合わない見込み)。
+**BonsaiAI との関係**: [amd](design/amd.ja.md) のとおり、密なモデルのデコードは帯域より設定のし直しで決まっている。効くのはそれを減らした後。先に q4nx の符号とスケールのエントロピーを測る (2.5 ビット/符号を切らないなら見合わない見込み)。
 
 ## MoE
 
@@ -146,7 +146,7 @@ AMD の q4 (Qwen3.6 の HF とのコサイン 0.986〜0.996 の差の大半が q
 
 **言っていること**: 20 個の MoE の経路の局所的な一貫性を測った。活性の専門家の約 2 倍のキャッシュで足りる。LFU が LRU より 3〜5 ポイント上。
 
-**hwnpu との関係**
+**BonsaiAI との関係**
 - AMD の専門家の置き場 (`--expert-places`、[moe](design/moe.ja.md)) は、校正した使用回数で置く専門家を選ぶ
 - Qwen3.6-35B-A3B は 16 GB の機械で 7.5 GiB、5.8〜6.0 tok/s ([moe](design/moe.ja.md))
 - 置き場の大きさは「活性の 2 倍」より大きく取っている (16 GB の機械の gpt-oss-20b は約 5 倍、1 層 32 個のうち 20)
@@ -158,7 +158,7 @@ AMD の q4 (Qwen3.6 の HF とのコサイン 0.986〜0.996 の差の大半が q
 - 重みは銀行 × 枠の DMA-BUF の置き場にあり、番地は 先頭 + 枠 × 間隔。経路の記述は呼び出しのときに渡す
 - 専門家は O_DIRECT で読む (同時に 2 つで帯域の 95 %)
 
-**hwnpu との関係**
+**BonsaiAI との関係**
 - `MoERoute` がスクラッチパッドに書く位置 ([moe](design/moe.ja.md)) は、この論文の「専門家の仮想化」と同じ考え方。一部の専門家だけを持つ AMD の置き場 ([moe](design/moe.ja.md)) の下敷きになった
 - gpt-oss-120b は、専門家のファイルを O_DIRECT で読む (handoff-amd-moe.md 4)
 
@@ -166,7 +166,7 @@ AMD の q4 (Qwen3.6 の HF とのコサイン 0.986〜0.996 の差の大半が q
 
 **言っていること**: 次の層のゲートを今の層の入力で予測する。生成の予測は 79〜84 %。
 
-**hwnpu との関係**
+**BonsaiAI との関係**
 - Apple の gpt-oss-20b: 次の層の専門家の予測が上位 4 個に 86〜87 %。先読みで、どの予算でも 3〜6 % 速くなった
 - AMD の gpt-oss-120b: 次の層の先読み (上位 4 個) で外れが 9.8 → 3.1 %、9.2 → 9.7〜9.9 tok/s (handoff-amd-moe.md 4)
 
@@ -174,7 +174,7 @@ AMD の q4 (Qwen3.6 の HF とのコサイン 0.986〜0.996 の差の大半が q
 
 **言っていること**: プロンプトだけを Core ML で Neural Engine に。経路、集め、書き戻しは CPU。
 
-**hwnpu との関係**: Neural Engine に gather を載せない hwnpu の判断 ([moe](design/moe.ja.md)) と合う。生成は扱っていない。
+**BonsaiAI との関係**: Neural Engine に gather を載せない BonsaiAI の判断 ([moe](design/moe.ja.md)) と合う。生成は扱っていない。
 
 ## Apple の Neural Engine (M2 で確かめた、[apple-neural-engine](design/apple-neural-engine.ja.md))
 
@@ -182,7 +182,7 @@ AMD の調査と同じ時期に、Neural Engine の論文の規則と上限を M
 
 ### 2606.22283 (リバースエンジニアリング) — 一部
 
-| 論文の規則 | M2 で | hwnpu の扱い |
+| 論文の規則 | M2 で | BonsaiAI の扱い |
 |---|---|---|
 | linear / conv の出力は 2^15 未満 | 成り立つ。**途中の和でも** 32768 に届くと Inf | もともと範囲を抑えている。新しいモデルの点検の項目に |
 | 幅の軸の slice で、開始が 0 でないと ×16 | 開始を 32 で割った余りが 1〜14 のときだけ | `aicheck lint` で探す。手元の書き出しで影響のある所はない |

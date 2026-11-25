@@ -1,13 +1,13 @@
 """LFM3-VL (Liquid AI's LFM3-VL-2B) on IRON: LFM3 (iron_lfm3.py) with its vision tower, for one image size.
 
-An application of amd/IRON kept in hwnpu, exported by ``iron_export_lm.py lfm3vl``. The
+An application of amd/IRON kept in bonsaiai, exported by ``iron_export_lm.py lfm3vl``. The
 text model is ``iron_lfm3.Lfm3`` under ``text_config``; the vision tower writes an image's
 soft tokens where the placed prompt chunk puts them in place of its ``<|image|>``
 placeholders (IRON's ``Multimodal``, as Gemma 4's).
 
 The tower (``Lfm3VlVisionModel`` and ``Lfm3VlMultiModalProjector``) takes an image of a fixed
 size (``VisionConfig.width`` by ``height``, 512 x 512 by default: the host resizes to it, as
-hwnpu's Core ML programs do) as its patches, normalized as the processor does, in raster order,
+bonsaiai's Core ML programs do) as its patches, normalized as the processor does, in raster order,
 a row of ``3 * patch_size**2`` each (a still image's temporal slices summed into the
 patchifier). Then:
 
@@ -324,7 +324,7 @@ class Lfm3Vl(Multimodal):
     """LFM3-VL whole: ``Lfm3`` with the vision tower, an image's soft tokens at its placeholders."""
 
     config = Lfm3VlConfig
-    hwnpu_kind = "lfm3vl"  # the multimodal manifest iron_export_lm.py writes
+    bonsaiai_kind = "lfm3vl"  # the multimodal manifest iron_export_lm.py writes
 
     def __init__(self, config: Lfm3VlConfig, weights):
         assert config.vision is not None

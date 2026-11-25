@@ -3,10 +3,10 @@ package qwen3
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/llm/paged"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/llm/paged"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Arch registers Qwen3 with the whitelist in internal/llm.
@@ -137,7 +137,7 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 }
 
 // PagedLayers are all the layers: split at its attention (llm.Options.Paged), every layer's
-// attention runs on the host's cache in chunks. hwnpu-chat does it only when told, or with Core AI (llm.Unpaged).
+// attention runs on the host's cache in chunks. bonsaiai-chat does it only when told, or with Core AI (llm.Unpaged).
 func (c *Config) PagedLayers() []int {
 	out := make([]int, c.NumLayers)
 	for i := range out {

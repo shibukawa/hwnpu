@@ -1,4 +1,4 @@
-// Package ze binds the parts of oneAPI Level Zero and the Intel NPU graph extension that hwnpu
+// Package ze binds the parts of oneAPI Level Zero and the Intel NPU graph extension that bonsaiai
 // uses, through purego. Struct layouts follow ze_api.h and ze_graph_ext.h for 64-bit targets and
 // are checked against values generated from the C headers (see testdata/abi).
 package ze

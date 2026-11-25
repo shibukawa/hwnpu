@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/bonsaiai/internal/palette"
 )
 
 // A lut8r weight's rows each span their table: rows of magnitudes 1000 times apart in one table

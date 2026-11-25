@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/bonsaiai/ai/text"
 )
 
 // script is a model that answers from a list, and remembers what it was asked.

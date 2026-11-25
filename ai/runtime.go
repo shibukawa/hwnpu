@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
 )
 
 // Option is a setting of App.Open.
@@ -63,7 +63,7 @@ func LoadSettings(role string, settings map[string]string) Option {
 // WithLog sends what loading the models does (the programs, where they run) to w.
 func WithLog(w io.Writer) Option { return func(o *options) { o.log = w } }
 
-// Console is where Plan.Log writes as hwnpu's commands do (internal/console): standard error,
+// Console is where Plan.Log writes as bonsaiai's commands do (internal/console): standard error,
 // in gray on a terminal, where the downloads' and compiles' bars are redrawn in place.
 func Console() io.Writer { return console.Log(os.Stderr) }
 
@@ -84,13 +84,13 @@ type Runtime struct {
 	mu     sync.Mutex
 	loaded map[string]*loadedModel
 	closed bool
-	// remote holds the models in hwnpud (nil: in this process)
+	// remote holds the models in bonsaiaid (nil: in this process)
 	remote *remoteRuntime
 }
 
 type loadedModel struct {
 	// value is the model Get gives, closer what releasing it closes: the model itself, or this
-	// Runtime's share of a model hwnpud's Runtimes share (sharedModel)
+	// Runtime's share of a model bonsaiaid's Runtimes share (sharedModel)
 	value, closer io.Closer
 	info          Loaded
 }
@@ -200,7 +200,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		loc.each(func(p *string) { cache.Touch(*p) })
 	}
 	t0 := time.Now()
-	// hwnpud's Runtimes share one copy of a model loaded alike (the same model, files and
+	// bonsaiaid's Runtimes share one copy of a model loaded alike (the same model, files and
 	// settings): one already loaded is this Runtime's too
 	key := ""
 	if rt.app.local {

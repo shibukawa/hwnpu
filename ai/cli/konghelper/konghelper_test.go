@@ -6,8 +6,8 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/modelstore"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/modelstore"
 )
 
 func TestCommands(t *testing.T) {

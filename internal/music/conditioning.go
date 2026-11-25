@@ -3,7 +3,7 @@ package music
 import (
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/notes"
+	"github.com/shibukawa/bonsaiai/internal/notes"
 )
 
 // The conditioning's layout: MusicCoCa's codes, the piano roll's 128 pitches, the drums, and the

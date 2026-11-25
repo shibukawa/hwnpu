@@ -24,7 +24,7 @@ the order a command runs them:
      and iron_q4's q4 table as it is (no second copy: a weight block's 5504 bytes are read from
      5120 further each block, a q4 block and the next one's start). Cores 0 and 1 take a column
      block's even k-blocks and cores 2 and 3 its odd ones, so the logits come as two partial
-     sums a row ([column block][even, odd][64], bf16), which hwnpu adds (the manifest's
+     sums a row ([column block][even, odd][64], bf16), which bonsaiai adds (the manifest's
      logit_parts). With it a decode step is this array alone: nothing is loaded after the first
 
 A step of the graph is one turn of the cores' loop: its ``phases`` (not a parameter of the array:
@@ -183,7 +183,7 @@ def unexpanded_loads() -> None:
     the layers' array, once a token). IRON expands them where a sequence has several designs."""
     from iron.common.image import compose
 
-    if getattr(compose.Composition, "_hwnpu_unexpanded", False):
+    if getattr(compose.Composition, "_bonsaiai_unexpanded", False):
         return
     init = compose.Composition.__init__
 
@@ -193,7 +193,7 @@ def unexpanded_loads() -> None:
             self.expands = False
 
     compose.Composition.__init__ = unexpanded
-    compose.Composition._hwnpu_unexpanded = True
+    compose.Composition._bonsaiai_unexpanded = True
 
 
 

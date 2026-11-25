@@ -1,4 +1,4 @@
-// Package gguf reads GGUF checkpoints (llama.cpp) and dequantizes the block formats hwnpu
+// Package gguf reads GGUF checkpoints (llama.cpp) and dequantizes the block formats bonsaiai
 // converts from: F32, F16, BF16, Q4_0, Q8_0 and Q6_K.
 //
 // Dimensions are stored innermost first, so a tensor listed as [2048, 128000] is a row major

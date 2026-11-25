@@ -15,11 +15,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Chat is the use of a chat model for an app: a model, a family or a use of the definitions
@@ -130,7 +130,7 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]any{"type": "function", "function": fn})
 }
 
-// GobEncode sends the tool to hwnpud as it was written (ParseTool's), not as MarshalJSON would
+// GobEncode sends the tool to bonsaiaid as it was written (ParseTool's), not as MarshalJSON would
 // write it again.
 func (t Tool) GobEncode() ([]byte, error) { return t.MarshalJSON() }
 
@@ -162,14 +162,14 @@ type Sampling struct {
 	Repetition float64
 }
 
-// DefaultSampling is a chat's sampling when ChatOptions does not give one: hwnpu-chat's.
+// DefaultSampling is a chat's sampling when ChatOptions does not give one: bonsaiai-chat's.
 var DefaultSampling = Sampling{Temperature: 0.1, TopK: 50, Repetition: 1.05}
 
 // Unlimited as ChatOptions.MaxTokens (or TranslateOptions') lets the answer go on until the
 // model ends it or its cache is full.
 const Unlimited = -1
 
-// ChatOptions are how a chat model answers. The zero value is hwnpu-chat's defaults.
+// ChatOptions are how a chat model answers. The zero value is bonsaiai-chat's defaults.
 type ChatOptions struct {
 	// MaxTokens is the most tokens of the answer, its thinking included (0: 1024; Unlimited:
 	// until the cache is full).
@@ -244,7 +244,7 @@ type Delta struct {
 
 // Chatter answers conversations with a chat model. It runs one request at a time; others wait.
 type Chatter struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
 	e      *chat.Engine
 	model  string
@@ -428,7 +428,7 @@ func (c *Chatter) Count(ctx context.Context, msgs []Message, o ChatOptions) (int
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (c *Chatter) Close() error {
 	if c.remote != nil {
-		return c.remote.Release() // the Runtime in hwnpud unloads it
+		return c.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -467,7 +467,7 @@ func thinkBudget(b int) int {
 	return b
 }
 
-// generate answers msgs on e as hwnpu-chat and its server do: it renders the prompt, reads it,
+// generate answers msgs on e as bonsaiai-chat and its server do: it renders the prompt, reads it,
 // generates, tells fn what each token adds (holding back what may become a stop text) and takes
 // the answer apart.
 func generate(ctx context.Context, e *chat.Engine, msgs []chat.Message, tools []chat.Tool, opts chat.Options, req chat.Request, budget int, stops []string, fn func(Delta) bool) (Answer, error) {
@@ -634,7 +634,7 @@ func chatTools(tools []Tool) ([]chat.Tool, error) {
 
 func init() {
 	airole.Register(chatRole)
-	// what the callers of a model in hwnpud check for (errors.Is, errors.As)
+	// what the callers of a model in bonsaiaid check for (errors.Is, errors.As)
 	airpc.RegisterError("text.ErrMedia", ErrMedia)
 	airpc.RegisterError("text.ErrContext", ErrContext)
 	airpc.RegisterErrorType("text.FormatError", (*FormatError)(nil))

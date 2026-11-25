@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/xdna"
-	"github.com/shibukawa/hwnpu/internal/xdna/xdnasim"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/xdna/xdnasim"
 )
 
 func simProvider(sim *xdnasim.Sim) Provider {

@@ -20,7 +20,7 @@ Here a windowed layer reads a fixed span of keys, rounded up to whole 64-key blo
 MHA masks by positions relative to the keys it reads (the queries are their last rows), so the
 attention is the same; only where the blocks of keys fall moves. The cache stays position-indexed,
 so a prompt can restart at any position (no ring). The MHA subclass keeps IRON's name ``MHA``: the
-export writes its derived words (s_q, q_start, ...) for hwnpu by that name
+export writes its derived words (s_q, q_start, ...) for bonsaiai by that name
 (``iron_export_lm._derived_entry``, Go's ``iron.Derived``), and they read the bounds, not where
 the keys start.
 

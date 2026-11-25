@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 func TestUses(t *testing.T) {
@@ -32,7 +32,7 @@ func TestUses(t *testing.T) {
 }
 
 // TestFadeOut checks the raised cosine over the last frames of interleaved audio, all of it
-// when it is shorter, as hwnpu-audio faded the music it wrote.
+// when it is shorter, as bonsaiai-audio faded the music it wrote.
 func TestFadeOut(t *testing.T) {
 	x := []float32{1, 1, 1, 1, 1, 1, 1, 1} // 4 stereo frames
 	fadeOut(x, 2, 2)
@@ -223,18 +223,18 @@ func TestMIDI(t *testing.T) {
 	}
 }
 
-// TestConvertedRoute checks where a converted model runs by its definition: hwnpu's executor
-// for settings.cpu hwnpu (all the cores unless threads), the CPU for device cpu, and threads.
+// TestConvertedRoute checks where a converted model runs by its definition: bonsaiai's executor
+// for settings.cpu bonsaiai (all the cores unless threads), the CPU for device cpu, and threads.
 func TestConvertedRoute(t *testing.T) {
-	t.Setenv("HWNPU_DEVICE", "")
-	t.Setenv("HWNPU_ONNXRUNTIME", "none")
+	t.Setenv("BONSAIAI_DEVICE", "")
+	t.Setenv("BONSAIAI_ONNXRUNTIME", "none")
 	n := airole.NPU{Vendor: "amd"}
-	r, err := convertedRoute(chat.Model{Settings: map[string]string{"cpu": "hwnpu"}}, "swift-f0", n)
-	if err != nil || r.runtime != "hwnpu" || r.threads != 0 || r.Where() != "on the CPU interpreter" || r.line != "" {
-		t.Errorf("cpu hwnpu: %+v, %v", r, err)
+	r, err := convertedRoute(chat.Model{Settings: map[string]string{"cpu": "bonsaiai"}}, "swift-f0", n)
+	if err != nil || r.runtime != "bonsaiai" || r.threads != 0 || r.Where() != "on the CPU interpreter" || r.line != "" {
+		t.Errorf("cpu bonsaiai: %+v, %v", r, err)
 	}
 	r, _ = convertedRoute(chat.Model{Settings: map[string]string{"threads": "3"}}, "swift-f0", n)
-	if r.device != "cpu" || r.runtime != "hwnpu" || r.threads != 3 || !strings.Contains(r.line, "no converted form") {
+	if r.device != "cpu" || r.runtime != "bonsaiai" || r.threads != 3 || !strings.Contains(r.line, "no converted form") {
 		t.Errorf("on AMD's NPU: %+v", r)
 	}
 	r, _ = convertedRoute(chat.Model{Device: map[string]string{"amd": "cpu"}}, "swift-f0", n)

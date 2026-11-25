@@ -7,8 +7,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // opsOf lowers the main function of the program the builder holds, its outputs outs, and

@@ -8,9 +8,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // On AMD's NPU the decoder's stages are the graphs of tools/amd/iron_moss_dac.py (dac-N/ of the
@@ -42,7 +42,7 @@ type amdStage struct {
 // amdDAC is the decoder's stages on AMD's NPU.
 type amdDAC struct{ st []*amdStage }
 
-func openAMDDAC(ctx context.Context, dev *hwnpu.Device, dirs []string) (*amdDAC, error) {
+func openAMDDAC(ctx context.Context, dev *bonsaiai.Device, dirs []string) (*amdDAC, error) {
 	d := &amdDAC{}
 	st := DACStages()
 	if len(dirs) != len(st) {

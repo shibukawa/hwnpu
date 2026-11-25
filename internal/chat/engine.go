@@ -16,23 +16,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/audio"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
-	"github.com/shibukawa/hwnpu/internal/vision"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/audio"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	_ "github.com/shibukawa/bonsaiai/internal/llm/archs"
+	"github.com/shibukawa/bonsaiai/internal/llm/chain"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/iron"
+	"github.com/shibukawa/bonsaiai/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/vision"
 )
 
 // Config says where the model is.
 type Config struct {
-	// Packages are the model converted with a KV cache (hwnpu-dev convert -cache), each an
+	// Packages are the model converted with a KV cache (bonsaiai-dev convert -cache), each an
 	// .mlpackage or an out.parts.json, all with the same cache length and different tokens per
 	// call (-seq): one of 1 to generate and one of about 64 to read prompts fast. They share
 	// one cache.
@@ -58,11 +58,11 @@ type Config struct {
 	// like an earlier one (an agent's system message and tools) comes back from there instead
 	// of being read again after a restart (store).
 	PromptDir string
-	// Vision is the LFM3-VL vision encoder converted by hwnpu-dev convert -arch lfm3-vision, a
+	// Vision is the LFM3-VL vision encoder converted by bonsaiai-dev convert -arch lfm3-vision, a
 	// package per image size (internal/vision), for a model that reads images (LFM3-VL); none to
 	// take no images. Its config.json and image processor settings are next to ModelConfig.
 	Vision []string
-	// Audio is the LFM3-Audio (or LFM3-Omni) audio encoder converted by hwnpu-dev convert -arch
+	// Audio is the LFM3-Audio (or LFM3-Omni) audio encoder converted by bonsaiai-dev convert -arch
 	// lfm3-audio-encoder, a package per clip length (internal/audio); none to take no audio.
 	Audio []string
 	// Log receives what loading does (nil for none).
@@ -70,7 +70,7 @@ type Config struct {
 	// Name is the model's name in the API (default: the first package's).
 	Name string
 	// Backend picks the device (llm.FindDevice): a device backend or the program format of the
-	// packages; empty for HWNPU_BACKEND or the NPU found.
+	// packages; empty for BONSAIAI_BACKEND or the NPU found.
 	Backend string
 	// IRON is a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), in
 	// place of Packages: its manifest, ELFs and arena. Tokenizer defaults to the
@@ -121,7 +121,7 @@ type Engine struct {
 	turnEnd   int32 // the newline that ends a turn's header, or -1
 	markTurns bool
 
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	tiers  []tier // by cache length, shortest first
 	ti     int    // the tier the session runs on
 	w      llm.Weights
@@ -141,7 +141,7 @@ type Engine struct {
 
 	ir *iron.Model // the model of an IRON export (Config.IRON); nil for none
 	// irUsage counts the experts an IRON mixture of experts runs, added to the files irUsageTo
-	// (Config.Experts.Usage, HWNPU_DEV's moe.usage=FILE) when the engine closes
+	// (Config.Experts.Usage, BONSAIAI_DEV's moe.usage=FILE) when the engine closes
 	irUsage   *experts.Usage
 	irUsageTo []string
 	store     *store    // prompts kept on disk (Config.PromptDir); nil for none
@@ -552,7 +552,7 @@ func sparseFrom(chunk int, sp decode.Sparse) int {
 }
 
 // compileNote says how long loading takes on the device the first time.
-func compileNote(dev *hwnpu.Device) string {
+func compileNote(dev *bonsaiai.Device) string {
 	switch dev.Info().Backend {
 	case "coreml":
 		return "Core ML compiles them the first time"
@@ -1540,7 +1540,7 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 	return logits, nil
 }
 
-// waveOff is HWNPU_DEV's moe.wave=0: a prompt's steps one after another, for measuring.
+// waveOff is BONSAIAI_DEV's moe.wave=0: a prompt's steps one after another, for measuring.
 var waveOff = func() bool { v, _ := experts.DebugOpt("wave"); return v == "0" }()
 
 // steps runs the tokens as steps of ks tokens each, read together (decode.Session.Steps), records

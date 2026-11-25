@@ -1,12 +1,12 @@
 """LFM3-Audio (Liquid AI's LFM3-Audio-2B) on IRON: LFM3 (iron_lfm3.py) with its audio encoder, audio in and text out.
 
-An application of amd/IRON kept in hwnpu, exported by ``iron_export_lm.py lfm3audio``. The
+An application of amd/IRON kept in bonsaiai, exported by ``iron_export_lm.py lfm3audio``. The
 text model is ``iron_lfm3.Lfm3`` under the checkpoint's ``lfm``; the audio tower writes a clip's
 soft tokens where the placed prompt chunk puts them in place of its ``<|audio|>`` placeholders
 (IRON's ``Multimodal``). The speech output (the depth decoder and the codec) is not built.
 
 The tower (``Lfm3AudioEncoder`` and ``Lfm3AudioProjector``) takes a clip's log-mel features,
-which the host computes (hwnpu's lfm3audio features, as its Core ML encoder's input): ``(frames
+which the host computes (bonsaiai's lfm3audio features, as its Core ML encoder's input): ``(frames
 + 2, mels)``, a zero row before the clip's frames and zeros after them, up to ``max_frames``.
 Then:
 
@@ -403,7 +403,7 @@ class Lfm3Audio(Multimodal):
     """LFM3-Audio with audio in: ``Lfm3`` with the audio tower, a clip's soft tokens at its placeholders."""
 
     config = Lfm3AudioConfig
-    hwnpu_kind = "lfm3audio"  # the multimodal manifest iron_export_lm.py writes
+    bonsaiai_kind = "lfm3audio"  # the multimodal manifest iron_export_lm.py writes
 
     def __init__(self, config: Lfm3AudioConfig, weights):
         assert config.audio is not None

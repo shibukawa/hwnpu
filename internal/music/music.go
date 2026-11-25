@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // The files of google/magenta-realtime-2 the small model needs: the checkpoint (the
@@ -391,18 +391,18 @@ func SpectroStreamUnits() string { return "" }
 
 // Open loads the programs on dev (nil: the CPU interpreter); the encoder's when prepared;
 // SpectroStream's on SpectroStreamUnits.
-func Open(ctx context.Context, dev *hwnpu.Device, p Paths) (*Generator, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, p Paths) (*Generator, error) {
 	return OpenOn(ctx, dev, p, SpectroStreamUnits())
 }
 
 // OpenOn is Open with SpectroStream's decoder and encoder on the Core ML units given ("gpu",
 // "cpu"; "": the Neural Engine). Core AI takes no units: its programs run on the Neural Engine.
-func OpenOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string) (*Generator, error) {
+func OpenOn(ctx context.Context, dev *bonsaiai.Device, p Paths, ssUnits string) (*Generator, error) {
 	return openOn(ctx, dev, p, ssUnits, nil)
 }
 
 // openOn is OpenOn with SpectroStream's decoder dec when not nil (p.Decoder then not opened).
-func openOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string, dec *step) (*Generator, error) {
+func openOn(ctx context.Context, dev *bonsaiai.Device, p Paths, ssUnits string, dec *step) (*Generator, error) {
 	g := &Generator{dec: dec}
 	var err error
 	host := cmp.Or(p.Host, p.Checkpoint)
@@ -462,7 +462,7 @@ func (g *Generator) tryOnSilence(s *step) error {
 // OpenEncoder loads SpectroStream's encoder of p (Setup.Encoder) on dev (nil: the CPU
 // interpreter) when Open left it out (p.Encoder was ""), for continuing a clip (EncodeAudio):
 // a generator that is not asked to does without it. It is the Neural Engine's on Core ML.
-func (g *Generator) OpenEncoder(ctx context.Context, dev *hwnpu.Device, p Paths) error {
+func (g *Generator) OpenEncoder(ctx context.Context, dev *bonsaiai.Device, p Paths) error {
 	if g.enc != nil {
 		return nil
 	}

@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/backend/openvino"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/backend/openvino"
 )
 
-// The program formats hwnpu-dev convert writes (Options.Backend).
+// The program formats bonsaiai-dev convert writes (Options.Backend).
 const (
 	BackendCoreML = "coreml" // .mlpackage, for the Neural Engine
 	BackendIntel  = "intel"  // OpenVINO IR, for Intel's NPU
@@ -23,7 +23,7 @@ const (
 
 // BackendEnv names the environment variable that picks the device to run on when a command is not
 // told: a device backend (coreml, levelzero, openvino) or a program format (intel: levelzero).
-const BackendEnv = "HWNPU_BACKEND"
+const BackendEnv = "BONSAIAI_BACKEND"
 
 // ProgramBackend is the program format a device backend runs (Options.Backend): coreml for Core
 // ML, intel for Level Zero and OpenVINO; "" for a backend that runs neither. A program format
@@ -53,20 +53,20 @@ func deviceBackends(name string) ([]string, error) {
 }
 
 // FindDevice finds the device a converted model runs on: the one of the backend named (a device
-// backend, or a program format), else of HWNPU_BACKEND, else the first device found of Core ML or
+// backend, or a program format), else of BONSAIAI_BACKEND, else the first device found of Core ML or
 // Level Zero (Intel's NPU). It returns the device and its program format (ProgramBackend).
-func FindDevice(ctx context.Context, name string) (hwnpu.DeviceInfo, string, error) {
+func FindDevice(ctx context.Context, name string) (bonsaiai.DeviceInfo, string, error) {
 	if name == "" {
 		name = strings.TrimSpace(os.Getenv(BackendEnv))
 	}
 	want, err := deviceBackends(name)
 	if err != nil {
-		return hwnpu.DeviceInfo{}, "", err
+		return bonsaiai.DeviceInfo{}, "", err
 	}
 	if name == "openvino" {
 		openvino.Enable()
 	}
-	infos, enumErr := hwnpu.Enumerate(ctx)
+	infos, enumErr := bonsaiai.Enumerate(ctx)
 	for _, b := range want {
 		for _, info := range infos {
 			if info.Backend == b {
@@ -81,7 +81,7 @@ func FindDevice(ctx context.Context, name string) (hwnpu.DeviceInfo, string, err
 	if enumErr != nil {
 		err = fmt.Errorf("%w: %w", err, enumErr)
 	}
-	return hwnpu.DeviceInfo{}, "", errors.Join(hwnpu.ErrNoDevice, err)
+	return bonsaiai.DeviceInfo{}, "", errors.Join(bonsaiai.ErrNoDevice, err)
 }
 
 // ProgramFormat is the program format (Options.Backend) to convert for: name when it is a format
@@ -105,7 +105,7 @@ func ProgramFormat(ctx context.Context, name string) (string, error) {
 // and returns it with its program format. Graphs are compiled with PlacementPrefer: Core ML may put
 // a few operations on the CPU, which the caller reports (chain.Chain.OnNPU); Intel's compiler
 // puts everything on the NPU or fails.
-func OpenDevice(ctx context.Context, name, cacheDir string, opts ...hwnpu.Option) (*hwnpu.Device, string, error) {
+func OpenDevice(ctx context.Context, name, cacheDir string, opts ...bonsaiai.Option) (*bonsaiai.Device, string, error) {
 	info, backend, err := FindDevice(ctx, name)
 	if err != nil {
 		return nil, "", err
@@ -115,18 +115,18 @@ func OpenDevice(ctx context.Context, name, cacheDir string, opts ...hwnpu.Option
 			return nil, "", err
 		}
 	}
-	opts = append([]hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementPrefer)}, opts...)
+	opts = append([]bonsaiai.Option{bonsaiai.WithPlacement(bonsaiai.PlacementPrefer)}, opts...)
 	if cacheDir != "" {
-		opts = append(opts, hwnpu.WithCacheDir(cacheDir))
+		opts = append(opts, bonsaiai.WithCacheDir(cacheDir))
 	}
-	dev, err := hwnpu.OpenDevice(ctx, info, opts...)
+	dev, err := bonsaiai.OpenDevice(ctx, info, opts...)
 	if err != nil {
 		return nil, "", err
 	}
 	return dev, backend, nil
 }
 
-// DeviceBackend is the device backend a command names (its --backend, else HWNPU_BACKEND) when it
+// DeviceBackend is the device backend a command names (its --backend, else BONSAIAI_BACKEND) when it
 // names one rather than a program format ("" otherwise): for opening that device, as coreai
 // runs Core ML's programs on Core AI.
 func DeviceBackend(name string) string {
@@ -141,7 +141,7 @@ func DeviceBackend(name string) string {
 }
 
 // NativeFormat is ProgramFormat for a model that converts for Core AI too: coreai when the
-// device named (name, else HWNPU_BACKEND) is Core AI's, ProgramFormat's otherwise.
+// device named (name, else BONSAIAI_BACKEND) is Core AI's, ProgramFormat's otherwise.
 func NativeFormat(ctx context.Context, name string) (string, error) {
 	if DeviceBackend(name) == BackendCoreAI {
 		return BackendCoreAI, nil
@@ -150,7 +150,7 @@ func NativeFormat(ctx context.Context, name string) (string, error) {
 }
 
 // ExportDevice is the device backend to open for an export of the program format: Core AI's for
-// a coreai export, else the device a command names (name, else HWNPU_BACKEND: coreai runs a Core ML
+// a coreai export, else the device a command names (name, else BONSAIAI_BACKEND: coreai runs a Core ML
 // export on Core AI), else Core ML's.
 func ExportDevice(format, name string) string {
 	if format == BackendCoreAI {
@@ -178,7 +178,7 @@ func ProgramExt(backend string) string {
 func AppleFormat(format string) bool { return format == BackendCoreML || format == BackendCoreAI }
 
 // DeviceName is what logs call the device: the Neural Engine or the device's own name.
-func DeviceName(dev *hwnpu.Device) string {
+func DeviceName(dev *bonsaiai.Device) string {
 	info := dev.Info()
 	switch info.Backend {
 	case "coreml":

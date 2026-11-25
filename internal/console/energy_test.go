@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/power"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/power"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
 // TestEnergy splits a meter's energy at the changes of phase: 10 W while preparing (and while

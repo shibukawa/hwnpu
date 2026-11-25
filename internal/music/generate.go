@@ -7,7 +7,7 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // LM steps the depthformer: one temporal step and Codebooks depth steps a frame, with its caches

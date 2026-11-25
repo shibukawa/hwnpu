@@ -22,8 +22,8 @@ package experts
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/milspec"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/milspec"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // Shape is the experts' sizes.

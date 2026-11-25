@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 	"time"
 )
 
@@ -108,10 +108,10 @@ func TestWiringBudget(t *testing.T) {
 		all    bool
 		budget int64
 	}{{"0", false, 0}, {"1", true, n}, {"0.0001GB", false, 100000}, {"100g", true, n}} {
-		t.Setenv("HWNPU_MOE_WIRE", c.env)
+		t.Setenv("BONSAIAI_MOE_WIRE", c.env)
 		all, b := h.wiring()
 		if all != c.all || b != c.budget {
-			t.Errorf("HWNPU_MOE_WIRE=%s: all %v budget %d, want %v %d", c.env, all, b, c.all, c.budget)
+			t.Errorf("BONSAIAI_MOE_WIRE=%s: all %v budget %d, want %v %d", c.env, all, b, c.all, c.budget)
 		}
 	}
 }

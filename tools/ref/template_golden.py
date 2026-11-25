@@ -178,10 +178,10 @@ HARMONY_CASES = [
     {"name": "harmony: tools with defaults", "tools": [SEARCH, NOARGS], "messages": [
         {"role": "system", "content": "Answer in Japanese."}, {"role": "user", "content": "東京の天気"}]},
     {"name": "harmony: answer after a call", "tools": [SEARCH], "messages": [
-        {"role": "user", "content": "Find hwnpu"},
+        {"role": "user", "content": "Find bonsaiai"},
         {"role": "assistant", "content": "", "reasoning_content": "Search it.",
-         "tool_calls": [{"id": "s1", "type": "function", "function": {"name": "search", "arguments": '{"query": "hwnpu \\"npu\\"", "topn": 3}'}}]},
-        {"role": "tool", "tool_call_id": "s1", "content": "{\"hits\": [\"github.com/shibukawa/hwnpu\"]}\nline 2"},
+         "tool_calls": [{"id": "s1", "type": "function", "function": {"name": "search", "arguments": '{"query": "bonsaiai \\"npu\\"", "topn": 3}'}}]},
+        {"role": "tool", "tool_call_id": "s1", "content": "{\"hits\": [\"github.com/shibukawa/bonsaiai\"]}\nline 2"},
         {"role": "assistant", "content": "It is on GitHub.", "reasoning_content": "Found."},
         {"role": "user", "content": "Thanks!"},
     ]},

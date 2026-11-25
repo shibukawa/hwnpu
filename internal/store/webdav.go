@@ -30,12 +30,12 @@ import (
 // WebDAVConfig is where a WebDAV folder is and who signs in to it (docs/cache-sharing-design.md 7).
 type WebDAVConfig struct {
 	Name string
-	// URL is the folder: https://nas:5006/hwnpu (Synology), https://cloud/remote.php/dav/files/USER/hwnpu
+	// URL is the folder: https://nas:5006/bonsaiai (Synology), https://cloud/remote.php/dav/files/USER/bonsaiai
 	// (Nextcloud). Its user name and password, if any, sign in.
 	URL string
 	// User and Password sign in with Basic authentication (over https). With no user: the
-	// URL's, else the netrc's login for the host, else HWNPU_WEBDAV_USER; with no password: the
-	// URL's, else the netrc's, else HWNPU_WEBDAV_PASSWORD. With neither, nothing signs in.
+	// URL's, else the netrc's login for the host, else BONSAIAI_WEBDAV_USER; with no password: the
+	// URL's, else the netrc's, else BONSAIAI_WEBDAV_PASSWORD. With neither, nothing signs in.
 	User, Password string
 	// TLSSHA256 is the SHA-256 of the server's certificate (hex, colons allowed) to trust instead
 	// of the system's roots: a NAS's own certificate, which no authority signed and which names
@@ -69,8 +69,8 @@ type WebDAV struct {
 
 // WebDAVPasswordEnv and WebDAVUserEnv sign in to a WebDAV store the netrc does not name.
 const (
-	WebDAVUserEnv     = "HWNPU_WEBDAV_USER"
-	WebDAVPasswordEnv = "HWNPU_WEBDAV_PASSWORD"
+	WebDAVUserEnv     = "BONSAIAI_WEBDAV_USER"
+	WebDAVPasswordEnv = "BONSAIAI_WEBDAV_PASSWORD"
 )
 
 // OpenWebDAV makes a WebDAV store.

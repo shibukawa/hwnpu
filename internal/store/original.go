@@ -14,17 +14,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/console"
 )
 
 // LockName is the file of a repository's folder in a source that says what its files are: the
 // commit of Hugging Face they are of, and each one's SHA-256 and size. A file it does not name
-// is not read. It changes only by writeback (a file of the same commit added) and by hwnpu-dev
+// is not read. It changes only by writeback (a file of the same commit added) and by bonsaiai-dev
 // cache update (another commit).
-const LockName = "hwnpu-lock.json"
+const LockName = "bonsaiai-lock.json"
 
-// LockFormat is the version of LockName this hwnpu reads and writes.
+// LockFormat is the version of LockName this bonsaiai reads and writes.
 const LockFormat = 1
 
 // Lock is a repository's LockName.
@@ -103,7 +103,7 @@ func readLock(ctx context.Context, s Source, repo string) (Lock, error) {
 		return l, fmt.Errorf("store: %s: %s of %s: %w", s, LockName, repo, err)
 	}
 	if l.Format != LockFormat {
-		return l, fmt.Errorf("store: %s: %s of %s is of format %d, not the %d this hwnpu reads", s, LockName, repo, l.Format, LockFormat)
+		return l, fmt.Errorf("store: %s: %s of %s is of format %d, not the %d this bonsaiai reads", s, LockName, repo, l.Format, LockFormat)
 	}
 	if l.Commit != "" && !commitRE.MatchString(l.Commit) {
 		return l, fmt.Errorf("store: %s: %s of %s: commit %q is not 40 hex digits", s, LockName, repo, l.Commit)
@@ -199,7 +199,7 @@ func getChecked(ctx context.Context, s Store, key, sum, dst string, bar func(don
 
 // PutOriginal puts a file of repo of commit (path here, of SHA-256 sum: worked out when "") in s
 // and names it in the source's lock. A source whose lock is of another commit is left as it is
-// (ErrOtherCommit: hwnpu-dev sources update moves it).
+// (ErrOtherCommit: bonsaiai-dev sources update moves it).
 func PutOriginal(ctx context.Context, s Source, repo, commit, name, path, sum string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -211,7 +211,7 @@ func PutOriginal(ctx context.Context, s Source, repo, commit, name, path, sum st
 		}
 	}
 	// the file is put before the lock of the repository is taken (that lock is only for
-	// reading, adding to and writing hwnpu-lock.json), so that the files of one repository go
+	// reading, adding to and writing bonsaiai-lock.json), so that the files of one repository go
 	// side by side; a lock of another commit is not written over (its file of the name is not
 	// this one)
 	switch l, err := readLock(ctx, s, repo); {

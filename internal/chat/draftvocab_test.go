@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // A token is kept for its kana, as one or two kanji, or as ASCII symbols and spaces; longer kanji

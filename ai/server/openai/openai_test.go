@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/ai/text"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // A server without models answers the requests it can without one: the list, the health, and

@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // synthetic is a Model with random weights of SwiftF0's shapes (no front end).
@@ -261,12 +261,12 @@ func readBin[T float32 | float64](t *testing.T, path string) []T {
 	return out
 }
 
-// With the real model (HWNPU_TEST_SWIFTF0_FILE = model.onnx) and a reference of tools/ref/ref_swiftf0.py
-// (HWNPU_TEST_SWIFTF0_REF = its OUT_PREFIX), the features, the logits and the pitch are the graph's.
+// With the real model (BONSAIAI_TEST_SWIFTF0_FILE = model.onnx) and a reference of tools/ref/ref_swiftf0.py
+// (BONSAIAI_TEST_SWIFTF0_REF = its OUT_PREFIX), the features, the logits and the pitch are the graph's.
 func TestMatchesONNX(t *testing.T) {
-	path, ref := os.Getenv("HWNPU_TEST_SWIFTF0_FILE"), os.Getenv("HWNPU_TEST_SWIFTF0_REF")
+	path, ref := os.Getenv("BONSAIAI_TEST_SWIFTF0_FILE"), os.Getenv("BONSAIAI_TEST_SWIFTF0_REF")
 	if path == "" || ref == "" {
-		t.Skip("HWNPU_TEST_SWIFTF0_FILE and HWNPU_TEST_SWIFTF0_REF are not set")
+		t.Skip("BONSAIAI_TEST_SWIFTF0_FILE and BONSAIAI_TEST_SWIFTF0_REF are not set")
 	}
 	m, err := Load(path)
 	if err != nil {

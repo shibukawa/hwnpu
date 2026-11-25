@@ -1,6 +1,6 @@
 package mil
 
-import "github.com/shibukawa/hwnpu/internal/imagegen/fluxvae"
+import "github.com/shibukawa/bonsaiai/internal/imagegen/fluxvae"
 
 // The FLUX.2 VAE's decoder is FLUX.1's (internal/imagegen/fluxvae: conv_in, the mid block with its one-head
 // attention, four up blocks of three residual blocks) over 32 latent channels, after

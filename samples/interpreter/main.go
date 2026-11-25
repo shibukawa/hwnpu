@@ -43,12 +43,12 @@ import (
 
 	"github.com/alecthomas/kong"
 
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/cli/konghelper"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/ai/speech"
-	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/samples/internal/capture"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/cli/konghelper"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/ai/speech"
+	"github.com/shibukawa/bonsaiai/ai/text"
+	"github.com/shibukawa/bonsaiai/samples/internal/capture"
 )
 
 // The models the app uses: uses of the definitions, which pick a model for the machine's memory.
@@ -209,7 +209,7 @@ func main() {
 	app, net := build()
 	k := kong.Parse(&cli,
 		kong.Name("interpreter"),
-		kong.Description("Interpret speech into another language on the NPU: a sample of hwnpu's ai package."),
+		kong.Description("Interpret speech into another language on the NPU: a sample of bonsaiai's ai package."),
 		kong.UsageOnError(),
 		konghelper.HelpWithoutArgs(),
 		konghelper.Bind(ctx, app),

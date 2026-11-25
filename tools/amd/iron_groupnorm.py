@@ -11,7 +11,7 @@ Here the device passes over the pixels twice:
   RowAffine      y = x a + b, a and b a value a channel in two bf16 limbs, float32 inside
 
 and the host, between the two commands, sums the lines' statistics and computes each channel's
-a = gamma / sqrt(var + eps) and b = beta - mean a in float64 (hwnpu's anima.VAE, a graph's
+a = gamma / sqrt(var + eps) and b = beta - mean a in float64 (bonsaiai's anima.VAE, a graph's
 ``norms`` in its meta). The pads of a grid are zeros: they add nothing to the sums, and the
 host divides by the image's pixels.
 """

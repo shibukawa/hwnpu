@@ -1,22 +1,22 @@
-# hwnpu を Go のライブラリとして使う (planned)
+# BonsaiAI を Go のライブラリとして使う (planned)
 
 [English](USAGE_LIBRARY.md)
 
 > **planned**: Go のライブラリとしての API は予定の段階です。名前や引数は予告なく変わります。
 
-hwnpu の Go の API の使い方と、NPU ごとの注意です。コマンド (hwnpu-chat、hwnpu-image、hwnpu-audio、hwnpu-dev) の使い方は [README.ja.md](README.ja.md) から辿ってください。
+BonsaiAI の Go の API の使い方と、NPU ごとの注意です。コマンド (bonsaiai-chat、bonsaiai-image、bonsaiai-audio、bonsaiai-dev) の使い方は [README.ja.md](README.ja.md) から辿ってください。
 
 ## 基本
 
 ```go
-dev, err := hwnpu.Open(ctx)
+dev, err := bonsaiai.Open(ctx)
 if err != nil { ... }
 defer dev.Close()
 
 gr, _ := dev.Graph()
-g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.mlpackage"})
-if errors.Is(err, hwnpu.ErrNotOnNPU) {
-	// err は *hwnpu.PlacementError。NPU 以外に置かれた演算が Report.Ops に入っている
+g, err := gr.Compile(ctx, bonsaiai.GraphSource{Path: "model.mlpackage"})
+if errors.Is(err, bonsaiai.ErrNotOnNPU) {
+	// err は *bonsaiai.PlacementError。NPU 以外に置かれた演算が Report.Ops に入っている
 }
 defer g.Close()
 
@@ -24,27 +24,27 @@ in, _ := g.Arg("x")
 out, _ := g.Arg("y")
 x, _ := dev.AllocBuffer(in.Bytes)
 y, _ := dev.AllocBuffer(out.Bytes)
-hwnpu.EncodeF16(x.Bytes(), input)
+bonsaiai.EncodeF16(x.Bytes(), input)
 
 req, _ := g.NewRequest()
 req.BindName("x", x)
 req.BindName("y", y)
 err = req.Run(ctx)
-hwnpu.DecodeF16(result, y.Bytes())
+bonsaiai.DecodeF16(result, y.Bytes())
 ```
 
 ## 電力とキャッシュ
 
 ```go
-dev, err := hwnpu.Open(ctx,
-	hwnpu.WithPowerPolicy(hwnpu.PowerLow), // Intel: 低優先度 + バックグラウンド
-	hwnpu.WithCacheDir(cacheDir),          // コンパイル結果を保存して再利用
+dev, err := bonsaiai.Open(ctx,
+	bonsaiai.WithPowerPolicy(bonsaiai.PowerLow), // Intel: 低優先度 + バックグラウンド
+	bonsaiai.WithCacheDir(cacheDir),       // コンパイル結果を保存して再利用
 )
 
 before, err := dev.PowerSample() // 電力量を読めないデバイスでは ErrUnsupported
 // ... 推論 ...
 after, _ := dev.PowerSample()
-fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" は CPU パッケージ全体
+fmt.Println(bonsaiai.AveragePower(before, after), "W", after.Scope) // "package" は CPU パッケージ全体
 ```
 
 - 電力ポリシーは、`CapPowerControl` のあるデバイスでだけ効きます。Core ML には電力の設定がありません
@@ -53,22 +53,22 @@ fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" �
 
 ## モデルのファイル (modelstore)
 
-`github.com/shibukawa/hwnpu/modelstore` は、hwnpu のコマンドと同じ順でモデルのファイルを探して取ります: この機械のキャッシュ、取得元 (`HWNPU_MODEL_SOURCE`: フォルダ、WebDAV と HTTP、S3)、アプリが一緒に入れたモデル、Hugging Face の順です (docs/cache-sharing-design.md 7 節)。
+`github.com/shibukawa/bonsaiai/modelstore` は、BonsaiAI のコマンドと同じ順でモデルのファイルを探して取ります: この機械のキャッシュ、取得元 (`BONSAIAI_MODEL_SOURCE`: フォルダ、WebDAV と HTTP、S3)、アプリが一緒に入れたモデル、Hugging Face の順です (docs/cache-sharing-design.md 7 節)。
 
 ```go
 app := configdir.New("", "myapp") // github.com/shibukawa/configdir v1.1.0
 s, err := modelstore.Open(modelstore.Options{
 	Bundle: &app, // インストーラがアプリの資源フォルダの models/ に置いたもの (nil: なし)
-	// Root: "" (HWNPU_CACHE、なければユーザーのキャッシュの hwnpu)、Sources: nil (環境のもの)
+	// Root: "" (BONSAIAI_CACHE、なければユーザーのキャッシュの bonsaiai)、Sources: nil (環境のもの)
 })
 config, err := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json") // 手元のパス
 weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safetensors (分割ならその索引も)
 ```
 
 - 設定はプロセスのもの: `Open` はプロセス全体に効きます
-- `Options.Files` は、アプリ自身の定義のファイル (models.yaml の形式: モデル、用途、別名) です。hwnpu のもの、機械のもの、利用者のものの上に読みます
-- 同梱のモデルは取得元と同じ並び (`original/OWNER/NAME/` と `hwnpu-lock.json`) で置き、その場で使います (コピーせずリンク)
-- `Options.Limits` (nil: `HWNPU_CACHE_MAX_SIZE`、`HWNPU_CACHE_MIN_FREE`) でキャッシュの大きさを抑えます: ディスクの空きが `MinFree` (指定がなければ 10 GB) を切るダウンロードは `modelstore.ErrNoRoom` で失敗し、`MaxSize` があれば先に最近使っていない単位から消して場所を空けます。`s.Usage()`、`s.PlanPrune(o)`、`s.Prune(o)`、`s.Remove(units)` は `hwnpu cache` と同じ処理です
+- `Options.Files` は、アプリ自身の定義のファイル (models.yaml の形式: モデル、用途、別名) です。BonsaiAI のもの、機械のもの、利用者のものの上に読みます
+- 同梱のモデルは取得元と同じ並び (`original/OWNER/NAME/` と `bonsaiai-lock.json`) で置き、その場で使います (コピーせずリンク)
+- `Options.Limits` (nil: `BONSAIAI_CACHE_MAX_SIZE`、`BONSAIAI_CACHE_MIN_FREE`) でキャッシュの大きさを抑えます: ディスクの空きが `MinFree` (指定がなければ 10 GB) を切るダウンロードは `modelstore.ErrNoRoom` で失敗し、`MaxSize` があれば先に最近使っていない単位から消して場所を空けます。`s.Usage()`、`s.PlanPrune(o)`、`s.Prune(o)`、`s.Remove(units)` は `bonsaiai cache` と同じ処理です
 
 ```go
 s, err := modelstore.Open(modelstore.Options{Limits: &modelstore.Limits{MaxSize: 100e9, MinFree: 20e9}})
@@ -78,10 +78,10 @@ gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) //
 
 ## モデルを組み合わせるアプリ (ai)
 
-`github.com/shibukawa/hwnpu/ai` は、アプリが使うモデルを登録し、前もってダウンロードとコンパイルを済ませ、NPU で動かすためのパッケージ群です (v0: 形はまだ変わります。使い方と設計の論点は [docs/developer-guide.ja.md](docs/developer-guide.ja.md)、計画は [docs/app-api.md](docs/app-api.md))。hwnpu-chat、hwnpu-image、hwnpu-audio が初回にするのと同じ準備を同じ置き場に行うので、コマンドで準備したモデルはそのまま使えます。
+`github.com/shibukawa/bonsaiai/ai` は、アプリが使うモデルを登録し、前もってダウンロードとコンパイルを済ませ、NPU で動かすためのパッケージ群です (v0: 形はまだ変わります。使い方と設計の論点は [docs/developer-guide.ja.md](docs/developer-guide.ja.md)、計画は [docs/app-api.md](docs/app-api.md))。bonsaiai-chat、bonsaiai-image、bonsaiai-audio が初回にするのと同じ準備を同じ置き場に行うので、コマンドで準備したモデルはそのまま使えます。
 
 ```go
-// 使うモデルを登録する。名前は models.yaml のモデル、ファミリー、用途 (hwnpu-chat list)
+// 使うモデルを登録する。名前は models.yaml のモデル、ファミリー、用途 (bonsaiai-chat list)
 var (
 	stt = speech.Transcribe("transcribe")
 	tr  = text.Translate("translate").
@@ -166,7 +166,7 @@ k := kong.Parse(&cmds, konghelper.Bind(ctx, app))
 k.FatalIfErrorf(k.Run())
 ```
 
-`APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `hwnpu status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) と [samples/parallax](samples/parallax) (絵の深度を推定し、カメラで見る人の頭を追って、奥行きがあるように描く。窓は Ebitengine)、[samples/layers](samples/layers) (絵を深度で層に分け、隠れていた部分を描き足して PSD に書く) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
+`APP models` は使うモデルと要るものの一覧 (同時に動かす合計と、この機械でモデルに使える量も出します)、`APP models download` はダウンロードと変換 (NPU は要りません)、`APP models prepare` はさらに 1 回読み込んで NPU 向けにコンパイルします。`APP status` は `bonsaiai status` と同じです。動く例は [samples/interpreter](samples/interpreter) (マイクか録音の音声を、別の言語の音声に訳す) と [samples/parallax](samples/parallax) (絵の深度を推定し、カメラで見る人の頭を追って、奥行きがあるように描く。窓は Ebitengine)、[samples/layers](samples/layers) (絵を深度で層に分け、隠れていた部分を描き足して PSD に書く) にあります。サンプルは別のモジュール (`samples/go.mod`) で、マイクとカメラは [hwcamera](https://github.com/shibukawa/hwcamera) から取ります (ライブラリ本体の依存には入りません)。
 
 - 今ある機能は音声と文、絵の深度と顔、画像の生成と編集 (FLUX.2 klein) です。ほかの画像のモデル (Anima)、物体や姿勢の検出などは、まだコマンドからだけ使えます
 - 実機で確かめたのは AMD の NPU (Ryzen AI 9 365) と Mac (M3、Core AI) です (3 つのサンプル、カメラ、窓)。Intel では、同じ準備と読み込みをコマンドが行っていますが、`ai` を通しては動かしていません
@@ -178,10 +178,10 @@ AMD の NPU は、モデルではなく IRON / mlir-aie でビルドしたカー
 
 ```go
 kr, err := dev.Kernel() // AMD 以外では ErrUnsupported
-prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: "final.xclbin"})
+prog, err := kr.Load(ctx, bonsaiai.ProgramSource{Path: "final.xclbin"})
 k, err := prog.Kernel("MLIR_AIE")
 
-instr, _ := dev.AllocBuffer(len(insts), hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+instr, _ := dev.AllocBuffer(len(insts), bonsaiai.WithBufferKind(bonsaiai.BufferInstructions))
 in, _ := dev.AllocBuffer(n)
 out, _ := dev.AllocBuffer(n)
 copy(instr.Bytes(), insts)
@@ -204,23 +204,23 @@ Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.el
 
 ## Apple での注意
 
-- Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません
+- Core ML は「Neural Engine だけ」を指定できません。BonsaiAI は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません
 - Neural Engine は fp16 前提です。fp32 のモデルや小さすぎるモデルは CPU に置かれます。coremltools で fp16 の ML Program に変換してください
 - 小さすぎるモデルは、`tools/coreml/ane_pad.py` でバッチ方向にパディングすると Neural Engine に載せられます。ただし小さなモデルでは遅くなることがあるので、詳しくは [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を読んでから使ってください
-- `hwnpu-chat` と `hwnpu-image` は Mac では Core AI だけで動きます (macOS 27 が要ります。Core ML は使いません。`hwnpu-image --cpu` は確かめ用に Core ML の書き出しを CPU のインタプリタで動かします)。ほかのコマンドも macOS 27 では同じ変換済みのモデルを Core AI で動かせます (`--backend coreai` か `HWNPU_BACKEND=coreai`。既定は Core ML)。結果と速さは同じで、違いはコンパイルした結果をディスクが減るまで持ち続けることです (Core ML は約 4 GiB を超えると 2 回目以降もコンパイルし直します)。使えるコマンドと費用は [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md) の 5 節にあります
+- `bonsaiai-chat` と `bonsaiai-image` は Mac では Core AI だけで動きます (macOS 27 が要ります。Core ML は使いません。`bonsaiai-image --cpu` は確かめ用に Core ML の書き出しを CPU のインタプリタで動かします)。ほかのコマンドも macOS 27 では同じ変換済みのモデルを Core AI で動かせます (`--backend coreai` か `BONSAIAI_BACKEND=coreai`。既定は Core ML)。結果と速さは同じで、違いはコンパイルした結果をディスクが減るまで持ち続けることです (Core ML は約 4 GiB を超えると 2 回目以降もコンパイルし直します)。使えるコマンドと費用は [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md) の 5 節にあります
 
 ## Intel での注意
 
-- Intel NPU ドライバ (`intel-level-zero-npu`、`intel-driver-compiler-npu`、`intel-fw-npu`) と Level Zero loader (`libze1`) が必要です。loader の場所は環境変数 `HWNPU_ZE_LOADER` で指定することもできます
+- Intel NPU ドライバ (`intel-level-zero-npu`、`intel-driver-compiler-npu`、`intel-fw-npu`) と Level Zero loader (`libze1`) が必要です。loader の場所は環境変数 `BONSAIAI_ZE_LOADER` で指定することもできます
 - Linux では `/dev/accel/accel0` に読み書きできる権限 (`render` グループ) が必要です
 - `GraphSource{Path: "model.xml"}` で OpenVINO IR (隣の `.bin` も読みます) を、`GraphSource{Blob: ...}` でコンパイル済み blob を渡せます。コンパイラに渡す追加のオプションは `BuildFlags` に `--config KEY="VALUE"` の形で書きます
 - NPU コンパイラが対応しない演算を含むモデルは、配置方針にかかわらず `ErrNotOnNPU` になり、原因の演算とビルドログが返ります
-- Intel の NPU に向けて OpenVINO IR に変換するのは、hwnpu-chat のモデル (LFM3 とその VL・Audio・d1、Gemma 4、Qwen3.5、Qwen3、PLaMo 3、PLaMo-Embedding)、Anima、`hwnpu-audio` の transcribe (Whisper)、tts、generate (Magenta RealTime 2、MOSS-SoundEffect)、pitch、notes、`hwnpu-image` の depth (DA3、MoGe-2)、face-detect (YuNet)、segment (EfficientSAM のエンコーダ)、detect、pose、ocr です。FLUX.2 klein、SigLIP 2 (label) は AMD の NPU と Apple の Neural Engine だけです (Intel はまだ)。実機で動かしたのは LFM3、PLaMo 3 Translate、PLaMo-Embedding、Anima だけで、ほかは OpenVINO の CPU (`HWNPU_BACKEND=openvino`、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の「OpenVINO で切り分ける」) で変換から結果までを確かめた段階です ([docs/design/intel.ja.md](docs/design/intel.ja.md))
+- Intel の NPU に向けて OpenVINO IR に変換するのは、bonsaiai-chat のモデル (LFM3 とその VL・Audio・d1、Gemma 4、Qwen3.5、Qwen3、PLaMo 3、PLaMo-Embedding)、Anima、`bonsaiai-audio` の transcribe (Whisper)、tts、generate (Magenta RealTime 2、MOSS-SoundEffect)、pitch、notes、`bonsaiai-image` の depth (DA3、MoGe-2)、face-detect (YuNet)、segment (EfficientSAM のエンコーダ)、detect、pose、ocr です。FLUX.2 klein、SigLIP 2 (label) は AMD の NPU と Apple の Neural Engine だけです (Intel はまだ)。実機で動かしたのは LFM3、PLaMo 3 Translate、PLaMo-Embedding、Anima だけで、ほかは OpenVINO の CPU (`BONSAIAI_BACKEND=openvino`、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の「OpenVINO で切り分ける」) で変換から結果までを確かめた段階です ([docs/design/intel.ja.md](docs/design/intel.ja.md))
 
 ## 診断
 
 ```bash
-go run ./cmd/hwnpu-dev info -model internal/fixtures/coreml/linear_relu_fp16.mlpackage
+go run ./cmd/bonsaiai-dev info -model internal/fixtures/coreml/linear_relu_fp16.mlpackage
 ```
 
 ## テスト

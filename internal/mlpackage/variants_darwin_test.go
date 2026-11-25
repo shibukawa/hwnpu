@@ -6,17 +6,17 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/backend/coreml"
-	"github.com/shibukawa/hwnpu/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/backend/coreml"
+	"github.com/shibukawa/bonsaiai/internal/types"
 )
 
-// Compiles one small program per operation the converters emit, selected by HWNPU_TEST_MLPACKAGE_VARIANT, so a
+// Compiles one small program per operation the converters emit, selected by BONSAIAI_TEST_MLPACKAGE_VARIANT, so a
 // loader crash on one of them can be pinned down from a shell loop.
 func TestOpVariant(t *testing.T) {
-	name := os.Getenv("HWNPU_TEST_MLPACKAGE_VARIANT")
+	name := os.Getenv("BONSAIAI_TEST_MLPACKAGE_VARIANT")
 	if name == "" {
-		t.Skip("HWNPU_TEST_MLPACKAGE_VARIANT not set")
+		t.Skip("BONSAIAI_TEST_MLPACKAGE_VARIANT not set")
 	}
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)

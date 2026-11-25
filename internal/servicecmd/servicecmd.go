@@ -1,15 +1,15 @@
-// Package servicecmd is hwnpu service: the commands that look after hwnpud (docs/design/hwnpud.md),
-// the per-user process that owns the NPU and the models. hwnpud itself is what the service manager
-// runs (serve, engine); the commands for the user are hwnpu's.
+// Package servicecmd is bonsaiai service: the commands that look after bonsaiaid (docs/design/bonsaiaid.md),
+// the per-user process that owns the NPU and the models. bonsaiaid itself is what the service manager
+// runs (serve, engine); the commands for the user are bonsaiai's.
 //
-//	hwnpu service install    # a LaunchAgent (Mac) or systemd user units (Linux): hwnpud starts at the first connection
-//	hwnpu service status     # whether it runs, its settings, what it holds
-//	hwnpu service start      # installed: start it now; not: run hwnpud serve here, in the foreground
-//	hwnpu service stop       # end it (installed: it starts again at the next connection)
-//	hwnpu service restart    # end it and start it again: a new executable, the settings as they are now
-//	hwnpu service uninstall
+//	bonsaiai service install    # a LaunchAgent (Mac) or systemd user units (Linux): bonsaiaid starts at the first connection
+//	bonsaiai service status     # whether it runs, its settings, what it holds
+//	bonsaiai service start      # installed: start it now; not: run bonsaiaid serve here, in the foreground
+//	bonsaiai service stop       # end it (installed: it starts again at the next connection)
+//	bonsaiai service restart    # end it and start it again: a new executable, the settings as they are now
+//	bonsaiai service uninstall
 //
-// A hwnpud run in the foreground (start without install, hwnpud serve) is stopped and restarted
+// A bonsaiaid run in the foreground (start without install, bonsaiaid serve) is stopped and restarted
 // from another terminal the same way: it runs itself again in its own process.
 package servicecmd
 
@@ -26,42 +26,42 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/daemon"
-	"github.com/shibukawa/hwnpu/internal/envfile"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/daemon"
+	"github.com/shibukawa/bonsaiai/internal/envfile"
 )
 
-// Cmd is hwnpu service.
+// Cmd is bonsaiai service.
 type Cmd struct {
-	Status    StatusCmd    `cmd:"" default:"1" help:"Whether hwnpud is installed and runs, its settings, and what it holds (the command when none is named)."`
-	Install   InstallCmd   `cmd:"" help:"Install hwnpud as a service (a LaunchAgent on the Mac, systemd user units on Linux): it starts when a client connects, and exits when idle."`
-	Uninstall UninstallCmd `cmd:"" help:"Stop hwnpud and remove the service."`
-	Start     StartCmd     `cmd:"" help:"Installed: start hwnpud and its engine now. Not installed: run hwnpud here, in the foreground (Ctrl-C, or hwnpu service stop in another terminal, ends it)."`
-	Stop      StopCmd      `cmd:"" help:"End hwnpud and its engine (installed: the service manager starts it again at the next connection)."`
-	Restart   RestartCmd   `cmd:"" help:"End hwnpud and its engine (the requests going on fail) and start them again, with the executable and the settings as they are now."`
+	Status    StatusCmd    `cmd:"" default:"1" help:"Whether bonsaiaid is installed and runs, its settings, and what it holds (the command when none is named)."`
+	Install   InstallCmd   `cmd:"" help:"Install bonsaiaid as a service (a LaunchAgent on the Mac, systemd user units on Linux): it starts when a client connects, and exits when idle."`
+	Uninstall UninstallCmd `cmd:"" help:"Stop bonsaiaid and remove the service."`
+	Start     StartCmd     `cmd:"" help:"Installed: start bonsaiaid and its engine now. Not installed: run bonsaiaid here, in the foreground (Ctrl-C, or bonsaiai service stop in another terminal, ends it)."`
+	Stop      StopCmd      `cmd:"" help:"End bonsaiaid and its engine (installed: the service manager starts it again at the next connection)."`
+	Restart   RestartCmd   `cmd:"" help:"End bonsaiaid and its engine (the requests going on fail) and start them again, with the executable and the settings as they are now."`
 }
 
-// Hwnpud is hwnpud's executable: this one when it is hwnpud, else the hwnpud beside it, else the
+// Bonsaiaid is bonsaiaid's executable: this one when it is bonsaiaid, else the bonsaiaid beside it, else the
 // one on PATH.
-func Hwnpud() (string, error) {
+func Bonsaiaid() (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSuffix(filepath.Base(self), ".exe") == "hwnpud" {
+	if strings.TrimSuffix(filepath.Base(self), ".exe") == "bonsaiaid" {
 		return self, nil
 	}
-	if p := filepath.Join(filepath.Dir(self), "hwnpud"); fileExists(p) {
+	if p := filepath.Join(filepath.Dir(self), "bonsaiaid"); fileExists(p) {
 		return p, nil
 	}
-	if p, err := exec.LookPath("hwnpud"); err == nil {
+	if p, err := exec.LookPath("bonsaiaid"); err == nil {
 		return filepath.Abs(p)
 	}
-	return "", errors.New("no hwnpud beside " + self + " or on PATH: go install ./cmd/hwnpud")
+	return "", errors.New("no bonsaiaid beside " + self + " or on PATH: go install ./cmd/bonsaiaid")
 }
 
 // installed says whether the service listens on the client's socket: the installed service's,
-// not another of HWNPU_DAEMON_SOCKET (a hwnpud of a worktree, run by hand beside it).
+// not another of BONSAIAI_DAEMON_SOCKET (a bonsaiaid of a worktree, run by hand beside it).
 func installed(cl *daemon.Client) bool {
 	return daemon.Installed() != "" && cl.Socket == daemon.DefaultSocketPath()
 }
@@ -75,7 +75,7 @@ func fileExists(p string) bool {
 type InstallCmd struct{}
 
 func (c *InstallCmd) Run() error {
-	exe, err := Hwnpud()
+	exe, err := Bonsaiaid()
 	if err != nil {
 		return err
 	}
@@ -83,12 +83,12 @@ func (c *InstallCmd) Run() error {
 		return err
 	}
 	if unseen := shellOnly(); len(unseen) > 0 {
-		fmt.Fprintf(os.Stderr, "hwnpud does not see what only the shell sets: %s. hwnpu config sets them for hwnpud too.\n", strings.Join(unseen, ", "))
+		fmt.Fprintf(os.Stderr, "bonsaiaid does not see what only the shell sets: %s. bonsaiai config sets them for bonsaiaid too.\n", strings.Join(unseen, ", "))
 	}
 	return nil
 }
 
-// shellOnly are hwnpu's variables (and Hugging Face's and AWS's) the environment sets that no
+// shellOnly are bonsaiai's variables (and Hugging Face's and AWS's) the environment sets that no
 // .env file does and the service manager does not give the service either (launchd gives none
 // of them, systemd those of environment.d): the service does not get them.
 func shellOnly() []string {
@@ -105,7 +105,7 @@ func shellOnly() []string {
 	var out []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if fromFiles[name] || service[kv] || strings.HasPrefix(name, "HWNPU_DAEMON") {
+		if fromFiles[name] || service[kv] || strings.HasPrefix(name, "BONSAIAI_DAEMON") {
 			continue
 		}
 		for _, p := range envfile.Prefixes {
@@ -141,7 +141,7 @@ func (c *StatusCmd) Run(ctx context.Context) error {
 		}
 		fmt.Println()
 	} else {
-		fmt.Println("installed: no (hwnpu service install; hwnpu service start runs it in the foreground)")
+		fmt.Println("installed: no (bonsaiai service install; bonsaiai service start runs it in the foreground)")
 	}
 	st, err := cl.Status(ctx)
 	if err != nil {
@@ -180,14 +180,14 @@ func (c *StatusCmd) Run(ctx context.Context) error {
 	return nil
 }
 
-// printSettings shows hwnpud's settings by their keys, where they were read from, and what
+// printSettings shows bonsaiaid's settings by their keys, where they were read from, and what
 // differs here.
 func printSettings(h daemon.Hello) {
 	files := "none"
 	if len(h.Files) > 0 {
 		files = strings.Join(h.Files, ", ")
 	}
-	fmt.Printf("settings: from %s and the environment hwnpud was started with (hwnpu config changes them)\n", files)
+	fmt.Printf("settings: from %s and the environment bonsaiaid was started with (bonsaiai config changes them)\n", files)
 	if h.SettingsError != "" {
 		fmt.Printf("  error: %s\n", h.SettingsError)
 	}
@@ -211,8 +211,8 @@ func printSettings(h daemon.Hello) {
 	for _, name := range other {
 		fmt.Printf("  %s=%s\n", name, h.Settings[name])
 	}
-	if _, set := h.Settings["HWNPU_CACHE"]; !set {
-		fmt.Println("  cache unset: the models are in hwnpu in the user cache directory")
+	if _, set := h.Settings["BONSAIAI_CACHE"]; !set {
+		fmt.Println("  cache unset: the models are in bonsaiai in the user cache directory")
 	}
 	if _, set := h.Settings[chat.PolicyEnv]; !set {
 		fmt.Println("  model-allowlist and model-denylist unset: every model but those that may make NSFW pictures (and what models.yaml's policy: refuses)")
@@ -224,14 +224,14 @@ func printSettings(h daemon.Hello) {
 				shown = append(shown, d)
 			}
 		}
-		fmt.Printf("  the engine still runs with the old %s: it is stopped when no request goes on, and starts again with these (hwnpu service restart: now)\n", strings.Join(shown, ", "))
+		fmt.Printf("  the engine still runs with the old %s: it is stopped when no request goes on, and starts again with these (bonsaiai service restart: now)\n", strings.Join(shown, ", "))
 	}
 	here := daemon.Settings(os.Environ())
 	for _, m := range daemon.Compare(here, h.Settings) {
-		fmt.Printf("  differs here: %s (hwnpud's is used)\n", m)
+		fmt.Printf("  differs here: %s (bonsaiaid's is used)\n", m)
 	}
 	if v := here[chat.PolicyEnv]; v != "" && v != h.Settings[chat.PolicyEnv] {
-		fmt.Printf("  here %s=%s: it narrows hwnpud's for the clients of this shell\n", chat.PolicyEnv, v)
+		fmt.Printf("  here %s=%s: it narrows bonsaiaid's for the clients of this shell\n", chat.PolicyEnv, v)
 	}
 }
 
@@ -251,19 +251,19 @@ func (c *StartCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("hwnpud runs: pid %d, engine pid %d, build %s\n", h.PID, h.Engine, h.Build)
+	fmt.Printf("bonsaiaid runs: pid %d, engine pid %d, build %s\n", h.PID, h.Engine, h.Build)
 	return nil
 }
 
-// foreground runs hwnpud serve in this process, in place of this command: its log comes here, and
+// foreground runs bonsaiaid serve in this process, in place of this command: its log comes here, and
 // Ctrl-C ends it. It gets the environment this command was started with, without what the .env
 // files set, to read the files itself (and again when they change).
 func foreground(socket string) error {
-	exe, err := Hwnpud()
+	exe, err := Bonsaiaid()
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "no service of hwnpud listens on %s (hwnpu service install): running it here, in the foreground; Ctrl-C or hwnpu service stop ends it\n", socket)
+	fmt.Fprintf(os.Stderr, "no service of bonsaiaid listens on %s (bonsaiai service install): running it here, in the foreground; Ctrl-C or bonsaiai service stop ends it\n", socket)
 	return syscall.Exec(exe, []string{exe, "serve"}, envfile.Original())
 }
 
@@ -280,9 +280,9 @@ func (c *StopCmd) Run(ctx context.Context) error {
 		return err
 	}
 	if h.Service != "" {
-		fmt.Printf("hwnpud stopped (%s starts it again at the next connection; hwnpu service uninstall keeps it stopped)\n", h.Service)
+		fmt.Printf("bonsaiaid stopped (%s starts it again at the next connection; bonsaiai service uninstall keeps it stopped)\n", h.Service)
 	} else {
-		fmt.Println("hwnpud stopped")
+		fmt.Println("bonsaiaid stopped")
 	}
 	return nil
 }
@@ -294,7 +294,7 @@ func (c *RestartCmd) Run(ctx context.Context) error {
 	cl := daemon.NewClient("")
 	if _, err := cl.Hello(ctx); errors.Is(err, daemon.ErrNotRunning) {
 		if !installed(cl) {
-			return fmt.Errorf("%w: hwnpu service start", err)
+			return fmt.Errorf("%w: bonsaiai service start", err)
 		}
 		return (&StartCmd{}).Run(ctx)
 	}
@@ -302,6 +302,6 @@ func (c *RestartCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("hwnpud restarted: pid %d, engine pid %d, build %s (was %s)\n", h.PID, h.Engine, h.Build, old.Build)
+	fmt.Printf("bonsaiaid restarted: pid %d, engine pid %d, build %s (was %s)\n", h.PID, h.Engine, h.Build, old.Build)
 	return nil
 }

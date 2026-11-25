@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"io"
 	"os"
 	"path"
@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm"
 )
 
 // Kind is what a model is for.
@@ -21,21 +21,21 @@ type Kind string
 const (
 	KindChat       Kind = "chat"        // generates text: the chat completions API
 	KindEmbed      Kind = "embedding"   // turns a text into a vector: the embeddings API
-	KindTranscribe Kind = "transcribe"  // speech to text: hwnpu-audio transcribe
-	KindSpeech     Kind = "speech"      // text to speech: hwnpu-audio tts
-	KindDecision   Kind = "decision"    // answers about a state: hwnpu-chat systemone
-	KindImage      Kind = "image"       // draws a picture from a prompt: hwnpu-image generate
-	KindDepth      Kind = "depth"       // the depth of a picture: hwnpu-image depth
-	KindFace       Kind = "face-detect" // the faces in a picture: hwnpu-image face-detect
-	KindPitch      Kind = "pitch"       // the pitch of a voice or an instrument: hwnpu-audio pitch
-	KindPose       Kind = "pose"        // people's keypoints in an image: hwnpu-image pose
-	KindDetect     Kind = "detect"      // the objects in an image, boxes and labels: hwnpu-image detect
-	KindOCR        Kind = "ocr"         // the text in an image, lines and boxes: hwnpu-image ocr
-	KindLabel      Kind = "label"       // labels of an image and embeddings of images and texts: hwnpu-image label, embed
-	KindSegment    Kind = "segment"     // the mask of a thing a point or a box picks: hwnpu-image segment
-	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-audio notes
-	KindMusic      Kind = "music"       // music from a style: hwnpu-audio generate
-	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-audio generate -m sfx
+	KindTranscribe Kind = "transcribe"  // speech to text: bonsaiai-audio transcribe
+	KindSpeech     Kind = "speech"      // text to speech: bonsaiai-audio tts
+	KindDecision   Kind = "decision"    // answers about a state: bonsaiai-chat systemone
+	KindImage      Kind = "image"       // draws a picture from a prompt: bonsaiai-image generate
+	KindDepth      Kind = "depth"       // the depth of a picture: bonsaiai-image depth
+	KindFace       Kind = "face-detect" // the faces in a picture: bonsaiai-image face-detect
+	KindPitch      Kind = "pitch"       // the pitch of a voice or an instrument: bonsaiai-audio pitch
+	KindPose       Kind = "pose"        // people's keypoints in an image: bonsaiai-image pose
+	KindDetect     Kind = "detect"      // the objects in an image, boxes and labels: bonsaiai-image detect
+	KindOCR        Kind = "ocr"         // the text in an image, lines and boxes: bonsaiai-image ocr
+	KindLabel      Kind = "label"       // labels of an image and embeddings of images and texts: bonsaiai-image label, embed
+	KindSegment    Kind = "segment"     // the mask of a thing a point or a box picks: bonsaiai-image segment
+	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: bonsaiai-audio notes
+	KindMusic      Kind = "music"       // music from a style: bonsaiai-audio generate
+	KindSFX        Kind = "sfx"         // sound effects from a text: bonsaiai-audio generate -m sfx
 )
 
 // Model is a model of the definitions (models.yaml).
@@ -44,7 +44,7 @@ const (
 // that are the default on every generation of the vendor's NPU (Sizes: the aspect ratio's name,
 // then width and height), the sizes a generation overrides (ByGen: by generation, a chip on
 // Apple, xdna1 or xdna2 on AMD), and the edits the export holds programs for (Edits: by aspect
-// ratio, the references of each as hwnpu-image names them: "1", "2@half", "1+2@half", ...).
+// ratio, the references of each as bonsaiai-image names them: "1", "2@half", "1+2@half", ...).
 type NPUSpec struct {
 	Text, Dit string
 	Sizes     map[string][2]int
@@ -129,7 +129,7 @@ type Model struct {
 	// the NPU's vendor (MemoryFor).
 	Memory   float64
 	MemoryBy PerVendor
-	// Run is how hwnpu-chat runs a chat model when its flags do not say (models.yaml's prefill,
+	// Run is how bonsaiai-chat runs a chat model when its flags do not say (models.yaml's prefill,
 	// format, context and paged), on a machine of Machine GB.
 	Run Run
 	// Variants change Memory and Run on machines of more memory, by the least memory (GB) of each
@@ -197,11 +197,11 @@ var Features = []struct{ Name, About string }{
 	{"query", "embeds search queries and the documents searched differently (input_type)"},
 	{"vision", "reads the images of user messages (image_url; /image in the terminal)"},
 	{"audio", "reads the audio of user messages (input_audio, WAV; /audio in the terminal)"},
-	{"edit", "edits or composes from reference images (hwnpu-image generate --image)"},
+	{"edit", "edits or composes from reference images (bonsaiai-image generate --image)"},
 	{"translation", "translates the text of each user message (chat_template_kwargs target_lang, source_lang, form, context, glossary; -to in the terminal)"},
 }
 
-// Catalog lists the models hwnpu knows, by name, in the order of the definition files
+// Catalog lists the models bonsaiai knows, by name, in the order of the definition files
 // (models.yaml, LoadModels).
 var Catalog []Model
 
@@ -246,13 +246,13 @@ func ModelsDir() string {
 // Resolve returns the model a name of -use means: one of the catalog by its name; a family or a
 // category of the catalog, with a tag or picked for the machine's memory (Pick: plamo3translate,
 // plamo3translate:2b, translate); or a Hugging Face repository (OWNER/NAME) of an architecture
-// hwnpu-chat runs, whose config.json it downloads (RepoDir) to find out what the model is for.
+// bonsaiai-chat runs, whose config.json it downloads (RepoDir) to find out what the model is for.
 // What else such a model can do is not known. Only the model picked is downloaded.
 func Resolve(ctx context.Context, name string, log io.Writer) (Model, error) {
 	return ResolveOn(ctx, name, 0, log)
 }
 
-// ResolveOn is Resolve on a machine of machine GB (hwnpu-chat --memory): the model picked and
+// ResolveOn is Resolve on a machine of machine GB (bonsaiai-chat --memory): the model picked and
 // run as such a machine would, whatever memory is chosen for the model (ChosenMemory); 0 for this
 // machine's memory (MachineMemory) and the memory chosen.
 func ResolveOn(ctx context.Context, name string, machine int, log io.Writer) (Model, error) {
@@ -284,7 +284,7 @@ func ResolveOn(ctx context.Context, name string, machine int, log io.Writer) (Mo
 	case cached:
 		m.Kind = KindChat
 	default:
-		return m, fmt.Errorf("chat: %s is a %s, which hwnpu-chat does not run", name, a.Title)
+		return m, fmt.Errorf("chat: %s is a %s, which bonsaiai-chat does not run", name, a.Title)
 	}
 	return m, nil
 }
@@ -301,7 +301,7 @@ func LookupFor(name string) (Model, bool) {
 	return m, ok && err == nil
 }
 
-// LookupOn finds the model of the definitions a name means, as hwnpu's commands do (lookupOn),
+// LookupOn finds the model of the definitions a name means, as bonsaiai's commands do (lookupOn),
 // for a package that runs models of several kinds (ai): by its name, or as a family or a use
 // picked for a machine of machine GB (0: this one, with the memory chosen for the model). Why
 // it was picked goes to log. ok is false for none; a repository is not looked up.
@@ -354,7 +354,7 @@ func ResolveFor(name string, kind Kind, log io.Writer) (Model, error) {
 	return ResolveForKinds(name, log, kind)
 }
 
-// ResolveForKinds is ResolveFor for a command that runs models of several kinds (hwnpu-audio:
+// ResolveForKinds is ResolveFor for a command that runs models of several kinds (bonsaiai-audio:
 // music and sound effects); a repository is taken to be of the first.
 func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
 	kind := kinds[0]
@@ -378,7 +378,7 @@ func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
 type NoModelError struct{ Name string }
 
 func (e *NoModelError) Error() string {
-	return fmt.Sprintf("chat: no model %q (hwnpu-chat list shows the models, their families and the uses that pick one; a repository is written OWNER/NAME)", e.Name)
+	return fmt.Sprintf("chat: no model %q (bonsaiai-chat list shows the models, their families and the uses that pick one; a repository is written OWNER/NAME)", e.Name)
 }
 
 func errNoModel(name string) error { return &NoModelError{Name: name} }

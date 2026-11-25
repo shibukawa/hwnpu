@@ -12,12 +12,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/ai/flow"
-	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/ai"
+	"github.com/shibukawa/bonsaiai/ai/flow"
+	"github.com/shibukawa/bonsaiai/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // Generate is the use of a model that draws pictures for an app: a model, a family or a use of
@@ -51,9 +51,9 @@ func Edit(name string) ai.Use[*Generator] {
 //	          resident-dit Anima on AMD's NPU: "true" keeps every group of the DiT's blocks on
 //	                       the NPU instead of reading each group's weights before it runs
 //	programs: export       an export's directory (Export): of tools/amd/iron_*.py for AMD's NPU,
-//	                       or of hwnpu-image convert; run as it is
+//	                       or of bonsaiai-image convert; run as it is
 //
-// A model of device cpu (Anima) runs a Core ML export with hwnpu's CPU interpreter
+// A model of device cpu (Anima) runs a Core ML export with bonsaiai's CPU interpreter
 // (slow; for checking without the NPU).
 const (
 	SettingTextFormat  = "text-format"
@@ -100,7 +100,7 @@ func newRole(name string, edit bool) *airole.Role {
 		// 2: Anima, Chroma (since removed) and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
 		// 3: FLUX.2 klein's export on Apple's of every size and edit in one, and one beside it
 		// 4: FLUX.2 klein's export v6 (two single blocks a program): the store's record of v4 is of a
-		// layout this hwnpu no longer reads (ai.Store.find does not look at the export's version)
+		// layout this bonsaiai no longer reads (ai.Store.find does not look at the export's version)
 		// 5: an M1 takes a FLUX.2 klein export of its own (models.yaml npu.apple generation_edits:
 		// its one reference of a picture of 1024 x 1024 at 512), where the store's record names the
 		// other chips', whose prebuilt programs draw noise on it
@@ -176,9 +176,9 @@ type family interface {
 
 // Generator draws pictures. It draws one at a time; others wait.
 type Generator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle // the model in bonsaiaid (ai's BONSAIAI_DAEMON), nil when it is here
 	mu     sync.Mutex
-	dev    *hwnpu.Device // nil on the CPU interpreter
+	dev    *bonsaiai.Device // nil on the CPU interpreter
 	name   string
 	model  chat.Model // the model of the definitions it was made from
 	family string
@@ -306,7 +306,7 @@ func (g *Generator) editFor(w, h, n int) (image.Point, []int, error) {
 	return image.Point{}, nil, fmt.Errorf("ai/imagegen: %s here draws from no %d reference(s) (it draws from %s)", g.name, n, strings.Join(have, ", "))
 }
 
-// SizeOf is the size a name of one means for the model, as hwnpu-image's --size takes it: an
+// SizeOf is the size a name of one means for the model, as bonsaiai-image's --size takes it: an
 // aspect ratio (1:1 for 1024 x 1024, 1:1s for 512 x 512, 2:3, 3:4, 9:16, 3:2, 4:3, 16:9: the
 // model's own sizes of them), or a side in pixels for a square. It need not be one of Sizes
 // (Generate draws the nearest); an error says what the model takes.
@@ -378,7 +378,7 @@ func (g *Generator) GenerateAll(ctx context.Context, prompts []string, o Options
 		return nil, errors.New("ai/imagegen: no prompt")
 	}
 	if g.remote != nil {
-		// the callbacks of o (Progress, Drawn, ...) are called here as hwnpud draws
+		// the callbacks of o (Progress, Drawn, ...) are called here as bonsaiaid draws
 		return airpc.Call1[*Pictures](g.remote, ctx, "GenerateAll", prompts, o)
 	}
 	g.mu.Lock()
@@ -422,7 +422,7 @@ func GenerateNode(u ai.Use[*Generator], o Options) *ai.ModelNode[Request, image.
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
 func (g *Generator) Close() error {
 	if g.remote != nil {
-		return g.remote.Release() // the Runtime in hwnpud unloads it
+		return g.remote.Release() // the Runtime in bonsaiaid unloads it
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

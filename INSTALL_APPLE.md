@@ -1,8 +1,8 @@
-# Setting up an Apple Neural Engine for hwnpu
+# Setting up an Apple Neural Engine for BonsaiAI
 
-How to use the Neural Engine of an Apple Silicon Mac from hwnpu, from checking the machine to running the report and preparing models.
+How to use the Neural Engine of an Apple Silicon Mac from BonsaiAI, from checking the machine to running the report and preparing models.
 
-> **Status.** The Apple backend is the one hwnpu has been developed and measured on (M3, macOS 27). The numbers in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md) come from it.
+> **Status.** The Apple backend is the one BonsaiAI has been developed and measured on (M3, macOS 27). The numbers in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md) come from it.
 
 日本語: [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)
 
@@ -10,15 +10,15 @@ How to use the Neural Engine of an Apple Silicon Mac from hwnpu, from checking t
 
 | Platform | Supported | Notes |
 |---|---|---|
-| macOS 14.4 or later on Apple Silicon | Yes | Core ML with `MLComputePlan`, which hwnpu uses to verify that a model runs on the Neural Engine. |
+| macOS 14.4 or later on Apple Silicon | Yes | Core ML with `MLComputePlan`, which BonsaiAI uses to verify that a model runs on the Neural Engine. |
 | macOS 13 to 14.3 on Apple Silicon | Partly | Models load and run, but the placement cannot be verified (`PlacementReport.Verified` is false) and strict mode refuses them. |
 | Intel Macs | Not applicable | No Neural Engine. Core ML would run everything on the CPU. |
-| iOS, iPadOS | **No** | hwnpu is a Go library for macOS; it does not build for iOS. |
+| iOS, iPadOS | **No** | BonsaiAI is a Go library for macOS; it does not build for iOS. |
 | Linux, Windows | Not applicable | The Neural Engine is only reachable through Core ML on macOS. |
 
-## What hwnpu needs
+## What BonsaiAI needs
 
-hwnpu calls Core ML through purego and the Objective-C runtime. Nothing has to be installed: Core ML is part of macOS.
+BonsaiAI calls Core ML through purego and the Objective-C runtime. Nothing has to be installed: Core ML is part of macOS.
 
 | Component | Needed | Notes |
 |---|---|---|
@@ -26,10 +26,10 @@ hwnpu calls Core ML through purego and the Objective-C runtime. Nothing has to b
 | macOS 14.4 or later | yes | For placement verification; 13 or later to load models. |
 | Go | yes | 1.27 or later (see `go.mod`). `CGO_ENABLED=0` works: no Xcode and no C toolchain are needed. |
 | Xcode or Command Line Tools | no | |
-| Python with coremltools | only for models `hwnpu-dev convert` does not know | `hwnpu-dev convert` converts supported LLM checkpoints (LFM3 so far) without Python (step 4). |
-| `sudo` | only for power measurement | `hwnpu-dev powerbench` runs `powermetrics`, which needs root. |
+| Python with coremltools | only for models `bonsaiai-dev convert` does not know | `bonsaiai-dev convert` converts supported LLM checkpoints (LFM3 so far) without Python (step 4). |
+| `sudo` | only for power measurement | `bonsaiai-dev powerbench` runs `powermetrics`, which needs root. |
 
-Unlike the Intel and AMD backends, Core ML cannot be told "Neural Engine only": hwnpu allows the CPU and the Neural Engine and never the GPU, then checks the compute plan and reports every operation that would run on the CPU.
+Unlike the Intel and AMD backends, Core ML cannot be told "Neural Engine only": BonsaiAI allows the CPU and the Neural Engine and never the GPU, then checks the compute plan and reports every operation that would run on the CPU.
 
 ## 1. Check the machine
 
@@ -39,16 +39,16 @@ sysctl hw.model && sw_vers
 
 Any `Mac`-prefixed model with an Apple chip (M1 or later) qualifies. The macOS version must be 14.4 or later for the full checks.
 
-## 2. Get hwnpu
+## 2. Get BonsaiAI
 
 ```bash
-go get github.com/shibukawa/hwnpu
+go get github.com/shibukawa/bonsaiai
 ```
 
 Or clone the repository to run the tools below. List the devices:
 
 ```bash
-go run ./cmd/hwnpu-dev info
+go run ./cmd/bonsaiai-dev info
 ```
 
 The Neural Engine appears with `backend: coreml`.
@@ -58,15 +58,15 @@ The Neural Engine appears with `backend: coreml`.
 The report runs the embedded test models, verifies their placement and times them:
 
 ```bash
-go run ./cmd/hwnpu-dev report -o report.md
+go run ./cmd/bonsaiai-dev report -o report.md
 ```
 
-The fp16 models should show all of their operations on the Neural Engine. Two models are there to be rejected: the fp32 one and the small MLP at batch 1, which Core ML places on the CPU; the report checks that strict placement (`WithPlacement(hwnpu.PlacementStrict)`, the default) refuses them, which is the behavior for applications that must not fall back silently. The same MLP padded to batch 64 runs on the Neural Engine.
+The fp16 models should show all of their operations on the Neural Engine. Two models are there to be rejected: the fp32 one and the small MLP at batch 1, which Core ML places on the CPU; the report checks that strict placement (`WithPlacement(bonsaiai.PlacementStrict)`, the default) refuses them, which is the behavior for applications that must not fall back silently. The same MLP padded to batch 64 runs on the Neural Engine.
 
 To measure the energy per call, which needs root for `powermetrics`:
 
 ```bash
-go run ./cmd/hwnpu-dev powerbench -model 'path/to/*.mlpackage' -o power.md
+go run ./cmd/bonsaiai-dev powerbench -model 'path/to/*.mlpackage' -o power.md
 ```
 
 It asks for the sudo password once and compares the Neural Engine with the CPU (and with the GPU when `-gpu` is given). The results on an M3 and how to read them are in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
@@ -74,10 +74,10 @@ It asks for the sudo password once and compares the Neural Engine with the CPU (
 To measure the Neural Engine with generated models, run the probe. It builds LLM decode shaped models in Go and measures 0.5 B and 1 B weights in fp16, int8, lut4 and int4 on the Neural Engine, the CPU and the GPU (`bench`). Then it grows the model in each format until it leaves the Neural Engine, bisects to the boundary, and loads several models just under it at once to tell a limit per model from a limit on the total (`limit`). It needs no Python, no model files and no root, takes about 40 minutes, needs free disk space of about twice the largest model (a quarter of the RAM by default, `-max-gb` to change), and writes `npuprobe-<machine>-<time>.md`. It runs without cloning:
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
+go run github.com/shibukawa/bonsaiai/cmd/bonsaiai-dev@latest probe
 ```
 
-For the energy per token, `go run ./cmd/hwnpu-dev powerbench -decode 8,16 -gpu` measures the same models with powermetrics. How to read the results, and the results so far: [PROBE.md](PROBE.md).
+For the energy per token, `go run ./cmd/bonsaiai-dev powerbench -decode 8,16 -gpu` measures the same models with powermetrics. How to read the results, and the results so far: [PROBE.md](PROBE.md).
 
 ## 4. Preparing models
 
@@ -88,29 +88,29 @@ What the Neural Engine needs from a model:
 - **fp16.** fp32 operations run on the CPU. Convert with `compute_precision=FLOAT16`.
 - **Fixed shapes.** Dynamic shapes fall back to the CPU. Export one model per sequence length or batch size.
 - **Enough work per call.** Small models are placed on the CPU even in fp16. `tools/coreml/ane_pad.py` pads the batch dimension until the model moves; read the energy results in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md) first, since padding only pays above roughly 200 MFLOP per call.
-- **Weights under 1 GiB per model.** On an M3 the boundary lay between 0.99 and 1.02 GiB of stored weights in fp16, int8 and lut4 alike (`hwnpu-dev probe limit`), and a model above it is placed entirely on the CPU. The limit is per model: three models of 0.91 GiB loaded at once all stayed on the Neural Engine at full speed, so a larger network can be split into several models. Only the 4 bit lookup-table format runs at full speed.
+- **Weights under 1 GiB per model.** On an M3 the boundary lay between 0.99 and 1.02 GiB of stored weights in fp16, int8 and lut4 alike (`bonsaiai-dev probe limit`), and a model above it is placed entirely on the CPU. The limit is per model: three models of 0.91 GiB loaded at once all stayed on the Neural Engine at full speed, so a larger network can be split into several models. Only the 4 bit lookup-table format runs at full speed.
 
-The intended path is `hwnpu-dev convert`, in Go, from the bf16 checkpoint; coremltools is only the fallback for architectures it does not know.
+The intended path is `bonsaiai-dev convert`, in Go, from the bf16 checkpoint; coremltools is only the fallback for architectures it does not know.
 
-- **LLM checkpoints with hwnpu-dev convert** (Go only, no Python). `go run ./cmd/hwnpu-dev convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` builds the graph from `config.json` for a known architecture and palettizes the weights to 4 bit. It knows LFM3 so far; other architectures (Llama, Qwen) need their structure added in `internal/llm`. How to choose the source checkpoint and what the Neural Engine accepts are described in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
-- **Anything else with coremltools** (Python). A generic converter that accepts arbitrary graphs is out of hwnpu's scope, so models that are not a supported LLM architecture (encoders such as MiniLM, vision models) are converted from PyTorch with `ct.convert(..., convert_to="mlprogram", compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS14)` and fixed input shapes. `tools/coreml/convert_minilm.py` and `tools/coreml/gen_sweep.py` are worked examples, written for the benchmarks.
+- **LLM checkpoints with bonsaiai-dev convert** (Go only, no Python). `go run ./cmd/bonsaiai-dev convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` builds the graph from `config.json` for a known architecture and palettizes the weights to 4 bit. It knows LFM3 so far; other architectures (Llama, Qwen) need their structure added in `internal/llm`. How to choose the source checkpoint and what the Neural Engine accepts are described in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
+- **Anything else with coremltools** (Python). A generic converter that accepts arbitrary graphs is out of BonsaiAI's scope, so models that are not a supported LLM architecture (encoders such as MiniLM, vision models) are converted from PyTorch with `ct.convert(..., convert_to="mlprogram", compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS14)` and fixed input shapes. `tools/coreml/convert_minilm.py` and `tools/coreml/gen_sweep.py` are worked examples, written for the benchmarks.
 
 ## 5. Running on Core AI (macOS 27)
 
 macOS 27 has Core AI beside Core ML. Nothing more to install.
 
-- **`hwnpu-chat` and `hwnpu-image` run on Core AI alone** and need macOS 27 on a Mac (`--backend` has no `coreml`; `HWNPU_BACKEND=coreml`, which the other commands take, means Core AI for them). They convert their models for Core AI (`.aimodel`, written from the checkpoints in Go) and do not use Core ML; `hwnpu-image --cpu` still runs a Core ML export with the CPU interpreter, for checking without the NPU. A Mac on macOS 26 or earlier gets an error that says so
-- **`hwnpu-audio` runs on Core AI alone** as well (macOS 27): music (Magenta RealTime 2), sound effects (MOSS-SoundEffect), tts (LFM3-Audio-2B), transcribe (Whisper), pitch and notes are converted for Core AI from their checkpoints and ONNX files (`.aimodel`). `--cpu`, and pitch and notes on the CPU without ONNX Runtime, read a Core ML export with the CPU interpreter
+- **`bonsaiai-chat` and `bonsaiai-image` run on Core AI alone** and need macOS 27 on a Mac (`--backend` has no `coreml`; `BONSAIAI_BACKEND=coreml`, which the other commands take, means Core AI for them). They convert their models for Core AI (`.aimodel`, written from the checkpoints in Go) and do not use Core ML; `bonsaiai-image --cpu` still runs a Core ML export with the CPU interpreter, for checking without the NPU. A Mac on macOS 26 or earlier gets an error that says so
+- **`bonsaiai-audio` runs on Core AI alone** as well (macOS 27): music (Magenta RealTime 2), sound effects (MOSS-SoundEffect), tts (LFM3-Audio-2B), transcribe (Whisper), pitch and notes are converted for Core AI from their checkpoints and ONNX files (`.aimodel`). `--cpu`, and pitch and notes on the CPU without ONNX Runtime, read a Core ML export with the CPU interpreter
 - **Where the programs go**: every command keeps a model's Core AI programs the same way, in exports `NAME.coreai` (directories of `.aimodel`s and what they need) in the model's directory beside its checkpoint, with `NAME.coreai.done` beside each once it is whole. A model with a single program has `NAME.coreai/model.aimodel`; parts that are converted again apart are exports of their own (music: the language models, SpectroStream's decoder and encoder, MusicCoCa's text and music sides; sound effects: the text encoder, the DiT, the decoder). The `coreai` directories and `NAME.aimodel` files of earlier versions are removed when the export that replaces them is written ([docs/design/apple-coreai.md](docs/design/apple-coreai.md))
-- **Sharing the conversions**: with a source written back to (a folder on a NAS, WebDAV or an S3 bucket: `HWNPU_MODEL_SOURCE=...?writeback=true`, docs/cache-sharing-design.md 7), each export is looked for there before it is converted and put there once it is converted here, as are the tables the commands read rows of. A Mac that runs what another converted downloads the export and needs no checkpoint; the first compile for the Neural Engine is still its own ([docs/design/distribution.md](docs/design/distribution.md))
-- **Converting** writes a model's programs side by side, as many as the CPU's cores and the free memory allow (`HWNPU_JOBS=N` sets the number, `1` one at a time); on a terminal it shows a bar and a line for each program being written, erased when all are done
-- **The other commands** keep Core ML as the default; `--backend coreai` or `HWNPU_BACKEND=coreai` runs their converted models (`.mlpackage`, lowered to Core AI programs in Go) on Core AI
+- **Sharing the conversions**: with a source written back to (a folder on a NAS, WebDAV or an S3 bucket: `BONSAIAI_MODEL_SOURCE=...?writeback=true`, docs/cache-sharing-design.md 7), each export is looked for there before it is converted and put there once it is converted here, as are the tables the commands read rows of. A Mac that runs what another converted downloads the export and needs no checkpoint; the first compile for the Neural Engine is still its own ([docs/design/distribution.md](docs/design/distribution.md))
+- **Converting** writes a model's programs side by side, as many as the CPU's cores and the free memory allow (`BONSAIAI_JOBS=N` sets the number, `1` one at a time); on a terminal it shows a bar and a line for each program being written, erased when all are done
+- **The other commands** keep Core ML as the default; `--backend coreai` or `BONSAIAI_BACKEND=coreai` runs their converted models (`.mlpackage`, lowered to Core AI programs in Go) on Core AI
 
-- **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, FLUX.2 klein, FLUX.3 klein), ocr, detect, pose, face-detect, depth, segment, label and embed; all of `hwnpu-audio` ([docs/design/audio-models.md](docs/design/audio-models.md))
+- **Commands**: all of `bonsaiai-chat`; `bonsaiai-image`'s generate (Anima, FLUX.2 klein, FLUX.3 klein), ocr, detect, pose, face-detect, depth, segment, label and embed; all of `bonsaiai-audio` ([docs/design/audio-models.md](docs/design/audio-models.md))
 - **Results and speed**: as Core ML's (the same answers, objects and text; cosines of 0.9999 or more for embeddings and depth; a call within ±10 %)
 - **The difference** is how the compiled programs are kept. Core ML's cache holds about 4 GiB, and past it programs compile again at later starts too (minutes to tens of minutes for the large image generators). Core AI keeps them in its own cache (`~/Library/Caches/coreai-cache`) until the disk runs low. With both caches warm the starts are the same
 - **The cost**: the weights are on the disk three times (the converted `.mlpackage`, the lowered `.aimodel`, Core AI's cache). Below about 15 GB free, macOS removes the caches and the next start compiles again
-- **hwnpu-chat** converts Core AI's own programs from the checkpoint (an export `NAME.coreai` of `.aimodel`s in the model's directory, as the image models', no `.mlpackage`): the programs of 8 and 128 tokens per call are functions of one, so their weights are on the disk, in Core AI's cache and on the Neural Engine once (LFM3-1.7B: 1.2 GB written, 1.32 GiB on the Neural Engine, a second start in 0.4 seconds on an M3; [docs/design/apple-coreai.md](docs/design/apple-coreai.md)). Qwen3.5-4B and gemma-4-E4B-it read a 2K-token prompt in about 2 seconds on an M2 ([apple-coreai](docs/design/apple-coreai.md))
+- **bonsaiai-chat** converts Core AI's own programs from the checkpoint (an export `NAME.coreai` of `.aimodel`s in the model's directory, as the image models', no `.mlpackage`): the programs of 8 and 128 tokens per call are functions of one, so their weights are on the disk, in Core AI's cache and on the Neural Engine once (LFM3-1.7B: 1.2 GB written, 1.32 GiB on the Neural Engine, a second start in 0.4 seconds on an M3; [docs/design/apple-coreai.md](docs/design/apple-coreai.md)). Qwen3.5-4B and gemma-4-E4B-it read a 2K-token prompt in about 2 seconds on an M2 ([apple-coreai](docs/design/apple-coreai.md))
 - The record is [docs/design/apple-coreai.md](docs/design/apple-coreai.md), [docs/design/image-apple.md](docs/design/image-apple.md), [docs/design/distribution.md](docs/design/distribution.md), [docs/design/memory-and-power.md](docs/design/memory-and-power.md), [docs/design/moe.md](docs/design/moe.md), [docs/design/vision-models.md](docs/design/vision-models.md), [docs/design/llm-engine.md](docs/design/llm-engine.md), [docs/design/llm-decoding.md](docs/design/llm-decoding.md), [docs/design/llm-qwen.md](docs/design/llm-qwen.md), [docs/design/architecture.md](docs/design/architecture.md), [docs/design/audio-models.md](docs/design/audio-models.md) ([docs/design/README.md](docs/design/README.md)); the summary is section 7.5 of [docs/design/performance.md](docs/design/performance.md)
 
 ## Troubleshooting
@@ -119,8 +119,8 @@ macOS 27 has Core AI beside Core ML. Nothing more to install.
 |---|---|
 | `PlacementReport` lists operations on the CPU | fp32 operations, dynamic shapes, `gather` (embedding lookups always run on the CPU) or a model too small for the Neural Engine. Convert to fp16 with fixed shapes; keep embedding lookups on the host. |
 | `Verified` is false | macOS older than 14.4, or a model in the old `neuralnetwork` format rather than an ML Program. Update macOS and reconvert as an ML Program. |
-| Loading crashes instead of returning an error | A hand-written ML Program with dots in value names, or a corrupt package. coremltools and `hwnpu-dev convert` write valid names. |
+| Loading crashes instead of returning an error | A hand-written ML Program with dots in value names, or a corrupt package. coremltools and `bonsaiai-dev convert` write valid names. |
 | The whole model runs on the CPU although it is fp16 | Weights too large (1 GiB or more per model; split it into several models), or weight compression in a layout the Neural Engine does not accept (lookup tables must cover whole rows, 16 per table; blockwise int4 is not accepted). |
-| Results differ from PyTorch by several percent | The Neural Engine's matrix products have an absolute error floor around 2.5e-4; layers whose outputs are tiny lose precision. `hwnpu-dev convert -post-scale` works around it for LFM3; see [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md). |
-| Need a CPU or GPU baseline | Set `HWNPU_COREML_UNITS=cpu` or `gpu` when loading (measurement only, not part of the API). |
-| `hwnpu-dev powerbench` stops at `Password:` | `powermetrics` needs root; type the sudo password once, the tool keeps the credentials alive. |
+| Results differ from PyTorch by several percent | The Neural Engine's matrix products have an absolute error floor around 2.5e-4; layers whose outputs are tiny lose precision. `bonsaiai-dev convert -post-scale` works around it for LFM3; see [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md). |
+| Need a CPU or GPU baseline | Set `BONSAIAI_COREML_UNITS=cpu` or `gpu` when loading (measurement only, not part of the API). |
+| `bonsaiai-dev powerbench` stops at `Password:` | `powermetrics` needs root; type the sudo password once, the tool keeps the credentials alive. |

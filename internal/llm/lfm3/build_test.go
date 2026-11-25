@@ -12,9 +12,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // tinyConfig is a small LFM3 (matrix rows in multiples of the lut4 group of 16) with every layer type, GQA, partial RoPE and a conv bias.
@@ -96,7 +96,7 @@ func TestBuildTiny(t *testing.T) {
 	}
 }
 
-// The path hwnpu-dev convert takes (detecting the architecture from config.json and passing LFM3's
+// The path bonsaiai-dev convert takes (detecting the architecture from config.json and passing LFM3's
 // settings as parameters) builds the same program as calling Build directly.
 func TestArch(t *testing.T) {
 	var cfg map[string]any
@@ -259,7 +259,7 @@ func TestPartsMatchWhole(t *testing.T) {
 	}
 }
 
-// writeParts writes the model split into n parts as hwnpu-dev convert does and returns the manifest.
+// writeParts writes the model split into n parts as bonsaiai-dev convert does and returns the manifest.
 func writeParts(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, n int) string {
 	t.Helper()
 	plan, err := llm.PlanSplit(cfg, opts, math.MaxInt64, n)

@@ -6,7 +6,7 @@ import (
 	"math/rand/v2"
 	"sort"
 
-	"github.com/shibukawa/hwnpu/internal/vecops"
+	"github.com/shibukawa/bonsaiai/internal/vecops"
 )
 
 // Sampling chooses the next token from the logits.

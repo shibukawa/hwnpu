@@ -3,8 +3,8 @@ package pitch
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
 )
 
 // cpuRunner runs SwiftF0's CNN from the ONNX file with ONNX Runtime: the graph cut from its

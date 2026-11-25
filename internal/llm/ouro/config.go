@@ -12,13 +12,13 @@
 // logits are lm_head of the last pass's. Each pass keeps keys and values of its own for every
 // layer (UniversalTransformerCache's slot pass × layers + layer).
 //
-// hwnpu treats the passes as layers of their own (Layers is layers × passes, layer v the weights
+// bonsaiai treats the passes as layers of their own (Layers is layers × passes, layer v the weights
 // of layer v mod layers), so that the caches, the parts and the checking layer by layer work as
 // for any decoder; a program holds the weights of a layer once however many passes it runs.
 //
 // The early exit gate (model.early_exit_gate) gives each pass a probability of being the last;
 // with early_exit_threshold 1.0, the checkpoints' value, transformers takes the last pass, as
-// hwnpu does: the gate is not read.
+// bonsaiai does: the gate is not read.
 package ouro
 
 import (

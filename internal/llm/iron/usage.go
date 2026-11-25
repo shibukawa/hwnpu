@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
 )
 
 // Counting the experts a mixture of experts runs (experts.Usage, the Mac's file and tools:

@@ -10,12 +10,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu/internal/accelfs"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/dl"
-	"github.com/shibukawa/hwnpu/internal/power"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/ze"
+	"github.com/shibukawa/bonsaiai/internal/accelfs"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/dl"
+	"github.com/shibukawa/bonsaiai/internal/power"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/ze"
 )
 
 // Provider is the Level Zero backend provider.

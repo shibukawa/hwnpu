@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/blocks"
-	"github.com/shibukawa/hwnpu/internal/llm/experts"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/blocks"
+	"github.com/shibukawa/bonsaiai/internal/llm/experts"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // MoEArch registers the mixture of experts models of Qwen3.5 and Qwen3.6 (qwen3_5_moe:
@@ -20,7 +20,7 @@ import (
 // Qwen3_5MoeSparseMoeBlock. As gpt-oss's (internal/llm/gptoss), the model is cut at every layer's
 // experts (llm.Routed): the Neural Engine runs the mixers, the router's logits and the shared
 // expert, and the host picks the experts and runs them on its CPU in MXFP4 (llm.HostRouted),
-// mapped from a checkpoint whose experts hwnpu-dev mxfp4 wrote in MXFP4 (DeriveMXFP4): the
+// mapped from a checkpoint whose experts bonsaiai-dev mxfp4 wrote in MXFP4 (DeriveMXFP4): the
 // release's are bf16, 64 GB of the 72.
 var MoEArch = &llm.Arch{
 	Name:          "qwen35moe",

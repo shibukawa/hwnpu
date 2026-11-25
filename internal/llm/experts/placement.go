@@ -15,7 +15,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 )
 
 // Placement says which of the host's experts stay wired in memory when they do not all fit
@@ -234,7 +234,7 @@ func (pl *placer) follow() {
 }
 
 // wiring is how the experts are wired: all of them, none, or a budget of bytes for
-// Placement's choice. HWNPU_MOE_WIRE=1 wires all, 0 none, a size (6GB, 6g, 6.5) that budget;
+// Placement's choice. BONSAIAI_MOE_WIRE=1 wires all, 0 none, a size (6GB, 6g, 6.5) that budget;
 // otherwise all when they take at most half of the machine's memory, none when they take over
 // three quarters of it (below), else a quarter of it (4.3
 // GB of 16 GiB; it was 3/8 until the prefetch made 3 GB as fast as 6: an M2 12.4–12.6 against
@@ -246,7 +246,7 @@ func (pl *placer) follow() {
 func (h *Host) wiring() (all bool, budget int64) {
 	n := h.bytes()
 	phys := mem.Physical()
-	switch v := strings.TrimSpace(os.Getenv("HWNPU_MOE_WIRE")); v {
+	switch v := strings.TrimSpace(os.Getenv("BONSAIAI_MOE_WIRE")); v {
 	case "":
 	case "0":
 		return false, 0
@@ -258,7 +258,7 @@ func (h *Host) wiring() (all bool, budget int64) {
 			b := int64(gb * 1e9)
 			return b >= n, min(b, n)
 		}
-		fmt.Fprintf(os.Stderr, "experts: HWNPU_MOE_WIRE=%s is not 0, 1 or a size in GB: taken as 1\n", v)
+		fmt.Fprintf(os.Stderr, "experts: BONSAIAI_MOE_WIRE=%s is not 0, 1 or a size in GB: taken as 1\n", v)
 		return true, n
 	}
 	if phys > 0 && 2*n <= phys {

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
 )
 
 // MediaMarker stands for an image or a clip in a prompt (llama.cpp's mtmd marker). Prompt

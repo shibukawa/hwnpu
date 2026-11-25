@@ -4,7 +4,7 @@ package chain
 
 import "errors"
 
-// mlock is not there off unix: HWNPU_MOE_WIRE then wires nothing and says so.
+// mlock is not there off unix: BONSAIAI_MOE_WIRE then wires nothing and says so.
 func mlock([]byte) error { return errors.ErrUnsupported }
 
 func munlock([]byte) error { return nil }

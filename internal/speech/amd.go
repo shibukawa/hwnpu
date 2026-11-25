@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
-// AMDTool is the IRON exporter of LFM3-Audio's speech (tools/amd, built into hwnpu): the text
+// AMDTool is the IRON exporter of LFM3-Audio's speech (tools/amd, built into bonsaiai): the text
 // model (iron_export_lm.py lfm3tts), the depthformer's and the codec decoder's graphs, and the
 // host's tables.
 const AMDTool = "iron_lfm3speech.py"
@@ -80,7 +80,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, log io.Writer) (Config, error
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), AMDRecipe(m), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev sources import)",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (bonsaiai-dev sources import)",
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; downloading the checkpoint and exporting it with IRON (about two minutes once IRON's kernels are built)\n", m.Name)

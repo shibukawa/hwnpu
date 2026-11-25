@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/chat"
 )
 
 // A load of a name no definition has fails with the error of resolving it, before any device
 // is opened, and the engine keeps serving.
 func TestEngineLoadUnknown(t *testing.T) {
-	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("BONSAIAI_CACHE", t.TempDir())
 	e := &Engine{Log: io.Discard}
 	e.init()
 	dir := shortDir(t)
@@ -29,8 +29,8 @@ func TestEngineLoadUnknown(t *testing.T) {
 	go srv.Serve(ln)
 	defer srv.Close()
 	c := NewClient(filepath.Join(dir, "e.sock"))
-	_, err = c.Load(context.Background(), LoadRequest{Model: "no-such-model-of-hwnpud"}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "no-such-model-of-hwnpud") {
+	_, err = c.Load(context.Background(), LoadRequest{Model: "no-such-model-of-bonsaiaid"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "no-such-model-of-bonsaiaid") {
 		t.Fatalf("load: %v", err)
 	}
 	st, err := c.Status(context.Background())

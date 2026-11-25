@@ -19,7 +19,7 @@ func ServiceFile() string { return PlistPath() }
 // LogPath is where the service writes its log.
 func LogPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "Logs", "hwnpud.log")
+	return filepath.Join(home, "Library", "Logs", "bonsaiaid.log")
 }
 
 // LogWhere is where the service's log is.
@@ -88,7 +88,7 @@ func Install(exe string, out io.Writer) error {
 		return err
 	}
 	if strings.Contains(exe, string(filepath.Separator)+"go-build") {
-		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/hwnpud, then hwnpu service install", exe)
+		return fmt.Errorf("%s is a go run build, gone when it exits: go install ./cmd/bonsaiaid, then bonsaiai service install", exe)
 	}
 	socket := DefaultSocketPath()
 	for _, dir := range []string{filepath.Dir(PlistPath()), filepath.Dir(socket), filepath.Dir(LogPath())} {
@@ -160,7 +160,7 @@ func Installed() string {
 }
 
 // uninstallQuiet unloads the LaunchAgent and waits until launchd has let it go: bootout returns
-// before a running hwnpud has exited, and a bootstrap before then fails (5: Input/output error).
+// before a running bonsaiaid has exited, and a bootstrap before then fails (5: Input/output error).
 func uninstallQuiet() {
 	exec.Command("launchctl", "bootout", domain()+"/"+Label).Run()
 	for deadline := time.Now().Add(45 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {

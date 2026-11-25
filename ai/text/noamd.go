@@ -3,11 +3,11 @@ package text
 import (
 	"fmt"
 
-	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/bonsaiai/internal/airole"
 )
 
 // noAMDForm is why a decision model without an export for AMD's NPU (its recipe, model-recipes.yaml)
-// does not run there: hwnpu has no form of it, said at once instead of looking for a device that
+// does not run there: bonsaiai has no form of it, said at once instead of looking for a device that
 // runs the converted programs ("no NPU device found" on a machine that has one). Programs given
 // (packages) and the CPU interpreter still run.
 func noAMDForm(e airole.PrepareEnv) error {

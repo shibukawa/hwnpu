@@ -1,5 +1,5 @@
 """GPTQ for gpt-oss's head on Apple's Neural Engine: lookup tables (lutN) chosen against the
-final norm's outputs, as codes that hwnpu-dev convert -codes and hwnpu-chat --codes read.
+final norm's outputs, as codes that bonsaiai-dev convert -codes and bonsaiai-chat --codes read.
 
 The Core AI conversion keeps every other part as it was (the experts the checkpoint's MXFP4 on the
 CPU, the attention lut8); the head (lm_head, 201088 x 2880, 0.55 GiB in lut8) is read whole every

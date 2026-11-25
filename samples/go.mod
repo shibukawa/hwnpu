@@ -1,7 +1,7 @@
-// The samples are a module of their own, so that what they take beside hwnpu (hwcamera for
+// The samples are a module of their own, so that what they take beside bonsaiai (hwcamera for
 // the microphone and the camera) is not a dependency of the library. They are built against
-// the hwnpu of this checkout.
-module github.com/shibukawa/hwnpu/samples
+// the bonsaiai of this checkout.
+module github.com/shibukawa/bonsaiai/samples
 
 go 1.27.0
 
@@ -10,7 +10,7 @@ require (
 	github.com/ebitengine/oto/v3 v3.5.1
 	github.com/hajimehoshi/ebiten/v2 v2.10.6
 	github.com/shibukawa/hwcamera v0.1.0
-	github.com/shibukawa/hwnpu v0.0.0
+	github.com/shibukawa/bonsaiai v0.0.0
 	golang.org/x/image v0.45.0
 )
 
@@ -31,4 +31,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace github.com/shibukawa/hwnpu => ../
+replace github.com/shibukawa/bonsaiai => ../

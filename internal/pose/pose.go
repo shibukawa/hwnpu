@@ -24,16 +24,16 @@ import (
 	"slices"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
-	"github.com/shibukawa/hwnpu/internal/llm/runner"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
-	"github.com/shibukawa/hwnpu/internal/onnx"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
-	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3vl"
+	"github.com/shibukawa/bonsaiai/internal/llm/runner"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/onnx"
+	"github.com/shibukawa/bonsaiai/internal/onnxrt"
+	"github.com/shibukawa/bonsaiai/internal/vision/ironcnn"
 )
 
 // Size is the image's size the model takes: images are stretched to it.
@@ -97,7 +97,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	}
 	p := newProgram(g)
 	_, err = llm.WritePart(program, p, nil, llm.Options{Format: format, Backend: s.Backend}, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("RTMO from %s up to its head's outputs, %dx%d, %s (hwnpu)", s.Repo, Size, Size, format)
+		pkg.Description = fmt.Sprintf("RTMO from %s up to its head's outputs, %dx%d, %s (bonsaiai)", s.Repo, Size, Size, format)
 		pkg.Metadata[llm.MetaArch] = Arch
 	})
 	if err != nil {
@@ -178,7 +178,7 @@ func ExportNPU(ctx context.Context, python []string, name, model, out string, lo
 
 // OpenNPU loads an export of ExportNPU (dir) onto dev, and the ONNX file model for the host's
 // part: from the head's convolutions to the people.
-func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Estimator, error) {
+func OpenNPU(ctx context.Context, dev *bonsaiai.Device, dir, model string) (*Estimator, error) {
 	g, err := onnx.LoadLazy(model)
 	if err != nil {
 		return nil, err
@@ -212,7 +212,7 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Estima
 }
 
 // Open loads the graph and the program on dev (nil: the CPU interpreter).
-func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Estimator, error) {
+func Open(ctx context.Context, dev *bonsaiai.Device, model, program string) (*Estimator, error) {
 	g, err := onnx.LoadLazy(model)
 	if err != nil {
 		return nil, err

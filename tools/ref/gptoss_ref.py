@@ -5,7 +5,7 @@ checkpoint's MXFP4 and each forward dequantizes the experts its rows chose (tran
 convert_moe_packed_tensors, GptOssExperts' gated unit), so the 12 GB of experts are never all in
 memory. The prompt is a user message in the chat template (harmony). It generates greedily, then
 runs the prompt and the answer in one forward and writes, as tools/ref/ref_logits.py does (for
-hwnpu-dev generate -score):
+bonsaiai-dev generate -score):
 
     OUT_PREFIX.ids.bin     int32 (seq)          the prompt's and the answer's tokens
     OUT_PREFIX.logits.bin  float32 (seq, vocab) the logits after each

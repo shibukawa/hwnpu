@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds libxrtshim.so against libxrt_coreutil, with the XRT headers in include/ (Linux, for
-# testing the shim: hwnpu talks to the amdxdna driver itself on Linux). XRT_ROOT is where XRT
+# testing the shim: bonsaiai talks to the amdxdna driver itself on Linux). XRT_ROOT is where XRT
 # is installed (default /usr; an unpacked package works). uuid/uuid.h comes from uuid-dev.
 set -e
 cd "$(dirname "$0")"

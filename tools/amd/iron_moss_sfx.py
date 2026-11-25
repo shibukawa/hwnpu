@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """MOSS-SoundEffect v2.0 (OpenMOSS-Team/MOSS-SoundEffect-v2.0, Apache-2.0) on IRON: the graphs
-hwnpu-audio generate -m sfx runs on AMD's NPU.
+bonsaiai-audio generate -m sfx runs on AMD's NPU.
 
   python tools/amd/iron_moss_sfx.py ~/models/MOSS-SoundEffect-v2.0 ~/models/moss-soundeffect-v2.0.amd-npu2
 

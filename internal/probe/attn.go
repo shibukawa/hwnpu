@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
-// Chunk attention probe models (hwnpu-dev probe attn): attention without weights over one chunk of a
+// Chunk attention probe models (bonsaiai-dev probe attn): attention without weights over one chunk of a
 // KV cache, the program a model would call once per used chunk and layer when its layers are
 // split at the attention (docs/model-fit.md T2), so that a step costs in proportion to the tokens
 // used, not to the cache's capacity. The host merges the chunks (ChunkMerge).
@@ -40,7 +40,7 @@ func WriteChunkAttnPackage(dir, form string, tokens, chunk int) error {
 	if err != nil {
 		return err
 	}
-	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("attn %s %d tokens chunk %d", form, tokens, chunk)
+	pkg.Metadata["com.github.shibukawa.bonsaiai.probe"] = fmt.Sprintf("attn %s %d tokens chunk %d", form, tokens, chunk)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
 	op := func(typ string, in map[string]any, shape ...int) *mlpackage.Var {
 		return b.Op(typ, in, mlpackage.Float16, shape...)

@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/cache"
 	"github.com/shibukawa/tinygodriver/storage/s3"
 )
 
 // TestClean removes what writebacks cut off left, the same in a folder, on WebDAV and in S3, and
-// leaves what is whole, what is being written and what is not hwnpu's.
+// leaves what is whole, what is being written and what is not bonsaiai's.
 func TestClean(t *testing.T) {
 	t.Setenv(cache.RootEnv, t.TempDir())
 	_, s3 := fakeS3(t, "pre")
@@ -59,7 +59,7 @@ func testClean(t *testing.T, s Source) {
 	mark(cut+"/"+WritingPrefix+"1", old)
 	put(cut+"/w.bin", "some")
 	put(cut+"/.put-fedcba9876543210", "more")
-	// one no marker is in at all (a hwnpu before markers)
+	// one no marker is in at all (a bonsaiai before markers)
 	bare := "converted/n/t/n.x/v1"
 	put(bare+"/sub/a.bin", "a")
 	busy := "converted/m/t/m.x/v0-cccccccc"
@@ -75,11 +75,11 @@ func testClean(t *testing.T, s Source) {
 	// one with no lock, and one being written
 	put("original/lab/nolock/c.bin", "c")
 	put("original/lab/w/d.bin", "d")
-	// not hwnpu's
+	// not bonsaiai's
 	put(".DS_Store", "x")
 	put("notes/readme.txt", "x")
 	time.Sleep(WritingStale + 1100*time.Millisecond)
-	// being written now: marked, or (a hwnpu before the markers) a file changed just now, where
+	// being written now: marked, or (a bonsaiai before the markers) a file changed just now, where
 	// the store says when (S3's fake does not)
 	mark(busy+"/"+WritingPrefix+"2", time.Now())
 	mark("original/lab/w/"+WritingPrefix+"3", time.Now())
@@ -232,7 +232,7 @@ func TestMarkWriting(t *testing.T) {
 
 // TestCleanUploads aborts in S3 the multipart uploads a Put cut off left under converted/ and
 // original/, those initiated more than WritingStale ago, and leaves the ones going on and the
-// ones not hwnpu's.
+// ones not bonsaiai's.
 func TestCleanUploads(t *testing.T) {
 	t.Setenv(cache.RootEnv, t.TempDir())
 	ctx := context.Background()

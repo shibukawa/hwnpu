@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/bonsaiai/internal/mem"
 )
 
 // Jobs is work run side by side (programs a conversion writes), shown as a few lines: on a
@@ -42,10 +42,10 @@ func (j *Jobs) Add(label string, do func() (string, error)) {
 func (j *Jobs) Len() int { return len(j.list) }
 
 // Workers is the jobs run at a time when each takes up to perJob bytes at its peak (0: little):
-// HWNPU_JOBS when set (1: one at a time), else the CPU's cores, and no more than three quarters of
+// BONSAIAI_JOBS when set (1: one at a time), else the CPU's cores, and no more than three quarters of
 // the memory available holds (two when that is not known).
 func Workers(perJob int64) int {
-	if n, err := strconv.Atoi(os.Getenv("HWNPU_JOBS")); err == nil && n > 0 {
+	if n, err := strconv.Atoi(os.Getenv("BONSAIAI_JOBS")); err == nil && n > 0 {
 		return n
 	}
 	n := runtime.NumCPU()

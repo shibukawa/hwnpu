@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3audio"
 )
 
 const tinyAudio = `{"model_type": "lfm3_audio", "lfm": {"model_type": "lfm3", "hidden_size": 48},
@@ -23,7 +23,7 @@ const tinyAudio = `{"model_type": "lfm3_audio", "lfm": {"model_type": "lfm3", "h
 		"layer_types": ["conv", "full_attention"], "rope_theta": 1000000.0, "subsampling_conv_channels": 4}}}`
 
 // writeTiny writes a tiny LFM3-Audio config and converts its audio encoder for the given clip
-// lengths in frames, as hwnpu-dev convert does.
+// lengths in frames, as bonsaiai-dev convert does.
 func writeTiny(t *testing.T, frames ...int) (string, []string) {
 	t.Helper()
 	dir := t.TempDir()

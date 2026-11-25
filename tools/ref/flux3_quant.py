@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The FLUX.3 [klein] DiT's linear weights in hwnpu's 8-bit formats, tensor by tensor from the
+"""The FLUX.3 [klein] DiT's linear weights in bonsaiai's 8-bit formats, tensor by tensor from the
 safetensors (a tensor in memory at a time), for tools/ref/ref_flux3klein.py --qfile.
 
   python tools/ref/flux3_quant.py int8 OUT.safetensors

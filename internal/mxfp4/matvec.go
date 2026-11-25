@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
+	devenv "github.com/shibukawa/bonsaiai/internal/dev"
 )
 
 // Job is one matrix's products with vectors: Out[k][r] is row r's dot product with V[k], the
@@ -26,7 +26,7 @@ func (j Job) Rows() int { return len(j.Out[0]) }
 const chunk = 32
 
 // padFrom is how many vectors past a multiple of 8 take a group of SMMLA padded with zeros
-// (HWNPU_DEV=mxfp4.pad=N).
+// (BONSAIAI_DEV=mxfp4.pad=N).
 var padFrom = 6
 
 // Run runs the jobs over the CPU's cores.
@@ -159,7 +159,7 @@ func Run(jobs ...Job) {
 //
 // Workers sleep between Runs. Polling instead (tried 2026-11-19, M3) keeps them on fast cores:
 // gpt-oss-20b's experts of a layer take 0.93 ms back to back, 1.77 ms with 1 ms between and 1.08
-// with every worker polling for 5 ms. In hwnpu-chat the Neural Engine's parts run between them,
+// with every worker polling for 5 ms. In bonsaiai-chat the Neural Engine's parts run between them,
 // and polling workers slowed those parts as much as they saved (2 of 8: the experts 1.62 to 1.27
 // ms a layer, 15.8 tokens/s either way; 4: 12.0 tokens/s), so it was taken out
 // (docs/design/performance.md).
@@ -170,7 +170,7 @@ func init() {
 	}
 }
 
-// Opt reads the item mxfp4.NAME of HWNPU_DEV (internal/dev), for measuring:
+// Opt reads the item mxfp4.NAME of BONSAIAI_DEV (internal/dev), for measuring:
 // i8mm=0 runs without SMMLA (the SDOT kernels), pad=N the vectors past a multiple of 8 that take
 // a padded group of SMMLA (6), bench=LAYERS the layers TestTokenTime times.
 func Opt(name string) (string, bool) {

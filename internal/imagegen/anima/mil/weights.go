@@ -1,4 +1,4 @@
-// Package mil describes Anima (circlestone-labs/Anima) as MIL programs, which hwnpu writes as
+// Package mil describes Anima (circlestone-labs/Anima) as MIL programs, which bonsaiai writes as
 // Core ML packages for Apple's Neural Engine and lowers to OpenVINO IR for Intel's NPU
 // (llm.WritePart): the same parts as the IRON graphs of tools/amd/iron_anima.py, the text
 // encoder and LLM adapter, the DiT in groups of blocks and the VAE decoder in stages.
@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/bonsaiai/internal/safetensors"
 )
 
 // Weights reads an Anima directory's checkpoints under one set of names: "dit." and the

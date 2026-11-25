@@ -1,15 +1,15 @@
-// Package daemon is hwnpud, the per-user process that owns the NPU and the models
-// (docs/design/hwnpud.md), and what its clients need of it: where its socket is, whether to use
-// it (HWNPU_DAEMON), and a client over the socket.
+// Package daemon is bonsaiaid, the per-user process that owns the NPU and the models
+// (docs/design/bonsaiaid.md), and what its clients need of it: where its socket is, whether to use
+// it (BONSAIAI_DAEMON), and a client over the socket.
 //
-// hwnpud is two processes. The supervisor (Supervisor) holds the socket that the service manager
+// bonsaiaid is two processes. The supervisor (Supervisor) holds the socket that the service manager
 // (launchd, systemd) or the supervisor itself listens on, answers hello and status, and passes
 // the rest to the engine (Engine), the same executable run again with "engine", which loads and
 // runs the models. The
 // engine exits after it has been idle, giving the NPU's memory and its lock back; the supervisor
 // starts it again at the next request.
 //
-// The protocol is HTTP over the Unix domain socket: hwnpud's own routes under /hwnpud/v1/ and the
+// The protocol is HTTP over the Unix domain socket: bonsaiaid's own routes under /bonsaiaid/v1/ and the
 // OpenAI compatible API of chat.Server under /v1/.
 package daemon
 
@@ -31,8 +31,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/envfile"
+	"github.com/shibukawa/bonsaiai/internal/airpc"
+	"github.com/shibukawa/bonsaiai/internal/envfile"
 )
 
 // Protocol is the version of the routes and messages; a client and a daemon of different
@@ -41,27 +41,27 @@ const Protocol = 1
 
 // The variables a client reads.
 const (
-	// ModeEnv says whether to go through hwnpud: on (always, an error when it does not answer),
+	// ModeEnv says whether to go through bonsaiaid: on (always, an error when it does not answer),
 	// off (never), auto (when it answers with this Protocol).
-	ModeEnv = "HWNPU_DAEMON"
-	// SocketEnv is another socket, to try a hwnpud built from a worktree beside the installed one.
-	SocketEnv = "HWNPU_DAEMON_SOCKET"
+	ModeEnv = "BONSAIAI_DAEMON"
+	// SocketEnv is another socket, to try a bonsaiaid built from a worktree beside the installed one.
+	SocketEnv = "BONSAIAI_DAEMON_SOCKET"
 	// IdleEnv is how long the engine and the supervisor wait without a request before they exit
 	// (a Go duration; 0 never).
-	IdleEnv = "HWNPU_DAEMON_IDLE"
+	IdleEnv = "BONSAIAI_DAEMON_IDLE"
 )
 
 // DefaultIdle is how long the engine keeps the models without a request.
 const DefaultIdle = 5 * time.Minute
 
 // Label is the name of the service on the Mac (launchd's label).
-const Label = "com.github.shibukawa.hwnpud"
+const Label = "com.github.shibukawa.bonsaiaid"
 
 // SocketName is the name of the socket in the service's definition (launchd's Sockets key,
 // systemd's FileDescriptorName).
-const SocketName = "hwnpud"
+const SocketName = "bonsaiaid"
 
-// SocketPath is the socket clients connect to: HWNPU_DAEMON_SOCKET, else DefaultSocketPath. It does not follow HWNPU_CACHE: the
+// SocketPath is the socket clients connect to: BONSAIAI_DAEMON_SOCKET, else DefaultSocketPath. It does not follow BONSAIAI_CACHE: the
 // service is started without the shell's variables, and every client must find the same socket.
 func SocketPath() string {
 	if p := strings.TrimSpace(os.Getenv(SocketEnv)); p != "" {
@@ -70,19 +70,19 @@ func SocketPath() string {
 	return DefaultSocketPath()
 }
 
-// DefaultSocketPath is the socket of the installed service: hwnpud.sock in XDG_RUNTIME_DIR on
+// DefaultSocketPath is the socket of the installed service: bonsaiaid.sock in XDG_RUNTIME_DIR on
 // Linux (where systemd's user units listen), else in the user's cache directory.
 func DefaultSocketPath() string {
 	if runtime.GOOS == "linux" {
 		if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" {
-			return filepath.Join(d, "hwnpud.sock")
+			return filepath.Join(d, "bonsaiaid.sock")
 		}
 	}
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		dir = os.TempDir()
 	}
-	return filepath.Join(dir, "hwnpu", "hwnpud.sock")
+	return filepath.Join(dir, "bonsaiai", "bonsaiaid.sock")
 }
 
 // EngineSocketPath is the engine's own socket, beside the supervisor's.
@@ -90,7 +90,7 @@ func EngineSocketPath(socket string) string {
 	return strings.TrimSuffix(socket, ".sock") + "-engine.sock"
 }
 
-// Idle is HWNPU_DAEMON_IDLE, else DefaultIdle.
+// Idle is BONSAIAI_DAEMON_IDLE, else DefaultIdle.
 func Idle() time.Duration {
 	if s := strings.TrimSpace(os.Getenv(IdleEnv)); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 0 {
@@ -100,9 +100,9 @@ func Idle() time.Duration {
 	return DefaultIdle
 }
 
-// DefaultMode is what HWNPU_DAEMON is when it is not set: on (every program goes through
-// hwnpud, and fails when it does not answer), except in a test (go test), which runs in its own
-// process. hwnpud's engine sets it off for itself.
+// DefaultMode is what BONSAIAI_DAEMON is when it is not set: on (every program goes through
+// bonsaiaid, and fails when it does not answer), except in a test (go test), which runs in its own
+// process. bonsaiaid's engine sets it off for itself.
 func DefaultMode() string {
 	if testing.Testing() {
 		return "off"
@@ -110,7 +110,7 @@ func DefaultMode() string {
 	return "on"
 }
 
-// Mode is HWNPU_DAEMON: "on", "auto" or "off" (anything else, and unset, is def).
+// Mode is BONSAIAI_DAEMON: "on", "auto" or "off" (anything else, and unset, is def).
 func Mode(def string) string {
 	switch m := strings.ToLower(strings.TrimSpace(os.Getenv(ModeEnv))); m {
 	case "on", "auto", "off":
@@ -150,7 +150,7 @@ func Build() string {
 	return rev
 }
 
-// Hello is the answer of GET /hwnpud/v1/hello.
+// Hello is the answer of GET /bonsaiaid/v1/hello.
 type Hello struct {
 	Protocol int    `json:"protocol"`
 	Build    string `json:"build"`
@@ -160,24 +160,24 @@ type Hello struct {
 	// Executable is the supervisor's executable.
 	Executable string `json:"executable"`
 	// Service is the service manager that started the supervisor (launchd, systemd), "" when it
-	// was started by hand (hwnpud serve): one that quits is started again only by the former.
+	// was started by hand (bonsaiaid serve): one that quits is started again only by the former.
 	Service string `json:"service,omitempty"`
 	// Started is when the supervisor started (unix nanoseconds): a restart by hand keeps the
 	// process, and this tells the new from the old.
 	Started int64 `json:"started,omitempty"`
-	// Settings are hwnpud's settings (Settings): those the next engine starts with, read from the
+	// Settings are bonsaiaid's settings (Settings): those the next engine starts with, read from the
 	// .env files now.
 	Settings map[string]string `json:"settings,omitempty"`
 	// Files are the .env files they were read from.
 	Files []string `json:"files,omitempty"`
-	// Pending are the variables (hwnpu's, Hugging Face's, AWS's) the running engine has other
+	// Pending are the variables (bonsaiai's, Hugging Face's, AWS's) the running engine has other
 	// values of: it is stopped when no request goes on, and the next starts one with these.
 	Pending []string `json:"pending,omitempty"`
 	// SettingsError is what was wrong with a .env file.
 	SettingsError string `json:"settings_error,omitempty"`
 }
 
-// Status is the answer of GET /hwnpud/v1/status.
+// Status is the answer of GET /bonsaiaid/v1/status.
 type Status struct {
 	Hello
 	// Models are the chat models the engine holds for its chat routes, Held the models the apps'
@@ -191,22 +191,22 @@ type Status struct {
 	Idle string `json:"idle,omitempty"`
 }
 
-// LoadRequest is the body of POST /hwnpud/v1/load: a chat model to make ready and load.
+// LoadRequest is the body of POST /bonsaiaid/v1/load: a chat model to make ready and load.
 type LoadRequest struct {
 	// Model is a name, a family or a use of models.yaml, or a Hugging Face repository.
 	Model string `json:"model"`
-	// Memory runs the model as on a machine of this many GB (hwnpu-chat --memory); 0 for the one
+	// Memory runs the model as on a machine of this many GB (bonsaiai-chat --memory); 0 for the one
 	// chosen for it.
 	Memory int `json:"memory,omitempty"`
 	// Terminal says that the client shows the log on a terminal, where bars are redrawn.
 	Terminal bool `json:"terminal,omitempty"`
-	// Allowlist is the client's model policy (its HWNPU_MODEL_ALLOWLIST): it narrows hwnpud's,
+	// Allowlist is the client's model policy (its BONSAIAI_MODEL_ALLOWLIST): it narrows bonsaiaid's,
 	// never widens it. "" for none.
 	Allowlist string `json:"allowlist,omitempty"`
 }
 
 // AllowlistHeader is a chat completion's model policy (LoadRequest.Allowlist).
-const AllowlistHeader = "X-Hwnpu-Model-Allowlist"
+const AllowlistHeader = "X-Bonsaiai-Model-Allowlist"
 
 // ModelInfo is a chat model the engine holds.
 type ModelInfo struct {
@@ -228,7 +228,7 @@ type HeldModel struct {
 	Uses int `json:"uses"`
 }
 
-// LoadEvent is a line of the answer of POST /hwnpud/v1/load (JSON lines): some of the log, then
+// LoadEvent is a line of the answer of POST /bonsaiaid/v1/load (JSON lines): some of the log, then
 // the model or an error.
 type LoadEvent struct {
 	Log   string     `json:"log,omitempty"`
@@ -236,10 +236,10 @@ type LoadEvent struct {
 	Error string     `json:"error,omitempty"`
 }
 
-// ThinkBudgetHeader carries hwnpu-chat's --think-budget in a chat completion request.
-const ThinkBudgetHeader = "X-Hwnpu-Think-Budget"
+// ThinkBudgetHeader carries bonsaiai-chat's --think-budget in a chat completion request.
+const ThinkBudgetHeader = "X-Bonsaiai-Think-Budget"
 
-// Client talks to hwnpud over its socket.
+// Client talks to bonsaiaid over its socket.
 type Client struct {
 	Socket string
 	HTTP   *http.Client
@@ -265,29 +265,29 @@ func UnixTransport(socket string) *http.Transport {
 }
 
 // URL is the URL of a route on the socket.
-func (c *Client) URL(path string) string { return "http://hwnpud" + path }
+func (c *Client) URL(path string) string { return "http://bonsaiaid" + path }
 
 // ErrNotRunning says that nothing answers on the socket.
-var ErrNotRunning = errors.New("hwnpud does not answer")
+var ErrNotRunning = errors.New("bonsaiaid does not answer")
 
 // Hello asks the daemon who it is.
 func (c *Client) Hello(ctx context.Context) (Hello, error) {
 	var h Hello
-	err := c.getJSON(ctx, "/hwnpud/v1/hello", &h)
+	err := c.getJSON(ctx, "/bonsaiaid/v1/hello", &h)
 	return h, err
 }
 
 // Status asks the daemon what it holds.
 func (c *Client) Status(ctx context.Context) (Status, error) {
 	var s Status
-	err := c.getJSON(ctx, "/hwnpud/v1/status", &s)
+	err := c.getJSON(ctx, "/bonsaiaid/v1/status", &s)
 	return s, err
 }
 
 // Quit asks the supervisor to stop the engine and exit (the service manager starts it again at
 // the next connection).
 func (c *Client) Quit(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/hwnpud/v1/quit"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/bonsaiaid/v1/quit"), nil)
 	if err != nil {
 		return err
 	}
@@ -302,7 +302,7 @@ func (c *Client) Quit(ctx context.Context) error {
 // Start starts the engine unless it runs (and the supervisor, when the service manager starts it
 // at a connection), and answers hello.
 func (c *Client) Start(ctx context.Context) (Hello, error) {
-	return c.postHello(ctx, "/hwnpud/v1/start")
+	return c.postHello(ctx, "/bonsaiaid/v1/start")
 }
 
 // Restart ends the supervisor and its engine (the requests going on fail) and waits until a new
@@ -312,7 +312,7 @@ func (c *Client) Restart(ctx context.Context) (old, now Hello, err error) {
 	if old, err = c.Hello(ctx); err != nil {
 		return old, now, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/hwnpud/v1/restart"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/bonsaiaid/v1/restart"), nil)
 	if err != nil {
 		return old, now, err
 	}
@@ -322,7 +322,7 @@ func (c *Client) Restart(ctx context.Context) (old, now Hello, err error) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		return old, now, fmt.Errorf("hwnpud %s does not restart (%s): hwnpu service stop, then start", old.Build, resp.Status)
+		return old, now, fmt.Errorf("bonsaiaid %s does not restart (%s): bonsaiai service stop, then start", old.Build, resp.Status)
 	}
 	// it stops its engine (up to 30 seconds) and exits or runs itself again
 	deadline := time.Now().Add(90 * time.Second)
@@ -337,7 +337,7 @@ func (c *Client) Restart(ctx context.Context) (old, now Hello, err error) {
 			return old, now, ctx.Err()
 		}
 		if time.Now().After(deadline) {
-			return old, now, fmt.Errorf("hwnpud did not start again (pid %d before; its log: %s)", old.PID, LogWhere())
+			return old, now, fmt.Errorf("bonsaiaid did not start again (pid %d before; its log: %s)", old.PID, LogWhere())
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -345,11 +345,11 @@ func (c *Client) Restart(ctx context.Context) (old, now Hello, err error) {
 	return old, now, err
 }
 
-// Reload has hwnpud apply the .env files now: when they changed what the engine runs with and no
+// Reload has bonsaiaid apply the .env files now: when they changed what the engine runs with and no
 // request goes on, it stops the engine (the next request starts one with them). Hello's Pending
 // are what is left for later.
 func (c *Client) Reload(ctx context.Context) (Hello, error) {
-	return c.postHello(ctx, "/hwnpud/v1/reload")
+	return c.postHello(ctx, "/bonsaiaid/v1/reload")
 }
 
 func (c *Client) postHello(ctx context.Context, path string) (Hello, error) {
@@ -396,8 +396,8 @@ func (c *Client) notRunning(err error) error {
 // AIPath is the route of the sessions of the ai package (an app's Plan, Runtime and models run
 // in the engine: internal/aihost), upgraded from HTTP to AIProtocol.
 const (
-	AIPath     = "/hwnpud/v1/ai"
-	AIProtocol = "hwnpu-ai/1"
+	AIPath     = "/bonsaiaid/v1/ai"
+	AIProtocol = "bonsaiai-ai/1"
 )
 
 // DialAI opens a session of the ai package with the engine (airpc over the socket).
@@ -409,7 +409,7 @@ func (c *Client) DialAI(ctx context.Context) (*airpc.Session, error) {
 	}
 	s, err := airpc.Dial(ctx, conn, AIPath, AIProtocol)
 	if err != nil {
-		return nil, fmt.Errorf("hwnpud at %s: %w", c.Socket, err)
+		return nil, fmt.Errorf("bonsaiaid at %s: %w", c.Socket, err)
 	}
 	return s, nil
 }
@@ -417,7 +417,7 @@ func (c *Client) DialAI(ctx context.Context) (*airpc.Session, error) {
 // Load makes the model ready and loads it, writing the engine's log to log as it comes.
 func (c *Client) Load(ctx context.Context, r LoadRequest, log io.Writer) (ModelInfo, error) {
 	body, _ := json.Marshal(r)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/hwnpud/v1/load"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL("/bonsaiaid/v1/load"), bytes.NewReader(body))
 	if err != nil {
 		return ModelInfo{}, err
 	}
@@ -435,7 +435,7 @@ func (c *Client) Load(ctx context.Context, r LoadRequest, log io.Writer) (ModelI
 	for sc.Scan() {
 		var ev LoadEvent
 		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-			return ModelInfo{}, fmt.Errorf("hwnpud: %w", err)
+			return ModelInfo{}, fmt.Errorf("bonsaiaid: %w", err)
 		}
 		if ev.Log != "" && log != nil {
 			io.WriteString(log, ev.Log)
@@ -450,7 +450,7 @@ func (c *Client) Load(ctx context.Context, r LoadRequest, log io.Writer) (ModelI
 	if err := sc.Err(); err != nil {
 		return ModelInfo{}, err
 	}
-	return ModelInfo{}, errors.New("hwnpud: the engine ended before the model was loaded (its log: " + LogWhere() + ")")
+	return ModelInfo{}, errors.New("bonsaiaid: the engine ended before the model was loaded (its log: " + LogWhere() + ")")
 }
 
 // ResponseError is the error of an answer that is not 200: its JSON error's message, else its body.
@@ -469,15 +469,15 @@ func ResponseError(resp *http.Response) error {
 			}
 		}
 	}
-	return fmt.Errorf("hwnpud: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	return fmt.Errorf("bonsaiaid: %s: %s", resp.Status, strings.TrimSpace(string(b)))
 }
 
-// Use says whether a client goes through hwnpud, by HWNPU_DAEMON (def when unset): on needs it to
+// Use says whether a client goes through bonsaiaid, by BONSAIAI_DAEMON (def when unset): on needs it to
 // answer with this Protocol, auto takes it when it does. It returns the client when it does.
 //
-// The settings of where the models are and come from are hwnpud's (Settings). When this process's
+// The settings of where the models are and come from are bonsaiaid's (Settings). When this process's
 // differ (a variable set only in the shell, or in a project's .env), on writes to log that
-// hwnpud's are used, and auto runs here instead, with this process's own.
+// bonsaiaid's are used, and auto runs here instead, with this process's own.
 func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 	mode := Mode(def)
 	if mode == "off" {
@@ -488,14 +488,14 @@ func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 	defer cancel()
 	h, err := c.Hello(hctx)
 	if err == nil && h.Protocol != Protocol {
-		err = fmt.Errorf("hwnpud at %s speaks protocol %d, this client %d: hwnpu service stop, then install the same version (go install ./cmd/hwnpud)", c.Socket, h.Protocol, Protocol)
+		err = fmt.Errorf("bonsaiaid at %s speaks protocol %d, this client %d: bonsaiai service stop, then install the same version (go install ./cmd/bonsaiaid)", c.Socket, h.Protocol, Protocol)
 	}
 	if err != nil {
 		if mode == "auto" {
 			return nil, nil
 		}
 		if errors.Is(err, ErrNotRunning) {
-			return nil, fmt.Errorf("%s=on: %w (go install ./cmd/hwnpu ./cmd/hwnpud && hwnpu service install, or %s=off)", ModeEnv, err, ModeEnv)
+			return nil, fmt.Errorf("%s=on: %w (go install ./cmd/bonsaiai ./cmd/bonsaiaid && bonsaiai service install, or %s=off)", ModeEnv, err, ModeEnv)
 		}
 		return nil, fmt.Errorf("%s=on: %w", ModeEnv, err)
 	}
@@ -508,12 +508,12 @@ func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 		if len(files) == 0 {
 			files = []string{filepath.Join(envfile.UserDir(), ".env")}
 		}
-		where := "hwnpud reads " + strings.Join(files, ", ") + ", not this shell"
+		where := "bonsaiaid reads " + strings.Join(files, ", ") + ", not this shell"
 		if mode == "auto" {
-			fmt.Fprintf(log, "not through hwnpud, whose settings differ (%s; %s): running here\n", strings.Join(parts, "; "), where)
+			fmt.Fprintf(log, "not through bonsaiaid, whose settings differ (%s; %s): running here\n", strings.Join(parts, "; "), where)
 			return nil, nil
 		}
-		fmt.Fprintf(log, "through hwnpud with its settings, not these: %s (%s)\n", strings.Join(parts, "; "), where)
+		fmt.Fprintf(log, "through bonsaiaid with its settings, not these: %s (%s)\n", strings.Join(parts, "; "), where)
 	}
 	return c, nil
 }

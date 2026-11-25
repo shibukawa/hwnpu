@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Driver names of the NPUs hwnpu knows.
+// Driver names of the NPUs bonsaiai knows.
 const (
 	DriverIntel = "intel_vpu"
 	DriverAMD   = "amdxdna"

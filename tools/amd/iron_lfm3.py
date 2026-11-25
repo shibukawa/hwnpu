@@ -1,6 +1,6 @@
 """LFM3 (Liquid AI's LFM3-1.7B) on IRON's shared decoder (``iron.lm``), its shape read from its checkpoint's ``config.json``.
 
-An application of amd/IRON kept in hwnpu (IRON has none for LFM3), exported by
+An application of amd/IRON kept in bonsaiai (IRON has none for LFM3), exported by
 ``iron_export_lm.py lfm3`` like IRON's own Gemma 4.
 
 LFM3's layers are of three kinds (``layer_types``):
@@ -23,7 +23,7 @@ norm is ``embedding_norm``; the head is the embedding.
 With ``install_q4`` (``iron_export_lm.py lfm3 --q4``) the projections are in iron_q4's
 formats, by part: the feed-forward's in q4nx, the attention's and the convolution's in q8,
 the head in q4nx. The head is tied to the token embeddings, whose rows then go to the host
-(``embed.bin``, iron_hostple's ``hwnpu_embed_rows``, as Gemma 4's with ``--q4``).
+(``embed.bin``, iron_hostple's ``bonsaiai_embed_rows``, as Gemma 4's with ``--q4``).
 """
 
 import dataclasses
@@ -49,25 +49,25 @@ from iron.operators.sigmoid import Sigmoid
 from ml_dtypes import bfloat16
 
 # A decode step's short convolution as one operator (iron_shortconv.ShortConvStep) in place of
-# IRON's about 16 (docs/design/amd-llm.md). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
-FUSED_CONV = __import__("os").environ.get("HWNPU_LFM3_FUSED_CONV", "1") != "0"
+# IRON's about 16 (docs/design/amd-llm.md). BONSAIAI_LFM3_FUSED_CONV=0 keeps IRON's.
+FUSED_CONV = __import__("os").environ.get("BONSAIAI_LFM3_FUSED_CONV", "1") != "0"
 # A prompt chunk's the same (iron_shortconv's ShortConvChunk, in_proj one linear) instead of
 # IRON's about 26 operators a conv layer (window and tail copies, a multiply and an add a tap).
-# HWNPU_LFM3_CHUNK_CONV=0 keeps IRON's.
-CHUNK_CONV = __import__("os").environ.get("HWNPU_LFM3_CHUNK_CONV", "1") != "0"
+# BONSAIAI_LFM3_CHUNK_CONV=0 keeps IRON's.
+CHUNK_CONV = __import__("os").environ.get("BONSAIAI_LFM3_CHUNK_CONV", "1") != "0"
 # The decode step's ShortConvStep reads and writes the convolution's checkpoint slots itself (at
-# per-call offsets) instead of a copy of each around it. HWNPU_LFM3_SLOTS_CONV=0 keeps the copies.
-SLOTS_CONV = __import__("os").environ.get("HWNPU_LFM3_SLOTS_CONV", "1") != "0"
+# per-call offsets) instead of a copy of each around it. BONSAIAI_LFM3_SLOTS_CONV=0 keeps the copies.
+SLOTS_CONV = __import__("os").environ.get("BONSAIAI_LFM3_SLOTS_CONV", "1") != "0"
 # A decode step's post-norm, residual and next norm as one operator (iron_sandwich.SandwichAdd)
-# in place of three, twice a layer. HWNPU_LFM3_FUSED_NORMS=0 keeps IRON's.
-FUSED_NORMS = __import__("os").environ.get("HWNPU_LFM3_FUSED_NORMS", "1") != "0"
+# in place of three, twice a layer. BONSAIAI_LFM3_FUSED_NORMS=0 keeps IRON's.
+FUSED_NORMS = __import__("os").environ.get("BONSAIAI_LFM3_FUSED_NORMS", "1") != "0"
 # The MLP's gate and up as one table (iron_q4's glu_param, QGEMVGlu: one operator of the decode
 # step in place of two GEMVs, a SiLU and a product), as iron_qwen35's FUSE_GLU.
-FUSE_GLU = __import__("os").environ.get("HWNPU_LFM3_FUSE_GLU", "1") != "0"
+FUSE_GLU = __import__("os").environ.get("BONSAIAI_LFM3_FUSE_GLU", "1") != "0"
 # The sandwiches made in the GEMV that reads their output (iron_q4.sandwich_linear: a conv layer's
 # in_proj, the MLP's QGEMVGlu, the head) in place of SandwichAdd and the GEMV (docs/design/amd.md).
-# HWNPU_LFM3_SANDWICH_GEMV=0 keeps SandwichAdd.
-SANDWICH_GEMV = __import__("os").environ.get("HWNPU_LFM3_SANDWICH_GEMV", "1") != "0"
+# BONSAIAI_LFM3_SANDWICH_GEMV=0 keeps SandwichAdd.
+SANDWICH_GEMV = __import__("os").environ.get("BONSAIAI_LFM3_SANDWICH_GEMV", "1") != "0"
 
 # By part of the model (mlp, attn, conv, head), its weights' format: iron_q4's "q4" (q4nx) or
 # "q8", or "bf16". Empty: all bf16, IRON's own linear.

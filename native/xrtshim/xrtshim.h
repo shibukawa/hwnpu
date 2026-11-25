@@ -1,13 +1,13 @@
 /*
- * xrtshim: a C ABI over XRT's C++ API, for hwnpu (Go without cgo) to reach AMD's NPU where
+ * xrtshim: a C ABI over XRT's C++ API, for bonsaiai (Go without cgo) to reach AMD's NPU where
  * the only way in is XRT: Windows, whose NPU driver ships xrt_coreutil.dll. It builds on Linux
  * too, against the XRT packages, which is how it is tested (internal/backend/amdxrt).
  *
  * Every function that can fail returns NULL on success, or an error message the caller frees
  * with xs_free_error. Objects are opaque and freed by their xs_*_free.
  */
-#ifndef HWNPU_XRTSHIM_H
-#define HWNPU_XRTSHIM_H
+#ifndef BONSAIAI_XRTSHIM_H
+#define BONSAIAI_XRTSHIM_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -22,7 +22,7 @@
 extern "C" {
 #endif
 
-/* The ABI version: hwnpu refuses a shim of another. */
+/* The ABI version: bonsaiai refuses a shim of another. */
 #define XS_ABI 1
 
 typedef struct xs_device xs_device;

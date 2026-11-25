@@ -10,14 +10,14 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/shibukawa/hwnpu/internal/aieelf"
-	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/ert"
-	"github.com/shibukawa/hwnpu/internal/mapped"
-	"github.com/shibukawa/hwnpu/internal/power"
-	"github.com/shibukawa/hwnpu/internal/types"
-	"github.com/shibukawa/hwnpu/internal/xclbin"
-	"github.com/shibukawa/hwnpu/internal/xdna"
+	"github.com/shibukawa/bonsaiai/internal/aieelf"
+	"github.com/shibukawa/bonsaiai/internal/backend"
+	"github.com/shibukawa/bonsaiai/internal/ert"
+	"github.com/shibukawa/bonsaiai/internal/mapped"
+	"github.com/shibukawa/bonsaiai/internal/power"
+	"github.com/shibukawa/bonsaiai/internal/types"
+	"github.com/shibukawa/bonsaiai/internal/xclbin"
+	"github.com/shibukawa/bonsaiai/internal/xdna"
 )
 
 const cmdBOSize = 4096 // XRT's kernel_command::allocation_size
@@ -177,7 +177,7 @@ func (b *buffer) Close() error {
 }
 
 // qosPriority maps the power policy to the hardware context priority (unprivileged). The device
-// wide power mode (SET_STATE) needs root and affects every user, so hwnpu leaves it alone.
+// wide power mode (SET_STATE) needs root and affects every user, so bonsaiai leaves it alone.
 func qosPriority(p types.PowerPolicy) uint32 {
 	switch p {
 	case types.PowerLow:

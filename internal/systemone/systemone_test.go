@@ -16,11 +16,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/pyjson"
-	"github.com/shibukawa/hwnpu/internal/vision"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/lfm3"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/pyjson"
+	"github.com/shibukawa/bonsaiai/internal/vision"
 )
 
 // Prompt writes what the systemone template llama.cpp writes for LFM3 d1 renders. The expected

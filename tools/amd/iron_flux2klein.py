@@ -19,7 +19,7 @@ positions are an input and the blocks' weights are placed alike whatever the row
 graphs depend on a step's row count alone: they are named by it (doubles_n8704 serves one
 reference of the picture's size and four of half its sides) and share one set of banks.
 
-Sizes: ``--size 1024 512 832x1248 ...`` makes one export of them all (hwnpu's eight aspect
+Sizes: ``--size 1024 512 832x1248 ...`` makes one export of them all (bonsaiai's eight aspect
 ratios: internal/imagegen/aspect). A step whose rows are no whole rounds of the attention's 512
 (832 x 1248 is 4056 patches and the text's 512 rows) runs with the text's rows first, then the
 image's, padded with zeros to the next round: the attention's keys are bounded to the step's
@@ -42,7 +42,7 @@ doubles_tROWS, on the same banks.
   vae/s*      the VAE's decoder in stages; vae_enc/s* its encoder (a reference image), and
               vae_enc_d2 the encoder of a reference of half the sides. Their GroupNorms are two
               operators and a step of the host between two commands (iron_groupnorm,
-              ``--host-norm``): hwnpu's anima.VAE reads the stages' ``norms``
+              ``--host-norm``): bonsaiai's anima.VAE reads the stages' ``norms``
 
 RoPE: four axes of 32 (the reference index, row, column, the text's position), theta 2000; FLUX
 turns pairs (2i, 2i + 1) of a head, so the q and k rows are permuted within each head to IRON's

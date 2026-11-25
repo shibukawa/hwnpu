@@ -32,8 +32,8 @@ func BenchmarkGenLayer(b *testing.B) {
 	v.Quantize(x)
 	outs := [][]float32{make([]float32, 5760), make([]float32, 2880)}
 	b.SetBytes(int64(4 * (5760 + 2880) * nb * 17))
-	// HWNPU_TEST_GPTOSS_GAP: a pause between layers (the Neural Engine's part), not timed
-	gap, _ := time.ParseDuration(os.Getenv("HWNPU_TEST_GPTOSS_GAP"))
+	// BONSAIAI_TEST_GPTOSS_GAP: a pause between layers (the Neural Engine's part), not timed
+	gap, _ := time.ParseDuration(os.Getenv("BONSAIAI_TEST_GPTOSS_GAP"))
 	i := 0
 	for b.Loop() {
 		if gap > 0 {

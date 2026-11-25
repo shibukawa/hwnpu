@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
+	"github.com/shibukawa/bonsaiai/internal/coreai/mlirbc"
 )
 
 // resMap stands for a file of a prebuilt program that is made of the bytes of its asset's

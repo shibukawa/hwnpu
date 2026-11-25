@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein/mil"
+	"github.com/shibukawa/bonsaiai/internal/imagegen/flux3klein/mil"
 )
 
 // Sigmas are FlowMatchEulerDiscreteScheduler's with a static shift of 6.93 over linspace(1, 1/16,

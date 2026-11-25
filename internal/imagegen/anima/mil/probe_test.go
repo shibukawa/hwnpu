@@ -8,20 +8,20 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
 // TestWriteProbes writes parts of the DiT at 1024 x 1024 whole and with pieces taken out, as Core
-// AI programs (Core ML packages with HWNPU_TEST_ANIMA_PROBE_COREML, for aicheck run -cpu), to time
-// what each piece of a block costs with aicheck run -calls N and aicheck cycle (docs/design/image-apple.md): HWNPU_TEST_ANIMA_DIR is the Anima directory (diffusion_models/ ...), HWNPU_TEST_ANIMA_PROBE_OUT
-// where they go, HWNPU_TEST_ANIMA_PROBE the comma separated keys of parts (default: all). v_ are one
+// AI programs (Core ML packages with BONSAIAI_TEST_ANIMA_PROBE_COREML, for aicheck run -cpu), to time
+// what each piece of a block costs with aicheck run -calls N and aicheck cycle (docs/design/image-apple.md): BONSAIAI_TEST_ANIMA_DIR is the Anima directory (diffusion_models/ ...), BONSAIAI_TEST_ANIMA_PROBE_OUT
+// where they go, BONSAIAI_TEST_ANIMA_PROBE the comma separated keys of parts (default: all). v_ are one
 // block (with self-attention it fails the Neural Engine's compiler alone: time groups), g_ and
 // na are groups of blocks, a_ attention alone on its q, k and v.
 func TestWriteProbes(t *testing.T) {
-	out, root := os.Getenv("HWNPU_TEST_ANIMA_PROBE_OUT"), os.Getenv("HWNPU_TEST_ANIMA_DIR")
+	out, root := os.Getenv("BONSAIAI_TEST_ANIMA_PROBE_OUT"), os.Getenv("BONSAIAI_TEST_ANIMA_DIR")
 	if out == "" || root == "" {
-		t.Skip("HWNPU_TEST_ANIMA_PROBE_OUT and HWNPU_TEST_ANIMA_DIR")
+		t.Skip("BONSAIAI_TEST_ANIMA_PROBE_OUT and BONSAIAI_TEST_ANIMA_DIR")
 	}
 	w, err := OpenWeights(root, filepath.Join(root, "diffusers"), "anima-turbo-v1.1.safetensors")
 	if err != nil {
@@ -168,14 +168,14 @@ func TestWriteProbes(t *testing.T) {
 		"defer256":   attnVar("a_defer256", 256, n, 0, false, false),
 		"crossdefer": attnVar("a_crossdefer", 0, TextRows, 0, false, false),
 	}
-	want := os.Getenv("HWNPU_TEST_ANIMA_PROBE")
+	want := os.Getenv("BONSAIAI_TEST_ANIMA_PROBE")
 	for k, p := range parts {
 		if want != "" && !strings.Contains(","+want+",", ","+k+",") {
 			continue
 		}
-		// HWNPU_TEST_ANIMA_PROBE_FORMAT: the weights' format (default int8, the export's), in the name
+		// BONSAIAI_TEST_ANIMA_PROBE_FORMAT: the weights' format (default int8, the export's), in the name
 		format, suffix := "int8", ""
-		if f := os.Getenv("HWNPU_TEST_ANIMA_PROBE_FORMAT"); f != "" {
+		if f := os.Getenv("BONSAIAI_TEST_ANIMA_PROBE_FORMAT"); f != "" {
 			format, suffix = f, "_"+f
 		}
 		path := filepath.Join(out, p.Name+suffix+probeExt())
@@ -418,14 +418,14 @@ func ditBlockV(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, vr v
 }
 
 func probeBackend() string {
-	if os.Getenv("HWNPU_TEST_ANIMA_PROBE_COREML") != "" {
+	if os.Getenv("BONSAIAI_TEST_ANIMA_PROBE_COREML") != "" {
 		return llm.BackendCoreML
 	}
 	return llm.BackendCoreAI
 }
 
 func probeExt() string {
-	if os.Getenv("HWNPU_TEST_ANIMA_PROBE_COREML") != "" {
+	if os.Getenv("BONSAIAI_TEST_ANIMA_PROBE_COREML") != "" {
 		return ".mlpackage"
 	}
 	return ".aimodel"

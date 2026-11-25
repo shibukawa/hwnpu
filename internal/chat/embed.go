@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/chain"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/tokenizer"
 )
 
 // DefaultEmbedSeqs are the sequence lengths PrepareEmbedder converts the embedding model for: a
@@ -117,7 +117,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 
 // EmbedConfig says where the embedding model is.
 type EmbedConfig struct {
-	// Packages are the model converted by hwnpu-dev convert (an .mlpackage or an out.parts.json),
+	// Packages are the model converted by bonsaiai-dev convert (an .mlpackage or an out.parts.json),
 	// each with another sequence length (-seq).
 	Packages []string
 	// ModelConfig is config.json, Weights the checkpoint the token embeddings are read from,
@@ -140,7 +140,7 @@ type Embedder struct {
 	Tok  *tokenizer.SentencePiece
 	Name string // the model's name
 
-	dev    *hwnpu.Device
+	dev    *bonsaiai.Device
 	chains []*chain.Chain
 	w      llm.Weights
 	model  llm.Model
@@ -173,7 +173,7 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 		return nil, err
 	}
 	if a.Name != "plamo-bi" {
-		return nil, fmt.Errorf("chat: %s is not an embedding model hwnpu-chat runs (only PLaMo-Embedding)", a.Title)
+		return nil, fmt.Errorf("chat: %s is not an embedding model bonsaiai-chat runs (only PLaMo-Embedding)", a.Title)
 	}
 	if c.Tokenizer == "" {
 		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), "tokenizer.model")
@@ -367,13 +367,13 @@ func (e *Embedder) run(ids []int32, skip int) ([]float32, error) {
 	for j := range ids {
 		mask[j] = 1
 	}
-	hwnpu.EncodeF16(p.In["x"], x)
-	hwnpu.EncodeF16(p.In["mask"], mask)
+	bonsaiai.EncodeF16(p.In["x"], x)
+	bonsaiai.EncodeF16(p.In["mask"], mask)
 	if err := p.Run(); err != nil {
 		return nil, err
 	}
 	y := make([]float32, len(ids)*d)
-	hwnpu.DecodeF16(y, p.Out["y"][:2*len(y)])
+	bonsaiai.DecodeF16(y, p.Out["y"][:2*len(y)])
 	return meanPool(y, d, skip), nil
 }
 

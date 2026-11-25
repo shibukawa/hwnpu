@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/bonsaiai"
+	"github.com/shibukawa/bonsaiai/internal/llm"
+	"github.com/shibukawa/bonsaiai/internal/llm/decode"
+	"github.com/shibukawa/bonsaiai/internal/milcpu"
+	"github.com/shibukawa/bonsaiai/internal/mlpackage"
 )
 
-// writeParts converts the model in n parts, as hwnpu-dev convert does, and returns the manifest.
+// writeParts converts the model in n parts, as bonsaiai-dev convert does, and returns the manifest.
 func writeParts(t *testing.T, c *Config, w llm.Weights, opts llm.Options, n int) (string, []llm.Part) {
 	t.Helper()
 	plan, err := llm.PlanSplit(c, opts, math.MaxInt64, n)
@@ -101,7 +101,7 @@ func cpuProgram(t *testing.T, manifest string) decode.Program {
 					b = p.Out[name]
 				}
 				v := make([]float32, count(sh))
-				hwnpu.DecodeF16(v, b)
+				bonsaiai.DecodeF16(v, b)
 				in[name] = milcpu.Tensor{Shape: sh, Data: v}
 			}
 			res, err := prog.Run(in, milcpu.Options{})
@@ -115,7 +115,7 @@ func cpuProgram(t *testing.T, manifest string) decode.Program {
 						continue
 					}
 				}
-				hwnpu.EncodeF16(p.Out[name], o.Data)
+				bonsaiai.EncodeF16(p.Out[name], o.Data)
 			}
 		}
 		return nil
@@ -171,12 +171,12 @@ func TestPartsMatchWhole(t *testing.T) {
 	for parts := 2; parts <= 4; parts++ {
 		path, plan := writeParts(t, c, w, llm.Options{Seq: n, Format: "fp16"}, parts)
 		p := cpuProgram(t, path)
-		hwnpu.EncodeF16(p.In["x"], feed["x"])
+		bonsaiai.EncodeF16(p.In["x"], feed["x"])
 		if err := p.Run(); err != nil {
 			t.Fatal(err)
 		}
 		got := make([]float32, len(whole))
-		hwnpu.DecodeF16(got, p.Out["y"])
+		bonsaiai.DecodeF16(got, p.Out["y"])
 		if e := relErr32(got, whole); e > 2e-3 {
 			t.Errorf("%d parts %v: relative error %g", parts, plan, e)
 		}

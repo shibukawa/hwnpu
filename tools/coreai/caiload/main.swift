@@ -1,4 +1,4 @@
-// caiload: a small Swift command over Core AI for measuring loads apart from hwnpu (docs/design/apple-coreai.md): specializes .aimodel or .aimodelc files on the Neural Engine and prints the time of each.
+// caiload: a small Swift command over Core AI for measuring loads apart from bonsaiai (docs/design/apple-coreai.md): specializes .aimodel or .aimodelc files on the Neural Engine and prints the time of each.
 //
 //	caiload PATH...            specialize in turn (the first load compiles; the second is the cache)
 //	caiload -par PATH...       specialize all at once in this process

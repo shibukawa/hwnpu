@@ -1,21 +1,21 @@
-// Package modelstore finds and fetches the files of the models hwnpu runs, as hwnpu's commands
+// Package modelstore finds and fetches the files of the models bonsaiai runs, as bonsaiai's commands
 // do (docs/cache-sharing-design.md 7). A file is looked for in layers, in order:
 //
-//	0  this machine's cache  Options.Root (HWNPU_CACHE, else hwnpu in the user cache directory),
+//	0  this machine's cache  Options.Root (BONSAIAI_CACHE, else bonsaiai in the user cache directory),
 //	                         what is read from the other layers: written back to always
-//	1  the sources           Options.Sources (HWNPU_MODEL_SOURCE, HWNPU_MODEL_SOURCE_1, ...):
+//	1  the sources           Options.Sources (BONSAIAI_MODEL_SOURCE, BONSAIAI_MODEL_SOURCE_1, ...):
 //	                         file://, http(s):// (WebDAV, or any server read only), s3:// URLs;
 //	                         ?writeback=true puts in one what is read from a later layer
 //	2  the bundled models    Options.Bundle: the models the application installs with it
 //	                         (read only, used where they are)
-//	3  Hugging Face          unless Options.HuggingFace is false (HWNPU_MODEL_HUGGING_FACE)
+//	3  Hugging Face          unless Options.HuggingFace is false (BONSAIAI_MODEL_HUGGING_FACE)
 //
-// A repository's files in a layer are those its hwnpu-lock.json names, of one commit: the
+// A repository's files in a layer are those its bonsaiai-lock.json names, of one commit: the
 // commit a model pins, else the one of the first lock after this machine's cache, else this
 // machine's, else Hugging Face's main. Every file is kept here in Store.Dir of its repository
 // (original/OWNER/NAME under the root), whichever layer it came from.
 //
-// The layers are a setting of the process: Open sets them for everything in it, hwnpu's own
+// The layers are a setting of the process: Open sets them for everything in it, bonsaiai's own
 // code too.
 package modelstore
 
@@ -30,22 +30,22 @@ import (
 
 	"github.com/shibukawa/configdir"
 
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/bonsaiai/internal/cache"
+	"github.com/shibukawa/bonsaiai/internal/chat"
+	"github.com/shibukawa/bonsaiai/internal/console"
+	shared "github.com/shibukawa/bonsaiai/internal/store"
 )
 
-// Options say where the models come from. The zero value is what hwnpu's commands read: the
+// Options say where the models come from. The zero value is what bonsaiai's commands read: the
 // environment (and its .env files), without bundled models.
 type Options struct {
-	// Root is this machine's cache, layer 0: "" for HWNPU_CACHE, else hwnpu in the user cache
-	// directory (~/.cache/hwnpu, ~/Library/Caches/hwnpu, %LOCALAPPDATA%\hwnpu).
+	// Root is this machine's cache, layer 0: "" for BONSAIAI_CACHE, else bonsaiai in the user cache
+	// directory (~/.cache/bonsaiai, ~/Library/Caches/bonsaiai, %LOCALAPPDATA%\bonsaiai).
 	Root string
-	// Sources are the URLs of the sources, layer 1 (as HWNPU_MODEL_SOURCE's): nil for the
+	// Sources are the URLs of the sources, layer 1 (as BONSAIAI_MODEL_SOURCE's): nil for the
 	// environment's, empty for none.
 	Sources []string
-	// HuggingFace says whether Hugging Face is read last: nil for HWNPU_MODEL_HUGGING_FACE (true
+	// HuggingFace says whether Hugging Face is read last: nil for BONSAIAI_MODEL_HUGGING_FACE (true
 	// when it is not set).
 	HuggingFace *bool
 	// Bundle is the application whose resource folders (configdir's QueryResourceFolders: next
@@ -53,15 +53,15 @@ type Options struct {
 	// installs with it, in BundleFolder: layer 2. nil for none.
 	Bundle *configdir.ConfigDir
 	// BundleFolder is the folder of each resource folder with the models, in the layout of a
-	// source (original/OWNER/NAME/ with hwnpu-lock.json, converted/): "models" when empty.
+	// source (original/OWNER/NAME/ with bonsaiai-lock.json, converted/): "models" when empty.
 	BundleFolder string
-	// Limits are what this machine's cache may take of the disk: nil for HWNPU_CACHE_MAX_SIZE and
-	// HWNPU_CACHE_MIN_FREE (10GB free unless set). A download that would leave less free, or put
+	// Limits are what this machine's cache may take of the disk: nil for BONSAIAI_CACHE_MAX_SIZE and
+	// BONSAIAI_CACHE_MIN_FREE (10GB free unless set). A download that would leave less free, or put
 	// the cache over MaxSize, removes the units least recently used first when there is a MaxSize,
 	// and fails (ErrNoRoom) when that is not enough.
 	Limits *Limits
 	// Files are definition files of the application's own (models.yaml's format: its models,
-	// uses and aliases), read over hwnpu's, the machine's and the user's, as hwnpu-chat's
+	// uses and aliases), read over bonsaiai's, the machine's and the user's, as bonsaiai-chat's
 	// -models are.
 	Files []string
 	// Definitions are definition files given as their text (models.yaml's format), read over
@@ -106,7 +106,7 @@ type Layer struct {
 }
 
 // Open sets the layers of the process as o says and returns the Store that reads them. It reads
-// the model definitions (hwnpu's models.yaml, the machine's, the user's and o.Files) too.
+// the model definitions (bonsaiai's models.yaml, the machine's, the user's and o.Files) too.
 func Open(o Options) (*Store, error) {
 	cache.SetRoot(o.Root)
 	cache.SetLimits(o.Limits)
@@ -160,7 +160,7 @@ func (s *Store) File(ctx context.Context, repo, name string) (string, error) {
 }
 
 // Weights puts a model's checkpoint here: model.safetensors, or its index and the files it
-// names. It returns the path of model.safetensors, by which hwnpu opens either.
+// names. It returns the path of model.safetensors, by which bonsaiai opens either.
 func (s *Store) Weights(ctx context.Context, repo string) (string, error) {
 	return chat.FetchWeights(ctx, repo, s.log)
 }
@@ -220,7 +220,7 @@ type CleanFolder = shared.CleanFolder
 
 // PlanClean works out what a writeback cut off left in each source written back to (not this
 // machine's cache, not the bundled models): an export's folder with no entry.json (all its
-// files), a repository's files its hwnpu-lock.json does not name, the temporary files of
+// files), a repository's files its bonsaiai-lock.json does not name, the temporary files of
 // uploads. A folder a writeback marked in the last hour (store.WritingStale) is being written and
 // is left. Nothing is removed until Clean.
 func (s *Store) PlanClean(ctx context.Context) ([]SourceClean, error) {
@@ -273,11 +273,11 @@ type Memory struct {
 	Model   string // the model's name in the definitions
 	GB      int    // the memory it runs as: Chosen, else Machine
 	Chosen  int    // chosen for it (SetMemory), 0 for none
-	Machine int    // this machine's (HWNPU_MEMORY, else the physical memory)
+	Machine int    // this machine's (BONSAIAI_MEMORY, else the physical memory)
 }
 
 // Memory is the memory model name (a name of the definitions, its repository, or a family or a
-// use: the model it picks here) runs as on this machine. Every hwnpu command and a Store's
+// use: the model it picks here) runs as on this machine. Every bonsaiai command and a Store's
 // application run a model as on a machine of that memory: its programs are those models.yaml
 // defines for it (variants), converted or fetched for that alone.
 func (s *Store) Memory(name string) (Memory, error) {
@@ -290,9 +290,9 @@ func (s *Store) Memory(name string) (Memory, error) {
 	return mem, nil
 }
 
-// SetMemory chooses gb as the memory model name runs as on this machine, in every hwnpu command
+// SetMemory chooses gb as the memory model name runs as on this machine, in every bonsaiai command
 // (a 16 GB Mac that runs a model the 8 GB way, beside other programs); 0 forgets it. It is kept
-// in hwnpu's directory of settings (run.json beside the user's models.yaml), not in the cache:
+// in bonsaiai's directory of settings (run.json beside the user's models.yaml), not in the cache:
 // pruning the cache keeps it, and another machine reading the same cache does not get it.
 func (s *Store) SetMemory(name string, gb int) (Memory, error) {
 	m, err := chat.Named(name)

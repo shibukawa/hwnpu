@@ -1,4 +1,4 @@
-package hwnpu
+package bonsaiai
 
 // Placement selects how Compile treats graphs that do not run entirely on the NPU.
 type Placement uint8
