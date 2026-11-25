@@ -137,6 +137,21 @@ func AMDExport(ctx context.Context, use, backend string, log io.Writer) (string,
 // the ai package's uses pick it their own way): its export here, else in the sources, else made
 // by PrepareAMD.
 func AMDExportOf(ctx context.Context, m Model, log io.Writer) (string, error) {
+	if own := AMDExportDir(m); own != "" {
+		// the recipe's own export (for the memory m runs as) here; else from the sources before
+		// one made by hand under another name (the whole export where the recipe's is gpt-oss's
+		// 16 places, or one made before the recipe changed), which runs only when the sources do
+		// not have it, in place of making it
+		if d := cache.FindExport(filepath.Base(own), isExport); d != "" {
+			noteHandOverPin(m, d, log)
+			ShareMadeByHand(m, d, log) // one made by hand here goes in the sources written back to
+			return d, nil
+		}
+		if d := FindAMDExport(m); d != "" {
+			return prepareAMD(ctx, m, log, d)
+		}
+		return PrepareAMD(ctx, m, log)
+	}
 	if d := FindAMDExport(m); d != "" {
 		ShareMadeByHand(m, d, log) // one made by hand here goes in the sources written back to
 		return d, nil
@@ -176,6 +191,22 @@ var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_c
 	"chat_template.jinja", "generation_config.json", "processor_config.json", "preprocessor_config.json",
 	"calibration.json"} // a d1 model's temperature (internal/systemone)
 
+// noteHandOverPin says on log that the export at dir, made by hand in ~/models (no entry.json:
+// its bytes are not known), runs in place of the one models.yaml pins under its name: ~/models
+// comes first (cache.ExportRoots), and moving it away takes the pin.
+func noteHandOverPin(m Model, dir string, log io.Writer) {
+	if log == nil || filepath.Dir(dir) != cache.LegacyExports() {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(dir, shared.EntryFile)); err == nil {
+		return
+	}
+	if p, ok := PinOf(m, cache.AMDTarget, filepath.Base(dir)); ok {
+		fmt.Fprintf(log, "%s: running %s, made by hand, not the %s models.yaml pins (move it away to take the pin)\n",
+			m.Name, dir, p.At)
+	}
+}
+
 // PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as its recipe
 // says: from the shared layers when one has it (SharedExport; else one made by hand under its
 // name that hwnpu-dev sources import put there), else it checks that IRON's
@@ -184,6 +215,13 @@ var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_c
 // built into hwnpu) in that environment into DIR.part, renamed to the export when it is done.
 // Its output goes to DIR.log. A cut-off export is made again.
 func PrepareAMD(ctx context.Context, m Model, log io.Writer) (string, error) {
+	return prepareAMD(ctx, m, log, "")
+}
+
+// prepareAMD is PrepareAMD; with byHand (an export made by hand here under another name), the
+// recipe's export is only fetched, and byHand runs when no source has it (or none answers)
+// instead of making it.
+func prepareAMD(ctx context.Context, m Model, log io.Writer, byHand string) (string, error) {
 	logf := func(format string, args ...any) {
 		if log != nil {
 			fmt.Fprintf(log, format+"\n", args...)
@@ -198,6 +236,18 @@ func PrepareAMD(ctx context.Context, m Model, log io.Writer) (string, error) {
 	}
 	// else one made by hand under its name and put in the sources (hwnpu-dev sources import)
 	imported := []SharedRecipe{{Kind: ImportKind, Recipe: ImportedRecipe(m, cache.AMDTarget, filepath.Base(out))}}
+	if byHand != "" {
+		ok, err := FetchShared(ctx, "iron-lm", recipe, imported, out, log)
+		if ok && err == nil {
+			return out, nil
+		}
+		why := "the sources do not have it"
+		if err != nil {
+			why = err.Error()
+		}
+		logf("%s: %s not had (%s); running %s, made by hand", m.Name, filepath.Base(out), why, byHand)
+		return byHand, nil
+	}
 	err := SharedExportOr(ctx, "iron-lm", recipe, imported, out, log, func() error {
 		python, err := ironPython(ctx)
 		if err != nil {
