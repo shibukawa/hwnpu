@@ -2,7 +2,8 @@
 // (docs/apple-feedback): each one operation or one short chain, fp16, constant weights, no
 // checkpoint.
 //
-//	go run ./tools/coreai/fbrepro sin OUT.aimodel          sin alone (M1: off the Neural Engine)
+//	go run ./tools/coreai/fbrepro sin OUT.aimodel          sin alone (M1, M2: off the Neural Engine)
+//	go run ./tools/coreai/fbrepro cos OUT.aimodel          cos alone
 //	go run ./tools/coreai/fbrepro clipew OUT.aimodel       conv -> reshape -> per-channel mul -> clip
 //	go run ./tools/coreai/fbrepro prescale OUT.aimodel     a*c1 - b*c2
 //	go run ./tools/coreai/fbrepro snake [-clip] [-square] OUT.aimodel
@@ -58,10 +59,10 @@ func main() {
 	}
 	var body func(g *milpart.Graph)
 	switch cmd {
-	case "sin":
+	case "sin", "cos":
 		body = func(g *milpart.Graph) {
 			x := g.Input("x", 1, *c, 1, *t)
-			g.Output(g.Unary("sin", x))
+			g.Output(g.Unary(cmd, x))
 		}
 	case "clipew":
 		body = func(g *milpart.Graph) {
@@ -147,6 +148,6 @@ func clipOp(g *milpart.Graph, x *mlpackage.Var, lo, hi float32) *mlpackage.Var {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fbrepro sin|clipew|prescale|snake|attn [flags] OUT.aimodel")
+	fmt.Fprintln(os.Stderr, "usage: fbrepro sin|cos|clipew|prescale|snake|attn [flags] OUT.aimodel")
 	os.Exit(2)
 }

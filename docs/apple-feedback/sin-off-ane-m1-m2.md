@@ -1,5 +1,7 @@
 # M1 and M2 (h13g, h14g) Neural Engine compilers place a program with `sin` on the GPU, where M3 runs it on the Neural Engine; coreai-build exits 0
 
+Filed as FB25724316 (2026-11-25), for sin and cos. `cos` measured the same way afterwards: not on the Neural Engine for h13g and h14g (offline, and on the M2's device), on it for h15g.
+
 - **Area**: Core AI / Neural Engine compiler, Xcode / coreai-build
 - **Type**: Incorrect/Unexpected behavior
 

@@ -19,7 +19,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
 | 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | FB25724246 ([報告の文面](apple-feedback/purged-programs-silent-recompile.md)) | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
 | 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
-| 10 | M1 (と M2: `sin`) の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 (下書き [sin-off-ane-m1-m2.md](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
+| 10 | M1 (と M2: `sin`、`cos`) の ANE のコンパイラが `sin`、`cos` と、まとめた要素ごとの演算の一部を受け付けない | FB25724316 ([報告の文面](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書き [offline-stricter-than-device.md](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 (下書き [h15g-dma-cache-hint.md](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 | 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
@@ -107,7 +107,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: 画像生成のモデル (FLUX.2 klein、Anima) にだけ prebuilt を置く。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
 - **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
 
-## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
+## 10. M1 の ANE のコンパイラが受け付けない演算 (FB25724316)
 
 - **何が**: Core AI で M1 (h13) の ANE のコンパイラは、`sin`、要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX")、定数倍した入力どうしの引き算 ("NEFUSED_EW: KernelPreScales") を受け付けず、プログラムごと GPU に回す。MOSS の DAC の段 3 は 1 回 4998 フレームで "unexpected failure" になる。M3 の端末のコンパイラは通す。[docs/design/audio-models.md](design/audio-models.md)。ほかの乗らない演算の一覧は [docs/design/apple-coreml.md](design/apple-coreml.md)
 - **今**: DAC の snake の sin を π を単位にした級数で計算し、段 3 を 4500 フレームにした (`DACRevision` 3)。M1 でも M3 でも同じ書き出し

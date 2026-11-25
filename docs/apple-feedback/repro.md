@@ -14,6 +14,7 @@ go build -o /tmp/fb/fbrepro ./tools/coreai/fbrepro
 go build -o /tmp/fb/aicheck ./tools/coreai/aicheck
 cd /tmp/fb
 ./fbrepro sin sin.aimodel
+./fbrepro cos cos.aimodel
 ./fbrepro snake snake.aimodel
 ./fbrepro snake -square square.aimodel
 ./fbrepro attn -chunk 1024 attn-1536-c1024.aimodel   # a 512-row chunk is left
@@ -41,6 +42,7 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 | program | h13g offline | h14g offline | h15g offline | M2 on the device |
 |---|---|---|---|---|
 | `sin` | not on ANE | not on ANE | ANE | not on ANE |
+| `cos` | not on ANE | not on ANE | ANE | not on ANE |
 | `snake` (with sin) | not on ANE | not on ANE | ANE | not on ANE |
 | `snake -square` (y*y for sin) | ANE | ANE | ANE | ANE |
 | `clipew` | ANE | ANE | ANE | ANE |
@@ -48,7 +50,7 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 
 `coreai-build` exits 0 in every case, also when the program is not on the Neural Engine.
 
-- `sin` reproduces on M1 and on M2 (h14g), offline and on the device; M3 (h15g) takes it.
+- `sin` and `cos` reproduce on M1 and on M2 (h14g), offline and on the device; M3 (h15g) takes them (FB25724316).
 - The fused clip ("NEFUSED_EW: EW: MAX") and the constant-scaled subtraction ("KernelPreScales") do not reproduce with these small programs offline for h13g or on the M2. They were seen with the M1's device compiler in the full DAC stage: check `clipew` and `prescale` on an M1 with `load.sh`, and if they pass, attach the DAC stage instead (below).
 
 ## offline-stricter-than-device.md (new, known-issues 11)
