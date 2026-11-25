@@ -64,13 +64,12 @@ func TestTokenizerStepVersion(t *testing.T) {
 	}
 }
 
-// Check refuses what would not go in the sources: a tokenizer's text, the data of --check
-// beside a graph (check/ next to manifest.json), and nothing else (a folder named check alone).
+// Check refuses a tokenizer's text, naming what makes it binary; a finished export passes.
 func TestCheck(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "text", "check"), 0o755)
 	os.WriteFile(filepath.Join(dir, "text", "manifest.json"), []byte(`{}`), 0o644)
-	os.WriteFile(filepath.Join(dir, "text", "check", "values.json"), []byte(`{}`), 0o644)
+	os.WriteFile(filepath.Join(dir, "text", "check", "words.json"), []byte(`{}`), 0o644)
 	os.WriteFile(filepath.Join(dir, "text", "tokenizer.json"), []byte(tiny), 0o644)
 	err := Check(dir, "--finish")
 	if err == nil || !strings.Contains(err.Error(), "text/tokenizer.json") || !strings.Contains(err.Error(), "--finish") {
@@ -79,12 +78,7 @@ func TestCheck(t *testing.T) {
 	if err := Run(dir, []recipe.Step{{Tokenizer: []string{"text/tokenizer.json"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(dir, ""); err == nil || !strings.Contains(err.Error(), "text/check/") {
-		t.Fatalf("--check's data: %v", err)
-	}
-	os.RemoveAll(filepath.Join(dir, "text", "check"))
-	os.MkdirAll(filepath.Join(dir, "images", "check"), 0o755) // no graph beside it: not --check's
-	if err := Check(dir, ""); err != nil {
+	if err := Check(dir, ""); err != nil { // check/ is left out of the entry, not refused
 		t.Errorf("a finished export: %v", err)
 	}
 	// no finish for it: the message says what the recipe needs

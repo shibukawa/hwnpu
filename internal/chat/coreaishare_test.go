@@ -248,8 +248,8 @@ func TestLabelLogTerminal(t *testing.T) {
 }
 
 // TestFinishCoreAICheck refuses a Core AI export that holds a tokenizer's text no finish makes
-// binary (a model whose recipe gives none, or one not known) or --check's data, as RunIRON does;
-// a model's finish makes it binary and lets it go.
+// binary (a model whose recipe gives none, or one not known), as RunIRON does; a model's finish
+// makes it binary and lets it go.
 func TestFinishCoreAICheck(t *testing.T) {
 	tok := `{"added_tokens": [], "normalizer": null, "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": false, "trim_offsets": true, "use_regex": true}, "model": {"type": "BPE", "vocab": {"a": 0, "b": 1, "ab": 2}, "merges": ["a b"]}}`
 	export := filepath.Join(t.TempDir(), "x-v1.coreai")
@@ -265,10 +265,5 @@ func TestFinishCoreAICheck(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(export, "text", "tokenizer.tok")); err != nil {
 		t.Error("no tokenizer.tok")
-	}
-	os.MkdirAll(filepath.Join(export, "text", "check"), 0o755)
-	os.WriteFile(filepath.Join(export, "text", "manifest.json"), []byte(`{}`), 0o644)
-	if err := FinishCoreAI(ctx, export); err == nil || !strings.Contains(err.Error(), "--check") {
-		t.Errorf("--check's data: %v", err)
 	}
 }

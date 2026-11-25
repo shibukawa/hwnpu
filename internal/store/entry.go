@@ -129,9 +129,25 @@ func Fingerprint(recipe map[string]string) string {
 // (iron.ShareExport's and chat.ShareWeights' marks that they went over it): not in an entry.
 var LocalMarks = []string{".files-shared", ".weights-shared"}
 
-// Describe lists the files of dir (every regular file but EntryFile and LocalMarks) with their
-// sizes and SHA-256, into e, and writes e as dir's EntryFile. Symbolic links are not followed or
-// listed.
+// IsCheckData reports whether the folder at p is the check data of a tools/amd export: check/
+// beside a graph's or a model's manifest (manifest.json, model.json), what iron_export_lm.py
+// always writes (check/words.json) and --check adds (the inputs and outputs of a run). Only the
+// tools' checks and tests read it, from the export they made: it is not in an entry.
+func IsCheckData(p string) bool {
+	if filepath.Base(p) != "check" {
+		return false
+	}
+	for _, f := range []string{"manifest.json", "model.json"} {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(p), f)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// Describe lists the files of dir (every regular file but EntryFile, LocalMarks and those of
+// check data: IsCheckData) with their sizes and SHA-256, into e, and writes e as dir's
+// EntryFile. Symbolic links are not followed or listed.
 func Describe(dir string, e Entry) (Entry, error) {
 	e.Format, e.Files, e.Pack = EntryFormat, nil, nil
 	if e.Key == "" {
@@ -143,6 +159,9 @@ func Describe(dir string, e Entry) (Entry, error) {
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.IsDir() && p != dir && IsCheckData(p) {
+			return filepath.SkipDir
 		}
 		if !d.Type().IsRegular() {
 			return nil
