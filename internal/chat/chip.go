@@ -44,3 +44,20 @@ func ActAsChip(chip string) (undo func()) {
 	}
 	return func() { chipName = was }
 }
+
+// archChips are the chips of the architectures of the Neural Engine, by the first three letters
+// of coreai-build's names for them (h13g an M1, h13s its Pro; h18g an M6).
+var archChips = map[string]string{"h13": "M1", "h14": "M2", "h15": "M3", "h16": "M4", "h17": "M5", "h18": "M6"}
+
+// TakesExportsOf reports whether a Mac whose Neural Engine is of the architecture arch (h13g)
+// takes the Core AI exports made as a Mac of chip converts (ActAsChip): its own chip's, or, when
+// its chip is none of ExportChips, those of the last of them (the M2, which stands for the later
+// ones). hwnpu-dev models package prebuilds an export for the architectures that take it alone:
+// where a chip has an export of its own (an M1's FLUX.2 klein), the others' is not its to load.
+func TakesExportsOf(arch, chip string) bool {
+	own := archChips[arch[:min(len(arch), 3)]]
+	if own == chip {
+		return true
+	}
+	return !slices.Contains(ExportChips, own) && chip == ExportChips[len(ExportChips)-1]
+}

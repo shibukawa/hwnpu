@@ -18,7 +18,9 @@ import (
 // configuration a chip's compiler leaves off the Neural Engine. HWNPU_TEST_KLEIN_PROBE_OUT is the
 // .aimodel, HWNPU_TEST_KLEIN_DIR the checkpoint, HWNPU_TEST_KLEIN_PROBE_REFS the edit's references
 // (side divisors, "2,2,2": three of half the sides; empty: no edit), _SIZE "W,H" (1024,1024),
-// _GROUP "first,count" (0,5), _KIND "double" for the double blocks' group in place, _PIECES milpart.PieceKeys for this program, _FORMAT (lut8).
+// _GROUP "first,count" (0,5), _KIND "double" for the double blocks' group in place, _PIECES milpart.PieceKeys for this program, _FORMAT (lut8),
+// _REF a Core ML package of the same part too, for the CPU interpreter to check the program's
+// output on a device against (go run ./tools/coreai/aicheck run -cpu -ref REF OUT#FUNCTION).
 func TestWriteSingleProbe(t *testing.T) {
 	out, root := os.Getenv("HWNPU_TEST_KLEIN_PROBE_OUT"), os.Getenv("HWNPU_TEST_KLEIN_DIR")
 	if out == "" || root == "" {
@@ -71,12 +73,19 @@ func TestWriteSingleProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := llm.Options{Backend: llm.BackendCoreAI, Format: format}
-	part := mil.Singles(c, first, count)
-	if os.Getenv("HWNPU_TEST_KLEIN_PROBE_KIND") == "double" {
-		part = mil.Doubles(c, first, count)
+	part := func() *mil.Part {
+		if os.Getenv("HWNPU_TEST_KLEIN_PROBE_KIND") == "double" {
+			return mil.Doubles(c, first, count)
+		}
+		return mil.Singles(c, first, count)
 	}
-	if _, err := llm.WriteAIFunctions(out, wt, []llm.AIFunction{{Name: fn, Model: part, Options: opts}}); err != nil {
+	if _, err := llm.WriteAIFunctions(out, wt, []llm.AIFunction{{Name: fn, Model: part(), Options: opts}}); err != nil {
 		t.Fatal(err)
+	}
+	if ref := os.Getenv("HWNPU_TEST_KLEIN_PROBE_REF"); ref != "" {
+		if _, err := llm.WritePart(ref, part(), wt, llm.Options{Backend: llm.BackendCoreML, Format: format}, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Logf("%s: %s, %d rows, PieceKeys %d", out, fn, c.Rows(), milpart.PieceKeys)
 }

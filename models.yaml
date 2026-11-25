@@ -928,8 +928,9 @@ models:
     # Neural Engine; 3.1 GB at 512 x 512), measured (docs/design/image-apple.md, docs/design/image-models.md)
     memory: {amd: 3.9, apple: 4.9}
     # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst). Apple: the
-    # export of the eight sizes and the edits below, one for every chip
-    # (flux.2-klein-4b-8sizes-4d02f40a-5edits-cacbebeb-lut8-lut8-v6.coreai), and the chip's
+    # export of the eight sizes and the edits below, one for every chip but the M1
+    # (flux.2-klein-4b-8sizes-4d02f40a-5edits-cacbebeb-lut8-lut8-v6.coreai; an M1's, of its own
+    # edits below, is ...-5edits-624c2d9e-..., the same size), and the chip's
     # prebuilt programs (0.3 GB on an M3 at v5). Converting here fetches the repository's
     # diffusers layout instead (16 GB; not its single-file DiT)
     bytes: {amd: 12.50e9, apple: 7.97e9}
@@ -961,6 +962,17 @@ models:
         edits:
           "1:1": ["1", "2@half", "3@half"]
           "1:1s": ["1", "2"]
+        # An M1 reads the one reference of a picture of 1024 x 1024 at 512 (5632 keys), so that
+        # its export holds no function of 8192 keys or more: coreai-build's h13g program of the
+        # edit from a reference of 1024 (8704 keys) is wrong on the M1 (two single blocks against
+        # the CPU: cosine -0.0005, 37924 values not finite; the double blocks' crash the service
+        # that finishes them), and Core AI then compiles the whole program on the device (54 min
+        # for one of 13). The same function compiled on the M1 is right, as coreai-build's of 4608
+        # and 6656 keys are (docs/known-issues.md 13, 2026-11-25). One export still, of its own
+        # name; --image FILE takes the reference at half the sides by itself
+        generation_edits:
+          M1:
+            "1:1": ["1@half", "2@half", "3@half"]
       amd:
         sizes:
           "1:1": 1024x1024

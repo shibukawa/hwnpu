@@ -75,10 +75,10 @@ func NPUEdits(m chat.Model, vendor, gen string) ([]Edit, error) {
 	if len(spec.Edits) == 0 {
 		return nil, nil
 	}
-	sizes := spec.SizesOn(gen)
+	sizes, edits := spec.SizesOn(gen), spec.EditsOn(gen)
 	var out []Edit
 	for _, a := range aspect.All {
-		names, ok := spec.Edits[a.Name]
+		names, ok := edits[a.Name]
 		if !ok {
 			continue
 		}

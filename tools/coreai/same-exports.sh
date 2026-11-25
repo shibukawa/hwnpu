@@ -10,6 +10,8 @@
 # from Hugging Face into it); no export is fetched or put in the sources. The programs are not
 # prebuilt. WORK (default a new temporary directory)
 # keeps the caches: 2 x the exports' size on the disk; they are removed when the two are the same.
+# CHIP (default M1) is the chip whose exports are made (hwnpu-dev models package --chip): M2 for
+# the other chips' where the M1 has an export of its own (a recipe's rewrite for h13g).
 set -euo pipefail
 [ $# -ge 2 ] || { sed -n '2,10p' "$0"; exit 2; }
 base=$1; shift
@@ -32,7 +34,7 @@ for side in base new; do
 	mkdir -p "$HWNPU_CACHE"
 	ln -sfn "$mine/original" "$HWNPU_CACHE/original"
 	echo "== $side ($([ $side = base ] && echo "$base" || echo this checkout)): ${models[*]}"
-	"$work/bin-$side/hwnpu-dev" models package "${models[@]}" --chip M1 --memory 16
+	"$work/bin-$side/hwnpu-dev" models package "${models[@]}" --chip "${CHIP:-M1}" --memory 16
 done
 
 # the same exports, file for file, but metadata.json's creationDate

@@ -50,6 +50,22 @@ type NPUSpec struct {
 	Sizes     map[string][2]int
 	ByGen     map[string]map[string][2]int
 	Edits     map[string][]string
+	// EditsByGen are a generation's edits where they are not Edits' (npu's generation_edits), by
+	// aspect ratio: an export of its own for that generation, as its other sizes make one.
+	EditsByGen map[string]map[string][]string
+}
+
+// EditsOn are the edits of the aspect ratios on generation gen: its own where it has them, the
+// default's otherwise ("" or an unknown generation: the default).
+func (s NPUSpec) EditsOn(gen string) map[string][]string {
+	out := make(map[string][]string, len(s.Edits))
+	for k, v := range s.Edits {
+		out[k] = v
+	}
+	for k, v := range s.EditsByGen[gen] {
+		out[k] = v
+	}
+	return out
 }
 
 // SizesOn are the picture sizes of the aspect ratios on generation gen: its override where it has
