@@ -85,12 +85,38 @@ func enqueue(j job) {
 		return
 	}
 	b, _ := json.Marshal(j)
-	if err := os.WriteFile(filepath.Join(dir, j.id()+".json"), b, 0o644); err != nil {
+	if err := writeJob(filepath.Join(dir, j.id()+".json"), b); err != nil {
 		logQueue("queue: %v", err)
 		return
 	}
 	Resume()
 	wake()
+}
+
+// writeJob writes the job b as file whole: in a file of its own beside it, then renamed. The
+// worker (and another process's) reads the queue's *.json at any time, and the same job queued
+// again (its id is of its content) writes the same file: written in place, it could be read
+// half written (or empty) and dropped as broken, the put lost.
+func writeJob(file string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(file), ".job-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(b)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmp, file)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 func wake() {

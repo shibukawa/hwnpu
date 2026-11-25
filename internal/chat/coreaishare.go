@@ -62,24 +62,28 @@ func (coreAIShares) Put(ctx context.Context, export string) {
 
 // FinishCoreAI does to the Core AI export made here what its model's recipe's finish says
 // (model-recipes.yaml models.NAME.apple.finish: its tokenizer files made binary), the model the
-// one of ctx (WithModel), else the one whose directory holds it. A model whose recipe gives no finish is left as it is: its
-// export may hold its tokenizer's text (FLUX.2 klein's until its next version).
+// one of ctx (WithModel), else the one whose directory holds it. Like an export for AMD's NPU
+// (RunIRON), one left holding a tokenizer's text (a model whose recipe gives no finish for it, or
+// none known) or the data of --check is refused (finish.Check): it does not go in the sources.
 func FinishCoreAI(ctx context.Context, export string) error {
 	m, ok := ctx.Value(modelKey{}).(Model)
 	if !ok {
-		if m, _, ok = modelOfDir(export); !ok {
-			return nil
+		m, _, ok = modelOfDir(export)
+	}
+	var steps []recipe.Step
+	if ok {
+		f, err := recipe.Builtin()
+		if err != nil {
+			return err
+		}
+		steps = f.AppleFinish(cmp.Or(m.Recipe, m.Name))
+	}
+	if len(steps) > 0 {
+		if err := finish.Run(export, steps); err != nil {
+			return err
 		}
 	}
-	f, err := recipe.Builtin()
-	if err != nil {
-		return err
-	}
-	steps := f.AppleFinish(cmp.Or(m.Recipe, m.Name))
-	if len(steps) == 0 {
-		return nil
-	}
-	return finish.Run(export, steps)
+	return finish.Check(export, "")
 }
 
 // PutCoreAI finishes the Core AI export (FinishCoreAI) and puts it in the layers written back to

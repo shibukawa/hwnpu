@@ -335,6 +335,46 @@ func TestQueue(t *testing.T) {
 	}
 }
 
+// TestQueueSameJob queues one job many times while the worker runs (the same id: the same file
+// written again): none is read half written and dropped, and the entry goes.
+func TestQueueSameJob(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	exp := filepath.Join(t.TempDir(), "e")
+	write(t, filepath.Join(exp, "a"), "a")
+	describeAt(t, exp, "converted/m/t/e/v0-12345678", map[string]string{"x": "1"})
+	s := Source{Store: Dir{Name: "share", Root: t.TempDir()}, Writeback: true}
+	SetSources([]Source{s}, true)
+	t.Cleanup(func() { SetSources(nil, true) })
+	for range 200 {
+		PutLater(s, exp)
+	}
+	Flush(context.Background())
+	if es, _ := ListEntries(context.Background(), s); len(es) != 1 {
+		t.Errorf("entries %v", es)
+	}
+	if b, _ := os.ReadFile(cache.Sub("work", "queue.log")); strings.Contains(string(b), "JSON") {
+		t.Errorf("a job read half written: %s", b)
+	}
+	if left, _ := filepath.Glob(filepath.Join(queueDir(), "*")); len(left) != 0 {
+		t.Errorf("left in the queue: %v", left)
+	}
+}
+
+// TestDescribeLocalMarks leaves the marks a directory here holds about itself out of its entry.
+func TestDescribeLocalMarks(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "a"), "a")
+	write(t, filepath.Join(dir, ".files-shared"), "")
+	write(t, filepath.Join(dir, "sub", ".weights-shared"), "")
+	e, err := Describe(dir, Entry{Path: "converted/m/t/e/v0-12345678", Recipe: map[string]string{"x": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Files) != 1 || e.Files[0].Path != "a" {
+		t.Errorf("files %v", e.Files)
+	}
+}
+
 // TestWait does at the end of a command the work a process before left in the queue, and says
 // nothing when there is none.
 func TestWait(t *testing.T) {

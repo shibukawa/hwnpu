@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/finish"
 	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
@@ -89,6 +90,12 @@ func ShareMadeHere(m Model, dir, kind string, recipe map[string]string, log io.W
 		log = io.Discard
 	}
 	name := filepath.Base(dir)
+	// as hwnpu-dev sources import refuses one: put as it is, the text would be what a first run
+	// elsewhere parses, and --check's data what it downloads for nothing
+	if err := finish.Check(dir, "hwnpu-dev sources import --finish"); err != nil {
+		fmt.Fprintf(log, "%s: made by hand here, not put in the sources: %v\n", name, err)
+		return
+	}
 	e := PlaceEntry(kind, m, cache.AMDTarget, name, recipe)
 	e.MadeBy = map[string]string{"host": hostName(), "note": "made by hand, described by its first use"}
 	fmt.Fprintf(log, "%s: made by hand here; describing it (the SHA-256 of its files, once) to put it in the sources\n", name)

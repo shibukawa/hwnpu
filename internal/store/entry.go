@@ -125,8 +125,13 @@ func Fingerprint(recipe map[string]string) string {
 	return cache.Key(parts...)
 }
 
-// Describe lists the files of dir (every regular file but EntryFile) with their sizes and
-// SHA-256, into e, and writes e as dir's EntryFile. Symbolic links are not followed or listed.
+// LocalMarks are the names of the files a directory here holds about itself, never of what it is
+// (iron.ShareExport's and chat.ShareWeights' marks that they went over it): not in an entry.
+var LocalMarks = []string{".files-shared", ".weights-shared"}
+
+// Describe lists the files of dir (every regular file but EntryFile and LocalMarks) with their
+// sizes and SHA-256, into e, and writes e as dir's EntryFile. Symbolic links are not followed or
+// listed.
 func Describe(dir string, e Entry) (Entry, error) {
 	e.Format, e.Files, e.Pack = EntryFormat, nil, nil
 	if e.Key == "" {
@@ -144,7 +149,7 @@ func Describe(dir string, e Entry) (Entry, error) {
 		}
 		rel, _ := filepath.Rel(dir, p)
 		rel = filepath.ToSlash(rel)
-		if rel == EntryFile {
+		if rel == EntryFile || slices.Contains(LocalMarks, d.Name()) {
 			return nil
 		}
 		fi, err := d.Info()

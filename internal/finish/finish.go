@@ -54,6 +54,57 @@ func Run(dir string, steps []recipe.Step) error {
 	return nil
 }
 
+// Check reports what keeps the export in dir, made by hand (hwnpu-dev sources import, its first
+// use here: chat.ShareMadeHere) or converted (chat.FinishCoreAI), out of the sources: a tokenizer
+// file not made binary yet (Leftover), or the data of a run of its tool with --check (Checks),
+// which only the tools of tools/amd read. how is what makes the tokenizer binary, for the
+// message ("": nothing in hand does, the recipe lacks a finish for it).
+func Check(dir, how string) error {
+	left, err := Leftover(dir)
+	if err != nil {
+		return err
+	}
+	if len(left) > 0 {
+		if how == "" {
+			how = fmt.Sprintf("its recipe's finish (add finish: [{tokenizer: [%s]}] and raise its version)", strings.Join(left, ", "))
+		}
+		return fmt.Errorf("the export holds %s, which %s makes binary", strings.Join(left, ", "), how)
+	}
+	checks, err := Checks(dir)
+	if err != nil {
+		return err
+	}
+	if len(checks) > 0 {
+		return fmt.Errorf("the export holds %s, the data of --check (read by tools/amd's checks, not by hwnpu): remove it first", strings.Join(checks, ", "))
+	}
+	return nil
+}
+
+// Checks are the folders of the data of a run of a tools/amd script with --check in the export
+// in dir (check/ beside a manifest.json or model.json: iron_graph.write_check, iron_export_lm.py
+// --check), as paths in it.
+func Checks(dir string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() || d.Name() != "check" {
+			return nil
+		}
+		for _, f := range []string{"manifest.json", "model.json"} {
+			if _, err := os.Stat(filepath.Join(filepath.Dir(p), f)); err == nil {
+				rel, _ := filepath.Rel(dir, p)
+				out = append(out, filepath.ToSlash(rel)+"/")
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out, err
+}
+
 // Leftover are the tokenizer files (recipe.IsTokenizerFile) in the export in dir, as paths in it.
 func Leftover(dir string) ([]string, error) {
 	var out []string

@@ -374,7 +374,8 @@ type GCCmd struct {
 	Source    int      `arg:"" help:"The source's number in hwnpu-dev sources list (0: this machine's cache)."`
 	Model     []string `help:"Remove the entries of these models." placeholder:"NAME"`
 	Kind      []string `help:"Remove the entries of these kinds (iron-lm, iron-onnxcnn...)." placeholder:"KIND"`
-	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH)." placeholder:"KEY"`
+	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH): every version of an export finished again (the same key) goes." placeholder:"KEY"`
+	Path      []string `help:"Remove the entries at these folders (converted/MODEL/TARGET/EXPORT/vN, as hwnpu-dev sources ls shows them, with or without converted/): one version alone." placeholder:"PATH"`
 	OlderThan int      `name:"older-than" help:"Remove the entries made more than this many days ago." placeholder:"DAYS"`
 	Target    []string `help:"Only the entries of these targets (amd-xdna2, coreai...): with the others, which choose among them." placeholder:"TARGET"`
 	Apply     bool     `help:"Remove them (without it, only show what would go)."`
@@ -391,8 +392,8 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 	if err != nil {
 		return err
 	}
-	if len(g.Model) == 0 && len(g.Kind) == 0 && len(g.Key) == 0 && g.OlderThan == 0 {
-		return errors.New("say what to remove: --model, --kind, --key, or --older-than (what a writeback cut off left: hwnpu cache clean)")
+	if len(g.Model) == 0 && len(g.Kind) == 0 && len(g.Key) == 0 && len(g.Path) == 0 && g.OlderThan == 0 {
+		return errors.New("say what to remove: --model, --kind, --key, --path, or --older-than (what a writeback cut off left: hwnpu cache clean)")
 	}
 	before := time.Now().AddDate(0, 0, -g.OlderThan)
 	kept := 0
@@ -412,6 +413,11 @@ func (g GCCmd) Run(d *devopt.Defs) error {
 		}
 		for _, k := range g.Key {
 			if k != "" && strings.HasPrefix(e.Key, k) {
+				return true
+			}
+		}
+		for _, p := range g.Path {
+			if e.Path == "converted/"+strings.TrimPrefix(strings.Trim(p, "/"), "converted/") {
 				return true
 			}
 		}
@@ -701,8 +707,9 @@ func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir stri
 		if err := finish.Run(dir, f.AMDFinish(m.Recipe)); err != nil {
 			return err
 		}
-	} else if left, err := finish.Leftover(dir); err == nil && len(left) > 0 {
-		return fmt.Errorf("the export holds %s, which its recipe's finish makes binary: --finish does it", strings.Join(left, ", "))
+	}
+	if err := finish.Check(dir, "--finish"); err != nil {
+		return err
 	}
 	return describeAndPut(ctx, writes, m, e, dir)
 }
