@@ -1023,10 +1023,12 @@ models:
           "3:2": 1248x832
           "4:3": 1168x880
           "16:9": 1344x768
-    # the repository's diffusers layout (not its single-file copy of the DiT nor its fp8 and nvfp4
-    # variants)
-    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst)
-    bytes: {amd: 13.76e9, apple: 2.03e10}
+    # AMD: the export for the NPU as the sources hold it (packed, files.tar.zst). Apple: the
+    # export of every chip (flux-3-image-klein-512+1024-t80+160-lut8-lut8x2-v1.coreai, 9.22 GB
+    # packed, 10.09 GB unpacked) and the chip's prebuilt programs (0.12 GB on an M2 and an M3,
+    # 0.15 GB on an M1; 2026-11-25). Converting here fetches the repository's diffusers layout
+    # instead (20.3 GB; not its single-file copy of the DiT nor its fp8 and nvfp4 variants)
+    bytes: {amd: 13.76e9, apple: 9.37e9}
     about: "FLUX.3 klein (a 5.5B DiT with each stream's mode blocks then single blocks, Qwen3-VL-4B reads the prompt, the FLUX.2 VAE): 16 flow-map steps without guidance, text to image on AMD's NPU (about 1 min 45 s at 1024 x 1024, 32 s at 512 x 512) and Apple's Neural Engine (lut8 tables fitted to the activations; about 2 min at 1024 x 1024 on an M3); FLUX Kommunity License (not commercial)"
   DA3MONO-LARGE:
     family: da3
