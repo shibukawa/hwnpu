@@ -37,5 +37,10 @@ MacBook Air M2 16 GB, macOS 27.2.1 (26B131). Seen also on an M1 (first step 5–
 
 ## Attachments
 
-- `log show --info --predicate 'process == "deleted" OR process == "aned" OR process == "ANECompilerService"'` over the purge and the next load
-- sysdiagnose after the reproduction
+- `README.txt`: the two episodes of 2026-11-25 in order, and which file shows each step
+- `system-log-1125-1305.txt`, `system-log-1408-1500.txt`: `log show --info` of deleted's purges and its "Purge: goal ... freespace ...", aned's `isPreCompiledModel=1` failures, its connections to ANELargeModelCompilerService, and ANECompilerService's "End of compilation of network"
+- `app-log-1212-rerun-after-purge.txt`: the load after the purges (DiT blocks 22 min 53 s and 21 min 14 s)
+- `app-log-1410-prebuilt-entries-removed.txt`: the load with Core AI's entries removed (DiT blocks 44–56 s from prebuilt)
+- `app-log-1434-after-purge.txt`: the next load after the second purge
+- `free-space-from-deleted.txt`, `df-samples-from-1434.txt`: free disk over time
+- a sysdiagnose taken within a few days of 2026-11-25 (its log archive holds the full logs of both episodes)

@@ -35,6 +35,7 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 
 - `purge.sh PROGRAM 11` on a test machine. Use a program that takes minutes to compile (`vae_s6.aimodel#s1024x1024`), so that the recompile after the purge is easy to see.
 - What it showed on 2026-11-25 in normal use: [the report](purged-programs-silent-recompile.md). The script itself was not run on the M2 used day to day.
+- The attachments of 2026-11-25 are extracts of the system log and hwnpu-image's output of two episodes, with paths under the home folder written as `~`. To extract again within the days the log keeps: `log show --info --style compact --start ... --end ... --predicate '(process == "deleted" AND (eventMessage CONTAINS "Purge: goal" OR (eventMessage CONTAINS "deleted_helper took" AND NOT eventMessage CONTAINS "purged 0 bytes"))) OR (process == "aned" AND (eventMessage CONTAINS "isPreCompiledModel=1" OR eventMessage CONTAINS "Compilation success" OR eventMessage CONTAINS "name=com.apple.ANELargeModelCompilerService")) OR (process == "ANECompilerService" AND eventMessage CONTAINS "End of compilation of network")'`.
 
 ## sin-off-ane-m1-m2.md (new, known-issues 10)
 
