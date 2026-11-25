@@ -187,16 +187,20 @@ models:
 ## 4. 実機に回る仕組み
 
 - `do: device` のプログラムはプリビルドしない。端末がそのプログラムのプリビルドを探しても見つからないので、端末のコンパイラがコンパイルする (初回だけ。そのあとは Core AI のキャッシュから)
-- VAE (`vae*`)、文のエンコーダー (`text*`)、名前が `_device` で終わるプログラムは、レシピとは別に、いつも端末に回る (`coreai.LeftToDevice`)。動かすときにも使う決まりなので、コードに残している
+- 文のエンコーダー (`text*`) と、名前が `_device` で終わるプログラムは、レシピとは別に、どのチップでもいつも端末に回る (`coreai.LeftToDevice`)。動かすときにも使う決まりなので、コードに残している。VAE (`vae_*`) はチップとモデルで違うので、レシピに書く (下の表)
 
-## 5. いまのレシピの中身 (2026-11-23)
+## 5. いまのレシピの中身 (2026-11-25)
 
 | モデル | M1 (h13g) | M2 (h14g) | M3 (h15g) |
 |---|---|---|---|
-| FLUX.2 klein 4B | `dit_single_*` を端末で (RegAlloc の L2 の割り付けに失敗) | 全部プリビルド | 全部プリビルド |
+| FLUX.2 klein 4B | `dit_single_*` を端末で (RegAlloc の L2 の割り付けに失敗)。VAE (`vae_*`) も端末で (縞、`Request cancelled`) | 全部プリビルド | 全部プリビルド |
+| FLUX.3 klein | VAE (`vae_*`) を端末で (FLUX.2 klein と同じ復号器) | 全部プリビルド | 全部プリビルド |
+| Anima-Turbo、Anima-Aesthetic | VAE (`vae_*`) を端末で | VAE を端末で | VAE を端末で |
 | MOSS-SoundEffect v2.0 (`-lut8` も) | sin は級数 | sin は級数 | sin はそのまま (`-sin-native` の書き出し) |
 
 MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をそのまま書くと、h13g、h14g、h14c (M2 Pro・Max) は 1 段が Neural Engine の 8〜9 個の区間に分かれる (sin がその間で外に出る)。h15g/c、h16g/s/c、h17g/s/c/d は 1 区間に収まる (h15s/m/d と h17p は coreai-build が落ちるので見ていない)。M3 では、この書き出しを取ってきて音を作れた。級数はどのチップでも 1 区間。sin の前の clip は、sin とまとめられて (NEFUSED_EW: EW: MAX) h15g でも通らないので、そのまま書くときは clip を外す (clip は丸めのためのもの)。音声のプリビルドは置かない (M1 で遅いか壊れていた) ので、DAC は全部端末に回す規則にしてある。
+
+FLUX.2 klein の VAE は、M3 で端末がコンパイルすると初回に 10 段で 2799 秒 (`vae_s6`〜`s8` が各約 600 秒) かかり、h15g のプリビルドなら 0.9 秒で、どの段の出力もバイトまで同じだった (2026-11-25)。M1 だけは縞が出たので端末に回す。FLUX.3 klein も同じ復号器で、M3 の 1024² の初回が 19 分 27 秒から 2 分 43 秒になり、絵はバイトまで同じだった (2026-11-26)。M1 は FLUX.2 klein にならって端末に回す。Anima の VAE は、coreai-build (Metal Toolchain 27.2.47) が h13g、h14g、h15g のどれでも 10 段のうち 8 段 (`vae_s0`〜`s4`、`s6`〜`s8`) を数秒で落とす (`ANECCompileOffline() failed … CompilationFailure`)。残りの 2 段だけプリビルドしても得がないので、全部端末に回す。
 
 どれも、落ちるまでに 1 本 1〜3 時間かかっていた。レシピに書いたので、もう試さない。
 

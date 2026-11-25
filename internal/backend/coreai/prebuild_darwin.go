@@ -103,8 +103,16 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 	if err != nil {
 		return nil, err
 	}
-	// what LeftToDevice leaves on an architecture is not compiled for it (nor counted)
-	assets := all
+	var assets []string
+	for _, a := range all {
+		if LeftToDevice(a) {
+			if o.Log != nil {
+				fmt.Fprintf(o.Log, "%s: left to the device (LeftToDevice)\n", filepath.Base(a))
+			}
+			continue
+		}
+		assets = append(assets, a)
+	}
 	archs := o.Archs
 	if len(archs) == 0 {
 		if a := Arch(); a != "" {
@@ -131,12 +139,6 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 	results := make([]BuildResult, 0, len(assets)*len(archs))
 	for _, a := range assets {
 		for _, arch := range archs {
-			if LeftToDevice(a, arch) {
-				if o.Log != nil {
-					fmt.Fprintf(o.Log, "%s %s: left to the device (LeftToDevice)\n", filepath.Base(a), arch)
-				}
-				continue
-			}
 			out := PrebuiltPath(a, arch)
 			if o.Packed {
 				if out = PackedPath(a, arch); out == "" {

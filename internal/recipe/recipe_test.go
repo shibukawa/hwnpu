@@ -88,6 +88,34 @@ failed`, "2026-11-23")
 	}
 }
 
+// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is prebuilt but on M1, Anima's on no chip (coreai-build
+// fails on it), and their other programs are not left by these rules.
+func TestVAELeftToDevice(t *testing.T) {
+	f, err := Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		model, program, arch string
+		want                 bool
+	}{
+		{"FLUX.2-klein-4B", "vae_s0", "h13g", true},
+		{"FLUX.2-klein-4B", "vae_enc_s3", "h13g", true},
+		{"FLUX.2-klein-4B", "vae_s0", "h14g", false},
+		{"FLUX.2-klein-4B", "vae_enc_s3", "h15g", false},
+		{"FLUX.2-klein-4B", "dit_double_0", "h15g", false},
+		{"flux-3-image-klein", "vae_s0", "h13g", true},
+		{"flux-3-image-klein", "vae_s9", "h15g", false},
+		{"Anima-Turbo", "vae_s0", "h15g", true},
+		{"Anima-Aesthetic", "vae_s9", "h14g", true},
+		{"Anima-Turbo", "dit_blocks_0", "h15g", false},
+	} {
+		if _, got := f.AppleOf(c.model).Left("e.coreai", c.program, c.arch); got != c.want {
+			t.Errorf("%s %s on %s: left %v", c.model, c.program, c.arch, got)
+		}
+	}
+}
+
 // TestRewrites: MOSS's decoder writes sin itself on M3 and later, by its series on M1 and M2,
 // and a build converts an export of each.
 func TestRewrites(t *testing.T) {

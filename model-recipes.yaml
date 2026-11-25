@@ -124,6 +124,15 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
+      # the VAE (decoder and encoder) is prebuilt for M2 and later: on an M3 the device's compiler
+      # took 2799 s over the ten decoder stages (vae_s6 to s8 about 600 s each), the prebuilt 0.9 s,
+      # and both gave the same bytes at 1024 x 1024 and 512 x 512 (2026-11-25)
+      prebuild:
+        - arch: [h13g, h13c, h13d, h13s]
+          programs: ["vae_*"]
+          do: device
+          why: "coreai-build's VAE prebuilt for h13g drew a band of noise every 112 rows at 512 x 512 on M1, and the 1024 x 768 export's vae_s0 ended in 'Request cancelled'; compiled on the device it draws right (the device compiles it in 104 s on M1)"
+          checked: 2026-11-25
   MOSS-SoundEffect-v2.0: &moss
     amd:
       # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
@@ -416,6 +425,15 @@ models:
         dit_format: lut8
         text_group: 4
         single_group: 5
+      # the VAE prebuilt for M2 and later: on an M3 the first run at 1024 x 1024 took 19m27s with
+      # the VAE compiled on the device (its ten stages 640 s), 2m43s with it prebuilt, the same
+      # pictures to the byte (2026-11-26)
+      prebuild:
+        - arch: [h13g, h13c, h13d, h13s]
+          programs: ["vae_*"]
+          do: device
+          why: "FLUX.2 klein's decoder (internal/imagegen/fluxvae), whose prebuilt for h13g drew a band of noise every 112 rows at 512 x 512 on M1; not run on M1 from a prebuilt"
+          checked: 2026-11-26
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
@@ -436,6 +454,11 @@ models:
         dit_format: int8
         group: 4
         qchunk: 512
+      prebuild:
+        - programs: ["vae_*"]
+          do: device
+          why: "coreai-build (Metal Toolchain 27.2.47): vae_s0 to s4 and s6 to s8 'ANECCompileOffline() failed: CompilationFailure' in seconds on h13g, h14g and h15g, alone too; s5 and s9 build but gain nothing beside the rest"
+          checked: 2026-11-25
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps

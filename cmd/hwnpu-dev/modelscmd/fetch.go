@@ -76,13 +76,10 @@ func (f FetchCmd) Run(d *devopt.Defs) error {
 	// coreai-ARCH: the programs compiled for each architecture, of each export there is here
 	for _, p := range done {
 		for _, export := range coreAIPaths(p.files.Paths) {
-			if !strings.HasSuffix(export, ".coreai") {
+			if !strings.HasSuffix(export, ".coreai") || coreai.NothingToPrebuild(export) {
 				continue
 			}
 			for _, arch := range p.job.archs {
-				if coreai.NothingToPrebuild(export, arch) {
-					continue
-				}
 				chat.FetchPrebuilt(ctx, export, arch)
 				if _, err := os.Stat(coreai.PackedRoot(export, arch)); err != nil {
 					missing = append(missing, fmt.Sprintf("%s (%s-%s): %s", p.job.model.Name, cache.CoreAITarget, arch, filepath.Base(export)))

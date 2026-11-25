@@ -9,68 +9,58 @@ import (
 	"testing"
 )
 
-// TestBuildLeavesVAEToDevice: Build passes over a text encoder's programs on every architecture
-// and a VAE's on M1's (LeftToDevice), whose prebuilt ones come out wrong there, and builds a VAE
-// for M2; Prebuilt does not take a text encoder's that lies there already.
-func TestBuildLeavesVAEToDevice(t *testing.T) {
+// TestBuildLeavesTextToDevice: Build passes over a text encoder's programs (LeftToDevice) and
+// builds a VAE's (the recipe leaves those it must to the device), and Prebuilt does not take a
+// text encoder's that lies there already.
+func TestBuildLeavesTextToDevice(t *testing.T) {
 	export := filepath.Join(t.TempDir(), "m.coreai")
-	for _, n := range []string{"dit_0", "vae_s0", "vae", "text_0"} {
+	for _, n := range []string{"dit_0", "vae_s0", "text_0"} {
 		d := filepath.Join(export, n+".aimodel")
 		os.MkdirAll(d, 0o755)
 		os.WriteFile(filepath.Join(d, "main.mlirb"), []byte("bytecode "+n), 0o644)
 		os.WriteFile(filepath.Join(d, "main.hash"), []byte("hash "+n), 0o644)
 	}
 	var log bytes.Buffer
-	rs, err := Build(context.Background(), []string{export}, BuildOptions{Archs: []string{"h13g", "h14g"}, DryRun: true, Log: &log})
+	rs, err := Build(context.Background(), []string{export}, BuildOptions{Archs: []string{"h13g"}, DryRun: true, Log: &log})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var got []string
 	for _, r := range rs {
-		got = append(got, strings.TrimSuffix(filepath.Base(r.Asset), ".aimodel")+" "+r.Arch)
+		got = append(got, filepath.Base(r.Asset))
 	}
-	want := []string{"dit_0 h13g", "dit_0 h14g", "vae h14g", "vae_s0 h14g"}
-	if strings.Join(got, ", ") != strings.Join(want, ", ") {
-		t.Errorf("compiled: %v, want %v", got, want)
+	if strings.Join(got, " ") != "dit_0.aimodel vae_s0.aimodel" {
+		t.Errorf("compiled: %v", got)
 	}
-	if strings.Count(log.String(), "left to the device") != 4 { // vae, vae_s0 on h13g; text_0 on both
+	if strings.Count(log.String(), "left to the device") != 1 {
 		t.Errorf("log:\n%s", log.String())
 	}
 
 	// a prebuilt text encoder's program of the same source beside it (from an earlier hwnpu) is
 	// not taken
-	if arch := Arch(); arch != "" {
-		text := filepath.Join(export, "text_0.aimodel")
-		pb := PrebuiltPath(text, arch)
-		os.MkdirAll(pb, 0o755)
-		os.WriteFile(filepath.Join(pb, "main.hash"), []byte("hash text_0"), 0o644)
-		if p := Prebuilt(text); p != "" {
-			t.Errorf("a text encoder's prebuilt program was taken: %s", p)
-		}
+	text := filepath.Join(export, "text_0.aimodel")
+	pb := PrebuiltPath(text, "h13g")
+	os.MkdirAll(pb, 0o755)
+	os.WriteFile(filepath.Join(pb, "main.hash"), []byte("hash text_0"), 0o644)
+	if p := Prebuilt(text); p != "" {
+		t.Errorf("a text encoder's prebuilt program was taken: %s", p)
 	}
 }
 
 func TestLeftToDevice(t *testing.T) {
-	for _, c := range []struct {
-		dir, arch string
-		want      bool
-	}{
-		{"/x/m.coreai/vae_s3.aimodel", "h13g", true},
-		{"/x/m.coreai/vae.aimodel/", "h13g", true},
-		{"/x/m.coreai/VAE_decoder.aimodel", "h13c", true},
-		{"/x/m.coreai/vae_s3.aimodel", "", true},
-		{"/x/m.coreai/vae_s3.aimodel", "h14g", false},
-		{"/x/m.coreai/VAE_decoder.aimodel", "h15g", false},
-		{"/x/m.coreai/dit_single_0.aimodel", "h13g", false},
-		{"/x/vae.coreai/text_0.aimodel", "h14g", true},
-		{"/x/m.coreai/text.aimodel", "h15g", true},
-		{"/x/text.coreai/mods.aimodel", "h13g", false},
-		{"/x/m.coreai/ctx.aimodel", "h14g", false},
-		{"/x/m.coreai/dit_double_0_device.aimodel", "h14g", true},
-		{"/x/m_device.coreai/dit_double_0.aimodel", "h13g", false},
+	for dir, want := range map[string]bool{
+		"/x/m.coreai/vae_s3.aimodel":              false,
+		"/x/m.coreai/vae.aimodel/":                false,
+		"/x/m.coreai/dit_single_0.aimodel":        false,
+		"/x/vae.coreai/text_0.aimodel":            true,
+		"/x/m.coreai/text.aimodel":                true,
+		"/x/text.coreai/mods.aimodel":             false,
+		"/x/m.coreai/ctx.aimodel":                 false,
+		"/x/m.coreai/dit_double_0_device.aimodel": true,
+		"/x/m_device.coreai/dit_double_0.aimodel": false,
 	} {
-		if got := LeftToDevice(c.dir, c.arch); got != c.want {
-			t.Errorf("%s on %q: %v", c.dir, c.arch, got)
+		if got := LeftToDevice(dir); got != want {
+			t.Errorf("%s: %v", dir, got)
 		}
 	}
 }
