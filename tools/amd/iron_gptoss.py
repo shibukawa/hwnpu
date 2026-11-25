@@ -57,16 +57,12 @@ HEAD_ROWS = 512  # the head's rows a multiple of this: 64-row blocks whole on 8 
 
 # install()'s formats (iron_q4's): the attention's projections and the head. Empty: bf16.
 QUANT: dict[str, str] = {}
-# The decode step's q, k, v in one operator with the input norm and RoPE (iron_q4's QGEMVQKV):
-# q's and k's rows in interleaved pairs (RoPE of Meta's form in the prompt chunk too; q and k
-# turned alike, the scores are the same)
-FUSE_QKV = os.environ.get("GPTOSS_FUSE_QKV", "1") == "1"
-# The decode step's layers as phases of one array (iron_gptoss_layer.py's GptOssStep): configured
-# once, where an operator of its own is loaded again each time it follows another
-RESIDENT = os.environ.get("GPTOSS_RESIDENT", "1") == "1"
-# The resident decode step's keys and values of a sliding layer as a ring of its window (0: a row
-# a position, as a full layer's: 16.5 MiB a layer more).
-KV_RING = os.environ.get("GPTOSS_KV_RING", "1") == "1"
+# With QUANT, the decode step's q, k, v are one operator with the input norm and RoPE (iron_q4's
+# QGEMVQKV): q's and k's rows in interleaved pairs (RoPE of Meta's form in the prompt chunk too;
+# q and k turned alike, the scores are the same). The decode step's layers are phases of one
+# array (iron_gptoss_layer.py's GptOssStep): configured once, where an operator of its own is
+# loaded again each time it follows another. Its keys and values of a sliding layer are a ring of
+# its window (a row a position, as a full layer's, was 16.5 MiB a layer more).
 
 
 # Where the experts do not all have a place (moe.EXPERTS, GPTOSS_EXPERT_PLACES, below the
@@ -253,14 +249,13 @@ class SinkAttention(Attention):
         self.qkv.weight = iron.param(np.ascontiguousarray(w.astype(dt)))
         self.qkv.bias = iron.param(np.ascontiguousarray(b.astype(np.asarray(self.qkv.bias).dtype)))
         self.interleaved = True
-        if RESIDENT:
-            # GptOssStep's tables: the same weights (as the q8 the prompt chunk reads) in its blocks
-            import iron_gptoss_layer as gl
+        # GptOssStep's tables: the same weights (as the q8 the prompt chunk reads) in its blocks
+        import iron_gptoss_layer as gl
 
-            self.qkv_x = iron.param(gl.q8x_table(w, b))
-            self.o_x = iron.param(gl.q8x_table(np.asarray(self.o_proj.weight, np.float32),
-                                               np.asarray(self.o_proj.bias, np.float32)))
-            self.sinks_x = iron.param(np.asarray(self.sink_values, np.float32).astype(bfloat16))
+        self.qkv_x = iron.param(gl.q8x_table(w, b))
+        self.o_x = iron.param(gl.q8x_table(np.asarray(self.o_proj.weight, np.float32),
+                                           np.asarray(self.o_proj.bias, np.float32)))
+        self.sinks_x = iron.param(np.asarray(self.sink_values, np.float32).astype(bfloat16))
 
     def rotate(self, x, angles):
         if not self.interleaved:
@@ -345,21 +340,20 @@ class SinkCache(KVCache):
 
     def __init__(self, c, window=None):
         super().__init__(c, window)
-        if RESIDENT:
-            # The decode step's array of the layer's keys and values (GptOssStep reads a group's
-            # key and value of a row together; IRON's operators take no such view of one array, so
-            # the prompt chunk keeps keys and values, and hwnpu copies a chunk's rows here and a
-            # decode step's back: internal/llm/iron's joinKV and splitKV). A chunk of rows more
-            # than the context: the attention's objects reach past the call's row
-            _, G, D = self.keys.shape
-            import iron_gptoss_layer as gl
+        # The decode step's array of the layer's keys and values (GptOssStep reads a group's
+        # key and value of a row together; IRON's operators take no such view of one array, so
+        # the prompt chunk keeps keys and values, and hwnpu copies a chunk's rows here and a
+        # decode step's back: internal/llm/iron's joinKV and splitKV). A chunk of rows more
+        # than the context: the attention's objects reach past the call's row
+        _, G, D = self.keys.shape
+        import iron_gptoss_layer as gl
 
-            # A sliding layer's is a ring of its window: the rows its attention reads are all the
-            # ring holds, in any order (position p's row is p % 128), one object of the attention.
-            # hwnpu fills it from the keys and values where a sequence goes back, and splits the
-            # steps' rows before the ring takes their place (rows.go's ringsTo and stepAt)
-            self.kv_ring = KV_RING and window is not None and window + 1 == gl.TOK
-            self.kv = iron.state((gl.TOK if self.kv_ring else c.max_seq_len + c.prefill_chunk, 2, G, D))
+        # A sliding layer's is a ring of its window: the rows its attention reads are all the
+        # ring holds, in any order (position p's row is p % 128), one object of the attention.
+        # hwnpu fills it from the keys and values where a sequence goes back, and splits the
+        # steps' rows before the ring takes their place (rows.go's ringsTo and stepAt)
+        self.kv_ring = window is not None and window + 1 == gl.TOK
+        self.kv = iron.state((gl.TOK if self.kv_ring else c.max_seq_len + c.prefill_chunk, 2, G, D))
 
     def attend(self, call, q, k, v, scale=None):
         import iron_window
@@ -430,14 +424,13 @@ class GptOssMoe(iron.Graph):
         program = np.zeros(4 * iron_moe.SLOTS + self.n // 2, np.int32)
         program[4 * iron_moe.SLOTS :] = np.ascontiguousarray(b[: self.n]).view(np.int32)
         self.program = iron.param(program)
-        if RESIDENT:
-            import iron_gptoss_layer as gl
+        import iron_gptoss_layer as gl
 
-            # (routed on the host: GptOssStep's operand all the same, unread past 32 experts)
-            self.router_x = iron.param(gl.router_table(np.asarray(w, np.float32)[: min(self.n, 32)], np.asarray(b, np.float32)[: min(self.n, 32)]))
-            if host_route(self.n):
-                self.write_router(np.asarray(w, np.float32)[: self.n], np.asarray(b, np.float32)[: self.n])
-            self.prog_x = iron.param(np.zeros(gl.PROG, bfloat16))  # the routing's program (program_rows)
+        # (routed on the host: GptOssStep's operand all the same, unread past 32 experts)
+        self.router_x = iron.param(gl.router_table(np.asarray(w, np.float32)[: min(self.n, 32)], np.asarray(b, np.float32)[: min(self.n, 32)]))
+        if host_route(self.n):
+            self.write_router(np.asarray(w, np.float32)[: self.n], np.asarray(b, np.float32)[: self.n])
+        self.prog_x = iron.param(np.zeros(gl.PROG, bfloat16))  # the routing's program (program_rows)
         self.router = self.experts = None
 
     def write_router(self, w, b):
@@ -606,7 +599,7 @@ class GptOssLayer(DecoderLayer):
     def load_state_dict(self, tree, *, path: str = "") -> None:
         super().load_state_dict(tree, path=path)
         self.cache.sinks = self.self_attn.sink_values
-        if FUSE_QKV and QUANT:
+        if QUANT:
             self.self_attn.fold()
             self.self_attn.norm_weight = self.input_layernorm.weight
 
@@ -677,7 +670,7 @@ class GptOss(CausalLM):
     def lookup(self, ids):
         shape = getattr(ids, "shape", ())
         if len(shape) == 0:
-            if RESIDENT and QUANT and FUSE_QKV:  # GptOssStep reads the row where the host puts it
+            if QUANT:  # GptOssStep reads the row where the host puts it
                 return self.embed_rows[:1]
             return Copy.step(self.embed_rows[:1])
         bound = getattr(ids, "valid", None) or {}
@@ -771,7 +764,7 @@ class GptOss(CausalLM):
             causal.Call = made
 
     def forward(self, x, call):
-        if call.prompt or not (RESIDENT and QUANT and FUSE_QKV):
+        if call.prompt or not QUANT:
             return super().forward(x, call)
         return self.resident(x, call)
 
@@ -856,7 +849,7 @@ class GptOss(CausalLM):
     def program_rows(self, kernels) -> list:
         """As iron_qwen35.Qwen35Moe.program_rows: each layer's MoERoute program from the decode
         step's commands; the manifest's ``fed``."""
-        if RESIDENT and QUANT and FUSE_QKV:
+        if QUANT:
             if host_route(self.config.num_local_experts):
                 return []  # no command's words are the device's
             return self.resident_rows(kernels)

@@ -19,11 +19,9 @@ A block is 32 out-features by KT = 320 in-features (2880 = 9 k-blocks, no paddin
     python tools/amd/iron_gptoss_moe.py check OUT     # a graph of both, random mx4 experts
     go run ./tools/amd/irongraph OUT
 
-MX4Experts runs the two as one operator (the decode step's form). For measuring: MX4_FUSED=1 makes
-check's graph MX4Experts, MX4_ONLY=gu or down one of the two, MX4_NOCOMPUTE=1 builds kernels that
-skip their products (the transfers alone), MX4_CORES (cores a column, 4; the tables' layout too),
-MX4_WDEPTH (the decode step's weight objects a memtile holds, 2), MX4_SB (rows an object of the
-prompt's x, 8).
+MX4Experts runs the two as one operator (the decode step's form). The switches for measuring
+(MX4_FUSED, MX4_ONLY, MX4_NOCOMPUTE, MX4_FASTDECODE, MX4_COUNTS, MX4_BFP, and MX4_CORES, MX4_WDEPTH,
+MX4_CAP, MX4_SB, MX4_SLOTS for the constants below) were removed 2026-11-26.
 """
 
 import argparse
@@ -46,14 +44,13 @@ BLOCK = MT * KT // GROUP + MT * KT // 2 + 2 * MT  # 5504: the exponents (a byte 
 TOP = 4
 EXPERTS = int(os.environ.get("GPTOSS_EXPERT_PLACES", "32"))
 HIDDEN, INTER = 2880, 2880
-CORES = int(os.environ.get("MX4_CORES", "4"))  # cores a column (the memtile splits each object of the weights between them)
+CORES = 4  # cores a column (the memtile splits each object of the weights between them)
 IPAD = 3072  # an expert's gate-up out-features (2880 and 192 of zeros): 96 blocks, 12 for each of its 8 cores
 NPAD = 3072  # the residual's width (48 column blocks of 64: whole on 8 columns)
 WV = 16  # MoERoute's routing weights (iron_moe.WV)
-NOCOMPUTE = os.environ.get("MX4_NOCOMPUTE") == "1"
-FASTDECODE = os.environ.get("MX4_FASTDECODE") == "1"  # a measurement: the prompt's kernels skip decoding the codes
-BFP = os.environ.get("MX4_BFP", "1") == "1"  # the prompt's products on bfp16 (mac_8x8_8x8T, docs/design/moe.md): the activations rounded to 8-bit mantissas; 0 the bf16 mmul
-WDEPTH = int(os.environ.get("MX4_WDEPTH", "2"))  # the decode step's weight objects held in a memtile
+# The prompt's products are on bfp16 (mac_8x8_8x8T, docs/design/moe.md): the activations rounded
+# to 8-bit mantissas (MX_BFP; the bf16 mmul was removed from the Python 2026-11-26).
+WDEPTH = 2  # the decode step's weight objects held in a memtile
 LIMIT, ALPHA = 7.0, 1.702
 FP4 = np.array([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6], np.float32)
 
@@ -199,11 +196,9 @@ def operators():
         here = Path(__file__).resolve().parent / "kernels"
         x = np.ndarray[(x_len,), np.dtype[bfloat16]]
         flags = [f"-DMX_K={k}", f"-DMX_KT={KT}", f"-DMX_XE={xe or k}", f"-DMX_W={w_at}"]
-        if NOCOMPUTE:  # a measurement (MX4_NOCOMPUTE=1): the kernels skip their products
-            flags.append("-DMX_NOCOMPUTE=1")
         common = dict(source_file=str(here / "moe_mx4.cc"),
                       include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
-                      compile_flags=flags, object_file_name=f"moe_mx4_{x_len}_{k}_{xe}_{w_at}{'_nc' if NOCOMPUTE else ''}.o")
+                      compile_flags=flags, object_file_name=f"moe_mx4_{x_len}_{k}_{xe}_{w_at}.o")
         f = lambda name, args: ExternalFunction(name, arg_types=args, **common)  # noqa: E731
         return dict(
             init=f("mx4_init", [blk_t, acc_t]),
@@ -232,7 +227,7 @@ def operators():
         YN: int = param(derive=lambda op: TOP * op.I, array=True)
         cores: int = param(default=CORES, array=True)  # cores a column (the tables' layout)
         wdepth: int = param(default=WDEPTH, array=True)
-        nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
+        nocompute: bool = param(default=False, array=True)  # was MX4_NOCOMPUTE: kept in the repr and device symbols
         picked: int = param(default=-1, repr=False)
         num_aie_columns: int = tunable(domain=widths)
 
@@ -346,7 +341,7 @@ def operators():
         R: int = param(derive=lambda op: op.N // 8, array=True)
         cores: int = param(default=CORES, array=True)  # cores a column (the tables' layout)
         wdepth: int = param(default=WDEPTH, array=True)
-        nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
+        nocompute: bool = param(default=False, array=True)  # was MX4_NOCOMPUTE: kept in the repr and device symbols
         picked: int = param(default=-1, repr=False)
         num_aie_columns: int = tunable(domain=widths)
 
@@ -483,7 +478,7 @@ def operators():
         YN: int = param(derive=lambda op: TOP * op.I + op.N, array=True)
         cores: int = param(default=CORES, array=True)
         form: int = param(default=2, array=True)  # 2: the down weights queued before phase 1 ends
-        nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
+        nocompute: bool = param(default=False, array=True)  # was MX4_NOCOMPUTE: kept in the repr and device symbols
         picked: int = param(default=-1, repr=False)
         num_aie_columns: int = tunable(domain=widths)
 
@@ -664,12 +659,11 @@ def random_expert(rng, out: int, k: int):
 
 def _check(a) -> int:
     import iron
-    from iron.operators.copy import Copy
     from iron import Scratchpad
     from iron_graph import bind_device, export_graph, write_check
 
     bind_device("npu2", 8)
-    GU, D, EX = operators()
+    GU, D, _ = operators()
     rng = np.random.default_rng(a.seed)
     E = a.experts
     gu = np.concatenate([gate_up_table(*random_expert(rng, 2 * INTER, HIDDEN)) for _ in range(E)])
@@ -686,21 +680,7 @@ def _check(a) -> int:
         def body(self, x, r, w, *, e0: Scratchpad[np.int32] = np.int32(0), e1: Scratchpad[np.int32] = np.int32(0),
                  e2: Scratchpad[np.int32] = np.int32(0), e3: Scratchpad[np.int32] = np.int32(0)):
             es = [e0, e1, e2, e3]
-            if os.environ.get("MX4_FUSED") == "1":  # MX4Experts: the two in one operator
-                out = EX.step(self.gu, self.dn, x, r, w, grows=self.gu.shape[0], drows=self.dn.shape[0],
-                              **{f"e{i}": es[i] * gu_eb for i in range(TOP)},
-                              **{f"d{i}": es[i] * dn_eb for i in range(TOP)})
-                return Copy.step(out[TOP * IPAD :])
-            only = os.environ.get("MX4_ONLY")  # a measurement: one of the two operators
-            if only == "down":
-                Copy.step(x)  # an input must be read (a small copy, about 0.1 ms of the time)
-                act = Copy.step(self.act0)
-                return D.step(self.dn, act, r, w, rows=self.dn.shape[0], **{f"e{i}": es[i] * dn_eb for i in range(TOP)})
             y = GU.step(self.gu, x, rows=self.gu.shape[0], **{f"e{i}": es[i] * gu_eb for i in range(TOP)})
-            if only == "gu":
-                Copy.step(r)  # inputs must be read (small copies, about 0.1 ms each of the time)
-                Copy.step(w)
-                return y
             return D.step(self.dn, y, r, w, rows=self.dn.shape[0], **{f"e{i}": es[i] * dn_eb for i in range(TOP)})
 
         def reference(self, x, r, w, e0=0, e1=0, e2=0, e3=0):
@@ -730,14 +710,14 @@ def _check(a) -> int:
 
 # --- a prompt chunk's experts: every expert's weights once a pass ---------------------------
 
-CAP = int(os.environ.get("MX4_CAP", "56"))  # a slot's rows (a core holds CAP rows' accumulators of a gate and an up block, and a decoded pair: 64 does not fit)
-SB = int(os.environ.get("MX4_SB", "8"))  # rows an object of x
+CAP = 56  # a slot's rows (a core holds CAP rows' accumulators of a gate and an up block, and a decoded pair: 64 does not fit)
+SB = 8  # rows an object of x
 # A pass runs SLOTS slots of up to CAP rows: slot e < EXPERTS expert e's first CAP rows, the
 # others an expert's further rows (its weights at a per-call offset, the graph's slot<i>; a
 # command's scratchpad holds 32 words, so not every slot can take one). x and the activations
 # stream a slot's CAP rows whatever its count, so CAP near a chunk's rows an expert (256 tokens:
 # about 32) is what they cost; the overflow slots are the weights read again.
-SLOTS = int(os.environ.get("MX4_SLOTS", str(EXPERTS + 8)))
+SLOTS = EXPERTS + 8
 GROUPS = SLOTS // TOP  # a prompt runs the slots 4 at a time on the decode step's columns
 COUNT_WORDS = 64  # the counts' int32 words (a slot's rows), the first object of the x channel
 assert SLOTS % TOP == 0 and SLOTS <= COUNT_WORDS
@@ -855,9 +835,8 @@ def group_operators():
         here = Path(__file__).resolve().parent / "kernels"
         common = dict(source_file=str(here / "moe_mx4_rows.cc"),
                       include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
-                      compile_flags=[f"-DMX_KT={KT}", f"-DMX_CAP={CAP}", f"-DMX_SB={SB}"] + (["-DMX_NOCOMPUTE=1"] if NOCOMPUTE else [])
-                      + (["-DMX_FASTDECODE=1"] if FASTDECODE else []) + (["-DMX_BFP=1"] if BFP else []),
-                      object_file_name=f"moe_mx4_rows_mm_{KT}_{CAP}_{SB}{'_nc' if NOCOMPUTE else ''}{'_fd' if FASTDECODE else ''}{'_bfp' if BFP else ''}.o")
+                      compile_flags=[f"-DMX_KT={KT}", f"-DMX_CAP={CAP}", f"-DMX_SB={SB}", "-DMX_BFP=1"],
+                      object_file_name=f"moe_mx4_rows_mm_{KT}_{CAP}_{SB}_bfp.o")
         f = lambda name, args: ExternalFunction(name, arg_types=args, **common)  # noqa: E731
         i32 = np.int32
         return dict(
@@ -870,7 +849,7 @@ def group_operators():
             **(dict(dec=f("mx4_rows_dec", [blk_t, dec_t, cnt_t, i32]),
                     dec2=f("mx4_rows_dec2", [blk_t, blk_t, dec2_t, cnt_t, i32]),
                     blockd=f("mx4_rows_blockd", [dec_t, obj_t, acc_t, cnt_t, i32, i32]),
-                    block2d=f("mx4_rows_block2d", [dec2_t, obj_t, acc_t, acc_t, cnt_t, i32, i32])) if BFP else {}),
+                    block2d=f("mx4_rows_block2d", [dec2_t, obj_t, acc_t, acc_t, cnt_t, i32, i32]))),
         )
 
     def i32(v):
@@ -888,9 +867,9 @@ def group_operators():
         XS: int = param(derive=lambda op: SLOTS * op.K * CAP, array=True)
         AN: int = param(derive=lambda op: SLOTS * CAP * op.I, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=8 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 8: bfp16 (MX_BFP), a block decoded once a slot
-        nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
-        fastdecode: bool = param(default=FASTDECODE, array=True)  # a measurement's build (MX4_FASTDECODE)
+        form: int = param(default=8, array=True)  # 8: bfp16 (MX_BFP), a block decoded once a slot (3, the bf16 mmul a strip at a time, removed)
+        nocompute: bool = param(default=False, array=True)  # was MX4_NOCOMPUTE: kept in the repr and device symbols
+        fastdecode: bool = param(default=False, array=True)  # was MX4_FASTDECODE: kept in the repr and device symbols
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
@@ -929,18 +908,13 @@ def group_operators():
                             if kb == 0:
                                 init(bl[0], g, cnt, e)
                                 init(bl[1], u, cnt, e)
-                            if BFP:  # the pair decoded once, its blocks freed for the next pair's
-                                dec2(bl[0], bl[1], dec, cnt, e)
-                                w_f.release(2)
+                            # the pair decoded once, its blocks freed for the next pair's
+                            dec2(bl[0], bl[1], dec, cnt, e)
+                            w_f.release(2)
                             for b in range_(CAP // SB):
                                 x = x_f.acquire(1)
-                                if BFP:
-                                    block2d(dec, x, g, u, cnt, e, i32(b))
-                                else:
-                                    block2(bl[0], bl[1], x, g, u, cnt, e, i32(b))
+                                block2d(dec, x, g, u, cnt, e, i32(b))
                                 x_f.release(1)
-                            if not BFP:
-                                w_f.release(2)
                         for r in range_(CAP):
                             y = y_f.acquire(1)
                             glu_k(g, u, cnt, e, i32(r), y)
@@ -949,7 +923,7 @@ def group_operators():
             workers = []
             for i in range(n):
                 for c in range(CORES):
-                    extra = [Buffer(dec2_t), k["dec2"], k["block2d"]] if BFP else []
+                    extra = [Buffer(dec2_t), k["dec2"], k["block2d"]]
                     workers.append(Worker(
                         lambda w_f, x_f, y_f, g, u, cnt, a1, a2, a3, a4, *bfp, j=i // 2: core(
                             w_f, x_f, y_f, g, u, cnt, j, a1, a2, a3, a4, *bfp),
@@ -1007,9 +981,9 @@ def group_operators():
         AN: int = param(derive=lambda op: SLOTS * CAP * op.I, array=True)
         YN: int = param(derive=lambda op: SLOTS * CAP * op.N, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=8 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 8: bfp16 (MX_BFP), a block decoded once a slot
-        nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
-        fastdecode: bool = param(default=FASTDECODE, array=True)  # a measurement's build (MX4_FASTDECODE)
+        form: int = param(default=8, array=True)  # 8: bfp16 (MX_BFP), a block decoded once a slot (3, the bf16 mmul a strip at a time, removed)
+        nocompute: bool = param(default=False, array=True)  # was MX4_NOCOMPUTE: kept in the repr and device symbols
+        fastdecode: bool = param(default=False, array=True)  # was MX4_FASTDECODE: kept in the repr and device symbols
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
@@ -1046,18 +1020,13 @@ def group_operators():
                             blk = w_f.acquire(1)
                             if kb == 0:
                                 init(blk, acc, cnt, e32)
-                            if BFP:  # the block decoded once, freed for the next
-                                dec_k(blk, dec, cnt, e32)
-                                w_f.release(1)
+                            # the block decoded once, freed for the next
+                            dec_k(blk, dec, cnt, e32)
+                            w_f.release(1)
                             for b in range_(CAP // SB):
                                 x = x_f.acquire(1)
-                                if BFP:
-                                    blockd(dec, x, acc, cnt, e32, i32(b))
-                                else:
-                                    block(blk, x, acc, cnt, e32, i32(b))
+                                blockd(dec, x, acc, cnt, e32, i32(b))
                                 x_f.release(1)
-                            if not BFP:
-                                w_f.release(1)
                         for r in range_(CAP):
                             y = y_f.acquire(1)
                             out(acc, cnt, e32, i32(r), y)
@@ -1066,7 +1035,7 @@ def group_operators():
             workers = []
             for i in range(n):
                 for c in range(CORES):
-                    extra = [Buffer(dec_t), k["dec"], k["blockd"]] if BFP else []
+                    extra = [Buffer(dec_t), k["dec"], k["blockd"]]
                     workers.append(Worker(core, [w_l1[i][c].cons(), x_l1[i].cons(), y_l1[i][c].prod(), Buffer(acc_t),
                                                  Buffer(cnt_t), k["counts"], k["init"], k["block"], k["out"], *extra]))
             self.W.bind([f.prod() for f in w_l3])
@@ -1124,9 +1093,6 @@ def _check_group(a) -> int:
     # per-call values)
     counts = rng.integers(0, CAP + 1, SLOTS)
     counts[:3] = (0, CAP, 1)
-    if os.environ.get("MX4_COUNTS") == "chunk":  # a measurement: a 256-token chunk's 1024 rows, about 32 an expert
-        plan = plan_slots(rng.multinomial(1024, rng.dirichlet(np.full(EXPERTS, 3.0))))
-        counts = np.array([c for _, _, c in plan])
     experts = [s % EXPERTS for s in range(SLOTS)]
 
     class G(iron.Graph):
@@ -1136,15 +1102,11 @@ def _check_group(a) -> int:
 
         def body(self, counts, xs):
             act = GU.step(self.gu, counts, xs, rows=self.gu.shape[0])
-            if os.environ.get("MX4_ONLY") == "gu":  # a measurement: the gate-up alone
-                return act
             return D.step(self.dn, counts, act, rows=self.dn.shape[0])
 
         def reference(self, cw, xs):
             c = np.asarray(cw).view(np.int32)[:SLOTS]
             act = group_reference_gate_up(gu, experts, c, xs).astype(bfloat16)
-            if os.environ.get("MX4_ONLY") == "gu":
-                return act.reshape(-1)
             return group_reference_down(dn, experts, c, act).astype(bfloat16).reshape(-1)
 
     g = G()

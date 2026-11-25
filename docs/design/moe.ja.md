@@ -177,7 +177,7 @@ NPU が読めるのは固定したバッファ (バンク) だけ。専門家の
 - **デコードを常駐の 1 配列に** (`GptOssStep`、`tools/amd/iron_gptoss_layer.py`、`kernels/gptoss_layer.cc`): 層の演算がすべて 1 つの配列の段。1 コマンド = 前の層の専門家 (E) → q/k/v と RMSNorm、bias、RoPE (Q) → 注意 (A) → o_proj と bias と残差 (O) → router (R) → 経路 (T: 次のコマンドのスクラッチパッドの語を書く)。最後のコマンドは [E、出力層 (H)]。1 トークン 25 コマンド、PDI の読み込みは 1 回 (`unexpanded_loads`)、ステップのバリアなし (`no_step_barrier`。`HWNPU_DEV=iron.barrier=1/0` で逆に)。
   - 射影は 5504 バイトの q8x ブロック (mx4 のブロックと同じ大きさ)。プロンプトも同じ q8x の表を戻して使う (`Q8XDequant`) ので表は 1 つ。
   - 出力層は q4 の表をそのまま、5120 バイトずつ進む 5504 バイトの窓として読む。1 行の 2 つの部分和は hwnpu が足す (`logit_parts`)。
-  - デコードの KV は 1 つの配列 (`cache.kv`)。hwnpu がプロンプトのキーと値の配列と行き来させる (`joinKV`、`splitKV`)。窓の層は 128 行の輪 (`GPTOSS_KV_RING`、位置 % 128)、巻き戻しの後は `ringsTo` で入れ直す。`TestKVRingRewindOnDevice` で確かめる。
+  - デコードの KV は 1 つの配列 (`cache.kv`)。hwnpu がプロンプトのキーと値の配列と行き来させる (`joinKV`、`splitKV`)。窓の層は 128 行の輪 (位置 % 128)、巻き戻しの後は `ringsTo` で入れ直す。`TestKVRingRewindOnDevice` で確かめる。
   - 指数関数は 1 つの `gl_exp32` (32 レーン、2^k·p(f)、bf16 の 2 リム) で softmax、glu、経路の重みに。
 - **プロンプトの専門家** (`MX4GroupGateUp`、`MX4GroupDown`): 経路はホスト (`moeHostRouteMX4`)。ブロックを直接 bfp16ebs8 に組み (仮数 = 2·e2m1、指数 = E + 5。重みは正確、活性は 8 ビットの仮数に丸まる)、bfp16 の行列命令 `mac_8x8_8x8T` で掛ける。AIE2P の bf16 の `mmul<4,8,8>` は放送 mac の真似。
   - スロット: `SLOTS = 40`、`CAP = 56`。スロット e < 32 は専門家 e の最初の行、残りの 8 は行の多い専門家の続きの行 (位置は呼び出しごとの語、`slot<i>`)。重みの塊は 1 回だけコアに戻してスロットの行で使い回す。入らない塊は 2 パス。
