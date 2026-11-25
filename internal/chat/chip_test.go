@@ -74,3 +74,21 @@ func TestPickNotOn(t *testing.T) {
 		}
 	}
 }
+
+// An export made as a chip converts is prebuilt for that chip's architectures of the Neural
+// Engine, the M2's standing for the later chips' too.
+func TestTakesExportsOf(t *testing.T) {
+	for _, c := range []struct {
+		arch, chip string
+		want       bool
+	}{
+		{"h13g", "M1", true}, {"h13s", "M1", true}, {"h13g", "M2", false},
+		{"h14g", "M2", true}, {"h14g", "M1", false},
+		{"h15g", "M2", true}, {"h15g", "M1", false}, {"h15g", "M3", true},
+		{"h18g", "M2", true}, {"h17p", "M1", false},
+	} {
+		if got := TakesExportsOf(c.arch, c.chip); got != c.want {
+			t.Errorf("%s takes the exports of an %s: %v, want %v", c.arch, c.chip, got, c.want)
+		}
+	}
+}

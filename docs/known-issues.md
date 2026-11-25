@@ -22,6 +22,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 10 | M1 の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書きあり) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
+| 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -128,6 +129,28 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: 何もしなくてよい
 - まだ見ていないもの: h15g 以外の種類の端末での検査 (この機械は h15g だけ)
 - 確かめ方: `coreai-build compile … --architecture h15g` で作った `.aimodelc` を M3 で開き (AIModel(contentsOf:))、`/usr/bin/log stream` に "cache_hint" が出るか。attention だけなら 1536 行、`HeadChunk` 1024 のもので足りる
+
+## 13. h13g (M1) 向けの 8192 キー以上の attention が端末で壊れる (未報告)
+
+- **何が**: FLUX.2 klein の「1024² を 1024 の参照 1 枚で編集」の関数 (`s1024x1024_ref1`、8704 キー。キーの部分ごとの softmax を log-sum-exp で合わせる形、`milpart.PieceKeys`) を `coreai-build` で h13g 向けに作ると、オフラインでは全部 Neural Engine に載るのに、M1 (macOS 27.2.1、Metal Toolchain 27.2.47、coreai-build 3605.6.3) で正しく動かない
+  - 単ブロックのプログラム: 仕上がって全部 Neural Engine で動くが、出力が雑音になる。絵は一面の雑音で、参照は何も残らない
+  - 二重ブロックのプログラム: 仕上げのサービス (ANELargeModelCompilerService) がその関数の変換の終わり近くで落ちる (SIGSEGV、`ZinAneHloConverter::ParseInstructions`。13 関数のうち 2 番目、38060 個中 37838 個目のタスク)
+  - Core AI は関数が 1 つ仕上がらないとプログラムごと端末でコンパイルし直す。13 関数の `dit_double_0` で 54 分かかり、その間にコンパイラが約 137 GB を書いた
+- **切り分け** (単ブロック 2 個、関数 1 つのプログラム。M1 の Neural Engine の出力を CPU のインタープリタと比べた):
+
+  | 関数 | キー | コンパイル | 余弦 |
+  |---|---|---|---|
+  | `s1024x1024` | 4608 | `coreai-build` h13g | 0.999999 |
+  | `s1024x1024_refh1` (M1 の書き出しの、参照 1 枚を 512 で読む関数) | 5632 | `coreai-build` h13g | 0.999999 |
+  | `s1024x1024_refh2` | 6656 | `coreai-build` h13g | 0.999999 |
+  | `s1024x1024_ref1` | 8704 | `coreai-build` h13g | −0.0005 (非有限値 37924 個) |
+  | `s1024x1024_ref1` | 8704 | M1 の上 | 0.999999 |
+
+  同じプログラムを Core AI の CPU で動かすと 0.999996 なので、書き出しは正しい。M2 (h14g) と M3 (h15g) では、同じ書き出しのプリビルトで絵が正しく出る
+- **今**: M1 の書き出しには 8192 キー以上の関数を入れない。1024² の絵の参照が 1 枚のとき、M1 では参照を 512 で読む (models.yaml の `npu.apple.generation_edits`、5632 キー)。書き出しは M1 用に 1 つ (名前の編集の hash が違う)。ほかのチップは今までどおり
+- **確かめた結果** (2026-11-25、M1): M1 用の書き出しの h13g のプリビルト 14 本は、M1 の上で全部仕上がった (`the prebuilt program failed` は 0 回、DiT の端末でのコンパイルも 0 回)。空の Core AI キャッシュからの初回は 18 分 15 秒。文からの生成 5 サイズ (512²、1024²、1280 × 704、704 × 1280、768 × 1024) と編集 5 通りの絵が正しく出た。本物の `dit_single_0` (13 関数) の 2 つの関数も、CPU との余弦が 0.999999 だった。時間は [design/image-apple.ja.md](design/image-apple.ja.md)
+- **直ったら**: `generation_edits` の M1 を消せば、M1 もほかのチップと同じ書き出しを使う (M1 用の書き出しとプリビルトは使われなくなる)
+- 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`HWNPU_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`hwnpu-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 

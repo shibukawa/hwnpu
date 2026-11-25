@@ -49,10 +49,12 @@ type job struct {
 	archs  []string
 }
 
-// prepared is what a job's preparation of a form gave (airole.Files).
+// prepared is what a job's preparation of a form gave (airole.Files), as a Mac of chip converts
+// ("" for another target's, of no chip).
 type prepared struct {
 	job   job
 	files airole.Files
+	chip  string
 }
 
 // folder is Core AI export folders and programs to compile for archs (none: the recipe's) as
@@ -88,7 +90,15 @@ func (x PackageCmd) Run(d *devopt.Defs) error {
 	for _, p := range done {
 		if len(p.job.archs) > 0 {
 			if paths := coreAIPaths(p.files.Paths); len(paths) > 0 {
-				folders = append(folders, folder{paths, p.job.archs, p.job.model.Name})
+				// the exports made as a chip converts, for the architectures that take them: a
+				// chip's own export is not compiled for the others, nor theirs for it (FLUX.2
+				// klein's for an M1, whose programs of the others' draw noise)
+				archs := slices.DeleteFunc(slices.Clone(p.job.archs), func(arch string) bool { return p.chip != "" && !chat.TakesExportsOf(arch, p.chip) })
+				if len(archs) > 0 {
+					folders = append(folders, folder{paths, archs, p.job.model.Name})
+				} else {
+					fmt.Fprintf(os.Stderr, "%s: its exports as on the %s are compiled for none of %s (another chip's)\n", p.job.model.Name, p.chip, strings.Join(p.job.archs, " "))
+				}
 			}
 		}
 	}
@@ -328,7 +338,7 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 				if missing == nil {
 					putHere(f)
 				}
-				out = append(out, prepared{j, f})
+				out = append(out, prepared{j, f, chip})
 			}
 		}
 	}

@@ -15,6 +15,7 @@ hwnpu-dev models package FLUX.2-klein-4B
 
 - レシピがあるモデルは、ターゲットを書かなくてよい。Core AI の書き出しを作り、レシピのチップ (`archs`) 向けにプリビルドし、取得元 (`HWNPU_MODEL_SOURCE …?writeback=true`) に置く
 - `MODEL/coreai-h14g` のようにチップを書くと、そのチップだけを作る。並列数と、実機に回すプログラムは、そのときもレシピのとおり
+- チップによって書き出しが違うモデル (FLUX.2 klein は M1 だけ別: models.yaml の `npu.apple.generation_edits`) は、M1 として作った書き出しを h13 の種類 (h13g、h13s、…) だけに、M2 として作った書き出しをそのほかの種類だけにプリビルドする (`chat.TakesExportsOf`)。ほかのチップの書き出しのプリビルトは作らない。手元の書き出しを `hwnpu-dev prebuild EXPORT_DIR` で作るときは、この振り分けがないので `-arch` で種類を名指しする
 - 手元の書き出しだけをプリビルドするときは `hwnpu-dev prebuild -put EXPORT_DIR`。どのモデルのレシピかは、書き出しの `entry.json` の `model` から決める (`-model NAME` で指定もできる)
 - `-arch` と `-j` は、レシピより優先する。確かめのとき以外は書かない
 - AMD のレシピ (`amd`) があるモデルは、Linux と Windows ではターゲットを書かなくても、レシピの世代 (`generations`) の書き出し (`amd-xdna2`) を作る。Mac では AMD の分を、ほかの OS では Core AI のプリビルドの分を、一言出して飛ばす
@@ -189,11 +190,11 @@ models:
 - `do: device` のプログラムはプリビルドしない。端末がそのプログラムのプリビルドを探しても見つからないので、端末のコンパイラがコンパイルする (初回だけ。そのあとは Core AI のキャッシュから)
 - VAE (`vae*`)、文のエンコーダー (`text*`)、名前が `_device` で終わるプログラムは、レシピとは別に、いつも端末に回る (`coreai.LeftToDevice`)。動かすときにも使う決まりなので、コードに残している
 
-## 5. いまのレシピの中身 (2026-11-23)
+## 5. いまのレシピの中身 (2026-11-25)
 
 | モデル | M1 (h13g) | M2 (h14g) | M3 (h15g) |
 |---|---|---|---|
-| FLUX.2 klein 4B | `dit_single_*` を端末で (RegAlloc の L2 の割り付けに失敗) | 全部プリビルド | 全部プリビルド |
+| FLUX.2 klein 4B | 全部プリビルド。ただし書き出しは M1 用 (1024² の参照 1 枚を 512 で読む。8192 キー以上の関数は h13g のプリビルトが壊れる: [known-issues](known-issues.md) 13 節) | 全部プリビルド | 全部プリビルド |
 | MOSS-SoundEffect v2.0 (`-lut8` も) | sin は級数 | sin は級数 | sin はそのまま (`-sin-native` の書き出し) |
 
 MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をそのまま書くと、h13g、h14g、h14c (M2 Pro・Max) は 1 段が Neural Engine の 8〜9 個の区間に分かれる (sin がその間で外に出る)。h15g/c、h16g/s/c、h17g/s/c/d は 1 区間に収まる (h15s/m/d と h17p は coreai-build が落ちるので見ていない)。M3 では、この書き出しを取ってきて音を作れた。級数はどのチップでも 1 区間。sin の前の clip は、sin とまとめられて (NEFUSED_EW: EW: MAX) h15g でも通らないので、そのまま書くときは clip を外す (clip は丸めのためのもの)。音声のプリビルドは置かない (M1 で遅いか壊れていた) ので、DAC は全部端末に回す規則にしてある。
@@ -214,7 +215,7 @@ MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をその
 
 - `go test ./internal/recipe`: 組み込みのレシピが読めること、M1 / M2 / M3 で規則が分かれること、AMD のコマンドの組み立て (置き場所、variants、世代の extra、skip)、AMD のレシピが変わったら版も上がっていること (`testdata/amd-versions.txt`)、Apple の `convert` か `code` が変わったら版も上がっていること (`testdata/apple-versions.txt`)
 - `go test ./cmd/hwnpu-dev/modelscmd`: Core AI の書き出しのあるモデルに、どれも `apple.version` があること
-- `tools/coreai/same-exports.sh BASE MODEL...`: 変える前の commit と今のコードで書き出しを作って比べる。同じなら版を上げずに `-update` してよい
+- `tools/coreai/same-exports.sh BASE MODEL...`: 変える前の commit と今のコードで書き出しを作って比べる。同じなら版を上げずに `-update` してよい。作るのは M1 の書き出し。`CHIP=M2` を付けると、ほかのチップの書き出しで比べる (M1 だけ書き出しが違うモデル)
 - `go test ./internal/chat`: レシピの名前が models.yaml のモデルであること、`iron_export_lm.py` のレシピが `AMDExport` になること (`like` と variants も)
 - `go test ./internal/prep`: AMD の NPU で動かすモデルに、コードが読むスクリプトのレシピがあり、置き場所がコードの入れるものであること。コマンドが前のコードのものと同じこと
 - 作ったプリビルドが端末で仕上がるかは、オフラインではわからない。そのチップの Mac で Core AI のキャッシュを空にして描き、「the prebuilt program failed」が出ないこと、DiT の各部品が数十秒で開くことを見る ([known-issues](known-issues.md) 12 節)
