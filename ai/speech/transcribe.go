@@ -39,6 +39,10 @@ var transcribeRole = &airole.Role{
 	Name:   "transcribe",
 	Remote: func(h *airpc.Handle) io.Closer { return &Transcriber{remote: h} },
 	Kinds:  []chat.Kind{chat.KindTranscribe},
+	// 1: the tokenizer as its binary file (chat.PrepareTokenizer) in the files, as "tokenizer":
+	// a store prepared before named none, and Load then read the checkpoint's tokenizer.json, which
+	// a checkpoint fetched since is without
+	Revision: 1,
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		cpu := e.NPU.CPU(e.Model)
 		if dir := first(e.Model.Programs["iron"]); dir != "" {

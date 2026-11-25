@@ -15,18 +15,27 @@ type Step struct {
 	// text/qwen_tokenizer.json, tokenizer.jsonl), each written as its binary file beside it
 	// (tokenizer.BinaryPath, which the runtime maps rather than parse the text) and removed.
 	Tokenizer Strings `yaml:"tokenizer,omitempty" json:"tokenizer,omitempty"`
+	// Remove are files of the export (paths in it) the runtime does not read, removed: what the
+	// script writes for its own use or for a step before (tokenizer_config.json, which PLaMo's
+	// tokenizer step reads and the binary file then holds). One missing is gone already.
+	Remove Strings `yaml:"remove,omitempty" json:"remove,omitempty"`
 }
 
 // StepVersions are the versions of what each kind of step makes: a model's finish stands for
 // its steps and their versions (Fingerprint), so that a step that comes to make other files
 // asks for the exports' new versions as a changed recipe does. tokenizer: the binary tokenizer
 // file's layout (tokenizer's tokbinVersion; the tokenizer package's test checks they agree).
-var StepVersions = map[string]int{"tokenizer": 1}
+var StepVersions = map[string]int{"tokenizer": 1, "remove": 1}
 
 // Kind is the step's kind (its field's name in the recipe).
 func (s Step) Kind() string {
-	if len(s.Tokenizer) > 0 {
+	switch {
+	case len(s.Tokenizer) > 0 && len(s.Remove) > 0:
+		return "" // one of them
+	case len(s.Tokenizer) > 0:
 		return "tokenizer"
+	case len(s.Remove) > 0:
+		return "remove"
 	}
 	return ""
 }
@@ -36,7 +45,15 @@ func checkFinish(at string, steps []Step) error {
 	for i, s := range steps {
 		at := fmt.Sprintf("%s[%d]", at, i)
 		if s.Kind() == "" {
-			return fmt.Errorf("%s: no step (one of %s)", at, strings.Join(stepKinds(), " "))
+			return fmt.Errorf("%s: no step, or more than one (one of %s)", at, strings.Join(stepKinds(), " "))
+		}
+		for _, f := range s.Remove {
+			if f == "" || path.IsAbs(f) || path.Clean(f) != f || strings.HasPrefix(f, "../") || f == ".." {
+				return fmt.Errorf("%s.remove: %q is not a path in the export", at, f)
+			}
+			if IsTokenizerFile(f) {
+				return fmt.Errorf("%s.remove: %q is a tokenizer file: a tokenizer step makes it binary (and removes it)", at, f)
+			}
 		}
 		for _, f := range s.Tokenizer {
 			if f == "" || path.IsAbs(f) || path.Clean(f) != f || strings.HasPrefix(f, "../") || f == ".." {

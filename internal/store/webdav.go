@@ -177,34 +177,110 @@ func (e *davError) Error() string { return fmt.Sprintf("store: %s %s: %s", e.Met
 // cut and tried again from where it stopped.
 var davStall = 60 * time.Second
 
-// stallError is a download cut for davStall without a byte: a timeout, tried again.
-type stallError struct{ err error }
+// A download that goes on but has slowed to a trickle (a NAS once sent 0.3 GB in 48 min of a
+// pack it had sent at 79 MB/s, and a new connection got the rest in a minute) is cut too, and
+// gone on from where it stopped: when a davStall brings less than 1/davSlowRatio of the most
+// one has brought in it, once one has brought davSlowFloor. A line that is slow all along is
+// never cut.
+var (
+	davSlowRatio int64 = 16
+	davSlowFloor int64 = 64 << 20
+)
+
+// stallError is a download cut for davStall without a byte, or slowed to a trickle: a
+// timeout, tried again.
+type stallError struct {
+	err error
+	// slow is the bytes of the davStall it was cut in, and best the most of one before it, when
+	// it was cut as slow
+	slow, best int64
+	isSlow     bool
+}
 
 func (e *stallError) Error() string {
+	if e.isSlow {
+		return fmt.Sprintf("%.2f MB in %s, after %.2f MB in one before: %v", float64(e.slow)/1e6, davStall, float64(e.best)/1e6, e.err)
+	}
 	return fmt.Sprintf("no data for %s: %v", davStall, e.err)
 }
 func (e *stallError) Unwrap() error   { return e.err }
 func (e *stallError) Timeout() bool   { return true }
 func (e *stallError) Temporary() bool { return true }
 
-// stalled is err as a stallError when it is of rctx cut by its watch, not of ctx.
-func stalled(ctx, rctx context.Context, err error) error {
+// stalled is err as a stallError when it is of rctx cut by its watch (w), not of ctx.
+func stalled(ctx, rctx context.Context, w *watched, err error) error {
 	if err != nil && ctx.Err() == nil && rctx.Err() != nil {
-		return &stallError{err: err}
+		e := &stallError{err: err}
+		if w != nil {
+			w.mu.Lock()
+			e.isSlow, e.slow, e.best = w.cutSlow, w.cutAt, w.best
+			w.mu.Unlock()
+		}
+		return e
 	}
 	return err
 }
 
-// watched is a body that puts its watch off by davStall at each byte read.
+// watched is a body that puts its watch off by davStall at each byte read, and cuts it (cancel)
+// at the end of a davStall that brought too little (davSlowRatio).
 type watched struct {
-	r    io.Reader
-	idle *time.Timer
+	r      io.Reader
+	idle   *time.Timer
+	cancel func()
+
+	mu       sync.Mutex
+	window   int64 // the bytes read in this davStall
+	best     int64 // the most of one before
+	cutSlow  bool
+	cutAt    int64
+	interval *time.Timer
+	stopped  bool
+}
+
+// watch starts w's measure of each davStall; stop ends it.
+func (w *watched) watch() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.interval = time.AfterFunc(davStall, w.tick)
+}
+
+func (w *watched) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopped = true
+	if w.interval != nil {
+		w.interval.Stop()
+	}
+}
+
+func (w *watched) tick() {
+	w.mu.Lock()
+	if w.stopped {
+		w.mu.Unlock()
+		return
+	}
+	n := w.window
+	w.window = 0
+	slow := w.best >= davSlowFloor && n*davSlowRatio < w.best
+	if slow {
+		w.cutSlow, w.cutAt = true, n
+	} else {
+		w.best = max(w.best, n)
+		w.interval.Reset(davStall)
+	}
+	w.mu.Unlock()
+	if slow {
+		w.cancel()
+	}
 }
 
 func (w *watched) Read(p []byte) (int, error) {
 	n, err := w.r.Read(p)
 	if n > 0 {
 		w.idle.Reset(davStall)
+		w.mu.Lock()
+		w.window += int64(n)
+		w.mu.Unlock()
 	}
 	return n, err
 }
@@ -444,7 +520,31 @@ func (w *WebDAV) Get(ctx context.Context, key, dst string, bar func(done, total 
 		return 0, err
 	}
 	var size int64
-	err := retryIf(ctx, davTransient, func() error {
+	partSize := func() int64 {
+		if fi, err := os.Stat(dst + ".part"); err == nil {
+			return fi.Size()
+		}
+		return 0
+	}
+	// the tries are of a download that does not get on: one cut (stalled, slowed) after it
+	// brought more of the file starts them again, so that a long download that slows now and
+	// then is not given up
+	for {
+		before := partSize()
+		err := w.get(ctx, key, dst, bar, &size)
+		var se *stallError
+		if err == nil || !errors.As(err, &se) || ctx.Err() != nil || partSize() <= before {
+			if errors.Is(err, ErrNotFound) {
+				return 0, fmt.Errorf("store: %s: %s: %w", w.cfg.Name, key, ErrNotFound)
+			}
+			return size, err
+		}
+	}
+}
+
+// get is one round of Get's tries.
+func (w *WebDAV) get(ctx context.Context, key, dst string, bar func(done, total int64), size *int64) error {
+	return retryIf(ctx, davTransient, func() error {
 		// the files are never changed in place: a part goes on from where it stopped
 		var have int64
 		if fi, err := os.Stat(dst + ".part"); err == nil {
@@ -458,7 +558,7 @@ func (w *WebDAV) Get(ctx context.Context, key, dst string, bar func(done, total 
 			case !ok:
 				return ErrNotFound
 			case have == n:
-				size = n
+				*size = n
 				return os.Rename(dst+".part", dst)
 			case have > n:
 				os.Remove(dst + ".part")
@@ -466,23 +566,25 @@ func (w *WebDAV) Get(ctx context.Context, key, dst string, bar func(done, total 
 			}
 		}
 		// a server that stops sending (or a connection that died quietly) is cut after
-		// davStall and gone on from where it stopped, not waited on for ever
+		// davStall, and one that slows to a trickle at the end of a davStall (watched), and gone
+		// on from where it stopped, not waited on for ever
 		rctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		idle := time.AfterFunc(davStall, cancel)
 		defer idle.Stop()
 		body, start, total, err := w.open(rctx, key, have)
 		if err != nil {
-			return stalled(ctx, rctx, err)
+			return stalled(ctx, rctx, nil, err)
 		}
 		defer body.Close()
-		size, err = copyTo(ctx, &watched{r: body, idle: idle}, dst, start, total, bar)
-		return stalled(ctx, rctx, err)
+		wb := &watched{r: body, idle: idle, cancel: cancel}
+		wb.watch()
+		defer wb.stop()
+		var n int64
+		n, err = copyTo(ctx, wb, dst, start, total, bar)
+		*size = n
+		return stalled(ctx, rctx, wb, err)
 	})
-	if errors.Is(err, ErrNotFound) {
-		return 0, fmt.Errorf("store: %s: %s: %w", w.cfg.Name, key, ErrNotFound)
-	}
-	return size, err
 }
 
 func (w *WebDAV) Read(ctx context.Context, key string) ([]byte, error) {

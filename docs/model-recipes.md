@@ -137,10 +137,12 @@ models:
 
 - スクリプトや変換が書き出しを作った後、置く (`out.part` を `out` にする、`entry.json` を書く) 前に、ビルドがする手順。順に、一つの手順に一つの種類 (`internal/finish`、`recipe.Step`)
 - `tokenizer`: 書き出しの中のトークナイザーのファイル (書き出しの中のパス) を、それぞれ隣のバイナリのファイル (`tokenizer.tok`、`qwen_tokenizer.tok`) にして、元のファイルを消す。実行するときは JSON を読まずに、バイナリのファイルを mmap してそのまま引く (Gemma 4 の 32 MB の tokenizer.json で、読み込み 480 ms・194 MB → 0.6 ms・ほぼ 0)。バイナリのファイルは元と同じに符号化することを、書いた後で確かめる
+- `remove`: 書き出しの中の、実行するときに読まないファイル (書き出しの中のパス) を消す。ないものは消えたものとする。スクリプトが自分のために書くものや、前の手順が読むもの (`tokenizer_config.json`: PLaMo の `tokenizer` の手順が読み、バイナリのファイルが値を持つ) に。`iron_export_lm.py` のチャットのモデルは `finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]` (版 3)。スクリプトを変えず (`iron_export_lm.py` はほとんどのスクリプトが読むので、変えると全部の版が上がる) にレシピで決める
+- ツールのチェック用のデータ (`manifest.json`・`model.json` の隣の `check/`: `iron_export_lm.py` が必ず書く `check/words.json`、`--check` の入出力) は、エントリに入れない (`store.Describe`)。手元のテストは作ったフォルダから読む
 - 書き出しに、`finish` が挙げていないトークナイザーのファイル (`tokenizer.json`、`NAME_tokenizer.json`、`tokenizer.jsonl`) が残っていたら、ビルドは止まる。挙げ忘れたモデルが JSON のまま出ていかないように
 - `finish` を変えるのはレシピを変えること: 指紋 (`Fingerprint`) に入るので、版を上げないと `go test ./internal/recipe` が落ちる。手順の種類ごとの版 (`recipe.StepVersions`、tokenizer はバイナリの形の版) も指紋に入る
 - 前の版の書き出しを作り直さずに新しい版にするには: 手元の書き出しのフォルダで `hwnpu-dev sources import --finish DIR` (仕上げをして、今の版として置く)、それから `hwnpu-dev models pin MODEL`。Core AI の書き出し (`models/MODEL/NAME.coreai`) も同じコマンドで置ける (ピンはない)
-- Apple (`models.NAME.apple.finish`) も同じ形。Core AI の書き出しを置く前 (`chat.FinishCoreAI`) にする。finish のないモデルの Core AI の書き出しはそのまま (FLUX.2 klein は apple の版 4 から)
+- Apple (`models.NAME.apple.finish`) も同じ形。Core AI の書き出しを置く前 (`chat.FinishCoreAI`) にする。AMD と同じに、トークナイザーのテキストが残った Core AI の書き出し (finish のないモデル、モデルの分からないもの) は置かない
 - 書き出しにない (元のチェックポイントから読む: Apple、Intel、CPU のチャット、TTS、Whisper、sfx、d1) トークナイザーは、取得元のエントリ `tokenizer` (`converted/NAME/any/tokenizer/v0-HASH`、キーはリポジトリとコミットとファイルとバイナリの形の版) のバイナリのファイルを取ってきて使い、tokenizer.json は落とさない (`chat.PrepareTokenizer`)。取得元にないときは JSON を落としてここでバイナリにし、書き戻す取得元に置く。前もって全部置くには `hwnpu-dev sources tokenizers`
 - それ以外にテキストのまま読んだトークナイザー (手で渡したファイルなど) は、初めに読んだときにキャッシュの根にバイナリのファイル (`KEY.tok`) を残し、次からはそれを mmap する
 
