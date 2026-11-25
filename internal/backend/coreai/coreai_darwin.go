@@ -85,11 +85,6 @@ func OnCPU() bool { return os.Getenv(UnitsEnv) == "cpu" }
 // lowDisk is the free disk below which a program off the Neural Engine is put down to it.
 const lowDisk = 10 << 30
 
-// kindNoRetry is a flag of the shim's kind: on a failure, do not delete Core AI's cache entries
-// and load again (an asset whose bytecode is cut, which would make Core AI parse nothing and
-// abort).
-const kindNoRetry = 0x100
-
 // prebuiltOnce says once a process that its programs come from prebuilt ones.
 var prebuiltOnce sync.Once
 
@@ -267,7 +262,7 @@ func (b *buffer) Close() error {
 // asset is the Core AI program of the package at path and its function: lowered once into the
 // compile cache, with the packages beside it of the same weights (resolve), or alone into a
 // temporary directory without a cache. stored is the cache's entry (the asset, "" in a temporary
-// directory): what Compile may cut.
+// directory): what Compile may take apart (ungroup).
 func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored string, err error) {
 	if d.opts.CacheDir != "" {
 		dir, fn, cached, err = resolve(d.opts.CacheDir, path)
@@ -283,13 +278,6 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 	}
 	return tmp, "main", false, tmp, "", nil
 }
-
-// HWNPU_DEV=coreai.drop-bytecode cuts the bytecode of the compile cache's assets once Core AI's cache
-// holds their programs: the last resort when the disk runs short (docs/design/apple-coreai.md keeps them by
-// default). The bytecode holds the weights, and Core AI's entry holds them again; Core AI loads a
-// program from its entry by main.hash alone (Chroma1-Flash at 512 x 512: the compile cache 28 ->
-// 15 GB, a DiT group loaded in 0.5 s rather than 6.5 s). When the entry is gone, the program is
-// lowered again from its package, and Core AI compiles it as the first time.
 
 // PrebuiltEnv set to off makes Core AI compile a program on the device even when a prebuilt one
 // (coreai-build's .aimodelc, Prebuilt) lies beside it.
@@ -377,20 +365,11 @@ func packed(pb string) bool {
 	return found
 }
 
-// Parsing a cut bytecode aborts the process, so a cut asset (whether cut now or before) is opened
-// only while its entry is there (hasEntry), with kindNoRetry; otherwise it is lowered again.
-
-// isCut reports whether the asset's bytecode was cut.
-func isCut(dir string) bool {
-	fi, err := os.Stat(filepath.Join(dir, "main.mlirb"))
-	return err == nil && fi.Size() == 0
-}
-
 // hasEntry reports whether Core AI's cache holds the program of the asset at dir for this
 // process: its entries are under the OS's build and the executable's name
 // (~/Library/Caches/coreai-cache/26B123/hwnpu-image/HASH/DEVICE/model.aimodelx). An entry
-// without main-this.odix makes Core AI compile the bytecode again (and abort on a cut one); one
-// without its delegates fails to load, and is lowered again. Anything it cannot read says no.
+// without main-this.odix makes Core AI compile the bytecode again; one without its delegates
+// fails to load, and is lowered again. Anything it cannot read says no.
 func hasEntry(dir string) bool {
 	d := entryDir(dir)
 	if d == "" {
@@ -480,24 +459,6 @@ func restorableEntries() []string {
 
 func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
-// cut cuts the asset's bytecode once Core AI's cache holds its program. The file is replaced, not
-// truncated: Core AI may still map the old one.
-func cut(dir string) error {
-	if isCut(dir) || !hasEntry(dir) {
-		return nil
-	}
-	p := filepath.Join(dir, "main.mlirb")
-	tmp := p + ".cut"
-	if err := os.WriteFile(tmp, nil, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
-}
-
 type graph struct {
 	h         uintptr
 	args      []types.ArgInfo
@@ -533,20 +494,14 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			return nil, err
 		}
 	}
-	if stored == "" && isCut(dir) && !hasEntry(dir) {
-		return nil, fmt.Errorf("coreai: %s: the bytecode was cut and Core AI's cache entry is gone: lower the package again", src.Path)
-	}
 	g := &graph{cached: cached, owned: owned}
 	open := func() string {
 		kind := int32(kindNeuralEngine)
 		if OnCPU() {
 			kind = kindCPU
 		}
-		if isCut(dir) {
-			kind |= kindNoRetry
-		}
 		name, prebuilt, packedPB := dir, false, false
-		if !isCut(dir) && !hasEntry(dir) {
+		if !hasEntry(dir) {
 			// no entry yet: a prebuilt program fills it, here or from the shared layers
 			pb := Prebuilt(dir)
 			if pb == "" {
@@ -604,25 +559,12 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		return ""
 	}
 	msg := open()
-	if g.h == 0 && stored != "" && isCut(stored) {
-		// the entry would not load: lowered again, and loaded as the first time
-		if os.RemoveAll(stored) == nil {
-			var err error
-			if dir, fn, g.cached, _, stored, err = d.asset(path); err != nil {
-				return nil, err
-			}
-			msg = open()
-		}
-	}
 	if g.h == 0 {
 		g.Close()
 		return nil, fmt.Errorf("coreai: load %s: %s", src.Path, msg)
 	}
 	if d := entryDir(dir); d != "" {
 		cache.Use(d) // its entry is not removed to make room while this process runs
-	}
-	if stored != "" && devenv.On("coreai.drop-bytecode") {
-		cut(stored) // best effort: an asset left whole only takes more disk
 	}
 	if err := g.describe(dir, fn); err != nil {
 		g.Close()
