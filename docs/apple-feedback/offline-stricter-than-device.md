@@ -1,5 +1,7 @@
 # coreai-build places on the GPU a program the device's compiler places entirely on the Neural Engine (a clip before sin), and exits 0
 
+Filed as FB25724867 (2026-11-25).
+
 - **Area**: Xcode / coreai-build (Metal Toolchain)
 - **Type**: Incorrect/Unexpected behavior
 
