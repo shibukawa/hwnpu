@@ -4,11 +4,11 @@
 
 ## 実装の状態 (2026-11-26)
 
-- 入れたもの: 記録 (`build.json`)、流用の判断 (4節の6つの条件)、待避場所 (`ARCH.prev`)、端末の結果の記録 (`-mark` と `HWNPU_DEV=coreai.mark-prebuilt`)、記録の前に作った prebuilt に記録を足す `-record` (取得元の束にも)、記録が変わった束を取得元で置き換える `revision`
+- 入れたもの: 記録 (`build.json`)、流用の判断 (4節の6つの条件)、待避場所 (`ARCH.prev`)、端末の結果の記録 (動かしたときに自動で、または `-mark`)、記録の前に作った prebuilt に記録を足す `-record` (取得元の束にも)、記録が変わった束を取得元で置き換える `revision`
 - コード: `internal/backend/coreai/record.go` (記録の形、`MarkDevice`)、`reuse_darwin.go` (候補、判断、写す、待避、記録を書く)、`prebuild_darwin.go` の `Build`、`pack_darwin.go` の `checkPacked`
 - テスト: `internal/backend/coreai/reuse_darwin_test.go` (9節の場合を全部)
 - 実機での確かめ (M1、偽の新しい書き出しに FLUX.2 klein v5 の `ctx` と `dit_double_0` を写して): 記録を足した v5 から `dit_double_0` の h14g を流用 (0.6 秒、重みの写像を読み直して確かめた。写したものは v5 のものとバイトまで同じ)。記録がなければ流用せずコンパイルに回った。`-mark failedToSpecialize` のあとは作らずに止まり、レシピの決まりを提案した
-- Qwen3.5-0.8B で、記録のある版上げと、ビルドの選択を変えた一部の作り直しと、そのあとの推論を確かめた (M1、h13g、2026-11-26)。どれも、Core AI のキャッシュが空のプロセスで、端末でコンパイルしたもの (`HWNPU_COREAI_PREBUILT=off`) と同じ seed で同じ文を出し、prebuilt の失敗はなかった (`HWNPU_DEV=coreai.mark-prebuilt` で17部品とも `ok`)
+- Qwen3.5-0.8B で、記録のある版上げと、ビルドの選択を変えた一部の作り直しと、そのあとの推論を確かめた (M1、h13g、2026-11-26)。どれも、Core AI のキャッシュが空のプロセスで、端末でコンパイルしたもの (`HWNPU_COREAI_PREBUILT=off`) と同じ seed で同じ文を出し、prebuilt の失敗はなかった (端末の印は17部品とも `ok`)
   - r1 を一から: 17部品 6分22秒
   - r1 → r2 (今のコードの書き出し): 大きい9部品 (`model.part1`〜`7`、`*.mass`) を r1 から流用し、中身の変わった注意の8部品だけを作って 10 秒。読み込みは端末のコンパイルの 22 秒に対して 1.8 秒
   - レシピに `sr-q8.attn*` の `do: device` を足すと: その4部品は `ARCH.prev` に移り (束は13部品)、端末でコンパイルされた (読み込み 7.0 秒)
@@ -106,7 +106,11 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
   hwnpu-dev prebuild -mark failedToSpecialize -arch h15g -programs 'dit_single_*' -function s1024x1024 EXPORT_DIR
   hwnpu-dev prebuild -mark ok -arch h15g EXPORT_DIR
   ```
-- **開発機で半自動** (`HWNPU_DEV=coreai.mark-prebuilt`): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) を Core AI が開けたら `ok`、`the prebuilt program failed` で開けなければ `failedToSpecialize` (メッセージにその語があるとき) か `failed` を、手元の `build.json` に書く。関数ごとにプロセスで1回。書いたものは、次に `-put` するまで取得元には上がらない (`-put` すれば `revision` が変わって置き換わる)
+- **動かしたときに自動で** (設定なし): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) を Core AI が開けたら `ok`、`the prebuilt program failed` のメッセージに `failedToSpecialize` があれば `failedToSpecialize` を、その束の `build.json` に書く (`coreai.DeviceMark`、`markPrebuilt`)
+  - 書くのは記録 (`build.json`) のある束だけ。記録のない束に新しく作ることはしない
+  - ほかの失敗 ("Request cancelled" など) は書かない。ほかのプロセスが Neural Engine を使っていたせいのこともあり、書くと良い部品を作る側が断ることになる。`failedToSpecialize` は部品の側の失敗で、毎回同じになる
+  - 書くのは記録が変わるときだけ (`Record.NeedsMark`: `ok` の上に `ok`、同じ関数の同じ失敗は書き直さない)。関数ごとにプロセスで1回。書けないとき (アプリの読み取り専用の置き場所など) は黙って続ける
+  - 利用者の機械でも書くが、その機械の中だけのもの (取得元へは `-put` する開発機からしか上がらない。`-put` すれば `revision` が変わって置き換わる)
 - 落ちた印は、別の関数の `ok` では消えない (どれかの関数が落ちれば、その部品は使えない)。関数を書かない `-mark ok` (人が部品全体を確かめた) は消す
 - チップが違う機械では確かめられないので、印のない部品は `unchecked` と同じに扱う (流用してよい)
 
@@ -115,7 +119,7 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 ## 6. 決めたこと (2026-11-26)
 
 1. **`build.json` は束に入れる**。`PackedRoot` の中に置くので `coreai.Bundle` がそのまま入れる。ほかの開発機が前の版の束を取れば、記録も付いてくる。束のバイトは変わるが、鍵 (`ProgramsDigest`) と `Holds` (`.aimodelc` の一覧) は変わらない。束の entry の `revision` が記録の SHA-256 で、記録だけが変わった束 (端末の印、`-record`) も取得元で置き換わる (2.1節)
-2. **端末の結果は、手 (`-mark`) と開発機の半自動 (`HWNPU_DEV=coreai.mark-prebuilt`) で書く**。確かめの段 (5節の最後) は次
+2. **端末の結果は、動かしたときに自動で書き (設定なし。`failedToSpecialize` と `ok` だけ)、手 (`-mark`) でも書ける**。はじめに入れた `HWNPU_DEV=coreai.mark-prebuilt` はなくした。確かめの段 (5節の最後) は次
 3. **記録のない今の prebuilt には、マージのときに `-record` で記録を足す** (取得元の全部の束と、各開発機の手元のキャッシュ)。フラグで信用する道 (はじめに入れた `-trust-old`) はなくした。記録のないものは、その場所では今までどおり使い、ほかの書き出しへは流用しない
 4. **前の版を取得元から自動では引かない**。前の書き出しの名前を作る方法 (版を下げる) はモデルによって脆く、取得元を一覧する API もない。前の版の prebuilt が手元になければ、`hwnpu-dev models fetch` で前の書き出しの `coreai-ARCH` を取ってから作る (同じモデルのフォルダに入るので候補になる)
 

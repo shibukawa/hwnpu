@@ -338,3 +338,38 @@ func Backfill(root, arch, export, model string, jobs int, today string) ([]strin
 	}
 	return keys, WriteRecord(root, rec)
 }
+
+// FailedToSpecialize is the device's failure to finish a prebuilt program (Core AI's
+// failedToSpecialize): the program's own, the same each time, unlike a run cut short by another
+// process on the Neural Engine ("Request cancelled").
+const FailedToSpecialize = "failedToSpecialize"
+
+// DeviceMark is the mark a run writes of the function fn of a prebuilt program it opened (msg:
+// the error, "" when it opened), and whether it writes one: an ok, or a FailedToSpecialize; no
+// other failure, which may be another process's doing and would make builds refuse a good
+// program.
+func DeviceMark(fn, msg, today, by string) (DeviceCheck, bool) {
+	d := DeviceCheck{Status: DeviceOK, Checked: today, Function: fn, By: by}
+	if msg == "" {
+		return d, true
+	}
+	if !strings.Contains(msg, FailedToSpecialize) {
+		return d, false
+	}
+	d.Status, d.Message = FailedToSpecialize, msg
+	return d, true
+}
+
+// NeedsMark reports whether d changes what the record says of the program key of source src:
+// an ok over an ok, or the same failure of the same function, is not written again (a run's
+// marks write the file only when something changes).
+func (r *Record) NeedsMark(key, src string, d DeviceCheck) bool {
+	e := r.Programs[key]
+	if e == nil || e.Source != src || e.Device == nil {
+		return true
+	}
+	if e.Device.Status != d.Status {
+		return !(e.Device.Bad() && !d.Bad() && d.Function != e.Device.Function) // another function's ok leaves a failure
+	}
+	return d.Status != DeviceOK && e.Device.Function != d.Function
+}

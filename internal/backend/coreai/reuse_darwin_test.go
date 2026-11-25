@@ -360,3 +360,37 @@ func TestBuildLeftSetsAside(t *testing.T) {
 		t.Errorf("%v\n%s", err, log)
 	}
 }
+
+// A run marks an ok or a failedToSpecialize, no other failure (another process's), and writes
+// only what changes the record.
+func TestDeviceMark(t *testing.T) {
+	if d, ok := DeviceMark("s512", "", "2026-11-26", "x"); !ok || d.Status != DeviceOK {
+		t.Errorf("ok: %+v %v", d, ok)
+	}
+	if d, ok := DeviceMark("s512", "Error Domain=CoreAI failedToSpecialize", "2026-11-26", "x"); !ok || d.Status != FailedToSpecialize || !d.Bad() {
+		t.Errorf("failedToSpecialize: %+v %v", d, ok)
+	}
+	if _, ok := DeviceMark("s512", "ANEProgramProcessRequestDirect() Failed with status=0xf Request cancelled", "2026-11-26", "x"); ok {
+		t.Error("a cancelled request was marked")
+	}
+	r := &Record{Programs: map[string]*ProgramRecord{"a": {Source: "s"}}}
+	ok := DeviceCheck{Status: DeviceOK, Function: "f1"}
+	bad := DeviceCheck{Status: FailedToSpecialize, Function: "f1"}
+	if !r.NeedsMark("a", "s", ok) || !r.NeedsMark("b", "s", ok) || !r.NeedsMark("a", "other", ok) {
+		t.Error("a first mark is not written")
+	}
+	r.Programs["a"].Device = &DeviceCheck{Status: DeviceOK, Function: "f0"}
+	if r.NeedsMark("a", "s", ok) {
+		t.Error("an ok over an ok is written again")
+	}
+	if !r.NeedsMark("a", "s", bad) {
+		t.Error("a failure over an ok is not written")
+	}
+	r.Programs["a"].Device = &DeviceCheck{Status: FailedToSpecialize, Function: "f1"}
+	if r.NeedsMark("a", "s", bad) || r.NeedsMark("a", "s", DeviceCheck{Status: DeviceOK, Function: "f2"}) {
+		t.Error("the same failure, or another function's ok, is written over the failure")
+	}
+	if !r.NeedsMark("a", "s", ok) {
+		t.Error("the failed function's ok does not replace the failure")
+	}
+}

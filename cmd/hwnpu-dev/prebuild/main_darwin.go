@@ -19,7 +19,7 @@
 // same source (an earlier version of the model's, beside the export) instead of compiling it
 // again, when the record of its build (EXPORT.prebuilt/ARCH/build.json) says it was good: the
 // same coreai-build, no rule leaving it to the device, no more compiles at once, on the Neural
-// Engine, and no device failed it (-mark, or HWNPU_DEV=coreai.mark-prebuilt on a run). One a
+// Engine, and no device failed it (-mark, or a run that failed to finish it: failedToSpecialize). One a
 // device failed is not compiled again (it would be the same): the run says the rule that leaves
 // it to the device. Prebuilt programs made before records are given theirs once with -record
 // (here and in the sources written back to); without one a program is kept where it is but taken for

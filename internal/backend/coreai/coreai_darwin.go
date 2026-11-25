@@ -96,14 +96,12 @@ var prebuiltOnce sync.Once
 // markedPrebuilt are the programs and functions markPrebuilt wrote of.
 var markedPrebuilt sync.Map
 
-// markPrebuilt writes, with HWNPU_DEV=coreai.mark-prebuilt, what the device made of the function
-// fn of the packed prebuilt program of the asset at dir (msg: its error, "" when it opened) in the
-// record of the export's prebuilt programs (MarkDevice): a build then takes the program for a
-// later export only when no device failed it (docs/prebuilt-reuse.md). Once a process a function.
+// markPrebuilt writes what the device made of the function fn of the packed prebuilt program of
+// the asset at dir (msg: its error, "" when it opened) in the record of the export's prebuilt
+// programs, when they have one (DeviceMark): a build then takes the program for a later export
+// only when no device failed it (docs/prebuilt-reuse.md). Once a process a function; quiet when
+// the record cannot be written (a folder of an application, read only).
 func markPrebuilt(dir, fn, msg string) {
-	if !devenv.On("coreai.mark-prebuilt") {
-		return
-	}
 	export, ok := ExportOf(dir)
 	arch := Arch()
 	if !ok || arch == "" {
@@ -112,18 +110,22 @@ func markPrebuilt(dir, fn, msg string) {
 	if _, done := markedPrebuilt.LoadOrStore(dir+"#"+fn, true); done {
 		return
 	}
-	d := DeviceCheck{Status: DeviceOK, Checked: time.Now().Format("2006-01-02"), Function: fn, By: filepath.Base(os.Args[0])}
-	if msg != "" {
-		d.Status, d.Message = "failed", msg
-		if strings.Contains(msg, "failedToSpecialize") {
-			d.Status = "failedToSpecialize"
-		}
+	d, ok := DeviceMark(fn, msg, time.Now().Format("2006-01-02"), filepath.Base(os.Args[0]))
+	if !ok {
+		return
 	}
+	root := PackedRoot(export, arch)
 	key := ProgramKey(export, dir)
+	rec, err := ReadRecord(root)
+	if err != nil || rec == nil || !rec.NeedsMark(key, sourceHex(dir), d) {
+		return
+	}
 	if _, err := MarkDevice(export, arch, []string{key}, d); err != nil {
-		fmt.Fprintf(os.Stderr, "coreai: %s: the record of the prebuilt program: %v\n", key, err)
+		if devenv.On("coreai.debug") {
+			fmt.Fprintf(os.Stderr, "coreai: %s: the record of the prebuilt program: %v\n", key, err)
+		}
 	} else if d.Bad() {
-		fmt.Fprintf(os.Stderr, "coreai: %s: written %s in %s (hwnpu-dev prebuild takes it for no later export)\n", key, d.Status, filepath.Join(filepath.Base(PackedRoot(export, arch)), RecordFile))
+		fmt.Fprintf(os.Stderr, "coreai: %s: written %s in %s (hwnpu-dev prebuild takes it for no later export)\n", key, d.Status, filepath.Join(filepath.Base(root), RecordFile))
 	}
 }
 

@@ -40,7 +40,6 @@ var Keys = map[string]string{
 	"coreai.copy":          "gives Core AI's inputs buffers of their own (the copies' cost, the arrays' errors)",
 	"coreai.debug":         "logs Core AI's calls",
 	"coreai.drop-bytecode": "cuts the bytecode of the compile cache's assets once Core AI's entry is made",
-	"coreai.mark-prebuilt": "writes whether each packed prebuilt program finished on the device in its build.json (hwnpu-dev prebuild takes no failed one for a later export)",
 	"coreml.trace":         "traces Core ML's graph calls",
 	// decoding
 	"draft.policy":  "0 checks the lookup's drafts at every step (no policy)",
