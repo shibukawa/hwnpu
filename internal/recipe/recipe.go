@@ -41,10 +41,15 @@ type Tools struct {
 // A model's has Version, the version of what it makes (raised when Convert or its Code
 // changes: testdata/apple-versions.txt), Code, the Go packages that write its programs after the
 // file's Code (those every conversion writes with), and Convert, the values its conversion is
-// made with.
+// made with; and Prebuilt, whether its exports' programs are prebuilt for Archs when a build
+// names no architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT): the image
+// generators', whose programs take the device minutes to hours to compile. Another model's are
+// small, and a Mac loads them slower from prebuilt programs than it compiles them
+// (docs/known-issues.md 9); a build that names architectures compiles any model's, to measure it.
 type Apple struct {
 	Archs    []string  `yaml:"archs"`
 	Jobs     int       `yaml:"jobs"`
+	Prebuilt bool      `yaml:"prebuilt"`
 	Prebuild []Rule    `yaml:"prebuild"`
 	Rewrite  []Rewrite `yaml:"rewrite"`
 	Version  int       `yaml:"version"`
@@ -143,8 +148,8 @@ func Parse(name string, raw []byte) (*File, error) {
 	if err := f.Apple.check("apple"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
 	}
-	if f.Apple.Version != 0 || f.Apple.Convert != nil || f.Apple.Finish != nil {
-		return nil, fmt.Errorf("recipe: %s: apple: version, convert and finish are a model's (models.NAME.apple)", name)
+	if f.Apple.Version != 0 || f.Apple.Convert != nil || f.Apple.Finish != nil || f.Apple.Prebuilt {
+		return nil, fmt.Errorf("recipe: %s: apple: version, convert, finish and prebuilt are a model's (models.NAME.apple)", name)
 	}
 	if err := f.AMD.check("amd"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
@@ -256,8 +261,9 @@ func Builtin() (*File, error) {
 }
 
 // AppleOf is how model's Core AI exports are built: the file's apple, with the model's archs and
-// jobs over its own and the model's rules after its own. A model without a recipe is built as
-// apple says.
+// jobs over its own, the model's rules after its own, and whether the model's are prebuilt
+// when no architecture is named. A model without a recipe is built as apple says, and not
+// prebuilt.
 func (f *File) AppleOf(model string) Apple {
 	a := Apple{Archs: f.Apple.Archs, Jobs: f.Apple.Jobs, Prebuild: slices.Clone(f.Apple.Prebuild), Rewrite: slices.Clone(f.Apple.Rewrite)}
 	if m, ok := f.Models[model]; ok && m.Apple != nil {
@@ -267,6 +273,7 @@ func (f *File) AppleOf(model string) Apple {
 		if m.Apple.Jobs > 0 {
 			a.Jobs = m.Apple.Jobs
 		}
+		a.Prebuilt = m.Apple.Prebuilt
 		a.Prebuild = append(a.Prebuild, m.Apple.Prebuild...)
 		a.Rewrite = append(a.Rewrite, m.Apple.Rewrite...)
 	}

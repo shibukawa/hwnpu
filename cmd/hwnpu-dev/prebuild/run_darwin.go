@@ -24,7 +24,8 @@ type Options struct {
 	// Model is the model of the definitions whose recipe the exports are built with; "" for the
 	// one each export is of (chat.ExportModel).
 	Model string
-	// Archs are the architectures (the recipe's when none).
+	// Archs are the architectures (when none: the recipe's for a model its recipe prebuilds,
+	// apple.prebuilt, and no other model's exports are compiled).
 	Archs []string
 	// Jobs are the compiles at once (the recipe's when 0, else coreai.DefaultJobs).
 	Jobs int
@@ -88,6 +89,11 @@ func Run(ctx context.Context, paths []string, o Options) error {
 		a := recipes.AppleOf(name)
 		archs := o.Archs
 		if len(archs) == 0 {
+			// no architecture named: the recipe's, for a model the recipe prebuilds
+			if !a.Prebuilt {
+				fmt.Fprintf(o.Log, "%s: not prebuilt (model-recipes.yaml gives it no prebuilt: a Mac loads its programs slower from prebuilt ones than it compiles them); name architectures to compile it all the same\n", name)
+				continue
+			}
 			archs = a.Archs
 		}
 		jobs := o.Jobs
@@ -155,8 +161,14 @@ func Run(ctx context.Context, paths []string, o Options) error {
 			for k := range bad {
 				fmt.Fprintf(o.Log, "%s for %s: not put (a program failed)\n", filepath.Base(k[0]), k[1])
 			}
+			// the model is the recipe's: an export converted here with no source to put it in
+			// has no entry.json to name it
+			pctx := ctx
+			if m, ok := chat.Lookup(name); ok {
+				pctx = chat.WithModel(ctx, m)
+			}
 			for _, k := range puts {
-				if err := chat.PutPrebuilt(k[0], k[1]); err != nil {
+				if err := chat.PutPrebuilt(pctx, k[0], k[1]); err != nil {
 					return err
 				}
 			}

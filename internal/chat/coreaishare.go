@@ -183,8 +183,10 @@ func init() { coreai.FetchPrebuilt = FetchPrebuilt }
 // what they are compiled from, the programs' bytecode (coreai.ProgramsDigest), not what the
 // export was converted from: a machine whose export is the same bytes finds them whatever
 // made it. The model is the one of the export's entry.json (from the shared layers, or made
-// here and put in them), else the one whose directory holds it.
-func prebuiltPlace(export, arch string) (place, bool) {
+// here and put in them), else ctx's (WithModel: an export converted here with no source to
+// put it in has no entry.json, and a family's directory, models/FLUX.2-klein, is no model's),
+// else the one whose directory holds it.
+func prebuiltPlace(ctx context.Context, export, arch string) (place, bool) {
 	name, ok := coreAIExportName(export)
 	if !ok {
 		return place{}, false
@@ -196,6 +198,8 @@ func prebuiltPlace(export, arch string) (place, bool) {
 	var m Model
 	if e, err := shared.ReadEntry(export); err == nil && e.Model != "" {
 		m = modelNamed(e.Model)
+	} else if cm, has := ctx.Value(modelKey{}).(Model); has {
+		m = cm
 	} else if m, _, ok = modelOfDir(export); !ok {
 		return place{}, false
 	}
@@ -209,7 +213,7 @@ func prebuiltPlace(export, arch string) (place, bool) {
 // entry holding programs they lack (shared.HoldsMore): a machine may have put the entry before
 // it had built them all, and the backend asks only when a program is missing here.
 func FetchPrebuilt(ctx context.Context, export, arch string) {
-	p, ok := prebuiltPlace(export, arch)
+	p, ok := prebuiltPlace(ctx, export, arch)
 	if !ok {
 		return
 	}
@@ -265,11 +269,12 @@ func bundleDir(root string) string { return root + ".shared" }
 
 // PutPrebuilt puts the packed prebuilt programs of the export for arch (coreai.PackedRoot, made
 // here by hwnpu-dev models package MODEL/coreai-ARCH) in the sources that are written back to, in the background, as
-// one file (coreai.Bundle).
-func PutPrebuilt(export, arch string) error {
-	p, ok := prebuiltPlace(export, arch)
+// one file (coreai.Bundle). The export's model is its entry.json's, else ctx's (WithModel), else
+// the one whose directory holds it.
+func PutPrebuilt(ctx context.Context, export, arch string) error {
+	p, ok := prebuiltPlace(ctx, export, arch)
 	if !ok {
-		return fmt.Errorf("%s: not a Core AI export of a model of the definitions", export)
+		return fmt.Errorf("%s: not a Core AI export of a model of the definitions (it has no entry.json, and its directory is no model's: name the model)", export)
 	}
 	if len(shared.Writebacks()) == 0 {
 		return errors.New("no source is written back to (HWNPU_MODEL_SOURCE...?writeback=true)")
