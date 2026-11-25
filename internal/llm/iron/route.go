@@ -38,7 +38,6 @@ type hostRouter struct {
 	// command runs, which reads none of them (expertPool.inflight: a place is waited for when it
 	// is run or copied over). guess: how many (HWNPU_DEV=moe.prefetch=N, 0 none)
 	guess     int
-	guess2    int      // two layers ahead (HWNPU_DEV=moe.prefetch2=N)
 	fetched   [][]bool // by layer and place: brought in by a guess, not yet run
 	raw       []float32
 	guessed   []int
@@ -64,11 +63,6 @@ func (m *Model) openRouter() error {
 	if v, ok := experts.DebugOpt("prefetch"); ok {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			r.guess = n
-		}
-	}
-	if v, ok := experts.DebugOpt("prefetch2"); ok {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			r.guess2 = n
 		}
 	}
 	for l, lay := range er.Layers {
@@ -152,11 +146,6 @@ func (m *Model) hostRoute(l int, values map[string]int64) error {
 	}
 	if m.pool != nil && r.guess > 0 && l+1 < len(er.Layers) {
 		if err := m.guessNext(l+1, inv, r.guess); err != nil {
-			return err
-		}
-	}
-	if m.pool != nil && r.guess2 > 0 && l+2 < len(er.Layers) {
-		if err := m.guessNext(l+2, inv, r.guess2); err != nil {
 			return err
 		}
 	}

@@ -68,7 +68,7 @@
 分かった決まり:
 - 自己注意では割り算を後に回さない: Anima の最後のブロック (27) で積が fp16 の最大に届く。避けようと V の int8 の重みに 1/256 を畳むと絵が変わった (fp16 の正規化の範囲を下回る積を NE が落とす)。
 - NE から外れた書き方: 2 つの塊を同じ和で割る形 (和の逆数を掛ける形にする)、幅の違う塊の最大値どうしの `maximum` (`Interleave should be matched for dual-input PEs`。最大値を連結してからもう 1 度 `reduce_max`)。Qwen-Image では問い合わせの塊 2048 も外れた。
-- `HWNPU_DEV=anima.attention=chunks` は、Apple でも前のヘッドをまとめた形 (`QChunkAttention`) で書き出す。丸めの差と誤りを分けるため (別のフォルダへ convert する)。Intel はいつも `QChunkAttention`。
+- Intel はいつもヘッドをまとめた形 (`QChunkAttention`)。
 - Core ML の NE では、1 つのスコアのテンソルが約 64 MiB を超えると 1 スコアあたり 2〜3 倍遅い (65 MiB と 68 MiB の間に段差)。そのため `mil.DitQChunk` は変換のときに、16 × 塊 × パッチの数 × 2 バイトが 64 MiB 以下になるまで問い合わせの塊を半分にする (Anima のヘッドをまとめた形: 1024² で 512、1280² で 256、2048² で 128)。内部のメモリの大きさが原因ではない: 1 スコアあたりの速さは 0.5 MB から 64 MiB まで平ら。
 
 ### fp16 の落とし穴と手当て
@@ -104,7 +104,7 @@
 - Core AI では DiT の組を持ったままにしない。組を順番が来たときに読み込み、回して閉じる (`runner.Swap`。Anima の `progEngine.swap`、FLUX の `runner.Ring`)。組が回っている間に次を読む (順に回す部品は `runner.InTurn`、DiT は `runner.Ring`: 最後の組の後は次の呼び出しのために最初の組を読む。使わなかった読み込みは閉じる)。開くのは 2 本まで。先読みに失敗したら、順番が来たところで 1 回だけ読み直す (`TestRing`、`TestInTurn`)。
 - 理由: Core AI のキャッシュからの読み込みは 0.02〜0.3 秒で、1 回の実行と同じほど。全部持っても速くならない。大きな組は別のプログラムの後に来るとどのみち切り替えの費用を払う (`aicheck cycle`: Anima の 4 ブロックの組が別の組の後で +50〜70 ms。小さいプログラム 2 つ、組と小さいもの 1 つでは +0)。たくさん持つとかえって遅いか失敗する: Chroma1-Flash の 1024² で 8.8 GiB を全部持つと 1 割遅い。Qwen-Image の lut4 の DiT を 5.2 GiB 持つと `underlying=0x15` で失敗した (Core AI は Core ML のように追い出さずにエラーにする)。
 - 文の符号器はプロンプトの後に、approximator はステップの前に、最後のステップの間に次のために読んだ組は VAE の前に閉じる。VAE の段は 1 段ずつ読む (1 段 10〜20 ms、先読みは要らない)。
-- `HWNPU_DEV=hold-dit=1` は全部の組を持つ。`HWNPU_DEV=load-ahead=0` は先読みなし (どちらも測るため)。Core ML と Intel は 1 本ずつ読む (Intel は入るだけ持ち、メモリが足りなければほかを閉じる)。
+- Core ML と Intel は 1 本ずつ読む (Intel は入るだけ持ち、メモリが足りなければほかを閉じる)。
 - 読み込んだ直後 (または別のプログラムの後) の 1 回目の呼び出しは遅い: VAE の段と文の符号器の組はいつも 1 回目。
 - 複数のプロンプトをまとめて (`--batch`、`GenerateAll`、`DecodeAll`、`EncodeAll`): 文は全部のプロンプトで 1 回、DiT の組ごとに全部の絵、VAE の段ごとに全部の絵。[image-models.md](image-models.md) を参照。
 - 1024² のメモリの最大は DiT ではなく VAE の最後の段 (プロセスの float32 のバッファ)。FLUX.2 klein は、全部の σ の行を作ったら時刻の埋め込みの重み (0.7 GB) を捨て、ステップのごみを VAE の前と段ごとに返す (`debug.FreeOSMemory`): footprint 5.8 → 4.1 GB。

@@ -44,7 +44,7 @@ Core ML の計算の計画で見たもの (Core AI 自身の落とし穴は [Cor
 | `gather` | いつも | one-hot の行列積 |
 | 指数の `reduce_sum` | コンパイルごとに変わる | 1 との行列積で和 |
 | K/V を `tile` で写す注意 | いつも | `SDPAGrouped` (演算の順だけで配置が変わる) |
-| 語彙 262144 の `reshape`、最後の部分の `transpose` | その演算 | ホストで並べ替え (PLaMo 3、Gemma 4 の `-logits host`) |
+| 語彙 262144 の `reshape`、最後の部分の `transpose` | その演算 | ホストで並べ替え (PLaMo 3、Gemma 4 の softcap をホストで) |
 | `conv_transpose` (M1) | 歩幅 5 と 7。8、4、3 は動くがずれる | ポリフェーズの畳み込み |
 | 膨張つき畳み込み、`max_pool` (M1) | 膨張 17〜48。窓 9 と 13 | ずらした写しと 1×1 の畳み込み。窓 5 の連鎖 |
 | 深さ方向の畳み込み (M1) | 4096 チャンネルを超える | 4096 以下の塊 |

@@ -46,7 +46,6 @@ type GenerateCmd struct {
 	Image      []string  `name:"image" short:"i" placeholder:"FILE[@half]" help:"FLUX.2 klein: a reference image to edit or to compose from (PNG or JPEG; its centre cropped to the picture's shape and scaled to its size); repeat for up to 4, named image 1, image 2, ... in the prompt. FILE@half reads that reference at half the picture's sides (a quarter of its rows in each step: an edit at 1024 x 1024 in about two thirds of the time, with less of the reference's fine detail)."`
 	RefLatents []string  `name:"ref-latents" type:"existingfile" placeholder:"FILE" help:"FLUX.2 klein: a reference's latents as raw float32 (tokens x 128, normalized), for checks against tools/ref/ref_flux2klein.py; repeat for several."`
 	CPU        bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU (Anima; slow; for checking)."`
-	Resident   bool      `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
 	Dump       string    `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py."`
 	convertFlags
 }
@@ -179,7 +178,7 @@ func (c *GenerateCmd) references(o *imagegen.Options) error {
 }
 
 // use is the use of the model --model names, as the flags make it: a model of its own for the
-// weight formats, Anima's conversion, --cpu, --resident-dit, or an export's directory.
+// weight formats, Anima's conversion, --cpu, or an export's directory.
 func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Definition, error) {
 	mk := imagegen.Generate
 	if (len(c.Image) > 0 || len(c.RefLatents) > 0) && c.Size != "1:1s" && c.Size != "512" {
@@ -228,9 +227,6 @@ func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Defini
 		}
 		if c.QChunk != 0 && c.QChunk != 512 {
 			set(imagegen.SettingQChunk, strconv.Itoa(c.QChunk))
-		}
-		if c.Resident {
-			set(imagegen.SettingResidentDiT, "true")
 		}
 		if c.Size != "1:1" && (vendor == "intel" || c.CPU) { // an export a size on Intel's NPU and Core ML's
 			set(imagegen.SettingSize, c.Size)

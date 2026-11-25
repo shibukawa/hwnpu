@@ -17,7 +17,7 @@ import (
 // 4's, one kv head for all).
 func TestMassMatchesSoftmax(t *testing.T) {
 	for _, sh := range []Shape{{Heads: 16, KVHeads: 4, HeadDim: 32}, {Heads: 4, KVHeads: 4, HeadDim: 8}, {Heads: 8, KVHeads: 1, HeadDim: 16, Scale: 1}} {
-		for _, form := range []string{"grouped", "tile"} {
+		for _, form := range []string{"grouped", Heads} {
 			t.Run(fmt.Sprintf("%v %s", sh, form), func(t *testing.T) { checkMass(t, sh, form) })
 		}
 	}

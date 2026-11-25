@@ -54,7 +54,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 
 ### MXFP4 kernels (`internal/mxfp4`, NEON)
 
-- e2m1 by table lookup; the activation row quantized to int8 by blocks of 32; SDOT for one vector, SMMLA (`mm28NEON`, FEAT_I8MM, M2 and later; `HWNPU_DEV=mxfp4.i8mm=0` off) for 8 or more rows of one expert.
+- e2m1 by table lookup; the activation row quantized to int8 by blocks of 32; SDOT for one vector, SMMLA (`mm28NEON`, FEAT_I8MM, M2 and later) for 8 or more rows of one expert.
 - Zero accumulators with `MOVI`, not `EOR v,v,v`: on the M3 EOR waits for the register's old value and the sums serialize. MOVI doubled the kernels (one vector row 65 → 32 µs).
 - `mxfp4.Rows` (`mvNEON`): many rows a call. 45.6–47.3 GMAC/s on one core. It is bound by NEON instructions (about 20 a 2 blocks), not memory. Bit-identical to `Dot`.
 - Encoding (`mxfp4.Encode`): the power-of-two scale per 32 values is the best (least squared error) of the OCP rule (max exponent − 2) and its neighbours; values round to the nearest e2m1 (ties to even). Relative error 0.113 on normal values.
@@ -95,7 +95,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
   - Marks (the prompt store's every 512 tokens) can be taken inside a wave. `ctx` is checked between steps and parts; an interrupted wave goes back to the mark before it.
   - Step masks written as fp16 bytes directly (`step.stepMasks`, 3 → 0.1 ms).
   - `TestPagedWave`: bit-identical to step-at-a-time on a synthetic model. Long prompts differ in rounding (the wave sizes the attention cache to its final chunk from the start).
-- **Several steps' rows per call** (`chain.moe.runMany`, `hostRows` 512): an expert is read once a call. Per row per layer: 128 rows 0.139 ms, 512 0.089, 1024 0.085. `Host.Run` works in groups of 1024 (expert × row) so memory stays one step's (12 MB). `HWNPU_DEV=moe.many=0` runs a step at a time.
+- **Several steps' rows per call** (`chain.moe.runMany`, `hostRows` 512): an expert is read once a call. Per row per layer: 128 rows 0.139 ms, 512 0.089, 1024 0.085. `Host.Run` works in groups of 1024 (expert × row) so memory stays one step's (12 MB).
 - LFM2-8B-A1B and earlier: `experts.BuildRows`, `chain.moe.runRows` run each chosen expert once over all rows of a call.
 
 ### Qwen3.6 on Apple
@@ -264,7 +264,7 @@ Apple:
 - Wiring experts that exceed 3/4 of memory (Qwen3.6 on 16 GB): slower at every budget.
 - Prefetching 16 for Qwen3.6 (7.3 tok/s, wrong guesses eat SSD reads); 8 for gpt-oss (no better than 4, worse when memory is short); a guess from two layers back (80–85 % top 4, more reading).
 - Keeping workers spinning (`mxfp4.Hold`, spinners): 0.55 → 1.0 ms, and the Neural Engine parts slow by as much. Thread QoS `USER_INTERACTIVE`: no effect.
-- SMMLA pad threshold (`HWNPU_DEV=mxfp4.pad=N`): no difference. 2 rows × 4 vectors SMMLA: slower than SDOT.
+- SMMLA pad threshold (other than 6): no difference. 2 rows × 4 vectors SMMLA: slower than SDOT.
 - Other replacement policies for wired experts: all 72–74 % average hit.
 - gpt-oss attention: plain lut8 (KL 0.284), int8 (slow on the Neural Engine); GPTQ codes for `lut8r` attention or lut6 head are not the default (not better on every text; codes not shipped).
 

@@ -31,9 +31,7 @@ func dot4Kernel(w, e []byte, v *[4]*Vec, out *[4]float32) bool {
 func mm28NEON(w0, w1, e0, e1 *byte, q *[4]*int8, s *[4]*float32, nb int, lut *int8, out *[16]float32)
 
 // haveI8MM is whether the CPU has FEAT_I8MM (SMMLA): Apple's M2 and later (not the M1).
-var haveI8MM = i8mm() && !i8mmOff()
-
-func i8mmOff() bool { v, ok := Opt("i8mm"); return ok && v == "0" }
+var haveI8MM = i8mm()
 
 // mm28Kernel is two rows (the second's blocks right after the first's) with the four pairs of
 // vectors p: out[4*k + 2*r + j] is row r's dot product with pair k's vector j. nb even.

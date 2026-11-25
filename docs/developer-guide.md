@@ -943,7 +943,7 @@ Both keep things from being in memory together, **at different levels**.
 
 Image generation's swapping is built differently for each NPU (figures of the records).
 
-- **AMD**: the three stages never run together, so each is on the NPU only while it runs. For Anima at 1024², the peak goes from 14.2 to 5.0 GiB; loading costs a few seconds a picture. The DiT reads each group's weights into one bank (pinned memory 7 × 464 → 464 MiB; `--resident-dit` keeps them all)
+- **AMD**: the three stages never run together, so each is on the NPU only while it runs. For Anima at 1024², the peak goes from 14.2 to 5.0 GiB; loading costs a few seconds a picture. The DiT reads each group's weights into one bank (pinned memory 7 × 464 → 464 MiB)
 - **Apple (Core AI)**: a group of the DiT is loaded when its turn comes, run, closed, and the next one is loaded ahead. For Anima-Turbo the Neural Engine holds 0.57 instead of 2.53 GiB, and a picture takes the same 49 s (M1). For Chroma1 (since removed) it was 2.2 to 2.6 instead of 8.3 GiB, and swapping was the faster
 - **Intel**: holds what fits, and closes what was not used lately to load again when it does not
 

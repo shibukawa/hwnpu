@@ -361,6 +361,7 @@ func relErr(got []float32, ref []float64) float64 {
 type program struct {
 	p         *milcpu.Program
 	ins, outs []mlpackage.Feature
+	softcap   float64 // applied to y, as the host does (Config.HostSoftcap)
 }
 
 func build(t *testing.T, c *Config, w llm.Weights, opts Options) program {
@@ -392,7 +393,11 @@ func build(t *testing.T, c *Config, w llm.Weights, opts Options) program {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return program{p, ins, outs}
+	sc := c.HostSoftcap(opts.Options)
+	if opts.NoHead {
+		sc = 0 // y is the hidden state
+	}
+	return program{p, ins, outs, sc}
 }
 
 // run feeds the named inputs, which must be all the program takes, and returns every output.
@@ -413,6 +418,9 @@ func (p program) run(t *testing.T, feed map[string][]float32) map[string][]float
 	out := map[string][]float32{}
 	for _, f := range p.outs {
 		out[f.Name] = res[f.Name].Data
+	}
+	if y, ok := out["y"]; ok {
+		llm.Softcap(y, p.softcap)
 	}
 	return out
 }
@@ -475,8 +483,7 @@ func TestLayerByLayer(t *testing.T) {
 	}
 }
 
-// With a vocabulary over the Neural Engine's 16384 per dimension, the soft cap runs on the logits
-// folded into rows, and gives the same logits.
+// A vocabulary over the Neural Engine's 16384 per dimension gives the same logits.
 func TestWideVocab(t *testing.T) {
 	raw := strings.ReplaceAll(tiny, `"vocab_size": 48, "vocab_size_per_layer_input": 48`, `"vocab_size": 32768, "vocab_size_per_layer_input": 32768`)
 	c, err := ParseConfig([]byte(raw))
@@ -490,14 +497,5 @@ func TestWideVocab(t *testing.T) {
 	out := p.run(t, map[string][]float32{"x": rows(t, w, c.Embedding(), ids), "ple": rows(t, w, c.perLayerTable(), ids)})
 	if e := relErr(out["y"], ref.logits); e > 1e-4 {
 		t.Errorf("logits: relative error %g", e)
-	}
-	// folded, y is (1, seq, rows, vocab/rows) with the same values in the same order
-	p = build(t, c, w, Options{Options: llm.Options{Seq: len(ids), Format: "fp16"}, FoldedLogits: true})
-	if y := p.outs[0].Shape; len(y) != 4 || y[1] != len(ids) || y[2]*y[3] != c.VocabSize || y[3] > llm.NeuralEngineMaxDim {
-		t.Errorf("folded y %v", y)
-	}
-	out = p.run(t, map[string][]float32{"x": rows(t, w, c.Embedding(), ids), "ple": rows(t, w, c.perLayerTable(), ids)})
-	if e := relErr(out["y"], ref.logits); e > 1e-4 {
-		t.Errorf("folded logits: relative error %g", e)
 	}
 }

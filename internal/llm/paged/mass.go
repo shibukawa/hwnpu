@@ -28,8 +28,8 @@ func BuildMass(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (
 	if form == Heads {
 		form = "grouped"
 	}
-	if form != "grouped" && form != "tile" {
-		return nil, nil, fmt.Errorf("paged: attention form %q is not grouped or tile", form)
+	if form != "grouped" {
+		return nil, nil, fmt.Errorf("paged: attention form %q is not grouped or %s", form, Heads)
 	}
 	if tokens < 1 || chunk < 1 || nh < 1 || nkv < 1 || d < 1 || nh%nkv != 0 {
 		return nil, nil, fmt.Errorf("paged: %d tokens over a chunk of %d with %d heads on %d kv heads of %d", tokens, chunk, nh, nkv, d)
@@ -72,12 +72,7 @@ func BuildMass(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (
 	var sc *mlpackage.Var
 	if form == "grouped" && rep > 1 {
 		sc = reshape(matmul(reshape(q, 1, nkv, rep*s, d), k, true, 1, nkv, rep*s, c), 1, nh, s, c)
-	} else {
-		if rep > 1 {
-			k = reshape(k, 1, nkv, 1, c, d)
-			k = op("tile", map[string]any{"x": k, "reps": b.Ints(1, 1, int32(rep), 1, 1)}, 1, nkv, rep, c, d)
-			k = reshape(k, 1, nh, c, d)
-		}
+	} else { // a query head a kv head
 		sc = matmul(q, k, true, 1, nh, s, c)
 	}
 	sc = op("add", map[string]any{"x": op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, c), "y": mask}, 1, nh, s, c)

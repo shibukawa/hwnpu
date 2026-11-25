@@ -104,11 +104,11 @@ Core AI にした理由:
 - `internal/backend/coreai/shim/shim.swift` を `tools/coreai/build-shim.sh` で `libcaishim.dylib` にし、go:embed して purego で読む。`CGO_ENABLED=0` のまま
 - `Compile` は Neural Engine を指定してプログラムを開く。配置は Core AI のキャッシュの MPSGraph の manifest の `mps.fullyPlacedOnANE` (関数ごとには `Entry Function Attributes` の下) で見る。delegate のフォルダは関数によらず `main-this-delegates`
 - 1 本のプログラムの呼び出しは 1 つずつ (`graph.mu`)
-- 入力: `cai_input_array(h, i)` は入力 i の形の `NDArray` を作り、その中身 (密な行優先) の番地を返す。呼び出し側はそこへ直接書き (`backend.InputAllocator`、`hwnpu.Graph.AllocInput`)、`cai_run` はその配列を写さずに渡す。配列は同じ形のどの入力にも、ほかのプログラムにも束ねられる (生成と読み取りのプログラムがキャッシュを共有し、注意のプログラムが塊を順に受け取る)。形の違うバッファは写す。`chain` はキャッシュ、リング、窓、状態、マスク、注意の塊をこれで取る。画像と音声のプログラムは今も写す。`HWNPU_COREAI_COPY=1` で前のとおり写す。M1 での効果: LFM3-1.7B の 3101 トークンのプロンプトの後 39.8〜40.6 → 43.0〜43.1 トークン/秒 (注意 1 回 1.34 → 1.0 ms)、PLaMo 3 Translate 2B 12.1 → 12.6〜13.1 トークン/秒。PLaMo 3 2B のリングの持ち分 252 → 84 MiB。写しは塊とともに増える: 塊 8192 で注意 1 回 2.07 ms のうち 0.56 ms
+- 入力: `cai_input_array(h, i)` は入力 i の形の `NDArray` を作り、その中身 (密な行優先) の番地を返す。呼び出し側はそこへ直接書き (`backend.InputAllocator`、`hwnpu.Graph.AllocInput`)、`cai_run` はその配列を写さずに渡す。配列は同じ形のどの入力にも、ほかのプログラムにも束ねられる (生成と読み取りのプログラムがキャッシュを共有し、注意のプログラムが塊を順に受け取る)。形の違うバッファは写す。`chain` はキャッシュ、リング、窓、状態、マスク、注意の塊をこれで取る。画像と音声のプログラムは今も写す。M1 での効果: LFM3-1.7B の 3101 トークンのプロンプトの後 39.8〜40.6 → 43.0〜43.1 トークン/秒 (注意 1 回 1.34 → 1.0 ms)、PLaMo 3 Translate 2B 12.1 → 12.6〜13.1 トークン/秒。PLaMo 3 2B のリングの持ち分 252 → 84 MiB。写しは塊とともに増える: 塊 8192 で注意 1 回 2.07 ms のうち 0.56 ms
 - M1 の写しは約 29 GB/s。何もしないプログラムの 1 回は 0.21 ms (M1)、呼び出しの下限は 160〜175 µs (M2)
 - Neural Engine に載るプログラムは 1 プロセス 112 個まで (M2)。113 個目は読み込みに失敗し (「no ANE resources」)、Core AI は黙って GPU で動かす。デバイスは読み込んだプログラムを数え (`aneLive`)、上限の近くで失敗したらそう言う。gpt-oss-20b の書き出しは約 84 個、ほかのチャットのモデルは 40 個以下。2 つのモデルを 1 プロセスに持つと越えうる
 - Core AI は Core ML の `GraphSource.Units` のように計算するユニットを選べない。`HWNPU_COREAI_UNITS=cpu` は全部を Core AI の CPU で動かす (Neural Engine なしのテスト用)
-- Core AI のキャッシュからの読み込みは 0.2〜0.3 秒なので、1 本を動かす間に次を読める (`runner.InTurn`、`runner.Ring`。`HWNPU_DEV=load-ahead=0` で切る)。[Apple の画像のモデル](image-apple.ja.md)
+- Core AI のキャッシュからの読み込みは 0.2〜0.3 秒なので、1 本を動かす間に次を読める (`runner.InTurn`、`runner.Ring`)。[Apple の画像のモデル](image-apple.ja.md)
 
 ## キャッシュとディスク
 
@@ -267,8 +267,8 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 
 | 選択 | ファイル |
 |---|---|
-| 短い会話は分けない 1 本で、伸びたら注意で分けた形に (`wholeTiers`、`decode.Session.Migrate`。M1 ではなし: `chat.wholeSlower`)、Core AI では Qwen3 も注意で分ける、kv ヘッドごとの注意 (`paged.Heads`、`HWNPU_DEV=attention=grouped`)、長い窓のリングの段 | [LLM のエンジン](llm-engine.ja.md) |
-| DiT の組を呼び出しごとに入れ替える (`HWNPU_DEV=hold-dit=1`)、先読み、まとめて描く、注意の並べ方、メモリに応じたブロック数 | [Apple の画像のモデル](image-apple.ja.md) |
+| 短い会話は分けない 1 本で、伸びたら注意で分けた形に (`wholeTiers`、`decode.Session.Migrate`。M1 ではなし: `chat.wholeSlower`)、Core AI では Qwen3 も注意で分ける、kv ヘッドごとの注意 (`paged.Heads`)、長い窓のリングの段 | [LLM のエンジン](llm-engine.ja.md) |
+| DiT の組を呼び出しごとに入れ替える、先読み、まとめて描く、注意の並べ方、メモリに応じたブロック数 | [Apple の画像のモデル](image-apple.ja.md) |
 | 部品の間でホストが専門家を選ぶ | [MoE](moe.ja.md) |
 | 取得元の書き出し、`files.tar.zst`、prebuilt の束 | [配布](distribution.ja.md) |
 

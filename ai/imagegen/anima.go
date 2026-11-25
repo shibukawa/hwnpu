@@ -97,16 +97,15 @@ func prepareAnima(e airole.PrepareEnv) (f airole.Files, err error) {
 
 // animaGen draws with Anima.
 type animaGen struct {
-	g        *Generator
-	dir      string
-	resident bool
-	sized    bool // an export of several sizes, opened at a size each
-	p        *anima.Pipeline
-	at       image.Point
+	g     *Generator
+	dir   string
+	sized bool // an export of several sizes, opened at a size each
+	p     *anima.Pipeline
+	at    image.Point
 }
 
 func loadAnima(ctx context.Context, g *Generator, f airole.Files, e airole.LoadEnv) (family, error) {
-	a := &animaGen{g: g, dir: f.Path("export"), resident: e.Def.Settings[SettingResidentDiT] == "true"}
+	a := &animaGen{g: g, dir: f.Path("export")}
 	g.parse = func(spec string) (int, int, error) { return anima.ParseAspect(spec) }
 	programs := anima.IsProgramExport(a.dir)
 	var sizes [][2]int
@@ -178,7 +177,6 @@ func (a *animaGen) open(ctx context.Context, size image.Point) (*anima.Pipeline,
 	if a.sized {
 		w, h = size.X, size.Y // an export of several sizes draws at the size (one of a size alone at its own)
 	}
-	anima.ResidentDiT = a.resident
 	t0 := time.Now()
 	p, err := anima.OpenAt(ctx, a.g.dev, a.dir, w, h, a.g.log)
 	if err != nil {
@@ -203,7 +201,6 @@ func (a *animaGen) draw(ctx context.Context, r *run) error {
 		return err
 	}
 	r.opened(t0)
-	anima.ResidentDiT = a.resident // read as the DiT is opened, at the first step
 	if p.Dump, err = r.dumpDir(); err != nil {
 		return err
 	}

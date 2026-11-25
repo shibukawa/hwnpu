@@ -68,7 +68,7 @@ At 1024² a DiT attends over 4096 image tokens. The time is in the element-wise 
 Rules learned:
 - Do not defer the division in self-attention: the product reaches fp16's max in Anima's last block (27). Scaling V's int8 weights by 1/256 to avoid it changed the pictures (products under fp16's normal range are dropped by the NE).
 - Writing that left the NE: two chunks divided by the same sum (use the sum's reciprocal), `maximum` of maxima of different widths (`Interleave should be matched for dual-input PEs`; concatenate the maxima and `reduce_max` again). Qwen-Image's query chunk of 2048 also left it.
-- `HWNPU_DEV=anima.attention=chunks` exports the older heads-together form (`QChunkAttention`) on Apple, to tell rounding from a mistake (convert into another folder). Intel always uses `QChunkAttention`.
+- Intel always uses the heads-together form (`QChunkAttention`).
 - A single score tensor over about 64 MiB is 2–3× slower per score on Core ML's NE (a step between 65 and 68 MiB). This is why `mil.DitQChunk` halves the query chunk at conversion until 16 × chunk × patches × 2 B ≤ 64 MiB (Anima's heads-together form: 1024² 512, 1280² 256, 2048² 128). The size of the on-chip memory is not the cause: per-score speed is flat from 0.5 MB to 64 MiB.
 
 ### fp16 traps and their fixes
@@ -104,7 +104,7 @@ Rules learned:
 - On Core AI the DiT groups are not held. Each group is loaded for its turn, run, and closed (`runner.Swap`; Anima `progEngine.swap`, FLUX `runner.Ring`). While a group runs, the next one loads (`runner.InTurn` for in-turn parts, `runner.Ring` for the DiT: after the last group it loads the first for the next call; an unused load is closed). At most 2 programs open. A failed ahead-load is retried once at its turn (`TestRing`, `TestInTurn`).
 - Why: a load from Core AI's cache is 0.02–0.3 s, about one run. Holding everything is no faster, because a large group that follows another program pays a switch cost anyway (`aicheck cycle`: a 4-block Anima group after another group +50–70 ms; 2 small programs or a group plus a small one +0). And holding a lot makes things slower or fail: Chroma1-Flash 1024² holding all 8.8 GiB is 10 % slower; Qwen-Image's lut4 DiT held at 5.2 GiB failed with `underlying=0x15` (Core AI errors instead of evicting like Core ML).
 - Text encoders are closed after the prompt, the approximator before the steps, the groups loaded for the last step's next before the VAE. VAE stages are loaded one at a time (10–20 ms each, no preload needed).
-- `HWNPU_DEV=hold-dit=1` holds every group; `HWNPU_DEV=load-ahead=0` turns preloading off (both for measuring). Core ML and Intel load one at a time (Intel holds what fits and closes others when out of memory).
+- Core ML and Intel load one at a time (Intel holds what fits and closes others when out of memory).
 - A first call after a load (or after another program) is slow: a VAE stage and a text encoder group always run as first calls.
 - Several prompts together (`--batch`, `GenerateAll`, `DecodeAll`, `EncodeAll`): the text once for all prompts, each DiT group runs every picture, each VAE stage every picture. See [image-models.md](image-models.md).
 - Memory at 1024² peaks in the last VAE stages (process float32 buffers), not in the DiT. FLUX.2 klein drops the time embedding weights (0.7 GB) after building every σ's rows and returns step garbage before the VAE and after each stage (`debug.FreeOSMemory`): 5.8 → 4.1 GB footprint.

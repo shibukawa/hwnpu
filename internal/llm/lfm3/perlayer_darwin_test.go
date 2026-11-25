@@ -61,7 +61,7 @@ func TestPerLayer(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-		inF, y, err := Build(b, cfg, w, Options{Seq: seq, Start: i, Layers: 1, Format: format, Group: envInt("HWNPU_TEST_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_TEST_LFM3_COLBLOCK", 0), ConvMode: os.Getenv("HWNPU_TEST_LFM3_CONV"), Quant: os.Getenv("HWNPU_TEST_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_TEST_LFM3_POSTSCALE", 1))})
+		inF, y, err := Build(b, cfg, w, Options{Seq: seq, Start: i, Layers: 1, Format: format, Group: envInt("HWNPU_TEST_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_TEST_LFM3_COLBLOCK", 0), Quant: os.Getenv("HWNPU_TEST_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_TEST_LFM3_POSTSCALE", 1))})
 		if err != nil {
 			t.Fatal(err)
 		}

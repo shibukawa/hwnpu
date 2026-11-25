@@ -49,7 +49,7 @@ stand-ins are in the graphs for both backends.
 | `gather` | Always | One-hot matmul |
 | `reduce_sum` of exponentials | Varies by compile | Sum with a matmul by ones |
 | Attention copying K/V with `tile` | Always | `SDPAGrouped` (op order alone changes placement) |
-| A 262144-vocabulary `reshape`; `transpose` in the last part | That op | Reorder on the host (PLaMo 3; Gemma 4 `-logits host`) |
+| A 262144-vocabulary `reshape`; `transpose` in the last part | That op | Reorder on the host (PLaMo 3; Gemma 4's softcap on the host) |
 | `conv_transpose` (M1) | Strides 5 and 7; 8, 4, 3 run but are off | Polyphase conv |
 | Dilated conv, `max_pool` (M1) | Dilations 17–48; windows 9 and 13 | Shifted copies + 1×1 conv; chains of window 5 |
 | Depthwise conv (M1) | Over 4096 channels | Chunks of ≤ 4096 |
