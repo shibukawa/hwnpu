@@ -199,7 +199,7 @@ func TestEntries(t *testing.T) {
 	exp := filepath.Join(t.TempDir(), "m.amd-npu2")
 	write(t, filepath.Join(exp, "manifest.json"), `{"version":1}`)
 	write(t, filepath.Join(exp, "bank.bin"), "weights")
-	write(t, filepath.Join(exp, "check", "x.bin"), "weights")
+	write(t, filepath.Join(exp, "sub", "x.bin"), "weights")
 	recipe := map[string]string{"model": "m", "commit": "abc"}
 	// an entry of loose files (not an export for AMD's NPU or of Core AI, which go packed:
 	// TestPackedEntries)
@@ -219,7 +219,7 @@ func TestEntries(t *testing.T) {
 	if err := PutEntry(ctx, far, exp); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(filepath.Join(far.Store.(Dir).Root, filepath.FromSlash(rel), "check", "x.bin")); err != nil || string(b) != "weights" {
+	if b, err := os.ReadFile(filepath.Join(far.Store.(Dir).Root, filepath.FromSlash(rel), "sub", "x.bin")); err != nil || string(b) != "weights" {
 		t.Fatalf("in the source: %q %v", b, err)
 	}
 	byKey := func(k string) func(Entry) bool { return func(e Entry) bool { return e.Key == k } }
@@ -332,6 +332,54 @@ func TestQueue(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(cache.Sub("work", "queue.log")); !strings.Contains(string(b), "no source") {
 		t.Errorf("log: %s", b)
+	}
+}
+
+// TestQueueSameJob queues one job many times while the worker runs (the same id: the same file
+// written again): none is read half written and dropped, and the entry goes.
+func TestQueueSameJob(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	exp := filepath.Join(t.TempDir(), "e")
+	write(t, filepath.Join(exp, "a"), "a")
+	describeAt(t, exp, "converted/m/t/e/v0-12345678", map[string]string{"x": "1"})
+	s := Source{Store: Dir{Name: "share", Root: t.TempDir()}, Writeback: true}
+	SetSources([]Source{s}, true)
+	t.Cleanup(func() { SetSources(nil, true) })
+	for range 200 {
+		PutLater(s, exp)
+	}
+	Flush(context.Background())
+	if es, _ := ListEntries(context.Background(), s); len(es) != 1 {
+		t.Errorf("entries %v", es)
+	}
+	if b, _ := os.ReadFile(cache.Sub("work", "queue.log")); strings.Contains(string(b), "JSON") {
+		t.Errorf("a job read half written: %s", b)
+	}
+	if left, _ := filepath.Glob(filepath.Join(queueDir(), "*")); len(left) != 0 {
+		t.Errorf("left in the queue: %v", left)
+	}
+}
+
+// TestDescribeLocalMarks leaves the marks a directory here holds about itself, and the tools'
+// check data (check/ beside a manifest), out of its entry; a folder named check alone stays.
+func TestDescribeLocalMarks(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "a"), "a")
+	write(t, filepath.Join(dir, ".files-shared"), "")
+	write(t, filepath.Join(dir, "sub", ".weights-shared"), "")
+	write(t, filepath.Join(dir, "text", "manifest.json"), "{}")
+	write(t, filepath.Join(dir, "text", "check", "words.json"), "{}")
+	write(t, filepath.Join(dir, "images", "check", "b"), "b")
+	e, err := Describe(dir, Entry{Path: "converted/m/t/e/v0-12345678", Recipe: map[string]string{"x": "1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range e.Files {
+		got = append(got, f.Path)
+	}
+	if strings.Join(got, " ") != "a images/check/b text/manifest.json" {
+		t.Errorf("files %v", got)
 	}
 }
 

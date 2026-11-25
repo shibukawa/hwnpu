@@ -63,3 +63,49 @@ func TestTokenizerStepVersion(t *testing.T) {
 		t.Errorf("recipe.StepVersions tokenizer %d, the binary file's version %d", recipe.StepVersions["tokenizer"], tokenizer.BinaryVersion)
 	}
 }
+
+// Check refuses a tokenizer's text, naming what makes it binary; a finished export passes.
+func TestCheck(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "text", "check"), 0o755)
+	os.WriteFile(filepath.Join(dir, "text", "manifest.json"), []byte(`{}`), 0o644)
+	os.WriteFile(filepath.Join(dir, "text", "check", "words.json"), []byte(`{}`), 0o644)
+	os.WriteFile(filepath.Join(dir, "text", "tokenizer.json"), []byte(tiny), 0o644)
+	err := Check(dir, "--finish")
+	if err == nil || !strings.Contains(err.Error(), "text/tokenizer.json") || !strings.Contains(err.Error(), "--finish") {
+		t.Fatalf("a tokenizer's text: %v", err)
+	}
+	if err := Run(dir, []recipe.Step{{Tokenizer: []string{"text/tokenizer.json"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(dir, ""); err != nil { // check/ is left out of the entry, not refused
+		t.Errorf("a finished export: %v", err)
+	}
+	// no finish for it: the message says what the recipe needs
+	other := t.TempDir()
+	os.WriteFile(filepath.Join(other, "tokenizer.json"), []byte(tiny), 0o644)
+	if err := Check(other, ""); err == nil || !strings.Contains(err.Error(), "finish: [{tokenizer: [tokenizer.json]}]") {
+		t.Errorf("no finish: %v", err)
+	}
+}
+
+// A remove step removes files the runtime does not read, after a tokenizer step before it that
+// may read them (PLaMo's tokenizer_config.json), and passes when they are gone already.
+func TestRemove(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(tiny), 0o644)
+	os.WriteFile(filepath.Join(dir, "tokenizer_config.json"), []byte(`{}`), 0o644)
+	steps := []recipe.Step{{Tokenizer: []string{"tokenizer.json"}}, {Remove: []string{"tokenizer_config.json"}}}
+	if err := Run(dir, steps); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tokenizer_config.json")); err == nil {
+		t.Error("tokenizer_config.json is still there")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tokenizer.tok")); err != nil {
+		t.Error("no tokenizer.tok")
+	}
+	if err := Run(dir, steps); err != nil {
+		t.Errorf("again: %v", err)
+	}
+}

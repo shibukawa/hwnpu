@@ -59,6 +59,8 @@ ROWS = 64  # the depthformer's rows: its 12 codebooks padded to MHA's 64
 VOCAB_PAD = 2048
 FRAMES = 64  # audio frames a codec call decodes (internal/speech's codec-frames)
 CODE_PAD = 64
+# what iron_export_lm.py writes in text/ that the export holds at its top level (or not at all)
+TEXT_DROP = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 BINS_PAD = 1344
 
 
@@ -377,6 +379,10 @@ def main(argv=None) -> int:
         if a.random:
             args += ["--random-weights", "0"]
         subprocess.run(args, check=True)
+        # the tokenizer and the chat's format are the top level's (internal/speech reads text/'s
+        # manifest.json and config.json): iron_export_lm.py's copies would go in the export twice
+        for f in TEXT_DROP:
+            (a.out / "text" / f).unlink(missing_ok=True)
         print(f"text: exported in {time.time() - t0:.0f} s", flush=True)
     bind_device(a.device, a.cols)
     w = (RandomWeights if a.random else Safetensors)(a.root / "model.safetensors")

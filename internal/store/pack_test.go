@@ -20,7 +20,7 @@ func TestPackedEntries(t *testing.T) {
 	exp := filepath.Join(t.TempDir(), "m.amd-npu2")
 	write(t, filepath.Join(exp, "manifest.json"), `{"version":1}`)
 	write(t, filepath.Join(exp, "bank.bin"), strings.Repeat("weights", 1000))
-	write(t, filepath.Join(exp, "check", "x.bin"), "check")
+	write(t, filepath.Join(exp, "sub", "x.bin"), "check")
 	recipe := map[string]string{"model": "m", "commit": "abc"}
 	rel := EntryPath("m", cache.AMDTarget, "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
 	if !Packs(rel) || !Packs(EntryPath("m", cache.CoreAITarget, "m.coreai", "v1")) ||
@@ -60,8 +60,8 @@ func TestPackedEntries(t *testing.T) {
 	if err := Verify(out, true); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(out, "check", "x.bin")); string(b) != "check" {
-		t.Errorf("check/x.bin: %q", b)
+	if b, _ := os.ReadFile(filepath.Join(out, "sub", "x.bin")); string(b) != "check" {
+		t.Errorf("sub/x.bin: %q", b)
 	}
 	if _, err := os.Stat(filepath.Join(out, packName)); err == nil {
 		t.Error("the pack is kept here")

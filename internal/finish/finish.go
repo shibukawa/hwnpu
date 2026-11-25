@@ -23,6 +23,11 @@ import (
 func Run(dir string, steps []recipe.Step) error {
 	made := map[string]string{}
 	for _, s := range steps {
+		for _, f := range s.Remove {
+			if err := os.Remove(filepath.Join(dir, filepath.FromSlash(f))); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("finish: remove %s: %w", f, err)
+			}
+		}
 		for _, f := range s.Tokenizer {
 			src := filepath.Join(dir, filepath.FromSlash(f))
 			dst := tokenizer.BinaryPath(src)
@@ -50,6 +55,25 @@ func Run(dir string, steps []recipe.Step) error {
 	}
 	if len(left) > 0 {
 		return fmt.Errorf("finish: the export holds %s, which its recipe's finish does not make binary (add finish: [{tokenizer: [%s]}])", strings.Join(left, ", "), strings.Join(left, ", "))
+	}
+	return nil
+}
+
+// Check reports what keeps the export in dir, made by hand (hwnpu-dev sources import, its first
+// use here: chat.ShareMadeHere) or converted (chat.FinishCoreAI), out of the sources: a tokenizer
+// file not made binary yet (Leftover). how is what makes it binary, for the message ("": nothing
+// in hand does, the recipe lacks a finish for it). The tools' check data is left out of every
+// entry (store.Describe), not refused.
+func Check(dir, how string) error {
+	left, err := Leftover(dir)
+	if err != nil {
+		return err
+	}
+	if len(left) > 0 {
+		if how == "" {
+			how = fmt.Sprintf("its recipe's finish (add finish: [{tokenizer: [%s]}] and raise its version)", strings.Join(left, ", "))
+		}
+		return fmt.Errorf("the export holds %s, which %s makes binary", strings.Join(left, ", "), how)
 	}
 	return nil
 }
