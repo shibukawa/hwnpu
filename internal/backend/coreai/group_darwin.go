@@ -149,7 +149,7 @@ func readRecord(dir, key string) (asset string, r record, ok bool) {
 		return "", r, false
 	}
 	asset, ok = cache.Lookup(dir, strings.TrimSuffix(r.Asset, ".aimodel"), ".aimodel")
-	return asset, r, ok && usable(asset)
+	return asset, r, ok
 }
 
 // rawRecord returns the record of key of this rule, whether or not its asset is in the cache.
@@ -169,16 +169,6 @@ func rawRecord(dir, key string) (r record, ok bool) {
 func alone(dir string, sum []byte) bool {
 	r, ok := rawRecord(dir, singleKey(sum))
 	return ok && r.Alone
-}
-
-// usable reports whether a stored asset can be opened: not one whose bytecode was cut
-// (HWNPU_DEV=coreai.drop-bytecode) after Core AI's entry went away, which is removed to be lowered again.
-func usable(asset string) bool {
-	if isCut(asset) && !hasEntry(asset) {
-		os.RemoveAll(asset)
-		return false
-	}
-	return true
 }
 
 func writeRecord(dir, key string, r record) error {
@@ -380,7 +370,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	}
 	if len(members) == 1 {
 		a, ok := cache.Lookup(dir, key, ".aimodel")
-		if ok = ok && usable(a); !ok {
+		if !ok {
 			if a, err = cache.Store(dir, key, ".aimodel", func(tmp string) error { return lowerOne(pkg, tmp) }); err != nil {
 				return "", "", false, err
 			}
@@ -399,7 +389,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	}
 	gkey := cache.Key(parts...)
 	a, ok := cache.Lookup(dir, gkey, ".aimodel")
-	if ok = ok && usable(a); !ok {
+	if !ok {
 		if a, err = cache.Store(dir, gkey, ".aimodel", func(tmp string) error { return lowerMany(paths, names, tmp) }); err != nil {
 			return "", "", false, err
 		}
