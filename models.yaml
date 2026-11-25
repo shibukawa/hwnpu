@@ -1151,7 +1151,7 @@ models:
     from: hf:google/siglip2-base-patch16-224
     exports:
       amd-xdna2:
-        siglip2-base-patch16-224.amd-npu2: v2 sha256:f4abb83e1990457a17673784c140b587d3e39ddd7ca60e71245affbbbee38195
+        siglip2-base-patch16-224.amd-npu2: v2 sha256:a8c37876e4f9d31023cadb1a350194aa26ab7e84d60191859e5fe42205f8c957
     license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-base-patch16-224", class: open}
     machine: 8
     # M3: 0.45 GB of the process at most (embedding the 444 default labels) and 0.36 GB on the
@@ -1167,7 +1167,7 @@ models:
     from: hf:google/siglip2-large-patch16-256
     exports:
       amd-xdna2:
-        siglip2-large-patch16-256.amd-npu2: v2 sha256:0d3fd481817692359e1363b0e1eedb5b27f66a5b31d117cf6f0b7835398c6e0a
+        siglip2-large-patch16-256.amd-npu2: v2 sha256:a74788b0a3494e17d5cce383c047b62d657a01e428363251bcd9a8779c1ebd94
     license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-large-patch16-256", class: open}
     machine: 16
     # M3: 1.8 GB of the process and 1.24 GB on the Neural Engine (Core AI: 1.56)
