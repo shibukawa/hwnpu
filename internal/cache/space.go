@@ -181,7 +181,9 @@ var (
 )
 
 // Room checks that need bytes more may go in the cache, for the file at path under the root
-// (being written: its unit is never removed). With a MaxSize, it removes the units least
+// (being written: its unit is never removed). Short of either, IRON's builds of graphs go first
+// (IRONBuild), with or without a MaxSize: they are made again in seconds. With a MaxSize, it
+// then removes the units least
 // recently used until the cache fits it with need more and the disk keeps its MinFree (units
 // used in the last KeepRecent, in this process, or with work queued are kept). It returns an
 // error (ErrNoRoom) when the disk would be left with less than MinFree, or the cache over
@@ -229,6 +231,23 @@ func Room(need int64, path string, log func(format string, args ...any)) error {
 		// short of disk: what is made again soon goes first, with or without a MaxSize (Core AI's
 		// entries of programs with prebuilt ones here, SetRestorable; docs/cache-sharing-design.md 7.7)
 		if freed := evictRestorable(short, log); freed > 0 {
+			if free, _, err = DiskSpace(root); err == nil {
+				short = minFree - (free - need)
+			}
+		}
+	}
+	if short > 0 || over > 0 {
+		// then IRON's builds of graphs, made again in seconds from the kernels and cores it keeps
+		// (IRONBuild)
+		u := scanned
+		if u == nil {
+			if s, err := Scan(); err == nil {
+				u = &s
+			}
+		}
+		if u != nil {
+			freed := evictIRONBuilds(u, max(short, over), keep, log)
+			over -= freed
 			if free, _, err = DiskSpace(root); err == nil {
 				short = minFree - (free - need)
 			}
@@ -290,6 +309,46 @@ func evictLRU(u *Usage, bytes int64, keep map[string]bool, log func(string, ...a
 		u.Bytes -= x.Bytes
 	}
 	u.Units = left
+	return freed
+}
+
+// IRONBuild reports whether the unit is one of IRON's builds of a design (iron/KEY, 24 hex
+// digits: a graph's full ELF with what aiecc wrote on the way, 10 to 100 MB and more, most of
+// iron/), not the stores it builds them from: iron/objects (the kernels' compiled objects, by
+// their sources) and iron/devices (each array's placed and linked cores), a few MB a model. A
+// build of a graph whose designs are in those is made again in seconds (RTMDet-m: 31 s for
+// the export with them, 52 s with none, 12 s with the builds too; 2026-11-26).
+func IRONBuild(x Unit) bool {
+	if x.Kind != KindKernels {
+		return false
+	}
+	name := filepath.Base(x.Path)
+	if len(name) != 24 {
+		return false
+	}
+	for _, c := range name {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// evictIRONBuilds is evictLRU over IRON's builds (IRONBuild) alone: they go before what is
+// downloaded or converted again, which takes minutes to hours.
+func evictIRONBuilds(u *Usage, bytes int64, keep map[string]bool, log func(string, ...any)) int64 {
+	var builds, rest []Unit
+	for _, x := range u.Units {
+		if IRONBuild(x) {
+			builds = append(builds, x)
+		} else {
+			rest = append(rest, x)
+		}
+	}
+	b := Usage{Units: builds}
+	freed := evictLRU(&b, bytes, keep, log)
+	u.Units = append(rest, b.Units...)
+	u.Bytes -= freed
 	return freed
 }
 

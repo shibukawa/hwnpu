@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -236,17 +237,86 @@ func putPacked(ctx context.Context, s Source, rel, dir string, e Entry) (File, e
 	if err := s.Store.Put(ctx, rel+"/"+pf.Path, tmp); err != nil {
 		return File{}, err
 	}
+	return pf, removeAllBut(ctx, s, rel, pf.Path)
+}
+
+// removeAllBut removes the files of the folder rel of s but keep, entry.json and the markers.
+func removeAllBut(ctx context.Context, s Source, rel, keep string) error {
 	keys, err := s.Store.List(ctx, rel+"/")
 	if err != nil {
-		return File{}, err
+		return err
 	}
 	for _, k := range keys {
-		if k == rel+"/"+pf.Path || k == rel+"/"+EntryFile || isMarker(k) {
+		if k == rel+"/"+keep || k == rel+"/"+EntryFile || isMarker(k) {
 			continue
 		}
 		if err := s.Store.Delete(ctx, k); err != nil {
-			return File{}, err
+			return err
 		}
 	}
-	return pf, nil
+	return nil
+}
+
+// Copier is a Store that copies an object to another key of its own without its bytes going
+// through this machine (a WebDAV COPY, a hard link in a folder).
+type Copier interface {
+	Copy(ctx context.Context, from, to string) error
+}
+
+// copyPack copies into rel the pack of another version of the same export, or of another export
+// of the same model and target, that holds the same files (the same Digest): a version raised
+// for a change of the recipe or of the tools that left the files as they were (the IRON builds
+// are byte for byte the same) is then not packed and sent again, gigabytes over Wi-Fi. It
+// returns the pack as a File of the entry, and false when s cannot copy (Copier) or holds no
+// such pack.
+func copyPack(ctx context.Context, s Source, rel string, e Entry) (File, bool, error) {
+	cp, ok := s.Store.(Copier)
+	if !ok || len(e.Files) == 0 {
+		return File{}, false, nil
+	}
+	from, pf, ok := samePack(ctx, s, rel, e)
+	if !ok {
+		return File{}, false, nil
+	}
+	if err := cp.Copy(ctx, from+"/"+pf.Path, rel+"/"+PackFile); err != nil {
+		// put as it would be without it
+		logQueue("%s: copying the pack of %s in %s failed (%v); packing it here", path.Base(path.Dir(rel)), from, s, err)
+		return File{}, false, nil
+	}
+	pf.Path = PackFile
+	logQueue("%s: the same files as %s: its pack (%.2f GB) copied in %s, not sent again", path.Base(path.Dir(rel)), from, float64(pf.Size)/1e9, s)
+	return pf, true, removeAllBut(ctx, s, rel, PackFile)
+}
+
+// samePack finds in s an entry of the model and target of rel, other than rel, with e's files
+// and a pack there of its size: its folder and its pack.
+func samePack(ctx context.Context, s Source, rel string, e Entry) (string, File, bool) {
+	parts := strings.Split(rel, "/")
+	if len(parts) != 5 {
+		return "", File{}, false
+	}
+	keys, err := s.Store.List(ctx, path.Join(parts[:3]...)+"/")
+	if err != nil {
+		return "", File{}, false
+	}
+	want := e.Digest()
+	for _, k := range keys {
+		dir, ok := strings.CutSuffix(k, "/"+EntryFile)
+		if !ok || dir == rel || strings.Count(dir, "/") != 4 {
+			continue
+		}
+		old, err := ReadEntryAt(ctx, s, dir)
+		if err != nil || old.Pack == nil || old.Digest() != want {
+			continue
+		}
+		p := *old.Pack
+		if !SafeKey(p.Path) || strings.Contains(p.Path, "/") || len(p.SHA256) != 64 {
+			continue
+		}
+		if n, ok, err := s.Store.Has(ctx, dir+"/"+p.Path); err != nil || !ok || n != p.Size {
+			continue
+		}
+		return dir, p, true
+	}
+	return "", File{}, false
 }

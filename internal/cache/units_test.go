@@ -312,3 +312,74 @@ func TestScanModel(t *testing.T) {
 		}
 	}
 }
+
+// TestRoomIRONBuilds: short of disk, without a MaxSize, IRON's builds of graphs (iron/KEY) go,
+// the oldest first, but not its stores of kernels and cores (iron/objects, iron/devices) nor the
+// other units; under a MaxSize the builds go before older units.
+func TestRoomIRONBuilds(t *testing.T) {
+	root, _ := fill(t)
+	old := time.Now().Add(-48 * time.Hour)
+	mk := func(name string, when time.Time) string {
+		p := filepath.Join(root, "iron", name)
+		os.MkdirAll(p, 0o755)
+		os.WriteFile(filepath.Join(p, "design.elf"), make([]byte, 1000), 0o644)
+		filepath.Walk(p, func(q string, _ os.FileInfo, _ error) error { return os.Chtimes(q, when, when) })
+		return p
+	}
+	a := mk("0123456789abcdef01234567", old)
+	b := mk("fedcba9876543210fedcba98", old.Add(time.Hour))
+	objects := mk("objects", old.Add(-time.Hour))
+	devices := mk("devices", old.Add(-time.Hour))
+	for _, x := range []struct {
+		p    string
+		want bool
+	}{{a, true}, {objects, false}, {filepath.Join(root, "iron/0123"), false}} {
+		if got := IRONBuild(Unit{Kind: KindKernels, Path: x.p}); got != x.want {
+			t.Errorf("IRONBuild(%s) = %v", filepath.Base(x.p), got)
+		}
+	}
+	free, _, err := DiskSpace(root)
+	if err != nil {
+		t.Skip(err)
+	}
+	SetLimits(&Limits{MinFree: free + 1e9})
+	var logged []string
+	err = Room(1, filepath.Join(root, "original/lab/x/f"), func(f string, a ...any) { logged = append(logged, f) })
+	SetLimits(nil)
+	if !errors.Is(err, ErrNoRoom) {
+		t.Fatalf("err %v", err)
+	}
+	for _, p := range []string{a, b} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("short of disk, %s was kept", filepath.Base(p))
+		}
+	}
+	for _, p := range []string{objects, devices, filepath.Join(root, "iron/0123"), filepath.Join(root, "original/lab/old")} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s went: %v", p, err)
+		}
+	}
+	if len(logged) != 2 {
+		t.Errorf("logged %v", logged)
+	}
+
+	// under a MaxSize, a build newer than every other unit goes first
+	root, _ = fill(t)
+	c := filepath.Join(root, "iron", "0123456789abcdef01234567")
+	os.MkdirAll(c, 0o755)
+	os.WriteFile(filepath.Join(c, "design.elf"), make([]byte, 1000), 0o644)
+	when := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(filepath.Join(c, "design.elf"), when, when)
+	os.Chtimes(c, when, when)
+	SetLimits(&Limits{MaxSize: 8052})
+	defer SetLimits(nil)
+	if err := Room(500, filepath.Join(root, "original/lab/x/f"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(c); !os.IsNotExist(err) {
+		t.Error("the build was kept")
+	}
+	if _, err := os.Stat(filepath.Join(root, "original/lab/old")); err != nil {
+		t.Errorf("an older unit went before the build: %v", err)
+	}
+}

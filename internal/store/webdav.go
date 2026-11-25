@@ -719,6 +719,42 @@ func (w *WebDAV) put(ctx context.Context, key string, body func() (io.Reader, in
 	return nil
 }
 
+// Copy copies the object from to the key to on the server (COPY), through a temporary name moved
+// into place as put does, so that a reader never sees part of it.
+func (w *WebDAV) Copy(ctx context.Context, from, to string) error {
+	if err := w.writable(); err != nil {
+		return err
+	}
+	if err := w.checkKey(from); err != nil {
+		return err
+	}
+	if err := w.checkKey(to); err != nil {
+		return err
+	}
+	dir := path.Dir(to)
+	if dir == "." {
+		dir = ""
+	}
+	if err := w.mkdirs(ctx, dir); err != nil {
+		return err
+	}
+	var rnd [8]byte
+	rand.Read(rnd[:])
+	tmp := path.Join(dir, ".put-"+hex.EncodeToString(rnd[:]))
+	ok := []int{http.StatusCreated, http.StatusNoContent, http.StatusOK}
+	// Depth 0: the object alone (a COPY of a folder would take what is in it)
+	hdr := http.Header{"Destination": {w.url(tmp)}, "Overwrite": {"T"}, "Depth": {"0"}}
+	err := w.call(ctx, "COPY", w.url(from), hdr, nil, ok...)
+	if err == nil {
+		hdr = http.Header{"Destination": {w.url(to)}, "Overwrite": {"T"}}
+		err = w.call(ctx, "MOVE", w.url(tmp), hdr, nil, ok...)
+	}
+	if err != nil {
+		w.call(context.WithoutCancel(ctx), http.MethodDelete, w.url(tmp), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusNotFound)
+	}
+	return err
+}
+
 // Put uploads the file in one request (a server may bound its size: nginx's
 // client_max_body_size, IIS's maxAllowedContentLength).
 func (w *WebDAV) Put(ctx context.Context, key, src string) error {

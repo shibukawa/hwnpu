@@ -210,10 +210,16 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 		return err
 	}
 	if Packs(rel) {
-		// one file (an export for AMD's NPU or of Core AI), entry.json after it
-		pf, err := putPacked(ctx, s, rel, dir, e)
+		// one file (an export for AMD's NPU or of Core AI), entry.json after it: copied in the
+		// source from another version of the same files (copyPack), else packed here and put
+		pf, ok, err := copyPack(ctx, s, rel, e)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			if pf, err = putPacked(ctx, s, rel, dir, e); err != nil {
+				return err
+			}
 		}
 		e.Pack = &pf
 		return writeEntryAt(ctx, s, rel, e)
