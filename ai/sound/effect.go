@@ -51,8 +51,11 @@ var effectRole = &airole.Role{
 	Name:   "sfx",
 	Kinds:  []chat.Kind{chat.KindSFX},
 	// 1: the decoder's export of this Mac's chip's rewrites (model-recipes.yaml: sin as it is on
-	// M3 and later), not the one prepared before
-	Revision: 1,
+	// M3 and later), not the one prepared before; 2: the tokenizer as its binary file
+	// (chat.PrepareTokenizer) in the files, as "tokenizer": a store prepared before named none,
+	// and Load then read the checkpoint's tokenizer.json, which a checkpoint fetched since is
+	// without
+	Revision: 2,
 	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 		cpu := e.NPU.CPU(e.Model)
 		var p sfx.Paths
