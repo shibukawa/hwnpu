@@ -28,6 +28,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
@@ -149,23 +150,23 @@ func indexNames(index string) (map[string]bool, error) {
 // (docs/design/llm-qwen.md). The cache is about 4 GiB.
 var compileCacheBytes int64 = 7 << 29 // 3.5 GiB
 
-// m1HoldBytes is what an M1's Neural Engine holds of the programs loaded together before every
-// call slows down about 12 times, as if parts were loaded again on each: lut4 parts holding 2.86
-// GiB ran at their own times added up, 2.97 GiB at 828 against 72 ms a token, whatever the number
-// of parts (hwnpu-dev probe split, PROBE.md). The M2 (3.65 GiB at full speed), the M3 and the M4 have no
-// such limit below the compile cache, so the programs are the same files on every chip and an M1
-// only loads fewer of them: the one that generates reads the prompts too (onePrograms).
-const m1HoldBytes = 2867 << 20 // 2.8 GiB
+// chipRecipe is the machine's chip's entry of model-recipes.yaml apple.chips: what its Neural
+// Engine takes less of (the M1 Pro, Max and Ultra, with the same Neural Engine, are taken to be
+// the M1; not measured). The zero recipe.Chip, everything taken, for another chip.
+func chipRecipe() recipe.Chip {
+	f, err := recipe.Builtin()
+	if err != nil {
+		return recipe.Chip{}
+	}
+	return f.ChipOf(chipName())
+}
 
 // neuralEngineHold is what the machine's Neural Engine holds of the programs loaded together
-// before it slows down, 0 for no such limit: m1HoldBytes on an M1 (the M1 Pro, Max and Ultra,
-// with the same Neural Engine, are taken to be alike; not measured).
-var neuralEngineHold = func() int64 {
-	if chipName() == "M1" {
-		return m1HoldBytes
-	}
-	return 0
-}
+// before every call slows down about 12 times, as if parts were loaded again on each, 0 for no
+// such limit (apple.chips' hold_mib: 2.8 GiB on an M1). The programs are the same files on
+// every chip, and a chip with a limit only loads fewer of them: the one that generates reads the
+// prompts too (onePrograms).
+var neuralEngineHold = func() int64 { return chipRecipe().Hold() }
 
 // DefaultTiers is the --tier of hwnpu-chat (chat, agent, serve): auto, a cache of 4096 to run on
 // while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
@@ -371,10 +372,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, err
 	}
 	_, hostExperts := model.(llm.HostRouted)
-	if _, routed := model.(llm.Routed); routed && !hostExperts && Chip() == "M1" {
-		// the experts' program picks their scales with gather_nd, which an M1's Neural Engine
-		// does not take (docs/handoff-ane-gather.md 1): refused before the checkpoint downloads
-		return Config{}, fmt.Errorf("chat: %s is a mixture of experts, which runs on an M2 or later, not on an M1's Neural Engine", c.Name)
+	if _, routed := model.(llm.Routed); routed && !hostExperts && !chipRecipe().TakesGatherND() {
+		// the experts' program picks their scales with gather_nd, which the chip's Neural Engine
+		// does not take (apple.chips' gather_nd: an M1's, docs/handoff-ane-gather.md 1): refused
+		// before the checkpoint downloads
+		return Config{}, fmt.Errorf("chat: %s is a mixture of experts, which runs on an M2 or later, not on an %s's Neural Engine", c.Name, Chip())
 	}
 	if _, routed := model.(llm.Routed); routed && s.Draft > 1 {
 		// a call's experts run row by row (llm.Routed): checking 7 drafts costs 8 rows of them,
@@ -1038,14 +1040,14 @@ func ringTiers(model llm.Model) []int {
 }
 
 // wholeSlower reports whether this machine runs the whole program slower than the one split at
-// its attention, so that a model has no whole programs (wholeTiers): an M1. Its Neural Engine
+// its attention, so that a model has no whole programs (wholeTiers): an M1's. Its Neural Engine
 // takes the caches a whole program is given at each call more slowly than an M3's: LFM3-1.7B
 // with a whole program of 2048 generated 33.6 and 37.0 tokens a second (a call 36 ms, the caches
 // of 27 MiB among it) where the split programs alone, their attention over chunks of 1024,
 // generated 39.9 and 43.6 (31 ms), the same drafts kept (docs/design/apple-coreai.md). The split
 // programs alone also hold the weights once (1.4 against 2.6 GiB, under what an M1 holds at full
-// speed, m1HoldBytes) and compile in half the time.
-var wholeSlower = func() bool { return chipName() == "M1" }
+// speed, neuralEngineHold) and compile in half the time. apple.chips' whole: false says it.
+var wholeSlower = func() bool { return !chipRecipe().WholePrograms() }
 
 // wholeTiers is the cache of the whole program (its caches inside, none of its attention on the
 // host) a model split at its attention runs on with Core AI while the conversation is short,
