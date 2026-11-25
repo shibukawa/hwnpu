@@ -134,3 +134,14 @@ func PinnedPath(model, target, export string, p Pin) string {
 	}
 	return shared.EntryPath(model, target, export, p.At)
 }
+
+// PinnedAMDModel is the model of the definitions whose exports for AMD's NPU models.yaml pins
+// one named export of (DA3-SMALL's da3-small-mv3.amd-npu2), if one does.
+func PinnedAMDModel(export string) (Model, bool) {
+	for _, m := range Catalog {
+		if _, ok := m.Pins[cache.AMDTarget][export]; ok {
+			return m, true
+		}
+	}
+	return Model{}, false
+}

@@ -87,6 +87,9 @@ func (f FetchCmd) Run(d *devopt.Defs) error {
 			}
 		}
 	}
+	if len(f.Memory) == 0 {
+		missing = append(missing, fetchPinnedAMD(ctx, jobs)...)
+	}
 	if len(missing) > 0 {
 		fmt.Fprintf(os.Stderr, "\nnot in the sources (hwnpu-dev models package makes them):\n")
 		for _, m := range missing {
@@ -129,4 +132,27 @@ func fetchCheckpoint(ctx context.Context, m chat.Model) error {
 	}
 	_, err := chat.FetchWeights(ctx, m.Source(), log)
 	return err
+}
+
+// fetchPinnedAMD brings the exports for AMD's NPU that models.yaml pins of the jobs' models (for
+// amd-xdna2) and that the recipe's forms did not: those made by hand (DA3-SMALL's multi-view
+// export of iron_da3.py --views 3), which run from their directory. It returns those no source has.
+func fetchPinnedAMD(ctx context.Context, jobs []job) []string {
+	var missing []string
+	log := console.Log(os.Stderr)
+	for _, j := range jobs {
+		if j.target != cache.AMDTarget {
+			continue
+		}
+		for _, name := range slices.Sorted(maps.Keys(j.model.Pins[cache.AMDTarget])) {
+			if cache.FindExport(name, exists) != "" {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "%s: %s, pinned (made by hand)\n", j.model.Name, name)
+			if chat.AMDNamed(ctx, j.model, []string{name}, exists, log) == "" {
+				missing = append(missing, fmt.Sprintf("%s (%s): %s", j.model.Name, cache.AMDTarget, name))
+			}
+		}
+	}
+	return missing
 }

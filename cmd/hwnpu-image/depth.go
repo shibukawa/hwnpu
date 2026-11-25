@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/ai/vision"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
@@ -60,6 +61,18 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	useBackend(c.Backend)
 	var how made
 	name := c.Model
+	if !isPath(c.Model) {
+		// an export models.yaml pins by its name (one made by hand: DA3-SMALL's multi-view
+		// da3-small-mv3.amd-npu2), here or fetched from the sources, run from its directory
+		if err := chat.LoadUserModels("", os.Stderr); err != nil {
+			return err
+		}
+		if m, ok := chat.PinnedAMDModel(c.Model); ok {
+			if d := chat.AMDNamed(ctx, m, []string{c.Model}, func(d string) bool { _, err := os.Stat(d); return err == nil }, lw); d != "" {
+				c.Model, name = d, d
+			}
+		}
+	}
 	if isPath(c.Model) {
 		// an export's directory: a model like the depth use's
 		how.program("export", expandHome(c.Model))
