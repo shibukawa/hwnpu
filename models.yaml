@@ -599,7 +599,7 @@ models:
     from: hf:LiquidAI/LFM3-Audio-2B@2d6c1f99c129b3ef07a8d168bc0ff08e2bdb93f1
     exports:
       amd-xdna2:
-        lfm3-audio-2b-tts.amd-npu2: v2 sha256:7c36d04086bdcdae8fb7a663db1a04db96c8f6f789ec4596ec643fecc8cc52ec
+        lfm3-audio-2b-tts.amd-npu2: v3 sha256:d39d6268997d83eaa49501a09f085fae59072c34b129aebc5f2e34eba1de5c3f
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # pinned for the export for AMD's NPU (tools/amd/iron_lfm3speech.py, a key of the sources)
     sha256:
@@ -1129,7 +1129,7 @@ models:
     from: hf:opencv/face_detection_yunet
     exports:
       amd-xdna2:
-        yunet.amd-npu2: v1 sha256:b0dd6d34adcbad8c0dac480c24c25305152d865a61459fc651fd3644d599d0d3
+        yunet.amd-npu2: v1 sha256:9b248bde9dc8bba520f77ac36082eb6818ca1b1fad5cc926599494432df393b2
     license: {id: mit, url: "https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/LICENSE", class: open}
     # AMD's NPU (IRON) switches its array for each operator: 29 ms and 127 mJ a picture at
     # 320 x 256, the CPU (onnxruntime, 1 thread) 2.7 ms and 7.7 mJ (docs/amd-npu-models.md 17).

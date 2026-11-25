@@ -357,9 +357,10 @@ models:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio, internal/llm/lfm3gen, internal/speech]
     amd:
-      version: 2
+      # 3: text/ without the text model's copy of the tokenizer and the chat's format
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
-      finish: [{tokenizer: [tokenizer.json, text/tokenizer.json]}]
+      finish: [{tokenizer: [tokenizer.json]}]
       script: iron_lfm3speech.py
       args: ["{in}", "{out}"]
   supertonic-3:
