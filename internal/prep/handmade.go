@@ -47,11 +47,11 @@ func init() {
 }
 
 // imageHandMade is the export of every aspect ratio of Anima's model m for AMD's NPU
-// (tools/amd/iron_anima.py as its recipe says: {sizes} those of aspect.Of(16), {dit} the model's
+// (tools/amd/iron_anima.py as its recipe says: {sizes} those of aspect.All, {dit} the model's
 // file).
 func imageHandMade(e airole.PrepareEnv) (string, error) {
 	var sizes []string
-	for _, a := range aspect.Of(16) {
+	for _, a := range aspect.All {
 		if a.Width == a.Height {
 			sizes = append(sizes, fmt.Sprint(a.Width))
 		} else {
@@ -63,7 +63,7 @@ func imageHandMade(e airole.PrepareEnv) (string, error) {
 	holds := func(sizesOf func(string) [][2]int) func(string) bool {
 		return func(dir string) bool {
 			have := sizesOf(dir)
-			for _, a := range aspect.Of(16) {
+			for _, a := range aspect.All {
 				if !slices.Contains(have, [2]int{a.Width, a.Height}) {
 					return false
 				}
