@@ -425,3 +425,92 @@ func TestWebDAVStall(t *testing.T) {
 		t.Errorf("took %v", d)
 	}
 }
+
+// slowServer serves data's GETs from their Range: the first slowGets send fast bytes, then
+// trickle bytes every tick until the client goes; the rest are the WebDAV handler's. trickle
+// alone (fast 0) sends every GET at one slow rate.
+func slowServer(t *testing.T, data []byte, slowGets int64, fast, trickle int, tick time.Duration) (*WebDAV, *atomic.Int64) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "f"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gets atomic.Int64
+	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(root), LockSystem: webdav.NewMemLS()}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || gets.Add(1) > slowGets {
+			h.ServeHTTP(w, r)
+			return
+		}
+		var off int
+		fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-", &off)
+		w.Header().Set("Content-Length", fmt.Sprint(len(data)-off))
+		if off > 0 {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", off, len(data)-1, len(data)))
+			w.WriteHeader(http.StatusPartialContent)
+		}
+		end := min(off+fast, len(data))
+		w.Write(data[off:end])
+		w.(http.Flusher).Flush()
+		for off = end; off < len(data); off += trickle {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(tick):
+			}
+			w.Write(data[off:min(off+trickle, len(data))])
+			w.(http.Flusher).Flush()
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("NETRC", filepath.Join(t.TempDir(), "none"))
+	st, err := OpenWebDAV(WebDAVConfig{Name: "nas", URL: srv.URL + "/dav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, &gets
+}
+
+// TestWebDAVSlow cuts a download that slows to a trickle after davStall and goes on from where
+// it stopped, more times than a round's tries: each cut brought more of the file.
+func TestWebDAVSlow(t *testing.T) {
+	defer func(d time.Duration, f int64) { davStall, davSlowFloor = d, f }(davStall, davSlowFloor)
+	davStall, davSlowFloor = 200*time.Millisecond, 32<<10
+	data := make([]byte, 1<<20)
+	rand.Read(data)
+	// four GETs send 128 KiB, then 100 bytes every 50 ms (0.4 KiB a davStall)
+	st, gets := slowServer(t, data, 4, 128<<10, 100, 50*time.Millisecond)
+	dst := filepath.Join(t.TempDir(), "f")
+	start := time.Now()
+	n, err := st.Get(context.Background(), "f", dst, nil)
+	if err != nil || n != int64(len(data)) {
+		t.Fatalf("Get: %d %v", n, err)
+	}
+	if got, _ := os.ReadFile(dst); !bytes.Equal(got, data) {
+		t.Error("the file is not the server's")
+	}
+	if g := gets.Load(); g != 5 {
+		t.Errorf("%d GETs, want 5", g)
+	}
+	if d := time.Since(start); d > 20*time.Second {
+		t.Errorf("took %v", d)
+	}
+}
+
+// TestWebDAVSlowAllAlong leaves a download that is slow from its start: it is not cut.
+func TestWebDAVSlowAllAlong(t *testing.T) {
+	defer func(d time.Duration, f int64) { davStall, davSlowFloor = d, f }(davStall, davSlowFloor)
+	davStall, davSlowFloor = 200*time.Millisecond, 32<<10
+	data := make([]byte, 256<<10)
+	rand.Read(data)
+	// 4 KiB every 20 ms: 40 KiB a davStall, over the floor, the same all along
+	st, gets := slowServer(t, data, 1, 0, 4<<10, 20*time.Millisecond)
+	dst := filepath.Join(t.TempDir(), "f")
+	n, err := st.Get(context.Background(), "f", dst, nil)
+	if err != nil || n != int64(len(data)) {
+		t.Fatalf("Get: %d %v", n, err)
+	}
+	if g := gets.Load(); g != 1 {
+		t.Errorf("%d GETs, want 1", g)
+	}
+}
