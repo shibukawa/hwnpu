@@ -18,6 +18,7 @@ hwnpu-dev models package FLUX.2-klein-4B
 - チップによって書き出しが違うモデル (FLUX.2 klein は M1 だけ別: models.yaml の `npu.apple.generation_edits`) は、M1 として作った書き出しを h13 の種類 (h13g、h13s、…) だけに、M2 として作った書き出しをそのほかの種類だけにプリビルドする (`chat.TakesExportsOf`)。ほかのチップの書き出しのプリビルトは作らない。手元の書き出しを `hwnpu-dev prebuild EXPORT_DIR` で作るときは、この振り分けがないので `-arch` で種類を名指しする
 - 手元の書き出しだけをプリビルドするときは `hwnpu-dev prebuild -put EXPORT_DIR`。どのモデルのレシピかは、書き出しの `entry.json` の `model` から決める (`-model NAME` で指定もできる)
 - `-arch` と `-j` は、レシピより優先する。確かめのとき以外は書かない
+- 作り直すとき (版が上がったときなど)、source (`main.hash`) の変わらない部品は、同じモデルのフォルダにある前の書き出しの prebuilt を流用して、コンパイルしない。流用するのは、記録 (`NAME.coreai.prebuilt/ARCH/build.json`) で同じ coreai-build、同じかより少ない同時数、端末に任せる決まりなし、NE に乗っている、端末で落ちた印なし、と分かるものだけ。記録のない今の prebuilt は `-trust-old` のときだけ。端末で落ちた印は `hwnpu-dev prebuild -mark` か `HWNPU_DEV=coreai.mark-prebuilt` で付ける ([prebuilt-reuse](prebuilt-reuse.md))
 - AMD のレシピ (`amd`) があるモデルは、Linux と Windows ではターゲットを書かなくても、レシピの世代 (`generations`) の書き出し (`amd-xdna2`) を作る。Mac では AMD の分を、ほかの OS では Core AI のプリビルドの分を、一言出して飛ばす
 - `MODEL/amd-xdna2` のように世代のターゲットを書くと、その世代だけを作る。hwnpu がまだ動かさない世代 (`amd-xdna1`) と、レシピが `skip` する世代は、理由を出して止まる
 
@@ -184,6 +185,7 @@ models:
 - coreai-build のエラーは出力ではなく os_log に出る。そこで、落ちた coreai-build のプロセスのログ (`/usr/bin/log show --predicate 'processID == PID'`) から、理由の行を拾って表示する
 - 表示の最後に、そのプログラムを端末に回すときのレシピの規則を示す。プログラムの作り方を直すか、その規則を model-recipes.yaml に書き足して PR にする
 - 2 本同時のコンパイルで NPU から外れたものは、Build が最後に 1 本ずつ作り直してから判断する (外した Chroma1 の double で見た)
+- 同じ source の prebuilt が端末で落ちた印 (`build.json` の `device.status`) のある部品は、作り直しても同じものになるので作らず、同じように止まって端末に回す規則を示す ([prebuilt-reuse](prebuilt-reuse.md) 3節)
 
 ## 4. 実機に回る仕組み
 

@@ -175,7 +175,7 @@ func coreAIExportName(export string) (string, bool) {
 const PrebuiltKind = "coreai-prebuilt"
 
 // prebuiltFormat is the version of what coreai.Pack writes, part of the key.
-const prebuiltFormat = 2
+const prebuiltFormat = coreai.PackFormat
 
 func init() { coreai.FetchPrebuilt = FetchPrebuilt }
 

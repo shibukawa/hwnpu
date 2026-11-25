@@ -32,6 +32,9 @@ type Options struct {
 	Put bool
 	// AnyTools builds with a coreai-build of another version than the recipes'.
 	AnyTools bool
+	// TrustOld takes the prebuilt programs of other exports made before their builds were
+	// recorded (coreai.BuildOptions.TrustOld).
+	TrustOld bool
 	Log      io.Writer
 }
 
@@ -45,11 +48,13 @@ func Run(ctx context.Context, paths []string, o Options) error {
 	if err != nil {
 		return err
 	}
+	var version string
 	if !o.DryRun {
 		v, err := coreai.BuildToolVersion()
 		if err != nil {
 			return err
 		}
+		version = v
 		if want := recipes.Tools.CoreAIBuild; v != want {
 			if !o.AnyTools {
 				return fmt.Errorf("coreai-build %s here, the recipes were checked with %s (model-recipes.yaml tools): install that Metal Toolchain, or --any-tools to build with this one (to check it, then write its version there)", v, want)
@@ -91,6 +96,7 @@ func Run(ctx context.Context, paths []string, o Options) error {
 		}
 		fmt.Fprintf(o.Log, "%s: for %s, %d at once (model-recipes.yaml)\n", name, strings.Join(archs, " "), max(jobs, 1))
 		bo := coreai.BuildOptions{Archs: archs, Jobs: jobs, Force: o.Force, DryRun: o.DryRun, Log: o.Log, Packed: o.Packed || o.Put,
+			Tool: version, Model: name, TrustOld: o.TrustOld,
 			Left: func(asset, arch string) string {
 				export, _ := coreai.ExportOf(asset)
 				if r, ok := a.Left(filepath.Base(export), filepath.Base(asset), arch); ok {
@@ -106,7 +112,7 @@ func Run(ctx context.Context, paths []string, o Options) error {
 			}
 			continue
 		}
-		built, skipped, left := 0, 0, 0
+		built, skipped, reused, left := 0, 0, 0, 0
 		var code, weights int64
 		bad := map[[2]string]bool{}
 		for _, r := range results {
@@ -119,14 +125,16 @@ func Run(ctx context.Context, paths []string, o Options) error {
 				left++
 			case r.Skipped:
 				skipped++
+			case r.Reused != "":
+				reused++
 			default:
 				built++
 				code += r.Code
 				weights += r.Weights
 			}
 		}
-		fmt.Fprintf(o.Log, "%s: %d compiled in %s (%.0f MB of compiled regions beside %.1f GB of weights), %d prebuilt already, %d left to the device, %d failed\n",
-			name, built, time.Since(t0).Round(time.Second), float64(code)/1e6, float64(weights)/1e9, skipped, left, len(bad))
+		fmt.Fprintf(o.Log, "%s: %d compiled in %s (%.0f MB of compiled regions beside %.1f GB of weights), %d prebuilt already, %d taken from other exports, %d left to the device, %d failed\n",
+			name, built, time.Since(t0).Round(time.Second), float64(code)/1e6, float64(weights)/1e9, skipped, reused, left, len(bad))
 		today := time.Now().Format("2006-01-02")
 		for _, r := range results {
 			if r.Err != nil && !errors.Is(r.Err, context.Canceled) {
@@ -169,4 +177,26 @@ func indent(s, by string) string {
 		lines[i] = by + lines[i]
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// Mark writes what a device made of the prebuilt programs of the exports for archs (status: ok,
+// or the failure's name) in the records of their builds (coreai.MarkDevice), the programs those
+// whose names match one of programs (all when none). A build then takes a failed one for no
+// later export, and says the rule that leaves it to the device.
+func Mark(exports, archs, programs []string, status, function string, log io.Writer) error {
+	d := coreai.DeviceCheck{Status: status, Checked: time.Now().Format("2006-01-02"), Function: function, By: "hwnpu-dev prebuild -mark"}
+	for _, e := range exports {
+		e = filepath.Clean(e)
+		if _, ok := coreai.ExportOf(filepath.Join(e, "x")); !ok {
+			return fmt.Errorf("%s is not an export (NAME.coreai)", e)
+		}
+		for _, arch := range archs {
+			marked, err := coreai.MarkDevice(e, arch, programs, d)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(log, "%s %s: %s %s\n", filepath.Base(e), arch, status, strings.Join(marked, " "))
+		}
+	}
+	return nil
 }
