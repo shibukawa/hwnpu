@@ -295,7 +295,8 @@ func evictLRU(u *Usage, bytes int64, keep map[string]bool, log func(string, ...a
 			left = append(left, x)
 			continue
 		}
-		if err := x.Remove(); err != nil {
+		entries, err := x.remove()
+		if err != nil {
 			if log != nil {
 				log("cache: removing %s: %v", x.Name, err)
 			}
@@ -303,7 +304,11 @@ func evictLRU(u *Usage, bytes int64, keep map[string]bool, log func(string, ...a
 			continue
 		}
 		if log != nil {
-			log("cache: removed %s (%s, last used %s) to make room", x.Name, FormatSize(x.Bytes), x.Used.Format(time.DateTime))
+			also := ""
+			if entries > 0 {
+				also = fmt.Sprintf(", and %s of Core AI's compiled programs", FormatSize(entries))
+			}
+			log("cache: removed %s (%s%s, last used %s) to make room", x.Name, FormatSize(x.Bytes), also, x.Used.Format(time.DateTime))
 		}
 		freed += x.Bytes
 		u.Bytes -= x.Bytes
