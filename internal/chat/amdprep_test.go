@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 func TestAMDSuffix(t *testing.T) {
@@ -126,5 +129,52 @@ func TestRunIRONStaleDone(t *testing.T) {
 	}
 	if _, err := os.Stat(out + ".done"); err != nil {
 		t.Error("no out.done after it was made")
+	}
+}
+
+// TestAMDExportOfSourcesFirst runs the recipe's own export (the one for the memory the model runs
+// as) from the sources before an export made by hand here under another name (gpt-oss-20b's
+// whole export in ~/models where the recipe's is its 16 places), and that one only when no source
+// has the recipe's: never making it then.
+func TestAMDExportOfSourcesFirst(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(IRONEnv, filepath.Join(t.TempDir(), "no-iron"))
+	share := t.TempDir()
+	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}); err != nil {
+		t.Fatal(err)
+	}
+	m := Model{Name: "X", Repo: "o/x@c0ffee", AMDExport: []string{"lfm3", "--q4"}}
+	own := "X.amd-npu2-q4"
+	hand := filepath.Join(home, "models", "X.amd-npu2")
+	os.MkdirAll(hand, 0o755)
+	os.WriteFile(filepath.Join(hand, "manifest.json"), []byte(`{"by":"hand"}`), 0o644)
+
+	// no source has the recipe's: the one made by hand runs, nothing is made or put
+	if d, err := AMDExportOf(ctx, m, nil); err != nil || d != hand {
+		t.Fatalf("without the recipe's in the sources: %s, %v", d, err)
+	}
+	if es, _ := shared.ListEntries(ctx, shared.Sources()[0]); len(es) != 0 {
+		t.Errorf("put in the source: %v", es)
+	}
+
+	// a source has it (put by name, as hwnpu-dev sources import and models pin do)
+	made := filepath.Join(t.TempDir(), own)
+	os.MkdirAll(made, 0o755)
+	os.WriteFile(filepath.Join(made, "manifest.json"), []byte(`{"by":"source"}`), 0o644)
+	if _, err := shared.Describe(made, PlaceEntry(ImportKind, m, cache.AMDTarget, own, ImportedRecipe(m, cache.AMDTarget, own))); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.PutEntry(ctx, shared.Sources()[0], made); err != nil {
+		t.Fatal(err)
+	}
+	d, err := AMDExportOf(ctx, m, nil)
+	if err != nil || d != filepath.Join(AMDRoot(), own) || read(t, filepath.Join(d, "manifest.json")) != `{"by":"source"}` {
+		t.Fatalf("with the recipe's in the sources: %s, %v", d, err)
+	}
+	// and from then on it is here
+	if d2, _ := AMDExportOf(ctx, m, nil); d2 != d {
+		t.Errorf("the second time: %s", d2)
 	}
 }
