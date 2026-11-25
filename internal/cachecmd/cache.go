@@ -22,7 +22,7 @@ type CacheCmd struct {
 	Info  InfoCmd  `cmd:"" default:"1" help:"Where the cache is, what it holds by kind, the disk's free space, the limits and the layers models are read from (the command when none is named)."`
 	Ls    LsCmd    `cmd:"" help:"What the cache holds (or what PATTERN names) by model and kind: the units, size, when last used; the least recently used first (--units: each unit)."`
 	Prune PruneCmd `cmd:"" help:"Remove the units least recently used until the cache holds --max-size, or those not used for --older-than. Units used in the last hour are kept."`
-	Clear ClearCmd `cmd:"" help:"Remove the units PATTERN names (a model's name, OWNER/NAME, a glob: 'Qwen*'), of --kind, or --all."`
+	Clear ClearCmd `cmd:"" help:"Remove the units PATTERN names (a model's name, OWNER/NAME, a glob: 'Qwen*'), of --kind, or --all. Core AI's compiled programs of the exports in them (~/Library/Caches/coreai-cache) go too, as with prune."`
 	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (HWNPU_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its hwnpu-lock.json does not name, the temporary files of uploads, in S3 the uploads in parts cut off over an hour ago. Folders being written now are left."`
 }
 
@@ -345,6 +345,18 @@ func remove(e *Env, s *modelstore.Store, units []modelstore.Unit, dryRun, yes bo
 	} else {
 		table(e, units)
 	}
+	// Core AI's entries of the exports go with them (cache.CoreAIEntries), outside the cache
+	entries := map[string]int64{}
+	var entryBytes int64
+	for _, x := range units {
+		if b := cache.CoreAIBytes(cache.CoreAIEntries(x)); b > 0 {
+			entries[x.Path] = b
+			entryBytes += b
+		}
+	}
+	if entryBytes > 0 {
+		fmt.Fprintf(e.Out, "and %s of Core AI's compiled programs of their exports (~/Library/Caches/coreai-cache): compiled again when an export is downloaded again\n", cache.FormatSize(entryBytes))
+	}
 	if dryRun {
 		fmt.Fprintln(e.Out, "(--dry-run: nothing removed)")
 		return nil
@@ -363,11 +375,16 @@ func remove(e *Env, s *modelstore.Store, units []modelstore.Unit, dryRun, yes bo
 		}
 	}
 	done, err := s.Remove(units)
-	var bytes int64
+	var bytes, also int64
 	for _, x := range done {
 		bytes += x.Bytes
+		also += entries[x.Path]
 	}
-	fmt.Fprintf(e.Out, "removed %d units, %s\n", len(done), cache.FormatSize(bytes))
+	if also > 0 {
+		fmt.Fprintf(e.Out, "removed %d units, %s, and %s of Core AI's compiled programs\n", len(done), cache.FormatSize(bytes), cache.FormatSize(also))
+	} else {
+		fmt.Fprintf(e.Out, "removed %d units, %s\n", len(done), cache.FormatSize(bytes))
+	}
 	return err
 }
 
