@@ -224,7 +224,7 @@ Core AI と `coreai-build` の未解決の問題、Apple への報告の番号�
 | `aicheck rules`、`limits`、`lint` | Neural Engine の数値の規則 (float32 と比べる)、上限 (呼び出しの下限、プログラムの数、形式)、書き出しの lint |
 | `caiload` (Swift) | Core AI だけで specialize、実行、`-cycle` で切り替えの費用 |
 | `lutfake`、`lutscan -tile 16`、`kleinonly`、`bcdump` | 合成の lut の層、隣り合う同じ表、FLUX.2 klein の準備と置き、バイトコードの読み出し |
-| `llirtasks [-task N [-around K]] X.mlir.bc` | prebuilt の LLIR (`X.aimodelc/…/binary_0.llir.bundle/…/X.mlir.bc`) の Neural Engine のタスクを順に並べ、それぞれの計算と読むカーネルを出す。端末の仕上げのサービスが失敗したときのタスク (os_log の `Convert 1/1 procedures of ANEHLO task N/M`) が何かを引く。`bcdump` も LLIR を読む |
+| `llirtasks [-task N [-around K]] [-check] X.mlir.bc` | prebuilt の LLIR (`X.aimodelc/…/binary_0.llir.bundle/…/X.mlir.bc`) の Neural Engine のタスクを順に並べ、それぞれの計算と読むカーネルを出す。端末の仕上げのサービスが失敗したときのタスク (os_log の `Convert 1/1 procedures of ANEHLO task N/M`) が何かを引く。`bcdump` も LLIR を読む `-check` は、読むカーネルの終わりより先の係数を読むタスクだけを出し、1 つでもあれば失敗する。M1 はそういうプログラムで止まるか、仕上げのサービスが落ちる (known-issues 16)。`hwnpu-dev prebuild` も、コンパイルしたプログラムごとに同じ検査をする (`internal/coreai/llir`)。 |
 | `AICHECK_SENTINEL=PROGRAM aicheck run …` | 動くと分かっているプログラムを最初に動かし、失敗したプログラムの後はそれが動くまで待つ。Neural Engine をタイムアウトさせる prebuilt の後は、しばらく次のプログラムも失敗するので、その間は判定しない |
 | `aicheck locked CMD…` | Neural Engine のロックを持ったまま CMD を動かす。CMD が起動する hwnpu のプロセスは同じロックの下で動く (`HWNPU_NPU_LOCK_FD`) ので、その間にほかのセッションが Neural Engine を取らない。CMD が残したプロセスもロックを持ち続けるので、補助のプロセスには記述子 3 を閉じさせる |
 | `partprobe -dir CHECKPOINT -o OUT.aimodel NAME=start:layers:seq:paged[:key=value,…] …` | チャットのモデルの部品を、1 本のプログラムの関数として書く。関数ごとに設定 (1 回の行数、attention で分けるか、アーキテクチャのパラメータ) を変えられる。prebuilt の仕上げ 1 回で、どの部品が失敗するかを見分ける。NAME が 1 つなら書き出しの部品そのもの (同じ `main.hash`) になる |

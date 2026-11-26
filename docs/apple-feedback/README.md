@@ -11,6 +11,7 @@ Drafts written 2026-11-25 for the problems of [known-issues.md](../known-issues.
 | [h15g-dma-cache-hint.md](h15g-dma-cache-hint.md) | new | 12 | |
 | [h13g-attention-8192-keys.md](h13g-attention-8192-keys.md) | new | 13 | |
 | [finisher-crash-throttle.md](finisher-crash-throttle.md) | new (written 2026-11-27) | 15, 17 | |
+| [h13g-kernel-overrun.md](h13g-kernel-overrun.md) | new (written 2026-11-27; the cause of 13 too, so file it before or with h13g-attention-8192-keys.md) | 16, 17, 18, 13 | |
 | [add-FB25624129-finish-slower.md](add-FB25624129-finish-slower.md) | addition | 1, 9 | FB25624129 |
 | [add-FB25624259-no-cancel.md](add-FB25624259-no-cancel.md) | addition | 5 | FB25624259 |
 
