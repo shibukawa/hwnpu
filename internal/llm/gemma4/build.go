@@ -313,11 +313,9 @@ func (m *builder) layerRest(i int, a, residual, ple *mlpackage.Var) *mlpackage.V
 	if ple != nil {
 		residual = h
 		pd := c.PerLayerDim
-		g := m.Linear(h, p+"per_layer_input_gate.weight", "", pd)
-		g = m.act(g)
 		mine := m.Op("slice_by_index", map[string]any{"x": ple, "begin": m.B.Ints(0, 0, int32(i*pd)), "end": m.B.Ints(1, int32(m.rows), int32((i+1)*pd)),
 			"begin_mask": m.Bools(true, true, false), "end_mask": m.Bools(true, true, false)}, 1, m.rows, pd)
-		g = m.Op("mul", map[string]any{"x": g, "y": mine}, g.Shape...)
+		g := m.gate(m.Linear(h, p+"per_layer_input_gate.weight", "", pd), mine)
 		g = m.Linear(g, p+"per_layer_projection.weight", "", m.d)
 		g = m.norm(g, p+"post_per_layer_input_norm.weight", m.d)
 		h = m.Op("add", map[string]any{"x": residual, "y": g}, h.Shape...)
@@ -328,20 +326,33 @@ func (m *builder) layerRest(i int, a, residual, ple *mlpackage.Var) *mlpackage.V
 	return h
 }
 
-// act is the model's activation over x (1, rows, n), run over its rows as batches (blocks.RowsAct):
-// both of a layer's activations, the MLP's and the gate's of the per-layer inputs, so that they
-// are laid out the same way. Left to the compiler, coreai-build's for the M1 gave them different
-// layouts, and the kernel they share the size of one: an M1 does not end the first call of such
-// a program (docs/known-issues.md 16, 2026-11-27).
-func (m *builder) act(x *mlpackage.Var) *mlpackage.Var {
-	return m.RowsAct(x, func(y *mlpackage.Var) *mlpackage.Var { return m.Activation(y, m.cfg.HiddenAct) })
+// gate is act(g) * mine, the gate of the per-layer inputs g and the layer's inputs mine, both
+// (1, rows, n): computed over (1, n, rows), the gate's values as channels, as its Linear leaves
+// them and as the MLP's are when its activation runs.
+//
+// Why: left as (1, rows, n), coreai-build's compiler for the M1 (h13g) ran the gate's gelu over
+// its rows as channels, or as batches, from one layer to the next (8 sets of coefficients, or 1),
+// and the MLP's over 6144 channels (16 sets). The two share the tanh's kernel, which the compiler
+// sizes for the last of them: the MLP's read 2048 bytes of a kernel of 1024 or 128, and an M1
+// does not end the first call of such a program (blocks.WideAct, docs/known-issues.md 16,
+// 2026-11-27). The MLP is left as it is: with both activations over (rows, 1, 1, n) no task read
+// past a kernel either, but a call took 20 to 27 % longer on the M1 (a part of 5 layers 3.65 to
+// 4.37 ms).
+func (m *builder) gate(g, mine *mlpackage.Var) *mlpackage.Var {
+	r, n := g.Shape[1], g.Shape[2]
+	swap := func(x *mlpackage.Var) *mlpackage.Var {
+		return m.Op("transpose", map[string]any{"x": x, "perm": m.B.Ints(0, 2, 1)}, 1, x.Shape[2], x.Shape[1])
+	}
+	gt := m.Activation(swap(g), m.cfg.HiddenAct)
+	gt = m.Op("mul", map[string]any{"x": gt, "y": swap(mine)}, 1, n, r)
+	return swap(gt)
 }
 
 // mlp is Gemma4TextMLP: down(act(gate(x)) * up(x)).
 func (m *builder) mlp(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("%slayers.%d.mlp.", m.cfg.Prefix, i)
 	f := m.cfg.mlpWidth(i)
-	g := m.act(m.Linear(h, p+"gate_proj.weight", "", f))
+	g := m.Activation(m.Linear(h, p+"gate_proj.weight", "", f), m.cfg.HiddenAct)
 	u := m.Linear(h, p+"up_proj.weight", "", f)
 	g = m.Op("mul", map[string]any{"x": g, "y": u}, g.Shape...)
 	return m.Linear(g, p+"down_proj.weight", "", m.d)

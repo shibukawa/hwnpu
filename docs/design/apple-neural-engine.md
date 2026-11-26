@@ -95,10 +95,16 @@ program.
   - an activation over heads `(1, rows, heads, dim)` is applied before the reshape into heads,
     over `(1, rows, heads·dim)` (Qwen3.5's `silu(z)` and the sigmoid of its attention's gate);
   - a gate of a few values a row (16 heads) is repeated to 64 values, activated, and cut back
-    (`blocks.WideAct`: Qwen3.5's `beta` and decay, LFM3's attention gate). The reshape below is
-    not enough for these;
-  - two activations the compiler lays out differently are both applied over `(rows, 1, 1, n)`
-    (`blocks.RowsAct`: Gemma 4's MLP gelu and the gelu of its per-layer gate).
+    (`blocks.WideAct`: Qwen3.5's `beta` and decay, LFM3's attention gate). A reshape to
+    `(rows, 1, 1, n)` is not enough for these;
+  - Gemma 4's gate of the per-layer inputs runs its gelu and the product with the inputs over
+    the transposed tensors `(1, n, rows)`, the gate's values as channels like the MLP's
+    (`gemma4`'s `builder.gate`). Applying both gelus over `(rows, 1, 1, n)` also left no such
+    task, but moved the MLP's 6144 values out of their channels and cost 20 to 27 % a call.
+
+  Time of a call on the M1, compiled on the device, before and after (ms; 8 rows, 128 rows):
+  Qwen3.5-0.8B `model.part2` 3.23 → 3.13, 10.69 → 10.64; LFM3-1.7B `model.part2` 3.75 → 3.78,
+  10.93 → 10.79; Gemma 4 E2B `model.part2` 3.65 → 3.75, 9.99 → 8.77, `model.part5` 5.06 → 5.09.
 
   The h13g compiler alone does this: the same parts before these changes, compiled for h14g to
   h17g, have no such task (`model.part2` of the three models), nor do the 790 h14g and h15g

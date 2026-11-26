@@ -693,8 +693,9 @@ const GateWidth = 64
 // and the MLP's silu after it the second, so the gate's activation read 1024 bytes of a kernel
 // of 128: the M1 finished such a prebuilt program and never ended its first call (Qwen3.5's
 // Gated DeltaNet and LFM3's attention gate, docs/known-issues.md 16, 2026-11-27). Repeated to 64
-// values a row the gate is laid out as the Linear's output. tools/coreai/llirtasks -check reads
-// a prebuilt program for such tasks, and hwnpu-dev prebuild refuses a program that has one.
+// values a row the gate is laid out as the Linear's output; a reshape to (rows, 1, 1, n) alone
+// left a gate of 16 values with its 8 sets. tools/coreai/llirtasks -check reads a prebuilt
+// program for such tasks, and hwnpu-dev prebuild refuses a program that has one.
 func (g *Graph) WideAct(x *mlpackage.Var, act func(*mlpackage.Var) *mlpackage.Var) *mlpackage.Var {
 	if len(x.Shape) != 3 {
 		g.Fail("WideAct over a tensor of rank %d", len(x.Shape))
@@ -711,23 +712,6 @@ func (g *Graph) WideAct(x *mlpackage.Var, act func(*mlpackage.Var) *mlpackage.Va
 	y := act(wide)
 	return g.Op("slice_by_index", map[string]any{"x": y, "begin": g.B.Ints(0, 0, 0), "end": g.B.Ints(int32(x.Shape[0]), int32(x.Shape[1]), int32(n)),
 		"begin_mask": g.Bools(true, true, false), "end_mask": g.Bools(true, true, false)}, x.Shape...)
-}
-
-// RowsAct is act over x (1, rows, n) as (rows, 1, 1, n), a row a batch: for the activations of
-// a program that the compiler would lay out in different ways, which then share a kernel of the
-// wrong size on an M1 (WideAct). Gemma 4's two gelus are such: the MLP's ran over its Linear's
-// output as 6144 channels (16 sets of coefficients) and the gate's of the per-layer inputs over
-// its rows as batches or as channels (1 set or 8), from one layer to the next. Over (rows, 1, 1,
-// n) each has one set. A gate narrower than GateWidth is not laid out so by the reshape alone
-// (Qwen3.5's, 16 wide, kept its 8 sets): WideAct is for those.
-func (g *Graph) RowsAct(x *mlpackage.Var, act func(*mlpackage.Var) *mlpackage.Var) *mlpackage.Var {
-	if len(x.Shape) != 3 || x.Shape[0] != 1 {
-		g.Fail("RowsAct over a tensor of shape %v", x.Shape)
-	}
-	r, n := x.Shape[1], x.Shape[2]
-	y := g.Op("reshape", map[string]any{"x": x, "shape": g.B.Ints(int32(r), 1, 1, int32(n))}, r, 1, 1, n)
-	y = act(y)
-	return g.Op("reshape", map[string]any{"x": y, "shape": g.B.Ints(1, int32(r), int32(n))}, 1, r, n)
 }
 
 // Sigmoid is the Neural Engine's own sigmoid of x.
