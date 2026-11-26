@@ -103,10 +103,11 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 
 2 つのプロセスが同時に ANE を使うと M1 が固まった (予測が返らず、プロセスを殺せず、約 20 分で戻った)。そこで:
 
-- `llm.OpenDevice` は Core AI か Core ML のデバイスのとき、ユーザーのキャッシュの `hwnpu/neural-engine.lock` に排他の flock を取り、プロセスの終わりまで持つ。2 つ目のプロセスは `waiting for the Neural Engine: process N (NAME) is using it …` と出す。プロバイダを直接開く道具は `llm.LockNPU` を取る。
+- `llm.OpenDevice` は Core AI か Core ML のデバイスのとき、ユーザーのキャッシュの `hwnpu/neural-engine.lock` に排他の flock を取り、プロセスの終わりまで持つ。ファイルはいつもユーザーのキャッシュ (`~/Library/Caches/hwnpu`) にあり、`HWNPU_CACHE` で別のキャッシュを使うプロセスも同じロックを待つ (2026-11-26 まではキャッシュの下にあり、別のキャッシュのセッションが並んで ANE を使った)。2 つ目のプロセスは `waiting for the Neural Engine: process N (NAME) is using it …` と出す。プロバイダを直接開く道具は `llm.LockNPU` を取る。
 - ロックを取ったあと `settle` は、前のプロセスのプログラムが ANE から消えるまで待つ (`mem.NPUWired` を 0.1 秒ごとに、最大 30 秒)。持ち主は見つけた hwnpu 以外の分 (`base N`) をファイルの 2 行目に書く。
 - 理由: プロセスのプログラムは終わったあとも ANE に残り (忙しい機械で最大 7 秒)、その間に読み込むプロセスは失敗しうる (`Request cancelled`)。別のプロセスのコンパイルが動いているプログラムを失敗させることもある。
 - ロックを飛ばす道はない (`HWNPU_NPU_LOCK` は 2026-11-22 になくした)。ほかのセッションが何時間もロックを持つことがある: ANE の仕事は順番を待つ。
+- ロックを持つプロセスが起動したプロセスは、同じロックの下で動く (`HWNPU_NPU_LOCK_FD`: ロックのファイルの記述子を渡す。`tools/coreai/aicheck locked CMD`)。飛ばすのではなく、親が持ち続ける: 試行の列の途中でほかのセッションに ANE を取られないために使う。
 
 ## Neural Engine のメモリ
 

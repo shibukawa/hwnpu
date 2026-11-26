@@ -11,7 +11,10 @@
 //	go run ./tools/coreai/aicheck merge OUT.aimodel NAME=PKG...
 //	                                               one program with a function of each package, the weights shared
 //
-// run takes an .aimodel too, and PROGRAM.aimodel#NAME for its function NAME. With
+// run takes an .aimodel too (compared with X.mlpackage beside X.aimodel when -ref gives none),
+// and PROGRAM.aimodel#NAME for its function NAME. AICHECK_SENTINEL=PROGRAM runs a program known
+// to run first and after each one that fails, until it runs again. locked CMD... runs CMD under
+// the Neural Engine's lock, and the hwnpu processes it starts under the same hold. With
 // HWNPU_DEV=ailower.cut=N, -cpu compares the cut program's output with milcpu's value of that
 // operation; AICHECK_WORST=1 also prints the elements that differ most; AICHECK_CONST=NAME=V,...
 // gives inputs a value instead of random ones (masks, a constant passed as an input). HWNPU_COREAI_UNITS=cpu

@@ -699,7 +699,13 @@ func locked(args []string) error {
 	if err := llm.LockNPU(context.Background()); err != nil {
 		return err
 	}
+	// the command's own hwnpu processes run under this lock (llm.NPULockEnv), one after another.
+	// Every process it leaves behind keeps the lock too (the descriptor is inherited): a
+	// watchdog's sleep held it for 25 minutes after its command was killed (2026-11-26); such
+	// a process closes descriptor 3 first (exec 3>&-)
 	c := exec.Command(args[0], args[1:]...)
-	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	c.ExtraFiles = []*os.File{llm.NPULockFile()}
+	c.Env = append(os.Environ(), llm.NPULockEnv+"=3")
 	return c.Run()
 }
