@@ -119,7 +119,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - **外れ値のチャネルのある行の norm**: 2 乗の平均は最大で割った写しから取り、x そのものに rsqrt / max を掛ける (Chroma1 の `mil.t5Norm`。`05c406c9` にある)
 - **NE の規則** (`aicheck rules`、M2 で測った。Core AI の CPU ではどれも起きない。[apple-coreai.md](apple-coreai.md)):
   - linear と畳み込みの和は**途中の和も** 2^15 未満 (reduce_sum は全範囲)
-  - 最後の軸の slice で開始を 32 で割った余りが 1〜14 だと 4094 を超える値が Inf: `aicheck lint` (か `HWNPU_AILOWER_NOTES=1`)
+  - 最後の軸の slice で開始を 32 で割った余りが 1〜14 だと 4094 を超える値が Inf: `aicheck lint` (か `HWNPU_DEV=ailower.notes`)
   - fp16 の正規化の範囲を下回る積は matmul の中で 0 になる。要素ごとでは残る
   - softplus と内側の次元が 1 の matmul は `ailower` が書き換える
 
@@ -141,8 +141,8 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 
 - **どの演算にも下ろし方が要る。** `aicheck lower OUT PKG` は最初の欠けで止まる。新しいものは coreai-torch と同じに書く: 小さな torch のモジュールを coreai-torch で変換し、プログラムを出し、バイトコードを `tools/coreai/bcdump` で読む
 - **各部分を Core AI と Core ML の CPU インタプリタと比べる**: `aicheck run -cpu PKG...` と `aicheck run -cpu -coreml PKG...`。全部 NE に載る部分が Core AI でだけ誤ることがある (PP-OCR の検出器 0.05 に対し 0.9999)
-- **`HWNPU_AILOWER_CUT=N aicheck run -cpu PKG` で演算を探す** (`AICHECK_WORST=1`)。誤差の大きさや最大の場所だけでなく、何の誤りかを見る (入力と出力の間に直線を当てると、NE が割るべきところで掛けていた)。小さな写しでなく本物の部分で確かめる
-- **下ろし方の誤りと NE の誤りを `HWNPU_COREAI_UNITS=cpu` で分ける。** 罠: Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる。CPU インタプリタは実装したものしか参照にならない (`elu` は alpha 1 だけ)。`runner` は `HWNPU_CPU_F16=1` でなければ fp32、aicheck は fp16 の丸めつき: 参照の精度を先に決める
+- **`HWNPU_DEV=ailower.cut=N aicheck run -cpu PKG` で演算を探す** (`AICHECK_WORST=1`)。誤差の大きさや最大の場所だけでなく、何の誤りかを見る (入力と出力の間に直線を当てると、NE が割るべきところで掛けていた)。小さな写しでなく本物の部分で確かめる
+- **下ろし方の誤りと NE の誤りを `HWNPU_COREAI_UNITS=cpu` で分ける。** 罠: Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる。CPU インタプリタは実装したものしか参照にならない (`elu` は alpha 1 だけ)。`runner` は `HWNPU_DEV=cpu.f16` でなければ fp32、aicheck は fp16 の丸めつき: 参照の精度を先に決める
 - **NE の落とし穴**: 定数での `divide_v1` を誤る (ailower は逆数の積に書く)。`(v + c) - c` を c が入力でも `v` に畳む。幅 1 より大きな核で 512 チャネル以上、入力を別の演算が計算する幅方向の畳み込みが誤る (高さ方向に回す)。膨張つきの畳み込みは長さによって誤る (膨張の行にフレームを並べる)。畳み込みの前の明示の `pad` が誤った。(1×1)·(1×N) の matmul は M3 で誤る (mul で)
 - **1 本の `.aimodel` の関数はまとめてコンパイルされる**: コンパイラが 1 つの関数を落とすと全部が NE から外れる。先に大きさごとの部分を単独で見て、`aicheck probe` で小さな書き換えを試す (`tile` のチャネルの繰り返し → 0/1 の重みの 1 × 1 の畳み込み)。隣り合う lut の表を同じにしない (`coreai-build` が部分を NE から外した)
 - **起動は両方のキャッシュを温めて比べる** (各バックエンドを 1 回回した直後に、新しいプロセスで 3 回ずつ)
@@ -161,9 +161,9 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - **アーキテクチャで**: `llm.Routed` を実装する。MoE の層の始まりで部分を切り (`moe_x_N`、fp16 の `moe_logits_N`)、次の部分は `moe_o_N` を足して始める。`llm.PlanRouted` で切る
 - **行を数える**: MoE のモデルは下書きを切り、段は 1 つ。プロンプトの呼び出しは選ばれた専門家をその行の分 1 回ずつ回す (`experts.BuildRows`)、1 回 128 トークン
 - **どの専門家が回るかを、多くの種類の文で数える** (`tools/moeusage`: `collect.sh MODEL OUT`、`analyze.py OUT`)。どの種類でも回る専門家は models.yaml の `experts_core` に。出す置き場の数で核が得か確かめる (AMD の Qwen3.6 は核なし)
-- **ホストが回す専門家 (`llm.HostRouted`)**: 読むのと計算を分けて測る (`HWNPU_MOE_DEBUG=1`)。先に SSD を測る。同じ質問の繰り返しで設定を比べない (ページキャッシュが温まる): 分野と言語の違う質問の一覧で (`--prompt-cache off`)。CPU のプロファイルを見る (`mincore` とカーネルで 66 %)。層の間に NE の間を入れて (`HWNPU_QWEN36_GAP`)、長いプロンプト (20 ステップ以上) でも測る。MXFP4 のチェックポイントを作る前 (`hwnpu-dev mxfp4`) にディスクの空きを見る
+- **ホストが回す専門家 (`llm.HostRouted`)**: 読むのと計算を分けて測る (`HWNPU_DEV=moe.time`)。先に SSD を測る。同じ質問の繰り返しで設定を比べない (ページキャッシュが温まる): 分野と言語の違う質問の一覧で (`--prompt-cache off`)。CPU のプロファイルを見る (`mincore` とカーネルで 66 %)。層の間に NE の間を入れて (`HWNPU_TEST_QWEN36_GAP`)、長いプロンプト (20 ステップ以上) でも測る。MXFP4 のチェックポイントを作る前 (`hwnpu-dev mxfp4`) にディスクの空きを見る
 - **生成した文は標準エラーで比べる**: `hwnpu-chat` は思考をそこに書くので、短い実行の標準出力は空。測るバイナリの名前は変えない (Core AI のキャッシュはプロセスの名前ごと、1 モデル 1.8 GB)
-- **AMD で入りきらない専門家は置き場に** (`iron_export_lm.py --expert-places P`): `HWNPU_MOE_DEBUG=check` と、全部を置いた書き出しとの比較で確かめる。16 GB の機械には `variants` を。モデルの名前で動かす (名前でだけ核と回数が渡る)
+- **AMD で入りきらない専門家は置き場に** (`iron_export_lm.py --expert-places P`): `HWNPU_DEV=moe.check` と、全部を置いた書き出しとの比較で確かめる。16 GB の機械には `variants` を。モデルの名前で動かす (名前でだけ核と回数が渡る)
 - **MoE でないモデルが変わらないことを確かめる** (同じ文、同じ速さ、変換し直さない)
 
 ## 4. AMD (IRON) と Intel の形
@@ -214,7 +214,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 
 | 手法 | 教訓 |
 |---|---|
-| 先にデコードの演算子と切り替えを数える | `model.record().steps`、`HWNPU_EXPORT_STEPS=1`、`elfconfigs`。`--command-per-step` と `HWNPU_IRON_TIMING` で 1 つずつ測る (1 コマンドに約 0.1 ms)。その書き出しでは時間だけを読む |
+| 先にデコードの演算子と切り替えを数える | `model.record().steps`、`HWNPU_EXPORT_STEPS=1`、`elfconfigs`。`--command-per-step` と `HWNPU_DEV=iron.timing` で 1 つずつ測る (1 コマンドに約 0.1 ms)。その書き出しでは時間だけを読む |
 | **デコードの演算子を減らす** | バイアスと残差を GEMV で (`into_linear`)、gate と up を 1 つの表に (`QGEMVGlu`)、sandwich norm を 1 つに (`SandwichAdd`)、q と k の RoPE を 1 回に、短い畳み込みを 1 つに (`ShortConvStep`)、状態の枠を直接 (`slots=`)、QGEMV を 1 列 1 コアに |
 | **プロンプトの塊の演算子を減らす** | 短い畳み込みを 1 つの演算子に (`ShortConvChunk`、`GdnConvChunk`)。小さな設定 (RMSNorm、和) をまとめても効かない |
 | デコードの 1 歩を 1 つの常駐の配列に (`GptOssStep`) | 載せ直しがなくなる (gpt-oss 79 → 49 ms)。代わりにコアのプログラムを 16 KB に収め、毎歩すべての operand を宣言する。層で違う `array=True` の引数は層ごとの配列になる: 書き出しを変えたらコマンドの時間を読む |

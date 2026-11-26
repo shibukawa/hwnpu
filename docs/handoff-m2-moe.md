@@ -59,7 +59,7 @@ for r in 1 2 3; do for w in 6GB 4GB; do for p in 4 0; do run HWNPU_MOE_WIRE=$w H
 - `internal/mxfp4` の `BenchmarkGenLayer` (1 層の生成: 4 専門家の gate_up と down、1 ベクトル、53 MB、318 MB を回してキャッシュの外): **1.05 ms (約 50 GB/s)**、M3 の 0.9 ms とほぼ同じ。`GOMAXPROCS` 8、6、4 で差なし (1.01〜1.10 ms)
 - 同じ機械で 8 スレッドの単純な読み出しは約 61 GB/s。カーネルはその 83 %: 命令を詰めても上がるのは最大 15 % ほど。生成は 1 行なので `dotNEON` (SDOT) で、SMMLA は関係しない
 - 実機のチェックポイントでの `TestHostTokenTime` はページの読み込みで 8.8〜23 ms/層になり、カーネルの比較には使えない (メモリが空いていないと)
-- 層の間の間: `HWNPU_TEST_GPTOSS_GAP=1ms` で 1.09 ms (変わらない)、`4ms` で 1.5〜2.2 ms (コアが眠る)。`HWNPU_MXFP4_SPINNERS=2` で 4 ms の間でも 1.0〜1.07 ms に戻る
+- 層の間の間: `HWNPU_TEST_GPTOSS_GAP=1ms` で 1.09 ms (変わらない)、`4ms` で 1.5〜2.2 ms (コアが眠る)。worker を回し続けると (`HWNPU_MXFP4_SPINNERS=2`、後にコードごと消した: performance.md) 4 ms の間でも 1.0〜1.07 ms に戻る
 - ところが hwnpu-chat の中では spinners は効かない: 4 GB・先読みありで spinners 0 は 12.5 / 12.4 / 12.4 tok/s、2 は 11.3 / 12.5 / 11.6。既定 (0) のまま
 - 「M2 の専門家は M3 の 1.85 倍」(2 節) は、カーネルではなく、ページの読み込みと眠ったコアと熱だった。chat の中の専門家は今も 1.64〜1.76 ms/層 (合成の 1.05 ms との差が残り)
 
