@@ -62,6 +62,10 @@ type Record struct {
 	Export string `json:"export"`
 	// Programs are by the program's path in the export without .aimodel (ProgramKey).
 	Programs map[string]*ProgramRecord `json:"programs"`
+	// Stopped is set on a device that stopped using these programs: one of them failed at its
+	// first call (FailedAtFirstCall), which leaves the Neural Engine unable to run the others.
+	// It is the device's own: a build does not carry it into a bundle.
+	Stopped *DeviceCheck `json:"stopped,omitempty"`
 }
 
 // ProgramRecord is what a build made of a program.
@@ -344,20 +348,57 @@ func Backfill(root, arch, export, model string, jobs int, today string) ([]strin
 // process on the Neural Engine ("Request cancelled").
 const FailedToSpecialize = "failedToSpecialize"
 
-// DeviceMark is the mark a run writes of the function fn of a prebuilt program it opened (msg:
-// the error, "" when it opened), and whether it writes one: an ok, or a FailedToSpecialize; no
-// other failure, which may be another process's doing and would make builds refuse a good
-// program.
-func DeviceMark(fn, msg, today, by string) (DeviceCheck, bool) {
+// FailedAtFirstCall is a prebuilt program the device finished and then failed to run, at its
+// first call, where the same program compiled on the device ran the same call (Qwen3.5-0.8B's
+// 128 rows of its Gated DeltaNet layers on an M1: the Neural Engine timed out, "Request
+// cancelled", 2026-11-26). A run writes it of the first such program of a process alone: the
+// Neural Engine then fails the next prebuilt programs for a while, whatever they are.
+const FailedAtFirstCall = "failedAtFirstCall"
+
+// DeviceMark is the mark a run writes of the function fn of a prebuilt program (msg: the error
+// of opening it or, with called, of its first call; "" when it opened and ran), and whether it
+// writes one: an ok once it has run, a FailedToSpecialize, or a FailedAtFirstCall; no other
+// failure, which may be another process's doing and would make builds refuse a good program.
+func DeviceMark(fn, msg, today, by string, called bool) (DeviceCheck, bool) {
 	d := DeviceCheck{Status: DeviceOK, Checked: today, Function: fn, By: by}
-	if msg == "" {
-		return d, true
-	}
-	if !strings.Contains(msg, FailedToSpecialize) {
+	switch {
+	case msg == "":
+		return d, called // an ok says the device ran it, not only that it finished it
+	case called:
+		d.Status, d.Message = FailedAtFirstCall, msg
+	case strings.Contains(msg, FailedToSpecialize):
+		d.Status, d.Message = FailedToSpecialize, msg
+	default:
 		return d, false
 	}
-	d.Status, d.Message = FailedToSpecialize, msg
 	return d, true
+}
+
+// StopDevice records that the program key (of source src) of the export's packed programs for
+// arch failed on this device as d says, and that the device stops using the programs
+// (Record.Stopped): a bundle without a record gets one.
+func StopDevice(export, arch, key, src string, d DeviceCheck) error {
+	root := PackedRoot(export, arch)
+	if _, err := os.Stat(root); err != nil {
+		return err
+	}
+	rec, err := ReadRecord(root)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		rec = &Record{Arch: arch, Pack: PackFormat, Export: filepath.Base(export), Programs: map[string]*ProgramRecord{}}
+	}
+	e := rec.Programs[key]
+	if e == nil || e.Source != src {
+		e = &ProgramRecord{Source: src, Legacy: true}
+		rec.Programs[key] = e
+	}
+	dc := d
+	e.Device = &dc
+	stop := d
+	rec.Stopped = &stop
+	return WriteRecord(root, rec)
 }
 
 // NeedsMark reports whether d changes what the record says of the program key of source src:

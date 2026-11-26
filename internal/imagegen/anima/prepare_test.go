@@ -22,9 +22,9 @@ func TestExportName(t *testing.T) {
 		backend string
 		want    string
 	}{
-		{880, 1168, "coreai", "anima-turbo-v1.1-880x1168-int8-int8-g4-q512-v5.coreai"},
-		{1360, 752, "coreai", "anima-turbo-v1.1-1360x752-int8-int8-g4-q512-v5.coreai"},
-		{832, 1248, "coreai", "anima-turbo-v1.1-832x1248-int8-int8-g4-q512-v4.coreai"},
+		{880, 1168, "coreai", "anima-turbo-v1.1-880x1168-int8-int8-g4-q512-v6.coreai"},
+		{1360, 752, "coreai", "anima-turbo-v1.1-1360x752-int8-int8-g4-q512-v6.coreai"},
+		{832, 1248, "coreai", "anima-turbo-v1.1-832x1248-int8-int8-g4-q512-v6.coreai"},
 		{880, 1168, "intel", "anima-turbo-v1.1-880x1168-int8-int8-g4-q512-v4.intel"},
 	} {
 		p := o
@@ -82,7 +82,7 @@ func TestExportNameSizes(t *testing.T) {
 		p.Width, p.Height = a.Width, a.Height
 		names = append(names, ExportName(p))
 	}
-	want := "anima-turbo-v1.1-" + aspect.Tag(aspect.SizesOf(aspect.All)) + "-int8-int8-g4-q512-v5.coreai"
+	want := "anima-turbo-v1.1-" + aspect.Tag(aspect.SizesOf(aspect.All)) + "-int8-int8-g4-q512-v6.coreai"
 	for _, n := range names {
 		if n != want {
 			t.Errorf("%s, want %s", n, want)

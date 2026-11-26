@@ -9,6 +9,7 @@
 - テスト: `internal/backend/coreai/reuse_darwin_test.go` (9節の場合を全部)
 - 実機での確かめ (M1、偽の新しい書き出しに FLUX.2 klein v5 の `ctx` と `dit_double_0` を写して): 記録を足した v5 から `dit_double_0` の h14g を流用 (0.6 秒、重みの写像を読み直して確かめた。写したものは v5 のものとバイトまで同じ)。記録がなければ流用せずコンパイルに回った。`-mark failedToSpecialize` のあとは作らずに止まり、レシピの決まりを提案した
 - Qwen3.5-0.8B で、記録のある版上げと、ビルドの選択を変えた一部の作り直しと、そのあとの推論を確かめた (M1、h13g、2026-11-26)。どれも、Core AI のキャッシュが空のプロセスで、端末でコンパイルしたもの (`HWNPU_COREAI_PREBUILT=off`) と同じ seed で同じ文を出し、prebuilt の失敗はなかった (端末の印は17部品とも `ok`)
+  - **この確かめは当てにならない** (2026-11-27 に分かった)。署名の識別子も変えた写し (`codesign -f -s - -i NEW`) で同じ束を動かすと、`model.part1` は仕上げのサービスが落ち、`mass` は仕上がらず、`model.part2` の `q128-last` は最初の呼び出しで Neural Engine を止めた (3 回とも同じ。[known-issues](known-issues.md) 15〜18節)。前の確かめは実行ファイルの名前だけを変えていた: Core AI のキャッシュは名前ごとだが、aned のコンパイル結果は署名の識別子ごとで、Go の実行ファイルはどれも識別子が `a.out` になる。なぜ通ったかまでは確かめていない。prebuilt を確かめるときは、識別子を変えた写しで動かす
   - r1 を一から: 17部品 6分22秒
   - r1 → r2 (今のコードの書き出し): 大きい9部品 (`model.part1`〜`7`、`*.mass`) を r1 から流用し、中身の変わった注意の8部品だけを作って 10 秒。読み込みは端末のコンパイルの 22 秒に対して 1.8 秒
   - レシピに `sr-q8.attn*` の `do: device` を足すと: その4部品は `ARCH.prev` に移り (束は13部品)、端末でコンパイルされた (読み込み 7.0 秒)
@@ -40,7 +41,7 @@
   "model": "FLUX.2-klein-4B",
   "export": "flux.2-klein-4b-8sizes-4d02f40a-5edits-cacbebeb-lut8-lut8-v6.coreai",
   "programs": {
-    "vae_s0": { "source": "e190…", "result": "left", "rule": "LeftToDevice" },
+    "text_0": { "source": "e190…", "result": "left", "rule": "LeftToDevice" },
     "dit_double_0": { "source": "…", "result": "built", "tool": "coreai-build-3605.6.3",
                       "jobs": 3, "built": "2026-11-25T10:35:30Z", "seconds": 1212,
                       "device": { "status": "ok", "checked": "2026-11-26", "function": "s1024x1024", "by": "hwnpu-image" } },
@@ -106,11 +107,15 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
   hwnpu-dev prebuild -mark failedToSpecialize -arch h15g -programs 'dit_single_*' -function s1024x1024 EXPORT_DIR
   hwnpu-dev prebuild -mark ok -arch h15g EXPORT_DIR
   ```
-- **動かしたときに自動で** (設定なし): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) を Core AI が開けたら `ok`、`the prebuilt program failed` のメッセージに `failedToSpecialize` があれば `failedToSpecialize` を、その束の `build.json` に書く (`coreai.DeviceMark`、`markPrebuilt`)
+- **動かしたときに自動で** (設定なし): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) について、その束の `build.json` に書く (`coreai.DeviceMark`、`markPrebuilt`)
+  - `ok`: Core AI が開け、**最初の呼び出しが返った**とき。開けただけでは書かない (2026-11-27 から)。開けて仕上がっても動かないプログラムがある: Qwen3.5-0.8B の h13g の prebuilt は M1 で仕上がるが、最初の呼び出しが Neural Engine の上で終わらず、100 秒で打ち切られた ([known-issues](known-issues.md) 16節)。それまでの `ok` は「仕上がった」の意味でしかない
+  - `failedToSpecialize`: `the prebuilt program failed` のメッセージに `failedToSpecialize` があるとき (開けなかった)
+  - `failedAtFirstCall`: 開けたのに最初の呼び出しが失敗したとき。同時に記録の `stopped` に同じ内容を書き、**その機械はその束を使うのをやめる** (`coreai.StopDevice`)。失敗した呼び出しは Neural Engine を止め、同じプロセスのほかのプログラムも動かなくなるので、その実行はエラーで終わる。その書き出しのプログラムの Core AI のキャッシュの項目 (prebuilt から仕上げたものが入っている) も消すので、次の実行は全部を端末でコンパイルする。束に記録がなければ作る (ほかの印と違い、安全のため)
   - 書くのは記録 (`build.json`) のある束だけ。記録のない束に新しく作ることはしない
-  - ほかの失敗 ("Request cancelled" など) は書かない。ほかのプロセスが Neural Engine を使っていたせいのこともあり、書くと良い部品を作る側が断ることになる。`failedToSpecialize` は部品の側の失敗で、毎回同じになる
+  - 開くときのほかの失敗 ("Request cancelled" など) は書かない。ほかのプロセスが Neural Engine を使っていたせいのこともあり、書くと良い部品を作る側が断ることになる。`failedToSpecialize` は部品の側の失敗で、毎回同じになる。最初の呼び出しの失敗は、ほかのプロセスのせいのこともありうるが、書く: 外れても端末のコンパイルに戻るだけで、当たっていれば次の実行も Neural Engine を止める
   - 書くのは記録が変わるときだけ (`Record.NeedsMark`: `ok` の上に `ok`、同じ関数の同じ失敗は書き直さない)。関数ごとにプロセスで1回。書けないとき (アプリの読み取り専用の置き場所など) は黙って続ける
   - 利用者の機械でも書くが、その機械の中だけのもの (取得元へは `-put` する開発機からしか上がらない。`-put` すれば `revision` が変わって置き換わる)
+- 開くとき、記録に落ちた印のある部品と、`stopped` のある束の部品は prebuilt を使わず、端末でコンパイルする (`badOnDevice`)。`stopped` は機械のもの: `hwnpu-dev prebuild` で束を作り直すと新しい記録になり、消える (失敗した部品の印は残るので、同じ source は作らずに止まり、レシピの決まりを求める)
 - 落ちた印は、別の関数の `ok` では消えない (どれかの関数が落ちれば、その部品は使えない)。関数を書かない `-mark ok` (人が部品全体を確かめた) は消す
 - チップが違う機械では確かめられないので、印のない部品は `unchecked` と同じに扱う (流用してよい)
 
@@ -136,7 +141,8 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 | FLUX.2 `dit_double` 3本 | 5〜26 分/本 | 27〜101 秒/本 | 未測定 |
 | FLUX.2 `dit_single` 10本 | 16〜21 分/本 | failedToSpecialize | 約 13 分/本 |
 | FLUX.3 VAE 10本 | 1 分 22 秒 | 測定中 | 測定中 |
-| Anima VAE | 8/10 段が `CompilationFailure` (h13g/h14g/h15g) | ― | 約 70 分 (M2) |
+| Anima VAE (v5) | 8/10 段が `CompilationFailure` (h13g/h14g/h15g) | ― | 約 70 分 (M2) |
+| Anima VAE (v6、512²) | 通る (h13g/h14g/h15g) | すぐ | 482 秒 (M3。v5 は 3552 秒) |
 
 M3 (h15g) の FLUX.2 klein v6 の DiT 13本は、全部を作り直して 1時間21分かかった (3本同時)。M1 (h13g) では1部品で1時間を超えるものもある。
 

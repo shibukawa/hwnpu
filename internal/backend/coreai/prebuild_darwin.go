@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/coreai/llir"
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
@@ -193,7 +194,7 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 				continue
 			}
 		}
-		if !o.Force && !o.Packed && sameSource(r.Asset, r.Out) && onANE(r.Out) {
+		if !o.Force && !o.Packed && sameSource(r.Asset, r.Out) && onANE(r.Out) && !oldOverrun(r.Arch, r.Out) {
 			r.Skipped = true
 			r.Code, r.Weights = sizes(r.Out)
 			logf("%s %s: prebuilt already (%s)\n", name, r.Arch, filepath.Base(r.Out))
@@ -206,6 +207,9 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 				r.Err = err
 				logf("%s %s: not compiled: %v\n", name, r.Arch, err)
 				continue
+			case c != nil && oldOverrun(r.Arch, c.dir):
+				// compiled again, which says so
+				r.Why = "the one of " + c.label() + ": its tasks read past their kernels"
 			case c != nil && c.dir == r.Out:
 				r.Skipped = true
 				r.Code, r.Weights = sizes(r.Out)
@@ -408,10 +412,33 @@ func buildOne(ctx context.Context, tool, asset, arch, out string) error {
 		}
 		return errOffANE
 	}
+	// a program whose tasks read past the kernels they load is not kept: the M1 does not end the
+	// first call of one (or its finishing service crashes), and takes the Neural Engine from
+	// every process meanwhile (llir.Overruns). An older output of the asset goes with it.
+	if _, err := llir.CheckKernels(built); err != nil {
+		if errors.Is(err, llir.ErrKernelOverrun) {
+			os.RemoveAll(out)
+		}
+		return err
+	}
 	if err := os.RemoveAll(out); err != nil {
 		return err
 	}
 	return os.Rename(built, out)
+}
+
+// oldOverrun reports whether the prebuilt program at out, whole or packed, that an earlier build
+// made for arch has tasks that read past the kernels they load (llir.Overruns): one built before
+// buildOne checked (2026-11-27). Only the programs for the M1's family are read again: the h13g
+// compiler alone wrote such tasks (none in 790 h14g and h15g programs, nor in the h14g to h17g
+// programs of the parts that have them on h13g), and reading the LLIR of an image model's
+// programs takes a minute a run.
+func oldOverrun(arch, out string) bool {
+	if !strings.HasPrefix(arch, "h13") {
+		return false
+	}
+	_, err := llir.CheckKernels(out)
+	return errors.Is(err, llir.ErrKernelOverrun)
 }
 
 // buildPacked runs coreai-build on asset for arch, and packs the result at out (Pack), the one
