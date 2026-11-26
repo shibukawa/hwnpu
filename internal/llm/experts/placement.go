@@ -246,20 +246,11 @@ func (pl *placer) follow() {
 func (h *Host) wiring() (all bool, budget int64) {
 	n := h.bytes()
 	phys := mem.Physical()
-	switch v := strings.TrimSpace(os.Getenv("HWNPU_MOE_WIRE")); v {
-	case "":
-	case "0":
-		return false, 0
-	case "1":
-		return true, n
-	default:
-		s := strings.TrimSuffix(strings.TrimSuffix(strings.ToUpper(v), "B"), "G")
-		if gb, err := strconv.ParseFloat(s, 64); err == nil && gb > 0 {
-			b := int64(gb * 1e9)
-			return b >= n, min(b, n)
+	if set, b := WireEnv(); set {
+		if b < 0 {
+			return true, n
 		}
-		fmt.Fprintf(os.Stderr, "experts: HWNPU_MOE_WIRE=%s is not 0, 1 or a size in GB: taken as 1\n", v)
-		return true, n
+		return b >= n, min(b, n)
 	}
 	if phys > 0 && 2*n <= phys {
 		return true, n
@@ -275,6 +266,27 @@ func (h *Host) wiring() (all bool, budget int64) {
 		return false, 0
 	}
 	return false, phys / 4
+}
+
+// WireEnv reads HWNPU_MOE_WIRE, the experts wired into memory (mlock): set is whether it is set,
+// budget the bytes it lets be wired: 0 for none ("0"), -1 for all ("1", or a value that is not a
+// size, which is told), else a size in GB ("6", "6GB").
+func WireEnv() (set bool, budget int64) {
+	switch v := strings.TrimSpace(os.Getenv("HWNPU_MOE_WIRE")); v {
+	case "":
+		return false, 0
+	case "0":
+		return true, 0
+	case "1":
+		return true, -1
+	default:
+		s := strings.TrimSuffix(strings.TrimSuffix(strings.ToUpper(v), "B"), "G")
+		if gb, err := strconv.ParseFloat(s, 64); err == nil && gb > 0 {
+			return true, int64(gb * 1e9)
+		}
+		fmt.Fprintf(os.Stderr, "experts: HWNPU_MOE_WIRE=%s is not 0, 1 or a size in GB: taken as 1\n", v)
+		return true, -1
+	}
 }
 
 // bytes is the size of every expert's weights.

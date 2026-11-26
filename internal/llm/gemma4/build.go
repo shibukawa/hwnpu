@@ -12,14 +12,6 @@ import (
 // Options select what to build. Gemma 4 has no settings of its own yet.
 type Options struct {
 	llm.Options
-	// FoldedLogits leaves y as (1, seq, rows, vocab/rows) when the vocabulary is wider than the
-	// Neural Engine takes elementwise (head): the reshape back to (1, seq, vocab) is the one
-	// operation of the program the CPU runs otherwise. decode reads either.
-	FoldedLogits bool
-	// HostSoftcap leaves the soft cap of the logits to the host (-logits host, the default): y is
-	// the output layer's (1, seq, vocab), all on the Neural Engine, and the host applies
-	// tanh(y/cap)*cap to the logits it uses (llm.LogitSoftcap).
-	HostSoftcap bool
 }
 
 type builder struct {
@@ -226,41 +218,16 @@ func (m *builder) perLayerInputs(h *mlpackage.Var) *mlpackage.Var {
 	return m.Op("reshape", map[string]any{"x": sum, "shape": m.B.Ints(1, int32(s), int32(n*pd))}, 1, s, n*pd)
 }
 
-// head is the final norm, the output layer tied to the embeddings and the soft cap of the logits.
-// By default (Options.HostSoftcap) the host applies the soft cap: it is monotonic, so sampling
-// needs its values for the few most likely tokens alone, and the program is all on the Neural
-// Engine. On an M1 the output layer's part took 2.3 ms less a step (docs/design/llm-engine.md).
-// In the program instead: the Neural Engine takes the output layer's 262144 wide axis but not
-// elementwise operations over it (they go to the CPU), so the soft cap runs on the logits folded
-// into rows of at most llm.NeuralEngineMaxDim. The reshape back to (1, seq, vocab) still goes to
-// the CPU (flat); leaving y folded (Options.FoldedLogits) puts everything on the Neural Engine
-// but was 5 to 12% slower on an M3 (docs/design/apple-coreml.md).
+// head is the final norm and the output layer tied to the embeddings. The host applies the soft
+// cap of the logits (Config.HostSoftcap, llm.LogitSoftcap): it is monotonic, so sampling needs its
+// values for the few most likely tokens alone, and the program is all on the Neural Engine. In
+// the program the Neural Engine took the output layer's 262144 wide axis but not elementwise
+// operations over it; on an M1 the output layer's part took 2.3 ms less a step with the cap on the
+// host (docs/design/llm-engine.md).
 func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
-	seq := h.Shape[1] // 1 for the last row alone (LastRow)
 	h = m.norm(h, c.Prefix+"norm.weight", m.d)
-	if c.Softcap == nil || m.opts.HostSoftcap {
-		return m.Linear(h, c.Embedding(), "y", c.VocabSize)
-	}
-	limit := float32(*c.Softcap)
-	y := m.Linear(h, c.Embedding(), "", c.VocabSize)
-	rows := 1
-	for c.VocabSize/rows > llm.NeuralEngineMaxDim || c.VocabSize%rows != 0 {
-		rows++
-	}
-	if rows > 1 {
-		y = m.Op("reshape", map[string]any{"x": y, "shape": m.B.Ints(1, int32(seq), int32(rows), int32(c.VocabSize/rows))}, 1, seq, rows, c.VocabSize/rows)
-	}
-	y = m.Op("mul", map[string]any{"x": y, "y": m.B.ScalarF16(1 / limit)}, y.Shape...)
-	y = m.Op("tanh", map[string]any{"x": y}, y.Shape...)
-	if rows == 1 {
-		return m.B.NamedOp("mul", "y", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, mlpackage.Float16, y.Shape...)
-	}
-	if m.opts.FoldedLogits {
-		return m.B.NamedOp("mul", "y", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, mlpackage.Float16, y.Shape...)
-	}
-	y = m.Op("mul", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, y.Shape...)
-	return m.B.NamedOp("reshape", "y", map[string]any{"x": y, "shape": m.B.Ints(1, int32(seq), int32(c.VocabSize))}, mlpackage.Float16, 1, seq, c.VocabSize)
+	return m.Linear(h, c.Embedding(), "y", c.VocabSize)
 }
 
 // normScale is how much the norms scale their input down before taking the squares. The square

@@ -49,12 +49,12 @@ func readF32(t *testing.T, path string) []float32 {
 
 // The host's modulation rows are diffusers' (Timesteps, TimestepEmbedding, Flux3Modulation,
 // norm_out's linear in float32, the timestep rounded to bf16 as the pipeline hands it): with an
-// export in FLUX3_EXPORT and the reference's rows in FLUX3_MODS (a directory of mods_0.f32, the
+// export in HWNPU_TEST_FLUX3_EXPORT and the reference's rows in HWNPU_TEST_FLUX3_MODS_REF (a directory of mods_0.f32, the
 // step 1 -> sigma 1, and mods_15.f32, the last), made from the checkpoint by diffusers' modules.
 func TestModulation(t *testing.T) {
-	dir, golden := os.Getenv("FLUX3_EXPORT"), os.Getenv("FLUX3_MODS")
+	dir, golden := os.Getenv("HWNPU_TEST_FLUX3_EXPORT"), os.Getenv("HWNPU_TEST_FLUX3_MODS_REF")
 	if dir == "" || golden == "" {
-		t.Skip("FLUX3_EXPORT and FLUX3_MODS name an export and the reference's modulation rows")
+		t.Skip("HWNPU_TEST_FLUX3_EXPORT and HWNPU_TEST_FLUX3_MODS_REF name an export and the reference's modulation rows")
 	}
 	te, err := readTimeFile(filepath.Join(dir, TimeFile), 3072, 256)
 	if err != nil {

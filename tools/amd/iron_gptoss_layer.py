@@ -82,7 +82,6 @@ PROG = 256  # the routing's program as bf16 (4 int32 a word)
 PH_E, PH_Q, PH_A, PH_O, PH_R, PH_T, PH_H = 1, 2, 4, 8, 16, 32, 64
 KINDS = {PH_E: (1, 2), PH_Q: (3,), PH_A: (4,), PH_O: (5,), PH_R: (6,), PH_T: (7,), PH_H: (8,)}  # gptoss_layer.cc's
 HB, HKB = 5120, 12  # the head's q4 block (32 out-features by 256 in-features), its k-blocks
-ATTN = int(os.environ.get("GPTOSS_ATTN", "1"))  # GptOssStep.att (0: the attention and exponential before 2026-11-14)
 
 
 def router_slot(kb: int):
@@ -280,9 +279,11 @@ def step_operator():
         eps: float = param(array=True)
         rope_rows: int = param(default=4608, array=True)
         form: int = param(default=1, array=True)
-        # the attention and the exponential (gptoss_layer.cc's GL_ATTN): 1 the values' sums as
-        # broadcast macs and the short exponential, 0 as before them, 9 the transfers alone
-        att: int = param(default=ATTN, array=True)
+        # the attention and the exponential: the values' sums as broadcast macs and the short
+        # exponential (gptoss_layer.cc). Its other forms (0, as before 2026-11-14; 9, the transfers
+        # alone) were removed 2026-11-26; it stays 1, in the repr, the device symbols and -DGL_ATTN
+        # (which the kernel no longer reads), so that the builds stay as they were
+        att: int = param(default=1, array=True)
         phases: int = param(default=PH_E)  # the step's phases: its sequence, not the array's
         sliding: bool = param(default=False)  # A: the layer's attention reads its window's keys
         picked: int = param(default=-1, repr=False)  # E: the reference's experts (iron_moeprobe.PICKED's key)
@@ -967,7 +968,7 @@ def main(argv=None) -> int:
     c.add_argument("--head", type=int, default=70, help="the head's column blocks a column (gpt-oss: 393)")
     c.add_argument("--position", type=int, default=300, help="the call's position (the rows before it random)")
     c.add_argument("--sliding", action="store_true", help="a sliding layer's attention (the last 128 rows)")
-    c.add_argument("--ring", action="store_true", help="a sliding layer's cache as a ring of 128 rows (iron_gptoss.py's KV_RING)")
+    c.add_argument("--ring", action="store_true", help="a sliding layer's cache as a ring of 128 rows (as iron_gptoss.py's)")
     c.add_argument("--empty", action="store_true", help="the caches as they are (zeros): no copy into them, for timing")
     c.add_argument("--expanded", action="store_true", help="IRON's expanded loads (the array loaded each command)")
     c.add_argument("--one", action="store_true", help="both steps one command (no host step between: timing)")

@@ -16,10 +16,11 @@ var Arch = &llm.Arch{
 	Title:         "LFM3",
 	ModelTypes:    []string{"lfm3", "lfm3_vl", "lfm3_omni", "lfm3_audio"},
 	Architectures: []string{"Lfm3ForCausalLM", "Lfm3VlForConditionalGeneration", "Lfm3OmniForConditionalGeneration", "Lfm3AudioForConditionalGeneration"},
+	// the short convolution as shifted multiply adds and the cached attention grouped (the conv
+	// op and the tiled keys and values were removed, 2026-11-26)
+	Fixed: map[string]string{"conv": "taps", "attn": "grouped"},
 	Params: []llm.Param{
 		{Name: "post-scale", Default: "64", Usage: "power of two multiplied into the weights of out_proj, o_proj and w2 and absorbed by the sandwich norms (Neural Engine accuracy); 1 disables"},
-		{Name: "conv", Default: "taps", Usage: "short convolution as shifted multiply adds (taps) or one conv op (conv)"},
-		{Name: "attn", Default: "grouped", Usage: "attention with a KV cache: one product per kv head over the stacked query heads (grouped, blocks.SDPAGrouped; 73.5 to 40.7 ms per call at a cache of 16320 on an M3) or the keys and values tiled per query head (tile)"},
 		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state, besides the logits (LFM3-Audio's speech output reads it)"},
 	},
 	// int8 on Intel's NPU: in LFM3-1.7B, int4 picks the next token fp16 picks at 22 of 52
@@ -111,7 +112,7 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 	if err != nil {
 		return nil, out, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
 	}
-	in, out, err := Build(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv")})
+	in, out, err := Build(b, c, w, Options{Options: opts, PostScale: float32(postScale)})
 	return []mlpackage.Feature{in}, out, err
 }
 
@@ -122,7 +123,7 @@ func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Optio
 	if err != nil {
 		return nil, nil, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
 	}
-	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv"), AttnMode: Arch.Param(opts, "attn"), HiddenOut: Arch.Param(opts, "hidden-out") == "1"})
+	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), HiddenOut: Arch.Param(opts, "hidden-out") == "1"})
 }
 
 var _ llm.Paged = (*Config)(nil)

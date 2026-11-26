@@ -77,14 +77,13 @@ const DefaultChunk = 8192
 
 // Build writes the program for tokens query rows over a chunk of the given length into b and
 // returns its inputs and outputs. form is "grouped" (the query heads of a kv head stacked along
-// the rows of one matrix product, as blocks.SDPAGrouped), "tile" (the keys and values copied for
-// each query head, as blocks.SDPA) or Heads. The sum of the exps of the first two is a matrix
-// product with ones, as blocks.ChunkedSDPA takes it: a reduce_sum made the placement of 64 rows
-// per call change from one compile to the next (Core ML).
+// the rows of one matrix product, as blocks.SDPAGrouped) or Heads. The sum of the exps of grouped
+// is a matrix product with ones, as blocks.ChunkedSDPA takes it: a reduce_sum made the placement
+// of 64 rows per call change from one compile to the next (Core ML).
 func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins, outs []mlpackage.Feature, err error) {
 	nh, nkv, d := sh.Heads, sh.KVHeads, sh.HeadDim
-	if form != "grouped" && form != "tile" && form != Heads {
-		return nil, nil, fmt.Errorf("paged: attention form %q is not grouped, tile or %s", form, Heads)
+	if form != "grouped" && form != Heads {
+		return nil, nil, fmt.Errorf("paged: attention form %q is not grouped or %s", form, Heads)
 	}
 	if tokens < 1 || chunk < 1 || nh < 1 || nkv < 1 || d < 1 || nh%nkv != 0 {
 		return nil, nil, fmt.Errorf("paged: %d tokens over a chunk of %d with %d heads on %d kv heads of %d", tokens, chunk, nh, nkv, d)
@@ -125,14 +124,6 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 	}
 	outScale, invScale := b.ScalarF16(float32(sh.Out())), b.ScalarF16(float32(1/sh.Out()))
 	rows := []int{1, nh, s, 1}
-	tile := func(x *mlpackage.Var) *mlpackage.Var {
-		if rep == 1 {
-			return x
-		}
-		x = reshape(x, 1, nkv, 1, c, d)
-		x = op("tile", map[string]any{"x": x, "reps": b.Ints(1, 1, int32(rep), 1, 1)}, 1, nkv, rep, c, d)
-		return reshape(x, 1, nh, c, d)
-	}
 	grouped := form == "grouped" && rep > 1
 	var o, m, l *mlpackage.Var
 	if form == Heads {
@@ -187,8 +178,7 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 		var sc *mlpackage.Var
 		if grouped {
 			sc = reshape(matmul(reshape(q, 1, nkv, rep*s, d), k, true, 1, nkv, rep*s, c), 1, nh, s, c)
-		} else {
-			k, v = tile(k), tile(v)
+		} else { // a query head a kv head
 			sc = matmul(q, k, true, 1, nh, s, c)
 		}
 		sc = op("add", map[string]any{"x": op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, c), "y": mask}, 1, nh, s, c)

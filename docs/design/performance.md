@@ -199,7 +199,7 @@ Cross-cutting speed ideas measured and left out (model-bringing ones are in [new
 - One command a token (gpt-oss): mlir-aie reads the scratchpad once a sequence, so routing broke (cosine 0.877)
 - The bfp16 matrix instruction for decode attention scores: no faster, outputs 3.6 % off
 - Prompt sandwich norms as one operator (`SandwichRows`): no faster (small configurations); GDN kernels at `-Os`: no smaller
-- Gemma 4's MLP gate and up with GELU as one operator: 9.3 → 9.9 tok/s but KL up (0.154 → 0.158) and logits drift; off by default (`HWNPU_GEMMA4_FUSE_GLU=1`)
+- Gemma 4's MLP gate and up with GELU as one operator: 9.3 → 9.9 tok/s but KL up (0.154 → 0.158) and logits drift; not adopted, code removed
 - Polling expert workers on the Mac (`HWNPU_MXFP4_SPIN`), threads at USER_INTERACTIVE, workers kept awake over a layer: slowed the NE's calls or no gain; code removed
 - Wiring Qwen3.6's experts up to a budget on 16 GB: 8.6–8.8 against 10.6 tok/s unwired; experts over 3/4 of memory are not wired
 - Core AI on image DiTs: more bits a weight (int8 is fastest on the NE), q / k / v as one linear, groups of 7 blocks, the softmax sum divided after P·V in self-attention (overflows fp16), 1/256 in int8 value weights (pictures changed), a norm's row-max division as a constant

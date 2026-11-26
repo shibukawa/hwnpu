@@ -270,9 +270,6 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 // out.attn.aimodel and out.mass.aimodel, into man.
 func writeAIPaged(man *Manifest, a *Arch, pm Paged, out string, o Options) error {
 	form := "grouped"
-	if a.Param(o, "attn") == "tile" {
-		form = "tile"
-	}
 	sh := pm.PagedShape()
 	arec, err := writeAttention(out+".attn", BackendCoreAI, sh, form, o.Seq, o.Paged, a.Title)
 	if err != nil {

@@ -67,6 +67,20 @@ models:
 - 動かすときは、その Mac のチップ (`coreai.Arch`) の規則で選ぶ。比べるときは `HWNPU_DEV=rewrite=sin:series` (または `sin:native`) で、その Mac の分だけ上書きできる
 - 置き換えを使うモデルのコードは、`llm.Options.Rewrites` を読んで書き分け、書き出しの名前に `recipe.Suffix` を付ける (MOSS の DAC: `sfx.DACOps`)
 
+チップ (`apple.chips`) は、そのチップの Neural Engine がほかより受けられないものを書く。会話のモデルの変換がチップで変わるのはこれによる (`chat.ExportChips` の M1 の書き出し):
+
+```yaml
+apple:
+  chips:
+    M1:
+      hold_mib: 2867   # 一緒に読み込む重みがこれを超えると呼び出しが遅くなる: 生成のプログラムがプロンプトも読む
+      whole: false     # 短い会話の分けないプログラムを作らない (注意で分けたものより遅い)
+      gather_nd: false # gather_nd で倍率を選ぶ専門家のプログラム (混合専門家) を断る
+```
+
+- 書いていないチップは、どれも受けられる (M2 以降)。モデルごとには書かない (ファイルの `apple` だけ)
+- 会話のモデル (`code` に `internal/chat/model.go`) の指紋 (`AppleFingerprint`) に入る: 値を変えたら、そのモデルの版を上げる
+
 - 知らないキー、知らない版、知らないチップの名前、知らない演算と書き方は、読むときに誤りにする
 - `why` と `checked` は省けない。あとで Metal Toolchain が上がったときに、その規則がまだ要るかを確かめるため
 - パターンは `path.Match` の形 (`*` は何文字でも)

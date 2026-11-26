@@ -293,7 +293,7 @@ func TestPagedMatchesFull(t *testing.T) {
 	for _, c := range []struct {
 		q, cache, chunk int
 		attn            string
-	}{{1, 12, 4, "grouped"}, {3, 13, 4, "grouped"}, {4, 12, 4, "grouped"}, {2, 11, 3, "tile"}, {3, 64, 5, "tile"}} {
+	}{{1, 12, 4, "grouped"}, {3, 13, 4, "grouped"}, {4, 12, 4, "grouped"}, {2, 11, 3, "grouped"}, {3, 64, 5, "grouped"}} {
 		t.Run(fmt.Sprintf("q%d cache%d chunk%d %s", c.q, c.cache, c.chunk, c.attn), func(t *testing.T) {
 			man := convertPaged(t, cfg, w, c.q, c.cache, c.chunk, c.attn)
 			if len(man.Parts) != 3 || man.Paged != c.chunk {

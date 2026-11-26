@@ -75,10 +75,6 @@ const (
 // above 1.1) overflows there, where the Neural Engine and the GPU are right (docs/design/vision-models.md).
 const UnitsEnv = "HWNPU_COREAI_UNITS"
 
-// HWNPU_DEV=coreai.copy gives the programs' inputs buffers of the host's, copied into Core AI's
-// arrays at every run, instead of those arrays themselves (graph.AllocInput): for telling what
-// the copies cost, and whether an error is of the arrays.
-
 // OnCPU reports whether UnitsEnv asks for the CPU.
 func OnCPU() bool { return os.Getenv(UnitsEnv) == "cpu" }
 
@@ -681,7 +677,7 @@ func (g *graph) describe(dir, fn string) error {
 // its step's 73 ms, docs/design/apple-coreai.md). It may be bound to any input of that shape, of this
 // program or another. nil when the shim has no such array for the input (backend.InputAllocator).
 func (g *graph) AllocInput(index int) (backend.Buffer, error) {
-	if caiInputArray == nil || g.h == 0 || devenv.On("coreai.copy") {
+	if caiInputArray == nil || g.h == 0 {
 		return nil, nil
 	}
 	if index < 0 || index >= len(g.args) || g.args[index].Kind != types.ArgInput {

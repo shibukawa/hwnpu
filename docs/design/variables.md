@@ -13,9 +13,11 @@ for can be told from its name.
 | The developers' switches | `HWNPU_DEV=KEY[=VALUE],...` | `internal/dev`; a process's own, never sent to hwnpud |
 | The tests' | `HWNPU_TEST_<GROUP>_<ROLE>`, `HWNPU_TEST_NPU` | `go test` only |
 
-Not here: the Python tools' own switches (`tools/amd/iron_*.py`: `HWNPU_LFM3_FUSED_*`,
-`HWNPU_Q_CORES`, ...), which an export reads, and `hwnpu-dev powerbench`'s `HWNPU_POWERMETRICS`
-(a command line). Removed: `HWNPU_NPU_LOCK` (the Neural Engine's lock is never skipped: several
+Not here: `hwnpu-dev powerbench`'s `HWNPU_POWERMETRICS` (a command line). The Python tools' own
+switches for measuring (`tools/amd/iron_*.py`: `HWNPU_LFM3_FUSED_*`, `HWNPU_Q_CORES`, ...) were
+removed 2026-11-26: an export takes only what was their default. Only `HWNPU_EXPORT_STEPS` (a
+diagnostic dump, [AMD LLM](amd-llm.md)) remains for a person to set; `GPTOSS_EXPERT_PLACES` and
+`GPTOSS_HOST_ROUTE` are `iron_export_lm.py`'s own, from its options. Removed: `HWNPU_NPU_LOCK` (the Neural Engine's lock is never skipped: several
 apps share the Neural Engine through hwnpud).
 
 ## The developers' switches: HWNPU_DEV
@@ -36,18 +38,18 @@ What were variables of their own:
 
 | Before | `HWNPU_DEV`'s key |
 |---|---|
-| `HWNPU_ANIMA_ATTENTION` | `anima.attention` |
+| `HWNPU_ANIMA_ATTENTION` | (removed 2026-11-26) |
 | `HWNPU_DRAFT_POLICY` | `draft.policy` |
 | `HWNPU_DRAFT_RATIO` | `draft.ratio` |
 | `HWNPU_DRAFT_TRACE` | `draft.trace` |
 | `HWNPU_MTP_DRAFTS` | `mtp.drafts` |
 | `HWNPU_IRON_DRAFTS` | `iron.drafts` |
-| `HWNPU_ROTATE` | `rotate` |
-| `HWNPU_LOAD_AHEAD` | `load-ahead` |
-| `HWNPU_HOLD_DIT` | `hold-dit` |
+| `HWNPU_ROTATE` | (removed 2026-11-26) |
+| `HWNPU_LOAD_AHEAD` | (removed 2026-11-26) |
+| `HWNPU_HOLD_DIT` | (removed 2026-11-26) |
 | `HWNPU_CPU_F16` | `cpu.f16` |
 | `HWNPU_KLEIN_DECODE` | `klein.decode` |
-| `HWNPU_IRON_PREFETCH` | `iron.prefetch` |
+| `HWNPU_IRON_PREFETCH` | (removed 2026-11-26) |
 | `HWNPU_IRON_SYNC` | `iron.sync` |
 | `HWNPU_IRON_BARRIER` | `iron.barrier` |
 | `HWNPU_IRON_TIMING` | `iron.timing` |
@@ -59,8 +61,8 @@ What were variables of their own:
 | `HWNPU_AILOWER_TRACE` | `ailower.trace` |
 | `HWNPU_OV_DEVICE` | `ov.device` |
 | `HWNPU_OV_PRECISION` | `ov.precision` |
-| `HWNPU_ATTENTION` | `attention` |
-| `HWNPU_COREAI_COPY` | `coreai.copy` |
+| `HWNPU_ATTENTION` | (removed 2026-11-26) |
+| `HWNPU_COREAI_COPY` | (removed 2026-11-26) |
 | `HWNPU_MOE_DEBUG=ITEM,...` | `moe.ITEM,...` (`1`: `moe.time`) |
 | `HWNPU_MXFP4=ITEM,...` | `mxfp4.ITEM,...` |
 
@@ -91,6 +93,8 @@ The names before (2026-11-22):
 
 | Before | Now |
 |---|---|
+| `FLUX3_EXPORT` (2026-11-26) | `HWNPU_TEST_FLUX3_EXPORT` |
+| `FLUX3_MODS` (2026-11-26) | `HWNPU_TEST_FLUX3_MODS_REF` |
 | `HWNPU_AIE_ELF` | `HWNPU_TEST_AIE_FILE` |
 | `HWNPU_ANIMA_DIR` | `HWNPU_TEST_ANIMA_DIR` |
 | `HWNPU_ANIMA_DIT` | `HWNPU_TEST_ANIMA_DIT` |
@@ -141,7 +145,7 @@ The names before (2026-11-22):
 | `HWNPU_KLEIN_OUT` | `HWNPU_TEST_KLEIN_OUT` |
 | `HWNPU_KLEIN_REPO` | `HWNPU_TEST_KLEIN_DIR` |
 | `HWNPU_LFM3_COLBLOCK` | `HWNPU_TEST_LFM3_COLBLOCK` |
-| `HWNPU_LFM3_CONV` | `HWNPU_TEST_LFM3_CONV` |
+| `HWNPU_LFM3_CONV` | (removed 2026-11-26) |
 | `HWNPU_LFM3_DIR` | `HWNPU_TEST_LFM3_DIR` |
 | `HWNPU_LFM3_FORMAT` | `HWNPU_TEST_LFM3_FORMAT` |
 | `HWNPU_LFM3_FORMATS` | `HWNPU_TEST_LFM3_FORMATS` |

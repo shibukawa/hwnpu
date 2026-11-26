@@ -191,9 +191,8 @@ const prefetchMargin = 384 << 20
 // PrefetchFits says whether the swapped graphs among the graphs in dirs (open together, under
 // root) may keep a second set of banks (iron.GraphOptions.Prefetch) without the stage pinning
 // more than the VAE's peak, or than PrefetchFloor: a 1024 x 1024 run's peak is then unchanged.
-// Off when iron.Prefetch is.
 func PrefetchFits(v *VAE, root string, dirs []string, swapped ...string) bool {
-	if !iron.Prefetch || v == nil {
+	if v == nil {
 		return false
 	}
 	var total int64

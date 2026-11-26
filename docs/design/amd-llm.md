@@ -109,8 +109,8 @@ Gemma 4 at 256 would make its sliding layers rings (IRON rings a window layer wh
 | Window layers read only their window (`iron_window.py`, default) | Prompt: copy the `chunk + window` keys/values ending at `start + chunk` (64-rounded, E2B 1536) into a shared work state with `Copy`, then IRON's `MHA`; window caches have `chunk` extra rows. Decode: read the `window + 1` keys in place (`MHA` subclass with `kv_offset`, still named `MHA`). Caches stay by position, so any position can restart | a window layer's attention at 3072: 112 → 66 ms. E2B 4K 7.84 → 6.87 s (−12 %), PLaMo 3 q4 8K 60.3 → 53.1 s; decode −2 % (E2B), −14 % (PLaMo 3 at 8191) |
 | GDN rule on active row blocks only (`gdn_zero_y`) | blocks with no valid row only stream x and write 0 | the operator 27 → 5 ms (32 of 256 rows) |
 | GDN SiLU once before the rule (`GdnSiLU`, `iron_gdn.silu_operator`, `GDR_PRESILU`) | the rule re-read each row once per 16-column slice and redid q/k/v SiLU every time | the operator 30.4 → 9.8 ms; Qwen3.5-0.8B 512 chunk 0.9 → 0.5 s; logits bit for bit the same |
-| LFM3 short convolution as one operator (`ShortConvChunk`, `iron_shortconv.short_conv_chunk_operator`, `kernels/short_conv.cc`) | B·x, 7 taps, C· in one; 8 columns × 1 core, 8-row tiles, the last 6 rows in a `hist` buffer, `valid` by RTP; in_proj as one 6144-out GEMM. IRON's form was about 26 operators a layer. Text layers only (not the LFM3-Audio encoder). `HWNPU_LFM3_CHUNK_CONV=0` | bit for bit the reference |
-| Qwen3.5 GDN convolution + SiLU as one (`GdnConvChunk`) | 2 cores a column (4 need 10 memtile DMA channels, over 6); rows after the call's are 0. `QWEN35_CHUNK_CONV=0` | 8704 ch: 3 rows 3.99 → 0.95 ms |
+| LFM3 short convolution as one operator (`ShortConvChunk`, `iron_shortconv.short_conv_chunk_operator`, `kernels/short_conv.cc`) | B·x, 7 taps, C· in one; 8 columns × 1 core, 8-row tiles, the last 6 rows in a `hist` buffer, `valid` by RTP; in_proj as one 6144-out GEMM. IRON's form was about 26 operators a layer. Text layers only (not the LFM3-Audio encoder) | bit for bit the reference |
+| Qwen3.5 GDN convolution + SiLU as one (`GdnConvChunk`) | 2 cores a column (4 need 10 memtile DMA channels, over 6); rows after the call's are 0 | 8704 ch: 3 rows 3.99 → 0.95 ms |
 
 Current prompt times (first call of `ironlm -record`, NPU otherwise idle):
 
@@ -130,11 +130,11 @@ AMD's decode is bound by the count of operators, not by weight bytes: each switc
 | Fusion | Models | Default / switch |
 |---|---|---|
 | `QGEMVAdd`: a projection's bias and the residual added as the GEMV's output leaves | Qwen3.5, gpt-oss | on |
-| `QGEMVGlu`: gate and up as one table, `silu(Gx)·(Ux)` | Qwen3.5 (q6/q8), LFM3 (q4) | on; `HWNPU_LFM3_FUSE_GLU=0` |
-| `QGEMVGlu` GELU form (`Q_GLU_GELU`) | Gemma 4 | **off**; `HWNPU_GEMMA4_FUSE_GLU=1` (see Not adopted) |
-| `ShortConvStep` (`iron_shortconv.py`): the decode short conv in one operator, reading and writing the checkpoint slots at per-call offsets (`short_conv_operator(slots=)`, no Copy around it); in_proj as one QGEMV | LFM3 | on; `HWNPU_LFM3_FUSED_CONV=0`, `HWNPU_LFM3_SLOTS_CONV=0` |
-| `SandwichAdd` (`iron_sandwich.py`, `kernels/sandwich_add.cc`): post norm + residual + next norm in one core; float32 sums, one bf16 rounding; `scale` for Gemma's layer_scalar (rounded then multiplied, as IRON) | LFM3, Gemma 4 | on; `HWNPU_LFM3_FUSED_NORMS=0`, `HWNPU_GEMMA4_FUSED_NORMS=0` |
-| Gemma 4 per-layer input for all 35 layers before the first layer (one 35 × 256 GEMV, one RMSNorm …) | Gemma 4 | on; `HWNPU_GEMMA4_BATCH_PLE=0`; logits bit for bit the same |
+| `QGEMVGlu`: gate and up as one table, `silu(Gx)·(Ux)` | Qwen3.5 (q6/q8), LFM3 (q4) | on |
+| `QGEMVGlu` GELU form (`Q_GLU_GELU`) | Gemma 4 | **off** (see Not adopted) |
+| `ShortConvStep` (`iron_shortconv.py`): the decode short conv in one operator, reading and writing the checkpoint slots at per-call offsets (`short_conv_operator(slots=)`, no Copy around it); in_proj as one QGEMV | LFM3 | on |
+| `SandwichAdd` (`iron_sandwich.py`, `kernels/sandwich_add.cc`): post norm + residual + next norm in one core; float32 sums, one bf16 rounding; `scale` for Gemma's layer_scalar (rounded then multiplied, as IRON) | LFM3, Gemma 4 | on |
+| Gemma 4 per-layer input for all 35 layers before the first layer (one 35 × 256 GEMV, one RMSNorm …) | Gemma 4 | on; logits bit for bit the same |
 | GDN with the convolution and gated norm inside the decode operator (`Qwen35Layer.fold`) | Qwen3.5 | on |
 | GDN arrays in Worker-local buffers (`gdn_bind`): only the 3 state limbs (`s_hi`, `s_mid`/`s_lo` at fixed offsets); `blk`, `u_row`, `y_keep` static (all of them overflowed the 16 KB program) | Qwen3.5/3.6 | on; zero blob a GDN call 258 → 61 KB |
 | GDN columns aligned to 64 (`iron_gdn.COLUMN_ALIGN`) | Qwen3.5 | 0.8B/2B fused projection 97 blocks (prime) ran on 1 column: 571 → 217 µs |

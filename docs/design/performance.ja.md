@@ -199,7 +199,7 @@ AMD の手法で Apple と Intel に持っていけそうなもの (試してい
 - 1 トークン 1 コマンド (gpt-oss): mlir-aie は scratchpad を 1 列に 1 回しか読まず、経路が壊れた (コサイン 0.877)
 - デコードの注意のスコアに bfp16 の行列命令: 速くならず、出力が 3.6 % ずれる
 - プロンプトの sandwich norm を 1 つの演算子に (`SandwichRows`): 速くならない (設定が小さい)。GDN のカーネルを `-Os` に: 小さくならない
-- Gemma 4 の MLP の gate と up を GELU つきで 1 つの演算子に: 9.3 → 9.9 tok/s だが KL が上がり (0.154 → 0.158)、ロジットがずれる。既定はオフ (`HWNPU_GEMMA4_FUSE_GLU=1`)
+- Gemma 4 の MLP の gate と up を GELU つきで 1 つの演算子に: 9.3 → 9.9 tok/s だが KL が上がり (0.154 → 0.158)、ロジットがずれる。採らなかった。コードは消した
 - Mac で専門家の worker を回し続ける (`HWNPU_MXFP4_SPIN`)、スレッドを USER_INTERACTIVE に、層の間 worker を起こしておく: NE の呼び出しが遅くなるか得がない。コードは消した
 - 16 GB で Qwen3.6 の専門家を予算まで固定: 固定なしの 10.6 に対し 8.6〜8.8 tok/s。メモリの 3/4 を超える専門家は固定しない
 - 画像の DiT の Core AI: 重みのビットを増やす (NE では int8 が最速)、q / k / v を 1 つの linear に、7 ブロックの組、自己注意で softmax の和を P·V の後に割る (fp16 を超える)、値の int8 の重みに 1/256 (絵が変わった)、norm の行の最大の割り算を定数に

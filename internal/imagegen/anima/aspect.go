@@ -15,7 +15,7 @@ var Aspects = aspect.All
 // ParseAspect is the picture's size of an aspect ratio name (one of Aspects). Pixels are not
 // accepted: the name is what an export is keyed by.
 func ParseAspect(name string) (width, height int, err error) {
-	w, h, err := aspect.Parse(name, 16)
+	w, h, err := aspect.Parse(name)
 	if err != nil {
 		err = fmt.Errorf("anima: %w", err)
 	}
@@ -23,4 +23,4 @@ func ParseAspect(name string) (width, height int, err error) {
 }
 
 // AspectName is the name of a width x height picture, "" when it is none of Aspects.
-func AspectName(width, height int) string { return aspect.Name(width, height, 16) }
+func AspectName(width, height int) string { return aspect.Name(width, height) }

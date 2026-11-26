@@ -109,8 +109,8 @@ Gemma 4 を 256 にするとスライディング窓の層がリングになり 
 | 窓の層は窓の中だけを読む (`iron_window.py`、既定) | プロンプト: `start + chunk` で終わる `chunk + window` 個 (64 に切り上げ、E2B は 1536) の鍵と値を `Copy` で共有の作業用の状態に写し、IRON の `MHA` を掛ける。窓の層のキャッシュは `chunk` 行多い。デコード: `window + 1` 個をその場で読む (`kv_offset` を足した `MHA` の派生クラス、名前は `MHA` のまま)。キャッシュは位置で引くままなので、どの位置からでもやり直せる | 位置 3072 の窓の層の注意 112 → 66 ms。E2B 4K 7.84 → 6.87 秒 (−12 %)、PLaMo 3 q4 8K 60.3 → 53.1 秒。デコード −2 % (E2B)、−14 % (PLaMo 3、位置 8191) |
 | GDN の rule は有効な行のあるブロックだけ (`gdn_zero_y`) | 有効な行のないブロックは x を読み流して 0 を書く | 演算子 27 → 5 ms (256 行に 32 行) |
 | GDN の SiLU を rule の前で 1 回 (`GdnSiLU`、`iron_gdn.silu_operator`、`GDR_PRESILU`) | rule は値の列 16 本の slice ごとに行を読み直し、そのたびに q、k、v の SiLU をかけ直していた | 演算子 30.4 → 9.8 ms。Qwen3.5-0.8B の 512 の塊 0.9 → 0.5 秒。ロジットはビット単位で同じ |
-| LFM3 の短い畳み込みを 1 演算子に (`ShortConvChunk`、`iron_shortconv.short_conv_chunk_operator`、`kernels/short_conv.cc`) | B·x、7 タップ、C· を 1 つに。8 列 1 コアずつ、8 行のタイル、前の 6 行を `hist` に、`valid` は RTP。in_proj は 6144 出力の GEMM 1 回。IRON の形は 1 層約 26 演算。本文の層だけ (LFM3-Audio のエンコーダは前のまま)。`HWNPU_LFM3_CHUNK_CONV=0` | 参照とビット単位で同じ |
-| Qwen3.5 の GDN の畳み込みと SiLU を 1 つに (`GdnConvChunk`) | 1 列 2 コア (4 コアは memtile の DMA チャネルが 10 本要り、6 本を超える)。呼び出しの行より後は 0。`QWEN35_CHUNK_CONV=0` | 8704 チャネル: 3 行 3.99 → 0.95 ms |
+| LFM3 の短い畳み込みを 1 演算子に (`ShortConvChunk`、`iron_shortconv.short_conv_chunk_operator`、`kernels/short_conv.cc`) | B·x、7 タップ、C· を 1 つに。8 列 1 コアずつ、8 行のタイル、前の 6 行を `hist` に、`valid` は RTP。in_proj は 6144 出力の GEMM 1 回。IRON の形は 1 層約 26 演算。本文の層だけ (LFM3-Audio のエンコーダは前のまま) | 参照とビット単位で同じ |
+| Qwen3.5 の GDN の畳み込みと SiLU を 1 つに (`GdnConvChunk`) | 1 列 2 コア (4 コアは memtile の DMA チャネルが 10 本要り、6 本を超える)。呼び出しの行より後は 0 | 8704 チャネル: 3 行 3.99 → 0.95 ms |
 
 今のプロンプトの時間 (`ironlm -record` の最初の呼び出し、NPU をほかが使っていないとき):
 
@@ -130,11 +130,11 @@ AMD のデコードは重みのバイト数ではなく演算の数で決まる:
 | まとめたもの | モデル | 既定 / 切り替え |
 |---|---|---|
 | `QGEMVAdd`: 射影の bias と残差を GEMV の出口で足す | Qwen3.5、gpt-oss | オン |
-| `QGEMVGlu`: gate と up を 1 つの表で `silu(Gx)·(Ux)` | Qwen3.5 (q6 / q8)、LFM3 (q4) | オン。`HWNPU_LFM3_FUSE_GLU=0` |
-| `QGEMVGlu` の GELU 版 (`Q_GLU_GELU`) | Gemma 4 | **オフ**。`HWNPU_GEMMA4_FUSE_GLU=1` (採らなかったもの) |
-| `ShortConvStep` (`iron_shortconv.py`): デコードの短い畳み込みを 1 演算子に。状態の slot を呼び出しごとのオフセットで直接読み書きする (`short_conv_operator(slots=)`、前後の Copy なし)。in_proj は QGEMV 1 回 | LFM3 | オン。`HWNPU_LFM3_FUSED_CONV=0`、`HWNPU_LFM3_SLOTS_CONV=0` |
-| `SandwichAdd` (`iron_sandwich.py`、`kernels/sandwich_add.cc`): post norm、残差、次の norm を 1 コアで。二乗和は float32、bf16 への丸めは 1 回。Gemma の layer_scalar には `scale` (丸めてから積、IRON と同じ) | LFM3、Gemma 4 | オン。`HWNPU_LFM3_FUSED_NORMS=0`、`HWNPU_GEMMA4_FUSED_NORMS=0` |
-| Gemma 4 の per-layer input を最初の層の前で 35 層分まとめて (35 × 256 行の GEMV 1 つ、RMSNorm 1 つ …) | Gemma 4 | オン。`HWNPU_GEMMA4_BATCH_PLE=0`。ロジットはビット単位で同じ |
+| `QGEMVGlu`: gate と up を 1 つの表で `silu(Gx)·(Ux)` | Qwen3.5 (q6 / q8)、LFM3 (q4) | オン |
+| `QGEMVGlu` の GELU 版 (`Q_GLU_GELU`) | Gemma 4 | **オフ** (採らなかったもの) |
+| `ShortConvStep` (`iron_shortconv.py`): デコードの短い畳み込みを 1 演算子に。状態の slot を呼び出しごとのオフセットで直接読み書きする (`short_conv_operator(slots=)`、前後の Copy なし)。in_proj は QGEMV 1 回 | LFM3 | オン |
+| `SandwichAdd` (`iron_sandwich.py`、`kernels/sandwich_add.cc`): post norm、残差、次の norm を 1 コアで。二乗和は float32、bf16 への丸めは 1 回。Gemma の layer_scalar には `scale` (丸めてから積、IRON と同じ) | LFM3、Gemma 4 | オン |
+| Gemma 4 の per-layer input を最初の層の前で 35 層分まとめて (35 × 256 行の GEMV 1 つ、RMSNorm 1 つ …) | Gemma 4 | オン。ロジットはビット単位で同じ |
 | GDN のデコードの演算子に畳み込みとゲートつきの norm を入れる (`Qwen35Layer.fold`) | Qwen3.5 | オン |
 | GDN の配列を Worker の局所バッファに (`gdn_bind`): 状態の 3 つの limb だけ (`s_hi`、`s_mid` / `s_lo` は定数の位置)。`blk`、`u_row`、`y_keep` は静的 (全部にするとプログラムが 16 KB を超えた) | Qwen3.5 / 3.6 | オン。GDN 1 回の 0 の塊 258 → 61 KB |
 | GDN の列を 64 にそろえる (`iron_gdn.COLUMN_ALIGN`) | Qwen3.5 | 0.8B / 2B の融合した射影は 97 ブロック (素数) で 1 列でしか回らなかった: 571 → 217 µs |

@@ -78,8 +78,8 @@
 
 ### 注意のプログラムの形
 
-- `grouped` (`blocks.SDPAGrouped`、LFM3 の `attn` の既定): kv ヘッドごとに、重ねた問い合わせのヘッドとの積 1 回。K/V を `tile` で複製しない。`tile` も選べる。
-- `paged.Heads` (Core AI、kv ヘッド 2 つ以上。`llm.attentionForm`): kv ヘッド 1 つ分の問い合わせを (1, 1, 行, d) にし、スコアを (1, 行, 1, キー) に並べ、倍率は問い合わせに掛け、最大値と和は最後の軸で `reduce_sum`。1 回が 5〜26% 速い (M1)。kv ヘッドが 1 つ (Gemma 4 E2B、PLaMo 3 0.8B) だと Neural Engine から外れるので `grouped` のまま。`HWNPU_DEV=attention=grouped` で比べるために前の形にできる。
+- `grouped` (`blocks.SDPAGrouped`): kv ヘッドごとに、重ねた問い合わせのヘッドとの積 1 回。K/V を `tile` で複製しない (`tile` の形、LFM3 の `attn=tile` は 2026-11-26 に削除)。
+- `paged.Heads` (Core AI、kv ヘッド 2 つ以上。`llm.attentionForm`): kv ヘッド 1 つ分の問い合わせを (1, 1, 行, d) にし、スコアを (1, 行, 1, キー) に並べ、倍率は問い合わせに掛け、最大値と和は最後の軸で `reduce_sum`。1 回が 5〜26% 速い (M1)。kv ヘッドが 1 つ (Gemma 4 E2B、PLaMo 3 0.8B) だと Neural Engine から外れるので `grouped` のまま。
 - `llm.RefreshAttention` が前の書き出しの注意のプログラムを書き直す (`Manifest.AttnForm`)。重みの部分はそのまま。`chat.Prepare` が `AddMass` の後に呼ぶ。
 - mass のプログラム (`paged.BuildMass`) は `grouped` のまま。
 
@@ -105,7 +105,7 @@
 - プロンプトのプログラムの Q: 1 本のモデル (鍵の軸を 16384 以下に) と Intel (実機で測っていない) は 64。Neural Engine の分けたモデルと、専門家を経路で選ぶ MoE のモデルは 128 (`pagedPrefillSeq`、塊が小さければその長さ)。64 行でも 1 回は重みを読む時間が大半。256 は 128 より速くない。LFM3-1.7B (M3) の Q=128: 4K 3.3〜3.9 秒、16K 15.2〜16.1 秒、64K 136〜146 秒 (Q=64: 3.9〜5.4、19.3〜25.2、160 秒)。Gemma 4 E2B の 16K 31.2 → 23.5 秒、LFM3-VL の 16K 21.6 → 16.9 秒。
 - 最後の行だけのロジット (`llm.Options.LastRow`、`-last-row`、`llm.Arch.LastRow`: LFM3、Gemma 4): 入力 `last` (1, 1, Seq) の one-hot と隠れ状態の積 (`blocks.Graph.LastRow`。`gather` は CPU に落ちる) で最後の norm の前に 1 行を取り出し、y は (1, 1, vocab)。`decode` が `last` を書き、0 行目を読む。Intel では付けない。`Speculate` はこの形のプログラムを選ばない (行ごとのロジットが要る)。名前の終わりは `-q128-last`。
 - KV だけのプロンプトのプログラム (`llm.Options.KVOnly`、`-paged` と組で `-kv-only`): 後ろの層がキャッシュを書かないモデル (`llm.CacheWriters`: Gemma 4 の共有の層) では、キャッシュを書く最後の層までの部分だけを残す。最後の部分はその層の注意の手前で終わり、その K/V を出す。出力層はない (`decode.Program.NoLogits`、`writeUnattended`)。エンジンはプロンプトのうち最後の生成 1 回分を除いた部分をこれで読み、残りを生成用で読む (`Engine.logitsQ`)。名前の終わりは `-q128-kv`。Gemma 4 E2B (M1): プロンプト用が 1.6 → 0.38 GiB で全部 Neural Engine、4249 トークンが 4.2〜4.6 → 2.4〜2.7 秒、その後の生成 18.5〜21.5 → 21.6〜24.4 tokens/s (2 本目が生成の部分を追い出さなくなった)。ロジットのない印はプロンプトの終わりには使わない (`errNoLogits`)。
-- ホストでのロジットのソフトキャップ (Gemma 4、`-logits host`): [LLM のモデル](llm-models.md)。`decode` は部分のメタデータのキャップを掛ける (`SetRawLogits(true)` で掛けない)。
+- ホストでのロジットのソフトキャップ (Gemma 4): [LLM のモデル](llm-models.md)。`decode` は部分のメタデータのキャップを掛ける (`SetRawLogits(true)` で掛けない)。
 
 ## プロンプトの再利用
 

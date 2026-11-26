@@ -78,7 +78,7 @@ mlpackage.Builder (MIL の演算列 + 重みの blob)
 | `softmax` | SDPA | `SoftMax` (opset8) | |
 | `gelu` | BERT、VL | `Gelu` (opset7)、`EXACT` → `erf`、`TANH_APPROXIMATION` → `tanh` | |
 | `layer_norm` | BERT、VL | `MVN` (opset6、`eps_mode=inside_sqrt`) → `Multiply`(gamma) → `Add`(beta) | |
-| `conv` | LFM3 (`ConvMode=conv`)、Audio | `GroupConvolution` (opset1。`groups=1` なら `Convolution`) | MIL の重み (out, in/g, k) を (g, out/g, in/g, k) に組み直す |
+| `conv` | LFM3-Audio | `GroupConvolution` (opset1。`groups=1` なら `Convolution`) | MIL の重み (out, in/g, k) を (g, out/g, in/g, k) に組み直す |
 | `const` | 全部 | `Const` | |
 | `constexpr_blockwise_shift_scale` | 新しい重み形式 (5 節) | `Const(i4/i8)` → `Convert(f16)` → `Multiply(scale)` | |
 | `constexpr_lut_to_dense` | `lut4/6/8` | **対応しない** | 「Intel では `-format int4` か `int8` を使う」というエラーにする |
@@ -166,7 +166,7 @@ OpenVINO GenAI の NPU 向けの推奨は「int4、対称、チャネルごと (
 | 1 次元 16384 の上限のため、KV キャッシュを塊に分ける (`CacheChunkOver`、`ChunkedSDPA`) | `llm`、`blocks` | 上限は Intel では未知。最初は同じ値のまま。`hwnpu-dev probe kv` を Intel で回して決める |
 | 塊の合流で `reduce_sum` を避け、1 の列との `matmul` で和を取る | `ChunkedSDPA` | 同じ計算なので残す |
 | `LinearS` と RMSNorm の `inScale` (fp16 の桁あふれ対策) | `blocks` | Intel も fp16 で計算するので残す |
-| LFM3 の短い畳み込みを `taps` (pad と積和) で書く。`conv` は ANE で誤差 5〜12% | `lfm3.ConvMode` | Intel では `conv` (GroupConvolution) の精度を測り、良ければ既定にする |
+| LFM3 の短い畳み込みを `taps` (pad と積和) で書く。`conv` は ANE で誤差 5〜12% | `lfm3` | `conv` の形 (`lfm3.ConvMode`) は 2026-11-26 に削除。Intel で GroupConvolution を試すなら、そのコミットの前から戻す |
 | GQA の K/V を `tile` で複製 (`SDPA`) と、複製しない `SDPAGrouped` | `blocks` | Intel では `SDPAGrouped` の形が NPU に載るかを測る |
 | スライディング注意のリングキャッシュ | `lfm3`、`gemma4` | ホスト側の処理なのでそのまま使える |
 | 重みファイルの上限による分割 (`llm.Targets`) | `split.go` | 6.1 |

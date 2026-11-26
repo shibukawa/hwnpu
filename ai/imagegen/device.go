@@ -110,7 +110,7 @@ func noAMDExport(m chat.Model, w, h int, tool string) error {
 		flags = " --dit " + m.File
 	}
 	var args []string
-	for _, a := range aspect.Of(16) {
+	for _, a := range aspect.All {
 		if a.Width == a.Height {
 			args = append(args, fmt.Sprint(a.Width))
 		} else {

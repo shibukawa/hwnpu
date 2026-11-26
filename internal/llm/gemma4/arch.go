@@ -20,10 +20,9 @@ var Arch = &llm.Arch{
 	// 6 bits and 0.05 with 8); 6 bits keeps 2 parts on the M3 and runs at 31 ms a token, against
 	// 24 with 4 bits and 41 with 8 (docs/design/llm-models.md).
 	Format: "lut6",
-	Params: []llm.Param{
-		{Name: "logits", Default: "host", Usage: "the logits output y: before the soft cap, which the host applies (host), or with the soft cap in the program, (1, seq, vocab) with its reshape on the CPU (flat) or left folded into rows of at most 16384 (folded), (1, seq, rows, vocab/rows), so that every operation is on the Neural Engine"},
-	},
-	// 1: the soft cap on the host (-logits host, 2026-11-08)
+	// the soft cap on the host (the soft cap in the program, flat or folded, was removed 2026-11-26)
+	Fixed: map[string]string{"logits": "host"},
+	// 1: the soft cap on the host (2026-11-08)
 	Revision:   1,
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	LastRow:    true,
@@ -32,14 +31,13 @@ var Arch = &llm.Arch{
 func init() { llm.Register(Arch) }
 
 func options(opts llm.Options) Options {
-	logits := Arch.Param(opts, "logits")
-	return Options{Options: opts, FoldedLogits: logits == "folded", HostSoftcap: logits == "host"}
+	return Options{Options: opts}
 }
 
-// HostSoftcap is final_logit_softcapping for a program built with -logits host, which leaves it
-// to the host (llm.LogitSoftcap); 0 otherwise.
+// HostSoftcap is final_logit_softcapping, which the programs leave to the host
+// (llm.LogitSoftcap); 0 for a model without one.
 func (c *Config) HostSoftcap(opts llm.Options) float64 {
-	if c.Softcap == nil || Arch.Param(opts, "logits") != "host" {
+	if c.Softcap == nil {
 		return 0
 	}
 	return *c.Softcap

@@ -232,9 +232,7 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	h.first, h.usage, h.usageTo = first, NewUsage(n, sh.Experts), p.Usage
 	h.zeroGate, h.zeroDown = make([]float32, 2*I), make([]float32, H)
 	all, budget := h.wiring()
-	if v, _ := DebugOpt("read"); !all && v != "0" {
-		h.reads = true
-	}
+	h.reads = !all
 	pf, _ := DebugOpt("prefault")
 	switch {
 	case all:

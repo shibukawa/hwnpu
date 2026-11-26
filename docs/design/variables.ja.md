@@ -12,8 +12,10 @@
 | 開発者のスイッチ | `HWNPU_DEV=KEY[=VALUE],...` | `internal/dev`。プロセス自身のもので、hwnpud には送らない |
 | テストのもの | `HWNPU_TEST_<群>_<役>`、`HWNPU_TEST_NPU` | `go test` だけ |
 
-ここにないもの: Python の道具のスイッチ (`tools/amd/iron_*.py` の `HWNPU_LFM3_FUSED_*`、`HWNPU_Q_CORES` など。書き出しが
-読む) と、`hwnpu-dev powerbench` の `HWNPU_POWERMETRICS` (コマンド行)。なくしたもの: `HWNPU_NPU_LOCK` (Neural Engine の
+ここにないもの: `hwnpu-dev powerbench` の `HWNPU_POWERMETRICS` (コマンド行)。Python の道具の測定用のスイッチ
+(`tools/amd/iron_*.py` の `HWNPU_LFM3_FUSED_*`、`HWNPU_Q_CORES` など) は 2026-11-26 になくした。書き出しは既定だった
+道だけを通る。人が設定するものは `HWNPU_EXPORT_STEPS` (診断の出力、[AMD の LLM](amd-llm.ja.md)) だけが残る
+(`GPTOSS_EXPERT_PLACES` と `GPTOSS_HOST_ROUTE` は `iron_export_lm.py` がオプションから自分で設定する)。なくしたもの: `HWNPU_NPU_LOCK` (Neural Engine の
 ロックは飛ばさない。複数のアプリは hwnpud を通して Neural Engine を分け合う)。
 
 ## 開発者のスイッチ: HWNPU_DEV
@@ -32,18 +34,18 @@
 
 | 前 | `HWNPU_DEV` の鍵 |
 |---|---|
-| `HWNPU_ANIMA_ATTENTION` | `anima.attention` |
+| `HWNPU_ANIMA_ATTENTION` | (2026-11-26 に削除) |
 | `HWNPU_DRAFT_POLICY` | `draft.policy` |
 | `HWNPU_DRAFT_RATIO` | `draft.ratio` |
 | `HWNPU_DRAFT_TRACE` | `draft.trace` |
 | `HWNPU_MTP_DRAFTS` | `mtp.drafts` |
 | `HWNPU_IRON_DRAFTS` | `iron.drafts` |
-| `HWNPU_ROTATE` | `rotate` |
-| `HWNPU_LOAD_AHEAD` | `load-ahead` |
-| `HWNPU_HOLD_DIT` | `hold-dit` |
+| `HWNPU_ROTATE` | (2026-11-26 に削除) |
+| `HWNPU_LOAD_AHEAD` | (2026-11-26 に削除) |
+| `HWNPU_HOLD_DIT` | (2026-11-26 に削除) |
 | `HWNPU_CPU_F16` | `cpu.f16` |
 | `HWNPU_KLEIN_DECODE` | `klein.decode` |
-| `HWNPU_IRON_PREFETCH` | `iron.prefetch` |
+| `HWNPU_IRON_PREFETCH` | (2026-11-26 に削除) |
 | `HWNPU_IRON_SYNC` | `iron.sync` |
 | `HWNPU_IRON_BARRIER` | `iron.barrier` |
 | `HWNPU_IRON_TIMING` | `iron.timing` |
@@ -55,8 +57,8 @@
 | `HWNPU_AILOWER_TRACE` | `ailower.trace` |
 | `HWNPU_OV_DEVICE` | `ov.device` |
 | `HWNPU_OV_PRECISION` | `ov.precision` |
-| `HWNPU_ATTENTION` | `attention` |
-| `HWNPU_COREAI_COPY` | `coreai.copy` |
+| `HWNPU_ATTENTION` | (2026-11-26 に削除) |
+| `HWNPU_COREAI_COPY` | (2026-11-26 に削除) |
 | `HWNPU_MOE_DEBUG=ITEM,...` | `moe.ITEM,...` (`1`: `moe.time`) |
 | `HWNPU_MXFP4=ITEM,...` | `mxfp4.ITEM,...` |
 
@@ -84,6 +86,8 @@
 
 | 前 | 今 |
 |---|---|
+| `FLUX3_EXPORT` (2026-11-26) | `HWNPU_TEST_FLUX3_EXPORT` |
+| `FLUX3_MODS` (2026-11-26) | `HWNPU_TEST_FLUX3_MODS_REF` |
 | `HWNPU_AIE_ELF` | `HWNPU_TEST_AIE_FILE` |
 | `HWNPU_ANIMA_DIR` | `HWNPU_TEST_ANIMA_DIR` |
 | `HWNPU_ANIMA_DIT` | `HWNPU_TEST_ANIMA_DIT` |
@@ -134,7 +138,7 @@
 | `HWNPU_KLEIN_OUT` | `HWNPU_TEST_KLEIN_OUT` |
 | `HWNPU_KLEIN_REPO` | `HWNPU_TEST_KLEIN_DIR` |
 | `HWNPU_LFM3_COLBLOCK` | `HWNPU_TEST_LFM3_COLBLOCK` |
-| `HWNPU_LFM3_CONV` | `HWNPU_TEST_LFM3_CONV` |
+| `HWNPU_LFM3_CONV` | (2026-11-26 に削除) |
 | `HWNPU_LFM3_DIR` | `HWNPU_TEST_LFM3_DIR` |
 | `HWNPU_LFM3_FORMAT` | `HWNPU_TEST_LFM3_FORMAT` |
 | `HWNPU_LFM3_FORMATS` | `HWNPU_TEST_LFM3_FORMATS` |

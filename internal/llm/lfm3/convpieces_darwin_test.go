@@ -148,7 +148,7 @@ func TestConvPieces(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-		m := newBuilder(b, cfg, w, Options{Seq: seq, Format: "fp16", Group: 16, ConvMode: "taps"})
+		m := newBuilder(b, cfg, w, Options{Seq: seq, Format: "fp16", Group: 16})
 		xv := b.Input("x", mlpackage.Float16, 1, seq, d)
 		hv := m.rmsNorm(xv, p+"operator_norm.weight", d)
 		bcxv := m.Linear(hv, p+"conv.in_proj.weight", "", 3*d)

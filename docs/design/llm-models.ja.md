@@ -40,9 +40,10 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 - 構造: 短い畳み込み、スライディング窓の注意 5 層 (窓 256、リング)、全注意 6 層、QK norm、部分 RoPE、ヘッドごとのゲート、
   サンドイッチ norm、SwiGLU。
 - アーキテクチャの設定: `post-scale` (既定 64。`out_proj`、`o_proj`、`w2` に掛ける 2 のべき乗で、サンドイッチ norm が吸収する。
-  ANE の誤差を 1 層 1.4〜2.7% に抑える)、`conv` (既定 `taps`: 短い畳み込みをずらした積和で書き、ANE の conv の誤差を避ける)、
-  `attn` (既定 `grouped`、`blocks.SDPAGrouped`: 積んだ問い合わせのヘッドに KV ヘッドごとに 1 回の積。M3、キャッシュ 16320 で
-  `tile` の 1 回 73.5 ms → 40.7 ms)、`hidden-out` (1: 最終の隠れ状態 h も出す。TTS が使う)。
+  ANE の誤差を 1 層 1.4〜2.7% に抑える)、`hidden-out` (1: 最終の隠れ状態 h も出す。TTS が使う)。
+- 短い畳み込みはずらした積和で書き、ANE の conv の誤差 (5〜12%) を避ける。キャッシュのある注意は `blocks.SDPAGrouped` (積んだ問い合わせの
+  ヘッドに KV ヘッドごとに 1 回の積。M3、キャッシュ 16320 で `tile` の 1 回 73.5 ms → 40.7 ms)。別の形を選ぶ設定 (`conv`、`attn`) は
+  2026-11-26 に削除。
 - 既定は lut6: bf16 との KL 0.23 nats (lut4 は 1.39)。コードの課題は lut4 の 13〜27 往復に対し 6 往復。プログラム 1 本の重みは
   1.21 GiB (lut4 は 0.81)。
 - 独立した fp64 の forward (`reference_test.go`、約 3e-7) と `hwnpu-dev check` で照合済み。
@@ -179,8 +180,8 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 - **fp16 のあふれ**: 層 0 の `input_layernorm` の重みが最大 270 あり、QK-norm の二乗が fp16 を超える (注意の出力が 45% ずれる)。残差も
   `layer_scalar` の前は 1900 に達する。gemma4 の norm はすべて `x/64` を正規化する (eps を 64² で割る。数学的に同じ)。`-f16` の照合で KL
   3.17 → 0.0004。PLE の射影の norm だけは縮めない (入力の RMS 0.3。縮めると二乗が非正規化数になり 0.04% → 0.5%)。
-- `-logits host` (既定、アーキテクチャの revision 1): プログラムは softcap の前のロジットを出し、ホストが掛ける (`llm.LogitSoftcap`)。
-  `flat` / `folded` はプログラムの中に softcap を持つ: Core ML では 262144 の軸のままの softcap は (16, 16384) に畳まないと CPU に落ち、
+- softcap はホストで (アーキテクチャの revision 1): プログラムは softcap の前のロジットを出し、ホストが掛ける (`llm.LogitSoftcap`)。
+  プログラムの中に softcap を持つ形 (`-logits flat` / `folded`、2026-11-26 に削除) では、Core ML では 262144 の軸のままの softcap は (16, 16384) に畳まないと CPU に落ち、
   最後に戻す reshape も CPU に残った。
 - `SDPAGrouped` (`tile` でない): `tile` は毎ステップ K と V を 8 倍に写していた (キャッシュ 16320 で 1 つ 128 MB)。M3 の lut4 で、キャッシュ
   1024 は 1 トークン 31〜35 → 23.6〜25.8 ms、16320 は 90〜150 → 47 ms。

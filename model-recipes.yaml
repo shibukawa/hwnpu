@@ -30,6 +30,18 @@
 #               A run takes its own chip's (HWNPU_DEV=rewrite=sin:series over it, to compare)
 #     code      the Go packages (directories of the module, or one .go file of one) every Core AI
 #               conversion writes its programs with: MIL, its lowering, the weights' writing
+#     chips     CHIP (M1, M2, ...: models.yaml's not_on): what its Neural Engine takes less of than
+#               the later chips', which changes what the chat models are converted into for it
+#               (a chip here has exports of its own, chat.ExportChips). A chip left out takes
+#               everything; the file's alone, not a model's:
+#                 hold_mib     the programs' weights loaded together (MiB) past which every
+#                              call slows down; the one that generates then reads the prompts
+#                              too (fewer programs)
+#                 whole        false: the chat models have no whole programs for short
+#                              conversations (slower there than those split at the attention)
+#                 gather_nd    false: no mixture of experts whose experts' program picks its
+#                              scales with gather_nd (refused before the checkpoint downloads)
+#               The chat models' fingerprints (apple-versions.txt) hold them
 #   amd         what every model's exports for AMD's NPU are made with, unless its own says:
 #     generations  the generations of the NPU they are made for: xdna1 (Phoenix, Hawk Point:
 #               IRON's npu1), xdna2 (Strix, Krackan: npu2). Each goes as its own target
@@ -99,6 +111,17 @@ apple:
   # what every Core AI conversion writes its programs with: MIL, its lowering to Core AI's
   # bytecode, and the writing of the weights and the parts
   code: [internal/mlpackage, internal/coreai/ailower, internal/coreai/mlirbc, internal/llm/manifest.go, internal/llm/convertai.go, internal/llm/weights.go]
+  chips:
+    M1:
+      # lut4 parts holding 2.86 GiB ran at their own times added up, 2.97 GiB at 828 against 72
+      # ms a token (hwnpu-dev probe split, PROBE.md); the M2 (3.65 GiB at full speed), the M3 and
+      # the M4 have no such limit below the compile cache
+      hold_mib: 2867
+      # LFM3-1.7B with a whole program of 2048: 33.6 and 37.0 tokens/s, the split programs alone
+      # 39.9 and 43.6 (docs/design/apple-coreai.md)
+      whole: false
+      # the experts' program picks their scales with gather_nd (docs/handoff-ane-gather.md 1)
+      gather_nd: false
 
 amd:
   generations: [xdna2]

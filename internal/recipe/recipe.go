@@ -56,7 +56,34 @@ type Apple struct {
 	Code     Strings   `yaml:"code"`
 	Convert  Convert   `yaml:"convert"`
 	Finish   []Step    `yaml:"finish"`
+	// Chips are what some chips' Neural Engines take less of (the file's alone).
+	Chips map[string]Chip `yaml:"chips"`
 }
+
+// Chip is what a chip's Neural Engine takes less of than the later chips', which changes what the
+// chat models are converted into for it (model-recipes.yaml apple.chips).
+type Chip struct {
+	// HoldMiB is the programs' weights loaded together past which every call slows down, 0 for
+	// no such limit.
+	HoldMiB int `yaml:"hold_mib" json:"hold_mib,omitempty"`
+	// Whole false: no whole programs for short conversations.
+	Whole *bool `yaml:"whole" json:"whole,omitempty"`
+	// GatherND false: no gather_nd in a program (no mixture of experts whose experts' program
+	// picks its scales with it).
+	GatherND *bool `yaml:"gather_nd" json:"gather_nd,omitempty"`
+}
+
+// Hold is c's HoldMiB in bytes.
+func (c Chip) Hold() int64 { return int64(c.HoldMiB) << 20 }
+
+// WholePrograms reports whether the chip runs the chat models' whole programs.
+func (c Chip) WholePrograms() bool { return c.Whole == nil || *c.Whole }
+
+// TakesGatherND reports whether the chip's Neural Engine takes gather_nd.
+func (c Chip) TakesGatherND() bool { return c.GatherND == nil || *c.GatherND }
+
+// ChipOf is chip's entry of apple.chips, the zero Chip (everything taken) for one not there.
+func (f *File) ChipOf(chip string) Chip { return f.Apple.Chips[chip] }
 
 // Rewrite is how the programs of the chips of Arch write an operation some Neural Engines do not
 // run: Op written As one of its Ways. It is chosen at the conversion (an export holds only its
@@ -147,6 +174,11 @@ func Parse(name string, raw []byte) (*File, error) {
 	}
 	if err := f.Apple.check("apple"); err != nil {
 		return nil, fmt.Errorf("recipe: %s: %w", name, err)
+	}
+	for _, m := range f.sortedModels() {
+		if a := f.Models[m].Apple; a != nil && a.Chips != nil {
+			return nil, fmt.Errorf("recipe: %s: models.%s.apple.chips: the chips are the file's (apple.chips)", name, m)
+		}
 	}
 	if f.Apple.Version != 0 || f.Apple.Convert != nil || f.Apple.Finish != nil || f.Apple.Prebuilt {
 		return nil, fmt.Errorf("recipe: %s: apple: version, convert, finish and prebuilt are a model's (models.NAME.apple)", name)
