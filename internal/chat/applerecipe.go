@@ -4,7 +4,10 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/recipe"
@@ -33,8 +36,14 @@ func init() { llm.StaleExport = staleExport }
 
 // staleExport reports whether the Core AI export (its entry.json, when it has one) is of another
 // version than its model's recipe (Targets: apple.version). An export of no version (v0-HASH,
-// made before the recipes gave one) is of version 1.
+// made before the recipes gave one) is of version 1. export is what the export's mark names:
+// the export, or for a chat model the program inside it (model.aimodel, model.parts.json).
 func staleExport(export string) bool {
+	if !strings.EqualFold(filepath.Ext(export), ".coreai") {
+		if dir, ok := coreai.ExportOf(export); ok {
+			export = dir
+		}
+	}
 	e, err := shared.ReadEntry(export)
 	if err != nil || e.Kind != CoreAIKind || e.Model == "" {
 		return false
