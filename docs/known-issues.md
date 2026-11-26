@@ -24,6 +24,8 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 (下書き [h15g-dma-cache-hint.md](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 | 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
 | 14 | 1024² の VAE の段の ANE のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使う (Anima) | 未報告 (下書き [compile-disk-and-time.md](apple-feedback/compile-disk-and-time.md)) | なし (初回は 70 GB 以上空ける) | VAE の prebuilt を M2 以降で使うか測り直す (#336) |
+| 15 | h14g (M2) 向けの `coreai-build` の VAE の段が、M2 でエラーなしに誤った行を書く (Anima の 512²、1024² ほか) | 未報告 (下書き [h14g-vae-wrong-rows.md](apple-feedback/h14g-vae-wrong-rows.md)) | VAE を prebuilt にしない (main は `coreai.LeftToDevice` で全チップ、#336 は M1・M2 を端末に) | M2 でも VAE を prebuilt にする (#351) |
+| 16 | 1 つの要求が NE を 100 秒止めて `Request cancelled` になり、その後は 30 分以上、すべての要求が同じく落ちる (Anima の 752×1360 の `vae_s0`) | 未報告 (下書き [ne-stuck-request-cancelled.md](apple-feedback/ne-stuck-request-cancelled.md)) | なし | 9:16 を M2 で描けるか確かめ直す |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -161,6 +163,36 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: 何もしなくてよい。VAE の prebuilt を M2 以降で使うか (#336) は、この問題とは別に測る
 - 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` で時間と空きの最小値を見る ([apple-feedback/repro.md](apple-feedback/repro.md))
 
+## 15. h14g の VAE の段が誤った行を書く (未報告)
+
+- **何が**: Anima の VAE の段 (書き出し v6、8 つの大きさの関数) を `coreai-build` (3605.6.3) で h14g 向けに作ると、オフラインでは全部 Neural Engine に載り、M2 (macOS 27.2.1) で読み込みも実行もエラーなく終わる。ところが、一部の段の一部の関数が、タイルの継ぎ目のような一定の間隔の行に誤った値を書く。絵には 160 行ごとに雑音の帯が入る。誤りの中身は実行ごとに変わる (同じ入力の 3 回で、s0〜s2 はバイトまで同じ、s3 以降は毎回違う)
+- **切り分け** (2026-11-27、M2。`tools/coreai/vaeprobe` で段を 1 つずつ動かし、各段を自分の入力から fp64 で計算した参照と比べた PSNR):
+
+  | 関数 | 誤る段 | 誤りの大きさ | 端末でのコンパイル |
+  |---|---|---|---|
+  | `s512x512` | s3、s4、s6、s7、s8、s9 | 21〜35 dB | 全段 74〜88 dB |
+  | `s1024x1024` | s9 | 16.2 dB | 全段 75〜89 dB |
+  | `s832x1248` | s9 | | 全段正しい |
+  | `s880x1168` | s3、s4、s6〜s9 | | 全段正しい |
+
+  - M3 で作った `.aimodelc` (NAS に置いたもの) も、M2 で作り直したもの (`hwnpu-dev prebuild -arch h14g`、10 段 56 秒) も、同じ段の同じ行が同じように誤る。ANE のプログラム本体のバイトは、s0 と s2 だけが同じ
+  - M1 (h13g) の prebuilt では縞が出ない (聞き取り)。同じプログラムを M2 の端末でコンパイルすると全段正しい (Core AI と aned のキャッシュなしで 10 段 2543 秒)
+  - `hwnpu-dev prebuild -mark` の端末での確認 (`build.json` の `device.status: ok`) は読み込めたかどうかだけを見るので、この誤りを見逃す
+  - 前に FLUX.2 klein の VAE が M1・M2 の 512² で 112 行ごとに帯を描いたのも、同じ種類に見える ([design/image-apple.md](design/image-apple.md))
+- **今**: VAE を prebuilt にしない (main は `coreai.LeftToDevice` で全チップの `vae*` を端末に。#336 は M1・M2 を端末に、M3 以降を prebuilt に)
+- **直ったら**: #351 (M1・M2 も prebuilt に) を、vaeprobe で全大きさの全段が参照と合うのを確かめてからマージする
+- 確かめ方: [apple-feedback/repro.md](apple-feedback/repro.md) の h14g-vae-wrong-rows の手順。実行ファイルはどれも、まだそのプログラムを動かしたことのない署名の識別子で署名する。aned のキャッシュは署名の識別子ごとで、SIP の中にあり sudo でも消せない。そこに誤ったプログラムが残ると、名前の違う実行ファイルの端末でのコンパイルにも使い回され、そちらも誤って見える
+
+## 16. 1 つの要求が NE を止め、その後しばらくすべての要求が落ちる (未報告)
+
+- **何が**: Anima の `vae_s0` の `s752x1360` (9:16) を Neural Engine で動かすと、約 100 秒止まった後に `ANEProgramProcessRequestDirect() Failed with status=0xf : statusType=0x9: Request cancelled` で落ちる。その後は、どのプログラムも (同じプログラムのさっきまで 0.24 秒で動いた `s1024x1024`、別の段、別の実行ファイルの prebuilt も)、どのプロセスからも、約 100 秒止まって同じく落ちる。5〜10 分空けても戻らず、要求をまったく出さずに 35 分 (06:19〜06:53) か約 2 時間 (04:11〜06:14) 空けると、再起動なしで戻った。止まっている間に出した要求は、どれも 100 秒止まって落ち、待ちをやり直させるように見える。端末でコンパイルしたプログラムで起き、NE が戻った後にもう一度再現した (2026-11-27、M2)
+  - 同じ段の `s512x512`、`s1024x1024`、`s832x1248`、`s880x1168` は動く。`s1248x832`、`s1168x880`、`s1360x752` は NE が止まった後にしか試せていない
+  - `hwnpu-image generate --size 9:16` も VAE の段 0 で同じく落ち、その後の 3:2、4:3、16:9 も落ちた
+  - 前にも、128 行の text の関数が NE を 1〜2 分止めて同じ状態にした ([design/image-apple.md](design/image-apple.md))
+- **今**: 回避はない。M2 で Anima の 9:16 を描くと、30 分以上 NE が使えなくなる
+- **直ったら**: M2 で 8 つの大きさを順に描き、どれも描けて、その後も NE が使えるか確かめる
+- 確かめ方: [apple-feedback/repro.md](apple-feedback/repro.md) の ne-stuck-request-cancelled の手順 (最後にやる。その後 30 分以上 NE が使えない)
+
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
 - 1 節: 画像のモデルを prebuilt で開き、`log show --predicate 'process == "launchd" AND eventMessage CONTAINS "ANELargeModel"'` に "deferred by 10 seconds" が出るか
@@ -168,6 +200,6 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - 3 節: FLUX.2 klein 1024² の初回に "vae_s0 … the prebuilt program failed" が出るか
 - 6、7 節: 6 節の確かめ方を、落ちる 9 種類と h18g で
 - 9 節: [apple-coreai](design/apple-coreai.md) の表と 9 節の表を測り直す
-- 10、11、12、14 節: 各節の確かめ方を ([apple-feedback/repro.md](apple-feedback/repro.md) の道具)
+- 10、11、12、14、15、16 節: 各節の確かめ方を ([apple-feedback/repro.md](apple-feedback/repro.md) の道具)。16 節はその後 30 分以上 NE が使えなくなるので最後に
 
 確かめた日と OS、Metal Toolchain の版を、この文書の各節に書き足す。
