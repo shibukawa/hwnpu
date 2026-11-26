@@ -21,6 +21,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/hwnpu/internal/recipe"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
@@ -458,8 +459,8 @@ func TestPreparePrefill(t *testing.T) {
 		{PrefillAuto, 1024, 0, []string{"q8"}},
 		{PrefillOn, 1024, 0, []string{"q8", "q96-last"}},
 		{PrefillOff, 4 << 30, 0, []string{"q8"}},
-		{PrefillAuto, 4 << 30, m1HoldBytes, []string{"q8", "q96-last"}}, // an M1 holds the tiny model
-		{PrefillAuto, 4 << 30, 1024, []string{"q8"}},                    // an M1 that would not
+		{PrefillAuto, 4 << 30, m1Hold(), []string{"q8", "q96-last"}}, // an M1 holds the tiny model
+		{PrefillAuto, 4 << 30, 1024, []string{"q8"}},                 // an M1 that would not
 		{PrefillOn, 4 << 30, 1024, []string{"q8", "q96-last"}},
 	} {
 		compileCacheBytes = c.cache
@@ -575,4 +576,13 @@ func TestGB(t *testing.T) {
 			t.Errorf("gb(%d, %d) = %q, want %q", c.n, c.total, got, c.want)
 		}
 	}
+}
+
+// m1Hold is an M1's apple.chips hold_mib in bytes.
+func m1Hold() int64 {
+	f, err := recipe.Builtin()
+	if err != nil {
+		panic(err)
+	}
+	return f.ChipOf("M1").Hold()
 }

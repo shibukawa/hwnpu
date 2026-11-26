@@ -40,6 +40,9 @@ func (f *File) ConvertOf(model string) Convert {
 	return Convert{}
 }
 
+// ChatModelCode is the file of the chat models' conversion, which reads apple.chips.
+const ChatModelCode = "internal/chat/model.go"
+
 // AppleCode are the Go packages model's Core AI exports are written by (directories of the
 // module): the file's apple.code (what every conversion writes with), then the model's.
 func (f *File) AppleCode(model string) []string {
@@ -54,9 +57,10 @@ func (f *File) AppleCode(model string) []string {
 	return out
 }
 
-// AppleFingerprint is the SHA-256 (hex) of model's apple.convert and finish: what changes its
-// exports' programs and files. Not its prebuild rules, archs and jobs (which programs are prebuilt, not what they
-// are) or its rewrites (in the names of the exports they change).
+// AppleFingerprint is the SHA-256 (hex) of model's apple.convert and finish, and for a chat model
+// (its code internal/chat/model.go) apple.chips: what changes its exports' programs and files.
+// Not its prebuild rules, archs and jobs (which programs are prebuilt, not what they are) or its
+// rewrites (in the names of the exports they change).
 func (f *File) AppleFingerprint(model string) string {
 	b, _ := json.Marshal(f.ConvertOf(model)) // a map's keys in order
 	if fin := f.AppleFinish(model); len(fin) > 0 {
@@ -65,6 +69,10 @@ func (f *File) AppleFingerprint(model string) string {
 			Finish  []Step
 			Steps   map[string]int
 		}{f.ConvertOf(model), fin, finishVersions(fin)})
+	}
+	if slices.Contains(f.AppleCode(model), ChatModelCode) && len(f.Apple.Chips) > 0 {
+		c, _ := json.Marshal(f.Apple.Chips)
+		b = append(append(b, '\n'), c...)
 	}
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
