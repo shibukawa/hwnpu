@@ -107,7 +107,7 @@ hwnpu が動かす画像生成のモデル (`hwnpu-image generate`) と、どの
 
 払うもの (ダウンロードの重複のほうが重いので受け入れた):
 
-- Core AI は 1 本の `.aimodel` の関数を全部まとめてコンパイルする: 初回は全部の大きさをコンパイルする (M1 の FLUX.2 klein で 512² だけ 10 分、512² と 1024² で 40 分)。prebuilt があれば端末では仕上げだけだが、M1 の VAE と Anima の VAE は prebuilt を使わないので、その大きさは初回にコンパイルする ([image-apple.ja.md](image-apple.ja.md))。
+- Core AI は 1 本の `.aimodel` の関数を全部まとめてコンパイルする: 初回は全部の大きさをコンパイルする (M1 の FLUX.2 klein で 512² だけ 10 分、512² と 1024² で 40 分)。prebuilt があれば端末では仕上げだけだが、M1 と M2 の VAE と Anima の VAE は prebuilt を使わないので、その大きさは初回にコンパイルする ([image-apple.ja.md](image-apple.ja.md))。
 - 1 つの大きさを Neural Engine のコンパイラが通さないと、その部品の **全部の** 大きさが NPU から落ちる。取得元に置く前に、チップごとに大きさを 1 つずつオフラインでコンパイルし (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`、そのあと `/usr/bin/log` で `Falling back` を探す)、チップごとの prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT`) は `0 failed` で終わること。
 - 大きさを足すと、書き出しと prebuilt を全部作り直す。
 

@@ -124,15 +124,20 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
-      # the VAE (decoder and encoder) is prebuilt for M2 and later: on an M3 the device's compiler
-      # took 2799 s over the ten decoder stages (vae_s6 to s8 about 600 s each), the prebuilt 0.9 s,
-      # and both gave the same bytes at 1024 x 1024 and 512 x 512 (2026-11-25)
+      # the VAE (decoder and encoder) is prebuilt for M3 and later: on an M3 the device's compiler
+      # took 625 to 2799 s over the ten decoder stages, the prebuilt about 1 s, and both gave the
+      # same bytes at every size, without bands (2026-11-25, 26)
       prebuild:
         - arch: [h13g, h13c, h13d, h13s]
           programs: ["vae_*"]
           do: device
           why: "coreai-build's VAE prebuilt for h13g drew a band of noise every 112 rows at 512 x 512 on M1, and the 1024 x 768 export's vae_s0 ended in 'Request cancelled'; compiled on the device it draws right (the device compiles it in 104 s on M1)"
           checked: 2026-11-25
+        - arch: [h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
+          do: device
+          why: "on M2 every picture at 512 x 512 had bands 8 to 16 rows high every 112 rows (rows 112, 224, 336, 448), from the h14g prebuilt and from the device's compile alike, FLUX.2 and FLUX.3 klein; 1024 x 1024 was right. Left to the device as on M1 until the program is fixed"
+          checked: 2026-11-26
   MOSS-SoundEffect-v2.0: &moss
     amd:
       # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
@@ -425,7 +430,7 @@ models:
         dit_format: lut8
         text_group: 4
         single_group: 5
-      # the VAE prebuilt for M2 and later: on an M3 the first run at 1024 x 1024 took 19m27s with
+      # the VAE prebuilt for M3 and later: on an M3 the first run at 1024 x 1024 took 19m27s with
       # the VAE compiled on the device (its ten stages 640 s), 2m43s with it prebuilt, the same
       # pictures to the byte (2026-11-26)
       prebuild:
@@ -433,6 +438,11 @@ models:
           programs: ["vae_*"]
           do: device
           why: "FLUX.2 klein's decoder (internal/imagegen/fluxvae), whose prebuilt for h13g drew a band of noise every 112 rows at 512 x 512 on M1; not run on M1 from a prebuilt"
+          checked: 2026-11-26
+        - arch: [h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
+          do: device
+          why: "on M2 the pictures at 512 x 512 had bands every 112 rows, from the h14g prebuilt and from the device's compile alike (as FLUX.2 klein's); 1024 x 1024 was right"
           checked: 2026-11-26
     amd:
       version: 2

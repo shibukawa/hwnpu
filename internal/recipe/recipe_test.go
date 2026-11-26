@@ -88,7 +88,7 @@ failed`, "2026-11-23")
 	}
 }
 
-// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is prebuilt but on M1, Anima's on no chip (coreai-build
+// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is prebuilt on M3 and later (not on M1 or M2), Anima's on no chip (coreai-build
 // fails on it), and their other programs are not left by these rules.
 func TestVAELeftToDevice(t *testing.T) {
 	f, err := Builtin()
@@ -101,10 +101,12 @@ func TestVAELeftToDevice(t *testing.T) {
 	}{
 		{"FLUX.2-klein-4B", "vae_s0", "h13g", true},
 		{"FLUX.2-klein-4B", "vae_enc_s3", "h13g", true},
-		{"FLUX.2-klein-4B", "vae_s0", "h14g", false},
+		{"FLUX.2-klein-4B", "vae_s0", "h14g", true},
+		{"FLUX.2-klein-4B", "vae_s0", "h15g", false},
 		{"FLUX.2-klein-4B", "vae_enc_s3", "h15g", false},
 		{"FLUX.2-klein-4B", "dit_double_0", "h15g", false},
 		{"flux-3-image-klein", "vae_s0", "h13g", true},
+		{"flux-3-image-klein", "vae_s9", "h14g", true},
 		{"flux-3-image-klein", "vae_s9", "h15g", false},
 		{"Anima-Turbo", "vae_s0", "h15g", true},
 		{"Anima-Aesthetic", "vae_s9", "h14g", true},

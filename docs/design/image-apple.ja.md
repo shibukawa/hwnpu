@@ -45,11 +45,11 @@
 
 | 部品 | チップ | 理由 |
 |---|---|---|
-| FLUX.2 klein の VAE (`vae_*`、復号器と符号器)、FLUX.3 klein の VAE (同じ復号器) | M1 (`h13*`) | `coreai-build` の h13g 向けの FLUX.2 klein の VAE は、512² で 112 行ごとに数行の色の縞を出した (同じ `.aimodel` の 1024² の関数は正しい)。1024 × 768 の `vae_s0` は `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた。M1 では得もない: 1024² の 10 段を端末が 104 秒でコンパイルする |
+| FLUX.2 klein の VAE (`vae_*`、復号器と符号器)、FLUX.3 klein の VAE (同じ復号器) | M1 (`h13*`)、M2 (`h14*`) | `coreai-build` の h13g 向けの FLUX.2 klein の VAE は、512² で 112 行ごとに数行の色の縞を出した (同じ `.aimodel` の 1024² の関数は正しい)。1024 × 768 の `vae_s0` は `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた。M1 では得もない: 1024² の 10 段を端末が 104 秒でコンパイルする。M2 では 512² の絵がどれも、112 行ごとに 8〜16 行の帯 (112、224、336、448 行) を持った。h14g の prebuilt でも端末のコンパイルでも同じで、FLUX.2 と FLUX.3 klein の両方。1024² は正しい (2026-11-26)。プログラムを直すまで M2 も端末に任せる |
 | Anima の VAE (`vae_*`) | すべて | `coreai-build` (Metal Toolchain 27.2.47) は 10 段のうち 8 段 (`vae_s0`〜`s4`、`s6`〜`s8`) を数秒で `ANECCompileOffline() failed … CompilationFailure` にする。h13g、h14g、h15g のどれでも、1 つずつでも同じ。端末のコンパイラは通す (M2 で約 70 分) |
 | 文の符号器 (`text_*`) | すべて | prebuilt の Chroma1 (外した) の T5-XXL の `text_0` は `Request cancelled` で 4 回続けて落ちた。FLUX.2 klein の Qwen3 は prebuilt で動くが、端末でコンパイルしたものより遅い (112 秒対 81 秒) |
 
-- FLUX.2 klein の VAE は M2 以降で prebuilt にする。M3 では、初回に端末のコンパイラが復号器の 10 段に 2799 秒かかった (`vae_s6`〜`s8` が各約 600 秒。全部の大きさをまとめて)。prebuilt の仕上げは 0.9 秒で、1024² と 512² のどの段の出力もバイトまで同じだった (2026-11-25)。M3 で描画全体を比べると (2026-11-26)、FLUX.2 klein の 1024² の初回の復号は 10 分 32 秒 → 4.5 秒、512² の編集の符号器は 430 秒 → 20 秒。FLUX.3 klein の 1024² の初回は 19 分 27 秒 → 2 分 43 秒 (VAE は 640 秒 → 1 秒)。絵はどれも、VAE を端末でコンパイルしたときとバイトまで同じだった。FLUX.3 klein の VAE も FLUX.2 klein と同じく M1 では端末に任せる (M1 では試していない)。
+- FLUX.2 と FLUX.3 klein の VAE は M3 以降で prebuilt にする。M3 では、初回に端末のコンパイラが復号器の 10 段に 2799 秒かかった (`vae_s6`〜`s8` が各約 600 秒。全部の大きさをまとめて)。prebuilt の仕上げは 0.9 秒で、1024² と 512² のどの段の出力もバイトまで同じだった (2026-11-25)。M3 で描画全体を比べると (2026-11-26)、FLUX.2 klein の 1024² の初回の復号は 10 分 32 秒 → 4.5 秒、512² の編集の符号器は 430 秒 → 20 秒。FLUX.3 klein の 1024² の初回は 19 分 27 秒 → 2 分 43 秒 (VAE は 640 秒 → 1 秒)。絵はどれも、VAE を端末でコンパイルしたときとバイトまで同じだった。FLUX.2 klein の 8 つの大きさのどれでも、本物の絵を VAE に通すと prebuilt と端末のコンパイルでバイトまで同じで、帯はなかった (2026-11-26)。FLUX.3 klein の VAE も FLUX.2 klein と同じく M1 では端末に任せる (M1 では試していない)。
 - M1 で prebuilt の VAE ですでに描いた機械では、仕上げた項目が Core AI のキャッシュに残り (`hasEntry` が prebuilt より先)、縞のままになる。`~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す (VAE の項目だけでもよい)。
 - 未解決: `coreai-build` の何が h13g の VAE と Anima の VAE を誤らせるか (112 行の周期は段の中の行の区切りかもしれない)、何が T5 を cancel させるか。直ったらレシピの決まりを外す。Apple に報告する (FB)。
 
@@ -136,7 +136,7 @@
 - FLUX の GroupNorm (`fluxvae.GroupNorm`): グループの値を (1, 32, a, b) に並べ (どの軸も 16384 以下)、グループの最大値で割り、2 乗の前に平均を引く (|平均| / 標準偏差は 6.3 に達する)。512² の VAE は diffusers の float32 と 66.3 dB。
 - FLUX.2 と FLUX.3 klein: FLUX.1 のデコーダ (`internal/imagegen/fluxvae`。元は Chroma1 のもの) に `post_quant_conv` を足したもの (`fluxvae.Vae.PostQuant`)。バッチノルムの統計で戻すのと 2 × 2 の展開はホスト。
 - Anima の VAE の値は 8 未満で、fp16 の手当ては要らない。
-- FLUX.2 klein は M2 以降で prebuilt。M1 と、Anima はすべてのチップで端末 (上)。
+- FLUX.2 と FLUX.3 klein は M3 以降で prebuilt。M1 と M2、Anima はすべてのチップで端末 (上)。
 - 段の間を float32 でなく fp16 で渡しても効かなかった (0〜0.3 秒、Sana の 1024²)。
 
 ## Anima (Cosmos-Predict2 2B、Qwen3-0.6B)

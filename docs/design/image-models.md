@@ -107,7 +107,7 @@ What it saves: Anima's per-size Apple exports were 2.9 GB each with the weights 
 
 What it costs (accepted: the repeated download is worse):
 
-- Core AI compiles every function of an `.aimodel` together: the first run compiles all sizes (FLUX.2 klein on an M1: 10 min for 512², 40 min for 512² and 1024²). With a prebuilt only the finish is local, but the VAE on M1 and Anima's VAE use no prebuilt, so their sizes compile at the first run ([image-apple.md](image-apple.md)).
+- Core AI compiles every function of an `.aimodel` together: the first run compiles all sizes (FLUX.2 klein on an M1: 10 min for 512², 40 min for 512² and 1024²). With a prebuilt only the finish is local, but the VAE on M1 and M2 and Anima's VAE use no prebuilt, so their sizes compile at the first run ([image-apple.md](image-apple.md)).
 - One size the Neural Engine compiler rejects takes **all** sizes of that part off the NPU. Before putting an export in the sources, compile each size alone offline per chip (`coreai-build compile … --architecture h13g/h14g/h15g/h16g`, then look for `Falling back` in `/usr/bin/log`); the per-chip prebuilt (`hwnpu-dev models package MODEL/coreai-ARCH --arch ARCH EXPORT`) must end with `0 failed`.
 - Adding a size remakes the export and every prebuilt.
 

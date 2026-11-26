@@ -487,5 +487,5 @@ Measured and not repeated (one line each; more in [performance.md](performance.m
 - NE MoE: experts gathered from a constant table (right, a sixth of the speed), an expert in one array (slows wide experts), 4-bit experts (no form faster than int8)
 - gpt-oss's head at lut4 / lut6 (KL 0.0088 → 0.068 / 0.0136; 0.27 / 0.41 GiB against lut8's 0.55)
 - Prompt-lookup drafts for host-run MoE experts: a check of 7 drafts adds about 90 ms to a 60 ms step
-- Shipping `.aimodelc` with weights; prebuilt for chat models (first load slower: LFM3-1.7B 2:17 → 8:12); prebuilt for VAEs on M1 (stripes, no gain; M2 and later prebuild FLUX.2 klein's)
+- Shipping `.aimodelc` with weights; prebuilt for chat models (first load slower: LFM3-1.7B 2:17 → 8:12); prebuilt for VAEs on M1 and M2 (stripes at 512²; M3 and later prebuild FLUX.2 and FLUX.3 klein's)
 - One export per picture size (re-downloads; see 11.4)
