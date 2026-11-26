@@ -129,6 +129,11 @@ func TestVAELeftToDevice(t *testing.T) {
 		{"Anima-Aesthetic", "vae_s9", "h14g", true},
 		{"Anima-Aesthetic", "vae_s9", "h16g", false},
 		{"Anima-Turbo", "dit_blocks_0", "h15g", false},
+		// the text encoders: prebuilt on M3 and later, on the device on M1 and M2 (every model)
+		{"FLUX.2-klein-4B", "text_0", "h15g", false},
+		{"FLUX.2-klein-4B", "text_0", "h14g", true},
+		{"Anima-Turbo", "text", "h13g", true},
+		{"Anima-Turbo", "text", "h16g", false},
 	} {
 		if _, got := f.AppleOf(c.model).Left("e.coreai", c.program, c.arch); got != c.want {
 			t.Errorf("%s %s on %s: left %v", c.model, c.program, c.arch, got)

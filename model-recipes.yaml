@@ -122,6 +122,11 @@ apple:
       whole: false
       # the experts' program picks their scales with gather_nd (docs/handoff-ane-gather.md 1)
       gather_nd: false
+  # the text encoders (text_*) are prebuilt for M3 and later, for the memory: on an M3 FLUX.2
+  # klein's nine Qwen3 programs took 94 to 190 s from prebuilts against 46 s compiled on the
+  # device, whose compiler (ANECompilerService) grew by 1.5 GB doing it against 0.5 GB for the
+  # prebuilts' finishing; the caches took 7.9 GB either way (2026-11-26). Left to the device on M1
+  # and M2 until they are run from prebuilts there
   prebuild:
     # the attention of a chat model split at it, a kv head at a time (paged.Heads): from
     # coreai-build's h13g programs, the M1 computes the first kv head right and the others wrong
@@ -133,6 +138,11 @@ apple:
       do: device
       why: "the attention a kv head at a time (paged.Heads) from coreai-build's h13g program: the second kv head's sum of exps 6 times too large on the M1, the answers noise; right compiled on the device (Qwen3.5-0.8B, prebuilt against device on the same inputs)"
       checked: 2026-11-27
+    - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
+      programs: ["text", "text_*"]
+      do: device
+      why: "text encoders prebuilt for h13g and h14g not yet run on an M1 or M2 (Chroma1's T5 from h13g prebuilts once ended in 'Request cancelled' there)"
+      checked: 2026-11-26
 
 amd:
   generations: [xdna2]
