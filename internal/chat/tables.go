@@ -203,14 +203,27 @@ func ProgramFile(dir, name, backend string) (string, error) {
 
 // converted reports whether convert finished writing out (its NAME.done is there), or, a Core AI
 // export, whether it was made from the shared layers (llm.SharedExports; its mark then written).
+//
+// A Core AI export of another version than its model's recipe makes now (staleExport) is as one
+// missing: taken from the shared layers, else its mark is removed, so that convert makes it
+// again and a conversion cut off is not taken for the old one. The image models' exports go
+// through llm.ExportDone for this; the chat models' marks were only looked for, so the first
+// raise of their version (2026-11-27) would have left every old export in use.
 func converted(ctx context.Context, out string) bool {
-	if exists(doneFile(out)) {
-		return true
+	done := doneFile(out)
+	stale := false
+	if exists(done) {
+		if stale = filepath.Ext(out) == ".coreai" && staleExport(out); !stale {
+			return true
+		}
 	}
 	if filepath.Ext(out) != ".coreai" || llm.SharedExports == nil || !llm.SharedExports.Fetch(ctx, out) {
+		if stale {
+			os.Remove(done)
+		}
 		return false
 	}
-	return cache.WriteDone(doneFile(out), exportProgram(out)) == nil
+	return cache.WriteDone(done, exportProgram(out)) == nil
 }
 
 // exportProgram is the program of a Core AI export of convert: its manifest model.parts.json
