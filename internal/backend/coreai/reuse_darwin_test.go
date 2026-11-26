@@ -361,17 +361,25 @@ func TestBuildLeftSetsAside(t *testing.T) {
 	}
 }
 
-// A run marks an ok or a failedToSpecialize, no other failure (another process's), and writes
-// only what changes the record.
+// A run marks an ok once the program ran (not when it only opened), a failedToSpecialize, or a
+// first call that failed; no other failure of opening it (another process's), and writes only
+// what changes the record.
 func TestDeviceMark(t *testing.T) {
-	if d, ok := DeviceMark("s512", "", "2026-11-26", "x"); !ok || d.Status != DeviceOK {
+	if _, ok := DeviceMark("s512", "", "2026-11-26", "x", false); ok {
+		t.Error("an ok was marked of a program that has not run")
+	}
+	if d, ok := DeviceMark("s512", "", "2026-11-26", "x", true); !ok || d.Status != DeviceOK {
 		t.Errorf("ok: %+v %v", d, ok)
 	}
-	if d, ok := DeviceMark("s512", "Error Domain=CoreAI failedToSpecialize", "2026-11-26", "x"); !ok || d.Status != FailedToSpecialize || !d.Bad() {
+	if d, ok := DeviceMark("s512", "Error Domain=CoreAI failedToSpecialize", "2026-11-26", "x", false); !ok || d.Status != FailedToSpecialize || !d.Bad() {
 		t.Errorf("failedToSpecialize: %+v %v", d, ok)
 	}
-	if _, ok := DeviceMark("s512", "ANEProgramProcessRequestDirect() Failed with status=0xf Request cancelled", "2026-11-26", "x"); ok {
-		t.Error("a cancelled request was marked")
+	const cancelled = "ANEProgramProcessRequestDirect() Failed with status=0xf Request cancelled"
+	if _, ok := DeviceMark("s512", cancelled, "2026-11-26", "x", false); ok {
+		t.Error("a cancelled request was marked of a program that did not open")
+	}
+	if d, ok := DeviceMark("s512", cancelled, "2026-11-26", "x", true); !ok || d.Status != FailedAtFirstCall || !d.Bad() || d.Message != cancelled {
+		t.Errorf("a first call that failed: %+v %v", d, ok)
 	}
 	r := &Record{Programs: map[string]*ProgramRecord{"a": {Source: "s"}}}
 	ok := DeviceCheck{Status: DeviceOK, Function: "f1"}
@@ -392,5 +400,106 @@ func TestDeviceMark(t *testing.T) {
 	}
 	if !r.NeedsMark("a", "s", ok) {
 		t.Error("the failed function's ok does not replace the failure")
+	}
+}
+
+// A prebuilt program that fails at its first call stops the device from using the export's
+// prebuilt programs (StopDevice): the record says which program and why, also for a bundle that
+// had no record, and keeps what it said of the other programs.
+func TestStopDevice(t *testing.T) {
+	export := filepath.Join(t.TempDir(), "m-v1.coreai")
+	root := PackedRoot(export, "h13g")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, ok := DeviceMark("q128-last", "Request cancelled", "2026-11-26", "hwnpu-chat", true)
+	if !ok {
+		t.Fatal("no mark of a failed first call")
+	}
+	if err := StopDevice(export, "h13g", "model.part2", "aa", d); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := ReadRecord(root)
+	if err != nil || rec == nil {
+		t.Fatalf("record: %v %v", rec, err)
+	}
+	if rec.Stopped == nil || rec.Stopped.Status != FailedAtFirstCall || rec.Stopped.Function != "q128-last" {
+		t.Errorf("stopped: %+v", rec.Stopped)
+	}
+	if e := rec.Programs["model.part2"]; e == nil || e.Source != "aa" || !e.Device.Bad() {
+		t.Errorf("the program's mark: %+v", e)
+	}
+	// with a record: the other programs' entries stay, the program's own build stays
+	rec.Stopped = nil
+	rec.Programs["model.part1"] = &ProgramRecord{Source: "bb", Result: ResultBuilt, Device: &DeviceCheck{Status: DeviceOK}}
+	rec.Programs["model.part2"] = &ProgramRecord{Source: "aa", Result: ResultBuilt, Seconds: 120}
+	if err := WriteRecord(root, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := StopDevice(export, "h13g", "model.part2", "aa", d); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ = ReadRecord(root)
+	if rec.Stopped == nil || rec.Programs["model.part1"].Device.Status != DeviceOK {
+		t.Errorf("after a stop: %+v, part1 %+v", rec.Stopped, rec.Programs["model.part1"])
+	}
+	if e := rec.Programs["model.part2"]; e.Seconds != 120 || e.Device.Status != FailedAtFirstCall {
+		t.Errorf("the program's entry: %+v", e)
+	}
+	if err := StopDevice(filepath.Join(t.TempDir(), "none.coreai"), "h13g", "x", "aa", d); err == nil {
+		t.Error("a stop was recorded of an export without prebuilt programs")
+	}
+}
+
+// A program the record says a device failed, and every program of a bundle a device stopped
+// using, is opened without its prebuilt program (badOnDevice).
+func TestBadOnDevice(t *testing.T) {
+	arch := Arch()
+	if arch == "" {
+		t.Skip("no Neural Engine architecture on this machine")
+	}
+	export := filepath.Join(t.TempDir(), "m-v1.coreai")
+	asset := func(name, hash string) string {
+		dir := filepath.Join(export, name+".aimodel")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "main.hash"), []byte(hash), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	a, b := asset("model.part1", "aaaa"), asset("model.part2", "bbbb")
+	root := PackedRoot(export, arch)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if badOnDevice(a) || badOnDevice(b) {
+		t.Fatal("bad without a record")
+	}
+	rec := &Record{Arch: arch, Pack: PackFormat, Export: filepath.Base(export), Programs: map[string]*ProgramRecord{
+		"model.part1": {Source: sourceHex(a), Result: ResultBuilt, Device: &DeviceCheck{Status: FailedToSpecialize}},
+		"model.part2": {Source: sourceHex(b), Result: ResultBuilt, Device: &DeviceCheck{Status: DeviceOK}},
+	}}
+	if err := WriteRecord(root, rec); err != nil {
+		t.Fatal(err)
+	}
+	if !badOnDevice(a) || badOnDevice(b) {
+		t.Errorf("a program a device failed: part1 %v, part2 %v", badOnDevice(a), badOnDevice(b))
+	}
+	// another source under the same name (a later export's program): its own to try
+	rec.Programs["model.part1"].Source = "0000"
+	if err := WriteRecord(root, rec); err != nil {
+		t.Fatal(err)
+	}
+	if badOnDevice(a) {
+		t.Error("the mark of another source stopped the program")
+	}
+	d, _ := DeviceMark("q8", "Request cancelled", "2026-11-27", "x", true)
+	if err := StopDevice(export, arch, "model.part2", sourceHex(b), d); err != nil {
+		t.Fatal(err)
+	}
+	if !badOnDevice(a) || !badOnDevice(b) {
+		t.Errorf("a stopped bundle: part1 %v, part2 %v", badOnDevice(a), badOnDevice(b))
 	}
 }
