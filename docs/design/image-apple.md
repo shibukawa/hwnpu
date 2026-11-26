@@ -24,7 +24,7 @@ The rule (see [image-models.md](image-models.md) and [new-model-checklist.md](ne
 
 - Apple form: a part whose graph depends on the size is one `.aimodel` with a function per size, `s{W}x{H}` (`llm.WriteAIFunctions`: identical weight bytes stored once). The manifest's `sizes` lists the part names per size, and `ProgramManifest.At` picks them. The size part of the name is `aspect.Tag` (three or more sizes: `8sizes-` plus the CRC-32 of the sizes). One prebuilt per chip per export holds all sizes.
 - What it costs (accepted: duplicate downloads cost more):
-  - Core AI compiles every function of an `.aimodel` together. The first run compiles all sizes. The VAE is never prebuilt (below), so its sizes are compiled on the device on the first run.
+  - Core AI compiles every function of an `.aimodel` together. The first run compiles all sizes. Where the VAE is not prebuilt (M1, and Anima on every chip: below), its sizes are compiled on the device on the first run.
   - If the NE compiler rejects one size, every size of that part leaves the NE. Check each chip and each size offline with `coreai-build` before placing an export.
   - Adding a size rebuilds the export and every prebuilt.
 - Parts that do not depend on the size (text encoders) are one function. Parts shared between models or exports are hard links (`ConvertOptions.LinkFrom`, `linkFrom`, `TextVersion`), so Core AI's cache hits them and they are not compiled again. The cache keys on program bytes, and each conversion writes a new UUID into the package, so separately converted copies of the same part would be compiled and held twice.
@@ -41,15 +41,17 @@ Migration order: Anima-Turbo → Anima-Aesthetic → FLUX.2 klein (the eight siz
 
 ## What is not prebuilt
 
-`coreai.LeftToDevice` keeps programs whose names start with `vae` or `text` on the device: `hwnpu-dev models package MODEL/coreai-ARCH` leaves them out ("left to the device") and `coreai.Prebuilt` ignores such prebuilts already in a source.
+`coreai.LeftToDevice` keeps programs whose names start with `text` (and those ending in `_device`) on the device on every chip: `hwnpu-dev models package MODEL/coreai-ARCH` leaves them out ("left to the device") and `coreai.Prebuilt` ignores such prebuilts already in a source. The VAE is the recipe's choice per model and chip (`model-recipes.yaml` apple `prebuild`, `do: device`):
 
-| part | why |
-|---|---|
-| VAE stages (FLUX.2 klein, Anima; Chroma1 too) | `coreai-build`'s FLUX.2 klein VAE drew stripes a few rows high every 112 rows at 512² (the 1024² function of the same `.aimodel` was right). A 1024 × 768 `vae_s0` failed with `ANEProgramProcessRequestDirect() … Request cancelled`. No gain anyway: finishing a prebuilt takes as long as compiling (10 stages at 1024²: 104 s against 106 s), as each waits for ANELargeModelCompilerService to start (10 s) |
-| text encoders (`text_*`) | Chroma1's T5-XXL `text_0` (removed) from prebuilt failed with `Request cancelled` four times in a row. FLUX.2 klein's Qwen3 from prebuilt runs but slower (112 s against 81 s compiled on the device) |
+| part | chips | why |
+|---|---|---|
+| FLUX.2 klein VAE (`vae_*`, decoder and encoder), FLUX.3 klein VAE (the same decoder) | every chip (M3 and later: a FLUX change of its own) | `coreai-build`'s FLUX.2 klein VAE for h13g drew stripes a few rows high every 112 rows at 512² (the 1024² function of the same `.aimodel` was right). A 1024 × 768 `vae_s0` failed with `ANEProgramProcessRequestDirect() … Request cancelled`. No gain there either: the M1 compiles the ten stages at 1024² in 104 s. On M2 every picture at 512² had bands 8 to 16 rows high every 112 rows (rows 112, 224, 336, 448), from the h14g prebuilt and from the device's compile alike, FLUX.2 and FLUX.3 klein; 1024² was right (2026-11-26). Left to the device on M2 too until the program is fixed |
+| Anima VAE (`vae_*`) | M2 (`h14*`) | Up to export v5 `coreai-build` failed 8 of the 10 stages on every chip (the native silu, below); since v6 all are placed on the Neural Engine offline for h13g and h14g too. On M2 the pictures from the h14g prebuilt had bands every 160 pixels (and twice or three times as often at some aspect ratios), none compiled on the device (2026-11-27). Prebuilt on M1 (drew right) and on M3 and later (the same bytes as compiled on the device, 2026-11-26) |
+| text encoders (`text_*`) | every chip | Chroma1's T5-XXL `text_0` (removed) from prebuilt failed with `Request cancelled` four times in a row. FLUX.2 klein's Qwen3 from prebuilt runs but slower (112 s against 81 s compiled on the device) |
 
-- A machine that already drew with a prebuilt VAE keeps the finished entry in Core AI's cache (`hasEntry` wins over prebuilt) and keeps the stripes. Remove `~/Library/Caches/coreai-cache/<OS build>/hwnpu-image/` (the VAE entries are enough).
-- Open: what makes `coreai-build` wrong on the VAE (the 112-row period may be a row split inside a stage) and what cancels T5. Drop `LeftToDevice` when fixed. Report to Apple (FB).
+- FLUX.2 and FLUX.3 klein's VAE stays on the device on every chip for now; on M3 and later a prebuilt would do (a FLUX change of its own). On an M3 the device's compiler took 2799 s over the ten decoder stages at the first run (`vae_s6`–`s8` about 600 s each, every size at once), finishing the prebuilt 0.9 s; the outputs of every stage were the same bytes at 1024² and 512² (2026-11-25). A whole run on the M3 (2026-11-26): FLUX.2 klein's first decode at 1024² 10m32s → 4.5 s and a 512² edit's encoder 430 s → 20 s; FLUX.3 klein's first run at 1024² 19m27s → 2m43s (the VAE 640 s → 1 s). Every picture was the same bytes as with the VAE compiled on the device. A real picture through the VAE at all eight sizes of FLUX.2 klein was the same bytes from the prebuilt and from the device's compile, without bands (2026-11-26). FLUX.3 klein's VAE is left to the device on M1 like FLUX.2 klein's, untried there.
+- A machine that already drew with a prebuilt VAE on M1 keeps the finished entry in Core AI's cache (`hasEntry` wins over prebuilt) and keeps the stripes. Remove `~/Library/Caches/coreai-cache/<OS build>/hwnpu-image/` (the VAE entries are enough).
+- Open: what makes `coreai-build` wrong on the VAE for h13g (the 112-row period may be a row split inside a stage), and what cancels T5. Drop the recipe's rules when fixed. Report to Apple (FB).
 
 ## Patterns shared by the models
 
@@ -68,7 +70,7 @@ At 1024² a DiT attends over 4096 image tokens. The time is in the element-wise 
 Rules learned:
 - Do not defer the division in self-attention: the product reaches fp16's max in Anima's last block (27). Scaling V's int8 weights by 1/256 to avoid it changed the pictures (products under fp16's normal range are dropped by the NE).
 - Writing that left the NE: two chunks divided by the same sum (use the sum's reciprocal), `maximum` of maxima of different widths (`Interleave should be matched for dual-input PEs`; concatenate the maxima and `reduce_max` again). Qwen-Image's query chunk of 2048 also left it.
-- `HWNPU_DEV=anima.attention=chunks` exports the older heads-together form (`QChunkAttention`) on Apple, to tell rounding from a mistake (convert into another folder). Intel always uses `QChunkAttention`.
+- Intel always uses the heads-together form (`QChunkAttention`).
 - A single score tensor over about 64 MiB is 2–3× slower per score on Core ML's NE (a step between 65 and 68 MiB). This is why `mil.DitQChunk` halves the query chunk at conversion until 16 × chunk × patches × 2 B ≤ 64 MiB (Anima's heads-together form: 1024² 512, 1280² 256, 2048² 128). The size of the on-chip memory is not the cause: per-score speed is flat from 0.5 MB to 64 MiB.
 
 ### fp16 traps and their fixes
@@ -104,7 +106,7 @@ Rules learned:
 - On Core AI the DiT groups are not held. Each group is loaded for its turn, run, and closed (`runner.Swap`; Anima `progEngine.swap`, FLUX `runner.Ring`). While a group runs, the next one loads (`runner.InTurn` for in-turn parts, `runner.Ring` for the DiT: after the last group it loads the first for the next call; an unused load is closed). At most 2 programs open. A failed ahead-load is retried once at its turn (`TestRing`, `TestInTurn`).
 - Why: a load from Core AI's cache is 0.02–0.3 s, about one run. Holding everything is no faster, because a large group that follows another program pays a switch cost anyway (`aicheck cycle`: a 4-block Anima group after another group +50–70 ms; 2 small programs or a group plus a small one +0). And holding a lot makes things slower or fail: Chroma1-Flash 1024² holding all 8.8 GiB is 10 % slower; Qwen-Image's lut4 DiT held at 5.2 GiB failed with `underlying=0x15` (Core AI errors instead of evicting like Core ML).
 - Text encoders are closed after the prompt, the approximator before the steps, the groups loaded for the last step's next before the VAE. VAE stages are loaded one at a time (10–20 ms each, no preload needed).
-- `HWNPU_DEV=hold-dit=1` holds every group; `HWNPU_DEV=load-ahead=0` turns preloading off (both for measuring). Core ML and Intel load one at a time (Intel holds what fits and closes others when out of memory).
+- Core ML and Intel load one at a time (Intel holds what fits and closes others when out of memory).
 - A first call after a load (or after another program) is slow: a VAE stage and a text encoder group always run as first calls.
 - Several prompts together (`--batch`, `GenerateAll`, `DecodeAll`, `EncodeAll`): the text once for all prompts, each DiT group runs every picture, each VAE stage every picture. See [image-models.md](image-models.md).
 - Memory at 1024² peaks in the last VAE stages (process float32 buffers), not in the DiT. FLUX.2 klein drops the time embedding weights (0.7 GB) after building every σ's rows and returns step garbage before the VAE and after each stage (`debug.FreeOSMemory`): 5.8 → 4.1 GB footprint.
@@ -134,13 +136,14 @@ Pictures are byte for byte the same in all forms.
 - FLUX's GroupNorm (`fluxvae.GroupNorm`): group values as (1, 32, a, b) (every axis ≤ 16384), divide by the group max, subtract the mean before the squares (|mean|/std reaches 6.3). 512² VAE vs diffusers fp32: 66.3 dB.
 - FLUX.2/3 klein: FLUX.1's decoder (`internal/imagegen/fluxvae`, once Chroma1's) plus `post_quant_conv` (`fluxvae.Vae.PostQuant`); batch-norm denormalization and the 2 × 2 unpack on the host.
 - Anima's VAE values stay under 8: no fp16 care.
-- Never prebuilt (above).
+- Anima's VAE for Core AI writes the residual blocks' silu in the exp form (`blocks.SiLU`, export v6, `anima.CoreAIExportVersion`). With the Neural Engine's own `silu` after both of a block's norms, `coreai-build` (Metal Toolchain 27.2.47) failed every stage with a residual block on h13g, h14g and h15g (`ANECCompileOffline: CompilationFailure`; norm, silu, conv, norm, silu is enough; exp after the second norm alone still failed s0–s2 and s4). With it all 10 stages × 8 sizes are placed whole on the Neural Engine for the three chips. M3, 512²: the device compiled the ten stages in 482 s (the native silu's: 3552 s, up to 12 GB of temporary disk a stage), from the h15g prebuilt they load at once; prebuilt and device outputs are the same bytes and every stage matches an fp64 reference from its own input at 75–89 dB, 1024² too (2026-11-26). Core ML and OpenVINO IR keep the native silu.
+- Anima's prebuilt on M1 and on M3 and later, on the device on M2; FLUX.2 and FLUX.3 klein's on the device on every chip (above).
 - Passing fp16 between stages instead of float32 gave nothing (0–0.3 s, Sana 1024²).
 
 ## Anima (Cosmos-Predict2 2B, Qwen3-0.6B)
 
 - Programs: `text`, `dit_time` (8 rows), DiT in groups of 4 blocks (`dit_blocks_N`, 7 groups of 28 blocks; the patch embedding in `dit_blocks_0`), the final layer, VAE 10 stages. Formats int8/int8 on Apple (`anima.Formats`), fp16 on Intel.
-- Attention: self-attention `HeadAttention` 1024 chunks, division first; cross-attention whole, division deferred, queries padded to 8. Scale in q's norm weight. Norms by `abs`. `ExportVersion` 4, `PaddedExportVersion` 5.
+- Attention: self-attention `HeadAttention` 1024 chunks, division first; cross-attention whole, division deferred, queries padded to 8. Scale in q's norm weight. Norms by `abs`. `ExportVersion` 4, `PaddedExportVersion` 5, `CoreAIExportVersion` 6 (every Core AI export: the VAE's exp silu).
 - `--group` (default 0 = `anima.DefaultGroup`): 4 on Apple. `--qchunk` 512 (Core ML/Intel heads-together form).
 - Breakdown of a 1024² block (M1, Core AI, before the attention forms): 232 ms; MLP 54 ms (5.1 TFLOPS), self-attention core 102 ms (1.3 TFLOPS), cross-attention core 14 ms. Element-wise ops other than attention are about 24 ms of a 221 ms block (11 %): q/k RMSNorm 11.3 (4.8 of it the max division), RoPE 3.4, LayerNorm max divisions 3.7, exact GELU 5.8 (tanh and sigmoid approximations are slower: +4.7, +12.5 ms).
 - Its CFG step costs exactly twice a plain step (11.1–11.2 vs 5.6–5.7 s): the groups are small (0.28 GiB), so it pays no switch cost, and batching groups does not speed it up.
@@ -241,7 +244,7 @@ Sana and Qwen-Image are no longer offered (see [image-models.md](image-models.md
 | what | why |
 |---|---|
 | Core ML for `hwnpu-image` | Core AI only on a Mac; Core ML exports are kept for `--cpu` |
-| VAE and text encoder prebuilts | wrong pictures / `Request cancelled`, no time saved (above) |
+| text encoder prebuilts, and the VAE's on M1 | wrong pictures / `Request cancelled`, no time saved (above) |
 | Anima: groups of 7 blocks | −1.2 % a step, larger programs harder on 8 GB machines |
 | Anima: q, k, v as one linear (2048 → 6144) | slower (a group 928 → 946 ms) |
 | Anima: normalization after P·V in self-attention | overflows fp16 in the last block; with a V scale the pictures change |
@@ -263,7 +266,7 @@ Sana and Qwen-Image are no longer offered (see [image-models.md](image-models.md
 ## Open
 
 - Move every Apple export to one export of all sizes (order above). Check each size per chip with `coreai-build` first.
-- Why `coreai-build` is wrong on the VAE and cancels T5; drop `LeftToDevice` when fixed.
+- Why the VAE draws bands at 512² on h13g and h14g (on M2 compiled on the device too), and what cancels T5; drop the recipe's rules and `LeftToDevice` when fixed.
 - FLUX.3 klein on Apple: Neural Engine memory, editing, other sizes, prompts over 160 tokens, the pad-row drift (e.g. later Qwen3-VL layers at fp16), how the calibration statistics are distributed.
 - FLUX.2 klein editing on Apple.
 - Anima on Intel's NPU: end-to-end run on hardware at 1024², the v4/v5 exports on Intel. Anima-Aesthetic ranges (`TestBlockRanges`).

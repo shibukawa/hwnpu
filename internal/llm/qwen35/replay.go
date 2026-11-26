@@ -11,7 +11,7 @@ import (
 // ReplayState brings a Gated DeltaNet's recurrent state st_rec_N from before a step to after its
 // first n rows (llm.StateReplayer), from the program's st_rec_N_rows (1, value heads, rows,
 // dk+dv+2): each row's key k (L2 normalized, the head's key head), value v, beta and decay, as
-// the program's deltaRule takes them. For each row, in float32:
+// the program's deltaRuleChunks takes them. For each row, in float32:
 //
 //	S = S * decay;  S = S + k^T ((v - k S) * beta)
 //

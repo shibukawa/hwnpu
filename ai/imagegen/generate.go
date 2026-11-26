@@ -48,22 +48,19 @@ func Edit(name string) ai.Use[*Generator] {
 //	          dit          Anima: the diffusion model, a file of split_files/diffusion_models/
 //	          group        Anima: the DiT's blocks a program holds
 //	          qchunk       Anima: the queries an attention scores at a time (default 512)
-//	          resident-dit Anima on AMD's NPU: "true" keeps every group of the DiT's blocks on
-//	                       the NPU instead of reading each group's weights before it runs
 //	programs: export       an export's directory (Export): of tools/amd/iron_*.py for AMD's NPU,
 //	                       or of hwnpu-image convert; run as it is
 //
 // A model of device cpu (Anima) runs a Core ML export with hwnpu's CPU interpreter
 // (slow; for checking without the NPU).
 const (
-	SettingTextFormat  = "text-format"
-	SettingDitFormat   = "dit-format"
-	SettingSize        = "size"
-	SettingDit         = "dit"
-	SettingGroup       = "group"
-	SettingQChunk      = "qchunk"
-	SettingResidentDiT = "resident-dit"
-	ProgramExport      = "export"
+	SettingTextFormat = "text-format"
+	SettingDitFormat  = "dit-format"
+	SettingSize       = "size"
+	SettingDit        = "dit"
+	SettingGroup      = "group"
+	SettingQChunk     = "qchunk"
+	ProgramExport     = "export"
 )
 
 var (

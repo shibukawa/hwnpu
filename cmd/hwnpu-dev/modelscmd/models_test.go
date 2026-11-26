@@ -27,6 +27,43 @@ func TestParseJobs(t *testing.T) {
 	if jobs, err := parseJobs([]string{"LFM3-1.7B/coreai-all"}); err != nil || len(jobs) != 1 || len(jobs[0].archs) != len(coreai.Archs) {
 		t.Errorf("coreai-all = %+v, %v", jobs, err)
 	}
+	// No target named: the Core AI exports, compiled for the recipe's architectures for a model
+	// its recipe prebuilds alone (an image generator), on a Mac; the architectures are of the
+	// Core AI job, not of the AMD one beside it
+	recipes, err := recipe.Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for model, prebuilt := range map[string]bool{"FLUX.2-klein-4B": true, "flux-3-image-klein": true, "Anima-Turbo": true, "Anima-Aesthetic": true,
+		"LFM3-1.7B": false, "whisper-large-v3-turbo": false, "MOSS-SoundEffect-v2.0": false, "DA3-BASE": false} {
+		jobs, err := parseJobs([]string{model})
+		if err != nil {
+			t.Errorf("%s: %v", model, err)
+			continue
+		}
+		var want []string
+		if prebuilt && canCompile() == nil {
+			want = recipes.AppleOf(model).Archs
+			if len(want) == 0 {
+				t.Errorf("%s: the recipe names no architectures", model)
+			}
+		}
+		core := 0
+		for _, j := range jobs {
+			switch {
+			case j.target == cache.CoreAITarget:
+				core++
+				if !slices.Equal(j.archs, want) {
+					t.Errorf("%s: compiled for %v, want %v", model, j.archs, want)
+				}
+			case len(j.archs) > 0:
+				t.Errorf("%s: %s has architectures %v", model, j.target, j.archs)
+			}
+		}
+		if core != 1 {
+			t.Errorf("%s: %d Core AI jobs in %+v", model, core, jobs)
+		}
+	}
 	for _, bad := range []string{"no-such-model", "LFM3-1.7B/coreai-h99", "LFM3-1.7B/intel"} {
 		if _, err := parseJobs([]string{bad}); err == nil {
 			t.Errorf("%s: no error", bad)

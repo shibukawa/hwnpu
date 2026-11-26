@@ -1225,7 +1225,7 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			kept = nil // marks of the tier before, not the store's programs'
 		}
 		before := len(e.cur.fed)
-		if ds, ok := e.sess.(*decode.Session); ok && ds.Waves() && e.mtp == nil && !waveOff {
+		if ds, ok := e.sess.(*decode.Session); ok && ds.Waves() && e.mtp == nil {
 			// the steps after it that the cache holds as it is, read together a stage at a
 			// time (decode.Session.Steps)
 			ks, marked := []int{k}, []int(nil)
@@ -1539,9 +1539,6 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 	e.recordHidden(pos0)
 	return logits, nil
 }
-
-// waveOff is HWNPU_DEV's moe.wave=0: a prompt's steps one after another, for measuring.
-var waveOff = func() bool { v, _ := experts.DebugOpt("wave"); return v == "0" }()
 
 // steps runs the tokens as steps of ks tokens each, read together (decode.Session.Steps), records
 // them as fed and returns the marks after the steps marked lists. A request given up while they

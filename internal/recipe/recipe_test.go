@@ -46,6 +46,13 @@ func TestLeft(t *testing.T) {
 	if flux.Jobs != 3 || strings.Join(flux.Archs, " ") != "h13g h14g h15g" {
 		t.Errorf("jobs %d, archs %v", flux.Jobs, flux.Archs)
 	}
+	// the image generators alone are prebuilt when a build names no architecture
+	for model, want := range map[string]bool{"FLUX.2-klein-4B": true, "flux-3-image-klein": true, "Anima-Turbo": true, "Anima-Aesthetic": true,
+		"MOSS-SoundEffect-v2.0": false, "LFM3-1.7B": false, "whisper-large-v3-turbo": false, "DA3-BASE": false, "no-such-model": false} {
+		if got := f.AppleOf(model).Prebuilt; got != want {
+			t.Errorf("%s: prebuilt %v, want %v", model, got, want)
+		}
+	}
 	// a model without a recipe is built as apple says
 	if a := f.AppleOf("Qwen3-0.6B"); len(a.Prebuild) != 0 || a.Jobs != f.Apple.Jobs {
 		t.Errorf("no recipe: %+v", a)
@@ -85,6 +92,37 @@ failed`, "2026-11-23")
 	f.Version = 1
 	if _, ok := f.AppleOf("FLUX.2-klein-4B").Left("e.coreai", "dit_single_5", "h13g"); !ok {
 		t.Errorf("suggested rule does not leave it:\n%s", s)
+	}
+}
+
+// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is left to the device on every chip, Anima's on M2 alone (prebuilt on M1 and on M3 and later), and their other programs are not left by these rules.
+func TestVAELeftToDevice(t *testing.T) {
+	f, err := Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		model, program, arch string
+		want                 bool
+	}{
+		{"FLUX.2-klein-4B", "vae_s0", "h13g", true},
+		{"FLUX.2-klein-4B", "vae_enc_s3", "h13g", true},
+		{"FLUX.2-klein-4B", "vae_s0", "h14g", true},
+		{"FLUX.2-klein-4B", "vae_s0", "h15g", true},
+		{"FLUX.2-klein-4B", "vae_enc_s3", "h15g", true},
+		{"FLUX.2-klein-4B", "dit_double_0", "h15g", false},
+		{"flux-3-image-klein", "vae_s0", "h13g", true},
+		{"flux-3-image-klein", "vae_s9", "h14g", true},
+		{"flux-3-image-klein", "vae_s9", "h15g", true},
+		{"Anima-Turbo", "vae_s0", "h15g", false},
+		{"Anima-Turbo", "vae_s0", "h13g", false},
+		{"Anima-Aesthetic", "vae_s9", "h14g", true},
+		{"Anima-Aesthetic", "vae_s9", "h16g", false},
+		{"Anima-Turbo", "dit_blocks_0", "h15g", false},
+	} {
+		if _, got := f.AppleOf(c.model).Left("e.coreai", c.program, c.arch); got != c.want {
+			t.Errorf("%s %s on %s: left %v", c.model, c.program, c.arch, got)
+		}
 	}
 }
 

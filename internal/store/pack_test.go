@@ -144,3 +144,100 @@ func TestDigest(t *testing.T) {
 		t.Error("the digest of other bytes is the same")
 	}
 }
+
+// putVersions puts the export exp as version 1, then as version 2 with the same files (a recipe
+// raised), then as version 3 with a file changed, in s; it returns the three folders.
+func putVersions(t *testing.T, s Source, exp string) [3]string {
+	t.Helper()
+	ctx := context.Background()
+	var rels [3]string
+	for i := range rels {
+		v := i + 1
+		if v == 3 {
+			write(t, filepath.Join(exp, "bank.bin"), strings.Repeat("other", 1000))
+		}
+		rels[i] = EntryPath("m", cache.AMDTarget, "m.amd-npu2", VersionDir(v, false, ""))
+		recipe := map[string]string{"model": "m", "version": string(rune('0' + v))}
+		e := describeAt(t, exp, rels[i], recipe)
+		e.Version = v
+		if err := WriteEntry(exp, e); err != nil {
+			t.Fatal(err)
+		}
+		if err := PutEntry(ctx, s, exp); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadEntryAt(ctx, s, rels[i])
+		if err != nil || got.Pack == nil || got.Version != v {
+			t.Fatalf("v%d: %+v %v", v, got, err)
+		}
+		out := filepath.Join(t.TempDir(), "m.amd-npu2")
+		if _, err := FetchEntry(ctx, []Source{s}, rels[i], func(Entry) bool { return true }, out, nil); err != nil {
+			t.Fatalf("v%d: %v", v, err)
+		}
+		if err := Verify(out, true); err != nil {
+			t.Fatalf("v%d: %v", v, err)
+		}
+	}
+	return rels
+}
+
+func testExport(t *testing.T) string {
+	exp := filepath.Join(t.TempDir(), "m.amd-npu2")
+	write(t, filepath.Join(exp, "manifest.json"), `{"version":1}`)
+	write(t, filepath.Join(exp, "bank.bin"), strings.Repeat("weights", 1000))
+	write(t, filepath.Join(exp, "sub", "graph.elf"), "elf")
+	return exp
+}
+
+// TestCopyPack: a version with the same files as one in the source takes its pack by a copy in
+// the source (a hard link in a folder), not packed and put again; one with other files is packed.
+func TestCopyPack(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	root := t.TempDir()
+	s := Source{Store: Dir{Name: "far", Root: root}, Writeback: true}
+	rels := putVersions(t, s, testExport(t))
+	ino := func(rel string) os.FileInfo {
+		fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel), PackFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi
+	}
+	if !os.SameFile(ino(rels[0]), ino(rels[1])) {
+		t.Error("v2 of the same files was packed again, not linked to v1's pack")
+	}
+	if os.SameFile(ino(rels[0]), ino(rels[2])) {
+		t.Error("v3 of other files took v1's pack")
+	}
+}
+
+// TestCopyPackWebDAV: over WebDAV the pack of the same files is copied on the server (COPY): no
+// PUT of it.
+func TestCopyPackWebDAV(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	d := newDAV(t)
+	s := Source{Store: openDAV(t, d), Writeback: true}
+	exp := testExport(t)
+	ctx := context.Background()
+	rels := putVersions(t, s, exp)
+	if d.methods["PUT"].Load() == 0 {
+		t.Fatal("no PUT counted")
+	}
+	if d.methods["COPY"].Load() != 1 {
+		t.Errorf("%d COPY, want 1 (v2)", d.methods["COPY"].Load())
+	}
+	// v2's folder holds its pack and entry.json alone
+	keys, err := s.Store.List(ctx, rels[1]+"/")
+	slices.Sort(keys)
+	if want := []string{rels[1] + "/" + EntryFile, rels[1] + "/" + PackFile}; err != nil || !slices.Equal(keys, want) {
+		t.Errorf("v2 holds %v (%v), want %v", keys, err, want)
+	}
+	// v2's pack is a copy of its own: v1's going leaves it
+	if err := s.Store.Delete(ctx, rels[0]+"/"+PackFile); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "m.amd-npu2")
+	if _, err := FetchEntry(ctx, []Source{s}, rels[1], func(Entry) bool { return true }, out, nil); err != nil {
+		t.Fatalf("v2 after v1's pack was removed: %v", err)
+	}
+}

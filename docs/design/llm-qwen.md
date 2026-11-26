@@ -171,9 +171,9 @@ Ported from `modeling_qwen3_5.py` (transformers 5.22). Checkpoints are image+tex
 - Partial draft acceptance: `state-rows` replays the kept rows on the host; otherwise
   `Speculate` reruns. See [llm-decoding.md](llm-decoding.md).
 
-### Gated delta rule over chunks (`delta=chunk`, default)
+### Gated delta rule over chunks
 
-Row by row (`delta=rows`), the state (4B: 32 × 128 × 128 fp16 = 1 MiB a layer) is read and
+Row by row (the `delta=rows` form, removed 2026-11-26), the state (4B: 32 × 128 × 128 fp16 = 1 MiB a layer) is read and
 written 5 times a row: ~1.3 GB a step over 24 layers, 30% of the 4.25 GB weights.
 `deltaRuleChunks` (flash-linear-attention's `chunk_gated_delta_rule`, WY form) reads the state
 as `k S0` and `q S0` and writes it once per chunk of 8 rows. With G_t = g_1 + … + g_t

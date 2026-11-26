@@ -13,11 +13,13 @@
 hwnpu-dev models package FLUX.2-klein-4B
 ```
 
-- レシピがあるモデルは、ターゲットを書かなくてよい。Core AI の書き出しを作り、レシピのチップ (`archs`) 向けにプリビルドし、取得元 (`HWNPU_MODEL_SOURCE …?writeback=true`) に置く
+- ターゲットを書かなくてよい。Core AI の書き出しを作り、取得元 (`HWNPU_MODEL_SOURCE …?writeback=true`) に置く。レシピに `prebuilt: true` のあるモデル (画像生成: FLUX.2 klein、FLUX.3 klein、Anima) は、続けてレシピのチップ (`archs`) 向けにプリビルドして置く。ほかのモデルはプリビルドしない (部品が小さく、Mac ではプリビルトから読むほうが端末のコンパイルより遅い: [known-issues](known-issues.md) 9 節)
+- 書き戻す取得元がないときは、作ったものは手元に残る (プリビルトは書き出しの隣の `EXPORT.prebuilt/ARCH`)。エラーにはしない
 - `MODEL/coreai-h14g` のようにチップを書くと、そのチップだけを作る。並列数と、実機に回すプログラムは、そのときもレシピのとおり
 - チップによって書き出しが違うモデル (FLUX.2 klein は M1 だけ別: models.yaml の `npu.apple.generation_edits`) は、M1 として作った書き出しを h13 の種類 (h13g、h13s、…) だけに、M2 として作った書き出しをそのほかの種類だけにプリビルドする (`chat.TakesExportsOf`)。ほかのチップの書き出しのプリビルトは作らない。手元の書き出しを `hwnpu-dev prebuild EXPORT_DIR` で作るときは、この振り分けがないので `-arch` で種類を名指しする
-- 手元の書き出しだけをプリビルドするときは `hwnpu-dev prebuild -put EXPORT_DIR`。どのモデルのレシピかは、書き出しの `entry.json` の `model` から決める (`-model NAME` で指定もできる)
+- 手元の書き出しだけをプリビルドするときは `hwnpu-dev prebuild -put EXPORT_DIR`。どのモデルのレシピかは、書き出しの `entry.json` の `model` から決める (`-model NAME` で指定もできる)。`-arch` を書かないと、`prebuilt: true` のモデルの書き出しだけをレシピのチップ向けに作り、ほかのモデルの書き出しは一言出して飛ばす。測り直すときは `-arch` (`models package` なら `MODEL/coreai-ARCH`) で名指しすれば、どのモデルでも作る
 - `-arch` と `-j` は、レシピより優先する。確かめのとき以外は書かない
+- 作り直すとき (版が上がったときなど)、source (`main.hash`) の変わらない部品は、同じモデルのフォルダにある前の書き出しの prebuilt を流用して、コンパイルしない。流用するのは、記録 (`NAME.coreai.prebuilt/ARCH/build.json`) で同じ coreai-build、同じかより少ない同時数、端末に任せる決まりなし、NE に乗っている、端末で落ちた印なし、と分かるものだけ。記録のない前の prebuilt には `hwnpu-dev prebuild -record` で一度記録を足す (足すまでは、その場所では使うが、ほかの書き出しへは流用しない)。端末で落ちた印 (`failedToSpecialize`) は動かしたときに自動で付き、`hwnpu-dev prebuild -mark` でも付けられる ([prebuilt-reuse](prebuilt-reuse.md))
 - AMD のレシピ (`amd`) があるモデルは、Linux と Windows ではターゲットを書かなくても、レシピの世代 (`generations`) の書き出し (`amd-xdna2`) を作る。Mac では AMD の分を、ほかの OS では Core AI のプリビルドの分を、一言出して飛ばす
 - `MODEL/amd-xdna2` のように世代のターゲットを書くと、その世代だけを作る。hwnpu がまだ動かさない世代 (`amd-xdna1`) と、レシピが `skip` する世代は、理由を出して止まる
 
@@ -30,12 +32,13 @@ tools:
   coreai-build: 3605.6.3        # coreai-build --version。違う版では止まる (--any-tools で作れる)
 
 apple:                          # どのモデルにも効く既定
-  archs: [h13g, h14g, h15g]     # プリビルドするチップ (h13g M1、h14g M2、h15g M3)
+  archs: [h13g, h14g, h15g]     # プリビルドするチップ (h13g M1、h14g M2、h15g M3)。プリビルドするのは prebuilt: true のモデルだけ
   jobs: 2                       # coreai-build を何本同時に動かすか
 
 models:
   FLUX.2-klein-4B:              # models.yaml のモデルの名前
     apple:                      # archs と jobs は既定より優先し、prebuild は既定のあとに足す
+      prebuilt: true            # チップを名指さないビルドでも archs 向けにプリビルドする (画像生成のモデルだけ)
       prebuild:
         - arch: h13g                                    # 1 つか並び。省くと全部
           export: "flux.2-klein-4b-8sizes-*"            # 書き出しの名前のパターン。省くと全部
@@ -63,6 +66,20 @@ models:
 - `hwnpu-dev models package MODEL` は、置き換えの組ごとに 1 つずつ書き出しを作って置く (`Apple.RewriteArchs`)
 - 動かすときは、その Mac のチップ (`coreai.Arch`) の規則で選ぶ。比べるときは `HWNPU_DEV=rewrite=sin:series` (または `sin:native`) で、その Mac の分だけ上書きできる
 - 置き換えを使うモデルのコードは、`llm.Options.Rewrites` を読んで書き分け、書き出しの名前に `recipe.Suffix` を付ける (MOSS の DAC: `sfx.DACOps`)
+
+チップ (`apple.chips`) は、そのチップの Neural Engine がほかより受けられないものを書く。会話のモデルの変換がチップで変わるのはこれによる (`chat.ExportChips` の M1 の書き出し):
+
+```yaml
+apple:
+  chips:
+    M1:
+      hold_mib: 2867   # 一緒に読み込む重みがこれを超えると呼び出しが遅くなる: 生成のプログラムがプロンプトも読む
+      whole: false     # 短い会話の分けないプログラムを作らない (注意で分けたものより遅い)
+      gather_nd: false # gather_nd で倍率を選ぶ専門家のプログラム (混合専門家) を断る
+```
+
+- 書いていないチップは、どれも受けられる (M2 以降)。モデルごとには書かない (ファイルの `apple` だけ)
+- 会話のモデル (`code` に `internal/chat/model.go`) の指紋 (`AppleFingerprint`) に入る: 値を変えたら、そのモデルの版を上げる
 
 - 知らないキー、知らない版、知らないチップの名前、知らない演算と書き方は、読むときに誤りにする
 - `why` と `checked` は省けない。あとで Metal Toolchain が上がったときに、その規則がまだ要るかを確かめるため
@@ -184,23 +201,27 @@ models:
 - coreai-build のエラーは出力ではなく os_log に出る。そこで、落ちた coreai-build のプロセスのログ (`/usr/bin/log show --predicate 'processID == PID'`) から、理由の行を拾って表示する
 - 表示の最後に、そのプログラムを端末に回すときのレシピの規則を示す。プログラムの作り方を直すか、その規則を model-recipes.yaml に書き足して PR にする
 - 2 本同時のコンパイルで NPU から外れたものは、Build が最後に 1 本ずつ作り直してから判断する (外した Chroma1 の double で見た)
+- 同じ source の prebuilt が端末で落ちた印 (`build.json` の `device.status`) のある部品は、作り直しても同じものになるので作らず、同じように止まって端末に回す規則を示す ([prebuilt-reuse](prebuilt-reuse.md) 3節)
 
 ## 4. 実機に回る仕組み
 
 - `do: device` のプログラムはプリビルドしない。端末がそのプログラムのプリビルドを探しても見つからないので、端末のコンパイラがコンパイルする (初回だけ。そのあとは Core AI のキャッシュから)
-- VAE (`vae*`)、文のエンコーダー (`text*`)、名前が `_device` で終わるプログラムは、レシピとは別に、いつも端末に回る (`coreai.LeftToDevice`)。動かすときにも使う決まりなので、コードに残している
+- 文のエンコーダー (`text*`) と、名前が `_device` で終わるプログラムは、レシピとは別に、どのチップでもいつも端末に回る (`coreai.LeftToDevice`)。動かすときにも使う決まりなので、コードに残している。VAE (`vae_*`) はチップとモデルで違うので、レシピに書く (下の表)
 
 ## 5. いまのレシピの中身 (2026-11-25)
 
 | モデル | M1 (h13g) | M2 (h14g) | M3 (h15g) |
 |---|---|---|---|
-| FLUX.2 klein 4B | 全部プリビルド。ただし書き出しは M1 用 (1024² の参照 1 枚を 512 で読む。8192 キー以上の関数は h13g のプリビルトが壊れる: [known-issues](known-issues.md) 13 節) | 全部プリビルド | 全部プリビルド |
+| FLUX.2 klein 4B | 全部プリビルド。ただし書き出しは M1 用 (1024² の参照 1 枚を 512 で読む。8192 キー以上の関数は h13g のプリビルトが壊れる: [known-issues](known-issues.md) 13 節)。VAE (`vae_*`) は端末で (縞、`Request cancelled`) | VAE (`vae_*`) を端末で (512² の帯) | VAE (`vae_*`) を端末で (M3 でのプリビルドは FLUX の別の変更で) |
+| FLUX.3 klein | VAE (`vae_*`) を端末で (FLUX.2 klein と同じ復号器) | VAE (`vae_*`) を端末で (512² の帯) | VAE (`vae_*`) を端末で (同上) |
+| Anima-Turbo、Anima-Aesthetic | VAE (`vae_*`) を端末で | VAE を端末で | VAE を端末で |
 | MOSS-SoundEffect v2.0 (`-lut8` も) | sin は級数 | sin は級数 | sin はそのまま (`-sin-native` の書き出し) |
-| FLUX.3 klein | 全部プリビルド | 全部プリビルド | 全部プリビルド |
 
-FLUX.3 klein (Apple の版 2) は、規則なしで 3 つのチップとも通った (2026-11-25、M3 の上の coreai-build 3605.6.3)。DiT の 9 本 (`ctx`、`dit_image_0`、`dit_text_0`、`dit_single_*` の 6 本) をプリビルドし、文のエンコーダーと VAE は端末に回る (`LeftToDevice`)。単ブロックの 1 本 (5 ブロック) は M3 で 6〜7 分、M2 で 9〜12 分、M1 で 18〜27 分。M1 のコンパイルされた区間は M2 の 1.5 倍 (74 MB と 49.5 MB)。M1 の実機では、NAS の書き出し (9.2 GB) と h13g のプリビルド (0.15 GB) を取ってきて、プリビルドの失敗 (`the prebuilt program failed`) なしに全部 Neural Engine で動いた。512² は 1 ステップ 4.0〜4.2 秒、1024² は 16.8〜17.2 秒 (16 ステップと VAE 9.3 秒で 4 分 45 秒)。どちらも縞、雑音、継ぎ目はない。初回は 49 分 33 秒 (取得 7 分 25 秒、残りは端末に回る文のエンコーダーと VAE のコンパイルと仕上げ。FLUX.2 のプリビルドを同時に動かしていたので遅めに出ている)。
+FLUX.3 klein (Apple の版 2) は、規則なしで 3 つのチップとも通った (2026-11-25、M3 の上の coreai-build 3605.6.3)。DiT の 9 本 (`ctx`、`dit_image_0`、`dit_text_0`、`dit_single_*` の 6 本) をプリビルドし、文のエンコーダーと VAE は端末に回る (このときは `LeftToDevice`。VAE はいまはレシピの決まりで全チップ端末: 上の表)。単ブロックの 1 本 (5 ブロック) は M3 で 6〜7 分、M2 で 9〜12 分、M1 で 18〜27 分。M1 のコンパイルされた区間は M2 の 1.5 倍 (74 MB と 49.5 MB)。M1 の実機では、NAS の書き出し (9.2 GB) と h13g のプリビルド (0.15 GB) を取ってきて、プリビルドの失敗 (`the prebuilt program failed`) なしに全部 Neural Engine で動いた。512² は 1 ステップ 4.0〜4.2 秒、1024² は 16.8〜17.2 秒 (16 ステップと VAE 9.3 秒で 4 分 45 秒)。どちらも縞、雑音、継ぎ目はない。初回は 49 分 33 秒 (取得 7 分 25 秒、残りは端末に回る文のエンコーダーと VAE のコンパイルと仕上げ。FLUX.2 のプリビルドを同時に動かしていたので遅めに出ている)。
 
 MOSS の DAC の sin は、coreai-build で 5 つの段を見た。sin をそのまま書くと、h13g、h14g、h14c (M2 Pro・Max) は 1 段が Neural Engine の 8〜9 個の区間に分かれる (sin がその間で外に出る)。h15g/c、h16g/s/c、h17g/s/c/d は 1 区間に収まる (h15s/m/d と h17p は coreai-build が落ちるので見ていない)。M3 では、この書き出しを取ってきて音を作れた。級数はどのチップでも 1 区間。sin の前の clip は、sin とまとめられて (NEFUSED_EW: EW: MAX) h15g でも通らないので、そのまま書くときは clip を外す (clip は丸めのためのもの)。音声のプリビルドは置かない (M1 で遅いか壊れていた) ので、DAC は全部端末に回す規則にしてある。
+
+FLUX.2 klein の VAE は、M3 で端末がコンパイルすると初回に 10 段で 2799 秒 (`vae_s6`〜`s8` が各約 600 秒) かかり、h15g のプリビルドなら 0.9 秒で、どの段の出力もバイトまで同じだった (2026-11-25)。M1 と M2 は 512² で 112 行ごとの帯が出た。FLUX.3 klein も同じ復号器で、M3 の 1024² の初回が 19 分 27 秒から 2 分 43 秒になり、絵はバイトまで同じだった (2026-11-26)。FLUX の VAE はいまはどのチップでも端末に回し、M3 でプリビルドにするのは FLUX の別の変更にする。Anima の VAE は、書き出し v5 まで coreai-build (Metal Toolchain 27.2.47) がどのチップでも 10 段のうち 8 段を落としていた (residual block のネイティブの silu)。v6 で exp の形にしてからは全段が通り、M3 では端末のコンパイルが 512² の 10 段で 482 秒 (v5 は 3552 秒)、h15g のプリビルドと出力がバイトまで同じだった (2026-11-26)。M3 では、プリビルドの VAE で描いた絵が、端末でコンパイルした VAE の絵と 512² も 1024² もバイトまで同じだった。M1 も正しく描けたのでプリビルドする。M2 は h14g のプリビルドで 160 ピクセルごとの帯が出たので、端末に回す (2026-11-27)。
 
 どれも、落ちるまでに 1 本 1〜3 時間かかっていた。レシピに書いたので、もう試さない。
 

@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
-
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -174,6 +172,9 @@ func metadata(a *Arch, model Model, w Weights, opts Options) map[string]string {
 	m := map[string]string{MetaSource: w.Source(), MetaFormat: opts.Format, MetaArch: a.Name}
 	for _, p := range a.Params {
 		m[MetaParam+p.Name] = a.Param(opts, p.Name)
+	}
+	for name, v := range a.Fixed {
+		m[MetaParam+name] = v
 	}
 	if lc, ok := model.(LogitSoftcap); ok {
 		if c := lc.HostSoftcap(opts); c > 0 {
@@ -359,9 +360,6 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		man.Parts = append(man.Parts, rec)
 	}
 	form := "grouped"
-	if a.Param(opts, "attn") == "tile" {
-		form = "tile"
-	}
 	apath := base + ".attn" + ext
 	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-dev convert)", a.Title, opts.Paged, opts.Seq, form)
 	var ins, outs []mlpackage.Feature
@@ -414,7 +412,7 @@ func writeMass(base, ext string, sh paged.Shape, form string, seq, chunk int, ti
 
 // AddMass adds the mass program of the two-level attention (decode.Sparse) to a model split at
 // its attention converted before there was one: it has no weights, so it is written from the
-// attention program's shape, next to it, in the attention's form ("grouped" or "tile", Build),
+// attention program's shape, next to it, in the attention's form (grouped, Build),
 // with the model's score scale (paged.Shape.Scale: 0 for 1/sqrt(head_dim), 1 for Gemma 4), as IR
 // for a manifest of Intel's NPU. It does nothing for a manifest that has it, or that is not split
 // at its attention.
@@ -505,13 +503,12 @@ func AddSmaller(path, form string, model paged.Shape, from int) error {
 }
 
 // attentionForm is the form the attention programs of a model split at its attention are
-// written in for backend, from the model's (its architecture's attn: grouped or tile): Core AI
+// written in for backend, from the model's (grouped): Core AI
 // runs a grouped attention of several kv heads faster a kv head at a time (paged.Heads). One kv
 // head for all the heads written so leaves the Neural Engine (Gemma 4 E2B, PLaMo 3 Translate
-// 0.8B): it stays grouped. HWNPU_DEV=attention=grouped keeps the model's own form, for comparing
-// the two: the programs are written again when it changes (RefreshAttention).
+// 0.8B): it stays grouped. Programs written grouped before are written again (RefreshAttention).
 func attentionForm(backend, form string, sh paged.Shape) string {
-	if backend == BackendCoreAI && form == "grouped" && sh.KVHeads > 1 && devenv.Value("attention") != "grouped" {
+	if backend == BackendCoreAI && form == "grouped" && sh.KVHeads > 1 {
 		return paged.Heads
 	}
 	return form

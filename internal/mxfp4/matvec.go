@@ -1,7 +1,6 @@
 package mxfp4
 
 import (
-	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -25,9 +24,9 @@ func (j Job) Rows() int { return len(j.Out[0]) }
 // performance, 4 of efficiency), so they take the next chunk as they finish one.
 const chunk = 32
 
-// padFrom is how many vectors past a multiple of 8 take a group of SMMLA padded with zeros
-// (HWNPU_DEV=mxfp4.pad=N).
-var padFrom = 6
+// padFrom is how many vectors past a multiple of 8 take a group of SMMLA padded with zeros (other
+// thresholds made no difference, docs/design/moe.md).
+const padFrom = 6
 
 // Run runs the jobs over the CPU's cores.
 func Run(jobs ...Job) {
@@ -164,15 +163,8 @@ func Run(jobs ...Job) {
 // ms a layer, 15.8 tokens/s either way; 4: 12.0 tokens/s), so it was taken out
 // (docs/design/performance.md).
 
-func init() {
-	if v, ok := Opt("pad"); ok {
-		fmt.Sscan(v, &padFrom)
-	}
-}
-
-// Opt reads the item mxfp4.NAME of HWNPU_DEV (internal/dev), for measuring:
-// i8mm=0 runs without SMMLA (the SDOT kernels), pad=N the vectors past a multiple of 8 that take
-// a padded group of SMMLA (6), bench=LAYERS the layers TestTokenTime times.
+// Opt reads the item mxfp4.NAME of HWNPU_DEV (internal/dev), for measuring: bench=LAYERS the
+// layers TestTokenTime times.
 func Opt(name string) (string, bool) {
 	return devenv.Get("mxfp4." + name)
 }

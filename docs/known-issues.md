@@ -104,7 +104,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
   - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
   - M1、M2 では測っていない
-- **今**: 画像生成のモデル (FLUX.2 klein、Anima) にだけ prebuilt を置く。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
+- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) にだけ prebuilt を置く。model-recipes.yaml の `apple.prebuilt: true` がその印で、`hwnpu-dev models package MODEL` と `hwnpu-dev prebuild EXPORT` は、チップを名指さなければ印のあるモデルだけをプリビルドする。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
 - **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (FB25724316)
@@ -124,12 +124,12 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 ## 12. h15g の DMA のキャッシュの指定が端末の検査に落ちる (FB25744357)
 
 - **何が**: FLUX.2 klein の DiT (8 つの大きさの関数を持つプログラム) の h15g 向けの prebuilt が、M3 (macOS 27.2.1) で全部 `failedToSpecialize` になった。Core AI は関数が 1 つ仕上がらないとプログラムごと使わないので、DiT の 7 つの部品がどれも端末でコンパイルされた (1 つ 3〜19 分。初回が prebuilt のないときと同じ)。落ちていたのは 512² の関数だけ。端末の仕上げ (ANELargeModelCompilerService) が "tile_dma_src.dma_config2.cache_hint != ane_tile_dma_src_dma_config2_cache_hint_drop_v8"、"Instruction corresponding to oplayer … failed validation test"、"Invalid TD exists" を出す。M1 で作ったものとこの機械で作ったものは、日付と統計のファイルのほかはバイト単位で同じで、どちらも落ちる。`--min-deployment-version 27.2` でも `--expect-frequent-reshapes` でも同じ
-- **原因の形**: attention の、1536 個のキーに対する 512 行のクエリの塊 (1536 行を `HeadChunk` の 1024 行ずつに分けた残り)。attention だけのプログラムでも起きる (1 ヘッド、キーを分けなくても)。768 行ずつ、1536 行まとめて、1024 個のキーに 512 行、3072 個のキーに 512 行は通る。1792 個のキーに 1280 行と 512 行も落ちる。attention だけでは 3968 行や 4032 行も落ちたが、DiT の中では通る (周りの演算とまとめ方で変わる)。どの形で起きるかは、オフラインのコンパイラの割り付け次第で、読めない
+- **原因の形**: attention の、1536 個のキーに対する 512 行のクエリの塊 (1536 行を `HeadChunk` の 1024 行ずつに分けた残り)。キーを部分 (1024 + 512) に分けて 1 つの softmax にした形 (`exp(x - max) × (1/sum)`) で起き、attention だけの 1 ヘッドのプログラムでも起きる。キーを 1 つのテンソルのままにすると通る (2026-11-27、M3)。768 行ずつ、1536 行まとめて、1024 個のキーに 512 行、3072 個のキーに 512 行は通る。1792 個のキーに 1280 行と 512 行も落ちる。attention だけでは 3968 行や 4032 行も落ちたが、DiT の中では通る (周りの演算とまとめ方で変わる)。どの形で起きるかは、オフラインのコンパイラの割り付け次第で、読めない
 - **今**: 行が 1 塊より多く 2 塊より少ないとき、半分ずつ (64 の倍数) にする (`flux2klein/mil` の `headChunk`)。FLUX.2 klein で変わるのは 512² の文からの生成だけ (1536 行 → 768 + 768)。計算は同じ (行ごとの softmax)。書き出しの版を 4 にした (`ExportVersion`。3 までは編集の置き方)。M3 で、直した 512² の DiT の 7 部品は prebuilt から全部仕上がり、直す前のものは全部落ちた。編集の 5 通り (2560 行から) は変わらない
 - **作り直し**: 書き出しの名前が `-v4` になるので、FLUX.2 klein の書き出しと、各種類の prebuilt (6 節) を作り直して取得元に置く。v3 までの prebuilt は使われなくなる
 - **直ったら**: 何もしなくてよい
 - まだ見ていないもの: h15g 以外の種類の端末での検査 (この機械は h15g だけ)
-- 確かめ方: `coreai-build compile … --architecture h15g` で作った `.aimodelc` を M3 で開き (AIModel(contentsOf:))、`/usr/bin/log stream` に "cache_hint" が出るか。attention だけなら 1536 行、`HeadChunk` 1024 のもので足りる
+- 確かめ方: `coreai-build compile … --architecture h15g` で作った `.aimodelc` を M3 で開き (AIModel(contentsOf:))、`/usr/bin/log stream` に "cache_hint" が出るか。attention だけなら `fbrepro attn -chunk 1024 -parts` で足りる ([apple-feedback/repro.md](apple-feedback/repro.md))。M3 がなくても、`.aimodelc` の LLIR に、転置とブロードキャストをした入力を tile DMA で `cache_hint` 4 で読む planar engine の乗算があるかで見分けられる
 
 ## 13. h13g (M1) 向けの 8192 キー以上の attention が端末で壊れる (未報告)
 

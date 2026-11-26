@@ -56,6 +56,11 @@ type Entry struct {
 	// that a machine finds the entry by what it would compile; PutEntry replaces an entry of the
 	// same key that holds less (HoldsMore), and a machine that lacks a part fetches it again.
 	Holds []string `json:"holds,omitempty"`
+	// Revision is what of the entry changes without its readers fetching it again (the SHA-256
+	// of the record of the build of prebuilt programs: coreai.RecordFile): PutEntry replaces an
+	// entry of the same key and holdings whose revision is another, but not with one that holds
+	// less.
+	Revision string `json:"revision,omitempty"`
 	// MadeBy is the tools and the machine that made it, recorded only (not in the key).
 	MadeBy map[string]string `json:"made_by,omitempty"`
 	Made   time.Time         `json:"made"`

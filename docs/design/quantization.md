@@ -173,7 +173,7 @@ Codes:
 - `rotkl` on the CPU (milcpu, float32, 256 tokens, kmeans-minmax): Qwen3.5-2B lut8 0.0047 → 0.0033, lut6 0.0560 → 0.0267, lut4 0.6026 → 0.3664; 0.8B lut6 0.0749 → 0.0388. fp16 rounding does not break the range
 - lut4 stays unusable even rotated, and no lut4 mix reaches today's lut6 (closest: head lut4, 0.062), so rotation buys accuracy for lut6, not speed
 - On the Neural Engine (`rotkl -ane -per-part 6`, M2, 2B, 128 tokens against the CPU's fp16): lut6 0.0537 → **0.0288**; lut8 0.0079 → 0.0091 (the NE's own fp16 error hides the gain)
-- **Default for Qwen3.5's lut6 exports on Apple** (the 2B): `chat.Prepare` rotates rotatable models at lut6 and below on Core AI and Core ML (`-rot` in the export name; `HWNPU_DEV=rotate=0` off, `=1` lut8 too). AMD and Intel exports are not rotated; Qwen3.6 is not (its experts are MXFP4 on the CPU and would need re-quantizing). Results and the MTP / table handling: [Qwen](llm-qwen.md)
+- **Default for Qwen3.5's lut6 exports on Apple** (the 2B): `chat.Prepare` rotates rotatable models at lut6 and below on Core AI and Core ML (`-rot` in the export name). AMD and Intel exports are not rotated; Qwen3.6 is not (its experts are MXFP4 on the CPU and would need re-quantizing). Results and the MTP / table handling: [Qwen](llm-qwen.md)
 
 ## Failure modes
 

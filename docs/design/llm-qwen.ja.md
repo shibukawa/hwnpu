@@ -164,9 +164,9 @@ Qwen3 のもの。
 - 下書きを途中まで採るとき: `state-rows` がホストで残す行を進める。なければ `Speculate` が回し直す。
   [llm-decoding.md](llm-decoding.ja.md)
 
-### Gated delta rule を塊の形で (`delta=chunk`、既定)
+### Gated delta rule を塊の形で
 
-1 行ずつ (`delta=rows`) では、状態 (4B: 32 × 128 × 128 の fp16 で 1 層 1 MiB) を 1 行に 5 回読み書き
+1 行ずつ (`delta=rows` の形、2026-11-26 に削除) では、状態 (4B: 32 × 128 × 128 の fp16 で 1 層 1 MiB) を 1 行に 5 回読み書き
 する: 24 層で 1 ステップ約 1.3 GB、重み 4.25 GB の 3 割。`deltaRuleChunks` (flash-linear-attention の
 `chunk_gated_delta_rule`、WY 表現) は 8 行の塊で、状態を `k S0` と `q S0` で読み、1 回書く。
 G_t = g_1 + … + g_t (減衰の対数)、Γ_t = exp(G_t) として:

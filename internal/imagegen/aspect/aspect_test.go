@@ -2,24 +2,22 @@ package aspect
 
 import "testing"
 
-// Each aspect ratio's name gives its size, of the model's multiple, and back.
+// Each aspect ratio's name gives its size, a multiple of 16, and back.
 func TestParse(t *testing.T) {
-	for _, m := range []int{16, 32} {
-		for _, a := range Of(m) {
-			w, h, err := Parse(a.Name, m)
-			if err != nil || w != a.Width || h != a.Height {
-				t.Errorf("Parse(%q, %d) = %dx%d, %v", a.Name, m, w, h, err)
-			}
-			if w%m != 0 || h%m != 0 {
-				t.Errorf("%s at %d: %dx%d is no multiple", a.Name, m, w, h)
-			}
-			if got := Name(w, h, m); got != a.Name {
-				t.Errorf("Name(%d, %d, %d) = %q, want %q", w, h, m, got, a.Name)
-			}
-			// the latents' (h/8) x (w/8) within 16384 pixels: a VAE's middle attention
-			if w/8*(h/8) > 16384 {
-				t.Errorf("%s at %d: %dx%d's latents are %d pixels", a.Name, m, w, h, w/8*(h/8))
-			}
+	for _, a := range All {
+		w, h, err := Parse(a.Name)
+		if err != nil || w != a.Width || h != a.Height {
+			t.Errorf("Parse(%q) = %dx%d, %v", a.Name, w, h, err)
+		}
+		if w%16 != 0 || h%16 != 0 {
+			t.Errorf("%s: %dx%d is no multiple of 16", a.Name, w, h)
+		}
+		if got := Name(w, h); got != a.Name {
+			t.Errorf("Name(%d, %d) = %q, want %q", w, h, got, a.Name)
+		}
+		// the latents' (h/8) x (w/8) within 16384 pixels: a VAE's middle attention
+		if w/8*(h/8) > 16384 {
+			t.Errorf("%s: %dx%d's latents are %d pixels", a.Name, w, h, w/8*(h/8))
 		}
 	}
 	if w, h, err := ParseOrSide("768", 16); err != nil || w != 768 || h != 768 {
@@ -54,7 +52,7 @@ func TestWith(t *testing.T) {
 	if w, h, err := ParseOrSideIn("2:3", as, 16); err != nil || w != 832 || h != 1248 {
 		t.Fatalf("2:3: %d %d %v", w, h, err)
 	}
-	if w, h, _ := Parse("16:9", 16); w != 1360 || h != 752 {
+	if w, h, _ := Parse("16:9"); w != 1360 || h != 752 {
 		t.Fatalf("All's 16:9 changed: %d %d", w, h)
 	}
 }
@@ -72,8 +70,7 @@ func TestTag(t *testing.T) {
 			t.Errorf("Tag(%v) = %q, want %q", c.sizes, got, c.want)
 		}
 	}
-	a, b := Tag(SizesOf(All)), Tag(SizesOf(All32))
-	if len(a) != len("8sizes-")+8 || a[:7] != "8sizes-" || a == b {
-		t.Errorf("Tag of All %q, of All32 %q", a, b)
+	if a := Tag(SizesOf(All)); len(a) != len("8sizes-")+8 || a[:7] != "8sizes-" {
+		t.Errorf("Tag of All %q", a)
 	}
 }

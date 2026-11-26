@@ -29,14 +29,21 @@ type davServer struct {
 	requests atomic.Int64
 	ranges   atomic.Int64
 	conns    atomic.Int64 // the connections made to it
+	methods  map[string]*atomic.Int64
 }
 
 func newDAV(t *testing.T) *davServer {
 	t.Helper()
-	d := &davServer{root: t.TempDir()}
+	d := &davServer{root: t.TempDir(), methods: map[string]*atomic.Int64{}}
+	for _, m := range []string{"PUT", "COPY", "MOVE"} {
+		d.methods[m] = new(atomic.Int64)
+	}
 	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(d.root), LockSystem: webdav.NewMemLS()}
 	d.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.requests.Add(1)
+		if n, ok := d.methods[r.Method]; ok {
+			n.Add(1)
+		}
 		if u, p, ok := r.BasicAuth(); !ok || u != "u" || p != "p" {
 			w.Header().Set("WWW-Authenticate", `Basic realm="dav"`)
 			http.Error(w, "sign in", http.StatusUnauthorized)

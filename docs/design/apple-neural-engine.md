@@ -49,7 +49,7 @@ stand-ins are in the graphs for both backends.
 | `gather` | Always | One-hot matmul |
 | `reduce_sum` of exponentials | Varies by compile | Sum with a matmul by ones |
 | Attention copying K/V with `tile` | Always | `SDPAGrouped` (op order alone changes placement) |
-| A 262144-vocabulary `reshape`; `transpose` in the last part | That op | Reorder on the host (PLaMo 3; Gemma 4 `-logits host`) |
+| A 262144-vocabulary `reshape`; `transpose` in the last part | That op | Reorder on the host (PLaMo 3; Gemma 4's softcap on the host) |
 | `conv_transpose` (M1) | Strides 5 and 7; 8, 4, 3 run but are off | Polyphase conv |
 | Dilated conv, `max_pool` (M1) | Dilations 17–48; windows 9 and 13 | Shifted copies + 1×1 conv; chains of window 5 |
 | Depthwise conv (M1) | Over 4096 channels | Chunks of ≤ 4096 |
@@ -127,7 +127,10 @@ Two processes using the ANE at once froze an M1 (predictions never returned, unk
 back after about 20 minutes). So:
 
 - `llm.OpenDevice` takes an exclusive flock on `hwnpu/neural-engine.lock` in the user cache for a
-  Core AI or Core ML device and holds it until the process ends. The second process prints
+  Core AI or Core ML device and holds it until the process ends. The file is always in the user's
+  cache (`~/Library/Caches/hwnpu`): a process on another cache (`HWNPU_CACHE`) waits for the same
+  lock (until 2026-11-26 it lay under the cache, and a session with a cache of its own ran on the
+  ANE beside another). The second process prints
   `waiting for the Neural Engine: process N (NAME) is using it …`. Tools that open a provider directly
   take `llm.LockNPU`.
 - After taking the lock, `settle` waits until the previous process's programs are gone from the ANE
@@ -138,6 +141,9 @@ back after about 20 minutes). So:
   working program fail.
 - The lock cannot be skipped (`HWNPU_NPU_LOCK` was removed on 2026-11-22). Other sessions may
   hold it for hours: queue ANE work.
+- A process started by one that holds the lock runs under it (`HWNPU_NPU_LOCK_FD`, the lock
+  file's descriptor passed on: `tools/coreai/aicheck locked CMD`). The lock is not skipped: the
+  parent keeps it, so that no other session takes the ANE between the commands of a series.
 
 ## Neural Engine memory
 
@@ -156,7 +162,8 @@ back after about 20 minutes). So:
 - A 2.8 GiB budget on every chip: M2+ would lose prompt programs. Only the M1 loads fewer.
 - `x · sigmoid(x)` for silu: same values as the ANE's `silu`.
 - The exp form of `gelu` (Gemma 4): no change. The exp form of the VAE's silu in Anima: no change in
-  images, VAE 15–20 % slower.
+  images, VAE 15–20 % slower (Core ML; Core AI's export takes it all the same, as `coreai-build` fails
+  on the native one: docs/design/image-apple.md).
 - Prompt calls of 256 tokens: no faster than 128, heavier to load.
 - Splitting attention queries by default: no gain on Whisper's 90 MB scores.
 

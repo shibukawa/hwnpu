@@ -151,12 +151,12 @@ Gemma 4, Qwen3.5, PLaMo 3; Qwen3 only on Core AI), on Core ML, Core AI and Intel
 
 ### Attention program forms
 
-- `grouped` (`blocks.SDPAGrouped`, LFM3's `attn` default): one product per kv head over stacked query
-  heads, no `tile` copy of K/V. `tile` remains selectable.
+- `grouped` (`blocks.SDPAGrouped`): one product per kv head over stacked query heads, no `tile` copy of
+  K/V (the `tile` form, LFM3's `attn=tile`, was removed 2026-11-26).
 - `paged.Heads` (Core AI, kv heads ≥ 2; `llm.attentionForm`): queries of a kv head as (1, 1, rows, d),
   scores laid out (1, rows, 1, keys), scale on the queries, max and sum over the last axis with `reduce_sum`.
   5–26% faster per call (M1). With 1 kv head (Gemma 4 E2B, PLaMo 3 0.8B) it leaves the Neural Engine, so
-  those stay `grouped`. `HWNPU_DEV=attention=grouped` forces the old form for comparison.
+  those stay `grouped`.
 - `llm.RefreshAttention` rewrites the attention programs of an older export (`Manifest.AttnForm`); weight
   parts stay. `chat.Prepare` calls it after `AddMass`.
 - The mass program (`paged.BuildMass`) stays `grouped`.
@@ -211,7 +211,7 @@ A tier switch costs about 15 ms once (Core ML).
   tokens 4.2–4.6 → 2.4–2.7 s, generation after it 18.5–21.5 → 21.6–24.4 tokens/s (the second program no
   longer evicts a generating part). Marks without logits are never used at the prompt's end
   (`errNoLogits`).
-- Host logit softcap (Gemma 4, `-logits host`): see [LLM models](llm-models.md). `decode` applies the
+- Host logit softcap (Gemma 4): see [LLM models](llm-models.md). `decode` applies the
   softcap from the part metadata unless `SetRawLogits(true)`.
 
 ## Reusing prompts

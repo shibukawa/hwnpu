@@ -9,12 +9,12 @@ import (
 	"testing"
 )
 
-// TestBuildLeavesVAEToDevice: Build passes over a VAE's and a text encoder's programs
-// (LeftToDevice), whose prebuilt ones come out wrong on the device, and Prebuilt does not take one
-// that lies there already.
-func TestBuildLeavesVAEToDevice(t *testing.T) {
+// TestBuildLeavesTextToDevice: Build passes over a text encoder's programs (LeftToDevice) and
+// builds a VAE's (the recipe leaves those it must to the device), and Prebuilt does not take a
+// text encoder's that lies there already.
+func TestBuildLeavesTextToDevice(t *testing.T) {
 	export := filepath.Join(t.TempDir(), "m.coreai")
-	for _, n := range []string{"dit_0", "vae_s0", "vae", "text_0"} {
+	for _, n := range []string{"dit_0", "vae_s0", "text_0"} {
 		d := filepath.Join(export, n+".aimodel")
 		os.MkdirAll(d, 0o755)
 		os.WriteFile(filepath.Join(d, "main.mlirb"), []byte("bytecode "+n), 0o644)
@@ -25,23 +25,21 @@ func TestBuildLeavesVAEToDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rs) != 1 || filepath.Base(rs[0].Asset) != "dit_0.aimodel" {
-		t.Errorf("compiled: %v", rs)
+	var got []string
+	for _, r := range rs {
+		got = append(got, filepath.Base(r.Asset))
 	}
-	if strings.Count(log.String(), "left to the device") != 3 {
+	if strings.Join(got, " ") != "dit_0.aimodel vae_s0.aimodel" {
+		t.Errorf("compiled: %v", got)
+	}
+	if strings.Count(log.String(), "left to the device") != 1 {
 		t.Errorf("log:\n%s", log.String())
 	}
 
-	// a prebuilt VAE program of the same source beside it (from an earlier hwnpu) is not taken
-	vae := filepath.Join(export, "vae_s0.aimodel")
-	pb := PrebuiltPath(vae, "h13g")
-	os.MkdirAll(pb, 0o755)
-	os.WriteFile(filepath.Join(pb, "main.hash"), []byte("hash vae_s0"), 0o644)
-	if p := Prebuilt(vae); p != "" {
-		t.Errorf("a VAE's prebuilt program was taken: %s", p)
-	}
+	// a prebuilt text encoder's program of the same source beside it (from an earlier hwnpu) is
+	// not taken
 	text := filepath.Join(export, "text_0.aimodel")
-	pb = PrebuiltPath(text, "h13g")
+	pb := PrebuiltPath(text, "h13g")
 	os.MkdirAll(pb, 0o755)
 	os.WriteFile(filepath.Join(pb, "main.hash"), []byte("hash text_0"), 0o644)
 	if p := Prebuilt(text); p != "" {
@@ -51,9 +49,8 @@ func TestBuildLeavesVAEToDevice(t *testing.T) {
 
 func TestLeftToDevice(t *testing.T) {
 	for dir, want := range map[string]bool{
-		"/x/m.coreai/vae_s3.aimodel":              true,
-		"/x/m.coreai/vae.aimodel/":                true,
-		"/x/m.coreai/VAE_decoder.aimodel":         true,
+		"/x/m.coreai/vae_s3.aimodel":              false,
+		"/x/m.coreai/vae.aimodel/":                false,
 		"/x/m.coreai/dit_single_0.aimodel":        false,
 		"/x/vae.coreai/text_0.aimodel":            true,
 		"/x/m.coreai/text.aimodel":                true,

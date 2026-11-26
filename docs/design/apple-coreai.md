@@ -104,11 +104,11 @@ Automatic grouping when a `.mlpackage` is lowered at load (`internal/backend/cor
 - `internal/backend/coreai/shim/shim.swift`, built by `tools/coreai/build-shim.sh` into `libcaishim.dylib`, embedded with go:embed and loaded with purego. `CGO_ENABLED=0` stays.
 - `Compile` opens a program with the Neural Engine preferred. Placement is read from Core AI's cache: the MPSGraph manifest's `mps.fullyPlacedOnANE`, per function under `Entry Function Attributes`. The delegate folder is `main-this-delegates` for every function.
 - Calls to one program are serialized (`graph.mu`).
-- Inputs: `cai_input_array(h, i)` makes an `NDArray` of input i's shape and returns the address of its dense row-major contents. The caller writes there directly (`backend.InputAllocator`, `hwnpu.Graph.AllocInput`); `cai_run` passes that array without a copy. An array binds to any input of its shape, also in other programs (generation and prompt programs share caches; attention programs take chunks in turn). A buffer of another shape is copied. `chain` allocates caches, rings, windows, states, masks and attention chunks this way; image and audio programs still copy. `HWNPU_COREAI_COPY=1` copies as before. Gains on an M1: LFM3-1.7B after a 3101-token prompt 39.8–40.6 → 43.0–43.1 tok/s (attention call 1.34 → 1.0 ms), PLaMo 3 Translate 2B 12.1 → 12.6–13.1 tok/s; PLaMo 3 2B's rings held 252 → 84 MiB. The copy grows with the chunk: 0.56 of an attention call's 2.07 ms at 8192.
+- Inputs: `cai_input_array(h, i)` makes an `NDArray` of input i's shape and returns the address of its dense row-major contents. The caller writes there directly (`backend.InputAllocator`, `hwnpu.Graph.AllocInput`); `cai_run` passes that array without a copy. An array binds to any input of its shape, also in other programs (generation and prompt programs share caches; attention programs take chunks in turn). A buffer of another shape is copied. `chain` allocates caches, rings, windows, states, masks and attention chunks this way; image and audio programs still copy. Gains on an M1: LFM3-1.7B after a 3101-token prompt 39.8–40.6 → 43.0–43.1 tok/s (attention call 1.34 → 1.0 ms), PLaMo 3 Translate 2B 12.1 → 12.6–13.1 tok/s; PLaMo 3 2B's rings held 252 → 84 MiB. The copy grows with the chunk: 0.56 of an attention call's 2.07 ms at 8192.
 - Copy speed on an M1 is about 29 GB/s. A program that does nothing costs 0.21 ms a call (M1); the floor of a call is 160–175 µs (M2).
 - At most 112 programs per process on the Neural Engine (M2). The 113th fails to load ("no ANE resources") and Core AI runs it on the GPU silently. The device counts loaded programs (`aneLive`) and says so when a load fails near the limit. gpt-oss-20b's export is about 84; other chat models under 40. Two models in one process can pass it.
 - Core AI cannot choose compute units for a program the way Core ML's `GraphSource.Units` does. `HWNPU_COREAI_UNITS=cpu` runs everything on Core AI's CPU, for tests without the Neural Engine.
-- A load from Core AI's cache takes 0.2–0.3 s, so the next program can be loaded while one runs (`runner.InTurn`, `runner.Ring`; `HWNPU_DEV=load-ahead=0` turns it off). See [image models on Apple](image-apple.md).
+- A load from Core AI's cache takes 0.2–0.3 s, so the next program can be loaded while one runs (`runner.InTurn`, `runner.Ring`). See [image models on Apple](image-apple.md).
 
 ## Caches and disk
 
@@ -128,8 +128,6 @@ Rules that follow:
 - With little free disk, macOS deletes Core AI entries, aned's code and sometimes hwnpu's cache root under `~/Library/Caches` (the default policy evicts on `storagePressure`, not by least recent use). It started below about 15 GiB free on an M2, and deleted freshly finished prebuilt programs even with 22 GB free. Keep 25 GB or more free for first runs.
 - When aned's code is gone but the entry is still there, `specialize` / `loadFunction` fails at once (`_GenericObjCError.nilError`, `_GenericObjCError 0`). The shim deletes the entry and loads again; with no disk left the Neural Engine compiler fails and the program goes to the GPU. `HWNPU_DEV=coreai.debug=1` prints "the cached entry failed (…), compiled again", deletes entries that fell to the GPU, and warns when free space is under 10 GiB.
 - Once Core AI has an entry, `main.mlirb` is not read again: the asset loads even with it emptied (`main.hash` must stay).
-- `HWNPU_DEV=coreai.drop-bytecode` replaces `main.mlirb` with an empty file (by rename, since Core AI may still map the old one) after the entry exists. Chroma1-Flash at 512²: hwnpu's cache 28 → 15 GB. Off by default: an export taken from a source would have to be downloaded again when the entry is evicted.
-- An empty `main.mlirb` given to Core AI's parser aborts the process (LLVM: `cannot unwrap empty odiec_module_t`). So an empty asset is opened only when its entry is there (`hasEntry`: a non-empty `…/model.aimodelx/main-this.odix`), with `kindNoRetry` (0x100: the shim does not delete and reload); otherwise Go lowers it again from the package, or fails for an asset given directly. When unsure, do not empty and lower again.
 - `hwnpu cache`, cutting to its free-space floor, deletes first the Core AI entries of parts that have a prebuilt: they come back from it in seconds.
 - The Neural Engine's weights are wired kernel memory (read by `mem.NPUWired`), not the process footprint: see [memory and power](memory-and-power.md).
 
@@ -158,7 +156,7 @@ Loading (`coreai.Prebuilt`):
 
 - `AIModel(contentsOf:)` on an `.aimodelc` makes `ANELargeModelCompilerService` finish the LLIR (CPU 25 %, one thread) in place of the ANE compiler. The entry lands at the same hash and ID as a native compile, with byte-identical `resources.bin`; later loads take the `.aimodel` path in 0.01 s.
 - Rule: when `hasEntry` is false and a prebuilt of the same hash for this architecture is there with `mps.fullyPlacedOnANE` in its manifest, open it. `HWNPU_COREAI_PREBUILT=off` compiles on the device. The shim also splits `PATH.aimodelc#NAME`. A prebuilt that fails to finish (`failedToSpecialize`) is compiled on the device.
-- `coreai.LeftToDevice`: programs named `vae*` and `text*` are always compiled on the device, and `Build` skips them. FLUX.2 klein's prebuilt VAE drew a band of noise every 112 rows at 512² on an M1, and its 1024 × 768 VAE and Chroma's T5 ended in `Request cancelled`. Neither gains: the device finishes a VAE stage no faster than it compiles it (10 stages at 1024²: 104 vs 106 s), and FLUX.2 klein's Qwen3 encoder was slower from prebuilt (112 vs 81 s). A machine that already drew with a prebuilt VAE keeps that entry: delete `~/Library/Caches/coreai-cache/<OS build>/hwnpu-image/`.
+- `coreai.LeftToDevice`: programs named `text*` (and `*_device`) are always compiled on the device, and `Build` skips them: Chroma's T5 ended in `Request cancelled`, and FLUX.2 klein's Qwen3 encoder was slower from prebuilt (112 vs 81 s). The VAEs are the recipe's (`model-recipes.yaml` apple `prebuild`, `do: device`): FLUX.2 and FLUX.3 klein's on every chip for now (on M1 the prebuilt VAE drew a band of noise every 112 rows at 512² and the 1024 × 768 VAE ended in `Request cancelled`; on M2 512² had such bands from the prebuilt and from the device's compile alike), and Anima's on M2 (up to export v5 `coreai-build` failed 8 of its 10 stages on every chip; v6 builds them all; M2's h14g prebuilt drew bands every 160 pixels, M1's h13g drew right). On an M3 FLUX.2 klein's ten decoder stages compiled in 2799 s and the prebuilt finished in 0.9 s, the same bytes out (2026-11-25, [image-apple.md](image-apple.md)): taking it there is a FLUX change of its own. An M1 that already drew with a prebuilt VAE keeps that entry: delete `~/Library/Caches/coreai-cache/<OS build>/hwnpu-image/`.
 - Another architecture's `.aimodelc` does not load (`incompatibleCompiledAssetArchitecture`), even with the name and `deviceDescriptor` rewritten.
 - Calls of a program finished from prebuilt are slower: 3–5 % (Chroma, M2), 8–16 % (M1).
 - Code that aned compiled on a device cannot be exported (SIP, per signing identifier). Only `coreai-build`'s output can be shipped.
@@ -216,7 +214,7 @@ Tools in `tools/coreai`:
 
 | Tool | Use |
 |---|---|
-| `aicheck run -cpu PKG…` | Run parts on Core AI and compare with `milcpu` on random inputs; `-coreml` runs the same part on Core ML (is the error Core AI's?); `-calls N` averages later calls; `-ref` compares with a reference package; `AICHECK_WORST=1` prints the worst elements; `AICHECK_CONST=name=v,…` gives constant or mask inputs their real values |
+| `aicheck run -cpu PKG…` | Run parts on Core AI and compare with `milcpu` on random inputs; `-coreml` runs the same part on Core ML (is the error Core AI's?); `-calls N` averages later calls; `-ref` compares with a reference package (an `X.aimodel` is compared with `X.mlpackage` beside it without one); `AICHECK_WORST=1` prints the worst elements; `AICHECK_CONST=name=v,…` gives constant or mask inputs their real values |
 | `HWNPU_DEV=ailower.cut=N` | Lower only the first N ops and compare that op by cosine with `milcpu`: bisect for the op that is wrong or leaves the Neural Engine |
 | `HWNPU_DEV=ailower.trace` | Map op_ids (Core AI's errors name them) to ops |
 | `aicheck probe` | Small MIL programs (SDPA, RoPE, RMSNorm, int8 linear, rewrites): do they stay on the Neural Engine? |
@@ -226,6 +224,10 @@ Tools in `tools/coreai`:
 | `aicheck rules`, `limits`, `lint` | The Neural Engine's numeric rules against float32, its limits (call floor, program count, formats), and lint of exports |
 | `caiload` (Swift) | specialize, run, `-cycle` switching cost, from Core AI alone |
 | `lutfake`, `lutscan -tile 16`, `kleinonly`, `bcdump` | Synthetic lut layers, equal neighbouring tables, FLUX.2 klein prepare / put, bytecode dump |
+| `llirtasks [-task N [-around K]] X.mlir.bc` | The Neural Engine tasks of a prebuilt program's LLIR (`X.aimodelc/…/binary_0.llir.bundle/…/X.mlir.bc`) in their order, with what each computes and the kernel it loads: the task the device's finishing service was at when it failed (`Convert 1/1 procedures of ANEHLO task N/M` in os_log). `bcdump` reads the LLIR too |
+| `AICHECK_SENTINEL=PROGRAM aicheck run …` | A program known to run, run first and again after each program that fails until it runs: a prebuilt program that times the Neural Engine out leaves it failing the next ones for a while, which are then not judged |
+| `aicheck locked CMD…` | CMD under the Neural Engine lock. The hwnpu processes CMD starts run under the same hold (`HWNPU_NPU_LOCK_FD`), so no other session gets the Neural Engine between them. A process CMD leaves behind keeps the lock: let helpers close descriptor 3 |
+| `partprobe -dir CHECKPOINT -o OUT.aimodel NAME=start:layers:seq:paged[:key=value,…] …` | Parts of a chat model as the functions of one program, each with its own options (rows a call, split at the attention or not, the architecture's parameters): one finish of a prebuilt program tells which part fails. With one NAME it writes the export's own part (the same `main.hash`) |
 
 `aicheck run` and `probe` take the Neural Engine lock like the commands (`llm.LockNPU`): two processes on it at once have frozen a Mac, and another process compiling spoils timings.
 
@@ -269,8 +271,8 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 
 | Choice | File |
 |---|---|
-| Short conversations on a whole program, then the program split at attention (`wholeTiers`, `decode.Session.Migrate`; none on an M1: `chat.wholeSlower`); Qwen3 split at attention on Core AI; attention a kv head at a time (`paged.Heads`, `HWNPU_DEV=attention=grouped`); ring tiers for long windows | [LLM engine](llm-engine.md) |
-| DiT groups swapped per call (`HWNPU_DEV=hold-dit=1`), load ahead, batching, attention layouts, block counts per memory | [image models on Apple](image-apple.md) |
+| Short conversations on a whole program, then the program split at attention (`wholeTiers`, `decode.Session.Migrate`; none on an M1: `chat.wholeSlower`); Qwen3 split at attention on Core AI; attention a kv head at a time (`paged.Heads`); ring tiers for long windows | [LLM engine](llm-engine.md) |
+| DiT groups swapped per call, load ahead, batching, attention layouts, block counts per memory | [image models on Apple](image-apple.md) |
 | Experts picked by the host between parts | [MoE](moe.md) |
 | Exports in sources, `files.tar.zst`, prebuilt bundles | [distribution](distribution.md) |
 
@@ -280,10 +282,10 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 - **Core ML as the intermediate form** (`.mlpackage` lowered at load): exports are written from checkpoints directly; it cost a third copy of the weights on disk (export, lowered `.aimodel`, Core AI entry) and conversion time.
 - **Shipping whole `.aimodelc`**: 99 % is weights that the `.aimodel` already holds; ship the `.aimodel` plus a weightless packed prebuilt per architecture.
 - **Prebuilt for chat models**: slower first runs (LFM3-1.7B 2 min 17 s → 8 min 12 s) and Qwen3.5-4B did not answer.
-- **Prebuilt for VAEs and text encoders** (`LeftToDevice`): wrong pictures / `Request cancelled`, and no gain.
+- **Prebuilt for text encoders** (`LeftToDevice`) **and for VAEs on M1 and M2** (the recipe): wrong pictures / `Request cancelled`, and no gain.
 - **Prebuilt for Sana**: `coreai-build` placed only 8 of 27 parts on the ANE when tried, and those finished slower than a native compile. Qwen-Image is not a target either.
 - **h18g and the 9 crashing architectures**: not built (a GPU-only prebuilt would keep an M6 off the ANE).
-- **Deleting `main.mlirb` after caching by default**: a source's export would be downloaded again on eviction; only `HWNPU_DEV=coreai.drop-bytecode`.
+- **Emptying `main.mlirb` once Core AI has an entry** (`HWNPU_DEV=coreai.drop-bytecode`, removed 2026-11-26): it only reached assets lowered from a `.mlpackage` into the compile cache, never the downloaded exports that are the main flow (YuNet on the M1: emptied in the first case, left whole in the second), and for a downloaded export an evicted entry (an OS update, low disk, a new executable name) would mean downloading it again. Disk is freed by the `hwnpu` command's cache cleaning; the library always keeps `main.mlirb`. An empty `main.mlirb` given to Core AI's parser aborts the process (LLVM: `cannot unwrap empty odiec_module_t`).
 - **Parallel compiles**: the machine has one ANE compiler queue.
 - **Fresh `NDArray` per call, or views of caller buffers** (`NDArray.RawView`, IOSurface): 10.0 / 10.7 / 8.3 ms against 7.2 ms for a reused array (PLaMo 3 0.8B part1, M1); now the caller writes into Core AI's array.
 - **A whole program and the split one in one `.aimodel`**: Qwen3-0.6B became 60 functions, loading took 2 min 28 s, some went to the GPU, and each function on the GPU wrote 0.6 GB of MPSGraph scratch until the disk ran out.
@@ -298,7 +300,7 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 - Core AI's `.persistent` cache policy (`AIModelCache.specialize(…cachePolicy:)`, kept in `~/Library/Application Support/coreai-cache/`): avoids eviction recompiles, but hwnpu would have to delete entries itself (`deleteEntries(for:)`), and aned's code would still be evicted. Not decided.
 - Whether the same `.aimodel` loads across OS versions (the cache folder is per OS build).
 - The fixed minutes of the first prebuilt finish in a process, and Anima's 13-minute first step (with or without prebuilt): not investigated.
-- Why `coreai-build`'s VAE programs stripe and T5 is cancelled; remove `LeftToDevice` when fixed. The sources' FLUX.2 klein prebuilts still contain VAE / text parts (unused) to be repacked.
+- Why the VAE stripes at 512² on h13g and h14g (on M2 compiled on the device too), and why T5 is cancelled; remove the recipe's rules and `LeftToDevice` when fixed. Older FLUX.2 klein prebuilts in the sources (of exports the code no longer reads) still contain VAE / text parts; the v6 export's h13g one leaves them out.
 - `coreai-build` crashes on 9 architectures and gives no ANE code for h18g (reported to Apple); whether an M6 compiles on the device is unknown.
 - aned's disk use not measured directly.
 - Input arrays written in place: not measured on M2 / M3; image and audio programs still copy.

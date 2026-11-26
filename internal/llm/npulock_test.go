@@ -2,8 +2,30 @@ package llm
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
 )
+
+// The lock's file is the user's, not the cache's: a process with a cache of its own (HWNPU_CACHE)
+// waits for the same lock as every other.
+func TestLockFileIsNotTheCaches(t *testing.T) {
+	own := t.TempDir()
+	t.Setenv(cache.RootEnv, own)
+	got := npuLockFile(false)
+	if strings.HasPrefix(got, own) {
+		t.Errorf("the lock %s is in the process's own cache %s", got, own)
+	}
+	if d, err := os.UserCacheDir(); err == nil && got != filepath.Join(d, "hwnpu", "neural-engine.lock") {
+		t.Errorf("the lock is %s", got)
+	}
+	if got := npuLockFile(true); !strings.HasPrefix(got, own) {
+		t.Errorf("a test's lock %s is not in its cache %s", got, own)
+	}
+}
 
 // series gives wired memory in MiB, look by look (the last one from then on), and counts the
 // looks; a negative value is one that cannot be read.

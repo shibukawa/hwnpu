@@ -44,7 +44,7 @@ Core ML の計算の計画で見たもの (Core AI 自身の落とし穴は [Cor
 | `gather` | いつも | one-hot の行列積 |
 | 指数の `reduce_sum` | コンパイルごとに変わる | 1 との行列積で和 |
 | K/V を `tile` で写す注意 | いつも | `SDPAGrouped` (演算の順だけで配置が変わる) |
-| 語彙 262144 の `reshape`、最後の部分の `transpose` | その演算 | ホストで並べ替え (PLaMo 3、Gemma 4 の `-logits host`) |
+| 語彙 262144 の `reshape`、最後の部分の `transpose` | その演算 | ホストで並べ替え (PLaMo 3、Gemma 4 の softcap をホストで) |
 | `conv_transpose` (M1) | 歩幅 5 と 7。8、4、3 は動くがずれる | ポリフェーズの畳み込み |
 | 膨張つき畳み込み、`max_pool` (M1) | 膨張 17〜48。窓 9 と 13 | ずらした写しと 1×1 の畳み込み。窓 5 の連鎖 |
 | 深さ方向の畳み込み (M1) | 4096 チャンネルを超える | 4096 以下の塊 |
@@ -103,10 +103,11 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 
 2 つのプロセスが同時に ANE を使うと M1 が固まった (予測が返らず、プロセスを殺せず、約 20 分で戻った)。そこで:
 
-- `llm.OpenDevice` は Core AI か Core ML のデバイスのとき、ユーザーのキャッシュの `hwnpu/neural-engine.lock` に排他の flock を取り、プロセスの終わりまで持つ。2 つ目のプロセスは `waiting for the Neural Engine: process N (NAME) is using it …` と出す。プロバイダを直接開く道具は `llm.LockNPU` を取る。
+- `llm.OpenDevice` は Core AI か Core ML のデバイスのとき、ユーザーのキャッシュの `hwnpu/neural-engine.lock` に排他の flock を取り、プロセスの終わりまで持つ。ファイルはいつもユーザーのキャッシュ (`~/Library/Caches/hwnpu`) にあり、`HWNPU_CACHE` で別のキャッシュを使うプロセスも同じロックを待つ (2026-11-26 まではキャッシュの下にあり、別のキャッシュのセッションが並んで ANE を使った)。2 つ目のプロセスは `waiting for the Neural Engine: process N (NAME) is using it …` と出す。プロバイダを直接開く道具は `llm.LockNPU` を取る。
 - ロックを取ったあと `settle` は、前のプロセスのプログラムが ANE から消えるまで待つ (`mem.NPUWired` を 0.1 秒ごとに、最大 30 秒)。持ち主は見つけた hwnpu 以外の分 (`base N`) をファイルの 2 行目に書く。
 - 理由: プロセスのプログラムは終わったあとも ANE に残り (忙しい機械で最大 7 秒)、その間に読み込むプロセスは失敗しうる (`Request cancelled`)。別のプロセスのコンパイルが動いているプログラムを失敗させることもある。
 - ロックを飛ばす道はない (`HWNPU_NPU_LOCK` は 2026-11-22 になくした)。ほかのセッションが何時間もロックを持つことがある: ANE の仕事は順番を待つ。
+- ロックを持つプロセスが起動したプロセスは、同じロックの下で動く (`HWNPU_NPU_LOCK_FD`: ロックのファイルの記述子を渡す。`tools/coreai/aicheck locked CMD`)。飛ばすのではなく、親が持ち続ける: 試行の列の途中でほかのセッションに ANE を取られないために使う。
 
 ## Neural Engine のメモリ
 
@@ -119,7 +120,7 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 
 - どのチップでも 2.8 GiB の予算: M2 以降でプロンプトのプログラムを失う。少なく読むのは M1 だけ。
 - silu を `x · sigmoid(x)` で: ANE の `silu` と同じ値。
-- `gelu` の exp の形 (Gemma 4): 変わらない。Anima の VAE の silu の exp の形: 絵は変わらず、VAE が 15〜20 % 遅い。
+- `gelu` の exp の形 (Gemma 4): 変わらない。Anima の VAE の silu の exp の形: 絵は変わらず、VAE が 15〜20 % 遅い (Core ML。Core AI の書き出しは、ネイティブの形を `coreai-build` が落とすので exp の形にする: docs/design/image-apple.ja.md)。
 - 1 回 256 トークンのプロンプト: 128 より速くなく、読み込みが重い。
 - 注意の問い合わせを既定で分ける: Whisper の 90 MB のスコアで得がない。
 

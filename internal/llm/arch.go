@@ -28,6 +28,10 @@ type Arch struct {
 	Architectures []string
 	// Params are the architecture's own build settings, read from Options.Params.
 	Params []Param
+	// Fixed are settings that were Params and have one value now, the other forms removed: Param
+	// gives it, and the parts' metadata and the exports' names hold it as before, so that the
+	// exports are the same bytes under the same names.
+	Fixed map[string]string
 	// Format is the weight format the converters use when not told (lut4 when empty).
 	Format string
 	// IntelFormat is the weight format for Intel's NPU when not told (when empty, IntelFormat of
@@ -99,8 +103,12 @@ func (a *Arch) DefaultFormatFor(m Model, backend string) string {
 	return IntelFormat(a.DefaultFormat(m))
 }
 
-// Param returns the value of the architecture's setting name in o, or its default.
+// Param returns the value of the architecture's setting name in o, or its default; a Fixed
+// setting's one value whatever o says.
 func (a *Arch) Param(o Options, name string) string {
+	if v, ok := a.Fixed[name]; ok {
+		return v
+	}
 	if v, ok := o.Params[name]; ok {
 		return v
 	}
@@ -304,7 +312,7 @@ type CacheWriters interface {
 }
 
 // LogitSoftcap is a model whose program may leave the soft cap of its logits to the host
-// (Gemma 4's -logits host): HostSoftcap is the cap c of a program built with opts, whose logits y
+// (Gemma 4): HostSoftcap is the cap c of a program built with opts, whose logits y
 // the host turns into c*tanh(y/c), and 0 when the program applies it. The conversion writes it
 // into the parts' metadata (MetaSoftcap), where the host finds it.
 type LogitSoftcap interface {

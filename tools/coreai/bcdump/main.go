@@ -1,7 +1,9 @@
 // Command bcdump prints an MLIR bytecode file's tables and IR (mlirbc.Read): for comparing what
-// hwnpu writes with what coreai-core writes.
+// hwnpu writes with what coreai-core writes, and for reading what the Neural Engine's compiler
+// made of a program (an .aimodelc's LLIR; tools/coreai/llirtasks lists its tasks).
 //
 //	go run ./tools/coreai/bcdump model.aimodel/main.mlirb
+//	go run ./tools/coreai/bcdump X.aimodelc/.../binary_0.llir.bundle/.../X.mlir.bc
 package main
 
 import (

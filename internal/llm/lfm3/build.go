@@ -18,15 +18,6 @@ type Options struct {
 	// an absolute error floor of about 2.5e-4, and these projections' outputs are around 0.01
 	// in LFM3, so without it they lose several percent. 0 or 1 disables; 64 is a good value.
 	PostScale float32
-	// ConvMode selects how the short convolution runs: "taps" (default) as 7 shifted multiply
-	// adds, which the Neural Engine computes at full fp16 accuracy, or "conv" as one depthwise
-	// conv operation, which it computes with 5 to 12 percent error per layer.
-	ConvMode string
-	// AttnMode selects how attention with a KV cache reads the cache: "grouped" (the default)
-	// stacks the query heads that share a kv head and takes one product per kv head
-	// (blocks.SDPAGrouped, ChunkedSDPAGrouped over the chunks of a long cache), "tile" copies
-	// the keys and values for each query head (blocks.SDPA, ChunkedSDPA).
-	AttnMode string
 	// HiddenOut makes a program with a KV cache output h, the final hidden state (1, seq,
 	// hidden), besides the logits y: LFM3-Audio's speech output samples from it
 	// (internal/llm/decode reads it as Session.Hidden).
@@ -98,17 +89,11 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options)
 	if opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers {
 		opts.Layers = cfg.NumLayers - opts.Start
 	}
-	if opts.ConvMode == "" {
-		opts.ConvMode = "taps"
-	}
 	if opts.PostScale <= 0 {
 		opts.PostScale = 1
 	}
 	if opts.PostScale != 1 && !cfg.UseSandwichNorm {
 		return nil, nil, fmt.Errorf("lfm3: PostScale needs sandwich norms to absorb the scale")
-	}
-	if opts.Cache > 0 && opts.ConvMode != "taps" {
-		return nil, nil, fmt.Errorf("lfm3: a KV cache needs conv mode taps")
 	}
 	if cfg.D1 && opts.Cache > 0 {
 		return nil, nil, fmt.Errorf("lfm3: a d1 model reads the whole prompt at once; it has no KV cache")
@@ -230,90 +215,60 @@ func (m *builder) layerRest(i int, h, residual *mlpackage.Var) *mlpackage.Var {
 }
 
 // shortConv is the gated short convolution: in_proj splits into B, C and x; the depthwise causal
-// convolution of width K runs over B*x along the sequence, and C gates the result. In "taps"
-// mode it stays in the (1, seq, d) layout: the convolution is K shifted multiply adds over a
-// left padded sequence, with no transposes.
+// convolution of width K runs over B*x along the sequence, and C gates the result. It stays in the
+// (1, seq, d) layout: the convolution is K shifted multiply adds over a left padded sequence, with
+// no transposes, which the Neural Engine computes at full fp16 accuracy (one depthwise conv
+// operation had 5 to 12 percent error a layer).
 func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("%slayers.%d.conv.", m.cfg.prefix(), i)
 	d, s, k := m.d, m.seq, m.cfg.ConvKernel
 	bcx := m.Linear(h, p+"in_proj.weight", "", 3*d) // (1, s, 3d)
 	cw := m.Get(p+"conv.weight", d, 1, k)
 	var y, cg *mlpackage.Var
-	switch m.opts.ConvMode {
-	case "conv":
-		t := m.Op("transpose", map[string]any{"x": bcx, "perm": m.B.Ints(0, 2, 1)}, 1, 3*d, s) // (1, 3d, s)
-		part := func(j int) *mlpackage.Var {
-			return m.Op("slice_by_index", map[string]any{"x": t, "begin": m.B.Ints(0, int32(j*d), 0), "end": m.B.Ints(1, int32((j+1)*d), int32(s)),
-				"begin_mask": m.Bools(true, false, true), "end_mask": m.Bools(true, false, true)}, 1, d, s)
+	part := func(j int) *mlpackage.Var {
+		return m.Op("slice_by_index", map[string]any{"x": bcx, "begin": m.B.Ints(0, 0, int32(j*d)), "end": m.B.Ints(1, int32(s), int32((j+1)*d)),
+			"begin_mask": m.Bools(true, true, false), "end_mask": m.Bools(true, true, false)}, 1, s, d)
+	}
+	bg, xg := part(0), part(2)
+	cg = part(1)
+	bx := m.Op("mul", map[string]any{"x": bg, "y": xg}, 1, s, d)
+	var padded *mlpackage.Var
+	if m.opts.Cache > 0 {
+		// the last k-1 rows of B*x before the step instead of zeros
+		win := m.input(fmt.Sprintf("win_conv_%d", i), 1, k-1, d)
+		padded = m.Op("concat", map[string]any{"values": []*mlpackage.Var{win, bx}, "axis": m.B.ScalarI32(1), "interleave": m.B.ScalarBool(false)}, 1, s+k-1, d)
+		m.output(padded, fmt.Sprintf("win_conv_%d_new", i))
+	} else {
+		// pad the sequence axis on the left; pad covers the last two axes
+		padded = m.Op("pad", map[string]any{"x": bx, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, s+k-1, d)
+	}
+	// y[t] = sum_j w[j] * bx[t + j - (k-1)]: tap j reads the padded sequence shifted by j
+	for j := 0; j < k; j++ {
+		tap := make([]float32, d)
+		for c := 0; c < d; c++ {
+			tap[c] = cw[c*k+j]
 		}
-		bg, xg := part(0), part(2)
-		cg = part(1)
-		bx := m.Op("mul", map[string]any{"x": bg, "y": xg}, 1, d, s)
-		padded := m.Op("pad", map[string]any{"x": bx, "pad": m.B.Ints(int32(k-1), 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, d, s+k-1)
-		wv, err := m.B.F16s(p+"conv.weight", []int{d, 1, k}, cw)
+		wv, err := m.B.F16s(fmt.Sprintf("%sconv.weight.tap%d", p, j), []int{1, 1, d}, tap)
 		if err != nil {
 			m.Fail("%v", err)
 		}
-		conv := map[string]any{"x": padded, "weight": wv, "strides": m.B.Ints(1), "pad_type": m.Str("valid"), "pad": m.B.Ints(0, 0),
-			"dilations": m.B.Ints(1), "groups": m.B.ScalarI32(int32(d))}
-		if m.cfg.ConvBias {
-			bias, err := m.B.F16s(p+"conv.bias", []int{d}, m.Get(p+"conv.bias", d))
-			if err != nil {
-				m.Fail("%v", err)
-			}
-			conv["bias"] = bias
-		}
-		y = m.Op("conv", conv, 1, d, s)
-		y = m.Op("mul", map[string]any{"x": cg, "y": y}, 1, d, s)
-		y = m.Op("transpose", map[string]any{"x": y, "perm": m.B.Ints(0, 2, 1)}, 1, s, d)
-	case "taps":
-		part := func(j int) *mlpackage.Var {
-			return m.Op("slice_by_index", map[string]any{"x": bcx, "begin": m.B.Ints(0, 0, int32(j*d)), "end": m.B.Ints(1, int32(s), int32((j+1)*d)),
-				"begin_mask": m.Bools(true, true, false), "end_mask": m.Bools(true, true, false)}, 1, s, d)
-		}
-		bg, xg := part(0), part(2)
-		cg = part(1)
-		bx := m.Op("mul", map[string]any{"x": bg, "y": xg}, 1, s, d)
-		var padded *mlpackage.Var
-		if m.opts.Cache > 0 {
-			// the last k-1 rows of B*x before the step instead of zeros
-			win := m.input(fmt.Sprintf("win_conv_%d", i), 1, k-1, d)
-			padded = m.Op("concat", map[string]any{"values": []*mlpackage.Var{win, bx}, "axis": m.B.ScalarI32(1), "interleave": m.B.ScalarBool(false)}, 1, s+k-1, d)
-			m.output(padded, fmt.Sprintf("win_conv_%d_new", i))
+		seg := m.Op("slice_by_index", map[string]any{"x": padded, "begin": m.B.Ints(0, int32(j), 0), "end": m.B.Ints(1, int32(j+s), int32(d)),
+			"begin_mask": m.Bools(true, false, true), "end_mask": m.Bools(true, false, true)}, 1, s, d)
+		term := m.Op("mul", map[string]any{"x": seg, "y": wv}, 1, s, d)
+		if y == nil {
+			y = term
 		} else {
-			// pad the sequence axis on the left; pad covers the last two axes
-			padded = m.Op("pad", map[string]any{"x": bx, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, s+k-1, d)
+			y = m.Op("add", map[string]any{"x": y, "y": term}, 1, s, d)
 		}
-		// y[t] = sum_j w[j] * bx[t + j - (k-1)]: tap j reads the padded sequence shifted by j
-		for j := 0; j < k; j++ {
-			tap := make([]float32, d)
-			for c := 0; c < d; c++ {
-				tap[c] = cw[c*k+j]
-			}
-			wv, err := m.B.F16s(fmt.Sprintf("%sconv.weight.tap%d", p, j), []int{1, 1, d}, tap)
-			if err != nil {
-				m.Fail("%v", err)
-			}
-			seg := m.Op("slice_by_index", map[string]any{"x": padded, "begin": m.B.Ints(0, int32(j), 0), "end": m.B.Ints(1, int32(j+s), int32(d)),
-				"begin_mask": m.Bools(true, false, true), "end_mask": m.Bools(true, false, true)}, 1, s, d)
-			term := m.Op("mul", map[string]any{"x": seg, "y": wv}, 1, s, d)
-			if y == nil {
-				y = term
-			} else {
-				y = m.Op("add", map[string]any{"x": y, "y": term}, 1, s, d)
-			}
-		}
-		if m.cfg.ConvBias {
-			bias, err := m.B.F16s(p+"conv.bias", []int{1, 1, d}, m.Get(p+"conv.bias", d))
-			if err != nil {
-				m.Fail("%v", err)
-			}
-			y = m.Op("add", map[string]any{"x": y, "y": bias}, 1, s, d)
-		}
-		y = m.Op("mul", map[string]any{"x": cg, "y": y}, 1, s, d)
-	default:
-		m.Fail("unknown conv mode %q", m.opts.ConvMode)
 	}
+	if m.cfg.ConvBias {
+		bias, err := m.B.F16s(p+"conv.bias", []int{1, 1, d}, m.Get(p+"conv.bias", d))
+		if err != nil {
+			m.Fail("%v", err)
+		}
+		y = m.Op("add", map[string]any{"x": y, "y": bias}, 1, s, d)
+	}
+	y = m.Op("mul", map[string]any{"x": cg, "y": y}, 1, s, d)
 	return m.LinearS(y, p+"out_proj.weight", "", d, m.opts.PostScale)
 }
 
@@ -342,11 +297,7 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 				masks = append(masks, m.input(fmt.Sprintf("mask_%s_c%d", layerType, j), 1, 1, s, l))
 			}
 			masks = append(masks, m.input("mask_"+layerType+"_self", 1, 1, s, s))
-			if m.opts.AttnMode == "grouped" {
-				o = m.ChunkedSDPAGrouped(q, append(ks, k), append(vs, v), masks)
-			} else {
-				o = m.ChunkedSDPA(q, append(ks, k), append(vs, v), masks)
-			}
+			o = m.ChunkedSDPAGrouped(q, append(ks, k), append(vs, v), masks)
 		} else {
 			cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
 				c := m.input(name, 1, nkv, t, hd)
@@ -354,11 +305,7 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 			}
 			k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
 			mask := m.input("mask_"+layerType, 1, 1, s, t+s)
-			if m.opts.AttnMode == "grouped" {
-				o = m.SDPAGrouped(q, k, v, 1/math.Sqrt(float64(hd)), func() *mlpackage.Var { return mask })
-			} else {
-				o = m.SDPA(q, k, v, func() *mlpackage.Var { return mask })
-			}
+			o = m.SDPAGrouped(q, k, v, 1/math.Sqrt(float64(hd)), func() *mlpackage.Var { return mask })
 		}
 	} else if m.cfg.D1 && layerType == "full_attention" {
 		if m.padBias == nil {

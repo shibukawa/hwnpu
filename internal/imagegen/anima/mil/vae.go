@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -134,12 +135,24 @@ func vaeRes(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 	if x.Shape[1] != cout {
 		h = conv(g, x, path+".conv_shortcut", cout)
 	}
-	// the Neural Engine's own silu, unlike the DiT's (blocks.SiLU): written with exp and real_div,
-	// no image changed (PSNR within 0.04 dB of diffusers' fp32) and the VAE took 15 to 20 % longer
+	// For Core AI, silu in the exp form (blocks.SiLU, as the DiT's and FLUX's VAE): with the
+	// Neural Engine's own silu after both norms, coreai-build (Metal Toolchain 27.2.47) failed
+	// every stage with a residual block for h13g, h14g and h15g (ANECCompileOffline:
+	// CompilationFailure; norm, silu, conv, norm, silu is enough), so none could be prebuilt and
+	// each Mac compiled them at its first run (about 70 min at 1024 x 1024 on an M2). With the exp
+	// form after the second norm alone, stages 0 to 2 and 4 still failed; the head's norm and silu
+	// builds as it is. Core ML and OpenVINO IR keep the Neural Engine's own silu: the exp form
+	// changed no image (PSNR within 0.04 dB of diffusers' fp32) and the VAE took 15 to 20 % longer
 	// (docs/design/apple-neural-engine.md)
-	a := g.Op("silu", map[string]any{"x": chanNorm(g, x, path+".norm1.gamma")}, x.Shape...)
+	silu := func(x *mlpackage.Var) *mlpackage.Var {
+		if g.Opts.Backend == llm.BackendCoreAI {
+			return g.SiLU(x)
+		}
+		return g.Op("silu", map[string]any{"x": x}, x.Shape...)
+	}
+	a := silu(chanNorm(g, x, path+".norm1.gamma"))
 	a = conv(g, a, path+".conv1", cout)
-	a = g.Op("silu", map[string]any{"x": chanNorm(g, a, path+".norm2.gamma")}, a.Shape...)
+	a = silu(chanNorm(g, a, path+".norm2.gamma"))
 	a = conv(g, a, path+".conv2", cout)
 	return g.Add(a, h)
 }

@@ -54,7 +54,7 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
 
 ### MXFP4 のカーネル (`internal/mxfp4`、NEON)
 
-- e2m1 は表で引く。活性の行は 32 個ごとに int8 にする。1 ベクトルは SDOT、同じ専門家の 8 行以上は SMMLA (`mm28NEON`、FEAT_I8MM、M2 以降。`HWNPU_DEV=mxfp4.i8mm=0` で切る)。
+- e2m1 は表で引く。活性の行は 32 個ごとに int8 にする。1 ベクトルは SDOT、同じ専門家の 8 行以上は SMMLA (`mm28NEON`、FEAT_I8MM、M2 以降)。
 - 累算は `EOR v,v,v` でなく `MOVI` で 0 にする: M3 では EOR がレジスタの前の値を待ち、和が直列になる。MOVI でカーネルが倍に (1 ベクトルの行 65 → 32 µs)。
 - `mxfp4.Rows` (`mvNEON`): 複数の行を 1 回の呼び出しで。1 コア 45.6〜47.3 GMAC/秒。メモリでなく NEON の命令数で決まる (2 ブロックに約 20 個)。`Dot` とビット単位で同じ。
 - 符号化 (`mxfp4.Encode`): 32 値ごとの 2 の冪の scale は、OCP の規則 (最大値の指数 − 2) とその前後のうち二乗誤差の小さいもの。値は最も近い e2m1 (同じ距離は偶数)。正規分布の値で相対誤差 0.113。
@@ -95,7 +95,7 @@ hwnpu が専門家の混合 (MoE) のモデルをどう動かすか: Apple の g
   - 印 (プロンプトの保存の 512 トークンごと) は wave の中でも取れる。ステップと部品の間で `ctx` を見て、中断した wave は前の印に戻す。
   - ステップのマスクは fp16 のバイトで直接書く (`step.stepMasks`、3 → 0.1 ms)。
   - `TestPagedWave`: 合成モデルで 1 ステップずつとビット単位で同じ。長いプロンプトは丸めが違う (wave は最初から注意のキャッシュを最後の塊の大きさにする)。
-- **複数のステップの行をまとめて** (`chain.moe.runMany`、`hostRows` 512): 専門家は 1 回の呼び出しで 1 回読む。1 行 1 層: 128 行で 0.139 ms、512 行 0.089、1024 行 0.085。`Host.Run` は (専門家 × 行) 1024 個ずつの組で回すので、持つ量は 1 ステップ分 (12 MB) のまま。`HWNPU_DEV=moe.many=0` で 1 ステップずつ。
+- **複数のステップの行をまとめて** (`chain.moe.runMany`、`hostRows` 512): 専門家は 1 回の呼び出しで 1 回読む。1 行 1 層: 128 行で 0.139 ms、512 行 0.089、1024 行 0.085。`Host.Run` は (専門家 × 行) 1024 個ずつの組で回すので、持つ量は 1 ステップ分 (12 MB) のまま。
 - LFM2-8B-A1B とそれ以前: `experts.BuildRows`、`chain.moe.runRows` が選ばれた専門家を呼び出しの全部の行に 1 回ずつ回す。
 
 ### Apple の Qwen3.6
@@ -177,7 +177,7 @@ NPU が読めるのは固定したバッファ (バンク) だけ。専門家の
 - **デコードを常駐の 1 配列に** (`GptOssStep`、`tools/amd/iron_gptoss_layer.py`、`kernels/gptoss_layer.cc`): 層の演算がすべて 1 つの配列の段。1 コマンド = 前の層の専門家 (E) → q/k/v と RMSNorm、bias、RoPE (Q) → 注意 (A) → o_proj と bias と残差 (O) → router (R) → 経路 (T: 次のコマンドのスクラッチパッドの語を書く)。最後のコマンドは [E、出力層 (H)]。1 トークン 25 コマンド、PDI の読み込みは 1 回 (`unexpanded_loads`)、ステップのバリアなし (`no_step_barrier`。`HWNPU_DEV=iron.barrier=1/0` で逆に)。
   - 射影は 5504 バイトの q8x ブロック (mx4 のブロックと同じ大きさ)。プロンプトも同じ q8x の表を戻して使う (`Q8XDequant`) ので表は 1 つ。
   - 出力層は q4 の表をそのまま、5120 バイトずつ進む 5504 バイトの窓として読む。1 行の 2 つの部分和は hwnpu が足す (`logit_parts`)。
-  - デコードの KV は 1 つの配列 (`cache.kv`)。hwnpu がプロンプトのキーと値の配列と行き来させる (`joinKV`、`splitKV`)。窓の層は 128 行の輪 (`GPTOSS_KV_RING`、位置 % 128)、巻き戻しの後は `ringsTo` で入れ直す。`TestKVRingRewindOnDevice` で確かめる。
+  - デコードの KV は 1 つの配列 (`cache.kv`)。hwnpu がプロンプトのキーと値の配列と行き来させる (`joinKV`、`splitKV`)。窓の層は 128 行の輪 (位置 % 128)、巻き戻しの後は `ringsTo` で入れ直す。`TestKVRingRewindOnDevice` で確かめる。
   - 指数関数は 1 つの `gl_exp32` (32 レーン、2^k·p(f)、bf16 の 2 リム) で softmax、glu、経路の重みに。
 - **プロンプトの専門家** (`MX4GroupGateUp`、`MX4GroupDown`): 経路はホスト (`moeHostRouteMX4`)。ブロックを直接 bfp16ebs8 に組み (仮数 = 2·e2m1、指数 = E + 5。重みは正確、活性は 8 ビットの仮数に丸まる)、bfp16 の行列命令 `mac_8x8_8x8T` で掛ける。AIE2P の bf16 の `mmul<4,8,8>` は放送 mac の真似。
   - スロット: `SLOTS = 40`、`CAP = 56`。スロット e < 32 は専門家 e の最初の行、残りの 8 は行の多い専門家の続きの行 (位置は呼び出しごとの語、`slot<i>`)。重みの塊は 1 回だけコアに戻してスロットの行で使い回す。入らない塊は 2 パス。
@@ -264,7 +264,7 @@ Apple:
 - メモリの 3/4 を超える専門家の固定 (16 GB の Qwen3.6): どの予算でも遅い。
 - Qwen3.6 で 16 個の先読み (7.3 トークン/秒、外れが SSD の読みを食う)、gpt-oss で 8 個 (4 個より速くない、メモリが苦しいと遅い)、2 層前からの予測 (上位 4 個に 80〜85 %、読む量が増える)。
 - 働き手を回し続ける (`mxfp4.Hold`、spinners): 0.55 → 1.0 ms で、Neural Engine の部品も同じだけ遅くなる。スレッドの QoS `USER_INTERACTIVE`: 効かない。
-- SMMLA の閾値 (`HWNPU_DEV=mxfp4.pad=N`): 差なし。2 行 × 4 ベクトルの SMMLA: SDOT より遅い。
+- SMMLA の閾値 (6 以外): 差なし。2 行 × 4 ベクトルの SMMLA: SDOT より遅い。
 - 固定した専門家のほかの入れ替え方式: どれも平均の当たり 72〜74 %。
 - gpt-oss の注意: ただの lut8 (KL 0.284)、int8 (Neural Engine で遅い)。`lut8r` の注意と lut6 の出力層の GPTQ の符号は既定にしない (どの文でも良くはならず、符号は配らない)。
 

@@ -74,7 +74,6 @@ func TestBuildTiny(t *testing.T) {
 		opts Options
 	}{
 		{"lut4", Options{Seq: 6}},
-		{"fp16 conv", Options{Seq: 6, Format: "fp16", ConvMode: "conv"}},
 		{"kmeans post-scale", Options{Seq: 6, Quant: "kmeans", PostScale: 64, KeepFP16: []string{"lm_head"}}},
 		{"colblock hidden", Options{Seq: 5, ColBlock: 16, Hidden: true}},
 		{"layers 1..2", Options{Seq: 6, Start: 1, Layers: 1, Format: "fp16"}},
@@ -117,8 +116,8 @@ func TestArch(t *testing.T) {
 		params map[string]string
 		direct Options
 	}{
-		{nil, Options{Seq: 6, PostScale: 64, ConvMode: "taps"}},
-		{map[string]string{"post-scale": "1", "conv": "conv"}, Options{Seq: 6, ConvMode: "conv"}},
+		{nil, Options{Seq: 6, PostScale: 64}},
+		{map[string]string{"post-scale": "1"}, Options{Seq: 6}},
 	} {
 		_, _, got := build(t, func(b *mlpackage.Builder) (mlpackage.Feature, mlpackage.Feature, error) {
 			ins, out, err := model.Build(b, w, llm.Options{Seq: 6, Params: c.params})
@@ -204,7 +203,6 @@ func TestCPUVariants(t *testing.T) {
 		name string
 		opts Options
 	}{
-		{"conv op", Options{Seq: seq, Format: "fp16", ConvMode: "conv"}},
 		{"post-scale 64", Options{Seq: seq, Format: "fp16", PostScale: 64}},
 	} {
 		if e := relErr(runCPU(t, cfg, w, c.opts, emb), ref); e > 1e-5 {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -20,7 +21,9 @@ import (
 // commands stuck behind them). OpenDevice takes an exclusive lock on a file for the Core ML
 // backend and keeps it while the process lives (the kernel drops it when the process ends); a
 // second process waits for it, saying which process holds it. It is not skipped: hwnpud
-// (docs/design/hwnpud.md) is how several apps share the Neural Engine.
+// (docs/design/hwnpud.md) is how several apps share the Neural Engine. A process started by one
+// that holds the lock runs under it (NPULockEnv: tools/coreai/aicheck locked, for a series of
+// commands no other process is to come between).
 //
 // AMD's NPU takes the same lock for a chat model's IRON export (chat's loadIRON): one chat model
 // uses all of its hardware contexts, a second process's CREATE_HWCTX right after another's
@@ -31,8 +34,22 @@ var npuLock struct {
 	f *os.File
 }
 
-func npuLockPath() string {
-	return cache.Sub("neural-engine.lock")
+// npuLockPath is the lock's file: hwnpu/neural-engine.lock in the user's cache, whatever cache the
+// process runs on (HWNPU_CACHE, cache.SetRoot). The NPU is the machine's: a session with a cache
+// of its own took a lock of its own, and ran on the Neural Engine beside a session with the usual
+// cache (2026-11-26). go test's is in the test's cache.
+func npuLockPath() string { return npuLockFile(testing.Testing()) }
+
+func npuLockFile(test bool) string {
+	const name = "neural-engine.lock"
+	if test {
+		return cache.Sub(name)
+	}
+	d, err := os.UserCacheDir()
+	if err != nil {
+		d = os.TempDir()
+	}
+	return filepath.Join(d, "hwnpu", name)
 }
 
 // lockNPU takes the lock unless this process has it, waiting until ctx ends.
@@ -45,6 +62,10 @@ func lockNPU(ctx context.Context) error {
 	path := npuLockPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
+	}
+	if f := inheritedNPULock(path); f != nil {
+		npuLock.f = f
+		return nil
 	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
@@ -168,6 +189,42 @@ func npuName() string {
 		return "Neural Engine"
 	}
 	return "NPU"
+}
+
+// NPULockEnv names the descriptor of the lock a process was started under (RunLocked): the
+// process that started it holds the lock, and keeps it until it ends itself.
+const NPULockEnv = "HWNPU_NPU_LOCK_FD"
+
+// inheritedNPULock is the lock's file passed on by the process that started this one holding it
+// (NPULockEnv), nil without one: a descriptor of the lock's own file (path) that the lock is
+// taken on. The lock is of the open file, which the two processes share, so no other process
+// gets it between the commands of the one that holds it.
+func inheritedNPULock(path string) *os.File {
+	fd, err := strconv.Atoi(os.Getenv(NPULockEnv))
+	if err != nil || fd < 3 {
+		return nil
+	}
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		return nil
+	}
+	got, err1 := f.Stat()
+	want, err2 := os.Stat(path)
+	if err1 != nil || err2 != nil || !os.SameFile(got, want) {
+		return nil // not the lock's file: take the lock as any process
+	}
+	if ok, err := tryLock(f); err != nil || !ok {
+		return nil
+	}
+	return f
+}
+
+// NPULockFile is the lock's file once this process holds it (LockNPU), for a command started
+// under it: passed as the command's descriptor 3 with NPULockEnv set to 3.
+func NPULockFile() *os.File {
+	npuLock.Lock()
+	defer npuLock.Unlock()
+	return npuLock.f
 }
 
 // LockNPU takes the NPU's lock as OpenDevice does, for what opens the device by other means:

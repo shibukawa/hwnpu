@@ -9,7 +9,7 @@
 //	hwnpu cache ls                           # by model and kind: the units, size, when last used (-u: each unit)
 //	hwnpu cache prune --max-size 200GB       # remove the least recently used until it fits
 //	hwnpu cache prune --older-than 30d       # remove what was not used for 30 days
-//	hwnpu cache clear Qwen3-1.7B             # remove a model's files and programs
+//	hwnpu cache clear Qwen3-1.7B             # remove a model's files and programs (and Core AI's compiled ones)
 //	hwnpu cache clear --all                  # remove everything the cache holds of the models
 //	hwnpu memory                             # this machine's memory, the models with a memory chosen
 //	hwnpu memory LFM3-1.7B                   # the memory it runs as, and how

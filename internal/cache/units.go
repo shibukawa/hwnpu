@@ -408,12 +408,19 @@ func Queued(path string) bool {
 	return false
 }
 
-// Remove removes x. A repository's lock goes first, so that a process reading it after takes
-// none of its files as there.
+// Remove removes x, and Core AI's entries of the exports in it (CoreAIEntries). A repository's
+// lock goes first, so that a process reading it after takes none of its files as there.
 func (x Unit) Remove() error {
+	_, err := x.remove()
+	return err
+}
+
+// remove is Remove, returning the bytes of Core AI's entries it removed too.
+func (x Unit) remove() (int64, error) {
+	entries := CoreAIEntries(x)
 	if x.Kind == KindOriginal {
 		if err := os.Remove(filepath.Join(x.Path, "hwnpu-lock.json")); err != nil && !os.IsNotExist(err) {
-			return err
+			return 0, err
 		}
 	}
 	if x.Kind == KindConverted {
@@ -432,9 +439,18 @@ func (x Unit) Remove() error {
 	}
 	forgetScan()
 	if len(errs) > 0 {
-		return errs[0]
+		return 0, errs[0] // the exports may be there still: their entries are kept
 	}
-	return nil
+	freed := CoreAIBytes(entries)
+	for _, e := range entries {
+		if err := os.RemoveAll(e); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return freed, errs[0]
+	}
+	return freed, nil
 }
 
 // forgetScan makes Room scan the root again (what it held changed).

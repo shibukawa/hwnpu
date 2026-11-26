@@ -7,8 +7,9 @@
 #               (coreai-build --version, Xcode's Metal Toolchain). Another version stops the
 #               build (--any-tools builds all the same, for a check of a new toolchain)
 #   apple       what every model's Core AI exports are built with, unless its own says:
-#     archs     the architectures of the Neural Engine their programs are prebuilt for
-#               (coreai-build's names: h13g M1, h14g M2, h15g M3, ...)
+#     archs     the architectures of the Neural Engine the programs of the models that are
+#               prebuilt (a model's prebuilt, below) are prebuilt for (coreai-build's names:
+#               h13g M1, h14g M2, h15g M3, ...)
 #     jobs      coreai-build's compiles at once (each takes one core and 1 to 3 GB; two at
 #               once have left programs off the Neural Engine that pass alone)
 #     prebuild  rules for programs of the exports, each for some architectures (arch: one or a
@@ -29,6 +30,18 @@
 #               A run takes its own chip's (HWNPU_DEV=rewrite=sin:series over it, to compare)
 #     code      the Go packages (directories of the module, or one .go file of one) every Core AI
 #               conversion writes its programs with: MIL, its lowering, the weights' writing
+#     chips     CHIP (M1, M2, ...: models.yaml's not_on): what its Neural Engine takes less of than
+#               the later chips', which changes what the chat models are converted into for it
+#               (a chip here has exports of its own, chat.ExportChips). A chip left out takes
+#               everything; the file's alone, not a model's:
+#                 hold_mib     the programs' weights loaded together (MiB) past which every
+#                              call slows down; the one that generates then reads the prompts
+#                              too (fewer programs)
+#                 whole        false: the chat models have no whole programs for short
+#                              conversations (slower there than those split at the attention)
+#                 gather_nd    false: no mixture of experts whose experts' program picks its
+#                              scales with gather_nd (refused before the checkpoint downloads)
+#               The chat models' fingerprints (apple-versions.txt) hold them
 #   amd         what every model's exports for AMD's NPU are made with, unless its own says:
 #     generations  the generations of the NPU they are made for: xdna1 (Phoenix, Hawk Point:
 #               IRON's npu1), xdna2 (Strix, Krackan: npu2). Each goes as its own target
@@ -37,6 +50,15 @@
 #   models      MODEL (a model of models.yaml): {apple: ..., amd: ...}. apple as above, its rules
 #               after those of apple. A build that fails on a program no rule names stops, and
 #               says the rule that would leave it to the device. A model's apple also has:
+#     prebuilt  true: its exports' programs are prebuilt for archs when the build names no
+#               architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT) and
+#               put in the sources, where a Mac of the chip takes them at its first run. The
+#               image generators alone: the device compiles a program of theirs in minutes to
+#               hours. Another model's programs are small, and a Mac loads them slower from
+#               prebuilt programs than it compiles them (LFM3-1.7B 2 min 17 s on the device, 8
+#               min 12 s prebuilt; Whisper 53 s, 5 min 27 s: docs/known-issues.md 9,
+#               2026-11-22). A build that names architectures (MODEL/coreai-ARCH, -arch)
+#               compiles any model's all the same, to measure it again
 #     version   the version of what its Core AI conversion makes (the sources keep its exports
 #               as vN: converted/MODEL/coreai/EXPORT/v1; an export made here of another version
 #               is made again). Raise it whenever its convert or its code changes what it
@@ -89,6 +111,17 @@ apple:
   # what every Core AI conversion writes its programs with: MIL, its lowering to Core AI's
   # bytecode, and the writing of the weights and the parts
   code: [internal/mlpackage, internal/coreai/ailower, internal/coreai/mlirbc, internal/llm/manifest.go, internal/llm/convertai.go, internal/llm/weights.go]
+  chips:
+    M1:
+      # lut4 parts holding 2.86 GiB ran at their own times added up, 2.97 GiB at 828 against 72
+      # ms a token (hwnpu-dev probe split, PROBE.md); the M2 (3.65 GiB at full speed), the M3 and
+      # the M4 have no such limit below the compile cache
+      hold_mib: 2867
+      # LFM3-1.7B with a whole program of 2048: 33.6 and 37.0 tokens/s, the split programs alone
+      # 39.9 and 43.6 (docs/design/apple-coreai.md)
+      whole: false
+      # the experts' program picks their scales with gather_nd (docs/handoff-ane-gather.md 1)
+      gather_nd: false
 
 amd:
   generations: [xdna2]
@@ -107,6 +140,7 @@ models:
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
       version: 4
+      prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps (version 4; the
       # programs as version 3's, so its prebuilt programs are the same)
       finish: [{tokenizer: [text/tokenizer.json]}]
@@ -124,6 +158,16 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
+      # the VAE (decoder and encoder) is compiled on the device on every chip, as before the rules:
+      # on M1 coreai-build's h13g prebuilt drew a band of noise every 112 rows at 512 x 512 and the
+      # 1024 x 768 vae_s0 ended in 'Request cancelled'; on M2 512 x 512 had bands every 112 rows.
+      # On an M3 the prebuilt gave the same bytes as the device's compile (2026-11-25, 26): taking
+      # it there is the FLUX change of its own
+      prebuild:
+        - programs: ["vae_*"]
+          do: device
+          why: "the VAE's prebuilts drew bands every 112 rows at 512 x 512 on M1 (h13g) and M2 (h14g); M3 and later are left to the device until they are taken by a change of FLUX's own"
+          checked: 2026-11-26
   MOSS-SoundEffect-v2.0: &moss
     amd:
       # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
@@ -405,6 +449,7 @@ models:
   flux-3-image-klein:
     apple:
       version: 2
+      prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/imagegen/flux3klein, internal/imagegen/flux3klein/mil, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
@@ -416,6 +461,13 @@ models:
         dit_format: lut8
         text_group: 4
         single_group: 5
+      # the VAE (FLUX.2 klein's decoder, internal/imagegen/fluxvae) is compiled on the device on
+      # every chip, as FLUX.2 klein's
+      prebuild:
+        - programs: ["vae_*"]
+          do: device
+          why: "FLUX.2 klein's decoder, whose prebuilts drew bands every 112 rows at 512 x 512 on M1 and M2; M3 and later are left to the device until they are taken by a change of FLUX's own"
+          checked: 2026-11-26
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
@@ -424,7 +476,10 @@ models:
       args: ["{in}", "{out}", --size, "{sizes}"]
   Anima-Aesthetic: &anima-amd
     apple:
-      version: 2
+      # 3: the VAE's residual blocks' silu in the exp form (export v6): coreai-build places
+      # every stage on the Neural Engine, so that they can be prebuilt (below)
+      version: 3
+      prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
       code: [internal/imagegen/anima, internal/imagegen/anima/mil, internal/imagegen/milpart]
@@ -436,6 +491,18 @@ models:
         dit_format: int8
         group: 4
         qchunk: 512
+      # the VAE (its residual blocks' silu in the exp form since version 3) is prebuilt on M1 and on
+      # M3 and later: on an M3 the device compiled the ten stages in 482 s at 512² (3552 s with the
+      # native silu, which coreai-build failed on), the h15g prebuilt gave the same bytes, every
+      # stage matched an fp64 reference at 512² and 1024², and whole pictures from the prebuilt VAE
+      # were the same bytes as with it compiled on the device (2026-11-26); an M1 drew right from
+      # the h13g prebuilt (2026-11-27)
+      prebuild:
+        - arch: [h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
+          do: device
+          why: "on M2 Anima-Turbo's pictures from the h14g VAE prebuilt had bands every 160 pixels (twice and three times as often at some aspect ratios), and none with the VAE compiled on the device"
+          checked: 2026-11-27
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps

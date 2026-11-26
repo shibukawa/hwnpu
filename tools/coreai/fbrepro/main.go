@@ -15,7 +15,7 @@
 //	                                                       a stage of MOSS-SoundEffect's DAC decoder
 //	                                                       for Core AI, its sine written as -sin says
 //	                                                       (series, native, native-clip: the r2 way)
-//	go run ./tools/coreai/fbrepro attn [-rows 1536] [-keys 1536] [-chunk 1024] [-head 128] OUT.aimodel
+//	go run ./tools/coreai/fbrepro attn [-rows 1536] [-keys 1536] [-chunk 1024] [-head 128] [-split 0] [-parts] OUT.aimodel
 //	                                                       one head's attention, the queries in chunks
 //	                                                       (1536 rows by 1024: a chunk of 512 is left)
 //
@@ -51,6 +51,8 @@ func main() {
 	keys := fs.Int("keys", 1536, "attn: keys")
 	chunk := fs.Int("chunk", 1024, "attn: query rows a chunk")
 	head := fs.Int("head", 128, "attn: head size")
+	split := fs.Int("split", 0, "attn: keys of the first kind (HeadOptions.Split), 0 for one kind")
+	parts := fs.Bool("parts", false, "attn: cut the keys in parts (KeyParts) under one softmax, not one tensor")
 	pth := fs.String("pth", "", "dac: the checkpoint's vae_128d_48k.pth")
 	stage := fs.Int("stage", 4, "dac: the stage (sfx.DACStages)")
 	sinWay := fs.String("sin", sfx.SinNativeClipped, "dac: series, native or native-clip")
@@ -119,7 +121,7 @@ func main() {
 			q := g.Input("q", 1, 1, *rows, *head)
 			k := g.Input("k", 1, 1, *keys, *head)
 			v := g.Input("v", 1, 1, *keys, *head)
-			g.Output(g.HeadAttention(q, k, v, milpart.HeadOptions{Chunk: *chunk, Whole: true}))
+			g.Output(g.HeadAttention(q, k, v, milpart.HeadOptions{Chunk: *chunk, Split: *split, Whole: !*parts}))
 		}
 	case "dac":
 		w, err := sfx.OpenWeights([]string{*pth}, nil)
