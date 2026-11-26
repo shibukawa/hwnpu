@@ -1,5 +1,7 @@
 # h15g .aimodelc from coreai-build fails the device's validation ("cache_hint != ...drop_v8") and the whole program falls back to an on-device compile
 
+Filed as FB25744357 (2026-11-27).
+
 - **Area**: Xcode / coreai-build, Core AI (ANELargeModelCompilerService)
 - **Type**: Incorrect/Unexpected behavior
 

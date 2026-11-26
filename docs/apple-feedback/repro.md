@@ -8,6 +8,7 @@ Tools (`tools/coreai/fbrepro`):
 - `offline.sh ARCH PROGRAM...`: compiles each program with `coreai-build` for ARCH and says whether `manifest.plist` has `mps.fullyPlacedOnANE`.
 - `load.sh PROGRAM[#FUNCTION]`: loads it on this Mac's Neural Engine with no cache for it (a copy of `aicheck` signed with a new identifier) and samples the free disk.
 - `purge.sh PROGRAM [KEEP_GB]`: loads, fills the disk to KEEP_GB for 5 minutes, then loads again.
+- `compare.sh [-a ARCHS] PROGRAM...`: compiles each program offline with the `coreai-build` of every Xcode in `XCODES` (default: every `/Applications/Xcode*.app`) for each architecture. Each row gives whether the program is on the Neural Engine, the seconds, the disk it took and a hash of the Neural Engine code. Use it to see what a new (beta) Metal Toolchain changes.
 
 ```sh
 go build -o /tmp/fb/fbrepro ./tools/coreai/fbrepro

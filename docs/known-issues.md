@@ -21,7 +21,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
 | 10 | M1 (と M2: `sin`、`cos`) の ANE のコンパイラが `sin`、`cos` と、まとめた要素ごとの演算の一部を受け付けない | FB25724316 ([報告の文面](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | FB25724867 ([報告の文面](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
-| 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 (下書き [h15g-dma-cache-hint.md](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
+| 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | FB25744357 ([報告の文面](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 | 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
 | 14 | 1024² の VAE の段の ANE のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使う (Anima) | 未報告 (下書き [compile-disk-and-time.md](apple-feedback/compile-disk-and-time.md)) | なし (初回は 70 GB 以上空ける) | VAE の prebuilt を M2 以降で使うか測り直す (#336) |
 
@@ -121,7 +121,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: 何もしなくてよい
 - 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_DEV=ailower.cut=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
 
-## 12. h15g の DMA のキャッシュの指定が端末の検査に落ちる (未報告)
+## 12. h15g の DMA のキャッシュの指定が端末の検査に落ちる (FB25744357)
 
 - **何が**: FLUX.2 klein の DiT (8 つの大きさの関数を持つプログラム) の h15g 向けの prebuilt が、M3 (macOS 27.2.1) で全部 `failedToSpecialize` になった。Core AI は関数が 1 つ仕上がらないとプログラムごと使わないので、DiT の 7 つの部品がどれも端末でコンパイルされた (1 つ 3〜19 分。初回が prebuilt のないときと同じ)。落ちていたのは 512² の関数だけ。端末の仕上げ (ANELargeModelCompilerService) が "tile_dma_src.dma_config2.cache_hint != ane_tile_dma_src_dma_config2_cache_hint_drop_v8"、"Instruction corresponding to oplayer … failed validation test"、"Invalid TD exists" を出す。M1 で作ったものとこの機械で作ったものは、日付と統計のファイルのほかはバイト単位で同じで、どちらも落ちる。`--min-deployment-version 27.2` でも `--expect-frequent-reshapes` でも同じ
 - **原因の形**: attention の、1536 個のキーに対する 512 行のクエリの塊 (1536 行を `HeadChunk` の 1024 行ずつに分けた残り)。attention だけのプログラムでも起きる (1 ヘッド、キーを分けなくても)。768 行ずつ、1536 行まとめて、1024 個のキーに 512 行、3072 個のキーに 512 行は通る。1792 個のキーに 1280 行と 512 行も落ちる。attention だけでは 3968 行や 4032 行も落ちたが、DiT の中では通る (周りの演算とまとめ方で変わる)。どの形で起きるかは、オフラインのコンパイラの割り付け次第で、読めない

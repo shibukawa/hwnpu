@@ -8,7 +8,7 @@ Drafts written 2026-11-25 for the problems of [known-issues.md](../known-issues.
 | [purged-programs-silent-recompile.md](purged-programs-silent-recompile.md) | new | 8 | FB25724246 |
 | [sin-off-ane-m1-m2.md](sin-off-ane-m1-m2.md) | new | 10 | FB25724316 |
 | [offline-stricter-than-device.md](offline-stricter-than-device.md) | new | 11 | FB25724867 |
-| [h15g-dma-cache-hint.md](h15g-dma-cache-hint.md) | new | 12 | |
+| [h15g-dma-cache-hint.md](h15g-dma-cache-hint.md) | new | 12 | FB25744357 |
 | [h13g-attention-8192-keys.md](h13g-attention-8192-keys.md) | new | 13 | |
 | [add-FB25624129-finish-slower.md](add-FB25624129-finish-slower.md) | addition | 1, 9 | FB25624129 |
 | [add-FB25624259-no-cancel.md](add-FB25624259-no-cancel.md) | addition | 5 | FB25624259 |
