@@ -39,6 +39,11 @@ type BuildOptions struct {
 	// Left, when set, is why the program at asset is left to the device on arch, "" when it is
 	// not: a rule of the model's recipe (internal/recipe). Build compiles none of those.
 	Left func(asset, arch string) string
+	// Tool is the version of coreai-build (BuildToolVersion's, asked when ""): a packed build
+	// takes no prebuilt program another one made.
+	Tool string
+	// Model is the model of the exports, for the record of a packed build (RecordFile).
+	Model string
 }
 
 // DefaultJobs is the compiles Build runs at once by default: one for every 4 GB of memory beyond
@@ -60,6 +65,12 @@ type BuildResult struct {
 	Elapsed          time.Duration
 	// Skipped: the prebuilt program was there already (not Force).
 	Skipped bool
+	// Reused is the export whose prebuilt program of the same source was taken (a packed
+	// build, not Force), "" when none was.
+	Reused string
+	// Why is why the prebuilt programs of the same source there were were not taken (it was
+	// compiled), "" when there was none.
+	Why string
 	// Left is why the program is left to the device on the architecture (BuildOptions.Left):
 	// not compiled.
 	Left string
@@ -67,6 +78,10 @@ type BuildResult struct {
 	// distribution would carry) and of the weights (resources.bin) in Out.
 	Code, Weights int64
 	Err           error
+
+	jobs      int        // the compiles that ran at once with it
+	ran       bool       // compiled (and packed)
+	from, bad *candidate // what it was taken from; what failed on the device
 }
 
 // FindCoreAIBuild finds coreai-build, the Metal Toolchain's compiler of Core AI programs: xcrun's
@@ -103,12 +118,13 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 	if err != nil {
 		return nil, err
 	}
-	var assets []string
+	var assets, leftAll []string
 	for _, a := range all {
 		if LeftToDevice(a) {
 			if o.Log != nil {
 				fmt.Fprintf(o.Log, "%s: left to the device (LeftToDevice)\n", filepath.Base(a))
 			}
+			leftAll = append(leftAll, a)
 			continue
 		}
 		assets = append(assets, a)
@@ -126,11 +142,9 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 			return nil, fmt.Errorf("unknown architecture %s (coreai-build knows %s)", a, strings.Join(Archs, " "))
 		}
 	}
-	var tool string
-	if !o.DryRun {
-		if tool, err = FindCoreAIBuild(); err != nil {
-			return nil, err
-		}
+	version := o.Tool
+	if version == "" && o.Packed {
+		version, _ = BuildToolVersion()
 	}
 	jobs := o.Jobs
 	if jobs <= 0 {
@@ -148,40 +162,100 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 			results = append(results, BuildResult{Asset: a, Arch: arch, Out: out})
 		}
 	}
+	logf := func(format string, a ...any) {
+		if o.Log != nil {
+			fmt.Fprintf(o.Log, format, a...)
+		}
+	}
+	u := &reuser{tool: version, jobs: jobs, dry: o.DryRun, log: logf}
 	build := buildOne
 	if o.Packed {
-		build = buildPacked
+		build = func(ctx context.Context, tool, asset, arch, out string) error {
+			return buildPacked(ctx, tool, asset, arch, out, u.stash)
+		}
+	}
+	// what is kept, taken or left; the rest is compiled
+	var queue []*BuildResult
+	for i := range results {
+		r := &results[i]
+		name := filepath.Base(r.Asset)
+		if o.Left != nil {
+			if why := o.Left(r.Asset, r.Arch); why != "" {
+				r.Left = why
+				logf("%s %s: left to the device by the recipe (%s)\n", name, r.Arch, why)
+				if o.Packed && !o.DryRun {
+					// one prebuilt before the rule goes aside: a device would take it from the
+					// bundle
+					if err := u.stash(r.Asset, r.Arch, r.Out); err != nil {
+						logf("%s %s: %v\n", name, r.Arch, err)
+					}
+				}
+				continue
+			}
+		}
+		if !o.Force && !o.Packed && sameSource(r.Asset, r.Out) && onANE(r.Out) {
+			r.Skipped = true
+			r.Code, r.Weights = sizes(r.Out)
+			logf("%s %s: prebuilt already (%s)\n", name, r.Arch, filepath.Base(r.Out))
+			continue
+		}
+		if !o.Force && o.Packed {
+			c, why, err := u.decide(r)
+			switch {
+			case err != nil:
+				r.Err = err
+				logf("%s %s: not compiled: %v\n", name, r.Arch, err)
+				continue
+			case c != nil && c.dir == r.Out:
+				r.Skipped = true
+				r.Code, r.Weights = sizes(r.Out)
+				logf("%s %s: prebuilt already (%s)\n", name, r.Arch, filepath.Base(r.Out))
+				continue
+			case c != nil && o.DryRun:
+				logf("%s %s: would take the one of %s\n", name, r.Arch, c.label())
+				continue
+			case c != nil:
+				if err := u.take(c, r.Asset, r.Arch, r.Out); err != nil {
+					r.Why = "the one of " + c.label() + ": " + err.Error()
+					break
+				}
+				r.Reused, r.from = c.export, c
+				r.Code, r.Weights = sizes(r.Out)
+				logf("%s %s: taken from %s (same source, coreai-build %s)\n", name, r.Arch, c.label(), version)
+				continue
+			default:
+				r.Why = why
+			}
+		}
+		if o.DryRun {
+			if r.Why != "" {
+				logf("%s %s: would compile to %s (not %s)\n", name, r.Arch, r.Out, r.Why)
+			} else {
+				logf("%s %s: would compile to %s\n", name, r.Arch, r.Out)
+			}
+			continue
+		}
+		if r.Why != "" {
+			logf("%s %s: compiling (not %s)\n", name, r.Arch, r.Why)
+		}
+		queue = append(queue, r)
+	}
+	var tool string
+	if len(queue) > 0 {
+		if tool, err = FindCoreAIBuild(); err != nil {
+			if o.Packed {
+				u.write(results, leftAll, archs, o.Model) // what was taken
+			}
+			return results, err
+		}
 	}
 	var (
 		wg  sync.WaitGroup
 		sem = make(chan struct{}, jobs)
 		mu  sync.Mutex
 	)
-	for i := range results {
-		r := &results[i]
-		if o.Left != nil {
-			if why := o.Left(r.Asset, r.Arch); why != "" {
-				r.Left = why
-				if o.Log != nil {
-					fmt.Fprintf(o.Log, "%s %s: left to the device by the recipe (%s)\n", filepath.Base(r.Asset), r.Arch, why)
-				}
-				continue
-			}
-		}
-		if !o.Force && sameSource(r.Asset, r.Out) && onANE(r.Out) {
-			r.Skipped = true
-			r.Code, r.Weights = sizes(r.Out)
-			if o.Log != nil {
-				fmt.Fprintf(o.Log, "%s %s: prebuilt already (%s)\n", filepath.Base(r.Asset), r.Arch, filepath.Base(r.Out))
-			}
-			continue
-		}
-		if o.DryRun {
-			if o.Log != nil {
-				fmt.Fprintf(o.Log, "%s %s: would compile to %s\n", filepath.Base(r.Asset), r.Arch, r.Out)
-			}
-			continue
-		}
+	for _, r := range queue {
+		r.jobs = min(jobs, len(queue))
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -196,6 +270,7 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 			r.Err = build(ctx, tool, r.Asset, r.Arch, r.Out)
 			r.Elapsed = time.Since(t0)
 			if r.Err == nil {
+				r.ran = true
 				r.Code, r.Weights = sizes(r.Out)
 			}
 			if o.Log != nil {
@@ -210,26 +285,28 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 		}()
 	}
 	wg.Wait()
-	for i := range results {
-		r := &results[i]
+	for _, r := range queue {
 		if !errors.Is(r.Err, errOffANE) || ctx.Err() != nil {
 			continue
 		}
-		if o.Log != nil {
-			fmt.Fprintf(o.Log, "%s %s: compiling again alone\n", filepath.Base(r.Asset), r.Arch)
-		}
+		logf("%s %s: compiling again alone\n", filepath.Base(r.Asset), r.Arch)
+		r.jobs = 1
 		t0 := time.Now()
 		r.Err = build(ctx, tool, r.Asset, r.Arch, r.Out)
 		r.Elapsed += time.Since(t0)
 		if r.Err == nil {
+			r.ran = true
 			r.Code, r.Weights = sizes(r.Out)
 		}
-		if o.Log != nil {
-			if r.Err != nil {
-				fmt.Fprintf(o.Log, "%s %s: FAILED again after %s: %v\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), r.Err)
-			} else {
-				fmt.Fprintf(o.Log, "%s %s: %s alone (%.1f MB of compiled regions, %.0f MB of weights)\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), float64(r.Code)/1e6, float64(r.Weights)/1e6)
-			}
+		if r.Err != nil {
+			logf("%s %s: FAILED again after %s: %v\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), r.Err)
+		} else {
+			logf("%s %s: %s alone (%.1f MB of compiled regions, %.0f MB of weights)\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), float64(r.Code)/1e6, float64(r.Weights)/1e6)
+		}
+	}
+	if o.Packed && !o.DryRun {
+		if err := u.write(results, leftAll, archs, o.Model); err != nil {
+			logf("the record of the build (%s): %v\n", RecordFile, err)
 		}
 	}
 	for _, r := range results {
@@ -239,6 +316,10 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 	}
 	return results, nil
 }
+
+// IsBadOnDevice reports whether err is a build's of a program whose prebuilt program of the same
+// source a device failed (its record says so): compiled again it would be the same.
+func IsBadOnDevice(err error) bool { return errors.Is(err, errBadOnDevice) }
 
 // errOffANE: coreai-build wrote a program without a Neural Engine region. Seen on 2 of 5 double
 // groups of Chroma1-Flash at 1024² with two compiles at once, and not on the same programs alone:
@@ -333,8 +414,9 @@ func buildOne(ctx context.Context, tool, asset, arch, out string) error {
 	return os.Rename(built, out)
 }
 
-// buildPacked runs coreai-build on asset for arch, and packs the result at out (Pack).
-func buildPacked(ctx context.Context, tool, asset, arch, out string) error {
+// buildPacked runs coreai-build on asset for arch, and packs the result at out (Pack), the one
+// there given to stash first.
+func buildPacked(ctx context.Context, tool, asset, arch, out string, stash func(asset, arch, out string) error) error {
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
 	}
@@ -345,6 +427,9 @@ func buildPacked(ctx context.Context, tool, asset, arch, out string) error {
 	defer os.RemoveAll(tmp)
 	full := filepath.Join(tmp, filepath.Base(out))
 	if err := buildOne(ctx, tool, asset, arch, full); err != nil {
+		return err
+	}
+	if err := stash(asset, arch, out); err != nil {
 		return err
 	}
 	return Pack(full, asset, out)

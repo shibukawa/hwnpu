@@ -101,7 +101,10 @@ func newRole(name string, edit bool) *airole.Role {
 		// 3: FLUX.2 klein's export on Apple's of every size and edit in one, and one beside it
 		// 4: FLUX.2 klein's export v6 (two single blocks a program): the store's record of v4 is of a
 		// layout this hwnpu no longer reads (ai.Store.find does not look at the export's version)
-		Revision: 4,
+		// 5: an M1 takes a FLUX.2 klein export of its own (models.yaml npu.apple generation_edits:
+		// its one reference of a picture of 1024 x 1024 at 512), where the store's record names the
+		// other chips', whose prebuilt programs draw noise on it
+		Revision: 5,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 			var f airole.Files
 			fam := familyOf(e.Base)

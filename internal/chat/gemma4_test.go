@@ -54,6 +54,10 @@ func TestGemma4Parse(t *testing.T) {
 	}{
 		{name: "answer", text: "Hello<turn|>", final: true, want: Answer{Content: "Hello"}},
 		{name: "thinking so far", text: "<|channel>thought\nLet me", want: Answer{Reasoning: "Let me", Thinking: true}},
+		// the channel's name as it streams in is not the reasoning (it was shown, then taken back)
+		{name: "channel name coming", text: "<|channel>thou", want: Answer{Thinking: true}},
+		{name: "channel name whole", text: "<|channel>thought", want: Answer{Thinking: true}},
+		{name: "channel name then newline", text: "<|channel>thought\n", want: Answer{Thinking: true}},
 		{name: "thought and answer", text: "<|channel>thought\nHmm.\n<channel|>Hi", final: true, want: Answer{Reasoning: "Hmm.", Content: "Hi"}},
 		{name: "empty thought", text: "<|channel>thought\n<channel|>Hi", final: true, want: Answer{Content: "Hi"}},
 		{name: "prompt inside the channel", text: "Next.\n<channel|>Done", thinking: true, final: true, want: Answer{Reasoning: "Next.", Content: "Done"}},

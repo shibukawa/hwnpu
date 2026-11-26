@@ -234,6 +234,9 @@ func TestUserErrors(t *testing.T) {
 		{"like nothing", "version: 1\nmodels:\n  x:\n    like: nothing\n", "no such model"},
 		{"with not hf", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: ocr\n    with: {detector: \"s3:a/b\"}\n", "not hf:OWNER/NAME"},
 		{"with escapes", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: ocr\n    with: {detector: \"hf:../b\"}\n", "not hf:OWNER/NAME"},
+		{"generation_edits chip", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: image\n    npu: {apple: {sizes: {\"1:1\": 1024x1024}, edits: {\"1:1\": [\"1\"]}, generation_edits: {M9: {\"1:1\": [\"1@half\"]}}}}\n", "M9"},
+		{"generation_edits aspect", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: image\n    npu: {apple: {sizes: {\"1:1\": 1024x1024}, edits: {\"1:1\": [\"1\"]}, generation_edits: {M1: {\"3:4\": [\"1@half\"]}}}}\n", "not one of its edits"},
+		{"generation_edits empty", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: image\n    npu: {apple: {sizes: {\"1:1\": 1024x1024}, edits: {\"1:1\": [\"1\"]}, generation_edits: {M1: {\"1:1\": []}}}}\n", "lists no references"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := userFiles(t, tc.file)
@@ -245,6 +248,29 @@ func TestUserErrors(t *testing.T) {
 				t.Error("the built-in definitions are gone")
 			}
 		})
+	}
+}
+
+// A generation's edits (npu's generation_edits) stand in place of the default's at their aspect
+// ratios on that generation alone: FLUX.2 klein's one reference of a picture of 1024 x 1024 at
+// half the sides on an M1.
+func TestEditsOn(t *testing.T) {
+	m, ok := Lookup("FLUX.2-klein-4B")
+	if !ok {
+		t.Fatal("FLUX.2-klein-4B is not in models.yaml")
+	}
+	spec := m.NPU["apple"]
+	for gen, want := range map[string]string{"": "1", "M2": "1", "M3": "1", "M1": "1@half"} {
+		e := spec.EditsOn(gen)
+		if got := e["1:1"]; len(got) != 3 || got[0] != want || got[1] != "2@half" || got[2] != "3@half" {
+			t.Errorf("on %q at 1:1: %v, want %s first", gen, got, want)
+		}
+		if got := e["1:1s"]; len(got) != 2 || got[0] != "1" {
+			t.Errorf("on %q at 1:1s: %v", gen, got)
+		}
+	}
+	if e := m.NPU["amd"].EditsOn("xdna2"); e["1:1"][0] != "1" {
+		t.Errorf("AMD's: %v", e)
 	}
 }
 

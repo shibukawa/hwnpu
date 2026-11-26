@@ -18,6 +18,7 @@ func TestParseRejectsAppleVersions(t *testing.T) {
 		{"models:\n  M:\n    apple: {version: 1, convert: {sizes: [[1, 2]]}}\n", "sizes[0]"},
 		{"apple: {version: 1}\n", "a model's"},
 		{"apple: {convert: {group: 1}}\n", "a model's"},
+		{"apple: {prebuilt: true}\n", "a model's"},
 	} {
 		_, err := Parse("t", []byte(head+c.body))
 		if err == nil || !strings.Contains(err.Error(), c.want) {

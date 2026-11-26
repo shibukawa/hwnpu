@@ -128,8 +128,6 @@ Core AI にした理由:
 - ディスクの空きが少ないと、macOS が Core AI の項目、aned のコード、ときに `~/Library/Caches` の下の hwnpu のキャッシュの根まで消す (既定の方針は `storagePressure` で消し、使っていない順ではない)。M2 では空き約 15 GiB を切ると始まり、空き 22 GB でも仕上げたばかりの prebuilt を消した。初回は 25 GB 以上空ける
 - aned のコードが消えて項目が残ると、`specialize` / `loadFunction` がすぐ失敗する (`_GenericObjCError.nilError`、`_GenericObjCError 0`)。shim は項目を消して読み直す。ディスクに空きがなければ Neural Engine のコンパイラが失敗し、GPU に回る。`HWNPU_DEV=coreai.debug=1` は「the cached entry failed (…), compiled again」を出し、GPU に落ちた項目を消し、空きが 10 GiB 未満なら警告する
 - Core AI に項目ができたら `main.mlirb` は読まれない。空にしても資産は読める (`main.hash` は残す)
-- `HWNPU_DEV=coreai.drop-bytecode` は項目ができた後に `main.mlirb` を空のファイルに置き換える (Core AI が古いファイルを写像しているかもしれないので rename で)。Chroma1-Flash の 512² で hwnpu のキャッシュは 28 → 15 GB。既定は切らない: 取得元から取った書き出しは、項目が消えたときに落とし直しになる
-- 空の `main.mlirb` を Core AI が解析するとプロセスごと落ちる (LLVM: `cannot unwrap empty odiec_module_t`)。そこで空の資産は項目があるとき (`hasEntry`: `…/model.aimodelx/main-this.odix` が空でないファイル) だけ `kindNoRetry` (0x100: shim は項目を消して読み直さない) で開き、なければ Go が部品から下ろし直す。直接渡されたものならエラーにする。迷ったら空にせず、下ろし直す
 - `hwnpu cache` が空きの下限まで切るときは、prebuilt のある部品の Core AI の項目を先に消す。prebuilt から数秒で戻る
 - Neural Engine の重みはカーネルの wired メモリ (`mem.NPUWired` で読む) で、プロセスの footprint ではない: [メモリと電力](memory-and-power.ja.md)
 
@@ -280,10 +278,10 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 - **Core ML を中間の形式にする** (読み込むときに `.mlpackage` を下ろす): 書き出しはチェックポイントから直接書く。ディスクに重みが 3 回 (書き出し、下ろした `.aimodel`、Core AI の項目) 置かれ、変換の時間もかかった
 - **`.aimodelc` を丸ごと配る**: 99 % は `.aimodel` がすでに持つ重み。`.aimodel` と、種類ごとの重みのない詰めた prebuilt を配る
 - **チャットのモデルの prebuilt**: 初回が遅くなり (LFM3-1.7B 2 分 17 秒 → 8 分 12 秒)、Qwen3.5-4B は答えなかった
-- **文の符号器の prebuilt** (`LeftToDevice`) **と M1 の VAE の prebuilt** (レシピ): 絵が誤る / `Request cancelled`、得もない
+- **文の符号器の prebuilt** (`LeftToDevice`) **と M1・M2 の VAE の prebuilt** (レシピ): 絵が誤る / `Request cancelled`、得もない
 - **Sana の prebuilt**: 試したとき `coreai-build` が ANE に乗せたのは 27 本のうち 8 本で、それも端末のコンパイルより仕上げが遅かった。Qwen-Image も対象にしない
 - **h18g と落ちる 9 種類**: 作らない (GPU だけの prebuilt は M6 を ANE から外す)
-- **キャッシュに入ったら既定で `main.mlirb` を消す**: 取得元の書き出しは項目が消えたら落とし直しになる。`HWNPU_DEV=coreai.drop-bytecode` だけ
+- **Core AI の項目ができたら `main.mlirb` を空にする** (`HWNPU_DEV=coreai.drop-bytecode`、2026-11-26 に削除): 効くのは `.mlpackage` を変換キャッシュに下ろした資産だけで、主な経路のダウンロードした書き出しには効かなかった (M1 の YuNet: 前者は空になり、後者はそのまま)。ダウンロードした書き出しに広げると、項目が消えたとき (OS の更新、ディスクの空き不足、実行ファイル名の変更) に落とし直しになる。ディスクを空けるのは `hwnpu` コマンドのキャッシュの整理の役目で、ライブラリは `main.mlirb` を常に残す。空の `main.mlirb` を Core AI が解析するとプロセスごと落ちる (LLVM: `cannot unwrap empty odiec_module_t`)
 - **コンパイルを並べる**: 機械に ANE のコンパイラの列は 1 本しかない
 - **呼び出しごとに新しい `NDArray`、呼び出し側のバッファの view** (`NDArray.RawView`、IOSurface): 10.0 / 10.7 / 8.3 ms に対し、使い回す配列は 7.2 ms (PLaMo 3 0.8B の part1、M1)。今は呼び出し側が Core AI の配列に書く
 - **分けない 1 本と分けた形を 1 本の `.aimodel` に**: Qwen3-0.6B で 60 関数になり、読み込み 2 分 28 秒、一部が GPU に外れ、GPU の関数ごとに MPSGraph の作業が 0.6 GB でディスクが尽きた
@@ -298,7 +296,7 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 - Core AI の `.persistent` のキャッシュの方針 (`AIModelCache.specialize(…cachePolicy:)`、`~/Library/Application Support/coreai-cache/` に置く): 掃除によるコンパイルし直しはなくなるが、項目は hwnpu が自分で消すことになり (`deleteEntries(for:)`)、aned のコードは消されるまま。決めていない
 - 同じ `.aimodel` が OS の版を越えて読めるか (キャッシュのフォルダは OS のビルドごと)
 - プロセスの最初の prebuilt の仕上げにかかる数分、Anima の最初のステップの 13 分 (prebuilt によらない): 調べていない
-- `coreai-build` の VAE のプログラムが h13g で縞を描く理由、Anima の VAE を落とす理由、T5 が cancelled になる理由。直ったらレシピの決まりと `LeftToDevice` を外す。取得元の古い FLUX.2 klein の prebuilt (今のコードが読まない書き出しのもの) はまだ VAE と文の部品を含む。v6 の書き出しの h13g のものは含まない
+- VAE が h13g と h14g の 512² で縞を描く理由 (M2 では端末のコンパイルでも)、Anima の VAE を落とす理由、T5 が cancelled になる理由。直ったらレシピの決まりと `LeftToDevice` を外す。取得元の古い FLUX.2 klein の prebuilt (今のコードが読まない書き出しのもの) はまだ VAE と文の部品を含む。v6 の書き出しの h13g のものは含まない
 - `coreai-build` は 9 種類で落ち、h18g で ANE のコードを出さない (Apple に報告済み)。M6 が端末でコンパイルできるかはわからない
 - aned のディスクの量は直接測っていない
 - 入力の配列に直接書く形: M2 / M3 では測っていない。画像と音声のプログラムは今も写す

@@ -278,6 +278,8 @@ type npuEntry struct {
 	Sizes       map[string]string            `yaml:"sizes"`
 	Generations map[string]map[string]string `yaml:"generations"`
 	Edits       map[string][]string          `yaml:"edits"`
+	// GenerationEdits are a generation's edits where they are not the default's, by aspect ratio.
+	GenerationEdits map[string]map[string][]string `yaml:"generation_edits"`
 }
 
 // NPUVendors are the NPU vendors a model's npu names.
@@ -906,6 +908,20 @@ func toModel(name string, e *modelEntry) (Model, error) {
 				}
 			}
 			spec.Edits = ne.Edits
+			for gen, edits := range ne.GenerationEdits {
+				if vendor == "apple" && !slices.Contains(Chips, gen) {
+					return m, fmt.Errorf("model %s: npu apple generation_edits %q is not one of %s", name, gen, strings.Join(Chips, ", "))
+				}
+				for a, refs := range edits {
+					if _, ok := spec.Edits[a]; !ok {
+						return m, fmt.Errorf("model %s: npu %s generation_edits %s %q is not one of its edits", name, vendor, gen, a)
+					}
+					if len(refs) == 0 {
+						return m, fmt.Errorf("model %s: npu %s generation_edits %s %s lists no references", name, vendor, gen, a)
+					}
+				}
+			}
+			spec.EditsByGen = ne.GenerationEdits
 			m.NPU[vendor] = spec
 		}
 	}

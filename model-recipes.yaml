@@ -7,8 +7,9 @@
 #               (coreai-build --version, Xcode's Metal Toolchain). Another version stops the
 #               build (--any-tools builds all the same, for a check of a new toolchain)
 #   apple       what every model's Core AI exports are built with, unless its own says:
-#     archs     the architectures of the Neural Engine their programs are prebuilt for
-#               (coreai-build's names: h13g M1, h14g M2, h15g M3, ...)
+#     archs     the architectures of the Neural Engine the programs of the models that are
+#               prebuilt (a model's prebuilt, below) are prebuilt for (coreai-build's names:
+#               h13g M1, h14g M2, h15g M3, ...)
 #     jobs      coreai-build's compiles at once (each takes one core and 1 to 3 GB; two at
 #               once have left programs off the Neural Engine that pass alone)
 #     prebuild  rules for programs of the exports, each for some architectures (arch: one or a
@@ -37,6 +38,15 @@
 #   models      MODEL (a model of models.yaml): {apple: ..., amd: ...}. apple as above, its rules
 #               after those of apple. A build that fails on a program no rule names stops, and
 #               says the rule that would leave it to the device. A model's apple also has:
+#     prebuilt  true: its exports' programs are prebuilt for archs when the build names no
+#               architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT) and
+#               put in the sources, where a Mac of the chip takes them at its first run. The
+#               image generators alone: the device compiles a program of theirs in minutes to
+#               hours. Another model's programs are small, and a Mac loads them slower from
+#               prebuilt programs than it compiles them (LFM3-1.7B 2 min 17 s on the device, 8
+#               min 12 s prebuilt; Whisper 53 s, 5 min 27 s: docs/known-issues.md 9,
+#               2026-11-22). A build that names architectures (MODEL/coreai-ARCH, -arch)
+#               compiles any model's all the same, to measure it again
 #     version   the version of what its Core AI conversion makes (the sources keep its exports
 #               as vN: converted/MODEL/coreai/EXPORT/v1; an export made here of another version
 #               is made again). Raise it whenever its convert or its code changes what it
@@ -107,6 +117,7 @@ models:
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
       version: 4
+      prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps (version 4; the
       # programs as version 3's, so its prebuilt programs are the same)
       finish: [{tokenizer: [text/tokenizer.json]}]
@@ -419,6 +430,7 @@ models:
   flux-3-image-klein:
     apple:
       version: 2
+      prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/imagegen/flux3klein, internal/imagegen/flux3klein/mil, internal/imagegen/flux2klein/mil, internal/imagegen/fluxvae, internal/imagegen/anima/mil, internal/imagegen/milpart]
@@ -453,6 +465,7 @@ models:
   Anima-Aesthetic: &anima-amd
     apple:
       version: 2
+      prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
       code: [internal/imagegen/anima, internal/imagegen/anima/mil, internal/imagegen/milpart]

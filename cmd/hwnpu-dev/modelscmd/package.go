@@ -49,10 +49,12 @@ type job struct {
 	archs  []string
 }
 
-// prepared is what a job's preparation of a form gave (airole.Files).
+// prepared is what a job's preparation of a form gave (airole.Files), as a Mac of chip converts
+// ("" for another target's, of no chip).
 type prepared struct {
 	job   job
 	files airole.Files
+	chip  string
 }
 
 // folder is Core AI export folders and programs to compile for archs (none: the recipe's) as
@@ -88,7 +90,15 @@ func (x PackageCmd) Run(d *devopt.Defs) error {
 	for _, p := range done {
 		if len(p.job.archs) > 0 {
 			if paths := coreAIPaths(p.files.Paths); len(paths) > 0 {
-				folders = append(folders, folder{paths, p.job.archs, p.job.model.Name})
+				// the exports made as a chip converts, for the architectures that take them: a
+				// chip's own export is not compiled for the others, nor theirs for it (FLUX.2
+				// klein's for an M1, whose programs of the others' draw noise)
+				archs := slices.DeleteFunc(slices.Clone(p.job.archs), func(arch string) bool { return p.chip != "" && !chat.TakesExportsOf(arch, p.chip) })
+				if len(archs) > 0 {
+					folders = append(folders, folder{paths, archs, p.job.model.Name})
+				} else {
+					fmt.Fprintf(os.Stderr, "%s: its exports as on the %s are compiled for none of %s (another chip's)\n", p.job.model.Name, p.chip, strings.Join(p.job.archs, " "))
+				}
 			}
 		}
 	}
@@ -190,9 +200,7 @@ func parseJobs(sel []string) ([]job, error) {
 				return nil, err
 			}
 			// and what its recipe makes: the exports for AMD's NPU of its generations (but
-			// on a Mac, which has no IRON), the Core AI exports (each of its rewrites)
-			// prebuilt for its architectures (on a Mac alone: elsewhere they cannot be
-			// compiled)
+			// on a Mac, which has no IRON)
 			if _, ok := recipes.AMDOf(m.Recipe); ok {
 				gens, skips := recipes.AMDGenerations(m.Recipe)
 				for _, sk := range skips {
@@ -211,11 +219,17 @@ func parseJobs(sel []string) ([]job, error) {
 					}
 				}
 			}
-			if r, ok := recipes.Models[m.Recipe]; ok && r.Apple != nil && !slices.Contains(ts, cache.CoreAITarget) {
+			// The Core AI exports are among ts already (the recipe's apple.version is the model's
+			// target's version); a model its recipe prebuilds (apple.prebuilt: the image
+			// generators) has them compiled for the recipe's architectures too
+			if a := recipes.AppleOf(m.Recipe); a.Prebuilt && len(a.Archs) > 0 {
 				if err := canCompile(); err != nil {
-					fmt.Fprintf(os.Stderr, "%s: its recipe's Core AI exports (%s/%s-ARCH) are made on a Mac: skipped here\n", m.Name, m.Name, cache.CoreAITarget)
+					fmt.Fprintf(os.Stderr, "%s: its recipe's prebuilt programs (%s/%s-ARCH) are compiled on a Mac: skipped here\n", m.Name, m.Name, cache.CoreAITarget)
 				} else {
-					ts, archs = append(ts, cache.CoreAITarget), recipes.AppleOf(m.Recipe).Archs
+					if !slices.Contains(ts, cache.CoreAITarget) {
+						ts = append(ts, cache.CoreAITarget)
+					}
+					archs = a.Archs
 				}
 			}
 			if len(ts) == 0 {
@@ -223,6 +237,10 @@ func parseJobs(sel []string) ([]job, error) {
 			}
 		}
 		for _, t := range ts {
+			archs := archs
+			if t != cache.CoreAITarget { // the architectures are the Core AI exports'
+				archs = nil
+			}
 			i := slices.IndexFunc(jobs, func(j job) bool { return j.model.Name == m.Name && j.target == t })
 			if i < 0 {
 				jobs = append(jobs, job{m, t, archs})
@@ -328,7 +346,7 @@ func prepare(ctx context.Context, jobs []job, memory []int, chips []string, miss
 				if missing == nil {
 					putHere(f)
 				}
-				out = append(out, prepared{j, f})
+				out = append(out, prepared{j, f, chip})
 			}
 		}
 	}

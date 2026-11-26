@@ -240,6 +240,33 @@ func TestAppleOptions(t *testing.T) {
 	if n := ExportName(m.Name, o); !strings.HasPrefix(n, "flux.2-klein-4b-8sizes-4d02f40a-5edits-") || !strings.HasSuffix(n, "-lut8-lut8-v6.coreai") {
 		t.Errorf("export name %s", n)
 	}
+	// an M1's export: the one reference of a picture of 1024 x 1024 read at 512, so that none of its
+	// functions is of 8192 keys or more (models.yaml generation_edits); every other chip's is the
+	// default's, by its name too
+	m1, err := AppleOptions(m, "M1", 1024, 1024, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Edit{{1024, 1024, [][]int{{2}, {2, 2}, {2, 2, 2}}}, {512, 512, [][]int{{1}, {1, 1}}}}; !reflect.DeepEqual(m1.Edits, want) {
+		t.Errorf("an M1's edits %v", m1.Edits)
+	}
+	for _, e := range m1.Edits {
+		for _, refs := range e.Refs {
+			c := mil.Dit{Width: e.Width, Height: e.Height, TextRows: 512, Refs: refs}
+			if rows := c.Rows(); rows >= 8192 {
+				t.Errorf("an M1's edit at %d x %d from %v: %d keys", e.Width, e.Height, refs, rows)
+			}
+		}
+	}
+	if a, b := ExportName(m.Name, o), ExportName(m.Name, m1); a != "flux.2-klein-4b-8sizes-4d02f40a-5edits-cacbebeb-lut8-lut8-v6.coreai" || b == a || !strings.HasPrefix(b, "flux.2-klein-4b-8sizes-4d02f40a-5edits-") {
+		t.Errorf("export names: %s, an M1's %s", a, b)
+	}
+	for _, chip := range []string{"M2", "M3", "M4", "M5"} {
+		oc, err := AppleOptions(m, chip, 1024, 1024, "", "")
+		if err != nil || ExportName(m.Name, oc) != ExportName(m.Name, o) {
+			t.Errorf("an %s's export %s (%v), want the default's", chip, ExportName(m.Name, oc), err)
+		}
+	}
 	if f := EditFunction(1024, 1024, []int{2, 2, 2}); f != "s1024x1024_refh3" {
 		t.Errorf("edit function %s", f)
 	}

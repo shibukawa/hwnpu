@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
 )
 
@@ -241,6 +243,23 @@ func Assemble(packed, asset, out string) error {
 
 // unmapFile makes the file dst of the map at p from the asset's file the map names.
 func unmapFile(p, asset, dst string) error {
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	err = replayMap(p, asset, f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(dst)
+	}
+	return err
+}
+
+// replayMap writes the file of the map at p, made from the asset's file the map names, to w,
+// and checks it is the size and SHA-256 the map names.
+func replayMap(p, asset string, w io.Writer) error {
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return err
@@ -257,12 +276,8 @@ func unmapFile(p, asset, dst string) error {
 		return err
 	}
 	defer src.Close()
-	f, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
 	h := sha256.New()
-	w := io.MultiWriter(f, h)
+	w = io.MultiWriter(w, h)
 	buf := make([]byte, 4<<20)
 	var lit, size int64
 	for _, op := range m.Ops {
@@ -278,24 +293,57 @@ func unmapFile(p, asset, dst string) error {
 			_, err = w.Write(m.Literal[lit : lit+op.Len])
 			lit += op.Len
 		} else {
-			_, err = io.CopyBuffer(w, io.NewSectionReader(src, op.From, op.Len), buf)
+			var n int64
+			n, err = io.CopyBuffer(w, io.NewSectionReader(src, op.From, op.Len), buf)
+			if err == nil && n != op.Len {
+				err = fmt.Errorf("%d bytes past the end of %s", op.Len-n, m.Source)
+			}
 		}
 		if err != nil {
 			break
 		}
 		size += op.Len
 	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
 	if err == nil && (size != m.Size || hex.EncodeToString(h.Sum(nil)) != m.SHA256) {
 		err = fmt.Errorf("made %d bytes not of the SHA-256 it names (another bytecode?)", size)
 	}
 	if err != nil {
-		os.Remove(dst)
 		return fmt.Errorf("%s: %w", filepath.Base(p), err)
 	}
 	return nil
+}
+
+// checkPacked checks that every map of the packed prebuilt program packed makes its file from
+// the asset's bytecode at asset (what Assemble would make), reading the bytecode once a map.
+func checkPacked(packed, asset string) error {
+	return filepath.WalkDir(packed, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, MapSuffix) {
+			return err
+		}
+		return replayMap(p, asset, io.Discard)
+	})
+}
+
+// copyDir copies the directory src to dst (which must not be there), files cloned where the
+// volume can (APFS), else copied.
+func copyDir(dst, src string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		to := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(to, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		if unix.Clonefile(p, to, 0) == nil {
+			return nil
+		}
+		return copyFile(to, p)
+	})
 }
 
 func copyFile(dst, src string) error {

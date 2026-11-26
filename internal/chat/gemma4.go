@@ -167,6 +167,20 @@ func (gemma4) Render(msgs []Message, tools []Tool, o Options) (string, bool, err
 	return sb.String(), thinking, nil
 }
 
+// gemmaChannelText is the text of a thought channel the model opened (after <|channel>), without
+// its name: "" while the name is still coming ("thought" before its newline), so that a stream
+// does not show the name as the start of the reasoning and then take it back.
+func gemmaChannelText(s string) string {
+	const name = "thought\n"
+	if rest, ok := strings.CutPrefix(s, name); ok {
+		return rest
+	}
+	if strings.HasPrefix(name, s) {
+		return ""
+	}
+	return s
+}
+
 // stripThinking is the template's strip_thinking: the text without its <|channel>...<channel|>
 // parts, trimmed.
 func stripThinking(text string) string {
@@ -487,13 +501,13 @@ func (gemma4) Parse(text string, thinking bool, tools []Tool, final bool) Answer
 	}
 	if !thinking {
 		if rest, ok := strings.CutPrefix(strings.TrimLeft(text, " \t\r\n"), "<|channel>"); ok {
-			text, thinking = strings.TrimPrefix(rest, "thought\n"), true
+			text, thinking = gemmaChannelText(rest), true
 		}
 	}
 	if thinking {
 		r, rest, ok := strings.Cut(text, "<channel|>")
 		if !ok {
-			a.Reasoning, a.Thinking = validPrefix(strings.TrimPrefix(r, "thought\n")), true
+			a.Reasoning, a.Thinking = validPrefix(r), true
 			return a
 		}
 		a.Reasoning, text = strings.TrimSuffix(r, "\n"), strings.TrimLeft(rest, " \t\r\n")

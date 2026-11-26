@@ -61,7 +61,6 @@ What were variables of their own:
 | `HWNPU_OV_PRECISION` | `ov.precision` |
 | `HWNPU_ATTENTION` | `attention` |
 | `HWNPU_COREAI_COPY` | `coreai.copy` |
-| `HWNPU_COREAI_DROP_BYTECODE` | `coreai.drop-bytecode` |
 | `HWNPU_MOE_DEBUG=ITEM,...` | `moe.ITEM,...` (`1`: `moe.time`) |
 | `HWNPU_MXFP4=ITEM,...` | `mxfp4.ITEM,...` |
 

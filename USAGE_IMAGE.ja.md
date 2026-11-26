@@ -47,6 +47,7 @@ hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn
 - Apple の Neural Engine (Core AI、macOS 27) では、初回にチェックポイント (16 GB) を落として Core AI のプログラムに変換し (`--size` の 8 つのアスペクト比を 1 つの書き出しに。重みは 1 回)、各プログラムを Neural Engine 用にコンパイルします (1024 × 1024 の初回で約 40 分。512 × 512 も一緒にコンパイルされます)。Qwen3-4B と DiT は lut8、VAE は fp16 で、時刻の埋め込みだけホストで計算します。M1 (16 GB) で、2 回目以降は 512 × 512 の 1 枚が約 11 秒、1024 × 1024 が約 41 秒で、プロセスのメモリは 1024 × 1024 で最大 4.1 GB (512 × 512 で 1.4 GB)、Neural Engine が 1.5 GiB です。プロンプトが複数なら 4 枚ずつまとめて描きます (`--batch`、512 × 512 で 1 枚 9 秒)。編集 (`--image`) は専用のプログラムで動き、最初の編集で変換します。形は 5 つで、絵は参照の大きい方の大きさです: 参照に `FILE` があれば 1024 × 1024 (`FILE@half` を 2 枚まで足せる)、なければ 512 × 512 で `FILE@half` 1〜2 枚をその大きさで読みます。編集では `--size` は使いません。Mac で全部の形を描いて確かめるのはまだです
 - Ryzen AI 9 365 で、1024 × 1024 の 1 枚が約 29 秒、参照 1 枚の編集が約 1 分です。512 × 512 の書き出しでは 11 秒と 15 秒です。メモリのピークは 1024 × 1024 で 3.9 GB (512 × 512 で 1.9 GB) です。プロンプトが複数なら、AMD の NPU でもステップを 4 枚ずつまとめて回します (`--batch`。絵は同じ。512 × 512 の 4 枚が 40 秒から 37 秒、1024 × 1024 は 3 % 短い。組の重みはどちらでも先に読まれているため。VAE は 1 枚ずつ)
 - 参照を `-i FILE@half` と書くと、その参照だけ絵の半分の辺で読みます。1024 × 1024 の参照 1 枚の編集が約 37 秒になり、その参照の細部は少し減ります。何も付けなければ絵と同じ大きさで読みます
+- M1 では、1024 × 1024 の絵の参照が 1 枚のとき、何も付けなくても半分の辺 (512 × 512) で読みます。M1 の Neural Engine では、1024 の参照からの編集のプリビルトのプログラムが正しく動かないので、M1 の書き出しには入れていません (models.yaml の `generation_edits`。ログに `reference 1 at 512x512` と出ます)。出来上がる絵は 1024 × 1024 のままです
 - 参照は 4 枚まで渡せます。`--image` (`-i`) を枚数だけ繰り返し、プロンプトでは渡した順に image 1、image 2 と呼びます。例: `hwnpu-image generate -m flux2-klein -i fox.png -i room.png "The fox from image 1 is sitting on the sofa in the living room from image 2."`
 - 大きさは参照ごとに選べます。被写体は同じ大きさ、背景や画風は `@half` にすると、質と時間の釣り合いが取れます (例: `-i fox.png -i room.png@half`)。1024 × 1024 の 1 枚の時間: `@half` 2 枚 42 秒、3 枚 50 秒、4 枚 1 分。同じ大きさ 1 枚 + `@half` 1 枚 1 分 8 秒、+ 2 枚 1 分 18 秒、+ 3 枚 1 分 30 秒。同じ大きさ 2 枚 1 分 41 秒 (同じ大きさは 2 枚まで)。512 × 512 では同じ大きさで 4 枚まで (2 枚 20 秒、4 枚 32 秒) で、`@half` は 2 枚か 4 枚にします (1 枚や 3 枚は行数が合わず、動かせる組み合わせを示すエラーになります)。メモリのピークは 1024 × 1024 で 3.9 GB のままです
 - 参照画像は、絵の縦横比に合わせて中央を切り出し、絵の大きさ (`@half` ではその半分) に縮めて (拡げて) 使います
@@ -77,7 +78,7 @@ python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE ~/models/da3mono-large.amd-n
 go run ./cmd/hwnpu-image depth photo.jpg
 ```
 
-Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。DA3-SMALL / BASE を `--views 3` で書き出すと、同じ場面の 3 枚を同時に推定して、1 つの尺度の深度とカメラの位置 (`cameras.json`)、点群 (`--ply`) を出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
+Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。DA3-SMALL / BASE を `--views 3` で書き出すと、同じ場面の 3 枚を同時に推定して、1 つの尺度の深度とカメラの位置 (`cameras.json`)、点群 (`--ply`) を出します。DA3-SMALL の 3 視点の書き出しは取得元にあり、`hwnpu-image depth -m da3-small-mv3.amd-npu2 a.png b.png c.png` で初回に取ってきます。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
 
 Apple の Neural Engine では、名前だけで動きます (`hwnpu-image depth -m da3:small photo.jpg`、`-m moge:vits`)。初回にチェックポイントを取ってきて、縦横比ごとの大きさは初めて使うときに変換します (数秒、その大きさの最初の読み込みでコンパイル)。M1 で 504 × 504 の 1 枚が DA3-SMALL 0.2 秒、DA3MONO-LARGE 0.5 秒、MoGe-2 ViT-S (700 × 700) 0.5 秒で、公式のモジュールとの深度のコサインは 0.99999 以上です。`--views` (複数視点) は AMD だけです。記録は [docs/design/vision-models.ja.md](docs/design/vision-models.ja.md) にあります。
 
