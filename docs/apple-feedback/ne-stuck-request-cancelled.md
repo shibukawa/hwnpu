@@ -1,4 +1,4 @@
-# One request stalls the Neural Engine for 100 s and ends in "Request cancelled"; after it, every request from every process does the same until restart
+# One request stalls the Neural Engine for 100 s and ends in "Request cancelled"; after it, every request from every process does the same for half an hour or more
 
 - **Area**: Core AI / Apple Neural Engine (aned) on M2
 - **Type**: Hang / Incorrect behavior
@@ -11,15 +11,16 @@ Running one function of a program on the Neural Engine (Anima's VAE stage 0 at 7
 InferenceError(location: unknown, underlyingError: MetalPerformanceShadersGraph.MPSGraphDelegateError.ndxRuntimeError("inferValue failed: processRequest:model:qos:qIndex:modelStringID:options:returnValue:error:: ANEProgramProcessRequestDirect() Failed with status=0xf : statusType=0x9: Request cancelled"))
 ```
 
-After that, **every** Neural Engine request fails the same way after about 100 s: other functions of the same program that ran a moment before (`s1024x1024`, 0.24 s), other programs, other processes, and programs from other binaries (prebuilt or compiled on the device). Nothing else used the Neural Engine. Ten minutes of idle did not bring it back; restarting the Mac did.
+After that, **every** Neural Engine request fails the same way after about 100 s: other functions of the same program that ran a moment before (`s1024x1024`, 0.24 s), other programs, other processes, and programs from other binaries (prebuilt or compiled on the device). Nothing else used the Neural Engine. It comes back by itself only after a long idle: 5–10 minutes with no request did not bring it back; 35 minutes with no request (06:19 to 06:53) did, as did about two hours (04:11 to 06:14). Each failing request seems to restart the wait.
 
-Reproduced right after a restart (2026-11-27, MacBook Air M2):
+Reproduced after the Neural Engine had come back by itself (2026-11-27, MacBook Air M2, no restart in between):
 
 | time | run | result |
 |---|---|---|
 | 06:14:27 | `vae_s0#s1024x1024` | right, 0.24 s (twice) |
 | 06:16:14 | `vae_s0#s752x1360` | "Request cancelled" after 100 s |
 | 06:17:54 | `vae_s0#s1024x1024` | "Request cancelled" after 100 s |
+| 06:53:26 | `vae_s0#s1024x1024` (no request since 06:19) | right, 0.25 s |
 
 The same stage's `s512x512`, `s1024x1024`, `s832x1248` and `s880x1168` functions run (0.2–0.5 s). `s1248x832`, `s1168x880` and `s1360x752` were only tried after the Neural Engine was stuck, so it is not known whether each also stalls it.
 
@@ -27,7 +28,7 @@ Seen before with other programs: a 128-row function of a text encoder stalled th
 
 ## Steps to reproduce
 
-1. Restart the Mac. Run `vae_s0.aimodel` (attached), function `s1024x1024`, on the Neural Engine with a random fp16 input (1×16×128×128): it returns in about 0.25 s.
+1. With the Neural Engine idle, run `vae_s0.aimodel` (attached), function `s1024x1024`, on the Neural Engine with a random fp16 input (1×16×128×128): it returns in about 0.25 s.
 2. Run function `s752x1360` (input 1×16×170×94).
 3. Run function `s1024x1024` again, from the same or another process.
 
@@ -37,7 +38,7 @@ Step 2 returns a result, or fails at once with an error that names the cause. Ei
 
 ## Actual results
 
-Step 2 fails with "Request cancelled" after about 100 s. Step 3, and every later Neural Engine request on the machine, fails the same way after about 100 s until the Mac is restarted.
+Step 2 fails with "Request cancelled" after about 100 s. Step 3, and every later Neural Engine request on the machine, fails the same way after about 100 s, until the Neural Engine has had no request for a long time (35 minutes was enough once, 5–10 minutes was not).
 
 ## Environment
 

@@ -90,8 +90,8 @@ python3 ref_anima.py CKPT pre; python3 ref_anima.py CKPT dev; python3 cmp.py pre
 ## ne-stuck-request-cancelled.md (new, known-issues 16)
 
 - Program: `vae_s0.aimodel` of the same export.
-- Right after a restart: `vaeprobe-dev OUT EXPORT.coreai s1024x1024 vae_s0` (works), then `… s752x1360 vae_s0`, then `… s1024x1024 vae_s0` again. Take the sysdiagnose after the last one.
-- The Neural Engine stays stuck until the Mac is restarted: do this last.
+- With the Neural Engine idle: `vaeprobe-dev OUT EXPORT.coreai s1024x1024 vae_s0` (works), then `… s752x1360 vae_s0`, then `… s1024x1024 vae_s0` again. Take the sysdiagnose after the last one.
+- The Neural Engine then stays stuck for half an hour or more (each request made meanwhile fails after 100 s and seems to restart the wait): do this last, and leave it alone afterwards. Restarting the Mac should also bring it back, but was not tried.
 
 ## Additions
 
