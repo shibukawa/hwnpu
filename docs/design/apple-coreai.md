@@ -214,7 +214,7 @@ Tools in `tools/coreai`:
 
 | Tool | Use |
 |---|---|
-| `aicheck run -cpu PKG…` | Run parts on Core AI and compare with `milcpu` on random inputs; `-coreml` runs the same part on Core ML (is the error Core AI's?); `-calls N` averages later calls; `-ref` compares with a reference package; `AICHECK_WORST=1` prints the worst elements; `AICHECK_CONST=name=v,…` gives constant or mask inputs their real values |
+| `aicheck run -cpu PKG…` | Run parts on Core AI and compare with `milcpu` on random inputs; `-coreml` runs the same part on Core ML (is the error Core AI's?); `-calls N` averages later calls; `-ref` compares with a reference package (an `X.aimodel` is compared with `X.mlpackage` beside it without one); `AICHECK_WORST=1` prints the worst elements; `AICHECK_CONST=name=v,…` gives constant or mask inputs their real values |
 | `HWNPU_DEV=ailower.cut=N` | Lower only the first N ops and compare that op by cosine with `milcpu`: bisect for the op that is wrong or leaves the Neural Engine |
 | `HWNPU_DEV=ailower.trace` | Map op_ids (Core AI's errors name them) to ops |
 | `aicheck probe` | Small MIL programs (SDPA, RoPE, RMSNorm, int8 linear, rewrites): do they stay on the Neural Engine? |
@@ -224,6 +224,10 @@ Tools in `tools/coreai`:
 | `aicheck rules`, `limits`, `lint` | The Neural Engine's numeric rules against float32, its limits (call floor, program count, formats), and lint of exports |
 | `caiload` (Swift) | specialize, run, `-cycle` switching cost, from Core AI alone |
 | `lutfake`, `lutscan -tile 16`, `kleinonly`, `bcdump` | Synthetic lut layers, equal neighbouring tables, FLUX.2 klein prepare / put, bytecode dump |
+| `llirtasks [-task N [-around K]] X.mlir.bc` | The Neural Engine tasks of a prebuilt program's LLIR (`X.aimodelc/…/binary_0.llir.bundle/…/X.mlir.bc`) in their order, with what each computes and the kernel it loads: the task the device's finishing service was at when it failed (`Convert 1/1 procedures of ANEHLO task N/M` in os_log). `bcdump` reads the LLIR too |
+| `AICHECK_SENTINEL=PROGRAM aicheck run …` | A program known to run, run first and again after each program that fails until it runs: a prebuilt program that times the Neural Engine out leaves it failing the next ones for a while, which are then not judged |
+| `aicheck locked CMD…` | CMD under the Neural Engine lock. The hwnpu processes CMD starts run under the same hold (`HWNPU_NPU_LOCK_FD`), so no other session gets the Neural Engine between them. A process CMD leaves behind keeps the lock: let helpers close descriptor 3 |
+| `partprobe -dir CHECKPOINT -o OUT.aimodel NAME=start:layers:seq:paged[:key=value,…] …` | Parts of a chat model as the functions of one program, each with its own options (rows a call, split at the attention or not, the architecture's parameters): one finish of a prebuilt program tells which part fails. With one NAME it writes the export's own part (the same `main.hash`) |
 
 `aicheck run` and `probe` take the Neural Engine lock like the commands (`llm.LockNPU`): two processes on it at once have frozen a Mac, and another process compiling spoils timings.
 

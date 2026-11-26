@@ -138,6 +138,9 @@ back after about 20 minutes). So:
   working program fail.
 - The lock cannot be skipped (`HWNPU_NPU_LOCK` was removed on 2026-11-22). Other sessions may
   hold it for hours: queue ANE work.
+- A process started by one that holds the lock runs under it (`HWNPU_NPU_LOCK_FD`, the lock
+  file's descriptor passed on: `tools/coreai/aicheck locked CMD`). The lock is not skipped: the
+  parent keeps it, so that no other session takes the ANE between the commands of a series.
 
 ## Neural Engine memory
 

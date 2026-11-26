@@ -2,7 +2,8 @@
 // program format of a Core AI model (.aimodel's main.mlirb). The reader decodes the container
 // (strings, dialects, attribute and type tables, properties, resources, the IR's structure)
 // without knowing any dialect: attributes and types with a custom encoding stay raw bytes. It is
-// for checking what the writer produces against what coreai-core writes.
+// for checking what the writer produces against what coreai-core writes, and reads the Neural
+// Engine compiler's LLIR of a prebuilt program too (tools/coreai/llirtasks).
 package mlirbc
 
 import (
@@ -523,7 +524,9 @@ func (f *File) readBlock(r *reader, b *Block, top bool) error {
 			return err
 		}
 		if uses != 0 {
-			return errors.New("block argument use-list orders are not supported")
+			if err := skipUseListOrders(r, len(b.Args)); err != nil {
+				return err
+			}
 		}
 	}
 	for range nops {
@@ -603,7 +606,9 @@ func (f *File) readOp(r *reader) (*Op, error) {
 		return nil, errors.New("successors are not supported")
 	}
 	if mask&opHasUseListOrders != 0 {
-		return nil, errors.New("use-list orders are not supported")
+		if err := skipUseListOrders(r, len(op.Results)); err != nil {
+			return nil, err
+		}
 	}
 	if mask&opHasInlineRegions != 0 {
 		n, iso, err := r.flagged()
@@ -631,6 +636,36 @@ func (f *File) readOp(r *reader) (*Op, error) {
 		}
 	}
 	return op, nil
+}
+
+// skipUseListOrders reads past the use-list orders of n values (an operation's results, a block's
+// arguments): the order of each value's uses, which the text of the IR does not need. Core AI's
+// own files have none; the Neural Engine compiler's (the LLIR of an .aimodelc) do.
+func skipUseListOrders(r *reader, n int) error {
+	values := uint64(1)
+	var err error
+	if n > 1 {
+		if values, err = r.varint(); err != nil {
+			return err
+		}
+	}
+	for range values {
+		if n > 1 {
+			if _, err := r.varint(); err != nil { // the value's index
+				return err
+			}
+		}
+		uses, _, err := r.flagged() // the flag: pairs of indices in place of a full shuffle
+		if err != nil {
+			return err
+		}
+		for range uses {
+			if _, err := r.varint(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (f *File) readRegion(r *reader) (*Region, error) {
