@@ -255,6 +255,16 @@ models:
     apple:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
+      prebuild:
+        # Apple's Gemma 4 export says coreai-build's ahead-of-time programs of it are not supported
+        # ("a known issue with coreai-build in Xcode 27.2 beta", models/gemma4/README.md of
+        # github.com/apple/coreai-models). On the M1, E2B's model.part3 q128-kv failed to finish
+        # every time ("Invalid root symbol"), the finishing service crashing once; its first load
+        # was 2 min 13 s prebuilt against 1 min 09 s on the device (docs/known-issues.md 9)
+        - programs: ["*"]
+          do: device
+          why: "Apple's Gemma 4 export: no ahead-of-time compile with coreai-build 27.2 (known issue); M1: model.part3 q128-kv failed to finish every time (Invalid root symbol), the finishing service crashed once, prebuilt load 2:13 against 1:09 on the device"
+          checked: 2026-11-27
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
       version: 3
@@ -267,6 +277,16 @@ models:
     apple:
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
+      prebuild:
+        # Apple's Gemma 4 export says coreai-build's ahead-of-time programs of it are not supported
+        # ("a known issue with coreai-build in Xcode 27.2 beta", models/gemma4/README.md of
+        # github.com/apple/coreai-models). On the M1, E2B's model.part3 q128-kv failed to finish
+        # every time ("Invalid root symbol"), the finishing service crashing once; its first load
+        # was 2 min 13 s prebuilt against 1 min 09 s on the device (docs/known-issues.md 9)
+        - programs: ["*"]
+          do: device
+          why: "Apple's Gemma 4 export: no ahead-of-time compile with coreai-build 27.2 (known issue); M1: model.part3 q128-kv failed to finish every time (Invalid root symbol), the finishing service crashed once, prebuilt load 2:13 against 1:09 on the device"
+          checked: 2026-11-27
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
       version: 3
