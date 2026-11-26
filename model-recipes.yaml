@@ -158,6 +158,16 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
+      # the VAE (decoder and encoder) is compiled on the device on every chip, as before the rules:
+      # on M1 coreai-build's h13g prebuilt drew a band of noise every 112 rows at 512 x 512 and the
+      # 1024 x 768 vae_s0 ended in 'Request cancelled'; on M2 512 x 512 had bands every 112 rows.
+      # On an M3 the prebuilt gave the same bytes as the device's compile (2026-11-25, 26): taking
+      # it there is the FLUX change of its own
+      prebuild:
+        - programs: ["vae_*"]
+          do: device
+          why: "the VAE's prebuilts drew bands every 112 rows at 512 x 512 on M1 (h13g) and M2 (h14g); M3 and later are left to the device until they are taken by a change of FLUX's own"
+          checked: 2026-11-26
   MOSS-SoundEffect-v2.0: &moss
     amd:
       # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
@@ -451,6 +461,13 @@ models:
         dit_format: lut8
         text_group: 4
         single_group: 5
+      # the VAE (FLUX.2 klein's decoder, internal/imagegen/fluxvae) is compiled on the device on
+      # every chip, as FLUX.2 klein's
+      prebuild:
+        - programs: ["vae_*"]
+          do: device
+          why: "FLUX.2 klein's decoder, whose prebuilts drew bands every 112 rows at 512 x 512 on M1 and M2; M3 and later are left to the device until they are taken by a change of FLUX's own"
+          checked: 2026-11-26
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
@@ -459,7 +476,9 @@ models:
       args: ["{in}", "{out}", --size, "{sizes}"]
   Anima-Aesthetic: &anima-amd
     apple:
-      version: 2
+      # 3: the VAE's residual blocks' silu in the exp form (export v6): coreai-build places
+      # every stage on the Neural Engine, so that they can be prebuilt (below)
+      version: 3
       prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
@@ -472,6 +491,18 @@ models:
         dit_format: int8
         group: 4
         qchunk: 512
+      # the VAE (its residual blocks' silu in the exp form since version 3) is prebuilt on M1 and on
+      # M3 and later: on an M3 the device compiled the ten stages in 482 s at 512² (3552 s with the
+      # native silu, which coreai-build failed on), the h15g prebuilt gave the same bytes, every
+      # stage matched an fp64 reference at 512² and 1024², and whole pictures from the prebuilt VAE
+      # were the same bytes as with it compiled on the device (2026-11-26); an M1 drew right from
+      # the h13g prebuilt (2026-11-27)
+      prebuild:
+        - arch: [h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
+          do: device
+          why: "on M2 Anima-Turbo's pictures from the h14g VAE prebuilt had bands every 160 pixels (twice and three times as often at some aspect ratios), and none with the VAE compiled on the device"
+          checked: 2026-11-27
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps

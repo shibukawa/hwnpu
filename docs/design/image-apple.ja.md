@@ -24,7 +24,7 @@
 
 - Apple の形: 大きさでグラフが変わる部品は、大きさごとの関数 `s{W}x{H}` を持つ 1 本の `.aimodel` にする (`llm.WriteAIFunctions`: 同じバイトの重みは 1 回だけ)。manifest の `sizes` に大きさごとの部品の名前を書き、`ProgramManifest.At` で選ぶ。名前の大きさの部分は `aspect.Tag` (3 つ以上は `8sizes-` と大きさの CRC-32)。機種ごとの prebuilt は書き出し 1 つにつき 1 つで、全部の大きさを持つ。
 - 払うもの (ダウンロードの重複のほうが重いので受け入れた):
-  - Core AI は 1 本の `.aimodel` の関数を全部まとめてコンパイルする。初回は全部の大きさをコンパイルする。VAE は prebuilt にしない (下) ので、その大きさは初回に端末でコンパイルする。
+  - Core AI は 1 本の `.aimodel` の関数を全部まとめてコンパイルする。初回は全部の大きさをコンパイルする。VAE を prebuilt にしないところ (M1、Anima はすべてのチップ: 下) では、その大きさは初回に端末でコンパイルする。
   - Neural Engine のコンパイラが 1 つの大きさを通さないと、その部品の全部の大きさが NE から落ちる。置く前にチップごと、大きさごとに `coreai-build` でオフラインで確かめる。
   - 大きさを足すと、書き出しと prebuilt を全部作り直す。
 - 大きさによらない部品 (文の符号器) は関数 1 つ。モデルや書き出しの間で共有する部品はハードリンクにする (`ConvertOptions.LinkFrom`、`linkFrom`、`TextVersion`)。Core AI のキャッシュに当たり、コンパイルし直さない。キャッシュはプログラムのバイトで引き、変換は毎回パッケージに新しい UUID を書くので、別々に変換した同じ部品は 2 回コンパイルされ、2 回持たれる。
@@ -41,15 +41,17 @@
 
 ## prebuilt にしないもの
 
-`coreai.LeftToDevice` は、名前が `vae` か `text` で始まるプログラムを端末でコンパイルさせる: `hwnpu-dev models package MODEL/coreai-ARCH` は外し (「left to the device」)、`coreai.Prebuilt` は取得元にすでにあるそれらの prebuilt を使わない。
+`coreai.LeftToDevice` は、名前が `text` で始まるプログラム (と `_device` で終わるもの) を、どのチップでも端末でコンパイルさせる: `hwnpu-dev models package MODEL/coreai-ARCH` は外し (「left to the device」)、`coreai.Prebuilt` は取得元にすでにあるそれらの prebuilt を使わない。VAE はモデルとチップごとにレシピで決める (`model-recipes.yaml` の apple の `prebuild`、`do: device`):
 
-| 部品 | 理由 |
-|---|---|
-| VAE の段 (FLUX.2 klein、Anima。Chroma1 も) | `coreai-build` の FLUX.2 klein の VAE は、512² で 112 行ごとに数行の色の縞を出した (同じ `.aimodel` の 1024² の関数は正しい)。1024 × 768 の `vae_s0` は `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた。そもそも得がない: 端末が prebuilt を仕上げる時間はコンパイルと同じ (1024² の 10 段で 104 秒対 106 秒)。仕上げは 1 つごとに ANELargeModelCompilerService の起動を待つ (10 秒) |
-| 文の符号器 (`text_*`) | prebuilt の Chroma1 (外した) の T5-XXL の `text_0` は `Request cancelled` で 4 回続けて落ちた。FLUX.2 klein の Qwen3 は prebuilt で動くが、端末でコンパイルしたものより遅い (112 秒対 81 秒) |
+| 部品 | チップ | 理由 |
+|---|---|---|
+| FLUX.2 klein の VAE (`vae_*`、復号器と符号器)、FLUX.3 klein の VAE (同じ復号器) | すべて (M3 以降は FLUX の別の変更で) | `coreai-build` の h13g 向けの FLUX.2 klein の VAE は、512² で 112 行ごとに数行の色の縞を出した (同じ `.aimodel` の 1024² の関数は正しい)。1024 × 768 の `vae_s0` は `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた。M1 では得もない: 1024² の 10 段を端末が 104 秒でコンパイルする。M2 では 512² の絵がどれも、112 行ごとに 8〜16 行の帯 (112、224、336、448 行) を持った。h14g の prebuilt でも端末のコンパイルでも同じで、FLUX.2 と FLUX.3 klein の両方。1024² は正しい (2026-11-26)。プログラムを直すまで M2 も端末に任せる |
+| Anima の VAE (`vae_*`) | M2 (`h14*`) | 書き出し v5 までは、`coreai-build` がどのチップでも 10 段のうち 8 段を落とした (ネイティブの silu。下)。v6 からは h13g と h14g でもオフラインで全段が Neural Engine に載る。M2 では h14g の prebuilt の絵に 160 ピクセルごとの帯が出た (アスペクト比によってはその 2 倍、3 倍の頻度でも)。端末でコンパイルすると出ない (2026-11-27)。M1 (正しく描けた) と M3 以降 (端末のコンパイルとバイトまで同じ、2026-11-26) は prebuilt |
+| 文の符号器 (`text_*`) | すべて | prebuilt の Chroma1 (外した) の T5-XXL の `text_0` は `Request cancelled` で 4 回続けて落ちた。FLUX.2 klein の Qwen3 は prebuilt で動くが、端末でコンパイルしたものより遅い (112 秒対 81 秒) |
 
-- prebuilt の VAE ですでに描いた機械では、仕上げた項目が Core AI のキャッシュに残り (`hasEntry` が prebuilt より先)、縞のままになる。`~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す (VAE の項目だけでもよい)。
-- 未解決: `coreai-build` の何が VAE を誤らせるか (112 行の周期は段の中の行の区切りかもしれない)、何が T5 を cancel させるか。直ったら `LeftToDevice` を外す。Apple に報告する (FB)。
+- FLUX.2 と FLUX.3 klein の VAE は、いまはどのチップでも端末。M3 以降は prebuilt でよい (FLUX の別の変更で)。M3 では、初回に端末のコンパイラが復号器の 10 段に 2799 秒かかった (`vae_s6`〜`s8` が各約 600 秒。全部の大きさをまとめて)。prebuilt の仕上げは 0.9 秒で、1024² と 512² のどの段の出力もバイトまで同じだった (2026-11-25)。M3 で描画全体を比べると (2026-11-26)、FLUX.2 klein の 1024² の初回の復号は 10 分 32 秒 → 4.5 秒、512² の編集の符号器は 430 秒 → 20 秒。FLUX.3 klein の 1024² の初回は 19 分 27 秒 → 2 分 43 秒 (VAE は 640 秒 → 1 秒)。絵はどれも、VAE を端末でコンパイルしたときとバイトまで同じだった。FLUX.2 klein の 8 つの大きさのどれでも、本物の絵を VAE に通すと prebuilt と端末のコンパイルでバイトまで同じで、帯はなかった (2026-11-26)。FLUX.3 klein の VAE も FLUX.2 klein と同じく M1 では端末に任せる (M1 では試していない)。
+- M1 で prebuilt の VAE ですでに描いた機械では、仕上げた項目が Core AI のキャッシュに残り (`hasEntry` が prebuilt より先)、縞のままになる。`~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す (VAE の項目だけでもよい)。
+- 未解決: `coreai-build` の何が h13g の VAE を誤らせるか (112 行の周期は段の中の行の区切りかもしれない)、何が T5 を cancel させるか。直ったらレシピの決まりを外す。Apple に報告する (FB)。
 
 ## モデルに共通の形
 
@@ -134,13 +136,14 @@
 - FLUX の GroupNorm (`fluxvae.GroupNorm`): グループの値を (1, 32, a, b) に並べ (どの軸も 16384 以下)、グループの最大値で割り、2 乗の前に平均を引く (|平均| / 標準偏差は 6.3 に達する)。512² の VAE は diffusers の float32 と 66.3 dB。
 - FLUX.2 と FLUX.3 klein: FLUX.1 のデコーダ (`internal/imagegen/fluxvae`。元は Chroma1 のもの) に `post_quant_conv` を足したもの (`fluxvae.Vae.PostQuant`)。バッチノルムの統計で戻すのと 2 × 2 の展開はホスト。
 - Anima の VAE の値は 8 未満で、fp16 の手当ては要らない。
-- prebuilt にしない (上)。
+- Core AI 向けの Anima の VAE は、residual block の silu を exp の形 (`blocks.SiLU`) で書く (書き出し v6、`anima.CoreAIExportVersion`)。ブロックの 2 つの norm の後を Neural Engine 自身の `silu` にすると、`coreai-build` (Metal Toolchain 27.2.47) が h13g、h14g、h15g で residual block のある段をすべて落とした (`ANECCompileOffline: CompilationFailure`。norm、silu、conv、norm、silu だけで起きる。2 つ目の norm の後だけ exp にしても s0〜s2 と s4 が落ちた)。exp の形なら 3 つのチップで 10 段 × 8 つの大きさがすべて Neural Engine に丸ごと載る。M3 の 512²: 端末のコンパイルが 10 段で 482 秒 (ネイティブの silu は 3552 秒、1 段で最大 12 GB の一時領域)、h15g の prebuilt からはすぐ読める。prebuilt と端末の出力はバイトまで同じで、どの段も自分の入力からの fp64 の参照と 75〜89 dB、1024² も同じ (2026-11-26)。Core ML と OpenVINO IR はネイティブの silu のまま。
+- Anima は M1 と M3 以降で prebuilt、M2 は端末。FLUX.2 と FLUX.3 klein はどのチップでも端末 (上)。
 - 段の間を float32 でなく fp16 で渡しても効かなかった (0〜0.3 秒、Sana の 1024²)。
 
 ## Anima (Cosmos-Predict2 2B、Qwen3-0.6B)
 
 - プログラム: `text`、`dit_time` (8 行)、DiT の 4 ブロックずつの組 (`dit_blocks_N`、28 ブロックで 7 本。パッチの埋め込みは `dit_blocks_0`)、最後の層、VAE の 10 段。Apple は int8 / int8 (`anima.Formats`)、Intel は fp16。
-- 注意: 自己注意は `HeadAttention` を 1024 ずつ、割り算は先。交差注意は全部を 1 度に、割り算は後、問い合わせは 8 に詰める。スケールは q の norm の重みに。norm は `abs` で。`ExportVersion` 4、`PaddedExportVersion` 5。
+- 注意: 自己注意は `HeadAttention` を 1024 ずつ、割り算は先。交差注意は全部を 1 度に、割り算は後、問い合わせは 8 に詰める。スケールは q の norm の重みに。norm は `abs` で。`ExportVersion` 4、`PaddedExportVersion` 5、`CoreAIExportVersion` 6 (Core AI の書き出しすべて: VAE の exp の silu)。
 - `--group` (既定の 0 は `anima.DefaultGroup`): Apple は 4。`--qchunk` 512 (Core ML と Intel のヘッドをまとめた形)。
 - 1024² の 1 ブロックの内訳 (M1、Core AI、注意の形を変える前): 232 ms。MLP 54 ms (毎秒 5.1 TFLOP)、自己注意の中身 102 ms (毎秒 1.3 TFLOP)、交差注意の中身 14 ms。注意のほかの要素ごとの演算は 221 ms のブロックのうち約 24 ms (11 %): q と k の RMSNorm 11.3 (うち最大で割る分 4.8)、RoPE 3.4、LayerNorm の最大で割る分 3.7、厳密な GELU 5.8 (tanh と sigmoid の近似は遅い: +4.7、+12.5 ms)。
 - CFG のステップはちょうど 1 回だけのステップの 2 倍 (11.1〜11.2 秒と 5.6〜5.7 秒): 組が小さく (0.28 GiB) 切り替えの費用を払わないので、組ごとにまとめて回しても速くならない。
@@ -241,7 +244,7 @@ Sana と Qwen-Image はもう出していない ([image-models.md](image-models.
 | もの | 理由 |
 |---|---|
 | `hwnpu-image` の Core ML | Mac では Core AI だけ。Core ML の書き出しは `--cpu` のために残す |
-| VAE と文の符号器の prebuilt | 絵が誤る / `Request cancelled`、時間も減らない (上) |
+| 文の符号器の prebuilt と、M1 の VAE の prebuilt | 絵が誤る / `Request cancelled`、時間も減らない (上) |
 | Anima: 7 ブロックの組 | 1 ステップ −1.2 % だけで、プログラムが大きく 8 GB の機械に載りにくい |
 | Anima: q、k、v を 1 本の線形に (2048 → 6144) | 遅くなる (組 928 → 946 ms) |
 | Anima: 自己注意の正規化を P·V の後に | 最後のブロックで fp16 があふれる。V に倍率を入れると絵が変わる |
@@ -263,7 +266,7 @@ Sana と Qwen-Image はもう出していない ([image-models.md](image-models.
 ## 未解決
 
 - Apple の書き出しを全部、全部の大きさを持つ 1 つに移す (順は上)。先にチップごとに各大きさを `coreai-build` で確かめる。
-- `coreai-build` が VAE を誤り T5 を cancel させる理由。直ったら `LeftToDevice` を外す。
+- VAE が h13g と h14g の 512² で帯を描く (M2 では端末のコンパイルでも) 理由、T5 が cancel される理由。直ったらレシピの決まりと `LeftToDevice` を外す。
 - Apple の FLUX.3 klein: Neural Engine のメモリ、編集、ほかの大きさ、161 トークン以上のプロンプト、パディングの行のずれ (Qwen3-VL の先の層を fp16 にするなど)、校正の統計の配り方。
 - Apple の FLUX.2 klein の編集。
 - Intel の NPU の Anima: 1024² の実機での通し、v4 と v5 の書き出しの Intel での確かめ。Anima-Aesthetic の範囲 (`TestBlockRanges`)。

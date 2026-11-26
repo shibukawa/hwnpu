@@ -120,7 +120,7 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 
 - どのチップでも 2.8 GiB の予算: M2 以降でプロンプトのプログラムを失う。少なく読むのは M1 だけ。
 - silu を `x · sigmoid(x)` で: ANE の `silu` と同じ値。
-- `gelu` の exp の形 (Gemma 4): 変わらない。Anima の VAE の silu の exp の形: 絵は変わらず、VAE が 15〜20 % 遅い。
+- `gelu` の exp の形 (Gemma 4): 変わらない。Anima の VAE の silu の exp の形: 絵は変わらず、VAE が 15〜20 % 遅い (Core ML。Core AI の書き出しは、ネイティブの形を `coreai-build` が落とすので exp の形にする: docs/design/image-apple.ja.md)。
 - 1 回 256 トークンのプロンプト: 128 より速くなく、読み込みが重い。
 - 注意の問い合わせを既定で分ける: Whisper の 90 MB のスコアで得がない。
 

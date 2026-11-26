@@ -40,7 +40,7 @@
   "model": "FLUX.2-klein-4B",
   "export": "flux.2-klein-4b-8sizes-4d02f40a-5edits-cacbebeb-lut8-lut8-v6.coreai",
   "programs": {
-    "vae_s0": { "source": "e190…", "result": "left", "rule": "LeftToDevice" },
+    "text_0": { "source": "e190…", "result": "left", "rule": "LeftToDevice" },
     "dit_double_0": { "source": "…", "result": "built", "tool": "coreai-build-3605.6.3",
                       "jobs": 3, "built": "2026-11-25T10:35:30Z", "seconds": 1212,
                       "device": { "status": "ok", "checked": "2026-11-26", "function": "s1024x1024", "by": "hwnpu-image" } },
@@ -136,7 +136,8 @@ hwnpu-dev prebuild -record EXPORT_DIR...       # 手元のその書き出しだ�
 | FLUX.2 `dit_double` 3本 | 5〜26 分/本 | 27〜101 秒/本 | 未測定 |
 | FLUX.2 `dit_single` 10本 | 16〜21 分/本 | failedToSpecialize | 約 13 分/本 |
 | FLUX.3 VAE 10本 | 1 分 22 秒 | 測定中 | 測定中 |
-| Anima VAE | 8/10 段が `CompilationFailure` (h13g/h14g/h15g) | ― | 約 70 分 (M2) |
+| Anima VAE (v5) | 8/10 段が `CompilationFailure` (h13g/h14g/h15g) | ― | 約 70 分 (M2) |
+| Anima VAE (v6、512²) | 通る (h13g/h14g/h15g) | すぐ | 482 秒 (M3。v5 は 3552 秒) |
 
 M3 (h15g) の FLUX.2 klein v6 の DiT 13本は、全部を作り直して 1時間21分かかった (3本同時)。M1 (h13g) では1部品で1時間を超えるものもある。
 
