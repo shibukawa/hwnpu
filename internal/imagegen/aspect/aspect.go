@@ -17,7 +17,7 @@ type Aspect struct {
 }
 
 // All are the eight sizes, by their aspect ratio, of a model whose pictures are multiples of 16
-// pixels (Anima, FLUX.2 klein, Chroma). "1:1s" is the small square (512 x 512); the others are
+// pixels (Anima, FLUX.2 klein). "1:1s" is the small square (512 x 512); the others are
 // 1024 x 1024 or the same area as it (about 1.0 M pixels), so that a VAE's middle attention keeps
 // at most 16384 pixels per dimension (the latents' (h/8) x (w/8), see llm.NeuralEngineMaxDim).
 var All = []Aspect{
@@ -29,27 +29,6 @@ var All = []Aspect{
 	{"3:2", 1248, 832},
 	{"4:3", 1168, 880},
 	{"16:9", 1360, 752},
-}
-
-// All32 are All for a model whose pictures are multiples of 32 pixels (Sana, Qwen-Image): the
-// same ratios as near as multiples of 32 give at about the same area (3:4 exactly 864 x 1152).
-var All32 = []Aspect{
-	{"1:1", 1024, 1024},
-	{"1:1s", 512, 512},
-	{"2:3", 832, 1248},
-	{"3:4", 864, 1152},
-	{"9:16", 768, 1344},
-	{"3:2", 1248, 832},
-	{"4:3", 1152, 864},
-	{"16:9", 1344, 768},
-}
-
-// Of are the aspects of a model whose pictures are multiples of multiple pixels (16 or 32).
-func Of(multiple int) []Aspect {
-	if multiple == 32 {
-		return All32
-	}
-	return All
 }
 
 // Names are the aspects' names, comma separated.
@@ -75,9 +54,9 @@ func With(as []Aspect, overrides ...Aspect) []Aspect {
 	return out
 }
 
-// Parse is the picture's size of an aspect ratio's name (one of Of(multiple)).
-func Parse(name string, multiple int) (width, height int, err error) {
-	return ParseIn(name, Of(multiple))
+// Parse is the picture's size of an aspect ratio's name (one of All).
+func Parse(name string) (width, height int, err error) {
+	return ParseIn(name, All)
 }
 
 // ParseIn is the picture's size of an aspect ratio's name, one of as.
@@ -94,7 +73,7 @@ func ParseIn(name string, as []Aspect) (width, height int, err error) {
 // the eight, such as 768x1152), or a picture of side x side pixels for a pixel count (the square
 // sizes --size took before it took names).
 func ParseOrSide(spec string, multiple int) (width, height int, err error) {
-	return ParseOrSideIn(spec, Of(multiple), multiple)
+	return ParseOrSideIn(spec, All, multiple)
 }
 
 // ParseOrSideIn is ParseOrSide with the aspect ratios' sizes of as.
@@ -117,18 +96,15 @@ func ParseOrSideIn(spec string, as []Aspect, multiple int) (width, height int, e
 	return n, n, nil
 }
 
-// Name is the name of a width x height picture among Of(multiple), "" when it is none of them.
-func Name(width, height, multiple int) string {
-	for _, a := range Of(multiple) {
+// Name is the name of a width x height picture among All, "" when it is none of them.
+func Name(width, height int) string {
+	for _, a := range All {
 		if a.Width == width && a.Height == height {
 			return a.Name
 		}
 	}
 	return ""
 }
-
-// Sizes are the aspects' sizes (width, height) of Of(multiple).
-func Sizes(multiple int) [][2]int { return SizesOf(Of(multiple)) }
 
 // SizesOf are the sizes (width, height) of as.
 func SizesOf(as []Aspect) [][2]int {
