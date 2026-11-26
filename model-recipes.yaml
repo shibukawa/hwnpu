@@ -122,6 +122,17 @@ apple:
       whole: false
       # the experts' program picks their scales with gather_nd (docs/handoff-ane-gather.md 1)
       gather_nd: false
+  prebuild:
+    # the attention of a chat model split at it, a kv head at a time (paged.Heads): from
+    # coreai-build's h13g programs, the M1 computes the first kv head right and the others wrong
+    # (Qwen3.5-0.8B: l about 6 times too large on the second, every answer noise), whatever the
+    # mask's form; compiled on the device it is right. The programs have no weights and compile
+    # in under a second on the device, and the parts stay prebuilt (docs/known-issues.md 19)
+    - arch: [h13g]
+      programs: ["*.attn*"]
+      do: device
+      why: "the attention a kv head at a time (paged.Heads) from coreai-build's h13g program: the second kv head's sum of exps 6 times too large on the M1, the answers noise; right compiled on the device (Qwen3.5-0.8B, prebuilt against device on the same inputs)"
+      checked: 2026-11-27
 
 amd:
   generations: [xdna2]

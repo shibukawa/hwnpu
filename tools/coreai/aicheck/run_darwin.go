@@ -127,6 +127,13 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 					}
 				}
 				hwnpu.EncodeF16(b.Bytes(), f)
+				// AICHECK_IN=DIR: the inputs of a call written by HWNPU_DEV=coreai.dump
+				// (DIR/in.NAME.f16) in place of random ones
+				if d := os.Getenv("AICHECK_IN"); d != "" {
+					if raw, err := os.ReadFile(filepath.Join(d, "in."+a.Name+".f16")); err == nil && len(raw) == a.Bytes {
+						copy(b.Bytes(), raw)
+					}
+				}
 				hwnpu.DecodeF16(f, b.Bytes()) // the values the device sees
 				in[a.Name] = milcpu.Tensor{Shape: a.Dims, Data: f}
 			} else {
@@ -190,6 +197,29 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 				if os.Getenv("AICHECK_WORST") != "" {
 					worst(got, w.Data, o.Dims)
 				}
+				line += fmt.Sprintf(" | %s cos %.6f rel %.4f nonfinite %d", o.Name, cos, rel, bad)
+			}
+		}
+		// AICHECK_DUMP=DIR: the outputs written to DIR/NAME.f16 (the inputs are the same every
+		// run, seed 1); AICHECK_CMP=DIR: compared with those of an earlier run (another way of
+		// compiling the same program: prebuilt against the device's compiler)
+		if d := os.Getenv("AICHECK_DUMP"); d != "" {
+			os.MkdirAll(d, 0o755)
+			for _, o := range outs {
+				os.WriteFile(filepath.Join(d, o.Name+".f16"), bufs[o.Index].Bytes()[:o.Bytes], 0o644)
+			}
+		}
+		if d := os.Getenv("AICHECK_CMP"); d != "" {
+			for _, o := range outs {
+				b, err := os.ReadFile(filepath.Join(d, o.Name+".f16"))
+				if err != nil || len(b) != o.Bytes {
+					line += fmt.Sprintf(" | %s: no earlier output", o.Name)
+					continue
+				}
+				got, want := make([]float32, o.Bytes/2), make([]float32, o.Bytes/2)
+				hwnpu.DecodeF16(got, bufs[o.Index].Bytes())
+				hwnpu.DecodeF16(want, b)
+				cos, rel, bad := compare(got, want)
 				line += fmt.Sprintf(" | %s cos %.6f rel %.4f nonfinite %d", o.Name, cos, rel, bad)
 			}
 		}
