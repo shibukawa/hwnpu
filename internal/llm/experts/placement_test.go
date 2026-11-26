@@ -270,3 +270,17 @@ func TestPlacementWarned(t *testing.T) {
 		t.Fatalf("%s is left with no ceiling", place.Ceiling)
 	}
 }
+
+// HWNPU_MOE_WIRE reads the same for the host's experts and the Neural Engine's (chain).
+func TestWireEnv(t *testing.T) {
+	for _, c := range []struct {
+		v      string
+		set    bool
+		budget int64
+	}{{"", false, 0}, {"0", true, 0}, {"1", true, -1}, {"6", true, 6e9}, {"6GB", true, 6e9}, {"2.5g", true, 2.5e9}, {"lots", true, -1}} {
+		t.Setenv("HWNPU_MOE_WIRE", c.v)
+		if set, b := WireEnv(); set != c.set || b != c.budget {
+			t.Errorf("HWNPU_MOE_WIRE=%q: %v %d, want %v %d", c.v, set, b, c.set, c.budget)
+		}
+	}
+}
