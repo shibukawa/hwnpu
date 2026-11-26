@@ -4,11 +4,11 @@ Drafts written 2026-11-25 for the problems of [known-issues.md](../known-issues.
 
 | File | Kind | known-issues.md | FB |
 |---|---|---|---|
-| [compile-disk-and-time.md](compile-disk-and-time.md) | new | 14 | |
-| [purged-programs-silent-recompile.md](purged-programs-silent-recompile.md) | new | 8 | |
-| [sin-off-ane-m1-m2.md](sin-off-ane-m1-m2.md) | new | 10 | |
-| [offline-stricter-than-device.md](offline-stricter-than-device.md) | new | 11 | |
-| [h15g-dma-cache-hint.md](h15g-dma-cache-hint.md) | new | 12 | |
+| [compile-disk-and-time.md](compile-disk-and-time.md) | new | 14 | FB25745042 |
+| [purged-programs-silent-recompile.md](purged-programs-silent-recompile.md) | new | 8 | FB25724246 |
+| [sin-off-ane-m1-m2.md](sin-off-ane-m1-m2.md) | new | 10 | FB25724316 |
+| [offline-stricter-than-device.md](offline-stricter-than-device.md) | new | 11 | FB25724867 |
+| [h15g-dma-cache-hint.md](h15g-dma-cache-hint.md) | new | 12 | FB25744357 |
 | [h13g-attention-8192-keys.md](h13g-attention-8192-keys.md) | new | 13 | |
 | [finisher-crash-throttle.md](finisher-crash-throttle.md) | new (written 2026-11-27) | 15, 17 | |
 | [h13g-kernel-overrun.md](h13g-kernel-overrun.md) | new (written 2026-11-27; the cause of 13 too, so file it before or with h13g-attention-8192-keys.md) | 16, 17, 18, 13 | |

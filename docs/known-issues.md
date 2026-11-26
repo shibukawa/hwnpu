@@ -17,13 +17,13 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 5 | ANE のコンパイルと prebuilt の仕上げが機械全体で 1 本ずつ | FB25624259 | なし | 読み込みを並べるか測る |
 | 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | FB25624336 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
 | 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
-| 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | 未報告 (下書き [purged-programs-silent-recompile.md](apple-feedback/purged-programs-silent-recompile.md)) | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
+| 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | FB25724246 ([報告の文面](apple-feedback/purged-programs-silent-recompile.md)) | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
 | 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
-| 10 | M1 (と M2: `sin`) の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 (下書き [sin-off-ane-m1-m2.md](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
-| 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書き [offline-stricter-than-device.md](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
-| 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 (下書き [h15g-dma-cache-hint.md](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
+| 10 | M1 (と M2: `sin`、`cos`) の ANE のコンパイラが `sin`、`cos` と、まとめた要素ごとの演算の一部を受け付けない | FB25724316 ([報告の文面](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
+| 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | FB25724867 ([報告の文面](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
+| 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | FB25744357 ([報告の文面](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 | 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
-| 14 | 1024² の VAE の段の ANE のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使う (Anima) | 未報告 (下書き [compile-disk-and-time.md](apple-feedback/compile-disk-and-time.md)) | なし (初回は 70 GB 以上空ける) | VAE の prebuilt を M2 以降で使うか測り直す (#336) |
+| 14 | ANE の `silu` の命令を使った VAE の段のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使い、`coreai-build` では落ちる (Anima) | FB25745042 ([報告の文面](apple-feedback/compile-disk-and-time.md)) | silu を exp の形で書く (Anima の書き出し v6、b3b022f6) | 何もしなくてよい。exp の形のままでよい |
 | 15 | 仕上げのサービスが落ちるたびに、launchd がその再起動を待たせる時間が伸びる (10 秒 → 80 秒 → … → 20 分)。再起動まで戻らない | 未報告 (下書き [finisher-crash-throttle.md](apple-feedback/finisher-crash-throttle.md)) | サービスを落とす prebuilt を置かない。測る前に今の待ちを読む | 1 節と 9 節を測り直す |
 | 16 | h13g (M1) 向けの `.aimodelc` で、活性化のタスクが、ほかの活性化と分け合うカーネルの外を読む。M1 では最初の呼び出しが終わらず (100 秒で打ち切り。その間ほかのプロセスの呼び出しも止まる)、関数が 2 つ以上だと仕上げのサービスが落ちる (Qwen3.5、LFM3、Gemma 4 のチャット。13 も同じと見られる) | 未報告 (下書き [h13g-kernel-overrun.md](apple-feedback/h13g-kernel-overrun.md)) | 活性化を同じ並びで書く (`blocks.WideAct` など。[design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」)。`hwnpu-dev prebuild` は、そのタスクのあるプログラムを置かない (`llirtasks -check`) | 何もしなくてよい (そろえた書き方に害はない) |
 | 17 | 16 と同じ原因で、Gated DeltaNet の層を持つ関数が 2 つ以上のプログラムの prebuilt が、仕上げのサービスを落とす (M1) | 未報告 (16 の下書きに含む) | 16 と同じ | 何もしなくてよい |
@@ -89,7 +89,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: h18g の prebuilt は作らない (GPU だけのものを置くと、M6 で ANE を使わなくなる)。M6 は端末でコンパイルする
 - **直ったら**: 6 節と同じに `--arch h18g` で作って置く。置く前に、`manifest.plist` に `mps.fullyPlacedOnANE` があることを必ず確かめる (GPU に回っても終了コードは 0)
 
-## 8. ディスクが少ないと仕上げたプログラムが消える (未報告)
+## 8. ディスクが少ないと仕上げたプログラムが消える (FB25724246)
 
 - **何が**: 空きが少ないと macOS の `deleted` が消せるものを消す (CD_NEAR_LOW_DISK_EVENT)。Core AI のキャッシュと aned の仕上げたプログラムも消える。仕上げた直後に消えると aned が `Model load failed … isPreCompiledModel=1` を出し、Core AI が OS の中で端末のコンパイルに切り替える。M1 で初回の最初のステップが 5〜15 分かかった。22 GB 空いていても消し始めた。[docs/design/distribution.md](design/distribution.md)
 - **今**: hwnpu では直せない (失敗が見えない)。初回を測るとき、使うときは 25 GB 以上空ける
@@ -116,21 +116,21 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) にだけ prebuilt を置く。model-recipes.yaml の `apple.prebuilt: true` がその印で、`hwnpu-dev models package MODEL` と `hwnpu-dev prebuild EXPORT` は、チップを名指さなければ印のあるモデルだけをプリビルドする。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
 - **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
 
-## 10. M1 の ANE のコンパイラが受け付けない演算 (未報告)
+## 10. M1 の ANE のコンパイラが受け付けない演算 (FB25724316)
 
 - **何が**: Core AI で M1 (h13) の ANE のコンパイラは、`sin`、要素ごとの演算にまとめた clip ("NEFUSED_EW: EW: MAX")、定数倍した入力どうしの引き算 ("NEFUSED_EW: KernelPreScales") を受け付けず、プログラムごと GPU に回す。MOSS の DAC の段 3 は 1 回 4998 フレームで "unexpected failure" になる。M3 の端末のコンパイラは通す。[docs/design/audio-models.md](design/audio-models.md)。ほかの乗らない演算の一覧は [docs/design/apple-coreml.md](design/apple-coreml.md)
 - **今**: DAC の snake の sin を π を単位にした級数で計算し、段 3 を 4500 フレームにした (`DACRevision` 3)。M1 でも M3 でも同じ書き出し
 - **直ったら**: 何もしなくてよい (級数の値は CPU の参照と 0.0085 で、sin と同じ)
 - 確かめ方: `sin` だけのプログラムを `coreai-build --architecture h13g` で作り、`mps.fullyPlacedOnANE` があるか
 
-## 11. オフラインのコンパイラの方が厳しい (未報告)
+## 11. オフラインのコンパイラの方が厳しい (FB25724867)
 
 - **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた ([docs/design/audio-models.md](design/audio-models.md))。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。[docs/design/audio-models.md](design/audio-models.md)
 - **今**: DAC は、どの機種でもオフラインで通る形 (r3) にした。prebuilt を作るなら、オフラインで乗る形で書く
 - **直ったら**: 何もしなくてよい
 - 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_DEV=ailower.cut=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
 
-## 12. h15g の DMA のキャッシュの指定が端末の検査に落ちる (未報告)
+## 12. h15g の DMA のキャッシュの指定が端末の検査に落ちる (FB25744357)
 
 - **何が**: FLUX.2 klein の DiT (8 つの大きさの関数を持つプログラム) の h15g 向けの prebuilt が、M3 (macOS 27.2.1) で全部 `failedToSpecialize` になった。Core AI は関数が 1 つ仕上がらないとプログラムごと使わないので、DiT の 7 つの部品がどれも端末でコンパイルされた (1 つ 3〜19 分。初回が prebuilt のないときと同じ)。落ちていたのは 512² の関数だけ。端末の仕上げ (ANELargeModelCompilerService) が "tile_dma_src.dma_config2.cache_hint != ane_tile_dma_src_dma_config2_cache_hint_drop_v8"、"Instruction corresponding to oplayer … failed validation test"、"Invalid TD exists" を出す。M1 で作ったものとこの機械で作ったものは、日付と統計のファイルのほかはバイト単位で同じで、どちらも落ちる。`--min-deployment-version 27.2` でも `--expect-frequent-reshapes` でも同じ
 - **原因の形**: attention の、1536 個のキーに対する 512 行のクエリの塊 (1536 行を `HeadChunk` の 1024 行ずつに分けた残り)。キーを部分 (1024 + 512) に分けて 1 つの softmax にした形 (`exp(x - max) × (1/sum)`) で起き、attention だけの 1 ヘッドのプログラムでも起きる。キーを 1 つのテンソルのままにすると通る (2026-11-27、M3)。768 行ずつ、1536 行まとめて、1024 個のキーに 512 行、3072 個のキーに 512 行は通る。1792 個のキーに 1280 行と 512 行も落ちる。attention だけでは 3968 行や 4032 行も落ちたが、DiT の中では通る (周りの演算とまとめ方で変わる)。どの形で起きるかは、オフラインのコンパイラの割り付け次第で、読めない
@@ -163,13 +163,14 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: `generation_edits` の M1 を消せば、M1 もほかのチップと同じ書き出しを使う (M1 用の書き出しとプリビルトは使われなくなる)
 - 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`HWNPU_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`hwnpu-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
 
-## 14. 1024² の VAE の段のコンパイルが長く、ディスクを大きく使う (未報告)
+## 14. silu の命令を使った VAE の段のコンパイルが長く、ディスクを大きく使う (FB25745042)
 
-- **何が**: Anima の VAE の段 (832 KB、8 つの大きさの関数) を M2 の端末でコンパイルすると、`vae_s6.aimodel#s1024x1024` だけで 871 秒かかり、その間に空きが 99.1 GB から 48.2 GB に減った (コンパイルが終わると戻る。2026-11-25)。10 段で約 70 分 (1 段 1〜15 分)。FLUX.2 klein の VAE は 10 段で 104 秒
+- **何が**: Anima の VAE の段 (832 KB、8 つの大きさの関数) は、活性化に MIL の `silu` を使うと、M2 の端末で `vae_s6.aimodel#s1024x1024` だけで 880 秒かかり、その間に空きが 139.9 GB から 89.0 GB に減った (コンパイルが終わると戻る)。10 段で約 70 分 (1 段 1〜15 分)。`coreai-build` は h13g、h14g、h15g で 10 段のうち 8 段を CompilationFailure で落とし、GPU だけの `.aimodelc` を書いて 0 で終わる
+- 同じ段の silu を `x / (1 + exp(-x))` で書くと、端末で 527 秒、ディスクはほぼ使わず、オフラインでも全部 Neural Engine に載る (2026-11-27)。M3 の端末では 512² の 10 段が 3552 → 482 秒 (b3b022f6)
 - 空きが足りないと "Failed to allocate memory for file backing" で GPU に回る。その前に空きが 15 GB ほどを切り、8 節の消去が起きる
-- **今**: 回避はない。Anima の初回は 70 GB 以上空けて動かす
-- **直ったら**: 何もしなくてよい。VAE の prebuilt を M2 以降で使うか (#336) は、この問題とは別に測る
-- 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` で時間と空きの最小値を見る ([apple-feedback/repro.md](apple-feedback/repro.md))
+- **今**: Anima の書き出し v6 (b3b022f6) から、Core AI の VAE の silu を exp の形 (`blocks.SiLU`) で書く。VAE の prebuilt はレシピで決め、M1 と M3 以降は prebuilt、M2 は端末 (M2 の prebuilt で帯が出た)
+- **直ったら**: 何もしなくてよい。exp の形のままで絵は同じ
+- 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` を v5 (silu の命令) と v6 (exp の形) の書き出しで比べる。オフラインは `compare.sh -a h14g,h15g` ([apple-feedback/repro.md](apple-feedback/repro.md))
 
 ## 15. 仕上げのサービスが落ちるたびに待ちが伸びる (未報告)
 

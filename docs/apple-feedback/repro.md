@@ -8,12 +8,14 @@ Tools (`tools/coreai/fbrepro`):
 - `offline.sh ARCH PROGRAM...`: compiles each program with `coreai-build` for ARCH and says whether `manifest.plist` has `mps.fullyPlacedOnANE`.
 - `load.sh PROGRAM[#FUNCTION]`: loads it on this Mac's Neural Engine with no cache for it (a copy of `aicheck` signed with a new identifier) and samples the free disk.
 - `purge.sh PROGRAM [KEEP_GB]`: loads, fills the disk to KEEP_GB for 5 minutes, then loads again.
+- `compare.sh [-a ARCHS] PROGRAM...`: compiles each program offline with the `coreai-build` of every Xcode in `XCODES` (default: every `/Applications/Xcode*.app`) for each architecture. Each row gives whether the program is on the Neural Engine, the seconds, the disk it took and a hash of the Neural Engine code. Use it to see what a new (beta) Metal Toolchain changes.
 
 ```sh
 go build -o /tmp/fb/fbrepro ./tools/coreai/fbrepro
 go build -o /tmp/fb/aicheck ./tools/coreai/aicheck
 cd /tmp/fb
 ./fbrepro sin sin.aimodel
+./fbrepro cos cos.aimodel
 ./fbrepro snake snake.aimodel
 ./fbrepro snake -square square.aimodel
 ./fbrepro attn -chunk 1024 -parts attn-1536-c1024.aimodel   # a 512-row chunk is left
@@ -25,11 +27,12 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 
 `aicheck run` prints `ane=true` when the program runs on the Neural Engine.
 
-## compile-disk-and-time.md (new)
+## compile-disk-and-time.md (new, known-issues 14)
 
-- Program: `vae_s6.aimodel` of Anima-Turbo's Core AI export (`anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai`, 832 KB, 8 size functions), from `hwnpu-dev models fetch Anima-Turbo/coreai`.
-- `load.sh "vae_s6.aimodel#s1024x1024"` on an M2 with 70 GB or more free.
-- Note: Core AI compiles every function of a program together, so this load compiles all 8 sizes.
+- Programs: `vae_s6.aimodel` of Anima-Turbo's Core AI exports `anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai` (silu as the MIL op, 832 KB, 8 size functions) and `...-v6.coreai` (silu in the exp form, 788 KB), from `hwnpu-dev models fetch Anima-Turbo/coreai`. The v5 export is no longer made by today's code: keep a copy, or check out a commit before b3b022f6.
+- `load.sh "vae_s6.aimodel#s1024x1024"` on an M2 with 70 GB or more free. On 2026-11-27: v5 880 s, free disk 139.9 → 89.0 GB; v6 527 s, free disk unchanged.
+- `compare.sh -a h14g,h15g` on both: v5 not on the Neural Engine (exit 0), v6 on it.
+- Core AI compiles every function of a program together, so one load compiles all 8 sizes.
 
 ## purged-programs-silent-recompile.md (new, known-issues 8)
 
@@ -41,6 +44,7 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 | program | h13g offline | h14g offline | h15g offline | M2 on the device |
 |---|---|---|---|---|
 | `sin` | not on ANE | not on ANE | ANE | not on ANE |
+| `cos` | not on ANE | not on ANE | ANE | not on ANE |
 | `snake` (with sin) | not on ANE | not on ANE | ANE | not on ANE |
 | `snake -square` (y*y for sin) | ANE | ANE | ANE | ANE |
 | `clipew` | ANE | ANE | ANE | ANE |
@@ -48,14 +52,16 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 
 `coreai-build` exits 0 in every case, also when the program is not on the Neural Engine.
 
-- `sin` reproduces on M1 and on M2 (h14g), offline and on the device; M3 (h15g) takes it.
+- `sin` and `cos` reproduce on M1 and on M2 (h14g), offline and on the device; M3 (h15g) takes them (FB25724316).
 - The fused clip ("NEFUSED_EW: EW: MAX") and the constant-scaled subtraction ("KernelPreScales") do not reproduce with these small programs offline for h13g or on the M2. They were seen with the M1's device compiler in the full DAC stage: check `clipew` and `prescale` on an M1 with `load.sh`, and if they pass, attach the DAC stage instead (below).
 
 ## offline-stricter-than-device.md (new, known-issues 11)
 
-- `snake -clip` passes offline for h15g, so this small program does not reproduce it.
-- It needs the DAC's stage 4 as hwnpu wrote it before r3 (Snake with `sin` and a clip): a MOSS-SoundEffect export from a commit before `DACRevision` 3, then `aicheck merge` with `HWNPU_DEV=ailower.cut=47` for the first 47 operations (known-issues 11).
-- Compile it with `offline.sh h15g`, and load it on an M3 with `load.sh`.
+- `fbrepro dac -pth vae_128d_48k.pth -stage 4 -sin native-clip dac4-native-clip.aimodel` writes MOSS-SoundEffect's DAC stage 4 with its sine as hwnpu's r2 wrote it (`sin(clip(alpha x, ±1500))`, sfx's `SinNativeClipped`). `-sin native` writes it without the clip (the M3's export today), `-sin series` with the polynomial. `vae_128d_48k.pth` is the checkpoint's `vae/` file.
+- `offline.sh h15g dac4-native-clip.aimodel dac4-native.aimodel`: on 2026-11-25 the clipped stage is not on the Neural Engine for h15g, h16g and h17g (exit 0, "Procedure compilation phase failed", "Falling back to full compile on GPU"); without the clip, and with the polynomial, it is.
+- The compiler's own message is `<private>` in the log. The layer it named when first seen ("NEFUSED_EW: EW: MAX") needs private data shown, or a sysdiagnose.
+- A small Snake block with the same clip before `sin` (`fbrepro snake -preclip`) passes offline, so it does not reproduce.
+- The device side (the M3 puts the clipped stage on the Neural Engine) is to confirm on an M3 with `load.sh dac4-native-clip.aimodel`.
 
 ## h15g-dma-cache-hint.md (new, known-issues 12)
 
