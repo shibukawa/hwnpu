@@ -16,7 +16,7 @@ u = linear2(x);  s = u / (1 + exp(-u))
 y = g * s
 ```
 
-Its tasks 6 and 7 (the sigmoid's two steps, 8 coefficient sets each) load the kernels of the later `exp` and inverse of `s` (one set each), 128 bytes. With the sigmoid applied before the reshape (`share-flat.aimodel`, the same values) every task has one set and nothing reads past a kernel. On the M1, `share.aimodel` from its `.aimodelc` was finished and its first call was given up after 100 s (2026-11-27, `checkForTimedOutRequests: Request timeout detected … elapsed: 100005 ms, timeout: 100000 ms`).
+Its tasks 6 and 7 (the sigmoid's two steps, 8 coefficient sets each) load the kernels of the later `exp` and inverse of `s` (one set each), 128 bytes. With the sigmoid applied before the reshape (`share-flat.aimodel`, the same values) every task has one set and nothing reads past a kernel. On the M1, `share.aimodel` from its `.aimodelc` was finished and its first call was given up after 100 s (2026-11-27, `checkForTimedOutRequests: Request timeout detected … elapsed: 100005 ms, timeout: 100000 ms`); `share-flat.aimodel` from its `.aimodelc` ran (0.39 ms a call).
 
 On an M1 (h13g) such a program is fully placed on the Neural Engine offline and then:
 
