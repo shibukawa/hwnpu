@@ -27,11 +27,12 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 
 `aicheck run` prints `ane=true` when the program runs on the Neural Engine.
 
-## compile-disk-and-time.md (new)
+## compile-disk-and-time.md (new, known-issues 14)
 
-- Program: `vae_s6.aimodel` of Anima-Turbo's Core AI export (`anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai`, 832 KB, 8 size functions), from `hwnpu-dev models fetch Anima-Turbo/coreai`.
-- `load.sh "vae_s6.aimodel#s1024x1024"` on an M2 with 70 GB or more free.
-- Note: Core AI compiles every function of a program together, so this load compiles all 8 sizes.
+- Programs: `vae_s6.aimodel` of Anima-Turbo's Core AI exports `anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v5.coreai` (silu as the MIL op, 832 KB, 8 size functions) and `...-v6.coreai` (silu in the exp form, 788 KB), from `hwnpu-dev models fetch Anima-Turbo/coreai`. The v5 export is no longer made by today's code: keep a copy, or check out a commit before b3b022f6.
+- `load.sh "vae_s6.aimodel#s1024x1024"` on an M2 with 70 GB or more free. On 2026-11-27: v5 880 s, free disk 139.9 → 89.0 GB; v6 527 s, free disk unchanged.
+- `compare.sh -a h14g,h15g` on both: v5 not on the Neural Engine (exit 0), v6 on it.
+- Core AI compiles every function of a program together, so one load compiles all 8 sizes.
 
 ## purged-programs-silent-recompile.md (new, known-issues 8)
 

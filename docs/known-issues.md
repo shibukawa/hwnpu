@@ -23,7 +23,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | FB25724867 ([報告の文面](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | FB25744357 ([報告の文面](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 | 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
-| 14 | 1024² の VAE の段の ANE のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使う (Anima) | 未報告 (下書き [compile-disk-and-time.md](apple-feedback/compile-disk-and-time.md)) | なし (初回は 70 GB 以上空ける) | VAE の prebuilt を M2 以降で使うか測り直す (#336) |
+| 14 | ANE の `silu` の命令を使った VAE の段のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使い、`coreai-build` では落ちる (Anima) | 未報告 (下書き [compile-disk-and-time.md](apple-feedback/compile-disk-and-time.md)) | silu を exp の形で書く (Anima の書き出し v6、b3b022f6) | 何もしなくてよい。exp の形のままでよい |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -153,13 +153,14 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: `generation_edits` の M1 を消せば、M1 もほかのチップと同じ書き出しを使う (M1 用の書き出しとプリビルトは使われなくなる)
 - 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`HWNPU_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`hwnpu-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
 
-## 14. 1024² の VAE の段のコンパイルが長く、ディスクを大きく使う (未報告)
+## 14. silu の命令を使った VAE の段のコンパイルが長く、ディスクを大きく使う (未報告)
 
-- **何が**: Anima の VAE の段 (832 KB、8 つの大きさの関数) を M2 の端末でコンパイルすると、`vae_s6.aimodel#s1024x1024` だけで 871 秒かかり、その間に空きが 99.1 GB から 48.2 GB に減った (コンパイルが終わると戻る。2026-11-25)。10 段で約 70 分 (1 段 1〜15 分)。FLUX.2 klein の VAE は 10 段で 104 秒
+- **何が**: Anima の VAE の段 (832 KB、8 つの大きさの関数) は、活性化に MIL の `silu` を使うと、M2 の端末で `vae_s6.aimodel#s1024x1024` だけで 880 秒かかり、その間に空きが 139.9 GB から 89.0 GB に減った (コンパイルが終わると戻る)。10 段で約 70 分 (1 段 1〜15 分)。`coreai-build` は h13g、h14g、h15g で 10 段のうち 8 段を CompilationFailure で落とし、GPU だけの `.aimodelc` を書いて 0 で終わる
+- 同じ段の silu を `x / (1 + exp(-x))` で書くと、端末で 527 秒、ディスクはほぼ使わず、オフラインでも全部 Neural Engine に載る (2026-11-27)。M3 の端末では 512² の 10 段が 3552 → 482 秒 (b3b022f6)
 - 空きが足りないと "Failed to allocate memory for file backing" で GPU に回る。その前に空きが 15 GB ほどを切り、8 節の消去が起きる
-- **今**: 回避はない。Anima の初回は 70 GB 以上空けて動かす
-- **直ったら**: 何もしなくてよい。VAE の prebuilt を M2 以降で使うか (#336) は、この問題とは別に測る
-- 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` で時間と空きの最小値を見る ([apple-feedback/repro.md](apple-feedback/repro.md))
+- **今**: Anima の書き出し v6 (b3b022f6) から、Core AI の VAE の silu を exp の形 (`blocks.SiLU`) で書く。VAE の prebuilt はレシピで決め、M1 と M3 以降は prebuilt、M2 は端末 (M2 の prebuilt で帯が出た)
+- **直ったら**: 何もしなくてよい。exp の形のままで絵は同じ
+- 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` を v5 (silu の命令) と v6 (exp の形) の書き出しで比べる。オフラインは `compare.sh -a h14g,h15g` ([apple-feedback/repro.md](apple-feedback/repro.md))
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
