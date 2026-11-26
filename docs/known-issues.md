@@ -28,6 +28,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 16 | h13g (M1) 向けの `.aimodelc` で、活性化のタスクが、ほかの活性化と分け合うカーネルの外を読む。M1 では最初の呼び出しが終わらず (100 秒で打ち切り。その間ほかのプロセスの呼び出しも止まる)、関数が 2 つ以上だと仕上げのサービスが落ちる (Qwen3.5、LFM3、Gemma 4 のチャット。13 も同じと見られる) | 未報告 (下書き [h13g-kernel-overrun.md](apple-feedback/h13g-kernel-overrun.md)) | 活性化を同じ並びで書く (`blocks.WideAct` など。[design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」)。`hwnpu-dev prebuild` は、そのタスクのあるプログラムを置かない (`llirtasks -check`) | 何もしなくてよい (そろえた書き方に害はない) |
 | 17 | 16 と同じ原因で、Gated DeltaNet の層を持つ関数が 2 つ以上のプログラムの prebuilt が、仕上げのサービスを落とす (M1) | 未報告 (16 の下書きに含む) | 16 と同じ | 何もしなくてよい |
 | 18 | 定数を左に置いた行列積が、prebuilt から仕上がらない ("Kernel evaluation failed"、M1) | 未報告 (16 の下書きに添える) | 定数を右に置く (`paged` の mass プログラム) | 何もしなくてよい |
+| 19 | h13g (M1) 向けの、kv ヘッドごとの attention のプログラム (`paged.Heads`) で、2 つめ以降の kv ヘッドの計算が誤る。チャットの答えが文字化けする (Qwen3.5-0.8B) | 未報告 (16 の下書きに添える) | h13g では attention のプログラムを端末でコンパイルする (レシピの `apple.prebuild`) | 決まりを外す |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -232,6 +233,23 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: 定数を右に置く (転置した exp に 1 の列を掛ける。`internal/llm/paged/mass.go`)。仕上がり、全部 Neural Engine で動き、CPU との余弦は 1.000000、速さは同じ (8 行で 1.23 ms どうし、128 行で 3.43 → 3.25 ms)
 - **直ったら**: 何もしなくてよい
 - 確かめ方: 直す前の mass プログラム (8 クエリ × 2 つの kv ヘッド、チャンク 8192) を h13g で作り、M1 で開く
+
+## 19. h13g の attention のプログラムで、2 つめ以降の kv ヘッドが誤る (未報告)
+
+- **何が**: チャットのモデルの、attention で分けた部品のあいだの attention のプログラムは、Core AI では kv ヘッドごとに計算する形 (`paged.Heads`) で書く。その h13g の prebuilt を M1 で動かすと、1 つめの kv ヘッドは正しく、2 つめ以降が誤る。Qwen3.5-0.8B (kv ヘッド 2 つ) では、kv ヘッド 1 (ヘッド 4〜7) の exp の和 `l` が約 6 倍になり、会話の答えが文字化けした (端末でコンパイルすると「東京です。」)。16 節の直しのあと、2026-11-27 に見つけた
+- **切り分け** (M1。`HWNPU_DEV=coreai.dump` で会話の呼び出しの入出力を書き、prebuilt と端末のコンパイルで比べた):
+  - 層の部品 (7 本の 14 関数) と mass のプログラムは、prebuilt と端末のコンパイルでビットまで同じ。最初にずれるのは層 3 の attention で、prebuilt だけ inf と NaN が出る
+  - 記録した入力で attention のプログラムだけを動かすと再現する (`aicheck` の `AICHECK_IN`)。行の最大値 `m` は合い、その後の exp と和が合わない
+  - 途中で切った検体 (`ailower.cut`) は、kv ヘッド 1 の部分を含め、どこで切っても合う。3 つの出力 (o、m、l) をそろえた完全なプログラムだけがずれる
+  - マスクを kv ヘッドで共有しない書き方 (ブロードキャスト、kv ヘッドごとの concat) でも、prebuilt はまったく同じ誤った値を出した
+  - LLIR に 16 節のタスクはない (`llirtasks -check` では見つからない)
+  - ランダムな入力では、`l` が 14 % ずれるだけで見落としやすい (実際の入力では大半のキーがマスクで消える)
+- **ほかの形**: grouped 形式 (全ヘッドを 1 つの行列積で) なら prebuilt でも正しいが、M1 で 8 行の呼び出しが 10〜17 % 遅い (Qwen3.5 0.54 → 0.60 ms、LFM3-1.7B の形 0.55 → 0.65 ms)。スコアを 1 つにまとめてから最大値・exp・和を取る形も正しいが、8 行で 2〜3 倍遅い
+- **今**: h13g では attention のプログラム (`*.attn*`) を prebuild しない (model-recipes.yaml の `apple.prebuild`)。重みがなく、端末のコンパイルは 1 本 1 秒未満。層の部品と mass は prebuilt のまま。Qwen3.5-0.8B は prebuilt から正しく答え、初回は 1 分 46 秒 (端末のコンパイルだけだと 7 分 13 秒)
+- kv ヘッドが 2 つ以上のチャットのモデル (Qwen3.5、LFM3、Qwen3、PLaMo 3 の 2b と 8b など) が当たる。Gemma 4 E2B と PLaMo 3 Translate 0.8B は kv ヘッドが 1 つで、grouped 形式のまま
+- h14g 以降で起きるかは確かめていない
+- **直ったら**: 決まりを外す
+- 確かめ方: `HWNPU_DEV=coreai.dump=DIR` を付けて、prebuilt と端末のコンパイル (`HWNPU_COREAI_PREBUILT=off`) で同じプロンプトを `--seed` を固定して流し、呼び出しごとの出力を比べる。attention のプログラムは、記録した入力で `AICHECK_IN=DIR/NNNNNN-…attn…` を付けて `aicheck run` し、`AICHECK_DUMP` と `AICHECK_CMP` で 2 つのコンパイルを比べる
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
