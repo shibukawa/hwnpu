@@ -503,12 +503,18 @@ models:
         dit_format: int8
         group: 4
         qchunk: 512
-      # the VAE (its residual blocks' silu in the exp form since version 3) is prebuilt on every
-      # chip: on an M3 the device compiled the ten stages in 482 s at 512² (3552 s with the native
-      # silu, which coreai-build failed on), the h15g prebuilt gave the same bytes, every stage
-      # matched an fp64 reference at 512² and 1024², and whole pictures from the prebuilt VAE were
-      # the same bytes as with it compiled on the device (2026-11-26). M1 and M2: placed whole on
-      # the Neural Engine offline; checked on the devices before this is merged
+      # the VAE (its residual blocks' silu in the exp form since version 3) is prebuilt on M1 and on
+      # M3 and later: on an M3 the device compiled the ten stages in 482 s at 512² (3552 s with the
+      # native silu, which coreai-build failed on), the h15g prebuilt gave the same bytes, every
+      # stage matched an fp64 reference at 512² and 1024², and whole pictures from the prebuilt VAE
+      # were the same bytes as with it compiled on the device (2026-11-26); an M1 drew right from
+      # the h13g prebuilt (2026-11-27)
+      prebuild:
+        - arch: [h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
+          do: device
+          why: "on M2 Anima-Turbo's pictures from the h14g VAE prebuilt had bands every 160 pixels (twice and three times as often at some aspect ratios), and none with the VAE compiled on the device"
+          checked: 2026-11-27
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
