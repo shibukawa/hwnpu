@@ -35,6 +35,7 @@ var Keys = map[string]string{
 	"ov.device":      "DEVICE: the OpenVINO device (NPU, CPU, GPU)",
 	"ov.precision":   "PRECISION: OpenVINO's inference precision hint",
 	"coreai.debug":   "logs Core AI's calls",
+	"coreai.dump":    "DIR: writes every call's outputs to DIR (a folder a call), to compare two runs",
 	"coreml.trace":   "traces Core ML's graph calls",
 	// decoding
 	"draft.policy": "0 checks the lookup's drafts at every step (no policy)",

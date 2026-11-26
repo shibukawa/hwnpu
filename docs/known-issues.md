@@ -24,11 +24,17 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | FB25744357 ([報告の文面](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 | 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
 | 14 | ANE の `silu` の命令を使った VAE の段のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使い、`coreai-build` では落ちる (Anima) | FB25745042 ([報告の文面](apple-feedback/compile-disk-and-time.md)) | silu を exp の形で書く (Anima の書き出し v6、b3b022f6) | 何もしなくてよい。exp の形のままでよい |
+| 15 | 仕上げのサービスが落ちるたびに、launchd がその再起動を待たせる時間が伸びる (10 秒 → 80 秒 → … → 20 分)。再起動まで戻らない | 未報告 (下書き [finisher-crash-throttle.md](apple-feedback/finisher-crash-throttle.md)) | サービスを落とす prebuilt を置かない。測る前に今の待ちを読む | 1 節と 9 節を測り直す |
+| 16 | h13g (M1) 向けの `.aimodelc` で、活性化のタスクが、ほかの活性化と分け合うカーネルの外を読む。M1 では最初の呼び出しが終わらず (100 秒で打ち切り。その間ほかのプロセスの呼び出しも止まる)、関数が 2 つ以上だと仕上げのサービスが落ちる (Qwen3.5、LFM3、Gemma 4 のチャット。13 も同じと見られる) | 未報告 (下書き [h13g-kernel-overrun.md](apple-feedback/h13g-kernel-overrun.md)) | 活性化を同じ並びで書く (`blocks.WideAct` など。[design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」)。`hwnpu-dev prebuild` は、そのタスクのあるプログラムを置かない (`llirtasks -check`) | 何もしなくてよい (そろえた書き方に害はない) |
+| 17 | 16 と同じ原因で、Gated DeltaNet の層を持つ関数が 2 つ以上のプログラムの prebuilt が、仕上げのサービスを落とす (M1) | 未報告 (16 の下書きに含む) | 16 と同じ | 何もしなくてよい |
+| 18 | 定数を左に置いた行列積が、prebuilt から仕上がらない ("Kernel evaluation failed"、M1) | 未報告 (16 の下書きに添える) | 定数を右に置く (`paged` の mass プログラム) | 何もしなくてよい |
+| 19 | h13g (M1) 向けの、kv ヘッドごとの attention のプログラム (`paged.Heads`) で、2 つめ以降の kv ヘッドの計算が誤る。チャットの答えが文字化けする (Qwen3.5-0.8B) | 未報告 (16 の下書きに添える) | h13g では attention のプログラムを端末でコンパイルする (レシピの `apple.prebuild`) | 決まりを外す |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
 - **何が**: `.aimodelc` を端末で仕上げる `ANELargeModelCompilerService` は 1 本ごとに終わり ("Exiting … to avoid VA fragmentation")、launchd が次の起動を 10 秒待たせる ("service spawn deferred by 10 seconds due to throttle")。小さな部品でも 1 本 10.2 秒かかる。[docs/design/image-apple.md](design/image-apple.md), [docs/design/quantization.md](design/quantization.md) のころの調べ
 - **今**: 回避はない。prebuilt が効くのは、1 部品の端末のコンパイルが数分かかる画像のモデル (FLUX.2 klein、Anima) だけ。部品の多い小さなプログラムは、10 秒ずつ積み上がって負ける (画像以外は 9 節)
+- 10 秒は下限で、いつもそうとは限らない: このサービスが落ちると間隔が伸びる (15 節)
 - **直ったら**: FLUX.2 klein の文の符号器 (prebuilt で 112 秒、端末で 81 秒、[distribution](design/distribution.md)) と、9 節の表のモデルを同じ測り方で測り直す。端末のコンパイルより速くなれば、9 節の手順で置く
 
 ## 2. 隣り合う同じ lut の表 (FB25624151)
@@ -93,6 +99,9 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 - **何が**: 画像生成以外のモデルは部品が小さく、端末のコンパイルが短い (長くて数分)。1 つめの prebuilt の決まった費用と 1 節の間隔で負ける
   - チャット: LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒。Qwen3.5-4B は prebuilt で読めたが、最初の呼び出しから答えなかった
+  - M1 (2026-11-26): Qwen3.5-0.8B は端末で 7 分 5 秒〜7 分 11 秒。prebuilt は読み込みが 3 分 56 秒 (3 部品は端末のコンパイルに戻った) で、最初の呼び出しが失敗した。Neural Engine の上で呼び出しが終わらなくなっていた (16 節)。Qwen3.5-4B (M3) の「答えなかった」が同じものかは分からない (16 節のタスクは h13g 向けのプログラムにしかない)
+  - M1 (2026-11-27): 16 節と 18 節を直した書き出しでは、`model.part1` (関数 2 つ) が prebuilt から 8.2 秒で仕上がって動いた。モデル全体の初回の時間はまだ測っていない (15 節の間隔が 20 分に伸びたままで、再起動するまで 1 部品 20 分かかる)
+  - 「prebuilt の方が遅い」のは、1 節の間隔が 10 秒より伸びていたせいかもしれない (15 節: 仕上げのサービスが落ちると伸び、再起動まで戻らない)。測るときは今の間隔を先に読む
   - 解析と音声 (2026-11-22、M3、h15g、空のキャッシュから 1 回目の読み込み):
 
     | モデル | 端末でコンパイル | prebuilt |
@@ -150,6 +159,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   同じプログラムを Core AI の CPU で動かすと 0.999996 なので、書き出しは正しい。M2 (h14g) と M3 (h15g) では、同じ書き出しのプリビルトで絵が正しく出る
 - **今**: M1 の書き出しには 8192 キー以上の関数を入れない。1024² の絵の参照が 1 枚のとき、M1 では参照を 512 で読む (models.yaml の `npu.apple.generation_edits`、5632 キー)。書き出しは M1 用に 1 つ (名前の編集の hash が違う)。ほかのチップは今までどおり
 - **確かめた結果** (2026-11-25、M1): M1 用の書き出しの h13g のプリビルト 14 本は、M1 の上で全部仕上がった (`the prebuilt program failed` は 0 回、DiT の端末でのコンパイルも 0 回)。空の Core AI キャッシュからの初回は 18 分 15 秒。文からの生成 5 サイズ (512²、1024²、1280 × 704、704 × 1280、768 × 1024) と編集 5 通りの絵が正しく出た。本物の `dit_single_0` (13 関数) の 2 つの関数も、CPU との余弦が 0.999999 だった。時間は [design/image-apple.ja.md](design/image-apple.ja.md)
+- **16 節と同じ原因と見られる** (2026-11-27): その書き出しの h13g のプログラムの 8704 キーの関数には、カーネルの外を読むタスクが 1296 個ある (単ブロックのプログラムの 37224 タスク中、二重ブロックの 38060 タスク中)。`(1, 512, 1)` の並びで 16 組の係数を読む活性化が、1 組の活性化と 128 バイトのカーネルを分け合っている。M1 用の書き出し (動く) には 1 つもない。二重ブロックで仕上げのサービスが落ちる所 (37838 個目) も、そのタスクのあとである。attention の部分の活性化の並びをそろえれば、M1 用の書き出しが要らなくなるかもしれない (試していない)
 - **直ったら**: `generation_edits` の M1 を消せば、M1 もほかのチップと同じ書き出しを使う (M1 用の書き出しとプリビルトは使われなくなる)
 - 確かめ方: `flux2klein` の `TestWriteSingleProbe` で関数 1 つのプログラムと CPU 用のパッケージを作る (`HWNPU_TEST_KLEIN_PROBE_REFS=1`、`_GROUP=0,2`、`_REF=…mlpackage`)。`hwnpu-dev prebuild -arch h13g` で作り、M1 で `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` の余弦を見る。Core AI のキャッシュに端末でコンパイルした同じプログラムが残っていると、プリビルトは使われない (実行ファイルの名前を変えるか、その項目を消す)
 
@@ -162,6 +172,86 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: 何もしなくてよい。exp の形のままで絵は同じ
 - 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` を v5 (silu の命令) と v6 (exp の形) の書き出しで比べる。オフラインは `compare.sh -a h14g,h15g` ([apple-feedback/repro.md](apple-feedback/repro.md))
 
+## 15. 仕上げのサービスが落ちるたびに待ちが伸びる (未報告)
+
+- **何が**: 1 節の 10 秒は、launchd が `ANELargeModelCompilerService` の起動どうしの間に置く間隔である (`service spawn deferred by N seconds due to throttle` の N は、前の起動からその間隔までの残り)。この間隔は、サービスが落ちると伸びる。2026-11-26 の M1 では、午後は 10 秒だったものが、サービスが何度か落ちたあとの夜には 80 秒になっていて、その夜さらに落ちるたびに 320 秒、640 秒、1200 秒になった。80 秒は、何も動かさなかった 4 時間半のあいだも変わらなかった。落ちた直後の 1 回だけはすぐ起動し、その次から新しい間隔を待つ
+- 仕上げは機械全体で 1 本ずつ、この間隔で進む。間隔が 80 秒なら 17 部品のチャットのモデルは 23 分、1200 秒なら 1 部品 20 分かかる。どのアプリの prebuilt も同じに遅くなる
+- 9 節の「prebuilt の方が遅い」と、[apple-coreai](design/apple-coreai.md) の「プロセスの最初の prebuilt に数分の決まった費用があるらしい」は、これで説明がつく (その日にサービスが落ちていたかは、当時の記録にない)
+- サービスを落としたもの (どれも端末の仕上げのメモリ破壊。`ZinKernelBuilder::BuildKernelFromLLIRData` の中の malloc の検査、`ZinAneHloConverter::ParseInstructions`、MLIR の後片付けなど、落ちる場所は毎回違う): 17 節のプログラム、13 節の二重ブロック、h13g の 8 つの大きさの Chroma。17 節と 13 節のものは、カーネルの外を読むタスク (16 節) のあるプログラムである
+- **今**: 回避はない。サービスを落とすと分かっている prebuilt は置かない (レシピの `prebuild` の決まりで端末に回す)。prebuilt の時間を測る前、切り分ける前に、今の間隔を読む。10 秒より長ければ、再起動してから測る
+- **直ったら**: 1 節と 9 節を測り直す
+- 確かめ方: `/usr/bin/log show --last 30m --predicate 'process == "launchd" AND eventMessage CONTAINS "deferred by"' | grep ANELargeModelCompilerService`。prebuilt を 2 本続けて開いたときの N と、2 本目が開くまでの時間を足したものが間隔
+
+## 16. h13g 向けのプログラムの活性化が、分け合うカーネルの外を読む (未報告)
+
+- **何が**: `coreai-build` (3605.6.3) の h13g 向けのコンパイラは、1 つの関数の中で定数が同じ活性化のカーネル (sigmoid と silu の exp の段と逆数の段、gelu の tanh など。1 組 128 バイト) を 1 つにまとめる。活性化のタスクが読む係数の組の数は、テンソルの並びで決まる
+  - `Linear` の出力のように、行をバッチとして置いたテンソル: 1 組 (128 バイト)
+  - 行やヘッドをチャネルとして置いたテンソル: チャネルごとに 1 組。8 行なら 8 組 (1024 バイト)、チャネルが 16 以上なら 16 組 (2048 バイト)
+
+  まとめたカーネルの大きさは、それを使う最後のタスクに合わせられる。最後が 1 組のタスクだとカーネルは 128 バイトになり、その前の 8 組や 16 組のタスクはカーネルの外を読む
+  - LLIR での見え方: `anehlo.kload` が読む `memref.view` の型が `memref<128>` なのに、その中の `anehlo.coeff_dma_offset_size` が (0, 128)、(128, 128)、…、(896, 128) を指す。`tools/coreai/llirtasks -check X.mlir.bc` がそのタスクを挙げる
+  - h13g だけで起きる。直す前の同じ部品を h14g〜h17g 向けに作ると 1 つもない (3 モデルの `model.part2`)
+- **M1 で起きること** (macOS 27.2.1、Metal Toolchain 27.2.47): オフラインでは全部 Neural Engine に載る。端末でコンパイルした同じプログラムは動く
+  - 関数が 1 つのプログラム: 仕上がるが、呼ぶと終わらない。カーネルのログ (`AppleH11ANEInterface`) に `SyncRequest timed out after 100000 ms` が出て、呼び出しは 100 秒後に "Request cancelled" で返る
+  - 関数が 2 つ以上のプログラム: 仕上げのサービスが落ちる (17 節)
+- **止まったあと**: Neural Engine のファームウェアは止まったままで、止める指示 (`CSNE_CMD_STOP`) も 2 秒で時間切れになる。ドライバは、Neural Engine を使うプロセスがいなくなってから 5 秒後に電源を落とし、強制的に再起動する (`Forcing firmware timeout path for clean reboot`)。それまでは、**ほかのプロセスの呼び出しも 100 秒ずつ待って失敗する**。プログラムを開いたまま呼び直すプロセスや、呼び続けるシステムのデーモン (夜に `mediaanalysisd` がそうだった) がいると、再起動が始まらない
+- **根拠** (2026-11-27): h13g のプログラムの LLIR を読んだ結果と、M1 での結果が全部合う
+  - M1 で止まったもの、仕上げで落ちたものには、どれにもこのタスクがある: Qwen3.5-0.8B の `model.part1` (関数 2 つでは仕上げで落ち、1 つでは止まる) と `model.part2` (どの部品にも 1 関数に 2〜11 個ある)、Gated DeltaNet 3 層の検体、層 1 つの検体 (3 個)、層 0 を演算 294、297、301 で切った検体 (3 個ずつ)
+  - M1 で動いたもの約 20 本には、どれにもない: 層 0 を演算 263、277、288 で切った検体、デルタ則だけの検体 8 本 (チャンク 8 で 8〜128 行、チャンク 16 で 16〜64 行)、softplus だけの検体 2 本、MLP の silu だけの検体、mass プログラム、Qwen3-0.6B の `model.part1` の 2 つの関数。M1 で試していない検体 20 本あまり (MLP を別の形で書いたものなど) にもない
+  - 層 0 では、288 演算 (MLP の最初の射影まで) と 294 演算 (その silu まで) の間で変わる。288 では分け合うカーネルが 1024 バイト (最後に使うのが 8 組の `silu(z)`)、294 では MLP の silu (1 組) が最後に加わって 128 バイトになる
+  - 手元の prebuilt 1331 本を読んだ。h14g 369 本と h15g 421 本には 1 つもない。h13g 541 本のうち、M1 で動いているもの (Anima、FLUX.3 klein、FLUX.2 klein の M1 用の書き出し) には 1 つもなく、あったのは Qwen3.5 のチャット、13 節の FLUX.2 klein の書き出し、古い FLUX.2 klein v1 の `vae_s0` だけ
+  - 最小の再現は 16 タスクのプログラム (620 KB): sigmoid を `(1, 8, 16, 64)` に掛け、別の `Linear` の出力に silu を掛けて、積を取る。sigmoid の 2 つの段 (タスク 6 と 7) が、128 バイトのカーネルから 1024 バイトを読む。M1 で prebuilt から開くと、仕上がったあと最初の呼び出しが 100 秒で打ち切られた (カーネルのログに `Request timeout detected … elapsed: 100005 ms`)。sigmoid を `(1, 8, 1024)` に掛ける形にすると 1 つもなく、M1 で prebuilt から動く (0.39 ms)
+- **どこにあったか** (直す前の書き出し、h13g):
+
+  | モデル | 1 関数のタスク | 分け合っていたもの |
+  |---|---|---|
+  | Qwen3.5-0.8B の Gated DeltaNet の層 | 層ごとに 3 個 | ヘッドごとの `silu(z)` と 16 幅のゲートの sigmoid (8 組) と、畳み込みのあとの silu、MLP の silu (1 組) |
+  | Qwen3.5-0.8B の attention の層 | 層ごとに 2 個 | ヘッドごとの出力のゲートの sigmoid (8 組) と MLP の silu (1 組) |
+  | LFM3-1.7B (`q8` の `model.part2`〜`model.part6`) | 1 個 | ヘッドごとのゲートの sigmoid (16 組と 8 組) と MLP の silu (1 組) |
+  | Gemma 4 E2B (全部品) | 1〜6 個 | MLP の gelu (6144 チャネル、16 組) と、層ごとの入力のゲートの gelu (1 組か 8 組。層によって違う) |
+  | Qwen3-0.6B、plamo-3-translate-0.8b | 0 | |
+- **今**:
+  - 書き出しの側で活性化の並びをそろえた ([design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」)。チャットのモデルのレシピの版は 2。直した書き出しの h13g のプログラム 202 本 (Qwen3.5-0.8B 24、Qwen3.5-2B 24、Qwen3.5-4B 26、LFM3-1.7B 17、LFM3-VL-2B 18、Gemma 4 E2B 18、Gemma 4 E4B 18、plamo-3-translate-2b 18、Qwen3-1.7B 39) のどれにもこのタスクがない
+  - M1 で確かめた (2026-11-27、直した書き出しの h13g の prebuilt。どれも関数 2 つで、全部 Neural Engine の上で動いた): Qwen3.5-0.8B の `model.part1` (Gated DeltaNet 3 層。直す前は仕上げのサービスが落ちた) は 8.2 秒で仕上がり、`sr-q8` が 5.45 ms、`q128-last` が 14.6 ms。`model.part2` (attention の層と Gated DeltaNet 3 層。直す前は止まった) は 9.4 秒で仕上がり、4.42 ms と 12.7 ms。直した LFM3-1.7B の `model.part2` (`q8` と `q128-last`) は 17.5 秒で仕上がり、4.56 ms と 11.3 ms。直した Gemma 4 E2B の `model.part2` (`q8` と `q128-kv`) は 14.1 秒で仕上がり、4.33 ms と 11.8 ms。Gated DeltaNet の層 1 つの検体は、CPU との余弦が出力で 0.999997、状態で 1.000000
+  - 1 回の呼び出しの時間は、直す前と変わらない (端末でコンパイルして測った。[design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」の表)。prebuilt から仕上げた `model.part2` と端末でコンパイルしたものを続けて測ると、8 行は 3.96 ms どうし、128 行は 12.05 ms と 11.56 ms だった
+  - `hwnpu-dev prebuild` (`hwnpu-dev models package` も) は、作ったプログラムの LLIR を読み、このタスクがあれば失敗にする。そのプログラムは置かれず、端末に任せる決まり (レシピの `prebuild`) を書くよう言われる。前に作ってある prebuilt も同じに読み、あれば作り直す
+  - 置いてしまった場合の備え: prebuilt から仕上げたプログラムの最初の呼び出しが失敗したら、その機械はその束を使うのをやめる (記録の `stopped`、[prebuilt-reuse](prebuilt-reuse.md) 5 節)。その実行はエラーで終わり、次の実行が端末でコンパイルする。端末の印 `ok` は、開けたときでなく最初の呼び出しが返ったときに書く
+- **prebuilt を確かめるとき**: まずオフラインで `llirtasks -check` を通す (数秒。Neural Engine は要らない)。実機では、署名の識別子を変えた写しで動かす (`codesign -f -s - -i NEW`。aned のコンパイル結果は識別子ごとで、Go の実行ファイルはどれも `a.out`)。1 回の試行は 1 つのプロセスで行い、失敗したら Neural Engine が戻るまで待つ (端末でコンパイルしたプログラムを新しいプロセスで動かして見る)。ほかのセッションが Neural Engine を使っていないことを `ps` でも見る
+- **直ったら**: 何もしなくてよい (そろえた書き方は値を変えない)
+- 確かめ方: `HWNPU_TEST_QWEN35_MLP_PROBE=share.mlpackage HWNPU_TEST_QWEN35_MLP_PROBE_SPEC=1024x256:share go test ./internal/llm/qwen35 -run TestWriteMLPProbe` で最小の再現を作り、`aicheck lower`、`coreai-build compile … --architecture h13g`、`llirtasks -check` の順にかける。2 個と出れば残っている。M1 で `aicheck run -scale 0.05 share.aimodel` (prebuilt を横に置いて) が 100 秒後に "the prebuilt program failed" で終われば、端末の側も直っていない
+
+## 17. 関数が 2 つ以上の Gated DeltaNet のプログラムで仕上げのサービスが落ちる (未報告)
+
+- **何が**: Qwen3.5-0.8B の `model.part1` (層 0〜2 と層 3 の attention の前段。関数は `sr-q8` と `q128-last`) の h13g の prebuilt を M1 で開くと、`ANELargeModelCompilerService` が 2 つめの関数 (`sr-q8`) の変換の途中で落ちる (1155 タスク中 1013 個目、4 回とも同じ所)。プロンプトの関数を 64 行にしても、デルタ則のチャンクを 16 行にしても落ちる。層 3〜7 を 8 つの関数にした検体も落ちた。関数を `sr-q8` 1 つにした `model.part1` は落ちずに仕上がり、16 節のとおり呼び出しが終わらない
+- **原因は 16 節と同じ**: その関数で、カーネルの外を読むタスクは 103、294、295、448、639、640、793、984、985 個目の 9 つで、落ちるのは最後の 2 つのすぐあとである。落ち方はヒープの破壊 (`ZinKernelBuilder::BuildKernelFromLLIRData` の中の malloc の検査など) で、カーネルの外を読むことと合う。直した書き出しの `model.part1` は、同じ関数 2 つのまま 8.2 秒で仕上がった (2026-11-27)
+- Core AI は `failedToSpecialize` を返し、hwnpu はその部品を端末でコンパイルする (今までどおり)。困るのは 15 節: 落ちるたびに、その機械のすべての prebuilt の仕上げが遅くなる
+- **今**: 16 節と同じ
+- **直ったら**: 何もしなくてよい
+
+## 18. 定数を左に置いた行列積が仕上がらない (未報告)
+
+- **何が**: `paged` の mass プログラムは、行の合計を「全部 1 の定数 × exp(scores)」の行列積で取っていた (定数が左)。`coreai-build` はこれを全部 Neural Engine に載せるが、M1 の仕上げは `Kernel evaluation failed: … mps.constant_… : memref<1x1x1x2x32x1xf16>` で失敗する (`failedToSpecialize`)。同じ「1 との積」でも、定数を右に置く attention のプログラムは仕上がる。16 節のタスクはこのプログラムにない (別の問題)
+- **今**: 定数を右に置く (転置した exp に 1 の列を掛ける。`internal/llm/paged/mass.go`)。仕上がり、全部 Neural Engine で動き、CPU との余弦は 1.000000、速さは同じ (8 行で 1.23 ms どうし、128 行で 3.43 → 3.25 ms)
+- **直ったら**: 何もしなくてよい
+- 確かめ方: 直す前の mass プログラム (8 クエリ × 2 つの kv ヘッド、チャンク 8192) を h13g で作り、M1 で開く
+
+## 19. h13g の attention のプログラムで、2 つめ以降の kv ヘッドが誤る (未報告)
+
+- **何が**: チャットのモデルの、attention で分けた部品のあいだの attention のプログラムは、Core AI では kv ヘッドごとに計算する形 (`paged.Heads`) で書く。その h13g の prebuilt を M1 で動かすと、1 つめの kv ヘッドは正しく、2 つめ以降が誤る。Qwen3.5-0.8B (kv ヘッド 2 つ) では、kv ヘッド 1 (ヘッド 4〜7) の exp の和 `l` が約 6 倍になり、会話の答えが文字化けした (端末でコンパイルすると「東京です。」)。16 節の直しのあと、2026-11-27 に見つけた
+- **切り分け** (M1。`HWNPU_DEV=coreai.dump` で会話の呼び出しの入出力を書き、prebuilt と端末のコンパイルで比べた):
+  - 層の部品 (7 本の 14 関数) と mass のプログラムは、prebuilt と端末のコンパイルでビットまで同じ。最初にずれるのは層 3 の attention で、prebuilt だけ inf と NaN が出る
+  - 記録した入力で attention のプログラムだけを動かすと再現する (`aicheck` の `AICHECK_IN`)。行の最大値 `m` は合い、その後の exp と和が合わない
+  - 途中で切った検体 (`ailower.cut`) は、kv ヘッド 1 の部分を含め、どこで切っても合う。3 つの出力 (o、m、l) をそろえた完全なプログラムだけがずれる
+  - マスクを kv ヘッドで共有しない書き方 (ブロードキャスト、kv ヘッドごとの concat) でも、prebuilt はまったく同じ誤った値を出した
+  - LLIR に 16 節のタスクはない (`llirtasks -check` では見つからない)
+  - ランダムな入力では、`l` が 14 % ずれるだけで見落としやすい (実際の入力では大半のキーがマスクで消える)
+- **ほかの形**: grouped 形式 (全ヘッドを 1 つの行列積で) なら prebuilt でも正しいが、M1 で 8 行の呼び出しが 10〜17 % 遅い (Qwen3.5 0.54 → 0.60 ms、LFM3-1.7B の形 0.55 → 0.65 ms)。スコアを 1 つにまとめてから最大値・exp・和を取る形も正しいが、8 行で 2〜3 倍遅い
+- **今**: h13g では attention のプログラム (`*.attn*`) を prebuild しない (model-recipes.yaml の `apple.prebuild`)。重みがなく、端末のコンパイルは 1 本 1 秒未満。層の部品と mass は prebuilt のまま。Qwen3.5-0.8B は prebuilt から正しく答え、初回は 1 分 46 秒 (端末のコンパイルだけだと 7 分 13 秒)
+- kv ヘッドが 2 つ以上のチャットのモデル (Qwen3.5、LFM3、Qwen3、PLaMo 3 の 2b と 8b など) が当たる。Gemma 4 E2B と PLaMo 3 Translate 0.8B は kv ヘッドが 1 つで、grouped 形式のまま
+- h14g 以降で起きるかは確かめていない
+- **直ったら**: 決まりを外す
+- 確かめ方: `HWNPU_DEV=coreai.dump=DIR` を付けて、prebuilt と端末のコンパイル (`HWNPU_COREAI_PREBUILT=off`) で同じプロンプトを `--seed` を固定して流し、呼び出しごとの出力を比べる。attention のプログラムは、記録した入力で `AICHECK_IN=DIR/NNNNNN-…attn…` を付けて `aicheck run` し、`AICHECK_DUMP` と `AICHECK_CMP` で 2 つのコンパイルを比べる
+
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
 - 1 節: 画像のモデルを prebuilt で開き、`log show --predicate 'process == "launchd" AND eventMessage CONTAINS "ANELargeModel"'` に "deferred by 10 seconds" が出るか
@@ -170,5 +260,6 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - 6、7 節: 6 節の確かめ方を、落ちる 9 種類と h18g で
 - 9 節: [apple-coreai](design/apple-coreai.md) の表と 9 節の表を測り直す
 - 10、11、12、14 節: 各節の確かめ方を ([apple-feedback/repro.md](apple-feedback/repro.md) の道具)
+- 16 節 (17、13 節も): 16 節の最小の再現を h13g 向けに作り、`llirtasks -check` が 0 個と言うか。0 個なら、活性化の並びをそろえる書き方 (`blocks.WideAct` など) と 13 節の M1 用の書き出しは要らなくなっている
 
 確かめた日と OS、Metal Toolchain の版を、この文書の各節に書き足す。

@@ -677,6 +677,48 @@ func (g *Graph) LayerNorm(x *mlpackage.Var, weight, bias string, n int, eps floa
 	return g.Op("layer_norm", map[string]any{"x": x, "axes": g.B.Ints(-1), "gamma": gamma, "beta": beta, "epsilon": g.B.ScalarF16(float32(eps))}, x.Shape...)
 }
 
+// GateWidth is the width WideAct repeats a narrow tensor to: twice the 32 values a row that
+// Apple's guide for the Neural Engine asks of a tensor's last axis.
+const GateWidth = 64
+
+// WideAct is act over x (1, rows, n), a gate of a few values a row (one a head): for n under
+// GateWidth the values are repeated along the last axis to GateWidth or more, act runs over
+// that, and the first n are kept.
+//
+// Why: coreai-build's compiler for the M1 (h13g) keeps one kernel for all the activations of a
+// program that have the same constants (the exp and the inverse steps of every sigmoid and silu)
+// and gives it the size the last of them needs. An activation over a tensor laid out with its
+// rows as channels has a set of coefficients a channel (8 of 128 bytes for 8 rows), one over a
+// tensor laid out as a Linear's output a single set. A narrow gate was laid out the first way
+// and the MLP's silu after it the second, so the gate's activation read 1024 bytes of a kernel
+// of 128: the M1 finished such a prebuilt program and never ended its first call (Qwen3.5's
+// Gated DeltaNet and LFM3's attention gate, docs/known-issues.md 16, 2026-11-27). Repeated to 64
+// values a row the gate is laid out as the Linear's output; a reshape to (rows, 1, 1, n) alone
+// left a gate of 16 values with its 8 sets. tools/coreai/llirtasks -check reads a prebuilt
+// program for such tasks, and hwnpu-dev prebuild refuses a program that has one.
+func (g *Graph) WideAct(x *mlpackage.Var, act func(*mlpackage.Var) *mlpackage.Var) *mlpackage.Var {
+	if len(x.Shape) != 3 {
+		g.Fail("WideAct over a tensor of rank %d", len(x.Shape))
+	}
+	n := x.Shape[2]
+	if n >= GateWidth {
+		return act(x)
+	}
+	vals := make([]*mlpackage.Var, (GateWidth+n-1)/n)
+	for i := range vals {
+		vals[i] = x
+	}
+	wide := g.Op("concat", map[string]any{"values": vals, "axis": g.B.ScalarI32(2), "interleave": g.B.ScalarBool(false)}, x.Shape[0], x.Shape[1], len(vals)*n)
+	y := act(wide)
+	return g.Op("slice_by_index", map[string]any{"x": y, "begin": g.B.Ints(0, 0, 0), "end": g.B.Ints(int32(x.Shape[0]), int32(x.Shape[1]), int32(n)),
+		"begin_mask": g.Bools(true, true, false), "end_mask": g.Bools(true, true, false)}, x.Shape...)
+}
+
+// Sigmoid is the Neural Engine's own sigmoid of x.
+func (g *Graph) Sigmoid(x *mlpackage.Var) *mlpackage.Var {
+	return g.Op("sigmoid", map[string]any{"x": x}, x.Shape...)
+}
+
 // Activation applies a Hugging Face hidden_act: gelu (exact), gelu_new / gelu_pytorch_tanh
 // (tanh approximation), relu, silu (SiLU). The Neural Engine's own gelu is kept: written with exp
 // and real_div, Gemma 4 E2B's KL was the same (docs/design/apple-neural-engine.md).

@@ -357,8 +357,8 @@ func (m *builder) qkv(i int, h *mlpackage.Var) (q, k, v *mlpackage.Var) {
 func (m *builder) gate(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
 	s, nh := m.seq, m.cfg.NumHeads
-	gate := m.Linear(h, p+"gate_proj.weight", "", nh)
-	gate = m.Op("sigmoid", map[string]any{"x": gate}, 1, s, nh)
+	// (the sigmoid over the gate repeated to blocks.GateWidth values a row: WideAct)
+	gate := m.WideAct(m.Linear(h, p+"gate_proj.weight", "", nh), m.Sigmoid)
 	return m.Op("reshape", map[string]any{"x": gate, "shape": m.B.Ints(1, int32(s), int32(nh), 1)}, 1, s, nh, 1)
 }
 

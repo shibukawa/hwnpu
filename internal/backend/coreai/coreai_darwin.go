@@ -11,6 +11,7 @@ package coreai
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -88,21 +89,21 @@ var prebuiltOnce sync.Once
 var markedPrebuilt sync.Map
 
 // markPrebuilt writes what the device made of the function fn of the packed prebuilt program of
-// the asset at dir (msg: its error, "" when it opened) in the record of the export's prebuilt
+// the asset at dir (msg: its error, "" when it opened and, with called, ran) in the record of the export's prebuilt
 // programs, when they have one (DeviceMark): a build then takes the program for a later export
 // only when no device failed it (docs/prebuilt-reuse.md). Once a process a function; quiet when
 // the record cannot be written (a folder of an application, read only).
-func markPrebuilt(dir, fn, msg string) {
+func markPrebuilt(dir, fn, msg string, called bool) {
 	export, ok := ExportOf(dir)
 	arch := Arch()
 	if !ok || arch == "" {
 		return
 	}
-	if _, done := markedPrebuilt.LoadOrStore(dir+"#"+fn, true); done {
+	d, ok := DeviceMark(fn, msg, time.Now().Format("2006-01-02"), filepath.Base(os.Args[0]), called)
+	if !ok {
 		return
 	}
-	d, ok := DeviceMark(fn, msg, time.Now().Format("2006-01-02"), filepath.Base(os.Args[0]))
-	if !ok {
+	if _, done := markedPrebuilt.LoadOrStore(dir+"#"+fn, true); done {
 		return
 	}
 	root := PackedRoot(export, arch)
@@ -455,7 +456,33 @@ func restorableEntries() []string {
 
 func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
+// prebuiltOpen is a program this process finished from a prebuilt one and has not run yet.
+type prebuiltOpen struct {
+	dir, fn string // the asset and its function
+	packed  bool   // of the export's packed programs, whose record takes the device's marks
+}
+
+// badOnDevice reports whether the record of the export's prebuilt programs says a device failed
+// the one of the asset at dir (of the same source), or stopped using them (Record.Stopped).
+func badOnDevice(dir string) bool {
+	export, ok := ExportOf(dir)
+	if !ok {
+		return false
+	}
+	rec, err := ReadRecord(PackedRoot(export, Arch()))
+	if err != nil || rec == nil {
+		return false
+	}
+	if rec.Stopped != nil {
+		return true
+	}
+	e := rec.Programs[ProgramKey(export, dir)]
+	return e != nil && e.Source == sourceHex(dir) && e.Device.Bad()
+}
+
 type graph struct {
+	// pb is set from a prebuilt program's finishing until its first call returns
+	pb        *prebuiltOpen
 	h         uintptr
 	args      []types.ArgInfo
 	order     [2][]int // the shim's inputs and outputs, as indices into args
@@ -464,6 +491,8 @@ type graph struct {
 	owned     string
 	onANE     bool // counted in aneLive
 	mu        sync.Mutex
+	label     string // the program and its function, for coreai.dump
+	calls     int
 }
 
 // aneLive is the programs this process has loaded on the Neural Engine and not closed. An M2
@@ -490,7 +519,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			return nil, err
 		}
 	}
-	g := &graph{cached: cached, owned: owned}
+	g := &graph{cached: cached, owned: owned, label: filepath.Base(path) + "#" + cmp.Or(fn, "main")}
 	open := func() string {
 		kind := int32(kindNeuralEngine)
 		if OnCPU() {
@@ -503,6 +532,9 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			if pb == "" {
 				fetchPrebuilt(ctx, dir)
 				pb = Prebuilt(dir)
+			}
+			if pb != "" && pb == PackedPath(dir, Arch()) && badOnDevice(dir) {
+				pb = "" // this device failed it, or stopped using the export's (its record)
 			}
 			if pb != "" {
 				p, done, err := openable(pb, dir)
@@ -526,7 +558,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			msg := goString(e)
 			fmt.Fprintf(os.Stderr, "coreai: %s: the prebuilt program failed (%s), compiled on the device\n", filepath.Base(name), msg)
 			if packedPB {
-				markPrebuilt(dir, fn, msg)
+				markPrebuilt(dir, fn, msg, false)
 			}
 			name = dir
 			if fn != "main" {
@@ -534,9 +566,8 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			}
 			g.h = caiOpen(cString(name), kind, &retried, &e)
 		} else if g.h != 0 && prebuilt {
-			if packedPB {
-				markPrebuilt(dir, fn, "")
-			}
+			// whether the device runs it is told at its first call (request.Submit)
+			g.pb = &prebuiltOpen{dir: dir, fn: fn, packed: packedPB}
 			prebuiltOnce.Do(func() {
 				console.Notef("  prebuilt programs (%s) finished on the device in place of the Neural Engine compiler (%s=off compiles them)\n", Arch(), PrebuiltEnv)
 			})
@@ -803,17 +834,95 @@ func (r *request) Submit() (backend.Fence, error) {
 	}
 	ins, outs := ptrs(r.g.order[0]), ptrs(r.g.order[1])
 	r.g.mu.Lock()
+	defer r.g.mu.Unlock()
+	if r.g.h == 0 {
+		return nil, errors.New("coreai: the program is closed")
+	}
 	var e *byte
 	rc := caiRun(r.g.h, &ins[0], &outs[0], &e)
-	r.g.mu.Unlock()
 	f := &fence{}
-	if rc != 0 {
+	pb := r.g.pb
+	r.g.pb = nil
+	switch {
+	case rc == 0:
+		if pb != nil && pb.packed {
+			markPrebuilt(pb.dir, pb.fn, "", true)
+		}
+		if d := devenv.Value("coreai.dump"); d != "" {
+			r.g.dump(d, r.binds)
+		}
+	case pb != nil:
+		// a program finished from a prebuilt one that fails at its first call: on an M1,
+		// Qwen3.5-0.8B's never ended on the Neural Engine, whose driver gave the request up
+		// after 100 s ("Request cancelled") and restarted the Neural Engine once its clients
+		// were gone (docs/known-issues.md). Nothing in this process can be trusted to run
+		// then: the export's prebuilt programs are not used again on this machine, and the next
+		// run compiles what is left on the device
+		msg := goString(e)
+		f.err = fmt.Errorf("coreai: run: %s: %s", filepath.Base(pb.dir)+"#"+pb.fn, stopPrebuilt(pb, msg))
+	default:
 		f.err = fmt.Errorf("coreai: run: %s", goString(e))
 	}
 	return f, nil
 }
 
+// stoppedOnce says once a process what a prebuilt program's failure at its first call means.
+var stoppedOnce sync.Once
+
+// stopPrebuilt records that the prebuilt program pb failed at its first call (msg) in the record
+// of its export's packed programs, which stops this machine from using them (StopDevice), and
+// returns what to tell: the error, and what the next run does.
+func stopPrebuilt(pb *prebuiltOpen, msg string) string {
+	what := "the prebuilt program failed at its first call (" + msg + ")"
+	export, ok := ExportOf(pb.dir)
+	arch := Arch()
+	if !pb.packed || !ok || arch == "" {
+		return what
+	}
+	d, _ := DeviceMark(pb.fn, msg, time.Now().Format("2006-01-02"), filepath.Base(os.Args[0]), true)
+	if err := StopDevice(export, arch, ProgramKey(export, pb.dir), sourceHex(pb.dir), d); err != nil {
+		return what // a folder of an application, read only: the next run meets it again
+	}
+	// Core AI's entries of the export's programs hold what the prebuilt programs were finished
+	// into, this one and maybe others not called yet: without them the next run compiles the
+	// programs on the device
+	if assets, err := Assets([]string{export}); err == nil {
+		for _, a := range assets {
+			if caiForget != nil {
+				caiForget(cString(a))
+			} else if e := entryDir(a); e != "" {
+				os.RemoveAll(e)
+			}
+		}
+	}
+	stoppedOnce.Do(func() {
+		fmt.Fprintf(os.Stderr, "coreai: %s#%s: %s\n  the prebuilt programs of %s for %s are not used again on this machine: the next run compiles the programs on the device (the Neural Engine may take a minute to answer again)\n", filepath.Base(pb.dir), pb.fn, what, filepath.Base(export), arch)
+	})
+	return what + "; run again: the programs are compiled on the device"
+}
+
 func (r *request) Close() error { return nil }
+
+// dump writes the outputs of the call that just returned to dir: a folder a call
+// (SEQ-PROGRAM#FUNCTION-N, SEQ counting the calls of the process), a file NAME.f16 an output, so
+// that two runs of the same conversation, one with programs finished from prebuilt ones and one
+// with the device's compiles, can be compared call by call (HWNPU_DEV=coreai.dump=DIR).
+func (g *graph) dump(dir string, binds []*buffer) {
+	g.calls++
+	d := filepath.Join(dir, fmt.Sprintf("%06d-%s-%d", dumpSeq.Add(1), g.label, g.calls))
+	if os.MkdirAll(d, 0o755) != nil {
+		return
+	}
+	for i, a := range g.args {
+		name := a.Name + ".f16"
+		if a.Kind == types.ArgInput {
+			name = "in." + name // what it was called with (after the call: the program's own inputs are not written)
+		}
+		os.WriteFile(filepath.Join(d, name), binds[i].b[:a.Bytes], 0o644)
+	}
+}
+
+var dumpSeq atomic.Int64
 
 type fence struct{ err error }
 

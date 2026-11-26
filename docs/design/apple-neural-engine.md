@@ -83,6 +83,32 @@ program.
 - `sigmoid` through a deep CNN drifts (RTMDet-s, 80 SiLUs: box 98 px off vs 7.5 on the CPU). Write it
   with exp (`onnx.Program.ExpSigmoid`).
 - The tanh `gelu` is fine (Gemma 4: no change when rewritten).
+- **Two activations of one program must be laid out the same way** (M1, `coreai-build`'s h13g
+  programs; known-issues 16). The h13g compiler keeps one kernel for all the activations with the
+  same constants (the exp and the inverse of every sigmoid and silu, the tanh of every gelu) and
+  gives it the size of the last one. An activation over a tensor laid out with its rows as
+  channels reads a set of coefficients a channel (8 or 16 × 128 bytes), one over a `Linear`'s
+  output a single set: when the last one is of the second kind, the first reads past the kernel,
+  and the M1 never ends the first call (or its finishing service crashes). `llirtasks -check`
+  reads a compiled program for such tasks; `hwnpu-dev prebuild` refuses one. What the builders do
+  (2026-11-27, every part of Qwen3.5-0.8B, LFM3-1.7B and Gemma 4 E2B then has none):
+  - an activation over heads `(1, rows, heads, dim)` is applied before the reshape into heads,
+    over `(1, rows, heads·dim)` (Qwen3.5's `silu(z)` and the sigmoid of its attention's gate);
+  - a gate of a few values a row (16 heads) is repeated to 64 values, activated, and cut back
+    (`blocks.WideAct`: Qwen3.5's `beta` and decay, LFM3's attention gate). A reshape to
+    `(rows, 1, 1, n)` is not enough for these;
+  - Gemma 4's gate of the per-layer inputs runs its gelu and the product with the inputs over
+    the transposed tensors `(1, n, rows)`, the gate's values as channels like the MLP's
+    (`gemma4`'s `builder.gate`). Applying both gelus over `(rows, 1, 1, n)` also left no such
+    task, but moved the MLP's 6144 values out of their channels and cost 20 to 27 % a call.
+
+  Time of a call on the M1, compiled on the device, before and after (ms; 8 rows, 128 rows):
+  Qwen3.5-0.8B `model.part2` 3.23 → 3.13, 10.69 → 10.64; LFM3-1.7B `model.part2` 3.75 → 3.78,
+  10.93 → 10.79; Gemma 4 E2B `model.part2` 3.65 → 3.75, 9.99 → 8.77, `model.part5` 5.06 → 5.09.
+
+  The h13g compiler alone does this: the same parts before these changes, compiled for h14g to
+  h17g, have no such task (`model.part2` of the three models), nor do the 790 h14g and h15g
+  prebuilt programs of the image models that were read.
 
 ### Values
 

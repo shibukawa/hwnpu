@@ -201,6 +201,7 @@ models:
 - coreai-build のエラーは出力ではなく os_log に出る。そこで、落ちた coreai-build のプロセスのログ (`/usr/bin/log show --predicate 'processID == PID'`) から、理由の行を拾って表示する
 - 表示の最後に、そのプログラムを端末に回すときのレシピの規則を示す。プログラムの作り方を直すか、その規則を model-recipes.yaml に書き足して PR にする
 - 2 本同時のコンパイルで NPU から外れたものは、Build が最後に 1 本ずつ作り直してから判断する (外した Chroma1 の double で見た)
+- コンパイルが通っても、プログラムの LLIR に「読むカーネルの終わりより先の係数を読むタスク」があれば落ちたものとして扱う (`internal/coreai/llir`、`llirtasks -check` と同じ検査)。M1 はそういうプログラムの最初の呼び出しが終わらず、その間ほかのプロセスの Neural Engine も止まるため ([known-issues](known-issues.md) 16 節、2026-11-27)。前に作ってある prebuilt も同じに読み、あれば作り直す。まず活性化の並びをそろえる書き方 ([design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」) を試し、だめなら端末に回す規則を書く
 - 同じ source の prebuilt が端末で落ちた印 (`build.json` の `device.status`) のある部品は、作り直しても同じものになるので作らず、同じように止まって端末に回す規則を示す ([prebuilt-reuse](prebuilt-reuse.md) 3節)
 
 ## 4. 実機に回る仕組み
