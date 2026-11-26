@@ -208,7 +208,7 @@ func TestBuildReuseTakes(t *testing.T) {
 	c.record(t, c.oldRoot(), good())
 	newRoot := PackedRoot(c.new, "h15g")
 	fakePacked(t, newRoot, "dit_0", "h15g", "bytecode dit_0", "3605.5.0", true)
-	vae := fakeAsset(t, c.new, "vae_s0", "bytecode vae")
+	text := fakeAsset(t, c.new, "text_0", "bytecode text") // left to the device (LeftToDevice)
 
 	rs, log, err := c.build(t, BuildOptions{Model: "M"})
 	if err != nil {
@@ -232,8 +232,8 @@ func TestBuildReuseTakes(t *testing.T) {
 	if e == nil || e.Result != ResultReused || e.From != "m-v5.coreai" || e.Device == nil || e.Device.Status != DeviceOK || e.Jobs != 3 {
 		t.Errorf("entry %+v", e)
 	}
-	if l := rec.Programs["vae_s0"]; l == nil || l.Result != ResultLeft || l.Rule != "LeftToDevice" || l.Source != sourceHex(vae) {
-		t.Errorf("vae entry %+v", l)
+	if l := rec.Programs["text_0"]; l == nil || l.Result != ResultLeft || l.Rule != "LeftToDevice" || l.Source != sourceHex(text) {
+		t.Errorf("text entry %+v", l)
 	}
 	if rec.Model != "M" || rec.Tool != ToolName(testTool) || rec.Export != "m-v6.coreai" {
 		t.Errorf("record %+v", rec)
