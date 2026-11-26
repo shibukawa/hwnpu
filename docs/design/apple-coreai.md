@@ -224,6 +224,7 @@ Tools in `tools/coreai`:
 | `aicheck rules`, `limits`, `lint` | The Neural Engine's numeric rules against float32, its limits (call floor, program count, formats), and lint of exports |
 | `caiload` (Swift) | specialize, run, `-cycle` switching cost, from Core AI alone |
 | `lutfake`, `lutscan -tile 16`, `kleinonly`, `bcdump` | Synthetic lut layers, equal neighbouring tables, FLUX.2 klein prepare / put, bytecode dump |
+| `vaeprobe OUT EXPORT FUNCTION STAGE…`, `ref_anima.py`, `ref_flux.py`, `cmp.py` (`tools/coreai/vaeprobe`) | Runs a VAE's stages in turn and writes each output; the scripts compute each stage again in float64 from the run's own input of it (PSNR, the rows that stand out: bands) and compare two runs byte for byte. A wrong stage shows by itself; `PROBE_INPUT` gives one stage a right input |
 
 `aicheck run` and `probe` take the Neural Engine lock like the commands (`llm.LockNPU`): two processes on it at once have frozen a Mac, and another process compiling spoils timings.
 

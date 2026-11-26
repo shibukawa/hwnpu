@@ -224,6 +224,7 @@ Core AI と `coreai-build` の未解決の問題、Apple への報告の番号�
 | `aicheck rules`、`limits`、`lint` | Neural Engine の数値の規則 (float32 と比べる)、上限 (呼び出しの下限、プログラムの数、形式)、書き出しの lint |
 | `caiload` (Swift) | Core AI だけで specialize、実行、`-cycle` で切り替えの費用 |
 | `lutfake`、`lutscan -tile 16`、`kleinonly`、`bcdump` | 合成の lut の層、隣り合う同じ表、FLUX.2 klein の準備と置き、バイトコードの読み出し |
+| `vaeprobe OUT EXPORT FUNCTION STAGE…`、`ref_anima.py`、`ref_flux.py`、`cmp.py` (`tools/coreai/vaeprobe`) | VAE の段を順に動かし、段ごとの出力を書く。スクリプトは各段をその実行の入力から float64 で計算し直して比べ (PSNR と、誤差の目立つ行: 縞)、2 つの実行をバイトで比べる。悪い段がそれだけで分かる。`PROBE_INPUT` で 1 つの段に正しい入力を与える |
 
 `aicheck run` と `probe` はコマンドと同じく Neural Engine のロックを取る (`llm.LockNPU`): 2 つのプロセスが同時に使うと Mac が固まったことがあり、ほかのプロセスのコンパイルは時間を乱す。
 
