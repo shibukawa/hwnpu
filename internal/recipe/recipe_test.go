@@ -95,8 +95,7 @@ failed`, "2026-11-23")
 	}
 }
 
-// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is prebuilt on M3 and later (not on M1 or M2), Anima's on no chip (coreai-build
-// fails on it), and their other programs are not left by these rules.
+// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is prebuilt on M3 and later (not on M1 or M2), Anima's on M3 and later too (M1, M2 untried), and their other programs are not left by these rules.
 func TestVAELeftToDevice(t *testing.T) {
 	f, err := Builtin()
 	if err != nil {
@@ -115,8 +114,10 @@ func TestVAELeftToDevice(t *testing.T) {
 		{"flux-3-image-klein", "vae_s0", "h13g", true},
 		{"flux-3-image-klein", "vae_s9", "h14g", true},
 		{"flux-3-image-klein", "vae_s9", "h15g", false},
-		{"Anima-Turbo", "vae_s0", "h15g", true},
+		{"Anima-Turbo", "vae_s0", "h15g", false},
+		{"Anima-Turbo", "vae_s0", "h13g", true},
 		{"Anima-Aesthetic", "vae_s9", "h14g", true},
+		{"Anima-Aesthetic", "vae_s9", "h16g", false},
 		{"Anima-Turbo", "dit_blocks_0", "h15g", false},
 	} {
 		if _, got := f.AppleOf(c.model).Left("e.coreai", c.program, c.arch); got != c.want {

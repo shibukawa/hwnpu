@@ -503,11 +503,17 @@ models:
         dit_format: int8
         group: 4
         qchunk: 512
+      # the VAE (its residual blocks' silu in the exp form since version 3) is prebuilt for M3 and
+      # later: on an M3 the device compiled the ten stages in 482 s at 512² (3552 s with the native
+      # silu, which coreai-build failed on), the h15g prebuilt gave the same bytes, and every stage
+      # matched an fp64 reference at 512² and 1024² (2026-11-26). M1 and M2 build offline with every
+      # stage on the Neural Engine but are untried on the device, where FLUX's VAE drew bands
       prebuild:
-        - programs: ["vae_*"]
+        - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
           do: device
-          why: "coreai-build (Metal Toolchain 27.2.47): vae_s0 to s4 and s6 to s8 'ANECCompileOffline() failed: CompilationFailure' in seconds on h13g, h14g and h15g, alone too; s5 and s9 build but gain nothing beside the rest"
-          checked: 2026-11-25
+          why: "the h13g and h14g VAE prebuilts (export v6) are placed whole on the Neural Engine offline but not yet run on an M1 or M2; FLUX.2 and FLUX.3 klein's VAE drew bands every 112 rows at 512 x 512 there"
+          checked: 2026-11-26
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps

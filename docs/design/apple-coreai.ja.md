@@ -156,7 +156,7 @@ xcrun coreai-build compile X.aimodel --platform macOS --architecture h14g --pref
 
 - `.aimodelc` を `AIModel(contentsOf:)` に渡すと、ANE のコンパイラの代わりに `ANELargeModelCompilerService` (CPU 25 %、1 スレッド) が LLIR を仕上げる。項目はネイティブのコンパイルと同じハッシュと ID に入り、`resources.bin` はバイト単位で同じ。次からは `.aimodel` の道で 0.01 秒で読む
 - 規則: `hasEntry` が偽で、この種類の同じハッシュの prebuilt があり、その manifest に `mps.fullyPlacedOnANE` があれば、それを開く。`HWNPU_COREAI_PREBUILT=off` で端末でコンパイルする。shim は `PATH.aimodelc#NAME` も分ける。仕上げに失敗した prebuilt (`failedToSpecialize`) は端末でコンパイルする
-- `coreai.LeftToDevice`: 名前が `text` で始まるプログラム (と `_device` で終わるもの) はいつも端末でコンパイルし、`Build` も外す。Chroma の T5 は `Request cancelled` で落ち、FLUX.2 klein の Qwen3 は prebuilt のほうが遅かった (112 秒対 81 秒)。VAE はレシピで決める (`model-recipes.yaml` の apple の `prebuild`、`do: device`): FLUX.2 と FLUX.3 klein は M1 と M2 で端末 (M1 では prebuilt の VAE が 512² で 112 行ごとに縞を描き、1024 × 768 の VAE は `Request cancelled` で落ちた。M2 では 512² に同じような帯が、prebuilt でも端末のコンパイルでも出た)、Anima はすべてのチップで端末 (`coreai-build` が h13g/h14g/h15g で 10 段のうち 8 段を落とす)。M3 以降の VAE は prebuilt: M3 は復号器の 10 段のコンパイルに 2799 秒かかり、prebuilt の仕上げは 0.9 秒で、出力はバイトまで同じ (2026-11-25、[image-apple.ja.md](image-apple.ja.md))。M1 で prebuilt の VAE ですでに描いた機械はその項目を持ち続けるので、`~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す
+- `coreai.LeftToDevice`: 名前が `text` で始まるプログラム (と `_device` で終わるもの) はいつも端末でコンパイルし、`Build` も外す。Chroma の T5 は `Request cancelled` で落ち、FLUX.2 klein の Qwen3 は prebuilt のほうが遅かった (112 秒対 81 秒)。VAE はレシピで決める (`model-recipes.yaml` の apple の `prebuild`、`do: device`): FLUX.2 と FLUX.3 klein は M1 と M2 で端末 (M1 では prebuilt の VAE が 512² で 112 行ごとに縞を描き、1024 × 768 の VAE は `Request cancelled` で落ちた。M2 では 512² に同じような帯が、prebuilt でも端末のコンパイルでも出た)、Anima は M1 と M2 で端末 (書き出し v5 までは `coreai-build` がどのチップでも 10 段のうち 8 段を落とした。v6 は全段が通るが、M1 と M2 ではまだ動かしていない)。M3 以降の VAE は prebuilt: M3 は復号器の 10 段のコンパイルに 2799 秒かかり、prebuilt の仕上げは 0.9 秒で、出力はバイトまで同じ (2026-11-25、[image-apple.ja.md](image-apple.ja.md))。M1 で prebuilt の VAE ですでに描いた機械はその項目を持ち続けるので、`~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す
 - ほかの種類の `.aimodelc` は読めない (`incompatibleCompiledAssetArchitecture`)。名前と `deviceDescriptor` を書き換えても読めない
 - prebuilt から仕上げたプログラムの呼び出しは遅い: 3〜5 % (Chroma、M2)、8〜16 % (M1)
 - 端末で aned がコンパイルしたコードは持ち出せない (SIP、署名の識別子ごと)。配れるのは `coreai-build` の出力だけ
@@ -296,7 +296,7 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 - Core AI の `.persistent` のキャッシュの方針 (`AIModelCache.specialize(…cachePolicy:)`、`~/Library/Application Support/coreai-cache/` に置く): 掃除によるコンパイルし直しはなくなるが、項目は hwnpu が自分で消すことになり (`deleteEntries(for:)`)、aned のコードは消されるまま。決めていない
 - 同じ `.aimodel` が OS の版を越えて読めるか (キャッシュのフォルダは OS のビルドごと)
 - プロセスの最初の prebuilt の仕上げにかかる数分、Anima の最初のステップの 13 分 (prebuilt によらない): 調べていない
-- VAE が h13g と h14g の 512² で縞を描く理由 (M2 では端末のコンパイルでも)、Anima の VAE を落とす理由、T5 が cancelled になる理由。直ったらレシピの決まりと `LeftToDevice` を外す。取得元の古い FLUX.2 klein の prebuilt (今のコードが読まない書き出しのもの) はまだ VAE と文の部品を含む。v6 の書き出しの h13g のものは含まない
+- VAE が h13g と h14g の 512² で縞を描く理由 (M2 では端末のコンパイルでも)、T5 が cancelled になる理由。直ったらレシピの決まりと `LeftToDevice` を外す。取得元の古い FLUX.2 klein の prebuilt (今のコードが読まない書き出しのもの) はまだ VAE と文の部品を含む。v6 の書き出しの h13g のものは含まない
 - `coreai-build` は 9 種類で落ち、h18g で ANE のコードを出さない (Apple に報告済み)。M6 が端末でコンパイルできるかはわからない
 - aned のディスクの量は直接測っていない
 - 入力の配列に直接書く形: M2 / M3 では測っていない。画像と音声のプログラムは今も写す
