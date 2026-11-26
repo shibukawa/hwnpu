@@ -9,7 +9,7 @@
 //	                                                       a Snake block as the DAC's (conv, sin, conv,
 //	                                                       reshape, mul), then a clip with -clip; -square
 //	                                                       writes sin(y) as y*y
-//	go run ./tools/coreai/fbrepro attn [-rows 1536] [-keys 1536] [-chunk 1024] [-head 128] OUT.aimodel
+//	go run ./tools/coreai/fbrepro attn [-rows 1536] [-keys 1536] [-chunk 1024] [-head 128] [-split 0] [-parts] OUT.aimodel
 //	                                                       one head's attention, the queries in chunks
 //	                                                       (1536 rows by 1024: a chunk of 512 is left)
 //
@@ -43,6 +43,8 @@ func main() {
 	keys := fs.Int("keys", 1536, "attn: keys")
 	chunk := fs.Int("chunk", 1024, "attn: query rows a chunk")
 	head := fs.Int("head", 128, "attn: head size")
+	split := fs.Int("split", 0, "attn: keys of the first kind (HeadOptions.Split), 0 for one kind")
+	parts := fs.Bool("parts", false, "attn: cut the keys in parts (KeyParts) under one softmax, not one tensor")
 	fs.Parse(os.Args[2:])
 	if fs.NArg() != 1 {
 		usage()
@@ -105,7 +107,7 @@ func main() {
 			q := g.Input("q", 1, 1, *rows, *head)
 			k := g.Input("k", 1, 1, *keys, *head)
 			v := g.Input("v", 1, 1, *keys, *head)
-			g.Output(g.HeadAttention(q, k, v, milpart.HeadOptions{Chunk: *chunk, Whole: true}))
+			g.Output(g.HeadAttention(q, k, v, milpart.HeadOptions{Chunk: *chunk, Split: *split, Whole: !*parts}))
 		}
 	default:
 		usage()
