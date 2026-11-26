@@ -1,5 +1,7 @@
 # Neural Engine compiler takes 15 minutes and about 50 GB of disk for an 832 KB VAE stage that uses the `silu` op; offline it fails
 
+Filed as FB25745042 (2026-11-27).
+
 - **Area**: Core AI / Neural Engine (ANECompilerService), Xcode / coreai-build
 - **Type**: Performance / Resource usage
 
