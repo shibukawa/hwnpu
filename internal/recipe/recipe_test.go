@@ -53,9 +53,19 @@ func TestLeft(t *testing.T) {
 			t.Errorf("%s: prebuilt %v, want %v", model, got, want)
 		}
 	}
-	// a model without a recipe is built as apple says
-	if a := f.AppleOf("Qwen3-0.6B"); len(a.Prebuild) != 0 || a.Jobs != f.Apple.Jobs {
-		t.Errorf("no recipe: %+v", a)
+	// a model without a recipe of its own is built as apple says, its rules too: the chat
+	// models' attention programs are left to the device on the M1 alone (docs/known-issues.md 19)
+	qwen := f.AppleOf("Qwen3-0.6B")
+	if len(qwen.Prebuild) != len(f.Apple.Prebuild) || qwen.Jobs != f.Apple.Jobs {
+		t.Errorf("no recipe: %+v", qwen)
+	}
+	for _, c := range []struct {
+		program, arch string
+		want          bool
+	}{{"q8.attn1024.aimodel", "h13g", true}, {"model.attn.aimodel", "h13g", true}, {"q8.attn1024.aimodel", "h14g", false}, {"model.part1.aimodel", "h13g", false}} {
+		if _, got := qwen.Left("x.coreai", c.program, c.arch); got != c.want {
+			t.Errorf("Qwen3-0.6B %s on %s: left %v, want %v", c.program, c.arch, got, c.want)
+		}
 	}
 }
 
