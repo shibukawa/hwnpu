@@ -11,6 +11,7 @@ package coreai
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -490,6 +491,8 @@ type graph struct {
 	owned     string
 	onANE     bool // counted in aneLive
 	mu        sync.Mutex
+	label     string // the program and its function, for coreai.dump
+	calls     int
 }
 
 // aneLive is the programs this process has loaded on the Neural Engine and not closed. An M2
@@ -516,7 +519,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			return nil, err
 		}
 	}
-	g := &graph{cached: cached, owned: owned}
+	g := &graph{cached: cached, owned: owned, label: filepath.Base(path) + "#" + cmp.Or(fn, "main")}
 	open := func() string {
 		kind := int32(kindNeuralEngine)
 		if OnCPU() {
@@ -845,6 +848,9 @@ func (r *request) Submit() (backend.Fence, error) {
 		if pb != nil && pb.packed {
 			markPrebuilt(pb.dir, pb.fn, "", true)
 		}
+		if d := devenv.Value("coreai.dump"); d != "" {
+			r.g.dump(d, r.binds)
+		}
 	case pb != nil:
 		// a program finished from a prebuilt one that fails at its first call: on an M1,
 		// Qwen3.5-0.8B's never ended on the Neural Engine, whose driver gave the request up
@@ -896,6 +902,27 @@ func stopPrebuilt(pb *prebuiltOpen, msg string) string {
 }
 
 func (r *request) Close() error { return nil }
+
+// dump writes the outputs of the call that just returned to dir: a folder a call
+// (SEQ-PROGRAM#FUNCTION-N, SEQ counting the calls of the process), a file NAME.f16 an output, so
+// that two runs of the same conversation, one with programs finished from prebuilt ones and one
+// with the device's compiles, can be compared call by call (HWNPU_DEV=coreai.dump=DIR).
+func (g *graph) dump(dir string, binds []*buffer) {
+	g.calls++
+	d := filepath.Join(dir, fmt.Sprintf("%06d-%s-%d", dumpSeq.Add(1), g.label, g.calls))
+	if os.MkdirAll(d, 0o755) != nil {
+		return
+	}
+	for i, a := range g.args {
+		name := a.Name + ".f16"
+		if a.Kind == types.ArgInput {
+			name = "in." + name // what it was called with (after the call: the program's own inputs are not written)
+		}
+		os.WriteFile(filepath.Join(d, name), binds[i].b[:a.Bytes], 0o644)
+	}
+}
+
+var dumpSeq atomic.Int64
 
 type fence struct{ err error }
 
