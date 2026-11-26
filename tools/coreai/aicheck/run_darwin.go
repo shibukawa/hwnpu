@@ -61,13 +61,41 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			consts[k] = float32(f)
 		}
 	}
-	for _, p := range pkgs {
+	// AICHECK_SENTINEL=PROGRAM: a program known to run, run before the others and after each one
+	// that fails until it runs again: a program that times the Neural Engine out leaves it
+	// failing the next ones for minutes (docs/known-issues.md), which are then not judged
+	sentinel := os.Getenv("AICHECK_SENTINEL")
+	var one func(p string, quiet bool) (bool, error)
+	healthy := func() error {
+		if sentinel == "" {
+			return nil
+		}
+		for i := 0; ; i++ {
+			ok, err := one(sentinel, true)
+			if err != nil {
+				return err
+			}
+			if ok {
+				if i > 0 {
+					fmt.Printf("  (the sentinel runs again after %d tries)\n", i+1)
+				}
+				return nil
+			}
+			if i >= 60 {
+				return fmt.Errorf("the sentinel %s still fails", sentinel)
+			}
+			time.Sleep(15 * time.Second)
+		}
+	}
+	one = func(p string, quiet bool) (bool, error) {
 		name := filepath.Base(p)
 		t := time.Now()
 		g, err := dev.Compile(ctx, types.GraphSource{Path: p})
 		if err != nil {
-			fmt.Printf("%-24s FAIL %v\n", name, err)
-			continue
+			if !quiet {
+				fmt.Printf("%-24s FAIL %v\n", name, err)
+			}
+			return false, nil
 		}
 		load := time.Since(t)
 		rng := rand.New(rand.NewSource(1))
@@ -84,7 +112,7 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 				b, err = dev.AllocBuffer(a.Bytes, types.BufferKind(0))
 			}
 			if err != nil {
-				return err
+				return false, err
 			}
 			bufs = append(bufs, b)
 			req.Bind(a.Index, b)
@@ -112,9 +140,11 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 		}
 		call := time.Since(t)
 		if err != nil {
-			fmt.Printf("%-24s FAIL run: %v\n", name, err)
+			if !quiet {
+				fmt.Printf("%-24s FAIL run: %v\n", name, err)
+			}
 			g.Close()
-			continue
+			return false, nil
 		}
 		t = time.Now()
 		for range max(calls, 1) {
@@ -128,10 +158,12 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			src := p
 			if ref != "" {
 				src = ref // p is an .aimodel lowered from ref
+			} else if base, ok := strings.CutSuffix(strings.TrimSuffix(p, "/"), ".aimodel"); ok {
+				src = base + ".mlpackage" // the package beside it, which it was lowered from
 			}
 			prog, closer, err := milcpu.OpenPackage(src)
 			if err != nil {
-				return err
+				return false, err
 			}
 			var cut []string // the output of HWNPU_DEV=ailower.cut: a value inside the package
 			for _, o := range outs {
@@ -145,7 +177,7 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			}})
 			closer.Close()
 			if err != nil {
-				return err
+				return false, err
 			}
 			for _, o := range outs {
 				got := make([]float32, o.Bytes/2)
@@ -161,10 +193,27 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 				line += fmt.Sprintf(" | %s cos %.6f rel %.4f nonfinite %d", o.Name, cos, rel, bad)
 			}
 		}
-		fmt.Println(line)
+		if !quiet {
+			fmt.Println(line)
+		}
 		g.Close()
 		for _, b := range bufs {
 			b.Close()
+		}
+		return true, nil
+	}
+	if err := healthy(); err != nil {
+		return err
+	}
+	for _, p := range pkgs {
+		ok, err := one(p, false)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if err := healthy(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
