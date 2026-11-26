@@ -127,7 +127,10 @@ Two processes using the ANE at once froze an M1 (predictions never returned, unk
 back after about 20 minutes). So:
 
 - `llm.OpenDevice` takes an exclusive flock on `hwnpu/neural-engine.lock` in the user cache for a
-  Core AI or Core ML device and holds it until the process ends. The second process prints
+  Core AI or Core ML device and holds it until the process ends. The file is always in the user's
+  cache (`~/Library/Caches/hwnpu`): a process on another cache (`HWNPU_CACHE`) waits for the same
+  lock (until 2026-11-26 it lay under the cache, and a session with a cache of its own ran on the
+  ANE beside another). The second process prints
   `waiting for the Neural Engine: process N (NAME) is using it …`. Tools that open a provider directly
   take `llm.LockNPU`.
 - After taking the lock, `settle` waits until the previous process's programs are gone from the ANE

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -31,8 +32,22 @@ var npuLock struct {
 	f *os.File
 }
 
-func npuLockPath() string {
-	return cache.Sub("neural-engine.lock")
+// npuLockPath is the lock's file: hwnpu/neural-engine.lock in the user's cache, whatever cache the
+// process runs on (HWNPU_CACHE, cache.SetRoot). The NPU is the machine's: a session with a cache
+// of its own took a lock of its own, and ran on the Neural Engine beside a session with the usual
+// cache (2026-11-26). go test's is in the test's cache.
+func npuLockPath() string { return npuLockFile(testing.Testing()) }
+
+func npuLockFile(test bool) string {
+	const name = "neural-engine.lock"
+	if test {
+		return cache.Sub(name)
+	}
+	d, err := os.UserCacheDir()
+	if err != nil {
+		d = os.TempDir()
+	}
+	return filepath.Join(d, "hwnpu", name)
 }
 
 // lockNPU takes the lock unless this process has it, waiting until ctx ends.
