@@ -24,11 +24,15 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | 未報告 (下書き [h15g-dma-cache-hint.md](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4) | 何もしなくてよい |
 | 13 | h13g (M1) 向けの 8192 キー以上の attention の `.aimodelc` が、M1 で雑音を計算するか、仕上げのサービスを落とす (FLUX.2 klein の 1024 の参照 1 枚の編集) | 未報告 (下書き [h13g-attention-8192-keys.md](apple-feedback/h13g-attention-8192-keys.md)) | M1 の書き出しにはその関数を入れず、参照を 512 で読む (models.yaml の `generation_edits`) | M1 の上書きを消す |
 | 14 | 1024² の VAE の段の ANE のコンパイルが 1 段最大 15 分、ディスクを最大約 50 GB 使う (Anima) | 未報告 (下書き [compile-disk-and-time.md](apple-feedback/compile-disk-and-time.md)) | なし (初回は 70 GB 以上空ける) | VAE の prebuilt を M2 以降で使うか測り直す (#336) |
+| 15 | 仕上げのサービスが落ちるたびに、launchd がその再起動を待たせる時間が伸びる (10 秒 → 80 秒 → … → 20 分)。再起動まで戻らない | 未報告 (下書き [finisher-crash-throttle.md](apple-feedback/finisher-crash-throttle.md)) | サービスを落とす prebuilt を置かない。測る前に今の待ちを読む | 1 節と 9 節を測り直す |
+| 16 | prebuilt から仕上げたプログラムが Neural Engine を止める (Qwen3.5-0.8B のチャット、M1)。呼び出しは 100 秒で打ち切られ、ほかのプロセスの呼び出しも止まる | 未報告 (下書きは、止める演算を絞ってから) | チャットのモデルに prebuilt を置かない (9 節)。最初の呼び出しで失敗した束は、その機械で二度と使わない | 置く前に、そのチップの実機で全関数を 1 回ずつ呼んで確かめる |
+| 17 | Gated DeltaNet の層を持つ、関数が 2 つ以上のプログラムの prebuilt で、仕上げのサービスが落ちる (M1) | 未報告 (15 の下書きに添える) | 端末のコンパイルに戻る (自動)。ただし 15 の待ちを伸ばす | 何もしなくてよい |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
 - **何が**: `.aimodelc` を端末で仕上げる `ANELargeModelCompilerService` は 1 本ごとに終わり ("Exiting … to avoid VA fragmentation")、launchd が次の起動を 10 秒待たせる ("service spawn deferred by 10 seconds due to throttle")。小さな部品でも 1 本 10.2 秒かかる。[docs/design/image-apple.md](design/image-apple.md), [docs/design/quantization.md](design/quantization.md) のころの調べ
 - **今**: 回避はない。prebuilt が効くのは、1 部品の端末のコンパイルが数分かかる画像のモデル (FLUX.2 klein、Anima) だけ。部品の多い小さなプログラムは、10 秒ずつ積み上がって負ける (画像以外は 9 節)
+- 10 秒は下限で、いつもそうとは限らない: このサービスが落ちると間隔が伸びる (15 節)
 - **直ったら**: FLUX.2 klein の文の符号器 (prebuilt で 112 秒、端末で 81 秒、[distribution](design/distribution.md)) と、9 節の表のモデルを同じ測り方で測り直す。端末のコンパイルより速くなれば、9 節の手順で置く
 
 ## 2. 隣り合う同じ lut の表 (FB25624151)
@@ -93,6 +97,8 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 
 - **何が**: 画像生成以外のモデルは部品が小さく、端末のコンパイルが短い (長くて数分)。1 つめの prebuilt の決まった費用と 1 節の間隔で負ける
   - チャット: LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒。Qwen3.5-4B は prebuilt で読めたが、最初の呼び出しから答えなかった
+  - M1 (2026-11-26): Qwen3.5-0.8B は端末で 7 分 5 秒〜7 分 11 秒。prebuilt は読み込みが 3 分 56 秒 (3 部品は端末のコンパイルに戻った) で、最初の呼び出しが失敗した。Neural Engine の上で呼び出しが終わらなくなっていた (16 節)。Qwen3.5-4B の「答えなかった」も同じものと見られる
+  - 「prebuilt の方が遅い」のは、1 節の間隔が 10 秒より伸びていたせいかもしれない (15 節: 仕上げのサービスが落ちると伸び、再起動まで戻らない)。測るときは今の間隔を先に読む
   - 解析と音声 (2026-11-22、M3、h15g、空のキャッシュから 1 回目の読み込み):
 
     | モデル | 端末でコンパイル | prebuilt |
@@ -160,6 +166,35 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: 回避はない。Anima の初回は 70 GB 以上空けて動かす
 - **直ったら**: 何もしなくてよい。VAE の prebuilt を M2 以降で使うか (#336) は、この問題とは別に測る
 - 確かめ方: `tools/coreai/fbrepro/load.sh "vae_s6.aimodel#s1024x1024"` で時間と空きの最小値を見る ([apple-feedback/repro.md](apple-feedback/repro.md))
+
+## 15. 仕上げのサービスが落ちるたびに待ちが伸びる (未報告)
+
+- **何が**: 1 節の 10 秒は、launchd が `ANELargeModelCompilerService` の起動どうしの間に置く間隔である (`service spawn deferred by N seconds due to throttle` の N は、前の起動からその間隔までの残り)。この間隔は、サービスが落ちると伸びる。2026-11-26 の M1 では、午後は 10 秒だったものが、サービスが何度か落ちたあとの夜には 80 秒になっていて、その夜さらに落ちるたびに 320 秒、640 秒、1200 秒になった。80 秒は、何も動かさなかった 4 時間半のあいだも変わらなかった。落ちた直後の 1 回だけはすぐ起動し、その次から新しい間隔を待つ
+- 仕上げは機械全体で 1 本ずつ、この間隔で進む。間隔が 80 秒なら 17 部品のチャットのモデルは 23 分、1200 秒なら 1 部品 20 分かかる。どのアプリの prebuilt も同じに遅くなる
+- 9 節の「prebuilt の方が遅い」と、[apple-coreai](design/apple-coreai.md) の「プロセスの最初の prebuilt に数分の決まった費用があるらしい」は、これで説明がつく (その日にサービスが落ちていたかは、当時の記録にない)
+- サービスを落としたもの (どれも端末の仕上げのメモリ破壊。`ZinKernelBuilder::BuildKernelFromLLIRData` の中の malloc の検査、`ZinAneHloConverter::ParseInstructions`、MLIR の後片付けなど、落ちる場所は毎回違う): 17 節のプログラム、13 節の二重ブロック、h13g の 8 つの大きさの Chroma
+- **今**: 回避はない。サービスを落とすと分かっている prebuilt は置かない (レシピの `prebuild` の決まりで端末に回す)。prebuilt の時間を測る前、切り分ける前に、今の間隔を読む。10 秒より長ければ、再起動してから測る
+- **直ったら**: 1 節と 9 節を測り直す
+- 確かめ方: `/usr/bin/log show --last 30m --predicate 'process == "launchd" AND eventMessage CONTAINS "deferred by"' | grep ANELargeModelCompilerService`。prebuilt を 2 本続けて開いたときの N と、2 本目が開くまでの時間を足したものが間隔
+
+## 16. prebuilt から仕上げたプログラムが Neural Engine を止める (未報告)
+
+- **何が**: Qwen3.5-0.8B のチャットの書き出しを `coreai-build` で h13g 向けに作ると、どの部品もオフラインでは全部 Neural Engine に載り、M1 の上でも (17 節のものを除いて) 仕上がる。しかし呼ぶと終わらない。カーネルのログ (`AppleH11ANEInterface`) に `SyncRequest timed out after 100000 ms` が出て、呼び出しは 100 秒後に "Request cancelled" で返る。同じプログラムを端末でコンパイルすると動く (12 ms)
+  - 止まったもの: `model.part2` の `q128-last` (午後のチャット、3 回とも)、Gated DeltaNet 3 層だけの検体 (8 行でも 128 行でも)、関数を `sr-q8` だけにした `model.part1` (8 行)、Gated DeltaNet の層 1 つだけの検体 (8 行)
+  - 動いたもの: デルタ則だけの検体 (チャンク 8 で 8〜128 行、チャンク 16 で 16〜64 行。CPU との余弦 0.99999)、ゲートの softplus だけの検体、Qwen3-0.6B の `model.part1` の `q8` と `q128-last`
+  - 層 0 を途中で切った検体 (`HWNPU_DEV=ailower.cut=N`): 入力の射影、因果的な畳み込み、ゲート、デルタ則、その出力の正規化まで (263 演算) は動き、層の出力 y まで (301 演算) は止まる。止めるのはその間 (z のゲートの silu、出力の射影、次の正規化、MLP) のどれかで、行数によらない。`log` の演算 (softplus) は関係がなかった (なくした層も止まる)
+- **止まったあと**: Neural Engine のファームウェアは止まったままで、止める指示 (`CSNE_CMD_STOP`) も 2 秒で時間切れになる。ドライバは、Neural Engine を使うプロセスがいなくなってから 5 秒後に電源を落とし、強制的に再起動する (`Forcing firmware timeout path for clean reboot`)。それまでは、**ほかのプロセスの呼び出しも 100 秒ずつ待って失敗する**。プログラムを開いたまま呼び直すプロセスや、呼び続けるシステムのデーモン (夜に `mediaanalysisd` がそうだった) がいると、再起動が始まらない
+- **今**: チャットのモデルには prebuilt を置かない (9 節)。置いてしまった場合の備えとして、prebuilt から仕上げたプログラムの最初の呼び出しが失敗したら、その機械はその束を使うのをやめる (記録の `stopped`、[prebuilt-reuse](prebuilt-reuse.md) 5 節)。その実行はエラーで終わり、次の実行が端末でコンパイルする。端末の印 `ok` は、開けたときでなく最初の呼び出しが返ったときに書く
+- **prebuilt を確かめるとき**: 署名の識別子を変えた写しで動かす (`codesign -f -s - -i NEW`。aned のコンパイル結果は識別子ごとで、Go の実行ファイルはどれも `a.out`)。1 回の試行は 1 つのプロセスで行い、失敗したら Neural Engine が戻るまで待つ (端末でコンパイルしたプログラムを新しいプロセスで動かして見る)。ほかのセッションが Neural Engine を使っていないことを `ps` でも見る
+- **直ったら**: 9 節の手順で測り直す
+- 確かめ方: `tools/coreai/partprobe` で `model.part2` を作り (`p2=3:4:128:8192:last=1`)、`coreai-build … --architecture h13g` で作ったものを M1 で `aicheck run -scale 0.05` する。止まれば 100 秒後に "Request cancelled"
+
+## 17. 関数が 2 つ以上の Gated DeltaNet のプログラムで仕上げのサービスが落ちる (未報告)
+
+- **何が**: Qwen3.5-0.8B の `model.part1` (層 0〜2 と層 3 の attention の前段。関数は `sr-q8` と `q128-last`) の h13g の prebuilt を M1 で開くと、`ANELargeModelCompilerService` が 2 つめの関数 (`sr-q8`) の変換の途中で落ちる (1155 タスク中 1013 個目、4 回とも同じ所。`tools/coreai/llirtasks` で引くと、128 バイトのカーネルを読む畳み込みのタスクで、デルタ則の 8 × 8 の定数の重みと見られる。落ち方はヒープの破壊なので、原因がそのタスクとは限らない)。プロンプトの関数を 64 行にしても、デルタ則のチャンクを 16 行にしても落ちる。層 3〜7 を 8 つの関数にした検体も落ちた。関数を `sr-q8` 1 つにした `model.part1` は落ちずに仕上がる (ただし 16 節のとおり動かない)。`model.part2`〜`model.part6` (関数 2 つ) は落ちない
+- Core AI は `failedToSpecialize` を返し、hwnpu はその部品を端末でコンパイルする (今までどおり)。困るのは 15 節: 落ちるたびに、その機械のすべての prebuilt の仕上げが遅くなる
+- **今**: 回避はない (チャットのモデルに prebuilt を置かないので、利用者の機械では起きない)
+- **直ったら**: 何もしなくてよい
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
