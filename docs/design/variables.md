@@ -13,9 +13,11 @@ for can be told from its name.
 | The developers' switches | `HWNPU_DEV=KEY[=VALUE],...` | `internal/dev`; a process's own, never sent to hwnpud |
 | The tests' | `HWNPU_TEST_<GROUP>_<ROLE>`, `HWNPU_TEST_NPU` | `go test` only |
 
-Not here: the Python tools' own switches (`tools/amd/iron_*.py`: `HWNPU_LFM3_FUSED_*`,
-`HWNPU_Q_CORES`, ...), which an export reads, and `hwnpu-dev powerbench`'s `HWNPU_POWERMETRICS`
-(a command line). Removed: `HWNPU_NPU_LOCK` (the Neural Engine's lock is never skipped: several
+Not here: `hwnpu-dev powerbench`'s `HWNPU_POWERMETRICS` (a command line). The Python tools' own
+switches for measuring (`tools/amd/iron_*.py`: `HWNPU_LFM3_FUSED_*`, `HWNPU_Q_CORES`, ...) were
+removed 2026-11-26: an export takes only what was their default. Only `HWNPU_EXPORT_STEPS` (a
+diagnostic dump, [AMD LLM](amd-llm.md)) remains for a person to set; `GPTOSS_EXPERT_PLACES` and
+`GPTOSS_HOST_ROUTE` are `iron_export_lm.py`'s own, from its options. Removed: `HWNPU_NPU_LOCK` (the Neural Engine's lock is never skipped: several
 apps share the Neural Engine through hwnpud).
 
 ## The developers' switches: HWNPU_DEV

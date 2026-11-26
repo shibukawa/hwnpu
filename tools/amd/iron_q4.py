@@ -945,12 +945,11 @@ def operators():
 
 # The cores a column of a plain QGEMV (q_linear): 2 (a memtile splits each column block between
 # two), or 1: half the configuration a switch to it writes, as fast for the decode step's
-# projections (LFM3-1.7B 15.6 -> 17.1 tokens/s, the same bits, docs/design/amd.md). 0 (the default):
-# 1 up to Q_CORES_UP_TO out-features, 2 past it (a head's). HWNPU_Q_CORES, HWNPU_Q_CORES_UP_TO.
-Q_CORES = int(os.environ.get("HWNPU_Q_CORES", "0"))  # 0: by the out-features (Q_CORES_UP_TO)
-Q_CORES_UP_TO = int(os.environ.get("HWNPU_Q_CORES_UP_TO", "16384"))
-# The same for QGEMVGlu (glu_linear). HWNPU_GLU_CORES.
-GLU_CORES = int(os.environ.get("HWNPU_GLU_CORES", "2"))
+# projections (LFM3-1.7B 15.6 -> 17.1 tokens/s, the same bits, docs/design/amd.md). By the
+# out-features: 1 up to Q_CORES_UP_TO, 2 past it (a head's).
+Q_CORES_UP_TO = 16384
+# The same for QGEMVGlu (glu_linear): 2 (1 is slower with its two accumulations).
+GLU_CORES = 2
 
 
 def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = None, adds=()):
@@ -966,7 +965,7 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = None, adds=()):
     E2B and LFM3), and "bf16" costs their prompt chunk 5 to 9 % (LFM3 2048: 628 -> 684 ms).
     """
     if cores is None:
-        cores = Q_CORES if Q_CORES > 0 else (1 if n <= Q_CORES_UP_TO else 2)
+        cores = 1 if n <= Q_CORES_UP_TO else 2
     QGEMV, QDequant = operators()
     one_row = len(x.shape) == 1 or x.shape[0] == 1
     if one_row:

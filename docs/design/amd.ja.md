@@ -110,8 +110,8 @@ NPU2 でどのモデルも使う形。グラフの 1 回の呼び出しを 1 つ
 hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON の演算子に差し込む (`tools/amd/iron_q4.py`、`tools/amd/kernels/`):
 
 - 量子化した GEMV `QGEMV` (q4nx、q6、q8: `q4_mv.cc`、`q6_mv.cc`、`q8_mv.cc`)、`QGEMVAdd` (出力が出るときにバイアスと残差を足す、`kernels/mv_add.h`)、`QGEMVGlu` (gate と up を 1 つの表、1 つの演算子に)、プロンプトと DiT の `QDequant` / `q4_dequant`。形式とモデルごとの選択は [quantization](quantization.md)。
-- QGEMV は 1 列 1 コア (`iron_q4.q_linear`、cores 0 = 16384 出力まで 1、越えると 2。`HWNPU_Q_CORES`、`HWNPU_Q_CORES_UP_TO`): 設定 92 → 36 KB (q8、2048 出力)、速さは同じ、ビット単位で同じ。`QGEMVGlu` は 2 コアのまま (`HWNPU_GLU_CORES`。1 コアでは 2 本の累算で遅い)。デコード: LFM3-1.7B 15.6 → 17.2〜17.3 tok/s (sandwich と合わせて)、Gemma 4 E2B 9.3 → 9.7、Qwen3.5-0.8B 18.5 → 18.7。
-- sandwich を次の GEMV の中で (`iron_q4.sandwich_operator`、`sandwich_linear`、`Q_SANDWICH`): 各コアが y = r + rms(h)·w_post と n = rms(y)·w_pre を作ってから n の GEMV をする (SandwichAdd と同じ和と丸め)。LFM3 で使う (`HWNPU_LFM3_SANDWICH_GEMV`)。これだけでは変わらない (15.5 tok/s)。
+- QGEMV は 1 列 1 コア (`iron_q4.q_linear`、cores 0 = 16384 出力まで 1、越えると 2): 設定 92 → 36 KB (q8、2048 出力)、速さは同じ、ビット単位で同じ。`QGEMVGlu` は 2 コアのまま (1 コアでは 2 本の累算で遅い)。デコード: LFM3-1.7B 15.6 → 17.2〜17.3 tok/s (sandwich と合わせて)、Gemma 4 E2B 9.3 → 9.7、Qwen3.5-0.8B 18.5 → 18.7。
+- sandwich を次の GEMV の中で (`iron_q4.sandwich_operator`、`sandwich_linear`、`Q_SANDWICH`): 各コアが y = r + rms(h)·w_post と n = rms(y)·w_pre を作ってから n の GEMV をする (SandwichAdd と同じ和と丸め)。LFM3 で使う。これだけでは変わらない (15.5 tok/s)。
 - GEMV は 64 行のブロックを割り切る数の列しか使わない: 8 列でブロックが揃うように詰める (`iron_gdn.COLUMN_ALIGN` 64)。量子化した射影は出力 64 の倍数 × 入力 512 の倍数。
 - hwnpu のカーネルはコアの丸めを最近接偶数にする。AIE のコアは切り捨てで始まり、bf16 / bfp16 に狭めるたびに、平均のある入力の和が下に寄る (IRON の `DequantBFP` も同じ: 平均 1 の入力でコサイン 0.968、`QDequant` の bf16 は 0.99994)。言語モデルのプロンプトは `DequantBFP` のまま (そこでは bf16 が 5〜9 % 遅く、何も変わらない)。
 - `iron_silu.SiLUF32` (`kernels/silu_f32.cc`): シグモイドを float32 で。IRON の bf16 の表の SiLU は x = −8 から下でちょうど 0、[−6, 2] で 1 % ずれる。

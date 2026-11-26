@@ -30,21 +30,17 @@ them.
 """
 
 import functools
-import os
 
 import numpy as np
 from ml_dtypes import bfloat16
 
 PLE = "hwnpu_ple_rows"
-# A decode step's per-layer inputs, every layer's at once before the first layer (Gemma4's
-# layer computes each layer's: a GEMV, an RMSNorm, a copy, an add and a product, each a
-# reconfiguration of the array, docs/design/amd.md). HWNPU_GEMMA4_BATCH_PLE=0 keeps a layer's own.
-BATCH_PLE = os.environ.get("HWNPU_GEMMA4_BATCH_PLE", "1") != "0"
-# The MLP's gate and up as one table, run by QGEMVGlu with gelu (iron_q4.glu_param): one
-# operator of a decode step in place of two GEMVs, a GELU and a product. Off unless
-# HWNPU_GEMMA4_FUSE_GLU=1: E2B's decode 9.3 -> 9.9 tokens/s, but its KL from Hugging Face's
-# float32 0.154 -> 0.158 (median 0.068 -> 0.074, docs/design/amd-llm.md), where LFM3's did not move.
-FUSE_GLU = os.environ.get("HWNPU_GEMMA4_FUSE_GLU", "0") == "1"
+# A decode step makes its per-layer inputs, every layer's at once before the first layer (layer
+# below; Gemma4's layer computes each layer's: a GEMV, an RMSNorm, a copy, an add and a product,
+# each a reconfiguration of the array, docs/design/amd.md).
+# The MLP's gate and up stay two tables: as one, run by QGEMVGlu with gelu (iron_q4.glu_param),
+# E2B's decode went 9.3 -> 9.9 tokens/s, but its KL from Hugging Face's float32 0.154 -> 0.158
+# (median 0.068 -> 0.074, docs/design/amd-llm.md), where LFM3's did not move.
 EMBED = "hwnpu_embed_rows"
 # A prompt chunk's commands end where their scratchpad words would pass IRON's limit (32).
 # Each of IRON's gathers took words of its own, so the chunk was 15 commands for E2B; without
@@ -62,11 +58,7 @@ _HOST_EMBED: dict[int, bool] = {}  # by id of the model: its embeddings on the h
 
 
 def _keep() -> set:
-    """What stays bf16 with q4: attention where install's attn is "bf16". HWNPU_Q4_KEEP (comma
-    separated: head, attn, mlp) names it instead, to measure what each costs."""
-    env = os.environ.get("HWNPU_Q4_KEEP")
-    if env is not None:
-        return set(filter(None, env.split(",")))
+    """What stays bf16 with q4: attention where install's attn is "bf16"."""
     return {"attn"} if _Q4["attn"] == "bf16" else set()
 
 
@@ -120,8 +112,6 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
             quantize(self, tables)
 
     def quantize(self, tables) -> None:
-        import os
-
         import iron_q4
 
         keep = _keep()
@@ -132,15 +122,7 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
             lins = []
             if attn is not None:
                 lins += [(lin, attn) for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj)]
-            if "mlp" not in keep and FUSE_GLU and self.config.hidden_act == "gelu_pytorch_tanh":
-                # gate and up as one table: the decode step's one operator (QGEMVGlu with gelu) in
-                # place of two GEMVs, a GELU and a product (docs/design/amd-llm.md)
-                iron_q4.install_glu()
-                mlp.gu = iron_q4.glu_param(np.asarray(mlp.gate_proj.weight, np.float32),
-                                           np.asarray(mlp.up_proj.weight, np.float32), "q4", act="gelu")
-                mlp.gate_proj = mlp.up_proj = None
-                lins += [(mlp.down_proj, "q4")]
-            elif "mlp" not in keep:
+            if "mlp" not in keep:
                 lins += [(lin, "q4") for lin in (mlp.gate_proj, mlp.up_proj, mlp.down_proj)]
             for lin, fmt in lins:
                 if lin is not None:
@@ -170,7 +152,7 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
 
     def layer(self, call, i, w, x):
         c, m, P = self.config, self.model, self.config.ple_dim
-        if BATCH_PLE and not call.prompt and getattr(call, "row", None) is None:
+        if not call.prompt and getattr(call, "row", None) is None:
             # a decode step: every layer's per-layer input at once, before the first layer
             # (five operators in place of five a layer: the same values, docs/design/amd-llm.md)
             batch = getattr(self, "_ple_batch", None)
@@ -240,13 +222,12 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
 # A decode step's post-norms, residuals and next norms as SandwichAdd (iron_sandwich): after
 # the attention (post-attention norm, residual, pre-feed-forward norm) and after the per-layer
 # input (its norm, residual, layer_scalar, the next layer's input norm), in place of seven
-# operators a layer (docs/design/amd-llm.md). HWNPU_GEMMA4_FUSED_NORMS=0 keeps IRON's.
-FUSED_NORMS = os.environ.get("HWNPU_GEMMA4_FUSED_NORMS", "1") != "0"
+# operators a layer (docs/design/amd-llm.md).
 
 
 def fused_norms(model, x) -> bool:
     c, m = model.config, model.model
-    if not FUSED_NORMS or x.shape[0] != 1:
+    if x.shape[0] != 1:
         return False
     norms = [m.norm] + [n for l in m.layers for n in (
         l.input_layernorm, l.post_attention_layernorm, l.pre_feedforward_layernorm,

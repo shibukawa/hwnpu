@@ -12,8 +12,10 @@
 | 開発者のスイッチ | `HWNPU_DEV=KEY[=VALUE],...` | `internal/dev`。プロセス自身のもので、hwnpud には送らない |
 | テストのもの | `HWNPU_TEST_<群>_<役>`、`HWNPU_TEST_NPU` | `go test` だけ |
 
-ここにないもの: Python の道具のスイッチ (`tools/amd/iron_*.py` の `HWNPU_LFM3_FUSED_*`、`HWNPU_Q_CORES` など。書き出しが
-読む) と、`hwnpu-dev powerbench` の `HWNPU_POWERMETRICS` (コマンド行)。なくしたもの: `HWNPU_NPU_LOCK` (Neural Engine の
+ここにないもの: `hwnpu-dev powerbench` の `HWNPU_POWERMETRICS` (コマンド行)。Python の道具の測定用のスイッチ
+(`tools/amd/iron_*.py` の `HWNPU_LFM3_FUSED_*`、`HWNPU_Q_CORES` など) は 2026-11-26 になくした。書き出しは既定だった
+道だけを通る。人が設定するものは `HWNPU_EXPORT_STEPS` (診断の出力、[AMD の LLM](amd-llm.ja.md)) だけが残る
+(`GPTOSS_EXPERT_PLACES` と `GPTOSS_HOST_ROUTE` は `iron_export_lm.py` がオプションから自分で設定する)。なくしたもの: `HWNPU_NPU_LOCK` (Neural Engine の
 ロックは飛ばさない。複数のアプリは hwnpud を通して Neural Engine を分け合う)。
 
 ## 開発者のスイッチ: HWNPU_DEV

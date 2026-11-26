@@ -48,26 +48,14 @@ from iron.operators.copy import Copy
 from iron.operators.sigmoid import Sigmoid
 from ml_dtypes import bfloat16
 
-# A decode step's short convolution as one operator (iron_shortconv.ShortConvStep) in place of
-# IRON's about 16 (docs/design/amd-llm.md). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
-FUSED_CONV = __import__("os").environ.get("HWNPU_LFM3_FUSED_CONV", "1") != "0"
-# A prompt chunk's the same (iron_shortconv's ShortConvChunk, in_proj one linear) instead of
-# IRON's about 26 operators a conv layer (window and tail copies, a multiply and an add a tap).
-# HWNPU_LFM3_CHUNK_CONV=0 keeps IRON's.
-CHUNK_CONV = __import__("os").environ.get("HWNPU_LFM3_CHUNK_CONV", "1") != "0"
-# The decode step's ShortConvStep reads and writes the convolution's checkpoint slots itself (at
-# per-call offsets) instead of a copy of each around it. HWNPU_LFM3_SLOTS_CONV=0 keeps the copies.
-SLOTS_CONV = __import__("os").environ.get("HWNPU_LFM3_SLOTS_CONV", "1") != "0"
-# A decode step's post-norm, residual and next norm as one operator (iron_sandwich.SandwichAdd)
-# in place of three, twice a layer. HWNPU_LFM3_FUSED_NORMS=0 keeps IRON's.
-FUSED_NORMS = __import__("os").environ.get("HWNPU_LFM3_FUSED_NORMS", "1") != "0"
-# The MLP's gate and up as one table (iron_q4's glu_param, QGEMVGlu: one operator of the decode
-# step in place of two GEMVs, a SiLU and a product), as iron_qwen35's FUSE_GLU.
-FUSE_GLU = __import__("os").environ.get("HWNPU_LFM3_FUSE_GLU", "1") != "0"
-# The sandwiches made in the GEMV that reads their output (iron_q4.sandwich_linear: a conv layer's
-# in_proj, the MLP's QGEMVGlu, the head) in place of SandwichAdd and the GEMV (docs/design/amd.md).
-# HWNPU_LFM3_SANDWICH_GEMV=0 keeps SandwichAdd.
-SANDWICH_GEMV = __import__("os").environ.get("HWNPU_LFM3_SANDWICH_GEMV", "1") != "0"
+# A decode step's short convolution is one operator (iron_shortconv.ShortConvStep) in place of
+# IRON's about 16 (docs/design/amd-llm.md); a prompt chunk's the same (ShortConvChunk, in_proj
+# one linear) instead of IRON's about 26 operators a conv layer. ShortConvStep reads and writes
+# the convolution's checkpoint slots itself (at per-call offsets). A decode step's post-norm,
+# residual and next norm are one operator (iron_sandwich.SandwichAdd) in place of three, or made
+# in the GEMV that reads their output (iron_q4.sandwich_linear: a conv layer's in_proj, the MLP's
+# QGEMVGlu, the head; docs/design/amd.md). With q4 or q8 the MLP's gate and up are one table
+# (iron_q4's glu_param, QGEMVGlu), as iron_qwen35's FUSE_GLU.
 
 # By part of the model (mlp, attn, conv, head), its weights' format: iron_q4's "q4" (q4nx) or
 # "q8", or "bf16". Empty: all bf16, IRON's own linear.
@@ -153,7 +141,7 @@ class Lfm3Config(DecoderConfig):
 class ShortConv(iron.Graph):
     """LFM2's gated short convolution on ``c``'s shape, named as the checkpoint's ``conv``."""
 
-    # A prompt chunk's as one operator (CHUNK_CONV): the language model's layers (Lfm3Layer), not
+    # A prompt chunk's as one operator (ShortConvChunk): the language model's layers (Lfm3Layer), not
     # the audio encoder's (iron_lfm3audio), whose calls are its own
     chunked = False
 
@@ -165,9 +153,9 @@ class ShortConv(iron.Graph):
 
     def body(self, x, call):
         E = self.width
-        if FUSED_CONV and not call.prompt and x.shape[0] == 1 and self.conv.bias is None:
+        if not call.prompt and x.shape[0] == 1 and self.conv.bias is None:
             return self.decode_from(self.in_proj(x), call)
-        if CHUNK_CONV and self.chunked and call.prompt and x.valid.get(0) is not None and self.conv.bias is None:
+        if self.chunked and call.prompt and x.valid.get(0) is not None and self.conv.bias is None:
             return self.chunk_from(self.in_proj(x), call)
         b, cg, v = self.in_proj.split(x, E, E, E)
         y = self.conv(b * v, call)
@@ -180,18 +168,13 @@ class ShortConv(iron.Graph):
         import iron_shortconv
 
         E, K = self.width, self.conv.taps.shape[0]
-        if SLOTS_CONV:  # the operator reads and writes the checkpoint slots itself
-            slots = self.conv.state.slots
-            ns, size, C = slots.shape[0], (K - 1) * E, self.conv.state.chunk
-            whole = slots.reshape(ns * size)
-            y, _ = iron_shortconv.short_conv_operator(slots=ns).step(
-                p.reshape(1, 3 * E), self.conv.taps, whole, whole, width=E, taps_n=K,
-                read_at=((call.start - 1) // C + 1) * size, write_at=(call.position // C + 1) * size)
-            return self.out_proj(y)
-        read, write = self.conv.state.at(call)
-        y, final = iron_shortconv.short_conv_operator().step(
-            p.reshape(1, 3 * E), self.conv.taps, Copy.step(read), width=E, taps_n=K)  # the slot is a view: Copy
-        Copy.step(final, write)
+        # the operator reads and writes the checkpoint slots itself
+        slots = self.conv.state.slots
+        ns, size, C = slots.shape[0], (K - 1) * E, self.conv.state.chunk
+        whole = slots.reshape(ns * size)
+        y, _ = iron_shortconv.short_conv_operator(slots=ns).step(
+            p.reshape(1, 3 * E), self.conv.taps, whole, whole, width=E, taps_n=K,
+            read_at=((call.start - 1) // C + 1) * size, write_at=(call.position // C + 1) * size)
         return self.out_proj(y)
 
 
@@ -262,7 +245,7 @@ class Lfm3Layer(SandwichLayer):
 
         eps = self.post_attention_layernorm.eps
         win = self.input_layernorm.weight
-        if pend[0] == "pending" and self.conv is not None and SANDWICH_GEMV:
+        if pend[0] == "pending" and self.conv is not None:
             p, x, _ = iron_q4.sandwich_linear(pend[1], x, pend[2], win, eps, self.conv.in_proj.weight)
             h = self.conv.decode_from(p, call)
         else:
@@ -272,7 +255,7 @@ class Lfm3Layer(SandwichLayer):
                 xn = pend[1]
             h = self.mix(xn, call)
         gu = getattr(self.mlp, "gu", None)
-        if gu is not None and SANDWICH_GEMV:
+        if gu is not None:
             g, x, _ = iron_q4.sandwich_linear(h, x, self.post_attention_layernorm.weight,
                                               self.pre_feedforward_layernorm.weight, eps, gu)
             h = self.mlp.down_proj(g)
@@ -320,9 +303,9 @@ class Lfm3(CausalLM):
             self.quantize(QUANT)
 
     def fused(self, call, x) -> bool:
-        """Whether this call's layers run fused_body (a decode step's row, FUSED_NORMS)."""
+        """Whether this call's layers run fused_body (a decode step's row)."""
         c = self.config
-        return (FUSED_NORMS and not call.prompt and x.shape[0] == 1
+        return (not call.prompt and x.shape[0] == 1
                 and getattr(self.model.layers[0], "residual_multiplier", None) in (None, 1, 1.0)
                 and all(n.eps == c.eps for l in self.model.layers for n in (
                     l.input_layernorm, l.post_attention_layernorm, l.pre_feedforward_layernorm,
@@ -344,7 +327,7 @@ class Lfm3(CausalLM):
 
         _, h, wpost = pend
         norm = self.model.norm
-        if SANDWICH_GEMV and id(self.lm_head.weight) in iron_q4._Q4:
+        if id(self.lm_head.weight) in iron_q4._Q4:
             # the last layer's sandwich, its next norm the final norm, made in the head's GEMV
             logits, _, _ = iron_q4.sandwich_linear(h, x, wpost, norm.weight, norm.eps, self.lm_head.weight)
             return logits.reshape(1, logits.shape[-1])
@@ -360,7 +343,7 @@ class Lfm3(CausalLM):
             return iron_q4.q_param(np.asarray(w, np.float32), fmt)
 
         for layer in self.layers:
-            if fmts["mlp"] != "bf16" and FUSE_GLU:
+            if fmts["mlp"] != "bf16":
                 # gate and up as one table: the decode step's one operator (iron_q4's QGEMVGlu) in
                 # place of two GEMVs, a SiLU and a product; a prompt chunk reads it in parts
                 mlp = layer.mlp
@@ -369,9 +352,6 @@ class Lfm3(CausalLM):
                                            np.asarray(mlp.up_proj.weight, np.float32), fmts["mlp"])
                 mlp.gate_proj = mlp.up_proj = None
                 mlp.down_proj.weight = q(mlp.down_proj.weight, fmts["mlp"])
-            elif fmts["mlp"] != "bf16":
-                for lin in (layer.mlp.gate_proj, layer.mlp.up_proj, layer.mlp.down_proj):
-                    lin.weight = q(lin.weight, fmts["mlp"])
             if layer.conv is not None:
                 conv, fmt = layer.conv, fmts["conv"]
                 if fmt != "bf16":
