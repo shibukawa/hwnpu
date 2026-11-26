@@ -17,6 +17,8 @@ The shape that triggers it: attention with a block of 512 query rows over 1536 k
 
 `.aimodelc` files made on an M1 and on the M3 are identical but for dates and statistics files, and both fail. `--min-deployment-version 27.2` and `--expect-frequent-reshapes` do not change it.
 
+A second shape, found 2026-11-27: FLUX.2 klein's single blocks at 704×1280 and 1280×704 (attention over 4032 rows, 24 heads, queries in blocks of 1024, the keys in parts joined by one softmax). In the h15g LLIR (`binary_0.llir.bundle`, read with an MLIR bytecode reader) the failing programs, and only they, have planar-engine multiplies whose second source is read through the tile DMA (`l2_access_mode` 2) transposed and broadcast with a first `cache_hint` of 4; the passing ones have the same instruction with 3. It is the softmax's normalization `exp(x − max) × (1/sum)`, `1/sum` broadcast over the keys. Dividing by the sum instead takes the instruction away and every function loads.
+
 ## Steps to reproduce
 
 1. `xcrun coreai-build compile attn-1536-c1024.aimodel --platform macOS --architecture h15g --preferred-compute neural-engine --output out/`. The attached program is one head's attention, 1536 query rows over 1536 keys, head 128, with the queries in chunks of 1024, so a chunk of 512 is left. It is 64 KB. Offline, it is all on the Neural Engine for h13g, h14g and h15g.
