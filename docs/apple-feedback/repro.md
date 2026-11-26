@@ -4,7 +4,7 @@ The programs and scripts that reproduce each report, how to make them, and what 
 
 Tools (`tools/coreai/fbrepro`):
 
-- `fbrepro`: writes the small programs: `sin`, `clipew`, `prescale`, `snake [-clip] [-square]`, `attn [-rows] [-keys] [-chunk] [-head]`. They are fp16 with constant random weights and need no checkpoint.
+- `fbrepro`: writes the small programs: `sin`, `clipew`, `prescale`, `snake [-clip] [-square]`, `attn [-rows] [-keys] [-chunk] [-head] [-split] [-parts]`. They are fp16 with constant random weights and need no checkpoint.
 - `offline.sh ARCH PROGRAM...`: compiles each program with `coreai-build` for ARCH and says whether `manifest.plist` has `mps.fullyPlacedOnANE`.
 - `load.sh PROGRAM[#FUNCTION]`: loads it on this Mac's Neural Engine with no cache for it (a copy of `aicheck` signed with a new identifier) and samples the free disk.
 - `purge.sh PROGRAM [KEEP_GB]`: loads, fills the disk to KEEP_GB for 5 minutes, then loads again.
@@ -16,8 +16,8 @@ cd /tmp/fb
 ./fbrepro sin sin.aimodel
 ./fbrepro snake snake.aimodel
 ./fbrepro snake -square square.aimodel
-./fbrepro attn -chunk 1024 attn-1536-c1024.aimodel   # a 512-row chunk is left
-./fbrepro attn -chunk 768 attn-1536-c768.aimodel     # the workaround
+./fbrepro attn -chunk 1024 -parts attn-1536-c1024.aimodel   # a 512-row chunk is left
+./fbrepro attn -chunk 768 -parts attn-1536-c768.aimodel     # the workaround
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   $REPO/tools/coreai/fbrepro/offline.sh h13g sin.aimodel snake.aimodel square.aimodel
 AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
@@ -59,9 +59,21 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 
 ## h15g-dma-cache-hint.md (new, known-issues 12)
 
-- `attn-1536-c1024.aimodel` (a chunk of 1024 query rows and one of 512, over 1536 keys) and `attn-1536-c768.aimodel` (two chunks of 768). Both are all on the Neural Engine offline for h13g, h14g and h15g, and on the M2's device.
-- The failure is in the M3's finishing of the h15g `.aimodelc`. Make them with `coreai-build compile ... --architecture h15g` (60 KB each), then on an M3 load the `.aimodelc` (`load.sh attn-1536-c1024.h15g.aimodelc`) while `log stream --predicate 'process == "ANELargeModelCompilerService"'` runs. Expect "cache_hint" for c1024 and none for c768.
-- Not checked on an M3 yet with these programs.
+- `fbrepro attn -chunk 1024 -parts attn-1536-c1024.aimodel` (a chunk of 1024 query rows and one of 512, over 1536 keys in two parts, 1024 + 512, under one softmax) and `-chunk 768 -parts attn-1536-c768.aimodel` (two chunks of 768). Make the `.aimodelc` with `coreai-build compile ... --architecture h15g`. Both are all on the Neural Engine offline.
+- On an M3, load the `.aimodelc` with the report's `load.swift` while the log runs: c1024 gives `failedToSpecialize` and "cache_hint"; c768 loads.
+- Checked on 2026-11-27 (M3, macOS 27.2.1, coreai-build 3605.6.3). Without `-parts` (keys in one tensor) c1024 loads too, so the earlier programs did not reproduce. The offline check (no M3 needed): the failing `.aimodelc`'s LLIR has a planar-engine multiply reading a transposed and broadcast source through the tile DMA with `cache_hint` 4.
+
+  | program | LLIR cache_hint 4 | M3 |
+  |---|---|---|
+  | c1024, keys whole | no | loads |
+  | c1024 `-parts` | yes | failedToSpecialize |
+  | c1024 `-split 512` or `-split 1024 -parts` | yes | (not loaded) |
+  | c768 `-parts` | no | loads |
+  | c1536 (one chunk) `-parts` | no | (not loaded) |
+  | 512 rows alone over 1536 or 1024 keys, `-parts` | no | (not loaded) |
+  | 4032 rows over 4032 keys, chunk 1024, whole or `-parts` | no | (not loaded) |
+
+- The attachment: `h15g-dma-cache-hint.zip` with both programs, their `.aimodelc`, `load.swift`, its output and `log show`. It is not kept in the repository; make it again with the commands above.
 
 ## h13g-attention-8192-keys.md (new, known-issues 13)
 
