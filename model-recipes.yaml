@@ -191,9 +191,17 @@ models:
 
   # language models (and d1's decision models): tools/amd/iron_export_lm.py ARCH CHECKPOINT OUT
   # OPTIONS; the options name the export (-q4, -q6, -p16) and key it in the sources
+  #
+  # The chat models' Core AI version 2 (2026-11-27), for an M1 to run coreai-build's programs of
+  # them: the attention's mass program multiplies with its ones on the right (the M1 could not
+  # finish the program of the other order: docs/known-issues.md 18), and the gates and the
+  # activations over heads of Qwen3.5 and LFM3 are laid out as the MLP's, so that no activation
+  # shares a kernel with one of another layout (the M1 never ended the first call of such a
+  # program, or its finishing service crashed: docs/known-issues.md 16)
   LFM3-1.7B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -207,7 +215,8 @@ models:
         xdna1: [--cols, "4"]
   LFM3-VL-2B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -219,7 +228,8 @@ models:
       extra: *lm-extra
   LFM3-Audio-2B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -231,7 +241,8 @@ models:
       extra: *lm-extra
   LFM3-Omni-2B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -243,7 +254,8 @@ models:
       extra: *lm-extra
   gemma-4-E2B-it:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -255,7 +267,8 @@ models:
       extra: *lm-extra
   gemma-4-E4B-it:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -267,7 +280,8 @@ models:
       extra: *lm-extra
   Qwen3.5-4B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -279,7 +293,8 @@ models:
       extra: *lm-extra
   Qwen3.5-0.8B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -291,7 +306,8 @@ models:
       extra: *lm-extra
   Qwen3.5-2B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -303,7 +319,8 @@ models:
       extra: *lm-extra
   gpt-oss-20b:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -318,7 +335,8 @@ models:
       extra: *lm-extra
   Qwen3.6-35B-A3B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -334,7 +352,8 @@ models:
       extra: *lm-extra
   plamo-3-translate-8b:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -346,7 +365,8 @@ models:
       extra: *lm-extra
   plamo-3-translate-2b:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -358,7 +378,8 @@ models:
       extra: *lm-extra
   plamo-3-translate-0.8b:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -370,7 +391,8 @@ models:
       extra: *lm-extra
   d1-2B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -382,7 +404,8 @@ models:
       extra: *lm-extra
   d1-Omni-2B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -395,6 +418,7 @@ models:
 
   whisper-large-v3-turbo:
     apple:
+      # (no part split at its attention, so no mass program: the bytes of version 1)
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/whisper, internal/transcribe]
       # a lut's values by k-means over the weights' range (the format is the architecture's, lut8)
@@ -407,7 +431,8 @@ models:
       args: ["{in}", "{out}"]
   LFM3-Audio-2B-TTS:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio, internal/llm/lfm3gen, internal/speech]
     amd:
       # 3: text/ without the text model's copy of the tokenizer and the chat's format
@@ -568,6 +593,7 @@ models:
   EfficientSAM-S: *efficientsam-amd
   plamo-embedding-1b:
     apple:
+      # (no part split at its attention, so no mass program: the bytes of version 1)
       version: 1
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo, internal/chat/embed.go]
     amd:
@@ -577,19 +603,23 @@ models:
 
   LFM2-8B-A1B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go"]
   Qwen2.5-Coder-7B-Instruct:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-0.6B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-1.7B:
     apple:
-      version: 1
+      # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   swift-f0:
     apple:

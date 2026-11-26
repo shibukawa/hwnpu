@@ -360,9 +360,11 @@ func (m *builder) qkvGate(i int, h *mlpackage.Var) (q, k, v, gate *mlpackage.Var
 func (m *builder) attnOutput(i int, o, gate *mlpackage.Var) *mlpackage.Var {
 	p := m.layer(i) + "self_attn."
 	s, nh, hd := m.seq, m.cfg.NumHeads, m.cfg.HeadDim
-	o = m.swap12(o) // (1, s, nh, hd)
-	o = m.Op("mul", map[string]any{"x": o, "y": m.Op("sigmoid", map[string]any{"x": gate}, gate.Shape...)}, o.Shape...)
-	o = m.reshape(o, 1, s, nh*hd)
+	// the sigmoid and the product over (1, s, nh*hd), as o_proj reads them: over the heads
+	// (1, s, nh, hd) the sigmoid has a set of coefficients a row and read past the kernel it
+	// shares with the MLP's silu (blocks.WideAct)
+	o = m.reshape(m.swap12(o), 1, s, nh*hd)
+	o = m.Op("mul", map[string]any{"x": o, "y": m.Sigmoid(m.reshape(gate, 1, s, nh*hd))}, o.Shape...)
 	return m.Linear(o, p+"o_proj.weight", "", m.d)
 }
 
@@ -411,14 +413,15 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 
 	// beta = sigmoid(b), g = -exp(A_log) * softplus(a + dt_bias), both (1, s, hv); with a cache
 	// the padding after the step's tokens gets beta 0 and g 0, which leaves the state as it is
-	beta := m.Op("sigmoid", map[string]any{"x": b}, b.Shape...)
+	// (the activations over the gates repeated to blocks.GateWidth values a row: WideAct)
+	beta := m.WideAct(b, m.Sigmoid)
 	alog, dt := m.Get(p+"A_log", hv), m.Get(p+"dt_bias", hv)
 	negA := make([]float32, hv)
 	for j, v := range alog {
 		negA[j] = float32(-math.Exp(float64(v)))
 	}
 	g := m.Op("add", map[string]any{"x": a, "y": m.const16(p+"dt_bias", []int{1, 1, hv}, dt)}, a.Shape...)
-	g = m.softplus(g)
+	g = m.WideAct(g, m.softplus)
 	g = m.Op("mul", map[string]any{"x": g, "y": m.const16(p+"A_log", []int{1, 1, hv}, negA)}, g.Shape...)
 	if m.opts.Cache > 0 {
 		valid := m.input("step_valid", 1, s, 1)
@@ -454,8 +457,10 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 	o = m.Op("mul", map[string]any{"x": m.swap12(o), "y": m.B.ScalarF16(1.0 / oNormIn)}, 1, s, hv, dv)
 	r := float64(oScale / oNormIn)
 	o = m.RMSNorm(o, p+"norm.weight", dv, c.NormEps*r*r, 1) // (1, s, hv, dv)
-	zg := m.reshape(z, 1, s, hv, dv)
-	zg = m.silu(zg)
+	// silu over z as the projection gives it, (1, s, vd), and the heads after: over the heads
+	// (1, s, hv, dv) its activation has a set of coefficients a row and read past the kernel it
+	// shares with the MLP's (blocks.WideAct)
+	zg := m.reshape(m.silu(z), 1, s, hv, dv)
 	o = m.Op("mul", map[string]any{"x": o, "y": zg}, o.Shape...)
 	return m.Linear(m.reshape(o, 1, s, vd), p+"out_proj.weight", "", m.d)
 }
@@ -537,7 +542,8 @@ func (m *builder) silu(x *mlpackage.Var) *mlpackage.Var {
 }
 
 // deltaChunk is the rows of a chunk of deltaRuleChunks: 8, a step's (Draft) in one.
-const deltaChunk = 8
+// A variable for the tests of other sizes (TestWriteDeltaProbe, TestDeltaChunkRealWeights).
+var deltaChunk = 8
 
 // deltaRuleChunks is the gated delta rule (torch_recurrent_gated_delta_rule) over q, k (1, heads,
 // seq, dk), v (1, heads, seq, dv), the log of the decay g and beta (1, heads, seq, 1), from the

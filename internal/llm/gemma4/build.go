@@ -314,7 +314,7 @@ func (m *builder) layerRest(i int, a, residual, ple *mlpackage.Var) *mlpackage.V
 		residual = h
 		pd := c.PerLayerDim
 		g := m.Linear(h, p+"per_layer_input_gate.weight", "", pd)
-		g = m.Activation(g, c.HiddenAct)
+		g = m.act(g)
 		mine := m.Op("slice_by_index", map[string]any{"x": ple, "begin": m.B.Ints(0, 0, int32(i*pd)), "end": m.B.Ints(1, int32(m.rows), int32((i+1)*pd)),
 			"begin_mask": m.Bools(true, true, false), "end_mask": m.Bools(true, true, false)}, 1, m.rows, pd)
 		g = m.Op("mul", map[string]any{"x": g, "y": mine}, g.Shape...)
@@ -328,11 +328,20 @@ func (m *builder) layerRest(i int, a, residual, ple *mlpackage.Var) *mlpackage.V
 	return h
 }
 
+// act is the model's activation over x (1, rows, n), run over its rows as batches (blocks.RowsAct):
+// both of a layer's activations, the MLP's and the gate's of the per-layer inputs, so that they
+// are laid out the same way. Left to the compiler, coreai-build's for the M1 gave them different
+// layouts, and the kernel they share the size of one: an M1 does not end the first call of such
+// a program (docs/known-issues.md 16, 2026-11-27).
+func (m *builder) act(x *mlpackage.Var) *mlpackage.Var {
+	return m.RowsAct(x, func(y *mlpackage.Var) *mlpackage.Var { return m.Activation(y, m.cfg.HiddenAct) })
+}
+
 // mlp is Gemma4TextMLP: down(act(gate(x)) * up(x)).
 func (m *builder) mlp(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("%slayers.%d.mlp.", m.cfg.Prefix, i)
 	f := m.cfg.mlpWidth(i)
-	g := m.Activation(m.Linear(h, p+"gate_proj.weight", "", f), m.cfg.HiddenAct)
+	g := m.act(m.Linear(h, p+"gate_proj.weight", "", f))
 	u := m.Linear(h, p+"up_proj.weight", "", f)
 	g = m.Op("mul", map[string]any{"x": g, "y": u}, g.Shape...)
 	return m.Linear(g, p+"down_proj.weight", "", m.d)
