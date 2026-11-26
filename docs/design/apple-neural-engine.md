@@ -156,7 +156,8 @@ back after about 20 minutes). So:
 - A 2.8 GiB budget on every chip: M2+ would lose prompt programs. Only the M1 loads fewer.
 - `x · sigmoid(x)` for silu: same values as the ANE's `silu`.
 - The exp form of `gelu` (Gemma 4): no change. The exp form of the VAE's silu in Anima: no change in
-  images, VAE 15–20 % slower.
+  images, VAE 15–20 % slower (Core ML; Core AI's export takes it all the same, as `coreai-build` fails
+  on the native one: docs/design/image-apple.md).
 - Prompt calls of 256 tokens: no faster than 128, heavier to load.
 - Splitting attention queries by default: no gain on Whisper's 90 MB scores.
 

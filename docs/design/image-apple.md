@@ -134,13 +134,14 @@ Pictures are byte for byte the same in all forms.
 - FLUX's GroupNorm (`fluxvae.GroupNorm`): group values as (1, 32, a, b) (every axis ≤ 16384), divide by the group max, subtract the mean before the squares (|mean|/std reaches 6.3). 512² VAE vs diffusers fp32: 66.3 dB.
 - FLUX.2/3 klein: FLUX.1's decoder (`internal/imagegen/fluxvae`, once Chroma1's) plus `post_quant_conv` (`fluxvae.Vae.PostQuant`); batch-norm denormalization and the 2 × 2 unpack on the host.
 - Anima's VAE values stay under 8: no fp16 care.
+- Anima's VAE for Core AI writes the residual blocks' silu in the exp form (`blocks.SiLU`, export v6, `anima.CoreAIExportVersion`). With the Neural Engine's own `silu` after both of a block's norms, `coreai-build` (Metal Toolchain 27.2.47) failed every stage with a residual block on h13g, h14g and h15g (`ANECCompileOffline: CompilationFailure`; norm, silu, conv, norm, silu is enough; exp after the second norm alone still failed s0–s2 and s4). With it all 10 stages × 8 sizes are placed whole on the Neural Engine for the three chips. M3, 512²: the device compiled the ten stages in 482 s (the native silu's: 3552 s, up to 12 GB of temporary disk a stage), from the h15g prebuilt they load at once; prebuilt and device outputs are the same bytes and every stage matches an fp64 reference from its own input at 75–89 dB, 1024² too (2026-11-26). Core ML and OpenVINO IR keep the native silu.
 - Never prebuilt (above).
 - Passing fp16 between stages instead of float32 gave nothing (0–0.3 s, Sana 1024²).
 
 ## Anima (Cosmos-Predict2 2B, Qwen3-0.6B)
 
 - Programs: `text`, `dit_time` (8 rows), DiT in groups of 4 blocks (`dit_blocks_N`, 7 groups of 28 blocks; the patch embedding in `dit_blocks_0`), the final layer, VAE 10 stages. Formats int8/int8 on Apple (`anima.Formats`), fp16 on Intel.
-- Attention: self-attention `HeadAttention` 1024 chunks, division first; cross-attention whole, division deferred, queries padded to 8. Scale in q's norm weight. Norms by `abs`. `ExportVersion` 4, `PaddedExportVersion` 5.
+- Attention: self-attention `HeadAttention` 1024 chunks, division first; cross-attention whole, division deferred, queries padded to 8. Scale in q's norm weight. Norms by `abs`. `ExportVersion` 4, `PaddedExportVersion` 5, `CoreAIExportVersion` 6 (every Core AI export: the VAE's exp silu).
 - `--group` (default 0 = `anima.DefaultGroup`): 4 on Apple. `--qchunk` 512 (Core ML/Intel heads-together form).
 - Breakdown of a 1024² block (M1, Core AI, before the attention forms): 232 ms; MLP 54 ms (5.1 TFLOPS), self-attention core 102 ms (1.3 TFLOPS), cross-attention core 14 ms. Element-wise ops other than attention are about 24 ms of a 221 ms block (11 %): q/k RMSNorm 11.3 (4.8 of it the max division), RoPE 3.4, LayerNorm max divisions 3.7, exact GELU 5.8 (tanh and sigmoid approximations are slower: +4.7, +12.5 ms).
 - Its CFG step costs exactly twice a plain step (11.1–11.2 vs 5.6–5.7 s): the groups are small (0.28 GiB), so it pays no switch cost, and batching groups does not speed it up.

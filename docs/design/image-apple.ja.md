@@ -134,13 +134,14 @@
 - FLUX の GroupNorm (`fluxvae.GroupNorm`): グループの値を (1, 32, a, b) に並べ (どの軸も 16384 以下)、グループの最大値で割り、2 乗の前に平均を引く (|平均| / 標準偏差は 6.3 に達する)。512² の VAE は diffusers の float32 と 66.3 dB。
 - FLUX.2 と FLUX.3 klein: FLUX.1 のデコーダ (`internal/imagegen/fluxvae`。元は Chroma1 のもの) に `post_quant_conv` を足したもの (`fluxvae.Vae.PostQuant`)。バッチノルムの統計で戻すのと 2 × 2 の展開はホスト。
 - Anima の VAE の値は 8 未満で、fp16 の手当ては要らない。
+- Core AI 向けの Anima の VAE は、residual block の silu を exp の形 (`blocks.SiLU`) で書く (書き出し v6、`anima.CoreAIExportVersion`)。ブロックの 2 つの norm の後を Neural Engine 自身の `silu` にすると、`coreai-build` (Metal Toolchain 27.2.47) が h13g、h14g、h15g で residual block のある段をすべて落とした (`ANECCompileOffline: CompilationFailure`。norm、silu、conv、norm、silu だけで起きる。2 つ目の norm の後だけ exp にしても s0〜s2 と s4 が落ちた)。exp の形なら 3 つのチップで 10 段 × 8 つの大きさがすべて Neural Engine に丸ごと載る。M3 の 512²: 端末のコンパイルが 10 段で 482 秒 (ネイティブの silu は 3552 秒、1 段で最大 12 GB の一時領域)、h15g の prebuilt からはすぐ読める。prebuilt と端末の出力はバイトまで同じで、どの段も自分の入力からの fp64 の参照と 75〜89 dB、1024² も同じ (2026-11-26)。Core ML と OpenVINO IR はネイティブの silu のまま。
 - prebuilt にしない (上)。
 - 段の間を float32 でなく fp16 で渡しても効かなかった (0〜0.3 秒、Sana の 1024²)。
 
 ## Anima (Cosmos-Predict2 2B、Qwen3-0.6B)
 
 - プログラム: `text`、`dit_time` (8 行)、DiT の 4 ブロックずつの組 (`dit_blocks_N`、28 ブロックで 7 本。パッチの埋め込みは `dit_blocks_0`)、最後の層、VAE の 10 段。Apple は int8 / int8 (`anima.Formats`)、Intel は fp16。
-- 注意: 自己注意は `HeadAttention` を 1024 ずつ、割り算は先。交差注意は全部を 1 度に、割り算は後、問い合わせは 8 に詰める。スケールは q の norm の重みに。norm は `abs` で。`ExportVersion` 4、`PaddedExportVersion` 5。
+- 注意: 自己注意は `HeadAttention` を 1024 ずつ、割り算は先。交差注意は全部を 1 度に、割り算は後、問い合わせは 8 に詰める。スケールは q の norm の重みに。norm は `abs` で。`ExportVersion` 4、`PaddedExportVersion` 5、`CoreAIExportVersion` 6 (Core AI の書き出しすべて: VAE の exp の silu)。
 - `--group` (既定の 0 は `anima.DefaultGroup`): Apple は 4。`--qchunk` 512 (Core ML と Intel のヘッドをまとめた形)。
 - 1024² の 1 ブロックの内訳 (M1、Core AI、注意の形を変える前): 232 ms。MLP 54 ms (毎秒 5.1 TFLOP)、自己注意の中身 102 ms (毎秒 1.3 TFLOP)、交差注意の中身 14 ms。注意のほかの要素ごとの演算は 221 ms のブロックのうち約 24 ms (11 %): q と k の RMSNorm 11.3 (うち最大で割る分 4.8)、RoPE 3.4、LayerNorm の最大で割る分 3.7、厳密な GELU 5.8 (tanh と sigmoid の近似は遅い: +4.7、+12.5 ms)。
 - CFG のステップはちょうど 1 回だけのステップの 2 倍 (11.1〜11.2 秒と 5.6〜5.7 秒): 組が小さく (0.28 GiB) 切り替えの費用を払わないので、組ごとにまとめて回しても速くならない。
