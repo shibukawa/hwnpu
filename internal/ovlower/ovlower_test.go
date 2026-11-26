@@ -255,7 +255,7 @@ func TestLinear(t *testing.T) {
 	p.check(b.NamedOp("identity", "y", map[string]any{"x": y}, f16, 1, 3, out), b.NamedOp("identity", "o", map[string]any{"x": o}, f16, 1, 2, 3, 8))
 }
 
-// A depthwise convolution with a bias, as LFM3's short convolution (ConvMode conv), and a full
+// A depthwise convolution with a bias, as LFM3-Audio's short convolution, and a full
 // one with explicit padding.
 func TestConv(t *testing.T) {
 	p := newProgram(t)

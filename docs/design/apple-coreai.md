@@ -104,11 +104,11 @@ Automatic grouping when a `.mlpackage` is lowered at load (`internal/backend/cor
 - `internal/backend/coreai/shim/shim.swift`, built by `tools/coreai/build-shim.sh` into `libcaishim.dylib`, embedded with go:embed and loaded with purego. `CGO_ENABLED=0` stays.
 - `Compile` opens a program with the Neural Engine preferred. Placement is read from Core AI's cache: the MPSGraph manifest's `mps.fullyPlacedOnANE`, per function under `Entry Function Attributes`. The delegate folder is `main-this-delegates` for every function.
 - Calls to one program are serialized (`graph.mu`).
-- Inputs: `cai_input_array(h, i)` makes an `NDArray` of input i's shape and returns the address of its dense row-major contents. The caller writes there directly (`backend.InputAllocator`, `hwnpu.Graph.AllocInput`); `cai_run` passes that array without a copy. An array binds to any input of its shape, also in other programs (generation and prompt programs share caches; attention programs take chunks in turn). A buffer of another shape is copied. `chain` allocates caches, rings, windows, states, masks and attention chunks this way; image and audio programs still copy. `HWNPU_COREAI_COPY=1` copies as before. Gains on an M1: LFM3-1.7B after a 3101-token prompt 39.8–40.6 → 43.0–43.1 tok/s (attention call 1.34 → 1.0 ms), PLaMo 3 Translate 2B 12.1 → 12.6–13.1 tok/s; PLaMo 3 2B's rings held 252 → 84 MiB. The copy grows with the chunk: 0.56 of an attention call's 2.07 ms at 8192.
+- Inputs: `cai_input_array(h, i)` makes an `NDArray` of input i's shape and returns the address of its dense row-major contents. The caller writes there directly (`backend.InputAllocator`, `hwnpu.Graph.AllocInput`); `cai_run` passes that array without a copy. An array binds to any input of its shape, also in other programs (generation and prompt programs share caches; attention programs take chunks in turn). A buffer of another shape is copied. `chain` allocates caches, rings, windows, states, masks and attention chunks this way; image and audio programs still copy. Gains on an M1: LFM3-1.7B after a 3101-token prompt 39.8–40.6 → 43.0–43.1 tok/s (attention call 1.34 → 1.0 ms), PLaMo 3 Translate 2B 12.1 → 12.6–13.1 tok/s; PLaMo 3 2B's rings held 252 → 84 MiB. The copy grows with the chunk: 0.56 of an attention call's 2.07 ms at 8192.
 - Copy speed on an M1 is about 29 GB/s. A program that does nothing costs 0.21 ms a call (M1); the floor of a call is 160–175 µs (M2).
 - At most 112 programs per process on the Neural Engine (M2). The 113th fails to load ("no ANE resources") and Core AI runs it on the GPU silently. The device counts loaded programs (`aneLive`) and says so when a load fails near the limit. gpt-oss-20b's export is about 84; other chat models under 40. Two models in one process can pass it.
 - Core AI cannot choose compute units for a program the way Core ML's `GraphSource.Units` does. `HWNPU_COREAI_UNITS=cpu` runs everything on Core AI's CPU, for tests without the Neural Engine.
-- A load from Core AI's cache takes 0.2–0.3 s, so the next program can be loaded while one runs (`runner.InTurn`, `runner.Ring`; `HWNPU_DEV=load-ahead=0` turns it off). See [image models on Apple](image-apple.md).
+- A load from Core AI's cache takes 0.2–0.3 s, so the next program can be loaded while one runs (`runner.InTurn`, `runner.Ring`). See [image models on Apple](image-apple.md).
 
 ## Caches and disk
 
@@ -267,8 +267,8 @@ Shared Neural Engine numerics (fp16 range, inaccurate silu, int8 overflow…) ar
 
 | Choice | File |
 |---|---|
-| Short conversations on a whole program, then the program split at attention (`wholeTiers`, `decode.Session.Migrate`; none on an M1: `chat.wholeSlower`); Qwen3 split at attention on Core AI; attention a kv head at a time (`paged.Heads`, `HWNPU_DEV=attention=grouped`); ring tiers for long windows | [LLM engine](llm-engine.md) |
-| DiT groups swapped per call (`HWNPU_DEV=hold-dit=1`), load ahead, batching, attention layouts, block counts per memory | [image models on Apple](image-apple.md) |
+| Short conversations on a whole program, then the program split at attention (`wholeTiers`, `decode.Session.Migrate`; none on an M1: `chat.wholeSlower`); Qwen3 split at attention on Core AI; attention a kv head at a time (`paged.Heads`); ring tiers for long windows | [LLM engine](llm-engine.md) |
+| DiT groups swapped per call, load ahead, batching, attention layouts, block counts per memory | [image models on Apple](image-apple.md) |
 | Experts picked by the host between parts | [MoE](moe.md) |
 | Exports in sources, `files.tar.zst`, prebuilt bundles | [distribution](distribution.md) |
 

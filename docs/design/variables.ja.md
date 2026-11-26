@@ -32,18 +32,18 @@
 
 | 前 | `HWNPU_DEV` の鍵 |
 |---|---|
-| `HWNPU_ANIMA_ATTENTION` | `anima.attention` |
+| `HWNPU_ANIMA_ATTENTION` | (2026-11-26 に削除) |
 | `HWNPU_DRAFT_POLICY` | `draft.policy` |
 | `HWNPU_DRAFT_RATIO` | `draft.ratio` |
 | `HWNPU_DRAFT_TRACE` | `draft.trace` |
 | `HWNPU_MTP_DRAFTS` | `mtp.drafts` |
 | `HWNPU_IRON_DRAFTS` | `iron.drafts` |
-| `HWNPU_ROTATE` | `rotate` |
-| `HWNPU_LOAD_AHEAD` | `load-ahead` |
-| `HWNPU_HOLD_DIT` | `hold-dit` |
+| `HWNPU_ROTATE` | (2026-11-26 に削除) |
+| `HWNPU_LOAD_AHEAD` | (2026-11-26 に削除) |
+| `HWNPU_HOLD_DIT` | (2026-11-26 に削除) |
 | `HWNPU_CPU_F16` | `cpu.f16` |
 | `HWNPU_KLEIN_DECODE` | `klein.decode` |
-| `HWNPU_IRON_PREFETCH` | `iron.prefetch` |
+| `HWNPU_IRON_PREFETCH` | (2026-11-26 に削除) |
 | `HWNPU_IRON_SYNC` | `iron.sync` |
 | `HWNPU_IRON_BARRIER` | `iron.barrier` |
 | `HWNPU_IRON_TIMING` | `iron.timing` |
@@ -55,8 +55,8 @@
 | `HWNPU_AILOWER_TRACE` | `ailower.trace` |
 | `HWNPU_OV_DEVICE` | `ov.device` |
 | `HWNPU_OV_PRECISION` | `ov.precision` |
-| `HWNPU_ATTENTION` | `attention` |
-| `HWNPU_COREAI_COPY` | `coreai.copy` |
+| `HWNPU_ATTENTION` | (2026-11-26 に削除) |
+| `HWNPU_COREAI_COPY` | (2026-11-26 に削除) |
 | `HWNPU_MOE_DEBUG=ITEM,...` | `moe.ITEM,...` (`1`: `moe.time`) |
 | `HWNPU_MXFP4=ITEM,...` | `mxfp4.ITEM,...` |
 
@@ -134,7 +134,7 @@
 | `HWNPU_KLEIN_OUT` | `HWNPU_TEST_KLEIN_OUT` |
 | `HWNPU_KLEIN_REPO` | `HWNPU_TEST_KLEIN_DIR` |
 | `HWNPU_LFM3_COLBLOCK` | `HWNPU_TEST_LFM3_COLBLOCK` |
-| `HWNPU_LFM3_CONV` | `HWNPU_TEST_LFM3_CONV` |
+| `HWNPU_LFM3_CONV` | (2026-11-26 に削除) |
 | `HWNPU_LFM3_DIR` | `HWNPU_TEST_LFM3_DIR` |
 | `HWNPU_LFM3_FORMAT` | `HWNPU_TEST_LFM3_FORMAT` |
 | `HWNPU_LFM3_FORMATS` | `HWNPU_TEST_LFM3_FORMATS` |

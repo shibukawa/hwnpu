@@ -43,10 +43,11 @@ Defaults come from `llm.Arch.Format` / `IntelFormat`, or per checkpoint from `Co
 - Structure: short convolutions, 5 sliding-attention layers (window 256, rings), 6 full-attention
   layers, QK norm, partial RoPE, per-head gates, sandwich norms, SwiGLU.
 - Arch params: `post-scale` (default 64; a power of two in `out_proj`, `o_proj`, `w2`, absorbed by
-  the sandwich norms; keeps the ANE's error to 1.4–2.7% a layer), `conv` (`taps` default: the short
-  convolution as shifted multiply-adds, avoiding the ANE conv's error), `attn` (`grouped` default,
-  `blocks.SDPAGrouped`: one product per KV head over stacked query heads; M3, cache 16320: 73.5 → 40.7
-  ms a call vs `tile`), `hidden-out` (1: also output the final hidden state h; used by TTS).
+  the sandwich norms; keeps the ANE's error to 1.4–2.7% a layer), `hidden-out` (1: also output the final hidden state h; used by TTS).
+- The short convolution is shifted multiply-adds, avoiding the ANE conv's 5–12% error; attention with a
+  cache is `blocks.SDPAGrouped`, one product per KV head over stacked query heads (M3, cache 16320: 73.5
+  → 40.7 ms a call vs `tile`). The params that chose the other forms (`conv`, `attn`) were removed
+  2026-11-26.
 - Default lut6: KL 0.23 nats against bf16 (lut4 1.39); a coding task took 6 rounds vs 13–27 with lut4.
   1.21 GiB a program vs 0.81 for lut4.
 - Checked against an independent fp64 forward (`reference_test.go`, ~3e-7) and `hwnpu-dev check`.
@@ -224,9 +225,10 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   (attention output 45% off), and residuals reach 1900 before `layer_scalar`. Every gemma4 norm
   normalizes `x/64` (eps / 64²; exact). `-f16` check: KL 3.17 → 0.0004. The PLE projection's norm is
   not scaled (its input RMS 0.3; scaling made squares subnormal, 0.04% → 0.5%).
-- `-logits host` (default, arch revision 1): the program outputs logits before the softcap and the host
-  applies it (`llm.LogitSoftcap`). `flat` / `folded` keep it in the program: on Core ML the 262144-wide
-  softcap fell to the CPU unless folded to (16, 16384), and the final reshape back stayed on the CPU.
+- The softcap on the host (arch revision 1): the program outputs logits before the softcap and the host
+  applies it (`llm.LogitSoftcap`). In the program (`-logits flat` / `folded`, removed 2026-11-26), on Core
+  ML the 262144-wide softcap fell to the CPU unless folded to (16, 16384), and the final reshape back
+  stayed on the CPU.
 - `SDPAGrouped` (not `tile`): `tile` copied K and V 8× per step (128 MB each at cache 16320). M3 lut4:
   1024 cache 31–35 → 23.6–25.8 ms a token, 16320 cache 90–150 → 47 ms.
 - Split at the full-attention layers (`llm.Paged`, context 131072). Unsplit, on Core ML, the lut6 parts

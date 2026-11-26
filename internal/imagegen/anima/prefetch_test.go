@@ -51,9 +51,6 @@ func writeGraph(t *testing.T, dir string, bank, arg int) {
 // TestPrefetchFits checks the second set of banks is kept only when the stage with it stays
 // within the VAE's peak (Qwen-Image's 512² DiT would otherwise set the run's peak, docs/design/image-amd.md).
 func TestPrefetchFits(t *testing.T) {
-	if !iron.Prefetch {
-		t.Skip("HWNPU_DEV=iron.prefetch=0")
-	}
 	root := t.TempDir()
 	writeGraph(t, filepath.Join(root, "dit_in"), 10, 6)
 	writeGraph(t, filepath.Join(root, "dit_blocks"), 1400, 20)

@@ -465,7 +465,7 @@ const hostRows = 512
 // takes at a time. The values differ from a step at a time in the last bits (which kernel takes a
 // row depends on how many rows share its expert, and they sum in different orders).
 func (m *moe) runMany(ctx context.Context, layer int, xs, logits, out [][]byte, rows []int) error {
-	if v, _ := experts.DebugOpt("many"); m.host == nil || v == "0" {
+	if m.host == nil {
 		for c := range xs {
 			if err := m.run(ctx, layer, xs[c], logits[c], out[c], rows[c]); err != nil {
 				return err

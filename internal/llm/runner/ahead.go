@@ -5,24 +5,21 @@ import (
 	"fmt"
 
 	"github.com/shibukawa/hwnpu"
-	devenv "github.com/shibukawa/hwnpu/internal/dev"
 )
 
 // Ahead reports whether the programs that run in turn on dev load one ahead (InTurn, Ring): on
-// Core AI, where a load is not a compile once its cache holds the program. HWNPU_DEV=load-ahead=0
-// turns it off, to measure without it.
+// Core AI, where a load is not a compile once its cache holds the program.
 func Ahead(dev *hwnpu.Device) bool {
-	return dev != nil && dev.Info().Backend == "coreai" && !devenv.IsOff("load-ahead")
+	return dev != nil && dev.Info().Backend == "coreai"
 }
 
 // Swap reports whether the groups of a large DiT's blocks load for each step on dev and close
 // after it, rather than all being held: on Core AI, which fails to run more than the Neural Engine
 // holds where Core ML evicts (Qwen-Image's 8 groups on an M1, docs/design/image-apple.md), and loads a group
 // from its cache in 20 ms. Where they can all be held that is no faster: a group pays for
-// following another group either way (docs/design/image-apple.md). HWNPU_DEV=hold-dit=1 holds them all as Core
-// ML does, to measure it.
+// following another group either way (docs/design/image-apple.md).
 func Swap(dev *hwnpu.Device) bool {
-	return dev != nil && dev.Info().Backend == "coreai" && !devenv.On("hold-dit")
+	return dev != nil && dev.Info().Backend == "coreai"
 }
 
 // OpenFunc loads the program name (a part of an export) for InTurn and Ring.

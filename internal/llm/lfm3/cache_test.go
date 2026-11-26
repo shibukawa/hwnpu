@@ -110,7 +110,7 @@ func TestCachedMatchesFull(t *testing.T) {
 	for _, c := range []struct {
 		q, cache, parts int
 		attn            string
-	}{{1, 8, 1, "tile"}, {1, 10, 3, "tile"}, {3, 9, 2, "tile"}, {8, 8, 1, "tile"}, {3, 9, 2, "grouped"}, {8, 8, 1, "grouped"}} {
+	}{{1, 8, 1, "grouped"}, {1, 10, 3, "grouped"}, {3, 9, 2, "grouped"}, {8, 8, 1, "grouped"}} {
 		t.Run(fmt.Sprintf("q%d cache%d parts%d %s", c.q, c.cache, c.parts, c.attn), func(t *testing.T) {
 			opts := llm.Options{Seq: c.q, Cache: c.cache, Format: "fp16", Params: map[string]string{"post-scale": "1", "attn": c.attn}}
 			s, err := decode.New(cpuProgram(t, writeParts(t, cfg, w, opts, c.parts)), cfg)

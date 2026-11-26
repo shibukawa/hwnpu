@@ -436,12 +436,7 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 		state = m.input(fmt.Sprintf("st_rec_%d", i), 1, hv, dk, dv)
 	}
 	decayH, betaH := perHead(decay), perHead(beta)
-	var o *mlpackage.Var
-	if Arch.Param(m.opts, "delta") == "rows" {
-		o, state = m.deltaRule(q, k, v, decayH, betaH, state)
-	} else {
-		o, state = m.deltaRuleChunks(q, k, v, perHead(g), betaH, state)
-	}
+	o, state := m.deltaRuleChunks(q, k, v, perHead(g), betaH, state)
 	if m.opts.Cache > 0 {
 		m.output(state, fmt.Sprintf("st_rec_%d_new", i))
 		if m.stateRows {
@@ -541,51 +536,18 @@ func (m *builder) silu(x *mlpackage.Var) *mlpackage.Var {
 	return m.Op("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
 }
 
-// deltaRule is the gated delta rule (torch_recurrent_gated_delta_rule) over q, k (1, heads, seq,
-// dk), v (1, heads, seq, dv), decay = exp(g) and beta (1, heads, seq, 1), one token after the
-// other from the state S (1, heads, dk, dv), nil for zeros:
-//
-//	S = S * decay_t;  S = S + k_t^T ((v_t - k_t S) * beta_t);  o_t = q_t S
-//
-// It returns the outputs (1, heads, seq, dv) and the state after the last token.
-func (m *builder) deltaRule(q, k, v, decay, beta, state *mlpackage.Var) (o, st *mlpackage.Var) {
-	hv, s, dk, dv := q.Shape[1], q.Shape[2], q.Shape[3], v.Shape[3]
-	mm := func(x, y *mlpackage.Var, tx bool, shape ...int) *mlpackage.Var {
-		return m.Op("matmul", map[string]any{"x": x, "y": y, "transpose_x": m.B.ScalarBool(tx), "transpose_y": m.B.ScalarBool(false)}, shape...)
-	}
-	var outs []*mlpackage.Var
-	for t := 0; t < s; t++ {
-		qt, kt, vt := m.slice(q, 2, t, t+1), m.slice(k, 2, t, t+1), m.slice(v, 2, t, t+1)
-		bt := m.slice(beta, 2, t, t+1)
-		var delta *mlpackage.Var
-		if state == nil { // S = 0: nothing to decay or read
-			delta = m.Op("mul", map[string]any{"x": vt, "y": bt}, 1, hv, 1, dv)
-		} else {
-			state = m.Op("mul", map[string]any{"x": state, "y": m.slice(decay, 2, t, t+1)}, 1, hv, dk, dv)
-			mem := mm(kt, state, false, 1, hv, 1, dv)
-			delta = m.Op("sub", map[string]any{"x": vt, "y": mem}, 1, hv, 1, dv)
-			delta = m.Op("mul", map[string]any{"x": delta, "y": bt}, 1, hv, 1, dv)
-		}
-		upd := mm(kt, delta, true, 1, hv, dk, dv)
-		if state == nil {
-			state = upd
-		} else {
-			state = m.Op("add", map[string]any{"x": state, "y": upd}, 1, hv, dk, dv)
-		}
-		outs = append(outs, mm(qt, state, false, 1, hv, 1, dv))
-	}
-	if len(outs) == 1 {
-		return outs[0], state
-	}
-	return m.Op("concat", map[string]any{"values": outs, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, hv, s, dv), state
-}
-
 // deltaChunk is the rows of a chunk of deltaRuleChunks: 8, a step's (Draft) in one.
 const deltaChunk = 8
 
-// deltaRuleChunks is deltaRule over chunks of deltaChunk rows in the chunked form of the gated
-// delta rule (flash-linear-attention's chunk_gated_delta_rule, the WY representation): a chunk
-// reads the state S0 twice (k S0, q S0) and writes it once, where deltaRule reads and writes it
+// deltaRuleChunks is the gated delta rule (torch_recurrent_gated_delta_rule) over q, k (1, heads,
+// seq, dk), v (1, heads, seq, dv), the log of the decay g and beta (1, heads, seq, 1), from the
+// state S (1, heads, dk, dv), nil for zeros, one token after the other:
+//
+//	S = S * exp(g_t);  S = S + k_t^T ((v_t - k_t S) * beta_t);  o_t = q_t S
+//
+// It is computed over chunks of deltaChunk rows in the chunked form of the rule
+// (flash-linear-attention's chunk_gated_delta_rule, the WY representation): a chunk reads the
+// state S0 twice (k S0, q S0) and writes it once, where the rule row by row read and wrote it
 // five times a row (the state of a value head is dk x dv: Qwen3.5-4B's 32 heads 1 MiB in fp16, 7
 // MiB a row and 1.3 GB a step of 8 rows over its 24 Gated DeltaNet layers, a third as much again
 // as its weights). g is the log of the decay (1, heads, seq, 1). Within a chunk, with
