@@ -69,6 +69,30 @@ AICHECK=./aicheck $REPO/tools/coreai/fbrepro/load.sh sin.aimodel
 - `hwnpu-dev prebuild -arch h13g`, then on an M1 `go run ./tools/coreai/aicheck run -cpu -ref REF OUT#s1024x1024_ref1` and look at the cosine.
 - Not reproduced on 2026-11-25 (it needs an M1).
 
+## h14g-vae-wrong-rows.md (new, known-issues 15)
+
+- Programs: `vae_s0` … `vae_s9` of Anima-Turbo's export v6 (`anima-turbo-v1.1-8sizes-ffe2f7fe-int8-int8-g4-q512-v6.coreai`, from `hwnpu-dev models fetch Anima-Turbo/coreai`) and its h14g prebuilt (`EXPORT.coreai.prebuilt/h14g`). To build the `.aimodelc` here: copy the export's `entry.json`, `manifest.json` and `vae_s*.aimodel` to a new folder, then `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer hwnpu-dev prebuild -arch h14g -packed DIR/EXPORT.coreai` (10 stages in 56 s on the M2).
+- Tool: `tools/coreai/vaeprobe` (branch `t3/vaeprobe-tools`): runs the stages in turn, writes each output, and `ref_anima.py` compares each stage with float64 from its own input. The reference needs `vae/diffusion_pytorch_model.safetensors` of `circlestone-labs/Anima-Base-v1.0-Diffusers`.
+
+```sh
+cp vaeprobe vaeprobe-pre; codesign -f -s - -i test.vaeprobe-pre.$(date +%s) vaeprobe-pre
+cp vaeprobe vaeprobe-dev; codesign -f -s - -i test.vaeprobe-dev.$(date +%s) vaeprobe-dev
+mkdir pre dev
+HWNPU_DAEMON=off HWNPU_BACKEND=coreai ./vaeprobe-pre pre EXPORT.coreai s512x512 vae_s{0..9}
+HWNPU_DAEMON=off HWNPU_BACKEND=coreai HWNPU_COREAI_PREBUILT=off ./vaeprobe-dev dev EXPORT.coreai s512x512 vae_s{0..9}
+python3 ref_anima.py CKPT pre; python3 ref_anima.py CKPT dev; python3 cmp.py pre dev
+```
+
+- Sign every binary with an identifier that has never run the programs. aned keeps its compiled programs by the signing identifier, Go builds are all ad-hoc `a.out`, and its cache cannot be removed (under SIP, even with sudo). A wrong program left there comes back for a binary of another name and makes a device compile look wrong too.
+- Each output folder must exist before the run (vaeprobe writes only the PNG otherwise). A run stopped while it loads leaves Core AI entries without programs for that binary's name, and the next run of the same name compiles on the device instead of using the prebuilt: use a new name.
+- What it showed on 2026-11-27 on the M2: [the report](h14g-vae-wrong-rows.md). Device compile of the 10 stages with no cache: 2543 s (stages 4, 6, 7 and 8 over 500 s each).
+
+## ne-stuck-request-cancelled.md (new, known-issues 16)
+
+- Program: `vae_s0.aimodel` of the same export.
+- Right after a restart: `vaeprobe-dev OUT EXPORT.coreai s1024x1024 vae_s0` (works), then `… s752x1360 vae_s0`, then `… s1024x1024 vae_s0` again. Take the sysdiagnose after the last one.
+- The Neural Engine stays stuck until the Mac is restarted: do this last.
+
 ## Additions
 
 - FB25624129: the measurement of [add-FB25624129-finish-slower.md](add-FB25624129-finish-slower.md) was made with hwnpu-chat / hwnpu-audio copies signed with new identifiers. Each model was loaded once compiling on the device (`HWNPU_COREAI_PREBUILT=off`) and once from `hwnpu-dev prebuild -arch h14g` of all its programs.
