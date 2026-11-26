@@ -142,29 +142,24 @@ func Assets(paths []string) ([]string, error) {
 	return out, nil
 }
 
-// LeftToDevice reports whether the program at dir is compiled on the device even where a prebuilt
-// one could be had: a VAE's (vae*.aimodel) or a text encoder's (text*.aimodel). coreai-build's VAE programs come out wrong on the
-// device: FLUX.2 klein's at 512 x 512 (the 512 function of the 512+1024 export, prebuilt for
-// h13g) drew a band of noise every 112 rows on M1, and the 1024 x 768 export's ended in
-// "Request cancelled" at their first stage; the same programs compiled on the device draw the
-// picture right. Nor do they gain anything: the device finishes a prebuilt program no faster than
-// it compiles one this small (the ten stages at 1024 x 1024 104 s either way: a finish waits on
-// the respawn of ANELargeModelCompilerService, 10 s a program). Build leaves them out and Prebuilt
-// passes over them in what the shared layers hold already (docs/design/image-apple.md).
+// LeftToDevice reports whether the program at dir is compiled on the device on every chip even
+// where a prebuilt one could be had: a text encoder's (text*.aimodel), and a program whose name
+// ends in _device. What is left to the device on some chips alone, or for one model, is the
+// recipe's (model-recipes.yaml apple prebuild, do: device): the VAEs (FLUX.2 klein's on M1,
+// Anima's everywhere, docs/design/image-apple.md).
 //
-// The text encoders likewise: Chroma1-Flash's T5-XXL (text_0 ... text_21, prebuilt for h13g) ended
-// in "Request cancelled" at text_0 on M1 four times running (fresh Core AI caches, nothing else on
-// the Neural Engine), and the same programs compiled on the device ran (T5-XXL 220 to 230 s); FLUX.2
+// The text encoders: Chroma1-Flash's T5-XXL (text_0 ... text_21, prebuilt for h13g) ended in
+// "Request cancelled" at text_0 on M1 four times running (fresh Core AI caches, nothing else on the
+// Neural Engine), and the same programs compiled on the device ran (T5-XXL 220 to 230 s); FLUX.2
 // klein's Qwen3 ran from its prebuilts but slower than compiled on the device (112 s against 81 s,
-// docs/design/distribution.md), so a prebuilt text encoder gains nothing either.
+// docs/design/distribution.md), so a prebuilt text encoder gains nothing.
 //
-// And a program whose name ends in _device (NAME_device.aimodel): one coreai-build leaves to the
-// GPU where the device's compiler takes it, as FLUX.2 klein's edits of 8192 keys or more
+// A program whose name ends in _device (NAME_device.aimodel): one coreai-build leaves to the GPU
+// where the device's compiler takes it, as FLUX.2 klein's edits of 8192 keys or more
 // (flux2klein.PrebuiltKeys).
 func LeftToDevice(dir string) bool {
 	base := strings.ToLower(filepath.Base(filepath.Clean(dir)))
-	return strings.HasPrefix(base, "vae") || strings.HasPrefix(base, "text") ||
-		strings.HasSuffix(strings.TrimSuffix(base, ".aimodel"), "_device")
+	return strings.HasPrefix(base, "text") || strings.HasSuffix(strings.TrimSuffix(base, ".aimodel"), "_device")
 }
 
 // NothingToPrebuild reports whether every program under export is LeftToDevice (FLUX.2 klein's

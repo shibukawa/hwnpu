@@ -60,8 +60,11 @@ func BuildMass(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (
 	for i := range ones {
 		ones[i] = 1
 	}
-	// the sum over the rows is a matrix product with ones, as the attention program's sum of exps
-	one, err := b.F16s("ones", []int{1, nkv, 1, rep * s}, ones)
+	// the sum over the rows is a matrix product with ones, as the attention program's sum of exps,
+	// the ones on the right (e transposed times a column): with them on the left, the M1 could not
+	// finish coreai-build's h13g program ("Kernel evaluation failed" on the ones, failedToSpecialize;
+	// the same speed either way on the device, 2026-11-26)
+	one, err := b.F16s("ones", []int{rep * s, 1}, ones[:rep*s])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -77,7 +80,7 @@ func BuildMass(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (
 	}
 	sc = op("add", map[string]any{"x": op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, c), "y": mask}, 1, nh, s, c)
 	e := op("exp", map[string]any{"x": op("add", map[string]any{"x": sc, "y": r}, 1, nh, s, c)}, 1, nh, s, c)
-	w := matmul(one, reshape(e, 1, nkv, rep*s, c), false, 1, nkv, 1, c)
+	w := reshape(op("matmul", map[string]any{"x": reshape(e, 1, nkv, rep*s, c), "y": one, "transpose_x": b.ScalarBool(true), "transpose_y": b.ScalarBool(false)}, 1, nkv, c, 1), 1, nkv, 1, c)
 	out := b.NamedOp("identity", "w", map[string]any{"x": w}, mlpackage.Float16, w.Shape...)
 	outs = append(outs, mlpackage.Feature{Name: out.Name, DType: mlpackage.Float16, Shape: out.Shape})
 	return ins, outs, nil
