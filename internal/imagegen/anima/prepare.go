@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
@@ -34,9 +34,17 @@ const ExportVersion = 4
 // other sizes' programs are as ExportVersion's, byte for byte, and keep its name.
 const PaddedExportVersion = 5
 
-// exportVersion is the version in the name of o's export: PaddedExportVersion when one of its
-// sizes is padded.
+// CoreAIExportVersion is the version of a Core AI export, padded or not: its VAE's residual
+// blocks' silu in the exp form, which coreai-build places on the Neural Engine (mil.vaeRes), so
+// that the stages can be prebuilt. Core ML's and OpenVINO IR's programs are as before.
+const CoreAIExportVersion = 6
+
+// exportVersion is the version in the name of o's export: CoreAIExportVersion for Core AI, else
+// PaddedExportVersion when one of its sizes is padded.
 func exportVersion(o ConvertOptions) int {
+	if o.Backend == llm.BackendCoreAI {
+		return CoreAIExportVersion
+	}
 	for _, sz := range o.sizes() {
 		gh, gw := mil.Grid(sz[0], sz[1])
 		if o.Backend != "intel" && (gh*gw)%milpart.DeferredRows != 0 {

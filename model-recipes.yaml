@@ -487,7 +487,10 @@ models:
       args: ["{in}", "{out}", --size, "{sizes}"]
   Anima-Aesthetic: &anima-amd
     apple:
-      version: 2
+      # 3: the VAE's residual blocks' silu in the exp form (export v6): coreai-build places
+      # every stage on the Neural Engine, so they can be prebuilt once the VAE is not left to
+      # the device (coreai.LeftToDevice; the prebuild rules of PR #336)
+      version: 3
       prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/qwen_tokenizer.json, text/t5_tokenizer.json]}]
