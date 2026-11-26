@@ -16,7 +16,7 @@ u = linear2(x);  s = u / (1 + exp(-u))
 y = g * s
 ```
 
-Its tasks 6 and 7 (the sigmoid's two steps, 8 coefficient sets each) load the kernels of the later `exp` and inverse of `s` (one set each), 128 bytes. With the sigmoid applied before the reshape (`share-flat.aimodel`, the same values) every task has one set and nothing reads past a kernel.
+Its tasks 6 and 7 (the sigmoid's two steps, 8 coefficient sets each) load the kernels of the later `exp` and inverse of `s` (one set each), 128 bytes. With the sigmoid applied before the reshape (`share-flat.aimodel`, the same values) every task has one set and nothing reads past a kernel. On the M1, `share.aimodel` from its `.aimodelc` was finished and its first call was given up after 100 s (2026-11-27, `checkForTimedOutRequests: Request timeout detected … elapsed: 100005 ms, timeout: 100000 ms`).
 
 On an M1 (h13g) such a program is fully placed on the Neural Engine offline and then:
 
@@ -25,7 +25,7 @@ On an M1 (h13g) such a program is fully placed on the Neural Engine offline and 
 
 The same `.aimodel` compiled on the M1 itself runs and is correct. The h14g, h15g, h16g and h17g LLIR of the same programs has no task that reads past its kernel.
 
-How well the reading of the LLIR matches the device: of the h13g programs tried on the M1, every one that hung or crashed the service has such tasks, and none of the about 20 that ran has one; the three chat models rewritten so that their activations are laid out alike (no such task in any of their 59 h13g programs) run from their `.aimodelc`. FLUX.2 klein's h13g program of an attention over 8704 keys (noise, or a crash of the service; reported as "h13g .aimodelc with attention over 8192 or more keys") has 1296 such tasks.
+How well the reading of the LLIR matches the device: of the h13g programs tried on the M1, every one that hung or crashed the service has such tasks, and none of the about 20 that ran has one; and the chat models rewritten so that their activations are laid out alike (no such task in any of 202 h13g programs of nine models) run from their `.aimodelc` (a part with two functions of each of three models tried on the M1, four parts in all). FLUX.2 klein's h13g program of an attention over 8704 keys (noise, or a crash of the service; reported as "h13g .aimodelc with attention over 8192 or more keys") has 1296 such tasks.
 
 ## Steps to reproduce
 
