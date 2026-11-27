@@ -528,6 +528,59 @@ func (b *Builder) scaled(name string, bits int, shape, block []int, data []byte,
 	return b.op("constexpr_blockwise_shift_scale", b.unique(name), map[string]any{"data": dv, "scale": sv}, Float16, shape), nil
 }
 
+// ShiftScaleMinVal is an asymmetric blockwise quantized weight (uint4 or uint8 data, fp16 scales,
+// fp16 per-block minimums: v = min + data * scale) lowered by ailower to Core AI's
+// blockwise_shift_scale_v2 with non-zero minimum.
+func (b *Builder) ShiftScaleMinVal(name string, shape, block []int, bits int, data []byte, scales, mins []uint16) (*Var, error) {
+	if bits != 4 && bits != 8 {
+		return nil, fmt.Errorf("mlpackage: %s: %d bit minval (4 or 8 only)", name, bits)
+	}
+	if len(block) != len(shape) {
+		return nil, fmt.Errorf("mlpackage: %s: %d block dims for %d tensor dims", name, len(block), len(shape))
+	}
+	n, tables := 1, 1
+	scaleShape := make([]int, len(shape))
+	for i, d := range shape {
+		if block[i] <= 0 || d%block[i] != 0 {
+			return nil, fmt.Errorf("mlpackage: %s: axis %d of %v not a multiple of block %v", name, i, shape, block)
+		}
+		n *= d
+		scaleShape[i] = d / block[i]
+		tables *= scaleShape[i]
+	}
+	dt, bt, size := UInt4, BlobUInt4, (n+1)/2
+	if bits == 8 {
+		dt, bt, size = UInt8, BlobUInt8, n
+	}
+	if len(data) != size || len(scales) != tables || len(mins) != tables {
+		return nil, fmt.Errorf("mlpackage: %s: %d data bytes, %d scales, %d mins for shape %v block %v", name, len(data), len(scales), len(mins), shape, block)
+	}
+	dv, err := b.constValue(dt, shape, data, bt)
+	if err != nil {
+		return nil, err
+	}
+	packF16 := func(hs []uint16) (*milspec.Value, error) {
+		raw := make([]byte, 2*len(hs))
+		for i, h := range hs {
+			binary.LittleEndian.PutUint16(raw[2*i:], h)
+		}
+		save := b.ImmediateLimit
+		b.ImmediateLimit = 0
+		v, err := b.constValue(Float16, scaleShape, raw, BlobFloat16)
+		b.ImmediateLimit = save
+		return v, err
+	}
+	sv, err := packF16(scales)
+	if err != nil {
+		return nil, err
+	}
+	mv, err := packF16(mins)
+	if err != nil {
+		return nil, err
+	}
+	return b.op("constexpr_blockwise_shift_scale", b.unique(name), map[string]any{"data": dv, "scale": sv, "min": mv}, Float16, shape), nil
+}
+
 // Finish returns the program with the given outputs.
 func (b *Builder) Finish(outputs ...*Var) *milspec.Program {
 	return &milspec.Program{Version: 1, Functions: map[string]*milspec.Function{"main": b.Function(outputs...)}}

@@ -116,6 +116,130 @@ func QuantizeLinear(w []float32, rows, cols, colBlock, bits int, search bool) Li
 	return l
 }
 
+// MinVal is an asymmetrically block-quantized matrix (MINVAL): each weight is an unsigned
+// Bits-wide integer q in [0, 2^Bits-1] standing for Min + q * Scale, giving all 16 (4-bit) or
+// 256 (8-bit) levels across each block's [min, max] range without wasting levels on empty signs.
+type MinVal struct {
+	Rows, Cols int
+	ColBlock   int
+	Bits       int // 4 or 8
+	Data       []byte
+	Scales     []uint16
+	Mins       []uint16
+}
+
+// QuantizeMinVal quantizes a row-major rows x cols matrix to unsigned bits (4 or 8) with
+// per-block fp16 minimum and scale: v ≈ Min + q * Scale.
+func QuantizeMinVal(w []float32, rows, cols, colBlock, bits int) MinVal {
+	if colBlock <= 0 || colBlock > cols {
+		colBlock = cols
+	}
+	if cols%colBlock != 0 {
+		panic("palette: columns not a multiple of the block")
+	}
+	if bits != 4 && bits != 8 {
+		panic("palette: minval quantization of 4 or 8 bits only")
+	}
+	nc := cols / colBlock
+	m := MinVal{
+		Rows: rows, Cols: cols, ColBlock: colBlock, Bits: bits,
+		Scales: make([]uint16, rows*nc),
+		Mins:   make([]uint16, rows*nc),
+	}
+	if bits == 8 {
+		m.Data = make([]byte, rows*cols)
+	} else {
+		m.Data = make([]byte, (rows*cols+1)/2)
+	}
+	qmax := float32(int(1)<<bits - 1)
+	work := make(chan int, rows)
+	for r := 0; r < rows; r += 2 {
+		work <- r
+	}
+	close(work)
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			q := make([]uint8, colBlock)
+			for r0 := range work {
+				for r := r0; r < min(r0+2, rows); r++ {
+					for b := 0; b < nc; b++ {
+						blk := w[r*cols+b*colBlock : r*cols+(b+1)*colBlock]
+						lo, hi, ok := vecops.MinMax(blk)
+						if !ok {
+							lo, hi = 0, 0
+						}
+						minH := f16(lo)
+						minV := f16val(minH)
+						span := hi - minV
+						if span < 0 {
+							span = 0
+						}
+						scH := f16(span / qmax)
+						scV := f16val(scH)
+						m.Mins[r*nc+b] = minH
+						m.Scales[r*nc+b] = scH
+						if scV == 0 {
+							clear(q)
+						} else {
+							inv := 1.0 / scV
+							maxI := int(qmax)
+							for j, v := range blk {
+								qi := int(math.Round(float64((v - minV) * inv)))
+								if qi < 0 {
+									qi = 0
+								} else if qi > maxI {
+									qi = maxI
+								}
+								q[j] = uint8(qi)
+							}
+						}
+						base := r*cols + b*colBlock
+						if bits == 8 {
+							copy(m.Data[base:], q)
+						} else if base%2 == 0 && colBlock%2 == 0 {
+							vecops.Pack(m.Data[base/2:], q, 4)
+						} else {
+							for j, v := range q {
+								i := base + j
+								m.Data[i/2] |= (v & 0xf) << (4 * (i % 2))
+							}
+						}
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	return m
+}
+
+// Dequantize unpacks MinVal back into float32 values matching hardware MINVAL dequantization.
+func (m MinVal) Dequantize() []float32 {
+	out := make([]float32, m.Rows*m.Cols)
+	nc := m.Cols / m.ColBlock
+	for r := range m.Rows {
+		for b := range nc {
+			minV := f16val(m.Mins[r*nc+b])
+			scV := f16val(m.Scales[r*nc+b])
+			base := r*m.Cols + b*m.ColBlock
+			for j := range m.ColBlock {
+				i := base + j
+				var q uint8
+				if m.Bits == 8 {
+					q = m.Data[i]
+				} else {
+					q = (m.Data[i/2] >> (4 * (i % 2))) & 0xf
+				}
+				out[i] = minV + float32(q)*scV
+			}
+		}
+	}
+	return out
+}
+
 // quantizeNaN is QuantizeLinear's block with NaNs, in Go: NaNs take part in the maximum and
 // errors as they come (the vecops kernels do not promise that), and the scale is returned.
 func quantizeNaN(dst []int8, blk []float32, qmin, qmax float32, search bool) uint16 {

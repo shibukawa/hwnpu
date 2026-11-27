@@ -13,6 +13,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/palette"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
 
@@ -267,4 +268,112 @@ func TestANELayoutBC1S(t *testing.T) {
 	})
 	t.Logf("softmax_2048x1024: last_axis(-1)=%v (npu=%v) vs channel_axis(1)=%v (npu=%v) (%.2fx)",
 		tLast, npuLast, tChan, npuChan, float64(tLast)/float64(tChan))
+}
+
+// TestANEMinValQuantization verifies that asymmetric 4-bit MINVAL (uint4 + fp16 scale + fp16
+// min via blockwise_shift_scale_v2) runs on Apple M3 ANE (onNPU=true) and matches dequantized
+// fp32 reference while halving quantization error on asymmetric weights compared to symmetric int4.
+func TestANEMinValQuantization(t *testing.T) {
+	infos, err := Provider{}.Enumerate(context.Background())
+	if err != nil || len(infos) == 0 {
+		t.Skip("no Core AI:", err)
+	}
+	t.Setenv("HWNPU_CACHE", t.TempDir())
+	ctx := context.Background()
+	dev, err := Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{CacheDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const S, K, N = 8, 128, 64
+	rng := rand.New(rand.NewSource(123))
+	// Shifted asymmetric weights in [+0.5, +2.5] where symmetric [-7, 7] wastes all negative levels!
+	w := make([]float32, N*K)
+	for i := range w {
+		w[i] = 1.5 + float32(rng.NormFloat64())*0.35
+	}
+	mv := palette.QuantizeMinVal(w, N, K, 32, 4)
+	sym := palette.QuantizeLinear(w, N, K, 32, 4, true)
+	mvDeq := mv.Dequantize()
+	symDeq := sym.Dequantize()
+	var mvSE, symSE, ss float64
+	for i, v := range w {
+		d1, d2 := float64(v-mvDeq[i]), float64(v-symDeq[i])
+		mvSE += d1 * d1
+		symSE += d2 * d2
+		ss += float64(v) * float64(v)
+	}
+	t.Logf("asymmetric 4-bit rel RMS err: symmetric=%.4f -> MINVAL=%.4f (%.2fx lower error)",
+		math.Sqrt(symSE/ss), math.Sqrt(mvSE/ss), math.Sqrt(symSE/mvSE))
+
+	dir := filepath.Join(t.TempDir(), "minval.mlpackage")
+	pkg, err := mlpackage.Create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
+	f16 := mlpackage.Float16
+	x := b.Input("x", f16, 1, S, K)
+	wv, err := b.ShiftScaleMinVal("w", []int{N, K}, []int{1, 32}, 4, mv.Data, mv.Scales, mv.Mins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	y := b.NamedOp("linear", "y", map[string]any{"x": x, "weight": wv}, f16, 1, S, N)
+	if err := pkg.Finish(b.Finish(y), 9,
+		[]mlpackage.Feature{{Name: "x", DType: f16, Shape: []int{1, S, K}}},
+		[]mlpackage.Feature{{Name: "y", DType: f16, Shape: []int{1, S, N}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := dev.Compile(ctx, types.GraphSource{Path: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	req, err := g.NewRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	xVals := make([]float32, S*K)
+	bufs := map[string]backend.Buffer{}
+	for _, a := range g.Args() {
+		buf, err := dev.AllocBuffer(a.Bytes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer buf.Close()
+		req.Bind(a.Index, buf)
+		bufs[a.Name] = buf
+		if a.Kind == types.ArgInput {
+			for i := range xVals {
+				h := mlpackage.Float16Bits(float32(rng.NormFloat64()) * 0.25)
+				binary.LittleEndian.PutUint16(buf.Bytes()[2*i:], h)
+				xVals[i] = mlpackage.Float16Value(h)
+			}
+		}
+	}
+	f, err := req.Submit()
+	if err == nil {
+		err = f.Wait(ctx)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var maxDiff float64
+	rawOut := bufs["y"].Bytes()
+	for s := range S {
+		for n := range N {
+			var want float64
+			for k := range K {
+				want += float64(xVals[s*K+k]) * float64(mvDeq[n*K+k])
+			}
+			got := float64(mlpackage.Float16Value(binary.LittleEndian.Uint16(rawOut[2*(s*N+n):])))
+			maxDiff = max(maxDiff, math.Abs(got-want))
+		}
+	}
+	t.Logf("MINVAL on Core AI: onNPU=%v (M4+ ANE native; M1-M3 runs on GPU), max abs diff vs fp32 ref=%.5f", g.Placement().OnNPU(), maxDiff)
+	if maxDiff > 0.05 {
+		t.Errorf("MINVAL Core AI max diff %g > 0.05", maxDiff)
+	}
 }

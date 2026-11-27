@@ -793,8 +793,20 @@ func (l *lowerer) shiftScale(op *milspec.Operation, oshape []int) val {
 	for _, d := range scale.shape {
 		n *= d
 	}
-	zero := l.constRaw(data.elem, scale.shape, make([]byte, n)) // one byte a zero point either way (splat)
-	minv := l.constRaw(scale.elem, scale.shape, make([]byte, 2*n))
+	zbytes := n
+	if data.elem == "sint4" || data.elem == "uint4" {
+		zbytes = (n + 1) / 2
+	}
+	zero := l.constRaw(data.elem, scale.shape, make([]byte, zbytes))
+	var minv val
+	if l.has(op, "min") {
+		minv = l.in(op, "min")
+		if !slices.Equal(minv.shape, scale.shape) {
+			l.fail("blockwise %s: min %v for scale %v", opName(op), minv.shape, scale.shape)
+		}
+	} else {
+		minv = l.constRaw(scale.elem, scale.shape, make([]byte, 2*n))
+	}
 	return l.emit("blockwise_shift_scale_v2", scale.elem, oshape, nil, data, scale, zero, minv)
 }
 
