@@ -21,11 +21,12 @@ func Translate(name string) ai.Use[*Translator] {
 }
 
 var translateRole = &airole.Role{
-	Name:    "translate",
-	Remote:  func(h *airpc.Handle) io.Closer { return &Translator{remote: h} },
-	Kinds:   []chat.Kind{chat.KindChat},
-	Feature: "translation",
-	Prepare: prepareEngine,
+	LoadSettings: loadSettings,
+	Name:         "translate",
+	Remote:       func(h *airpc.Handle) io.Closer { return &Translator{remote: h} },
+	Kinds:        []chat.Kind{chat.KindChat},
+	Feature:      "translation",
+	Prepare:      prepareEngine,
 	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
 		eng, err := loadEngine(ctx, f, e, "translate")
 		if err != nil {

@@ -42,7 +42,7 @@ type childSpec struct {
 	Quick      bool          `json:"quick"`
 	Cycle      bool          `json:"cycle,omitempty"` // resident: run every held program in turn after each load
 	N          int           `json:"n"`
-	Layout     string        `json:"layout,omitempty"`      // split: files or functions; kv: the mode; attn: the form
+	Layout     string        `json:"layout,omitempty"`      // split: files or functions; kv: the mode
 	Used       []int         `json:"used,omitempty"`        // attn, seam: used cache lengths of the passes
 	AttnLayers int           `json:"attn_layers,omitempty"` // seam: attention layers between the weighted parts
 	Paths      []string      `json:"paths,omitempty"`       // cache: the programs, in the order to load
@@ -173,9 +173,9 @@ func runChild(arg string) error {
 	case "kv":
 		rs = p.kv(spec.Layout, spec.Layers, spec.N)
 	case "attn":
-		rs = p.attn(spec.Layout, spec.Layers, max(spec.Tokens, 1), spec.N, spec.Used)
+		rs = p.attn(spec.Layers, max(spec.Tokens, 1), spec.N, spec.Used)
 	case "seam":
-		rs = p.seam(spec.Format, spec.Layers, spec.AttnLayers, max(spec.Tokens, 1), spec.Layout, spec.N, spec.Used)
+		rs = p.seam(spec.Format, spec.Layers, spec.AttnLayers, max(spec.Tokens, 1), spec.N, spec.Used)
 	case "resident":
 		rs = p.resident(spec.Format, spec.Layers, spec.Layout, spec.N, !spec.Quick, spec.Cycle)
 	case "cache":

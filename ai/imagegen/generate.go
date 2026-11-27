@@ -46,7 +46,7 @@ func Edit(name string) ai.Use[*Generator] {
 //	                       one size (Anima on Intel's NPU): an aspect ratio
 //	                       (1:1, 1:1s, 16:9, ...) or a side in pixels; default 1:1
 //	          dit          Anima: the diffusion model, a file of split_files/diffusion_models/
-//	          group        Anima: the DiT's blocks a program holds
+//	          dit-group    Anima: the DiT's blocks a program holds
 //	          qchunk       Anima: the queries an attention scores at a time (default 512)
 //	programs: export       an export's directory (Export): of tools/amd/iron_*.py for AMD's NPU,
 //	                       or of hwnpu-image convert; run as it is
@@ -58,7 +58,7 @@ const (
 	SettingDitFormat  = "dit-format"
 	SettingSize       = "size"
 	SettingDit        = "dit"
-	SettingGroup      = "group"
+	SettingDitGroup   = "dit-group"
 	SettingQChunk     = "qchunk"
 	ProgramExport     = "export"
 )
@@ -102,6 +102,7 @@ func newRole(name string, edit bool) *airole.Role {
 		// its one reference of a picture of 1024 x 1024 at 512), where the store's record names the
 		// other chips', whose prebuilt programs draw noise on it
 		Revision: 5,
+		Usable:   currentExport,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 			var f airole.Files
 			fam := familyOf(e.Base)
@@ -124,6 +125,9 @@ func newRole(name string, edit bool) *airole.Role {
 			}
 			f.SetValue("family", fam)
 			f.SetValue("base", e.Base.Name)
+			if first(e.Model.Programs[ProgramExport]) != "" {
+				f.SetValue(valueGiven, "true") // the definition's export, by path: currentExport leaves it
+			}
 			return f, err
 		},
 		Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {

@@ -122,5 +122,5 @@ macOS 27 には Core ML のほかに Core AI があります。追加で入れ�
 | 読み込みがエラーを返さずに落ちる | 手書きの ML Program で値の名前にドットがあるか、パッケージが壊れている。coremltools と `hwnpu-dev convert` が書く名前は問題ない。 |
 | fp16 なのにモデル全体が CPU で動く | 重みが大きすぎる（モデル 1 つあたり 1 GiB 以上。複数のモデルに分ける）か、Neural Engine が受け付けない並びの重み圧縮（表引きは行全体を 16 行ごとに 1 表、ブロックごとの int4 は不可）。 |
 | 結果が PyTorch と数パーセントずれる | Neural Engine の行列積には約 2.5e-4 の絶対誤差の床があり、出力の小さい層が精度を失う。LFM3 では `hwnpu-dev convert -post-scale` が回避する。[MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を参照。 |
-| CPU や GPU との比較がしたい | 読み込み時に `HWNPU_COREML_UNITS=cpu` か `gpu` を設定する（計測専用で、API ではない）。 |
+| CPU や GPU との比較がしたい | 読み込み時に `HWNPU_DEV=coreml.units=cpu` か `gpu` を設定する（計測専用で、API ではない）。 |
 | `hwnpu-dev powerbench` が `Password:` で止まる | `powermetrics` に root が要る。sudo のパスワードを一度入れれば、あとはツールが資格を保つ。 |

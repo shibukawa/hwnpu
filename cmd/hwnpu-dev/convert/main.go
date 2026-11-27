@@ -54,7 +54,7 @@ func Main() {
 	config := flag.String("config", "", "config.json of the model")
 	weights := flag.String("weights", "", "checkpoint: .safetensors (bf16) or .gguf")
 	out := flag.String("o", "", "output: an .mlpackage directory (replaced), or an .xml with -backend intel")
-	backend := flag.String("backend", "coreml", "runtime to write for: coreml (an .mlpackage for the Neural Engine) or intel (OpenVINO IR for Intel's NPU, with out.parts.json)")
+	backend := flag.String("backend", "coreml", "program format to write: coreml (an .mlpackage: the program Core ML runs and Core AI lowers to its own, for Apple's Neural Engine) or intel (OpenVINO IR for Intel's NPU, with out.parts.json)")
 	arch := flag.String("arch", "", "architecture (default: detected from config.json)")
 	list := flag.Bool("archs", false, "list the supported architectures and exit")
 	seq := flag.Int("seq", 32, "fixed sequence length")

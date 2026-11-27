@@ -233,15 +233,12 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	h.zeroGate, h.zeroDown = make([]float32, 2*I), make([]float32, H)
 	all, budget := h.wiring()
 	h.reads = !all
-	pf, _ := DebugOpt("prefault")
 	switch {
 	case all:
 		h.prefault(true)
 	case budget > 0:
 		h.place = newPlacer(h, p, budget, n)
 		h.place.start()
-	case pf != "0" && 2*h.bytes() <= mem.Physical():
-		h.prefault(false) // unwired as asked, and they fit: their pages in before the first runs
 	}
 	if !all {
 		// a router as the checkpoint has it in bf16, mapped: read a row at a time by the guess
@@ -270,7 +267,7 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	if path, ok := DebugOpt("trace"); ok && path != "" {
 		h.trace = openTrace(path)
 	}
-	if pf == "wait" { // for measuring: every page in before the first run
+	if pf, _ := DebugOpt("prefault"); pf == "wait" { // for measuring: every page in before the first run
 		h.warm.Wait()
 	}
 	return h, nil
@@ -464,6 +461,9 @@ const rowPiece = 128 * 2048
 // runItems is the most rows of experts (an expert on a row) whose products Run holds at once:
 // those of a step of 128 tokens with 8 experts a token (12 MB of Qwen3.6-35B-A3B's).
 const runItems = 1024
+
+// oneRow runs a call of one row as runRow; a test sets it false to compare with the rows' form.
+var oneRow = true
 
 // runRow is Run of one row (a generated token), as one piece of work of the cores' workers, woken
 // once a layer: as three Runs over all the experts (the rows' form) each wakes them again, and
@@ -802,7 +802,7 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	if h.reads {
 		h.readChosen(layer, byExpert)
 	}
-	if v, _ := DebugOpt("row"); len(rows) == 1 && v != "0" {
+	if len(rows) == 1 && oneRow {
 		h.runRow(hl, rows[0], idx[0], w[0], out[0])
 		return nil
 	}

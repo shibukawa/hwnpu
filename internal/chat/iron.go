@@ -58,7 +58,51 @@ func (s *ironSession) Cache() int {
 	return s.m.Manifest.Config.MaxSeqLen
 }
 func (s *ironSession) Pos() int { return s.pos }
-func (s *ironSession) Reset()   { s.pos = 0 }
+
+// Stateless: an export whose state is the KV caches written by position (Restartable) goes back
+// to any position.
+func (s *ironSession) Stateless() bool { return s.m.Manifest.Restartable }
+
+// RewindPoint: a restartable export goes back to n itself. One with recurrent states goes back
+// to the last prompt-chunk boundary at or before n without a mark taken there: a call ends
+// within the chunk it starts in, and the boundary's slot holds the state after the positions
+// before it until they are run again (iron.Model.StateAt), so the sequence in the cache has it.
+// Its prompt calls are a chunk each, so going back to the boundary reads in as many calls as
+// going back to a mark inside the chunk would.
+// boundaryChunk is the prompt chunk whose boundaries a model with recurrent states goes back to
+// by itself (RewindPoint), 0 for none: its states' slots must be the prompt calls' chunks.
+func (s *ironSession) boundaryChunk() int {
+	c := s.m.Manifest.Config.PrefillChunk
+	if c <= 0 || s.m.Manifest.Restartable || len(s.m.Manifest.Checkpoints) == 0 {
+		return 0
+	}
+	for _, cp := range s.m.Manifest.Checkpoints {
+		if cp.Chunk != c {
+			return 0 // slots of another size than the prompt calls'
+		}
+	}
+	return c
+}
+
+func (s *ironSession) RewindPoint(n int) *decode.Mark {
+	if n <= 0 || n > s.pos {
+		return nil
+	}
+	if s.Stateless() {
+		return decode.NewMark(n, nil)
+	}
+	c := s.boundaryChunk()
+	if c == 0 || n < c {
+		return nil
+	}
+	b := n / c * c
+	state, err := s.m.StateAt(b)
+	if err != nil {
+		return nil
+	}
+	return decode.NewMark(b, map[string][]byte{savedState: state})
+}
+func (s *ironSession) Reset() { s.pos = 0 }
 
 // savedRows is the key of a saved sequence's rows in its mark's buffers, savedState that of the
 // recurrent states' slot at its position.
@@ -121,6 +165,8 @@ func (s *ironSession) restore(m *decode.Mark) error {
 }
 
 func (s *ironSession) RowBytes() int { return s.m.RowBytes() }
+
+func (s *ironSession) RowFormat() (string, int) { return s.m.RowFormat() }
 
 func (s *ironSession) ExportRows(from, to int) ([]byte, error) {
 	if to > s.pos {

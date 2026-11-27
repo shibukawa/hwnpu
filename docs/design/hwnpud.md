@@ -458,10 +458,68 @@ One process makes some limits shared by every app:
   (`HWNPU_DAEMON_SOCKET`).
 - `HWNPU_DAEMON_SOCKET` points to another socket, to try a hwnpud built from a worktree beside the
   installed one.
-- The first message gives the protocol version and the build. A daemon older than its client is
-  asked to exit once it is idle, and the service manager starts the new binary at the next
-  connection.
+- The first message (`hello`) gives the protocol version, the build, the hash of the model
+  definitions and recipes built in (`definitions`: models.yaml and model-recipes.yaml, which decide
+  the exports and how the models run) and the settings each role takes (`roles`, the names of
+  `ai.LoadSettings`; `airole.Role.LoadSettings`). Added 2026-11-27, after an installed hwnpud of
+  11-24 ran newer clients' models by its own definitions and dropped a setting it did not know
+  (`reserve_moe_memory`) without a word.
+  - Another protocol: the client refuses, as before.
+  - No `definitions` (a hwnpud from before), or others than the client's: the client says so in one
+    line (`go install ./cmd/hwnpud && hwnpu service restart`), and so does `hwnpu service status`,
+    and runs through it. An app built against another version of the module meets the same line;
+    it is a note, not an error, as its hwnpud is the machine's.
+  - A setting a role of hwnpud's does not take: the client stops before opening (with the names
+    the role takes, and the version when it differs). The engine refuses one too (`Open`,
+    `CheckSettings`), and so does a process of its own (`HWNPU_DAEMON=off`): a misspelled name is
+    an error everywhere.
+- The supervisor watches its executable: once it is replaced (`go install`) and no engine runs, it
+  exits, and the service manager starts the new one at the next connection. A hwnpud whose file
+  was never replaced keeps running: the line above is what tells.
 - The socket is mode 0600 and the daemon checks the peer's uid.
+
+## Plan: clients without the engine (not built yet)
+
+Written 2026-11-27. Every program that uses hwnpu links the whole engine: `hwnpu-chat` depends on
+88 of hwnpu's packages, hwnpud on 123, and an app of the `ai` package on as many. With
+`HWNPU_DAEMON=off` a client runs the models itself. That was the way before hwnpud and stays the
+way of the tests, but it has costs beyond turning the sharing off:
+
+- Two paths. The same machine may run a model differently through hwnpud and in a process of its
+  own; an investigation done with `off` (Anima's VAE on the M2, 2026-11-27) says nothing of the
+  hwnpud path.
+- Versions that do not show. The engine's code and definitions decide the exports and how the
+  models run; a client carries its own besides hwnpud's (`definitions` above now tells them apart).
+- Settings in two places: a client of its own reads its shell; hwnpud reads the .env files.
+- aned's compile cache is keyed by the signing identity, `a.out` for every Go build: the more
+  binaries that run the Neural Engine, the more often one reuses another's program (a bad prebuilt
+  VAE came back in a fresh build, 2026-11-27).
+- Every app is as large as the engine, with the shims embedded (Core AI's dylib).
+
+The plan, in steps:
+
+1. The client side alone. Each role package (`ai/text`, `ai/imagegen`, ...) keeps its types, its
+   `Remote` and its uses, and moves `Prepare` and `Load` (and what they import) into a package of
+   the engine that registers them (`airole.Register`), imported by hwnpud (`internal/aihost`),
+   hwnpu-dev and the tests. `internal/daemon`'s client (`Client`, `Use`, `Hello`) moves apart from
+   the supervisor and the engine, which import the backends today. A test checks that
+   `cmd/hwnpu-chat` and an app of `ai` import none of `internal/llm`, `internal/backend` and
+   `internal/coreai`.
+2. The commands go through hwnpud only. `HWNPU_DAEMON=off` stays where the engine is linked
+   (hwnpud itself, `hwnpu-dev`, `go test`); elsewhere it is an error that says how to run a
+   hwnpud of the worktree.
+3. Development: a worktree's code runs through a hwnpud of the worktree on its own socket
+   (`HWNPU_DAEMON_SOCKET`), which a command of `hwnpu-dev` builds and starts, so that the path
+   tried is the path shipped.
+
+To find out first:
+
+- hwnpud runs on the Mac (launchd) and Linux (systemd); Windows has no service yet
+  (`install_other.go`): Intel's NPU on Windows needs one before step 2.
+- Whether every path of the commands works through the engine as with `off`: the CPU checks
+  (`--cpu`, hwnpu's CPU interpreter) and the first preparing (`CompileOnLoad`) in particular.
+- `hwnpu-dev` (convert, prebuild, models package) stays a process of its own: it makes the
+  programs, it does not serve them.
 
 ## Installing and distributing
 

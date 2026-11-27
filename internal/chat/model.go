@@ -374,7 +374,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	_, hostExperts := model.(llm.HostRouted)
 	if _, routed := model.(llm.Routed); routed && !hostExperts && !chipRecipe().TakesGatherND() {
 		// the experts' program picks their scales with gather_nd, which the chip's Neural Engine
-		// does not take (apple.chips' gather_nd: an M1's, docs/handoff-ane-gather.md 1): refused
+		// does not take (apple.chips' gather_nd: an M1's, docs/design/apple-neural-engine.md): refused
 		// before the checkpoint downloads
 		return Config{}, fmt.Errorf("chat: %s is a mixture of experts, which runs on an M2 or later, not on an %s's Neural Engine", c.Name, Chip())
 	}

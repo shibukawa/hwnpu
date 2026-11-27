@@ -167,8 +167,8 @@ hwnpu swaps its own kernels into IRON's operators at export without changing IRO
 - NPU1 on real hardware (only simulated 4 columns, and the same export shape on NPU2). Its 6 xclbins use all 6 hardware contexts (none if another process uses the NPU): exports past that need context swapping.
 - xrtshim on Windows hardware; building with MSVC.
 - The NPU's own power on stock Linux (no sensor; numbers are package PPT).
-- `--load-pdi-to-ctrl-pkt` (configurations streamed as control packets by DMA; biggest expected cut of the 2.3 µs/KB part): aiecc stops at `npu_materialized.mlir` ("operand #0 does not dominate this use", `aie.lock`), and `internal/aieelf` does not support scheme 4 yet.
-- GDN kernels' static arrays as IRON Worker local buffers (no zero blocks): ~8 ms a token on Qwen3.6, ~5 ms on Qwen3.5; not started.
+- `--load-pdi-to-ctrl-pkt` (configurations streamed as control packets by DMA; biggest expected cut of the 2.3 µs/KB part): aiecc stops at `npu_materialized.mlir` ("operand #0 does not dominate this use", `aie.lock`), and `internal/aieelf` does not support scheme 4 yet. It stops also with `--ctrlpkt-adaptive-overlay=false` and without teardown; upstream has no report of it (mlir-aie #3928's plan; #3934, #3935 merged), and multi-column designs may also hit #3488 (hangs on hardware, open).
+- GDN kernels' static arrays as IRON Worker local buffers (no zero blocks): ~8 ms a token on Qwen3.6, ~5 ms on Qwen3.5; not started. Qwen3.6's GDN configuration is 374 KB a layer × 30 layers.
 - One resident array per layer for dense models (LFM3-1.7B: ~60 ms a token expected).
 - Several commands in one ELF; address-dependent scratchpad words.
 - ELF flow on UMQ-generation hardware; device heap growth.
@@ -189,3 +189,4 @@ hwnpu swaps its own kernels into IRON's operators at export without changing IRO
 - Merging small configurations (RMSNorm, add): does not pay.
 - `-idle` for Neural Engine and Intel: reload takes tens of seconds to minutes.
 - Pinning more memory for speed: no effect.
+- Skipping host syncs of buffers only the NPU uses (2606.07586): the IRON path already syncs only the ranges it reads or writes (`readRegion`, `writeRegion`, `writeCopies`). Whole syncs remain only at load and on non-IRON paths (`internal/llm/chain`). When cutting syncs, keep host-read regions in place (see the host-read pitfall above).

@@ -36,6 +36,13 @@ func (m *Model) caches() ([]kvCache, error) {
 			if q, ok := placed[name]; ok && q != p {
 				return nil, fmt.Errorf("iron: cache %s is placed differently by a prompt chunk", name)
 			}
+			if _, ok := placed[name]; !ok && v == m.verify {
+				// the check of drafts' own scratch (tools/amd/iron_verify.py's rows_o: the rows
+				// it attends, 3 positions), not a cache of the sequence, which the decode step
+				// or a prompt chunk has too. Taken for one, ExportRows read past its buffer
+				// (Qwen3.5-0.8B and 2B: the prompt store kept nothing)
+				continue
+			}
 			placed[name] = p
 		}
 	}
@@ -255,6 +262,44 @@ func (m *Model) RowBytes() int {
 		n += c.row
 	}
 	return n
+}
+
+// RowFormat returns the common element dtype ("bf16" or "f16") and a guaranteed power-of-two head
+// alignment across exported KV caches, or ("", 0) when the caches use mixed or non-float dtypes.
+func (m *Model) RowFormat() (dtype string, headDim int) {
+	cs, err := m.caches()
+	if err != nil || len(cs) == 0 {
+		return "", 0
+	}
+	minRow := 0
+	for _, c := range cs {
+		var dt string
+		switch c.p.DType {
+		case "bfloat16", "bf16":
+			dt = "bf16"
+		case "float16", "f16":
+			dt = "f16"
+		default:
+			return "", 0
+		}
+		if dtype == "" {
+			dtype = dt
+		} else if dtype != dt {
+			return "", 0
+		}
+		if c.row%2 != 0 {
+			return "", 0
+		}
+		if minRow == 0 || c.row < minRow {
+			minRow = c.row
+		}
+	}
+	// Every modern LLM head_dim is a multiple of 64 (64, 128, 256), so 64-element blocks never
+	// cross a head or K/V cache boundary.
+	if (minRow/2)%64 == 0 {
+		return dtype, 64
+	}
+	return "", 0
 }
 
 // ExportRows copies the KV caches' rows of positions [from, to): position by position, the

@@ -72,9 +72,11 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/daemon"
 	"github.com/shibukawa/hwnpu/internal/npustatus"
 	"github.com/shibukawa/hwnpu/internal/servicecmd"
 	shared "github.com/shibukawa/hwnpu/internal/store"
@@ -87,6 +89,11 @@ type cli struct {
 	Service servicecmd.Cmd     `cmd:"" help:"hwnpud, which owns the NPU and the models for the commands and the apps: install (as a service that starts at the first connection), status, start (not installed: in the foreground), stop, restart, uninstall."`
 	Config  ConfigCmd          `cmd:"" help:"hwnpu's settings by key, as git config (model-source, model-allowlist: config keys): set, get and remove; add, get and remove N of a list. Kept in ~/.config/hwnpu/.env, which hwnpud reads and applies at once."`
 	Issue   IssueCmd           `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
+}
+
+func init() {
+	// hwnpu service status compares hwnpud's definitions with these (daemon.VersionNote)
+	daemon.Builtin = [][]byte{hwnpu.ModelsYAML, hwnpu.RecipesYAML}
 }
 
 func main() {

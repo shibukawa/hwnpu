@@ -48,6 +48,128 @@ type mtpDrafter struct {
 	// norm, which the rotated programs leave out of h) scales the hidden states after
 	unrot func([]float32)
 	final []float32
+
+	guard      mtpGuard // skips MTP temporarily on high OOV or sustained very low acceptance
+	lastDraftN int      // MTP drafts proposed on the latest draft() call (0 if skipped or lookup won)
+}
+
+// mtpGuard suppresses wasted MTP calls without reducing the normal draft depth (d=2 is fastest on
+// fixed-batch ANE verification): it skips MTP when recent tokens are mostly outside draftVocab
+// (>25% OOV over the last 32 tokens) or when rolling acceptance over 8 MTP steps drops below 15%,
+// backing off for 8..16 steps before probing again.
+type mtpGuard struct {
+	inVocab  []bool
+	hist     [8]struct{ drafted, accepted int }
+	nHist    int
+	pos      int
+	skipLeft int
+	cooldown int
+	probing  bool
+}
+
+func (g *mtpGuard) setVocab(ids []int32) {
+	if len(ids) == 0 {
+		g.inVocab = nil
+		return
+	}
+	var hi int32
+	for _, id := range ids {
+		if id > hi {
+			hi = id
+		}
+	}
+	if hi < 0 || hi > 1<<22 {
+		g.inVocab = nil
+		return
+	}
+	g.inVocab = make([]bool, hi+1)
+	for _, id := range ids {
+		if id >= 0 {
+			g.inVocab[id] = true
+		}
+	}
+}
+
+func (g *mtpGuard) reset() {
+	g.nHist, g.pos = 0, 0
+	g.skipLeft, g.cooldown = 0, 0
+	g.probing = false
+}
+
+func (g *mtpGuard) allow(seq []int32) bool {
+	if len(g.inVocab) > 0 && len(seq) >= 16 {
+		win := seq
+		if len(win) > 32 {
+			win = win[len(win)-32:]
+		}
+		oov, checked := 0, 0
+		for _, id := range win {
+			if id < 0 {
+				continue
+			}
+			checked++
+			if int(id) >= len(g.inVocab) || !g.inVocab[id] {
+				oov++
+			}
+		}
+		if checked >= 16 && oov*4 > checked {
+			return false
+		}
+	}
+	if g.skipLeft > 0 {
+		g.skipLeft--
+		return false
+	}
+	return true
+}
+
+func (g *mtpGuard) observe(drafted, accepted int) {
+	if drafted <= 0 {
+		return
+	}
+	if g.probing {
+		g.probing = false
+		if accepted > 0 {
+			g.nHist, g.pos = 0, 0
+			g.cooldown = 0
+			return
+		}
+		g.cooldown = min(max(g.cooldown*2, 8), 16)
+		g.skipLeft = g.cooldown
+		g.probing = true
+		return
+	}
+	g.hist[g.pos] = struct{ drafted, accepted int }{drafted, accepted}
+	g.pos = (g.pos + 1) % len(g.hist)
+	if g.nHist < len(g.hist) {
+		g.nHist++
+	}
+	if g.nHist < len(g.hist) {
+		return
+	}
+	totD, totA := 0, 0
+	for _, h := range g.hist {
+		totD += h.drafted
+		totA += h.accepted
+	}
+	if totD > 0 && totA*100 < totD*15 {
+		g.nHist, g.pos = 0, 0
+		g.cooldown = 8
+		g.skipLeft = g.cooldown
+		g.probing = true
+	}
+}
+
+func (m *mtpDrafter) resetRequest() {
+	m.guard.reset()
+	m.lastDraftN = 0
+}
+
+func (m *mtpDrafter) observed(accepted int) {
+	if m.lastDraftN > 0 {
+		m.guard.observe(m.lastDraftN, accepted)
+		m.lastDraftN = 0
+	}
 }
 
 // plain is row taken back from the rotated residual (unrot) and, for a hidden state, scaled by
@@ -130,6 +252,7 @@ func loadMTP(ctx context.Context, e *Engine, c Config) (*mtpDrafter, error) {
 	if m.ids, err = readDraftVocab(c.MTP[0]); err != nil {
 		return nil, err
 	}
+	m.guard.setVocab(m.ids)
 	for i, pkg := range c.MTP {
 		var ch *chain.Chain
 		if i == 0 {
@@ -229,8 +352,9 @@ func (m *mtpDrafter) record(fed []int32, pos0 int, rows [][]float32) {
 // draft guesses up to k tokens after seq (the tokens fed and the one just picked), with the
 // prompt's guess when that agrees with the layer's first and goes further (LookupDraft).
 func (m *mtpDrafter) draft(seq []int32, k int) []int32 {
+	m.lastDraftN = 0
 	look := LookupDraft(seq, k)
-	if m.failed {
+	if m.failed || !m.guard.allow(seq) {
 		return look
 	}
 	d, err := m.guess(seq, min(k, m.k))
@@ -242,6 +366,7 @@ func (m *mtpDrafter) draft(seq []int32, k int) []int32 {
 	if len(look) > len(d) && (len(d) == 0 || look[0] == d[0]) {
 		return look
 	}
+	m.lastDraftN = len(d)
 	return d
 }
 
@@ -279,12 +404,22 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 			rows[i] = append(append(make([]float32, 0, 2*len(m.hrows[0])), m.plain(x[0], false)...), m.hrows[t+i-m.hbase]...)
 		}
 		var err error
-		if logits, err = m.sess.Step(rows); err != nil {
-			m.sess.Reset()
-			m.base = -1
-			return nil, err
+		// Non-final catch-up batches only need to populate the single layer's KV cache;
+		// attention, o_proj, MLP and the LM head are unused until the final batch.
+		if t+n < end {
+			if err = m.sess.StepKVOnly(rows); err != nil {
+				m.sess.Reset()
+				m.base = -1
+				return nil, err
+			}
+		} else {
+			if logits, err = m.sess.Step(rows); err != nil {
+				m.sess.Reset()
+				m.base = -1
+				return nil, err
+			}
+			h = m.sess.Hidden()
 		}
-		h = m.sess.Hidden()
 		t += n
 		m.real += n
 	}

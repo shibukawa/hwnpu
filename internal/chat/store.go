@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 )
 
@@ -40,7 +41,66 @@ type entry struct {
 	Rows     int     `json:"rows"`
 	Marks    []int   `json:"marks"`
 	RowBytes int     `json:"row_bytes"`
+	KVQBits  int     `json:"kvq_bits,omitempty"`
+	KVQDim   int     `json:"kvq_dim,omitempty"`
+	KVQDType string  `json:"kvq_dtype,omitempty"`
 	Used     int64   `json:"used"` // unix nanoseconds of the last use
+}
+
+// storeKVQBits is the bits a value of the rows the store keeps, Hadamard-rotated and Lloyd-Max
+// quantized (kvq.go; 6: 39-41 % of fp16 and bf16); 0, the default, keeps them as they are.
+// HWNPU_DEV=store.kvq=4|5|6 sets it. Not exact: on AMD, Qwen3.5-2B's greedy answer from rows of 6
+// bits parted from a cold read after about 10 tokens (0.8B about 70), and was the same byte for
+// byte from rows kept as they are; it saved 85 of the entry's 777 MB of disk (its marks, the
+// recurrent states, are most of it) and no memory, as the rows are expanded when they come back.
+var storeKVQBits = 0
+
+// storeKVQ is the bits of the rows to keep: HWNPU_DEV=store.kvq, else storeKVQBits.
+func storeKVQ() int {
+	if v, err := strconv.Atoi(devenv.Value("store.kvq")); err == nil && (v == 0 || kvqLevels(v) != nil) {
+		return v
+	}
+	return storeKVQBits
+}
+
+func (e *entry) kvqValid() bool {
+	if e.KVQBits == 0 {
+		return true
+	}
+	return kvqLevels(e.KVQBits) != nil &&
+		kvqDTypeOK(e.KVQDType) &&
+		e.KVQDim > 0 && e.KVQDim&(e.KVQDim-1) == 0 &&
+		e.RowBytes%2 == 0 && (e.RowBytes/2)%e.KVQDim == 0
+}
+
+func (e *entry) diskRowBytes() int {
+	if e.KVQBits == 0 {
+		return e.RowBytes
+	}
+	return (e.RowBytes / (2 * e.KVQDim)) * kvqBlockBytes(e.KVQDim, e.KVQBits)
+}
+
+type rowFormatter interface {
+	RowFormat() (dtype string, headDim int)
+}
+
+func storeKVQFor(sess rowSource, rowBytes int) (bits, dim int, dtype string) {
+	bits = storeKVQ()
+	rf, ok := sess.(rowFormatter)
+	if bits == 0 || !ok || rowBytes%2 != 0 {
+		return 0, 0, ""
+	}
+	dt, headDim := rf.RowFormat()
+	if !kvqDTypeOK(dt) || headDim < 64 {
+		return 0, 0, ""
+	}
+	nvals := rowBytes / 2
+	for _, d := range []int{128, 64} {
+		if headDim >= d && headDim%d == 0 && nvals%d == 0 {
+			return bits, d, dt
+		}
+	}
+	return 0, 0, ""
 }
 
 // storedMark is a mark file.
@@ -92,7 +152,7 @@ func openStore(dir string) (*store, error) {
 		}
 		e := &entry{dir: filepath.Join(dir, d.Name())}
 		b, err := os.ReadFile(filepath.Join(e.dir, "meta.json"))
-		if err != nil || json.Unmarshal(b, e) != nil || e.RowBytes <= 0 {
+		if err != nil || json.Unmarshal(b, e) != nil || e.RowBytes <= 0 || !e.kvqValid() {
 			// not an entry: one being written by another process (put writes meta.json
 			// last), or left by a write that failed; the old ones go
 			if fi, err := d.Info(); err == nil && time.Since(fi.ModTime()) > staleAfter {
@@ -100,7 +160,7 @@ func openStore(dir string) (*store, error) {
 			}
 			continue
 		}
-		if fi, err := os.Stat(filepath.Join(e.dir, "rows.bin")); err != nil || fi.Size() < int64(e.Rows)*int64(e.RowBytes) {
+		if fi, err := os.Stat(filepath.Join(e.dir, "rows.bin")); err != nil || fi.Size() < int64(e.Rows)*int64(e.diskRowBytes()) {
 			os.RemoveAll(e.dir) // its rows went bad: it would be dropped on its first use
 			continue
 		}
@@ -112,13 +172,22 @@ func openStore(dir string) (*store, error) {
 // find returns the entry and the mark position that bring prompt furthest without reading: the
 // last mark inside the longest beginning that prompt shares with an entry, whose rows the entry
 // holds. 0 and nil for none.
-func (st *store) find(prompt []int32) (*entry, int) {
+//
+// free: the session goes back to any position (stateless), so the longest beginning itself, short
+// of prompt's last token, whose logits a step gives, mark or not.
+func (st *store) find(prompt []int32, free bool) (*entry, int) {
 	var best *entry
 	bestPos := 0
 	for _, e := range st.entries {
 		n := 0
 		for n < len(e.Tokens) && n < len(prompt) && e.Tokens[n] == prompt[n] {
 			n++
+		}
+		if free {
+			if p := min(n, e.Rows, len(prompt)-1); p > 0 && (p > bestPos || p == bestPos && e.Used > best.Used) {
+				best, bestPos = e, p
+			}
+			continue
 		}
 		for _, p := range e.Marks {
 			if p <= n && p <= e.Rows && p > 0 && (p > bestPos || p == bestPos && e.Used > best.Used) {
@@ -130,8 +199,12 @@ func (st *store) find(prompt []int32) (*entry, int) {
 }
 
 // load reads the rows before pos and the mark at pos of an entry.
-func (st *store) load(e *entry, pos int) (rows []byte, m *decode.Mark, logits []float32, err error) {
-	if !slices.Contains(e.Marks, pos) || pos > e.Rows {
+//
+// free: a position without a mark, of a stateless session, comes with an empty mark and no
+// logits.
+func (st *store) load(e *entry, pos int, free bool) (rows []byte, m *decode.Mark, logits []float32, err error) {
+	marked := slices.Contains(e.Marks, pos)
+	if !marked && !free || pos > e.Rows {
 		return nil, nil, nil, fmt.Errorf("chat: no mark at %d in %s", pos, e.dir)
 	}
 	f, err := os.Open(filepath.Join(e.dir, "rows.bin"))
@@ -139,9 +212,26 @@ func (st *store) load(e *entry, pos int) (rows []byte, m *decode.Mark, logits []
 		return nil, nil, nil, err
 	}
 	defer f.Close()
-	rows = make([]byte, pos*e.RowBytes)
-	if _, err := io.ReadFull(f, rows); err != nil {
+	setNoCache(f)
+	raw := make([]byte, pos*e.diskRowBytes())
+	if _, err := io.ReadFull(f, raw); err != nil {
 		return nil, nil, nil, fmt.Errorf("chat: %s: rows: %w", e.dir, err)
+	}
+	dropPageCache(f, false)
+	if e.KVQBits > 0 {
+		rows, err = kvqDecompress(raw, e.KVQDType, e.KVQDim, e.KVQBits)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("chat: %s: kvq decode: %w", e.dir, err)
+		}
+	} else {
+		rows = raw
+	}
+	if !marked {
+		e.Used = time.Now().UnixNano()
+		if err := e.writeMeta(); err != nil {
+			return nil, nil, nil, err
+		}
+		return rows, decode.NewMark(pos, nil), nil, nil
 	}
 	sm, err := readMark(filepath.Join(e.dir, markFile(pos)))
 	if err != nil {
@@ -160,13 +250,12 @@ func (st *store) load(e *entry, pos int) (rows []byte, m *decode.Mark, logits []
 func markFile(pos int) string { return "mark-" + strconv.Itoa(pos) + ".bin" }
 
 func readMark(path string) (*storedMark, error) {
-	f, err := os.Open(path)
+	b, err := readUncached(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	var sm storedMark
-	if err := gob.NewDecoder(f).Decode(&sm); err != nil {
+	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&sm); err != nil {
 		return nil, fmt.Errorf("chat: %s: %w", path, err)
 	}
 	return &sm, nil
@@ -183,7 +272,7 @@ func writeMark(path string, sm storedMark) error {
 // writeFile writes a file through a temporary name, so that a reader never sees a part of it.
 func writeFile(path string, b []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := writeUncached(tmp, b); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -239,7 +328,14 @@ func (st *store) put(tokens []int32, sess rowSource, marks []storedMark, base *e
 		base.Used = time.Now().UnixNano()
 		return base, base.writeMeta()
 	}
-	e := &entry{dir: filepath.Join(st.dir, strconv.FormatInt(time.Now().UnixNano(), 10)), RowBytes: rb}
+	kvqBits, kvqDim, kvqDType := storeKVQFor(sess, rb)
+	e := &entry{
+		dir:      filepath.Join(st.dir, strconv.FormatInt(time.Now().UnixNano(), 10)),
+		RowBytes: rb,
+		KVQBits:  kvqBits,
+		KVQDim:   kvqDim,
+		KVQDType: kvqDType,
+	}
 	if err := os.MkdirAll(e.dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -280,7 +376,8 @@ func (e *entry) append(tokens []int32, sess rowSource, marks []storedMark) error
 	if err != nil {
 		return err
 	}
-	if _, err := f.Seek(int64(e.Rows)*int64(e.RowBytes), io.SeekStart); err != nil {
+	setNoCache(f)
+	if _, err := f.Seek(int64(e.Rows)*int64(e.diskRowBytes()), io.SeekStart); err != nil {
 		f.Close()
 		return err
 	}
@@ -292,11 +389,19 @@ func (e *entry) append(tokens []int32, sess rowSource, marks []storedMark) error
 			f.Close()
 			return err
 		}
+		if e.KVQBits > 0 {
+			rows, err = kvqCompress(rows, e.KVQDType, e.KVQDim, e.KVQBits)
+			if err != nil {
+				f.Close()
+				return err
+			}
+		}
 		if _, err := f.Write(rows); err != nil {
 			f.Close()
 			return err
 		}
 	}
+	dropPageCache(f, true)
 	if err := f.Close(); err != nil {
 		return err
 	}
@@ -317,7 +422,7 @@ func (e *entry) append(tokens []int32, sess rowSource, marks []storedMark) error
 }
 
 func copyFile(from, to string) error {
-	b, err := os.ReadFile(from)
+	b, err := readUncached(from)
 	if err != nil {
 		return err
 	}

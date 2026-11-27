@@ -224,6 +224,31 @@ A tier switch costs about 15 ms once (Core ML).
   prompt, and `Rewind`s to the last mark inside the common prefix.
 - Chat templates drop earlier `<think>` blocks, so the common prefix usually ends at the previous prompt's
   end.
+- Where agents' prompts part (`internal/chat/resume.go`, after openset-llm's resume, patches/0007):
+  clients rewrite the end of the prompt they sent (Claude Code moves its `<system-reminder>`), so the
+  next prompt parts inside the last one, past its end mark. `resumeTracker` learns the token there and
+  the 4 after it, and `prefill` cuts the step and marks the sequence before the last place they come;
+  marks are kept by expected saved tokens (hit rate of their kind × position), not oldest first.
+- Sessions that go back inside their sequence by themselves (`rewindPointer`, `Engine.selfReach`) need
+  no such marks, and `prefill` makes none for them:
+  - stateless ones to any position: `decode.Session.Stateless` (no rings, no held inputs; on Apple
+    Qwen3 and Qwen2.5-Coder) and AMD's `restartable` exports (gpt-oss-20b, Gemma 4 E2B/E4B, PLaMo 3
+    Translate). The store also restores the whole shared beginning for them, not the last mark in it
+    (`store.find`/`load` with `free`).
+  - AMD's exports with recurrent states (LFM3, Qwen3.5, Qwen3.6) to the last prompt-chunk boundary at
+    or before the parting (`ironSession.RewindPoint`): a call ends within the chunk it starts in and the
+    boundary's slot keeps the state after the positions before it (`iron.Model.StateAt`). Their prompt
+    calls are a chunk each, so a mark inside a chunk would cost a call (the cut) and save none.
+  - aix1 (Ryzen AI 9 365), an agent loop of 6 requests (a 6000-character system prompt, each request
+    moving the reminder; seconds a request, turns 1–5, 8 tokens of answer), main 030fe5a7 → this:
+    LFM3-1.7B 1.46–2.66 → 1.00–1.69, Qwen3.5-2B 2.29–5.42 → 1.76–2.35, Gemma 4 E2B 1.69–2.77 →
+    1.25–1.30; with the prompt store (the default) LFM3 1.17–2.07 → 1.14–1.79, Gemma 1.46–1.96 →
+    1.37–1.41. After a restart LFM3 restores 2048 tokens instead of 3049 (the store keeps no marks
+    where prompts part for it): 1.94 s against 1.77, once. A 64-token greedy answer after the loop is the
+    same as a cold read for LFM3 and Gemma; Qwen3.5-2B parts from the cold read after about 45 tokens on
+    main and on this alike (the same warm text).
+  - `TestEngineReuseStateless`, `TestStoreStateless` (Qwen3 on the CPU); the AMD boundaries were checked
+    on aix1 only.
 - Up to 2 other sequences are set aside (`maxSaved`) with `Session.Save`, which copies only the rows up to
   the position (`ExportRows`), so parallel requests (OpenCode's title and summary requests) do not force
   re-reading the main one. A saved sequence remembers its tier.
@@ -242,6 +267,23 @@ A tier switch costs about 15 ms once (Core ML).
   (copying the shared marks), or adds missing marks. Marks every 512 tokens (`markEvery`). Sequences under
   1024 tokens are not stored (`minStored`: they read in a second). 4 entries per model (`maxStored`), least
   recently used goes. Writes go to a temporary name and are renamed; `meta.json` is written last.
+- The files (rows, marks, meta) leave no pages in the file cache (`store_nocache*.go`): on a machine
+  short of memory they would push out the model's pages. macOS: `F_NOCACHE` as each is opened. Linux:
+  `fadvise(DONTNEED)` after reads, and after writes `fdatasync` and `DONTNEED` on a copy of the
+  descriptor in the background (dirty pages are not dropped; the answer does not wait for the disk). On
+  aix1 the store's files in the file cache after an agent loop: LFM3 12 of 106 MB → 0, Gemma 4 E2B 15
+  of 96 MB → 0 (the marks were left before). `TestStoreFilesUncached` (Linux, skipped on tmpfs).
+- Rows are kept as they are by default. `HWNPU_DEV=store.kvq=4|5|6` keeps them Hadamard-rotated in that
+  many bits a value (`kvq.go`, after openset-llm's KV cache types; 6 bits: 39–41 % of fp16/bf16), which is
+  not exact: on aix1 Qwen3.5-2B's 64-token greedy answer restored from 6-bit rows parted from a cold read
+  after about 10 tokens (0.8B about 70), and from rows as they are it was the same byte for byte. It saved
+  85 of the entry's 777 MB (the marks, recurrent states, are most of it) and no memory: the rows are
+  expanded when they come back. Entries written in bits are still read (`kvq_bits`).
+- AMD: the check of drafts' scratch rows (`iron_verify.py`'s `model.layers.N.cache.rows_o`) are not
+  caches of the sequence (`iron.Model.caches` skips buffers only that version has). Taken for one,
+  `ExportRows` read past its buffer and Qwen3.5-0.8B and 2B kept nothing (`amd: sync of [...] in a buffer
+  of ...`); with the fix, the first request after a restart of an agent loop: 2B 6.76 → 2.41 s, 0.8B 5.36
+  → 1.86 s.
 - Unreadable entries are dropped on use and the next best entry tried; `openStore` removes directories
   without `meta.json` older than 1 hour (`staleAfter`).
 - `Engine.prefill` uses the store only when it reaches further than the in-memory reuse; it resumes on the

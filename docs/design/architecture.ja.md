@@ -165,7 +165,7 @@ func BindAddr(fptr any, addr uintptr)                  // DDI テーブルの関
 | 偽のドライバ | `testdata/zemock` (偽の Level Zero、`cc` があればビルド)、`internal/xdna/xdnasim` (Go で書いた偽の amdxdna) | 不要 |
 | fixture | `internal/fixtures` の小さなモデル (`gen_models.py` で作り直す) | 不要 |
 | 変換器 | 合成の重み (`llm.NewSynthetic`)、プログラムと `weight.bin` のダイジェスト、`modeling_*.py` から書いた fp64 の forward、`milcpu` と PyTorch の照合 | 不要 |
-| 実機 | Mac での Core ML / Core AI の試験。各 NPU での `hwnpu-dev report` (passthrough の設計、サンプルのモデル)。書き出し済みのプログラムは `HWNPU_TEST_PREBUILT` | 要 |
+| 実機 | Mac での Core ML / Core AI の試験。各 NPU での `hwnpu-dev report` (passthrough の設計、サンプルのモデル)。書き出し済みのプログラムは `HWNPU_TEST_COREAI_PREBUILT_FILE` | 要 |
 | 電力 | 同じモデルを `PowerLow` と `PowerPerformance` で、`hwnpu-dev powerbench` (mJ/トークン) | 要 |
 
 試験は全部 `CGO_ENABLED=0 go test ./...` で動く。

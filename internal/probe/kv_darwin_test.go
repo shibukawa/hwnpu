@@ -42,7 +42,7 @@ func TestKVOnNeuralEngine(t *testing.T) {
 	}
 }
 
-// The chunk attention program of every form stays on the Neural Engine with 64 query rows, and
+// The chunk attention program stays on the Neural Engine with 64 query rows, and
 // with one over a chunk of the longest length a dimension takes. With one row over 1024 keys
 // Core ML puts the whole program on the CPU (M3, macOS 27.0.1): too little work for the Neural
 // Engine by its estimate. That case is logged, not required; hwnpu-dev probe attn maps the boundary.
@@ -57,32 +57,30 @@ func TestChunkAttnOnNeuralEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dev.Close()
-	for _, form := range AttnForms {
-		for _, c := range []struct {
-			q, chunk int
-			want     bool
-		}{{1, 1024, false}, {1, 4096, false}, {1, 16384, true}, {8, 1024, false}, {64, 1024, true}, {64, 16384, true}} {
-			dir := filepath.Join(t.TempDir(), fmt.Sprintf("attn_%s_%d_%d.mlpackage", form, c.q, c.chunk))
-			if err := WriteChunkAttnPackage(dir, form, c.q, c.chunk); err != nil {
-				t.Fatal(err)
-			}
-			g, err := dev.Compile(ctx, types.GraphSource{Path: dir})
-			if err != nil {
-				t.Errorf("%s Q=%d chunk %d: %v", form, c.q, c.chunk, err)
-				continue
-			}
-			p := g.Placement()
-			switch {
-			case !p.Verified:
-				t.Logf("%s Q=%d chunk %d: placement not verified", form, c.q, c.chunk)
-			case p.OnNPU():
-				t.Logf("%s Q=%d chunk %d: on the Neural Engine", form, c.q, c.chunk)
-			case c.want:
-				t.Errorf("%s Q=%d chunk %d: %d operations off the Neural Engine: %v", form, c.q, c.chunk, len(p.Ops), p.Ops)
-			default:
-				t.Logf("%s Q=%d chunk %d: %d of %d operations off the Neural Engine", form, c.q, c.chunk, len(p.Ops), len(p.Ops)+p.NPUOps)
-			}
-			g.Close()
+	for _, c := range []struct {
+		q, chunk int
+		want     bool
+	}{{1, 1024, false}, {1, 4096, false}, {1, 16384, true}, {8, 1024, false}, {64, 1024, true}, {64, 16384, true}} {
+		dir := filepath.Join(t.TempDir(), fmt.Sprintf("attn_%d_%d.mlpackage", c.q, c.chunk))
+		if err := WriteChunkAttnPackage(dir, c.q, c.chunk); err != nil {
+			t.Fatal(err)
 		}
+		g, err := dev.Compile(ctx, types.GraphSource{Path: dir})
+		if err != nil {
+			t.Errorf("Q=%d chunk %d: %v", c.q, c.chunk, err)
+			continue
+		}
+		p := g.Placement()
+		switch {
+		case !p.Verified:
+			t.Logf("Q=%d chunk %d: placement not verified", c.q, c.chunk)
+		case p.OnNPU():
+			t.Logf("Q=%d chunk %d: on the Neural Engine", c.q, c.chunk)
+		case c.want:
+			t.Errorf("Q=%d chunk %d: %d operations off the Neural Engine: %v", c.q, c.chunk, len(p.Ops), p.Ops)
+		default:
+			t.Logf("Q=%d chunk %d: %d of %d operations off the Neural Engine", c.q, c.chunk, len(p.Ops), len(p.Ops)+p.NPUOps)
+		}
+		g.Close()
 	}
 }

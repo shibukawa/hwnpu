@@ -111,7 +111,7 @@ int8 stays the default: per-group int4 is slower than int8 here, per-row int4 is
 ### Windows job time limit (TDR)
 
 - Windows stops a GPU/NPU job past its time limit (TDR, 2 s by default) and the device is lost (`zeFenceHostSynchronize: ZE_RESULT_ERROR_DEVICE_LOST`). Anima 1024² with 4 DiT blocks a program hit it (estimated 2–4 s a group).
-- `--group` default 0 = auto, `anima.DefaultGroup`: Core ML and Core AI 4; Intel halves from 4 until blocks × patches ≤ 4096 (512²: 4, 640²: 2, 768² and 1024²: 1). `g` is in the export name. On DEVICE_LOST (`types.IsDeviceLost`) with group ≥ 2 the error suggests halving `--group`.
+- `--dit-group` default 0 = auto, `anima.DefaultGroup`: Core ML and Core AI 4; Intel halves from 4 until blocks × patches ≤ 4096 (512²: 4, 640²: 2, 768² and 1024²: 1). `g` is in the export name. On DEVICE_LOST (`types.IsDeviceLost`) with group ≥ 2 the error suggests halving `--group`.
 - g4 and g1 exports give the same picture (latent difference 3.6 % relative, rounding between groups).
 
 ## Windows
@@ -123,7 +123,11 @@ int8 stays the default: per-group int4 is slower than int8 here, per-row int4 is
 
 - Whether the NPU compiler accepts the ops added for the non-chat models (DepthToSpace, ConvolutionBackpropData, Clamp, MaxPool, Elu, …) and the large graphs (Sana's Gemma 2 6 layers int8 ~0.5 GB, EfficientSAM's 4096-token attention); speed; whether Sana and MOSS fit the 135U's memory.
 - Where the 4.6 GB failure comes from (program size or graph shape, not the total); whether the 0xc0000005 crash is out of memory.
-- Anima on the NPU after g1: the reload after "bad allocation" (text and a few blocks a prompt expected); int8 Anima (`image-512-int8`) against fp16.
+- Anima on the NPU after g1, at 512² and 1024²: whether every part loads (the reload after "bad allocation"; text and a few blocks a prompt expected) without `DEVICE_LOST`; driver compile, step, VAE and total times, NPU memory; `--dit-format int8` and `int4` against the fp16 default (less memory, no reloads?); the picture against Mac / AMD with the same prompt and seed. Then fix USAGE_IMAGE.md / .ja.md ("Intel's NPU is untested") and Anima's row in [performance.md](performance.md).
+  ```sh
+  hwnpu-image generate --size 1:1s "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" --seed 1 -o out512.png
+  hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" --seed 1 -o out1024.png
+  ```
 - Cost of re-recording command lists for attention over chunks (full-attention layers × chunks used, each step).
 - Real-NPU runs of Gemma 4, LFM3-VL / Audio, Qwen3.5, Whisper, d1, PLaMo 3 8B int4 (two programs or one).
 - A size limit like Apple's 1 GiB: the 2 GiB of `-target intel` is a placeholder. Compile times of large graphs.

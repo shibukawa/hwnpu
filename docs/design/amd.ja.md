@@ -160,8 +160,8 @@ hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON 
 - NPU1 の実機 (4 列の模擬と、同じ書き出しの形を NPU2 でしか確かめていない)。xclbin 6 個でハードウェアコンテキストの上限 6 を使い切る (ほかのプロセスが NPU を使っていると作れない)。それを超える書き出しにはコンテキストの入れ替えが要る。
 - Windows の実機での xrtshim、MSVC でのビルド。
 - 標準の Linux での NPU 単体の電力 (センサーなし。数字はパッケージの PPT)。
-- `--load-pdi-to-ctrl-pkt` (設定を制御パケットとして DMA で流す。2.3 µs/KB の部分を最も減らせる見込み): aiecc が `npu_materialized.mlir` で止まり ("operand #0 does not dominate this use"、`aie.lock`)、`internal/aieelf` も種類 4 にまだ対応していない。
-- GDN のカーネルの静的な配列を IRON の Worker の局所バッファに (0 の塊をなくす): Qwen3.6 で 1 トークン約 8 ms、Qwen3.5 で約 5 ms。未着手。
+- `--load-pdi-to-ctrl-pkt` (設定を制御パケットとして DMA で流す。2.3 µs/KB の部分を最も減らせる見込み): aiecc が `npu_materialized.mlir` で止まり ("operand #0 does not dominate this use"、`aie.lock`)、`internal/aieelf` も種類 4 にまだ対応していない。`--ctrlpkt-adaptive-overlay=false` でも teardown なしでも止まる。上流にこの不具合の報告はない (mlir-aie #3928 の計画、#3934・#3935 はマージ済み)。複数列の設計は #3488 (実機で止まる、open) にも当たりうる。
+- GDN のカーネルの静的な配列を IRON の Worker の局所バッファに (0 の塊をなくす): Qwen3.6 で 1 トークン約 8 ms、Qwen3.5 で約 5 ms。未着手。Qwen3.6 の GDN の設定は 1 層 374 KB × 30 層。
 - 密なモデルの 1 層を 1 つの常駐の配列に (LFM3-1.7B で 1 トークン約 60 ms の見込み)。
 - 1 つの ELF に複数のコマンド。アドレスに依るスクラッチパッドの語。
 - UMQ 世代での ELF の流れ。デバイスヒープの拡張。
@@ -182,3 +182,4 @@ hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON 
 - 小さな設定 (RMSNorm、加算) をまとめること: 割に合わない。
 - Neural Engine と Intel の `-idle`: 読み直しに数十秒から数分かかる。
 - 速さのために多く固定すること: 効かない。
+- NPU だけが使うバッファのホストとの同期を省くこと (2606.07586): IRON の経路はすでに読み書きする範囲だけを同期している (`readRegion`、`writeRegion`、`writeCopies`)。全体の同期が残るのは読み込みと、IRON でない経路 (`internal/llm/chain`) だけ。同期を減らすときも、ホストが読む領域の位置は変えない (上の、ホストが読む領域の落とし穴)。

@@ -13,6 +13,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
 // The settings and programs a chat model's definition may give (ai.Definition), besides its
@@ -118,6 +119,9 @@ func prepareEngine(e airole.PrepareEnv) (f airole.Files, err error) {
 	return f, nil
 }
 
+// loadSettings are the settings loadEngine reads (ai.LoadSettings).
+var loadSettings = []string{"idle", "prompt_cache", "experts_key", "sparse", "reserve_moe_memory"}
+
 // loadEngine loads what prepareEngine made, run as the app's settings for the role say
 // (LoadEnv.Settings).
 func loadEngine(ctx context.Context, f airole.Files, e airole.LoadEnv, role string) (*chat.Engine, error) {
@@ -142,6 +146,11 @@ func loadEngine(ctx context.Context, f airole.Files, e airole.LoadEnv, role stri
 	// a mixture of experts' experts that do not all fit: its core first, then the app's counts
 	// (a model without experts on the host ignores it)
 	c.Experts = expertsPlacement(e.Def, idle, cmp.Or(set["experts_key"], role))
+	reserve, err := experts.ParseReserve(set["reserve_moe_memory"], mem.Physical())
+	if err != nil {
+		return nil, fmt.Errorf("text: reserve_moe_memory: %w", err)
+	}
+	c.Experts.Reserve = reserve
 	eng, err := chat.Load(ctx, c)
 	if err != nil {
 		return nil, err

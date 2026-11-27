@@ -222,8 +222,8 @@ func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Defini
 		if c.Dit != "" {
 			set(imagegen.SettingDit, c.Dit)
 		}
-		if c.Group > 0 {
-			set(imagegen.SettingGroup, strconv.Itoa(c.Group))
+		if c.DitGroup > 0 {
+			set(imagegen.SettingDitGroup, strconv.Itoa(c.DitGroup))
 		}
 		if c.QChunk != 0 && c.QChunk != 512 {
 			set(imagegen.SettingQChunk, strconv.Itoa(c.QChunk))

@@ -147,7 +147,7 @@ var (
 
 定義 (`ai.Definition`) の設定と変換済みのファイル (各役割のコメントに一覧):
 
-- チャットと翻訳: `Format`、`Context`、`Paged`、`Prefill`、`Tier` の欄、settings の `draft`、`mtp`、`shortest`、`codes`、`format_for`、programs の `iron` (AMD の書き出しのディレクトリ)、`packages` (と `config`、`weights`)、`tokenizer`、`vision`、`audio`。AMD では元のモデル (`PrepareEnv.Base`) の名前で書き出しを引く。読み込みの設定 (`ai.LoadSettings("chat", ...)`) は `idle` (既定 5m)、`prompt_cache` (既定はキャッシュの `prompts`、`off`)、`experts_key` (既定は役割の名前)、`sparse` (`off`)
+- チャットと翻訳: `Format`、`Context`、`Paged`、`Prefill`、`Tier` の欄、settings の `draft`、`mtp`、`shortest`、`codes`、`format_for`、programs の `iron` (AMD の書き出しのディレクトリ)、`packages` (と `config`、`weights`)、`tokenizer`、`vision`、`audio`。AMD では元のモデル (`PrepareEnv.Base`) の名前で書き出しを引く。読み込みの設定 (`ai.LoadSettings("chat", ...)`) は `idle` (既定 5m)、`prompt_cache` (既定はキャッシュの `prompts`、`off`)、`experts_key` (既定は役割の名前)、`sparse` (`off`)、`reserve_moe_memory` (Neural Engine の専門家をメモリに固定する量、`8GB` や `50%`。既定は固定しない)
 - 埋め込み: settings の `seqs` (既定 128,1024)、programs の `packages` (と `config`、`weights`)
 - 判断: settings の `seqs` (既定 512)、`format` (既定 lut8)、`Device: "cpu"`、programs の `packages` (と `config`、`weights`、`tokenizer`、`calibration`)、`vision`、`audio`
 

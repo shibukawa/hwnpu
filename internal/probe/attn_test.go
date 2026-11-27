@@ -69,59 +69,55 @@ func TestChunkAttnMergeMatchesFull(t *testing.T) {
 		}
 	}
 
-	for _, form := range AttnForms {
-		t.Run(form, func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "attn.mlpackage")
-			if err := WriteChunkAttnPackage(dir, form, tokens, chunk); err != nil {
-				t.Fatal(err)
+	dir := filepath.Join(t.TempDir(), "attn.mlpackage")
+	if err := WriteChunkAttnPackage(dir, tokens, chunk); err != nil {
+		t.Fatal(err)
+	}
+	p, f, err := milcpu.OpenPackage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	merge := NewChunkMerge(QHeads*tokens, HeadDim)
+	for j := 0; j < chunks; j++ {
+		part := func(x []float32) []float32 { // chunk j of every kv head
+			out := make([]float32, 0, KVHeads*chunk*HeadDim)
+			for h := 0; h < KVHeads; h++ {
+				out = append(out, x[(h*cache+j*chunk)*HeadDim:(h*cache+(j+1)*chunk)*HeadDim]...)
 			}
-			p, f, err := milcpu.OpenPackage(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer f.Close()
-			merge := NewChunkMerge(QHeads*tokens, HeadDim)
-			for j := 0; j < chunks; j++ {
-				part := func(x []float32) []float32 { // chunk j of every kv head
-					out := make([]float32, 0, KVHeads*chunk*HeadDim)
-					for h := 0; h < KVHeads; h++ {
-						out = append(out, x[(h*cache+j*chunk)*HeadDim:(h*cache+(j+1)*chunk)*HeadDim]...)
-					}
-					return out
+			return out
+		}
+		mask := make([]float32, tokens*chunk)
+		for r := 0; r < tokens; r++ {
+			for c := 0; c < chunk; c++ {
+				if !visible(r, j*chunk+c) {
+					mask[r*chunk+c] = -1e4
 				}
-				mask := make([]float32, tokens*chunk)
-				for r := 0; r < tokens; r++ {
-					for c := 0; c < chunk; c++ {
-						if !visible(r, j*chunk+c) {
-							mask[r*chunk+c] = -1e4
-						}
-					}
-				}
-				res, err := p.Run(map[string]milcpu.Tensor{
-					"q":    {Shape: []int{1, QHeads, tokens, HeadDim}, Data: q},
-					"k":    {Shape: []int{1, KVHeads, chunk, HeadDim}, Data: part(k)},
-					"v":    {Shape: []int{1, KVHeads, chunk, HeadDim}, Data: part(v)},
-					"mask": {Shape: []int{1, 1, tokens, chunk}, Data: mask},
-				}, milcpu.Options{})
-				if err != nil {
-					t.Fatal(err)
-				}
-				merge.Add(res["o"].Data, res["m"].Data, res["l"].Data)
 			}
-			got := make([]float32, len(want))
-			merge.Result(got)
-			var num, den float64
-			for i := range want {
-				d := float64(got[i]) - want[i]
-				num += d * d
-				den += want[i] * want[i]
-			}
-			if e := math.Sqrt(num / den); e > 5e-3 || math.IsNaN(e) {
-				t.Errorf("relative error %g against one softmax over the cache", e)
-			} else {
-				t.Logf("relative error %.2g", e)
-			}
-		})
+		}
+		res, err := p.Run(map[string]milcpu.Tensor{
+			"q":    {Shape: []int{1, QHeads, tokens, HeadDim}, Data: q},
+			"k":    {Shape: []int{1, KVHeads, chunk, HeadDim}, Data: part(k)},
+			"v":    {Shape: []int{1, KVHeads, chunk, HeadDim}, Data: part(v)},
+			"mask": {Shape: []int{1, 1, tokens, chunk}, Data: mask},
+		}, milcpu.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		merge.Add(res["o"].Data, res["m"].Data, res["l"].Data)
+	}
+	got := make([]float32, len(want))
+	merge.Result(got)
+	var num, den float64
+	for i := range want {
+		d := float64(got[i]) - want[i]
+		num += d * d
+		den += want[i] * want[i]
+	}
+	if e := math.Sqrt(num / den); e > 5e-3 || math.IsNaN(e) {
+		t.Errorf("relative error %g against one softmax over the cache", e)
+	} else {
+		t.Logf("relative error %.2g", e)
 	}
 }
 

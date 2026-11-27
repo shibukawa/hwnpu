@@ -5,7 +5,7 @@ embedding and the head) run here in float32 with transformers' modules; each MoE
 the reference (``ref``: the router and the chosen experts from the bf16 checkpoint in float32,
 transformers' Lfm2MoeSparseMoeBlock written out, the experts read on demand so the 15 GB of
 experts are never all in memory) or ``aicheck moeserve`` (``ane``: the router and the experts in
-int8 on the Neural Engine, every MoE layer's experts held, docs/handoff-ane-gather.md 1b).
+int8 on the Neural Engine, every MoE layer's experts held, docs/design/apple-neural-engine.md).
 
     PY=~/models/ref-venv/bin/python
     go build -o /tmp/aicheck ./tools/coreai/aicheck

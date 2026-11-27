@@ -359,9 +359,57 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
   その worktree のコードを動かすには `HWNPU_DAEMON=off` (`base/hwnpu-chat` / `new/hwnpu-chat` の比べ方も
   そうする) か、worktree の hwnpud を別のソケットで (`HWNPU_DAEMON_SOCKET`)
 - `HWNPU_DAEMON_SOCKET` は別のソケットを指す。worktree でビルドした hwnpud を、入れてあるものの横で試すため
-- 最初のメッセージでプロトコルの版とビルドを伝える。クライアントより古いデーモンには手が空いたら終わってもらい、
-  次の接続でサービスの管理役が新しいバイナリを起こす
+- 最初のメッセージ (`hello`) で、プロトコルの版、ビルド、組み込んだモデルの定義とレシピのハッシュ
+  (`definitions`: models.yaml と model-recipes.yaml。書き出しとモデルの動かし方を決める)、役割ごとに受け取る設定
+  (`roles`: `ai.LoadSettings` の名前、`airole.Role.LoadSettings`) を伝える。2026-11-27 に足した: 11-24 の
+  hwnpud が入ったままで、新しいクライアントのモデルを自分の定義で動かし、知らない設定 (`reserve_moe_memory`) を
+  黙って捨てていた
+  - プロトコルが違う: これまでどおりクライアントが断る
+  - `definitions` がない (前の hwnpud) か、クライアントのと違う: クライアントが 1 行で伝え
+    (`go install ./cmd/hwnpud && hwnpu service restart`)、`hwnpu service status` も伝える。そのまま hwnpud を通る。
+    別の版のモジュールでビルドしたアプリも同じ 1 行を見る。hwnpud は機械のものなので、エラーではなく注意
+  - hwnpud の役割が受け取らない設定: クライアントが開く前に止める (役割が受け取る名前と、違えば版のことも)。
+    engine も断り (`Open`、`CheckSettings`)、自分のプロセス (`HWNPU_DAEMON=off`) も断る: 名前の書き違いはどこでも
+    エラーになる
+- supervisor は自分の実行ファイルを見張る: 入れ替わり (`go install`)、engine が動いていなければ終わり、次の接続で
+  サービスの管理役が新しいものを起こす。ファイルが入れ替わらなければ古いまま動き続ける: それを伝えるのが上の 1 行
 - ソケットはモード 0600、デーモンは相手の uid を確かめる
+
+## 予定: エンジンを持たないクライアント (まだ作っていない)
+
+2026-11-27 に書いた。hwnpu を使うプログラムは、どれもエンジンを丸ごとリンクしている: `hwnpu-chat` は hwnpu の
+パッケージ 88 個、hwnpud は 123 個、`ai` のパッケージのアプリも同じくらいに依存する。`HWNPU_DAEMON=off` では
+クライアントが自分でモデルを動かす。hwnpud の前はそれがやり方で、テストは今もそうだが、共有を切るだけでない
+費用がある:
+
+- 道が 2 つ。同じ機械でも、hwnpud を通すのと自分のプロセスとでモデルの動き方が違いうる。`off` で調べたこと
+  (M2 の Anima の VAE、2026-11-27) は hwnpud の道について何も言わない
+- 版が見えない。書き出しとモデルの動かし方を決めるのはエンジンのコードと定義で、クライアントは hwnpud のとは
+  別に自分のを持つ (上の `definitions` で見分けられるようにした)
+- 設定が 2 か所: 自分のプロセスのクライアントはシェルを、hwnpud は .env のファイルを読む
+- aned のコンパイルのキャッシュは署名の ID ごとで、Go のビルドはどれも `a.out`: Neural Engine を使うバイナリが
+  多いほど、ほかのプログラムを使い回すことが増える (誤った prebuilt の VAE が新しいビルドでも戻った、2026-11-27)
+- どのアプリもエンジンと同じ大きさで、shim (Core AI の dylib) を埋め込む
+
+段取り:
+
+1. クライアントの側だけにする。役割のパッケージ (`ai/text`、`ai/imagegen`、...) は型、`Remote`、使い方を残し、
+   `Prepare` と `Load` (とそれが読むもの) はエンジンのパッケージに移して登録する (`airole.Register`)。それを
+   読むのは hwnpud (`internal/aihost`)、hwnpu-dev、テスト。`internal/daemon` のクライアント (`Client`、`Use`、
+   `Hello`) を、今はバックエンドを読む supervisor と engine から分ける。`cmd/hwnpu-chat` と `ai` のアプリが
+   `internal/llm`、`internal/backend`、`internal/coreai` を読まないことをテストで確かめる
+2. コマンドは hwnpud だけを通る。`HWNPU_DAEMON=off` はエンジンをリンクするところ (hwnpud 自身、`hwnpu-dev`、
+   `go test`) に残し、ほかではエラーにして worktree の hwnpud の動かし方を伝える
+3. 開発: worktree のコードは worktree の hwnpud を別のソケットで (`HWNPU_DAEMON_SOCKET`)。`hwnpu-dev` の
+   コマンドがビルドして起こす。試す道と出す道を同じにする
+
+先に確かめること:
+
+- hwnpud は Mac (launchd) と Linux (systemd) で動き、Windows にはまだサービスがない (`install_other.go`):
+  Windows の Intel の NPU は段取り 2 の前にそれが要る
+- コマンドのどの道も、`off` と同じにエンジンを通して動くか: 特に CPU での確かめ (`--cpu`、hwnpu の CPU の
+  インタプリタ) と最初の準備 (`CompileOnLoad`)
+- `hwnpu-dev` (convert、prebuild、models package) は自分のプロセスのまま: プログラムを作るもので、配るものではない
 
 ## 入れ方と配り方
 

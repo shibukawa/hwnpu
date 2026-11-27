@@ -10,9 +10,9 @@ import (
 )
 
 func TestGet(t *testing.T) {
-	t.Setenv(Env, " moe.time, moe.prefetch=0 ,draft.ratio=2,draft.ratio=3,nope=1")
-	if v, ok := Get("draft.ratio"); !ok || v != "3" {
-		t.Errorf("draft.ratio: %q %v, want the last", v, ok)
+	t.Setenv(Env, " moe.time, moe.prefetch=0 ,iron.lookup.cost=2,iron.lookup.cost=3,nope=1")
+	if v, ok := Get("iron.lookup.cost"); !ok || v != "3" {
+		t.Errorf("iron.lookup.cost: %q %v, want the last", v, ok)
 	}
 	if !On("moe.time") || On("moe.prefetch") || !IsOff("moe.prefetch") || IsOff("moe.time") {
 		t.Error("On and IsOff")

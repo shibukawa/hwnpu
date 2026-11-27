@@ -19,7 +19,8 @@ import (
 // the others: the cost of a call hardly depends on the tokens it takes (speculative decoding
 // relies on that), and switching programs costs. Needs HWNPU_TEST_LFM3_DIR (the model's directory of
 // hwnpu-chat); HWNPU_TEST_CHAT_CALL_PKGS names the programs, groups that share one cache separated by ";"
-// and programs by "," (default: the programs of 1, 8 and 64 tokens with the cache of 16320).
+// and programs by "," (default: what Prepare writes for Core ML, the programs of 8 and 128 tokens
+// split at the attention in chunks of 8192, with the cache of LFM3-1.7B's context of 262144).
 func TestCallTimes(t *testing.T) {
 	dir := os.Getenv("HWNPU_TEST_LFM3_DIR")
 	if dir == "" {
@@ -31,7 +32,7 @@ func TestCallTimes(t *testing.T) {
 	}
 	groups := os.Getenv("HWNPU_TEST_CHAT_CALL_PKGS")
 	if groups == "" {
-		groups = "lfm3-lut6-grouped-c16320-q8.mlpackage,lfm3-lut6-grouped-c16320-q64.mlpackage"
+		groups = "lfm3-r1-lut6-grouped-p8192-c262144-q8.mlpackage,lfm3-r1-lut6-grouped-p8192-c262144-q128-last.mlpackage"
 	}
 	cache, _ := os.UserCacheDir()
 	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(cache, "hwnpu")))

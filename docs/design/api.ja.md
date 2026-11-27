@@ -88,7 +88,7 @@ type GraphSource struct {
 	XML, Bin   []byte      // OpenVINO IR
 	BuildFlags string      // 例: `--inputs_precisions="0:fp16" --config NPU_PLATFORM="4000"`
 	Function   string      // 複数の関数を持つ ML Program の 1 つ (macOS 15 以降)。関数どうしは重みを共有する
-	Units      string      // Core ML: "" Neural Engine (+CPU)、"cpu"、"gpu"。HWNPU_COREML_UNITS が上書き
+	Units      string      // Core ML: "" Neural Engine (+CPU)、"cpu"、"gpu"。HWNPU_DEV=coreml.units が上書き
 }
 
 type GraphRunner interface {
@@ -249,7 +249,7 @@ type VersionError struct{ Component, Have, Need string }
 | `WithCacheDir(dir)` | コンパイル結果を保存して使い回す。キーはモデル、ビルドフラグ、ドライバ / コンパイラ (または OS) の版。コンパイルは電力を使うので起動ごとに繰り返さない |
 
 環境変数: `HWNPU_BACKEND` (コマンドのバックエンド。`openvino` / `xrt` を列挙させる)、`HWNPU_ZE_LOADER`
-(Level Zero のローダのパス)、`HWNPU_COREML_UNITS` と `HWNPU_COREAI_UNITS` (プログラムを Neural Engine から
+(Level Zero のローダのパス)、`HWNPU_DEV=coreml.units` と `coreai.units` (プログラムを Neural Engine から
 外す。例: `cpu` でエンジンの誤差とモデルの誤差を分ける)。
 
 ## modelstore

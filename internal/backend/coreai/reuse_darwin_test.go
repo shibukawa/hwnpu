@@ -159,17 +159,6 @@ func TestBuildReuse(t *testing.T) {
 		{name: "no record", want: "no record of how it was built", setup: func(t *testing.T, c reuseCase) {
 			fakePacked(t, c.oldRoot(), "dit_0", "h15g", "bytecode dit_0", testTool, true)
 		}},
-		{name: "no record, backfilled", want: "would take the one of m-v5.coreai", setup: func(t *testing.T, c reuseCase) {
-			fakePacked(t, c.oldRoot(), "dit_0", "h15g", "bytecode dit_0", testTool, true)
-			if keys, err := Backfill(c.oldRoot(), "h15g", "m-v5.coreai", "M", 3, "2026-11-26"); err != nil || len(keys) != 1 {
-				t.Fatal(keys, err)
-			}
-		}},
-		{name: "backfilled, failed on the device", bad: true, want: "failedToSpecialize", setup: func(t *testing.T, c reuseCase) {
-			fakePacked(t, c.oldRoot(), "dit_0", "h15g", "bytecode dit_0", testTool, true)
-			MarkDevice(c.old, "h15g", nil, DeviceCheck{Status: "failedToSpecialize"})
-			Backfill(c.oldRoot(), "h15g", "m-v5.coreai", "M", 3, "2026-11-26")
-		}},
 		{name: "no record, in place", want: "prebuilt already", setup: func(t *testing.T, c reuseCase) {
 			fakePacked(t, PackedRoot(c.new, "h15g"), "dit_0", "h15g", "bytecode dit_0", testTool, true)
 		}},
@@ -208,7 +197,7 @@ func TestBuildReuseTakes(t *testing.T) {
 	c.record(t, c.oldRoot(), good())
 	newRoot := PackedRoot(c.new, "h15g")
 	fakePacked(t, newRoot, "dit_0", "h15g", "bytecode dit_0", "3605.5.0", true)
-	text := fakeAsset(t, c.new, "text_0", "bytecode text") // left to the device (LeftToDevice)
+	text := fakeAsset(t, c.new, "dit_1_device", "bytecode dev") // left to the device (LeftToDevice)
 
 	rs, log, err := c.build(t, BuildOptions{Model: "M"})
 	if err != nil {
@@ -232,8 +221,8 @@ func TestBuildReuseTakes(t *testing.T) {
 	if e == nil || e.Result != ResultReused || e.From != "m-v5.coreai" || e.Device == nil || e.Device.Status != DeviceOK || e.Jobs != 3 {
 		t.Errorf("entry %+v", e)
 	}
-	if l := rec.Programs["text_0"]; l == nil || l.Result != ResultLeft || l.Rule != "LeftToDevice" || l.Source != sourceHex(text) {
-		t.Errorf("text entry %+v", l)
+	if l := rec.Programs["dit_1_device"]; l == nil || l.Result != ResultLeft || l.Rule != "LeftToDevice" || l.Source != sourceHex(text) {
+		t.Errorf("left entry %+v", l)
 	}
 	if rec.Model != "M" || rec.Tool != ToolName(testTool) || rec.Export != "m-v6.coreai" {
 		t.Errorf("record %+v", rec)
@@ -310,31 +299,6 @@ func TestBuildReuseLegacyMarkedOK(t *testing.T) {
 	_, log, err := c.build(t, BuildOptions{DryRun: true})
 	if err != nil || !strings.Contains(log, "would take the one of m-v5.coreai") {
 		t.Errorf("%v\n%s", err, log)
-	}
-}
-
-// Backfill records what the files say of programs made before records, keeps a device's
-// mark, and leaves those recorded by a build.
-func TestBackfill(t *testing.T) {
-	c := newReuseCase(t)
-	root := c.oldRoot()
-	fakePacked(t, root, "a", "h15g", "a", testTool, true)
-	fakePacked(t, root, "b", "h15g", "b", testTool, true)
-	MarkDevice(c.old, "h15g", []string{"a"}, DeviceCheck{Status: "failedToSpecialize"})
-	keys, err := Backfill(root, "h15g", "m-v5.coreai", "M", 3, "2026-11-26")
-	if err != nil || strings.Join(keys, " ") != "a b" {
-		t.Fatal(keys, err)
-	}
-	rec, _ := ReadRecord(root)
-	a, b := rec.Programs["a"], rec.Programs["b"]
-	if a.Legacy || !a.Device.Bad() || b.Legacy || b.Jobs != 3 || b.Tool != ToolName(testTool) || b.Backfilled != "2026-11-26" || b.Result != ResultBuilt {
-		t.Errorf("a %+v b %+v", a, b)
-	}
-	if rec.Model != "M" || rec.Tool != ToolName(testTool) {
-		t.Errorf("record %+v", rec)
-	}
-	if keys, err := Backfill(root, "h15g", "m-v5.coreai", "M", 3, "2026-11-27"); err != nil || len(keys) != 0 {
-		t.Errorf("recorded again: %v %v", keys, err)
 	}
 }
 

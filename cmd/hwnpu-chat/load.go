@@ -24,6 +24,7 @@ type loadFlags struct {
 	PromptCache string        `placeholder:"DIR" help:"Keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the cache; \"off\" for none)."`
 	Idle        time.Duration `default:"5m" help:"AMD's NPU: give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy. A mixture of experts whose experts run on the CPU: keep only the core ones wired after this long."`
 	ExpertsKey  string        `placeholder:"KEY" help:"A mixture of experts whose experts do not all fit in memory: the name of this application's counts of the experts it runs, which choose the ones kept wired (default: the command, chat, agent or serve; off: none read or kept)."`
+	ReserveMoE  string        `name:"reserve-moe-memory" placeholder:"SIZE" help:"A mixture of experts whose experts run on the Neural Engine (LFM2-8B-A1B): the memory kept for its experts, a size or a part of the machine's memory (8GB, 50%): they then stay in memory while the model is loaded, and a run does not slow down when other applications take the memory (an M2 of 16 GB with 6 GB taken: 6 against 12 tokens/s; 8GB holds all of LFM2-8B-A1B's). Default: none kept."`
 	Models      string        `placeholder:"FILES" help:"${models_usage}."`
 }
 
@@ -271,6 +272,9 @@ func options(lf *loadFlags, cf *convertFlags, expertsKey string) []ai.Option {
 	set := map[string]string{"idle": lf.Idle.String(), "experts_key": cmp.Or(lf.ExpertsKey, expertsKey)}
 	if lf.PromptCache != "" {
 		set["prompt_cache"] = lf.PromptCache
+	}
+	if lf.ReserveMoE != "" {
+		set["reserve_moe_memory"] = lf.ReserveMoE
 	}
 	if cf != nil && !cf.Sparse {
 		set["sparse"] = "off"

@@ -11,7 +11,7 @@
 | 1 本のプログラムの重み | Core ML: 0.99 GiB は ANE で動き、1.02 GiB は CPU に落ちる (M1〜M3。M4 は 2 GB)。Core AI 自身の上限は [Core AI](apple-coreai.ja.md) | 層ごとに分ける ([Core ML](apple-coreml.ja.md))、または注意で分ける ([LLM のエンジン](llm-engine.ja.md)) |
 | テンソルのどの次元も | 16384 は収まる。16385 では演算が CPU に置かれる (M3)。出力に名前をつけるだけの恒等でも | `llm.NeuralEngineMaxDim`。KV キャッシュは 16384 ずつの塊 (`CacheChunks`)。幅の広い出力、入力、連結は分ける |
 | 重みの表 (lut) | 16 行に 1 つの表だけ | 行を 16 の倍数に詰めて切り戻す (`blocks.LinearPadded`)。[量子化](quantization.ja.md) |
-| `gather` | CPU で動く | one-hot の行列積。埋め込みの行はホストで引く |
+| `gather` | Core ML: CPU で動く。Core AI: int16 の索引の `gather_nd` は M2 と M3 で動き、M1 では動かない ([下](#gather-と実行時の重み)) | one-hot の行列積。埋め込みの行はホストで引く。M2 以降では専門家の拡大を `gather_nd` で取る |
 | ANE のコンパイルのキャッシュ (システム、`aned`) | バイト数で約 4 GiB の LRU (3.2〜4.8 GiB、実効は約 3.5)。sudo なしでは見えない。外れると読み込み時に `ANECompilerService` がやり直し、1 本に数十秒〜数分 | `-prefill auto` は 2 本で `compileCacheBytes` (3.5 GiB) を超えるなら 1 本にする。毎ステップ動くものを一番小さく。2 回目**と 3 回目**の起動が数秒なら良い |
 | 部分を順に回す (M1 だけ) | 2.86 GiB まで全速。2.97 GiB からは呼び出しがどれも約 12 倍遅い (1 トークン 828 対 72 ms)。M2 は 3.65 GiB、M3 は 3.96、M4 は 3.62 まで全速 | `Apple M1` では `neuralEngineHold` = 2.8 GiB: 2 本と横のプログラム (MTP、塔) で超えるなら `-prefill auto` は 1 本にし、1 本で超えるなら警告する |
 | 1 プロセスのプログラムの数 | 112 (M2、Core AI): 113 本目の読み込みは失敗し (`no ANE resources`)、Core AI は黙って GPU で動かす | `coreai` は ANE に載ったプログラムを数え、上限が近いと警告する。gpt-oss-20b は約 84 |
@@ -41,7 +41,7 @@ Core ML の計算の計画で見たもの (Core AI 自身の落とし穴は [Cor
 | 演算や形 | どこから | 代わり |
 |---|---|---|
 | `sin`、`cos`、`floor`、`round`、`ceil`、`mod`、`sign`、`cast` | いつも | 丸めは 1536 を入力にした `(v + 1536) − 1536` (定数だとたたまれる)。範囲を縮めてから級数 |
-| `gather` | いつも | one-hot の行列積 |
+| `gather` | Core ML はいつも。Core AI は int32 の索引か M1 | one-hot の行列積。M2 と M3 では int16 の索引の `gather_nd` が動く ([下](#gather-と実行時の重み)) |
 | 指数の `reduce_sum` | コンパイルごとに変わる | 1 との行列積で和 |
 | K/V を `tile` で写す注意 | いつも | `SDPAGrouped` (演算の順だけで配置が変わる) |
 | 語彙 262144 の `reshape`、最後の部分の `transpose` | その演算 | ホストで並べ替え (PLaMo 3、Gemma 4 の softcap をホストで) |
@@ -50,6 +50,41 @@ Core ML の計算の計画で見たもの (Core AI 自身の落とし穴は [Cor
 | 深さ方向の畳み込み (M1) | 4096 チャンネルを超える | 4096 以下の塊 |
 | 8×8 と 8×8 の行列積 (Qwen3.5 の GDN の塊) | いつも | (8×8)·(8×128) の積 7 つ |
 | (3, 39) の畳み込みと ReLU (Basic Pitch) | いつも | 解決していない |
+
+## gather と実行時の重み
+
+MoE のために調べた (2026-11-18〜20、M1、M3、M2、Core AI、`tools/coreai/aicheck`)。hwnpu が専門家をどう動かすかは [MoE](moe.ja.md)。
+
+- ANE のコンパイラには gather の部品がある: `anec` の演算 `gather_nd`、`dynamic_input_view`、`top_k`、`sort`、`param_linear`、`mx_dequant` ほか (dyld の共有キャッシュの文字列)。Core AI の基本演算にも `gather_nd_v1`、`gather_along_axis_v1`、`slice_v1` (begin は実行時でもよい) がある。
+- 流れ: Core AI の基本演算 → MPS 方言 → MPSGraph が ANE の領域を切り出し、`ANEValidateNetworkCreate` に尋ねる。演算ごとの返事 (`support`、`errorMsg`) は `log stream --level debug` にだけ出る。M3 では `<private>` で読めない。
+
+| 演算 | M1 | M2、M3 |
+|---|---|---|
+| `gather_nd`、`gather_along_axis`、int32 の索引 | GPU | GPU |
+| 同じもの、int16 の索引 | 外される (下) | ANE、値も正しい |
+| begin が実行時の `slice_by_index` | GPU | GPU |
+| 重みが入力の `matmul` (fp16、または int8 + `cast` + 拡大) | ANE | ANE |
+
+M1 の検証の返事 (形ごと):
+
+| 形 | 返事 |
+|---|---|
+| int32 の索引 | Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16 |
+| int16、行を丸ごと取る | Invalid gather axes size 1, must be 3 |
+| 索引 (1024, 3) | Invalid gather index tensor width size 1024, must be 1 |
+| 索引 (32, 32, 1, 3) | Invalid gather index tensor channel size 96, must be 3 |
+| 索引 (1024, 1, 3) か (1, 1024, 1, 3): 条件を全部満たす | **Cannot decompose layer on this architecture** |
+| begin を int16 にした動的切り出し | MPS は int32 か int64 しか取らない (`mps.strided_slice`)。プロセスが落ちる |
+
+なので M1 の ANE には gather がない。M3 の ANE の gather は約 3 G 要素/秒 (1 M 要素で 0.33〜0.36 ms) で、定数の重みを読む速さの 1/6。選ぶものごとに `gather_nd` を 1 つ置くほうが、K 個を 1 つで取るより速い (K 4: 1.53 対 6〜7 ms)。int8 の表を K 個まとめて取ると GPU に落ちる。gather は小さい表 (専門家の拡大、埋め込みの行) 向きで、専門家の重みには向かない。
+
+実行時の重み:
+
+- M1、8 行 × 2880 × 2880: 定数 fp16 0.52 ms、定数 int8 0.35、入力 fp16 0.61、入力 int8 + cast 0.54。呼ぶたびに入力をコピーすると fp16 1.16、int8 0.72 (約 29 GB/s)。
+- **M1 では 1 プログラムに専門家 5 個まで** (実行時の重み行列 10 枚): 6 個で 5.00 → 21.53 ms (gpt-oss の形)、1.79 → 7.78 ms (Qwen3-30B-A3B の形) に跳ぶ。入力の数や大きさのせいではない。M2 と M3 に段差はない (M3、Qwen の形の top-5 / 6 / 8: 1.13 / 1.34 / 1.76 ms)。
+- 結び付け: Core AI は ANE に結び付けた配列を数百 MB ぶん覚えている。超えると結び付けのたびに割り当て直す (約 5 GB/s、M1)。4 層ぶんの専門家からランダムに選んだ 1 層: M1 は 20.83 ms (定数は 2.18。選んだものを K 個の結び付けた枠へコピーすると 8.93)、M3 は 4.38 ms。M3 では配列の数と大きさで費用が増える (LFM2-8B-A1B の形: 1 層 1.81 ms、22 層全部 7.75 GB で 5.32 ms)。
+- 本物の LFM2-8B-A1B を M3 で (`aicheck moeserve`、`tools/ref/lfm2moe_ane.py`): 専門家は行ごとの int8、拡大は `gather_nd`、全層の専門家を持たせる。48 トークンが bf16 の基準と同じ、KL 0.0019、選んだ専門家の一致 99.0 %。1 層 1 行: ルーター 0.33 ms + 専門家 2.7〜3.0 ms。
+- 4 ビットの専門家は int8 (M3 で 1 層 1.7〜2.6 ms) に負ける: int8 に 2 つ詰めて `floor_div` で取り出す形は 8.7〜11 ms で ANE では NaN。int4 の配列と `blockwise_shift_scale` は GPU。int4 の cast は 85 ms。MX の定数も入力も ANE に載らない。uint4 の符号を表で引く形は 1 専門家 49 ms。なので gpt-oss-20b の専門家は CPU で動かす ([Core AI](apple-coreai.ja.md))。
 
 ## 数値の落とし穴
 
@@ -91,7 +126,7 @@ Core ML の計算の計画で見たもの (Core AI 自身の落とし穴は [Cor
 
 ### 確かめ方
 
-1. 同じプログラムを ANE と CPU (`HWNPU_COREAI_UNITS=cpu`、`HWNPU_COREML_UNITS=cpu`) で動かし、位置ごとに比べる (ロジットの KL かコサイン)。詰め物は別に数える。
+1. 同じプログラムを ANE と CPU (`HWNPU_DEV=coreai.units=cpu`、`HWNPU_DEV=coreml.units=cpu`) で動かし、位置ごとに比べる (ロジットの KL かコサイン)。詰め物は別に数える。
 2. 原因を探す前に、参照の fp16 と比べる。HF の fp16 も同じだけずれるなら移植の誤りではない (Whisper の符号器: 無音の位置の注意の sink で、ANE の誤りではない)。
 3. 最初の N 層だけ変換し (`hwnpu-dev convert -layers N`)、ずれの始まりを探す。
 4. ANE と CPU のインタプリタの間で演算ごとに二分する (`internal/vision/detect` の `TestBisect`)。または部品を 1 つずつ CPU に移す。
@@ -103,7 +138,7 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 1 回の費用の大半は重みの読み出しで、64 行は 8 行の 1.06 倍。そこでプロンプトのプログラムは 1 回に多くの行を読み、ロジットは最後の行だけ計算する。
 
 - 注意で分けたモデルはプロンプトを `pagedPrefillSeq` = 1 回 128 トークンで読む (`…-q128-last`)。分けないモデルは鍵の軸を 16384 以下に保つため 64。Intel は `LastRow` なしの 64。
-- `llm.Options.LastRow` (LFM3、Gemma 4): 最後の行を one-hot の入力 `last` との積で取る (gather は CPU なので)。y は (1, 1, 語彙)。
+- `llm.Options.LastRow` (LFM3、Gemma 4): 最後の行を one-hot の入力 `last` との積で取る (gather は M1 と Core ML では ANE に載らないので)。y は (1, 1, 語彙)。
 - KV を共有する Gemma 4: 最初の共有の層から先は全部の層を 1 行で動かす (`attendOne`)。
 - Core AI での数値は [LLM のエンジン](llm-engine.ja.md)。
 
@@ -135,7 +170,7 @@ CPU の `hwnpu-dev check` にはどれも出ない。
 ## 未解決
 
 - 2 つのプロセスで ANE が固まる理由。Intel と AMD は試しておらず、ロックは Apple だけ。
-- システムの ANE のコンパイルのキャッシュの大きさと場所 (sudo が要る)。M1〜M4 の `hwnpu-dev probe cache` の結果は未記録。
+- システムの ANE のコンパイルのキャッシュの大きさと場所 (sudo が要る)。`hwnpu-dev probe cache` の結果: M2 は [Core ML](apple-coreml.ja.md) にある。M1、M3、M4 は測っていない。
 - 16384 の上限で、どの形が CPU に落ちどれが残るか。
 - 重み以外の ANE のメモリ (KV、途中の値) を分けて見られない。
 - M1 Pro / Max / Ultra の上限 (M1 と同じとみなしている)。

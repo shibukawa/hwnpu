@@ -78,7 +78,7 @@ func TestAgainstReference(t *testing.T) {
 	}
 	for _, ls := range strings.Split(layerList, ",") {
 		layers, _ := strconv.Atoi(ls)
-		opts := Options{Seq: seq, Layers: layers, Format: format, Group: envInt("HWNPU_TEST_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_TEST_LFM3_COLBLOCK", 0), Quant: os.Getenv("HWNPU_TEST_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_TEST_LFM3_POSTSCALE", 1))}
+		opts := Options{Seq: seq, Layers: layers, Format: format, Group: envInt("HWNPU_TEST_LFM3_GROUP", 16), ColBlock: envInt("HWNPU_TEST_LFM3_COLBLOCK", 0), Quant: os.Getenv("HWNPU_TEST_LFM3_QUANT"), PostScale: float32(envInt("HWNPU_TEST_LFM3_POSTSCALE", 64))}
 		if keep := os.Getenv("HWNPU_TEST_LFM3_KEEP"); keep != "" {
 			opts.KeepFP16 = strings.Split(keep, ",")
 		}

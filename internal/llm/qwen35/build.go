@@ -542,7 +542,7 @@ func (m *builder) silu(x *mlpackage.Var) *mlpackage.Var {
 }
 
 // deltaChunk is the rows of a chunk of deltaRuleChunks: 8, a step's (Draft) in one.
-// A variable for the tests of other sizes (TestWriteDeltaProbe, TestDeltaChunkRealWeights).
+// Not changed (a variable since the tests of other sizes, kept so for the exports' CodeHash).
 var deltaChunk = 8
 
 // deltaRuleChunks is the gated delta rule (torch_recurrent_gated_delta_rule) over q, k (1, heads,

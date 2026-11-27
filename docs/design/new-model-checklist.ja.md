@@ -110,7 +110,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - 残差を 1/32 で持ち、正規化の前に行ごとの最大で割る (Anima。固定の倍率は非正規数を作った)
 - 残差の倍率は試して決めず、参照の層ごとの最大から決める (fp32 の参照が出す)
 - 詰め物の行を最後のトークンで埋める (Gemma 4 の eps が fp16 で 0 になる)
-- ANE の `sigmoid`、`tanh`、`softplus`、`silu`、`gelu` は不正確: exp で書く (`blocks.SiLU`、`onnx.Program.ExpSigmoid`、GELU は `x / (1 + exp(-1.5958 (x + 0.044715 x³)))`)。CPU の `hwnpu-dev check` では見えない: ANE と Core ML の CPU (`HWNPU_COREML_UNITS=cpu`) で位置ごとの KL を比べ、ANE と CPU インタプリタで途中の値を比べて探す (`TestBisect`)
+- ANE の `sigmoid`、`tanh`、`softplus`、`silu`、`gelu` は不正確: exp で書く (`blocks.SiLU`、`onnx.Program.ExpSigmoid`、GELU は `x / (1 + exp(-1.5958 (x + 0.044715 x³)))`)。CPU の `hwnpu-dev check` では見えない: ANE と Core ML の CPU (`HWNPU_DEV=coreml.units=cpu`) で位置ごとの KL を比べ、ANE と CPU インタプリタで途中の値を比べて探す (`TestBisect`)
 - 後の全層が受け取る 1 行の計算 (拡散の時刻の埋め込み) は ANE で 1 % ずれた: ホストの fp32 で
 - 線形注意の和は残差が収まっても fp16 を超える: 各ヘッドの q の行をその最大で割り、キーを和の前に縮め、分母の下を切る
 - linear の出力の 1 行が fp16 の上限に近いと ANE でだけ NaN: 直後が正規化なら重みとバイアスを 1/64 に。部品を 1 つずつ CPU に移して探す
@@ -142,7 +142,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - **どの演算にも下ろし方が要る。** `aicheck lower OUT PKG` は最初の欠けで止まる。新しいものは coreai-torch と同じに書く: 小さな torch のモジュールを coreai-torch で変換し、プログラムを出し、バイトコードを `tools/coreai/bcdump` で読む
 - **各部分を Core AI と Core ML の CPU インタプリタと比べる**: `aicheck run -cpu PKG...` と `aicheck run -cpu -coreml PKG...`。全部 NE に載る部分が Core AI でだけ誤ることがある (PP-OCR の検出器 0.05 に対し 0.9999)
 - **`HWNPU_DEV=ailower.cut=N aicheck run -cpu PKG` で演算を探す** (`AICHECK_WORST=1`)。誤差の大きさや最大の場所だけでなく、何の誤りかを見る (入力と出力の間に直線を当てると、NE が割るべきところで掛けていた)。小さな写しでなく本物の部分で確かめる
-- **下ろし方の誤りと NE の誤りを `HWNPU_COREAI_UNITS=cpu` で分ける。** 罠: Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる。CPU インタプリタは実装したものしか参照にならない (`elu` は alpha 1 だけ)。`runner` は `HWNPU_DEV=cpu.f16` でなければ fp32、aicheck は fp16 の丸めつき: 参照の精度を先に決める
+- **下ろし方の誤りと NE の誤りを `HWNPU_DEV=coreai.units=cpu` で分ける。** 罠: Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる。CPU インタプリタは実装したものしか参照にならない (`elu` は alpha 1 だけ)。`runner` は `HWNPU_DEV=cpu.f16` でなければ fp32、aicheck は fp16 の丸めつき: 参照の精度を先に決める
 - **NE の落とし穴**: 定数での `divide_v1` を誤る (ailower は逆数の積に書く)。`(v + c) - c` を c が入力でも `v` に畳む。幅 1 より大きな核で 512 チャネル以上、入力を別の演算が計算する幅方向の畳み込みが誤る (高さ方向に回す)。膨張つきの畳み込みは長さによって誤る (膨張の行にフレームを並べる)。畳み込みの前の明示の `pad` が誤った。(1×1)·(1×N) の matmul は M3 で誤る (mul で)
 - **1 本の `.aimodel` の関数はまとめてコンパイルされる**: コンパイラが 1 つの関数を落とすと全部が NE から外れる。先に大きさごとの部分を単独で見て、`aicheck probe` で小さな書き換えを試す (`tile` のチャネルの繰り返し → 0/1 の重みの 1 × 1 の畳み込み)。隣り合う lut の表を同じにしない (`coreai-build` が部分を NE から外した)
 - **起動は両方のキャッシュを温めて比べる** (各バックエンドを 1 回回した直後に、新しいプロセスで 3 回ずつ)
@@ -163,7 +163,7 @@ Mac がないと何も決まらない。ないときは引き継ぎ (`docs/hando
 - **どの専門家が回るかを、多くの種類の文で数える** (`tools/moeusage`: `collect.sh MODEL OUT`、`analyze.py OUT`)。どの種類でも回る専門家は models.yaml の `experts_core` に。出す置き場の数で核が得か確かめる (AMD の Qwen3.6 は核なし)
 - **ホストが回す専門家 (`llm.HostRouted`)**: 読むのと計算を分けて測る (`HWNPU_DEV=moe.time`)。先に SSD を測る。同じ質問の繰り返しで設定を比べない (ページキャッシュが温まる): 分野と言語の違う質問の一覧で (`--prompt-cache off`)。CPU のプロファイルを見る (`mincore` とカーネルで 66 %)。層の間に NE の間を入れて (`HWNPU_TEST_QWEN36_GAP`)、長いプロンプト (20 ステップ以上) でも測る。MXFP4 のチェックポイントを作る前 (`hwnpu-dev mxfp4`) にディスクの空きを見る
 - **生成した文は標準エラーで比べる**: `hwnpu-chat` は思考をそこに書くので、短い実行の標準出力は空。測るバイナリの名前は変えない (Core AI のキャッシュはプロセスの名前ごと、1 モデル 1.8 GB)
-- **AMD で入りきらない専門家は置き場に** (`iron_export_lm.py --expert-places P`): `HWNPU_DEV=moe.check` と、全部を置いた書き出しとの比較で確かめる。16 GB の機械には `variants` を。モデルの名前で動かす (名前でだけ核と回数が渡る)
+- **AMD で入りきらない専門家は置き場に** (`iron_export_lm.py --expert-places P`): `HWNPU_DEV=iron.moe.check` と、全部を置いた書き出しとの比較で確かめる。16 GB の機械には `variants` を。モデルの名前で動かす (名前でだけ核と回数が渡る)
 - **MoE でないモデルが変わらないことを確かめる** (同じ文、同じ速さ、変換し直さない)
 
 ## 4. AMD (IRON) と Intel の形
@@ -489,5 +489,5 @@ done
 - NE の MoE: 定数の表から専門家を gather (正しいが 6 分の 1 の速さ)、専門家を 1 つの配列に (幅の広い専門家で遅い)、4 ビットの専門家 (int8 より速い形がない)
 - gpt-oss の出力層を lut4 / lut6 に (KL 0.0088 → 0.068 / 0.0136。lut8 の 0.55 GiB に対し 0.27 / 0.41 GiB)
 - ホストが回す MoE の専門家にプロンプトの検索の下書き: 7 つの下書きの確認で 60 ms の 1 歩に約 90 ms 足される
-- 重みつきの `.aimodelc` を配る。チャットのモデルの prebuilt (初回の読み込みが遅い: LFM3-1.7B 2:17 → 8:12)。FLUX の VAE の prebuilt (M1 と M2 で 512² の縞。M3 は別の変更で) と M2 の Anima の VAE の prebuilt (160 ピクセルごとの帯)
+- 重みつきの `.aimodelc` を配る。チャットのモデルの prebuilt (初回の読み込みが遅い: LFM3-1.7B 2:17 → 8:12)。M1 と M2 の FLUX の VAE の prebuilt (512² の縞。M3 以降は prebuilt) と M2 の Anima の VAE の prebuilt (160 ピクセルごとの帯)
 - 絵の大きさごとの書き出し (ダウンロードし直しになる。11.4)
