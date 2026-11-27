@@ -620,3 +620,69 @@ lutdone:
 	VMOVUPS Y1, 32(DI)
 	VZEROUPPER
 	RET
+
+// func dotI8AVX2(a, b *int8, n int) int32
+// n is a positive multiple of 16: sign-extends 16 int8s to int16 (VPMOVSXBW) and accumulates
+// exact int32 pair products via VPMADDWD (no int16 saturation or -128*-128 wrap-around).
+TEXT ·dotI8AVX2(SB), NOSPLIT, $0-28
+	MOVQ  a+0(FP), SI
+	MOVQ  b+8(FP), DI
+	MOVQ  n+16(FP), CX
+	VPXOR Y0, Y0, Y0
+	VPXOR Y1, Y1, Y1
+	VPXOR Y2, Y2, Y2
+	VPXOR Y3, Y3, Y3
+	CMPQ  CX, $64
+	JB    doti8tail
+
+doti8loop64:
+	VPMOVSXBW 0(SI), Y4
+	VPMOVSXBW 0(DI), Y5
+	VPMADDWD  Y5, Y4, Y4
+	VPADDD    Y4, Y0, Y0
+	VPMOVSXBW 16(SI), Y6
+	VPMOVSXBW 16(DI), Y7
+	VPMADDWD  Y7, Y6, Y6
+	VPADDD    Y6, Y1, Y1
+	VPMOVSXBW 32(SI), Y8
+	VPMOVSXBW 32(DI), Y9
+	VPMADDWD  Y9, Y8, Y8
+	VPADDD    Y8, Y2, Y2
+	VPMOVSXBW 48(SI), Y10
+	VPMOVSXBW 48(DI), Y11
+	VPMADDWD  Y11, Y10, Y10
+	VPADDD    Y10, Y3, Y3
+	ADDQ      $64, SI
+	ADDQ      $64, DI
+	SUBQ      $64, CX
+	CMPQ      CX, $64
+	JAE       doti8loop64
+
+doti8tail:
+	CMPQ CX, $16
+	JB   doti8reduce
+
+doti8loop16:
+	VPMOVSXBW 0(SI), Y4
+	VPMOVSXBW 0(DI), Y5
+	VPMADDWD  Y5, Y4, Y4
+	VPADDD    Y4, Y0, Y0
+	ADDQ      $16, SI
+	ADDQ      $16, DI
+	SUBQ      $16, CX
+	CMPQ      CX, $16
+	JAE       doti8loop16
+
+doti8reduce:
+	VPADDD       Y1, Y0, Y0
+	VPADDD       Y3, Y2, Y2
+	VPADDD       Y2, Y0, Y0
+	VEXTRACTI128 $1, Y0, X1
+	VPADDD       X1, X0, X0
+	VPSHUFD      $0x4e, X0, X1
+	VPADDD       X1, X0, X0
+	VPSHUFD      $0xb1, X0, X1
+	VPADDD       X1, X0, X0
+	MOVD         X0, ret+24(FP)
+	VZEROUPPER
+	RET
