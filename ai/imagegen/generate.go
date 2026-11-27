@@ -102,6 +102,7 @@ func newRole(name string, edit bool) *airole.Role {
 		// its one reference of a picture of 1024 x 1024 at 512), where the store's record names the
 		// other chips', whose prebuilt programs draw noise on it
 		Revision: 5,
+		Usable:   currentExport,
 		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
 			var f airole.Files
 			fam := familyOf(e.Base)
@@ -124,6 +125,9 @@ func newRole(name string, edit bool) *airole.Role {
 			}
 			f.SetValue("family", fam)
 			f.SetValue("base", e.Base.Name)
+			if first(e.Model.Programs[ProgramExport]) != "" {
+				f.SetValue(valueGiven, "true") // the definition's export, by path: currentExport leaves it
+			}
 			return f, err
 		},
 		Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
