@@ -36,15 +36,15 @@ func fakeEngine(socket string) int {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /hwnpud/v1/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSONValue(w, http.StatusOK, Status{Hello: Hello{Protocol: Protocol, PID: os.Getpid()}, Models: []ModelInfo{{Name: "fake", Context: 4096, OnNPU: true}}})
+		WriteJSON(w, http.StatusOK, Status{Hello: Hello{Protocol: Protocol, PID: os.Getpid()}, Models: []ModelInfo{{Name: "fake", Context: 4096, OnNPU: true}}})
 	})
 	mux.HandleFunc("POST /hwnpud/v1/load", func(w http.ResponseWriter, r *http.Request) {
 		var req LoadRequest
 		json.NewDecoder(r.Body).Decode(&req)
-		f := &frames{w: w, rc: http.NewResponseController(w), ok: true}
+		f := NewLoadStream(w)
 		if req.Model == "missing" {
-			f.send(LoadEvent{Log: "looking for missing\n"})
-			f.send(LoadEvent{Error: "no model missing"})
+			f.Send(LoadEvent{Log: "looking for missing\n"})
+			f.Send(LoadEvent{Error: "no model missing"})
 			return
 		}
 		fmt.Fprintf(f, "downloading %s\n", req.Model)
@@ -52,7 +52,7 @@ func fakeEngine(socket string) int {
 		if v := os.Getenv("HWNPU_CACHE"); v != "" {
 			fmt.Fprintf(f, "cache %s\n", v)
 		}
-		f.send(LoadEvent{Model: &ModelInfo{Name: req.Model, Context: 4096, OnNPU: true}})
+		f.Send(LoadEvent{Model: &ModelInfo{Name: req.Model, Context: 4096, OnNPU: true}})
 	})
 	mux.HandleFunc("POST /crash", func(w http.ResponseWriter, r *http.Request) { os.Exit(3) })
 	srv := &http.Server{Handler: mux}

@@ -45,7 +45,7 @@ Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd
   (回されるにつれて読み、読む側がやめれば止まる)。エラーは登録した番兵と型 (`ai.ErrNotPrepared`、
   `*ai.LicenseError`、`text.ErrContext`、`*text.FormatError`) を保つので、`errors.Is` と `errors.As` が通る。
   エンジンのハンドラーはセッションが終わるまで戻らないので、アプリが使っている間エンジンは待ち時間で終わらない
-- エンジン (`internal/aihost`。`cmd/hwnpud` が `daemon.Engine.AI` に付ける。`internal/daemon` はモデルの
+- エンジン (`internal/aihost`。`cmd/hwnpud` が `engine.Engine.AI` (`internal/daemon/engine`) に付ける。`internal/daemon` はモデルの
   パッケージを import しない) はセッションごとに `ai.Host` を出す: `App.Plan` と `Plan.Run` は、クライアントが送った
   もの (`App.Spec`、`ai.AppFromSpec`: 役の名前による use (`airole.Lookup`)、`InTurns` のグループ、メモリ、
   定義つきのストア) からアプリを作り直して、エンジンで計画し実行する。`Run` の段階とモデルのログは出るそばから
@@ -391,7 +391,29 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
   多いほど、ほかのプログラムを使い回すことが増える (誤った prebuilt の VAE が新しいビルドでも戻った、2026-11-27)
 - どのアプリもエンジンと同じ大きさで、shim (Core AI の dylib) を埋め込む
 
-段取り:
+2026-11-27 に決めた: クライアントはモデルの定義を自分では持たず、表、ポリシーの判断、モデルを動かすメモリを
+hwnpud に聞く。アプリが自分のプロセスでモデルを動かすのは、エンジンを読むとき (`import _
+"github.com/shibukawa/hwnpu/ai/engine"`、hwnpud、hwnpu-dev、テストと同じ) だけで、`HWNPU_DAEMON=off` はそのときの
+意味になる。
+
+段はそれぞれ 1 つのプルリクエスト。`internal/boundary` のテストが、エンジンに届いてはいけないパッケージを並べ、
+段ごとに足す:
+
+1. 済み: `internal/daemon` はクライアントと supervisor。engine は `internal/daemon/engine` で、cmd/hwnpud が
+   つなぐ。読み込みの流れ (`LoadStream`) と答えの手伝いはプロトコルのもので `internal/daemon` に
+2. `internal/airole`: 役割のデータと `Remote` を、デバイスを探すこと (`Here`、`llm.FindDevice`) から分け、
+   後者はエンジンの側へ
+3. 定義を hwnpud から: 表、ポリシーの判断、メモリの道を足し、`ai` はクライアントを通して聞き、engine は
+   `internal/chat` から答える
+4. 役割のパッケージ: `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して
+   `airole.Register` で登録する。クライアントの型は実装を呼ぶ: hwnpud のもの (`Remote`) か、読んであれば
+   エンジンのもの
+5. コマンド: `hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` がエンジンを読まなくなる。自分のプロセスで
+   していること (変換の引数、`--cpu`) は hwnpud を通すか hwnpu-dev に移す
+6. エンジンを読まずに `HWNPU_DAEMON=off` はエラーにして、worktree の hwnpud の動かし方を伝える (hwnpu-dev の
+   コマンドが別のソケットでビルドして起こす)
+
+最初に書いた段取り:
 
 1. クライアントの側だけにする。役割のパッケージ (`ai/text`、`ai/imagegen`、...) は型、`Remote`、使い方を残し、
    `Prepare` と `Load` (とそれが読むもの) はエンジンのパッケージに移して登録する (`airole.Register`)。それを

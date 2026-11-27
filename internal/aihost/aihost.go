@@ -4,7 +4,7 @@
 // compiler keeps one cache (coreai-cache/<OS>/hwnpud/) for every program.
 //
 // It imports the packages of models, whose roles (airole.Register) the apps' uses name; the
-// engine's package (internal/daemon) does not, and cmd/hwnpud joins the two (daemon.Engine.AI).
+// engine's package (internal/daemon/engine) does not, and cmd/hwnpud joins the two (engine.Engine.AI).
 package aihost
 
 import (
@@ -42,7 +42,7 @@ type Options struct {
 	// Log receives what the sessions do (nil: nowhere).
 	Log io.Writer
 	// Held are the directories of the models the engine holds outside the ai package (its chat
-	// models, daemon.Engine.HeldDirs), which the cache's commands leave too; nil for none.
+	// models, engine.Engine.HeldDirs), which the cache's commands leave too; nil for none.
 	Held func() []string
 }
 

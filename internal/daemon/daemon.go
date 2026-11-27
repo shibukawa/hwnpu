@@ -31,6 +31,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -210,8 +211,8 @@ var Builtin [][]byte
 // has the roles (internal/aihost); nil in a client.
 var RoleSettings func() map[string][]string
 
-// base is the Hello of this process's version.
-func base() Hello {
+// Base is the Hello of this process's version.
+func Base() Hello {
 	h := Hello{Protocol: Protocol, Build: Build(), PID: os.Getpid(), Definitions: Definitions()}
 	if RoleSettings != nil {
 		h.Roles = RoleSettings()
@@ -606,4 +607,42 @@ func (h Hello) CheckSettings(settings map[string]map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// LoadStream writes a load's log to its client as LoadEvent lines (POST /hwnpud/v1/load's
+// answer, which Client.Load reads). A client that went away fails no load: what it loads stays
+// for the next.
+type LoadStream struct {
+	mu sync.Mutex
+	w  http.ResponseWriter
+	rc *http.ResponseController
+	ok bool
+}
+
+// NewLoadStream starts the answer of a load on w.
+func NewLoadStream(w http.ResponseWriter) *LoadStream {
+	f := &LoadStream{w: w, rc: http.NewResponseController(w), ok: true}
+	f.rc.Flush()
+	return f
+}
+
+// Send writes ev.
+func (f *LoadStream) Send(ev LoadEvent) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.ok {
+		return
+	}
+	b, _ := json.Marshal(ev)
+	if _, err := f.w.Write(append(b, '\n')); err != nil {
+		f.ok = false
+		return
+	}
+	f.rc.Flush()
+}
+
+// Write sends p as a line of the log.
+func (f *LoadStream) Write(p []byte) (int, error) {
+	f.Send(LoadEvent{Log: string(p)})
+	return len(p), nil
 }

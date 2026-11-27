@@ -1,4 +1,4 @@
-package daemon
+package engine
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/daemon"
 )
 
 // A load of a name no definition has fails with the error of resolving it, before any device
@@ -21,15 +22,15 @@ func TestEngineLoadUnknown(t *testing.T) {
 	e := &Engine{Log: io.Discard}
 	e.init()
 	dir := shortDir(t)
-	ln, err := ListenUnix(filepath.Join(dir, "e.sock"))
+	ln, err := daemon.ListenUnix(filepath.Join(dir, "e.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: e.Handler()}
 	go srv.Serve(ln)
 	defer srv.Close()
-	c := NewClient(filepath.Join(dir, "e.sock"))
-	_, err = c.Load(context.Background(), LoadRequest{Model: "no-such-model-of-hwnpud"}, &bytes.Buffer{})
+	c := daemon.NewClient(filepath.Join(dir, "e.sock"))
+	_, err = c.Load(context.Background(), daemon.LoadRequest{Model: "no-such-model-of-hwnpud"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "no-such-model-of-hwnpud") {
 		t.Fatalf("load: %v", err)
 	}
@@ -82,4 +83,14 @@ func TestEvictIRONWaitsForRequests(t *testing.T) {
 	if e.lookup("mac@0") != mac || len(e.models) != 1 || len(e.aliases) != 1 {
 		t.Fatalf("models %v, aliases %v", e.models, e.aliases)
 	}
+}
+
+// shortDir is a folder of a short path, for a socket's (macOS: 104 bytes at most).
+func shortDir(t *testing.T) string {
+	d, err := os.MkdirTemp("/tmp", "hwnpud")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return d
 }

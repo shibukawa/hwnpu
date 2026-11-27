@@ -5,6 +5,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
 // The model policy (docs/model-provenance.md 2): which models may be picked or run, by their
@@ -18,7 +20,7 @@ import (
 // content nsfw are refused unless +nsfw.
 
 // PolicyEnv is the environment's model policy (and a .env file's).
-const PolicyEnv = "HWNPU_MODEL_ALLOWLIST"
+const PolicyEnv = envfile.PolicyEnv
 
 // LicenseClasses are a license's classes (License.Class): what it allows of commercial use.
 var LicenseClasses = []string{
