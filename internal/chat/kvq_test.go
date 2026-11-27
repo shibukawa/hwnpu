@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -72,6 +73,8 @@ func TestKVQRoundTripF16AndBF16(t *testing.T) {
 }
 
 func TestStoreKVQPutAppendReload(t *testing.T) {
+	defer func(b int) { storeKVQBits = b }(storeKVQBits)
+	storeKVQBits = 6 // HWNPU_DEV=store.kvq=6
 	rng := rand.New(rand.NewPCG(7, 9))
 	for _, tc := range []struct {
 		name    string
@@ -152,5 +155,39 @@ func TestStoreKVQPutAppendReload(t *testing.T) {
 				t.Fatalf("relMSE=%.5f too high", relMSE)
 			}
 		})
+	}
+}
+
+// By default the store keeps the rows as they are: rows of fewer bits change the answers a
+// restored sequence gives (Qwen3.5-2B on AMD, after about 10 tokens).
+func TestStoreKVQOffByDefault(t *testing.T) {
+	const headDim, rows = 128, 8
+	rowBytes := 2 * headDim * 2
+	raw := make([]byte, rows*rowBytes)
+	for i := range raw {
+		raw[i] = byte(i * 7)
+	}
+	src := &fakeRowSource{dtype: "bf16", headDim: headDim, rowBytes: rowBytes, data: raw}
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	toks := make([]int32, rows)
+	for i := range toks {
+		toks[i] = int32(i + 1)
+	}
+	e, err := st.put(toks, src, []storedMark{{Pos: rows}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.KVQBits != 0 || e.diskRowBytes() != rowBytes {
+		t.Fatalf("kept in %d bits, %d bytes a row; want the rows as they are, %d", e.KVQBits, e.diskRowBytes(), rowBytes)
+	}
+	got, _, _, err := st.load(e, rows, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Error("the rows came back changed")
 	}
 }

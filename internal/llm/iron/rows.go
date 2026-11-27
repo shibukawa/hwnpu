@@ -36,6 +36,13 @@ func (m *Model) caches() ([]kvCache, error) {
 			if q, ok := placed[name]; ok && q != p {
 				return nil, fmt.Errorf("iron: cache %s is placed differently by a prompt chunk", name)
 			}
+			if _, ok := placed[name]; !ok && v == m.verify {
+				// the check of drafts' own scratch (tools/amd/iron_verify.py's rows_o: the rows
+				// it attends, 3 positions), not a cache of the sequence, which the decode step
+				// or a prompt chunk has too. Taken for one, ExportRows read past its buffer
+				// (Qwen3.5-0.8B and 2B: the prompt store kept nothing)
+				continue
+			}
 			placed[name] = p
 		}
 	}
