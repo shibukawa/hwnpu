@@ -34,6 +34,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/check"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/convert"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/daemoncmd"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/devopt"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/formats"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/generate"
@@ -69,6 +70,7 @@ type cli struct {
 	Xclbin     tool           `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
 	Models     modelscmd.Cmd  `cmd:"" help:"The models' conversions, MODEL/TARGET (amd-xdna2, coreai, coreai-ARCH), the same commands on every OS: fetch them here, package them (made here unless a source has them, and put in the sources), push what was made by hand, put them on Hugging Face (hf)."`
 	Sources    sourcescmd.Cmd `cmd:"" help:"The upkeep of the sources (HWNPU_MODEL_SOURCE): which are in effect, what they hold, putting folders made by hand in them, moving locks to a new commit, checking and removing entries."`
+	Daemon     daemoncmd.Cmd  `cmd:"" help:"Build hwnpud from this checkout and serve on a socket of its own, beside the installed one: the commands are its clients, so a worktree's code is tried through it (hwnpu-dev daemon -- go run ./cmd/hwnpu-chat chat -m lfm3 hi)."`
 }
 
 var mains = map[string]func(){

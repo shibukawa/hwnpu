@@ -59,7 +59,7 @@ type Engine interface {
 var E Engine
 
 // ErrNone is the error of a process without the engine asked to run the models itself.
-var ErrNone = errors.New("this process has no engine to run the models in: go through hwnpud (HWNPU_DAEMON), or import _ \"github.com/shibukawa/hwnpu/ai/engine\" to run them here")
+var ErrNone = errors.New("this process has no engine to run the models in: go through hwnpud (HWNPU_DAEMON; a checkout's own: hwnpu-dev daemon -- COMMAND), or import _ \"github.com/shibukawa/hwnpu/ai/engine\" to run them here")
 
 // Get is E, or an error that says how to have one.
 func Get() (Engine, error) {
