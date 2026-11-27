@@ -8,14 +8,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // A mixture of experts (llm.Routed) is refused on an M1 before anything past config.json
 // downloads: its experts' program needs gather_nd, which an M1's Neural Engine does not take.
 func TestPrepareMoEOnM1(t *testing.T) {
 	cacheHere(t)
-	defer func(f func() string) { chipName = f }(chipName)
-	chipName = func() string { return "M1" }
+	defer func(f func() string) { catalog.ChipName = f }(catalog.ChipName)
+	catalog.ChipName = func() string { return "M1" }
 	config := `{"model_type": "lfm2_moe", "hidden_size": 64, "intermediate_size": 128,
 		"moe_intermediate_size": 32, "num_hidden_layers": 2, "num_dense_layers": 1,
 		"num_experts": 4, "num_experts_per_tok": 2, "num_attention_heads": 4,

@@ -401,8 +401,10 @@ hwnpud に聞く。アプリが自分のプロセスでモデルを動かすの�
 
 1. 済み: `internal/daemon` はクライアントと supervisor。engine は `internal/daemon/engine` で、cmd/hwnpud が
    つなぐ。読み込みの流れ (`LoadStream`) と答えの手伝いはプロトコルのもので `internal/daemon` に
-2. `internal/airole`: 役割のデータと `Remote` を、デバイスを探すこと (`Here`、`llm.FindDevice`) から分け、
-   後者はエンジンの側へ
+2. 済み: 定義のデータ (`Model`、`Kind`、ライセンス、ベンダーとチップごとのメモリ、variant) は
+   `internal/catalog` にあり、hwnpu のほかのパッケージを読まない。`internal/chat` はその型を別名で使う。
+   `internal/airole` は `internal/chat` の代わりに `internal/catalog` を読み、この機械の NPU を探すこと
+   (`airole.Here`) はエンジンが入れるフック (`internal/chat`)。クライアントにはない
 3. 定義を hwnpud から: 表、ポリシーの判断、メモリの道を足し、`ai` はクライアントを通して聞き、engine は
    `internal/chat` から答える
 4. 役割のパッケージ: `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して

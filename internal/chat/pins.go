@@ -28,40 +28,6 @@ func stalePinned(dir string) bool {
 	return e.Digest() != pin.Digest || !FormatTaken(e)
 }
 
-// Pin is a conversion models.yaml's exports pin (hwnpu-dev models pin writes them): the folder
-// of its entry in a source, converted/MODEL/TARGET/EXPORT/At (vN, vN-HASH or v0-HASH), and the
-// digest of what it holds (store.Entry.Digest). It is taken from that folder in any source, in
-// the model's repository on Hugging Face at the commit its hub pins, or here, when its entry has
-// that digest, whatever its recipe (the tools that made it): what changes the pinned exports'
-// bytes changes the pin.
-type Pin struct {
-	At     string
-	Digest string
-}
-
-func (p Pin) String() string { return p.At + " " + p.Digest }
-
-// Version is the version of the pin's folder (N of vN or vN-HASH; 0 of v0-HASH).
-func (p Pin) Version() int {
-	n := 0
-	for _, c := range strings.TrimPrefix(p.At, "v") {
-		if c < '0' || c > '9' {
-			break
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
-}
-
-// OfVersion reports whether the pin is of version v of its export (models.yaml targets, or
-// model-recipes.yaml amd.version): its folder's version is v; v0-HASH stands for version 1 too,
-// the version of the exports pinned before the recipes gave versions (2026-11-23). A pin of
-// another version is not taken (placeOf), so that raising a recipe's version does not take the
-// bytes of before.
-func (p Pin) OfVersion(v int) bool {
-	return p.Version() == v || p.Version() == 0 && v <= 1
-}
-
 var (
 	pinFolder = regexp.MustCompile(`^v[0-9]+(-[0-9a-f]{8,64})?$`)
 	pinDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)

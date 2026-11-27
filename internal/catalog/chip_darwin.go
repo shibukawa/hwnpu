@@ -1,4 +1,4 @@
-package chat
+package catalog
 
 import "syscall"
 

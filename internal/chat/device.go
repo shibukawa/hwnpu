@@ -3,7 +3,6 @@ package chat
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -12,22 +11,6 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
-
-// Vendors are the NPU vendors a model's Device names (types.Vendor's names).
-var Vendors = []string{"amd", "apple", "intel"}
-
-// Devices are where a model runs: the NPU, or the CPU beside it (a small model can cost less
-// there: YuNet on AMD's NPU took 16 times the energy of the CPU, docs/amd-npu-models.md 17).
-var Devices = []string{"npu", "cpu"}
-
-// DeviceFor is where m runs on a machine whose NPU is vendor's: its definition's Device, "npu"
-// where it names none.
-func (m Model) DeviceFor(vendor string) string {
-	if d, ok := m.Device[vendor]; ok {
-		return d
-	}
-	return "npu"
-}
 
 // ChooseDevice is where m runs on a machine whose NPU is vendor's: flag (a command's --device)
 // when given, else HWNPU_DEVICE, else the definitions' (DeviceFor). why says which.
@@ -49,92 +32,6 @@ func ChooseDevice(m Model, vendor, flag string) (device, why string, err error) 
 		return m.DeviceFor(vendor), "models.yaml (" + vendor + ")", nil
 	}
 	return "npu", "the default", nil
-}
-
-// PerVendor is a value by the vendor of the machine's NPU (Vendors); "" holds the one for the
-// vendors it does not name. A definition writes it as one number (every vendor) or as a table
-// of vendors (memory: {amd: 3.5, apple: 4.1}): what a model takes and downloads can differ by
-// NPU (Anima-Turbo: 3.5 GB on AMD's, 4.1 on Apple's). The table may also name Apple's chips
-// (Chips) where one differs from the others (memory: {amd: 2.2, apple: 3.1, M1: 1.7}: an M1
-// does not load LFM3-1.7B's whole program of short conversations).
-type PerVendor map[string]float64
-
-// For is the value for vendor: on Apple's, this machine's chip's when the table names it, else
-// the vendor's own, else the one for every vendor, else the largest of the table (a vendor it
-// leaves out is not assumed to need less).
-func (p PerVendor) For(vendor string) float64 {
-	if vendor == "apple" {
-		if c := chipName(); c != "" {
-			if v, ok := p[c]; ok {
-				return v
-			}
-		}
-	}
-	if v, ok := p[vendor]; ok {
-		return v
-	}
-	if v, ok := p[""]; ok {
-		return v
-	}
-	m := 0.0
-	for _, v := range p {
-		m = max(m, v)
-	}
-	return m
-}
-
-// UnmarshalYAML reads a number or a table of vendors and chips.
-func (p *PerVendor) UnmarshalYAML(unmarshal func(any) error) error {
-	var one float64
-	if err := unmarshal(&one); err == nil {
-		*p = PerVendor{"": one}
-		return nil
-	}
-	var by map[string]float64
-	if err := unmarshal(&by); err != nil {
-		return fmt.Errorf("a number or a table of vendors (%s) and chips (%s)", strings.Join(Vendors, ", "), strings.Join(Chips, ", "))
-	}
-	for v := range by {
-		if !slices.Contains(Vendors, v) && !slices.Contains(Chips, v) {
-			return fmt.Errorf("%q is not a vendor (%s) or a chip (%s)", v, strings.Join(Vendors, ", "), strings.Join(Chips, ", "))
-		}
-	}
-	*p = by
-	return nil
-}
-
-// over is p with q written over it: q's number replaces p, q's table changes the vendors it
-// names.
-func (p PerVendor) over(q PerVendor) PerVendor {
-	if _, one := q[""]; one || p == nil {
-		return maps.Clone(q)
-	}
-	r := maps.Clone(p)
-	maps.Copy(r, q)
-	return r
-}
-
-// MemoryFor is what m takes running on a machine whose NPU is vendor's, in GB (0: unknown).
-func (m Model) MemoryFor(vendor string) float64 { return m.MemoryBy.For(vendor) }
-
-// BytesFor is the size of m's download on a machine whose NPU is vendor's (0: unknown).
-func (m Model) BytesFor(vendor string) float64 { return m.BytesBy.For(vendor) }
-
-// DiskFor is what m keeps in the cache to run on a machine whose NPU is vendor's (0: unknown):
-// its conversion unpacked and its tables. Preparing it takes the download and this at once for
-// a while (a packed export is unpacked beside its pack). Unlike memory and bytes, a vendor the
-// table leaves out is not known (0), not the largest: the sizes come from what the sources hold,
-// and a vendor's may not be there yet.
-func (m Model) DiskFor(vendor string) float64 {
-	if v, ok := m.DiskBy[""]; ok {
-		return v
-	}
-	if vendor == "apple" {
-		if v, ok := m.DiskBy[chipName()]; ok {
-			return v
-		}
-	}
-	return m.DiskBy[vendor]
 }
 
 // HereVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.

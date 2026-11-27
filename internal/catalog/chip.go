@@ -1,4 +1,4 @@
-package chat
+package catalog
 
 import (
 	"slices"
@@ -8,8 +8,9 @@ import (
 // Chips are the chips models.yaml's not_on names: Apple's, by their family (an M1 Pro is an M1).
 var Chips = []string{"M1", "M2", "M3", "M4", "M5"}
 
-// chipName is the machine's chip of Chips ("M1" for an Apple M1 Pro), "" for another.
-var chipName = func() string { return chipOf(cpuBrand()) }
+// ChipName is the machine's chip of Chips ("M1" for an Apple M1 Pro), "" for another; a
+// test's own (ActAsChip).
+var ChipName = func() string { return chipOf(cpuBrand()) }
 
 // chipOf is the chip of Chips that a CPU's brand ("Apple M1 Pro") names, "" for none.
 func chipOf(brand string) string {
@@ -25,7 +26,7 @@ func chipOf(brand string) string {
 }
 
 // Chip is the machine's chip of Chips ("M1" for an Apple M1 Pro), "" for another.
-func Chip() string { return chipName() }
+func Chip() string { return ChipName() }
 
 // ExportChips are the chips whose Core AI exports of a model differ, one standing for each kind:
 // the M1, whose chat models have no whole programs (wholeSlower) and read prompts with the one
@@ -38,11 +39,11 @@ var ExportChips = []string{"M1", "M2"}
 // hwnpu-dev models package makes each chip's Core AI exports on any machine. It returns what
 // undoes it.
 func ActAsChip(chip string) (undo func()) {
-	was := chipName
+	was := ChipName
 	if chip != "" {
-		chipName = func() string { return chip }
+		ChipName = func() string { return chip }
 	}
-	return func() { chipName = was }
+	return func() { ChipName = was }
 }
 
 // archChips are the chips of the architectures of the Neural Engine, by the first three letters

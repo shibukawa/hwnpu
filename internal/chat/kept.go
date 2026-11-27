@@ -136,9 +136,6 @@ func runsAs(m Model, machine int, given bool, log io.Writer) int {
 	return gb
 }
 
-// Over is r with the fields o gives.
-func (r Run) Over(o Run) Run { return r.over(o) }
-
 // Named is the model of the definitions name means on this machine: by its name or repository,
 // or the one a family or a use picks here (lfm3, translate), through the aliases.
 func Named(name string) (Model, error) {
