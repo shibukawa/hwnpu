@@ -139,4 +139,19 @@ func TestQuantizeLinear(t *testing.T) {
 			t.Errorf("element %d: %v, want %v", i, got, want)
 		}
 	}
+	// symmetric_with_clipping: no -8 nibble emitted even on negative outliers, and extended
+	// clipping grid improves heavy-tailed outlier blocks.
+	wOut := append([]float32(nil), w...)
+	for i := 0; i < len(wOut); i += 128 {
+		wOut[i] = -20
+	}
+	lOut := QuantizeLinear(wOut, rows, cols, 128, 4, true)
+	for i, b := range lOut.Data {
+		lo := int8(b<<4) >> 4
+		hi := int8(b) >> 4
+		if lo < -7 || hi < -7 {
+			t.Fatalf("byte %d has asymmetric nibble (%d, %d) below -7", i, lo, hi)
+		}
+	}
+	t.Logf("int4 block 128 heavy-tail (20-sigma outliers) rel RMS err %.4f", relErr(wOut, lOut.Dequantize()))
 }

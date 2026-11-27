@@ -263,18 +263,18 @@ type AIFunction struct {
 // them), each with the program's size.
 func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, error) {
 	base := strings.TrimSuffix(path, filepath.Ext(path))
+	tmp := base + ".milblob.tmp"
+	blobs, err := mlpackage.NewBlobWriter(tmp)
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp)
+	opCache := mlpackage.NewOpCache()
 	var mfns []*milspec.Function
-	var readers []io.ReaderAt
-	var files []*os.File // the readers, removed once the program is lowered
 	var recs []PartRecord
 	for _, f := range fns {
-		tmp := base + "." + f.Name + ".milblob.tmp"
-		blobs, err := mlpackage.NewBlobWriter(tmp)
-		if err != nil {
-			return nil, err
-		}
-		defer os.Remove(tmp)
 		b := mlpackage.NewBuilder("CoreML8", blobs)
+		b.ShareOps(opCache)
 		ins, outs, err := buildPart(b, f.Model, w, f.Options)
 		if err != nil {
 			blobs.Close()
@@ -284,28 +284,29 @@ func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, e
 		for _, o := range outs {
 			vars = append(vars, &mlpackage.Var{Name: o.Name})
 		}
-		fn := b.Function(vars...)
-		if err := blobs.Close(); err != nil {
-			return nil, err
-		}
-		r, err := os.Open(tmp)
-		if err != nil {
-			return nil, err
-		}
-		defer r.Close()
-		mfns, readers, files = append(mfns, fn), append(readers, r), append(files, r)
+		mfns = append(mfns, b.Function(vars...))
 		recs = append(recs, PartRecord{Path: path + "#" + f.Name, Start: f.Options.Start, Layers: f.Options.Layers,
 			Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)})
 	}
+	if err := blobs.Close(); err != nil {
+		return nil, err
+	}
+	r, err := os.Open(tmp)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	readers := make([]io.ReaderAt, len(fns))
 	names := make([]string, len(fns))
 	for i, f := range fns {
+		readers[i] = r
 		names[i] = f.Name
 	}
 	if err := os.RemoveAll(path); err != nil {
 		return nil, err
 	}
-	// written as it is lowered, its weights through a file: not held in memory
-	prog, err := ailower.WriteMany(path, mfns, readers, names, func() error { return removeFiles(files...) })
+	// written as it is lowered, its weights through a single shared file: not held in memory
+	prog, err := ailower.WriteMany(path, mfns, readers, names, func() error { return removeFiles(r) })
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}

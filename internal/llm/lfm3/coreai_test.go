@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
@@ -174,6 +175,89 @@ func TestConvertAISharesParts(t *testing.T) {
 	}
 	if fmt.Sprint(files[0]) != fmt.Sprint(files[1]) {
 		t.Errorf("the programs' parts are in different files: %v and %v", files[0], files[1])
+	}
+}
+
+// countingWeights counts Get calls to verify WriteAIFunctions reads and quantizes shared
+// weights once across multiple functions.
+type countingWeights struct {
+	llm.Weights
+	gets map[string]int
+}
+
+func (c *countingWeights) Get(name string) ([]float32, []int, error) {
+	c.gets[name]++
+	return c.Weights.Get(name)
+}
+
+func TestWriteAIFunctionsDedupWeights(t *testing.T) {
+	cfg := tinyConfig()
+	baseW := llm.NewSynthetic(cfg)
+	dir := t.TempDir()
+	opts := llm.Options{Seq: 8, Format: "lut4", Backend: llm.BackendCoreAI}
+	long := opts
+	long.Seq = 16
+	longer := opts
+	longer.Seq = 32
+	cw := &countingWeights{Weights: baseW, gets: map[string]int{}}
+	out := filepath.Join(dir, "three.aimodel")
+	if _, err := llm.WriteAIFunctions(out, cw, []llm.AIFunction{
+		{Name: "f8", Model: cfg, Options: opts},
+		{Name: "f16", Model: cfg, Options: long},
+		{Name: "f32", Model: cfg, Options: longer},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Every matrix weight should have been read and quantized once across all 3 functions.
+	for name, n := range cw.gets {
+		if strings.HasSuffix(name, ".weight") && !strings.Contains(name, "norm") && !strings.Contains(name, "conv.conv") && n != 1 {
+			t.Errorf("weight %s read %d times across 3 functions, want 1", name, n)
+		}
+	}
+	// Verify the lowered bytecode is byte-for-byte identical to lowering separate packages without OpCache.
+	var pkgs []string
+	names := []string{"f8", "f16", "f32"}
+	for i, o := range []llm.Options{opts, long, longer} {
+		o.Backend = llm.BackendCoreML
+		p := filepath.Join(dir, fmt.Sprintf("ref%d.mlpackage", i))
+		if _, err := llm.WritePart(p, cfg, baseW, o, nil); err != nil {
+			t.Fatal(err)
+		}
+		pkgs = append(pkgs, p)
+	}
+	want, err := ailower.LowerFunctions(pkgs, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "main.mlirb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want.Bytecode) {
+		t.Errorf("WriteAIFunctions bytecode (%d B) differs from LowerFunctions (%d B)", len(got), len(want.Bytecode))
+	}
+}
+
+func BenchmarkWriteAIFunctions(b *testing.B) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	baseOpts := llm.Options{Seq: 8, Format: "lut4", Quant: "kmeans-minmax", Backend: llm.BackendCoreAI}
+	for _, nfn := range []int{2, 8} {
+		fns := make([]llm.AIFunction, nfn)
+		for i := range nfn {
+			o := baseOpts
+			o.Seq = 8 * (i + 1)
+			fns[i] = llm.AIFunction{Name: fmt.Sprintf("f%d", o.Seq), Model: cfg, Options: o}
+		}
+		b.Run(fmt.Sprintf("%dfns_lut4", nfn), func(b *testing.B) {
+			dir := b.TempDir()
+			for b.Loop() {
+				out := filepath.Join(dir, "m.aimodel")
+				if _, err := llm.WriteAIFunctions(out, w, fns); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

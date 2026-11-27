@@ -173,6 +173,94 @@ func TestEncode(t *testing.T) {
 			t.Errorf("nearest(%g) = %d, want %d", tc.x, got, tc.want)
 		}
 	}
+	// Reference check across subnormals, normal floats, huge values, ties, and negative zero.
+	nearestRef := func(x float64) byte {
+		var sign byte
+		if x < 0 {
+			sign, x = 8, -x
+		}
+		c := byte(7)
+		for k := range byte(7) {
+			mid := float64(Values[k]+Values[k+1]) / 2
+			if x < mid || x == mid && k%2 == 0 {
+				c = k
+				break
+			}
+			if x == mid {
+				c = k + 1
+				break
+			}
+		}
+		if c == 0 {
+			return 0
+		}
+		return sign | c
+	}
+	edge := make([]float32, 6*Block)
+	for i := range Block {
+		edge[i] = math.Float32frombits(uint32(i + 1)) // subnormals
+		edge[Block+i] = float32(r.NormFloat64()) * 1e-35
+		edge[2*Block+i] = float32(r.NormFloat64()) * 1e20
+		edge[3*Block+i] = Values[i%len(Values)]
+		edge[4*Block+i] = float32(r.NormFloat64() * 0.1)
+	}
+	edge[5*Block] = float32(math.Copysign(0, -1))
+	ew, ee := make([]byte, 16*6), make([]byte, 6)
+	Encode(ew, ee, edge)
+	for b := range 6 {
+		blk := edge[b*Block : (b+1)*Block]
+		var m float32
+		for _, v := range blk {
+			m = max(m, float32(math.Abs(float64(v))))
+		}
+		best, bestErr := byte(0), math.Inf(1)
+		if m > 0 {
+			_, exp := math.Frexp(float64(m))
+			rule := exp - 3
+			for _, x := range []int{rule - 1, rule, rule + 1} {
+				eb := x + 127
+				if eb < 1 || eb > 254 {
+					continue
+				}
+				s := float64(scale(byte(eb)))
+				var se float64
+				for _, v := range blk {
+					d := float64(v) - float64(Values[nearestRef(float64(v)/s)])*s
+					se += d * d
+				}
+				if se < bestErr {
+					best, bestErr = byte(eb), se
+				}
+			}
+		}
+		if ee[b] != best {
+			t.Fatalf("block %d: scale %d, want %d", b, ee[b], best)
+		}
+		if best == 0 {
+			continue
+		}
+		s := float64(scale(best))
+		for j := range Block / 2 {
+			want := nearestRef(float64(blk[2*j])/s) | nearestRef(float64(blk[2*j+1])/s)<<4
+			if ew[16*b+j] != want {
+				t.Fatalf("block %d byte %d: got 0x%02x, want 0x%02x", b, j, ew[16*b+j], want)
+			}
+		}
+	}
+}
+
+func BenchmarkEncode(b *testing.B) {
+	r := rand.New(rand.NewPCG(9, 10))
+	const nb = 1024
+	row := make([]float32, nb*Block)
+	for i := range row {
+		row[i] = float32(r.NormFloat64() * 0.02)
+	}
+	w, e := make([]byte, 16*nb), make([]byte, nb)
+	b.SetBytes(int64(len(row) * 4))
+	for b.Loop() {
+		Encode(w, e, row)
+	}
 }
 
 // Rows gives Dot's value for every row, bit for bit: with blocks in fours, with two left over

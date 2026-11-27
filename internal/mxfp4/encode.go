@@ -14,21 +14,31 @@ func Encode(w, e []byte, row []float32) {
 		blk := row[b*Block : (b+1)*Block]
 		var m float32
 		for _, v := range blk {
-			m = max(m, float32(math.Abs(float64(v))))
+			m = max(m, math.Float32frombits(math.Float32bits(v)&0x7fffffff))
 		}
 		best, bestErr := byte(0), math.Inf(1)
 		if m > 0 {
-			_, exp := math.Frexp(float64(m)) // m = f 2^exp, f in [0.5, 1): floor(log2 m) = exp-1
-			rule := exp - 1 - 2
-			for _, x := range []int{rule - 1, rule, rule + 1} {
+			// IEEE-754 exponent extraction for floor(log2(m)) without Frexp on normal floats.
+			bits := math.Float32bits(m)
+			var floorLog2 int
+			if exp := int((bits >> 23) & 0xff); exp > 0 && exp < 0xff {
+				floorLog2 = exp - 127
+			} else {
+				_, e2 := math.Frexp(float64(m))
+				floorLog2 = e2 - 1
+			}
+			rule := floorLog2 - 2
+			for _, x := range [3]int{rule - 1, rule, rule + 1} {
 				eb := x + 127
 				if eb < 1 || eb > 254 {
 					continue
 				}
 				s := float64(scale(byte(eb)))
+				invS := 1 / s // exact power of two in float64: v * invS == v / s bit-for-bit
 				var se float64
 				for _, v := range blk {
-					d := float64(v) - float64(Values[nearest(float64(v)/s)])*s
+					fv := float64(v)
+					d := fv - float64(Values[nearest(fv*invS)])*s
 					se += d * d
 				}
 				if se < bestErr {
@@ -41,9 +51,9 @@ func Encode(w, e []byte, row []float32) {
 			e[b] = 0
 			continue
 		}
-		s := float64(scale(best))
+		invS := 1 / float64(scale(best))
 		for j, v := range blk {
-			codes[j] = nearest(float64(v) / s)
+			codes[j] = nearest(float64(v) * invS)
 		}
 		for j := range Block / 2 {
 			w[16*b+j] = codes[2*j] | codes[2*j+1]<<4
@@ -59,20 +69,32 @@ func nearest(x float64) byte {
 	if x < 0 {
 		sign, x = 8, -x
 	}
-	c := byte(7)
-	for k := range byte(7) {
-		mid := float64(Values[k]+Values[k+1]) / 2
-		if x < mid || x == mid && k%2 == 0 {
-			c = k
-			break
+	var c byte
+	if x <= 1.75 {
+		if x < 0.75 {
+			if x <= 0.25 {
+				return 0
+			}
+			c = 1
+		} else if x <= 1.25 {
+			c = 2
+		} else if x < 1.75 {
+			c = 3
+		} else {
+			c = 4
 		}
-		if x == mid {
-			c = k + 1
-			break
+	} else if x <= 3.5 {
+		if x <= 2.5 {
+			c = 4
+		} else if x < 3.5 {
+			c = 5
+		} else {
+			c = 6
 		}
-	}
-	if c == 0 {
-		return 0
+	} else if x <= 5.0 {
+		c = 6
+	} else {
+		c = 7
 	}
 	return sign | c
 }

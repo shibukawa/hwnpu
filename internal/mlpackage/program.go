@@ -34,14 +34,33 @@ type Var struct {
 	Shape []int // nil for a scalar
 }
 
+// OpCache shares emitted zero-input weight operations (const, constexpr_lut_to_dense,
+// constexpr_blockwise_shift_scale) across Builders writing to the same BlobWriter so shared
+// weights are read, quantized, and written to the blob file once.
+type OpCache struct {
+	ops map[string]cachedOp
+}
+
+type cachedOp struct {
+	op    *milspec.Operation
+	dtype milspec.DataType
+	shape []int
+}
+
+// NewOpCache creates an empty OpCache for Builders sharing a BlobWriter.
+func NewOpCache() *OpCache {
+	return &OpCache{ops: map[string]cachedOp{}}
+}
+
 // Builder assembles one MIL function (main) and its constants.
 type Builder struct {
-	opset  string
-	blobs  *BlobWriter
-	inputs []*milspec.NamedValueType
-	ops    []*milspec.Operation
-	names  map[string]bool
-	seq    int
+	opset   string
+	blobs   *BlobWriter
+	opCache *OpCache
+	inputs  []*milspec.NamedValueType
+	ops     []*milspec.Operation
+	names   map[string]bool
+	seq     int
 	// ImmediateLimit is the largest constant, in bytes, kept inline in the program; larger ones go
 	// to the weight file. coremltools uses a similar threshold.
 	ImmediateLimit int
@@ -51,6 +70,54 @@ type Builder struct {
 // larger than ImmediateLimit are written to blobs, which must not be nil in that case.
 func NewBuilder(opset string, blobs *BlobWriter) *Builder {
 	return &Builder{opset: opset, blobs: blobs, names: map[string]bool{}, ImmediateLimit: 256}
+}
+
+// ShareOps attaches c so CachedOp can reuse weight operations written to the same BlobWriter
+// across multiple Builders.
+func (b *Builder) ShareOps(c *OpCache) { b.opCache = c }
+
+// HasOpCache reports whether an OpCache is attached to b.
+func (b *Builder) HasOpCache() bool { return b.opCache != nil }
+
+// HasCachedOp reports whether key is already present in b's OpCache.
+func (b *Builder) HasCachedOp(key string) bool {
+	if b.opCache == nil {
+		return false
+	}
+	_, ok := b.opCache.ops[key]
+	return ok
+}
+
+// CachedOp emits a copy of the single zero-input operation previously built under key (with its
+// output named from baseName via unique), or runs build to emit and cache it when absent or when
+// no OpCache is attached.
+func (b *Builder) CachedOp(key, baseName string, build func() (*Var, error)) (*Var, error) {
+	if b.opCache != nil {
+		if e, ok := b.opCache.ops[key]; ok {
+			name := b.unique(baseName)
+			attrs := make(map[string]*milspec.Value, len(e.op.Attributes))
+			for k, v := range e.op.Attributes {
+				attrs[k] = v
+			}
+			attrs["name"] = stringValue(name)
+			b.ops = append(b.ops, &milspec.Operation{
+				Type:       e.op.Type,
+				Inputs:     e.op.Inputs,
+				Attributes: attrs,
+				Outputs:    []*milspec.NamedValueType{{Name: name, Type: e.op.Outputs[0].Type}},
+			})
+			return &Var{Name: name, DType: e.dtype, Shape: slices.Clone(e.shape)}, nil
+		}
+	}
+	start := len(b.ops)
+	v, err := build()
+	if err != nil {
+		return nil, err
+	}
+	if b.opCache != nil && len(b.ops) == start+1 {
+		b.opCache.ops[key] = cachedOp{op: b.ops[start], dtype: v.DType, shape: slices.Clone(v.Shape)}
+	}
+	return v, nil
 }
 
 // unique makes a value name the loader accepts (letters, digits and underscores; a name with

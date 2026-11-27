@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
@@ -69,5 +70,38 @@ func TestImageOps(t *testing.T) {
 	}
 	if slices.Contains(ops, "aicode.primitive.divide_v1") {
 		t.Errorf("a divide_v1 by a constant: %v", ops)
+	}
+}
+
+// LintPackage flags ANE fp16 arithmetic traps (rsqrt/layer_norm eps < 2^-14, clip alpha < 2^-14)
+// and rank > 5 tensors without altering lowered bytecode.
+func TestLintANETraps(t *testing.T) {
+	f16 := mlpackage.Float16
+	dir := filepath.Join(t.TempDir(), "traps.mlpackage")
+	pkg, err := mlpackage.Create(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
+	x := b.Input("x", f16, 1, 2, 2, 4)
+	r := b.Op("rsqrt", map[string]any{"x": x, "epsilon": b.ScalarF16(1e-6)}, f16, 1, 2, 2, 4)
+	c := b.Op("clip", map[string]any{"x": r, "alpha": b.ScalarF16(1e-5), "beta": b.ScalarF16(6.0)}, f16, 1, 2, 2, 4)
+	ln := b.Op("layer_norm", map[string]any{"x": c, "axes": b.Ints(-1), "epsilon": b.ScalarF16(1e-5)}, f16, 1, 2, 2, 4)
+	r6 := b.Op("reshape", map[string]any{"x": ln, "shape": b.Ints(1, 2, 1, 2, 2, 2)}, f16, 1, 2, 1, 2, 2, 2)
+	y := b.NamedOp("reshape", "y", map[string]any{"x": r6, "shape": b.Ints(1, 2, 2, 4)}, f16, 1, 2, 2, 4)
+	ins := []mlpackage.Feature{{Name: "x", DType: f16, Shape: []int{1, 2, 2, 4}}}
+	outs := []mlpackage.Feature{{Name: "y", DType: f16, Shape: []int{1, 2, 2, 4}}}
+	if err := pkg.Finish(b.Finish(y), 9, ins, outs); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := LintPackage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(notes, "\n")
+	for _, want := range []string{"rsqrt", "clip", "layer_norm", "rank 6"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("LintPackage missing %q warning in:\n%s", want, joined)
+		}
 	}
 }

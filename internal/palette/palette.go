@@ -211,6 +211,12 @@ func fit(c, vals []float32, iters int, mode Mode, sc *scratch) {
 		lloyd(c, vals, iters, sc)
 		return
 	}
+	if lo, hi, ok := vecops.MinMax(vals); ok && lo == hi {
+		for i := range c {
+			c[i] = lo
+		}
+		return
+	}
 	var sample []float32
 	if len(vals) > 1<<16 {
 		step := len(vals) / (1 << 16)
@@ -239,10 +245,14 @@ func fit(c, vals []float32, iters int, mode Mode, sc *scratch) {
 func lloyd(c []float32, vals []float32, iters int, sc *scratch) {
 	var sum [256]float64
 	var cnt [256]int
+	var prev [256]uint32
 	ids := grow(&sc.lloydIDs, len(vals))
 	mids := make([]float32, len(c)-1)
 	var th vecops.Thresholds
 	for it := 0; it < iters; it++ {
+		for k, v := range c {
+			prev[k] = math.Float32bits(v)
+		}
 		clear(sum[:])
 		clear(cnt[:])
 		th.Reset(midpoints(mids, c))
@@ -258,6 +268,16 @@ func lloyd(c []float32, vals []float32, iters int, sc *scratch) {
 			}
 		}
 		sortValues(c)
+		same := true
+		for k, v := range c {
+			if math.Float32bits(v) != prev[k] {
+				same = false
+				break
+			}
+		}
+		if same {
+			break
+		}
 	}
 }
 

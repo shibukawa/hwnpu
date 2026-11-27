@@ -26,8 +26,9 @@ type Linear struct {
 }
 
 // clips are the fractions of a block's largest magnitude tried as the clipping point with
-// search: clipping the few largest weights lets the bulk use more of the levels.
-var clips = []float32{1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5}
+// search: clipping the few largest weights lets the bulk use more of the levels (including
+// heavy-tailed outlier blocks down to 0.25).
+var clips = []float32{1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25}
 
 // QuantizeLinear quantizes a row major rows x cols matrix to bits (4 or 8) with one scale per
 // colBlock columns of a row (0 means whole rows). The scale maps the block's largest magnitude
@@ -50,8 +51,10 @@ func QuantizeLinear(w []float32, rows, cols, colBlock, bits int, search bool) Li
 	} else {
 		l.Data = make([]byte, (rows*cols+1)/2)
 	}
+	// Symmetric clipping range [-7, 7] / [-127, 127] (avoiding asymmetric -8 / -128 DC bias
+	// and signed overflow on hardware INT4/INT8 MACs).
 	qmax := float32(int(1)<<(bits-1) - 1)
-	qmin := -qmax - 1
+	qmin := -qmax
 	// rows are independent; 4 bit rows share no byte only for even cols, so hand out rows in
 	// pairs
 	work := make(chan int, rows)
