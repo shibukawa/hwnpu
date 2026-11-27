@@ -54,7 +54,7 @@
 #               architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT) and
 #               put in the sources, where a Mac of the chip takes them at its first run. The
 #               image generators, whose programs the device compiles in minutes to hours, and
-#               chat models checked on the M1 (Qwen3.5-0.8B, 2B and 4B, LFM3-1.7B: their archs h13g
+#               chat models checked on the M1 (Qwen3.5-0.8B, 2B and 4B, LFM3-1.7B, VL, Audio and Omni: their archs h13g
 #               alone). A small model's programs may load slower from prebuilt programs than the
 #               device compiles them (LFM3-1.7B on an M1, 1 min 45 s prebuilt, 1 min 02 s on the
 #               device: docs/known-issues.md 9, 2026-11-27); a prebuilt that is only somewhat
@@ -247,6 +247,12 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
+      # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
+      # to the device by apple's rule): the answers with an image are those of the device's compile; the first load takes 3 min 44 s
+      # prebuilt against 1 min 10 s on the device, slower, with 2.1 GB less disk left, which the user takes
+      # for all of LFM3's models (2026-11-27). The other chips' programs are not checked yet
+      prebuilt: true
+      archs: [h13g]
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -260,6 +266,24 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
+      # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
+      # to the device by apple's rule): the answers with a clip are those of the device's compile; the first load takes 3 min 03 s
+      # prebuilt against 1 min 07 s on the device, slower, with 6.9 GB less disk left, which the user takes
+      # for all of LFM3's models (2026-11-27). The other chips' programs are not checked yet
+      prebuilt: true
+      archs: [h13g]
+      prebuild:
+        # the audio encoder's downsampler: its three silus over the convolutions' outputs (256
+        # channels, 16 sets of coefficients) share their kernels with the layers' MLP silus (1
+        # set), and coreai-build's h13g program reads past them (docs/known-issues.md 16); a
+        # reshape of the silus' input took the program off the Neural Engine. Compiled on the
+        # device it is right, and the clip was transcribed the same
+        - arch: [h13g]
+          export: "lfm3-audio-encoder*"
+          programs: ["*"]
+          do: device
+          why: "the audio encoder's downsampler silus (16 coefficient sets) share kernels with the MLP silus (1 set): 6 tasks read past them in coreai-build's h13g program (llirtasks -check); right compiled on the device"
+          checked: 2026-11-27
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -273,6 +297,24 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
+      # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
+      # to the device by apple's rule): the answers with an image and with a clip are those of the device's compile (the clip transcribed word for word); the first load takes 4 min 09 s to 4 min 32 s
+      # prebuilt (the device's compile not measured: another session was on the Neural Engine), which the user takes
+      # for all of LFM3's models (2026-11-27). The other chips' programs are not checked yet
+      prebuilt: true
+      archs: [h13g]
+      prebuild:
+        # the audio encoder's downsampler: its three silus over the convolutions' outputs (256
+        # channels, 16 sets of coefficients) share their kernels with the layers' MLP silus (1
+        # set), and coreai-build's h13g program reads past them (docs/known-issues.md 16); a
+        # reshape of the silus' input took the program off the Neural Engine. Compiled on the
+        # device it is right, and the clip was transcribed the same
+        - arch: [h13g]
+          export: "lfm3-audio-encoder*"
+          programs: ["*"]
+          do: device
+          why: "the audio encoder's downsampler silus (16 coefficient sets) share kernels with the MLP silus (1 set): 6 tasks read past them in coreai-build's h13g program (llirtasks -check); right compiled on the device"
+          checked: 2026-11-27
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)

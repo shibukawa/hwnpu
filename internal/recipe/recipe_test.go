@@ -48,7 +48,7 @@ func TestLeft(t *testing.T) {
 	}
 	// the image generators alone are prebuilt when a build names no architecture
 	for model, want := range map[string]bool{"FLUX.2-klein-4B": true, "flux-3-image-klein": true, "Anima-Turbo": true, "Anima-Aesthetic": true,
-		"MOSS-SoundEffect-v2.0": false, "LFM3-1.7B": true, "Qwen3.5-0.8B": true, "Qwen3.5-4B": true, "Qwen3.5-2B": true, "whisper-large-v3-turbo": false, "DA3-BASE": false, "no-such-model": false} {
+		"MOSS-SoundEffect-v2.0": false, "LFM3-1.7B": true, "LFM3-VL-2B": true, "LFM3-Omni-2B": true, "Qwen3.5-0.8B": true, "Qwen3.5-4B": true, "Qwen3.5-2B": true, "whisper-large-v3-turbo": false, "DA3-BASE": false, "no-such-model": false} {
 		if got := f.AppleOf(model).Prebuilt; got != want {
 			t.Errorf("%s: prebuilt %v, want %v", model, got, want)
 		}
