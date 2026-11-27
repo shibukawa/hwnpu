@@ -2,26 +2,20 @@ package speech
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/hwnpu/ai/speech/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/llm/whisper"
-	"github.com/shibukawa/hwnpu/internal/transcribe"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/speechwire"
 )
 
 // TranscribeRate is the samples a second Transcriber reads.
-const TranscribeRate = whisper.SampleRate
+const TranscribeRate = speechwire.TranscribeRate
 
 // Transcribe is the use of a model of speech to text (Whisper) for an app: a model, a family or
 // a use of the definitions ("transcribe", "whisper:large-v3-turbo").
@@ -35,95 +29,15 @@ func Transcribe(name string) ai.Use[*Transcriber] {
 //	programs: iron      on AMD's NPU, an export of tools/amd/iron_whisper.py (its directory)
 //
 // A model of device cpu runs on hwnpu's CPU interpreter (slow).
+// transcribeRole's Prepare and Load are the engine's (ai/speech/engine).
 var transcribeRole = &airole.Role{
 	Name:   "transcribe",
 	Remote: func(h *airpc.Handle) io.Closer { return &Transcriber{remote: h} },
-	Kinds:  []chat.Kind{chat.KindTranscribe},
+	Kinds:  []catalog.Kind{catalog.KindTranscribe},
 	// 1: the tokenizer as its binary file (chat.PrepareTokenizer) in the files, as "tokenizer":
 	// a store prepared before named none, and Load then read the checkpoint's tokenizer.json, which
 	// a checkpoint fetched since is without
 	Revision: 1,
-	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
-		cpu := e.NPU.CPU(e.Model)
-		if dir := first(e.Model.Programs["iron"]); dir != "" {
-			if !transcribe.IsIronExport(dir) {
-				return f, fmt.Errorf("%s is not an export of tools/amd/iron_whisper.py", dir)
-			}
-			f.Set("iron", dir)
-			return f, nil
-		}
-		if e.NPU.AMD() && !cpu {
-			// AMD's NPU runs the graphs of tools/amd/iron_whisper.py
-			dir, err := transcribe.PrepareAMD(e.Ctx, e.Base, e.Log)
-			if err != nil {
-				return f, err
-			}
-			iron.ShareExport(dir, logf(e.Log))
-			f.Set("iron", dir)
-			return f, nil
-		}
-		backend := e.NPU.Format
-		if cpu {
-			backend = llm.BackendCoreML // what the CPU interpreter runs
-		}
-		c, err := transcribe.Prepare(e.Ctx, transcribe.Setup{Dir: e.Dir, Repo: e.Model.Source(), Format: e.Model.Settings["format"], Backend: backend, Log: e.Log})
-		if err != nil {
-			return f, err
-		}
-		f.Set("dir", c.Dir)
-		f.Set("tokenizer", c.Tokenizer)
-		f.Set("encoder", c.Encoder)
-		f.Set("cross", c.Cross)
-		f.Set("decoder", c.Decoder)
-		f.Set("weights", c.Weights)
-		return f, nil
-	},
-	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		var (
-			dev *hwnpu.Device
-			t   *transcribe.Transcriber
-			err error
-		)
-		cpu := e.NPU.CPU(e.Def)
-		if dir := f.Path("iron"); dir != "" {
-			if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
-				return nil, err
-			}
-			t, err = transcribe.LoadIron(ctx, dev, dir)
-		} else {
-			if !cpu {
-				if dev, _, err = llm.OpenDevice(ctx, e.NPU.Device, e.Cache); err != nil {
-					return nil, err
-				}
-			}
-			t, err = transcribe.Load(ctx, dev, transcribe.Config{Dir: f.Path("dir"), Tokenizer: f.Path("tokenizer"), Encoder: f.Path("encoder"),
-				Cross: f.Path("cross"), Decoder: f.Path("decoder"), Weights: f.Path("weights")})
-		}
-		if err != nil {
-			if dev != nil {
-				dev.Close()
-			}
-			return nil, err
-		}
-		return &Transcriber{t: t, dev: dev, model: e.Model, cpu: cpu}, nil
-	},
-}
-
-// first is the first of ps, "" for none.
-func first(ps []string) string {
-	if len(ps) == 0 {
-		return ""
-	}
-	return ps[0]
-}
-
-// logf writes lines to w (nil for nowhere).
-func logf(w io.Writer) func(string, ...any) {
-	return func(format string, args ...any) {
-		if w != nil {
-			fmt.Fprintf(w, format+"\n", args...)
-		}
-	}
 }
 
 // TranscribeOptions are how speech is transcribed.
@@ -169,12 +83,17 @@ type Segment struct {
 
 // Transcriber turns speech into text (Whisper). It runs one request at a time; others wait.
 type Transcriber struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	mu     sync.Mutex
-	t      *transcribe.Transcriber
-	dev    *hwnpu.Device
-	model  string
-	cpu    bool
+	remote *airpc.Handle   // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	local  transcriberImpl // the engine's (ai/speech/engine), when it is here
+}
+
+// transcriberImpl is a transcription model of the engine in this process.
+type transcriberImpl interface {
+	Model() string
+	OnCPU() bool
+	OnNPU() bool
+	Transcribe(ctx context.Context, pcm []float32, o TranscribeOptions) (Transcript, error)
+	Close() error
 }
 
 // OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
@@ -182,7 +101,7 @@ func (t *Transcriber) OnCPU() bool {
 	if t.remote != nil {
 		return airpc.Value[bool](t.remote, "OnCPU")
 	}
-	return t.cpu
+	return t.local.OnCPU()
 }
 
 // Model is the name of the model in the definitions.
@@ -190,7 +109,7 @@ func (t *Transcriber) Model() string {
 	if t.remote != nil {
 		return airpc.Value[string](t.remote, "Model")
 	}
-	return t.model
+	return t.local.Model()
 }
 
 // OnNPU reports whether the programs were verified to run on the NPU.
@@ -198,7 +117,7 @@ func (t *Transcriber) OnNPU() bool {
 	if t.remote != nil {
 		return airpc.Value[bool](t.remote, "OnNPU")
 	}
-	return t.t.OnNPU()
+	return t.local.OnNPU()
 }
 
 // Transcribe turns speech (mono, at TranscribeRate, in [-1, 1]) into text. Speech longer than 30
@@ -207,28 +126,7 @@ func (t *Transcriber) Transcribe(ctx context.Context, pcm []float32, o Transcrib
 	if t.remote != nil {
 		return airpc.Call1[Transcript](t.remote, ctx, "Transcribe", pcm, o)
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t0 := time.Now()
-	res, err := t.t.Transcribe(ctx, pcm, transcribe.Options{Language: o.Language, Translate: o.Translate, MaxTokens: o.MaxTokens})
-	if err != nil {
-		return Transcript{}, err
-	}
-	out := Transcript{Text: strings.TrimSpace(res.Text), Took: time.Since(t0)}
-	for _, w := range res.Windows {
-		if out.Lang == "" {
-			out.Lang = w.Language
-		}
-		out.Windows = append(out.Windows, Window{Start: w.Start, Lang: w.Language, Tokens: len(w.Tokens),
-			Features: w.Features, Encode: w.Encode, Decode: w.Decode})
-		for _, s := range w.Segments {
-			out.Segments = append(out.Segments, Segment{Start: w.Start + s.Start, End: w.Start + s.End, Text: strings.TrimSpace(t.t.SegmentText(s))})
-		}
-	}
-	if o.Translate {
-		out.Lang = "en"
-	}
-	return out, nil
+	return t.local.Transcribe(ctx, pcm, o)
 }
 
 // TranscribeStream transcribes a stream of speech (VAD.Detect's) segment by segment: the
@@ -291,15 +189,11 @@ func (t *Transcriber) Close() error {
 	if t.remote != nil {
 		return t.remote.Release() // the Runtime in hwnpud unloads it
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	err := t.t.Close()
-	if t.dev != nil {
-		if e := t.dev.Close(); err == nil {
-			err = e
-		}
-	}
-	return err
+	return t.local.Close()
 }
 
-func init() { airole.Register(transcribeRole) }
+func init() {
+	airole.Register(transcribeRole)
+	bridge.Roles[transcribeRole.Name] = transcribeRole
+	bridge.Wrap[transcribeRole.Name] = func(l any) io.Closer { return &Transcriber{local: l.(transcriberImpl)} }
+}
