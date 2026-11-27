@@ -9,9 +9,18 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/aieng"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
+
+// runFile is the file of the memories chosen, as the engine of this process (hwnpud's) keeps it.
+func runFile() string {
+	if m, err := aieng.GetMachine(); err == nil {
+		return m.RunFile()
+	}
+	return ""
+}
 
 // MemoryCmd is hwnpu memory.
 type MemoryCmd struct {
@@ -68,7 +77,7 @@ func (c MemoryCmd) exec(e *Env) error {
 
 // listMemories prints this machine's memory and the models with a memory chosen.
 func listMemories(e *Env, s *modelstore.Store) error {
-	fmt.Fprintf(e.Out, "this machine: %d GB (%s)\n", chat.MachineMemory(), chat.RunFile())
+	fmt.Fprintf(e.Out, "this machine: %d GB (%s)\n", aieng.Must().MachineMemory(), runFile())
 	chosen := s.Memories()
 	if len(chosen) == 0 {
 		fmt.Fprintln(e.Out, "no model has a memory chosen: each runs as on this machine")
@@ -97,7 +106,7 @@ func describe(mem modelstore.Memory) string {
 
 // how says what models.yaml gives model name on a machine of gb GB: its programs and memory.
 func how(name string, gb int) string {
-	m, ok := chat.Lookup(name)
+	m, ok := aieng.Must().Lookup(name)
 	if !ok {
 		return ""
 	}
@@ -115,7 +124,7 @@ func how(name string, gb int) string {
 	if len(parts) > 0 {
 		out = strings.Join(parts, ", ")
 	}
-	if mb := m.MemoryFor(chat.HereVendor()); mb > 0 {
+	if mb := m.MemoryFor(aieng.Must().HereVendor()); mb > 0 {
 		out += fmt.Sprintf("; about %.1f GB running here", mb)
 	}
 	return out
@@ -130,7 +139,7 @@ func itoa(n int) string {
 
 // parseGB reads a memory: 8, 8g, 8GB.
 func parseGB(s string) (int, bool) {
-	if gb, ok := chat.MemoryTag(s); ok {
+	if gb, ok := catalog.MemoryTag(s); ok {
 		return gb, true
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(s))
