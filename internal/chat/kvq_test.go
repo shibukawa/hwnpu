@@ -15,8 +15,8 @@ type fakeRowSource struct {
 	data     []byte
 }
 
-func (f *fakeRowSource) RowBytes() int             { return f.rowBytes }
-func (f *fakeRowSource) RowFormat() (string, int)  { return f.dtype, f.headDim }
+func (f *fakeRowSource) RowBytes() int            { return f.rowBytes }
+func (f *fakeRowSource) RowFormat() (string, int) { return f.dtype, f.headDim }
 func (f *fakeRowSource) ExportRows(from, to int) ([]byte, error) {
 	return f.data[from*f.rowBytes : to*f.rowBytes], nil
 }
@@ -134,7 +134,7 @@ func TestStoreKVQPutAppendReload(t *testing.T) {
 			if err != nil || len(st2.entries) != 1 {
 				t.Fatalf("reopen: len=%d err=%v", len(st2.entries), err)
 			}
-			gotBytes, _, _, err := st2.load(st2.entries[0], rows)
+			gotBytes, _, _, err := st2.load(st2.entries[0], rows, false)
 			if err != nil {
 				t.Fatal(err)
 			}

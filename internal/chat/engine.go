@@ -160,6 +160,9 @@ type Engine struct {
 	cur    seq           // the sequence in the cache
 	saved  []saved       // put aside, the most recently used last
 	rsm    resumeTracker // learned divergence points and cost-aware mark eviction
+	// self: the session goes back inside its sequence by itself (rewindPointer), and free: to
+	// any position (stateless); set by prefill
+	self, free bool
 }
 
 func (e *Engine) logf(format string, args ...any) {
@@ -229,6 +232,30 @@ var (
 	maxSaved = 2
 	minSaved = 256 // shorter sequences are cheap to read again
 )
+
+// selfReach is how far into prompt the session goes back by itself (rewindPointer) inside the
+// beginning that prompt shares with the sequence in the cache, short of prompt's last token
+// (whose logits a step gives), and the mark for it; 0 and nil for none, or when the sequence goes
+// on as it is.
+func (e *Engine) selfReach(prompt []int32) (int, *mark) {
+	rp, ok := e.sess.(rewindPointer)
+	if !ok {
+		return 0, nil
+	}
+	q := &e.cur
+	n := 0
+	for n < len(q.fed) && n < len(prompt) && q.fed[n] == prompt[n] {
+		n++
+	}
+	if n == len(q.fed) && (n < len(prompt) || q.last != nil) {
+		return 0, nil
+	}
+	dm := rp.RewindPoint(min(n, len(prompt)-1))
+	if dm == nil {
+		return 0, nil
+	}
+	return dm.Pos(), &mark{m: dm, kind: markOther}
+}
 
 // reach is how far into prompt the sequence can be brought without reading, and the mark to go
 // back to for it (nil for the sequence as it is, or for none at all when 0).
@@ -1119,8 +1146,19 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	// to the mark m when not nil) or a sequence put aside (from)
 	var n, from int
 	var m *mark
+	e.self, e.free = false, false
+	if rp, ok := e.sess.(rewindPointer); ok {
+		e.free = rp.Stateless()
+		e.self = e.free
+	}
+	if is, ok := e.sess.(*ironSession); ok && is.boundaryChunk() > 0 {
+		e.self = true
+	}
 	plan := func() {
 		n, m = e.cur.reach(prompt)
+		if k, sm := e.selfReach(prompt); sm != nil && k > n {
+			n, m = k, sm
+		}
 		from = -1
 		for i := range e.saved {
 			if k, _ := e.saved[i].reach(prompt); k > n {
@@ -1138,7 +1176,7 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	for e.store != nil && n < len(plain) {
 		// the store brings the prompt further than what is in memory: start on its rows; an
 		// entry that cannot be read is dropped, and the next best is tried
-		se, sp := e.store.find(plain)
+		se, sp := e.store.find(plain, e.free)
 		if se == nil || sp <= n {
 			break
 		}
@@ -1221,7 +1259,12 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			}
 		}
 	}
-	sigPts := e.rsm.predictPoints(prompt, len(e.cur.fed))
+	var sigPts []int
+	if !e.self {
+		// a session that goes back by itself needs no marks where prompts part (selfReach): on
+		// AMD's NPU a cut inside a prompt chunk costs a call, and the mark saves none
+		sigPts = e.rsm.predictPoints(prompt, len(e.cur.fed))
+	}
 	sigAt := func(fed int) bool {
 		_, ok := slices.BinarySearch(sigPts, fed)
 		return ok
@@ -1347,7 +1390,7 @@ var errNoLogits = errors.New("chat: the stored mark has no logits")
 // that holds the prompt, and says whether it did: the entry is dropped when its files cannot be
 // read.
 func (e *Engine) restore(se *entry, pos int, prompt []int32, st *Stats) (bool, error) {
-	rows, m, logits, err := e.store.load(se, pos)
+	rows, m, logits, err := e.store.load(se, pos, e.free)
 	if err != nil {
 		e.logf("prompt store: %v (dropped)", err)
 		e.store.remove(se)

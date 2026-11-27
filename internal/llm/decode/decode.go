@@ -1118,6 +1118,33 @@ type Mark struct {
 // Pos is the position of the mark.
 func (m *Mark) Pos() int { return m.pos }
 
+// Stateless reports whether the sequence's state is its caches' rows by position alone: no
+// rings, no held inputs (recurrent states, convolution windows). Then it goes back to any
+// position with a mark that holds nothing but the position (NewMark(pos, nil)): the rows past it
+// are masked and later steps overwrite them.
+func (s *Session) Stateless() bool {
+	for name := range s.progs[0].p.In {
+		if llm.HeldInput(name) {
+			return false
+		}
+	}
+	for _, c := range s.kv {
+		if !c.long {
+			return false
+		}
+	}
+	return true
+}
+
+// RewindPoint is a mark at n of a stateless session (Stateless), which holds the position
+// alone; nil for a session with state or n outside the sequence.
+func (s *Session) RewindPoint(n int) *Mark {
+	if n <= 0 || n > s.pos || !s.Stateless() {
+		return nil
+	}
+	return &Mark{pos: n, bufs: map[string][]byte{}}
+}
+
 // Mark returns the current point of the sequence.
 func (s *Session) Mark() *Mark {
 	m := &Mark{pos: s.pos, bufs: map[string][]byte{}}
