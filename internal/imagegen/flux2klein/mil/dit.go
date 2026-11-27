@@ -138,7 +138,7 @@ func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.V
 // image stream's keys and the text's as score tensors of their own (docs/design/image-apple.md).
 func (d *ditGraph) attend(q, k, v *mlpackage.Var) *mlpackage.Var {
 	t := func(x *mlpackage.Var) *mlpackage.Var { return d.Transpose(x, 0, 2, 1, 3) }
-	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: headChunk(q.Shape[1]), Split: d.c.ImageRows()}))
+	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: headChunk(q.Shape[1]), Split: d.c.ImageRows(), DivideParts: true}))
 }
 
 // headChunk is the queries the attention of rows takes at a time: HeadChunk, or half the rows

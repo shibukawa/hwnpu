@@ -160,7 +160,9 @@ models:
       script: iron_flux2klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
-      version: 4
+      # 5: the attention's parts divided by their sum (export v7), so that the M3's prebuilt
+      # single blocks load at every size (docs/known-issues.md 12)
+      version: 5
       prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps (version 4; the
       # programs as version 3's, so its prebuilt programs are the same)
