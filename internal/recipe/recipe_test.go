@@ -105,7 +105,7 @@ failed`, "2026-11-23")
 	}
 }
 
-// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is left to the device on every chip, Anima's on M2 (prebuilt on M1 but its vae_s0, and on M3 and later), and their other programs are not left by these rules.
+// TestVAELeftToDevice: FLUX.2 and FLUX.3 klein's VAE is left to the device on M1 and M2 (prebuilt on M3 and later), Anima's on M2 (prebuilt on M1 but its vae_s0, and on M3 and later), and their other programs are not left by these rules.
 func TestVAELeftToDevice(t *testing.T) {
 	f, err := Builtin()
 	if err != nil {
@@ -118,12 +118,12 @@ func TestVAELeftToDevice(t *testing.T) {
 		{"FLUX.2-klein-4B", "vae_s0", "h13g", true},
 		{"FLUX.2-klein-4B", "vae_enc_s3", "h13g", true},
 		{"FLUX.2-klein-4B", "vae_s0", "h14g", true},
-		{"FLUX.2-klein-4B", "vae_s0", "h15g", true},
-		{"FLUX.2-klein-4B", "vae_enc_s3", "h15g", true},
+		{"FLUX.2-klein-4B", "vae_s0", "h15g", false},
+		{"FLUX.2-klein-4B", "vae_enc_s3", "h15g", false},
 		{"FLUX.2-klein-4B", "dit_double_0", "h15g", false},
 		{"flux-3-image-klein", "vae_s0", "h13g", true},
 		{"flux-3-image-klein", "vae_s9", "h14g", true},
-		{"flux-3-image-klein", "vae_s9", "h15g", true},
+		{"flux-3-image-klein", "vae_s9", "h15g", false},
 		{"Anima-Turbo", "vae_s0", "h15g", false},
 		{"Anima-Turbo", "vae_s0", "h13g", true},
 		{"Anima-Turbo", "vae_s1", "h13g", false},

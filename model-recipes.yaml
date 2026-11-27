@@ -181,15 +181,16 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
-      # the VAE (decoder and encoder) is compiled on the device on every chip, as before the rules:
-      # on M1 coreai-build's h13g prebuilt drew a band of noise every 112 rows at 512 x 512 and the
-      # 1024 x 768 vae_s0 ended in 'Request cancelled'; on M2 512 x 512 had bands every 112 rows.
-      # On an M3 the prebuilt gave the same bytes as the device's compile (2026-11-25, 26): taking
-      # it there is the FLUX change of its own
+      # the VAE (decoder and encoder) is prebuilt for M3 and later: on an M3 the device's compiler
+      # took 625 to 2799 s over the ten decoder stages, the prebuilt about 1 s, and both gave the
+      # same bytes at every size, without bands (2026-11-25, 26). On M1 coreai-build's h13g
+      # prebuilt drew a band of noise every 112 rows at 512 x 512 and the 1024 x 768 vae_s0 ended
+      # in 'Request cancelled'; on M2 512 x 512 had bands every 112 rows
       prebuild:
-        - programs: ["vae_*"]
+        - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
           do: device
-          why: "the VAE's prebuilts drew bands every 112 rows at 512 x 512 on M1 (h13g) and M2 (h14g); M3 and later are left to the device until they are taken by a change of FLUX's own"
+          why: "the VAE's prebuilts drew bands every 112 rows at 512 x 512 on M1 (h13g) and M2 (h14g); right on M3 (the same bytes as compiled on the device)"
           checked: 2026-11-26
   MOSS-SoundEffect-v2.0: &moss
     amd:
@@ -529,12 +530,14 @@ models:
         dit_format: lut8
         text_group: 4
         single_group: 5
-      # the VAE (FLUX.2 klein's decoder, internal/imagegen/fluxvae) is compiled on the device on
-      # every chip, as FLUX.2 klein's
+      # the VAE (FLUX.2 klein's decoder, internal/imagegen/fluxvae) is prebuilt for M3 and later:
+      # on an M3 the first run at 1024 x 1024 took 19m27s with the VAE compiled on the device (its
+      # ten stages 640 s), 2m43s with it prebuilt, the same pictures to the byte (2026-11-26)
       prebuild:
-        - programs: ["vae_*"]
+        - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
           do: device
-          why: "FLUX.2 klein's decoder, whose prebuilts drew bands every 112 rows at 512 x 512 on M1 and M2; M3 and later are left to the device until they are taken by a change of FLUX's own"
+          why: "FLUX.2 klein's decoder, whose prebuilts drew bands every 112 rows at 512 x 512 on M1 and M2"
           checked: 2026-11-26
     amd:
       version: 2
