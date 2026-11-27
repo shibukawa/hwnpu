@@ -101,3 +101,32 @@ func TestKVRing(t *testing.T) {
 		}
 	}
 }
+
+// The check of drafts' scratch rows (iron_verify.py's rows_o, named under the layer's cache) are
+// no cache of the sequence: the decode step and the prompt chunks do not have them.
+func TestCachesSkipVerifyScratch(t *testing.T) {
+	const L, row = 4096, 4096
+	seq := map[string]Placement{
+		"model.layers.3.cache.keys":   {Argument: "scratch", Bytes: L * row},
+		"model.layers.3.cache.values": {Argument: "scratch", Offset: L * row, Bytes: L * row},
+	}
+	ver := map[string]Placement{"model.layers.3.cache.rows_o": {Argument: "scratch", Offset: 2 * L * row, Bytes: 3 * row}}
+	for n, p := range seq {
+		ver[n] = p
+	}
+	m := &Model{Manifest: &Manifest{CacheRows: map[string]int{"model.layers.3.cache.rows_o": 3}},
+		decode: &version{m: &Version{Buffers: seq}}, verify: &version{m: &Version{Buffers: ver}}}
+	m.Manifest.Config.MaxSeqLen = L
+	cs, err := m.caches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs {
+		if c.name == "model.layers.3.cache.rows_o" {
+			t.Errorf("the check's scratch %s taken for a cache", c.name)
+		}
+	}
+	if len(cs) != 2 || m.RowBytes() != 2*row {
+		t.Errorf("%d caches, RowBytes %d; want 2 and %d", len(cs), m.RowBytes(), 2*row)
+	}
+}
