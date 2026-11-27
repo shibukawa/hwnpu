@@ -31,8 +31,9 @@ None changes what a user gets by default, and none is a setting of the user's.
   code reads is there and every key there is read. An unknown key is told once on standard error.
 - It is read at each call (`dev.Get`, `On`, `IsOff`, `Value`, `Int`), so that a test's
   `t.Setenv` takes.
-- hwnpud does not take a client's: an experiment runs in the developer's own process
-  (`HWNPU_DAEMON=off`; the default is on), with the Neural Engine's lock as before.
+- hwnpud does not take a client's: an experiment runs in a hwnpud of its own, `HWNPU_DEV=...
+  hwnpu-dev daemon -- COMMAND` (the shell's variables go to it), or in a process that imports the
+  engine (`HWNPU_DAEMON=off`: hwnpu-dev, a test).
 
 What were variables of their own:
 
