@@ -8,9 +8,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
-// ModelsUsage is the usage of the -models flag of the commands that pick models.
-const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/hwnpu/models.yaml) and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
-
 // PolicyError is the error of a model the policy refuses.
 type PolicyError struct {
 	Model string
