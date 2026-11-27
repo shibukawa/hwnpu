@@ -518,8 +518,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// that only writes the caches (llm.Options.KVOnly), without those layers and the output layer,
 	// and the program that generates reads the last tokens of a prompt
 	type prog struct {
-		seq, parts      int
-		lastRow, kvOnly bool
+		seq, parts, maxLayers int
+		lastRow, kvOnly       bool
 	}
 	pre := prog{seq: prefillSeq, lastRow: a.LastRow && backend != llm.BackendIntel}
 	if _, routed := model.(llm.Routed); routed {
@@ -634,6 +634,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			if len(progs) > 1 {
 				tprogs = append(tprogs, prog{seq: min(prefillSeq, cache), lastRow: a.LastRow})
 			}
+			if backend == llm.BackendCoreAI {
+				tprogs = slices.Clone(tprogs)
+				for i := range tprogs {
+					tprogs[i].maxLayers = wholeLayers(c.Name)
+				}
+			}
 		}
 		base := filepath.Join(pdir, fmt.Sprintf("%s-c%d", tkind, cache))
 		for i, p := range tprogs {
@@ -657,7 +663,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				missing = missing || !converted(ctx, out+programExt(backend))
 			}
 			outs, names, base = append(outs, out), append(names, name), base+"-"+name
-			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
+			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, maxLayers: p.maxLayers, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
 		}
 		tps = append(tps, tierProgs{outs, names, ps, base})
 	}
@@ -1073,6 +1079,26 @@ func wholeTiers(model llm.Model, gen int64) []int {
 	return []int{longest}
 }
 
+// wholeLayers is the most layers a part of a Core AI whole program (its caches inside, the
+// shorter caches' beside the programs split at the attention) holds: the recipe's
+// apple.convert.whole_layers of the model, 0 (as its weights allow) without one. The M3 refused
+// Qwen3.5-0.8B's whole program of 24 layers, and of 12, from h15g programs (ANEProgramCreate 0x13)
+// and took those of 8 (docs/known-issues.md)
+func wholeLayers(name string) int {
+	conv, by, err := AppleConvert(name)
+	if err != nil {
+		return 0
+	}
+	if _, ok := conv["whole_layers"]; !ok {
+		return 0
+	}
+	n, err := conv.Int(by, "whole_layers")
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
 // none: the model must be Paged (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4), on any
 // NPU, and an Unpaged one (Qwen3) is split only when Setup.Paged asks, but with Core AI, where it
@@ -1111,6 +1137,7 @@ type program struct {
 	arch, format      string
 	params            map[string]string
 	seq, parts, cache int
+	maxLayers         int      // llm.AIProgram.MaxLayers
 	paged             int      // llm.Options.Paged
 	lastRow           bool     // llm.Options.LastRow
 	kvOnly            bool     // llm.Options.KVOnly
@@ -1294,7 +1321,7 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 		if err != nil {
 			return nil, err
 		}
-		progs = append(progs, llm.AIProgram{Out: filepath.Join(export, names[i]), Name: names[i], Parts: p.parts, Options: opts})
+		progs = append(progs, llm.AIProgram{Out: filepath.Join(export, names[i]), Name: names[i], Parts: p.parts, MaxLayers: p.maxLayers, Options: opts})
 	}
 	p := ps[0]
 	if p.paged > 0 {
