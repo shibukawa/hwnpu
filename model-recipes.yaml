@@ -559,6 +559,11 @@ models:
           do: device
           why: "on M2 Anima-Turbo's pictures from the h14g VAE prebuilt had bands every 160 pixels (twice and three times as often at some aspect ratios), and none with the VAE compiled on the device"
           checked: 2026-11-27
+        - arch: [h13g, h13c, h13d, h13s]
+          programs: ["vae_s0"]
+          do: device
+          why: "tasks read past the kernel they load (llirtasks -check, docs/known-issues.md 16): the h13g vae_s0's functions at 1168 x 880, 880 x 1168, 1360 x 752 and 752 x 1360 (task 48: an activation's kernel sized by the last task that uses it); the other stages have none"
+          checked: 2026-11-27
     amd:
       version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
