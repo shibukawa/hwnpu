@@ -1226,6 +1226,48 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	return s.keep(p, q, len(emb)), nil
 }
 
+// StepKVOnly feeds emb into a single-attention-layer paged program (such as Qwen3.5's MTP layer
+// catching up over prompt positions) by running only part 0 and writing its KV cache rows, skipping
+// attention and the trailing o_proj/MLP/LM-head part whose outputs are unused for non-final catch-up
+// batches. Falls back to Step when the program is not a single-layer paged KV cache.
+func (s *Session) StepKVOnly(emb [][]float32) error {
+	v := len(emb)
+	st := s.pick(v, false)
+	p, q := st.p, st.q
+	if v == 0 || v > q || p.Attn == nil || len(p.Attend) != 1 || len(s.kv) != 2 || s.replaced(p) {
+		_, err := s.Step(emb)
+		return err
+	}
+	for name := range p.In {
+		if strings.HasPrefix(name, "win_") {
+			_, err := s.Step(emb)
+			return err
+		}
+	}
+	if s.pos+v > s.t {
+		return fmt.Errorf("decode: %d tokens at %d exceeds cache %d", v, s.pos, s.t)
+	}
+	if err := s.writeInputs(st, emb); err != nil {
+		return err
+	}
+	rows := min(q, s.t-s.pos)
+	if err := s.fit(s.pos + rows); err != nil {
+		return err
+	}
+	if err := p.RunPart(0); err != nil {
+		return err
+	}
+	layer := p.Attend[0]
+	kc, vc := s.cache(fmt.Sprintf("kv_k_%d_new", layer)), s.cache(fmt.Sprintf("kv_v_%d_new", layer))
+	for _, c := range []*kvCache{kc, vc} {
+		if err := s.writeRows(c, p.Out[c.out], q, s.pos, rows); err != nil {
+			return err
+		}
+	}
+	s.pos += v
+	return nil
+}
+
 // Speculate runs the tokens like Step, but keeps only as many of them as accept says, given the
 // logits after each (row i, after token i, computed when asked): the first token and the drafts
 // of speculative decoding after it, of which the model confirms a beginning. Each row is the
@@ -1852,6 +1894,21 @@ func (s *Session) RowBytes() int {
 		n += 2 * c.heads * c.d
 	}
 	return n
+}
+
+// RowFormat returns the element dtype ("f16") and smallest head dimension of the long caches
+// exported by ExportRows, or ("", 0) when there are none.
+func (s *Session) RowFormat() (dtype string, headDim int) {
+	cs := s.longCaches()
+	if len(cs) == 0 {
+		return "", 0
+	}
+	for _, c := range cs {
+		if headDim == 0 || c.d < headDim {
+			headDim = c.d
+		}
+	}
+	return "f16", headDim
 }
 
 // ExportRows returns the rows of positions from (inclusive) to to (exclusive) of the longest

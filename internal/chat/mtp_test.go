@@ -123,6 +123,132 @@ func TestMTPDrafts(t *testing.T) {
 	}
 }
 
+// TestMTPKVOnlyMatchesFull verifies that KV-only catch-up (decode.Session.StepKVOnly) produces
+// bit-identical MTP drafts to running full Step on every catch-up batch of a paged MTP program.
+func TestMTPKVOnlyMatchesFull(t *testing.T) {
+	cfg, err := qwen35.ParseConfig([]byte(tinyQwen35MTP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mm, err := qwen35.ParseMTP([]byte(tinyQwen35MTP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(cfg)
+	for name, shape := range mm.Tensors() {
+		w[name] = shape
+	}
+	const cache = 64
+	run := func(useKVOnly bool) []int32 {
+		gen := cpuPackage(t, cfg, w, llm.Options{Seq: 4, Cache: cache, Format: "fp16", Params: map[string]string{"hidden-out": "1", "state-rows": "1"}})
+		sess, err := decode.New(gen, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := &Engine{sess: sess, w: w, model: cfg, emb: map[int32][]float32{}, Stops: map[int32]bool{}}
+		mp := cpuPackage(t, mm, w, llm.Options{Seq: 4, Cache: cache, Paged: 16, Format: "fp16", LastRow: true})
+		if !useKVOnly {
+			// Force StepKVOnly to fall back to full Step by hiding RunPart.
+			mp.RunPart = nil
+		}
+		ms, err := decode.New(mp, mm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.mtp = &mtpDrafter{e: e, sess: ms, k: 2, base: -1}
+		prompt := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5, 8, 9, 7, 9, 3, 2, 3}
+		var st Stats
+		logits, err := e.prefill(context.Background(), prompt, &st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := argmax(logits)
+		d, err := e.mtp.guess(append(slices.Clone(prompt), next), 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	full := run(false)
+	fast := run(true)
+	if !slices.Equal(full, fast) {
+		t.Fatalf("KV-only catch-up drafts %v != full drafts %v", fast, full)
+	}
+}
+
+func TestMTPGuard(t *testing.T) {
+	var g mtpGuard
+	// Draft vocab contains tokens [0, 100).
+	ids := make([]int32, 100)
+	for i := range ids {
+		ids[i] = int32(i)
+	}
+	g.setVocab(ids)
+
+	inSeq := make([]int32, 32)
+	for i := range inSeq {
+		inSeq[i] = int32(i % 50)
+	}
+	// 1. Normal ~40% acceptance never triggers backoff.
+	for step := range 24 {
+		if !g.allow(inSeq) {
+			t.Fatalf("step %d: normal acceptance should stay enabled", step)
+		}
+		acc := 1
+		if step%5 == 0 {
+			acc = 0
+		}
+		g.observe(2, acc)
+	}
+
+	// 2. >25% OOV tokens immediately suppress MTP, and returning in-vocab re-enables it.
+	oovSeq := make([]int32, 32)
+	for i := range oovSeq {
+		if i%3 == 0 {
+			oovSeq[i] = 500 + int32(i) // 11/32 = 34% OOV
+		} else {
+			oovSeq[i] = int32(i)
+		}
+	}
+	if g.allow(oovSeq) {
+		t.Fatalf("expected OOV sequence to suppress MTP")
+	}
+	if !g.allow(inSeq) {
+		t.Fatalf("expected in-vocab sequence to immediately re-enable MTP")
+	}
+
+	// 3. Sustained <15% acceptance enters 8-step cooldown, doubles to 16 on missed probe,
+	//    and immediately resumes when a probe accepts a draft.
+	g.reset()
+	for step := range 8 {
+		if !g.allow(inSeq) {
+			t.Fatalf("warmup step %d should allow", step)
+		}
+		g.observe(2, 0)
+	}
+	for i := range 8 {
+		if g.allow(inSeq) {
+			t.Fatalf("cooldown step %d should skip", i)
+		}
+	}
+	if !g.allow(inSeq) {
+		t.Fatalf("probe after 8-step cooldown should allow")
+	}
+	g.observe(2, 0) // probe missed -> backoff doubles to 16
+	for i := range 16 {
+		if g.allow(inSeq) {
+			t.Fatalf("second cooldown step %d should skip", i)
+		}
+	}
+	if !g.allow(inSeq) {
+		t.Fatalf("probe after 16-step cooldown should allow")
+	}
+	g.observe(2, 1) // probe succeeded -> immediately back on
+	if !g.allow(inSeq) {
+		t.Fatalf("expected immediate resume after successful probe")
+	}
+}
+
 // plainOut generates n tokens after prompt one at a time on a fresh sequence.
 func plainOut(t *testing.T, e *Engine, prompt []int32, n int) []int32 {
 	var got []int32
