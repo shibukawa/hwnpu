@@ -41,6 +41,7 @@ var Keys = map[string]string{
 	"coreml.trace":   "traces Core ML's graph calls",
 	// decoding
 	"mtp.drafts":        "N: the multi-token prediction's drafts a step",
+	"store.kvq":         "4, 5 or 6: the prompt store keeps its rows in that many bits a value (not exact; 0, the default, as they are)",
 	"iron.drafts":       "0 runs IRON's chat models without drafts",
 	"iron.lookup.cost":  "R: what a check of the prompt lookup's drafts costs on IRON, in decode steps (1.8): a check is made when the tokens it is expected to bring are more",
 	"iron.lookup.trace": "PATH: writes IRON's choice of checking the prompt lookup's drafts, a line a call (tools/amd/draft_analyze.py)",

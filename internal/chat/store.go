@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 )
 
@@ -46,7 +47,21 @@ type entry struct {
 	Used     int64   `json:"used"` // unix nanoseconds of the last use
 }
 
-const storeKVQBits = 6 // near-lossless (~39% of fp16/bf16 size) Hadamard + Lloyd-Max KV compression
+// storeKVQBits is the bits a value of the rows the store keeps, Hadamard-rotated and Lloyd-Max
+// quantized (kvq.go; 6: 39-41 % of fp16 and bf16); 0, the default, keeps them as they are.
+// HWNPU_DEV=store.kvq=4|5|6 sets it. Not exact: on AMD, Qwen3.5-2B's greedy answer from rows of 6
+// bits parted from a cold read after about 10 tokens (0.8B about 70), and was the same byte for
+// byte from rows kept as they are; it saved 85 of the entry's 777 MB of disk (its marks, the
+// recurrent states, are most of it) and no memory, as the rows are expanded when they come back.
+var storeKVQBits = 0
+
+// storeKVQ is the bits of the rows to keep: HWNPU_DEV=store.kvq, else storeKVQBits.
+func storeKVQ() int {
+	if v, err := strconv.Atoi(devenv.Value("store.kvq")); err == nil && (v == 0 || kvqLevels(v) != nil) {
+		return v
+	}
+	return storeKVQBits
+}
 
 func (e *entry) kvqValid() bool {
 	if e.KVQBits == 0 {
@@ -70,8 +85,9 @@ type rowFormatter interface {
 }
 
 func storeKVQFor(sess rowSource, rowBytes int) (bits, dim int, dtype string) {
+	bits = storeKVQ()
 	rf, ok := sess.(rowFormatter)
-	if !ok || rowBytes%2 != 0 {
+	if bits == 0 || !ok || rowBytes%2 != 0 {
 		return 0, 0, ""
 	}
 	dt, headDim := rf.RowFormat()
@@ -81,7 +97,7 @@ func storeKVQFor(sess rowSource, rowBytes int) (bits, dim int, dtype string) {
 	nvals := rowBytes / 2
 	for _, d := range []int{128, 64} {
 		if headDim >= d && headDim%d == 0 && nvals%d == 0 {
-			return storeKVQBits, d, dt
+			return bits, d, dt
 		}
 	}
 	return 0, 0, ""
