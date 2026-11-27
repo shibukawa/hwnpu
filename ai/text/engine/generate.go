@@ -203,4 +203,3 @@ func chatTools(tools []text.Tool) ([]chat.Tool, error) {
 	}
 	return out, nil
 }
-

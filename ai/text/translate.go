@@ -67,7 +67,7 @@ type Pair struct{ Source, Target string }
 
 // Translator translates texts (PLaMo 3 Translate). It runs one request at a time; others wait.
 type Translator struct {
-	remote *airpc.Handle    // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	remote *airpc.Handle  // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
 	local  translatorImpl // the engine's (ai/text/engine), when it is here
 }
 

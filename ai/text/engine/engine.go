@@ -27,7 +27,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/systemone"
 )
 
-
 func init() {
 	for name, r := range bridge.Roles {
 		switch name {
@@ -240,8 +239,6 @@ type kindError struct{ err, kind error }
 func (e kindError) Error() string   { return e.err.Error() }
 func (e kindError) Unwrap() []error { return []error{e.kind, e.err} }
 
-
-
 // The settings and programs a chat model's definition may give (ai.Definition), besides its
 // Format, Context, Paged, Prefill and Tier:
 //
@@ -431,7 +428,6 @@ func first(ps []string) string {
 	}
 	return ps[0]
 }
-
 
 // noAMDForm is why a decision model without an export for AMD's NPU (its recipe, model-recipes.yaml)
 // does not run there: hwnpu has no form of it, said at once instead of looking for a device that
