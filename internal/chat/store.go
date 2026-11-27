@@ -156,13 +156,22 @@ func openStore(dir string) (*store, error) {
 // find returns the entry and the mark position that bring prompt furthest without reading: the
 // last mark inside the longest beginning that prompt shares with an entry, whose rows the entry
 // holds. 0 and nil for none.
-func (st *store) find(prompt []int32) (*entry, int) {
+//
+// free: the session goes back to any position (stateless), so the longest beginning itself, short
+// of prompt's last token, whose logits a step gives, mark or not.
+func (st *store) find(prompt []int32, free bool) (*entry, int) {
 	var best *entry
 	bestPos := 0
 	for _, e := range st.entries {
 		n := 0
 		for n < len(e.Tokens) && n < len(prompt) && e.Tokens[n] == prompt[n] {
 			n++
+		}
+		if free {
+			if p := min(n, e.Rows, len(prompt)-1); p > 0 && (p > bestPos || p == bestPos && e.Used > best.Used) {
+				best, bestPos = e, p
+			}
+			continue
 		}
 		for _, p := range e.Marks {
 			if p <= n && p <= e.Rows && p > 0 && (p > bestPos || p == bestPos && e.Used > best.Used) {
@@ -174,8 +183,12 @@ func (st *store) find(prompt []int32) (*entry, int) {
 }
 
 // load reads the rows before pos and the mark at pos of an entry.
-func (st *store) load(e *entry, pos int) (rows []byte, m *decode.Mark, logits []float32, err error) {
-	if !slices.Contains(e.Marks, pos) || pos > e.Rows {
+//
+// free: a position without a mark, of a stateless session, comes with an empty mark and no
+// logits.
+func (st *store) load(e *entry, pos int, free bool) (rows []byte, m *decode.Mark, logits []float32, err error) {
+	marked := slices.Contains(e.Marks, pos)
+	if !marked && !free || pos > e.Rows {
 		return nil, nil, nil, fmt.Errorf("chat: no mark at %d in %s", pos, e.dir)
 	}
 	f, err := os.Open(filepath.Join(e.dir, "rows.bin"))
@@ -197,6 +210,13 @@ func (st *store) load(e *entry, pos int) (rows []byte, m *decode.Mark, logits []
 	} else {
 		rows = raw
 	}
+	if !marked {
+		e.Used = time.Now().UnixNano()
+		if err := e.writeMeta(); err != nil {
+			return nil, nil, nil, err
+		}
+		return rows, decode.NewMark(pos, nil), nil, nil
+	}
 	sm, err := readMark(filepath.Join(e.dir, markFile(pos)))
 	if err != nil {
 		return nil, nil, nil, err
@@ -214,13 +234,12 @@ func (st *store) load(e *entry, pos int) (rows []byte, m *decode.Mark, logits []
 func markFile(pos int) string { return "mark-" + strconv.Itoa(pos) + ".bin" }
 
 func readMark(path string) (*storedMark, error) {
-	f, err := os.Open(path)
+	b, err := readUncached(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	var sm storedMark
-	if err := gob.NewDecoder(f).Decode(&sm); err != nil {
+	if err := gob.NewDecoder(bytes.NewReader(b)).Decode(&sm); err != nil {
 		return nil, fmt.Errorf("chat: %s: %w", path, err)
 	}
 	return &sm, nil
@@ -237,7 +256,7 @@ func writeMark(path string, sm storedMark) error {
 // writeFile writes a file through a temporary name, so that a reader never sees a part of it.
 func writeFile(path string, b []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := writeUncached(tmp, b); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -387,7 +406,7 @@ func (e *entry) append(tokens []int32, sess rowSource, marks []storedMark) error
 }
 
 func copyFile(from, to string) error {
-	b, err := os.ReadFile(from)
+	b, err := readUncached(from)
 	if err != nil {
 		return err
 	}

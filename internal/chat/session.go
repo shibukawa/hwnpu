@@ -31,4 +31,13 @@ type tokenSession interface {
 	SpeculateTokens(toks []int32, accept func(row func(i int) []float32) int) ([]float32, int, error)
 }
 
+// rewindPointer is a session that goes back inside its sequence without a mark taken there:
+// RewindPoint is the mark of the furthest position at or before n it can go back to (nil for
+// none, as the start needs no mark). Stateless reports whether that is n itself (the state is
+// the caches' rows by position alone), so that marks are never needed.
+type rewindPointer interface {
+	RewindPoint(n int) *decode.Mark
+	Stateless() bool
+}
+
 var _ session = (*decode.Session)(nil)
