@@ -32,7 +32,6 @@ var settingNames = []string{
 	"HWNPU_MEMORY",
 	"HWNPU_ACCEPT_LICENSE",
 	"HWNPU_COREAI_PREBUILT",
-	"HWNPU_COREAI_UNITS",
 	"HWNPU_WEBDAV_USER",
 	"HF_ENDPOINT",
 	chat.PolicyEnv,

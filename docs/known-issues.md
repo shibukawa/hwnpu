@@ -45,7 +45,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   1. `DistinctNeighbours` の呼び出しを除き、`ailower.FormatVersion` を 3 に上げる (書くものが変わるので、取得元の鍵も変わる)
   2. 6 節の「作り直し」をする (書き出し、prebuilt、チャットのモデルのすべて)
   3. 直った Metal Toolchain を、prebuilt を作る機械の最低限として docs に書く (古い `coreai-build` では同じ部品がまた GPU に回る)
-- 確かめ方: `tools/coreai/lutfake -dup N` (合成の 1 層) は `Builder.LUT` を通るので、今は再現しない。再現には `DistinctNeighbours` を外した hwnpu で書くか、Apple への追記に添えた再現 (lut8 の 256 × 256 の 1 層。リポジトリにはない) を使う。モデルにその並びがあるかは `tools/coreai/lutscan -tile 16` で見る
+- 確かめ方: `tools/coreai/lutfake` (合成の 1 層) は `Builder.LUT` を通るので、今は再現しない。再現には `DistinctNeighbours` を外した hwnpu で書くか、Apple への追記に添えた再現 (lut8 の 256 × 256 の 1 層。リポジトリにはない) を使う。モデルにその並びがあるかは `tools/coreai/lutscan -tile 16` で見る
 
 ## 3. 端末で仕上がらない `.aimodelc` (FB25624294)
 

@@ -177,7 +177,7 @@ look is from grey maps side by side.
 | The Neural Engine's `sigmoid` and `tanh` drift through a deep CNN (80 SiLUs in RTMDet-s) | box 98 px, score 0.35 off, an object lost (CPU fp16: 7.5 px) | `ExpSigmoid`: 5.5 px, score 0.063. Costs 2 ops: s 6.6 → 9.3 ms, m 12.2 → 18.2 ms; accuracy wins. `0.5 x (1 + tanh(x/2))` also drifts |
 | Any op on a tensor wider than 16384 on an axis, even the output identity | PP-OCR's 18710-class softmax, bias add and output on the CPU | logits as output, linear split in two, bias folded |
 | Core AI on the Neural Engine computes `divide_v1` by a constant wrong (×√2 instead of ÷√2, plus a per-channel offset) | PP-OCR detector cosine 0.05, recognizer −0.42 | `ailower` writes `x × (1/c)`; only ONNX graphs write such divides, so other programs' bytes are unchanged. `HWNPU_DEV=ailower.divide=1` restores the divide for checks |
-| Core AI's CPU sums `reduce_mean` in fp32 then stores fp16 before 1/n | −inf where \|mean\| > 65504/n (an SE block of 57600 elements) | only matters on Core AI's CPU (`HWNPU_COREAI_UNITS=cpu`); not fixed, it would change every program's hash |
+| Core AI's CPU sums `reduce_mean` in fp32 then stores fp16 before 1/n | −inf where \|mean\| > 65504/n (an SE block of 57600 elements) | only matters on Core AI's CPU (`HWNPU_DEV=coreai.units=cpu`); not fixed, it would change every program's hash |
 | Core AI `max_pool` | did not lower | `pad_v1` (−inf) + `primitive.max_pool_2d_v1`, as coreai-torch writes it |
 | Core AI `conv_transpose` with MIL's pads (may be negative) | — | full output with padding 0, `slice_v1`, `pad_v1` with 0, then bias |
 | `pad` replicate / reflect | — | `#aicode.padding_mode_v1<replicate>` / `<reflect>` |

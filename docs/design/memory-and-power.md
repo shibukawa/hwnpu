@@ -62,7 +62,7 @@ machine's memory class, and how the NPU's resident limit is probed. The Go API (
   measurement, runs each model continuously on its own thread (or `-rate` calls/s), and reports CPU / GPU /
   ANE power minus idle and mJ per call. A model that reaches the NE is also measured CPU-only (`-cpu=false`
   skips). `-decode 8,16` generates LLM decode models (energy per token).
-- `HWNPU_COREML_UNITS=cpu|gpu` loads Core ML with `MLComputeUnitsCPUOnly` / `CPUAndGPU`; for measurement
+- `HWNPU_DEV=coreml.units=cpu|gpu` loads Core ML with `MLComputeUnitsCPUOnly` / `CPUAndGPU`; for measurement
   only, not public API. Sweeps: `tools/coreml/gen_sweep.py`.
 - Result (M3): break-even about 200 MFLOP per call. Above it the ANE is 2–3× faster at about 1/4 the energy
   (≈1 TFLOP/J vs CPU 0.25 TFLOP/J). Below it Core ML's fixed cost per call (≈55 µs) and ANE startup win,

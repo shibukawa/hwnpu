@@ -462,6 +462,9 @@ const rowPiece = 128 * 2048
 // those of a step of 128 tokens with 8 experts a token (12 MB of Qwen3.6-35B-A3B's).
 const runItems = 1024
 
+// oneRow runs a call of one row as runRow; a test sets it false to compare with the rows' form.
+var oneRow = true
+
 // runRow is Run of one row (a generated token), as one piece of work of the cores' workers, woken
 // once a layer: as three Runs over all the experts (the rows' form) each wakes them again, and
 // after the Neural Engine's part of a step they are asleep (Qwen3.6-35B-A3B's 8 experts of a
@@ -799,7 +802,7 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	if h.reads {
 		h.readChosen(layer, byExpert)
 	}
-	if v, _ := DebugOpt("row"); len(rows) == 1 && v != "0" {
+	if len(rows) == 1 && oneRow {
 		h.runRow(hl, rows[0], idx[0], w[0], out[0])
 		return nil
 	}

@@ -169,8 +169,9 @@ func TestHostRowMatchesRows(t *testing.T) {
 			if !c.wired {
 				physical = func() int64 { return 1 } // more experts than the memory: none wired
 			}
-			run := func(debug string) [][]float32 {
-				t.Setenv("HWNPU_DEV", debug)
+			run := func(alone bool) [][]float32 {
+				oneRow = alone
+				defer func() { oneRow = true }()
 				h, err := OpenHost(rec, sh)
 				if err != nil {
 					t.Fatal(err)
@@ -191,7 +192,7 @@ func TestHostRowMatchesRows(t *testing.T) {
 				}
 				return outs
 			}
-			row, rows := run(""), run("moe.row=0")
+			row, rows := run(true), run(false)
 			var nonzero bool
 			for l := range row {
 				for j := range row[l] {

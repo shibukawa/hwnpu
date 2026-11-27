@@ -55,10 +55,10 @@ var (
 	caiClose func(h uintptr)
 	caiNames func(h uintptr, which int32) *byte
 	caiRun   func(h uintptr, ins, outs *uintptr, err **byte) int32
-	// caiForget deletes Core AI's cache entries of an asset; nil with a shim from before it
+	// caiForget deletes Core AI's cache entries of an asset
 	caiForget func(path *byte)
 	// caiInputArray makes an array of an input, whose storage the caller fills in place, and
-	// caiArrayFree frees it; nil with a shim from before them
+	// caiArrayFree frees it
 	caiInputArray func(h uintptr, index int32) unsafe.Pointer
 	caiArrayFree  func(p unsafe.Pointer)
 )
@@ -69,15 +69,15 @@ const (
 	kindNeuralEngine = 2
 )
 
-// UnitsEnv names the environment variable that moves the programs off the Neural Engine, for
-// telling a lowering's errors from the Neural Engine's (and checking a lowering while another
-// process has the Neural Engine): "cpu" runs them on Core AI's CPU alone. As Core ML's
-// HWNPU_COREML_UNITS. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
+// UnitsKey is the developers' switch (HWNPU_DEV=coreai.units=cpu) that moves the programs off the
+// Neural Engine, for telling a lowering's errors from the Neural Engine's (and checking a
+// lowering while another process has the Neural Engine): "cpu" runs them on Core AI's CPU alone.
+// As Core ML's coreml.units. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
 // above 1.1) overflows there, where the Neural Engine and the GPU are right (docs/design/vision-models.md).
-const UnitsEnv = "HWNPU_COREAI_UNITS"
+const UnitsKey = "coreai.units"
 
-// OnCPU reports whether UnitsEnv asks for the CPU.
-func OnCPU() bool { return os.Getenv(UnitsEnv) == "cpu" }
+// OnCPU reports whether UnitsKey asks for the CPU.
+func OnCPU() bool { return devenv.Value("coreai.units") == "cpu" }
 
 // lowDisk is the free disk below which a program off the Neural Engine is put down to it.
 const lowDisk = 10 << 30
@@ -156,13 +156,10 @@ func load() error {
 		purego.RegisterLibFunc(&caiClose, h, "cai_close")
 		purego.RegisterLibFunc(&caiNames, h, "cai_names")
 		purego.RegisterLibFunc(&caiRun, h, "cai_run")
-		if _, err := purego.Dlsym(h, "cai_forget"); err == nil {
-			purego.RegisterLibFunc(&caiForget, h, "cai_forget")
-		}
-		if _, err := purego.Dlsym(h, "cai_input_array"); err == nil {
-			purego.RegisterLibFunc(&caiInputArray, h, "cai_input_array")
-			purego.RegisterLibFunc(&caiArrayFree, h, "cai_array_free")
-		}
+		// the shim is the one embedded (shimLib), named by its hash: it has every function
+		purego.RegisterLibFunc(&caiForget, h, "cai_forget")
+		purego.RegisterLibFunc(&caiInputArray, h, "cai_input_array")
+		purego.RegisterLibFunc(&caiArrayFree, h, "cai_array_free")
 	})
 	return loadErr
 }
@@ -276,9 +273,12 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 	return tmp, "main", false, tmp, "", nil
 }
 
-// PrebuiltEnv set to off makes Core AI compile a program on the device even when a prebuilt one
+// PrebuiltEnv set to off (or 0, false, no) makes Core AI compile a program on the device even when a prebuilt one
 // (coreai-build's .aimodelc, Prebuilt) lies beside it.
 const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
+
+// prebuiltOff is whether PrebuiltEnv turns the prebuilt programs off.
+func prebuiltOff() bool { return devenv.Off(strings.TrimSpace(os.Getenv(PrebuiltEnv))) }
 
 // Prebuilt is the program coreai-build compiled for this device's architecture for the asset at
 // dir, or "" without one of the same source (main.hash): X.ARCH.aimodelc beside X.aimodel
@@ -289,7 +289,7 @@ const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
 // source's), so the asset itself loads from the entry afterwards (docs/design/apple-coreai.md). The program
 // it holds runs a few percent slower than one compiled on the device.
 func Prebuilt(dir string) string {
-	if os.Getenv(PrebuiltEnv) == "off" || LeftToDevice(dir) {
+	if prebuiltOff() || LeftToDevice(dir) {
 		return ""
 	}
 	arch := Arch()
@@ -319,7 +319,7 @@ var fetchedPrebuilt sync.Map
 // of the export that holds the asset at dir, which Core AI would compile.
 func fetchPrebuilt(ctx context.Context, dir string) {
 	export, ok := ExportOf(dir)
-	if !ok || FetchPrebuilt == nil || os.Getenv(PrebuiltEnv) == "off" {
+	if !ok || FetchPrebuilt == nil || prebuiltOff() {
 		return
 	}
 	arch := Arch()
@@ -418,7 +418,7 @@ func init() { cache.SetRestorable(restorableEntries) }
 // docs/cache-sharing-design.md 7.7).
 func restorableEntries() []string {
 	base := coreAICacheDir()
-	if base == "" || os.Getenv(PrebuiltEnv) == "off" || Arch() == "" {
+	if base == "" || prebuiltOff() || Arch() == "" {
 		return nil
 	}
 	hashes := map[string]bool{}
@@ -600,7 +600,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	var offNPU []string
 	g.placement, offNPU = placement(dir, fn)
 	if OnCPU() { // the cache's entry may be another run's, for the Neural Engine
-		g.placement = types.PlacementReport{Method: UnitsEnv, Verified: true, Ops: []types.OpPlacement{{Name: "program", Type: "program", Device: "cpu"}}}
+		g.placement = types.PlacementReport{Method: "HWNPU_DEV=" + UnitsKey + "=cpu", Verified: true, Ops: []types.OpPlacement{{Name: "program", Type: "program", Device: "cpu"}}}
 		offNPU = nil
 	}
 	if g.placement.OnNPU() && !OnCPU() {
@@ -708,7 +708,7 @@ func (g *graph) describe(dir, fn string) error {
 // its step's 73 ms, docs/design/apple-coreai.md). It may be bound to any input of that shape, of this
 // program or another. nil when the shim has no such array for the input (backend.InputAllocator).
 func (g *graph) AllocInput(index int) (backend.Buffer, error) {
-	if caiInputArray == nil || g.h == 0 {
+	if g.h == 0 {
 		return nil, nil
 	}
 	if index < 0 || index >= len(g.args) || g.args[index].Kind != types.ArgInput {
@@ -888,11 +888,7 @@ func stopPrebuilt(pb *prebuiltOpen, msg string) string {
 	// programs on the device
 	if assets, err := Assets([]string{export}); err == nil {
 		for _, a := range assets {
-			if caiForget != nil {
-				caiForget(cString(a))
-			} else if e := entryDir(a); e != "" {
-				os.RemoveAll(e)
-			}
+			caiForget(cString(a))
 		}
 	}
 	stoppedOnce.Do(func() {

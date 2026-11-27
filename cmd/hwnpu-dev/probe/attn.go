@@ -13,7 +13,6 @@ import (
 // attnResult is one chunk attention probe model (probe.WriteChunkAttnPackage): its placement and
 // time per call with one chunk bound, and passes over caches of several used lengths.
 type attnResult struct {
-	Form   string     `json:"form"`   // grouped or tile
 	Chunk  int        `json:"chunk"`  // tokens of a chunk
 	Passes []attnPass `json:"passes"` // result.Tokens is the query rows per call
 	result
@@ -42,28 +41,26 @@ func (a attnPass) msPerCall() float64 {
 	return a.MsPerPass / float64(a.Layers*a.Chunks)
 }
 
-// attns measures the chunk attention program of each form, query rows and chunk length.
-func (p *prober) attns(rep *report, layers int, chunks, tokens []int, forms []string, used []int, save func()) {
+// attns measures the chunk attention program for each number of query rows and chunk length.
+func (p *prober) attns(rep *report, layers int, chunks, tokens []int, used []int, save func()) {
 	fmt.Printf("attn, attention without weights over one chunk, %d layers per pass:\n", layers)
-	for _, f := range forms {
-		for _, q := range tokens {
-			for _, c := range chunks {
-				if p.ctx.Err() != nil {
-					return
-				}
-				var a attnResult
-				if err := p.child(childSpec{Kind: "attn", Layers: layers, Tokens: q, N: c, Layout: f, Used: used}, &a); err != nil {
-					a = attnResult{Form: f, Chunk: c, result: result{Format: "none", Tokens: q, Units: "npu", Error: err.Error()}}
-				}
-				fmt.Printf("  %-7s Q=%-3d chunk %5d: ", a.Form, a.Tokens, a.Chunk)
-				logResult(a.result)
-				for _, s := range a.Passes {
-					fmt.Printf("      used %6d: %4d chunks/layer, %7.2f ms/pass (%.3f ms/call, merge %.2f ms), KV %.0f MiB, peak RSS %.2f GiB%s\n",
-						s.Used, s.Chunks, s.MsPerPass, s.msPerCall(), s.MsMerge, float64(s.KVBytes)/(1<<20), probe.GiB(s.MaxRSS), errSuffix(s.Error))
-				}
-				rep.Attn = append(rep.Attn, a)
-				save()
+	for _, q := range tokens {
+		for _, c := range chunks {
+			if p.ctx.Err() != nil {
+				return
 			}
+			var a attnResult
+			if err := p.child(childSpec{Kind: "attn", Layers: layers, Tokens: q, N: c, Used: used}, &a); err != nil {
+				a = attnResult{Chunk: c, result: result{Format: "none", Tokens: q, Units: "npu", Error: err.Error()}}
+			}
+			fmt.Printf("  Q=%-3d chunk %5d: ", a.Tokens, a.Chunk)
+			logResult(a.result)
+			for _, s := range a.Passes {
+				fmt.Printf("      used %6d: %4d chunks/layer, %7.2f ms/pass (%.3f ms/call, merge %.2f ms), KV %.0f MiB, peak RSS %.2f GiB%s\n",
+					s.Used, s.Chunks, s.MsPerPass, s.msPerCall(), s.MsMerge, float64(s.KVBytes)/(1<<20), probe.GiB(s.MaxRSS), errSuffix(s.Error))
+			}
+			rep.Attn = append(rep.Attn, a)
+			save()
 		}
 	}
 }
@@ -76,11 +73,11 @@ func errSuffix(e string) string {
 }
 
 // attn is the child side: build, load on the NPU, time one call, then the passes.
-func (p *prober) attn(form string, layers, tokens, chunk int, used []int) attnResult {
-	a := attnResult{Form: form, Chunk: chunk}
+func (p *prober) attn(layers, tokens, chunk int, used []int) attnResult {
+	a := attnResult{Chunk: chunk}
 	r := &a.result
-	path := filepath.Join(p.dir, fmt.Sprintf("probe_attn_%s_q%d_c%d.mlpackage", form, tokens, chunk))
-	if err := probe.WriteChunkAttnPackage(path, form, tokens, chunk); err != nil {
+	path := filepath.Join(p.dir, fmt.Sprintf("probe_attn_q%d_c%d.mlpackage", tokens, chunk))
+	if err := probe.WriteChunkAttnPackage(path, tokens, chunk); err != nil {
 		r.Error = "build: " + err.Error()
 		return a
 	}

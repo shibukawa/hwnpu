@@ -58,7 +58,7 @@
   起動する。各モデルを別スレッドで呼び続け (`-rate` で一定頻度)、CPU / GPU / ANE の電力から待機を引いた値と、1 回あたりの
   mJ を出す。Neural Engine に載るモデルは CPU だけの場合も測る (`-cpu=false` で省く)。`-decode 8,16` は言語モデルの
   デコードの形のモデルを作る (1 トークンあたりの電力量)
-- `HWNPU_COREML_UNITS=cpu|gpu` で Core ML を `MLComputeUnitsCPUOnly` / `CPUAndGPU` で読み込む。計測専用で、公開の API に
+- `HWNPU_DEV=coreml.units=cpu|gpu` で Core ML を `MLComputeUnitsCPUOnly` / `CPUAndGPU` で読み込む。計測専用で、公開の API に
   はしない。大きさを変えた合成モデルは `tools/coreml/gen_sweep.py`
 - 結果 (M3): 損益分岐点は 1 回あたり約 200 MFLOP。それより大きいと ANE は 2〜3 倍速く、電力量は約 4 分の 1 (約 1 TFLOP/J
   対 CPU 0.25 TFLOP/J)。小さいと Core ML の 1 回の固定費 (約 55 µs) と ANE の起動が勝ち、CPU が有利。詳しくは

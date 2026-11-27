@@ -180,8 +180,8 @@ program.
 
 ### How to check
 
-1. Compare the same program on the ANE and on the CPU (`HWNPU_COREAI_UNITS=cpu`,
-   `HWNPU_COREML_UNITS=cpu`), per position (KL of logits, or cosine), counting padding apart.
+1. Compare the same program on the ANE and on the CPU (`HWNPU_DEV=coreai.units=cpu`,
+   `HWNPU_DEV=coreml.units=cpu`), per position (KL of logits, or cosine), counting padding apart.
 2. Compare with the reference run in fp16 before hunting a cause. If HF's fp16 drifts as much, the
    port is not wrong (Whisper's encoder: an attention sink at silent positions, not an ANE error).
 3. Convert the first N layers (`hwnpu-dev convert -layers N`) and find where the drift starts.

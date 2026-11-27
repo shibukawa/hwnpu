@@ -22,14 +22,14 @@ type convertFlags struct {
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Apple's; int8 on Intel; default int8 on Apple's, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
 	DitFormat  string `help:"The DiT's weights (fp16; lut8, lut6 on Apple's; int8, int4 on Intel; default int8 on Apple's: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel)."`
-	Group      int    `help:"The DiT's blocks a program holds (default 4; Anima on Intel: fewer above 512 x 512, 1 at 1024 x 1024, as a program running past Windows' 2 s limit loses the NPU)."`
+	DitGroup   int    `name:"dit-group" help:"The DiT's blocks a program holds (default 4; Anima on Intel: fewer above 512 x 512, 1 at 1024 x 1024, as a program running past Windows' 2 s limit loses the NPU)."`
 	QChunk     int    `name:"qchunk" default:"512" help:"The queries an attention scores at a time (M3: 512 is 25 % faster than 1024 at 1024 x 1024)."`
 }
 
 func (f convertFlags) options() (anima.ConvertOptions, error) {
 	w, h, err := anima.ParseAspect(f.Size)
 	return anima.ConvertOptions{Backend: f.Backend, Width: w, Height: h, Dit: f.Dit,
-		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}, err
+		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.DitGroup, QChunk: f.QChunk}, err
 }
 
 // ConvertCmd is "hwnpu-image convert": an Anima directory into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).

@@ -144,7 +144,7 @@
 
 - プログラム: `text`、`dit_time` (8 行)、DiT の 4 ブロックずつの組 (`dit_blocks_N`、28 ブロックで 7 本。パッチの埋め込みは `dit_blocks_0`)、最後の層、VAE の 10 段。Apple は int8 / int8 (`anima.Formats`)、Intel は fp16。
 - 注意: 自己注意は `HeadAttention` を 1024 ずつ、割り算は先。交差注意は全部を 1 度に、割り算は後、問い合わせは 8 に詰める。スケールは q の norm の重みに。norm は `abs` で。`ExportVersion` 4、`PaddedExportVersion` 5、`CoreAIExportVersion` 6 (Core AI の書き出しすべて: VAE の exp の silu)。
-- `--group` (既定の 0 は `anima.DefaultGroup`): Apple は 4。`--qchunk` 512 (Core ML と Intel のヘッドをまとめた形)。
+- `--dit-group` (既定の 0 は `anima.DefaultGroup`): Apple は 4。`--qchunk` 512 (Core ML と Intel のヘッドをまとめた形)。
 - 1024² の 1 ブロックの内訳 (M1、Core AI、注意の形を変える前): 232 ms。MLP 54 ms (毎秒 5.1 TFLOP)、自己注意の中身 102 ms (毎秒 1.3 TFLOP)、交差注意の中身 14 ms。注意のほかの要素ごとの演算は 221 ms のブロックのうち約 24 ms (11 %): q と k の RMSNorm 11.3 (うち最大で割る分 4.8)、RoPE 3.4、LayerNorm の最大で割る分 3.7、厳密な GELU 5.8 (tanh と sigmoid の近似は遅い: +4.7、+12.5 ms)。
 - CFG のステップはちょうど 1 回だけのステップの 2 倍 (11.1〜11.2 秒と 5.6〜5.7 秒): 組が小さく (0.28 GiB) 切り替えの費用を払わないので、組ごとにまとめて回しても速くならない。
 - 精度: Anima-Turbo の 512² を、同じ int8 の重みを CPU の float32 で回したものと比べて、潜在のコサイン 0.987〜0.999。diffusers の float32 とは 1024² (M1、Core ML、int8) で 0.876〜0.948、構図は同じ。8 ステップに蒸留したモデルは小さな差を広げる。Anima-Aesthetic (小さなステップ 25 回) は離れない (注意の形どうしで 0.997〜0.9999)。

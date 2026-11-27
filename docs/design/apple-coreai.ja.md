@@ -107,7 +107,7 @@ Core AI にした理由:
 - 入力: `cai_input_array(h, i)` は入力 i の形の `NDArray` を作り、その中身 (密な行優先) の番地を返す。呼び出し側はそこへ直接書き (`backend.InputAllocator`、`hwnpu.Graph.AllocInput`)、`cai_run` はその配列を写さずに渡す。配列は同じ形のどの入力にも、ほかのプログラムにも束ねられる (生成と読み取りのプログラムがキャッシュを共有し、注意のプログラムが塊を順に受け取る)。形の違うバッファは写す。`chain` はキャッシュ、リング、窓、状態、マスク、注意の塊をこれで取る。画像と音声のプログラムは今も写す。M1 での効果: LFM3-1.7B の 3101 トークンのプロンプトの後 39.8〜40.6 → 43.0〜43.1 トークン/秒 (注意 1 回 1.34 → 1.0 ms)、PLaMo 3 Translate 2B 12.1 → 12.6〜13.1 トークン/秒。PLaMo 3 2B のリングの持ち分 252 → 84 MiB。写しは塊とともに増える: 塊 8192 で注意 1 回 2.07 ms のうち 0.56 ms
 - M1 の写しは約 29 GB/s。何もしないプログラムの 1 回は 0.21 ms (M1)、呼び出しの下限は 160〜175 µs (M2)
 - Neural Engine に載るプログラムは 1 プロセス 112 個まで (M2)。113 個目は読み込みに失敗し (「no ANE resources」)、Core AI は黙って GPU で動かす。デバイスは読み込んだプログラムを数え (`aneLive`)、上限の近くで失敗したらそう言う。gpt-oss-20b の書き出しは約 84 個、ほかのチャットのモデルは 40 個以下。2 つのモデルを 1 プロセスに持つと越えうる
-- Core AI は Core ML の `GraphSource.Units` のように計算するユニットを選べない。`HWNPU_COREAI_UNITS=cpu` は全部を Core AI の CPU で動かす (Neural Engine なしのテスト用)
+- Core AI は Core ML の `GraphSource.Units` のように計算するユニットを選べない。`HWNPU_DEV=coreai.units=cpu` は全部を Core AI の CPU で動かす (Neural Engine なしのテスト用)
 - Core AI のキャッシュからの読み込みは 0.2〜0.3 秒なので、1 本を動かす間に次を読める (`runner.InTurn`、`runner.Ring`)。[Apple の画像のモデル](image-apple.ja.md)
 
 ## キャッシュとディスク
@@ -234,7 +234,7 @@ Core AI と `coreai-build` の未解決の問題、Apple への報告の番号�
 新しいモデルで見ること ([Neural Engine の項目](apple-neural-engine.ja.md) と[チェックリスト](new-model-checklist.ja.md)に加えて):
 
 - Core ML で通っても Core AI で、M1 でも確かめる: MoGe-2 の dense の頭と Sana の VAE は、M3 や Core ML では通り、M1 の Core AI のコンパイラで落ちた
-- 下ろし方の誤りと Neural Engine の誤りを `HWNPU_COREAI_UNITS=cpu` で分ける
+- 下ろし方の誤りと Neural Engine の誤りを `HWNPU_DEV=coreai.units=cpu` で分ける
 - 誤りの大きさだけでなく中身を見る (PP-OCR の誤りは割り算の代わりの掛け算で、チャンネルごとに直線を当てて分かった)。疑う演算だけの小さなプログラムは正しいことがある。本物の部品を切り詰めて確かめる
 - 小さなプログラム (約 45 演算) は中身によらず CPU に行く。Neural Engine から外す原因は、載ると分かっている本物の大きさのプログラムに足して探す
 - 大きさを 1 本の関数にするときは、切り詰める前に大きさごとの部品を単独で見る
@@ -248,7 +248,7 @@ Neural Engine に共通の数値 (fp16 の範囲、不正確な silu、int8 の�
 | 罠 | 回避 |
 |---|---|
 | 定数での `divide_v1` を Neural Engine が積として計算する | ailower が逆数との積で書く |
-| Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる (1/n の前に和が fp16 に戻る。平均 −1.37 の 57600 個で −inf)。Neural Engine と GPU は正しい | `HWNPU_COREAI_UNITS=cpu` を使うときに覚えておく |
+| Core AI の CPU は和が fp16 を超える `reduce_mean` であふれる (1/n の前に和が fp16 に戻る。平均 −1.37 の 57600 個で −inf)。Neural Engine と GPU は正しい | `HWNPU_DEV=coreai.units=cpu` を使うときに覚えておく |
 | c が入力でも `(v + c) - c` を `v` にまとめる (魔法数の丸めが壊れる) | Neural Engine ではその丸めの形を使わない |
 | 幅の軸の畳み込みで、幅 1 の核、512 以上のチャンネル、計算された入力だと誤る | 高さの軸で: x を (1, C, T, 1)、重みを (co, ci, k, 1) |
 | 膨張つきの畳み込みが長さによって誤るか GPU に行く | フレームを膨張の行に並べ、膨張なしで畳み込む |

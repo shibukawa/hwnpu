@@ -163,9 +163,7 @@ func (p *prober) loadPart(format string, part probe.Part, units string, seed uin
 	r.BuildS = time.Since(t).Seconds()
 
 	if p.coreml && units != "npu" {
-		// The measurement switch of the Core ML backend, read when the model is loaded.
-		os.Setenv("HWNPU_COREML_UNITS", units)
-		defer os.Unsetenv("HWNPU_COREML_UNITS")
+		src.Units = units // Core ML's CPU or GPU, as a baseline
 	}
 	t = time.Now()
 	g, err := p.gr.Compile(p.ctx, src)

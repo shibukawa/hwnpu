@@ -111,7 +111,7 @@ Intel での配置の検証 (NPU のコンパイラは演算を他の装置に�
 ### Windows のジョブの時間の上限 (TDR)
 
 - Windows は時間の上限 (TDR、既定 2 秒) を超えた GPU / NPU のジョブを止め、デバイスを失わせる (`zeFenceHostSynchronize: ZE_RESULT_ERROR_DEVICE_LOST`)。1 プログラムに DiT 4 ブロックの Anima 1024² がこれに当たった (1 群 2〜4 秒の見込み)。
-- `--group` の既定は 0 = 自動 (`anima.DefaultGroup`): Core ML と Core AI は 4。Intel は 4 から半分ずつにして「ブロック数 × パッチ数」を 4096 以下に (512²: 4、640²: 2、768² と 1024²: 1)。`g` は書き出しの名前に入る。DEVICE_LOST (`types.IsDeviceLost`) で群が 2 以上なら、エラーに `--group` を半分にする案内を付ける。
+- `--dit-group` の既定は 0 = 自動 (`anima.DefaultGroup`): Core ML と Core AI は 4。Intel は 4 から半分ずつにして「ブロック数 × パッチ数」を 4096 以下に (512²: 4、640²: 2、768² と 1024²: 1)。`g` は書き出しの名前に入る。DEVICE_LOST (`types.IsDeviceLost`) で群が 2 以上なら、エラーに `--group` を半分にする案内を付ける。
 - g4 と g1 の書き出しは同じ絵を描く (潜在の差は相対 3.6 %、群の間の丸め)。
 
 ## Windows

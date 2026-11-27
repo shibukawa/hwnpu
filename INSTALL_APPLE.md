@@ -122,5 +122,5 @@ macOS 27 has Core AI beside Core ML. Nothing more to install.
 | Loading crashes instead of returning an error | A hand-written ML Program with dots in value names, or a corrupt package. coremltools and `hwnpu-dev convert` write valid names. |
 | The whole model runs on the CPU although it is fp16 | Weights too large (1 GiB or more per model; split it into several models), or weight compression in a layout the Neural Engine does not accept (lookup tables must cover whole rows, 16 per table; blockwise int4 is not accepted). |
 | Results differ from PyTorch by several percent | The Neural Engine's matrix products have an absolute error floor around 2.5e-4; layers whose outputs are tiny lose precision. `hwnpu-dev convert -post-scale` works around it for LFM3; see [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md). |
-| Need a CPU or GPU baseline | Set `HWNPU_COREML_UNITS=cpu` or `gpu` when loading (measurement only, not part of the API). |
+| Need a CPU or GPU baseline | Set `HWNPU_DEV=coreml.units=cpu` or `gpu` when loading (measurement only, not part of the API). |
 | `hwnpu-dev powerbench` stops at `Password:` | `powermetrics` needs root; type the sudo password once, the tool keeps the credentials alive. |

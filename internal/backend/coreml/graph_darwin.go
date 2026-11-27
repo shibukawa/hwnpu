@@ -105,11 +105,11 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	var config objc.ID
 	err := withPool(func() error {
 		config = send(send(class("MLModelConfiguration"), "alloc"), "init")
-		// HWNPU_COREML_UNITS=cpu|gpu loads the model on the CPU or the GPU instead, as the
+		// HWNPU_DEV=coreml.units=cpu|gpu loads the model on the CPU or the GPU instead, as the
 		// baselines hwnpu-dev powerbench compares the Neural Engine with. It is not part of the API.
 		units := computeUnitsCPUAndNeuralEngine
 		want := src.Units
-		if env := os.Getenv("HWNPU_COREML_UNITS"); env != "" {
+		if env := devenv.Value("coreml.units"); env != "" {
 			want = env
 		}
 		switch want {

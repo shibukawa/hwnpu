@@ -111,7 +111,7 @@ int8 stays the default: per-group int4 is slower than int8 here, per-row int4 is
 ### Windows job time limit (TDR)
 
 - Windows stops a GPU/NPU job past its time limit (TDR, 2 s by default) and the device is lost (`zeFenceHostSynchronize: ZE_RESULT_ERROR_DEVICE_LOST`). Anima 1024² with 4 DiT blocks a program hit it (estimated 2–4 s a group).
-- `--group` default 0 = auto, `anima.DefaultGroup`: Core ML and Core AI 4; Intel halves from 4 until blocks × patches ≤ 4096 (512²: 4, 640²: 2, 768² and 1024²: 1). `g` is in the export name. On DEVICE_LOST (`types.IsDeviceLost`) with group ≥ 2 the error suggests halving `--group`.
+- `--dit-group` default 0 = auto, `anima.DefaultGroup`: Core ML and Core AI 4; Intel halves from 4 until blocks × patches ≤ 4096 (512²: 4, 640²: 2, 768² and 1024²: 1). `g` is in the export name. On DEVICE_LOST (`types.IsDeviceLost`) with group ≥ 2 the error suggests halving `--group`.
 - g4 and g1 exports give the same picture (latent difference 3.6 % relative, rounding between groups).
 
 ## Windows

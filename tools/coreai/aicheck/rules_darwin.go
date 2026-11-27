@@ -31,7 +31,7 @@ import (
 //   - inner1: a matmul of inner dimension 1 (memory: ane-matmul-inner-dim-1)
 //   - div: a division by a constant
 //
-// HWNPU_COREAI_UNITS=cpu runs the same programs on Core AI's CPU, to tell the engine's errors
+// HWNPU_DEV=coreai.units=cpu runs the same programs on Core AI's CPU, to tell the engine's errors
 // from the lowering's.
 //
 //	aicheck rules [-only slice,conv,...]
