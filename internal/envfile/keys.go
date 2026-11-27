@@ -187,6 +187,10 @@ func (k Key) all(v string) []string {
 	return out
 }
 
+// PolicyEnv is the variable of the model policy (internal/chat.PolicyEnv): what it allows and
+// refuses, a setting a client may have of its own (hwnpud's narrows it).
+const PolicyEnv = "HWNPU_MODEL_ALLOWLIST"
+
 // Keys are the settings hwnpu config knows.
 var Keys = []Key{
 	{Name: "model-source", Env: "HWNPU_MODEL_SOURCE", Numbered: true, Help: "where the models are looked for before Hugging Face, in order: URLs (file:///..., https://USER@host/dav, s3://BUCKET/PREFIX; ?writeback=true puts there what is made here)"},

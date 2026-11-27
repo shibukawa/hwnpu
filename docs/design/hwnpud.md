@@ -58,7 +58,7 @@ Step 3 on the Mac (`internal/airpc`, `internal/aihost`, `internal/cachecmd`, the
   types (`ai.ErrNotPrepared`, `*ai.LicenseError`, `text.ErrContext`, `*text.FormatError`), so
   `errors.Is` and `errors.As` hold. The engine's handler returns when the session ends, so the
   engine does not exit idle under an app.
-- The engine (`internal/aihost`, given to `daemon.Engine.AI` by `cmd/hwnpud`; `internal/daemon`
+- The engine (`internal/aihost`, given to `engine.Engine.AI` (`internal/daemon/engine`) by `cmd/hwnpud`; `internal/daemon`
   imports no package of models) serves `ai.Host` on each session: `App.Plan` and `Plan.Run`
   make the app again from what the client sent (`App.Spec`, `ai.AppFromSpec`: the uses by
   their roles' names, `airole.Lookup`, the groups of `InTurns`, the memory, the store with its
@@ -496,7 +496,31 @@ way of the tests, but it has costs beyond turning the sharing off:
   VAE came back in a fresh build, 2026-11-27).
 - Every app is as large as the engine, with the shims embedded (Core AI's dylib).
 
-The plan, in steps:
+Decided 2026-11-27: a client holds no model definitions of its own, it asks hwnpud for the table,
+the policy's verdicts and the memory a model runs as; and an app runs the models in its own
+process only when it imports the engine (`import _ "github.com/shibukawa/hwnpu/ai/engine"`, as
+hwnpud, hwnpu-dev and the tests do), which is what `HWNPU_DAEMON=off` then means.
+
+Stages, each a pull request; `internal/boundary`'s test lists the packages that must not reach the
+engine, and each stage adds its own:
+
+1. Done: `internal/daemon` is the client and the supervisor; the engine is
+   `internal/daemon/engine`, which cmd/hwnpud joins to them. The load's stream (`LoadStream`) and
+   the answers' helpers are the protocol's, in `internal/daemon`.
+2. `internal/airole`: the role's data and `Remote` apart from finding the device (`Here`,
+   `llm.FindDevice`), which moves to the engine's side.
+3. The definitions from hwnpud: routes for the table, the policy's verdicts and the memory; the
+   `ai` package asks them through a client, and the engine answers from `internal/chat`.
+4. The role packages: `Prepare` and `Load` (and the engine types they return) move into
+   `ai/engine/...`, registered with `airole.Register`; the client types call an implementation,
+   hwnpud's (`Remote`) or the engine's when it is imported.
+5. The commands: `hwnpu-chat`, `hwnpu-image` and `hwnpu-audio` stop importing the engine; what they
+   do in their own process (a conversion's flags, `--cpu`) goes through hwnpud or moves to
+   hwnpu-dev.
+6. `HWNPU_DAEMON=off` without the engine imported is an error that says how to run a hwnpud of the
+   worktree (a command of hwnpu-dev builds and starts one on its own socket).
+
+The steps as first written:
 
 1. The client side alone. Each role package (`ai/text`, `ai/imagegen`, ...) keeps its types, its
    `Remote` and its uses, and moves `Prepare` and `Load` (and what they import) into a package of

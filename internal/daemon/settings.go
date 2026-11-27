@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
@@ -34,13 +33,13 @@ var settingNames = []string{
 	"HWNPU_COREAI_PREBUILT",
 	"HWNPU_WEBDAV_USER",
 	"HF_ENDPOINT",
-	chat.PolicyEnv,
+	envfile.PolicyEnv,
 }
 
 // clientNames are the settings of settingNames a client may have of its own: the model policy.
 // hwnpud's is its own, from the .env files; a client's goes with each request and narrows it
 // (LoadRequest.Allowlist), so it is reported but not compared.
-var clientNames = []string{chat.PolicyEnv}
+var clientNames = []string{envfile.PolicyEnv}
 
 // settingPrefixes are beginnings of the names of such variables (HWNPU_MODEL_SOURCE_1, ...).
 var settingPrefixes = []string{"HWNPU_MODEL_SOURCE"}

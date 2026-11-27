@@ -1,4 +1,4 @@
-package daemon
+package engine
 
 import (
 	"bytes"
@@ -20,6 +20,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/daemon"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/mem"
@@ -37,12 +38,12 @@ type Engine struct {
 	Idle time.Duration
 	// Log receives what goes on outside a load (os.Stderr when nil, the service's log).
 	Log io.Writer
-	// AI serves the sessions of the ai package at AIPath (internal/aihost, which cmd/hwnpud
+	// AI serves the sessions of the ai package at daemon.AIPath (internal/aihost, which cmd/hwnpud
 	// gives it: the engine's package does not import the packages of models); nil for none.
 	// A session is a request going on until it ends, so the engine does not exit idle under it.
 	AI http.Handler
 	// Held are the models AI's sessions hold, for the status; nil for none.
-	Held func() []HeldModel
+	Held func() []daemon.HeldModel
 
 	load    sync.Mutex // one load at a time; the next waits
 	mu      sync.Mutex
@@ -58,7 +59,7 @@ type Engine struct {
 type held struct {
 	e     *chat.Engine
 	model chat.Model
-	info  ModelInfo
+	info  daemon.ModelInfo
 	refs  int  // the requests using it, on Engine.mu
 	iron  bool // an IRON export, on AMD's NPU
 }
@@ -103,7 +104,7 @@ func (e *Engine) Run(ctx context.Context, socket string) error {
 	if err := chat.LoadUserModels("", e.Log); err != nil {
 		return err
 	}
-	ln, err := ListenUnix(socket)
+	ln, err := daemon.ListenUnix(socket)
 	if err != nil {
 		return err
 	}
@@ -129,7 +130,7 @@ func (e *Engine) Run(ctx context.Context, socket string) error {
 			}
 		}
 	}()
-	err = srv.Serve(sameUser{ln, e.Log})
+	err = srv.Serve(daemon.SameUser(ln, e.Log))
 	e.closeAll()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -209,7 +210,7 @@ func (e *Engine) Handler() http.Handler {
 	mux.HandleFunc("POST /hwnpud/v1/load", e.serveLoad)
 	mux.HandleFunc("POST /v1/chat/completions", e.completions)
 	if e.AI != nil {
-		mux.Handle("GET "+AIPath, e.AI)
+		mux.Handle("GET "+daemon.AIPath, e.AI)
 	}
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
 		e.server(nil, r).Handler().ServeHTTP(w, r)
@@ -225,7 +226,7 @@ func (e *Engine) Handler() http.Handler {
 }
 
 func (e *Engine) status(w http.ResponseWriter, r *http.Request) {
-	st := Status{Hello: base()}
+	st := daemon.Status{Hello: daemon.Base()}
 	e.mu.Lock()
 	for _, h := range e.models {
 		st.Models = append(st.Models, h.info)
@@ -241,62 +242,33 @@ func (e *Engine) status(w http.ResponseWriter, r *http.Request) {
 	}
 	// this request is one: the idle time is since the one before
 	st.Idle = time.Since(time.Unix(0, e.last.Load())).Round(time.Second).String()
-	writeJSONValue(w, http.StatusOK, st)
-}
-
-// frames writes a load's log to its client as LoadEvent lines. A client that went away fails no
-// load: what it loads stays for the next.
-type frames struct {
-	mu sync.Mutex
-	w  http.ResponseWriter
-	rc *http.ResponseController
-	ok bool
-}
-
-func (f *frames) send(ev LoadEvent) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.ok {
-		return
-	}
-	b, _ := json.Marshal(ev)
-	if _, err := f.w.Write(append(b, '\n')); err != nil {
-		f.ok = false
-		return
-	}
-	f.rc.Flush()
-}
-
-func (f *frames) Write(p []byte) (int, error) {
-	f.send(LoadEvent{Log: string(p)})
-	return len(p), nil
+	daemon.WriteJSON(w, http.StatusOK, st)
 }
 
 func (e *Engine) serveLoad(w http.ResponseWriter, r *http.Request) {
-	var req LoadRequest
+	var req daemon.LoadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Model) == "" {
-		writeError(w, http.StatusBadRequest, "a load names a model")
+		daemon.WriteError(w, http.StatusBadRequest, "a load names a model")
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
-	f := &frames{w: w, rc: http.NewResponseController(w), ok: true}
-	f.rc.Flush()
+	f := daemon.NewLoadStream(w)
 	// the load goes on when its client goes away: the next client gets the model
 	h, err := e.loadModel(context.WithoutCancel(r.Context()), req, f)
 	if err != nil {
-		f.send(LoadEvent{Error: err.Error()})
+		f.Send(daemon.LoadEvent{Error: err.Error()})
 		return
 	}
 	info := h.info
 	e.release(h)
-	f.send(LoadEvent{Model: &info})
+	f.Send(daemon.LoadEvent{Model: &info})
 }
 
 // loadModel returns the model a load names, loading it unless the engine holds it; its log goes
 // to log (and the service's) while it loads. A model the request's policy refuses is an error,
 // held or not. The caller releases the model (Engine.release) when its request ends.
-func (e *Engine) loadModel(ctx context.Context, req LoadRequest, log io.Writer) (*held, error) {
+func (e *Engine) loadModel(ctx context.Context, req daemon.LoadRequest, log io.Writer) (*held, error) {
 	h, err := e.loadAny(ctx, req, log)
 	if err != nil {
 		return nil, err
@@ -308,7 +280,7 @@ func (e *Engine) loadModel(ctx context.Context, req LoadRequest, log io.Writer) 
 	return h, nil
 }
 
-func (e *Engine) loadAny(ctx context.Context, req LoadRequest, log io.Writer) (*held, error) {
+func (e *Engine) loadAny(ctx context.Context, req daemon.LoadRequest, log io.Writer) (*held, error) {
 	key := req.Model + "@" + strconv.Itoa(req.Memory)
 	if h := e.lookup(key); h != nil {
 		return h, nil
@@ -337,7 +309,7 @@ func (e *Engine) loadAny(ctx context.Context, req LoadRequest, log io.Writer) (*
 		h.refs++
 		return h, nil
 	}
-	h := &held{e: ce, model: m, iron: iron, refs: 1, info: ModelInfo{Name: m.Name, Context: ce.Context(), Images: ce.Images(), Audio: ce.Audio(),
+	h := &held{e: ce, model: m, iron: iron, refs: 1, info: daemon.ModelInfo{Name: m.Name, Context: ce.Context(), Images: ce.Images(), Audio: ce.Audio(),
 		Translator: ce.Template == chat.Plamo3, NoThink: ce.NoThink, OnNPU: ce.OnNPU(), Device: ce.DeviceName()}}
 	e.models[m.Name] = h
 	e.aliases[key] = m.Name
@@ -361,7 +333,7 @@ func (e *Engine) lookup(key string) *held {
 // think budget.
 func (e *Engine) server(h *held, r *http.Request) *chat.Server {
 	s := &chat.Server{Think: true, ThinkBudget: 1024, Defaults: chat.Sampling{Temperature: 0.1, TopK: 50, Repetition: 1.05}, Log: e.Log, Count: &e.count}
-	if v, err := strconv.Atoi(r.Header.Get(ThinkBudgetHeader)); err == nil && v >= 0 {
+	if v, err := strconv.Atoi(r.Header.Get(daemon.ThinkBudgetHeader)); err == nil && v >= 0 {
 		s.ThinkBudget = v
 	}
 	if h != nil {
@@ -379,7 +351,7 @@ func (e *Engine) server(h *held, r *http.Request) *chat.Server {
 func (e *Engine) completions(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		daemon.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var head struct {
@@ -387,12 +359,12 @@ func (e *Engine) completions(w http.ResponseWriter, r *http.Request) {
 	}
 	json.Unmarshal(body, &head)
 	if strings.TrimSpace(head.Model) == "" {
-		writeError(w, http.StatusBadRequest, "a chat completion names its model")
+		daemon.WriteError(w, http.StatusBadRequest, "a chat completion names its model")
 		return
 	}
-	h, err := e.loadModel(context.WithoutCancel(r.Context()), LoadRequest{Model: head.Model, Allowlist: r.Header.Get(AllowlistHeader)}, nil)
+	h, err := e.loadModel(context.WithoutCancel(r.Context()), daemon.LoadRequest{Model: head.Model, Allowlist: r.Header.Get(daemon.AllowlistHeader)}, nil)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		daemon.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	defer e.release(h)
@@ -418,7 +390,7 @@ func chatBackend() string {
 // already held, which is not loaded twice. On AMD's NPU (an IRON export, iron) evict closes the
 // IRON models held before it loads another: one chat model takes all of the NPU's hardware
 // contexts.
-func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(string) *held, evict func()) (chat.Model, *chat.Engine, bool, error) {
+func loadChat(ctx context.Context, req daemon.LoadRequest, log io.Writer, holding func(string) *held, evict func()) (chat.Model, *chat.Engine, bool, error) {
 	backend := chatBackend()
 	if backend == llm.BackendCoreAI {
 		if _, _, err := llm.FindDevice(ctx, backend); err != nil {
@@ -439,7 +411,7 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 			return m, h.e, true, nil
 		}
 		evict()
-		c := chat.Config{IRON: iron, Log: log, PromptDir: promptDir, Idle: DefaultIdle}
+		c := chat.Config{IRON: iron, Log: log, PromptDir: promptDir, Idle: daemon.DefaultIdle}
 		if m.Name != "" {
 			c.Experts = placement(m)
 		}
@@ -476,7 +448,7 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 	if err != nil {
 		return m, nil, false, err
 	}
-	c.CacheDir, c.Log, c.PromptDir, c.Idle = root, log, promptDir, DefaultIdle
+	c.CacheDir, c.Log, c.PromptDir, c.Idle = root, log, promptDir, daemon.DefaultIdle
 	c.Experts = placement(m)
 	ce, err := chat.Load(ctx, c)
 	if err != nil {
@@ -489,6 +461,6 @@ func loadChat(ctx context.Context, req LoadRequest, log io.Writer, holding func(
 // placement is how a mixture of experts' experts are placed: the model's core first, then by
 // hwnpud's own counts of the experts it runs.
 func placement(m chat.Model) experts.Placement {
-	return experts.Placement{Core: m.ExpertsCore, Idle: DefaultIdle, Ceiling: filepath.Join(chat.ModelDir(m), "experts-usage", "ceiling"),
+	return experts.Placement{Core: m.ExpertsCore, Idle: daemon.DefaultIdle, Ceiling: filepath.Join(chat.ModelDir(m), "experts-usage", "ceiling"),
 		Usage: chat.ExpertsUsage(chat.ModelDir(m), "hwnpud")}
 }
