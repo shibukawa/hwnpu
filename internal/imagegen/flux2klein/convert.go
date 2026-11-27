@@ -29,8 +29,10 @@ import (
 // the export, prebuilt (PrebuiltKeys); 6: two single blocks a program (model-recipes.yaml
 // single_group: five left the edit at 1024 x 1024 from three references of 512 off the Neural
 // Engine on an M1 and an M2, "RegAlloc: failed to allocate tensors with fixed L2 hint", and every
-// size off it on an M1).
-const ExportVersion = 6
+// size off it on an M1); 7: the attention's parts divided by their sum (milpart.HeadOptions
+// DivideParts: the prebuilt single blocks for an M3 failed to load at 704 x 1280 and 1280 x 704,
+// docs/known-issues.md 12).
+const ExportVersion = 7
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {

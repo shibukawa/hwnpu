@@ -7,7 +7,7 @@
 // chosen with a bias of the layer (expert_bias) and weighed by their scores normalized, each a
 // SwiGLU. The host picks the experts (llm.Routed): the programs are cut at each such layer, and
 // the experts run in a program of their own between the parts, every layer's experts held in
-// int8 (internal/llm/experts, docs/handoff-ane-gather.md 1b).
+// int8 (internal/llm/experts, docs/design/moe.md).
 package lfm2moe
 
 import (

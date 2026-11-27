@@ -69,7 +69,7 @@
 #               before (2026-11-24), the same bytes, their names kept
 #     code      the Go packages that write its programs, after apple's code (a change of them
 #               is a change of the version, as amd's tools); !FILE leaves out a file of them
-#               only a run reads (experts' host.go, lfm3vl's preprocess.go)
+#               only a run reads (experts' host.go, placement.go and debug.go, lfm3vl's preprocess.go)
 #     finish    what the build does to its Core AI exports once converted, as amd's finish
 #               (their tokenizer files made binary); a model without one leaves them as they are
 #     convert   the values its conversion is made with, by their names in its code
@@ -122,8 +122,13 @@ apple:
       # LFM3-1.7B with a whole program of 2048: 33.6 and 37.0 tokens/s, the split programs alone
       # 39.9 and 43.6 (docs/design/apple-coreai.md)
       whole: false
-      # the experts' program picks their scales with gather_nd (docs/handoff-ane-gather.md 1)
+      # the experts' program picks their scales with gather_nd (docs/design/apple-neural-engine.md)
       gather_nd: false
+  # the text encoders (text_*) are prebuilt for M3 and later, for the memory: on an M3 FLUX.2
+  # klein's nine Qwen3 programs took 94 to 190 s from prebuilts against 46 s compiled on the
+  # device, whose compiler (ANECompilerService) grew by 1.5 GB doing it against 0.5 GB for the
+  # prebuilts' finishing; the caches took 7.9 GB either way (2026-11-26). Left to the device on M1
+  # and M2 until they are run from prebuilts there
   prebuild:
     # the attention of a chat model split at it, a kv head at a time (paged.Heads): from
     # coreai-build's h13g programs, the M1 computes the first kv head right and the others wrong
@@ -144,6 +149,11 @@ apple:
       do: device
       why: "the attention a kv head at a time (paged.Heads) from coreai-build's h15g program: the second kv head's sum of exps 6 times too large and its output about 0 on the M3; right compiled on the device (Qwen3.5-0.8B, prebuilt against device and Core AI's CPU on the same inputs)"
       checked: 2026-11-27
+    - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
+      programs: ["text", "text_*"]
+      do: device
+      why: "text encoders prebuilt for h13g and h14g not yet run on an M1 or M2 (Chroma1's T5 from h13g prebuilts once ended in 'Request cancelled' there)"
+      checked: 2026-11-26
 
 amd:
   generations: [xdna2]
@@ -161,7 +171,9 @@ models:
       script: iron_flux2klein.py
       args: ["{in}", "{out}", --size, "{sizes}"]
     apple:
-      version: 4
+      # 5: the attention's parts divided by their sum (export v7), so that the M3's prebuilt
+      # single blocks load at every size (docs/known-issues.md 12)
+      version: 5
       prebuilt: true
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps (version 4; the
       # programs as version 3's, so its prebuilt programs are the same)
@@ -180,16 +192,22 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
-      # the VAE (decoder and encoder) is compiled on the device on every chip, as before the rules:
-      # on M1 coreai-build's h13g prebuilt drew a band of noise every 112 rows at 512 x 512 and the
-      # 1024 x 768 vae_s0 ended in 'Request cancelled'; on M2 512 x 512 had bands every 112 rows.
-      # On an M3 the prebuilt gave the same bytes as the device's compile (2026-11-25, 26): taking
-      # it there is the FLUX change of its own
+      # the VAE (decoder and encoder) is prebuilt on M1 and on M3 and later: on an M3 the device's
+      # compiler took 625 to 2799 s over the ten decoder stages, the prebuilt about 1 s, and both
+      # gave the same bytes at every size, without bands (2026-11-25, 26). On M2 the h14g prebuilt
+      # drew bands again (export v7, 2026-11-27), though offline its stages have no task reading
+      # past its kernel; Anima's VAE did the same there
       prebuild:
-        - programs: ["vae_*"]
+        - arch: [h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
           do: device
-          why: "the VAE's prebuilts drew bands every 112 rows at 512 x 512 on M1 (h13g) and M2 (h14g); M3 and later are left to the device until they are taken by a change of FLUX's own"
-          checked: 2026-11-26
+          why: "on M2 the pictures from the h14g VAE prebuilt had bands (export v7, 2026-11-27), as Anima's had; none with the VAE compiled on the device"
+          checked: 2026-11-27
+        - arch: [h13g, h13c, h13d, h13s]
+          programs: ["vae_s0"]
+          do: device
+          why: "tasks read past the kernel they load (llirtasks -check, docs/known-issues.md 16): the mid block's attention softmax exp reads 8 coefficient sets of a kernel sized for the residual blocks' SiLU exp (1 set), at 1024 x 1024 and 512 x 512"
+          checked: 2026-11-27
   MOSS-SoundEffect-v2.0: &moss
     amd:
       # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
@@ -456,7 +474,7 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
-      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go"]
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
       version: 3
@@ -474,7 +492,7 @@ models:
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
       version: 3
-      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go"]
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
       version: 3
@@ -613,12 +631,14 @@ models:
         dit_format: lut8
         text_group: 4
         single_group: 5
-      # the VAE (FLUX.2 klein's decoder, internal/imagegen/fluxvae) is compiled on the device on
-      # every chip, as FLUX.2 klein's
+      # the VAE (FLUX.2 klein's decoder, internal/imagegen/fluxvae) is prebuilt for M3 and later:
+      # on an M3 the first run at 1024 x 1024 took 19m27s with the VAE compiled on the device (its
+      # ten stages 640 s), 2m43s with it prebuilt, the same pictures to the byte (2026-11-26)
       prebuild:
-        - programs: ["vae_*"]
+        - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
+          programs: ["vae_*"]
           do: device
-          why: "FLUX.2 klein's decoder, whose prebuilts drew bands every 112 rows at 512 x 512 on M1 and M2; M3 and later are left to the device until they are taken by a change of FLUX's own"
+          why: "FLUX.2 klein's decoder, whose prebuilts drew bands every 112 rows at 512 x 512 on M1 and M2"
           checked: 2026-11-26
     amd:
       version: 2
@@ -654,6 +674,11 @@ models:
           programs: ["vae_*"]
           do: device
           why: "on M2 Anima-Turbo's pictures from the h14g VAE prebuilt had bands every 160 pixels (twice and three times as often at some aspect ratios), and none with the VAE compiled on the device"
+          checked: 2026-11-27
+        - arch: [h13g, h13c, h13d, h13s]
+          programs: ["vae_s0"]
+          do: device
+          why: "tasks read past the kernel they load (llirtasks -check, docs/known-issues.md 16): the h13g vae_s0's functions at 1168 x 880, 880 x 1168, 1360 x 752 and 752 x 1360 (task 48: an activation's kernel sized by the last task that uses it); the other stages have none"
           checked: 2026-11-27
     amd:
       version: 2
@@ -763,7 +788,7 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
-      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go"]
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
   Qwen2.5-Coder-7B-Instruct:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)

@@ -610,7 +610,7 @@ q8 と同じブロックと並びで符号を 6 ビット (−31〜31) にした
 
 ### 下書きを確かめる版 (`--verify`、2026-11-08)
 
-`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。AMD の NPU の hwnpu-chat はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン ([docs/design/amd-llm.ja.md](design/amd-llm.ja.md))。デコードが速くなった現在、確認 1 回は 0.8B で 1.96 ステップ、2B で 1.67 ステップ分で、全部確かめると散文は下書きなしより遅い。そこで hwnpu-chat は当たりそうな下書き (長く一致した後のもの) だけ確かめる (`chat.draftPolicy`; `HWNPU_DEV=draft.policy=0` で全部確かめる)。`HWNPU_DEV=draft.ratio` で確認の費用を変え、`HWNPU_DEV=draft.trace=FILE` で判断を記録する。温度 0 でも下書きなしとありで文が違うことがある (原因は未調査)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_DEV=iron.drafts=0` で使わない。
+`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。AMD の NPU の hwnpu-chat はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン ([docs/design/amd-llm.ja.md](design/amd-llm.ja.md))。デコードが速くなった現在、確認 1 回は 0.8B で 1.96 ステップ、2B で 1.67 ステップ分で、全部確かめると散文は下書きなしより遅い。そこで hwnpu-chat は当たりそうな下書き (長く一致した後のもの) だけ確かめる (`chat.draftPolicy`)。`HWNPU_DEV=iron.lookup.cost` で確認の費用を変え、`HWNPU_DEV=iron.lookup.trace=FILE` で判断を記録する。温度 0 でも下書きなしとありで文が違うことがある (原因は未調査)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_DEV=iron.drafts=0` で使わない。
 
 #### Qwen3.6-35B-A3B (`tools/amd/qwen36_gptq.py`、2026-11-08)
 

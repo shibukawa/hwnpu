@@ -175,13 +175,11 @@ func Main() {
 	kvModes := fs.String("kv-modes", "host,state", "kv: host (buffers bound as inputs and outputs) and state (Core ML MLState); -mha gives every query head its own cached head, so nothing is repeated; -int8 holds the host cache as int8 with fp16 scales, cast back in the program; -chunk holds the host cache in chunks of at most 16384 tokens, so that caches over the Neural Engine's dimension limit stay on it")
 	attnChunks := fs.String("attn-chunks", "1024,2048,4096,8192,16384", "attn: chunk lengths in tokens (at most 16384, the Neural Engine's dimension limit; Core ML puts the shortest on the CPU with few query rows)")
 	attnTokens := fs.String("attn-tokens", "1,8,64", "attn: query rows per call (1 a step, 8 a step checking drafts, 64 a chunk of the prompt)")
-	attnForms := fs.String("attn-forms", "grouped", "attn: grouped (the query heads of a kv head stacked in one matrix product, LFM3-1.7B's default) and tile (keys and values copied per query head)")
 	attnUsed := fs.String("attn-used", "4096,16384,65536,262144", "attn: used cache lengths of the passes, ascending; the chunk buffers of every layer are held at once (12 KiB a token with 6 layers: 3 GiB at 262144)")
 	attnLayers := fs.Int("attn-layers", 6, "attn: layers per pass (6 is LFM3-1.7B's full attention layers)")
 	seamFormat := fs.String("seam-format", "lut4", "seam: weight format of the weighted parts")
 	seamLayers := fs.Int("seam-layers", 40, "seam: weighted layers (61 M weights each; 40 in lut4 is 1.14 GiB, about LFM3-1.7B in lut6), split into -attn-layers + 1 parts")
 	seamTokens := fs.String("seam-tokens", "8,64", "seam: query rows per call of the parts and the attention (8 a step checking drafts, 64 a chunk of the prompt)")
-	seamForm := fs.String("seam-form", "grouped", "seam: form of the attention, grouped or tile")
 	seamChunk := fs.Int("seam-chunk", 8192, "seam: chunk length of the attention")
 	seamUsed := fs.String("seam-used", "8192,65536", "seam: used cache lengths, ascending")
 	cacheFormat := fs.String("cache-format", "fp16", "cache: weight format of the programs (fp16, int8, lut4)")
@@ -218,8 +216,8 @@ func Main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref, kvLayers: *kvLayers, kvCache: *kvCache, kvModes: *kvModes,
-		attnChunks: *attnChunks, attnTokens: *attnTokens, attnForms: *attnForms, attnUsed: *attnUsed, attnLayers: *attnLayers,
-		seamFormat: *seamFormat, seamLayers: *seamLayers, seamTokens: *seamTokens, seamForm: *seamForm, seamChunk: *seamChunk, seamUsed: *seamUsed}
+		attnChunks: *attnChunks, attnTokens: *attnTokens, attnUsed: *attnUsed, attnLayers: *attnLayers,
+		seamFormat: *seamFormat, seamLayers: *seamLayers, seamTokens: *seamTokens, seamChunk: *seamChunk, seamUsed: *seamUsed}
 	co := cacheOpts{format: *cacheFormat, rounds: *cacheRounds, holds: split(*cacheHold), orders: split(*cacheOrder), passes: *cachePasses,
 		names: split(*cacheNames), hit: *cacheHit, pause: *cachePause, keep: *cacheKeep}
 	if mode == "cache" {
@@ -259,11 +257,11 @@ type splitOpts struct {
 	kvLayers           int
 	kvCache, kvModes   string
 
-	attnChunks, attnTokens, attnForms, attnUsed string
-	attnLayers                                  int
+	attnChunks, attnTokens, attnUsed string
+	attnLayers                       int
 
-	seamFormat, seamTokens, seamForm, seamUsed string
-	seamLayers, seamChunk                      int
+	seamFormat, seamTokens, seamUsed string
+	seamLayers, seamChunk            int
 }
 
 func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, co cacheOpts, ro residentOpts, ao amdFlags, minRun time.Duration, work, out string) error {
@@ -456,16 +454,10 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 		if !slices.IsSorted(used) {
 			return errors.New("-attn-used: the lengths go up")
 		}
-		forms := split(sp.attnForms)
-		for _, f := range forms {
-			if !slices.Contains(probe.AttnForms, f) {
-				return fmt.Errorf("-attn-forms: %q is not grouped or tile", f)
-			}
-		}
 		if sp.attnLayers < 1 {
 			return errors.New("-attn-layers: at least 1")
 		}
-		p.attns(&rep, sp.attnLayers, chunks, tokens, forms, used, save)
+		p.attns(&rep, sp.attnLayers, chunks, tokens, used, save)
 	}
 	if mode == "seam" {
 		if !p.coreml {
@@ -479,9 +471,6 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 		}
 		if sp.seamChunk < 1 || sp.seamChunk > 16384 {
 			return fmt.Errorf("-seam-chunk: %d is not 1 to 16384", sp.seamChunk)
-		}
-		if !slices.Contains(probe.AttnForms, sp.seamForm) {
-			return fmt.Errorf("-seam-form: %q is not grouped or tile", sp.seamForm)
 		}
 		tokens, err := counts("-seam-tokens", sp.seamTokens)
 		if err != nil {
@@ -497,7 +486,7 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 		if sp.attnLayers < 1 {
 			return errors.New("-attn-layers: at least 1")
 		}
-		p.seams(&rep, sp.seamFormat, sp.seamLayers, sp.attnLayers, tokens, sp.seamForm, sp.seamChunk, used, save)
+		p.seams(&rep, sp.seamFormat, sp.seamLayers, sp.attnLayers, tokens, sp.seamChunk, used, save)
 	}
 	if mode == "resident" {
 		for _, f := range ro.formats {

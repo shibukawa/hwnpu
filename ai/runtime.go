@@ -42,7 +42,7 @@ func AllowOffNPU() Option { return func(o *options) { o.allowOffNPU = true } }
 
 // LoadSettings are settings of how the models of a role (chat, translate, embed, ...) run
 // that change nothing of what is prepared: a role reads the names it knows when it loads a model
-// (text's chat: idle, prompt_cache, experts_key, sparse). What changes the programs is a model
+// (text's chat: idle, prompt_cache, experts_key, sparse, reserve_moe_memory). What changes the programs is a model
 // of its own instead (Definition's Settings). Given twice for a role, the later names win.
 func LoadSettings(role string, settings map[string]string) Option {
 	return func(o *options) {

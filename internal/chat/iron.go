@@ -122,6 +122,8 @@ func (s *ironSession) restore(m *decode.Mark) error {
 
 func (s *ironSession) RowBytes() int { return s.m.RowBytes() }
 
+func (s *ironSession) RowFormat() (string, int) { return s.m.RowFormat() }
+
 func (s *ironSession) ExportRows(from, to int) ([]byte, error) {
 	if to > s.pos {
 		return nil, fmt.Errorf("chat: rows to %d of a sequence of %d", to, s.pos)

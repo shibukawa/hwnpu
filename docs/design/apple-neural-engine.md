@@ -14,7 +14,7 @@ pitfalls, prompt programs, the lock between processes and the ANE's memory. The 
 | Weights per program | Core ML: 0.99 GiB runs on the ANE, 1.02 GiB falls to the CPU (M1–M3; M4 2 GB). Core AI's own limit is in [Core AI](apple-coreai.md) | Split by layers ([Core ML](apple-coreml.md)), or at the attention ([LLM engine](llm-engine.md)) |
 | Any tensor dimension | 16384 fits; 16385 puts the ops on the CPU (M3), even an identity naming the output | `llm.NeuralEngineMaxDim`; KV caches in chunks of 16384 (`CacheChunks`); wide outputs, inputs and concats split |
 | Weight tables (lut) | One table per 16 rows only | Pad rows to a multiple of 16 and slice back (`blocks.LinearPadded`); see [Quantization](quantization.md) |
-| `gather` | Runs on the CPU | One-hot matmul; embedding rows looked up on the host |
+| `gather` | Core ML: on the CPU. Core AI: `gather_nd` with int16 indices runs on the M2 and M3, not on the M1 ([below](#gather-and-run-time-weights)) | One-hot matmul; embedding rows looked up on the host; the experts' scales by `gather_nd` on the M2+ |
 | ANE compile cache (system, `aned`) | LRU of about 4 GiB by bytes (3.2–4.8 GiB; about 3.5 in effect); not visible without sudo. A miss reruns `ANECompilerService` at load: tens of seconds to minutes a program | `-prefill auto` keeps one program when two would pass `compileCacheBytes` (3.5 GiB); keep what runs every step smallest. A start is good when the second **and third** starts take a few seconds |
 | Parts run in turn (M1 only) | Up to 2.86 GiB held: full speed; from 2.97 GiB every call is about 12× slower (828 vs 72 ms a token). M2 runs 3.65 GiB, M3 3.96, M4 3.62 at full speed | `neuralEngineHold` = 2.8 GiB on an `Apple M1`: `-prefill auto` keeps one program if two plus the programs beside them (MTP, towers) pass it; warns when one alone does |
 | Programs per process | 112 (M2, Core AI): the 113th load fails (`no ANE resources`) and Core AI silently runs it on the GPU | `coreai` counts its live ANE programs and warns near the limit. gpt-oss-20b uses about 84 |
@@ -46,7 +46,7 @@ stand-ins are in the graphs for both backends.
 | Op or form | Past what | Stand-in |
 |---|---|---|
 | `sin`, `cos`, `floor`, `round`, `ceil`, `mod`, `sign`, `cast` | Always | Rounding as `(v + 1536) − 1536` with 1536 an input (a constant is folded away); series after a range reduction |
-| `gather` | Always | One-hot matmul |
+| `gather` | Core ML always; Core AI with int32 indices, or on the M1 | One-hot matmul. On the M2 and M3, `gather_nd` with int16 indices runs ([below](#gather-and-run-time-weights)) |
 | `reduce_sum` of exponentials | Varies by compile | Sum with a matmul by ones |
 | Attention copying K/V with `tile` | Always | `SDPAGrouped` (op order alone changes placement) |
 | A 262144-vocabulary `reshape`; `transpose` in the last part | That op | Reorder on the host (PLaMo 3; Gemma 4's softcap on the host) |
@@ -55,6 +55,61 @@ stand-ins are in the graphs for both backends.
 | Depthwise conv (M1) | Over 4096 channels | Chunks of ≤ 4096 |
 | An 8×8 by 8×8 matmul (Qwen3.5 GDN chunk) | Always | 7 products of (8×8)·(8×128) |
 | (3, 39) conv + ReLU (Basic Pitch) | Always | Not solved |
+
+## Gather and run-time weights
+
+Looked at for mixtures of experts (2026-11-18 to 20, M1, M3 and M2, Core AI, `tools/coreai/aicheck`).
+How hwnpu runs experts is in [MoE](moe.md).
+
+- The ANE compiler has gather parts: the `anec` ops `gather_nd`, `dynamic_input_view`, `top_k`,
+  `sort`, `param_linear`, `mx_dequant` and others (strings in the dyld shared cache). Core AI's
+  primitives include `gather_nd_v1`, `gather_along_axis_v1` and `slice_v1` (begin at run time).
+- Path: Core AI's primitive → MPS dialect → MPSGraph cuts out the ANE regions and asks
+  `ANEValidateNetworkCreate`. Its reply per op (`support`, `errorMsg`) shows only in
+  `log stream --level debug`; on the M3 it reads `<private>`.
+
+| Op | M1 | M2, M3 |
+|---|---|---|
+| `gather_nd`, `gather_along_axis`, int32 indices | GPU | GPU |
+| The same, int16 indices | Refused (below) | ANE, values right |
+| `slice_by_index` with begin at run time | GPU | GPU |
+| `matmul` with weights as inputs (fp16, or int8 + `cast` + scale) | ANE | ANE |
+
+The M1's validation, shape by shape:
+
+| Form | Reply |
+|---|---|
+| int32 indices | Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16 |
+| int16, whole rows | Invalid gather axes size 1, must be 3 |
+| Index (1024, 3) | Invalid gather index tensor width size 1024, must be 1 |
+| Index (32, 32, 1, 3) | Invalid gather index tensor channel size 96, must be 3 |
+| Index (1024, 1, 3) or (1, 1024, 1, 3): every rule met | **Cannot decompose layer on this architecture** |
+| int16 begin of a dynamic slice | MPS takes int32 or int64 only (`mps.strided_slice`); the process crashes |
+
+So the M1 has no gather on the ANE. On the M3 the ANE's gather reads about 3 G elements/s (1 M
+elements 0.33–0.36 ms), a sixth of reading constant weights; one `gather_nd` a chosen item beats one
+for all K (K 4: 1.53 vs 6–7 ms); an int8 table gathered K at once falls to the GPU. Gather suits small
+tables (the experts' scales, embedding rows), not the experts' weights.
+
+Run-time weights:
+
+- M1, 8 rows × 2880 × 2880: constant fp16 0.52 ms, constant int8 0.35, input fp16 0.61, input int8 +
+  cast 0.54. Copying the inputs every call: fp16 1.16, int8 0.72 (about 29 GB/s).
+- A program takes **at most 5 experts on the M1** (10 run-time weight matrices): 6 jump from 5.00 to
+  21.53 ms (gpt-oss shape) and 1.79 to 7.78 ms (Qwen3-30B-A3B shape). Not the count or size of inputs.
+  The M2 and M3 have no such step (M3, Qwen shape top-5 / 6 / 8: 1.13 / 1.34 / 1.76 ms).
+- Binding: Core AI keeps a few hundred MB of arrays bound to the ANE; past that, each binding
+  reallocates (about 5 GB/s, M1). One layer of 4 layers' experts chosen at random: M1 20.83 ms against
+  2.18 for constants (copying the chosen into K bound slots: 8.93); M3 4.38 ms. On the M3 the cost grows
+  with the count and the size of the arrays (LFM2-8B-A1B shape: 1 layer 1.81 ms, all 22 layers,
+  7.75 GB, 5.32 ms).
+- Real LFM2-8B-A1B on the M3 (`aicheck moeserve`, `tools/ref/lfm2moe_ane.py`): experts per-row int8,
+  scales by `gather_nd`, every layer's experts held. 48 tokens the same as the bf16 reference, KL
+  0.0019, 99.0 % of experts the same; a layer and row: router 0.33 ms + experts 2.7–3.0 ms.
+- 4-bit experts lose to int8 (1.7–2.6 ms a layer, M3): two codes in int8 taken apart with `floor_div`
+  8.7–11 ms and NaN on the ANE; int4 arrays with `blockwise_shift_scale` on the GPU; int4 cast 85 ms;
+  MX constants and inputs not on the ANE; a uint4 code with a table 49 ms an expert. So gpt-oss-20b's
+  experts run on the CPU ([Core AI](apple-coreai.md)).
 
 ## Numeric pitfalls
 
@@ -125,8 +180,8 @@ program.
 
 ### How to check
 
-1. Compare the same program on the ANE and on the CPU (`HWNPU_COREAI_UNITS=cpu`,
-   `HWNPU_COREML_UNITS=cpu`), per position (KL of logits, or cosine), counting padding apart.
+1. Compare the same program on the ANE and on the CPU (`HWNPU_DEV=coreai.units=cpu`,
+   `HWNPU_DEV=coreml.units=cpu`), per position (KL of logits, or cosine), counting padding apart.
 2. Compare with the reference run in fp16 before hunting a cause. If HF's fp16 drifts as much, the
    port is not wrong (Whisper's encoder: an attention sink at silent positions, not an ANE error).
 3. Convert the first N layers (`hwnpu-dev convert -layers N`) and find where the drift starts.
@@ -143,7 +198,7 @@ per call and computes logits for the last row only.
 - Paged models read prompts at `pagedPrefillSeq` = 128 tokens a call (`…-q128-last`). Unsplit
   models keep 64 so the key axis stays ≤ 16384. Intel keeps 64 without `LastRow`.
 - `llm.Options.LastRow` (LFM3, Gemma 4): the last row is taken by a product with a one-hot input
-  `last` (gather is on the CPU), so y is (1, 1, vocab).
+  `last` (gather is off the ANE on the M1 and with Core ML), so y is (1, 1, vocab).
 - Gemma 4 with KV sharing: from the first shared layer on, all layers run on one row (`attendOne`).
 - Numbers on Core AI are in [LLM engine](llm-engine.md).
 
@@ -196,8 +251,8 @@ back after about 20 minutes). So:
 ## Open
 
 - Why two processes at once freeze the ANE. Intel and AMD were not tried; the lock is Apple only.
-- Size and location of the system ANE compile cache (needs sudo); `hwnpu-dev probe cache` results on
-  M1–M4 not recorded.
+- Size and location of the system ANE compile cache (needs sudo). `hwnpu-dev probe cache` results:
+  the M2's are in [Core ML](apple-coreml.md); the M1, M3 and M4 are not measured.
 - Which shapes at the 16384 limit fall to the CPU and which stay.
 - The ANE's memory beyond weights (KV, intermediates) is not told apart.
 - M1 Pro / Max / Ultra hold limit (taken as the M1's).

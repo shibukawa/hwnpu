@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
@@ -36,6 +37,10 @@ type Placement struct {
 	// Ceiling is a file that keeps the budget's ceiling after the system's warning (placer.warned)
 	// for the next run of the model, of any application: the model's experts-usage/ceiling.
 	Ceiling string
+	// Reserve is the bytes of the Neural Engine's experts (internal/llm/chain) wired in memory,
+	// 0 for none (the default): wired, a prompt does not wait for the arrays the system
+	// compressed when memory is short (ParseReserve). The host's experts ignore it.
+	Reserve int64
 }
 
 // timeNow is time.Now, a test's own.
@@ -234,9 +239,8 @@ func (pl *placer) follow() {
 }
 
 // wiring is how the experts are wired: all of them, none, or a budget of bytes for
-// Placement's choice. HWNPU_MOE_WIRE=1 wires all, 0 none, a size (6GB, 6g, 6.5) that budget;
-// otherwise all when they take at most half of the machine's memory, none when they take over
-// three quarters of it (below), else a quarter of it (4.3
+// Placement's choice: all when they take at most half of the machine's memory, none when they
+// take over three quarters of it (below), else a quarter of it (4.3
 // GB of 16 GiB; it was 3/8 until the prefetch made 3 GB as fast as 6: an M2 12.4–12.6 against
 // 12.2–12.5 tokens/s, an M3 16.8–16.9 against 17.2–17.6). The budget then follows the system's
 // free memory (placer.effective). Wired, a token's experts cost half as much even with memory to spare (gpt-oss-20b on a
@@ -245,13 +249,7 @@ func (pl *placer) follow() {
 // system drops them (an M2: 13.2 tokens/s wired, 7.9 not).
 func (h *Host) wiring() (all bool, budget int64) {
 	n := h.bytes()
-	phys := mem.Physical()
-	if set, b := WireEnv(); set {
-		if b < 0 {
-			return true, n
-		}
-		return b >= n, min(b, n)
-	}
+	phys := physical()
 	if phys > 0 && 2*n <= phys {
 		return true, n
 	}
@@ -268,25 +266,29 @@ func (h *Host) wiring() (all bool, budget int64) {
 	return false, phys / 4
 }
 
-// WireEnv reads HWNPU_MOE_WIRE, the experts wired into memory (mlock): set is whether it is set,
-// budget the bytes it lets be wired: 0 for none ("0"), -1 for all ("1", or a value that is not a
-// size, which is told), else a size in GB ("6", "6GB").
-func WireEnv() (set bool, budget int64) {
-	switch v := strings.TrimSpace(os.Getenv("HWNPU_MOE_WIRE")); v {
-	case "":
-		return false, 0
-	case "0":
-		return true, 0
-	case "1":
-		return true, -1
-	default:
-		s := strings.TrimSuffix(strings.TrimSuffix(strings.ToUpper(v), "B"), "G")
-		if gb, err := strconv.ParseFloat(s, 64); err == nil && gb > 0 {
-			return true, int64(gb * 1e9)
-		}
-		fmt.Fprintf(os.Stderr, "experts: HWNPU_MOE_WIRE=%s is not 0, 1 or a size in GB: taken as 1\n", v)
-		return true, -1
+// physical is the machine's memory (mem.Physical), a test's own.
+var physical = mem.Physical
+
+// ParseReserve reads Placement.Reserve as an app gives it (the setting reserve_moe_memory,
+// hwnpu-chat --reserve-moe-memory): a size (6GB, 6.5GiB, 0) or a percentage of the machine's
+// memory phys (40%). "" is 0.
+func ParseReserve(s string, phys int64) (int64, error) {
+	v := strings.TrimSpace(s)
+	if v == "" {
+		return 0, nil
 	}
+	if p, ok := strings.CutSuffix(v, "%"); ok {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil || f < 0 || f > 100 {
+			return 0, fmt.Errorf("%q is not a percentage of the memory (40%%)", s)
+		}
+		return int64(f / 100 * float64(phys)), nil
+	}
+	n, err := cache.ParseSize(v)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a size or a percentage of the memory (6GB, 40%%, 0)", s)
+	}
+	return n, nil
 }
 
 // bytes is the size of every expert's weights.

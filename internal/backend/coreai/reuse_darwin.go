@@ -187,7 +187,7 @@ func (u *reuser) check(c *candidate, src string, inPlace bool) string {
 	}
 	e := c.entry
 	if !inPlace && (e == nil || e.Legacy && (e.Device == nil || e.Device.Status != DeviceOK)) {
-		return "no record of how it was built (" + RecordFile + ": hwnpu-dev prebuild -record writes those of earlier builds)"
+		return "no record of how it was built (" + RecordFile + ")"
 	}
 	if e != nil {
 		switch {

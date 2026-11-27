@@ -20,7 +20,6 @@ type seamResult struct {
 	Layers      int       `json:"layers"` // weighted layers, in AttnLayers+1 parts
 	WeightBytes int64     `json:"weight_bytes"`
 	Tokens      int       `json:"tokens"` // query rows per call, of the parts and the attention
-	Form        string    `json:"form"`
 	Chunk       int       `json:"chunk"`
 	AttnLayers  int       `json:"attn_layers"`
 	Parts       []result  `json:"parts"` // placement of each weighted part
@@ -52,17 +51,17 @@ func (r seamRun) msPerSeam() float64 {
 }
 
 // seams measures the split model for each number of query rows.
-func (p *prober) seams(rep *report, format string, layers, attnLayers int, tokens []int, form string, chunk int, used []int, save func()) {
-	fmt.Printf("seam, %s %d layers (%.2f GiB) in %d parts with %s attention over chunks of %d between them:\n",
-		format, layers, probe.GiB(probe.WeightBytes(format, layers)), attnLayers+1, form, chunk)
+func (p *prober) seams(rep *report, format string, layers, attnLayers int, tokens []int, chunk int, used []int, save func()) {
+	fmt.Printf("seam, %s %d layers (%.2f GiB) in %d parts with attention over chunks of %d between them:\n",
+		format, layers, probe.GiB(probe.WeightBytes(format, layers)), attnLayers+1, chunk)
 	for _, q := range tokens {
 		if p.ctx.Err() != nil {
 			return
 		}
 		var s seamResult
-		spec := childSpec{Kind: "seam", Format: format, Layers: layers, AttnLayers: attnLayers, Tokens: q, N: chunk, Layout: form, Used: used}
+		spec := childSpec{Kind: "seam", Format: format, Layers: layers, AttnLayers: attnLayers, Tokens: q, N: chunk, Used: used}
 		if err := p.child(spec, &s); err != nil {
-			s = seamResult{Format: format, Layers: layers, WeightBytes: probe.WeightBytes(format, layers), Tokens: q, Form: form, Chunk: chunk, AttnLayers: attnLayers, Error: err.Error()}
+			s = seamResult{Format: format, Layers: layers, WeightBytes: probe.WeightBytes(format, layers), Tokens: q, Chunk: chunk, AttnLayers: attnLayers, Error: err.Error()}
 		}
 		fmt.Printf("  Q=%d: parts %s, attention %s%s\n", s.Tokens, partsPlacement(s.Parts), s.Attn.placement(), errSuffix(s.Error))
 		for _, r := range s.Runs {
@@ -93,8 +92,8 @@ func partsPlacement(parts []result) string {
 
 // seam is the child side: load the weighted parts and the attention program, all at once, and
 // time the three ways of running them for each used length.
-func (p *prober) seam(format string, layers, attnLayers, tokens int, form string, chunk int, used []int) seamResult {
-	s := seamResult{Format: format, Layers: layers, WeightBytes: probe.WeightBytes(format, layers), Tokens: tokens, Form: form, Chunk: chunk, AttnLayers: attnLayers}
+func (p *prober) seam(format string, layers, attnLayers, tokens, chunk int, used []int) seamResult {
+	s := seamResult{Format: format, Layers: layers, WeightBytes: probe.WeightBytes(format, layers), Tokens: tokens, Chunk: chunk, AttnLayers: attnLayers}
 	var models []*loaded
 	defer func() {
 		for _, l := range models {
@@ -115,8 +114,8 @@ func (p *prober) seam(format string, layers, attnLayers, tokens int, form string
 		models = append(models, l)
 		in = l.out
 	}
-	path := filepath.Join(p.dir, fmt.Sprintf("probe_seam_attn_%s_q%d_c%d.mlpackage", form, tokens, chunk))
-	if err := probe.WriteChunkAttnPackage(path, form, tokens, chunk); err != nil {
+	path := filepath.Join(p.dir, fmt.Sprintf("probe_seam_attn_q%d_c%d.mlpackage", tokens, chunk))
+	if err := probe.WriteChunkAttnPackage(path, tokens, chunk); err != nil {
 		s.Error = "build: " + err.Error()
 		return s
 	}

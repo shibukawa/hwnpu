@@ -111,7 +111,7 @@ Intel での配置の検証 (NPU のコンパイラは演算を他の装置に�
 ### Windows のジョブの時間の上限 (TDR)
 
 - Windows は時間の上限 (TDR、既定 2 秒) を超えた GPU / NPU のジョブを止め、デバイスを失わせる (`zeFenceHostSynchronize: ZE_RESULT_ERROR_DEVICE_LOST`)。1 プログラムに DiT 4 ブロックの Anima 1024² がこれに当たった (1 群 2〜4 秒の見込み)。
-- `--group` の既定は 0 = 自動 (`anima.DefaultGroup`): Core ML と Core AI は 4。Intel は 4 から半分ずつにして「ブロック数 × パッチ数」を 4096 以下に (512²: 4、640²: 2、768² と 1024²: 1)。`g` は書き出しの名前に入る。DEVICE_LOST (`types.IsDeviceLost`) で群が 2 以上なら、エラーに `--group` を半分にする案内を付ける。
+- `--dit-group` の既定は 0 = 自動 (`anima.DefaultGroup`): Core ML と Core AI は 4。Intel は 4 から半分ずつにして「ブロック数 × パッチ数」を 4096 以下に (512²: 4、640²: 2、768² と 1024²: 1)。`g` は書き出しの名前に入る。DEVICE_LOST (`types.IsDeviceLost`) で群が 2 以上なら、エラーに `--group` を半分にする案内を付ける。
 - g4 と g1 の書き出しは同じ絵を描く (潜在の差は相対 3.6 %、群の間の丸め)。
 
 ## Windows
@@ -123,7 +123,11 @@ Intel での配置の検証 (NPU のコンパイラは演算を他の装置に�
 
 - chat 以外のモデルのために足した演算 (DepthToSpace、ConvolutionBackpropData、Clamp、MaxPool、Elu など) と大きなグラフ (Sana の Gemma 2 の 6 層 int8 で約 0.5 GB、EfficientSAM の 4096 トークンの注意) を NPU のコンパイラが受け付けるか。速さ。Sana と MOSS が 135U のメモリに収まるか。
 - 4.6 GB の失敗の原因 (合計でなく、1 本の大きさかグラフの形か)。0xc0000005 の異常終了がメモリ不足か。
-- g1 にした後の NPU の Anima: "bad allocation" の後の読み直し (プロンプトごとに text と数ブロックの見込み)。int8 の Anima (`image-512-int8`) と fp16 の比べ。
+- g1 にした後の NPU の Anima を 512² と 1024² で: 全部の部品が読めるか ("bad allocation" の後の読み直し。プロンプトごとに text と数ブロックの見込み)、`DEVICE_LOST` で止まらないか。ドライバ内コンパイラ、1 ステップ、VAE、全体の時間と NPU のメモリ。`--dit-format int8` と `int4` を既定の fp16 と比べる (メモリが減って読み直しが要らなくなるか)。同じプロンプトと種の Mac / AMD の絵と比べる。済んだら USAGE_IMAGE.md / .ja.md の「Intel の NPU では未確認」と [performance.ja.md](performance.ja.md) の Anima の行を直す。
+  ```sh
+  hwnpu-image generate --size 1:1s "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" --seed 1 -o out512.png
+  hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" --seed 1 -o out1024.png
+  ```
 - 塊ごとの注意でのコマンドリストの積み直しの費用 (毎ステップ、全注意の層 × 使う塊の数)。
 - Gemma 4、LFM3-VL / Audio、Qwen3.5、Whisper、d1、PLaMo 3 8B int4 (2 本か 1 本か) の NPU の実機。
 - Apple の 1 GiB のような大きさの上限。`-target intel` の 2 GiB は仮の値。大きなグラフのコンパイル時間。

@@ -241,7 +241,7 @@ Core AI だけで動く ([apple-coreai.md](apple-coreai.md))。Go の変換器�
 - 8B: Neural Engine の重みは lut8 7.58 GiB、lut6 5.66、lut4 3.77。lut4 は訳を保つ: 20 文中 13 文が lut8 と一字一句同じで、残りは正しい言い換え。
   lut8 に対する答えのトークンの KL 0.305、argmax 88% (`hwnpu-dev generate -write-ref` / `-score`)。速さ (lut4): M3、Core AI で短い 1 文 14.5 トークン/秒、
   1214 トークンの文書を 12.8 秒で読み (1 回 8 トークンのプログラム 1 本、prefill なし) 23 トークン/秒で訳す。2 回目からの起動 0.3〜0.4 秒 (初回は書き出し 4 GB のダウンロード込みで 2 分 22 秒)、NE に 3.80 GiB。Core ML の頃: M2 9.4〜10.1 トークン/秒だが毎回の起動に 35〜41 秒 (コンパイルのキャッシュに 1.2〜2.1 GiB しか残らない)。M1 は
-  0.8 トークン/秒 (M1 の NE が全速で動かせる 2.8 GiB を超える) なので `not_on: [M1]` で、M1 では 2B を選ぶ。M3 の lut8 は 5.8〜6.5 トークン/秒 (Core ML)。
+  0.8 トークン/秒 (M1 の NE が全速で動かせる 2.8 GiB を超える。全部 NPU、NE 3.81 GiB、ピーク 4.1 GB) なので `not_on: [M1]` で、M1 では 2B を選ぶ。M3 の lut8 は 5.8〜6.5 トークン/秒、M2 の lut8 は約 6 (Core ML)。
   メモリは models.yaml のとおり (Apple のピーク 8.2 GB)。
 - Intel の 8B: int8 (7.6 GiB) は Core Ultra 5 135U の NPU が持てた約 4.6 GB を超える。行ごとの int4 (3.8 GiB、1 本)。同じ int4 の丸めを M1 の
   ANE で動かすと、20 文中 12 文が lut8 と同じで、残りは言い換え。

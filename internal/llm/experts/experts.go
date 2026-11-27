@@ -2,7 +2,7 @@
 // program that precedes such a layer outputs its router's logits, the host picks the layer's top
 // k experts from them, and a program without weights runs the k chosen ones on one row, their
 // weights given at run time from arrays the host holds for every expert of every layer
-// (docs/handoff-ane-gather.md 1b). On an M3's Neural Engine with Core AI, LFM2-8B-A1B's four
+// (docs/design/apple-neural-engine.md). On an M3's Neural Engine with Core AI, LFM2-8B-A1B's four
 // experts of 2048 x 1792 take 2.7 to 3.0 ms a row this way, every layer's 7.75 GB held.
 //
 // An expert is a SwiGLU: down(silu(gate x) * up x). Its weights are int8, a scale a row, as two
@@ -10,7 +10,7 @@
 // columns side by side, and Down (hidden, inter), the down projection as the checkpoint has it.
 // The scales of a layer's experts are one table (experts, 2 inter + hidden), from which the
 // program picks the chosen experts' rows with gather_nd on the Neural Engine (its gather takes
-// int16 indices and runs on an M3; on an M1 it does not, docs/handoff-ane-gather.md 1).
+// int16 indices and runs on an M3; on an M1 it does not, docs/design/apple-neural-engine.md).
 //
 // The program's inputs are x (1, 1, hidden), the row the layer's feed forward takes; i (k, 1),
 // the chosen experts' numbers, fp16 (cast to int16 inside: Core ML's model description has no

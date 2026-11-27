@@ -120,7 +120,7 @@ func (w *Writer) Attr(d, text string) int {
 }
 
 // RawAttr appends an attribute as the bytes e holds (its dialect's encoding or its text),
-// without merging it with an equal one: for copying a file's tables (tools/coreai/bcrecode).
+// without merging it with an equal one: for copying another file's tables entry by entry.
 func (w *Writer) RawAttr(e Entry) int {
 	w.attrs = append(w.attrs, entry{w.dialect(e.Dialect), string(e.Data), e.Custom})
 	return len(w.attrs) - 1

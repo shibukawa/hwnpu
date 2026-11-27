@@ -126,7 +126,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | Model | Use | At start | Growth with the conversation (KV cache) | Basis |
 |---|---|---|---|---|
 | LFM3-1.7B | Chat, coding | 2.2 GB on AMD. On Apple 1.7 GB (1.36 GiB on the Neural Engine and 0.23 GiB of the process); 3.1 GB on an M2 or later from 16 GB (the program of short conversations holds the weights once more: 2.64 GiB and 0.21 GiB) | 12 KiB/token (3 GiB at 262144) | measured (AMD and an M1; an M2's programs loaded on the M1 with `--tier 2048`) |
-| LFM2-8B-A1B | Chat, tool calls (`-m lfm2`; Apple's M2 and later, not an M1) | 8.0 GB on an M2 (the experts' 7.23 GiB in the process's memory, `HWNPU_MOE_WIRE=1` wires them when memory is short); 12.9 GB at the first run's conversion | 13.5 KiB/token with the means of 8 positions (1.65 GiB at 128000) | measured (an M2; speed on an M3 too) |
+| LFM2-8B-A1B | Chat, tool calls (`-m lfm2`; Apple's M2 and later, not an M1) | 8.0 GB on an M2 (the experts' 7.23 GiB in the process's memory, `--reserve-moe-memory 8GB` keeps them there when other applications take the memory); 12.9 GB at the first run's conversion | 13.5 KiB/token with the means of 8 positions (1.65 GiB at 128000) | measured (an M2; speed on an M3 too) |
 | Gemma 4 E2B | Chat, coding | 2.4 GB on AMD (2026-11-17), 2.3 GB on Apple (an M1 with Core AI: 1.66 GiB on the Neural Engine; the process not measured with Core AI) | 6 KiB/token (0.75 GiB at 131072) | measured |
 | Gemma 4 E2B with images and audio | Images, audio (one image and 30 seconds a prompt) | 3.4 GB (2.4 GB until an image or audio arrives) | 6 KiB/token | measured |
 | Gemma 4 E4B | Chat, coding | 4.3 GB on AMD (2026-11-17), 4.0 GB on Apple | 16 KiB/token (2 GiB at 131072) | measured |

@@ -1,7 +1,6 @@
 package qwen35
 
 import (
-	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -15,59 +14,11 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
-// TestWriteDeltaProbe writes the gated delta rule alone (deltaRuleChunks) as packages, for
-// checking coreai-build's programs of it on a device: HWNPU_TEST_QWEN35_DELTA_PROBE=DIR and
-// _SIZES=ROWSxCHUNK,... (128x8,128x16), heads 16 of 128 x 128 (Qwen3.5-0.8B's).
-func TestWriteDeltaProbe(t *testing.T) {
-	dir := os.Getenv("HWNPU_TEST_QWEN35_DELTA_PROBE")
-	if dir == "" {
-		t.Skip("HWNPU_TEST_QWEN35_DELTA_PROBE is not set")
-	}
-	const hv, dk, dv = 16, 128, 128
-	for _, size := range strings.Split(os.Getenv("HWNPU_TEST_QWEN35_DELTA_PROBE_SIZES"), ",") {
-		rs, cs, _ := strings.Cut(size, "x")
-		rows, _ := strconv.Atoi(rs)
-		chunk, _ := strconv.Atoi(cs)
-		if rows < 1 || chunk < 1 {
-			t.Fatalf("size %q", size)
-		}
-		old := deltaChunk
-		deltaChunk = chunk
-		path := filepath.Join(dir, fmt.Sprintf("delta_r%d_c%d.mlpackage", rows, chunk))
-		pkg, err := mlpackage.Create(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-		m := &builder{Graph: &blocks.Graph{Name: "probe", B: b}}
-		var ins []mlpackage.Feature
-		input := func(name string, sh ...int) *mlpackage.Var {
-			ins = append(ins, mlpackage.Feature{Name: name, DType: mlpackage.Float16, Shape: sh})
-			return b.Input(name, mlpackage.Float16, sh...)
-		}
-		q, k, v := input("q", 1, hv, rows, dk), input("k", 1, hv, rows, dk), input("v", 1, hv, rows, dv)
-		g, beta := input("g", 1, hv, rows, 1), input("beta", 1, hv, rows, 1)
-		state := input("state", 1, hv, dk, dv)
-		var o, st *mlpackage.Var
-		if err := blocks.Run(func() { o, st = m.deltaRuleChunks(q, k, v, g, beta, state) }); err != nil {
-			t.Fatal(err)
-		}
-		oo := b.NamedOp("identity", "o", map[string]any{"x": o}, mlpackage.Float16, o.Shape...)
-		so := b.NamedOp("identity", "state_new", map[string]any{"x": st}, mlpackage.Float16, st.Shape...)
-		outs := []mlpackage.Feature{{Name: "o", DType: mlpackage.Float16, Shape: oo.Shape}, {Name: "state_new", DType: mlpackage.Float16, Shape: so.Shape}}
-		if err := pkg.Finish(b.Finish(&mlpackage.Var{Name: "o"}, &mlpackage.Var{Name: "state_new"}), 9, ins, outs); err != nil {
-			t.Fatal(err)
-		}
-		deltaChunk = old
-		t.Logf("%s", path)
-	}
-}
-
 // TestDeltaChunkRealWeights measures the chunked delta rule's error in fp16 with a real
 // checkpoint (HWNPU_TEST_QWEN35_DIR, its config.json and model.safetensors.index.json): the
 // hidden state after the first HWNPU_TEST_QWEN35_LAYERS layers (default 3, the first Gated
 // DeltaNet layers) of 128 tokens, every operation rounded to fp16, against the float64
-// reference. HWNPU_TEST_QWEN35_CHUNK is the chunk's rows (default deltaChunk).
+// reference.
 func TestDeltaChunkRealWeights(t *testing.T) {
 	dir := os.Getenv("HWNPU_TEST_QWEN35_DIR")
 	if dir == "" {
@@ -89,10 +40,6 @@ func TestDeltaChunkRealWeights(t *testing.T) {
 	layers := 3
 	if n, err := strconv.Atoi(os.Getenv("HWNPU_TEST_QWEN35_LAYERS")); err == nil && n > 0 {
 		layers = n
-	}
-	if n, err := strconv.Atoi(os.Getenv("HWNPU_TEST_QWEN35_CHUNK")); err == nil && n > 0 {
-		defer func(old int) { deltaChunk = old }(deltaChunk)
-		deltaChunk = n
 	}
 	const n = 128
 	seed := 0 // HWNPU_TEST_QWEN35_SEED: another sequence of tokens; a multiple of 100 repeats one token (the delta rule's worst)

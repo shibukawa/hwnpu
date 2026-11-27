@@ -34,7 +34,7 @@ type moe struct {
 	dnArg   []int
 	layers  map[int]*moeLayer
 	bufs    []*hwnpu.Buffer
-	locked  [][]byte   // the memory HWNPU_MOE_WIRE wired, unwired by close
+	locked  [][]byte   // the memory Placement.Reserve wired, unwired by close
 	mu      sync.Mutex // one row at a time: the chains that share it run in turn
 	// the programs of one expert on all the rows of a call, by its rows (experts.BuildRows)
 	rows map[int]*moeRows
@@ -185,13 +185,15 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		}
 		return b, err
 	}
-	// HWNPU_MOE_WIRE wires the experts' arrays into memory (mlock): short of memory, the system
-	// compresses or swaps out the experts no row chose for a while, and a prompt's calls then wait
-	// for them (an M2 of 16 GB: 14.3 s to 43.3 s for the same prompt, the binding of the arrays
-	// alone growing). Off by default: wiring 7.2 GB of 16 pushes the other applications out. A
-	// size wires the arrays in turn up to it (experts.WireEnv).
-	set, budget := experts.WireEnv()
-	wire := set && budget != 0
+	// Placement.Reserve wires the experts' arrays into memory (mlock), in turn up to it: short of
+	// memory, the system compresses or swaps out the experts no row chose for a while, and a
+	// prompt's calls then wait for them. LFM2-8B-A1B on a 16 GB M2 (2026-11-27, 2352 tokens of
+	// prompt and 300 generated): 17.0 s and 12.8 tokens/s none wired, 16.2 s and 13.3 all (7.23
+	// GiB); with another process holding 6 GB, 19.2 s and 6.1 tokens/s against 17.9 s and 11.6.
+	// None by default: the arrays wired stay so while the model is loaded, idle too, which takes
+	// the memory from the other applications (the Neural Engine wires those it runs anyway).
+	budget := p.Reserve
+	wire := budget > 0
 	var wired int64
 	var wireErr error
 	if wire {
@@ -200,7 +202,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 			if err := read0(b, name); err != nil {
 				return err
 			}
-			if wireErr == nil && (budget < 0 || wired+int64(b.Size()) <= budget) {
+			if wireErr == nil && wired+int64(b.Size()) <= budget {
 				if wireErr = mlock(b.Bytes()); wireErr == nil {
 					wired += int64(b.Size())
 					m.locked = append(m.locked, b.Bytes())
@@ -246,7 +248,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		m.layers[l] = ml
 	}
 	if wireErr != nil {
-		fmt.Fprintf(os.Stderr, "chain: HWNPU_MOE_WIRE: %.2f GiB of the experts wired, the rest not: %v\n", float64(wired)/(1<<30), wireErr)
+		fmt.Fprintf(os.Stderr, "chain: %.2f GiB of the experts wired (the memory reserved for them), the rest not: %v\n", float64(wired)/(1<<30), wireErr)
 	}
 	if experts.DebugTime() {
 		fmt.Fprintf(os.Stderr, "chain: the experts of %d layers held (%.2f GiB wired), placement %v\n", len(rec.Layers), float64(wired)/(1<<30), g.Placement())

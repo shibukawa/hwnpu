@@ -302,7 +302,7 @@ func Main() {
 
 // prepare compiles the model and binds inputs filled with x[i] = sin(i * 0.01).
 // units "cpu" and "gpu" load the model with MLComputeUnitsCPUOnly and MLComputeUnitsCPUAndGPU
-// (through HWNPU_COREML_UNITS), as baselines; "npu" is hwnpu's normal CPU and Neural Engine.
+// (GraphSource.Units), as baselines; "npu" is hwnpu's normal CPU and Neural Engine.
 func prepare(ctx context.Context, dev *hwnpu.Device, path, units string) *Workload {
 	w := &Workload{Name: strings.TrimSuffix(filepath.Base(path), ".mlpackage"), Path: path, Units: units, CPUOnly: units == "cpu"}
 	switch units {
@@ -316,11 +316,11 @@ func prepare(ctx context.Context, dev *hwnpu.Device, path, units string) *Worklo
 		w.Err = err.Error()
 		return w
 	}
+	src := hwnpu.GraphSource{Path: path}
 	if units != "npu" {
-		os.Setenv("HWNPU_COREML_UNITS", units)
+		src.Units = units
 	}
-	g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: path})
-	os.Unsetenv("HWNPU_COREML_UNITS")
+	g, err := gr.Compile(ctx, src)
 	if err != nil {
 		w.Err = err.Error()
 		return w

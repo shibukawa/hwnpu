@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// BenchmarkPackage runs the .mlpackage at HWNPU_TEST_MLPACKAGE on random inputs in [0, 1) (one
+// BenchmarkPackage runs the .mlpackage at HWNPU_TEST_MILCPU_FILE on random inputs in [0, 1) (one
 // thread unless -cpu says otherwise): a check of the executor's speed on a real program (YuNet's).
 func BenchmarkPackage(b *testing.B) {
-	path := os.Getenv("HWNPU_TEST_MLPACKAGE")
+	path := os.Getenv("HWNPU_TEST_MILCPU_FILE")
 	if path == "" {
-		b.Skip("HWNPU_TEST_MLPACKAGE: an .mlpackage")
+		b.Skip("HWNPU_TEST_MILCPU_FILE: an .mlpackage")
 	}
 	prog, f, err := OpenPackage(path)
 	if err != nil {

@@ -89,7 +89,7 @@ type GraphSource struct {
 	XML, Bin   []byte      // OpenVINO IR
 	BuildFlags string      // e.g. `--inputs_precisions="0:fp16" --config NPU_PLATFORM="4000"`
 	Function   string      // one function of a multi-function ML Program (macOS 15+); functions share weights
-	Units      string      // Core ML: "" Neural Engine (+CPU), "cpu", "gpu"; HWNPU_COREML_UNITS overrides
+	Units      string      // Core ML: "" Neural Engine (+CPU), "cpu", "gpu"; HWNPU_DEV=coreml.units overrides
 }
 
 type GraphRunner interface {
@@ -252,7 +252,7 @@ type VersionError struct{ Component, Have, Need string }
 | `WithCacheDir(dir)` | Store compiled graphs and reuse them. Key: the model, the build flags, the driver / compiler (or OS) version. Compiling costs power, so it is not repeated each start |
 
 Environment: `HWNPU_BACKEND` (backend for the commands; makes `openvino` / `xrt` list),
-`HWNPU_ZE_LOADER` (path of the Level Zero loader), `HWNPU_COREML_UNITS` and `HWNPU_COREAI_UNITS`
+`HWNPU_ZE_LOADER` (path of the Level Zero loader), `HWNPU_DEV=coreml.units` and `coreai.units`
 (move programs off the Neural Engine, e.g. `cpu` to separate engine errors from model errors).
 
 ## modelstore

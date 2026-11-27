@@ -437,7 +437,7 @@ func (m *Model) Close() error {
 					r.guess, r.prefetchN, r.prefetchU, 100*float64(r.prefetchU)/float64(r.prefetchN), p.waiting.Seconds())
 			}
 		}
-		if _, ok := experts.DebugOpt("check"); ok && !m.released && m.pool.filled {
+		if _, ok := devenv.Get("iron.moe.check"); ok && !m.released && m.pool.filled {
 			if err := m.checkPool(); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 			}

@@ -18,21 +18,14 @@ import (
 // chunk's attention normalized over the chunk alone; m and l (1, QHeads, tokens, 1), the largest
 // scaled score of each row and the sum of exp(score - m) over the chunk.
 //
-// Forms: "grouped" stacks the query heads of a kv head along the rows of one matrix product, as
-// blocks.SDPAGrouped (the default attention of LFM3-1.7B); "tile" copies the keys and values for
-// every query head, as blocks.SDPA. Both take the sum of the exps as a matrix product with ones,
-// as blocks.ChunkedSDPA does: a reduce_sum made the placement of 64 tokens per call change from
-// one compile to the next (docs/design/llm-engine.md).
-
-// AttnForms are the forms of WriteChunkAttnPackage.
-var AttnForms = []string{"grouped", "tile"}
+// The query heads of a kv head are stacked along the rows of one matrix product, as
+// blocks.SDPAGrouped (the default attention of LFM3-1.7B). The sum of the exps is a matrix
+// product with ones, as blocks.ChunkedSDPA does: a reduce_sum made the placement of 64 tokens per
+// call change from one compile to the next (docs/design/llm-engine.md).
 
 // WriteChunkAttnPackage writes a chunk attention probe model for tokens query rows and a chunk
 // of the given length.
-func WriteChunkAttnPackage(dir, form string, tokens, chunk int) error {
-	if form != "grouped" && form != "tile" {
-		return fmt.Errorf("probe: attention form %q is not grouped or tile", form)
-	}
+func WriteChunkAttnPackage(dir string, tokens, chunk int) error {
 	if tokens < 1 || chunk < 1 {
 		return fmt.Errorf("probe: %d tokens over a chunk of %d", tokens, chunk)
 	}
@@ -40,7 +33,7 @@ func WriteChunkAttnPackage(dir, form string, tokens, chunk int) error {
 	if err != nil {
 		return err
 	}
-	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("attn %s %d tokens chunk %d", form, tokens, chunk)
+	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("attn %d tokens chunk %d", tokens, chunk)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
 	op := func(typ string, in map[string]any, shape ...int) *mlpackage.Var {
 		return b.Op(typ, in, mlpackage.Float16, shape...)
@@ -73,27 +66,15 @@ func WriteChunkAttnPackage(dir, form string, tokens, chunk int) error {
 	scale := b.ScalarF16(float32(1 / math.Sqrt(d)))
 	rows := []int{1, nh, s, 1}
 
-	var sc *mlpackage.Var
-	if form == "grouped" {
-		qg := reshape(q, 1, nkv, rep*s, d)
-		sc = reshape(matmul(qg, k, true, 1, nkv, rep*s, c), 1, nh, s, c)
-	} else {
-		k, v = tileHeads(b, k, rep), tileHeads(b, v, rep)
-		sc = matmul(q, k, true, 1, nh, s, c)
-	}
+	qg := reshape(q, 1, nkv, rep*s, d)
+	sc := reshape(matmul(qg, k, true, 1, nkv, rep*s, c), 1, nh, s, c)
 	sc = op("add", map[string]any{"x": op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, c), "y": mask}, 1, nh, s, c)
 	m := op("reduce_max", map[string]any{"x": sc, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, rows...)
 	e := op("exp", map[string]any{"x": op("sub", map[string]any{"x": sc, "y": m}, 1, nh, s, c)}, 1, nh, s, c)
-	var o, l *mlpackage.Var
-	if form == "grouped" {
-		e = reshape(e, 1, nkv, rep*s, c)
-		l = matmul(e, ones, false, 1, nkv, rep*s, 1)
-		o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nkv, rep*s, d), "y": l}, 1, nkv, rep*s, d)
-		o, l = reshape(o, 1, nh, s, d), reshape(l, rows...)
-	} else {
-		l = matmul(e, ones, false, rows...)
-		o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nh, s, d), "y": l}, 1, nh, s, d)
-	}
+	e = reshape(e, 1, nkv, rep*s, c)
+	l := matmul(e, ones, false, 1, nkv, rep*s, 1)
+	o := op("real_div", map[string]any{"x": matmul(e, v, false, 1, nkv, rep*s, d), "y": l}, 1, nkv, rep*s, d)
+	o, l = reshape(o, 1, nh, s, d), reshape(l, rows...)
 	outs := []*mlpackage.Var{
 		b.NamedOp("identity", "o", map[string]any{"x": o}, mlpackage.Float16, 1, nh, s, d),
 		b.NamedOp("identity", "m", map[string]any{"x": m}, mlpackage.Float16, rows...),
@@ -104,14 +85,6 @@ func WriteChunkAttnPackage(dir, form string, tokens, chunk int) error {
 		feats = append(feats, mlpackage.Feature{Name: v.Name, DType: mlpackage.Float16, Shape: v.Shape})
 	}
 	return pkg.Finish(b.Finish(outs...), 9, ins, feats)
-}
-
-// tileHeads copies (1, nkv, t, d) for rep query heads each: (1, nkv*rep, t, d).
-func tileHeads(b *mlpackage.Builder, x *mlpackage.Var, rep int) *mlpackage.Var {
-	nkv, t, d := x.Shape[1], x.Shape[2], x.Shape[3]
-	x = b.Op("reshape", map[string]any{"x": x, "shape": b.Ints(1, int32(nkv), 1, int32(t), int32(d))}, mlpackage.Float16, 1, nkv, 1, t, d)
-	x = b.Op("tile", map[string]any{"x": x, "reps": b.Ints(1, 1, int32(rep), 1, 1)}, mlpackage.Float16, 1, nkv, rep, t, d)
-	return b.Op("reshape", map[string]any{"x": x, "shape": b.Ints(1, int32(nkv*rep), int32(t), int32(d))}, mlpackage.Float16, 1, nkv*rep, t, d)
 }
 
 func constOnes(n int) []float32 {

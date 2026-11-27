@@ -32,7 +32,7 @@ func main() {
 	out := flag.String("o", "", "the codes directory to write")
 	format := flag.String("format", "lut4", "lut4, lut6 or lut8")
 	group := flag.Int("group", 16, "rows a table")
-	colBlock := flag.Int("col-block", 0, "columns a table (0: whole rows; Core AI's Neural Engine reads only the first block's of a row, docs/design/llm-qwen.md)")
+	colBlock := flag.Int("colblock", 0, "columns a table (0: whole rows; Core AI's Neural Engine reads only the first block's of a row, docs/design/llm-qwen.md)")
 	iters := flag.Int("iters", 20, "passes of weighted Lloyd")
 	flag.Parse()
 	if *config == "" || *weights == "" || *stats == "" || *out == "" {

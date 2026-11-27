@@ -175,12 +175,13 @@ ONNX の CNN (CSPNeXt、YOLOX 型) を IRON のグラフ 1 つにする。AMD �
 | Neural Engine の `sigmoid` と `tanh` は深い CNN でずれる (RTMDet-s の SiLU 80 個) | 箱 98 px、スコア 0.35 ずれ、物が 1 つ減る (CPU の fp16 は 7.5 px) | `ExpSigmoid`: 5.5 px、スコア 0.063。演算が 2 つ増え s 6.6 → 9.3 ms、m 12.2 → 18.2 ms。精度を取る。`0.5 x (1 + tanh(x/2))` もずれる |
 | 1 つの軸が 16384 を超えるテンソルの演算は、出力の identity でも | PP-OCR の 18710 クラスの softmax、bias の足し算、出力が CPU に | logit を出力に、linear を 2 つに分ける、bias を畳み込む |
 | Core AI の Neural Engine は定数による `divide_v1` を誤る (√2 で割らずに √2 倍、チャネルごとのずれも) | PP-OCR の検出器のコサイン 0.05、認識器 −0.42 | `ailower` が `x × (1/c)` と書く。定数で割る MIL は ONNX のグラフだけなので、ほかのプログラムのバイトは変わらない。確かめるときは `HWNPU_DEV=ailower.divide=1` で割り算に戻す |
-| Core AI の CPU は `reduce_mean` の和を fp32 でとり、1/n の前に fp16 に戻す | 平均の絶対値が 65504/n を超えると −inf (57600 要素の SE ブロック) | Core AI の CPU (`HWNPU_COREAI_UNITS=cpu`) だけの問題。全部のプログラムのハッシュが変わるので直さない |
+| Core AI の CPU は `reduce_mean` の和を fp32 でとり、1/n の前に fp16 に戻す | 平均の絶対値が 65504/n を超えると −inf (57600 要素の SE ブロック) | Core AI の CPU (`HWNPU_DEV=coreai.units=cpu`) だけの問題。全部のプログラムのハッシュが変わるので直さない |
 | Core AI の `max_pool` | 下ろせなかった | coreai-torch の書き方どおり `pad_v1` (−inf) と `primitive.max_pool_2d_v1` |
 | Core AI の `conv_transpose` と MIL の pad (負もある) | — | padding 0 で全体を出し、`slice_v1`、0 で `pad_v1`、そのあと bias |
 | `pad` の replicate / reflect | — | `#aicode.padding_mode_v1<replicate>` / `<reflect>` |
 
 - 両方のキャッシュが当たっていれば Core AI と Core ML の起動は同じ (M3、新しいプロセスで 3 回ずつ。Core AI が 1 コマンド 0.01〜0.05 秒短い程度)。Core ML のキャッシュ (約 4 GiB) は外れ、Core AI はディスクが減るまで持つ。[apple-coreai.md](apple-coreai.md)
+- Core AI で確かめたチップ: M3 はどの部品も全部 Neural Engine、milcpu とのコサイン 0.9997 以上。M1 は全部のコマンドを既定のまま走らせ、Core ML と同じ結果 (上の MoGe-2 の `dense` を直した後)
 - M3 の 1 回の呼び出し、Core AI / Core ML: PP-OCR 検出器 13.0 / 9.7 ms、認識器 8×320 5.1 / 4.0 ms、RTMDet-m 10.2 / 13.5 ms、RTMO-s 8.0 / 4.9 ms、YuNet 1.2 / 0.9 ms、DA3-BASE の ViT 106 / 103 ms。Core AI の初回のコンパイルは部品ごとに 1.6〜38 秒 (RTMO 36〜38 秒)。Neural Engine の持つ量は Core AI が多い (OCR 27 → 40 MB、RTMDet 56 → 89 MB)
 - 確かめる道具: `aicheck run -cpu PKG` (Core AI) と `-coreml` で milcpu と比べる。`HWNPU_DEV=ailower.cut=N` で N 番目の演算の後で切ってその値を比べる。`AICHECK_WORST=1` で差の大きい要素を出す
 - ホストの縮小 (`lfm3vl.ResizeRGB`、PIL の双線形) は画素ごとのクロージャなしで行を並列に: 37〜55 ms から 5〜7 ms、バイトは同じ (`TestResizeRGBSameBytes`)。バイトへの丸めは組み込みの `min` / `max`: `math.Max` と `math.Min` は呼び出しで (NaN と符号つきの 0 のため。和はどちらでもない)、CPU の 3 分の 1 を取っていた。`lfm3vl.RGB` はアルファを落とすのを行ごとに全部のコアで。M2 で 512² から 640²: 拡大縮小 4.2 → 1.2 ms、RTMDet-m の `Pixels` 5.4 → 2.2 ms。140 通り (双線形と双三次、RGBA と NRGBA、拡大と縮小) で前とバイトが同じ
@@ -194,7 +195,7 @@ ONNX の CNN (CSPNeXt、YOLOX 型) を IRON のグラフ 1 つにする。AMD �
 
 - 電力量を測っていない: Apple の画像を読むモデル (`hwnpu-dev powerbench` は sudo が要る)、AMD の RTMO と EfficientSAM、SigLIP 2
 - Intel の実機の NPU (全モデル)。SigLIP 2 は Intel の形がない (同じ MIL から IR に下ろせるが未確認)
-- Core AI の M1 / M2 / M4 (docs/handoff-coreai-vision.md)。M1 では EfficientSAM の符号器の注意 (4096 × 4096 × 頭の数) が 64 MiB を超える
+- Core AI の M2 / M4 (docs/handoff-coreai-vision.md)。M1 では EfficientSAM の符号器の注意 (4096 × 4096 × 頭の数) が 64 MiB を超える
 - Core AI の割り算の誤りが 3 つの演算だけのプログラムで再現しない理由。チップで違うか
 - Core AI の CPU の `reduce_mean` のあふれ
 - ONNX Runtime との照合は RTMDet-s だけ (tiny と m は未)。RTMO-m / l。PP-OCRv6 medium。180 度回った行 (文字の向きの分類器 PP-LCNet なし)。縦書き。段組みの解析 (PP-StructureV3)

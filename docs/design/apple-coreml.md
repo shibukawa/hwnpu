@@ -12,7 +12,7 @@ Facts about the Neural Engine itself are in [Neural Engine](apple-neural-engine.
 | Where | How |
 |---|---|
 | Public library (`hwnpu.Open`) | Registered first in `backends_darwin.go`: the default Apple device. Core AI by name (`WithBackend("coreai")`, `HWNPU_BACKEND=coreai`) |
-| CPU runs | `GraphSource.Units` / `HWNPU_COREML_UNITS=cpu` run a package on Core ML's CPU (references, models the ANE runs worse) |
+| CPU runs | `GraphSource.Units` / `HWNPU_DEV=coreml.units=cpu` run a package on Core ML's CPU (references, models the ANE runs worse) |
 | `llm.OpenDevice` with no backend named | Prefers `coreml`; used by `hwnpu-dev generate` and `formats` |
 | `hwnpu-dev info`, `powerbench`, `probe`, `report` | Core ML device, placement report (`MLComputePlan` shows each op's device) |
 | `aicheck run -coreml` | Core ML as a comparison when Core AI's result looks wrong |
@@ -36,11 +36,50 @@ Facts about the Neural Engine itself are in [Neural Engine](apple-neural-engine.
 |---|---|---|
 | Weights per package | 0.99 GiB runs on the ANE, 1.02 GiB falls to the CPU (M1–M3, every format); M4 2 GB | Split by layers at conversion (below) |
 | Too little work | Small models stay on the CPU even in fp16 ((32, 256)→256 on CPU, (64, 512)→512 on ANE; one-row parts) | 8 rows; merge small parts; batch padding (`tools/coreml/ane_pad.py`) |
-| ANE compile cache | About 4 GiB (see [Neural Engine](apple-neural-engine.md)) | Fewer, smaller programs |
+| ANE compile cache | About 4 GiB (see [Neural Engine](apple-neural-engine.md)); measurements below | Fewer, smaller programs |
 | hwnpu's cache | `.mlmodelc` and placement results in `WithCacheDir` (commands: `~/Library/Caches/hwnpu`), keyed by the package's tree digest | `cache.Prune`; converting again leaves old entries |
 | e5 bundle cache | `~/Library/Caches/<process>/com.apple.e5rt.e5bundlecache`, no cap seen (49 GB) | Build test binaries with the command's name |
 
 Ops Core ML puts on the CPU and their stand-ins are in [Neural Engine](apple-neural-engine.md). Check a part with `hwnpu-dev info -model PART.mlpackage` (`all on the NPU`).
+
+### The ANE's compile cache
+
+hwnpu's cache (`.mlmodelc` and placement) hits. A slow load from it is the system's cache missing:
+`MLModel` runs `ANECompilerService` again. Core AI's cache is another one
+(`~/Library/Caches/coreai-cache/<OS>/<executable>/`) and keeps 17 GB exports ([Core AI](apple-coreai.md)).
+
+M1 16 GB, three programs of the Sana-Sprint 0.6B export, each load (`runner.Open`) in a new process:
+
+| | vae_s1 | dit_blocks_0 | vae_s0 |
+|---|---|---|---|
+| 1st | 129.2 s | 14.7 s | 10.6 s |
+| 2nd | 0.1 s | 0.1 s | 0.1 s |
+| 3rd | 0.1 s | 0.1 s | 0.1 s |
+
+Misses inside the capacity: Gemma 4 E2B (M3) misses at every start (98 s; each part's `MLModel` load
+22–25 s) while hwnpu's cache hits (0.7–0.8 s). Neither ops on the CPU nor smaller parts (three of
+0.51–0.55 GiB) change it. The format does (Q=8 loaded 3 times, `TestCallTimes`):
+
+| | Parts | 1st | 2nd | 3rd |
+|---|---|---|---|---|
+| Gemma 4 lut4 | 2 (0.54 + 0.52 GiB) | miss | miss | **hit** (0.07 + 0.04 s) |
+| Gemma 4 lut6 | 2 | miss (29 + 25 s) | miss | miss |
+| Gemma 4 lut8 | 3 (0.69–0.74 GiB) | miss (8–10 s) | miss | miss |
+
+LFM3 of the same size hits (lut6 from the 2nd load, lut8 VL from the 3rd), and Sana's Gemma 2 in int8
+hits on the M1. Something in Gemma 4's lut6 and lut8 graphs is not kept; the cause is not known.
+
+`hwnpu-dev probe cache` on an M2 (16 GB, macOS 27.2, 2026-11-10):
+
+- fp16 programs of 0.45 GiB hit up to 16 (7.25 GiB) and miss at 20 (9.06 GiB).
+- 1.02 GiB: 1 hits, 2–3 hit from the 3rd round, 4 or more miss.
+- int8 hits up to about 3 GiB in total, lut4 about 1 GiB.
+- So the count of layers seemed to decide (fp16 about 72, int8 about 50, lut4 about 36), not the GiB.
+- SANA 1.5 on the M1 does not fit this: Gemma 2 int8 (about 2.2 GB), the DiT in fp16 (about 3.2 GB) and the VAE all hit from the second process when
+  no other process uses the ANE. Whether the M1 differs or synthetic programs do is not known.
+
+To measure: reuse the same packages (converting again writes new random UUIDs, so both caches
+miss), and make sure no other process compiles for the ANE. How to run the probe: [PROBE](../../PROBE.md).
 
 ### Splitting by layers
 
@@ -74,3 +113,16 @@ Ops Core ML puts on the CPU and their stand-ins are in [Neural Engine](apple-neu
 
 - Only the 8-part split of LFM3-1.7B loads slowly from the cache (23.7 s).
 - Whether `MLState` KV caches count toward the 1 GiB limit.
+
+ANE compile cache, low priority (the commands use Core ML only for `--cpu`), with
+`hwnpu-dev probe cache`:
+
+- Capacity on the M1, M3 and M4: the largest total that stays warm, and whether bytes or programs
+  decide.
+- Holding or closing programs, the order they are pushed out, and the process (loading again in one
+  process, the executable's name, after a restart). One machine is enough.
+- Gemma 4's misses inside the capacity: lut6 and lut8 in `-cache-format`, a mode that loads
+  exported packages, and what `e5bundlecache` holds for the programs that miss.
+- A fixed `uuid()`: `internal/mlpackage/package.go` writes random UUIDs (`rand.Read`), so every
+  conversion changes the package's bytes. Fixed values would let both caches hit after converting
+  again.
