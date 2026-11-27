@@ -529,6 +529,15 @@ engine, and each stage adds its own:
    `internal/chatwire`. `ai/engine` gathers `internal/aiengine` (ai's and modelstore's
    `aieng.Engine`) and the roles' engines; the tests of `ai` and `modelstore` import
    `internal/aiengine` alone. `cmd/hwnpu-chat` imports `ai/engine` until stage 5.
+4c. Done for the others the same way: `ai/vision`, `ai/speech`, `ai/sound` and `ai/imagegen`, each
+   with `engine` and `internal/bridge`. What their clients need without the engine is in
+   `internal/visionwire` (the COCO classes, the keypoints, the labels, ...), `internal/speechwire`
+   (the WAV reading and writing, the rate) and `internal/soundwire` (the rates and defaults, MIDI,
+   WAV). These are copies, not moves, of code in the models' `code:` lists (model-recipes.yaml),
+   which a move would change; each engine's test checks that the copy gives what the original
+   does. When that code changes anyway, it should point at the wire package. `imagegen.Export`
+   needs the engine to tell an export's family. Every command and sample imports `ai/engine`
+   once (until stage 5 for the commands; a sample imports it to run with `HWNPU_DAEMON=off`).
 4. The role packages: `Prepare` and `Load` (and the engine types they return) move into
    `ai/engine/...`, registered with `airole.Register`; the client types call an implementation,
    hwnpud's (`Remote`) or the engine's when it is imported.

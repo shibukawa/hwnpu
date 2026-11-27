@@ -1,4 +1,4 @@
-package imagegen
+package engine
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/shibukawa/hwnpu/ai/imagegen"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
@@ -25,7 +26,7 @@ import (
 
 func prepareFlux3(e airole.PrepareEnv) (f airole.Files, err error) {
 	m, base := e.Model, e.Base
-	if dir := first(m.Programs[ProgramExport]); dir != "" {
+	if dir := first(m.Programs[imagegen.ProgramExport]); dir != "" {
 		f.Set("export", dir)
 		return f, nil
 	}
@@ -45,7 +46,7 @@ func prepareFlux3(e airole.PrepareEnv) (f airole.Files, err error) {
 			return f, err
 		}
 	case e.NPU.Format == llm.BackendCoreAI:
-		o := flux3klein.ConvertOptions{TextFormat: m.Settings[SettingTextFormat], DitFormat: m.Settings[SettingDitFormat]}
+		o := flux3klein.ConvertOptions{TextFormat: m.Settings[imagegen.SettingTextFormat], DitFormat: m.Settings[imagegen.SettingDitFormat]}
 		dir, err = flux3klein.Prepare(ctx, flux3klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.3-klein"), Repo: base.Repo,
 			Name: base.Name, ConvertOptions: o, Log: e.Log})
 		if err != nil {
@@ -60,13 +61,13 @@ func prepareFlux3(e airole.PrepareEnv) (f airole.Files, err error) {
 
 // flux3 draws with FLUX.3 klein.
 type flux3 struct {
-	g   *Generator
+	g   *generator
 	dir string
 	p   *flux3klein.Pipeline
 	at  image.Point
 }
 
-func loadFlux3(ctx context.Context, g *Generator, f airole.Files, e airole.LoadEnv) (family, error) {
+func loadFlux3(ctx context.Context, g *generator, f airole.Files, e airole.LoadEnv) (family, error) {
 	x := &flux3{g: g, dir: f.Path("export")}
 	var err error
 	g.amd = flux3klein.IsIronExport(x.dir)
@@ -150,7 +151,7 @@ func (x *flux3) draw(ctx context.Context, r *run) error {
 func (x *flux3) drawSteps(ctx context.Context, r *run, sig []float64) error {
 	ctx = chat.WithModel(ctx, x.g.model)
 	if x.p == nil || x.at != r.size {
-		r.phase(PhaseOpen)
+		r.phase(imagegen.PhaseOpen)
 	}
 	t0 := time.Now()
 	p, err := x.open(ctx, r.size)
@@ -162,7 +163,7 @@ func (x *flux3) drawSteps(ctx context.Context, r *run, sig []float64) error {
 		return err
 	}
 	for i, prompt := range r.prompts {
-		r.phase(PhasePrompt)
+		r.phase(imagegen.PhasePrompt)
 		t := time.Now()
 		cond, err := p.Encode(ctx, prompt)
 		if err != nil {
@@ -175,7 +176,7 @@ func (x *flux3) drawSteps(ctx context.Context, r *run, sig []float64) error {
 			return err
 		}
 		r.latents(i, lat)
-		r.phase(PhaseDecode)
+		r.phase(imagegen.PhaseDecode)
 		t = time.Now()
 		img, err := p.Decode(ctx, cond, lat, r.stage)
 		if err != nil {

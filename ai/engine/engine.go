@@ -6,6 +6,10 @@
 package engine
 
 import (
-	_ "github.com/shibukawa/hwnpu/ai/text/engine" // the text models
+	_ "github.com/shibukawa/hwnpu/ai/imagegen/engine" // the picture models
+	_ "github.com/shibukawa/hwnpu/ai/sound/engine"    // the sound models
+	_ "github.com/shibukawa/hwnpu/ai/speech/engine"   // the speech models
+	_ "github.com/shibukawa/hwnpu/ai/text/engine"     // the text models
+	_ "github.com/shibukawa/hwnpu/ai/vision/engine"   // the models of pictures read
 	_ "github.com/shibukawa/hwnpu/internal/aiengine"
 )

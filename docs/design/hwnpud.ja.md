@@ -421,7 +421,14 @@ hwnpud に聞く。アプリが自分のプロセスでモデルを動かすの�
    共有するもの (エラー、`AutoTarget`、`Cosine`) は `internal/chatwire`。`ai/engine` は `internal/aiengine`
    (ai と modelstore の `aieng.Engine`) と役割のエンジンを集める。`ai` と `modelstore` のテストは
    `internal/aiengine` だけを読む。`cmd/hwnpu-chat` は段 5 まで `ai/engine` を読む
-4. 役割のパッケージ: `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して
+4c. ほかも同じ形で済み: `ai/vision`、`ai/speech`、`ai/sound`、`ai/imagegen`。それぞれ `engine` と
+   `internal/bridge` を持つ。クライアントがエンジンなしで要るものは `internal/visionwire` (COCO の分類、
+   キーポイント、ラベルなど)、`internal/speechwire` (WAV の読み書き、レート)、`internal/soundwire`
+   (レートと既定、MIDI、WAV)。これらはモデルの `code:` (model-recipes.yaml) にあるコードの写しで、
+   移すとハッシュが変わるので移さない。各エンジンのテストが、写しが元と同じ結果を返すことを確かめる。
+   そのコードを変えるときに、wire のパッケージを指すようにする。`imagegen.Export` は書き出しの family を
+   見分けるのにエンジンが要る。どのコマンドとサンプルも `ai/engine` を 1 か所で読む (コマンドは段 5 まで。
+   サンプルは `HWNPU_DAEMON=off` で動かすために) `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して
    `airole.Register` で登録する。クライアントの型は実装を呼ぶ: hwnpud のもの (`Remote`) か、読んであれば
    エンジンのもの
 5. コマンド: `hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` がエンジンを読まなくなる。自分のプロセスで

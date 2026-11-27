@@ -25,6 +25,14 @@ var light = []string{
 	"modelstore",
 	"ai",
 	"ai/text",
+	"ai/vision",
+	"ai/speech",
+	"ai/sound",
+	"ai/imagegen",
+	"internal/chatwire",
+	"internal/visionwire",
+	"internal/speechwire",
+	"internal/soundwire",
 }
 
 // engine are the packages of the engine: the conversions, the runtimes and the backends.
