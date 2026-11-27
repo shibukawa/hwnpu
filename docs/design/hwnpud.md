@@ -517,6 +517,11 @@ engine, and each stage adds its own:
    the machine's memory and NPU vendor) and `Find` (`Catalog.Find`, with the role's check; a name
    of none comes back as the `*NoModelError`). A hwnpud without them says to install the new one.
    The `ai` package still imports `internal/chat` for its own process's path, until stage 4.
+4a. Done: the `ai` package and `modelstore` read no engine. What they did of `internal/chat` (the
+   table, the policy, the licenses, the memory, fetching) is `internal/aieng.Engine`, which
+   `ai/engine` sets (`import _ "github.com/shibukawa/hwnpu/ai/engine"`); without it their own
+   process's paths say so (`aieng.ErrNone`). Until the role packages are taken apart, each of them,
+   `cmd/hwnpu` and `internal/aihost` import `ai/engine`, so no program changes.
 4. The role packages: `Prepare` and `Load` (and the engine types they return) move into
    `ai/engine/...`, registered with `airole.Register`; the client types call an implementation,
    hwnpud's (`Remote`) or the engine's when it is imported.

@@ -11,12 +11,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/daemon"
+	"github.com/shibukawa/hwnpu/internal/envfile"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
 
@@ -132,13 +132,13 @@ func init() {
 	airpc.RegisterError("ai.ErrBundleTarget", ErrBundleTarget)
 	airpc.RegisterError("modelstore.ErrNoRoom", modelstore.ErrNoRoom)
 	airpc.RegisterErrorType("ai.LicenseError", (*LicenseError)(nil))
-	airpc.RegisterErrorType("chat.PolicyError", (*chat.PolicyError)(nil))
+	airpc.RegisterErrorType("catalog.PolicyError", (*catalog.PolicyError)(nil))
 	airpc.RegisterErrorType("ai.NoModelError", (*NoModelError)(nil))
 }
 
 // Spec is the app as it is sent to hwnpud. It is for hwnpud's sessions.
 func (a *App) Spec() (AppSpec, error) {
-	s := AppSpec{Name: a.Name, Memory: a.memory, Turns: a.turns, Allowlist: os.Getenv(chat.PolicyEnv)}
+	s := AppSpec{Name: a.Name, Memory: a.memory, Turns: a.turns, Allowlist: os.Getenv(envfile.PolicyEnv)}
 	for _, r := range a.requirements() {
 		u := UseSpec{Role: r.role.Name, Name: r.name, As: r.as}
 		for _, t := range r.tiers {
@@ -194,11 +194,6 @@ var daemonClient struct {
 	sync.Mutex
 	socket string // asked of the hwnpud of this socket ("": not asked)
 	c      *daemon.Client
-}
-
-func init() {
-	// hwnpud and its clients compare the definitions they were built with (daemon.Hello)
-	daemon.Builtin = [][]byte{hwnpu.ModelsYAML, hwnpu.RecipesYAML}
 }
 
 // through is hwnpud's client when the app's models run there: never for an app hwnpud made

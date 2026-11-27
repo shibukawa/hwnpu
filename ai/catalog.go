@@ -10,9 +10,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/aieng"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/daemon"
 )
 
@@ -103,24 +104,29 @@ func (s Store) Catalog() (*Catalog, error) {
 func (s Store) catalog() (*Catalog, error) {
 	openMu.Lock()
 	defer openMu.Unlock()
+	e, err := aieng.Get()
+	if err != nil {
+		return nil, fmt.Errorf("ai: %w", err)
+	}
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	c := &Catalog{Aliases: maps.Clone(chat.Aliases), Files: slices.Clone(chat.ModelFiles), machine: chat.MachineMemory(), vendor: chat.HereVendor()}
+	models, uses, aliases, files := e.Table()
+	c := &Catalog{Aliases: maps.Clone(aliases), Files: slices.Clone(files), machine: e.MachineMemory(), vendor: e.HereVendor()}
 	defined := map[string]bool{}
 	for _, d := range s.Definitions {
 		defined[d.ID()] = true
 	}
-	for _, m := range chat.Catalog {
+	for _, m := range models {
 		c.Models = append(c.Models, c.info(m, defined[m.Name]))
 	}
-	for _, cat := range chat.Categories {
+	for _, cat := range uses {
 		u := UseInfo{Name: cat.Name, Aliases: slices.Clone(cat.Aliases), About: cat.About}
 		for _, p := range cat.Picks {
 			u.Picks = append(u.Picks, Pick{MachineGB: p.Machine, Model: p.Model})
 		}
 		slices.SortFunc(u.Picks, func(a, b Pick) int { return a.MachineGB - b.MachineGB })
-		if m, _, ok, err := chat.Pick(cat.Name, c.machine); ok && err == nil {
+		if m, _, ok, err := e.Pick(cat.Name, c.machine); ok && err == nil {
 			u.Model = m.Name
 		}
 		c.Uses = append(c.Uses, u)
@@ -128,11 +134,11 @@ func (s Store) catalog() (*Catalog, error) {
 	return c, nil
 }
 
-func (c *Catalog) info(m chat.Model, defined bool) ModelInfo {
+func (c *Catalog) info(m catalog.Model, defined bool) ModelInfo {
 	return ModelInfo{Name: m.Name, Kind: string(m.Kind), Family: m.Family, Tag: m.Tag, Machine: m.Machine,
 		Repo: m.Source(), About: m.About, Features: slices.Clone(m.Features), MemoryGB: m.MemoryFor(c.vendor),
 		DownloadBytes: int64(m.BytesFor(c.vendor)), Device: m.DeviceFor(c.vendor), License: license(m),
-		Downloaded: chat.Downloaded(m), Develop: m.Develop, Defined: defined}
+		Downloaded: aieng.Must().Downloaded(m), Develop: m.Develop, Defined: defined}
 }
 
 // OfKind are the models of the kinds named (all of them when none is).
@@ -183,7 +189,7 @@ func (c *Catalog) Find(name string, u Requirement) (ModelInfo, error) {
 
 // find is Find in this process's definitions.
 func (c *Catalog) find(name string, role *airole.Role) (ModelInfo, error) {
-	m, ok, err := chat.LookupOn(strings.TrimSpace(name), 0, io.Discard)
+	m, ok, err := aieng.Must().LookupOn(strings.TrimSpace(name), 0, io.Discard)
 	if err != nil {
 		return ModelInfo{}, fmt.Errorf("ai: %w", err)
 	}
@@ -203,7 +209,7 @@ func (c *Catalog) find(name string, role *airole.Role) (ModelInfo, error) {
 func (c *Catalog) noModel(name string, role *airole.Role) error {
 	e := &NoModelError{Name: name, Role: role.Name}
 	for _, m := range c.Models {
-		if slices.Contains(role.Kinds, chat.Kind(m.Kind)) {
+		if slices.Contains(role.Kinds, catalog.Kind(m.Kind)) {
 			e.Models = append(e.Models, m)
 		}
 	}
@@ -233,7 +239,7 @@ func Normalize[T io.Closer](c *Catalog, u Use[T]) (Use[T], *Definition, error) {
 		return u, nil, err
 	}
 	if _, tag, ok := strings.Cut(name, ":"); ok {
-		if gb, ok := chat.MemoryTag(tag); ok && u.req.as == 0 {
+		if gb, ok := catalog.MemoryTag(tag); ok && u.req.as == 0 {
 			u = u.As(gb)
 		}
 	}

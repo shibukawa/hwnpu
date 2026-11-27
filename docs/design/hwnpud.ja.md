@@ -410,6 +410,11 @@ hwnpud に聞く。アプリが自分のプロセスでモデルを動かすの�
    モデル、使い方とその選び方、別名、機械のメモリと NPU のベンダー) と `Find` (`Catalog.Find`、役割の確かめも。
    ない名前は `*NoModelError` で返る)。それを持たない hwnpud には新しいものを入れるよう伝える。`ai` のパッケージは
    自分のプロセスの道のために、段 4 まで `internal/chat` を読んだまま
+4a. 済み: `ai` のパッケージと `modelstore` はエンジンを読まない。`internal/chat` にしていたこと (表、ポリシー、
+   ライセンス、メモリ、取得) は `internal/aieng.Engine` で、`ai/engine` が入れる (`import _
+   "github.com/shibukawa/hwnpu/ai/engine"`)。それがないと、自分のプロセスの道はそう伝える (`aieng.ErrNone`)。
+   役割のパッケージを分けるまでは、それぞれと `cmd/hwnpu`、`internal/aihost` が `ai/engine` を読むので、
+   どのプログラムも変わらない
 4. 役割のパッケージ: `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して
    `airole.Register` で登録する。クライアントの型は実装を呼ぶ: hwnpud のもの (`Remote`) か、読んであれば
    エンジンのもの

@@ -3,10 +3,11 @@ package chat
 import (
 	"errors"
 	"fmt"
-	"github.com/shibukawa/configdir"
 	"io"
 	"maps"
 	"os"
+
+	"github.com/shibukawa/configdir"
 
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -37,7 +39,7 @@ func LoadUserModels(flagValue string, log io.Writer) error {
 }
 
 // TableVersion is the version of the definition files this hwnpu reads.
-const TableVersion = 1
+const TableVersion = catalog.TableVersion
 
 // Builtin is what ModelFiles calls the embedded models.yaml.
 const Builtin = "built-in models.yaml"
@@ -82,13 +84,6 @@ func UserModelsFile() string {
 // log.
 func LoadModels(files []string, user bool, log io.Writer) error {
 	return LoadModelsWith(files, nil, user, log)
-}
-
-// Definitions is a definition file given as its text, not a path: Name names it in messages
-// and in a model's Files.
-type Definitions struct {
-	Name string
-	YAML []byte
 }
 
 // LoadModelsWith is LoadModels with the definitions of texts read over all the files, in order

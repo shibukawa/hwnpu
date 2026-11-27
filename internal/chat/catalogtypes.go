@@ -5,15 +5,19 @@ import "github.com/shibukawa/hwnpu/internal/catalog"
 // The data of the definitions are internal/catalog's, which a client of hwnpud reads without the
 // engine; these are its names here.
 type (
-	Kind      = catalog.Kind
-	Model     = catalog.Model
-	NPUSpec   = catalog.NPUSpec
-	Pin       = catalog.Pin
-	HubRepo   = catalog.HubRepo
-	PerVendor = catalog.PerVendor
-	Run       = catalog.Run
-	Variant   = catalog.Variant
-	License   = catalog.License
+	Kind         = catalog.Kind
+	Model        = catalog.Model
+	NPUSpec      = catalog.NPUSpec
+	Pin          = catalog.Pin
+	HubRepo      = catalog.HubRepo
+	PerVendor    = catalog.PerVendor
+	Run          = catalog.Run
+	Variant      = catalog.Variant
+	License      = catalog.License
+	Category     = catalog.Category
+	CategoryPick = catalog.CategoryPick
+	PolicyError  = catalog.PolicyError
+	Definitions  = catalog.Definitions
 )
 
 const (
@@ -55,3 +59,6 @@ func TakesExportsOf(arch, chip string) bool { return catalog.TakesExportsOf(arch
 // chipName is the machine's chip (catalog.ChipName), as model.go names it: its code is the hash
 // of the chat models' exports (model-recipes.yaml's code), which a rename would change.
 func chipName() string { return catalog.ChipName() }
+
+// MemoryTag reads a tag of memory (catalog.MemoryTag).
+func MemoryTag(tag string) (int, bool) { return catalog.MemoryTag(tag) }

@@ -30,8 +30,9 @@ import (
 
 	"github.com/shibukawa/configdir"
 
+	"github.com/shibukawa/hwnpu/internal/aieng"
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
@@ -72,7 +73,7 @@ type Options struct {
 }
 
 // Definitions is a definition file given as its text: Name names it in messages.
-type Definitions = chat.Definitions
+type Definitions = catalog.Definitions
 
 // Limits are what the cache may take of the disk (cache.Limits).
 type Limits = cache.Limits
@@ -107,10 +108,17 @@ type Layer struct {
 
 // Open sets the layers of the process as o says and returns the Store that reads them. It reads
 // the model definitions (hwnpu's models.yaml, the machine's, the user's and o.Files) too.
+//
+// It needs the engine in the process (import _ "github.com/shibukawa/hwnpu/ai/engine"): without
+// it, the error is aieng.ErrNone's.
 func Open(o Options) (*Store, error) {
+	e, err := aieng.Get()
+	if err != nil {
+		return nil, fmt.Errorf("modelstore: %w", err)
+	}
 	cache.SetRoot(o.Root)
 	cache.SetLimits(o.Limits)
-	if err := chat.LoadModelsWith(o.Files, o.Definitions, true, o.Log); err != nil {
+	if err := e.LoadModels(o.Files, o.Definitions, true, o.Log); err != nil {
 		return nil, err
 	}
 	sources, hf := shared.Sources(), shared.HuggingFace()
@@ -132,7 +140,7 @@ func Open(o Options) (*Store, error) {
 	shared.SetSources(sources, hf)
 	var bundles []string
 	if o.Bundle != nil {
-		bundles = chat.BundleDirs(*o.Bundle, o.BundleFolder)
+		bundles = e.BundleDirs(*o.Bundle, o.BundleFolder)
 	}
 	shared.SetBundles(bundles)
 	log := o.Log
@@ -156,20 +164,20 @@ func withoutBundles(ss []shared.Source) []shared.Source {
 // OWNER/NAME@REVISION) here, which it puts there from the layers unless it is there. A file
 // the definitions pin (models.yaml's sha256) is checked.
 func (s *Store) File(ctx context.Context, repo, name string) (string, error) {
-	return chat.Fetch(ctx, repo, name, s.log)
+	return aieng.Must().Fetch(ctx, repo, name, s.log)
 }
 
 // Weights puts a model's checkpoint here: model.safetensors, or its index and the files it
 // names. It returns the path of model.safetensors, by which hwnpu opens either.
 func (s *Store) Weights(ctx context.Context, repo string) (string, error) {
-	return chat.FetchWeights(ctx, repo, s.log)
+	return aieng.Must().FetchWeights(ctx, repo, s.log)
 }
 
 // Dir is the folder the files of repo are kept in here (original/OWNER/NAME under the root).
-func (s *Store) Dir(repo string) string { return chat.RepoDir(repo) }
+func (s *Store) Dir(repo string) string { return aieng.Must().RepoDir(repo) }
 
 // NotFound reports whether err is File's for a file no layer has.
-func NotFound(err error) bool { return chat.NotFound(err) }
+func NotFound(err error) bool { return aieng.E != nil && aieng.E.NotFound(err) }
 
 // Layers are the layers in effect, in order (Hugging Face last, when it is read).
 func (s *Store) Layers() []Layer {
@@ -281,11 +289,12 @@ type Memory struct {
 // application run a model as on a machine of that memory: its programs are those models.yaml
 // defines for it (variants), converted or fetched for that alone.
 func (s *Store) Memory(name string) (Memory, error) {
-	m, err := chat.Named(name)
+	e := aieng.Must()
+	m, err := e.Named(name)
 	if err != nil {
 		return Memory{}, err
 	}
-	mem := Memory{Model: m.Name, Chosen: chat.ChosenMemory(m), Machine: chat.MachineMemory()}
+	mem := Memory{Model: m.Name, Chosen: e.ChosenMemory(m), Machine: e.MachineMemory()}
 	mem.GB = cmp.Or(mem.Chosen, mem.Machine)
 	return mem, nil
 }
@@ -295,15 +304,16 @@ func (s *Store) Memory(name string) (Memory, error) {
 // in hwnpu's directory of settings (run.json beside the user's models.yaml), not in the cache:
 // pruning the cache keeps it, and another machine reading the same cache does not get it.
 func (s *Store) SetMemory(name string, gb int) (Memory, error) {
-	m, err := chat.Named(name)
+	e := aieng.Must()
+	m, err := e.Named(name)
 	if err != nil {
 		return Memory{}, err
 	}
-	if err := chat.ChooseMemory(m, gb); err != nil {
+	if err := e.ChooseMemory(m, gb); err != nil {
 		return Memory{}, err
 	}
 	return s.Memory(m.Name)
 }
 
 // Memories are the models with a memory chosen (SetMemory), by name.
-func (s *Store) Memories() map[string]int { return chat.ChosenMemories() }
+func (s *Store) Memories() map[string]int { return aieng.Must().ChosenMemories() }
