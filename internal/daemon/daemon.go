@@ -17,6 +17,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +158,13 @@ type Hello struct {
 	Protocol int    `json:"protocol"`
 	Build    string `json:"build"`
 	PID      int    `json:"pid"`
+	// Definitions is the hash of the model definitions and recipes hwnpud was built with
+	// (Definitions): what decides the models' exports and how they run. A client of other ones
+	// says so; "" from a hwnpud from before it told them.
+	Definitions string `json:"definitions,omitempty"`
+	// Roles are the settings each role of the engine takes (ai.LoadSettings, airole.Role's
+	// LoadSettings): a client stops before sending one hwnpud does not know.
+	Roles map[string][]string `json:"roles,omitempty"`
 	// Engine is the engine's process, 0 when it is not running.
 	Engine int `json:"engine"`
 	// Executable is the supervisor's executable.
@@ -175,6 +185,38 @@ type Hello struct {
 	Pending []string `json:"pending,omitempty"`
 	// SettingsError is what was wrong with a .env file.
 	SettingsError string `json:"settings_error,omitempty"`
+}
+
+// Definitions is the hash of the model definitions and recipes built in (models.yaml and
+// model-recipes.yaml, Builtin), 12 hex digits; "" without them.
+func Definitions() string {
+	if len(Builtin) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, b := range Builtin {
+		h.Write(b)
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// Builtin are the model definitions and recipes this process was built with (hwnpu.ModelsYAML and
+// hwnpu.RecipesYAML), set by the package ai, which has them: this package stays without the
+// engine's.
+var Builtin [][]byte
+
+// RoleSettings gives the settings of the engine's roles (Hello.Roles): set by hwnpud, whose engine
+// has the roles (internal/aihost); nil in a client.
+var RoleSettings func() map[string][]string
+
+// base is the Hello of this process's version.
+func base() Hello {
+	h := Hello{Protocol: Protocol, Build: Build(), PID: os.Getpid(), Definitions: Definitions()}
+	if RoleSettings != nil {
+		h.Roles = RoleSettings()
+	}
+	return h
 }
 
 // Status is the answer of GET /hwnpud/v1/status.
@@ -243,6 +285,8 @@ const ThinkBudgetHeader = "X-Hwnpu-Think-Budget"
 type Client struct {
 	Socket string
 	HTTP   *http.Client
+	// Server is what hwnpud answered Use's hello with.
+	Server Hello
 }
 
 // NewClient is a client of the socket (SocketPath when "").
@@ -499,6 +543,10 @@ func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 		}
 		return nil, fmt.Errorf("%s=on: %w", ModeEnv, err)
 	}
+	c.Server = h
+	if note := VersionNote(h); note != "" {
+		fmt.Fprintln(log, note)
+	}
 	if ms := Compare(localSettings(), h.Settings); len(ms) > 0 {
 		var parts []string
 		for _, m := range ms {
@@ -516,4 +564,46 @@ func Use(ctx context.Context, def string, log io.Writer) (*Client, error) {
 		fmt.Fprintf(log, "through hwnpud with its settings, not these: %s (%s)\n", strings.Join(parts, "; "), where)
 	}
 	return c, nil
+}
+
+// VersionNote is what a client says of hwnpud's version, "" when its definitions are this
+// client's: a hwnpud left running (or installed) from an earlier build decides the exports and
+// how the models run by its own definitions, and silently, unless told.
+func VersionNote(h Hello) string {
+	const fix = "go install ./cmd/hwnpud && hwnpu service restart, or HWNPU_DAEMON=off"
+	switch {
+	case Definitions() == "":
+		return ""
+	case h.Definitions == "":
+		return fmt.Sprintf("hwnpud (build %s) is older than this client (build %s): it does not tell its model definitions and settings (%s)", h.Build, Build(), fix)
+	case h.Definitions != Definitions():
+		return fmt.Sprintf("hwnpud (build %s) has other model definitions and recipes than this client (build %s): the models run as hwnpud's say (%s)", h.Build, Build(), fix)
+	}
+	return ""
+}
+
+// CheckSettings is nil when hwnpud's engine takes every setting of settings (by role, as
+// ai.LoadSettings), as its Hello says; a role it does not tell is not checked.
+func (h Hello) CheckSettings(settings map[string]map[string]string) error {
+	for role, set := range settings {
+		names, ok := h.Roles[role]
+		if !ok {
+			continue
+		}
+		var unknown []string
+		for k := range set {
+			if !slices.Contains(names, k) {
+				unknown = append(unknown, k)
+			}
+		}
+		if len(unknown) > 0 {
+			slices.Sort(unknown)
+			why := "it takes " + strings.Join(names, ", ")
+			if h.Definitions != Definitions() {
+				why += "; it is not this client's version: go install ./cmd/hwnpud && hwnpu service restart"
+			}
+			return fmt.Errorf("hwnpud (build %s) takes no setting %s of %s (%s)", h.Build, strings.Join(unknown, ", "), role, why)
+		}
+	}
+	return nil
 }

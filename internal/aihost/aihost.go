@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/internal/daemon"
@@ -66,6 +67,11 @@ func Held() []daemon.HeldModel {
 // loading keeps the loads and the runs of every session one at a time, as the engine's chat
 // models load: the NPU's compiler and its memory take one model after another.
 var loading sync.Mutex
+
+func init() {
+	// hwnpud tells its clients the settings its roles take (daemon.Hello.Roles)
+	daemon.RoleSettings = airole.Capabilities
+}
 
 // Host is a session's ai.Host: a client's app, planned and run, and one Runtime of it.
 type Host struct {

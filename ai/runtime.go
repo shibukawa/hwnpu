@@ -131,6 +131,13 @@ func (a *App) Open(ctx context.Context, opts ...Option) (*Runtime, error) {
 	for _, o := range opts {
 		o(&rt.o)
 	}
+	for role, set := range rt.o.settings {
+		if r := airole.Lookup(role); r != nil {
+			if err := r.CheckSettings(set); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return rt, nil
 }
 

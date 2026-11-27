@@ -119,6 +119,9 @@ func prepareEngine(e airole.PrepareEnv) (f airole.Files, err error) {
 	return f, nil
 }
 
+// loadSettings are the settings loadEngine reads (ai.LoadSettings).
+var loadSettings = []string{"idle", "prompt_cache", "experts_key", "sparse", "reserve_moe_memory"}
+
 // loadEngine loads what prepareEngine made, run as the app's settings for the role say
 // (LoadEnv.Settings).
 func loadEngine(ctx context.Context, f airole.Files, e airole.LoadEnv, role string) (*chat.Engine, error) {

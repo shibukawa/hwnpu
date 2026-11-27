@@ -74,7 +74,7 @@ func (f *fakeModel) Close() error {
 }
 
 var (
-	fakeRole = &airole.Role{Name: "aihost-test", Kinds: []chat.Kind{chat.KindTranscribe},
+	fakeRole = &airole.Role{Name: "aihost-test", Kinds: []chat.Kind{chat.KindTranscribe}, LoadSettings: []string{"idle"},
 		Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
 			counts.prepared.Add(1)
 			if err := os.MkdirAll(e.Dir, 0o755); err != nil {
