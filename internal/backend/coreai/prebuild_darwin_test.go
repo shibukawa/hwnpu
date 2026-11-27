@@ -9,12 +9,12 @@ import (
 	"testing"
 )
 
-// TestBuildLeavesTextToDevice: Build passes over a text encoder's programs (LeftToDevice) and
-// builds a VAE's (the recipe leaves those it must to the device), and Prebuilt does not take a
-// text encoder's that lies there already.
-func TestBuildLeavesTextToDevice(t *testing.T) {
+// TestBuildLeavesDeviceProgramsToDevice: Build passes over a program named *_device
+// (LeftToDevice) and builds a VAE's and a text encoder's (the recipe leaves those it must to the
+// device), and Prebuilt does not take a *_device program's that lies there already.
+func TestBuildLeavesDeviceProgramsToDevice(t *testing.T) {
 	export := filepath.Join(t.TempDir(), "m.coreai")
-	for _, n := range []string{"dit_0", "vae_s0", "text_0"} {
+	for _, n := range []string{"dit_0", "vae_s0", "text_0", "dit_1_device"} {
 		d := filepath.Join(export, n+".aimodel")
 		os.MkdirAll(d, 0o755)
 		os.WriteFile(filepath.Join(d, "main.mlirb"), []byte("bytecode "+n), 0o644)
@@ -29,21 +29,20 @@ func TestBuildLeavesTextToDevice(t *testing.T) {
 	for _, r := range rs {
 		got = append(got, filepath.Base(r.Asset))
 	}
-	if strings.Join(got, " ") != "dit_0.aimodel vae_s0.aimodel" {
+	if strings.Join(got, " ") != "dit_0.aimodel text_0.aimodel vae_s0.aimodel" {
 		t.Errorf("compiled: %v", got)
 	}
 	if strings.Count(log.String(), "left to the device") != 1 {
 		t.Errorf("log:\n%s", log.String())
 	}
 
-	// a prebuilt text encoder's program of the same source beside it (from an earlier hwnpu) is
-	// not taken
-	text := filepath.Join(export, "text_0.aimodel")
-	pb := PrebuiltPath(text, "h13g")
+	// a prebuilt program of the same source beside it (from an earlier hwnpu) is not taken
+	dev := filepath.Join(export, "dit_1_device.aimodel")
+	pb := PrebuiltPath(dev, "h13g")
 	os.MkdirAll(pb, 0o755)
-	os.WriteFile(filepath.Join(pb, "main.hash"), []byte("hash text_0"), 0o644)
-	if p := Prebuilt(text); p != "" {
-		t.Errorf("a text encoder's prebuilt program was taken: %s", p)
+	os.WriteFile(filepath.Join(pb, "main.hash"), []byte("hash dit_1_device"), 0o644)
+	if p := Prebuilt(dev); p != "" {
+		t.Errorf("a program left to the device was taken prebuilt: %s", p)
 	}
 }
 
@@ -52,8 +51,8 @@ func TestLeftToDevice(t *testing.T) {
 		"/x/m.coreai/vae_s3.aimodel":              false,
 		"/x/m.coreai/vae.aimodel/":                false,
 		"/x/m.coreai/dit_single_0.aimodel":        false,
-		"/x/vae.coreai/text_0.aimodel":            true,
-		"/x/m.coreai/text.aimodel":                true,
+		"/x/vae.coreai/text_0.aimodel":            false,
+		"/x/m.coreai/text.aimodel":                false,
 		"/x/text.coreai/mods.aimodel":             false,
 		"/x/m.coreai/ctx.aimodel":                 false,
 		"/x/m.coreai/dit_double_0_device.aimodel": true,
