@@ -2,6 +2,7 @@ package aieng
 
 import (
 	"context"
+	"io"
 
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -14,6 +15,9 @@ type Machine interface {
 	RunFile() string
 	// Enumerate opens the NPUs the engine finds (hwnpu.Enumerate): it wakes a sleeping one.
 	Enumerate(ctx context.Context) ([]types.DeviceInfo, error)
+	// List writes the commands' list of the models of kinds (all for none) of the definitions
+	// read last: whether each is here, what the uses pick by memory, the policy, the sources.
+	List(w io.Writer, kinds ...string)
 }
 
 // M is the machine of this process's engine, nil without one.

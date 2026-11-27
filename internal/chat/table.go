@@ -30,7 +30,7 @@ import (
 const ModelsEnv = "HWNPU_MODELS"
 
 // ModelsUsage is the usage of the -models flag of the commands that pick models.
-const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/hwnpu/models.yaml) and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
+const ModelsUsage = catalog.ModelsUsage
 
 // LoadUserModels is LoadModels of the user's files and those of -models (comma separated), with
 // warnings to log.
