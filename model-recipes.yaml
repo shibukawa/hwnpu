@@ -53,12 +53,14 @@
 #     prebuilt  true: its exports' programs are prebuilt for archs when the build names no
 #               architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT) and
 #               put in the sources, where a Mac of the chip takes them at its first run. The
-#               image generators alone: the device compiles a program of theirs in minutes to
-#               hours. Another model's programs are small, and a Mac loads them slower from
-#               prebuilt programs than it compiles them (LFM3-1.7B 2 min 17 s on the device, 8
-#               min 12 s prebuilt; Whisper 53 s, 5 min 27 s: docs/known-issues.md 9,
-#               2026-11-22). A build that names architectures (MODEL/coreai-ARCH, -arch)
-#               compiles any model's all the same, to measure it again
+#               image generators, whose programs the device compiles in minutes to hours, and
+#               Qwen3.5's chat models on the M1 (its archs: h13g alone). Another model's
+#               programs are small, and a Mac loads them slower from prebuilt programs than it
+#               compiles them (LFM3-1.7B on an M1, 1 min 45 s prebuilt, 1 min 02 s on the device:
+#               docs/known-issues.md 9, 2026-11-27); a prebuilt that is only somewhat slower is
+#               still taken where it holds less memory and disk. A build that names
+#               architectures (MODEL/coreai-ARCH, -arch) compiles any model's all the same, to
+#               measure it again
 #     version   the version of what its Core AI conversion makes (the sources keep its exports
 #               as vN: converted/MODEL/coreai/EXPORT/v1; an export made here of another version
 #               is made again). Raise it whenever its convert or its code changes what it
@@ -323,6 +325,12 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
+      # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
+      # device by apple's rule): the answers are those of the device's compile, and the first load
+      # takes 5 min 20 s against 21 min 43 s compiled on the device, with 4.3 GB less disk left and no 5.5 GB
+      # peak of the device's compiler. The other chips' programs are not checked yet
+      prebuilt: true
+      archs: [h13g]
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -336,6 +344,12 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
+      # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
+      # device by apple's rule): the answers are those of the device's compile, and the first load
+      # takes 1 min 46 s against 7 min 14 s compiled on the device, with 1.7 GB less disk left and no 2.3 GB
+      # peak of the device's compiler. The other chips' programs are not checked yet
+      prebuilt: true
+      archs: [h13g]
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)

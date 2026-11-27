@@ -48,10 +48,14 @@ func TestLeft(t *testing.T) {
 	}
 	// the image generators alone are prebuilt when a build names no architecture
 	for model, want := range map[string]bool{"FLUX.2-klein-4B": true, "flux-3-image-klein": true, "Anima-Turbo": true, "Anima-Aesthetic": true,
-		"MOSS-SoundEffect-v2.0": false, "LFM3-1.7B": false, "whisper-large-v3-turbo": false, "DA3-BASE": false, "no-such-model": false} {
+		"MOSS-SoundEffect-v2.0": false, "LFM3-1.7B": false, "Qwen3.5-0.8B": true, "Qwen3.5-4B": true, "Qwen3.5-2B": false, "whisper-large-v3-turbo": false, "DA3-BASE": false, "no-such-model": false} {
 		if got := f.AppleOf(model).Prebuilt; got != want {
 			t.Errorf("%s: prebuilt %v, want %v", model, got, want)
 		}
+	}
+	// Qwen3.5's chat models are prebuilt for the M1 alone
+	if a := f.AppleOf("Qwen3.5-0.8B"); strings.Join(a.Archs, " ") != "h13g" {
+		t.Errorf("Qwen3.5-0.8B: archs %v", a.Archs)
 	}
 	// a model without a recipe of its own is built as apple says, its rules too: the chat
 	// models' attention programs are left to the device on the M1 alone (docs/known-issues.md 19)
