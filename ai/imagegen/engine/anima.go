@@ -1,4 +1,4 @@
-package imagegen
+package engine
 
 import (
 	"cmp"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/ai/imagegen"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
@@ -35,13 +36,13 @@ const turboNegativeGuidance = 1.5
 
 // animaOptions are the conversion's options the model's settings give, for backend.
 func animaOptions(m chat.Model, backend string) (anima.ConvertOptions, error) {
-	w, h, err := anima.ParseAspect(setting(m, SettingSize, "1:1"))
+	w, h, err := anima.ParseAspect(setting(m, imagegen.SettingSize, "1:1"))
 	if err != nil {
 		return anima.ConvertOptions{}, err
 	}
-	o := anima.ConvertOptions{Backend: backend, Width: w, Height: h, Dit: setting(m, SettingDit, m.File),
-		TextFormat: m.Settings[SettingTextFormat], DitFormat: m.Settings[SettingDitFormat]}
-	for name, p := range map[string]*int{SettingDitGroup: &o.Group, SettingQChunk: &o.QChunk} {
+	o := anima.ConvertOptions{Backend: backend, Width: w, Height: h, Dit: setting(m, imagegen.SettingDit, m.File),
+		TextFormat: m.Settings[imagegen.SettingTextFormat], DitFormat: m.Settings[imagegen.SettingDitFormat]}
+	for name, p := range map[string]*int{imagegen.SettingDitGroup: &o.Group, imagegen.SettingQChunk: &o.QChunk} {
 		if v := m.Settings[name]; v != "" {
 			if *p, err = strconv.Atoi(v); err != nil {
 				return o, fmt.Errorf("ai/imagegen: %s's setting %s: %w", m.Name, name, err)
@@ -62,7 +63,7 @@ func animaOptions(m chat.Model, backend string) (anima.ConvertOptions, error) {
 
 func prepareAnima(e airole.PrepareEnv) (f airole.Files, err error) {
 	m := e.Model
-	if dir := first(m.Programs[ProgramExport]); dir != "" {
+	if dir := first(m.Programs[imagegen.ProgramExport]); dir != "" {
 		f.Set("export", dir)
 		return f, nil
 	}
@@ -97,14 +98,14 @@ func prepareAnima(e airole.PrepareEnv) (f airole.Files, err error) {
 
 // animaGen draws with Anima.
 type animaGen struct {
-	g     *Generator
+	g     *generator
 	dir   string
 	sized bool // an export of several sizes, opened at a size each
 	p     *anima.Pipeline
 	at    image.Point
 }
 
-func loadAnima(ctx context.Context, g *Generator, f airole.Files, e airole.LoadEnv) (family, error) {
+func loadAnima(ctx context.Context, g *generator, f airole.Files, e airole.LoadEnv) (family, error) {
 	a := &animaGen{g: g, dir: f.Path("export")}
 	g.parse = func(spec string) (int, int, error) { return anima.ParseAspect(spec) }
 	programs := anima.IsProgramExport(a.dir)
@@ -193,7 +194,7 @@ func (a *animaGen) warm(ctx context.Context, r *run) error { return a.draw(ctx, 
 func (a *animaGen) draw(ctx context.Context, r *run) error {
 	o := r.o
 	if a.p == nil || a.at != r.size {
-		r.phase(PhaseOpen)
+		r.phase(imagegen.PhaseOpen)
 	}
 	t0 := time.Now()
 	p, err := a.open(ctx, r.size)
@@ -221,7 +222,7 @@ func (a *animaGen) draw(ctx context.Context, r *run) error {
 	}
 	var uncond []float32
 	for i, prompt := range r.prompts {
-		r.phase(PhasePrompt)
+		r.phase(imagegen.PhasePrompt)
 		t := time.Now()
 		cond, err := p.Encode(ctx, prompt)
 		if err != nil {
@@ -258,7 +259,7 @@ func (a *animaGen) draw(ctx context.Context, r *run) error {
 			return err
 		}
 		r.latents(i, x)
-		r.phase(PhaseDecode)
+		r.phase(imagegen.PhaseDecode)
 		p.Stage = r.stage
 		t = time.Now()
 		img, err := p.Decode(ctx, x)

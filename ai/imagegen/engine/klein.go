@@ -1,4 +1,4 @@
-package imagegen
+package engine
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/ai/imagegen"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
@@ -31,7 +32,7 @@ import (
 
 func prepareKlein(e airole.PrepareEnv, edit bool) (f airole.Files, err error) {
 	m, base := e.Model, e.Base
-	if dir := first(m.Programs[ProgramExport]); dir != "" {
+	if dir := first(m.Programs[imagegen.ProgramExport]); dir != "" {
 		f.Set("export", dir)
 		if edit && flux2klein.IsProgramExport(dir) {
 			// the export beside it of the edits of a reference of the picture's size, when it has one
@@ -75,7 +76,7 @@ func prepareKlein(e airole.PrepareEnv, edit bool) (f airole.Files, err error) {
 	// every size and edit of models.yaml npu.apple in one export (the weights once), as hwnpu-image's
 	spec := m.NPU["apple"]
 	o, err := flux2klein.AppleOptions(m, flux2klein.NPUGeneration(vendor), as[0].Width, as[0].Height,
-		setting(m, SettingTextFormat, spec.Text), setting(m, SettingDitFormat, spec.Dit))
+		setting(m, imagegen.SettingTextFormat, spec.Text), setting(m, imagegen.SettingDitFormat, spec.Dit))
 	if err != nil {
 		return f, err
 	}
@@ -103,14 +104,14 @@ func kleinSetup(base chat.Model, o flux2klein.ConvertOptions, log io.Writer) flu
 
 // klein draws with FLUX.2 klein.
 type klein struct {
-	g   *Generator
+	g   *generator
 	dir string
 	// p draws pictures of at; another size closes it and opens that size's
 	p  *flux2klein.Pipeline
 	at image.Point
 }
 
-func loadKlein(ctx context.Context, g *Generator, f airole.Files, e airole.LoadEnv) (family, error) {
+func loadKlein(ctx context.Context, g *generator, f airole.Files, e airole.LoadEnv) (family, error) {
 	k := &klein{g: g, dir: f.Path("export")}
 	var err error
 	g.amd = !flux2klein.IsProgramExport(k.dir)
@@ -214,7 +215,7 @@ func (k *klein) draw(ctx context.Context, r *run) error {
 	}
 	ctx = chat.WithModel(ctx, k.g.model)
 	if k.p == nil || k.at != r.size {
-		r.phase(PhaseOpen)
+		r.phase(imagegen.PhaseOpen)
 	}
 	t0 := time.Now()
 	p, err := k.open(ctx, r.size)
@@ -258,7 +259,7 @@ func (k *klein) draw(ctx context.Context, r *run) error {
 	// the references' latents: those given, then the pictures' (the VAE's encoder)
 	refs := append([][]float32(nil), c.RefLatents...)
 	if len(o.References) > 0 {
-		r.phase(PhaseReferences)
+		r.phase(imagegen.PhaseReferences)
 	}
 	t1 := time.Now()
 	for i, img := range o.References {
@@ -286,7 +287,7 @@ func (k *klein) draw(ctx context.Context, r *run) error {
 	if n := len(refs); n > 0 {
 		k.g.logf("editing: %d reference(s)", n)
 	}
-	r.phase(PhasePrompt)
+	r.phase(imagegen.PhasePrompt)
 	t1 = time.Now()
 	conds, err := p.EncodeAll(ctx, r.prompts...)
 	if err != nil {
@@ -310,7 +311,7 @@ func (k *klein) draw(ctx context.Context, r *run) error {
 			return err
 		}
 		r.latents(lo, xs...)
-		r.phase(PhaseDecode)
+		r.phase(imagegen.PhaseDecode)
 		p.Stage = r.stage
 		t := time.Now()
 		imgs, err := p.DecodeAll(ctx, xs...)

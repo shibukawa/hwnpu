@@ -1,4 +1,4 @@
-package imagegen
+package engine
 
 import (
 	"image"
@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shibukawa/hwnpu/ai/imagegen"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 )
 
 func TestSizeFor(t *testing.T) {
-	g := &Generator{sizes: []image.Point{{1024, 1024}, {512, 512}, {832, 1248}, {1248, 832}, {1360, 752}}}
+	g := &generator{sizes: []image.Point{{1024, 1024}, {512, 512}, {832, 1248}, {1248, 832}, {1360, 752}}}
 	for _, c := range []struct{ w, h, wantW, wantH int }{
 		{0, 0, 1024, 1024}, // nothing asked: the first
 		{1024, 1024, 1024, 1024},
@@ -32,11 +33,11 @@ func TestSizeFor(t *testing.T) {
 // A run's batches: the seeds from Options.Seed, the steps' and stages' times, the pictures told
 // as they are drawn.
 func TestRunBatches(t *testing.T) {
-	g := &Generator{sizes: []image.Point{{512, 512}}}
-	var batches []Batch
-	var steps []Step
+	g := &generator{sizes: []image.Point{{512, 512}}}
+	var batches []imagegen.Batch
+	var steps []imagegen.Step
 	var drawn []int
-	o := Options{Seed: 10, OnBatch: func(b Batch) { batches = append(batches, b) }, OnStep: func(s Step) { steps = append(steps, s) },
+	o := imagegen.Options{Seed: 10, OnBatch: func(b imagegen.Batch) { batches = append(batches, b) }, OnStep: func(s imagegen.Step) { steps = append(steps, s) },
 		Drawn: func(i int, _ *image.RGBA) { drawn = append(drawn, i) }}
 	r := g.newRun([]string{"a", "b", "c"}, o)
 	noise := func(seed uint64) []float32 { return []float32{float32(seed)} }
@@ -72,7 +73,7 @@ func TestRunBatches(t *testing.T) {
 		t.Errorf("drawn %v, size %v", drawn, p.Size)
 	}
 	// Checks.Noise in place of the seeds'
-	r = g.newRun([]string{"a"}, Options{Checks: &Checks{Noise: []float32{3}}})
+	r = g.newRun([]string{"a"}, imagegen.Options{Checks: &imagegen.Checks{Noise: []float32{3}}})
 	if xs := r.batch(0, 1, 1, noise); xs[0][0] != 3 || r.out.Seeds[0] != 0 {
 		t.Errorf("noise %v, seeds %v", xs, r.out.Seeds)
 	}
@@ -86,7 +87,7 @@ func TestReferenceNames(t *testing.T) {
 
 // The settings of a definition: Anima's conversion.
 func TestSettings(t *testing.T) {
-	m := chat.Model{Name: "Anima-Turbo", File: "anima-turbo-v1.1.safetensors", Settings: map[string]string{SettingDitGroup: "2", SettingSize: "16:9", SettingDitFormat: "fp16"}}
+	m := chat.Model{Name: "Anima-Turbo", File: "anima-turbo-v1.1.safetensors", Settings: map[string]string{imagegen.SettingDitGroup: "2", imagegen.SettingSize: "16:9", imagegen.SettingDitFormat: "fp16"}}
 	o, err := animaOptions(m, "intel")
 	if err != nil {
 		t.Fatal(err)
@@ -97,13 +98,13 @@ func TestSettings(t *testing.T) {
 	if o, _ := animaOptions(chat.Model{}, "coreai"); len(o.Sizes) != 8 || o.Width != 1024 {
 		t.Errorf("anima on Core AI: %+v", o)
 	}
-	if _, err := animaOptions(chat.Model{Settings: map[string]string{SettingQChunk: "x"}}, "intel"); err == nil {
+	if _, err := animaOptions(chat.Model{Settings: map[string]string{imagegen.SettingQChunk: "x"}}, "intel"); err == nil {
 		t.Error("qchunk x: no error")
 	}
 }
 
 func TestExportNone(t *testing.T) {
-	if _, err := Export(t.TempDir()); err == nil {
+	if _, err := imagegen.Export(t.TempDir()); err == nil {
 		t.Error("an empty directory is an export")
 	}
 }
@@ -112,7 +113,7 @@ func TestExportNone(t *testing.T) {
 // edits of models.yaml), or any number of the picture's size (AMD's).
 func TestEditFor(t *testing.T) {
 	big, small := image.Pt(1024, 1024), image.Pt(512, 512)
-	g := &Generator{edits: true, sizes: []image.Point{big, small, {768, 1152}}, editSizes: []image.Point{big, small},
+	g := &generator{edits: true, sizes: []image.Point{big, small, {768, 1152}}, editSizes: []image.Point{big, small},
 		editRefs: map[image.Point][][]int{big: {{1}, {1, 2}, {1, 2, 2}}, small: {{1}, {1, 1}}}}
 	for _, c := range []struct {
 		w, h, n int
@@ -135,11 +136,11 @@ func TestEditFor(t *testing.T) {
 	if _, _, err := g.editFor(1024, 1024, 4); err == nil {
 		t.Error("4 references: no error")
 	}
-	if r := g.newRun([]string{"a"}, Options{Width: 512, Height: 512, References: make([]image.Image, 3)}); r.size != big {
+	if r := g.newRun([]string{"a"}, imagegen.Options{Width: 512, Height: 512, References: make([]image.Image, 3)}); r.size != big {
 		t.Errorf("a run of 3 references at 512: %v", r.size)
 	}
 	// AMD's NPU: any number at every size, of the picture's size
-	g = &Generator{edits: true, sizes: []image.Point{big, small}}
+	g = &generator{edits: true, sizes: []image.Point{big, small}}
 	if s, d, err := g.editFor(512, 512, 2); err != nil || s != small || !slices.Equal(d, []int{1, 1}) {
 		t.Errorf("AMD: %v %v %v", s, d, err)
 	}
@@ -149,7 +150,7 @@ func TestEditFor(t *testing.T) {
 	// AMD's with models.yaml npu.amd edits at 1024 and 512: those as Apple's, the other sizes any
 	// number of the picture's size, but only as the nearest
 	wide := image.Pt(1344, 768)
-	g = &Generator{edits: true, sizes: []image.Point{big, small, wide},
+	g = &generator{edits: true, sizes: []image.Point{big, small, wide},
 		editRefs: map[image.Point][][]int{big: {{1}, {2, 2}, {2, 2, 2}}, small: {{1}, {1, 1}}}}
 	for _, c := range []struct {
 		w, h, n int

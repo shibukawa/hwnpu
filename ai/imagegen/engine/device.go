@@ -1,4 +1,4 @@
-package imagegen
+package engine
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -21,24 +20,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
-
-// Export is the model an export's directory runs as (an ai.Definition the app defines and uses
-// by its ID): an export of tools/amd/iron_flux2klein.py, iron_flux3klein.py or iron_anima.py
-// for AMD's NPU, or of hwnpu-image convert (Anima) and the library's conversions for Apple's
-// Neural Engine or Intel's NPU. It is like the family's model of the definitions
-// (FLUX.2-klein-4B, flux-3-image-klein, Anima-Turbo), which names
-// it and its license; the export's own files say how it draws.
-func Export(dir string) (ai.Definition, error) {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return ai.Definition{}, err
-	}
-	like := map[string]string{famKlein: "FLUX.2-klein-4B", famFlux3: "flux-3-image-klein", famAnima: "Anima-Turbo"}[exportFamily(abs)]
-	if like == "" {
-		return ai.Definition{}, fmt.Errorf("ai/imagegen: %s is no export of a picture model (FLUX.2 klein, FLUX.3 klein, Anima)", dir)
-	}
-	return ai.Definition{Like: like, Programs: map[string][]string{ProgramExport: {abs}}}, nil
-}
 
 // exportFamily is the family of the export dir, "" for none.
 func exportFamily(dir string) string {

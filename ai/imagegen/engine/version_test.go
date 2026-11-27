@@ -1,4 +1,4 @@
-package imagegen
+package engine
 
 import (
 	"fmt"
