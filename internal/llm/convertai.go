@@ -18,10 +18,14 @@ import (
 // call, the last row alone, the caches alone...) into Out.parts.json, as the function Name of
 // the Core AI programs it shares with the others, in Parts parts (0: as the target needs).
 type AIProgram struct {
-	Out     string // the manifest's path without .parts.json (OUT.parts.json)
-	Name    string // the function's name in the programs it shares
-	Parts   int
-	Options Options
+	Out   string // the manifest's path without .parts.json (OUT.parts.json)
+	Name  string // the function's name in the programs it shares
+	Parts int
+	// MaxLayers is the most layers a part of a program not split at its attention holds (0: as
+	// many as its weights allow): the M3 refuses h15g programs of more layers with their caches
+	// inside (PlanSplitMax)
+	MaxLayers int
+	Options   Options
 }
 
 // ConvertAI writes programs of one model (the same weights, different Options) for Core AI, from
@@ -94,8 +98,8 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 				return nil, fmt.Errorf("llm: chunks of %d are over the Neural Engine's %d per dimension", o.Paged, NeuralEngineMaxDim)
 			}
 			plans[i], err = PlanPaged(model, o, budget)
-		case targetName != "none" || p.Parts > 1:
-			plans[i], err = PlanSplit(model, o, budget, p.Parts)
+		case targetName != "none" || p.Parts > 1 || p.MaxLayers > 0:
+			plans[i], err = PlanSplitMax(model, o, budget, p.Parts, p.MaxLayers)
 		default:
 			plans[i] = []Part{{}}
 		}
