@@ -23,6 +23,7 @@
 #define UMINVS(n, d) WORD $(0x6EB1A800 | (n)<<5 | (d))              // .4S, across the lanes
 #define CMHIH(m, n, d) WORD $(0x6E603400 | (m)<<16 | (n)<<5 | (d))  // .8H: all ones where n > m, unsigned
 #define UMAXVH(n, d) WORD $(0x6E70A800 | (n)<<5 | (d))              // .8H, across the lanes
+#define SDOT(m, n, d) WORD $(0x4E809400 | (m)<<16 | (n)<<5 | (d))   // SDOT Vd.4S, Vn.16B, Vm.16B
 
 // One threshold, broadcast in register m, against the 16 values in V0-V3: the counts in V4-V7
 // grow by one where the value is above it.
@@ -426,4 +427,34 @@ floop:
 	CMPW  $0, R3
 	CSET  NE, R3
 	MOVB  R3, nan+24(FP)
+	RET
+
+// func dotI8SDOT(a, b *int8, n int) int32
+// n is a positive multiple of 64: 4x unrolled ARMv8.2-A SDOT over 64 int8 pairs per iteration.
+TEXT ·dotI8SDOT(SB), NOSPLIT, $0-28
+	MOVD a+0(FP), R0
+	MOVD b+8(FP), R1
+	MOVD n+16(FP), R2
+	VEOR V0.B16, V0.B16, V0.B16
+	VEOR V1.B16, V1.B16, V1.B16
+	VEOR V2.B16, V2.B16, V2.B16
+	VEOR V3.B16, V3.B16, V3.B16
+
+doti8loop:
+	VLD1.P 64(R0), [V4.B16, V5.B16, V6.B16, V7.B16]
+	VLD1.P 64(R1), [V8.B16, V9.B16, V10.B16, V11.B16]
+	SDOT(8, 4, 0)
+	SDOT(9, 5, 1)
+	SDOT(10, 6, 2)
+	SDOT(11, 7, 3)
+	SUBS   $64, R2, R2
+	BNE    doti8loop
+
+	VADD  V1.S4, V0.S4, V0.S4
+	VADD  V3.S4, V2.S4, V2.S4
+	VADD  V2.S4, V0.S4, V0.S4
+	VADDP V0.S4, V0.S4, V0.S4
+	VADDP V0.S4, V0.S4, V0.S4
+	VMOV  V0.S[0], R0
+	MOVW  R0, ret+24(FP)
 	RET

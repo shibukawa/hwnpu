@@ -24,6 +24,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
@@ -781,15 +782,23 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if chunk > 0 {
 			mkind += fmt.Sprintf("-p%d", chunk)
 		}
-		// Core AI's drafts are of a part of the vocabulary (draftVocab), listed in the export
+		// Core AI's qwen35-mtp omits lm_head from the NPU (Options.Hidden) and scores the full
+		// vocabulary on CPU via DraftScan (0% OOV, 0.26-0.68 GiB less ANE memory). Set
+		// HWNPU_DEV=mtp.draftscan=0 to fall back to the partial-vocabulary draftVocab (dv2) head.
 		var rows []int32
+		var hidden bool
 		if backend == llm.BackendCoreAI {
-			tok, err := tokenizer.Load(c.Tokenizer)
-			if err != nil {
-				return Config{}, err
-			}
-			if rows = draftVocab(tok); rows != nil {
-				mkind += "-" + draftVocabRule
+			if mtp == "qwen35-mtp" && devenv.Value("mtp.draftscan") != "0" {
+				hidden = true
+				mkind += "-ds1"
+			} else {
+				tok, err := tokenizer.Load(c.Tokenizer)
+				if err != nil {
+					return Config{}, err
+				}
+				if rows = draftVocab(tok); rows != nil {
+					mkind += "-" + draftVocabRule
+				}
 			}
 		}
 		out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d-last%s", mkind, context, mtpSeq, programExt(backend)))
@@ -798,7 +807,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				return Config{}, err
 			}
 		}
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, seq: mtpSeq, cache: context, paged: chunk, lastRow: true, headRows: rows}, s.Log)
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, seq: mtpSeq, cache: context, paged: chunk, lastRow: true, hidden: hidden, headRows: rows}, s.Log)
 		if err != nil {
 			return Config{}, err
 		}
@@ -1140,6 +1149,7 @@ type program struct {
 	maxLayers         int      // llm.AIProgram.MaxLayers
 	paged             int      // llm.Options.Paged
 	lastRow           bool     // llm.Options.LastRow
+	hidden            bool     // llm.Options.Hidden (omit lm_head; CPU DraftScan scores h)
 	kvOnly            bool     // llm.Options.KVOnly
 	codes             string   // llm.Options.Codes
 	formatFor         []string // llm.Options.FormatFor
@@ -1265,7 +1275,7 @@ func programOptions(a *llm.Arch, model llm.Model, p program) (llm.Options, error
 	if p.backend != llm.BackendIntel && !strings.HasPrefix(opts.Format, "int") {
 		opts.Quant = "kmeans-minmax"
 	}
-	opts.Seq, opts.Cache, opts.Paged, opts.LastRow, opts.KVOnly = p.seq, p.cache, p.paged, p.lastRow, p.kvOnly
+	opts.Seq, opts.Cache, opts.Paged, opts.LastRow, opts.Hidden, opts.KVOnly = p.seq, p.cache, p.paged, p.lastRow, p.hidden, p.kvOnly
 	opts.Codes, opts.FormatFor, opts.HeadRows = p.codes, p.formatFor, p.headRows
 	for k, v := range p.params {
 		opts.Params[k] = v

@@ -378,3 +378,16 @@ func LUTRows16(acc *[16]float32, x []float32, idx []byte, rows *[16]int32, k0 in
 	}
 	lutRowsKernel(acc, &x[0], n, &idx[k0], rows, off, &table[0])
 }
+
+// DotI8 returns the exact int32 dot product of equal-length int8 slices a and b.
+func DotI8(a, b []int8) int32 {
+	n := min(len(a), len(b))
+	if n == 0 {
+		return 0
+	}
+	done, sum := dotI8Kernel(a[:n], b[:n])
+	for i := done; i < n; i++ {
+		sum += int32(a[i]) * int32(b[i])
+	}
+	return sum
+}
