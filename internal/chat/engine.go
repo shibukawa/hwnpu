@@ -157,8 +157,9 @@ type Engine struct {
 	mu     sync.Mutex
 	closed bool // by Close: the programs and the weights are gone
 	sess   session
-	cur    seq     // the sequence in the cache
-	saved  []saved // put aside, the most recently used last
+	cur    seq           // the sequence in the cache
+	saved  []saved       // put aside, the most recently used last
+	rsm    resumeTracker // learned divergence points and cost-aware mark eviction
 }
 
 func (e *Engine) logf(format string, args ...any) {
@@ -194,15 +195,17 @@ var maxImages = 16
 
 // seq is a sequence of tokens in the cache.
 type seq struct {
-	fed   []int32   // the tokens in the cache
-	last  []float32 // the logits after fed
-	marks []mark
-	base  *entry // the store's entry the sequence came from or extended last; nil for none
+	fed        []int32   // the tokens in the cache
+	last       []float32 // the logits after fed
+	marks      []mark
+	base       *entry // the store's entry the sequence came from or extended last; nil for none
+	prevPrompt int    // length of the previous prompt on this sequence (for divergence learning)
 }
 
 type mark struct {
 	m      *decode.Mark
 	logits []float32
+	kind   markKind
 }
 
 type saved struct {
@@ -707,7 +710,7 @@ func (e *Engine) room(n int) (bool, error) {
 			marks := e.cur.marks[:0]
 			for _, m := range e.cur.marks {
 				if nm := ds.Remark(m.m); nm != nil {
-					marks = append(marks, mark{nm, m.logits})
+					marks = append(marks, mark{nm, m.logits, m.kind})
 				}
 			}
 			e.cur.marks = marks
@@ -971,6 +974,9 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	if pol != nil {
 		pol.open = nil
 	}
+	if e.mtp != nil {
+		e.mtp.resetRequest()
+	}
 	// pick changes the logits it is given: a copy, in one array for the whole answer (a clone a
 	// token was 1 MB of garbage a token for 248320 logits, more time than the pick)
 	var mine []float32
@@ -1073,6 +1079,9 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		if pol != nil {
 			pol.checked(match, len(drafts), kept-1, time.Since(t0))
 		}
+		if e.mtp != nil {
+			e.mtp.observed(kept - 1)
+		}
 		for _, d := range drafts[:kept-1] {
 			if over, err := take(d); over || err != nil {
 				return st, err
@@ -1161,11 +1170,33 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	case from == -2:
 		// restored from the store
 	case m != nil:
+		common := 0
+		for common < len(e.cur.fed) && common < len(prompt) && e.cur.fed[common] == prompt[common] {
+			common++
+		}
+		e.rsm.observeDivergence(e.cur.fed, e.cur.prevPrompt, common)
+		e.rsm.recordHit(m.kind)
 		e.sess.Rewind(m.m)
 		p := m.m.Pos()
 		e.cur.fed, e.cur.last = e.cur.fed[:p], m.logits
-		e.cur.marks = slices.DeleteFunc(e.cur.marks, func(m mark) bool { return m.m.Pos() > p })
+		e.cur.marks = slices.DeleteFunc(e.cur.marks, func(mk mark) bool {
+			if mk.m.Pos() > p {
+				e.rsm.recordInvalidated(mk.kind)
+				return true
+			}
+			return false
+		})
 	case n < len(e.cur.fed) || len(e.cur.fed) == 0:
+		if len(e.cur.fed) > 0 {
+			common := 0
+			for common < len(e.cur.fed) && common < len(prompt) && e.cur.fed[common] == prompt[common] {
+				common++
+			}
+			e.rsm.observeDivergence(e.cur.fed, e.cur.prevPrompt, common)
+			for _, mk := range e.cur.marks {
+				e.rsm.recordInvalidated(mk.kind)
+			}
+		}
 		// start over, on the shortest tier that holds the prompt
 		if err := e.use(e.tierFor(len(prompt))); err != nil {
 			return nil, err
@@ -1190,6 +1221,11 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			}
 		}
 	}
+	sigPts := e.rsm.predictPoints(prompt, len(e.cur.fed))
+	sigAt := func(fed int) bool {
+		_, ok := slices.BinarySearch(sigPts, fed)
+		return ok
+	}
 	// the tokens of the step that reads the prompt from fed on
 	stepLen := func(fed int) int {
 		rest := len(prompt) - fed
@@ -1202,10 +1238,16 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if cut > fed && cut < fed+k {
 			k = cut - fed
 		}
+		for _, sp := range sigPts {
+			if sp > fed && sp < fed+k {
+				k = sp - fed
+				break
+			}
+		}
 		return k
 	}
-	// whether the sequence is marked at fed, reached from before: at the last turn's start, and
-	// for the store
+	// whether the sequence is marked at fed, reached from before: at the last turn's start, at a
+	// learned divergence signature, and for the store
 	cutAt := func(fed int) bool { return fed == cut && cut < len(prompt) }
 	storeAt := func(before, fed int) bool {
 		return e.store != nil && fed < len(prompt) && fed/markEvery > before/markEvery
@@ -1231,7 +1273,7 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			ks, marked := []int{k}, []int(nil)
 			for fed := before; ; {
 				next := fed + ks[len(ks)-1]
-				if cutAt(next) || storeAt(fed, next) {
+				if cutAt(next) || sigAt(next) || storeAt(fed, next) {
 					marked = append(marked, len(ks)-1)
 				}
 				fed = next
@@ -1253,13 +1295,12 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 					if j < 0 {
 						continue
 					}
-					if cutAt(fed) {
-						e.cur.marks = append(e.cur.marks, mark{marks[j].Mark, marks[j].Logits})
-						if len(e.cur.marks) > maxMarks {
-							e.cur.marks = e.cur.marks[1:]
-						}
+					if sigAt(fed) {
+						e.cur.marks = e.rsm.addMark(e.cur.marks, mark{marks[j].Mark, marks[j].Logits, markSig}, maxMarks)
+					} else if cutAt(fed) {
+						e.cur.marks = e.rsm.addMark(e.cur.marks, mark{marks[j].Mark, marks[j].Logits, markTurn}, maxMarks)
 					}
-					if storeAt(from, fed) {
+					if storeAt(from, fed) || (e.store != nil && sigAt(fed)) {
 						kept = append(kept, storedMark{marks[j].Mark.Pos(), marks[j].Mark.Bufs(), marks[j].Logits})
 					}
 				}
@@ -1269,22 +1310,25 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if _, err := e.step(prompt[before : before+k]); err != nil {
 			return nil, err
 		}
-		if cutAt(len(e.cur.fed)) {
-			e.cur.marks = append(e.cur.marks, mark{e.sess.Mark(), e.cur.last})
-			if len(e.cur.marks) > maxMarks {
-				e.cur.marks = e.cur.marks[1:]
+		fed := len(e.cur.fed)
+		var taken *decode.Mark
+		if sigAt(fed) {
+			taken = e.sess.Mark()
+			e.cur.marks = e.rsm.addMark(e.cur.marks, mark{taken, e.cur.last, markSig}, maxMarks)
+		} else if cutAt(fed) {
+			taken = e.sess.Mark()
+			e.cur.marks = e.rsm.addMark(e.cur.marks, mark{taken, e.cur.last, markTurn}, maxMarks)
+		}
+		if storeAt(before, fed) || (e.store != nil && sigAt(fed)) {
+			if taken == nil {
+				taken = e.sess.Mark()
 			}
-		}
-		if storeAt(before, len(e.cur.fed)) {
-			m := e.sess.Mark()
-			kept = append(kept, storedMark{m.Pos(), m.Bufs(), e.cur.last})
+			kept = append(kept, storedMark{taken.Pos(), taken.Bufs(), e.cur.last})
 		}
 	}
-	m = &mark{e.sess.Mark(), e.cur.last}
-	e.cur.marks = append(e.cur.marks, *m)
-	if len(e.cur.marks) > maxMarks {
-		e.cur.marks = e.cur.marks[1:]
-	}
+	m = &mark{e.sess.Mark(), e.cur.last, markEnd}
+	e.cur.marks = e.rsm.addMark(e.cur.marks, *m, maxMarks)
+	e.cur.prevPrompt = len(prompt)
 	if e.store != nil && len(e.cur.fed) >= minStored && !slices.ContainsFunc(e.cur.fed, func(t int32) bool { return t < 0 }) {
 		kept = append(kept, storedMark{m.m.Pos(), m.m.Bufs(), m.logits})
 		if se, err := e.store.put(e.cur.fed, e.sess.(rowSource), kept, e.cur.base); err != nil {
@@ -1326,7 +1370,7 @@ func (e *Engine) restore(se *entry, pos int, prompt []int32, st *Stats) (bool, e
 		e.cur = seq{}
 		return false, nil
 	}
-	e.cur = seq{fed: slices.Clone(se.Tokens[:pos]), last: logits, marks: []mark{{m, logits}}, base: se}
+	e.cur = seq{fed: slices.Clone(se.Tokens[:pos]), last: logits, marks: []mark{{m, logits, markEnd}}, base: se, prevPrompt: pos}
 	st.Restored = pos
 	return true, nil
 }
@@ -1340,7 +1384,7 @@ func (e *Engine) putAside() {
 	if all == nil {
 		return
 	}
-	q := seq{fed: slices.Clone(e.cur.fed), last: e.cur.last, marks: slices.Clone(e.cur.marks)}
+	q := seq{fed: slices.Clone(e.cur.fed), last: e.cur.last, marks: slices.Clone(e.cur.marks), prevPrompt: e.cur.prevPrompt}
 	e.saved = append(e.saved, saved{q, all, e.ti})
 	if len(e.saved) > maxSaved {
 		e.saved = e.saved[1:]

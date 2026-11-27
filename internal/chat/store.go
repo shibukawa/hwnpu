@@ -40,7 +40,51 @@ type entry struct {
 	Rows     int     `json:"rows"`
 	Marks    []int   `json:"marks"`
 	RowBytes int     `json:"row_bytes"`
+	KVQBits  int     `json:"kvq_bits,omitempty"`
+	KVQDim   int     `json:"kvq_dim,omitempty"`
+	KVQDType string  `json:"kvq_dtype,omitempty"`
 	Used     int64   `json:"used"` // unix nanoseconds of the last use
+}
+
+const storeKVQBits = 6 // near-lossless (~39% of fp16/bf16 size) Hadamard + Lloyd-Max KV compression
+
+func (e *entry) kvqValid() bool {
+	if e.KVQBits == 0 {
+		return true
+	}
+	return kvqLevels(e.KVQBits) != nil &&
+		kvqDTypeOK(e.KVQDType) &&
+		e.KVQDim > 0 && e.KVQDim&(e.KVQDim-1) == 0 &&
+		e.RowBytes%2 == 0 && (e.RowBytes/2)%e.KVQDim == 0
+}
+
+func (e *entry) diskRowBytes() int {
+	if e.KVQBits == 0 {
+		return e.RowBytes
+	}
+	return (e.RowBytes / (2 * e.KVQDim)) * kvqBlockBytes(e.KVQDim, e.KVQBits)
+}
+
+type rowFormatter interface {
+	RowFormat() (dtype string, headDim int)
+}
+
+func storeKVQFor(sess rowSource, rowBytes int) (bits, dim int, dtype string) {
+	rf, ok := sess.(rowFormatter)
+	if !ok || rowBytes%2 != 0 {
+		return 0, 0, ""
+	}
+	dt, headDim := rf.RowFormat()
+	if !kvqDTypeOK(dt) || headDim < 64 {
+		return 0, 0, ""
+	}
+	nvals := rowBytes / 2
+	for _, d := range []int{128, 64} {
+		if headDim >= d && headDim%d == 0 && nvals%d == 0 {
+			return storeKVQBits, d, dt
+		}
+	}
+	return 0, 0, ""
 }
 
 // storedMark is a mark file.
@@ -92,7 +136,7 @@ func openStore(dir string) (*store, error) {
 		}
 		e := &entry{dir: filepath.Join(dir, d.Name())}
 		b, err := os.ReadFile(filepath.Join(e.dir, "meta.json"))
-		if err != nil || json.Unmarshal(b, e) != nil || e.RowBytes <= 0 {
+		if err != nil || json.Unmarshal(b, e) != nil || e.RowBytes <= 0 || !e.kvqValid() {
 			// not an entry: one being written by another process (put writes meta.json
 			// last), or left by a write that failed; the old ones go
 			if fi, err := d.Info(); err == nil && time.Since(fi.ModTime()) > staleAfter {
@@ -100,7 +144,7 @@ func openStore(dir string) (*store, error) {
 			}
 			continue
 		}
-		if fi, err := os.Stat(filepath.Join(e.dir, "rows.bin")); err != nil || fi.Size() < int64(e.Rows)*int64(e.RowBytes) {
+		if fi, err := os.Stat(filepath.Join(e.dir, "rows.bin")); err != nil || fi.Size() < int64(e.Rows)*int64(e.diskRowBytes()) {
 			os.RemoveAll(e.dir) // its rows went bad: it would be dropped on its first use
 			continue
 		}
@@ -139,9 +183,19 @@ func (st *store) load(e *entry, pos int) (rows []byte, m *decode.Mark, logits []
 		return nil, nil, nil, err
 	}
 	defer f.Close()
-	rows = make([]byte, pos*e.RowBytes)
-	if _, err := io.ReadFull(f, rows); err != nil {
+	setNoCache(f)
+	raw := make([]byte, pos*e.diskRowBytes())
+	if _, err := io.ReadFull(f, raw); err != nil {
 		return nil, nil, nil, fmt.Errorf("chat: %s: rows: %w", e.dir, err)
+	}
+	dropPageCache(f, false)
+	if e.KVQBits > 0 {
+		rows, err = kvqDecompress(raw, e.KVQDType, e.KVQDim, e.KVQBits)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("chat: %s: kvq decode: %w", e.dir, err)
+		}
+	} else {
+		rows = raw
 	}
 	sm, err := readMark(filepath.Join(e.dir, markFile(pos)))
 	if err != nil {
@@ -239,7 +293,14 @@ func (st *store) put(tokens []int32, sess rowSource, marks []storedMark, base *e
 		base.Used = time.Now().UnixNano()
 		return base, base.writeMeta()
 	}
-	e := &entry{dir: filepath.Join(st.dir, strconv.FormatInt(time.Now().UnixNano(), 10)), RowBytes: rb}
+	kvqBits, kvqDim, kvqDType := storeKVQFor(sess, rb)
+	e := &entry{
+		dir:      filepath.Join(st.dir, strconv.FormatInt(time.Now().UnixNano(), 10)),
+		RowBytes: rb,
+		KVQBits:  kvqBits,
+		KVQDim:   kvqDim,
+		KVQDType: kvqDType,
+	}
 	if err := os.MkdirAll(e.dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -280,7 +341,8 @@ func (e *entry) append(tokens []int32, sess rowSource, marks []storedMark) error
 	if err != nil {
 		return err
 	}
-	if _, err := f.Seek(int64(e.Rows)*int64(e.RowBytes), io.SeekStart); err != nil {
+	setNoCache(f)
+	if _, err := f.Seek(int64(e.Rows)*int64(e.diskRowBytes()), io.SeekStart); err != nil {
 		f.Close()
 		return err
 	}
@@ -292,11 +354,19 @@ func (e *entry) append(tokens []int32, sess rowSource, marks []storedMark) error
 			f.Close()
 			return err
 		}
+		if e.KVQBits > 0 {
+			rows, err = kvqCompress(rows, e.KVQDType, e.KVQDim, e.KVQBits)
+			if err != nil {
+				f.Close()
+				return err
+			}
+		}
 		if _, err := f.Write(rows); err != nil {
 			f.Close()
 			return err
 		}
 	}
+	dropPageCache(f, true)
 	if err := f.Close(); err != nil {
 		return err
 	}
