@@ -16,9 +16,8 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/ai/vision"
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/hwnpu/internal/pixels"
 )
 
 // DepthCmd is "hwnpu-image depth": the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth Anything 3
@@ -63,14 +62,13 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	name := c.Model
 	if !isPath(c.Model) {
 		// an export models.yaml pins by its name (one made by hand: DA3-SMALL's multi-view
-		// da3-small-mv3.amd-npu2), here or fetched from the sources, run from its directory
-		if err := chat.LoadUserModels("", os.Stderr); err != nil {
+		// da3-small-mv3.amd-npu2), here or fetched from hwnpud's sources, run from its directory
+		d, err := pinnedExport(ctx, c.Model, lw)
+		if err != nil {
 			return err
 		}
-		if m, ok := chat.PinnedAMDModel(c.Model); ok {
-			if d := chat.AMDNamed(ctx, m, []string{c.Model}, func(d string) bool { _, err := os.Stat(d); return err == nil }, lw); d != "" {
-				c.Model, name = d, d
-			}
+		if d != "" {
+			c.Model, name = d, d
 		}
 	}
 	if isPath(c.Model) {
@@ -291,7 +289,7 @@ func writePLY(path string, imgs []image.Image, rs []*vision.DepthMap) error {
 	n := 0
 	for i, r := range rs {
 		c := r.Camera
-		px := lfm3vl.Resize(imgs[i], r.W, r.H, "bilinear")
+		px := pixels.Resize(imgs[i], r.W, r.H, "bilinear")
 		for y := 0; y < r.H; y++ {
 			for x := 0; x < r.W; x++ {
 				d := float64(r.Depth[y*r.W+x])

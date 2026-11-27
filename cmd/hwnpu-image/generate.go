@@ -17,10 +17,10 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	aicli "github.com/shibukawa/hwnpu/ai/cli"
 	"github.com/shibukawa/hwnpu/ai/imagegen"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/console"
 	devenv "github.com/shibukawa/hwnpu/internal/dev"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/imagewire"
 )
 
 // generate runs its models through the ai package, as an app would: the model --model names is
@@ -67,7 +67,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	}
 	if c.Backend != "" {
 		// the device the models are prepared for and run on (ai's NPU is HWNPU_BACKEND's)
-		os.Setenv(llm.BackendEnv, c.Backend)
+		os.Setenv(imagewire.BackendEnv, c.Backend)
 	}
 	lw := console.Log(os.Stderr)
 	o, err := c.options()
@@ -75,7 +75,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		return err
 	}
 	st := ai.Store{}
-	use, defs, err := c.use(st)
+	use, defs, err := c.use(ctx, st)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func (c *GenerateCmd) references(o *imagegen.Options) error {
 
 // use is the use of the model --model names, as the flags make it: a model of its own for the
 // weight formats, Anima's conversion, --cpu, or an export's directory.
-func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Definition, error) {
+func (c *GenerateCmd) use(ctx context.Context, st ai.Store) (ai.Use[*imagegen.Generator], []ai.Definition, error) {
 	mk := imagegen.Generate
 	if (len(c.Image) > 0 || len(c.RefLatents) > 0) && c.Size != "1:1s" && c.Size != "512" {
 		// on Apple's Neural Engine with the export of the edits of 1024 beside the model's (the
@@ -190,7 +190,7 @@ func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Defini
 	name := c.Model
 	if isPath(c.Model) {
 		var err error
-		if d, err = imagegen.Export(expandHome(c.Model)); err != nil {
+		if d, err = imageExport(ctx, expandHome(c.Model)); err != nil {
 			return ai.Use[*imagegen.Generator]{}, nil, err
 		}
 		name = d.Like
@@ -216,7 +216,7 @@ func (c *GenerateCmd) use(st ai.Store) (ai.Use[*imagegen.Generator], []ai.Defini
 	if c.DitFormat != "" {
 		set(imagegen.SettingDitFormat, c.DitFormat)
 	}
-	vendor := chat.HereVendor()
+	vendor := npuVendor(cat)
 	switch fam := info.Family; {
 	case strings.HasPrefix(fam, "anima"):
 		if c.Dit != "" {
@@ -249,7 +249,7 @@ func imageUse[T io.Closer](cat *ai.Catalog, u ai.Use[T]) (ai.Use[T], []ai.Defini
 	n, def, err := ai.Normalize(cat, u)
 	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
 		fmt.Fprintf(os.Stderr, "no image model %q; the image models of the definitions:\n\n", e.Name)
-		listModels(os.Stderr, chat.KindImage)
+		listModels(os.Stderr, cat, catalog.KindImage)
 		fmt.Fprintln(os.Stderr)
 		return u, nil, fmt.Errorf("no image model, family or use %q (hwnpu-image list shows them)", e.Name)
 	}

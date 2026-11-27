@@ -32,9 +32,10 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/hwnpu/internal/aieng"
 	"github.com/shibukawa/hwnpu/internal/aiensure"
+	"github.com/shibukawa/hwnpu/internal/aistatus"
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/npustatus"
 )
 
 // ListOptions are how List writes.
@@ -296,9 +297,13 @@ type StatusOptions struct {
 
 // Status writes the NPU's status on the standard output, as hwnpu status does: the device, its
 // driver and firmware, how busy it is, its power, the processes that use it and the memory
-// each holds, and the app's cache of models.
+// each holds, and the app's cache of models. It reads the devices with the engine (import _
+// "github.com/shibukawa/hwnpu/ai/engine").
 func Status(ctx context.Context, app *ai.App, o StatusOptions) error {
-	return npustatus.Cmd{JSON: o.JSON, Watch: o.Watch, Wake: o.Wake, Store: app.Store.Models}.Run(ctx)
+	if aistatus.Run == nil {
+		return fmt.Errorf("status: %w", aieng.ErrNone)
+	}
+	return aistatus.Run(ctx, o.JSON, o.Watch, o.Wake, app.Store.Models)
 }
 
 // Usage is the help of the commands Run takes, for an app's own help.
