@@ -153,7 +153,9 @@ func (p *Processor) Patches(img image.Image, w, h int) []float32 {
 // Resize scales img to w x h (stretching) with an antialiased bilinear or bicubic filter, as PIL
 // and torchvision's resize with antialias do (pixels.Resize): the pixels as RGB bytes in raster
 // order.
-func Resize(img image.Image, w, h int, filter string) []uint8 { return pixels.Resize(img, w, h, filter) }
+func Resize(img image.Image, w, h int, filter string) []uint8 {
+	return pixels.Resize(img, w, h, filter)
+}
 
 // RGB is img's pixels as RGB bytes in raster order (pixels.RGB).
 func RGB(img image.Image) []uint8 { return pixels.RGB(img) }
