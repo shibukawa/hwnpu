@@ -65,6 +65,30 @@ func (g *Graph) AllocInput(index int) (*Buffer, error) {
 	return g.dev.AllocBuffer(size)
 }
 
+// AllocOutput allocates the buffer of the output at index: where the backend can write an output
+// directly into memory of its own (Core AI: via outputViews, so a run neither allocates nor
+// copies, and binding the same buffer to the next graph's input is zero-copy on both sides),
+// there; elsewhere as Device.AllocBuffer of the argument's bytes.
+func (g *Graph) AllocOutput(index int) (*Buffer, error) {
+	if g.be == nil {
+		return nil, ErrClosed
+	}
+	if index < 0 || index >= len(g.args) || g.args[index].Kind != ArgOutput {
+		return nil, fmt.Errorf("hwnpu: argument %d is not an output", index)
+	}
+	size := g.args[index].Bytes
+	if a, ok := g.be.(backend.OutputAllocator); ok {
+		b, err := a.AllocOutput(index)
+		if err != nil {
+			return nil, err
+		}
+		if b != nil {
+			return &Buffer{be: b, size: size, dev: g.dev}, nil
+		}
+	}
+	return g.dev.AllocBuffer(size)
+}
+
 // Args lists the graph arguments. Inputs come first; the order defines Bind indices.
 func (g *Graph) Args() []ArgInfo { return append([]ArgInfo(nil), g.args...) }
 

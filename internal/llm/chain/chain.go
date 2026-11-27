@@ -342,7 +342,12 @@ func loadAttention(ctx context.Context, c *Chain, path string) (*attention, erro
 			a.mask = arg.Index
 			continue
 		}
-		b, err := c.dev.AllocBuffer(arg.Bytes)
+		var b *hwnpu.Buffer
+		if arg.Kind == hwnpu.ArgOutput {
+			b, err = a.g.AllocOutput(arg.Index)
+		} else {
+			b, err = a.g.AllocInput(arg.Index)
+		}
 		if err != nil {
 			return a, err
 		}
@@ -390,7 +395,12 @@ func loadMass(ctx context.Context, c *Chain, path string) (*mass, error) {
 			ms.mask = arg.Index
 			continue
 		}
-		b, err := c.dev.AllocBuffer(arg.Bytes)
+		var b *hwnpu.Buffer
+		if arg.Kind == hwnpu.ArgOutput {
+			b, err = ms.g.AllocOutput(arg.Index)
+		} else {
+			b, err = ms.g.AllocInput(arg.Index)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -512,13 +522,6 @@ func (a *attention) close() {
 func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[string]*hwnpu.Buffer) (*tier, error) {
 	start := time.Now()
 	t := &tier{inputs: map[string]*hwnpu.Buffer{}, outputs: map[string]*hwnpu.Buffer{}, inShape: map[string][]int{}, outShape: map[string][]int{}, passed: map[string]bool{}}
-	alloc := func(size int) (*hwnpu.Buffer, error) {
-		b, err := c.dev.AllocBuffer(size)
-		if err == nil {
-			t.bufs = append(t.bufs, b)
-		}
-		return b, err
-	}
 	var err error
 	for i, lp := range list {
 		p := &Part{PartRecord: lp}
@@ -541,10 +544,11 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 			var b *hwnpu.Buffer
 			switch {
 			case a.Kind == hwnpu.ArgOutput:
-				if b, err = alloc(a.Bytes); err != nil {
+				if b, err = p.g.AllocOutput(a.Index); err != nil {
 					t.close()
 					return nil, err
 				}
+				t.bufs = append(t.bufs, b)
 				if a.Name == "y" {
 					out = b
 				} else {
