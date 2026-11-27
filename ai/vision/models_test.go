@@ -3,57 +3,26 @@ package vision
 import (
 	"image"
 	"image/color"
-	"math"
 	"slices"
 	"testing"
-
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/vision/segment"
-	"github.com/shibukawa/hwnpu/internal/vision/siglip"
 )
 
-// TestSettings: what the definition of a model of pictures says (common.go).
-func TestSettings(t *testing.T) {
-	m := chat.Model{Name: "RTMDet-tiny+1a2b3c4d"}
-	if threads(m) != 1 || interpreter(m) || program(m, "export") != "" {
-		t.Errorf("a model without settings: %d threads, interpreter %v", threads(m), interpreter(m))
-	}
-	m.Settings = map[string]string{"threads": "4", "cpu": "interpreter"}
-	m.Programs = map[string][]string{"export": {"/x/y.amd-npu2"}}
-	if threads(m) != 4 || !interpreter(m) || program(m, "export") != "/x/y.amd-npu2" {
-		t.Errorf("settings %v: %d threads, interpreter %v", m.Settings, threads(m), interpreter(m))
-	}
-	if shown(m.Name) != "RTMDet-tiny" || shown("YuNet") != "YuNet" {
-		t.Errorf("shown %q", shown(m.Name))
-	}
-	// a device for every NPU is chosen as --device is; one of models.yaml for one NPU is not
-	if d := imagedev.DeviceFlag(chat.Model{Device: map[string]string{"amd": "cpu", "apple": "cpu", "intel": "cpu"}}); d != "cpu" {
-		t.Errorf("a definition's device for every NPU: %q", d)
-	}
-	if d := imagedev.DeviceFlag(chat.Model{Device: map[string]string{"amd": "cpu"}}); d != "" {
-		t.Errorf("models.yaml's device for AMD: %q", d)
-	}
-}
+// box is the box of corners x1, y1, x2, y2.
+func box(x1, y1, x2, y2 float64) Box { return Box{Point{x1, y1}, Point{x2, y2}} }
 
 func TestBox(t *testing.T) {
-	b := box(float32(1.5), 2, 11.5, 22)
+	b := box(1.5, 2, 11.5, 22)
 	if b.Dx() != 10 || b.Dy() != 20 || b.Min != (Point{1.5, 2}) {
 		t.Errorf("box %+v", b)
 	}
-	if m := b.add(image.Pt(10, 20)); m.Min != (Point{11.5, 22}) || m.Dx() != 10 {
-		t.Errorf("moved %+v", m)
-	}
 }
 
-func TestPrompt(t *testing.T) {
-	p := Prompt{Points: []Point{{1, 2}}, Negative: []Point{{3, 4}, {5, 6}}, Box: &Box{Point{7, 8}, Point{9, 10}}}
-	want := []segment.Point{{X: 1, Y: 2, Label: 1}, {X: 3, Y: 4, Label: 0}, {X: 5, Y: 6, Label: 0}, {X: 7, Y: 8, Label: 2}, {X: 9, Y: 10, Label: 3}}
-	if got := p.points(); !slices.Equal(got, want) {
-		t.Errorf("points %v, want %v", got, want)
-	}
+func TestEmptyPrompt(t *testing.T) {
 	if _, err := (&Segmenter{}).Masks(&PictureEncoding{}, Prompt{}); err == nil {
 		t.Error("masks of an empty prompt")
+	}
+	if (Prompt{Box: &Box{}}).empty() || (Prompt{Negative: []Point{{}}}).empty() || !(Prompt{}).empty() {
+		t.Error("an empty prompt")
 	}
 }
 
@@ -85,29 +54,6 @@ func TestMask(t *testing.T) {
 	}
 }
 
-func TestRank(t *testing.T) {
-	l := &Labeler{m: &siglip.Model{Export: siglip.Export{LogitScale: 10}}}
-	pic := Embedding{1, 0}
-	c := &Candidates{Labels: []string{"far", "near", "middle"}}
-	c.Embeddings = []Embedding{{0, 1}, {1, 0}, {float32(math.Sqrt(0.5)), float32(math.Sqrt(0.5))}}
-	got := l.Rank(pic, c, RankOptions{})
-	if len(got) != 3 || got[0].Label != "near" || got[1].Label != "middle" || got[2].Label != "far" {
-		t.Errorf("ranked %v", got)
-	}
-	if got := l.Rank(pic, c, RankOptions{Top: 1}); len(got) != 1 || got[0].Label != "near" {
-		t.Errorf("the top one: %v", got)
-	}
-	if got := l.Rank(pic, c, RankOptions{Min: 0.6}); len(got) != 2 {
-		t.Errorf("at least 0.6: %v", got)
-	}
-	if Cosine(pic, c.Embeddings[2]) < 0.7 || Cosine(pic, c.Embeddings[0]) != 0 {
-		t.Error("cosines")
-	}
-	if _, err := l.Candidates(t.Context(), []string{"a"}, CandidateOptions{Template: "no braces"}); err == nil {
-		t.Error("a template without {}")
-	}
-}
-
 func TestBilinear(t *testing.T) {
 	// Bilinear keeps a map of the same size, and halves one to the means of its pixels' pairs
 	xs := []float32{0, 2, 4, 6}
@@ -120,5 +66,14 @@ func TestBilinear(t *testing.T) {
 	d := &DepthMap{W: 2, H: 1, Depth: []float32{2, 4}, Metric: true}
 	if n := d.Near(2, 1); n[0] != 1 || n[1] != 0 {
 		t.Errorf("near %v", n)
+	}
+}
+
+func TestLabels(t *testing.T) {
+	if len(DefaultLabels()) < 400 || !slices.Equal(ParseLabels("a\n# b\n\n c \n"), []string{"a", "c"}) {
+		t.Errorf("%d default labels", len(DefaultLabels()))
+	}
+	if c := Cosine([]float32{1, 0}, []float32{0.5, 0.5}); c != 0.5 {
+		t.Errorf("cosine %v", c)
 	}
 }
