@@ -54,7 +54,7 @@
 #               architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT) and
 #               put in the sources, where a Mac of the chip takes them at its first run. The
 #               image generators, whose programs the device compiles in minutes to hours, and
-#               chat models checked on the M1 (Qwen3.5-0.8B and 4B, LFM3-1.7B: their archs h13g
+#               chat models checked on the M1 (Qwen3.5-0.8B, 2B and 4B, LFM3-1.7B: their archs h13g
 #               alone). A small model's programs may load slower from prebuilt programs than the
 #               device compiles them (LFM3-1.7B on an M1, 1 min 45 s prebuilt, 1 min 02 s on the
 #               device: docs/known-issues.md 9, 2026-11-27); a prebuilt that is only somewhat
@@ -370,6 +370,12 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
+      # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
+      # device by apple's rule): the answers are those of the device's compile, and the first load
+      # takes 2 min 06 s against 7 min 48 s compiled on the device, with 1.5 GB less disk left and
+      # no 2.7 GB peak of the device's compiler. The other chips' programs are not checked yet
+      prebuilt: true
+      archs: [h13g]
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
