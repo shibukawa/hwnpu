@@ -34,7 +34,8 @@ Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd
 
 - `ai` のパッケージを使うプログラムはすべて hwnpud を通る: `HWNPU_DAEMON` は設定しなければ `on`
   (`daemon.DefaultMode`)。hwnpud が答えなければ、どうすればよいかを添えてエラーにする。`HWNPU_DAEMON=off` は
-  今までどおり自分のプロセスで動かす。テスト (`go test`) と hwnpud のエンジン自身 (自分で off にする) も自分のプロセス。
+  自分のプロセスで動かす。エンジンを読むプログラム (`ai/engine`: hwnpud のエンジン自身、hwnpu-dev、テスト、そう選んだ
+  アプリ) だけで、hwnpu のコマンドは読まないので、どうすればよいかを添えてエラーになる。
   `hwnpu-chat [chat]` も既定で hwnpud を通る
 - セッション (`internal/airpc`) はソケットへの接続を HTTP から切り替えたもの (`GET /hwnpud/v1/ai`、
   `Upgrade: hwnpu-ai/1`。監督役のプロキシを通ってエンジンへ)。両方向に gob の流れを 1 本ずつ持ち、電文を ID で
@@ -45,7 +46,7 @@ Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd
   (回されるにつれて読み、読む側がやめれば止まる)。エラーは登録した番兵と型 (`ai.ErrNotPrepared`、
   `*ai.LicenseError`、`text.ErrContext`、`*text.FormatError`) を保つので、`errors.Is` と `errors.As` が通る。
   エンジンのハンドラーはセッションが終わるまで戻らないので、アプリが使っている間エンジンは待ち時間で終わらない
-- エンジン (`internal/aihost`。`cmd/hwnpud` が `daemon.Engine.AI` に付ける。`internal/daemon` はモデルの
+- エンジン (`internal/aihost`。`cmd/hwnpud` が `engine.Engine.AI` (`internal/daemon/engine`) に付ける。`internal/daemon` はモデルの
   パッケージを import しない) はセッションごとに `ai.Host` を出す: `App.Plan` と `Plan.Run` は、クライアントが送った
   もの (`App.Spec`、`ai.AppFromSpec`: 役の名前による use (`airole.Lookup`)、`InTurns` のグループ、メモリ、
   定義つきのストア) からアプリを作り直して、エンジンで計画し実行する。`Run` の段階とモデルのログは出るそばから
@@ -355,9 +356,10 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 
 - `HWNPU_DAEMON=on|off|auto`。設定しなければ `on` (2026-11-23 に決めた): `ai` のパッケージのアプリも hwnpu の
   コマンドも、すべてのプログラムが hwnpud を通り、答えなければ失敗する。`auto` は同じプロトコルで答えればそれを、
-  なければ自分のプロセスで。`off` は自分のプロセスで (テストと同じ)。worktree の `go run ./cmd/hwnpu-chat` で
-  その worktree のコードを動かすには `HWNPU_DAEMON=off` (`base/hwnpu-chat` / `new/hwnpu-chat` の比べ方も
-  そうする) か、worktree の hwnpud を別のソケットで (`HWNPU_DAEMON_SOCKET`)
+  なければ自分のプロセスで。`off` は自分のプロセスで (テストと同じ、エンジンを読むとき)。worktree の
+  コードは worktree の hwnpud を別のソケットで動かして試す: `hwnpu-dev daemon -- go run ./cmd/hwnpu-chat chat ...` が
+  `./cmd/hwnpud` をビルドし、ユーザーのキャッシュのソケットで動かし、`HWNPU_DAEMON_SOCKET` を付けてコマンドを動かし、
+  終われば止める (`HWNPU_DEV` などシェルの変数もその hwnpud に渡る)
 - `HWNPU_DAEMON_SOCKET` は別のソケットを指す。worktree でビルドした hwnpud を、入れてあるものの横で試すため
 - 最初のメッセージ (`hello`) で、プロトコルの版、ビルド、組み込んだモデルの定義とレシピのハッシュ
   (`definitions`: models.yaml と model-recipes.yaml。書き出しとモデルの動かし方を決める)、役割ごとに受け取る設定
@@ -391,7 +393,58 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
   多いほど、ほかのプログラムを使い回すことが増える (誤った prebuilt の VAE が新しいビルドでも戻った、2026-11-27)
 - どのアプリもエンジンと同じ大きさで、shim (Core AI の dylib) を埋め込む
 
-段取り:
+2026-11-27 に決めた: クライアントはモデルの定義を自分では持たず、表、ポリシーの判断、モデルを動かすメモリを
+hwnpud に聞く。アプリが自分のプロセスでモデルを動かすのは、エンジンを読むとき (`import _
+"github.com/shibukawa/hwnpu/ai/engine"`、hwnpud、hwnpu-dev、テストと同じ) だけで、`HWNPU_DAEMON=off` はそのときの
+意味になる。
+
+段はそれぞれ 1 つのプルリクエスト。`internal/boundary` のテストが、エンジンに届いてはいけないパッケージを並べ、
+段ごとに足す:
+
+1. 済み: `internal/daemon` はクライアントと supervisor。engine は `internal/daemon/engine` で、cmd/hwnpud が
+   つなぐ。読み込みの流れ (`LoadStream`) と答えの手伝いはプロトコルのもので `internal/daemon` に
+2. 済み: 定義のデータ (`Model`、`Kind`、ライセンス、ベンダーとチップごとのメモリ、variant) は
+   `internal/catalog` にあり、hwnpu のほかのパッケージを読まない。`internal/chat` はその型を別名で使う。
+   `internal/airole` は `internal/chat` の代わりに `internal/catalog` を読み、この機械の NPU を探すこと
+   (`airole.Here`) はエンジンが入れるフック (`internal/chat`)。クライアントにはない
+3. 済み: 定義は hwnpud のもの。hwnpud を通すクライアントが聞くのは 2 つだけなので、ファイル (その読み込みは
+   取得の処理と絡んでいる) ではなく、エンジンの `ai.Host` の 2 つのメソッドにした: `Catalog` (`Store.Catalog`:
+   モデル、使い方とその選び方、別名、機械のメモリと NPU のベンダー) と `Find` (`Catalog.Find`、役割の確かめも。
+   ない名前は `*NoModelError` で返る)。それを持たない hwnpud には新しいものを入れるよう伝える。`ai` のパッケージは
+   自分のプロセスの道のために、段 4 まで `internal/chat` を読んだまま
+4a. 済み: `ai` のパッケージと `modelstore` はエンジンを読まない。`internal/chat` にしていたこと (表、ポリシー、
+   ライセンス、メモリ、取得) は `internal/aieng.Engine` で、`ai/engine` が入れる (`import _
+   "github.com/shibukawa/hwnpu/ai/engine"`)。それがないと、自分のプロセスの道はそう伝える (`aieng.ErrNone`)。
+   役割のパッケージを分けるまでは、それぞれと `cmd/hwnpu`、`internal/aihost` が `ai/engine` を読むので、
+   どのプログラムも変わらない
+4b. `ai/text` は済み (chat、translate、embed、decide): どの型も実装を呼ぶ。hwnpud のもの (`Remote`) か、
+   このプロセスのエンジンのもの。エンジンのものは `ai/text/engine` で、役割の `Prepare` と `Load` を
+   (`ai/text/internal/bridge` を通して) 入れ、自分のモデルをクライアントの型にする。両方がエンジンなしで
+   共有するもの (エラー、`AutoTarget`、`Cosine`) は `internal/chatwire`。`ai/engine` は `internal/aiengine`
+   (ai と modelstore の `aieng.Engine`) と役割のエンジンを集める。`ai` と `modelstore` のテストは
+   `internal/aiengine` だけを読む。`cmd/hwnpu-chat` は段 5 まで `ai/engine` を読む
+4c. ほかも同じ形で済み: `ai/vision`、`ai/speech`、`ai/sound`、`ai/imagegen`。それぞれ `engine` と
+   `internal/bridge` を持つ。クライアントがエンジンなしで要るものは `internal/visionwire` (COCO の分類、
+   キーポイント、ラベルなど)、`internal/speechwire` (WAV の読み書き、レート)、`internal/soundwire`
+   (レートと既定、MIDI、WAV)。これらはモデルの `code:` (model-recipes.yaml) にあるコードの写しで、
+   移すとハッシュが変わるので移さない。各エンジンのテストが、写しが元と同じ結果を返すことを確かめる。
+   そのコードを変えるときに、wire のパッケージを指すようにする。`imagegen.Export` は書き出しの family を
+   見分けるのにエンジンが要る。どのコマンドとサンプルも `ai/engine` を 1 か所で読む (コマンドは段 5 まで。
+   サンプルは `HWNPU_DAEMON=off` で動かすために) `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して
+   `airole.Register` で登録する。クライアントの型は実装を呼ぶ: hwnpud のもの (`Remote`) か、読んであれば
+   エンジンのもの
+5. 済み: `hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` はエンジンを読まない (`internal/boundary` が
+   確かめる)。モデルのほかにエンジンに聞いていたことは、`internal/cachecmd` と同じく、セッションに bind する
+   自分のインターフェースで hwnpud に聞く: `internal/chatcmd` (一覧、使い方の選んだもの、`--memory` を残すこと、
+   デバイスの確かめ、プロファイル)、`internal/imagewire` (一覧、書き出しの family、固定した書き出し、
+   `hwnpu-image convert`。hwnpud のエンジンで動かし、ログを返す)、`npustatus.Host` (`status --wake` の
+   デバイス)、`cachecmd.ListHost` (`hwnpu-audio list`)。`internal/aihost` が実装し、エンジンの側は
+   `internal/aieng` のほかのインターフェース (`aieng.Chat`、`aieng.M`)。`ai/cli`、`ai/server/openai`、
+   `internal/npustatus`、`internal/cachecmd` も軽い。`hwnpu-dev` はエンジンを持つ
+6. 済み: エンジンを読まずに `HWNPU_DAEMON=off` は `aieng.ErrNone` で、hwnpud を通すよう伝える。チェックアウトの
+   ものは `hwnpu-dev daemon -- COMMAND`
+
+最初に書いた段取り:
 
 1. クライアントの側だけにする。役割のパッケージ (`ai/text`、`ai/imagegen`、...) は型、`Remote`、使い方を残し、
    `Prepare` と `Load` (とそれが読むもの) はエンジンのパッケージに移して登録する (`airole.Register`)。それを

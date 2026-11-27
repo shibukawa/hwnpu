@@ -43,7 +43,8 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/chatwire"
 )
 
 // Server serves chat and embedding models with the OpenAI API. Each model runs one request at a
@@ -65,6 +66,11 @@ type Server struct {
 	// Dump, when set, is a directory that receives each chat request, its prompt and the
 	// generated text (ID.json), for finding out what a client sends.
 	Dump string
+	// Catalog is the definitions a request's model is looked up in when it names none of the
+	// models served (a use or a family names the model it picks here, Catalog.Find), and those
+	// of the embedding models' features; Load sets it (Runtime.Catalog). nil: the models' names
+	// alone.
+	Catalog *ai.Catalog
 
 	n atomic.Int64
 }
@@ -86,6 +92,11 @@ func Load(ctx context.Context, rt *ai.Runtime, chats []ai.Use[*text.Chatter], em
 		}
 		s.Embedders = append(s.Embedders, e)
 	}
+	cat, err := rt.Catalog()
+	if err != nil {
+		return nil, err
+	}
+	s.Catalog = cat
 	return s, nil
 }
 
@@ -112,21 +123,23 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		if c.Audio() {
 			in = append(in, "audio")
 		}
-		data = append(data, describe(c.Name(), chat.KindChat, c.Features(), map[string]any{"context_length": c.Context(),
+		data = append(data, describe(c.Name(), catalog.KindChat, c.Features(), map[string]any{"context_length": c.Context(),
 			"architecture": map[string]any{"input_modalities": in, "output_modalities": []string{"text"}}}))
 	}
 	for _, e := range s.Embedders {
 		f := []string{}
-		if m, ok := chat.Lookup(e.Model()); ok {
-			f = m.Features
+		if s.Catalog != nil {
+			if m, ok := s.Catalog.Model(e.Model()); ok && m.Features != nil {
+				f = m.Features
+			}
 		}
-		data = append(data, describe(e.Name(), chat.KindEmbed, f, map[string]any{"context_length": e.MaxTokens(), "dimensions": e.Dim()}))
+		data = append(data, describe(e.Name(), catalog.KindEmbed, f, map[string]any{"context_length": e.MaxTokens(), "dimensions": e.Dim()}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
 // describe is a model's entry in /v1/models: with its kind and its features (capabilities).
-func describe(name string, kind chat.Kind, features []string, more map[string]any) map[string]any {
+func describe(name string, kind catalog.Kind, features []string, more map[string]any) map[string]any {
 	m := map[string]any{"id": name, "object": "model", "created": 0, "owned_by": "hwnpu", "kind": kind,
 		"capabilities": append([]string{}, features...)}
 	for k, v := range more {
@@ -147,22 +160,25 @@ func (s *Server) names() (chats, embedders []string) {
 
 // route picks the model a request names among those of the endpoint's kind (names): the one of
 // that name, or the only one. A name of a model of the other kind (others) is an error, so that
-// a client set up with the wrong model finds out. It returns the index, or -1 with the error's
-// status and message.
-func route(model string, names, others []string, kind chat.Kind, other string) (int, int, string) {
+// a client set up with the wrong model finds out. pick is the model a family or a use names
+// here ("" for none; pick may be nil). It returns the index, or -1 with the error's status and
+// message.
+func route(model string, names, others []string, kind catalog.Kind, other string, pick func(string) string) (int, int, string) {
 	for i, n := range names {
 		if strings.EqualFold(model, n) {
 			return i, 0, ""
 		}
 	}
 	// a family or a use (translate, plamo3translate:2b) names the model it picks here
-	if m, _, ok, err := chat.Pick(model, chat.MachineMemory()); ok && err == nil {
-		for i, n := range names {
-			if strings.EqualFold(m.Name, n) {
-				return i, 0, ""
+	if pick != nil {
+		if p := pick(model); p != "" {
+			for i, n := range names {
+				if strings.EqualFold(p, n) {
+					return i, 0, ""
+				}
 			}
+			model = p
 		}
-		model = m.Name
 	}
 	for _, n := range others {
 		if strings.EqualFold(model, n) {
@@ -176,6 +192,24 @@ func route(model string, names, others []string, kind chat.Kind, other string) (
 		return 0, 0, ""
 	}
 	return -1, http.StatusNotFound, fmt.Sprintf("no %s model %q: the model is one of %s", kind, model, strings.Join(names, ", "))
+}
+
+// pick is the model a family or a use named model picks here (Catalog.Find, as a chat model,
+// else as an embedding model), "" for none: a model's own name picks none, as no name of the
+// definitions does.
+func (s *Server) pick(model string) string {
+	if s.Catalog == nil || model == "" {
+		return ""
+	}
+	if _, ok := s.Catalog.Model(model); ok {
+		return ""
+	}
+	for _, u := range []ai.Requirement{text.Chat(model), text.Embed(model)} {
+		if m, err := s.Catalog.Find(model, u); err == nil {
+			return m.Name
+		}
+	}
+	return ""
 }
 
 type chatRequest struct {
@@ -318,7 +352,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chats, embedders := s.names()
-	i, code, msg := route(req.Model, chats, embedders, chat.KindChat, "/v1/embeddings")
+	i, code, msg := route(req.Model, chats, embedders, catalog.KindChat, "/v1/embeddings", s.pick)
 	if i < 0 {
 		apiError(w, code, "invalid_request_error", "model_not_found", msg)
 		return
@@ -341,7 +375,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// a template that refuses the conversation, an image or a clip the model does not read
 		code, typ := http.StatusBadRequest, "invalid_request_error"
-		if errors.Is(err, chat.ErrClosed) || r.Context().Err() != nil {
+		if errors.Is(err, chatwire.ErrClosed) || r.Context().Err() != nil {
 			code, typ = http.StatusInternalServerError, "server_error"
 		}
 		apiError(w, code, typ, "", err.Error())
@@ -507,7 +541,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chats, embedders := s.names()
-	i, code, msg := route(req.Model, embedders, chats, chat.KindEmbed, "/v1/chat/completions")
+	i, code, msg := route(req.Model, embedders, chats, catalog.KindEmbed, "/v1/chat/completions", s.pick)
 	if i < 0 {
 		apiError(w, code, "invalid_request_error", "model_not_found", msg)
 		return

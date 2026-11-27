@@ -11,7 +11,8 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/aieng"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
@@ -100,14 +101,14 @@ func (d Definition) yaml(name string) ([]byte, error) {
 	}
 	if d.Device != "" {
 		e.Device = map[string]string{}
-		for _, v := range chat.Vendors {
+		for _, v := range catalog.Vendors {
 			e.Device[v] = d.Device
 		}
 	}
 	file := struct {
 		Version int               `yaml:"version"`
 		Models  map[string]*entry `yaml:"models"`
-	}{chat.TableVersion, map[string]*entry{name: &e}}
+	}{catalog.TableVersion, map[string]*entry{name: &e}}
 	return yaml.Marshal(file)
 }
 
@@ -145,7 +146,7 @@ func definitions(defs []Definition) ([]modelstore.Definitions, error) {
 
 // spec is what makes two preparations of a model differ beyond its name and its run (record.Run):
 // its device, settings and programs.
-func spec(m chat.Model) string {
+func spec(m catalog.Model) string {
 	var parts []string
 	for _, v := range slices.Sorted(maps.Keys(m.Device)) {
 		parts = append(parts, "device."+v+"="+m.Device[v])
@@ -166,13 +167,13 @@ func spec(m chat.Model) string {
 
 // base is the model of the definitions m was made from by the app (Definition.Like, through the
 // app's definitions made from others), m itself for one it did not make.
-func (s Store) base(m chat.Model) chat.Model {
+func (s Store) base(m catalog.Model) catalog.Model {
 	for range len(s.Definitions) + 1 {
 		i := slices.IndexFunc(s.Definitions, func(d Definition) bool { return d.ID() == m.Name })
 		if i < 0 || s.Definitions[i].Like == "" {
 			return m
 		}
-		b, ok := chat.Lookup(s.Definitions[i].Like)
+		b, ok := aieng.Must().Lookup(s.Definitions[i].Like)
 		if !ok {
 			return m
 		}

@@ -1,23 +1,19 @@
 package imagegen
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"image"
 	"io"
-	"math"
-	"slices"
-	"strings"
-	"sync"
+	"path/filepath"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/hwnpu/ai/imagegen/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // Generate is the use of a model that draws pictures for an app: a model, a family or a use of
@@ -64,35 +60,19 @@ const (
 )
 
 var (
-	role     = newRole("image", false)
-	editRole = newRole("image-edit", true)
+	role     = newRole("image")
+	editRole = newRole("image-edit")
 )
 
-// The families of the models the generator draws with (chat.Model's Family's prefix).
-const (
-	famKlein = "flux2-klein"
-	famFlux3 = "flux3-klein"
-	famAnima = "anima"
-)
-
-// familyOf is the family of the generator that draws with m, "" for none.
-func familyOf(m chat.Model) string {
-	for _, f := range []string{famKlein, famFlux3, famAnima} {
-		if strings.HasPrefix(m.Family, f) {
-			return f
-		}
-	}
-	return ""
-}
-
-// newRole is the role of a generator; edit prepares FLUX.2 klein's edits of a reference of the
-// picture's size too on Apple's Neural Engine (flux2klein.PrepareDevice: an export of their own,
-// compiled on the device), which Generate leaves out.
-func newRole(name string, edit bool) *airole.Role {
+// newRole is the role of a generator; its Prepare, Load and Usable are the engine's
+// (ai/imagegen/engine). image-edit prepares FLUX.2 klein's edits of a reference of the picture's
+// size too on Apple's Neural Engine (an export of their own, compiled on the device), which
+// Generate leaves out.
+func newRole(name string) *airole.Role {
 	return &airole.Role{
 		Name:   name,
 		Remote: func(h *airpc.Handle) io.Closer { return &Generator{remote: h} },
-		Kinds:  []chat.Kind{chat.KindImage},
+		Kinds:  []catalog.Kind{catalog.KindImage},
 		// 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		// 2: Anima, Chroma (since removed) and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
 		// 3: FLUX.2 klein's export on Apple's of every size and edit in one, and one beside it
@@ -102,103 +82,50 @@ func newRole(name string, edit bool) *airole.Role {
 		// its one reference of a picture of 1024 x 1024 at 512), where the store's record names the
 		// other chips', whose prebuilt programs draw noise on it
 		Revision: 5,
-		Usable:   currentExport,
-		Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
-			var f airole.Files
-			fam := familyOf(e.Base)
-			if dir := first(e.Model.Programs[ProgramExport]); dir != "" {
-				fam = exportFamily(dir)
-				if fam == "" {
-					return f, fmt.Errorf("ai/imagegen: %s is no export of a picture model (FLUX.2 klein, FLUX.3 klein, Anima)", dir)
-				}
-			}
-			var err error
-			switch fam {
-			case famKlein:
-				f, err = prepareKlein(e, edit)
-			case famFlux3:
-				f, err = prepareFlux3(e)
-			case famAnima:
-				f, err = prepareAnima(e)
-			default:
-				return f, fmt.Errorf("ai/imagegen: %s is not drawn by the library (FLUX.2 klein, FLUX.3 klein and Anima are)", e.Model.Name)
-			}
-			f.SetValue("family", fam)
-			f.SetValue("base", e.Base.Name)
-			if first(e.Model.Programs[ProgramExport]) != "" {
-				f.SetValue(valueGiven, "true") // the definition's export, by path: currentExport leaves it
-			}
-			return f, err
-		},
-		Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-			g := &Generator{name: e.Model, log: e.Log, family: f.Values["family"]}
-			g.model, _ = chat.Lookup(f.Values["base"])
-			if g.model.Name == "" {
-				g.model = e.Def
-			}
-			var err error
-			switch g.family {
-			case famKlein:
-				g.p, err = loadKlein(ctx, g, f, e)
-			case famFlux3:
-				g.p, err = loadFlux3(ctx, g, f, e)
-			case famAnima:
-				g.p, err = loadAnima(ctx, g, f, e)
-			default:
-				err = fmt.Errorf("ai/imagegen: %s was prepared for no family the library draws (%q)", e.Model, g.family)
-			}
-			if err != nil {
-				if g.dev != nil {
-					g.dev.Close()
-				}
-				return nil, err
-			}
-			return g, nil
-		},
 	}
 }
 
-func first(s []string) string {
-	if len(s) > 0 {
-		return s[0]
+// Export is the model an export's directory runs as (an ai.Definition the app defines and uses
+// by its ID): an export of tools/amd/iron_flux2klein.py, iron_flux3klein.py or iron_anima.py
+// for AMD's NPU, or of hwnpu-image convert (Anima) and the library's conversions for Apple's
+// Neural Engine or Intel's NPU. It is like the family's model of the definitions
+// (FLUX.2-klein-4B, flux-3-image-klein, Anima-Turbo), which names
+// it and its license; the export's own files say how it draws. It reads the export with the
+// engine (import _ "github.com/shibukawa/hwnpu/ai/engine").
+func Export(dir string) (ai.Definition, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return ai.Definition{}, err
 	}
-	return ""
-}
-
-// family is what draws a family's pictures on a Generator: its pipeline, opened for a size
-// at a time.
-type family interface {
-	// draw draws r's pictures at r.size.
-	draw(ctx context.Context, r *run) error
-	// warm draws a picture of one step at size, which compiles its programs.
-	warm(ctx context.Context, r *run) error
-	close() error
+	if bridge.ExportFamily == nil {
+		return ai.Definition{}, fmt.Errorf("ai/imagegen: reading the export %s takes the engine (import _ \"github.com/shibukawa/hwnpu/ai/engine\")", dir)
+	}
+	like := map[string]string{bridge.FamKlein: "FLUX.2-klein-4B", bridge.FamFlux3: "flux-3-image-klein", bridge.FamAnima: "Anima-Turbo"}[bridge.ExportFamily(abs)]
+	if like == "" {
+		return ai.Definition{}, fmt.Errorf("ai/imagegen: %s is no export of a picture model (FLUX.2 klein, FLUX.3 klein, Anima)", dir)
+	}
+	return ai.Definition{Like: like, Programs: map[string][]string{ProgramExport: {abs}}}, nil
 }
 
 // Generator draws pictures. It draws one at a time; others wait.
 type Generator struct {
 	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	mu     sync.Mutex
-	dev    *hwnpu.Device // nil on the CPU interpreter
-	name   string
-	model  chat.Model // the model of the definitions it was made from
-	family string
-	sizes  []image.Point
-	// parse is SizeOf's: a size's name as the family reads it
-	parse func(spec string) (w, h int, err error)
-	log   io.Writer
-	// edits is whether it draws from references; warmAll whether Warm draws every size (FLUX.2
-	// klein on Apple's), else the first; amd whether it runs on AMD's NPU, whose programs are made
-	// at Prepare (Warm does nothing)
-	edits, warmAll, amd bool
-	// editSizes are the sizes it draws from references at, nil for every one of sizes; editRefs
-	// the references of each size's edits, each the picture's sides over 1 or 2 in order
-	// (FLUX.2 klein: models.yaml npu.apple and npu.amd edits). A size it lacks (or a nil
-	// editRefs) draws from any number of the picture's size (AMD's sizes the table leaves out),
-	// and only when it is the nearest to the size asked
-	editSizes []image.Point
-	editRefs  map[image.Point][][]int
-	p         family
+	local  generatorImpl // the engine's (ai/imagegen/engine), when it is here
+}
+
+// generatorImpl is a picture model of the engine in this process: Generator's methods but those
+// made of them.
+type generatorImpl interface {
+	Model() string
+	Family() string
+	Edits() bool
+	Sizes() []image.Point
+	EditSizes() []image.Point
+	SizeFor(w, h int) image.Point
+	SizeOf(spec string) (image.Point, error)
+	Warm(ctx context.Context) error
+	GenerateAll(ctx context.Context, prompts []string, o Options) (*Pictures, error)
+	Close() error
 }
 
 // Model is the name of the model in the definitions.
@@ -206,7 +133,7 @@ func (g *Generator) Model() string {
 	if g.remote != nil {
 		return airpc.Value[string](g.remote, "Model")
 	}
-	return g.name
+	return g.local.Model()
 }
 
 // Family is the model's family: flux2-klein, flux3-klein or anima.
@@ -214,7 +141,7 @@ func (g *Generator) Family() string {
 	if g.remote != nil {
 		return airpc.Value[string](g.remote, "Family")
 	}
-	return g.family
+	return g.local.Family()
 }
 
 // Edits reports whether it draws from reference pictures (Options.References).
@@ -222,7 +149,7 @@ func (g *Generator) Edits() bool {
 	if g.remote != nil {
 		return airpc.Value[bool](g.remote, "Edits")
 	}
-	return g.edits
+	return g.local.Edits()
 }
 
 // Sizes are the picture sizes the model draws on this machine's NPU.
@@ -230,7 +157,7 @@ func (g *Generator) Sizes() []image.Point {
 	if g.remote != nil {
 		return airpc.Value[[]image.Point](g.remote, "Sizes")
 	}
-	return append([]image.Point(nil), g.sizes...)
+	return g.local.Sizes()
 }
 
 // EditSizes are the picture sizes it draws from references at on this machine's NPU (none when it
@@ -239,13 +166,7 @@ func (g *Generator) EditSizes() []image.Point {
 	if g.remote != nil {
 		return airpc.Value[[]image.Point](g.remote, "EditSizes")
 	}
-	if !g.edits {
-		return nil
-	}
-	if g.editSizes == nil {
-		return g.Sizes()
-	}
-	return append([]image.Point(nil), g.editSizes...)
+	return g.local.EditSizes()
 }
 
 // SizeFor is the size of Sizes nearest w x h in shape; between sizes of one shape, the nearest
@@ -255,56 +176,7 @@ func (g *Generator) SizeFor(w, h int) image.Point {
 	if g.remote != nil {
 		return airpc.Value[image.Point](g.remote, "SizeFor", w, h)
 	}
-	return byNearness(g.sizes, w, h)[0]
-}
-
-// byNearness is sizes from the nearest w x h in shape, then in pixels (as they are for none).
-func byNearness(sizes []image.Point, w, h int) []image.Point {
-	out := slices.Clone(sizes)
-	if w <= 0 || h <= 0 {
-		return out
-	}
-	score := func(s image.Point) float64 {
-		shape := math.Abs(math.Log(float64(w)/float64(h)) - math.Log(float64(s.X)/float64(s.Y)))
-		area := math.Abs(math.Log(float64(w)*float64(h)) - math.Log(float64(s.X)*float64(s.Y)))
-		return shape*100 + area
-	}
-	slices.SortStableFunc(out, func(a, b image.Point) int { return cmp.Compare(score(a), score(b)) })
-	return out
-}
-
-// editFor is the size and the references (the picture's sides over each) of an edit from n
-// references for a picture of about w x h: the nearest of EditSizes with an edit of n. A size
-// editRefs leaves out takes any number of the picture's size, but only as the nearest: an edit
-// of a number the table of the nearest sizes lacks (4 at 1024 x 1024) is not drawn at another
-// shape, so it fails as on Apple's.
-func (g *Generator) editFor(w, h, n int) (image.Point, []int, error) {
-	sizes := byNearness(g.EditSizes(), w, h)
-	for i, s := range sizes {
-		refs, ok := g.editRefs[s]
-		if !ok {
-			if i > 0 {
-				continue
-			}
-			divs := make([]int, n)
-			for i := range divs {
-				divs[i] = 1
-			}
-			return s, divs, nil
-		}
-		for _, r := range refs {
-			if len(r) == n {
-				return s, r, nil
-			}
-		}
-	}
-	var have []string
-	for _, s := range sizes {
-		for _, r := range g.editRefs[s] {
-			have = append(have, fmt.Sprintf("%s at %d x %d", referenceNames(r), s.X, s.Y))
-		}
-	}
-	return image.Point{}, nil, fmt.Errorf("ai/imagegen: %s here draws from no %d reference(s) (it draws from %s)", g.name, n, strings.Join(have, ", "))
+	return g.local.SizeFor(w, h)
 }
 
 // SizeOf is the size a name of one means for the model, as hwnpu-image's --size takes it: an
@@ -315,11 +187,7 @@ func (g *Generator) SizeOf(spec string) (image.Point, error) {
 	if g.remote != nil {
 		return airpc.Call1[image.Point](g.remote, context.Background(), "SizeOf", spec)
 	}
-	w, h, err := g.parse(spec)
-	if err != nil {
-		return image.Point{}, err
-	}
-	return image.Pt(w, h), nil
+	return g.local.SizeOf(spec)
 }
 
 // Warm draws a picture of one step at each of Sizes (FLUX.2 klein; the first size alone for the
@@ -332,33 +200,7 @@ func (g *Generator) Warm(ctx context.Context) error {
 	if g.remote != nil {
 		return airpc.Call0(g.remote, ctx, "Warm")
 	}
-	if g.amd || g.dev == nil {
-		return nil
-	}
-	sizes := g.Sizes()
-	if !g.warmAll {
-		sizes = sizes[:1]
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for _, s := range sizes {
-		o := Options{Width: s.X, Height: s.Y, Steps: 1, Seed: 1}
-		if at, _, err := g.editFor(s.X, s.Y, 1); g.edits && err == nil && at == s {
-			ref := image.NewRGBA(image.Rect(0, 0, s.X, s.Y))
-			for i := range ref.Pix {
-				ref.Pix[i] = 128
-			}
-			o.References = []image.Image{ref}
-		}
-		if g.log != nil {
-			fmt.Fprintf(g.log, "  compiling the programs of %d x %d: a picture of one step\n", s.X, s.Y)
-		}
-		r := g.newRun([]string{"a gray picture"}, o)
-		if err := g.p.warm(ctx, r); err != nil {
-			return fmt.Errorf("ai/imagegen: warming %d x %d: %w", s.X, s.Y, err)
-		}
-	}
-	return nil
+	return g.local.Warm(ctx)
 }
 
 // Generate draws a picture from a prompt, and from the references when there are any (an edit).
@@ -382,19 +224,7 @@ func (g *Generator) GenerateAll(ctx context.Context, prompts []string, o Options
 		// the callbacks of o (Progress, Drawn, ...) are called here as hwnpud draws
 		return airpc.Call1[*Pictures](g.remote, ctx, "GenerateAll", prompts, o)
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if len(o.References) > 0 && !g.edits {
-		if g.family == famKlein {
-			return nil, fmt.Errorf("ai/imagegen: %s draws from references on Apple's Neural Engine with the edit's programs: use imagegen.Edit in place of imagegen.Generate", g.name)
-		}
-		return nil, fmt.Errorf("ai/imagegen: %s draws from a prompt alone (no references)", g.name)
-	}
-	r := g.newRun(prompts, o)
-	if err := g.p.draw(ctx, r); err != nil {
-		return nil, err
-	}
-	return r.finish(), nil
+	return g.local.GenerateAll(ctx, prompts, o)
 }
 
 // Request is what a GenerateNode reads: a prompt, and the pictures it edits or composes from.
@@ -425,30 +255,14 @@ func (g *Generator) Close() error {
 	if g.remote != nil {
 		return g.remote.Release() // the Runtime in hwnpud unloads it
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	var err error
-	if g.p != nil {
-		err = g.p.close()
-		g.p = nil
-	}
-	if g.dev != nil {
-		if e := g.dev.Close(); err == nil {
-			err = e
-		}
-		g.dev = nil
-	}
-	return err
-}
-
-// logf writes a line of the generator's log.
-func (g *Generator) logf(format string, args ...any) {
-	if g.log != nil {
-		fmt.Fprintf(g.log, format+"\n", args...)
-	}
+	return g.local.Close()
 }
 
 func init() {
-	airole.Register(role)
-	airole.Register(editRole)
+	wrap := func(l any) io.Closer { return &Generator{local: l.(generatorImpl)} }
+	for _, r := range []*airole.Role{role, editRole} {
+		airole.Register(r)
+		bridge.Roles[r.Name] = r
+		bridge.Wrap[r.Name] = wrap
+	}
 }

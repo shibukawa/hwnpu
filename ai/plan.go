@@ -13,8 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/aieng"
 	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/daemon"
 	shared "github.com/shibukawa/hwnpu/internal/store"
@@ -94,7 +95,7 @@ type Item struct {
 	// MemoryGB is what the model takes running, from the definitions (0: not known).
 	MemoryGB float64 `json:"memory_gb"`
 
-	model chat.Model
+	model catalog.Model
 	req   requirement
 }
 
@@ -125,17 +126,17 @@ func (e *LicenseError) Error() string {
 		terms = ": " + l.Terms
 	}
 	return fmt.Sprintf("ai: %s is under the %s license (%s)%s, which asks to be accepted before the model is downloaded (Plan.AcceptLicenses, or %s=%s)",
-		l.Model, l.ID, l.URL, terms, chat.LicenseEnv, l.ID)
+		l.Model, l.ID, l.URL, terms, catalog.LicenseEnv, l.ID)
 }
 
 // resolve finds the model a requirement means for a machine of memory GB (0: this one, with the
 // memory chosen for each model, hwnpu memory), as hwnpu's commands find it: by the name of the
 // requirement's tier for that memory (Use.At), picked as a machine of its own memory would when
 // it has one (Use.As).
-func resolve(r requirement, memory int) (m chat.Model, why string, err error) {
-	name, tier := r.pick(cmp.Or(memory, chat.MachineMemory()))
+func resolve(r requirement, memory int) (m catalog.Model, why string, err error) {
+	name, tier := r.pick(cmp.Or(memory, aieng.Must().MachineMemory()))
 	var log strings.Builder
-	m, ok, err := chat.LookupOn(name, cmp.Or(r.as, memory), &log)
+	m, ok, err := aieng.Must().LookupOn(name, cmp.Or(r.as, memory), &log)
 	if err != nil {
 		return m, "", fmt.Errorf("ai: %w", err)
 	}
@@ -177,7 +178,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 	if err := a.Store.open(); err != nil {
 		return nil, err
 	}
-	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, chat.MachineMemory()), turns: a.turns}
+	p := &Plan{store: a.Store, npu: airole.Here(ctx), machine: cmp.Or(a.memory, aieng.Must().MachineMemory()), turns: a.turns}
 	for _, r := range reqs {
 		m, why, err := resolve(r, a.memory)
 		if err != nil {
@@ -200,7 +201,7 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		case err != nil && !errors.Is(err, ErrNotPrepared) && !errors.Is(err, ErrBundleTarget):
 			return nil, err
 		}
-		if !it.Ready && !chat.Downloaded(m) && len(m.Programs) == 0 {
+		if !it.Ready && !aieng.Must().Downloaded(m) && len(m.Programs) == 0 {
 			it.Download = int64(m.BytesFor(p.npu.Vendor))
 		}
 		p.Items = append(p.Items, it)
@@ -348,13 +349,13 @@ func (p *Plan) Licenses() []License {
 	return out
 }
 
-func license(m chat.Model) License {
+func license(m catalog.Model) License {
 	ml := m.License
 	l := License{Model: m.Name, Repo: m.Source(), ID: ml.ID, Class: ml.Class, Terms: ml.Terms, URL: ml.URL, Accept: ml.Accept}
 	if l.URL == "" && m.Repo != "" {
 		l.URL = "https://huggingface.co/" + m.Repo
 	}
-	l.Accepted = !l.Accept || chat.AcceptLicense(m, false, false, nil, io.Discard) == nil
+	l.Accepted = !l.Accept || aieng.Must().AcceptLicense(m, false, false, nil, io.Discard) == nil
 	return l
 }
 
@@ -493,13 +494,13 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 				if !p.AcceptLicenses {
 					return &LicenseError{License: l}
 				}
-				if err := chat.AcceptLicense(it.model, true, false, nil, out); err != nil {
+				if err := aieng.Must().AcceptLicense(it.model, true, false, nil, out); err != nil {
 					return fmt.Errorf("ai: %w", err)
 				}
 			}
 			report(StagePrepare, "")
-			dir := chat.ModelDir(it.model)
-			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: chat.WithModel(ctx, it.model), Model: it.model, Base: p.store.base(it.model), Dir: dir, NPU: p.npu, Log: out})
+			dir := aieng.Must().ModelDir(it.model)
+			files, err := it.req.role.Prepare(airole.PrepareEnv{Ctx: aieng.Must().WithModel(ctx, it.model), Model: it.model, Base: p.store.base(it.model), Dir: dir, NPU: p.npu, Log: out})
 			if err != nil {
 				return fmt.Errorf("ai: preparing %s (%s): %w", it.Use, it.Model, err)
 			}
@@ -519,7 +520,7 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) (err error) {
 			log.fn = func(line string) { report(StageCompile, line) }
 			t0 := time.Now()
 			// the model in the context too: what a load converts (a size at its first picture) is made from its recipe
-			l, err := it.req.role.Load(chat.WithModel(ctx, it.model), r.Files, airole.LoadEnv{Model: it.Model, Def: it.model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out, AllowOffNPU: p.AllowOffNPU})
+			l, err := it.req.role.Load(aieng.Must().WithModel(ctx, it.model), r.Files, airole.LoadEnv{Model: it.Model, Def: it.model, NPU: p.npu, Cache: p.store.cacheDir(), Log: out, AllowOffNPU: p.AllowOffNPU})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
 			}

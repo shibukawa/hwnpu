@@ -9,8 +9,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/shibukawa/hwnpu/internal/aieng"
 	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // What hwnpud's engine (internal/aihost) does with the app a client sends: it makes the app
@@ -19,7 +20,7 @@ import (
 
 // AppFromSpec is the app a client sent (App.Spec), its roles those this process registered
 // (airole.Lookup), its models run here whatever HWNPU_DAEMON says. The client's model policy
-// narrows this process's (chat.AllowedAlso).
+// narrows this process's (the engine's AllowedAlso).
 func AppFromSpec(s AppSpec) (*App, error) {
 	a := &App{Name: s.Name, Store: s.Store.store(), memory: s.Memory, turns: s.Turns, local: true, allowlist: s.Allowlist}
 	for _, u := range s.Uses {
@@ -37,11 +38,11 @@ func AppFromSpec(s AppSpec) (*App, error) {
 }
 
 // allowed is nil when the policy, narrowed by the client's of an app hwnpud made, allows m.
-func (a *App) allowed(m chat.Model) error {
+func (a *App) allowed(m catalog.Model) error {
 	if strings.TrimSpace(a.allowlist) == "" {
 		return nil
 	}
-	return chat.AllowedAlso(m, a.allowlist)
+	return aieng.Must().AllowedAlso(m, a.allowlist)
 }
 
 // Spec is the plan as hwnpud sends it to its client.

@@ -2,23 +2,16 @@ package vision
 
 import (
 	"context"
-	"fmt"
 	"image"
 	"io"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/vision/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
-	"github.com/shibukawa/hwnpu/internal/llm"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vision/siglip"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/visionwire"
 )
 
 // Label is the use of a model that labels pictures and embeds pictures and texts in one space
@@ -31,87 +24,27 @@ func Label(name string) ai.Use[*Labeler] {
 // directory of tools/amd/iron_siglip2.py, or one Prepare made for Apple's Neural Engine)
 // (common.go). It runs on AMD's NPU from the export of iron_siglip2.py, and on Apple's Neural
 // Engine from the checkpoint converted into Core AI programs on the first run (with settings
-// cpu: interpreter, into Core ML packages that the CPU interpreter runs).
+// cpu: interpreter, into Core ML packages that the CPU interpreter runs). labelRole's Prepare
+// and Load are the engine's (ai/vision/engine).
 var labelRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &Labeler{remote: h} },
 	Name:   "label",
-	Kinds:  []chat.Kind{chat.KindLabel},
-	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
-		m := e.Model
-		dir := program(m, "export")
-		if dir == "" {
-			format := ""
-			switch {
-			case interpreter(m):
-				format = llm.BackendCoreML // what the CPU interpreter runs
-			case !e.NPU.AMD():
-				format = e.NPU.Format
-			}
-			switch format {
-			case llm.BackendCoreML, llm.BackendCoreAI:
-				dir, err = siglip.Prepare(chat.WithModel(e.Ctx, m), siglip.Setup{Dir: chat.ModelsDir(), Repo: m.Source(), Name: e.Base.Name, Format: format, Log: e.Log})
-			case "":
-				dir, err = chat.AMDPictureExport(e.Ctx, e.Base, "tools/amd/iron_siglip2.py", 0, e.Log)
-			default:
-				err = fmt.Errorf("SigLIP 2 runs on AMD's NPU and Apple's Neural Engine so far (this machine's NPU takes %s programs)", format)
-			}
-			if err != nil {
-				return f, err
-			}
-		}
-		x, err := siglip.ReadExport(dir)
-		if err != nil {
-			return f, err
-		}
-		if !siglip.IsProgramFormat(x.Format) && e.NPU.AMD() {
-			iron.ShareExport(dir, logf(e.Log))
-		}
-		f.Set("export", dir)
-		return f, nil
-	},
-	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		dir := f.Path("export")
-		x, err := siglip.ReadExport(dir)
-		if err != nil {
-			return nil, err
-		}
-		var dev *hwnpu.Device
-		switch {
-		case siglip.IsProgramFormat(x.Format) && interpreter(e.Def):
-		case siglip.IsProgramFormat(x.Format):
-			if dev, _, err = llm.OpenDevice(ctx, imagedev.ExportDevice(x.Format, e.NPU.Device), e.Cache, hwnpu.WithPlacement(hwnpu.PlacementStrict)); err != nil {
-				return nil, err
-			}
-		default:
-			if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
-				return nil, err
-			}
-		}
-		m, err := siglip.Open(ctx, dev, dir)
-		if err != nil {
-			if dev != nil {
-				dev.Close()
-			}
-			return nil, err
-		}
-		m.Logf = logf(e.Log)
-		return &Labeler{m: m, dev: dev, name: e.Model, dir: dir}, nil
-	},
+	Kinds:  []catalog.Kind{catalog.KindLabel},
 }
 
 // DefaultLabels are about 440 common things, places and kinds of picture, the labels a picture
 // is labeled with when an app gives none.
-func DefaultLabels() []string { return siglip.DefaultLabels() }
+func DefaultLabels() []string { return visionwire.DefaultLabels() }
 
 // ParseLabels is the labels of a list: one a line, blank lines and lines starting with # left
 // out.
-func ParseLabels(s string) []string { return siglip.ParseLabels(s) }
+func ParseLabels(s string) []string { return visionwire.ParseLabels(s) }
 
 // DefaultTemplate is the sentence each label is put in by default, {} the label.
 const DefaultTemplate = "this is a photo of {}."
 
 // Cosine is the cosine of two embeddings (their dot product: they are normalized).
-func Cosine(a, b []float32) float64 { return siglip.Dot(a, b) }
+func Cosine(a, b []float32) float64 { return visionwire.Dot(a, b) }
 
 // Embedding is the embedding of a picture or a text: normalized, Labeler.Dim long.
 type Embedding []float32
@@ -170,11 +103,21 @@ type Labels struct {
 // time; others wait.
 type Labeler struct {
 	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	mu     sync.Mutex
-	m      *siglip.Model
-	dev    *hwnpu.Device
-	name   string
-	dir    string
+	local  labelerImpl   // the engine's (ai/vision/engine), when it is here
+}
+
+// labelerImpl is a label model of the engine in this process.
+type labelerImpl interface {
+	Model() string
+	Export() string
+	ImageSize() int
+	Dim() int
+	EmbedPicture(ctx context.Context, img image.Image) (*PictureEmbedding, error)
+	EmbedTexts(ctx context.Context, texts []string) (*TextEmbeddings, error)
+	Candidates(ctx context.Context, labels []string, o CandidateOptions) (*Candidates, error)
+	Rank(e Embedding, c *Candidates, o RankOptions) []Scored
+	Probability(picture, text Embedding) float64
+	Close() error
 }
 
 // Model is the name of the model in the definitions.
@@ -182,7 +125,7 @@ func (l *Labeler) Model() string {
 	if l.remote != nil {
 		return airpc.Value[string](l.remote, "Model")
 	}
-	return l.name
+	return l.local.Model()
 }
 
 // Export is the directory of the export or the programs the model runs from.
@@ -190,7 +133,7 @@ func (l *Labeler) Export() string {
 	if l.remote != nil {
 		return airpc.Value[string](l.remote, "Export")
 	}
-	return l.dir
+	return l.local.Export()
 }
 
 // ImageSize is the side of the square pictures are stretched to, Dim the embeddings' length.
@@ -198,13 +141,13 @@ func (l *Labeler) ImageSize() int {
 	if l.remote != nil {
 		return airpc.Value[int](l.remote, "ImageSize")
 	}
-	return l.m.Config.Image
+	return l.local.ImageSize()
 }
 func (l *Labeler) Dim() int {
 	if l.remote != nil {
 		return airpc.Value[int](l.remote, "Dim")
 	}
-	return l.m.Dim()
+	return l.local.Dim()
 }
 
 // EmbedPicture is a picture's embedding.
@@ -212,14 +155,7 @@ func (l *Labeler) EmbedPicture(ctx context.Context, img image.Image) (*PictureEm
 	if l.remote != nil {
 		return airpc.Call1[*PictureEmbedding](l.remote, ctx, "EmbedPicture", img)
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	t0 := time.Now()
-	e, err := l.m.Image(ctx, img)
-	if err != nil {
-		return nil, err
-	}
-	return &PictureEmbedding{Embedding: e, Took: time.Since(t0), Input: l.m.Times[0], NPU: l.m.Times[1]}, nil
+	return l.local.EmbedPicture(ctx, img)
 }
 
 // EmbedTexts are texts' embeddings (lowercased, as SigLIP 2 was trained).
@@ -227,23 +163,7 @@ func (l *Labeler) EmbedTexts(ctx context.Context, texts []string) (*TextEmbeddin
 	if l.remote != nil {
 		return airpc.Call1[*TextEmbeddings](l.remote, ctx, "EmbedTexts", texts)
 	}
-	return l.texts(ctx, texts, "")
-}
-
-func (l *Labeler) texts(ctx context.Context, texts []string, keep string) (*TextEmbeddings, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	t0 := time.Now()
-	l.m.Times = [3]time.Duration{}
-	es, err := l.m.CachedTexts(ctx, texts, keep)
-	if err != nil {
-		return nil, err
-	}
-	out := &TextEmbeddings{Took: time.Since(t0), NPU: l.m.Times[1]}
-	for _, e := range es {
-		out.Embeddings = append(out.Embeddings, e)
-	}
-	return out, nil
+	return l.local.EmbedTexts(ctx, texts)
 }
 
 // Candidates embeds labels, each put in the options' sentence, to label pictures with (Rank):
@@ -253,26 +173,7 @@ func (l *Labeler) Candidates(ctx context.Context, labels []string, o CandidateOp
 	if l.remote != nil {
 		return airpc.Call1[*Candidates](l.remote, ctx, "Candidates", labels, o)
 	}
-	tmpl := o.Template
-	if tmpl == "" {
-		tmpl = DefaultTemplate
-	}
-	if !strings.Contains(tmpl, "{}") {
-		return nil, fmt.Errorf("vision: the template %q has no {}", tmpl)
-	}
-	sentences := make([]string, len(labels))
-	for i, s := range labels {
-		sentences[i] = strings.ReplaceAll(tmpl, "{}", s)
-	}
-	keep := ""
-	if !o.NoCache {
-		keep = cache.Sub("siglip")
-	}
-	t, err := l.texts(ctx, sentences, keep)
-	if err != nil {
-		return nil, err
-	}
-	return &Candidates{Labels: append([]string(nil), labels...), TextEmbeddings: *t}, nil
+	return l.local.Candidates(ctx, labels, o)
 }
 
 // Rank is the candidates by their probability for the picture of embedding e, the likeliest
@@ -282,18 +183,7 @@ func (l *Labeler) Rank(e Embedding, c *Candidates, o RankOptions) []Scored {
 	if l.remote != nil {
 		return airpc.Value[[]Scored](l.remote, "Rank", e, c, o)
 	}
-	texts := make([][]float32, len(c.Embeddings))
-	for i, t := range c.Embeddings {
-		texts[i] = t
-	}
-	out := []Scored{}
-	for _, s := range l.m.Rank(e, c.Labels, texts) {
-		if (o.Top > 0 && len(out) >= o.Top) || s.Score < o.Min {
-			break
-		}
-		out = append(out, Scored{Label: s.Label, Score: s.Score})
-	}
-	return out
+	return l.local.Rank(e, c, o)
 }
 
 // Label labels a picture with the candidates: EmbedPicture, then Rank.
@@ -311,7 +201,7 @@ func (l *Labeler) Probability(picture, text Embedding) float64 {
 	if l.remote != nil {
 		return airpc.Value[float64](l.remote, "Probability", picture, text)
 	}
-	return l.m.Probability(picture, text)
+	return l.local.Probability(picture, text)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
@@ -319,15 +209,11 @@ func (l *Labeler) Close() error {
 	if l.remote != nil {
 		return l.remote.Release() // the Runtime in hwnpud unloads it
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	err := l.m.Close()
-	if l.dev != nil {
-		l.dev.Close()
-	}
-	return err
+	return l.local.Close()
 }
 
 func init() {
 	airole.Register(labelRole)
+	bridge.Roles[labelRole.Name] = labelRole
+	bridge.Wrap[labelRole.Name] = func(l any) io.Closer { return &Labeler{local: l.(labelerImpl)} }
 }

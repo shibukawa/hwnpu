@@ -10,25 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
-
-// Category is a use that names the model recommended for it on the machine (MODEL.md's rows):
-// -use translate. Picks go by the machine's memory: the one of the largest Machine the machine
-// has. CATEGORY:TAG picks the model of that tag among them (translate:0.8b).
-type Category struct {
-	Name    string
-	Aliases []string
-	About   string
-	Picks   []CategoryPick
-}
-
-// CategoryPick is a model of a category and the least memory of a machine, in GB, it is
-// recommended for there.
-type CategoryPick struct {
-	Machine int
-	Model   string // its name in Catalog
-}
 
 // Categories are MODEL.md's rows, with its columns of memory: the categories of the definition
 // files (models.yaml, LoadModels).
@@ -54,19 +38,6 @@ func MachineMemory() int {
 
 // Columns are MODEL.md's columns of machine memory, in GB: the memory tags (8g, 16g, ...).
 var Columns = []int{8, 16, 24, 32, 48, 64}
-
-// MemoryTag reads a tag of memory, N g or N gb (8g, 16GB): the model a machine of N GB gets.
-func MemoryTag(tag string) (int, bool) {
-	t := tagOf(tag)
-	num, ok := strings.CutSuffix(t, "gb")
-	if !ok {
-		if num, ok = strings.CutSuffix(t, "g"); !ok {
-			return 0, false
-		}
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(num)) // 8 g, 8 GB too
-	return n, err == nil && n > 0
-}
 
 // fold is a name as names are compared: in lower case without '-', '_', '.' and spaces, so that
 // plamo-3-translate, PLaMo3Translate and plamo3translate are one.
@@ -133,7 +104,7 @@ func Pick(name string, machine int) (m Model, why string, ok bool, err error) {
 // family that a machine of machine GB picks instead, with ok; Model{} when it has none. m
 // itself, ok false, when m is picked here.
 func notOnHere(m Model, machine int) (alt Model, ok bool) {
-	chip := chipName()
+	chip := catalog.ChipName()
 	if chip == "" || !slices.Contains(m.NotOn, chip) {
 		return m, false
 	}
@@ -239,7 +210,7 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		cands[i] = cands[i].On(machine)
 	}
 	best, found := cands[0], false
-	chip := chipName()
+	chip := catalog.ChipName()
 	var skipped []string
 	for _, c := range cands {
 		if c.Machine > machine {

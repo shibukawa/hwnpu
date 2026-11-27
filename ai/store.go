@@ -17,7 +17,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
@@ -39,6 +39,9 @@ type Store struct {
 	// Definitions are models the app makes as it runs (App.Define), read over the definitions
 	// of Models.
 	Definitions []Definition
+
+	// local reads the definitions in this process, not hwnpud's: hwnpud's own (StoreSpec.store)
+	local bool
 }
 
 // openMu keeps the process's layers and definitions (modelstore.Open) from changing while a
@@ -98,7 +101,7 @@ type record struct {
 	Role  string `json:"role"`
 	// Run is the model's definition for the memory it runs as (Model.On): the variant its
 	// programs were converted for.
-	Run chat.Run `json:"run"`
+	Run catalog.Run `json:"run"`
 	// Spec is what else the model was prepared as (its device, settings and programs: spec).
 	Spec     string    `json:"spec,omitempty"`
 	MemoryGB float64   `json:"memory_gb,omitempty"`
@@ -257,7 +260,7 @@ type located struct {
 // app runs now (its line-up changed, or the machine's memory did), so it is as good as not there.
 // A prepared cache that has the use for other NPUs alone is reported as ErrBundleTarget when
 // nothing else is found.
-func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int, usable func(airole.Files) error) (located, error) {
+func (s Store) find(key string, npu airole.NPU, want catalog.Model, revision int, usable func(airole.Files) error) (located, error) {
 	var mismatch, unusable error
 	stale, older := "", false
 	target := targetKey(npu)
@@ -341,7 +344,7 @@ func (s Store) find(key string, npu airole.NPU, want chat.Model, revision int, u
 // compiledAs marks r compiled for this program when another use's record of the same model in
 // m says this program compiled it: Apple's compiler keeps its cache by the program and the
 // model's programs, not by the use (hwnpud compiles every app's).
-func compiledAs(m *manifest, target, key string, want chat.Model, r *record) {
+func compiledAs(m *manifest, target, key string, want catalog.Model, r *record) {
 	role, _, _ := strings.Cut(key, ":")
 	for other, o := range m.Targets[target] {
 		if other == key || o.Role != role || o.Model != want.Name || o.Run != want.Run || o.Spec != spec(want) || o.Revision < r.Revision {

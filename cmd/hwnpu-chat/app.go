@@ -10,19 +10,20 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/ai"
-	aicli "github.com/shibukawa/hwnpu/ai/cli"
+	"github.com/shibukawa/hwnpu/internal/aiensure"
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/chatcmd"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
 
 // hwnpu-chat runs its models through the ai package, as an app would: the model --model names
 // is a use of the definitions (ai.Catalog), the flags that change how it is made a model of its
-// own made from it (ai.Definition), prepared when it is not here (aicli.Ensure) and loaded by a
-// Runtime that compiles it at its first load (ai.CompileOnLoad). The flags that change only how
-// it runs (--idle, --prompt-cache, --experts-key, --no-sparse) are the role's load settings
+// own made from it (ai.Definition), prepared when it is not here (aiensure.Ensure, ai/cli's
+// Ensure) and loaded by a Runtime that compiles it at its first load (ai.CompileOnLoad). The
+// models run in hwnpud, and what the command asks of it besides them (its list, why a use picks
+// a model, the memory kept) is internal/chatcmd's. The flags that change only how it runs
+// (--idle, --prompt-cache, --experts-key, --no-sparse) are the role's load settings
 // (ai.LoadSettings), the sampling and the thinking each request's options.
 
 // store is where hwnpu-chat's models come from: the commands' layers, with --models' files.
@@ -37,14 +38,16 @@ func store(models string) ai.Store {
 }
 
 // useFor is the use of the model name means for u's role (ai.Normalize), and the definitions
-// it needs (a Hugging Face repository the definitions do not have). A name of none is an error
-// after the models of the role's kind are listed.
-func useFor[T io.Closer](cat *ai.Catalog, u ai.Use[T]) (ai.Use[T], []ai.Definition, error) {
+// it needs (a Hugging Face repository the definitions do not have), in st's catalog cat. A name
+// of none is an error after the models of the role's kind are listed.
+func useFor[T io.Closer](st ai.Store, cat *ai.Catalog, u ai.Use[T]) (ai.Use[T], []ai.Definition, error) {
 	n, def, err := ai.Normalize(cat, u)
 	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
 		kind := u.Kinds()[0]
 		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, e.Name, kind)
-		chat.List(os.Stderr, chat.Kind(kind))
+		if err := chatcmd.List(context.Background(), st, os.Stderr, chatcmd.ListRequest{Kinds: []string{kind}}); err != nil {
+			return u, nil, err
+		}
 		fmt.Fprintln(os.Stderr)
 		return u, nil, fmt.Errorf("no %s model, family or use %q (hwnpu-chat list shows them)", kind, e.Name)
 	}
@@ -52,7 +55,10 @@ func useFor[T io.Closer](cat *ai.Catalog, u ai.Use[T]) (ai.Use[T], []ai.Definiti
 		return u, nil, err
 	}
 	if !strings.EqualFold(n.Name(), u.Name()) && def == nil {
-		chat.LookupOn(u.Name(), 0, logw()) // what a use or a family picks, and why, as before
+		// what a use or a family picks, and why, as before
+		if err := chatcmd.Picked(context.Background(), st, u.Name(), logw()); err != nil {
+			return u, nil, err
+		}
 	}
 	if def != nil {
 		return n, []ai.Definition{*def}, nil
@@ -71,13 +77,13 @@ func setBackend(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return os.Setenv(llm.BackendEnv, d)
+	return os.Setenv(backendEnv, d)
 }
 
 // open prepares the app's models that are not here and opens its Runtime, whose first load of a
 // model compiles it for the NPU.
 func open(ctx context.Context, app *ai.App, opts ...ai.Option) (*ai.Runtime, error) {
-	if err := aicli.Ensure(ctx, app, aicli.PrepareOptions{Log: os.Stderr}); err != nil {
+	if err := aiensure.Ensure(ctx, app, aiensure.Options{Log: os.Stderr}); err != nil {
 		return nil, err
 	}
 	return app.Open(ctx, append([]ai.Option{ai.CompileOnLoad(), ai.WithLog(logw())}, opts...)...)

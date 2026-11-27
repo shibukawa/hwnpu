@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // A server without models answers the requests it can without one: the list, the health, and
@@ -61,16 +61,16 @@ func TestServerErrors(t *testing.T) {
 // other kind.
 func TestRoute(t *testing.T) {
 	names, others := []string{"LFM3-1.7B", "Qwen3.5-0.8B"}, []string{"plamo-embedding-1b"}
-	if i, _, _ := route("qwen3.5-0.8b", names, others, chat.KindChat, "/v1/embeddings"); i != 1 {
+	if i, _, _ := route("qwen3.5-0.8b", names, others, catalog.KindChat, "/v1/embeddings", nil); i != 1 {
 		t.Errorf("by name: %d", i)
 	}
-	if i, _, _ := route("gpt-4", names[:1], others, chat.KindChat, "/v1/embeddings"); i != 0 {
+	if i, _, _ := route("gpt-4", names[:1], others, catalog.KindChat, "/v1/embeddings", nil); i != 0 {
 		t.Errorf("the only one: %d", i)
 	}
-	if i, code, msg := route("plamo-embedding-1b", names, others, chat.KindChat, "/v1/embeddings"); i >= 0 || code != 400 || !strings.Contains(msg, "/v1/embeddings") {
+	if i, code, msg := route("plamo-embedding-1b", names, others, catalog.KindChat, "/v1/embeddings", nil); i >= 0 || code != 400 || !strings.Contains(msg, "/v1/embeddings") {
 		t.Errorf("of the other kind: %d %d %s", i, code, msg)
 	}
-	if i, code, _ := route("gpt-4", names, others, chat.KindChat, "/v1/embeddings"); i >= 0 || code != 404 {
+	if i, code, _ := route("gpt-4", names, others, catalog.KindChat, "/v1/embeddings", nil); i >= 0 || code != 404 {
 		t.Errorf("none of several: %d %d", i, code)
 	}
 }

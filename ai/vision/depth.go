@@ -2,23 +2,18 @@ package vision
 
 import (
 	"context"
-	"fmt"
 	"image"
 	"io"
 	"math"
-	"path/filepath"
-	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/hwnpu/ai/vision/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
-	"github.com/shibukawa/hwnpu/internal/vision/depth"
-	"github.com/shibukawa/hwnpu/internal/vision/moge"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/visionwire"
 )
 
 // Depth is the use of a model of a picture's depth (Depth Anything 3, MoGe-2) for an app: a
@@ -29,82 +24,13 @@ func Depth(name string) ai.Use[*DepthEstimator] {
 
 // The definition of a depth model may give the programs export: a directory of
 // tools/amd/iron_da3.py (one of --views N among them: a multi-view export, EstimateViews),
-// iron_moge.py, or one Prepare made for Apple's or Intel's NPU.
+// iron_moge.py, or one Prepare made for Apple's or Intel's NPU. depthRole's Prepare and Load
+// are the engine's (ai/vision/engine).
 var depthRole = &airole.Role{
 	Name:     "depth",
 	Remote:   func(h *airpc.Handle) io.Closer { return &DepthEstimator{remote: h} },
 	Revision: 1, // 1: every size's programs made at Prepare
-	Kinds:    []chat.Kind{chat.KindDepth},
-	Prepare: func(e airole.PrepareEnv) (f airole.Files, err error) {
-		m := e.Model
-		if dir := program(m, "export"); dir != "" {
-			if !depth.IsExport(dir) && !depth.IsMultiExport(dir) && !moge.IsExport(dir) {
-				return f, fmt.Errorf("%s is not an export of Depth Anything 3 or MoGe-2", dir)
-			}
-			if e.NPU.AMD() {
-				iron.ShareExport(dir, logf(e.Log))
-			}
-			f.Set("export", dir)
-			return f, nil
-		}
-		var dir string
-		switch mg := m.Family == "moge"; {
-		case e.NPU.AMD():
-			// AMD's NPU runs an export of IRON (tools/amd/iron_da3.py, iron_moge.py), here or in
-			// the sources: the one of the model the app's was made from
-			tool := "tools/amd/iron_da3.py"
-			if mg {
-				tool = "tools/amd/iron_moge.py"
-			}
-			if dir, err = chat.AMDPictureExport(e.Ctx, e.Base, tool, 0, e.Log); err == nil {
-				iron.ShareExport(dir, logf(e.Log))
-			}
-		case mg:
-			dir, err = moge.Prepare(e.Ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: e.Base.Name, Backend: e.NPU.Format, Log: e.Log})
-		default:
-			dir, err = depth.Prepare(e.Ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: e.Base.Name, Backend: e.NPU.Format, Log: e.Log})
-		}
-		if err == nil && m.Family != "moge" && !e.NPU.AMD() {
-			// every aspect's programs now, not at the first picture of each: after "models
-			// prepare" a run needs no network nor conversion (Warm compiles them)
-			err = depth.ConvertSizes(e.Ctx, dir, e.Log)
-		}
-		if err != nil {
-			return f, err
-		}
-		f.Set("export", dir)
-		return f, nil
-	},
-	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		dir := f.Path("export")
-		dev, err := openDevice(ctx, e)
-		if err != nil {
-			return nil, err
-		}
-		d := &DepthEstimator{dev: dev, name: e.Model, dir: dir}
-		d.model, _ = chat.Lookup(e.Model)
-		ctx = chat.WithModel(ctx, d.model)
-		lf := logf(e.Log)
-		switch {
-		case depth.IsMultiExport(dir):
-			if d.mv, err = depth.OpenMulti(ctx, dev, dir); err == nil {
-				d.mv.Logf = lf
-			}
-		case moge.IsExport(dir):
-			if d.mg, err = moge.Open(ctx, dev, dir); err == nil {
-				d.mg.Logf = lf
-			}
-		default:
-			if d.da, err = depth.Open(ctx, dev, dir); err == nil {
-				d.da.Logf = lf
-			}
-		}
-		if err != nil {
-			dev.Close()
-			return nil, err
-		}
-		return d, nil
-	},
+	Kinds:    []catalog.Kind{catalog.KindDepth},
 }
 
 // DepthMap is the depth of a picture.
@@ -141,7 +67,7 @@ type DepthMap struct {
 }
 
 // SkyThreshold is the least of DepthMap.Sky that is sky.
-const SkyThreshold = depth.SkyThreshold
+const SkyThreshold = visionwire.SkyThreshold
 
 // Camera is a view's camera, as a multi-view model gives it: its world-to-camera [R | t] (3 x 4,
 // row major) in the reference view's frame, and its intrinsics fx, fy, cx, cy at the map's size.
@@ -185,7 +111,9 @@ func (d *DepthMap) NearImage(w, h int) *image.Gray {
 
 // Bilinear resizes a map xs of w x h (row major) to ow x oh, the pixels' centres aligned (as
 // PyTorch's interpolate without align_corners): a copy of xs when the sizes are the same.
-func Bilinear(xs []float32, w, h, ow, oh int) []float32 { return moge.Bilinear(xs, w, h, ow, oh) }
+func Bilinear(xs []float32, w, h, ow, oh int) []float32 {
+	return visionwire.Bilinear(xs, w, h, ow, oh)
+}
 
 // DepthOptions are how a picture's depth is estimated. The zero value estimates it as the model
 // does alone.
@@ -198,15 +126,22 @@ type DepthOptions struct {
 
 // DepthEstimator estimates the depth of pictures. It runs one picture at a time; others wait.
 type DepthEstimator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	mu     sync.Mutex
-	da     *depth.Estimator
-	mg     *moge.Estimator
-	mv     *depth.Multi
-	dev    *hwnpu.Device
-	model  chat.Model
-	name   string
-	dir    string
+	remote *airpc.Handle      // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	local  depthEstimatorImpl // the engine's (ai/vision/engine), when it is here
+}
+
+// depthEstimatorImpl is a depth model of the engine in this process.
+type depthEstimatorImpl interface {
+	Model() string
+	Export() string
+	Kind() string
+	Family() string
+	Sizes() [][2]int
+	Views() int
+	EstimateWith(ctx context.Context, img image.Image, o DepthOptions) (*DepthMap, error)
+	EstimateViews(ctx context.Context, imgs []image.Image, o ViewOptions) ([]*DepthMap, error)
+	Warm(ctx context.Context) error
+	Close() error
 }
 
 // Model is the name of the model in the definitions.
@@ -214,7 +149,7 @@ func (d *DepthEstimator) Model() string {
 	if d.remote != nil {
 		return airpc.Value[string](d.remote, "Model")
 	}
-	return d.name
+	return d.local.Model()
 }
 
 // Export is the directory of the export or the programs the model runs from.
@@ -222,7 +157,7 @@ func (d *DepthEstimator) Export() string {
 	if d.remote != nil {
 		return airpc.Value[string](d.remote, "Export")
 	}
-	return d.dir
+	return d.local.Export()
 }
 
 // Kind is what the model gives: "relative depth" (Depth Anything 3, as one view), "metric
@@ -232,13 +167,7 @@ func (d *DepthEstimator) Kind() string {
 	if d.remote != nil {
 		return airpc.Value[string](d.remote, "Kind")
 	}
-	switch {
-	case d.mv != nil:
-		return "views"
-	case d.mg != nil || d.da.Metric:
-		return "metric depth"
-	}
-	return "relative depth"
+	return d.local.Kind()
 }
 
 // Family is the model's family: "moge" for MoGe-2, "da3" for Depth Anything 3.
@@ -246,10 +175,7 @@ func (d *DepthEstimator) Family() string {
 	if d.remote != nil {
 		return airpc.Value[string](d.remote, "Family")
 	}
-	if d.mg != nil {
-		return "moge"
-	}
-	return "da3"
+	return d.local.Family()
 }
 
 // Sizes are the input sizes of the model (W x H): a picture is stretched to the one nearest its
@@ -258,13 +184,7 @@ func (d *DepthEstimator) Sizes() [][2]int {
 	if d.remote != nil {
 		return airpc.Value[[][2]int](d.remote, "Sizes")
 	}
-	switch {
-	case d.mg != nil:
-		return d.mg.Sizes
-	case d.da != nil:
-		return d.da.Sizes
-	}
-	return [][2]int{{d.mv.Width, d.mv.Height}}
+	return d.local.Sizes()
 }
 
 // Views is how many pictures of one scene a multi-view export takes together (EstimateViews), 0
@@ -273,10 +193,7 @@ func (d *DepthEstimator) Views() int {
 	if d.remote != nil {
 		return airpc.Value[int](d.remote, "Views")
 	}
-	if d.mv == nil {
-		return 0
-	}
-	return d.mv.Views
+	return d.local.Views()
 }
 
 // Estimate estimates the depth of a picture. The picture is stretched to the size of the
@@ -291,45 +208,7 @@ func (d *DepthEstimator) EstimateWith(ctx context.Context, img image.Image, o De
 	if d.remote != nil {
 		return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o)
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	ctx = chat.WithModel(ctx, d.model)
-	t0 := time.Now()
-	switch {
-	case d.mv != nil:
-		return nil, fmt.Errorf("vision: %s takes %d pictures of a scene together (EstimateViews)", filepath.Base(d.dir), d.mv.Views)
-	case d.mg != nil:
-		d.mg.FovX = o.FovX
-		r, err := d.mg.Estimate(ctx, img)
-		if err != nil {
-			return nil, err
-		}
-		out := &DepthMap{W: r.W, H: r.H, Depth: append([]float32(nil), r.Depth...), Metric: true, Mask: r.Mask,
-			Normal: r.Normal, Points: r.Points, FovX: r.FovX, Fx: r.Fx, Fy: r.Fy}
-		for i, ok := range r.Mask {
-			if !ok {
-				out.Depth[i] = 0 // no depth there (the sky): the farthest
-			}
-		}
-		out.Took = time.Since(t0)
-		return out, nil
-	}
-	r, err := d.da.Estimate(ctx, img)
-	if err != nil {
-		return nil, err
-	}
-	out := &DepthMap{W: r.W, H: r.H, Depth: r.Depth, Sky: r.Sky, Conf: r.Conf}
-	if r.Metric && (o.Focal > 0 || o.FovX > 0) {
-		ow, oh := img.Bounds().Dx(), img.Bounds().Dy()
-		f := o.Focal
-		if f == 0 {
-			f = float64(ow) / 2 / math.Tan(o.FovX*math.Pi/360)
-		}
-		r.Meters(f, f, ow, oh)
-		out.Metric = true
-	}
-	out.Took = time.Since(t0)
-	return out, nil
+	return d.local.EstimateWith(ctx, img, o)
 }
 
 // ViewOptions are how the pictures of a scene are estimated together.
@@ -346,27 +225,7 @@ func (d *DepthEstimator) EstimateViews(ctx context.Context, imgs []image.Image, 
 	if d.remote != nil {
 		return airpc.Call1[[]*DepthMap](d.remote, ctx, "EstimateViews", imgs, o)
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.mv == nil {
-		return nil, fmt.Errorf("vision: %s is not a multi-view export", filepath.Base(d.dir))
-	}
-	if len(imgs) != d.mv.Views {
-		return nil, fmt.Errorf("vision: the export takes %d pictures together, got %d", d.mv.Views, len(imgs))
-	}
-	t0 := time.Now()
-	d.mv.Ref = o.Ref
-	rs, cams, err := d.mv.Estimate(chat.WithModel(ctx, d.model), imgs)
-	if err != nil {
-		return nil, err
-	}
-	took := time.Since(t0)
-	out := make([]*DepthMap, len(rs))
-	for i, r := range rs {
-		c := Camera(cams[i])
-		out[i] = &DepthMap{W: r.W, H: r.H, Depth: r.Depth, Conf: r.Conf, Camera: &c, Took: took}
-	}
-	return out, nil
+	return d.local.EstimateViews(ctx, imgs, o)
 }
 
 // Warm loads the programs of every size once, which compiles them for the NPU (ai.Warmer: the
@@ -375,12 +234,7 @@ func (d *DepthEstimator) Warm(ctx context.Context) error {
 	if d.remote != nil {
 		return airpc.Call0(d.remote, ctx, "Warm")
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.da == nil {
-		return nil
-	}
-	return d.da.Warm(chat.WithModel(ctx, d.model))
+	return d.local.Warm(ctx)
 }
 
 // EstimateStream estimates the depth of each picture of a stream, in a chunk of the picture's
@@ -402,22 +256,11 @@ func (d *DepthEstimator) Close() error {
 	if d.remote != nil {
 		return d.remote.Release() // the Runtime in hwnpud unloads it
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	var err error
-	if d.mg != nil {
-		err = d.mg.Close()
-	}
-	if d.da != nil {
-		err = d.da.Close()
-	}
-	if d.mv != nil {
-		err = d.mv.Close()
-	}
-	if e := d.dev.Close(); err == nil {
-		err = e
-	}
-	return err
+	return d.local.Close()
 }
 
-func init() { airole.Register(depthRole) }
+func init() {
+	airole.Register(depthRole)
+	bridge.Roles[depthRole.Name] = depthRole
+	bridge.Wrap[depthRole.Name] = func(l any) io.Closer { return &DepthEstimator{local: l.(depthEstimatorImpl)} }
+}

@@ -37,6 +37,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/aihost"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/daemon"
+	"github.com/shibukawa/hwnpu/internal/daemon/engine"
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
@@ -89,7 +90,7 @@ type EngineCmd struct {
 func (c *EngineCmd) Run(ctx context.Context) error {
 	// the engine runs the models itself: its apps' (internal/aihost) are not sent on to hwnpud
 	os.Setenv(daemon.ModeEnv, "off")
-	e := &daemon.Engine{Idle: idle(c.Idle), Log: os.Stderr, Held: aihost.Held}
+	e := &engine.Engine{Idle: idle(c.Idle), Log: os.Stderr, Held: aihost.Held}
 	o := aihost.Options{Log: os.Stderr, Held: e.HeldDirs}
 	e.AI = o.Handler()
 	// what the cache keeps of the engine's are the models it holds loaded, not all it ever used

@@ -3,10 +3,11 @@ package chat
 import (
 	"errors"
 	"fmt"
-	"github.com/shibukawa/configdir"
 	"io"
 	"maps"
 	"os"
+
+	"github.com/shibukawa/configdir"
 
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
@@ -27,8 +29,9 @@ import (
 // ModelsEnv lists more definition files, separated as PATH is (':', ';' on Windows).
 const ModelsEnv = "HWNPU_MODELS"
 
-// ModelsUsage is the usage of the -models flag of the commands that pick models.
-const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/hwnpu/models.yaml) and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
+// ModelsUsage is the usage of the -models flag of the commands that pick models
+// (catalog.ModelsUsage).
+const ModelsUsage = catalog.ModelsUsage
 
 // LoadUserModels is LoadModels of the user's files and those of -models (comma separated), with
 // warnings to log.
@@ -37,7 +40,7 @@ func LoadUserModels(flagValue string, log io.Writer) error {
 }
 
 // TableVersion is the version of the definition files this hwnpu reads.
-const TableVersion = 1
+const TableVersion = catalog.TableVersion
 
 // Builtin is what ModelFiles calls the embedded models.yaml.
 const Builtin = "built-in models.yaml"
@@ -82,13 +85,6 @@ func UserModelsFile() string {
 // log.
 func LoadModels(files []string, user bool, log io.Writer) error {
 	return LoadModelsWith(files, nil, user, log)
-}
-
-// Definitions is a definition file given as its text, not a path: Name names it in messages
-// and in a model's Files.
-type Definitions struct {
-	Name string
-	YAML []byte
 }
 
 // LoadModelsWith is LoadModels with the definitions of texts read over all the files, in order
@@ -507,7 +503,7 @@ func merge(dst, src *modelEntry) {
 	// memory and bytes: a table changes the vendors it names
 	for _, f := range []struct{ d, s **PerVendor }{{&dst.Memory, &src.Memory}, {&dst.Bytes, &src.Bytes}, {&dst.Disk, &src.Disk}} {
 		if *f.s != nil && *f.d != nil {
-			m := (**f.d).over(**f.s)
+			m := (**f.d).Over(**f.s)
 			defer func(d **PerVendor) { *d = &m }(f.d)
 		}
 	}
@@ -946,7 +942,7 @@ func toModel(name string, e *modelEntry) (Model, error) {
 	if err != nil {
 		return m, fmt.Errorf("model %s: %w", name, err)
 	}
-	if !run.zero() && m.Kind != KindChat {
+	if !run.Zero() && m.Kind != KindChat {
 		return m, fmt.Errorf("model %s: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", name)
 	}
 	m.Run = run

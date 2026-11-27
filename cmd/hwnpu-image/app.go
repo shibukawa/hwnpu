@@ -12,8 +12,8 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	aicli "github.com/shibukawa/hwnpu/ai/cli"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/imagewire"
 )
 
 // hwnpu-image's analyses (depth, face-detect, detect, pose, segment, ocr, label, embed) run their
@@ -26,17 +26,17 @@ import (
 // useFor is the use of the model name means for u's role (ai.Normalize), and the definitions it
 // needs (a Hugging Face repository the definitions do not have), saying what a family or a use
 // picked when say. A name of none is an error after the models of the role's kind are listed.
-func useFor[T io.Closer](st ai.Store, u ai.Use[T], say bool) (ai.Use[T], []ai.Definition, error) {
+func useFor[T io.Closer](ctx context.Context, st ai.Store, u ai.Use[T], say bool) (ai.Use[T], []ai.Definition, error) {
 	cat, err := st.Catalog()
 	if err != nil {
 		return u, nil, err
 	}
 	n, def, err := ai.Normalize(cat, u)
 	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
-		kind := chat.Kind(u.Kinds()[0])
+		kind := catalog.Kind(u.Kinds()[0])
 		// what there is, then the error (kong prints it last)
 		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, e.Name, kind)
-		listModels(os.Stderr, kind)
+		listModels(os.Stderr, cat, kind)
 		fmt.Fprintln(os.Stderr)
 		return u, nil, fmt.Errorf("no %s model, family or use %q (hwnpu-image list shows them)", kind, e.Name)
 	}
@@ -46,9 +46,10 @@ func useFor[T io.Closer](st ai.Store, u ai.Use[T], say bool) (ai.Use[T], []ai.De
 	if def != nil {
 		return n, []ai.Definition{*def}, nil
 	}
-	// what a family or a use picked, said as the commands say it
+	// what a family or a use picked, said as the commands say it (by hwnpud, whose definitions
+	// picked it; nothing when it cannot say)
 	if say {
-		chat.LookupOn(u.Name(), 0, os.Stderr)
+		picked(ctx, u.Name())
 	}
 	return n, nil, nil
 }
@@ -101,7 +102,7 @@ func (m *made) program(name, path string) {
 func load[T io.Closer](ctx context.Context, name string, mk func(string) ai.Use[T], how made, lw io.Writer) (T, *ai.Runtime, string, error) {
 	var none T
 	st := ai.Store{}
-	use, defs, err := useFor(st, mk(name), how.programs == nil)
+	use, defs, err := useFor(ctx, st, mk(name), how.programs == nil)
 	if err != nil {
 		return none, nil, "", err
 	}
@@ -137,6 +138,6 @@ func load[T io.Closer](ctx context.Context, name string, mk func(string) ai.Use[
 // ai reads).
 func useBackend(name string) {
 	if name != "" {
-		os.Setenv(llm.BackendEnv, name)
+		os.Setenv(imagewire.BackendEnv, name)
 	}
 }

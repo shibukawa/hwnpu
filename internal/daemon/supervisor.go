@@ -122,22 +122,22 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			if r.Context().Err() != nil {
 				return // the client went away
 			}
-			writeError(w, http.StatusBadGateway, fmt.Sprintf("hwnpud's engine: %v (its log: %s)", err, LogWhere()))
+			WriteError(w, http.StatusBadGateway, fmt.Sprintf("hwnpud's engine: %v (its log: %s)", err, LogWhere()))
 		},
 	}
 	s.last.Store(time.Now().UnixNano())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /hwnpud/v1/hello", func(w http.ResponseWriter, r *http.Request) {
-		writeJSONValue(w, http.StatusOK, s.hello())
+		WriteJSON(w, http.StatusOK, s.hello())
 	})
 	mux.HandleFunc("GET /hwnpud/v1/status", s.status)
 	mux.HandleFunc("POST /hwnpud/v1/start", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.ensureEngine(r.Context(), engineSocket); err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
+			WriteError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
-		writeJSONValue(w, http.StatusOK, s.hello())
+		WriteJSON(w, http.StatusOK, s.hello())
 	})
 	mux.HandleFunc("POST /hwnpud/v1/restart", func(w http.ResponseWriter, r *http.Request) {
 		// the service manager starts the next at the next connection; one started by hand runs
@@ -148,7 +148,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	})
 	mux.HandleFunc("POST /hwnpud/v1/reload", func(w http.ResponseWriter, r *http.Request) {
 		s.reload(1) // this request is one
-		writeJSONValue(w, http.StatusOK, s.hello())
+		WriteJSON(w, http.StatusOK, s.hello())
 	})
 	mux.HandleFunc("POST /hwnpud/v1/quit", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -156,7 +156,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.ensureEngine(r.Context(), engineSocket); err != nil {
-			writeError(w, http.StatusServiceUnavailable, err.Error())
+			WriteError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
 		s.proxy.ServeHTTP(w, r)
@@ -270,7 +270,7 @@ func (s *Supervisor) track(h http.Handler) http.Handler {
 }
 
 func (s *Supervisor) hello() Hello {
-	h := base()
+	h := Base()
 	h.Executable, h.Started = s.exe, s.since.UnixNano()
 	if s.launched {
 		h.Service = serviceManager()
@@ -292,17 +292,17 @@ func (s *Supervisor) hello() Hello {
 // status is the engine's status when it runs (without starting it), else the supervisor's.
 func (s *Supervisor) status(w http.ResponseWriter, r *http.Request) {
 	if !s.engineRunning() {
-		writeJSONValue(w, http.StatusOK, Status{Hello: s.hello()})
+		WriteJSON(w, http.StatusOK, Status{Hello: s.hello()})
 		return
 	}
 	c := NewClient(EngineSocketPath(s.Socket))
 	st, err := c.Status(r.Context())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
+		WriteError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	st.Hello = s.hello()
-	writeJSONValue(w, http.StatusOK, st)
+	WriteJSON(w, http.StatusOK, st)
 }
 
 func (s *Supervisor) engineRunning() bool {
@@ -421,12 +421,14 @@ func ListenUnix(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-func writeJSONValue(w http.ResponseWriter, code int, v any) {
+// WriteJSON answers v as JSON with code.
+func WriteJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSONValue(w, code, map[string]any{"error": map[string]any{"message": msg, "type": "hwnpud_error"}})
+// WriteError answers msg as an error of hwnpud's (the OpenAI API's form) with code.
+func WriteError(w http.ResponseWriter, code int, msg string) {
+	WriteJSON(w, code, map[string]any{"error": map[string]any{"message": msg, "type": "hwnpud_error"}})
 }

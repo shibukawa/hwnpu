@@ -1,77 +1,11 @@
 package chat
 
 import (
-	"cmp"
 	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
 )
-
-// Run is how hwnpu-chat runs a chat model when its flags do not say: models.yaml's prefill,
-// format, context, paged and tier, the defaults of --prefill, --format, --context, --paged and
-// --tier ("" and 0: hwnpu-chat's own).
-type Run struct {
-	Prefill string // PrefillAuto, PrefillOn or PrefillOff
-	Format  string // the weight format of its programs (lut8, int8, ...)
-	Context int    // tokens of a prompt and its answer together
-	Paged   int    // the chunk length to split it at its attention with, -1 never
-	// Tier is the caches shorter than the context to run on while a conversation is short, as
-	// --tier takes them (Tiers): auto, none or a list. LFM3-1.7B has none on a machine of 8 GB,
-	// where the whole program of short conversations would hold its weights a second time
-	// (3.1 GB against 1.7), and auto from 16 GB.
-	Tier string
-	// Codes is the hash of the lookup tables chosen against the activations (GPTQ) that its
-	// programs are converted with (Setup.CodesHash): Qwen2.5-Coder's 4 bit tables, which
-	// rounding alone leaves far from the model (docs/design/llm-qwen.md).
-	Codes string
-}
-
-// over is r with the fields o gives.
-func (r Run) over(o Run) Run {
-	return Run{Prefill: cmp.Or(o.Prefill, r.Prefill), Format: cmp.Or(o.Format, r.Format),
-		Context: cmp.Or(o.Context, r.Context), Paged: cmp.Or(o.Paged, r.Paged), Tier: cmp.Or(o.Tier, r.Tier),
-		Codes: cmp.Or(o.Codes, r.Codes)}
-}
-
-// zero reports whether r gives nothing.
-func (r Run) zero() bool { return r == Run{} }
-
-// Variant is a model's settings on a machine of more memory than its Machine (models.yaml's
-// variants): what it takes running and how it runs, the fields it gives replacing the model's.
-// Qwen3-1.7B reads prompts with a program of its own from 16 GB and with the one that generates
-// on 8 GB; LFM3-1.7B has its whole program of short conversations from 16 GB.
-type Variant struct {
-	Memory PerVendor // nil: the model's
-	Run    Run
-	// AMDExport replaces the model's (nil: the model's), from its recipe's variant of the same
-	// GB: gpt-oss-20b keeps 16 of its 32 experts a layer on AMD's NPU on 16 GB, all of them from 24 GB
-	AMDExport []string
-}
-
-// On is the model as a machine of machine GB runs it: with the variant of the largest memory the
-// machine has (Variants), or as it is when none is that small.
-func (m Model) On(machine int) Model {
-	best := 0
-	for gb := range m.Variants {
-		if gb <= machine && gb > best {
-			best = gb
-		}
-	}
-	if best == 0 {
-		return m
-	}
-	v := m.Variants[best]
-	if v.Memory != nil {
-		m.MemoryBy = m.MemoryBy.over(v.Memory)
-		m.Memory = m.MemoryBy.For("")
-	}
-	m.Run = m.Run.over(v.Run)
-	if v.AMDExport != nil {
-		m.AMDExport = v.AMDExport
-	}
-	return m
-}
 
 // RunEntry is a model's or a variant's fields of Run in a definition file.
 type RunEntry struct {
@@ -146,14 +80,14 @@ func toVariants(m Model, es map[int]*variantEntry) (map[int]Variant, error) {
 		if err != nil {
 			return nil, fmt.Errorf("variant of %d GB: %w", gb, err)
 		}
-		if !r.zero() && m.Kind != KindChat {
+		if !r.Zero() && m.Kind != KindChat {
 			return nil, fmt.Errorf("variant of %d GB: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", gb)
 		}
 		v := Variant{Run: r}
 		if e.Memory != nil {
 			v.Memory = *e.Memory
 		}
-		if v.Memory == nil && r.zero() {
+		if v.Memory == nil && r.Zero() {
 			return nil, fmt.Errorf("variant of %d GB gives nothing", gb)
 		}
 		out[gb] = v

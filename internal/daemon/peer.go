@@ -14,6 +14,9 @@ type sameUser struct {
 	log io.Writer
 }
 
+// SameUser is ln closing the connections of other users' processes, which it tells log.
+func SameUser(ln net.Listener, log io.Writer) net.Listener { return sameUser{ln, log} }
+
 func (l sameUser) Accept() (net.Conn, error) {
 	for {
 		c, err := l.Listener.Accept()

@@ -11,7 +11,6 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
 )
 
 // OCRCmd is "hwnpu-image ocr": the text in pictures with PaddleOCR's PP-OCRv6 (Apache-2.0;
@@ -61,7 +60,7 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer rt.Close()
-	defer imagedev.NPUHeld(logf)()
+	defer npuHeld(logf)()
 	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for n, p := range c.Pictures {

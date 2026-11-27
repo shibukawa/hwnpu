@@ -10,7 +10,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/mem"
-	"github.com/shibukawa/hwnpu/internal/transcribe"
+	"github.com/shibukawa/hwnpu/internal/speechwire"
 )
 
 // TranscribeCmd is "hwnpu-audio transcribe": speech to text with Whisper on the Neural Engine.
@@ -103,7 +103,7 @@ func (c *TranscribeCmd) Run(ctx context.Context) error {
 func (c *TranscribeCmd) use(st ai.Store) (ai.Use[*speech.Transcriber], []ai.Definition, error) {
 	var d ai.Definition
 	name := c.Model
-	if dir := expandHome(c.Model); transcribe.IsIronExport(dir) {
+	if dir := expandHome(c.Model); speechwire.IsWhisperExport(dir) {
 		// an export of tools/amd/iron_whisper.py, for AMD's NPU: a model like the definitions' own
 		d.Programs = map[string][]string{"iron": {absolute(dir)}}
 		name = "transcribe"

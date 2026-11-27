@@ -4,21 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/server/openai"
 	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/chatcmd"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
 
@@ -49,11 +47,11 @@ func (f *serverFlags) server(ctx context.Context) (*openai.Server, *ai.Runtime, 
 	for _, name := range split(f.Model) {
 		name = strings.TrimSpace(name)
 		if !isPath(name) {
-			if m, err := cat.Find(name, text.Embed(name)); err == nil && m.Kind == string(chat.KindEmbed) {
+			if m, err := cat.Find(name, text.Embed(name)); err == nil && m.Kind == string(catalog.KindEmbed) {
 				if len(embeds) > 0 && f.EmbedPackage != "" {
 					return nil, nil, errors.New("--embed-package is for one embedding model; --model names several")
 				}
-				u, d, err := embedUse(cat, name, &f.embedFlags)
+				u, d, err := embedUse(st, cat, name, &f.embedFlags)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -64,7 +62,7 @@ func (f *serverFlags) server(ctx context.Context) (*openai.Server, *ai.Runtime, 
 		if len(chats) > 0 && (f.Package != "" || f.Config != "" || f.Weights != "" || f.Tokenizer != "" || f.Vision != "" || f.AudioEncoder != "") {
 			return nil, nil, errors.New("--package, --config, --weights, --tokenizer, --vision and --audio-encoder are for one chat model; --model names several")
 		}
-		cm, err := chatModelOf(cat, name, &f.convertFlags, &f.encoderFlags)
+		cm, err := chatModelOf(st, cat, name, &f.convertFlags, &f.encoderFlags)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -90,7 +88,7 @@ func (f *serverFlags) server(ctx context.Context) (*openai.Server, *ai.Runtime, 
 	}
 	prepared(rt)
 	for _, cm := range kept {
-		cm.keep()
+		cm.keep(ctx)
 	}
 	s.Think, s.ThinkBudget, s.Log, s.Dump = f.Think, f.budget(), logw(), f.Dump
 	sm := f.sampling()
@@ -202,7 +200,7 @@ func (c *SearchCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if err != nil {
 		return err
 	}
-	u, defs, err := embedUse(cat, c.Model, &c.embedFlags)
+	u, defs, err := embedUse(st, cat, c.Model, &c.embedFlags)
 	if err != nil {
 		return err
 	}
@@ -298,63 +296,16 @@ func oneLine(s string) string {
 
 // ListCmd is "hwnpu-chat list": the chat and embedding models of the definitions (models.yaml),
 // whether they are downloaded (on AMD's NPU: the export each runs from), and what the features
-// mean.
+// mean, as hwnpud has them (chatcmd.List).
 type ListCmd struct {
 	Models string `placeholder:"FILES" help:"${models_usage}."`
 }
 
 // Run lists the models.
 func (c *ListCmd) Run(ctx context.Context) error {
-	if _, err := store(c.Models).Catalog(); err != nil { // the definitions, as the commands read them
+	st := store(c.Models)
+	if _, err := st.Catalog(); err != nil { // the definitions, as the commands read them
 		return err
 	}
-	showModels(os.Stdout, chat.OnlyAMD(ctx, ""))
-	return nil
-}
-
-// showModels writes the models of the definitions hwnpu-chat runs (chat.List) and what the
-// features mean.
-func showModels(w io.Writer, amd bool) {
-	if amd { // what runs: the export here, or the one the first run makes
-		chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
-			if d := chat.FindAMDExport(m); d != "" {
-				return shortPath(d)
-			}
-			if m.Kind == chat.KindEmbed {
-				if d := chat.FindEmbedAMDExport(m); d != "" {
-					return shortPath(d)
-				}
-				return "exported on first run"
-			}
-			if len(m.AMDExport) > 0 {
-				return "exported on first run"
-			}
-			return "- (no form for AMD)"
-		}, chat.KindChat, chat.KindEmbed, chat.KindDecision)
-	} else {
-		chat.List(w, chat.KindChat, chat.KindEmbed, chat.KindDecision)
-	}
-	fmt.Fprintln(w, "\nFeatures:")
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for _, f := range chat.Features {
-		fmt.Fprintf(tw, "  %s\t%s\n", f.Name, f.About)
-	}
-	tw.Flush()
-	fmt.Fprintf(w, "\n--model (-m) takes a model's name, a use or a family (translate, plamo3translate), either with a\n"+
-		"tag (plamo3translate:2b, chat:e4b, chat:16g), or a Hugging Face repository OWNER/NAME of a supported\n"+
-		"architecture; serve takes several, comma separated. The default is LFM3-1.7B (search: embedding).\n"+
-		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
-		"On AMD's NPU a name runs its export, NAME.amd-npu2-q4 (-q6, or none for bf16) in %s or ~/models;\n"+
-		"the first run takes it from the sources (hwnpu-dev sources), else downloads the checkpoint\n"+
-		"and makes it with IRON (tools/amd/iron_export_lm.py, %s, INSTALL_AMD.md).\n"+
-		"Models are kept in %s (HWNPU_CACHE moves it).\n", shortPath(chat.AMDRoot()), chat.IRONEnv, shortPath(cache.Root()))
-}
-
-// shortPath is path with the home directory written ~.
-func shortPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err == nil && home != "" && strings.HasPrefix(path, home+string(filepath.Separator)) {
-		return "~" + path[len(home):]
-	}
-	return path
+	return chatcmd.List(ctx, st, os.Stdout, chatcmd.ListRequest{Full: true, Backend: strings.TrimSpace(os.Getenv(backendEnv))})
 }

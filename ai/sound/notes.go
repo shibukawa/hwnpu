@@ -3,19 +3,18 @@ package sound
 import (
 	"context"
 	"io"
-	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai"
+	"github.com/shibukawa/hwnpu/ai/sound/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/notes"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/soundwire"
 )
 
 // NotesRate is the samples a second a NoteTranscriber reads (mono).
-const NotesRate = notes.SampleRate
+const NotesRate = soundwire.NotesRate
 
 // Notes is the use of a model that writes down the notes of music (Basic Pitch) for an app: a
 // model, a family or a use of the definitions ("notes", "basic-pitch").
@@ -23,46 +22,28 @@ func Notes(name string) ai.Use[*NoteTranscriber] {
 	return ai.Define[*NoteTranscriber](notesRole, name)
 }
 
-// notesRole's models run as the converted models do (converted.go): the constant-Q transform
-// and the making of notes on the host, the network on the NPU or the CPU.
+// notesRole's Prepare and Load are the engine's (ai/sound/engine): the constant-Q transform and
+// the making of notes on the host, the network on the NPU or the CPU.
 var notesRole = &airole.Role{
 	Remote: func(h *airpc.Handle) io.Closer { return &NoteTranscriber{remote: h} },
 	Name:   "notes",
-	Kinds:  []chat.Kind{chat.KindNotes},
-	Prepare: func(e airole.PrepareEnv) (airole.Files, error) {
-		return convertedPrepare(e, func(backend string) (string, string, error) {
-			return notes.Prepare(e.Ctx, notes.Setup{Dir: e.Dir, Repo: e.Model.Source(), SHA256: e.Model.SHA256[notes.ModelFile], Backend: backend, Log: e.Log})
-		})
-	},
-	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		r, err := convertedRoute(e.Def, e.Model, e.NPU)
-		if err != nil {
-			return nil, err
-		}
-		c, dev, err := convertedLoad(ctx, f, e, r, convertedOpener{
-			cpu: func(model string, threads int) (io.Closer, error) { return notes.OpenCPU(model, threads) },
-			npu: func(ctx context.Context, dev *hwnpu.Device, model, program string) (io.Closer, error) {
-				return notes.Open(ctx, dev, model, program)
-			}})
-		if err != nil {
-			return nil, err
-		}
-		t := c.(*notes.Transcriber)
-		if dev != nil {
-			t.OnClose = func() { dev.Close() }
-		}
-		return &NoteTranscriber{t: t, r: r, model: e.Model}, nil
-	},
+	Kinds:  []catalog.Kind{catalog.KindNotes},
 }
 
 // NoteTranscriber writes down the notes of music (Basic Pitch): any instrument, several notes
 // at once, with their pitch bends. It runs one request at a time; others wait.
 type NoteTranscriber struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	mu     sync.Mutex
-	t      *notes.Transcriber
-	r      route
-	model  string
+	remote *airpc.Handle       // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	local  noteTranscriberImpl // the engine's (ai/sound/engine), when it is here
+}
+
+// noteTranscriberImpl is a notes model of the engine in this process.
+type noteTranscriberImpl interface {
+	Model() string
+	Device() string
+	Where() string
+	Transcribe(ctx context.Context, pcm []float32, o NotesOptions) (NoteList, error)
+	Close() error
 }
 
 // Model is the name of the model in the definitions.
@@ -70,7 +51,7 @@ func (t *NoteTranscriber) Model() string {
 	if t.remote != nil {
 		return airpc.Value[string](t.remote, "Model")
 	}
-	return t.model
+	return t.local.Model()
 }
 
 // Device is where the model runs: npu or cpu.
@@ -78,7 +59,7 @@ func (t *NoteTranscriber) Device() string {
 	if t.remote != nil {
 		return airpc.Value[string](t.remote, "Device")
 	}
-	return t.r.device
+	return t.local.Device()
 }
 
 // Where says where the model runs, for a log: "all on the NPU", "on the CPU (ONNX Runtime, 1
@@ -87,10 +68,7 @@ func (t *NoteTranscriber) Where() string {
 	if t.remote != nil {
 		return airpc.Value[string](t.remote, "Where")
 	}
-	if w := t.r.Where(); w != "" {
-		return w
-	}
-	return onNPUWhere(t.t.OnNPU())
+	return t.local.Where()
 }
 
 // NotesOptions are how the notes are made from the network's activations (basic-pitch's
@@ -109,23 +87,8 @@ type NotesOptions struct {
 }
 
 // DefaultNotesOptions are basic-pitch's.
-var DefaultNotesOptions = NotesOptions{Onset: notes.DefaultOptions.OnsetThreshold, Frame: notes.DefaultOptions.FrameThreshold,
-	MinNoteMS: notes.DefaultOptions.MinNoteMS}
-
-func (o NotesOptions) internal() notes.Options {
-	n := notes.DefaultOptions
-	if o.Onset != 0 {
-		n.OnsetThreshold = o.Onset
-	}
-	if o.Frame != 0 {
-		n.FrameThreshold = o.Frame
-	}
-	if o.MinNoteMS != 0 {
-		n.MinNoteMS = o.MinNoteMS
-	}
-	n.MinHz, n.MaxHz, n.Melodia = o.MinHz, o.MaxHz, !o.NoMelodia
-	return n
-}
+var DefaultNotesOptions = NotesOptions{Onset: soundwire.NotesOnset, Frame: soundwire.NotesFrame,
+	MinNoteMS: soundwire.NotesMinNoteMS}
 
 // NoteList is the notes of some music.
 type NoteList struct {
@@ -140,22 +103,7 @@ func (t *NoteTranscriber) Transcribe(ctx context.Context, pcm []float32, o Notes
 	if t.remote != nil {
 		return airpc.Call1[NoteList](t.remote, ctx, "Transcribe", pcm, o)
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t0 := time.Now()
-	a, err := t.t.Run(ctx, pcm)
-	if err != nil {
-		return NoteList{}, err
-	}
-	ns := notes.Notes(a, o.internal())
-	out := NoteList{Seconds: float64(len(pcm)) / notes.SampleRate, Took: time.Since(t0)}
-	if ns != nil {
-		out.Notes = make([]Note, 0, len(ns))
-	}
-	for _, n := range ns {
-		out.Notes = append(out.Notes, Note(n))
-	}
-	return out, nil
+	return t.local.Transcribe(ctx, pcm, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
@@ -163,11 +111,11 @@ func (t *NoteTranscriber) Close() error {
 	if t.remote != nil {
 		return t.remote.Release() // the Runtime in hwnpud unloads it
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.t.Close()
+	return t.local.Close()
 }
 
 func init() {
 	airole.Register(notesRole)
+	bridge.Roles[notesRole.Name] = notesRole
+	bridge.Wrap[notesRole.Name] = func(l any) io.Closer { return &NoteTranscriber{local: l.(noteTranscriberImpl)} }
 }

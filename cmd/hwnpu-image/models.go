@@ -1,11 +1,8 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"github.com/shibukawa/hwnpu"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,19 +11,11 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/ai"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // acceptLicenses is --accept-license.
 var acceptLicenses bool
-
-// isTerminal reports whether f is a terminal (a character device).
-func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
 
 // expandHome is path with a leading ~ made the home directory.
 func expandHome(path string) string {
@@ -43,33 +32,6 @@ func isPath(name string) bool {
 	return strings.ContainsAny(name, `/\`) || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~")
 }
 
-// resolve is the model of the definitions (models.yaml) a name of --model means for kind: its
-// name, a family (anima, flux2-klein: picked for the machine's memory) or a use (image, depth).
-// What was picked is logged.
-func resolve(name string, kind chat.Kind) (chat.Model, error) {
-	if err := chat.LoadUserModels("", os.Stderr); err != nil {
-		return chat.Model{}, err
-	}
-	m, err := chat.ResolveFor(name, kind, os.Stderr)
-	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
-		err = fmt.Errorf("no %s model, family or use %q (hwnpu-image list shows them)", kind, name)
-	}
-	if err == nil {
-		// a license that restricts the use: accepted once, before the first download or run
-		err = chat.AcceptLicense(m, acceptLicenses, isTerminal(os.Stdin) && isTerminal(os.Stderr), os.Stdin, os.Stderr)
-		if err != nil {
-			return m, err
-		}
-	}
-	if err != nil {
-		// what there is, then the error (kong prints it last)
-		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, name, kind)
-		listModels(os.Stderr, kind)
-		fmt.Fprintln(os.Stderr)
-	}
-	return m, err
-}
-
 // ListCmd is "hwnpu-image list": the image, depth, face-detect, pose, detect, ocr and label models of the definitions (models.yaml),
 // whether their exports are here, and what each use and family picks for each machine's memory.
 type ListCmd struct {
@@ -79,95 +41,17 @@ type ListCmd struct {
 // Run lists the models.
 func (c *ListCmd) Run() error {
 	// the definitions as ai reads them (its catalog: the built-in, the machine's and the user's)
-	if _, err := (ai.Store{}).Catalog(); err != nil {
+	cat, err := (ai.Store{}).Catalog()
+	if err != nil {
 		return err
 	}
 	if c.Kind != "" {
-		listModels(os.Stdout, chat.Kind(c.Kind))
+		listModels(os.Stdout, cat, catalog.Kind(c.Kind))
 	} else {
-		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel, chat.KindSegment)
+		listModels(os.Stdout, cat, catalog.KindImage, catalog.KindDepth, catalog.KindFace, catalog.KindPose, catalog.KindDetect, catalog.KindOCR,
+			catalog.KindLabel, catalog.KindSegment)
 	}
 	return nil
-}
-
-// listModels writes chat's list of the models of kinds with, in place of the download, what
-// each runs from on this machine: the CPU where models.yaml's device (or HWNPU_DEVICE) puts it
-// for this machine's NPU, else the AMD export (~/models/NAME.amd-npu2) or "-".
-func listModels(w io.Writer, kinds ...chat.Kind) {
-	vendor := npuVendor(context.Background())
-	chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
-		if d, _, err := chat.ChooseDevice(m, vendor, ""); err == nil && d == "cpu" {
-			return "CPU"
-		}
-		if (m.Kind == chat.KindDetect || m.Kind == chat.KindPose || m.Kind == chat.KindSegment) && vendor == "amd" { // an export of iron_onnxcnn.py or iron_efficientsam.py, made on the first run
-			if d := amdExportHere(m); d != "" {
-				return shortHome(d)
-			}
-			return "exported on first run (IRON)"
-		}
-		if m.Kind == chat.KindSegment { // the encoder: converted on Apple's and Intel's, else the CPU
-			if imagedev.ProgramDevice(m, vendor, "") {
-				return "converted on first run"
-			}
-			return "CPU"
-		}
-		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core AI or OpenVINO
-			if d, _, err := chat.ConvertedDevice(m, vendor, ""); err == nil && d == "cpu" {
-				return "CPU"
-			}
-			return "converted on first run"
-		}
-		if d := amdExportHere(m); d != "" {
-			return shortHome(d)
-		}
-		if m.Kind == chat.KindImage && (strings.HasPrefix(m.Family, "flux2-klein") || strings.HasPrefix(m.Family, "flux3-klein")) && vendor == "amd" { // flux2klein.PrepareAMD, flux3klein.PrepareAMD
-			return "exported on first run (IRON)"
-		}
-		if m.Kind == chat.KindLabel && strings.EqualFold(vendor, hwnpu.VendorApple.String()) { // siglip.Prepare
-			return "converted on first run"
-		}
-		if m.Kind == chat.KindImage && convertedImage(m.Family, vendor) {
-			return "converted on first run"
-		}
-		return "-"
-	}, kinds...)
-}
-
-// convertedImage reports whether the image family converts for this machine's NPU (vendor, as
-// hwnpu.Vendor's String) on its first run: Anima on Apple's (Core AI) and Intel's, FLUX.2 and
-// FLUX.3 klein on Apple's.
-func convertedImage(family, vendor string) bool {
-	switch v := strings.ToLower(vendor); {
-	case strings.HasPrefix(family, "anima"):
-		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
-	case strings.HasPrefix(family, "flux2-klein"), strings.HasPrefix(family, "flux3-klein"):
-		return v == strings.ToLower(hwnpu.VendorApple.String())
-	}
-	return false
-}
-
-// amdExport is chat.AMDPictureExport: the export of model m on AMD's NPU for pictures of size x
-// size, here or in the sources. tool is the script that writes it, for the error when there is
-// none.
-func amdExport(ctx context.Context, m chat.Model, tool string, size int) (string, error) {
-	return chat.AMDPictureExport(ctx, m, tool, size, console.Log(os.Stderr))
-}
-
-// amdNames are the names the export of model m for AMD's NPU has (chat.AMDPictureNames).
-func amdNames(m chat.Model, size int) []string { return chat.AMDPictureNames(m, size) }
-
-// amdExportHere is the export of model m for AMD's NPU here (amdNames at no size), "" for none:
-// what the listing shows, without asking the sources.
-func amdExportHere(m chat.Model) string { return chat.AMDPictureExportHere(m) }
-
-// shortHome is path with the home directory written ~.
-func shortHome(path string) string {
-	if home, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(home, path); err == nil && filepath.IsLocal(rel) {
-			return "~/" + filepath.ToSlash(rel)
-		}
-	}
-	return path
 }
 
 // freeName is the first of base, "stem (2).ext", "stem (3).ext", ... that does not exist and

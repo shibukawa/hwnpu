@@ -5,6 +5,9 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/envfile"
 )
 
 // The model policy (docs/model-provenance.md 2): which models may be picked or run, by their
@@ -18,7 +21,7 @@ import (
 // content nsfw are refused unless +nsfw.
 
 // PolicyEnv is the environment's model policy (and a .env file's).
-const PolicyEnv = "HWNPU_MODEL_ALLOWLIST"
+const PolicyEnv = envfile.PolicyEnv
 
 // LicenseClasses are a license's classes (License.Class): what it allows of commercial use.
 var LicenseClasses = []string{
@@ -32,75 +35,15 @@ var Contents = []string{
 	"nsfw", // makes NSFW pictures without being asked (Anima, even with "safe" in the prompt)
 }
 
-// policyKeys are the keys of a rule, with whether they take a value.
-var policyKeys = map[string]bool{"license": true, "nsfw": false}
-
 // Rule is an item of the policy.
-type Rule struct {
-	Allow bool   // + (else -)
-	Key   string // a key of policyKeys
-	Value string // in lower case
-	From  string // where it was written (PolicyEnv, a definition file)
-}
-
-func (r Rule) String() string {
-	s := "-"
-	if r.Allow {
-		s = "+"
-	}
-	s += r.Key
-	if r.Value != "" {
-		s += ":" + r.Value
-	}
-	return s
-}
+type Rule = catalog.Rule
 
 // Policy are the rules of the model policy, set by LoadModels.
 var Policy []Rule
 
 // ParsePolicy reads the items of a policy written in from (+license:ID, -license:CLASS, +nsfw).
 func ParsePolicy(items []string, from string) ([]Rule, error) {
-	var rules []Rule
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		bad := func(why string) error {
-			return fmt.Errorf("chat: %s: %q %s (+license:ID, -license:CLASS or +nsfw: docs/model-provenance.md 2)", from, item, why)
-		}
-		var r Rule
-		switch item[0] {
-		case '+':
-			r.Allow = true
-		case '-':
-		default:
-			return nil, bad("starts with neither + nor -")
-		}
-		key, value, valued := strings.Cut(strings.ToLower(item[1:]), ":")
-		r.Key, r.Value, r.From = key, value, from
-		takes, ok := policyKeys[key]
-		switch {
-		case !ok:
-			return nil, bad("has no key hwnpu knows")
-		case !takes && valued:
-			return nil, bad("takes no value")
-		case takes && value == "":
-			return nil, bad("has no value")
-		}
-		rules = append(rules, r)
-	}
-	return rules, nil
-}
-
-// PolicyError is the error of a model the policy refuses.
-type PolicyError struct {
-	Model string
-	Why   string // what refuses it
-}
-
-func (e *PolicyError) Error() string {
-	return fmt.Sprintf("chat: %s is not allowed by the model policy (%s, policy of models.yaml): %s", e.Model, PolicyEnv, e.Why)
+	return catalog.ParsePolicy(items, from)
 }
 
 // Allowed is nil when the policy allows m, else a *PolicyError that says why.
