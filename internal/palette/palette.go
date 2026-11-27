@@ -186,6 +186,55 @@ func (l LUT4) index(i int) int {
 	return int(v>>(bit%8)) & (1<<bits - 1)
 }
 
+// fitDistinct checks whether vals already contains at most len(c) distinct finite float32
+// values (an already-palettized, sparse, binary, or ternary block). When true, it fills c with
+// those sorted exact values (padding remaining slots with the maximum) so Lloyd refinement can
+// be skipped with zero error. For continuous weights it exits after inspecting the first
+// len(c)+1 distinct elements (~20 ns).
+func fitDistinct(c, vals []float32) bool {
+	k := len(c)
+	if len(vals) == 0 || k == 0 || k > 256 {
+		return false
+	}
+	var uniq [256]float32
+	n := 0
+	for _, v := range vals {
+		if math.IsNaN(float64(v)) {
+			return false
+		}
+		// Binary search in sorted uniq[:n]
+		lo, hi := 0, n
+		for lo < hi {
+			mid := (lo + hi) >> 1
+			if uniq[mid] < v {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		if lo < n && uniq[lo] == v {
+			continue
+		}
+		if n == k {
+			return false
+		}
+		copy(uniq[lo+1:n+1], uniq[lo:n])
+		uniq[lo] = v
+		n++
+	}
+	if n == 1 {
+		for i := range c {
+			c[i] = uniq[0]
+		}
+		return true
+	}
+	if n == k {
+		copy(c, uniq[:k])
+		return true
+	}
+	return false
+}
+
 // fit runs k-means with k centers over vals. The centers start at the quantiles of the values,
 // so that every center begins with the same share of them: weights are heavy tailed, and a start
 // spread evenly between the extremes leaves most centers in the empty tails, where Lloyd's
@@ -193,6 +242,9 @@ func (l LUT4) index(i int) int {
 // the midpoints.
 func fit(c, vals []float32, iters int, mode Mode, sc *scratch) {
 	k := len(c)
+	if mode != Uniform && fitDistinct(c, vals) {
+		return
+	}
 	if mode != KMeans {
 		lo, hi, ok := vecops.MinMax(vals)
 		if !ok { // NaNs: the order of min and max decides

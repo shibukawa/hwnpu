@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -291,6 +292,9 @@ func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, e
 	if err := blobs.Close(); err != nil {
 		return nil, err
 	}
+	// Release MIL builder and dedup caches before lowering streams the shared blob file.
+	opCache = nil
+	blobs = nil
 	r, err := os.Open(tmp)
 	if err != nil {
 		return nil, err
@@ -309,6 +313,11 @@ func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, e
 	prog, err := ailower.WriteMany(path, mfns, readers, names, func() error { return removeFiles(r) })
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	mfns = nil
+	readers = nil
+	if prog.Size >= 128<<20 {
+		debug.FreeOSMemory()
 	}
 	for i := range recs {
 		recs[i].WeightBytes = prog.Size

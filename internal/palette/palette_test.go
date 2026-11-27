@@ -155,3 +155,29 @@ func TestQuantizeLinear(t *testing.T) {
 	}
 	t.Logf("int4 block 128 heavy-tail (20-sigma outliers) rel RMS err %.4f", relErr(wOut, lOut.Dequantize()))
 }
+
+// TestAlreadyPalettizedFastPath verifies that blocks with <= 2^bits distinct values (e.g.
+// already-palettized or sparse/ternary weights) are detected without Lloyd iterations and
+// reproduced with zero error.
+func TestAlreadyPalettizedFastPath(t *testing.T) {
+	const rows, cols = 16, 256
+	levels := []float32{-2.0, -1.5, -1.25, -1.0, -0.75, -0.5, -0.25, -0.125, 0, 0.125, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0}
+	w := make([]float32, rows*cols)
+	for i := range w {
+		w[i] = levels[(i*7+3)%len(levels)]
+	}
+	for _, mode := range []Mode{KMeans, KMeansMinMax} {
+		q := Quantize(w, rows, cols, 16, 0, 16, mode)
+		if e := relErr(w, q.Dequantize()); e != 0 {
+			t.Errorf("mode %d: already-palettized rel RMS err = %g, want 0", mode, e)
+		}
+	}
+	colW := make([]float32, cols)
+	for i := range colW {
+		colW[i] = float32(i + 1)
+	}
+	qw := QuantizeWeightedMinMax(w, rows, cols, 16, 0, 4, 16, colW)
+	if e := relErr(w, qw.Dequantize()); e != 0 {
+		t.Errorf("weighted already-palettized rel RMS err = %g, want 0", e)
+	}
+}
