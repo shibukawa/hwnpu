@@ -88,3 +88,46 @@ func TestSplitSizes(t *testing.T) {
 		t.Error("a budget smaller than one layer did not fail")
 	}
 }
+
+// PlanSplitMax keeps every part to maxLayers layers, with at least as many parts as that takes,
+// and a budget that needs more parts still gets them.
+func TestSplitMaxLayers(t *testing.T) {
+	cfg := tinyConfig()
+	cfg.HiddenSize, cfg.IntermediateSize, cfg.VocabSize, cfg.HeadDim = 256, 512, 512, 16
+	cfg.NumLayers = 12
+	cfg.LayerTypes = nil
+	for i := range cfg.NumLayers {
+		cfg.LayerTypes = append(cfg.LayerTypes, []string{"conv", "full_attention"}[i%2])
+	}
+	opts := llm.Options{Seq: 4, Format: "lut4"}
+	for _, tc := range []struct {
+		budget          int64
+		maxLayers, want int
+	}{{1 << 40, 4, 3}, {1 << 40, 5, 3}, {1 << 40, 12, 1}, {1 << 40, 0, 1}} {
+		parts, err := llm.PlanSplitMax(cfg, opts, tc.budget, 0, tc.maxLayers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(parts) != tc.want {
+			t.Errorf("max %d: %d parts, want %d", tc.maxLayers, len(parts), tc.want)
+		}
+		next := 0
+		for _, p := range parts {
+			if p.Start != next || tc.maxLayers > 0 && p.Layers > tc.maxLayers {
+				t.Errorf("max %d: part %+v after layer %d", tc.maxLayers, p, next)
+			}
+			next = p.Start + p.Layers
+		}
+		if next != cfg.NumLayers {
+			t.Errorf("max %d: the parts end at %d of %d layers", tc.maxLayers, next, cfg.NumLayers)
+		}
+	}
+	pre, layers, post := llm.EstimateBytes(cfg, opts)
+	total := pre + post
+	for _, n := range layers {
+		total += n
+	}
+	if parts, _ := llm.PlanSplitMax(cfg, opts, total/5, 0, 6); len(parts) < 5 {
+		t.Errorf("a budget of a fifth with at most 6 layers a part: %d parts", len(parts))
+	}
+}
