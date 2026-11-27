@@ -105,7 +105,7 @@ failed`, "2026-11-23")
 	}
 }
 
-// TestVAELeftToDevice: FLUX.2 klein's VAE is prebuilt on M1 (but its vae_s0) and on M3 and later, FLUX.3 klein's left to the device on M1 and M2, Anima's on M2 (prebuilt on M1 but its vae_s0, and on M3 and later), and their other programs are not left by these rules.
+// TestVAELeftToDevice: FLUX.2 klein's VAE is prebuilt on M3 and later, FLUX.3 klein's left to the device on M1 and M2, Anima's on M2 (prebuilt on M1 but its vae_s0, and on M3 and later), and their other programs are not left by these rules.
 func TestVAELeftToDevice(t *testing.T) {
 	f, err := Builtin()
 	if err != nil {
@@ -116,7 +116,7 @@ func TestVAELeftToDevice(t *testing.T) {
 		want                 bool
 	}{
 		{"FLUX.2-klein-4B", "vae_s0", "h13g", true},
-		{"FLUX.2-klein-4B", "vae_enc_s3", "h13g", false},
+		{"FLUX.2-klein-4B", "vae_enc_s3", "h13g", true},
 		{"FLUX.2-klein-4B", "vae_s0", "h14g", true},
 		{"FLUX.2-klein-4B", "vae_s0", "h15g", false},
 		{"FLUX.2-klein-4B", "vae_enc_s3", "h15g", false},

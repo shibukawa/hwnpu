@@ -181,21 +181,17 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
-      # the VAE (decoder and encoder) is prebuilt on M1 and on M3 and later: on an M3 the device's
-      # compiler took 625 to 2799 s over the ten decoder stages, the prebuilt about 1 s, and both
-      # gave the same bytes at every size, without bands (2026-11-25, 26). On M2 the h14g prebuilt
-      # drew bands again (export v7, 2026-11-27), though offline its stages have no task reading
-      # past its kernel; Anima's VAE did the same there
+      # the VAE (decoder and encoder) is prebuilt on M3 and later: on an M3 the device's compiler
+      # took 625 to 2799 s over the ten decoder stages, the prebuilt about 1 s, and both gave the
+      # same bytes at every size, without bands (2026-11-25, 26). On M2 the h14g prebuilt drew
+      # bands again (export v7, 2026-11-27), though offline its stages have no task reading past
+      # its kernel; Anima's VAE did the same there. On M1 the h13g vae_s0 has tasks reading past
+      # their kernel (its attention's softmax exp sized for the SiLU's), and the others are untried
       prebuild:
-        - arch: [h14g, h14c, h14d, h14s]
+        - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
           programs: ["vae_*"]
           do: device
-          why: "on M2 the pictures from the h14g VAE prebuilt had bands (export v7, 2026-11-27), as Anima's had; none with the VAE compiled on the device"
-          checked: 2026-11-27
-        - arch: [h13g, h13c, h13d, h13s]
-          programs: ["vae_s0"]
-          do: device
-          why: "tasks read past the kernel they load (llirtasks -check, docs/known-issues.md 16): the mid block's attention softmax exp reads 8 coefficient sets of a kernel sized for the residual blocks' SiLU exp (1 set), at 1024 x 1024 and 512 x 512"
+          why: "on M2 the pictures from the h14g VAE prebuilt had bands (export v7, 2026-11-27), as Anima's had; on M1 the h13g vae_s0 reads past its kernels (llirtasks -check, docs/known-issues.md 16) and the other stages are not run there from prebuilts"
           checked: 2026-11-27
   MOSS-SoundEffect-v2.0: &moss
     amd:
