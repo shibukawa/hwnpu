@@ -766,8 +766,8 @@ func LookupDraft(seq []int32, k int) []int32 {
 	return drafts
 }
 
-// ErrClosed is returned for a request to a model that Close released.
-var ErrClosed = errors.New("chat: the model is closed")
+// ErrClosed is returned for a request to a model that Close released (chatwire.ErrClosed).
+var ErrClosed = chatwire.ErrClosed
 
 // Close releases the model. It waits for the step that a generation is running, and the
 // generations after it fail with ErrClosed.

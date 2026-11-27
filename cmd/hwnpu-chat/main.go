@@ -57,13 +57,14 @@
 // from 30000 (or --listen), writes an OpenCode config for the server's chat models, and runs
 // OpenCode on this terminal with the arguments after --; when it exits, so does the server.
 //
-// Unless HWNPU_DAEMON is off (it is on when unset), every command runs its models in hwnpud
-// (cmd/hwnpud) through the ai package: hwnpud makes the model ready, as the flags define it, and
-// runs it, this process sends the conversation and writes the answers. Two programs using the
-// same model share one copy of it there; it is unloaded when the last lets it go. Where the
-// models are and come from (HWNPU_CACHE, HWNPU_MODEL_SOURCE, ...) are then hwnpud's, read from
-// ~/.config/hwnpu/.env: a shell of other values is told so (auto runs here instead);
-// HWNPU_MODEL_ALLOWLIST goes with the request and narrows hwnpud's policy.
+// Every command runs its models in hwnpud (cmd/hwnpud) through the ai package: hwnpud makes the
+// model ready, as the flags define it, and runs it, this process sends the conversation and
+// writes the answers; the list, why a use picks a model and the memory kept for one are hwnpud's
+// too (internal/chatcmd). Two programs using the same model share one copy of it there; it is
+// unloaded when the last lets it go. Where the models are and come from (HWNPU_CACHE,
+// HWNPU_MODEL_SOURCE, ...) are hwnpud's, read from ~/.config/hwnpu/.env: a shell of other values
+// is told so; HWNPU_MODEL_ALLOWLIST goes with the request and narrows hwnpud's policy.
+// hwnpu-chat links no engine: with HWNPU_DAEMON=off (or auto without hwnpud) it says so.
 package main
 
 import (
@@ -71,7 +72,7 @@ import (
 	"os"
 
 	"github.com/alecthomas/kong"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
@@ -95,9 +96,9 @@ func main() {
 		kong.Description("Language models on an NPU: chat, a coding agent, search by embeddings and the OpenAI compatible API."),
 		kong.UsageOnError(),
 		kong.Vars{
-			"models_usage": chat.ModelsUsage,
-			"embed_seqs":   ints(chat.DefaultEmbedSeqs),
-			"mtp":          chat.MTPAuto,
+			"models_usage": catalog.ModelsUsage,
+			"embed_seqs":   ints(defaultEmbedSeqs),
+			"mtp":          mtpAuto,
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(stop))

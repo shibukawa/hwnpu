@@ -18,6 +18,8 @@ var (
 	ErrTooLong = errors.New("chat: the text is longer than the embedding model reads")
 	// ErrEmpty is returned for a text with no tokens of its own.
 	ErrEmpty = errors.New("chat: empty text")
+	// ErrClosed is the error of a request to a model that Close released.
+	ErrClosed = errors.New("chat: the model is closed")
 )
 
 // Cosine is the cosine similarity of two embeddings.

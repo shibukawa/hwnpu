@@ -64,5 +64,8 @@ func tagOf(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 // TableVersion is the version of the definition files this hwnpu reads (models.yaml's version).
 const TableVersion = 1
 
+// ModelsUsage is the usage of the -models flag of the commands that pick models.
+const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/hwnpu/models.yaml) and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
+
 // LicenseEnv is the variable of the licenses accepted without asking: their ids, or all.
 const LicenseEnv = "HWNPU_ACCEPT_LICENSE"

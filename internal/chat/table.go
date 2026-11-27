@@ -29,7 +29,8 @@ import (
 // ModelsEnv lists more definition files, separated as PATH is (':', ';' on Windows).
 const ModelsEnv = "HWNPU_MODELS"
 
-// ModelsUsage is the usage of the -models flag of the commands that pick models.
+// ModelsUsage is the usage of the -models flag of the commands that pick models
+// (catalog.ModelsUsage).
 const ModelsUsage = catalog.ModelsUsage
 
 // LoadUserModels is LoadModels of the user's files and those of -models (comma separated), with

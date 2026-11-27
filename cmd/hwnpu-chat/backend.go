@@ -2,12 +2,19 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"runtime"
 	"strings"
 
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/chatcmd"
+)
+
+// The names of the backends hwnpu-chat runs on, and the variable that names one (internal/llm's
+// BackendCoreML, BackendCoreAI and BackendEnv).
+const (
+	backendEnv    = "HWNPU_BACKEND"
+	backendCoreML = "coreml"
+	backendCoreAI = "coreai"
 )
 
 // chatDevice is the device backend hwnpu-chat converts for and runs on for the one a command names
@@ -16,23 +23,24 @@ import (
 // chat and embedding models are converted for Core AI from their checkpoints (docs/design/apple-coreai.md).
 func chatDevice(name string) string {
 	if name == "" {
-		name = strings.TrimSpace(os.Getenv(llm.BackendEnv))
+		name = strings.TrimSpace(os.Getenv(backendEnv))
 	}
 	if runtime.GOOS == "darwin" {
 		switch name {
-		case "", llm.BackendCoreML, llm.BackendCoreAI:
-			return llm.BackendCoreAI
+		case "", backendCoreML, backendCoreAI:
+			return backendCoreAI
 		}
 	}
 	return name
 }
 
-// resolveBackend is chatDevice(name), checked on a Mac: Core AI needs macOS 27.
+// resolveBackend is chatDevice(name), checked on a Mac by hwnpud, where the models run: Core AI
+// needs macOS 27.
 func resolveBackend(ctx context.Context, name string) (string, error) {
 	d := chatDevice(name)
-	if d == llm.BackendCoreAI {
-		if _, _, err := llm.FindDevice(ctx, d); err != nil {
-			return "", fmt.Errorf("hwnpu-chat runs on Apple's Neural Engine through Core AI, which needs macOS 27: %w", err)
+	if d == backendCoreAI {
+		if err := chatcmd.Device(ctx, d); err != nil {
+			return "", err
 		}
 	}
 	return d, nil

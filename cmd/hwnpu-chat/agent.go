@@ -95,7 +95,7 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		return errors.New("--search-first needs search among --tools")
 	}
 
-	cm, err := chatModelOf(cat, c.Model, &c.convertFlags, nil)
+	cm, err := chatModelOf(st, cat, c.Model, &c.convertFlags, nil)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		return err
 	}
 	prepared(rt)
-	cm.keep()
+	cm.keep(ctx)
 	if f := e.Features(); len(f) > 0 && !slices.Contains(f, "tools") {
 		return fmt.Errorf("%s has no tool calls; the agent needs a model with the tools feature (hwnpu-chat list)", cm.base)
 	}
