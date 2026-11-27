@@ -54,11 +54,11 @@
 #               architecture (hwnpu-dev models package MODEL, hwnpu-dev prebuild EXPORT) and
 #               put in the sources, where a Mac of the chip takes them at its first run. The
 #               image generators, whose programs the device compiles in minutes to hours, and
-#               Qwen3.5's chat models on the M1 (its archs: h13g alone). Another model's
-#               programs are small, and a Mac loads them slower from prebuilt programs than it
-#               compiles them (LFM3-1.7B on an M1, 1 min 45 s prebuilt, 1 min 02 s on the device:
-#               docs/known-issues.md 9, 2026-11-27); a prebuilt that is only somewhat slower is
-#               still taken where it holds less memory and disk. A build that names
+#               chat models checked on the M1 (Qwen3.5-0.8B and 4B, LFM3-1.7B: their archs h13g
+#               alone). A small model's programs may load slower from prebuilt programs than the
+#               device compiles them (LFM3-1.7B on an M1, 1 min 45 s prebuilt, 1 min 02 s on the
+#               device: docs/known-issues.md 9, 2026-11-27); a prebuilt that is only somewhat
+#               slower is still taken where it holds less memory and disk (the user, 2026-11-27). A build that names
 #               architectures (MODEL/coreai-ARCH, -arch) compiles any model's all the same, to
 #               measure it again
 #     version   the version of what its Core AI conversion makes (the sources keep its exports
@@ -225,6 +225,13 @@ models:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       version: 2
+      # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
+      # device by apple's rule): the answers are those of the device's compile; the first load
+      # takes 1 min 45 s against 1 min 02 s compiled on the device, slower but with 1.3 GB less
+      # disk left and a 1 GB lower peak of the device's compiler (2.2 against 3.2 GB), which the
+      # user prefers (2026-11-27). The other chips' programs are not checked yet
+      prebuilt: true
+      archs: [h13g]
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
