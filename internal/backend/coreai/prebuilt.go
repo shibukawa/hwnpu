@@ -143,23 +143,21 @@ func Assets(paths []string) ([]string, error) {
 }
 
 // LeftToDevice reports whether the program at dir is compiled on the device on every chip even
-// where a prebuilt one could be had: a text encoder's (text*.aimodel), and a program whose name
-// ends in _device. What is left to the device on some chips alone, or for one model, is the
-// recipe's (model-recipes.yaml apple prebuild, do: device): the VAEs (FLUX.2 klein's on M1,
-// Anima's everywhere, docs/design/image-apple.md).
+// where a prebuilt one could be had: a program whose name ends in _device (NAME_device.aimodel),
+// one coreai-build leaves to the GPU where the device's compiler takes it, as FLUX.2 klein's edits
+// of 8192 keys or more (flux2klein.PrebuiltKeys). What is left to the device on some chips alone,
+// or for one model, is the recipe's (model-recipes.yaml apple prebuild, do: device): the VAEs and
+// the text encoders on M1 and M2 (docs/design/image-apple.md).
 //
-// The text encoders: Chroma1-Flash's T5-XXL (text_0 ... text_21, prebuilt for h13g) ended in
-// "Request cancelled" at text_0 on M1 four times running (fresh Core AI caches, nothing else on the
-// Neural Engine), and the same programs compiled on the device ran (T5-XXL 220 to 230 s); FLUX.2
-// klein's Qwen3 ran from its prebuilts but slower than compiled on the device (112 s against 81 s,
-// docs/design/distribution.md), so a prebuilt text encoder gains nothing.
-//
-// A program whose name ends in _device (NAME_device.aimodel): one coreai-build leaves to the GPU
-// where the device's compiler takes it, as FLUX.2 klein's edits of 8192 keys or more
-// (flux2klein.PrebuiltKeys).
+// The text encoders were left to the device on every chip until 2026-11-26: Chroma1-Flash's T5-XXL
+// (removed) ended in "Request cancelled" from its h13g prebuilts, and FLUX.2 klein's Qwen3 was
+// slower from prebuilts. They are prebuilt now for the memory: on an M3 the nine Qwen3 programs
+// took 94 to 190 s from prebuilts against 46 s compiled on the device, but the device's compiler
+// (ANECompilerService) grew by 1.5 GB doing it, the prebuilts' finishing service by 0.5 GB, and
+// both left the same 7.9 GB in the caches.
 func LeftToDevice(dir string) bool {
 	base := strings.ToLower(filepath.Base(filepath.Clean(dir)))
-	return strings.HasPrefix(base, "text") || strings.HasSuffix(strings.TrimSuffix(base, ".aimodel"), "_device")
+	return strings.HasSuffix(strings.TrimSuffix(base, ".aimodel"), "_device")
 }
 
 // NothingToPrebuild reports whether every program under export is LeftToDevice (FLUX.2 klein's

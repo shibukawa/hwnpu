@@ -45,11 +45,11 @@
 
 | 部品 | チップ | 理由 |
 |---|---|---|
-| FLUX.2 klein の VAE (`vae_*`、復号器と符号器)、FLUX.3 klein の VAE (同じ復号器) | すべて (M3 以降は FLUX の別の変更で) | `coreai-build` の h13g 向けの FLUX.2 klein の VAE は、512² で 112 行ごとに数行の色の縞を出した (同じ `.aimodel` の 1024² の関数は正しい)。1024 × 768 の `vae_s0` は `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた。M1 では得もない: 1024² の 10 段を端末が 104 秒でコンパイルする。M2 では 512² の絵がどれも、112 行ごとに 8〜16 行の帯 (112、224、336、448 行) を持った。h14g の prebuilt でも端末のコンパイルでも同じで、FLUX.2 と FLUX.3 klein の両方。1024² は正しい (2026-11-26)。プログラムを直すまで M2 も端末に任せる |
+| FLUX.2 klein の VAE (M1 では `vae_s0`: attention の softmax がカーネルの外を読む、`llirtasks -check`)、FLUX.3 klein の VAE (同じ復号器。FLUX.2 のものを M1 と M2 で動かすまで、M1 と M2 は全段) | M1 (`h13*`: FLUX.2 は `vae_s0`、FLUX.3 は全段)、M2 (`h14*`: 全段。FLUX.2 の h14g の prebuilt は帯を描いた、2026-11-27) | `coreai-build` の h13g 向けの FLUX.2 klein の VAE は、512² で 112 行ごとに数行の色の縞を出した (同じ `.aimodel` の 1024² の関数は正しい)。1024 × 768 の `vae_s0` は `ANEProgramProcessRequestDirect() … Request cancelled` で落ちた。M1 では得もない: 1024² の 10 段を端末が 104 秒でコンパイルする。M2 では 512² の絵がどれも、112 行ごとに 8〜16 行の帯 (112、224、336、448 行) を持った。h14g の prebuilt でも端末のコンパイルでも同じで、FLUX.2 と FLUX.3 klein の両方。1024² は正しい (2026-11-26)。プログラムを直すまで M2 も端末に任せる |
 | Anima の VAE (`vae_*`) | M2 (`h14*`) | 書き出し v5 までは、`coreai-build` がどのチップでも 10 段のうち 8 段を落とした (ネイティブの silu。下)。v6 からは h13g と h14g でもオフラインで全段が Neural Engine に載る。M2 では h14g の prebuilt の絵に 160 ピクセルごとの帯が出た (アスペクト比によってはその 2 倍、3 倍の頻度でも)。端末でコンパイルすると出ない (2026-11-27)。M1 (正しく描けた) と M3 以降 (端末のコンパイルとバイトまで同じ、2026-11-26) は prebuilt |
-| 文の符号器 (`text_*`) | すべて | prebuilt の Chroma1 (外した) の T5-XXL の `text_0` は `Request cancelled` で 4 回続けて落ちた。FLUX.2 klein の Qwen3 は prebuilt で動くが、端末でコンパイルしたものより遅い (112 秒対 81 秒) |
+| 文の符号器 (`text_*`) | M1 (`h13*`)、M2 (`h14*`) | 2026-11-26 から、メモリのため M3 以降は prebuilt。FLUX.2 klein の Qwen3 の 9 本を端末でコンパイルすると、コンパイラが 1.5 GB 増え、prebuilt の仕上げのサービスは 0.5 GB。キャッシュはどちらも 7.9 GB。初回の読み込みは prebuilt で 46〜190 秒、端末のコンパイルで 46〜52 秒 (回ごとにばらつく)。その機械で一度もコンパイルしていないプログラムで、prebuilt と端末のコンパイルの出力はバイトまで同じ。M1 と M2 は動かすまで端末 (外した Chroma1 の T5 は h13g の prebuilt で `Request cancelled` で落ちた) |
 
-- FLUX.2 と FLUX.3 klein の VAE は、いまはどのチップでも端末。M3 以降は prebuilt でよい (FLUX の別の変更で)。M3 では、初回に端末のコンパイラが復号器の 10 段に 2799 秒かかった (`vae_s6`〜`s8` が各約 600 秒。全部の大きさをまとめて)。prebuilt の仕上げは 0.9 秒で、1024² と 512² のどの段の出力もバイトまで同じだった (2026-11-25)。M3 で描画全体を比べると (2026-11-26)、FLUX.2 klein の 1024² の初回の復号は 10 分 32 秒 → 4.5 秒、512² の編集の符号器は 430 秒 → 20 秒。FLUX.3 klein の 1024² の初回は 19 分 27 秒 → 2 分 43 秒 (VAE は 640 秒 → 1 秒)。絵はどれも、VAE を端末でコンパイルしたときとバイトまで同じだった。FLUX.2 klein の 8 つの大きさのどれでも、本物の絵を VAE に通すと prebuilt と端末のコンパイルでバイトまで同じで、帯はなかった (2026-11-26)。FLUX.3 klein の VAE も FLUX.2 klein と同じく M1 では端末に任せる (M1 では試していない)。
+- FLUX.2 と FLUX.3 klein の VAE は M3 以降で prebuilt にする。M3 では、初回に端末のコンパイラが復号器の 10 段に 2799 秒かかった (`vae_s6`〜`s8` が各約 600 秒。全部の大きさをまとめて)。prebuilt の仕上げは 0.9 秒で、1024² と 512² のどの段の出力もバイトまで同じだった (2026-11-25)。M3 で描画全体を比べると (2026-11-26)、FLUX.2 klein の 1024² の初回の復号は 10 分 32 秒 → 4.5 秒、512² の編集の符号器は 430 秒 → 20 秒。FLUX.3 klein の 1024² の初回は 19 分 27 秒 → 2 分 43 秒 (VAE は 640 秒 → 1 秒)。絵はどれも、VAE を端末でコンパイルしたときとバイトまで同じだった。FLUX.2 klein の 8 つの大きさのどれでも、本物の絵を VAE に通すと prebuilt と端末のコンパイルでバイトまで同じで、帯はなかった (2026-11-26)。FLUX.3 klein の VAE も FLUX.2 klein と同じく M1 では端末に任せる (M1 では試していない)。
 - M1 で prebuilt の VAE ですでに描いた機械では、仕上げた項目が Core AI のキャッシュに残り (`hasEntry` が prebuilt より先)、縞のままになる。`~/Library/Caches/coreai-cache/<OS のビルド>/hwnpu-image/` を消す (VAE の項目だけでもよい)。
 - 未解決: `coreai-build` の何が h13g の VAE を誤らせるか (112 行の周期は段の中の行の区切りかもしれない)、何が T5 を cancel させるか。直ったらレシピの決まりを外す。Apple に報告する (FB)。
 
@@ -137,7 +137,7 @@
 - FLUX.2 と FLUX.3 klein: FLUX.1 のデコーダ (`internal/imagegen/fluxvae`。元は Chroma1 のもの) に `post_quant_conv` を足したもの (`fluxvae.Vae.PostQuant`)。バッチノルムの統計で戻すのと 2 × 2 の展開はホスト。
 - Anima の VAE の値は 8 未満で、fp16 の手当ては要らない。
 - Core AI 向けの Anima の VAE は、residual block の silu を exp の形 (`blocks.SiLU`) で書く (書き出し v6、`anima.CoreAIExportVersion`)。ブロックの 2 つの norm の後を Neural Engine 自身の `silu` にすると、`coreai-build` (Metal Toolchain 27.2.47) が h13g、h14g、h15g で residual block のある段をすべて落とした (`ANECCompileOffline: CompilationFailure`。norm、silu、conv、norm、silu だけで起きる。2 つ目の norm の後だけ exp にしても s0〜s2 と s4 が落ちた)。exp の形なら 3 つのチップで 10 段 × 8 つの大きさがすべて Neural Engine に丸ごと載る。M3 の 512²: 端末のコンパイルが 10 段で 482 秒 (ネイティブの silu は 3552 秒、1 段で最大 12 GB の一時領域)、h15g の prebuilt からはすぐ読める。prebuilt と端末の出力はバイトまで同じで、どの段も自分の入力からの fp64 の参照と 75〜89 dB、1024² も同じ (2026-11-26)。Core ML と OpenVINO IR はネイティブの silu のまま。
-- Anima は M1 と M3 以降で prebuilt、M2 は端末。FLUX.2 と FLUX.3 klein はどのチップでも端末 (上)。
+- Anima は M1 (`vae_s0` のほか) と M3 以降で prebuilt、M2 は端末。FLUX.2 と FLUX.3 klein は M3 以降で prebuilt、M1 と M2 は端末 (上)。
 - 段の間を float32 でなく fp16 で渡しても効かなかった (0〜0.3 秒、Sana の 1024²)。
 
 ## Anima (Cosmos-Predict2 2B、Qwen3-0.6B)

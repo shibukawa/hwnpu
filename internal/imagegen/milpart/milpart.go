@@ -398,6 +398,16 @@ type HeadOptions struct {
 	// Note, when not nil, is given each chunk's product before Deferred's division (1, 1,
 	// queries, d), for checking its range.
 	Note func(*mlpackage.Var)
+	// DivideParts normalizes each part's exponentials by dividing them by the parts' sum, in place
+	// of multiplying them by its reciprocal: the same values (cosine 0.999998 to the CPU either
+	// way). FLUX.2 klein's single blocks at 704 x 1280 and 1280 x 704 (4032 rows, 24 heads, 1024
+	// queries a chunk) compiled by coreai-build for an M3 (h15g) read the reciprocal times the
+	// exponentials through a DMA that broadcasts and transposes the reciprocal with a cache hint
+	// the device refuses ("tile_dma_src.dma_config2.cache_hint != ..._cache_hint_drop_v8",
+	// "Invalid TD exists"): the program failed to load (failedToSpecialize) and every size's
+	// single blocks compiled on the device, 13 minutes each. Divided, every function loads
+	// (docs/known-issues.md 12). Off for the others, whose programs are as before.
+	DivideParts bool
 }
 
 // HeadAttention is the attention of q (1, heads, n, d), which holds the scores' scale, over k and
@@ -509,10 +519,19 @@ func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.
 			sum := joined("sum", pss) // (1, queries, 1, 1)
 			switch {
 			case len(parts) > 1:
-				r := g.Op("real_div", map[string]any{"x": g.B.ScalarF16(1), "y": sum}, sum.Shape...)
+				var r *mlpackage.Var
+				if !o.DivideParts {
+					r = g.Op("real_div", map[string]any{"x": g.B.ScalarF16(1), "y": sum}, sum.Shape...)
+				}
 				var row *mlpackage.Var
 				for i, p := range parts {
-					pv := g.MatMul(g.Reshape(g.Mul(es[i], r), 1, 1, c, p.hi-p.lo), vs[i], false, false)
+					var pr *mlpackage.Var
+					if o.DivideParts {
+						pr = g.Div(es[i], sum)
+					} else {
+						pr = g.Mul(es[i], r)
+					}
+					pv := g.MatMul(g.Reshape(pr, 1, 1, c, p.hi-p.lo), vs[i], false, false)
 					if row == nil {
 						row = pv
 					} else {
