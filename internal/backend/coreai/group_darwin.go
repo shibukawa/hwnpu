@@ -79,7 +79,7 @@ var (
 	}
 	// forget deletes Core AI's cache entries of the asset at path (before it is removed).
 	forget = func(path string) {
-		if load() == nil && caiForget != nil {
+		if load() == nil {
 			caiForget(cString(path))
 		}
 	}

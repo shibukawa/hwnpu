@@ -12,8 +12,8 @@ import (
 	"github.com/shibukawa/hwnpu/internal/ovir"
 )
 
-// The probe models have the shape of LLM decoding (tools/coreml/gen_decode.py): one token through
-// Llama 3.2 1B sized layers with random weights, so every call reads every weight once.
+// The probe models have the shape of LLM decoding: one token through Llama 3.2 1B sized layers
+// with random weights, so every call reads every weight once.
 //
 //	x (1, tokens, d) fp16 -> layers x [norm, q/k/v/o projections, norm, SwiGLU MLP] -> norm -> y
 //

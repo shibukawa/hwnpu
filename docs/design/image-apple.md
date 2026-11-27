@@ -144,7 +144,7 @@ Pictures are byte for byte the same in all forms.
 
 - Programs: `text`, `dit_time` (8 rows), DiT in groups of 4 blocks (`dit_blocks_N`, 7 groups of 28 blocks; the patch embedding in `dit_blocks_0`), the final layer, VAE 10 stages. Formats int8/int8 on Apple (`anima.Formats`), fp16 on Intel.
 - Attention: self-attention `HeadAttention` 1024 chunks, division first; cross-attention whole, division deferred, queries padded to 8. Scale in q's norm weight. Norms by `abs`. `ExportVersion` 4, `PaddedExportVersion` 5, `CoreAIExportVersion` 6 (every Core AI export: the VAE's exp silu).
-- `--group` (default 0 = `anima.DefaultGroup`): 4 on Apple. `--qchunk` 512 (Core ML/Intel heads-together form).
+- `--dit-group` (default 0 = `anima.DefaultGroup`): 4 on Apple. `--qchunk` 512 (Core ML/Intel heads-together form).
 - Breakdown of a 1024² block (M1, Core AI, before the attention forms): 232 ms; MLP 54 ms (5.1 TFLOPS), self-attention core 102 ms (1.3 TFLOPS), cross-attention core 14 ms. Element-wise ops other than attention are about 24 ms of a 221 ms block (11 %): q/k RMSNorm 11.3 (4.8 of it the max division), RoPE 3.4, LayerNorm max divisions 3.7, exact GELU 5.8 (tanh and sigmoid approximations are slower: +4.7, +12.5 ms).
 - Its CFG step costs exactly twice a plain step (11.1–11.2 vs 5.6–5.7 s): the groups are small (0.28 GiB), so it pays no switch cost, and batching groups does not speed it up.
 - Accuracy: Anima-Turbo 512² against a CPU float32 run of the same int8 weights: latent cosine 0.987–0.999. Against diffusers fp32 at 1024² (M1, Core ML, int8): 0.876–0.948, same composition; the 8-step distilled model amplifies small differences. Anima-Aesthetic (25 small steps) stays close (0.997–0.9999 between attention forms).

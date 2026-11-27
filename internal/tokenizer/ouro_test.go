@@ -10,19 +10,19 @@ import (
 
 // TestOuro checks Ouro's tokenizer (SmolLM's: individual Digits, then a ByteLevel pre-tokenizer
 // with GPT-2's pattern) against the ids Hugging Face gave (testdata/Ouro-1.4B-Thinking.json, from
-// tools/ref/tokenizer_golden.py). It needs HWNPU_OURO_DIR with tokenizer.json; HWNPU_OURO_GOLDEN
+// tools/ref/tokenizer_golden.py). It needs HWNPU_TEST_OURO_DIR with tokenizer.json; HWNPU_TEST_OURO_TOKENS_REF
 // names another golden file (one with --random cases).
 func TestOuro(t *testing.T) {
-	dir := os.Getenv("HWNPU_OURO_DIR")
+	dir := os.Getenv("HWNPU_TEST_OURO_DIR")
 	if dir == "" {
-		t.Skip("HWNPU_OURO_DIR not set")
+		t.Skip("HWNPU_TEST_OURO_DIR not set")
 	}
 	tk, err := Load(filepath.Join(dir, "tokenizer.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	golden := "testdata/Ouro-1.4B-Thinking.json"
-	if g := os.Getenv("HWNPU_OURO_GOLDEN"); g != "" {
+	if g := os.Getenv("HWNPU_TEST_OURO_TOKENS_REF"); g != "" {
 		golden = g
 	}
 	raw, err := os.ReadFile(golden)

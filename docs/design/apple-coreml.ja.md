@@ -9,7 +9,7 @@ Core ML のバックエンド (`internal/backend/coreml`、macOS arm64) は**ベ
 | どこ | どう |
 |---|---|
 | 公開のライブラリ (`hwnpu.Open`) | `backends_darwin.go` で最初に登録され、Apple の既定のデバイス。Core AI は名前で (`WithBackend("coreai")`、`HWNPU_BACKEND=coreai`) |
-| CPU で動かす | `GraphSource.Units` / `HWNPU_COREML_UNITS=cpu` でパッケージを Core ML の CPU で動かす (参照、ANE のほうが悪いモデル) |
+| CPU で動かす | `GraphSource.Units` / `HWNPU_DEV=coreml.units=cpu` でパッケージを Core ML の CPU で動かす (参照、ANE のほうが悪いモデル) |
 | バックエンドを指定しない `llm.OpenDevice` | `coreml` を優先。`hwnpu-dev generate` と `formats` が使う |
 | `hwnpu-dev info`、`powerbench`、`probe`、`report` | Core ML のデバイスと配置の報告 (`MLComputePlan` が演算ごとのデバイスを示す) |
 | `aicheck run -coreml` | Core AI の結果が怪しいときの比べる相手 |

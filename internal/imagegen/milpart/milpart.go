@@ -330,7 +330,7 @@ func KeyParts(lo, hi int) [][2]int {
 // 1024 with a reference of 1024, 8704 keys, then went to the GPU, and were compiled on the
 // device). The same parts joined so are all on the Neural Engine. Fewer keys keep the one softmax
 // (their programs the same bytes as before).
-var PieceKeys = 8192 // a var for the probes of the tests (TestWriteSingleProbe); not changed elsewhere
+var PieceKeys = 8192 // not changed (a var since the tests' probes, kept so for the exports' CodeHash)
 
 // keyPart is a part of HeadAttention's keys: [lo, hi) and its bias (nil: none).
 type keyPart struct {

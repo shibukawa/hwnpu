@@ -189,7 +189,7 @@ type GraphSource struct {
 	Function string
 	// Units are where Core ML runs the graph: "" the Neural Engine (with the CPU), "gpu" the GPU
 	// (with the CPU) or "cpu" the CPU; for a graph that the Neural Engine of a chip cannot run.
-	// HWNPU_COREML_UNITS overrides it for every graph.
+	// HWNPU_DEV=coreml.units overrides it for every graph.
 	Units string
 }
 

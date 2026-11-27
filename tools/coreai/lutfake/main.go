@@ -30,7 +30,6 @@ func main() {
 	bits := flag.Int("bits", 8, "4, 6 or 8")
 	tables := flag.String("tables", "random", "random, same, first32, pairs, sorted")
 	seed := flag.Int64("seed", 1, "random seed")
-	dup := flag.Int("dup", -1, "make table DUP+1 a copy of table DUP (after -tables)")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		log.Fatal("usage: lutfake [flags] OUT.aimodel")
@@ -72,9 +71,6 @@ func main() {
 		default:
 			log.Fatalf("unknown -tables %q", *tables)
 		}
-	}
-	if *dup >= 0 {
-		copy(lut[(*dup+1)*k:(*dup+2)*k], lut[*dup*k:(*dup+1)*k])
 	}
 	n := *rows * *cols
 	idx := make([]byte, (n**bits+7)/8)

@@ -88,12 +88,12 @@ func TestPackAssemble(t *testing.T) {
 	}
 }
 
-// TestPackReal packs and assembles a prebuilt program of coreai-build's (HWNPU_TEST_PREBUILT: the
+// TestPackReal packs and assembles a prebuilt program of coreai-build's (HWNPU_TEST_COREAI_PREBUILT_FILE: the
 // X.ARCH.aimodelc beside its X.aimodel).
 func TestPackReal(t *testing.T) {
-	full := os.Getenv("HWNPU_TEST_PREBUILT")
+	full := os.Getenv("HWNPU_TEST_COREAI_PREBUILT_FILE")
 	if full == "" {
-		t.Skip("HWNPU_TEST_PREBUILT is not set")
+		t.Skip("HWNPU_TEST_COREAI_PREBUILT_FILE is not set")
 	}
 	asset := filepath.Join(filepath.Dir(full), filepath.Base(full)[:len(filepath.Base(full))-len(".h14g.aimodelc")]+".aimodel")
 	dir := t.TempDir()

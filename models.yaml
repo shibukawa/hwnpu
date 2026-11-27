@@ -380,7 +380,7 @@ models:
     # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB.
     # Below 48 GB its experts in places (--expert-places P, docs/design/moe.md): the others in
     # experts.bin (20.1 GB), copied into a place when chosen, read with O_DIRECT where the file
-    # does not fit beside the places (measured with HWNPU_DEV=moe.direct=1, 2026-11-21, a
+    # does not fit beside the places (measured with HWNPU_DEV=iron.moe.direct=1, 2026-11-21, a
     # 1173-token prompt then 200 tokens, the peak of the NPU's buffers and the process's): 32
     # places 7.6 GiB, 33-38 % of the decode's choices copied in; 128 places 16.0 GiB, 6-7 %. The
     # logits the same to the bit as with every expert. Re-exported from main after the array

@@ -18,7 +18,7 @@ import (
 // configuration a chip's compiler leaves off the Neural Engine. HWNPU_TEST_KLEIN_PROBE_OUT is the
 // .aimodel, HWNPU_TEST_KLEIN_DIR the checkpoint, HWNPU_TEST_KLEIN_PROBE_REFS the edit's references
 // (side divisors, "2,2,2": three of half the sides; empty: no edit), _SIZE "W,H" (1024,1024),
-// _GROUP "first,count" (0,5), _KIND "double" for the double blocks' group in place, _PIECES milpart.PieceKeys for this program, _FORMAT (lut8),
+// _GROUP "first,count" (0,5), _KIND "double" for the double blocks' group in place, _FORMAT (lut8),
 // _REF a Core ML package of the same part too, for the CPU interpreter to check the program's
 // output on a device against (go run ./tools/coreai/aicheck run -cpu -ref REF OUT#FUNCTION).
 func TestWriteSingleProbe(t *testing.T) {
@@ -35,14 +35,6 @@ func TestWriteSingleProbe(t *testing.T) {
 	}
 	if s := os.Getenv("HWNPU_TEST_KLEIN_PROBE_FORMAT"); s != "" {
 		format = s
-	}
-	if s := os.Getenv("HWNPU_TEST_KLEIN_PROBE_PIECES"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func(k int) { milpart.PieceKeys = k }(milpart.PieceKeys)
-		milpart.PieceKeys = n
 	}
 	c, err := mil.ReadDit(root, w, h)
 	if err != nil {

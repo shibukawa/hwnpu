@@ -126,7 +126,7 @@ M1 の検証の返事 (形ごと):
 
 ### 確かめ方
 
-1. 同じプログラムを ANE と CPU (`HWNPU_COREAI_UNITS=cpu`、`HWNPU_COREML_UNITS=cpu`) で動かし、位置ごとに比べる (ロジットの KL かコサイン)。詰め物は別に数える。
+1. 同じプログラムを ANE と CPU (`HWNPU_DEV=coreai.units=cpu`、`HWNPU_DEV=coreml.units=cpu`) で動かし、位置ごとに比べる (ロジットの KL かコサイン)。詰め物は別に数える。
 2. 原因を探す前に、参照の fp16 と比べる。HF の fp16 も同じだけずれるなら移植の誤りではない (Whisper の符号器: 無音の位置の注意の sink で、ANE の誤りではない)。
 3. 最初の N 層だけ変換し (`hwnpu-dev convert -layers N`)、ずれの始まりを探す。
 4. ANE と CPU のインタプリタの間で演算ごとに二分する (`internal/vision/detect` の `TestBisect`)。または部品を 1 つずつ CPU に移す。

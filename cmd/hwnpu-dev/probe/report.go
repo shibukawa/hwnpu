@@ -159,11 +159,11 @@ func markdown(rep *report) string {
 	}
 	if len(rep.Attn) > 0 {
 		sb.WriteString("\n## Attention per chunk of a KV cache, merged on the host\n\n")
-		sb.WriteString("| form | Q | chunk | placement | ms/call alone | CPU use | compile s | error |\n|---|---|---|---|---|---|---|---|\n")
+		sb.WriteString("| Q | chunk | placement | ms/call alone | CPU use | compile s | error |\n|---|---|---|---|---|---|---|\n")
 		for _, a := range rep.Attn {
-			fmt.Fprintf(&sb, "| %s | %d | %d | %s | %s | %s | %.1f | %s |\n", a.Form, a.Tokens, a.Chunk, a.placement(), cell(a.MsPerCall, "%.3f"), cell(a.CPUUse, "%.2f"), a.CompileS, errCell(a.result))
+			fmt.Fprintf(&sb, "| %d | %d | %s | %s | %s | %.1f | %s |\n", a.Tokens, a.Chunk, a.placement(), cell(a.MsPerCall, "%.3f"), cell(a.CPUUse, "%.2f"), a.CompileS, errCell(a.result))
 		}
-		sb.WriteString("\n| form | Q | chunk | placement | used | layers × chunks | ms/step | ms/call in the step | of it the merge, ms | ms per 1K used | KV | peak RSS | CPU use | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		sb.WriteString("\n| Q | chunk | placement | used | layers × chunks | ms/step | ms/call in the step | of it the merge, ms | ms per 1K used | KV | peak RSS | CPU use | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, a := range rep.Attn {
 			for _, s := range a.Passes {
 				per1K := 0.0
@@ -174,7 +174,7 @@ func markdown(rep *report) string {
 				if s.MaxRSS > 0 {
 					rss = fmt.Sprintf("%.2f GiB", probe.GiB(s.MaxRSS))
 				}
-				fmt.Fprintf(&sb, "| %s | %d | %d | %s | %d | %d × %d | %s | %s | %s | %s | %.0f MiB | %s | %s | %s |\n", a.Form, a.Tokens, a.Chunk, a.placement(), s.Used, s.Layers, s.Chunks,
+				fmt.Fprintf(&sb, "| %d | %d | %s | %d | %d × %d | %s | %s | %s | %s | %.0f MiB | %s | %s | %s |\n", a.Tokens, a.Chunk, a.placement(), s.Used, s.Layers, s.Chunks,
 					cell(s.MsPerPass, "%.2f"), cell(s.msPerCall(), "%.3f"), cell(s.MsMerge, "%.2f"), cell(per1K, "%.3f"), float64(s.KVBytes)/(1<<20), rss, cell(s.CPUUse, "%.2f"), strings.ReplaceAll(short(s.Error, 200), "|", "/"))
 			}
 		}
@@ -184,7 +184,7 @@ func markdown(rep *report) string {
 		sb.WriteString("\n## A model split at its attention: weighted parts and the chunk attention interleaved\n\n")
 		sb.WriteString("| weights | parts | Q | attention | placement of the parts | of the attention | used | chunks | ms/step weights alone | attention alone | interleaved | ms per seam | seams | CPU use | peak RSS | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, s := range rep.Seam {
-			head := fmt.Sprintf("| %s %d layers, %.2f GiB | %d | %d | %s, %d layers, chunks of %d | %s | %s |", s.Format, s.Layers, probe.GiB(s.WeightBytes), s.AttnLayers+1, s.Tokens, s.Form, s.AttnLayers, s.Chunk,
+			head := fmt.Sprintf("| %s %d layers, %.2f GiB | %d | %d | %d layers, chunks of %d | %s | %s |", s.Format, s.Layers, probe.GiB(s.WeightBytes), s.AttnLayers+1, s.Tokens, s.AttnLayers, s.Chunk,
 				partsPlacement(s.Parts), s.Attn.placement())
 			if len(s.Runs) == 0 {
 				fmt.Fprintf(&sb, "%s | | | | | | | | | %s |\n", head, strings.ReplaceAll(short(s.Error, 200), "|", "/"))

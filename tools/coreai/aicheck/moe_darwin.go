@@ -691,7 +691,7 @@ func relErr(a, b []float32) float64 {
 }
 
 // locked runs a command holding hwnpu's Neural Engine lock (for tools of other languages that
-// load programs, such as tools/coreai/moebind).
+// load programs).
 func locked(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("locked: no command")

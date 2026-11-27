@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
@@ -235,7 +236,7 @@ func (m *Model) fillPool() error {
 	}
 	p.filled = true
 	m.logf("experts: %d places a layer filled in %.2f s", p.P, time.Since(t0).Seconds())
-	if _, ok := experts.DebugOpt("check"); ok {
+	if _, ok := devenv.Get("iron.moe.check"); ok {
 		return m.checkPool()
 	}
 	return nil
@@ -725,9 +726,9 @@ func (m *Model) poolRowPasses(h *HostStep, rt *moeRoute, ids []int32, rows []byt
 // directReads says whether to read an experts file of n bytes with O_DIRECT: when it is half the
 // memory or more, the page cache cannot keep it beside the places, and a miss's page faults read
 // the disk at about 1.5 GB/s (gpt-oss-120b: 9.4 ms an expert) where one read straight into the
-// bank takes 6 GB/s. HWNPU_DEV=moe.direct=1 or 0 decides.
+// bank takes 6 GB/s. HWNPU_DEV=iron.moe.direct=1 or 0 decides.
 func directReads(n int64) bool {
-	if v, ok := experts.DebugOpt("direct"); ok {
+	if v, ok := devenv.Get("iron.moe.direct"); ok {
 		return v != "0"
 	}
 	phys := mem.Physical()

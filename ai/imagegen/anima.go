@@ -41,7 +41,7 @@ func animaOptions(m chat.Model, backend string) (anima.ConvertOptions, error) {
 	}
 	o := anima.ConvertOptions{Backend: backend, Width: w, Height: h, Dit: setting(m, SettingDit, m.File),
 		TextFormat: m.Settings[SettingTextFormat], DitFormat: m.Settings[SettingDitFormat]}
-	for name, p := range map[string]*int{SettingGroup: &o.Group, SettingQChunk: &o.QChunk} {
+	for name, p := range map[string]*int{SettingDitGroup: &o.Group, SettingQChunk: &o.QChunk} {
 		if v := m.Settings[name]; v != "" {
 			if *p, err = strconv.Atoi(v); err != nil {
 				return o, fmt.Errorf("ai/imagegen: %s's setting %s: %w", m.Name, name, err)

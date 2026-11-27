@@ -167,7 +167,7 @@ func BindAddr(fptr any, addr uintptr)                  // DDI table function poi
 | Fake drivers | `testdata/zemock` (fake Level Zero, built when `cc` exists), `internal/xdna/xdnasim` (fake amdxdna in Go) | no |
 | Fixtures | small models in `internal/fixtures` (regenerated with `gen_models.py`) | no |
 | Converter | synthetic weights (`llm.NewSynthetic`), digests of program and `weight.bin`, fp64 forward written from `modeling_*.py`, `milcpu` against PyTorch | no |
-| On device | Core ML / Core AI tests on a Mac; `hwnpu-dev report` (passthrough design, sample models) on each NPU; `HWNPU_TEST_PREBUILT` for prebuilt programs | yes |
+| On device | Core ML / Core AI tests on a Mac; `hwnpu-dev report` (passthrough design, sample models) on each NPU; `HWNPU_TEST_COREAI_PREBUILT_FILE` for prebuilt programs | yes |
 | Power | the same model under `PowerLow` and `PowerPerformance`, `hwnpu-dev powerbench` (mJ/token) | yes |
 
 All tests run with `CGO_ENABLED=0 go test ./...`.

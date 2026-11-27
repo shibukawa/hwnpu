@@ -86,7 +86,7 @@ func TestReferenceNames(t *testing.T) {
 
 // The settings of a definition: Anima's conversion.
 func TestSettings(t *testing.T) {
-	m := chat.Model{Name: "Anima-Turbo", File: "anima-turbo-v1.1.safetensors", Settings: map[string]string{SettingGroup: "2", SettingSize: "16:9", SettingDitFormat: "fp16"}}
+	m := chat.Model{Name: "Anima-Turbo", File: "anima-turbo-v1.1.safetensors", Settings: map[string]string{SettingDitGroup: "2", SettingSize: "16:9", SettingDitFormat: "fp16"}}
 	o, err := animaOptions(m, "intel")
 	if err != nil {
 		t.Fatal(err)

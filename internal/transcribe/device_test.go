@@ -16,7 +16,7 @@ import (
 )
 
 // TestEncoderOnDevice runs encoder packages on the Neural Engine and on Core ML's CPU
-// (HWNPU_COREML_UNITS=cpu, fp32 there) and compares both with transformers' fp32 encoder output,
+// (HWNPU_DEV=coreml.units=cpu, fp32 there) and compares both with transformers' fp32 encoder output,
 // the checklist's 3.3 check for arithmetic the CPU interpreter does not show (the ANE's own
 // layer_norm, rounding inside its operations). HWNPU_TEST_WHISPER_REF is a prefix written by
 // tools/ref/ref_whisper.py (PREFIX.x.bin the mel frames, PREFIX.logits.bin the output);
@@ -63,10 +63,11 @@ func TestEncoderOnDevice(t *testing.T) {
 		var outs [][]float32
 		for _, u := range units {
 			if u != "npu" {
-				os.Setenv("HWNPU_COREML_UNITS", u)
+				t.Setenv("HWNPU_DEV", "coreml.units="+u)
+			} else {
+				t.Setenv("HWNPU_DEV", "")
 			}
 			p, err := runner.Open(ctx, dev, pkg)
-			os.Unsetenv("HWNPU_COREML_UNITS")
 			if err != nil {
 				t.Fatalf("%s on %s: %v", pkg, u, err)
 			}

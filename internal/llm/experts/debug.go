@@ -13,17 +13,14 @@ import (
 // experts in order (a line "LAYER ROWS E E E E" a row, for trying placements on, tools/moeusage);
 // "prefault=wait" has every page of experts wired whole in before the first run; "prefetch=N"
 // brings in N of the next layer's guessed experts (0: none; the default is as many as a token
-// runs); "row=0" runs a token's experts as the rows' three Runs instead of one piece of work each
-// (Host.runRow).
+// runs).
 func DebugOpt(name string) (string, bool) {
 	return devenv.Get("moe." + name)
 }
 
-// DebugTime is whether HWNPU_DEV asks for the experts' times (moe.time).
-func DebugTime() bool {
-	_, ok := DebugOpt("time")
-	return ok
-}
+// DebugTime is whether HWNPU_DEV asks for the experts' times (moe.time; moe.time=0 is off, as
+// every key's).
+func DebugTime() bool { return devenv.On("moe.time") }
 
 // traceFile is HWNPU_DEV's moe.trace=FILE.
 type traceFile struct {

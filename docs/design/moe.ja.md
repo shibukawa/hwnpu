@@ -197,8 +197,8 @@ NPU が読めるのは固定したバッファ (バンク) だけ。専門家の
 - 点数: 使うたびに +1、1 トークンごとに × 0.995 (半減は約 140 トークン)。最初は統計の定常の点数を入れる。
 - **デコード、ホストの経路** (`--host-route`、`internal/llm/iron/route.go`。gpt-oss の 16 GB の書き出しと 120b): 層のコマンドを注意で終える。ホストが残差 (`yo`) を読み、RMSNorm と router を CPU で (`router.bin`、転置した float32)、上位 4 個と softmax を取り、次のコマンドの位置の語と経路の重み (`moe_rw<l>`) を書く。続けて層 l+1 の上位 4 個を予測し、無いものを l+1 の置き場へ裏で読む (`guessNext`、`expertPool.inflight`)。デバイスの経路に対して (20b): コサインの中央値 0.99998、KL 0.0095。1 ステップ 50.3 → 51.9 ms。
 - **プロンプト** (`poolPasses` / Qwen3.6 の `poolRowPasses`、`rowsPass`): 置き場にある専門家を最初のパスに、ない専門家は後のパスで要らない専門家の置き場へそのパスの前にコピーする。`TestPoolRowPasses` で確かめる。
-- **コピー**: 4 つの goroutine がページキャッシュの写像から写して clflush (`SyncToDevice`)。`directReads` (専門家のファイルが物理メモリの半分以上。`HWNPU_DEV=moe.direct=0/1`) のときは O_DIRECT で、goroutine ごとの中継のバッファを通して読む (バンクの写像は O_DIRECT を EFAULT で断る)。1 専門家を 8 つに分ける。測った費用: gpt-oss の 1 専門家 (14.3 MB) はページキャッシュから 1.1 ms、O_DIRECT で 2.6 ms (フォールトでは 9.4 ms)。Qwen3.6 の 1 専門家 (1.97 MB) は O_DIRECT で 0.4〜0.7 ms、キャッシュから 0.1〜0.3 ms。
-- `HWNPU_DEV=moe.check` は詰めた後と閉じる時に全部の置き場を `experts.bin` と比べる。置き場の書き出しのロジットは全部の書き出しとビット単位で同じ (重みは同じで、置く場所だけが違う)。
+- **コピー**: 4 つの goroutine がページキャッシュの写像から写して clflush (`SyncToDevice`)。`directReads` (専門家のファイルが物理メモリの半分以上。`HWNPU_DEV=iron.moe.direct=0/1`) のときは O_DIRECT で、goroutine ごとの中継のバッファを通して読む (バンクの写像は O_DIRECT を EFAULT で断る)。1 専門家を 8 つに分ける。測った費用: gpt-oss の 1 専門家 (14.3 MB) はページキャッシュから 1.1 ms、O_DIRECT で 2.6 ms (フォールトでは 9.4 ms)。Qwen3.6 の 1 専門家 (1.97 MB) は O_DIRECT で 0.4〜0.7 ms、キャッシュから 0.1〜0.3 ms。
+- `HWNPU_DEV=iron.moe.check` は詰めた後と閉じる時に全部の置き場を `experts.bin` と比べる。置き場の書き出しのロジットは全部の書き出しとビット単位で同じ (重みは同じで、置く場所だけが違う)。
 
 ### 値 (AMD、Ryzen AI 9 365)
 

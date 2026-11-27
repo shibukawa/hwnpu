@@ -12,7 +12,7 @@ Facts about the Neural Engine itself are in [Neural Engine](apple-neural-engine.
 | Where | How |
 |---|---|
 | Public library (`hwnpu.Open`) | Registered first in `backends_darwin.go`: the default Apple device. Core AI by name (`WithBackend("coreai")`, `HWNPU_BACKEND=coreai`) |
-| CPU runs | `GraphSource.Units` / `HWNPU_COREML_UNITS=cpu` run a package on Core ML's CPU (references, models the ANE runs worse) |
+| CPU runs | `GraphSource.Units` / `HWNPU_DEV=coreml.units=cpu` run a package on Core ML's CPU (references, models the ANE runs worse) |
 | `llm.OpenDevice` with no backend named | Prefers `coreml`; used by `hwnpu-dev generate` and `formats` |
 | `hwnpu-dev info`, `powerbench`, `probe`, `report` | Core ML device, placement report (`MLComputePlan` shows each op's device) |
 | `aicheck run -coreml` | Core ML as a comparison when Core AI's result looks wrong |

@@ -31,7 +31,7 @@ func TestBisect(t *testing.T) {
 	}
 	defer d.Close()
 	for _, name := range strings.Split(at, ",") {
-		p := &onnx.Program{G: g, Inputs: []onnx.ValueInfo{{Name: g.Inputs[0].Name, Shape: []int{1, 3, Size, Size}}}, Outputs: []string{name}, Axis: -1, ExpSigmoid: os.Getenv("HWNPU_TEST_DETECT_EXP") != "0"}
+		p := &onnx.Program{G: g, Inputs: []onnx.ValueInfo{{Name: g.Inputs[0].Name, Shape: []int{1, 3, Size, Size}}}, Outputs: []string{name}, Axis: -1, ExpSigmoid: true}
 		dir := filepath.Join(t.TempDir(), "p.mlpackage")
 		if _, err := llm.WritePart(dir, p, nil, llm.Options{Format: "fp16"}, nil); err != nil {
 			t.Fatal(err)
