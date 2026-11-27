@@ -4,7 +4,7 @@
 
 **2026-11-21 に変わったこと**: `ai` は 1 つのパッケージから、`ai` (登録、計画、準備、実行)、`ai/flow` (流れ、非同期、メトロノーム)、機能のパッケージ (`ai/speech`、`ai/text`)、`ai/cli` (サブコマンド。kong 用は `ai/cli/konghelper`) に分けた。`ai.NewRegistry` と `rt.Transcriber("transcribe")` は、`ai.NewApp` と型のついた `Use` (`speech.Transcribe("transcribe").Get(ctx, rt)`) になった。下の節の本文にある古い名前は、その読み替えで読む。Whisper と LFM3-Audio の読み上げは AMD の NPU で動くようになり ([audio-models](design/audio-models.md))、`samples/interpreter` (録音を読む形) は aix1 で動いた。
 
-読む順: [app-api.md](app-api.md) → [prebuilt.md](prebuilt.md) の 1〜4 節 → [handoff-ane-cache.md](handoff-ane-cache.md) の 4 節。
+読む順: [app-api.md](app-api.md) → [prebuilt.md](prebuilt.md) の 1〜4 節 → [PROBE.ja.md](../PROBE.ja.md) の cache (ANE のキャッシュの測り方)。
 
 ## 0. 進め方
 
@@ -14,7 +14,7 @@
   - **Mac**: Neural Engine のある Mac。主に M3 (16 GB)。8 GB での確認には M1
   - **aix1**: Ryzen AI 9 365 (Linux、XDNA 2)。IRON の環境がある
 - **同時に触らないファイル**: `internal/chat/model.go` (`Prepare`)、`internal/transcribe/prepare.go`、`internal/speech/prepare.go` は、A3、B1、E2 が触る。この 3 つは順に進める (1 節の依存のとおり)
-- NPU の確認は、そのとき Neural Engine を使っているほかのセッションがないときに行う。コンパイルが重なると、キャッシュの当たり外れも時間も狂う (handoff-ane-cache.md)
+- NPU の確認は、そのとき Neural Engine を使っているほかのセッションがないときに行う。コンパイルが重なると、キャッシュの当たり外れも時間も狂う ([design/apple-coreml.ja.md](design/apple-coreml.ja.md) の「ANE のコンパイルのキャッシュ」)
 
 ## 1. 一覧
 
@@ -90,7 +90,7 @@ I1 (決まった形で答える生成) は単独で進められる。I2 は C2 �
 
 - 問題: 同じ入力で変換し直しても、パッケージのバイトが毎回変わる。コンパイルのキャッシュのキーは中身のハッシュ (`internal/backend/coreml/graph_darwin.go` の `compiledModel`、`cache.TreeDigest` と OS の版) なので、hwnpu の `.mlmodelc` のキャッシュも ANE 自身のキャッシュも外れる。Gemma 4 は起動に 100 秒、SANA の書き出しの作り直しでは 18 分かかった
 - 原因は 2 つ (`internal/mlpackage/package.go` の `write`)
-  - `Manifest.json` の 2 つの UUID が乱数 (`uuid()` は `rand.Read`)。handoff-ane-cache.md 4 節に記録がある
+  - `Manifest.json` の 2 つの UUID が乱数 (`uuid()` は `rand.Read`)。[design/apple-coreml.ja.md](design/apple-coreml.ja.md) の未解決に記録がある
   - `proto.Marshal` を決定的なモードなしで呼んでいる。Go の protobuf は map のフィールドを順不同で書く。MIL の属性や関数は map なので、`model.mlmodel` も揃わないおそれがある
 - 直し方
   - UUID を中身から作る。`model.mlmodel` のバイトと weights の要約のハッシュから、UUID の版 5 の形にする

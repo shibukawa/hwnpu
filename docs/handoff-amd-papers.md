@@ -1,10 +1,10 @@
 # 引き継ぎ: 論文から拾った AMD の NPU の最適化の候補
 
-作成: 2026-11-20、整理: 2026-11-21。arXiv の「NPU」の検索 (505 件) と、AMD XDNA、端末の LLM の論文の調査から、hwnpu の AMD の経路 (IRON、`internal/llm/iron`、`internal/backend/amd`) に入れられそうなものを選んだ。全体の一覧 (`docs/npu-optimization-papers.md`: MoE 以外、`docs/moe-papers.md`: MoE) は、このリポジトリにはまだ入っていない。
+残り: 論文から拾った AMD の NPU の最適化の候補のうち、手を付けていない 3〜9 節。機械は Ryzen AI 9 365 (XDNA2、NPU4 系)。書いてあるのは仮説と、それを確かめる手順。
 
-論文ごとの結果 (当てはまったか) の一覧は [reference-paper.ja.md](reference-paper.ja.md)。
+作成: 2026-11-20、整理: 2026-11-21、2026-11-27。arXiv の「NPU」の検索 (505 件) と、AMD XDNA、端末の LLM の論文の調査から、hwnpu の AMD の経路 (IRON、`internal/llm/iron`、`internal/backend/amd`) に入れられそうなものを選んだ。全体の一覧 (`docs/npu-optimization-papers.md`: MoE 以外、`docs/moe-papers.md`: MoE) は、このリポジトリにはまだ入っていない。論文ごとの結果 (当てはまったか) の一覧は [reference-paper.ja.md](reference-paper.ja.md)。
 
-対象の機械は Ryzen AI 9 365 (XDNA2、NPU4 系)。書いてあるのは仮説と、それを確かめる手順。
+済んだ 0〜2 節 (基準の数字、演算子の切り替えの上乗せ、要らない同期) は外した。結果は [docs/design/amd.md](design/amd.md)、[amd-llm](design/amd-llm.md)、[moe](design/moe.md)。今の数字と測り方もそこにある。
 
 **論文の確かめた度合い**
 - ✓: 本文 (HTML) を調べた
@@ -13,47 +13,7 @@
 
 2026 年のものは査読前のプレプリントが多い。数字を設計の根拠にする前に本文を読む。
 
-## 進み具合 (2026-11-21)
-
-1 と 2 は済み (下に結果と残りだけ)。3〜9 は手を付けていない。
-
-道具: `go run ./tools/amd/elfconfigs [-seq] ELF...` (設定のし直しの数とバイト)、`iron_moeprobe.py --switch` (切り替えの費用)。
-
-## 0. 今の数字 (比べる基準)
-
-2026-11-20 の値。このあと 1 で LFM3 系、Gemma 4、Qwen3.5 / 3.6 のデコードは速くなった (1 節)。
-
-| もの | 値 | 出典 |
-|---|---|---|
-| gpt-oss-20b のデコード | 49.4 ms/トークン (20.2 tok/s)。層のコマンド 1.80 ms | [docs/design/moe.md](design/moe.md) |
-| gpt-oss-20b のプロンプト | 256 トークン 1.8〜1.9 s | [moe](design/moe.md) |
-| Qwen3.6-35B-A3B のデコード | 172〜192 ms (5.2〜5.8 tok/s) | [moe](design/moe.md)、[moe](design/moe.md) |
-| Qwen3.6 のプロンプト | 183 トークン 4.6 s。GDN の層の A が塊の時間の半分近く。専門家の B は重みを読む速さ (約 27 GB/s) が下限 | [moe](design/moe.md) |
-| q4nx の GEMV | 47〜54 GB/s (帯域どおり) | [moe](design/moe.md) |
-| 違う種類の演算子 1 個の上乗せ | 約 80 µs。同じ演算子が続くと 20 µs 未満 | [moe](design/moe.md) |
-| コマンド 1 個 | 62 µs | [moe](design/moe.md) |
-| Anima-Aesthetic 1024² (DPM 25) | 2 分 37 秒、2.84 kJ | [image-amd](design/image-amd.md) |
-
-測り方:
-- `HWNPU_DEV=iron.timing=1`: コマンドとホストの手順ごとの時間 (コマンドごとに待つので、プロンプトの時間は数倍にふくらむ)
-- `iron_export_lm.py --command-per-step`: プロンプトを手順ごとのコマンドに切って内訳を見る ([amd](design/amd.md))
-- `HWNPU_ENERGY`: 電力量 (package)
-- `go run ./tools/amd/irongraph`、`tools/amd/ironlm`: 照合
-
-## 1. 演算子の切り替えの上乗せを減らす — 済み ([docs/design/amd.md](design/amd.md)、[amd-llm](design/amd-llm.md)、[moe](design/moe.md), [amd](design/amd.md), [amd-llm](design/amd-llm.md))
-
-出典は HeteroMosaic 2607.12839 ✓ (データパスの再設定は高く、DMA の設定の切り替えはほぼ無料) と 2606.07586 ✓。仮説どおり、演算子が変わるたびに `load_pdi` と配列の設定が制御コードに入る (約 40 µs + 2.3 µs/KB)。1 層の演算をまとめて、LFM3 系 11.2 → 17.2 トークン/秒、Gemma 4 E2B 7.7 → 9.3、Qwen3.5-0.8B 13.8 → 18.7、Qwen3.6 8.5 → 8.9 (どれも KL かロジットは同じ)。
-
-残り:
-
-- デコードの層の中の演算の切り替え: 減らすには gpt-oss の `GptOssStep` (iron_gptoss_layer.py) のような 1 配列の常駐の形を密なモデル (LFM3-1.7B か Qwen3.5) に作る。比べる基準は `elfconfigs` の数とデコードの 1 トークンの時間、合格条件はロジットのコサインが変わらないこと (`ironlm` の閾値)
-- Qwen3.6 の GDN の演算子の設定 (374 KB × 30 層)
-- プロンプト: IRON の GEMM が行に関係なく重みを全部の行の単位に流す
-- `--load-pdi-to-ctrl-pkt` は aiecc が「operand #0 does not dominate this use」で止まる (`--ctrlpkt-adaptive-overlay=false`、teardown なしでも)。上流 (Xilinx/mlir-aie #3928 の計画、#3934・#3935 はマージ済み) にこの不具合の報告はない。複数列の設計は #3488 (実機で止まる、open) にも当たりうる。`--reconfig-teardown` は大きな設定で遅くなる
-
-## 2. 要らない同期を外す — 済み (すること無し、16.266 の最後)
-
-2606.07586 ✓ の「NPU だけが読み書きするバッファはホストとの同期を省く」は、IRON の経路 (`internal/llm/iron` の `readRegion`/`writeRegion`/`writeCopies`、`rows.go`、`graph.go`、`moe_route`、`moe_combine`、`moeHostRouteMX4`) ではすでに使う範囲だけを同期している。全体の同期が残るのは読み込みと、IRON でない経路 (`internal/llm/chain/moe.go`、`chain.go`。Intel と Apple でも使う) だけ。同期を減らすときは、ホストが読む領域の位置を変えない (IRON の割り当てで使用に数えられず、あとの演算に上書きされることがある。[moe](design/moe.md)、[moe](design/moe.md))
+道具: `go run ./tools/amd/elfconfigs [-seq] ELF...` (設定のし直しの数とバイト)、`iron_moeprobe.py --switch` (切り替えの費用)。落とし穴は [moe](design/moe.md) と [amd](design/amd.md) の表にある。
 
 ## 3. 多次元の DMA の番地で、1023 語の制限と事前の並べ替えを避ける (優先: 中)
 
@@ -128,15 +88,14 @@
 
 MoE の論文と順位つきの候補は別の資料 (`docs/moe-papers.md`、未収録)。AMD に直接関係する上位 3 つ:
 
-1. 専門家の常駐を、校正した頻度で決める。層ごとに活性の約 2 倍 (2505.16056、NPUMoE、Fate)。[handoff-amd-moe.md](handoff-amd-moe.md) と同じ方向
+1. 専門家の常駐を、校正した頻度で決める。層ごとに活性の約 2 倍 (2505.16056、NPUMoE、Fate)。[moe](design/moe.md) と同じ方向
 2. `MoERoute` がスクラッチパッドに書く「表の中の位置」を「arena の枠の位置」に読み替える (EStream 2609.06551)。今の形 ([moe](design/moe.md)) はこの論文の「専門家の仮想化」と同じ考え方
 3. 層をまたいだゲートの先読み (Fate、Pre-gated)
 
-## 10. 気をつけること (前の作業の落とし穴)
+## 10. 気をつけること
 
-- **shim のチャネルのタスクキューは 4 段**: 待たずに積むと止まる (`ERT_CMD_STATE_TIMEOUT`)。続けて 2 回止めると SMU が戻らず、再起動が要る ([moe](design/moe.md))。DMA の形を変える試し (3 と 4) では、チャネルごとに 3 本までにする
-- **IRON のコンパイルのキャッシュは演算子の引数で引く**: build の中を変えても古い設計が動く。形を変えたら、形の引数を足す ([moe](design/moe.md) の `sink_form`)
-- **ホストが読む領域**は、ホストの手順の直前の演算の出力か、状態に写したものだけ ([moe](design/moe.md))
-- **書き出しは重い**: Qwen3.6 で 29 分、最大 RSS 50 GB。他の重い仕事と並べない ([moe](design/moe.md))
+shim のチャネルのキュー、IRON のコンパイルのキャッシュ、ホストが読む領域、書き出しの重さは [moe](design/moe.md) と [amd](design/amd.md) の落とし穴の表。ここにはこの調査に固有のことだけ。
+
+- DMA の形を変える試し (3 と 4) では、チャネルごとに 3 本までにする (タスクキューは 4 段。続けて 2 回止めると再起動が要る)
 - **NPU を他のセッションと分け合う**: 2026-11-20 は別のセッションが gpt-oss-120b の hwnpu-chat を続けて回していて、小さな試しの時間が 2〜5 倍に揺れた。比べるものは同じ回の中で交互に回し、`/dev/accel/accel0` を開いているプロセスを先に見る
-- 結果は docs/design/ の話題のファイル ([design/README.md](design/README.md)) に今の状態として書く (測った表、採らなかったもの、試し方)
+- 結果は docs/design/ の話題のファイル ([design/README.md](design/README.md)) に今の状態として書く

@@ -111,11 +111,11 @@ models:
   LFM2-8B-A1B:
     # a mixture of experts (lfm2_moe, 32 experts of which 4 a token): the host picks the experts
     # between the parts and a program without weights runs them, every layer's experts held in
-    # int8 (docs/handoff-ane-gather.md 1b). Apple only, Core AI: an M3 (2026-11-19) 15.0-16.1
+    # int8 (docs/design/moe.md). Apple only, Core AI: an M3 (2026-11-19) 15.0-16.1
     # tokens/s, 1503 tokens of prompt in 8.6-10.9 s; an M2 12.0-13.7 tokens/s, 1624 in 13-14.5 s,
     # loaded in 3.1 s and 8.0 GB (the experts' 7.23 GiB in the process's memory; the first run,
     # converting, 12.9 GB). Short of memory the system compresses the experts and a prompt takes
-    # up to 3 times as long: HWNPU_MOE_WIRE=1 wires them. Not on an M1: its Neural Engine does
+    # up to 3 times as long: an app's reserve_moe_memory (hwnpu-chat --reserve-moe-memory 8GB) wires them. Not on an M1: its Neural Engine does
     # not take the gather_nd that picks the experts' scales. Not picked by a use: 8.0 GB on 16 GB
     family: lfm2
     tag: 8b-a1b

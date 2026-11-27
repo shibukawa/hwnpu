@@ -59,8 +59,8 @@ WORK=/tmp/same CHIP=M2 tools/coreai/same-exports.sh 987628d9 Qwen2.5-Coder-7B-In
   - M1: LFM2-8B-A1B が「M2 or later, not on an M1's Neural Engine」で断られるか
 - 専門家 (M2 以降): gpt-oss-20b か Qwen3.6-35B-A3B。MXFP4 の SMMLA (`mxfp4.i8mm` と `mxfp4.pad` を消し、
   閾値は定数 6)、`moe.read`、`moe.many`、`moe.wave` を消した。速さが前と同じくらいか
-- `HWNPU_MOE_WIRE=6GB` で LFM2-8B-A1B (M2 以降): 前は全部 (約 7.2 GB) を固定した。今は 6 GB まで。
-  固定した量はアクティビティモニタの「固定」(Wired) で見る
+- (済み、2026-11-27) `HWNPU_MOE_WIRE` はなくし、Neural Engine の専門家は `--reserve-moe-memory` (アプリの
+  `reserve_moe_memory`) で固定する。M2 で測った値は docs/design/moe.md
 - 絵: Anima と FLUX.2 klein を Core AI で (DiT の組の入れ替えと先読みは、もう切れない)
 - `HWNPU_DEV` に消したキーを書くと「not a key hwnpu knows」と 1 回出て、無視される
 

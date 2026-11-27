@@ -5,8 +5,9 @@ prints, a model:
 
 - the time of a decode step and of a call checking drafts (medians over every run), and what a
   check costs in steps,
-- by the length of the match behind the drafts, the tokens a check brought (1 + the drafts that
-  were right) when every draft was checked: a check pays where that is over its cost,
+- by the length of the match behind the drafts, the tokens a check brings (1 + the drafts that
+  were right), from the drafts the policy checked and those it left and compared with the tokens
+  that came (check and left): a check pays where that is over its cost,
 - a prompt and a mode, the calls, the drafts kept, the tokens a second at those median times
   (a run's own figure moves when something else uses the NPU) and against no drafts, the
   figures of the runs none of whose calls took twice the median, and whether the answers of the
@@ -17,7 +18,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-MODES = ("none", "always", "policy")
+MODES = ("none", "policy")
 
 
 def median(xs):
@@ -47,12 +48,12 @@ def main():
         print(f"\n{model}: a step {step:.1f} ms, a check {check:.1f} ms ({check / step:.2f} steps)")
         by = defaultdict(lambda: [0, 0])
         for k, cs in calls.items():
-            if k[0] == model and k[2] == "always" and k[3] == 1:
+            if k[0] == model and k[2] == "policy" and k[3] == 1:
                 for c in cs:
-                    if c[0] == "check":
+                    if c[0] in ("check", "left"):
                         by[bucket(c[1])][0] += 1
                         by[bucket(c[1])][1] += c[3]
-        print("  tokens a check brings, by the match behind its drafts (every draft checked):")
+        print("  tokens a check brings, by the match behind its drafts (checked or left):")
         for n in sorted(by):
             print(f"    {n:2d}{'+' if n >= 4 else ' '} tokens: {by[n][0]:4d} checks, {1 + by[n][1] / by[n][0]:.2f}")
         print(f"  {'prompt':12s} {'mode':7s} checks steps  drafts kept   tokens/s          runs not disturbed   answers")

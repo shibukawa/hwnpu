@@ -17,7 +17,7 @@ import (
 
 // The cache mode measures the Neural Engine's own cache of compiled programs (Core ML): what
 // makes a program that hwnpu's compile cache already holds load in 0.1 s on one run and take a
-// minute or two (ANECompilerService) on the next (docs/handoff-ane-cache.md). A configuration is
+// minute or two (ANECompilerService) on the next (docs/design/apple-coreml.md). A configuration is
 // N programs of S bytes each, written once and loaded in order by a new process per round;
 // a load that takes longer than -cache-hit is a miss. Sweeping N × S tells the capacity, and
 // whether it counts bytes or programs; -cache-hold, -cache-order, -cache-passes and
