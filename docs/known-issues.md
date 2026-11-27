@@ -18,7 +18,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | FB25624336 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
 | 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
 | 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | FB25724246 ([報告の文面](apple-feedback/purged-programs-silent-recompile.md)) | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
-| 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
+| 9 | 画像以外のモデルでは prebuilt が遅いことがある (部品が多いと 1 節の間隔が効く) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルと、M1 で確かめたチャットのモデル (Qwen3.5、LFM3) にだけ prebuilt を置く | 1 節が直ったら測り直す |
 | 10 | M1 (と M2: `sin`、`cos`) の ANE のコンパイラが `sin`、`cos` と、まとめた要素ごとの演算の一部を受け付けない | FB25724316 ([報告の文面](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | FB25724867 ([報告の文面](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | FB25744357 ([報告の文面](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4)。softmax を和の逆数との積でなく和で割る (`HeadOptions.DivideParts`、ExportVersion 7) | 何もしなくてよい |
@@ -96,14 +96,31 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: hwnpu では直せない (失敗が見えない)。初回を測るとき、使うときは 25 GB 以上空ける
 - **直ったら**: 何もしなくてよい。Core AI のキャッシュの方針を `.persistent` にすれば ([docs/design/apple-coreai.md](design/apple-coreai.md)) Core AI の分は消えなくなるが、aned の分は残るので、それだけでは足りない
 
-## 9. 画像以外のモデルに prebuilt を置かない ([apple-coreai](design/apple-coreai.md))
+## 9. 画像以外のモデルの prebuilt ([apple-coreai](design/apple-coreai.md))
 
-- **何が**: 画像生成以外のモデルは部品が小さく、端末のコンパイルが短い (長くて数分)。1 つめの prebuilt の決まった費用と 1 節の間隔で負ける
-  - チャット: LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒。Qwen3.5-4B は prebuilt で読めたが、最初の呼び出しから答えなかった
-  - M1 (2026-11-26): Qwen3.5-0.8B は端末で 7 分 5 秒〜7 分 11 秒。prebuilt は読み込みが 3 分 56 秒 (3 部品は端末のコンパイルに戻った) で、最初の呼び出しが失敗した。Neural Engine の上で呼び出しが終わらなくなっていた (16 節)。Qwen3.5-4B (M3) の「答えなかった」が同じものかは分からない (16 節のタスクは h13g 向けのプログラムにしかない)
-  - M1 (2026-11-27): 16 節と 18 節を直した書き出しでは、`model.part1` (関数 2 つ) が prebuilt から 8.2 秒で仕上がって動いた。モデル全体の初回の時間はまだ測っていない (15 節の間隔が 20 分に伸びたままで、再起動するまで 1 部品 20 分かかる)
-  - 「prebuilt の方が遅い」のは、1 節の間隔が 10 秒より伸びていたせいかもしれない (15 節: 仕上げのサービスが落ちると伸び、再起動まで戻らない)。測るときは今の間隔を先に読む
-  - 解析と音声 (2026-11-22、M3、h15g、空のキャッシュから 1 回目の読み込み):
+- **何が**: 画像生成以外のモデルは部品が小さく、端末のコンパイルが短い (長くて数分)。部品が多いと、仕上げが機械全体で 10 秒に 1 本しか進まないこと (1 節) で prebuilt が負ける
+- **M1 での計測** (2026-11-27、16 節・18 節・19 節を直した書き出し。署名の識別子を変えた写しで、空のキャッシュから初回を 1 回ずつ。答えは同じ seed で端末のコンパイルと比べた):
+
+  | モデル | 答え | prebuilt の初回 | 端末のみの初回 | 残るディスク (prebuilt / 端末) | 端末のコンパイラのメモリの最大 (prebuilt / 端末) | 判断 |
+  |---|---|---|---|---|---|---|
+  | Qwen3.5-0.8B (版 2) | 同じ | **1 分 46 秒** | 7 分 14 秒 | 0.9 / 2.6 GB | 0.4 / 2.3 GB | prebuilt |
+  | Qwen3.5-0.8B (版 4) | 同じ | 3 分 55 秒 | — | — | — | prebuilt (M3 でも、#369) |
+  | Qwen3.5-2B (版 2) | 同じ | **2 分 06 秒** | 7 分 48 秒 | 3.0 / 4.6 GB | 0.04 / 2.7 GB | prebuilt |
+  | Qwen3.5-4B (版 2) | 同じ | **5 分 20 秒** | 21 分 43 秒 | 8.8 / 13.1 GB | 0.05 / 5.5 GB | prebuilt |
+  | LFM3-1.7B | 同じ | 1 分 45 秒 | 1 分 02 秒 | 2.7 / 4.0 GB | 2.2 / 3.2 GB | prebuilt (ユーザーの判断) |
+  | LFM3-VL-2B (画像) | 同じ | 3 分 44 秒 | 1 分 10 秒 | 4.2 / 6.3 GB | — | prebuilt (同) |
+  | LFM3-Audio-2B (音声) | 同じ | 3 分 03 秒 | 1 分 07 秒 | 4.3 / 11.2 GB | — | prebuilt (同。音声の符号器は端末、16 節) |
+  | LFM3-Omni-2B (画像・音声) | 同じ | 4 分 09 秒〜4 分 32 秒 | 測れず (別のセッションと重なった) | — | — | prebuilt (同) |
+  | Gemma 4 E2B | 同じ | 2 分 13 秒 | 1 分 09 秒 | 3.6 / 4.9 GB | 3.2 / 4.6 GB | 端末 (`model.part3` が仕上がらない。Apple の書き出しも AOT 非対応と明記) |
+  | Qwen3-0.6B | 同じ | 5 分 20 秒 | **35 秒** | 1.4 / 1.8 GB | 1.1 / 2.2 GB | 端末 (31 部品) |
+  | Qwen3-1.7B | 同じ | 5 分 13 秒 | **49 秒** | 3.4 / 5.1 GB | 2.0 / 4.0 GB | 端末 (31 部品) |
+  | plamo-3-translate-0.8b | 同じ | 3 分 26 秒 | **51 秒** | 2.6 / 2.2 GB | 4.4 / 5.0 GB | 端末 (c512 の部品 2 本が仕上がらない) |
+  | plamo-3-translate-2b | 同じ | 10 分 44 秒 | **1 分 48 秒** | 9.6 / 7.7 GB | 6.1 / 5.6 GB | 端末 (c512 の部品 3 本が仕上がらず、仕上げのサービスが 1 回落ちた) |
+
+  - 判断の決まり (ユーザー、2026-11-27): 端末のコンパイルより多少遅くても、メモリとディスクで有利なら prebuilt を採る。数倍遅いもの、仕上がらない部品があるものは端末のまま
+  - Qwen3.5-4B は prebuilt でも端末でも生成が 2.4 トークン/秒。重み 4.67 GiB が M1 の Neural Engine の 2.8 GiB を超えるため (起動時に警告が出る)
+  - 版 3・4 の Qwen3.5 は、prebuilt の部品が増えて初回が延びた (0.8B 1 分 46 秒 → 3 分 55 秒、2B → 3 分 31 秒、4B → 6 分 58 秒。どれも答えは同じ)。端末のコンパイルは測り直していない
+- **これまで** (M3、h15g): LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒だった (2026-11-22)。このときの「prebuilt の方が遅い」は、1 節の間隔が 10 秒より伸びていたせいかもしれない (15 節)。解析と音声 (2026-11-22、M3、空のキャッシュから 1 回目の読み込み):
 
     | モデル | 端末でコンパイル | prebuilt |
     |---|---|---|
@@ -113,9 +130,8 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
     | LFM3-Audio-2B-TTS | 45 秒 | 測れず (ディスクが尽きて ANE のコンパイラが落ちた、8 節) |
 
   - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
-  - M1、M2 では測っていない
-- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) にだけ prebuilt を置く。model-recipes.yaml の `apple.prebuilt: true` がその印で、`hwnpu-dev models package MODEL` と `hwnpu-dev prebuild EXPORT` は、チップを名指さなければ印のあるモデルだけをプリビルドする。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
-- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
+- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) と、上の表で prebuilt にしたチャットのモデルにだけ prebuilt を置く (model-recipes.yaml の `apple.prebuilt: true`。チャットは `archs` を確かめたチップに限る: Qwen3.5-0.8B は h13g と h15g、ほかは h13g)。どのチャットのモデルも attention のプログラムは h13g と h15g で端末に任せる (19 節)。Gemma 4 は全部を端末に任せる決まりがある
+- **直ったら** (1 節): 上の表を同じ測り方で測り直す。M2 (h14g) は確かめていない
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (FB25724316)
 
@@ -216,6 +232,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   | LFM3-1.7B (`q8` の `model.part2`〜`model.part6`) | 1 個 | ヘッドごとのゲートの sigmoid (16 組と 8 組) と MLP の silu (1 組) |
   | Gemma 4 E2B (全部品) | 1〜6 個 | MLP の gelu (6144 チャネル、16 組) と、層ごとの入力のゲートの gelu (1 組か 8 組。層によって違う) |
   | Qwen3-0.6B、plamo-3-translate-0.8b | 0 | |
+  | LFM3-Audio-2B と Omni-2B の音声の符号器 (直していない) | 6 個 | ダウンサンプラーの silu (256 チャネル、16 組) と、層の MLP の silu (1 組)。silu の入力を `(1, 時間×周波数, 256)` や `(時間×周波数, 1, 1, 256)` に並べ直すと Neural Engine から外れた。h13g では端末に任せる (model-recipes.yaml、2026-11-27) |
 - **今**:
   - 書き出しの側で活性化の並びをそろえた ([design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」)。チャットのモデルのレシピの版は 2。直した書き出しの h13g のプログラム 202 本 (Qwen3.5-0.8B 24、Qwen3.5-2B 24、Qwen3.5-4B 26、LFM3-1.7B 17、LFM3-VL-2B 18、Gemma 4 E2B 18、Gemma 4 E4B 18、plamo-3-translate-2b 18、Qwen3-1.7B 39) のどれにもこのタスクがない
   - M1 で確かめた (2026-11-27、直した書き出しの h13g の prebuilt。どれも関数 2 つで、全部 Neural Engine の上で動いた): Qwen3.5-0.8B の `model.part1` (Gated DeltaNet 3 層。直す前は仕上げのサービスが落ちた) は 8.2 秒で仕上がり、`sr-q8` が 5.45 ms、`q128-last` が 14.6 ms。`model.part2` (attention の層と Gated DeltaNet 3 層。直す前は止まった) は 9.4 秒で仕上がり、4.42 ms と 12.7 ms。直した LFM3-1.7B の `model.part2` (`q8` と `q128-last`) は 17.5 秒で仕上がり、4.56 ms と 11.3 ms。直した Gemma 4 E2B の `model.part2` (`q8` と `q128-kv`) は 14.1 秒で仕上がり、4.33 ms と 11.8 ms。Gated DeltaNet の層 1 つの検体は、CPU との余弦が出力で 0.999997、状態で 1.000000
