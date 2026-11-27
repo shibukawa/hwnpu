@@ -55,7 +55,6 @@ func MemoryTag(tag string) (int, bool) {
 	return n, err == nil && n > 0
 }
 
-
 // tagOf is a tag as tags are compared: lower case, dots kept (0.8b and 08b are not the same).
 func tagOf(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 

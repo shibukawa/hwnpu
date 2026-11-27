@@ -24,6 +24,7 @@ var light = []string{
 	"internal/aieng",
 	"modelstore",
 	"ai",
+	"ai/text",
 }
 
 // engine are the packages of the engine: the conversions, the runtimes and the backends.
@@ -37,6 +38,7 @@ var engine = []string{
 	"internal/aihost",
 	"internal/daemon/engine",
 	"ai/engine",
+	"internal/aiengine",
 }
 
 func TestLightPackages(t *testing.T) {

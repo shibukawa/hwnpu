@@ -415,6 +415,12 @@ hwnpud に聞く。アプリが自分のプロセスでモデルを動かすの�
    "github.com/shibukawa/hwnpu/ai/engine"`)。それがないと、自分のプロセスの道はそう伝える (`aieng.ErrNone`)。
    役割のパッケージを分けるまでは、それぞれと `cmd/hwnpu`、`internal/aihost` が `ai/engine` を読むので、
    どのプログラムも変わらない
+4b. `ai/text` は済み (chat、translate、embed、decide): どの型も実装を呼ぶ。hwnpud のもの (`Remote`) か、
+   このプロセスのエンジンのもの。エンジンのものは `ai/text/engine` で、役割の `Prepare` と `Load` を
+   (`ai/text/internal/bridge` を通して) 入れ、自分のモデルをクライアントの型にする。両方がエンジンなしで
+   共有するもの (エラー、`AutoTarget`、`Cosine`) は `internal/chatwire`。`ai/engine` は `internal/aiengine`
+   (ai と modelstore の `aieng.Engine`) と役割のエンジンを集める。`ai` と `modelstore` のテストは
+   `internal/aiengine` だけを読む。`cmd/hwnpu-chat` は段 5 まで `ai/engine` を読む
 4. 役割のパッケージ: `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して
    `airole.Register` で登録する。クライアントの型は実装を呼ぶ: hwnpud のもの (`Remote`) か、読んであれば
    エンジンのもの

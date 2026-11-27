@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/chatwire"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
@@ -314,9 +315,9 @@ type Embedding struct {
 
 var (
 	// ErrTooLong is returned for a text over MaxTokens when it is not to be truncated.
-	ErrTooLong = errors.New("chat: the text is longer than the embedding model reads")
+	ErrTooLong = chatwire.ErrTooLong
 	// ErrEmpty is returned for a text with no tokens of its own.
-	ErrEmpty = errors.New("chat: empty text")
+	ErrEmpty = chatwire.ErrEmpty
 )
 
 // Embed returns the embedding of text, as a search query or as a document (see Tokens). A text
@@ -401,16 +402,5 @@ func meanPool(h []float32, d, skip int) []float32 {
 	return out
 }
 
-// Cosine is the cosine similarity of two embeddings.
-func Cosine(a, b []float32) float64 {
-	var ab, aa, bb float64
-	for i := range a {
-		ab += float64(a[i]) * float64(b[i])
-		aa += float64(a[i]) * float64(a[i])
-		bb += float64(b[i]) * float64(b[i])
-	}
-	if aa == 0 || bb == 0 {
-		return 0
-	}
-	return ab / math.Sqrt(aa*bb)
-}
+// Cosine is the cosine similarity of two embeddings (chatwire.Cosine).
+func Cosine(a, b []float32) float64 { return chatwire.Cosine(a, b) }

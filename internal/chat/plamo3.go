@@ -3,7 +3,8 @@ package chat
 import (
 	"fmt"
 	"strings"
-	"unicode"
+
+	"github.com/shibukawa/hwnpu/internal/chatwire"
 )
 
 // Plamo3 is the format of PLaMo 3's translation models (pfnet/plamo-3-translate-*): the PFML3
@@ -153,17 +154,6 @@ func (plamo3Format) Parse(text string, thinking bool, tools []Tool, final bool) 
 	return Answer{Content: text}
 }
 
-// AutoTarget is the language a text is translated into when not told: English for a text with
-// hiragana, katakana or kanji, Japanese for any other.
-func AutoTarget(text string) string {
-	for _, r := range text {
-		if unicode.In(r, unicode.Hiragana, unicode.Katakana, unicode.Han) {
-			return "en"
-		}
-	}
-	return "ja"
-}
-
 // pfmlText checks a text of the prompt as the template does: not empty unless allowed, no PFML
 // tokens.
 func pfmlText(s, name string, empty bool) error {
@@ -194,3 +184,6 @@ func pfmlLang(s, name string) error {
 	}
 	return nil
 }
+
+// AutoTarget is the language a text is translated into when not told (chatwire.AutoTarget).
+func AutoTarget(text string) string { return chatwire.AutoTarget(text) }

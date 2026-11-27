@@ -7,8 +7,6 @@ import (
 	"math"
 	"slices"
 	"strings"
-
-	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
 // Format asks a chat model for its answer as JSON (the OpenAI API's response_format): any JSON
@@ -35,28 +33,23 @@ type FormatError struct {
 
 func (e *FormatError) Error() string { return "text: the answer is not the JSON asked for: " + e.Why }
 
-// instruct puts the request for JSON in the system message of msgs.
-func (f *Format) instruct(msgs []chat.Message) []chat.Message {
-	say := "Answer with a JSON object only, without any other text or code fences."
-	if len(f.Schema) > 0 {
-		var b bytes.Buffer
-		if json.Compact(&b, f.Schema) != nil {
-			b.Reset()
-			b.Write(f.Schema)
-		}
-		say = "Answer with JSON only, without any other text or code fences. The JSON must match this JSON Schema:\n" + b.String()
+// Instruction is what the conversation is told of the format, at the end of its system message
+// (or as one): JSON only, of the schema when there is one.
+func (f *Format) Instruction() string {
+	if len(f.Schema) == 0 {
+		return "Answer with a JSON object only, without any other text or code fences."
 	}
-	msgs = slices.Clone(msgs)
-	if len(msgs) > 0 && msgs[0].Role == "system" {
-		c := msgs[0].Content
-		msgs[0].Content = chat.Content{Text: strings.TrimRight(c.Text, "\n") + "\n\n" + say, Media: c.Media}
-		return msgs
+	var b bytes.Buffer
+	if json.Compact(&b, f.Schema) != nil {
+		b.Reset()
+		b.Write(f.Schema)
 	}
-	return append([]chat.Message{{Role: "system", Content: chat.Content{Text: say}}}, msgs...)
+	return "Answer with JSON only, without any other text or code fences. The JSON must match this JSON Schema:\n" + b.String()
 }
 
-// check takes the JSON out of an answer and matches it against the schema.
-func (f *Format) check(text string) (string, error) {
+// Check takes the JSON out of an answer and matches it against the schema: the JSON, or a
+// *FormatError of why it is not the JSON asked for.
+func (f *Format) Check(text string) (string, error) {
 	s := strings.TrimSpace(text)
 	i := strings.IndexAny(s, "{[")
 	if i < 0 {
