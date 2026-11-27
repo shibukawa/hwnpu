@@ -224,6 +224,12 @@ func tensorBytes(name string, shape []int, o Options) int64 {
 // it takes the fewest parts that fit; otherwise exactly that many (or fewer when there are fewer
 // layers). The layers are spread so that the largest part is as small as it can be.
 func PlanSplit(m Model, opts Options, budget int64, parts int) ([]Part, error) {
+	return PlanSplitMax(m, opts, budget, parts, 0)
+}
+
+// PlanSplitMax is PlanSplit with parts of at most maxLayers layers each (0: any): at least as
+// many parts as that takes, the layers as evenly by weight as it allows.
+func PlanSplitMax(m Model, opts Options, budget int64, parts, maxLayers int) ([]Part, error) {
 	pre, layers, post := EstimateBytes(m, opts)
 	cost := append([]int64(nil), layers...)
 	if len(cost) == 0 {
@@ -240,28 +246,31 @@ func PlanSplit(m Model, opts Options, budget int64, parts int) ([]Part, error) {
 		if largest > budget {
 			return nil, fmt.Errorf("llm: one layer (with the model's ends) needs %.2f GiB, over the %.2f GiB a part may hold", gib(largest), gib(budget))
 		}
-		parts = len(fill(cost, budget, 0))
+		parts = len(fill(cost, budget, 0, maxLayers))
+	}
+	if maxLayers > 0 {
+		parts = max(parts, (len(cost)+maxLayers-1)/maxLayers)
 	}
 	parts = min(parts, len(cost))
 	// The smallest cap that filling fits in parts.
 	lo, hi := largest, total
 	for lo < hi {
 		mid := lo + (hi-lo)/2
-		if len(fill(cost, mid, 0)) <= parts {
+		if len(fill(cost, mid, 0, maxLayers)) <= parts {
 			hi = mid
 		} else {
 			lo = mid + 1
 		}
 	}
-	return fill(cost, lo, parts), nil
+	return fill(cost, lo, parts, maxLayers), nil
 }
 
-// fill puts layers in each part up to cap. With n above 0 it also starts a new part whenever the
-// layers left are just enough to give each of the n parts one, so that it makes exactly n.
-func fill(cost []int64, cap int64, n int) []Part {
+// fill puts the layers of cost in order into parts of at most cap bytes and maxLayers layers (0:
+// any), a new part for each of the last n layers while fewer parts than n are left.
+func fill(cost []int64, cap int64, n, maxLayers int) []Part {
 	var out []Part
 	for i, c := range cost {
-		if len(out) == 0 || out[len(out)-1].Bytes+c > cap || n-len(out) >= len(cost)-i {
+		if len(out) == 0 || out[len(out)-1].Bytes+c > cap || maxLayers > 0 && out[len(out)-1].Layers >= maxLayers || n-len(out) >= len(cost)-i {
 			out = append(out, Part{Start: i})
 		}
 		p := &out[len(out)-1]
@@ -321,7 +330,7 @@ func PlanPaged(m Model, opts Options, budget int64) ([]Part, error) {
 		if largest > budget {
 			return nil, fmt.Errorf("llm: layer %d needs %.2f GiB, over the %.2f GiB a part may hold", a, gib(largest), gib(budget))
 		}
-		for _, p := range fill(seg, budget, 0) {
+		for _, p := range fill(seg, budget, 0, 0) {
 			p.Start += a
 			out = append(out, p)
 		}

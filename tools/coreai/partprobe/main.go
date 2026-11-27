@@ -6,7 +6,8 @@
 //
 // layers -1 is no layer (llm.NoLayers); paged 0 a part with its cache inside (cache 8192). The
 // options are the chat's (lut8 by k-means for Qwen3.5); key=value are the architecture's
-// parameters (state-rows=1) or last=1 (the logits of the last row alone).
+// parameters (state-rows=1), last=1 (the logits of the last row alone) or cache=N (the cache
+// of a part with its cache inside, 8192 by default).
 package main
 
 import (
@@ -72,6 +73,12 @@ func main() {
 				k, v, _ := strings.Cut(kv, "=")
 				if k == "last" {
 					o.LastRow = v == "1"
+					continue
+				}
+				if k == "cache" { // the cache of a part with its cache inside (paged 0)
+					if o.Cache, err = strconv.Atoi(v); err != nil {
+						log.Fatalf("%s: %v", spec, err)
+					}
 					continue
 				}
 				o.Params[k] = v

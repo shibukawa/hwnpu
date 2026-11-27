@@ -632,8 +632,25 @@ func (m *builder) deltaRuleChunks(q, k, v, g, beta, state *mlpackage.Var) (o, st
 		}
 		outs = append(outs, oc)
 		// the state after the chunk: Γ_c S0 + K^T (exp(G_c - G_j) u_j)
-		last := m.reshape(m.slice(E, 2, c-1, c), 1, hv, c, 1)
-		upd := mm(kc, op("mul", u, last, 1, hv, c, dv), true, false, 1, hv, dk, dv)
+		var upd *mlpackage.Var
+		if s > deltaChunk {
+			// a program of several chunks (q128): diag(exp(G_c - G_j)) as the last row of E (1,
+			// hv, 1, c) times the identity, then a product with u. u times that row put as a
+			// column (1, hv, c, 1) and broadcast over dv is read by the h15g program through the
+			// tile DMA, transposed and broadcast, with a cache hint the M3 refuses
+			// ("tile_dma_src.dma_config2.cache_hint != ...cache_hint_drop_v8": failedToSpecialize,
+			// docs/known-issues.md 12). The same outputs (cosine 0.999995) and 2 % slower a call;
+			// a program of one chunk (sr-q8) keeps the multiply, 24 % faster than the product
+			eye := make([]float32, c*c)
+			for t := range c {
+				eye[t*c+t] = 1
+			}
+			dl := op("mul", m.slice(E, 2, c-1, c), m.const16(fmt.Sprintf("delta_eye_%d", c), []int{1, 1, c, c}, eye), 1, hv, c, c)
+			upd = mm(kc, mm(dl, u, false, false, 1, hv, c, dv), true, false, 1, hv, dk, dv)
+		} else {
+			last := m.reshape(m.slice(E, 2, c-1, c), 1, hv, c, 1)
+			upd = mm(kc, op("mul", u, last, 1, hv, c, dv), true, false, 1, hv, dk, dv)
+		}
 		if state == nil {
 			state = upd
 		} else {
