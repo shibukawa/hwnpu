@@ -183,6 +183,7 @@ look is from grey maps side by side.
 | `pad` replicate / reflect | — | `#aicode.padding_mode_v1<replicate>` / `<reflect>` |
 
 - Core AI and Core ML match when both caches are warm (M3, three new processes each: Core AI 0.01–0.05 s faster per command). Core ML's cache (~4 GiB) evicts; Core AI keeps its programs until the disk runs low. See [apple-coreai.md](apple-coreai.md).
+- Chips checked on Core AI: M3, every part on the Neural Engine, cosine vs milcpu ≥ 0.9997; M1, every command with its defaults gives the same results as Core ML (after the MoGe-2 `dense` fix above).
 - Per call on M3, Core AI vs Core ML: PP-OCR detector 13.0 / 9.7 ms, recognizer 8×320 5.1 / 4.0 ms, RTMDet-m 10.2 / 13.5 ms, RTMO-s 8.0 / 4.9 ms, YuNet 1.2 / 0.9 ms, DA3-BASE ViT 106 / 103 ms. Core AI first compile 1.6–38 s per part (RTMO 36–38 s). Neural Engine memory is higher on Core AI (OCR 27 → 40 MB, RTMDet 56 → 89 MB).
 - Checking tools: `aicheck run -cpu PKG` (Core AI) and `-coreml` vs milcpu; `HWNPU_DEV=ailower.cut=N` cuts after op N and compares that value; `AICHECK_WORST=1` prints the worst elements.
 - Host resize (`lfm3vl.ResizeRGB`, PIL bilinear) is row-parallel without per-pixel closures: 5–7 ms instead of 37–55 ms, same bytes (`TestResizeRGBSameBytes`). Rounding to a byte uses the built-in `min` / `max`: `math.Max` and `math.Min` are calls (for NaN and signed zeros, which the sums are not) and took a third of the CPU. `lfm3vl.RGB` drops alpha a row at a time on the cores. M2, 512² to 640²: resize 4.2 → 1.2 ms, RTMDet-m's `Pixels` 5.4 → 2.2 ms; bytes the same as before on 140 resizes (bilinear and bicubic, RGBA and NRGBA, up and down).
@@ -196,7 +197,7 @@ look is from grey maps side by side.
 
 - Power not measured: Apple's vision models (`hwnpu-dev powerbench` needs sudo), RTMO and EfficientSAM on AMD, SigLIP 2.
 - Intel's real NPU for every model; SigLIP 2 has no Intel form (same MIL could be lowered to IR, unchecked).
-- M1 / M2 / M4 on Core AI (docs/handoff-coreai-vision.md). On M1, EfficientSAM's encoder attention (4096 × 4096 × heads) passes 64 MiB.
+- M2 / M4 on Core AI (docs/handoff-coreai-vision.md). On M1, EfficientSAM's encoder attention (4096 × 4096 × heads) passes 64 MiB.
 - Why the Core AI divide error does not reproduce in a 3-op program; whether it differs by chip.
 - Core AI CPU `reduce_mean` overflow.
 - RTMDet-tiny and m checked against ONNX Runtime only through s; RTMO-m / l; PP-OCRv6 medium; 180°-rotated lines (no PP-LCNet orientation classifier); vertical text; layout analysis (PP-StructureV3).

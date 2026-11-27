@@ -158,7 +158,7 @@ MODEL_ARCHITECTURE.md の「表の値の選び方」の表は、重みの誤差�
 | **語彙の大きさ** | 出力層のバイト数が語彙 × 隠れ。262144 × 1536 の lut6 は 300 MB で 1 トークン 4.6 ms、248320 × 2048 は 380 MB で 6 ms。262144 の軸はソフトキャップが CPU に置かれ、(16, 16384) に畳む手間がある ([llm-models](design/llm-models.md)) | 65536 (LFM3) が最も安い。128K で +2 ms、250K で +6 ms |
 | **幅広く浅い** | 同じバイト数なら層が減り、注意の回数と演算の数 (1 層 70 前後) が減る。prefill (Q=64) の行列積の効率も上がる。1 トークンの生成は行列とベクトルの積で幅に依らない | 24 層 × 2048 は 36 層 × 1536 より有利。MobileLLM 型の「深く細い」設計は ANE には不利 |
 | **KV ヘッドの数と head_dim** | KV のメモリと `tile` の写しの量。`SDPAGrouped` の形なら少ないほど問い合わせの行が増えて効率が上がる | 1〜2 KV ヘッドが最良。16384 の軸の上限に head_dim は関係ない |
-| **使えない構造** | 形が固定で、動的な索引は CPU 行き | MoE (ルーティングは `gather`。全専門家を密に計算する形は重みのバイト数どおりに遅い)、学習済みの疎な注意 (MiniCPM4 の InfLLM v2、DeepSeek の DSA)、MTP の頭、画像の可変の形 |
+| **使えない構造** | 形が固定で、動的な索引は CPU 行き | 学習済みの疎な注意 (MiniCPM4 の InfLLM v2、DeepSeek の DSA)、MTP の頭、画像の可変の形。MoE はルーティングの `gather` を部品の間でホストが受け持てば動く: LFM2-8B-A1B は専門家も M2/M3 の Neural Engine (int16 の索引の `gather_nd`)、gpt-oss-20b と Qwen3.6 は専門家を CPU で ([moe](design/moe.md)) |
 | **ライセンスと言語** | hwnpu-chat の目録に載せるため | Apache 2.0 (Qwen、Granite、Jamba、RWKV)、MIT (Phi)、各社の条件 (Gemma、LFM、Nemotron)。日本語は Gemma 4、Qwen3.5、PLaMo 3 が強い |
 
 Apple の on-device モデル (Foundation Models、約 3B) は後半 37.5% の層の K/V 射影を外して前半のを使い、2 ビットの QAT で、まさにこの基準で作られている (kv-cache.md 6 節)。重みは公開されていないので、公開物で最も近いのは Gemma 4 E2B (PLE と KV の共有)。
@@ -196,7 +196,7 @@ Apple の on-device モデル (Foundation Models、約 3B) は後半 37.5% の�
 | Phi-4-mini-flash-reasoning (3.8B、SambaY) | 約 9 (全注意 1 + 共有の K/V を読む cross-attention 約 8) | 1 層分 (最小級) | 2.85 GB | 49〜51 / 79〜116 | KV の*メモリ*は最小だが、注意の*計算*は 9 回残る。Mamba-1。数学向けの調整 |
 | Falcon-H1-1.5B-deep / 3B | 66 / 32 (毎層に注意 6〜10 Q / 2 KV と Mamba2 が並列) | 66 / 32 KiB | 1.16 / 2.4 GB | 36〜52 / 258〜527 (1.5B-deep)、47〜55 / 155〜285 (3B) | 並列ハイブリッドは毎層が注意。2K までなら良い |
 | Gemma 3 1B | 4 (26 層の 5:1、4 Q / 1 KV × 256) | 4 KiB | 0.75 GB | 15〜16 / 29〜45 | 合うが弱い。Gemma 4 E2B が上位互換 |
-| MoE (Gemma 4 26B-A4B、Qwen3.5-35B-A3B、LFM2-8B-A1B、Granite 4.0 H-Tiny、gpt-oss-20b) | — | — | 全専門家 | — | ルーティングが `gather`。密に計算すれば重みのバイト数どおり (8B で 4 GB、60 ms 超) |
+| MoE (Gemma 4 26B-A4B、Qwen3.5-35B-A3B、LFM2-8B-A1B、Granite 4.0 H-Tiny、gpt-oss-20b) | — | — | 全専門家 | — | ルーティングはホスト。LFM2-8B-A1B は専門家を M2/M3 の Neural Engine で (int16 の索引の `gather_nd`、M1 は不可)、gpt-oss-20b と Qwen3.6 は専門家を CPU で ([moe](design/moe.md))。全専門家を密に計算すれば重みのバイト数どおり (8B で 4 GB、60 ms 超) |
 
 ### 5.3 移植の見積もり
 

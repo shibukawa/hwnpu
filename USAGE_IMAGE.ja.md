@@ -32,7 +32,7 @@ Mac の Neural Engine と Intel の NPU では、hwnpu-chat と同じく、初�
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
 ```
 
-M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 49 秒、Anima-Aesthetic が約 4 分 (DiT 1 回 5.7 秒。DiT の組を順に読み込んで閉じるので、Neural Engine が抱えるのは 0.6〜0.8 GiB、プロセスのメモリは最大 3.3 GB) です。Neural Engine を使う hwnpu のコマンドがほかに動いている間は、それが終わるのを待ちます。記録は [docs/design/image-apple.ja.md](docs/design/image-apple.ja.md)、[docs/design/image-models.ja.md](docs/design/image-models.ja.md) にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
+M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 49 秒、Anima-Aesthetic が約 4 分 (DiT 1 回 5.7 秒。DiT の組を順に読み込んで閉じるので、Neural Engine が抱えるのは 0.6〜0.8 GiB、プロセスのメモリは最大 3.3 GB) です。Neural Engine を使う hwnpu のコマンドがほかに動いている間は、それが終わるのを待ちます。記録は [docs/design/image-apple.ja.md](docs/design/image-apple.ja.md)、[docs/design/image-models.ja.md](docs/design/image-models.ja.md) にあります。Intel の NPU では未確認です ([docs/design/intel.ja.md](docs/design/intel.ja.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
 
 ## 画像生成と編集 (FLUX.2 klein)
 

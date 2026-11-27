@@ -35,8 +35,8 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 | TileFuse 2606.11357 ✓ | BFP16 kernels are not accurate enough for end-to-end LLMs | **Check only.** hwnpu checks every bfp16 use with KL or cosine | [moe](design/moe.md), [image-amd](design/image-amd.md) |
 | ENEC 2604.03298 (a, Ascend) | Lossless weight compression removes the transfer bound | **Not started.** Decode today is bound by reconfiguration, not bandwidth, so this waits | |
 | 2505.16056 (Not All Models Suit Expert Offloading) | A cache about twice the active experts is enough. LFU beats LRU | **Partly.** AMD's expert places (`--expert-places`) are now chosen by usage count | [moe](design/moe.md), [moe](design/moe.md) |
-| EStream 2609.06551 (Hexagon) | Keep experts in a bank × slot pool, addressed as base + slot × size. Read with O_DIRECT | **Held.** It is the basis of AMD's expert places. gpt-oss-120b reads with O_DIRECT | [moe](design/moe.md), handoff-amd-moe.md |
-| Fate 2502.12224 | Predict the next layer's gate from the current layer's input, and prefetch | **Held.** Apple's gpt-oss-20b: 86–87 % in the top 4. AMD's gpt-oss-120b: misses 9.8 → 3.1 % | [docs/design/performance.md](design/performance.md), handoff-amd-moe.md 4 |
+| EStream 2609.06551 (Hexagon) | Keep experts in a bank × slot pool, addressed as base + slot × size. Read with O_DIRECT | **Held.** It is the basis of AMD's expert places. gpt-oss-120b reads with O_DIRECT | [moe](design/moe.md) |
+| Fate 2502.12224 | Predict the next layer's gate from the current layer's input, and prefetch | **Held.** Apple's gpt-oss-20b: 86–87 % in the top 4. AMD's gpt-oss-120b: misses 9.8 → 3.1 % | [docs/design/performance.md](design/performance.md), [moe](design/moe.md) |
 | NPUMoE 2604.18788 | Only the prompt on the Neural Engine; routing and gather on the CPU | **Already done.** It matches the decision not to put gather on the Neural Engine ([moe](design/moe.md)) | [moe](design/moe.md) |
 | Pre-gated MoE 2308.12066 and others | Compute the next gate one layer early | Read as background only | [docs/design/performance.md](design/performance.md) |
 | 2606.22283 (Neural Engine reverse engineering) | Numeric rules: outputs below 2^15, width slices, softplus, and more | **Partly.** Most rules hold on the M2. The width-slice rule triggers under narrower conditions than the paper says | [apple-neural-engine](design/apple-neural-engine.md) |
@@ -160,7 +160,7 @@ The full table is chapter 13 of [docs/design/performance.md](design/performance.
 
 **Relation to hwnpu**
 - The positions `MoERoute` writes to the scratchpad ([moe](design/moe.md)) follow the same idea as the paper's "expert virtualization". It became the basis of AMD's places, which hold only some of the experts ([moe](design/moe.md))
-- gpt-oss-120b reads its expert files with O_DIRECT (handoff-amd-moe.md 4)
+- gpt-oss-120b reads its expert files with O_DIRECT ([moe](design/moe.md))
 
 ### Fate 2502.12224 — held
 
@@ -168,7 +168,7 @@ The full table is chapter 13 of [docs/design/performance.md](design/performance.
 
 **Relation to hwnpu**
 - Apple's gpt-oss-20b: the next layer's prediction holds 86–87 % of the experts in its top 4. Prefetching made every budget 3–6 % faster
-- AMD's gpt-oss-120b: prefetching the next layer's top 4 cut misses from 9.8 to 3.1 % and took it from 9.2 to 9.7–9.9 tok/s (handoff-amd-moe.md 4)
+- AMD's gpt-oss-120b: prefetching the next layer's top 4 cut misses from 9.8 to 3.1 % and took it from 9.2 to 9.7–9.9 tok/s ([moe](design/moe.md))
 
 ### NPUMoE 2604.18788 — already done
 

@@ -1,17 +1,9 @@
 # 引き継ぎ: 画像を読むモデルの Core AI と SigLIP 2 を M2、M4 で確かめる
 
-作成: 2026-11-14、整理: 2026-11-21。M3 (16 GB、macOS 27.2) で入れた 2 つ ([docs/design/vision-models.md](design/vision-models.md)) の、ほかのチップでの確認。全部で 30 分ほど。
+残り: **M2 と M4** で確かめること (と、[apple-coreai](design/apple-coreai.md) の残りの「M2 と M3 の初回」)。全部で 30 分ほど。M3 と M1 は済み。結果は [docs/design/vision-models.md](design/vision-models.md)。
 
 - 画像を読むモデル (PP-OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、EfficientSAM) と SigLIP 2 (`hwnpu-image label`、`embed`) を Core AI で
 - `hwnpu-image segment` の符号器は Apple では Neural Engine
-
-**済んだこと**
-
-- M3: どの部品も全部 Neural Engine、CPU のインタプリタ (`milcpu`) とのコサイン 0.9997 以上。SigLIP 2 は Transformers (float32) と画像 0.9998 以上、文 0.99999 以上。EfficientSAM-S の符号器は 0.36〜0.43 秒
-- M1: `hwnpu-image` を Core AI だけにしたとき ([apple-coreai](design/apple-coreai.md))、全部のコマンドを既定のまま走らせ、main の Core ML と同じ結果。MoGe-2 の dense が GPU に回ったのは直した
-- `hwnpu-image` から Core ML (`--backend coreml`) は外れたので、前の版の「Core ML と Core AI でコマンドの結果と起動の時間を比べる」はもうしない
-
-残りは **M2 と M4** (と、[apple-coreai](design/apple-coreai.md) の残りの「M2 と M3 の初回」)。
 
 ## 1. コマンドが動くか
 

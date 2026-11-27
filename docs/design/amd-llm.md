@@ -125,7 +125,7 @@ Where short prompts still go (LFM3-1.7B, 16 tokens, by command): `ProjectionGEMM
 
 ## Decode programs
 
-AMD's decode is bound by the count of operators, not by weight bytes: each switch reconfigures the array (about 40 µs + 2.3 µs/KB; around 70 % of a dense model's token). Qwen3.5-0.8B decodes in the same time at bf16, q4 and q6. So the work is to fuse operators. Count them with `HWNPU_EXPORT_STEPS=1` and `elfconfigs`.
+AMD's decode is bound by the count of operators, not by weight bytes: each switch reconfigures the array (about 40 µs + 2.3 µs/KB; around 70 % of a dense model's token). Qwen3.5-0.8B decodes in the same time at bf16, q4 and q6. So the work is to fuse operators. Count them with `HWNPU_EXPORT_STEPS=1` and `elfconfigs`. Fusing a layer's operators (2026-11-21, after HeteroMosaic 2607.12839) took decode from 11.2 to 17.2 tok/s on the LFM3 family, 7.7 → 9.3 on Gemma 4 E2B, 13.8 → 18.7 on Qwen3.5-0.8B and 8.5 → 8.9 on Qwen3.6, with the same KL or logits.
 
 | Fusion | Models | Default / switch |
 |---|---|---|

@@ -304,8 +304,8 @@ Model-level parts; the pipeline, sampling and command are in [audio-models.md](a
   the 1214-token document read in 12.8 s (one program of 8 tokens a call: prefill off) and translated at
   23 tok/s; start 0.3–0.4 s from the second run (first 2 min 22 s with a 4 GB download of the export);
   NE holds 3.80 GiB. Core ML era: M2 9.4–10.1 tok/s but 35–41 s every start (compile cache keeps only 1.2–2.1 GiB);
-  M1 0.8 tok/s (over the 2.8 GiB an M1's NE runs at full speed) → `not_on: [M1]`, the 2B is picked
-  there. M3 lut8 5.8–6.5 tok/s (Core ML). Memory per models.yaml (Apple 8.2 GB peak).
+  M1 0.8 tok/s (over the 2.8 GiB an M1's NE runs at full speed; all on the NPU, NE 3.81 GiB, peak 4.1 GB)
+  → `not_on: [M1]`, the 2B is picked there. M3 lut8 5.8–6.5 tok/s, M2 lut8 about 6 (Core ML). Memory per models.yaml (Apple 8.2 GB peak).
 - Intel 8B: int8 (7.6 GiB) is over the ~4.6 GB a Core Ultra 5 135U NPU held; int4 by rows (3.8 GiB, one
   program). int4 rounding run on the M1 ANE: 12/20 same as lut8, rest rewordings.
 - Checks (2B): tiny model vs fp64 6.5e-5; `hwnpu-dev check` 0 missing / unused, argmax 31/31 (fp32),

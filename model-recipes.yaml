@@ -120,7 +120,7 @@ apple:
       # LFM3-1.7B with a whole program of 2048: 33.6 and 37.0 tokens/s, the split programs alone
       # 39.9 and 43.6 (docs/design/apple-coreai.md)
       whole: false
-      # the experts' program picks their scales with gather_nd (docs/handoff-ane-gather.md 1)
+      # the experts' program picks their scales with gather_nd (docs/design/apple-neural-engine.md)
       gather_nd: false
   # the text encoders (text_*) are prebuilt for M3 and later, for the memory: on an M3 FLUX.2
   # klein's nine Qwen3 programs took 94 to 190 s from prebuilts against 46 s compiled on the

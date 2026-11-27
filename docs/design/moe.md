@@ -37,7 +37,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 | Top half, all fields mixed | 81 % | 81 % | top 64: 59 %, top 128: 83 % | top 64: 88 % |
 | Half chosen from other fields: computer, math | 59 %, 63 % | 60 %, 63 % | 45 %, 48 % (top 64) | 69 %, 70 % (top 64) |
 | Core (at least an even share in every field) | 141 experts (1.9 GB), 31–41 % of runs | 841 (1.4 GB), 21–28 % | 901, 24–31 % | 515, 29–40 % |
-| Experts never run | none | none (8 under 10 runs) | a few (78 under 10) | some |
+| Experts never run | none | none (8 under 10 runs) | a few (78 under 10) | 5 (39 under 10) |
 
 - The AMD counts of gpt-oss-20b match the Mac's (140 vs 141 core experts, 131 shared), because the attention and the mx4 experts give the same routing. models.yaml's `experts_core` is one list for both vendors.
 - On AMD, a layer's core larger than half its places is left out (`internal/llm/iron/pool.go`): with 32 places the core took most places and copies rose 34.4 → 36.7 %.
@@ -87,6 +87,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 - `Host.readIn` / `readChosen` / `experts.reader` (`reader.need`): before a row's (or chunk's) experts run, ranges not in memory are read whole with `pread` (1 MiB pieces, several readers) into the page cache, then used through the mapping. Where `mem.Resident` is missing it falls back to `madvise(WILLNEED)` (0.5 GB/s). `HWNPU_DEV=moe.need=0` leaves it to faults.
 - **Prefetch** (`experts.prefetcher`, on by default): the guess runs in its own goroutine during the Neural Engine part; guessed experts not wired get `madvise(WILLNEED)` and are read by the readers. Count `prefetchN` = experts a token picks, at least 4 (gpt-oss 4, Qwen3.6 8). For 10 s after a run had to read experts from disk, only the top 2 (`prefetcher.auto`, `reader.short`). `HWNPU_DEV=moe.prefetch=N` fixes it, `0` off.
 - Cold-read benchmark (`tools/moeusage/read_bench.py`, page cache dropped): one gpt-oss-20b expert (13.2 MB) took 13.9 ms by mapping/page faults, 3.0 ms with O_DIRECT, or 2.6 ms with four 2 MiB reads; a Qwen3.6 expert (6.3 MB) took 6.9 vs 1.4 ms. A warm page-cache read took 0.04 ms. Mac direct reads have not been measured.
+- M2 (`TestColdRead`, experts picked by `mincore` as not in memory, 13.3 MB each): faults 0.5–0.6 GB/s (20–27 ms an expert); `madvise(WILLNEED)` then touch 1.7–1.8 GB/s (7.1–8.1 ms); `pread` in 1 MB pieces on 4–8 threads 2.7–2.8 GB/s (4.7–4.8 ms). Even 4.8 ms is longer than the gap between Neural Engine parts (about 1.5 ms), so prefetch cannot hide every miss read from the SSD.
 
 ### Prompts
 
@@ -131,12 +132,17 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 | gpt-oss-20b, M3 16 GB, quiet | all wired 17.0–18.1; budget 4.3 GB 17.5–18.1 | 3914 tokens 33–38 s | process 0.5 + budget + Neural Engine 1.44 GiB |
 | gpt-oss-20b, M3 16 GB, busy page cache | 12.2–12.4 → 14.1 tok/s with the CPU changes of the generation section | 707 tokens over 8 prompts 14.2–14.5 s | |
 | gpt-oss-20b, M4 32 GB | wired 17.4–18.0 | 2157 tokens 26.7–30.5 s | |
-| gpt-oss-20b, M2 16 GB | all wired 13.2; default budget 10.1; unwired 7.9 | — | |
+| gpt-oss-20b, M2 16 GB (MacBook Air), memory to spare | default budget (ceiling 3.1 GB) 13.9; all wired 14.2–14.4; unwired 13.6–13.7 | — | |
+| gpt-oss-20b, M2 16 GB, other apps as usual | budgets of 3–6 GB with prefetch 12.4–12.6 | — | |
+| gpt-oss-20b, M2 16 GB, memory short (page-ins 23–58 GB a run) | default budget: English 10.1, code 8.8 | 77–89 tokens 2.3–3.3 s | |
 | LFM2-8B-A1B, M3 16 GB | 15.0–16.1 | 1503 tokens 8.6–10.9 s | 8.0 GB |
 | LFM2-8B-A1B, M2 | 12.0–13.7 | 1624 tokens 13–14.5 s | 8.0 GB |
 
 - Qwen3.6 step at 10 tok/s (106 ms): experts 51 ms, Neural Engine about 55 ms (a GDN part 1.3 ms, head about 8 ms). Since then, layers whose experts are all in memory went 0.57 → 0.36–0.42 ms; layers that read (about 30 %) stay at 1.6 ms. Another process taking 3 GB dropped 9.8–11.5 to 8.4 tok/s.
 - Qwen3.6 prompt of 2602 tokens: experts about 17.5 s (reading 14.6 GB about 4 s), Neural Engine parts and attention about 3.5 s.
+- gpt-oss-20b M2 step (memory short, 96 ms): experts 24 × 2.39 = 57 ms, 37 Neural Engine calls about 32 ms (about 0.85 ms each), host attention 12 × 0.53 = 6.4 ms. With memory to spare (80 ms) the experts take 41 ms. The 37 parts read 1.09 GB of weights a token (head 436 MB), about 34 GB/s: weight reads, not the fixed cost of a call.
+- gpt-oss-20b M2 prefetch (other apps as usual): +2 % at 6 GB, +4 % at 4 GB; with it, 3 GB is as fast as 6 GB. It adds 2–3 GB of page-ins a run for wrong guesses.
+- gpt-oss-20b M2 `reader.need` (memory short, against `moe.need=0`): English 9.3 → 10.1, code 7.9 → 8.8 tok/s; a layer that met an expert not in memory 18.5 → 8.6 ms; prompts of 77–89 tokens 4.8–6.8 → 2.3–3.3 s. Speed then follows the count of experts not in memory (English 4.6–4.8 % of layers, code 7.2–7.8 %).
 - Power, M2 16 GB, gpt-oss-20b: about 7.0 W whatever the wiring; 0.50 J a token with memory to spare, 0.71 J while reading experts from disk. M3: 8.96 W, 0.52 J.
 
 ## AMD: IRON (Ryzen AI 9 365)
@@ -210,6 +216,7 @@ The NPU reads only pinned buffers (banks). An expert's position in its table is 
 - Qwen3.6 accuracy (q4 rounded, as models.yaml exports): cosine 0.989–0.995 vs HF float32 (32-token prompt and 8 greedy steps), top 9/9; two calls stay below `ironlm`'s 0.99 threshold. With GPTQ codes (`qwen36_gptq.py`, `--q4-codes`): 0.989–0.997, CPU KL 0.0243 → 0.0185. Place exports are bit-identical to all-expert exports.
 - Qwen3.6 export: 29–37 min, peak RSS 36–50 GiB depending on P. A 16 GB machine cannot export it and takes it from the source. 20.1 GB `experts.bin`, 1.97 MB an expert.
 - gpt-oss-20b export: 3 min 16 s, peak RSS 38 GB.
+- gpt-oss-120b (64 GB machine, 59 GiB to the OS): vs HF, 32 tokens and 3 steps, cosine 0.9978–0.9992, top 3/4 (the miss: the reference's first and second were p 0.052 and 0.036, and it chose the second). Next-layer prefetch (top 4): misses 9.8 → 3.1 %, 9.2 → 9.7–9.9 tok/s. Counts from 110 prompts (`~/.cache/hwnpu/moeusage/gpt-oss-120b-amd`): the top 56 take about 84 % of choices (20b's 16 of 32: 81 %); passing the core (515, 14.3 a layer) as `experts_core`: copies 3.1 → 2.8 %, 10.0 tok/s.
 
 ## What limits speed
 
@@ -222,7 +229,7 @@ The NPU reads only pinned buffers (banks). An expert's position in its table is 
 | gpt-oss-120b | SSD bandwidth (about 300 MB a token read) |
 | Qwen3.6 Mac generation | Experts missing from memory (about 30 % of layers, 1.5 MB an expert); the Neural Engine parts (about 55 ms); cores slow after sleeping during a part |
 | Qwen3.6 Mac prompt | Expert compute: 0.085 ms a row a layer even with ≥ 16 rows an expert; the 4-bit → int8 unpack costs per row |
-| gpt-oss Mac 16 GB | Page cache share; M2 kernels 1.85 ms a layer (29 GB/s) against the M3's 0.9 |
+| gpt-oss Mac 16 GB | Page cache share: experts not in memory, read from the SSD. The M2 kernel is 1.05 ms a layer (about 50 GB/s, 83 % of a plain 8-thread read; `BenchmarkGenLayer`), close to the M3's 0.9. In chat 1.64–1.76 ms: the rest is misses and cores waking after a part. The earlier 1.85 ms (29 GB/s) came from page-ins, sleeping cores and heat |
 
 ## Pitfalls
 
@@ -235,6 +242,12 @@ The NPU reads only pinned buffers (banks). An expert's position in its table is 
 - `--command-per-step` exports give unreliable Qwen3.6 prompt logits (cosine 0.32). A 2-layer truncated checkpoint routes most tokens of layer 0 to the same 8 experts, unlike the full model.
 - `--check` at export fails for `qwen35moe --q4` (host reference GEMM gets q4 tables); check with `ironlm -record` and `iron_qwen35_check.py ref --stream` instead.
 - Polling `hwnpu status` every 0.5 s while a model loads was followed once by a firmware mailbox timeout and a dead SMU (cause not confirmed). While measuring, another process on the NPU makes one-command-at-a-time decoding much slower.
+- **Measuring on the M2 MacBook Air** (otherwise the settings' differences are lost in noise):
+  - The fanless Air reaches `thermal pressure` heavy (`hwnpu status`) after 1–2 runs in a row, and the same setting drops 12.8 → 8.7 tok/s. Wait for nominal (about 60 s), then 45–60 s more, before each run.
+  - Compare `vm_stat` Pageins before and after a run. Safari and other open apps read 100–450 MB/s system-wide during generation, 7–36 GB a run.
+  - Alternate the settings run by run (3 runs each), not one setting after another.
+  - After Core AI's compiled cache is lost, the first run recompiles (about 40 s): compare from the second run.
+- On AMD, the pinned amount is the size of the `/dev/accel/accel0` mapping in smaps. `hwnpu status` shows resident memory on Linux.
 - **Mac**: hwnpu-chat writes thinking to stderr: compare text from stderr's "ready" line to "[prompt". Core AI's cache is per process name: renamed test binaries add 1.8 GB each. Measure with `--experts-key off` or the app counts bias hit rates.
 
 ## Not adopted
@@ -271,10 +284,12 @@ Apple:
 ## Open
 
 - Qwen3.6 Mac: prompt expert compute (about 13 s of 21 s excluding reads); missed-expert reads in generation; cores slow after sleeping (keeping one spinning slows the Neural Engine parts); 24 GB and larger Macs not measured (budget wiring, `experts_core`); KL not measured; whether the inner-dim-1 fix changed dense Qwen3.5.
-- gpt-oss Mac: top-2 vs top-4 prefetch on an M3 with other applications busy (if top 2 is slower there, set `fewWhenShort` back to 4).
+- gpt-oss Mac: top-2 vs top-4 prefetch on an M3 with other applications busy (if top 2 is slower there, set `fewWhenShort` back to 4). The wake-up after a gap between layers (0.15–0.3 ms a layer, even all wired): changing how workers are woken did not shorten it.
 - Qwen3.6 AMD: prompt with places (P = 32 is 2.2× all; ideas: compute misses on the CPU, widen places during prompts); decode prefetch (needs host routing); GPTQ codes (`qwen36_gptq.py`, 4.3 h, 18 GB) not in the models.yaml export; one resident array for the decode step; prompt experts on the matrix unit (q4nx group scales are not powers of two and must be applied to partial sums).
 - gpt-oss AMD: more than 56 places (prompt slots `COUNT_WORDS` 64); per-layer place counts (the array key needs equal sizes); attention below q8 with GPTQ (36 % of a layer's transfer); KV laid out [group][position][key, value] for long contexts; draft verification for MoE.
-- Computing missed experts on the AMD host CPU instead of copying them: not tried.
+- Computing missed experts on the AMD host CPU instead of copying them: not tried. `internal/mxfp4` has NEON only (amd64 takes the slow Go path, `mxfp4_other.go`); it needs an AVX-512 VNNI (VPDPBUSD) kernel and a round trip between the NPU array and the CPU each layer.
+- gpt-oss-120b: push the export (70 GB) to the model source (NAS, `hwnpu-dev models push`).
+- AMD's ONNX Runtime GenAI gpt-oss-20b figures (Related work) on the same machine: no environment, not measured.
 
 ## Related work
 
