@@ -1,25 +1,22 @@
 package text
 
 import (
-	"cmp"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/hwnpu/ai/text/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/chatwire"
 )
 
 // Chat is the use of a chat model for an app: a model, a family or a use of the definitions
@@ -28,25 +25,18 @@ func Chat(name string) ai.Use[*Chatter] {
 	return ai.Define[*Chatter](chatRole, name)
 }
 
+// chatRole's Prepare and Load are the engine's (ai/text/engine).
 var chatRole = &airole.Role{
 	LoadSettings: loadSettings,
 	Name:         "chat",
 	Remote:       func(h *airpc.Handle) io.Closer { return &Chatter{remote: h} },
-	Kinds:        []chat.Kind{chat.KindChat},
-	Prepare:      prepareEngine,
+	Kinds:        []catalog.Kind{catalog.KindChat},
 	// 1: the attention programs of a model split at its attention are written again with the
 	// model's scale of the values' weights (paged.Shape.OutScale: Qwen3's), which Prepare does;
 	// 2: Qwen3.5's too; 3: the tokenizer as its binary file (chat.PrepareTokenizer): a store
 	// prepared before named the checkpoint's tokenizer.json, which a checkpoint fetched since is
 	// without
 	Revision: 3,
-	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		eng, err := loadEngine(ctx, f, e, "chat")
-		if err != nil {
-			return nil, err
-		}
-		return &Chatter{e: eng, model: e.Model, def: e.Def}, nil
-	},
 }
 
 // Message is a turn of a conversation.
@@ -96,25 +86,43 @@ type Tool struct {
 // ParseTool reads a tool as the OpenAI API sends it ({"type": "function", "function": {...}} or
 // the function object alone), kept as it was written: the prompt shows it so.
 func ParseTool(raw []byte) (Tool, error) {
-	var t chat.Tool
-	if err := json.Unmarshal(raw, &t); err != nil {
-		return Tool{}, err
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return Tool{}, fmt.Errorf("chat: a tool is not an object")
 	}
-	var f struct {
-		Function *struct {
-			Description string          `json:"description"`
-			Parameters  json.RawMessage `json:"parameters"`
-		} `json:"function"`
+	type function struct {
+		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		Parameters  json.RawMessage `json:"parameters"`
 	}
+	var f struct {
+		function
+		Function *function `json:"function"`
+	}
 	json.Unmarshal(raw, &f)
-	out := Tool{Name: t.Name(), Description: f.Description, Parameters: f.Parameters, raw: slices.Clone(raw)}
+	out := Tool{Name: f.Name, Description: f.Description, Parameters: f.Parameters, raw: slices.Clone(raw)}
 	if f.Function != nil {
-		out.Description, out.Parameters = f.Function.Description, f.Function.Parameters
+		out.Name, out.Description, out.Parameters = f.Function.Name, f.Function.Description, f.Function.Parameters
+	}
+	var name struct {
+		Name     json.RawMessage `json:"name"`
+		Function *struct {
+			Name json.RawMessage `json:"name"`
+		} `json:"function"`
+	}
+	json.Unmarshal(raw, &name)
+	n := name.Name
+	if name.Function != nil {
+		n = name.Function.Name
+	}
+	if len(n) == 0 || n[0] != '"' {
+		return Tool{}, fmt.Errorf("chat: a tool has no name")
 	}
 	return out, nil
 }
+
+// loadSettings are the settings the engine's text models read (ai.LoadSettings).
+var loadSettings = []string{"idle", "prompt_cache", "experts_key", "sparse", "reserve_moe_memory"}
 
 // MarshalJSON writes the tool as the OpenAI API does.
 func (t Tool) MarshalJSON() ([]byte, error) {
@@ -246,10 +254,25 @@ type Delta struct {
 // Chatter answers conversations with a chat model. It runs one request at a time; others wait.
 type Chatter struct {
 	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	mu     sync.Mutex
-	e      *chat.Engine
-	model  string
-	def    chat.Model
+	local  chatterImpl   // the engine's (ai/text/engine), when it is here
+}
+
+// chatterImpl is a chat model of the engine in this process: Chatter's methods but those made
+// of them.
+type chatterImpl interface {
+	Model() string
+	Name() string
+	Features() []string
+	Thinks() bool
+	Translates() bool
+	Context() int
+	Images() bool
+	Audio() bool
+	OnNPU() bool
+	Device() string
+	Reply(ctx context.Context, msgs []Message, o ChatOptions, fn func(Delta) bool) (Answer, error)
+	Count(ctx context.Context, msgs []Message, o ChatOptions) (int, error)
+	Close() error
 }
 
 // Model is the name of the model in the definitions.
@@ -257,7 +280,7 @@ func (c *Chatter) Model() string {
 	if c.remote != nil {
 		return airpc.Value[string](c.remote, "Model")
 	}
-	return c.model
+	return c.local.Model()
 }
 
 // Name is the model's name as it calls itself (the API's, the logs'): its definition's, or the
@@ -266,7 +289,7 @@ func (c *Chatter) Name() string {
 	if c.remote != nil {
 		return airpc.Value[string](c.remote, "Name")
 	}
-	return c.e.Name
+	return c.local.Name()
 }
 
 // Features are the model's features in the definitions (tools, vision, audio, translation, ...).
@@ -274,7 +297,7 @@ func (c *Chatter) Features() []string {
 	if c.remote != nil {
 		return airpc.Value[[]string](c.remote, "Features")
 	}
-	return slices.Clone(c.def.Features)
+	return c.local.Features()
 }
 
 // Thinks reports whether the model thinks before it answers when ChatOptions does not say.
@@ -282,7 +305,7 @@ func (c *Chatter) Thinks() bool {
 	if c.remote != nil {
 		return airpc.Value[bool](c.remote, "Thinks")
 	}
-	return !c.e.NoThink
+	return c.local.Thinks()
 }
 
 // Translates reports whether the model is a translation model (ChatOptions.Translation).
@@ -290,7 +313,7 @@ func (c *Chatter) Translates() bool {
 	if c.remote != nil {
 		return airpc.Value[bool](c.remote, "Translates")
 	}
-	return c.e.Template == chat.Plamo3
+	return c.local.Translates()
 }
 
 // Context is the most tokens a prompt and its answer can have together.
@@ -298,7 +321,7 @@ func (c *Chatter) Context() int {
 	if c.remote != nil {
 		return airpc.Value[int](c.remote, "Context")
 	}
-	return c.e.Context()
+	return c.local.Context()
 }
 
 // Images and Audio report whether the model reads images and audio clips.
@@ -306,14 +329,14 @@ func (c *Chatter) Images() bool {
 	if c.remote != nil {
 		return airpc.Value[bool](c.remote, "Images")
 	}
-	return c.e.Images()
+	return c.local.Images()
 }
 
 func (c *Chatter) Audio() bool {
 	if c.remote != nil {
 		return airpc.Value[bool](c.remote, "Audio")
 	}
-	return c.e.Audio()
+	return c.local.Audio()
 }
 
 // OnNPU reports whether the programs were verified to run on the NPU.
@@ -321,7 +344,7 @@ func (c *Chatter) OnNPU() bool {
 	if c.remote != nil {
 		return airpc.Value[bool](c.remote, "OnNPU")
 	}
-	return c.e.OnNPU()
+	return c.local.OnNPU()
 }
 
 // Device is the NPU the model runs on, as the logs call it.
@@ -329,7 +352,7 @@ func (c *Chatter) Device() string {
 	if c.remote != nil {
 		return airpc.Value[string](c.remote, "Device")
 	}
-	return c.e.DeviceName()
+	return c.local.Device()
 }
 
 // Complete answers a conversation: its text, trimmed.
@@ -373,35 +396,7 @@ func (c *Chatter) Reply(ctx context.Context, msgs []Message, o ChatOptions, fn f
 	if c.remote != nil {
 		return airpc.Call1[Answer](c.remote, ctx, "Reply", msgs, o, fn)
 	}
-	in, err := chatMessages(msgs)
-	if err != nil {
-		return Answer{}, err
-	}
-	if o.Format != nil {
-		in = o.Format.instruct(in)
-	}
-	tools, err := chatTools(o.Tools)
-	if err != nil {
-		return Answer{}, err
-	}
-	think := c.Thinks()
-	if o.Think != nil {
-		think = *o.Think
-	}
-	opts := chat.Options{NoThink: !think, KeepThinking: o.KeepThinking}
-	if o.Translation != nil {
-		opts.Translation = o.Translation.chat()
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	a, err := generate(ctx, c.e, in, tools, opts, request(o.Sampling, DefaultSampling, o.MaxTokens, o.Seed), thinkBudget(o.ThinkBudget), o.Stop, fn)
-	if err == nil && o.Format != nil {
-		var text string
-		if text, err = o.Format.check(a.Text); err == nil {
-			a.Text = text
-		}
-	}
-	return a, err
+	return c.local.Reply(ctx, msgs, o, fn)
 }
 
 // Count is the tokens of the prompt the conversation is, with o's tools and thinking.
@@ -409,21 +404,7 @@ func (c *Chatter) Count(ctx context.Context, msgs []Message, o ChatOptions) (int
 	if c.remote != nil {
 		return airpc.Call1[int](c.remote, ctx, "Count", msgs, o)
 	}
-	in, err := chatMessages(msgs)
-	if err != nil {
-		return 0, err
-	}
-	tools, err := chatTools(o.Tools)
-	if err != nil {
-		return 0, err
-	}
-	think := c.Thinks()
-	if o.Think != nil {
-		think = *o.Think
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.e.Count(ctx, in, tools, chat.Options{NoThink: !think, KeepThinking: o.KeepThinking})
+	return c.local.Count(ctx, msgs, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
@@ -431,210 +412,20 @@ func (c *Chatter) Close() error {
 	if c.remote != nil {
 		return c.remote.Release() // the Runtime in hwnpud unloads it
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.e.Close()
+	return c.local.Close()
 }
 
 // ErrMedia is returned for an image or a clip the model cannot read (not one, or a model
 // without the feature).
-var ErrMedia = chat.ErrImage
+var ErrMedia = chatwire.ErrImage
 
 // ErrContext is returned for a prompt that does not fit in the model's context.
-var ErrContext = chat.ErrContext
-
-// request is the generation of the options given: sampling s (nil: def), maxTokens (0: 1024,
-// Unlimited: until the cache is full) and seed.
-func request(s *Sampling, def Sampling, maxTokens int, seed uint64) chat.Request {
-	sm := cmp.Or(s, &def)
-	r := chat.Request{Sampling: chat.Sampling{Temperature: sm.Temperature, TopK: sm.TopK, TopP: sm.TopP, Repetition: sm.Repetition}, Seed: seed}
-	switch {
-	case maxTokens == 0:
-		r.MaxTokens = 1024
-	case maxTokens > 0:
-		r.MaxTokens = maxTokens
-	}
-	return r
-}
-
-// thinkBudget is ChatOptions.ThinkBudget as the engine takes it (0: none).
-func thinkBudget(b int) int {
-	switch {
-	case b == 0:
-		return 1024
-	case b < 0:
-		return 0
-	}
-	return b
-}
-
-// generate answers msgs on e as hwnpu-chat and its server do: it renders the prompt, reads it,
-// generates, tells fn what each token adds (holding back what may become a stop text) and takes
-// the answer apart.
-func generate(ctx context.Context, e *chat.Engine, msgs []chat.Message, tools []chat.Tool, opts chat.Options, req chat.Request, budget int, stops []string, fn func(Delta) bool) (Answer, error) {
-	var a Answer
-	prompt, thinking, err := e.Template.Render(msgs, tools, opts)
-	if err != nil {
-		return a, err
-	}
-	a.Prompt = prompt
-	var media []chat.Media
-	for _, m := range msgs {
-		media = append(media, m.Content.Media...)
-	}
-	ids, err := e.Tokens(ctx, prompt, media)
-	if err != nil {
-		return a, err
-	}
-	req.Prompt, req.Think = ids, e.ThinkLimit(budget, thinking)
-	hold := 0 // the text held back while it may become a stop text
-	for _, st := range stops {
-		hold = max(hold, len(st)-1)
-	}
-	cut := func(c string) (string, bool) {
-		for _, st := range stops {
-			if i := strings.Index(c, st); st != "" && i >= 0 {
-				return c[:i], true
-			}
-		}
-		return c, false
-	}
-	var sent chat.Stream
-	var gen []int32
-	called := false // fn said to stop
-	st, err := e.Generate(ctx, req, func(sofar []int32) (bool, error) {
-		gen = sofar
-		p := e.Template.Parse(e.Tok.Decode(sofar, false), thinking, tools, false)
-		c, stopped := cut(p.Content)
-		if fn == nil {
-			return stopped, nil
-		}
-		if !stopped && !p.Calling {
-			c = validPrefix(c[:max(0, len(c)-hold)])
-		}
-		if dr, dc := sent.Next(p.Reasoning, c); dr != "" || dc != "" {
-			if !fn(Delta{Reasoning: dr, Text: dc}) {
-				called = true
-				return true, nil
-			}
-		}
-		return stopped, nil
-	})
-	a.Stats = stats(st)
-	a.Raw = e.Tok.Decode(gen, false)
-	p := e.Template.Parse(a.Raw, thinking, tools, true)
-	a.Text, _ = cut(p.Content)
-	a.Reasoning = p.Reasoning
-	for _, tc := range p.ToolCalls {
-		a.ToolCalls = append(a.ToolCalls, ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
-	}
-	a.Finish = st.Finish
-	if len(a.ToolCalls) > 0 {
-		a.Finish = "tool_calls"
-	}
-	if err != nil {
-		return a, err
-	}
-	if fn != nil && !called {
-		// what the last parse adds (a tail held back while it might have begun a call)
-		if dr, dc := sent.Next(a.Reasoning, a.Text); dr != "" || dc != "" {
-			fn(Delta{Reasoning: dr, Text: dc})
-		}
-	}
-	return a, nil
-}
-
-func stats(s chat.Stats) Stats {
-	return Stats{Prompt: s.Prompt, Reused: s.Reused, Restored: s.Restored, Generated: s.Generated, Prefill: s.Prefill, Decode: s.Decode,
-		Drafted: s.Drafted, Accepted: s.Accepted, Calls: s.Calls, Cache: s.Cache, Seed: s.Seed, ThinkCut: s.ThinkCut, ThinkLooped: s.ThinkLooped, Looped: s.Looped}
-}
-
-// validPrefix is s without an incomplete UTF-8 character at its end.
-func validPrefix(s string) string {
-	for i := 0; i < utf8.UTFMax && len(s) > 0 && !utf8.ValidString(s); i++ {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-// chatMessages are msgs as the engine takes them: each medium a MediaMarker in the text.
-func chatMessages(msgs []Message) ([]chat.Message, error) {
-	out := make([]chat.Message, len(msgs))
-	for i, m := range msgs {
-		cm := chat.Message{Role: m.Role, ToolCallID: m.ToolCallID, Name: m.Name}
-		if m.Reasoning != "" {
-			r := m.Reasoning
-			cm.Reasoning = &r
-		}
-		for _, tc := range m.ToolCalls {
-			var c chat.ToolCall
-			c.ID, c.Type, c.Function.Name, c.Function.Arguments = tc.ID, "function", tc.Name, tc.Arguments
-			cm.ToolCalls = append(cm.ToolCalls, c)
-		}
-		if len(m.Parts) > 0 {
-			var parts []string
-			var media []chat.Media
-			for _, p := range m.Parts {
-				if p.Media == nil {
-					parts = append(parts, p.Text)
-					continue
-				}
-				md, err := chatMedia(*p.Media)
-				if err != nil {
-					return nil, err
-				}
-				parts, media = append(parts, chat.MediaMarker), append(media, md)
-			}
-			cm.Content = chat.PartsContent(parts, media)
-		} else {
-			cm.Content = chat.Content{Text: strings.Repeat(chat.MediaMarker, len(m.Media)) + m.Text}
-			for _, md := range m.Media {
-				c, err := chatMedia(md)
-				if err != nil {
-					return nil, err
-				}
-				cm.Content.Media = append(cm.Content.Media, c)
-			}
-		}
-		out[i] = cm
-	}
-	return out, nil
-}
-
-// chatMedia is m as the engine reads it: an image's data URL, or a clip's base64 WAV.
-func chatMedia(m Media) (chat.Media, error) {
-	if m.URL != "" {
-		return chat.Media{Audio: m.Audio, Data: m.URL}, nil
-	}
-	if m.Audio {
-		return chat.Media{Audio: true, Data: base64.StdEncoding.EncodeToString(m.Data)}, nil
-	}
-	mime := http.DetectContentType(m.Data)
-	if !strings.HasPrefix(mime, "image/") {
-		return chat.Media{}, fmt.Errorf("%w: %s, not an image", ErrMedia, mime)
-	}
-	return chat.Media{Data: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(m.Data)}, nil
-}
-
-// chatTools are tools as the engine takes them.
-func chatTools(tools []Tool) ([]chat.Tool, error) {
-	var out []chat.Tool
-	for _, t := range tools {
-		raw, err := t.MarshalJSON()
-		if err != nil {
-			return nil, err
-		}
-		var ct chat.Tool
-		if err := json.Unmarshal(raw, &ct); err != nil {
-			return nil, fmt.Errorf("text: the tool %s: %w", t.Name, err)
-		}
-		out = append(out, ct)
-	}
-	return out, nil
-}
+var ErrContext = chatwire.ErrContext
 
 func init() {
 	airole.Register(chatRole)
+	bridge.Roles[chatRole.Name] = chatRole
+	bridge.Wrap[chatRole.Name] = func(l any) io.Closer { return &Chatter{local: l.(chatterImpl)} }
 	// what the callers of a model in hwnpud check for (errors.Is, errors.As)
 	airpc.RegisterError("text.ErrMedia", ErrMedia)
 	airpc.RegisterError("text.ErrContext", ErrContext)

@@ -522,6 +522,13 @@ engine, and each stage adds its own:
    `ai/engine` sets (`import _ "github.com/shibukawa/hwnpu/ai/engine"`); without it their own
    process's paths say so (`aieng.ErrNone`). Until the role packages are taken apart, each of them,
    `cmd/hwnpu` and `internal/aihost` import `ai/engine`, so no program changes.
+4b. Done for `ai/text` (chat, translate, embed, decide): each type calls an implementation, hwnpud's
+   (`Remote`) or the engine's in this process; the engine's is `ai/text/engine`, which sets the
+   roles' `Prepare` and `Load` (through `ai/text/internal/bridge`) and makes its models the client's
+   types. What both share without the engine (the errors, `AutoTarget`, `Cosine`) is
+   `internal/chatwire`. `ai/engine` gathers `internal/aiengine` (ai's and modelstore's
+   `aieng.Engine`) and the roles' engines; the tests of `ai` and `modelstore` import
+   `internal/aiengine` alone. `cmd/hwnpu-chat` imports `ai/engine` until stage 5.
 4. The role packages: `Prepare` and `Load` (and the engine types they return) move into
    `ai/engine/...`, registered with `airole.Register`; the client types call an implementation,
    hwnpud's (`Remote`) or the engine's when it is imported.

@@ -5,13 +5,14 @@ import (
 	"errors"
 	"io"
 	"strings"
-	"sync"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/hwnpu/ai/text/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/chatwire"
 )
 
 // Translate is the use of a translation model (PLaMo 3 Translate) for an app: a model, a family
@@ -20,20 +21,13 @@ func Translate(name string) ai.Use[*Translator] {
 	return ai.Define[*Translator](translateRole, name)
 }
 
+// translateRole's Prepare and Load are the engine's (ai/text/engine).
 var translateRole = &airole.Role{
 	LoadSettings: loadSettings,
 	Name:         "translate",
 	Remote:       func(h *airpc.Handle) io.Closer { return &Translator{remote: h} },
-	Kinds:        []chat.Kind{chat.KindChat},
+	Kinds:        []catalog.Kind{catalog.KindChat},
 	Feature:      "translation",
-	Prepare:      prepareEngine,
-	Load: func(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, error) {
-		eng, err := loadEngine(ctx, f, e, "translate")
-		if err != nil {
-			return nil, err
-		}
-		return &Translator{e: eng, model: e.Model}, nil
-	},
 }
 
 // TranslateOptions are how a text is translated (PLaMo 3 Translate's settings).
@@ -61,15 +55,6 @@ type TranslateOptions struct {
 	Seed     uint64
 }
 
-// chat is the translation's settings as PLaMo 3's template takes them.
-func (o *TranslateOptions) chat() *chat.Translation {
-	tr := &chat.Translation{TargetLang: o.To, SourceLang: o.From, Form: o.Form, Context: o.Context}
-	for _, g := range o.Glossary {
-		tr.Glossary = append(tr.Glossary, chat.Term{Source: g.Source, Target: g.Target})
-	}
-	return tr
-}
-
 // Translation is a text translated.
 type Translation struct {
 	// Text is the translation as the model wrote it (Translate trims it).
@@ -82,10 +67,16 @@ type Pair struct{ Source, Target string }
 
 // Translator translates texts (PLaMo 3 Translate). It runs one request at a time; others wait.
 type Translator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	mu     sync.Mutex
-	e      *chat.Engine
-	model  string
+	remote *airpc.Handle    // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
+	local  translatorImpl // the engine's (ai/text/engine), when it is here
+}
+
+// translatorImpl is a translation model of the engine in this process.
+type translatorImpl interface {
+	Model() string
+	OnNPU() bool
+	Reply(ctx context.Context, text string, o TranslateOptions, fn func(Delta) bool) (Translation, error)
+	Close() error
 }
 
 // Model is the name of the model in the definitions.
@@ -93,7 +84,7 @@ func (t *Translator) Model() string {
 	if t.remote != nil {
 		return airpc.Value[string](t.remote, "Model")
 	}
-	return t.model
+	return t.local.Model()
 }
 
 // OnNPU reports whether the programs were verified to run on the NPU.
@@ -101,7 +92,7 @@ func (t *Translator) OnNPU() bool {
 	if t.remote != nil {
 		return airpc.Value[bool](t.remote, "OnNPU")
 	}
-	return t.e.OnNPU()
+	return t.local.OnNPU()
 }
 
 // Translate translates a text.
@@ -120,16 +111,7 @@ func (t *Translator) Reply(ctx context.Context, text string, o TranslateOptions,
 	if t.remote != nil {
 		return airpc.Call1[Translation](t.remote, ctx, "Reply", text, o, fn)
 	}
-	var msgs []chat.Message
-	for _, p := range o.History {
-		msgs = append(msgs, chat.Message{Role: "user", Content: chat.Content{Text: p.Source}},
-			chat.Message{Role: "assistant", Content: chat.Content{Text: p.Target}})
-	}
-	msgs = append(msgs, chat.Message{Role: "user", Content: chat.Content{Text: text}})
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	a, err := generate(ctx, t.e, msgs, nil, chat.Options{Translation: o.chat()}, request(o.Sampling, Sampling{}, o.MaxTokens, o.Seed), 0, nil, fn)
-	return Translation{Text: a.Text, Stats: a.Stats}, err
+	return t.local.Reply(ctx, text, o, fn)
 }
 
 // historyTurns is how many earlier pairs TranslateStream gives each translation.
@@ -185,7 +167,7 @@ func (t *Translator) translateStream(ctx context.Context, s flow.Stream[flow.Tex
 			}
 			lang := o.To
 			if lang == "" {
-				lang = chat.AutoTarget(c.Data.Text)
+				lang = chatwire.AutoTarget(c.Data.Text)
 			}
 			if !yield(flow.Chunk[flow.Text]{Data: flow.Text{Text: out, Lang: lang}, Start: c.Start, Len: c.Len, Final: true}, nil) {
 				return
@@ -199,9 +181,11 @@ func (t *Translator) Close() error {
 	if t.remote != nil {
 		return t.remote.Release() // the Runtime in hwnpud unloads it
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.e.Close()
+	return t.local.Close()
 }
 
-func init() { airole.Register(translateRole) }
+func init() {
+	airole.Register(translateRole)
+	bridge.Roles[translateRole.Name] = translateRole
+	bridge.Wrap[translateRole.Name] = func(l any) io.Closer { return &Translator{local: l.(translatorImpl)} }
+}

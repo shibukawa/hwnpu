@@ -18,6 +18,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/audio"
+	"github.com/shibukawa/hwnpu/internal/chatwire"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
@@ -895,7 +896,7 @@ type Stats struct {
 }
 
 // ErrContext is returned for a prompt that does not fit in the cache.
-var ErrContext = errors.New("chat: the prompt does not fit in the context")
+var ErrContext = chatwire.ErrContext
 
 // Generate reads the prompt and generates tokens until a stop token, MaxTokens or a full
 // cache. After each token, emit gets all the tokens generated so far (without the stop
@@ -1441,7 +1442,7 @@ func (e *Engine) Images() bool { return e.vis != nil || e.ir != nil && e.ir.HasV
 func (e *Engine) Audio() bool { return e.aud != nil || e.ir != nil && e.ir.HasAudio() }
 
 // ErrImage is returned for an image or a clip the engine cannot read.
-var ErrImage = errors.New("chat: media")
+var ErrImage = chatwire.ErrImage
 
 // Tokens turns a rendered prompt into tokens. Each MediaMarker in it is the next of media: an
 // image is <|vision_start|>, a token per row of its embeddings, <|vision_end|>; a clip is its
