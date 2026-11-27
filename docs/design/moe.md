@@ -74,7 +74,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 | > 1/2 and ≤ 3/4 (gpt-oss-20b on 16 GB) | a budget of 1/4 of memory (4.3 GB on 16 GiB), wired an expert at a time: core first, then the application's counts. Rebalanced every 30 s (first after 5 s); after `--idle` (5 min) all but the core are unwired |
 | > 3/4 (Qwen3.6, 17.1 GB on 16 GiB) | none wired; the page cache keeps what fits (6–7 GB), the system counts it as free |
 
-- `HWNPU_MOE_WIRE`: `0` none, `1` all, a size (`6GB`) for the budget.
+- Nothing overrides this: `HWNPU_MOE_WIRE` was removed on 2026-11-27 (`HWNPU_DEV=moe.prefault=wait` still has every page wired in before the first run, for measuring).
 - Wiring Qwen3.6 only moves the page cache's share: none 10.6, 2 GB 9.1, 4.3 GB 8.6–8.8 tok/s, and even fully resident layers got slower (system 19 % free vs 51 %).
 - **Budget that follows free memory** (`placer.effective`, `mem.PressureNow`, every 5 s). Budget = free memory + what this process wired − 25 % (35 % for 5 min after a system warning); core only at critical (level 4). Changes within 2 % of free memory are ignored. Counting own wiring as free gives a fixed point. Using free percent alone made it oscillate.
 - **After a warning** with more than the core wired (`placer.warned`): ceiling one step (1/4 of the budget above the core) below what was wired, held 10 min, then rises a step at a time. A warning soon after a step up doubles the hold (max 80 min). Kept across starts in `experts-usage/ceiling` (`Placement.Ceiling`).
@@ -121,7 +121,7 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
 - A part ends at each MoE layer with fp16 router logits and the experts' input (`moe_x_N`, `moe_logits_N`). The host takes the top 4 and runs a program without weights on the chosen experts. Their int8 weights live in arrays of that program that hold every layer's experts (7.22 GiB, read once, shared by chains that `Share`).
 - The experts' scales are picked by `gather_nd` with int16 indices: the M2 and M3 run it, the M1 does not (`not_on: [M1]`, `chat` refuses on an M1).
 - `PlanRouted` with `Paged` also splits at attention (a part of no layers, `NoLayers`) for a 128000 context.
-- Short of memory, macOS compresses the expert arrays and prompts take up to 3× as long: `HWNPU_MOE_WIRE=1` wires them (off by default).
+- Short of memory, macOS compresses the expert arrays and prompts take up to 3× as long. An app's `reserve_moe_memory` (`ai.LoadSettings`, hwnpu-chat `--reserve-moe-memory=8GB` or `50%`) wires them up to that much; none by default, as the wired arrays stay so while the model is loaded, idle too. LFM2-8B-A1B on a 16 GB M2 (2026-11-27, 2352 tokens of prompt, 300 generated, 3 runs each in turn): none 17.0–17.1 s and 11.9–12.8 tok/s, 4GB 16.5–16.9 s and 12.8–13.4, all (7.23 GiB) 16.1–16.3 s and 12.9–13.6; with another process holding 6 GB, none 19.1–19.3 s and 5.9–6.3 tok/s, all 17.8–18.0 s and 11.6–11.7. Unwired, the Neural Engine wires 4–5 GB of the arrays while it runs them anyway (wired memory 6.7–7.1 GB against 10.1 GB at most).
 
 ### Numbers (Apple)
 

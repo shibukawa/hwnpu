@@ -55,7 +55,7 @@ var Keys = map[string]string{
 	"moe.usage":    "PATH: writes the experts a run used (tools/moeusage)",
 	"moe.trace":    "PATH: writes the experts each token ran (tools/moeusage/place.py)",
 	"moe.direct":   "1 or 0: IRON's banks read the experts directly or not",
-	"moe.prefault": "0: a host's experts not faulted in ahead (they are when they fit in memory); wait: every page in before the first run",
+	"moe.prefault": "wait: a host's experts wired with every page in before the first run (for measuring)",
 	"moe.check":    "checks the experts' results against the CPU's",
 	"mxfp4.bench":  "LAYERS: the layers TestTokenTime times",
 }

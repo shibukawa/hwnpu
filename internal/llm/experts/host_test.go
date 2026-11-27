@@ -158,14 +158,17 @@ func writeHost(t *testing.T, sh Shape, L int, act Act, bias bool) *HostRecord {
 func TestHostRowMatchesRows(t *testing.T) {
 	sh := Shape{Hidden: 128, Inter: 64, Experts: 16, TopK: 4}
 	for _, c := range []struct {
-		name string
-		act  Act
-		bias bool
-		wire string
-	}{{"gptoss", Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, true, "1"}, {"silu", Act{Kind: ActSiLU}, false, "1"}, {"silu not wired", Act{Kind: ActSiLU}, false, "0"}} {
+		name  string
+		act   Act
+		bias  bool
+		wired bool
+	}{{"gptoss", Act{Kind: ActGptOss, Alpha: 1.702, Limit: 7}, true, true}, {"silu", Act{Kind: ActSiLU}, false, true}, {"silu not wired", Act{Kind: ActSiLU}, false, false}} {
 		t.Run(c.name, func(t *testing.T) {
 			rec := writeHost(t, sh, 2, c.act, c.bias)
-			t.Setenv("HWNPU_MOE_WIRE", c.wire)
+			defer func(f func() int64) { physical = f }(physical)
+			if !c.wired {
+				physical = func() int64 { return 1 } // more experts than the memory: none wired
+			}
 			run := func(debug string) [][]float32 {
 				t.Setenv("HWNPU_DEV", debug)
 				h, err := OpenHost(rec, sh)

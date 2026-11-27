@@ -233,15 +233,12 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	h.zeroGate, h.zeroDown = make([]float32, 2*I), make([]float32, H)
 	all, budget := h.wiring()
 	h.reads = !all
-	pf, _ := DebugOpt("prefault")
 	switch {
 	case all:
 		h.prefault(true)
 	case budget > 0:
 		h.place = newPlacer(h, p, budget, n)
 		h.place.start()
-	case pf != "0" && 2*h.bytes() <= mem.Physical():
-		h.prefault(false) // unwired as asked, and they fit: their pages in before the first runs
 	}
 	if !all {
 		// a router as the checkpoint has it in bf16, mapped: read a row at a time by the guess
@@ -270,7 +267,7 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	if path, ok := DebugOpt("trace"); ok && path != "" {
 		h.trace = openTrace(path)
 	}
-	if pf == "wait" { // for measuring: every page in before the first run
+	if pf, _ := DebugOpt("prefault"); pf == "wait" { // for measuring: every page in before the first run
 		h.warm.Wait()
 	}
 	return h, nil

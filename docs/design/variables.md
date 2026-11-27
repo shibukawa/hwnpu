@@ -8,7 +8,7 @@ for can be told from its name.
 
 | Kind | Names | Read by |
 |---|---|---|
-| Settings | `HWNPU_CACHE*`, `HWNPU_MODEL_SOURCE*`, `HWNPU_MODEL_HUGGING_FACE`, `HWNPU_MODELS`, `HWNPU_MODEL_ALLOWLIST`, `HWNPU_ACCEPT_LICENSE`, `HWNPU_MEMORY`, `HWNPU_BACKEND`, `HWNPU_DEVICE`, `HWNPU_COREAI_UNITS`, `HWNPU_COREML_UNITS`, `HWNPU_COREAI_PREBUILT`, `HWNPU_MOE_WIRE`, `HWNPU_WEBDAV_*`, `HWNPU_HF_CLIENT_ID`, `HWNPU_DAEMON*`, `HWNPU_JOBS`, `HWNPU_PROFILE`, `HWNPU_ENERGY`, `HWNPU_NO_RUN_LOG` | The programs, from the environment and the `.env` files (`internal/envfile`); with hwnpud, whose each one is:  [hwnpud](hwnpud.md#settings) |
+| Settings | `HWNPU_CACHE*`, `HWNPU_MODEL_SOURCE*`, `HWNPU_MODEL_HUGGING_FACE`, `HWNPU_MODELS`, `HWNPU_MODEL_ALLOWLIST`, `HWNPU_ACCEPT_LICENSE`, `HWNPU_MEMORY`, `HWNPU_BACKEND`, `HWNPU_DEVICE`, `HWNPU_COREAI_UNITS`, `HWNPU_COREML_UNITS`, `HWNPU_COREAI_PREBUILT`, `HWNPU_WEBDAV_*`, `HWNPU_HF_CLIENT_ID`, `HWNPU_DAEMON*`, `HWNPU_JOBS`, `HWNPU_PROFILE`, `HWNPU_ENERGY`, `HWNPU_NO_RUN_LOG` | The programs, from the environment and the `.env` files (`internal/envfile`); with hwnpud, whose each one is:  [hwnpud](hwnpud.md#settings) |
 | The machine's libraries | `HWNPU_ONNXRUNTIME`, `HWNPU_OV_PYTHON`, `HWNPU_XRTSHIM`, `HWNPU_XRT_CORE`, `HWNPU_ZE_LOADER`, `HWNPU_IRON_ENV` | The backends; hwnpud's |
 | The developers' switches | `HWNPU_DEV=KEY[=VALUE],...` | `internal/dev`; a process's own, never sent to hwnpud |
 | The tests' | `HWNPU_TEST_<GROUP>_<ROLE>`, `HWNPU_TEST_NPU` | `go test` only |
@@ -17,7 +17,7 @@ Not here: `hwnpu-dev powerbench`'s `HWNPU_POWERMETRICS` (a command line). The Py
 switches for measuring (`tools/amd/iron_*.py`: `HWNPU_LFM3_FUSED_*`, `HWNPU_Q_CORES`, ...) were
 removed 2026-11-26: an export takes only what was their default. Only `HWNPU_EXPORT_STEPS` (a
 diagnostic dump, [AMD LLM](amd-llm.md)) remains for a person to set; `GPTOSS_EXPERT_PLACES` and
-`GPTOSS_HOST_ROUTE` are `iron_export_lm.py`'s own, from its options. Removed: `HWNPU_NPU_LOCK` (the Neural Engine's lock is never skipped: several
+`GPTOSS_HOST_ROUTE` are `iron_export_lm.py`'s own, from its options. Removed: `HWNPU_MOE_WIRE` (2026-11-27: the host's experts are wired by the memory alone, the Neural Engine's by an app's `reserve_moe_memory`, hwnpu-chat `--reserve-moe-memory`, [MoE](moe.md)), `HWNPU_NPU_LOCK` (the Neural Engine's lock is never skipped: several
 apps share the Neural Engine through hwnpud).
 
 ## The developers' switches: HWNPU_DEV

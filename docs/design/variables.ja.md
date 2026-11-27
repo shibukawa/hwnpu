@@ -7,7 +7,7 @@
 
 | 種類 | 名前 | 読むもの |
 |---|---|---|
-| 設定 | `HWNPU_CACHE*`、`HWNPU_MODEL_SOURCE*`、`HWNPU_MODEL_HUGGING_FACE`、`HWNPU_MODELS`、`HWNPU_MODEL_ALLOWLIST`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_MEMORY`、`HWNPU_BACKEND`、`HWNPU_DEVICE`、`HWNPU_COREAI_UNITS`、`HWNPU_COREML_UNITS`、`HWNPU_COREAI_PREBUILT`、`HWNPU_MOE_WIRE`、`HWNPU_WEBDAV_*`、`HWNPU_HF_CLIENT_ID`、`HWNPU_DAEMON*`、`HWNPU_JOBS`、`HWNPU_PROFILE`、`HWNPU_ENERGY`、`HWNPU_NO_RUN_LOG` | プログラムが環境と `.env` (`internal/envfile`) から。hwnpud があるときにどれが誰のものかは [hwnpud](hwnpud.ja.md#設定) |
+| 設定 | `HWNPU_CACHE*`、`HWNPU_MODEL_SOURCE*`、`HWNPU_MODEL_HUGGING_FACE`、`HWNPU_MODELS`、`HWNPU_MODEL_ALLOWLIST`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_MEMORY`、`HWNPU_BACKEND`、`HWNPU_DEVICE`、`HWNPU_COREAI_UNITS`、`HWNPU_COREML_UNITS`、`HWNPU_COREAI_PREBUILT`、`HWNPU_WEBDAV_*`、`HWNPU_HF_CLIENT_ID`、`HWNPU_DAEMON*`、`HWNPU_JOBS`、`HWNPU_PROFILE`、`HWNPU_ENERGY`、`HWNPU_NO_RUN_LOG` | プログラムが環境と `.env` (`internal/envfile`) から。hwnpud があるときにどれが誰のものかは [hwnpud](hwnpud.ja.md#設定) |
 | 機械のライブラリ | `HWNPU_ONNXRUNTIME`、`HWNPU_OV_PYTHON`、`HWNPU_XRTSHIM`、`HWNPU_XRT_CORE`、`HWNPU_ZE_LOADER`、`HWNPU_IRON_ENV` | バックエンド。hwnpud のもの |
 | 開発者のスイッチ | `HWNPU_DEV=KEY[=VALUE],...` | `internal/dev`。プロセス自身のもので、hwnpud には送らない |
 | テストのもの | `HWNPU_TEST_<群>_<役>`、`HWNPU_TEST_NPU` | `go test` だけ |
@@ -15,7 +15,7 @@
 ここにないもの: `hwnpu-dev powerbench` の `HWNPU_POWERMETRICS` (コマンド行)。Python の道具の測定用のスイッチ
 (`tools/amd/iron_*.py` の `HWNPU_LFM3_FUSED_*`、`HWNPU_Q_CORES` など) は 2026-11-26 になくした。書き出しは既定だった
 道だけを通る。人が設定するものは `HWNPU_EXPORT_STEPS` (診断の出力、[AMD の LLM](amd-llm.ja.md)) だけが残る
-(`GPTOSS_EXPERT_PLACES` と `GPTOSS_HOST_ROUTE` は `iron_export_lm.py` がオプションから自分で設定する)。なくしたもの: `HWNPU_NPU_LOCK` (Neural Engine の
+(`GPTOSS_EXPERT_PLACES` と `GPTOSS_HOST_ROUTE` は `iron_export_lm.py` がオプションから自分で設定する)。なくしたもの: `HWNPU_MOE_WIRE` (2026-11-27。ホストの専門家はメモリだけで固定を決め、Neural Engine の専門家はアプリの `reserve_moe_memory`、hwnpu-chat の `--reserve-moe-memory` で固定する。[MoE](moe.ja.md))、`HWNPU_NPU_LOCK` (Neural Engine の
 ロックは飛ばさない。複数のアプリは hwnpud を通して Neural Engine を分け合う)。
 
 ## 開発者のスイッチ: HWNPU_DEV

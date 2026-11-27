@@ -11,14 +11,10 @@ import (
 // DebugOpt reads the item moe.NAME of HWNPU_DEV (internal/dev): "time" prints what the experts took; "usage=FILE" adds the counts of the
 // experts each layer ran to FILE (Usage) when the experts close; "trace=FILE" writes every row's
 // experts in order (a line "LAYER ROWS E E E E" a row, for trying placements on, tools/moeusage);
-// "prefault=0" leaves their pages to the first runs, "prefault=wait" has every page in before the
-// first run. For measuring a host's experts that are not all wired: "prefetch=N" brings in N of
-// the next layer's guessed experts (0: none; the default is as many as a token runs), "read=0"
-// leaves the experts a run chose to the page faults instead of reading them whole (Host.readIn),
-// "row=0" runs a token's experts as the rows' three Runs instead of one piece of work each
-// (Host.runRow), "many=0" a prompt's experts for a step's rows at a time instead of several steps'
-// together (the values of a step at a time, bit for bit), "wave=0" a prompt's steps one after
-// another through every part instead of a part at a time for all of them (decode.Session.Steps).
+// "prefault=wait" has every page of experts wired whole in before the first run; "prefetch=N"
+// brings in N of the next layer's guessed experts (0: none; the default is as many as a token
+// runs); "row=0" runs a token's experts as the rows' three Runs instead of one piece of work each
+// (Host.runRow).
 func DebugOpt(name string) (string, bool) {
 	return devenv.Get("moe." + name)
 }

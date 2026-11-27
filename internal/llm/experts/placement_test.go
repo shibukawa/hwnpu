@@ -103,15 +103,16 @@ func TestPlacement(t *testing.T) {
 func TestWiringBudget(t *testing.T) {
 	h := fakeHost(2, 4)
 	n := h.bytes()
+	defer func(f func() int64) { physical = f }(physical)
 	for _, c := range []struct {
-		env    string
+		phys   int64
 		all    bool
 		budget int64
-	}{{"0", false, 0}, {"1", true, n}, {"0.0001GB", false, 100000}, {"100g", true, n}} {
-		t.Setenv("HWNPU_MOE_WIRE", c.env)
+	}{{2 * n, true, n}, {n + n/2, false, (n + n/2) / 4}, {n, false, 0}} {
+		physical = func() int64 { return c.phys }
 		all, b := h.wiring()
 		if all != c.all || b != c.budget {
-			t.Errorf("HWNPU_MOE_WIRE=%s: all %v budget %d, want %v %d", c.env, all, b, c.all, c.budget)
+			t.Errorf("memory %d for %d of experts: all %v budget %d, want %v %d", c.phys, n, all, b, c.all, c.budget)
 		}
 	}
 }
@@ -271,16 +272,15 @@ func TestPlacementWarned(t *testing.T) {
 	}
 }
 
-// HWNPU_MOE_WIRE reads the same for the host's experts and the Neural Engine's (chain).
-func TestWireEnv(t *testing.T) {
+func TestParseReserve(t *testing.T) {
 	for _, c := range []struct {
-		v      string
-		set    bool
-		budget int64
-	}{{"", false, 0}, {"0", true, 0}, {"1", true, -1}, {"6", true, 6e9}, {"6GB", true, 6e9}, {"2.5g", true, 2.5e9}, {"lots", true, -1}} {
-		t.Setenv("HWNPU_MOE_WIRE", c.v)
-		if set, b := WireEnv(); set != c.set || b != c.budget {
-			t.Errorf("HWNPU_MOE_WIRE=%q: %v %d, want %v %d", c.v, set, b, c.set, c.budget)
+		v    string
+		want int64
+		bad  bool
+	}{{"", 0, false}, {"0", 0, false}, {"6GB", 6e9, false}, {"2.5GiB", 2.5 * (1 << 30), false}, {"40%", 4e9, false}, {"100%", 10e9, false}, {"lots", 0, true}, {"120%", 0, true}, {"-1GB", 0, true}} {
+		got, err := ParseReserve(c.v, 10e9)
+		if (err != nil) != c.bad || got != c.want {
+			t.Errorf("ParseReserve(%q): %d, %v, want %d (error %v)", c.v, got, err, c.want, c.bad)
 		}
 	}
 }
