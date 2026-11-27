@@ -181,17 +181,18 @@ models:
         double_group: 2
         single_group: 2
       jobs: 3
-      # the VAE (decoder and encoder) is prebuilt for M3 and later: on an M3 the device's compiler
-      # took 625 to 2799 s over the ten decoder stages, the prebuilt about 1 s, and both gave the
-      # same bytes at every size, without bands (2026-11-25, 26). On M1 coreai-build's h13g
-      # prebuilt drew a band of noise every 112 rows at 512 x 512 and the 1024 x 768 vae_s0 ended
-      # in 'Request cancelled'; on M2 512 x 512 had bands every 112 rows
+      # the VAE (decoder and encoder) is prebuilt: on an M3 the device's compiler took 625 to 2799
+      # s over the ten decoder stages, the prebuilt about 1 s, and both gave the same bytes at
+      # every size, without bands (2026-11-25, 26). The bands seen on M1 and M2 at 512 x 512 before
+      # (every 112 rows) were not checked against a fresh compile (wrong compiles stay in aned's
+      # cache); offline the h14g stages have no task reading past its kernel, and the h13g ones
+      # but vae_s0 (to be run on an M1 and an M2)
       prebuild:
-        - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
-          programs: ["vae_*"]
+        - arch: [h13g, h13c, h13d, h13s]
+          programs: ["vae_s0"]
           do: device
-          why: "the VAE's prebuilts drew bands every 112 rows at 512 x 512 on M1 (h13g) and M2 (h14g); right on M3 (the same bytes as compiled on the device)"
-          checked: 2026-11-26
+          why: "tasks read past the kernel they load (llirtasks -check, docs/known-issues.md 16): the mid block's attention softmax exp reads 8 coefficient sets of a kernel sized for the residual blocks' SiLU exp (1 set), at 1024 x 1024 and 512 x 512"
+          checked: 2026-11-27
   MOSS-SoundEffect-v2.0: &moss
     amd:
       # 3: no tokenizer/tokenizer_config.json (iron_moss_sfx.py: internal/sfx reads none)
