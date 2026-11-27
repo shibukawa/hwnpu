@@ -20,10 +20,8 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -34,8 +32,8 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/flow"
+	"github.com/shibukawa/hwnpu/internal/aiensure"
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/npustatus"
 )
 
@@ -276,63 +274,13 @@ func prepare(ctx context.Context, app *ai.App, c PrepareOptions, noCompile bool)
 // is here. It leaves the compiling to the command's first load (open the Runtime with
 // ai.CompileOnLoad), so that a model is loaded once, not once to compile it and once to run it.
 func Ensure(ctx context.Context, app *ai.App, o PrepareOptions) error {
-	if o.Log == nil {
-		o.Log = os.Stderr
-	}
-	if o.In == nil {
-		o.In = os.Stdin
-	}
-	p, err := app.Plan(ctx)
-	if err != nil {
-		return err
-	}
-	if p.Ready() {
-		return nil
-	}
-	p.NoCompile, p.Log, p.Brief = true, o.Log, o.Quiet
-	if err := licenses(p, o, o.Log); err != nil {
-		return err
-	}
-	return p.Run(ctx, nil)
+	return aiensure.Ensure(ctx, app, aiensure.Options{AcceptLicenses: o.AcceptLicenses, Quiet: o.Quiet, Log: o.Log, In: o.In})
 }
 
 // licenses shows the licenses of the models to download that ask to be accepted, and accepts
-// them: by AcceptLicenses, else by asking on a terminal.
+// them: by AcceptLicenses, else by asking on a terminal (aiensure.Licenses).
 func licenses(p *ai.Plan, c PrepareOptions, out io.Writer) error {
-	missing := map[string]bool{}
-	for _, it := range p.Items {
-		if !it.Ready {
-			missing[it.Model] = true
-		}
-	}
-	var ask []ai.License
-	for _, l := range p.Licenses() {
-		if missing[l.Model] && l.Accept && !l.Accepted {
-			ask = append(ask, l)
-		}
-	}
-	if len(ask) == 0 {
-		return nil
-	}
-	for _, l := range ask {
-		terms := ""
-		if l.Terms != "" {
-			terms = ": " + l.Terms
-		}
-		fmt.Fprintf(out, "%s is under the %s license%s\n  %s\n", l.Model, l.ID, terms, l.URL)
-	}
-	if !c.AcceptLicenses {
-		if !console.Terminal(c.In) {
-			return errors.New("these licenses ask to be accepted before the models are downloaded: accept them (--accept-license)")
-		}
-		fmt.Fprint(out, "Accept? [y/N] ")
-		line, _ := bufio.NewReader(c.In).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			return errors.New("the licenses were not accepted")
-		}
-	}
-	p.AcceptLicenses = true
-	return nil
+	return aiensure.Licenses(p, c.AcceptLicenses, c.In, out)
 }
 
 // StatusOptions are how Status writes.
@@ -348,7 +296,8 @@ type StatusOptions struct {
 
 // Status writes the NPU's status on the standard output, as hwnpu status does: the device, its
 // driver and firmware, how busy it is, its power, the processes that use it and the memory
-// each holds, and the app's cache of models.
+// each holds, and the app's cache of models. It reads the devices with the engine (import _
+// "github.com/shibukawa/hwnpu/ai/engine").
 func Status(ctx context.Context, app *ai.App, o StatusOptions) error {
 	return npustatus.Cmd{JSON: o.JSON, Watch: o.Watch, Wake: o.Wake, Store: app.Store.Models}.Run(ctx)
 }

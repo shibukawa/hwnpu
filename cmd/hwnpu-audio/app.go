@@ -12,7 +12,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	aicli "github.com/shibukawa/hwnpu/ai/cli"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
 
@@ -44,7 +44,7 @@ func useFor[T io.Closer](st ai.Store, u ai.Use[T]) (ai.Use[T], []ai.Definition, 
 	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
 		kind := u.Kinds()[0]
 		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, e.Name, kind)
-		chat.List(os.Stderr, chat.Kind(kind))
+		listModels(os.Stderr, st, kind)
 		fmt.Fprintln(os.Stderr)
 		return u, nil, fmt.Errorf("no %s model, family or use %q (hwnpu-audio list %s shows them)", kind, e.Name, kind)
 	}
@@ -55,6 +55,14 @@ func useFor[T io.Closer](st ai.Store, u ai.Use[T]) (ai.Use[T], []ai.Definition, 
 		return n, []ai.Definition{*def}, nil
 	}
 	return n, nil, nil
+}
+
+// listModels writes the models of kinds (all for none) of st's definitions, as hwnpud lists
+// them (cachecmd.List).
+func listModels(w io.Writer, st ai.Store, kinds ...string) {
+	if err := cachecmd.List(context.Background(), w, st.Models.Files, kinds...); err != nil {
+		fmt.Fprintf(os.Stderr, "the models' list: %v\n", err)
+	}
 }
 
 // open prepares the app's models that are not here and opens its Runtime, whose first load of a

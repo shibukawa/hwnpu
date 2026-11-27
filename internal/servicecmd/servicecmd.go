@@ -26,7 +26,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/daemon"
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
@@ -217,7 +216,7 @@ func printSettings(h daemon.Hello) {
 	if _, set := h.Settings["HWNPU_CACHE"]; !set {
 		fmt.Println("  cache unset: the models are in hwnpu in the user cache directory")
 	}
-	if _, set := h.Settings[chat.PolicyEnv]; !set {
+	if _, set := h.Settings[envfile.PolicyEnv]; !set {
 		fmt.Println("  model-allowlist and model-denylist unset: every model but those that may make NSFW pictures (and what models.yaml's policy: refuses)")
 	}
 	if len(h.Pending) > 0 {
@@ -233,8 +232,8 @@ func printSettings(h daemon.Hello) {
 	for _, m := range daemon.Compare(here, h.Settings) {
 		fmt.Printf("  differs here: %s (hwnpud's is used)\n", m)
 	}
-	if v := here[chat.PolicyEnv]; v != "" && v != h.Settings[chat.PolicyEnv] {
-		fmt.Printf("  here %s=%s: it narrows hwnpud's for the clients of this shell\n", chat.PolicyEnv, v)
+	if v := here[envfile.PolicyEnv]; v != "" && v != h.Settings[envfile.PolicyEnv] {
+		fmt.Printf("  here %s=%s: it narrows hwnpud's for the clients of this shell\n", envfile.PolicyEnv, v)
 	}
 }
 

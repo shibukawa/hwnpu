@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/ai/vision"
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
 
@@ -111,10 +110,6 @@ func (c *FaceDetectCmd) Run(ctx context.Context) error {
 	}
 	return nil
 }
-
-// npuVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one
-// (chat.HereVendor: HWNPU_BACKEND=openvino is an Intel machine).
-func npuVendor(context.Context) string { return chat.HereVendor() }
 
 func readPicture(path string) (image.Image, error) {
 	f, err := os.Open(path)

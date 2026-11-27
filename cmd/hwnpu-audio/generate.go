@@ -12,7 +12,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/sound"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
 
@@ -52,7 +52,7 @@ func (c *GenerateCmd) isEffect(st ai.Store) (bool, error) {
 		return false, errS
 	}
 	fmt.Fprintf(os.Stderr, "no model %q; the music and sound effects models of the definitions:\n\n", c.Model)
-	chat.List(os.Stderr, chat.KindMusic, chat.KindSFX)
+	listModels(os.Stderr, st, string(catalog.KindMusic), string(catalog.KindSFX))
 	fmt.Fprintln(os.Stderr)
 	return false, fmt.Errorf("no music or sound effects model, family or use %q (hwnpu-audio list shows them)", c.Model)
 }

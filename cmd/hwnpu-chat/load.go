@@ -14,7 +14,8 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
+	"github.com/shibukawa/hwnpu/internal/chatcmd"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
 
@@ -48,9 +49,18 @@ type convertFlags struct {
 	Memory    int     `placeholder:"GB" help:"Run the model as on a machine of this much memory, as MODEL.md's columns: --memory 8 on a 16 GB Mac for the smaller programs models.yaml gives 8 GB (LFM3-1.7B and Qwen3.5-0.8B without the whole program of short conversations, Qwen3-1.7B without the one that reads prompts), to leave room for other programs. Kept for the model once it is ready, and every hwnpu command runs it so (hwnpu memory shows and changes it; a tag of memory, lfm3:8g, does the same) (default: the memory chosen for the model, else HWNPU_MEMORY, else the machine's)."`
 }
 
-// given is what the flags give of how a model runs (chat.Run), the zero for those not given.
-func (f *convertFlags) given() chat.Run {
-	r := chat.Run{Prefill: f.Prefill, Format: f.Format, Context: f.Context, Paged: f.Paged}
+// The defaults of the flags: internal/chat's MTPAuto and DefaultEmbedSeqs, and
+// internal/systemone's DefaultSeqs (main_test checks that they are the same).
+const mtpAuto = "auto"
+
+var (
+	defaultEmbedSeqs  = []int{128, 1024}
+	defaultSystemSeqs = []int{512}
+)
+
+// given is what the flags give of how a model runs (catalog.Run), the zero for those not given.
+func (f *convertFlags) given() catalog.Run {
+	r := catalog.Run{Prefill: f.Prefill, Format: f.Format, Context: f.Context, Paged: f.Paged}
 	if f.Tier != nil {
 		r.Tier = cmp.Or(strings.TrimSpace(*f.Tier), "none") // an empty --tier is none
 	}
@@ -61,24 +71,11 @@ func (f *convertFlags) given() chat.Run {
 // (lfm3:8g), else --memory, 0 for none.
 func memoryGiven(name string, cf *convertFlags) int {
 	if _, tag, tagged := strings.Cut(name, ":"); tagged {
-		if gb, ok := chat.MemoryTag(tag); ok {
+		if gb, ok := catalog.MemoryTag(tag); ok {
 			return gb
 		}
 	}
 	return max(cf.Memory, 0)
-}
-
-// keepMemory keeps gb, the memory given (memoryGiven), as the one to run model m as
-// (chat.ChooseMemory), now that it is ready on it. Not keeping it fails no run.
-func keepMemory(m chat.Model, gb int, log io.Writer) {
-	if gb == 0 || chat.ChosenMemory(m) == gb {
-		return
-	}
-	if err := chat.ChooseMemory(m, gb); err != nil {
-		fmt.Fprintf(log, "%s: %d GB not kept for the next runs: %v\n", m.Name, gb, err)
-		return
-	}
-	fmt.Fprintf(log, "%s: runs as on a machine of %d GB from now on, in every hwnpu command (%s; hwnpu memory %s --forget forgets it)\n", m.Name, gb, chat.RunFile(), m.Name)
 }
 
 // samplingFlags are how a chat model answers.
@@ -154,15 +151,16 @@ type chatModel struct {
 	translate *ai.Use[*text.Translator]
 	defs      []ai.Definition
 	// base is the model of the definitions it is, or is made from; memory the memory given to
-	// run it as (memoryGiven), kept for it once it is ready.
+	// run it as (memoryGiven), kept for it once it is ready, in the definitions of st.
 	base   string
 	memory int
+	st     ai.Store
 }
 
 // chatModelOf is the chat model name names (a model, a use or a family of the definitions, a
-// Hugging Face repository, an export's directory) with the flags.
-func chatModelOf(cat *ai.Catalog, name string, cf *convertFlags, ef *encoderFlags) (chatModel, error) {
-	var cm chatModel
+// Hugging Face repository, an export's directory) with the flags, in st's catalog cat.
+func chatModelOf(st ai.Store, cat *ai.Catalog, name string, cf *convertFlags, ef *encoderFlags) (chatModel, error) {
+	cm := chatModel{st: st}
 	if isPath(name) {
 		// an export of tools/amd/iron_export_lm.py, for AMD's NPU: a model like the one of the
 		// definitions it was exported from (else the default chat model), named by its directory
@@ -172,7 +170,7 @@ func chatModelOf(cat *ai.Catalog, name string, cf *convertFlags, ef *encoderFlag
 		}
 		like := "LFM3-1.7B"
 		if b, _, ok := strings.Cut(filepath.Base(dir), ".amd-npu2"); ok {
-			if m, found := chat.Lookup(b); found && m.Kind == chat.KindChat {
+			if m, err := cat.Find(b, text.Chat(b)); err == nil && m.Kind == string(catalog.KindChat) {
 				like = m.Name
 			}
 		}
@@ -193,7 +191,7 @@ func chatModelOf(cat *ai.Catalog, name string, cf *convertFlags, ef *encoderFlag
 	if cm.memory > 0 {
 		u = u.As(cm.memory)
 	}
-	u, defs, err := useFor(cat, u)
+	u, defs, err := useFor(st, cat, u)
 	if err != nil {
 		return cm, err
 	}
@@ -226,7 +224,7 @@ func (f *convertFlags) definition(ef *encoderFlags) ai.Definition {
 	if f.Draft != 8 {
 		set["draft"] = strconv.Itoa(f.Draft)
 	}
-	if f.MTP != chat.MTPAuto {
+	if f.MTP != mtpAuto {
 		set["mtp"] = f.MTP
 	}
 	if f.Shortest != 0 {
@@ -293,10 +291,11 @@ func (f *loadFlags) prepare(ctx context.Context) (ai.Store, *ai.Catalog, error) 
 	return st, cat, err
 }
 
-// keep keeps the memory given for the model, now that it is ready (keepMemory).
-func (cm chatModel) keep() {
-	if m, ok := chat.Lookup(cm.base); ok {
-		keepMemory(m, cm.memory, logw())
+// keep keeps the memory given as the one to run the model as, now that it is ready on it (in
+// hwnpud: chatcmd.KeepMemory, as hwnpu memory does). Not keeping it fails no run.
+func (cm chatModel) keep(ctx context.Context) {
+	if err := chatcmd.KeepMemory(ctx, cm.st, cm.base, cm.memory, logw()); err != nil {
+		fmt.Fprintf(logw(), "%s: %d GB not kept for the next runs: %v\n", cm.base, cm.memory, err)
 	}
 }
 
@@ -308,8 +307,8 @@ type embedFlags struct {
 
 // embedUse is the use of the embedding model name names, as the flags make it: a model of its
 // own for --embed-seq and --embed-package.
-func embedUse(cat *ai.Catalog, name string, ef *embedFlags) (ai.Use[*text.Embedder], []ai.Definition, error) {
-	u, defs, err := useFor(cat, text.Embed(name))
+func embedUse(st ai.Store, cat *ai.Catalog, name string, ef *embedFlags) (ai.Use[*text.Embedder], []ai.Definition, error) {
+	u, defs, err := useFor(st, cat, text.Embed(name))
 	if err != nil {
 		return u, nil, err
 	}
@@ -317,7 +316,7 @@ func embedUse(cat *ai.Catalog, name string, ef *embedFlags) (ai.Use[*text.Embedd
 		return u, nil, fmt.Errorf("--embed-seq: %w", err)
 	}
 	d := ai.Definition{Like: u.Name()}
-	if ef.EmbedSeq != ints(chat.DefaultEmbedSeqs) {
+	if ef.EmbedSeq != ints(defaultEmbedSeqs) {
 		d.Settings = map[string]string{"seqs": ef.EmbedSeq}
 	}
 	if ef.EmbedPackage != "" {

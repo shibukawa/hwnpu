@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/daemon"
 	"github.com/shibukawa/hwnpu/internal/envfile"
 )
@@ -325,7 +325,7 @@ func checkItem(k envfile.Key, item string) error {
 		if strings.HasPrefix(item, "+") || strings.HasPrefix(item, "-") {
 			return fmt.Errorf("%s's items are written without + or -: hwnpu config add model-allowlist nsfw, hwnpu config add model-denylist license:non-commercial", k.Name)
 		}
-		_, err := chat.ParsePolicy([]string{k.Sign + item}, k.Name)
+		_, err := catalog.ParsePolicy([]string{k.Sign + item}, k.Name)
 		return err
 	}
 	if k.Numbered {

@@ -18,14 +18,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/cache"
-	"github.com/shibukawa/hwnpu/internal/cachecmd"
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/sysload"
+	"github.com/shibukawa/hwnpu/internal/types"
 	"github.com/shibukawa/hwnpu/modelstore"
 	"github.com/shibukawa/hwnpu/npuinfo"
 )
@@ -42,7 +39,7 @@ type Status struct {
 	Memory     int64              `json:"memory_bytes,omitempty"`
 	Vendor     string             `json:"vendor"`                  // the NPU the commands run on: amd, apple, intel ("" for none)
 	BackendEnv string             `json:"hwnpu_backend,omitempty"` // HWNPU_BACKEND
-	Devices    []hwnpu.DeviceInfo `json:"devices,omitempty"`
+	Devices    []types.DeviceInfo `json:"devices,omitempty"`
 	// Opened says the devices were opened (--wake): Devices is what hwnpu finds then.
 	Opened    bool   `json:"devices_opened"`
 	EnumError string `json:"enumerate_error,omitempty"`
@@ -129,7 +126,7 @@ func version() string {
 func Collect(ctx context.Context, s StoreView, scan, wake bool, load *Samplers) Status {
 	st := Status{
 		Time: time.Now(), Version: version(), OS: runtime.GOOS, Arch: runtime.GOARCH,
-		Memory: mem.Physical(), BackendEnv: os.Getenv(llm.BackendEnv),
+		Memory: mem.Physical(), BackendEnv: os.Getenv(BackendEnv),
 	}
 	st.Load.Sample = load.sys.Read()
 	st.OSVersion, st.CPU = osVersion(), cpuName()
@@ -158,7 +155,7 @@ func Collect(ctx context.Context, s StoreView, scan, wake bool, load *Samplers) 
 	if wake {
 		st.Devices, st.EnumError = devices(ctx)
 		st.Opened = true
-		st.Vendor = chat.HereVendor()
+		st.Vendor = vendorFound(st.Devices)
 	} else {
 		st.Vendor = vendorOf(st.Info)
 	}
@@ -168,15 +165,17 @@ func Collect(ctx context.Context, s StoreView, scan, wake bool, load *Samplers) 
 
 var (
 	enumerated bool
-	devs       []hwnpu.DeviceInfo
+	devs       []types.DeviceInfo
 	enumErr    string
 )
 
-// devices are the NPUs hwnpu finds, looked for once (status --watch: not every time).
-func devices(ctx context.Context) ([]hwnpu.DeviceInfo, string) {
+// devices are the NPUs hwnpu finds, looked for once (status --watch: not every time): by
+// hwnpud's engine, which owns the NPU, or with HWNPU_DAEMON=off by this process's (none without
+// the engine imported: the error says so).
+func devices(ctx context.Context) ([]types.DeviceInfo, string) {
 	if !enumerated {
 		enumerated = true
-		d, err := hwnpu.Enumerate(ctx)
+		d, err := enumerate(ctx)
 		devs = d
 		if err != nil {
 			enumErr = err.Error()
@@ -189,8 +188,8 @@ func devices(ctx context.Context) ([]hwnpu.DeviceInfo, string) {
 // vendor HWNPU_BACKEND names, else the driver's (Linux), the ANE (macOS), the vendor of a
 // compute-only adapter (Windows). "" for none.
 func vendorOf(info *npuinfo.Info) string {
-	if os.Getenv(llm.BackendEnv) != "" {
-		return chat.HereVendor() // the variable decides, nothing is opened
+	if v := backendVendor(os.Getenv(BackendEnv)); v != "" {
+		return v // the variable decides, nothing is opened
 	}
 	if info == nil {
 		return ""
@@ -499,7 +498,7 @@ func (st Status) writeFixed(w io.Writer) {
 	}
 	runs := cmp.Or(st.Vendor, "none (the CPU)")
 	if st.BackendEnv != "" {
-		runs += " (" + llm.BackendEnv + "=" + st.BackendEnv + ")"
+		runs += " (" + BackendEnv + "=" + st.BackendEnv + ")"
 	}
 	fmt.Fprintf(w, "runs on:  %s\n", runs)
 	for _, d := range st.Devices {
@@ -659,20 +658,11 @@ func (c Cmd) Run(ctx context.Context) error {
 	if o.Log == nil {
 		o.Log = os.Stderr
 	}
-	s, err := modelstore.Open(o)
+	v, closeView, err := OpenView(ctx, o)
 	if err != nil {
 		return err
 	}
-	var v StoreView = View{s}
-	// the cache is hwnpud's, unless HWNPU_DAEMON is off (its own settings, not this shell's)
-	rv, closeRemote, err := cachecmd.RemoteStore(ctx)
-	if err != nil {
-		return err
-	}
-	defer closeRemote()
-	if rv != nil {
-		v = rv
-	}
+	defer closeView()
 	var load Samplers
 	if c.Watch <= 0 {
 		st := Collect(ctx, v, true, c.Wake, &load)

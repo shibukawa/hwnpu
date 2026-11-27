@@ -9,7 +9,7 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/speech"
 	"github.com/shibukawa/hwnpu/internal/console"
-	ispeech "github.com/shibukawa/hwnpu/internal/speech"
+	"github.com/shibukawa/hwnpu/internal/speechwire"
 )
 
 // TTSCmd is "hwnpu-audio tts": speaks a text with LFM3-Audio-2B on the Neural Engine into a WAV
@@ -136,4 +136,4 @@ func (c *TTSCmd) use(st ai.Store) (ai.Use[*speech.Speaker], []ai.Definition, err
 }
 
 // isSpeechExport reports whether dir is an export of tools/amd/iron_lfm3speech.py.
-func isSpeechExport(dir string) bool { return ispeech.IsIronExport(dir) }
+func isSpeechExport(dir string) bool { return speechwire.IsSpeechExport(dir) }

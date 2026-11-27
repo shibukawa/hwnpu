@@ -9,13 +9,11 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/text"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/chatcmd"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
@@ -47,7 +45,7 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if err != nil {
 		return err
 	}
-	cm, err := chatModelOf(cat, c.Model, &c.convertFlags, &c.encoderFlags)
+	cm, err := chatModelOf(st, cat, c.Model, &c.convertFlags, &c.encoderFlags)
 	if err != nil {
 		return err
 	}
@@ -78,7 +76,7 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		t.think = c.think(cchat)
 	}
 	prepared(rt)
-	cm.keep()
+	cm.keep(ctx)
 	stop() // Ctrl-C stops an answer, not the chat
 	return c.converse(t)
 }
@@ -126,59 +124,6 @@ type talker struct {
 	s           text.Sampling
 	seed        uint64
 	tr          text.TranslateOptions
-}
-
-// replier answers a conversation, writing the answer to out as it comes.
-type replier interface {
-	reply(ctx context.Context, msgs []chat.Message, o turn, out *printer) (chat.Message, turnStats, error)
-	// features are what the model reads besides text, and whether it translates.
-	features() features
-}
-
-type features struct{ images, audio, translator bool }
-
-// turn is how a turn is answered.
-type turn struct {
-	think       bool
-	thinkBudget int
-	maxNew      int
-	s           chat.Sampling
-	seed        uint64
-	tr          *chat.Translation
-}
-
-// turnStats are a turn's statistics, for its line.
-type turnStats struct {
-	prompt, reused, generated int
-	prefill, decode           time.Duration
-	thinkCut, thinkLooped     bool
-	looped                    bool
-	drafted, accepted         int
-	seed                      uint64
-}
-
-// printer writes an answer as it comes: the thinking to standard error in dim, the answer to
-// standard output.
-type printer struct{ thought, answered bool }
-
-func (p *printer) write(dr, dc string) {
-	if dr != "" {
-		fmt.Fprint(os.Stderr, dimmed(dr))
-		p.thought = true
-	}
-	if dc != "" {
-		if !p.answered && p.thought {
-			fmt.Fprint(os.Stderr, "\n\n")
-		}
-		fmt.Print(dc)
-		p.answered = true
-	}
-}
-
-func (p *printer) end() {
-	if p.answered || p.thought {
-		fmt.Println()
-	}
 }
 
 // reset starts the conversation again, with the system message.
@@ -267,48 +212,15 @@ func (t *talker) answer(msg text.Message) error {
 	console.Notef("[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]\n",
 		st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, st.TokensPerSecond(), cut)
 	if console.Profile {
-		decode.WriteProfile(os.Stderr)
+		// the steps' profile is of the process that ran them: hwnpud's (chatcmd.Profile)
+		if err := chatcmd.Profile(context.Background(), os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "profile:", err)
+		}
 		if b, ok := mem.NPUWired(); ok {
 			fmt.Fprintf(os.Stderr, "profile: the Neural Engine holds %.2f GiB\n", float64(b)/(1<<30))
 		}
 	}
 	return nil
-}
-
-// local is a chat model loaded in this process.
-type local struct{ e *chat.Engine }
-
-func (l local) features() features {
-	return features{images: l.e.Images(), audio: l.e.Audio(), translator: l.e.Template == chat.Plamo3}
-}
-
-func (l local) reply(ctx context.Context, msgs []chat.Message, o turn, out *printer) (chat.Message, turnStats, error) {
-	e := l.e
-	prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !o.think, Translation: o.tr})
-	if err != nil {
-		return chat.Message{}, turnStats{}, err
-	}
-	var media []chat.Media
-	for _, m := range msgs {
-		media = append(media, m.Content.Media...)
-	}
-	ids, err := e.Tokens(ctx, prompt, media)
-	if err != nil {
-		return chat.Message{}, turnStats{}, err
-	}
-	var sent chat.Stream
-	var gen []int32
-	st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: o.maxNew, Sampling: o.s, Seed: o.seed, Think: e.ThinkLimit(o.thinkBudget, thinking)}, func(g []int32) (bool, error) {
-		gen = g
-		a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
-		out.write(sent.Next(a.Reasoning, a.Content))
-		return false, nil
-	})
-	a := e.Template.Parse(e.Tok.Decode(gen, false), thinking, nil, true)
-	r := a.Reasoning
-	msg := chat.Message{Role: "assistant", Content: chat.Content{Text: a.Content}, Reasoning: &r}
-	return msg, turnStats{prompt: st.Prompt, reused: st.Reused, generated: st.Generated, prefill: st.Prefill, decode: st.Decode,
-		thinkCut: st.ThinkCut, thinkLooped: st.ThinkLooped, looped: st.Looped, drafted: st.Drafted, accepted: st.Accepted, seed: st.Seed}, err
 }
 
 // talk is the conversation in the terminal.

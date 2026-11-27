@@ -58,7 +58,8 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/ai/sound"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/cachecmd"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
@@ -81,7 +82,7 @@ func main() {
 		kong.Description("Audio models on an NPU: music, sound effects, speech, transcription, pitch and notes."),
 		kong.UsageOnError(),
 		kong.Vars{
-			"models_usage": chat.ModelsUsage,
+			"models_usage": catalog.ModelsUsage,
 			"onset":        fmt.Sprint(sound.DefaultNotesOptions.Onset),
 			"frame":        fmt.Sprint(sound.DefaultNotesOptions.Frame),
 			"min_note":     fmt.Sprint(sound.DefaultNotesOptions.MinNoteMS),
@@ -140,16 +141,15 @@ type ListCmd struct {
 
 // Run lists the models of the definitions the commands' store reads (ai.Store.Catalog), as
 // hwnpu-chat list shows them.
-func (c *ListCmd) Run() error {
-	if _, err := store("").Catalog(); err != nil {
-		return err
+func (c *ListCmd) Run(ctx context.Context) error {
+	kinds := []string{}
+	for _, k := range []catalog.Kind{catalog.KindMusic, catalog.KindSFX, catalog.KindSpeech, catalog.KindTranscribe, catalog.KindPitch, catalog.KindNotes} {
+		kinds = append(kinds, string(k))
 	}
-	kinds := []chat.Kind{chat.KindMusic, chat.KindSFX, chat.KindSpeech, chat.KindTranscribe, chat.KindPitch, chat.KindNotes}
 	if c.Kind != "" {
-		kinds = []chat.Kind{chat.Kind(c.Kind)}
+		kinds = []string{c.Kind}
 	}
-	chat.List(os.Stdout, kinds...)
-	return nil
+	return cachecmd.List(ctx, os.Stdout, nil, kinds...)
 }
 
 // wavWriter writes a 16-bit stereo WAV as samples come, its sizes set at the end when the file

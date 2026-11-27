@@ -1,17 +1,16 @@
 package main
 
 import (
-	"cmp"
+	"context"
 	"encoding/binary"
 	"fmt"
-	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"math"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/imagewire"
 )
 
 // convertFlags are what an Anima export for Apple's or Intel's NPU is made with (generate's first
@@ -26,12 +25,6 @@ type convertFlags struct {
 	QChunk     int    `name:"qchunk" default:"512" help:"The queries an attention scores at a time (M3: 512 is 25 % faster than 1024 at 1024 x 1024)."`
 }
 
-func (f convertFlags) options() (anima.ConvertOptions, error) {
-	w, h, err := anima.ParseAspect(f.Size)
-	return anima.ConvertOptions{Backend: f.Backend, Width: w, Height: h, Dit: f.Dit,
-		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.DitGroup, QChunk: f.QChunk}, err
-}
-
 // ConvertCmd is "hwnpu-image convert": an Anima directory into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).
 type ConvertCmd struct {
 	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/)."`
@@ -39,33 +32,31 @@ type ConvertCmd struct {
 	convertFlags
 }
 
-// Run converts the checkpoint.
-func (c *ConvertCmd) Run() error {
+// Run converts the checkpoint. The conversion is the engine's: it runs in hwnpud's
+// (internal/imagecmd.Convert), with its log here.
+func (c *ConvertCmd) Run(ctx context.Context) error {
 	t0 := time.Now()
-	o, err := c.options()
+	dir, err := filepath.Abs(c.Anima) // hwnpud's working directory is not ours
 	if err != nil {
 		return err
 	}
-	o.Backend = cmp.Or(o.Backend, llm.BackendCoreAI)
-	text, dit := anima.Formats(o.Backend)
-	o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
-	if err := anima.Convert(anima.LayoutCheckpoint(c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
+	out, err := filepath.Abs(c.Model)
+	if err != nil {
+		return err
+	}
+	r := imagewire.Convert{Dir: dir, Out: out, Backend: c.Backend, Size: c.Size, Dit: c.Dit,
+		TextFormat: c.TextFormat, DitFormat: c.DitFormat, Group: c.DitGroup, QChunk: c.QChunk}
+	lw := console.Log(os.Stderr)
+	s, err := imagewire.Dial(ctx, lw)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	if err := s.Convert(ctx, r, lw); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "%s: converted in %s\n", c.Model, console.Duration(time.Since(t0)))
 	return nil
-}
-
-// cacheDirOf is the compile cache of --cache: the user cache directory's hwnpu by default, "" for
-// "-".
-func cacheDirOf(flag string) string {
-	switch flag {
-	case "-":
-		return ""
-	case "":
-		return hcache.Root()
-	}
-	return flag
 }
 
 func readF32(path string) ([]float32, error) {

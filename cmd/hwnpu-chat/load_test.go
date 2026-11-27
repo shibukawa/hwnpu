@@ -1,14 +1,16 @@
 package main
 
 import (
-	"bytes"
+	"slices"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/systemone"
 )
 
-// The memory to run a model as: a tag of memory over --memory, none (0) without either; kept
-// once the model is ready, and said so once.
+// The memory to run a model as: a tag of memory over --memory, none (0) without either (hwnpud
+// keeps it: internal/aiengine's TestKeepMemory).
 func TestMemoryGiven(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -26,22 +28,14 @@ func TestMemoryGiven(t *testing.T) {
 			t.Errorf("%s --memory %d: %d, want %d", c.name, c.memory, got, c.want)
 		}
 	}
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	m, ok := chat.Lookup("LFM3-1.7B")
-	if !ok {
-		t.Fatal("no LFM3-1.7B")
+}
+
+// The defaults the command copies, so as to import no engine, are the engine's.
+func TestDefaultsOfTheEngine(t *testing.T) {
+	if mtpAuto != chat.MTPAuto || !slices.Equal(defaultEmbedSeqs, chat.DefaultEmbedSeqs) || !slices.Equal(defaultSystemSeqs, systemone.DefaultSeqs) {
+		t.Errorf("mtp %q, embed seqs %v, systemone seqs %v: not internal/chat's and internal/systemone's", mtpAuto, defaultEmbedSeqs, defaultSystemSeqs)
 	}
-	var log bytes.Buffer
-	keepMemory(m, 0, &log)
-	if chat.ChosenMemory(m) != 0 || log.Len() != 0 {
-		t.Errorf("nothing given: chosen %d, log %q", chat.ChosenMemory(m), log.String())
-	}
-	keepMemory(m, 8, &log)
-	if chat.ChosenMemory(m) != 8 || !bytes.Contains(log.Bytes(), []byte("runs as on a machine of 8 GB from now on")) {
-		t.Errorf("8 GB: chosen %d, log %q", chat.ChosenMemory(m), log.String())
-	}
-	log.Reset()
-	if keepMemory(m, 8, &log); log.Len() != 0 {
-		t.Errorf("kept again: %q", log.String())
+	if backendEnv != llm.BackendEnv || backendCoreML != llm.BackendCoreML || backendCoreAI != llm.BackendCoreAI {
+		t.Errorf("backends %q %q %q: not internal/llm's", backendEnv, backendCoreML, backendCoreAI)
 	}
 }

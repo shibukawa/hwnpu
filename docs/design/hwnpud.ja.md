@@ -34,7 +34,8 @@ Mac で段取りの 3 (`internal/airpc`、`internal/aihost`、`internal/cachecmd
 
 - `ai` のパッケージを使うプログラムはすべて hwnpud を通る: `HWNPU_DAEMON` は設定しなければ `on`
   (`daemon.DefaultMode`)。hwnpud が答えなければ、どうすればよいかを添えてエラーにする。`HWNPU_DAEMON=off` は
-  今までどおり自分のプロセスで動かす。テスト (`go test`) と hwnpud のエンジン自身 (自分で off にする) も自分のプロセス。
+  自分のプロセスで動かす。エンジンを読むプログラム (`ai/engine`: hwnpud のエンジン自身、hwnpu-dev、テスト、そう選んだ
+  アプリ) だけで、hwnpu のコマンドは読まないので、どうすればよいかを添えてエラーになる。
   `hwnpu-chat [chat]` も既定で hwnpud を通る
 - セッション (`internal/airpc`) はソケットへの接続を HTTP から切り替えたもの (`GET /hwnpud/v1/ai`、
   `Upgrade: hwnpu-ai/1`。監督役のプロキシを通ってエンジンへ)。両方向に gob の流れを 1 本ずつ持ち、電文を ID で
@@ -355,9 +356,10 @@ RPC は `ai` のパッケージの用途の粒度のモデルの呼び出し: `T
 
 - `HWNPU_DAEMON=on|off|auto`。設定しなければ `on` (2026-11-23 に決めた): `ai` のパッケージのアプリも hwnpu の
   コマンドも、すべてのプログラムが hwnpud を通り、答えなければ失敗する。`auto` は同じプロトコルで答えればそれを、
-  なければ自分のプロセスで。`off` は自分のプロセスで (テストと同じ)。worktree の `go run ./cmd/hwnpu-chat` で
-  その worktree のコードを動かすには `HWNPU_DAEMON=off` (`base/hwnpu-chat` / `new/hwnpu-chat` の比べ方も
-  そうする) か、worktree の hwnpud を別のソケットで (`HWNPU_DAEMON_SOCKET`)
+  なければ自分のプロセスで。`off` は自分のプロセスで (テストと同じ、エンジンを読むとき)。worktree の
+  コードは worktree の hwnpud を別のソケットで動かして試す: `hwnpu-dev daemon -- go run ./cmd/hwnpu-chat chat ...` が
+  `./cmd/hwnpud` をビルドし、ユーザーのキャッシュのソケットで動かし、`HWNPU_DAEMON_SOCKET` を付けてコマンドを動かし、
+  終われば止める (`HWNPU_DEV` などシェルの変数もその hwnpud に渡る)
 - `HWNPU_DAEMON_SOCKET` は別のソケットを指す。worktree でビルドした hwnpud を、入れてあるものの横で試すため
 - 最初のメッセージ (`hello`) で、プロトコルの版、ビルド、組み込んだモデルの定義とレシピのハッシュ
   (`definitions`: models.yaml と model-recipes.yaml。書き出しとモデルの動かし方を決める)、役割ごとに受け取る設定
@@ -431,10 +433,16 @@ hwnpud に聞く。アプリが自分のプロセスでモデルを動かすの�
    サンプルは `HWNPU_DAEMON=off` で動かすために) `Prepare` と `Load` (と、それが返すエンジンの型) を `ai/engine/...` に移して
    `airole.Register` で登録する。クライアントの型は実装を呼ぶ: hwnpud のもの (`Remote`) か、読んであれば
    エンジンのもの
-5. コマンド: `hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` がエンジンを読まなくなる。自分のプロセスで
-   していること (変換の引数、`--cpu`) は hwnpud を通すか hwnpu-dev に移す
-6. エンジンを読まずに `HWNPU_DAEMON=off` はエラーにして、worktree の hwnpud の動かし方を伝える (hwnpu-dev の
-   コマンドが別のソケットでビルドして起こす)
+5. 済み: `hwnpu`、`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` はエンジンを読まない (`internal/boundary` が
+   確かめる)。モデルのほかにエンジンに聞いていたことは、`internal/cachecmd` と同じく、セッションに bind する
+   自分のインターフェースで hwnpud に聞く: `internal/chatcmd` (一覧、使い方の選んだもの、`--memory` を残すこと、
+   デバイスの確かめ、プロファイル)、`internal/imagewire` (一覧、書き出しの family、固定した書き出し、
+   `hwnpu-image convert`。hwnpud のエンジンで動かし、ログを返す)、`npustatus.Host` (`status --wake` の
+   デバイス)、`cachecmd.ListHost` (`hwnpu-audio list`)。`internal/aihost` が実装し、エンジンの側は
+   `internal/aieng` のほかのインターフェース (`aieng.Chat`、`aieng.M`)。`ai/cli`、`ai/server/openai`、
+   `internal/npustatus`、`internal/cachecmd` も軽い。`hwnpu-dev` はエンジンを持つ
+6. 済み: エンジンを読まずに `HWNPU_DAEMON=off` は `aieng.ErrNone` で、hwnpud を通すよう伝える。チェックアウトの
+   ものは `hwnpu-dev daemon -- COMMAND`
 
 最初に書いた段取り:
 

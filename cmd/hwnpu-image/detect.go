@@ -17,7 +17,6 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
 )
 
 // DetectCmd is "hwnpu-image detect": the objects in pictures (COCO's 80 classes) with RTMDet
@@ -65,7 +64,7 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer rt.Close()
-	defer imagedev.NPUHeld(logf)()
+	defer npuHeld(logf)()
 	logf("%s, %s", loaded, d.Where())
 	o := vision.DetectOptions{Score: orAll(c.Score), NMS: c.NMS}
 	for _, l := range c.Class {

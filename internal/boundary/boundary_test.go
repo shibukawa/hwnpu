@@ -33,6 +33,19 @@ var light = []string{
 	"internal/visionwire",
 	"internal/speechwire",
 	"internal/soundwire",
+	"ai/cli",
+	"ai/server/openai",
+	"internal/cachecmd",
+	"internal/npustatus",
+	"internal/servicecmd",
+	"internal/chatcmd",
+	"internal/aiensure",
+	"internal/imagewire",
+	"internal/pixels",
+	"cmd/hwnpu",
+	"cmd/hwnpu-chat",
+	"cmd/hwnpu-image",
+	"cmd/hwnpu-audio",
 }
 
 // engine are the packages of the engine: the conversions, the runtimes and the backends.
@@ -47,6 +60,7 @@ var engine = []string{
 	"internal/daemon/engine",
 	"ai/engine",
 	"internal/aiengine",
+	"internal/imagecmd",
 }
 
 func TestLightPackages(t *testing.T) {

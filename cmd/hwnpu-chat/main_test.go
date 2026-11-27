@@ -5,14 +5,14 @@ import (
 	"testing"
 
 	"github.com/alecthomas/kong"
-	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 func parse(t *testing.T, args ...string) (*cli, string) {
 	t.Helper()
 	var c cli
-	p, err := kong.New(&c, kong.Vars{"models_usage": chat.ModelsUsage,
-		"embed_seqs": ints(chat.DefaultEmbedSeqs), "mtp": chat.MTPAuto})
+	p, err := kong.New(&c, kong.Vars{"models_usage": catalog.ModelsUsage,
+		"embed_seqs": ints(defaultEmbedSeqs), "mtp": mtpAuto})
 	if err != nil {
 		t.Fatal(err)
 	}

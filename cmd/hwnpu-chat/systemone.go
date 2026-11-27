@@ -15,7 +15,6 @@ import (
 	"github.com/shibukawa/hwnpu/ai/server/systemone"
 	"github.com/shibukawa/hwnpu/ai/text"
 	"github.com/shibukawa/hwnpu/internal/console"
-	sysone "github.com/shibukawa/hwnpu/internal/systemone"
 )
 
 // SystemOneCmd is "hwnpu-chat systemone": typed questions about a state answered by a d1
@@ -82,7 +81,7 @@ func (c *SystemOneCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if err != nil {
 		return err
 	}
-	u, defs, err := c.use(cat)
+	u, defs, err := c.use(st, cat)
 	if err != nil {
 		return err
 	}
@@ -107,8 +106,8 @@ func (c *SystemOneCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 
 // use is the use of the decision model --model names, as the flags make it: a model of its own
 // for --seq, --format, --cpu and the programs converted by hand.
-func (c *SystemOneCmd) use(cat *ai.Catalog) (ai.Use[*text.Decider], []ai.Definition, error) {
-	u, defs, err := useFor(cat, text.Decide(c.Model))
+func (c *SystemOneCmd) use(st ai.Store, cat *ai.Catalog) (ai.Use[*text.Decider], []ai.Definition, error) {
+	u, defs, err := useFor(st, cat, text.Decide(c.Model))
 	if err != nil {
 		return u, nil, err
 	}
@@ -117,7 +116,7 @@ func (c *SystemOneCmd) use(cat *ai.Catalog) (ai.Use[*text.Decider], []ai.Definit
 	}
 	d := ai.Definition{Like: u.Name()}
 	set, ps := map[string]string{}, map[string][]string{}
-	if c.Seq != ints(sysone.DefaultSeqs) {
+	if c.Seq != ints(defaultSystemSeqs) {
 		set["seqs"] = c.Seq
 	}
 	if c.Format != "" {

@@ -14,7 +14,6 @@ import (
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/vision"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagedev"
 )
 
 // LabelCmd is "hwnpu-image label": zero-shot labels of pictures with SigLIP 2 (google/siglip2-*,
@@ -60,7 +59,7 @@ func (c *LabelCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer rt.Close()
-	defer imagedev.NPUHeld(logf)()
+	defer npuHeld(logf)()
 	console.Running()
 	cands, err := m.Candidates(ctx, labels, vision.CandidateOptions{Template: c.Template, NoCache: c.NoCache})
 	if err != nil {
@@ -161,7 +160,7 @@ func (c *EmbedCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer rt.Close()
-	defer imagedev.NPUHeld(logf)()
+	defer npuHeld(logf)()
 	console.Running()
 	var imgs []vision.Embedding
 	for _, p := range c.Pictures {

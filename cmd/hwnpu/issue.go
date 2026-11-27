@@ -36,10 +36,12 @@ type IssueCmd struct {
 }
 
 func (c IssueCmd) Run(ctx context.Context) error {
-	s, err := modelstore.Open(modelstore.Options{Log: os.Stderr})
+	// the cache is hwnpud's, unless HWNPU_DAEMON is off
+	v, closeView, err := npustatus.OpenView(ctx, modelstore.Options{Log: os.Stderr})
 	if err != nil {
 		return err
 	}
+	defer closeView()
 	runs := console.Runs()
 	if c.List {
 		if len(runs) == 0 {
@@ -74,7 +76,7 @@ func (c IssueCmd) Run(ctx context.Context) error {
 			run = &runs[0]
 		}
 	}
-	st := npustatus.Collect(ctx, npustatus.View{Store: s}, true, c.Wake, new(npustatus.Samplers))
+	st := npustatus.Collect(ctx, v, true, c.Wake, new(npustatus.Samplers))
 	r := newRedactor()
 	title, body := draft(st, run, c.Title, c.Lines, r)
 	u := issueURL(title, body)
