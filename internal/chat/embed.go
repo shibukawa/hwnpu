@@ -402,6 +402,5 @@ func meanPool(h []float32, d, skip int) []float32 {
 	return out
 }
 
-
 // Cosine is the cosine similarity of two embeddings (chatwire.Cosine).
 func Cosine(a, b []float32) float64 { return chatwire.Cosine(a, b) }
