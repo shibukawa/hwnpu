@@ -225,7 +225,7 @@ func (e *Engine) Handler() http.Handler {
 }
 
 func (e *Engine) status(w http.ResponseWriter, r *http.Request) {
-	st := Status{Hello: Hello{Protocol: Protocol, Build: Build(), PID: os.Getpid()}}
+	st := Status{Hello: base()}
 	e.mu.Lock()
 	for _, h := range e.models {
 		st.Models = append(st.Models, h.info)

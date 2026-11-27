@@ -270,7 +270,8 @@ func (s *Supervisor) track(h http.Handler) http.Handler {
 }
 
 func (s *Supervisor) hello() Hello {
-	h := Hello{Protocol: Protocol, Build: Build(), PID: os.Getpid(), Executable: s.exe, Started: s.since.UnixNano()}
+	h := base()
+	h.Executable, h.Started = s.exe, s.since.UnixNano()
 	if s.launched {
 		h.Service = serviceManager()
 	}

@@ -45,6 +45,30 @@ type Role struct {
 	// (airpc.Call1(x.remote, ctx, "Estimate", img)). nil for a role that does not run through
 	// hwnpud yet: an app of it runs with HWNPU_DAEMON=off.
 	Remote func(h *airpc.Handle) io.Closer
+	// LoadSettings are the names of LoadEnv.Settings that Load reads (ai.LoadSettings): Open
+	// refuses another (CheckSettings), so that a name this version does not know (a newer
+	// client's, through an older hwnpud) is not dropped without a word, and hwnpud tells its
+	// clients the names of its roles (daemon.Hello.Roles).
+	LoadSettings []string
+}
+
+// CheckSettings is nil when the role knows every name of set (LoadSettings).
+func (r *Role) CheckSettings(set map[string]string) error {
+	var unknown []string
+	for k := range set {
+		if !slices.Contains(r.LoadSettings, k) {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	slices.Sort(unknown)
+	known := strings.Join(r.LoadSettings, ", ")
+	if known == "" {
+		known = "none"
+	}
+	return fmt.Errorf("ai: the role %s takes no setting %s (it takes %s)", r.Name, strings.Join(unknown, ", "), known)
 }
 
 // Accepts is nil when the role runs model m.
@@ -187,6 +211,16 @@ var registered []*Role
 // Register adds r to the roles For finds: each package of models registers its roles, so that a
 // tool (hwnpu-dev models package) makes a model ready as the app would, by its kind alone.
 func Register(r *Role) { registered = append(registered, r) }
+
+// Capabilities are the registered roles' LoadSettings, by role: what hwnpud's engine takes
+// (daemon.Hello.Roles).
+func Capabilities() map[string][]string {
+	out := map[string][]string{}
+	for _, r := range registered {
+		out[r.Name] = slices.Sorted(slices.Values(r.LoadSettings))
+	}
+	return out
+}
 
 // Lookup is the role registered as name (Role.Name), nil when none is: how hwnpud's engine finds
 // the roles of an app's uses (internal/aihost), whose packages it imports.

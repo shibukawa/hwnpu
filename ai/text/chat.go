@@ -29,10 +29,11 @@ func Chat(name string) ai.Use[*Chatter] {
 }
 
 var chatRole = &airole.Role{
-	Name:    "chat",
-	Remote:  func(h *airpc.Handle) io.Closer { return &Chatter{remote: h} },
-	Kinds:   []chat.Kind{chat.KindChat},
-	Prepare: prepareEngine,
+	LoadSettings: loadSettings,
+	Name:         "chat",
+	Remote:       func(h *airpc.Handle) io.Closer { return &Chatter{remote: h} },
+	Kinds:        []chat.Kind{chat.KindChat},
+	Prepare:      prepareEngine,
 	// 1: the attention programs of a model split at its attention are written again with the
 	// model's scale of the values' weights (paged.Shape.OutScale: Qwen3's), which Prepare does;
 	// 2: Qwen3.5's too; 3: the tokenizer as its binary file (chat.PrepareTokenizer): a store

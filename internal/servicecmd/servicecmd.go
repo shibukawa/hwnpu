@@ -153,6 +153,9 @@ func (c *StatusCmd) Run(ctx context.Context) error {
 		how = "started by " + st.Service
 	}
 	fmt.Printf("running: pid %d, %s, build %s, protocol %d, %s\n", st.PID, how, st.Build, st.Protocol, cl.Socket)
+	if note := daemon.VersionNote(st.Hello); note != "" {
+		fmt.Println("note: " + note)
+	}
 	printSettings(st.Hello)
 	if st.Engine == 0 {
 		fmt.Println("engine: not running (it starts at the next request)")

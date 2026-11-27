@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/airole"
 	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -170,6 +171,11 @@ var daemonClient struct {
 	c      *daemon.Client
 }
 
+func init() {
+	// hwnpud and its clients compare the definitions they were built with (daemon.Hello)
+	daemon.Builtin = [][]byte{hwnpu.ModelsYAML, hwnpu.RecipesYAML}
+}
+
 // through is hwnpud's client when the app's models run there: never for an app hwnpud made
 // (AppFromSpec), else as HWNPU_DAEMON says (on unless it is set, off in a test).
 func (a *App) through(ctx context.Context) (*daemon.Client, error) {
@@ -283,6 +289,11 @@ func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (
 	s, host, spec, err := a.session(ctx, c)
 	if err != nil {
 		return nil, err
+	}
+	// a setting the engine does not know would be dropped there without a word
+	if err := c.Server.CheckSettings(rt.o.settings); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("ai: %w", err)
 	}
 	o := OpenSpec{Compile: rt.o.compile, AllowOffNPU: rt.o.allowOffNPU, Settings: rt.o.settings}
 	var logFn func([]byte)
