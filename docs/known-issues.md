@@ -18,7 +18,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | FB25624336 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
 | 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
 | 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | FB25724246 ([報告の文面](apple-feedback/purged-programs-silent-recompile.md)) | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
-| 9 | 画像以外のモデルでは prebuilt が遅い (チャットには止まるものもある) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルにだけ prebuilt を置く | 測り直して、置くなら作って置く |
+| 9 | 画像以外のモデルでは prebuilt が遅いことがある (部品が多いと 1 節の間隔が効く) | 報告済み ([apple-coreai](design/apple-coreai.md)) | 画像生成のモデルと、M1 で確かめたチャットのモデル (Qwen3.5、LFM3) にだけ prebuilt を置く | 1 節が直ったら測り直す |
 | 10 | M1 (と M2: `sin`、`cos`) の ANE のコンパイラが `sin`、`cos` と、まとめた要素ごとの演算の一部を受け付けない | FB25724316 ([報告の文面](apple-feedback/sin-off-ane-m1-m2.md)) | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
 | 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | FB25724867 ([報告の文面](apple-feedback/offline-stricter-than-device.md)) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 | 12 | h15g (M3) 向けの `.aimodelc` が、DMA のキャッシュの指定で端末の検査に落ちる (FLUX.2 klein 512² の attention) | FB25744357 ([報告の文面](apple-feedback/h15g-dma-cache-hint.md)) | 1536 行を 768 行ずつ 2 回に分ける (`flux2klein` の `headChunk`、ExportVersion 4)。softmax を和の逆数との積でなく和で割る (`HeadOptions.DivideParts`、ExportVersion 7) | 何もしなくてよい |
@@ -28,7 +28,8 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 16 | h13g (M1) 向けの `.aimodelc` で、活性化のタスクが、ほかの活性化と分け合うカーネルの外を読む。M1 では最初の呼び出しが終わらず (100 秒で打ち切り。その間ほかのプロセスの呼び出しも止まる)、関数が 2 つ以上だと仕上げのサービスが落ちる (Qwen3.5、LFM3、Gemma 4 のチャット。13 も同じと見られる) | 未報告 (下書き [h13g-kernel-overrun.md](apple-feedback/h13g-kernel-overrun.md)) | 活性化を同じ並びで書く (`blocks.WideAct` など。[design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」)。`hwnpu-dev prebuild` は、そのタスクのあるプログラムを置かない (`llirtasks -check`) | 何もしなくてよい (そろえた書き方に害はない) |
 | 17 | 16 と同じ原因で、Gated DeltaNet の層を持つ関数が 2 つ以上のプログラムの prebuilt が、仕上げのサービスを落とす (M1) | 未報告 (16 の下書きに含む) | 16 と同じ | 何もしなくてよい |
 | 18 | 定数を左に置いた行列積が、prebuilt から仕上がらない ("Kernel evaluation failed"、M1) | 未報告 (16 の下書きに添える) | 定数を右に置く (`paged` の mass プログラム) | 何もしなくてよい |
-| 19 | h13g (M1) 向けの、kv ヘッドごとの attention のプログラム (`paged.Heads`) で、2 つめ以降の kv ヘッドの計算が誤る。チャットの答えが文字化けする (Qwen3.5-0.8B) | 未報告 (16 の下書きに添える) | h13g では attention のプログラムを端末でコンパイルする (レシピの `apple.prebuild`) | 決まりを外す |
+| 19 | h13g (M1) と h15g (M3) 向けの、kv ヘッドごとの attention のプログラム (`paged.Heads`) で、2 つめ以降の kv ヘッドの計算が誤る。チャットの答えが文字化けする、または変わる (Qwen3.5-0.8B) | 未報告 (16 の下書きに添える) | h13g と h15g では attention のプログラムを端末でコンパイルする (レシピの `apple.prebuild`) | 決まりを外す |
+| 20 | h15g (M3) 向けの、層を中に 12 以上持つプログラム (キャッシュを中に持つ全体のプログラム) を、M3 が読み込まない (`ANEProgramCreate() failed ret=0x13`) | 未報告 | 全体のプログラムを 8 層ずつに分ける (レシピの `apple.convert.whole_layers`、Qwen3.5-0.8B) | 決まりを外して 1 本に戻す |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -95,14 +96,31 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: hwnpu では直せない (失敗が見えない)。初回を測るとき、使うときは 25 GB 以上空ける
 - **直ったら**: 何もしなくてよい。Core AI のキャッシュの方針を `.persistent` にすれば ([docs/design/apple-coreai.md](design/apple-coreai.md)) Core AI の分は消えなくなるが、aned の分は残るので、それだけでは足りない
 
-## 9. 画像以外のモデルに prebuilt を置かない ([apple-coreai](design/apple-coreai.md))
+## 9. 画像以外のモデルの prebuilt ([apple-coreai](design/apple-coreai.md))
 
-- **何が**: 画像生成以外のモデルは部品が小さく、端末のコンパイルが短い (長くて数分)。1 つめの prebuilt の決まった費用と 1 節の間隔で負ける
-  - チャット: LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒。Qwen3.5-4B は prebuilt で読めたが、最初の呼び出しから答えなかった
-  - M1 (2026-11-26): Qwen3.5-0.8B は端末で 7 分 5 秒〜7 分 11 秒。prebuilt は読み込みが 3 分 56 秒 (3 部品は端末のコンパイルに戻った) で、最初の呼び出しが失敗した。Neural Engine の上で呼び出しが終わらなくなっていた (16 節)。Qwen3.5-4B (M3) の「答えなかった」が同じものかは分からない (16 節のタスクは h13g 向けのプログラムにしかない)
-  - M1 (2026-11-27): 16 節と 18 節を直した書き出しでは、`model.part1` (関数 2 つ) が prebuilt から 8.2 秒で仕上がって動いた。モデル全体の初回の時間はまだ測っていない (15 節の間隔が 20 分に伸びたままで、再起動するまで 1 部品 20 分かかる)
-  - 「prebuilt の方が遅い」のは、1 節の間隔が 10 秒より伸びていたせいかもしれない (15 節: 仕上げのサービスが落ちると伸び、再起動まで戻らない)。測るときは今の間隔を先に読む
-  - 解析と音声 (2026-11-22、M3、h15g、空のキャッシュから 1 回目の読み込み):
+- **何が**: 画像生成以外のモデルは部品が小さく、端末のコンパイルが短い (長くて数分)。部品が多いと、仕上げが機械全体で 10 秒に 1 本しか進まないこと (1 節) で prebuilt が負ける
+- **M1 での計測** (2026-11-27、16 節・18 節・19 節を直した書き出し。署名の識別子を変えた写しで、空のキャッシュから初回を 1 回ずつ。答えは同じ seed で端末のコンパイルと比べた):
+
+  | モデル | 答え | prebuilt の初回 | 端末のみの初回 | 残るディスク (prebuilt / 端末) | 端末のコンパイラのメモリの最大 (prebuilt / 端末) | 判断 |
+  |---|---|---|---|---|---|---|
+  | Qwen3.5-0.8B (版 2) | 同じ | **1 分 46 秒** | 7 分 14 秒 | 0.9 / 2.6 GB | 0.4 / 2.3 GB | prebuilt |
+  | Qwen3.5-0.8B (版 4) | 同じ | 3 分 55 秒 | — | — | — | prebuilt (M3 でも、#369) |
+  | Qwen3.5-2B (版 2) | 同じ | **2 分 06 秒** | 7 分 48 秒 | 3.0 / 4.6 GB | 0.04 / 2.7 GB | prebuilt |
+  | Qwen3.5-4B (版 2) | 同じ | **5 分 20 秒** | 21 分 43 秒 | 8.8 / 13.1 GB | 0.05 / 5.5 GB | prebuilt |
+  | LFM3-1.7B | 同じ | 1 分 45 秒 | 1 分 02 秒 | 2.7 / 4.0 GB | 2.2 / 3.2 GB | prebuilt (ユーザーの判断) |
+  | LFM3-VL-2B (画像) | 同じ | 3 分 44 秒 | 1 分 10 秒 | 4.2 / 6.3 GB | — | prebuilt (同) |
+  | LFM3-Audio-2B (音声) | 同じ | 3 分 03 秒 | 1 分 07 秒 | 4.3 / 11.2 GB | — | prebuilt (同。音声の符号器は端末、16 節) |
+  | LFM3-Omni-2B (画像・音声) | 同じ | 4 分 09 秒〜4 分 32 秒 | 測れず (別のセッションと重なった) | — | — | prebuilt (同) |
+  | Gemma 4 E2B | 同じ | 2 分 13 秒 | 1 分 09 秒 | 3.6 / 4.9 GB | 3.2 / 4.6 GB | 端末 (`model.part3` が仕上がらない。Apple の書き出しも AOT 非対応と明記) |
+  | Qwen3-0.6B | 同じ | 5 分 20 秒 | **35 秒** | 1.4 / 1.8 GB | 1.1 / 2.2 GB | 端末 (31 部品) |
+  | Qwen3-1.7B | 同じ | 5 分 13 秒 | **49 秒** | 3.4 / 5.1 GB | 2.0 / 4.0 GB | 端末 (31 部品) |
+  | plamo-3-translate-0.8b | 同じ | 3 分 26 秒 | **51 秒** | 2.6 / 2.2 GB | 4.4 / 5.0 GB | 端末 (c512 の部品 2 本が仕上がらない) |
+  | plamo-3-translate-2b | 同じ | 10 分 44 秒 | **1 分 48 秒** | 9.6 / 7.7 GB | 6.1 / 5.6 GB | 端末 (c512 の部品 3 本が仕上がらず、仕上げのサービスが 1 回落ちた) |
+
+  - 判断の決まり (ユーザー、2026-11-27): 端末のコンパイルより多少遅くても、メモリとディスクで有利なら prebuilt を採る。数倍遅いもの、仕上がらない部品があるものは端末のまま
+  - Qwen3.5-4B は prebuilt でも端末でも生成が 2.4 トークン/秒。重み 4.67 GiB が M1 の Neural Engine の 2.8 GiB を超えるため (起動時に警告が出る)
+  - 版 3・4 の Qwen3.5 は、prebuilt の部品が増えて初回が延びた (0.8B 1 分 46 秒 → 3 分 55 秒、2B → 3 分 31 秒、4B → 6 分 58 秒。どれも答えは同じ)。端末のコンパイルは測り直していない
+- **これまで** (M3、h15g): LFM3-1.7B は端末で 2 分 17 秒、prebuilt で 8 分 12 秒だった (2026-11-22)。このときの「prebuilt の方が遅い」は、1 節の間隔が 10 秒より伸びていたせいかもしれない (15 節)。解析と音声 (2026-11-22、M3、空のキャッシュから 1 回目の読み込み):
 
     | モデル | 端末でコンパイル | prebuilt |
     |---|---|---|
@@ -112,9 +130,8 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
     | LFM3-Audio-2B-TTS | 45 秒 | 測れず (ディスクが尽きて ANE のコンパイラが落ちた、8 節) |
 
   - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
-  - M1、M2 では測っていない
-- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) にだけ prebuilt を置く。model-recipes.yaml の `apple.prebuilt: true` がその印で、`hwnpu-dev models package MODEL` と `hwnpu-dev prebuild EXPORT` は、チップを名指さなければ印のあるモデルだけをプリビルドする。ほかは書き出し (`.aimodel`) だけを取得元に置く。Mac は自分の種類の prebuilt があれば自動で取りにいくので、置くと初回が遅くなる (2026-11-22 に h15g で作った 17 モデル分は消した)
-- **直ったら** (1 節、4 節、Qwen3.5-4B の止まりが直ったら): [apple-coreai](design/apple-coreai.md) と同じ測り方 (署名の識別子を変えたコピーで空のキャッシュから) で、LFM3-1.7B、plamo-3-translate-8b、Qwen3.5-4B と上の表のモデルを測る。速くなっていれば、その書き出しにも 6 節の prebuild をする (書き出しは `~/Library/Caches/hwnpu/models/NAME/` の下)
+- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) と、上の表で prebuilt にしたチャットのモデルにだけ prebuilt を置く (model-recipes.yaml の `apple.prebuilt: true`。チャットは `archs` を確かめたチップに限る: Qwen3.5-0.8B は h13g と h15g、ほかは h13g)。どのチャットのモデルも attention のプログラムは h13g と h15g で端末に任せる (19 節)。Gemma 4 は全部を端末に任せる決まりがある
+- **直ったら** (1 節): 上の表を同じ測り方で測り直す。M2 (h14g) は確かめていない
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (FB25724316)
 
@@ -135,6 +152,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **何が**: FLUX.2 klein の DiT (8 つの大きさの関数を持つプログラム) の h15g 向けの prebuilt が、M3 (macOS 27.2.1) で全部 `failedToSpecialize` になった。Core AI は関数が 1 つ仕上がらないとプログラムごと使わないので、DiT の 7 つの部品がどれも端末でコンパイルされた (1 つ 3〜19 分。初回が prebuilt のないときと同じ)。落ちていたのは 512² の関数だけ。端末の仕上げ (ANELargeModelCompilerService) が "tile_dma_src.dma_config2.cache_hint != ane_tile_dma_src_dma_config2_cache_hint_drop_v8"、"Instruction corresponding to oplayer … failed validation test"、"Invalid TD exists" を出す。M1 で作ったものとこの機械で作ったものは、日付と統計のファイルのほかはバイト単位で同じで、どちらも落ちる。`--min-deployment-version 27.2` でも `--expect-frequent-reshapes` でも同じ
 - **原因の形**: attention の、1536 個のキーに対する 512 行のクエリの塊 (1536 行を `HeadChunk` の 1024 行ずつに分けた残り)。キーを部分 (1024 + 512) に分けて 1 つの softmax にした形 (`exp(x - max) × (1/sum)`) で起き、attention だけの 1 ヘッドのプログラムでも起きる。キーを 1 つのテンソルのままにすると通る (2026-11-27、M3)。768 行ずつ、1536 行まとめて、1024 個のキーに 512 行、3072 個のキーに 512 行は通る。1792 個のキーに 1280 行と 512 行も落ちる。attention だけでは 3968 行や 4032 行も落ちたが、DiT の中では通る (周りの演算とまとめ方で変わる)。どの形で起きるかは、オフラインのコンパイラの割り付け次第で、読めない
 - **今**: 行が 1 塊より多く 2 塊より少ないとき、半分ずつ (64 の倍数) にする (`flux2klein/mil` の `headChunk`)。FLUX.2 klein で変わるのは 512² の文からの生成だけ (1536 行 → 768 + 768)。計算は同じ (行ごとの softmax)。書き出しの版を 4 にした (`ExportVersion`。3 までは編集の置き方)。M3 で、直した 512² の DiT の 7 部品は prebuilt から全部仕上がり、直す前のものは全部落ちた。編集の 5 通り (2560 行から) は変わらない
+- **チャットでも** (2026-11-27、M3): Qwen3.5 の Gated DeltaNet の層の部品の、128 行のプログラムが同じメッセージで落ちた (層の部品の 6 本とも)。塊ごとの最後の状態の更新 `K^T (u * exp(G_c - G_j))` で、行ごとの減衰を列 (1, ヘッド, 8, 1) にして幅 128 にブロードキャストした乗算が、転置とブロードキャストをした tile DMA の読み出し (`cache_hint` 4) になっていた。減衰を対角行列 (E の最後の行 × 単位行列) にして行列積で掛けると消え、prebuilt から仕上がる (値は余弦 0.999995、128 行の呼び出しが 2 % 遅い)。塊が 1 つのプログラム (8 行) は乗算のまま (行列積だと 24 % 遅い)。Qwen3.5 と Qwen3.6 の Core AI の版 3
 - **作り直し**: 書き出しの名前が `-v4` になるので、FLUX.2 klein の書き出しと、各種類の prebuilt (6 節) を作り直して取得元に置く。v3 までの prebuilt は使われなくなる
 - **2 度目 (2026-11-27)**: 書き出し v6 (single blocks 2 つで 1 プログラム) の h15g の `dit_single_*` 10 本が M3 で全部 `failedToSpecialize` になり、1 本 13 分の端末のコンパイルに回っていた。13 の関数を 1 つずつのプログラムにして仕上げると、落ちるのは 704 × 1280 と 1280 × 704 (4032 行) の 2 つだけ。ログは同じ "cache_hint != …drop_v8"、"Invalid TD exists"
   - **見つけ方**: `.aimodelc` の LLIR (`binary_0.llir.bundle/…/*.mlir.bc`) を `bcdump` で読み、落ちるものと通るものの命令 (`anehlo.pe`) を比べた。差は 1 つ: planar engine の掛け算の片方を、tile DMA (`l2_access_mode` 2) で転置と broadcast をしながら読み、その `cache_hint` の最初の値が 4 のもの。通るプログラムでは同じ命令が 3。これで 704 × 1280、1280 × 704、attention だけの 4032 行・3968 行 (24 ヘッド) の落ちるもの全部と、通るもの全部が分けられる
@@ -214,6 +232,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   | LFM3-1.7B (`q8` の `model.part2`〜`model.part6`) | 1 個 | ヘッドごとのゲートの sigmoid (16 組と 8 組) と MLP の silu (1 組) |
   | Gemma 4 E2B (全部品) | 1〜6 個 | MLP の gelu (6144 チャネル、16 組) と、層ごとの入力のゲートの gelu (1 組か 8 組。層によって違う) |
   | Qwen3-0.6B、plamo-3-translate-0.8b | 0 | |
+  | LFM3-Audio-2B と Omni-2B の音声の符号器 (直していない) | 6 個 | ダウンサンプラーの silu (256 チャネル、16 組) と、層の MLP の silu (1 組)。silu の入力を `(1, 時間×周波数, 256)` や `(時間×周波数, 1, 1, 256)` に並べ直すと Neural Engine から外れた。h13g では端末に任せる (model-recipes.yaml、2026-11-27) |
 - **今**:
   - 書き出しの側で活性化の並びをそろえた ([design/apple-neural-engine.ja.md](design/apple-neural-engine.ja.md) の「活性」)。チャットのモデルのレシピの版は 2。直した書き出しの h13g のプログラム 202 本 (Qwen3.5-0.8B 24、Qwen3.5-2B 24、Qwen3.5-4B 26、LFM3-1.7B 17、LFM3-VL-2B 18、Gemma 4 E2B 18、Gemma 4 E4B 18、plamo-3-translate-2b 18、Qwen3-1.7B 39) のどれにもこのタスクがない
   - M1 で確かめた (2026-11-27、直した書き出しの h13g の prebuilt。どれも関数 2 つで、全部 Neural Engine の上で動いた): Qwen3.5-0.8B の `model.part1` (Gated DeltaNet 3 層。直す前は仕上げのサービスが落ちた) は 8.2 秒で仕上がり、`sr-q8` が 5.45 ms、`q128-last` が 14.6 ms。`model.part2` (attention の層と Gated DeltaNet 3 層。直す前は止まった) は 9.4 秒で仕上がり、4.42 ms と 12.7 ms。直した LFM3-1.7B の `model.part2` (`q8` と `q128-last`) は 17.5 秒で仕上がり、4.56 ms と 11.3 ms。直した Gemma 4 E2B の `model.part2` (`q8` と `q128-kv`) は 14.1 秒で仕上がり、4.33 ms と 11.8 ms。Gated DeltaNet の層 1 つの検体は、CPU との余弦が出力で 0.999997、状態で 1.000000
@@ -252,9 +271,17 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **ほかの形**: grouped 形式 (全ヘッドを 1 つの行列積で) なら prebuilt でも正しいが、M1 で 8 行の呼び出しが 10〜17 % 遅い (Qwen3.5 0.54 → 0.60 ms、LFM3-1.7B の形 0.55 → 0.65 ms)。スコアを 1 つにまとめてから最大値・exp・和を取る形も正しいが、8 行で 2〜3 倍遅い
 - **今**: h13g では attention のプログラム (`*.attn*`) を prebuild しない (model-recipes.yaml の `apple.prebuild`)。重みがなく、端末のコンパイルは 1 本 1 秒未満。層の部品と mass は prebuilt のまま。Qwen3.5-0.8B は prebuilt から正しく答え、初回は 1 分 46 秒 (端末のコンパイルだけだと 7 分 13 秒)
 - kv ヘッドが 2 つ以上のチャットのモデル (Qwen3.5、LFM3、Qwen3、PLaMo 3 の 2b と 8b など) が当たる。Gemma 4 E2B と PLaMo 3 Translate 0.8B は kv ヘッドが 1 つで、grouped 形式のまま
-- h14g 以降で起きるかは確かめていない
+- **h15g でも起きる** (2026-11-27、M3): Qwen3.5-0.8B の attention の 8 本と MTP 層の 4 本の全部で、kv ヘッド 1 の `l` が約 6 倍、`o` がほぼ 0 (prebuilt、端末のコンパイル、Core AI の CPU に同じ乱数の入力を入れて比べた。端末のコンパイルは CPU と余弦 0.99999)。会話の答えが変わり、MTP の下書きが 1 つも通らなかった (328 回中 0 回)。h15g にも同じ決まりを付けた
+- h14g (M2) で起きるかは確かめていない
 - **直ったら**: 決まりを外す
 - 確かめ方: `HWNPU_DEV=coreai.dump=DIR` を付けて、prebuilt と端末のコンパイル (`HWNPU_COREAI_PREBUILT=off`) で同じプロンプトを `--seed` を固定して流し、呼び出しごとの出力を比べる。attention のプログラムは、記録した入力で `AICHECK_IN=DIR/NNNNNN-…attn…` を付けて `aicheck run` し、`AICHECK_DUMP` と `AICHECK_CMP` で 2 つのコンパイルを比べる
+
+## 20. h15g の、層を 12 以上持つ全体のプログラムを M3 が読み込まない (未報告)
+
+- **何が**: Qwen3.5-0.8B の短い会話の全体のプログラム (24 層、キャッシュを中に持つ、2 関数) の h15g の prebuilt は、M3 で仕上げに 17 分 52 秒かかったあと、`ANEProgramCreate() failed ret=0x13` で読み込まれなかった (aned: "Unable to parse all inputs/outputs for all procedures")。12 層の半分でも同じ ("ZinComputeProgramGetInitSection: error! section addr < segment addr")。`coreai-build` は通り、LLIR に 12 節や 16 節の形はない
+- **切り分け** (`partprobe` で書き出しと同じ `main.hash` の部品を書いて): 1 層、4 層、8 層 (1 関数、172 MB) は prebuilt から仕上がり、12 層 (1 関数、259 MB) と 24 層は落ちる。8 層ずつ 3 本 (2 関数、3 本目は出力層を含め 440 MB) は 48、52、77 秒で仕上がる
+- **今**: 全体のプログラムを 8 層ずつに分ける (`apple.convert.whole_layers: 8`、Qwen3.5-0.8B の版 4)。M3 で初回 5 分 42 秒 (端末のコンパイルだけだと 39 分 18 秒)。生成の 1 歩は 22.1 → 27.4 ms (3 本の呼び出しの合計)、64 行は 35.3 → 30.7 ms。書き出しは M2 以降で同じなので、M2 も分けた形になる
+- **直ったら**: `whole_layers` を外し、版を上げる
 
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
