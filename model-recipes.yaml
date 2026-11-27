@@ -135,6 +135,15 @@ apple:
       do: device
       why: "the attention a kv head at a time (paged.Heads) from coreai-build's h13g program: the second kv head's sum of exps 6 times too large on the M1, the answers noise; right compiled on the device (Qwen3.5-0.8B, prebuilt against device on the same inputs)"
       checked: 2026-11-27
+    # the same on the M3 from h15g programs: the second kv head's l 6 times too large and its o
+    # about 0, every attention program of Qwen3.5-0.8B (8 and 128 rows, 1024 to 8192 keys) and of
+    # its multi-token prediction layer; compiled on the device it is Core AI's CPU's (cosine
+    # 0.99999). The answers changed and none of the drafts was taken (docs/known-issues.md 19)
+    - arch: [h15g]
+      programs: ["*.attn*"]
+      do: device
+      why: "the attention a kv head at a time (paged.Heads) from coreai-build's h15g program: the second kv head's sum of exps 6 times too large and its output about 0 on the M3; right compiled on the device (Qwen3.5-0.8B, prebuilt against device and Core AI's CPU on the same inputs)"
+      checked: 2026-11-27
 
 amd:
   generations: [xdna2]
@@ -373,7 +382,9 @@ models:
   Qwen3.5-4B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
+      # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
+      version: 3
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 5 min 20 s against 21 min 43 s compiled on the device, with 4.3 GB less disk left and no 5.5 GB
@@ -391,14 +402,26 @@ models:
       extra: *lm-extra
   Qwen3.5-0.8B:
     apple:
+      convert:
+        # the most layers a part of the whole program of short conversations (c2048-sr-q8 and
+        # c2048-q64-last, its caches inside) holds: from h15g the M3 refused it of 24 layers
+        # (finished in 17 min 52 s, then "ANEProgramCreate() failed ret=0x13", aned: "Unable to
+        # parse all inputs/outputs for all procedures") and of 12 ("section addr < segment addr"),
+        # and finished 3 parts of 8 in 48, 52 and 77 s, where the device compiled it whole in 3 min
+        # 53 s to 18 min 52 s (2026-11-27)
+        whole_layers: 8
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
-      # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
+      # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
+      # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
+      # 4: the whole program in parts of 8 layers (convert.whole_layers)
+      version: 4
+      # prebuilt for the M1 and the M3 (2026-11-27; on the M1 version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 1 min 46 s against 7 min 14 s compiled on the device, with 1.7 GB less disk left and no 2.3 GB
-      # peak of the device's compiler. The other chips' programs are not checked yet
+      # peak of the device's compiler; on the M3 (version 4) 5 min 42 s against 39 min 18 s, the
+      # same answers. The M2's programs are not checked yet
       prebuilt: true
-      archs: [h13g]
+      archs: [h13g, h15g]
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -411,7 +434,9 @@ models:
   Qwen3.5-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
+      # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
+      version: 3
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 2 min 06 s against 7 min 48 s compiled on the device, with 1.5 GB less disk left and
@@ -446,7 +471,9 @@ models:
   Qwen3.6-35B-A3B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
+      # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
