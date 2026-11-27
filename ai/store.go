@@ -39,6 +39,9 @@ type Store struct {
 	// Definitions are models the app makes as it runs (App.Define), read over the definitions
 	// of Models.
 	Definitions []Definition
+
+	// local reads the definitions in this process, not hwnpud's: hwnpud's own (StoreSpec.store)
+	local bool
 }
 
 // openMu keeps the process's layers and definitions (modelstore.Open) from changing while a

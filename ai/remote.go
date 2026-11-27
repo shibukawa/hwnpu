@@ -39,6 +39,20 @@ type Host interface {
 	Get(ctx context.Context, key string) (GotSpec, error)
 	Release(ctx context.Context, key string) error
 	CloseRuntime(ctx context.Context) error
+	// Catalog and Find are Store.Catalog and Catalog.Find of hwnpud's definitions; role is the
+	// name of the requirement's role.
+	Catalog(ctx context.Context, store StoreSpec) (CatalogSpec, error)
+	Find(ctx context.Context, store StoreSpec, name, role string) (ModelInfo, error)
+}
+
+// CatalogSpec is a Catalog as hwnpud sends it.
+type CatalogSpec struct {
+	Models  []ModelInfo
+	Uses    []UseInfo
+	Aliases map[string]string
+	Files   []string
+	Machine int
+	Vendor  string
 }
 
 // AppSpec is an app as it is sent to hwnpud: its uses, their groups of InTurns, its memory and
@@ -119,6 +133,7 @@ func init() {
 	airpc.RegisterError("modelstore.ErrNoRoom", modelstore.ErrNoRoom)
 	airpc.RegisterErrorType("ai.LicenseError", (*LicenseError)(nil))
 	airpc.RegisterErrorType("chat.PolicyError", (*chat.PolicyError)(nil))
+	airpc.RegisterErrorType("ai.NoModelError", (*NoModelError)(nil))
 }
 
 // Spec is the app as it is sent to hwnpud. It is for hwnpud's sessions.
@@ -131,17 +146,27 @@ func (a *App) Spec() (AppSpec, error) {
 		}
 		s.Uses = append(s.Uses, u)
 	}
-	o := a.Store.Models
-	if o.Bundle != nil {
-		return s, fmt.Errorf("ai: %s's models bundled with it (Store.Models.Bundle) are not read through hwnpud yet (%s=off reads them here)", a.Name, daemon.ModeEnv)
+	st, err := a.Store.spec()
+	if err != nil {
+		return s, fmt.Errorf("ai: %s's %w", a.Name, err)
 	}
-	s.Store = StoreSpec{Root: o.Root, Sources: o.Sources, SourcesSet: o.Sources != nil, Files: o.Files, Definitions: o.Definitions,
-		Prepared: a.Store.Prepared, AppDefinitions: a.Store.Definitions}
+	s.Store = st
+	return s, nil
+}
+
+// spec is the Store as it is sent to hwnpud.
+func (st Store) spec() (StoreSpec, error) {
+	o := st.Models
+	if o.Bundle != nil {
+		return StoreSpec{}, fmt.Errorf("models bundled with it (Store.Models.Bundle) are not read through hwnpud yet (%s=off reads them here)", daemon.ModeEnv)
+	}
+	s := StoreSpec{Root: o.Root, Sources: o.Sources, SourcesSet: o.Sources != nil, Files: o.Files, Definitions: o.Definitions,
+		Prepared: st.Prepared, AppDefinitions: st.Definitions}
 	if o.HuggingFace != nil {
-		s.Store.HuggingFace, s.Store.HuggingFaceSet = *o.HuggingFace, true
+		s.HuggingFace, s.HuggingFaceSet = *o.HuggingFace, true
 	}
 	if o.Limits != nil {
-		s.Store.Limits, s.Store.LimitsSet = *o.Limits, true
+		s.Limits, s.LimitsSet = *o.Limits, true
 	}
 	return s, nil
 }
@@ -160,7 +185,7 @@ func (s StoreSpec) store() Store {
 		l := s.Limits
 		o.Limits = &l
 	}
-	return Store{Models: o, Prepared: s.Prepared, Definitions: s.AppDefinitions}
+	return Store{Models: o, Prepared: s.Prepared, Definitions: s.AppDefinitions, local: true}
 }
 
 // daemonClient is this process's client of hwnpud, asked once for a socket (daemon.Use:
@@ -179,7 +204,15 @@ func init() {
 // through is hwnpud's client when the app's models run there: never for an app hwnpud made
 // (AppFromSpec), else as HWNPU_DAEMON says (on unless it is set, off in a test).
 func (a *App) through(ctx context.Context) (*daemon.Client, error) {
-	if a.local || daemon.Mode(daemon.DefaultMode()) == "off" {
+	if a.local {
+		return nil, nil
+	}
+	return hwnpud(ctx)
+}
+
+// hwnpud is this process's client of hwnpud, nil when the models run here (HWNPU_DAEMON).
+func hwnpud(ctx context.Context) (*daemon.Client, error) {
+	if daemon.Mode(daemon.DefaultMode()) == "off" {
 		return nil, nil
 	}
 	daemonClient.Lock()
@@ -216,11 +249,17 @@ func (a *App) session(ctx context.Context, c *daemon.Client) (*airpc.Session, *a
 	if err != nil {
 		return nil, nil, spec, err
 	}
+	s, host, err := hostSession(ctx, c)
+	return s, host, spec, err
+}
+
+// hostSession opens a session with hwnpud's engine and the handle of its Host.
+func hostSession(ctx context.Context, c *daemon.Client) (*airpc.Session, *airpc.Handle, error) {
 	s, err := c.DialAI(ctx)
 	if err != nil {
-		return nil, nil, spec, fmt.Errorf("ai: %w", err)
+		return nil, nil, fmt.Errorf("ai: %w", err)
 	}
-	return s, s.Object(0).Bind(reflect.TypeFor[Host]()), spec, nil
+	return s, s.Object(0).Bind(reflect.TypeFor[Host]()), nil
 }
 
 // planRemote is Plan made by hwnpud.

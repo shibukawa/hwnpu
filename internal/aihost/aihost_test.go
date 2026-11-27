@@ -362,3 +362,32 @@ func TestEngineState(t *testing.T) {
 		t.Error("an encoding of this process decoded with hwnpud's state")
 	}
 }
+
+// The catalog of an app through hwnpud is hwnpud's (Host.Catalog), and a name is found there
+// (Host.Find): a model, a use, and a name of none as the *NoModelError of the role's models.
+func TestCatalogThroughHwnpud(t *testing.T) {
+	serve(t)
+	c, err := testStore(t).Catalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.Model("whisper-large-v3-turbo"); !ok || len(c.Uses) == 0 || len(c.Files) == 0 {
+		t.Fatalf("catalog: %d models, %d uses, files %v", len(c.Models), len(c.Uses), c.Files)
+	}
+	use := ai.Define[*fakeModel](fakeRole, "transcribe")
+	if m, err := c.Find("whisper-large-v3-turbo", use); err != nil || m.Name != "whisper-large-v3-turbo" {
+		t.Fatalf("find a model: %+v %v", m, err)
+	}
+	var none *ai.NoModelError
+	if _, err := c.Find("no-such-model-of-hwnpud", use); !errors.As(err, &none) || len(none.Models) == 0 {
+		t.Fatalf("find none: %v", err)
+	}
+	if _, err := c.Find("LFM3-1.7B", use); err == nil || errors.As(err, &none) {
+		t.Fatalf("a model the role does not run: %v", err)
+	}
+	// it is hwnpud's: without one answering, there is none
+	t.Setenv(daemon.SocketEnv, filepath.Join(t.TempDir(), "none.sock"))
+	if _, err := testStore(t).Catalog(); err == nil {
+		t.Fatal("a catalog without hwnpud answering")
+	}
+}

@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +11,9 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/airole"
+	"github.com/shibukawa/hwnpu/internal/airpc"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/daemon"
 )
 
 // Catalog is what the definitions name (models.yaml, the machine's, the user's, the app's
@@ -27,6 +30,9 @@ type Catalog struct {
 
 	machine int
 	vendor  string
+	// remote is hwnpud, whose definitions these are (Find asks it); store the Store asked
+	remote *daemon.Client
+	store  StoreSpec
 }
 
 // ModelInfo is a model of the definitions.
@@ -77,8 +83,24 @@ type Pick struct {
 }
 
 // Catalog reads the definitions as the Store says (its Models' files and its Definitions) and
-// lists them. It sets the process's layers and definitions, as Plan does.
+// lists them: hwnpud's, through it (HWNPU_DAEMON), else this process's, setting its layers and
+// definitions as Plan does.
 func (s Store) Catalog() (*Catalog, error) {
+	if !s.local {
+		ctx := context.Background()
+		dc, err := hwnpud(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if dc != nil {
+			return s.catalogRemote(ctx, dc)
+		}
+	}
+	return s.catalog()
+}
+
+// catalog is Catalog of this process's definitions.
+func (s Store) catalog() (*Catalog, error) {
 	openMu.Lock()
 	defer openMu.Unlock()
 	if err := s.open(); err != nil {
@@ -153,14 +175,22 @@ func (e *NoModelError) Error() string {
 // *NoModelError; a model the role does not run is an error that says so.
 func (c *Catalog) Find(name string, u Requirement) (ModelInfo, error) {
 	r := u.requirement()
+	if c.remote != nil {
+		return c.findRemote(context.Background(), name, r.role)
+	}
+	return c.find(name, r.role)
+}
+
+// find is Find in this process's definitions.
+func (c *Catalog) find(name string, role *airole.Role) (ModelInfo, error) {
 	m, ok, err := chat.LookupOn(strings.TrimSpace(name), 0, io.Discard)
 	if err != nil {
 		return ModelInfo{}, fmt.Errorf("ai: %w", err)
 	}
 	if !ok {
-		return ModelInfo{}, c.noModel(name, r.role)
+		return ModelInfo{}, c.noModel(name, role)
 	}
-	if err := r.role.Accepts(m); err != nil {
+	if err := role.Accepts(m); err != nil {
 		return ModelInfo{}, err
 	}
 	info, _ := c.Model(m.Name)
@@ -218,4 +248,70 @@ func (u Use[T]) Kinds() []string {
 		out = append(out, string(k))
 	}
 	return out
+}
+
+// Spec is the catalog as hwnpud sends it.
+func (c *Catalog) Spec() CatalogSpec {
+	return CatalogSpec{Models: c.Models, Uses: c.Uses, Aliases: c.Aliases, Files: c.Files, Machine: c.machine, Vendor: c.vendor}
+}
+
+// catalogRemote is Catalog of hwnpud's definitions.
+func (s Store) catalogRemote(ctx context.Context, dc *daemon.Client) (*Catalog, error) {
+	st, err := s.spec()
+	if err != nil {
+		return nil, fmt.Errorf("ai: the store's %w", err)
+	}
+	sess, host, err := hostSession(ctx, dc)
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	cs, err := airpc.Call1[CatalogSpec](host, ctx, "Catalog", st)
+	if err != nil {
+		return nil, fmt.Errorf("ai: hwnpud's catalog: %w", olderHwnpud(dc, err))
+	}
+	return &Catalog{Models: cs.Models, Uses: cs.Uses, Aliases: cs.Aliases, Files: cs.Files, machine: cs.Machine, vendor: cs.Vendor,
+		remote: dc, store: st}, nil
+}
+
+// findRemote is Find in hwnpud's definitions.
+func (c *Catalog) findRemote(ctx context.Context, name string, role *airole.Role) (ModelInfo, error) {
+	sess, host, err := hostSession(ctx, c.remote)
+	if err != nil {
+		return ModelInfo{}, err
+	}
+	defer sess.Close()
+	m, err := airpc.Call1[ModelInfo](host, ctx, "Find", c.store, name, role.Name)
+	return m, olderHwnpud(c.remote, err)
+}
+
+// olderHwnpud is err, told as what to do when hwnpud is of a build before the method (its Host
+// has no method of the call).
+func olderHwnpud(dc *daemon.Client, err error) error {
+	if err == nil || !strings.Contains(err.Error(), "has no method") {
+		return err
+	}
+	return fmt.Errorf("%w: hwnpud (build %s) is older than this client (go install ./cmd/hwnpud && hwnpu service restart)", err, dc.Server.Build)
+}
+
+// HostCatalog is Store.Catalog of the store a client sent, in hwnpud's definitions (Host.Catalog).
+func HostCatalog(st StoreSpec) (CatalogSpec, error) {
+	c, err := st.store().catalog()
+	if err != nil {
+		return CatalogSpec{}, err
+	}
+	return c.Spec(), nil
+}
+
+// HostFind is Catalog.Find of the store a client sent, for the role named role (Host.Find).
+func HostFind(st StoreSpec, name, role string) (ModelInfo, error) {
+	r := airole.Lookup(role)
+	if r == nil {
+		return ModelInfo{}, fmt.Errorf("ai: hwnpud knows no role %q: hwnpud is of an older build than the app (go install ./cmd/hwnpud, then hwnpu service restart)", role)
+	}
+	c, err := st.store().catalog()
+	if err != nil {
+		return ModelInfo{}, err
+	}
+	return c.find(name, r)
 }

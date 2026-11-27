@@ -167,6 +167,16 @@ func (h *Host) Open(ctx context.Context, spec ai.AppSpec, o ai.OpenSpec, log fun
 	return rt.Target(), nil
 }
 
+// Catalog is ai.Store.Catalog of the store a client sent, in hwnpud's definitions.
+func (h *Host) Catalog(ctx context.Context, st ai.StoreSpec) (ai.CatalogSpec, error) {
+	return ai.HostCatalog(st)
+}
+
+// Find is ai.Catalog.Find of the store a client sent, for the role named role.
+func (h *Host) Find(ctx context.Context, st ai.StoreSpec, name, role string) (ai.ModelInfo, error) {
+	return ai.HostFind(st, name, role)
+}
+
 func (h *Host) runtime() (*ai.Runtime, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

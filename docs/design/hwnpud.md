@@ -511,8 +511,12 @@ engine, and each stage adds its own:
    variants) is `internal/catalog`, which reads nothing of hwnpu's; `internal/chat` names its types
    (aliases). `internal/airole` reads `internal/catalog` instead of `internal/chat`, and finding the
    machine's NPU (`airole.Here`) is a hook the engine sets (`internal/chat`); a client has none.
-3. The definitions from hwnpud: routes for the table, the policy's verdicts and the memory; the
-   `ai` package asks them through a client, and the engine answers from `internal/chat`.
+3. Done: the definitions are hwnpud's. What a client through hwnpud asks of them is two things,
+   so they are two methods of the engine's `ai.Host`, not the files (whose reading is tangled with
+   the fetching): `Catalog` (`Store.Catalog`: the models, the uses and their picks, the aliases,
+   the machine's memory and NPU vendor) and `Find` (`Catalog.Find`, with the role's check; a name
+   of none comes back as the `*NoModelError`). A hwnpud without them says to install the new one.
+   The `ai` package still imports `internal/chat` for its own process's path, until stage 4.
 4. The role packages: `Prepare` and `Load` (and the engine types they return) move into
    `ai/engine/...`, registered with `airole.Register`; the client types call an implementation,
    hwnpud's (`Remote`) or the engine's when it is imported.
