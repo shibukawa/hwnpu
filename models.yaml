@@ -105,7 +105,7 @@ models:
     variants:
       16: {memory: {apple: 3.1, M1: 1.7}, tier: auto}
     bytes: {amd: 1.74e9, apple: 3.5e9}
-    disk: {amd: 2.28e9}
+    disk: {amd: 2.28e9, M1: 3.1e9}
     features: [tools, thinking]
     about: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"
   LFM2-8B-A1B:
@@ -143,7 +143,7 @@ models:
     machine: 8
     memory: {amd: 2.6, apple: 2.7}
     bytes: {amd: 2.08e9, apple: 3.8e9}
-    disk: {amd: 2.76e9}
+    disk: {amd: 2.76e9, M1: 4.7e9}
     features: [tools, thinking, vision]
     about: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"
   LFM3-Audio-2B:
@@ -160,7 +160,7 @@ models:
     machine: 8
     memory: 2.6
     bytes: {amd: 1.97e9, apple: 4.0e9}
-    disk: {amd: 2.79e9}
+    disk: {amd: 2.79e9, M1: 5.1e9}
     features: [tools, thinking, audio]
     about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-audio tts)"
   LFM3-Omni-2B:
@@ -178,7 +178,7 @@ models:
     machine: 8
     memory: {amd: 3.0, apple: 3.1}
     bytes: {amd: 2.33e9, apple: 4.3e9}
-    disk: {amd: 3.20e9}
+    disk: {amd: 3.20e9, M1: 5.3e9}
     features: [tools, thinking, vision, audio]
     about: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"
   gemma-4-E2B-it:
@@ -197,7 +197,7 @@ models:
     # export (1.73 GB) and the tables (3.17 GB, the per-layer embeddings in int8), 4.94 GB with the tokenizer
     memory: {amd: 2.4, apple: 2.3}
     bytes: {amd: 4.78e9, apple: 4.9e9}
-    disk: {amd: 5.08e9}
+    disk: {amd: 5.08e9, M1: 6.3e9}
     features: [tools, thinking]
     about: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"
   gemma-4-E4B-it:
@@ -229,9 +229,9 @@ models:
         Qwen3.5-4B.amd-npu2-q4: v3 sha256:5350985e0df1af6f917671eca71e7a859e6fce23a75305c2c0fd6516154ee185
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE", class: open}
     machine: 24
-    memory: 4.2
+    memory: {amd: 4.2, apple: 5.9}
     bytes: {amd: 4.46e9, apple: 9.3e9}
-    disk: {amd: 5.37e9}
+    disk: {amd: 5.37e9, M1: 10.7e9}
     features: [tools, thinking]
     about: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"
   Qwen3.5-0.8B:
@@ -253,7 +253,7 @@ models:
     variants:
       16: {memory: {apple: 2.3, M1: 1.5}, tier: auto}
     bytes: {amd: 1.18e9, apple: 1.77e9}
-    disk: {amd: 1.63e9}
+    disk: {amd: 1.63e9, M1: 2.6e9}
     features: [tools, thinking]
     no_think: true
     about: "Qwen's smallest Qwen3.5, the 4B's structure in 0.8B: fast, but weak at facts; its text model in 8 bit tables, answering without thinking unless asked; the download has the vision part too, which is not converted"
@@ -271,9 +271,9 @@ models:
     # too (docs/design/memory-and-power.md). Converting it the first time the process peaks at 6.0 GiB, which a machine
     # of 8 GB swaps for: there the programs converted already are to be fetched
     machine: 8
-    memory: {amd: 2.4, apple: 2.2}
+    memory: {amd: 2.4, apple: 2.5}
     bytes: {amd: 2.67e9, apple: 4.57e9}
-    disk: {amd: 3.15e9}
+    disk: {amd: 3.15e9, M1: 4.4e9}
     features: [tools, thinking]
     no_think: true
     about: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"
@@ -457,6 +457,7 @@ models:
     machine: 8
     memory: {apple: 1.6, M1: 1.1}
     bytes: 1.52e9
+    disk: {M1: 1.6e9}
     features: [tools, thinking]
     about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB); in 8 bit tables, tool calls as JSON"
   Qwen3-1.7B:
@@ -482,6 +483,7 @@ models:
     variants:
       16: {memory: 2.3, prefill: auto}
     bytes: 4.06e9
+    disk: {M1: 3.6e9}
     features: [tools, thinking]
     about: "Qwen3-1.7B, the 0.6B's structure in 1.7B (byte for byte the text encoder of MOSS-SoundEffect): weak at Japanese facts as the 0.6B is; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB), in 8 bit tables, tool calls as JSON; below 16 GB one program, slower to read long prompts"
   plamo-3-translate-8b:
@@ -529,9 +531,9 @@ models:
     # wired: the programs of the short context are functions of the same .aimodel, 0.1 GiB
     # more, docs/design/llm-engine.md) and the process's 0.24 GiB
     machine: 16
-    memory: {amd: 2.7, apple: 3.2}
+    memory: {amd: 2.7, apple: 3.4}
     bytes: {amd: 2.35e9, apple: 5.76e9}
-    disk: {amd: 3.03e9}
+    disk: {amd: 3.03e9, M1: 5.9e9}
     features: [translation]
     about: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"
   plamo-3-translate-0.8b:
@@ -546,9 +548,9 @@ models:
     # Apple (Core AI, an M1, 2026-11-15, docs/design/memory-and-power.md): 0.82 GiB on the Neural Engine and the process's
     # 0.12 GiB; as AMD's
     machine: 8
-    memory: 1.0
+    memory: 1.2
     bytes: {amd: 0.83e9, apple: 1.79e9}
-    disk: {amd: 1.02e9}
+    disk: {amd: 1.02e9, M1: 1.9e9}
     features: [translation]
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"
   plamo-embedding-1b:
@@ -565,8 +567,9 @@ models:
     # tools/amd/iron_plamo_embed.py in bf16, the graphs of 128 and 1024 tokens sharing one bank):
     # 1.89 GiB pinned and the process's 0.08 GiB
     machine: 8
-    memory: {amd: 2.1, apple: 1.2}
+    memory: {amd: 2.1, apple: 1.4}
     bytes: 2.1e9
+    disk: {M1: 2.1e9}
     features: [query]
     about: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"
   whisper-large-v3-turbo:
@@ -651,6 +654,7 @@ models:
     # AMD's NPU: LFM3-VL's export read as d1 reads it (tools/amd/iron_d1.py): a question is one
     # prompt chunk from 0, so at most 1024 tokens with its image
     memory: 2.4
+    disk: {M1: 4.1e9}
     about: "Liquid AI's d1-2B: answers typed questions about a state (the System One API), images too, in 8 bit tables"
   d1-Omni-2B:
     family: d1-omni
@@ -663,6 +667,7 @@ models:
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.8
+    disk: {M1: 4.6e9}
     about: "Liquid AI's d1-Omni-2B: d1 with an audio encoder, questions about images and clips and questions asked as a clip"
   swift-f0:
     family: swiftf0
