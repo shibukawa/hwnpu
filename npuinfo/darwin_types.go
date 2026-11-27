@@ -159,9 +159,14 @@ type DarwinIOReportState struct {
 }
 
 type DarwinANEService struct {
-	PID  int    `json:"pid"`
-	Name string `json:"name"`
-	Path string `json:"path"`
+	PID                        int    `json:"pid"`
+	Name                       string `json:"name"`
+	Path                       string `json:"path"`
+	Read                       bool   `json:"read,omitempty"`
+	PhysFootprint              uint64 `json:"phys_footprint,omitempty"`
+	LifetimeMaxPhysFootprint   uint64 `json:"lifetime_max_phys_footprint,omitempty"`
+	NeuralFootprint            uint64 `json:"neural_footprint,omitempty"`
+	LifetimeMaxNeuralFootprint uint64 `json:"lifetime_max_neural_footprint,omitempty"`
 }
 
 type DarwinKext struct {

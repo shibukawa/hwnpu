@@ -132,7 +132,15 @@ func darwinServices() ([]DarwinANEService, error) {
 		if !isANEService(path) {
 			continue
 		}
-		out = append(out, DarwinANEService{PID: int(pid), Name: filepath.Base(path), Path: path})
+		svc := DarwinANEService{PID: int(pid), Name: filepath.Base(path), Path: path}
+		if ri, err := p.rusage(pid); err == nil {
+			svc.Read = true
+			svc.PhysFootprint = ri.PhysFootprint
+			svc.LifetimeMaxPhysFootprint = ri.LifetimeMaxPhysFootprint
+			svc.NeuralFootprint = ri.NeuralFootprint
+			svc.LifetimeMaxNeuralFootprint = ri.LifetimeMaxNeuralFootprint
+		}
+		out = append(out, svc)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PID < out[j].PID })
 	return out, nil

@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/server/systemone"
@@ -185,14 +187,34 @@ func answerSystemOne(ctx context.Context, d *text.Decider, path string) error {
 }
 
 func serveSystemOne(ctx context.Context, stop context.CancelFunc, s *systemone.Server, addr string, maxTokens int) error {
-	srv := &http.Server{Addr: addr, Handler: s.Handler()}
+	base, cancelReqs := context.WithCancel(context.Background())
+	defer cancelReqs()
+	srv := &http.Server{
+		Addr:        addr,
+		Handler:     s.Handler(),
+		BaseContext: func(net.Listener) context.Context { return base },
+	}
+	listenDone := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		stop() // as ServeCmd.Run: Ctrl-C is how serving ends
-		srv.Close()
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+			stop() // as ServeCmd.Run: Ctrl-C waits for active calls before closing models
+			cancelReqs()
+			sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer scancel()
+			if err := srv.Shutdown(sctx); err != nil {
+				srv.Close()
+			}
+		case <-listenDone:
+		}
 	}()
 	fmt.Fprintf(os.Stderr, "serving %s (prompts up to %d tokens) at http://%s/v1/systemone\n", s.D.Name(), maxTokens, addr)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	err := srv.ListenAndServe()
+	close(listenDone)
+	<-shutdownDone
+	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

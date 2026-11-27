@@ -1091,13 +1091,21 @@ func (s *Session) Limit(n int) error {
 	return nil
 }
 
-// Reset empties the cache. The chunks a session split at its attention holds stay allocated:
-// their rows past the position are masked (the next step moves them into the shortest chunk
-// that holds the sequence, Program.Smaller).
+// Reset empties the cache. The chunks a session split at its attention holds stay allocated
+// and are zeroed so stale keys or values from an earlier sequence cannot overflow masked scores
+// into Inf/NaN; the next step moves them into the shortest chunk that holds the sequence
+// (Program.Smaller).
 func (s *Session) Reset() {
 	for name, b := range s.progs[0].p.In {
 		if cacheInput(name) {
 			clear(b)
+		}
+	}
+	for _, cs := range s.chunks {
+		for _, b := range cs {
+			if b != nil {
+				clear(b.Bytes())
+			}
 		}
 	}
 	s.pos = 0
@@ -1277,7 +1285,7 @@ func (s *Session) StepKVOnly(emb [][]float32) error {
 	if err := s.writeInputs(st, emb); err != nil {
 		return err
 	}
-	rows := min(q, s.t-s.pos)
+	rows := min(v, s.t-s.pos)
 	if err := s.fit(s.pos + rows); err != nil {
 		return err
 	}
@@ -1454,18 +1462,19 @@ func (s *Session) writeInputs(st *step, emb [][]float32) error {
 }
 
 // runPaged runs a program split at its attention, valid of its rows tokens: its parts, and
-// between them the attention over the session's own cache. The step's keys and values go into the cache first, all q rows
-// that fit (the padding's past the valid tokens are masked for them and written over later), so
-// that the attention over the cache covers the step's tokens too; keep does not write them again.
+// between them the attention over the session's own cache. Only the valid step rows are written
+// into the cache before attention (padding queries repeat the last valid token's causal mask),
+// avoiding redundant KV copies and premature chunk growth across chunk boundaries; keep does not
+// write them again.
 func (s *Session) runPaged(st *step, valid int) error {
 	p, q := st.p, st.q
-	rows := min(q, s.t-s.pos) // rows that fit in the cache
+	rows := min(valid, s.t-s.pos) // only the valid rows of the step need cache space and writes
 	if err := s.fit(s.pos + rows); err != nil {
 		return err
 	}
 	att := p.attention(s.chunk)
 	used := (s.pos + rows + att.Chunk - 1) / att.Chunk
-	if err := st.stepMasks(s.pos, q, used); err != nil {
+	if err := st.stepMasks(s.pos, rows, q, used); err != nil {
 		return err
 	}
 	oneMasks := false // the masks of the last token alone, made for the first layer that needs them
@@ -1627,7 +1636,7 @@ func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, mas
 	pos := s.pos + valid - 1
 	used := pos/a.Chunk + 1 // the chunks the token sees
 	if !*masks {
-		if err := sm.stepMasks(pos, sm.q, used); err != nil {
+		if err := sm.stepMasks(pos, 1, sm.q, used); err != nil {
 			return err
 		}
 		*masks = true
@@ -1692,9 +1701,10 @@ func putAttnOut(p Program, layer int, res []float32) {
 	hwnpu.EncodeF16(b, t)
 }
 
-// stepMasks makes the masks of the chunks the step's q tokens from pos fall in: query t (position
-// pos+t) sees the positions up to its own. The chunks before them are wholly seen (zero).
-func (st *step) stepMasks(pos, q, used int) error {
+// stepMasks makes the masks of the chunks the step's valid tokens from pos fall in: query t
+// (position pos+t for t < valid; padding rows repeat the last valid token's causal horizon) sees
+// the positions up to its own. The chunks before them are wholly seen (zero).
+func (st *step) stepMasks(pos, valid, q, used int) error {
 	c := st.chunk
 	for j, b := range st.masks {
 		st.spare = append(st.spare, b)
@@ -1723,7 +1733,7 @@ func (st *step) stepMasks(pos, q, used int) error {
 		m := b.Bytes()
 		for t := 0; t < q; t++ {
 			row := m[2*t*c : 2*(t+1)*c]
-			seen := min(max(pos+t-j*c+1, 0), c) // positions j*c+k <= pos+t
+			seen := min(max(pos+min(t, valid-1)-j*c+1, 0), c) // positions j*c+k <= pos+min(t, valid-1)
 			clear(row[:2*seen])
 			copy(row[2*seen:], st.hide[2*seen:])
 		}

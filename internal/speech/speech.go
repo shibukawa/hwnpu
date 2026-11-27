@@ -35,6 +35,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3gen"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
@@ -116,6 +117,7 @@ type Synth struct {
 	// feedback), the depthformer's passes and the codec decoder.
 	Times struct{ Text, Depth, Codec time.Duration }
 	rows  map[string][]float32 // rows of the code and feedback tables read so far
+	mask  []float32            // cached mask embedding row (depth.MaskEmbedding)
 }
 
 // Sampling is how the codes are drawn: a temperature (0 picks the best), the k best (0: all,
@@ -174,6 +176,9 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 	s.tok = tok
 	if s.w, err = llm.OpenWeights(cmp.Or(c.Weights, filepath.Join(c.Dir, "model.safetensors")), lfm3.Arch); err != nil {
 		return nil, err
+	}
+	if pf, ok := s.w.(interface{ Prefetch(maxWillNeed int64) }); ok {
+		pf.Prefetch(mem.Physical() / 8)
 	}
 	s.closers = append(s.closers, s.w)
 	open := func(path string) (runner.Program, error) { return runner.Open(ctx, s.dev, path) }
@@ -418,10 +423,13 @@ func (s *Synth) frame(ctx context.Context, h []float32, hist [][]int32, rng *ran
 	d := s.depth.Hidden()
 	order := rng.Perm(n)
 	codes := slices.Repeat([]int32{-1}, n)
-	mask, _, err := s.w.Get(s.depth.MaskEmbedding())
-	if err != nil {
-		return nil, err
+	var err error
+	if s.mask == nil {
+		if s.mask, _, err = s.w.Get(s.depth.MaskEmbedding()); err != nil {
+			return nil, err
+		}
 	}
+	mask := s.mask
 	k := 0
 	for _, pick := range s.depth.Schedule {
 		x := make([]float32, n*d)
@@ -589,21 +597,26 @@ func DecodeCodec(ctx context.Context, c *lfm3gen.Codec, p runner.Program, fr int
 		return nil, fmt.Errorf("speech: the codec decoder's %d frames per call do not exceed its look back of %d frames", fr, overlap)
 	}
 	w := 2 * c.Bins() * c.FrameStack // values per frame
-	var out []float32
+	out := make([]float32, 0, len(frames)*w)
+	x := make([]float32, fr*c.CodeDim())
 	for e := 0; e < len(frames); {
 		start := max(0, e-overlap)
-		x := make([]float32, fr*c.CodeDim())
+		clear(x)
 		for f := start; f < min(start+fr, len(frames)); f++ {
 			for cb, code := range frames[f] {
 				copy(x[(f-start)*c.CodeDim()+cb*len(c.Levels):], c.Codes(int(code)))
 			}
 		}
-		y, err := p.Run(ctx, map[string][]float32{"x": x})
+		raw, err := runner.F16(ctx, p, map[string][]float32{"x": x})
 		if err != nil {
 			return nil, err
 		}
 		end := min(start+fr, len(frames))
-		out = append(out, y[(e-start)*w:(end-start)*w]...)
+		lo, hi := (e-start)*w, (end-start)*w
+		n := hi - lo
+		pos := len(out)
+		out = out[:pos+n]
+		hwnpu.DecodeF16(out[pos:], raw[2*lo:2*hi])
 		e = end
 	}
 	return out, nil

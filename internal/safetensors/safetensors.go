@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
@@ -35,12 +36,13 @@ func (t Tensor) Len() int {
 // File is an open checkpoint. Tensors are read on demand so a multi gigabyte checkpoint costs
 // only the memory of the tensors in use.
 type File struct {
-	f        *os.File
-	tensors  map[string]Tensor
-	names    []string
-	dataBase int64
-	Metadata map[string]string // the "__metadata__" entry, if any
-	mapped   []byte            // the file mapped by Map
+	f          *os.File
+	tensors    map[string]Tensor
+	names      []string
+	dataBase   int64
+	Metadata   map[string]string // the "__metadata__" entry, if any
+	mapped     []byte            // the file mapped by Map / MapFile
+	prefetchWG sync.WaitGroup    // waits for any async MADV_WILLNEED before Munmap
 }
 
 type header struct {
@@ -159,9 +161,16 @@ func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {
 	if t.DType == "F32" {
 		size = 4
 	}
-	raw := make([]byte, n*size)
-	if _, err := f.f.ReadAt(raw, f.dataBase+t.begin+int64(begin*size)); err != nil {
-		return nil, fmt.Errorf("safetensors: %s: %w", name, err)
+	off := f.dataBase + t.begin + int64(begin*size)
+	nBytes := int64(n * size)
+	var raw []byte
+	if f.mapped != nil && off >= 0 && off+nBytes <= int64(len(f.mapped)) {
+		raw = f.mapped[off : off+nBytes]
+	} else {
+		raw = make([]byte, nBytes)
+		if _, err := f.f.ReadAt(raw, off); err != nil {
+			return nil, fmt.Errorf("safetensors: %s: %w", name, err)
+		}
 	}
 	out := make([]float32, n)
 	switch t.DType {
@@ -197,9 +206,16 @@ func (f *File) int8Range(name string, t Tensor, begin, end int) ([]float32, erro
 	}
 	cols, groups := t.Shape[1], st.Shape[1]
 	group := cols / groups
-	q := make([]byte, end-begin)
-	if _, err := f.f.ReadAt(q, f.dataBase+t.begin+int64(begin)); err != nil {
-		return nil, fmt.Errorf("safetensors: %s: %w", name, err)
+	off := f.dataBase + t.begin + int64(begin)
+	nBytes := int64(end - begin)
+	var q []byte
+	if f.mapped != nil && off >= 0 && off+nBytes <= int64(len(f.mapped)) {
+		q = f.mapped[off : off+nBytes]
+	} else {
+		q = make([]byte, nBytes)
+		if _, err := f.f.ReadAt(q, off); err != nil {
+			return nil, fmt.Errorf("safetensors: %s: %w", name, err)
+		}
 	}
 	// the scales of the rows the range touches
 	r0, r1 := begin/cols, (end+cols-1)/cols
