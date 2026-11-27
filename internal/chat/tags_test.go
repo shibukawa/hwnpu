@@ -2,6 +2,7 @@ package chat
 
 import (
 	"github.com/goccy/go-yaml"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 
 	"strings"
 	"testing"
@@ -187,7 +188,7 @@ func TestPerVendor(t *testing.T) {
 	}
 	// a table names a chip of Apple's where it differs: this machine's on Apple's NPU, and no
 	// other vendor's
-	defer func(f func() string) { chipName = f }(chipName)
+	defer func(f func() string) { catalog.ChipName = f }(catalog.ChipName)
 	var c modelEntry
 	if err := yaml.UnmarshalWithOptions([]byte("memory: {amd: 2.2, apple: 3.1, M1: 1.7}\n"), &c, yaml.DisallowUnknownField()); err != nil {
 		t.Fatal(err)
@@ -199,7 +200,7 @@ func TestPerVendor(t *testing.T) {
 		{"M1", "apple", 1.7}, {"M3", "apple", 3.1}, {"", "apple", 3.1},
 		{"M1", "amd", 2.2}, {"M1", "intel", 3.1}, {"M1", "", 3.1},
 	} {
-		chipName = func() string { return w.chip }
+		catalog.ChipName = func() string { return w.chip }
 		if got := c.Memory.For(w.vendor); got != w.want {
 			t.Errorf("memory for %q on %q: %v, want %v", w.vendor, w.chip, got, w.want)
 		}

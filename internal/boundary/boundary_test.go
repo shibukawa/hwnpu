@@ -19,6 +19,8 @@ var light = []string{
 	"internal/daemon",
 	"internal/envfile",
 	"internal/airpc",
+	"internal/catalog",
+	"internal/airole",
 }
 
 // engine are the packages of the engine: the conversions, the runtimes and the backends.

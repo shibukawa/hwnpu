@@ -4,13 +4,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // TestMain picks models as on a chip that no definition leaves out, whatever this machine is
 // (TestPickNotOn sets the chip itself), and keeps what the tests download out of this machine's
 // cache (a test of its own sets HWNPU_CACHE again).
 func TestMain(m *testing.M) {
-	chipName = func() string { return "" }
+	catalog.ChipName = func() string { return "" }
 	dir, err := os.MkdirTemp("", "hwnpu-chat-test")
 	if err != nil {
 		panic(err)
@@ -31,21 +33,10 @@ func cacheHere(t *testing.T) string {
 	return d
 }
 
-func TestChipOf(t *testing.T) {
-	for brand, want := range map[string]string{
-		"Apple M1": "M1", "Apple M1 Pro": "M1", "Apple M2": "M2", "Apple M3 Max": "M3", "Apple M4": "M4",
-		"Intel(R) Core(TM) Ultra 5 135U": "", "Apple M9": "", "": "",
-	} {
-		if got := chipOf(brand); got != want {
-			t.Errorf("chipOf(%q) = %q, want %q", brand, got, want)
-		}
-	}
-}
-
 // PLaMo 3 Translate 8B is not picked on an M1 (not_on), by its family or a use: the 2B is. Its
 // tag still runs it.
 func TestPickNotOn(t *testing.T) {
-	defer func(f func() string) { chipName = f }(chipName)
+	defer func(f func() string) { catalog.ChipName = f }(catalog.ChipName)
 	for _, c := range []struct {
 		chip, name string
 		machine    int
@@ -64,7 +55,7 @@ func TestPickNotOn(t *testing.T) {
 		{"M1", "lfm2", 16, "LFM2-8B-A1B"},
 		{"M2", "lfm2", 16, "LFM2-8B-A1B"},
 	} {
-		chipName = func() string { return c.chip }
+		catalog.ChipName = func() string { return c.chip }
 		m, why, ok, err := Pick(c.name, c.machine)
 		if err != nil || !ok || m.Name != c.want {
 			t.Errorf("%s: Pick(%q, %d) = %s (%s), %v; want %s", c.chip, c.name, c.machine, m.Name, why, err, c.want)

@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // Qwen3-1.7B: one program below 16 GB, a program of its own to read prompts from there, by its
@@ -54,7 +56,7 @@ func TestBuiltinTier(t *testing.T) {
 	if err := LoadModels(nil, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	defer func(f func() string) { chipName = f }(chipName)
+	defer func(f func() string) { catalog.ChipName = f }(catalog.ChipName)
 	for _, c := range []struct {
 		name          string
 		machine       int
@@ -72,9 +74,9 @@ func TestBuiltinTier(t *testing.T) {
 		if !ok || err != nil || got.Run.Tier != c.tier {
 			t.Fatalf("%s on %d GB: tier %q (%v), want %q", c.name, c.machine, got.Run.Tier, err, c.tier)
 		}
-		chipName = func() string { return "M1" }
+		catalog.ChipName = func() string { return "M1" }
 		m1 := got.MemoryFor("apple")
-		chipName = func() string { return "M3" }
+		catalog.ChipName = func() string { return "M3" }
 		if m3, amd := got.MemoryFor("apple"), got.MemoryFor("amd"); m1 != c.m1 || m3 != c.m3 || amd != c.other {
 			t.Errorf("%s on %d GB: memory %v on an M1, %v on an M3, %v on AMD's; want %v, %v, %v", c.name, c.machine, m1, m3, amd, c.m1, c.m3, c.other)
 		}

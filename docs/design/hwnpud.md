@@ -507,8 +507,10 @@ engine, and each stage adds its own:
 1. Done: `internal/daemon` is the client and the supervisor; the engine is
    `internal/daemon/engine`, which cmd/hwnpud joins to them. The load's stream (`LoadStream`) and
    the answers' helpers are the protocol's, in `internal/daemon`.
-2. `internal/airole`: the role's data and `Remote` apart from finding the device (`Here`,
-   `llm.FindDevice`), which moves to the engine's side.
+2. Done: the definitions' data (`Model`, `Kind`, the licenses, the memory by vendor and chip, the
+   variants) is `internal/catalog`, which reads nothing of hwnpu's; `internal/chat` names its types
+   (aliases). `internal/airole` reads `internal/catalog` instead of `internal/chat`, and finding the
+   machine's NPU (`airole.Here`) is a hook the engine sets (`internal/chat`); a client has none.
 3. The definitions from hwnpud: routes for the table, the policy's verdicts and the memory; the
    `ai` package asks them through a client, and the engine answers from `internal/chat`.
 4. The role packages: `Prepare` and `Load` (and the engine types they return) move into

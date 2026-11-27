@@ -16,16 +16,6 @@ import (
 // model, the repositories its conversions are in and the commit each target reads there, and at
 // its top the namespace hwnpu-dev models hf push puts them in (hub: {push: hwnpu}).
 
-// HubRepo is a repository of a model's conversions on Hugging Face (models.yaml's hub).
-type HubRepo struct {
-	Repo string // OWNER/NAME
-	// Pins are the commit each target reads (amd-xdna2, apple, coreai-ARCH): 40 hex digits, or
-	// main (to try what is there now).
-	Pins map[string]string
-	// File is the definition file that wrote the repository last (Builtin for the built-in one).
-	File string
-}
-
 // HubPush is the namespace on Hugging Face that hwnpu-dev models hf push puts the conversions in
 // (models.yaml's hub.push, the last file's that gives it), and HubPushFile that file.
 var HubPush, HubPushFile string

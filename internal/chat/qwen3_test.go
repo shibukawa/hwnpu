@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
@@ -141,12 +142,12 @@ func TestWholeTiers(t *testing.T) {
 		t.Errorf("weights of 2 GiB: %v, want none", got)
 	}
 	// an M1 runs the whole program slower than the split one: none there
-	defer func(f func() string) { chipName = f }(chipName)
-	chipName = func() string { return "M1" }
+	defer func(f func() string) { catalog.ChipName = f }(catalog.ChipName)
+	catalog.ChipName = func() string { return "M1" }
 	if got := wholeTiers(q, 600<<20); got != nil {
 		t.Errorf("Qwen3-0.6B on an M1: %v, want none", got)
 	}
-	chipName = func() string { return "M3" }
+	catalog.ChipName = func() string { return "M3" }
 	l, err := lfm3.ParseConfig([]byte(tinyLFM3))
 	if err != nil {
 		t.Fatal(err)

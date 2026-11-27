@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
@@ -133,7 +134,7 @@ func Pick(name string, machine int) (m Model, why string, ok bool, err error) {
 // family that a machine of machine GB picks instead, with ok; Model{} when it has none. m
 // itself, ok false, when m is picked here.
 func notOnHere(m Model, machine int) (alt Model, ok bool) {
-	chip := chipName()
+	chip := catalog.ChipName()
 	if chip == "" || !slices.Contains(m.NotOn, chip) {
 		return m, false
 	}
@@ -239,7 +240,7 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		cands[i] = cands[i].On(machine)
 	}
 	best, found := cands[0], false
-	chip := chipName()
+	chip := catalog.ChipName()
 	var skipped []string
 	for _, c := range cands {
 		if c.Machine > machine {

@@ -507,7 +507,7 @@ func merge(dst, src *modelEntry) {
 	// memory and bytes: a table changes the vendors it names
 	for _, f := range []struct{ d, s **PerVendor }{{&dst.Memory, &src.Memory}, {&dst.Bytes, &src.Bytes}, {&dst.Disk, &src.Disk}} {
 		if *f.s != nil && *f.d != nil {
-			m := (**f.d).over(**f.s)
+			m := (**f.d).Over(**f.s)
 			defer func(d **PerVendor) { *d = &m }(f.d)
 		}
 	}
@@ -946,7 +946,7 @@ func toModel(name string, e *modelEntry) (Model, error) {
 	if err != nil {
 		return m, fmt.Errorf("model %s: %w", name, err)
 	}
-	if !run.zero() && m.Kind != KindChat {
+	if !run.Zero() && m.Kind != KindChat {
 		return m, fmt.Errorf("model %s: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", name)
 	}
 	m.Run = run
