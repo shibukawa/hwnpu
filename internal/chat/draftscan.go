@@ -24,7 +24,7 @@ import (
 // Embeddings are quantized to per-row symmetric int8 and reordered contiguously into C
 // balanced clusters built on mean-centered embeddings (defeating embedding anisotropy).
 // Each query scores all C centroids and then scans only the top-B clusters using SIMD
-// vecops.DotI8 (ARM64 NEON SDOT).
+// vecops.DotI8 (ARM64 NEON SDOT / amd64 AVX2).
 type DraftScan struct {
 	V, D, C        int
 	TopClusters    int

@@ -100,11 +100,11 @@ func TestDraftScanSynthetic(t *testing.T) {
 // TestDraftScanRealQwen35 benchmarks DraftScan on real Qwen3.5-0.8B 248,320 x 1024 embeddings
 // when present in the local hwnpu cache.
 func TestDraftScanRealQwen35(t *testing.T) {
-	home, err := os.UserHomeDir()
+	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		t.Skip(err)
 	}
-	path := filepath.Join(home, "Library", "Caches", "hwnpu", "models", "Qwen3.5-0.8B", "tables.safetensors")
+	path := filepath.Join(cacheDir, "hwnpu", "models", "Qwen3.5-0.8B", "tables.safetensors")
 	sf, err := safetensors.Open(path)
 	if err != nil {
 		t.Skip("no local Qwen3.5-0.8B tables.safetensors:", err)

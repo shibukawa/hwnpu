@@ -143,4 +143,18 @@ func lutRowsKernel(acc *[16]float32, x *float32, n int, idx *byte, rows *[16]int
 	lutRowsAVX2(acc, x, n, idx, rows, off, table)
 }
 
-func dotI8Kernel(a, b []int8) (int, int32) { return 0, 0 }
+var haveDotI8 = haveKernels
+
+//go:noescape
+func dotI8AVX2(a, b *int8, n int) int32
+
+func dotI8Kernel(a, b []int8) (int, int32) {
+	if !haveDotI8 {
+		return 0, 0
+	}
+	n := len(a) &^ 15
+	if n == 0 {
+		return 0, 0
+	}
+	return n, dotI8AVX2(&a[0], &b[0], n)
+}
