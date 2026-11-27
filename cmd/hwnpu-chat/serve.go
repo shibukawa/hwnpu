@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/server/openai"
@@ -108,11 +110,30 @@ func (c *ServeCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		return err
 	}
 	defer rt.Close()
-	srv := &http.Server{Addr: c.Listen, Handler: s.Handler()}
+	// The requests' contexts end with base: on Ctrl-C, active generations finish their current
+	// step and Shutdown waits for all handlers to return before defer rt.Close() releases models.
+	base, cancelReqs := context.WithCancel(context.Background())
+	defer cancelReqs()
+	srv := &http.Server{
+		Addr:        c.Listen,
+		Handler:     s.Handler(),
+		BaseContext: func(net.Listener) context.Context { return base },
+	}
+	listenDone := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		stop() // Ctrl-C is how serving ends: the models are closed and the command returns, not cut short (console.Interrupt)
-		srv.Close()
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+			stop() // Ctrl-C is how serving ends: wait for active calls before closing models (console.Interrupt)
+			cancelReqs()
+			sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer scancel()
+			if err := srv.Shutdown(sctx); err != nil {
+				srv.Close()
+			}
+		case <-listenDone:
+		}
 	}()
 	var what []string
 	for _, e := range s.Chats {
@@ -122,7 +143,10 @@ func (c *ServeCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 		what = append(what, fmt.Sprintf("%s (embeddings, up to %d tokens)", e.Name(), e.MaxTokens()))
 	}
 	fmt.Fprintf(os.Stderr, "serving %s at http://%s/v1\n", strings.Join(what, " and "), c.Listen)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	err = srv.ListenAndServe()
+	close(listenDone)
+	<-shutdownDone
+	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

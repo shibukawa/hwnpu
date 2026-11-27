@@ -31,3 +31,5 @@ const haveLUTRows = false
 
 func lutRowsKernel(acc *[16]float32, x *float32, n int, idx *byte, rows *[16]int32, off *[16]int32, table *float32) {
 }
+
+func dotI8Kernel(a, b []int8) (int, int32) { return 0, 0 }

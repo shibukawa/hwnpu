@@ -31,6 +31,7 @@ import (
 	devenv "github.com/shibukawa/hwnpu/internal/dev"
 
 	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
+	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -139,11 +140,27 @@ func LowerMany(fns []*milspec.Function, weights []io.ReaderAt, names []string) (
 	return p, nil
 }
 
+const defaultSpillKeep int64 = 512 << 20
+
 // SpillKeep is the weights' bytes WriteMany holds in memory before it writes them to its file: a
 // program under it is written as from memory, a larger one takes this much (written to the disk
 // past it, the file is read back as the program is written: 54 s against 61 s from memory for
 // Qwen-Image-2.1 Turbo six at a time on a RAM disk, but 88 s against 65 s on a full Btrfs disk).
-var SpillKeep int64 = 512 << 20
+// At the default value, low-memory machines automatically cap it to an eighth of available RAM
+// (at least 32 MiB) so conversion stays out of swap.
+var SpillKeep int64 = defaultSpillKeep
+
+func effectiveSpillKeep() int64 {
+	keep := SpillKeep
+	if keep == defaultSpillKeep {
+		if avail := mem.Available(); avail > 0 {
+			if capKeep := max(avail/8, 32<<20); capKeep < keep {
+				keep = capKeep
+			}
+		}
+	}
+	return keep
+}
 
 // WriteMany lowers fns as LowerMany does and writes the program at dir as WriteAsset does, with
 // its weights past SpillKeep held in a file next to dir (dir.blobs.tmp, removed) until the
@@ -175,7 +192,7 @@ func writeMany(dir string, fns []*milspec.Function, weights []io.ReaderAt, names
 	defer os.Remove(spill.Name())
 	defer spill.Close()
 	w := newWriter()
-	w.Spill(spill, SpillKeep)
+	w.Spill(spill, effectiveSpillKeep())
 	p, top, err := lowerMany(w, fns, weights, names)
 	if err != nil {
 		return nil, err
@@ -194,6 +211,16 @@ func writeMany(dir string, fns []*milspec.Function, weights []io.ReaderAt, names
 	return p, nil
 }
 
+type blobOffKey struct {
+	f   *os.File
+	off uint64
+}
+
+type cachedConst struct {
+	elem string
+	text string
+}
+
 // lowerMany is LowerMany into w, returning the program without its bytecode and the top block
 // that w writes as it.
 func lowerMany(w *mlirbc.Writer, fns []*milspec.Function, weights []io.ReaderAt, names []string) (*Program, *mlirbc.BlockW, error) {
@@ -201,6 +228,7 @@ func lowerMany(w *mlirbc.Writer, fns []*milspec.Function, weights []io.ReaderAt,
 		return nil, nil, fmt.Errorf("ailower: %d functions, %d weights and %d names", len(fns), len(weights), len(names))
 	}
 	blobs := map[[32]byte]string{}
+	blobOffs := map[blobOffKey]cachedConst{}
 	p := &Program{Functions: map[string]IO{}}
 	var graphs []graph
 	for i, fn := range fns {
@@ -211,7 +239,9 @@ func lowerMany(w *mlirbc.Writer, fns []*milspec.Function, weights []io.ReaderAt,
 		if block == nil {
 			return nil, nil, &funcError{i, fmt.Errorf("ailower: the function has no block for opset %q", fn.GetOpset())}
 		}
-		io, g, err := newLowerer(w, blobs, weights[i]).lower(fn, block, names[i])
+		l := newLowerer(w, blobs, weights[i])
+		l.blobOffs = blobOffs
+		io, g, err := l.lower(fn, block, names[i])
 		if err != nil {
 			return nil, nil, &funcError{i, err}
 		}
@@ -435,6 +465,9 @@ type lowerer struct {
 	// blobKeys are the resources written so far by the sha256 of their bytes, shared by the
 	// lowerers of one program's functions: a weight is written once
 	blobKeys map[[32]byte]string
+	// blobOffs caches lowered constants by (*os.File, blob offset) when multiple functions share
+	// one weight file, avoiding redundant disk reads and SHA-256 hashing.
+	blobOffs map[blobOffKey]cachedConst
 	// notes, when not nil, collects what note is told (LintPackage)
 	notes *[]string
 }
@@ -634,17 +667,20 @@ func (l *lowerer) emit(name string, elem string, shape []int, props []mlirbc.Pro
 
 // constRaw is a constant of the given element type, shape and little endian bytes.
 func (l *lowerer) constRaw(elem string, shape []int, raw []byte) val {
+	return l.emit("constant_v1", elem, shape, []mlirbc.Prop{l.prop(l.constText(shape, raw))})
+}
+
+func (l *lowerer) constText(shape []int, raw []byte) string {
 	n := 1
 	for _, d := range shape {
 		n *= d
 	}
 	splat := n > 1 && allSame(raw, len(raw)/n)
-	var text string
 	switch {
 	case splat:
-		text = fmt.Sprintf("#aicode.serialization.dense_elements<[splat = true] %q>", base64.StdEncoding.EncodeToString(raw[:len(raw)/n]))
+		return fmt.Sprintf("#aicode.serialization.dense_elements<[splat = true] %q>", base64.StdEncoding.EncodeToString(raw[:len(raw)/n]))
 	case len(raw) <= inlineBytes:
-		text = fmt.Sprintf("#aicode.serialization.dense_elements<[splat = false] %q>", base64.StdEncoding.EncodeToString(raw))
+		return fmt.Sprintf("#aicode.serialization.dense_elements<[splat = false] %q>", base64.StdEncoding.EncodeToString(raw))
 	default:
 		sum := sha256.Sum256(raw)
 		key, ok := l.blobKeys[sum]
@@ -653,9 +689,8 @@ func (l *lowerer) constRaw(elem string, shape []int, raw []byte) val {
 			l.blobKeys[sum] = key
 			l.w.Blob("aicode", key, 16, raw)
 		}
-		text = "#aicode.serialization.dense_resource<" + key + ">"
+		return "#aicode.serialization.dense_resource<" + key + ">"
 	}
-	return l.emit("constant_v1", elem, shape, []mlirbc.Prop{l.prop(text)})
 }
 
 func allSame(raw []byte, size int) bool {
@@ -922,6 +957,20 @@ func (l *lowerer) decode(c *milspec.Value) (elem string, shape []int, raw []byte
 }
 
 func (l *lowerer) constant(c *milspec.Value) val {
+	if l.blobOffs != nil {
+		if bf := c.GetBlobFileValue(); bf != nil {
+			if f, ok := l.weights.(*os.File); ok {
+				k := blobOffKey{f: f, off: bf.GetOffset()}
+				if cc, hit := l.blobOffs[k]; hit {
+					return l.emit("constant_v1", cc.elem, shapeOf(c.GetType()), []mlirbc.Prop{l.prop(cc.text)})
+				}
+				elem, shape, raw := l.decode(c)
+				text := l.constText(shape, raw)
+				l.blobOffs[k] = cachedConst{elem: elem, text: text}
+				return l.emit("constant_v1", elem, shape, []mlirbc.Prop{l.prop(text)})
+			}
+		}
+	}
 	elem, shape, raw := l.decode(c)
 	return l.constRaw(elem, shape, raw)
 }

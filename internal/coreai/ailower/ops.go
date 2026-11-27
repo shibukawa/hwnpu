@@ -21,6 +21,10 @@ var binaryOps = map[string]string{"add": "add_v1", "sub": "sub_v1", "mul": "mul_
 var unaryOps = map[string]string{"exp": "exp_v1", "tanh": "tanh_v1", "sqrt": "sqrt_v1", "abs": "abs_v1",
 	"cos": "cos_v1", "sin": "sin_v1", "erf": "erf_v1", "log": "log_v1", "round": "round_v1"}
 
+// fp16MinNormal is 2^-14 (fp16 0x0400 = 6.103515625e-5). On the Apple Neural Engine, fp16
+// clamp/clip bounds below this clamp to 0 and rsqrt(x + eps) with eps below this returns Inf at 0.
+const fp16MinNormal float32 = 1.0 / 16384.0
+
 // op lowers one MIL operation.
 func (l *lowerer) op(op *milspec.Operation) {
 	typ := op.GetType()
@@ -39,6 +43,9 @@ func (l *lowerer) op(op *milspec.Operation) {
 		}
 	}
 	oshape := shapeOf(op.GetOutputs()[0].GetType())
+	if len(oshape) > 5 {
+		l.note(fmt.Sprintf("%s %s: output rank %d exceeds the Neural Engine limit of 5 (shape %v)", typ, out, len(oshape), oshape))
+	}
 	set := func(v val) {
 		if !slices.Equal(v.shape, oshape) {
 			l.fail("%s %s: lowered to %v, MIL says %v", typ, out, v.shape, oshape)
@@ -70,6 +77,9 @@ func (l *lowerer) op(op *milspec.Operation) {
 	case "rsqrt":
 		x := l.in(op, "x")
 		if eps := l.float(op, "epsilon", 1e-12); eps != 0 {
+			if x.elem == "float16" && eps > 0 && eps < fp16MinNormal {
+				l.note(fmt.Sprintf("rsqrt %s: fp16 epsilon %g is below 2^-14 (0x0400): the Neural Engine returns Inf at 0 and wrong values near 0", out, eps))
+			}
 			x = l.binary("add_v1", x, l.scalar(x.elem, eps), x.shape)
 		}
 		set(l.emit("rsqrt_v1", x.elem, x.shape, nil, x))
@@ -100,7 +110,11 @@ func (l *lowerer) op(op *milspec.Operation) {
 		set(l.gelu(l.in(op, "x"), l.str(op, "mode", "EXACT")))
 	case "clip":
 		x := l.in(op, "x")
-		x = l.binary("maximum_v1", x, l.scalar(x.elem, l.float(op, "alpha", 0)), x.shape)
+		alpha := l.float(op, "alpha", 0)
+		if x.elem == "float16" && alpha > 0 && alpha < fp16MinNormal {
+			l.note(fmt.Sprintf("clip %s: fp16 lower bound %g is below 2^-14 (0x0400): the Neural Engine returns 0 for clamped values", out, alpha))
+		}
+		x = l.binary("maximum_v1", x, l.scalar(x.elem, alpha), x.shape)
 		set(l.binary("minimum_v1", x, l.scalar(x.elem, l.float(op, "beta", 0)), x.shape))
 	case "softmax":
 		x := l.in(op, "x")
@@ -573,6 +587,9 @@ func (l *lowerer) layerNorm(op *milspec.Operation) val {
 		axes[i] = l.axis(axes[i], len(x.shape))
 	}
 	eps := l.float(op, "epsilon", 1e-5)
+	if x.elem == "float16" && eps > 0 && eps < fp16MinNormal {
+		l.note(fmt.Sprintf("layer_norm %s: fp16 epsilon %g is below 2^-14 (0x0400): the Neural Engine rsqrt returns Inf at 0 and wrong values near 0", opName(op), eps))
+	}
 	m := l.reduce("reduce_mean", x, axes)
 	d := l.binary("sub_v1", x, m, x.shape)
 	v := l.reduce("reduce_mean", l.binary("mul_v1", d, d, x.shape), axes)
@@ -626,6 +643,23 @@ func (l *lowerer) convTranspose(op *milspec.Operation, oshape []int) val {
 		pads = l.ints(op, "pad", 0, 0, 0, 0)
 	default:
 		l.fail("conv_transpose %s: pad_type %s", opName(op), t)
+	}
+	// Symmetric non-negative padding (e.g. pad=[1,1,1,1] for 4x4 stride-2 transposed conv) can
+	// be passed directly to conv_transpose2d_v1, avoiding the oversized uncropped intermediate
+	// and trailing slice_v1.
+	if pads[0] == pads[1] && pads[2] == pads[3] && pads[0] >= 0 && pads[2] >= 0 {
+		out := []int{x.shape[0], w.shape[1] * groups, 0, 0}
+		for i := range 2 {
+			out[2+i] = (x.shape[2+i]-1)*strides[i] + dil[i]*(w.shape[2+i]-1) + 1 - 2*pads[2*i]
+		}
+		if slices.Equal(out, oshape) {
+			y := l.emit("conv_transpose2d_v1", x.elem, out, nil, x, w, l.u32s(strides...), l.u32s(pads[0], pads[2]), l.u32s(dil...), l.u32s(0, 0), l.u32(groups))
+			if l.has(op, "bias") {
+				b := l.in(op, "bias")
+				y = l.binary("add_v1", y, l.reshape(b, []int{1, b.shape[0], 1, 1}), oshape)
+			}
+			return y
+		}
 	}
 	full := []int{x.shape[0], w.shape[1] * groups, 0, 0}
 	for i := range 2 {
@@ -759,8 +793,20 @@ func (l *lowerer) shiftScale(op *milspec.Operation, oshape []int) val {
 	for _, d := range scale.shape {
 		n *= d
 	}
-	zero := l.constRaw(data.elem, scale.shape, make([]byte, n)) // one byte a zero point either way (splat)
-	minv := l.constRaw(scale.elem, scale.shape, make([]byte, 2*n))
+	zbytes := n
+	if data.elem == "sint4" || data.elem == "uint4" {
+		zbytes = (n + 1) / 2
+	}
+	zero := l.constRaw(data.elem, scale.shape, make([]byte, zbytes))
+	var minv val
+	if l.has(op, "min") {
+		minv = l.in(op, "min")
+		if !slices.Equal(minv.shape, scale.shape) {
+			l.fail("blockwise %s: min %v for scale %v", opName(op), minv.shape, scale.shape)
+		}
+	} else {
+		minv = l.constRaw(scale.elem, scale.shape, make([]byte, 2*n))
+	}
 	return l.emit("blockwise_shift_scale_v2", scale.elem, oshape, nil, data, scale, zero, minv)
 }
 

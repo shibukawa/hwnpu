@@ -1,6 +1,7 @@
 package palette
 
 import (
+	"math"
 	"runtime"
 	"sort"
 	"sync"
@@ -91,6 +92,9 @@ func quantizeWeighted(w []float32, rows, cols, group, colBlock, bits, iters int,
 // (each center the same share of the weight), then iters passes of weighted Lloyd. ids is scratch
 // of len(vals).
 func fitWeighted(c, vals, wts []float32, iters int, ids []uint8) {
+	if fitDistinct(c, vals) {
+		return
+	}
 	k := len(c)
 	order := make([]int, len(vals))
 	for i := range order {
@@ -126,6 +130,9 @@ func fitWeighted(c, vals, wts []float32, iters int, ids []uint8) {
 // spaced between the values' minimum and maximum, then iters passes of weighted Lloyd. ids is
 // scratch of len(vals).
 func fitWeightedMinMax(c, vals, wts []float32, iters int, ids []uint8) {
+	if fitDistinct(c, vals) {
+		return
+	}
 	lo, hi := vals[0], vals[0]
 	for _, v := range vals {
 		lo, hi = min(lo, v), max(hi, v)
@@ -147,7 +154,11 @@ func weightedLloyd(c, vals, wts []float32, iters int, ids []uint8) {
 	mids := make([]float32, k-1)
 	var th vecops.Thresholds
 	var sum, sw [256]float64
+	var prev [256]uint32
 	for range iters {
+		for j, v := range c {
+			prev[j] = math.Float32bits(v)
+		}
 		clear(sum[:])
 		clear(sw[:])
 		th.Reset(midpoints(mids, c))
@@ -162,6 +173,16 @@ func weightedLloyd(c, vals, wts []float32, iters int, ids []uint8) {
 			}
 		}
 		sortValues(c)
+		same := true
+		for j, v := range c {
+			if math.Float32bits(v) != prev[j] {
+				same = false
+				break
+			}
+		}
+		if same {
+			break
+		}
 	}
 }
 

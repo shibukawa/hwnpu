@@ -256,10 +256,10 @@ func (g *Graph) AbsScaledLayerNorm(x *mlpackage.Var, eps float64) *mlpackage.Var
 		"epsilon": g.B.ScalarF16(float32(eps))}, x.Shape...)
 }
 
-// ScaledRMSNorm is the RMS norm over the last axis with the named weight, of x scaled by MaxScaled.
+// ScaledRMSNorm is the RMS norm over the last axis with the named weight, of x scaled by AbsScaled.
 func (g *Graph) ScaledRMSNorm(x *mlpackage.Var, name string, eps float64) *mlpackage.Var {
 	n := x.Shape[len(x.Shape)-1]
-	return g.RMSNormWith(g.MaxScaled(x, -1), name, g.Get(name, n), eps, 1)
+	return g.RMSNormWith(g.AbsScaled(x, -1), name, g.Get(name, n), eps, 1)
 }
 
 // ScaledLayerNorm is a LayerNorm over the last axis without weight and bias, of x scaled by
@@ -653,6 +653,76 @@ func (g *Graph) Conv2DPad(x *mlpackage.Var, name string, wt, bias []float32, cou
 	}
 	oh, ow := (H+pad[0]+pad[1]-k)/stride+1, (W+pad[2]+pad[3]-k)/stride+1
 	return g.Op("conv", inputs, 1, cout, oh, ow)
+}
+
+// FuseNearest2xConv3x3 folds a 2x nearest-neighbor upsample followed by a same-padded (pad=1)
+// 3x3 convolution of weight wt (cout, cin, 3, 3) into an exact mathematically equivalent 4x4
+// stride-2 pad-1 transposed convolution weight of shape (cin, cout, 4, 4).
+//
+// Along each spatial axis:
+//
+//	out[2y]   = w[0]*h[y-1] + (w[1]+w[2])*h[y]
+//	out[2y+1] = (w[0]+w[1])*h[y] + w[2]*h[y+1]
+//
+// which matches ConvTranspose2d(k=4, stride=2, pad=1) with taps:
+//
+//	m[0] = w[2], m[1] = w[1]+w[2], m[2] = w[0]+w[1], m[3] = w[0]
+//
+// (including zero-padded boundaries at y=0 and y=H-1). This eliminates the 4x intermediate
+// upsampled tensor and reduces MACs by 2.25x (4 vs 9 MACs per output pixel).
+func FuseNearest2xConv3x3(wt []float32, cout, cin int) []float32 {
+	out := make([]float32, cin*cout*16)
+	// For each 1D output tap k in 0..3, the contributing 3x3 taps (a0, a1; -1 if none):
+	var taps = [4][2]int{{2, -1}, {1, 2}, {0, 1}, {0, -1}}
+	for o := range cout {
+		for i := range cin {
+			src := wt[(o*cin+i)*9 : (o*cin+i+1)*9]
+			dst := out[(i*cout+o)*16 : (i*cout+o+1)*16]
+			for ky := range 4 {
+				ty := taps[ky]
+				for kx := range 4 {
+					tx := taps[kx]
+					var sum float32
+					sum += src[ty[0]*3+tx[0]]
+					if tx[1] >= 0 {
+						sum += src[ty[0]*3+tx[1]]
+					}
+					if ty[1] >= 0 {
+						sum += src[ty[1]*3+tx[0]]
+						if tx[1] >= 0 {
+							sum += src[ty[1]*3+tx[1]]
+						}
+					}
+					dst[ky*4+kx] = sum
+				}
+			}
+		}
+	}
+	return out
+}
+
+// UpsampleConv2D is 2x nearest-neighbor upsampling followed by a pad-1 3x3 convolution (wt
+// (cout, cin, 3, 3), optional bias), fused at export time into a single ConvTranspose2d(k=4,
+// stride=2, pad=1).
+func (g *Graph) UpsampleConv2D(x *mlpackage.Var, name string, wt, bias []float32, cout int) *mlpackage.Var {
+	cin, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
+	if len(wt) != cout*cin*9 {
+		g.Fail("%s: %d weights for %d to %d channels, 3 x 3 upsample conv", name, len(wt), cin, cout)
+	}
+	fused := FuseNearest2xConv3x3(wt, cout, cin)
+	inputs := map[string]any{
+		"x":         x,
+		"weight":    g.F16s(name+".k", []int{cin, cout, 4, 4}, fused),
+		"strides":   g.B.Ints(2, 2),
+		"pad_type":  g.Str("custom"),
+		"pad":       g.B.Ints(1, 1, 1, 1),
+		"dilations": g.B.Ints(1, 1),
+		"groups":    g.B.ScalarI32(1),
+	}
+	if bias != nil {
+		inputs["bias"] = g.F16s(name+".b", []int{cout}, bias)
+	}
+	return g.Op("conv_transpose", inputs, 1, cout, 2*H, 2*W)
 }
 
 // InvFreq is RoPE's inverse frequencies of a head of dim at theta.

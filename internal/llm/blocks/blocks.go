@@ -97,8 +97,26 @@ func (g *Graph) Str(s string) *mlpackage.Var {
 	return g.B.Str("c", s)
 }
 
+// weightKey uniquely identifies a weight tensor's quantized representation in a shared OpCache.
+func (g *Graph) weightKey(kind, name, constName string, a, b, rows, cols int, scale float32) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%d:%d|%dx%d|%s|%d|%d|%s|%s|%s|%s|%08x",
+		kind, g.W.Source(), name, constName, a, b, rows, cols,
+		g.Opts.FormatOf(name), g.Opts.Group, g.Opts.ColBlock, g.Opts.Quant, g.Opts.Codes,
+		g.Opts.Backend, g.Opts.Params[llm.RotateParam], math.Float32bits(scale))
+}
+
 // Weight adds a (rows, cols) matrix in the chosen format, multiplied by scale.
 func (g *Graph) Weight(name string, rows, cols int, scale float32) *mlpackage.Var {
+	if g.B.HasOpCache() && len(g.Opts.HeadRows) == 0 {
+		key := g.weightKey("W", name, name, 0, 0, rows, cols, scale)
+		v, err := g.B.CachedOp(key, name, func() (*mlpackage.Var, error) {
+			return g.matrix(name, name, g.Get(name, rows, cols), rows, cols, scale), nil
+		})
+		if err != nil {
+			g.Fail("%v", err)
+		}
+		return v
+	}
 	return g.matrix(name, name, g.Get(name, rows, cols), rows, cols, scale)
 }
 
@@ -111,6 +129,24 @@ func (g *Graph) Matrix(name string, w []float32, rows, cols int) *mlpackage.Var 
 // WeightRows is Weight for rows [begin, end) of the named matrix of cols columns: one part of a
 // fused projection (PLaMo's qkv_proj and gate_up_proj). The constant is called name_begin_end.
 func (g *Graph) WeightRows(name string, begin, end, cols int, scale float32) *mlpackage.Var {
+	constName := fmt.Sprintf("%s_%d_%d", name, begin, end)
+	if g.B.HasOpCache() && len(g.Opts.HeadRows) == 0 {
+		key := g.weightKey("WR", name, constName, begin, end, end-begin, cols, scale)
+		v, err := g.B.CachedOp(key, constName, func() (*mlpackage.Var, error) {
+			w, err := g.W.Rows(name, begin, end)
+			if err != nil {
+				g.Fail("%v", err)
+			}
+			if len(w) != (end-begin)*cols {
+				g.Fail("%s: rows %d..%d have %d values, expected %d columns", name, begin, end, len(w), cols)
+			}
+			return g.matrix(name, constName, w, end-begin, cols, scale), nil
+		})
+		if err != nil {
+			g.Fail("%v", err)
+		}
+		return v
+	}
 	w, err := g.W.Rows(name, begin, end)
 	if err != nil {
 		g.Fail("%v", err)
@@ -118,7 +154,7 @@ func (g *Graph) WeightRows(name string, begin, end, cols int, scale float32) *ml
 	if len(w) != (end-begin)*cols {
 		g.Fail("%s: rows %d..%d have %d values, expected %d columns", name, begin, end, len(w), cols)
 	}
-	return g.matrix(name, fmt.Sprintf("%s_%d_%d", name, begin, end), w, end-begin, cols, scale)
+	return g.matrix(name, constName, w, end-begin, cols, scale)
 }
 
 // rowsOnly refuses a weight of tables or scales per block of columns in a Core AI program: the
@@ -231,6 +267,20 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 // The constant is called name_r0_r1_c0_c1.
 func (g *Graph) MatrixSlice(name string, rows, cols, r0, r1, c0, c1 int) *mlpackage.Var {
 	constName := fmt.Sprintf("%s_%d_%d_%d_%d", name, r0, r1, c0, c1)
+	if g.B.HasOpCache() && len(g.Opts.HeadRows) == 0 {
+		key := g.weightKey("MS", name, constName, r0*cols+c0, r1*cols+c1, rows, cols, 1)
+		v, err := g.B.CachedOp(key, constName, func() (*mlpackage.Var, error) {
+			return g.matrixSlice(name, constName, rows, cols, r0, r1, c0, c1), nil
+		})
+		if err != nil {
+			g.Fail("%v", err)
+		}
+		return v
+	}
+	return g.matrixSlice(name, constName, rows, cols, r0, r1, c0, c1)
+}
+
+func (g *Graph) matrixSlice(name, constName string, rows, cols, r0, r1, c0, c1 int) *mlpackage.Var {
 	format := g.Opts.FormatOf(name)
 	bits := map[string]int{"lut4": 4, "lut6": 6, "lut8": 8}[format]
 	if bits == 0 {
@@ -372,6 +422,30 @@ func (g *Graph) RMSNormWith(x *mlpackage.Var, name string, w []float32, eps floa
 	ms := g.Op("reduce_mean", map[string]any{"x": sq, "axes": g.B.Ints(-1), "keep_dims": g.B.ScalarBool(true)}, msShape...)
 	r := g.Op("rsqrt", map[string]any{"x": ms, "epsilon": g.B.ScalarF16(float32(eps))}, msShape...)
 	y := g.Op("mul", map[string]any{"x": x, "y": r}, x.Shape...)
+	return g.Op("mul", map[string]any{"x": y, "y": gamma}, x.Shape...)
+}
+
+// MaxAbsRMSNorm normalizes over the last axis with scale-invariant max-abs prescaling
+// (floor="add": scale = max(|x|) + 2^-14) so tiny activations (down to 1e-3) do not underflow
+// x^2 below fp16's normal range (2^-14) and zero rows (e.g. padding) never trigger ANE rsqrt
+// +Inf/NaN, while avoiding NEFUSED_EW max-clamp issues.
+func (g *Graph) MaxAbsRMSNorm(x *mlpackage.Var, name string, w []float32) *mlpackage.Var {
+	const fp16MinNormal = float32(1.0 / 16384.0) // 2^-14 = 0x0400
+	wshape := make([]int, len(x.Shape))
+	for i := range wshape {
+		wshape[i] = 1
+	}
+	wshape[len(wshape)-1] = len(w)
+	gamma := g.F16s(name, wshape, w)
+	msShape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), 1)
+	absX := g.Op("abs", map[string]any{"x": x}, x.Shape...)
+	maxAbs := g.Op("reduce_max", map[string]any{"x": absX, "axes": g.B.Ints(-1), "keep_dims": g.B.ScalarBool(true)}, msShape...)
+	scale := g.Op("add", map[string]any{"x": maxAbs, "y": g.B.ScalarF16(fp16MinNormal)}, msShape...)
+	xs := g.Op("real_div", map[string]any{"x": x, "y": scale}, x.Shape...)
+	sq := g.Op("mul", map[string]any{"x": xs, "y": xs}, x.Shape...)
+	ms := g.Op("reduce_mean", map[string]any{"x": sq, "axes": g.B.Ints(-1), "keep_dims": g.B.ScalarBool(true)}, msShape...)
+	r := g.Op("rsqrt", map[string]any{"x": ms, "epsilon": g.B.ScalarF16(fp16MinNormal)}, msShape...)
+	y := g.Op("mul", map[string]any{"x": xs, "y": r}, x.Shape...)
 	return g.Op("mul", map[string]any{"x": y, "y": gamma}, x.Shape...)
 }
 
@@ -766,37 +840,65 @@ func RowScaledBits(format string) int {
 // row spans its table. The output is bounded as the weight's own (the scales are at most 1).
 func (g *Graph) linearRows(x *mlpackage.Var, name, bias, outName string, outDim, bits int, s float32) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]
-	var q palette.LUT4
+	wKey := g.weightKey("LR", name, name, bits, 0, outDim, in, 1)
+	sKey := g.weightKey("LRS", name, name+"_rows", bits, 0, outDim, in, s)
+	useCache := g.B.HasOpCache() && len(g.Opts.HeadRows) == 0
+	var wv *mlpackage.Var
 	var scales []float32
-	found := false
-	if g.Opts.Codes != "" {
-		// codes chosen for the weight as the checkpoint holds it (gptoss_attn_gptq.py's lutrow)
-		c, err := LoadCodes(g.Opts.Codes)
+	if useCache && g.B.HasCachedOp(wKey) && g.B.HasCachedOp(sKey) {
+		var err error
+		if wv, err = g.B.CachedOp(wKey, name, nil); err != nil {
+			g.Fail("%v", err)
+		}
+	} else {
+		var q palette.LUT4
+		found := false
+		if g.Opts.Codes != "" {
+			// codes chosen for the weight as the checkpoint holds it (gptoss_attn_gptq.py's lutrow)
+			c, err := LoadCodes(g.Opts.Codes)
+			if err != nil {
+				g.Fail("%v", err)
+			}
+			if q, scales, found, err = c.LookupRows(g.Get(name, outDim, in), outDim, in, g.Opts.Group, g.Opts.ColBlock, bits); err != nil {
+				g.Fail("%s: %v", name, err)
+			}
+		}
+		if !found {
+			w := slices.Clone(g.Get(name, outDim, in))
+			scales = RowScales(w, outDim, in)
+			q = palette.QuantizeBits(w, outDim, in, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
+		}
+		if s != 1 {
+			for i := range scales {
+				scales[i] *= s
+			}
+		}
+		g.rowsOnly(name, q.ColBlock, in)
+		var err error
+		if useCache {
+			wv, err = g.B.CachedOp(wKey, name, func() (*mlpackage.Var, error) {
+				return g.B.LUT(name, bits, []int{outDim, in}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+			})
+		} else {
+			wv, err = g.B.LUT(name, bits, []int{outDim, in}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+		}
 		if err != nil {
 			g.Fail("%v", err)
 		}
-		if q, scales, found, err = c.LookupRows(g.Get(name, outDim, in), outDim, in, g.Opts.Group, g.Opts.ColBlock, bits); err != nil {
-			g.Fail("%s: %v", name, err)
-		}
-	}
-	if !found {
-		w := slices.Clone(g.Get(name, outDim, in))
-		scales = RowScales(w, outDim, in)
-		q = palette.QuantizeBits(w, outDim, in, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
-	}
-	if s != 1 {
-		for i := range scales {
-			scales[i] *= s
-		}
-	}
-	g.rowsOnly(name, q.ColBlock, in)
-	wv, err := g.B.LUT(name, bits, []int{outDim, in}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
-	if err != nil {
-		g.Fail("%v", err)
 	}
 	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
 	y := g.Op("linear", map[string]any{"x": x, "weight": wv}, shape...)
-	rs := g.F16s(name+"_rows", []int{outDim}, scales)
+	var rs *mlpackage.Var
+	if useCache {
+		var err error
+		if rs, err = g.B.CachedOp(sKey, name+"_rows", func() (*mlpackage.Var, error) {
+			return g.B.F16s(name+"_rows", []int{outDim}, scales)
+		}); err != nil {
+			g.Fail("%v", err)
+		}
+	} else {
+		rs = g.F16s(name+"_rows", []int{outDim}, scales)
+	}
 	if bias == "" {
 		if outName != "" {
 			return g.B.NamedOp("mul", outName, map[string]any{"x": y, "y": rs}, mlpackage.Float16, shape...)

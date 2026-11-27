@@ -142,7 +142,7 @@ func (s *Session) runWave(st *step, steps [][][]float32, at []int, check func() 
 	// on any return the sequence is where the wave began or, done, where it ends
 	pos := s.pos
 	defer func() { s.pos = pos }()
-	if err := s.fit(start[n-1] + min(q, s.t-start[n-1])); err != nil {
+	if err := s.fit(start[n]); err != nil {
 		return nil, nil, err
 	}
 	s.sparseTouch(s.pos)
@@ -209,7 +209,7 @@ func (s *Session) runWave(st *step, steps [][][]float32, at []int, check func() 
 			if !last {
 				return nil
 			}
-			rows := min(q, s.t-s.pos)
+			rows := min(v, s.t-s.pos)
 			if i == len(p.Attend) {
 				if p.NoLogits {
 					if err := s.writeUnattended(p, q, rows); err != nil {
@@ -230,7 +230,7 @@ func (s *Session) runWave(st *step, steps [][][]float32, at []int, check func() 
 				return nil
 			}
 			used := (s.pos + rows + att.Chunk - 1) / att.Chunk
-			if err := st.stepMasks(s.pos, q, used); err != nil {
+			if err := st.stepMasks(s.pos, rows, q, used); err != nil {
 				return err
 			}
 			oneMasks := false

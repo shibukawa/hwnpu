@@ -84,6 +84,14 @@ type InputAllocator interface {
 	AllocInput(index int) (Buffer, error)
 }
 
+// OutputAllocator is implemented by graphs that can write an output directly into memory of
+// their own rather than allocating and copying on every run: AllocOutput returns the buffer of
+// the output at index there, which may also be bound to any input of that shape (of this graph
+// or another of the device) with no copy on either side, or nil when it has none for that output.
+type OutputAllocator interface {
+	AllocOutput(index int) (Buffer, error)
+}
+
 // Request binds buffers to graph arguments and submits executions.
 // Bind has already been checked against ArgInfo by the caller.
 type Request interface {

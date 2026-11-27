@@ -85,6 +85,38 @@ func TestEvictIRONWaitsForRequests(t *testing.T) {
 	}
 }
 
+// closeAll waits for in-flight requests to release their held models before closing them,
+// preventing premature model teardown or mutex deadlock during graceful shutdown.
+func TestCloseAllWaitsForRequests(t *testing.T) {
+	e := &Engine{Log: io.Discard}
+	e.init()
+	m := &held{e: &chat.Engine{}, model: chat.Model{Name: "m"}}
+	e.models["m"] = m
+	e.aliases["m@0"] = "m"
+	if e.lookup("m@0") != m {
+		t.Fatal("lookup")
+	}
+	done := make(chan struct{})
+	go func() {
+		e.closeAll()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("closeAll returned while request still held model")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if e.lookup("m@0") != nil {
+		t.Fatal("new request got model during closeAll")
+	}
+	e.release(m)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("closeAll did not finish after request released model")
+	}
+}
+
 // shortDir is a folder of a short path, for a socket's (macOS: 104 bytes at most).
 func shortDir(t *testing.T) string {
 	d, err := os.MkdirTemp("/tmp", "hwnpud")

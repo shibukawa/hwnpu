@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -110,27 +111,47 @@ func (e *Engine) Run(ctx context.Context, socket string) error {
 	}
 	defer os.Remove(socket)
 	e.last.Store(time.Now().UnixNano())
-	srv := &http.Server{Handler: e.Handler()}
+	reqBase, cancelReqs := context.WithCancel(context.Background())
+	defer cancelReqs()
+	srv := &http.Server{
+		Handler:     e.Handler(),
+		BaseContext: func(net.Listener) context.Context { return reqBase },
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	serveDone := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	shutdown := func() {
+		cancelReqs()
+		sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer scancel()
+		if err := srv.Shutdown(sctx); err != nil {
+			srv.Close()
+		}
+	}
 	go func() {
+		defer close(shutdownDone)
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
 		for {
 			select {
+			case <-serveDone:
+				return
 			case <-ctx.Done():
-				srv.Close()
+				shutdown()
 				return
 			case <-t.C:
 			}
 			if e.Idle > 0 && e.active.Load() == 0 && time.Since(time.Unix(0, e.last.Load())) > e.Idle {
 				fmt.Fprintf(e.Log, "hwnpud engine: idle for %s; closing the models\n", e.Idle)
-				srv.Close()
+				shutdown()
 				return
 			}
 		}
 	}()
 	err = srv.Serve(daemon.SameUser(ln, e.Log))
+	close(serveDone)
+	<-shutdownDone
 	e.closeAll()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -195,10 +216,20 @@ func (e *Engine) evictIRON() {
 
 func (e *Engine) closeAll() {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	out := make([]*held, 0, len(e.models))
 	for name, h := range e.models {
-		h.e.Close()
+		out = append(out, h)
 		delete(e.models, name)
+	}
+	clear(e.aliases)
+	for _, h := range out {
+		for h.refs > 0 {
+			e.freed.Wait()
+		}
+	}
+	e.mu.Unlock()
+	for _, h := range out {
+		h.e.Close()
 	}
 }
 

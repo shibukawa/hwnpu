@@ -7,6 +7,12 @@ import "fmt"
 // Map reads a tensor's raw data (no mapping here).
 func (f *File) Map(name string) ([]byte, error) { return f.Bytes(name) }
 
+// MapFile is a no-op where mmap is unavailable.
+func (f *File) MapFile() error { return nil }
+
+// PrefetchAsync is a no-op where mmap is unavailable.
+func (f *File) PrefetchAsync(maxWillNeed int64) error { return nil }
+
 func (f *File) unmap() {}
 
 // MappedAt is false: nothing is mapped here.

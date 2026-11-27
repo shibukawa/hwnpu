@@ -177,12 +177,31 @@ func vaeAttn(g *graph, x *mlpackage.Var, path string, qchunk int) *mlpackage.Var
 	return g.Add(x, o)
 }
 
-// vaeUp is nearest 2x upsampling and the upsampler's 3 x 3 convolution. upsample_nearest_neighbor
-// is 3 times faster on the Neural Engine than the same as reshapes and tiles (stage 5 at 1024 x
-// 1024 on M3: 412 ms against 1275 ms); OpenVINO IR lowers it to those.
+// vaeUp is nearest 2x upsampling and the upsampler's 3 x 3 convolution, pre-fused into an
+// equivalent ConvTranspose2d(k=4, stride=2, pad=1) to eliminate the 4x upsampled tensor and
+// cut MACs by 2.25x.
 func vaeUp(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
-	C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
-	u := g.Op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": g.B.ScalarI32(2),
-		"scale_factor_width": g.B.ScalarI32(2)}, 1, C, 2*H, 2*W)
-	return conv(g, u, path+".upsamplers.0.resample.1", cout)
+	convPath := path + ".upsamplers.0.resample.1"
+	raw, shape, err := g.W.Get(convPath + ".weight")
+	if err != nil {
+		g.Fail("%v", err)
+	}
+	cin := x.Shape[1]
+	var k, kt int
+	switch len(shape) {
+	case 5:
+		k, kt = shape[3], shape[2]
+	case 4:
+		k, kt = shape[2], 1
+	default:
+		g.Fail("%s: weight shape %v", convPath, shape)
+	}
+	if shape[0] != cout || shape[1] != cin || k != 3 {
+		g.Fail("%s: weight %v for %d to %d channels, want 3 x 3", convPath, shape, cin, cout)
+	}
+	wt := make([]float32, cout*cin*9)
+	for o := 0; o < cout*cin; o++ {
+		copy(wt[o*9:(o+1)*9], raw[(o*kt+kt-1)*9:][:9])
+	}
+	return g.UpsampleConv2D(x, convPath, wt, g.Get(convPath+".bias", cout), cout)
 }

@@ -1,6 +1,7 @@
 package mlpackage
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ const blobAlign = 64
 // MIL const refers to is that of the metadata record.
 type BlobWriter struct {
 	w     *os.File
+	bw    *bufio.Writer
 	pos   int64
 	count uint32
 	err   error
@@ -39,7 +41,7 @@ func NewBlobWriter(path string) (*BlobWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &BlobWriter{w: f}
+	b := &BlobWriter{w: f, bw: bufio.NewWriterSize(f, 256<<10)}
 	b.write(make([]byte, blobAlign))
 	return b, b.err
 }
@@ -51,7 +53,7 @@ func (b *BlobWriter) write(p []byte) {
 	if b.err != nil {
 		return
 	}
-	n, err := b.w.Write(p)
+	n, err := b.bw.Write(p)
 	b.pos += int64(n)
 	b.err = err
 }
@@ -85,6 +87,11 @@ func (b *BlobWriter) Add(dtype BlobDType, data []byte) (uint64, error) {
 func (b *BlobWriter) Close() error {
 	if b.err == nil {
 		b.pad()
+		if err := b.bw.Flush(); err != nil {
+			b.err = err
+		}
+	}
+	if b.err == nil {
 		hdr := make([]byte, blobAlign)
 		binary.LittleEndian.PutUint32(hdr[0:], b.count)
 		binary.LittleEndian.PutUint32(hdr[4:], 2)

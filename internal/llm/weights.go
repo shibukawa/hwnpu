@@ -83,9 +83,10 @@ func (w stWeights) Shape(name string) ([]int, bool) {
 	return t.Shape, ok
 }
 
-func (w stWeights) Source() string { return "safetensors " + filepath.Base(w.path) }
-func (w stWeights) Path() string   { return w.path }
-func (w stWeights) Close() error   { return w.f.Close() }
+func (w stWeights) Source() string                  { return "safetensors " + filepath.Base(w.path) }
+func (w stWeights) Path() string                    { return w.path }
+func (w stWeights) Close() error                    { return w.f.Close() }
+func (w stWeights) Prefetch(maxWillNeed int64)      { _ = w.f.PrefetchAsync(maxWillNeed) }
 
 type ggufWeights struct {
 	f    *gguf.File

@@ -191,8 +191,14 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 			return fmt.Sprintf("%d functions, %.2f GiB", len(fns), float64(rs[0].WeightBytes)/(1<<30)), nil
 		})
 	}
-	// a job holds its program's weights (up to the target's limit, a few GiB) and the tensors it reads
-	if err := jobs.Run(4 << 30); err != nil {
+	// a job holds its program's weights (up to the target's limit, a few GiB) and the tensors it reads.
+	// Size perJob to at least 2x target.MaxBytes so multi-part exports do not overlap peak RSS on
+	// 8-16 GiB machines.
+	perJob := int64(4 << 30)
+	if target.MaxBytes > 0 {
+		perJob = max(perJob, target.MaxBytes*2)
+	}
+	if err := jobs.Run(perJob); err != nil {
 		return nil, err
 	}
 	warned := map[string]bool{}

@@ -6,7 +6,49 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
+
+// MapFile maps the whole file read-only so subsequent Float32Range / int8Range lookups read
+// directly from the mapping without ReadAt syscalls or temporary byte allocations.
+func (f *File) MapFile() error {
+	if f.mapped != nil {
+		return nil
+	}
+	fi, err := f.f.Stat()
+	if err != nil {
+		return err
+	}
+	if fi.Size() == 0 {
+		return nil
+	}
+	b, err := syscall.Mmap(int(f.f.Fd()), 0, int(fi.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
+	if err != nil {
+		return fmt.Errorf("safetensors: mapping %s: %w", f.f.Name(), err)
+	}
+	f.mapped = b
+	return nil
+}
+
+// PrefetchAsync maps the file read-only and, when its size is at most maxWillNeed bytes, issues
+// madvise(MADV_WILLNEED) asynchronously so large embedding / PLE tables warm in the page cache
+// while the NPU programs load. Close waits for any in-flight madvise before unmapping.
+func (f *File) PrefetchAsync(maxWillNeed int64) error {
+	if err := f.MapFile(); err != nil {
+		return err
+	}
+	if maxWillNeed <= 0 || len(f.mapped) == 0 || int64(len(f.mapped)) > maxWillNeed {
+		return nil
+	}
+	b := f.mapped
+	f.prefetchWG.Add(1)
+	go func() {
+		defer f.prefetchWG.Done()
+		_ = unix.Madvise(b, unix.MADV_WILLNEED)
+	}()
+	return nil
+}
 
 // Map returns a tensor's raw data in the file mapped into memory (read only), without reading it:
 // the system reads the pages as they are touched and may drop them again, so a checkpoint larger
@@ -16,21 +58,14 @@ func (f *File) Map(name string) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("safetensors: no tensor %q", name)
 	}
-	if f.mapped == nil {
-		fi, err := f.f.Stat()
-		if err != nil {
-			return nil, err
-		}
-		b, err := syscall.Mmap(int(f.f.Fd()), 0, int(fi.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
-		if err != nil {
-			return nil, fmt.Errorf("safetensors: mapping %s: %w", f.f.Name(), err)
-		}
-		f.mapped = b
+	if err := f.MapFile(); err != nil {
+		return nil, err
 	}
 	return f.mapped[f.dataBase+t.begin : f.dataBase+t.end : f.dataBase+t.end], nil
 }
 
 func (f *File) unmap() {
+	f.prefetchWG.Wait()
 	if f.mapped != nil {
 		syscall.Munmap(f.mapped)
 		f.mapped = nil

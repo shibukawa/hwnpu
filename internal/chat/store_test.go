@@ -306,3 +306,64 @@ func TestResume(t *testing.T) {
 		t.Errorf("a mark lacking a buffer: no error")
 	}
 }
+
+// Resuming a stateful model from an unaligned position snaps subsequent multi-chunk prefill
+// steps onto exact deterministic markEvery grid multiples, keeping store marks and chunk
+// boundaries aligned with a cold read.
+func TestEngineStoreDeterministicGrid(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(cfg)
+	const cache = 40
+	short, long := cpuProgram(t, cfg, w, 1, cache), cpuProgram(t, cfg, w, 4, cache)
+	for name := range long.In {
+		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+			long.In[name] = short.In[name]
+		}
+	}
+	sess, err := decode.New(short, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Add(long); err != nil {
+		t.Fatal(err)
+	}
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{sess: sess, w: w, model: cfg, emb: map[int32][]float32{}, store: st}
+	defer func(a, b, c int) { markEvery, minStored, maxStored = a, b, c }(markEvery, minStored, maxStored)
+	markEvery, minStored, maxStored = 8, 8, 4
+
+	rng := rand.New(rand.NewPCG(19, 20))
+	full := make([]int32, 26)
+	for i := range full {
+		full[i] = int32(rng.IntN(cfg.VocabSize))
+	}
+	// First prompt ends at unaligned position 5 (< minStored).
+	var s1 Stats
+	if _, err := e.prefill(context.Background(), full[:5], &s1); err != nil {
+		t.Fatal(err)
+	}
+	// Second prompt continues from 5 to 26: must snap to exact grid marks 8, 16, 24 (not 9, 17, 25).
+	var s2 Stats
+	got, err := e.prefill(context.Background(), full, &s2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Reused != 5 {
+		t.Fatalf("reused %d, want 5", s2.Reused)
+	}
+	if len(st.entries) != 1 {
+		t.Fatalf("entries %d, want 1", len(st.entries))
+	}
+	if want := []int{8, 16, 24, 26}; !slices.Equal(st.entries[0].Marks, want) {
+		t.Errorf("grid marks = %v, want %v", st.entries[0].Marks, want)
+	}
+	if d := relErr(got, refLogits(t, cfg, w, cache, full)); d > 2e-3 {
+		t.Errorf("relative error %g against cold read", d)
+	}
+}

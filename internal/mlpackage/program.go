@@ -34,14 +34,33 @@ type Var struct {
 	Shape []int // nil for a scalar
 }
 
+// OpCache shares emitted zero-input weight operations (const, constexpr_lut_to_dense,
+// constexpr_blockwise_shift_scale) across Builders writing to the same BlobWriter so shared
+// weights are read, quantized, and written to the blob file once.
+type OpCache struct {
+	ops map[string]cachedOp
+}
+
+type cachedOp struct {
+	op    *milspec.Operation
+	dtype milspec.DataType
+	shape []int
+}
+
+// NewOpCache creates an empty OpCache for Builders sharing a BlobWriter.
+func NewOpCache() *OpCache {
+	return &OpCache{ops: map[string]cachedOp{}}
+}
+
 // Builder assembles one MIL function (main) and its constants.
 type Builder struct {
-	opset  string
-	blobs  *BlobWriter
-	inputs []*milspec.NamedValueType
-	ops    []*milspec.Operation
-	names  map[string]bool
-	seq    int
+	opset   string
+	blobs   *BlobWriter
+	opCache *OpCache
+	inputs  []*milspec.NamedValueType
+	ops     []*milspec.Operation
+	names   map[string]bool
+	seq     int
 	// ImmediateLimit is the largest constant, in bytes, kept inline in the program; larger ones go
 	// to the weight file. coremltools uses a similar threshold.
 	ImmediateLimit int
@@ -51,6 +70,54 @@ type Builder struct {
 // larger than ImmediateLimit are written to blobs, which must not be nil in that case.
 func NewBuilder(opset string, blobs *BlobWriter) *Builder {
 	return &Builder{opset: opset, blobs: blobs, names: map[string]bool{}, ImmediateLimit: 256}
+}
+
+// ShareOps attaches c so CachedOp can reuse weight operations written to the same BlobWriter
+// across multiple Builders.
+func (b *Builder) ShareOps(c *OpCache) { b.opCache = c }
+
+// HasOpCache reports whether an OpCache is attached to b.
+func (b *Builder) HasOpCache() bool { return b.opCache != nil }
+
+// HasCachedOp reports whether key is already present in b's OpCache.
+func (b *Builder) HasCachedOp(key string) bool {
+	if b.opCache == nil {
+		return false
+	}
+	_, ok := b.opCache.ops[key]
+	return ok
+}
+
+// CachedOp emits a copy of the single zero-input operation previously built under key (with its
+// output named from baseName via unique), or runs build to emit and cache it when absent or when
+// no OpCache is attached.
+func (b *Builder) CachedOp(key, baseName string, build func() (*Var, error)) (*Var, error) {
+	if b.opCache != nil {
+		if e, ok := b.opCache.ops[key]; ok {
+			name := b.unique(baseName)
+			attrs := make(map[string]*milspec.Value, len(e.op.Attributes))
+			for k, v := range e.op.Attributes {
+				attrs[k] = v
+			}
+			attrs["name"] = stringValue(name)
+			b.ops = append(b.ops, &milspec.Operation{
+				Type:       e.op.Type,
+				Inputs:     e.op.Inputs,
+				Attributes: attrs,
+				Outputs:    []*milspec.NamedValueType{{Name: name, Type: e.op.Outputs[0].Type}},
+			})
+			return &Var{Name: name, DType: e.dtype, Shape: slices.Clone(e.shape)}, nil
+		}
+	}
+	start := len(b.ops)
+	v, err := build()
+	if err != nil {
+		return nil, err
+	}
+	if b.opCache != nil && len(b.ops) == start+1 {
+		b.opCache.ops[key] = cachedOp{op: b.ops[start], dtype: v.DType, shape: slices.Clone(v.Shape)}
+	}
+	return v, nil
 }
 
 // unique makes a value name the loader accepts (letters, digits and underscores; a name with
@@ -459,6 +526,59 @@ func (b *Builder) scaled(name string, bits int, shape, block []int, data []byte,
 		return nil, err
 	}
 	return b.op("constexpr_blockwise_shift_scale", b.unique(name), map[string]any{"data": dv, "scale": sv}, Float16, shape), nil
+}
+
+// ShiftScaleMinVal is an asymmetric blockwise quantized weight (uint4 or uint8 data, fp16 scales,
+// fp16 per-block minimums: v = min + data * scale) lowered by ailower to Core AI's
+// blockwise_shift_scale_v2 with non-zero minimum.
+func (b *Builder) ShiftScaleMinVal(name string, shape, block []int, bits int, data []byte, scales, mins []uint16) (*Var, error) {
+	if bits != 4 && bits != 8 {
+		return nil, fmt.Errorf("mlpackage: %s: %d bit minval (4 or 8 only)", name, bits)
+	}
+	if len(block) != len(shape) {
+		return nil, fmt.Errorf("mlpackage: %s: %d block dims for %d tensor dims", name, len(block), len(shape))
+	}
+	n, tables := 1, 1
+	scaleShape := make([]int, len(shape))
+	for i, d := range shape {
+		if block[i] <= 0 || d%block[i] != 0 {
+			return nil, fmt.Errorf("mlpackage: %s: axis %d of %v not a multiple of block %v", name, i, shape, block)
+		}
+		n *= d
+		scaleShape[i] = d / block[i]
+		tables *= scaleShape[i]
+	}
+	dt, bt, size := UInt4, BlobUInt4, (n+1)/2
+	if bits == 8 {
+		dt, bt, size = UInt8, BlobUInt8, n
+	}
+	if len(data) != size || len(scales) != tables || len(mins) != tables {
+		return nil, fmt.Errorf("mlpackage: %s: %d data bytes, %d scales, %d mins for shape %v block %v", name, len(data), len(scales), len(mins), shape, block)
+	}
+	dv, err := b.constValue(dt, shape, data, bt)
+	if err != nil {
+		return nil, err
+	}
+	packF16 := func(hs []uint16) (*milspec.Value, error) {
+		raw := make([]byte, 2*len(hs))
+		for i, h := range hs {
+			binary.LittleEndian.PutUint16(raw[2*i:], h)
+		}
+		save := b.ImmediateLimit
+		b.ImmediateLimit = 0
+		v, err := b.constValue(Float16, scaleShape, raw, BlobFloat16)
+		b.ImmediateLimit = save
+		return v, err
+	}
+	sv, err := packF16(scales)
+	if err != nil {
+		return nil, err
+	}
+	mv, err := packF16(mins)
+	if err != nil {
+		return nil, err
+	}
+	return b.op("constexpr_blockwise_shift_scale", b.unique(name), map[string]any{"data": dv, "scale": sv, "min": mv}, Float16, shape), nil
 }
 
 // Finish returns the program with the given outputs.

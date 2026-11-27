@@ -113,7 +113,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		}
 		var b *hwnpu.Buffer
 		if a.Kind == hwnpu.ArgOutput {
-			b, err = c.dev.AllocBuffer(a.Bytes)
+			b, err = g.AllocOutput(a.Index)
 		} else {
 			b, err = g.AllocInput(a.Index)
 		}
@@ -307,9 +307,8 @@ func loadRows(ctx context.Context, c *Chain, path string) (*moeRows, error) {
 	if mr.zero, err = in("acc"); err != nil { // zeros: the first expert's acc
 		return fail(err)
 	}
-	n := g.Args()[mr.y].Bytes
 	for j := range mr.ys {
-		if mr.ys[j], err = c.dev.AllocBuffer(n); err != nil {
+		if mr.ys[j], err = g.AllocOutput(mr.y); err != nil {
 			return fail(err)
 		}
 	}

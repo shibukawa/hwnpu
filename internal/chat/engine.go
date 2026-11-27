@@ -335,6 +335,11 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if e.w, err = llm.OpenWeights(c.Weights, a); err != nil {
 		return nil, err
 	}
+	// Map the embedding / PLE tables file read-only (zero-syscall token lookups) and warm it
+	// asynchronously with MADV_WILLNEED while the NPU programs load, when it fits well inside RAM.
+	if pf, ok := e.w.(interface{ Prefetch(maxWillNeed int64) }); ok {
+		pf.Prefetch(mem.Physical() / 8)
+	}
 	if e.dev, _, err = llm.OpenDevice(ctx, c.Backend, c.CacheDir); err != nil {
 		e.Close()
 		return nil, err
@@ -1012,6 +1017,12 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		mine = append(mine[:0], l...)
 		return mine
 	}
+	// Reusable prefix buffer for drafters (avoids cloning the full prompt history every token).
+	var seqBuf []int32
+	if k > 0 {
+		seqBuf = make([]int32, len(e.cur.fed), len(e.cur.fed)+128)
+		copy(seqBuf, e.cur.fed)
+	}
 	next := r.pick(own(logits), gen, rng)
 	for {
 		// next is generated and not in the cache yet
@@ -1055,7 +1066,11 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 				room = min(room, think.Budget-thought)
 			}
 			if room > 0 {
-				seq := append(slices.Clone(e.cur.fed), next)
+				if len(seqBuf) > len(e.cur.fed) {
+					seqBuf = seqBuf[:len(e.cur.fed)]
+				}
+				seqBuf = append(seqBuf, e.cur.fed[len(seqBuf):]...)
+				seq := append(seqBuf, next)
 				if pol == nil {
 					drafts = e.drafter(seq, min(k, room))
 				} else if drafts, match = lookupDraft(seq, min(k, room)); len(drafts) > 0 && !pol.take(match, len(drafts)) {
@@ -1278,6 +1293,14 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			// the program that reads prompts gives no logits: the last tokens go through the one
 			// that generates, which does
 			k = min(rest-g, e.sess.Q())
+		}
+		if e.store != nil && !e.self && markEvery > 0 && rest > k {
+			// Snap stateful/hybrid prefill onto deterministic markEvery grid boundaries whenever
+			// more prompt follows, so store marks land on exact grid multiples and subsequent
+			// prefill chunks match a cold read's chunk alignment (preventing recurrent fp16 drift).
+			if grid := (fed/markEvery + 1) * markEvery; grid > fed && grid < fed+k {
+				k = grid - fed
+			}
 		}
 		if cut > fed && cut < fed+k {
 			k = cut - fed

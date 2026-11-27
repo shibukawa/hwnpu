@@ -219,6 +219,11 @@ func (t *talker) answer(msg text.Message) error {
 		if b, ok := mem.NPUWired(); ok {
 			fmt.Fprintf(os.Stderr, "profile: the Neural Engine holds %.2f GiB\n", float64(b)/(1<<30))
 		}
+		if pm, ok := mem.ProcessMemory(); ok {
+			fmt.Fprintf(os.Stderr, "profile: process footprint %.2f GiB (peak %.2f GiB, external %.2f GiB, neural_nofp %.2f GiB)\n",
+				float64(pm.PhysFootprint)/(1<<30), float64(pm.PeakFootprint)/(1<<30),
+				float64(pm.External)/(1<<30), float64(pm.NeuralNoFootprint)/(1<<30))
+		}
 	}
 	return nil
 }

@@ -93,10 +93,10 @@ func VaeProgram(v Vae, w, h, i int) *Part {
 			case "attn":
 				x = vaeAttn(g, x, op.Path, v.Groups)
 			case "up":
-				C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
-				u := g.Op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": g.B.ScalarI32(2),
-					"scale_factor_width": g.B.ScalarI32(2)}, 1, C, 2*H, 2*W)
-				x = conv(g, u, op.Path, op.Out, 3)
+				cin := x.Shape[1]
+				wt := g.Get(op.Path+".weight", op.Out, cin, 3, 3)
+				bias := g.Get(op.Path+".bias", op.Out)
+				x = g.UpsampleConv2D(x, op.Path, wt, bias, op.Out)
 			case "head":
 				x = g.SiLU(GroupNorm(g, x, "vae.decoder.conv_norm_out", v.Groups, 1e-6))
 				x = conv(g, x, "vae.decoder.conv_out", 3, 3)
@@ -138,7 +138,7 @@ func GroupNorm(g *graph, x *mlpackage.Var, path string, groups int, eps float64)
 	}
 	t := g.Reshape(x, 1, groups, n/b, b)
 	reduce := func(typ string, y *mlpackage.Var) *mlpackage.Var { return g.Reduce(typ, g.Reduce(typ, y, 3), 2) }
-	abs := g.Op("maximum", map[string]any{"x": t, "y": g.Scale(t, -1)}, t.Shape...)
+	abs := g.Unary("abs", t)
 	m := g.Op("maximum", map[string]any{"x": reduce("max", abs), "y": g.B.ScalarF16(1e-3)}, 1, groups, 1, 1)
 	t = g.Div(t, m)
 	d := g.Sub(t, reduce("mean", t))

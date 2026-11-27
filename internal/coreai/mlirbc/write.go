@@ -31,9 +31,10 @@ type Writer struct {
 	types    []entry
 	typeIdx  map[string]int
 	res      []resource
-	props    [][]byte
-	locs     int // the locations made
-	resByKey map[string]bool
+	props     [][]byte
+	locs      int // the locations made
+	sharedLoc int // cached shared location_v1 attr index + 1 (0 when unset)
+	resByKey  map[string]bool
 
 	// spill, when set (Spill), holds the blobs' bytes from Blob to WriteTo: a weight is held in
 	// memory only while it is added, not until the file is written
@@ -82,11 +83,21 @@ func NewWriter(producer string, versions map[string][]byte) *Writer {
 	return w
 }
 
-// Loc is a new location attribute: Core AI's own (aicode.debuginfo.location_v1, as coreai-core
-// writes them), its op_id the next number; Core AI does not take builtin locations.
+const sharedLocationV1 = `#aicode.debuginfo.location_v1<src = <file = <filename = "-", directory = "", sha256Sum = "">, startLine = 0, startColumn = 0, endLine = 0, endColumn = 0>, scope = #aicode.unit_v1, metadata = <"op_id": <value = #aicode.serialization.dictionary<{<"type" = [#aicode.serialization.string<"coreai">]>, <"value" = [#aicode.serialization.integer<(64bit unsigned) 0>]>}>>>>`
+
+// Loc returns Core AI's location attribute (aicode.debuginfo.location_v1; Core AI does not take
+// builtin locations). When Trace is nil (release export), all ops share a single location_v1
+// attribute (op_id 0) so large graphs do not bloat the attribute table with thousands of unique
+// debug strings; when Trace is set, each op gets a unique sequential op_id.
 func (w *Writer) Loc() int {
 	id := w.locs
 	w.locs++
+	if w.Trace == nil {
+		if w.sharedLoc == 0 {
+			w.sharedLoc = w.Attr("aicode", sharedLocationV1) + 1
+		}
+		return w.sharedLoc - 1
+	}
 	return w.Attr("aicode", fmt.Sprintf(`#aicode.debuginfo.location_v1<src = <file = <filename = "-", directory = "", sha256Sum = "">, startLine = 0, startColumn = 0, endLine = 0, endColumn = 0>, scope = #aicode.unit_v1, metadata = <"op_id": <value = #aicode.serialization.dictionary<{<"type" = [#aicode.serialization.string<"coreai">]>, <"value" = [#aicode.serialization.integer<(64bit unsigned) %d>]>}>>>>`, id))
 }
 

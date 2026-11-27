@@ -57,10 +57,20 @@ var (
 	caiRun   func(h uintptr, ins, outs *uintptr, err **byte) int32
 	// caiForget deletes Core AI's cache entries of an asset
 	caiForget func(path *byte)
-	// caiInputArray makes an array of an input, whose storage the caller fills in place, and
-	// caiArrayFree frees it
-	caiInputArray func(h uintptr, index int32) unsafe.Pointer
-	caiArrayFree  func(p unsafe.Pointer)
+	// caiHasEntry checks Core AI's cache via AIModelCache.default.model(for:options:) without compiling
+	caiHasEntry func(path *byte, kind int32) int32
+	// caiAssetValid and caiAssetFunctions inspect an .aimodel/.aimodelc via AIModelAsset without
+	// materializing weights or triggering compilation
+	caiAssetValid     func(path *byte) int32
+	caiAssetFunctions func(path *byte, err **byte) *byte
+	// caiArgBytes returns Core AI's expected dense byte count for an input (which 0) or output (1)
+	caiArgBytes func(h uintptr, which, index int32) int64
+	// caiInputArray and caiOutputArray make arrays of an input/output whose storage the caller
+	// accesses in place, and caiArrayFree frees them
+	caiInputArray  func(h uintptr, index int32) unsafe.Pointer
+	caiOutputArray func(h uintptr, index int32) unsafe.Pointer
+	caiArrayFree   func(p unsafe.Pointer)
+	caiCowMoves    func() int64
 )
 
 // kindNeuralEngine is the shim's specialization: prefer the Neural Engine. kindCPU: the CPU alone.
@@ -158,8 +168,14 @@ func load() error {
 		purego.RegisterLibFunc(&caiRun, h, "cai_run")
 		// the shim is the one embedded (shimLib), named by its hash: it has every function
 		purego.RegisterLibFunc(&caiForget, h, "cai_forget")
+		purego.RegisterLibFunc(&caiHasEntry, h, "cai_has_entry")
+		purego.RegisterLibFunc(&caiAssetValid, h, "cai_asset_valid")
+		purego.RegisterLibFunc(&caiAssetFunctions, h, "cai_asset_functions")
+		purego.RegisterLibFunc(&caiArgBytes, h, "cai_arg_bytes")
 		purego.RegisterLibFunc(&caiInputArray, h, "cai_input_array")
+		purego.RegisterLibFunc(&caiOutputArray, h, "cai_output_array")
 		purego.RegisterLibFunc(&caiArrayFree, h, "cai_array_free")
+		purego.RegisterLibFunc(&caiCowMoves, h, "cai_cow_moves")
 	})
 	return loadErr
 }
@@ -187,6 +203,33 @@ func Arch() string {
 		return ""
 	}
 	return goString(caiArch())
+}
+
+// AssetValid reports whether dir is a structurally valid Core AI model asset (.aimodel or
+// .aimodelc) via AIModelAsset.isValid(at:), without loading weights or triggering compilation.
+func AssetValid(dir string) bool {
+	if load() != nil {
+		return false
+	}
+	return caiAssetValid(cString(dir)) != 0
+}
+
+// AssetFunctions returns the function names declared in the Core AI model asset at dir via
+// AIModelAsset.summary(includingStatistics: false), without materializing weights.
+func AssetFunctions(dir string) ([]string, error) {
+	if err := load(); err != nil {
+		return nil, err
+	}
+	var e *byte
+	p := caiAssetFunctions(cString(dir), &e)
+	if p == nil {
+		return nil, fmt.Errorf("coreai: inspect %s: %s", dir, goString(e))
+	}
+	s := goString(p)
+	if s == "" {
+		return nil, nil
+	}
+	return strings.Split(s, "\n"), nil
 }
 
 // Provider is the Core AI backend provider.
@@ -362,23 +405,11 @@ func packed(pb string) bool {
 	return found
 }
 
-// hasEntry reports whether Core AI's cache holds the program of the asset at dir for this
-// process: its entries are under the OS's build and the executable's name
-// (~/Library/Caches/coreai-cache/26B123/hwnpu-image/HASH/DEVICE/model.aimodelx). An entry
-// without main-this.odix makes Core AI compile the bytecode again; one without its delegates
-// fails to load, and is lowered again. Anything it cannot read says no.
-func hasEntry(dir string) bool {
-	d := entryDir(dir)
-	if d == "" {
-		return false
-	}
-	entries, _ := filepath.Glob(filepath.Join(d, "*", "model.aimodelx", "main-this.odix"))
-	for _, e := range entries {
-		if fi, err := os.Stat(e); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
-			return true
-		}
-	}
-	return false
+// hasEntry reports whether Core AI's cache already holds a specialized entry for the asset at dir
+// under the given specialization kind, via the official AIModelCache.default.model(for:options:)
+// API (which never triggers compilation and does not depend on private cache directory layout).
+func hasEntry(dir string, kind int32) bool {
+	return caiHasEntry(cString(dir), kind) != 0
 }
 
 // entryDir is the folder of Core AI's cache that holds the entries of the asset at dir for this
@@ -526,7 +557,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			kind = kindCPU
 		}
 		name, prebuilt, packedPB := dir, false, false
-		if !hasEntry(dir) {
+		if !hasEntry(dir, kind) {
 			// no entry yet: a prebuilt program fills it, here or from the shared layers
 			pb := Prebuilt(dir)
 			if pb == "" {
@@ -691,10 +722,15 @@ func (g *graph) describe(dir, fn string) error {
 		}
 	}
 	for which := 0; which < 2; which++ {
-		for _, n := range strings.Split(goString(caiNames(g.h, int32(which))), "\n") {
+		for pos, n := range strings.Split(goString(caiNames(g.h, int32(which))), "\n") {
 			i, ok := index[n]
 			if !ok {
 				return fmt.Errorf("coreai: the program has %q, not in its description", n)
+			}
+			// Verify static tensor byte size against Core AI's InferenceFunctionDescriptor
+			// before execution (a mismatch on a static function causes an uncatchable SIGKILL).
+			if want := caiArgBytes(g.h, int32(which), int32(pos)); want >= 0 && int64(g.args[i].Bytes) != want {
+				return fmt.Errorf("coreai: %s %q is %d bytes in its description, Core AI expects %d", g.args[i].Kind, n, g.args[i].Bytes, want)
 			}
 			g.order[which] = append(g.order[which], i)
 		}
@@ -729,18 +765,50 @@ func (g *graph) AllocInput(index int) (backend.Buffer, error) {
 	return nil, nil
 }
 
+// AllocOutput makes the buffer of the output index as an array of Core AI's, which cai_run writes
+// directly via outputViews (zero allocation, zero copy) and which may also be bound to any input
+// of that shape of another program with zero copy on both sides (backend.OutputAllocator).
+func (g *graph) AllocOutput(index int) (backend.Buffer, error) {
+	if g.h == 0 {
+		return nil, nil
+	}
+	if index < 0 || index >= len(g.args) || g.args[index].Kind != types.ArgOutput {
+		return nil, fmt.Errorf("coreai: argument %d is not an output", index)
+	}
+	for i, a := range g.order[1] {
+		if a != index {
+			continue
+		}
+		g.mu.Lock()
+		p := caiOutputArray(g.h, int32(i))
+		g.mu.Unlock()
+		if p == nil {
+			return nil, nil
+		}
+		return &buffer{b: unsafe.Slice((*byte)(p), g.args[index].Bytes), array: p}, nil
+	}
+	return nil, nil
+}
+
 func (g *graph) Args() []types.ArgInfo            { return g.args }
 func (g *graph) Cached() bool                     { return g.cached }
 func (g *graph) Placement() types.PlacementReport { return g.placement }
 func (g *graph) NewRequest() (backend.Request, error) {
-	return &request{g: g, binds: make([]*buffer, len(g.args))}, nil
+	return &request{
+		g:     g,
+		binds: make([]*buffer, len(g.args)),
+		ins:   make([]uintptr, len(g.order[0])+1),
+		outs:  make([]uintptr, len(g.order[1])+1),
+	}, nil
 }
 
 func (g *graph) Close() error {
+	g.mu.Lock()
 	if g.h != 0 {
 		caiClose(g.h)
 		g.h = 0
 	}
+	g.mu.Unlock()
 	if g.onANE {
 		g.onANE = false
 		aneLive.Add(-1)
@@ -801,9 +869,10 @@ func fullyPlaced(manifest []byte, fn string) bool {
 }
 
 type request struct {
-	g     *graph
-	binds []*buffer
-	mu    sync.Mutex
+	g         *graph
+	binds     []*buffer
+	ins, outs []uintptr
+	mu        sync.Mutex
 }
 
 func (r *request) Bind(index int, b backend.Buffer) error {
@@ -825,21 +894,19 @@ func (r *request) Submit() (backend.Fence, error) {
 			return nil, fmt.Errorf("coreai: argument %d (%s) is not bound", i, r.g.args[i].Name)
 		}
 	}
-	ptrs := func(order []int) []uintptr {
-		out := make([]uintptr, len(order)+1)
-		for i, a := range order {
-			out[i] = uintptr(unsafe.Pointer(&r.binds[a].b[0]))
-		}
-		return out
+	for i, a := range r.g.order[0] {
+		r.ins[i] = uintptr(unsafe.Pointer(&r.binds[a].b[0]))
 	}
-	ins, outs := ptrs(r.g.order[0]), ptrs(r.g.order[1])
+	for i, a := range r.g.order[1] {
+		r.outs[i] = uintptr(unsafe.Pointer(&r.binds[a].b[0]))
+	}
 	r.g.mu.Lock()
 	defer r.g.mu.Unlock()
 	if r.g.h == 0 {
 		return nil, errors.New("coreai: the program is closed")
 	}
 	var e *byte
-	rc := caiRun(r.g.h, &ins[0], &outs[0], &e)
+	rc := caiRun(r.g.h, &r.ins[0], &r.outs[0], &e)
 	f := &fence{}
 	pb := r.g.pb
 	r.g.pb = nil

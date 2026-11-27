@@ -33,6 +33,9 @@ type mtpDrafter struct {
 	// ids are the tokens of the layer's logits, in order, when they are of a part of the
 	// vocabulary (draftVocab); nil: all of it
 	ids []int32
+	// scan, when non-nil, scores the MTP layer's hidden state h on CPU over the full vocabulary
+	// (0% OOV) when the MTP program was exported without lm_head (Options.Hidden).
+	scan *DraftScan
 
 	// fed is the sequence the hidden states and the entries are of; hrows the model's final
 	// hidden states at positions [hbase, hbase+len(hrows)) of it
@@ -279,6 +282,33 @@ func loadMTP(ctx context.Context, e *Engine, c Config) (*mtpDrafter, error) {
 			return nil, err
 		}
 	}
+	// Auto-detect hidden-only MTP programs (exported with Options.Hidden, no lm_head on NPU):
+	// load or build the CPU DraftScan index (cached on disk beside the MTP export).
+	if m.ids == nil {
+		parts := m.chains[0].Parts()
+		if len(parts) > 0 {
+			shape := parts[len(parts)-1].Output.Shape
+			vocab, isLogits := main.Output()
+			hiddenDim := main.Hidden()
+			if isLogits && len(shape) > 0 && shape[len(shape)-1] == hiddenDim && hiddenDim < vocab {
+				headName := main.Embedding()
+				if hm, ok := main.(interface{ Head() string }); ok && hm.Head() != "" {
+					headName = hm.Head()
+				}
+				srcPath := c.Weights
+				if cp, ok := e.w.(llm.CheckpointPath); ok {
+					srcPath = cp.Path()
+				}
+				cachePath := filepath.Join(filepath.Dir(c.MTP[0]), draftScanFile)
+				ds, err := LoadOrBuildDraftScan(cachePath, srcPath, e.w, headName, vocab, hiddenDim)
+				if err != nil {
+					m.close()
+					return nil, fmt.Errorf("chat: mtp draftscan: %w", err)
+				}
+				m.scan = ds
+			}
+		}
+	}
 	return m, nil
 }
 
@@ -419,11 +449,14 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 				return nil, err
 			}
 			h = m.sess.Hidden()
+			if h == nil && m.scan != nil {
+				h = logits // hidden-only MTP program outputs h directly as y
+			}
 		}
 		t += n
 		m.real += n
 	}
-	if m.ids != nil && len(logits) != len(m.ids) {
+	if m.scan == nil && m.ids != nil && len(logits) != len(m.ids) {
 		return nil, fmt.Errorf("chat: the multi-token prediction layer gave %d logits for a vocabulary of %d", len(logits), len(m.ids))
 	}
 	drafts := []int32{m.token(logits)}
@@ -439,14 +472,20 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 			return nil, err
 		}
 		h = m.sess.Hidden()
+		if h == nil && m.scan != nil {
+			h = logits
+		}
 		drafts = append(drafts, m.token(logits))
 	}
 	// back to the entries read for real
 	return drafts, m.sess.Truncate(m.real)
 }
 
-// token is the draft the logits give: their largest's token.
+// token is the draft the logits (or hidden state when DraftScan is active) give.
 func (m *mtpDrafter) token(logits []float32) int32 {
+	if m.scan != nil {
+		return m.scan.Scan(logits)
+	}
 	i := argmax(logits)
 	if m.ids != nil {
 		return m.ids[i]

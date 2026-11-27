@@ -1,7 +1,10 @@
 package vecops
 
+import "golang.org/x/sys/cpu"
+
 // haveKernels: every arm64 processor has NEON.
 var haveKernels = true
+var haveDotI8 = cpu.ARM64.HasASIMDDP
 
 //go:noescape
 func assign15NEON(dst *uint8, vals *float32, n int, mids *float32)
@@ -146,4 +149,18 @@ func f16ToF32Kernel(dst []float32, src []byte) int {
 const haveLUTRows = false
 
 func lutRowsKernel(acc *[16]float32, x *float32, n int, idx *byte, rows *[16]int32, off *[16]int32, table *float32) {
+}
+
+//go:noescape
+func dotI8SDOT(a, b *int8, n int) int32
+
+func dotI8Kernel(a, b []int8) (int, int32) {
+	if !haveDotI8 {
+		return 0, 0
+	}
+	n := len(a) &^ 63
+	if n == 0 {
+		return 0, 0
+	}
+	return n, dotI8SDOT(&a[0], &b[0], n)
 }

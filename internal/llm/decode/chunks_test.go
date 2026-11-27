@@ -144,3 +144,46 @@ func TestSmallerChunksChecked(t *testing.T) {
 		}
 	}
 }
+
+// Reset zeroes retained paged chunk buffers in place (preventing stale KV from overflowing masked
+// scores into Inf/NaN) without freeing them, and a partial step near a chunk boundary does not
+// prematurely grow the chunk for unused padding rows.
+func TestResetClearsChunksAndNoPrematureGrow(t *testing.T) {
+	const n, q = 64, 4
+	tab := newTables(n, 16)
+	var out []float32
+	s, err := New(smaller(fakeProgram(q, n, &tab, &out, true), q, 16, 32), fakeModel{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSparse(testSparse()); err != nil {
+		t.Fatal(err)
+	}
+	pick, _ := s.layout(testSparse(), q, true)
+	// 14 tokens then a partial step of 2 reaches 16 (exact chunk boundary): must stay in chunk 16
+	// even though q=4 would have pushed pos+q to 18.
+	steps(t, s, tab, &out, 0, 14, q, 0, pick)
+	steps(t, s, tab, &out, 14, 16, q, 0, pick)
+	if s.chunk != 16 {
+		t.Fatalf("chunk grew prematurely to %d at pos 16 (q=%d), want 16", s.chunk, q)
+	}
+	if s.HeldBytes() == 0 {
+		t.Fatal("expected allocated chunks before Reset")
+	}
+	s.Reset()
+	if s.HeldBytes() == 0 {
+		t.Fatal("Reset freed chunks instead of keeping them allocated")
+	}
+	for name, cs := range s.chunks {
+		for j, b := range cs {
+			if b == nil {
+				continue
+			}
+			for i, v := range b.Bytes() {
+				if v != 0 {
+					t.Fatalf("chunk %s[%d] byte %d = %d after Reset, want 0", name, j, i, v)
+				}
+			}
+		}
+	}
+}
