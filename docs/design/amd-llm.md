@@ -207,7 +207,7 @@ A prompt chunk checking 2–8 tokens costs a full chunk (3–9 decode steps): Qw
 
 ### Selective draft checks
 
-The three-row check now costs 1.96 decode steps for Qwen3.5-0.8B and 1.67 for 2B. On Ryzen AI 9 365, checking every draft made prose slower than decoding without drafts. The AMD-only `chat.draftPolicy` tracks the acceptance rate q by the length of the preceding match and checks only when `1 + q + q²` exceeds the check cost (default 1.8 decode steps, with a 3% margin). Drafts it skips still update q when compared with later tokens. `HWNPU_DEV=draft.policy=0` restores checking every draft; `HWNPU_DEV=draft.ratio` changes the cost and `HWNPU_DEV=draft.trace=FILE` records decisions. Apple and Intel are unchanged.
+The three-row check now costs 1.96 decode steps for Qwen3.5-0.8B and 1.67 for 2B. On Ryzen AI 9 365, checking every draft made prose slower than decoding without drafts. The AMD-only `chat.draftPolicy` tracks the acceptance rate q by the length of the preceding match and checks only when `1 + q + q²` exceeds the check cost (default 1.8 decode steps, with a 3% margin). Drafts it skips still update q when compared with later tokens. `HWNPU_DEV=iron.lookup.cost` changes the cost and `HWNPU_DEV=iron.lookup.trace=FILE` records decisions (checking every draft, `draft.policy=0`, was removed on 2026-11-27). Apple and Intel are unchanged.
 
 On 300-token, temperature-0 runs, prose on the 0.8B model went from 14.6 tok/s with every draft checked to 18.8 with the policy (18.8 without drafts); on 2B, 9.6 → 11.5 (11.2 without drafts). Copy-heavy answers retained their gains: code on 0.8B 26.9 → 27.2 tok/s, JSON on 2B 14.2 → 13.6. Temperature-0 output can differ between drafted and undrafted decoding; this is not investigated.
 

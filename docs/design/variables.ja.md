@@ -23,7 +23,7 @@
 実験、計測、トレース: 変換の別の形、方針を切る、トレースを書く。どれも利用者が既定で得るものを変えず、利用者の設定でもない。
 
 - 項目はカンマで区切る。項目は鍵だけ (入) か `KEY=VALUE`。鍵の群はドットの前 (`moe.`、`iron.`、`coreai.`、`ailower.`、
-  `mxfp4.`、`draft.`)。`HWNPU_DEV=moe.time,moe.prefetch=0,ailower.trace`
+  `mxfp4.`)。`HWNPU_DEV=moe.time,moe.prefetch=0,ailower.trace`
 - `internal/dev.Keys` が全部の鍵と働きを持つ。`TestKeysUsed` は、コードが読む鍵が全部そこにあり、そこにある鍵が全部読まれて
   いることを確かめる。知らない鍵は標準エラーに一度だけ出す
 - 呼ぶたびに読む (`dev.Get`、`On`、`IsOff`、`Value`、`Int`)。テストの `t.Setenv` が効くように
@@ -35,9 +35,9 @@
 | 前 | `HWNPU_DEV` の鍵 |
 |---|---|
 | `HWNPU_ANIMA_ATTENTION` | (2026-11-26 に削除) |
-| `HWNPU_DRAFT_POLICY` | `draft.policy` |
-| `HWNPU_DRAFT_RATIO` | `draft.ratio` |
-| `HWNPU_DRAFT_TRACE` | `draft.trace` |
+| `HWNPU_DRAFT_POLICY` | (2026-11-27 に削除) |
+| `HWNPU_DRAFT_RATIO` | `iron.lookup.cost` |
+| `HWNPU_DRAFT_TRACE` | `iron.lookup.trace` |
 | `HWNPU_MTP_DRAFTS` | `mtp.drafts` |
 | `HWNPU_IRON_DRAFTS` | `iron.drafts` |
 | `HWNPU_ROTATE` | (2026-11-26 に削除) |

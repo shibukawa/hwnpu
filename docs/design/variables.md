@@ -26,7 +26,7 @@ Experiments, measurements and traces: a conversion's other form, a policy off, a
 None changes what a user gets by default, and none is a setting of the user's.
 
 - Items separated by commas; an item is a key (on) or `KEY=VALUE`; a key's group goes before a
-  dot (`moe.`, `iron.`, `coreai.`, `ailower.`, `mxfp4.`, `draft.`). `HWNPU_DEV=moe.time,moe.prefetch=0,ailower.trace`.
+  dot (`moe.`, `iron.`, `coreai.`, `ailower.`, `mxfp4.`). `HWNPU_DEV=moe.time,moe.prefetch=0,ailower.trace`.
 - `internal/dev.Keys` lists every key with what it does; `TestKeysUsed` checks that every key the
   code reads is there and every key there is read. An unknown key is told once on standard error.
 - It is read at each call (`dev.Get`, `On`, `IsOff`, `Value`, `Int`), so that a test's
@@ -39,9 +39,9 @@ What were variables of their own:
 | Before | `HWNPU_DEV`'s key |
 |---|---|
 | `HWNPU_ANIMA_ATTENTION` | (removed 2026-11-26) |
-| `HWNPU_DRAFT_POLICY` | `draft.policy` |
-| `HWNPU_DRAFT_RATIO` | `draft.ratio` |
-| `HWNPU_DRAFT_TRACE` | `draft.trace` |
+| `HWNPU_DRAFT_POLICY` | (removed 2026-11-27) |
+| `HWNPU_DRAFT_RATIO` | `iron.lookup.cost` |
+| `HWNPU_DRAFT_TRACE` | `iron.lookup.trace` |
 | `HWNPU_MTP_DRAFTS` | `mtp.drafts` |
 | `HWNPU_IRON_DRAFTS` | `iron.drafts` |
 | `HWNPU_ROTATE` | (removed 2026-11-26) |

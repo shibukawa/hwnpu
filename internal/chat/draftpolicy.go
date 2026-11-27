@@ -24,14 +24,14 @@ import (
 // following the text at no cost. The cost is a constant and not the calls' times, so that the
 // choices, and with them the call that computes each token, are the same from run to run.
 //
-// HWNPU_DEV=draft.policy=0 checks every draft, as before; HWNPU_DEV=draft.ratio is the cost of a check in
-// steps; HWNPU_DEV=draft.trace=FILE adds a line a call, "KIND MATCH DRAFTS RIGHT MS" (step, check,
-// leave, and left when the drafts left unchecked are known: tools/amd/draft_analyze.py reads it).
+// HWNPU_DEV=iron.lookup.cost is the cost of a check in steps; HWNPU_DEV=iron.lookup.trace=FILE adds
+// a line a call, "KIND MATCH DRAFTS RIGHT MS" (step, check, leave, and left when the drafts left
+// unchecked are known: tools/amd/draft_analyze.py reads it). Checking every draft, as before the
+// policy, is gone (2026-11-27): prose ran slower than with no drafts (docs/design/amd-llm.md).
 type draftPolicy struct {
 	ok, bad [draftBuckets]float64 // drafts that were right, and drafts that ended a run, decayed
 	open    []openDraft           // drafts left unchecked, waiting for the tokens they guessed
 	ratio   float64               // a check's cost in steps
-	always  bool                  // check every draft, only counting
 	trace   *os.File
 }
 
@@ -40,7 +40,7 @@ const (
 	draftMargin  = 0.03 // a check must bring this much more than its cost
 	draftPrior   = 4.0  // the prior's weight, in drafts
 	draftDecay   = 0.99
-	// draftCheckSteps is what a check costs in steps unless HWNPU_DEV=draft.ratio says: between the
+	// draftCheckSteps is what a check costs in steps unless HWNPU_DEV=iron.lookup.cost says: between the
 	// two models measured (1.95 and 1.68).
 	draftCheckSteps = 1.8
 )
@@ -68,11 +68,11 @@ func draftBucket(n int) int {
 }
 
 func newDraftPolicy() *draftPolicy {
-	p := &draftPolicy{always: devenv.IsOff("draft.policy"), ratio: draftCheckSteps}
-	if r, err := strconv.ParseFloat(devenv.Value("draft.ratio"), 64); err == nil && r > 0 {
+	p := &draftPolicy{ratio: draftCheckSteps}
+	if r, err := strconv.ParseFloat(devenv.Value("iron.lookup.cost"), 64); err == nil && r > 0 {
 		p.ratio = r
 	}
-	if path := devenv.Value("draft.trace"); path != "" {
+	if path := devenv.Value("iron.lookup.trace"); path != "" {
 		p.trace, _ = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	}
 	return p
@@ -84,9 +84,6 @@ func (p *draftPolicy) q(b int) float64 {
 
 // take reports whether to check n drafts behind a match of match tokens.
 func (p *draftPolicy) take(match, n int) bool {
-	if p.always {
-		return true
-	}
 	q := p.q(draftBucket(match))
 	e, t := 1.0, 1.0
 	for range n {
