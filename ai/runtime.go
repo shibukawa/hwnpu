@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/aieng"
 	"github.com/shibukawa/hwnpu/internal/airole"
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
@@ -246,7 +246,7 @@ func (rt *Runtime) get(ctx context.Context, r requirement) (io.Closer, error) {
 		share.attach(log)
 		log = share
 	}
-	l, err := r.role.Load(chat.WithModel(ctx, m), loc.Files, airole.LoadEnv{Model: loc.Model, Def: m, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log, AllowOffNPU: rt.o.allowOffNPU, Settings: rt.o.settings[r.role.Name]})
+	l, err := r.role.Load(aieng.Must().WithModel(ctx, m), loc.Files, airole.LoadEnv{Model: loc.Model, Def: m, NPU: rt.npu, Cache: rt.app.Store.cacheDir(), Log: log, AllowOffNPU: rt.o.allowOffNPU, Settings: rt.o.settings[r.role.Name]})
 	if err != nil {
 		loaded.Store(true)
 		tell(StageDone, "")

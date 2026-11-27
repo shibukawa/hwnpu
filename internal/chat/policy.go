@@ -95,16 +95,6 @@ func ParsePolicy(items []string, from string) ([]Rule, error) {
 	return rules, nil
 }
 
-// PolicyError is the error of a model the policy refuses.
-type PolicyError struct {
-	Model string
-	Why   string // what refuses it
-}
-
-func (e *PolicyError) Error() string {
-	return fmt.Sprintf("chat: %s is not allowed by the model policy (%s, policy of models.yaml): %s", e.Model, PolicyEnv, e.Why)
-}
-
 // Allowed is nil when the policy allows m, else a *PolicyError that says why.
 func Allowed(m Model) error {
 	if why := refused(Policy, m); why != "" {

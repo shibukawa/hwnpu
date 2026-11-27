@@ -11,11 +11,13 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/catalog"
 )
 
 // LicenseEnv accepts licenses without asking: their ids, comma separated, or "all" (for scripts
 // and servers, where nothing can be asked).
-const LicenseEnv = "HWNPU_ACCEPT_LICENSE"
+const LicenseEnv = catalog.LicenseEnv
 
 // LicensesFile is where the accepted licenses are kept: licenses.json beside the user's
 // models.yaml (UserModelsFile).

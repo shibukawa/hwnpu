@@ -21,6 +21,9 @@ var light = []string{
 	"internal/airpc",
 	"internal/catalog",
 	"internal/airole",
+	"internal/aieng",
+	"modelstore",
+	"ai",
 }
 
 // engine are the packages of the engine: the conversions, the runtimes and the backends.
@@ -33,6 +36,7 @@ var engine = []string{
 	"internal/chat",
 	"internal/aihost",
 	"internal/daemon/engine",
+	"ai/engine",
 }
 
 func TestLightPackages(t *testing.T) {
