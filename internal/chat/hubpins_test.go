@@ -182,10 +182,10 @@ func TestHubPin(t *testing.T) {
 
 // disk is read by vendor; a vendor it leaves out is not known (not the largest, as bytes).
 func TestDisk(t *testing.T) {
-	if _, err := userFiles(t, "version: 1\nmodels:\n  LFM3-1.7B:\n    disk: {amd: 2.28e9}\n  Qwen3-0.6B:\n    disk: 1.5e9\n"); err != nil {
+	if _, err := userFiles(t, "version: 1\nmodels:\n  Qwen2.5-Coder-7B-Instruct:\n    disk: {amd: 2.28e9}\n  Qwen3-0.6B:\n    disk: 1.5e9\n"); err != nil {
 		t.Fatal(err)
 	}
-	m, _ := Lookup("LFM3-1.7B")
+	m, _ := Lookup("Qwen2.5-Coder-7B-Instruct")
 	if m.DiskFor("amd") != 2.28e9 || m.DiskFor("apple") != 0 || m.BytesFor("amd") == 0 {
 		t.Errorf("amd %v apple %v", m.DiskFor("amd"), m.DiskFor("apple"))
 	}
