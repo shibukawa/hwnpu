@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/png"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -221,5 +226,56 @@ func TestFlagsFor(t *testing.T) {
 	cf, ef = c.flagsFor("lfm3-1.7b")
 	if cf.Package != "a.mlpackage" || cf.Tokenizer != "tokenizer.json" || ef.Vision != "v.mlpackage" {
 		t.Errorf("the command line's model: %+v %+v", cf, ef)
+	}
+}
+
+// /image and /audio send the file with the text after it, to a model that reads them; a model
+// that does not, a file that is not there and a file that is no image send nothing.
+func TestMediaCommands(t *testing.T) {
+	dir := t.TempDir()
+	var pic bytes.Buffer
+	if err := png.Encode(&pic, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	photo, clip, note := filepath.Join(dir, "photo.png"), filepath.Join(dir, "clip.wav"), filepath.Join(dir, "note.txt")
+	for path, data := range map[string][]byte{photo: pic.Bytes(), clip: []byte("RIFF....WAVEfmt "), note: []byte("only text")} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cat := &ai.Catalog{Models: []ai.ModelInfo{{Name: "LFM3-VL-2B", Kind: "chat", Features: []string{"vision"}}}}
+	f := &fakeChat{images: true, audio: true}
+	tk := &talker{c: f, cat: cat}
+	tk.reset()
+	cs := tk.commands()
+	last := func() text.Message { msgs := f.got[len(f.got)-1]; return msgs[len(msgs)-1] }
+
+	if handled, _ := cs.do("/image " + photo + " what is in it?"); !handled || len(f.got) != 1 {
+		t.Fatalf("/image: handled %v, %d messages sent", handled, len(f.got))
+	}
+	if m := last(); m.Text != "what is in it?" || len(m.Media) != 1 || m.Media[0].Audio || !bytes.Equal(m.Media[0].Data, pic.Bytes()) {
+		t.Errorf("/image sent %q with %d media", m.Text, len(m.Media))
+	}
+	cs.do("/audio " + clip)
+	if m := last(); len(f.got) != 2 || m.Text != "" || len(m.Media) != 1 || !m.Media[0].Audio {
+		t.Errorf("/audio sent %q with %d media (%d messages)", m.Text, len(m.Media), len(f.got))
+	}
+	// /retry sends the clip again
+	tk.retry()
+	if m := last(); len(f.got) != 3 || len(m.Media) != 1 || !m.Media[0].Audio {
+		t.Errorf("/retry after /audio: %d messages, %d media", len(f.got), len(m.Media))
+	}
+	for _, line := range []string{"/image", "/image " + filepath.Join(dir, "none.png") + " hello", "/image " + note + " hello"} {
+		if handled, _ := cs.do(line); !handled || len(f.got) != 3 {
+			t.Errorf("%q: handled %v, %d messages sent", line, handled, len(f.got))
+		}
+	}
+	// a model that reads neither: said so, with the models that do, and nothing sent
+	g := &fakeChat{}
+	tk.c = g
+	for _, line := range []string{"/image " + photo + " hello", "/audio " + clip} {
+		if handled, _ := cs.do(line); !handled || len(g.got) != 0 {
+			t.Errorf("%q to a model that reads no media: handled %v, %d messages sent", line, handled, len(g.got))
+		}
 	}
 }
