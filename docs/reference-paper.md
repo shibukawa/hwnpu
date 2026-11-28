@@ -4,6 +4,8 @@
 
 Written 2026-11-21. The paper survey that began on 2026-11-20 ([handoff-amd-papers.md](handoff-amd-papers.md)) picked out the papers below. For each one, this page says what it claims and whether it held on our hardware. The detailed numbers and how to rerun the tests are in the [docs/design/README.md](design/README.md) sections cited. This page is the list and a guide to those sections.
 
+On 2026-11-23, papers from another survey that hwnpu had already implemented were added under [Papers found later](#papers-found-later-already-implemented).
+
 - The focus is optimization ideas for the AMD NPU (XDNA2, Ryzen AI 9 365). It also covers MoE papers, and the Apple Neural Engine papers checked on an M2 around the same time
 - The full table of MoE papers is chapter 13 of [docs/design/performance.md](design/performance.md). Only the ones relevant to AMD are here
 
@@ -19,6 +21,7 @@ Most of the 2026 papers are preprints that have not been peer-reviewed.
 - **Already done**: hwnpu already did the same thing
 - **Partly**: parts held and parts did not
 - **Not started**: not tried yet
+- **Tried, not adopted**: measured, but not made the default
 
 ## At a glance
 
@@ -201,6 +204,34 @@ Around the same time as the AMD survey, we checked the Neural Engine papers' rul
 
 A direct call costs about 70 µs. Through Core AI it costs about 160–175 µs; Core AI and the driver add about 100 µs.
 
+## Papers found later: already implemented
+
+On 2026-11-23 we checked the 2026-11-21 arXiv survey (about 50 papers on speeding up LLMs on consumer NPUs) against hwnpu. The papers below describe things hwnpu already did. Most were built without reading the paper; the table says what matches and what differs. The survey read these papers at the abstract level (a), except the Gemma 3 on XDNA2 paper, whose full text it read (✓).
+
+The "Cited in docs" column says whether hwnpu's docs named the paper when the feature was built.
+
+- **No**: built without the paper; found to match later
+- **Yes**: studied first, then built (or studied and not adopted)
+
+| Paper | Claim | Result | What hwnpu has | Differences, what is left | Cited in docs |
+|---|---|---|---|---|---|
+| mllm-NPU 2407.05858 (a) | Read the prompt in fixed-size chunks and reuse one compiled graph for every length | **Already done** | One prompt program at Q=64 or 128 runs every length in chunks. Short programs for short conversations (`--tier`) ([llm-engine](design/llm-engine.md)) | No shadow outlier execution on the CPU, no out-of-order block scheduling | No |
+| HeteroLLM 2501.14794 (a) | Split work differently for the prompt (compute-bound) and decode (bandwidth-bound) | **Already done** | Separate programs for the prompt and decode (Q=64/128 and Q=1/8) that share weights ([llm-engine](design/llm-engine.md)) | No concurrent GPU + NPU split | No |
+| Sarathi-Serve 2403.02310 (a) | Chunked prefill that does not stall decode | **Partly** | The prompt is read in chunks | One user, so decode and prompt chunks are not batched together. Concurrent requests (OpenCode titles and summaries) use saved sequences (`maxSaved`) | No |
+| NITRO 2412.11053 (a) | Intel's NPU needs static shapes, so cut the model into fixed-shape parts and join them at runtime | **Already done** | Intel uses the same chain of parts (`internal/llm/chain`) and fixed-shape programs as the other backends ([intel](design/intel.md)) | Calls Level Zero directly instead of the OpenVINO runtime | No |
+| PagedAttention 2309.06180 (a) | Store KV in fixed-size blocks looked up through a table | **Partly** | Attention split: KV lives in host chunks (8192 by default), a weightless attention program runs per chunk, and results merge in float32 (Flash-Decoding style, [llm-engine](design/llm-engine.md)) | No page table on the NPU (`gather` falls back to the CPU). Chunks are large, and there is no copy-on-write sharing between sequences | Yes ([kv-cache](kv-cache.md) judged it no help; the split came later in a different form) |
+| Prompt Lookup Decoding † (no verified arXiv paper; the often-cited 2401.15987 is unrelated) | Draft from n-gram matches in the prompt | **Already done** | `LookupDraft`. On AMD, `draftPolicy` decides whether to verify ([llm-decoding](design/llm-decoding.md), [amd-llm](design/amd-llm.md)) | | Yes |
+| Multi-Token Prediction 2404.19737 (a) | Extra output heads predict future tokens for self-speculation | **Already done** | Drafts from the MTP layer in Qwen3.5 checkpoints (`mtpDrafter`, [llm-decoding](design/llm-decoding.md)) | No training. Models without an MTP layer get nothing. Not yet on AMD or Intel | Yes |
+| SGLang / RadixAttention 2312.07104 (a), Prompt Cache 2311.04934 (a) | Reuse the KV of a shared prefix across requests | **Already done** | `Rewind` to the shared prefix in memory, up to 2 saved sequences, and the on-disk prompt store (longest shared prefix, a mark every 512 tokens, [llm-engine](design/llm-engine.md)) | Not a tree: 4 entries per model. No composition of non-prefix modules as in Prompt Cache | No |
+| StreamingLLM 2309.17453 (a) | Keep a few leading tokens (sinks) and a recent window | **Partly** | Sliding-window layers of windowed models are rings (`pos mod W`, [llm-engine](design/llm-engine.md)). gpt-oss's learned sinks are supported | Layers without a window do not drop old rows while keeping sinks (a candidate below) | Yes ([kv-cache](kv-cache.md)) |
+| Gated DeltaNet 2412.06464 (a) | Linear attention with a fixed-size state | **Already done** | Qwen3.5 / 3.6 GDN layers ported to Apple and AMD ([llm-qwen](design/llm-qwen.md), [amd-llm](design/amd-llm.md)) | The paper proposes an architecture; hwnpu runs the models that adopted it | Yes |
+| GPTQ 2210.17323 (a) | Layer-wise 3–4-bit quantization using second-order information | **Already done** | `tools/amd/q4_gptq.py` and others ([quantization](design/quantization.md)) | | Yes |
+| SqueezeLLM 2306.07629 (a) | Sensitivity-weighted non-uniform tables, with outliers kept sparse | **Partly** | lut tables weighted by each input channel's E[x²] (`wkmeans`, [quantization](design/quantization.md)) | No sparse outlier side table | No |
+| Gemma 3 on XDNA2 2602.06063 ✓ (by the survey) | The 4-bit q4nx format, fused dequant + projection, chunked attention streaming (FlowQKV, FlowKV) | **Partly** | q4nx `QGEMV` and prompt `DequantBFP` (FastFlowLM's kernels, [amd-npu-models](amd-npu-models.md)) | Not compared with its decode layer structure or FlowKV (a candidate below) | No (yes as FastFlowLM's kernels) |
+| Fiddler 2402.07033 (a) | Compute non-resident experts on the CPU instead of moving their weights | **Partly** | Apple runs every expert on the CPU in MXFP4 (`llm.HostRouted`, [moe](design/moe.md)) | AMD does not compute missed experts on the CPU (a candidate below) | No |
+| ProMoE 2410.22134 (a), MoE-Infinity 2401.14361 (a) | Prefetch experts by prediction and cache them by usage | **Partly** | Fate-style prefetch and places chosen by calibrated usage counts (Fate and 2505.16056 above) | No learned predictor, no per-request traces | No |
+| KIVI 2402.02750 (a), KVQuant 2401.18079 (a) | 2–3-bit KV | **Tried, not adopted** | int8 KV measured on the Neural Engine: half the memory, 10 % slower than fp16 ([kv-cache](kv-cache.md) section 3) | 2-bit not tried. Only for contexts past 100K | Yes |
+
 ## Things the papers led to that they did not cover
 
 - **GDN's blocks of zeros** ([amd](design/amd.md), [amd-llm](design/amd-llm.md)): the tool that counts reconfigurations (`tools/amd/elfconfigs`) showed aiecc writing zeros to the GDN kernel's .bss arrays on every reconfiguration. No paper mentions this
@@ -217,3 +248,12 @@ Sections 3–9 of handoff-amd-papers.md describe how to try each.
 3. Different tile sizes for input and output (2511.16041). For the image DiTs and long prompts
 4. Rotation before q4 (QuaRot style). For the accuracy of AMD's q4 on Qwen3.5 / 3.6
 5. Lossless weight compression (ENEC). After reconfiguration is cut
+
+From the 2026-11-23 check (in priority order, not yet tried; how to start is in [handoff-npu-papers.md](handoff-npu-papers.md), in Japanese):
+
+1. The decode layer structure and FlowKV of Gemma 3 on XDNA2 (2602.06063). A model for the remaining work of fusing a dense model's layer into one resident array (the HeteroMosaic section)
+2. Compute missed experts on the CPU on AMD (Fiddler 2402.07033), choosing between moving and computing by a cost estimate
+3. Cut the cost of verifying drafts (sd.npu 2510.15312). AMD's verify program costs 1.67–1.96 decode steps
+4. Fold AWQ-style scales into the previous op (AWQ 2306.00978). For lut4 accuracy on the Neural Engine (item 5 in [quantization](design/quantization.md))
+5. Shrink long-context KV (SnapKV 2404.14469, StreamingLLM sinks). The Neural Engine's cost grows with the length used. Output changes, so make it a setting
+6. Read missed experts at lower precision (HOBBIT 2411.01433). Pairs with 2. Only behind a KL check
