@@ -14,6 +14,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // File is a file of a model's repository and where fetch puts it.
@@ -43,25 +44,20 @@ func Expect(ctx context.Context, files []File) {
 	t0 := time.Now()
 	var mu sync.Mutex
 	sizes := map[string]int64{}
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
+	var missing []File
 	for _, f := range files {
-		if _, err := os.Stat(f.Path()); err == nil {
-			continue
+		if _, err := os.Stat(f.Path()); err != nil {
+			missing = append(missing, f)
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if n, ok := fileSize(ctx, f.Repo, f.Name); ok {
-				mu.Lock()
-				sizes[filepath.Clean(f.Path())] = n
-				mu.Unlock()
-			}
-		}()
 	}
-	wg.Wait()
+	_ = syncx.ForEachAll(context.Background(), 8, missing, func(_ context.Context, f File) error {
+		if n, ok := fileSize(ctx, f.Repo, f.Name); ok {
+			mu.Lock()
+			sizes[filepath.Clean(f.Path())] = n
+			mu.Unlock()
+		}
+		return nil
+	})
 	if len(sizes) > 0 {
 		console.Looked(len(sizes), time.Since(t0))
 	}
@@ -85,39 +81,11 @@ func Expect(ctx context.Context, files []File) {
 // (2026-11-17). The first error stops the files not started yet and is returned.
 func FetchFiles(ctx context.Context, files []File, log io.Writer) error {
 	Expect(ctx, files)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	sem := make(chan struct{}, max(1, shared.FetchStreams))
-	var (
-		wg    sync.WaitGroup
-		mu    sync.Mutex
-		first error
-	)
-	for _, f := range files {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-		}
-		if ctx.Err() != nil {
-			break
-		}
-		wg.Add(1)
-		go func() {
-			defer func() { <-sem; wg.Done() }()
-			if _, err := fetch(ctx, f.Repo, f.Name, log); err != nil {
-				mu.Lock()
-				if first == nil {
-					first = err
-					cancel()
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	mu.Lock()
-	defer mu.Unlock()
-	return cmp.Or(first, context.Cause(ctx))
+	err := syncx.ForEach(ctx, max(1, shared.FetchStreams), files, func(ctx context.Context, f File) error {
+		_, err := fetch(ctx, f.Repo, f.Name, log)
+		return err
+	})
+	return cmp.Or(err, context.Cause(ctx))
 }
 
 // planned is the planned file at path, if Expect looked it up and it is not fetched yet.

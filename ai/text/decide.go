@@ -34,7 +34,7 @@ func Decide(name string) ai.Use[*Decider] {
 // model runs from its export of tools/amd/iron_export_lm.py d1 (its recipe, model-recipes.yaml).
 // decideRole's Prepare and Load are the engine's (ai/text/engine).
 var decideRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &Decider{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &Decider{p: airpc.RemoteProxy[deciderImpl](h)} },
 	Name:   "decide",
 	Kinds:  []catalog.Kind{catalog.KindDecision},
 	// 1: the tokenizer as its binary file (chat.PrepareTokenizer) in the files, as "tokenizer":
@@ -62,8 +62,7 @@ type Decision struct {
 // Decider answers typed questions about a state with a decision model. It runs one question at a
 // time.
 type Decider struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  deciderImpl   // the engine's (ai/text/engine), when it is here
+	p airpc.Proxy[deciderImpl]
 }
 
 // deciderImpl is a decision model of the engine in this process.
@@ -77,57 +76,31 @@ type deciderImpl interface {
 }
 
 // Model is the name of the model in the definitions, Name the one it calls itself.
-func (d *Decider) Model() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Model")
-	}
-	return d.local.Model()
-}
-func (d *Decider) Name() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Name")
-	}
-	return d.local.Name()
-}
+func (d *Decider) Model() string { return airpc.ProxyValue(d.p, "Model", deciderImpl.Model) }
+func (d *Decider) Name() string  { return airpc.ProxyValue(d.p, "Name", deciderImpl.Name) }
 
 // MaxTokens is the most tokens of a question's prompt.
-func (d *Decider) MaxTokens() int {
-	if d.remote != nil {
-		return airpc.Value[int](d.remote, "MaxTokens")
-	}
-	return d.local.MaxTokens()
-}
+func (d *Decider) MaxTokens() int { return airpc.ProxyValue(d.p, "MaxTokens", deciderImpl.MaxTokens) }
 
 // OnCPU reports whether it runs on the CPU interpreter.
-func (d *Decider) OnCPU() bool {
-	if d.remote != nil {
-		return airpc.Value[bool](d.remote, "OnCPU")
-	}
-	return d.local.OnCPU()
-}
+func (d *Decider) OnCPU() bool { return airpc.ProxyValue(d.p, "OnCPU", deciderImpl.OnCPU) }
 
 // Decide answers a request of the System One API: {"state": ..., "questions": {"id": {"type":
 // "choice" | "score" | "noul", "instructions": ..., "criteria": ...}}}, as llama.cpp's
 // tools/server/README.md describes it. A request that is not one is ErrBadRequest.
 func (d *Decider) Decide(ctx context.Context, request []byte) (Decision, error) {
-	if d.remote != nil {
-		return airpc.Call1[Decision](d.remote, ctx, "Decide", request)
-	}
-	return d.local.Decide(ctx, request)
+	return airpc.ProxyCall1(d.p, ctx, "Decide", func(l deciderImpl) (Decision, error) {
+		return l.Decide(ctx, request)
+	}, request)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (d *Decider) Close() error {
-	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return d.local.Close()
-}
+func (d *Decider) Close() error { return d.p.Close() }
 
 func init() {
 	airole.Register(decideRole)
 	bridge.Roles[decideRole.Name] = decideRole
-	bridge.Wrap[decideRole.Name] = func(l any) io.Closer { return &Decider{local: l.(deciderImpl)} }
+	bridge.Wrap[decideRole.Name] = func(l any) io.Closer { return &Decider{p: airpc.LocalProxy(l.(deciderImpl))} }
 	airpc.RegisterError("text.ErrBadRequest", ErrBadRequest)
 	airpc.RegisterError("text.ErrUnsupported", ErrUnsupported)
 }

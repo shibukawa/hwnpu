@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/shibukawa/hwnpu/internal/sgemm"
+	"github.com/shibukawa/hwnpu/internal/tensorops"
 )
 
 // Needed returns the nodes of g that the outputs depend on, in the graph's (topological) order,
@@ -160,15 +161,7 @@ func (g *Graph) EvalShapes(given map[string]*Tensor, shapes map[string][]int, ou
 func scalar(x float64, typ int) *Tensor { return &Tensor{Shape: []int{}, F: []float64{x}, Type: typ} }
 
 // strides of a shape, row major.
-func strides(shape []int) []int {
-	s := make([]int, len(shape))
-	n := 1
-	for i := len(shape) - 1; i >= 0; i-- {
-		s[i] = n
-		n *= shape[i]
-	}
-	return s
-}
+func strides(shape []int) []int { return tensorops.Strides(shape) }
 
 // Broadcast is numpy's broadcast of two shapes.
 func Broadcast(a, b []int) ([]int, error) {
@@ -865,28 +858,9 @@ func slice(t *Tensor, begin, end, step []int) *Tensor {
 }
 
 func transpose(t *Tensor, perm []int) *Tensor {
-	r := len(t.Shape)
-	shape := make([]int, r)
-	for i, p := range perm {
-		shape[i] = t.Shape[p]
-	}
-	st := strides(t.Shape)
+	shape, src := tensorops.TransposePlan(t.Shape, perm)
 	out := &Tensor{Shape: shape, F: make([]float64, len(t.F)), Type: t.Type}
-	coord := make([]int, r)
-	for k := range out.F {
-		off := 0
-		for i := range r {
-			off += coord[i] * st[perm[i]]
-		}
-		out.F[k] = t.F[off]
-		for i := r - 1; i >= 0; i-- {
-			coord[i]++
-			if coord[i] < shape[i] {
-				break
-			}
-			coord[i] = 0
-		}
-	}
+	tensorops.Permute(out.F, t.F, 0, shape, src)
 	return out
 }
 
@@ -901,21 +875,19 @@ func concat(ts []*Tensor, a int) (*Tensor, error) {
 	a = axis(a, r)
 	shape := slices.Clone(parts[0].Shape)
 	shape[a] = 0
-	for _, t := range parts {
+	srcs := make([][]float64, len(parts))
+	sizes := make([]int, len(parts))
+	for i, t := range parts {
 		if len(t.Shape) != r {
 			return nil, fmt.Errorf("concat of ranks %d and %d", r, len(t.Shape))
 		}
 		shape[a] += t.Shape[a]
+		srcs[i] = t.F
+		sizes[i] = t.Shape[a]
 	}
-	outer := Len(shape[:a])
-	out := &Tensor{Shape: shape, Type: parts[0].Type}
-	for o := range outer {
-		for _, t := range parts {
-			inner := Len(t.Shape[a:])
-			out.F = append(out.F, t.F[o*inner:(o+1)*inner]...)
-		}
-	}
-	return out, nil
+	dst := make([]float64, tensorops.Numel(shape))
+	F := tensorops.Concat(dst, srcs, sizes, tensorops.Numel(shape[:a]), tensorops.Numel(shape[a+1:]))
+	return &Tensor{Shape: shape, F: F, Type: parts[0].Type}, nil
 }
 
 func gather(t, idx *Tensor, a int) (*Tensor, error) {
@@ -944,23 +916,8 @@ func tile(t *Tensor, reps []int) *Tensor {
 	for i := range shape {
 		shape[i] = t.Shape[i] * reps[i]
 	}
-	st := strides(t.Shape)
-	out := &Tensor{Shape: shape, F: make([]float64, Len(shape)), Type: t.Type}
-	coord := make([]int, len(shape))
-	for k := range out.F {
-		off := 0
-		for i := range shape {
-			off += coord[i] % t.Shape[i] * st[i]
-		}
-		out.F[k] = t.F[off]
-		for i := len(shape) - 1; i >= 0; i-- {
-			coord[i]++
-			if coord[i] < shape[i] {
-				break
-			}
-			coord[i] = 0
-		}
-	}
+	out := &Tensor{Shape: shape, F: make([]float64, tensorops.Numel(shape)), Type: t.Type}
+	tensorops.Tile(out.F, t.F, t.Shape, shape)
 	return out
 }
 
@@ -1327,55 +1284,9 @@ func FullPads(rank int, pads, axes []int) []int {
 // pad pads t by (begin, end) per axis with a constant, or by reflection (the edge not repeated)
 // or the edge's value; a negative pad crops.
 func pad(t *Tensor, pads []int, mode string, c float64) (*Tensor, error) {
-	r := len(t.Shape)
-	shape := make([]int, r)
-	for i := range r {
-		shape[i] = t.Shape[i] + pads[2*i] + pads[2*i+1]
-	}
-	st := strides(t.Shape)
-	out := &Tensor{Shape: shape, F: make([]float64, Len(shape)), Type: t.Type}
-	coord := make([]int, r)
-	for k := range out.F {
-		off, inside := 0, true
-		for i := range r {
-			j := coord[i] - pads[2*i]
-			d := t.Shape[i]
-			if j < 0 || j >= d {
-				switch mode {
-				case "reflect":
-					if d == 1 {
-						j = 0
-						break
-					}
-					for j < 0 || j >= d {
-						if j < 0 {
-							j = -j
-						}
-						if j >= d {
-							j = 2*(d-1) - j
-						}
-					}
-				case "edge":
-					j = min(max(j, 0), d-1)
-				default:
-					inside = false
-				}
-			}
-			off += j * st[i]
-		}
-		if inside {
-			out.F[k] = t.F[off]
-		} else {
-			out.F[k] = c
-		}
-		for i := r - 1; i >= 0; i-- {
-			coord[i]++
-			if coord[i] < shape[i] {
-				break
-			}
-			coord[i] = 0
-		}
-	}
+	shape := tensorops.PadShape(t.Shape, pads)
+	out := &Tensor{Shape: shape, F: make([]float64, tensorops.Numel(shape)), Type: t.Type}
+	tensorops.Pad(out.F, t.F, t.Shape, pads, mode, c)
 	return out, nil
 }
 

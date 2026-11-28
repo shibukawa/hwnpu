@@ -27,7 +27,7 @@ func Label(name string) ai.Use[*Labeler] {
 // cpu: interpreter, into Core ML packages that the CPU interpreter runs). labelRole's Prepare
 // and Load are the engine's (ai/vision/engine).
 var labelRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &Labeler{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &Labeler{p: airpc.RemoteProxy[labelerImpl](h)} },
 	Name:   "label",
 	Kinds:  []catalog.Kind{catalog.KindLabel},
 }
@@ -102,8 +102,7 @@ type Labels struct {
 // Labeler labels pictures and embeds pictures and texts in one space. It runs one call at a
 // time; others wait.
 type Labeler struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  labelerImpl   // the engine's (ai/vision/engine), when it is here
+	p airpc.Proxy[labelerImpl]
 }
 
 // labelerImpl is a label model of the engine in this process.
@@ -121,69 +120,45 @@ type labelerImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (l *Labeler) Model() string {
-	if l.remote != nil {
-		return airpc.Value[string](l.remote, "Model")
-	}
-	return l.local.Model()
-}
+func (l *Labeler) Model() string { return airpc.ProxyValue(l.p, "Model", labelerImpl.Model) }
 
 // Export is the directory of the export or the programs the model runs from.
-func (l *Labeler) Export() string {
-	if l.remote != nil {
-		return airpc.Value[string](l.remote, "Export")
-	}
-	return l.local.Export()
-}
+func (l *Labeler) Export() string { return airpc.ProxyValue(l.p, "Export", labelerImpl.Export) }
 
 // ImageSize is the side of the square pictures are stretched to, Dim the embeddings' length.
-func (l *Labeler) ImageSize() int {
-	if l.remote != nil {
-		return airpc.Value[int](l.remote, "ImageSize")
-	}
-	return l.local.ImageSize()
-}
-func (l *Labeler) Dim() int {
-	if l.remote != nil {
-		return airpc.Value[int](l.remote, "Dim")
-	}
-	return l.local.Dim()
-}
+func (l *Labeler) ImageSize() int { return airpc.ProxyValue(l.p, "ImageSize", labelerImpl.ImageSize) }
+func (l *Labeler) Dim() int       { return airpc.ProxyValue(l.p, "Dim", labelerImpl.Dim) }
 
 // EmbedPicture is a picture's embedding.
 func (l *Labeler) EmbedPicture(ctx context.Context, img image.Image) (*PictureEmbedding, error) {
-	if l.remote != nil {
-		return airpc.Call1[*PictureEmbedding](l.remote, ctx, "EmbedPicture", img)
-	}
-	return l.local.EmbedPicture(ctx, img)
+	return airpc.ProxyCall1(l.p, ctx, "EmbedPicture", func(impl labelerImpl) (*PictureEmbedding, error) {
+		return impl.EmbedPicture(ctx, img)
+	}, img)
 }
 
 // EmbedTexts are texts' embeddings (lowercased, as SigLIP 2 was trained).
 func (l *Labeler) EmbedTexts(ctx context.Context, texts []string) (*TextEmbeddings, error) {
-	if l.remote != nil {
-		return airpc.Call1[*TextEmbeddings](l.remote, ctx, "EmbedTexts", texts)
-	}
-	return l.local.EmbedTexts(ctx, texts)
+	return airpc.ProxyCall1(l.p, ctx, "EmbedTexts", func(impl labelerImpl) (*TextEmbeddings, error) {
+		return impl.EmbedTexts(ctx, texts)
+	}, texts)
 }
 
 // Candidates embeds labels, each put in the options' sentence, to label pictures with (Rank):
 // once for any number of pictures. The embeddings are kept in the user cache directory, so that
 // a list of labels is embedded once.
 func (l *Labeler) Candidates(ctx context.Context, labels []string, o CandidateOptions) (*Candidates, error) {
-	if l.remote != nil {
-		return airpc.Call1[*Candidates](l.remote, ctx, "Candidates", labels, o)
-	}
-	return l.local.Candidates(ctx, labels, o)
+	return airpc.ProxyCall1(l.p, ctx, "Candidates", func(impl labelerImpl) (*Candidates, error) {
+		return impl.Candidates(ctx, labels, o)
+	}, labels, o)
 }
 
 // Rank is the candidates by their probability for the picture of embedding e, the likeliest
 // first: each label's on its own (a sigmoid, not a softmax over the labels), so that they need
 // not sum to 1 and a picture may have several or none.
 func (l *Labeler) Rank(e Embedding, c *Candidates, o RankOptions) []Scored {
-	if l.remote != nil {
-		return airpc.Value[[]Scored](l.remote, "Rank", e, c, o)
-	}
-	return l.local.Rank(e, c, o)
+	return airpc.ProxyValue(l.p, "Rank", func(impl labelerImpl) []Scored {
+		return impl.Rank(e, c, o)
+	}, e, c, o)
 }
 
 // Label labels a picture with the candidates: EmbedPicture, then Rank.
@@ -198,22 +173,16 @@ func (l *Labeler) Label(ctx context.Context, img image.Image, c *Candidates, o R
 // Probability is the model's probability that the text of embedding text describes the picture
 // of embedding picture.
 func (l *Labeler) Probability(picture, text Embedding) float64 {
-	if l.remote != nil {
-		return airpc.Value[float64](l.remote, "Probability", picture, text)
-	}
-	return l.local.Probability(picture, text)
+	return airpc.ProxyValue(l.p, "Probability", func(impl labelerImpl) float64 {
+		return impl.Probability(picture, text)
+	}, picture, text)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (l *Labeler) Close() error {
-	if l.remote != nil {
-		return l.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return l.local.Close()
-}
+func (l *Labeler) Close() error { return l.p.Close() }
 
 func init() {
 	airole.Register(labelRole)
 	bridge.Roles[labelRole.Name] = labelRole
-	bridge.Wrap[labelRole.Name] = func(l any) io.Closer { return &Labeler{local: l.(labelerImpl)} }
+	bridge.Wrap[labelRole.Name] = func(l any) io.Closer { return &Labeler{p: airpc.LocalProxy(l.(labelerImpl))} }
 }

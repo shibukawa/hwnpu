@@ -19,6 +19,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/coreai/llir"
 	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // BuildOptions says how Build compiles.
@@ -253,42 +254,31 @@ func Build(ctx context.Context, paths []string, o BuildOptions) ([]BuildResult, 
 			return results, err
 		}
 	}
-	var (
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, jobs)
-		mu  sync.Mutex
-	)
-	for _, r := range queue {
+	var mu sync.Mutex
+	_ = syncx.ForEachAll(context.Background(), jobs, queue, func(_ context.Context, r *BuildResult) error {
 		r.jobs = min(jobs, len(queue))
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				r.Err = ctx.Err()
-				return
+		if err := ctx.Err(); err != nil {
+			r.Err = err
+			return err
+		}
+		t0 := time.Now()
+		r.Err = build(ctx, tool, r.Asset, r.Arch, r.Out)
+		r.Elapsed = time.Since(t0)
+		if r.Err == nil {
+			r.ran = true
+			r.Code, r.Weights = sizes(r.Out)
+		}
+		if o.Log != nil {
+			mu.Lock()
+			if r.Err != nil {
+				fmt.Fprintf(o.Log, "%s %s: FAILED after %s: %v\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), r.Err)
+			} else {
+				fmt.Fprintf(o.Log, "%s %s: %s (%.1f MB of compiled regions, %.0f MB of weights)\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), float64(r.Code)/1e6, float64(r.Weights)/1e6)
 			}
-			defer func() { <-sem }()
-			t0 := time.Now()
-			r.Err = build(ctx, tool, r.Asset, r.Arch, r.Out)
-			r.Elapsed = time.Since(t0)
-			if r.Err == nil {
-				r.ran = true
-				r.Code, r.Weights = sizes(r.Out)
-			}
-			if o.Log != nil {
-				mu.Lock()
-				if r.Err != nil {
-					fmt.Fprintf(o.Log, "%s %s: FAILED after %s: %v\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), r.Err)
-				} else {
-					fmt.Fprintf(o.Log, "%s %s: %s (%.1f MB of compiled regions, %.0f MB of weights)\n", filepath.Base(r.Asset), r.Arch, r.Elapsed.Round(time.Second), float64(r.Code)/1e6, float64(r.Weights)/1e6)
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
+			mu.Unlock()
+		}
+		return r.Err
+	})
 	for _, r := range queue {
 		if !errors.Is(r.Err, errOffANE) || ctx.Err() != nil {
 			continue

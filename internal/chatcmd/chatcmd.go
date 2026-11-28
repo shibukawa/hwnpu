@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"reflect"
 	"strings"
 	"sync"
 
@@ -124,7 +123,7 @@ func call(ctx context.Context, w io.Writer, here func(aieng.ChatCommands, io.Wri
 		return err
 	}
 	defer sess.Close()
-	out, err := remote(sess.Object(0).Bind(reflect.TypeFor[Host]()), spec)
+	out, err := remote(airpc.Root[Host](sess), spec)
 	if err != nil {
 		return olderHwnpud(dc, err)
 	}

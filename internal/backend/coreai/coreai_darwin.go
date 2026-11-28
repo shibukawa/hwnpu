@@ -39,6 +39,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
 
@@ -96,7 +97,7 @@ const lowDisk = 10 << 30
 var prebuiltOnce sync.Once
 
 // markedPrebuilt are the programs and functions markPrebuilt wrote of.
-var markedPrebuilt sync.Map
+var markedPrebuilt syncx.SyncMap[string, bool]
 
 // markPrebuilt writes what the device made of the function fn of the packed prebuilt program of
 // the asset at dir (msg: its error, "" when it opened and, with called, ran) in the record of the export's prebuilt
@@ -356,7 +357,7 @@ func Prebuilt(dir string) string {
 }
 
 // fetchedPrebuilt are the exports FetchPrebuilt was called for, by export and architecture.
-var fetchedPrebuilt sync.Map
+var fetchedPrebuilt syncx.SyncMap[string, *sync.Once]
 
 // fetchPrebuilt asks the shared layers (FetchPrebuilt) once a process for the prebuilt programs
 // of the export that holds the asset at dir, which Core AI would compile.
@@ -370,7 +371,7 @@ func fetchPrebuilt(ctx context.Context, dir string) {
 		return
 	}
 	once, _ := fetchedPrebuilt.LoadOrStore(export+"\x00"+arch, new(sync.Once))
-	once.(*sync.Once).Do(func() { FetchPrebuilt(ctx, export, arch) })
+	once.Do(func() { FetchPrebuilt(ctx, export, arch) })
 }
 
 // openable is the prebuilt program pb for Core AI to open: pb, or, packed (its weights a map onto

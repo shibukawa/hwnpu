@@ -16,6 +16,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // What is converted goes in a source as a folder (docs/cache-sharing-design.md 7):
@@ -141,7 +142,7 @@ func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io
 		mu.Unlock()
 		set(done, total)
 	}
-	err := each(ctx, FetchStreams, len(order), func(ctx context.Context, k int) error {
+	err := syncx.ForEachIndex(ctx, FetchStreams, len(order), func(ctx context.Context, k int) error {
 		i := order[k]
 		f := e.Files[i]
 		p := filepath.Join(part, filepath.FromSlash(f.Path))
@@ -228,7 +229,7 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 	}
 	e.Pack = nil
 	// the files side by side (each a PUT and a MOVE on WebDAV), entry.json after them all
-	err = each(ctx, PutStreams, len(e.Files), func(ctx context.Context, i int) error {
+	err = syncx.ForEachIndex(ctx, PutStreams, len(e.Files), func(ctx context.Context, i int) error {
 		f := e.Files[i]
 		p := filepath.Join(dir, filepath.FromSlash(f.Path))
 		if st, ok := put[f.Path]; ok {
@@ -286,38 +287,7 @@ var PutStreams = 4
 // each runs f(ctx, 0..n-1), at most k at a time, and returns the first error: the rest are then
 // not started, and the ctx of those running ends.
 func each(parent context.Context, k, n int, f func(context.Context, int) error) error {
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
-	var (
-		wg    sync.WaitGroup
-		mu    sync.Mutex
-		first error
-	)
-	sem := make(chan struct{}, max(k, 1))
-	for i := 0; i < n && ctx.Err() == nil; i++ {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer func() { <-sem; wg.Done() }()
-			if err := f(ctx, i); err != nil {
-				mu.Lock()
-				if first == nil {
-					first = err
-					cancel()
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	if first == nil {
-		first = parent.Err()
-	}
-	return first
+	return cmp.Or(syncx.ForEachIndex(parent, k, n, f), parent.Err())
 }
 
 // lockWork is the lock of one piece of work on a source (cache.Lock).

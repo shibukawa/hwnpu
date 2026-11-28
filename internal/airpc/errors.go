@@ -36,13 +36,12 @@ func RegisterError(name string, err error) {
 	sentinels[name] = err
 }
 
-// RegisterErrorType names an error type (sample is a value of it, often a nil pointer:
-// (*ai.LicenseError)(nil)) whose values errors.As finds through the session; they are sent
-// with gob, so its exported fields alone cross.
-func RegisterErrorType(name string, sample error) {
+// RegisterErrorType names an error type T (such as *ai.LicenseError) whose values errors.As finds
+// through the session; they are sent with gob, so its exported fields alone cross.
+func RegisterErrorType[T error](name string) {
 	errMu.Lock()
 	defer errMu.Unlock()
-	typed[name] = reflect.TypeOf(sample)
+	typed[name] = reflect.TypeFor[T]()
 }
 
 // ErrClosed is the error of a call on a session that has ended (hwnpud's engine exited).

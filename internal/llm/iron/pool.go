@@ -2,6 +2,7 @@ package iron
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -15,6 +16,7 @@ import (
 	devenv "github.com/shibukawa/hwnpu/internal/dev"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // A mixture of experts whose layers' tables hold fewer places than experts (Manifest.ExpertsPool,
@@ -274,28 +276,15 @@ func (m *Model) checkPool() error {
 // copyPlaces copies each place i's expert es[i] (-1: none) of layer l into its tables, in
 // parallel over the places.
 func (m *Model) copyPlaces(l int, es []int) error {
-	var wg sync.WaitGroup
-	errs := make([]error, len(es))
-	sem := make(chan struct{}, 8)
+	var places []int
 	for i, e := range es {
-		if e < 0 {
-			continue
-		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer wg.Done()
-			errs[i] = m.copyExpert(l, e, i, 1)
-			<-sem
-		}()
-	}
-	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return err
+		if e >= 0 {
+			places = append(places, i)
 		}
 	}
-	return nil
+	return syncx.ForEachAll(context.Background(), 8, places, func(_ context.Context, i int) error {
+		return m.copyExpert(l, es[i], i, 1)
+	})
 }
 
 // copyExpert copies expert e of layer l from the experts file into place i, the tables' bytes
@@ -739,19 +728,28 @@ var directOnce sync.Once
 
 // staging holds the buffers direct reads land in: O_DIRECT does not read into the bank's
 // mapping (the driver's pages: EFAULT), so a part goes through one and is copied in.
-var staging sync.Pool
+var staging syncx.Pool[[]byte]
 
 func readStaged(f *os.File, dst []byte, off int64) bool {
-	b, _ := staging.Get().([]byte)
+	bp := staging.Get()
+	var b []byte
+	if bp != nil {
+		b = *bp
+	}
 	if cap(b) < len(dst) {
 		b = make([]byte, len(dst))
 	}
 	b = b[:len(dst)]
+	if bp == nil {
+		bp = &b
+	} else {
+		*bp = b
+	}
 	ok := readDirect(f, b, off)
 	if ok {
 		copy(dst, b)
 	}
-	staging.Put(b)
+	staging.Put(bp)
 	return ok
 }
 

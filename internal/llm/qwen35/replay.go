@@ -6,6 +6,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 type replayScratch struct {
@@ -14,10 +15,10 @@ type replayScratch struct {
 	delta []float32
 }
 
-var replayScratchPool sync.Pool
+var replayScratchPool syncx.Pool[replayScratch]
 
 func getReplayScratch(sLen, rLen, dLen int) *replayScratch {
-	sc, _ := replayScratchPool.Get().(*replayScratch)
+	sc := replayScratchPool.Get()
 	if sc == nil {
 		sc = &replayScratch{}
 	}

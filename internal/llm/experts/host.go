@@ -17,6 +17,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/mxfp4"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // MXFP4 names a layer's experts in a checkpoint of OCP's MXFP4, every expert of the layer in one
@@ -128,7 +129,7 @@ type Host struct {
 	zeroGate, zeroDown []float32
 	// runRow's arrays (*rowBufs), kept for the next token: made anew they were 217 KB a layer of
 	// gpt-oss-20b, and the collector's clearing and returning of them 16 % of the experts' CPU
-	rowBufs sync.Pool
+	rowBufs syncx.Pool[rowBufs]
 
 	// for HWNPU_DEV's moe.time: the bytes of the experts a row ran, and those of them not in memory
 	// when it chose them (read from the disk for it)
@@ -480,7 +481,7 @@ var oneRow = true
 func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []float32) {
 	H, I := h.shape.Hidden, h.shape.Inter
 	K := len(idx)
-	bufs, _ := h.rowBufs.Get().(*rowBufs)
+	bufs := h.rowBufs.Get()
 	if bufs == nil || len(bufs.gu) < K {
 		bufs = newRowBufs(K, H, I)
 	}
@@ -605,7 +606,7 @@ func (a Act) glu() (alpha, limit, add float32) {
 // readPiece is the most a read of readIn asks for at once: an SSD's largest requests.
 const readPiece = 1 << 20
 
-var readBufs = sync.Pool{New: func() any { b := make([]byte, readPiece); return &b }}
+var readBufs = syncx.Pool[[]byte]{New: func() *[]byte { b := make([]byte, readPiece); return &b }}
 
 // readIn reads the ranges of expert e of layer l that are not all in memory from the file, each
 // whole in requests of readPiece, and returns the bytes read. The pages land in the page cache,
@@ -652,7 +653,7 @@ func (h *Host) readRange(l, e, array int) (n int64, ok bool) {
 	if in {
 		return 0, true
 	}
-	buf := readBufs.Get().(*[]byte)
+	buf := readBufs.Get()
 	defer readBufs.Put(buf)
 	for off := 0; off < len(b); off += readPiece {
 		k, err := a.src.ReadAt((*buf)[:min(readPiece, len(b)-off)], int64(e*a.n+off))

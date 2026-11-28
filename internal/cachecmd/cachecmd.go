@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"reflect"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/airpc"
@@ -110,7 +109,7 @@ func dial(ctx context.Context) (*airpc.Session, *airpc.Handle, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return s, s.Object(0).Bind(reflect.TypeFor[Host]()), nil
+	return s, airpc.Root[Host](s), nil
 }
 
 // terminalAsk asks on standard output and reads the answer from standard input when it is a

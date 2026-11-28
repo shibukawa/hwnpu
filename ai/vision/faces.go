@@ -25,7 +25,7 @@ func Faces(name string) ai.Use[*FaceDetector] {
 // converted for Apple's and Intel's NPU), and the device (common.go). facesRole's Prepare, Load
 // and Usable are the engine's (ai/vision/engine).
 var facesRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &FaceDetector{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &FaceDetector{p: airpc.RemoteProxy[faceDetectorImpl](h)} },
 	Name:   "faces",
 	// 1: the programs of every size made at Prepare; 2: hwnpu's own executor on the CPU where
 	// ONNX Runtime is not here (AMD's NPU before)
@@ -36,10 +36,7 @@ var facesRole = &airole.Role{
 // Warm loads the program of every size once, which compiles it for the NPU (ai.Warmer: the
 // load of "models prepare"), so that a camera of any size does not wait for that.
 func (d *FaceDetector) Warm(ctx context.Context) error {
-	if d.remote != nil {
-		return airpc.Call0(d.remote, ctx, "Warm")
-	}
-	return d.local.Warm(ctx)
+	return airpc.ProxyCall0(d.p, ctx, "Warm", faceDetectorImpl.Warm)
 }
 
 // Face is a face found in a picture, in the picture's pixels.
@@ -56,8 +53,7 @@ type Face struct {
 
 // FaceDetector finds the faces in pictures. It runs one picture at a time; others wait.
 type FaceDetector struct {
-	remote *airpc.Handle    // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  faceDetectorImpl // the engine's (ai/vision/engine), when it is here
+	p airpc.Proxy[faceDetectorImpl]
 }
 
 // faceDetectorImpl is a face model of the engine in this process.
@@ -84,29 +80,16 @@ type FaceOptions struct {
 }
 
 // Model is the name of the model in the definitions.
-func (d *FaceDetector) Model() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Model")
-	}
-	return d.local.Model()
-}
+func (d *FaceDetector) Model() string { return airpc.ProxyValue(d.p, "Model", faceDetectorImpl.Model) }
 
 // Device is where the model runs: npu or cpu (YuNet is a small graph that the definitions put
 // on the CPU beside AMD's NPU).
 func (d *FaceDetector) Device() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Device")
-	}
-	return d.local.Device()
+	return airpc.ProxyValue(d.p, "Device", faceDetectorImpl.Device)
 }
 
 // Where says where the model runs, for a log: "the CPU (ONNX Runtime, 1 threads)", "the NPU".
-func (d *FaceDetector) Where() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Where")
-	}
-	return d.local.Where()
-}
+func (d *FaceDetector) Where() string { return airpc.ProxyValue(d.p, "Where", faceDetectorImpl.Where) }
 
 // Detect finds the faces in a picture, the surest first.
 func (d *FaceDetector) Detect(ctx context.Context, img image.Image) ([]Face, error) {
@@ -115,10 +98,9 @@ func (d *FaceDetector) Detect(ctx context.Context, img image.Image) ([]Face, err
 
 // DetectWith is Detect with options.
 func (d *FaceDetector) DetectWith(ctx context.Context, img image.Image, o FaceOptions) ([]Face, error) {
-	if d.remote != nil {
-		return airpc.Call1[[]Face](d.remote, ctx, "DetectWith", img, o)
-	}
-	return d.local.DetectWith(ctx, img, o)
+	return airpc.ProxyCall1(d.p, ctx, "DetectWith", func(l faceDetectorImpl) ([]Face, error) {
+		return l.DetectWith(ctx, img, o)
+	}, img, o)
 }
 
 // Found is what was found in a frame: its faces, the surest first (none for a frame without
@@ -162,15 +144,10 @@ func HeadNode(o HeadOptions) *flow.Node[Found, Head] {
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (d *FaceDetector) Close() error {
-	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return d.local.Close()
-}
+func (d *FaceDetector) Close() error { return d.p.Close() }
 
 func init() {
 	airole.Register(facesRole)
 	bridge.Roles[facesRole.Name] = facesRole
-	bridge.Wrap[facesRole.Name] = func(l any) io.Closer { return &FaceDetector{local: l.(faceDetectorImpl)} }
+	bridge.Wrap[facesRole.Name] = func(l any) io.Closer { return &FaceDetector{p: airpc.LocalProxy(l.(faceDetectorImpl))} }
 }

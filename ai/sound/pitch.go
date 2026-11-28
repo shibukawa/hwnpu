@@ -31,7 +31,7 @@ func Pitch(name string) ai.Use[*PitchDetector] {
 // pitchRole's Prepare and Load are the engine's (ai/sound/engine): the front end (the three
 // spectrograms) and the decoding of the logits on the host, the CNN on the NPU or the CPU.
 var pitchRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &PitchDetector{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &PitchDetector{p: airpc.RemoteProxy[pitchDetectorImpl](h)} },
 	Name:   "pitch",
 	Kinds:  []catalog.Kind{catalog.KindPitch},
 }
@@ -39,8 +39,7 @@ var pitchRole = &airole.Role{
 // PitchDetector tells the pitch (F0) of a voice or an instrument (SwiftF0), and how sure it is
 // that there is one, every 16 ms. It runs one request at a time; others wait.
 type PitchDetector struct {
-	remote *airpc.Handle     // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  pitchDetectorImpl // the engine's (ai/sound/engine), when it is here
+	p airpc.Proxy[pitchDetectorImpl]
 }
 
 // pitchDetectorImpl is a pitch model of the engine in this process.
@@ -54,27 +53,18 @@ type pitchDetectorImpl interface {
 
 // Model is the name of the model in the definitions.
 func (d *PitchDetector) Model() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Model")
-	}
-	return d.local.Model()
+	return airpc.ProxyValue(d.p, "Model", pitchDetectorImpl.Model)
 }
 
 // Device is where the model runs: npu or cpu.
 func (d *PitchDetector) Device() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Device")
-	}
-	return d.local.Device()
+	return airpc.ProxyValue(d.p, "Device", pitchDetectorImpl.Device)
 }
 
 // Where says where the model runs, for a log: "all on the NPU", "on the CPU (ONNX Runtime, 1
 // threads)", "on the CPU interpreter", ...
 func (d *PitchDetector) Where() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Where")
-	}
-	return d.local.Where()
+	return airpc.ProxyValue(d.p, "Where", pitchDetectorImpl.Where)
 }
 
 // PitchOptions are how the pitch is told.
@@ -101,22 +91,16 @@ type PitchTrack struct {
 
 // Detect tells the pitch of audio (mono, at PitchRate, in [-1, 1]).
 func (d *PitchDetector) Detect(ctx context.Context, pcm []float32, o PitchOptions) (PitchTrack, error) {
-	if d.remote != nil {
-		return airpc.Call1[PitchTrack](d.remote, ctx, "Detect", pcm, o)
-	}
-	return d.local.Detect(ctx, pcm, o)
+	return airpc.ProxyCall1(d.p, ctx, "Detect", func(l pitchDetectorImpl) (PitchTrack, error) {
+		return l.Detect(ctx, pcm, o)
+	}, pcm, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (d *PitchDetector) Close() error {
-	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return d.local.Close()
-}
+func (d *PitchDetector) Close() error { return d.p.Close() }
 
 func init() {
 	airole.Register(pitchRole)
 	bridge.Roles[pitchRole.Name] = pitchRole
-	bridge.Wrap[pitchRole.Name] = func(l any) io.Closer { return &PitchDetector{local: l.(pitchDetectorImpl)} }
+	bridge.Wrap[pitchRole.Name] = func(l any) io.Closer { return &PitchDetector{p: airpc.LocalProxy(l.(pitchDetectorImpl))} }
 }

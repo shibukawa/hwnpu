@@ -28,7 +28,7 @@ func Depth(name string) ai.Use[*DepthEstimator] {
 // are the engine's (ai/vision/engine).
 var depthRole = &airole.Role{
 	Name:     "depth",
-	Remote:   func(h *airpc.Handle) io.Closer { return &DepthEstimator{remote: h} },
+	Remote:   func(h *airpc.Handle) io.Closer { return &DepthEstimator{p: airpc.RemoteProxy[depthEstimatorImpl](h)} },
 	Revision: 1, // 1: every size's programs made at Prepare
 	Kinds:    []catalog.Kind{catalog.KindDepth},
 }
@@ -126,8 +126,7 @@ type DepthOptions struct {
 
 // DepthEstimator estimates the depth of pictures. It runs one picture at a time; others wait.
 type DepthEstimator struct {
-	remote *airpc.Handle      // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  depthEstimatorImpl // the engine's (ai/vision/engine), when it is here
+	p airpc.Proxy[depthEstimatorImpl]
 }
 
 // depthEstimatorImpl is a depth model of the engine in this process.
@@ -146,54 +145,36 @@ type depthEstimatorImpl interface {
 
 // Model is the name of the model in the definitions.
 func (d *DepthEstimator) Model() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Model")
-	}
-	return d.local.Model()
+	return airpc.ProxyValue(d.p, "Model", depthEstimatorImpl.Model)
 }
 
 // Export is the directory of the export or the programs the model runs from.
 func (d *DepthEstimator) Export() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Export")
-	}
-	return d.local.Export()
+	return airpc.ProxyValue(d.p, "Export", depthEstimatorImpl.Export)
 }
 
 // Kind is what the model gives: "relative depth" (Depth Anything 3, as one view), "metric
 // depth" (Depth Anything 3 Metric, given the focal length; MoGe-2), or "views" (a multi-view
 // export: EstimateViews).
 func (d *DepthEstimator) Kind() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Kind")
-	}
-	return d.local.Kind()
+	return airpc.ProxyValue(d.p, "Kind", depthEstimatorImpl.Kind)
 }
 
 // Family is the model's family: "moge" for MoGe-2, "da3" for Depth Anything 3.
 func (d *DepthEstimator) Family() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Family")
-	}
-	return d.local.Family()
+	return airpc.ProxyValue(d.p, "Family", depthEstimatorImpl.Family)
 }
 
 // Sizes are the input sizes of the model (W x H): a picture is stretched to the one nearest its
 // shape.
 func (d *DepthEstimator) Sizes() [][2]int {
-	if d.remote != nil {
-		return airpc.Value[[][2]int](d.remote, "Sizes")
-	}
-	return d.local.Sizes()
+	return airpc.ProxyValue(d.p, "Sizes", depthEstimatorImpl.Sizes)
 }
 
 // Views is how many pictures of one scene a multi-view export takes together (EstimateViews), 0
 // for a model of one picture.
 func (d *DepthEstimator) Views() int {
-	if d.remote != nil {
-		return airpc.Value[int](d.remote, "Views")
-	}
-	return d.local.Views()
+	return airpc.ProxyValue(d.p, "Views", depthEstimatorImpl.Views)
 }
 
 // Estimate estimates the depth of a picture. The picture is stretched to the size of the
@@ -205,10 +186,9 @@ func (d *DepthEstimator) Estimate(ctx context.Context, img image.Image) (*DepthM
 
 // EstimateWith is Estimate with options.
 func (d *DepthEstimator) EstimateWith(ctx context.Context, img image.Image, o DepthOptions) (*DepthMap, error) {
-	if d.remote != nil {
-		return airpc.Call1[*DepthMap](d.remote, ctx, "EstimateWith", img, o)
-	}
-	return d.local.EstimateWith(ctx, img, o)
+	return airpc.ProxyCall1(d.p, ctx, "EstimateWith", func(l depthEstimatorImpl) (*DepthMap, error) {
+		return l.EstimateWith(ctx, img, o)
+	}, img, o)
 }
 
 // ViewOptions are how the pictures of a scene are estimated together.
@@ -222,19 +202,15 @@ type ViewOptions struct {
 // export (Views of them, each stretched to its size): each view's depth, of one scale for all,
 // its confidence and its camera (DepthMap.Camera). Took is of all of them.
 func (d *DepthEstimator) EstimateViews(ctx context.Context, imgs []image.Image, o ViewOptions) ([]*DepthMap, error) {
-	if d.remote != nil {
-		return airpc.Call1[[]*DepthMap](d.remote, ctx, "EstimateViews", imgs, o)
-	}
-	return d.local.EstimateViews(ctx, imgs, o)
+	return airpc.ProxyCall1(d.p, ctx, "EstimateViews", func(l depthEstimatorImpl) ([]*DepthMap, error) {
+		return l.EstimateViews(ctx, imgs, o)
+	}, imgs, o)
 }
 
 // Warm loads the programs of every size once, which compiles them for the NPU (ai.Warmer: the
 // load of "models prepare"), so that a picture of any aspect does not wait for that.
 func (d *DepthEstimator) Warm(ctx context.Context) error {
-	if d.remote != nil {
-		return airpc.Call0(d.remote, ctx, "Warm")
-	}
-	return d.local.Warm(ctx)
+	return airpc.ProxyCall0(d.p, ctx, "Warm", depthEstimatorImpl.Warm)
 }
 
 // EstimateStream estimates the depth of each picture of a stream, in a chunk of the picture's
@@ -252,15 +228,10 @@ func DepthNode(u ai.Use[*DepthEstimator]) *flow.Node[image.Image, *DepthMap] {
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (d *DepthEstimator) Close() error {
-	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return d.local.Close()
-}
+func (d *DepthEstimator) Close() error { return d.p.Close() }
 
 func init() {
 	airole.Register(depthRole)
 	bridge.Roles[depthRole.Name] = depthRole
-	bridge.Wrap[depthRole.Name] = func(l any) io.Closer { return &DepthEstimator{local: l.(depthEstimatorImpl)} }
+	bridge.Wrap[depthRole.Name] = func(l any) io.Closer { return &DepthEstimator{p: airpc.LocalProxy(l.(depthEstimatorImpl))} }
 }

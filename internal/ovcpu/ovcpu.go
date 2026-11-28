@@ -5,14 +5,14 @@
 package ovcpu
 
 import (
-	"encoding/binary"
 	"fmt"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/binview"
 )
 
 // Python is the interpreter from HWNPU_OV_PYTHON, or "" when it is not set.
@@ -69,11 +69,7 @@ func Run(python, xml string, inputs map[string][]float32, opts Options) (map[str
 }
 
 func writeF32(path string, v []float32) error {
-	raw := make([]byte, 4*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint32(raw[4*i:], math.Float32bits(x))
-	}
-	return os.WriteFile(path, raw, 0o644)
+	return os.WriteFile(path, binview.EncodeLE(v), 0o644)
 }
 
 func readF32(path string) ([]float32, error) {
@@ -81,9 +77,5 @@ func readF32(path string) ([]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	v := make([]float32, len(raw)/4)
-	for i := range v {
-		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[4*i:]))
-	}
-	return v, nil
+	return binview.DecodeLE[float32](raw), nil
 }

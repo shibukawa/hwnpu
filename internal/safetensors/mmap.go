@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/shibukawa/hwnpu/internal/binview"
 	"golang.org/x/sys/unix"
 )
 
@@ -94,17 +95,13 @@ func (f *File) MapFloat32(name string) (v []float32, ok bool, err error) {
 	if !found {
 		return nil, false, fmt.Errorf("safetensors: no tensor %q", name)
 	}
-	if t.DType != "F32" || !littleEndian || (f.dataBase+t.begin)%4 != 0 {
+	if t.DType != "F32" || !binview.NativeLE || (f.dataBase+t.begin)%4 != 0 {
 		return nil, false, nil
 	}
 	b, err := f.Map(name)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(b) == 0 {
-		return []float32{}, true, nil
-	}
-	return unsafe.Slice((*float32)(unsafe.Pointer(&b[0])), len(b)/4), true, nil
+	v, ok = binview.NativeLEView[float32](b)
+	return v, ok, nil
 }
-
-var littleEndian = func() bool { x := uint16(1); return *(*byte)(unsafe.Pointer(&x)) == 1 }()

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/binview"
 	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/onnx"
 	"github.com/shibukawa/hwnpu/internal/tflite"
@@ -123,10 +124,7 @@ func (s *Styler) Text(text string) ([]float32, error) {
 	for i, v := range noise {
 		noise[i] = float64(float32(v))
 	}
-	e := make([]float64, len(emb))
-	for i, v := range emb {
-		e[i] = float64(v)
-	}
+	e := binview.Convert[float64](emb)
 	mapped, err := evalOne(mp, map[string]*onnx.Tensor{
 		mp.InputValues[0]: {Shape: []int{1, len(e)}, Type: onnx.Float, F: e},
 		mp.InputValues[1]: {Shape: []int{1, len(noise)}, Type: onnx.Float, F: noise},
@@ -196,10 +194,7 @@ func (s *Styler) Tokens(emb []float32) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := make([]float64, len(emb))
-	for i, v := range emb {
-		e[i] = float64(v)
-	}
+	e := binview.Convert[float64](emb)
 	codes, err := evalOne(vq, map[string]*onnx.Tensor{vq.InputValues[0]: {Shape: []int{1, len(e)}, Type: onnx.Float, F: e}})
 	if err != nil {
 		return nil, fmt.Errorf("music: quantizer: %w", err)
@@ -207,11 +202,7 @@ func (s *Styler) Tokens(emb []float32) ([]int, error) {
 	if len(codes.F) < StyleCodes {
 		return nil, fmt.Errorf("music: the quantizer gave %d codes", len(codes.F))
 	}
-	out := make([]int, StyleCodes)
-	for i := range out {
-		out[i] = int(codes.F[i])
-	}
-	return out, nil
+	return binview.Convert[int](codes.F[:StyleCodes]), nil
 }
 
 // Mix is a weighted mix of style embeddings: the weighted mean of their directions, at the

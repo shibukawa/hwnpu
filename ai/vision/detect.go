@@ -27,7 +27,7 @@ var COCO = slices.Clone(visionwire.COCO)
 // The definition of a detection model may give the settings threads and cpu, and the device
 // (common.go). detectRole's Prepare and Load are the engine's (ai/vision/engine).
 var detectRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &Detector{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &Detector{p: airpc.RemoteProxy[detectorImpl](h)} },
 	Name:   "detect",
 	Kinds:  []catalog.Kind{catalog.KindDetect},
 }
@@ -62,8 +62,7 @@ type DetectOptions struct {
 
 // Detector finds the objects in pictures. It runs one picture at a time; others wait.
 type Detector struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  detectorImpl  // the engine's (ai/vision/engine), when it is here
+	p airpc.Proxy[detectorImpl]
 }
 
 // detectorImpl is a detection model of the engine in this process.
@@ -77,56 +76,30 @@ type detectorImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (d *Detector) Model() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Model")
-	}
-	return d.local.Model()
-}
+func (d *Detector) Model() string { return airpc.ProxyValue(d.p, "Model", detectorImpl.Model) }
 
 // Device is where the model's network runs: npu or cpu.
-func (d *Detector) Device() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Device")
-	}
-	return d.local.Device()
-}
+func (d *Detector) Device() string { return airpc.ProxyValue(d.p, "Device", detectorImpl.Device) }
 
 // Where says where the model runs, for a log: "on AMD's NPU (rtmdet-m.amd-npu2)", "on the CPU
 // (ONNX Runtime, 1 threads)", "all on the NPU", "on the CPU interpreter".
-func (d *Detector) Where() string {
-	if d.remote != nil {
-		return airpc.Value[string](d.remote, "Where")
-	}
-	return d.local.Where()
-}
+func (d *Detector) Where() string { return airpc.ProxyValue(d.p, "Where", detectorImpl.Where) }
 
 // Classes are the names of the model's classes (COCO's).
-func (d *Detector) Classes() []string {
-	if d.remote != nil {
-		return airpc.Value[[]string](d.remote, "Classes")
-	}
-	return d.local.Classes()
-}
+func (d *Detector) Classes() []string { return airpc.ProxyValue(d.p, "Classes", detectorImpl.Classes) }
 
 // Detect finds the objects in a picture, the surest first.
 func (d *Detector) Detect(ctx context.Context, img image.Image, o DetectOptions) (*Objects, error) {
-	if d.remote != nil {
-		return airpc.Call1[*Objects](d.remote, ctx, "Detect", img, o)
-	}
-	return d.local.Detect(ctx, img, o)
+	return airpc.ProxyCall1(d.p, ctx, "Detect", func(l detectorImpl) (*Objects, error) {
+		return l.Detect(ctx, img, o)
+	}, img, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (d *Detector) Close() error {
-	if d.remote != nil {
-		return d.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return d.local.Close()
-}
+func (d *Detector) Close() error { return d.p.Close() }
 
 func init() {
 	airole.Register(detectRole)
 	bridge.Roles[detectRole.Name] = detectRole
-	bridge.Wrap[detectRole.Name] = func(l any) io.Closer { return &Detector{local: l.(detectorImpl)} }
+	bridge.Wrap[detectRole.Name] = func(l any) io.Closer { return &Detector{p: airpc.LocalProxy(l.(detectorImpl))} }
 }

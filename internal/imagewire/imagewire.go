@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"reflect"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/ai"
@@ -73,7 +72,7 @@ func Dial(ctx context.Context, log io.Writer) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Session{s: s, h: s.Object(0).Bind(reflect.TypeFor[Host]())}, nil
+	return &Session{s: s, h: airpc.Root[Host](s)}, nil
 }
 
 // Close ends the session.

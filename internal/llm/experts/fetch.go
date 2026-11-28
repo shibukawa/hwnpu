@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // reader brings experts' pages into memory from the checkpoint's files, on readers goroutines.
@@ -23,7 +25,7 @@ type reader struct {
 	urgent chan *demand
 	quit   chan struct{}
 	wg     sync.WaitGroup
-	bufs   sync.Pool
+	bufs   syncx.Pool[[]byte]
 
 	// for HWNPU_DEV's moe.time: the runs that waited for a demand, its pieces read and the wait
 	demands, read atomic.Int64
@@ -56,7 +58,7 @@ type demand struct {
 
 func newReader(h *Host) *reader {
 	r := &reader{h: h, queue: make(chan []byte, 256), urgent: make(chan *demand, readers), quit: make(chan struct{})}
-	r.bufs.New = func() any { b := make([]byte, piece); return &b }
+	r.bufs.New = func() *[]byte { b := make([]byte, piece); return &b }
 	for range readers {
 		r.wg.Add(1)
 		go func() {
@@ -169,7 +171,7 @@ func (r *reader) need(l int, idx [][]int) {
 		default:
 		}
 	}
-	buf := r.bufs.Get().(*[]byte)
+	buf := r.bufs.Get()
 	r.work(d, *buf)
 	r.bufs.Put(buf)
 	d.wg.Wait()

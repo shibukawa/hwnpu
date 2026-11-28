@@ -29,7 +29,7 @@ func Chat(name string) ai.Use[*Chatter] {
 var chatRole = &airole.Role{
 	LoadSettings: loadSettings,
 	Name:         "chat",
-	Remote:       func(h *airpc.Handle) io.Closer { return &Chatter{remote: h} },
+	Remote:       func(h *airpc.Handle) io.Closer { return &Chatter{p: airpc.RemoteProxy[chatterImpl](h)} },
 	Kinds:        []catalog.Kind{catalog.KindChat},
 	// 1: the attention programs of a model split at its attention are written again with the
 	// model's scale of the values' weights (paged.Shape.OutScale: Qwen3's), which Prepare does;
@@ -253,8 +253,7 @@ type Delta struct {
 
 // Chatter answers conversations with a chat model. It runs one request at a time; others wait.
 type Chatter struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  chatterImpl   // the engine's (ai/text/engine), when it is here
+	p airpc.Proxy[chatterImpl]
 }
 
 // chatterImpl is a chat model of the engine in this process: Chatter's methods but those made
@@ -276,84 +275,36 @@ type chatterImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (c *Chatter) Model() string {
-	if c.remote != nil {
-		return airpc.Value[string](c.remote, "Model")
-	}
-	return c.local.Model()
-}
+func (c *Chatter) Model() string { return airpc.ProxyValue(c.p, "Model", chatterImpl.Model) }
 
 // Name is the model's name as it calls itself (the API's, the logs'): its definition's, or the
 // export's.
-func (c *Chatter) Name() string {
-	if c.remote != nil {
-		return airpc.Value[string](c.remote, "Name")
-	}
-	return c.local.Name()
-}
+func (c *Chatter) Name() string { return airpc.ProxyValue(c.p, "Name", chatterImpl.Name) }
 
 // Features are the model's features in the definitions (tools, vision, audio, translation, ...).
-func (c *Chatter) Features() []string {
-	if c.remote != nil {
-		return airpc.Value[[]string](c.remote, "Features")
-	}
-	return c.local.Features()
-}
+func (c *Chatter) Features() []string { return airpc.ProxyValue(c.p, "Features", chatterImpl.Features) }
 
 // Thinks reports whether the model thinks before it answers when ChatOptions does not say.
-func (c *Chatter) Thinks() bool {
-	if c.remote != nil {
-		return airpc.Value[bool](c.remote, "Thinks")
-	}
-	return c.local.Thinks()
-}
+func (c *Chatter) Thinks() bool { return airpc.ProxyValue(c.p, "Thinks", chatterImpl.Thinks) }
 
 // Translates reports whether the model is a translation model (ChatOptions.Translation).
 func (c *Chatter) Translates() bool {
-	if c.remote != nil {
-		return airpc.Value[bool](c.remote, "Translates")
-	}
-	return c.local.Translates()
+	return airpc.ProxyValue(c.p, "Translates", chatterImpl.Translates)
 }
 
 // Context is the most tokens a prompt and its answer can have together.
-func (c *Chatter) Context() int {
-	if c.remote != nil {
-		return airpc.Value[int](c.remote, "Context")
-	}
-	return c.local.Context()
-}
+func (c *Chatter) Context() int { return airpc.ProxyValue(c.p, "Context", chatterImpl.Context) }
 
 // Images and Audio report whether the model reads images and audio clips.
-func (c *Chatter) Images() bool {
-	if c.remote != nil {
-		return airpc.Value[bool](c.remote, "Images")
-	}
-	return c.local.Images()
-}
+func (c *Chatter) Images() bool { return airpc.ProxyValue(c.p, "Images", chatterImpl.Images) }
 
-func (c *Chatter) Audio() bool {
-	if c.remote != nil {
-		return airpc.Value[bool](c.remote, "Audio")
-	}
-	return c.local.Audio()
-}
+func (c *Chatter) Audio() bool { return airpc.ProxyValue(c.p, "Audio", chatterImpl.Audio) }
 
 // OnNPU reports whether the programs were verified to run on the NPU.
-func (c *Chatter) OnNPU() bool {
-	if c.remote != nil {
-		return airpc.Value[bool](c.remote, "OnNPU")
-	}
-	return c.local.OnNPU()
-}
+func (c *Chatter) OnNPU() bool { return airpc.ProxyValue(c.p, "OnNPU", chatterImpl.OnNPU) }
 
 // Device is the NPU the model runs on, as the logs call it.
-func (c *Chatter) Device() string {
-	if c.remote != nil {
-		return airpc.Value[string](c.remote, "Device")
-	}
-	return c.local.Device()
-}
+func (c *Chatter) Device() string { return airpc.ProxyValue(c.p, "Device", chatterImpl.Device) }
 
 // Complete answers a conversation: its text, trimmed.
 func (c *Chatter) Complete(ctx context.Context, msgs []Message, o ChatOptions) (string, error) {
@@ -393,27 +344,20 @@ func (c *Chatter) Reply(ctx context.Context, msgs []Message, o ChatOptions, fn f
 	if len(msgs) == 0 {
 		return Answer{}, errors.New("text: no messages to answer")
 	}
-	if c.remote != nil {
-		return airpc.Call1[Answer](c.remote, ctx, "Reply", msgs, o, fn)
-	}
-	return c.local.Reply(ctx, msgs, o, fn)
+	return airpc.ProxyCall1(c.p, ctx, "Reply", func(l chatterImpl) (Answer, error) {
+		return l.Reply(ctx, msgs, o, fn)
+	}, msgs, o, fn)
 }
 
 // Count is the tokens of the prompt the conversation is, with o's tools and thinking.
 func (c *Chatter) Count(ctx context.Context, msgs []Message, o ChatOptions) (int, error) {
-	if c.remote != nil {
-		return airpc.Call1[int](c.remote, ctx, "Count", msgs, o)
-	}
-	return c.local.Count(ctx, msgs, o)
+	return airpc.ProxyCall1(c.p, ctx, "Count", func(l chatterImpl) (int, error) {
+		return l.Count(ctx, msgs, o)
+	}, msgs, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (c *Chatter) Close() error {
-	if c.remote != nil {
-		return c.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return c.local.Close()
-}
+func (c *Chatter) Close() error { return c.p.Close() }
 
 // ErrMedia is returned for an image or a clip the model cannot read (not one, or a model
 // without the feature).
@@ -425,9 +369,9 @@ var ErrContext = chatwire.ErrContext
 func init() {
 	airole.Register(chatRole)
 	bridge.Roles[chatRole.Name] = chatRole
-	bridge.Wrap[chatRole.Name] = func(l any) io.Closer { return &Chatter{local: l.(chatterImpl)} }
+	bridge.Wrap[chatRole.Name] = func(l any) io.Closer { return &Chatter{p: airpc.LocalProxy(l.(chatterImpl))} }
 	// what the callers of a model in hwnpud check for (errors.Is, errors.As)
 	airpc.RegisterError("text.ErrMedia", ErrMedia)
 	airpc.RegisterError("text.ErrContext", ErrContext)
-	airpc.RegisterErrorType("text.FormatError", (*FormatError)(nil))
+	airpc.RegisterErrorType[*FormatError]("text.FormatError")
 }

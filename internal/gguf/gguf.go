@@ -102,21 +102,16 @@ type reader struct {
 	err error
 }
 
-func (r *reader) u32() uint32 {
-	var v uint32
+func readLE[T uint8 | int8 | uint16 | int16 | uint32 | int32 | float32 | uint64 | int64 | float64](r *reader) T {
+	var v T
 	if r.err == nil {
 		r.err = binary.Read(r.r, binary.LittleEndian, &v)
 	}
 	return v
 }
 
-func (r *reader) u64() uint64 {
-	var v uint64
-	if r.err == nil {
-		r.err = binary.Read(r.r, binary.LittleEndian, &v)
-	}
-	return v
-}
+func (r *reader) u32() uint32 { return readLE[uint32](r) }
+func (r *reader) u64() uint64 { return readLE[uint64](r) }
 
 func (r *reader) str() string {
 	n := r.u64()
@@ -136,31 +131,21 @@ func (r *reader) str() string {
 func (r *reader) value(t uint32) any {
 	switch t {
 	case 0: // uint8
-		var v uint8
-		r.err = binary.Read(r.r, binary.LittleEndian, &v)
-		return float64(v)
+		return float64(readLE[uint8](r))
 	case 1:
-		var v int8
-		r.err = binary.Read(r.r, binary.LittleEndian, &v)
-		return float64(v)
+		return float64(readLE[int8](r))
 	case 2:
-		var v uint16
-		r.err = binary.Read(r.r, binary.LittleEndian, &v)
-		return float64(v)
+		return float64(readLE[uint16](r))
 	case 3:
-		var v int16
-		r.err = binary.Read(r.r, binary.LittleEndian, &v)
-		return float64(v)
+		return float64(readLE[int16](r))
 	case 4:
-		return float64(r.u32())
+		return float64(readLE[uint32](r))
 	case 5:
-		return float64(int32(r.u32()))
+		return float64(readLE[int32](r))
 	case 6:
-		return float64(math.Float32frombits(r.u32()))
+		return float64(readLE[float32](r))
 	case 7:
-		var v uint8
-		r.err = binary.Read(r.r, binary.LittleEndian, &v)
-		return v != 0
+		return readLE[uint8](r) != 0
 	case 8:
 		return r.str()
 	case 9:
@@ -183,13 +168,15 @@ func (r *reader) value(t uint32) any {
 		}
 		return out
 	case 10:
-		return float64(r.u64())
+		return float64(readLE[uint64](r))
 	case 11:
-		return float64(int64(r.u64()))
+		return float64(readLE[int64](r))
 	case 12:
-		return math.Float64frombits(r.u64())
+		return readLE[float64](r)
 	}
-	r.err = fmt.Errorf("unknown metadata type %d", t)
+	if r.err == nil {
+		r.err = fmt.Errorf("unknown metadata type %d", t)
+	}
 	return nil
 }
 
