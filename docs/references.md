@@ -6,7 +6,7 @@
 
 | ベンダー | NPU 名称 | モデル最適化レシピ / サンプル集 | 量子化・変換・最適化ツール |
 | :--- | :--- | :--- | :--- |
-| **Apple** | Apple Neural Engine (ANE) | [`apple/coreai-models`](https://github.com/apple/coreai-models) | Core AI (`coreai-torch`, `coreai-optimization`) |
+| **Apple** | Apple Neural Engine (ANE) | [`apple/coreai-models`](https://github.com/apple/coreai-models) | [`apple/coreai-optimization`](https://github.com/apple/coreai-optimization), Core AI (`coreai-torch`) |
 | **Qualcomm** | Hexagon NPU (HTP) | [`qualcomm/ai-hub-models`](https://github.com/qualcomm/ai-hub-models), [`qualcomm/ai-hub-apps`](https://github.com/qualcomm/ai-hub-apps) | Qualcomm AI Hub (`qai-hub`) / QNN |
 | **AMD** | Ryzen AI NPU (XDNA) | [`amd/RyzenAI-SW`](https://github.com/amd/RyzenAI-SW), [`ROCm/FastFlowLM`](https://github.com/ROCm/FastFlowLM) | [`amd/Quark`](https://github.com/amd/Quark), [`amd/IRON`](https://github.com/amd/IRON), [`huggingface/optimum-amd`](https://github.com/huggingface/optimum-amd) |
 | **Intel** | Intel AI Boost NPU | [`openvinotoolkit/openvino_notebooks`](https://github.com/openvinotoolkit/openvino_notebooks), [`openvinotoolkit/openvino.genai`](https://github.com/openvinotoolkit/openvino.genai) | [`openvinotoolkit/nncf`](https://github.com/openvinotoolkit/nncf), [`huggingface/optimum-intel`](https://github.com/huggingface/optimum-intel) |
@@ -17,6 +17,8 @@
 
 * **[apple/coreai-models](https://github.com/apple/coreai-models)**
   * Core AI フレームワーク向けに、言語・画像・音声などのオープンソースモデルを `.aimodel` 形式へ最適化・エクスポートするための Python レシピ集および Swift ランタイムユーティリティ（`CoreAILanguageModel` 等）。
+* **[apple/coreai-optimization](https://github.com/apple/coreai-optimization)**
+  * Apple Silicon（ANE / GPU / CPU）上での Core AI 実行向けに、PyTorch モデルの量子化・パレット化などの圧縮・最適化を行う Apple 公式 Python ライブラリ。
 
 ---
 
