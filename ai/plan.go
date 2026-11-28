@@ -86,7 +86,9 @@ type Item struct {
 	// Download is about how many bytes preparing it downloads: the model's size in the
 	// definitions, 0 when its checkpoint is here (or it is Ready). It is the most: a shared
 	// layer (Store.Models) may hold what was converted, and then the checkpoint is not
-	// downloaded.
+	// downloaded. On AMD's NPU it is the size of the model's export, which is taken from the
+	// sources whether or not the checkpoint is here (and made here, of the checkpoint, only
+	// when no source has it).
 	Download int64 `json:"download_bytes"`
 	// Disk is about how many bytes the model keeps on the disk to run (its conversion unpacked
 	// and its tables), from the definitions (0: not known). Preparing it needs about Download
@@ -201,7 +203,11 @@ func (a *App) plan(ctx context.Context, reqs []requirement) (*Plan, error) {
 		case err != nil && !errors.Is(err, ErrNotPrepared) && !errors.Is(err, ErrBundleTarget):
 			return nil, err
 		}
-		if !it.Ready && !aieng.Must().Downloaded(m) && len(m.Programs) == 0 {
+		// what preparing it downloads: its checkpoint, unless that is here. On AMD's NPU a model
+		// runs from an export, which the sources are asked for first whether or not the
+		// checkpoint is here (chat.PrepareAMD): the export's size, the definitions' bytes for amd
+		export := p.npu.AMD() && !p.npu.CPU(m)
+		if !it.Ready && len(m.Programs) == 0 && (export || !aieng.Must().Downloaded(m)) {
 			it.Download = int64(m.BytesFor(p.npu.Vendor))
 		}
 		p.Items = append(p.Items, it)
