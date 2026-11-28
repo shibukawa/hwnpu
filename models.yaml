@@ -315,8 +315,11 @@ models:
     # choices read. On a Mac about 4 GB of the experts wired (experts.Placement), the others
     # mapped from the checkpoint. From 24 GB every expert in the NPU's memory (19.4 tokens/s on
     # AMD) and wired on a Mac
+    # (M1, 2026-11-28: 6.64 GB with the hot prefill experts on the Neural Engine, PR #392, against
+    # 6.24 GB on the CPU: their fp16 buffers; over a 2059-token prompt the CPU's time 180 -> 113 s,
+    # the prefill 38 -> 42 s; the answer parts from the CPU's after about 30 tokens, fp16's sums)
     machine: 16
-    memory: {amd: 8.3, apple: 6.4}
+    memory: {amd: 8.3, apple: 6.7}
     variants:
       24: {memory: {amd: 14.6, apple: 12.2}}
     bytes: {amd: 11.79e9, apple: 14.4e9}
@@ -387,8 +390,11 @@ models:
     # work of docs/design/amd.md, docs/design/amd-llm.md, docs/design/moe.md: every expert 8.8-8.9 tokens/s, 128 places 7.5-7.6, 32 places 5.8-6.0.
     # A layer's core over half its places is not kept in place on AMD (pool.go: with 32 places
     # it took most of them, 34.4 -> 36.7 % copied in)
+    # Apple (M1, 2026-11-28): 3.15 GB with the hot prefill experts on the Neural Engine (PR #392)
+    # against 2.99 GB on the CPU; over a 2181-token prompt the prefill 24.9 -> 22.6 s and the
+    # CPU's time 110 -> 58 s, the same answer; the decode 8.8 tokens/s either way
     machine: 16
-    memory: {amd: 8.2, apple: 2.7}
+    memory: {amd: 8.2, apple: 3.2}
     variants:
       24: {memory: {amd: 17.2, apple: 2.7}}
       48: {memory: {amd: 26.3, apple: 2.7}}
