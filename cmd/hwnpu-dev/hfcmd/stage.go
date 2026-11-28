@@ -240,6 +240,9 @@ func card(m chat.Model, commit string, man manifest, gated string) string {
 	if targets["coreai"] {
 		tags = append(tags, "coreai", "apple-neural-engine")
 	}
+	if targets["coreml"] {
+		tags = append(tags, "coreml", "cpu")
+	}
 	fmt.Fprintf(&b, "tags: [%s]\n", strings.Join(tags, ", "))
 	if gated != "" {
 		fmt.Fprintf(&b, "extra_gated_prompt: \"%s is gated as %s is: agree to its license (%s) to download it.\"\n", m.Name, m.Repo, m.License.ID)
@@ -271,6 +274,9 @@ func card(m chat.Model, commit string, man manifest, gated string) string {
 	}
 	b.WriteString("\n- `amd-xdna2`: AMD's Ryzen AI NPU (XDNA2: Strix Point and later). The same files on Linux (checked) and on Windows through XRT (not checked yet).\n")
 	b.WriteString("- `coreai`: every Mac with Core AI (macOS 27): compiled on the Mac the first time. `coreai-<chip>`: compiled ahead of time for that Neural Engine (h13g M1, h14g M2, h15g M3, h16g M4, h17g M5, and their c/s/d variants); a Mac without one uses `coreai`.\n")
+	if targets["coreml"] {
+		b.WriteString("- `coreml`: the CPU's programs (Core ML packages, run by hwnpu's own executor on every OS) with what the run reads beside them (`.onnxpart` files): a machine that runs the model on the CPU needs neither the ONNX file nor its conversion.\n")
+	}
 	b.WriteString("- `any`: tables read on every NPU (the embeddings), so that the checkpoint is not downloaded.\n")
 	b.WriteString("- `config.json`: hwnpu's list of what is here (not a transformers config).\n")
 	return b.String()
@@ -284,6 +290,8 @@ func what(e manifestEntry) string {
 		return "prebuilt programs (" + strings.TrimPrefix(e.Target, "coreai-") + ")"
 	case e.Kind == chat.TablesKind:
 		return "tables"
+	case e.Kind == chat.CoreMLKind:
+		return "Core ML package (the CPU)"
 	case strings.HasPrefix(e.Kind, "iron-"):
 		return "export for AMD's NPU (IRON)"
 	}

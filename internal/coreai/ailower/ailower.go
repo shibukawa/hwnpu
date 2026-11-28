@@ -44,7 +44,10 @@ const Producer = "hwnpu-ailower"
 // programs of an export of the same name different, so that the layers' older ones are not taken.
 // 2: no two neighbouring lookup tables are equal (mlpackage.DistinctNeighbours), which
 // coreai-build's Neural Engine compiler failed on.
-const FormatVersion = 2
+// 3: one location for every op, a part's functions sharing their weights, the blockwise
+// dequantization's min and conv_transpose2d_v1 written directly (PR #384): with 2 the layers'
+// v0-HASH exports of before were taken for the recipes' raised versions (MoGe-2's).
+const FormatVersion = 3
 
 // assetVersion is the aicode serialization asset's version coreai-core 1.0.0b3 writes.
 const assetVersion = 20260204

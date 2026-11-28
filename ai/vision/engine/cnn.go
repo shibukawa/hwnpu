@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagedev"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
 )
 
 // cnn is how a model of one ONNX file that is converted for the NPU (RTMDet, RTMO) is made
@@ -35,6 +36,11 @@ type cnn[T io.Closer] struct {
 	openCPU func(model string, threads int) (T, error)
 	open    func(ctx context.Context, dev *hwnpu.Device, model, program string) (T, error)
 	onNPU   func(T) bool
+	// programOnly says open runs a converted Core ML package without the ONNX file (convert gives
+	// no model's path for it: the program alone, or with its part file of what the host reads):
+	// on the CPU one from the shared layers (chat.CoreMLKind) is run on hwnpu's own executor in
+	// place of the ONNX file, even where ONNX Runtime is, and the ONNX file is not downloaded
+	programOnly bool
 }
 
 func (c cnn[T]) prepare(e airole.PrepareEnv) (f airole.Files, err error) {
@@ -55,6 +61,14 @@ func (c cnn[T]) prepare(e airole.PrepareEnv) (f airole.Files, err error) {
 		return f, nil
 	}
 	ort, builtin := imagedev.CPURoute(e.Ctx, m, flag, interp, threads(m), quiet)
+	if ort && c.programOnly {
+		// a prebuilt Core ML package, here or in the shared layers, before the ONNX file
+		if model, program, err := c.convert(llm.WithFetchOnly(e.Ctx), m, e.Base, llm.BackendCoreML, e.Log); err == nil && model == "" {
+			f.Set("program", program)
+			f.SetValue("runtime", "hwnpu")
+			return f, nil
+		}
+	}
 	if ort {
 		model, err := fetch()
 		if err != nil {
@@ -98,6 +112,11 @@ func (c cnn[T]) load(ctx context.Context, f airole.Files, e airole.LoadEnv) (t T
 	}
 	interp := interpreter(m)
 	ort, builtin := imagedev.CPURoute(ctx, named(m), imagedev.DeviceFlag(m), interp, n, logf(e.Log))
+	if ort && f.Values["runtime"] == "hwnpu" {
+		// prepared with a prebuilt Core ML package in place of the ONNX file (programOnly)
+		ort, builtin = false, true
+		milcpu.Threads = max(1, n)
+	}
 	if ort {
 		if t, err = c.openCPU(f.Path("onnx"), n); err != nil {
 			return t, "", "", nil, err

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -110,6 +111,12 @@ type convertedOpener[T io.Closer] struct {
 // (nil on the CPU), which the caller closes after it.
 func convertedLoad[T io.Closer](ctx context.Context, f airole.Files, e airole.LoadEnv, r route, o convertedOpener[T]) (T, *hwnpu.Device, error) {
 	var zero T
+	if r.runtime == "onnxruntime" && f.Path("onnx") == "" && f.Path("program-"+llm.BackendCoreML) != "" {
+		// prepared from a Core ML package of the shared layers with its part file, no ONNX file
+		// downloaded: run on hwnpu's own executor even where ONNX Runtime is
+		r.runtime, r.threads = "hwnpu", max(1, r.threads)
+		r.line = strings.Replace(r.line, "with ONNX Runtime", "with hwnpu's own executor on the prebuilt program", 1)
+	}
 	if r.line != "" {
 		logf(e.Log)("%s", r.line)
 	}

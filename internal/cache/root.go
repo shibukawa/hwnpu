@@ -76,6 +76,11 @@ const AMDTarget = "amd-xdna2"
 // every Mac; what is compiled for a chip goes as its own target, CoreAITarget-ARCH.
 const CoreAITarget = "coreai"
 
+// CoreMLTarget is the target of the Core ML packages (.mlpackage) of the models the CPU runs
+// converted (hwnpu's own executor, internal/milcpu): made from their ONNX files, the same on
+// every OS, so that a machine takes them in place of the ONNX file and its conversion.
+const CoreMLTarget = "coreml"
+
 // Entries is where the exports for a target are kept: entries/TARGET under Root.
 func Entries(target string) string { return Sub("entries", target) }
 

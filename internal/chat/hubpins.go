@@ -23,9 +23,10 @@ var HubPush, HubPushFile string
 var (
 	hubNamespace = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	// HubTarget matches the targets a repository of hub pins a commit for: amd-xdna2 (AMD's
-	// NPU), apple (every Mac), coreai-ARCH (a Mac of that Neural Engine, before apple), and the
-	// generations to come (amd-xdna1, intel-npu4).
-	HubTarget = regexp.MustCompile(`^(amd-xdna[0-9]+|apple|coreai-h[0-9]+[a-z]+|intel-npu[0-9]+)$`)
+	// NPU), apple (every Mac), coreai-ARCH (a Mac of that Neural Engine, before apple), coreml
+	// (the Core ML packages the CPU runs, on every OS), and the generations to come (amd-xdna1,
+	// intel-npu4).
+	HubTarget = regexp.MustCompile(`^(amd-xdna[0-9]+|apple|coreai-h[0-9]+[a-z]+|coreml|intel-npu[0-9]+)$`)
 )
 
 // toHub checks a model's hub and orders its repositories: those of the files read last first,
@@ -39,7 +40,7 @@ func toHub(h map[string]map[string]string, files map[string]hubOrigin) ([]HubRep
 		}
 		for t, c := range pins {
 			if !HubTarget.MatchString(t) {
-				return nil, fmt.Errorf("%s: %q is not a target (amd-xdna2, apple, coreai-ARCH)", repo, t)
+				return nil, fmt.Errorf("%s: %q is not a target (amd-xdna2, apple, coreai-ARCH, coreml)", repo, t)
 			}
 			if c != "main" && !commitRE.MatchString(c) {
 				return nil, fmt.Errorf("%s: %s: %q is not a commit (40 hex digits) or main", repo, t, c)

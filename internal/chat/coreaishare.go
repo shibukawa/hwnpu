@@ -45,13 +45,21 @@ type coreAIShares struct{}
 var sharedLog io.Writer = console.Log(os.Stderr)
 
 func (coreAIShares) Fetch(ctx context.Context, export string) bool {
+	if isCoreML(export) {
+		return fetchCoreML(ctx, export)
+	}
 	m, r := coreAIRecipe(ctx, export)
 	return fetchShared(ctx, CoreAIKind, m, r, export, r["export"])
 }
 
 // Put finishes the export made here as its model's recipe says (apple.finish: FinishCoreAI),
-// then puts it in the layers that are written.
+// then puts it in the layers that are written; a Core ML package (NAME.mlpackage) is put as it
+// is (putCoreML).
 func (coreAIShares) Put(ctx context.Context, export string) {
+	if isCoreML(export) {
+		putCoreML(ctx, export)
+		return
+	}
 	if err := FinishCoreAI(ctx, export); err != nil {
 		fmt.Fprintf(sharedLog, "%s: %v\n", filepath.Base(export), err)
 		return

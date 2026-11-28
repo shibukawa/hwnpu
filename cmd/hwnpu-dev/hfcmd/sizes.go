@@ -58,6 +58,9 @@ func (s SizesCmd) Run(d *devopt.Defs) error {
 		var lack []string
 		for _, r := range rows(ctx, ls, sel.layer, m, true) {
 			v := vendorOf[r.group]
+			if v == "" {
+				continue // the CPU's Core ML packages: of no vendor's NPU (models.yaml's disk is by vendor)
+			}
 			if len(r.entries) == 0 {
 				lack = append(lack, v)
 				continue

@@ -93,13 +93,12 @@ type Setup struct {
 	Log               io.Writer
 }
 
-// Prepare downloads nmp.onnx unless it is there and converts the program unless it is. It
-// returns the model's and the program's paths.
+// Prepare converts the program unless it is here or in the shared layers, downloading nmp.onnx
+// for it unless it is there. It returns the model's and the program's paths: the model's is ""
+// when a Core ML package with its front end's part (FrontPart) was here or fetched, which Open
+// runs without the ONNX file.
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	if model, err = Fetch(ctx, s); err != nil {
-		return "", "", err
-	}
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	format, err := chat.ConvertFormat(ctx, filepath.Join(s.Dir, Arch), s.Backend, "fp16")
 	if err != nil {
@@ -107,14 +106,27 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	}
 	name := fmt.Sprintf("%s-r%d-%s", Arch, Revision, format)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
-	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
-		return model, program, nil
+	llm.DropStaleCoreML(program, done, FrontPart(program))
+	ready := llm.ProgramReady(ctx, s.Dir, name, done, export)
+	if ready && hasFrontPart(program) {
+		return "", program, nil
+	}
+	if !ready {
+		if err := llm.MayConvert(ctx, program); err != nil {
+			return "", "", err // nothing converted now: the ONNX file is not downloaded either
+		}
+	}
+	if model, err = Fetch(ctx, s); err != nil {
+		return "", "", err
+	}
+	if ready {
+		return model, program, nil // a program of before its front end's part: with the ONNX file
 	}
 	g, err := onnx.Load(model)
 	if err != nil {
 		return "", "", err
 	}
-	p, _, err := newProgram(g)
+	p, c, err := newProgram(g)
 	if err != nil {
 		return "", "", err
 	}
@@ -131,8 +143,31 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		bar.Done("failed")
 		return "", "", err
 	}
+	if s.Backend == llm.BackendCoreML {
+		// the front end the host runs (the window to the normalized log CQT) and the program's
+		// layout, beside the program in its package: a machine that takes it needs no ONNX file
+		input := g.Inputs[0].Name
+		part, err := p.ProgramPart([]string{input}, []string{c}, map[string]any{"cut": c})
+		if err == nil {
+			err = onnx.WritePart(FrontPart(program), part)
+		}
+		if err != nil {
+			bar.Done("failed")
+			return "", "", fmt.Errorf("notes: %w", err)
+		}
+	}
 	bar.Done(console.Duration(bar.Elapsed()))
 	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
+}
+
+// FrontPart is the part file (onnx.PartExt) in a Core ML package of Prepare (program): the graph
+// from the window to the normalized log CQT and the program's layout of its outputs, which Open
+// runs the front end from in place of the ONNX file.
+func FrontPart(program string) string { return filepath.Join(program, "front"+onnx.PartExt) }
+
+func hasFrontPart(program string) bool {
+	_, err := os.Stat(FrontPart(program))
+	return err == nil
 }
 
 // Fetch downloads nmp.onnx unless it is there, checks its sha256 and returns its path: all the
@@ -177,8 +212,30 @@ type Transcriber struct {
 	OnClose func()
 }
 
-// Open loads the graph and the program on dev (nil: the CPU interpreter).
+// Open loads the graph and the program on dev (nil: the CPU interpreter): the front end from the
+// program's part file (FrontPart) when it has one, mapped, else from the ONNX file model.
 func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Transcriber, error) {
+	if hasFrontPart(program) {
+		part, err := onnx.ReadPart(FrontPart(program))
+		if err == nil {
+			op, err := onnx.ProgramOf(part)
+			var c string
+			if err == nil {
+				err = part.MetaOf("cut", &c)
+			}
+			if err != nil || part.Graph == nil || len(part.Graph.Inputs) != 1 {
+				return nil, fmt.Errorf("notes: %s: %v", FrontPart(program), err)
+			}
+			p, err := runner.Open(ctx, dev, program)
+			if err != nil {
+				return nil, err
+			}
+			return newTranscriber(part.Graph, op, c, p, program)
+		}
+		if model == "" {
+			return nil, fmt.Errorf("notes: %w", err)
+		}
+	}
 	g, err := onnx.Load(model)
 	if err != nil {
 		return nil, err

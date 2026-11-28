@@ -97,6 +97,7 @@
   hwnpu-dev prebuild -mark failedToSpecialize -arch h15g -programs 'dit_single_*' -function s1024x1024 EXPORT_DIR
   hwnpu-dev prebuild -mark ok -arch h15g EXPORT_DIR
   ```
+  `-put` を付けると、印を付けた束をそのまま取得元に置く (`-model NAME` で、`entry.json` のない書き出しのモデルを言う)。取得元は記録の変わった束 (`revision`) を置き換える。**レシピに `do: device` を足すだけでは取得元の束は直らない**: 全部の部品が端末に任された書き出しは置き直されず、一部だけのときも、取得元は持つ部品の多い前の束を残す (`PutEntry`)。端末で結果が悪かった prebuilt は、決まりを足す前に `-mark 失敗の名前 -put` で印を取得元に置く (2026-11-28、M2 の RTMDet や DA3 で)。決まりを足して作り直したあとで印を置くには、決まりを外して `--force --packed` で作り直し、`-mark -put` してから決まりを戻す
 - **動かしたときに自動で** (設定なし): `hwnpu-image` などで、パックした prebuilt (`NAME.coreai.prebuilt/ARCH` の中のもの) について、その束の `build.json` に書く (`coreai.DeviceMark`、`markPrebuilt`)
   - `ok`: Core AI が開け、**最初の呼び出しが返った**とき。開けただけでは書かない (2026-11-27 から)。開けて仕上がっても動かないプログラムがある: Qwen3.5-0.8B の h13g の prebuilt は M1 で仕上がるが、最初の呼び出しが Neural Engine の上で終わらず、100 秒で打ち切られた ([known-issues](known-issues.md) 16節)。それまでの `ok` は「仕上がった」の意味でしかない
   - `failedToSpecialize`: `the prebuilt program failed` のメッセージに `failedToSpecialize` があるとき (開けなかった)

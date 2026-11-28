@@ -11,8 +11,11 @@ package pitch
 
 import (
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/onnx"
 	"math"
 	"math/cmplx"
+	"os"
+	"path/filepath"
 	"slices"
 )
 
@@ -104,6 +107,13 @@ func Load(path string) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newModel(t, path, true)
+}
+
+// newModel is the model of the initializers t (read from source): the front end's filter banks
+// and the pitch bins; with cnn, the CNN's weights are checked to be there too (a program is
+// built from them).
+func newModel(t map[string]tensor, path string, cnn bool) (*Model, error) {
 	m := &Model{t: t, source: path}
 	for _, tr := range transforms {
 		w, idx, vals := t[tr.window], t[tr.index], t[tr.weights]
@@ -134,6 +144,9 @@ func Load(path string) (*Model, error) {
 		return nil, fmt.Errorf("pitch: %s: %d and %d pitch bins, want %d", path, len(m.hz), len(m.logHz), Bins)
 	}
 	for _, c := range append([]conv{stem, head1, head2, pitchConv, voice1, voice2}, flat(body)...) {
+		if !cnn {
+			break
+		}
 		if _, ok := t[c.weight]; !ok {
 			return nil, fmt.Errorf("pitch: %s has no %s: not swift-f0 0.3.0's model", path, c.weight)
 		}
@@ -391,4 +404,48 @@ func (r Result) Voiced(threshold float64) []bool {
 			}
 		}
 	})
+}
+
+// FrontPart is the part file (onnx.PartExt) in a Core ML package of Prepare (program): the front
+// end's windows and filter banks and the pitch bins (the host's part: the CNN is the program),
+// which Open reads in place of the ONNX file.
+func FrontPart(program string) string { return filepath.Join(program, "front"+onnx.PartExt) }
+
+// frontTensors are the initializers the host reads (FrontPart).
+func frontTensors() []string {
+	names := []string{binHz, binLog}
+	for _, tr := range transforms {
+		names = append(names, tr.window, tr.index, tr.weights)
+	}
+	return names
+}
+
+// writeFrontPart writes the model's FrontPart beside the program.
+func (m *Model) writeFrontPart(program string) error {
+	p := onnx.Part{Tensors: map[string]*onnx.Tensor{}}
+	for _, name := range frontTensors() {
+		t, ok := m.t[name]
+		if !ok {
+			return fmt.Errorf("pitch: no initializer %s", name)
+		}
+		p.Tensors[name] = &onnx.Tensor{Shape: t.shape, F: t.vals, Type: onnx.Double}
+	}
+	return onnx.WritePart(FrontPart(program), p)
+}
+
+// loadFrontPart is the model of a program's FrontPart (mapped), "" when it has none.
+func loadFrontPart(program string) (*Model, error) {
+	path := FrontPart(program)
+	if _, err := os.Stat(path); err != nil {
+		return nil, nil
+	}
+	p, err := onnx.ReadPart(path)
+	if err != nil {
+		return nil, err
+	}
+	t := map[string]tensor{}
+	for name, v := range p.Tensors {
+		t[name] = tensor{shape: v.Shape, vals: v.Values()}
+	}
+	return newModel(t, path, false)
 }

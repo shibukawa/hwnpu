@@ -69,13 +69,12 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// Prepare downloads the ONNX export into s.Dir unless it is there and converts the program
-// unless it is. It returns the model's and the program's paths.
+// Prepare converts the program unless it is here or in the shared layers, downloading the ONNX
+// export into s.Dir for it unless it is there. It returns the model's and the program's paths:
+// the model's is "" when a Core ML package with its host's part (HostPart) was here or fetched,
+// which Open runs without the ONNX file.
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	if model, err = Fetch(ctx, s); err != nil {
-		return "", "", err
-	}
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	format, err := chat.ConvertFormat(ctx, filepath.Join(s.Dir, Arch), s.Backend, "fp16")
 	if err != nil {
@@ -83,8 +82,21 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	}
 	name := fmt.Sprintf("%s-r%d-%s-%d", Arch, Revision, format, Size)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
-	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
-		return model, program, nil
+	llm.DropStaleCoreML(program, done, HostPart(program))
+	ready := llm.ProgramReady(ctx, s.Dir, name, done, export)
+	if ready && hasHostPart(program) {
+		return "", program, nil
+	}
+	if !ready {
+		if err := llm.MayConvert(ctx, program); err != nil {
+			return "", "", err // nothing converted now: the ONNX file is not downloaded either
+		}
+	}
+	if model, err = Fetch(ctx, s); err != nil {
+		return "", "", err
+	}
+	if ready {
+		return model, program, nil // a program of before its host's part: run with the ONNX file
 	}
 	g, err := onnx.Load(model)
 	if err != nil {
@@ -104,8 +116,30 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		bar.Done("failed")
 		return "", "", err
 	}
+	if s.Backend == llm.BackendCoreML {
+		// what the host's part reads, beside the program in its package: the CPU's program goes
+		// in the sources with it, and a machine that takes it needs no ONNX file
+		part, err := p.ProgramPart(append(slices.Clone(p.Outputs), slices.Sorted(maps.Keys(p.Folded()))...), outputs, nil)
+		if err == nil {
+			err = onnx.WritePart(HostPart(program), part)
+		}
+		if err != nil {
+			bar.Done("failed")
+			return "", "", fmt.Errorf("pose: %w", err)
+		}
+	}
 	bar.Done(console.Duration(bar.Elapsed()))
 	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
+}
+
+// HostPart is the part file (onnx.PartExt) in a Core ML package of Prepare (program): the graph
+// from the program's outputs to the people, the values the program folds and its layout of the
+// outputs, which Open runs the host's part from in place of the ONNX file.
+func HostPart(program string) string { return filepath.Join(program, "host"+onnx.PartExt) }
+
+func hasHostPart(program string) bool {
+	_, err := os.Stat(HostPart(program))
+	return err == nil
 }
 
 // newProgram is the program of the graph up to its dynamic part: for every anchor, the person
@@ -211,8 +245,26 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Estima
 	return &Estimator{g: g, npu: npu}, nil
 }
 
-// Open loads the graph and the program on dev (nil: the CPU interpreter).
+// Open loads the graph and the program on dev (nil: the CPU interpreter): the host's part from
+// the program's part file (HostPart) when it has one, mapped, else from the ONNX file model.
 func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Estimator, error) {
+	if hasHostPart(program) {
+		part, err := onnx.ReadPart(HostPart(program))
+		if err == nil {
+			p, err := onnx.ProgramOf(part)
+			if err != nil {
+				return nil, fmt.Errorf("pose: %w", err)
+			}
+			prog, err := runner.Open(ctx, dev, program)
+			if err != nil {
+				return nil, err
+			}
+			return newEstimator(part.Graph, p, prog, program)
+		}
+		if model == "" {
+			return nil, fmt.Errorf("pose: %w", err)
+		}
+	}
 	g, err := onnx.LoadLazy(model)
 	if err != nil {
 		return nil, err

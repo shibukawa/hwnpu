@@ -23,7 +23,7 @@ func TestPackedEntries(t *testing.T) {
 	write(t, filepath.Join(exp, "sub", "x.bin"), "check")
 	recipe := map[string]string{"model": "m", "commit": "abc"}
 	rel := EntryPath("m", cache.AMDTarget, "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
-	if !Packs(rel) || !Packs(EntryPath("m", cache.CoreAITarget, "m.coreai", "v1")) ||
+	if !Packs(rel) || !Packs(EntryPath("m", cache.CoreAITarget, "m.coreai", "v1")) || !Packs(EntryPath("m", cache.CoreMLTarget, "m.mlpackage", "v1")) ||
 		Packs(EntryPath("m", "any", "tables.safetensors", "v1")) || Packs(EntryPath("m", "coreai-h14g", "m.coreai", "v1")) {
 		t.Fatal("Packs")
 	}

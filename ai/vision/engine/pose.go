@@ -39,6 +39,8 @@ var poseCNN = cnn[*pose.Estimator]{
 		return pose.Open(ctx, dev, model, program)
 	},
 	onNPU: (*pose.Estimator).OnNPU,
+	// a Core ML package with its host's part (pose.HostPart) spares the ONNX file
+	programOnly: true,
 }
 
 func init() {

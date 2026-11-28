@@ -34,8 +34,8 @@ func AppleConvert(name string) (recipe.Convert, string, error) {
 
 func init() { llm.StaleExport = staleExport }
 
-// staleExport reports whether the Core AI export (its entry.json, when it has one) is of another
-// version than its model's recipe (Targets: apple.version). An export of no version (v0-HASH,
+// staleExport reports whether the Core AI export or Core ML package (its entry.json, when it has
+// one) is of another version than its model's recipe (Targets: apple.version). An export of no version (v0-HASH,
 // made before the recipes gave one) is of version 1. export is what the export's mark names:
 // the export, or for a chat model the program inside it (model.aimodel, model.parts.json).
 func staleExport(export string) bool {
@@ -45,7 +45,7 @@ func staleExport(export string) bool {
 		}
 	}
 	e, err := shared.ReadEntry(export)
-	if err != nil || e.Kind != CoreAIKind || e.Model == "" {
+	if err != nil || (e.Kind != CoreAIKind && e.Kind != CoreMLKind) || e.Model == "" {
 		return false
 	}
 	m, ok := Lookup(e.Model)
@@ -53,6 +53,9 @@ func staleExport(export string) bool {
 		return false
 	}
 	want := m.Targets[cache.CoreAITarget]
+	if e.Kind == CoreMLKind {
+		want = m.Targets[cache.CoreMLTarget]
+	}
 	got := max(e.Version, 1)
 	return want > 0 && got != want
 }

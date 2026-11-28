@@ -104,7 +104,9 @@ func buildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 	if opts.Paged > 0 && opts.Cache <= 0 {
 		return nil, nil, fmt.Errorf("qwen35: a program split at its attention (Paged) needs a KV cache")
 	}
-	if opts.LastRow && (opts.Cache <= 0 || opts.Hidden) {
+	// (with Hidden the last row's final hidden state alone: the MTP layer of Core AI, whose drafts
+	// the host scores over the whole vocabulary, chat.DraftScan)
+	if opts.LastRow && opts.Cache <= 0 {
 		return nil, nil, fmt.Errorf("qwen35: the logits of the last row alone (LastRow) are of a program with a KV cache")
 	}
 	if _, chunked := llm.CacheChunks(opts.Cache); opts.Cache > 0 && opts.Paged == 0 && chunked {

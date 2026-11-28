@@ -38,9 +38,6 @@ type Setup struct {
 // It returns the model's and the program's paths.
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	if model, err = Fetch(ctx, s); err != nil {
-		return "", "", err
-	}
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	format, err := chat.ConvertFormat(ctx, filepath.Join(s.Dir, Arch), s.Backend, "fp16")
 	if err != nil {
@@ -48,7 +45,20 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	}
 	name := fmt.Sprintf("%s-r%d-%s-t%d", Arch, Revision, format, ProgramFrames)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
-	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
+	llm.DropStaleCoreML(program, done, FrontPart(program))
+	ready := llm.ProgramReady(ctx, s.Dir, name, done, export)
+	if _, err := os.Stat(FrontPart(program)); ready && err == nil {
+		return "", program, nil // a Core ML package with its front end's part: no ONNX file
+	}
+	if !ready {
+		if err := llm.MayConvert(ctx, program); err != nil {
+			return "", "", err // nothing converted now: the ONNX file is not downloaded either
+		}
+	}
+	if model, err = Fetch(ctx, s); err != nil {
+		return "", "", err
+	}
+	if ready {
 		return model, program, nil
 	}
 	m, err := Load(model)
@@ -67,6 +77,14 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	if err != nil {
 		bar.Done("failed")
 		return "", "", err
+	}
+	if s.Backend == llm.BackendCoreML {
+		// the front end's tables beside the program in its package: a machine that takes it
+		// from the sources needs no ONNX file
+		if err := m.writeFrontPart(program); err != nil {
+			bar.Done("failed")
+			return "", "", err
+		}
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
 	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
@@ -105,9 +123,13 @@ type Detector struct {
 	cpu  *cpuRunner // OpenCPU's, in place of prog
 }
 
-// Open loads the model and its program on dev (nil: the CPU interpreter).
+// Open loads the model and its program on dev (nil: the CPU interpreter): the front end's tables
+// from the program's part file (FrontPart) when it has one, mapped, else from the ONNX file model.
 func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Detector, error) {
-	m, err := Load(model)
+	m, err := loadFrontPart(program)
+	if m == nil && (err == nil || model != "") {
+		m, err = Load(model)
+	}
 	if err != nil {
 		return nil, err
 	}

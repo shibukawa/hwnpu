@@ -164,9 +164,12 @@ func TestHubLayer(t *testing.T) {
 }
 
 func TestHubPin(t *testing.T) {
-	pins := map[string]string{"amd-xdna2": "a", "apple": "b", "coreai-h14g": "c"}
+	pins := map[string]string{"amd-xdna2": "a", "apple": "b", "coreai-h14g": "c", "coreml": "d"}
 	for _, tc := range []struct{ target, arch, want string }{
 		{"amd-xdna2", "", "a"},
+		// the CPU's Core ML packages, on any machine (a Mac's chip changes nothing)
+		{"coreml", "", "d"},
+		{"coreml", "h14g", "d"},
 		{"coreai", "h13g", "b"},
 		{"coreai", "h14g", "c"},
 		{"coreai-h14g", "h14g", "c"},
@@ -177,6 +180,21 @@ func TestHubPin(t *testing.T) {
 		if got := shared.HubPin(pins, tc.target, tc.arch); got != tc.want {
 			t.Errorf("%s on %q: %q, want %q", tc.target, tc.arch, got, tc.want)
 		}
+	}
+}
+
+// A repository of hub may pin a commit for the CPU's Core ML packages (coreml) beside the NPUs'.
+func TestHubTargetCoreML(t *testing.T) {
+	for _, tc := range []struct {
+		target string
+		ok     bool
+	}{{"coreml", true}, {"apple", true}, {"coreai-h14g", true}, {"cpu", false}, {"coremlx", false}} {
+		if got := HubTarget.MatchString(tc.target); got != tc.ok {
+			t.Errorf("HubTarget %q: %v, want %v", tc.target, got, tc.ok)
+		}
+	}
+	if _, err := toHub(map[string]map[string]string{"hwnpu/YuNet": {"coreml": "main", "apple": "main"}}, nil); err != nil {
+		t.Errorf("a hub of coreml: %v", err)
 	}
 }
 

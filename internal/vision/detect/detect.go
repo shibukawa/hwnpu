@@ -78,13 +78,12 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// Prepare downloads the ONNX file into s.Dir unless it is there and converts the program
-// unless it is. It returns the model's and the program's paths.
+// Prepare converts the program unless it is here or in the shared layers, downloading the ONNX
+// file for it unless that is here. It returns the model's and the program's paths; the model's is
+// "" when the program was here or fetched (Open reads the program alone, the ONNX file is not
+// downloaded for it).
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	if model, err = Fetch(ctx, s); err != nil {
-		return "", "", err
-	}
 	stem := filepath.Base(s.File)
 	stem = stem[:len(stem)-len(filepath.Ext(stem))]
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
@@ -95,7 +94,13 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	name := fmt.Sprintf("%s-%s-r%d-%s-%d", Arch, stem, Revision, format, Size)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
 	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
-		return model, program, nil
+		return "", program, nil
+	}
+	if err := llm.MayConvert(ctx, program); err != nil {
+		return "", "", err // nothing converted now: the ONNX file is not downloaded either
+	}
+	if model, err = Fetch(ctx, s); err != nil {
+		return "", "", err
 	}
 	g, err := onnx.Load(model)
 	if err != nil {

@@ -21,11 +21,13 @@ import (
 )
 
 // The groups of a model's conversions on Hugging Face, each a row of hwnpu-dev models hf plan and a
-// target of models.yaml's hub: the exports for AMD's NPU, and the Macs' (the Core AI exports
-// with their prebuilt programs and the tables they read).
+// target of models.yaml's hub: the exports for AMD's NPU, the Macs' (the Core AI exports with
+// their prebuilt programs and the tables they read), and the Core ML packages the CPU runs on
+// every OS (of a model whose definitions give them a version: chat.CoreMLKinds).
 const (
-	groupAMD   = "amd-xdna2"
-	groupApple = "apple"
+	groupAMD    = "amd-xdna2"
+	groupApple  = "apple"
+	groupCoreML = "coreml"
 )
 
 // found is an entry of the sources that a model's conversions have now.
@@ -255,6 +257,12 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 	}
 	amd := &row{model: m, group: groupAMD, why: slices.Clone(common)}
 	apple := &row{model: m, group: groupApple, why: slices.Clone(common)}
+	out := []*row{amd, apple}
+	var coreml *row
+	if m.Targets[chat.CoreMLTarget] > 0 {
+		coreml = &row{model: m, group: groupCoreML, why: slices.Clone(common)}
+		out = append(out, coreml)
+	}
 	pinnedAMD := len(m.Pins[cache.AMDTarget]) > 0
 	if pinnedAMD {
 		// the exports models.yaml pins: their folders and digests, whatever the commit and tools
@@ -269,7 +277,7 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 		}
 	}
 	if len(common) > 0 && !loose {
-		return []*row{amd, apple} // the keys need the commit: no lookups
+		return out // the keys need the commit: no lookups
 	}
 	held := listed(ctx, ls, only, m)
 
@@ -377,7 +385,27 @@ func rows(ctx context.Context, ls []shared.Source, only int, m chat.Model, loose
 	if len(apple.entries) > 0 {
 		apple.entries = append(apple.entries, tables...)
 	}
-	return []*row{amd, apple}
+
+	// the CPU's Core ML packages the sources hold at their version (what this hwnpu makes now)
+	if coreml != nil {
+		for _, dir := range slices.Sorted(mapKeys(held[chat.CoreMLTarget])) {
+			e := exportOf(dir)
+			if e == "" {
+				continue
+			}
+			want, ok := chat.CoreMLWant(ctx, m, e)
+			if !ok || want.Version == 0 || want.Develop || want.Path != dir {
+				continue
+			}
+			if f, ok := lookup(ctx, ls, only, want, nil, false); ok && f.from == want.Path {
+				coreml.entries = append(coreml.entries, f)
+			}
+		}
+		if len(coreml.entries) == 0 {
+			coreml.why = append(coreml.why, fmt.Sprintf("hwnpu-dev models package %s/coreml (on any machine): its Core ML packages go in the sources as v%d", m.Name, m.Targets[chat.CoreMLTarget]))
+		}
+	}
+	return out
 }
 
 func mapKeys[V any](m map[string]V) func(func(string) bool) {

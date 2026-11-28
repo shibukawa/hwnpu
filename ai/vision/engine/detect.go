@@ -50,6 +50,8 @@ var detectCNN = cnn[*detect.Detector]{
 	},
 	openNPU: detect.OpenNPU,
 	openCPU: detect.OpenCPU,
+	// Open reads the program alone: a Core ML package of the shared layers spares the ONNX file
+	programOnly: true,
 	open: func(ctx context.Context, dev *hwnpu.Device, _, program string) (*detect.Detector, error) {
 		return detect.Open(ctx, dev, program)
 	},
