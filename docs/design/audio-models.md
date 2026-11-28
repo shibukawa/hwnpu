@@ -12,8 +12,8 @@ All audio models run through one command, `hwnpu-audio` (`generate`, `tts`, `tra
 | `LFM3-Audio-2B-TTS` (LFM Open 1.0) | speech | text model lut8, depthformer and codec fp16 | IR (int8), CPU only | text model q8, depthformer and codec graphs | apple 2.4 / amd 2.9 GB |
 | `magenta-realtime-2-small` (CC-BY 4.0) | music | all on the NE | IR, CPU only | SpectroStream decoder graph; LM, MusicCoCa, encoder on the CPU | apple 1.0 / amd 2.7 GB |
 | `MOSS-SoundEffect-v2.0` / `-lut8` (Apache-2.0) | sound effects | all on the NE (M1 and M3) | IR, CPU only | text encoder, DiT and DAC graphs | apple 2.3 (2.2) / amd 5.0 GB |
-| `swift-f0` (MIT) | pitch (F0) | all on the NE | IR, CPU only | CPU (ONNX Runtime, or milcpu) | 0.06 GB |
-| `basic-pitch` (Apache-2.0) | notes, MIDI | partly off the NE | IR, CPU only | CPU (ONNX Runtime, or milcpu) | 0.07 GB |
+| `swift-f0` (MIT) | pitch (F0) | all on the NE | IR, CPU only | CPU (`device: {amd: cpu}`: ONNX Runtime, or milcpu) | 0.06 GB |
+| `basic-pitch` (Apache-2.0) | notes, MIDI | partly off the NE | IR, CPU only | CPU (`device: {amd: cpu}`: ONNX Runtime, or milcpu) | 0.07 GB |
 
 - "IR, CPU only": Intel programs are written (lut8 read as int8 by `llm.IntelFormat`) and the whole path was checked on OpenVINO's CPU (`HWNPU_BACKEND=openvino`), never on an Intel NPU. See [intel.md](intel.md).
 - Magenta RT2 weights are CC-BY 4.0: credit "Magenta RealTime 2 by Google DeepMind" where the music is used.

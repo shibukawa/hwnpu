@@ -34,6 +34,22 @@ func ChooseDevice(m Model, vendor, flag string) (device, why string, err error) 
 	return "npu", "the default", nil
 }
 
+// DefinedDevice is the device the definition of m gives for every NPU, as an app's model of its
+// own does (ai.Definition's Device): chosen as a command's --device is, over HWNPU_DEVICE and the
+// fallbacks of a model without a form for this NPU. "" when it gives none, or not for every NPU:
+// models.yaml's device of a vendor ({amd: cpu}) is ChooseDevice's last pick, after HWNPU_DEVICE.
+func DefinedDevice(m Model) string {
+	d := ""
+	for _, v := range Vendors {
+		got, ok := m.Device[v]
+		if !ok || d != "" && got != d {
+			return ""
+		}
+		d = got
+	}
+	return d
+}
+
 // HereVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
 // HWNPU_BACKEND naming a backend of Intel's programs (intel, levelzero, openvino) makes it
 // "intel", and coreml or coreai "apple": with openvino, a machine without Intel's NPU runs the commands'

@@ -143,6 +143,12 @@ func TestDevice(t *testing.T) {
 	if m.DeviceFor("amd") != "cpu" || m.DeviceFor("apple") != "npu" || m.DeviceFor("intel") != "npu" {
 		t.Errorf("YuNet's devices %v", m.Device)
 	}
+	// the ONNX models with no form for AMD's NPU say that they run on the CPU there
+	for _, name := range []string{"swift-f0", "basic-pitch", "PP-OCRv6-small"} {
+		if c, ok := Lookup(name); !ok || c.DeviceFor("amd") != "cpu" || c.DeviceFor("apple") != "npu" || c.DeviceFor("intel") != "npu" || DefinedDevice(c) != "" {
+			t.Errorf("%s's devices %v", name, c.Device)
+		}
+	}
 	t.Setenv("HWNPU_DEVICE", "")
 	if d, why, _ := ChooseDevice(m, "amd", ""); d != "cpu" || !strings.Contains(why, "models.yaml") {
 		t.Errorf("amd: %s (%s)", d, why)

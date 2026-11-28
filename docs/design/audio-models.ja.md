@@ -12,8 +12,8 @@
 | `LFM3-Audio-2B-TTS` (LFM Open 1.0) | 読み上げ | 文のモデル lut8、depthformer と codec は fp16 | IR (int8)、CPU でだけ | 文のモデル q8、depthformer と codec はグラフ | apple 2.4 / amd 2.9 GB |
 | `magenta-realtime-2-small` (CC-BY 4.0) | 音楽 | 全部 NE | IR、CPU でだけ | SpectroStream の復号器のグラフ。言語モデル、MusicCoCa、符号器は CPU | apple 1.0 / amd 2.7 GB |
 | `MOSS-SoundEffect-v2.0` / `-lut8` (Apache-2.0) | 効果音 | 全部 NE (M1 と M3) | IR、CPU でだけ | 文の符号器、DiT、DAC のグラフ | apple 2.3 (2.2) / amd 5.0 GB |
-| `swift-f0` (MIT) | 音高 (F0) | 全部 NE | IR、CPU でだけ | CPU (ONNX Runtime か milcpu) | 0.06 GB |
-| `basic-pitch` (Apache-2.0) | 音符、MIDI | 一部が NE の外 | IR、CPU でだけ | CPU (ONNX Runtime か milcpu) | 0.07 GB |
+| `swift-f0` (MIT) | 音高 (F0) | 全部 NE | IR、CPU でだけ | CPU (`device: {amd: cpu}`。ONNX Runtime か milcpu) | 0.06 GB |
+| `basic-pitch` (Apache-2.0) | 音符、MIDI | 一部が NE の外 | IR、CPU でだけ | CPU (`device: {amd: cpu}`。ONNX Runtime か milcpu) | 0.07 GB |
 
 - 「IR、CPU でだけ」: Intel のプログラムは書く (lut8 は `llm.IntelFormat` で int8 に読み替え) が、通しで確かめたのは OpenVINO の CPU (`HWNPU_BACKEND=openvino`) だけで、Intel の NPU の実機では動かしていない。[intel.md](intel.md)
 - Magenta RT2 の重みは CC-BY 4.0。音楽を使うところに「Magenta RealTime 2 by Google DeepMind」と表示する

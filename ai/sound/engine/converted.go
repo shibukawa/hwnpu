@@ -83,7 +83,9 @@ func convertedRoute(m chat.Model, name string, n airole.NPU) (route, error) {
 		}
 		return route{device: "cpu", runtime: "hwnpu", threads: threads}, nil
 	}
-	device, why, err := chat.ConvertedDevice(m, n.Vendor, m.Device[n.Vendor])
+	// the app's device (for every NPU) as a command's --device; models.yaml's, of a vendor, after
+	// HWNPU_DEVICE, and said as models.yaml's
+	device, why, err := chat.ConvertedDevice(m, n.Vendor, chat.DefinedDevice(m))
 	if err != nil {
 		return route{device: "npu", runtime: "npu", line: fmt.Sprintf("%v; the NPU", err)}, nil
 	}
