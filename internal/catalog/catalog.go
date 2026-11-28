@@ -113,8 +113,10 @@ type Model struct {
 	// the tag for the machine's memory: the one of the largest Machine that the machine has.
 	Family, Tag string
 	// Machine is the least memory of a machine, in GB, that the model is recommended for when its
-	// family is named without a tag (MODEL.md's columns: 8, 16, 24, 32, 48, 64).
-	Machine int
+	// family is named without a tag (MODEL.md's columns: 8, 16, 24, 32, 48, 64): the largest of
+	// MachineBy, which has it by the NPU's vendor where they differ (MachineFor).
+	Machine   int
+	MachineBy PerVendor
 	// Memory is what the model takes running, in GB: its NPU buffers and the process after a short
 	// conversation (MODEL.md, "at start"), for a vendor MemoryBy does not name. MemoryBy has it by
 	// the NPU's vendor (MemoryFor).
@@ -250,6 +252,17 @@ func (p PerVendor) Over(q PerVendor) PerVendor {
 	r := maps.Clone(p)
 	maps.Copy(r, q)
 	return r
+}
+
+// MachineFor is the least memory of a machine whose NPU is vendor's, in GB, that m is
+// recommended for (Machine where MachineBy does not differ by vendor): LFM2-8B-A1B is for 16 GB
+// on Apple's (its experts in the process's memory), for 8 GB on AMD's (16 of each layer's 32
+// experts on the NPU).
+func (m Model) MachineFor(vendor string) int {
+	if m.MachineBy == nil {
+		return m.Machine
+	}
+	return int(m.MachineBy.For(vendor))
 }
 
 // MemoryFor is what m takes running on a machine whose NPU is vendor's, in GB (0: unknown).

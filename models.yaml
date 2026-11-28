@@ -39,7 +39,9 @@
 #   sha256        FILE: the SHA-256 of a file of the repository, checked from any source; a file
 #                 another model pins with the same SHA-256 and has downloaded is linked from its
 #                 directory instead of downloaded (Qwen3-1.7B and MOSS-SoundEffect's text encoder)
-#   machine       the least memory of a machine, in GB, the family recommends the model for
+#   machine       the least memory of a machine, in GB, the family recommends the model for: one
+#                 number, or a table by the NPU's vendor where they differ (machine: {apple: 16, amd: 8});
+#                 a vendor it leaves out takes the largest, and variants must be above the least
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
 #                 buffers and the process's together over a run (docs/design/new-model-checklist.md)
 #   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
@@ -111,7 +113,13 @@ models:
   LFM2-8B-A1B:
     # a mixture of experts (lfm2_moe, 32 experts of which 4 a token): the host picks the experts
     # between the parts and a program without weights runs them, every layer's experts held in
-    # int8 (docs/design/moe.md). Apple only, Core AI: an M3 (2026-11-19) 15.0-16.1
+    # int8 (docs/design/moe.md). AMD (iron_lfm2moe.py, a Ryzen AI 9 365, 2026-11-28): 4 of 32 experts
+    # routed on the device and read in place (q4nx, the rest q8), 19.3 tokens/s, 5.8 GB at its peak
+    # (5554 MiB, 5445 of it on the device); a prompt chunk runs the experts its tokens chose alone:
+    # up to 80 tokens a token at a time (33 tokens in 0.7 s), a longer one with each expert's tokens
+    # gathered into GEMMs (110 tokens in 1.5 s, 989 in 2.0 s: docs/design/amd-llm.md). With 16 of a
+    # layer's 32 experts in places (--expert-places 16: AMD's machines under 16 GB) 3.2 GB and 15-16
+    # tokens/s. Core AI: an M3 (2026-11-19) 15.0-16.1
     # tokens/s, 1503 tokens of prompt in 8.6-10.9 s; an M2 12.0-13.7 tokens/s, 1624 in 13-14.5 s,
     # loaded in 3.1 s and 8.0 GB (the experts' 7.23 GiB in the process's memory; the first run,
     # converting, 12.9 GB). Short of memory the system compresses the experts and a prompt takes
@@ -121,13 +129,21 @@ models:
     tag: 8b-a1b
     kind: chat
     from: hf:LiquidAI/LFM2-8B-A1B@7ed1404fdf502a5446c1b67d4fe1533158d6f2ad
+    exports:
+      amd-xdna2:
+        LFM2-8B-A1B.amd-npu2-q8: v2 sha256:7a641b8749c2135ddf5714f0003cefbb34f794e7edab90fef8325104d042f5e9
+        LFM2-8B-A1B.amd-npu2-q8-p16: v2 sha256:decca2f9cc1cce078c5109bd90ff132ae8f0010bf6582f0cdad5e772cc18f0d2
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM2-8B-A1B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
-    machine: 16
-    memory: 8.0
-    bytes: 16.7e9
+    # Apple from 16 GB; AMD from 8 GB with 16 of each layer's 32 experts on the NPU, every one from 16
+    machine: {apple: 16, amd: 8}
+    memory: {amd: 3.2, apple: 8.0}
+    variants:
+      16: {memory: {amd: 5.8}}
+    bytes: {amd: 5.64e9, apple: 16.7e9}
+    disk: {amd: 8.39e9}
     features: [tools]
     not_on: [M1]
-    about: "Liquid AI's LFM2-8B-A1B, a mixture of experts of 8.3B with 1.5B active a token: the experts in int8, the rest in 8 bit tables; a context of 128000, tool calls in Python's form; Apple's M2 and later only"
+    about: "Liquid AI's LFM2-8B-A1B, a mixture of experts of 8.3B with 1.5B active a token: on a Mac the experts in int8 and the rest in 8 bit tables (M2 and later), on AMD's NPU the experts in 4 bits and the rest in 8; a context of 128000 (4096 on AMD), tool calls in Python's form"
   LFM3-VL-2B:
     family: lfm3-vl
     tag: 2b
@@ -285,20 +301,27 @@ models:
     # down_proj=lut8 0.078 for 0.95 GB more). Tables of column blocks would be finer, but the
     # Neural Engine reads only a row's first (docs/design/llm-qwen.md). M1 (2026-11-16): 4.0 GB on
     # the Neural Engine and the process's 0.35 GB, 0.8 tokens/s: over the 2.8 GiB an M1 runs at
-    # full speed (docs/design/apple-neural-engine.md), so not picked there; the M2 and later not measured. AMD: no export
+    # full speed (docs/design/apple-neural-engine.md), so not picked there; the M2 and later not measured. AMD
+    # (iron_qwen3.py's Qwen2, a Ryzen AI 9 365, 2026-11-28): the MLP and head in q4nx rounded (KL 0.028 and
+    # 0.018 against float32, no codes), attention q8: 5.8 tokens/s (its weights' reads), 5.1 GB at its
+    # peak, 1024 tokens of prompt in 3.0 s
     family: qwen2.5-coder
     tag: 7b
     kind: chat
     from: hf:Qwen/Qwen2.5-Coder-7B-Instruct@c03e6d358207e414f1eca0bb1891e29f1db0e242
+    exports:
+      amd-xdna2:
+        Qwen2.5-Coder-7B-Instruct.amd-npu2-q4: v1 sha256:c825099712a4e7d53f2febe2074cd1c2cb518899db127adf76ddbb9abf899da4
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/blob/main/LICENSE", class: open}
     machine: 16
-    memory: 4.4
+    memory: {amd: 5.4, apple: 4.4}
     not_on: [M1]
     format: lut4
     codes: faace07a
-    bytes: 15.2e9
+    bytes: {amd: 5.79e9, apple: 15.2e9}
+    disk: {amd: 6.39e9}
     features: [tools]
-    about: "Qwen's Qwen2.5-Coder-7B-Instruct: code generation, completion and repair, tool calls as JSON, in 4 bit tables chosen against its activations; no thinking; a context of 32768"
+    about: "Qwen's Qwen2.5-Coder-7B-Instruct: code generation, completion and repair, tool calls as JSON, in 4 bit tables chosen against its activations (on AMD's NPU its MLP and head in 4 bits rounded, attention in 8); no thinking; a context of 32768 (4096 on AMD's NPU)"
   gpt-oss-20b:
     family: gpt-oss
     tag: 20b
@@ -448,17 +471,23 @@ models:
     tag: 0.6b
     kind: chat
     from: hf:Qwen/Qwen3-0.6B
+    exports:
+      amd-xdna2:
+        Qwen3-0.6B.amd-npu2-q8: v1 sha256:94e658d7a47dd21d01c5b9693c1603a4f1891a912e867f29bd998dfabfeceb21
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE", class: open}
-    # Apple only. Core AI, an M1, 2026-11-15 (docs/design/memory-and-power.md): split at its attention, 0.65 GiB on the
+    # AMD (iron_qwen3.py, q8 throughout, a Ryzen AI 9 365, 2026-11-28): 23 tokens/s, 1.2 GB at its peak
+    # (1166 MiB on the device), 1024 tokens of prompt in 0.5 s (docs/design/amd-llm.md).
+    # Core AI, an M1, 2026-11-15 (docs/design/memory-and-power.md): split at its attention, 0.65 GiB on the
     # Neural Engine and the process's 0.35 GiB, 1.1 GB on an M1; with the whole program of short
     # conversations an M2 or later loads too (--tier 1024 on the M1) 1.23 + 0.26 GiB, 1.6 GB.
     # It keeps that program on 8 GB (within what such a machine has, and twice as fast on an
     # M3, docs/design/apple-coreai.md)
     machine: 8
-    memory: {apple: 1.6, M1: 1.1}
-    bytes: 1.52e9
+    memory: {amd: 1.3, apple: 1.6, M1: 1.1}
+    bytes: {amd: 0.94e9, apple: 1.52e9}
+    disk: {amd: 1.54e9}
     features: [tools, thinking]
-    about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB); in 8 bit tables, tool calls as JSON"
+    about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB; 4096 on AMD's NPU); in 8 bit tables (8 bits on AMD's NPU), tool calls as JSON"
   Qwen3-1.7B:
     # the same checkpoint (byte for byte) as MOSS-SoundEffect v2.0's text encoder: the files of
     # the same sha256 are linked from one's download into the other's (fetch)
@@ -466,6 +495,9 @@ models:
     tag: 1.7b
     kind: chat
     from: hf:Qwen/Qwen3-1.7B@70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+    exports:
+      amd-xdna2:
+        Qwen3-1.7B.amd-npu2-q8: v1 sha256:ae2b675531627a2c55a5fdd42c02bdfa11861b86c63e828bf0e8abb80a0aa490
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/LICENSE", class: open}
     sha256:
       model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
@@ -475,15 +507,18 @@ models:
     # program of 128 tokens a call reads them, a function of the same .aimodel (the weights
     # held once): 1.80 + 0.36 GiB. With Core ML each program held the weights (M3: 1.63 GiB and
     # the process's 2.2 to 2.8 GB at its peak, a new prompt of 1822 tokens in 16.8 s; two of
-    # 1.63 GiB and 3.0 to 4.1 GB from 16 GB, 3.4 s), 4.5 and 7.6 GB
+    # 1.63 GiB and 3.0 to 4.1 GB from 16 GB, 3.4 s), 4.5 and 7.6 GB. AMD (iron_qwen3.py, q8
+    # throughout, a Ryzen AI 9 365, 2026-11-28): 14.5 tokens/s, 2.5 GB at its peak (2350 MiB on the
+    # device), 1024 tokens of prompt in 0.8 s
     machine: 8
-    memory: 2.1
+    memory: {amd: 2.5, apple: 2.1}
     prefill: off
     variants:
-      16: {memory: 2.3, prefill: auto}
-    bytes: 4.06e9
+      16: {memory: {amd: 2.5, apple: 2.3}, prefill: auto}
+    bytes: {amd: 2.43e9, apple: 4.06e9}
+    disk: {amd: 3.10e9}
     features: [tools, thinking]
-    about: "Qwen3-1.7B, the 0.6B's structure in 1.7B (byte for byte the text encoder of MOSS-SoundEffect): weak at Japanese facts as the 0.6B is; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB), in 8 bit tables, tool calls as JSON; below 16 GB one program, slower to read long prompts"
+    about: "Qwen3-1.7B, the 0.6B's structure in 1.7B (byte for byte the text encoder of MOSS-SoundEffect): weak at Japanese facts as the 0.6B is; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB; 4096 on AMD's NPU), in 8 bit tables (8 bits on AMD's NPU), tool calls as JSON; below 16 GB one program, slower to read long prompts"
   plamo-3-translate-8b:
     # the 2B's structure in 8B (hidden 4096, 32 layers, 4 key and value heads). Apple: 4 bit
     # tables (the architecture's Format for the 8B), 3.81 GiB on the Neural Engine and the

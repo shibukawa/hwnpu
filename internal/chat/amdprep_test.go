@@ -31,7 +31,7 @@ func TestAMDSuffix(t *testing.T) {
 // exports made by hand have (Qwen3.5's small models in q6, the others in q4).
 func TestAMDExportRecipes(t *testing.T) {
 	models := map[string]bool{"lfm3": true, "lfm3vl": true, "lfm3audio": true, "lfm3omni": true, "gemma4": true,
-		"plamo3": true, "qwen35": true, "qwen35moe": true, "gptoss": true, "ouro": true, "d1": true, "d1omni": true}
+		"plamo3": true, "qwen35": true, "qwen35moe": true, "gptoss": true, "ouro": true, "d1": true, "d1omni": true, "qwen3": true, "qwen2": true, "lfm2moe": true}
 	want := map[string]string{"LFM3-1.7B": "-q4", "Qwen3.5-0.8B": "-q6", "Qwen3.5-2B": "-q6", "Qwen3.5-4B": "-q4",
 		"plamo-3-translate-2b": "-q4", "gemma-4-E2B-it": "-q4", "gpt-oss-20b": "-p16",
 		"Qwen3.6-35B-A3B": "-q4-p32"}

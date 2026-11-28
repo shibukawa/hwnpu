@@ -139,7 +139,6 @@ def install(Model, rows: int) -> None:
     def forward(self, x, call):
         if not is_verify(self, call):
             return base_forward(self, x, call)
-        c = self.config
         call.embeddings = x
         for rope in (layer.rope for layer in self.layers):
             if rope is not None and rope not in call.ropes:
@@ -148,7 +147,8 @@ def install(Model, rows: int) -> None:
         for i, weights in enumerate(self.layers):
             x = self.layer(call, i, weights, x)
         logits = self.head(x)  # (rows, vocabulary): every row's
-        last = Copy.step(logits[rows - 1]).reshape(1, c.vocab_size + c.vocab_size % 2)
+        # the head's own width: the vocabulary's, or rows padded past it (iron_qwen3's head)
+        last = Copy.step(logits[rows - 1]).reshape(1, logits.shape[-1])
         _, carried = self.draw(last, call)
         return logits, carried
 

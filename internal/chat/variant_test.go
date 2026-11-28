@@ -15,7 +15,8 @@ func TestBuiltinVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, ok := Lookup("Qwen3-1.7B")
-	if !ok || m.Run.Prefill != PrefillOff || m.Memory != 2.1 || m.Variants[16].Run.Prefill != PrefillAuto {
+	// Memory is the largest vendor's (AMD's 2.5 GB, Apple's 2.1 and 2.3)
+	if !ok || m.Run.Prefill != PrefillOff || m.Memory != 2.5 || m.Variants[16].Run.Prefill != PrefillAuto {
 		t.Fatalf("as defined: %+v", m)
 	}
 	for _, c := range []struct {
@@ -24,9 +25,9 @@ func TestBuiltinVariants(t *testing.T) {
 		memory         float64
 		family, tagged string // what qwen3 and qwen3:1.7b pick
 	}{
-		{8, PrefillOff, 2.1, "Qwen3-1.7B", "Qwen3-1.7B"},
-		{16, PrefillAuto, 2.3, "Qwen3-1.7B", "Qwen3-1.7B"},
-		{64, PrefillAuto, 2.3, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{8, PrefillOff, 2.5, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{16, PrefillAuto, 2.5, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{64, PrefillAuto, 2.5, "Qwen3-1.7B", "Qwen3-1.7B"},
 	} {
 		t.Setenv(MemoryEnv, strconv.Itoa(c.machine))
 		got, ok, err := lookupFor("Qwen3-1.7B", nil)
@@ -174,7 +175,7 @@ models:
 		t.Errorf("on 32 GB: %+v", got)
 	}
 	d, _ := Lookup("my-qwen")
-	if d.Run != (Run{Prefill: PrefillOff, Format: "lut6", Paged: 1024}) || len(d.Variants) != 2 || d.Memory != 2.1 {
+	if d.Run != (Run{Prefill: PrefillOff, Format: "lut6", Paged: 1024}) || len(d.Variants) != 2 || d.Memory != 2.5 {
 		t.Errorf("like: %+v %+v %v", d.Run, d.Variants, d.Memory)
 	}
 }
@@ -210,5 +211,43 @@ func TestVariantErrors(t *testing.T) {
 		t.Errorf("prefill: off: %v", err)
 	} else if m, _ := Lookup("x"); m.Run.Prefill != PrefillOff {
 		t.Errorf("prefill: off read as %q", m.Run.Prefill)
+	}
+}
+
+// LFM2-8B-A1B: machine by vendor. Apple's from 16 GB; AMD's from 8 GB with 16 of each layer's
+// experts in places (3.2 GB, the -p16 export), every expert from 16 GB (5.8 GB).
+func TestMachineByVendor(t *testing.T) {
+	if err := LoadModels(nil, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := Lookup("LFM2-8B-A1B")
+	if !ok || m.Machine != 16 || m.MachineFor("amd") != 8 || m.MachineFor("apple") != 16 || m.MachineFor("") != 16 {
+		t.Fatalf("as defined: machine %d, by vendor %v", m.Machine, m.MachineBy)
+	}
+	defer func(f func() string) { HereVendor = f }(HereVendor)
+	for _, c := range []struct {
+		vendor  string
+		machine int
+		memory  float64
+		places  bool // AMD's export with places (--expert-places 16)
+		why     string
+	}{
+		{"amd", 8, 3.2, true, "lfm2 on a machine of 8 GB: lfm2:8b-a1b"},
+		{"amd", 16, 5.8, false, "lfm2 on a machine of 16 GB: lfm2:8b-a1b"},
+		{"apple", 8, 8.0, false, "the smallest (none is recommended below 16 GB)"},
+		{"apple", 16, 8.0, false, "lfm2 on a machine of 16 GB: lfm2:8b-a1b"},
+	} {
+		HereVendor = func() string { return c.vendor }
+		p, why, ok, err := Pick("lfm2", c.machine)
+		if !ok || err != nil || p.Name != "LFM2-8B-A1B" || !strings.Contains(why, c.why) {
+			t.Errorf("%s %d GB: %s, %q (%v)", c.vendor, c.machine, p.Name, why, err)
+			continue
+		}
+		if got := p.MemoryFor(c.vendor); got != c.memory {
+			t.Errorf("%s %d GB: memory %v, want %v", c.vendor, c.machine, got, c.memory)
+		}
+		if places := strings.Contains(strings.Join(p.AMDExport, " "), "--expert-places 16"); c.vendor == "amd" && places != c.places {
+			t.Errorf("%s %d GB: export %v", c.vendor, c.machine, p.AMDExport)
+		}
 	}
 }

@@ -82,6 +82,20 @@ python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5
 go run ./cmd/hwnpu-chat -m ~/models/Qwen3.5-0.8B.amd-npu2-q6
 ```
 
+## Qwen3 と Qwen2.5-Coder
+
+Qwen3-0.6B、Qwen3-1.7B、Qwen2.5-Coder-7B-Instruct は hwnpu の `tools/amd/iron_qwen3.py` で書き出します (`qwen3`、`qwen2`)。Qwen3 はすべて 8 ビットです (`--mlp q8 --head q8`)。この小さなモデルではデコードの 1 ステップが演算子の切り替えで決まり、q8 の GEMV は q6 より速く (0.6B で 50 ms 対 63 ms)、精度も上でした。4 ビットでは 1.7B が崩れました。`--verify 3` も付けます。Ryzen AI 9 365 で 0.6B は 1 秒 23 トークン・1.2 GB、1.7B は 14.5 トークン・2.5 GB、1024 トークンのプロンプトはそれぞれ 0.5 秒と 0.8 秒です。Qwen2.5-Coder-7B は MLP と出力が 4 ビット (丸めだけで fp32 との KL 0.028)、注意が 8 ビットで、1 秒 5.8 トークン (1 トークンごとに 4.7 GB の重みを読む)、5.1 GB、1024 トークンのプロンプトは 3.0 秒です。
+
+```bash
+python tools/amd/iron_export_lm.py qwen3 ~/models/Qwen3-1.7B ~/models/Qwen3-1.7B.amd-npu2-q8 --q4 --mlp q8 --head q8 --verify 3
+python tools/amd/iron_export_lm.py qwen2 ~/models/Qwen2.5-Coder-7B-Instruct ~/models/Qwen2.5-Coder-7B-Instruct.amd-npu2-q4 --q4
+go run ./cmd/hwnpu-chat -m Qwen3-1.7B
+```
+
+## LFM2-8B-A1B
+
+LFM2-8B-A1B (専門家の混合、1 トークンに 32 のうち 4) は `tools/amd/iron_lfm2moe.py` で書き出します (`lfm2moe --q4 --mlp q8 --head q8`)。専門家は 4 ビット、ほかは 8 ビットです。デコードは NPU の上で専門家を選び、その 4 つだけを読みます。1 秒 19.3 トークン、5.8 GB (Apple の形は 8 GB)。プロンプトは、トークンが選んだ専門家だけを計算します。80 トークンまでは 1 トークンずつ (33 トークンで 0.7 秒、会話の次の短い発言は約 0.5 秒)、それより長いプロンプトは専門家ごとにトークンを集めて行列積で計算します (110 トークンで 1.5 秒、507 で 1.8 秒、989 で 2.0 秒) ([docs/design/amd-llm.ja.md](docs/design/amd-llm.ja.md))。16 GB 未満の機械では、1 層の 32 の専門家のうち 16 個だけを NPU に置き (`--expert-places 16`)、ほかは選ばれたときに書き出しの `experts.bin` から読みます。5.8 GB が 3.2 GB になり、1 秒 15〜16 トークン (ファイルがページキャッシュに残らないときは 12〜14.5) です。16 GB からはすべての専門家を置きます。書き出しは約 11 分、メモリ 24 GB です。
+
 ## Phoenix と Hawk Point (NPU1)
 
 Phoenix と Hawk Point (NPU1) には full ELF がないので、`--device npu1 --cols 4` で書き出します。各版は IRON と同じく「1 ステップごとの xclbin」(Gemma 4 E2B のデコードで 1095 ステップ、xclbin は 2 個) になり、呼び出しごとの命令列は書き出しに含めたプログラムから hwnpu が作ります。NPU1 の実機では未検証です。同じ形の書き出しを `--per-step` で NPU2 向けに作ると Ryzen AI 9 365 で正しく動き、デコードは 1 秒に 2.6 トークンでした (full ELF の 6 の半分以下。1 トークンに 1095 回の投入が要るため)。NPU1 は、版ごとの xclbin (計 6 個) で、ハードウェアコンテキストの上限 6 を使い切ります。

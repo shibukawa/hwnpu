@@ -28,7 +28,7 @@ func TestAMDCommand(t *testing.T) {
 	if _, err := f.AMDCommand("FLUX.2-klein-4B", 0, "xdna2", map[string][]string{In: {"/repo"}}); err == nil || !strings.Contains(err.Error(), Sizes) {
 		t.Errorf("no sizes: %v", err)
 	}
-	if _, err := f.AMDCommand("Qwen3-0.6B", 0, "xdna2", vars); err == nil {
+	if _, err := f.AMDCommand("swift-f0", 0, "xdna2", vars); err == nil {
 		t.Error("a model without a recipe for AMD's NPU")
 	}
 	// a variant's args from its GB up; the language models' extra arguments on xdna1

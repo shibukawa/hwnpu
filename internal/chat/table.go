@@ -179,7 +179,7 @@ type modelEntry struct {
 	Kind    *string    `yaml:"kind"`
 	From    *string    `yaml:"from"`
 	Arch    *string    `yaml:"arch"`
-	Machine *int       `yaml:"machine"`
+	Machine *PerVendor `yaml:"machine"`
 	Memory  *PerVendor `yaml:"memory"`
 	Bytes   *PerVendor `yaml:"bytes"`
 	// Disk is what the model keeps in the cache to run: its conversion unpacked and its tables
@@ -501,7 +501,7 @@ func (t *table) addModel(file, name string, e *modelEntry, builtin bool) error {
 // merge sets the fields of dst that src gives.
 func merge(dst, src *modelEntry) {
 	// memory and bytes: a table changes the vendors it names
-	for _, f := range []struct{ d, s **PerVendor }{{&dst.Memory, &src.Memory}, {&dst.Bytes, &src.Bytes}, {&dst.Disk, &src.Disk}} {
+	for _, f := range []struct{ d, s **PerVendor }{{&dst.Machine, &src.Machine}, {&dst.Memory, &src.Memory}, {&dst.Bytes, &src.Bytes}, {&dst.Disk, &src.Disk}} {
 		if *f.s != nil && *f.d != nil {
 			m := (**f.d).Over(**f.s)
 			defer func(d **PerVendor) { *d = &m }(f.d)
@@ -806,7 +806,15 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		m.SHA256 = *e.SHA256
 	}
 	if e.Machine != nil {
-		m.Machine = *e.Machine
+		for v, gb := range *e.Machine {
+			if gb <= 0 || gb != float64(int(gb)) {
+				return m, fmt.Errorf("model %s: machine %v of %q is not a whole number of GB", name, gb, v)
+			}
+		}
+		m.Machine = int(e.Machine.For(""))
+		if len(*e.Machine) > 1 || (*e.Machine)[""] == 0 {
+			m.MachineBy = maps.Clone(*e.Machine)
+		}
 	}
 	if e.Memory != nil {
 		m.MemoryBy, m.Memory = maps.Clone(*e.Memory), e.Memory.For("")

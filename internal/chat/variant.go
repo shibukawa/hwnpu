@@ -63,9 +63,13 @@ func toRun(e RunEntry) (Run, error) {
 	return r, nil
 }
 
-// toVariants checks a definition's variants: each above the model's machine, giving something,
-// and the fields of Run only for a chat model.
+// toVariants checks a definition's variants: each above the model's machine (the least of its
+// vendors', where they differ), giving something, and the fields of Run only for a chat model.
 func toVariants(m Model, es map[int]*variantEntry) (map[int]Variant, error) {
+	least := m.Machine
+	for _, gb := range m.MachineBy {
+		least = min(least, int(gb))
+	}
 	out := map[int]Variant{}
 	for gb, e := range es {
 		switch {
@@ -73,8 +77,8 @@ func toVariants(m Model, es map[int]*variantEntry) (map[int]Variant, error) {
 			return nil, fmt.Errorf("variant of %d GB gives nothing", gb)
 		case m.Machine <= 0:
 			return nil, fmt.Errorf("variants need machine, the memory the model itself is for")
-		case gb <= m.Machine:
-			return nil, fmt.Errorf("variant of %d GB is not above machine (%d GB), which the model itself is for", gb, m.Machine)
+		case gb <= least:
+			return nil, fmt.Errorf("variant of %d GB is not above machine (%d GB), which the model itself is for", gb, least)
 		}
 		r, err := toRun(e.RunEntry)
 		if err != nil {

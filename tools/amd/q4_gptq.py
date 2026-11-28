@@ -113,6 +113,18 @@ MODELS = {
         q4=("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"),
         q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
     ),
+    # Qwen3 and Qwen2 (iron_qwen3): dense attention models; <|endoftext|> (151643) stands for the
+    # BOS they do not have
+    "qwen3": dict(
+        bos=151643, layers="model.layers", remote=False,
+        q4=("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"),
+        q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
+    ),
+    "qwen2": dict(
+        bos=151643, layers="model.layers", remote=False,
+        q4=("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"),
+        q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
+    ),
     "lfm3": dict(
         bos=124894, layers="model.layers", remote=True,
         q4=("feed_forward.w1", "feed_forward.w3", "feed_forward.w2"),

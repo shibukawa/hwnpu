@@ -57,6 +57,10 @@ const (
 	TargetArg        Target = iota // a kernel argument's buffer address (Arg)
 	TargetPDI                      // the address of a PDI (PDI names the section)
 	TargetScratchpad               // the ctrl scratchpad (scratch-pad-ctrl)
+	// TargetCtrlData is the instance's control packets (.ctrldata.N, symbol control-packet):
+	// what aiecc's --load-pdi-to-ctrl-pkt streams the configurations from by shim DMA, a
+	// buffer the host places as an argument's (the addend the packets' offset in it)
+	TargetCtrlData
 )
 
 // Reloc is one place in the control code to patch.
@@ -76,7 +80,9 @@ type Instance struct {
 	Name   string // "sequence"
 	Args   int    // the kernel's arguments
 	Ctrl   []byte // .ctrltext
-	Relocs []Reloc
+	// CtrlData is .ctrldata, the control packets the code streams (nil without them).
+	CtrlData []byte
+	Relocs   []Reloc
 	// Scratchpad is the size of the ctrl scratchpad the code reads, 0 without one.
 	Scratchpad int
 }
@@ -213,8 +219,11 @@ func Parse(data []byte) (*File, error) {
 					return nil, err
 				}
 				ctrl = m
-			case strings.HasPrefix(ms.Name, sectionCtrlData), strings.HasPrefix(ms.Name, sectionPreemptSave),
-				strings.HasPrefix(ms.Name, sectionPreemptRestore):
+			case strings.HasPrefix(ms.Name, sectionCtrlData):
+				if in.CtrlData, err = sectionData(data, ms); err != nil {
+					return nil, err
+				}
+			case strings.HasPrefix(ms.Name, sectionPreemptSave), strings.HasPrefix(ms.Name, sectionPreemptRestore):
 				return nil, fmt.Errorf("aieelf: %s: %s is not supported yet", in.FullName(), ms.Name)
 			}
 		}
@@ -280,7 +289,12 @@ func readRelocs(ef *elf.File, abiVersion uint8, bySection map[int]*Instance, f *
 		case s.Name == symbolScratchpadCtrl:
 			r.Target = TargetScratchpad
 			in.Scratchpad = max(in.Scratchpad, int(s.Size))
-		case s.Name == symbolControlPacket || strings.HasPrefix(s.Name, "ctrlpkt") || strings.HasPrefix(s.Name, "scratch-pad"):
+		case s.Name == symbolControlPacket:
+			if in.CtrlData == nil {
+				return fmt.Errorf("aieelf: %s: %s without %s", in.FullName(), s.Name, sectionCtrlData)
+			}
+			r.Target = TargetCtrlData
+		case strings.HasPrefix(s.Name, "ctrlpkt") || strings.HasPrefix(s.Name, "scratch-pad"):
 			return fmt.Errorf("aieelf: %s: %s is not supported yet", in.FullName(), s.Name)
 		default:
 			n, err := strconv.Atoi(s.Name)

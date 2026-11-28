@@ -135,7 +135,7 @@ func (s Store) catalog() (*Catalog, error) {
 }
 
 func (c *Catalog) info(m catalog.Model, defined bool) ModelInfo {
-	return ModelInfo{Name: m.Name, Kind: string(m.Kind), Family: m.Family, Tag: m.Tag, Machine: m.Machine,
+	return ModelInfo{Name: m.Name, Kind: string(m.Kind), Family: m.Family, Tag: m.Tag, Machine: m.MachineFor(c.vendor),
 		Repo: m.Source(), About: m.About, Features: slices.Clone(m.Features), MemoryGB: m.MemoryFor(c.vendor),
 		DownloadBytes: int64(m.BytesFor(c.vendor)), Device: m.DeviceFor(c.vendor), License: license(m),
 		Downloaded: aieng.Must().Downloaded(m), Develop: m.Develop, Defined: defined}

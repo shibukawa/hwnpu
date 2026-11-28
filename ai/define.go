@@ -145,7 +145,7 @@ func definitions(defs []Definition) ([]modelstore.Definitions, error) {
 }
 
 // spec is what makes two preparations of a model differ beyond its name and its run (record.Run):
-// its device, settings and programs.
+// its device, settings and programs, and the export of AMD's NPU where the machine's memory picks it.
 func spec(m catalog.Model) string {
 	var parts []string
 	for _, v := range slices.Sorted(maps.Keys(m.Device)) {
@@ -156,6 +156,15 @@ func spec(m catalog.Model) string {
 	}
 	for _, k := range slices.Sorted(maps.Keys(m.Programs)) {
 		parts = append(parts, "programs."+k+"="+strings.Join(m.Programs[k], ","))
+	}
+	// the export of AMD's NPU of a model whose variants change it (gpt-oss-20b, LFM2-8B-A1B: their
+	// experts in places below 16 or 24 GB): what is prepared on a machine of one memory is not
+	// that of another
+	for _, v := range m.Variants {
+		if v.AMDExport != nil {
+			parts = append(parts, "amd.export="+strings.Join(m.AMDExport, " "))
+			break
+		}
 	}
 	// the developers' rewrites over the recipe's (internal/recipe.RewritesFor): what is prepared
 	// with them is not what is prepared without

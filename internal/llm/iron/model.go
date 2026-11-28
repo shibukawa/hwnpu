@@ -499,6 +499,18 @@ func (m *Model) newRun(v *version, k int) (*hwnpu.Run, error) {
 	return run, nil
 }
 
+// promptRun is newRun for a prompt chunk's command: where the device heap holds no more control
+// code, the decode step's run (as IRON releases a run) and the check of drafts' are released,
+// which Step and Verify make again.
+func (m *Model) promptRun(v *version, k int) (*hwnpu.Run, error) {
+	run, err := m.newRun(v, k)
+	if errors.Is(err, syscall.ENOSPC) && (m.decode.run != nil || m.verify != nil && m.verify.run != nil) {
+		m.dropDecode()
+		run, err = m.newRun(v, k)
+	}
+	return run, err
+}
+
 // values are a call's per-call values (CausalLM's body).
 func callValues(token int32, position, start, rows int) map[string]int64 {
 	return map[string]int64{"token": int64(token), "position": int64(position), "start": int64(start), "rows": int64(rows), "rope_start": int64(start)}
@@ -926,17 +938,13 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 	if err := m.fillPool(); err != nil {
 		return nil, err
 	}
-	routes := map[int]*moeRoute{} // by layer: its moe_route's, until its moe_combine
+	routes := map[int]*moeRoute{}   // by layer: its moe_route's, until its moe_combine
+	rowPlans := map[int]*moeRows{}  // by layer: its moe_rows_plan's where the rows form runs, until its moe_gather_combine
+	gathers := map[int]*moeGather{} // by layer: its moe_gather's, until its moe_gather_combine
 	for k := range v.m.Kernels {
 		runOnce := func() error {
 			t0 := time.Now()
-			run, err := m.newRun(v, k)
-			if errors.Is(err, syscall.ENOSPC) && (m.decode.run != nil || m.verify != nil && m.verify.run != nil) {
-				// the device heap holds no more control code: release the decode step's (as IRON
-				// releases a run) and the check of drafts', which Step and Verify make again
-				m.dropDecode()
-				run, err = m.newRun(v, k)
-			}
+			run, err := m.promptRun(v, k)
 			t1 := time.Now()
 			if err != nil {
 				return fmt.Errorf("iron: prompt command %d: %w", k, err)
@@ -957,6 +965,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			return nil
 		}
 		var route *HostStep
+		var rowsStep *HostStep   // the command runs a short chunk's experts a row at a time
+		var gatherStep *HostStep // the command runs a longer chunk's experts by slots of their rows
+		skip := false            // the command is the other form's: left out
 		for i := range v.m.Host {
 			h := &v.m.Host[i]
 			if h.Command != k {
@@ -964,6 +975,26 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			}
 			th := time.Now()
 			switch h.Kind {
+			case "moe_rows_plan":
+				plan, err := m.moeRowsPlan(v, h, rows)
+				if err != nil {
+					return nil, err
+				}
+				if plan == nil {
+					skip = true
+				} else {
+					rowPlans[h.Layer], rowsStep = plan, h
+				}
+			case "moe_gather":
+				if rowPlans[h.Layer] != nil {
+					skip = true
+					break
+				}
+				plan, err := m.moeGatherPlan(v, h, rows)
+				if err != nil {
+					return nil, err
+				}
+				gathers[h.Layer], gatherStep = plan, h
 			case "moe_route", "moe_route_mx4":
 				plan := m.moeHostRoute
 				if h.Kind == "moe_route_mx4" {
@@ -979,12 +1010,52 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 					return nil, err
 				}
 				delete(routes, h.Layer)
+			case "moe_gather_combine":
+				if rowPlans[h.Layer] != nil { // the rows form made the layer's output
+					delete(rowPlans, h.Layer)
+					if err := m.moeRowsOut(v, h, rows); err != nil {
+						return nil, err
+					}
+					break
+				}
+				if err := m.moeGatherCombine(v, h, gathers[h.Layer], rows); err != nil {
+					return nil, err
+				}
+				delete(gathers, h.Layer)
 			default:
 				return nil, fmt.Errorf("iron: a host step %s before prompt command %d", h.Kind, k)
 			}
 			if timing {
 				fmt.Fprintf(os.Stderr, "host %s of layer %d: %.1f ms\n", h.Kind, h.Layer, time.Since(th).Seconds()*1000)
 			}
+		}
+		if skip {
+			continue
+		}
+		if rowsStep != nil {
+			tm := time.Now()
+			if err := m.runMoERows(ctx, v, k, rowsStep, rowPlans[rowsStep.Layer], values); err != nil {
+				return nil, err
+			}
+			if timing {
+				fmt.Fprintf(os.Stderr, "moe rows command %d (%d rows): %.1f ms in all\n", k, rows, time.Since(tm).Seconds()*1000)
+			}
+			continue
+		}
+		if gatherStep != nil {
+			combine := v.hostStep("moe_gather_combine", gatherStep.Layer)
+			if combine == nil {
+				return nil, fmt.Errorf("iron: layer %d's moe_gather without a moe_gather_combine", gatherStep.Layer)
+			}
+			tm := time.Now()
+			g := gathers[gatherStep.Layer]
+			if err := m.runMoEGather(ctx, v, k, gatherStep, combine, g, values); err != nil {
+				return nil, err
+			}
+			if timing {
+				fmt.Fprintf(os.Stderr, "moe gather command %d (%d rows, %d slots): %.1f ms in all\n", k, rows, len(g.slots), time.Since(tm).Seconds()*1000)
+			}
+			continue
 		}
 		if route == nil {
 			if err := runOnce(); err != nil {

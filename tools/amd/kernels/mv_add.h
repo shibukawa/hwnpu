@@ -150,6 +150,8 @@ extern "C" void MV_GLU_NAME(MV_FMT)(float *g, float *u, bf16 *y) {
 // A GEMV whose x is a sandwich-normed layer's next input (iron_q4.py's sandwich forms of QGEMV and
 // QGEMVGlu): the block's output h, the residual r, the post norm's weight and the next norm's
 // (with Q_SANDWICH_SCALE then a scale row, Gemma 4's layer_scalar) ride on x's channel, K each.
+// With Q_SANDWICH_PLAIN (a pre-norm decoder's residual and next norm) there is no post norm:
+// y = r + h, and w_pre follows r on x's channel.
 // The begin makes, on every core, y = r + rms(h) w_post (rounded; with the scale, rounded again
 // times it) into r's place and n = rms(y) w_pre into h's, as kernels/sandwich_add.cc does (the
 // same sums, lanes and roundings: the same bits), then starts the GEMV on n. One operator in place
@@ -192,12 +194,20 @@ extern "C" void MV_SW_BEGIN(MV_FMT)(bf16 *xa, bf16 *sums, float *acc) {
   using namespace mv_sandwich;
   aie::set_rounding(aie::rounding_mode::conv_even);
   bf16 *h = xa, *r = xa + K;
+  const bf_t one = aie::broadcast<bf16, L>(1.0f);
+#ifdef Q_SANDWICH_PLAIN
+  // A pre-norm decoder's (Q_SANDWICH_PLAIN): no post norm, y = r + h; the next norm's weight
+  // third on x's channel
+  const bf16 *wpre = xa + 2 * K;
+  for (int i = 0; i < K; i += L) {
+    bf_t y = aie::mac(aie::mul(aie::load_v<L>(h + i), one), aie::load_v<L>(r + i), one).template to_vector<bf16>();
+#else
   const bf16 *wpost = xa + 2 * K, *wpre = xa + 3 * K;
   const float sh = inv_rms(h);
-  const bf_t one = aie::broadcast<bf16, L>(1.0f);
   for (int i = 0; i < K; i += L) {
     const bf_t p = scaled(aie::load_v<L>(h + i), aie::load_v<L>(wpost + i), sh);
     bf_t y = aie::mac(aie::mul(p, one), aie::load_v<L>(r + i), one).template to_vector<bf16>();
+#endif
 #ifdef Q_SANDWICH_SCALE
     y = aie::mul(y, aie::load_v<L>(xa + 4 * K + i)).template to_vector<bf16>();
 #endif

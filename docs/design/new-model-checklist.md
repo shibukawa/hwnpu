@@ -163,7 +163,7 @@ Details in [moe.md](moe.md).
 - **Count which experts run** over many kinds of text (`tools/moeusage`: `collect.sh MODEL OUT`, `analyze.py OUT`). Experts every kind runs go to models.yaml's `experts_core`; check the core pays at the places you ship (Qwen3.6 on AMD has none)
 - **Host-run experts (`llm.HostRouted`)**: measure reading and computing apart (`HWNPU_DEV=moe.time`). Measure the SSD first. Do not compare settings on one repeated question (the page cache warms): use a list of questions of different fields and languages (`--prompt-cache off`). Look at a CPU profile (`mincore` and the kernel took 66 %). Time with the NE's pause between layers (`HWNPU_TEST_QWEN36_GAP`) and a long prompt (20+ steps). Check the free disk before deriving an MXFP4 checkpoint (`hwnpu-dev mxfp4`)
 - **Compare generated text from stderr**: `hwnpu-chat` writes thinking there, so a short run's stdout is empty. Keep measuring binaries' names (Core AI's cache is per process name, 1.8 GB a model)
-- **On AMD, experts that do not fit go in places** (`iron_export_lm.py --expert-places P`): check with `HWNPU_DEV=iron.moe.check` and against an export with every expert placed; give a 16 GB machine a `variants` entry; run by the model's name (only the name gives the core and counts)
+- **On AMD, experts that do not fit go in places** (`iron_export_lm.py --expert-places P`): check with `HWNPU_DEV=iron.moe.check` and against an export with every expert placed; give a 16 GB machine a `variants` entry; run by the model's name (only the name gives the core and counts). What it costs depends on how evenly the model uses its experts: simulate an LRU of P places on routing traces first (gpt-oss copies 3.5 % of its choices at 16 of 32, LFM2-MoE 11 to 22 %)
 - **Check a model that is not MoE stays as it was** (same text, same speed, not converted again)
 
 ## 4. The AMD (IRON) and Intel forms
@@ -202,7 +202,7 @@ Details in [amd.md](amd.md), [amd-llm.md](amd-llm.md) and [image-amd.md](image-a
 | A DMA run is at most 1023 words; a descriptor repeats at most 64 | Lay tables out in the order operators read them |
 | Program memory 16 KB a core | One noinline function; check after adding kernels |
 | Quantized projections: multiples of 64 out, 512 in | Pad fused projections per column (`iron_gdn.column_widths`) |
-| GEMV's 64-row blocks divide over the 8 columns | Else it runs on fewer columns (97 blocks: 1 column). Check `num_aie_columns`; pad (`COLUMN_ALIGN` 64) |
+| GEMV's 64-row blocks divide over the 8 columns | Else it runs on fewer columns (97 blocks: 1 column). Check `num_aie_columns`; pad (`COLUMN_ALIGN` 64). The head too: Qwen3's vocabulary of 151936 ran on 2 columns until padded to 512 (`iron_qwen3.HEAD_ALIGN`) |
 | MHA's head_dim a multiple of 64 | Pad 96 to 128 |
 | A hidden size not whole blocks on 8 columns (2880) | Carry the residual padded with zeros, rescale the norm's weight and eps |
 | Per-call row bounds | Every per-call word must be affine in one per-call value: fixed chunks and one `start`; `ProjectionGEMM` takes multiples of 256 rows |
@@ -214,8 +214,11 @@ Details in [amd.md](amd.md), [amd-llm.md](amd-llm.md) and [image-amd.md](image-a
 
 | Method | Lesson |
 |---|---|
+| **Try q8 before q6 on small models** | While a step is bound by switches, q6's GEMV is the slower: Qwen3-0.6B 50 ms at q8 against 63 at q6, and a lower KL (amd-llm.md) |
 | Count the decode step's operators and switches first | `model.record().steps`, `HWNPU_EXPORT_STEPS=1` and `elfconfigs`; time each with `--command-per-step` and `HWNPU_DEV=iron.timing` (a command costs about 0.1 ms of its own). Read times only from that export |
 | **Fewer operators in the decode step** | Bias and residual in the GEMV (`into_linear`), gate and up as one table (`QGEMVGlu`), sandwich norms as one (`SandwichAdd`), one RoPE for q and k, short convolution as one (`ShortConvStep`), state slots read in place (`slots=`), QGEMV on one core a column |
+| **The same operators in a row in a prompt chunk** | Where a chunk repeats a block (a MoE layer's experts), run each operator for a group of them in turn: LFM2-MoE's chunk 6724 → 1796 reconfigurations, 3.91 → 2.94 s, the same logits. Count with `elfconfigs` ("a reorder ... removes at most"); a group holds its intermediates together (memory) |
+| **A MoE prompt chunk pays for the experts its rows chose** | Time the experts' command at several row counts first (`HWNPU_DEV=iron.timing`): LFM2-MoE's every expert on every row was 69 ms a layer whatever the rows and 12 ms for 256 rows. Few rows (up to 80): the decode step's expert operators a row at a time with the row's place as a per-call offset, one command the host runs again for the next rows (`moe_rows_plan`): a 33-token prompt 1.9 → 0.7 s. More: the host gathers each expert's rows into 256-row slots and runs a command of 4 slots again and again, the slots' experts per-call offsets on the dequantizing operators (`moe_gather`): the same logits bit for bit, 1024 tokens 3.1 → 2.3 s, 126 MB less pinned. Find the crossing by running both forms at the same rows; a state the host writes cannot be a step's output too |
 | **Fewer operators in a prompt chunk** | One short-convolution operator (`ShortConvChunk`, `GdnConvChunk`). Merging small configurations (RMSNorm, add) does not pay |
 | A decode step as one resident array (`GptOssStep`) | Removes reloads (gpt-oss 79 → 49 ms); costs a core program within 16 KB and every operand declared every step. An `array=True` parameter that differs by layer makes an array a layer: read the commands' times after any export change |
 | Prompt MHA on several pipelines (`--mha-pipelines`, default 8) | 2–5× faster chunks; check `num_pipelines` in kernel names |
