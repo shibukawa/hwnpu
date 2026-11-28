@@ -110,6 +110,7 @@ func notOnHere(m Model, machine int) (alt Model, ok bool) {
 	}
 	found := false
 	for _, c := range Catalog {
+		c.Machine = c.MachineFor(HereVendor())
 		if m.Family == "" || c.Family != m.Family || c.Tag == "" || c.Machine > machine || slices.Contains(c.NotOn, chip) {
 			continue
 		}
@@ -136,7 +137,7 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 				} else if alt.Name == "" {
 					continue
 				}
-				m.Machine = p.Machine // the category's column, not the family's
+				m.Machine, m.MachineBy = p.Machine, nil // the category's column, not the family's
 				cands = append(cands, m)
 			}
 			break
@@ -147,6 +148,7 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 			// a model without a tag (one like another) is picked by its name, not its family
 			if m.Family != "" && m.Tag != "" && fold(m.Family) == key {
 				base = m.Family
+				m.Machine = m.MachineFor(HereVendor()) // the family's column on this machine's NPU
 				cands = append(cands, m)
 			}
 		}

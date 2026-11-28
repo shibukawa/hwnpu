@@ -212,7 +212,7 @@ The NPU reads only pinned buffers (banks). An expert's position in its table is 
 | Qwen3.6, P = 32 (16 GB, O_DIRECT) | 7.2–7.6 GiB | 5.8–6.0 | 33–38 % | 1173 tokens 29.7–29.8 s |
 | gpt-oss-120b, P = 56, host route, O_DIRECT, prefetch (64 GB) | 32.05 GiB + 1.0 | 9.7–9.9 | 3.2 % | 74 tokens 6.1 s |
 | LFM2-8B-A1B, all | 5.31 GiB + 0.1 | 19.3 tok/s (51.7 ms) | — | 33 tokens 0.9 s; 1024 tokens 2.3 s |
-| LFM2-8B-A1B, P = 16 (not in models.yaml) | 3.06 GiB + 0.1 | 15.0–15.9 (62.8–66.9 ms) | 11–22 % | 33 tokens 1.1 s; 1024 tokens 2.5 s |
+| LFM2-8B-A1B, P = 16 (AMD under 16 GB) | 3.06 GiB + 0.1 | 15.0–15.9 (62.8–66.9 ms) | 11–22 % | 33 tokens 1.1 s; 1024 tokens 2.5 s |
 | LFM2-8B-A1B, P = 16, O_DIRECT | 3.06 GiB + 0.1 | 12.3–14.5 (69–81 ms) | 11–22 % | 33 tokens 1.8 s; 1024 tokens 3.0 s |
 
 - gpt-oss-20b accuracy: vs HF float32 top 4/4, cosine 0.9968–0.9997; KL over 5 texts mean about 0.03. Energy: 0.92 J a token including the prompt (15.6 W while running).

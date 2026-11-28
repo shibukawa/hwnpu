@@ -58,6 +58,7 @@
 
 - `models` と `sources` と `npus`: 名前ごとに欄単位で上書き。`plamo-3-translate-0.8b: {from: ...}` と書けば、取得元だけが変わり、ほかの欄は既定のまま。`remove: true` で消す
 - `aliases`: 名前ごとに足す (5.1 節)
+- `machine` は数か NPU の会社ごとの表 (`machine: {apple: 16, amd: 8}`: LFM2-8B-A1B は Apple では 16 GB から、AMD では置き場 16 個の書き出しで 8 GB から)。表にない会社は最大の値。`variants` はその最小より上
 - `categories`: `picks` は列 (`machine`) ごとに上書き。`{machine: 8, model: X}` と書けば 8 GB の列だけが変わる。`{machine: 8, remove: true}` でその列を消す
 - `builds`: 足していく。既定のルールより具体的か、同じ具体さであとにあるので、書いた欄だけが勝つ (6 節)
 - コマンドラインの `-format` などは、どのファイルよりも強い

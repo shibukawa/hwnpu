@@ -39,7 +39,9 @@
 #   sha256        FILE: the SHA-256 of a file of the repository, checked from any source; a file
 #                 another model pins with the same SHA-256 and has downloaded is linked from its
 #                 directory instead of downloaded (Qwen3-1.7B and MOSS-SoundEffect's text encoder)
-#   machine       the least memory of a machine, in GB, the family recommends the model for
+#   machine       the least memory of a machine, in GB, the family recommends the model for: one
+#                 number, or a table by the NPU's vendor where they differ (machine: {apple: 16, amd: 8});
+#                 a vendor it leaves out takes the largest, and variants must be above the least
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
 #                 buffers and the process's together over a run (docs/design/new-model-checklist.md)
 #   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
@@ -116,7 +118,7 @@ models:
     # (5554 MiB, 5445 of it on the device); a prompt chunk runs the experts its tokens chose alone:
     # up to 80 tokens a token at a time (33 tokens in 0.7 s), a longer one with each expert's tokens
     # gathered into GEMMs (110 tokens in 1.5 s, 989 in 2.0 s: docs/design/amd-llm.md). With 16 of a
-    # layer's 32 experts in places (--expert-places 16, no export of the catalog) 3.2 GB and 15-16
+    # layer's 32 experts in places (--expert-places 16: AMD's machines under 16 GB) 3.2 GB and 15-16
     # tokens/s. Core AI: an M3 (2026-11-19) 15.0-16.1
     # tokens/s, 1503 tokens of prompt in 8.6-10.9 s; an M2 12.0-13.7 tokens/s, 1624 in 13-14.5 s,
     # loaded in 3.1 s and 8.0 GB (the experts' 7.23 GiB in the process's memory; the first run,
@@ -129,12 +131,16 @@ models:
     from: hf:LiquidAI/LFM2-8B-A1B@7ed1404fdf502a5446c1b67d4fe1533158d6f2ad
     exports:
       amd-xdna2:
-        LFM2-8B-A1B.amd-npu2-q8: v1 sha256:7a641b8749c2135ddf5714f0003cefbb34f794e7edab90fef8325104d042f5e9
+        LFM2-8B-A1B.amd-npu2-q8: v2 sha256:7a641b8749c2135ddf5714f0003cefbb34f794e7edab90fef8325104d042f5e9
+        LFM2-8B-A1B.amd-npu2-q8-p16: v2 sha256:decca2f9cc1cce078c5109bd90ff132ae8f0010bf6582f0cdad5e772cc18f0d2
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM2-8B-A1B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
-    machine: 16
-    memory: {amd: 5.8, apple: 8.0}
+    # Apple from 16 GB; AMD from 8 GB with 16 of each layer's 32 experts on the NPU, every one from 16
+    machine: {apple: 16, amd: 8}
+    memory: {amd: 3.2, apple: 8.0}
+    variants:
+      16: {memory: {amd: 5.8}}
     bytes: {amd: 5.64e9, apple: 16.7e9}
-    disk: {amd: 5.97e9}
+    disk: {amd: 8.39e9}
     features: [tools]
     not_on: [M1]
     about: "Liquid AI's LFM2-8B-A1B, a mixture of experts of 8.3B with 1.5B active a token: on a Mac the experts in int8 and the rest in 8 bit tables (M2 and later), on AMD's NPU the experts in 4 bits and the rest in 8; a context of 128000 (4096 on AMD), tool calls in Python's form"

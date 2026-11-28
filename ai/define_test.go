@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,5 +136,21 @@ func TestCompileOnLoad(t *testing.T) {
 	}
 	if p, err := app.Plan(ctx); err != nil || !p.Compiled() {
 		t.Errorf("compiled by the load: %v", err)
+	}
+}
+
+// A model whose variants change its export for AMD's NPU (LFM2-8B-A1B: 16 of 32 experts in
+// places below 16 GB) is prepared again for another memory: the export is in its spec, so the
+// record of one memory is not taken for the other.
+func TestSpecOfAMDVariants(t *testing.T) {
+	m := catalog.Model{Name: "x", AMDExport: []string{"lfm2moe", "--expert-places", "16"},
+		Variants: map[int]catalog.Variant{16: {AMDExport: []string{"lfm2moe"}}}}
+	small, big := spec(m.On(8)), spec(m.On(16))
+	if small == big {
+		t.Fatalf("the same spec on 8 and 16 GB: %q", small)
+	}
+	plain := catalog.Model{Name: "y", AMDExport: []string{"lfm3"}}
+	if s := spec(plain); s != "" {
+		t.Errorf("a model without such variants: spec %q", s)
 	}
 }

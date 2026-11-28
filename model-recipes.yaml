@@ -909,13 +909,18 @@ models:
       version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
     amd:
-      version: 1
+      # 2: 16 of each layer's 32 experts in places under 16 GB (the variant of 16 is version 1's export)
+      version: 2
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
-      # the experts in q4nx (4 of 32 read in place by the decode step, every one run by a prompt
-      # chunk), the convolutions, attention, dense MLPs and head in q8 (iron_lfm2moe.py)
+      # the experts in q4nx (4 of 32 read in place by the decode step; a prompt chunk runs the
+      # ones its rows chose), the convolutions, attention, dense MLPs and head in q8
+      # (iron_lfm2moe.py). Under 16 GB: 16 of each layer's 32 experts in places, the others copied
+      # in from experts.bin when chosen (3.2 GB); every expert from 16 GB (5.8 GB)
       script: iron_export_lm.py
-      args: [lfm2moe, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q8, --head, q8]
+      args: [lfm2moe, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q8, --head, q8, --expert-places, "16"]
+      variants:
+        16: [lfm2moe, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q8, --head, q8]
       extra: *lm-extra
   Qwen2.5-Coder-7B-Instruct:
     apple:
