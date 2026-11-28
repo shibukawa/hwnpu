@@ -89,14 +89,7 @@ func (c *MTP) BeforeLayers(name string) bool {
 
 // Build writes the program without a cache.
 func (c *MTP) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
-	if opts.Cache > 0 {
-		return nil, out, fmt.Errorf("qwen35: a program with a KV cache has more inputs and outputs; use BuildCached")
-	}
-	all, outs, err := c.BuildCached(b, w, opts)
-	if err != nil {
-		return nil, out, err
-	}
-	return all, outs[0], nil
+	return llm.BuildUncached("qwen35", c, b, w, opts)
 }
 
 // BuildCached writes the program with its state held by the host (llm.Cached): the KV cache of

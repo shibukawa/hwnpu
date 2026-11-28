@@ -440,3 +440,46 @@ func LoadConfig(path, arch string) (*Arch, Model, error) {
 	}
 	return a, m, nil
 }
+
+// LoadModel adapts a typed config parser returning M (such as *Config or *MoE) to Arch.LoadConfig.
+func LoadModel[M Model](parse func([]byte) (M, error)) func([]byte) (Model, error) {
+	return func(raw []byte) (Model, error) {
+		return parse(raw)
+	}
+}
+
+// BuildUncached implements Model.Build for a Cached model whose uncached form delegates to
+// BuildCached and returns its first output.
+func BuildUncached[M Cached](name string, m M, b *mlpackage.Builder, w Weights, opts Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
+	if opts.Cache > 0 {
+		return nil, out, fmt.Errorf("%s: a program with a KV cache has more inputs and outputs; use BuildCached", name)
+	}
+	i, o, err := m.BuildCached(b, w, opts)
+	if err != nil {
+		return nil, out, err
+	}
+	return i, o[0], nil
+}
+
+// LayerRange returns the layer indices [from, to) in order.
+func LayerRange(from, to int) []int {
+	if to <= from {
+		return nil
+	}
+	out := make([]int, to-from)
+	for i := range out {
+		out[i] = from + i
+	}
+	return out
+}
+
+// LayersWhere returns the indices i of items for which keep(i, items[i]) reports true.
+func LayersWhere[T any](items []T, keep func(int, T) bool) []int {
+	var out []int
+	for i, v := range items {
+		if keep(i, v) {
+			out = append(out, i)
+		}
+	}
+	return out
+}

@@ -13,7 +13,7 @@ var Arch = &llm.Arch{
 	Title:         "LFM2-MoE",
 	ModelTypes:    []string{"lfm2_moe"},
 	Architectures: []string{"Lfm2MoeForCausalLM"},
-	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	LoadConfig:    llm.LoadModel(ParseConfig),
 	LastRow:       true,
 }
 
@@ -86,14 +86,7 @@ func (c *Config) Tensors() map[string][]int {
 
 // Build writes a program without a KV cache (a part, as llm.Routed cuts it).
 func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
-	if opts.Cache > 0 {
-		return nil, out, fmt.Errorf("lfm2moe: a program with a KV cache has more inputs and outputs; use BuildCached")
-	}
-	i, o, err := c.BuildCached(b, w, opts)
-	if err != nil {
-		return nil, out, err
-	}
-	return i, o[0], nil
+	return llm.BuildUncached("lfm2moe", c, b, w, opts)
 }
 
 // BuildCached writes a part of the model (llm.Cached, llm.Routed).

@@ -1,9 +1,11 @@
 package lfm2moe
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
 // LFM2-8B-A1B's config.json, its layer types shortened to 6 layers.
@@ -35,6 +37,27 @@ func TestPlanRouted(t *testing.T) {
 			t.Errorf("part %d: %d+%d, want %v", i, p.Start, p.Layers, want[i])
 		}
 	}
+	w := llm.NewSynthetic(c)
+	for _, opts := range []llm.Options{{Format: "lut8", Seq: 8}, {Format: "lut8", Seq: 8, Paged: 8192, Cache: 32768}} {
+		parts, err := llm.PlanRouted(c, opts, 1<<30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range parts {
+			o := opts
+			o.Start, o.Layers = p.Start, p.Layers
+			o.LastRow = opts.Cache > 0
+			blobs, err := mlpackage.NewBlobWriter(filepath.Join(t.TempDir(), "w.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = c.BuildCached(mlpackage.NewBuilder("CoreML8", blobs), w, o)
+			blobs.Close()
+			if err != nil {
+				t.Fatalf("paged %d part %+v: %v", opts.Paged, p, err)
+			}
+		}
+	}
 }
 
 // Split at its attention too, a layer with both gets a part of no layers between its attention and
@@ -55,6 +78,27 @@ func TestPlanRoutedPaged(t *testing.T) {
 	for i, p := range plan {
 		if p.Start != want[i][0] || p.Layers != want[i][1] {
 			t.Errorf("part %d: %d+%d, want %v", i, p.Start, p.Layers, want[i])
+		}
+	}
+	w := llm.NewSynthetic(c)
+	for _, opts := range []llm.Options{{Format: "lut8", Seq: 8}, {Format: "lut8", Seq: 8, Paged: 8192, Cache: 32768}} {
+		parts, err := llm.PlanRouted(c, opts, 1<<30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range parts {
+			o := opts
+			o.Start, o.Layers = p.Start, p.Layers
+			o.LastRow = opts.Cache > 0
+			blobs, err := mlpackage.NewBlobWriter(filepath.Join(t.TempDir(), "w.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = c.BuildCached(mlpackage.NewBuilder("CoreML8", blobs), w, o)
+			blobs.Close()
+			if err != nil {
+				t.Fatalf("paged %d part %+v: %v", opts.Paged, p, err)
+			}
 		}
 	}
 }

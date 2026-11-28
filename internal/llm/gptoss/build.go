@@ -11,26 +11,9 @@ import (
 
 type builder struct {
 	*blocks.Graph
-	cfg     *Config
-	opts    llm.Options
-	seq, d  int
-	ins     map[string]*mlpackage.Var
-	inList  []mlpackage.Feature
-	outList []*mlpackage.Var
-}
-
-func (m *builder) input(name string, shape ...int) *mlpackage.Var {
-	if v, ok := m.ins[name]; ok {
-		return v
-	}
-	v := m.B.Input(name, mlpackage.Float16, shape...)
-	m.ins[name] = v
-	m.inList = append(m.inList, mlpackage.Feature{Name: name, DType: mlpackage.Float16, Shape: shape})
-	return v
-}
-
-func (m *builder) output(v *mlpackage.Var, name string) {
-	m.outList = append(m.outList, m.B.NamedOp("identity", name, map[string]any{"x": v}, mlpackage.Float16, v.Shape...))
+	cfg    *Config
+	opts   llm.Options
+	seq, d int
 }
 
 // build writes a part (llm.PlanRouted): every layer ends with its experts, so a part is one
@@ -42,144 +25,67 @@ func (m *builder) output(v *mlpackage.Var, name string) {
 // (kv_k_N, kv_v_N, mask_sliding_attention) with its sink; a part before a full attention layer
 // outputs that layer's sinks (attn_sink_N) for the host's merge.
 func build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
-	if opts.Group == 0 {
-		opts.Group = 16
-	}
-	if opts.Format == "" {
-		opts.Format = cfg.Format()
-	}
-	opts.FormatFor = append(defaultFormats(), opts.FormatFor...)
-	noLayers := opts.Layers == llm.NoLayers
-	first := noLayers && opts.Start == 0 // layer 0 up to its router
-	afterAttn := noLayers && opts.Start > 0
-	if !noLayers && (opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers) {
-		opts.Layers = cfg.NumLayers - opts.Start
-	}
 	if opts.Cache > 0 && opts.Paged <= 0 {
 		return nil, nil, fmt.Errorf("gptoss: a program with a KV cache is split at its full attention (Paged)")
 	}
-	if opts.LastRow && opts.Cache <= 0 {
-		return nil, nil, fmt.Errorf("gptoss: the logits of the last row alone (LastRow) are of a program with a KV cache")
-	}
-	start, end := opts.Start, opts.Start+opts.Layers
 	paged := func(i int) bool { return opts.Paged > 0 && !cfg.IsSliding(i) }
-	if afterAttn && !paged(start) {
-		return nil, nil, fmt.Errorf("gptoss: a part of no layers from layer %d is the rest of a full attention layer the host attends for", start)
+	routed := func(int) bool { return true }
+	first, afterAttn, err := blocks.NormalizeRoutedOptions("gptoss", &opts, cfg.NumLayers, cfg.Format(), defaultFormats(), routed, paged)
+	if err != nil {
+		return nil, nil, err
 	}
-	m := &builder{Graph: &blocks.Graph{Name: "gptoss", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, ins: map[string]*mlpackage.Var{}}
-	err = blocks.Run(func() {
-		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
-		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
-		h := x
-		var y *mlpackage.Var
-		switch {
-		case first:
-			h = m.operator(0, h)
-			m.moeHead(0, h)
-			y = m.y(h)
-		case afterAttn:
-			h = m.Op("add", map[string]any{"x": m.attnOutput(start, m.input(fmt.Sprintf("attn_o_%d", start), 1, cfg.NumHeads, m.seq, cfg.HeadDim)), "y": h}, h.Shape...)
-			m.moeHead(start, h)
-			y = m.y(h)
-		default:
-			h = m.Op("add", map[string]any{"x": h, "y": m.input(fmt.Sprintf("moe_o_%d", start), 1, m.seq, m.d)}, h.Shape...)
-			if end != start+1 {
-				m.Fail("the part of layers %d to %d holds a layer's experts: a part is one layer's step (llm.PlanRouted)", start, end-1)
-			}
-			switch {
-			case end < cfg.NumLayers && paged(end):
-				m.beforeAttention(end, h)
-				y = m.y(h)
-			case end < cfg.NumLayers:
-				h = m.operator(end, h)
-				m.moeHead(end, h)
-				y = m.y(h)
-			case opts.NoHead:
-				y = m.y(h)
-			default:
-				if opts.LastRow {
-					h = m.LastRow(h, m.input("last", 1, 1, m.seq))
-				}
-				h = m.RMSNorm(h, "model.norm.weight", m.d, cfg.NormEps, 1)
-				if opts.Hidden {
-					y = m.y(h)
-				} else {
-					y = m.Linear(h, cfg.Head(), "y", cfg.VocabSize)
-				}
-			}
-		}
-		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
-		for _, v := range m.outList {
-			outs = append(outs, mlpackage.Feature{Name: v.Name, DType: mlpackage.Float16, Shape: v.Shape})
-		}
-		ins = append(ins, m.inList...)
-	})
-	return ins, outs, err
+	m := &builder{Graph: &blocks.Graph{Name: "gptoss", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize}
+	return blocks.BuildRouted(m, first, afterAttn, m.seq, m.d, cfg.NumLayers, cfg.VocabSize, cfg.Head())
 }
 
-func (m *builder) y(h *mlpackage.Var) *mlpackage.Var {
-	return m.B.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
+func (m *builder) IsRouted(int) bool                        { return true }
+func (m *builder) IsPaged(i int) bool                       { return m.opts.Paged > 0 && !m.cfg.IsSliding(i) }
+func (m *builder) DenseFFN(_ int, h *mlpackage.Var) *mlpackage.Var { return h }
+
+func (m *builder) FinalNorm(h *mlpackage.Var) *mlpackage.Var {
+	return m.RMSNorm(h, "model.norm.weight", m.d, m.cfg.NormEps, 1)
 }
 
-// moeHead is the end of a part before layer i's experts: the post attention norm's output moe_x_N
+func (m *builder) AfterAttention(i int) *mlpackage.Var {
+	return m.attnOutput(i, m.Input(fmt.Sprintf("attn_o_%d", i), 1, m.cfg.NumHeads, m.seq, m.cfg.HeadDim))
+}
+
+// MoEHead is the end of a part before layer i's experts: the post attention norm's output moe_x_N
 // and the router's logits moe_logits_N, its weight in fp16 (llm.Routed).
-func (m *builder) moeHead(i int, h *mlpackage.Var) {
+func (m *builder) MoEHead(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("model.layers.%d.", i)
 	f := m.RMSNorm(h, p+"post_attention_layernorm.weight", m.d, m.cfg.NormEps, 1)
-	m.output(f, fmt.Sprintf("moe_x_%d", i))
-	e := m.cfg.NumExperts
-	wv, err := m.B.F16s(p+"mlp.router.weight", []int{e, m.d}, m.Get(p+"mlp.router.weight", e, m.d))
-	if err != nil {
-		m.Fail("%v", err)
-	}
-	bv, err := m.B.F16s(p+"mlp.router.bias", []int{e}, m.Get(p+"mlp.router.bias", e))
-	if err != nil {
-		m.Fail("%v", err)
-	}
-	m.output(m.Op("linear", map[string]any{"x": f, "weight": wv, "bias": bv}, 1, m.seq, e), fmt.Sprintf("moe_logits_%d", i))
+	m.EmitMoERouter(i, f, p+"mlp.router.weight", p+"mlp.router.bias", m.cfg.NumExperts)
+	return h
 }
 
-// operator is the first half of a layer the program attends for: the norm, the attention, the
+// Mixer is the first half of a layer the program attends for: the norm, the attention, the
 // residual.
-func (m *builder) operator(i int, h *mlpackage.Var) *mlpackage.Var {
+func (m *builder) Mixer(i int, h *mlpackage.Var) *mlpackage.Var {
 	n := m.RMSNorm(h, fmt.Sprintf("model.layers.%d.input_layernorm.weight", i), m.d, m.cfg.NormEps, 1)
 	return m.Op("add", map[string]any{"x": m.attention(i, n), "y": h}, h.Shape...)
 }
 
-// beforeAttention ends a part before layer i's attention, which the host runs: the queries, the
+// BeforeAttention ends a part before layer i's attention, which the host runs: the queries, the
 // step's keys and values, and the sinks.
-func (m *builder) beforeAttention(i int, h *mlpackage.Var) {
+func (m *builder) BeforeAttention(i int, h *mlpackage.Var) {
 	n := m.RMSNorm(h, fmt.Sprintf("model.layers.%d.input_layernorm.weight", i), m.d, m.cfg.NormEps, 1)
 	q, k, v := m.qkv(i, n)
-	m.output(q, fmt.Sprintf("attn_q_%d", i))
-	m.output(k, fmt.Sprintf("kv_k_%d_new", i))
-	m.output(v, fmt.Sprintf("kv_v_%d_new", i))
+	m.EmitPagedQKV(i, q, k, v)
 	nh := m.cfg.NumHeads
 	name := fmt.Sprintf("model.layers.%d.self_attn.sinks", i)
-	sv, err := m.B.F16s(name, []int{1, nh}, m.Get(name, nh))
-	if err != nil {
-		m.Fail("%v", err)
-	}
-	m.output(sv, fmt.Sprintf("attn_sink_%d", i))
+	m.Output(m.F16s(name, []int{1, nh}, m.Get(name, nh)), fmt.Sprintf("attn_sink_%d", i))
 }
 
 // rope is the rotary tables (1, seq, 1, head_dim): YaRN's, scaled by its attention factor.
 func (m *builder) rope() (cos, sin *mlpackage.Var) {
 	hd := m.cfg.HeadDim
 	if m.opts.Cache > 0 {
-		return m.input("rope_cos", 1, m.seq, 1, hd), m.input("rope_sin", 1, m.seq, 1, hd)
+		return m.Input("rope_cos", 1, m.seq, 1, hd), m.Input("rope_sin", 1, m.seq, 1, hd)
 	}
 	c, s := m.cfg.ropeValues(0, m.seq)
 	shape := []int{1, m.seq, 1, hd}
-	cv, err := m.B.F16s("rope_cos", shape, c)
-	if err == nil {
-		var sv *mlpackage.Var
-		if sv, err = m.B.F16s("rope_sin", shape, s); err == nil {
-			return cv, sv
-		}
-	}
-	m.Fail("%v", err)
-	return nil, nil
+	return m.F16s("rope_cos", shape, c), m.F16s("rope_sin", shape, s)
 }
 
 // ropeValues are the rotary tables of n positions from start, scaled by YaRN's attention factor.
@@ -231,15 +137,15 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 		if !m.cfg.IsSliding(i) {
 			m.Fail("layer %d's full attention is the host's in a program with a cache", i)
 		}
-		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
-		m.output(v, fmt.Sprintf("kv_v_%d_new", i))
+		m.Output(k, fmt.Sprintf("kv_k_%d_new", i))
+		m.Output(v, fmt.Sprintf("kv_v_%d_new", i))
 		t := m.cfg.cacheLen(i, m.opts.Cache)
 		cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
-			c := m.input(name, 1, nkv, t, hd)
+			c := m.Input(name, 1, nkv, t, hd)
 			return m.Op("concat", map[string]any{"values": []*mlpackage.Var{c, x}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, nkv, t+s, hd)
 		}
 		k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
-		mask = m.input("mask_sliding_attention", 1, 1, s, t+s)
+		mask = m.Input("mask_sliding_attention", 1, 1, s, t+s)
 	} else {
 		window := 0
 		name := "mask_full_attention"
@@ -270,10 +176,7 @@ func (m *builder) sdpaSink(i int, q, k, v, mask *mlpackage.Var) *mlpackage.Var {
 			col[h*s+t] = sinks[h]
 		}
 	}
-	cv, err := m.B.F16s(name, []int{1, nh, s, 1}, col)
-	if err != nil {
-		m.Fail("%v", err)
-	}
+	cv := m.F16s(name, []int{1, nh, s, 1}, col)
 	sc = m.Op("concat", map[string]any{"values": []*mlpackage.Var{sc, cv}, "axis": m.B.ScalarI32(3), "interleave": m.B.ScalarBool(false)}, 1, nh, s, sk+1)
 	probs := m.Op("softmax", map[string]any{"x": sc, "axis": m.B.ScalarI32(-1)}, 1, nh, s, sk+1)
 	probs = m.Op("slice_by_index", map[string]any{"x": probs, "begin": m.B.Ints(0, 0, 0, 0), "end": m.B.Ints(1, int32(nh), int32(s), int32(sk)),
@@ -289,41 +192,12 @@ func (m *builder) sdpaSink(i int, q, k, v, mask *mlpackage.Var) *mlpackage.Var {
 // those less than the window behind it. The full layers are the host's (Paged): their masks are
 // its attention's.
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
-	out := map[string][]float32{}
-	out["rope_cos"], out["rope_sin"] = c.ropeValues(pos, q)
-	keys := c.SlidingWindow
-	if cache < keys {
-		keys = cache
+	cos, sin := c.ropeValues(pos, q)
+	return map[string][]float32{
+		"rope_cos":               cos,
+		"rope_sin":               sin,
+		"mask_sliding_attention": blocks.StepMask(pos, q, cache, c.SlidingWindow),
 	}
-	ring := keys < cache
-	mask := make([]float32, q*(keys+q))
-	for t := 0; t < q; t++ {
-		p := pos + t
-		row := mask[t*(keys+q):]
-		for j := 0; j < keys+q; j++ {
-			var key int
-			var visible bool
-			switch {
-			case j >= keys:
-				key = pos + j - keys
-				visible = j-keys <= t
-			case ring:
-				key = pos - 1 - ((pos-1-j)%keys+keys)%keys
-				visible = key >= 0
-			default:
-				key = j
-				visible = j < pos
-			}
-			if p-key >= c.SlidingWindow {
-				visible = false
-			}
-			if !visible {
-				row[j] = -1e4
-			}
-		}
-	}
-	out["mask_sliding_attention"] = mask
-	return out
 }
 
 // PagedStepInputs is StepInputs: the inputs of the sliding layers and the rotary tables (the
@@ -334,15 +208,4 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 
 // defaultFormats are the formats ahead of the caller's FormatFor rules (a later rule wins), each
 // lutN with a scale a row (lutNr, blocks.LinearBias and Linear).
-//
-// The attention in lut8r: the rows of one projection differ in magnitude by up to 6600 times, so
-// in plain lut8 (a table for 16 rows) the small rows have few levels: on the Neural Engine the KL
-// from the float32 reference on plain text is 0.28 in lut8, 0.069 in lut8r, 0.092 in int8 (a
-// scale a row), 0.033 in fp16; a step on an M3 57 ms in lut8 and lut8r, 73 in int8, 79 in fp16,
-// whose 2.99 GiB on the Neural Engine swaps on a 16 GB Mac with the experts wired.
-//
-// The head in lut6r: the head's part 10.2 → 8.1 ms a step and 0.14 GiB less on the Neural Engine,
-// for KL on 4 texts 0.057 → 0.061 (plain lut6 0.063; GPTQ's lut6 codes about the same as lut6r,
-// but they are not shipped). Best answers: --format-for=self_attn=fp16,lm_head=lut8
-// (docs/design/performance.md).
 func defaultFormats() []string { return []string{"self_attn=lut8r", "lm_head=lut6r"} }

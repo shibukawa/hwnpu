@@ -126,3 +126,88 @@ func Dequantize(dst []float32, w, e []byte) {
 		}
 	}
 }
+
+// f16Hi holds the high bytes of IEEE-754 binary16 for Values at exponent bias 127 (scale = 1.0),
+// with -0 canonicalized to +0 (0x0000). Because every e2m1 value has at most 1 mantissa bit (bit 9
+// of binary16), the low byte of every normal scaled binary16 value (114 <= e <= 140) is 0x00.
+var f16Hi = [16]byte{0x00, 0x38, 0x3C, 0x3E, 0x40, 0x42, 0x44, 0x46, 0x00, 0xB8, 0xBC, 0xBE, 0xC0, 0xC2, 0xC4, 0xC6}
+
+// DequantizeF16 writes a row's MXFP4 blocks w (16 bytes/block) and scales e (1 byte/block) as
+// little-endian IEEE-754 fp16 (64 bytes/block) into dst.
+func DequantizeF16(dst, w, e []byte) {
+	nb := len(e)
+	if nb == 0 {
+		return
+	}
+	b := 0
+	for b < nb {
+		if haveKernel {
+			n := dequantF16Kernel(dst[b*64:], w[b*16:], e[b:])
+			b += n
+			if b >= nb {
+				return
+			}
+		}
+		dequantF16BlockGo(dst[b*64:(b+1)*64], w[b*16:(b+1)*16], e[b])
+		b++
+	}
+}
+
+func dequantF16BlockGo(dst, blk []byte, eb byte) {
+	if eb >= 114 && eb <= 140 {
+		delta := byte(int8(int(eb)-127) << 2)
+		for j, by := range blk[:16] {
+			h0, h1 := f16Hi[by&15], f16Hi[by>>4]
+			if h0 != 0 {
+				h0 += delta
+			}
+			if h1 != 0 {
+				h1 += delta
+			}
+			dst[4*j] = 0
+			dst[4*j+1] = h0
+			dst[4*j+2] = 0
+			dst[4*j+3] = h1
+		}
+		return
+	}
+	s := scale(eb)
+	for j, by := range blk[:16] {
+		u0 := f32ToF16Bits(Values[by&15] * s)
+		u1 := f32ToF16Bits(Values[by>>4] * s)
+		dst[4*j] = byte(u0)
+		dst[4*j+1] = byte(u0 >> 8)
+		dst[4*j+2] = byte(u1)
+		dst[4*j+3] = byte(u1 >> 8)
+	}
+}
+
+func f32ToF16Bits(f float32) uint16 {
+	if f == 0 {
+		return 0
+	}
+	bits := math.Float32bits(f)
+	sign := uint16((bits >> 16) & 0x8000)
+	exp := int((bits>>23)&0xFF) - 127 + 15
+	mant := bits & 0x7FFFFF
+	if exp <= 0 {
+		if exp < -10 {
+			return sign
+		}
+		mant |= 0x800000
+		shift := uint(14 - exp)
+		half := mant >> shift
+		if (mant>>(shift-1))&1 != 0 && ((mant&((1<<(shift-1))-1)) != 0 || (half&1) != 0) {
+			half++
+		}
+		return sign | uint16(half)
+	}
+	if exp >= 31 {
+		return sign | 0x7C00
+	}
+	half := uint16(exp<<10) | uint16(mant>>13)
+	if (mant&0x1000) != 0 && ((mant&0x0FFF) != 0 || (half&1) != 0) {
+		half++
+	}
+	return sign | half
+}

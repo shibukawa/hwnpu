@@ -58,8 +58,11 @@ var Keys = map[string]string{
 	"moe.prefetch": "N of the next layer's guessed experts brought in (0: none)",
 	"moe.usage":    "PATH: writes the experts a run used (tools/moeusage)",
 	"moe.trace":    "PATH: writes the experts each token ran (tools/moeusage/place.py)",
-	"moe.prefault": "wait: a host's experts wired with every page in before the first run (for measuring)",
-	"mxfp4.bench":  "LAYERS: the layers TestTokenTime times; cache or wake: runs that benchmark (internal/mxfp4's tests)",
+	"moe.prefault":         "wait: a host's experts wired with every page in before the first run (for measuring)",
+	"moe.prefill":          "0 or cpu: keeps a host's multi-row prefill experts on the CPU instead of offloading hot ones to the Neural Engine",
+	"moe.prefill-min-rows": "N: minimum rows an expert takes in a prefill batch to run on the Neural Engine (24)",
+	"moe.min-ratio":        "R: skips trailing routed experts whose weight is below R times the top expert's",
+	"mxfp4.bench":          "LAYERS: the layers TestTokenTime times; cache or wake: runs that benchmark (internal/mxfp4's tests)",
 }
 
 var warned sync.Map

@@ -13,8 +13,9 @@ package lfm2moe
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
@@ -111,22 +112,11 @@ func (c *Config) IsRouted(i int) bool { return i >= c.NumDense }
 
 // RopeInvFreq is the inverse frequencies over the whole head dimension.
 func (c *Config) RopeInvFreq() []float64 {
-	half := c.HeadDim / 2
-	inv := make([]float64, half)
-	for i := range inv {
-		inv[i] = 1 / math.Pow(c.RopeTheta, float64(2*i)/float64(c.HeadDim))
-	}
-	return inv
+	return blocks.DefaultRopeInvFreq(c.RopeTheta, c.HeadDim)
 }
 
 // RoutedLayers are the layers past the dense ones (llm.Routed).
-func (c *Config) RoutedLayers() []int {
-	var out []int
-	for i := c.NumDense; i < c.NumLayers; i++ {
-		out = append(out, i)
-	}
-	return out
-}
+func (c *Config) RoutedLayers() []int { return llm.LayerRange(c.NumDense, c.NumLayers) }
 
 // ExpertShape is the experts' sizes.
 func (c *Config) ExpertShape() experts.Shape {
@@ -155,13 +145,7 @@ func (c *Config) ExpertNames(layer int) experts.Names {
 // PagedLayers are the attention layers: split at them (llm.Options.Paged), the host attends over
 // its cache in chunks, as well as running the experts.
 func (c *Config) PagedLayers() []int {
-	var out []int
-	for i := range c.LayerTypes {
-		if c.IsAttention(i) {
-			out = append(out, i)
-		}
-	}
-	return out
+	return llm.LayersWhere(c.LayerTypes, func(i int, _ string) bool { return c.IsAttention(i) })
 }
 
 // PagedShape is the attention's heads, kv heads and head size, its scores scaled by 1/sqrt(head_dim).

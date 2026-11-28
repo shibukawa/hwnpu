@@ -35,6 +35,72 @@ type Shape struct {
 // projection's (2 inter), then the down projection's (hidden).
 func (s Shape) ScaleRow() int { return 2*s.Inter + s.Hidden }
 
+// milBuilder shares the fp16 MIL construction primitives across experts' Neural Engine programs
+// (Build, BuildRows, and buildGroupedPrefillPkg).
+type milBuilder struct {
+	b   *mlpackage.Builder
+	ins []mlpackage.Feature
+}
+
+func (m *milBuilder) f16(typ string, in map[string]any, shape ...int) *mlpackage.Var {
+	return m.b.Op(typ, in, mlpackage.Float16, shape...)
+}
+
+func (m *milBuilder) input(name string, dt milspec.DataType, shape ...int) *mlpackage.Var {
+	m.ins = append(m.ins, mlpackage.Feature{Name: name, DType: dt, Shape: shape})
+	return m.b.Input(name, dt, shape...)
+}
+
+func (m *milBuilder) slice(x *mlpackage.Var, axis, lo, hi int) *mlpackage.Var {
+	begin, end := make([]int32, len(x.Shape)), make([]int32, len(x.Shape))
+	out := append([]int(nil), x.Shape...)
+	for i, d := range x.Shape {
+		end[i] = int32(d)
+	}
+	begin[axis], end[axis], out[axis] = int32(lo), int32(hi), hi-lo
+	return m.f16("slice_by_index", map[string]any{"x": x, "begin": m.b.Ints(begin...), "end": m.b.Ints(end...)}, out...)
+}
+
+func (m *milBuilder) mul(x, y *mlpackage.Var, shape ...int) *mlpackage.Var {
+	if shape == nil {
+		shape = x.Shape
+	}
+	return m.f16("mul", map[string]any{"x": x, "y": y}, shape...)
+}
+
+func (m *milBuilder) add(x, y *mlpackage.Var, shape ...int) *mlpackage.Var {
+	if shape == nil {
+		shape = x.Shape
+	}
+	return m.f16("add", map[string]any{"x": x, "y": y}, shape...)
+}
+
+func (m *milBuilder) matmul(x, y *mlpackage.Var, ty bool, shape ...int) *mlpackage.Var {
+	return m.f16("matmul", map[string]any{"x": x, "y": y, "transpose_x": m.b.ScalarBool(false), "transpose_y": m.b.ScalarBool(ty)}, shape...)
+}
+
+func (m *milBuilder) castF16(x *mlpackage.Var) *mlpackage.Var {
+	return m.f16("cast", map[string]any{"x": x, "dtype": m.b.Str("c", "fp16")}, x.Shape...)
+}
+
+// silu as x / (1 + exp(-x)): the Neural Engine's silu (and x times its sigmoid) is about 1.4%
+// off (blocks.SiLU).
+func (m *milBuilder) silu(x *mlpackage.Var) *mlpackage.Var {
+	neg := m.mul(x, m.b.ScalarF16(-1))
+	den := m.add(m.f16("exp", map[string]any{"x": neg}, x.Shape...), m.b.ScalarF16(1))
+	return m.f16("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
+}
+
+func (m *milBuilder) gatherScales(idx, tbl *mlpackage.Var, n, scaleRow int) *mlpackage.Var {
+	i16 := m.b.Op("cast", map[string]any{"x": idx, "dtype": m.b.Str("c", "int16")}, mlpackage.Int16, n, 1)
+	return m.f16("gather_nd", map[string]any{"x": tbl, "indices": i16, "batch_dims": m.b.ScalarI32(0), "validate_indices": m.b.ScalarBool(false)}, n, scaleRow)
+}
+
+func (m *milBuilder) finishY(v *mlpackage.Var, shape ...int) (*mlpackage.Var, []mlpackage.Feature, []mlpackage.Feature) {
+	y := m.b.NamedOp("identity", "y", map[string]any{"x": v}, mlpackage.Float16, shape...)
+	return y, m.ins, []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
+}
+
 // Build writes the program of k chosen experts on one row into b.
 func Build(b *mlpackage.Builder, sh Shape) (ins, outs []mlpackage.Feature, err error) {
 	H, I, E, K := sh.Hidden, sh.Inter, sh.Experts, sh.TopK
@@ -42,62 +108,29 @@ func Build(b *mlpackage.Builder, sh Shape) (ins, outs []mlpackage.Feature, err e
 		return nil, nil, fmt.Errorf("experts: %d of %d experts of %d x %d", K, E, H, I)
 	}
 	S := sh.ScaleRow()
-	f16 := func(typ string, in map[string]any, shape ...int) *mlpackage.Var {
-		return b.Op(typ, in, mlpackage.Float16, shape...)
-	}
-	input := func(name string, dt milspec.DataType, shape ...int) *mlpackage.Var {
-		ins = append(ins, mlpackage.Feature{Name: name, DType: dt, Shape: shape})
-		return b.Input(name, dt, shape...)
-	}
-	slice := func(x *mlpackage.Var, axis, lo, hi int) *mlpackage.Var {
-		begin, end := make([]int32, len(x.Shape)), make([]int32, len(x.Shape))
-		out := append([]int(nil), x.Shape...)
-		for i, d := range x.Shape {
-			end[i] = int32(d)
-		}
-		begin[axis], end[axis], out[axis] = int32(lo), int32(hi), hi-lo
-		return f16("slice_by_index", map[string]any{"x": x, "begin": b.Ints(begin...), "end": b.Ints(end...)}, out...)
-	}
-	mul := func(x, y *mlpackage.Var) *mlpackage.Var {
-		return f16("mul", map[string]any{"x": x, "y": y}, x.Shape...)
-	}
-	matmul := func(x, y *mlpackage.Var, ty bool, shape ...int) *mlpackage.Var {
-		return f16("matmul", map[string]any{"x": x, "y": y, "transpose_x": b.ScalarBool(false), "transpose_y": b.ScalarBool(ty)}, shape...)
-	}
-	cast := func(x *mlpackage.Var) *mlpackage.Var {
-		return f16("cast", map[string]any{"x": x, "dtype": b.Str("c", "fp16")}, x.Shape...)
-	}
-	// silu as x / (1 + exp(-x)): the Neural Engine's silu (and x times its sigmoid) is about 1.4%
-	// off (blocks.SiLU)
-	silu := func(x *mlpackage.Var) *mlpackage.Var {
-		neg := mul(x, b.ScalarF16(-1))
-		den := f16("add", map[string]any{"x": f16("exp", map[string]any{"x": neg}, x.Shape...), "y": b.ScalarF16(1)}, x.Shape...)
-		return f16("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
-	}
-
-	x := input("x", mlpackage.Float16, 1, 1, H)
-	idx := input("i", mlpackage.Float16, K, 1)
-	tbl := input("S", mlpackage.Float16, E, S)
-	r := input("r", mlpackage.Float16, 1, 1, K)
-	i16 := b.Op("cast", map[string]any{"x": idx, "dtype": b.Str("c", "int16")}, mlpackage.Int16, K, 1)
-	sc := f16("gather_nd", map[string]any{"x": tbl, "indices": i16, "batch_dims": b.ScalarI32(0), "validate_indices": b.ScalarBool(false)}, K, S)
+	m := &milBuilder{b: b}
+	x := m.input("x", mlpackage.Float16, 1, 1, H)
+	idx := m.input("i", mlpackage.Float16, K, 1)
+	tbl := m.input("S", mlpackage.Float16, E, S)
+	r := m.input("r", mlpackage.Float16, 1, 1, K)
+	sc := m.gatherScales(idx, tbl, K, S)
 	var acc *mlpackage.Var
 	for k := 0; k < K; k++ {
-		gu := input(fmt.Sprintf("gu%d", k), mlpackage.Int8, 1, H, 2*I)
-		dn := input(fmt.Sprintf("dn%d", k), mlpackage.Int8, 1, H, I)
-		s := f16("reshape", map[string]any{"x": slice(sc, 0, k, k+1), "shape": b.Ints(1, 1, int32(S))}, 1, 1, S)
-		h := mul(matmul(x, cast(gu), false, 1, 1, 2*I), slice(s, 2, 0, 2*I))
-		a := mul(silu(slice(h, 2, 0, I)), slice(h, 2, I, 2*I))
-		d := mul(matmul(a, cast(dn), true, 1, 1, H), slice(s, 2, 2*I, S))
-		y := mul(d, slice(r, 2, k, k+1))
+		gu := m.input(fmt.Sprintf("gu%d", k), mlpackage.Int8, 1, H, 2*I)
+		dn := m.input(fmt.Sprintf("dn%d", k), mlpackage.Int8, 1, H, I)
+		s := m.f16("reshape", map[string]any{"x": m.slice(sc, 0, k, k+1), "shape": b.Ints(1, 1, int32(S))}, 1, 1, S)
+		h := m.mul(m.matmul(x, m.castF16(gu), false, 1, 1, 2*I), m.slice(s, 2, 0, 2*I))
+		a := m.mul(m.silu(m.slice(h, 2, 0, I)), m.slice(h, 2, I, 2*I))
+		d := m.mul(m.matmul(a, m.castF16(dn), true, 1, 1, H), m.slice(s, 2, 2*I, S))
+		y := m.mul(d, m.slice(r, 2, k, k+1))
 		if acc == nil {
 			acc = y
 		} else {
-			acc = f16("add", map[string]any{"x": acc, "y": y}, 1, 1, H)
+			acc = m.add(acc, y, 1, 1, H)
 		}
 	}
-	y := b.NamedOp("identity", "y", map[string]any{"x": acc}, mlpackage.Float16, 1, 1, H)
-	return ins, []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}, nil
+	_, ins, outs = m.finishY(acc, 1, 1, H)
+	return ins, outs, nil
 }
 
 // BuildRows writes the program of one expert on rows rows (a call that reads a prompt): the host
@@ -113,53 +146,20 @@ func BuildRows(b *mlpackage.Builder, sh Shape, rows int) (ins, outs []mlpackage.
 		return nil, nil, fmt.Errorf("experts: %d rows of an expert of %d x %d", rows, H, I)
 	}
 	S := sh.ScaleRow()
-	f16 := func(typ string, in map[string]any, shape ...int) *mlpackage.Var {
-		return b.Op(typ, in, mlpackage.Float16, shape...)
-	}
-	input := func(name string, dt milspec.DataType, shape ...int) *mlpackage.Var {
-		ins = append(ins, mlpackage.Feature{Name: name, DType: dt, Shape: shape})
-		return b.Input(name, dt, shape...)
-	}
-	slice := func(x *mlpackage.Var, axis, lo, hi int) *mlpackage.Var {
-		begin, end := make([]int32, len(x.Shape)), make([]int32, len(x.Shape))
-		out := append([]int(nil), x.Shape...)
-		for i, d := range x.Shape {
-			end[i] = int32(d)
-		}
-		begin[axis], end[axis], out[axis] = int32(lo), int32(hi), hi-lo
-		return f16("slice_by_index", map[string]any{"x": x, "begin": b.Ints(begin...), "end": b.Ints(end...)}, out...)
-	}
-	mul := func(x, y *mlpackage.Var, shape ...int) *mlpackage.Var {
-		if shape == nil {
-			shape = x.Shape
-		}
-		return f16("mul", map[string]any{"x": x, "y": y}, shape...)
-	}
-	matmul := func(x, y *mlpackage.Var, ty bool, shape ...int) *mlpackage.Var {
-		return f16("matmul", map[string]any{"x": x, "y": y, "transpose_x": b.ScalarBool(false), "transpose_y": b.ScalarBool(ty)}, shape...)
-	}
-	cast := func(x *mlpackage.Var) *mlpackage.Var {
-		return f16("cast", map[string]any{"x": x, "dtype": b.Str("c", "fp16")}, x.Shape...)
-	}
-	silu := func(x *mlpackage.Var) *mlpackage.Var {
-		neg := mul(x, b.ScalarF16(-1))
-		den := f16("add", map[string]any{"x": f16("exp", map[string]any{"x": neg}, x.Shape...), "y": b.ScalarF16(1)}, x.Shape...)
-		return f16("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
-	}
-	x := input("x", mlpackage.Float16, 1, rows, H)
-	idx := input("i", mlpackage.Float16, 1, 1)
-	tbl := input("S", mlpackage.Float16, E, S)
-	gu := input("gu", mlpackage.Int8, 1, H, 2*I)
-	dn := input("dn", mlpackage.Int8, 1, H, I)
-	r := input("r", mlpackage.Float16, 1, rows, 1)
-	acc := input("acc", mlpackage.Float16, 1, rows, H)
-	i16 := b.Op("cast", map[string]any{"x": idx, "dtype": b.Str("c", "int16")}, mlpackage.Int16, 1, 1)
-	sc := f16("gather_nd", map[string]any{"x": tbl, "indices": i16, "batch_dims": b.ScalarI32(0), "validate_indices": b.ScalarBool(false)}, 1, S)
-	s := f16("reshape", map[string]any{"x": sc, "shape": b.Ints(1, 1, int32(S))}, 1, 1, S)
-	h := mul(matmul(x, cast(gu), false, 1, rows, 2*I), slice(s, 2, 0, 2*I), 1, rows, 2*I)
-	a := mul(silu(slice(h, 2, 0, I)), slice(h, 2, I, 2*I), 1, rows, I)
-	d := mul(matmul(a, cast(dn), true, 1, rows, H), slice(s, 2, 2*I, S), 1, rows, H)
-	sum := f16("add", map[string]any{"x": acc, "y": mul(d, r, 1, rows, H)}, 1, rows, H)
-	y := b.NamedOp("identity", "y", map[string]any{"x": sum}, mlpackage.Float16, 1, rows, H)
-	return ins, []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}, nil
+	m := &milBuilder{b: b}
+	x := m.input("x", mlpackage.Float16, 1, rows, H)
+	idx := m.input("i", mlpackage.Float16, 1, 1)
+	tbl := m.input("S", mlpackage.Float16, E, S)
+	gu := m.input("gu", mlpackage.Int8, 1, H, 2*I)
+	dn := m.input("dn", mlpackage.Int8, 1, H, I)
+	r := m.input("r", mlpackage.Float16, 1, rows, 1)
+	acc := m.input("acc", mlpackage.Float16, 1, rows, H)
+	sc := m.gatherScales(idx, tbl, 1, S)
+	s := m.f16("reshape", map[string]any{"x": sc, "shape": b.Ints(1, 1, int32(S))}, 1, 1, S)
+	h := m.mul(m.matmul(x, m.castF16(gu), false, 1, rows, 2*I), m.slice(s, 2, 0, 2*I), 1, rows, 2*I)
+	a := m.mul(m.silu(m.slice(h, 2, 0, I)), m.slice(h, 2, I, 2*I), 1, rows, I)
+	d := m.mul(m.matmul(a, m.castF16(dn), true, 1, rows, H), m.slice(s, 2, 2*I, S), 1, rows, H)
+	sum := m.add(acc, m.mul(d, r, 1, rows, H), 1, rows, H)
+	_, ins, outs = m.finishY(sum, 1, rows, H)
+	return ins, outs, nil
 }

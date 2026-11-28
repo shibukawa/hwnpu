@@ -478,3 +478,57 @@ mvdone:
 	SUBS $1, R7, R7
 	BNE mvrow
 	RET
+
+#define DUP16B(rn, d) WORD $(0x4E010C00 | (rn)<<5 | (d))             // d.16B = dup(Rn)
+#define ZIP1B(m, n, d) WORD $(0x4E003800 | (m)<<16 | (n)<<5 | (d))   // d.16B = zip1(n.16B, m.16B)
+#define ZIP2B(m, n, d) WORD $(0x4E007800 | (m)<<16 | (n)<<5 | (d))   // d.16B = zip2(n.16B, m.16B)
+#define CMTST16B(m, n, d) WORD $(0x4E208C00 | (m)<<16 | (n)<<5 | (d)) // d.16B = (n.16B & m.16B) != 0
+#define ADD16B(m, n, d) WORD $(0x4E208400 | (m)<<16 | (n)<<5 | (d))  // d.16B = n.16B + m.16B
+
+// func dequantF16NEON(dst, w, e, lut *byte, nb int) int
+// Unpacks normal-range MXFP4 blocks (114 <= e <= 140) directly to little-endian IEEE-754 fp16.
+// Stops and returns blocks processed if an out-of-range exponent is encountered.
+TEXT ·dequantF16NEON(SB), NOSPLIT, $0-48
+	MOVD dst+0(FP), R0
+	MOVD w+8(FP), R1
+	MOVD e+16(FP), R2
+	MOVD lut+24(FP), R3
+	MOVD nb+32(FP), R4
+	MOVD $0, R7
+	CBZ R4, df16done
+	VLD1 (R3), [V30.B16]
+	VMOVI $15, V31.B16
+	VMOVI $0, V28.B16
+df16loop:
+	MOVBU (R2), R5
+	SUB $114, R5, R6
+	CMP $26, R6
+	BHI df16done
+	ADD $1, R2, R2
+	SUB $127, R5, R5
+	LSL $2, R5, R5
+	DUP16B(5, 6)
+	VLD1.P 16(R1), [V0.B16]
+	VAND V31.B16, V0.B16, V1.B16
+	VUSHR $4, V0.B16, V2.B16
+	VTBL V1.B16, [V30.B16], V1.B16
+	VTBL V2.B16, [V30.B16], V2.B16
+	ZIP1B(2, 1, 3)
+	ZIP2B(2, 1, 4)
+	CMTST16B(3, 3, 16)
+	CMTST16B(4, 4, 17)
+	VAND V6.B16, V16.B16, V16.B16
+	VAND V6.B16, V17.B16, V17.B16
+	ADD16B(16, 3, 3)
+	ADD16B(17, 4, 4)
+	ZIP1B(3, 28, 20)
+	ZIP2B(3, 28, 21)
+	ZIP1B(4, 28, 22)
+	ZIP2B(4, 28, 23)
+	VST1.P [V20.B16, V21.B16, V22.B16, V23.B16], 64(R0)
+	ADD $1, R7, R7
+	CMP R4, R7
+	BLT df16loop
+df16done:
+	MOVD R7, ret+40(FP)
+	RET

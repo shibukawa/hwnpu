@@ -25,26 +25,6 @@ type builder struct {
 	// stateRows makes a program with a KV cache also output st_rec_N_rows, the rows' inputs of
 	// each Gated DeltaNet's delta rule (Arch param state-rows, Config.ReplayState).
 	stateRows bool
-	// With a KV cache (opts.Cache): the inputs and outputs besides x and y.
-	ins     map[string]*mlpackage.Var
-	inList  []mlpackage.Feature
-	outList []*mlpackage.Var
-}
-
-// input declares an fp16 program input once and returns it.
-func (m *builder) input(name string, shape ...int) *mlpackage.Var {
-	if v, ok := m.ins[name]; ok {
-		return v
-	}
-	v := m.B.Input(name, mlpackage.Float16, shape...)
-	m.ins[name] = v
-	m.inList = append(m.inList, mlpackage.Feature{Name: name, DType: mlpackage.Float16, Shape: shape})
-	return v
-}
-
-// output makes v a program output called name.
-func (m *builder) output(v *mlpackage.Var, name string) {
-	m.outList = append(m.outList, m.B.NamedOp("identity", name, map[string]any{"x": v}, mlpackage.Float16, v.Shape...))
 }
 
 // Build writes the program for the model into b. The program's input is x, the fp16 token
@@ -112,10 +92,9 @@ func buildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 	if _, chunked := llm.CacheChunks(opts.Cache); opts.Cache > 0 && opts.Paged == 0 && chunked {
 		return nil, nil, fmt.Errorf("qwen35: a KV cache of %d is over the Neural Engine's dimension limit; split the model at its attention (Paged) for a longer one", opts.Cache)
 	}
-	m := &builder{Graph: &blocks.Graph{Name: "qwen35", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, mtp: mtp, hiddenOut: hiddenOut, stateRows: !mtp && Arch.Param(opts, "state-rows") == "1", ins: map[string]*mlpackage.Var{}}
+	m := &builder{Graph: &blocks.Graph{Name: "qwen35", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, mtp: mtp, hiddenOut: hiddenOut, stateRows: !mtp && Arch.Param(opts, "state-rows") == "1"}
 	err = blocks.Run(func() {
 		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
-		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
 		h := x
 		for i := opts.Start; i < opts.Start+opts.Layers; i++ {
 			if i == opts.Start && i > 0 && m.paged(i) {
@@ -134,7 +113,7 @@ func buildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 		var y *mlpackage.Var
 		switch {
 		case opts.Start+opts.Layers < layers || opts.NoHead:
-			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
+			y = m.IdentityY(h)
 		default:
 			norm := cfg.prefix() + "norm.weight"
 			if m.mtp {
@@ -144,23 +123,23 @@ func buildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 				// h of every row, which the MTP layer reads after each token, then the logits
 				// of the rows the program computes them for
 				h = m.norm(h, norm)
-				m.output(h, "h")
+				m.Output(h, "h")
 				if opts.LastRow {
-					h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+					h = m.LastRow(h, m.Input("last", 1, 1, m.seq))
 				}
 			} else {
 				if opts.LastRow {
-					h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+					h = m.LastRow(h, m.Input("last", 1, 1, m.seq))
 				}
 				h = m.norm(h, norm)
 				if m.mtp && opts.Cache > 0 && !opts.Hidden {
 					// the MTP layer's own final hidden state, which it reads in place of the
 					// model's for the drafts after the first
-					m.output(h, "h")
+					m.Output(h, "h")
 				}
 			}
 			if opts.Hidden {
-				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
+				y = m.IdentityY(h)
 			} else {
 				vocab := cfg.VocabSize
 				if len(opts.HeadRows) > 0 {
@@ -169,11 +148,7 @@ func buildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 				y = m.Linear(h, cfg.Head(), "y", vocab)
 			}
 		}
-		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
-		for _, v := range m.outList {
-			outs = append(outs, mlpackage.Feature{Name: v.Name, DType: mlpackage.Float16, Shape: v.Shape})
-		}
-		ins = append(ins, m.inList...)
+		ins, outs = m.Features(x, y)
 	})
 	return ins, outs, err
 }
@@ -196,7 +171,7 @@ func (m *builder) linear(i int) bool { return !m.mtp && m.cfg.IsLinear(i) }
 // concatenated (the embedding first) and projected back to the hidden size by fc.
 func (m *builder) mtpInput(x *mlpackage.Var) *mlpackage.Var {
 	e := m.norm(x, "mtp.pre_fc_norm_embedding.weight")
-	h := m.norm(m.input("hid", 1, m.seq, m.d), "mtp.pre_fc_norm_hidden.weight")
+	h := m.norm(m.Input("hid", 1, m.seq, m.d), "mtp.pre_fc_norm_hidden.weight")
 	cat := m.Op("concat", map[string]any{"values": []*mlpackage.Var{e, h}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, m.seq, 2*m.d)
 	return m.Linear(cat, "mtp.fc.weight", "", m.d)
 }
@@ -282,18 +257,16 @@ func (m *builder) paged(i int) bool {
 func (m *builder) beforeAttention(i int, h *mlpackage.Var) {
 	p := m.layer(i)
 	q, k, v, gate := m.qkvGate(i, m.norm(h, p+"input_layernorm.weight"))
-	m.output(q, fmt.Sprintf("attn_q_%d", i))
-	m.output(k, fmt.Sprintf("kv_k_%d_new", i))
-	m.output(v, fmt.Sprintf("kv_v_%d_new", i))
-	m.output(gate, fmt.Sprintf("attn_gate_%d", i))
+	m.EmitPagedQKV(i, q, k, v)
+	m.Output(gate, fmt.Sprintf("attn_gate_%d", i))
 }
 
 // afterAttention is the rest of layer i from its attention's output, attn_o_N (1, heads, seq,
 // head_dim), with the gate the part before output and x the hidden state entering the layer.
 func (m *builder) afterAttention(i int, x *mlpackage.Var) *mlpackage.Var {
 	s, nh, hd := m.seq, m.cfg.NumHeads, m.cfg.HeadDim
-	o := m.input(fmt.Sprintf("attn_o_%d", i), 1, nh, s, hd)
-	gate := m.input(fmt.Sprintf("attn_gate_%d", i), 1, s, nh, hd)
+	o := m.Input(fmt.Sprintf("attn_o_%d", i), 1, nh, s, hd)
+	gate := m.Input(fmt.Sprintf("attn_gate_%d", i), 1, s, nh, hd)
 	return m.layerRest(i, m.attnOutput(i, o, gate), x)
 }
 
@@ -308,14 +281,14 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	var o *mlpackage.Var
 	if m.opts.Cache > 0 {
 		t := m.opts.Cache
-		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
-		m.output(v, fmt.Sprintf("kv_v_%d_new", i))
+		m.Output(k, fmt.Sprintf("kv_k_%d_new", i))
+		m.Output(v, fmt.Sprintf("kv_v_%d_new", i))
 		cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
-			c := m.input(name, 1, nkv, t, hd)
+			c := m.Input(name, 1, nkv, t, hd)
 			return m.Op("concat", map[string]any{"values": []*mlpackage.Var{c, x}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, nkv, t+s, hd)
 		}
 		k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
-		mask := m.input("mask_full_attention", 1, 1, s, t+s)
+		mask := m.Input("mask_full_attention", 1, 1, s, t+s)
 		o = m.SDPAGrouped(q, k, v, 1/math.Sqrt(float64(hd)), func() *mlpackage.Var { return mask })
 	} else {
 		o = m.Attention(q, k, v, "mask_full_attention", 0)
@@ -332,7 +305,7 @@ func (m *builder) qkvGate(i int, h *mlpackage.Var) (q, k, v, gate *mlpackage.Var
 	rot := m.cfg.RotaryDim()
 	var cos, sin *mlpackage.Var
 	if m.opts.Cache > 0 {
-		cos, sin = m.input("rope_cos_full_attention", 1, s, 1, rot), m.input("rope_sin_full_attention", 1, s, 1, rot)
+		cos, sin = m.Input("rope_cos_full_attention", 1, s, 1, rot), m.Input("rope_sin_full_attention", 1, s, 1, rot)
 	} else {
 		cos, sin = m.RopeTables("full_attention", m.cfg.RopeInvFreq(), s, rot)
 	}
@@ -426,7 +399,7 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 	g = m.WideAct(g, m.softplus)
 	g = m.Op("mul", map[string]any{"x": g, "y": m.const16(p+"A_log", []int{1, 1, hv}, negA)}, g.Shape...)
 	if m.opts.Cache > 0 {
-		valid := m.input("step_valid", 1, s, 1)
+		valid := m.Input("step_valid", 1, s, 1)
 		beta = m.Op("mul", map[string]any{"x": beta, "y": valid}, beta.Shape...)
 		g = m.Op("mul", map[string]any{"x": g, "y": valid}, g.Shape...)
 	}
@@ -438,17 +411,17 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 
 	var state *mlpackage.Var
 	if m.opts.Cache > 0 {
-		state = m.input(fmt.Sprintf("st_rec_%d", i), 1, hv, dk, dv)
+		state = m.Input(fmt.Sprintf("st_rec_%d", i), 1, hv, dk, dv)
 	}
 	decayH, betaH := perHead(decay), perHead(beta)
 	o, state := m.deltaRuleChunks(q, k, v, perHead(g), betaH, state)
 	if m.opts.Cache > 0 {
-		m.output(state, fmt.Sprintf("st_rec_%d_new", i))
+		m.Output(state, fmt.Sprintf("st_rec_%d_new", i))
 		if m.stateRows {
 			// what each row adds to the state, for the host to bring the state before the step
 			// to the one after a beginning of its rows (ReplayState): k, v, beta and the decay
 			rows := m.Op("concat", map[string]any{"values": []*mlpackage.Var{k, v, betaH, decayH}, "axis": m.B.ScalarI32(3), "interleave": m.B.ScalarBool(false)}, 1, hv, s, dk+dv+2)
-			m.output(rows, fmt.Sprintf("st_rec_%d_rows", i))
+			m.Output(rows, fmt.Sprintf("st_rec_%d_rows", i))
 		}
 	}
 
@@ -499,7 +472,7 @@ func (m *builder) causalConv(i int, x *mlpackage.Var) *mlpackage.Var {
 	padded := x
 	if k > 1 {
 		if m.opts.Cache > 0 {
-			win := m.input(fmt.Sprintf("win_conv_%d", i), 1, k-1, ch)
+			win := m.Input(fmt.Sprintf("win_conv_%d", i), 1, k-1, ch)
 			padded = m.Op("concat", map[string]any{"values": []*mlpackage.Var{win, x}, "axis": m.B.ScalarI32(1), "interleave": m.B.ScalarBool(false)}, 1, s+k-1, ch)
 			next := padded // the window and the step's rows: the host takes the window after them
 			if m.cfg.moe && s == 1 {
@@ -508,10 +481,10 @@ func (m *builder) causalConv(i int, x *mlpackage.Var) *mlpackage.Var {
 				// the k-1 rows ending at the step's last token, picked by step_window (a 1 a
 				// row): the whole of Qwen3.6-35B-A3B's 30 layers at 128 tokens a step is 64 MB
 				// of outputs, of which the host keeps 1.5
-				pick := m.input("step_window", 1, k-1, s+k-1)
+				pick := m.Input("step_window", 1, k-1, s+k-1)
 				next = m.Op("matmul", map[string]any{"x": pick, "y": padded, "transpose_x": m.B.ScalarBool(false), "transpose_y": m.B.ScalarBool(false)}, 1, k-1, ch)
 			}
-			m.output(next, fmt.Sprintf("win_conv_%d_new", i))
+			m.Output(next, fmt.Sprintf("win_conv_%d_new", i))
 		} else {
 			padded = m.Op("pad", map[string]any{"x": x, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, s+k-1, ch)
 		}
@@ -530,18 +503,11 @@ func (m *builder) causalConv(i int, x *mlpackage.Var) *mlpackage.Var {
 			y = m.Op("add", map[string]any{"x": y, "y": term}, 1, s, ch)
 		}
 	}
-	return m.silu(y)
+	return m.SiLU(y)
 }
 
-// silu is x / (1 + exp(-x)). The Neural Engine's own silu is about 1.4% off over the
-// convolution's outputs of Qwen3.5-4B (an M3), and much more on the small values of its tail,
-// which the L2 norm of the keys then scales up to unit rows. Past x = -11, exp(-x) overflows fp16
-// to inf and the quotient is 0 (silu is under 2e-4 there).
-func (m *builder) silu(x *mlpackage.Var) *mlpackage.Var {
-	neg := m.Op("mul", map[string]any{"x": x, "y": m.B.ScalarF16(-1)}, x.Shape...)
-	den := m.Op("add", map[string]any{"x": m.Op("exp", map[string]any{"x": neg}, x.Shape...), "y": m.B.ScalarF16(1)}, x.Shape...)
-	return m.Op("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
-}
+// silu delegates to blocks.Graph.SiLU (x / (1 + exp(-x))).
+func (m *builder) silu(x *mlpackage.Var) *mlpackage.Var { return m.SiLU(x) }
 
 // deltaChunk is the rows of a chunk of deltaRuleChunks: 8, a step's (Draft) in one.
 // Not changed (a variable since the tests of other sizes, kept so for the exports' CodeHash).
@@ -699,16 +665,7 @@ func prefixWeights(m *builder, c int, diff bool) *mlpackage.Var {
 // the cached positions before pos and the step's tokens up to itself.
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 	in := c.PagedStepInputs(pos, valid, q, cache)
-	mask := make([]float32, q*(cache+q))
-	for t := 0; t < q; t++ {
-		row := mask[t*(cache+q):]
-		for j := 0; j < cache+q; j++ {
-			if j < cache && j >= pos || j >= cache && j-cache > t {
-				row[j] = -1e4
-			}
-		}
-	}
-	in["mask_full_attention"] = mask
+	in["mask_full_attention"] = blocks.StepMask(pos, q, cache, 0)
 	return in
 }
 

@@ -58,3 +58,10 @@ func rowsKernel(out []float32, w, e []byte, v *Vec) bool {
 	mvNEON(&w[0], &e[0], &v.Q[0], &v.S[0], nb, len(out), &doubled[0], &out[0])
 	return true
 }
+
+//go:noescape
+func dequantF16NEON(dst, w, e, lut *byte, nb int) int
+
+func dequantF16Kernel(dst, w, e []byte) int {
+	return dequantF16NEON(&dst[0], &w[0], &e[0], &f16Hi[0], len(e))
+}

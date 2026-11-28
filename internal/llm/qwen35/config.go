@@ -16,7 +16,9 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
-	"math"
+
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 )
 
 // Config is the subset of the text model's config.json the conversion needs.
@@ -240,12 +242,7 @@ func (c *Config) RotaryDim() int {
 // RopeInvFreq is the inverse frequencies of the rotary dimensions, RotaryDim / 2 of them, as
 // Qwen3_5TextRotaryEmbedding.compute_default_rope_parameters.
 func (c *Config) RopeInvFreq() []float64 {
-	dim := c.RotaryDim()
-	inv := make([]float64, dim/2)
-	for i := range inv {
-		inv[i] = 1 / math.Pow(c.RopeParameters.Theta, float64(2*i)/float64(dim))
-	}
-	return inv
+	return blocks.DefaultRopeInvFreq(c.RopeParameters.Theta, c.RotaryDim())
 }
 
 // IsLinear reports whether layer i is a Gated DeltaNet layer.
@@ -253,13 +250,7 @@ func (c *Config) IsLinear(i int) bool { return c.LayerTypes[i] == "linear_attent
 
 // FullLayers are the full attention layers.
 func (c *Config) FullLayers() []int {
-	var out []int
-	for i := range c.LayerTypes {
-		if !c.IsLinear(i) {
-			out = append(out, i)
-		}
-	}
-	return out
+	return llm.LayersWhere(c.LayerTypes, func(i int, _ string) bool { return !c.IsLinear(i) })
 }
 
 // keyDim, valueDim and convDim are the Gated DeltaNet's widths: the keys (and queries) and values

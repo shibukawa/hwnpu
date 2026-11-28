@@ -31,7 +31,7 @@ var MoEArch = &llm.Arch{
 	LastRow:       true,
 	// 1: a chunk of one row without the matmul of an inner dimension of 1 (deltaRuleChunks), 2026-11-20
 	Revision:   2, // 2: win_conv_N_new is the window after the step's tokens (step_window)
-	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseMoE(raw) },
+	LoadConfig: llm.LoadModel(ParseMoE),
 	Fixed:      map[string]string{"delta": "chunk"}, // as Arch's
 }
 
@@ -84,13 +84,7 @@ func (c *MoE) Tensors() map[string][]int {
 }
 
 // RoutedLayers are every layer (llm.Routed).
-func (c *MoE) RoutedLayers() []int {
-	out := make([]int, c.NumLayers)
-	for i := range out {
-		out[i] = i
-	}
-	return out
-}
+func (c *MoE) RoutedLayers() []int { return llm.LayerRange(0, c.NumLayers) }
 
 // ExpertShape is the experts' sizes.
 func (c *MoE) ExpertShape() experts.Shape {
@@ -123,110 +117,45 @@ func (c *MoE) ExpertAct() experts.Act { return experts.Act{Kind: experts.ActSiLU
 
 // Build writes a program without a KV cache (a part, as llm.Routed cuts it).
 func (c *MoE) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
-	if opts.Cache > 0 {
-		return nil, out, fmt.Errorf("qwen35moe: a program with a KV cache has more inputs and outputs; use BuildCached")
-	}
-	i, o, err := c.BuildCached(b, w, opts)
-	if err != nil {
-		return nil, out, err
-	}
-	return i, o[0], nil
+	return llm.BuildUncached("qwen35moe", c, b, w, opts)
 }
 
 // BuildCached writes a part of the model (llm.Cached, llm.Routed): every layer ends with its
 // experts, so a part is one layer's step between two of the host's (llm.PlanRouted), as
-// gpt-oss's:
-//
-//   - {0, NoLayers}: layer 0 up to its router
-//   - {N, 1}: from layer N's experts' output (moe_o_N, added to x) through layer N+1 up to its
-//     router, or up to its attention when the host attends for it (Paged); the last part ends
-//     with the final norm and the logits
-//   - {N, NoLayers} of a full attention layer N the host attended for: from the attention's
-//     output (attn_o_N, with the gate attn_gate_N) up to its router
-//
-// A part that ends at layer N's router outputs moe_x_N, the post-attention norm's output the
-// experts take, and moe_logits_N; its y is the residual plus the shared expert's output, to which
-// the host's experts' output is added.
+// gpt-oss's.
 func (c *MoE) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
 	cfg := c.Config
-	if opts.Group == 0 {
-		opts.Group = 16
-	}
-	if opts.Format == "" {
-		opts.Format = c.Format()
-	}
-	opts.FormatFor = append(moeFormats(), opts.FormatFor...)
-	noLayers := opts.Layers == llm.NoLayers
-	first := noLayers && opts.Start == 0
-	afterAttn := noLayers && opts.Start > 0
-	if !noLayers && (opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers) {
-		opts.Layers = cfg.NumLayers - opts.Start
-	}
-	if opts.Paged > 0 && opts.Cache <= 0 {
-		return nil, nil, fmt.Errorf("qwen35moe: a program split at its attention (Paged) needs a KV cache")
-	}
-	if opts.LastRow && opts.Cache <= 0 {
-		return nil, nil, fmt.Errorf("qwen35moe: the logits of the last row alone (LastRow) are of a program with a KV cache")
-	}
 	if _, chunked := llm.CacheChunks(opts.Cache); opts.Cache > 0 && opts.Paged == 0 && chunked {
 		return nil, nil, fmt.Errorf("qwen35moe: a KV cache of %d is over the Neural Engine's dimension limit; split the model at its attention (Paged) for a longer one", opts.Cache)
 	}
-	start, end := opts.Start, opts.Start+opts.Layers
-	m := &builder{Graph: &blocks.Graph{Name: "qwen35moe", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, ins: map[string]*mlpackage.Var{}}
-	if afterAttn && !m.paged(start) {
-		return nil, nil, fmt.Errorf("qwen35moe: a part of no layers from layer %d is the rest of a full attention layer the host attends for", start)
+	routed := func(int) bool { return true }
+	paged := func(i int) bool { return opts.Paged > 0 && opts.Cache > 0 && !cfg.IsLinear(i) }
+	first, afterAttn, err := blocks.NormalizeRoutedOptions("qwen35moe", &opts, cfg.NumLayers, c.Format(), moeFormats(), routed, paged)
+	if err != nil {
+		return nil, nil, err
 	}
-	err = blocks.Run(func() {
-		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
-		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
-		h := x
-		var y *mlpackage.Var
-		switch {
-		case first:
-			y = m.ident(m.moeHead(0, m.mixer(0, h)))
-		case afterAttn:
-			s, nh, hd := m.seq, cfg.NumHeads, cfg.HeadDim
-			o := m.input(fmt.Sprintf("attn_o_%d", start), 1, nh, s, hd)
-			gate := m.input(fmt.Sprintf("attn_gate_%d", start), 1, s, nh, hd)
-			h = m.Op("add", map[string]any{"x": m.attnOutput(start, o, gate), "y": h}, h.Shape...)
-			y = m.ident(m.moeHead(start, h))
-		default:
-			if end != start+1 {
-				m.Fail("the part of layers %d to %d holds a layer's experts: a part is one layer's step (llm.PlanRouted)", start, end-1)
-			}
-			h = m.Op("add", map[string]any{"x": h, "y": m.input(fmt.Sprintf("moe_o_%d", start), 1, m.seq, m.d)}, h.Shape...)
-			switch {
-			case end < cfg.NumLayers && m.paged(end):
-				m.beforeAttention(end, h)
-				y = m.ident(h)
-			case end < cfg.NumLayers:
-				y = m.ident(m.moeHead(end, m.mixer(end, h)))
-			case opts.NoHead:
-				y = m.ident(h)
-			default:
-				if opts.LastRow {
-					h = m.LastRow(h, m.input("last", 1, 1, m.seq))
-				}
-				h = m.norm(h, cfg.prefix()+"norm.weight")
-				if opts.Hidden {
-					y = m.ident(h)
-				} else {
-					y = m.Linear(h, cfg.Head(), "y", cfg.VocabSize)
-				}
-			}
-		}
-		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
-		for _, v := range m.outList {
-			outs = append(outs, mlpackage.Feature{Name: v.Name, DType: mlpackage.Float16, Shape: v.Shape})
-		}
-		ins = append(ins, m.inList...)
-	})
-	return ins, outs, err
+	m := moeBuilder{&builder{Graph: &blocks.Graph{Name: "qwen35moe", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize}}
+	return blocks.BuildRouted(m, first, afterAttn, m.seq, m.d, cfg.NumLayers, cfg.VocabSize, cfg.Head())
 }
 
-// ident is h as the program's output y.
-func (m *builder) ident(h *mlpackage.Var) *mlpackage.Var {
-	return m.B.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
+type moeBuilder struct{ *builder }
+
+func (m moeBuilder) IsRouted(int) bool                        { return true }
+func (m moeBuilder) IsPaged(i int) bool                       { return m.paged(i) }
+func (m moeBuilder) Mixer(i int, h *mlpackage.Var) *mlpackage.Var { return m.mixer(i, h) }
+func (m moeBuilder) DenseFFN(_ int, h *mlpackage.Var) *mlpackage.Var { return h }
+func (m moeBuilder) BeforeAttention(i int, h *mlpackage.Var)  { m.beforeAttention(i, h) }
+func (m moeBuilder) MoEHead(i int, h *mlpackage.Var) *mlpackage.Var { return m.moeHead(i, h) }
+
+func (m moeBuilder) FinalNorm(h *mlpackage.Var) *mlpackage.Var {
+	return m.norm(h, m.cfg.prefix()+"norm.weight")
+}
+
+func (m moeBuilder) AfterAttention(i int) *mlpackage.Var {
+	s, nh, hd := m.seq, m.cfg.NumHeads, m.cfg.HeadDim
+	o := m.Input(fmt.Sprintf("attn_o_%d", i), 1, nh, s, hd)
+	gate := m.Input(fmt.Sprintf("attn_gate_%d", i), 1, s, nh, hd)
+	return m.attnOutput(i, o, gate)
 }
 
 // mixer is the first half of Qwen3_5MoeDecoderLayer i: the input norm, the token mixer (Gated
@@ -251,23 +180,13 @@ func (m *builder) moeHead(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := m.layer(i) + "mlp."
 	c := m.cfg
 	f := m.norm(h, m.layer(i)+"post_attention_layernorm.weight")
-	m.output(f, fmt.Sprintf("moe_x_%d", i))
-	m.output(m.f16Linear(f, p+"gate.weight", c.NumExperts), fmt.Sprintf("moe_logits_%d", i))
-	sh := m.silu(m.Linear(f, p+"shared_expert.gate_proj.weight", "", c.SharedIntermediate))
+	m.EmitMoERouter(i, f, p+"gate.weight", "", c.NumExperts)
+	sh := m.SiLU(m.Linear(f, p+"shared_expert.gate_proj.weight", "", c.SharedIntermediate))
 	sh = m.Op("mul", map[string]any{"x": sh, "y": m.Linear(f, p+"shared_expert.up_proj.weight", "", c.SharedIntermediate)}, sh.Shape...)
 	sh = m.Linear(sh, p+"shared_expert.down_proj.weight", "", m.d)
-	g := m.Op("sigmoid", map[string]any{"x": m.f16Linear(f, p+"shared_expert_gate.weight", 1)}, 1, m.seq, 1)
+	g := m.Op("sigmoid", map[string]any{"x": m.F16Linear(f, p+"shared_expert_gate.weight", "", 1)}, 1, m.seq, 1)
 	sh = m.Op("mul", map[string]any{"x": sh, "y": g}, sh.Shape...)
 	return m.Op("add", map[string]any{"x": h, "y": sh}, h.Shape...)
-}
-
-// f16Linear is x (1, seq, hidden) times the weight name (out, hidden) kept in fp16.
-func (m *builder) f16Linear(x *mlpackage.Var, name string, out int) *mlpackage.Var {
-	wv, err := m.B.F16s(name, []int{out, m.d}, m.Get(name, out, m.d))
-	if err != nil {
-		m.Fail("%v", err)
-	}
-	return m.Op("linear", map[string]any{"x": x, "weight": wv}, 1, m.seq, out)
 }
 
 // Derive writes the checkpoint with the experts in MXFP4 (DeriveMXFP4) of the Hugging Face

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -129,6 +130,10 @@ type Host struct {
 	// runRow's arrays (*rowBufs), kept for the next token: made anew they were 217 KB a layer of
 	// gpt-oss-20b, and the collector's clearing and returning of them 16 % of the experts' CPU
 	rowBufs sync.Pool
+	// npu runs hot multi-row prefill experts on the Neural Engine (EnablePrefillNPU), nil otherwise
+	npu *hostPrefill
+	// minRatio (HWNPU_DEV=moe.min-ratio=R, default 0) skips trailing experts whose weight < R*w[0]
+	minRatio float32
 
 	// for HWNPU_DEV's moe.time: the bytes of the experts a row ran, and those of them not in memory
 	// when it chose them (read from the disk for it)
@@ -266,6 +271,11 @@ func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	}
 	if path, ok := DebugOpt("trace"); ok && path != "" {
 		h.trace = openTrace(path)
+	}
+	if mr, ok := DebugOpt("min-ratio"); ok && mr != "" {
+		if f, err := strconv.ParseFloat(mr, 32); err == nil && f > 0 && f < 1 {
+			h.minRatio = float32(f)
+		}
 	}
 	if pf, _ := DebugOpt("prefault"); pf == "wait" { // for measuring: every page in before the first run
 		h.warm.Wait()
@@ -405,6 +415,10 @@ func (h *Host) Close() {
 	if h.pre != nil {
 		h.pre.stop()
 		h.pre = nil
+	}
+	if h.npu != nil {
+		h.npu.close()
+		h.npu = nil
 	}
 	if h.place != nil {
 		h.place.stop()
@@ -749,7 +763,46 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	if hl == nil {
 		return fmt.Errorf("experts: layer %d has no experts held", layer)
 	}
-	E, H, I := h.shape.Experts, h.shape.Hidden, h.shape.Inter
+	E := h.shape.Experts
+	if h.minRatio > 0 {
+		trimmedIdx := make([][]int, len(idx))
+		trimmedW := make([][]float32, len(w))
+		for r := range idx {
+			ir, wr := idx[r], w[r]
+			if len(wr) <= 1 {
+				trimmedIdx[r], trimmedW[r] = ir, wr
+				continue
+			}
+			thr := h.minRatio * wr[0]
+			var sum float32
+			kept := 0
+			for k, wk := range wr {
+				if k > 0 && wk < thr {
+					break
+				}
+				sum += wk
+				kept++
+			}
+			if kept == len(wr) {
+				trimmedIdx[r], trimmedW[r] = ir, wr
+				continue
+			}
+			nw := make([]float32, kept)
+			var origSum float32
+			for _, wk := range wr {
+				origSum += wk
+			}
+			scale := float32(1)
+			if sum > 0 {
+				scale = origSum / sum
+			}
+			for k := range kept {
+				nw[k] = wr[k] * scale
+			}
+			trimmedIdx[r], trimmedW[r] = ir[:kept], nw
+		}
+		idx, w = trimmedIdx, trimmedW
+	}
 	byExpert := make([][]int, E) // the rows that chose each expert, and at which of their k
 	byK := make([][]int, E)
 	if h.usage != nil {
@@ -803,13 +856,52 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 		h.readChosen(layer, byExpert)
 	}
 	if len(rows) == 1 && oneRow {
+		if h.npu != nil {
+			h.npu.releaseSlots()
+		}
 		h.runRow(hl, rows[0], idx[0], w[0], out[0])
 		return nil
 	}
+	if h.npu != nil {
+		if ok, err := h.tryRunPrefillNPU(hl, rows, byExpert, byK, w, out); err != nil {
+			return err
+		} else if ok {
+			return nil
+		}
+	}
+	var es []int
+	for e, rs := range byExpert {
+		if len(rs) > 0 {
+			es = append(es, e)
+		}
+	}
+	h.runExpertsCPU(hl, es, rows, byExpert, byK, w, out)
+	return nil
+}
+
+// runExpertsCPU runs the experts in es on rows over the CPU's MXFP4 kernels in bounded groups of
+// runItems, adding their weighted outputs to dst.
+func (h *Host) runExpertsCPU(hl *hostLayer, es []int, rows [][]float32, byExpert, byK [][]int, w, dst [][]float32) {
+	if len(es) == 0 {
+		return
+	}
+	H, I := h.shape.Hidden, h.shape.Inter
+	used := make([]bool, len(rows))
+	var needRows []int
+	for _, e := range es {
+		for _, r := range byExpert[e] {
+			if !used[r] {
+				used[r] = true
+				needRows = append(needRows, r)
+			}
+		}
+	}
 	xv := make([]*mxfp4.Vec, len(rows))
-	mxfp4.Parallel(len(rows), func(r int) {
-		xv[r] = mxfp4.NewVec(H)
-		xv[r].Quantize(rows[r])
+	mxfp4.Parallel(len(needRows), func(i int) {
+		r := needRows[i]
+		v := mxfp4.NewVec(H)
+		v.Quantize(rows[r])
+		xv[r] = v
 	})
 	type run struct {
 		e    int
@@ -822,10 +914,10 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	alpha, limit, add := h.act.glu()
 	// the experts in groups of at most runItems rows of theirs, so that the products held at
 	// once are those of a step of a prompt however many rows the call has
-	group := func(es []int) {
+	group := func(sub []int) {
 		var runs []*run
 		var jobs []mxfp4.Job
-		for _, e := range es {
+		for _, e := range sub {
 			rs := byExpert[e]
 			ru := &run{e: e}
 			vs := make([]*mxfp4.Vec, len(rs))
@@ -872,24 +964,24 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 				if hl.db != nil {
 					addTo(y, h.downBias(hl, ru.e))
 				}
-				f32.Axpy(out[r], w[r][byK[ru.e][j]], y)
+				f32.Axpy(dst[r], w[r][byK[ru.e][j]], y)
 			}
 		}
 	}
-	var es []int
+	var sub []int
 	held := 0
-	for e, rs := range byExpert {
+	for _, e := range es {
+		rs := byExpert[e]
 		if len(rs) == 0 {
 			continue
 		}
 		if held > 0 && held+len(rs) > runItems {
-			group(es)
-			es, held = es[:0], 0
+			group(sub)
+			sub, held = sub[:0], 0
 		}
-		es, held = append(es, e), held+len(rs)
+		sub, held = append(sub, e), held+len(rs)
 	}
-	if len(es) > 0 {
-		group(es)
+	if len(sub) > 0 {
+		group(sub)
 	}
-	return nil
 }

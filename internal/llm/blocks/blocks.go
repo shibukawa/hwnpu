@@ -26,7 +26,77 @@ type Graph struct {
 	W    llm.Weights
 	Opts llm.Options
 
-	luts map[string]palette.LUT4 // the whole matrices MatrixSlice cut blocks of, by name
+	luts    map[string]palette.LUT4 // the whole matrices MatrixSlice cut blocks of, by name
+	ins     map[string]*mlpackage.Var
+	inList  []mlpackage.Feature
+	outList []*mlpackage.Var
+}
+
+// GraphRef returns g, allowing structs embedding *Graph to satisfy RoutedBuilder.
+func (g *Graph) GraphRef() *Graph { return g }
+
+// Input declares an fp16 program input besides x once and returns it.
+func (g *Graph) Input(name string, shape ...int) *mlpackage.Var {
+	if g.ins == nil {
+		g.ins = map[string]*mlpackage.Var{}
+	}
+	if v, ok := g.ins[name]; ok {
+		return v
+	}
+	v := g.B.Input(name, mlpackage.Float16, shape...)
+	g.ins[name] = v
+	g.inList = append(g.inList, mlpackage.Feature{Name: name, DType: mlpackage.Float16, Shape: shape})
+	return v
+}
+
+// Output records v as an fp16 program output named name (besides y).
+func (g *Graph) Output(v *mlpackage.Var, name string) {
+	g.outList = append(g.outList, g.B.NamedOp("identity", name, map[string]any{"x": v}, mlpackage.Float16, v.Shape...))
+}
+
+// IdentityY emits h as the program's primary fp16 output y.
+func (g *Graph) IdentityY(h *mlpackage.Var) *mlpackage.Var {
+	return g.B.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
+}
+
+// Features assembles the program's input and output descriptions: x and y first, followed by
+// inputs declared via Input and outputs recorded via Output in declaration order.
+func (g *Graph) Features(x, y *mlpackage.Var) (ins, outs []mlpackage.Feature) {
+	ins = make([]mlpackage.Feature, 0, 1+len(g.inList))
+	ins = append(ins, mlpackage.Feature{Name: x.Name, DType: mlpackage.Float16, Shape: x.Shape})
+	ins = append(ins, g.inList...)
+	outs = make([]mlpackage.Feature, 0, 1+len(g.outList))
+	outs = append(outs, mlpackage.Feature{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape})
+	for _, v := range g.outList {
+		outs = append(outs, mlpackage.Feature{Name: v.Name, DType: mlpackage.Float16, Shape: v.Shape})
+	}
+	return ins, outs
+}
+
+// F16Linear is x (..., in) times weight (outDim, in) kept in fp16, plus optional fp16 bias
+// ("" for none): for routers and narrow gates whose precision must not be palettized.
+func (g *Graph) F16Linear(x *mlpackage.Var, weight, bias string, outDim int) *mlpackage.Var {
+	in := x.Shape[len(x.Shape)-1]
+	wv := g.F16s(weight, []int{outDim, in}, g.Get(weight, outDim, in))
+	inputs := map[string]any{"x": x, "weight": wv}
+	if bias != "" {
+		inputs["bias"] = g.F16s(bias, []int{outDim}, g.Get(bias, outDim))
+	}
+	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
+	return g.Op("linear", inputs, shape...)
+}
+
+// EmitMoERouter records f as moe_x_N and its fp16 router projection as moe_logits_N (llm.Routed).
+func (g *Graph) EmitMoERouter(layer int, f *mlpackage.Var, weight, bias string, experts int) {
+	g.Output(f, fmt.Sprintf("moe_x_%d", layer))
+	g.Output(g.F16Linear(f, weight, bias, experts), fmt.Sprintf("moe_logits_%d", layer))
+}
+
+// EmitPagedQKV records layer's queries, keys and values for host-paged attention (llm.Paged).
+func (g *Graph) EmitPagedQKV(layer int, q, k, v *mlpackage.Var) {
+	g.Output(q, fmt.Sprintf("attn_q_%d", layer))
+	g.Output(k, fmt.Sprintf("kv_k_%d_new", layer))
+	g.Output(v, fmt.Sprintf("kv_v_%d_new", layer))
 }
 
 type buildError struct{ err error }
@@ -470,6 +540,81 @@ func (g *Graph) SiLU(x *mlpackage.Var) *mlpackage.Var {
 	neg := g.Op("mul", map[string]any{"x": x, "y": g.B.ScalarF16(-1)}, x.Shape...)
 	den := g.Op("add", map[string]any{"x": g.Op("exp", map[string]any{"x": neg}, x.Shape...), "y": g.B.ScalarF16(1)}, x.Shape...)
 	return g.Op("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
+}
+
+// DefaultRopeInvFreq returns the dim/2 inverse frequencies 1 / theta^(2i/dim) of standard RoPE.
+func DefaultRopeInvFreq(theta float64, dim int) []float64 {
+	inv := make([]float64, dim/2)
+	for i := range inv {
+		inv[i] = 1 / math.Pow(theta, float64(2*i)/float64(dim))
+	}
+	return inv
+}
+
+// StepMask returns the additive causal mask (0 for visible keys, -1e4 otherwise) of shape
+// (q, keys+q) for a step of q tokens starting at pos with a KV cache of capacity cache. When
+// window > 0, a query sees at most window positions ending at itself, and when window < cache the
+// cached keys are treated as a ring buffer of length window written at position mod window.
+func StepMask(pos, q, cache, window int) []float32 {
+	keys := cache
+	if window > 0 && window < keys {
+		keys = window
+	}
+	ring := keys < cache
+	mask := make([]float32, q*(keys+q))
+	for t := 0; t < q; t++ {
+		p := pos + t
+		row := mask[t*(keys+q):]
+		for j := 0; j < keys+q; j++ {
+			var key int
+			var visible bool
+			switch {
+			case j >= keys:
+				key = pos + j - keys
+				visible = j-keys <= t
+			case ring:
+				key = pos - 1 - ((pos-1-j)%keys+keys)%keys
+				visible = key >= 0
+			default:
+				key = j
+				visible = j < pos
+			}
+			if window > 0 && p-key >= window {
+				visible = false
+			}
+			if !visible {
+				row[j] = -1e4
+			}
+		}
+	}
+	return mask
+}
+
+// PutStepMask writes StepMask into out under "mask_"+lt, or split across chunked KV cache inputs
+// ("mask_"+lt+"_c0", ..., "mask_"+lt+"_self") when keys exceeds llm.CacheChunkOver.
+func PutStepMask(out map[string][]float32, lt string, pos, q, cache, window int) {
+	keys := cache
+	if window > 0 && window < keys {
+		keys = window
+	}
+	mask := StepMask(pos, q, cache, window)
+	if lens, chunked := llm.CacheChunks(keys); chunked {
+		part := func(name string, from, n int) {
+			v := make([]float32, 0, q*n)
+			for t := 0; t < q; t++ {
+				v = append(v, mask[t*(keys+q)+from:t*(keys+q)+from+n]...)
+			}
+			out[name] = v
+		}
+		off := 0
+		for j, l := range lens {
+			part(fmt.Sprintf("mask_%s_c%d", lt, j), off, l)
+			off += l
+		}
+		part("mask_"+lt+"_self", keys, q)
+		return
+	}
+	out["mask_"+lt] = mask
 }
 
 // RopeTables returns cos and sin tables of shape (1, seq, 1, head_dim) for positions 0..seq-1,

@@ -12,3 +12,4 @@ const haveI8MM = false
 
 func mm28Kernel(w []byte, e []byte, p *[4]pairVec, out *[16]float32) {}
 func rowsKernel(out []float32, w, e []byte, v *Vec) bool             { return false }
+func dequantF16Kernel(dst, w, e []byte) int                          { return 0 }

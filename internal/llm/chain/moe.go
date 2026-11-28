@@ -40,7 +40,6 @@ type moe struct {
 	rows map[int]*moeRows
 	// host runs the experts on the CPU from the checkpoint (llm.HostRouted), in place of g
 	host *experts.Host
-	bias map[int][]float32
 
 	// what the experts took, for HWNPU_DEV's moe.time: the chain's runs, the rows a layer's experts
 	// ran on, their time and the time of the calls alone
@@ -84,6 +83,9 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Pl
 		h, err := experts.OpenHostWith(rec.Host, rec.Shape, p)
 		if err != nil {
 			return nil, fmt.Errorf("chain: the experts: %w", err)
+		}
+		if c.dev != nil && c.dev.Info().Backend == "coreai" && c.units == "" {
+			h.EnablePrefillNPU(c.gr, c.units)
 		}
 		if experts.DebugTime() {
 			fmt.Fprintf(os.Stderr, "chain: the experts of %d layers on the CPU, from %s\n", len(rec.Host.Layers), rec.Host.Checkpoint)
@@ -455,11 +457,16 @@ func (t *tier) stepRows(layer int) int {
 	return rows
 }
 
-// hostRows is the most rows one call of the host's experts takes of several steps' (runMany):
-// with 8 of 256 experts a row, 512 rows give an expert 16, two full groups of the kernel that
-// takes 8 vectors at a time (Qwen3.6-35B-A3B on an M3: 0.139 ms a row at 128 rows a call, 0.089
-// at 512, 0.085 at 1024).
-const hostRows = 512
+// hostRows is the most rows one call of the host's experts takes of several steps' (runMany) on
+// the CPU alone: with 8 of 256 experts a row, 512 rows give an expert 16, two full groups of the
+// kernel that takes 8 vectors at a time (Qwen3.6-35B-A3B on an M3: 0.139 ms a row at 128 rows a
+// call, 0.089 at 512, 0.085 at 1024). When the Neural Engine takes hot prefill experts
+// (HasPrefillNPU), prefillHostRows gathers up to 2048 rows of a wave so each active expert's
+// weights are unpacked to fp16 once across 64 rows per call.
+const (
+	hostRows        = 512
+	prefillHostRows = 2048
+)
 
 // runMany runs layer's experts for several steps: xs and logits are each step's moe_x_N and
 // moe_logits_N and rows its rows, and out, of each step's moe_o_N, is written. On the host the
@@ -479,7 +486,7 @@ func (m *moe) runMany(ctx context.Context, layer int, xs, logits, out [][]byte, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	start := time.Now()
-	H, E, K := m.shape.Hidden, m.shape.Experts, m.shape.TopK
+	H, E := m.shape.Hidden, m.shape.Experts
 	type at struct{ step, row int }
 	var from []at
 	var x, y [][]float32
@@ -500,16 +507,16 @@ func (m *moe) runMany(ctx context.Context, layer int, xs, logits, out [][]byte, 
 		from, x, y, idx, w = from[:0], x[:0], y[:0], idx[:0], w[:0]
 		return nil
 	}
+	maxBatch := hostRows
+	if m.host.HasPrefillNPU() {
+		maxBatch = prefillHostRows
+	}
 	for c := range xs {
 		clear(out[c])
 		for r := range rows[c] {
-			xr, yr := make([]float32, H), make([]float32, H)
-			vecops.F16ToF32(xr, xs[c][2*r*H:2*(r+1)*H])
-			vecops.F16ToF32(lg, logits[c][2*r*E:2*(r+1)*E])
-			ir, wr := make([]int, K), make([]float32, K)
-			m.routing.Choose(lg, nil, ir, wr)
+			xr, yr, ir, wr := m.decodeHostRow(xs[c], logits[c], r, lg)
 			from, x, y, idx, w = append(from, at{c, r}), append(x, xr), append(y, yr), append(idx, ir), append(w, wr)
-			if len(from) == hostRows {
+			if len(from) == maxBatch {
 				if err := flush(); err != nil {
 					return err
 				}
@@ -581,23 +588,30 @@ func (m *moe) runRows(ctx context.Context, mr *moeRows, ml *moeLayer, xs, logits
 	return nil
 }
 
+// decodeHostRow unpacks row r's hidden input and router logits from fp16 and selects its top-k experts.
+func (m *moe) decodeHostRow(xs, logits []byte, r int, lg []float32) (xr, yr []float32, ir []int, wr []float32) {
+	H, E, K := m.shape.Hidden, m.shape.Experts, m.shape.TopK
+	xr, yr = make([]float32, H), make([]float32, H)
+	vecops.F16ToF32(xr, xs[2*r*H:2*(r+1)*H])
+	vecops.F16ToF32(lg, logits[2*r*E:2*(r+1)*E])
+	ir, wr = make([]int, K), make([]float32, K)
+	m.routing.Choose(lg, nil, ir, wr)
+	return xr, yr, ir, wr
+}
+
 // runHost runs layer's experts on the CPU (llm.HostRouted).
 func (m *moe) runHost(layer int, xs, logits, out []byte, rows int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	start := time.Now()
-	H, E, K := m.shape.Hidden, m.shape.Experts, m.shape.TopK
+	H, E := m.shape.Hidden, m.shape.Experts
 	x := make([][]float32, rows)
 	idx := make([][]int, rows)
 	w := make([][]float32, rows)
 	y := make([][]float32, rows)
 	lg := make([]float32, E)
 	for r := range rows {
-		x[r], y[r] = make([]float32, H), make([]float32, H)
-		vecops.F16ToF32(x[r], xs[2*r*H:2*(r+1)*H])
-		vecops.F16ToF32(lg, logits[2*r*E:2*(r+1)*E])
-		idx[r], w[r] = make([]int, K), make([]float32, K)
-		m.routing.Choose(lg, nil, idx[r], w[r])
+		x[r], y[r], idx[r], w[r] = m.decodeHostRow(xs, logits, r, lg)
 	}
 	if err := m.host.Run(layer, x, idx, w, y); err != nil {
 		return fmt.Errorf("chain: layer %d's experts: %w", layer, err)

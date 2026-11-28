@@ -11,28 +11,9 @@ import (
 
 type builder struct {
 	*blocks.Graph
-	cfg     *Config
-	opts    llm.Options
-	seq, d  int
-	ins     map[string]*mlpackage.Var
-	inList  []mlpackage.Feature
-	outList []*mlpackage.Var
-}
-
-// input declares an fp16 program input once and returns it.
-func (m *builder) input(name string, shape ...int) *mlpackage.Var {
-	if v, ok := m.ins[name]; ok {
-		return v
-	}
-	v := m.B.Input(name, mlpackage.Float16, shape...)
-	m.ins[name] = v
-	m.inList = append(m.inList, mlpackage.Feature{Name: name, DType: mlpackage.Float16, Shape: shape})
-	return v
-}
-
-// output makes v a program output called name.
-func (m *builder) output(v *mlpackage.Var, name string) {
-	m.outList = append(m.outList, m.B.NamedOp("identity", name, map[string]any{"x": v}, mlpackage.Float16, v.Shape...))
+	cfg    *Config
+	opts   llm.Options
+	seq, d int
 }
 
 // build writes the part of layers [Start, Start+Layers) (all when Layers is 0): a part starting at
@@ -44,112 +25,43 @@ func (m *builder) output(v *mlpackage.Var, name string) {
 // (mask_full_attention, rope_cos_full_attention, rope_sin_full_attention) are inputs, as
 // llm.Cached describes.
 func build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
-	if opts.Group == 0 {
-		opts.Group = 16
-	}
-	if opts.Format == "" {
-		opts.Format = cfg.Format()
-	}
-	afterAttn := opts.Layers == llm.NoLayers // the rest of layer Start's attention, up to its router
-	if !afterAttn && (opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers) {
-		opts.Layers = cfg.NumLayers - opts.Start
-	}
-	if opts.Paged > 0 && opts.Cache <= 0 {
-		return nil, nil, fmt.Errorf("lfm2moe: a program split at its attention (Paged) needs a KV cache")
-	}
-	if opts.LastRow && opts.Cache <= 0 {
-		return nil, nil, fmt.Errorf("lfm2moe: the logits of the last row alone (LastRow) are of a program with a KV cache")
-	}
-	start, end := opts.Start, opts.Start+opts.Layers
 	paged := func(i int) bool { return opts.Paged > 0 && cfg.IsAttention(i) }
-	if afterAttn && (!paged(start) || !cfg.IsRouted(start)) {
-		return nil, nil, fmt.Errorf("lfm2moe: a part of no layers is the rest of an attention layer the host attends for, up to its experts (layer %d)", start)
+	first, afterAttn, err := blocks.NormalizeRoutedOptions("lfm2moe", &opts, cfg.NumLayers, cfg.Format(), nil, cfg.IsRouted, paged)
+	if err != nil {
+		return nil, nil, err
 	}
-	m := &builder{Graph: &blocks.Graph{Name: "lfm2moe", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, ins: map[string]*mlpackage.Var{}}
-	err = blocks.Run(func() {
-		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
-		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
-		h := x
-		i := start
-		switch {
-		case afterAttn:
-			end = start // the part ends with the layer's router
-		case start > 0 && cfg.IsRouted(start):
-			h = m.Op("add", map[string]any{"x": h, "y": m.input(fmt.Sprintf("moe_o_%d", start), 1, m.seq, m.d)}, h.Shape...)
-			i++
-		}
-		for ; i < end; i++ {
-			if cfg.IsRouted(i) || paged(i) {
-				m.Fail("layer %d's experts or attention are inside the part of layers %d to %d: a part ends where they begin (llm.PlanRouted)", i, start, end-1)
-			}
-			h = m.dense(i, m.operator(i, h))
-		}
-		var y *mlpackage.Var
-		switch {
-		case afterAttn:
-			h = m.Op("add", map[string]any{"x": m.attnOutput(start, m.input(fmt.Sprintf("attn_o_%d", start), 1, cfg.NumHeads, m.seq, cfg.HeadDim)), "y": h}, h.Shape...)
-			m.moeHead(start, h)
-			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
-		case end < cfg.NumLayers && paged(end):
-			// the host attends next: the queries, the step's keys and values; y the hidden
-			// state entering the layer
-			p := fmt.Sprintf("model.layers.%d.", end)
-			q, k, v := m.qkv(end, m.RMSNorm(h, p+"operator_norm.weight", m.d, cfg.NormEps, 1))
-			m.output(q, fmt.Sprintf("attn_q_%d", end))
-			m.output(k, fmt.Sprintf("kv_k_%d_new", end))
-			m.output(v, fmt.Sprintf("kv_v_%d_new", end))
-			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
-		case end < cfg.NumLayers:
-			if !cfg.IsRouted(end) {
-				m.Fail("the part of layers %d to %d ends at a dense layer", start, end-1)
-			}
-			h = m.operator(end, h)
-			m.moeHead(end, h)
-			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
-		case opts.NoHead:
-			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
-		default:
-			if opts.LastRow {
-				h = m.LastRow(h, m.input("last", 1, 1, m.seq))
-			}
-			h = m.RMSNorm(h, "model.embedding_norm.weight", m.d, cfg.NormEps, 1)
-			if opts.Hidden {
-				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
-			} else {
-				y = m.Linear(h, cfg.Head(), "y", cfg.VocabSize)
-			}
-		}
-		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
-		for _, v := range m.outList {
-			outs = append(outs, mlpackage.Feature{Name: v.Name, DType: mlpackage.Float16, Shape: v.Shape})
-		}
-		ins = append(ins, m.inList...)
-	})
-	return ins, outs, err
+	m := &builder{Graph: &blocks.Graph{Name: "lfm2moe", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize}
+	return blocks.BuildRouted(m, first, afterAttn, m.seq, m.d, cfg.NumLayers, cfg.VocabSize, cfg.Head())
 }
 
-// moeHead is the end of a part before layer i's experts: the ffn norm's output moe_x_N and the
+func (m *builder) IsRouted(i int) bool { return m.cfg.IsRouted(i) }
+func (m *builder) IsPaged(i int) bool  { return m.opts.Paged > 0 && m.cfg.IsAttention(i) }
+
+func (m *builder) FinalNorm(h *mlpackage.Var) *mlpackage.Var {
+	return m.RMSNorm(h, "model.embedding_norm.weight", m.d, m.cfg.NormEps, 1)
+}
+
+func (m *builder) BeforeAttention(i int, h *mlpackage.Var) {
+	p := fmt.Sprintf("model.layers.%d.", i)
+	q, k, v := m.qkv(i, m.RMSNorm(h, p+"operator_norm.weight", m.d, m.cfg.NormEps, 1))
+	m.EmitPagedQKV(i, q, k, v)
+}
+
+func (m *builder) AfterAttention(i int) *mlpackage.Var {
+	return m.attnOutput(i, m.Input(fmt.Sprintf("attn_o_%d", i), 1, m.cfg.NumHeads, m.seq, m.cfg.HeadDim))
+}
+
+// MoEHead is the end of a part before layer i's experts: the ffn norm's output moe_x_N and the
 // router's logits moe_logits_N (llm.Routed).
-func (m *builder) moeHead(i int, h *mlpackage.Var) {
+func (m *builder) MoEHead(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("model.layers.%d.", i)
 	f := m.RMSNorm(h, p+"ffn_norm.weight", m.d, m.cfg.NormEps, 1)
-	m.output(f, fmt.Sprintf("moe_x_%d", i))
-	m.output(m.router(f, p+"feed_forward.gate.weight"), fmt.Sprintf("moe_logits_%d", i))
+	m.EmitMoERouter(i, f, p+"feed_forward.gate.weight", "", m.cfg.NumExperts)
+	return h
 }
 
-// router is the router's logits (1, seq, experts), its weight in fp16: the choice of the experts
-// turns on small differences of the scores.
-func (m *builder) router(f *mlpackage.Var, name string) *mlpackage.Var {
-	e := m.cfg.NumExperts
-	wv, err := m.B.F16s(name, []int{e, m.d}, m.Get(name, e, m.d))
-	if err != nil {
-		m.Fail("%v", err)
-	}
-	return m.Op("linear", map[string]any{"x": f, "weight": wv}, 1, m.seq, e)
-}
-
-// operator is the first half of layer i: the norm, the convolution or attention, the residual.
-func (m *builder) operator(i int, h *mlpackage.Var) *mlpackage.Var {
+// Mixer is the first half of layer i: the norm, the convolution or attention, the residual.
+func (m *builder) Mixer(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("model.layers.%d.", i)
 	n := m.RMSNorm(h, p+"operator_norm.weight", m.d, m.cfg.NormEps, 1)
 	if m.cfg.IsAttention(i) {
@@ -160,8 +72,8 @@ func (m *builder) operator(i int, h *mlpackage.Var) *mlpackage.Var {
 	return m.Op("add", map[string]any{"x": n, "y": h}, h.Shape...)
 }
 
-// dense is the second half of a dense layer: the norm, the SwiGLU, the residual.
-func (m *builder) dense(i int, h *mlpackage.Var) *mlpackage.Var {
+// DenseFFN is the second half of a dense layer: the norm, the SwiGLU, the residual.
+func (m *builder) DenseFFN(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("model.layers.%d.", i)
 	f := m.RMSNorm(h, p+"ffn_norm.weight", m.d, m.cfg.NormEps, 1)
 	f = m.SwiGLU(f, p+"feed_forward.w1.weight", p+"feed_forward.w3.weight", p+"feed_forward.w2.weight", m.cfg.IntermediateSize, m.d, 1)
@@ -182,9 +94,9 @@ func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
 	bx := m.Op("mul", map[string]any{"x": part(0), "y": part(2)}, 1, s, d)
 	var padded *mlpackage.Var
 	if m.opts.Cache > 0 {
-		win := m.input(fmt.Sprintf("win_conv_%d", i), 1, k-1, d)
+		win := m.Input(fmt.Sprintf("win_conv_%d", i), 1, k-1, d)
 		padded = m.Op("concat", map[string]any{"values": []*mlpackage.Var{win, bx}, "axis": m.B.ScalarI32(1), "interleave": m.B.ScalarBool(false)}, 1, s+k-1, d)
-		m.output(padded, fmt.Sprintf("win_conv_%d_new", i))
+		m.Output(padded, fmt.Sprintf("win_conv_%d_new", i))
 	} else {
 		padded = m.Op("pad", map[string]any{"x": bx, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, s+k-1, d)
 	}
@@ -194,10 +106,7 @@ func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
 		for c := 0; c < d; c++ {
 			tap[c] = cw[c*k+j]
 		}
-		wv, err := m.B.F16s(fmt.Sprintf("%sconv.weight.tap%d", p, j), []int{1, 1, d}, tap)
-		if err != nil {
-			m.Fail("%v", err)
-		}
+		wv := m.F16s(fmt.Sprintf("%sconv.weight.tap%d", p, j), []int{1, 1, d}, tap)
 		seg := m.Op("slice_by_index", map[string]any{"x": padded, "begin": m.B.Ints(0, int32(j), 0), "end": m.B.Ints(1, int32(j+s), int32(d)),
 			"begin_mask": m.Bools(true, false, true), "end_mask": m.Bools(true, false, true)}, 1, s, d)
 		term := m.Op("mul", map[string]any{"x": seg, "y": wv}, 1, s, d)
@@ -219,7 +128,7 @@ func (m *builder) qkv(i int, h *mlpackage.Var) (q, k, v *mlpackage.Var) {
 	const lt = "full_attention"
 	var cos, sin *mlpackage.Var
 	if m.opts.Cache > 0 {
-		cos, sin = m.input("rope_cos_"+lt, 1, s, 1, hd), m.input("rope_sin_"+lt, 1, s, 1, hd)
+		cos, sin = m.Input("rope_cos_"+lt, 1, s, 1, hd), m.Input("rope_sin_"+lt, 1, s, 1, hd)
 	} else {
 		cos, sin = m.RopeTables(lt, m.cfg.RopeInvFreq(), s, hd)
 	}
@@ -251,25 +160,25 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	q, k, v := m.qkv(i, h)
 	var o *mlpackage.Var
 	if m.opts.Cache > 0 {
-		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
-		m.output(v, fmt.Sprintf("kv_v_%d_new", i))
+		m.Output(k, fmt.Sprintf("kv_k_%d_new", i))
+		m.Output(v, fmt.Sprintf("kv_v_%d_new", i))
 		t := m.opts.Cache
 		if lens, chunked := llm.CacheChunks(t); chunked {
 			var ks, vs, masks []*mlpackage.Var
 			for j, l := range lens {
-				ks = append(ks, m.input(fmt.Sprintf("kv_k_%d_c%d", i, j), 1, nkv, l, hd))
-				vs = append(vs, m.input(fmt.Sprintf("kv_v_%d_c%d", i, j), 1, nkv, l, hd))
-				masks = append(masks, m.input(fmt.Sprintf("mask_%s_c%d", lt, j), 1, 1, s, l))
+				ks = append(ks, m.Input(fmt.Sprintf("kv_k_%d_c%d", i, j), 1, nkv, l, hd))
+				vs = append(vs, m.Input(fmt.Sprintf("kv_v_%d_c%d", i, j), 1, nkv, l, hd))
+				masks = append(masks, m.Input(fmt.Sprintf("mask_%s_c%d", lt, j), 1, 1, s, l))
 			}
-			masks = append(masks, m.input("mask_"+lt+"_self", 1, 1, s, s))
+			masks = append(masks, m.Input("mask_"+lt+"_self", 1, 1, s, s))
 			o = m.ChunkedSDPAGrouped(q, append(ks, k), append(vs, v), masks)
 		} else {
 			cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
-				c := m.input(name, 1, nkv, t, hd)
+				c := m.Input(name, 1, nkv, t, hd)
 				return m.Op("concat", map[string]any{"values": []*mlpackage.Var{c, x}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, nkv, t+s, hd)
 			}
 			k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
-			mask := m.input("mask_"+lt, 1, 1, s, t+s)
+			mask := m.Input("mask_"+lt, 1, 1, s, t+s)
 			o = m.SDPAGrouped(q, k, v, 1/math.Sqrt(float64(hd)), func() *mlpackage.Var { return mask })
 		}
 	} else {
@@ -283,39 +192,8 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 	const lt = "full_attention"
 	out := map[string][]float32{}
-	if cache == pagedCache { // PagedStepInputs: the host attends, the rotary tables alone
-		out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(), pos, q, c.HeadDim)
-		return out
-	}
-	mask := make([]float32, q*(cache+q))
-	for t := 0; t < q; t++ {
-		row := mask[t*(cache+q):]
-		for j := 0; j < cache+q; j++ {
-			visible := j < pos
-			if j >= cache {
-				visible = j-cache <= t
-			}
-			if !visible {
-				row[j] = -1e4
-			}
-		}
-	}
-	if lens, chunked := llm.CacheChunks(cache); chunked {
-		part := func(name string, from, n int) {
-			v := make([]float32, 0, q*n)
-			for t := 0; t < q; t++ {
-				v = append(v, mask[t*(cache+q)+from:t*(cache+q)+from+n]...)
-			}
-			out[name] = v
-		}
-		off := 0
-		for j, l := range lens {
-			part(fmt.Sprintf("mask_%s_c%d", lt, j), off, l)
-			off += l
-		}
-		part("mask_"+lt+"_self", cache, q)
-	} else {
-		out["mask_"+lt] = mask
+	if cache != pagedCache {
+		blocks.PutStepMask(out, lt, pos, q, cache, 0)
 	}
 	out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(), pos, q, c.HeadDim)
 	return out

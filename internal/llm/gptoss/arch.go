@@ -13,7 +13,7 @@ var Arch = &llm.Arch{
 	Title:         "gpt-oss",
 	ModelTypes:    []string{"gpt_oss"},
 	Architectures: []string{"GptOssForCausalLM"},
-	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	LoadConfig:    llm.LoadModel(ParseConfig),
 	LastRow:       true,
 	// 1: the attention's projections fp16 (build), 2026-11-19
 	// 2: fp16 for the first 8 layers, int8 for the rest, 2026-11-19
@@ -79,14 +79,7 @@ func (c *Config) Tensors() map[string][]int {
 
 // Build writes a program without a KV cache (a part, as llm.Routed cuts it).
 func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
-	if opts.Cache > 0 {
-		return nil, out, fmt.Errorf("gptoss: a program with a KV cache has more inputs and outputs; use BuildCached")
-	}
-	i, o, err := c.BuildCached(b, w, opts)
-	if err != nil {
-		return nil, out, err
-	}
-	return i, o[0], nil
+	return llm.BuildUncached("gptoss", c, b, w, opts)
 }
 
 // BuildCached writes a part of the model (llm.Cached, llm.Routed).

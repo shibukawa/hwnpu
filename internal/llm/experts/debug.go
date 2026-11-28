@@ -13,7 +13,9 @@ import (
 // experts in order (a line "LAYER ROWS E E E E" a row, for trying placements on, tools/moeusage);
 // "prefault=wait" has every page of experts wired whole in before the first run; "prefetch=N"
 // brings in N of the next layer's guessed experts (0: none; the default is as many as a token
-// runs).
+// runs); "prefill=0" (or "cpu") disables Neural Engine offloading of hot multi-row prefill
+// experts; "prefill-min-rows=N" sets the minimum rows per expert sent to the Neural Engine
+// (default 24); "min-ratio=R" skips trailing routed experts whose weight is below R*w[0].
 func DebugOpt(name string) (string, bool) {
 	return devenv.Get("moe." + name)
 }

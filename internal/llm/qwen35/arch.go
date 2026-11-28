@@ -19,7 +19,7 @@ var Arch = &llm.Arch{
 	// 2: a chunk of one row without the matmul of an inner dimension of 1, which the Neural
 	// Engine gets wrong (deltaRuleChunks), 2026-11-20
 	Revision:   2,
-	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	LoadConfig: llm.LoadModel(ParseConfig),
 	// the Gated DeltaNet over chunks of rows (the rule row by row was removed, 2026-11-26)
 	Fixed: map[string]string{"delta": "chunk"},
 	Params: []llm.Param{
@@ -36,7 +36,7 @@ var MTPArch = &llm.Arch{
 	Title:      "Qwen3.5 multi-token prediction",
 	Format:     "lut8",
 	LastRow:    true,
-	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseMTP(raw) },
+	LoadConfig: llm.LoadModel(ParseMTP),
 }
 
 func init() {

@@ -96,7 +96,8 @@ How hwnpu runs mixture-of-experts (MoE) models: gpt-oss-20b, Qwen3.6-35B-A3B and
   - Marks (the prompt store's every 512 tokens) can be taken inside a wave. `ctx` is checked between steps and parts; an interrupted wave goes back to the mark before it.
   - Step masks written as fp16 bytes directly (`step.stepMasks`, 3 → 0.1 ms).
   - `TestPagedWave`: bit-identical to step-at-a-time on a synthetic model. Long prompts differ in rounding (the wave sizes the attention cache to its final chunk from the start).
-- **Several steps' rows per call** (`chain.moe.runMany`, `hostRows` 512): an expert is read once a call. Per row per layer: 128 rows 0.139 ms, 512 0.089, 1024 0.085. `Host.Run` works in groups of 1024 (expert × row) so memory stays one step's (12 MB).
+- **Several steps' rows per call** (`chain.moe.runMany`, `hostRows` 512; `prefillHostRows` 2048 when Core AI prefill offload is active): an expert is read once a call. Per row per layer: 128 rows 0.139 ms, 512 0.089, 1024 0.085. `Host.Run` works in groups of 1024 (expert × row) so memory stays one step's (12 MB).
+- **Neural Engine prefill offload on Core AI** (`experts.Host.EnablePrefillNPU`, off with `HWNPU_DEV=moe.prefill=0`): hot experts with at least 24 rows (`moe.prefill-min-rows`) run on the Neural Engine through one weightless 4D batched-matmul program (`G=8, M=64`, or `G=4, M=128` for large experts, compiled in 0.1–0.2 s), while colder experts run concurrently on the CPU. MXFP4 blocks unpack directly to fp16 in NEON registers (`mxfp4.DequantizeF16`, 40.3 GB/s on one M1 core) into alternating zero-copy input arrays (`AllocInput`), which are released as soon as 1-token decoding begins (zero extra RAM held during generation). Measured on M1 (one layer vs 8-core NEON, cosine 0.99994): `gpt-oss-20b` at 512 rows goes from 222.4 → **160.1 ms** wall (1.39×) and 1691.6 → **484–522 ms** CPU time (3.2–3.5× lower); `Qwen3.6` wave at 2048 rows goes from 275.2 → **222.4 ms** wall (1.24×) and 1940.5 → **618–706 ms** CPU time (2.8–3.1× lower); at 512 rows 65.6 → **61.7 ms** wall with 1.24× lower CPU time.
 - LFM2-8B-A1B and earlier: `experts.BuildRows`, `chain.moe.runRows` run each chosen expert once over all rows of a call.
 
 ### Qwen3.6 on Apple
@@ -280,6 +281,9 @@ Apple:
 - SMMLA pad threshold (other than 6): no difference. 2 rows × 4 vectors SMMLA: slower than SDOT.
 - Other replacement policies for wired experts: all 72–74 % average hit.
 - gpt-oss attention: plain lut8 (KL 0.284), int8 (slow on the Neural Engine); GPTQ codes for `lut8r` attention or lut6 head are not the default (not better on every text; codes not shipped).
+- Keeping core experts resident as constant `lut4` programs on the Neural Engine during decoding while running cold misses on the CPU in parallel (M1): lowers CPU time 1.18–1.34× back to back, but with a 1.2 ms inter-part gap Core AI dispatch overhead raises wall time from 1.52 → 3.79–7.05 ms on `gpt-oss` and 0.33 → 2.66–3.39 ms on `Qwen3.6` (with worse CPU time too), drops cosine to 0.9916–0.9934, and consumes 1.4–1.9 GB of wired memory plus per-layer ANE program slots. Decoding stays on the CPU.
+- Running prompt experts via Accelerate `cblas_sgemm` on AMX (M1): single-thread AMX takes 596.7 ms wall (600.4 ms CPU) on 512 rows of `gpt-oss`, slower and higher CPU time than the Neural Engine prefill offload (160.1 ms wall, 484–522 ms CPU).
+- Adaptive ratio pruning of low-weight routed experts (`HWNPU_DEV=moe.min-ratio=R`): much lower KL than a fixed drop (`R=0.12` gives mean KL 0.00077 vs 0.034 / 0.0022, saving 6.6–7.3 % of expert calls), but changes outputs so off by default.
 
 ## Open
 

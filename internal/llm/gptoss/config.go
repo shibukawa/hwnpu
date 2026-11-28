@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
@@ -134,15 +136,11 @@ func (c *Config) IsSliding(i int) bool { return c.LayerTypes[i] == "sliding_atte
 // and the factor the cos and sin tables are scaled by.
 func (c *Config) RopeInvFreq() ([]float64, float64) {
 	dim := c.HeadDim
-	half := dim / 2
-	inv := make([]float64, half)
 	y := c.Yarn
 	if y.Factor <= 1 {
-		for i := range inv {
-			inv[i] = 1 / math.Pow(c.RopeTheta, float64(2*i)/float64(dim))
-		}
-		return inv, 1
+		return blocks.DefaultRopeInvFreq(c.RopeTheta, dim), 1
 	}
+	inv := make([]float64, dim/2)
 	corr := func(rot float64) float64 {
 		return float64(dim) * math.Log(float64(y.Original)/(rot*2*math.Pi)) / (2 * math.Log(c.RopeTheta))
 	}
@@ -165,13 +163,7 @@ func (c *Config) RopeInvFreq() ([]float64, float64) {
 }
 
 // RoutedLayers are every layer (llm.Routed).
-func (c *Config) RoutedLayers() []int {
-	out := make([]int, c.NumLayers)
-	for i := range out {
-		out[i] = i
-	}
-	return out
-}
+func (c *Config) RoutedLayers() []int { return llm.LayerRange(0, c.NumLayers) }
 
 // ExpertShape is the experts' sizes.
 func (c *Config) ExpertShape() experts.Shape {
@@ -203,13 +195,7 @@ func (c *Config) ExpertAct() experts.Act {
 // PagedLayers are the full attention layers: split at them, the host attends over its cache in
 // chunks; the sliding layers keep rings of the window in the program.
 func (c *Config) PagedLayers() []int {
-	var out []int
-	for i := range c.LayerTypes {
-		if !c.IsSliding(i) {
-			out = append(out, i)
-		}
-	}
-	return out
+	return llm.LayersWhere(c.LayerTypes, func(i int, _ string) bool { return !c.IsSliding(i) })
 }
 
 // PagedShape is the attention's heads, kv heads and head size, its scores scaled by 1/sqrt(head_dim).

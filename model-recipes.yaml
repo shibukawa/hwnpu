@@ -69,7 +69,7 @@
 #               before (2026-11-24), the same bytes, their names kept
 #     code      the Go packages that write its programs, after apple's code (a change of them
 #               is a change of the version, as amd's tools); !FILE leaves out a file of them
-#               only a run reads (experts' host.go, placement.go and debug.go, qwen35's replay.go, lfm3vl's preprocess.go)
+#               only a run reads (experts' host.go, prefill.go, placement.go and debug.go, qwen35's replay.go, lfm3vl's preprocess.go)
 #     finish    what the build does to its Core AI exports once converted, as amd's finish
 #               (their tokenizer files made binary); a model without one leaves them as they are
 #     convert   the values its conversion is made with, by their names in its code
@@ -494,7 +494,7 @@ models:
       # 3: PR #384's conversion: the weights shared between the functions of a program, one
       # location for every operation (2026-11-28)
       version: 3
-      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/prefill.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
       version: 3
@@ -514,7 +514,7 @@ models:
       # 4: PR #384's conversion: the weights shared between the functions of a program, one
       # location for every operation (2026-11-28)
       version: 4
-      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go", "!internal/llm/qwen35/replay.go"]
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/prefill.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go", "!internal/llm/qwen35/replay.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
       version: 3
@@ -826,7 +826,7 @@ models:
       # 3: PR #384's conversion: the weights shared between the functions of a program, one
       # location for every operation (2026-11-28)
       version: 3
-      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
+      code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/prefill.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
   Qwen2.5-Coder-7B-Instruct:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
