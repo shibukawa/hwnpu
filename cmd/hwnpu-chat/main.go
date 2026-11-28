@@ -19,6 +19,13 @@
 // loading) is logged in gray, with "all on the NPU" in green and "NOT all on the NPU" in red for
 // each program loaded.
 //
+// In the terminal a line that starts with / is a command, named as the other chat programs
+// name theirs (/help lists them: /exit or /quit, /reset or /clear, and in chat /model, /retry,
+// /system, /think, /status). /model lists the chat models to choose one from, each with what
+// it takes running and, when it is not here, what it downloads and keeps on the disk; /model
+// NAME loads one, asking before a download, and the conversation goes on with it. A model that
+// is not here says those sizes before any command downloads it.
+//
 // --model (-m) takes a name, a family or a use of models.yaml (LFM3-1.7B, chat, translate,
 // plamo3translate:2b; a family alone picks for the machine's memory), a Hugging Face repository
 // OWNER/NAME, or an export's directory (a value with a / or a leading . or ~: on AMD's NPU, one of

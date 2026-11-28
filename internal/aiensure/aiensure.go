@@ -28,6 +28,10 @@ type Options struct {
 	// acceptance is read from (nil: the standard input).
 	Log io.Writer
 	In  *os.File
+	// Before is called with the plan when a model is not here, before its licenses are asked
+	// and it is downloaded and converted: a command says there what that takes (the items'
+	// Download and Disk), or asks; its error ends Ensure. Nil for nothing.
+	Before func(*ai.Plan) error
 }
 
 // Ensure makes the app's models that are not here ready for a command that runs them next: it
@@ -46,6 +50,11 @@ func Ensure(ctx context.Context, app *ai.App, o Options) error {
 	}
 	if p.Ready() {
 		return nil
+	}
+	if o.Before != nil {
+		if err := o.Before(p); err != nil {
+			return err
+		}
 	}
 	p.NoCompile, p.Log, p.Brief = true, o.Log, o.Quiet
 	if err := Licenses(p, o.AcceptLicenses, o.In, o.Log); err != nil {

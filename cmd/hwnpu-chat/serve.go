@@ -227,30 +227,39 @@ func search(e *text.Embedder) error {
 		v    []float32
 	}
 	var docs []doc
-	console.Notef("%s: %d dimensions, up to %d tokens a text. Each input is a document to search; ?TEXT searches them, /list shows them, /reset clears them, /exit (or Ctrl-D) quits\n",
+	console.Notef("%s: %d dimensions, up to %d tokens a text. Each input is a document to search; ?TEXT searches them, /list shows them, /reset clears them, /exit (or Ctrl-D) quits, /help lists the commands\n",
 		e.Name(), e.Dim(), e.MaxTokens())
 	ed := console.NewEditor("search")
+	cs := commands{
+		{names: []string{"list"}, about: "show the documents", run: func(string) bool {
+			for i, d := range docs {
+				fmt.Printf("%3d  %s\n", i+1, oneLine(d.text))
+			}
+			return false
+		}},
+		{names: []string{"reset", "clear", "new"}, about: "clear the documents", run: func(string) bool {
+			docs = docs[:0]
+			console.Notef("[documents cleared]\n")
+			return false
+		}},
+		quitCommand(),
+	}
 	for {
 		line, ok := read(ed)
 		if !ok {
 			return nil
 		}
-		query := false
-		switch {
-		case line == "":
+		if line == "" {
 			continue
-		case line == "/exit" || line == "/quit":
-			return nil
-		case line == "/reset":
-			docs = docs[:0]
-			console.Notef("[documents cleared]\n")
-			continue
-		case line == "/list":
-			for i, d := range docs {
-				fmt.Printf("%3d  %s\n", i+1, oneLine(d.text))
+		}
+		if handled, quit := cs.do(line); handled {
+			if quit {
+				return nil
 			}
 			continue
-		case strings.HasPrefix(line, "?") || strings.HasPrefix(line, "？"):
+		}
+		query := false
+		if strings.HasPrefix(line, "?") || strings.HasPrefix(line, "？") {
 			query = true
 			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "?"), "？"))
 		}
