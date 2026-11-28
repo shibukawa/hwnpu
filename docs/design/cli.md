@@ -103,9 +103,14 @@ were removed without wrappers.
   no command is a message too (`/tmp is full`), unless it is one slip of the keys from a command (`/modle`:
   an error, not sent to the model).
 - `/model` (chat): alone it lists the chat models, each planned as it would be loaded (`ai.App.Plan`, with
-  the command line's flags): its memory, whether it is ready, else the plan's download and disk sizes. On a
-  terminal the list is a picker (`console.Editor.Select`: ↑ ↓, Enter, Esc; cut to the terminal's width,
-  scrolled when longer than it); elsewhere it is printed and `/model NAME` loads one. The order of a change:
+  the command line's flags), on one line of at most 78 columns: `MEM`, `DL` (`ready`, else the plan's
+  download, `7.5G`), `DISK` and the features, none cut on a terminal of 80 columns. On a terminal the list
+  is a picker (`console.Editor.Select`: ↑ ↓, Enter, Esc; cut to the terminal's width, scrolled when longer
+  than it); elsewhere it is printed and `/model NAME` loads one. With colors the features are tags, a color
+  for each (`tagColors`): a background and a space on each side when every row then fits (87 columns with
+  models.yaml's models), else the words in their colors. `Select` takes the paint of a row, which ends its
+  colors with the default ones (`\x1b[39m`), not a reset, so that the bold of the row chosen stays. The
+  order of a change:
   resolve the name, ask before a download (`aiensure.Options.Before`), make the new model ready, close the
   old Runtime, open the new one. So nothing is lost when the name, the download or the conversion fails,
   and the two models are not held at once. If the new one fails to load, the old one is loaded again.

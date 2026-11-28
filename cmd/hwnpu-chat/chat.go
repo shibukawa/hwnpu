@@ -332,6 +332,11 @@ func (t *talker) retry() {
 		console.Notef("[nothing to answer again yet]\n")
 		return
 	}
+	if what := t.unread(t.last); what != "" && (t.c != nil || t.tl != nil) {
+		// after /model: the message of the model before it
+		console.Notef("[the last message has %s, which %s does not read]\n", what, t.name())
+		return
+	}
 	if t.tl != nil {
 		t.pairs = t.pairs[:min(t.lastAt, len(t.pairs))]
 	} else {

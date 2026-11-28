@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -186,28 +187,111 @@ func TestReads(t *testing.T) {
 }
 
 // What a model that is not here takes: its download and what it keeps on the disk, as the
-// lines before a download and as /model's column.
+// lines before a download and as /model's columns.
 func TestFetchSize(t *testing.T) {
 	for _, c := range []struct {
-		it          ai.Item
-		line, state string
+		it             ai.Item
+		line, dl, disk string
 	}{
-		{ai.Item{Model: "m", Ready: true}, "", "yes"},
-		{ai.Item{Model: "m", Download: 7_500_000_000, Disk: 8_100_000_000}, "m is not here yet: about 7.5 GB to download, 8.1 GB kept on the disk", "no: 7.5 GB download, 8.1 GB disk"},
-		{ai.Item{Model: "m", Download: 830_000_000}, "m is not here yet: about 830.0 MB to download", "no: 830.0 MB download"},
-		{ai.Item{Model: "m", Disk: 2_300_000_000}, "m is not here yet: its checkpoint is here; 2.3 GB kept on the disk once it is made ready", "no: 2.3 GB disk (checkpoint here)"},
-		{ai.Item{Model: "m"}, "m is not here yet", "no"},
+		{ai.Item{Model: "m", Ready: true, Disk: 2_280_000_000}, "", "ready", "2.3G"},
+		{ai.Item{Model: "m", Download: 7_500_000_000, Disk: 8_100_000_000}, "m is not here yet: about 7.5 GB to download, 8.1 GB kept on the disk", "7.5G", "8.1G"},
+		{ai.Item{Model: "m", Download: 22_600_000_000, Disk: 27_110_000_000}, "m is not here yet: about 22.6 GB to download, 27.1 GB kept on the disk", "22.6G", "27.1G"},
+		{ai.Item{Model: "m", Download: 830_000_000}, "m is not here yet: about 830.0 MB to download", "830M", "-"},
+		{ai.Item{Model: "m", Disk: 2_300_000_000}, "m is not here yet: its checkpoint is here; 2.3 GB kept on the disk once it is made ready", "0", "2.3G"},
+		{ai.Item{Model: "m"}, "m is not here yet", "0", "-"},
 	} {
 		lines := toFetch(&ai.Plan{Items: []ai.Item{c.it, c.it}}) // a model of two uses is said once
 		if got := strings.Join(lines, "|"); got != c.line {
 			t.Errorf("%+v: %q, want %q", c.it, got, c.line)
 		}
-		if got := (modelChoice{item: c.it}).state(); got != c.state {
-			t.Errorf("%+v: state %q, want %q", c.it, got, c.state)
+		if dl, disk := (modelChoice{item: c.it}).dl(), shortSize(c.it.Disk); dl != c.dl || disk != c.disk {
+			t.Errorf("%+v: columns %q %q, want %q %q", c.it, dl, disk, c.dl, c.disk)
 		}
 	}
-	if got := (modelChoice{err: errors.New("ai: the model policy refuses it")}).state(); got != "no: the model policy refuses it" {
-		t.Errorf("a model that cannot be planned: %q", got)
+	for n, want := range map[int64]string{0: "-", 140_000: "<1M", 31_000_000: "31M", 999_400_000: "999M", 999_600_000: "1.0G", 1_740_000_000: "1.7G"} {
+		if got := shortSize(n); got != want {
+			t.Errorf("shortSize(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// /model's list shows every column whole on a terminal of 80 columns, the features included:
+// the longest name, sizes and features of models.yaml fit in the 78 the list leaves a row. On a
+// terminal of colors the features are tags, each in its color: with a background and a space on
+// each side where there is room for those, else as words.
+func TestModelTable(t *testing.T) {
+	tk := &talker{run: &chatRun{cm: chatModel{base: "LFM3-Omni-2B"}}}
+	cs := []modelChoice{
+		{info: ai.ModelInfo{Name: "Qwen2.5-Coder-7B-Instruct", Features: []string{"tools"}}, item: ai.Item{MemoryGB: 4.4, Download: 15_200_000_000}},
+		{info: ai.ModelInfo{Name: "Qwen3.6-35B-A3B", Features: []string{"tools", "thinking"}}, item: ai.Item{MemoryGB: 26.3, Download: 22_600_000_000, Disk: 27_110_000_000}},
+		{info: ai.ModelInfo{Name: "LFM3-Omni-2B", Features: []string{"tools", "thinking", "vision", "audio"}}, item: ai.Item{MemoryGB: 3.0, Ready: true, Disk: 3_200_000_000}},
+		{info: ai.ModelInfo{Name: "plamo-3-translate-0.8b", Features: []string{"translation"}, MemoryGB: 1.0}, err: errors.New("ai: the model policy refuses it")},
+	}
+	want := []string{
+		" MODEL                      MEM    DL     DISK   FEATURES",
+		" Qwen2.5-Coder-7B-Instruct  4.4G   15.2G  -      tools",
+		" Qwen3.6-35B-A3B            26.3G  22.6G  27.1G  tools,thinking",
+		"*LFM3-Omni-2B               3.0G   ready  3.2G   tools,thinking,vision,audio",
+		" plamo-3-translate-0.8b     1.0G   -      -      not to be had: the model policy refuses it",
+	}
+	sgr := regexp.MustCompile("\x1b\\[[0-9;]*m")
+	check := func(what string, head string, rows []string, want []string) {
+		t.Helper()
+		if got := append([]string{head}, rows...); !slices.Equal(got, want) {
+			t.Errorf("%s:\n%s\nwant:\n%s", what, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+
+	// without colors: as models.yaml writes the features, and nothing painted
+	head, rows, paint := tk.table(cs, 80, false)
+	check("the table", head, rows, want)
+	for _, r := range rows[:3] {
+		if len(r) > 78 {
+			t.Errorf("a row of %d columns, over the 78 of a terminal of 80: %q", len(r), r)
+		}
+		if paint(r) != r {
+			t.Errorf("painted without colors: %q", paint(r))
+		}
+	}
+
+	// colors on 80 columns: the same rows, the features' words in their colors
+	head, rows, paint = tk.table(cs, 80, true)
+	check("the table of 80 columns", head, rows, want)
+	const left = "*LFM3-Omni-2B               3.0G   ready  3.2G   "
+	if got, want := paint(rows[2]), left+"\x1b[36mtools\x1b[39m \x1b[35mthinking\x1b[39m \x1b[32mvision\x1b[39m \x1b[33maudio\x1b[39m"; got != want {
+		t.Errorf("the words:\n%q\nwant\n%q", got, want)
+	}
+	if got := paint(" Qwen3.6-35B-A3B            26.3G  22.6G  27.1G  tools,thin…"); !strings.HasSuffix(got, "\x1b[36mtools\x1b[39m \x1b[35mthin…\x1b[39m") {
+		t.Errorf("a row the terminal cut: %q", got)
+	}
+	if got := paint(rows[3]); !strings.HasSuffix(got, "\x1b[31mnot to be had: the model policy refuses it\x1b[39m") {
+		t.Errorf("a model not to be had: %q", got)
+	}
+
+	// colors and room: tags, a space on each side and one between them
+	head, rows, paint = tk.table(cs, 100, true)
+	check("the table of 100 columns", head, rows, []string{
+		" MODEL                      MEM    DL     DISK    FEATURES",
+		" Qwen2.5-Coder-7B-Instruct  4.4G   15.2G  -       tools ",
+		" Qwen3.6-35B-A3B            26.3G  22.6G  27.1G   tools   thinking ",
+		"*LFM3-Omni-2B               3.0G   ready  3.2G    tools   thinking   vision   audio ",
+		" plamo-3-translate-0.8b     1.0G   -      -      not to be had: the model policy refuses it",
+	})
+	if got, want := paint(rows[2]), left+"\x1b[30;46m tools \x1b[39;49m \x1b[30;45m thinking \x1b[39;49m \x1b[30;42m vision \x1b[39;49m \x1b[30;43m audio \x1b[39;49m"; got != want {
+		t.Errorf("the tags:\n%q\nwant\n%q", got, want)
+	}
+	for _, r := range rows {
+		// the paint adds no column, and ends no mark of the list's (no reset)
+		if got := paint(r); sgr.ReplaceAllString(got, "") != r && !strings.Contains(r, ",") || strings.Contains(got, "\x1b[0m") {
+			t.Errorf("painted %q of %q", got, r)
+		}
+	}
+	// the tags do not fit beside the list's mark below 87 columns
+	if _, rows, _ = tk.table(cs, 86, true); rows[2] != want[3] {
+		t.Errorf("86 columns: %q", rows[2])
+	}
+	if _, rows, _ = tk.table(cs, 87, true); !strings.HasSuffix(rows[2], " tools   thinking   vision   audio ") {
+		t.Errorf("87 columns: %q", rows[2])
 	}
 }
 

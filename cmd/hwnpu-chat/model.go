@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"text/tabwriter"
+	"unicode/utf8"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/text"
@@ -30,23 +31,32 @@ type modelChoice struct {
 	err  error // why it cannot be planned (the model policy refuses it)
 }
 
-// state is the choice's column of whether it is here: yes, or what making it ready takes (what
-// it downloads and keeps on the disk), short enough for a terminal of 80 columns.
-func (m modelChoice) state() string {
-	it := m.item
+// dl is the choice's column of what loading it downloads first: ready when it is here, else
+// about how much (0 when only its conversion is missing), - when it cannot be planned.
+func (m modelChoice) dl() string {
 	switch {
 	case m.err != nil:
-		return "no: " + strings.TrimPrefix(m.err.Error(), "ai: ")
-	case it.Ready:
-		return "yes"
-	case it.Download > 0 && it.Disk > 0:
-		return fmt.Sprintf("no: %s download, %s disk", cache.FormatSize(it.Download), cache.FormatSize(it.Disk))
-	case it.Download > 0:
-		return fmt.Sprintf("no: %s download", cache.FormatSize(it.Download))
-	case it.Disk > 0:
-		return fmt.Sprintf("no: %s disk (checkpoint here)", cache.FormatSize(it.Disk))
+		return "-"
+	case m.item.Ready:
+		return "ready"
+	case m.item.Download <= 0:
+		return "0"
 	}
-	return "no"
+	return shortSize(m.item.Download)
+}
+
+// shortSize is n bytes in five characters at most, for a column of the list: 26.3G, 830M; - for
+// none (not known).
+func shortSize(n int64) string {
+	switch {
+	case n <= 0:
+		return "-"
+	case n < 1_000_000:
+		return "<1M"
+	case n < 999_500_000:
+		return fmt.Sprintf("%.0fM", float64(n)/1e6)
+	}
+	return fmt.Sprintf("%.1fG", float64(n)/1e9)
 }
 
 // choices are the chat models of the definitions, each planned as /model would load it.
@@ -89,27 +99,143 @@ func (t *talker) choices(ctx context.Context) []modelChoice {
 	return out
 }
 
-// table is the choices as lines of aligned columns under a line of headings: the model at hand
-// marked, each with its memory running, whether it is here or what it takes, and its features
-// (last: a narrow terminal cuts them, not the sizes).
-func (t *talker) table(cs []modelChoice) (head string, rows []string) {
-	var b strings.Builder
-	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "MODEL\tMEMORY\tHERE\tFEATURES")
-	for _, c := range cs {
-		name := c.info.Name
-		if t.at(name) {
-			name += " *"
+// table is the choices as lines of aligned columns under a line of headings, all of it within
+// the 80 columns of a terminal (78 with the longest names and features of models.yaml, beside
+// the two of the list's mark): the model at hand marked with a *, the memory it takes running
+// (MEM), what loading it downloads first (DL: ready when it is here), what it keeps on the disk
+// (DISK), and its features, none cut. A model that cannot be planned says why in their place.
+//
+// paint colors a row's features as tags, each feature in its color, on a terminal that takes
+// colors (colors): on one of cols columns that has the room, tags with a background and a space
+// on each side (the rows have those spaces); else the features' words, a space in place of the
+// comma between them. Without colors the features are as models.yaml writes them, and paint
+// changes nothing.
+func (t *talker) table(cs []modelChoice, cols int, colors bool) (head string, rows []string, paint func(string) string) {
+	build := func(chips bool) []string {
+		var b strings.Builder
+		tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+		if chips {
+			fmt.Fprintln(tw, " MODEL\tMEM\tDL\tDISK\t FEATURES")
+		} else {
+			fmt.Fprintln(tw, " MODEL\tMEM\tDL\tDISK\tFEATURES")
 		}
-		mem := "-"
-		if gb := cmp.Or(c.item.MemoryGB, c.info.MemoryGB); gb > 0 { // the plan's: of the variant for this machine's memory
-			mem = fmt.Sprintf("%.1f GB", gb)
+		for _, c := range cs {
+			name := " " + c.info.Name
+			if t.at(c.info.Name) {
+				name = "*" + c.info.Name
+			}
+			mem := "-"
+			if gb := cmp.Or(c.item.MemoryGB, c.info.MemoryGB); gb > 0 { // the plan's: of the variant for this machine's memory
+				mem = fmt.Sprintf("%.1fG", gb)
+			}
+			features := strings.Join(c.info.Features, ",")
+			switch {
+			case c.err != nil:
+				features = notHad + strings.TrimPrefix(c.err.Error(), "ai: ")
+			case chips && len(c.info.Features) > 0:
+				features = " " + strings.Join(c.info.Features, "   ") + " "
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, mem, c.dl(), shortSize(c.item.Disk), features)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, mem, c.state(), strings.Join(c.info.Features, ","))
+		tw.Flush()
+		return strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
 	}
-	tw.Flush()
-	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
-	return lines[0], lines[1:]
+	chips := false
+	lines := build(false)
+	if colors {
+		// the tags with their spaces, when every model's fit beside the list's mark
+		wide, fits := build(true), true
+		for i, l := range wide[1:] {
+			fits = fits && (cs[i].err != nil || utf8.RuneCountInString(l)+2 < cols)
+		}
+		if fits {
+			chips, lines = true, wide
+		}
+	}
+	at := utf8.RuneCountInString(lines[0][:strings.Index(lines[0], "FEATURES")])
+	if chips {
+		at-- // the space before the first tag
+	}
+	paint = func(row string) string {
+		if !colors {
+			return row
+		}
+		r := []rune(row)
+		if len(r) <= at {
+			return row
+		}
+		left, features := string(r[:at]), string(r[at:])
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(features), strings.TrimSpace(notHad)):
+			return left + "\x1b[31m" + features + "\x1b[39m"
+		case chips:
+			return left + paintChips(features)
+		}
+		words := strings.Split(features, ",")
+		for i, w := range words {
+			if c := tagColor(w).word; c != "" {
+				words[i] = "\x1b[" + c + "m" + w + "\x1b[39m"
+			}
+		}
+		return left + strings.Join(words, " ")
+	}
+	return lines[0], lines[1:], paint
+}
+
+// notHad begins what a model that cannot be planned says in place of its features.
+const notHad = "not to be had: "
+
+// tagColors are the colors of the features in /model's list (SGR parameters): of a tag, its
+// text on a background, and of the feature's word alone.
+var tagColors = map[string]struct{ chip, word string }{
+	"tools":       {"30;46", "36"},
+	"thinking":    {"30;45", "35"},
+	"vision":      {"30;42", "32"},
+	"audio":       {"30;43", "33"},
+	"translation": {"97;44", "94"},
+}
+
+// tagColor is the colors of the feature a word of the list names, a word the terminal's width
+// cut (thin…) too; a feature without colors of its own is a gray tag and a plain word.
+func tagColor(word string) struct{ chip, word string } {
+	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(word), "…"))
+	if c, ok := tagColors[name]; ok {
+		return c
+	}
+	if name != "" {
+		for n, c := range tagColors {
+			if strings.HasPrefix(n, name) {
+				return c
+			}
+		}
+	}
+	return struct{ chip, word string }{"30;47", ""}
+}
+
+// paintChips colors the tags of a row's features: each word with the space on each side of it,
+// the spaces between the tags left as they are.
+func paintChips(features string) string {
+	var b strings.Builder
+	for i := 0; i < len(features); {
+		if features[i] == ' ' && (i+1 == len(features) || features[i+1] == ' ') {
+			b.WriteByte(' ') // between two tags, or after the last
+			i++
+			continue
+		}
+		start := i
+		if features[i] == ' ' {
+			i++ // the tag's own space
+		}
+		for i < len(features) && features[i] != ' ' {
+			i++
+		}
+		word := features[start:i]
+		if i < len(features) {
+			i++ // the space that closes it
+		}
+		b.WriteString("\x1b[" + tagColor(word).chip + "m" + features[start:i] + "\x1b[39;49m")
+	}
+	return b.String()
 }
 
 // model is /model: with a name, the model to load; alone, the list to choose from.
@@ -129,21 +255,22 @@ func (t *talker) model(arg string) {
 		printError(errors.New("the definitions have no chat model"))
 		return
 	}
-	head, rows := t.table(cs)
+	colors := console.Colors(os.Stdout)
+	head, rows, paint := t.table(cs, console.Columns(os.Stdout), colors)
 	cur := 0
 	for i, c := range cs {
 		if t.at(c.info.Name) {
 			cur = i
 		}
 	}
-	i, err := t.ed.Select(head, rows, cur)
+	i, err := t.ed.Select(head, rows, cur, paint)
 	if errors.Is(err, console.ErrNoTerminal) {
 		// not a terminal to choose on: the list, to name one of
 		fmt.Println("  " + head)
 		for _, r := range rows {
-			fmt.Println("  " + r)
+			fmt.Println("  " + paint(r))
 		}
-		console.Notef("* is the model at hand; /model NAME loads another\n")
+		console.Notef("* is the model at hand; DL is what loading a model downloads first (ready: it is here), DISK what it keeps on the disk; /model NAME loads another\n")
 		return
 	}
 	if i < 0 || t.at(cs[i].info.Name) {
@@ -279,11 +406,23 @@ func (t *talker) restart() {
 // reads reports whether the model at hand reads the images and clips of the conversation.
 func (t *talker) reads() bool {
 	for _, m := range t.msgs {
-		for _, md := range m.Media {
-			if t.c == nil || (md.Audio && !t.c.Audio()) || (!md.Audio && !t.c.Images()) {
-				return false
-			}
+		if t.unread(m) != "" {
+			return false
 		}
 	}
 	return true
+}
+
+// unread is what of a message the model at hand does not read: "an image", "a clip", "" when it
+// reads it all.
+func (t *talker) unread(m text.Message) string {
+	for _, md := range m.Media {
+		switch {
+		case md.Audio && (t.c == nil || !t.c.Audio()):
+			return "a clip"
+		case !md.Audio && (t.c == nil || !t.c.Images()):
+			return "an image"
+		}
+	}
+	return ""
 }

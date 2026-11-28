@@ -98,7 +98,12 @@ var ErrNoTerminal = errors.New("console: not a terminal")
 // terminal are cut, and of more rows than it has those around the one marked are shown. What it
 // drew is erased when it returns. Without a terminal to edit on (a pipe), it is ErrNoTerminal:
 // the caller writes the rows.
-func (e *Editor) Select(head string, rows []string, cur int) (int, error) {
+//
+// paint (nil for none) colors a row as it is shown, cut to the terminal's width, where the
+// terminal takes colors: it adds escape sequences and no column, and ends a color with the
+// default one (\x1b[39m, \x1b[49m), not with a reset, which would end the mark of the row
+// chosen too.
+func (e *Editor) Select(head string, rows []string, cur int, paint func(row string) string) (int, error) {
 	if !e.edit || len(rows) == 0 {
 		return -1, ErrNoTerminal
 	}
@@ -107,11 +112,11 @@ func (e *Editor) Select(head string, rows []string, cur int) (int, error) {
 		return -1, ErrNoTerminal
 	}
 	defer restore()
-	return e.selectRow(head, rows, cur), nil
+	return e.selectRow(head, rows, cur, paint), nil
 }
 
 // selectRow is Select on the terminal in raw mode.
-func (e *Editor) selectRow(head string, rows []string, cur int) int {
+func (e *Editor) selectRow(head string, rows []string, cur int, paint func(string) string) int {
 	cur = min(max(cur, 0), len(rows)-1)
 	top, drawn := 0, 0
 	erase := func() string {
@@ -161,11 +166,24 @@ func (e *Editor) selectRow(head string, rows []string, cur int) int {
 			line("  "+head, gray, reset)
 		}
 		for i := top; i < top+fit; i++ {
+			mark, on, off := "  ", "", ""
 			if i == cur {
-				line("> "+rows[i], "\x1b[1m", reset)
-			} else {
-				line("  "+rows[i], "", "")
+				mark, on, off = "> ", "\x1b[1m", reset
 			}
+			if drawn > 0 {
+				sb.WriteString("\r\n")
+			}
+			row := shorten(rows[i], cols-1-len(mark))
+			if e.color {
+				if paint != nil {
+					row = paint(row)
+				}
+				row = on + mark + row + off
+			} else {
+				row = mark + row
+			}
+			sb.WriteString(row)
+			drawn++
 		}
 		keys := "↑ ↓ move, Enter chooses, Esc leaves it as it is"
 		if fit < len(rows) {

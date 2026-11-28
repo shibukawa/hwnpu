@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -119,12 +120,12 @@ func TestSelect(t *testing.T) {
 		{"a row out of range", "\r", 9, 4},
 	} {
 		e := fake(c.keys, 40)
-		if got := e.selectRow("HEAD", rows, c.cur); got != c.want {
+		if got := e.selectRow("HEAD", rows, c.cur, nil); got != c.want {
 			t.Errorf("%s: %d, want %d", c.name, got, c.want)
 		}
 	}
 	// not a terminal: the caller writes the rows
-	if i, err := NewPlainEditor(strings.NewReader("\r"), io.Discard).Select("", rows, 0); i != -1 || err != ErrNoTerminal {
+	if i, err := NewPlainEditor(strings.NewReader("\r"), io.Discard).Select("", rows, 0, nil); i != -1 || err != ErrNoTerminal {
 		t.Errorf("on a pipe: %d, %v", i, err)
 	}
 }
@@ -136,7 +137,7 @@ func TestSelectDraws(t *testing.T) {
 	rows := []string{"zero", "one", "two", "three", "a row that is longer than the terminal is wide"}
 	e := &Editor{in: bufio.NewReader(strings.NewReader("\x1b[B\x1b[B\x1b[B\x1b[B\r")), out: &out, edit: true,
 		cols: func() int { return 20 }, lines: func() int { return 5 }} // the headings, 2 rows and the keys
-	if got := e.selectRow("HEAD", rows, 0); got != 4 {
+	if got := e.selectRow("HEAD", rows, 0, nil); got != 4 {
 		t.Fatalf("chose %d, want 4", got)
 	}
 	frames := strings.Split(out.String(), "\x1b[J")
@@ -155,5 +156,39 @@ func TestSelectDraws(t *testing.T) {
 	// 4 lines drawn: back to the first and erased from there, at each redraw and at the end
 	if !strings.HasSuffix(out.String(), "\r\x1b[3A\x1b[J") {
 		t.Errorf("not erased at the end: %q", out.String()[max(0, out.Len()-20):])
+	}
+}
+
+// On a terminal of colors, Select paints each row as it is cut and marks the one chosen in bold
+// around its paint; without colors it paints nothing.
+func TestSelectPaints(t *testing.T) {
+	rows := []string{"zero tag", "a row that is longer than the terminal is wide"}
+	var painted []string
+	paint := func(row string) string {
+		painted = append(painted, row)
+		return strings.Replace(row, "tag", "\x1b[36mtag\x1b[39m", 1)
+	}
+	var out bytes.Buffer
+	e := &Editor{in: bufio.NewReader(strings.NewReader("\r")), out: &out, edit: true, color: true, cols: func() int { return 20 }}
+	if got := e.selectRow("", rows, 0, paint); got != 0 {
+		t.Fatalf("chose %d", got)
+	}
+	frame := strings.Split(out.String(), "\x1b[J")[0]
+	if !strings.Contains(frame, "\x1b[1m> zero \x1b[36mtag\x1b[39m\x1b[0m") {
+		t.Errorf("the row chosen: %q", frame)
+	}
+	if !slices.Equal(painted, []string{"zero tag", "a row that is lo…"}) {
+		t.Errorf("painted %q", painted)
+	}
+	for _, line := range strings.Split(frame, "\r\n") {
+		line, _, _ = strings.Cut(line, "\r") // the last: the cursor back to the first
+		if w := visibleWidth(line); w > 19 {
+			t.Errorf("a line of %d columns on a terminal of 20: %q", w, line)
+		}
+	}
+	painted = nil
+	e = &Editor{in: bufio.NewReader(strings.NewReader("\r")), out: io.Discard, edit: true, cols: func() int { return 20 }}
+	if e.selectRow("", rows, 0, paint); painted != nil {
+		t.Errorf("painted %q on a terminal without colors", painted)
 	}
 }

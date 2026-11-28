@@ -65,7 +65,7 @@ go run ./cmd/hwnpu-chat -m translate "桜が満開です。"
 
   | Command | What it does |
   |---|---|
-  | `/model` | lists the chat models to choose one from (↑ ↓ and Enter; Esc keeps the model at hand), each with the memory it takes running and whether it is here. A model that is not here shows what it downloads and keeps on the disk (`no: 7.5 GB download, 8.1 GB disk`) |
+  | `/model` | lists the chat models to choose one from (↑ ↓ and Enter; Esc keeps the model at hand), each on a line that fits a terminal of 80 columns: the memory it takes running (`MEM`), what loading it downloads first (`DL`: `ready` when it is here, else a size such as `7.5G`), what it keeps on the disk (`DISK`) and its features. On a terminal of colors the features are tags, each in its color (`vision` green, `audio` yellow): with a background from 87 columns, as colored words below |
   | `/model NAME` | loads NAME, named as for `--model` (`/model gemma4:e4b`, `/model translate`) |
   | `/reset` (`/clear`, `/new`) | clears the conversation |
   | `/retry` (`/regen`) | answers the last message again; after `/model`, the other model answers it |
