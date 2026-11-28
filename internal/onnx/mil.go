@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 
+	"github.com/shibukawa/hwnpu/internal/binview"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -67,11 +68,7 @@ func (p *Program) OutShapes() [][]int { return p.outShapes }
 func (p *Program) Split(y []float32) map[string]*Tensor {
 	out := map[string]*Tensor{}
 	for i, f := range SplitFlat(y, p.outShapes) {
-		t := &Tensor{Shape: p.outShapes[i], F: make([]float64, len(f)), Type: Float}
-		for j, v := range f {
-			t.F[j] = float64(v)
-		}
-		out[p.Outputs[i]] = t
+		out[p.Outputs[i]] = &Tensor{Shape: p.outShapes[i], F: binview.Convert[float64](f), Type: Float}
 	}
 	return out
 }
@@ -271,15 +268,9 @@ func (l *lowering) v(x val) *mlpackage.Var {
 	return l.F16s("k", x.c.Shape, vals)
 }
 
-func ints32(v []int) *[]int32 {
-	out := make([]int32, len(v))
-	for i, x := range v {
-		out[i] = int32(x)
-	}
-	return &out
-}
+func ints32(v []int) []int32 { return binview.Convert[int32](v) }
 
-func (l *lowering) ints(v ...int) *mlpackage.Var { return l.B.Ints(*ints32(v)...) }
+func (l *lowering) ints(v ...int) *mlpackage.Var { return l.B.Ints(ints32(v)...) }
 
 func (l *lowering) op(typ string, in map[string]any, shape ...int) *mlpackage.Var {
 	return l.Op(typ, in, shape...)
@@ -313,13 +304,9 @@ func (l *lowering) node(n *Node) {
 	}
 	set := func(i int, x val) { l.vals[n.Out[i]] = x }
 	if n.Op == "Shape" && in[0].v != nil { // a program value's shape is static
-		t := &Tensor{Shape: []int{len(in[0].v.Shape)}, Type: Int64}
-		for _, d := range in[0].v.Shape {
-			t.F = append(t.F, float64(d))
-		}
 		r := len(in[0].v.Shape)
 		start, end := clampAxis(int(n.Int("start", 0)), r), clampAxis(int(n.Int("end", int64(r))), r)
-		t.F, t.Shape = t.F[start:end], []int{end - start}
+		t := &Tensor{Shape: []int{end - start}, F: binview.Convert[float64](in[0].v.Shape[start:end]), Type: Int64}
 		set(0, val{c: t})
 		return
 	}
@@ -845,13 +832,7 @@ func siluOnly(g *Graph, outputs []string) map[string]bool {
 	return only
 }
 
-func toInt64(v []int) []int64 {
-	out := make([]int64, len(v))
-	for i, x := range v {
-		out[i] = int64(x)
-	}
-	return out
-}
+func toInt64(v []int) []int64 { return binview.Convert[int64](v) }
 
 func (l *lowering) reshape(v *mlpackage.Var, shape []int) *mlpackage.Var {
 	if slices.Equal(v.Shape, shape) {
@@ -878,11 +859,7 @@ func (l *lowering) slice(v *mlpackage.Var, begin, end, step []int) *mlpackage.Va
 
 // weight is a constant input as an fp16 constant named after it.
 func (l *lowering) weight(name string, t *Tensor, shape []int) *mlpackage.Var {
-	vals := make([]float32, len(t.F))
-	for i, f := range t.F {
-		vals[i] = float32(f)
-	}
-	return l.F16s(milName(name), shape, vals)
+	return l.F16s(milName(name), shape, binview.Convert[float32](t.F))
 }
 
 // milName is an ONNX name as a MIL identifier: other characters than letters, digits and _ as

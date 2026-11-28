@@ -218,10 +218,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	}
 	var stops []string
 	if len(req.Stop) > 0 && string(req.Stop) != "null" {
-		var one string
-		if json.Unmarshal(req.Stop, &one) == nil {
-			stops = []string{one}
-		} else if err := json.Unmarshal(req.Stop, &stops); err != nil {
+		if stops, err = unmarshalOneOrMany[string](req.Stop); err != nil {
 			apiError(w, http.StatusBadRequest, "invalid_request_error", "", "stop is neither a string nor a list of strings")
 			return
 		}
@@ -440,11 +437,8 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	emb := s.Embedders[i]
-	var texts []string
-	var one string
-	if json.Unmarshal(req.Input, &one) == nil {
-		texts = []string{one}
-	} else if err := json.Unmarshal(req.Input, &texts); err != nil {
+	texts, err := unmarshalOneOrMany[string](req.Input)
+	if err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", "input is neither a string nor a list of strings (token ids are not taken)")
 		return
 	}
@@ -527,6 +521,18 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		"object": "list", "data": data, "model": emb.Name,
 		"usage": map[string]any{"prompt_tokens": tokens, "total_tokens": tokens},
 	})
+}
+
+func unmarshalOneOrMany[T any](raw json.RawMessage) ([]T, error) {
+	var one T
+	if json.Unmarshal(raw, &one) == nil {
+		return []T{one}, nil
+	}
+	var many []T
+	if err := json.Unmarshal(raw, &many); err != nil {
+		return nil, err
+	}
+	return many, nil
 }
 
 func (s *Server) logf(format string, args ...any) {

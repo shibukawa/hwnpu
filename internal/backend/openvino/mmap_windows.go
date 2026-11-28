@@ -4,9 +4,10 @@ package openvino
 
 import (
 	"os"
-	"sync"
 	"syscall"
 	"unsafe"
+
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 const supported = true
@@ -14,7 +15,7 @@ const supported = true
 func shmDir() string { return os.TempDir() }
 
 // views are the mapping handles of the mapped buffers, by their first byte.
-var views sync.Map
+var views syncx.SyncMap[uintptr, syscall.Handle]
 
 // mapFile makes a file of size bytes at path and maps it shared.
 func mapFile(path string, size int) ([]byte, error) {
@@ -46,7 +47,7 @@ func unmap(b []byte) error {
 	addr := uintptr(unsafe.Pointer(unsafe.SliceData(b[:cap(b)])))
 	err := syscall.UnmapViewOfFile(addr)
 	if h, ok := views.LoadAndDelete(addr); ok {
-		syscall.CloseHandle(h.(syscall.Handle))
+		syscall.CloseHandle(h)
 	}
 	return err
 }

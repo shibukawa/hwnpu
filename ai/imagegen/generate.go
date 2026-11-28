@@ -71,7 +71,7 @@ var (
 func newRole(name string) *airole.Role {
 	return &airole.Role{
 		Name:   name,
-		Remote: func(h *airpc.Handle) io.Closer { return &Generator{remote: h} },
+		Remote: func(h *airpc.Handle) io.Closer { return &Generator{p: airpc.RemoteProxy[generatorImpl](h)} },
 		Kinds:  []catalog.Kind{catalog.KindImage},
 		// 1: Warm draws a picture of every size at the compile, so that none compiles at its first use
 		// 2: Anima, Chroma (since removed) and FLUX.3 klein; FLUX.2 klein's export on Apple's of the eight sizes
@@ -109,8 +109,7 @@ func Export(dir string) (ai.Definition, error) {
 
 // Generator draws pictures. It draws one at a time; others wait.
 type Generator struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  generatorImpl // the engine's (ai/imagegen/engine), when it is here
+	p airpc.Proxy[generatorImpl]
 }
 
 // generatorImpl is a picture model of the engine in this process: Generator's methods but those
@@ -129,54 +128,30 @@ type generatorImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (g *Generator) Model() string {
-	if g.remote != nil {
-		return airpc.Value[string](g.remote, "Model")
-	}
-	return g.local.Model()
-}
+func (g *Generator) Model() string { return airpc.ProxyValue(g.p, "Model", generatorImpl.Model) }
 
 // Family is the model's family: flux2-klein, flux3-klein or anima.
-func (g *Generator) Family() string {
-	if g.remote != nil {
-		return airpc.Value[string](g.remote, "Family")
-	}
-	return g.local.Family()
-}
+func (g *Generator) Family() string { return airpc.ProxyValue(g.p, "Family", generatorImpl.Family) }
 
 // Edits reports whether it draws from reference pictures (Options.References).
-func (g *Generator) Edits() bool {
-	if g.remote != nil {
-		return airpc.Value[bool](g.remote, "Edits")
-	}
-	return g.local.Edits()
-}
+func (g *Generator) Edits() bool { return airpc.ProxyValue(g.p, "Edits", generatorImpl.Edits) }
 
 // Sizes are the picture sizes the model draws on this machine's NPU.
 func (g *Generator) Sizes() []image.Point {
-	if g.remote != nil {
-		return airpc.Value[[]image.Point](g.remote, "Sizes")
-	}
-	return g.local.Sizes()
+	return airpc.ProxyValue(g.p, "Sizes", generatorImpl.Sizes)
 }
 
 // EditSizes are the picture sizes it draws from references at on this machine's NPU (none when it
 // does not edit).
 func (g *Generator) EditSizes() []image.Point {
-	if g.remote != nil {
-		return airpc.Value[[]image.Point](g.remote, "EditSizes")
-	}
-	return g.local.EditSizes()
+	return airpc.ProxyValue(g.p, "EditSizes", generatorImpl.EditSizes)
 }
 
 // SizeFor is the size of Sizes nearest w x h in shape; between sizes of one shape, the nearest
 // in pixels. A picture of another shape is drawn from by stretching it to this size, or by
 // leaving the crop to Generate.
 func (g *Generator) SizeFor(w, h int) image.Point {
-	if g.remote != nil {
-		return airpc.Value[image.Point](g.remote, "SizeFor", w, h)
-	}
-	return g.local.SizeFor(w, h)
+	return airpc.ProxyValue(g.p, "SizeFor", func(l generatorImpl) image.Point { return l.SizeFor(w, h) }, w, h)
 }
 
 // SizeOf is the size a name of one means for the model, as hwnpu-image's --size takes it: an
@@ -184,10 +159,9 @@ func (g *Generator) SizeFor(w, h int) image.Point {
 // model's own sizes of them), or a side in pixels for a square. It need not be one of Sizes
 // (Generate draws the nearest); an error says what the model takes.
 func (g *Generator) SizeOf(spec string) (image.Point, error) {
-	if g.remote != nil {
-		return airpc.Call1[image.Point](g.remote, context.Background(), "SizeOf", spec)
-	}
-	return g.local.SizeOf(spec)
+	return airpc.ProxyCall1(g.p, context.Background(), "SizeOf", func(l generatorImpl) (image.Point, error) {
+		return l.SizeOf(spec)
+	}, spec)
 }
 
 // Warm draws a picture of one step at each of Sizes (FLUX.2 klein; the first size alone for the
@@ -197,10 +171,7 @@ func (g *Generator) SizeOf(spec string) (image.Point, error) {
 // it, so that no picture waits for a compile. On AMD's NPU, whose programs are made at Prepare,
 // it does nothing.
 func (g *Generator) Warm(ctx context.Context) error {
-	if g.remote != nil {
-		return airpc.Call0(g.remote, ctx, "Warm")
-	}
-	return g.local.Warm(ctx)
+	return airpc.ProxyCall0(g.p, ctx, "Warm", generatorImpl.Warm)
 }
 
 // Generate draws a picture from a prompt, and from the references when there are any (an edit).
@@ -220,11 +191,10 @@ func (g *Generator) GenerateAll(ctx context.Context, prompts []string, o Options
 	if len(prompts) == 0 {
 		return nil, errors.New("ai/imagegen: no prompt")
 	}
-	if g.remote != nil {
-		// the callbacks of o (Progress, Drawn, ...) are called here as hwnpud draws
-		return airpc.Call1[*Pictures](g.remote, ctx, "GenerateAll", prompts, o)
-	}
-	return g.local.GenerateAll(ctx, prompts, o)
+	// the callbacks of o (Progress, Drawn, ...) are called here as hwnpud draws
+	return airpc.ProxyCall1(g.p, ctx, "GenerateAll", func(l generatorImpl) (*Pictures, error) {
+		return l.GenerateAll(ctx, prompts, o)
+	}, prompts, o)
 }
 
 // Request is what a GenerateNode reads: a prompt, and the pictures it edits or composes from.
@@ -251,15 +221,10 @@ func GenerateNode(u ai.Use[*Generator], o Options) *ai.ModelNode[Request, image.
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (g *Generator) Close() error {
-	if g.remote != nil {
-		return g.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return g.local.Close()
-}
+func (g *Generator) Close() error { return g.p.Close() }
 
 func init() {
-	wrap := func(l any) io.Closer { return &Generator{local: l.(generatorImpl)} }
+	wrap := func(l any) io.Closer { return &Generator{p: airpc.LocalProxy(l.(generatorImpl))} }
 	for _, r := range []*airole.Role{role, editRole} {
 		airole.Register(r)
 		bridge.Roles[r.Name] = r

@@ -92,3 +92,51 @@ func Licenses(p *ai.Plan, accept bool, in *os.File, out io.Writer) error {
 	p.AcceptLicenses = true
 	return nil
 }
+
+// ResolveOptions configures how ResolveUse reports missing models or resolved family/use names.
+type ResolveOptions struct {
+	// ListCommand is the command shown in the final error when no model matches; if it contains
+	// "%s", the role's primary kind is formatted into it.
+	ListCommand string
+	// ErrOut receives the list header and models on NoModelError (nil defaults to os.Stderr).
+	ErrOut io.Writer
+	// List writes the available models of kind to w when no model matches.
+	List func(w io.Writer, kind string) error
+}
+
+// ResolveUse normalizes u against cat (ai.Normalize). On NoModelError it lists the available
+// models of u's primary kind and returns a formatted error mentioning o.ListCommand.
+func ResolveUse[T io.Closer](cat *ai.Catalog, u ai.Use[T], o ResolveOptions, onPicked func(resolved ai.Use[T]) error) (ai.Use[T], []ai.Definition, error) {
+	n, def, err := ai.Normalize(cat, u)
+	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
+		kind := u.Kinds()[0]
+		out := o.ErrOut
+		if out == nil {
+			out = os.Stderr
+		}
+		fmt.Fprintf(out, "no %s model %q; the %s models of the definitions:\n\n", kind, e.Name, kind)
+		if o.List != nil {
+			if lerr := o.List(out, kind); lerr != nil {
+				return u, nil, lerr
+			}
+		}
+		fmt.Fprintln(out)
+		hint := o.ListCommand
+		if strings.Contains(hint, "%s") {
+			hint = fmt.Sprintf(hint, kind)
+		}
+		return u, nil, fmt.Errorf("no %s model, family or use %q (%s shows them)", kind, e.Name, hint)
+	}
+	if err != nil {
+		return u, nil, err
+	}
+	if def != nil {
+		return n, []ai.Definition{*def}, nil
+	}
+	if onPicked != nil {
+		if err := onPicked(n); err != nil {
+			return u, nil, err
+		}
+	}
+	return n, nil, nil
+}

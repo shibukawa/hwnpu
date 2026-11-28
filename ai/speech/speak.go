@@ -38,7 +38,7 @@ func Speak(name string) ai.Use[*Speaker] {
 // speakRole's Prepare and Load are the engine's (ai/speech/engine).
 var speakRole = &airole.Role{
 	Name:   "speak",
-	Remote: func(h *airpc.Handle) io.Closer { return &Speaker{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &Speaker{p: airpc.RemoteProxy[speakerImpl](h)} },
 	Kinds:  []catalog.Kind{catalog.KindSpeech},
 	// 1: Supertonic's programs of its text's graphs (durations, encoders), with no ONNX Runtime
 	// 2: Supertonic on AMD's NPU (amd: supertonic.PrepareAMD's export)
@@ -68,12 +68,7 @@ type SpeakOptions struct {
 
 // Paces reports whether the model says a text at SpeakOptions.Speed itself (Supertonic); the
 // speech of another is to be stretched for it.
-func (s *Speaker) Paces() bool {
-	if s.remote != nil {
-		return airpc.Value[bool](s.remote, "Paces")
-	}
-	return s.local.Paces()
-}
+func (s *Speaker) Paces() bool { return airpc.ProxyValue(s.p, "Paces", speakerImpl.Paces) }
 
 // Audio is mono audio.
 type Audio struct {
@@ -96,8 +91,7 @@ type SpeakStats struct {
 
 // Speaker speaks texts (LFM3-Audio). It runs one request at a time; others wait.
 type Speaker struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  speakerImpl   // the engine's (ai/speech/engine), when it is here
+	p airpc.Proxy[speakerImpl]
 }
 
 // speakerImpl is a speech model of the engine in this process.
@@ -113,52 +107,36 @@ type speakerImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (s *Speaker) Model() string {
-	if s.remote != nil {
-		return airpc.Value[string](s.remote, "Model")
-	}
-	return s.local.Model()
-}
+func (s *Speaker) Model() string { return airpc.ProxyValue(s.p, "Model", speakerImpl.Model) }
 
 // Rate is the samples a second of the speech (LFM3-Audio's 24000, Supertonic's 44100).
-func (s *Speaker) Rate() int {
-	if s.remote != nil {
-		return airpc.Value[int](s.remote, "Rate")
-	}
-	return s.local.Rate()
-}
+func (s *Speaker) Rate() int { return airpc.ProxyValue(s.p, "Rate", speakerImpl.Rate) }
 
 // Stages names what SpeakStats' Text, Depth and Codec times are of: LFM3-Audio's text model,
 // depthformer and codec decoder, or Supertonic's text graphs, flow and vocoder.
 func (s *Speaker) Stages() (text, depth, codec string) {
-	if s.remote != nil {
-		out, err := s.remote.Call(context.Background(), "Stages")
+	if h := s.p.Remote(); h != nil {
+		out, err := h.Call(context.Background(), "Stages")
 		if err != nil || len(out) != 3 {
 			return "", "", ""
 		}
 		return out[0].String(), out[1].String(), out[2].String()
 	}
-	return s.local.Stages()
+	return s.p.Local().Stages()
 }
 
 // OnNPU reports whether the speech is made on the NPU (Supertonic's flow and vocoder; false on
 // the CPU).
-func (s *Speaker) OnNPU() bool {
-	if s.remote != nil {
-		return airpc.Value[bool](s.remote, "OnNPU")
-	}
-	return s.local.OnNPU()
-}
+func (s *Speaker) OnNPU() bool { return airpc.ProxyValue(s.p, "OnNPU", speakerImpl.OnNPU) }
 
 // Speak speaks a text.
 func (s *Speaker) Speak(ctx context.Context, text string, o SpeakOptions) (Audio, error) {
 	if strings.TrimSpace(text) == "" {
 		return Audio{}, errors.New("speech: nothing to speak")
 	}
-	if s.remote != nil {
-		return airpc.Call1[Audio](s.remote, ctx, "Speak", text, o)
-	}
-	return s.local.Speak(ctx, text, o)
+	return airpc.ProxyCall1(s.p, ctx, "Speak", func(l speakerImpl) (Audio, error) {
+		return l.Speak(ctx, text, o)
+	}, text, o)
 }
 
 // SpeakStream speaks each final chunk of a stream of text (flow.Sentences, or a translation's)
@@ -215,15 +193,10 @@ func (s *Speaker) speakStream(ctx context.Context, in flow.Stream[flow.Text], op
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (s *Speaker) Close() error {
-	if s.remote != nil {
-		return s.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return s.local.Close()
-}
+func (s *Speaker) Close() error { return s.p.Close() }
 
 func init() {
 	airole.Register(speakRole)
 	bridge.Roles[speakRole.Name] = speakRole
-	bridge.Wrap[speakRole.Name] = func(l any) io.Closer { return &Speaker{local: l.(speakerImpl)} }
+	bridge.Wrap[speakRole.Name] = func(l any) io.Closer { return &Speaker{p: airpc.LocalProxy(l.(speakerImpl))} }
 }

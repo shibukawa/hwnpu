@@ -6,13 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"unsafe"
 
+	"github.com/shibukawa/hwnpu/internal/binview"
 	"github.com/shibukawa/hwnpu/internal/mapped"
 )
 
@@ -78,37 +77,10 @@ func (w *tokbinWriter) add(name string, b []byte) {
 	w.data[name] = b
 }
 
-func (w *tokbinWriter) i32(name string, v []int32) {
-	b := make([]byte, 4*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint32(b[4*i:], uint32(x))
-	}
-	w.add(name, b)
-}
-
-func (w *tokbinWriter) u32(name string, v []uint32) {
-	b := make([]byte, 4*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint32(b[4*i:], x)
-	}
-	w.add(name, b)
-}
-
-func (w *tokbinWriter) i64(name string, v []int64) {
-	b := make([]byte, 8*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint64(b[8*i:], uint64(x))
-	}
-	w.add(name, b)
-}
-
-func (w *tokbinWriter) f64(name string, v []float64) {
-	b := make([]byte, 8*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint64(b[8*i:], math.Float64bits(x))
-	}
-	w.add(name, b)
-}
+func (w *tokbinWriter) i32(name string, v []int32)   { w.add(name, binview.EncodeLE(v)) }
+func (w *tokbinWriter) u32(name string, v []uint32)  { w.add(name, binview.EncodeLE(v)) }
+func (w *tokbinWriter) i64(name string, v []int64)   { w.add(name, binview.EncodeLE(v)) }
+func (w *tokbinWriter) f64(name string, v []float64) { w.add(name, binview.EncodeLE(v)) }
 
 func (w *tokbinWriter) strs(name string, t *strTable) {
 	w.u32(name+".off", t.off)
@@ -220,51 +192,44 @@ func (r *tokbinReader) section(name string, optional bool) []byte {
 	return b[s[0] : s[0]+s[1] : s[0]+s[1]]
 }
 
-// nativeLE: the arrays are the file's bytes as they are where the machine is little-endian.
-var nativeLE = binary.NativeEndian.Uint16([]byte{1, 0}) == 1
-
 // view is the section's values of type T (4 or 8 bytes) in place when the machine reads them as
-// the file holds them, else decoded with get.
-func view[T int32 | uint32 | int64 | float64](r *tokbinReader, name string, optional bool, get func([]byte) T) []T {
+// the file holds them, else decoded from little-endian bytes.
+func view[T int32 | uint32 | int64 | float64](r *tokbinReader, name string, optional bool) []T {
 	b := r.section(name, optional)
 	if b == nil {
 		return nil
 	}
-	var z T
-	size := int(unsafe.Sizeof(z))
+	size := 8
+	switch any(*new(T)).(type) {
+	case int32, uint32:
+		size = 4
+	}
 	if len(b)%size != 0 {
 		if r.err == nil {
 			r.err = fmt.Errorf("section %s is not of %d-byte values", name, size)
 		}
 		return nil
 	}
-	if len(b) == 0 {
-		return []T{}
+	if v, ok := binview.NativeLEView[T](b); ok {
+		return v
 	}
-	if nativeLE && uintptr(unsafe.Pointer(&b[0]))%uintptr(size) == 0 {
-		return unsafe.Slice((*T)(unsafe.Pointer(&b[0])), len(b)/size)
-	}
-	out := make([]T, len(b)/size)
-	for i := range out {
-		out[i] = get(b[size*i:])
-	}
-	return out
+	return binview.DecodeLE[T](b)
 }
 
 func (r *tokbinReader) i32(name string, optional bool) []int32 {
-	return view(r, name, optional, func(b []byte) int32 { return int32(binary.LittleEndian.Uint32(b)) })
+	return view[int32](r, name, optional)
 }
 
 func (r *tokbinReader) u32(name string) []uint32 {
-	return view(r, name, false, binary.LittleEndian.Uint32)
+	return view[uint32](r, name, false)
 }
 
 func (r *tokbinReader) i64(name string) []int64 {
-	return view(r, name, false, func(b []byte) int64 { return int64(binary.LittleEndian.Uint64(b)) })
+	return view[int64](r, name, false)
 }
 
 func (r *tokbinReader) f64(name string) []float64 {
-	return view(r, name, false, func(b []byte) float64 { return math.Float64frombits(binary.LittleEndian.Uint64(b)) })
+	return view[float64](r, name, false)
 }
 
 // strs is a string table, checked so that a bad file cannot make str or find read past it.

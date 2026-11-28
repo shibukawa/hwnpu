@@ -24,10 +24,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/goccy/go-yaml"
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/binview"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -589,13 +589,12 @@ func sortKey(h uint16) uint16 {
 	return h ^ (uint16(int16(h)>>15) | 0x8000)
 }
 
-// f16s are fp16 values' little-endian bytes as uint16s (the machines hwnpu runs on are
-// little-endian).
+// f16s are fp16 values' little-endian bytes as uint16s.
 func f16s(b []byte) []uint16 {
-	if len(b) == 0 {
-		return nil
+	if v, ok := binview.NativeLEView[uint16](b); ok {
+		return v
 	}
-	return unsafe.Slice((*uint16)(unsafe.Pointer(&b[0])), len(b)/2)
+	return binview.DecodeLE[uint16](b)
 }
 
 // parallel calls f(0), ..., f(n-1) on the CPU's cores.

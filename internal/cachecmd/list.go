@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"os"
-	"reflect"
 
 	"github.com/shibukawa/hwnpu/internal/aieng"
 	"github.com/shibukawa/hwnpu/internal/airpc"
@@ -62,6 +61,6 @@ func List(ctx context.Context, w io.Writer, files []string, kinds ...string) err
 		return err
 	}
 	defer s.Close()
-	h := s.Object(0).Bind(reflect.TypeFor[ListHost]())
+	h := airpc.Root[ListHost](s)
 	return airpc.Call0(h, ctx, "ListModels", r, func(b []byte) { w.Write(b) }, func(b []byte) { os.Stderr.Write(b) })
 }

@@ -316,12 +316,10 @@ func (g *GraphExt) buildLog(graph Handle) string {
 	if g.pfnBuildLogGetString == nil {
 		return ""
 	}
-	var n uint32
-	if g.pfnBuildLogGetString(graph, &n, nil) != ResultSuccess || n == 0 {
-		return ""
-	}
-	buf := make([]byte, n)
-	if g.pfnBuildLogGetString(graph, &n, &buf[0]) != ResultSuccess {
+	buf, err := enumerate("pfnBuildLogGetString", func(n *uint32, b *byte) Result {
+		return g.pfnBuildLogGetString(graph, n, b)
+	})
+	if err != nil || len(buf) == 0 {
 		return ""
 	}
 	return strings.TrimSpace(CString(buf))
@@ -372,15 +370,9 @@ func (g *GraphExt) AppendExecute(list, h Handle) error {
 
 // NativeBinary returns a copy of the compiled blob.
 func (g *GraphExt) NativeBinary(h Handle) ([]byte, error) {
-	var n uintptr
-	if err := check("pfnGetNativeBinary", g.pfnGetNativeBinary(h, &n, nil)); err != nil {
-		return nil, err
-	}
-	if n == 0 {
-		return nil, nil
-	}
-	buf := make([]byte, n)
-	return buf, check("pfnGetNativeBinary", g.pfnGetNativeBinary(h, &n, &buf[0]))
+	return enumerate("pfnGetNativeBinary", func(n *uintptr, b *byte) Result {
+		return g.pfnGetNativeBinary(h, n, b)
+	})
 }
 
 // SupportedLayers asks the compiler which layers of an IR it can compile. The driver answers

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 
+	"github.com/shibukawa/hwnpu/internal/binview"
 	"github.com/shibukawa/hwnpu/internal/mapped"
 	"github.com/shibukawa/hwnpu/internal/onnx"
 )
@@ -290,13 +291,7 @@ func f16(h uint16) float64 {
 	return sign * (1 + m/1024) * math.Pow(2, float64(e-15))
 }
 
-func ints64(v ...int) []int64 {
-	out := make([]int64, len(v))
-	for i, x := range v {
-		out[i] = int64(x)
-	}
-	return out
-}
+func ints64(v ...int) []int64 { return binview.Convert[int64](v) }
 
 // node converts one operator to onnx nodes.
 func (c *converter) node(g *onnx.Graph, code int, opts table, ins, outs []string, nm string, shapes [][]int, idx []int) ([]*onnx.Node, error) {
@@ -518,13 +513,7 @@ func (c *converter) node(g *onnx.Graph, code int, opts table, ins, outs []string
 
 func (t table) int8(i int) int { return int(int8(t.uint8(i, 0))) }
 
-func toF(v []int) []float64 {
-	out := make([]float64, len(v))
-	for i, x := range v {
-		out[i] = float64(x)
-	}
-	return out
-}
+func toF(v []int) []float64 { return binview.Convert[float64](v) }
 
 func transpose2(w *onnx.Tensor) *onnx.Tensor {
 	r, c := w.Shape[0], w.Shape[1]

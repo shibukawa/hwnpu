@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	aicli "github.com/shibukawa/hwnpu/ai/cli"
+	"github.com/shibukawa/hwnpu/internal/aiensure"
 	"github.com/shibukawa/hwnpu/internal/cachecmd"
 	"github.com/shibukawa/hwnpu/modelstore"
 )
@@ -40,21 +40,13 @@ func useFor[T io.Closer](st ai.Store, u ai.Use[T]) (ai.Use[T], []ai.Definition, 
 	if err != nil {
 		return u, nil, err
 	}
-	n, def, err := ai.Normalize(cat, u)
-	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
-		kind := u.Kinds()[0]
-		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, e.Name, kind)
-		listModels(os.Stderr, st, kind)
-		fmt.Fprintln(os.Stderr)
-		return u, nil, fmt.Errorf("no %s model, family or use %q (hwnpu-audio list %s shows them)", kind, e.Name, kind)
-	}
-	if err != nil {
-		return u, nil, err
-	}
-	if def != nil {
-		return n, []ai.Definition{*def}, nil
-	}
-	return n, nil, nil
+	return aiensure.ResolveUse(cat, u, aiensure.ResolveOptions{
+		ListCommand: "hwnpu-audio list %s",
+		List: func(w io.Writer, kind string) error {
+			listModels(w, st, kind)
+			return nil
+		},
+	}, nil)
 }
 
 // listModels writes the models of kinds (all for none) of st's definitions, as hwnpud lists

@@ -29,7 +29,7 @@ func Embed(name string) ai.Use[*Embedder] {
 // On AMD's NPU a model runs from its export of tools/amd/iron_plamo_embed.py.
 // embedRole's Prepare and Load are the engine's (ai/text/engine).
 var embedRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &Embedder{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &Embedder{p: airpc.RemoteProxy[embedderImpl](h)} },
 	Name:   "embed",
 	Kinds:  []catalog.Kind{catalog.KindEmbed},
 }
@@ -63,8 +63,7 @@ var (
 
 // Embedder turns texts into vectors for search. It runs one text at a time; others wait.
 type Embedder struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  embedderImpl  // the engine's (ai/text/engine), when it is here
+	p airpc.Proxy[embedderImpl]
 }
 
 // embedderImpl is an embedding model of the engine in this process.
@@ -78,48 +77,22 @@ type embedderImpl interface {
 }
 
 // Model is the name of the model in the definitions, Name the one it calls itself (the API's).
-func (e *Embedder) Model() string {
-	if e.remote != nil {
-		return airpc.Value[string](e.remote, "Model")
-	}
-	return e.local.Model()
-}
-func (e *Embedder) Name() string {
-	if e.remote != nil {
-		return airpc.Value[string](e.remote, "Name")
-	}
-	return e.local.Name()
-}
+func (e *Embedder) Model() string { return airpc.ProxyValue(e.p, "Model", embedderImpl.Model) }
+func (e *Embedder) Name() string  { return airpc.ProxyValue(e.p, "Name", embedderImpl.Name) }
 
 // Dim is the length of the vectors, MaxTokens the most tokens of a text.
-func (e *Embedder) Dim() int {
-	if e.remote != nil {
-		return airpc.Value[int](e.remote, "Dim")
-	}
-	return e.local.Dim()
-}
-func (e *Embedder) MaxTokens() int {
-	if e.remote != nil {
-		return airpc.Value[int](e.remote, "MaxTokens")
-	}
-	return e.local.MaxTokens()
-}
+func (e *Embedder) Dim() int       { return airpc.ProxyValue(e.p, "Dim", embedderImpl.Dim) }
+func (e *Embedder) MaxTokens() int { return airpc.ProxyValue(e.p, "MaxTokens", embedderImpl.MaxTokens) }
 
 // Embed is the embedding of a text.
 func (e *Embedder) Embed(ctx context.Context, text string, o EmbedOptions) (Embedding, error) {
-	if e.remote != nil {
-		return airpc.Call1[Embedding](e.remote, ctx, "Embed", text, o)
-	}
-	return e.local.Embed(ctx, text, o)
+	return airpc.ProxyCall1(e.p, ctx, "Embed", func(l embedderImpl) (Embedding, error) {
+		return l.Embed(ctx, text, o)
+	}, text, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (e *Embedder) Close() error {
-	if e.remote != nil {
-		return e.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return e.local.Close()
-}
+func (e *Embedder) Close() error { return e.p.Close() }
 
 // Cosine is the cosine similarity of two vectors.
 func Cosine(a, b []float32) float64 { return chatwire.Cosine(a, b) }
@@ -127,5 +100,5 @@ func Cosine(a, b []float32) float64 { return chatwire.Cosine(a, b) }
 func init() {
 	airole.Register(embedRole)
 	bridge.Roles[embedRole.Name] = embedRole
-	bridge.Wrap[embedRole.Name] = func(l any) io.Closer { return &Embedder{local: l.(embedderImpl)} }
+	bridge.Wrap[embedRole.Name] = func(l any) io.Closer { return &Embedder{p: airpc.LocalProxy(l.(embedderImpl))} }
 }

@@ -25,7 +25,7 @@ func Notes(name string) ai.Use[*NoteTranscriber] {
 // notesRole's Prepare and Load are the engine's (ai/sound/engine): the constant-Q transform and
 // the making of notes on the host, the network on the NPU or the CPU.
 var notesRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &NoteTranscriber{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &NoteTranscriber{p: airpc.RemoteProxy[noteTranscriberImpl](h)} },
 	Name:   "notes",
 	Kinds:  []catalog.Kind{catalog.KindNotes},
 }
@@ -33,8 +33,7 @@ var notesRole = &airole.Role{
 // NoteTranscriber writes down the notes of music (Basic Pitch): any instrument, several notes
 // at once, with their pitch bends. It runs one request at a time; others wait.
 type NoteTranscriber struct {
-	remote *airpc.Handle       // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  noteTranscriberImpl // the engine's (ai/sound/engine), when it is here
+	p airpc.Proxy[noteTranscriberImpl]
 }
 
 // noteTranscriberImpl is a notes model of the engine in this process.
@@ -48,27 +47,18 @@ type noteTranscriberImpl interface {
 
 // Model is the name of the model in the definitions.
 func (t *NoteTranscriber) Model() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Model")
-	}
-	return t.local.Model()
+	return airpc.ProxyValue(t.p, "Model", noteTranscriberImpl.Model)
 }
 
 // Device is where the model runs: npu or cpu.
 func (t *NoteTranscriber) Device() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Device")
-	}
-	return t.local.Device()
+	return airpc.ProxyValue(t.p, "Device", noteTranscriberImpl.Device)
 }
 
 // Where says where the model runs, for a log: "all on the NPU", "on the CPU (ONNX Runtime, 1
 // threads)", "on the CPU interpreter", ...
 func (t *NoteTranscriber) Where() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Where")
-	}
-	return t.local.Where()
+	return airpc.ProxyValue(t.p, "Where", noteTranscriberImpl.Where)
 }
 
 // NotesOptions are how the notes are made from the network's activations (basic-pitch's
@@ -100,22 +90,16 @@ type NoteList struct {
 
 // Transcribe writes down the notes of music (mono, at NotesRate, in [-1, 1]).
 func (t *NoteTranscriber) Transcribe(ctx context.Context, pcm []float32, o NotesOptions) (NoteList, error) {
-	if t.remote != nil {
-		return airpc.Call1[NoteList](t.remote, ctx, "Transcribe", pcm, o)
-	}
-	return t.local.Transcribe(ctx, pcm, o)
+	return airpc.ProxyCall1(t.p, ctx, "Transcribe", func(l noteTranscriberImpl) (NoteList, error) {
+		return l.Transcribe(ctx, pcm, o)
+	}, pcm, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (t *NoteTranscriber) Close() error {
-	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return t.local.Close()
-}
+func (t *NoteTranscriber) Close() error { return t.p.Close() }
 
 func init() {
 	airole.Register(notesRole)
 	bridge.Roles[notesRole.Name] = notesRole
-	bridge.Wrap[notesRole.Name] = func(l any) io.Closer { return &NoteTranscriber{local: l.(noteTranscriberImpl)} }
+	bridge.Wrap[notesRole.Name] = func(l any) io.Closer { return &NoteTranscriber{p: airpc.LocalProxy(l.(noteTranscriberImpl))} }
 }

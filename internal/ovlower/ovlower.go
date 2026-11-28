@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/binview"
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/ovir"
@@ -216,11 +217,7 @@ func (l *lowerer) ints(op *milspec.Operation, key string, def ...int64) []int64 
 	if tv == nil || tv.GetInts() == nil {
 		l.fail("%s %s: input %s is not an immediate int32 constant", op.GetType(), opName(op), key)
 	}
-	out := make([]int64, len(tv.GetInts().GetValues()))
-	for i, v := range tv.GetInts().GetValues() {
-		out[i] = int64(v)
-	}
-	return out
+	return binview.Convert[int64](tv.GetInts().GetValues())
 }
 
 func (l *lowerer) bools(op *milspec.Operation, key string, n int) []bool {
@@ -309,19 +306,9 @@ func (l *lowerer) decode(c *milspec.Value) (elem string, shape []int, raw []byte
 	case milspec.DataType_FLOAT16:
 		return "f16", shape, tv.GetBytes().GetValues()
 	case milspec.DataType_FLOAT32:
-		f := tv.GetFloats().GetValues()
-		raw := make([]byte, 4*len(f))
-		for i, v := range f {
-			binary.LittleEndian.PutUint32(raw[4*i:], math.Float32bits(v))
-		}
-		return "f16", shape, f32ToF16(raw)
+		return "f16", shape, f32ToF16(binview.EncodeLE(tv.GetFloats().GetValues()))
 	case milspec.DataType_INT32:
-		v := tv.GetInts().GetValues()
-		raw := make([]byte, 4*len(v))
-		for i, x := range v {
-			binary.LittleEndian.PutUint32(raw[4*i:], uint32(x))
-		}
-		return "i32", shape, raw
+		return "i32", shape, binview.EncodeLE(tv.GetInts().GetValues())
 	case milspec.DataType_BOOL:
 		v := tv.GetBools().GetValues()
 		raw := make([]byte, len(v))
@@ -347,11 +334,7 @@ func (l *lowerer) constant(c *milspec.Value, shape []int) ovir.Value {
 }
 
 func (l *lowerer) i64s(v ...int64) ovir.Value {
-	raw := make([]byte, 8*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint64(raw[8*i:], uint64(x))
-	}
-	return l.b.Const("i64", []int{len(v)}, raw)
+	return l.b.Const("i64", []int{len(v)}, binview.EncodeLE(v))
 }
 
 func (l *lowerer) f16(v float32) ovir.Value {
@@ -454,13 +437,7 @@ func (l *lowerer) op(op *milspec.Operation) {
 		}
 		N, C, H, W := int64(x.Shape[0]), int64(x.Shape[1]), int64(x.Shape[2]), int64(x.Shape[3])
 		sh, sw := l.ints(op, "scale_factor_height", 1)[0], l.ints(op, "scale_factor_width", 1)[0]
-		dims := func(v ...int64) []int {
-			out := make([]int, len(v))
-			for i, d := range v {
-				out[i] = int(d)
-			}
-			return out
-		}
+		dims := func(v ...int64) []int { return binview.Convert[int](v) }
 		u := b.Op("Reshape", "opset1", []string{"special_zero", "false"}, elem, dims(N*C, H, W, 1), x, l.i64s(N*C, H, W, 1))
 		u = b.Op("Tile", "opset1", nil, elem, dims(N*C, H, W, sw), u, l.i64s(1, 1, 1, sw))
 		u = b.Op("Reshape", "opset1", []string{"special_zero", "false"}, elem, dims(N*C, H, 1, W*sw), u, l.i64s(N*C, H, 1, W*sw))
@@ -821,13 +798,7 @@ func join(v []int64) string {
 	return strings.Join(s, ",")
 }
 
-func ints64(v []int) []int64 {
-	out := make([]int64, len(v))
-	for i, x := range v {
-		out[i] = int64(x)
-	}
-	return out
-}
+func ints64(v []int) []int64 { return binview.Convert[int64](v) }
 
 // rtKey makes a metadata key an XML name: letters, digits, '_', '-' and '.' are kept.
 func rtKey(k string) string {

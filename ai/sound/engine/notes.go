@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/ai/sound"
 	"github.com/shibukawa/hwnpu/ai/sound/internal/bridge"
 	"github.com/shibukawa/hwnpu/internal/airole"
@@ -26,15 +25,13 @@ func loadNotes(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer
 	if err != nil {
 		return nil, err
 	}
-	c, dev, err := convertedLoad(ctx, f, e, r, convertedOpener{
-		cpu: func(model string, threads int) (io.Closer, error) { return notes.OpenCPU(model, threads) },
-		npu: func(ctx context.Context, dev *hwnpu.Device, model, program string) (io.Closer, error) {
-			return notes.Open(ctx, dev, model, program)
-		}})
+	t, dev, err := convertedLoad(ctx, f, e, r, convertedOpener[*notes.Transcriber]{
+		cpu: notes.OpenCPU,
+		npu: notes.Open,
+	})
 	if err != nil {
 		return nil, err
 	}
-	t := c.(*notes.Transcriber)
 	if dev != nil {
 		t.OnClose = func() { dev.Close() }
 	}

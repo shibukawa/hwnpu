@@ -44,7 +44,7 @@ func Music(name string) ai.Use[*MusicGenerator] {
 // and SpectroStream's encoder (continuing a clip), loaded at their first use. The role's
 // Prepare and Load are the engine's (ai/sound/engine).
 var musicRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &MusicGenerator{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &MusicGenerator{p: airpc.RemoteProxy[musicGeneratorImpl](h)} },
 	Name:   "music",
 	Kinds:  []catalog.Kind{catalog.KindMusic},
 }
@@ -52,8 +52,7 @@ var musicRole = &airole.Role{
 // MusicGenerator makes music (Magenta RealTime 2): styles from texts and audio (Style), then
 // the music of a style, as it is made (Generate). It runs one request at a time; others wait.
 type MusicGenerator struct {
-	remote *airpc.Handle      // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  musicGeneratorImpl // the engine's (ai/sound/engine), when it is here
+	p airpc.Proxy[musicGeneratorImpl]
 }
 
 // musicGeneratorImpl is a music model of the engine in this process.
@@ -68,27 +67,18 @@ type musicGeneratorImpl interface {
 
 // Model is the name of the model in the definitions.
 func (m *MusicGenerator) Model() string {
-	if m.remote != nil {
-		return airpc.Value[string](m.remote, "Model")
-	}
-	return m.local.Model()
+	return airpc.ProxyValue(m.p, "Model", musicGeneratorImpl.Model)
 }
 
 // OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
 func (m *MusicGenerator) OnCPU() bool {
-	if m.remote != nil {
-		return airpc.Value[bool](m.remote, "OnCPU")
-	}
-	return m.local.OnCPU()
+	return airpc.ProxyValue(m.p, "OnCPU", musicGeneratorImpl.OnCPU)
 }
 
 // Where says where the programs run, for a log: "all on the NPU", "SpectroStream's decoder on
 // the NPU, the language model on the CPU" (AMD's NPU), "on the CPU interpreter", ...
 func (m *MusicGenerator) Where() string {
-	if m.remote != nil {
-		return airpc.Value[string](m.remote, "Where")
-	}
-	return m.local.Where()
+	return airpc.ProxyValue(m.p, "Where", musicGeneratorImpl.Where)
 }
 
 // Clip is audio of any rate and channels, as a WAV file holds it (DecodeWAV).
@@ -131,10 +121,9 @@ type StyleResult struct {
 // Style is the style of the parts mixed by their weights (MusicCoCa's embeddings, averaged,
 // then its 12 codes). MusicCoCa is loaded at the first call and kept.
 func (m *MusicGenerator) Style(ctx context.Context, parts ...Style) (StyleResult, error) {
-	if m.remote != nil {
-		return airpc.Call1[StyleResult](m.remote, ctx, "Style", parts)
-	}
-	return m.local.Style(ctx, parts...)
+	return airpc.ProxyCall1(m.p, ctx, "Style", func(l musicGeneratorImpl) (StyleResult, error) {
+		return l.Style(ctx, parts...)
+	}, parts)
 }
 
 // Drums says whether the music has drums.
@@ -237,27 +226,22 @@ func (s MusicStats) RealTime() float64 { return s.Seconds() / s.Took.Seconds() }
 // time on the NPU; a player paces it (flow.Pace) and plays it at MusicGain. The stats are those
 // of the piece, whole when the stream ends. The stream generates once, when it is read.
 func (m *MusicGenerator) Generate(ctx context.Context, o MusicOptions) (flow.Stream[[]float32], *MusicStats) {
-	if m.remote != nil {
+	if h := m.p.Remote(); h != nil {
 		// the stats are whole when the stream ends, as here (airpc sends them with its end)
-		s, st, err := airpc.Call2[flow.Stream[[]float32], *MusicStats](m.remote, ctx, "Generate", o)
+		s, st, err := airpc.Call2[flow.Stream[[]float32], *MusicStats](h, ctx, "Generate", o)
 		if err != nil {
 			return func(yield func(flow.Chunk[[]float32], error) bool) { yield(flow.Chunk[[]float32]{}, err) }, &MusicStats{Seed: o.Seed}
 		}
 		return s, st
 	}
-	return m.local.Generate(ctx, o)
+	return m.p.Local().Generate(ctx, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (m *MusicGenerator) Close() error {
-	if m.remote != nil {
-		return m.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return m.local.Close()
-}
+func (m *MusicGenerator) Close() error { return m.p.Close() }
 
 func init() {
 	airole.Register(musicRole)
 	bridge.Roles[musicRole.Name] = musicRole
-	bridge.Wrap[musicRole.Name] = func(l any) io.Closer { return &MusicGenerator{local: l.(musicGeneratorImpl)} }
+	bridge.Wrap[musicRole.Name] = func(l any) io.Closer { return &MusicGenerator{p: airpc.LocalProxy(l.(musicGeneratorImpl))} }
 }

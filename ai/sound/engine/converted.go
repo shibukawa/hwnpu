@@ -99,14 +99,15 @@ func convertedRoute(m chat.Model, name string, n airole.NPU) (route, error) {
 
 // convertedOpen loads a converted model on its route: open with the ONNX file on ONNX Runtime,
 // else with the program of the CPU interpreter (dev nil) or of the NPU (dev open).
-type convertedOpener struct {
-	cpu func(model string, threads int) (io.Closer, error)
-	npu func(ctx context.Context, dev *hwnpu.Device, model, program string) (io.Closer, error)
+type convertedOpener[T io.Closer] struct {
+	cpu func(model string, threads int) (T, error)
+	npu func(ctx context.Context, dev *hwnpu.Device, model, program string) (T, error)
 }
 
 // convertedLoad loads the model of the files f on r: the loaded model, and the device it holds
 // (nil on the CPU), which the caller closes after it.
-func convertedLoad(ctx context.Context, f airole.Files, e airole.LoadEnv, r route, o convertedOpener) (io.Closer, *hwnpu.Device, error) {
+func convertedLoad[T io.Closer](ctx context.Context, f airole.Files, e airole.LoadEnv, r route, o convertedOpener[T]) (T, *hwnpu.Device, error) {
+	var zero T
 	if r.line != "" {
 		logf(e.Log)("%s", r.line)
 	}
@@ -121,20 +122,20 @@ func convertedLoad(ctx context.Context, f airole.Files, e airole.LoadEnv, r rout
 	}
 	format, err := programFormat(e.NPU)
 	if err != nil {
-		return nil, nil, err
+		return zero, nil, err
 	}
 	program := f.Path("program-" + format)
 	if program == "" {
-		return nil, nil, fmt.Errorf("sound: %s has no program for %s prepared", e.Model, format)
+		return zero, nil, fmt.Errorf("sound: %s has no program for %s prepared", e.Model, format)
 	}
 	dev, err := openNPU(ctx, e.NPU, e.Cache)
 	if err != nil {
-		return nil, nil, err
+		return zero, nil, err
 	}
 	m, err := o.npu(ctx, dev, f.Path("onnx"), program)
 	if err != nil {
 		dev.Close()
-		return nil, nil, err
+		return zero, nil, err
 	}
 	return m, dev, nil
 }

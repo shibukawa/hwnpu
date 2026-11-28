@@ -2,6 +2,7 @@ package qwen35
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/mxfp4"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
@@ -332,40 +334,20 @@ func (c *MoE) encodeExperts(src Source, t tensorAt, rows, cols int, gateUp bool)
 	const piece = 8                              // experts a read
 	w, e = make([]byte, E*rows*cols/2), make([]byte, E*rows*cols/32)
 	type job struct{ first, n int }
-	jobs := make(chan job)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var firstErr error
-	workers := 4 // reads at a time: a range of Hugging Face's comes at about 20 MB/s
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := range jobs {
-				b, err := t.read(src, int64(j.first)*per, int64(j.n)*per)
-				if err != nil {
-					mu.Lock()
-					firstErr = cmpErr(firstErr, err)
-					mu.Unlock()
-					continue
-				}
-				encodePiece(b, t.t.DType, j.first, j.n, rows, cols, gateUp, w, e)
-			}
-		}()
-	}
+	var jobs []job
 	for first := 0; first < E; first += piece {
-		jobs <- job{first, min(piece, E-first)}
+		jobs = append(jobs, job{first, min(piece, E-first)})
 	}
-	close(jobs)
-	wg.Wait()
-	return w, e, firstErr
-}
-
-func cmpErr(a, b error) error {
-	if a != nil {
-		return a
-	}
-	return b
+	const workers = 4 // reads at a time: a range of Hugging Face's comes at about 20 MB/s
+	err = syncx.ForEachAll(context.Background(), workers, jobs, func(_ context.Context, j job) error {
+		b, err := t.read(src, int64(j.first)*per, int64(j.n)*per)
+		if err != nil {
+			return err
+		}
+		encodePiece(b, t.t.DType, j.first, j.n, rows, cols, gateUp, w, e)
+		return nil
+	})
+	return w, e, err
 }
 
 // encodePiece encodes experts first.. of n from their raw values b over the CPU's cores.

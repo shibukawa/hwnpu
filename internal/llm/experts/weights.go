@@ -2,6 +2,7 @@ package experts
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/safetensors"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
@@ -123,57 +125,38 @@ func WriteFile(path string, sh Shape, layers []int, names func(layer int) Names,
 			n := names(l)
 			d.gu, d.dn = make([][]byte, E), make([][]byte, E)
 			sc := make([]float32, E*S)
-			var mu sync.Mutex
-			var wg sync.WaitGroup
-			sem := make(chan struct{}, runtime.NumCPU())
-			for e := 0; e < E; e++ {
-				wg.Add(1)
-				sem <- struct{}{}
-				go func(e int) {
-					defer func() { <-sem; wg.Done() }()
-					fail := func(err error) {
-						mu.Lock()
-						if d.err == nil {
-							d.err = err
-						}
-						mu.Unlock()
+			d.err = syncx.ForEachIndexAll(context.Background(), runtime.NumCPU(), E, func(_ context.Context, e int) error {
+				gate, err := get(n.Gate(e))
+				if err != nil {
+					return err
+				}
+				up, err := get(n.Up(e))
+				if err != nil {
+					return err
+				}
+				down, err := get(n.Down(e))
+				if err != nil {
+					return err
+				}
+				if len(gate) != I*H || len(up) != I*H || len(down) != H*I {
+					return fmt.Errorf("experts: layer %d expert %d: projections of %d, %d and %d values, want %d", l, e, len(gate), len(up), len(down), H*I)
+				}
+				row := sc[e*S : (e+1)*S]
+				q := make([]byte, 2*I*H) // the gate's rows then the up's, (2 inter, hidden)
+				quantize(gate, I, H, q[:I*H], row[:I])
+				quantize(up, I, H, q[I*H:], row[I:2*I])
+				gu := make([]byte, H*2*I) // transposed: (hidden, 2 inter)
+				for j := 0; j < 2*I; j++ {
+					src := q[j*H : (j+1)*H]
+					for h, v := range src {
+						gu[h*2*I+j] = v
 					}
-					gate, err := get(n.Gate(e))
-					if err != nil {
-						fail(err)
-						return
-					}
-					up, err := get(n.Up(e))
-					if err != nil {
-						fail(err)
-						return
-					}
-					down, err := get(n.Down(e))
-					if err != nil {
-						fail(err)
-						return
-					}
-					if len(gate) != I*H || len(up) != I*H || len(down) != H*I {
-						fail(fmt.Errorf("experts: layer %d expert %d: projections of %d, %d and %d values, want %d", l, e, len(gate), len(up), len(down), H*I))
-						return
-					}
-					row := sc[e*S : (e+1)*S]
-					q := make([]byte, 2*I*H) // the gate's rows then the up's, (2 inter, hidden)
-					quantize(gate, I, H, q[:I*H], row[:I])
-					quantize(up, I, H, q[I*H:], row[I:2*I])
-					gu := make([]byte, H*2*I) // transposed: (hidden, 2 inter)
-					for j := 0; j < 2*I; j++ {
-						src := q[j*H : (j+1)*H]
-						for h, v := range src {
-							gu[h*2*I+j] = v
-						}
-					}
-					dn := make([]byte, H*I)
-					quantize(down, H, I, dn, row[2*I:])
-					d.gu[e], d.dn[e] = gu, dn
-				}(e)
-			}
-			wg.Wait()
+				}
+				dn := make([]byte, H*I)
+				quantize(down, H, I, dn, row[2*I:])
+				d.gu[e], d.dn[e] = gu, dn
+				return nil
+			})
 			if d.err != nil {
 				return
 			}

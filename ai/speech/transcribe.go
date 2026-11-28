@@ -32,7 +32,7 @@ func Transcribe(name string) ai.Use[*Transcriber] {
 // transcribeRole's Prepare and Load are the engine's (ai/speech/engine).
 var transcribeRole = &airole.Role{
 	Name:   "transcribe",
-	Remote: func(h *airpc.Handle) io.Closer { return &Transcriber{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &Transcriber{p: airpc.RemoteProxy[transcriberImpl](h)} },
 	Kinds:  []catalog.Kind{catalog.KindTranscribe},
 	// 1: the tokenizer as its binary file (chat.PrepareTokenizer) in the files, as "tokenizer":
 	// a store prepared before named none, and Load then read the checkpoint's tokenizer.json, which
@@ -83,8 +83,7 @@ type Segment struct {
 
 // Transcriber turns speech into text (Whisper). It runs one request at a time; others wait.
 type Transcriber struct {
-	remote *airpc.Handle   // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  transcriberImpl // the engine's (ai/speech/engine), when it is here
+	p airpc.Proxy[transcriberImpl]
 }
 
 // transcriberImpl is a transcription model of the engine in this process.
@@ -97,36 +96,20 @@ type transcriberImpl interface {
 }
 
 // OnCPU reports whether the model runs on hwnpu's CPU interpreter (its definition's device cpu).
-func (t *Transcriber) OnCPU() bool {
-	if t.remote != nil {
-		return airpc.Value[bool](t.remote, "OnCPU")
-	}
-	return t.local.OnCPU()
-}
+func (t *Transcriber) OnCPU() bool { return airpc.ProxyValue(t.p, "OnCPU", transcriberImpl.OnCPU) }
 
 // Model is the name of the model in the definitions.
-func (t *Transcriber) Model() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Model")
-	}
-	return t.local.Model()
-}
+func (t *Transcriber) Model() string { return airpc.ProxyValue(t.p, "Model", transcriberImpl.Model) }
 
 // OnNPU reports whether the programs were verified to run on the NPU.
-func (t *Transcriber) OnNPU() bool {
-	if t.remote != nil {
-		return airpc.Value[bool](t.remote, "OnNPU")
-	}
-	return t.local.OnNPU()
-}
+func (t *Transcriber) OnNPU() bool { return airpc.ProxyValue(t.p, "OnNPU", transcriberImpl.OnNPU) }
 
 // Transcribe turns speech (mono, at TranscribeRate, in [-1, 1]) into text. Speech longer than 30
 // seconds is read in windows, each starting where the last one's last whole segment ended.
 func (t *Transcriber) Transcribe(ctx context.Context, pcm []float32, o TranscribeOptions) (Transcript, error) {
-	if t.remote != nil {
-		return airpc.Call1[Transcript](t.remote, ctx, "Transcribe", pcm, o)
-	}
-	return t.local.Transcribe(ctx, pcm, o)
+	return airpc.ProxyCall1(t.p, ctx, "Transcribe", func(l transcriberImpl) (Transcript, error) {
+		return l.Transcribe(ctx, pcm, o)
+	}, pcm, o)
 }
 
 // TranscribeStream transcribes a stream of speech (VAD.Detect's) segment by segment: the
@@ -185,15 +168,10 @@ func (t *Transcriber) transcribeStream(ctx context.Context, s flow.Stream[[]floa
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (t *Transcriber) Close() error {
-	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return t.local.Close()
-}
+func (t *Transcriber) Close() error { return t.p.Close() }
 
 func init() {
 	airole.Register(transcribeRole)
 	bridge.Roles[transcribeRole.Name] = transcribeRole
-	bridge.Wrap[transcribeRole.Name] = func(l any) io.Closer { return &Transcriber{local: l.(transcriberImpl)} }
+	bridge.Wrap[transcribeRole.Name] = func(l any) io.Closer { return &Transcriber{p: airpc.LocalProxy(l.(transcriberImpl))} }
 }

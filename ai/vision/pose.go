@@ -30,7 +30,7 @@ var Skeleton = [][2]int{{15, 13}, {13, 11}, {16, 14}, {14, 12}, {11, 12}, {5, 11
 // The definition of a pose model may give the settings threads and cpu, and the device
 // (common.go). poseRole's Prepare and Load are the engine's (ai/vision/engine).
 var poseRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &PoseEstimator{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &PoseEstimator{p: airpc.RemoteProxy[poseEstimatorImpl](h)} },
 	Name:   "pose",
 	Kinds:  []catalog.Kind{catalog.KindPose},
 }
@@ -69,8 +69,7 @@ type PoseOptions struct {
 // PoseEstimator finds the people in pictures and their keypoints. It runs one picture at a
 // time; others wait.
 type PoseEstimator struct {
-	remote *airpc.Handle     // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  poseEstimatorImpl // the engine's (ai/vision/engine), when it is here
+	p airpc.Proxy[poseEstimatorImpl]
 }
 
 // poseEstimatorImpl is a pose model of the engine in this process.
@@ -84,46 +83,31 @@ type poseEstimatorImpl interface {
 
 // Model is the name of the model in the definitions.
 func (p *PoseEstimator) Model() string {
-	if p.remote != nil {
-		return airpc.Value[string](p.remote, "Model")
-	}
-	return p.local.Model()
+	return airpc.ProxyValue(p.p, "Model", poseEstimatorImpl.Model)
 }
 
 // Device is where the model's network runs: npu or cpu.
 func (p *PoseEstimator) Device() string {
-	if p.remote != nil {
-		return airpc.Value[string](p.remote, "Device")
-	}
-	return p.local.Device()
+	return airpc.ProxyValue(p.p, "Device", poseEstimatorImpl.Device)
 }
 
 // Where says where the model runs, for a log (Detector.Where).
 func (p *PoseEstimator) Where() string {
-	if p.remote != nil {
-		return airpc.Value[string](p.remote, "Where")
-	}
-	return p.local.Where()
+	return airpc.ProxyValue(p.p, "Where", poseEstimatorImpl.Where)
 }
 
 // Estimate finds the people in a picture and their keypoints.
 func (p *PoseEstimator) Estimate(ctx context.Context, img image.Image, o PoseOptions) (*People, error) {
-	if p.remote != nil {
-		return airpc.Call1[*People](p.remote, ctx, "Estimate", img, o)
-	}
-	return p.local.Estimate(ctx, img, o)
+	return airpc.ProxyCall1(p.p, ctx, "Estimate", func(l poseEstimatorImpl) (*People, error) {
+		return l.Estimate(ctx, img, o)
+	}, img, o)
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (p *PoseEstimator) Close() error {
-	if p.remote != nil {
-		return p.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return p.local.Close()
-}
+func (p *PoseEstimator) Close() error { return p.p.Close() }
 
 func init() {
 	airole.Register(poseRole)
 	bridge.Roles[poseRole.Name] = poseRole
-	bridge.Wrap[poseRole.Name] = func(l any) io.Closer { return &PoseEstimator{local: l.(poseEstimatorImpl)} }
+	bridge.Wrap[poseRole.Name] = func(l any) io.Closer { return &PoseEstimator{p: airpc.LocalProxy(l.(poseEstimatorImpl))} }
 }

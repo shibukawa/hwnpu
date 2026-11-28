@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"reflect"
 	"slices"
 	"strings"
 
@@ -64,7 +63,7 @@ func enumerate(ctx context.Context) ([]types.DeviceInfo, error) {
 			return nil, err
 		}
 		defer s.Close()
-		h := s.Object(0).Bind(reflect.TypeFor[Host]())
+		h := airpc.Root[Host](s)
 		if d, err = airpc.Call1[Devices](h, ctx, "NPUDevices"); err != nil {
 			return nil, err
 		}

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // Where a model's converted programs go in its directory. Core AI's are an export: a directory
@@ -111,7 +111,7 @@ func MayConvert(ctx context.Context, what string) error {
 
 // noRoom holds, by export, the error of the last fetch from the shared layers the cache had no
 // room for (cache.ErrNoRoom).
-var noRoom sync.Map
+var noRoom syncx.SyncMap[string, error]
 
 // NoteFetch is told of the end of a fetch of export from the shared layers (nil: it was made).
 // One the cache has no room for is kept for FetchFailed: converting it here would need the
@@ -138,7 +138,7 @@ func NoteFetch(export string, err error) {
 // returns it instead.
 func FetchFailed(export string) error {
 	if err, ok := noRoom.Load(filepath.Clean(export)); ok {
-		return err.(error)
+		return err
 	}
 	return nil
 }

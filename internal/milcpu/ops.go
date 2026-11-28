@@ -11,6 +11,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/sgemm"
+	"github.com/shibukawa/hwnpu/internal/tensorops"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
@@ -410,15 +411,7 @@ func ones(n int) []int32 {
 	return v
 }
 
-func strides(shape []int) []int {
-	s := make([]int, len(shape))
-	n := 1
-	for i := len(shape) - 1; i >= 0; i-- {
-		s[i] = n
-		n *= shape[i]
-	}
-	return s
-}
+func strides(shape []int) []int { return tensorops.Strides(shape) }
 
 func axis(a, rank int) (int, error) {
 	if a < 0 {
@@ -1243,20 +1236,7 @@ func reshape(x *value, s []int32) (*value, error) {
 // and moves by src[d] along output axis d.
 func permute(pl *pool, x *value, start int, shape []int, src []int) *value {
 	out := &value{shape: shape, f: pl.get(numel(shape))}
-	idx := make([]int, len(shape))
-	off := start
-	for i := range out.f {
-		out.f[i] = x.f[off]
-		for d := len(shape) - 1; d >= 0; d-- {
-			idx[d]++
-			off += src[d]
-			if idx[d] < shape[d] {
-				break
-			}
-			off -= src[d] * idx[d]
-			idx[d] = 0
-		}
-	}
+	tensorops.Permute(out.f, x.f, start, shape, src)
 	return out
 }
 
@@ -1264,11 +1244,7 @@ func transpose(pl *pool, x *value, perm []int32) (*value, error) {
 	if len(perm) != len(x.shape) {
 		return nil, fmt.Errorf("perm %v for shape %v", perm, x.shape)
 	}
-	st := strides(x.shape)
-	shape, src := make([]int, len(perm)), make([]int, len(perm))
-	for i, p := range perm {
-		shape[i], src[i] = x.shape[p], st[p]
-	}
+	shape, src := tensorops.TransposePlan(x.shape, perm)
 	return permute(pl, x, 0, shape, src), nil
 }
 
@@ -1281,21 +1257,7 @@ func tile(x *value, reps []int32) (*value, error) {
 		shape[i] = x.shape[i] * int(r)
 	}
 	out := &value{shape: shape, f: make([]float32, numel(shape))}
-	st := strides(x.shape)
-	idx := make([]int, len(shape))
-	for i := range out.f {
-		off := 0
-		for d := range shape {
-			off += (idx[d] % x.shape[d]) * st[d]
-		}
-		out.f[i] = x.f[off]
-		for d := len(shape) - 1; d >= 0; d-- {
-			if idx[d]++; idx[d] < shape[d] {
-				break
-			}
-			idx[d] = 0
-		}
-	}
+	tensorops.Tile(out.f, x.f, x.shape, shape)
 	return out, nil
 }
 
@@ -1415,86 +1377,28 @@ func sliceByIndex(x *value, begin, end, stride []int32, bm, em, sm []bool) (*val
 
 // padConst pads the last len(pad)/2 axes with c: pad holds (before, after) pairs in axis order.
 func padConst(x *value, pad []int32, c float32) (*value, error) {
-	rank := len(x.shape)
-	k := len(pad) / 2
-	if len(pad)%2 != 0 || k > rank {
-		return nil, fmt.Errorf("pad %v for shape %v", pad, x.shape)
-	}
-	shape := append([]int{}, x.shape...)
-	before := make([]int, rank)
-	for j := 0; j < k; j++ {
-		ax := rank - k + j
-		before[ax] = int(pad[2*j])
-		shape[ax] += int(pad[2*j]) + int(pad[2*j+1])
-	}
-	out := &value{shape: shape, f: make([]float32, numel(shape))}
-	for i := range out.f {
-		out.f[i] = c
-	}
-	ost := strides(shape)
-	idx := make([]int, rank)
-	for _, v := range x.f {
-		o := 0
-		for d := 0; d < rank; d++ {
-			o += (idx[d] + before[d]) * ost[d]
-		}
-		out.f[o] = v
-		for d := rank - 1; d >= 0; d-- {
-			if idx[d]++; idx[d] < x.shape[d] {
-				break
-			}
-			idx[d] = 0
-		}
-	}
-	return out, nil
+	return padValue(x, pad, "constant", c)
 }
 
 // padEdges pads the last len(pad)/2 axes by reflection (the edge not repeated) or by repeating
 // the edge.
 func padEdges(x *value, pad []int32, mode string) (*value, error) {
+	return padValue(x, pad, mode, 0)
+}
+
+func padValue(x *value, pad []int32, mode string, c float32) (*value, error) {
 	rank := len(x.shape)
 	k := len(pad) / 2
 	if len(pad)%2 != 0 || k > rank {
 		return nil, fmt.Errorf("pad %v for shape %v", pad, x.shape)
 	}
-	shape := append([]int{}, x.shape...)
-	before := make([]int, rank)
-	for j := 0; j < k; j++ {
-		ax := rank - k + j
-		before[ax] = int(pad[2*j])
-		shape[ax] += int(pad[2*j]) + int(pad[2*j+1])
+	pads := make([]int, 2*rank)
+	for j := range 2 * k {
+		pads[2*(rank-k)+j] = int(pad[j])
 	}
+	shape := tensorops.PadShape(x.shape, pads)
 	out := &value{shape: shape, f: make([]float32, numel(shape))}
-	xst := strides(x.shape)
-	idx := make([]int, rank)
-	for i := range out.f {
-		off := 0
-		for d := range rank {
-			j, n := idx[d]-before[d], x.shape[d]
-			if mode == "replicate" {
-				j = min(max(j, 0), n-1)
-			} else if n > 1 {
-				for j < 0 || j >= n {
-					if j < 0 {
-						j = -j
-					}
-					if j >= n {
-						j = 2*(n-1) - j
-					}
-				}
-			} else {
-				j = 0
-			}
-			off += j * xst[d]
-		}
-		out.f[i] = x.f[off]
-		for d := rank - 1; d >= 0; d-- {
-			if idx[d]++; idx[d] < shape[d] {
-				break
-			}
-			idx[d] = 0
-		}
-	}
+	tensorops.Pad(out.f, x.f, x.shape, pads, mode, c)
 	return out, nil
 }
 
@@ -1508,7 +1412,9 @@ func concat(pl *pool, xs []*value, a int) (*value, error) {
 	}
 	shape := append([]int{}, xs[0].shape...)
 	shape[ax] = 0
-	for _, x := range xs {
+	srcs := make([][]float32, len(xs))
+	sizes := make([]int, len(xs))
+	for i, x := range xs {
 		if len(x.shape) != len(shape) || x.f == nil {
 			return nil, fmt.Errorf("cannot concat %v", x.shape)
 		}
@@ -1518,16 +1424,12 @@ func concat(pl *pool, xs []*value, a int) (*value, error) {
 			}
 		}
 		shape[ax] += x.shape[ax]
+		srcs[i] = x.f
+		sizes[i] = x.shape[ax]
 	}
 	outer, _, inner := around(shape, ax)
-	out := &value{shape: shape, f: pl.get(numel(shape))[:0]}
-	for o := 0; o < outer; o++ {
-		for _, x := range xs {
-			w := x.shape[ax] * inner
-			out.f = append(out.f, x.f[o*w:(o+1)*w]...)
-		}
-	}
-	return out, nil
+	dst := pl.get(numel(shape))
+	return &value{shape: shape, f: tensorops.Concat(dst, srcs, sizes, outer, inner)}, nil
 }
 
 // conv1d is a grouped 1 D convolution of x (n, c_in, w) with weight (c_out, c_in/groups, k):

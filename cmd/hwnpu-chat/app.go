@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -41,29 +39,18 @@ func store(models string) ai.Store {
 // it needs (a Hugging Face repository the definitions do not have), in st's catalog cat. A name
 // of none is an error after the models of the role's kind are listed.
 func useFor[T io.Closer](st ai.Store, cat *ai.Catalog, u ai.Use[T]) (ai.Use[T], []ai.Definition, error) {
-	n, def, err := ai.Normalize(cat, u)
-	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
-		kind := u.Kinds()[0]
-		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, e.Name, kind)
-		if err := chatcmd.List(context.Background(), st, os.Stderr, chatcmd.ListRequest{Kinds: []string{kind}}); err != nil {
-			return u, nil, err
+	return aiensure.ResolveUse(cat, u, aiensure.ResolveOptions{
+		ListCommand: "hwnpu-chat list",
+		List: func(w io.Writer, kind string) error {
+			return chatcmd.List(context.Background(), st, w, chatcmd.ListRequest{Kinds: []string{kind}})
+		},
+	}, func(n ai.Use[T]) error {
+		if !strings.EqualFold(n.Name(), u.Name()) {
+			// what a use or a family picks, and why, as before
+			return chatcmd.Picked(context.Background(), st, u.Name(), logw())
 		}
-		fmt.Fprintln(os.Stderr)
-		return u, nil, fmt.Errorf("no %s model, family or use %q (hwnpu-chat list shows them)", kind, e.Name)
-	}
-	if err != nil {
-		return u, nil, err
-	}
-	if !strings.EqualFold(n.Name(), u.Name()) && def == nil {
-		// what a use or a family picks, and why, as before
-		if err := chatcmd.Picked(context.Background(), st, u.Name(), logw()); err != nil {
-			return u, nil, err
-		}
-	}
-	if def != nil {
-		return n, []ai.Definition{*def}, nil
-	}
-	return n, nil, nil
+		return nil
+	})
 }
 
 // setBackend makes the NPU --backend names the one the models are converted for and run on (the

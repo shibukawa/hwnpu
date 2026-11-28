@@ -29,7 +29,7 @@ func Segment(name string) ai.Use[*Segmenter] {
 // library is here, else hwnpu's evaluator: slow); the mask decoder on the host. segmentRole's
 // Prepare and Load are the engine's (ai/vision/engine).
 var segmentRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &Segmenter{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &Segmenter{p: airpc.RemoteProxy[segmenterImpl](h)} },
 	Name:   "segment",
 	Kinds:  []catalog.Kind{catalog.KindSegment},
 }
@@ -139,8 +139,7 @@ func (m *Masks) Best() int {
 // Segmenter cuts out the things prompts pick in pictures. It runs one picture at a time; others
 // wait.
 type Segmenter struct {
-	remote *airpc.Handle // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  segmenterImpl // the engine's (ai/vision/engine), when it is here
+	p airpc.Proxy[segmenterImpl]
 }
 
 // segmenterImpl is a segmentation model of the engine in this process.
@@ -156,40 +155,24 @@ type segmenterImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (s *Segmenter) Model() string {
-	if s.remote != nil {
-		return airpc.Value[string](s.remote, "Model")
-	}
-	return s.local.Model()
-}
+func (s *Segmenter) Model() string { return airpc.ProxyValue(s.p, "Model", segmenterImpl.Model) }
 
 // Device is where the image encoder runs: npu or cpu.
-func (s *Segmenter) Device() string {
-	if s.remote != nil {
-		return airpc.Value[string](s.remote, "Device")
-	}
-	return s.local.Device()
-}
+func (s *Segmenter) Device() string { return airpc.ProxyValue(s.p, "Device", segmenterImpl.Device) }
 
 // Where says where the image encoder runs, for a log: "AMD's NPU", "the CPU (ONNX Runtime)", ...
-func (s *Segmenter) Where() string {
-	if s.remote != nil {
-		return airpc.Value[string](s.remote, "Where")
-	}
-	return s.local.Where()
-}
+func (s *Segmenter) Where() string { return airpc.ProxyValue(s.p, "Where", segmenterImpl.Where) }
 
 // Encode runs the image encoder on a picture.
 func (s *Segmenter) Encode(ctx context.Context, img image.Image) (*PictureEncoding, error) {
-	if s.remote != nil {
-		return airpc.Call1[*PictureEncoding](s.remote, ctx, "Encode", img)
-	}
-	e, local, err := s.local.Encode(ctx, img)
-	if err != nil {
-		return nil, err
-	}
-	e.local = local
-	return e, nil
+	return airpc.ProxyCall1(s.p, ctx, "Encode", func(l segmenterImpl) (*PictureEncoding, error) {
+		e, local, err := l.Encode(ctx, img)
+		if err != nil {
+			return nil, err
+		}
+		e.local = local
+		return e, nil
+	}, img)
 }
 
 // Masks decodes a prompt's masks on a picture's encoding.
@@ -197,10 +180,9 @@ func (s *Segmenter) Masks(e *PictureEncoding, p Prompt) (*Masks, error) {
 	if p.empty() {
 		return nil, errors.New("vision: a prompt of no points and no box")
 	}
-	if s.remote != nil {
-		return airpc.Call1[*Masks](s.remote, context.Background(), "Masks", e, p)
-	}
-	return s.local.Masks(e.local, p)
+	return airpc.ProxyCall1(s.p, context.Background(), "Masks", func(l segmenterImpl) (*Masks, error) {
+		return l.Masks(e.local, p)
+	}, e, p)
 }
 
 // Segment is Encode and Masks: the masks of a prompt on a picture.
@@ -213,17 +195,12 @@ func (s *Segmenter) Segment(ctx context.Context, img image.Image, p Prompt) (*Ma
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (s *Segmenter) Close() error {
-	if s.remote != nil {
-		return s.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return s.local.Close()
-}
+func (s *Segmenter) Close() error { return s.p.Close() }
 
 func init() {
 	airole.Register(segmentRole)
 	bridge.Roles[segmentRole.Name] = segmentRole
-	bridge.Wrap[segmentRole.Name] = func(l any) io.Closer { return &Segmenter{local: l.(segmenterImpl)} }
+	bridge.Wrap[segmentRole.Name] = func(l any) io.Closer { return &Segmenter{p: airpc.LocalProxy(l.(segmenterImpl))} }
 	// a picture's encoding stays in hwnpud, where its masks are decoded
 	airpc.RegisterRef(func(e *PictureEncoding, h *airpc.Handle) { e.remote = h }, func(e *PictureEncoding) *airpc.Handle { return e.remote })
 }

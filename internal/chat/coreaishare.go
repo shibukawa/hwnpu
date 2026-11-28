@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -22,6 +21,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/recipe"
 	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // CoreAIKind is the kind of entry of a Core AI export in the shared layers.
@@ -333,11 +333,11 @@ func modelRecipe(ctx context.Context, path string) (Model, map[string]string) {
 }
 
 // coreAICommits caches sourceCommit by the model's source (it may ask the hub).
-var coreAICommits sync.Map
+var coreAICommits syncx.SyncMap[string, string]
 
 func commitOf(ctx context.Context, m Model) string {
 	if c, ok := coreAICommits.Load(m.Source()); ok {
-		return c.(string)
+		return c
 	}
 	c := sourceCommit(ctx, m)
 	coreAICommits.Store(m.Source(), c)

@@ -25,7 +25,7 @@ func OCR(name string) ai.Use[*TextReader] {
 // the first time a picture (a line) takes it. ocrRole's Prepare and Load are the engine's
 // (ai/vision/engine).
 var ocrRole = &airole.Role{
-	Remote: func(h *airpc.Handle) io.Closer { return &TextReader{remote: h} },
+	Remote: func(h *airpc.Handle) io.Closer { return &TextReader{p: airpc.RemoteProxy[textReaderImpl](h)} },
 	Name:   "ocr",
 	Kinds:  []catalog.Kind{catalog.KindOCR},
 }
@@ -62,8 +62,7 @@ type OCROptions struct {
 
 // TextReader reads the text in pictures. It runs one picture at a time; others wait.
 type TextReader struct {
-	remote *airpc.Handle  // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  textReaderImpl // the engine's (ai/vision/engine), when it is here
+	p airpc.Proxy[textReaderImpl]
 }
 
 // textReaderImpl is an OCR model of the engine in this process.
@@ -76,47 +75,26 @@ type textReaderImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (t *TextReader) Model() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Model")
-	}
-	return t.local.Model()
-}
+func (t *TextReader) Model() string { return airpc.ProxyValue(t.p, "Model", textReaderImpl.Model) }
 
 // Device is where the networks run: npu or cpu.
-func (t *TextReader) Device() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Device")
-	}
-	return t.local.Device()
-}
+func (t *TextReader) Device() string { return airpc.ProxyValue(t.p, "Device", textReaderImpl.Device) }
 
 // Where says where the networks run, for a log.
-func (t *TextReader) Where() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Where")
-	}
-	return t.local.Where()
-}
+func (t *TextReader) Where() string { return airpc.ProxyValue(t.p, "Where", textReaderImpl.Where) }
 
 // Read reads the lines of text in a picture.
 func (t *TextReader) Read(ctx context.Context, img image.Image, o OCROptions) (*Text, error) {
-	if t.remote != nil {
-		return airpc.Call1[*Text](t.remote, ctx, "Read", img, o)
-	}
-	return t.local.Read(ctx, img, o)
+	return airpc.ProxyCall1(t.p, ctx, "Read", func(l textReaderImpl) (*Text, error) {
+		return l.Read(ctx, img, o)
+	}, img, o)
 }
 
 // Close unloads the models. An app leaves it to the Runtime (its Close, or the use's Release).
-func (t *TextReader) Close() error {
-	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return t.local.Close()
-}
+func (t *TextReader) Close() error { return t.p.Close() }
 
 func init() {
 	airole.Register(ocrRole)
 	bridge.Roles[ocrRole.Name] = ocrRole
-	bridge.Wrap[ocrRole.Name] = func(l any) io.Closer { return &TextReader{local: l.(textReaderImpl)} }
+	bridge.Wrap[ocrRole.Name] = func(l any) io.Closer { return &TextReader{p: airpc.LocalProxy(l.(textReaderImpl))} }
 }

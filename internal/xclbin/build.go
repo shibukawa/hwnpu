@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/binview"
 )
 
 // Spec describes an xclbin: a synthetic one for tests, or an aiecc design (SpecFromAiecc). Build lays it out exactly like xclbinutil:
@@ -101,11 +103,7 @@ func aiePartition(s Spec) []byte {
 	}
 	le.PutUint32(buf[8:], s.OpsPerCycle)
 	le.PutUint16(buf[32:], uint16(s.Columns))
-	cols := make([]byte, 2*len(s.StartCols))
-	for i, c := range s.StartCols {
-		le.PutUint16(cols[2*i:], c)
-	}
-	colOff := put(cols)
+	colOff := put(binview.EncodeLE(s.StartCols))
 	le.PutUint32(buf[40:], uint32(len(s.StartCols)))
 	le.PutUint32(buf[44:], colOff)
 
@@ -117,11 +115,7 @@ func aiePartition(s Spec) []byte {
 		groupTable := put(make([]byte, len(p.Groups)*cdoGroupSize))
 		for j, g := range p.Groups {
 			name := put(append([]byte(g.Name), 0))
-			ids := make([]byte, 8*len(g.KernelIDs))
-			for k, id := range g.KernelIDs {
-				le.PutUint64(ids[8*k:], id)
-			}
-			idOff := put(ids)
+			idOff := put(binview.EncodeLE(g.KernelIDs))
 			gd := buf[groupTable+uint32(j*cdoGroupSize):]
 			le.PutUint32(gd[0:], name)
 			gd[4] = g.Type

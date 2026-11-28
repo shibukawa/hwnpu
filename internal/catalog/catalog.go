@@ -55,26 +55,19 @@ type NPUSpec struct {
 // EditsOn are the edits of the aspect ratios on generation gen: its own where it has them, the
 // default's otherwise ("" or an unknown generation: the default).
 func (s NPUSpec) EditsOn(gen string) map[string][]string {
-	out := make(map[string][]string, len(s.Edits))
-	for k, v := range s.Edits {
-		out[k] = v
-	}
-	for k, v := range s.EditsByGen[gen] {
-		out[k] = v
-	}
-	return out
+	return mergeByGen(s.Edits, s.EditsByGen, gen)
 }
 
 // SizesOn are the picture sizes of the aspect ratios on generation gen: its override where it has
 // one, the default otherwise ("" or an unknown generation: the default).
 func (s NPUSpec) SizesOn(gen string) map[string][2]int {
-	out := make(map[string][2]int, len(s.Sizes))
-	for k, v := range s.Sizes {
-		out[k] = v
-	}
-	for k, v := range s.ByGen[gen] {
-		out[k] = v
-	}
+	return mergeByGen(s.Sizes, s.ByGen, gen)
+}
+
+func mergeByGen[K comparable, V any](base map[K]V, byGen map[string]map[K]V, gen string) map[K]V {
+	out := make(map[K]V, len(base))
+	maps.Copy(out, base)
+	maps.Copy(out, byGen[gen])
 	return out
 }
 

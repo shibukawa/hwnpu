@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -131,9 +130,9 @@ func init() {
 	airpc.RegisterError("ai.ErrNotPrepared", ErrNotPrepared)
 	airpc.RegisterError("ai.ErrBundleTarget", ErrBundleTarget)
 	airpc.RegisterError("modelstore.ErrNoRoom", modelstore.ErrNoRoom)
-	airpc.RegisterErrorType("ai.LicenseError", (*LicenseError)(nil))
-	airpc.RegisterErrorType("catalog.PolicyError", (*catalog.PolicyError)(nil))
-	airpc.RegisterErrorType("ai.NoModelError", (*NoModelError)(nil))
+	airpc.RegisterErrorType[*LicenseError]("ai.LicenseError")
+	airpc.RegisterErrorType[*catalog.PolicyError]("catalog.PolicyError")
+	airpc.RegisterErrorType[*NoModelError]("ai.NoModelError")
 }
 
 // Spec is the app as it is sent to hwnpud. It is for hwnpud's sessions.
@@ -254,7 +253,7 @@ func hostSession(ctx context.Context, c *daemon.Client) (*airpc.Session, *airpc.
 	if err != nil {
 		return nil, nil, fmt.Errorf("ai: %w", err)
 	}
-	return s, s.Object(0).Bind(reflect.TypeFor[Host]()), nil
+	return s, airpc.Root[Host](s), nil
 }
 
 // planRemote is Plan made by hwnpud.
@@ -336,12 +335,12 @@ func (a *App) openRemote(ctx context.Context, c *daemon.Client, opts []Option) (
 		o.Live = console.Live(w)
 	}
 	// the log and the loading's are kept: hwnpud's models write their logs after their loads too
-	out, err := host.CallKeep(ctx, "Open", spec, o, logFn, rt.o.loading)
+	target, err := airpc.CallKeep1[string](host, ctx, "Open", spec, o, logFn, rt.o.loading)
 	if err != nil {
 		s.Close()
 		return nil, err
 	}
-	rt.npu.Target, _ = out[0].Interface().(string)
+	rt.npu.Target = target
 	rt.remote = &remoteRuntime{s: s, host: host}
 	return rt, nil
 }

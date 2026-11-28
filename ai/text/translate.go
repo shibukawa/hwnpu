@@ -25,7 +25,7 @@ func Translate(name string) ai.Use[*Translator] {
 var translateRole = &airole.Role{
 	LoadSettings: loadSettings,
 	Name:         "translate",
-	Remote:       func(h *airpc.Handle) io.Closer { return &Translator{remote: h} },
+	Remote:       func(h *airpc.Handle) io.Closer { return &Translator{p: airpc.RemoteProxy[translatorImpl](h)} },
 	Kinds:        []catalog.Kind{catalog.KindChat},
 	Feature:      "translation",
 }
@@ -67,8 +67,7 @@ type Pair struct{ Source, Target string }
 
 // Translator translates texts (PLaMo 3 Translate). It runs one request at a time; others wait.
 type Translator struct {
-	remote *airpc.Handle  // the model in hwnpud (ai's HWNPU_DAEMON), nil when it is here
-	local  translatorImpl // the engine's (ai/text/engine), when it is here
+	p airpc.Proxy[translatorImpl]
 }
 
 // translatorImpl is a translation model of the engine in this process.
@@ -80,20 +79,10 @@ type translatorImpl interface {
 }
 
 // Model is the name of the model in the definitions.
-func (t *Translator) Model() string {
-	if t.remote != nil {
-		return airpc.Value[string](t.remote, "Model")
-	}
-	return t.local.Model()
-}
+func (t *Translator) Model() string { return airpc.ProxyValue(t.p, "Model", translatorImpl.Model) }
 
 // OnNPU reports whether the programs were verified to run on the NPU.
-func (t *Translator) OnNPU() bool {
-	if t.remote != nil {
-		return airpc.Value[bool](t.remote, "OnNPU")
-	}
-	return t.local.OnNPU()
-}
+func (t *Translator) OnNPU() bool { return airpc.ProxyValue(t.p, "OnNPU", translatorImpl.OnNPU) }
 
 // Translate translates a text.
 func (t *Translator) Translate(ctx context.Context, text string, o TranslateOptions) (string, error) {
@@ -108,10 +97,9 @@ func (t *Translator) Reply(ctx context.Context, text string, o TranslateOptions,
 	if strings.TrimSpace(text) == "" {
 		return Translation{}, errors.New("text: nothing to translate")
 	}
-	if t.remote != nil {
-		return airpc.Call1[Translation](t.remote, ctx, "Reply", text, o, fn)
-	}
-	return t.local.Reply(ctx, text, o, fn)
+	return airpc.ProxyCall1(t.p, ctx, "Reply", func(l translatorImpl) (Translation, error) {
+		return l.Reply(ctx, text, o, fn)
+	}, text, o, fn)
 }
 
 // historyTurns is how many earlier pairs TranslateStream gives each translation.
@@ -177,15 +165,10 @@ func (t *Translator) translateStream(ctx context.Context, s flow.Stream[flow.Tex
 }
 
 // Close unloads the model. An app leaves it to the Runtime (its Close, or the use's Release).
-func (t *Translator) Close() error {
-	if t.remote != nil {
-		return t.remote.Release() // the Runtime in hwnpud unloads it
-	}
-	return t.local.Close()
-}
+func (t *Translator) Close() error { return t.p.Close() }
 
 func init() {
 	airole.Register(translateRole)
 	bridge.Roles[translateRole.Name] = translateRole
-	bridge.Wrap[translateRole.Name] = func(l any) io.Closer { return &Translator{local: l.(translatorImpl)} }
+	bridge.Wrap[translateRole.Name] = func(l any) io.Closer { return &Translator{p: airpc.LocalProxy(l.(translatorImpl))} }
 }

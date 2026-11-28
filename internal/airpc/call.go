@@ -23,6 +23,9 @@ type Handle struct {
 // (Bind) before it is called.
 func (s *Session) Object(id uint64) *Handle { return &Handle{s: s, id: id} }
 
+// Root is the handle of the session's root object (object 0) bound to the methods of T.
+func Root[T any](s *Session) *Handle { return s.Object(0).Bind(reflect.TypeFor[T]()) }
+
 // Bind takes the types of the object's methods from the methods of v's type (a value of the
 // client's process with the same methods: the model's own type), or from the interface type
 // itself when v is a reflect.Type of one (the server's methods). It returns h.
@@ -83,6 +86,16 @@ func (h *Handle) Call(ctx context.Context, method string, args ...any) ([]reflec
 // and calls later (a Runtime's log).
 func (h *Handle) CallKeep(ctx context.Context, method string, args ...any) ([]reflect.Value, error) {
 	return h.invoke(ctx, method, true, args)
+}
+
+// CallKeep1 is Call1 with CallKeep: callbacks stay for the rest of the session.
+func CallKeep1[R any](h *Handle, ctx context.Context, method string, args ...any) (R, error) {
+	var r R
+	out, err := h.CallKeep(ctx, method, args...)
+	if len(out) > 0 && out[0].IsValid() {
+		r, _ = out[0].Interface().(R)
+	}
+	return r, err
 }
 
 // Call0 calls a method that returns an error alone.

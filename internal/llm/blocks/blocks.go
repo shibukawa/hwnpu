@@ -11,11 +11,11 @@ import (
 	"math"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/hwnpu/internal/syncx"
 )
 
 // Graph is a program under construction with its weight source and options.
@@ -811,19 +811,19 @@ func (g *Graph) Activation(x *mlpackage.Var, act string) *mlpackage.Var {
 	return nil
 }
 
-var codes sync.Map // by directory: *palette.Codes
+var codes syncx.SyncMap[string, *palette.Codes] // by directory
 
 // LoadCodes reads a codes directory (llm.Options.Codes) once per process.
 func LoadCodes(dir string) (*palette.Codes, error) {
 	if c, ok := codes.Load(dir); ok {
-		return c.(*palette.Codes), nil
+		return c, nil
 	}
 	c, err := palette.LoadCodes(dir)
 	if err != nil {
 		return nil, err
 	}
 	got, _ := codes.LoadOrStore(dir, c)
-	return got.(*palette.Codes), nil
+	return got, nil
 }
 
 // RowScaledBits is the table width of a lutN format with a scale a row (lut4r, lut6r, lut8r), 0

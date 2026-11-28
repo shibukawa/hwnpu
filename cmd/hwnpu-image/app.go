@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/ai"
 	aicli "github.com/shibukawa/hwnpu/ai/cli"
+	"github.com/shibukawa/hwnpu/internal/aiensure"
 	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/imagewire"
 )
@@ -31,27 +31,20 @@ func useFor[T io.Closer](ctx context.Context, st ai.Store, u ai.Use[T], say bool
 	if err != nil {
 		return u, nil, err
 	}
-	n, def, err := ai.Normalize(cat, u)
-	if e := (*ai.NoModelError)(nil); errors.As(err, &e) {
-		kind := catalog.Kind(u.Kinds()[0])
-		// what there is, then the error (kong prints it last)
-		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, e.Name, kind)
-		listModels(os.Stderr, cat, kind)
-		fmt.Fprintln(os.Stderr)
-		return u, nil, fmt.Errorf("no %s model, family or use %q (hwnpu-image list shows them)", kind, e.Name)
-	}
-	if err != nil {
-		return u, nil, err
-	}
-	if def != nil {
-		return n, []ai.Definition{*def}, nil
-	}
-	// what a family or a use picked, said as the commands say it (by hwnpud, whose definitions
-	// picked it; nothing when it cannot say)
-	if say {
-		picked(ctx, u.Name())
-	}
-	return n, nil, nil
+	return aiensure.ResolveUse(cat, u, aiensure.ResolveOptions{
+		ListCommand: "hwnpu-image list",
+		List: func(w io.Writer, kind string) error {
+			listModels(w, cat, catalog.Kind(kind))
+			return nil
+		},
+	}, func(_ ai.Use[T]) error {
+		// what a family or a use picked, said as the commands say it (by hwnpud, whose definitions
+		// picked it; nothing when it cannot say)
+		if say {
+			picked(ctx, u.Name())
+		}
+		return nil
+	})
 }
 
 // made is how the flags make a model of its own (ai.Definition): its Device, Settings and

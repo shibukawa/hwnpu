@@ -24,7 +24,7 @@ func (e *typedErr) Error() string { return fmt.Sprintf("test: code %d", e.Code) 
 
 func init() {
 	RegisterError("test.sentinel", errSentinel)
-	RegisterErrorType("test.typed", (*typedErr)(nil))
+	RegisterErrorType[*typedErr]("test.typed")
 }
 
 // options is an argument with functions among its fields.

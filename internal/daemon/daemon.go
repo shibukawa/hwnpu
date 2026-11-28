@@ -317,16 +317,12 @@ var ErrNotRunning = errors.New("hwnpud does not answer")
 
 // Hello asks the daemon who it is.
 func (c *Client) Hello(ctx context.Context) (Hello, error) {
-	var h Hello
-	err := c.getJSON(ctx, "/hwnpud/v1/hello", &h)
-	return h, err
+	return doJSON[Hello](c, ctx, http.MethodGet, "/hwnpud/v1/hello")
 }
 
 // Status asks the daemon what it holds.
 func (c *Client) Status(ctx context.Context) (Status, error) {
-	var s Status
-	err := c.getJSON(ctx, "/hwnpud/v1/status", &s)
-	return s, err
+	return doJSON[Status](c, ctx, http.MethodGet, "/hwnpud/v1/status")
 }
 
 // Quit asks the supervisor to stop the engine and exit (the service manager starts it again at
@@ -347,7 +343,7 @@ func (c *Client) Quit(ctx context.Context) error {
 // Start starts the engine unless it runs (and the supervisor, when the service manager starts it
 // at a connection), and answers hello.
 func (c *Client) Start(ctx context.Context) (Hello, error) {
-	return c.postHello(ctx, "/hwnpud/v1/start")
+	return doJSON[Hello](c, ctx, http.MethodPost, "/hwnpud/v1/start")
 }
 
 // Restart ends the supervisor and its engine (the requests going on fail) and waits until a new
@@ -394,40 +390,24 @@ func (c *Client) Restart(ctx context.Context) (old, now Hello, err error) {
 // request goes on, it stops the engine (the next request starts one with them). Hello's Pending
 // are what is left for later.
 func (c *Client) Reload(ctx context.Context) (Hello, error) {
-	return c.postHello(ctx, "/hwnpud/v1/reload")
+	return doJSON[Hello](c, ctx, http.MethodPost, "/hwnpud/v1/reload")
 }
 
-func (c *Client) postHello(ctx context.Context, path string) (Hello, error) {
-	var h Hello
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL(path), nil)
+func doJSON[T any](c *Client, ctx context.Context, method, path string) (T, error) {
+	var out T
+	req, err := http.NewRequestWithContext(ctx, method, c.URL(path), nil)
 	if err != nil {
-		return h, err
+		return out, err
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return h, c.notRunning(err)
+		return out, c.notRunning(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return h, ResponseError(resp)
+		return out, ResponseError(resp)
 	}
-	return h, json.NewDecoder(resp.Body).Decode(&h)
-}
-
-func (c *Client) getJSON(ctx context.Context, path string, v any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL(path), nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return c.notRunning(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ResponseError(resp)
-	}
-	return json.NewDecoder(resp.Body).Decode(v)
+	return out, json.NewDecoder(resp.Body).Decode(&out)
 }
 
 func (c *Client) notRunning(err error) error {

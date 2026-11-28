@@ -103,17 +103,30 @@ func Load() (*API, error) {
 // Init calls zeInit for NPU (VPU) drivers only.
 func (a *API) Init() error { return check("zeInit", a.zeInit(initFlagVPUOnly)) }
 
+func enumerateInit[N uint32 | uintptr, T any](op string, init func(*T), fn func(*N, *T) Result) ([]T, error) {
+	var n N
+	if err := check(op, fn(&n, nil)); err != nil || n == 0 {
+		return nil, err
+	}
+	out := make([]T, n)
+	if init != nil {
+		for i := range out {
+			init(&out[i])
+		}
+	}
+	if err := check(op, fn(&n, &out[0])); err != nil {
+		return nil, err
+	}
+	return out[:n], nil
+}
+
+func enumerate[N uint32 | uintptr, T any](op string, fn func(*N, *T) Result) ([]T, error) {
+	return enumerateInit(op, nil, fn)
+}
+
 // Drivers lists driver handles.
 func (a *API) Drivers() ([]Handle, error) {
-	var n uint32
-	if err := check("zeDriverGet", a.zeDriverGet(&n, nil)); err != nil || n == 0 {
-		return nil, err
-	}
-	hs := make([]Handle, n)
-	if err := check("zeDriverGet", a.zeDriverGet(&n, &hs[0])); err != nil {
-		return nil, err
-	}
-	return hs[:n], nil
+	return enumerate("zeDriverGet", a.zeDriverGet)
 }
 
 // DriverProperties returns ze_driver_properties_t.
@@ -132,15 +145,9 @@ func (a *API) APIVersion(d Handle) (uint32, error) {
 
 // Extensions lists the extensions a driver supports.
 func (a *API) Extensions(d Handle) ([]DriverExtensionProperties, error) {
-	var n uint32
-	if err := check("zeDriverGetExtensionProperties", a.zeDriverGetExtensionProperties(d, &n, nil)); err != nil || n == 0 {
-		return nil, err
-	}
-	ps := make([]DriverExtensionProperties, n)
-	if err := check("zeDriverGetExtensionProperties", a.zeDriverGetExtensionProperties(d, &n, &ps[0])); err != nil {
-		return nil, err
-	}
-	return ps[:n], nil
+	return enumerate("zeDriverGetExtensionProperties", func(n *uint32, p *DriverExtensionProperties) Result {
+		return a.zeDriverGetExtensionProperties(d, n, p)
+	})
 }
 
 // ExtensionFunction returns the address registered for an extension name. For the graph
@@ -159,15 +166,9 @@ func (a *API) ExtensionFunction(d Handle, name string) (unsafe.Pointer, error) {
 
 // Devices lists the devices of a driver.
 func (a *API) Devices(d Handle) ([]Handle, error) {
-	var n uint32
-	if err := check("zeDeviceGet", a.zeDeviceGet(d, &n, nil)); err != nil || n == 0 {
-		return nil, err
-	}
-	hs := make([]Handle, n)
-	if err := check("zeDeviceGet", a.zeDeviceGet(d, &n, &hs[0])); err != nil {
-		return nil, err
-	}
-	return hs[:n], nil
+	return enumerate("zeDeviceGet", func(n *uint32, h *Handle) Result {
+		return a.zeDeviceGet(d, n, h)
+	})
 }
 
 // DeviceProperties returns ze_device_properties_t.
@@ -205,18 +206,16 @@ func (a *API) Free(ctx Handle, p unsafe.Pointer) error {
 // ComputeOrdinal returns the command queue group to use for compute work, choosing like the
 // OpenVINO NPU plugin: a group with only the compute flag, then any group with it, then 0.
 func (a *API) ComputeOrdinal(dev Handle) (uint32, error) {
-	var n uint32
-	if err := check("zeDeviceGetCommandQueueGroupProperties", a.zeDeviceGetCommandQueueGroupProps(dev, &n, nil)); err != nil || n == 0 {
+	ps, err := enumerateInit("zeDeviceGetCommandQueueGroupProperties",
+		func(p *CommandQueueGroupProperties) { p.SType = stypeCommandQueueGroupProps },
+		func(n *uint32, p *CommandQueueGroupProperties) Result {
+			return a.zeDeviceGetCommandQueueGroupProps(dev, n, p)
+		},
+	)
+	if err != nil {
 		return 0, err
 	}
-	ps := make([]CommandQueueGroupProperties, n)
-	for i := range ps {
-		ps[i].SType = stypeCommandQueueGroupProps
-	}
-	if err := check("zeDeviceGetCommandQueueGroupProperties", a.zeDeviceGetCommandQueueGroupProps(dev, &n, &ps[0])); err != nil {
-		return 0, err
-	}
-	return SelectComputeOrdinal(ps[:n]), nil
+	return SelectComputeOrdinal(ps), nil
 }
 
 // SelectComputeOrdinal implements the choice of ComputeOrdinal.

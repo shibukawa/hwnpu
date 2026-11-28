@@ -108,6 +108,11 @@ func (j *Join[A, B, C]) unfed() error {
 	return nil
 }
 
+type chunkPair[A, B any] struct {
+	a Chunk[A]
+	b Chunk[B]
+}
+
 // Both makes a node that waits for a chunk of each input and passes on what fn makes of the
 // two: the first of one with the first of the other, the second with the second. It ends when
 // either input ends. It is for two results of the same thing that are both needed: a picture's
@@ -117,10 +122,10 @@ func Both[A, B, C any](name string, fn func(a Chunk[A], b Chunk[B], emit func(Ch
 		return func(yield func(Chunk[C], error) bool) {
 			next, stop := iter.Pull2(bs)
 			defer stop()
-			pairs := Stream[[2]any](func(yield func(Chunk[[2]any], error) bool) {
+			pairs := Stream[chunkPair[A, B]](func(yield func(Chunk[chunkPair[A, B]], error) bool) {
 				for a, err := range as {
 					if err != nil {
-						yield(Chunk[[2]any]{}, err)
+						yield(Chunk[chunkPair[A, B]]{}, err)
 						return
 					}
 					b, err, ok := next()
@@ -128,16 +133,16 @@ func Both[A, B, C any](name string, fn func(a Chunk[A], b Chunk[B], emit func(Ch
 						return
 					}
 					if err != nil {
-						yield(Chunk[[2]any]{}, err)
+						yield(Chunk[chunkPair[A, B]]{}, err)
 						return
 					}
-					if !yield(Chunk[[2]any]{Data: [2]any{a, b}}, nil) {
+					if !yield(Chunk[chunkPair[A, B]]{Data: chunkPair[A, B]{a: a, b: b}}, nil) {
 						return
 					}
 				}
 			})
-			each(ctx, pairs, nil, func(p Chunk[[2]any], emit func(Chunk[C])) error {
-				return fn(p.Data[0].(Chunk[A]), p.Data[1].(Chunk[B]), emit)
+			each(ctx, pairs, nil, func(p Chunk[chunkPair[A, B]], emit func(Chunk[C])) error {
+				return fn(p.Data.a, p.Data.b, emit)
 			})(yield)
 		}
 	})

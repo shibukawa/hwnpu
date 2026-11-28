@@ -159,38 +159,43 @@ func (c Convert) check(at string) error {
 
 // Int is the whole number key of c; an error names model and key when it is missing or not one.
 func (c Convert) Int(model, key string) (int, error) {
-	v, ok := c[key]
-	if !ok {
-		return 0, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert has no %s", model, key)
-	}
-	n, ok := toInt(v)
-	if !ok {
-		return 0, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s: %v is not a whole number", model, key, v)
-	}
-	return n, nil
+	return convertScalar(c, model, key, "a whole number", toInt)
 }
 
 // Ints is the list of whole numbers key of c.
 func (c Convert) Ints(model, key string) ([]int, error) {
-	v, ok := c[key]
-	if !ok {
-		return nil, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert has no %s", model, key)
-	}
-	list, ok := v.([]any)
-	if !ok {
-		return nil, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s: %v is not a list", model, key, v)
-	}
-	out := make([]int, len(list))
-	for i, e := range list {
-		if out[i], ok = toInt(e); !ok {
-			return nil, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s[%d]: %v is not a whole number", model, key, i, e)
-		}
-	}
-	return out, nil
+	return convertSlice(c, model, key, "a whole number", toInt)
 }
 
 // Strings is the list of strings key of c.
 func (c Convert) Strings(model, key string) ([]string, error) {
+	return convertSlice(c, model, key, "a string", toString)
+}
+
+// Float is the number key of c.
+func (c Convert) Float(model, key string) (float64, error) {
+	return convertScalar(c, model, key, "a number", toFloat)
+}
+
+// String is the string key of c.
+func (c Convert) String(model, key string) (string, error) {
+	return convertScalar(c, model, key, "a string", toString)
+}
+
+func convertScalar[T any](c Convert, model, key, want string, parse func(any) (T, bool)) (T, error) {
+	var zero T
+	v, ok := c[key]
+	if !ok {
+		return zero, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert has no %s", model, key)
+	}
+	out, ok := parse(v)
+	if !ok {
+		return zero, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s: %v is not %s", model, key, v, want)
+	}
+	return out, nil
+}
+
+func convertSlice[T any](c Convert, model, key, want string, parse func(any) (T, bool)) ([]T, error) {
 	v, ok := c[key]
 	if !ok {
 		return nil, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert has no %s", model, key)
@@ -199,43 +204,13 @@ func (c Convert) Strings(model, key string) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s: %v is not a list", model, key, v)
 	}
-	out := make([]string, len(list))
+	out := make([]T, len(list))
 	for i, e := range list {
-		if out[i], ok = e.(string); !ok {
-			return nil, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s[%d]: %v is not a string", model, key, i, e)
+		if out[i], ok = parse(e); !ok {
+			return nil, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s[%d]: %v is not %s", model, key, i, e, want)
 		}
 	}
 	return out, nil
-}
-
-// Float is the number key of c.
-func (c Convert) Float(model, key string) (float64, error) {
-	v, ok := c[key]
-	if !ok {
-		return 0, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert has no %s", model, key)
-	}
-	switch n := v.(type) {
-	case float64:
-		return n, nil
-	case uint64:
-		return float64(n), nil
-	case int64:
-		return float64(n), nil
-	}
-	return 0, fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s: %v is not a number", model, key, v)
-}
-
-// String is the string key of c.
-func (c Convert) String(model, key string) (string, error) {
-	v, ok := c[key]
-	if !ok {
-		return "", fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert has no %s", model, key)
-	}
-	s, ok := v.(string)
-	if !ok {
-		return "", fmt.Errorf("recipe: model-recipes.yaml models.%s.apple.convert.%s: %v is not a string", model, key, v)
-	}
-	return s, nil
 }
 
 func toInt(v any) (int, bool) {
@@ -250,4 +225,21 @@ func toInt(v any) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case uint64:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
+}
+
+func toString(v any) (string, bool) {
+	s, ok := v.(string)
+	return s, ok
 }
