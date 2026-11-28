@@ -878,3 +878,44 @@ func TestCompiledByProgram(t *testing.T) {
 		t.Errorf("compiled by this program: %v, warmed %d more, prepared %d (once)", err, f.warmed-warmed, f.prepared)
 	}
 }
+
+// A checkpoint that is here is not downloaded again where the programs are converted from it.
+// On AMD's NPU a model runs from its export, which the sources are asked for first whether or
+// not the checkpoint is here: a plan counts the export's download (the definitions' bytes for
+// amd).
+func TestPlanDownloadWithCheckpoint(t *testing.T) {
+	ownDefinitions(t)
+	var f fakes
+	c := Define[*fakeModel](f.role("chat", "", chat.KindChat), "LFM3-1.7B")
+	app := NewApp("test", c)
+	app.Store = testStore(t)
+	ctx := context.Background()
+	plan := func() Item {
+		t.Helper()
+		p, err := app.Plan(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.Items[0]
+	}
+	m, _ := chat.Lookup("LFM3-1.7B")
+	if it := plan(); it.Ready || it.Download != int64(m.BytesFor("intel")) {
+		t.Fatalf("an empty store: ready %v, download %d", it.Ready, it.Download)
+	}
+	dir := chat.RepoDir(m.Source())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "model.safetensors"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if it := plan(); it.Ready || it.Download != 0 {
+		t.Errorf("the checkpoint here, Intel's NPU: ready %v, download %d, want 0", it.Ready, it.Download)
+	}
+	saved := airole.Here
+	airole.Here = func(context.Context) airole.NPU { return airole.NPU{Vendor: "amd", Target: cache.AMDTarget} }
+	defer func() { airole.Here = saved }()
+	if it := plan(); it.Ready || it.Download != int64(m.BytesFor("amd")) || it.Download <= 0 {
+		t.Errorf("the checkpoint here, AMD's NPU: ready %v, download %d, want the export's %d", it.Ready, it.Download, int64(m.BytesFor("amd")))
+	}
+}

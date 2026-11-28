@@ -151,20 +151,27 @@ func (c *AgentCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if task := strings.TrimSpace(strings.Join(c.Task, " ")); task != "" {
 		return runTask(s, task)
 	}
-	console.Notef("/reset starts a new conversation, /exit (or Ctrl-D) quits; Ctrl-C stops the task, ↑ ↓ go through what was typed\n")
+	console.Notef("/reset starts a new conversation, /exit (or Ctrl-D) quits, /help lists the commands; Ctrl-C stops the task, ↑ ↓ go through what was typed\n")
+	cs := commands{
+		{names: []string{"reset", "clear", "new"}, about: "start a new conversation", run: func(string) bool {
+			s.Reset()
+			console.Notef("[conversation cleared]\n")
+			return false
+		}},
+		quitCommand(),
+	}
 	for {
 		text, ok := read(ed)
 		if !ok {
 			return nil
 		}
-		switch text {
-		case "":
+		if text == "" {
 			continue
-		case "/exit", "/quit":
-			return nil
-		case "/reset":
-			s.Reset()
-			console.Notef("[conversation cleared]\n")
+		}
+		if handled, quit := cs.do(text); handled {
+			if quit {
+				return nil
+			}
 			continue
 		}
 		if err := runTask(s, text); err != nil {

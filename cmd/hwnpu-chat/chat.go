@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/ai"
 	"github.com/shibukawa/hwnpu/ai/text"
+	"github.com/shibukawa/hwnpu/internal/catalog"
 	"github.com/shibukawa/hwnpu/internal/chatcmd"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/mem"
@@ -49,42 +51,74 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if err != nil {
 		return err
 	}
-	st.Definitions = cm.defs
-	var use ai.Requirement = cm.chat
-	if cm.translate != nil {
-		use = *cm.translate // a translation model translates each text, with the chat's turns as its history
-	}
-	app := ai.NewApp("hwnpu-chat", use)
-	app.Store = st
-	rt, err := open(ctx, app, options(&c.loadFlags, &c.convertFlags, "chat")...)
+	run, err := c.start(ctx, cm, said, nil)
 	if err != nil {
 		return err
 	}
-	defer rt.Close()
-	t := &talker{maxNew: c.N, s: c.sampling(), seed: c.Seed, thinkBudget: c.ThinkBudget,
-		tr: text.TranslateOptions{To: c.To, From: c.From, Form: c.Form}}
-	if cm.translate != nil {
-		if t.tl, err = cm.translate.Get(ctx, rt); err != nil {
-			return err
-		}
-	} else {
-		cchat, err := cm.chat.Get(ctx, rt)
-		if err != nil {
-			return err
-		}
-		t.c = cchat
-		t.think = c.think(cchat)
-	}
-	prepared(rt)
+	t := &talker{cmd: c, st: st, cat: cat, maxNew: c.N, s: c.sampling(), seed: c.Seed, thinkGiven: c.Think, thinkBudget: c.ThinkBudget,
+		system: c.System, tr: text.TranslateOptions{To: c.To, From: c.From, Form: c.Form}}
+	t.use(run)
+	defer func() { t.run.close() }() // the model at the end, which /model may have changed
+	prepared(run.rt)
 	cm.keep(ctx)
 	stop() // Ctrl-C stops an answer, not the chat
 	return c.converse(t)
 }
 
+// chatRun is a chat model loaded: the model --model or /model named, its Runtime and what
+// answers.
+type chatRun struct {
+	cm chatModel
+	rt *ai.Runtime
+	c  *text.Chatter    // nil for a translation model
+	tl *text.Translator // a translation model, in place of c
+}
+
+// close unloads the model (nothing for none).
+func (r *chatRun) close() {
+	if r != nil && r.rt != nil {
+		r.rt.Close()
+	}
+}
+
+// start makes the model cm ready and loads it. before is called when it is not here, before
+// it is downloaded and converted (its error ends start: openAfter); ready, when not nil, once
+// it is ready, before it is loaded.
+func (c *ChatCmd) start(ctx context.Context, cm chatModel, before func(*ai.Plan) error, ready func()) (*chatRun, error) {
+	rt, err := openAfter(ctx, cm.app(), before, ready, options(&c.loadFlags, &c.convertFlags, "chat")...)
+	if err != nil {
+		return nil, err
+	}
+	r := &chatRun{cm: cm, rt: rt}
+	if cm.translate != nil {
+		r.tl, err = cm.translate.Get(ctx, rt)
+	} else {
+		r.c, err = cm.chat.Get(ctx, rt)
+	}
+	if err != nil {
+		rt.Close()
+		return nil, err
+	}
+	return r, nil
+}
+
+// flagsFor are the flags the model /model names runs with: the command line's, without the
+// files made by hand for the model it named (--package, --config, --weights, --tokenizer,
+// --codes, --format-for and the encoders), which are that model's alone. Named as on the
+// command line, the model takes them all again.
+func (c *ChatCmd) flagsFor(name string) (*convertFlags, *encoderFlags) {
+	if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(c.Model)) {
+		return &c.convertFlags, &c.encoderFlags
+	}
+	cf := c.convertFlags
+	cf.Package, cf.Config, cf.Weights, cf.Tokenizer, cf.Codes, cf.FormatFor = "", "", "", "", "", ""
+	return &cf, &encoderFlags{}
+}
+
 func (c *ChatCmd) converse(t *talker) error {
-	t.reset(c.System)
+	t.reset()
 	if c.Prompt == "" {
-		return t.talk(c.System)
+		return t.talk()
 	}
 	console.Running() // the times of a conversation in the terminal are not told
 	msg := text.Message{Role: "user", Text: c.Prompt}
@@ -108,17 +142,35 @@ func (c *ChatCmd) converse(t *talker) error {
 // talker holds a conversation with a chat model, or a translation model's history.
 type chatter interface {
 	Reply(context.Context, []text.Message, text.ChatOptions, func(text.Delta) bool) (text.Answer, error)
+	Count(context.Context, []text.Message, text.ChatOptions) (int, error)
+	Context() int
 	Images() bool
 	Audio() bool
 	Translates() bool
 }
 
 type talker struct {
-	c           chatter
-	tl          *text.Translator // a translation model, in place of c
-	msgs        []text.Message
-	pairs       []text.Pair // the translations so far (tl)
+	// cmd is the command, st and cat where its models come from: what /model loads another
+	// with. run is the model loaded (nil when /model lost it), c and tl what answers of it.
+	cmd *ChatCmd
+	st  ai.Store
+	cat *ai.Catalog
+	run *chatRun
+	ed  *console.Editor // the terminal's (nil with a prompt on the command line)
+
+	c      chatter
+	tl     *text.Translator // a translation model, in place of c
+	system string           // the system message ("" for none)
+	msgs   []text.Message
+	pairs  []text.Pair // the translations so far (tl)
+	// last is the message sent last and lastAt how long the conversation (msgs, or pairs) was
+	// before it, for /retry; sent is false when there is none.
+	last   text.Message
+	lastAt int
+	sent   bool
+
 	think       bool
+	thinkGiven  *bool // --think or /think, which the next model keeps (nil: each model's own)
 	thinkBudget int
 	maxNew      int
 	s           text.Sampling
@@ -126,18 +178,69 @@ type talker struct {
 	tr          text.TranslateOptions
 }
 
-// reset starts the conversation again, with the system message.
-func (t *talker) reset(system string) {
-	t.msgs, t.pairs = t.msgs[:0], nil
-	if system != "" {
-		t.msgs = append(t.msgs, text.Message{Role: "system", Text: system})
+// use makes r the model that answers (nil: none).
+func (t *talker) use(r *chatRun) {
+	t.run, t.c, t.tl = r, nil, nil
+	if r == nil {
+		return
 	}
+	t.tl = r.tl
+	if r.c != nil {
+		t.c = r.c
+		t.think = r.c.Thinks() // unless its definition turns the thinking off
+	}
+	if t.thinkGiven != nil {
+		t.think = *t.thinkGiven
+	}
+}
+
+// name is the name of the model that answers: its name in the definitions, or its export's.
+func (t *talker) name() string {
+	if t.run == nil {
+		return "no model"
+	}
+	return cmp.Or(t.run.cm.export, t.run.cm.base)
+}
+
+// at reports whether the model of the definitions named name is the one that answers.
+func (t *talker) at(name string) bool {
+	return t.run != nil && t.run.cm.export == "" && strings.EqualFold(name, t.run.cm.base)
+}
+
+// translator reports whether the model translates each text.
+func (t *talker) translator() bool {
+	return t.tl != nil || (t.c != nil && t.c.Translates())
+}
+
+// reset starts the conversation again, with the system message.
+func (t *talker) reset() {
+	t.msgs, t.pairs, t.sent = t.msgs[:0], nil, false
+	if t.system != "" {
+		t.msgs = append(t.msgs, text.Message{Role: "system", Text: t.system})
+	}
+}
+
+// options are the options of an answer of a chat model.
+func (t *talker) options() text.ChatOptions {
+	maxNew := t.maxNew
+	if maxNew <= 0 {
+		maxNew = text.Unlimited
+	}
+	o := text.ChatOptions{MaxTokens: maxNew, Think: &t.think, ThinkBudget: samplingFlags{ThinkBudget: t.thinkBudget}.budget(),
+		Sampling: &t.s, Seed: t.seed}
+	if t.c != nil && t.c.Translates() {
+		o.Translation = &t.tr
+	}
+	return o
 }
 
 // answer sends a message and writes the answer: the thinking to standard error in dim, the
 // answer to standard output, a line of statistics to standard error in gray. On an error the
 // message is taken back.
 func (t *talker) answer(msg text.Message) error {
+	if t.c == nil && t.tl == nil {
+		return errors.New("no model is loaded (/model NAME loads one)")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	thought, answered := false, false
 	show := func(d text.Delta) bool {
@@ -154,15 +257,13 @@ func (t *talker) answer(msg text.Message) error {
 		}
 		return true
 	}
-	maxNew := t.maxNew
-	if maxNew <= 0 {
-		maxNew = text.Unlimited
-	}
 	var st text.Stats
 	var err error
+	t.last, t.sent = msg, true
 	if t.tl != nil {
+		t.lastAt = len(t.pairs)
 		o := t.tr
-		o.History, o.MaxTokens, o.Sampling, o.Seed = t.pairs, maxNew, &t.s, t.seed
+		o.History, o.MaxTokens, o.Sampling, o.Seed = t.pairs, t.options().MaxTokens, &t.s, t.seed
 		var tr text.Translation
 		tr, err = t.tl.Reply(ctx, msg.Text, o, show)
 		st = tr.Stats
@@ -170,14 +271,10 @@ func (t *talker) answer(msg text.Message) error {
 			t.pairs = append(t.pairs, text.Pair{Source: msg.Text, Target: tr.Text})
 		}
 	} else {
+		t.lastAt = len(t.msgs)
 		var a text.Answer
 		msgs := append(t.msgs, msg)
-		o := text.ChatOptions{MaxTokens: maxNew, Think: &t.think, ThinkBudget: samplingFlags{ThinkBudget: t.thinkBudget}.budget(),
-			Sampling: &t.s, Seed: t.seed}
-		if t.c.Translates() {
-			o.Translation = &t.tr
-		}
-		a, err = t.c.Reply(ctx, msgs, o, show)
+		a, err = t.c.Reply(ctx, msgs, t.options(), show)
 		st = a.Stats
 		if err == nil || errors.Is(err, context.Canceled) {
 			t.msgs = append(msgs, text.Message{Role: "assistant", Text: a.Text, Reasoning: a.Reasoning})
@@ -228,69 +325,215 @@ func (t *talker) answer(msg text.Message) error {
 	return nil
 }
 
-// talk is the conversation in the terminal.
-func (t *talker) talk(system string) error {
-	media := ""
+// retry answers the message sent last again: what it added to the conversation is taken back
+// first. After /model it is the same question asked of another model.
+func (t *talker) retry() {
+	if !t.sent {
+		console.Notef("[nothing to answer again yet]\n")
+		return
+	}
+	if what := t.unread(t.last); what != "" && (t.c != nil || t.tl != nil) {
+		// after /model: the message of the model before it
+		console.Notef("[the last message has %s, which %s does not read]\n", what, t.name())
+		return
+	}
+	if t.tl != nil {
+		t.pairs = t.pairs[:min(t.lastAt, len(t.pairs))]
+	} else {
+		t.msgs = t.msgs[:min(t.lastAt, len(t.msgs))]
+	}
+	if err := t.answer(t.last); err != nil {
+		printError(err)
+	}
+}
+
+// hints says what the model at hand takes besides texts, for the notes of the start and of
+// /model: the images and clips it reads, the language it translates into.
+func (t *talker) hints() string {
+	h := ""
 	if t.c != nil && t.c.Images() {
-		media += "/image FILE [text] sends an image, "
+		h += "/image FILE [text] sends an image, "
 	}
 	if t.c != nil && t.c.Audio() {
-		media += "/audio FILE.wav [text] sends a clip, "
+		h += "/audio FILE.wav [text] sends a clip, "
 	}
-	translator := t.tl != nil || (t.c != nil && t.c.Translates())
-	if translator {
+	if t.translator() {
 		to := cmp.Or(t.tr.To, "English for Japanese text, else Japanese")
-		media += fmt.Sprintf("each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)
+		h += fmt.Sprintf("each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)
 	}
-	console.Notef("%s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer, ↑ ↓ go through what was typed\n", media)
-	ed := console.NewEditor("chat")
+	return h
+}
+
+// commands are the commands of the conversation in the terminal (/help lists them).
+func (t *talker) commands() commands {
+	reads := func(feature, what string, has func() bool) func() string {
+		return func() string {
+			if has() {
+				return ""
+			}
+			why := fmt.Sprintf("%s does not read %s", t.name(), what)
+			var can []string
+			for _, m := range t.cat.OfKind(string(catalog.KindChat)) {
+				if slices.Contains(m.Features, feature) {
+					can = append(can, m.Name)
+				}
+			}
+			if len(can) > 0 {
+				why += " (/model picks one that does: " + strings.Join(can, ", ") + ")"
+			}
+			return why
+		}
+	}
+	media := func(isAudio bool) func(string) bool {
+		return func(arg string) bool {
+			file, after, _ := strings.Cut(arg, " ")
+			if file == "" {
+				printError(errors.New("a file to send: /image FILE [text], /audio FILE.wav [text]"))
+				return false
+			}
+			m, err := mediaFile(expandHome(file), isAudio)
+			if err != nil {
+				printError(err)
+				return false
+			}
+			t.say(text.Message{Role: "user", Text: strings.TrimSpace(after), Media: []text.Media{m}})
+			return false
+		}
+	}
+	return commands{
+		{names: []string{"model", "models"}, args: "[NAME]", about: "choose the model from the list of them, or load NAME (a name, a family or a use, as --model); the conversation goes on with it",
+			run: func(arg string) bool { t.model(arg); return false }},
+		{names: []string{"reset", "clear", "new"}, about: "clear the conversation", run: func(string) bool {
+			t.reset()
+			console.Notef("[conversation cleared]\n")
+			return false
+		}},
+		{names: []string{"retry", "regen"}, about: "answer the last message again (after /model: by the other model)", run: func(string) bool { t.retry(); return false }},
+		{names: []string{"system"}, args: "[TEXT|none]", about: "show the system message, or set it and clear the conversation (none: without one)",
+			unless: func() string {
+				if t.tl != nil {
+					return t.name() + " is a translation model, which takes no system message"
+				}
+				return ""
+			},
+			run: func(arg string) bool {
+				switch arg {
+				case "":
+					if t.system == "" {
+						console.Notef("[no system message]\n")
+					} else {
+						console.Notef("[system message: %s]\n", t.system)
+					}
+					return false
+				case "none":
+					arg = ""
+				}
+				t.system = arg
+				t.reset()
+				if arg == "" {
+					console.Notef("[no system message; conversation cleared]\n")
+				} else {
+					console.Notef("[system message set; conversation cleared]\n")
+				}
+				return false
+			}},
+		{names: []string{"think"}, args: "on|off", about: "let the model think before it answers, or not", run: func(arg string) bool {
+			t.think = arg != "off"
+			t.thinkGiven = &t.think
+			console.Notef("[thinking %s]\n", onOff(t.think))
+			return false
+		}},
+		{names: []string{"to"}, args: "[LANG]", about: "the language to translate into, clearing the history (alone: by the text)",
+			unless: func() string {
+				if !t.translator() {
+					return t.name() + " is not a translation model (/model translate picks one)"
+				}
+				return ""
+			},
+			run: func(arg string) bool {
+				// the history's translations are labelled with the target language: start again
+				t.tr.To = arg
+				t.reset()
+				console.Notef("[translating into %s; history cleared]\n", cmp.Or(t.tr.To, "the language by the text"))
+				return false
+			}},
+		{names: []string{"image"}, args: "FILE [text]", about: "send an image, with a text",
+			unless: reads("vision", "images", func() bool { return t.c != nil && t.c.Images() }), run: media(false)},
+		{names: []string{"audio"}, args: "FILE.wav [text]", about: "send a clip, with a text",
+			unless: reads("audio", "audio", func() bool { return t.c != nil && t.c.Audio() }), run: media(true)},
+		{names: []string{"status", "info"}, about: "the model, the length of the conversation and the settings", run: func(string) bool { t.status(); return false }},
+		quitCommand(),
+	}
+}
+
+// say sends a message and writes an error as one of the turn: the conversation goes on.
+func (t *talker) say(msg text.Message) {
+	if err := t.answer(msg); err != nil {
+		printError(err)
+	}
+}
+
+// status writes the model at hand, how long the conversation is and how the model answers.
+func (t *talker) status() {
+	if t.run == nil {
+		console.Notef("[no model is loaded: /model NAME loads one]\n")
+		return
+	}
+	line := t.name()
+	if t.tl != nil {
+		line += fmt.Sprintf(": a translation model, %d texts in its history", len(t.pairs))
+	} else {
+		turns := 0
+		for _, m := range t.msgs {
+			if m.Role == "user" {
+				turns++
+			}
+		}
+		line += fmt.Sprintf(": context %d tokens; %d messages sent", t.c.Context(), turns)
+		if len(t.msgs) > 0 {
+			if n, err := t.c.Count(context.Background(), t.msgs, t.options()); err == nil {
+				line += fmt.Sprintf(", %d tokens", n)
+			}
+		}
+		line += "; thinking " + onOff(t.think)
+		if t.system != "" {
+			line += "; system message: " + oneLine(t.system)
+		}
+	}
+	if t.translator() {
+		line += "; translating into " + cmp.Or(t.tr.To, "the language by the text")
+	}
+	console.Notef("[%s]\n", line)
+}
+
+// onOff is a setting as the commands write it.
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
+// talk is the conversation in the terminal.
+func (t *talker) talk() error {
+	console.Notef("%s: %s/help lists the commands (/model picks another model, /reset clears the conversation, /exit or Ctrl-D quits); Ctrl-C stops an answer, ↑ ↓ go through what was typed\n", t.name(), t.hints())
+	t.ed = console.NewEditor("chat")
+	cs := t.commands()
 	for {
-		line, ok := read(ed)
+		line, ok := read(t.ed)
 		if !ok {
 			return nil
 		}
-		switch {
-		case line == "":
-			continue
-		case line == "/exit" || line == "/quit":
-			return nil
-		case line == "/reset":
-			t.reset(system)
-			console.Notef("[conversation cleared]\n")
-			continue
-		case translator && (line == "/to" || strings.HasPrefix(line, "/to ")):
-			// the history's translations are labelled with the target language: start again
-			t.tr.To = strings.TrimSpace(strings.TrimPrefix(line, "/to"))
-			t.reset(system)
-			console.Notef("[translating into %s; history cleared]\n", cmp.Or(t.tr.To, "the language by the text"))
-			continue
-		case strings.HasPrefix(line, "/think"):
-			t.think = strings.TrimSpace(strings.TrimPrefix(line, "/think")) != "off"
-			console.Notef("[thinking %v]\n", t.think)
+		if line == "" {
 			continue
 		}
-		msg := text.Message{Role: "user", Text: line}
-		// /image FILE [text], /audio FILE.wav [text]: the image or the clip, then the text
-		for _, cmd := range []string{"/image ", "/audio "} {
-			rest, ok := strings.CutPrefix(line, cmd)
-			if !ok {
-				continue
+		if handled, quit := cs.do(line); handled {
+			if quit {
+				return nil
 			}
-			file, after, _ := strings.Cut(strings.TrimSpace(rest), " ")
-			m, err := mediaFile(expandHome(file), cmd == "/audio ")
-			if err != nil {
-				printError(err)
-				msg.Text = ""
-				break
-			}
-			msg = text.Message{Role: "user", Text: strings.TrimSpace(after), Media: []text.Media{m}}
-		}
-		if msg.Text == "" && len(msg.Media) == 0 {
 			continue
 		}
-		if err := t.answer(msg); err != nil {
-			printError(err)
-		}
+		t.say(text.Message{Role: "user", Text: line})
 	}
 }
 

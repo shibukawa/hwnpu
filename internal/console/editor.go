@@ -34,12 +34,17 @@ type Editor struct {
 	file    string // the history file, "" for none
 	history []string
 	row     int // the row of the cursor below the prompt's, as last drawn
+
+	lines func() int // the rows of the terminal (nil: 24), for Select
+	color bool       // the terminal takes colors (Select's marks)
 }
 
 // NewEditor returns an editor of standard input with the history called name (kept in the user
 // cache directory, hwnpu/history/NAME; "" for none).
 func NewEditor(name string) *Editor {
 	e := &Editor{in: bufio.NewReader(os.Stdin), out: os.Stdout, edit: Terminal(os.Stdin) && Terminal(os.Stdout), cols: func() int { return columns(os.Stdout) }}
+	e.lines = func() int { _, rows := size(os.Stdout); return rows }
+	e.color = Colors(os.Stdout)
 	if name != "" {
 		e.file = cache.Sub("history", name)
 		e.history = readHistory(e.file)
@@ -82,6 +87,150 @@ func (e *Editor) read(prompt string, history []string) (string, error) {
 		restore()
 	}()
 	return e.editLine(prompt, history)
+}
+
+// ErrNoTerminal is Select's error where there is no terminal to choose on.
+var ErrNoTerminal = errors.New("console: not a terminal")
+
+// Select shows rows under head (a line of headings, "" for none) and returns the index of the
+// one chosen: ↑ ↓ (Ctrl-P, Ctrl-N, k, j) move from row cur, Home and End go to the first and the
+// last, Enter chooses; Esc, q, Ctrl-C and Ctrl-D leave without one (-1). Rows wider than the
+// terminal are cut, and of more rows than it has those around the one marked are shown. What it
+// drew is erased when it returns. Without a terminal to edit on (a pipe), it is ErrNoTerminal:
+// the caller writes the rows.
+//
+// paint (nil for none) colors a row as it is shown, cut to the terminal's width, where the
+// terminal takes colors: it adds escape sequences and no column, and ends a color with the
+// default one (\x1b[39m, \x1b[49m), not with a reset, which would end the mark of the row
+// chosen too.
+func (e *Editor) Select(head string, rows []string, cur int, paint func(row string) string) (int, error) {
+	if !e.edit || len(rows) == 0 {
+		return -1, ErrNoTerminal
+	}
+	restore, err := makeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return -1, ErrNoTerminal
+	}
+	defer restore()
+	return e.selectRow(head, rows, cur, paint), nil
+}
+
+// selectRow is Select on the terminal in raw mode.
+func (e *Editor) selectRow(head string, rows []string, cur int, paint func(string) string) int {
+	cur = min(max(cur, 0), len(rows)-1)
+	top, drawn := 0, 0
+	erase := func() string {
+		if drawn == 0 {
+			return ""
+		}
+		s := "\r"
+		if drawn > 1 {
+			s += fmt.Sprintf("\x1b[%dA", drawn-1)
+		}
+		return s + "\x1b[J"
+	}
+	draw := func() {
+		cols := e.cols()
+		if cols <= 0 {
+			cols = 80
+		}
+		// the rows that fit beside the headings and the line of keys
+		fit := 24
+		if e.lines != nil {
+			if n := e.lines(); n > 0 {
+				fit = n
+			}
+		}
+		fit -= 2
+		if head != "" {
+			fit--
+		}
+		fit = min(max(fit, 1), len(rows))
+		top = min(max(top, cur-fit+1), cur) // keep the one marked in sight
+		top = min(top, len(rows)-fit)
+		var sb strings.Builder
+		sb.WriteString(erase())
+		drawn = 0
+		line := func(s, on, off string) {
+			if drawn > 0 {
+				sb.WriteString("\r\n")
+			}
+			s = shorten(s, cols-1)
+			if e.color {
+				s = on + s + off
+			}
+			sb.WriteString(s)
+			drawn++
+		}
+		if head != "" {
+			line("  "+head, gray, reset)
+		}
+		for i := top; i < top+fit; i++ {
+			mark, on, off := "  ", "", ""
+			if i == cur {
+				mark, on, off = "> ", "\x1b[1m", reset
+			}
+			if drawn > 0 {
+				sb.WriteString("\r\n")
+			}
+			row := shorten(rows[i], cols-1-len(mark))
+			if e.color {
+				if paint != nil {
+					row = paint(row)
+				}
+				row = on + mark + row + off
+			} else {
+				row = mark + row
+			}
+			sb.WriteString(row)
+			drawn++
+		}
+		keys := "↑ ↓ move, Enter chooses, Esc leaves it as it is"
+		if fit < len(rows) {
+			keys = fmt.Sprintf("%d-%d of %d; %s", top+1, top+fit, len(rows), keys)
+		}
+		line(keys, gray, reset)
+		io.WriteString(e.out, sb.String())
+	}
+	done := func(i int) int {
+		io.WriteString(e.out, erase())
+		return i
+	}
+	for {
+		draw()
+		r, _, err := e.in.ReadRune()
+		if err != nil {
+			return done(-1)
+		}
+		switch r {
+		case '\r', '\n':
+			return done(cur)
+		case 0x03, 0x04, 'q':
+			return done(-1)
+		case 0x10, 'k':
+			cur = max(cur-1, 0)
+		case 0x0e, 'j':
+			cur = min(cur+1, len(rows)-1)
+		case 0x1b:
+			if e.in.Buffered() == 0 {
+				return done(-1) // Esc alone: the keys' sequences come in one piece
+			}
+			switch e.escape() {
+			case "[A", "OA":
+				cur = max(cur-1, 0)
+			case "[B", "OB":
+				cur = min(cur+1, len(rows)-1)
+			case "[H", "OH", "[1~", "[7~":
+				cur = 0
+			case "[F", "OF", "[4~", "[8~":
+				cur = len(rows) - 1
+			case "[5~": // page up
+				cur = max(cur-10, 0)
+			case "[6~": // page down
+				cur = min(cur+10, len(rows)-1)
+			}
+		}
+	}
 }
 
 // readPlain reads lines without editing, those ending in \ joined to the next.

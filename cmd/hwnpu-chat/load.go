@@ -155,6 +155,9 @@ type chatModel struct {
 	base   string
 	memory int
 	st     ai.Store
+	// export is the name of an export's directory --model named ("" for a model of the
+	// definitions): it runs in place of base's own.
+	export string
 }
 
 // chatModelOf is the chat model name names (a model, a use or a family of the definitions, a
@@ -183,7 +186,7 @@ func chatModelOf(st ai.Store, cat *ai.Catalog, name string, cf *convertFlags, ef
 		if cf.Tokenizer != "" {
 			d.Programs["tokenizer"] = []string{absolute(cf.Tokenizer)}
 		}
-		cm.chat, cm.defs, cm.base = text.Chat(d.ID()), []ai.Definition{d}, like
+		cm.chat, cm.defs, cm.base, cm.export = text.Chat(d.ID()), []ai.Definition{d}, like, d.Name
 		return cm, nil
 	}
 	cm.memory = memoryGiven(name, cf)
@@ -213,6 +216,24 @@ func chatModelOf(st ai.Store, cat *ai.Catalog, name string, cf *convertFlags, ef
 		cm.translate = &t
 	}
 	return cm, nil
+}
+
+// use is the use the model is loaded by: as a translator, for a translation model, which
+// translates each text with the chat's turns as its history.
+func (cm chatModel) use() ai.Requirement {
+	if cm.translate != nil {
+		return *cm.translate
+	}
+	return cm.chat
+}
+
+// app is the app of the model alone: its use (as a translator, for a translation model) in
+// the store with its definitions.
+func (cm chatModel) app() *ai.App {
+	app := ai.NewApp("hwnpu-chat", cm.use())
+	app.Store = cm.st
+	app.Store.Definitions = cm.defs
+	return app
 }
 
 // definition is what the flags change of how a chat model is made (the zero Definition when

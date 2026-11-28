@@ -319,9 +319,15 @@ func TestConvertedRoute(t *testing.T) {
 	if r.device != "cpu" || r.runtime != "hwnpu" || r.threads != 3 || !strings.Contains(r.line, "no converted form") {
 		t.Errorf("on AMD's NPU: %+v", r)
 	}
-	r, _ = convertedRoute(chat.Model{Device: map[string]string{"amd": "cpu"}}, "swift-f0", n)
+	// the app's Definition.Device, which is for every NPU, is chosen as --device is
+	r, _ = convertedRoute(chat.Model{Device: map[string]string{"amd": "cpu", "apple": "cpu", "intel": "cpu"}}, "swift-f0", n)
 	if r.device != "cpu" || r.threads != 1 || !strings.Contains(r.line, "(--device;") {
 		t.Errorf("device cpu: %+v", r)
+	}
+	// models.yaml's device of a vendor (swift-f0 and basic-pitch on AMD's)
+	r, _ = convertedRoute(chat.Model{Device: map[string]string{"amd": "cpu"}}, "swift-f0", n)
+	if r.device != "cpu" || r.threads != 1 || !strings.Contains(r.line, "(models.yaml (amd);") {
+		t.Errorf("device {amd: cpu}: %+v", r)
 	}
 	r, _ = convertedRoute(chat.Model{Device: map[string]string{"apple": "npu"}}, "swift-f0", airole.NPU{Vendor: "apple"})
 	if r.device != "npu" || r.runtime != "npu" || r.Where() != "" {

@@ -242,19 +242,9 @@ func AMDFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bo
 }
 
 // DeviceFlag is the device the definition of m gives for every NPU, as an app's model of its own
-// does (ai.Definition's Device): chosen as a command's --device is, over HWNPU_DEVICE and the
-// fallbacks of a model without a form for this NPU. "" when it gives none, or not for every NPU.
-func DeviceFlag(m chat.Model) string {
-	d := ""
-	for _, v := range chat.Vendors {
-		got, ok := m.Device[v]
-		if !ok || d != "" && got != d {
-			return ""
-		}
-		d = got
-	}
-	return d
-}
+// does (chat.DefinedDevice): what the roles of pictures pass as a command's --device. "" when it
+// gives none, or not for every NPU.
+func DeviceFlag(m chat.Model) string { return chat.DefinedDevice(m) }
 
 // YuNetFile is the ONNX file of YuNet's repository (opencv/face_detection_yunet).
 const YuNetFile = "face_detection_yunet_2023mar.onnx"

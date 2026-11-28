@@ -28,7 +28,7 @@
 | RTMDet-tiny / s | Core AI | CPU (`device: {amd: cpu}`) | OpenVINO IR | ONNX Runtime、なければ milcpu |
 | RTMDet-m | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | 同じ |
 | RTMO-s | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | 同じ |
-| PP-OCRv6-small | Core AI | CPU (IRON の形なし) | OpenVINO IR | 同じ |
+| PP-OCRv6-small | Core AI | CPU (`device: {amd: cpu}`。IRON の形なし) | OpenVINO IR | 同じ |
 | YuNet | Core AI | 既定は CPU。`--device npu` で `iron_yunet.py` の書き出し | OpenVINO IR | ONNX Runtime、なければ milcpu |
 | EfficientSAM の符号器 | Core AI | NPU、初回に IRON で書き出す | OpenVINO IR | ONNX Runtime、なければ hwnpu の評価器 |
 | EfficientSAM の復号器 | ホストの評価器 | ホストの評価器 | ホストの評価器 | ホストの評価器 |

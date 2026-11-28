@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -67,13 +68,69 @@ func setBackend(ctx context.Context, name string) error {
 	return os.Setenv(backendEnv, d)
 }
 
-// open prepares the app's models that are not here and opens its Runtime, whose first load of a
-// model compiles it for the NPU.
+// open prepares the app's models that are not here, saying what each takes to download and on
+// the disk first (toFetch), and opens its Runtime, whose first load of a model compiles it for
+// the NPU.
 func open(ctx context.Context, app *ai.App, opts ...ai.Option) (*ai.Runtime, error) {
-	if err := aiensure.Ensure(ctx, app, aiensure.Options{Log: os.Stderr}); err != nil {
+	return openAfter(ctx, app, said, nil, opts...)
+}
+
+// said is openAfter's before that says what the models that are not here take (toFetch) and
+// goes on.
+func said(p *ai.Plan) error {
+	for _, line := range toFetch(p) {
+		fmt.Fprintln(logw(), line)
+	}
+	return nil
+}
+
+// openAfter is open with what is done when a model is not here, before it is made ready
+// (before: aiensure's Options.Before, whose error ends it), and once the models are ready,
+// before the Runtime is opened (ready; nil for nothing): /model asks before a download, and
+// lets the model at hand go before the next is loaded.
+func openAfter(ctx context.Context, app *ai.App, before func(*ai.Plan) error, ready func(), opts ...ai.Option) (*ai.Runtime, error) {
+	if err := aiensure.Ensure(ctx, app, aiensure.Options{Log: os.Stderr, Before: before}); err != nil {
 		return nil, err
 	}
+	if ready != nil {
+		ready()
+	}
 	return app.Open(ctx, append([]ai.Option{ai.CompileOnLoad(), ai.WithLog(logw())}, opts...)...)
+}
+
+// toFetch says, a line for each model of the plan that is not here, what making it ready takes:
+// about how much is downloaded and how much it keeps on the disk (the definitions' bytes and
+// disk; while it is prepared the two are there at once).
+func toFetch(p *ai.Plan) []string {
+	var lines []string
+	seen := map[string]bool{}
+	for _, it := range p.Items {
+		if it.Ready || seen[it.Model] {
+			continue
+		}
+		seen[it.Model] = true
+		line := it.Model + " is not here yet"
+		if size := fetchSize(it); size != "" {
+			line += ": " + size
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// fetchSize is what making a model that is not here ready takes, from its plan; "" when the
+// definitions do not say (a model with no form for this NPU has no size on its disk).
+func fetchSize(it ai.Item) string {
+	disk := cache.FormatSize(it.Disk)
+	switch {
+	case it.Download > 0 && it.Disk > 0:
+		return fmt.Sprintf("about %s to download, %s kept on the disk", cache.FormatSize(it.Download), disk)
+	case it.Download > 0:
+		return fmt.Sprintf("about %s to download", cache.FormatSize(it.Download))
+	case it.Disk > 0:
+		return fmt.Sprintf("its checkpoint is here; %s kept on the disk once it is made ready", disk)
+	}
+	return ""
 }
 
 // prepared logs how long making the models ready took (console.Prepared), as hwnpu-chat did for

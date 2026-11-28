@@ -96,6 +96,29 @@ were removed without wrappers.
   the thinking goes to stderr (compare stderr when checking generated text).
 - `search`: each line typed is a document; a line starting with `?` is a query, and documents are listed
   by cosine similarity.
+- Commands start with `/` (`commands` in `cmd/hwnpu-chat/commands.go`: one table per conversation, which
+  `/help` lists; `chat`, `agent` and `search` each have theirs). The names follow the other chat programs:
+  `/exit` `/quit` `/bye`, `/reset` `/clear` `/new`, `/model`, `/retry`, `/system`, `/status`. A line is a
+  command only when it starts with `/` and lowercase letters (`/usr/bin/env` is a message). A name that is
+  no command is a message too (`/tmp is full`), unless it is one slip of the keys from a command (`/modle`:
+  an error, not sent to the model).
+- `/model` (chat): alone it lists the chat models, each planned as it would be loaded (`ai.App.Plan`, with
+  the command line's flags), on one line of at most 78 columns: `MEM`, `DL` (`ready`, else the plan's
+  download, `7.5G`), `DISK` and the features, none cut on a terminal of 80 columns. On a terminal the list
+  is a picker (`console.Editor.Select`: ↑ ↓, Enter, Esc; cut to the terminal's width, scrolled when longer
+  than it); elsewhere it is printed and `/model NAME` loads one. With colors the features are tags, a color
+  for each (`tagColors`): a background and a space on each side when every row then fits (87 columns with
+  models.yaml's models), else the words in their colors. `Select` takes the paint of a row, which ends its
+  colors with the default ones (`\x1b[39m`), not a reset, so that the bold of the row chosen stays. The
+  order of a change:
+  resolve the name, ask before a download (`aiensure.Options.Before`), make the new model ready, close the
+  old Runtime, open the new one. So nothing is lost when the name, the download or the conversion fails,
+  and the two models are not held at once. If the new one fails to load, the old one is loaded again.
+- The conversation is kept across `/model`: its messages are text, and the new model reads them as its
+  prompt. It starts again when either model is a translation model (its history is pairs, not messages) or
+  when it holds media the new model does not read.
+- A model that is not here says its download and disk sizes before the download starts, in every command
+  (`toFetch`); only `/model` asks, as a prompt on the command line must not wait for an answer.
 
 ### OpenAI-compatible server (`serve`)
 

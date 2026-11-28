@@ -28,7 +28,7 @@ Models that read images (not image generation, see [image-models.md](image-model
 | RTMDet-tiny / s | Core AI | CPU (`device: {amd: cpu}`) | OpenVINO IR | ONNX Runtime, else milcpu |
 | RTMDet-m | Core AI | NPU, IRON export made on first run | OpenVINO IR | same |
 | RTMO-s | Core AI | NPU, IRON export made on first run | OpenVINO IR | same |
-| PP-OCRv6-small | Core AI | CPU (no IRON form) | OpenVINO IR | same |
+| PP-OCRv6-small | Core AI | CPU (`device: {amd: cpu}`; no IRON form) | OpenVINO IR | same |
 | YuNet | Core AI | CPU by default; `--device npu` runs `iron_yunet.py`'s export | OpenVINO IR | ONNX Runtime, else milcpu |
 | EfficientSAM encoder | Core AI | NPU, IRON export made on first run | OpenVINO IR | ONNX Runtime, else hwnpu's evaluator |
 | EfficientSAM decoder | host evaluator | host evaluator | host evaluator | host evaluator |
