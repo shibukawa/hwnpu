@@ -160,6 +160,27 @@ func LeftToDevice(dir string) bool {
 	return strings.HasSuffix(strings.TrimSuffix(base, ".aimodel"), "_device")
 }
 
+// PrebuiltTaken, when set (internal/chat), reports whether a run takes the prebuilt programs of
+// the export for arch: its model's recipe prebuilds them for it (model-recipes.yaml
+// apple.prebuilt and archs). Another chip's, or a model's left to the device, may be in the
+// sources all the same (made to measure them: Qwen3-0.6B's h13g programs loaded in 5 min 23 s
+// against 36 s compiled on the M1, 2026-11-28), and are not taken. PrebuiltEnv=any takes them
+// whatever the recipe says, to check a chip's before its recipe names it.
+var PrebuiltTaken func(export, arch string) bool
+
+// prebuiltAny is whether PrebuiltEnv takes every prebuilt program there is (any).
+func prebuiltAny() bool { return strings.EqualFold(strings.TrimSpace(os.Getenv(PrebuiltEnv)), "any") }
+
+// prebuiltTaken is whether the prebuilt programs for arch of the export holding the asset at dir
+// are taken (PrebuiltTaken); those of an asset of no export are.
+func prebuiltTaken(dir, arch string) bool {
+	if prebuiltAny() || PrebuiltTaken == nil {
+		return true
+	}
+	export, ok := ExportOf(dir)
+	return !ok || PrebuiltTaken(export, arch)
+}
+
 // NothingToPrebuild reports whether every program under export is LeftToDevice (FLUX.2 klein's
 // DeviceExport): no prebuilt of it is made, or looked for.
 func NothingToPrebuild(export string) bool {

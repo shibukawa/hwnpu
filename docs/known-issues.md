@@ -149,7 +149,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
     | LFM3-Audio-2B-TTS | 45 秒 | 測れず (ディスクが尽きて ANE のコンパイラが落ちた、8 節) |
 
   - `coreai-build` で作れないものもある: basic-pitch と RTMO-s は ANE に何も乗らない、magenta-realtime-2-small の復号器は `coreai-build` が落ちる。PP-OCR、EfficientSAM、MoGe-2 は書き出しが最初の読み込みでできるので、先に端末で一度読まないと作れない
-- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) と、上の表で prebuilt にしたチャットのモデルにだけ prebuilt を置く (model-recipes.yaml の `apple.prebuilt: true`。チャットは `archs` を確かめたチップに限る: Qwen3.5-0.8B は h13g と h15g、ほかは h13g)。どのチャットのモデルも attention のプログラムは h13g と h15g で端末に任せる (19 節)。Gemma 4 は全部を端末に任せる決まりがある
+- **今**: 画像生成のモデル (FLUX.2 klein、FLUX.3 klein、Anima) と、上の表で prebuilt にしたチャットのモデルにだけ prebuilt を置く。動かすときも、レシピの `prebuilt: true` と `archs` にあるチップのものだけを使う (取得元に確かめるための h13g・h14g・h15g のプリビルドがあっても。`HWNPU_COREAI_PREBUILT=any` で使う、2026-11-28) (model-recipes.yaml の `apple.prebuilt: true`。チャットは `archs` を確かめたチップに限る: Qwen3.5-0.8B は h13g と h15g、ほかは h13g)。どのチャットのモデルも attention のプログラムは h13g と h15g で端末に任せる (19 節)。Gemma 4 は全部を端末に任せる決まりがある
 - **直ったら** (1 節): 上の表を同じ測り方で測り直す。M2 (h14g) は確かめていない
 
 ## 10. M1 の ANE のコンパイラが受け付けない演算 (FB25724316)

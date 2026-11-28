@@ -215,7 +215,7 @@ Machines that crash or lose the network in the middle of an upload leave nothing
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE` | S3 keys |
 | `HF_TOKEN` | Gated Hugging Face repositories (CI; on a desktop sign in once instead) |
 | `HWNPU_MEMORY` | Treat the machine as this many GB |
-| `HWNPU_COREAI_PREBUILT` | `off`: do not use the precompiled Core AI parts (4.1) |
+| `HWNPU_COREAI_PREBUILT` | `off`: do not use the precompiled Core AI parts (4.1); `any`: use them for any model and chip, also those the model's recipe does not prebuild (to check them) |
 | `HWNPU_MODELS`, `HWNPU_ACCEPT_LICENSE`, `HWNPU_BACKEND`, `HWNPU_DEVICE` | Your own model definitions, license prompts, which NPU |
 
 ### 3.2 `.env` files

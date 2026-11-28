@@ -317,7 +317,8 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 }
 
 // PrebuiltEnv set to off (or 0, false, no) makes Core AI compile a program on the device even when a prebuilt one
-// (coreai-build's .aimodelc, Prebuilt) lies beside it.
+// (coreai-build's .aimodelc, Prebuilt) lies beside it; any takes the prebuilt programs of every
+// model and chip there are, also those its recipe does not prebuild (PrebuiltTaken).
 const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
 
 // prebuiltOff is whether PrebuiltEnv turns the prebuilt programs off.
@@ -336,7 +337,7 @@ func Prebuilt(dir string) string {
 		return ""
 	}
 	arch := Arch()
-	if arch == "" {
+	if arch == "" || !prebuiltTaken(dir, arch) {
 		return ""
 	}
 	want, err := os.ReadFile(filepath.Join(dir, "main.hash"))
@@ -366,7 +367,7 @@ func fetchPrebuilt(ctx context.Context, dir string) {
 		return
 	}
 	arch := Arch()
-	if arch == "" {
+	if arch == "" || !prebuiltAny() && PrebuiltTaken != nil && !PrebuiltTaken(export, arch) {
 		return
 	}
 	once, _ := fetchedPrebuilt.LoadOrStore(export+"\x00"+arch, new(sync.Once))

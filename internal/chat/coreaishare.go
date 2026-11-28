@@ -177,7 +177,39 @@ const PrebuiltKind = "coreai-prebuilt"
 // prebuiltFormat is the version of what coreai.Pack writes, part of the key.
 const prebuiltFormat = coreai.PackFormat
 
-func init() { coreai.FetchPrebuilt = FetchPrebuilt }
+func init() {
+	coreai.FetchPrebuilt = FetchPrebuilt
+	coreai.PrebuiltTaken = prebuiltTaken
+}
+
+// takenPrebuilt holds prebuiltTaken's answers, by export and architecture.
+var takenPrebuilt sync.Map
+
+// prebuiltTaken reports whether a run takes the prebuilt programs of the export for arch
+// (coreai.PrebuiltTaken): its model's recipe has apple.prebuilt and arch among its archs. The
+// model is its entry.json's, else the one whose directory holds it; an export of no model
+// takes them.
+func prebuiltTaken(export, arch string) bool {
+	key := export + "\x00" + arch
+	if v, ok := takenPrebuilt.Load(key); ok {
+		return v.(bool)
+	}
+	taken := true
+	var m Model
+	ok := false
+	if e, err := shared.ReadEntry(export); err == nil && e.Model != "" {
+		m, ok = Lookup(e.Model)
+	}
+	if !ok {
+		m, _, ok = modelOfDir(export)
+	}
+	if f, err := recipe.Builtin(); ok && err == nil {
+		a := f.AppleOf(cmp.Or(m.Recipe, m.Name))
+		taken = a.Prebuilt && slices.Contains(a.Archs, arch)
+	}
+	takenPrebuilt.Store(key, taken)
+	return taken
+}
 
 // prebuiltPlace is the place of the packed prebuilt programs of the export for arch. Its key is
 // what they are compiled from, the programs' bytecode (coreai.ProgramsDigest), not what the

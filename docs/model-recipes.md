@@ -206,6 +206,7 @@ models:
 
 ## 4. 実機に回る仕組み
 
+- 動かすときにプリビルドを使うのは、モデルのレシピに `prebuilt: true` があり、その Mac のチップがレシピの `archs` にあるときだけ (`coreai.PrebuiltTaken`、`chat.prebuiltTaken`)。取得元や書き出しの隣に、ほかのチップのものや、端末に任せると決めたモデルのものがあっても使わない (確かめるために作ったもの: M1 の Qwen3-0.6B は h13g のプリビルドで初回 5 分 16 秒、端末のコンパイルで 31 秒、2026-11-28)。`HWNPU_COREAI_PREBUILT=any` で、レシピによらず使う (確かめるとき)
 - `do: device` のプログラムはプリビルドしない。端末がそのプログラムのプリビルドを探しても見つからないので、端末のコンパイラがコンパイルする (初回だけ。そのあとは Core AI のキャッシュから)
 - 文のエンコーダー (`text*`) と、名前が `_device` で終わるプログラムは、レシピとは別に、どのチップでもいつも端末に回る (`coreai.LeftToDevice`)。動かすときにも使う決まりなので、コードに残している。VAE (`vae_*`) はチップとモデルで違うので、レシピに書く (下の表)
 
@@ -243,4 +244,5 @@ FLUX.2 klein の VAE は、M3 で端末がコンパイルすると初回に 10 �
 - `tools/coreai/same-exports.sh BASE MODEL...`: 変える前の commit と今のコードで書き出しを作って比べる。同じなら版を上げずに `-update` してよい。作るのは M1 の書き出し。`CHIP=M2` を付けると、ほかのチップの書き出しで比べる (M1 だけ書き出しが違うモデル)
 - `go test ./internal/chat`: レシピの名前が models.yaml のモデルであること、`iron_export_lm.py` のレシピが `AMDExport` になること (`like` と variants も)
 - `go test ./internal/prep`: AMD の NPU で動かすモデルに、コードが読むスクリプトのレシピがあり、置き場所がコードの入れるものであること。コマンドが前のコードのものと同じこと
+- まだレシピの `archs` にないチップのプリビルドは、そのチップの Mac で `HWNPU_COREAI_PREBUILT=any` を付けて動かし、`HWNPU_COREAI_PREBUILT=off` (端末のコンパイル) と同じ seed で答えを比べる。署名の識別子と実行ファイルの名前は、回ごとに変える (Core AI のキャッシュは実行ファイルの名前ごと)。答えが同じで、初回が端末より大きく遅くなければ `archs` に足す。違えば、そのプログラムを端末に回す規則を書く
 - 作ったプリビルドが端末で仕上がるかは、オフラインではわからない。そのチップの Mac で Core AI のキャッシュを空にして描き、「the prebuilt program failed」が出ないこと、DiT の各部品が数十秒で開くことを見る ([known-issues](known-issues.md) 12 節)

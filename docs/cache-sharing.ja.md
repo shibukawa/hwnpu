@@ -214,7 +214,7 @@ hwnpu cache clean                   書き戻しが切れて残したものを�
 | `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`AWS_PROFILE` | S3 の鍵 |
 | `HF_TOKEN` | gated の Hugging Face のリポジトリ (CI 向け。普段はサインインを勧める) |
 | `HWNPU_MEMORY` | その機械を何 GB として扱うか |
-| `HWNPU_COREAI_PREBUILT` | `off` で Core AI のコンパイル済みの部品を使わない (4.1) |
+| `HWNPU_COREAI_PREBUILT` | `off` で Core AI のコンパイル済みの部品を使わない (4.1)。`any` でモデルのレシピがプリビルドしないモデルやチップのものも使う (確かめるとき) |
 | `HWNPU_MODELS`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_BACKEND`、`HWNPU_DEVICE` | 自分のモデルの定義、ライセンスの確認、使う NPU |
 
 ### 3.2 `.env` ファイル

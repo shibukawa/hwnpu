@@ -205,7 +205,7 @@ var Keys = []Key{
 	{Name: "memory", Env: "HWNPU_MEMORY", Help: "the machine's memory in GB that models are picked by"},
 	{Name: "backend", Env: "HWNPU_BACKEND", Help: "the backend to run on"},
 	{Name: "device", Env: "HWNPU_DEVICE", Help: "the device to run on"},
-	{Name: "coreai-prebuilt", Env: "HWNPU_COREAI_PREBUILT", Help: "off (or 0, false, no): compile Core AI's programs on the device even when prebuilt ones are there"},
+	{Name: "coreai-prebuilt", Env: "HWNPU_COREAI_PREBUILT", Help: "off (or 0, false, no): compile Core AI's programs on the device even when prebuilt ones are there; any: take the prebuilt programs of a model or chip its recipe does not prebuild too (to check them)"},
 	{Name: "daemon-idle", Env: "HWNPU_DAEMON_IDLE", Help: "how long hwnpud keeps the models without a request (5m; 0 always)"},
 	{Name: "webdav-user", Env: "HWNPU_WEBDAV_USER", Help: "the WebDAV source's user"},
 	{Name: "webdav-password", Env: "HWNPU_WEBDAV_PASSWORD", Help: "the WebDAV source's password"},
