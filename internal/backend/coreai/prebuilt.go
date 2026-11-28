@@ -160,6 +160,11 @@ func LeftToDevice(dir string) bool {
 	return strings.HasSuffix(strings.TrimSuffix(base, ".aimodel"), "_device")
 }
 
+// PrebuiltEnv set to off (or 0, false, no) makes Core AI compile a program on the device even when a prebuilt one
+// (coreai-build's .aimodelc, Prebuilt) lies beside it; any takes the prebuilt programs of every
+// model and chip there are, also those its recipe does not prebuild (PrebuiltTaken).
+const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
+
 // PrebuiltTaken, when set (internal/chat), reports whether a run takes the prebuilt programs of
 // the export for arch: its model's recipe prebuilds them for it (model-recipes.yaml
 // apple.prebuilt and archs). Another chip's, or a model's left to the device, may be in the

@@ -316,11 +316,6 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 	return tmp, "main", false, tmp, "", nil
 }
 
-// PrebuiltEnv set to off (or 0, false, no) makes Core AI compile a program on the device even when a prebuilt one
-// (coreai-build's .aimodelc, Prebuilt) lies beside it; any takes the prebuilt programs of every
-// model and chip there are, also those its recipe does not prebuild (PrebuiltTaken).
-const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
-
 // prebuiltOff is whether PrebuiltEnv turns the prebuilt programs off.
 func prebuiltOff() bool { return devenv.Off(strings.TrimSpace(os.Getenv(PrebuiltEnv))) }
 
