@@ -41,6 +41,7 @@ var Keys = map[string]string{
 	"coreml.trace":   "traces Core ML's graph calls",
 	// decoding
 	"mtp.drafts":        "N: the multi-token prediction's drafts a step",
+	"mtp.draftscan":     "0: Core AI's qwen35-mtp scores a part of the vocabulary on the Neural Engine (dv2) in place of its hidden state scored on the CPU over all of it (DraftScan)",
 	"store.kvq":         "4, 5 or 6: the prompt store keeps its rows in that many bits a value (not exact; 0, the default, as they are)",
 	"iron.drafts":       "0 runs IRON's chat models without drafts",
 	"iron.lookup.cost":  "R: what a check of the prompt lookup's drafts costs on IRON, in decode steps (1.8): a check is made when the tokens it is expected to bring are more",

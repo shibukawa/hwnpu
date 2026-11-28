@@ -251,7 +251,9 @@ models:
   LFM3-1.7B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile; the first load
       # takes 1 min 45 s against 1 min 02 s compiled on the device, slower but with 1.3 GB less
@@ -273,7 +275,9 @@ models:
   LFM3-VL-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
       # to the device by apple's rule): the answers with an image are those of the device's compile; the first load takes 3 min 44 s
       # prebuilt against 1 min 10 s on the device, slower, with 2.1 GB less disk left, which the user takes
@@ -292,7 +296,9 @@ models:
   LFM3-Audio-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
       # to the device by apple's rule): the answers with a clip are those of the device's compile; the first load takes 3 min 03 s
       # prebuilt against 1 min 07 s on the device, slower, with 6.9 GB less disk left, which the user takes
@@ -323,7 +329,9 @@ models:
   LFM3-Omni-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
       # to the device by apple's rule): the answers with an image and with a clip are those of the device's compile (the clip transcribed word for word); the first load takes 4 min 09 s to 4 min 32 s
       # prebuilt (the device's compile not measured: another session was on the Neural Engine), which the user takes
@@ -354,7 +362,9 @@ models:
   gemma-4-E2B-it:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
       prebuild:
         # Apple's Gemma 4 export says coreai-build's ahead-of-time programs of it are not supported
@@ -377,7 +387,9 @@ models:
   gemma-4-E4B-it:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
       prebuild:
         # Apple's Gemma 4 export says coreai-build's ahead-of-time programs of it are not supported
@@ -402,7 +414,9 @@ models:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
-      version: 3
+      # 4: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 4
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 5 min 20 s against 21 min 43 s compiled on the device, with 4.3 GB less disk left and no 5.5 GB
@@ -432,7 +446,9 @@ models:
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
       # 4: the whole program in parts of 8 layers (convert.whole_layers)
-      version: 4
+      # 5: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 5
       # prebuilt for the M1 and the M3 (2026-11-27; on the M1 version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 1 min 46 s against 7 min 14 s compiled on the device, with 1.7 GB less disk left and no 2.3 GB
@@ -454,7 +470,9 @@ models:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
-      version: 3
+      # 4: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 4
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 2 min 06 s against 7 min 48 s compiled on the device, with 1.5 GB less disk left and
@@ -473,7 +491,9 @@ models:
   gpt-oss-20b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -491,7 +511,9 @@ models:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
-      version: 3
+      # 4: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 4
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go", "!internal/llm/qwen35/replay.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -508,7 +530,9 @@ models:
   plamo-3-translate-8b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -521,7 +545,9 @@ models:
   plamo-3-translate-2b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -534,7 +560,9 @@ models:
   plamo-3-translate-0.8b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -547,7 +575,9 @@ models:
   d1-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -560,7 +590,9 @@ models:
   d1-Omni-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -587,7 +619,9 @@ models:
   LFM3-Audio-2B-TTS:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio, internal/llm/lfm3gen, internal/speech]
     amd:
       # 3: text/ without the text model's copy of the tokenizer and the chat's format
@@ -777,7 +811,9 @@ models:
   plamo-embedding-1b:
     apple:
       # (no part split at its attention, so no mass program: the bytes of version 1)
-      version: 1
+      # 2: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo, internal/chat/embed.go]
     amd:
       version: 1
@@ -787,22 +823,30 @@ models:
   LFM2-8B-A1B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
   Qwen2.5-Coder-7B-Instruct:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-0.6B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-1.7B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: PR #384's conversion: the weights shared between the functions of a program, one
+      # location for every operation (2026-11-28)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   swift-f0:
     apple:

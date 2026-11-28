@@ -390,12 +390,17 @@ func BuildDraftScanFromWeights(w llm.Weights, tensorName string, V, D int) (*Dra
 			return nil
 		})
 	}
-	raw, _, err := w.Get(tensorName)
-	if err != nil {
-		return nil, err
-	}
+	// a row at a time: the whole table as float32 (Get) held 2 GB more at the first run of
+	// Qwen3.5-2B (248320 x 2048), its footprint 3.6 GB against 0.9 GB (M1, 2026-11-28)
 	return BuildDraftScan(V, D, func(row int, dst []float32) error {
-		copy(dst, raw[row*D:(row+1)*D])
+		v, err := w.Rows(tensorName, row, row+1)
+		if err != nil {
+			return err
+		}
+		if len(v) != D {
+			return fmt.Errorf("chat: draftscan: row %d of %s has %d values, not %d", row, tensorName, len(v), D)
+		}
+		copy(dst, v)
 		return nil
 	})
 }
