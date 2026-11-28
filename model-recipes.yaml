@@ -908,24 +908,61 @@ models:
       # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
       version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
+    amd:
+      version: 1
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
+      # the experts in q4nx (4 of 32 read in place by the decode step, every one run by a prompt
+      # chunk), the convolutions, attention, dense MLPs and head in q8 (iron_lfm2moe.py)
+      script: iron_export_lm.py
+      args: [lfm2moe, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q8, --head, q8]
+      extra: *lm-extra
   Qwen2.5-Coder-7B-Instruct:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
       version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
+    amd:
+      version: 1
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
+      # the MLP and the head in q4nx, rounded (no codes): KL 0.028 (README) and 0.018 (GPL) against
+      # transformers' float32, where Apple's rounded lut4 gave 0.90; the decode step reads its
+      # weights (169 ms), so no check of drafts (q4 has no rows GEMV)
+      script: iron_export_lm.py
+      args: [qwen2, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q4, --head, q4]
+      extra: *lm-extra
   Qwen3-0.6B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
       version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
+    amd:
+      version: 1
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
+      # q8 throughout: q6's MLP and head made the GPL's KL 0.099 against q8's 0.023 and its decode step
+      # 63 against 50 ms (q6's GEMV is the slower); 1.0 GB
+      script: iron_export_lm.py
+      args: [qwen3, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q8, --head, q8, --verify, "3"]
+      extra: *lm-extra
   Qwen3-1.7B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
       version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
+    amd:
+      version: 1
+      # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
+      finish: [{tokenizer: [tokenizer.json]}, {remove: [tokenizer_config.json]}]
+      # q8 throughout: q6's MLP and head made the GPL's KL 0.081 against q8's 0.019 and its decode step
+      # 92 against 68 ms; q4's MLP 1.31 (unusable)
+      script: iron_export_lm.py
+      args: [qwen3, "{in}", "{out}", --max-seq-len, "4096", --q4, --mlp, q8, --head, q8, --verify, "3"]
+      extra: *lm-extra
   swift-f0:
     apple:
       # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)

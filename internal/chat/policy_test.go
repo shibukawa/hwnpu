@@ -64,7 +64,8 @@ func TestPolicyPicks(t *testing.T) {
 		{"", "anima", 8, "error"},
 		{"+nsfw,-nsfw", "image", 8, "FLUX.2-klein-4B"},
 		// license: an id or a class; a use takes another of its kind when its own are refused
-		{"-license:conditional", "chat", 8, "Qwen3.5-2B"}, // LFM3 caps the revenue: an open model of 8 GB
+		// LFM3 caps the revenue: an open model of 8 GB, the largest (Qwen3-1.7B's 2.5 GB on AMD's NPU)
+		{"-license:conditional", "chat", 8, "Qwen3-1.7B"},
 		{"-license:conditional", "chat", 16, "gemma-4-E2B-it"},
 		{"+nsfw,-license:non-commercial", "image", 8, "FLUX.2-klein-4B"},
 		{"-license:lfm-open-1.0", "speech", 16, "supertonic-3"}, // the other speech model

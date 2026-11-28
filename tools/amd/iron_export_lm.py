@@ -66,6 +66,14 @@ MODELS = {
     # Ouro (ByteDance/Ouro-1.4B-Thinking): a looped decoder, its layers run total_ut_steps times
     # a token, a cache a pass (iron_ouro.py).
     "ouro": ("iron_ouro", "Ouro"),
+    # Qwen3 (qwen3: Qwen3-0.6B, 1.7B) and Qwen2 (qwen2: Qwen2.5-Coder-7B-Instruct), dense attention
+    # models (iron_qwen3.py).
+    "qwen3": ("iron_qwen3", "Qwen3"),
+    "qwen2": ("iron_qwen3", "Qwen2"),
+    # LFM2-MoE (lfm2_moe: LFM2-8B-A1B): short convolutions and attention, 4 of 32 experts routed on
+    # the device in a decode step, every expert run and the host combining in a prompt chunk
+    # (iron_lfm2moe.py).
+    "lfm2moe": ("iron_lfm2moe", "Lfm2Moe"),
     # Qwen3.5 (qwen3_5): Gated DeltaNet (iron_gdn.py) and gated attention (iron_qwen35.py).
     "qwen35": ("iron_qwen35", "Qwen35"),
     # Qwen3.6-35B-A3B (qwen3_5_moe): Qwen3.5 with experts routed on the device (iron_moe.py).
@@ -773,6 +781,8 @@ def export(model, versions, out: Path) -> dict:
     if pool:
         for layer in pool["layers"]:
             for k in ("gu", "dn"):
+                if not layer[k]:
+                    continue  # a layer without experts (LFM2-MoE's dense ones)
                 have = {json.dumps(v["buffers"].get(layer[k]), sort_keys=True) for v in vm.values() if layer[k] in v["buffers"]}
                 if len(have) != 1 or "decode" not in vm or layer[k] not in vm["decode"]["buffers"]:
                     raise SystemExit(f"experts_pool: {layer[k]} is not one buffer of the versions")
@@ -957,9 +967,10 @@ def main(argv=None) -> int:
                     help="for measuring: the prompt chunk a command per step (HWNPU_DEV=iron.timing times each), "
                          "the steps' operators by command in OUT/steps.json")
     ap.add_argument("--expert-places", type=int, default=None, metavar="N",
-                    help="gpt-oss and qwen35moe: N places of an expert's tables a layer (gpt-oss: a multiple of 4, at "
-                         "most 56; Qwen3.6: at most its 256), the experts in experts.bin and copied into a place when "
-                         "chosen (hwnpu's pool.go): GPTOSS_EXPERT_PLACES, iron_qwen35.POOL")
+                    help="gpt-oss, qwen35moe and lfm2moe: N places of an expert's tables a layer (gpt-oss: a multiple of "
+                         "4, at most 56; Qwen3.6: at most its 256; LFM2-MoE: 8 to its 32), the experts in experts.bin and "
+                         "copied into a place when chosen (hwnpu's pool.go): GPTOSS_EXPERT_PLACES, iron_qwen35.POOL, "
+                         "iron_lfm2moe.POOL")
     ap.add_argument("--host-route", action="store_true",
                     help="gpt-oss: the decode step's routing on the host (always for 128 experts): GPTOSS_HOST_ROUTE")
     ap.add_argument("--scan-window", action="store_true",
@@ -974,8 +985,8 @@ def main(argv=None) -> int:
 
         iron_window.install()
 
-    if a.expert_places is not None and not (a.model == "gptoss" or (a.model == "qwen35moe" and a.q4)):
-        raise SystemExit("--expert-places: gptoss, or qwen35moe with --q4")
+    if a.expert_places is not None and not (a.model == "gptoss" or (a.model in ("qwen35moe", "lfm2moe") and a.q4)):
+        raise SystemExit("--expert-places: gptoss, or qwen35moe or lfm2moe with --q4")
     if a.host_route and a.model != "gptoss":
         raise SystemExit("--host-route: gptoss")
     if a.model.startswith("gemma4") and not a.device_ple:
@@ -996,6 +1007,14 @@ def main(argv=None) -> int:
         import iron_ouro
 
         iron_ouro.install(attn=a.attn, mlp=a.mlp, head=a.head)
+    elif a.model == "lfm2moe" and a.q4:
+        import iron_lfm2moe
+
+        iron_lfm2moe.install(attn=a.attn, conv=a.conv, mlp=a.mlp, head=a.head, places=a.expert_places or 0, out=a.out)
+    elif a.model in ("qwen3", "qwen2") and a.q4:
+        import iron_qwen3
+
+        iron_qwen3.install(attn=a.attn, mlp=a.mlp, head=a.head)
     elif (a.model.startswith("lfm3") or a.model.startswith("d1")) and a.q4:
         import iron_lfm3
 
@@ -1021,6 +1040,10 @@ def main(argv=None) -> int:
         import iron_qwen35
 
         iron_qwen35.install_dense()
+    if a.model in ("qwen3", "qwen2"):
+        import iron_qwen3
+
+        iron_qwen3.install_cuts()
     if a.q4_codes:
         if not a.q4 and a.model != "gptoss":  # gpt-oss's parts are quantized without --q4
             raise SystemExit("--q4-codes: with --q4")

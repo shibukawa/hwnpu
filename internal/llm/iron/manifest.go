@@ -51,7 +51,7 @@ type Manifest struct {
 	// HostTables are tables whose rows the host writes into the arena before each call.
 	HostTables []HostTable `json:"host_tables"`
 	// ExpertsPool, where not nil, says a mixture of experts' layers hold fewer places than
-	// experts (iron_export_lm.py --expert-places: gpt-oss, Qwen3.6): the host fills the places
+	// experts (iron_export_lm.py --expert-places: gpt-oss, Qwen3.6, LFM2-MoE): the host fills the places
 	// from its file (pool.go).
 	ExpertsPool *ExpertsPool `json:"experts_pool,omitempty"`
 	// ExpertsRoute, where not nil, says the decode step's experts are chosen on the host
@@ -92,7 +92,8 @@ type ExpertsPool struct {
 	Layers  []PoolLayer `json:"layers"`
 }
 
-// PoolLayer is a layer of ExpertsPool.
+// PoolLayer is a layer of ExpertsPool; one without experts (LFM2-MoE's first, dense ones) names
+// no buffers.
 type PoolLayer struct {
 	GU      string `json:"gu"`
 	DN      string `json:"dn"`

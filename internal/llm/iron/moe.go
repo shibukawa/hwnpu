@@ -40,9 +40,31 @@ type HostStep struct {
 	// Places, where below Experts, is the places of the layer's tables (Manifest.ExpertsPool):
 	// fixed slot i is place i (moe_route: the counts and x by place), and the experts not in a
 	// place are copied in between passes
-	Places int      `json:"places,omitempty"`
-	Reads  []Region `json:"reads"`
-	Writes []Region `json:"writes"`
+	Places int `json:"places,omitempty"`
+	// LFM2-MoE's prompt chunk (tools/amd/iron_lfm2moe.py: moe_rows_plan, moe_gather and
+	// moe_gather_combine): the experts' scores (sigmoid: each logit's sigmoid, the top Top of
+	// score + Bias chosen and weighted by score over the chosen's sum, times Scale)
+	Score string    `json:"score,omitempty"`
+	Bias  []float32 `json:"bias,omitempty"`
+	Scale float32   `json:"scale,omitempty"`
+	// moe_rows_plan (LFM2-MoE's, iron_lfm2moe's MoERowsHost), ahead of the command that runs a
+	// prompt chunk's experts a row at a time: a chunk of up to RowMax rows takes that form
+	// (moeRowsPlan), the command run once for every RowTokens rows with the rows' indices in the
+	// values RowValues and their experts in ExpertValues; the weights' rows are of Stride
+	// elements. A longer chunk leaves the command out and runs the one after moe_gather.
+	RowMax       int        `json:"row_max,omitempty"`
+	RowTokens    int        `json:"row_tokens,omitempty"`
+	Stride       int        `json:"stride,omitempty"`
+	RowValues    []string   `json:"row_values,omitempty"`
+	ExpertValues [][]string `json:"expert_values,omitempty"`
+	// moe_gather (iron_lfm2moe's MoEGatherHost), ahead of the command that runs Slots slots of
+	// SlotRows rows, a slot the rows of one expert (the graph's value SlotValues[i]): each
+	// expert's rows of the chunk are gathered into slots (moeGatherPlan) and the command run once
+	// for every Slots slots (runMoEGather); left out with its command where the rows form ran.
+	// moe_gather_combine then adds each row's experts' rows to the residual.
+	SlotRows int      `json:"slot_rows,omitempty"`
+	Reads    []Region `json:"reads"`
+	Writes   []Region `json:"writes"`
 }
 
 // Region is a buffer's place in an argument, and the tensor it holds.
@@ -179,6 +201,96 @@ func topK(best []int, vals []float32) {
 	}
 }
 
+// expertRouter chooses a row's experts from its row of router logits: route fills chosen's
+// experts (the largest first) and their weights, rounded to bf16. softmaxRouter is Qwen3.6's and
+// gpt-oss's (iron_moep's route), sigmoidRouter LFM2-MoE's (kernels/moe_route_sigmoid.cc).
+type expertRouter interface {
+	route(logits []byte, t, L int)
+	chosen() (best []int, w []float32)
+}
+
+// routed is a router's choice of a row.
+type routed struct {
+	best []int     // the chosen experts, the largest first
+	w    []float32 // their weights
+}
+
+func (r *routed) chosen() ([]int, []float32) { return r.best, r.w }
+
+// newRouter is the router of a host step's experts (its Score: "" softmax, or sigmoid).
+func newRouter(h *HostStep) (expertRouter, error) {
+	switch h.Score {
+	case "":
+		return newSoftmaxRouter(h.Experts, h.Top), nil
+	case "sigmoid":
+		if len(h.Bias) != h.Experts {
+			return nil, fmt.Errorf("iron: layer %d: %d biases for %d experts", h.Layer, len(h.Bias), h.Experts)
+		}
+		return newSigmoidRouter(h), nil
+	}
+	return nil, fmt.Errorf("iron: layer %d: experts scored by %q", h.Layer, h.Score)
+}
+
+// softmaxRouter takes the Top largest of the first E logits (ties to the lower index) and
+// weights them by their softmax over the chosen alone. vals holds the row's logits after route
+// (Qwen3.6's shared expert's gate follows the experts').
+type softmaxRouter struct {
+	routed
+	E    int
+	vals []float32
+	e    []float64
+}
+
+func newSoftmaxRouter(E, top int) *softmaxRouter {
+	return &softmaxRouter{routed: routed{best: make([]int, top), w: make([]float32, top)}, E: E, e: make([]float64, top)}
+}
+
+func (r *softmaxRouter) route(logits []byte, t, L int) {
+	if len(r.vals) != L {
+		r.vals = make([]float32, L)
+	}
+	for i := range r.vals {
+		r.vals[i] = bf16At(logits, t*L+i)
+	}
+	topK(r.best, r.vals[:r.E])
+	var sum float64
+	for k, o := range r.best {
+		r.e[k] = math.Exp(float64(r.vals[o] - r.vals[r.best[0]]))
+		sum += r.e[k]
+	}
+	for k := range r.best {
+		r.w[k] = roundBF16(float32(r.e[k] / sum))
+	}
+}
+
+// routeRows routes the first n rows of logits (rows of L bf16 values): the chosen experts and
+// their weights, Top a row; each, where not nil, is called after row t is routed.
+func routeRows(r expertRouter, logits []byte, n, L int, each func(t int)) (ids []int32, w []float32) {
+	best, rw := r.chosen()
+	top := len(best)
+	ids, w = make([]int32, n*top), make([]float32, n*top)
+	for t := 0; t < n; t++ {
+		r.route(logits, t, L)
+		for k, e := range best {
+			ids[t*top+k], w[t*top+k] = int32(e), rw[k]
+		}
+		if each != nil {
+			each(t)
+		}
+	}
+	return ids, w
+}
+
+// byExpert is the choices (row × top + rank, from first) of ids by expert, each expert's in
+// the rows' order; size is the experts' count (or the counts' slots, moePad).
+func byExpert(ids []int32, size, first int) [][]int {
+	by := make([][]int, size)
+	for c, e := range ids {
+		by[e] = append(by[e], first+c)
+	}
+	return by
+}
+
 // moeHostRoute runs a moe_route step over the chunk's first n rows, as iron_moep's route_chunk
 // and plan (iron_qwen35.MoEHost.moe_route) do, split into passes of at most Cap rows an expert.
 func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) {
@@ -201,28 +313,12 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 	if err != nil {
 		return nil, err
 	}
-	rt := &moeRoute{w: make([]float32, n*top), shared: make([]float32, n),
-		pass: make([]int32, n*top), row: make([]int32, n*top), hn: rows}
-	ids := make([]int32, n*top)
-	order := make([]int, top)
-	vals := make([]float32, L)
-	for t := 0; t < n; t++ {
-		for i := range vals {
-			vals[i] = bf16At(logits, t*L+i)
-		}
-		topK(order[:top], vals[:E])
-		var sum float64
-		e := make([]float64, top)
-		for k := 0; k < top; k++ {
-			ids[t*top+k] = int32(order[k])
-			e[k] = math.Exp(float64(vals[order[k]] - vals[order[0]]))
-			sum += e[k]
-		}
-		for k := 0; k < top; k++ {
-			rt.w[t*top+k] = roundBF16(float32(e[k] / sum))
-		}
-		rt.shared[t] = roundBF16(float32(1 / (1 + math.Exp(-float64(vals[E])))))
-	}
+	rt := &moeRoute{shared: make([]float32, n), pass: make([]int32, n*top), row: make([]int32, n*top), hn: rows}
+	r := newSoftmaxRouter(E, top)
+	ids, w := routeRows(r, logits, n, L, func(t int) {
+		rt.shared[t] = roundBF16(float32(1 / (1 + math.Exp(-float64(r.vals[E])))))
+	})
+	rt.w = w
 	m.countPrompt(h.Layer, ids)
 	if h.Places > 0 && h.Places < E {
 		return rt, m.poolRowPasses(h, rt, ids, rows, n, K)
@@ -246,15 +342,9 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 		}
 	}
 	for p, tokens := range passTokens {
-		// rows by expert: the pass's tokens' choices
-		groups := make([][]int, moePad) // token*top+k
-		for _, t := range tokens {
-			for k := 0; k < top; k++ {
-				e := ids[t*top+k]
-				groups[e] = append(groups[e], t*top+k)
-			}
-		}
-		rt.passes = append(rt.passes, rowsPass(rt, p, groups, rows, top*C, K, top))
+		// rows by expert: the pass's tokens' choices (a pass's tokens are consecutive)
+		lo, hi := tokens[0]*top, (tokens[len(tokens)-1]+1)*top
+		rt.passes = append(rt.passes, rowsPass(rt, p, byExpert(ids[lo:hi], moePad, lo), rows, top*C, K, top))
 	}
 	return rt, nil
 }
@@ -316,37 +406,372 @@ func (m *Model) moeHostCombine(v *version, h *HostStep, rt *moeRoute, n int) err
 		}
 	}
 	o := make([]byte, out.Bytes)
-	// the tokens split among the CPUs, each token's sums in the same order as one loop's
-	workers := min(runtime.GOMAXPROCS(0), n)
+	combineRows(o, resid, sh, rt.shared, rt.w, n, K, top, func(c int) []byte {
+		base := int(rt.row[c]) * K
+		return rt.outs[rt.pass[c]][2*base : 2*(base+K)]
+	})
+	return m.writeRegion(v, out, o)
+}
+
+// combineRows writes into out, for each of the first n rows of K bf16 values, the residual's
+// row plus (where shared is not nil) gate × the shared expert's row plus each choice's weight ×
+// its expert's output row (row(c) for choice c = row × top + rank, K bf16 values), summed in
+// float32 in that order and rounded to bf16 once (iron_moep's and iron_lfm2moe's combine). The
+// rows split among the CPUs, each row's sums in the same order as one loop's.
+func combineRows(out, resid, shared []byte, gate, w []float32, n, K, top int, row func(c int) []byte) {
+	workers := min(runtime.GOMAXPROCS(0), max(n, 1))
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
+	for j := 0; j < workers; j++ {
 		wg.Add(1)
 		go func(lo, hi int) {
 			defer wg.Done()
 			acc := make([]float32, K)
 			for t := lo; t < hi; t++ {
-				g := rt.shared[t]
-				rr, sr := resid[2*t*K:2*(t+1)*K], sh[2*t*K:2*(t+1)*K]
-				for i := range acc {
-					acc[i] = bf16At(rr, i) + g*bf16At(sr, i)
+				rr := resid[2*t*K : 2*(t+1)*K]
+				if shared != nil {
+					g, sr := gate[t], shared[2*t*K:2*(t+1)*K]
+					for i := range acc {
+						acc[i] = bf16At(rr, i) + g*bf16At(sr, i)
+					}
+				} else {
+					for i := range acc {
+						acc[i] = bf16At(rr, i)
+					}
 				}
 				for k := 0; k < top; k++ {
 					c := t*top + k
-					base := int(rt.row[c]) * K
-					y, w := rt.outs[rt.pass[c]][2*base:2*(base+K)], rt.w[c]
+					y, wk := row(c), w[c]
 					for i := range acc {
-						acc[i] += w * bf16At(y, i)
+						acc[i] += wk * bf16At(y, i)
 					}
 				}
-				ot := o[2*t*K : 2*(t+1)*K]
+				ot := out[2*t*K : 2*(t+1)*K]
 				for i, x := range acc {
 					putBF16(ot, i, x)
 				}
 			}
-		}(w*n/workers, (w+1)*n/workers)
+		}(j*n/workers, (j+1)*n/workers)
 	}
 	wg.Wait()
-	return m.writeRegion(v, out, o)
+}
+
+// sigmoidRouter routes rows as LFM2-MoE does (tools/amd/kernels/moe_route_sigmoid.cc): each
+// expert's score is the sigmoid of its logit, the Top largest of score + bias are chosen (ties to
+// the lower index), and their weights are the scores over the chosen's sum, times the scale,
+// rounded to bf16.
+type sigmoidRouter struct {
+	routed
+	bias    []float32
+	scale   float32
+	s, pick []float32
+}
+
+func newSigmoidRouter(h *HostStep) *sigmoidRouter {
+	scale := h.Scale
+	if scale == 0 {
+		scale = 1
+	}
+	return &sigmoidRouter{routed: routed{best: make([]int, h.Top), w: make([]float32, h.Top)}, bias: h.Bias, scale: scale,
+		s: make([]float32, h.Experts), pick: make([]float32, h.Experts)}
+}
+
+// route fills best and w for row t of logits (rows of L bf16 values).
+func (r *sigmoidRouter) route(logits []byte, t, L int) {
+	for i := range r.s {
+		r.s[i] = float32(1 / (1 + math.Exp(-float64(bf16At(logits, t*L+i)))))
+		r.pick[i] = r.s[i] + r.bias[i]
+	}
+	topK(r.best, r.pick)
+	var sum float32
+	for _, e := range r.best {
+		sum += r.s[e]
+	}
+	norm := r.scale / (sum + 1e-6)
+	for k, e := range r.best {
+		r.w[k] = roundBF16(r.s[e] * norm)
+	}
+}
+
+// moeRows is the routing of a short prompt chunk whose experts run a row at a time
+// (moe_rows_plan): each row's experts, Top a row.
+type moeRows struct {
+	ids []int32
+	n   int
+}
+
+// moeRowsPlan runs a moe_rows_plan step for a chunk of n rows: nil for a chunk of more than
+// RowMax rows (the commands of every expert run); else the rows' routing, their weights written
+// into the weights' buffer (the first Top elements of a row of Stride).
+func (m *Model) moeRowsPlan(v *version, h *HostStep, n int) (*moeRows, error) {
+	if len(h.Reads) != 1 || len(h.Writes) != 1 || h.Score != "sigmoid" || h.RowTokens < 1 || len(h.RowValues) != h.RowTokens ||
+		len(h.ExpertValues) != h.RowTokens || h.Stride < h.Top || h.Top < 1 {
+		return nil, fmt.Errorf("iron: moe_rows_plan of layer %d: %d reads, %d writes, score %q, %d rows a pass", h.Layer, len(h.Reads), len(h.Writes), h.Score, h.RowTokens)
+	}
+	lg, wr := h.Reads[0], h.Writes[0]
+	if len(lg.Shape) != 2 || h.Experts > lg.Shape[1] || len(h.Bias) != h.Experts || 2*h.RowMax*h.Stride > wr.Bytes {
+		return nil, fmt.Errorf("iron: moe_rows_plan of layer %d: logits %v, %d experts, weights of %d bytes for %d rows", h.Layer, lg.Shape, h.Experts, wr.Bytes, h.RowMax)
+	}
+	for _, names := range h.ExpertValues {
+		if len(names) != h.Top {
+			return nil, fmt.Errorf("iron: moe_rows_plan of layer %d: %d experts' values a row, top %d", h.Layer, len(names), h.Top)
+		}
+	}
+	if n > h.RowMax || n > h.Tokens {
+		return nil, nil
+	}
+	L, top := lg.Shape[1], h.Top
+	logits, err := m.readRegion(v, lg, 2*n*L)
+	if err != nil {
+		return nil, err
+	}
+	r, err := newRouter(h)
+	if err != nil {
+		return nil, err
+	}
+	ids, rw := routeRows(r, logits, n, L, nil)
+	rows := &moeRows{ids: ids, n: n}
+	w := make([]byte, 2*n*h.Stride)
+	for c, x := range rw {
+		putBF16(w, c/top*h.Stride+c%top, x)
+	}
+	m.countPrompt(h.Layer, rows.ids)
+	return rows, m.writeRegion(v, wr, w)
+}
+
+// moeRowsOut ends a layer whose experts ran a row at a time: the n rows the rows form wrote
+// (the last read of the layer's moe_gather_combine step) go into the layer's output, which the
+// host writes (a step may not write a buffer the host writes too). The output's rows past n
+// keep what they held: no row of the chunk reads them.
+func (m *Model) moeRowsOut(v *version, h *HostStep, n int) error {
+	if len(h.Reads) != 5 || len(h.Writes) != 1 || len(h.Reads[1].Shape) != 2 {
+		return fmt.Errorf("iron: moe_gather_combine of layer %d has no rows form's output", h.Layer)
+	}
+	b, err := m.readRegion(v, h.Reads[4], 2*n*h.Reads[1].Shape[1])
+	if err != nil {
+		return err
+	}
+	return m.writeRegion(v, h.Writes[0], b)
+}
+
+// runMoERows runs command k of v, a short prompt chunk's experts a row at a time, once for every
+// RowTokens rows: the rows' indices and their experts in the values the step names (a last pass
+// short of rows runs its last row again, which writes the same output).
+func (m *Model) runMoERows(ctx context.Context, v *version, k int, h *HostStep, rows *moeRows, values map[string]int64) error {
+	run, err := m.promptRun(v, k)
+	if err != nil {
+		return err
+	}
+	defer run.Close()
+	ids := make([]int32, 0, h.RowTokens*h.Top)
+	for first := 0; first < rows.n; first += h.RowTokens {
+		ids = ids[:0]
+		for j := 0; j < h.RowTokens; j++ {
+			t := min(first+j, rows.n-1)
+			values[h.RowValues[j]] = int64(t)
+			ids = append(ids, rows.ids[t*h.Top:(t+1)*h.Top]...)
+		}
+		places, err := m.placePass(h.Layer, ids) // an expert's place: itself where every one has its own
+		if err != nil {
+			return err
+		}
+		for j := 0; j < h.RowTokens; j++ {
+			for i, name := range h.ExpertValues[j] {
+				values[name] = int64(places[j*h.Top+i])
+			}
+		}
+		if err := writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values); err != nil {
+			return err
+		}
+		if err := run.Run(ctx); err != nil {
+			return fmt.Errorf("iron: prompt command %d (rows from %d): %w", k, first, err)
+		}
+	}
+	return nil
+}
+
+// moeGather is the routing of a prompt chunk whose experts' rows are gathered into slots
+// (moe_gather): each row's experts and weights, the slots (an expert's rows of the chunk, up to
+// SlotRows of them; an expert of more rows has further slots), and for each choice its row among
+// the slots' rows in order (at). ys holds the slots' rows out, in that order.
+type moeGather struct {
+	n     int
+	w     []float32 // (n, top)
+	at    []int32   // (n, top)
+	slots []gatherSlot
+	x     []byte // the chunk's rows of the experts' input, as the plan read them
+	ys    []byte
+}
+
+type gatherSlot struct {
+	expert int
+	rows   []int32 // the chunk's rows
+	first  int     // the slot's first row among the slots' rows
+}
+
+// gatherPad is the rows a slot's rows are padded to with zero rows: the GEMM packs its rows in
+// blocks, and what a slot held before must not share one with a row that is read.
+const gatherPad = 64
+
+// gatherSlots gives each expert the rows that chose it (ids: top experts a row), in slots of up
+// to slotRows rows in order of the experts, and each choice's row among the slots' rows.
+func gatherSlots(ids []int32, experts, top, slotRows int) ([]gatherSlot, []int32) {
+	n := len(ids) / top
+	by := byExpert(ids, experts, 0)
+	var slots []gatherSlot
+	at := make([]int32, n*top)
+	first := 0
+	for e, choices := range by {
+		for len(choices) > 0 {
+			c := min(len(choices), slotRows)
+			s := gatherSlot{expert: e, rows: make([]int32, c), first: first}
+			for r, choice := range choices[:c] {
+				s.rows[r] = int32(choice / top)
+				at[choice] = int32(first + r)
+			}
+			slots = append(slots, s)
+			first += c
+			choices = choices[c:]
+		}
+	}
+	return slots, at
+}
+
+// moeGatherPlan runs a moe_gather step for a chunk of n rows: the rows' routing from the
+// router's logits (its first read) and the slots of the rows of the experts' input (its second).
+func (m *Model) moeGatherPlan(v *version, h *HostStep, n int) (*moeGather, error) {
+	if len(h.Reads) != 2 || len(h.Writes) != 1 || h.Score != "sigmoid" || h.Slots < 1 || h.SlotRows < 1 ||
+		len(h.SlotValues) != h.Slots || h.Top < 1 {
+		return nil, fmt.Errorf("iron: moe_gather of layer %d: %d reads, %d writes, score %q, %d slots of %d rows", h.Layer, len(h.Reads), len(h.Writes), h.Score, h.Slots, h.SlotRows)
+	}
+	lg, xr, gx := h.Reads[0], h.Reads[1], h.Writes[0]
+	if len(lg.Shape) != 2 || len(xr.Shape) != 2 || h.Experts > lg.Shape[1] || len(h.Bias) != h.Experts || n > h.Tokens ||
+		n > xr.Shape[0] || gx.Bytes < 2*h.Slots*h.SlotRows*xr.Shape[1] {
+		return nil, fmt.Errorf("iron: moe_gather of layer %d: logits %v, x %v, %d rows of %d, slots of %d bytes", h.Layer, lg.Shape, xr.Shape, n, h.Tokens, gx.Bytes)
+	}
+	L, K, top := lg.Shape[1], xr.Shape[1], h.Top
+	logits, err := m.readRegion(v, lg, 2*n*L)
+	if err != nil {
+		return nil, err
+	}
+	g := &moeGather{n: n}
+	if g.x, err = m.readRegion(v, xr, 2*n*K); err != nil {
+		return nil, err
+	}
+	r, err := newRouter(h)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int32
+	ids, g.w = routeRows(r, logits, n, L, nil)
+	m.countPrompt(h.Layer, ids)
+	g.slots, g.at = gatherSlots(ids, h.Experts, top, h.SlotRows)
+	g.ys = make([]byte, 2*n*top*K)
+	return g, nil
+}
+
+// runMoEGather runs command k of v, the gathered form of a prompt chunk's experts, once for
+// every Slots slots of g: the slots' rows written into the command's input (h's write; a slot's
+// rows padded with zero rows to whole gatherPad), their experts in the values h names, and the
+// slots' rows of the command's output (combine's fourth read) copied out after it. A last run
+// short of slots gives the others the last slot's expert and no rows.
+func (m *Model) runMoEGather(ctx context.Context, v *version, k int, h, combine *HostStep, g *moeGather, values map[string]int64) error {
+	if len(combine.Reads) != 5 || combine.Reads[3].Bytes < h.Writes[0].Bytes {
+		return fmt.Errorf("iron: moe_gather_combine of layer %d has no slots' output", h.Layer)
+	}
+	gx, gy := h.Writes[0], combine.Reads[3]
+	K, R := h.Reads[1].Shape[1], h.SlotRows
+	run, err := m.promptRun(v, k)
+	if err != nil {
+		return err
+	}
+	defer run.Close()
+	slot := func(r Region, j, rows int) Region { // slot j's first rows of r
+		r.Offset += 2 * j * R * K
+		r.Bytes = 2 * rows * K
+		return r
+	}
+	each := func(pass []gatherSlot, f func(j int, s gatherSlot) error) error {
+		errs := make([]error, len(pass))
+		var wg sync.WaitGroup
+		for j, s := range pass {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[j] = f(j, s)
+			}()
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	ids := make([]int32, h.Slots)
+	for first := 0; first < len(g.slots); first += h.Slots {
+		pass := g.slots[first:min(first+h.Slots, len(g.slots))]
+		for j := range ids {
+			ids[j] = int32(pass[min(j, len(pass)-1)].expert)
+		}
+		places, err := m.placePass(h.Layer, ids) // an expert's place: itself where every one has its own
+		if err != nil {
+			return err
+		}
+		for j, name := range h.SlotValues {
+			values[name] = int64(places[j])
+		}
+		err = each(pass, func(j int, s gatherSlot) error {
+			padded := min(R, (len(s.rows)+gatherPad-1)/gatherPad*gatherPad)
+			b := make([]byte, 2*padded*K)
+			for r, t := range s.rows {
+				copy(b[2*r*K:2*(r+1)*K], g.x[2*int(t)*K:2*(int(t)+1)*K])
+			}
+			return m.writeRegion(v, slot(gx, j, padded), b)
+		})
+		if err != nil {
+			return err
+		}
+		if err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values); err != nil {
+			return err
+		}
+		if err = run.Run(ctx); err != nil {
+			return fmt.Errorf("iron: prompt command %d (slots from %d): %w", k, first, err)
+		}
+		err = each(pass, func(j int, s gatherSlot) error {
+			y, err := m.viewRegion(v, slot(gy, j, len(s.rows)), 2*len(s.rows)*K)
+			if err != nil {
+				return err
+			}
+			copy(g.ys[2*s.first*K:], y)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// moeGatherCombine runs a moe_gather_combine step after the gathered form: for the chunk's n
+// rows, out = h (its second read) + each chosen expert's weight times its row of the slots'
+// output, summed in float32 in the order chosen (iron_lfm2moe's MoECombineHost). The output's
+// rows past n keep what they held: no row of the chunk reads them.
+func (m *Model) moeGatherCombine(v *version, h *HostStep, g *moeGather, n int) error {
+	if len(h.Reads) != 5 || len(h.Writes) != 1 || g == nil || g.n != n || len(h.Reads[1].Shape) != 2 {
+		return fmt.Errorf("iron: moe_gather_combine of layer %d without its moe_gather", h.Layer)
+	}
+	K, top := h.Reads[1].Shape[1], h.Top
+	res, err := m.readRegion(v, h.Reads[1], 2*n*K)
+	if err != nil {
+		return err
+	}
+	o := make([]byte, 2*n*K)
+	combineRows(o, res, nil, nil, g.w, n, K, top, func(c int) []byte {
+		row := int(g.at[c]) * K
+		return g.ys[2*row : 2*(row+K)]
+	})
+	return m.writeRegion(v, h.Writes[0], o)
 }
 
 // runMoECommand runs command k of v (an experts' command after a moe_route) once a pass: the
@@ -476,27 +901,9 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 	if err != nil {
 		return nil, err
 	}
-	rt := &moeRoute{w: make([]float32, n*top), shared: make([]float32, n),
-		pass: make([]int32, n*top), row: make([]int32, n*top), hn: rows}
-	ids := make([]int32, n*top)
-	order := make([]int, top)
-	vals := make([]float32, L)
-	e := make([]float64, top)
-	for t := 0; t < n; t++ {
-		for i := range vals {
-			vals[i] = bf16At(logits, t*L+i)
-		}
-		topK(order, vals[:E])
-		var sum float64
-		for k := 0; k < top; k++ {
-			ids[t*top+k] = int32(order[k])
-			e[k] = math.Exp(float64(vals[order[k]] - vals[order[0]]))
-			sum += e[k]
-		}
-		for k := 0; k < top; k++ {
-			rt.w[t*top+k] = roundBF16(float32(e[k] / sum))
-		}
-	}
+	rt := &moeRoute{shared: make([]float32, n), pass: make([]int32, n*top), row: make([]int32, n*top), hn: rows}
+	ids, w := routeRows(newSoftmaxRouter(E, top), logits, n, L, nil)
+	rt.w = w
 	m.countPrompt(h.Layer, ids)
 	// Passes: each token into the first pass where its experts have room (any pass: combine
 	// finds each choice's row), a new pass where none has. Every pass streams the weights again,

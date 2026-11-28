@@ -20,7 +20,8 @@ import (
 )
 
 // A mixture of experts whose layers' tables hold fewer places than experts (Manifest.ExpertsPool,
-// iron_export_lm.py --expert-places: gpt-oss's GPTOSS_EXPERT_PLACES, Qwen3.6's iron_qwen35.POOL). The NPU reads only the pinned banks, so an expert runs from a
+// iron_export_lm.py --expert-places: gpt-oss's GPTOSS_EXPERT_PLACES, Qwen3.6's iron_qwen35.POOL,
+// LFM2-MoE's iron_lfm2moe.POOL). The NPU reads only the pinned banks, so an expert runs from a
 // place: the host copies an expert chosen and not in one from the export's experts.bin (mapped,
 // in the page cache) over the place of the expert of the layer least used lately, never one
 // chosen in the same step or a core expert (models.yaml's experts_core) while another will do.
@@ -31,7 +32,9 @@ import (
 // back, copies the missing experts in, and writes the places' offsets over the words before it
 // submits the next command. A prompt chunk's are chosen on the host (moeHostRouteMX4, Qwen3.6's
 // moeHostRoute): the experts in a place run in the first pass, the others in passes after it,
-// each pass's missing experts copied in before it (poolPasses, poolRowPasses).
+// each pass's missing experts copied in before it (poolPasses, poolRowPasses). LFM2-MoE's passes
+// run a few experts each (a pass of rows its rows' 8, a pass of slots its 4), which get places
+// as a decode step's do (placePass).
 
 // poolDecay is how much an expert's lateness of use weighs a token later: half after about 140
 // tokens.
@@ -93,7 +96,13 @@ func (m *Model) openPool() error {
 	p := &expertPool{man: ep, L: L, E: E, P: P, places: make([]poolPlaces, L), core: make([]bool, L*E),
 		score: make([]float64, L*E), last: make([]int64, L*E), init: make([]float64, L*E)}
 	dec := m.decode.m.Buffers
+	var placed, all int64 // the bytes of the places and of every expert
 	for l, lay := range ep.Layers {
+		if lay.GU == "" {
+			continue // a layer without experts (LFM2-MoE's first ones)
+		}
+		placed += int64(P) * int64(lay.GUBytes+lay.DNBytes)
+		all += int64(E) * int64(lay.GUBytes+lay.DNBytes)
 		end := lay.Offset + int64(E)*int64(lay.GUBytes+lay.DNBytes)
 		if end > st.Size() {
 			return fmt.Errorf("iron: experts_pool: layer %d ends at %d, past %s's %d bytes", l, end, ep.File, st.Size())
@@ -127,8 +136,7 @@ func (m *Model) openPool() error {
 	}
 	m.pool = p
 	m.logf("experts: %d places of %d a layer (%.1f of %.1f GiB), the others copied in from %s when chosen",
-		P, E, float64(int64(L)*int64(P)*int64(ep.Layers[0].GUBytes+ep.Layers[0].DNBytes))/(1<<30),
-		float64(int64(L)*int64(E)*int64(ep.Layers[0].GUBytes+ep.Layers[0].DNBytes))/(1<<30), ep.File)
+		P, E, float64(placed)/(1<<30), float64(all)/(1<<30), ep.File)
 	return nil
 }
 
@@ -206,6 +214,9 @@ func (m *Model) fillPool() error {
 	order := make([]int, p.E)
 	for l := range p.L {
 		pl := &p.places[l]
+		if pl.at == nil {
+			continue // a layer without experts
+		}
 		for e := range order {
 			order[e] = e
 		}
@@ -476,6 +487,26 @@ func (m *Model) route(r *fedRoute) error {
 	return buf.SyncToDevice(r.at, r.bytes)
 }
 
+// placePass gives a prompt pass's experts ids of layer l their places (placeChoices), the experts
+// copied in counted as the prompt's loads, not as the decode steps' misses. Without places, an
+// expert's place is its index.
+func (m *Model) placePass(l int, ids []int32) ([]int, error) {
+	p := m.pool
+	if p == nil {
+		return m.placeChoices(l, ids, nil)
+	}
+	if l < 0 || l >= p.L || p.places[l].at == nil {
+		return nil, fmt.Errorf("iron: layer %d has no places for its experts", l)
+	}
+	m.waitGuesses() // the prompt's passes read and copy over any place
+	hits, misses, copying := p.hits, p.misses, p.copying
+	places, err := m.placeChoices(l, ids, nil)
+	p.loads += p.misses - misses
+	p.loading += p.copying - copying
+	p.hits, p.misses, p.copying = hits, misses, copying
+	return places, err
+}
+
 // PoolStats is the decode steps' choices found in a place and copied in, and the time the
 // copies took (zeros without places).
 func (m *Model) PoolStats() (hits, misses int64, copying time.Duration) {
@@ -700,9 +731,10 @@ func (m *Model) poolRowPasses(h *HostStep, rt *moeRoute, ids []int32, rows []byt
 	for q := range groups {
 		byPlace[q] = make([][]int, p.P)
 	}
-	for c, e := range ids {
-		q := passOf[e]
-		byPlace[q][placeOf[e]] = append(byPlace[q][placeOf[e]], c)
+	for e, choices := range byExpert(ids, E, 0) { // an expert is in one pass, in a place of its own
+		if len(choices) > 0 {
+			byPlace[passOf[e]][placeOf[e]] = choices
+		}
 	}
 	for q := range groups {
 		ps := rowsPass(rt, q, byPlace[q], rows, top*h.Tokens, K, top)

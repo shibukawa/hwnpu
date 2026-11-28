@@ -8,7 +8,7 @@
 // each 256 in-features, the block of out-features 0-31, then 32-63), so prefill
 // can dequantize the same bytes for its GEMM.
 //
-// Q4_K is the in-features, a multiple of 512. Q_OUT is the out-features a core
+// Q4_K is the in-features, a multiple of 512 (256 for q4_dequant). Q_OUT is the out-features a core
 // keeps (64: both halves of a column block, its blocks alternating; 32: one
 // half, the memtile giving it every other block).
 //===----------------------------------------------------------------------===//
@@ -27,7 +27,9 @@ constexpr int OUT = Q_OUT;
 static_assert(OUT == 32 || OUT == 64, "a core keeps one or two halves");
 constexpr int KT = 256; // in-features a block
 constexpr int MT = 32;  // out-features a block
-static_assert(K % 512 == 0, "K must be a multiple of 512");
+// (whole 256s: a prompt chunk's dequantization of LFM2-MoE's experts' down, 1792 in-features,
+// reads a block at a time; the GEMVs' K are whole 512s)
+static_assert(K % 256 == 0, "K must be a multiple of 256");
 
 using block_t = q4nx_block<MT, KT>;
 

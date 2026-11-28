@@ -82,6 +82,20 @@ python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5
 go run ./cmd/hwnpu-chat -m ~/models/Qwen3.5-0.8B.amd-npu2-q6
 ```
 
+## Qwen3 and Qwen2.5-Coder
+
+Qwen3-0.6B, Qwen3-1.7B and Qwen2.5-Coder-7B-Instruct are exported with hwnpu's `tools/amd/iron_qwen3.py` (`qwen3`, `qwen2`). The Qwen3 models are 8 bit throughout (`--mlp q8 --head q8`): on these small models a decode step is bound by operator switches, and q8's GEMV was faster than q6's (0.6B 50 against 63 ms) and more accurate; 4 bits broke 1.7B. They also take `--verify 3`. On a Ryzen AI 9 365: 0.6B 23 tokens a second at 1.2 GB, 1.7B 14.5 at 2.5 GB, a 1024-token prompt in 0.5 and 0.8 s. Qwen2.5-Coder-7B's MLP and head are 4 bit (rounded, KL 0.028 against fp32) and its attention 8 bit: 5.8 tokens a second (it reads its 4.7 GB of weights a token), 5.1 GB, a 1024-token prompt in 3.0 s.
+
+```bash
+python tools/amd/iron_export_lm.py qwen3 ~/models/Qwen3-1.7B ~/models/Qwen3-1.7B.amd-npu2-q8 --q4 --mlp q8 --head q8 --verify 3
+python tools/amd/iron_export_lm.py qwen2 ~/models/Qwen2.5-Coder-7B-Instruct ~/models/Qwen2.5-Coder-7B-Instruct.amd-npu2-q4 --q4
+go run ./cmd/hwnpu-chat -m Qwen3-1.7B
+```
+
+## LFM2-8B-A1B
+
+LFM2-8B-A1B (a mixture of experts, 4 of 32 a token) is exported with `tools/amd/iron_lfm2moe.py` (`lfm2moe --q4 --mlp q8 --head q8`): the experts are 4 bit, the rest 8 bit. A decode step picks the experts on the NPU and reads only those 4: 19.3 tokens a second at 5.8 GB (Apple's form needs 8 GB). A prompt runs only the experts its tokens chose: up to 80 tokens a token at a time (33 tokens in 0.7 s, a conversation's next short turn about 0.5 s), a longer one with each expert's tokens gathered into matrix products (110 tokens in 1.5 s, 507 in 1.8 s, 989 in 2.0 s) ([docs/design/amd-llm.md](docs/design/amd-llm.md)). `--expert-places 16` keeps 16 of a layer's 32 experts on the NPU and reads the others from the export's `experts.bin` when they are chosen: 3.2 GB in place of 5.8, 15 to 16 tokens a second (12 to 14.5 when the file does not stay in the page cache); it is not in models.yaml. Exporting takes about 11 minutes and 24 GB of memory.
+
 ## Phoenix and Hawk Point (NPU1)
 
 Phoenix and Hawk Point (NPU1) have no full ELF, so export with `--device npu1 --cols 4`. Each version then becomes "an xclbin per step", as in IRON (1095 steps for Gemma 4 E2B's decode, 2 xclbins), and hwnpu makes the instruction stream for each call from the program included in the export. This is untested on NPU1 hardware. The same kind of export made for NPU2 with `--per-step` runs correctly on a Ryzen AI 9 365, decoding at 2.6 tokens a second (less than half of the 6 with full ELF, because a token needs 1095 submissions). On NPU1, the xclbins of the versions (6 in all) use up the limit of 6 hardware contexts.

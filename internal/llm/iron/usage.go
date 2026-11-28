@@ -34,14 +34,14 @@ type routedWord struct {
 }
 
 // ExpertsShape is the layers and experts of the model's mixture of experts (from its prompt
-// chunk's host steps), or zeros for a model without one.
+// chunk's host steps: moe_route's, or LFM2-MoE's moe_gather), or zeros for a model without one.
 func (m *Model) ExpertsShape() (layers, experts int) {
 	for _, v := range m.versions() {
 		if v == nil {
 			continue
 		}
 		for _, h := range v.m.Host {
-			if strings.HasPrefix(h.Kind, "moe_route") {
+			if strings.HasPrefix(h.Kind, "moe_route") || h.Kind == "moe_gather" {
 				layers, experts = max(layers, h.Layer+1), max(experts, h.Experts)
 			}
 		}

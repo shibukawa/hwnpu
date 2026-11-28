@@ -510,6 +510,11 @@ func teacher(ctx context.Context, m *iron.Model, path, tokPath string, bos int32
 		write(logits)
 	}
 	fed := len(ids) - 1 - split
+	if hits, misses, copying := m.PoolStats(); hits+misses > 0 {
+		// experts in places (--expert-places): what the decode steps' choices cost
+		log.Printf("experts' places: %d of the decode steps' %d choices copied in (%.1f %%), %.2f ms a step", misses, hits+misses,
+			100*float64(misses)/float64(hits+misses), copying.Seconds()*1000/float64(fed))
+	}
 	log.Printf("%d tokens: %d prompt, %d fed, %d rows of %d logits in %.1f s (a decode step %.2f ms)", len(ids), split, fed, len(ids)-split, len(logits), time.Since(t0).Seconds(), steps.Seconds()*1000/float64(fed))
 	ids32 := make([]byte, 4*len(ids))
 	for i, id := range ids {

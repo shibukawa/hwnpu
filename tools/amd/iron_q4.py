@@ -86,8 +86,8 @@ def quantize(w) -> np.ndarray:
     """
     w = np.asarray(w, np.float32)
     N, K = w.shape
-    if N % CB or K % 512:
-        raise ValueError(f"q4nx: ({N}, {K}) is not 64 x 512 blocks")
+    if N % CB or K % K_TILE:
+        raise ValueError(f"q4nx: ({N}, {K}) is not 64 x 256 blocks")
     g = w.reshape(N, K // GROUP, GROUP)
     scale = np.empty((N, K // GROUP), np.float32)
     mn = np.empty_like(scale)
@@ -108,8 +108,8 @@ def pack(codes, scale, mn) -> np.ndarray:
     codes = np.asarray(codes, np.uint8)
     scale, mn = np.asarray(scale, np.float32), np.asarray(mn, np.float32)
     N, K = codes.shape
-    if N % CB or K % 512:
-        raise ValueError(f"q4nx: ({N}, {K}) is not 64 x 512 blocks")
+    if N % CB or K % K_TILE:
+        raise ValueError(f"q4nx: ({N}, {K}) is not 64 x 256 blocks")
     # blocks [N/32, K/256]: scales and minima [k // 32, m], codes [m // 16, k, m % 16]
     nb, kb = N // M_TILE, K // K_TILE
     s = scale.reshape(nb, M_TILE, kb, K_TILE // GROUP).transpose(0, 2, 3, 1).astype(bfloat16)
@@ -119,15 +119,16 @@ def pack(codes, scale, mn) -> np.ndarray:
     blocks = np.concatenate(
         [s.reshape(nb, kb, -1).view(np.uint8), m.reshape(nb, kb, -1).view(np.uint8), packed], axis=-1
     )  # [N/32, K/256, BLOCK_BYTES]
-    # DequantBFP's order: [N/64][K/512][2 k-halves][2 n-halves]
-    blocks = blocks.reshape(N // CB, 2, K // 512, 2, BLOCK_BYTES).transpose(0, 2, 3, 1, 4)
+    # DequantBFP's order: [N/64][K/512][2 k-halves][2 n-halves], i.e. [N/64][K/256][2 n-halves]
+    # (which also lays out a K of whole 256s, LFM2-MoE's experts' 1792, for the GEMVs)
+    blocks = blocks.reshape(N // CB, 2, K // K_TILE, BLOCK_BYTES).transpose(0, 2, 1, 3)
     return np.ascontiguousarray(blocks.reshape(-1, BLOCK_BYTES))
 
 
 def dequantize(q, n: int, k: int) -> np.ndarray:
     """The (n, k) float32 weights of quantize's blocks."""
-    q = np.asarray(q, np.uint8).reshape(n // CB, k // 512, 2, 2, BLOCK_BYTES)
-    q = q.transpose(0, 3, 1, 2, 4).reshape(n // M_TILE, k // K_TILE, BLOCK_BYTES)
+    q = np.asarray(q, np.uint8).reshape(n // CB, k // K_TILE, 2, BLOCK_BYTES)
+    q = q.transpose(0, 2, 1, 3).reshape(n // M_TILE, k // K_TILE, BLOCK_BYTES)
     sm = M_TILE * K_TILE // GROUP
     s = q[..., : 2 * sm].copy().view(bfloat16).astype(np.float32).reshape(n // M_TILE, k // K_TILE, -1, M_TILE)
     m = q[..., 2 * sm : 4 * sm].copy().view(bfloat16).astype(np.float32).reshape(n // M_TILE, k // K_TILE, -1, M_TILE)
@@ -1705,14 +1706,18 @@ def install_glu() -> None:
 _SW_OPS: dict = {}
 
 
-def sandwich_operator(glu: bool = False, scaled: bool = False):
+def sandwich_operator(glu: bool = False, scaled: bool = False, plain: bool = False):
     """QGEMV (or QGEMVGlu with ``glu``) whose x is made on every core from a sandwich-normed block
     (kernels/mv_add.h's Q_SANDWICH): ``h`` the block's output and ``r`` the residual, with the post
     norm's and the next norm's weights (``scaled``: and a scale row, Gemma 4's layer_scalar), on
     x's channel. y = r + rms(h) w_post (times the scale), n = rms(y) w_pre, then the GEMV of n.
     Outputs: the GEMV's, then y and n (a core of column 0 each), as SandwichAdd would give them:
-    one operator in place of SandwichAdd and the GEMV (docs/design/amd.md)."""
-    key = (glu, scaled)
+    one operator in place of SandwichAdd and the GEMV (docs/design/amd.md). With ``plain`` (a
+    pre-norm decoder's: Qwen3's) there is no post norm: y = r + h, n = rms(y) w_pre, one rounding
+    each as an add and RMSNorm of their own give."""
+    if plain and scaled:
+        raise ValueError("sandwich GEMV: plain takes no scale")
+    key = (glu, scaled, plain)
     if key in _SW_OPS:
         return _SW_OPS[key]
     import aie.dialects.index as index
@@ -1729,7 +1734,7 @@ def sandwich_operator(glu: bool = False, scaled: bool = False):
 
     Base = glu_operators()["glu"] if glu else operators()[0]
     cols = Base.num_aie_columns
-    parts = ("r", "wpost", "wpre") + (("scale",) if scaled else ())
+    parts = ("r",) + (() if plain else ("wpost",)) + ("wpre",) + (("scale",) if scaled else ())
     one = param(default=1, init=False, array=True)
     body = dict(
         eps=param(array=True),
@@ -1747,7 +1752,7 @@ def sandwich_operator(glu: bool = False, scaled: bool = False):
             raise ValueError("sandwich GEMV: two cores a column (column 0's two put y and n)")
         kbs = K // K_TILE
         out = CB // cores
-        xa_t = np.ndarray[((4 + scaled) * K,), np.dtype[bfloat16]]
+        xa_t = np.ndarray[((1 + len(parts)) * K,), np.dtype[bfloat16]]
         k_t = np.ndarray[(K,), np.dtype[bfloat16]]
         y_t = np.ndarray[(out,), np.dtype[bfloat16]]
         acc_t = np.ndarray[(out,), np.dtype[np.float32]]
@@ -1757,9 +1762,11 @@ def sandwich_operator(glu: bool = False, scaled: bool = False):
         here = Path(__file__).resolve().parent / "kernels"
         flags = [f"-D{self.fmt.upper()}_K={K}", f"-DQ_OUT={out}", "-DQ_SANDWICH=1", f"-DQ_EPS={float(self.eps)!r}f"]
         flags += ["-DQ_SANDWICH_SCALE=1"] if scaled else []
+        flags += ["-DQ_SANDWICH_PLAIN=1"] if plain else []
         if glu:
             flags += ["-DQ_GLU=1"] + (["-DQ_GLU_GELU=1"] if self.act == "gelu" else [])
-        tag = f"{'glu_' + self.act + '_' if glu else ''}{'s_' if scaled else ''}{abs(hash(float(self.eps))) % 10**8}"
+        tag = (f"{'glu_' + self.act + '_' if glu else ''}{'s_' if scaled else ''}{'p_' if plain else ''}"
+               f"{abs(hash(float(self.eps))) % 10**8}")
         common = dict(source_file=str(here / f"{self.fmt}_mv.cc"),
                       include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
                       compile_flags=flags, object_file_name=f"{self.fmt}_mv_sw_{K}_{out}_{tag}.o")
@@ -1853,36 +1860,43 @@ def sandwich_operator(glu: bool = False, scaled: bool = False):
         ins = [m.name for m in self.declaration.members if m.name in ("W", "x") + parts]
         v = dict(zip(ins, ops))
 
-        W, x, r, wpost, wpre = (v[k] for k in ("W", "x", "r", "wpost", "wpre"))
+        W, x, r, wpre = (v[k] for k in ("W", "x", "r", "wpre"))
         scale = v.get("scale")
-        y, nn = iron_sandwich.sandwich_reference(x, r, wpost, wpre, float(self.eps), scale)
+        if plain:
+            y, nn = iron_sandwich.plain_reference(x, r, wpre, float(self.eps))
+        else:
+            y, nn = iron_sandwich.sandwich_reference(x, r, v["wpost"], wpre, float(self.eps), scale)
         base = Base.reference(self, W, np.asarray(nn, np.float32).reshape(-1).astype(bfloat16))
         got = dict(y=base, res=np.asarray(y).reshape(-1), nrm=np.asarray(nn).reshape(-1))
         outs = [m.name for m in self.declaration.members if m.name in got]  # the outputs' order
         return tuple(got[o] for o in outs)
 
     body.update(build=build, sequence=sequence, reference=reference, __doc__=sandwich_operator.__doc__)
-    cls = type(Base.__name__ + "Sandwich", (Base,), body)
+    cls = type(Base.__name__ + ("PreNorm" if plain else "Sandwich"), (Base,), body)
     _SW_OPS[key] = cls
     return cls
 
 
 def sandwich_linear(h, r, w_post, w_pre, eps: float, weight, scale=None):
     """``(W n, y, n)`` for a q_param weight (or a glu_param table: ``act(G n) * (U n)``), y and n
-    the sandwich of block output h and residual r (iron_sandwich.sandwich_add's, its bits): one row."""
+    the sandwich of block output h and residual r (iron_sandwich.sandwich_add's, its bits): one row.
+    ``w_post`` None: a pre-norm decoder's (sandwich_operator's plain), y = r + h."""
     K = h.shape[-1]
-    given = dict(x=h.reshape(K), r=r.reshape(K), wpost=w_post.reshape(K), wpre=w_pre.reshape(K))
+    plain = w_post is None
+    given = dict(x=h.reshape(K), r=r.reshape(K), wpre=w_pre.reshape(K))
+    if not plain:
+        given["wpost"] = w_post.reshape(K)
     if scale is not None:
         given["scale"] = scale.reshape(K)
     if id(weight) in _GLU:
         _, I, k, fmt, act = _GLU[id(weight)]
-        op, kw = sandwich_operator(True, scale is not None), dict(fmt=fmt, act=act, eps=float(eps))
+        op, kw = sandwich_operator(True, scale is not None, plain), dict(fmt=fmt, act=act, eps=float(eps))
     else:
         entry = _Q4.get(id(weight))
         if entry is None or entry[0] is not weight:
             raise ValueError("sandwich_linear: the weight is neither a q_param nor a glu_param")
         _, nout, k, fmt = entry
-        op, kw = sandwich_operator(False, scale is not None), dict(fmt=fmt, cores=2, eps=float(eps))
+        op, kw = sandwich_operator(False, scale is not None, plain), dict(fmt=fmt, cores=2, eps=float(eps))
     given["W"] = weight.reshape(-1, FORMATS[fmt])
     names = [m.name for m in op.declaration.members if m.name in given]
     got = op.step(*(given[nm] for nm in names), **kw)

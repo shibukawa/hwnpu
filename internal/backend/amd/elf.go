@@ -123,6 +123,9 @@ type elfRun struct {
 	fence *fence
 	// scratch is the ctrl scratchpad the control code reads (scratch-pad-ctrl), or nil.
 	scratch *buffer
+	// ctrlData is the instance's control packets (.ctrldata, aiecc's --load-pdi-to-ctrl-pkt),
+	// which the control code streams by shim DMA as it does an argument's buffer; nil without.
+	ctrlData *buffer
 }
 
 func (p *elfProgram) NewRun(name string) (backend.Run, error) {
@@ -149,12 +152,23 @@ func (p *elfProgram) NewRun(name string) (backend.Run, error) {
 		}
 		clear(r.scratch.mem)
 	}
+	if len(in.CtrlData) > 0 {
+		if r.ctrlData, err = p.d.allocMapped(xdna.BOShare, len(in.CtrlData)); err != nil {
+			return fail(fmt.Errorf("amd: control packets: %w", err))
+		}
+		copy(r.ctrlData.mem, in.CtrlData)
+		if err := r.ctrlData.SyncToDevice(0, len(in.CtrlData)); err != nil {
+			return fail(err)
+		}
+	}
 	for _, rel := range in.Relocs {
 		switch rel.Target {
 		case aieelf.TargetPDI:
 			aieelf.Patch(r.instr.mem, in.Ctrl, rel, p.pdis[rel.PDI].bo.DeviceAddr())
 		case aieelf.TargetScratchpad:
 			aieelf.Patch(r.instr.mem, in.Ctrl, rel, r.scratch.bo.DeviceAddr())
+		case aieelf.TargetCtrlData:
+			aieelf.Patch(r.instr.mem, in.Ctrl, rel, r.ctrlData.dmaAddr())
 		}
 	}
 	if r.cmd, err = p.d.allocMapped(xdna.BOCmd, cmdBOSize); err != nil {
@@ -253,6 +267,10 @@ func (r *elfRun) submit() (*fence, error) {
 	}
 	var args []uint32
 	seen := map[uint32]bool{}
+	if r.ctrlData != nil {
+		seen[r.ctrlData.bo.Handle] = true
+		args = append(args, r.ctrlData.bo.Handle)
+	}
 	for _, b := range r.bufs {
 		if b != nil && !seen[b.bo.Handle] {
 			seen[b.bo.Handle] = true
@@ -272,7 +290,7 @@ func (r *elfRun) Close() error {
 		r.fence.Wait(context.Background())
 	}
 	var errs []error
-	for _, b := range []*buffer{r.cmd, r.instr, r.scratch} {
+	for _, b := range []*buffer{r.cmd, r.instr, r.scratch, r.ctrlData} {
 		if b != nil {
 			errs = append(errs, b.Close())
 		}

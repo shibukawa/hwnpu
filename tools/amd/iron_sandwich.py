@@ -40,6 +40,14 @@ def sandwich_reference(h, x, w_post, w_pre, eps: float, scale=None):
     return y, bf16(norm(y.astype(np.float64), w_pre))
 
 
+def plain_reference(h, x, w_pre, eps: float):
+    """A pre-norm decoder's residual and next norm in numpy (float64 inside): y = x + h, n = rms(y)
+    w_pre, each bf16 (iron_q4.sandwich_operator's plain)."""
+    y = bf16(np.asarray(x, np.float64) + np.asarray(h, np.float64))
+    v = y.astype(np.float64)
+    return y, bf16(v / np.sqrt((v * v).mean(axis=-1, keepdims=True) + eps) * np.asarray(w_pre, np.float64))
+
+
 @functools.cache
 def sandwich_operator(scaled: bool = False):
     """``y, n = SandwichAdd(h, x, w_post, w_pre[, scale])``: one row, one core; with ``scaled``, y

@@ -50,7 +50,7 @@ AMD の Ryzen AI の NPU: ドライバの経路 (`internal/xdna`、`internal/bac
 
 NPU2 でどのモデルも使う形。グラフの 1 回の呼び出しを 1 つのハードウェアコンテキスト、1 つのコマンドで流す。
 
-- `internal/aieelf` が aiecc の full ELF を読む: グループからインスタンス (`main:sequence`) と制御コード、`.dynsym` から引数と PDI、`.rela.dyn` から再配置、`.note.xrt.configuration` から列の数。再配置の種類: 3 scalar32、5 shim DMA 48 ビット (+0x80000000 の窓)、8 address64。種類 4 (制御パケット)、プリエンプション、`.ctrldata` はエラー。`Patch` は書き換え前の語から計算するので、引数を変えて何度書き直しても同じ。
+- `internal/aieelf` が aiecc の full ELF を読む: グループからインスタンス (`main:sequence`) と制御コード、`.dynsym` から引数と PDI、`.rela.dyn` から再配置、`.note.xrt.configuration` から列の数。再配置の種類: 3 scalar32、5 shim DMA 48 ビット (+0x80000000 の窓)、8 address64。`.ctrldata` (aiecc の `--load-pdi-to-ctrl-pkt` の制御パケット。記号 `control-packet`、種類 5) は、実行が引数のバッファと同じように置くバッファ (`TargetCtrlData`)。種類 4 (制御パケット) とプリエンプションはエラー。`Patch` は書き換え前の語から計算するので、引数を変えて何度書き直しても同じ。
 - `internal/backend/amd/elf.go`: `ProgramSource.ELF` (または中身が ELF の `Xclbin` / `Path`)。PDI はプログラムで共有する 1 つの `BO_DEV`、制御コードは run ごとの `BO_DEV` で、引数が変わったときだけ書き直して同期する。コンテキストは `CREATE_HWCTX` だけ (CU なし)。ファームウェアはメールボックスのプロトコルの主版 7 (`AIE2_NPU_COMMAND`、`AIE2_PREEMPT`) が要る。Linux 7.0 は `EXEC_NPU_TYPE_ELF` のスロットを作る (`force_cmdlist`)。
 - XRT を root なしで展開し、`LD_PRELOAD` で ioctl を記録して、書き換えた制御コードとパケットを語ごとに突き合わせて確かめた。
 - IRON の ReLU → AXPY (2048 要素): 実行時に IRON も XRT も使わず `graph.reference()` とビット単位で一致。読み込み 1.0 ms、1 回 0.27 ms。
@@ -86,7 +86,7 @@ NPU2 でどのモデルも使う形。グラフの 1 回の呼び出しを 1 つ
 
 - AMD に公開されたグラフのコンパイラはなく、演算ごとの xclbin は切り替え 1 回 0.46 ms かかる (`tools/amd/ctxbench`: 3 つのコンテキストを交互に 2.960 ms、単独の合計 1.571 ms。まとめて投入しても縮まない)。100 演算なら 1 トークン 46 ms。そこで [amd/IRON](https://github.com/amd/IRON) (Apache-2.0) と mlir-aie で書き出し時にコンパイルし、モデルの 1 回の呼び出しを 1 つの full ELF にして、hwnpu が Go で動かす。「変換は Go だけで」の唯一の例外で、利用者の機械には Python も XRT も要らない。
 - 書き出しの道具: `tools/amd/iron_export.py` (IRON の `CompiledGraph` → ELF + manifest: コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ、`carried`、`images` = バンクの初期像 `arg_<種類>.bin`。`--check` は乱数の入力と `graph.reference()` の出力、引き継ぐ値のあるグラフでは `check/calls.json` を書く)。`iron_export_lm.py` (言語モデル)、`iron_graph.py` + `iron.Graph` (それ以外のグラフ。1 つの ELF が複数の重みのバンク `variants` を持てる)。`hwnpu-dev xclbin` は XRT の xclbinutil なしで IRON の設計をビルドする。
-- 実行側の道具: `tools/amd/ironcheck` (書き出しをその check と照合)、`irongraph` (`-runs N`、`-swap -variant`)、`ironlm` (言語モデル)、`gemvbench`、`ctxbench`、`elfconfigs` (ELF ごとの設定のし直し)、`HWNPU_DEV=iron.timing=1` (コマンドごとの時間)、`--command-per-step` (ステップごとに 1 コマンド。時間を測るためだけ)。
+- 実行側の道具: `tools/amd/ironcheck` (書き出しをその check と照合)、`irongraph` (`-runs N`、`-swap -variant`)、`ironlm` (言語モデル)、`gemvbench`、`ctxbench`、`elfconfigs` (ELF ごとの設定のし直し)、`elfredundant` (設定のし直しが領域ごとに書くものと、そのうちすでにあったもの。`-ops` は制御コードの操作を種類ごとに数える)、`HWNPU_DEV=iron.timing=1` (コマンドごとの時間)、`--command-per-step` (ステップごとに 1 コマンド。時間を測るためだけ)。
 - ビルド環境: mlir-aie の wheel は Python 3.12 が要る (uv)。IRON は mlir-aie の nightly を固定する。装置は `aie_utils.set_current_device(from_name("npu2", n_cols=8))`。大きな書き出し (Qwen3.6: 30 分、ピーク RSS 60 GB 中 53.8 GB) はほかの大きな仕事と並べない。置き場は `~/models` (`/tmp` は tmpfs)。長いものは `systemd-run --user` で。
 - 書き出しの名前: `~/models/NAME.amd-npu2-q4` (または `NAME.amd-npu2`)。AMD の NPU だけの機械では、hwnpu-chat が `-m NAME` にこれを選ぶ。
 
@@ -104,6 +104,7 @@ NPU2 でどのモデルも使う形。グラフの 1 回の呼び出しを 1 つ
 - full ELF の中では演算子が変わるごとに `load_pdi` (TXN の op 8) が入り、続いて配列の設定 (プログラムメモリ 16 KB × 使うコア、データメモリの初期値、ロック、DMA、スイッチ) が制御コードの書き込みとして並ぶ。PDI 本体は 368 B の殻。同じ演算子が続けば設定は 1 回。
 - 密なモデルのデコード ≈ 重み ÷ 50 GB/s + 設定のし直し。LFM3-1.7B q4: 測定 92.6 ms、見積もり 33 + 65 = 98 ms。Gemma 4 E2B q4: 137 ms、35 + 103 = 138 ms。デコードを決めるのは帯域でなく演算子の数と大きさ。効くのは、1 層の演算子を減らす、設定を小さくする (QGEMV を 1 列 1 コアに)、ステップを 1 つの常駐の配列にする (gpt-oss の `GptOssStep`、[moe](moe.md))。
 - `elfconfigs` の「reorder … removes at most」は依存を見ないので、1 層 1 コマンドのときだけ意味がある。同じプログラムの書き直しを省いてもプログラムのバイトの 0〜20 % で、費用はバイトにほとんどよらない。
+- デコードの 1 ステップが書き直すもの (`elfredundant`、LFM2-8B-A1B、2026-11-28): 1 トークンに設定のし直し 250 回、8.1 MB。55 % がコアのプログラムメモリ (そのうちコアがすでに持っていたものは 9.6 %)、28 % がコアのレジスタ、残りがメモリタイルと shim。0 を書くコアのロックは制御コードの 7.8 %、連続するレジスタの書き込みをブロック書き込みにまとめても 0.1 %。生成された制御コードから重複した書き込みを抜いても得は小さい。費用は、演算子が変わるたびに同じコアへ別のプログラムを載せることにある。設計ごとの完全な PDI は ELF に残るが (19 の設定に 21 個、最大 101 KB)、読み込まれない (読み込みは展開されている)。
 
 ## 共有のカーネルと演算子の選び方
 
@@ -160,7 +161,6 @@ hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON 
 - NPU1 の実機 (4 列の模擬と、同じ書き出しの形を NPU2 でしか確かめていない)。xclbin 6 個でハードウェアコンテキストの上限 6 を使い切る (ほかのプロセスが NPU を使っていると作れない)。それを超える書き出しにはコンテキストの入れ替えが要る。
 - Windows の実機での xrtshim、MSVC でのビルド。
 - 標準の Linux での NPU 単体の電力 (センサーなし。数字はパッケージの PPT)。
-- `--load-pdi-to-ctrl-pkt` (設定を制御パケットとして DMA で流す。2.3 µs/KB の部分を最も減らせる見込み): aiecc が `npu_materialized.mlir` で止まり ("operand #0 does not dominate this use"、`aie.lock`)、`internal/aieelf` も種類 4 にまだ対応していない。`--ctrlpkt-adaptive-overlay=false` でも teardown なしでも止まる。上流にこの不具合の報告はない (mlir-aie #3928 の計画、#3934・#3935 はマージ済み)。複数列の設計は #3488 (実機で止まる、open) にも当たりうる。
 - GDN のカーネルの静的な配列を IRON の Worker の局所バッファに (0 の塊をなくす): Qwen3.6 で 1 トークン約 8 ms、Qwen3.5 で約 5 ms。未着手。Qwen3.6 の GDN の設定は 1 層 374 KB × 30 層。
 - 密なモデルの 1 層を 1 つの常駐の配列に (LFM3-1.7B で 1 トークン約 60 ms の見込み)。
 - 1 つの ELF に複数のコマンド。アドレスに依るスクラッチパッドの語。
@@ -177,6 +177,7 @@ hwnpu は書き出し時に、IRON を変えずに自前のカーネルを IRON 
 - Windows に、XRT の旧 C API を purego で (`xrtPLKernelOpen`、`xrtRunSetArg`: deprecated で NPU で動く保証がなく、可変長引数) と、ONNX Runtime の VitisAI EP (カーネルを動かせず、依存が大きい): xrtshim を選んだ。
 - XRT の時間を区切った待ち (`run.wait(timeout)`): 待ち直すとコマンドの状態が壊れる。
 - `--reconfig-teardown`: 小さな設定は 95 → 79 µs、大きな設定は 236 → 274 µs、制御コードも増える (483 → 597 KB)。
+- `--load-pdi-to-ctrl-pkt` (設定を制御パケットとして DMA で流す)。2026-11-28 に測った。aiecc は `npu_materialized.mlir` で止まる ("operand #0 does not dominate this use"、mlir-aie #4092): `--aie-materialize-runtime-sequences` が、制御用オーバーレイの `aie.lock` 16 個 (lockID 6) を合成した `main` デバイスの先頭に、それが指す `aie.tile` より前に置く。リポジトリの外で回避した: 再現用のチェックポイント (`--enable-repeater-scripts`) からこのパスの入力を取り、`aie-opt --verify-each=false` でパスを実行し、ロックをタイルの後ろへ移し、frontier に `physical_with_elfs.mlir` と直した `npu_materialized.mlir` を書いた manifest から `aiecc --resume` する (argv から `--await-link-files` を外す)。できた ELF は正しい出力で動くが (SiLU と ElementwiseMul を交互に、設定のし直し 8 回)、遅い: 展開した読み込みの 1 コマンド 0.95 ms に対して 2.5 ms。設定のし直し 1 回が約 123 個の小さな DMA タスクになり、1 つずつ完了を待つ (タスクのトークン 984 個、1 個約 2.5 µs)。制御コードは 240 → 172 KB にしか減らない (ほかにパケット 228 KB)。得になるにはパケットをまとめる (記述子の連鎖) 必要がある。
 - 設定を共有するための演算子の並べ替え: Qwen3.6 で 1 トークン多くて 40 回 (約 4 ms、2 %)、密なモデルは依存で並べられない。
 - `QGEMVGlu` の 1 コア: 2 コアの 17.2 に対し 16.3 tok/s (1 コアで 2 本の累算)。
 - 小さな設定 (RMSNorm、加算) をまとめること: 割に合わない。
