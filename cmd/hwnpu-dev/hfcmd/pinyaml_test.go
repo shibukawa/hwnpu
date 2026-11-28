@@ -113,3 +113,17 @@ func TestExportsYAML(t *testing.T) {
 		t.Errorf("read back %+v from\n%s", got, out)
 	}
 }
+
+// hwnpu-dev models hf push's selector takes the CPU's Core ML packages (coreml) as a group of
+// their own, pinned under that target.
+func TestCoreMLSelector(t *testing.T) {
+	sel, err := parseSelector("1:YuNet/coreml")
+	if err != nil || sel.group != groupCoreML || sel.layer != 1 || sel.which != "" {
+		t.Fatalf("parseSelector = %+v, %v", sel, err)
+	}
+	src := []byte("models:\n  YuNet:\n    kind: face-detect\n")
+	out, err := pinYAML(src, "YuNet", "hwnpu/YuNet", groupCoreML, strings.Repeat("a", 40))
+	if err != nil || !strings.Contains(string(out), "coreml: "+strings.Repeat("a", 40)) {
+		t.Fatalf("pinYAML:\n%s\n%v", out, err)
+	}
+}

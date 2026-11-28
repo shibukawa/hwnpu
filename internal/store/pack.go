@@ -32,10 +32,10 @@ import (
 const PackFile = "files.tar.zst"
 
 // Packs reports whether the entry at rel (EntryPath) goes in a source packed: an export for
-// AMD's NPU or of Core AI.
+// AMD's NPU, of Core AI or a Core ML package (cache.CoreMLTarget).
 func Packs(rel string) bool {
 	parts := strings.Split(rel, "/")
-	return len(parts) >= 3 && parts[0] == "converted" && (parts[2] == cache.AMDTarget || parts[2] == cache.CoreAITarget)
+	return len(parts) >= 3 && parts[0] == "converted" && (parts[2] == cache.AMDTarget || parts[2] == cache.CoreAITarget || parts[2] == cache.CoreMLTarget)
 }
 
 // packTo writes e's files (in dir) as a tar compressed with zstd at out and returns it as a File

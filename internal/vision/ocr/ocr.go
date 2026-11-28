@@ -13,6 +13,7 @@ package ocr
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"io"
@@ -85,7 +86,11 @@ type Setup struct {
 	// calling thread) instead of converting them.
 	CPU     bool
 	Threads int
-	Log     io.Writer
+	// Parts opens the reader from its Core ML packages' part files alone (Backend coreml): when
+	// they are neither here nor in the shared layers Open fails (a *llm.NotFetchedError) instead
+	// of downloading the ONNX files.
+	Parts bool
+	Log   io.Writer
 }
 
 // Line is a line of text found: its box (four corners clockwise from the top left, in the
@@ -137,6 +142,18 @@ func Open(ctx context.Context, dev *hwnpu.Device, s Setup) (*Reader, error) {
 	s.Log = log
 	r := &Reader{Thresh: 0.2, BoxThresh: 0.45, Unclip: 1.4, Sizes: Sizes, Widths: Widths, Batch: Batch, Columns: Columns,
 		s: s, dev: dev, det: map[[2]int]runner.Program{}, rec: map[int]runner.Program{}, onNPU: dev != nil}
+	if !s.CPU && s.Backend == llm.BackendCoreML {
+		// the CPU's Core ML packages with their settings' part files (ConfigPart), here or in the
+		// shared layers: no ONNX file nor inference.yml downloaded
+		if ok, err := r.fromParts(ctx); err != nil {
+			return nil, err
+		} else if ok {
+			return r, nil
+		}
+	}
+	if s.Parts {
+		return nil, &llm.NotFetchedError{What: "PP-OCR's Core ML packages"}
+	}
 	var err error
 	if r.detModel, err = fetch(ctx, s.Det, ModelFile, log); err != nil {
 		return nil, err
@@ -230,6 +247,102 @@ func (r *Reader) Close() error {
 	clear(r.det)
 	clear(r.rec)
 	return err
+}
+
+// ConfigPart is the part file (onnx.PartExt) in a Core ML package of the reader's programs: the
+// detector's thresholds (in a detector's) or the recognizer's dictionary (in a recognizer's),
+// what Open reads from inference.yml otherwise.
+func ConfigPart(program string) string { return filepath.Join(program, "config"+onnx.PartExt) }
+
+// detConfig and recConfig are what ConfigPart holds.
+type (
+	detConfig struct {
+		Thresh, BoxThresh, Unclip float32
+	}
+	recConfig struct {
+		Chars []string
+	}
+)
+
+// fromParts takes the reader's settings from the part files of its first detector's and
+// recognizer's Core ML packages, here or in the shared layers (fetched then), when both have
+// one: the other programs are taken so as their pictures come, and the ONNX files downloaded
+// only for one no layer has (modelOf).
+func (r *Reader) fromParts(ctx context.Context) (bool, error) {
+	det, ok := r.readyProgram(ctx, r.s.Det, "det", []int{1, 3, r.Sizes[0][1], r.Sizes[0][0]})
+	if !ok {
+		return false, nil
+	}
+	w := r.Widths[0]
+	rec, ok := r.readyProgram(ctx, r.s.Rec, "rec", []int{r.batch(w), 3, Height, w})
+	if !ok {
+		return false, nil
+	}
+	dp, err := onnx.ReadPart(ConfigPart(det))
+	if err != nil {
+		return false, nil
+	}
+	rp, err := onnx.ReadPart(ConfigPart(rec))
+	if err != nil {
+		return false, nil
+	}
+	var dc detConfig
+	var rc recConfig
+	if err := dp.MetaOf("detector", &dc); err != nil {
+		return false, fmt.Errorf("ocr: %s: %w", ConfigPart(det), err)
+	}
+	if err := rp.MetaOf("recognizer", &rc); err != nil || len(rc.Chars) == 0 {
+		return false, fmt.Errorf("ocr: %s: no dictionary (%v)", ConfigPart(rec), err)
+	}
+	r.Thresh, r.BoxThresh, r.Unclip, r.chars = dc.Thresh, dc.BoxThresh, dc.Unclip, rc.Chars
+	return true, nil
+}
+
+// readyProgram is the path of the program of src's NAME at the input shape when it is here or in
+// the shared layers (fetched then), with its settings' part file.
+func (r *Reader) readyProgram(ctx context.Context, src Source, name string, shape []int) (string, bool) {
+	dir := repoDir(r.s.Dir, src)
+	stem, err := r.stem(ctx, dir, name, shape)
+	if err != nil {
+		return "", false
+	}
+	path, done, export := llm.ProgramPath(dir, stem, r.s.Backend)
+	llm.DropStaleCoreML(path, done, ConfigPart(path))
+	if !llm.ProgramReady(ctx, dir, stem, done, export) {
+		return "", false
+	}
+	if _, err := os.Stat(ConfigPart(path)); err != nil {
+		return "", false
+	}
+	return path, true
+}
+
+// stem is the program's name (ProgramPath's NAME) of NAME at the input shape, in dir.
+func (r *Reader) stem(ctx context.Context, dir, name string, shape []int) (string, error) {
+	tag := fmt.Sprintf("%dx%d", shape[3], shape[2])
+	if shape[0] != 1 {
+		tag = fmt.Sprintf("%dx%dx%d", shape[0], shape[3], shape[2])
+	}
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	format, err := chat.ConvertFormat(ctx, filepath.Join(dir, name), r.s.Backend, "fp16")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-r%d-%s-%s", name, Revision, format, tag), nil
+}
+
+// modelOf is the ONNX file of src's repository (the detector's or the recognizer's), downloaded
+// now when the reader was opened from part files without it.
+func (r *Reader) modelOf(ctx context.Context, src Source, model *string) (string, error) {
+	if *model != "" {
+		return *model, nil
+	}
+	p, err := fetch(ctx, src, ModelFile, r.s.Log)
+	if err != nil {
+		return "", err
+	}
+	*model = p
+	return p, nil
 }
 
 // program converts (unless converted) and loads the program of model at the input shape, in
@@ -626,15 +739,31 @@ func (r *Reader) convertProgram(ctx context.Context, src Source, model, name str
 	if shape[0] != 1 {
 		tag = fmt.Sprintf("%dx%dx%d", shape[0], shape[3], shape[2])
 	}
-	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	dir := repoDir(r.s.Dir, src)
 	format, err := chat.ConvertFormat(ctx, filepath.Join(dir, name), r.s.Backend, "fp16")
 	if err != nil {
 		return "", err
 	}
-	stem := fmt.Sprintf("%s-r%d-%s-%s", name, Revision, format, tag)
+	stem, err := r.stem(ctx, dir, name, shape)
+	if err != nil {
+		return "", err
+	}
 	path, done, export := llm.ProgramPath(dir, stem, r.s.Backend)
+	llm.DropStaleCoreML(path, done, ConfigPart(path))
 	if !llm.ProgramReady(ctx, dir, stem, done, export) {
+		if err := llm.MayConvert(ctx, path); err != nil {
+			return "", err
+		}
+		if model == "" {
+			// opened from part files: the ONNX file downloaded now, for this program alone
+			m := &r.recModel
+			if name == "det" {
+				m = &r.detModel
+			}
+			if model, err = r.modelOf(ctx, src, m); err != nil {
+				return "", err
+			}
+		}
 		g, err := onnx.Load(model)
 		if err != nil {
 			return "", err
@@ -653,12 +782,39 @@ func (r *Reader) convertProgram(ctx context.Context, src Source, model, name str
 			bar.Done("failed")
 			return "", err
 		}
+		if r.s.Backend == llm.BackendCoreML {
+			// the reader's settings beside the CPU's program, which Open takes in place of
+			// inference.yml (fromParts)
+			if err := r.writeConfigPart(path, name); err != nil {
+				bar.Done("failed")
+				return "", err
+			}
+		}
 		bar.Done(console.Duration(bar.Elapsed()))
 		if err := llm.FinishProgram(ctx, dir, stem, done, export); err != nil {
 			return "", err
 		}
 	}
 	return path, nil
+}
+
+// writeConfigPart writes the reader's settings of NAME's programs (det: the thresholds, rec: the
+// dictionary) in the program's ConfigPart.
+func (r *Reader) writeConfigPart(program, name string) error {
+	var meta map[string]any
+	if name == "det" {
+		meta = map[string]any{"detector": detConfig{Thresh: r.Thresh, BoxThresh: r.BoxThresh, Unclip: r.Unclip}}
+	} else {
+		meta = map[string]any{"recognizer": recConfig{Chars: r.chars}}
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	if err := onnx.WritePart(ConfigPart(program), onnx.Part{Meta: b}); err != nil {
+		return fmt.Errorf("ocr: %w", err)
+	}
+	return nil
 }
 
 // PreparePrograms converts the programs of every size the reader takes by default: the

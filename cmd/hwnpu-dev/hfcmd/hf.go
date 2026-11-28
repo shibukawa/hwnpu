@@ -72,12 +72,12 @@ func parseSelector(s string) (selector, error) {
 	sel.model = m
 	switch {
 	case target == "":
-	case target == groupAMD, target == groupApple:
+	case target == groupAMD, target == groupApple, target == groupCoreML:
 		sel.group = target
 	case target == chat.CoreAITarget, strings.HasPrefix(target, chat.CoreAITarget+"-"):
 		sel.group, sel.which = groupApple, target
 	default:
-		return sel, fmt.Errorf("%s: %s is not amd-xdna2, apple, coreai or coreai-ARCH", s, target)
+		return sel, fmt.Errorf("%s: %s is not amd-xdna2, apple, coreai, coreai-ARCH or coreml", s, target)
 	}
 	return sel, nil
 }
@@ -204,9 +204,12 @@ func printRows(ctx context.Context, w io.Writer, rs []*row) {
 		}
 		conv := cache.AMDTarget
 		chips := "-"
-		if r.group == groupApple {
+		switch r.group {
+		case groupApple:
 			conv = chat.CoreAITarget
 			chips = fmt.Sprintf("%d/%d", len(r.chips), len(prebuiltChips))
+		case groupCoreML:
+			conv = chat.CoreMLTarget
 		}
 		version := "-"
 		if v := r.model.Targets[conv]; v > 0 {
@@ -234,7 +237,7 @@ var prebuiltChips = []string{"h13g", "h14c", "h14g", "h15c", "h15g", "h16c", "h1
 
 // PlanCmd is hwnpu-dev models hf plan.
 type PlanCmd struct {
-	Sel     []string `arg:"" optional:"" name:"N:MODEL/TARGET" help:"What to show (every model when left out): a model, its target (amd-xdna2, apple, coreai, coreai-ARCH) after /, the layer it comes from before :."`
+	Sel     []string `arg:"" optional:"" name:"N:MODEL/TARGET" help:"What to show (every model when left out): a model, its target (amd-xdna2, apple, coreai, coreai-ARCH, coreml) after /, the layer it comes from before :."`
 	Verbose bool     `short:"v" help:"Show each entry, and the chips that have prebuilt programs."`
 }
 
@@ -671,8 +674,11 @@ func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin 
 		}
 	}
 	ofTarget := func(t string) bool {
-		if target == groupAMD {
+		switch target {
+		case groupAMD:
 			return t == cache.AMDTarget || t == "any"
+		case groupCoreML:
+			return t == chat.CoreMLTarget
 		}
 		return t == chat.CoreAITarget || strings.HasPrefix(t, chat.CoreAITarget+"-") && (target == groupApple || t == target) || t == "any"
 	}
@@ -685,7 +691,11 @@ func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin 
 		return e, err
 	}
 	conv := target
-	if target != groupAMD {
+	switch target {
+	case groupAMD:
+	case groupCoreML:
+		conv = chat.CoreMLTarget
+	default:
 		conv = chat.CoreAITarget
 	}
 	pinnedAMD := target == groupAMD && len(m.Pins[cache.AMDTarget]) > 0
@@ -747,6 +757,8 @@ func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin 
 		switch e.Kind {
 		case chat.CoreAIKind:
 			want, ok = chat.CoreAIWant(ctx, m, e.Recipe["export"])
+		case chat.CoreMLKind:
+			want, ok = chat.CoreMLWant(ctx, m, e.Recipe["export"])
 		case chat.TablesKind:
 			want, ok = chat.TablesWant(ctx, m, e)
 		case chat.PrebuiltKind:
@@ -760,14 +772,17 @@ func checkPin(ctx context.Context, w io.Writer, m chat.Model, repo, target, pin 
 			report(me.Path, "another version (kept for the hwnpu that reads it); this one reads "+hubRel(want.Path), false)
 		case chat.Takes(want, e):
 			report(me.Path, "ok", false)
-			if e.Kind == chat.CoreAIKind {
+			if e.Kind == chat.CoreAIKind || e.Kind == chat.CoreMLKind {
 				current++
 			}
 		default:
 			report(me.Path, "not what this hwnpu makes: bump the version and push again", true)
 		}
 	}
-	if target != groupAMD && current == 0 {
+	switch {
+	case target == groupCoreML && current == 0:
+		report("-", "no Core ML package of the version this hwnpu reads", true)
+	case target != groupAMD && target != groupCoreML && current == 0:
 		report("-", "no Core AI export of the version this hwnpu reads", true)
 	}
 	return problems, nil

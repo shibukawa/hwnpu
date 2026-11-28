@@ -418,6 +418,26 @@ converted/MODEL/amd-xdna2/EXPORT/VERSION/entry.json      files: 中のファイ�
 - 2026-11-17、チャットの 13 モデルを今の道具で書き出して UGREEN の NAS に置いた。合わせて 65.7 GB が 55.2 GB。gemma-4-E2B-it 7.42 → 7.11 GB、E4B 10.86 → 10.24 GB と gemma は 4〜6% しか縮まず、ほかは 2〜3 割 (Qwen3.5-4B 5.39 → 4.46、gpt-oss-20b 14.39 → 11.79、plamo-3-translate-8b 7.45 → 6.41)。Qwen3.5-0.8B (1.18 GB) を空の根に取って展開して答えるまでを確かめた (取るのに 40 秒、展開 2 秒)
 - 注意: 同じ機械の `work/queue` を前の hwnpu (pack を知らないもの) も処理すると、同じ entry をばらで置き直し、詰めたものが `.put-` のまま残ることがある (plamo-3-translate-2b で起きた)。その機械の hwnpu を揃えること
 
+### 7.11 CPU で動かすモデルの Core ML パッケージ: `coreml` (2026-11-28)
+
+CPU で動かすモデル (models.yaml の `device: cpu`。今は AMD の機械の YuNet と RTMDet-tiny) は、ONNX Runtime がなければ、ONNX から変換した Core ML パッケージ (`.mlpackage`) を hwnpu の CPU の実行器 (`internal/milcpu`) で動かす。今までは各機械が ONNX を落として変換していた。これを、変換したパッケージそのものを取得元に置いて配る。
+
+- 対象は `coreml` (`cache.CoreMLTarget`)、種類も `coreml` (`chat.CoreMLKind`)。`converted/MODEL/coreml/NAME.mlpackage/VERSION` に、Core AI の書き出しと同じく `files.tar.zst` に詰めて置く (`store.Packs`)。`entry.json` はパッケージのフォルダの直下に置く (`milcpu` は `Data/` しか読まない)
+- 版は Core AI の版 (レシピの `apple.version`) と同じ: 同じコード (`internal/mlpackage` と各モデルの変換) が書く。`device: cpu` のあるモデルにだけ付く (`applyRecipe`)。ほかのモデルが CPU で動くときのパッケージも同じ仕組みで出し入れするが、版がないので `v0-HASH`
+- 出し入れは `llm.ProgramReady` / `FinishProgram` で、`.mlpackage` も取得元から取り、作ったら置く (その時に ONNX は落とさない)。作る側は `hwnpu-dev models package MODEL/coreml` (どの OS でも)
+- Hugging Face: `hwnpu-dev models hf plan/push/check` の行 `MODEL/coreml` (リポジトリの `coreml/` に置き、models.yaml の `hub.REPO.coreml` にコミットを固定する)。読む側は `coreml` の鍵のコミットを、Mac でも Mac でなくても読む (`store.HubPin`)。版 (`coreml` の対象の版) のあるモデルにだけ行がある
+- **実行が ONNX から読むものは、パッケージの中の part file (`onnx.PartExt`、`.onnxpart`) に入れる**。トークナイザーのバイナリ (`tokenizer.tok`) と同じ作り: `"HWNPUONX"`、版、JSON (グラフの節点と入出力、テンソルの型と形と位置、モデルの設定)、8 バイト境界からのテンソルのバイト列 (TensorProto.raw_data と同じ並び)。読むのは写像するだけで、重み (4096 要素以上) は写像のまま必要なときに読み (`Tensor.Lazy`)、小さいテンソルと属性のテンソルはすぐ読む (`onnx.LoadLazy` と同じ)。版の違うファイルは読まず ONNX に戻る
+  - RTMO (pose): `host.onnxpart`。プログラムの出力から人までのグラフ (`Graph.Subgraph`)、プログラムが畳んだ値、出力の並び (`Program.ProgramPart` / `onnx.ProgramOf`)
+  - Basic Pitch (notes): `front.onnxpart`。窓から正規化した対数 CQT までのグラフと出力の並び
+  - SwiftF0 (pitch): `front.onnxpart`。前段の窓とフィルタバンクと音高の区分のテンソルだけ (CNN はプログラム)
+  - EfficientSAM (segment): エンコーダのパッケージに `decoder.onnxpart` (デコーダのグラフ全部)。CPU は今まで ONNX Runtime か ONNX の評価器でエンコーダを動かしていたが、パッケージがあれば hwnpu の実行器で動かす (fp16。評価器の float64 とマスクの PSNR 44〜55 dB、スコアは小数 4 桁目から違う)
+  - PP-OCR: 検出器のパッケージに閾値、認識器のパッケージに辞書 (`config.onnxpart`、メタデータだけ)。最初の大きさの 2 つが揃えば inference.yml も ONNX も落とさない。取得元にない大きさは、その時に ONNX を落として変換する
+  - YuNet は出力の形をパッケージのメタデータ `hwnpu.outshapes` に書く。RTMDet はプログラムだけ
+  - part file のない古いパッケージは作り直す (`llm.DropStaleCoreML`)
+- 取得元にパッケージがあれば、ONNX Runtime がある機械でも hwnpu の実行器で動かし、ONNX を落とさない (利用者の決定、2026-11-28。ONNX Runtime より遅いが、ダウンロードと変換がない)
+- アプリが作ったモデル (`NAME+HASH`: `hwnpu-image --device cpu`) は、元のモデルの場所のパッケージを取る
+- 確かめたこと (M2、2026-11-28): 空のキャッシュで `--device cpu` の YuNet、RTMDet-tiny、RTMO-s、EfficientSAM-Ti/S、PP-OCRv6-small を動かし、ONNX を 1 つも落とさず (swift-f0 と basic-pitch は、Mac では音のエンジンが NPU 向けの Core AI の書き出しも用意するので ONNX を落とす。NPU のない機械では落とさない)、ONNX を読む前のコード (HEAD) と同じ結果になった (EfficientSAM は上のとおり精度の差だけ)。ONNX Runtime のある機械での動きは、ここに ONNX Runtime がなく確かめていない
+
 ## 8. 準備の流れ: 計画と作るを分ける
 
 今の `chat.Prepare` と `PrepareAMD` は、まずチェックポイントを落とす。これを次にする:

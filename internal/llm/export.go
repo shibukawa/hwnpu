@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/syncx"
@@ -187,9 +188,13 @@ func OldCoreAIProgram(dir, name string) []string {
 
 // ProgramReady reports whether a program of ProgramPath (NAME in dir) is whole: its Core AI
 // export here or from the shared layers (FetchExport; the old program NAME.aimodel then
-// removed), Core ML's and Intel's program with its .done.
+// removed), Core ML's package here or from the shared layers (the CPU's program, in place of the
+// ONNX file it is converted from), Intel's program with its .done.
 func ProgramReady(ctx context.Context, dir, name, done, export string) bool {
 	if export == "" {
+		if pkg := strings.TrimSuffix(done, ".done"); filepath.Ext(pkg) == ".mlpackage" {
+			return FetchExport(ctx, pkg, done)
+		}
 		return ExportDone(done)
 	}
 	if !FetchExport(ctx, export, done) {
@@ -213,9 +218,23 @@ func StartProgram(ctx context.Context, program, export string) error {
 	return os.RemoveAll(program)
 }
 
+// DropStaleCoreML removes the Core ML package program (and its mark done) when it is whole but
+// lacks the part file part (one of before its model wrote it beside the program): it is then
+// taken from the shared layers or converted again, with it.
+func DropStaleCoreML(program, done, part string) {
+	if filepath.Ext(program) != ".mlpackage" || !ExportDone(done) {
+		return
+	}
+	if _, err := os.Stat(part); err == nil {
+		return
+	}
+	os.RemoveAll(program)
+	os.Remove(done)
+}
+
 // FinishProgram marks a program of ProgramPath (NAME in dir) whole: its export with
 // FinishExport (and the old Core AI program NAME.aimodel removed), put in the shared layers
-// (ShareExport), or done written empty.
+// (ShareExport), or done written empty; a Core ML package is put in the shared layers too.
 func FinishProgram(ctx context.Context, dir, name, done, export string) error {
 	if export != "" {
 		if err := FinishExport(export, done, OldCoreAIProgram(dir, name)...); err != nil {
@@ -224,5 +243,11 @@ func FinishProgram(ctx context.Context, dir, name, done, export string) error {
 		ShareExport(ctx, export)
 		return nil
 	}
-	return os.WriteFile(done, nil, 0o644)
+	if err := os.WriteFile(done, nil, 0o644); err != nil {
+		return err
+	}
+	if pkg := strings.TrimSuffix(done, ".done"); filepath.Ext(pkg) == ".mlpackage" {
+		ShareExport(ctx, pkg)
+	}
+	return nil
 }

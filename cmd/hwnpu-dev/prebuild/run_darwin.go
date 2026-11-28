@@ -191,8 +191,9 @@ func indent(s, by string) string {
 // Mark writes what a device made of the prebuilt programs of the exports for archs (status: ok,
 // or the failure's name) in the records of their builds (coreai.MarkDevice), the programs those
 // whose names match one of programs (all when none). A build then takes a failed one for no
-// later export, and says the rule that leaves it to the device.
-func Mark(exports, archs, programs []string, status, function string, log io.Writer) error {
+// later export, and says the rule that leaves it to the device. With put the bundles are put in
+// the sources written back to (of model, when the export names none).
+func Mark(ctx context.Context, exports, archs, programs []string, status, function, model string, put bool, log io.Writer) error {
 	d := coreai.DeviceCheck{Status: status, Checked: time.Now().Format("2006-01-02"), Function: function, By: "hwnpu-dev prebuild -mark"}
 	for _, e := range exports {
 		e = filepath.Clean(e)
@@ -205,6 +206,19 @@ func Mark(exports, archs, programs []string, status, function string, log io.Wri
 				return err
 			}
 			fmt.Fprintf(log, "%s %s: %s %s\n", filepath.Base(e), arch, status, strings.Join(marked, " "))
+			if put {
+				// the bundle with its new record: the source replaces its own (the record's
+				// revision changed), and a device that fetches it reads the mark (badOnDevice)
+				pctx := ctx
+				if m, ok := chat.Lookup(model); model != "" && ok {
+					pctx = chat.WithModel(ctx, m)
+				} else if m, ok := chat.ExportModel(e); ok {
+					pctx = chat.WithModel(ctx, m)
+				}
+				if err := chat.PutPrebuilt(pctx, e, arch); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil

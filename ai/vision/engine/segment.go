@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"image"
 	"io"
 	"os"
@@ -57,6 +59,15 @@ func prepareSegment(e airole.PrepareEnv) (f airole.Files, err error) {
 		func(python []string, model, dir string) error {
 			return segment.ExportNPU(e.Ctx, python, e.Base.Name, model, dir, e.Log)
 		})
+	if export == "" && !imagedev.ProgramDevice(m, e.NPU.Vendor, flag) {
+		// the CPU: the encoder's Core ML package with the decoder's part file made before
+		// (hwnpu-dev models package MODEL/coreml), here or in the shared layers, on hwnpu's own
+		// executor even where ONNX Runtime is, and no ONNX file downloaded
+		if program, err := segment.PrepareCPU(llm.WithFetchOnly(e.Ctx), s, chat.ModelDir(e.Base)); err == nil {
+			f.Set("cpu-program", program)
+			return f, nil
+		}
+	}
 	enc, dec, err := segment.Fetch(e.Ctx, s)
 	if err != nil {
 		return f, err
@@ -88,6 +99,10 @@ func loadSegment(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Clos
 	)
 	device := "npu"
 	switch {
+	case f.Path("cpu-program") != "":
+		device = "cpu"
+		milcpu.Threads = threads(e.Def)
+		sm, err = segment.OpenCPUProgram(ctx, f.Path("cpu-program"))
 	case f.Path("export") != "":
 		if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
 			return nil, err

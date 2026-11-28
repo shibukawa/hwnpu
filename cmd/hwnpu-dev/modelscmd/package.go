@@ -32,14 +32,14 @@ import (
 // then compiled for that architecture of the Neural Engine with coreai-build (compile, macOS).
 // What is made goes in the sources written back to, as the first run's does.
 type PackageCmd struct {
-	Sel    []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2; coreai, the generic exports; coreai-ARCH, those compiled for an architecture of the Neural Engine, h14g..., coreai-all for every one) or for the targets its definition gives versions for (targets), else what its recipe makes (model-recipes.yaml: the Core AI exports prebuilt for its architectures). A Core AI export folder or program (DIR[/coreai-ARCH]) is compiled alone, for the architectures of its model's recipe when none is named."`
+	Sel    []string `arg:"" name:"MODEL[/TARGET]" help:"Models of the definitions, each for a target (amd-xdna2; coreai, the generic exports; coreai-ARCH, those compiled for an architecture of the Neural Engine, h14g..., coreai-all for every one; coreml, the Core ML packages hwnpu's own executor runs on the CPU in place of the ONNX file, of the models the definitions put on the CPU) or for the targets its definition gives versions for (targets), else what its recipe makes (model-recipes.yaml: the Core AI exports prebuilt for its architectures). A Core AI export folder or program (DIR[/coreai-ARCH]) is compiled alone, for the architectures of its model's recipe when none is named."`
 	Memory []int    `help:"Only the forms of machines of these GB (hwnpu-chat --memory); every form the definitions give when left out." placeholder:"GB"`
 	Chip   []string `help:"For coreai, only the exports of Macs of these chips (M1, M2, ...); one of each kind of chip whose exports differ when left out (chat.ExportChips: M1, M2 for the later ones)." placeholder:"CHIP"`
 	compileFlags
 }
 
 // targets are the targets package makes conversions for; coreai-ARCH is coreai's compiled.
-var targets = []string{cache.AMDTarget, cache.CoreAITarget}
+var targets = []string{cache.AMDTarget, cache.CoreAITarget, cache.CoreMLTarget}
 
 // job is a model to make ready for a target; for coreai, archs are the architectures its exports
 // are compiled for (none: the generic exports alone).
@@ -191,6 +191,11 @@ func parseJobs(sel []string) ([]job, error) {
 		default:
 			for _, t := range targets {
 				// (AMD's from its recipe, below, which gives its version too)
+				// (the Core ML packages only of a model the definitions put on the CPU: the others'
+				// CPU runs them only when asked, MODEL/coreml makes them)
+				if t == cache.CoreMLTarget && !slices.Contains(slices.Collect(maps.Values(m.Device)), "cpu") {
+					continue
+				}
 				if _, ok := m.Targets[t]; ok && recipe.GenerationOf(t) == "" {
 					ts = append(ts, t)
 				}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -53,6 +54,17 @@ func applyRecipe(m *Model, by string) error {
 				m.Targets = map[string]int{}
 			}
 			m.Targets[cache.CoreAITarget] = v
+		}
+	}
+	// and of its Core ML packages, which a machine that runs it on the CPU takes in place of its
+	// ONNX file (models.yaml's device: cpu for some vendor, or a kind converted from ONNX files
+	// whose CPU runs them: CoreMLKinds): the same code writes both, so the same version
+	if v := f.AppleVersion(by); v > 0 && (slices.Contains(slices.Collect(maps.Values(m.Device)), "cpu") || slices.Contains(CoreMLKinds, m.Kind)) {
+		if _, ok := m.Targets[cache.CoreMLTarget]; !ok {
+			if m.Targets == nil {
+				m.Targets = map[string]int{}
+			}
+			m.Targets[cache.CoreMLTarget] = v
 		}
 	}
 	r, ok := f.AMDOf(by)

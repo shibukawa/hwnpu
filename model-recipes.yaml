@@ -149,6 +149,14 @@ apple:
       do: device
       why: "the attention a kv head at a time (paged.Heads) from coreai-build's h15g program: the second kv head's sum of exps 6 times too large and its output about 0 on the M3; right compiled on the device (Qwen3.5-0.8B, prebuilt against device and Core AI's CPU on the same inputs)"
       checked: 2026-11-27
+    # the same on the M2 from h14g programs: Qwen3-1.7B's answers noise with its attention
+    # prebuilt, right with it compiled on the device and the other parts (and mass) prebuilt;
+    # LFM3-1.7B's and Qwen3-0.6B's were right, so it depends on the model
+    - arch: [h14g]
+      programs: ["*.attn*"]
+      do: device
+      why: "the attention a kv head at a time (paged.Heads) from coreai-build's h14g program: Qwen3-1.7B's answers noise on the M2; right with the attention compiled on the device and the parts and mass prebuilt"
+      checked: 2026-11-28
     - arch: [h13g, h13c, h13d, h13s, h14g, h14c, h14d, h14s]
       programs: ["text", "text_*"]
       do: device
@@ -218,7 +226,8 @@ models:
       script: iron_moss_sfx.py
       args: ["{in}", "{out}", --text, "{text}"]
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/sfx]
       rewrite:
         # coreai-build, each of the five decoder stages: with sin itself, h13g, h14g and h14c
@@ -251,7 +260,8 @@ models:
   LFM3-1.7B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile; the first load
       # takes 1 min 45 s against 1 min 02 s compiled on the device, slower but with 1.3 GB less
@@ -273,7 +283,8 @@ models:
   LFM3-VL-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
       # to the device by apple's rule): the answers with an image are those of the device's compile; the first load takes 3 min 44 s
       # prebuilt against 1 min 10 s on the device, slower, with 2.1 GB less disk left, which the user takes
@@ -292,7 +303,8 @@ models:
   LFM3-Audio-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
       # to the device by apple's rule): the answers with a clip are those of the device's compile; the first load takes 3 min 03 s
       # prebuilt against 1 min 07 s on the device, slower, with 6.9 GB less disk left, which the user takes
@@ -323,7 +335,8 @@ models:
   LFM3-Omni-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       # prebuilt for the M1 alone, as LFM3-1.7B (2026-11-27, version 2's export, the attention left
       # to the device by apple's rule): the answers with an image and with a clip are those of the device's compile (the clip transcribed word for word); the first load takes 4 min 09 s to 4 min 32 s
       # prebuilt (the device's compile not measured: another session was on the Neural Engine), which the user takes
@@ -354,7 +367,8 @@ models:
   gemma-4-E2B-it:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
       prebuild:
         # Apple's Gemma 4 export says coreai-build's ahead-of-time programs of it are not supported
@@ -377,7 +391,8 @@ models:
   gemma-4-E4B-it:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gemma4]
       prebuild:
         # Apple's Gemma 4 export says coreai-build's ahead-of-time programs of it are not supported
@@ -402,7 +417,8 @@ models:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
-      version: 3
+      # 4: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 4
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 5 min 20 s against 21 min 43 s compiled on the device, with 4.3 GB less disk left and no 5.5 GB
@@ -432,7 +448,8 @@ models:
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
       # 4: the whole program in parts of 8 layers (convert.whole_layers)
-      version: 4
+      # 5: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 5
       # prebuilt for the M1 and the M3 (2026-11-27; on the M1 version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 1 min 46 s against 7 min 14 s compiled on the device, with 1.7 GB less disk left and no 2.3 GB
@@ -454,7 +471,8 @@ models:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
-      version: 3
+      # 4: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 4
       # prebuilt for the M1 alone (2026-11-27, version 2's export, the attention left to the
       # device by apple's rule): the answers are those of the device's compile, and the first load
       # takes 2 min 06 s against 7 min 48 s compiled on the device, with 1.5 GB less disk left and
@@ -473,7 +491,8 @@ models:
   gpt-oss-20b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/gptoss, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -491,7 +510,8 @@ models:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
       # 3: the Gated DeltaNet's state after a chunk through diag(decay) in the programs of several
       # chunks (q128), which the M3 finishes from h15g programs (docs/known-issues.md 12)
-      version: 3
+      # 4: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 4
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen35, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go", "!internal/llm/qwen35/replay.go"]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -508,7 +528,8 @@ models:
   plamo-3-translate-8b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -521,7 +542,8 @@ models:
   plamo-3-translate-2b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -534,7 +556,8 @@ models:
   plamo-3-translate-0.8b:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo3]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -547,7 +570,8 @@ models:
   d1-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -560,7 +584,8 @@ models:
   d1-Omni-2B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3vl, "!internal/llm/lfm3vl/preprocess.go", internal/llm/lfm3audio, internal/systemone]
     amd:
       # 3: tokenizer_config.json removed (the binary tokenizer holds what hwnpu reads of it)
@@ -574,8 +599,17 @@ models:
   whisper-large-v3-turbo:
     apple:
       # (no part split at its attention, so no mass program: the bytes of version 1)
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/whisper, internal/transcribe]
+      prebuild:
+        # the h14g prebuilts give the same text as the device's compile on the M2 but load 4 to 5
+        # times slower (372 s against 78 s, the same memory at its peak, 2026-11-28): nothing gained
+        - arch: [h14g]
+          programs: ["*"]
+          do: device
+          why: "the h14g prebuilts load 4 to 5 times slower on the M2 than the device compiles them (372 s against 78 s), the same answers and memory"
+          checked: 2026-11-28
       # a lut's values by k-means over the weights' range (the format is the architecture's, lut8)
       convert: {quant: kmeans-minmax}
     amd:
@@ -587,7 +621,8 @@ models:
   LFM3-Audio-2B-TTS:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm3, internal/llm/lfm3audio, internal/llm/lfm3gen, internal/speech]
     amd:
       # 3: text/ without the text model's copy of the tokenizer and the chat's format
@@ -598,7 +633,8 @@ models:
       args: ["{in}", "{out}"]
   supertonic-3:
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/supertonic, internal/onnx]
     amd:
       version: 1
@@ -607,10 +643,31 @@ models:
       args: ["{in}", "{out}", --sizes, "{sizes}"]
   magenta-realtime-2-small:
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/music, internal/notes, internal/onnx]
       # the depth and temporal transformers in lut8, a lut's values by k-means over the weights' range (the other programs fp16)
       convert: {format: lut8, quant: kmeans-minmax}
+      prebuild:
+        - arch: [h14g]
+          programs: [decoder]
+          do: device
+          why: "coreai-build crashed (signal: abort trap): Assertion failed: (n < size()), function operator[], file ZinIrMappedData_Impl.h, line 371."
+          checked: 2026-11-28
+        # the temporal transformer's h14g prebuilt does not load on the M2 ("bad program image",
+        # failedToSpecialize), and compiled on the device after that failure in the same process it
+        # went to the GPU, which fails the run; a process that compiles it on the device from the
+        # start has it on the Neural Engine
+        - arch: [h14g]
+          programs: [temporal]
+          do: device
+          why: "the h14g prebuilt fails to load on the M2 (Program load failed, bad program image: failedToSpecialize); the fallback in that process ran on the GPU"
+          checked: 2026-11-28
+        - arch: [h14g]
+          programs: [encoder]
+          do: device
+          why: "coreai-build left the program off the Neural Engine (no compiled region): (ANEHostCompiler) Procedure compilation phase failed; MPSGraphANEUtils.mm: ANE compilation failed, full compile on GPU"
+          checked: 2026-11-28
     amd:
       version: 1
       # SpectroStream's decoder; the language model and MusicCoCa run on the CPU
@@ -691,9 +748,20 @@ models:
   Anima-Turbo: *anima-amd
   DA3-BASE: &da3-amd
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/vision/depth, internal/vision/depth/mil, internal/imagegen/milpart]
       convert: {format: fp16}
+      prebuild:
+        # the ViT (DINOv2) from coreai-build's h14g program gives a wrong depth on the M2: DA3-BASE's
+        # dog at 504 x 504 noise (cosine 0.90 against the device's compile), DA3-SMALL's blurred
+        # (0.976); with the ViT compiled on the device and the head prebuilt, the same bytes as all
+        # compiled on the device. The device compiles a ViT in about 20 s
+        - arch: [h14g]
+          programs: [vit]
+          do: device
+          why: "the h14g ViT prebuilt gives a wrong depth on the M2 (DA3-BASE at 504 x 504 noise, cosine 0.90); right compiled on the device, the head prebuilt"
+          checked: 2026-11-28
     amd:
       version: 1
       script: iron_da3.py
@@ -703,9 +771,21 @@ models:
   DA3METRIC-LARGE: *da3-amd
   moge-2-vits: &moge-amd
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      # 3: version 2 in the sources took the exports of before (ailower.FormatVersion 2 kept their
+      # key); made again with FormatVersion 3
+      version: 3
       code: [internal/vision/moge, internal/vision/moge/mil, internal/vision/depth/mil, internal/imagegen/milpart]
       convert: {format: fp16}
+      prebuild:
+        # the dense head from coreai-build's h14g program draws a band across the depth on the M2
+        # (moge-2-vits at 700 x 700, PSNR 19 dB against the device's compile); with it compiled on
+        # the device and the ViT prebuilt, the same bytes as all compiled on the device
+        - arch: [h14g]
+          programs: [dense]
+          do: device
+          why: "the h14g dense head prebuilt draws a band across the depth on the M2 (moge-2-vits at 700 x 700, PSNR 19 dB); right compiled on the device, the ViT prebuilt"
+          checked: 2026-11-28
     amd:
       version: 1
       script: iron_moge.py
@@ -714,10 +794,20 @@ models:
   moge-2-vitl: *moge-amd
   siglip2-base-patch16-224: &siglip-amd
     apple:
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       # the tokenizer as its binary file (tokenizer.tok), which the runtime maps
       finish: [{tokenizer: [text/tokenizer.json]}]
       code: [internal/vision/siglip, internal/vision/siglip/mil, internal/imagegen/milpart]
+      prebuild:
+        # the vision encoder's h14g prebuilt gives the same labels as the device's compile on the
+        # M2 but loads slower (siglip2-base: 62 s against 18 s, 2026-11-28): nothing gained (the
+        # text encoder is left to the device by apple's rule)
+        - arch: [h14g]
+          programs: [vision]
+          do: device
+          why: "the h14g vision prebuilt loads 3 to 4 times slower on the M2 than the device compiles it (siglip2-base 62 s against 18 s), the same labels"
+          checked: 2026-11-28
       # the two towers in fp16
       convert: {format: fp16}
     amd:
@@ -729,7 +819,12 @@ models:
   siglip2-large-patch16-256: *siglip-amd
   YuNet:
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
+      # prebuilt for the M2 (2026-11-28, version 2): the same faces as compiled on the device,
+      # loaded in 0.3 s against 2.3 s. The other chips' are not checked yet
+      prebuilt: true
+      archs: [h14g]
       code: [internal/vision/face, internal/onnx]
       convert: {format: fp16}
     amd:
@@ -738,10 +833,20 @@ models:
       args: ["{in}", "{out}"]
   RTMDet-tiny: &rtmdet-amd
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/vision/detect, internal/onnx]
       # fp16: the convolutions' outputs are near fp32's at fp16, and the programs are small
       convert: {format: fp16}
+      prebuild:
+        # on the M2 the h14g prebuilt of every size found boxes of score 1 all over the picture
+        # (version 2's exports, the dog and the bench pictures); compiled on the device it finds
+        # the dog (0.35 to 0.49) and the bench. The device compiles them in 3 to 8 s
+        - arch: [h14g]
+          programs: [model]
+          do: device
+          why: "the h14g prebuilt's detections are noise on the M2 (boxes of score 1 everywhere, tiny, s and m); right compiled on the device"
+          checked: 2026-11-28
     amd:
       version: 1
       # {in} the ONNX file, {size} the detector's (detect.Size), {outputs} its heads
@@ -751,9 +856,16 @@ models:
   RTMDet-m: *rtmdet-amd
   RTMO-s:
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/pose, internal/onnx]
       convert: {format: fp16}
+      prebuild:
+        - arch: [h14g]
+          programs: [model]
+          do: device
+          why: "coreai-build left the program off the Neural Engine (no compiled region): (ANEHostCompiler) Procedure compilation phase failed; MPSGraphANEUtils.mm:403: ANE compilation failed, full compile on GPU"
+          checked: 2026-11-28
     amd:
       version: 1
       # its pixels as they are (0 to 255), SiLU as an operator of its own (the GEMM epilogue's
@@ -765,7 +877,12 @@ models:
         --precision, HIGH, --dw-precision, HIGH, --outputs, "{outputs}"]
   EfficientSAM-Ti: &efficientsam-amd
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
+      # prebuilt for the M2 (2026-11-28, version 2): the same masks as compiled on the device; S
+      # loaded in 7 s against 33 s, 0.28 against 0.71 GB at its peak; Ti 2 s against 19 s
+      prebuilt: true
+      archs: [h14g]
       code: [internal/vision/segment, internal/onnx]
       convert: {format: fp16}
     amd:
@@ -777,7 +894,8 @@ models:
   plamo-embedding-1b:
     apple:
       # (no part split at its attention, so no mass program: the bytes of version 1)
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/plamo, internal/chat/embed.go]
     amd:
       version: 1
@@ -787,35 +905,61 @@ models:
   LFM2-8B-A1B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/lfm2moe, internal/llm/experts, "!internal/llm/experts/host.go", "!internal/llm/experts/placement.go", "!internal/llm/experts/debug.go"]
   Qwen2.5-Coder-7B-Instruct:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-0.6B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   Qwen3-1.7B:
     apple:
       # 2: the mass program and the activations' layout (the chat models' Core AI version 2, above)
-      version: 2
+      # 3: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 3
       code: [internal/llm/arch.go, internal/llm/convert.go, internal/llm/rotate.go, internal/llm/split.go, internal/llm/tables.go, internal/llm/blocks, internal/llm/paged, internal/chat/model.go, internal/llm/qwen3]
   swift-f0:
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
+      # prebuilt for the M2 (2026-11-28, version 2): the same pitches as compiled on the device,
+      # loaded in 0.5 s against 10 s
+      prebuilt: true
+      archs: [h14g]
       code: [internal/pitch, internal/onnx]
       convert: {format: fp16}
   basic-pitch:
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/notes, internal/onnx]
       convert: {format: fp16}
+      prebuild:
+        - arch: [h14g]
+          programs: [model]
+          do: device
+          why: "coreai-build left the program off the Neural Engine (no compiled region): (ANEHostCompiler) Error: kernel width and height should be multiple of 8 for large kernel but are 39 and 3"
+          checked: 2026-11-28
   PP-OCRv6-small:
     apple:
-      version: 1
+      # 2: the programs' bytes of PR #384 (one location for every op, weights shared between a part's functions)
+      version: 2
       code: [internal/vision/ocr, internal/vision/detect, internal/onnx]
       convert: {format: fp16}
+      prebuild:
+        # on the M2 the h14g prebuilts found the English line alone of a picture of two lines
+        # (score 0.9957), the device's compile both (0.9999, 0.9999); the device compiles them in
+        # about 16 s
+        - arch: [h14g]
+          programs: [model]
+          do: device
+          why: "the h14g prebuilts' detector missed a line of two on the M2 (the device's compile found both)"
+          checked: 2026-11-28

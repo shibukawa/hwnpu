@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"image"
 	"io"
 	"os"
@@ -55,6 +57,19 @@ func prepareOCR(e airole.PrepareEnv) (f airole.Files, err error) {
 	if !ort && !interpreter(m) && !builtin && e.NPU.Format == "" {
 		return f, errors.New("this machine's NPU runs neither Core AI programs nor OpenVINO IR (--device cpu runs PP-OCR on the CPU)")
 	}
+	if ort || builtin || interpreter(m) {
+		// the CPU: the Core ML packages with their settings' part files made before (hwnpu-dev
+		// models package MODEL/coreml), here or in the shared layers, on hwnpu's own executor
+		// even where ONNX Runtime is, and no ONNX file downloaded
+		p := s
+		p.Backend, p.Parts = llm.BackendCoreML, true
+		if r, err := ocr.Open(e.Ctx, nil, p); err == nil {
+			r.Close()
+			f.Set("models", s.Dir)
+			f.SetValue("prebuilt", "1")
+			return f, nil
+		}
+	}
 	// the repositories' files (opening the reader downloads them; its programs are made later)
 	s.CPU = true
 	r, err := ocr.Open(e.Ctx, nil, s)
@@ -79,6 +94,11 @@ func loadOCR(ctx context.Context, f airole.Files, e airole.LoadEnv) (io.Closer, 
 	}
 	n, interp := threads(m), interpreter(m)
 	ort, builtin := imagedev.CPURoute(ctx, named(m), imagedev.DeviceFlag(m), interp, n, logf(e.Log))
+	if f.Values["prebuilt"] == "1" && ort {
+		// prepared from the prebuilt Core ML packages, no ONNX file: hwnpu's own executor
+		ort, builtin = false, true
+		milcpu.Threads = max(1, n)
+	}
 	cpu := interp || builtin
 	var (
 		dev      *hwnpu.Device

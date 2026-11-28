@@ -59,7 +59,7 @@ func Main() {
 	function := flag.String("function", "", "with -mark, the function that failed (s1024x1024)")
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: hwnpu-dev prebuild [-arch LIST] [-j N] [-force] [-n] [-put] [-model NAME] EXPORT_DIR_OR_PROGRAM...\n       hwnpu-dev prebuild -mark STATUS -arch LIST [-programs LIST] [-function F] EXPORT_DIR...")
+		fmt.Fprintln(os.Stderr, "usage: hwnpu-dev prebuild [-arch LIST] [-j N] [-force] [-n] [-put] [-model NAME] EXPORT_DIR_OR_PROGRAM...\n       hwnpu-dev prebuild -mark STATUS -arch LIST [-programs LIST] [-function F] [-put [-model NAME]] EXPORT_DIR...")
 		os.Exit(2)
 	}
 	// the definitions (the models of the exports) and the sources of the environment
@@ -76,7 +76,7 @@ func Main() {
 		if *programs != "" {
 			progs = strings.Split(*programs, ",")
 		}
-		if err := Mark(flag.Args(), strings.Split(*archs, ","), progs, *mark, *function, os.Stderr); err != nil {
+		if err := Mark(context.Background(), flag.Args(), strings.Split(*archs, ","), progs, *mark, *function, *model, *put, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, "hwnpu-dev prebuild -mark:", err)
 			os.Exit(1)
 		}

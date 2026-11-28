@@ -227,6 +227,9 @@ func ForTarget(target string) (NPU, error) {
 		return NPU{Vendor: "amd", Target: cache.AMDTarget}, nil
 	case cache.CoreAITarget:
 		return NPU{Vendor: "apple", Target: cache.CoreAITarget, Device: coreAI, Format: coreAI}, nil
+	case cache.CoreMLTarget:
+		// the Core ML packages hwnpu's own executor runs on the CPU, of no NPU
+		return NPU{Target: cache.CoreMLTarget, Format: "coreml"}, nil
 	}
-	return NPU{}, fmt.Errorf("ai: no target %q to prepare models for (%s, %s)", target, cache.AMDTarget, cache.CoreAITarget)
+	return NPU{}, fmt.Errorf("ai: no target %q to prepare models for (%s, %s, %s)", target, cache.AMDTarget, cache.CoreAITarget, cache.CoreMLTarget)
 }

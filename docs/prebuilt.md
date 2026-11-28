@@ -139,7 +139,7 @@ SEL = [N:]MODEL[/TARGET]
 
 **どこから上げるか**: 読むときと同じ層の並び (`hwnpu-dev sources` の番号: 0 がこの機械のキャッシュ、1 から `HWNPU_MODEL_SOURCE`、`_1`、...) を前から順に見て、place の entry を最初に持つ層から取る。今の `store.FetchEntry` の chain of responsibility をそのまま使い、HF 用の別の置き場所は持たない。層を決めたいときは `N:` を付ける (`--source` のフラグは持たない)。今の環境では 1 番の NAS だけ。
 
-**対象の選び方**: `/TARGET` は `amd-xdna2`、`coreai` (汎用だけ)、`coreai-<チップ>`、`apple` (`coreai` と全部の `coreai-<チップ>`)。表 (`any`) はどの対象を選んでも付く (どちらの NPU も読むので)。`--target` のフラグは持たない。prebuilt は汎用の `coreai` がないと使えない (重みをそこから組み立てる) ので、`coreai-<チップ>` だけを選んで HF に汎用のものがなければエラーにする。
+**対象の選び方**: `/TARGET` は `amd-xdna2`、`coreai` (汎用だけ)、`coreai-<チップ>`、`apple` (`coreai` と全部の `coreai-<チップ>`)、`coreml` (CPU で動かす Core ML パッケージ。どの OS でも同じもの。版のあるモデルにだけ行がある: [cache-sharing-design.md](cache-sharing-design.md) 7.11 節)。表 (`any`) はどの対象を選んでも付く (どちらの NPU も読むので)。`--target` のフラグは持たない。prebuilt は汎用の `coreai` がないと使えない (重みをそこから組み立てる) ので、`coreai-<チップ>` だけを選んで HF に汎用のものがなければエラーにする。
 
 **名指さないとき**: 層の一覧と、候補を出す。行の頭の `N:MODEL/TARGET` を、そのまま `hwnpu-dev models hf push` に渡せる。
 
@@ -319,7 +319,7 @@ models:
 - **固定はリポジトリに付く**: コミットはそのリポジトリの中でしか意味がないので、リポジトリの名前の下に書く。別の名前空間に上げた人の固定 (4.6 節) は、別のリポジトリの行として並ぶ。混ざらない
 - **読む順**: モデルの `hub` に並んだリポジトリのうち、自分の対象の鍵のあるものを、後から読んだファイルのものから順に (利用者のファイル → 組み込み)。最初に当たったものを使う。自分のチームで変換したものを先に、なければ公式のもの、と重ねられる
 
-- **鍵は対象の名前**: `amd-xdna2`、`apple`、`coreai-<チップ>`。のちの `amd-xdna1` や `intel-npu4` も同じ形で足す。Mac は `coreai-<自分のチップ>` があればそれ、なければ `apple`。広い名前が既定で狭い名前が例外、という対象の決まり ([cache-sharing-design.md](cache-sharing-design.md) 3.1 節) と同じ
+- **鍵は対象の名前**: `amd-xdna2`、`apple`、`coreai-<チップ>`、`coreml` (CPU の Core ML パッケージ。どの機械でも同じ鍵を読む、2026-11-28)。のちの `amd-xdna1` や `intel-npu4` も同じ形で足す。Mac は `coreai-<自分のチップ>` があればそれ、なければ `apple`。広い名前が既定で狭い名前が例外、という対象の決まり ([cache-sharing-design.md](cache-sharing-design.md) 3.1 節) と同じ
 - **対象を別々に進められる**: Apple のチップの prebuilt を後から足したら `apple` だけを進める。AMD の機械が読むコミットは変わらないので、AMD の利用者は何も取り直さない (中身が同じなので取り直さないのは 1 本の固定でも同じだが、AMD の分を確かめ直す必要もなくなる)。チップを 1 つだけ試しに足すなら `coreai-<チップ>` に書く
 - **表 (`any`)**: その対象のコミットにあるものを読む。HF の履歴は 1 本なので、表を上げたあとのコミットにはどれも入っている。`hwnpu-dev models hf check` は、対象ごとのコミットにその対象と表の place が全部あることを見る
 - 利用者のファイルは名指したリポジトリの名指した鍵だけを変える (`targets` と同じ)。リポジトリを足すだけなら組み込みの固定は残る

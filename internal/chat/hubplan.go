@@ -46,6 +46,18 @@ func CoreAIWant(ctx context.Context, m Model, export string) (shared.Entry, bool
 	return placeOf(CoreAIKind, m, CoreAITarget, export, r).entry, true
 }
 
+// CoreMLWant is the entry of the Core ML package of model m named export in the sources
+// (NAME.mlpackage, chat.CoreMLKind: what the CPU runs in place of the ONNX file), as the commands
+// look for it now; false when neither the digests of the model's files nor their commit are known.
+func CoreMLWant(ctx context.Context, m Model, export string) (shared.Entry, bool) {
+	_, r := modelRecipe(WithModel(ctx, m), "")
+	if r == nil {
+		return shared.Entry{}, false
+	}
+	r["kind"], r["target"], r["export"] = CoreMLKind, CoreMLTarget, export
+	return placeOf(CoreMLKind, m, CoreMLTarget, export, r).entry, true
+}
+
 // TablesWant is the entry of model m's tables that got (an entry of tables found in a source)
 // would be if made now: the same tables of the same architecture, of the model's files and the
 // tables' version of this hwnpu. false when got is not tables, or the model's files are not known.

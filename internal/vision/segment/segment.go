@@ -117,6 +117,8 @@ type Model struct {
 	x     *exportConfig  // the NPU export's model.json
 	// progName is the program's file
 	progName string
+	// cpu says prog runs on hwnpu's own executor (OpenCPUProgram), not on an NPU
+	cpu bool
 }
 
 type exportConfig struct {
@@ -191,6 +193,8 @@ func (m *Model) Where() string {
 	switch {
 	case m.npu != nil:
 		return "AMD's NPU"
+	case m.prog != nil && m.cpu:
+		return "the CPU (hwnpu's own executor, " + m.progName + ")"
 	case m.prog != nil:
 		if m.prog.OnNPU() {
 			return "the NPU (" + m.progName + ")"

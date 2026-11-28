@@ -66,7 +66,7 @@ func TestLeft(t *testing.T) {
 	for _, c := range []struct {
 		program, arch string
 		want          bool
-	}{{"q8.attn1024.aimodel", "h13g", true}, {"model.attn.aimodel", "h13g", true}, {"q8.attn1024.aimodel", "h14g", false}, {"model.part1.aimodel", "h13g", false}} {
+	}{{"q8.attn1024.aimodel", "h13g", true}, {"model.attn.aimodel", "h13g", true}, {"q8.attn1024.aimodel", "h14g", true}, {"model.part1.aimodel", "h13g", false}, {"model.part1.aimodel", "h14g", false}} {
 		if _, got := qwen.Left("x.coreai", c.program, c.arch); got != c.want {
 			t.Errorf("Qwen3-0.6B %s on %s: left %v, want %v", c.program, c.arch, got, c.want)
 		}

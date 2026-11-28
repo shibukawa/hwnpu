@@ -44,49 +44,66 @@ func init() {
 	})})
 	// ocr: PP-OCR's detector of each size and recognizer of each width (ocr.Sizes, ocr.Widths)
 	Register(&Preparer{Name: "ocr", Kinds: []chat.Kind{chat.KindOCR}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {
-		m := e.Model
-		det := m.With["detector"]
-		if det == "" {
-			return fmt.Errorf("models.yaml gives no detector (with: {detector: hf:OWNER/NAME})")
-		}
-		detSHA, recSHA := map[string]string{}, map[string]string{}
-		for file, d := range m.SHA256 {
-			if rest, ok := strings.CutPrefix(file, "detector/"); ok {
-				detSHA[rest] = d
-			} else {
-				recSHA[file] = d
-			}
-		}
-		r, err := ocr.Open(e.Ctx, nil, ocr.Setup{Dir: chat.ModelsDir(), Det: ocr.Source{Repo: det, SHA256: detSHA}, Rec: ocr.Source{Repo: m.Source(), SHA256: recSHA}, Backend: llm.BackendCoreAI, Log: e.Log})
-		if err != nil {
-			return err
-		}
-		return r.PreparePrograms(chat.WithModel(e.Ctx, m))
+		return prepareOCR(e, llm.BackendCoreAI)
 	})})
 	// segment: EfficientSAM's encoder (the decoder runs on the host from its ONNX file)
 	Register(&Preparer{Name: "segment", Kinds: []chat.Kind{chat.KindSegment}, Prepare: coreAIOnly(func(e airole.PrepareEnv, f *airole.Files) error {
 		m := e.Model
-		var encFile, decFile string
-		for file := range m.SHA256 {
-			switch {
-			case strings.HasSuffix(file, "_encoder.onnx"):
-				encFile = file
-			case strings.HasSuffix(file, "_decoder.onnx"):
-				decFile = file
-			}
+		setup, err := segmentSetup(e)
+		if err != nil {
+			return err
 		}
-		if encFile == "" || decFile == "" {
-			return fmt.Errorf("models.yaml names no *_encoder.onnx and *_decoder.onnx in its sha256")
-		}
-		setup := segment.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Encoder: encFile, Decoder: decFile, SHA256: m.SHA256, Log: e.Log}
 		enc, _, err := segment.Fetch(e.Ctx, setup)
 		if err != nil {
 			return err
 		}
-		program, err := segment.ConvertEncoder(chat.WithModel(e.Ctx, m), llm.BackendCoreAI, enc, setup.Dir, e.Log)
+		program, err := segment.ConvertEncoder(chat.WithModel(e.Ctx, m), llm.BackendCoreAI, enc, "", setup.Dir, e.Log)
 		f.Set("program", program)
 		return err
 	})})
+}
+
+// prepareOCR makes PP-OCR's programs of every size for backend (its detector's and its
+// recognizer's: ocr.Sizes, ocr.Widths).
+func prepareOCR(e airole.PrepareEnv, backend string) error {
+	m := e.Model
+	det := m.With["detector"]
+	if det == "" {
+		return fmt.Errorf("models.yaml gives no detector (with: {detector: hf:OWNER/NAME})")
+	}
+	detSHA, recSHA := map[string]string{}, map[string]string{}
+	for file, d := range m.SHA256 {
+		if rest, ok := strings.CutPrefix(file, "detector/"); ok {
+			detSHA[rest] = d
+		} else {
+			recSHA[file] = d
+		}
+	}
+	r, err := ocr.Open(e.Ctx, nil, ocr.Setup{Dir: chat.ModelsDir(), Det: ocr.Source{Repo: det, SHA256: detSHA}, Rec: ocr.Source{Repo: m.Source(), SHA256: recSHA}, Backend: backend, Log: e.Log})
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	return r.PreparePrograms(chat.WithModel(e.Ctx, m))
+}
+
+// segmentSetup is what segment downloads for EfficientSAM's model: its encoder's and decoder's
+// ONNX files, which models.yaml's sha256 names.
+func segmentSetup(e airole.PrepareEnv) (segment.Setup, error) {
+	m := e.Model
+	var encFile, decFile string
+	for file := range m.SHA256 {
+		switch {
+		case strings.HasSuffix(file, "_encoder.onnx"):
+			encFile = file
+		case strings.HasSuffix(file, "_decoder.onnx"):
+			decFile = file
+		}
+	}
+	if encFile == "" || decFile == "" {
+		return segment.Setup{}, fmt.Errorf("models.yaml names no *_encoder.onnx and *_decoder.onnx in its sha256")
+	}
+	return segment.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Encoder: encFile, Decoder: decFile, SHA256: m.SHA256, Log: e.Log}, nil
 }
 
 // logf writes lines to w (nil for nowhere).

@@ -38,7 +38,7 @@ func usableFaces(f airole.Files) error {
 	switch ort := onnxrt.Available(); {
 	case f.Values["runtime"] != "hwnpu" && !ort:
 		return errors.New("it runs on the CPU with ONNX Runtime, whose library does not load (HWNPU_ONNXRUNTIME)")
-	case f.Values["runtime"] == "hwnpu" && ort:
+	case f.Values["runtime"] == "hwnpu" && ort && f.Values["prebuilt"] == "":
 		return errors.New("it runs on hwnpu's own executor, and ONNX Runtime is here now")
 	}
 	return nil
@@ -101,21 +101,41 @@ func prepareFaces(e airole.PrepareEnv) (f airole.Files, err error) {
 		f.Set("export", dir)
 		return f, nil
 	}
+	fetchONNX := func() (string, error) { return chat.Fetch(e.Ctx, m.Source(), imagedev.YuNetFile, e.Log) }
+	if device == "cpu" && path == "" {
+		// the Core ML programs of every size made before (hwnpu-dev models package
+		// YuNet/coreml), here or in the shared layers: run on hwnpu's own executor even where
+		// ONNX Runtime is, and the ONNX file is not downloaded
+		dir := chat.ModelDir(e.Base)
+		if _, err := face.PreparePrograms(llm.WithFetchOnly(e.Ctx), llm.BackendCoreML, fetchONNX, dir, face.CPUSizes); err == nil {
+			f.SetValue("runtime", "hwnpu")
+			f.SetValue("prebuilt", "1")
+			f.SetValue("why", strings.TrimPrefix(f.Values["why"]+"; hwnpu's own executor on the prebuilt programs", "; "))
+			f.Set("programs", dir)
+			return f, nil
+		}
+	}
+	if builtin {
+		// the Core ML programs of every size now, which the executor runs (as the NPU's below);
+		// the ONNX file downloaded only for one converted here
+		dir := chat.ModelDir(e.Base)
+		if path == "" {
+			if path, err = face.PreparePrograms(e.Ctx, llm.BackendCoreML, fetchONNX, dir, face.CPUSizes); err != nil {
+				return f, err
+			}
+		} else if err := face.ConvertPrograms(e.Ctx, llm.BackendCoreML, path, dir, face.CPUSizes); err != nil {
+			return f, err
+		}
+		f.Set("onnx", path)
+		f.Set("programs", dir)
+		return f, nil
+	}
 	if path == "" {
-		if path, err = chat.Fetch(e.Ctx, m.Source(), imagedev.YuNetFile, e.Log); err != nil {
+		if path, err = fetchONNX(); err != nil {
 			return f, err
 		}
 	}
 	f.Set("onnx", path)
-	if builtin {
-		// the Core ML programs of every size now, which the executor runs (as the NPU's below)
-		dir := chat.ModelDir(e.Base)
-		if err := face.ConvertPrograms(e.Ctx, llm.BackendCoreML, path, dir, face.CPUSizes); err != nil {
-			return f, err
-		}
-		f.Set("programs", dir)
-		return f, nil
-	}
 	if device == "npu" {
 		// Apple's and Intel's NPU run the ONNX graph converted (at its first load) into the
 		// model's directory of programs, made now: the store finds a use whose files are all
